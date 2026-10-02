@@ -109,6 +109,11 @@
   mperfsel/mperfctl ignore writes. Writes to the three read-only ones trap
   either way.
 */
+// Kept as its own hierarchy: its write and read paths are decoded locally
+// (see the CSR write data calculation and the read multiplexer), and keeping
+// the boundary stops synthesis from merging that logic into the commit and
+// serializer cones it sits beside.
+(* keep_hierarchy = "yes" *)
 module csr_file #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     // cpu_ooo never commits a CSR in the same cycle as a trap or xRET, and
@@ -169,7 +174,8 @@ module csr_file #(
     input  logic        i_trap_to_d,
     input  logic [ 2:0] i_trap_dbg_cause,
     input  logic        i_dret_taken,      // DRET is being executed
-    // ddata (0x7B4): the debug module's data0/data1 pair, forwarded.
+    // ddata (0x7B4): the debug module's data0/data1 pair, forwarded. The
+    // write data is valid while o_dbg_data_we is set.
     input  logic [63:0] i_dbg_data,
     output logic        o_dbg_data_we,
     output logic [63:0] o_dbg_data_wdata,
@@ -737,6 +743,103 @@ module csr_file #(
     endcase
   end
 
+  // Every other written CSR has a local copy too. For an access to CSR X,
+  // csr_rmw_base is X's own value: its register, the view for sstatus, sie
+  // and sip, and for mip the software SEIP/STIP bits. Each write path below
+  // takes the copy of its own CSR, so its write data is one LUT level from
+  // the CSR's register and the write operands, and only the write enables
+  // decode the address. The shared csr_new_value remains for the formal
+  // properties. p_csr_local_rmw_matches_generic checks every copy against it
+  // under its address. The operation is a per-bit mask pair shared by every
+  // copy, so the commit bus's write data fans out to the two masks rather
+  // than to each copy: new = (base & keep) | set. The decode is funct3[1:0]
+  // (riscv_pkg's CSR_* encodings): write (01) keeps nothing and sets the
+  // data, set (10) keeps all and sets the data, clear (11) keeps the bits the
+  // data leaves clear, and the pure read (00) keeps all.
+  (* keep = "true" *) logic [XLEN-1:0] csr_rmw_keep, csr_rmw_set;
+  always_comb begin
+    unique case (i_csr_op[1:0])
+      2'b01: begin
+        csr_rmw_keep = '0;
+        csr_rmw_set  = i_csr_write_data;
+      end
+      2'b10: begin
+        csr_rmw_keep = '1;
+        csr_rmw_set  = i_csr_write_data;
+      end
+      2'b11: begin
+        csr_rmw_keep = ~i_csr_write_data;
+        csr_rmw_set  = '0;
+      end
+      default: begin
+        csr_rmw_keep = '1;
+        csr_rmw_set  = '0;
+      end
+    endcase
+  end
+  function automatic logic [XLEN-1:0] zicsr_rmw(
+      input logic [XLEN-1:0] keep, input logic [XLEN-1:0] set, input logic [XLEN-1:0] base);
+    zicsr_rmw = (base & keep) | set;
+  endfunction
+  logic [XLEN-1:0] mip_rmw_base;
+  always_comb begin
+    mip_rmw_base = mip;
+    mip_rmw_base[riscv_pkg::MieSeiBit] = mip_seip;
+    mip_rmw_base[riscv_pkg::MieStiBit] = mip_stip;
+  end
+  logic [XLEN-1:0] fflags_new_value, frm_new_value, fcsr_new_value;
+  logic [XLEN-1:0] mstatus_new_value, sstatus_new_value, mie_new_value, sie_new_value;
+  logic [XLEN-1:0] mcounteren_new_value, mcountinhibit_new_value;
+  logic [XLEN-1:0] mcycle_new_value, minstret_new_value;
+  logic [XLEN-1:0] mscratch_new_value, mepc_new_value, mcause_new_value, mtval_new_value;
+  logic [XLEN-1:0] medeleg_new_value, mideleg_new_value, mip_new_value, sip_new_value;
+  logic [XLEN-1:0] stvec_new_value, scounteren_new_value, sscratch_new_value;
+  logic [XLEN-1:0] sepc_new_value, scause_new_value, stval_new_value, satp_new_value;
+  logic [XLEN-1:0] menvcfg_new_value, stimecmp_new_value;
+  logic [XLEN-1:0] mperfsel_new_value, mperfctl_new_value;
+  logic [XLEN-1:0] dcsr_new_value, dpc_new_value, dscratch0_new_value, dscratch1_new_value;
+  logic [XLEN-1:0] ddata_new_value;
+  assign fflags_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, XLEN'({27'b0, fflags}));
+  assign frm_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, XLEN'({29'b0, frm}));
+  assign fcsr_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, fcsr);
+  assign mstatus_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mstatus);
+  assign sstatus_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, sstatus);
+  assign mie_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mie);
+  assign sie_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, sie_view);
+  assign mcounteren_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, XLEN'({29'b0, mcounteren_q}));
+  assign mcountinhibit_new_value = zicsr_rmw(
+      csr_rmw_keep, csr_rmw_set, XLEN'({29'b0, mcountinhibit_ir, 1'b0, mcountinhibit_cy})
+  );
+  assign mcycle_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, cycle_counter[XLEN-1:0]);
+  assign minstret_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, instret_counter[XLEN-1:0]);
+  assign mscratch_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mscratch);
+  assign mepc_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mepc);
+  assign mcause_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mcause);
+  assign mtval_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mtval);
+  assign medeleg_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, XLEN'(medeleg_q));
+  assign mideleg_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mideleg);
+  assign mip_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mip_rmw_base);
+  assign sip_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, sip_view);
+  assign stvec_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, stvec);
+  assign scounteren_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, XLEN'({29'b0, scounteren_q}));
+  assign sscratch_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, sscratch);
+  assign sepc_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, sepc);
+  assign scause_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, scause);
+  assign stval_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, stval);
+  assign satp_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, satp);
+  assign menvcfg_new_value = zicsr_rmw(
+      csr_rmw_keep, csr_rmw_set, XLEN'(menvcfg_stce) << riscv_pkg::MenvcfgStceBit
+  );
+  assign stimecmp_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, stimecmp);
+  assign mperfsel_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, perf_counter_select);
+  // mperfctl reads 0, so its base is 0.
+  assign mperfctl_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, '0);
+  assign dcsr_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, dcsr);
+  assign dpc_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, dpc);
+  assign dscratch0_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, dscratch0);
+  assign dscratch1_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, dscratch1);
+  assign ddata_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, XLEN'(i_dbg_data));
+
 `ifndef SYNTHESIS
   // Check the local mtvec calculation against the generic one. Qualifying by
   // address captures the premise that makes csr_rmw_base equal mtvec, while
@@ -755,6 +858,59 @@ module csr_file #(
             {i_csr_address, i_csr_op, i_csr_write_data, mtvec, csr_new_value, mtvec_new_value}
         ) && (i_csr_address == riscv_pkg::CsrMtvec)) begin
       p_mtvec_local_rmw_matches_generic : assert (mtvec_new_value == csr_new_value);
+    end
+`endif
+  end
+
+  // The same check for every other local copy: under each CSR's address its
+  // copy equals csr_new_value.
+  logic [XLEN-1:0] csr_local_new_value;
+  always_comb begin
+    case (i_csr_address)
+      riscv_pkg::CsrFflags: csr_local_new_value = fflags_new_value;
+      riscv_pkg::CsrFrm: csr_local_new_value = frm_new_value;
+      riscv_pkg::CsrFcsr: csr_local_new_value = fcsr_new_value;
+      riscv_pkg::CsrMstatus: csr_local_new_value = mstatus_new_value;
+      riscv_pkg::CsrSstatus: csr_local_new_value = sstatus_new_value;
+      riscv_pkg::CsrMie: csr_local_new_value = mie_new_value;
+      riscv_pkg::CsrSie: csr_local_new_value = sie_new_value;
+      riscv_pkg::CsrMcounteren: csr_local_new_value = mcounteren_new_value;
+      riscv_pkg::CsrMcountinhibit: csr_local_new_value = mcountinhibit_new_value;
+      riscv_pkg::CsrMcycle: csr_local_new_value = mcycle_new_value;
+      riscv_pkg::CsrMinstret: csr_local_new_value = minstret_new_value;
+      riscv_pkg::CsrMscratch: csr_local_new_value = mscratch_new_value;
+      riscv_pkg::CsrMepc: csr_local_new_value = mepc_new_value;
+      riscv_pkg::CsrMcause: csr_local_new_value = mcause_new_value;
+      riscv_pkg::CsrMtval: csr_local_new_value = mtval_new_value;
+      riscv_pkg::CsrMedeleg: csr_local_new_value = medeleg_new_value;
+      riscv_pkg::CsrMideleg: csr_local_new_value = mideleg_new_value;
+      riscv_pkg::CsrMip: csr_local_new_value = mip_new_value;
+      riscv_pkg::CsrSip: csr_local_new_value = sip_new_value;
+      riscv_pkg::CsrStvec: csr_local_new_value = stvec_new_value;
+      riscv_pkg::CsrScounteren: csr_local_new_value = scounteren_new_value;
+      riscv_pkg::CsrSscratch: csr_local_new_value = sscratch_new_value;
+      riscv_pkg::CsrSepc: csr_local_new_value = sepc_new_value;
+      riscv_pkg::CsrScause: csr_local_new_value = scause_new_value;
+      riscv_pkg::CsrStval: csr_local_new_value = stval_new_value;
+      riscv_pkg::CsrSatp: csr_local_new_value = satp_new_value;
+      riscv_pkg::CsrMenvcfg: csr_local_new_value = menvcfg_new_value;
+      riscv_pkg::CsrStimecmp: csr_local_new_value = stimecmp_new_value;
+      riscv_pkg::CsrMperfSel: csr_local_new_value = mperfsel_new_value;
+      riscv_pkg::CsrMperfCtl: csr_local_new_value = mperfctl_new_value;
+      riscv_pkg::CsrDcsr: csr_local_new_value = dcsr_new_value;
+      riscv_pkg::CsrDpc: csr_local_new_value = dpc_new_value;
+      riscv_pkg::CsrDscratch0: csr_local_new_value = dscratch0_new_value;
+      riscv_pkg::CsrDscratch1: csr_local_new_value = dscratch1_new_value;
+      riscv_pkg::CsrDdata: csr_local_new_value = ddata_new_value;
+      default: csr_local_new_value = csr_new_value;
+    endcase
+`ifdef FORMAL
+    p_csr_local_rmw_matches_generic : assert (csr_local_new_value == csr_new_value);
+`else
+    if (!$isunknown(
+            {i_csr_address, i_csr_op, i_csr_write_data, csr_new_value, csr_local_new_value}
+        )) begin
+      p_csr_local_rmw_matches_generic : assert (csr_local_new_value == csr_new_value);
     end
 `endif
   end
@@ -796,7 +952,7 @@ module csr_file #(
     if (i_rst) begin
       cycle_counter <= 64'd0;
     end else if (mcycle_write) begin
-      cycle_counter <= csr_new_value;
+      cycle_counter <= mcycle_new_value;
     end else if (!mcountinhibit_cy) begin
       cycle_counter <= cycle_counter_incremented;
     end
@@ -865,7 +1021,7 @@ module csr_file #(
     end else begin
       instruction_retired_count_q <= (mcountinhibit_ir || minstret_write) ? 2'd0 :
                                      i_instruction_retired_count;
-      instret_counter <= minstret_write ? csr_new_value : instret_counter_accumulated;
+      instret_counter <= minstret_write ? minstret_new_value : instret_counter_accumulated;
     end
   end
 
@@ -906,11 +1062,11 @@ module csr_file #(
       // Priority: CSR write > FP flag accumulation
       if (i_csr_write_enable && i_csr_read_enable) begin
         unique case (i_csr_address)
-          riscv_pkg::CsrFflags: fflags <= csr_new_value[4:0];
-          riscv_pkg::CsrFrm:    frm <= csr_new_value[2:0];
+          riscv_pkg::CsrFflags: fflags <= fflags_new_value[4:0];
+          riscv_pkg::CsrFrm:    frm <= frm_new_value[2:0];
           riscv_pkg::CsrFcsr: begin
-            fflags <= csr_new_value[4:0];
-            frm    <= csr_new_value[7:5];
+            fflags <= fcsr_new_value[4:0];
+            frm    <= fcsr_new_value[7:5];
           end
           default: begin
             // The write targets a non-FP CSR, so flags still accumulate.
@@ -1005,47 +1161,47 @@ module csr_file #(
       if (dcsr_prv != riscv_pkg::PrivM) next_mstatus_mprv = 1'b0;
     end else if (i_csr_write_enable && i_csr_read_enable) begin
       if (i_csr_address == riscv_pkg::CsrMstatus) begin
-        next_mstatus_sie = csr_new_value[riscv_pkg::MstatusSieBit];
-        next_mstatus_mie = csr_new_value[3];
-        next_mstatus_spie = csr_new_value[riscv_pkg::MstatusSpieBit];
-        next_mstatus_mpie = csr_new_value[7];
-        next_mstatus_spp = csr_new_value[riscv_pkg::MstatusSppBit];
+        next_mstatus_sie = mstatus_new_value[riscv_pkg::MstatusSieBit];
+        next_mstatus_mie = mstatus_new_value[3];
+        next_mstatus_spie = mstatus_new_value[riscv_pkg::MstatusSpieBit];
+        next_mstatus_mpie = mstatus_new_value[7];
+        next_mstatus_spp = mstatus_new_value[riscv_pkg::MstatusSppBit];
         // MPP is WARL over {U, S, M}: the reserved encoding 2'b10 folds to
         // U (matches the pinned Spike's legalization).
-        next_mstatus_mpp = (csr_new_value[12:11] == 2'b10) ? riscv_pkg::PrivU
-                                                           : csr_new_value[12:11];
-        next_mstatus_mprv = csr_new_value[riscv_pkg::MstatusMprvBit];
-        next_mstatus_sum = csr_new_value[riscv_pkg::MstatusSumBit];
-        next_mstatus_mxr = csr_new_value[riscv_pkg::MstatusMxrBit];
-        next_mstatus_tvm = csr_new_value[riscv_pkg::MstatusTvmBit];
-        next_mstatus_tw = csr_new_value[riscv_pkg::MstatusTwBit];
-        next_mstatus_tsr = csr_new_value[riscv_pkg::MstatusTsrBit];
+        next_mstatus_mpp = (mstatus_new_value[12:11] == 2'b10) ? riscv_pkg::PrivU
+                                                               : mstatus_new_value[12:11];
+        next_mstatus_mprv = mstatus_new_value[riscv_pkg::MstatusMprvBit];
+        next_mstatus_sum = mstatus_new_value[riscv_pkg::MstatusSumBit];
+        next_mstatus_mxr = mstatus_new_value[riscv_pkg::MstatusMxrBit];
+        next_mstatus_tvm = mstatus_new_value[riscv_pkg::MstatusTvmBit];
+        next_mstatus_tw = mstatus_new_value[riscv_pkg::MstatusTwBit];
+        next_mstatus_tsr = mstatus_new_value[riscv_pkg::MstatusTsrBit];
         // FS is WARL with all four values storable (Off/Initial/Clean/Dirty).
-        next_mstatus_fs = csr_new_value[14:13];
+        next_mstatus_fs = mstatus_new_value[14:13];
       end else if (i_csr_address == riscv_pkg::CsrSstatus) begin
         // sstatus view write: only the S-visible fields move; the machine
         // fields are untouched by construction.
-        next_mstatus_sie  = csr_new_value[riscv_pkg::MstatusSieBit];
-        next_mstatus_spie = csr_new_value[riscv_pkg::MstatusSpieBit];
-        next_mstatus_spp  = csr_new_value[riscv_pkg::MstatusSppBit];
-        next_mstatus_sum  = csr_new_value[riscv_pkg::MstatusSumBit];
-        next_mstatus_mxr  = csr_new_value[riscv_pkg::MstatusMxrBit];
-        next_mstatus_fs   = csr_new_value[14:13];
+        next_mstatus_sie  = sstatus_new_value[riscv_pkg::MstatusSieBit];
+        next_mstatus_spie = sstatus_new_value[riscv_pkg::MstatusSpieBit];
+        next_mstatus_spp  = sstatus_new_value[riscv_pkg::MstatusSppBit];
+        next_mstatus_sum  = sstatus_new_value[riscv_pkg::MstatusSumBit];
+        next_mstatus_mxr  = sstatus_new_value[riscv_pkg::MstatusMxrBit];
+        next_mstatus_fs   = sstatus_new_value[14:13];
       end else if (i_csr_address == riscv_pkg::CsrMie) begin
-        next_mie_ssie = csr_new_value[riscv_pkg::MieSsiBit];
-        next_mie_msie = csr_new_value[3];
-        next_mie_stie = csr_new_value[riscv_pkg::MieStiBit];
-        next_mie_mtie = csr_new_value[7];
-        next_mie_seie = csr_new_value[riscv_pkg::MieSeiBit];
-        next_mie_meie = csr_new_value[11];
+        next_mie_ssie = mie_new_value[riscv_pkg::MieSsiBit];
+        next_mie_msie = mie_new_value[3];
+        next_mie_stie = mie_new_value[riscv_pkg::MieStiBit];
+        next_mie_mtie = mie_new_value[7];
+        next_mie_seie = mie_new_value[riscv_pkg::MieSeiBit];
+        next_mie_meie = mie_new_value[11];
       end else if (i_csr_address == riscv_pkg::CsrSie) begin
         // sie view write: delegated bits write through to the mie storage;
         // non-delegated bits are read-only-zero in the view and discard
-        // writes (csr_new_value was computed over the masked view, so a
+        // writes (the write value is computed over the masked view, so a
         // set/clear op cannot leak a non-delegated enable through either).
-        if (mideleg_ssi) next_mie_ssie = csr_new_value[riscv_pkg::MieSsiBit];
-        if (mideleg_sti) next_mie_stie = csr_new_value[riscv_pkg::MieStiBit];
-        if (mideleg_sei) next_mie_seie = csr_new_value[riscv_pkg::MieSeiBit];
+        if (mideleg_ssi) next_mie_ssie = sie_new_value[riscv_pkg::MieSsiBit];
+        if (mideleg_sti) next_mie_stie = sie_new_value[riscv_pkg::MieStiBit];
+        if (mideleg_sei) next_mie_seie = sie_new_value[riscv_pkg::MieSeiBit];
       end
     end
 
@@ -1176,62 +1332,63 @@ module csr_file #(
           mtvec                    <= {mtvec_new_value[XLEN-1:2], 1'b0, mtvec_new_value[0]};
           mtvec_traps_misaligned_q <= |mtvec_new_value[XLEN-1:2];
         end
-        riscv_pkg::CsrMcounteren: mcounteren_q <= csr_new_value[2:0];  // WARL: CY/TM/IR only
+        riscv_pkg::CsrMcounteren: mcounteren_q <= mcounteren_new_value[2:0];  // WARL: CY/TM/IR only
         riscv_pkg::CsrMcountinhibit: begin  // WARL: CY and IR only (TM/HPM bits read 0)
-          mcountinhibit_cy <= csr_new_value[0];
-          mcountinhibit_ir <= csr_new_value[2];
+          mcountinhibit_cy <= mcountinhibit_new_value[0];
+          mcountinhibit_ir <= mcountinhibit_new_value[2];
         end
-        riscv_pkg::CsrMscratch: mscratch <= csr_new_value;
-        riscv_pkg::CsrMepc: mepc <= {csr_new_value[XLEN-1:1], 1'b0};  // 2-byte aligned for C ext
-        riscv_pkg::CsrMcause: mcause <= csr_new_value;
-        riscv_pkg::CsrMtval: mtval <= csr_new_value;
-        riscv_pkg::CsrMedeleg: medeleg_q <= csr_new_value[15:0] & riscv_pkg::MedelegMask[15:0];
+        riscv_pkg::CsrMscratch: mscratch <= mscratch_new_value;
+        riscv_pkg::CsrMepc: mepc <= {mepc_new_value[XLEN-1:1], 1'b0};  // 2-byte aligned for C ext
+        riscv_pkg::CsrMcause: mcause <= mcause_new_value;
+        riscv_pkg::CsrMtval: mtval <= mtval_new_value;
+        riscv_pkg::CsrMedeleg: medeleg_q <= medeleg_new_value[15:0] & riscv_pkg::MedelegMask[15:0];
         riscv_pkg::CsrMideleg: begin
-          mideleg_ssi <= csr_new_value[riscv_pkg::MieSsiBit];
-          mideleg_sti <= csr_new_value[riscv_pkg::MieStiBit];
-          mideleg_sei <= csr_new_value[riscv_pkg::MieSeiBit];
+          mideleg_ssi <= mideleg_new_value[riscv_pkg::MieSsiBit];
+          mideleg_sti <= mideleg_new_value[riscv_pkg::MieStiBit];
+          mideleg_sei <= mideleg_new_value[riscv_pkg::MieSeiBit];
         end
         // mip: the machine bits are read-only (input reflections); the
         // supervisor pending bits are the M-mode software-injection state.
         riscv_pkg::CsrMip: begin
-          mip_ssip <= csr_new_value[riscv_pkg::MieSsiBit];
-          mip_stip <= csr_new_value[riscv_pkg::MieStiBit];
-          mip_seip <= csr_new_value[riscv_pkg::MieSeiBit];
+          mip_ssip <= mip_new_value[riscv_pkg::MieSsiBit];
+          mip_stip <= mip_new_value[riscv_pkg::MieStiBit];
+          mip_seip <= mip_new_value[riscv_pkg::MieSeiBit];
         end
         // sip: SSIP is the only S-writable pending bit, and only where
         // delegated (the RMW base was the masked view, so set/clear forms
         // cannot leak through a non-delegated bit either).
         riscv_pkg::CsrSip: begin
-          if (mideleg_ssi) mip_ssip <= csr_new_value[riscv_pkg::MieSsiBit];
+          if (mideleg_ssi) mip_ssip <= sip_new_value[riscv_pkg::MieSsiBit];
         end
-        riscv_pkg::CsrStvec: stvec <= {csr_new_value[XLEN-1:2], 1'b0, csr_new_value[0]};
-        riscv_pkg::CsrScounteren: scounteren_q <= csr_new_value[2:0];  // WARL: CY/TM/IR only
-        riscv_pkg::CsrSscratch: sscratch <= csr_new_value;
-        riscv_pkg::CsrSepc: sepc <= {csr_new_value[XLEN-1:1], 1'b0};  // 2-byte aligned for C
-        riscv_pkg::CsrScause: scause <= csr_new_value;
-        riscv_pkg::CsrStval: stval <= csr_new_value;
+        riscv_pkg::CsrStvec: stvec <= {stvec_new_value[XLEN-1:2], 1'b0, stvec_new_value[0]};
+        riscv_pkg::CsrScounteren: scounteren_q <= scounteren_new_value[2:0];  // WARL: CY/TM/IR only
+        riscv_pkg::CsrSscratch: sscratch <= sscratch_new_value;
+        riscv_pkg::CsrSepc: sepc <= {sepc_new_value[XLEN-1:1], 1'b0};  // 2-byte aligned for C
+        riscv_pkg::CsrScause: scause <= scause_new_value;
+        riscv_pkg::CsrStval: stval <= stval_new_value;
         // satp: a write carrying an unsupported MODE leaves the whole
         // register unchanged (privileged-spec rule). ASID is WARL-0; the
         // PPN field stores all written bits.
         riscv_pkg::CsrSatp: begin
-          if (csr_new_value[63:60] == SatpModeBare) begin
+          if (satp_new_value[63:60] == SatpModeBare) begin
             satp_mode_sv39 <= 1'b0;
-            satp_ppn <= csr_new_value[SatpPpnBits-1:0];
-          end else if (SatpSv39Supported && (csr_new_value[63:60] == SatpModeSv39)) begin
+            satp_ppn <= satp_new_value[SatpPpnBits-1:0];
+          end else if (SatpSv39Supported && (satp_new_value[63:60] == SatpModeSv39)) begin
             satp_mode_sv39 <= 1'b1;
-            satp_ppn <= csr_new_value[SatpPpnBits-1:0];
+            satp_ppn <= satp_new_value[SatpPpnBits-1:0];
           end
         end
         // Sstc: menvcfg implements STCE only (the rest stays WARL-0);
         // stimecmp is the full 64-bit compare value.
-        riscv_pkg::CsrMenvcfg: menvcfg_stce <= csr_new_value[riscv_pkg::MenvcfgStceBit];
-        riscv_pkg::CsrStimecmp: stimecmp <= csr_new_value;
+        riscv_pkg::CsrMenvcfg: menvcfg_stce <= menvcfg_new_value[riscv_pkg::MenvcfgStceBit];
+        riscv_pkg::CsrStimecmp: stimecmp <= stimecmp_new_value;
         // Without counters the profiling state keeps its reset value.
         // mperfctl reads 0, so a pure read's write-back would clear the bank
         // select; only a write with intent sets it.
-        riscv_pkg::CsrMperfSel: if (PerfCountersPresent) perf_counter_select <= csr_new_value;
+        riscv_pkg::CsrMperfSel: if (PerfCountersPresent) perf_counter_select <= mperfsel_new_value;
         riscv_pkg::CsrMperfCtl:
-        if (PerfCountersPresent && csr_write_intent) perf_cache_previous_select <= csr_new_value[1];
+        if (PerfCountersPresent && csr_write_intent)
+          perf_cache_previous_select <= mperfctl_new_value[1];
         default: ;
       endcase
     end
@@ -1266,15 +1423,15 @@ module csr_file #(
     end else if (i_csr_write_enable && i_csr_read_enable) begin
       unique case (i_csr_address)
         riscv_pkg::CsrDcsr: begin
-          dcsr_ebreakm <= csr_new_value[riscv_pkg::DcsrEbreakMBit];
-          dcsr_ebreaks <= csr_new_value[riscv_pkg::DcsrEbreakSBit];
-          dcsr_ebreaku <= csr_new_value[riscv_pkg::DcsrEbreakUBit];
-          dcsr_step    <= csr_new_value[riscv_pkg::DcsrStepBit];
-          dcsr_prv     <= (csr_new_value[1:0] == 2'b10) ? riscv_pkg::PrivU : csr_new_value[1:0];
+          dcsr_ebreakm <= dcsr_new_value[riscv_pkg::DcsrEbreakMBit];
+          dcsr_ebreaks <= dcsr_new_value[riscv_pkg::DcsrEbreakSBit];
+          dcsr_ebreaku <= dcsr_new_value[riscv_pkg::DcsrEbreakUBit];
+          dcsr_step    <= dcsr_new_value[riscv_pkg::DcsrStepBit];
+          dcsr_prv     <= (dcsr_new_value[1:0] == 2'b10) ? riscv_pkg::PrivU : dcsr_new_value[1:0];
         end
-        riscv_pkg::CsrDpc: dpc <= {csr_new_value[XLEN-1:1], 1'b0};
-        riscv_pkg::CsrDscratch0: dscratch0 <= csr_new_value;
-        riscv_pkg::CsrDscratch1: dscratch1 <= csr_new_value;
+        riscv_pkg::CsrDpc: dpc <= {dpc_new_value[XLEN-1:1], 1'b0};
+        riscv_pkg::CsrDscratch0: dscratch0 <= dscratch0_new_value;
+        riscv_pkg::CsrDscratch1: dscratch1 <= dscratch1_new_value;
         default: ;
       endcase
     end
@@ -1282,7 +1439,7 @@ module csr_file #(
   // ddata: the write lands in the debug module's data0/data1 storage.
   assign o_dbg_data_we = i_csr_write_enable && i_csr_read_enable &&
       (i_csr_address == riscv_pkg::CsrDdata);
-  assign o_dbg_data_wdata = csr_new_value[63:0];
+  assign o_dbg_data_wdata = ddata_new_value[63:0];
 
   // Post-commit invalidate request for translation-relevant CSRs.
   // Every enabled satp commit-port access invalidates conservatively,
@@ -1297,17 +1454,17 @@ module csr_file #(
   logic csr_translation_flush_req_d;
   logic csr_status_write_changes_translation;
   logic [1:0] csr_written_mpp;
-  assign csr_written_mpp = (csr_new_value[12:11] == 2'b10) ? riscv_pkg::PrivU :
-      csr_new_value[12:11];
+  assign csr_written_mpp = (mstatus_new_value[12:11] == 2'b10) ? riscv_pkg::PrivU :
+      mstatus_new_value[12:11];
   // With COMMIT_EXCLUDES_CONTROL_TAKE, no trap or xRET can replace these
   // fields when a CSR commit fires. Compare its complete write result before
   // applying the late commit enable, including MPP's WARL mapping and
   // old-MPRV gate.
   assign csr_status_write_changes_translation =
-      (csr_new_value[riscv_pkg::MstatusSumBit] != mstatus_sum) ||
-      (csr_new_value[riscv_pkg::MstatusMxrBit] != mstatus_mxr) ||
+      (mstatus_new_value[riscv_pkg::MstatusSumBit] != mstatus_sum) ||
+      (mstatus_new_value[riscv_pkg::MstatusMxrBit] != mstatus_mxr) ||
       ((i_csr_address == riscv_pkg::CsrMstatus) &&
-       ((csr_new_value[riscv_pkg::MstatusMprvBit] != mstatus_mprv) ||
+       ((mstatus_new_value[riscv_pkg::MstatusMprvBit] != mstatus_mprv) ||
         (mstatus_mprv && (csr_written_mpp != mstatus_mpp))));
   assign csr_translation_flush_req_d = i_csr_write_enable && i_csr_read_enable &&
       ((i_csr_address == riscv_pkg::CsrSatp) ||
@@ -1389,83 +1546,140 @@ module csr_file #(
       (i_fp_flags_ma_valid ? ma_flags_packed : 5'b0) |
       (i_fp_flags_wb_valid ? wb_flags_packed : 5'b0);
 
-  // Combinational CSR read data (before registering)
+  // Combinational CSR read data (before registering): 0 when no CSR access
+  // is committing, else the addressed CSR's value, and 0 for the read-zero
+  // addresses (mperfctl, mhartid, senvcfg, mvendorid, marchid, mimpid,
+  // mconfigptr) and any address without a CSR.
+  //
+  // TIMING: the select is decoded in two levels: one-hot decodes of the
+  // address's three nibbles, then one AND per readable address with the read
+  // enable, all kept as nets. The data is the OR of each select with its
+  // CSR's value. Readable addresses are distinct, so at most one select is
+  // set and the OR equals a case statement over the address; a plain case
+  // let synthesis share partial address compares into a deeper decode tree
+  // ahead of the data mux. Entry k of ReadCsrAddrs is the address of
+  // read_csr_value[k].
   logic [XLEN-1:0] csr_read_data_comb;
-
+  localparam int unsigned NumReadCsrs = 42;
+  localparam logic [12*NumReadCsrs-1:0] ReadCsrAddrs = {
+    riscv_pkg::CsrDdata,  // 41
+    riscv_pkg::CsrDscratch1,  // 40
+    riscv_pkg::CsrDscratch0,  // 39
+    riscv_pkg::CsrDpc,  // 38
+    riscv_pkg::CsrDcsr,  // 37
+    riscv_pkg::CsrMperfCount,  // 36
+    riscv_pkg::CsrMperfDataH,  // 35
+    riscv_pkg::CsrMperfData,  // 34
+    riscv_pkg::CsrMperfSel,  // 33
+    riscv_pkg::CsrStimecmp,  // 32
+    riscv_pkg::CsrMenvcfg,  // 31
+    riscv_pkg::CsrSatp,  // 30
+    riscv_pkg::CsrStval,  // 29
+    riscv_pkg::CsrScause,  // 28
+    riscv_pkg::CsrSepc,  // 27
+    riscv_pkg::CsrSscratch,  // 26
+    riscv_pkg::CsrScounteren,  // 25
+    riscv_pkg::CsrStvec,  // 24
+    riscv_pkg::CsrSip,  // 23
+    riscv_pkg::CsrSie,  // 22
+    riscv_pkg::CsrSstatus,  // 21
+    riscv_pkg::CsrMip,  // 20
+    riscv_pkg::CsrMtval,  // 19
+    riscv_pkg::CsrMcause,  // 18
+    riscv_pkg::CsrMepc,  // 17
+    riscv_pkg::CsrMscratch,  // 16
+    riscv_pkg::CsrMcountinhibit,  // 15
+    riscv_pkg::CsrMcounteren,  // 14
+    riscv_pkg::CsrMtvec,  // 13
+    riscv_pkg::CsrMie,  // 12
+    riscv_pkg::CsrMideleg,  // 11
+    riscv_pkg::CsrMedeleg,  // 10
+    riscv_pkg::CsrMisa,  // 9
+    riscv_pkg::CsrMstatus,  // 8
+    riscv_pkg::CsrMinstret,  // 7
+    riscv_pkg::CsrInstret,  // 6
+    riscv_pkg::CsrTime,  // 5
+    riscv_pkg::CsrMcycle,  // 4
+    riscv_pkg::CsrCycle,  // 3
+    riscv_pkg::CsrFcsr,  // 2
+    riscv_pkg::CsrFrm,  // 1
+    riscv_pkg::CsrFflags  // 0
+  };
+  (* keep = "true" *) logic [15:0] read_addr_hi_onehot, read_addr_mid_onehot, read_addr_lo_onehot;
+  assign read_addr_hi_onehot  = 16'(1) << i_csr_address[11:8];
+  assign read_addr_mid_onehot = 16'(1) << i_csr_address[7:4];
+  assign read_addr_lo_onehot  = 16'(1) << i_csr_address[3:0];
+  (* keep = "true" *) logic [NumReadCsrs-1:0] read_csr_select;
+  for (genvar k = 0; k < int'(NumReadCsrs); k++) begin : gen_read_select
+    localparam logic [11:0] Addr = ReadCsrAddrs[12*k+:12];
+    assign read_csr_select[k] = i_csr_read_enable && read_addr_hi_onehot[Addr[11:8]] &&
+        read_addr_mid_onehot[Addr[7:4]] && read_addr_lo_onehot[Addr[3:0]];
+  end
+  logic [XLEN-1:0] read_csr_value[NumReadCsrs];
   always_comb begin
-    csr_read_data_comb = '0;  // 0 when no CSR access is committing
-
-    if (i_csr_read_enable) begin
-      unique case (i_csr_address)
-        // F extension CSRs (with forwarding for pending flags)
-        riscv_pkg::CsrFflags: csr_read_data_comb = XLEN'({27'b0, fflags_forwarded});
-        riscv_pkg::CsrFrm: csr_read_data_comb = XLEN'({29'b0, frm});
-        riscv_pkg::CsrFcsr: csr_read_data_comb = XLEN'({24'b0, frm, fflags_forwarded});
-        // Zicntr counters (the read-only user CSRs and their machine-mode
-        // aliases): single 64-bit CSRs. The RV32 high-half addresses
-        // (cycleh etc.) are captured as illegal-instruction at ROB allocation.
-        riscv_pkg::CsrCycle, riscv_pkg::CsrMcycle:
-        csr_read_data_comb = XLEN'(cycle_counter[XLEN-1:0]);
-        riscv_pkg::CsrTime: csr_read_data_comb = XLEN'(i_mtime[XLEN-1:0]);
-        riscv_pkg::CsrInstret, riscv_pkg::CsrMinstret:
-        csr_read_data_comb = XLEN'(instret_counter[XLEN-1:0]);
-        // Machine-mode CSRs
-        riscv_pkg::CsrMstatus: csr_read_data_comb = mstatus;
-        riscv_pkg::CsrMisa: csr_read_data_comb = MisaValue;
-        riscv_pkg::CsrMedeleg: csr_read_data_comb = XLEN'(medeleg_q);
-        riscv_pkg::CsrMideleg: csr_read_data_comb = mideleg;
-        riscv_pkg::CsrMie: csr_read_data_comb = mie;
-        riscv_pkg::CsrMtvec: csr_read_data_comb = mtvec;
-        riscv_pkg::CsrMcounteren: csr_read_data_comb = XLEN'({29'b0, mcounteren_q});
-        riscv_pkg::CsrMcountinhibit:
-        csr_read_data_comb = XLEN'({29'b0, mcountinhibit_ir, 1'b0, mcountinhibit_cy});
-        riscv_pkg::CsrMscratch: csr_read_data_comb = mscratch;
-        riscv_pkg::CsrMepc: csr_read_data_comb = mepc;
-        riscv_pkg::CsrMcause: csr_read_data_comb = mcause;
-        riscv_pkg::CsrMtval: csr_read_data_comb = mtval;
-        riscv_pkg::CsrMip: csr_read_data_comb = mip;
-        // Supervisor CSRs (views and dedicated registers)
-        riscv_pkg::CsrSstatus: csr_read_data_comb = sstatus;
-        riscv_pkg::CsrSie: csr_read_data_comb = sie_view;
-        riscv_pkg::CsrSip: csr_read_data_comb = sip_view;
-        riscv_pkg::CsrStvec: csr_read_data_comb = stvec;
-        riscv_pkg::CsrScounteren: csr_read_data_comb = XLEN'({29'b0, scounteren_q});
-        riscv_pkg::CsrSscratch: csr_read_data_comb = sscratch;
-        riscv_pkg::CsrSepc: csr_read_data_comb = sepc;
-        riscv_pkg::CsrScause: csr_read_data_comb = scause;
-        riscv_pkg::CsrStval: csr_read_data_comb = stval;
-        riscv_pkg::CsrSatp: csr_read_data_comb = satp;
-        riscv_pkg::CsrMenvcfg:
-        csr_read_data_comb = XLEN'(menvcfg_stce) << riscv_pkg::MenvcfgStceBit;
-        riscv_pkg::CsrStimecmp: csr_read_data_comb = stimecmp;
-        // senvcfg exists (S/U make it mandatory) with no implemented
-        // fields: RAZ/WI via the default arm.
-        riscv_pkg::CsrMperfSel: csr_read_data_comb = perf_counter_select;
-        riscv_pkg::CsrMperfCtl: csr_read_data_comb = '0;
-        // The profiling data CSRs are 32-bit halves even at RV64 (software
-        // reads them in pairs); zero-extend to the bus. With UsePerfCsrHalf
-        // the half was selected upstream when the commit address was
-        // registered; this case and i_csr_read_enable qualify the access as
-        // usual. Without counters (PERF_COUNTERS = 0) these read zero.
-        riscv_pkg::CsrMperfData:
-        csr_read_data_comb = !PerfCountersPresent ? '0 :
-            XLEN'(UsePerfCsrHalf ? i_perf_counter_csr_half : i_perf_counter_data[31:0]);
-        riscv_pkg::CsrMperfDataH:
-        csr_read_data_comb = !PerfCountersPresent ? '0 :
-            XLEN'(UsePerfCsrHalf ? i_perf_counter_csr_half : i_perf_counter_data[63:32]);
-        riscv_pkg::CsrMperfCount:
-        csr_read_data_comb = !PerfCountersPresent ? '0 : XLEN'(i_perf_counter_count);
-        // Debug Mode CSRs
-        riscv_pkg::CsrDcsr: csr_read_data_comb = dcsr;
-        riscv_pkg::CsrDpc: csr_read_data_comb = dpc;
-        riscv_pkg::CsrDscratch0: csr_read_data_comb = dscratch0;
-        riscv_pkg::CsrDscratch1: csr_read_data_comb = dscratch1;
-        riscv_pkg::CsrDdata: csr_read_data_comb = XLEN'(i_dbg_data);
-        // Machine information registers (read-only)
-        riscv_pkg::CsrMhartid:
-        csr_read_data_comb = '0;  // Hardware thread ID (always 0 for single-core)
-        default: csr_read_data_comb = '0;  // senvcfg, mvendorid, marchid, mimpid, mconfigptr
-      endcase
+    // F extension CSRs (with forwarding for pending flags).
+    read_csr_value[0] = XLEN'({27'b0, fflags_forwarded});  // CsrFflags
+    read_csr_value[1] = XLEN'({29'b0, frm});  // CsrFrm
+    read_csr_value[2] = XLEN'({24'b0, frm, fflags_forwarded});  // CsrFcsr
+    // Zicntr counters (the read-only user CSRs and their machine-mode
+    // aliases): single 64-bit CSRs. The RV32 high-half addresses (cycleh
+    // etc.) are captured as illegal-instruction at ROB allocation.
+    read_csr_value[3] = XLEN'(cycle_counter[XLEN-1:0]);  // CsrCycle
+    read_csr_value[4] = XLEN'(cycle_counter[XLEN-1:0]);  // CsrMcycle
+    read_csr_value[5] = XLEN'(i_mtime[XLEN-1:0]);  // CsrTime
+    read_csr_value[6] = XLEN'(instret_counter[XLEN-1:0]);  // CsrInstret
+    read_csr_value[7] = XLEN'(instret_counter[XLEN-1:0]);  // CsrMinstret
+    // Machine-mode CSRs.
+    read_csr_value[8] = mstatus;  // CsrMstatus
+    read_csr_value[9] = MisaValue;  // CsrMisa
+    read_csr_value[10] = XLEN'(medeleg_q);  // CsrMedeleg
+    read_csr_value[11] = mideleg;  // CsrMideleg
+    read_csr_value[12] = mie;  // CsrMie
+    read_csr_value[13] = mtvec;  // CsrMtvec
+    read_csr_value[14] = XLEN'({29'b0, mcounteren_q});  // CsrMcounteren
+    // CsrMcountinhibit
+    read_csr_value[15] = XLEN'({29'b0, mcountinhibit_ir, 1'b0, mcountinhibit_cy});
+    read_csr_value[16] = mscratch;  // CsrMscratch
+    read_csr_value[17] = mepc;  // CsrMepc
+    read_csr_value[18] = mcause;  // CsrMcause
+    read_csr_value[19] = mtval;  // CsrMtval
+    read_csr_value[20] = mip;  // CsrMip
+    // Supervisor CSRs (views and dedicated registers).
+    read_csr_value[21] = sstatus;  // CsrSstatus
+    read_csr_value[22] = sie_view;  // CsrSie
+    read_csr_value[23] = sip_view;  // CsrSip
+    read_csr_value[24] = stvec;  // CsrStvec
+    read_csr_value[25] = XLEN'({29'b0, scounteren_q});  // CsrScounteren
+    read_csr_value[26] = sscratch;  // CsrSscratch
+    read_csr_value[27] = sepc;  // CsrSepc
+    read_csr_value[28] = scause;  // CsrScause
+    read_csr_value[29] = stval;  // CsrStval
+    read_csr_value[30] = satp;  // CsrSatp
+    read_csr_value[31] = XLEN'(menvcfg_stce) << riscv_pkg::MenvcfgStceBit;  // CsrMenvcfg
+    read_csr_value[32] = stimecmp;  // CsrStimecmp
+    // The profiling data CSRs are 32-bit halves even at RV64 (software
+    // reads them in pairs), zero-extended to the bus. With UsePerfCsrHalf
+    // the half was selected upstream when the commit address was
+    // registered. Without counters (PERF_COUNTERS = 0) these read zero.
+    read_csr_value[33] = perf_counter_select;  // CsrMperfSel
+    // CsrMperfData
+    read_csr_value[34] = !PerfCountersPresent ? '0 :
+        XLEN'(UsePerfCsrHalf ? i_perf_counter_csr_half : i_perf_counter_data[31:0]);
+    // CsrMperfDataH
+    read_csr_value[35] = !PerfCountersPresent ? '0 :
+        XLEN'(UsePerfCsrHalf ? i_perf_counter_csr_half : i_perf_counter_data[63:32]);
+    read_csr_value[36] = !PerfCountersPresent ? '0 : XLEN'(i_perf_counter_count);  // CsrMperfCount
+    // Debug Mode CSRs.
+    read_csr_value[37] = dcsr;  // CsrDcsr
+    read_csr_value[38] = dpc;  // CsrDpc
+    read_csr_value[39] = dscratch0;  // CsrDscratch0
+    read_csr_value[40] = dscratch1;  // CsrDscratch1
+    read_csr_value[41] = XLEN'(i_dbg_data);  // CsrDdata
+  end
+  always_comb begin
+    csr_read_data_comb = '0;
+    for (int k = 0; k < int'(NumReadCsrs); k++) begin
+      csr_read_data_comb = csr_read_data_comb | ({XLEN{read_csr_select[k]}} & read_csr_value[k]);
     end
   end
 
@@ -1482,7 +1696,7 @@ module csr_file #(
   assign o_perf_snapshot_capture = PerfCountersPresent && i_csr_write_enable &&
                                    i_csr_read_enable &&
                                    (i_csr_address == riscv_pkg::CsrMperfCtl) &&
-                                   csr_new_value[0];
+                                   mperfctl_new_value[0];
 
   // ===========================================================================
   // Formal Verification Properties
