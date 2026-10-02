@@ -121,10 +121,9 @@ module mwp_dist_ram #(
   // 9.2.2.4 forbids an always_ff variable being written by another process but
   // permits declaration initialization (Verilator >=5.050 enforces this;
   // yosys formal needs the pinned init value either way).
-  // Timing: do not put max_fanout on these staging registers.  Synthesis
-  // would replicate them and rebuild each replica's per-entry lvt_eff
-  // override cone in every read-port instance, which in the ROB multiplies
-  // the value RAMs' logic and congests placement, for no timing gain.
+  // Timing: do not put max_fanout on these staging registers.  They load the
+  // per-entry LVT drain decode and each read port's override compares;
+  // replicas would only add copies of that logic, for no timing gain.
   logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
   logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
 
@@ -156,12 +155,21 @@ module mwp_dist_ram #(
   // Read mux: select the bank indicated by the effective LVT
   //
   // lvt_eff overrides the staged entries' still-stale LVT bits during the
-  // one-cycle drain gap.  The override terms are pure functions of staging
-  // registers, so they fold into the early side of the select cone; the late
-  // read address sees the same RamDepth-to-1 depth as the unstaged module.
-  // The staged port's bank was written in the enable cycle, so the corrected
-  // select returns the new data.  Apart from a same-cycle staged/live
-  // collision (see header), reads match the unstaged module cycle for cycle.
+  // one-cycle drain gap.  The staged port's bank was written in the enable
+  // cycle, so the corrected select returns the new data.  Apart from a
+  // same-cycle staged/live collision (see header), reads match the unstaged
+  // module cycle for cycle.  Without staged ports lvt_eff is the LVT itself.
+  //
+  // With staged ports the read computes the same select for the read address
+  // only (g_read_staged): a staged port whose staging address equals the read
+  // address selects its own bank (the highest such port, matching lvt_eff).
+  // TIMING: compare, then select.  Each staging address is compared with the
+  // read address beside the LVT mux, instead of being decoded into every
+  // entry ahead of it.  The LVT mux is split at the address MSB into two
+  // half-depth muxes, so the override and the MSB select share the select's
+  // last LUT.  For the ROB's 32-entry dispatch-bypass value RAMs (this
+  // module's only staged users) the bank select is three LUT levels from
+  // registers and the data mux a fourth.
   // ---------------------------------------------------------------------------
   logic [SelWidth-1:0] lvt_eff[RamDepth];
 
@@ -177,7 +185,39 @@ module mwp_dist_ram #(
     end
   end
 
-  assign o_read_data = bank_read_data[lvt_eff[i_read_address]];
+  if (StagedLvtPorts == 0) begin : g_read_live
+    assign o_read_data = bank_read_data[lvt_eff[i_read_address]];
+  end else begin : g_read_staged
+    // The kept nets fix the split described above; without them synthesis
+    // folds the override back into the full-depth mux.
+    (* keep = "true" *) logic [SelWidth-1:0] lvt_read_lo;
+    (* keep = "true" *) logic [SelWidth-1:0] lvt_read_hi;
+    (* keep = "true" *) logic [StagedLvtPorts-1:0] staged_read_hit;
+    (* keep = "true" *) logic [SelWidth-1:0] lvt_read_sel;
+
+    if (ADDR_WIDTH > 1) begin : g_split
+      assign lvt_read_lo = lvt[{1'b0, i_read_address[ADDR_WIDTH-2:0]}];
+      assign lvt_read_hi = lvt[{1'b1, i_read_address[ADDR_WIDTH-2:0]}];
+    end else begin : g_no_split
+      assign lvt_read_lo = lvt[0];
+      assign lvt_read_hi = lvt[RamDepth-1];
+    end
+
+    always_comb begin
+      for (int wp = 0; wp < StagedLvtPorts; wp++) begin
+        staged_read_hit[wp] = staged_lvt_we_q[wp] && (staged_lvt_addr_q[wp] == i_read_address);
+      end
+    end
+
+    always_comb begin
+      lvt_read_sel = i_read_address[ADDR_WIDTH-1] ? lvt_read_hi : lvt_read_lo;
+      for (int wp = 0; wp < StagedLvtPorts; wp++) begin
+        if (staged_read_hit[wp]) lvt_read_sel = SelWidth'(wp);
+      end
+    end
+
+    assign o_read_data = bank_read_data[lvt_read_sel];
+  end : g_read_staged
 
 `ifndef SYNTHESIS
 `ifndef FORMAL

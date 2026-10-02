@@ -1490,11 +1490,14 @@ module reorder_buffer #(
   // alloc ports (0/1) still write their banks in the alloc cycle, but the LVT
   // update runs one cycle later from registers inside the RAM module, so the
   // late enables load only the staging flops and the bank write enables.
-  // Reads stay cycle-exact through the module's per-entry effective-LVT
-  // correction. This matters for JAL, which is done at alloc and whose link
-  // value may be read (head commit or dispatch bypass) at alloc+1. CDB lanes
-  // (2/3) stay live. A stale CDB write in the same cycle as a new allocation
-  // of that entry loses to the allocation (lvt_eff override). A CDB write in
+  // Reads stay cycle-exact through the module's staged override, which makes
+  // a read of a staged address return that staged bank: a per-entry
+  // effective-LVT correction in the head ports' one-hot read, and staging-
+  // address compares against the read address in the bypass ports. This
+  // matters for JAL, which is done at alloc and whose link value may be read
+  // (head commit or dispatch bypass) at alloc+1. CDB lanes (2/3) stay live. A
+  // stale CDB write in the same cycle as a new allocation of that entry loses
+  // to the allocation (staged override, then the drain). A CDB write in
   // the cycle after an allocation (the drain cycle) wins the LVT, so no CDB
   // write may target the entry then; g_drain_window_check flags one in
   // simulation.
@@ -3724,7 +3727,7 @@ module reorder_buffer #(
       // with the drain-window CDB assume above, this gives the staged LVT of
       // the rob_value RAMs everything it needs: a same-cycle alloc-vs-CDB
       // collision on one entry is legal and resolves alloc-wins inside the
-      // RAM (lvt_eff override + drain), and the dangerous arrival, a CDB write
+      // RAM (staged override + drain), and the dangerous arrival, a CDB write
       // in the entry's drain cycle, is excluded by the environment contract
       // (mirrored by g_drain_window_check in simulation).
       p_alloc_targets_free : assert (!alloc_en || !rob_valid[tail_idx]);
