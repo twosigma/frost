@@ -68,10 +68,13 @@ module branch_target_precompute #(
 
   // JAL and branches have PC-relative targets, so the whole prediction
   // comparison fits in ID, and branch resolution sees only its one-bit result
-  // (the ROB checks a JAL's full target itself at allocation).
-  logic [XLEN-1:0] precomputed_target_for_btb;
-  assign precomputed_target_for_btb = i_is_jal ? o_jal_target_precomputed :
-                                                 o_branch_target_precomputed;
-  assign o_btb_correct_non_jalr = (precomputed_target_for_btb == i_btb_predicted_target);
+  // (the ROB checks a JAL's full target itself at allocation). TIMING: both
+  // targets are compared and the decoded JAL class selects the result, so
+  // the opcode decode enters after the wide compares rather than ahead of
+  // them.
+  logic jal_target_matches, branch_target_matches;
+  assign jal_target_matches = o_jal_target_precomputed == i_btb_predicted_target;
+  assign branch_target_matches = o_branch_target_precomputed == i_btb_predicted_target;
+  assign o_btb_correct_non_jalr = i_is_jal ? jal_target_matches : branch_target_matches;
 
 endmodule : branch_target_precompute
