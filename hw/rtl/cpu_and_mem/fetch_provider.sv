@@ -134,10 +134,11 @@ module fetch_provider #(
     input logic i_pipeline_stall,
     output logic [63:0] o_instr,
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_instr_sideband,
-    // Payload-aligned IF timing replicas in physical {odd,even} word order.
-    // Normalize the positional {next,current} sideband on the same edge that
-    // captures it. That keeps the registered bank selector out of IF's
-    // served-window -> PC recurrence without adding a response cycle.
+    // Payload-aligned IF timing replicas in physical {odd,even} word order,
+    // each word selected by its parity position directly on the edge that
+    // captures the window (see even_pos, odd_pos). That keeps the registered
+    // bank selector out of IF's served-window -> PC recurrence without
+    // adding a response cycle.
     output logic [7:0] o_pc_metadata_by_parity,
     output logic [3:0] o_pc_pairability_by_parity,
     output logic [1:0] o_slot2_start_valid_lo_by_parity,
@@ -292,10 +293,12 @@ module fetch_provider #(
   // until the selected-VA result is visible. The core holds o_pc at the ask
   // until then, so the live pair is the ask's.
   logic [31:0] ask_pa0_q, ask_pa1_q;
-  // The line after ask_pa0_q's and whether the window straddles a line,
-  // loaded with it, so the window-slot and victim-store lookups start from
-  // registers instead of an adder and a reduction of ask_pa0_q
-  // (p_ask_line_next_matches, p_ask_straddle_matches).
+  // Whether the window straddles a line, loaded with the ask so the
+  // fetchability check reads a register instead of a reduction of ask_pa0_q
+  // (p_ask_straddle_matches). The line after ask_pa0_q's, loaded the same
+  // way (p_ask_line_next_matches), is one source of the candidate line's
+  // simulation reference (cand_line_ref); the lookups themselves use the
+  // registered candidate line, cand_line_q.
   logic [LineAddrBits-1:0] ask_line_next_q;
   (* max_fanout = 64 *) logic ask_straddle_q;
   logic ask_pa_valid_q;
@@ -303,6 +306,30 @@ module fetch_provider #(
   logic ask_after_ok_q;
   logic ask_pa_load;
   assign ask_pa_load = o_instr_valid || retarget_now || !ask_pa_valid_q;
+
+  // The candidate line of each slot parity (see cand_line below), loaded
+  // with the ask from the same i_pa0/i_pa1 values as ask_pa0_q, ask_pa1_q,
+  // ask_line_next_q, and ask_straddle_q. The slot, victim-store, and shadow
+  // lookups then each compare one register pair instead of three
+  // comparisons selected by the straddle and parity bits
+  // (p_cand_line_q_exact).
+  logic [1:0][LineAddrBits-1:0] cand_line_q;
+  logic [LineAddrBits-1:0] load_line0, load_line_next, load_line_after;
+  assign load_line0 = i_pa0[31:OffsetBits];
+  assign load_line_next = load_line0 + 1'b1;
+  assign load_line_after = (&i_pa0[OffsetBits-1:2]) ? i_pa1[31:OffsetBits] : load_line_next;
+
+  // Word positions of the ask inside the slot lines, {line parity, word
+  // index}, for the window muxes below: word 1 (the aligned successor of
+  // word 0) and the even-addressed word of the pair. Loaded with the ask so
+  // the live window muxes select between the live PA's positions and these
+  // registers in one LUT.
+  localparam int unsigned WordPosBits = WordSelBits + 1;
+  logic [WordPosBits-1:0] load_word0_pos, load_word1_pos, load_even_pos;
+  logic [WordPosBits-1:0] ask_word1_pos_q, ask_even_pos_q;
+  assign load_word0_pos = i_pa0[OffsetBits:2];
+  assign load_word1_pos = load_word0_pos + 1'b1;
+  assign load_even_pos  = i_pa0[2] ? load_word1_pos : load_word0_pos;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -316,10 +343,14 @@ module fetch_provider #(
       ask_fault1_q      <= 1'b0;
       ask_fault1_page_q <= 1'b0;
       ask_after_ok_q    <= 1'b1;
+      cand_line_q[0]    <= '0;
+      cand_line_q[1]    <= LineAddrBits'(1);
+      ask_word1_pos_q   <= WordPosBits'(1);
+      ask_even_pos_q    <= '0;
     end else if (ask_pa_load) begin
       ask_pa0_q         <= i_pa0;
       ask_pa1_q         <= i_pa1;
-      ask_line_next_q   <= i_pa0[31:OffsetBits] + 1'b1;
+      ask_line_next_q   <= load_line_next;
       ask_straddle_q    <= &i_pa0[OffsetBits-1:2];
       ask_pa_valid_q    <= i_pa_valid;
       ask_fault0_q      <= i_fault0;
@@ -327,6 +358,11 @@ module fetch_provider #(
       ask_fault1_q      <= i_fault1;
       ask_fault1_page_q <= i_fault1_page;
       ask_after_ok_q    <= i_line_after_ok;
+      for (int p = 0; p < 2; p++) begin
+        cand_line_q[p] <= (load_line0[0] == 1'(p)) ? load_line0 : load_line_after;
+      end
+      ask_word1_pos_q <= load_word1_pos;
+      ask_even_pos_q  <= load_even_pos;
     end
   end
 
@@ -355,44 +391,104 @@ module fetch_provider #(
   assign present1 = slot_valid_q[win_line1[0]] && (slot_line_q[win_line1[0]] == win_line1);
 
   // Word extraction for the (about to be registered) DDR window.
-  logic [WordSelBits-1:0] word_sel0, word_sel1;
-  assign word_sel0 = win_addr0[2+:WordSelBits];
-  assign word_sel1 = win_addr1[2+:WordSelBits];
+  //
+  // Word positions, {line parity, word index}. Word 0 sits at fetch_pa0's
+  // own position. Word 1 is the aligned successor of word 0, so its position
+  // is word 0's plus one, with the carry flipping the line parity: the IMMU
+  // forms both physical addresses' page offsets from the one PC (o_pa1's is
+  // o_pa0's plus 4, in both translation modes), and the ask copies load
+  // together, so fetch_pa1[OffsetBits:2] == fetch_pa0[OffsetBits:2] + 1 on
+  // every cycle (p_window_pair_offset_contract). The even-addressed word of
+  // the pair is word 0 when fetch_pa0[2] is 0 and word 1 otherwise; the odd
+  // word always lies in word 0's line at index {fetch_pa0[OffsetBits-1:3], 1}.
+  // Forming every position from fetch_pa0 keeps the live PA's +4 adder off
+  // the window muxes, and the registered ask positions let each live select
+  // be one LUT: the live PA's position or the ask's.
+  logic [WordPosBits-1:0] word0_pos, word1_pos, even_pos, odd_pos;
+  logic [WordPosBits-1:0] live_word0_pos, live_word1_pos;
+  assign live_word0_pos = i_pa0[OffsetBits:2];
+  assign live_word1_pos = live_word0_pos + 1'b1;
+  assign word0_pos = fetch_pa0[OffsetBits:2];
+  assign word1_pos = o_instr_valid ? live_word1_pos : ask_word1_pos_q;
+  assign even_pos = o_instr_valid ? (i_pa0[2] ? live_word1_pos : live_word0_pos) : ask_even_pos_q;
+  assign odd_pos = {fetch_pa0[OffsetBits:3], 1'b1};
 
   logic [31:0] ddr_word0, ddr_word1;
-  logic [SbWidth-1:0] ddr_sb0, ddr_sb1;
-  assign ddr_word0 = slot_data_q[win_line0[0]][word_sel0*32+:32];
-  assign ddr_word1 = slot_data_q[win_line1[0]][word_sel1*32+:32];
-  assign ddr_sb0   = slot_sb_q[win_line0[0]][word_sel0*SbWidth+:SbWidth];
-  assign ddr_sb1   = slot_sb_q[win_line1[0]][word_sel1*SbWidth+:SbWidth];
+  logic [SbWidth-1:0] ddr_sb0, ddr_sb1, ddr_sb_even, ddr_sb_odd;
+  assign ddr_word0 = slot_data_q[word0_pos[WordSelBits]][word0_pos[WordSelBits-1:0]*32+:32];
+  assign ddr_word1 = slot_data_q[word1_pos[WordSelBits]][word1_pos[WordSelBits-1:0]*32+:32];
+  assign ddr_sb0 = slot_sb_q[word0_pos[WordSelBits]][word0_pos[WordSelBits-1:0]*SbWidth+:SbWidth];
+  assign ddr_sb1 = slot_sb_q[word1_pos[WordSelBits]][word1_pos[WordSelBits-1:0]*SbWidth+:SbWidth];
+  assign ddr_sb_even = slot_sb_q[even_pos[WordSelBits]][even_pos[WordSelBits-1:0]*SbWidth+:SbWidth];
+  assign ddr_sb_odd = slot_sb_q[odd_pos[WordSelBits]][odd_pos[WordSelBits-1:0]*SbWidth+:SbWidth];
 
-  // Per-word subsets consumed by IF's PC/dispatch timing replicas. ddr_sb0 is
-  // the current word and ddr_sb1 the following word. fetch_addr[2] says which
-  // one is physically odd, so selecting here produces a stable {odd,even}
-  // register beside the positional payload register below.
-  logic [3:0] ddr_pc_metadata0, ddr_pc_metadata1;
-  logic [1:0] ddr_pc_pairability0, ddr_pc_pairability1;
-  logic ddr_slot2_start_valid_lo0, ddr_slot2_start_valid_lo1;
-  assign ddr_pc_metadata0 = {
-    ddr_sb0[riscv_pkg::ImemSbPairableNativeHi],
-    ddr_sb0[riscv_pkg::ImemSbPairableCompressedHi],
-    ddr_sb0[riscv_pkg::ImemSbIsCompressedHi],
-    ddr_sb0[riscv_pkg::ImemSbIsCompressedLo]
+  // Per-word subsets consumed by IF's PC/dispatch timing replicas, selected
+  // by physical parity directly (ddr_sb_even, ddr_sb_odd), so the {odd,even}
+  // registers below take one mux each instead of the positional
+  // {next,current} muxes followed by a swap.
+  logic [3:0] ddr_pc_metadata_even, ddr_pc_metadata_odd;
+  logic [1:0] ddr_pc_pairability_even, ddr_pc_pairability_odd;
+  logic ddr_slot2_start_valid_lo_even, ddr_slot2_start_valid_lo_odd;
+  assign ddr_pc_metadata_even = {
+    ddr_sb_even[riscv_pkg::ImemSbPairableNativeHi],
+    ddr_sb_even[riscv_pkg::ImemSbPairableCompressedHi],
+    ddr_sb_even[riscv_pkg::ImemSbIsCompressedHi],
+    ddr_sb_even[riscv_pkg::ImemSbIsCompressedLo]
   };
-  assign ddr_pc_metadata1 = {
-    ddr_sb1[riscv_pkg::ImemSbPairableNativeHi],
-    ddr_sb1[riscv_pkg::ImemSbPairableCompressedHi],
-    ddr_sb1[riscv_pkg::ImemSbIsCompressedHi],
-    ddr_sb1[riscv_pkg::ImemSbIsCompressedLo]
+  assign ddr_pc_metadata_odd = {
+    ddr_sb_odd[riscv_pkg::ImemSbPairableNativeHi],
+    ddr_sb_odd[riscv_pkg::ImemSbPairableCompressedHi],
+    ddr_sb_odd[riscv_pkg::ImemSbIsCompressedHi],
+    ddr_sb_odd[riscv_pkg::ImemSbIsCompressedLo]
   };
-  assign ddr_pc_pairability0 = {
-    ddr_sb0[riscv_pkg::ImemSbPairableNativeLo], ddr_sb0[riscv_pkg::ImemSbEvenLocalPairValid]
+  assign ddr_pc_pairability_even = {
+    ddr_sb_even[riscv_pkg::ImemSbPairableNativeLo], ddr_sb_even[riscv_pkg::ImemSbEvenLocalPairValid]
   };
-  assign ddr_pc_pairability1 = {
-    ddr_sb1[riscv_pkg::ImemSbPairableNativeLo], ddr_sb1[riscv_pkg::ImemSbEvenLocalPairValid]
+  assign ddr_pc_pairability_odd = {
+    ddr_sb_odd[riscv_pkg::ImemSbPairableNativeLo], ddr_sb_odd[riscv_pkg::ImemSbEvenLocalPairValid]
   };
-  assign ddr_slot2_start_valid_lo0 = ddr_sb0[riscv_pkg::ImemSbSlot2StartValidLo];
-  assign ddr_slot2_start_valid_lo1 = ddr_sb1[riscv_pkg::ImemSbSlot2StartValidLo];
+  assign ddr_slot2_start_valid_lo_even = ddr_sb_even[riscv_pkg::ImemSbSlot2StartValidLo];
+  assign ddr_slot2_start_valid_lo_odd = ddr_sb_odd[riscv_pkg::ImemSbSlot2StartValidLo];
+
+`ifndef SYNTHESIS
+  // The positional selection by fetch_pa1 and the {odd,even} selection by
+  // fetch_addr[2], which the pa0-derived positions replace.
+  logic [WordSelBits-1:0] word_sel1_ref;
+  logic [SbWidth-1:0] ddr_sb1_ref;
+  logic [31:0] ddr_word1_ref;
+  logic [SbWidth-1:0] ddr_sb_even_ref, ddr_sb_odd_ref;
+  assign word_sel1_ref = win_addr1[2+:WordSelBits];
+  assign ddr_word1_ref = slot_data_q[win_line1[0]][word_sel1_ref*32+:32];
+  assign ddr_sb1_ref = slot_sb_q[win_line1[0]][word_sel1_ref*SbWidth+:SbWidth];
+  assign ddr_sb_even_ref = fetch_addr[2] ? ddr_sb1_ref : ddr_sb0;
+  assign ddr_sb_odd_ref = fetch_addr[2] ? ddr_sb0 : ddr_sb1_ref;
+  // Armed after the first reset, like the ask checks below: before it the
+  // ask registers hold no related pair.
+  always_ff @(posedge i_clk) begin
+    if (ask_line_next_armed_q && !i_rst && !$isunknown({fetch_pa0, fetch_pa1, fetch_addr[2]})) begin
+      p_window_pair_offset_contract :
+      assert (fetch_pa1[OffsetBits:2] == WordPosBits'(fetch_pa0[OffsetBits:2] + 1'b1) &&
+              fetch_addr[2] == fetch_pa0[2]);
+    end
+    if (ask_line_next_armed_q && !i_rst && !$isunknown(
+            {word1_pos, win_line1[0], word_sel1_ref, even_pos, odd_pos}
+        )) begin
+      p_window_word_positions_exact :
+      assert (word1_pos == {win_line1[0], word_sel1_ref} &&
+              ask_word1_pos_q == WordPosBits'(ask_pa0_q[OffsetBits:2] + 1'b1) &&
+              ask_even_pos_q == (ask_pa0_q[2] ? WordPosBits'(ask_pa0_q[OffsetBits:2] + 1'b1) :
+                                                ask_pa0_q[OffsetBits:2]));
+    end
+    if (ask_line_next_armed_q && !i_rst && !$isunknown(
+            {ddr_word1, ddr_word1_ref, ddr_sb1, ddr_sb1_ref,
+                     ddr_sb_even, ddr_sb_even_ref, ddr_sb_odd, ddr_sb_odd_ref}
+        )) begin
+      p_window_word1_exact : assert (ddr_word1 == ddr_word1_ref && ddr_sb1 == ddr_sb1_ref);
+      p_window_parity_words_exact :
+      assert (ddr_sb_even == ddr_sb_even_ref && ddr_sb_odd == ddr_sb_odd_ref);
+    end
+  end
+`endif
 
   // ===========================================================================
   // Window readiness (computed for the presented ask, registered with its tag)
@@ -413,9 +509,10 @@ module fetch_provider #(
   // bit-identical to comparing those two registers a cycle later.
   logic [63:0] ddr_instr_q;
   logic [2*SbWidth-1:0] ddr_sb_pair_q;
-  // Timing cut at the payload edge: the {odd,even} selection happens before
-  // these registers. The keep attribute stops hierarchy flattening from
-  // rebuilding it as a bank mux after the payload register.
+  // Timing cut at the payload edge: the {odd,even} words are selected by
+  // physical parity directly into these registers (see even_pos, odd_pos).
+  // The keep attribute stops hierarchy flattening from rebuilding the
+  // selection as a bank mux after the payload register.
   (* keep = "true", max_fanout = 16 *) logic [7:0] pc_metadata_by_parity_q;
   (* keep = "true", max_fanout = 16 *) logic [3:0] pc_pairability_by_parity_q;
   (* keep = "true", max_fanout = 16 *) logic [1:0] slot2_start_valid_lo_by_parity_q;
@@ -450,27 +547,23 @@ module fetch_provider #(
       window_ready_q   <= window_ready && (fetch_addr == ask_d);
       pipeline_stall_q <= i_pipeline_stall;
     end
-    served_addr_q            <= fetch_addr;
+    served_addr_q <= fetch_addr;
     // Window identity stays virtual: word 1 is always VA word 0 + 1.
-    served_last_word_q       <= fetch_addr[31:2] + 1'b1;
-    served_prev_word_q       <= fetch_addr[31:2] - 1'b1;
+    served_last_word_q <= fetch_addr[31:2] + 1'b1;
+    served_prev_word_q <= fetch_addr[31:2] - 1'b1;
     served_prev_word_valid_q <= |fetch_addr[31:2];
-    served_fault0_q          <= fetch_fault0;
-    served_fault0_page_q     <= fetch_fault0_page;
-    served_fault1_q          <= fetch_fault1;
-    served_fault1_page_q     <= fetch_fault1_page;
-    bank_sel_q               <= fetch_addr[2];
-    ddr_instr_q              <= {ddr_word1, ddr_word0};
-    ddr_sb_pair_q            <= {ddr_sb1, ddr_sb0};
-    if (fetch_addr[2]) begin
-      pc_metadata_by_parity_q          <= {ddr_pc_metadata0, ddr_pc_metadata1};
-      pc_pairability_by_parity_q       <= {ddr_pc_pairability0, ddr_pc_pairability1};
-      slot2_start_valid_lo_by_parity_q <= {ddr_slot2_start_valid_lo0, ddr_slot2_start_valid_lo1};
-    end else begin
-      pc_metadata_by_parity_q          <= {ddr_pc_metadata1, ddr_pc_metadata0};
-      pc_pairability_by_parity_q       <= {ddr_pc_pairability1, ddr_pc_pairability0};
-      slot2_start_valid_lo_by_parity_q <= {ddr_slot2_start_valid_lo1, ddr_slot2_start_valid_lo0};
-    end
+    served_fault0_q <= fetch_fault0;
+    served_fault0_page_q <= fetch_fault0_page;
+    served_fault1_q <= fetch_fault1;
+    served_fault1_page_q <= fetch_fault1_page;
+    bank_sel_q <= fetch_addr[2];
+    ddr_instr_q <= {ddr_word1, ddr_word0};
+    ddr_sb_pair_q <= {ddr_sb1, ddr_sb0};
+    pc_metadata_by_parity_q <= {ddr_pc_metadata_odd, ddr_pc_metadata_even};
+    pc_pairability_by_parity_q <= {ddr_pc_pairability_odd, ddr_pc_pairability_even};
+    slot2_start_valid_lo_by_parity_q <= {
+      ddr_slot2_start_valid_lo_odd, ddr_slot2_start_valid_lo_even
+    };
   end
 
   assign o_instr = ddr_instr_q;
@@ -525,16 +618,34 @@ module fetch_provider #(
   // Candidate line per slot parity, its presence, and whether it may be
   // fetched at all. A faulted word's line is never fetchable, and the prefetch
   // line only inside the page.
-  // TIMING: a line lookup compares against each of the three registered
-  // sources of the candidate (fill_line0, ask_pa1_q's line, ask_line_next_q)
-  // and then selects the result by the same registered bits that select
-  // cand_line, so the comparators start from registers. cand_pick(...) of the
-  // three comparisons equals comparing against cand_line.
-  logic [LineAddrBits-1:0] line_pa1;
+  // TIMING: the candidate line is the register cand_line_q, loaded with the
+  // ask (see there), so every lookup below is one comparison of two
+  // registers. The selection it stands in for, by the registered straddle
+  // and parity bits among the three registered sources (fill_line0,
+  // ask_pa1_q's line, ask_line_next_q), is the simulation reference
+  // cand_line_ref.
   logic [1:0] cand_is_line0;
   logic [1:0][LineAddrBits-1:0] cand_line;
   logic [1:0] cand_present;
   logic [1:0] cand_fetchable;
+  always_comb begin
+    for (int p = 0; p < 2; p++) begin
+      cand_is_line0[p] = (fill_line0[0] == 1'(p));
+      cand_line[p] = cand_line_q[p];
+      if (cand_is_line0[p]) begin
+        cand_fetchable[p] = !ask_fault0_q;
+      end else begin
+        cand_fetchable[p] = !ask_fault0_q && (fill_straddle ? !ask_fault1_q : ask_after_ok_q);
+      end
+      // The valid bit joins the comparison as one more equal bit, inside the
+      // carry chain, instead of an AND after it.
+      cand_present[p] = ({slot_valid_q[p], slot_line_q[p]} == {1'b1, cand_line_q[p]});
+    end
+  end
+
+`ifndef SYNTHESIS
+  logic [LineAddrBits-1:0] line_pa1;
+  logic [1:0][LineAddrBits-1:0] cand_line_ref;
   assign line_pa1 = ask_pa1_q[31:OffsetBits];
   function automatic logic cand_pick(input logic is_line0, input logic straddle,
                                      input logic eq_line0, input logic eq_pa1, input logic eq_next);
@@ -542,23 +653,15 @@ module fetch_provider #(
   endfunction
   always_comb begin
     for (int p = 0; p < 2; p++) begin
-      cand_is_line0[p] = (fill_line0[0] == 1'(p));
-      if (cand_is_line0[p]) begin
-        cand_line[p] = fill_line0;
-        cand_fetchable[p] = !ask_fault0_q;
-      end else begin
-        cand_line[p] = fill_line_after;
-        cand_fetchable[p] = !ask_fault0_q && (fill_straddle ? !ask_fault1_q : ask_after_ok_q);
-      end
-      cand_present[p] = slot_valid_q[p] && cand_pick(
-        cand_is_line0[p],
-        fill_straddle,
-        slot_line_q[p] == fill_line0,
-        slot_line_q[p] == line_pa1,
-        slot_line_q[p] == ask_line_next_q
-      );
+      cand_line_ref[p] = cand_is_line0[p] ? fill_line0 : fill_line_after;
     end
   end
+  always_ff @(posedge i_clk) begin
+    if (ask_line_next_armed_q && !$isunknown({cand_line_q, cand_line_ref})) begin
+      p_cand_line_q_exact : assert (cand_line_q == cand_line_ref);
+    end
+  end
+`endif
 
   logic [1:0] fill_busy_q;
   logic [1:0] fill_sent_q;
@@ -588,12 +691,37 @@ module fetch_provider #(
   logic [1:0][LineBits-1:0] ev_data_q;
   logic [1:0][LineSbBits-1:0] ev_sb_q;
 
+  // Victim-store lookup per slot parity: one comparison per entry against
+  // the registered candidate line, with the entry's valid bit folded into the
+  // comparison as one more equal bit. A line lives in one place, so at most
+  // one entry matches (p_vs_hit_onehot) and the index is a plain OR of the
+  // matching entries' numbers, which keeps a priority chain and the
+  // comparison select out of the LUTRAM read address. The fanout cap
+  // replicates the index LUTs beside the store's address pins.
+  logic [1:0][VictimLines-1:0] vs_hit_vec;
   logic [1:0] vs_hit;
-  logic [1:0][VictimPtrBits-1:0] vs_hit_idx;
+  (* max_fanout = 64 *) logic [1:0][VictimPtrBits-1:0] vs_hit_idx;
   always_comb begin
     for (int p = 0; p < 2; p++) begin
-      vs_hit[p] = 1'b0;
       vs_hit_idx[p] = '0;
+      for (int v = 0; v < int'(VictimLines); v++) begin
+        vs_hit_vec[p][v] = (VICTIM_LINES > 0) &&
+            ({vs_valid_q[v], vs_line_q[v]} == {1'b1, cand_line_q[p]});
+        vs_hit_idx[p] |= {VictimPtrBits{vs_hit_vec[p][v]}} & VictimPtrBits'(v);
+      end
+      vs_hit[p] = |vs_hit_vec[p];
+    end
+  end
+
+`ifndef SYNTHESIS
+  // The lookup it replaces: the three comparisons selected by cand_pick,
+  // with the highest matching entry winning.
+  logic [1:0] vs_hit_ref;
+  logic [1:0][VictimPtrBits-1:0] vs_hit_idx_ref;
+  always_comb begin
+    for (int p = 0; p < 2; p++) begin
+      vs_hit_ref[p] = 1'b0;
+      vs_hit_idx_ref[p] = '0;
       for (int v = 0; v < int'(VictimLines); v++) begin
         if ((VICTIM_LINES > 0) && vs_valid_q[v] && cand_pick(
                 cand_is_line0[p],
@@ -602,12 +730,19 @@ module fetch_provider #(
                 vs_line_q[v] == line_pa1,
                 vs_line_q[v] == ask_line_next_q
             )) begin
-          vs_hit[p] = 1'b1;
-          vs_hit_idx[p] = VictimPtrBits'(v);
+          vs_hit_ref[p] = 1'b1;
+          vs_hit_idx_ref[p] = VictimPtrBits'(v);
         end
       end
     end
   end
+  always_ff @(posedge i_clk) begin
+    if (ask_line_next_armed_q && !$isunknown({vs_hit_vec, vs_hit_ref, vs_hit_idx_ref})) begin
+      p_vs_hit_onehot : assert ($onehot0(vs_hit_vec[0]) && $onehot0(vs_hit_vec[1]));
+      p_vs_hit_idx_exact : assert (vs_hit == vs_hit_ref && vs_hit_idx == vs_hit_idx_ref);
+    end
+  end
+`endif
 
   // A wanted candidate: absent from its slot with the slot's engine free. If
   // the store holds it, it is copied, one slot per cycle and never in a cycle
@@ -617,30 +752,52 @@ module fetch_provider #(
   // after the slot write), and so does a fill of the line the shadow holds:
   // that line is copied back once it reaches the store rather than fetched a
   // second time. A fill of any other line starts at once.
+  // TIMING: the copy decision folds its registered terms first
+  // (copy_reg_ok), joins the two comparison results (copy_base), and ranks
+  // the parities last: the window's own line (parity fill_line0[0]) copies
+  // first, the other only when it does not. Each copy_now is then one LUT of
+  // the two copy_base bits, the registered rank, and the two global vetoes,
+  // and the slot write enables follow in one more
+  // (p_copy_now_exact).
   logic [1:0] want_cand, want_fill, copy_now;
+  logic [1:0] copy_reg_ok;
+  logic [1:0] copy_base;
   always_comb begin
     for (int p = 0; p < 2; p++) begin
       want_cand[p] = ask_pa_valid_q && ask_pa0_q[31] && cand_fetchable[p] && !cand_present[p] &&
           !fill_busy_q[p];
       want_fill[p] = want_cand[p] && !vs_hit[p] &&
-          !((VICTIM_LINES > 0) && ev_pending_q[p] && cand_pick(
-        cand_is_line0[p],
-        fill_straddle,
-        ev_line_q[p] == fill_line0,
-        ev_line_q[p] == line_pa1,
-        ev_line_q[p] == ask_line_next_q
-      ));
+          !((VICTIM_LINES > 0) && ev_pending_q[p] && (ev_line_q[p] == cand_line_q[p]));
+      copy_reg_ok[p] = ask_pa_valid_q && ask_pa0_q[31] && cand_fetchable[p] && !fill_busy_q[p] &&
+          !ev_pending_q[p];
+      copy_base[p] = copy_reg_ok[p] && vs_hit[p] && !cand_present[p];
     end
-    copy_now = '0;
-    if (!i_line_resp_valid && !i_invalidate) begin
-      if (want_cand[fill_line0[0]] && vs_hit[fill_line0[0]] && !ev_pending_q[fill_line0[0]])
-        copy_now[fill_line0[0]] = 1'b1;
-      else if (want_cand[~fill_line0[0]] && vs_hit[~fill_line0[0]] && !ev_pending_q[~fill_line0[0]])
-        copy_now[~fill_line0[0]] = 1'b1;
+    for (int p = 0; p < 2; p++) begin
+      copy_now[p] = !i_line_resp_valid && !i_invalidate && copy_base[p] &&
+          ((fill_line0[0] == 1'(p)) || !copy_base[~p]);
     end
   end
   logic copy_slot;
   assign copy_slot = copy_now[1];
+
+`ifndef SYNTHESIS
+  // The priority form it replaces.
+  logic [1:0] copy_now_ref;
+  always_comb begin
+    copy_now_ref = '0;
+    if (!i_line_resp_valid && !i_invalidate) begin
+      if (want_cand[fill_line0[0]] && vs_hit[fill_line0[0]] && !ev_pending_q[fill_line0[0]])
+        copy_now_ref[fill_line0[0]] = 1'b1;
+      else if (want_cand[~fill_line0[0]] && vs_hit[~fill_line0[0]] && !ev_pending_q[~fill_line0[0]])
+        copy_now_ref[~fill_line0[0]] = 1'b1;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (ask_line_next_armed_q && !$isunknown({copy_now, copy_now_ref})) begin
+      p_copy_now_exact : assert (copy_now == copy_now_ref);
+    end
+  end
+`endif
 
   // Request presentation: the window's own line (parity of L) first, then
   // the following line. One request per cycle on the port.
