@@ -100,25 +100,50 @@ module lq_issue_selector #(
     end
   end
 
-  // Phase A: per-entry CDB readiness (parallel, no inter-entry dependency)
-  logic [DEPTH-1:0] cdb_ready_mask;
+  // Phase A: the first CDB-ready entry in ring order from head_idx. Ring
+  // order visits head_idx..DEPTH-1 and then 0..head_idx-1, so that entry is
+  // the lowest ready index at or above head_idx if there is one, else the
+  // lowest ready index; whether one exists does not depend on head_idx at
+  // all. TIMING: found and both priority encoders read the physical ready
+  // bits, and the registered head_idx only forms the at-or-above mask, so no
+  // head-rotation mux precedes the found bit or the index. found reaches the
+  // cdb_stage capture enable, its value select and the SQ-check clear.
+  logic [DEPTH-1:0] cdb_ready_phys;
+  logic [DEPTH-1:0] at_or_above_head;
+  logic [DEPTH-1:0] cdb_ready_upper;
+  logic cdb_upper_found;
+  logic [IdxWidth-1:0] cdb_upper_idx;
+  logic [IdxWidth-1:0] cdb_lowest_idx;
+  assign cdb_ready_phys = lq_valid & lq_data_valid;
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      cdb_ready_mask[i] = lq_valid[scan_idx[i]] && lq_data_valid[scan_idx[i]];
+      at_or_above_head[i] = IdxWidth'(i) >= head_idx;
     end
   end
+  assign cdb_ready_upper = cdb_ready_phys & at_or_above_head;
+  assign cdb_upper_found = |cdb_ready_upper;
+  always_comb begin
+    cdb_upper_idx  = '0;
+    cdb_lowest_idx = '0;
+    for (int i = DEPTH - 1; i >= 0; i--) begin
+      if (cdb_ready_upper[i]) cdb_upper_idx = IdxWidth'(i);
+      if (cdb_ready_phys[i]) cdb_lowest_idx = IdxWidth'(i);
+    end
+  end
+  assign issue_cdb_found = |cdb_ready_phys;
+  assign issue_cdb_idx   = cdb_upper_found ? cdb_upper_idx : cdb_lowest_idx;
 
-  // Phase A: priority encoder for the first CDB-ready entry in ring order
-  always_comb begin
-    issue_cdb_found = 1'b0;
-    issue_cdb_idx   = '0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (cdb_ready_mask[i] && !issue_cdb_found) begin
-        issue_cdb_found = 1'b1;
-        issue_cdb_idx   = scan_idx[i];
-      end
-    end
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // The scan indices wrap at 2**IdxWidth, so ring order visits every entry
+  // once only when DEPTH is a power of two. load_queue checks the selection
+  // against the ring-order scan every cycle (p_issue_cdb_physical_select_exact).
+  initial begin
+    assert ((1 << IdxWidth) == DEPTH)
+    else $error("lq_issue_selector: DEPTH must be a power of two");
   end
+`endif
+`endif
 
   // Mask of the entry already claimed by the sq_check staging register.  It is
   // registered one-hot state in load_queue rather than a live compare against

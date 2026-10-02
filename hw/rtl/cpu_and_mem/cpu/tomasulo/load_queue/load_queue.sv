@@ -3771,6 +3771,32 @@ module load_queue #(
     end
   end
 
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // Phase A against the ring-order scan lq_issue_selector replaces: the
+  // first entry from head_idx with lq_valid and lq_data_valid.
+  logic sim_issue_cdb_found_ref;
+  logic [IdxWidth-1:0] sim_issue_cdb_idx_ref;
+  always_comb begin
+    sim_issue_cdb_found_ref = 1'b0;
+    sim_issue_cdb_idx_ref   = '0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (lq_valid[IdxWidth'(head_idx + IdxWidth'(i))] &&
+          lq_data_valid[IdxWidth'(head_idx + IdxWidth'(i))] && !sim_issue_cdb_found_ref) begin
+        sim_issue_cdb_found_ref = 1'b1;
+        sim_issue_cdb_idx_ref   = IdxWidth'(head_idx + IdxWidth'(i));
+      end
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n && !$isunknown({lq_valid, lq_data_valid, head_idx})) begin
+      p_issue_cdb_physical_select_exact :
+      assert (issue_cdb_found == sim_issue_cdb_found_ref && issue_cdb_idx == sim_issue_cdb_idx_ref);
+    end
+  end
+`endif
+`endif
+
   // ===========================================================================
   // Simulation Assertions
   // ===========================================================================
