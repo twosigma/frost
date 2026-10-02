@@ -40,6 +40,11 @@
  * flip-flops, as do the class bits the commit logic reads early.
  */
 
+// Kept as its own hierarchy: its commit strobes are built from this module's
+// RTL alone, so synthesis cannot re-derive them through shared logic in the
+// commit consumers (the misprediction flush controller, the predictor update
+// hold, the serializer), which made their enables several levels deeper.
+(* keep_hierarchy = "yes" *)
 module reorder_buffer #(
     // Simulation-only check that no CDB write lands on an entry allocated in
     // the previous cycle (the staged-LVT drain window; see
@@ -733,12 +738,15 @@ module reorder_buffer #(
   logic commit_stall_for_retire;  // Consumers also apply retirement permission.
   // Early/late factoring of the commit gates (pure AND re-association,
   // bit-identical conjunct sets; see Commit Enable Logic).
-  logic commit_ready_early;
-  logic commit_2_ready_early;
+  // Kept: the register-sourced commit aggregates stay their own nets, so the
+  // late stall reaches each commit strobe through one LUT (see the late-side
+  // factoring below) however synthesis shares the logic around them.
+  (* keep = "true" *) logic commit_ready_early;
+  (* keep = "true" *) logic commit_2_ready_early;
   logic commit_store_like_early;
   logic commit_mispredict_early;
   logic commit_correct_branch_early;
-  logic commit_correct_branch_2_early;
+  (* keep = "true" *) logic commit_correct_branch_2_early;
   logic head_mispredict_candidate_early;
   logic commit_2_store_like_early;
 
@@ -2424,7 +2432,7 @@ module reorder_buffer #(
   // exactly when its stored done bit is set. The branch strobes read that bit,
   // which keeps the head's CDB match out of the misprediction and
   // correct-branch captures; their head_ready forms are checked below.
-  logic commit_branch_ready_early;
+  (* keep = "true" *) logic commit_branch_ready_early;
   assign commit_branch_ready_early = head_valid && head_done && !head_exception &&
                                      !i_commit_hold && !i_early_recovery_en && !i_flush_en &&
                                      !i_flush_all && !flush_after_head_commit;

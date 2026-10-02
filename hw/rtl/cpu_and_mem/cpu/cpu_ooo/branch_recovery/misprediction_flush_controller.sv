@@ -36,6 +36,7 @@
  * chain.
  */
 
+(* keep_hierarchy = "yes" *)
 module misprediction_flush_controller #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
@@ -259,12 +260,20 @@ module misprediction_flush_controller #(
   // ex_comb_synthesizer. The mux is replicated per RAM region, so the select
   // feeds every replica. Cap it for the same per-region replication.
   (* max_fanout = 48 *) logic correct_branch_commit_pending;
-  // Payload cap: same reasoning as mispredict_commit_q above.
-  (* max_fanout = 64 *) riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q;
+  // Payload cap: same reasoning as mispredict_commit_q above. extract_reset
+  // keeps the late capture strobe on the clock enable: the payload has no
+  // reset, and letting synthesis derive one from the load logic routes the
+  // strobe through extra levels to the reset pins.
+  (* max_fanout = 64, extract_reset = "no" *)
+  riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q;
 
   // The ROB raises this strobe for a checkpointed head that did not mispredict
   // and was not early-recovered, so nothing more needs gating here.
-  wire commit_is_correct_branch = rob_commit_correct_branch_raw;
+  // Kept as nets: the strobes come from the ROB's commit cone, and keeping
+  // them stops synthesis from rebuilding the capture enables out of that cone
+  // (it otherwise shared terms with the misprediction capture and added
+  // levels to these enables).
+  (* keep = "true" *) wire commit_is_correct_branch = rob_commit_correct_branch_raw;
 
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_all) correct_branch_commit_pending <= 1'b0;
@@ -299,8 +308,9 @@ module misprediction_flush_controller #(
   // replica of the BTB training mux, so it carries the same caps as the
   // slot-1 pending/payload pair.
   (* max_fanout = 48 *) logic correct_branch_commit_pending_2;
-  (* max_fanout = 64 *) riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q_2;
-  wire commit_is_correct_branch_2 = rob_commit_correct_branch_2_raw;
+  (* max_fanout = 64, extract_reset = "no" *)
+  riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q_2;
+  (* keep = "true" *) wire commit_is_correct_branch_2 = rob_commit_correct_branch_2_raw;
   logic correct_branch_2_served;
   // Set after a held capture's first cycle, the only cycle its free may pulse.
   logic correct_branch_2_free_done_q;
