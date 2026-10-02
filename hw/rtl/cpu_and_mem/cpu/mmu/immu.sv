@@ -107,9 +107,44 @@ module immu #(
       (bare_pma_pc[31:30] == 2'b10);
   assign bare_verdict.straddle = &bare_pma_pc[11:2];
   assign bare_verdict.bare_fault0 = !(bare_pma_high_zero && bare_pma_low_ok);
-  assign bare_verdict.bare_fault1 = bare_verdict.straddle ? !riscv_pkg::pma_fetch_next_page_ok(
-      bare_pma_pc
-  ) : bare_verdict.bare_fault0;
+  // The next-page check (riscv_pkg::pma_fetch_next_page_ok) with its PC
+  // reductions as kept nets: the high-bits-zero chunks above, and the code
+  // region's, the cached region's, and the all-ones reductions below. TIMING:
+  // kept, synthesis builds each as its own tree beside the Bare fault; left
+  // to itself it has shared them as one LUT chain that put five levels
+  // between the PC and the fault.
+  (* keep = "true" *) logic [PmaHighChunks-1:0] bare_pma_high_ones_chunk;
+  (* keep = "true" *) logic bare_pma_high_ones;
+  (* keep = "true" *) logic bare_pma_low_ones;
+  (* keep = "true" *) logic bare_pma_code_low_zero;
+  (* keep = "true" *) logic bare_pma_code_page_ones;
+  (* keep = "true" *) logic bare_pma_cached_page_ones;
+  logic bare_next_page_ok;
+  for (genvar k = 0; k < PmaHighChunks; k++) begin : gen_bare_pma_high_ones
+    localparam int unsigned ChunkBits = ((PmaHighBits - 6 * k) < 6) ? (PmaHighBits - 6 * k) : 6;
+    assign bare_pma_high_ones_chunk[k] = &bare_pma_pc[32+6*k+:ChunkBits];
+  end
+  assign bare_pma_high_ones = &bare_pma_high_ones_chunk;
+  assign bare_pma_low_ones = &bare_pma_pc[31:12];
+  assign bare_pma_code_low_zero = (bare_pma_pc[31:riscv_pkg::LowBramCodeAddrBits] == '0);
+  assign bare_pma_code_page_ones = &bare_pma_pc[riscv_pkg::LowBramCodeAddrBits-1:12];
+  assign bare_pma_cached_page_ones = &bare_pma_pc[29:12];
+  assign bare_next_page_ok =
+      (bare_pma_high_zero && bare_pma_code_low_zero && !bare_pma_code_page_ones) ||
+      (bare_pma_high_ones && bare_pma_low_ones) ||
+      (bare_pma_high_zero &&
+       (((bare_pma_pc[31:30] == 2'b10) && !bare_pma_cached_page_ones) ||
+        ((bare_pma_pc[31:30] == 2'b01) && bare_pma_cached_page_ones)));
+  assign bare_verdict.bare_fault1 = bare_verdict.straddle ? !bare_next_page_ok :
+                                                            bare_verdict.bare_fault0;
+`ifndef SYNTHESIS
+  always_comb begin
+    if (!$isunknown(bare_pma_pc)) begin
+      p_bare_next_page_ok_exact :
+      assert (bare_next_page_ok == riscv_pkg::pma_fetch_next_page_ok(bare_pma_pc));
+    end
+  end
+`endif
   assign bare_verdict.line_after_in_page =
       (bare_pma_pc[11:5] != 7'h7F) || (bare_pma_pc[4:2] == 3'b111);
   assign bare_pa1 = {i_pc[31:2] + 30'd1, 2'b00};
@@ -186,6 +221,11 @@ module immu #(
   logic [1:0] tlb_hi_nonzero;
   logic [1:0] tlb_r, tlb_w, tlb_x, tlb_u, tlb_d;
   logic [1:0][1:0] tlb_level;
+  // TIMING: the fetch permission and PMA verdicts of each port's hit, formed
+  // per entry inside the ITLB and selected beside the PPN, so the PA select
+  // below sees the fault at the same depth as the PPN instead of after a
+  // PMA check of the selected PPN (p_itlb_fetch_verdicts_exact).
+  logic [1:0] tlb_fetch_perm_fault, tlb_fetch_pma_bad, tlb_fetch_next_pma_bad;
   logic tlb_install;
 
   assign tlb_vpn[0] = pc_vpn;
@@ -194,8 +234,9 @@ module immu #(
       (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && !i_tlb_invalidate;
 
   dtlb #(
-      .NUM_ENTRIES(NUM_ENTRIES),
-      .NUM_PORTS  (2)
+      .NUM_ENTRIES   (NUM_ENTRIES),
+      .NUM_PORTS     (2),
+      .FETCH_VERDICTS(1'b1)
   ) u_itlb (
       .i_clk(i_clk),
       .i_rst_n(!i_rst),
@@ -219,7 +260,11 @@ module immu #(
       .i_perm_sum(1'b0),
       .i_perm_mxr(1'b0),
       .o_perm_ok(),
-      .o_atomic_page()
+      .o_atomic_page(),
+      .i_fetch_priv_u(i_priv_u),
+      .o_fetch_perm_fault(tlb_fetch_perm_fault),
+      .o_fetch_pma_bad(tlb_fetch_pma_bad),
+      .o_fetch_next_pma_bad(tlb_fetch_next_pma_bad)
   );
 
   // ---------------------------------------------------------------------------
@@ -269,17 +314,20 @@ module immu #(
     logic clean_hit;
   } port_res_t;
 
+  // A hit's permission and PMA verdicts come from the ITLB's per-entry
+  // checks (tlb_perm_fault, tlb_pma_bad); only the walk-response bypass
+  // checks the fields it selects.
   function automatic port_res_t resolve_port(
       input logic noncanon, input logic [VpnBits-1:0] vpn, input logic hit,
-      input logic [19:0] ppn20, input logic hi_nonzero, input logic perm_x, input logic perm_u,
-      input logic [1:0] level, input logic priv_u, input logic invalidate, input logic resp_valid,
-      input riscv_pkg::ptw_resp_t resp, input logic memo_valid, input logic [VpnBits-1:0] memo_vpn,
-      input logic memo_page);
+      input logic [19:0] ppn20, input logic hi_nonzero, input logic tlb_perm_fault,
+      input logic tlb_pma_bad, input logic [1:0] level, input logic priv_u, input logic invalidate,
+      input logic resp_valid, input riscv_pkg::ptw_resp_t resp, input logic memo_valid,
+      input logic [VpnBits-1:0] memo_vpn, input logic memo_page);
     port_res_t r;
     logic resp_match, use_resp_leaf, have;
-    logic e_x, e_u, e_hi_nonzero;
+    logic e_hi_nonzero;
     logic [19:0] e_ppn20;
-    logic [ 1:0] e_level;
+    logic [1:0] e_level;
     logic perm_ok, pma_bad;
     begin
       r = '0;
@@ -287,20 +335,18 @@ module immu #(
       use_resp_leaf = resp_match && (resp.fault_kind == riscv_pkg::DFAULT_NONE);
       have = (hit && !invalidate) || use_resp_leaf;
       if (use_resp_leaf && !(hit && !invalidate)) begin
-        e_x = resp.perm_x;
-        e_u = resp.perm_u;
         e_hi_nonzero = |resp.ppn[riscv_pkg::PtePpnBits-1:20];
         e_ppn20 = ppn20_from_resp(resp, vpn);
         e_level = resp.level;
+        perm_ok = resp.perm_x && (resp.perm_u == priv_u);
+        pma_bad = e_hi_nonzero || !riscv_pkg::pma_fetch_ok({32'b0, e_ppn20, 12'h000});
       end else begin
-        e_x = perm_x;
-        e_u = perm_u;
         e_hi_nonzero = hi_nonzero;
         e_ppn20 = ppn20;
         e_level = level;
+        perm_ok = !tlb_perm_fault;
+        pma_bad = tlb_pma_bad;
       end
-      perm_ok = e_x && (e_u == priv_u);
-      pma_bad = e_hi_nonzero || !riscv_pkg::pma_fetch_ok({32'b0, e_ppn20, 12'h000});
       r.ppn20 = e_ppn20;
       r.hi_nonzero = e_hi_nonzero;
       r.level = e_level;
@@ -339,8 +385,8 @@ module immu #(
       tlb_hit[0],
       tlb_ppn20[0],
       tlb_hi_nonzero[0],
-      tlb_x[0],
-      tlb_u[0],
+      tlb_fetch_perm_fault[0],
+      tlb_fetch_pma_bad[0],
       tlb_level[0],
       i_priv_u,
       i_tlb_invalidate,
@@ -356,8 +402,8 @@ module immu #(
       tlb_hit[1],
       tlb_ppn20[1],
       tlb_hi_nonzero[1],
-      tlb_x[1],
-      tlb_u[1],
+      tlb_fetch_perm_fault[1],
+      tlb_fetch_pma_bad[1],
       tlb_level[1],
       i_priv_u,
       i_tlb_invalidate,
@@ -368,13 +414,38 @@ module immu #(
       memo_page_q
   );
 
+`ifndef SYNTHESIS
+  // The per-entry verdicts equal the checks of the selected hit's fields.
+  always_comb begin
+    for (int p = 0; p < 2; p++) begin
+      if (tlb_hit[p] && !$isunknown(
+              {tlb_x[p], tlb_u[p], tlb_hi_nonzero[p], tlb_ppn20[p], i_priv_u,
+               tlb_fetch_perm_fault[p], tlb_fetch_pma_bad[p]}
+          )) begin
+        p_itlb_fetch_verdicts_exact :
+        assert (tlb_fetch_perm_fault[p] == !(tlb_x[p] && (tlb_u[p] == i_priv_u)) &&
+                tlb_fetch_pma_bad[p] ==
+                (tlb_hi_nonzero[p] || !riscv_pkg::pma_fetch_ok(
+            {32'b0, tlb_ppn20[p], 12'h000}
+        )));
+      end
+    end
+  end
+`endif
+
   // The aligned successor word can be derived inside the same 2 MiB/1 GiB
   // leaf. At the superpage end the carry enters the entry key, so port 1 must
   // resolve the exact next VPN instead.
+  // The next page's PMA verdict comes from the ITLB's per-entry check when
+  // the result is an ITLB hit, and from the selected fields only for the
+  // walk-response bypass (p_super_next_pma_exact).
   logic super_end;
   logic super_next_ok;
   logic [19:0] super_next_ppn20;
   logic super_next_pma_bad;
+  logic super_next_pma_bad_selected;
+  logic res0_from_tlb;
+  assign res0_from_tlb = tlb_hit[0] && !i_tlb_invalidate;
   always_comb begin
     unique case (res0.level)
       2'd2: begin
@@ -392,7 +463,16 @@ module immu #(
     endcase
   end
   assign super_next_ok = res0.clean_hit && (res0.level != 2'd0) && !super_end;
-  assign super_next_pma_bad = !riscv_pkg::pma_fetch_ok({32'b0, super_next_ppn20, 12'h000});
+  assign super_next_pma_bad_selected = !riscv_pkg::pma_fetch_ok({32'b0, super_next_ppn20, 12'h000});
+  assign super_next_pma_bad = res0_from_tlb ? tlb_fetch_next_pma_bad[0] :
+                                              super_next_pma_bad_selected;
+`ifndef SYNTHESIS
+  always_comb begin
+    if (super_next_ok && !$isunknown({super_next_pma_bad, super_next_pma_bad_selected})) begin
+      p_super_next_pma_exact : assert (super_next_pma_bad == super_next_pma_bad_selected);
+    end
+  end
+`endif
 
   // ---------------------------------------------------------------------------
   // Tag and result capture. The key and its result always load together.

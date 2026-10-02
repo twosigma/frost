@@ -611,7 +611,12 @@ module dmmu (
       .i_perm_sum(i_sum),
       .i_perm_mxr(i_mxr),
       .o_perm_ok(tlb_perm_ok),
-      .o_atomic_page(tlb_atomic_page)
+      .o_atomic_page(tlb_atomic_page),
+      // The instruction MMU's leaf checks; the data side uses its own.
+      .i_fetch_priv_u(1'b0),
+      .o_fetch_perm_fault(),
+      .o_fetch_pma_bad(),
+      .o_fetch_next_pma_bad()
   );
 
 `ifdef DMMU_MMIO_LOCAL_PROOF
