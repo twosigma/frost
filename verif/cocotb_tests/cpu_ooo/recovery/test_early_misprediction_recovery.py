@@ -99,7 +99,11 @@ def _drive_mispredict(
     """Drive a coherent branch-resolution transaction.
 
     The RS packet carries is_compressed as a dispatch-time bit; by default it
-    is derived from the link/pc pair the way the front end would set it.
+    is derived from the link/pc pair the way the front end would set it. Its
+    prediction agrees with ``mispredicted``: a misprediction predicted the
+    other direction, a correct prediction the resolved direction and target.
+    The fire reads the prediction for conditional branches, and a simulation
+    check compares that form with the update's flag.
     """
     dut.i_branch_update.value = _pack_branch_update(
         {
@@ -125,6 +129,8 @@ def _drive_mispredict(
             ),
             "has_checkpoint": has_checkpoint,
             "checkpoint_id": checkpoint_id,
+            "predicted_taken": branch_taken != mispredicted,
+            "predicted_target_ok": True,
             "is_branch_class": True,
             "is_jal": False,
             "is_jalr": is_jalr,

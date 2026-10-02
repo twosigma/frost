@@ -136,7 +136,20 @@ module early_misprediction_recovery #(
 
   // Fire when a conditional-branch misprediction resolves at execute. JALR
   // mispredictions recover at commit.
-  assign early_mispredict_capture = branch_update.mispredicted && !early_mispredict_pending &&
+  //
+  // TIMING: the fire excludes JALR, so it uses the conditional-branch form of
+  // branch_update.mispredicted rather than the flag itself. For a non-JALR
+  // issue, prediction_wrong in branch_resolution is (taken != predicted) ||
+  // (taken && predicted && !predicted_target_ok), which reduces to the mux
+  // below, and branch_update.valid is the qualification that flag carries. A
+  // JALR issue cannot fire either way. The flag also holds the JALR target
+  // compare (rs1 + imm against the side-RAM prediction), which this form keeps
+  // out of the early_mispredict_pending D input.
+  logic branch_mispredicted_direct;
+  assign branch_mispredicted_direct = branch_update.valid && (branch_taken_resolved ?
+      !(rs_issue_int.predicted_taken && rs_issue_int.predicted_target_ok) :
+      rs_issue_int.predicted_taken);
+  assign early_mispredict_capture = branch_mispredicted_direct && !early_mispredict_pending &&
                                     !early_backend_recovery_pending;
   // TIMING: the wide redirect/BTB/checkpoint payload does not need the
   // checkpoint-owner-qualified mispredict as its clock enable.  Capture any
@@ -244,11 +257,15 @@ module early_misprediction_recovery #(
   assign o_early_backend_recovery_hold = early_backend_recovery_hold;
 
 `ifndef SYNTHESIS
-  // The fire condition uses the raw is_jalr bit; the reference uses the
-  // qualified i_is_jalr_issue. branch_update.mispredicted can only be true
-  // for a qualified branch update, where the two JALR predicates are equal.
+  // The reference is the fire with the full branch_update.mispredicted flag
+  // and the qualified i_is_jalr_issue. The fire uses the conditional-branch
+  // form of the flag and the raw is_jalr bit; branch_update.mispredicted can
+  // only be true for a qualified branch update, where the two JALR
+  // predicates are equal.
   logic early_mispredict_fire_reference;
-  assign early_mispredict_fire_reference = early_mispredict_capture &&
+  assign early_mispredict_fire_reference = branch_update.mispredicted &&
+                                            !early_mispredict_pending &&
+                                            !early_backend_recovery_pending &&
                                             rs_issue_int.has_checkpoint && !is_jalr_issue &&
                                             !fence_i_flush && !mispredict_recovery_pending;
 
@@ -257,12 +274,16 @@ module early_misprediction_recovery #(
             {branch_update.mispredicted, is_jalr_issue,
                               rs_issue_int.is_jalr, early_mispredict_fire,
                               early_mispredict_fire_reference,
+                              branch_mispredicted_direct,
                               early_mispredict_payload_capture}
         )) begin
       p_qualified_jalr_matches_raw_on_mispredict :
       assert (!branch_update.mispredicted || is_jalr_issue == rs_issue_int.is_jalr);
       p_raw_jalr_fire_substitution_exact :
       assert (early_mispredict_fire == early_mispredict_fire_reference);
+      // The conditional-branch form equals the flag on every non-JALR issue.
+      p_branch_mispredicted_direct_exact :
+      assert (rs_issue_int.is_jalr || (branch_mispredicted_direct == branch_update.mispredicted));
       p_fire_implies_payload_capture :
       assert (!early_mispredict_fire || early_mispredict_payload_capture);
     end
