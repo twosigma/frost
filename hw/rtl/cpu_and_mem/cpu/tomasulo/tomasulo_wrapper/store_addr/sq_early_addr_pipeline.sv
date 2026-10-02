@@ -214,7 +214,11 @@ module sq_early_addr_pipeline (
   logic [riscv_pkg::XLEN-1:0] sq_early_repair_effective_addr_2;
   logic sq_early_addr_repair_match;
   logic sq_early_addr_repair_fire;
-  logic [7:0] sq_early_addr_repair_cond;
+  // TIMING: the per-channel match conditions (and the slot-2 copies below)
+  // are kept nets, so each tag compare maps to its own two LUT levels and
+  // the trees start from them, instead of synthesis folding the compares
+  // into a longer shared chain.
+  (* keep = "true" *) logic [7:0] sq_early_addr_repair_cond;
   logic [3:0] sq_early_addr_repair_pair_match;
   logic [1:0] sq_early_addr_repair_half_match;
   always_comb begin
@@ -260,7 +264,7 @@ module sq_early_addr_pipeline (
   // own address, since the base is shared but the imm differs.
   logic sq_early_addr_repair_match_2;
   logic sq_early_addr_repair_fire_2;
-  logic [7:0] sq_early_addr_repair_cond_2;
+  (* keep = "true" *) logic [7:0] sq_early_addr_repair_cond_2;
   logic [3:0] sq_early_addr_repair_pair_match_2;
   logic [1:0] sq_early_addr_repair_half_match_2;
   always_comb begin
@@ -312,6 +316,16 @@ module sq_early_addr_pipeline (
   // and sends it on the next free-port cycle. The candidate's immediate cannot
   // change while it is held: only a newer unready store writes it, and that
   // store evicts the held candidate on the same edge.
+  //
+  // The address hold registers are read only while repair_ready is set, and
+  // repair_ready is set only on an edge that also loads them with that
+  // candidate's repaired address. They therefore load the repaired address on
+  // every edge while repair_ready is clear and hold while it is set: the edge
+  // that sets repair_ready loads the same address as before, and every other
+  // load lands while repair_ready stays or becomes clear, so it is never read
+  // (p_repair_hold_load_exact). TIMING: their 64-bit clock enables are then
+  // the registered repair_ready alone, not the match, fire and dispatch-time
+  // RAT readiness of a newly dispatched store.
   logic sq_early_addr_repair_ready_q;
   logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_addr_hold_q;
   logic sq_early_addr_repair_ready_2_q;
@@ -366,10 +380,7 @@ module sq_early_addr_pipeline (
       end else begin
         if (sq_early_addr_repair_fire) begin
           sq_early_addr_repair_valid_q <= 1'b0;
-          if (slot1_port_taken_by_fresh) begin
-            sq_early_addr_repair_ready_q <= 1'b1;
-            sq_early_addr_repair_addr_hold_q <= sq_early_repair_effective_addr;
-          end
+          if (slot1_port_taken_by_fresh) sq_early_addr_repair_ready_q <= 1'b1;
         end
         if (sq_early_addr_repair_ready_q && !slot1_port_taken_by_fresh) begin
           sq_early_addr_repair_ready_q <= 1'b0;
@@ -394,10 +405,7 @@ module sq_early_addr_pipeline (
       end else begin
         if (sq_early_addr_repair_fire_2) begin
           sq_early_addr_repair_valid_2_q <= 1'b0;
-          if (slot2_port_taken_by_fresh) begin
-            sq_early_addr_repair_ready_2_q <= 1'b1;
-            sq_early_addr_repair_addr_hold_2_q <= sq_early_repair_effective_addr_2;
-          end
+          if (slot2_port_taken_by_fresh) sq_early_addr_repair_ready_2_q <= 1'b1;
         end
         if (sq_early_addr_repair_ready_2_q && !slot2_port_taken_by_fresh) begin
           sq_early_addr_repair_ready_2_q <= 1'b0;
@@ -405,6 +413,37 @@ module sq_early_addr_pipeline (
       end
     end
   end
+
+  // Address hold loads (see the repair hold state note above).
+  always_ff @(posedge i_clk) begin
+    if (!sq_early_addr_repair_ready_q)
+      sq_early_addr_repair_addr_hold_q <= sq_early_repair_effective_addr;
+    if (!sq_early_addr_repair_ready_2_q)
+      sq_early_addr_repair_addr_hold_2_q <= sq_early_repair_effective_addr_2;
+  end
+
+`ifndef SYNTHESIS
+  // Reference hold registers with the original fully qualified load: they
+  // must equal the hold registers whenever repair_ready lets the packet read
+  // them.
+  logic [riscv_pkg::XLEN-1:0] f_ref_hold_q, f_ref_hold_2_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n && !i_flush_all && !i_flush_en) begin
+      if (!slot1_new_unready_store && !slot1_mem_rs_issue_kill &&
+          sq_early_addr_repair_fire && slot1_port_taken_by_fresh)
+        f_ref_hold_q <= sq_early_repair_effective_addr;
+      if (!slot2_new_unready_store && !slot2_mem_rs_issue_kill &&
+          sq_early_addr_repair_fire_2 && slot2_port_taken_by_fresh)
+        f_ref_hold_2_q <= sq_early_repair_effective_addr_2;
+    end
+    if (i_rst_n && sq_early_addr_repair_ready_q) begin
+      p_repair_hold_load_exact : assert (sq_early_addr_repair_addr_hold_q == f_ref_hold_q);
+    end
+    if (i_rst_n && sq_early_addr_repair_ready_2_q) begin
+      p_repair_hold_load_2_exact : assert (sq_early_addr_repair_addr_hold_2_q == f_ref_hold_2_q);
+    end
+  end
+`endif
 
   // The adders run on registered inputs, off the dispatch critical path. The
   // XLEN-wide address sums below are full width and unmasked. An out-of-map
