@@ -174,11 +174,23 @@ module cached_tier_adapter #(
   // queued beat belongs to an outstanding read, so READ_SLOTS entries suffice.
   // A beat arriving with the output free bypasses the queue, keeping the
   // line-response-to-router latency at one cycle.
+  //
+  // The line response's valid and id come out of the cache's response
+  // selection late in the cycle, so they reach only small state here. The
+  // queue entry at the write pointer is not in the queue unless the queue is
+  // full, so it takes the arriving beat and slot every cycle the queue is not
+  // full, and a push only advances the pointer. The output beat and id are
+  // read only while o_read_valid is set, so they load whenever the output
+  // takes (out_take): with no beat for it, o_read_valid clears and the loaded
+  // data is never read. p_rq_queue_exact and p_read_beat_exact check both
+  // against copies written only on a push and on a delivered beat.
   logic [BeatBits-1:0] rq_data_q[READ_SLOTS];
   logic [SlotBits-1:0] rq_id_q  [READ_SLOTS];
   logic [RespPtrBits-1:0] rq_wr_q, rq_rd_q;
-  logic rq_nonempty, rq_pop, rq_push, out_take;
+  logic rq_nonempty, rq_pop, rq_push, out_take, rq_full;
   assign rq_nonempty = (rq_wr_q != rq_rd_q);
+  assign rq_full = (rq_wr_q[SlotBits] != rq_rd_q[SlotBits]) &&
+      (rq_wr_q[SlotBits-1:0] == rq_rd_q[SlotBits-1:0]);
   // The output reloads when empty or when the router takes the beat.
   assign out_take = !o_read_valid || i_read_ready;
   assign rq_pop = out_take && rq_nonempty;
@@ -229,26 +241,22 @@ module cached_tier_adapter #(
         o_write_done        <= 1'b1;
       end
       if (resp_is_read) rd_valid_q[resp_slot] <= 1'b0;
-      if (rq_push) begin
-        rq_data_q[rq_wr_q[SlotBits-1:0]] <= resp_beat;
-        rq_id_q[rq_wr_q[SlotBits-1:0]] <= resp_slot;
-        rq_wr_q <= rq_wr_q + 1'b1;
-      end
+      if (rq_push) rq_wr_q <= rq_wr_q + 1'b1;
       if (rq_pop) rq_rd_q <= rq_rd_q + 1'b1;
       // Output beat: queue head first (oldest), else the arriving beat.
-      if (out_take) begin
-        if (rq_nonempty) begin
-          o_read_valid <= 1'b1;
-          o_read_data  <= rq_data_q[rq_rd_q[SlotBits-1:0]];
-          o_read_id    <= rq_id_q[rq_rd_q[SlotBits-1:0]];
-        end else if (resp_is_read) begin
-          o_read_valid <= 1'b1;
-          o_read_data  <= resp_beat;
-          o_read_id    <= resp_slot;
-        end else begin
-          o_read_valid <= 1'b0;
-        end
-      end
+      if (out_take) o_read_valid <= rq_nonempty || resp_is_read;
+    end
+  end
+
+  // Queue tail and output beat payloads (see the queue comment above).
+  always_ff @(posedge i_clk) begin
+    if (!rq_full) begin
+      rq_data_q[rq_wr_q[SlotBits-1:0]] <= resp_beat;
+      rq_id_q[rq_wr_q[SlotBits-1:0]]   <= resp_slot;
+    end
+    if (out_take) begin
+      o_read_data <= rq_nonempty ? rq_data_q[rq_rd_q[SlotBits-1:0]] : resp_beat;
+      o_read_id   <= rq_nonempty ? rq_id_q[rq_rd_q[SlotBits-1:0]] : resp_slot;
     end
   end
 
@@ -277,6 +285,49 @@ module cached_tier_adapter #(
         $error("cached_tier_adapter: read response for slot %0d not in flight", resp_slot);
       if (rq_push && ((rq_wr_q - rq_rd_q) == RespPtrBits'(READ_SLOTS)))
         $error("cached_tier_adapter: read-response queue overflow");
+    end
+  end
+
+  // Reference queue and output beat, written only on a push and on a
+  // delivered beat (the enables the payload captures above dropped).
+  logic [BeatBits-1:0] ref_rq_data_q[READ_SLOTS];
+  logic [SlotBits-1:0] ref_rq_id_q[READ_SLOTS];
+  logic [BeatBits-1:0] ref_read_data_q;
+  logic [SlotBits-1:0] ref_read_id_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      if (rq_push) begin
+        ref_rq_data_q[rq_wr_q[SlotBits-1:0]] <= resp_beat;
+        ref_rq_id_q[rq_wr_q[SlotBits-1:0]]   <= resp_slot;
+      end
+      if (out_take && rq_nonempty) begin
+        ref_read_data_q <= ref_rq_data_q[rq_rd_q[SlotBits-1:0]];
+        ref_read_id_q   <= ref_rq_id_q[rq_rd_q[SlotBits-1:0]];
+      end else if (out_take && resp_is_read) begin
+        ref_read_data_q <= resp_beat;
+        ref_read_id_q   <= resp_slot;
+      end
+    end
+  end
+  logic rq_queue_mismatch;
+  always_comb begin
+    rq_queue_mismatch = 1'b0;
+    for (int unsigned n = 0; n < READ_SLOTS; n++) begin
+      logic [RespPtrBits-1:0] slot_ptr;
+      slot_ptr = rq_rd_q + RespPtrBits'(n);
+      if ((RespPtrBits'(n) < RespPtrBits'(rq_wr_q - rq_rd_q)) &&
+          ({rq_data_q[slot_ptr[SlotBits-1:0]], rq_id_q[slot_ptr[SlotBits-1:0]]} !=
+           {ref_rq_data_q[slot_ptr[SlotBits-1:0]], ref_rq_id_q[slot_ptr[SlotBits-1:0]]})) begin
+        rq_queue_mismatch = 1'b1;
+      end
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      p_rq_queue_exact : assert (!rq_queue_mismatch);
+      if (o_read_valid) begin
+        p_read_beat_exact : assert ({o_read_data, o_read_id} == {ref_read_data_q, ref_read_id_q});
+      end
     end
   end
 `endif
