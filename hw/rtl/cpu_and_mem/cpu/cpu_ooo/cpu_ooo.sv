@@ -1466,12 +1466,40 @@ module cpu_ooo #(
       dir_update_held_valid <= 1'b0;
     end else if (dir_update_valid_2_comb && !dir_slot2_pass) begin
       dir_update_held_valid <= 1'b1;
-      dir_update_held_idx   <= dir_update_idx_2_comb;
-      dir_update_held_taken <= rob_head_next_branch_taken_early;
     end else if (dir_update_held_valid && !dir_update_valid_comb) begin
       dir_update_held_valid <= 1'b0;
     end
   end
+  // The held payload is read only while dir_update_held_valid is set, so it
+  // loads on every slot-2 training commit: a commit that passes straight
+  // through (dir_slot2_pass) leaves the hold empty, and a pass needs an empty
+  // hold, so no load replaces a held entry the original enable would have
+  // kept. This keeps the slot-1 strobe and the hold state off the payload
+  // enable. p_dir_update_held_payload_exact checks it against a copy loaded
+  // only when the hold is set.
+  always_ff @(posedge i_clk) begin
+    if (dir_update_valid_2_comb) begin
+      dir_update_held_idx   <= dir_update_idx_2_comb;
+      dir_update_held_taken <= rob_head_next_branch_taken_early;
+    end
+  end
+`ifndef SYNTHESIS
+  logic [riscv_pkg::BpDirIdxBits-1:0] dir_update_held_idx_ref;
+  logic dir_update_held_taken_ref;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && dir_update_valid_2_comb && !dir_slot2_pass) begin
+      dir_update_held_idx_ref   <= dir_update_idx_2_comb;
+      dir_update_held_taken_ref <= rob_head_next_branch_taken_early;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && dir_update_held_valid) begin
+      p_dir_update_held_payload_exact :
+      assert ((dir_update_held_idx == dir_update_held_idx_ref) &&
+              (dir_update_held_taken == dir_update_held_taken_ref));
+    end
+  end
+`endif
 
   // TIMING: precompute the non-slot-1 fallback so the update-index register
   // mux is a single 2:1 selected by dir_update_valid_comb, without the
