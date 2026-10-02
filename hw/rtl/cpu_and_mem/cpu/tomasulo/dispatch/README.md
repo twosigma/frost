@@ -62,8 +62,14 @@ Each source reads the INT or FP RAT, as the `uses_int_rs*` and `uses_fp_rs*`
 flags from ID select, and becomes an RS operand:
 
 - A source that is not renamed is ready, with its value from the register
-  file (passed through the RAT). Its tag is meaningless and must not take
-  part in wakeup or done repair.
+  file. With `RAW_INT_RF_VALUES` (set by `cpu_ooo`) an INT value comes from
+  the bypassed register-file read that also feeds the RAT, under one mask per
+  RS packet (the packet's use of the source and the x0 test); otherwise from
+  the RAT lookup. Its tag is meaningless and must not take part in wakeup or
+  done repair.
+- A source the instruction does not use is ready with value zero. Its tag is
+  meaningless too: INT_RS and MEM_RS (base) packets carry the INT lookup tag
+  unmasked, since every station tag compare is qualified by not-ready.
 - A renamed source carries the producer's ROB tag and waits for the CDB. The
   producer may have broadcast already, so dispatch also sends a registered
   done-repair request (channels 1 to 3 for slot 1, 4 and 5 for slot 2;

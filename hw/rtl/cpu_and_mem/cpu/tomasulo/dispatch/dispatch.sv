@@ -56,7 +56,15 @@ module dispatch #(
     // from the registered is_real bit, which keeps the shared queue-valid
     // signal out of slot 2's blocking gate. With the default 0, dispatch uses
     // i_valid_2.
-    parameter bit SLOT2_VALID_FROM_BUNDLE = 1'b0
+    parameter bit SLOT2_VALID_FROM_BUNDLE = 1'b0,
+    // Set when i_int_rf_* carry the bypassed integer register-file reads that
+    // also feed the RAT's regfile-data inputs. The per-RS packet values are
+    // then formed from those reads with a single mask per packet (that
+    // packet's use of the source together with the x0 test), not from the
+    // RAT lookup value, whose x0 select is a second mask on the same path.
+    // The packet values are unchanged (p_*_value_exact). With the default 0
+    // the i_int_rf_* inputs are unused.
+    parameter bit RAW_INT_RF_VALUES = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -137,6 +145,14 @@ module dispatch #(
     input riscv_pkg::rat_lookup_t i_fp_src1_2,
     input riscv_pkg::rat_lookup_t i_fp_src2_2,
     input riscv_pkg::rat_lookup_t i_fp_src3_2,
+
+    // Bypassed integer register-file reads at i_rs1_addr/i_rs2_addr (slot 1)
+    // and i_rs1_addr_2/i_rs2_addr_2 (slot 2): the RAT lookups' value source.
+    // Used only with RAW_INT_RF_VALUES.
+    input logic [riscv_pkg::XLEN-1:0] i_int_rf_rs1_data,
+    input logic [riscv_pkg::XLEN-1:0] i_int_rf_rs2_data,
+    input logic [riscv_pkg::XLEN-1:0] i_int_rf_rs1_data_2,
+    input logic [riscv_pkg::XLEN-1:0] i_int_rf_rs2_data_2,
 
     // =========================================================================
     // RAT Rename (to tomasulo_wrapper: writes the dest mapping)
@@ -722,7 +738,11 @@ module dispatch #(
   // Stall Logic
   // ===========================================================================
 
-  logic rs_full;
+  // TIMING: rs_full selects among the stations' registered full flags with
+  // the registered RS route; keep holds it as its own net so the late
+  // dispatch_common_ready meets it in one LUT of the fire cone rather than
+  // being repeated across a two-LUT rebuild of this select.
+  (* keep = "true" *) logic rs_full;
   always_comb begin
     case (rs_type)
       riscv_pkg::RS_INT: rs_full = i_int_rs_full;
@@ -1284,6 +1304,57 @@ module dispatch #(
     fp_src3_2_value  = fp_src3_2_eff.value;
   end
 
+  // ---------------------------------------------------------------------------
+  // INT source values for the per-RS packets
+  // ---------------------------------------------------------------------------
+  // A packet value is its INT read under one mask: the packet's use of that
+  // source, the x0 test (x0 reads zero) and, for slot 2, no intra-bundle RAW
+  // (that value then arrives from slot 1's result). This equals masking the
+  // lookup value int_src*_value (which already carries the x0 test and the
+  // RAW override) by the packet's use. TIMING: with RAW_INT_RF_VALUES the
+  // read is the register file's bypassed data itself, so the read-to-packet
+  // path has one mask LUT instead of the RAT's x0 select plus the packet
+  // mask; each packet gets its own mask, so no shared masked net is kept.
+  logic [riscv_pkg::FLEN-1:0] int_src1_read, int_src2_read;
+  logic [riscv_pkg::FLEN-1:0] int_src1_2_read, int_src2_2_read;
+  assign int_src1_read = RAW_INT_RF_VALUES ?
+      {{(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, i_int_rf_rs1_data} : i_int_src1.value;
+  assign int_src2_read = RAW_INT_RF_VALUES ?
+      {{(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, i_int_rf_rs2_data} : i_int_src2.value;
+  assign int_src1_2_read = RAW_INT_RF_VALUES ?
+      {{(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, i_int_rf_rs1_data_2} : i_int_src1_2.value;
+  assign int_src2_2_read = RAW_INT_RF_VALUES ?
+      {{(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, i_int_rf_rs2_data_2} : i_int_src2_2.value;
+
+  // Read qualifiers: for slot 2, no RAW on slot 1's destination, and with
+  // RAW_INT_RF_VALUES a nonzero source register (the lookup value already
+  // reads x0 as zero).
+  logic int_src1_read_ok, int_src2_read_ok, int_src1_2_read_ok, int_src2_2_read_ok;
+  assign int_src1_read_ok = !RAW_INT_RF_VALUES || (i_rs1_addr != '0);
+  assign int_src2_read_ok = !RAW_INT_RF_VALUES || (i_rs2_addr != '0);
+  assign int_src1_2_read_ok = (!RAW_INT_RF_VALUES || (i_rs1_addr_2 != '0)) &&
+                              !intra_bundle_int_src1_2;
+  assign int_src2_2_read_ok = (!RAW_INT_RF_VALUES || (i_rs2_addr_2 != '0)) &&
+                              !intra_bundle_int_src2_2;
+
+  // Packet masks: INT_RS and MEM_RS read INT rs1 when they use it, INT_RS
+  // and the INT form of MEM_RS rs2 likewise, MUL_RS always reads both, and
+  // FP_RS (and the combined packet) read INT rs1 only without an FP rs1.
+  logic int_use1_mask, int_use2_mask, mul_use1_mask, mul_use2_mask;
+  logic fp_int_use1_mask;
+  logic int_use1_mask_2, int_use2_mask_2, mul_use1_mask_2, mul_use2_mask_2;
+  logic fp_int_use1_mask_2;
+  assign int_use1_mask      = uses_int_rs1 && int_src1_read_ok;
+  assign int_use2_mask      = uses_int_rs2 && int_src2_read_ok;
+  assign mul_use1_mask      = int_src1_read_ok;
+  assign mul_use2_mask      = int_src2_read_ok;
+  assign fp_int_use1_mask   = !uses_fp_rs1_flag && uses_int_rs1 && int_src1_read_ok;
+  assign int_use1_mask_2    = uses_int_rs1_2 && int_src1_2_read_ok;
+  assign int_use2_mask_2    = uses_int_rs2_2 && int_src2_2_read_ok;
+  assign mul_use1_mask_2    = int_src1_2_read_ok;
+  assign mul_use2_mask_2    = int_src2_2_read_ok;
+  assign fp_int_use1_mask_2 = !uses_fp_rs1_flag_2 && uses_int_rs1_2 && int_src1_2_read_ok;
+
   // ===========================================================================
   // ROB Allocation Request
   // ===========================================================================
@@ -1527,33 +1598,31 @@ module dispatch #(
     o_fp_rs_dispatch.valid = fp_rs_dispatch_fire;
 
     // INT_RS: integer-only sources.  LUI/AUIPC/JAL-like operations keep the
-    // default ready constants for unused slots.
-    if (uses_int_rs1) begin
-      o_int_rs_dispatch.src1_ready = int_src1_ready;
-      o_int_rs_dispatch.src1_tag   = int_src1_tag;
-      o_int_rs_dispatch.src1_value = int_src1_value;
-    end
-    if (uses_int_rs2) begin
-      o_int_rs_dispatch.src2_ready = int_src2_ready;
-      o_int_rs_dispatch.src2_tag   = int_src2_tag;
-      o_int_rs_dispatch.src2_value = int_src2_value;
-    end
+    // default ready constants for unused slots.  The tag of an unused
+    // (ready) source is never read by a station (every tag compare there is
+    // qualified by not-ready), so INT_RS and MEM_RS take the INT lookup tag
+    // unmasked. TIMING: the tag then reaches the station's dispatch CDB
+    // compare without a use-mask LUT.
+    o_int_rs_dispatch.src1_tag = int_src1_tag;
+    o_int_rs_dispatch.src2_tag = int_src2_tag;
+    o_int_rs_dispatch.src1_value = int_use1_mask ? int_src1_read : '0;
+    o_int_rs_dispatch.src2_value = int_use2_mask ? int_src2_read : '0;
+    if (uses_int_rs1) o_int_rs_dispatch.src1_ready = int_src1_ready;
+    if (uses_int_rs2) o_int_rs_dispatch.src2_ready = int_src2_ready;
 
     // MUL_RS: M-extension operations always consume integer rs1/rs2.
     o_mul_rs_dispatch.src1_ready = int_src1_ready;
     o_mul_rs_dispatch.src1_tag   = int_src1_tag;
-    o_mul_rs_dispatch.src1_value = int_src1_value;
+    o_mul_rs_dispatch.src1_value = mul_use1_mask ? int_src1_read : '0;
     o_mul_rs_dispatch.src2_ready = int_src2_ready;
     o_mul_rs_dispatch.src2_tag   = int_src2_tag;
-    o_mul_rs_dispatch.src2_value = int_src2_value;
+    o_mul_rs_dispatch.src2_value = mul_use2_mask ? int_src2_read : '0;
 
     // MEM_RS: base address is integer rs1 when present; store data is integer
     // rs2 for integer stores/AMOs and FP rs2 for FP stores.
-    if (uses_int_rs1) begin
-      o_mem_rs_dispatch.src1_ready = int_src1_ready;
-      o_mem_rs_dispatch.src1_tag   = int_src1_tag;
-      o_mem_rs_dispatch.src1_value = int_src1_value;
-    end
+    o_mem_rs_dispatch.src1_tag   = int_src1_tag;
+    o_mem_rs_dispatch.src1_value = int_use1_mask ? int_src1_read : '0;
+    if (uses_int_rs1) o_mem_rs_dispatch.src1_ready = int_src1_ready;
     if (uses_fp_rs2_flag) begin
       o_mem_rs_dispatch.src2_ready = fp_src2_ready;
       o_mem_rs_dispatch.src2_tag   = fp_src2_tag;
@@ -1561,7 +1630,7 @@ module dispatch #(
     end else if (uses_int_rs2) begin
       o_mem_rs_dispatch.src2_ready = int_src2_ready;
       o_mem_rs_dispatch.src2_tag   = int_src2_tag;
-      o_mem_rs_dispatch.src2_value = int_src2_value;
+      o_mem_rs_dispatch.src2_value = int_use2_mask ? int_src2_read : '0;
     end
 
     // FP_RS: most operations use FP rs1; int-to-FP moves/conversions use INT
@@ -1574,7 +1643,7 @@ module dispatch #(
     end else if (uses_int_rs1) begin
       o_fp_rs_dispatch.src1_ready = int_src1_ready;
       o_fp_rs_dispatch.src1_tag   = int_src1_tag;
-      o_fp_rs_dispatch.src1_value = int_src1_value;
+      o_fp_rs_dispatch.src1_value = fp_int_use1_mask ? int_src1_read : '0;
     end
     if (uses_fp_rs2_flag) begin
       o_fp_rs_dispatch.src2_ready = fp_src2_ready;
@@ -1681,32 +1750,26 @@ module dispatch #(
     o_mem_rs_dispatch_2.valid = mem_rs_dispatch_fire_2;
     o_fp_rs_dispatch_2.valid = fp_rs_dispatch_fire_2;
 
-    // INT_RS slot-2: integer-only sources.
-    if (uses_int_rs1_2) begin
-      o_int_rs_dispatch_2.src1_ready = int_src1_2_ready;
-      o_int_rs_dispatch_2.src1_tag   = int_src1_2_tag;
-      o_int_rs_dispatch_2.src1_value = int_src1_2_value;
-    end
-    if (uses_int_rs2_2) begin
-      o_int_rs_dispatch_2.src2_ready = int_src2_2_ready;
-      o_int_rs_dispatch_2.src2_tag   = int_src2_2_tag;
-      o_int_rs_dispatch_2.src2_value = int_src2_2_value;
-    end
+    // INT_RS slot-2: integer-only sources (unmasked tags as in slot 1).
+    o_int_rs_dispatch_2.src1_tag = int_src1_2_tag;
+    o_int_rs_dispatch_2.src2_tag = int_src2_2_tag;
+    o_int_rs_dispatch_2.src1_value = int_use1_mask_2 ? int_src1_2_read : '0;
+    o_int_rs_dispatch_2.src2_value = int_use2_mask_2 ? int_src2_2_read : '0;
+    if (uses_int_rs1_2) o_int_rs_dispatch_2.src1_ready = int_src1_2_ready;
+    if (uses_int_rs2_2) o_int_rs_dispatch_2.src2_ready = int_src2_2_ready;
 
     // MUL_RS slot-2: M-extension always consumes integer rs1/rs2.
     o_mul_rs_dispatch_2.src1_ready = int_src1_2_ready;
     o_mul_rs_dispatch_2.src1_tag   = int_src1_2_tag;
-    o_mul_rs_dispatch_2.src1_value = int_src1_2_value;
+    o_mul_rs_dispatch_2.src1_value = mul_use1_mask_2 ? int_src1_2_read : '0;
     o_mul_rs_dispatch_2.src2_ready = int_src2_2_ready;
     o_mul_rs_dispatch_2.src2_tag   = int_src2_2_tag;
-    o_mul_rs_dispatch_2.src2_value = int_src2_2_value;
+    o_mul_rs_dispatch_2.src2_value = mul_use2_mask_2 ? int_src2_2_read : '0;
 
     // MEM_RS slot-2: base = INT rs1; data = INT rs2 or FP rs2 for FP stores.
-    if (uses_int_rs1_2) begin
-      o_mem_rs_dispatch_2.src1_ready = int_src1_2_ready;
-      o_mem_rs_dispatch_2.src1_tag   = int_src1_2_tag;
-      o_mem_rs_dispatch_2.src1_value = int_src1_2_value;
-    end
+    o_mem_rs_dispatch_2.src1_tag   = int_src1_2_tag;
+    o_mem_rs_dispatch_2.src1_value = int_use1_mask_2 ? int_src1_2_read : '0;
+    if (uses_int_rs1_2) o_mem_rs_dispatch_2.src1_ready = int_src1_2_ready;
     if (uses_fp_rs2_flag_2) begin
       o_mem_rs_dispatch_2.src2_ready = fp_src2_2_ready;
       o_mem_rs_dispatch_2.src2_tag   = fp_src2_2_tag;
@@ -1714,7 +1777,7 @@ module dispatch #(
     end else if (uses_int_rs2_2) begin
       o_mem_rs_dispatch_2.src2_ready = int_src2_2_ready;
       o_mem_rs_dispatch_2.src2_tag   = int_src2_2_tag;
-      o_mem_rs_dispatch_2.src2_value = int_src2_2_value;
+      o_mem_rs_dispatch_2.src2_value = int_use2_mask_2 ? int_src2_2_read : '0;
     end
 
     // FP_RS slot-2: most ops use FP rs1; INT-to-FP conversions use INT rs1.
@@ -1725,7 +1788,7 @@ module dispatch #(
     end else if (uses_int_rs1_2) begin
       o_fp_rs_dispatch_2.src1_ready = int_src1_2_ready;
       o_fp_rs_dispatch_2.src1_tag   = int_src1_2_tag;
-      o_fp_rs_dispatch_2.src1_value = int_src1_2_value;
+      o_fp_rs_dispatch_2.src1_value = fp_int_use1_mask_2 ? int_src1_2_read : '0;
     end
     if (uses_fp_rs2_flag_2) begin
       o_fp_rs_dispatch_2.src2_ready = fp_src2_2_ready;
@@ -1917,6 +1980,58 @@ module dispatch #(
         predicted_taken_2) begin
       assert (predicted_target_ok_2 == (predicted_target_2 == branch_target_2))
       else $error("dispatch: slot-2 predicted_target_ok disagrees with the target compare");
+    end
+  end
+`endif
+
+`ifndef SYNTHESIS
+  // The per-RS packet values equal the lookup values masked by each packet's
+  // use of the source (their form before the single-mask build above), for
+  // either source of the reads, and a not-ready source carries the lookup
+  // tag (the only case in which a station reads a dispatched tag).
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n) begin
+      p_int_rs_src1_value_exact :
+      assert (o_int_rs_dispatch.src1_value == (uses_int_rs1 ? int_src1_value : '0));
+      p_int_rs_src2_value_exact :
+      assert (o_int_rs_dispatch.src2_value == (uses_int_rs2 ? int_src2_value : '0));
+      p_mul_rs_src1_value_exact : assert (o_mul_rs_dispatch.src1_value == int_src1_value);
+      p_mul_rs_src2_value_exact : assert (o_mul_rs_dispatch.src2_value == int_src2_value);
+      p_mem_rs_src1_value_exact :
+      assert (o_mem_rs_dispatch.src1_value == (uses_int_rs1 ? int_src1_value : '0));
+      p_mem_rs_src2_value_exact :
+      assert (o_mem_rs_dispatch.src2_value ==
+              (uses_fp_rs2_flag ? fp_src2_value : (uses_int_rs2 ? int_src2_value : '0)));
+      p_fp_rs_src1_value_exact :
+      assert (o_fp_rs_dispatch.src1_value ==
+              (uses_fp_rs1_flag ? fp_src1_value : (uses_int_rs1 ? int_src1_value : '0)));
+      p_int_rs_src1_value_2_exact :
+      assert (o_int_rs_dispatch_2.src1_value == (uses_int_rs1_2 ? int_src1_2_value : '0));
+      p_int_rs_src2_value_2_exact :
+      assert (o_int_rs_dispatch_2.src2_value == (uses_int_rs2_2 ? int_src2_2_value : '0));
+      p_mul_rs_src1_value_2_exact : assert (o_mul_rs_dispatch_2.src1_value == int_src1_2_value);
+      p_mul_rs_src2_value_2_exact : assert (o_mul_rs_dispatch_2.src2_value == int_src2_2_value);
+      p_mem_rs_src1_value_2_exact :
+      assert (o_mem_rs_dispatch_2.src1_value == (uses_int_rs1_2 ? int_src1_2_value : '0));
+      p_mem_rs_src2_value_2_exact :
+      assert (o_mem_rs_dispatch_2.src2_value ==
+              (uses_fp_rs2_flag_2 ? fp_src2_2_value :
+               (uses_int_rs2_2 ? int_src2_2_value : '0)));
+      p_fp_rs_src1_value_2_exact :
+      assert (o_fp_rs_dispatch_2.src1_value ==
+              (uses_fp_rs1_flag_2 ? fp_src1_2_value :
+               (uses_int_rs1_2 ? int_src1_2_value : '0)));
+      p_int_rs_unready_tags_exact :
+      assert ((o_int_rs_dispatch.src1_ready || o_int_rs_dispatch.src1_tag == int_src1_tag) &&
+              (o_int_rs_dispatch.src2_ready || o_int_rs_dispatch.src2_tag == int_src2_tag) &&
+              (o_int_rs_dispatch_2.src1_ready ||
+               o_int_rs_dispatch_2.src1_tag == int_src1_2_tag) &&
+              (o_int_rs_dispatch_2.src2_ready ||
+               o_int_rs_dispatch_2.src2_tag == int_src2_2_tag));
+      p_mem_rs_unready_base_tags_exact :
+      assert ((o_mem_rs_dispatch.src1_ready || o_mem_rs_dispatch.src1_tag == int_src1_tag) &&
+              (o_mem_rs_dispatch_2.src1_ready ||
+               o_mem_rs_dispatch_2.src1_tag == int_src1_2_tag));
     end
   end
 `endif

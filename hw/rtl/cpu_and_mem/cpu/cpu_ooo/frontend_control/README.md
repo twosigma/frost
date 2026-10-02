@@ -65,7 +65,11 @@ reports any queued unpredicted JALR (`o_indirect_pending`) to the
 control-flow serialization stall. For timing, dispatch reads a flop copy of
 the head bundle rather than the queue RAM, and takes its narrow control fields
 from a register (`o_shadow`) loaded a cycle early from ID's next-cycle value
-(`o_from_id_to_ex_next`). Neither the RAM write nor the head copy's data
+(`o_from_id_to_ex_next`). `cpu_ooo` also loads private copies of the shadow's
+source-register fields from its next value (`o_shadow_next`), one each for
+the INT RAT lookups, the FP RAT lookups, and the register files' commit-bypass
+compares, so those address nets do not share the shadow fields' fanout to the
+register-file RAMs. Neither the RAM write nor the head copy's data
 depends on the pop: the RAM writes the tail row whenever the queue is not full
 (that row is free then), and the pop only enables the head copy's load, one
 enable per 128-bit group.

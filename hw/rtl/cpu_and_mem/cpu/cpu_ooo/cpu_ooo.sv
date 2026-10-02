@@ -384,6 +384,16 @@ module cpu_ooo #(
   logic pd_redirect;
   logic [XLEN-1:0] pd_redirect_target;
   riscv_pkg::from_id_to_ex_t from_id_to_ex;
+  // Dispatch-bundle source-register fields for the register files' commit
+  // bypass compares and for the RAT lookups. With the decoded queue they are
+  // same-edge register copies of the queue shadow's fields, one per consumer
+  // group (see gen_decoded_queue); without it, the bundle's own fields.
+  // rf_bypass_src_addr is {slot-2 rs3, rs2, rs1, slot-1 rs3, rs2, rs1}.
+  logic [29:0] rf_bypass_src_addr;
+  logic [riscv_pkg::RegAddrWidth-1:0] rat_int_src1_addr, rat_int_src2_addr;
+  logic [riscv_pkg::RegAddrWidth-1:0] rat_int_src1_addr_2, rat_int_src2_addr_2;
+  logic [riscv_pkg::RegAddrWidth-1:0] rat_fp_src1_addr, rat_fp_src2_addr, rat_fp_src3_addr;
+  logic [riscv_pkg::RegAddrWidth-1:0] rat_fp_src1_addr_2, rat_fp_src2_addr_2, rat_fp_src3_addr_2;
   riscv_pkg::from_id_to_ex_t decoded_packet, decoded_packet_2;
   // The ID instruction registers' next-edge values (queued frontend only).
   /* verilator lint_off UNUSEDSIGNAL */
@@ -828,7 +838,8 @@ module cpu_ooo #(
   logic            retired_without_commit_q;
 
   ooo_register_files #(
-      .XLEN(XLEN)
+      .XLEN(XLEN),
+      .SEPARATE_BYPASS_ADDR(1'b1)
   ) ooo_register_files_inst (
       .i_clk,
       .i_port0_int_we  (port0_int_we),
@@ -851,6 +862,7 @@ module cpu_ooo #(
       .i_bypass_p1_addr  (bypass_p1_addr_q),
       .i_from_id_to_ex  (from_id_to_ex),
       .i_from_id_to_ex_2(from_id_to_ex_2),
+      .i_bypass_src_addr(rf_bypass_src_addr),
       .o_int_rf_dispatch_rs1_data  (int_rf_dispatch_rs1_data),
       .o_int_rf_dispatch_rs2_data  (int_rf_dispatch_rs2_data),
       .o_int_rf_dispatch_rs1_data_2(int_rf_dispatch_rs1_data_2),
@@ -962,6 +974,7 @@ module cpu_ooo #(
       logic input_indirect;
       riscv_pkg::from_id_to_ex_t queue_packet, queue_packet_2;
       riscv_pkg::id_dispatch_ctrl_t queue_ctrl, queue_ctrl_2;
+      riscv_pkg::id_dispatch_ctrl_t queue_ctrl_next, queue_ctrl_next_2;
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl, producer_ctrl_2;
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next, producer_ctrl_next_2;
       // The queue's shadow slice: the id_dispatch_ctrl_t fields of ID's output
@@ -1168,8 +1181,59 @@ module cpu_ooo #(
           .o_valid(queue_valid),
           .o_packet({queue_packet_2, queue_packet}),
           .o_shadow({queue_ctrl_2, queue_ctrl}),
+          .o_shadow_next({queue_ctrl_next_2, queue_ctrl_next}),
           .o_indirect_pending(decoded_queue_indirect_pending)
       );
+      // TIMING: the shadow's source-register fields address the RAT lookups,
+      // every register-file read-port RAM and the commit-bypass compares,
+      // several hundred loads per bit. Each consumer group below gets a
+      // private copy register loaded from the shadow register's own D, so
+      // each address net starts beside its consumers: one copy for the INT
+      // RAT lookups, one for the FP RAT lookups, and one for the bypass
+      // compares. The shadow fields keep the RAMs and dispatch. The copies
+      // equal the shadow fields on every cycle (p_shadow_src_copies_exact).
+      (* dont_touch = "true" *)logic [19:0] rat_int_src_addr_q;
+      (* dont_touch = "true" *)logic [29:0] rat_fp_src_addr_q;
+      (* dont_touch = "true" *)logic [29:0] rf_bypass_src_addr_q;
+      logic [29:0] shadow_src_addr_next;
+      assign shadow_src_addr_next = {
+        queue_ctrl_next_2.instruction.funct7[6:2],
+        queue_ctrl_next_2.instruction.source_reg_2,
+        queue_ctrl_next_2.instruction.source_reg_1,
+        queue_ctrl_next.instruction.funct7[6:2],
+        queue_ctrl_next.instruction.source_reg_2,
+        queue_ctrl_next.instruction.source_reg_1
+      };
+      always_ff @(posedge i_clk) begin
+        rat_int_src_addr_q   <= {shadow_src_addr_next[24:15], shadow_src_addr_next[9:0]};
+        rat_fp_src_addr_q    <= shadow_src_addr_next;
+        rf_bypass_src_addr_q <= shadow_src_addr_next;
+      end
+      assign {rat_int_src2_addr_2, rat_int_src1_addr_2, rat_int_src2_addr, rat_int_src1_addr} =
+          rat_int_src_addr_q;
+      assign {rat_fp_src3_addr_2, rat_fp_src2_addr_2, rat_fp_src1_addr_2,
+              rat_fp_src3_addr, rat_fp_src2_addr, rat_fp_src1_addr} = rat_fp_src_addr_q;
+      assign rf_bypass_src_addr = rf_bypass_src_addr_q;
+`ifndef SYNTHESIS
+      logic shadow_src_copies_armed_q = 1'b0;
+      logic [29:0] shadow_src_addr;
+      assign shadow_src_addr = {
+        queue_ctrl_2.instruction.funct7[6:2],
+        queue_ctrl_2.instruction.source_reg_2,
+        queue_ctrl_2.instruction.source_reg_1,
+        queue_ctrl.instruction.funct7[6:2],
+        queue_ctrl.instruction.source_reg_2,
+        queue_ctrl.instruction.source_reg_1
+      };
+      always_ff @(posedge i_clk) begin
+        shadow_src_copies_armed_q <= 1'b1;
+        if (shadow_src_copies_armed_q) begin
+          p_shadow_src_copies_exact :
+          assert (rat_fp_src_addr_q == shadow_src_addr && rf_bypass_src_addr_q == shadow_src_addr &&
+                  rat_int_src_addr_q == {shadow_src_addr[24:15], shadow_src_addr[9:0]});
+        end
+      end
+`endif
       // TIMING: every narrow control field (the RS route, the operation and
       // classification flags that gate dispatch_fire, and the instruction
       // word whose register fields address the RAT and register files) comes
@@ -1297,6 +1361,14 @@ module cpu_ooo #(
       assign decoded_queue_indirect_pending = 1'b0;
       assign from_id_to_ex = decoded_packet;
       assign from_id_to_ex_2 = decoded_packet_2;
+      assign rf_bypass_src_addr = {
+        from_id_to_ex_2.instruction.funct7[6:2],
+        from_id_to_ex_2.instruction.source_reg_2,
+        from_id_to_ex_2.instruction.source_reg_1,
+        from_id_to_ex.instruction.funct7[6:2],
+        from_id_to_ex.instruction.source_reg_2,
+        from_id_to_ex.instruction.source_reg_1
+      };
       assign id_valid_preflush = direct_id_valid_preflush;
       assign id_valid_2_preflush = direct_id_valid_2_preflush;
       assign id_valid = direct_id_valid;
@@ -1346,9 +1418,13 @@ module cpu_ooo #(
   // allocated for a committing conditional branch are ever used.
   logic [riscv_pkg::BpDirIdxBits-1:0] branch_dir_idx_table[riscv_pkg::ReorderBufferDepth];
 
-  // RAT lookup - slot 1
+  // RAT lookup - slot 1. Dispatch's lookup-address outputs drive the RAT
+  // only without the decoded queue (gen_rat_addr_from_dispatch); with it the
+  // RAT takes the rat_*_addr copies, and these are unused.
+  /* verilator lint_off UNUSEDSIGNAL */
   logic [riscv_pkg::RegAddrWidth-1:0] int_src1_addr, int_src2_addr;
   logic [riscv_pkg::RegAddrWidth-1:0] fp_src1_addr, fp_src2_addr, fp_src3_addr;
+  /* verilator lint_on UNUSEDSIGNAL */
   riscv_pkg::rat_lookup_t int_src1_lookup, int_src2_lookup;
   riscv_pkg::rat_lookup_t fp_src1_lookup, fp_src2_lookup, fp_src3_lookup;
 
@@ -1357,8 +1433,24 @@ module cpu_ooo #(
   // where rs2 supplies FP-store data while src1/src3 only matter for
   // FP-compute ops, which the bundle rules keep out of slot 2. The lint
   // waiver below covers the struct fields dispatch doesn't read.
+  /* verilator lint_off UNUSEDSIGNAL */
   logic [riscv_pkg::RegAddrWidth-1:0] int_src1_addr_2, int_src2_addr_2;
   logic [riscv_pkg::RegAddrWidth-1:0] fp_src1_addr_2, fp_src2_addr_2, fp_src3_addr_2;
+  /* verilator lint_on UNUSEDSIGNAL */
+  // Without the decoded queue the RAT lookups take dispatch's address
+  // outputs (the bundle's own source fields).
+  if (DECODED_QUEUE_DEPTH == 0) begin : gen_rat_addr_from_dispatch
+    assign rat_int_src1_addr = int_src1_addr;
+    assign rat_int_src2_addr = int_src2_addr;
+    assign rat_int_src1_addr_2 = int_src1_addr_2;
+    assign rat_int_src2_addr_2 = int_src2_addr_2;
+    assign rat_fp_src1_addr = fp_src1_addr;
+    assign rat_fp_src2_addr = fp_src2_addr;
+    assign rat_fp_src3_addr = fp_src3_addr;
+    assign rat_fp_src1_addr_2 = fp_src1_addr_2;
+    assign rat_fp_src2_addr_2 = fp_src2_addr_2;
+    assign rat_fp_src3_addr_2 = fp_src3_addr_2;
+  end
   /* verilator lint_off UNUSEDSIGNAL */
   riscv_pkg::rat_lookup_t int_src1_lookup_2, int_src2_lookup_2;
   riscv_pkg::rat_lookup_t fp_src1_lookup_2, fp_src2_lookup_2, fp_src3_lookup_2;
@@ -1989,26 +2081,27 @@ module cpu_ooo #(
       .i_bypass_tag_6(dispatch_bypass_tag_6),
       .o_bypass_value_6(),
 
-      // RAT source lookups - slot 1
-      .i_int_src1_addr(int_src1_addr),
-      .i_int_src2_addr(int_src2_addr),
+      // RAT source lookups - slot 1 (addresses: rat_*_addr, the
+      // consumer-local copies of the bundle's source fields)
+      .i_int_src1_addr(rat_int_src1_addr),
+      .i_int_src2_addr(rat_int_src2_addr),
       .o_int_src1(int_src1_lookup),
       .o_int_src2(int_src2_lookup),
-      .i_fp_src1_addr(fp_src1_addr),
-      .i_fp_src2_addr(fp_src2_addr),
-      .i_fp_src3_addr(fp_src3_addr),
+      .i_fp_src1_addr(rat_fp_src1_addr),
+      .i_fp_src2_addr(rat_fp_src2_addr),
+      .i_fp_src3_addr(rat_fp_src3_addr),
       .o_fp_src1(fp_src1_lookup),
       .o_fp_src2(fp_src2_lookup),
       .o_fp_src3(fp_src3_lookup),
 
       // RAT source lookups - slot 2 (2-wide dispatch)
-      .i_int_src1_addr_2(int_src1_addr_2),
-      .i_int_src2_addr_2(int_src2_addr_2),
+      .i_int_src1_addr_2(rat_int_src1_addr_2),
+      .i_int_src2_addr_2(rat_int_src2_addr_2),
       .o_int_src1_2(int_src1_lookup_2),
       .o_int_src2_2(int_src2_lookup_2),
-      .i_fp_src1_addr_2(fp_src1_addr_2),
-      .i_fp_src2_addr_2(fp_src2_addr_2),
-      .i_fp_src3_addr_2(fp_src3_addr_2),
+      .i_fp_src1_addr_2(rat_fp_src1_addr_2),
+      .i_fp_src2_addr_2(rat_fp_src2_addr_2),
+      .i_fp_src3_addr_2(rat_fp_src3_addr_2),
       .o_fp_src1_2(fp_src1_lookup_2),
       .o_fp_src2_2(fp_src2_lookup_2),
       .o_fp_src3_2(fp_src3_lookup_2),
@@ -2253,7 +2346,10 @@ module cpu_ooo #(
   // ===========================================================================
 
   dispatch #(
-      .SLOT2_VALID_FROM_BUNDLE(DECODED_QUEUE_DEPTH > 0)
+      .SLOT2_VALID_FROM_BUNDLE(DECODED_QUEUE_DEPTH > 0),
+      // The int_rf_dispatch_* reads below also feed the RAT's regfile-data
+      // inputs, which is the contract RAW_INT_RF_VALUES needs.
+      .RAW_INT_RF_VALUES(1'b1)
   ) u_dispatch (
       .i_clk,
       .i_rst_n(rst_n),
@@ -2313,6 +2409,12 @@ module cpu_ooo #(
       .i_fp_src1_2 (fp_src1_lookup_2),
       .i_fp_src2_2 (fp_src2_lookup_2),
       .i_fp_src3_2 (fp_src3_lookup_2),
+
+      // Bypassed INT register-file reads (the RAT lookups' value source).
+      .i_int_rf_rs1_data  (int_rf_dispatch_rs1_data),
+      .i_int_rf_rs2_data  (int_rf_dispatch_rs2_data),
+      .i_int_rf_rs1_data_2(int_rf_dispatch_rs1_data_2),
+      .i_int_rf_rs2_data_2(int_rf_dispatch_rs2_data_2),
 
       // RAT rename - slot 1
       .o_rat_alloc_valid(rat_alloc_valid_raw),

@@ -25,7 +25,8 @@
 // consumer sees, bypass included (in cpu_ooo, the bundle's narrow control
 // fields, including the register fields that address the RAT and register
 // files). It needs the producer register's current value (i_shadow) and its
-// next-edge value (i_shadow_next).
+// next-edge value (i_shadow_next). o_shadow_next is o_shadow's register D,
+// for a consumer that keeps its own same-edge copy of some shadow fields.
 module decoded_bundle_queue #(
     parameter int unsigned DEPTH = 4,
     parameter int unsigned WIDTH = 32,
@@ -45,6 +46,7 @@ module decoded_bundle_queue #(
     output logic o_valid,
     output logic [WIDTH-1:0] o_packet,
     output logic [SHADOW_WIDTH-1:0] o_shadow,
+    output logic [SHADOW_WIDTH-1:0] o_shadow_next,
     output logic o_indirect_pending
 );
   localparam int unsigned PtrBits = $clog2(DEPTH);
@@ -69,7 +71,12 @@ module decoded_bundle_queue #(
   logic [PtrBits-1:0] head_q, tail_q;
   logic [PtrBits:0] count_q;
   logic consumed_q;
-  logic input_valid, accept, push, pop;
+  // TIMING: input_valid is formed from registered producer state alone; keep
+  // holds it as its own net so the consumer's valid cone (dispatch fire)
+  // takes nonempty_q || input_valid in one LUT instead of rebuilding the
+  // producer terms in series behind nonempty_q.
+  (* keep = "true" *) logic input_valid;
+  logic accept, push, pop;
 
   initial begin
     if (DEPTH < 2 || (DEPTH & (DEPTH - 1)) != 0)
@@ -102,6 +109,7 @@ module decoded_bundle_queue #(
   assign nonempty_next = !(i_rst || i_flush) &&
       ((count_q + (PtrBits + 1)'(push) - (PtrBits + 1)'(pop)) != '0);
   assign o_shadow = out_shadow_q;
+  assign o_shadow_next = nonempty_next ? head_shadow_next : i_shadow_next;
 
   always_ff @(posedge i_clk) begin
     if (i_rst || i_flush) begin
@@ -143,7 +151,7 @@ module decoded_bundle_queue #(
     head_shadow_q <= head_shadow_next;
     // Unconditional: after reset/flush the queue is empty and the shadow
     // follows the producer register.
-    out_shadow_q  <= nonempty_next ? head_shadow_next : i_shadow_next;
+    out_shadow_q  <= o_shadow_next;
   end
 
   // Head mirror load, one group of MirrorGroupBits per same-edge copy of
