@@ -213,6 +213,7 @@ module prediction_release_formal #(
       .i_sel_nop(i_sel_nop_for_pc),
       .i_slot2_prediction_used(slot2_prediction_used),
       .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
+      .i_slot2_prediction_used_for_fetch_mux(slot2_prediction_used_for_pc),
       .i_slot2_predicted_target,
       // Every slot-2 request enters as a staged prediction, with the
       // live-alias selects tied low. That is a legal use of the split

@@ -71,6 +71,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_slot2_valid.value = 0
     dut.i_slot2_prediction_used.value = 0
     dut.i_slot2_prediction_used_for_pc.value = 0
+    dut.i_slot2_prediction_used_for_fetch_mux.value = 0
     dut.i_slot2_predicted_target.value = 0
     dut.i_slot2_staged_prediction_used_for_pc.value = 0
     dut.i_slot1_aliases_slot2_candidate.value = 0
@@ -141,6 +142,7 @@ def _drive_staged_slot2_prediction(dut: Any, *, target: int) -> None:
     """Drive a slot-2 prediction redirect from the staged BTB lookup."""
     dut.i_slot2_prediction_used.value = 1
     dut.i_slot2_prediction_used_for_pc.value = 1
+    dut.i_slot2_prediction_used_for_fetch_mux.value = 1
     dut.i_slot2_predicted_target.value = target
     dut.i_slot2_staged_prediction_used_for_pc.value = 1
     dut.i_slot2_staged_predicted_target.value = target
@@ -150,6 +152,7 @@ def _drive_live_slot2_fallback(dut: Any, *, target: int) -> None:
     """Drive a slot-2 prediction from the live fallback, with the alias check true."""
     dut.i_slot2_prediction_used.value = 1
     dut.i_slot2_prediction_used_for_pc.value = 1
+    dut.i_slot2_prediction_used_for_fetch_mux.value = 1
     dut.i_slot2_predicted_target.value = target
     dut.i_slot1_aliases_slot2_candidate.value = 1
     dut.i_slot2_live_target_used_for_pc_cofactor.value = 1

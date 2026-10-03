@@ -186,6 +186,9 @@ module branch_prediction_controller #(
     // bubble, because fetch has already requested the next sequential window.
     output logic                       o_slot2_prediction_used,
     output logic                       o_slot2_prediction_used_for_pc,
+    // A separate copy of o_slot2_prediction_used_for_pc for pc_controller's
+    // fetch-PC mux, which selects with it in each of its 64 bit LUTs.
+    output logic                       o_slot2_prediction_used_for_fetch_mux,
     // The slot-2 PC redirect, split for timing.  The staged-lookup part does
     // not depend on the live-PC alias.  The live-target part is exported
     // without the alias term; pc_controller ANDs in
@@ -970,6 +973,13 @@ module branch_prediction_controller #(
        btb_hit && slot2_live_fallback_size_safe && dir_predicted_taken);
   assign o_slot2_prediction_used_for_pc =
       slot2_prediction_permission && slot2_prediction_candidate_for_pc;
+  // TIMING: the fetch-PC mux's copy of the request has its own LUT, so the
+  // mux's 64 select loads stay off the copy that the control-flow tracker
+  // and the other slot-2 consumers read.
+  (* keep = "true", dont_touch = "true" *) logic slot2_prediction_used_for_fetch_mux;
+  assign slot2_prediction_used_for_fetch_mux =
+      slot2_prediction_permission && slot2_prediction_candidate_for_pc;
+  assign o_slot2_prediction_used_for_fetch_mux = slot2_prediction_used_for_fetch_mux;
   // Split the slot-2 redirect into a staged-copy term and a live-lookup term
   // with the alias factored out (pc_controller ANDs the alias back in).
   // After a collapsed lead, slot1_prediction_owned_by_slot2 equals the alias

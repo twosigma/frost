@@ -117,6 +117,8 @@ module pc_controller #(
     input  logic            i_slot2_prediction_used,
     // Slot-2 PC-mux arm select (stall-ungated; branch/span kills already applied).
     input  logic            i_slot2_prediction_used_for_pc,
+    // The same select from its own LUT, for the fetch-PC mux's bit LUTs only.
+    input  logic            i_slot2_prediction_used_for_fetch_mux,
     input  logic [XLEN-1:0] i_slot2_predicted_target,
     // The same slot-2 prediction, split for pc_reg timing. The staged select
     // does not depend on the live-PC alias check. The live select is computed
@@ -1259,11 +1261,19 @@ module pc_controller #(
       (npc_catchup_permission_without_nop_or_wcs && !i_sel_nop) ? seq_next_pc_plus_2 :
                                                                   seq_next_pc;
   // Per bit: the redirect, resteer, and progress-hold data first, then slot 1
-  // in a one-bit mux, then a final mux that takes reset, slot 2, the
+  // and reset in a one-bit mux, then a final mux that takes slot 2, the
   // sequential value, or that result. The sequential value enters only the
   // final mux, which keeps a wide stage off the bundle-size path. Slot 2 has
   // priority over the sequential request, and slot 1 blocks only the
   // sequential one.
+  // TIMING: reset clears the prediction permission and selects zero in the
+  // slot-1 mux, so the final mux has no reset input and takes the
+  // permission and the slot-2 request as separate inputs: both late terms,
+  // the served-window check inside the permission and the slot-2 BTB hit
+  // inside the request, reach the last LUT directly instead of through a
+  // shared AND. The final mux reads its own copies of both
+  // (npc_fetch_mux_permission, i_slot2_prediction_used_for_fetch_mux), which
+  // keeps its 64 loads off the copies that the other logic reads.
   // With FROST_XILINX_PRIMS the three stages are explicit LUTs with the same
   // function as the portable muxes in the `else` branch.
   (* keep = "true" *) logic [XLEN-1:0] npc_final_nonseq_data;
@@ -1272,11 +1282,37 @@ module pc_controller #(
   // Vivado creates undriven per-iteration implicit nets for its LUT input.
   (* keep = "true" *) logic pc_reg_live_redirect_permission;
   (* keep = "true" *) logic npc_prediction_permission;
-  (* keep = "true" *) logic npc_final_slot2_request;
   (* keep = "true" *) logic npc_final_sequential_request;
-  assign npc_prediction_permission = pc_reg_live_redirect_permission &&
+  assign npc_prediction_permission = !i_reset && pc_reg_live_redirect_permission &&
       i_fetch_progress && !i_window_cannot_serve;
-  assign npc_final_slot2_request = npc_prediction_permission && npc_cond[7];
+  // The fetch_pc_mux local proof leaves every input free, so there the final
+  // mux reads i_slot2_prediction_used_for_pc itself; the copy equals it
+  // (p_fetch_mux_select_copies_exact).
+  logic slot2_request_for_fetch_mux;
+`ifdef FETCH_MUX_LOCAL_PROOF
+  assign slot2_request_for_fetch_mux = i_slot2_prediction_used_for_pc;
+`else
+  assign slot2_request_for_fetch_mux = i_slot2_prediction_used_for_fetch_mux;
+`endif
+  (* keep = "true", dont_touch = "true" *) logic npc_fetch_mux_permission;
+  assign npc_fetch_mux_permission = !i_reset && pc_reg_live_redirect_permission &&
+      i_fetch_progress && !i_window_cannot_serve;
+`ifndef SYNTHESIS
+  always_comb begin
+    if (!$isunknown(
+            {
+              npc_fetch_mux_permission,
+              npc_prediction_permission,
+              i_slot2_prediction_used_for_fetch_mux,
+              i_slot2_prediction_used_for_pc
+            }
+        )) begin
+      p_fetch_mux_select_copies_exact :
+      assert (npc_fetch_mux_permission == npc_prediction_permission &&
+              i_slot2_prediction_used_for_fetch_mux == i_slot2_prediction_used_for_pc);
+    end
+  end
+`endif
   assign npc_final_sequential_request = npc_prediction_permission && !npc_cond[8] &&
       (npc_base_sequential_request_without_catchup ||
        (npc_catchup_permission_without_nop_or_wcs && !i_sel_nop) ||
@@ -1296,21 +1332,22 @@ module pc_controller #(
         .O (npc_final_nonseq_data[bit_idx])
     );
     (* dont_touch = "true" *)
-    LUT4 #(
-        .INIT(16'hf780)
+    LUT5 #(
+        .INIT(32'h55154000)
     ) u_slot1 (
-        .I0(npc_prediction_permission),
-        .I1(npc_cond[8]),
-        .I2(npc_val[8][bit_idx]),
-        .I3(npc_final_nonseq_data[bit_idx]),
+        .I0(i_reset),
+        .I1(npc_prediction_permission),
+        .I2(npc_cond[8]),
+        .I3(npc_val[8][bit_idx]),
+        .I4(npc_final_nonseq_data[bit_idx]),
         .O (npc_slot1_or_nonseq_data[bit_idx])
     );
     (* dont_touch = "true" *)
     LUT6 #(
-        .INIT(64'h5511450154104400)
+        .INIT(64'hff778f07f8708800)
     ) u_mux (
-        .I0(i_reset),
-        .I1(npc_final_slot2_request),
+        .I0(npc_fetch_mux_permission),
+        .I1(slot2_request_for_fetch_mux),
         .I2(npc_final_sequential_request),
         .I3(npc_val[7][bit_idx]),
         .I4(next_pc_sequential_target[bit_idx]),
@@ -1323,9 +1360,9 @@ module pc_controller #(
       next_pc_without_prediction_or_sequential : i_window_cannot_serve ?
       {o_pc_reg[XLEN-1:2], 2'b00} : !i_fetch_progress ? o_pc :
       next_pc_without_prediction_or_sequential;
-  assign npc_slot1_or_nonseq_data = npc_prediction_permission && npc_cond[8] ?
+  assign npc_slot1_or_nonseq_data = i_reset ? '0 : npc_prediction_permission && npc_cond[8] ?
       npc_val[8] : npc_final_nonseq_data;
-  assign next_pc = i_reset ? '0 : npc_final_slot2_request ? npc_val[7] :
+  assign next_pc = npc_fetch_mux_permission && slot2_request_for_fetch_mux ? npc_val[7] :
       npc_final_sequential_request ? next_pc_sequential_target : npc_slot1_or_nonseq_data;
 `endif
 
