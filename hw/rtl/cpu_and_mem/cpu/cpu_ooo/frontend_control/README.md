@@ -69,7 +69,13 @@ from a register (`o_shadow`) loaded a cycle early from ID's next-cycle value
 source-register fields from its next value (`o_shadow_next`), one each for
 the INT RAT lookups, the FP RAT lookups, and the register files' commit-bypass
 compares, so those address nets do not share the shadow fields' fanout to the
-register-file RAMs. Neither the RAM write nor the head copy's data
+register-file RAMs. The shadow's next value applies ID's stall at its last
+LUT (`SPLIT_SHADOW_STALL`): ID also exports its next value for both outcomes
+(`o_from_id_to_ex_next_go`, `o_from_id_to_ex_next_hold`), each outcome goes
+through the queue's bypass select, and one LUT per bit picks between them from
+the stall's terms. The latest of those, the fetch translation hold, comes from
+private IMMU copies rather than the stall's wide fanout. Neither the RAM write
+nor the head copy's data
 depends on the pop: the RAM writes the tail row whenever the queue is not full
 (that row is free then), and the pop only enables the head copy's load, one
 enable per 128-bit group.

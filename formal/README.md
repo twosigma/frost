@@ -124,7 +124,9 @@ the output packet; the harness ties the shadow input to the payload's low
 bits. It assumes an initial reset, that the consumer pops only a valid
 bundle, that the producer never replaces a bundle before it is accepted, and
 that the producer's announced next shadow value (`i_shadow_next`) arrives on
-the next cycle. In simulation the last three are assertions.
+the next cycle. In simulation the last three are assertions. The proof covers
+the default build; the split shadow select that `cpu_ooo` enables
+(`SPLIT_SHADOW_STALL`) is checked in simulation against the unsplit form.
 
 ### Reservation stations and the Tomasulo wrapper
 

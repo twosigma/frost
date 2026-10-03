@@ -30,7 +30,18 @@
 module decoded_bundle_queue #(
     parameter int unsigned DEPTH = 4,
     parameter int unsigned WIDTH = 32,
-    parameter int unsigned SHADOW_WIDTH = 1
+    parameter int unsigned SHADOW_WIDTH = 1,
+    // SPLIT_SHADOW_STALL: o_shadow_next applies the producer's stall at its
+    // last LUT. The producer supplies its next shadow value for both
+    // outcomes (i_shadow_next_go if it advances, i_shadow_next_hold if it
+    // holds) and the stall's terms: it holds when
+    // (i_stall_early || i_stall_late) && !i_stall_flush, the latest term
+    // being i_stall_late (STALL_LATE_COPIES equal copies, each driving its
+    // share of the bits). i_shadow_next must still be the selected value; it
+    // is used only by the simulation check. Without SPLIT_SHADOW_STALL the
+    // split inputs are unused.
+    parameter bit SPLIT_SHADOW_STALL = 1'b0,
+    parameter int unsigned STALL_LATE_COPIES = 1
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -40,6 +51,11 @@ module decoded_bundle_queue #(
     input logic [WIDTH-1:0] i_packet,
     input logic [SHADOW_WIDTH-1:0] i_shadow,
     input logic [SHADOW_WIDTH-1:0] i_shadow_next,
+    input logic [SHADOW_WIDTH-1:0] i_shadow_next_go,
+    input logic [SHADOW_WIDTH-1:0] i_shadow_next_hold,
+    input logic i_stall_early,
+    input logic [STALL_LATE_COPIES-1:0] i_stall_late,
+    input logic i_stall_flush,
     input logic i_indirect,
     input logic i_pop,
     output logic o_full,
@@ -109,7 +125,45 @@ module decoded_bundle_queue #(
   assign nonempty_next = !(i_rst || i_flush) &&
       ((count_q + (PtrBits + 1)'(push) - (PtrBits + 1)'(pop)) != '0);
   assign o_shadow = out_shadow_q;
-  assign o_shadow_next = nonempty_next ? head_shadow_next : i_shadow_next;
+  if (SPLIT_SHADOW_STALL) begin : gen_split_shadow_stall
+    // TIMING: the producer's stall ends in the fetch translation compare.
+    // Both outcomes of the bypass select are finished first, and one LUT
+    // per bit applies the stall's terms, so that compare reaches out_shadow_q
+    // (and the producer-side copies of o_shadow_next) through a single LUT.
+    (* keep = "true" *)logic [SHADOW_WIDTH-1:0] shadow_next_go;
+    (* keep = "true" *)logic [SHADOW_WIDTH-1:0] shadow_next_hold;
+    assign shadow_next_go   = nonempty_next ? head_shadow_next : i_shadow_next_go;
+    assign shadow_next_hold = nonempty_next ? head_shadow_next : i_shadow_next_hold;
+    for (genvar b = 0; b < SHADOW_WIDTH; b++) begin : gen_shadow_stall_bit
+      localparam int unsigned LateCopy = (b * STALL_LATE_COPIES) / SHADOW_WIDTH;
+`ifdef FROST_XILINX_PRIMS
+      (* dont_touch = "true" *)
+      LUT5 #(
+          .INIT(32'hfff10e00)
+      ) u_sel (
+          .I0(i_stall_late[LateCopy]),
+          .I1(i_stall_early),
+          .I2(i_stall_flush),
+          .I3(shadow_next_hold[b]),
+          .I4(shadow_next_go[b]),
+          .O (o_shadow_next[b])
+      );
+`else
+      assign o_shadow_next[b] = ((i_stall_late[LateCopy] || i_stall_early) && !i_stall_flush) ?
+          shadow_next_hold[b] : shadow_next_go[b];
+`endif
+    end
+`ifndef SYNTHESIS
+    always_comb begin
+      if (!$isunknown({o_shadow_next, nonempty_next, head_shadow_next, i_shadow_next})) begin
+        p_split_shadow_next_exact :
+        assert (o_shadow_next == (nonempty_next ? head_shadow_next : i_shadow_next));
+      end
+    end
+`endif
+  end else begin : gen_shadow_next
+    assign o_shadow_next = nonempty_next ? head_shadow_next : i_shadow_next;
+  end
 
   always_ff @(posedge i_clk) begin
     if (i_rst || i_flush) begin

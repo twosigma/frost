@@ -43,7 +43,8 @@
  */
 module immu #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
-    parameter int unsigned NUM_ENTRIES = 8
+    parameter int unsigned NUM_ENTRIES = 8,
+    parameter int unsigned PA_VALID_COPIES = 1
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -64,6 +65,9 @@ module immu #(
     output logic [31:0] o_pa0,
     output logic [31:0] o_pa1,
     output logic o_pa_valid,
+    // Copies of o_pa_valid, each its own LUT, for consumers that should not
+    // share o_pa_valid's fanout (the decoded queue's shadow select).
+    output logic [PA_VALID_COPIES-1:0] o_pa_valid_copy,
     output logic o_fault0,
     output logic o_fault0_page,
     output logic o_fault1,
@@ -617,6 +621,11 @@ module immu #(
   assign visible_before_pc_compare = !i_tlb_invalidate && key_valid_q &&
                                      (key_priv_u_q == i_priv_u) && resolved_q;
   assign o_pa_valid = !i_active || (visible_before_pc_compare && (key_va_q == i_pc));
+  for (genvar copy = 0; copy < PA_VALID_COPIES; copy++) begin : gen_pa_valid_copy
+    (* keep = "true", dont_touch = "true" *) logic pa_valid_copy;
+    assign pa_valid_copy = !i_active || (visible_before_pc_compare && (key_va_q == i_pc));
+    assign o_pa_valid_copy[copy] = pa_valid_copy;
+  end
   always_comb begin
     if (!i_active) begin
       o_fault0 = bare_verdict.bare_fault0;

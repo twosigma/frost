@@ -2192,6 +2192,10 @@ package riscv_pkg;
   // correction stage. The core multiplies the operands' low XLEN bits with the
   // default tiling.
   localparam int unsigned MulAWidth = XLEN;
+  // Copies of the fetch translation hold for the decoded queue's shadow
+  // select (if_stage o_fetch_pa_hold_copy), each driving its share of the
+  // shadow bits.
+  localparam int unsigned FetchPaHoldCopies = 4;
   localparam int unsigned MulPipeDepth = 1 + dsp_tiled_stages(MulAWidth, MulAWidth, 27, 35) + 1;
 
   // 64-bit CTZ using tree of 8-bit CTZ operations (mirror of clz64,

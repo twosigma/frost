@@ -296,6 +296,11 @@ module cpu_ooo #(
   logic [XLEN-1:0] trap_target_reg;
 
   logic fetch_pa_hold;  // if_stage: no visible result for the selected fetch VA yet
+  // fetch_pa_hold from separate IMMU copies, for the decoded queue's shadow
+  // select only.
+  logic [riscv_pkg::FetchPaHoldCopies-1:0] fetch_pa_hold_copy;
+  // The front-end stall without fetch_pa_hold, for the same select.
+  logic frontend_stall_without_pa_hold;
 
   // Trap control
   riscv_pkg::trap_ctrl_t trap_ctrl;
@@ -360,6 +365,7 @@ module cpu_ooo #(
       .o_disable_branch_prediction_ooo(disable_branch_prediction_ooo),
       .o_front_end_cf_serialize_stall(front_end_cf_serialize_stall),
       .o_stall_q(stall_q),
+      .o_frontend_stall_without_pa_hold(frontend_stall_without_pa_hold),
       .o_id_stall_q(id_stall_q),
       .o_replay_after_dispatch_stall_q(replay_after_dispatch_stall_q),
       .o_replay_after_serialize_stall_q(replay_after_serialize_stall_q),
@@ -398,6 +404,10 @@ module cpu_ooo #(
   // The ID instruction registers' next-edge values (queued frontend only).
   /* verilator lint_off UNUSEDSIGNAL */
   riscv_pkg::from_id_to_ex_t decoded_packet_next, decoded_packet_next_2;
+  // ID's next-edge values if it advances and if it holds; decoded_packet_next
+  // is the one the stall selects.
+  riscv_pkg::from_id_to_ex_t decoded_packet_next_go, decoded_packet_next_go_2;
+  riscv_pkg::from_id_to_ex_t decoded_packet_next_hold, decoded_packet_next_hold_2;
   /* verilator lint_on UNUSEDSIGNAL */
 
   // Slot-2 inter-stage signals (2-wide dispatch). from_if_to_pd_2 carries
@@ -728,6 +738,7 @@ module cpu_ooo #(
       .o_fetch_redirect,
       .o_fetch_cached_retarget,
       .o_fetch_pa_hold(fetch_pa_hold),
+      .o_fetch_pa_hold_copy(fetch_pa_hold_copy),
       .i_fetch_translation_active(csr_fetch_translation_active),
       .i_fetch_priv_u(csr_fetch_priv_u),
       .i_tlb_invalidate(tlb_invalidate),
@@ -904,12 +915,16 @@ module cpu_ooo #(
       .i_mstatus_fs_off(id_mstatus_fs_off_q),
       .o_from_id_to_ex(decoded_packet),
       .o_from_id_to_ex_next(decoded_packet_next),
+      .o_from_id_to_ex_next_go(decoded_packet_next_go),
+      .o_from_id_to_ex_next_hold(decoded_packet_next_hold),
       // Slot 2 (2-wide dispatch). i_from_pd_to_id_2 carries the second
       // instruction plus its inject_nop bubble marker, which ID applies before
       // producing o_from_id_to_ex_2.
       .i_from_pd_to_id_2(from_pd_to_id_2),
       .o_from_id_to_ex_2(decoded_packet_2),
-      .o_from_id_to_ex_next_2(decoded_packet_next_2)
+      .o_from_id_to_ex_next_2(decoded_packet_next_2),
+      .o_from_id_to_ex_next_go_2(decoded_packet_next_go_2),
+      .o_from_id_to_ex_next_hold_2(decoded_packet_next_hold_2)
   );
 
   // ===========================================================================
@@ -977,6 +992,63 @@ module cpu_ooo #(
       riscv_pkg::id_dispatch_ctrl_t queue_ctrl_next, queue_ctrl_next_2;
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl, producer_ctrl_2;
       riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next, producer_ctrl_next_2;
+      riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next_go, producer_ctrl_next_go_2;
+      riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next_hold, producer_ctrl_next_hold_2;
+      // The shadow slice of an ID packet: the same field copy as
+      // producer_ctrl_next, for the go and hold outcomes.
+      function automatic riscv_pkg::id_dispatch_ctrl_t id_ctrl_of(
+          input riscv_pkg::from_id_to_ex_t d);
+        riscv_pkg::id_dispatch_ctrl_t c;
+        c = '0;
+        c.is_load_instruction = d.is_load_instruction;
+        c.is_load_unsigned = d.is_load_unsigned;
+        c.instruction_operation = d.instruction_operation;
+        c.rs_type = d.rs_type;
+        c.is_int_store = d.is_int_store;
+        c.is_branch_or_jump = d.is_branch_or_jump;
+        c.is_fence = d.is_fence;
+        c.is_fence_i = d.is_fence_i;
+        c.is_csr_imm = d.is_csr_imm;
+        c.has_fp_flags = d.has_fp_flags;
+        c.needs_lq = d.needs_lq;
+        c.needs_sq = d.needs_sq;
+        c.is_jump_and_link = d.is_jump_and_link;
+        c.is_jump_and_link_register = d.is_jump_and_link_register;
+        c.is_csr_instruction = d.is_csr_instruction;
+        c.is_amo_instruction = d.is_amo_instruction;
+        c.is_lr = d.is_lr;
+        c.is_sc = d.is_sc;
+        c.is_mret = d.is_mret;
+        c.is_sret = d.is_sret;
+        c.is_dret = d.is_dret;
+        c.is_sfence_vma = d.is_sfence_vma;
+        c.is_wfi = d.is_wfi;
+        c.is_illegal_instruction = d.is_illegal_instruction;
+        c.is_fetch_fault = d.is_fetch_fault;
+        c.is_fetch_fault_page = d.is_fetch_fault_page;
+        c.is_fp_instruction = d.is_fp_instruction;
+        c.is_fp_load = d.is_fp_load;
+        c.is_fp_store = d.is_fp_store;
+        c.is_compressed = d.is_compressed;
+        c.instruction = d.instruction;
+        c.btb_predicted_taken = d.btb_predicted_taken;
+        c.is_ras_return = d.is_ras_return;
+        c.is_ras_call = d.is_ras_call;
+        c.btb_correct_non_jalr = d.btb_correct_non_jalr;
+        c.has_int_dest = d.has_int_dest;
+        c.has_fp_dest = d.has_fp_dest;
+        c.uses_int_rs1 = d.uses_int_rs1;
+        c.uses_int_rs2 = d.uses_int_rs2;
+        c.uses_fp_rs1 = d.uses_fp_rs1;
+        c.uses_fp_rs2 = d.uses_fp_rs2;
+        c.uses_fp_rs3 = d.uses_fp_rs3;
+        c.is_real = d.is_real;
+        return c;
+      endfunction
+      assign producer_ctrl_next_go = id_ctrl_of(decoded_packet_next_go);
+      assign producer_ctrl_next_go_2 = id_ctrl_of(decoded_packet_next_go_2);
+      assign producer_ctrl_next_hold = id_ctrl_of(decoded_packet_next_hold);
+      assign producer_ctrl_next_hold_2 = id_ctrl_of(decoded_packet_next_hold_2);
       // The queue's shadow slice: the id_dispatch_ctrl_t fields of ID's output
       // registers (producer_ctrl) and of their next-edge values
       // (producer_ctrl_next).
@@ -1165,7 +1237,9 @@ module cpu_ooo #(
       decoded_bundle_queue #(
           .DEPTH(DECODED_QUEUE_DEPTH),
           .WIDTH(2 * $bits(decoded_packet)),
-          .SHADOW_WIDTH(2 * $bits(producer_ctrl))
+          .SHADOW_WIDTH(2 * $bits(producer_ctrl)),
+          .SPLIT_SHADOW_STALL(1'b1),
+          .STALL_LATE_COPIES(riscv_pkg::FetchPaHoldCopies)
       ) u_queue (
           .i_clk(i_clk),
           .i_rst(i_rst),
@@ -1175,6 +1249,11 @@ module cpu_ooo #(
           .i_packet({decoded_packet_2, decoded_packet}),
           .i_shadow({producer_ctrl_2, producer_ctrl}),
           .i_shadow_next({producer_ctrl_next_2, producer_ctrl_next}),
+          .i_shadow_next_go({producer_ctrl_next_go_2, producer_ctrl_next_go}),
+          .i_shadow_next_hold({producer_ctrl_next_hold_2, producer_ctrl_next_hold}),
+          .i_stall_early(frontend_stall_without_pa_hold),
+          .i_stall_late(fetch_pa_hold_copy),
+          .i_stall_flush(flush_pipeline),
           .i_indirect(input_indirect),
           .i_pop(rob_alloc_req.alloc_valid),
           .o_full(decoded_queue_full),
@@ -1184,6 +1263,42 @@ module cpu_ooo #(
           .o_shadow_next({queue_ctrl_next_2, queue_ctrl_next}),
           .o_indirect_pending(decoded_queue_indirect_pending)
       );
+`ifndef SYNTHESIS
+      // The queue's split shadow select rebuilds the stall from its terms and
+      // takes ID's two outcomes; both must match what ID itself uses.
+      always_comb begin
+        if (!$isunknown(
+                {
+                  frontend_stall_without_pa_hold,
+                  fetch_pa_hold,
+                  fetch_pa_hold_copy,
+                  flush_pipeline,
+                  pipeline_ctrl.stall
+                }
+            )) begin
+          p_queue_stall_terms_exact :
+          assert ((((frontend_stall_without_pa_hold || fetch_pa_hold) && !flush_pipeline) ==
+                   pipeline_ctrl.stall) &&
+                  (fetch_pa_hold_copy == {riscv_pkg::FetchPaHoldCopies{fetch_pa_hold}}));
+        end
+        if (!$isunknown(
+                {
+                  pipeline_ctrl.stall,
+                  producer_ctrl_next,
+                  producer_ctrl_next_2,
+                  producer_ctrl_next_go,
+                  producer_ctrl_next_go_2,
+                  producer_ctrl_next_hold,
+                  producer_ctrl_next_hold_2
+                }
+            )) begin
+          p_queue_shadow_outcomes_exact :
+          assert ({producer_ctrl_next_2, producer_ctrl_next} == (pipeline_ctrl.stall ?
+                  {producer_ctrl_next_hold_2, producer_ctrl_next_hold} :
+                  {producer_ctrl_next_go_2, producer_ctrl_next_go}));
+        end
+      end
+`endif
       // TIMING: the shadow's source-register fields address the RAT lookups,
       // every register-file read-port RAM and the commit-bypass compares,
       // several hundred loads per bit. Each consumer group below gets a

@@ -74,6 +74,9 @@ module ooo_pipeline_control #(
     output logic o_disable_branch_prediction_ooo,
     output logic o_front_end_cf_serialize_stall,
     output logic o_stall_q,
+    // The front-end stall without the fetch translation hold: the stall is
+    // (o_frontend_stall_without_pa_hold || i_fetch_pa_hold) && !i_flush_pipeline.
+    output logic o_frontend_stall_without_pa_hold,
     output logic o_id_stall_q,
     output logic o_replay_after_dispatch_stall_q,
     output logic o_replay_after_serialize_stall_q,
@@ -401,6 +404,7 @@ module ooo_pipeline_control #(
   assign o_disable_branch_prediction_ooo  = disable_branch_prediction_ooo;
   assign o_front_end_cf_serialize_stall   = front_end_cf_serialize_stall;
   assign o_stall_q                        = stall_q;
+  assign o_frontend_stall_without_pa_hold = frontend_stall_without_pa_hold;
   assign o_id_stall_q                     = id_stall_q;
   assign o_replay_after_dispatch_stall_q  = replay_after_dispatch_stall_q;
   assign o_replay_after_serialize_stall_q = replay_after_serialize_stall_q;
