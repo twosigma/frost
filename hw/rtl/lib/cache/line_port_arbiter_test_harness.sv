@@ -17,13 +17,12 @@
 /*
  * line_port_arbiter_test_harness: cocotb unit-bench top for the arbiter.
  *
- * Exposes both upstream tagged line ports and drains the arbiter into the
- * same backside the hierarchy uses below it: line_port_axi_bridge ->
- * axi_behavioral_memory. The bench plays the two L1s itself, so contention
- * windows (simultaneous requests, several transactions in flight per port,
- * responses returning out of order) are driven cycle-precisely. MEM_LATENCY
- * widens the in-flight window and MEM_REORDER lets the memory complete ids
- * out of issue order.
+ * A 2:1 arbiter whose upstream ports the bench drives directly, draining into
+ * the same bottom the hierarchy uses: line_port_axi_bridge ->
+ * axi_behavioral_memory. Driving the ports directly lets the bench time
+ * simultaneous requests and several transactions in flight per port to the
+ * cycle. MEM_LATENCY widens the in-flight window and MEM_REORDER lets the
+ * memory complete ids out of issue order.
  */
 module line_port_arbiter_test_harness #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -129,6 +128,8 @@ module line_port_arbiter_test_harness #(
   ) bridge (
       .i_clk(i_clk),
       .i_rst(i_rst),
+      // The behavioral memory below resets with the bridge.
+      .i_axi_rst(i_rst),
       .i_req_valid(arb_down_req_valid && i_down_ready_gate),
       .o_req_ready(arb_down_req_ready),
       .i_req_write(arb_down_req_write),

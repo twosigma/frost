@@ -15,19 +15,15 @@
  */
 
 /*
- * PC Register Pre-computation
+ * pc_reg + 2, + 4, + 6, and + 8, computed in parallel from the registered
+ * i_pc_reg for pc_increment_calculator.
  *
- * Computes fixed pc_reg + 2/4/6/8 candidates in parallel from registered
- * i_pc_reg.
- *
- * The separate module is a synthesis boundary: when instantiated with
- * (* dont_touch = "yes" *), Vivado cannot merge the CARRY8 adder chains
- * with the downstream bundle-advance MUX in pc_increment_calculator.
- * Without this boundary, Vivado can fold the late sideband-derived selector
- * into the CARRY8 S-inputs, putting the entire carry chain on that select path.
- *
- * All inputs are registered, so outputs settle ~0.3 ns into the cycle, well
- * before BRAM data arrives at ~0.9 ns.
+ * The module is a synthesis boundary. pc_increment_calculator instantiates it
+ * with (* dont_touch = "yes" *), so Vivado cannot merge these CARRY8 adders
+ * with the bundle-advance mux that follows. Merged, the late predecode-derived
+ * select would drive the CARRY8 S inputs and put the whole carry chain on the
+ * select path. With only a registered input, the sums settle well before the
+ * fetch window arrives.
  */
 (* keep_hierarchy = "yes" *)
 module pc_reg_precompute #(
@@ -35,12 +31,11 @@ module pc_reg_precompute #(
 ) (
     input logic [XLEN-1:0] i_pc_reg,
 
-    // Pre-computed results for both is_compressed outcomes
+    // One-instruction advances: +2 (compressed) and +4 (32-bit)
     output logic [XLEN-1:0] o_pc_reg_if_compressed,
     output logic [XLEN-1:0] o_pc_reg_if_32bit,
-    // 2-wide dispatch addition.  Bundle advances are RVC+RVC (+4),
-    // RVC+32b / 32b+RVC (+6), and 32b+32b (+8).
-    // The +4 case reuses pc_reg_if_32bit.
+    // Two-instruction bundle advances: RVC+RVC is +4 (o_pc_reg_if_32bit),
+    // RVC+32b or 32b+RVC is +6, and 32b+32b is +8.
     output logic [XLEN-1:0] o_pc_reg_plus_6,
     output logic [XLEN-1:0] o_pc_reg_plus_8
 );

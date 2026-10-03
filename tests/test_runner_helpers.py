@@ -14,16 +14,21 @@
 
 """Fast regression tests for standalone simulation-runner result handling."""
 
+import importlib.util
+import os
 import subprocess
+import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
 import test_arch_compliance
+import test_run_cocotb
 import test_riscv_tests
 import test_riscv_torture
-import test_run_cocotb
 
 
 def _failed_simulation() -> subprocess.CompletedProcess[str]:
@@ -64,6 +69,30 @@ def test_arch_timeout_is_a_failure(
     assert "timed out" in result.message
 
 
+def test_arch_missing_reference_fails_the_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A selected arch test without a committed reference fails an extension run."""
+    source = tmp_path / "fadd_b1-01.S"
+    source.write_text("")
+    monkeypatch.setattr(
+        test_arch_compliance, "discover_tests", lambda *_, **__: [source]
+    )
+    monkeypatch.setattr(
+        test_arch_compliance,
+        "get_reference_path",
+        lambda _: tmp_path / "fadd_b1-01.reference_output",
+    )
+
+    def compile_test(*_: object, **__: object) -> tuple[bool, str]:
+        raise AssertionError("the runner built a test that has no reference")
+
+    monkeypatch.setattr(test_arch_compliance, "compile_test", compile_test)
+    monkeypatch.setattr(sys, "argv", ["test_arch_compliance.py", "--extensions", "F"])
+
+    assert test_arch_compliance.main() == 1
+
+
 def test_torture_timeout_is_a_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -80,6 +109,79 @@ def test_torture_timeout_is_a_failure(
 
     assert result.status == "FAIL"
     assert "timed out" in result.message
+
+
+def test_arch_shards_partition_tests_by_case_count(tmp_path: Path) -> None:
+    """Arch-test shards are disjoint, cover every test, and balance case counts."""
+    tests = []
+    for index, cases in enumerate((900, 500, 400, 300, 200, 100, 50)):
+        source = tmp_path / f"t{index}-01.S"
+        source.write_text("".join(f"inst_{n}:\n" for n in range(cases)))
+        tests.append(source)
+
+    shards = [test_arch_compliance.select_shard(tests, k, 3) for k in (1, 2, 3)]
+
+    assert sorted(t for shard in shards for t in shard) == sorted(tests)
+    loads = [
+        sum(test_arch_compliance._count_test_cases(t) for t in shard)
+        for shard in shards
+    ]
+    assert loads == [900, 800, 750]
+
+
+def _generate_references() -> ModuleType:
+    """Load sw/apps/arch_test/generate_references.py as a module."""
+    path = test_arch_compliance.ARCH_TEST_APP_DIR / "generate_references.py"
+    spec = importlib.util.spec_from_file_location("generate_references", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_arch_reference_paths_keep_the_suite() -> None:
+    """Runner and generator map a test in a src subdirectory under its suite too."""
+    generator = _generate_references()
+    src = test_arch_compliance.SUITE_ROOT / "rv32i_m" / "F" / "src"
+    refs = test_arch_compliance.REFERENCES_DIR / "rv32i_m" / "F"
+    for test, reference in (
+        (src / "fadd_b1-01.S", refs / "fadd_b1-01.reference_output"),
+        (
+            src / "fmadd_b15" / "fmadd_b15-001.S",
+            refs / "fmadd_b15-001.reference_output",
+        ),
+    ):
+        assert test_arch_compliance.get_reference_path(test) == reference
+        assert generator.reference_path(test) == reference
+
+
+def test_arch_empty_shard_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty --shard is a usage error, not an unsharded run."""
+
+    def run_extension_tests(*_: object, **__: object) -> list[object]:
+        raise AssertionError("the runner started tests")
+
+    monkeypatch.setattr(
+        test_arch_compliance, "run_extension_tests", run_extension_tests
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["test_arch_compliance.py", "--extensions", "F", "--shard", ""]
+    )
+    with pytest.raises(SystemExit) as exit_info:
+        test_arch_compliance.main()
+    assert exit_info.value.code == 2
+
+
+def test_signature_alignment_accepts_a_commented_define(tmp_path: Path) -> None:
+    """A trailing comment on FROST_SIG_ALIGN does not hide its value."""
+    generator = _generate_references()
+    header = (generator.SCRIPT_DIR / "model_test.h").read_text()
+    commented = header.replace(
+        "#define FROST_SIG_ALIGN 4", "#define FROST_SIG_ALIGN 4 // 16 B"
+    )
+    assert commented != header
+    (tmp_path / "model_test.h").write_text(commented)
+    assert generator._signature_alignment(tmp_path / "model_test.h") == (4, 4)
 
 
 def test_signature_extractors_ignore_interspersed_logs() -> None:
@@ -108,7 +210,7 @@ def test_signature_extractors_ignore_interspersed_logs() -> None:
 def test_unsafe_parallel_runner_modes_fail_before_starting(
     runner: Callable[[], object],
 ) -> None:
-    """Advertised concurrency must not race shared build and result artifacts."""
+    """Parallel runs must fail before starting: workers would share build and result files."""
     with pytest.raises(ValueError, match="workers share application outputs"):
         runner()
 
@@ -116,7 +218,7 @@ def test_unsafe_parallel_runner_modes_fail_before_starting(
 def test_cocotb_runner_removes_every_program_memory_symlink(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A completed app run must not leave a stale data-BRAM image behind."""
+    """A completed app run removes every program-memory symlink it made in tests/."""
     test_directory = tmp_path / "tests"
     app_directory = tmp_path / "sw" / "apps" / "sample"
     test_directory.mkdir()
@@ -146,6 +248,9 @@ def test_cocotb_runner_removes_every_program_memory_symlink(
     ) -> subprocess.CompletedProcess[str]:
         for mem_name in test_run_cocotb.PROGRAM_MEMORY_FILENAMES:
             assert (test_directory / mem_name).is_symlink()
+        (test_directory / "results.xml").write_text(
+            '<testsuites><testsuite><testcase name="sample"/></testsuite></testsuites>'
+        )
         return subprocess.CompletedProcess(args=["make"], returncode=0)
 
     monkeypatch.setattr(subprocess, "run", simulation_run)
@@ -155,3 +260,143 @@ def test_cocotb_runner_removes_every_program_memory_symlink(
     for mem_name in test_run_cocotb.PROGRAM_MEMORY_FILENAMES:
         assert not (test_directory / mem_name).exists()
         assert not (test_directory / mem_name).is_symlink()
+
+
+@pytest.mark.parametrize(
+    "fresh_report",
+    (
+        None,
+        "invalid XML",
+        "<testsuites/>",
+        "<testsuites><testsuite><testcase><failure/></testcase></testsuite></testsuites>",
+        "<testsuites><testsuite><testcase><error/></testcase></testsuite></testsuites>",
+    ),
+)
+def test_cocotb_runner_rejects_zero_exit_without_fresh_passing_tests(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fresh_report: str | None
+) -> None:
+    """A stale pass and zero make exit cannot stand in for a simulator run."""
+    report_path = tmp_path / "custom-results.xml"
+    report_path.write_text(
+        '<testsuites><testsuite><testcase name="stale"/></testsuite></testsuites>'
+    )
+    runner = test_run_cocotb.CocotbRunner(
+        python_test_module="cocotb_tests.test_sample",
+        hdl_toplevel_module="cdb_arbiter",
+    )
+    runner.test_directory = tmp_path
+    monkeypatch.setattr(
+        runner, "setup_environment", lambda: {"COCOTB_RESULTS_FILE": str(report_path)}
+    )
+    monkeypatch.setattr(runner, "_verilator_needs_rebuild", lambda _path: False)
+
+    def simulation_run(
+        *_args: object, **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        assert not report_path.exists()
+        if fresh_report is not None:
+            report_path.write_text(fresh_report)
+        return subprocess.CompletedProcess(args=["make"], returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", simulation_run)
+    with pytest.raises(RuntimeError, match="report"):
+        runner.run_simulation()
+
+
+def test_arch_simulation_turns_off_the_uart_tx_drop_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Arch runs pass +uart_tx_drop_check=0: the signature dump can outgrow the TX FIFO."""
+    monkeypatch.setenv("SIM", "verilator")
+    monkeypatch.setattr(test_arch_compliance, "TESTS_DIR", tmp_path / "tests")
+    monkeypatch.setattr(test_arch_compliance, "ARCH_TEST_APP_DIR", tmp_path / "app")
+    (tmp_path / "tests").mkdir()
+    runner_class = test_run_cocotb.CocotbRunner
+    monkeypatch.setattr(
+        runner_class, "setup_environment", lambda _self: {"COCOTB_PLUSARGS": "+seed"}
+    )
+    monkeypatch.setattr(runner_class, "_verilator_needs_rebuild", lambda *_: False)
+    monkeypatch.setattr(
+        runner_class, "_update_verilator_toplevel_marker", lambda *_: None
+    )
+    environments: list[dict[str, str]] = []
+
+    def simulation_run(
+        _command: list[str], *, env: dict[str, str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        environments.append(env)
+        return subprocess.CompletedProcess(args=["make"], returncode=0)
+
+    monkeypatch.setattr(test_arch_compliance, "run_in_process_group", simulation_run)
+
+    test_arch_compliance.run_simulation()
+
+    assert [env["COCOTB_PLUSARGS"].split() for env in environments] == [
+        ["+seed", "+uart_tx_drop_check=0"]
+    ]
+
+
+def test_run_in_process_group_returns_output() -> None:
+    """A command that finishes in time returns its exit code and output."""
+    result = test_run_cocotb.run_in_process_group(
+        ["bash", "-c", "echo out; echo err >&2; exit 3"], env=os.environ, timeout=30
+    )
+    assert result.returncode == 3
+    assert result.stdout == "out\n"
+    assert result.stderr == "err\n"
+
+
+def test_run_in_process_group_kills_grandchildren_on_timeout(tmp_path: Path) -> None:
+    """A timeout kills the command's whole process group, not just its shell."""
+    pid_file = tmp_path / "child.pid"
+    with pytest.raises(subprocess.TimeoutExpired):
+        test_run_cocotb.run_in_process_group(
+            ["bash", "-c", f"sleep 60 & echo $! > {pid_file}; wait"],
+            env=os.environ,
+            timeout=1,
+        )
+    child = int(pid_file.read_text())
+    for _ in range(50):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.1)
+    pytest.fail(f"grandchild {child} survived the timeout")
+
+
+def test_seed_sweep_restores_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A seed sweep undoes its registry entry's environment overrides."""
+    from concurrent.futures import Future
+
+    class _InlineExecutor:
+        def __init__(self, max_workers: int) -> None:
+            del max_workers
+
+        def __enter__(self) -> "_InlineExecutor":
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def submit(
+            self, function: Callable[..., object], *args: object
+        ) -> Future[object]:
+            del function
+            future: Future[object] = Future()
+            future.set_result((args[1], True, ""))
+            return future
+
+    config = test_run_cocotb.CocotbRunConfig(
+        python_test_module="cocotb_tests.sweep_probe",
+        hdl_toplevel_module="sweep_probe",
+        extra_env=(("FROST_SWEEP_ENV_PROBE", "set"),),
+    )
+    monkeypatch.setitem(test_run_cocotb.TEST_REGISTRY, "sweep_probe", config)
+    monkeypatch.setattr(test_run_cocotb, "ProcessPoolExecutor", _InlineExecutor)
+    monkeypatch.delenv("FROST_SWEEP_ENV_PROBE", raising=False)
+
+    report = test_run_cocotb.run_seed_sweep("sweep_probe", num_seeds=1)
+
+    assert report["passed"] == 1
+    assert "FROST_SWEEP_ENV_PROBE" not in os.environ

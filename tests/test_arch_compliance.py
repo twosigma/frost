@@ -14,19 +14,26 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Build and run riscv-arch-test cases, then compare golden signatures.
+"""Run riscv-arch-test cases and compare their signatures with Spike references.
 
-Can be run standalone:
-    ./test_arch_compliance.py --extensions I M
-    ./test_arch_compliance.py --all
-    ./test_arch_compliance.py --test rv64i_m/I/src/addw-01.S
+The ISA runners share build directories, so clean tests/ before each run. From
+the repository root:
 
-Or via pytest:
-    pytest test_arch_compliance.py -v -m slow
+    ./scripts/frost.py run make -C tests clean
+    ./scripts/frost.py run python3 tests/test_arch_compliance.py --extensions I M
+    ./scripts/frost.py run python3 tests/test_arch_compliance.py --all
+    ./scripts/frost.py run python3 tests/test_arch_compliance.py --test rv64i_m/I/src/addw-01.S
+    ./scripts/frost.py run python3 tests/test_arch_compliance.py --test rv32i_m/F/src/fadd_b1-01.S
+
+Every test runs on the RV64 core, including the F and D tests that RV32 and
+RV64 share, which the suite keeps under rv32i_m. The pytest entry point
+(TestArchCompliance) is marked slow and reads the memory tier from
+FROST_ARCH_MEM_CONFIG.
 """
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -35,7 +42,7 @@ from typing import Any
 
 import pytest
 
-from test_run_cocotb import CocotbRunner
+from test_run_cocotb import CocotbRunner, run_in_process_group
 
 # Directory layout
 TESTS_DIR = Path(__file__).parent.resolve()
@@ -44,13 +51,23 @@ ARCH_TEST_APP_DIR = REPO_ROOT / "sw" / "apps" / "arch_test"
 ARCH_TEST_DIR = ARCH_TEST_APP_DIR / "riscv-arch-test"
 REFERENCES_DIR = ARCH_TEST_APP_DIR / "references"
 
-# Suite name, also the reference namespace under references/. rv64i_m is the
-# upstream suite's name, kept so the committed goldens keep their paths.
-SUITE_NAME = "rv64i_m"
-SUITE_DIR = ARCH_TEST_DIR / "riscv-test-suite" / SUITE_NAME
+SUITE_ROOT = ARCH_TEST_DIR / "riscv-test-suite"
 
-# Extensions available in the test suite (dev branch) relevant to Frost's
-# ISA.
+# Suite directories under riscv-test-suite that each extension's tests come
+# from. rv64i_m holds the RV64 tests. The F and D tests that RV32 and RV64
+# share (fadd, fmadd, fdiv, fsqrt, fcvt.w.s, fcvt.s.d, ...) exist only under
+# rv32i_m; rv64i_m/F and rv64i_m/D hold just the RV64-only conversions and
+# moves. Only tests whose RVTEST_ISA lists RV64 run, and only the .S files
+# directly in each src directory (the *_b15 fused multiply-add sets in its
+# subdirectories do not). This must match EXTENSION_SUITES in
+# sw/apps/arch_test/generate_references.py.
+DEFAULT_SUITES = ("rv64i_m",)
+EXTENSION_SUITES: dict[str, tuple[str, ...]] = {
+    "F": ("rv64i_m", "rv32i_m"),
+    "D": ("rv64i_m", "rv32i_m"),
+}
+
+# The suite's extension directories that FROST runs.
 SUPPORTED_EXTENSIONS = [
     "I",
     "M",
@@ -69,52 +86,47 @@ SUPPORTED_EXTENSIONS = [
     "hints",
 ]
 
-# Filter for extensions where Frost implements only a subset of instructions.
-# Maps extension name -> set of test filename prefixes to include; extensions
-# not listed here run all their tests.
-# From the K extension Frost implements Zbkb (pack/packh/packw/brev8; zip and
-# unzip are RV32-only encodings) but not Zbkx (xperm4/xperm8), Zkn
-# (AES/SHA256/SHA512), or Zks (SM3/SM4).
-# Frost implements Machine, Supervisor, and User privilege, but no Hypervisor.
-# The privilege suite's envcfg tests (menvcfg/senvcfg/henvcfg, including the
-# *_illegal_u variants) drive an S-mode trap routine and declare extensions
-# Frost does not implement (Zicbom, Zicboz, Ssdtso), so they stay filtered
-# out; at this suite snapshot they exist only under rv32i_m anyway. Frost's
-# U-mode, including illegal M-CSR/MRET access from U, is covered by the
-# directed sw/apps/umode_test instead. Hypervisor tests are likewise excluded.
+# Extensions FROST implements only in part: extension -> test-name prefixes to
+# run. Extensions not listed are not filtered here.
+# K: FROST implements Zbkb (pack/packh/packw/brev8; zip and unzip are RV32-only
+# encodings) but not Zbkx (xperm4/xperm8), Zkn (AES/SHA256/SHA512), or Zks
+# (SM3/SM4).
+# privilege: FROST implements M, S, and U modes but no hypervisor. The envcfg
+# tests are left out: they declare Zicbom, Zicboz, and Ssdtso, and FROST's
+# menvcfg implements only STCE. The directed sw/apps/umode_test covers U-mode,
+# including illegal M-CSR and MRET access from U.
 EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "K": {"pack", "packh", "packw", "brev8"},
-    "privilege": {"ebreak", "ecall", "misalign", "menvcfg_m"},
+    "privilege": {"ebreak", "ecall", "misalign"},
 }
 
-# Tests excluded by filename prefix: Frost implements Zba/Zbb/Zbs but not
-# Zbc, so the carry-less multiply tests cannot even compile for its march;
-# the C directories likewise mix in Zcb tests (clbu/clh/csb/cmul/...),
-# which Frost does not implement.
+# Tests excluded by filename prefix. FROST implements Zba/Zbb/Zbs but not Zbc,
+# so the carry-less multiply tests do not assemble for its -march. The C
+# directory also holds Zcb tests (clbu/clh/csb/cmul/...), which FROST does not
+# implement.
 EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
     "B": {"clmul"},
     "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
 }
 
-# Maximum test case count for simulation. Tests with more than this many
-# inst_ entries are too slow for Verilator simulation (>30 min each) and
-# should be validated on hardware instead. At this suite snapshot no rv64i_m
-# test exceeds the limit (the largest has 880 cases), so the filter selects
-# everything; it remains for future snapshots.
-# Override with --no-sim-filter (CLI) or include_all=True (API).
+# Tests with more than this many cases (inst_ labels) are too slow for
+# Verilator and are left out unless --no-sim-filter (CLI) or include_all=True
+# (API) is given.
 SIM_MAX_TEST_CASES = 5000
 
-# Slow fused FP arch tests can run for more than three hours under Verilator.
+# Per-test simulation timeout in seconds; FROST_ARCH_SIM_TIMEOUT_SEC overrides it.
+# This and the cycle budget in run_simulation cover the largest tests, the
+# fused multiply-add *_b1 sets that --no-sim-filter adds, in the ddr tier.
 ARCH_SIM_TIMEOUT_SEC = int(os.environ.get("FROST_ARCH_SIM_TIMEOUT_SEC", "12600"))
 
-# Memory configurations: where each test's code vs data/signature lives, so a
-# failure is attributable to one path. Selected with --mem-config; passed to
-# the arch_test Makefile as MEM_CONFIG, which picks the linker script + crt0.
-#   bram   - code + data + signature all in low BRAM (pure ISA conformance).
-#   icache - code in DDR (L1I fetch path under test), data + signature in low
-#            BRAM (isolates instruction fetch from the D-side cached tier).
-#   ddr    - code + data + signature in DDR (also exercises the D-side cached
-#            tier on every load/store); the historical default.
+# Memory configurations decide where a test's code, data, and signature live,
+# so a failure points at one path. Selected with --mem-config and passed to the
+# arch_test Makefile as MEM_CONFIG, which picks the linker script and crt0.
+#   bram   - code, data, and signature in low BRAM (pure ISA conformance).
+#   icache - code in DDR (the L1I fetch path under test), data and signature in
+#            low BRAM (isolates instruction fetch from the D-side cached tier).
+#   ddr    - code, data, and signature in DDR (also exercises the D-side cached
+#            tier on every load and store); the default.
 MEM_CONFIGS = ("bram", "icache", "ddr")
 DEFAULT_MEM_CONFIG = "ddr"
 PARALLEL_UNSAFE_MESSAGE = (
@@ -145,19 +157,27 @@ def _count_test_cases(test_src: Path) -> int:
     return count
 
 
-def discover_tests(extension: str, include_all: bool = False) -> list[Path]:
-    """Find all .S test files for an extension.
+def declares_rv64(test_src: Path) -> bool:
+    """Return True if the test's RVTEST_ISA string lists an RV64 ISA."""
+    match = re.search(r'RVTEST_ISA\("([^"]*)"\)', test_src.read_text(errors="replace"))
+    return match is not None and "RV64" in match.group(1)
 
-    If the extension has a filter in EXTENSION_TEST_FILTERS, only tests whose
+
+def discover_tests(extension: str, include_all: bool = False) -> list[Path]:
+    """Find the RV64 .S test files for an extension.
+
+    Tests come from the extension's EXTENSION_SUITES directories. If the
+    extension has a filter in EXTENSION_TEST_FILTERS, only tests whose
     filename (without numeric suffix) matches a filter prefix are returned.
 
-    Unless include_all is True, tests exceeding SIM_MAX_TEST_CASES are excluded
-    (too slow for simulation, should be validated on hardware).
+    Unless include_all is True, tests with more than SIM_MAX_TEST_CASES cases
+    are left out as too slow to simulate.
     """
-    src_dir = SUITE_DIR / extension / "src"
-    if not src_dir.is_dir():
-        return []
-    tests = sorted(src_dir.glob("*.S"))
+    tests: list[Path] = []
+    for suite in EXTENSION_SUITES.get(extension, DEFAULT_SUITES):
+        src_dir = SUITE_ROOT / suite / extension / "src"
+        if src_dir.is_dir():
+            tests.extend(t for t in sorted(src_dir.glob("*.S")) if declares_rv64(t))
     allowed_prefixes = EXTENSION_TEST_FILTERS.get(extension)
     if allowed_prefixes is not None:
         tests = [
@@ -186,19 +206,36 @@ def discover_tests(extension: str, include_all: bool = False) -> list[Path]:
     return tests
 
 
-def get_reference_path(test_src: Path) -> Path:
-    """Get the golden reference output path for a test source file.
+def select_shard(tests: list[Path], shard: int, shard_count: int) -> list[Path]:
+    """Return shard number `shard` (1-based) of `shard_count`, balanced by case count.
 
-    References live under
-    references/rv64i_m/{extension}/{test}.reference_output,
-    generated by generate_references.py using the Docker image's pinned
-    Spike. The suite name comes from the test's own path.
+    Tests are dealt largest first to the shard with the fewest cases so far,
+    so the shards take similar simulation time. The split depends only on the
+    test list, so every CI job computes the same partition.
     """
-    # Path shape: .../riscv-test-suite/{SUITE}/{EXT}/src/{test}.S
-    suite_name = test_src.parent.parent.parent.name
-    ext_name = test_src.parent.parent.name
-    test_stem = test_src.stem
-    return REFERENCES_DIR / suite_name / ext_name / f"{test_stem}.reference_output"
+    loads = [0] * shard_count
+    members: list[list[Path]] = [[] for _ in range(shard_count)]
+    sized = sorted(
+        ((_count_test_cases(t), t) for t in tests),
+        key=lambda item: (-item[0], str(item[1])),
+    )
+    for cases, test in sized:
+        index = loads.index(min(loads))
+        members[index].append(test)
+        loads[index] += cases
+    return sorted(members[shard - 1])
+
+
+def get_reference_path(test_src: Path) -> Path:
+    """Return the reference signature path for a test source file.
+
+    References live under references/{suite}/{extension}/{test}.reference_output
+    and come from generate_references.py, run with the image's pinned Spike. The
+    suite name comes from the test's own path.
+    """
+    # Path shape: .../riscv-test-suite/{SUITE}/{EXT}/src/[{subdir}/]{test}.S
+    suite_name, ext_name = test_src.relative_to(SUITE_ROOT).parts[:2]
+    return REFERENCES_DIR / suite_name / ext_name / f"{test_src.stem}.reference_output"
 
 
 def compile_test(
@@ -207,9 +244,9 @@ def compile_test(
     """Compile a single arch test.
 
     Returns (success, combined_make_output). mem_config selects the linker
-    script + crt0 (and the BRAM/DDR section split) via the arch_test Makefile's
-    MEM_CONFIG variable. The output lets the caller distinguish a low-BRAM
-    capacity overflow (a DDR-only test) from a genuine compile failure.
+    script and crt0 (and the BRAM/DDR section split) through the arch_test
+    Makefile's MEM_CONFIG variable. The output lets the caller tell a low-BRAM
+    capacity overflow (a DDR-only test) from a real compile failure.
     """
     env = dict(os.environ)
     subprocess.run(
@@ -234,7 +271,7 @@ def compile_test(
 
 
 def run_simulation() -> subprocess.CompletedProcess[str] | None:
-    """Run cocotb simulation and return the result."""
+    """Simulate the compiled test; return the result, or None on timeout."""
     runner = CocotbRunner(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -244,22 +281,27 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
     os.environ["SIM"] = "verilator"
     env = runner.setup_environment()
     # Arch tests use the hardware memory map: the boot stub always comes from
-    # the 256 KiB low BRAM (sw.mem). How much of the test's code/data/signature
-    # lives in the cached DDR region (sw_ddr.mem, preloaded into the behavioral
-    # DDR) depends on --mem-config: all of it for ddr, code only for icache,
-    # none for bram (which emits an empty sw_ddr.mem). The standard sim_build
-    # applies.
+    # the 256 KiB low BRAM (sw.mem). How much of the test's code, data, and
+    # signature lives in the cached DDR region (sw_ddr.mem, preloaded into the
+    # behavioral DDR) depends on --mem-config: all of it for ddr, the code for
+    # icache, and none for bram (which emits an empty sw_ddr.mem). The build
+    # uses the shared sim_build directory.
     sim_build_dir = runner._get_sim_build_dir(env)
-    # Arch tests with many test vectors need more cycles than the default 500K.
-    # The fmadd/fmsub/fnmadd/fnmsub tests have ~14K test cases each, and
-    # double-precision b11 tests have ~11K cases, needing well over 5M cycles.
+    # A 50M-cycle budget instead of the 500K application default.
     env["COCOTB_MAX_CYCLES"] = "50000000"
+    # RVMODEL_HALT writes the signature without checking the UART TX status, so
+    # a large dump overflows the transmit FIFO. The dump is read from the CPU's
+    # UART writes, ahead of the FIFO, so turn off frost's dropped-byte check.
+    env["COCOTB_PLUSARGS"] = (
+        env.get("COCOTB_PLUSARGS", "") + " +uart_tx_drop_check=0"
+    ).strip()
 
     original_dir = os.getcwd()
     os.chdir(TESTS_DIR)
 
     try:
-        # Clean only if toplevel changed (within the dedicated build dir)
+        # Clean only when the existing Verilator build cannot be reused (a
+        # different toplevel, cocotb installation, or FROST_VERILATOR_EXTRA_ARGS).
         needs_clean = runner._verilator_needs_rebuild(sim_build_dir)
         if needs_clean:
             subprocess.run(["make", "clean"], check=False, env=env)
@@ -277,13 +319,8 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
             f"make COCOTB_TEST_MODULES='cocotb_tests.test_real_program' "
             f"TOPLEVEL=frost"
         )
-        result = subprocess.run(
-            ["bash", "-c", cmd],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-            timeout=ARCH_SIM_TIMEOUT_SEC,
+        result = run_in_process_group(
+            ["bash", "-c", cmd], env=env, timeout=ARCH_SIM_TIMEOUT_SEC
         )
 
         if result.returncode == 0:
@@ -320,19 +357,16 @@ def extract_signature(sim_output: str) -> list[str]:
         elif sig_lines and stripped.startswith("<<PASS>>"):
             # The signature dump is terminated by the standalone <<PASS>> marker.
             break
-        # Any other line (interspersed cocotb INFO logs, banners, blanks) is
-        # ignored without resetting the collected words. Over a long dump the
-        # UART hex stream is interleaved with periodic cocotb log lines; an
-        # earlier reset-on-non-hex rule truncated the signature to whatever
-        # followed the last log line and produced false "signature mismatch"
-        # diffs on the long b3/b8/b9 arch tests. Signature words are the only
-        # bare 8-hex lines the program emits, so collecting them all up to
-        # <<PASS>> is exact.
+        # Any other line (cocotb logs, banners, blanks) is skipped without
+        # discarding the words collected so far: cocotb logs periodically
+        # during a long dump, so its lines can fall between signature words.
+        # Signature words are the only bare 8-hex-digit lines the program
+        # prints, so collecting them all up to <<PASS>> is exact.
     return sig_lines
 
 
 def load_reference(ref_path: Path) -> list[str]:
-    """Load golden reference signature file."""
+    """Read a reference signature as lowercase hex words, skipping blank lines."""
     lines = []
     for line in ref_path.read_text().splitlines():
         stripped = line.strip()
@@ -346,8 +380,8 @@ def compare_signatures(actual: list[str], expected: list[str]) -> tuple[bool, st
     if actual == expected:
         return True, ""
 
-    # Always surface the word counts first so a length mismatch (e.g. a
-    # truncated/extracted-wrong signature) is obvious even when <6 words differ.
+    # Report the word counts first, so a length mismatch (a truncated or
+    # misextracted signature) stands out even when few words differ.
     diff_lines = [f"  (actual={len(actual)} words, expected={len(expected)} words)"]
     max_len = max(len(actual), len(expected))
     shown = 0
@@ -372,15 +406,21 @@ def run_single_test(
 
     ref_path = get_reference_path(test_src)
     if not ref_path.exists():
-        return TestResult(test_name, extension, "SKIP", "No reference output")
+        # A FAIL, so tests that a suite update adds cannot pass unchecked.
+        return TestResult(
+            test_name,
+            extension,
+            "FAIL",
+            f"No reference output ({ref_path.name}); generate it with "
+            "sw/apps/arch_test/generate_references.py",
+        )
 
     compiled, compile_out = compile_test(test_src, mem_config)
     if not compiled:
-        # A low-memory region overflow is not a failure in the bram/icache
-        # tiers: the test's .text/.data exceeds the 256 KiB low BRAM (96 KiB
-        # instruction + 160 KiB data) and belongs to the ddr tier, which has
-        # 64 MiB. The big control-flow tests (branches, jal) hit this. Report
-        # SKIP so the tier stays green; ddr still exercises them.
+        # In the bram and icache tiers, a linker region overflow means the test
+        # does not fit in low BRAM (95 KiB of code, 1 KiB reserved for debug,
+        # and 160 KiB of data and stack), assuming icache code fits its 64 MiB
+        # DDR region. Report SKIP: the ddr tier, with 64 MiB, runs the test.
         if mem_config != "ddr" and (
             "will not fit in region" in compile_out or "overflowed by" in compile_out
         ):
@@ -437,19 +477,24 @@ def run_extension_tests(
     parallel: int = 1,
     include_all: bool = False,
     mem_config: str = DEFAULT_MEM_CONFIG,
+    shard: tuple[int, int] | None = None,
 ) -> list[TestResult]:
-    """Run all tests for a given extension."""
+    """Run all tests for a given extension, or one (index, count) shard of them."""
     if parallel != 1:
         raise ValueError(PARALLEL_UNSAFE_MESSAGE)
 
     tests = discover_tests(extension, include_all=include_all)
+    if shard is not None:
+        tests = select_shard(tests, *shard)
     if not tests:
         print(f"  No tests found for extension {extension}")
         return []
 
+    suites = ", ".join(EXTENSION_SUITES.get(extension, DEFAULT_SUITES))
+    shard_text = f", shard {shard[0]}/{shard[1]}" if shard is not None else ""
     print(
-        f"\nExtension: {extension} ({len(tests)} tests, "
-        f"suite={SUITE_NAME}, mem-config={mem_config})"
+        f"\nExtension: {extension} ({len(tests)} tests{shard_text}, "
+        f"suites={suites}, mem-config={mem_config})"
     )
 
     results = []
@@ -516,15 +561,16 @@ class TestArchCompliance:
 
 
 def main() -> int:
-    """Run RISC-V architecture tests on Frost."""
+    """Run the selected arch tests and return the exit status."""
     parser = argparse.ArgumentParser(
-        description="Run RISC-V Architecture Tests on Frost",
+        description="Run riscv-arch-test cases on FROST against Spike references",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Examples:
   %(prog)s --extensions I M
   %(prog)s --all
   %(prog)s --test rv64i_m/I/src/addw-01.S
+  %(prog)s --test rv32i_m/F/src/fadd_b1-01.S
 
 Available extensions: {", ".join(SUPPORTED_EXTENSIONS)}
 """,
@@ -551,21 +597,26 @@ Available extensions: {", ".join(SUPPORTED_EXTENSIONS)}
         type=int,
         default=1,
         metavar="N",
-        help="Number of workers; currently only 1 is safe and supported",
+        help="Number of workers; only 1 is supported",
+    )
+    parser.add_argument(
+        "--shard",
+        metavar="K/N",
+        help="Run only shard K of N of each extension's tests, balanced by case count",
     )
     parser.add_argument(
         "--no-sim-filter",
         action="store_true",
-        help="Include all tests, even those too large for simulation (>5000 test cases)",
+        help="Also run tests with over 5000 cases (left out by default as too slow)",
     )
     parser.add_argument(
         "--mem-config",
         choices=MEM_CONFIGS,
         default=DEFAULT_MEM_CONFIG,
         help=(
-            "Memory configuration: 'bram' (code+data+signature in low BRAM), "
-            "'icache' (code in DDR, data+signature in BRAM -- isolates the "
-            "instruction-fetch path), or 'ddr' (code+data+signature in DDR -- "
+            "Memory configuration: 'bram' (code, data, and signature in low BRAM), "
+            "'icache' (code in DDR, data and signature in BRAM, to isolate "
+            "instruction fetch), or 'ddr' (code, data, and signature in DDR, which "
             f"also exercises the D-side cached tier). Default: {DEFAULT_MEM_CONFIG}."
         ),
     )
@@ -573,12 +624,23 @@ Available extensions: {", ".join(SUPPORTED_EXTENSIONS)}
     args = parser.parse_args()
     if args.parallel != 1:
         parser.error(PARALLEL_UNSAFE_MESSAGE)
+    shard = None
+    if args.shard is not None:
+        match = re.fullmatch(r"(\d+)/(\d+)", args.shard)
+        if not match or not 1 <= int(match.group(1)) <= int(match.group(2)):
+            parser.error("--shard must be K/N with 1 <= K <= N")
+        if args.test:
+            parser.error("--shard applies to --extensions and --all, not --test")
+        shard = (int(match.group(1)), int(match.group(2)))
 
     # Single test mode
     if args.test:
-        test_path = ARCH_TEST_DIR / "riscv-test-suite" / args.test
+        test_path = SUITE_ROOT / args.test
         if not test_path.exists():
             print(f"Error: Test file not found: {args.test}")
+            return 1
+        if not declares_rv64(test_path):
+            print(f"Error: {args.test} does not list RV64 in its RVTEST_ISA")
             return 1
 
         parts = Path(args.test).parts
@@ -595,13 +657,16 @@ Available extensions: {", ".join(SUPPORTED_EXTENSIONS)}
     extensions = SUPPORTED_EXTENSIONS if args.all else args.extensions
 
     for ext in extensions:
-        ext_dir = SUITE_DIR / ext
-        if not ext_dir.is_dir():
+        ext_suites = EXTENSION_SUITES.get(ext, DEFAULT_SUITES)
+        if not any((SUITE_ROOT / suite / ext).is_dir() for suite in ext_suites):
             print(f"Warning: Extension '{ext}' not found in test suite, skipping")
 
     print("=" * 60)
     print("RISC-V Architecture Test Results")
-    print(f"Suite: {SUITE_NAME}")
+    suites = sorted(
+        {s for ext in extensions for s in EXTENSION_SUITES.get(ext, DEFAULT_SUITES)}
+    )
+    print(f"Suites: {', '.join(suites)}")
     print(f"Extensions: {', '.join(extensions)}")
     print(f"Memory config: {args.mem_config}")
     print("=" * 60)
@@ -613,6 +678,7 @@ Available extensions: {", ".join(SUPPORTED_EXTENSIONS)}
             parallel=args.parallel,
             include_all=args.no_sim_filter,
             mem_config=args.mem_config,
+            shard=shard,
         )
         all_results.extend(results)
 

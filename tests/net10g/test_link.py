@@ -12,11 +12,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Check synchronization, BER windows and reconciliation fault qualification.
+"""Check block lock, the BER windows, and reconciliation fault qualification.
 
-Thresholds follow IEEE Clause49 and Clause46. The BER reset condition and timer
-state transitions are reproduced in the IEEE presentation linked in the README;
-these tests drive each monitor independently so one cannot hide another's error.
+Thresholds follow IEEE Clause 49 and Clause 46. The BER reset condition and
+timer state transitions are reproduced in the Clause 49 presentation listed
+under "Design references" in hw/rtl/net10g/README.md. These tests drive each
+monitor independently so one cannot hide another's error.
 """
 
 from typing import Any
@@ -29,7 +30,7 @@ FAULT_COLUMNS = {1: 0x0100009C, 2: 0x0200009C}
 
 
 class LinkBench:
-    """Drive three independent monitors on a shared physical clock."""
+    """Drive the block-lock, BER, and fault monitors from one clock."""
 
     def __init__(self, dut: Any) -> None:
         """Initialize valid idle inputs for all three monitors."""
@@ -70,12 +71,16 @@ class LinkBench:
         self.check_fault(0)
 
     def check_fault(self, expected: int) -> None:
-        """Check mutually exclusive local and remote fault outputs."""
+        """Check the fault outputs: 0 for none, 1 for local, 2 for remote."""
         assert int(self.dut.local_fault.value) == int(expected == 1)
         assert int(self.dut.remote_fault.value) == int(expected == 2)
 
     async def columns(self, first: int = 0, second: int = 0, **changes: int) -> None:
-        """Send two independently selected idle/local/remote-fault columns."""
+        """Send one XGMII word of two columns.
+
+        ``first`` and ``second`` each select idle (0), local fault (1), or remote
+        fault (2).
+        """
         first_data = FAULT_COLUMNS.get(first, IDLE_COLUMN)
         second_data = FAULT_COLUMNS.get(second, IDLE_COLUMN)
         ctrl = (1 if first else 15) | ((1 if second else 15) << 4)
@@ -86,7 +91,7 @@ class LinkBench:
 
 @cocotb.test()
 async def block_acquisition_gating_slip_and_signal_loss(dut: Any) -> None:
-    """Require 64 consecutive valid headers and same-candidate slip requests."""
+    """Lock on 64 valid headers in a row; slip on a bad one; unlock on signal loss."""
     bench = LinkBench(dut)
     await bench.reset()
     for index in range(63):
@@ -180,10 +185,10 @@ async def ber_threshold_timing_and_lock_reset(dut: Any) -> None:
 
 @cocotb.test()
 async def ber_default_125_microsecond_window(dut: Any) -> None:
-    """Verify the production 20142-clock timer, including a boundary error."""
+    """Check the default 20142-clock timer, including an error on its last clock."""
     bench = LinkBench(dut)
     await bench.reset()
-    # Fifteen errors in one complete production window must not carry forward.
+    # Fifteen errors in one complete default window must not carry forward.
     for index in range(20142):
         await bench.step(ber_locked=1, ber_valid=int(index < 15), ber_header=0)
         assert not int(dut.high_ber_default.value)
@@ -234,7 +239,7 @@ async def fault_sequence_qualification_timeout_and_enable(dut: Any) -> None:
 
 @cocotb.test()
 async def fault_mixed_sequences_invalid_controls_pcs_loss_and_reset(dut: Any) -> None:
-    """Reject mismatched sequence types and invalid ordered-set controls."""
+    """Reject mixed or malformed fault sequences; check PCS loss and reset."""
     bench = LinkBench(dut)
     await bench.reset()
     for _ in range(30):

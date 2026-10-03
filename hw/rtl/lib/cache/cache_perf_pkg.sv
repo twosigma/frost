@@ -15,17 +15,17 @@
  */
 
 /*
- * Cache-hierarchy performance-observer types.
+ * Cache performance event types.
  *
- * Kept in a cache-local package so the standalone cache file list and unit
- * benches do not depend on the CPU's monolithic riscv_pkg.  frost_cache
- * registers every field in cache_instance_perf_events_t at the source before
- * the hierarchy carries the bundle toward the CPU.
+ * A cache-local package, so the cache file list and unit benches do not
+ * depend on the CPU's riscv_pkg. frost_cache registers every field of
+ * cache_instance_perf_events_t at the source, and the hierarchy carries the
+ * bundle toward the CPU.
  */
 package cache_perf_pkg;
 
-  // Width of the per-instance outstanding-miss count. Sized for the
-  // non-blocking cache's miss-status slots; a blocking instance reports 0/1.
+  // Width of the per-instance outstanding-miss count: enough for up to 15
+  // miss-status slots.
   localparam int unsigned MissOutstandingBits = 4;
 
   typedef struct packed {
@@ -33,15 +33,17 @@ package cache_perf_pkg;
     logic hit;
     logic miss;
     logic writeback;
-    // Number of unresolved non-maintenance misses this cycle (a level, not a
+    // Non-maintenance miss-status slots in use this cycle (a level, not a
     // pulse): the aggregator integrates it into the *_MISS_CYCLES_SUM
     // counters.
     logic [MissOutstandingBits-1:0] miss_outstanding;
     // A hit resolved while at least one miss was outstanding.
     logic hit_under_miss;
-    // Stall cycles at the tag stage: an allocation with no free miss-status
-    // slot (or no writeback slot for its dirty victim), and a request behind
-    // an index in transition that it can neither merge into nor wait on.
+    // Tag-stage decisions that stall. slot_full_stall: an allocation with no
+    // free miss-status slot (or no writeback slot for its dirty victim).
+    // conflict_stall: a request aimed at an index in transition that it can
+    // neither merge into nor wait on, or a write hit on a line still in a
+    // writeback slot.
     logic slot_full_stall;
     logic conflict_stall;
   } cache_instance_perf_events_t;
@@ -52,9 +54,9 @@ package cache_perf_pkg;
     cache_instance_perf_events_t l2;
   } cache_hierarchy_perf_events_t;
 
-  // Complete bundle crossing from cpu_and_mem into cpu_ooo.  The hierarchy
-  // supplies the three per-instance groups; cpu_and_mem adds the fetch-seam
-  // stall observer before crossing the CPU boundary.
+  // The bundle cpu_and_mem passes into cpu_ooo: the hierarchy's three
+  // per-instance groups, plus the fetch provider's L1I-miss stall, which
+  // cpu_and_mem adds.
   typedef struct packed {
     cache_hierarchy_perf_events_t hierarchy;
     logic                         l1i_fetch_miss_stall;

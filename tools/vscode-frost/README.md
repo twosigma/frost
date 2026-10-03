@@ -1,13 +1,17 @@
 # FROST FPGA Debugger
 
-Program the X3, load software, debug bare-metal apps, and use the UART console
-from VS Code. Install on the Linux FPGA host, directly or through Remote-SSH.
-Use official VS Code 1.106+, a trusted FROST workspace, Microsoft C/C++, and
-native Vivado, OpenOCD, Python, and RISC-V GDB.
+This VS Code extension programs a FROST X3 board, builds and loads software
+over JTAG, debugs bare-metal programs through GDB and OpenOCD, and provides a
+two-way UART console. It runs on the Linux host with the FPGA cable, locally
+or through Remote-SSH, and calls the repository's own build and load scripts.
+
+It needs official VS Code 1.106 or newer, a trusted FROST workspace, the
+Microsoft C/C++ extension, and native Vivado, OpenOCD, Python, and RISC-V GDB
+on the FPGA host.
 
 ## Build and install locally
 
-From the repository root, build with the pinned image:
+From the repository root, build with the pinned Docker image and install:
 
 ```bash
 ./scripts/frost.py run bash -c 'cd tools/vscode-frost && npm ci && npm run check && npm test && npm run package'
@@ -15,150 +19,184 @@ code --install-extension tools/vscode-frost/frost-0.3.0.vsix
 ```
 
 For Remote-SSH, run **Extensions: Install from VSIX** in the connected window
-and install on the FPGA host. Reload the window after installing or upgrading.
-For native development, run the npm commands in `tools/vscode-frost` with
-Node.js 22+. Packaging creates a local VSIX; it does not publish it.
+so the extension installs on the FPGA host. Reload the window after
+installing or upgrading. To build without Docker, run the same npm commands in
+`tools/vscode-frost` with Node.js 22 or newer. Packaging creates a local VSIX
+and publishes nothing.
 
-Run **FROST: Configure Target**, then **FROST: Load Software** or **FROST:
-Load Software and Debug**. The serial terminal opens automatically. Resume
-a halted CPU to see new output; **FROST: Show Output** displays diagnostics.
+Then run **FROST: Configure Target**, followed by **FROST: Load Software** or
+**FROST: Load Software and Debug**. The **FROST Serial** terminal opens
+automatically, and **FROST: Show Output** shows the build and tool logs.
 
 ## Target settings
 
-Configure the FT4232H serial, exact Vivado target, application, placement,
-actual CPU clock in Hz, and CoreMark-PRO mode when applicable. The target path
-must be `127.0.0.1:3121/xilinx_tcf/Xilinx/<serial+channel>` as reported by Vivado;
-the FTDI serial alone is insufficient. Attach-only use can omit this path.
-Ports 3121 and 3333 must be free.
+**FROST: Configure Target** asks for the FT4232H JTAG serial and the exact
+Vivado target, then an application, its placement, and a CoreMark-PRO mode
+when one applies. The Vivado target is the full path Vivado reports,
+`127.0.0.1:3121/xilinx_tcf/Xilinx/<serial+channel>`; the FTDI serial alone is
+not enough. Leave it empty for attach-only use. The extension runs its own
+hardware server on port 3121 and OpenOCD on port 3333, and both ports must be
+free.
 
-Cable identities and executable paths are machine-scoped User settings, outside
-Settings Sync. App/layout/clock selections update existing workspace overrides
-or otherwise User settings. Cancelling configuration saves nothing.
+Cable identities and tool paths are machine-scoped User settings, so Settings
+Sync does not copy them. Application, placement, and clock choices update an
+existing workspace override, or User settings otherwise. Cancelling Configure
+Target saves nothing.
 
-Set tool paths in **Settings → FROST** if they are absent from VS Code's host
-PATH. Supply executable paths without shell arguments; GDB defaults to
-`riscv64-linux-gdb`. Other useful settings:
+If a tool is not on VS Code's `PATH` on the host, set its path under
+**Settings → FROST** (`frost.pythonPath`, `frost.openocdPath`,
+`frost.gdbPath`, `frost.vivadoPath`, `frost.hwServerPath`). Give the
+executable only, without arguments. GDB defaults to `riscv64-linux-gdb`.
 
-| Setting | Behavior |
-|---------|----------|
-| `frost.repoRoot` | Selected workspace folder by default |
-| `frost.elf` | Attach ELF; default resolves the app's registered build directory |
-| `frost.bitstream` | `.bit` file; empty opens a picker |
-| `frost.cpuClockHz` | Required actual bitstream clock; no assumed default |
-| `frost.loadTimeoutMs` | Plain-load timeout, default two hours for first Linux builds |
-| `frost.toolTimeoutMs` | Debug/program timeout |
+| Setting | Default | Behavior |
+|---------|---------|----------|
+| `frost.repoRoot` | Workspace folder | Repository root, relative to the workspace folder or absolute |
+| `frost.cpuClockHz` | `322265625` | CPU clock of the programmed bitstream; `161132812` for a `--cpu-clock-div 2` build |
+| `frost.bitstream` | Empty | `.bit` file for the program commands; empty opens a file picker |
+| `frost.elf` | Empty | ELF for Attach; empty uses `sw.elf` in the app's build directory |
+| `frost.loadTimeoutMs` | 2 hours | Timeout for Load Software, long enough for a first Linux build |
+| `frost.toolTimeoutMs` | 5 minutes | Timeout for debug loads and programming |
+| `frost.startupTimeoutMs` | 20 seconds | Timeout for starting the debugger or a hardware server |
 
-Artifact paths are repository-relative. Attach requires the ELF matching the
-loaded image; load-and-debug uses its own build. CoreMark-PRO aliases share
-`sw/apps/coremark_pro`.
+Relative paths resolve against the repository. Attach needs the ELF of the
+image that is loaded; the debug load commands use the ELF they just built.
+CoreMark-PRO workloads share the `sw/apps/coremark_pro` build directory.
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| FROST: Configure Target | Save the cable, Vivado target, clock and application choices. |
-| FROST: Load Software | Choose any application accepted by the repository loader and run it using its normal build profile. |
-| FROST: Attach Debugger | Attach `cppdbg` to the already loaded application. |
-| FROST: Load Software and Debug | Choose and save a debug application, build/load it, then debug it. |
-| FROST: Program Bitstream | Program volatile FPGA configuration. |
-| FROST: Program Bitstream, Load and Debug | Choose and save a debug application, program the FPGA, load and debug it. |
-| FROST: Disconnect and Resume | Request a nonterminating debugger detach, then stop the owned OpenOCD process. |
+| FROST: Configure Target | Save the cable, Vivado target, and application choices. |
+| FROST: Load Software | Build any application the repository loader accepts, with its normal build profile, and run it. |
+| FROST: Attach Debugger | Attach `cppdbg` to the application that is already loaded. |
+| FROST: Load Software and Debug | Choose and save a debug application, build and load it, then debug it. |
+| FROST: Program Bitstream | Program the FPGA's volatile configuration. |
+| FROST: Program Bitstream, Load and Debug | Choose and save a debug application, program the FPGA, then load and debug it. |
+| FROST: Disconnect and Resume | Request a detach that leaves the program running, then stop OpenOCD. |
 | FROST: Show Output | Open the FROST operation log. |
-| FROST: Open Serial Console | Open or reconnect the integrated bidirectional UART terminal. |
-| FROST: Close Serial Console | Close the terminal and release its owned UART connection. |
-| FROST: Apply Focus Layout | Apply the optional quieter layout and save previous User values. |
-| FROST: Restore Layout | Restore saved layout values while preserving subsequent user changes. |
+| FROST: Open Serial Console | Open or reconnect the UART terminal. |
+| FROST: Close Serial Console | Close the terminal and release the UART. |
+| FROST: Apply Focus Layout | Apply an optional quieter layout, saving the previous User settings. |
+| FROST: Restore Layout | Restore the saved settings, keeping any you changed since. |
 | FROST: Toggle Zen Mode | Enter or leave VS Code's Zen Mode. |
 
-## Plain software loading
+## Loading software
 
-**FROST: Load Software** offers the repository loader's apps, including Linux
-and benchmarks, and leaves the CPU running. Debug commands keep a separate
-app selection. Placement choices are:
+**FROST: Load Software** offers every application the repository loader
+accepts, including Linux and the benchmarks, and leaves the CPU running. It
+does not change the application the debug commands remember. It asks for a
+placement:
 
-- **BRAM / default application layout:** use the app's layout, which may include DDR.
-- **DDR relocation:** request `--ddr`; fixed-layout apps retain their placement.
-- **CoreMark-PRO:** choose validation (`-v1`) or performance (`-v0`).
+| Placement | Effect |
+|---|---|
+| BRAM / default application layout | The app's own layout, which may include DDR |
+| DDR relocation | Passes `--ddr`; apps with a fixed layout keep it |
 
-Repository app/board/layout restrictions still apply. Cancellation waits for
-the loader to stop and image reset to settle before accepting another operation.
+CoreMark-PRO workloads also ask for validation (`-v1`) or performance (`-v0`)
+mode. The loader's own restrictions on apps, boards, and layouts still apply.
+Cancelling waits for the loader to exit and the image reset to settle before
+another operation can start.
 
 ## Serial console
 
-**FROST Serial** is bidirectional raw 8N1, without flow control or local echo.
-Typed characters appear only if the target echoes them. Output pauses while
-the CPU is halted. Close with **FROST: Close Serial Console**, the terminal's
-close button, or **Ctrl+]**. Detach leaves it open.
+**FROST Serial** is a raw two-way UART terminal at 8N1, with no flow control
+or local echo, so typed characters appear only if the program echoes them.
+Output pauses while the CPU is halted. Close it with
+**FROST: Close Serial Console**, the terminal's close button, or **Ctrl+]**.
+Detaching the debugger leaves it open.
 
-`frost.serial.autoOpen` defaults to true. `frost.serial.port=auto` prefers a
-stable `/dev/serial/by-id` FT4232H `if02` device matching `frost.jtagSerial`,
-then falls back to the repository's X3 default (`/dev/ttyUSB3`). Ambiguous or
-mismatched stable identities are refused; set an explicit path when needed.
-`frost.serial.baudRate` defaults to 115200. Close and reopen after settings changes.
+| Setting | Default | Behavior |
+|---------|---------|----------|
+| `frost.serial.autoOpen` | `true` | Open the console for program, load, and debug commands |
+| `frost.serial.port` | `auto` | Prefer the stable `/dev/serial/by-id` FT4232H `if02` device matching `frost.jtagSerial`, else the repository's X3 default (`/dev/ttyUSB3`). Ambiguous or mismatched devices are refused; set an explicit path instead. |
+| `frost.serial.baudRate` | `115200` | Baud rate |
 
-Close other serial readers first. The console stays open during managed JTAG
-work; an automatic connection failure does not block the FPGA operation.
-Large pastes are limited to 64 KiB pending input. No pyserial install is needed.
+Close and reopen the console after changing these settings. Close other
+programs that read the port first: the console refuses the port when it
+detects another reader.
+It stays open during JTAG operations, and a failed automatic connection does
+not stop the FPGA operation. Pasted input is limited to 64 KiB waiting to be
+sent. No pyserial install is needed.
 
-## Optional focused workspace
+## Focus layout
 
-**Apply Focus Layout** hides bars, minimap, and the chat toolbar button and
-configures Zen preferences. **Restore Layout** restores saved User values
-while preserving later changes. Workspace overrides remain effective.
-**Toggle Zen Mode** enters/exits Zen; Escape twice also exits.
-
-For an independent extension set, import
-[FROST.code-profile](resources/FROST.code-profile) into a new **FROST Debug**
-profile, with independent Settings and UI State, then install the VSIX there.
-See [focus instructions](resources/FOCUS.md) for profile-sharing limits.
+**FROST: Apply Focus Layout** hides the activity bar, status bar, minimap,
+and chat button, and sets Zen Mode preferences. **FROST: Restore Layout** puts
+back the saved User settings but keeps any you changed since.
+[FOCUS.md](resources/FOCUS.md) lists the settings and explains how to import
+[FROST.code-profile](resources/FROST.code-profile) as a separate
+**FROST Debug** profile.
 
 ## Debugging
 
-Attach halts the loaded app at its current PC. Load-and-debug builds with
-`--debug` and keeps a private ELF for the session. Avoid concurrent builds of
-apps sharing a directory. `linux_boot` and `opensbi_smoke` are load-only
-composite images. FreeRTOS supports CPU/source inspection without task views.
-Debug benchmark timings are not reportable scores; use normal loading.
+Attach halts the loaded program at its current PC. The debug load commands
+build with `--debug`, load the image, and give the debugger a private copy of
+the ELF for the session. Avoid concurrent builds of apps that share a build
+directory: a load stops if the image changes under it.
 
-Managed loads wait for image reset: 2040 ms at 300 MHz or 3830 ms at 150 MHz.
-After an external load, wait `ceil(4 * 2^27 * 1000 / CPU_clock_Hz) + 250` ms
-before Attach. Startup depends on the built ELF:
+`linux_boot` and `opensbi_smoke` are composite images that can be loaded but
+not debugged. FreeRTOS programs support CPU and source debugging, without
+task views. Timings from debug builds of benchmarks are not valid scores; use
+**FROST: Load Software** for measurements.
+
+After a load, the debug module stays in reset until the image-load reset
+releases, and a debugger access during that time can be lost. Managed loads
+wait for it before starting OpenOCD: 1916 ms at 322.265625 MHz, 3582 ms at
+half rate. After loading an image some other way, wait
+`ceil(4 * 2^27 * 1000 / CPU_clock_Hz) + 250` ms before Attach.
+
+The first stop depends on the built image:
 
 | Built image | Initial debug stop |
 | --- | --- |
-| BRAM entry at zero, `main` present, no initialized writable DDR data | Reset/halt, verify PC zero, then continue to a temporary breakpoint at `main`. |
-| The same BRAM conditions, without `main` | Reset/halt at PC zero for assembly source or instruction stepping. |
-| DDR execution, initialized writable DDR data, or another entry address | Halt at the current PC after cable handoff. |
+| BRAM entry at zero, `main` present, no initialized writable DDR data | Reset and halt, check that the PC is zero, then run to a temporary breakpoint at `main`. |
+| The same BRAM conditions, without `main` | Reset and halt at PC zero, for assembly source or instruction stepping. |
+| DDR execution, initialized writable DDR data, or another entry address | Halt at the current PC after the cable handoff. |
 
-A default BRAM app can still contain initialized DDR data. Execution during
-cable handoff can change it, and reset does not restore it; reload when needed.
-`isa_test` uses `s0` in instruction tests, so frame-pointer unwinding is unavailable.
+An app in the default BRAM layout can still have initialized DDR data. The
+program can run during the cable handoff and change it, and a reset does not
+restore it, so reload the image when you need that data fresh. `isa_test`
+clobbers `s0` in its compressed-instruction tests, so frame-pointer unwinding
+does not work there.
 
-## Cable ownership and cleanup
+## Cable handoff and cleanup
 
-Stop external OpenOCD/hardware-server sessions through their owners before
-using FROST. The extension refuses occupied ports and never adopts or stops
-another session's server. It allows one operation at a time and manages its
-own Vivado/OpenOCD handoff. Progress notifications offer cancellation.
+The program, load, and debug commands refuse to run while any other OpenOCD
+or `hw_server` process is running on the host, or while port 3121 or 3333 is
+in use. The extension never adopts or stops another session's server, so stop
+those sessions through whatever started them. It runs one operation at a
+time, moves the cable between Vivado and OpenOCD itself, and offers
+cancellation in its progress notification.
 
-Use **FROST: Disconnect and Resume** for a nonterminating detach. Generic VS
-Code Stop can request target termination. Reload after a debugger crash because
-software breakpoint restoration is not guaranteed.
+End a session with **FROST: Disconnect and Resume**, which requests a detach
+that leaves the program running. If the detach is not confirmed, the
+extension falls back to VS Code's generic Stop, which can ask to terminate the
+target, and stops OpenOCD anyway. After a debugger crash or an unconfirmed
+detach, reload the image, because the extension cannot guarantee that
+software breakpoints were removed from memory.
 
-If native-process cleanup cannot be confirmed, new operations are blocked.
-Inspect **FROST: Show Output**, confirm the cable is free, then reopen the
-workspace. Process cleanup does not provide a lock against unrelated tools.
+If the extension cannot confirm that its native processes stopped, it blocks
+new operations. Check **FROST: Show Output**, confirm that the cable is free,
+then close and reopen the window. This cleanup does not lock the cable
+against unrelated tools.
 
 ## Debugger scope
 
-Supported: software breakpoints, source/instruction stepping, registers,
-locals, and call stack. Hardware breakpoints, watchpoints, Linux debugging,
-RTOS task views, profiling/ILA views, and persistent flash programming are
-unavailable. GDB memory access is limited to BRAM and DDR to avoid MMIO side effects.
+Supported: software breakpoints, source and instruction stepping, registers,
+locals, and the call stack. Not available: hardware breakpoints, watchpoints,
+Linux debugging, RTOS task views, profiling or ILA views, and persistent flash
+programming. GDB can access only BRAM and DDR, so it never reads a device
+register that has read side effects.
 
-For optional-CSR failures in Registers, set `frost.registerDescription=core`
-([details](resources/README.md)). For display problems, use
-`-exec x/16i $pc` or `-exec info registers pc sp ra a0` in Debug Console.
-MIEngine can report an `x86_64` assumption despite GDB reporting RV64;
-disassembly can prefetch below BRAM or display stale breakpoint bytes.
-Expanded application/startup support in version 0.3 awaits hardware validation.
+## Known issues
+
+- The extension is a preview release. On the board, debugging has been
+  tested with `hello_world` and `debug_target`, not yet with the other
+  applications the picker offers.
+- If the Registers view fails on an optional CSR such as `vcsr`, set
+  `frost.registerDescription` to `core` to use the bundled CPU and FPU
+  register description ([details](resources/README.md)).
+- MIEngine can report that it assumes `x86_64` even though GDB reports RV64.
+- The disassembly view can try to read below the start of BRAM or show stale
+  breakpoint bytes. In the Debug Console, `-exec x/16i $pc` and
+  `-exec info registers pc sp ra a0` show the real state.

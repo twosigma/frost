@@ -12,8 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Qualify the completed placement at real constraints. Printed three-decimal
-# slack cannot resolve the -0.200 ns boundary; query calculated slack directly.
+# X3 post-place timing gate, run after placement with the added setup
+# uncertainty back at zero (the gate checks this). Writes post_place_gate.txt
+# with STATUS=PASS when no path has setup slack below -0.200 ns. Printed slack
+# has three decimals and cannot resolve that boundary, so the comparison uses
+# Vivado's calculated slack.
 namespace eval ::frost_x3_post_place_gate {
     proc one {objects label} {
         if {[llength $objects] != 1} {error "Expected one $label"}
@@ -31,10 +34,9 @@ namespace eval ::frost_x3_post_place_gate {
         return [regexp {^-?[0-9]+([.][0-9]+)?$} $value]
     }
 
-    # report_timing prints the requirement to three decimals while the clock
-    # object carries its full period, so a healthy build can differ in the
-    # digits Vivado never printed. Half a printed digit accepts exactly the
-    # values that display as the clock period, and no others.
+    # report_timing prints the requirement to three decimals, but the clock
+    # object holds the full period. Accept a printed value within half a unit
+    # of the last printed digit (0.0005 ns) of the period.
     proc displays_as {value expected} {
         return [expr {abs($value - $expected) <= 0.0005}]
     }
@@ -75,15 +77,16 @@ namespace eval ::frost_x3_post_place_gate {
         set period [get_property PERIOD $clock]
         if {![finite $period] || $period <= 0} {error "Invalid CPU clock period"}
 
-        # A nonempty global query prevents an empty timing universe from passing.
+        # Require a global worst path, so a design with no timed paths cannot pass.
         set command [list get_timing_paths -delay_type max -sort_by slack -max_paths 1 -nworst 1]
         set worst [one [{*}$command] "global max-delay path"]
         set slack [get_property SLACK $worst]
         if {![finite $slack]} {error "Missing finite global setup slack"}
         report_timing -of_objects $worst -file [file join $work_directory post_place_gate_worst.rpt]
 
-        # Read the actual CPU-to-CPU path, including the generated-clock and UU
-        # report evidence. A MAC-domain worst path must not hide CPU uncertainty.
+        # Check the worst CPU-to-CPU path's report for the CPU clock period and
+        # zero user uncertainty (UU). The global worst path may be in a MAC
+        # clock domain, whose report says nothing about the CPU clock.
         set cpu_path [one [{*}$command -from $clock -to $clock] "CPU max-delay path"]
         foreach key {STARTPOINT_CLOCK ENDPOINT_CLOCK GROUP} {
             if {[get_property $key $cpu_path] ne "clock_from_mmcm"} {
@@ -94,8 +97,8 @@ namespace eval ::frost_x3_post_place_gate {
         report_timing -of_objects $cpu_path -file $cpu_report
         validate_cpu_report [read_text $cpu_report] $period
 
-        # No conversion of displayed SLACK decides this comparison. Vivado's
-        # strict search compares calculated slack against the requested gate.
+        # Vivado compares calculated slack with the threshold (-slack_lesser_than
+        # is strict); the rounded SLACK value never decides it.
         set below [{*}$command -slack_lesser_than -0.200]
         set count [llength $below]
         if {$count > 1} {error "Unexpected strict-threshold path count"}

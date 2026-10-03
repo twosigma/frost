@@ -18,27 +18,29 @@
  * nic_byte_pack: places a frame's 8-byte beats into 32-byte line writes at
  * any byte address.
  *
- * Contract: input byte j of the frame lands at address A + j for
- * j < LIMIT, with no other strobe set (A = i_addr, LIMIT = i_limit,
- * both taken at i_start). Beats arrive on the valid/ready input, each with
- * its byte count (1..8, only the last beat may be short) and a last flag.
- * The engine keeps at most one frame in the packer at a time.
+ * Input byte j of the frame lands at address A + j for j < LIMIT, with no
+ * other strobe set (A = i_addr and LIMIT = i_limit, both taken at
+ * i_start). Beats arrive on the valid/ready input, each with its byte count
+ * (1..8, only the last beat may be short) and a last flag. The engine keeps
+ * at most one frame in the packer at a time.
  *
- * Mechanism: a two-line staging window whose base is the line of A. A
- * beat is rotated once by A mod 8 (the rotation is the same for every beat
- * of the frame: positions advance by 8) into a 16-byte pattern and placed
- * at chunk pos/8 and pos/8 + 1 of the window with per-byte enables; pos is
- * the byte position of the next byte relative to the window base. When the
- * next byte belongs to the upper line the lower line is complete and is
- * issued as a line write with the strobes it accumulated (full for
- * interior lines, partial at both ends), and the window shifts down a
- * line. At the last beat the lower line is flushed, and the upper line too
- * if it holds any byte. Bytes at or beyond LIMIT are dropped (the engine
- * reports the truncation). Output writes go through a register that holds
- * the line until the front-end accepts it. A two-beat input queue keeps
- * ready independent of rotation, byte limits and line-write backpressure;
- * it accepts one beat per cycle until the queue fills behind a stalled
- * completed line. Start and flush discard both queued beats.
+ * Bytes are staged in a two-line window whose base is the line of A. Each
+ * beat is rotated by A mod 8 (the same for every beat of the frame, since
+ * positions advance by 8) into a 16-byte pattern and placed with per-byte
+ * enables at chunks pos/8 and pos/8 + 1 of the window, where pos is the
+ * next byte's position relative to the window base. When the next byte
+ * belongs to the upper line, the lower line is complete and the window
+ * shifts down a line; the completed line, if it holds any byte, is issued
+ * as a line write with the strobes it collected (full for interior lines,
+ * partial at both ends). At the last beat the lower line is flushed, and
+ * the upper line too if it holds any byte. Bytes at or beyond LIMIT are
+ * dropped; the engine reports the truncation.
+ *
+ * A register holds each line write until the front-end accepts it. A
+ * two-beat input queue keeps ready independent of rotation, byte limits and
+ * line-write backpressure; it accepts one beat per cycle until the queue
+ * fills behind a stalled completed line. Start and flush discard both
+ * queued beats.
  */
 module nic_byte_pack #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -85,8 +87,8 @@ module nic_byte_pack #(
   // ---- input queue ----------------------------------------------------------------
   // No combinational path from the offered beat or the line write port to
   // ready. Two slots sustain one beat per cycle while the packer consumes
-  // the previous beat. Once the last beat is queued, accept no next frame
-  // until its start; active_q stays high until that beat is actually placed.
+  // the previous beat. After the last beat is queued, ready stays low until
+  // the next i_start; active_q stays high until that beat is placed.
   logic accepting_q;
   logic [1:0] beat_count_q;
   logic beat_rd_q, beat_wr_q;
@@ -122,7 +124,7 @@ module nic_byte_pack #(
   end
 
   // ---- beat rotation and placement -------------------------------------------------
-  // rotated16[rot + j] = beat[j]; enables cover the bytes inside the limit.
+  // rot16[rot_q + j] = beat byte j; the enables cover the bytes inside the limit.
   logic [7:0] rot16[16];
   logic [15:0] rot16_en;
   logic [15:0] room;  // bytes still allowed
@@ -154,7 +156,7 @@ module nic_byte_pack #(
   logic [7:0] win_data_n[WindowBytes];
   logic [WindowBytes-1:0] win_strb_n;
   always_comb begin
-    // The window as if the offered beat were placed (used only on the fire).
+    // The window as if the queue's head beat were placed (committed only on beat_fire).
     win_data_n = win_data_q;
     win_strb_n = win_strb_q;
     for (int i = 0; i < 16; i++) begin

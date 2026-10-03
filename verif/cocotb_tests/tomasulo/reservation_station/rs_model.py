@@ -46,10 +46,10 @@ class RSEntry:
     src3_tag: int = 0
     src3_value: int = 0
 
-    # Behavioral abstraction of deferred dispatch-cycle CDB delivery. RTL uses
-    # per-entry, per-source pending/lane state plus two shared registered lane
-    # values; a pending value expresses the same externally visible result at
-    # this model boundary.
+    # Deferred delivery of a CDB match in the dispatch cycle. The RTL keeps a
+    # pending bit and lane select per source plus two registered lane values;
+    # the model stores the pending value itself, which is equivalent at its
+    # outputs.
     src1_pend: bool = False
     src1_pend_value: int = 0
     src2_pend: bool = False
@@ -88,20 +88,20 @@ class RSModel:
         """Initialize RS model with given depth."""
         self.depth = depth
         self.entries: list[RSEntry] = [RSEntry() for _ in range(depth)]
-        # Opt-in RTL-exact allocation timing: the RTL clears an issued entry's
-        # valid bit at the clock edge, so its slot is not visible to the
-        # free-slot priority encoder until the next cycle. A model consume in
-        # bench-cycle N must therefore not free the slot for a dispatch in the
-        # same bench cycle, or model/DUT slot indices diverge and simultaneous
-        # wakeups legally tie-break to different entries. Cycle-driven tests
-        # enable this and call tick() once per cycle; directed tests that step
-        # freely keep the immediate-reuse behavior.
+        # Optional cycle-exact allocation. The RTL clears an issued entry's
+        # valid bit at the clock edge, so the free-slot priority encoder sees
+        # that slot only in the next cycle. With this set, a slot consumed in
+        # a bench cycle stays unavailable to dispatch until tick(); otherwise
+        # model and DUT slot indices diverge, and when two entries wake
+        # together the lowest-index rule picks different ones. Cycle-driven
+        # tests set it and call tick() once per cycle; directed tests leave it
+        # off and reuse slots immediately.
         self.strict_alloc_timing = False
         self._alloc_blocked: set[int] = set()
-        # A model dispatch is called before the RTL edge that captures it.
-        # The first tick after dispatch therefore arms any dispatch-CDB replay;
-        # the second tick delivers it, matching the RTL's following-edge
-        # pending-to-ready handoff.
+        # dispatch() runs before the RTL edge that writes the entry, so the
+        # first tick() after it arms a deferred CDB delivery and the second
+        # applies it, as the RTL sets the source ready on the edge after the
+        # dispatch edge.
         self._pending_delivery_armed: set[tuple[int, int]] = set()
 
     def reset(self) -> None:
@@ -111,7 +111,7 @@ class RSModel:
         self._pending_delivery_armed.clear()
 
     def tick(self) -> None:
-        """Advance one cycle: release consumed slots and age CDB replays."""
+        """Advance one cycle: free consumed slots and age deferred CDB deliveries."""
         self._alloc_blocked.clear()
 
         for idx, source in self._pending_delivery_armed:
@@ -194,14 +194,16 @@ class RSModel:
         """Dispatch an instruction to the RS.
 
         Returns the index it was placed at, or None if full.
-        The cdb_* args enable same-cycle CDB bypass at dispatch.
+        The cdb_* args describe a CDB broadcast in the dispatch cycle; a
+        matching unready source becomes ready one cycle later (see
+        deliver_pending and tick).
         """
         idx = self._find_free()
         if idx is None:
             return None
 
-        # A flushed/consumed occupant may still have an armed dead replay.
-        # Reusing its slot starts a fresh dispatch-to-delivery lifetime.
+        # The slot's previous occupant, flushed or issued, may still have an
+        # armed delivery. Drop it so the new entry starts clean.
         self._pending_delivery_armed.difference_update({(idx, 1), (idx, 2), (idx, 3)})
         e = self.entries[idx]
         e.valid = True
@@ -274,9 +276,9 @@ class RSModel:
     def deliver_pending(self) -> None:
         """Apply deferred dispatch-cycle CDB deliveries (one RTL cycle later).
 
-        Mirrors the RTL's pending-state lifetime: delivery is unconditional
-        (an entry invalidated in the meantime receives dead state), then
-        the one-cycle replay state expires.
+        As in the RTL, delivery ignores the entry's valid bit (an entry flushed
+        in the meantime gets writes that nothing reads), and the pending state
+        lasts only that one cycle.
         """
         for e in self.entries:
             if e.src1_pend:
@@ -294,7 +296,7 @@ class RSModel:
         self._pending_delivery_armed.clear()
 
     def cdb_snoop(self, tag: int, value: int) -> None:
-        """Process CDB broadcast: wake pending sources across all entries."""
+        """Apply a CDB broadcast: wake matching unready sources in valid entries."""
         tag = tag & MASK_TAG
         value = value & MASK64
         for e in self.entries:

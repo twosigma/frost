@@ -20,27 +20,11 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer
-from cocotb_tests.cpu_structs import (
-    PD_TO_ID_FIELDS,
-    RF_TO_FWD_FIELDS,
-    FP_RF_TO_FWD_FIELDS,
-    ID_TO_EX_FIELDS,
-)
-from utils.packed_structs import (
-    pack_struct as _pack_struct,
-    unpack_struct as _unpack_struct,
-)
+from cocotb_tests.cpu_structs import ID_TO_EX_FIELDS
+from utils.packed_structs import pack_struct as _pack_struct
 
 
 CLOCK_PERIOD_NS = 10
-BRANCH_OP_WIDTH = 3
-RAS_PTR_BITS = 3
-BP_DIR_IDX_BITS = 10
-
-
-def _pack_pd_to_id(fields: Mapping[str, int | bool]) -> int:
-    """Pack a from_pd_to_id_t value."""
-    return _pack_struct(PD_TO_ID_FIELDS, fields)
 
 
 def _pack_id_to_ex(fields: Mapping[str, int | bool]) -> int:
@@ -62,38 +46,26 @@ def _make_instr(
     )
 
 
-def _read_int_slot1(dut: Any) -> dict[str, int | bool]:
-    """Read and unpack the slot-1 integer forwarding output."""
-    return _unpack_struct(RF_TO_FWD_FIELDS, int(dut.o_rf_to_fwd.value))
+def _int_reads(dut: Any) -> tuple[int, int, int, int]:
+    """Return the INT dispatch reads (slot-1 rs1, rs2, slot-2 rs1, rs2)."""
+    return (
+        int(dut.o_int_rf_dispatch_rs1_data.value),
+        int(dut.o_int_rf_dispatch_rs2_data.value),
+        int(dut.o_int_rf_dispatch_rs1_data_2.value),
+        int(dut.o_int_rf_dispatch_rs2_data_2.value),
+    )
 
 
-def _read_int_slot2(dut: Any) -> dict[str, int | bool]:
-    """Read and unpack the slot-2 integer forwarding output."""
-    return _unpack_struct(RF_TO_FWD_FIELDS, int(dut.o_rf_to_fwd_2.value))
-
-
-def _read_fp_slot1(dut: Any) -> dict[str, int | bool]:
-    """Read and unpack the slot-1 FP forwarding output."""
-    return _unpack_struct(FP_RF_TO_FWD_FIELDS, int(dut.o_fp_rf_to_fwd.value))
-
-
-def _read_fp_slot2(dut: Any) -> dict[str, int | bool]:
-    """Read and unpack the slot-2 FP forwarding output."""
-    return _unpack_struct(FP_RF_TO_FWD_FIELDS, int(dut.o_fp_rf_to_fwd_2.value))
-
-
-def _drive_pd_slot(
-    dut: Any,
-    fields: Mapping[str, int | bool],
-    *,
-    slot2: bool = False,
-) -> None:
-    """Drive a PD-to-ID slot with register-read source fields."""
-    value = _pack_pd_to_id(fields)
-    if slot2:
-        dut.i_from_pd_to_id_2.value = value
-    else:
-        dut.i_from_pd_to_id.value = value
+def _fp_reads(dut: Any) -> tuple[int, int, int, int, int, int]:
+    """Return the FP dispatch reads (slot-1 rs1..rs3, slot-2 rs1..rs3)."""
+    return (
+        int(dut.o_fp_rf_dispatch_rs1_data.value),
+        int(dut.o_fp_rf_dispatch_rs2_data.value),
+        int(dut.o_fp_rf_dispatch_rs3_data.value),
+        int(dut.o_fp_rf_dispatch_rs1_data_2.value),
+        int(dut.o_fp_rf_dispatch_rs2_data_2.value),
+        int(dut.o_fp_rf_dispatch_rs3_data_2.value),
+    )
 
 
 def _drive_ex_slot(
@@ -145,8 +117,6 @@ def _clear_writes(dut: Any) -> None:
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to idle values."""
     _clear_writes(dut)
-    _drive_pd_slot(dut, {})
-    _drive_pd_slot(dut, {}, slot2=True)
     _drive_ex_slot(dut)
     _drive_ex_slot(dut, slot2=True)
 
@@ -219,62 +189,52 @@ async def _commit_writes(dut: Any) -> None:
 
 
 def _drive_all_int_reads(dut: Any, *, rs1: int, rs2: int) -> None:
-    """Drive both INT slots so ID and dispatch read the same source pair."""
-    _drive_pd_slot(dut, {"source_reg_1_early": rs1, "source_reg_2_early": rs2})
-    _drive_pd_slot(
-        dut,
-        {"source_reg_1_early": rs1, "source_reg_2_early": rs2},
-        slot2=True,
-    )
+    """Drive both INT slots to read the same source pair."""
     _drive_ex_slot(dut, rs1=rs1, rs2=rs2)
     _drive_ex_slot(dut, rs1=rs1, rs2=rs2, slot2=True)
 
 
 def _drive_all_fp_reads(dut: Any, *, rs1: int, rs2: int, rs3: int) -> None:
-    """Drive both FP slots so ID and dispatch read the same source triple."""
-    _drive_pd_slot(
-        dut,
-        {
-            "source_reg_1_early": rs1,
-            "source_reg_2_early": rs2,
-            "fp_source_reg_3_early": rs3,
-        },
-    )
-    _drive_pd_slot(
-        dut,
-        {
-            "source_reg_1_early": rs1,
-            "source_reg_2_early": rs2,
-            "fp_source_reg_3_early": rs3,
-        },
-        slot2=True,
-    )
+    """Drive both FP slots to read the same source triple."""
     _drive_ex_slot(dut, rs1=rs1, rs2=rs2, fp_rs3=rs3)
     _drive_ex_slot(dut, rs1=rs1, rs2=rs2, fp_rs3=rs3, slot2=True)
 
 
 @cocotb.test()
 async def test_integer_register_reads_reach_both_slots(dut: Any) -> None:
-    """Committed INT values feed ID and dispatch reads for both slots."""
+    """Each INT dispatch read returns its own slot's source register."""
     await _setup_test(dut)
 
     _drive_int_write(dut, port=0, addr=5, data=0x11112222)
     _drive_int_write(dut, port=1, addr=6, data=0x33334444)
     await _commit_writes(dut)
+    _drive_int_write(dut, port=0, addr=7, data=0x55556666)
+    _drive_int_write(dut, port=1, addr=8, data=0x77778888)
+    await _commit_writes(dut)
 
-    _drive_all_int_reads(dut, rs1=5, rs2=6)
+    _drive_ex_slot(dut, rs1=5, rs2=6)
+    _drive_ex_slot(dut, rs1=7, rs2=8, slot2=True)
     await _settle()
 
-    slot1 = _read_int_slot1(dut)
-    slot2 = _read_int_slot2(dut)
-    assert int(slot1["source_reg_1_data"]) == 0x11112222
-    assert int(slot1["source_reg_2_data"]) == 0x33334444
-    assert int(slot2["source_reg_1_data"]) == 0x11112222
-    assert int(slot2["source_reg_2_data"]) == 0x33334444
-    assert int(dut.o_int_rf_dispatch_rs1_data.value) == 0x11112222
-    assert int(dut.o_int_rf_dispatch_rs2_data.value) == 0x33334444
-    assert int(dut.o_int_rf_dispatch_rs1_data_2.value) == 0x11112222
-    assert int(dut.o_int_rf_dispatch_rs2_data_2.value) == 0x33334444
+    assert _int_reads(dut) == (0x11112222, 0x33334444, 0x55556666, 0x77778888)
+
+
+@cocotb.test()
+async def test_integer_bypass_reaches_each_read_port(dut: Any) -> None:
+    """A same-cycle commit on either write port bypasses to each INT read that names it."""
+    await _setup_test(dut)
+
+    _drive_ex_slot(dut, rs1=10, rs2=11)
+    _drive_ex_slot(dut, rs1=11, rs2=10, slot2=True)
+    _drive_int_write(dut, port=0, addr=10, data=0xAAAA0000)
+    _drive_int_write(dut, port=1, addr=11, data=0xBBBB1111)
+    await _settle()
+
+    assert _int_reads(dut) == (0xAAAA0000, 0xBBBB1111, 0xBBBB1111, 0xAAAA0000)
+
+    await _commit_writes(dut)
+
+    assert _int_reads(dut) == (0xAAAA0000, 0xBBBB1111, 0xBBBB1111, 0xAAAA0000)
 
 
 @cocotb.test()
@@ -287,19 +247,12 @@ async def test_integer_same_cycle_bypass_prefers_port1(dut: Any) -> None:
     _drive_int_write(dut, port=1, addr=7, data=0xBBBB1111)
     await _settle()
 
-    slot1 = _read_int_slot1(dut)
-    slot2 = _read_int_slot2(dut)
-    assert int(slot1["source_reg_1_data"]) == 0xBBBB1111
-    assert int(slot1["source_reg_2_data"]) == 0xBBBB1111
-    assert int(slot2["source_reg_1_data"]) == 0xBBBB1111
-    assert int(slot2["source_reg_2_data"]) == 0xBBBB1111
-    assert int(dut.o_int_rf_dispatch_rs1_data.value) == 0xBBBB1111
-    assert int(dut.o_int_rf_dispatch_rs2_data_2.value) == 0xBBBB1111
+    assert _int_reads(dut) == (0xBBBB1111,) * 4
 
     await _commit_writes(dut)
     await _settle()
 
-    assert int(_read_int_slot1(dut)["source_reg_1_data"]) == 0xBBBB1111
+    assert _int_reads(dut) == (0xBBBB1111,) * 4
 
 
 @cocotb.test()
@@ -312,45 +265,37 @@ async def test_integer_x0_write_is_not_bypassed_or_stored(dut: Any) -> None:
     _drive_int_write(dut, port=1, addr=0, data=0x87654321)
     await _settle()
 
-    slot1 = _read_int_slot1(dut)
-    assert int(slot1["source_reg_1_data"]) == 0
-    assert int(slot1["source_reg_2_data"]) == 0
-    assert int(dut.o_int_rf_dispatch_rs1_data.value) == 0
+    assert _int_reads(dut) == (0, 0, 0, 0)
 
     await _commit_writes(dut)
 
-    assert int(_read_int_slot2(dut)["source_reg_1_data"]) == 0
+    assert _int_reads(dut) == (0, 0, 0, 0)
 
 
 @cocotb.test()
 async def test_fp_register_reads_reach_all_sources_and_slots(dut: Any) -> None:
-    """Committed FP values feed all three source reads for both slots."""
+    """Each FP dispatch read returns its own slot's source register, rs3 included."""
     await _setup_test(dut)
 
-    _drive_fp_write(dut, port=0, addr=3, data=0x1111222233334444)
-    _drive_fp_write(dut, port=1, addr=4, data=0x5555666677778888)
-    await _commit_writes(dut)
+    values = {
+        3: 0x1111222233334444,
+        4: 0x5555666677778888,
+        5: 0x9999AAAABBBBCCCC,
+        6: 0x0123456789ABCDEF,
+        7: 0xFEDCBA9876543210,
+        8: 0x0F1E2D3C4B5A6978,
+    }
+    regs = list(values)
+    for port0_addr, port1_addr in zip(regs[0::2], regs[1::2]):
+        _drive_fp_write(dut, port=0, addr=port0_addr, data=values[port0_addr])
+        _drive_fp_write(dut, port=1, addr=port1_addr, data=values[port1_addr])
+        await _commit_writes(dut)
 
-    _drive_fp_write(dut, port=0, addr=5, data=0x9999AAAABBBBCCCC)
-    await _commit_writes(dut)
-
-    _drive_all_fp_reads(dut, rs1=3, rs2=4, rs3=5)
+    _drive_ex_slot(dut, rs1=3, rs2=4, fp_rs3=5)
+    _drive_ex_slot(dut, rs1=6, rs2=7, fp_rs3=8, slot2=True)
     await _settle()
 
-    slot1 = _read_fp_slot1(dut)
-    slot2 = _read_fp_slot2(dut)
-    assert int(slot1["fp_source_reg_1_data"]) == 0x1111222233334444
-    assert int(slot1["fp_source_reg_2_data"]) == 0x5555666677778888
-    assert int(slot1["fp_source_reg_3_data"]) == 0x9999AAAABBBBCCCC
-    assert int(slot2["fp_source_reg_1_data"]) == 0x1111222233334444
-    assert int(slot2["fp_source_reg_2_data"]) == 0x5555666677778888
-    assert int(slot2["fp_source_reg_3_data"]) == 0x9999AAAABBBBCCCC
-    assert int(dut.o_fp_rf_dispatch_rs1_data.value) == 0x1111222233334444
-    assert int(dut.o_fp_rf_dispatch_rs2_data.value) == 0x5555666677778888
-    assert int(dut.o_fp_rf_dispatch_rs3_data.value) == 0x9999AAAABBBBCCCC
-    assert int(dut.o_fp_rf_dispatch_rs1_data_2.value) == 0x1111222233334444
-    assert int(dut.o_fp_rf_dispatch_rs2_data_2.value) == 0x5555666677778888
-    assert int(dut.o_fp_rf_dispatch_rs3_data_2.value) == 0x9999AAAABBBBCCCC
+    assert _fp_reads(dut) == tuple(values[r] for r in regs)
 
 
 @cocotb.test()
@@ -363,20 +308,32 @@ async def test_fp_same_cycle_bypass_prefers_port1(dut: Any) -> None:
     _drive_fp_write(dut, port=1, addr=9, data=0x1111222233334444)
     await _settle()
 
-    slot1 = _read_fp_slot1(dut)
-    slot2 = _read_fp_slot2(dut)
-    assert int(slot1["fp_source_reg_1_data"]) == 0x1111222233334444
-    assert int(slot1["fp_source_reg_2_data"]) == 0x1111222233334444
-    assert int(slot1["fp_source_reg_3_data"]) == 0x1111222233334444
-    assert int(slot2["fp_source_reg_1_data"]) == 0x1111222233334444
-    assert int(slot2["fp_source_reg_2_data"]) == 0x1111222233334444
-    assert int(slot2["fp_source_reg_3_data"]) == 0x1111222233334444
-    assert int(dut.o_fp_rf_dispatch_rs3_data.value) == 0x1111222233334444
-    assert int(dut.o_fp_rf_dispatch_rs3_data_2.value) == 0x1111222233334444
+    assert _fp_reads(dut) == (0x1111222233334444,) * 6
 
     await _commit_writes(dut)
 
-    assert int(_read_fp_slot1(dut)["fp_source_reg_1_data"]) == 0x1111222233334444
+    assert _fp_reads(dut) == (0x1111222233334444,) * 6
+
+
+@cocotb.test()
+async def test_fp_bypass_reaches_each_read_port(dut: Any) -> None:
+    """A same-cycle commit on either write port bypasses to each FP read that names it."""
+    await _setup_test(dut)
+
+    port0_data = 0xAAAABBBBCCCCDDDD
+    port1_data = 0x1111222233334444
+    _drive_ex_slot(dut, rs1=12, rs2=13, fp_rs3=12)
+    _drive_ex_slot(dut, rs1=13, rs2=12, fp_rs3=13, slot2=True)
+    _drive_fp_write(dut, port=0, addr=12, data=port0_data)
+    _drive_fp_write(dut, port=1, addr=13, data=port1_data)
+    await _settle()
+
+    expected = (port0_data, port1_data, port0_data, port1_data, port0_data, port1_data)
+    assert _fp_reads(dut) == expected
+
+    await _commit_writes(dut)
+
+    assert _fp_reads(dut) == expected
 
 
 @cocotb.test()
@@ -388,12 +345,8 @@ async def test_fp_register_zero_is_written_and_bypassed(dut: Any) -> None:
     _drive_fp_write(dut, port=0, addr=0, data=0x0102030405060708)
     await _settle()
 
-    assert int(_read_fp_slot1(dut)["fp_source_reg_1_data"]) == 0x0102030405060708
-    assert int(dut.o_fp_rf_dispatch_rs2_data.value) == 0x0102030405060708
+    assert _fp_reads(dut) == (0x0102030405060708,) * 6
 
     await _commit_writes(dut)
 
-    slot2 = _read_fp_slot2(dut)
-    assert int(slot2["fp_source_reg_1_data"]) == 0x0102030405060708
-    assert int(slot2["fp_source_reg_2_data"]) == 0x0102030405060708
-    assert int(slot2["fp_source_reg_3_data"]) == 0x0102030405060708
+    assert _fp_reads(dut) == (0x0102030405060708,) * 6

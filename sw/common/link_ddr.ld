@@ -121,11 +121,11 @@ SECTIONS
     } > DDR
 
     /*
-     * Cache-report support runs only after measured work. Keep its loadable
-     * sections after every legacy program section, including .ddr_bss, so
-     * adding the report preserves crt0 endpoint constants as well as ordinary
-     * code/data addresses. common.mk includes both output sections in the DDR
-     * image and removes them from the boot-only low image.
+     * The cache-profile report runs only after the measured work. Its loadable
+     * sections come after every other program section, including .ddr_bss, so
+     * linking the report in moves neither the program's code and data nor the
+     * section bounds crt0 reads. common.mk includes both output sections in the
+     * DDR image and removes them from the boot-only low image.
      */
     .cache_profile_text : {
         *(.cache_profile_text*)

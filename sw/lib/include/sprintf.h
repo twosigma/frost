@@ -24,33 +24,40 @@
  *   %d / %i   signed decimal integer
  *   %u        unsigned decimal integer
  *   %o        unsigned octal integer
- *   %x / %X  unsigned hex integer (lower / upper)
- *   %f        decimal floating-point  ([-]ddd.dddddd)
- *   %e / %E  scientific notation     ([-]d.ddde±dd)
- *   %g / %G  shorter of %f / %e
+ *   %x / %X   unsigned hex integer (lower / upper)
+ *   %f / %F   decimal floating-point  ([-]ddd.dddddd)
+ *   %e / %E   scientific notation     ([-]d.ddde±dd)
+ *   %g / %G   %e style when the rounded exponent is < -4 or >= the precision,
+ *             else %f
  *   %c        character
  *   %s        NUL-terminated string
  *   %p        pointer (0x…)
+ *   %n        store the count written so far (int *, or the type a length
+ *             modifier names)
  *   %%        literal '%'
  *
  * Flags:   - + space 0 #
  * Width:   decimal integer or *
  * Precision: .decimal integer or .*
- * Length modifiers: h  hh  l  ll  z  t
+ * Length modifiers: h  hh  l  ll  z  t, with every integer conversion and %n
+ *
+ * Floating-point output is correctly rounded (to nearest, ties to even) for
+ * every finite double; the dynamic rounding mode in frm does not change it.
+ * Infinity and NaN print as inf and nan, or as INF and NAN for %F, %E, and %G.
  */
 
 #include <stdarg.h>
 #include <stddef.h>
 
 /**
- * sprintf  – format into an unbounded buffer (caller must ensure space).
+ * sprintf: format into an unbounded buffer (the caller must provide room).
  * Returns the number of characters written (excluding the NUL terminator),
  * or a negative value on error.
  */
 int sprintf(char *buf, const char *fmt, ...);
 
 /**
- * snprintf – format into at most (size-1) characters + NUL.
+ * snprintf: format into at most (size-1) characters + NUL.
  * Always NUL-terminates when size > 0.
  * Returns the number of characters that *would* have been written had the
  * buffer been large enough (excluding NUL), or -1 when that count exceeds

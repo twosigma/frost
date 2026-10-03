@@ -15,16 +15,11 @@
 """Reset handshake tests on nic_reset_test_harness.
 
 The harness holds nic_reset_ctrl, two nic_domain_reset far sides, two
-async_fifos and a cdc_gray_count across three clocks. Checked: the RESET sequence (drain first, busy until the core-side reset is
-done and the requests are up, never waiting for a MAC clock); the
-per-domain generation handshake (ready only after the domain acknowledged
-the current generation and left reset); an absent clock (RESET completes,
-that domain stays not-ready, becomes ready when the clock returns); a clock
-lost during operation (the domain drops to not-ready, a new generation runs
-when it returns); a stale acknowledgement (a second RESET is not satisfied
-by the previous generation); words left in a FIFO across a RESET never
-reappear and the FIFO works after; the event counter survives a domain
-reset without inventing events and the RESET clears it.
+async_fifos, and a cdc_gray_count across three clocks. RESET drains first
+and never waits for a MAC clock; a domain is ready only after it has
+acknowledged the current generation and left reset. Words left in a FIFO
+across a RESET never reappear, and the event total holds across a domain
+reset and clears on RESET.
 """
 
 import random
@@ -182,7 +177,7 @@ async def test_startup_handshake_then_ready(dut: Any) -> None:
 
 @cocotb.test()
 async def test_reset_drains_then_resets_and_busy_ends_without_acks(dut: Any) -> None:
-    """RESET waits for DMA idle, pulses the core reset, and busy clears before the far sides answer."""
+    """RESET drains DMA, then pulses the core reset; busy clears before the far sides answer."""
     await _setup(dut)
     await _wait_for(dut, lambda: _ready(dut) == (1, 1), "ready")
     dut.i_dma_idle.value = 0

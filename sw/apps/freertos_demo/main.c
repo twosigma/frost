@@ -18,11 +18,15 @@
  * FreeRTOS demo for FROST. A producer and a higher-priority consumer pass
  * NUM_ITEMS values through a depth-3 queue, sharing the UART under a mutex,
  * while two worker tasks hammer one counter with amoadd.w and yield every 64
- * iterations. The consumer checks both tallies at the end and prints <<PASS>>
- * or <<FAIL>>.
+ * iterations; the 1 ms tick also time-slices the equal-priority tasks. Each
+ * demo task checks that it starts with a 16-byte aligned stack pointer. The
+ * consumer then checks that a tick taken inside a critical section defers its
+ * task switch to the end of that section, checks both tallies, and prints
+ * <<PASS>> or <<FAIL>>.
  */
 
 #include "FreeRTOS.h"
+#include "csr.h"
 #include "queue.h"
 #include "semphr.h"
 #include "task.h"
@@ -47,6 +51,23 @@ static volatile uint32_t ulProducerCount = 0;
 static volatile uint32_t ulConsumerCount = 0;
 static volatile uint32_t ulAtomicCounter = 0;
 static const uint32_t ulAtomicWorkerIds[ATOMIC_WORKER_TASKS] = {1U, 2U};
+static volatile uint32_t ulHelperRuns = 0;
+static volatile uint32_t ulStackMisaligned = 0;
+
+/*-----------------------------------------------------------*/
+/* Stack alignment */
+
+/* The psABI keeps sp 16-byte aligned and every frame a multiple of 16 bytes, so sp here is
+ * misaligned only if the task started with a misaligned sp. */
+static void prvCheckStackAlignment(void)
+{
+    uintptr_t uxSp;
+
+    __asm volatile("mv %0, sp" : "=r"(uxSp));
+    if ((uxSp & 0xFU) != 0U) {
+        ulStackMisaligned = 1U;
+    }
+}
 
 /*-----------------------------------------------------------*/
 /* UART output under the mutex */
@@ -67,6 +88,7 @@ static void vProducerTask(void *pvParameters)
     (void) pvParameters;
     uint32_t ulValue;
 
+    prvCheckStackAlignment();
     safe_print("[Producer] Task started\r\n");
 
     for (ulValue = 1; ulValue <= NUM_ITEMS; ulValue++) {
@@ -114,6 +136,7 @@ static void vAtomicWorkerTask(void *pvParameters)
     (void) pvParameters;
     uint32_t i;
 
+    prvCheckStackAlignment();
     for (i = 0; i < ATOMIC_ITERATIONS_PER_WORKER; i++) {
         atomic_inc_amo(&ulAtomicCounter);
 
@@ -131,6 +154,93 @@ static void vAtomicWorkerTask(void *pvParameters)
 }
 
 /*-----------------------------------------------------------*/
+/* Tick inside a critical section */
+
+/* Outcome of prvTickInCriticalSection */
+typedef enum {
+    eTickCheckNotRun,   /* the helper task could not be created */
+    eTickCheckLost,     /* the switch the tick asked for never ran */
+    eTickCheckDeferred, /* the switch ran once the section ended */
+} TickCheckResult_t;
+
+/* Stays ready at the consumer's priority, so each tick asks for a time-slice switch */
+static void vTickHelperTask(void *pvParameters)
+{
+    (void) pvParameters;
+
+    prvCheckStackAlignment();
+    for (;;) {
+        ulHelperRuns++;
+        taskYIELD();
+    }
+}
+
+/* Re-enable interrupts inside a critical section and wait for a tick while an
+ * equal-priority task is ready. The tick must not switch tasks inside the
+ * section, and the switch it asks for must run once the section ends. A switch
+ * inside the section, or a second tick in it, prints <<FAIL>> and stops. */
+static TickCheckResult_t prvTickInCriticalSection(void)
+{
+    TaskHandle_t xSelf = xTaskGetCurrentTaskHandle();
+    TaskHandle_t xHelper = NULL;
+    TickType_t xStart;
+    uint32_t ulRunsBefore;
+    uint32_t ulAttempt;
+    TickCheckResult_t eResult;
+
+    /* The helper's stack comes from the heap, which holds the finished tasks'
+     * stacks until the idle task frees them, so retry after a tick. */
+    for (ulAttempt = 0U; xTaskCreate(vTickHelperTask,
+                                     "Helper",
+                                     ATOMIC_TASK_STACK_SIZE,
+                                     NULL,
+                                     tskIDLE_PRIORITY + 2,
+                                     &xHelper) != pdPASS;
+         ulAttempt++) {
+        if (ulAttempt == 10U) {
+            safe_print("[Consumer] Helper task creation failed\r\n");
+            return eTickCheckNotRun;
+        }
+        vTaskDelay(1);
+    }
+
+    taskENTER_CRITICAL();
+    ulRunsBefore = ulHelperRuns;
+    /* Read the count while interrupts are still off, so the wait ends at the first tick
+     * taken in the section, even one already pending when interrupts come on. */
+    xStart = xTaskGetTickCount();
+    portENABLE_INTERRUPTS();
+    while (xTaskGetTickCount() == xStart) {
+    }
+    portDISABLE_INTERRUPTS();
+    /* No further ticks until the checks are done, so only the switch this tick
+     * asked for can run the helper. */
+    csr_clear(mie, MIE_MTIE);
+    if ((TickType_t) (xTaskGetTickCount() - xStart) != 1U) {
+        /* A second tick, taken only if the next one is already due when the first
+         * returns, could undo a switch made by the first and hide it from the checks
+         * below. */
+        uart_puts("[Consumer] More than one tick in the critical section\r\n");
+        uart_puts("\r\nFAIL\r\n<<FAIL>>\r\n");
+        for (;;) {
+        }
+    }
+    if ((xTaskGetCurrentTaskHandle() != xSelf) || (ulHelperRuns != ulRunsBefore)) {
+        /* The section was preempted, or pxCurrentTCB no longer names this task */
+        uart_puts("[Consumer] Tick in a critical section switched tasks\r\n");
+        uart_puts("\r\nFAIL\r\n<<FAIL>>\r\n");
+        for (;;) {
+        }
+    }
+    taskEXIT_CRITICAL();
+
+    eResult = (ulHelperRuns != ulRunsBefore) ? eTickCheckDeferred : eTickCheckLost;
+    csr_set(mie, MIE_MTIE);
+    vTaskDelete(xHelper);
+    return eResult;
+}
+
+/*-----------------------------------------------------------*/
 /* Consumer Task - receives data from queue */
 
 static void vConsumerTask(void *pvParameters)
@@ -140,8 +250,11 @@ static void vConsumerTask(void *pvParameters)
     uint32_t i;
     BaseType_t xQueueOk;
     BaseType_t xAtomicOk;
+    BaseType_t xStackOk;
+    TickCheckResult_t eTickCheck;
     const uint32_t ulAtomicExpected = ATOMIC_WORKER_TASKS * ATOMIC_ITERATIONS_PER_WORKER;
 
+    prvCheckStackAlignment();
     safe_print("[Consumer] Task started (higher priority)\r\n");
 
     while (ulConsumerCount < NUM_ITEMS) {
@@ -160,12 +273,18 @@ static void vConsumerTask(void *pvParameters)
     }
 
     safe_print("[Consumer] Waiting for atomic worker completion...\r\n");
+    /* pdFALSE takes one notification per call, so both workers count even if
+     * both notified before the first take. */
     for (i = 0; i < ATOMIC_WORKER_TASKS; i++) {
-        (void) ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        (void) ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
     }
+
+    safe_print("[Consumer] Waiting for a tick inside a critical section...\r\n");
+    eTickCheck = prvTickInCriticalSection();
 
     xQueueOk = (ulProducerCount == NUM_ITEMS) && (ulConsumerCount == NUM_ITEMS);
     xAtomicOk = (ulAtomicCounter == ulAtomicExpected);
+    xStackOk = (ulStackMisaligned == 0U);
 
     /* Print summary */
     if (xSemaphoreTake(xUartMutex, portMAX_DELAY) == pdTRUE) {
@@ -176,8 +295,20 @@ static void vConsumerTask(void *pvParameters)
         uart_printf("Atomic counter: %lu/%lu\r\n",
                     (unsigned long) ulAtomicCounter,
                     (unsigned long) ulAtomicExpected);
-        uart_puts("Queue + Mutex + Preemption + A-extension stress: ");
-        if (xQueueOk == pdTRUE && xAtomicOk == pdTRUE) {
+        uart_printf("Ticks: %lu\r\n", (unsigned long) xTaskGetTickCount());
+        uart_puts("Tick in a critical section: ");
+        if (eTickCheck == eTickCheckDeferred) {
+            uart_puts("switch deferred\r\n");
+        } else if (eTickCheck == eTickCheckLost) {
+            uart_puts("switch lost\r\n");
+        } else {
+            uart_puts("not run\r\n");
+        }
+        uart_puts("Task stacks: ");
+        uart_puts(xStackOk == pdTRUE ? "16-byte aligned\r\n" : "misaligned\r\n");
+        uart_puts("All checks: ");
+        if (xQueueOk == pdTRUE && xAtomicOk == pdTRUE && eTickCheck == eTickCheckDeferred &&
+            xStackOk == pdTRUE) {
             uart_puts("Working!\r\n");
             uart_puts("\r\nPASS\r\n");
             uart_puts("<<PASS>>\r\n");
@@ -217,6 +348,7 @@ int main(void)
     uart_puts("  - Inter-task queue communication\r\n");
     uart_puts("  - Mutex protecting shared UART\r\n");
     uart_puts("  - Preemptive priority scheduling\r\n");
+    uart_puts("  - Tick-driven time slicing\r\n");
     uart_puts("  - Blocking on queue empty/full\r\n");
     uart_puts("========================================\r\n\r\n");
 
@@ -303,17 +435,10 @@ int main(void)
 
 void freertos_risc_v_application_exception_handler(void)
 {
-    uint32_t mcause, mepc;
+    unsigned long mcause, mepc;
     __asm volatile("csrr %0, mcause" : "=r"(mcause));
     __asm volatile("csrr %0, mepc" : "=r"(mepc));
-    uart_puts("\r\n[EXCEPTION] cause=");
-    uart_putchar('0' + (mcause & 0xF));
-    uart_puts(" at PC=0x");
-    static const char hex[] = "0123456789ABCDEF";
-    for (int i = 7; i >= 0; i--) {
-        uart_putchar(hex[(mepc >> (i * 4)) & 0xF]);
-    }
-    uart_puts("\r\n");
+    uart_printf("\r\n[EXCEPTION] cause=%lu at PC=0x%016lx\r\n", mcause, mepc);
     for (;;)
         ;
 }
@@ -328,15 +453,9 @@ void freertos_risc_v_application_interrupt_handler(void)
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 {
     (void) xTask;
-    (void) pcTaskName;
-    uart_puts("[STACK OVERFLOW]\r\n");
-    for (;;)
-        ;
-}
-
-void vApplicationMallocFailedHook(void)
-{
-    uart_puts("[MALLOC FAILED]\r\n");
+    uart_puts("\r\n[STACK OVERFLOW] ");
+    uart_puts(pcTaskName);
+    uart_puts("\r\nFAIL\r\n<<FAIL>>\r\n");
     for (;;)
         ;
 }

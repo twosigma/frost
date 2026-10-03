@@ -17,10 +17,9 @@
 #ifndef FROST_ISS_UART_H
 #define FROST_ISS_UART_H
 
-/* Shim standing in for sw/lib/include/uart.h so that the app's unmodified
- * ../core_portme.h compiles for Spike.  This harness never passes
- * -I../../lib/include, so the real MMIO driver is not on the include path and
- * cannot be reached; uart_printf is a sink (see stub.c).  Reusing the app's
+/* Stands in for sw/lib/include/uart.h so the app's unmodified ../core_portme.h
+ * compiles in count_instructions.py's build, which does not put sw/lib/include
+ * on the include path. uart_printf is a sink (see stub.c). Reusing the app's
  * port header rather than copying it keeps the two builds from drifting. */
 int uart_printf(const char *format, ...);
 

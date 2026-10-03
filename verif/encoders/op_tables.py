@@ -15,38 +15,35 @@
 """Map instruction mnemonics to encoders and reference evaluators.
 
 Each entry connects a mnemonic such as ``add``, ``lw``, or ``beq`` to an encoder
-that turns instruction parameters into raw instruction bits and, where the
-instruction writes a register, an evaluator that computes the expected result in
-software. An instruction that writes no register has an encoder alone.
+that turns instruction parameters into raw instruction bits and, in most tables,
+an evaluator that computes the expected result in software. Tables typed
+``dict[str, Callable]`` hold encoders only; the tests model those instructions'
+effects themselves.
 
     - R_ALU: register-register operations (add, sub, mul, div, ...)
     - I_ALU: immediate ALU operations (addi, andi, slli, ...)
     - LOADS: loads (lw, lh, lb, lhu, lbu)
     - STORES: stores (sw, sh, sb), encoder only
     - BRANCHES: conditional branches (beq, bne, blt, ...), encoder only
-    - JUMPS: jumps (jal, jalr)
-
-The tables keep test selection data-driven: adding an entry requires no test-loop
-changes.
+    - JUMPS: jumps (jal, jalr), encoder only
 
 Example::
 
-    >>> # Look up ADD instruction
-    >>> encoder, evaluator = R_ALU["add"]
-    >>> # Encode: add x5, x3, x4
-    >>> binary = encoder(rd=5, rs1=3, rs2=4)
-    >>> # Evaluate: compute result
-    >>> result = evaluator(register[3], register[4])
+    encoder, evaluator = R_ALU["add"]
+    word = encoder(rd=5, rs1=3, rs2=4)  # add x5, x3, x4
+    result = evaluator(rs1_value, rs2_value)
 
-To add an instruction, write its evaluator in alu_model.py if one does not exist
-yet, then add the entry to the table it belongs in here.
+To add an instruction, write its evaluator in alu_model.py or fp_model.py if one
+does not exist yet, then add the entry to the table it belongs in here.
 """
 
 from collections.abc import Callable
 
 
+from config import SHIFT_AMOUNT_MASK
 from encoders.instruction_encode import (
     enc_r,
+    enc_r_w,
     enc_i,
     enc_i_load,
     enc_i_jalr,
@@ -80,7 +77,7 @@ from encoders.instruction_encode import (
     enc_ebreak,
     enc_mret,
     enc_wfi,
-    # F extension (floating-point)
+    # F and D extensions (floating-point)
     enc_flw,
     enc_fsw,
     enc_fld,
@@ -292,59 +289,66 @@ from models.fp_model import (
     # D extension - classify
     fclass_d,
     # FP loads
+    flw,
     fld,
 )
 
 
 def make_r_encoder(f7: int, f3: int) -> Callable:
-    """Create R-type instruction encoders."""
+    """Return an R-type encoder called as ``encoder(rd, rs1, rs2)``."""
     return lambda rd, rs1, rs2: enc_r(f7, rs2, rs1, f3, rd)
 
 
 def make_i_encoder(f3: int) -> Callable:
-    """Create I-type ALU instruction encoders."""
+    """Return an I-type ALU encoder called as ``encoder(rd, rs1, imm)``."""
     return lambda rd, rs1, imm: enc_i(imm, rs1, f3, rd)
 
 
 def make_i_shift_encoder(f3: int, f7: int) -> Callable:
-    """Create I-type shift instruction encoders."""
-    return lambda rd, rs1, sh: enc_i((sh & 0x1F) | (f7 << 5), rs1, f3, rd)
+    """Return an I-type shift encoder called as ``encoder(rd, rs1, sh)``.
+
+    RV64 layout: funct7[6:1] fills imm[11:6] and the 6-bit shift amount fills
+    imm[5:0], so funct7[0] must be 0.
+    """
+    assert f7 & 1 == 0, "funct7[0] would overlap shift amount bit 5"
+    return lambda rd, rs1, sh: enc_i((sh & SHIFT_AMOUNT_MASK) | (f7 << 5), rs1, f3, rd)
 
 
 def make_i_unary_encoder(f3: int, f7: int, rs2_field: int) -> Callable:
-    """Create I-type unary instruction encoders (Zbb clz, ctz, cpop, sext.b, sext.h).
+    """Return a unary encoder called as ``encoder(rd, rs1)``.
 
-    These instructions encode the operation type in both funct7 and rs2 field,
-    and only take one source register operand.
+    Used for Zbb clz, ctz, cpop, sext.b, and sext.h, where funct7 and the rs2
+    field together select the operation.
     """
     return lambda rd, rs1: enc_i((rs2_field & 0x1F) | (f7 << 5), rs1, f3, rd)
 
 
 def make_i_fixed_encoder(f3: int, f7: int, rs2_field: int) -> Callable:
-    """Create I-type instruction encoders with fixed rs2 field (Zbb orc.b, rev8).
+    """Return a unary encoder called as ``encoder(rd, rs1)``.
 
-    These instructions use a fixed value in the rs2 field.
+    Used for orc.b, rev8, and brev8. It builds the same encoding as
+    make_i_unary_encoder.
     """
     return lambda rd, rs1: enc_i((rs2_field & 0x1F) | (f7 << 5), rs1, f3, rd)
 
 
-def make_r_unary_encoder(f7: int, f3: int) -> Callable:
-    """Create an R-type unary instruction encoder (zext.h, with rs2 tied to 0)."""
-    return lambda rd, rs1: enc_r(f7, 0, rs1, f3, rd)
+def make_r_w_unary_encoder(f7: int, f3: int) -> Callable:
+    """Return an OP-32 encoder called as ``encoder(rd, rs1)`` with rs2 = x0 (zext.h)."""
+    return lambda rd, rs1: enc_r_w(f7, 0, rs1, f3, rd)
 
 
 def make_load_encoder(f3: int) -> Callable:
-    """Create load instruction encoders."""
+    """Return a load encoder called as ``encoder(rd, rs1, imm)``."""
     return lambda rd, rs1, imm: enc_i_load(imm, rs1, f3, rd)
 
 
 def make_store_encoder(f3: int) -> Callable:
-    """Create store instruction encoders."""
+    """Return a store encoder called as ``encoder(rs2, rs1, imm)``."""
     return lambda rs2, rs1, imm: enc_s(rs2, rs1, f3, imm)
 
 
 def make_branch_encoder(f3: int) -> Callable:
-    """Create branch instruction encoders."""
+    """Return a branch encoder called as ``encoder(rs2, rs1, offset)``."""
     return lambda rs2, rs1, offset: enc_b(rs2, rs1, f3, offset)
 
 
@@ -447,8 +451,9 @@ JUMPS: dict[str, Callable] = {
     "jalr": lambda rd, rs1, imm: enc_i_jalr(imm, rs1, rd),
 }
 
-# Zifencei memory-ordering instructions. They write no register, so the table
-# carries an encoder and no evaluator.
+# FENCE, FENCE.I (Zifencei), and PAUSE (Zihintpause): fixed encodings with no
+# operands. They write no register, so the table carries an encoder and no
+# evaluator.
 FENCES: dict[str, Callable] = {
     "fence": enc_fence,
     "fence.i": enc_fence_i,
@@ -457,9 +462,10 @@ FENCES: dict[str, Callable] = {
 }
 
 # Zicsr read/modify/write instructions. Each writes the old CSR value into rd.
-# The encoder takes (rd, csr_address, rs1_or_zimm). Against the read-only Zicntr
-# counters the random stream passes rs1=x0 or zimm=0, which reads the CSR without
-# modifying it (the csrr pseudo-instruction).
+# The encoder takes (rd, csr_address, rs1_or_zimm). csrrw and csrrwi always
+# write, and a write to a read-only counter raises illegal-instruction, so the
+# random stream draws only csrrs, csrrc, csrrsi, and csrrci, targets only
+# ZICNTR_CSRS, and passes rs1=x0 or zimm=0, which makes them pure reads.
 CSRS: dict[str, Callable] = {
     "csrrw": enc_csrrw,
     "csrrs": enc_csrrs,
@@ -470,15 +476,16 @@ CSRS: dict[str, Callable] = {
 }
 
 # Zicntr CSR addresses the random stream may read. CYCLE and TIME increment every
-# clock cycle, so their values are unpredictable once a mul or div stalls. Only
-# INSTRET is listed: it advances once per retired instruction. The rv32-era
-# high-half counters do not exist at rv64, where reads of them trap.
+# clock cycle, so the model cannot predict them once the pipeline stalls. Only
+# INSTRET is listed: it advances once per retired instruction. The RV32
+# high-half counters (cycleh, timeh, instreth) do not exist at RV64, where
+# accessing them raises illegal-instruction.
 ZICNTR_CSRS: list[int] = [
     CSRAddress.INSTRET,
 ]
 
-# Zbb unary bit-manipulation operations. Each takes a single source register
-# (rd, rs1) and encodes the operation in funct7 plus the rs2 field.
+# Zbb and Zbkb unary operations. Each encoder takes (rd, rs1), and funct7 plus
+# the rs2 field select the operation.
 I_UNARY: dict[str, tuple[Callable, Callable]] = {
     # funct3=1, funct7=0x30, rs2 encodes operation
     "clz": (make_i_unary_encoder(0x1, 0x30, 0), clz),
@@ -486,11 +493,11 @@ I_UNARY: dict[str, tuple[Callable, Callable]] = {
     "cpop": (make_i_unary_encoder(0x1, 0x30, 2), cpop),
     "sext.b": (make_i_unary_encoder(0x1, 0x30, 4), sext_b),
     "sext.h": (make_i_unary_encoder(0x1, 0x30, 5), sext_h),
-    # zext.h is R-type (opcode 0x33) with funct7=0x04, funct3=4, rs2=0
-    "zext.h": (make_r_unary_encoder(0x04, 0x4), zext_h),
-    # funct3=5, fixed rs2 value
+    # zext.h at RV64 is packw rd, rs1, x0: OP-32 with funct7=0x04, funct3=4
+    "zext.h": (make_r_w_unary_encoder(0x04, 0x4), zext_h),
+    # funct3=5, fixed rs2 value; rev8 uses its RV64 funct7 (0x35)
     "orc.b": (make_i_fixed_encoder(0x5, 0x14, 7), orc_b),
-    "rev8": (make_i_fixed_encoder(0x5, 0x34, 0x18), rev8),
+    "rev8": (make_i_fixed_encoder(0x5, 0x35, 0x18), rev8),
     # Zbkb extension - bit manipulation for crypto
     "brev8": (make_i_fixed_encoder(0x5, 0x34, 7), brev8),
 }
@@ -527,7 +534,8 @@ AMO: dict[str, tuple[Callable, Callable]] = {
 # tests cover them instead.
 #
 # ECALL: environment call, raises an exception and jumps to mtvec.
-# EBREAK: breakpoint exception, raises an exception and jumps to mtvec.
+# EBREAK: raises a breakpoint exception and jumps to mtvec. With dcsr.ebreakm
+#   set, it enters Debug Mode instead.
 # MRET: returns from a trap, restoring the PC from mepc and restoring mstatus.
 # WFI: waits for an interrupt, stalling until one is pending.
 TRAP_INSTRS: dict[str, Callable] = {
@@ -615,9 +623,10 @@ C_JUMPS: dict[str, Callable] = {
 # F and D extensions (floating-point instructions)
 # =============================================================================
 #
-# The F extension adds 32 floating-point registers (f0-f31) and single-precision
-# (32-bit) IEEE 754 operations. The D extension adds the double-precision forms,
-# which appear in the same tables with a .d suffix.
+# Single- and double-precision forms share tables (.s and .d suffixes). FP
+# registers are 64 bits wide, so the evaluators unbox single-precision operands
+# and NaN-box single-precision results (unbox32, box32). FMV.X.W is the
+# exception: it moves the raw low word without a NaN-box check.
 #
 # FP instruction categories:
 #   - FP_ARITH_2OP: two-operand arithmetic (rd, rs1, rs2)
@@ -635,7 +644,7 @@ C_JUMPS: dict[str, Callable] = {
 #   - FP_LOADS: load from memory into an FP register (rd=fp, rs1=int, imm)
 #   - FP_STORES: store an FP register to memory (rs2=fp, rs1=int, imm)
 #
-# Entries are (encoder, evaluator):
+# Two-operand entries are (encoder, evaluator):
 #   encoder: lambda rd, rs1, rs2 -> 32-bit instruction
 #   evaluator: lambda rs1_bits, rs2_bits -> result_bits
 
@@ -794,9 +803,10 @@ FP_CVT_F2F: dict[str, tuple[Callable, Callable]] = {
     ),
 }
 
-# FP to integer move: copies bits without conversion into an integer register.
+# FP to integer move: copies the low word without conversion into an integer
+# register, sign-extended.
 FP_MV_F2I: dict[str, tuple[Callable, Callable]] = {
-    "fmv.x.w": (lambda rd, rs1: enc_fmv_x_w(rd, rs1), lambda a: fmv_x_w(unbox32(a))),
+    "fmv.x.w": (lambda rd, rs1: enc_fmv_x_w(rd, rs1), fmv_x_w),
 }
 
 # Integer to FP move: copies bits without conversion from an integer register into
@@ -813,9 +823,9 @@ FP_CLASS: dict[str, tuple[Callable, Callable]] = {
 
 # FP load (memory -> FP register)
 #   encoder: lambda rd, rs1, imm -> 32-bit instruction
-#   evaluator: lambda memory, address -> loaded bits (lw for flw, fld for fld)
+#   evaluator: lambda memory, address -> FP register bits (flw NaN-boxes the word)
 FP_LOADS: dict[str, tuple[Callable, Callable]] = {
-    "flw": (lambda rd, rs1, imm: enc_flw(rd, rs1, imm), lambda m, a: box32(lw(m, a))),
+    "flw": (lambda rd, rs1, imm: enc_flw(rd, rs1, imm), flw),
     "fld": (lambda rd, rs1, imm: enc_fld(rd, rs1, imm), fld),
 }
 

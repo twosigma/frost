@@ -12,10 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Print hardware targets with a machine-readable ``TARGET:`` prefix.
+# Print each hardware target on a line starting with TARGET:, which
+# hw_target.py parses.
 
 source [file join [file dirname [info script]] hw_session.tcl]
-# Optional positional arguments: legacy remote host, then explicit HOST:PORT.
+# Optional arguments: a remote host (port 3121), then a HOST:PORT server URL.
 frost_hw_session [lindex $argv 0] [lindex $argv 1] "" {
     foreach target [get_hw_targets] {
         puts "TARGET:$target"

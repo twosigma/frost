@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Managed FPGA CLI contracts, using mocked Vivado and isolated software builds."""
+"""Tests for the FPGA programmer, loader, and ECC scripts, with Vivado mocked."""
 
 import argparse
 import importlib.util
@@ -76,7 +76,7 @@ def test_bad_server_endpoint(url: str) -> None:
 
 
 def test_exact_and_noninteractive_selection(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A managed caller cannot accidentally choose a substring neighbor."""
+    """Exact selection ignores near matches, and non-interactive calls never prompt."""
     monkeypatch.setattr(
         target, "get_available_targets", lambda *a, **k: [TARGET, TARGET + "-other"]
     )
@@ -164,7 +164,10 @@ def test_program_passes_selected_file_and_endpoint(
 def test_loader_build_only_never_discovers(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Debug compilation can complete while another process owns JTAG."""
+    """--debug --build-only builds and prints one debug-build record.
+
+    The cable is never touched.
+    """
     monkeypatch.setattr(
         sys,
         "argv",
@@ -256,7 +259,7 @@ def test_clean_failure_does_not_build(
         raise subprocess.CalledProcessError(1, command)
 
     monkeypatch.setattr(loader.subprocess, "run", failed)
-    assert not loader.compile_app_for_board("hello_world", tmp_path, 150000000, 1)
+    assert not loader.compile_app_for_board("hello_world", tmp_path, 161132812, 1)
     assert calls == [["make", "clean"]]
 
 
@@ -272,7 +275,11 @@ def test_clean_failure_does_not_build(
 def test_debug_profile_emits_dwarf_and_validates_settings(
     tmp_path: Path, mode: str, app: str
 ) -> None:
-    """Compile in a temporary tree; final profile flags override hostile tuning."""
+    """A debug build in a scratch tree keeps DWARF despite -O3 -g0 tuning flags.
+
+    Validation then rejects another clock, debug setting, or memory mode, and a
+    corrupt image.
+    """
     sw = tmp_path / "sw"
     (sw / "apps").mkdir(parents=True)
     (sw / "common").symlink_to(ROOT / "sw/common", target_is_directory=True)
@@ -296,7 +303,7 @@ def test_debug_profile_emits_dwarf_and_validates_settings(
             "GENERATE_IMEM_INIT=0",
             "FROST_DEBUG=1",
             f"MEM_CONFIG={mode}",
-            "FPGA_CPU_CLK_FREQ=150000000",
+            "FPGA_CPU_CLK_FREQ=161132812",
             "EXTRA_CFLAGS=-O3 -g0 -funroll-loops -fomit-frame-pointer",
             "APP_TUNE_FLAGS=-O3 -g0 -funroll-loops -fomit-frame-pointer",
         ],
@@ -307,7 +314,7 @@ def test_debug_profile_emits_dwarf_and_validates_settings(
         timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    descriptor = loader.validate_prebuilt_app(app_dir, 150000000, mode, True)
+    descriptor = loader.validate_prebuilt_app(app_dir, 161132812, mode, True)
     effective_memory = "ddr" if app in loader.FORCED_DDR_APPS else mode
     assert descriptor["effectiveMemory"] == effective_memory
     assert descriptor["startStrategy"] == (
@@ -315,23 +322,23 @@ def test_debug_profile_emits_dwarf_and_validates_settings(
     )
     assert descriptor["appDirectory"] == str(app_dir.resolve())
     mismatches = [
-        (300000000, mode, True),
-        (150000000, mode, False),
+        (322265625, mode, True),
+        (161132812, mode, False),
     ]
     if app not in loader.FORCED_DDR_APPS:
-        mismatches.append((150000000, "ddr" if mode == "bram" else "bram", True))
+        mismatches.append((161132812, "ddr" if mode == "bram" else "bram", True))
     for clock, memory, debug in mismatches:
         with pytest.raises(ValueError):
             loader.validate_prebuilt_app(app_dir, clock, memory, debug)
     (app_dir / "sw.txt").write_text("nothex!!\n")
     with pytest.raises(ValueError, match="invalid 32-bit"):
-        loader.validate_prebuilt_app(app_dir, 150000000, mode, True)
+        loader.validate_prebuilt_app(app_dir, 161132812, mode, True)
 
 
 def minimal_debug_elf(
     *, main: bool = True, writable_ddr: bool = False, entry: int = 0
 ) -> bytes:
-    """Create bounded ELF tables for startup-policy and malformed-input checks."""
+    """Build a minimal RISC-V ELF for the start-strategy and malformed-ELF tests."""
     definitions = [
         ("", 0, 0, 0, b"", 0, 0),
         (".text", 1, 6, 0, b"\x13\0\0\0", 0, 0),
@@ -402,7 +409,7 @@ def minimal_debug_elf(
 
 
 def write_prebuilt(directory: Path, elf: bytes, **fields: str) -> None:
-    """Write fixture images and the existing Make stamp, without compiling."""
+    """Write fixture images and a build-config stamp as make does, without compiling."""
     directory.mkdir(parents=True)
     (directory / "sw.elf").write_bytes(elf)
     (directory / "sw.txt").write_text("00000013\n")
@@ -410,7 +417,7 @@ def write_prebuilt(directory: Path, elf: bytes, **fields: str) -> None:
     config = {
         "MEM_CONFIG": "bram",
         "FROST_DEBUG": "1",
-        "FPGA_CPU_CLK_FREQ": "150000000",
+        "FPGA_CPU_CLK_FREQ": "161132812",
         **fields,
     }
     (directory / ".frost-build-config.bin").write_text(
@@ -430,12 +437,17 @@ def write_prebuilt(directory: Path, elf: bytes, **fields: str) -> None:
 def test_elf_determines_safe_startup(
     tmp_path: Path, main: bool, writable_ddr: bool, entry: int, strategy: str
 ) -> None:
-    """BRAM selection alone cannot establish that crt0 restores loaded DDR."""
+    """The ELF, not the BRAM setting alone, decides whether a restart is safe.
+
+    A restart (to main, or from reset without main) needs entry 0 and no
+    initialized writable DDR data, since it does not reload DDR; anything
+    else attaches.
+    """
     directory = tmp_path / "hello_world"
     write_prebuilt(
         directory, minimal_debug_elf(main=main, writable_ddr=writable_ddr, entry=entry)
     )
-    descriptor = loader.validate_prebuilt_app(directory, 150000000, "bram", True)
+    descriptor = loader.validate_prebuilt_app(directory, 161132812, "bram", True)
     assert descriptor["startStrategy"] == strategy
     assert descriptor["elf"] == str(directory / "sw.elf")
     assert len(descriptor["buildConfigSha256"]) == 64
@@ -446,7 +458,7 @@ def test_elf_determines_safe_startup(
     ["header", "sections", "section_payload", "names", "symbol_link", "empty_dwarf"],
 )
 def test_invalid_elf_tables_fail_closed(corruption: str) -> None:
-    """Truncated or fabricated table ranges never become debugger metadata."""
+    """Truncated or out-of-range ELF tables, or empty DWARF, raise ValueError."""
     elf = bytearray(minimal_debug_elf())
     section_offset = struct.unpack_from("<Q", elf, 40)[0]
     if corruption == "header":
@@ -466,7 +478,10 @@ def test_invalid_elf_tables_fail_closed(corruption: str) -> None:
 
 
 def test_coremark_pro_prebuilt_binds_alias_mode_and_diagnostics(tmp_path: Path) -> None:
-    """Shared CoreMark-PRO artifact names cannot substitute another workload."""
+    """A CoreMark-PRO build loads only for its workload, mode, and diagnostic flags.
+
+    Every workload builds into the same directory with the same file names.
+    """
     directory = tmp_path / "coremark_pro"
     selected = loader.coremark_pro_make_vars(
         "coremark_pro_core", hardware=True, hardware_mode="validation", board="x3"
@@ -484,7 +499,7 @@ def test_coremark_pro_prebuilt_binds_alias_mode_and_diagnostics(tmp_path: Path) 
     write_prebuilt(directory, minimal_debug_elf(), **selected, **flags)
     descriptor = loader.validate_prebuilt_app(
         directory,
-        150000000,
+        161132812,
         "bram",
         True,
         app_name="coremark_pro_core",
@@ -503,7 +518,7 @@ def test_coremark_pro_prebuilt_binds_alias_mode_and_diagnostics(tmp_path: Path) 
             changed["FROST_MALLOC_DISABLE_FREE"] = "1"
         with pytest.raises(ValueError, match="workload options differ"):
             loader.validate_prebuilt_app(
-                directory, 150000000, "bram", True, app_name=app, make_vars=changed
+                directory, 161132812, "bram", True, app_name=app, make_vars=changed
             )
 
 
@@ -511,12 +526,12 @@ def test_coremark_pro_prebuilt_binds_alias_mode_and_diagnostics(tmp_path: Path) 
 def test_config_hash_binds_build_before_cable(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, matching: bool
 ) -> None:
-    """The build-only descriptor binds the exact prebuilt configuration."""
+    """The config hash must match, in either letter case, before the cable is used."""
     directory = tmp_path / "sw/apps/hello_world"
     write_prebuilt(directory, minimal_debug_elf())
-    descriptor = loader.validate_prebuilt_app(directory, 150000000, "bram", True)
+    descriptor = loader.validate_prebuilt_app(directory, 161132812, "bram", True)
     monkeypatch.setattr(loader, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setenv("FROST_CPU_CLK_HZ", "150000000")
+    monkeypatch.setenv("FROST_CPU_CLK_HZ", "161132812")
     monkeypatch.delenv("MEM_CONFIG", raising=False)
     monkeypatch.setattr(
         sys,
@@ -578,7 +593,7 @@ def test_config_hash_options_validate_before_build(
 def test_composite_debug_rejected_before_build(
     monkeypatch: pytest.MonkeyPatch, app: str
 ) -> None:
-    """Unsupported composite image layouts fail before preflight or build."""
+    """--debug with a composite image fails before preflight or build."""
     monkeypatch.setattr(
         sys, "argv", ["load_software.py", "x3", app, "--debug", "--build-only"]
     )
@@ -598,7 +613,10 @@ def test_composite_debug_rejected_before_build(
 def test_normal_coremark_pro_load_preserves_inherited_diagnostics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Generic debugging must not impose a new contract on ordinary PRO loads."""
+    """An ordinary CoreMark-PRO load builds with the inherited diagnostic settings.
+
+    The prebuilt-image checks do not run.
+    """
     monkeypatch.setenv("FROST_MALLOC_DISABLE_FREE", "1")
     monkeypatch.setattr(
         sys, "argv", ["load_software.py", "x3", "coremark_pro_core", "-v1"]
@@ -614,7 +632,7 @@ def test_normal_coremark_pro_load_preserves_inherited_diagnostics(
     monkeypatch.setattr(
         loader,
         "validate_prebuilt_app",
-        lambda *a, **k: pytest.fail("new validator affected ordinary load"),
+        lambda *a, **k: pytest.fail("prebuilt validation ran for an ordinary load"),
     )
     monkeypatch.setattr(loader, "select_target", lambda *a, **k: TARGET)
     loads = []
@@ -629,7 +647,10 @@ def test_normal_coremark_pro_load_preserves_inherited_diagnostics(
 
 @pytest.mark.parametrize("failure", [False, True])
 def test_tcl_program_connection_cleanup(tmp_path: Path, failure: bool) -> None:
-    """Run actual programmer Tcl with fake Vivado commands, never a server."""
+    """program_bitstream.tcl uses the given server and disconnects, pass or fail.
+
+    Stub Vivado commands stand in for the hardware manager.
+    """
     bitstream = tmp_path / "selected.bit"
     bitstream.write_bytes(b"test")
     harness = tmp_path / "mock.tcl"
@@ -678,9 +699,88 @@ source $actual_script
     assert ("FROST_PROGRAM_COMPLETE" in result.stdout) is not failure
 
 
+@pytest.mark.parametrize("failure", [False, True])
+def test_tcl_fetch_ila_capture_cleanup(tmp_path: Path, failure: bool) -> None:
+    """capture_fetch_ila.tcl writes the CSV and closes its session, pass or fail.
+
+    Stub Vivado commands stand in for the hardware manager and the ILA. Only
+    commands Vivado has are stubbed, so a call to any other one fails.
+    """
+    csv = tmp_path / "fetch_ila.csv"
+    harness = tmp_path / "mock-ila.tcl"
+    harness.write_text("""
+set actual_script [lindex $argv 0]
+set argv [lrange $argv 1 end]
+set argc [llength $argv]
+proc open_hw_manager {} {puts OPEN_MANAGER}
+proc connect_hw_server {args} {puts "CONNECT:$args"}
+proc get_hw_targets {} {return {localhost:3219/xilinx_tcf/Xilinx/cable-1}}
+proc current_hw_target {target} {puts "TARGET:$target"}
+proc open_hw_target {} {puts OPEN_TARGET}
+proc get_hw_devices {} {return device0}
+proc current_hw_device {args} {return device0}
+proc set_property {args} {}
+proc refresh_hw_device {args} {}
+proc get_hw_ilas {args} {return ila0}
+proc get_hw_probes {args} {
+    if {[lsearch -exact $args -filter] >= 0} {return probe0}
+    return {probe0 probe1}
+}
+proc get_property {key object} {return $object}
+proc report_property {args} {return "STATUS idle"}
+proc run_hw_ila {ila} {puts "ARM:$ila"}
+proc wait_on_hw_ila {args} {}
+proc upload_hw_ila_data {ila} {
+    if {$::env(TEST_UPLOAD_FAIL)} {error "injected upload failure"}
+    return data0
+}
+proc write_hw_ila_data {args} {
+    set fd [open [lindex $args end-1] w]
+    puts $fd sample
+    close $fd
+}
+proc close_hw_target {} {puts CLOSE_TARGET}
+proc disconnect_hw_server {} {puts DISCONNECT_SERVER}
+proc close_hw_manager {} {puts CLOSE_MANAGER}
+source $actual_script
+""")
+    env = os.environ.copy()
+    env["TEST_UPLOAD_FAIL"] = str(int(failure))
+    result = subprocess.run(
+        [
+            "tclsh",
+            str(harness),
+            str(ROOT / "fpga/debug/capture_fetch_ila.tcl"),
+            TARGET,
+            str(tmp_path / "x3_frost.ltx"),
+            str(csv),
+            "*fault",
+            "*pc*",
+            "eq16'hX5E4",
+            "3072",
+            "1",
+            "192.0.2.7",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+    assert result.returncode == int(failure), result.stderr
+    assert "CONNECT:-url 192.0.2.7:3121" in result.stdout
+    assert "ARM:ila0" in result.stdout
+    assert result.stdout.endswith("CLOSE_TARGET\nDISCONNECT_SERVER\nCLOSE_MANAGER\n")
+    assert csv.exists() is not failure
+    assert ("injected upload failure" in result.stderr) is failure
+
+
 @pytest.mark.parametrize("app", [*loader.VALID_APPS, "unregistered_app"])
 def test_tcl_loader_app_preflight_never_opens_manager(tmp_path: Path, app: str) -> None:
-    """Tcl accepts every Python-listed app, then rejects its missing image."""
+    """load_software.tcl accepts every app in VALID_APPS and rejects others.
+
+    Both fail before the hardware manager opens: a listed app on its missing
+    BRAM image, any other on its name.
+    """
     harness = tmp_path / "mock.tcl"
     harness.write_text("""
 set actual_script [lindex $argv 0]
@@ -716,7 +816,10 @@ source $actual_script
 
 @pytest.mark.parametrize("failure", [False, True])
 def test_tcl_loader_transfer_and_cleanup(tmp_path: Path, failure: bool) -> None:
-    """Exercise actual BRAM/DDR helper dispatch with fake AXI transactions."""
+    """load_software.tcl loads BRAM and DDR and disconnects, pass or fail.
+
+    Stub Vivado commands stand in for the hardware manager and AXI transactions.
+    """
     app_dir = tmp_path / "sw/apps/debug_target"
     app_dir.mkdir(parents=True)
     for name in ("sw.txt", "sw_ddr.txt"):
@@ -785,13 +888,12 @@ source $actual_script
 
 # --- DDR4 ECC state ----------------------------------------------------------
 #
-# The register offsets and the verdict rule are what the hardware regression's
-# last stage trusts, and both are read back from a board rather than computed,
-# so they get their own coverage here.
+# The hardware regression's last stage relies on these register offsets and on
+# verdict(), and only a board run exercises them, so they are tested here.
 
 
 def test_ecc_register_offsets_match_the_controller() -> None:
-    """The offsets are the controller's own map, and the verdict pair is in it."""
+    """ECC_REGISTERS has the controller's offsets and every register verdict() reads."""
     offsets = dict(ecc.ECC_REGISTERS)
     assert offsets["ECC_STATUS"] == 0x000
     assert offsets["ECC_EN_IRQ"] == 0x004
@@ -824,7 +926,7 @@ def test_ecc_verdict_named_every_way_the_board_can_be_dirty() -> None:
     """Clean needs checking on and both registers zero; each fault is named."""
     assert ecc.verdict({"ECC_STATUS": 0, "CE_CNT": 0, "ECC_ON_OFF": 1}) == (True, [])
 
-    # The state a 2026-09-20 board actually reported before initialization.
+    # What a board reported after reading DDR before it was initialized.
     clean, problems = ecc.verdict({"ECC_STATUS": 0x3, "CE_CNT": 0xFF, "ECC_ON_OFF": 1})
     assert not clean
     assert any("saturated" in p for p in problems)

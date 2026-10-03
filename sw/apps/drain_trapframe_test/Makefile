@@ -12,9 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Trap-frame store-visibility-under-L1D-eviction directed test ("Bug B" relocated
-# to pt_regs s2). Force the whole program into cached DDR so the trap-frame save
-# store and the conflicting eviction accesses all traverse the L1D -> DDR path.
+# Trap-frame store visibility under L1D eviction, on the pt_regs s2 slot. The
+# frame and the eviction addresses are fixed cached-DDR addresses; forcing the
+# whole program into cached DDR puts the handler's code and globals behind the
+# caches too.
 override MEM_CONFIG := ddr
 SRC_C := ../../lib/src/uart.c main.c
 include ../../common/common.mk

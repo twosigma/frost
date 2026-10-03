@@ -14,16 +14,17 @@
 
 """Unit tests for the tagged N:1 line-port arbiter (line_port_arbiter_test_harness).
 
-The harness drains the arbiter into the same backside the cache hierarchy
-sits on (line_port_axi_bridge -> axi_behavioral_memory); the bench plays the
-two upstream L1s itself so contention windows are driven cycle-precisely.
-Port 0 has fixed priority (FROST's D-side L1); port 1 is the I-side. Checked:
+The harness drains a 2:1 arbiter into the same backside the cache hierarchy
+sits on (line_port_axi_bridge -> axi_behavioral_memory); the bench drives
+both upstream ports itself, so it can time contention to the cycle. Port 0
+has priority, up to the starvation bound (STARVATION_LIMIT). Checked:
 per-port data integrity and id echo, response isolation (one pulse per
 transaction, never cross-routed), priority on simultaneous requests, the
 absence of a grant lock (a later port-0 request fires while port 1's
 transaction is still in flight), several tagged transactions in flight per
 port with responses collected by id in whatever order the memory completes
-them, and random mixed traffic on both ports.
+them, random mixed traffic on both ports, and the starvation bound under
+downstream backpressure.
 """
 
 import random
@@ -52,7 +53,7 @@ NOLOCK_BASE = (BASE_ADDR + 0x40000, BASE_ADDR + 0x50000)
 RANDOM_BASE = (BASE_ADDR + 0x60000, BASE_ADDR + 0x80000)
 BURST_BASE = (BASE_ADDR + 0xA0000, BASE_ADDR + 0xB0000)
 RANDOM_OUT_BASE = (BASE_ADDR + 0xC0000, BASE_ADDR + 0xE0000)
-STARVE_BASE = (BASE_ADDR + 0xE0000, BASE_ADDR + 0xF0000)
+STARVE_BASE = (BASE_ADDR + 0xF0000, BASE_ADDR + 0xF8000)
 
 STARVATION_LIMIT = 16  # harness default, the hierarchy's DMA_STARVATION_LIMIT
 
@@ -415,7 +416,7 @@ async def test_random_interleaved_traffic(dut: Any) -> None:
     for task in tasks:
         await task
 
-    # Final sweep: everything each model knows about must read back exactly.
+    # Final sweep: every 13th line of each window must read back exactly.
     for port in (0, 1):
         for line in range(0, WINDOW_LINES, 13):
             await _check_read(

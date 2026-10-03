@@ -23,9 +23,9 @@
 
 /**
  * Machine-mode trap handling for RISC-V: interrupt enable/disable, trap
- * handler setup, the WFI/ECALL/EBREAK instructions, and the CLINT timer.
+ * handler setup, the WFI/ECALL/EBREAK instructions, and the machine timer.
  *
- * Frost implements Machine (M), Supervisor (S), and User (U) privilege
+ * FROST implements Machine (M), Supervisor (S), and User (U) privilege
  * modes. These helpers cover the M-mode side: a trap jumps to the address
  * in mtvec, saving the return address in mepc and the cause in mcause.
  * medeleg/mideleg can delegate S/U traps to S-mode instead.
@@ -36,7 +36,7 @@
  *
  *   // Enable timer interrupt
  *   enable_timer_interrupt();
- *   set_timer_cmp(rdmtime() + 1000000);  // 1M cycles from now
+ *   set_timer_cmp(rdmtime() + 1000000);  // 1M mtime ticks from now
  *
  *   // Enable global interrupts
  *   enable_interrupts();
@@ -60,8 +60,8 @@
  * itself. Useful for low-power idle loops in RTOS or bare-metal code.
  *
  * If an interrupt is already pending when WFI executes, the processor does
- * not stall: it continues immediately, or takes the interrupt if interrupts
- * are enabled globally.
+ * not stall: it continues immediately, or takes the interrupt if it is
+ * enabled.
  */
 static inline __attribute__((always_inline)) void wfi(void)
 {
@@ -190,7 +190,6 @@ static inline __attribute__((always_inline)) void disable_external_interrupt(voi
  */
 static inline void set_trap_handler(void (*handler)(void))
 {
-    /* uintptr_t: a uint32_t cast would truncate the handler address at RV64 */
     csr_write(mtvec, (uintptr_t) handler);
 }
 
@@ -203,7 +202,7 @@ static inline uintptr_t get_trap_handler(void)
 }
 
 /* ========================================================================== */
-/* Timer functions (using CLINT-compatible memory-mapped registers)           */
+/* Timer functions (native memory-mapped timer registers)                     */
 /* ========================================================================== */
 
 /**

@@ -17,17 +17,18 @@
 """Repeatedly load and score Linux boots from the board UART.
 
 The boot is Debian's pinned riscv64 kernel with the Buildroot test initramfs
-(``linux/debian_kernel.py``). A boot requires the NIC module's
-``FROST_NET10G_MODULE_PASS <release>`` line -- Debian's kernel has no FROST
-driver built in, and that line names the release the board is running -- and the
-``FROST_USERSPACE_STRESS_PASS`` token, both before the login prompt;
-``--login-only`` requires only the prompt. Crash signatures, timeout, or
-``counters=unavailable`` fail. The counter result is mandatory because FROST
-resets ``mcounteren`` to 0x7, making Zicntr U-readable.
+(``linux/debian_kernel.py``). Before the login prompt, a boot must print the
+NIC module's ``FROST_NET10G_MODULE_PASS <release>`` line (Debian's kernel has
+no FROST driver built in, and the line names the running release) and the
+``FROST_USERSPACE_STRESS_PASS`` token; ``--login-only`` requires only the
+prompt. A crash signature or a timeout fails the boot, and so does
+``counters=unavailable``: the boot image's DTB maps the cycle and instruction
+events to FROST's fixed counters, so the SBI PMU must serve them to the stress
+payload's ``perf_event_open``.
 
-The script reads 115200 8N1 directly through termios and reasserts the speed
-after every load because Vivado hw_server FTDI probes can corrupt the UART
-baud setting.
+The script reads the UART at 115200 8N1 through termios and sets the speed
+again after every load, because Vivado hw_server's FTDI probes can corrupt the
+UART baud setting.
 
 Usage:
     ./fpga/linux_boot_soak.py x3 --boots 5
@@ -57,10 +58,10 @@ from hw_defaults import DEFAULT_SERIALS  # noqa: E402
 PASS_TOKEN = "FROST_USERSPACE_STRESS_PASS"
 FAIL_TOKEN = "FROST_USERSPACE_STRESS_FAIL"
 # Both are printed from sysinit entries, so both precede the login prompt. The
-# module line carries the release its init script read from ``uname -r``, and
-# the whole line is required, matched with a boundary so that a longer release
-# does not satisfy it: the pin sets CONFIG_MODVERSIONS, so Linux ignores
-# vermagic's release field and a bare insmod does not identify the kernel.
+# module line carries the release its init script read from ``uname -r``. The
+# whole line must match, up to a boundary, so a longer release cannot satisfy
+# it. The pinned kernel sets CONFIG_MODVERSIONS, so Linux ignores the release
+# field of vermagic and a successful insmod alone does not identify the kernel.
 BOOT_TOKENS = (
     (MODULE_PASS_LINE, MODULE_PASS_RE),
     (PASS_TOKEN, re.compile(re.escape(PASS_TOKEN))),
@@ -87,7 +88,7 @@ def open_uart(device: str) -> int:
 
 
 def force_baud(fd: int) -> None:
-    """(Re-)assert 115200 8N1 raw; hw_server FTDI probes can wedge this."""
+    """Set raw 115200 8N1; hw_server's FTDI probes can corrupt the setting."""
     attrs = termios.tcgetattr(fd)
     attrs[0] = 0  # iflag
     attrs[1] = 0  # oflag
@@ -132,8 +133,9 @@ def run_load(board: str, vivado_path: str) -> int:
 def score_boot(fd: int, expect_stress: bool, timeout_s: int) -> tuple[str, str]:
     """Watch the UART until the boot passes, crashes, or times out.
 
-    Returns (verdict, transcript). PASS requires the login prompt and, when
-    expect_stress, every BOOT_TOKENS token before it.
+    Returns (result, transcript), where result is PASS, FAIL(...) or
+    TIMEOUT(...). PASS requires the login prompt and, when expect_stress,
+    every BOOT_TOKENS entry before it.
     """
     deadline = time.monotonic() + timeout_s
     transcript = b""
@@ -166,13 +168,13 @@ def main() -> int:
     parser.add_argument(
         "--login-only",
         action="store_true",
-        help="Assert only the login prompt (image without the stress payload)",
+        help="Require only the login prompt (for an image without the stress test)",
     )
     parser.add_argument(
         "--timeout-per-boot",
         type=int,
         default=600,
-        help="Seconds from load completion to required boot outcome",
+        help="Seconds to wait after each load for the boot result",
     )
     parser.add_argument("--vivado-path", default="vivado")
     parser.add_argument(
@@ -191,7 +193,7 @@ def main() -> int:
             termios.tcflush(fd, termios.TCIFLUSH)
             print(f"boot {boot}/{args.boots}: loading ...", flush=True)
             rc = run_load(args.board, args.vivado_path)
-            force_baud(fd)  # undo any hw_server termios wedge from the load
+            force_baud(fd)  # the load's hw_server session can change the UART settings
             if rc != 0:
                 print(f"boot {boot}: LOAD-FAIL rc={rc}", flush=True)
                 failures += 1
@@ -212,7 +214,8 @@ def main() -> int:
                 and not args.login_only
                 and "counters=unavailable" in stress_line
             ):
-                # Only QEMU may degrade; FROST resets all counters enabled.
+                # The boot image's DTB gives the SBI PMU both fixed counters,
+                # so a FROST boot must be able to read them.
                 verdict = "FAIL(counters-unavailable)"
             print(f"boot {boot}: {verdict}  {stress_line}", flush=True)
             if verdict == "PASS":

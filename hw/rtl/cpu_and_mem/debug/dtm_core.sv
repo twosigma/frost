@@ -25,26 +25,36 @@
  * OpenOCD's `riscv set_ir` pointing the three DTM registers at the FPGA's
  * IDCODE and USER instructions).
  *
- * dtmcs: version 1 (0.13), abits 7, idle 3 (the Run-Test/Idle hint),
- * dmistat = the sticky status, dmireset (W1) clears it, dmihardreset (W1)
- * additionally re-synchronizes the request handshake (the debugger's escape
- * when it believes an in-flight request will never complete, e.g. after a
- * reset). dmi: {address[6:0], data[31:0], op[1:0]}. Update-DR with op = read
- * or write starts a request unless the status is sticky or a request is
- * still in flight; a scan that captures or attempts an operation while a
- * request is in flight makes the status sticky-busy (op = 3) until dmireset,
- * which is the spec's rule for batched scans. Capture-DR returns the last
- * response's data with op = the current status.
+ * dtmcs: version 1 (0.13), abits 7, idle 3 (the Run-Test/Idle hint), and
+ * dmistat, the sticky status alone (0 none, 2 failed, 3 busy). dmireset (W1)
+ * clears the sticky status. dmihardreset (W1) also abandons a request in
+ * flight: it is not issued again (the debug module may still perform it
+ * once), its response is discarded when it arrives, and the DTM stays busy
+ * until then. The spec's dmihardreset forgets the request instead, for one
+ * that will never complete. Waiting keeps one request in flight across the
+ * crossing, so the payload never changes under the core side and no later
+ * request receives the abandoned one's response. It relies on the debug
+ * module answering every request, one that arrives during its reset once
+ * the reset ends, so no request stays in flight for good.
+ *
+ * dmi: {address[6:0], data[31:0], op[1:0]}. Update-DR with op = read or write
+ * starts a request unless the status is sticky or a request is still in
+ * flight. A dmi capture or an attempted operation while a request is in
+ * flight sets the sticky busy status (op = 3), the spec's rule for batched
+ * scans. A failed response sets the sticky failed status (op = 2), replacing
+ * a sticky busy, so dmireset's busy recovery can never hide a failure. The
+ * sticky status lasts until dmireset, dmihardreset, or Test-Logic-Reset.
+ * Capture-DR returns the last request's address and the data of the last
+ * response kept, with op = the current status: the sticky status if set,
+ * else 3 while a request is in flight, else 0.
  *
  * CDC: two-phase toggle handshakes through ASYNC_REG two-flop synchronizers.
- * The request payload is written by the TCK domain together with its toggle
- * and does not change until the response has returned; the response payload
- * likewise sits still in the core domain until the next request. Neither
- * toggle is ever reset (both domains initialize to 0), so a core-side reset
- * cannot desynchronize the pair; dmihardreset re-aligns the TCK-side toggle
- * to the last acknowledged value. The TCK side latches the response payload
- * and clears busy on the same edge (one edge after the synchronized ack), so
- * a scan that captures busy=0 can never capture stale data.
+ * The TCK domain writes the request payload together with its toggle and
+ * changes it only after the response has returned; the core domain likewise
+ * holds the response payload until the next request. Only a new request
+ * moves the request toggle, so the core side never sees a request twice.
+ * Neither toggle is ever reset (both domains initialize to 0), so a
+ * core-side reset cannot desynchronize the pair.
  */
 module dtm_core (
     // JTAG side (TCK domain, BSCAN-style bundle)
@@ -89,10 +99,12 @@ module dtm_core (
   logic [        31:0] req_data_q = '0;
   (* ASYNC_REG = "TRUE" *)logic                ack_sync1 = 1'b0;
   (* ASYNC_REG = "TRUE" *)logic                ack_sync2 = 1'b0;
-  logic                ack_seen_q = 1'b0;  // last ack consumed (data latched)
+  logic                ack_seen_q = 1'b0;  // last ack consumed
   logic                resp_arrived;
   logic [        31:0] resp_data_tck = '0;
-  logic [         1:0] resp_op_tck = 2'd0;
+  logic                drop_q = 1'b0;  // the response owed belongs to an abandoned request
+  logic                hardreset;
+  logic                resp_keep;
   logic                busy;
   logic [         1:0] dmi_status;
   logic [        31:0] dtmcs_value;
@@ -111,23 +123,28 @@ module dtm_core (
     ack_sync1 <= ack_toggle_q;
     ack_sync2 <= ack_sync1;
   end
-  // Busy clears only once the response payload has been latched below, so
-  // a Capture-DR that sees busy=0 always captures the new data (the two are
-  // updated on the same TCK edge, one edge after the synchronized ack).
+  // Busy clears on the edge that consumes the synchronized ack, which is the
+  // edge that latches a kept response's payload below, so a Capture-DR that
+  // sees busy=0 always captures the new data.
   assign busy = (req_toggle_q != ack_seen_q);
   assign dmi_status = (sticky_q != 2'd0) ? sticky_q : (busy ? 2'd3 : 2'd0);
+  // dmistat is the sticky status: a request merely in flight is not an error.
   // [17] dmihardreset / [16] dmireset read 0, [15] reserved.
-  assign dtmcs_value = {14'b0, 3'b000, DtmIdleHint, dmi_status, 6'(Abits), DtmVersion};
+  assign dtmcs_value = {14'b0, 3'b000, DtmIdleHint, sticky_q, 6'(Abits), DtmVersion};
 
   // Latch the response payload when the synchronized ack toggles (the core
-  // wrote it before toggling; the synchronizer delay orders the read).
+  // wrote it before toggling; the synchronizer delay orders the read). The
+  // response owed to a request abandoned by dmihardreset, on this edge or
+  // earlier, completes the handshake and is otherwise dropped. Only one
+  // request is ever in flight, so the next response is that one.
   assign resp_arrived = (ack_sync2 != ack_seen_q);
+  assign hardreset = !i_tlr && i_sel_dtmcs && !i_capture && !i_shift && i_update && dtmcs_shift[17];
+  assign resp_keep = resp_arrived && !drop_q && !hardreset;
   always_ff @(posedge i_tck) begin
-    if (resp_arrived) begin
-      ack_seen_q    <= ack_sync2;
-      resp_data_tck <= resp_data_q;
-      resp_op_tck   <= resp_op_q;
-    end
+    if (resp_arrived) ack_seen_q <= ack_sync2;
+    if (resp_keep) resp_data_tck <= resp_data_q;
+    if (resp_arrived) drop_q <= 1'b0;
+    else if (hardreset && busy) drop_q <= 1'b1;
   end
 
   always_ff @(posedge i_tck) begin
@@ -140,7 +157,6 @@ module dtm_core (
         else if (i_shift) dtmcs_shift <= {i_tdi, dtmcs_shift[31:1]};
         else if (i_update) begin
           if (dtmcs_shift[16] || dtmcs_shift[17]) sticky_q <= 2'd0;  // dmireset / dmihardreset
-          if (dtmcs_shift[17]) req_toggle_q <= ack_seen_q;  // dmihardreset: forget in-flight
         end
       end
       // dmi
@@ -163,8 +179,9 @@ module dtm_core (
           end
         end
       end
-      // A failed response is sticky like busy.
-      if (resp_arrived && (resp_op_q == 2'd2) && (sticky_q == 2'd0)) sticky_q <= 2'd2;
+      // A failed response is sticky like busy, and outranks it. Placed last, it
+      // also survives a dmireset on the same edge.
+      if (resp_keep && (resp_op_q == 2'd2)) sticky_q <= 2'd2;
     end
   end
 

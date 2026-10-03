@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Run the shipped flush-guidance Tcl with the finite netlist test API."""
+"""Run the diagnostic flush-guidance Tcl helper against a mocked Vivado netlist."""
 
 from pathlib import Path
 import subprocess
@@ -21,7 +21,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "fpga/build/x3_flush_guidance.tcl"
-# Finite in-memory stand-ins for the native netlist commands the script calls.
+# In-memory stand-ins for the Vivado netlist commands the helper calls.
 API = r"""
 source [lindex $argv 0]
 set audit [lindex $argv 1]
@@ -129,7 +129,7 @@ proc sim::consumer {pin} {
 }
 """
 FLUSH = r"""
-namespace eval sim {variable netprops {}; variable clock_name clock_from_mmcm; variable period 3.333}
+namespace eval sim {variable netprops {}; variable clock_name clock_from_mmcm; variable period 3.10272}
 rename get_property sim::base_get_property
 proc get_property {key objects} {
     if {$objects eq "clock_from_mmcm" || $objects eq "wrong_clock"} {
@@ -187,7 +187,7 @@ set ::sim::edits 0
 
 
 def run_flush(tmp_path: Path, body: str) -> subprocess.CompletedProcess[str]:
-    """Execute actual prepare/verify without opening a native design."""
+    """Run `body` in tclsh on the mock netlist, with the helper sourced."""
     harness = tmp_path / "flush.tcl"
     harness.write_text(API + FLUSH + body)
     return subprocess.run(
@@ -203,7 +203,11 @@ def run_flush(tmp_path: Path, body: str) -> subprocess.CompletedProcess[str]:
 def test_current_partition_not_historical_count(
     tmp_path: Path, replicate: bool
 ) -> None:
-    """Accept any equivalent complete partition, including one unchanged driver."""
+    """The verify step accepts any split of the original sinks among equivalent drivers.
+
+    The original driver alone passes too. The prepare step makes exactly its
+    two net-property writes, and verify makes no edits.
+    """
     result = run_flush(
         tmp_path,
         r"""
@@ -234,11 +238,11 @@ if {[dict get $result sinks] != 4 || $::sim::edits != 2} {error "Verify changed 
         "dict set ::sim::netprops $net MAX_FANOUT_MODE SLR",
         "dict set ::sim::netprops $net FORCE_MAX_FANOUT 32",
         "set ::sim::clock_name wrong_clock",
-        "set ::sim::period 6.666",
+        "set ::sim::period 3.333",
     ],
 )
 def test_invalid_preflight_has_no_writes(tmp_path: Path, change: str) -> None:
-    """Reject conflicting or unsupported current designs before changing properties."""
+    """The prepare step rejects a conflicting or unsupported design before any netlist edit."""
     result = run_flush(
         tmp_path,
         change
@@ -249,9 +253,24 @@ if {![catch {::frost_x3_flush_guidance::prepare $audit} message] || $::sim::edit
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("divider", (1, 2, 3, 4))
+def test_flush_guidance_accepts_actual_cpu_clock(tmp_path: Path, divider: int) -> None:
+    """The prepare step accepts the CPU clock period for FROST_CPU_CLK_DIV values 1 to 4."""
+    result = run_flush(
+        tmp_path,
+        f"set ::env(FROST_CPU_CLK_DIV) {divider}\n"
+        f"set ::sim::period [expr {{3.333 * 8 * 4 * {divider} / 34.375}}]\n"
+        "::frost_x3_flush_guidance::prepare $audit\n",
+    )
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.parametrize("change", ["data", "init", "missing", "extra"])
 def test_changed_replica_or_partition_fails(tmp_path: Path, change: str) -> None:
-    """Detect changed register functions and missing or unexpected sink owners."""
+    """The verify step fails on a changed replica input or INIT, a lost sink, or an extra sink.
+
+    The audit records FAILED_AFTER_PLACE, and verify makes no edits.
+    """
     mutation = {
         "data": "sim::wire reset/Q renamed_by_placer/D",
         "init": "dict set ::sim::cells renamed_by_placer INIT {1'b1}",

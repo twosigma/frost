@@ -17,10 +17,10 @@
 /*
  * Memory-level parallelism probe for the cached (DDR) tier.
  *
- * The sim registry shrinks the L1D to 4 KiB and removes the L2, so the sweep
- * stays short and every miss goes to the DDR model. Two passes run over a
- * region larger than the L1D, each touching one word per line so that every
- * access is a demand miss:
+ * The simulation registry shrinks the L1D and the L2 to 4 KiB, so a short
+ * sweep misses in both and each miss goes to the DDR model. Two passes run
+ * over a region larger than both caches, each touching one word per line so
+ * that every access is a demand miss:
  *   1. independent loads (a strided sum). The load queue can keep several
  *      misses in flight, so L1D_MISS_OVERLAP_CYCLES has to be non-zero.
  *   2. a pointer chase through the same lines. Every load depends on the
@@ -29,9 +29,11 @@
  * A store burst to cold lines follows: every store misses, and the early
  * acknowledgement lets their fills overlap as well.
  *
- * The sums and the chase's final pointer are checked, the cache counters are
- * printed, and <<PASS>> requires overlap in the independent pass. Cold lines
- * come from a region above the L2.
+ * The independent sum, the chase's final pointer, and a sample of the stored
+ * words are checked, and the cache counters are printed. <<PASS>> also needs
+ * the independent pass to miss on at least half its lines, overlapped misses
+ * in that pass and in the store burst, and an independent pass that takes
+ * fewer cycles than the chase.
  */
 
 #include <stdint.h>
@@ -128,8 +130,9 @@ int main(void)
         expected_sum += next;
     }
 
-    /* Evict everything the seeding left in the L1D by touching a second
-     * window of the same size, so both passes start cold. */
+    /* Touching a second window of the same size evicts the seeded lines from
+     * the L1D and the L2, so the first pass starts cold. The same sweep runs
+     * before each measured region. */
     for (i = 0; i < NUM_LINES; i++) {
         (void) probe[(NUM_LINES + i) * (LINE_BYTES / 4u)];
     }

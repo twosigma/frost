@@ -19,7 +19,7 @@ from typing import Any
 
 import cocotb
 from cocotb.triggers import Timer
-from config import XLEN
+from config import MASK_XLEN
 from cocotb_tests.cpu_structs import (
     FROM_EX_FIELDS,
     MISPREDICT_COMMIT_FIELDS,
@@ -34,7 +34,6 @@ from utils.packed_structs import (
 ROB_TAG_WIDTH = 5
 CHECKPOINT_ID_WIDTH = 3
 RAS_PTR_BITS = 3
-MASK32 = (1 << XLEN) - 1
 
 
 def _pack_mispredict_commit(fields: Mapping[str, int | bool]) -> int:
@@ -67,6 +66,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_early_mispredict_is_compressed.value = 0
     dut.i_restored_ras_tos.value = 0
     dut.i_restored_ras_valid_count.value = 0
+    dut.i_restored_ras_top.value = 0
     dut.i_mispredict_recovery_pending.value = 0
     dut.i_mispredict_commit_q.value = 0
     dut.i_correct_branch_commit_pending.value = 0
@@ -105,8 +105,8 @@ def _assert_late_btb_candidate(
     pc: int,
     taken: bool,
 ) -> None:
-    """Assert the independently formed lower-priority RMW candidate."""
-    assert int(dut.o_btb_late_update_pc.value) == (pc & MASK32)
+    """Assert the late BTB counter-RMW candidate, which never depends on early recovery."""
+    assert int(dut.o_btb_late_update_pc.value) == (pc & MASK_XLEN)
     assert bool(dut.o_btb_late_update_taken.value) is taken
 
 
@@ -117,14 +117,17 @@ def _assert_btb_update(
     target: int,
     taken: bool,
     compressed: bool,
+    call: bool = False,
+    ret: bool = False,
 ) -> None:
     """Assert the BTB update payload fields."""
     assert output["btb_update"]
-    assert output["btb_update_pc"] == (pc & MASK32)
-    assert output["btb_update_target"] == (target & MASK32)
+    assert output["btb_update_pc"] == (pc & MASK_XLEN)
+    assert output["btb_update_target"] == (target & MASK_XLEN)
     assert output["btb_update_taken"] is taken
     assert output["btb_update_compressed"] is compressed
-    assert output["btb_update_requires_pc_reg_handoff"]
+    assert output["btb_update_call"] is call
+    assert output["btb_update_return"] is ret
 
 
 @cocotb.test()
@@ -151,6 +154,7 @@ async def test_early_mispredict_has_priority_and_restores_ras(dut: Any) -> None:
     dut.i_early_mispredict_is_compressed.value = 1
     dut.i_restored_ras_tos.value = 3
     dut.i_restored_ras_valid_count.value = 5
+    dut.i_restored_ras_top.value = 0x8000_0000_0000_0104
     _drive_mispredict_commit(
         dut,
         {
@@ -186,6 +190,7 @@ async def test_early_mispredict_has_priority_and_restores_ras(dut: Any) -> None:
     assert output["ras_misprediction"]
     assert output["ras_restore_tos"] == 3
     assert output["ras_restore_valid_count"] == 5
+    assert output["ras_restore_top"] == 0x8000_0000_0000_0104
     assert not output["ras_pop_after_restore"]
     assert not output["ras_push_after_restore"]
     # The bus selects the early transaction. The late candidate is formed
@@ -196,7 +201,7 @@ async def test_early_mispredict_has_priority_and_restores_ras(dut: Any) -> None:
 
 @cocotb.test()
 async def test_early_selected_bus_keeps_raw_slot2_as_late_candidate(dut: Any) -> None:
-    """Early A owns the write while held slot-2 B remains the parallel late RMW."""
+    """Early recovery drives the BTB write; a held slot-2 commit stays the late candidate."""
     await _setup_test(dut)
 
     dut.i_early_mispredict_active.value = 1
@@ -258,52 +263,62 @@ async def test_commit_mispredict_branch_redirects_and_updates_btb(dut: Any) -> N
 
 @cocotb.test()
 async def test_commit_mispredict_jal_updates_btb(dut: Any) -> None:
-    """Commit-time JAL recovery trains the BTB."""
+    """Commit-time JAL recovery trains the BTB, typed as a call when it links."""
     await _setup_test(dut)
 
-    _drive_mispredict_commit(
-        dut,
-        {
-            "redirect_pc": 0x400,
-            "pc": 0x300,
-            "branch_target": 0x500,
-            "branch_taken": True,
-            "is_branch": True,
-            "is_jal": True,
-        },
-    )
-    await _settle()
+    for call in (False, True):
+        _drive_mispredict_commit(
+            dut,
+            {
+                "redirect_pc": 0x400,
+                "pc": 0x300,
+                "branch_target": 0x500,
+                "branch_taken": True,
+                "is_branch": True,
+                "is_jal": True,
+                "is_call": call,
+            },
+        )
+        await _settle()
 
-    output = _read_from_ex(dut)
+        output = _read_from_ex(dut)
 
-    assert output["branch_target_address"] == 0x400
-    _assert_btb_update(output, pc=0x300, target=0x500, taken=True, compressed=False)
-    _assert_late_btb_candidate(dut, pc=0x300, taken=True)
+        assert output["branch_target_address"] == 0x400
+        _assert_btb_update(
+            output, pc=0x300, target=0x500, taken=True, compressed=False, call=call
+        )
+        _assert_late_btb_candidate(dut, pc=0x300, taken=True)
 
 
 @cocotb.test()
 async def test_commit_mispredict_jalr_redirects_without_btb_update(dut: Any) -> None:
-    """Commit-time JALR recovery redirects but does not train the BTB."""
+    """A JALR that is not a return redirects but does not train the BTB.
+
+    That covers an indirect jump and an indirect call alike: only a return's
+    target comes from the return address stack.
+    """
     await _setup_test(dut)
 
-    _drive_mispredict_commit(
-        dut,
-        {
-            "redirect_pc": 0x700,
-            "pc": 0x600,
-            "branch_target": 0x710,
-            "branch_taken": True,
-            "is_branch": True,
-            "is_jalr": True,
-        },
-    )
-    await _settle()
+    for call in (False, True):
+        _drive_mispredict_commit(
+            dut,
+            {
+                "redirect_pc": 0x700,
+                "pc": 0x600,
+                "branch_target": 0x710,
+                "branch_taken": True,
+                "is_branch": True,
+                "is_jalr": True,
+                "is_call": call,
+            },
+        )
+        await _settle()
 
-    output = _read_from_ex(dut)
+        output = _read_from_ex(dut)
 
-    assert output["branch_taken"]
-    assert output["branch_target_address"] == 0x700
-    assert not output["btb_update"]
+        assert output["branch_taken"]
+        assert output["branch_target_address"] == 0x700
+        assert not output["btb_update"]
 
 
 @cocotb.test()
@@ -313,6 +328,7 @@ async def test_commit_mispredict_return_restores_and_pops_ras(dut: Any) -> None:
 
     dut.i_restored_ras_tos.value = 6
     dut.i_restored_ras_valid_count.value = 7
+    dut.i_restored_ras_top.value = 0x904
     _drive_mispredict_commit(
         dut,
         {
@@ -334,8 +350,13 @@ async def test_commit_mispredict_return_restores_and_pops_ras(dut: Any) -> None:
     assert output["ras_misprediction"]
     assert output["ras_restore_tos"] == 6
     assert output["ras_restore_valid_count"] == 7
+    assert output["ras_restore_top"] == 0x904
     assert output["ras_pop_after_restore"]
     assert not output["ras_push_after_restore"]
+    # The return trains its BTB entry as a return, with the target it took.
+    _assert_btb_update(
+        output, pc=0x880, target=0x900, taken=True, compressed=False, ret=True
+    )
 
 
 @cocotb.test()
@@ -345,6 +366,7 @@ async def test_commit_mispredict_call_restores_and_pushes_link(dut: Any) -> None
 
     dut.i_restored_ras_tos.value = 1
     dut.i_restored_ras_valid_count.value = 2
+    dut.i_restored_ras_top.value = 0xA04
     _drive_mispredict_commit(
         dut,
         {
@@ -365,6 +387,7 @@ async def test_commit_mispredict_call_restores_and_pushes_link(dut: Any) -> None
     assert output["ras_misprediction"]
     assert output["ras_restore_tos"] == 1
     assert output["ras_restore_valid_count"] == 2
+    assert output["ras_restore_top"] == 0xA04
     assert not output["ras_pop_after_restore"]
     assert output["ras_push_after_restore"]
     assert output["ras_push_address_after_restore"] == 0xA82
@@ -388,6 +411,7 @@ async def test_commit_mispredict_coroutine_replays_pop_then_push(dut: Any) -> No
             "is_branch": True,
             "is_call": True,
             "is_return": True,
+            "is_jalr": True,
             "is_compressed": False,
         },
     )
@@ -404,6 +428,15 @@ async def test_commit_mispredict_coroutine_replays_pop_then_push(dut: Any) -> No
     assert output["ras_pop_after_restore"]
     assert output["ras_push_after_restore"]
     assert output["ras_push_address_after_restore"] == 0xB84
+    _assert_btb_update(
+        output,
+        pc=0xB80,
+        target=0xB00,
+        taken=True,
+        compressed=False,
+        call=True,
+        ret=True,
+    )
 
 
 @cocotb.test()

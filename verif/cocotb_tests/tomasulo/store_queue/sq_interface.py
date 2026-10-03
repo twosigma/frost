@@ -24,17 +24,15 @@ from typing import Any
 from cocotb.triggers import FallingEdge, RisingEdge
 
 from .sq_model import ForwardResult, MemWriteReq
-from config import FLEN, XLEN
+from config import FLEN, MASK_XLEN, XLEN
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
-MASK32 = (1 << XLEN) - 1
 MASK64 = (1 << FLEN) - 1
 
-# sq_forward_result_t packed layout:
-# data(64) | can_forward(1) | match(1) = 66 bits
+# sq_forward_result_t, MSB first: match(1) | can_forward(1) | data(64) = 66 bits
 SQ_FORWARD_WIDTH = 66
 
 
@@ -53,7 +51,7 @@ def pack_sq_alloc(
     bit = 0
     val |= (1 if is_mmio else 0) << bit
     bit += 1
-    val |= (address & MASK32) << bit
+    val |= (address & MASK_XLEN) << bit
     bit += XLEN
     val |= (1 if addr_valid else 0) << bit
     bit += 1
@@ -80,7 +78,7 @@ def pack_sq_addr_update(
     bit = 0
     val |= (1 if is_mmio else 0) << bit
     bit += 1
-    val |= (address & MASK32) << bit
+    val |= (address & MASK_XLEN) << bit
     bit += XLEN
     val |= (rob_tag & MASK_TAG) << bit
     bit += ROB_TAG_WIDTH
@@ -161,25 +159,24 @@ class SQInterface:
         self.dut.i_commit_valid.value = 0
         self.dut.i_commit_rob_tag.value = 0
         self.dut.i_commit_valid_comb.value = 0
-        self.dut.i_commit_rob_tag_comb.value = 0
         self.dut.i_commit_valid_2.value = 0
         self.dut.i_commit_rob_tag_2.value = 0
         self.dut.i_commit_valid_comb_2.value = 0
-        self.dut.i_commit_rob_tag_comb_2.value = 0
-        # Trap-cone-free scan variants: the bench never overlaps a commit
-        # with a full flush, so they mirror i_commit_valid/_2 exactly (as the
-        # wrapper does on every non-flush cycle).
+        # Commit pulses for the forwarding scan: i_commit_valid/_2 without the
+        # full-flush mask, so the two differ only in a full-flush cycle. The
+        # bench never commits in one, and drive_commit* raise both together.
         self.dut.i_commit_valid_scan.value = 0
         self.dut.i_commit_valid_scan_2.value = 0
-        self.dut.i_sq_check_valid.value = 0
-        # Flush-free capture-enable variant. It normally mirrors
-        # i_sq_check_valid (as the LQ does on every non-flush cycle); focused
-        # forwarding tests overlap a probe with a full flush to exercise the
-        # forwarding unit's capture-then-consumer-kill contract.
+        # Capture enable for the forwarding result register: the LQ's probe
+        # valid without its flush and commit-block terms. drive_sq_check
+        # raises it. test_forward_metadata_survives_flush_capture_edge
+        # overlaps a check with a full flush, whose captured result the LQ
+        # would discard.
         self.dut.i_sq_check_capture_valid.value = 0
         self.dut.i_sq_check_addr.value = 0
-        # Port-split replicas. The wrapper drives all four from phase-identical
-        # sister LQ registers, one physical anchor per two-entry SQ quarter.
+        # Copies of i_sq_check_addr. The LQ drives all four with the same
+        # value, one per two-entry quarter of the SQ, to keep the compare
+        # logic local.
         self.dut.i_sq_check_addr_b.value = 0
         self.dut.i_sq_check_addr_c.value = 0
         self.dut.i_sq_check_addr_d.value = 0
@@ -190,6 +187,7 @@ class SQInterface:
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_flush_all.value = 0
+        self.dut.i_flush_after_head_commit.value = 0
         self.dut.i_sc_discard.value = 0
         self.dut.i_sc_discard_rob_tag.value = 0
 
@@ -265,7 +263,7 @@ class SQInterface:
     def drive_early_addr_capture(
         self, rob_tag: int, address: int, is_mmio: bool = False
     ) -> None:
-        """Refresh hidden slot-1 early-address payload without setting valid."""
+        """Refresh slot 1's early-address payload without setting address-valid."""
         self.dut.i_early_addr_update.value = pack_sq_addr_update(
             valid=False, rob_tag=rob_tag, address=address, is_mmio=is_mmio
         )
@@ -288,7 +286,7 @@ class SQInterface:
     def drive_early_addr_capture_2(
         self, rob_tag: int, address: int, is_mmio: bool = False
     ) -> None:
-        """Refresh hidden slot-2 early-address payload without setting valid."""
+        """Refresh slot 2's early-address payload without setting address-valid."""
         self.dut.i_early_addr_update_2.value = pack_sq_addr_update(
             valid=False, rob_tag=rob_tag, address=address, is_mmio=is_mmio
         )
@@ -361,20 +359,17 @@ class SQInterface:
 
     def drive_sq_check(self, addr: int, rob_tag: int, size: int = 2) -> None:
         """Drive forwarding check from LQ."""
-        self.dut.i_sq_check_valid.value = 1
         self.dut.i_sq_check_capture_valid.value = 1
-        self.dut.i_sq_check_addr.value = addr & MASK32
-        # Mirror the address on every port-split replica so all four SQ
-        # quarters see the phase-identical value used in the integrated core.
-        self.dut.i_sq_check_addr_b.value = addr & MASK32
-        self.dut.i_sq_check_addr_c.value = addr & MASK32
-        self.dut.i_sq_check_addr_d.value = addr & MASK32
+        self.dut.i_sq_check_addr.value = addr & MASK_XLEN
+        # Drive the same address on all four copies, as the LQ does.
+        self.dut.i_sq_check_addr_b.value = addr & MASK_XLEN
+        self.dut.i_sq_check_addr_c.value = addr & MASK_XLEN
+        self.dut.i_sq_check_addr_d.value = addr & MASK_XLEN
         self.dut.i_sq_check_rob_tag.value = rob_tag & MASK_TAG
         self.dut.i_sq_check_size.value = size
 
     def clear_sq_check(self) -> None:
         """Clear forwarding check."""
-        self.dut.i_sq_check_valid.value = 0
         self.dut.i_sq_check_capture_valid.value = 0
 
     def read_sq_forward(self) -> ForwardResult:

@@ -3,39 +3,39 @@
 
 # Optional FROST focus layout
 
-Run **FROST: Apply Focus Layout** to hide the activity bar, status bar, minimap,
-and chat toolbar button. **FROST: Restore Layout** restores the saved
-User overrides, including removing overrides that were originally absent.
-Settings whose User values differ from the applied values are preserved. The backup survives VS Code reloads;
-repeating Apply keeps the original backup. Workspace overrides remain effective.
-These commands never change extension enablement.
+**FROST: Apply Focus Layout** hides the activity bar, status bar, minimap,
+and chat button, and sets Zen Mode to keep line numbers, avoid full screen and
+centered layout, and show only error notifications. It also makes the
+secondary side bar start hidden; close one that is already open with VS
+Code's layout controls. Apply changes User settings only, never extension
+enablement, and saves their previous values, which survive window reloads.
+Workspace settings still override it.
 
-Use **FROST: Toggle Zen Mode** for quieter notifications and fewer panels.
-It invokes VS Code's public Zen toggle; toggle again or press Escape twice to
-exit. Apply configures Zen to retain source line numbers and avoid fullscreen or
-centered layout. Zen silences ordinary notification popups while preserving
-error notifications. FROST Output remains available through **FROST: Show Output**.
-Apply/Restore do not enter or exit Zen, so an existing Zen session stays under
-your control. The secondary sidebar setting controls its default visibility;
-an already open sidebar can be closed with VS Code's layout controls.
-See [VS Code custom layout](https://code.visualstudio.com/docs/configure/custom-layout)
-and the [1.106 Zen settings](https://github.com/microsoft/vscode/blob/1.106.3/src/vs/workbench/browser/workbench.contribution.ts).
+**FROST: Restore Layout** puts the saved values back, removing settings that
+Apply added, and keeps any setting you changed after Apply. Apply refuses to
+run again until you restore. Neither command enters or leaves Zen Mode: use
+**FROST: Toggle Zen Mode**, or press Escape twice to leave it.
+**FROST: Show Output** still shows FROST's log in Zen Mode.
 
-For an isolated setup, open **File > Preferences > Profiles**, choose
-**Import Profile** from the **New Profile** dropdown, and select
-[FROST.code-profile](FROST.code-profile). Create a **new** profile named
-**FROST Debug** and review its contents before importing. Then run
-**Extensions: Install from VSIX...** in that profile and select the packaged
-FROST VSIX. The template requests only C/C++; FROST is a local VSIX and cannot
-be installed by a Marketplace profile entry. Built-in extensions remain, and
-extensions explicitly applied to all profiles may also appear. Review those
-in the Profiles editor if you want only FROST and C/C++ as added extensions.
-Switch back to your previous profile to recover its layout and extension set.
-See [VS Code profiles](https://code.visualstudio.com/docs/configure/profiles).
+## A separate profile
 
-Use independent Settings and UI State for the dedicated profile. Profiles that
-inherit the Default profile's Settings share that settings file; the public
-extension API does not expose this inheritance. Apply/Restore refuse managed
-settings marked **Apply Setting to all Profiles**, and Restore refuses a backup
-copied from another profile storage location. Imported focus settings are the
-new profile's initial settings; Restore only undoes changes made by Apply.
+To keep this layout and a minimal extension set apart from your usual setup:
+
+1. In **File > Preferences > Profiles**, choose **Import Profile** from the
+   **New Profile** menu and select [FROST.code-profile](FROST.code-profile).
+2. Create it as a new profile named **FROST Debug**, with its own Settings and
+   UI State, after reviewing its contents.
+3. In that profile, run **Extensions: Install from VSIX...** and select the
+   FROST VSIX.
+
+The template adds only C/C++; a profile cannot install a local VSIX.
+Built-in extensions, and any applied to all profiles, still appear. Switch
+profiles to get your usual layout back. See
+[VS Code profiles](https://code.visualstudio.com/docs/configure/profiles).
+
+Keep the profile's Settings separate: if it shares the Default profile's
+settings, Apply changes those too, and the extension cannot detect the
+sharing. Apply and Restore refuse settings marked
+**Apply Setting to all Profiles**, and Restore refuses a backup saved in
+another profile. The imported profile starts with the focus settings already
+set, and Restore undoes only what Apply changed.

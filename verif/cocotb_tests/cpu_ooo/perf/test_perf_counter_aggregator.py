@@ -56,8 +56,9 @@ PERF_DISPATCH_STALL_INT_RS_FULL = 8
 PERF_DISPATCH_STALL_MUL_RS_FULL = 9
 PERF_DISPATCH_STALL_MEM_RS_FULL = 10
 PERF_DISPATCH_STALL_FP_RS_FULL = 11
-PERF_DISPATCH_STALL_FMUL_RS_FULL = 12
-PERF_DISPATCH_STALL_FDIV_RS_FULL = 13
+# 12 and 13 are reserved and read 0.
+PERF_RESERVED_12 = 12
+PERF_RESERVED_13 = 13
 PERF_DISPATCH_STALL_LQ_FULL = 14
 PERF_DISPATCH_STALL_SQ_FULL = 15
 PERF_DISPATCH_STALL_CHECKPOINT_FULL = 16
@@ -111,8 +112,6 @@ DISPATCH_STATUS_FIELDS = [
     ("mul_rs_full", 1),
     ("mem_rs_full", 1),
     ("fp_rs_full", 1),
-    ("fmul_rs_full", 1),
-    ("fdiv_rs_full", 1),
     ("lq_full", 1),
     ("sq_full", 1),
     ("checkpoint_full", 1),
@@ -272,7 +271,7 @@ async def _capture_snapshot(dut: Any) -> None:
 
 
 async def _read_counter(dut: Any, index: int) -> int:
-    """Read a selected counter through the two-stage registered CSR path."""
+    """Read a counter through the aggregator's two read-path registers."""
     dut.i_perf_counter_select.value = index
     await _advance_cycle(dut)
     await _advance_cycle(dut)
@@ -287,7 +286,7 @@ async def _finish_event_pipeline(dut: Any) -> None:
 
 @cocotb.test()
 async def test_counter_count_and_idle_snapshot_are_zero(dut: Any) -> None:
-    """The aggregate exposes all counters and an idle snapshot reads as zero."""
+    """The aggregator reports the full counter count, and an idle snapshot reads zero."""
     await _setup_test(dut)
 
     await _capture_snapshot(dut)
@@ -325,8 +324,6 @@ async def test_dispatch_activity_and_resource_stall_counters(dut: Any) -> None:
             "stall": True,
             "mem_rs_full": True,
             "fp_rs_full": True,
-            "fmul_rs_full": True,
-            "fdiv_rs_full": True,
             "lq_full": True,
             "sq_full": True,
             "checkpoint_full": True,
@@ -345,8 +342,8 @@ async def test_dispatch_activity_and_resource_stall_counters(dut: Any) -> None:
         PERF_DISPATCH_STALL_MUL_RS_FULL: 0,
         PERF_DISPATCH_STALL_MEM_RS_FULL: 1,
         PERF_DISPATCH_STALL_FP_RS_FULL: 1,
-        PERF_DISPATCH_STALL_FMUL_RS_FULL: 1,
-        PERF_DISPATCH_STALL_FDIV_RS_FULL: 1,
+        PERF_RESERVED_12: 0,
+        PERF_RESERVED_13: 0,
         PERF_DISPATCH_STALL_LQ_FULL: 1,
         PERF_DISPATCH_STALL_SQ_FULL: 1,
         PERF_DISPATCH_STALL_CHECKPOINT_FULL: 1,
@@ -520,7 +517,7 @@ async def test_wrapper_counter_select_and_data_path(dut: Any) -> None:
 
 @cocotb.test()
 async def test_cache_counter_block_accumulates_snapshots_and_muxes(dut: Any) -> None:
-    """The appended cache block counts every event/sum without shifting wrapper indices."""
+    """Cache counters accumulate; a capture freezes a snapshot and keeps the preceding one."""
     await _setup_test(dut)
 
     patterns: list[dict[str, int | bool]] = [
@@ -596,10 +593,10 @@ async def test_cache_counter_block_accumulates_snapshots_and_muxes(dut: Any) -> 
     await _capture_snapshot(dut)
     assert await _read_counter(dut, PERF_L1D_ACCESS) == 4
 
-    # A second capture keeps the first cache snapshot in the cache-only
-    # previous bank, reached through i_perf_cache_previous_select. Software
-    # reads both ends of a timed region after timing has stopped without
-    # duplicating counter indices or disturbing the existing 0-105 read path.
+    # The second capture moved the first cache snapshot into the preceding
+    # bank, which i_perf_cache_previous_select reads, so software can read both
+    # ends of a timed region afterward. The select does not affect indices
+    # 0-105.
     dut.i_perf_cache_previous_select.value = 1
     for counter, value in expected.items():
         assert await _read_counter(dut, counter) == value
@@ -610,7 +607,7 @@ async def test_cache_counter_block_accumulates_snapshots_and_muxes(dut: Any) -> 
 
 @cocotb.test()
 async def test_cache_block_bounds_and_out_of_range_selects(dut: Any) -> None:
-    """The third block ends at 120; every larger 8-bit selector reads zero."""
+    """A cache event stays in the cache block; selectors past the last counter read zero."""
     await _setup_test(dut)
 
     _drive_cache_perf_events(dut, {"l2_miss_outstanding": True})

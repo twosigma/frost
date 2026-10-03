@@ -18,19 +18,21 @@
  * nic_byte_unpack: turns 32-byte lines at any byte alignment into a frame's
  * contiguous 8-byte beats.
  *
- * Contract: the frame is the LEN bytes starting at byte offset OFF inside
- * its first line (i_offset, i_len at i_start; the engine keeps the line
- * addresses); the engine feeds the lines that cover
- * [A, A + LEN) in address order through the valid/ready line input; the
- * output presents beats of 8 bytes, the last one carrying the remaining
- * 1..8 bytes and the last flag. o_beat_data lane 0 is the lowest address.
+ * The frame is the LEN bytes at address A, byte offset OFF inside its
+ * first line (LEN = i_len and OFF = i_offset, both taken at i_start). The
+ * engine keeps the line addresses and feeds the lines that cover
+ * [A, A + LEN) in address order through the valid/ready line input. Every
+ * beat carries 8 bytes except the last, which carries the remaining 1..8
+ * bytes and the last flag. o_beat_data lane 0 is the lowest address.
  *
- * Mechanism: the mirror of nic_byte_pack. A two-line window holds the
- * current and the next line; a beat takes the 16 bytes of the chunk pair
- * at pos/8 and rotates them down by A mod 8 (constant per frame), so no
- * barrel shifter is needed. The window advances a line when pos crosses it,
- * consuming the next line from the input; a beat is offered only when every
- * chunk it needs is present. The last beat frees the window.
+ * This is the mirror of nic_byte_pack. A two-line window holds the current
+ * and the next line. A beat takes the 16 bytes of the chunk pair at pos/8
+ * (pos is the next byte's position in the window) and rotates them down by
+ * A mod 8, which is constant for the frame, so each beat needs only a
+ * chunk-pair select and an eight-position rotate. The window advances a
+ * line when pos crosses into the upper line, and the next input line fills
+ * the freed half; a beat is offered only when every chunk it needs is
+ * present. The last beat frees the window.
  */
 module nic_byte_unpack #(
     parameter int unsigned LINE_BYTES = 32

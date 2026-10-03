@@ -12,7 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# ETXTBSY directed probe with a self-defined _start (no crt0.S).
+# Directed probe of lr.w sign extension in the Linux i_writecount (ETXTBSY)
+# sequence, with a self-defined _start (no crt0.S).
 include ../../common/arch.mk
 ARCH := $(FROST_XLEN_PREFIX)imac_zicsr
 ABI := $(FROST_INT_ABI)

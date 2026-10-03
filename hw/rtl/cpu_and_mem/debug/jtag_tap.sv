@@ -16,15 +16,15 @@
 
 /*
  * Generic IEEE 1149.1 test access port for the RISC-V debug transport module
- *. Five-bit instruction register with the standard
- * DTM encodings (IDCODE 0x01, DTMCS 0x10, DMI 0x11, BYPASS 0x1F; every other
- * code selects BYPASS), so any RISC-V-aware JTAG debugger drives it without
- * configuration. This TAP is what simulation and the portable synthesis
- * targets use (frost's i_jtag_* pins); on the Xilinx boards the same
- * downstream bundle comes from two BSCANE2 primitives on the FPGA's own TAP
- * instead (boards/xilinx_frost_subsystem.sv), which is why the interface to
- * dtm_core is expressed in BSCAN terms: TAP-state levels (capture / shift /
- * update / test-logic-reset) plus one select per DTM register.
+ * (dtm_core). The five-bit instruction register uses the standard DTM
+ * encodings (IDCODE 0x01, DTMCS 0x10, DMI 0x11, BYPASS 0x1F; every other code
+ * selects BYPASS), so any RISC-V-aware JTAG debugger drives it without
+ * configuration. Simulation and the portable synthesis targets use this TAP
+ * (frost's i_jtag_* pins). On the Xilinx boards the same bundle comes from two
+ * BSCANE2 primitives on the FPGA's own TAP instead
+ * (boards/xilinx_frost_subsystem.sv), which is why the interface to dtm_core
+ * is expressed in BSCAN terms: TAP-state levels (capture / shift / update /
+ * test-logic-reset) plus one select per DTM register.
  *
  * Timing follows the standard: the state machine and shift registers advance
  * on the rising edge of TCK, TDO changes on the falling edge. The instruction

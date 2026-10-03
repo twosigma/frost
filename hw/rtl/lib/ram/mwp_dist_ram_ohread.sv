@@ -17,38 +17,28 @@
 /*
  * mwp_dist_ram with a one-hot read select for the Live Value Table.
  *
- * Storage and write semantics match mwp_dist_ram: one sdp_dist_ram bank per
- * write port plus a register LVT, highest-numbered port wins on same-address
- * writes.  Only the read path differs, and only for timing.  The caller
+ * Storage, write semantics, and the NUM_STAGED_LVT_PORTS and
+ * NUM_NARROW_WRITE_PORTS options match mwp_dist_ram, whose header states
+ * their rules.  Only the read path differs, and only for timing.  The caller
  * supplies the binary read address, which still drives the banks' LUTRAM
- * address pins because those require binary, and alongside it a registered
- * one-hot image of the same address (i_read_onehot).  In the base module the
- * LVT bank-select lookup is a 32:1 mux of registered LVT bits behind a
+ * address pins because those require binary, and alongside it a one-hot
+ * image of the same address (i_read_onehot).  In the base module the LVT
+ * bank-select lookup is a RamDepth:1 mux of registered LVT bits behind a
  * high-fanout binary select.  Here it becomes an AND-OR reduction over
  * per-entry one-hot bits:
  *
- *   lvt_read_sel = OR_i (i_read_onehot[i] ? lvt[i] : '0)
+ *   lvt_read_sel = OR_i (i_read_onehot[i] ? lvt_eff[i] : '0)
  *
  * The caller must hold i_read_onehot == (1 << i_read_address) in every cycle
- * where o_read_data is consumed.  Under that invariant the reduction equals
- * lvt[i_read_address] exactly, so o_read_data is bit-identical to the base
- * module's.  A simulation-only check below fires if the invariant is
- * violated.
+ * where o_read_data is consumed; o_read_data then equals the base module's.
+ * An all-zero i_read_onehot reads bank 0.  A simulation-only check below
+ * fires on any other mismatch.
  *
- * Intended use: the reorder buffer head / head+1 read ports, whose one-hot
- * images (head_clear_mask / head_next_clear_mask) are already maintained as
- * registers that move in lockstep with head_ptr.
- *
- * NUM_STAGED_LVT_PORTS: the register-staged LVT-update option from
- * mwp_dist_ram, whose header states the full contract.  Ports
- * [NUM_STAGED_LVT_PORTS-1:0] write their bank same-cycle but update the LVT
- * one cycle later from staging registers.  Reads stay cycle-exact via a
- * per-entry effective-LVT override computed from those registers.
- *
- * NUM_NARROW_WRITE_PORTS / NARROW_DATA_WIDTH: the narrow-write-port
- * area/routability option from mwp_dist_ram (see that header).  The low
- * NUM_NARROW_WRITE_PORTS ports store only NARROW_DATA_WIDTH bits, and reads
- * reconstruct their constant-zero upper bits.
+ * Users: the reorder buffer's head and head+1 read ports, whose one-hot
+ * images (head_clear_mask, head_next_clear_mask) are registers that move in
+ * lockstep with head_ptr, and the reservation station's second-issue-port
+ * payload copy, read with the one-hot that its issue2 selector already
+ * computes.
  */
 module mwp_dist_ram_ohread #(
     parameter int unsigned ADDR_WIDTH             = 5,          // Address width in bits
@@ -70,8 +60,8 @@ module mwp_dist_ram_ohread #(
     input logic [NUM_WRITE_PORTS-1:0][DATA_WIDTH-1:0] i_write_data,
 
     // Read port (asynchronous / combinational).
-    // i_read_address feeds the LUTRAM banks in binary.  i_read_onehot must be
-    // a registered one-hot image of that same address and steers the LVT
+    // i_read_address feeds the LUTRAM banks in binary.  i_read_onehot is the
+    // one-hot image of that same address (see header) and steers the LVT
     // select.
     input  logic [   ADDR_WIDTH-1:0] i_read_address,
     input  logic [2**ADDR_WIDTH-1:0] i_read_onehot,
@@ -217,13 +207,14 @@ module mwp_dist_ram_ohread #(
 
   // Simulation-only check that the one-hot select mirrors the binary read
   // address whenever both are known.  A mismatch would silently return the
-  // wrong bank's data, so treat it as an error.  The all-zero case is
-  // tolerated: it only occurs before the caller's reset has loaded the mask
-  // register (2-state sims read uninitialized FFs as 0), and there it selects
-  // bank 0, the same result as the base module's initial lvt='0 read.
-  // FORMAL builds exclude this block because yosys cannot elaborate $error in
-  // a clocked process.  The reorder_buffer's FORMAL section proves the
-  // equivalent invariant as p_head_mask_onehot / p_head_next_mask_onehot.
+  // wrong bank's data, so treat it as an error.  An all-zero select is
+  // allowed: it reads bank 0, and callers present it only when the read is
+  // unused (the ROB's head masks before reset loads them, which 2-state
+  // simulation reads as 0, and the reservation station's second issue port
+  // when nothing issues there).  FORMAL builds exclude this block because
+  // yosys cannot elaborate $error in a clocked process.  The reorder_buffer's
+  // FORMAL section proves the invariant for its head ports as
+  // p_head_mask_onehot / p_head_next_mask_onehot.
   always @(posedge i_clk) begin
     if (!$isunknown(
             i_read_address

@@ -175,7 +175,7 @@ static void test_independent_ooo(void)
 {
     uart_printf("Test 4:  Independent OOO...");
 
-    /* 4 fully independent ADDs - all can execute in parallel */
+    /* 4 fully independent ADDs: free to execute in any order */
     uint32_t a, b, c, d;
     __asm__ volatile("add  %[a], %[r1], %[r2]\n" /* a = 10 + 20 = 30 */
                      "add  %[b], %[r3], %[r4]\n" /* b = 30 + 40 = 70 */
@@ -255,7 +255,7 @@ static void test_latency_bypass(void)
 
 /* ========================================================================== */
 /* Test 6: Reservation Station Saturation                                     */
-/* Tests: Instruction issue stalls when RS entries are full                    */
+/* Tests: Long dependent chains waiting in the reservation station            */
 /* ========================================================================== */
 
 static void test_rs_saturation(void)
@@ -497,7 +497,7 @@ static void test_cdb_contention(void)
 {
     uart_printf("Test 10: CDB contention...");
 
-    /* 4 independent ADDs - may all try to broadcast on CDB same cycle */
+    /* 4 independent ALU ops competing for the CDB lanes */
     uint32_t a, b, c, d;
     __asm__ volatile("add  %[a], %[s1], %[s2]\n" /* 1 + 2 = 3 */
                      "add  %[b], %[s3], %[s4]\n" /* 3 + 4 = 7 */
@@ -567,7 +567,7 @@ static void test_fp_hazards(void)
     TEST_FP("FP RAW fb", fb, 7);
     TEST_FP("FP RAW fc", fc, 15);
 
-    /* FP MUL→ADD RAW: FMUL.D produces, FADD.D consumes */
+    /* FP MUL->ADD RAW: FMUL.D produces, FADD.D consumes */
     double fp, fs;
     __asm__ volatile("fmul.d %[p], %[a], %[b]\n" /* fp = 3.0 * 4.0 = 12.0 */
                      "fadd.d %[s], %[p], %[c]\n" /* fs = 12.0 + 1.0 = 13.0 (RAW) */
@@ -616,7 +616,7 @@ static void test_fp_hazards(void)
                      : [z] "f"(0.0), [one] "f"(1.0), [v2] "f"(2.0), [v3] "f"(3.0), [v4] "f"(4.0));
     TEST_FP("FMADD chain", fma_acc, 9);
 
-    /* 4 independent FADD.D ops - all can execute in parallel */
+    /* 4 independent FADD.D ops: free to execute in any order */
     double ia, ib, ic, id;
     __asm__ volatile("fadd.d %[a], %[v1], %[v2]\n" /* 1+2 = 3 */
                      "fadd.d %[b], %[v3], %[v4]\n" /* 3+4 = 7 */

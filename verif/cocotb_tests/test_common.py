@@ -14,8 +14,8 @@
 
 """Shared configuration, instruction-driving, and commit-wait helpers.
 
-Use event-based waits for OOO retirement. ``TestConfig`` controls generation;
-``DUTSignalPaths`` in config.py controls hierarchy access.
+Use event-based waits for OOO retirement. ``TestConfig`` holds the per-test
+settings; ``DUTSignalPaths`` in config.py controls hierarchy access.
 """
 
 import cocotb
@@ -24,15 +24,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from config import (
-    MASK32,
+    MASK_XLEN,
     NOP_INSTRUCTION,
     DEFAULT_NUM_TEST_LOOPS,
     DEFAULT_MIN_COVERAGE_COUNT,
-    DEFAULT_MEMORY_INIT_SIZE,
     DEFAULT_CLOCK_PERIOD_NS,
     DEFAULT_RESET_CYCLES,
-    PIPELINE_DEPTH,
-    PIPELINE_FLUSH_CYCLES,
 )
 from cocotb_tests.test_state import TestState
 from cocotb_tests.test_helpers import DUTInterface
@@ -42,149 +39,17 @@ from cocotb_tests.test_helpers import DUTInterface
 class TestConfig:
     """Per-test configuration, passed explicitly rather than through globals.
 
-    Basic Parameters:
-        num_loops: How many random instructions to generate and test
+    Attributes:
+        num_loops: How many instructions a randomized test runs
         min_coverage_count: Minimum executions required per instruction type
-        memory_init_size: Size of initialized memory region (in bytes)
         clock_period_ns: Clock period for simulation
         reset_cycles: How many clock cycles to hold reset
-
-    Advanced Options:
-        use_structured_logging: When True, log the PC flow, register updates
-            and memory ops in a formatted form for debugging a failure; when
-            False, use the standard (less verbose) cocotb logging.
-
-        constrain_addresses_to_memory: When True, keep generated addresses in
-            [0, memory_init_size) so the allocated memory gets exercised; when
-            False, addresses can fall anywhere in the 32-bit space, and many
-            are out of range.
-
-        force_one_address: If True, use rs1=0 and imm=0 so every access hits
-            one address, which stresses memory hazards and cache behavior.
-
-        compressed_ratio: Fraction (0.0-1.0) of compressed (C extension)
-            instructions. 0.0 (the default) generates only 32-bit
-            instructions; above 0 mixes in 16-bit ones, which advance the PC
-            by 2 instead of 4. Only ALU compressed instructions are used, no
-            branches or jumps.
     """
 
     num_loops: int = DEFAULT_NUM_TEST_LOOPS
     min_coverage_count: int = DEFAULT_MIN_COVERAGE_COUNT
-    memory_init_size: int = DEFAULT_MEMORY_INIT_SIZE
     clock_period_ns: int = DEFAULT_CLOCK_PERIOD_NS
     reset_cycles: int = DEFAULT_RESET_CYCLES
-    use_structured_logging: bool = False
-    constrain_addresses_to_memory: bool = False
-    force_one_address: bool = False
-    compressed_ratio: float = 0.0
-
-
-def handle_branch_flush(
-    state: TestState, operation: str
-) -> tuple[str, int, int, int, int]:
-    """Handle branch flush by inserting NOP (addi x0, x0, 0).
-
-    A taken branch flushes the pipeline: the instructions fetched after it
-    are discarded. The model stands in for them with a NOP, which adds 0 to
-    x0, writes the hardwired-zero x0, and advances the PC by 4.
-
-    Legacy reference-model flush timeline:
-        ┌─────────────────────────────────────────────────────────────┐
-        │ Branch/jump taken in EX stage                               │
-        │                                                             │
-        │ Cycle 0: branch_taken_current = True   → Insert NOP         │
-        │ Cycle 1: branch_taken_previous = True  → Insert NOP         │
-        │ Cycle 2: branch_taken_two_cycles_ago   → Insert NOP         │
-        │ Cycle 3: All flags cleared             → Resume normal ops  │
-        └─────────────────────────────────────────────────────────────┘
-
-    This legacy reference model treats all branches and jumps (JAL, JALR,
-    conditional branches) as resolving at EX with a 3-cycle flush. The OOO
-    CPU has variable recovery and commit timing. The cpu_random harness
-    remains CLI-only and needs a commit-indexed scoreboard before its
-    expected-value queues can validate the current core.
-
-    Args:
-        state: Test state to update branch tracking
-        operation: Previous operation type (unused, kept for API compatibility)
-
-    Returns:
-        Tuple of (operation, rd, rs1, rs2, imm) representing a NOP
-    """
-    # Shift the branch-taken and JAL flags through the model's three flush
-    # slots.
-    state.advance_branch_state()
-
-    return "addi", 0, 0, 0, 0  # operation, rd, rs1, rs2, imm
-
-
-async def flush_remaining_outputs(
-    dut: Any,
-    state: TestState,
-    dut_if: DUTInterface | None = None,
-) -> None:
-    """Flush remaining expected outputs through the pipeline.
-
-    When the main test loop ends, instructions are still in the pipeline.
-    This waits for them to drain so the monitors can check them.
-
-    The PC monitor sees output earlier than the register file monitor
-    because of pipeline staging, so the PC queue is padded with sequential
-    values for the instructions still in flight.
-
-    Args:
-        dut: Device under test
-        state: Test state with expected value queues
-        dut_if: Optional DUT interface (for cleaner signal access)
-    """
-    # Pad the PC queue for the instructions still in the pipeline.
-    for _ in range(PIPELINE_FLUSH_CYCLES):
-        expected_pc = (state.program_counter_current + 4) & MASK32
-        state.program_counter_expected_values_queue.append(expected_pc)
-        state.program_counter_current += 4
-
-    # The monitors pop these queues as the hardware produces valid outputs.
-    while state.has_pending_expectations():
-        if dut_if:
-            await RisingEdge(dut_if.clock)
-        else:
-            await RisingEdge(dut.i_clk)
-        cocotb.log.info(
-            f"len(register_file_expected_values_queue) is {len(state.register_file_current_expected_queue)}"
-        )
-
-
-async def warmup_pipeline(
-    dut_if: DUTInterface, state: TestState, enable_fp: bool = False
-) -> None:
-    """Fill the pipeline with NOPs to synchronize expected value queues.
-
-    Queues expected values for the first PIPELINE_DEPTH cycles, before o_vld
-    starts firing, and drives NOPs so the initial state is predictable.
-
-    Args:
-        dut_if: DUT interface for signal access
-        state: Test state for tracking expectations
-        enable_fp: If True, also queue FP register file expectations
-    """
-    cocotb.log.info(f"=== Warming up pipeline ({PIPELINE_DEPTH} NOPs) ===")
-    for warmup_cycle in range(PIPELINE_DEPTH):
-        expected_pc = (state.program_counter_current + 4) & MASK32
-        state.queue_expected_outputs(expected_pc, include_fp=enable_fp)
-
-        dut_if.instruction = NOP_INSTRUCTION
-
-        await RisingEdge(dut_if.clock)
-        state.increment_cycle_counter()
-        state.increment_instret_counter()
-
-        state.update_program_counter(expected_pc)
-        state.advance_register_state()
-
-        cocotb.log.info(
-            f"Warmup NOP {warmup_cycle}: pc_cur={state.program_counter_current}"
-        )
 
 
 # Cycle budget for event-based waits in directed tests. Hitting it means the
@@ -283,9 +148,9 @@ async def execute_nop(
 ) -> None:
     """Execute a NOP instruction (addi x0, x0, 0).
 
-    Used for pipeline warmup, for padding during branch-flush recovery, and
-    for waiting while pipeline effects propagate. The NOP reads x0, adds 0,
-    writes the hardwired-zero x0 (no effect), and advances the PC by 4.
+    Used to warm up the pipeline and to pad cycles while earlier instructions
+    take effect. The NOP writes the hardwired-zero x0 (no effect) and advances
+    the PC by 4.
 
     Args:
         dut_if: DUT interface for signal access
@@ -308,7 +173,7 @@ async def execute_nop(
     state.register_file_current_expected_queue.append(
         state.register_file_current.copy()
     )
-    expected_pc = (state.program_counter_current + 4) & MASK32
+    expected_pc = (state.program_counter_current + 4) & MASK_XLEN
     state.program_counter_expected_values_queue.append(expected_pc)
 
     dut_if.instruction = instr

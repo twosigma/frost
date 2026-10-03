@@ -15,9 +15,9 @@
 
 """Run FROST's reproducible development workflows in the pinned Docker image.
 
-The container runs as the invoking user's UID and GID.  Files created in the
-bind-mounted checkout therefore remain writable by native tools such as Vivado.
-A host-owned cache directory, mounted at the container's ``~/.cache``, keeps
+The container runs as the invoking user's UID and GID, so files it creates in
+the bind-mounted checkout stay writable by native tools such as Vivado. A
+host-owned cache directory, mounted at the container's ``~/.cache``, keeps
 pre-commit hook environments and npm downloads across container runs.
 """
 
@@ -50,6 +50,7 @@ FORWARDED_ENV_NAMES = {
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "NO_PROXY",
+    "NUMBER_OF_CPU_CORES",
     "PYTEST_ADDOPTS",
     "SIM_FAST_MAINT",
     "SIM_MEM_SIZE_BYTES",
@@ -248,7 +249,7 @@ class Diagnostic:
 
 @dataclass(frozen=True)
 class CheckStepResult:
-    """Result and elapsed time for one aggregate fast check."""
+    """Status and elapsed time of one ``check`` job."""
 
     name: str
     status: str
@@ -288,7 +289,7 @@ def workflow_command(workflow: str, arguments: Sequence[str]) -> list[str]:
 
 
 def forwarded_environment_names(environment: Mapping[str, str]) -> list[str]:
-    """Return safe development-variable names to inherit in the container."""
+    """Return the allowlisted development-variable names to inherit in the container."""
     return sorted(
         name
         for name in environment
@@ -365,6 +366,7 @@ def run_captured_command(
     except FileNotFoundError as error:
         return CommandOutcome(127, stderr=str(error))
     except subprocess.TimeoutExpired:
+        # Killing the docker client leaves its container running: remove it.
         if list(command[:2]) == ["docker", "run"] and "--name" in command:
             name_index = command.index("--name") + 1
             if name_index < len(command):
@@ -403,7 +405,7 @@ def build_docker_command(
     """Build the host-side Docker invocation for a workflow command."""
     validate_image_reference(image)
     overrides = environment_overrides or {}
-    # Docker creates HOME as a root-owned parent of the cache mount. npm's
+    # With a cache mount, Docker creates HOME as its root-owned parent, so npm's
     # default ~/.npm would be unwritable to the invoking UID.
     npm_cache = (
         f"/tmp/frost-home-{uid}/.cache/npm"
@@ -1074,7 +1076,7 @@ def run_fast_checks(
     command_runner: Callable[[Sequence[str]], int] = run_streaming_command,
     clock: Callable[[], float] = time.monotonic,
 ) -> int:
-    """Run CI's lint and fast-Python lanes with aggregate reporting."""
+    """Run CI's Lint and Fast Python jobs and summarize the results."""
     print("Running CI's Lint and Fast Python jobs.")
     print("Note: lint hooks may update files; review the worktree if lint fails.")
     results: list[CheckStepResult] = []
@@ -1179,7 +1181,7 @@ def _check_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fail-fast",
         action="store_true",
-        help="stop after the first failed lane instead of reporting both",
+        help="stop after the first failed job instead of running both",
     )
     return parser
 

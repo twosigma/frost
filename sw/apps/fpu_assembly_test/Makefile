@@ -12,9 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# FPU hazard/flush assembly test with a self-defined _start (no crt0.S).
-# ARCH must match common.mk's supported ISA. arch.mk supplies the XLEN prefix
-# and the integer ABI.
+# FP hazard assembly test with a self-defined _start (no crt0.S).
+# ARCH must stay within the ISA the core implements (common.mk RISCV_FLAGS);
+# the XLEN prefix and the ABI names come from arch.mk.
 include ../../common/arch.mk
 ARCH := $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 ABI := $(FROST_INT_ABI)

@@ -17,13 +17,13 @@
 # Compressed Double-Precision FP (Zcd) Extension Test
 #
 # Zcf (C.FLW/C.FSW and the SP forms) is rv32-only. At rv64 those encodings
-# are C.LD/C.SD (+SP forms), which c_ext_test covers, so there is nothing
-# left for Zcf here and this app tests only Zcd. The old Zcf subtests 1 and
-# 2 are gone. The remaining Zcd subtests keep their original numbering:
+# are C.LD/C.SD (+SP forms), which c_ext_test covers, so this app tests only
+# Zcd. Subtests 1 and 2 would be the Zcf forms, so numbering starts at 3:
 #   3. C.FLD / C.FSD using compressed registers (f8-f15, x8-x15 base)
 #   4. C.FLDSP / C.FSDSP using stack-pointer base
 #
-# Prints <<PASS>> on success.
+# Prints <<PASS>> on success. A failing subtest prints FAIL with its name and
+# then <<FAIL>>, and stops.
 
     .section .init
     .option push
@@ -41,10 +41,6 @@ _start:
     # Data base in s1 = x9, inside the register range the compressed
     # loads and stores can encode.
     la      s1, data_base
-    # Seed the scratch words: data_base is in .bss and nothing zeroes it here.
-    li      t0, 0x00000001
-    sw      t0, 0(s1)
-    sw      x0, 4(s1)
 
     la      a0, msg_header
     jal     ra, print_string
@@ -59,6 +55,11 @@ _start:
     sw      t0, 8(s1)        # low word
     li      t1, 0x01234567
     sw      t1, 12(s1)       # high word
+    # Clear the destination and fs0 first: a rerun after reset finds the
+    # previous run's results in both, which would hide a dropped c.fld/c.fsd.
+    sw      zero, 16(s1)
+    sw      zero, 20(s1)
+    fmv.d.x fs0, zero
     .option rvc
     c.fld   fs0, 8(s1)       # f8 from [s1 + 8]
     c.fsd   fs0, 16(s1)      # store to [s1 + 16]
@@ -83,6 +84,9 @@ _start:
     sw      t0, 0(sp)        # low word
     li      t1, 0x5A5A5A5A
     sw      t1, 4(sp)        # high word
+    sw      zero, 8(sp)      # cleared as in test 3
+    sw      zero, 12(sp)
+    fmv.d.x fs1, zero
     .option rvc
     c.fldsp fs1, 0(sp)       # f9 from [sp + 0]
     c.fsdsp fs1, 8(sp)       # store to [sp + 8]
@@ -114,10 +118,14 @@ fail_test3:
     .option norvc
     la      a0, msg_fail3
     jal     ra, print_string
-    j       done
+    j       fail_marker
 
 fail_test4:
     la      a0, msg_fail4
+    jal     ra, print_string
+
+fail_marker:
+    la      a0, msg_fail_marker
     jal     ra, print_string
     j       done
 
@@ -162,6 +170,8 @@ msg_pass:
     .asciz "\n=== All Tests Passed ===\n"
 msg_marker:
     .asciz "<<PASS>>\n"
+msg_fail_marker:
+    .asciz "<<FAIL>>\n"
 
 # =========================================
 # Test data

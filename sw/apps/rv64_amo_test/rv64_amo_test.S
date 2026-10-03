@@ -1,22 +1,21 @@
-# RV64 A-extension directed test (Phase 1 plan M6)
+# RV64 A-extension directed test
 #
 # Exercises the doubleword atomics end-to-end through the OoO core's AMO
-# path. rv64_smoke's M2-minimum slice has no A at all, and the arch and
-# riscv-tests suites cover the ops one at a time. Each test here checks both
-# the returned old value and the resulting memory word, with full-64-bit
-# patterns chosen so any 32-bit datapath truncation or W-style
-# sign-extension in the AMO ALU shows up.
+# path. Each test checks both the returned old value and the resulting memory
+# doubleword, with full 64-bit patterns chosen so any 32-bit datapath
+# truncation or W-style sign extension in the AMO ALU shows up.
 #
 # Coverage:
 #   1. AMOSWAP.D: old value returned, new value stored
-#   2. AMOADD.D: carry propagates across bit 31, so it is not a W add
+#   2. AMOADD.D: the carry crosses bit 31, which a W add would drop
 #   3. AMOAND.D / AMOOR.D / AMOXOR.D: bit patterns across all 64 bits
 #   4. AMOMIN.D / AMOMAX.D: signed compares with 64-bit negatives
 #   5. AMOMINU.D / AMOMAXU.D: unsigned compares with top-bit-set operands
 #   6. LR.D / SC.D success pair: SC writes and returns 0
 #   7. SC.D without a reservation: fails with a nonzero rc, memory intact
 #   8. AMOADD.W on a dword cell: returns sext32(old low word) and leaves
-#      the upper word untouched, since word AMOs are 32-bit windows at rv64
+#      the upper word untouched, since a word AMO reads and writes only its
+#      own 32 bits
 #
 # print_string clobbers t1/t2, so values that must survive a print live in
 # s-registers: s0 = UART base, s1 = &amo_cell.
@@ -154,7 +153,7 @@ _start:
     jal     ra, print_string
 
     # =========================================================
-    # Test 8: AMOADD.W window semantics on a dword cell
+    # Test 8: AMOADD.W on the low word of a dword cell
     # =========================================================
     li      t3, 0x11111111FFFFFFFF
     sd      t3, 0(s1)

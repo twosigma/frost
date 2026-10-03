@@ -1,93 +1,176 @@
 # Functional Unit Shims
 
-Each shim translates an RS `rs_issue_t` into an FU-native request, tracks
-in-flight ROB tags, handles CDB back-pressure, and emits `fu_complete_t` through
-a `fu_cdb_adapter`.
+A shim connects a reservation station's issue port to a functional unit (FU).
+It turns the RS's `rs_issue_t` into the unit's native ports, tracks the ROB
+tags of operations in flight, applies flushes and back-pressure, and packs each
+result into a `fu_complete_t` for the slot's
+[`fu_cdb_adapter`](../fu_cdb_adapter/README.md). The arithmetic itself lives
+in [`ex_stage/`](../../ex_stage/); the shims add none. How much a shim tracks
+depends on how many operations its unit can have in flight.
 
-The ALU, multiplier, divider, and FPU subunits live under `ex_stage/`; the
-shims add no arithmetic.
+| Shim | RS | Units | Unit latency (cycles) | In flight |
+|------|----|-------|-----------------------|-----------|
+| `int_alu_shim` (two copies) | INT_RS | ALU | 0 (combinational) | n/a |
+| `int_muldiv_shim` | MUL_RS | Pipelined multiplier plus a 32-bit word multiplier; iterative divider | MUL 6, MULW 3, DIV/REM 65, word DIV/REM 33 | Up to 4 multiplies, 1 divide |
+| `fp_shim` | FP_RS | Iterative FP engine: every F and D compute instruction | 3 to 139, by operation and operands (see below) | 1 |
 
-## How they vary
+`int_muldiv_shim` stores each multiply result in a FIFO before presenting it,
+which adds at least one cycle, more if earlier results are still waiting. The
+other shims present a result in the cycle the unit produces it.
 
-Each shim's structure follows the pipeline depth of the FU it wraps.
+## int_alu_shim
 
-- `int_alu_shim` is combinational. The ALU is single-cycle and contains no
-  multiplier or divider: M-extension ops issue through `int_muldiv_shim`, and
-  the shim asserts in simulation that none arrive here. The result tag flows
-  with the data and `o_fu_busy` is tied low. Conditional branches do not
-  write the CDB; `o_fu_complete.valid` follows the INT RS's predecoded
-  `i_issue_writes_cdb_hint`, and branch resolution happens outside the shims,
-  in `cpu_ooo`'s `branch_resolution` wrapper around `branch_jump_unit`. JALR
-  does write its link address through here; dispatch places it in the
-  immediate word, and AUIPC and the fetch-fault pseudo-ops likewise arrive
-  with their PC-relative values precomputed by ID in the immediate, so
-  neither the shim nor the ALU takes a PC. JAL is `RS_NONE`: it never reaches
-  an RS, and the ROB writes its link value at allocation. The wrapper
-  instantiates two copies of this shim, `u_alu_shim` on CDB slot `FU_ALU` and
-  `u_alu2_shim` on `FU_ALU2`, off the dual-issue INT RS's two issue ports. The
-  RS steers branch-class entries to issue port 0, so only the first pipe
-  carries branch and JALR traffic. Only `u_alu2_shim` enables
-  `USE_SHIFT_AMOUNT_HINT`: its six-bit `i_shift_amount_hint` is captured with
-  the RS's issue2 operands. It must match the effective shift amount selected
-  using `riscv_pkg::projected_shift_controls`. The default shim/ALU ignores
-  the hint and selects the amount locally.
-- `fp_add_shim` wraps the shallow FPU pipelines (2 to about 10 cycles) with
-  one op in flight at a time: a single `in_flight` bit, a single `tag_reg`,
-  and a one-hot `unit_sel_reg` that picks among the adder, compare,
-  classify, sign-inject, and convert subunits.
-- `fp_mul_shim` fronts the fully pipelined FMUL and FMA units, one op per
-  cycle each. The DSP-tiled multiplier pipeline is 3 stages for both
-  precisions (`riscv_pkg::dsp_tiled_stages` pads single precision up to the
-  double-precision depth), so each unit's results emerge in issue order.
-  Each unit has its own 32-entry circular tag queue, and completions drain
-  into a shared 16-deep ordering ring that holds its head valid until the
-  CDB adapter accepts it (`i_mul_accepted`). The ring keeps tags, source,
-  and flush state; each producer's 69-bit value/flags payload sits in its
-  own 16-deep block-RAM FIFO. A synchronous head prefetch and a one-entry
-  first-word/pop-refill bypass keep the one-result-per-cycle handoff
-  without depending on block-RAM read-during-write behavior. `o_fu_busy`
-  is credit-based on `total_occupancy = mult_count + fma_count +
-  fifo_count`: busy once that reaches 14 (FIFO depth minus 2) or either
-  tag queue holds 31 entries, so the FIFO cannot overflow.
-- `int_muldiv_shim` drives both the multiplier and the divider off the same
-  MUL_RS issue port. Both units are fully pipelined: the multiplier is
-  `riscv_pkg::MulPipeDepth` stages deep (6 at XLEN=64) and the divider is
-  XLEN/2+1 stages (33). Each path has a tag queue and a 4-entry result FIFO.
-  Credit-based backpressure limits `fifo_count + inflight_count` to the FIFO
-  depth, allowing at most four unflushed operations per path. The MUL
-  completion tag may be arbitrary on invalid cycles; its adapter must qualify
-  tag use and payload capture with valid.
-- `fp_div_shim` wraps one `fp_div_sqrt_iter`, which runs FDIV.S/D and
-  FSQRT.S/D on a shared iterative datapath, one operation at a time. A
-  completion is visible 36 cycles after issue at single precision and 65 at
-  double; the unit pulses its result one cycle earlier and the shim's result
-  register presents it. A tag register tracks the operation in flight, and a
-  result register holds its output until `i_div_accepted`.
-  `o_fu_busy` is exactly those two places occupied, which is why no tag
-  queue, hold buffer, arbiter or FIFO is needed: nothing can complete with
-  nowhere to go. The unit takes a kill input, so a flush that covers the
-  operation in progress drops it where it is.
+The wrapper instantiates two copies on the dual-issue INT RS: `u_alu_shim` on
+issue port 0 (CDB slot `FU_ALU`) and `u_alu2_shim` on port 1 (`FU_ALU2`). The
+ALU is single-cycle and has no multiplier or divider; M-extension operations
+go to `int_muldiv_shim`, and the shim asserts in simulation that none arrive
+here. The tag travels with the data and `o_fu_busy` is tied low. Back-pressure
+comes from the adapter: a pending ALU adapter deasserts its RS ready.
 
-## Common patterns
+The RS sends conditional branches and JALR only to port 0, so only
+`u_alu_shim` sees them. Conditional branches do not write the CDB:
+`o_fu_complete.valid` follows the RS's predecoded `i_issue_writes_cdb_hint`,
+and the branch itself resolves in `cpu_ooo`'s `branch_resolution` wrapper
+around `branch_jump_unit`. JALR does complete here with its link address. ID
+precomputes that address, AUIPC's result, and the fetch-fault `xtval`, and
+dispatch places them in the immediate word, so neither the shim nor the ALU
+needs the PC. JAL never reaches an RS; the ROB writes its link value at
+allocation.
 
-All multi-cycle shims accept the partial-flush inputs and apply the same
-age comparison (`is_younger`) as the rest of the back-end: in-flight tags
-younger than the flush boundary are marked flushed in their tag queues, hold
-buffers, and FIFOs, and their results are suppressed when they emerge from
-the pipeline. The pipelined FUs have no mid-pipeline kill, so a flushed entry
-rides the pipeline to completion and is dropped at the output. The iterative
-divide/sqrt unit is the exception: `fp_div_shim` kills it outright, so the
-FDIV RS is free again without waiting out the remaining digit steps.
+The shim also completes ECALL, EBREAK, illegal instructions, and fetch faults
+as exceptions, and sends a CSR instruction's write operand to the CDB; the CSR
+itself is read and written at commit. The CSR operand and the fetch-fault
+`xtval` reach the CDB value through the ALU's `i_side_result` input, which
+the ALU ORs into its early result bus; no ALU result group selects those
+operations, so the value is exact without a mux after the ALU.
 
-Every FP-result shim presents single-precision results NaN-boxed, with the
-upper 32 bits set to one. `fp_add_shim` and `fp_div_shim` box in the shim;
-`fp_mul_shim` receives already-boxed results from `fpu_mult_unit` and
-`fpu_fma_unit`.
+`u_alu2_shim` sets `USE_SHIFT_AMOUNT_HINT`: the RS precomputes the shift
+amount for port 1, and the ALU uses it instead of selecting one itself. The
+hint must equal the amount the ALU would have selected.
 
-## Result-FIFO pop convention
+## int_muldiv_shim
 
-`int_muldiv_shim`'s MUL and DIV FIFOs advance their read pointer on pop and
-leave the per-slot `valid` and `flushed` bits alone. `fifo_count` is the
-occupancy of record; a stale bit is never consulted until the next push to
-that slot overwrites it. `fp_mul_shim`'s shared ordering ring clears both bits
-on pop. `fp_div_shim` holds a single result register and clears it on acceptance.
+One MUL_RS issue port drives the multipliers and the divider. The multiplier
+is pipelined and accepts one operation per cycle; it takes
+`riscv_pkg::MulPipeDepth` cycles (6 at XLEN=64), and a dedicated 32-bit unit
+cuts MULW to 3. The 32-bit unit's two-tile product needs two of its three
+stages, so it registers its operands in the third (`INPUT_REGISTER`): its DSPs
+start from registers rather than from the RS operand select. The multiply path has one tag tracker, a shift register as
+deep as the full-width unit, and one 4-entry result FIFO, both shared by the
+two widths. A MULW enters the tracker partway down, at the stage that lines up
+with the word multiplier, so both widths leave through the same tail. If a
+live full-width operation is about to pass that stage, the MULW waits;
+full-width operations are never held up by it. This busy term depends on the
+opcode, which is safe because the RS presents its registered opcode
+independently of `ready`, so there is no ready/valid loop.
+
+Multiply back-pressure (`o_fu_busy`) is credit-based. FIFO occupancy plus
+unflushed operations in flight never exceeds the FIFO depth, so the path holds
+at most four live multiplies and its FIFO cannot overflow. The FIFO pops when
+its adapter takes the head, or on its own when the head is flushed.
+
+The divider runs one operation at a time, one quotient bit per cycle, on
+magnitudes: DIV, DIVU, REM, and REMU take 64 steps and the W forms 32, with
+their operands' low words sign- or zero-extended. Counted from the issue cycle,
+the result is valid 65 cycles later (33 for a W form) and stays in the divider
+until the DIV adapter takes it; every W result is sign-extended. `o_div_busy`
+is high from the start until then. It does not feed `o_fu_busy`: MUL_RS holds
+waiting divides back itself (see its
+[divide gate](../reservation_station/README.md#divide-gate-mul_rs)), so the
+multiplies in the station issue past them, and every divide the station
+presents starts at once unless a flush in the same cycle squashes it. A
+station full of waiting divides does stop dispatch.
+
+The MUL completion's tag is unspecified while `valid` is low, and so are the
+DIV completion's tag and value, so each adapter must use them only with
+`valid`. `SHORT_WORD_OPS=0` sends MULW through the full-width multiplier
+instead; only the tests and formal proofs use it.
+
+## fp_shim
+
+`fp_shim` starts each FP_RS issue on one
+[`fp_engine`](../../ex_stage/fpu/fp_engine.sv), which runs every F and D
+compute instruction (arithmetic, conversions, compares, min/max, classify,
+sign injection, and the FMV moves) one at a time on a single shared adder.
+One tag register tracks the operation in the engine. `o_fu_busy` is high
+whenever the engine is not idle, its result cycle included, and the wrapper
+also stops FP_RS while the adapter holds a result, so the engine's one-cycle
+result always finds the adapter free.
+
+The engine's latency, from the issue to the result cycle, depends on the
+operation and its operands. Operations whose result the decode cycles settle
+(NaN, infinity, and zero operands, invalid operations, divide by zero,
+out-of-range conversions, FCLASS, sign injection) take 3 cycles. For normal
+operands:
+
+| Operation | Single | Double |
+|-----------|--------|--------|
+| FADD, FSUB | 12 to 34 | 12 to 34 |
+| FMUL | 33 to 34 | 62 to 63 |
+| FMADD, FMSUB, FNMADD, FNMSUB | 37 to 60 | 66 to 89 |
+| FDIV | 49 to 50 | 70 to 71 |
+| FSQRT | 58 to 59 | 79 to 80 |
+| Conversions between integer and FP | up to 31 | up to 31 |
+| FCVT.S.D, FCVT.D.S | 9 | 9 |
+| Compares, FMIN, FMAX | 7 | 7 |
+| FMV.X.*, FMV.*.X | 5 | 5 |
+
+Subnormal operands and results take longer, because the engine normalizes
+them a few bits per cycle. The slowest case found, a double-precision FMA on
+subnormal operands, takes 139 cycles.
+
+## Flushes
+
+Every multi-cycle shim takes the full and partial flush inputs. A full flush
+squashes everything in flight; a partial flush squashes operations younger
+than the flush point, using the same age comparison as the rest of the back
+end (`is_younger`, measured from the ROB head).
+
+`int_muldiv_shim` marks squashed multiplies in its tracker and FIFO and drops
+their results when they emerge. The pipelined multipliers have no
+mid-pipeline kill, so a squashed multiply rides to the end of its pipeline and
+is dropped there. A squashed divide is killed in the divider, which is idle
+again on the next cycle, and a divide issue that the same cycle's flush covers
+never starts. As with `fp_shim`, a flush in the cycle the divider presents its
+result is left to the DIV adapter, which sees the same flush.
+
+`fp_shim` kills a squashed operation inside the engine (`i_kill`), which is
+idle again on the next cycle, so FP_RS can issue without waiting out the rest
+of the operation. An issue the same flush covers never starts. A flush on the
+result cycle itself is left to the FP adapter, which sees the same flush and
+does not keep a squashed result.
+
+## NaN boxing
+
+FP registers are 64 bits wide. `fp_engine` returns single-precision results
+NaN-boxed, with the upper 32 bits all ones. Integer results (compares,
+FCLASS, conversions to integer, FMV.X.W and FMV.X.D) are not boxed. On input,
+the engine unboxes single-precision operands: an operand whose upper 32 bits
+are not all ones reads as the canonical NaN, except that FMV.X.W takes the
+raw low bits.
+
+## Result FIFO pops
+
+`int_muldiv_shim`'s MUL FIFO advances the read pointer on a pop but leaves the
+slot's `valid` and `flushed` bits set. The FIFO count is the true occupancy,
+and the next push to the slot overwrites the stale bits, so any logic that
+reads those bits must also check the count.
+
+## Verification
+
+Each shim has a cocotb target of the same name. `int_alu_shim_shift_hint` and
+`int_muldiv_shim_full_width` rerun the ALU and MUL/DIV tests with
+`USE_SHIFT_AMOUNT_HINT=1` and `SHORT_WORD_OPS=0`, and the `alu_shift_hint`
+formal target proves that the ALU gives the same result with a correct hint as
+without one. `fp_shim` and `int_muldiv_shim` also have formal targets. The
+`int_muldiv_shim` proofs are unbounded: under arbitrary flushes and
+back-pressure, and for both `SHORT_WORD_OPS` settings, each completing tracker
+entry matches the multiplier that produced its data, the credit bounds hold,
+and a squashed divide never completes. The `divider` cocotb and formal
+targets check the divider's results against integer division. The `fp_shim`
+proof replaces the engine with a model of arbitrary latency and result; the
+`fp_engine_equiv` bench checks the engine itself against Berkeley SoftFloat,
+results and flags bit for bit.
+
+See the [test runner](../../../../../../tests/README.md) for commands and the
+[formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

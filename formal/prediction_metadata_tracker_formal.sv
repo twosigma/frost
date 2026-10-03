@@ -14,13 +14,14 @@
  *    limitations under the License.
  */
 
-// Formal environment for prediction_metadata_tracker's split control/payload
-// contract.  The registered predictor target models the production
-// branch_prediction_controller: it may change freely on a running cycle and
-// holds throughout a stall. Pending prediction owner/output PCs are arbitrary,
-// so the proof covers both exact-owner replay and a real non-owner predecessor.
-// The remaining controls and payloads are arbitrary except for the
-// source-provenance and reset implications that if_stage guarantees.
+// Formal environment for prediction_metadata_tracker, which selects a
+// packet's prediction validity and target payload separately. The registered
+// predictor target behaves like branch_prediction_controller's: it may change
+// on any unstalled cycle and holds throughout a stall. The pending and output
+// PCs are arbitrary, so the proof covers both replay to the exact owner and a
+// real non-owner predecessor. Other controls and payloads are arbitrary
+// except for a reset on the first cycle and the replay, live-prediction, and
+// reset-cycle relations the fetch stage guarantees (assumed below).
 module prediction_metadata_tracker_formal (
     input logic i_clk
 );
@@ -31,7 +32,6 @@ module prediction_metadata_tracker_formal (
   (* anyseq *) logic i_stall;
   (* anyseq *) logic i_flush;
   (* anyseq *) logic i_pending_prediction_kill;
-  (* anyseq *) logic i_prediction_holdoff;
   (* anyseq *) logic i_prediction_used_r;
   (* anyseq *) logic i_pending_prediction_active;
   (* anyseq *) logic [XLEN-1:0] i_pending_prediction_pc;
@@ -49,9 +49,17 @@ module prediction_metadata_tracker_formal (
   logic f_past_valid;
   logic i_stall_registered;
   logic [XLEN-1:0] i_predicted_target_r;
-  logic o_btb_hit;
   logic o_btb_predicted_taken;
   logic [XLEN-1:0] o_btb_predicted_target;
+  logic o_btb_predicted_is_call;
+  logic o_btb_predicted_is_return;
+  // Each call and return type pair is tied to its target's low two bits, so a
+  // type selected from a different source than its target shows as a
+  // mismatch at the output.
+  logic i_predicted_is_call_r, i_predicted_is_return_r;
+  logic i_live_predicted_is_call, i_live_predicted_is_return;
+  assign {i_predicted_is_call_r, i_predicted_is_return_r} = i_predicted_target_r[1:0];
+  assign {i_live_predicted_is_call, i_live_predicted_is_return} = i_live_predicted_target[1:0];
   logic formal_pending_valid;
   logic formal_pending_owner_match;
   logic formal_pending_consume;
@@ -79,19 +87,20 @@ module prediction_metadata_tracker_formal (
   end
 
   always_comb begin
-    // A saved replay is a subset of the registered-stall phase.  Extra
-    // arbitrary blockers are omitted so the proof covers more control
-    // combinations than the production integration can generate.
+    // Saved values are replayed only during a registered stall. The fetch
+    // stage's other conditions on replay are left out, so the proof covers
+    // more control combinations than the integration can produce.
     assume (!i_use_saved_values || i_stall_registered);
 
-    // A collapsed-lead valid is generated from the raw same-PC phase and only
-    // when neither registered nor pending metadata already owns the packet.
+    // The live prediction serves the output (a collapsed lead) only when the
+    // lookup is aligned with the output packet, no stall is registered, and
+    // no registered or pending prediction already owns the packet.
     assume (!i_live_prediction_for_output ||
             (i_live_target_aligned_with_output && !i_stall_registered &&
              !i_prediction_used_r &&
              !formal_pending_valid));
 
-    // Production reset inserts a NOP and never asks for saved/live metadata.
+    // A reset cycle inserts a NOP and uses neither saved nor live metadata.
     assume (!i_reset || (i_sel_nop && !i_use_saved_values && !i_live_prediction_for_output));
   end
 
@@ -103,16 +112,19 @@ module prediction_metadata_tracker_formal (
       .i_stall,
       .i_flush,
       .i_pending_prediction_kill,
-      .i_prediction_holdoff,
       .i_stall_registered,
       .i_prediction_used_r,
       .i_predicted_target_r,
+      .i_predicted_is_call_r,
+      .i_predicted_is_return_r,
       .i_pending_prediction_active,
       .i_pending_prediction_pc,
       .i_output_pc,
       .i_live_prediction_for_output,
       .i_live_target_aligned_with_output,
       .i_live_predicted_target,
+      .i_live_predicted_is_call,
+      .i_live_predicted_is_return,
       .i_pending_prediction_fetch_holdoff,
       .i_pending_prediction_target_handoff,
       .i_sel_nop,
@@ -123,47 +135,57 @@ module prediction_metadata_tracker_formal (
       .o_formal_pending_consume(formal_pending_consume),
       .o_formal_pending_pc(formal_pending_pc),
       .o_formal_pending_target(formal_pending_target),
-      .o_btb_hit,
       .o_btb_predicted_taken,
-      .o_btb_predicted_target
+      .o_btb_predicted_target,
+      .o_btb_predicted_is_call,
+      .o_btb_predicted_is_return
   );
 
-  // Reach each payload provenance, including an invalid packet with a nonzero
-  // target.  The DUT's legacy oracle asserts that the latter is observationally
-  // identical once the taken bit gates the target.
+  // The types always travel with their target. Before the first edge the
+  // unreset pending copies are arbitrary, as for the harness's other checks.
+  always_comb begin
+    if (f_past_valid) begin
+      p_types_follow_target :
+      assert ({o_btb_predicted_is_call, o_btb_predicted_is_return} == o_btb_predicted_target[1:0]);
+    end
+  end
+
   always_ff @(posedge i_clk) begin
     if (f_past_valid && $past(
             formal_pending_valid
         ) && !$past(
             i_reset || i_flush || i_pending_prediction_kill || formal_pending_consume
         )) begin
-      // A pending episode is immutable until its exact owner consumes it or a
-      // reset/redirect kills it. In particular, another apparent prediction
-      // during fetch holdoff cannot overwrite the saved owner or target.
+      // A saved pending prediction stays valid and keeps its PC and target
+      // until the packet at that PC consumes it or a reset, a flush, or
+      // i_pending_prediction_kill invalidates it. In particular, another
+      // apparent prediction during fetch holdoff cannot overwrite it.
       assert (formal_pending_valid);
       assert (formal_pending_pc == $past(formal_pending_pc));
       assert (formal_pending_target == $past(formal_pending_target));
     end
 
+    // Reach each payload source, including an invalid packet with a nonzero
+    // target, which the tracker's reference assertions show is equivalent
+    // once the taken bit gates the target.
     cover (f_past_valid && !o_btb_predicted_taken && (o_btb_predicted_target != '0));
     cover (f_past_valid && i_live_prediction_for_output && o_btb_predicted_taken);
     cover (f_past_valid && formal_pending_valid && o_btb_predicted_taken);
     cover (f_past_valid && formal_pending_valid &&
            i_prediction_used_r && i_pending_prediction_fetch_holdoff &&
            (i_pending_prediction_pc != formal_pending_pc));
-    // The motivating raw-WCS predecessor phase opens fetch holdoff on the
-    // first pending-active registered-prediction cycle. The non-owner is
-    // suppressed while its younger branch packet is captured.
+    // The raw-WCS predecessor phase opens fetch holdoff on the first
+    // pending-active registered-prediction cycle. The non-owner is suppressed
+    // while its younger branch packet is captured.
     cover (f_past_valid && i_pending_prediction_active &&
            !i_pending_prediction_fetch_holdoff &&
-           (i_output_pc != i_pending_prediction_pc) && !o_btb_hit &&
-           !o_btb_predicted_taken);
+           (i_output_pc != i_pending_prediction_pc) && !o_btb_predicted_taken);
     // A real non-owner packet may pass while pending metadata remains saved;
     // it must carry no prediction until its exact owner PC arrives.
     cover (f_past_valid && formal_pending_valid &&
            !formal_pending_owner_match &&
            !i_sel_nop && !i_pending_prediction_fetch_holdoff &&
-           !o_btb_hit && !o_btb_predicted_taken);
+           !o_btb_predicted_taken);
     // Model a self-targeting/RAS-pop collision: raw lookup alignment remains
     // true while registered metadata already owns the packet and its target.
     cover (f_past_valid && i_prediction_used_r &&

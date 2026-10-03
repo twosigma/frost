@@ -14,9 +14,6 @@
  *    limitations under the License.
  */
 
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 Two Sigma Open Source, LLC
-
 // Reflected Ethernet CRC. Bytes and bits are consumed least significant first.
 package eth10g_crc_pkg;
   function automatic logic [31:0] crc32_byte(input logic [31:0] crc, input logic [7:0] data);

@@ -12,8 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# AMO-vs-interrupt-flush directed torture (see main.c). Runs from cached DDR
-# like the no-MMU Linux kernel whose flaky boot hang it reproduces.
+# Timer interrupts swept across AMO bursts (see main.c). MEM_CONFIG is forced
+# to ddr so that the AMO counters live in the cached region.
 override MEM_CONFIG := ddr
 SRC_C := ../../lib/src/uart.c main.c
 include ../../common/common.mk

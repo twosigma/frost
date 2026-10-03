@@ -1,7 +1,7 @@
 [tasks]
 bmc
 cover
-fmul_repair_bmc
+fp_repair_bmc
 
 [options]
 bmc: mode bmc
@@ -9,26 +9,24 @@ bmc: depth 4
 cover: mode cover
 cover: depth 6
 cover: vcd off
-fmul_repair_bmc: mode bmc
-fmul_repair_bmc: depth 4
+fp_repair_bmc: mode bmc
+fp_repair_bmc: depth 4
 
 [engines]
 bmc: smtbmc boolector
 cover: smtbmc boolector
-# fmul_repair_bmc runs without smtbmc's presat query: the load queue's
-# dead-slot flush guard turned that query pathological for boolector, from
-# 1.5 minutes to past the runner's 40-minute ceiling, while the assertion
-# proof it precedes still finishes in 13 seconds. presat only checks that the
-# harness is satisfiable before the assertions are checked, and the bmc task
-# above runs it over the same harness and assumptions -- the tasks differ
-# only in ENABLE_DISPATCH_DONE_REPAIR, which is internal logic -- so a
+# fp_repair_bmc runs without smtbmc's presat query, which boolector cannot
+# finish within the runner's 40-minute per-task timeout on this configuration,
+# although the assertion checks themselves finish quickly. presat only checks
+# that the harness is satisfiable before the assertions are checked, and the
+# bmc task above runs it over the same harness and assumptions (the tasks
+# differ only in ENABLE_DISPATCH_DONE_REPAIR, which is internal logic), so a
 # harness that constrained itself into vacuity would still be caught there.
-fmul_repair_bmc: smtbmc --nopresat boolector
+fp_repair_bmc: smtbmc --nopresat boolector
 
 [script]
 read -formal -sv riscv_pkg.sv
 read -formal -sv sdp_dist_ram.sv
-read -formal -sv sdp_block_ram.sv
 read -formal -sv mwp_dist_ram.sv
 read -formal -sv mwp_dist_ram_ohread.sv
 read -sv rob_serializer.sv
@@ -36,10 +34,9 @@ read -sv reorder_buffer.sv
 read -sv register_alias_table.sv
 read -formal -sv rs_issue2_selector.sv
 # -formal: every station elaborates with FORMAL_STANDALONE_ENV=0, so this
-# brings in the reservation station's own assertions - including the
-# branch-payload side RAM's ROB-tag ownership contract, which only this proof
-# has a real allocator to check - without its standalone environment
-# assumptions or covers.
+# brings in the reservation station's own assertions without its standalone
+# environment assumptions or covers. They include the branch-payload side
+# RAM's ROB-tag rule, which only this proof has a real allocator to check.
 read -formal -sv reservation_station.sv
 read -sv cdb_arbiter.sv
 read -sv fu_cdb_adapter.sv
@@ -58,43 +55,21 @@ read -sv sq_early_addr_pipeline.sv
 read -sv commit_bus_pipeline.sv
 read -sv dispatch_rs_router.sv
 read -sv sc_pending_unit.sv
+read -formal -sv mem_wakeup_merge.sv
 read -sv lq_coherence_port.sv
 read -sv divider.sv
 read -sv dsp_tiled_multiplier_unsigned.sv
 read -sv multiplier.sv
 read -sv alu.sv
-read -sv fp_lzc.sv
-read -sv fp_classify_operand.sv
-read -sv fp_operand_unpacker.sv
-read -sv fp_subnorm_shift.sv
-read -sv fp_result_assembler.sv
-read -sv fp_sign_inject.sv
-read -sv fp_classify.sv
-read -sv fp_compare.sv
-read -sv fp_convert.sv
-read -sv fp_convert_sd.sv
-read -sv fp_adder.sv
-read -sv fp_multiplier.sv
-read -sv fp_div_sqrt_iter.sv
-read -sv fp_fma.sv
-read -sv fpu_adder_unit.sv
-read -sv fpu_mult_unit.sv
-read -sv fpu_fma_unit.sv
-read -sv fpu_compare_unit.sv
-read -sv fpu_sign_inject_unit.sv
-read -sv fpu_classify_unit.sv
-read -sv fpu_convert_unit.sv
-read -sv fp_add_shim.sv
-read -sv fp_mul_shim.sv
-read -sv fp_div_shim.sv
+read -sv fp_engine.sv
+read -sv fp_shim.sv
 read -formal -sv tomasulo_wrapper.sv
-fmul_repair_bmc: chparam -set ENABLE_DISPATCH_DONE_REPAIR 1 tomasulo_wrapper
+fp_repair_bmc: chparam -set ENABLE_DISPATCH_DONE_REPAIR 1 tomasulo_wrapper
 prep -top tomasulo_wrapper
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
-../hw/rtl/lib/ram/sdp_block_ram.sv
 ../hw/rtl/lib/ram/mwp_dist_ram.sv
 ../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_serializer.sv
@@ -119,33 +94,12 @@ prep -top tomasulo_wrapper
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/commit_bus/commit_bus_pipeline.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/dispatch_routing/dispatch_rs_router.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/atomics/sc_pending_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/wakeup/mem_wakeup_merge.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/coherence/lq_coherence_port.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/multiplier.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/alu.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_lzc.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_classify_operand.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_operand_unpacker.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_subnorm_shift.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_result_assembler.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_sign_inject.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_classify.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_compare.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_convert.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_convert_sd.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_adder.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_multiplier.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_div_sqrt_iter.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_fma.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_adder_unit.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_mult_unit.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_fma_unit.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_compare_unit.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_sign_inject_unit.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_classify_unit.sv
-../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_convert_unit.sv
-../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_add_shim.sv
-../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_mul_shim.sv
-../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_div_shim.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_engine.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_shim.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv

@@ -17,15 +17,16 @@
 /**
  * memory.c: heap allocation for bare-metal use, two ways.
  *
- * 1. Arena: bump-pointer allocation with bulk release, for allocations that
- *    share a lifetime (per frame, per request).
+ * 1. Arena: bump-pointer allocation, reset in bulk with arena_clear(), for
+ *    allocations that share a lifetime (per frame, per request).
  *
- * 2. malloc/free: first-fit freelist allocator, for allocations with mixed
- *    lifetimes.
+ * 2. malloc/free: first-fit freelist allocator that coalesces adjacent free
+ *    blocks, for allocations with mixed lifetimes.
  *
  * Both draw from one bounds-checked bump-pointer heap that grows from
  * _heap_start toward _heap_end (both defined in the linker script). _sbrk()
- * exposes the same heap to bare-metal callers and never shrinks it.
+ * exposes the same heap to bare-metal callers. It never shrinks the heap and
+ * returns NULL, not (char *) -1, on failure.
  */
 
 #include "memory.h"
@@ -34,6 +35,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Diagnostic build switches for free(), all off by default. */
 #ifndef FROST_MALLOC_DISABLE_FREE
 #define FROST_MALLOC_DISABLE_FREE 0
 #endif
@@ -101,19 +103,44 @@ static int align_size_up(size_t value, size_t align, size_t *result)
 }
 
 #if FROST_MALLOC_EVICT_FREE
-static void evict_l0_words_for_range(uintptr_t start, uint32_t size)
+/* Entries in the load queue's direct-mapped L0 (riscv_pkg::LqL0Depth, frost's
+ * L0_CACHE_DEPTH); this must not be below the hardware's depth. An entry
+ * holds one aligned dword, so address bits [3, 3 + log2(depth)) index it and
+ * the bits above are its tag. */
+#ifndef FROST_MALLOC_EVICT_L0_DEPTH
+#define FROST_MALLOC_EVICT_L0_DEPTH 128
+#endif
+_Static_assert(FROST_MALLOC_EVICT_L0_DEPTH >= 8 &&
+                   (FROST_MALLOC_EVICT_L0_DEPTH & (FROST_MALLOC_EVICT_L0_DEPTH - 1)) == 0,
+               "the L0 depth is a power of two of at least 8");
+#define L0_BYTES ((uintptr_t) 8 * FROST_MALLOC_EVICT_L0_DEPTH)
+/* The heap lies in the 1 GiB DDR region, which is aligned to its size, so an
+ * address with one bit below 30 flipped stays inside it. */
+#define L0_ALIAS_LIMIT ((uintptr_t) 1 << 29)
+
+/*
+ * Evict the dwords of [start, start + size) from the L0 without a
+ * cache-management instruction: load an alias of each dword that differs in
+ * one tag bit, so it indexes the same entry and its fill replaces the freed
+ * dword. The flipped bit is worth at least the range's span, counted from the
+ * dword that holds start, which puts every alias outside the range, so no load
+ * here reinstalls a freed dword (for spans up to L0_ALIAS_LIMIT). A range
+ * longer than the L0 needs one load per entry.
+ * Best effort: a load answered by store forwarding, or whose fill a store or
+ * DMA write suppresses, leaves its entry in place.
+ */
+static void evict_l0_dwords_for_range(uintptr_t start, uint32_t size)
 {
     volatile uint32_t sink = 0;
-    uintptr_t end = start + size;
-    start &= ~(uintptr_t) (sizeof(uint32_t) - 1);
+    uintptr_t first = start & ~(uintptr_t) 7;
+    uintptr_t span = start + size - first;
+    uintptr_t alias = L0_BYTES;
+    uintptr_t count = span < L0_BYTES ? (span + 7) / 8 : FROST_MALLOC_EVICT_L0_DEPTH;
 
-    /*
-     * FROST's load-queue L0 is direct-mapped and indexed by address bits [8:2].
-     * Toggling bit 9 preserves the index and changes the tag, forcing the word
-     * entry out without needing hardware support for explicit cache management.
-     */
-    for (uintptr_t addr = start; addr < end; addr += sizeof(uint32_t)) {
-        sink ^= *(volatile uint32_t *) (addr ^ 0x200u);
+    while (alias < span && alias < L0_ALIAS_LIMIT)
+        alias <<= 1;
+    for (uintptr_t i = 0; i < count; i++) {
+        sink ^= *(volatile uint32_t *) ((first + 8 * i) ^ alias);
     }
 
     __asm__ volatile("" : : "r"(sink) : "memory");
@@ -214,7 +241,9 @@ void *malloc(size_t size)
         struct free_slot *slot = *p;
 
         if (block_size <= slot->size) {
-            /* Shrink down free slot */
+            /* Carve the block from the end of the slot so the slot's header stays
+             * in place. Block and slot sizes are multiples of DEFAULT_ALIGN, so a
+             * nonzero remainder still holds a struct free_slot. */
             slot->size -= block_size;
             result = (char *) slot + slot->size + ALIGNED_METADATA_SIZE;
 
@@ -283,6 +312,9 @@ void free(void *ptr)
 #else
     uintptr_t header_size = ALIGNED_METADATA_SIZE;
 #if FROST_MALLOC_GUARD_FREE
+    /* Diagnostic mode: silently ignore a pointer that is misaligned or outside
+     * the allocated heap, or whose size header is misaligned, smaller than the
+     * header, or runs past heap_mark. */
     uintptr_t payload = (uintptr_t) ptr;
     uintptr_t heap_start = (uintptr_t) heap_start_p;
     uintptr_t heap_limit = (uintptr_t) heap_mark;
@@ -303,7 +335,7 @@ void free(void *ptr)
     uint32_t block_size = md->size;
 
 #if FROST_MALLOC_EVICT_FREE
-    evict_l0_words_for_range((uintptr_t) ptr - header_size, block_size);
+    evict_l0_dwords_for_range((uintptr_t) ptr - header_size, block_size);
 #endif
 
     struct free_slot *slot = ptr - header_size;
@@ -344,11 +376,16 @@ void *realloc(void *ptr, size_t size)
     if (size <= old_payload)
         return ptr;
 
+    /* Grow to twice the old payload when that fits, else to exactly size. With
+     * a 32-bit size_t the doubling can wrap, which leaves it below old_payload. */
     size_t new_size = size;
-    if (old_payload <= (SIZE_MAX / 2u) && (size_t) old_payload * 2u > new_size)
-        new_size = (size_t) old_payload * 2u;
+    size_t doubled = (size_t) old_payload * 2u;
+    if (doubled >= old_payload && doubled > new_size)
+        new_size = doubled;
 
     void *newp = malloc(new_size);
+    if (newp == NULL && new_size != size)
+        newp = malloc(size);
     if (newp == NULL)
         return NULL;
 

@@ -20,12 +20,12 @@ Packs and unpacks fu_complete_t, drives stimulus, and reads results.
 from typing import Any
 
 from cocotb.triggers import FallingEdge, RisingEdge
+from config import FLEN
 
 from .fu_cdb_adapter_model import FuComplete
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
-FLEN = 64
 EXC_CAUSE_WIDTH = 5
 FP_FLAGS_WIDTH = 5
 
@@ -177,5 +177,5 @@ class FuCdbAdapterInterface:
         return bool(int(self.dut.o_result_pending.value))
 
     def read_held_value(self) -> int:
-        """Read the unqualified value in the adapter's existing payload register."""
+        """Read o_held_value: held_result.value, not qualified by result_pending."""
         return int(self.dut.o_held_value.value) & MASK64

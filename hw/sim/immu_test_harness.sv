@@ -15,18 +15,18 @@
  */
 
 /*
- * immu_test_harness: standalone instruction-MMU seam for cocotb.
+ * immu_test_harness: immu behind a model of pc_controller's fetch-PC register,
+ * for cocotb.
  *
- * The harness owns the upstream PC register so a test drives the same edge
- * relationship as pc_controller: i_pc_d is sampled only when
- * i_pc_update_en is asserted, and immu sees the resulting registered o_pc.
- * The load enable stays outside immu because the IMMU visibility boundary is
- * exact registered-PC tagging, not advance control. Keeping that register in
- * the harness makes translated retag bubbles and same-edge retarget races
- * visible instead of letting a testbench change the lookup key between edges.
+ * pc_q loads i_pc_d on edges where i_pc_update_en is high, and immu translates
+ * the registered value, as in the core. A test can therefore move the PC only
+ * at a clock edge, so it sees the core's retag bubbles and can land a PC load
+ * on the same edge as a walk request or response. immu itself has no load
+ * enable: under Sv39 it detects a PC change by comparing the registered PC
+ * with its result's tag.
  *
- * The package-typed walker response is flattened at this boundary because
- * cocotb cannot portably drive fields of a SystemVerilog packed struct.
+ * The walker response comes in as separate ports because cocotb cannot
+ * portably drive fields of a SystemVerilog packed struct.
  */
 module immu_test_harness #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,

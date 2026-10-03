@@ -9,10 +9,10 @@
 # unsigned core, latency riscv_pkg::MulPipeDepth)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/alu/multiplier.sv
 
-# Fully pipelined radix-2 restoring divider (WIDTH/2 stages, two quotient
-# bits per stage)
+# Iterative radix-2 restoring divider (one quotient bit per cycle, one
+# operation at a time)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv
 
-# ALU top-level - single-cycle combinational integer, logic, and
-# bit-manipulation datapath
+# ALU: single-cycle combinational integer, logic, and bit-manipulation
+# datapath
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/alu/alu.sv

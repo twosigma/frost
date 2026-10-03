@@ -16,18 +16,22 @@
 
 """Fetch the pinned Debian RISC-V kernel and build its FROST NIC module.
 
-Produces a flat Linux Image and a module matched to its Debian headers; the
-initramfs command adds the module and startup script to the test image.
-Host kbuild tools drive the riscv64 headers using the Linux cross compiler.
+The kernel's flat Image comes from Debian's package. The module is built
+against the pinned Debian headers with Debian's amd64 kbuild tools and a
+riscv64 Linux cross compiler. The initramfs command appends the module, and a
+script that loads it, to a copy of the test initramfs.
 
-Cache entries are immutable and keyed by input digest. Builders hold an
-exclusive lock, stage work privately, and publish by rename. Manifests validate
-reuse; incomplete entries rebuild. Old entries remain for concurrent readers.
-``FROST_DEBIAN_KERNEL_CACHE`` changes the default ``linux/debian-kernel`` path;
-``FROST_NET10G_MODULE`` selects a prebuilt module.
+Cache entries are directories named after a digest of their inputs. Builders
+take an exclusive lock; the extraction and the toolchain wrappers are built in
+private staging directories and published with one rename, and an extraction
+that fails its manifest check is rebuilt. Entries for other inputs stay in
+place for concurrent readers. ``FROST_DEBIAN_KERNEL_CACHE`` overrides the
+default ``linux/debian-kernel`` cache, and ``FROST_NET10G_MODULE`` names a
+prebuilt module to use instead of building one.
 
-Commands: fetch, release, image, module, initramfs. Results go to stdout and
-progress to stderr. See ``linux/README.md`` and ``--help``.
+Commands: fetch, release, image, module, initramfs. Each prints its result on
+stdout and progress on stderr. See "Kernel" and "NIC module" in
+``linux/README.md``.
 """
 
 import argparse
@@ -58,10 +62,10 @@ def log(message: str) -> None:
 
 
 def run_logged(command: list[str], env: dict[str, str] | None = None) -> None:
-    """Run a child with its stdout redirected to ours, so stdout stays the answer.
+    """Run a command with its stdout sent to our stderr.
 
-    kbuild and strip talk on stdout, and a caller that captures ours wants only
-    the path it asked for.
+    kbuild and strip print to stdout, and a caller that captures our stdout
+    wants only the path it asked for.
     """
     sys.stderr.flush()
     try:
@@ -80,17 +84,18 @@ def run_logged(command: list[str], env: dict[str, str] | None = None) -> None:
 
 # --- The pin ----------------------------------------------------------------
 # One snapshot.debian.org timestamp and one source version pin every package
-# below, so the kernel cannot move underneath a build. This is the kernel the
-# X3 board runs from its Debian NFS root; ../docs/debian_nfsroot.md installs
-# the same version there.
+# below, so the kernel cannot change underneath a build. The hardware
+# regression boots this kernel with the board's Debian NFS root, which must
+# have the same release installed (docs/debian_nfsroot.md, "Hardware
+# regression").
 SNAPSHOT = "20260907T023910Z"
 SNAPSHOT_BASE = (
     f"https://snapshot.debian.org/archive/debian/{SNAPSHOT}/pool/main/l/linux"
 )
 # Debian's source version, the .deb filename's middle field.
 SOURCE_VERSION = "6.12.107-1"
-# uname -r of the packaged kernel: the vermagic the module must match and the
-# /lib/modules directory name. It is also the banner the boot must print.
+# uname -r of the packaged kernel: the vermagic release the module must match,
+# the /lib/modules directory name, and the release in the boot banner.
 KERNEL_RELEASE = "6.12.107+deb13-riscv64"
 # The kernel prints "Linux version <release> (<builder>) ...", so the trailing
 # space is part of the marker: without it the check also passes for a release
@@ -109,9 +114,9 @@ class DebianPackage:
     arch: str
     size: int
     sha256: str
-    # Members to extract, by path prefix inside the package (Debian's own
-    # layout, which the extracted tree keeps). Everything else is skipped:
-    # linux-image alone carries ~100 MiB of modules FROST never loads.
+    # Members to extract, as paths inside the package, which the extracted
+    # tree keeps (extract() has the matching rule). Everything else is
+    # skipped: linux-image is mostly kernel modules this script never uses.
     members: tuple[str, ...]
 
     @property
@@ -125,8 +130,8 @@ class DebianPackage:
         return f"{SNAPSHOT_BASE}/{urllib.parse.quote(self.filename)}"
 
 
-# The kernel itself. Only boot/ is kept: the flat Image FROST packs and the
-# configuration it was built with, for reference.
+# The kernel itself. Only two files are kept: the flat Image FROST packs and,
+# for reference, the configuration it was built with.
 KERNEL_PACKAGE = DebianPackage(
     name=f"linux-image-{KERNEL_RELEASE}",
     arch="riscv64",
@@ -137,14 +142,14 @@ KERNEL_PACKAGE = DebianPackage(
 
 # The module build's inputs. linux-headers-<abi>-common holds the kernel's own
 # Makefile and headers; linux-headers-<release> the architecture half plus
-# .config, Module.symvers and the generated headers; linux-kbuild the host
-# tools (fixdep, modpost, genksyms), which are host binaries, so the amd64
-# build of that package drives the riscv64 headers tree.
+# .config, Module.symvers and the generated headers; linux-kbuild the kbuild
+# tools (fixdep, modpost, genksyms). Those run on the build host, so that
+# package's amd64 build drives the riscv64 headers tree.
 #
-# The headers tree's ``vmlinux`` is deliberately left out: it is only the BTF
-# base for CONFIG_DEBUG_INFO_BTF_MODULES, and without it kbuild skips module
-# BTF generation with a message instead of demanding pahole, which the FROST
-# image does not ship (an out-of-tree module gains nothing from BTF).
+# The headers tree's ``vmlinux`` is left out: it only serves as the BTF base
+# for CONFIG_DEBUG_INFO_BTF_MODULES, and without it kbuild skips module BTF
+# with a message instead of requiring pahole, which the frost Docker image does
+# not ship. An out-of-tree module gains nothing from BTF.
 HEADER_PACKAGES = (
     DebianPackage(
         name=f"linux-headers-{KERNEL_ABI}-common",
@@ -208,16 +213,13 @@ BUILD_VERSION = 1
 # here it is taken on trust, since verifying it needs the headers tree.
 MODULE_ENV = "FROST_NET10G_MODULE"
 
-# The initramfs tokens the boot prints, asserted by fpga/hw_regression.py's
-# Linux stage, fpga/linux_boot_soak.py and CI's QEMU boot job. The script
-# compares ``uname -r`` with the pinned release itself: the pin sets
-# CONFIG_MODVERSIONS, and with symbol CRCs present Linux skips the release
-# field of vermagic, so a successful insmod alone does not identify the kernel.
+# The tokens the module's init script prints (see module_cpio()), which
+# fpga/linux_boot_soak.py and CI's QEMU boot job check.
 MODULE_PASS_TOKEN = "FROST_NET10G_MODULE_PASS"
 MODULE_FAIL_TOKEN = "FROST_NET10G_MODULE_FAIL"
-# The exact line a healthy boot prints, which the gates require, and the pattern
-# that requires it exactly: without the boundary a longer release would satisfy
-# it, since this line is a prefix of that one.
+# The line a healthy boot prints, and the pattern fpga/linux_boot_soak.py
+# matches it with. The lookahead keeps a longer release, which has this line as
+# a prefix, from matching.
 MODULE_PASS_LINE = f"{MODULE_PASS_TOKEN} {KERNEL_RELEASE}"
 MODULE_PASS_RE = re.compile(re.escape(MODULE_PASS_LINE) + r"(?![\w.+-])")
 # Runs from Buildroot's /etc/init.d/rcS, which the overlay inittab invokes as a
@@ -226,12 +228,10 @@ MODULE_PASS_RE = re.compile(re.escape(MODULE_PASS_LINE) + r"(?![\w.+-])")
 MODULE_INIT_SCRIPT = "etc/init.d/S03frost-net10g"
 
 # The counter line's token, and the program in the base archive that prints it.
-# Its presence is how a current test userspace is recognized: an archive built
-# before the counter mode existed boots happily and reports no counters at all,
-# quietly costing the board soak the counter evidence it scores. Composing an
-# initramfs from such a base is refused instead. The hardware regression types
-# the same token's command, but on the Debian NFS root it boots, from a build of
-# the same source installed there (fpga/hw_regression.py).
+# A frost_stress without the token predates ``frost_stress --counters``, so
+# check_base_initramfs() refuses the archive as out of date.
+# fpga/hw_regression.py matches the same token from the frost_stress it
+# installs on the Debian NFS root.
 INITRAMFS_COUNTER_TOKEN = "FROST_COUNTERS"
 INITRAMFS_COUNTER_PROGRAM = "usr/bin/frost_stress"
 # Buildroot does not notice an edited package source on its own.
@@ -313,8 +313,9 @@ def symvers(cache: Path | str | None = None) -> Path:
     return kernel_build_dir(cache) / "Module.symvers"
 
 
-# The files a usable extraction must have, and what the manifest records their
-# sizes under. A truncated or partly deleted entry fails this and is rebuilt.
+# The manifest records the size of each file required_files() names. An
+# extraction that is truncated or partly deleted fails the check and is
+# extracted again.
 MANIFEST_NAME = ".frost-manifest"
 
 
@@ -363,11 +364,12 @@ def manifest_holds(root: Path) -> bool:
 
 
 def download(package: DebianPackage, dl_dir: Path) -> Path:
-    """Return the cached .deb, downloading and checking it when absent.
+    """Return the cached .deb, downloading it unless the cache already has it.
 
-    A file of the pinned size and sha256 is reused. The download streams into a
-    per-process temporary and is published with one rename, so a second builder
-    (or an interrupted one) can neither see nor truncate a partial file.
+    A cached file is reused, and a new download accepted, only at the pinned
+    size and sha256. A download streams into a per-process temporary file and
+    is renamed into place, so another builder, or an interrupted one, never
+    sees or truncates a partial file.
     """
     dl_dir.mkdir(parents=True, exist_ok=True)
     path = dl_dir / package.filename
@@ -408,8 +410,8 @@ def file_digest(path: Path) -> str:
 def deb_data_tar(deb: Path) -> bytes:
     """Return the data.tar member of a .deb (an ar archive) as bytes.
 
-    Reads the ar format directly: the image ships no dpkg-deb-independent
-    extractor, and tarfile handles the xz compression natively.
+    The ar container is parsed here, with no dependency on dpkg-deb or ar;
+    tarfile handles the xz compression inside.
     """
     with deb.open("rb") as handle:
         if handle.read(8) != b"!<arch>\n":
@@ -479,8 +481,8 @@ def fix_headers_tree(root: Path) -> None:
         "# are installed under /usr/src.\n"
         f"include {relative}\n"
     )
-    # A changed cross prefix would silently build the module with the host
-    # compiler, so fail loudly instead.
+    # The wrappers from toolchain_bin() answer only to DEBIAN_CROSS_COMPILE, so
+    # refuse a tree whose .kernelvariables does not set that prefix.
     variables = (
         root / "usr" / "src" / f"linux-headers-{KERNEL_RELEASE}" / ".kernelvariables"
     )
@@ -532,12 +534,10 @@ def cross_prefix(cross: str | None = None) -> str:
 
 
 def toolchain_identity(cross: str | None = None) -> tuple[Path, str]:
-    """Return the resolved compiler and a string that identifies it.
+    """Return the compiler found on PATH and a string that identifies it.
 
-    The identity is what the cache keys the wrappers and the module objects on:
-    kbuild records the compiler by Debian's ``riscv64-linux-gnu-gcc`` name, so
-    nothing in a build directory changes when the toolchain behind that name
-    does, and stale objects would survive.
+    The identity is hashed into the names of the wrapper and module
+    directories (see module_dir()).
     """
     prefix = cross_prefix(cross)
     resolved = shutil.which(f"{prefix}gcc")
@@ -569,7 +569,9 @@ def toolchain_bin(cache: Path | str | None = None, cross: str | None = None) -> 
     These are wrapper scripts rather than symlinks because the toolchain's gcc
     is itself a wrapper that finds its real binary from its own name. The
     directory is named after the toolchain, so two builders with different
-    toolchains get one each instead of overwriting a shared directory.
+    toolchains get one each instead of overwriting a shared directory. One
+    without its ``.complete`` marker (partly deleted, say) is replaced under
+    the lock.
     """
     compiler, identity = toolchain_identity(cross)
     key = hashlib.sha256(identity.encode()).hexdigest()[:KEY_LENGTH]
@@ -585,6 +587,10 @@ def toolchain_bin(cache: Path | str | None = None, cross: str | None = None) -> 
     with cache_lock(cache):
         if marker.exists():
             return out
+        if out.exists():
+            # publish() cannot rename the new entry onto a nonempty directory.
+            log(f"{out.name} is incomplete; writing its wrappers again")
+            shutil.rmtree(out)
         staging = staging_dir(cache)
         try:
             staged = staging / out.name
@@ -604,16 +610,18 @@ def toolchain_bin(cache: Path | str | None = None, cross: str | None = None) -> 
             publish(staged, out)
         finally:
             shutil.rmtree(staging, ignore_errors=True)
+    if not marker.exists():
+        raise RuntimeError(f"{out}: the toolchain wrappers were not published")
     return out
 
 
 def module_dir(cache: Path | str | None = None, cross: str | None = None) -> Path:
     """Return the build directory for this pin and this toolchain.
 
-    Keying it on both is what keeps kbuild honest: it records the compiler by
-    name and the headers by path, so neither a swapped toolchain behind that
-    name nor a re-extracted tree at the same path would otherwise invalidate
-    the objects.
+    kbuild records the compiler by Debian's ``riscv64-linux-gnu-gcc`` name and
+    the headers by path, so neither a different toolchain behind that name nor
+    a re-extracted tree at the same path would invalidate its objects. A
+    directory per pin and toolchain keeps stale objects out.
     """
     _, identity = toolchain_identity(cross)
     key = hashlib.sha256(f"{pin_digest()}\n{identity}".encode()).hexdigest()
@@ -651,7 +659,7 @@ def module_info(module: Path, objcopy: str) -> dict[str, list[str]]:
 
 
 # struct modversion_info: an unsigned long CRC then a 56-byte name, one per
-# symbol the module imports (kernel/module.h, MODULE_NAME_LEN).
+# symbol the module imports (include/linux/module.h, MODULE_NAME_LEN).
 MODVERSION_ENTRY = 64
 
 
@@ -726,13 +734,13 @@ def build_module(
 ) -> Path:
     """Build frost_net10g as a module for the pinned kernel; return the .ko.
 
-    The build directory is named after the pin and the toolchain, so objects
-    are never reused across either. Inside it the driver's sources are copied
-    and only rewritten when they change, so kbuild recompiles an edited driver
-    and nothing else. ``CC`` is passed explicitly so that the exact compiler
-    name in Debian's ``.kernelvariables`` (``$(CROSS_COMPILE)gcc-14`` today)
-    does not have to exist. Nothing is published until the module's metadata
-    and symbol CRCs say it belongs to the pinned kernel.
+    The build runs in module_dir(), under the cache lock. The driver's sources
+    are copied there and rewritten only when they change, so kbuild recompiles
+    an edited driver and nothing else. ``CC`` is passed explicitly so that the
+    exact compiler name in Debian's ``.kernelvariables``
+    (``$(CROSS_COMPILE)gcc-14`` in the pinned release) does not have to exist.
+    A module whose metadata or symbol CRCs do not match the pinned kernel is
+    deleted and the build fails.
     """
     fetch(cache)
     build = module_dir(cache, cross)
@@ -759,8 +767,9 @@ def build_module(
             ],
             env=environment,
         )
-        # Debug information triples the module's size, and the initramfs travels
-        # to the board over JTAG. This is what kbuild's INSTALL_MOD_STRIP=1 runs.
+        # Drop the debug information, which is most of the module, because the
+        # initramfs is loaded over JTAG. kbuild's INSTALL_MOD_STRIP=1 runs the
+        # same command.
         run_logged(
             [f"{DEBIAN_CROSS_COMPILE}strip", "--strip-debug", str(module)],
             env=environment,
@@ -776,16 +785,18 @@ def build_module(
 
 
 # --- The initramfs ----------------------------------------------------------
-# A cpio (newc) writer: the kernel concatenates initramfs archives, so the
-# module and its init script are appended to Buildroot's own rootfs.cpio
-# instead of regenerating it. Buildroot's archive is left byte-for-byte alone,
-# and a checkout with an already-built initramfs needs no Buildroot rebuild.
+# A cpio (newc) writer: the kernel unpacks concatenated initramfs archives in
+# order, so the module and its init script are appended to Buildroot's own
+# rootfs.cpio instead of regenerating it. Buildroot's archive is left
+# byte-for-byte alone, and a checkout with an already-built initramfs needs no
+# Buildroot rebuild.
 CPIO_MAGIC = b"070701"
 CPIO_TRAILER = "TRAILER!!!"
-# Every newc member is padded to 4 bytes, and the kernel's unpacker rejects a
-# gap between two archives that leaves a length not a multiple of 4
-# (init/initramfs.c, do_reset). GNU cpio pads a whole archive to 512, which our
-# own trailing padding matches so the result looks like one it wrote.
+# Every newc member is padded to 4 bytes. Between two archives the kernel's
+# unpacker skips NUL padding and then requires 4-byte alignment
+# (init/initramfs.c, do_reset), so an archive to append to must be a multiple
+# of 4 bytes long. Our own archive is padded to 512 bytes, like one GNU cpio
+# writes.
 CPIO_ALIGN = 4
 CPIO_BLOCK = 512
 
@@ -819,9 +830,8 @@ def cpio_entry(name: str, mode: int, data: bytes = b"", *, ino: int = 0) -> byte
 def cpio_members(archive: bytes) -> Iterator[tuple[str, int, bytes]]:
     """Yield (name, mode, data) for every member of concatenated newc archives.
 
-    The reader the initramfs check needs: it walks the inter-archive padding the
-    kernel's unpacker walks, so it sees the members of every archive in the
-    file rather than only the first.
+    Like the kernel's unpacker, it skips the NUL padding between archives, so
+    it sees the members of every archive in the file, not only the first.
     """
     at = 0
     while at < len(archive):
@@ -923,12 +933,10 @@ def prebuilt_module(module: Path | str | None = None) -> Path | None:
 
 
 def check_base_initramfs(base: Path, payload: bytes) -> None:
-    """Fail unless the base archive can be appended to and drives the gates.
+    """Refuse a base that cannot take a second archive or has an old frost_stress.
 
-    Two ways a stale archive would otherwise reach a board: its length may not
-    suit a second archive, and its ``frost_stress`` may predate the counter mode,
-    which the boot would survive while reporting none of the counters the board
-    soak scores.
+    The base must be a multiple of CPIO_ALIGN bytes long, and its
+    ``frost_stress`` must be new enough to contain INITRAMFS_COUNTER_TOKEN.
     """
     if len(payload) % CPIO_ALIGN:
         raise RuntimeError(
@@ -949,8 +957,8 @@ def check_base_initramfs(base: Path, payload: bytes) -> None:
     if INITRAMFS_COUNTER_TOKEN.encode() not in program:
         raise RuntimeError(
             f"{base}: its /{INITRAMFS_COUNTER_PROGRAM} predates "
-            f"{INITRAMFS_COUNTER_TOKEN}, so it is older than the counter "
-            f"evidence the board soak scores. Rebuild the test userspace:\n"
+            f"{INITRAMFS_COUNTER_TOKEN}, so the archive is out of date. "
+            f"Rebuild the test userspace:\n"
             f"  {FROST_STRESS_REBUILD}"
         )
 
@@ -964,9 +972,8 @@ def compose_initramfs(
 ) -> Path:
     """Write base plus the NIC module and its loader as one initramfs.
 
-    The kernel unpacks concatenated cpio archives in order, which is how the
-    module reaches Buildroot's userspace without rebuilding it. The base is
-    checked first, so no consumer can pack a stale one (see
+    The module and its loader go in a second archive after the base. The base
+    is checked first, so no consumer can pack a stale one (see
     ``check_base_initramfs``).
     """
     payload = base.read_bytes()

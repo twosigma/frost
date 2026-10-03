@@ -12,14 +12,15 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Assembly landmarks for the debug-module benches (Phase 3 M3). The benches
-# look up every label below in the ELF symbol table, so the exact instruction
-# layout matters:
+# Assembly landmarks for the debug-module benches. The benches look up every
+# label below in the ELF symbol table, so the exact instruction layout matters:
 #
 #   bp_target       32-bit addi (software breakpoint site; step +4)
 #   bp_target_rvc   c.nop (16-bit software breakpoint site; step +2)
 #                   c.nop (step +2)
 #                   ret   (step lands on the caller's return address)
+#   step_wfi_site   div, then wfi: a step over the div halts at the wfi, and
+#                   a second step retires the wfi as a nop
 #   u_loop          the U-mode loop: bump counter, ecall (u_ecall_site) every
 #                   64th iteration, loop
 #   trap_entry      the M-mode trap entry (single-step over an ecall must halt
@@ -40,6 +41,18 @@ bp_target_rvc:
     c.nop
     ret
     .size bp_target, .-bp_target
+
+    .balign 4
+    .globl step_wfi_site
+    .type step_wfi_site, @function
+step_wfi_site:
+    .option push
+    .option norvc
+    div     a0, a1, a2
+    wfi
+    nop
+    .option pop
+    .size step_wfi_site, .-step_wfi_site
 
     .balign 4
     .globl u_loop

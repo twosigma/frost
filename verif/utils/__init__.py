@@ -12,18 +12,13 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""RISC-V conversion, memory-alignment, logging, and validation helpers.
+"""RISC-V conversion, memory-access, and validation helpers.
 
 Only ``__all__`` names are re-exported; import other helpers from their modules.
 """
 
 from utils.riscv_utils import sign_extend, to_signed32, to_unsigned32
 from utils.validation import HardwareAssertions
-
-# InstructionLogger is not re-exported here: it imports encoders.op_tables, which
-# reaches back into utils.riscv_utils via models.alu_model, so pulling it in during
-# package init would close a cycle. Import it from its own module instead:
-# from utils.instruction_logger import InstructionLogger
 
 __all__ = [
     "sign_extend",

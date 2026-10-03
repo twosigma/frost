@@ -1,0 +1,33 @@
+[tasks]
+bmc
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv rs_issue2_selector.sv
+# Read the real merger without its separate environment/protocol assertions.
+read -sv -D SYNTHESIS mem_wakeup_merge.sv
+read -formal -D SYNTHESIS -D RS_PRETAG_LOCAL_PROOF -sv reservation_station.sv rs_raw_pretag_equiv.sv
+hierarchy -top rs_raw_pretag_equiv
+proc
+flatten
+setundef -undriven -anyseq
+opt
+prep -top rs_raw_pretag_equiv
+select -assert-none t:$assume
+select -assert-count 1 t:$check
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/wakeup/mem_wakeup_merge.sv
+rs_raw_pretag_equiv.sv

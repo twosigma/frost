@@ -1,0 +1,45 @@
+[tasks]
+bmc
+bmc_forward
+bmc_forward_only
+cover
+
+[options]
+bmc: mode bmc
+bmc_forward: mode bmc
+bmc_forward_only: mode bmc
+cover: mode cover
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -sv sdp_dist_ram.sv
+read -sv mwp_dist_ram.sv
+read -sv load_unit.sv
+read -sv lq_l0_cache.sv
+read -sv lq_issue_selector.sv
+read -formal -D SYNTHESIS -D F_LQ_PREMATCH_ONLY -D F_LQ_RAM_PAYLOAD_PROOF -sv load_queue.sv
+cover: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
+bmc_forward: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
+bmc_forward_only: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 -set ENABLE_L0_FAST_PATH 0 load_queue
+delete t:lq_l0_cache t:mwp_dist_ram t:sdp_dist_ram
+proc
+setundef -undriven -anyseq
+opt
+prep -top load_queue
+select -assert-none t:$assume a:init
+select -assert-count 5 t:$check r:FLAVOR=assert %i
+select -assert-count 4 t:$check r:FLAVOR=cover %i
+select -assert-none t:$check r:FLAVOR=assume %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv

@@ -30,9 +30,6 @@
 #include <stddef.h> /* For size_t */
 #include <stdint.h>
 
-#define CLOCK_PERIOD_PS 3103
-
-
 /* Versioned packet types produced by the parser */
 typedef uint8_t packet_v1_msg_type_t;
 typedef uint8_t packet_v1_venue_t;
@@ -100,10 +97,7 @@ static uint32_t extract_client_order_id(uint64_t mapped_order_id)
 /* Read one word from the selected FIFO. */
 static inline uint32_t fifo_read_word(int fifo_id)
 {
-    uint32_t chunk = (fifo_id == 0) ? fifo0_read() : fifo1_read();
-    /* Give MMIO read data a cycle to settle before consumption. */
-    asm volatile("nop");
-    return chunk;
+    return (fifo_id == 0) ? fifo0_read() : fifo1_read();
 }
 
 /* Read one length-prefixed string; false on the zero-length terminator word. */
@@ -319,6 +313,20 @@ static bool test_oversized_fifo_string(void)
            strcmp(following.data, "next") == 0;
 }
 
+/* parse_price keeps the sign of a negative price, including one below 1 and
+ * the most negative amount, and wraps an amount below that modulo 2^64. */
+static bool test_signed_prices(void)
+{
+    fix_price_t neg = parse_price("-1.5");
+    fix_price_t neg_fraction = parse_price("-0.25");
+    fix_price_t neg_whole = parse_price("-94");
+    fix_price_t most_negative = parse_price("-92233720368.54775808");
+    fix_price_t below_range = parse_price("-92233720368.54775809");
+    return neg.amount == -150000000LL && neg_fraction.amount == -25000000LL &&
+           neg_whole.amount == -9400000000LL && most_negative.amount == INT64_MIN &&
+           below_range.amount == INT64_MAX && neg.scale == TARGET_SCALE;
+}
+
 /* Test FIX message: ICE venue accepted execution report */
 static const char *test_fix_message[][2] = {
     {"8", "FIX.4.2"},                /* BeginString */
@@ -378,6 +386,7 @@ int main(void)
     drain_fifo_pairs();
 
     bool fifo_framing_ok = test_oversized_fifo_string();
+    bool signed_prices_ok = test_signed_prices();
 
     fill_fifos_with_fix_message();
     delay_ticks(1000);
@@ -406,6 +415,9 @@ int main(void)
     if (!fifo_framing_ok) {
         uart_printf("ERROR: oversized FIFO string corrupted framing\n");
     }
+    if (!signed_prices_ok) {
+        uart_printf("ERROR: a negative price lost its sign\n");
+    }
     if (!message_ok) {
         uart_printf("ERROR: parsed fields did not match the expected message\n");
     }
@@ -431,12 +443,12 @@ int main(void)
     uart_printf("currency: %u\n", msg.currency);
     uart_printf("line_setter_status: %u\n", msg.line_setter_status);
 
-    uart_printf("\nParsing time: clock cycles = %u  Time duration = %u ns\n",
+    uart_printf("\nParsing time: clock cycles = %u  Time duration = %llu ns\n",
                 end_time - start_time,
-                (end_time - start_time) * CLOCK_PERIOD_PS / 1000);
+                (unsigned long long) (end_time - start_time) * 1000000000ull / FPGA_CPU_CLK_FREQ);
 
     uart_printf("\n=== Test Complete ===\n");
-    if (message_ok) {
+    if (message_ok && signed_prices_ok) {
         uart_printf("<<PASS>>\n");
     } else {
         uart_printf("<<FAIL>>\n");

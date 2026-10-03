@@ -27,12 +27,12 @@
  * valid (BASE 32-byte aligned, SIZE in range, the ring inside the
  * aperture); a refused enable sets *_CONFIG_ERR and raises DESC_ERR. A
  * direction that loses READY (its MAC domain resetting) is disabled. BASE
- * and SIZE are writable only while the direction is disabled and idle; a
- * write starts a new ring generation (TAIL and, through o_*_restart, the
- * engine's HEAD and descriptor cache reset).
+ * and SIZE are writable only while the direction is disabled and idle.
+ * Writing either starts a new ring generation: TAIL returns to 0, and
+ * o_*_restart resets the engine's HEAD and descriptor cache.
  *
  * i_soft_rst is the RESET's core-domain reset: it clears the enables, the
- * rings and the counters; the station address, PROMISC, PHY_CTRL survive.
+ * rings and the counters; the station address, PROMISC and PHY_CTRL survive.
  */
 module nic_csr #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -239,7 +239,7 @@ module nic_csr #(
         tx_en_q      <= 1'b0;
         tx_cfg_err_q <= 1'b0;
       end
-      // A direction whose MAC domain is resetting is disabled.
+      // A direction whose MAC domain is not READY is disabled.
       if (!i_rx_ready) rx_en_q <= 1'b0;
       if (!i_tx_ready) tx_en_q <= 1'b0;
 

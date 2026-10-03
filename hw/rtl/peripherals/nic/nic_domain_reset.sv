@@ -21,18 +21,17 @@
  * The core-side controller (nic_reset_ctrl) raises a request level with a
  * generation bit. This block asserts the domain's synchronous reset
  * (o_domain_rst, for the MAC and this domain's halves of the packet FIFOs)
- * without waiting for a clock edge (cdc_reset_sync), keeps it while the
- * request is high and for HOLD_CYCLES after it drops, and reports two
+ * without waiting for a clock edge (cdc_reset_sync), and keeps it while the
+ * request is high and for HOLD_CYCLES clocks after it drops. It reports two
  * levels back: o_in_reset, and o_applied_gen with o_applied_valid, which
- * take the request's generation once the reset has been held for
- * HOLD_CYCLES of this clock with the request high (o_applied_valid stays 0
- * from the core's reset until the first application, so a generation
- * that merely equals the reset value is never mistaken for an
- * acknowledgement). A generation is therefore acknowledged only after this
- * domain's clock has actually applied the reset, and a stale
- * acknowledgement from an earlier generation cannot satisfy a new request.
- * With no clock the reset is held and nothing is acknowledged, which is
- * what the controller expects.
+ * take the request's generation once this clock has held the reset for
+ * HOLD_CYCLES with the request high. o_applied_valid stays 0 from the
+ * core's reset until the first application, so a generation that merely
+ * equals the reset value is never mistaken for an acknowledgement. A
+ * generation is therefore acknowledged only after this domain's clock has
+ * actually applied the reset, and a stale acknowledgement from an earlier
+ * generation cannot satisfy a new request. With no clock the reset is held
+ * and nothing is acknowledged, which is what the controller expects.
  *
  * The core's own reset (i_core_rst_async) resets this block's bookkeeping
  * and the domain alike, so a CPU reset starts a fresh generation on both

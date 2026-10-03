@@ -12,7 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Direct tests for the isolated balanced second-issue selector."""
+"""Tests for rs_issue2_selector, the balanced-tree selector for INT_RS port 1.
+
+The DUT is the standalone 16-entry selector, compared against a serial
+reference.
+"""
 
 import random
 from typing import Any
@@ -25,7 +29,10 @@ MASK = (1 << DEPTH) - 1
 
 
 def reference_select(ready: int, branch_class: int) -> int | None:
-    """Return the canonical serial implementation's second-port index."""
+    """Return port 1's pick: the lowest ready non-branch entry other than port 0's.
+
+    Port 0 picks the lowest ready entry, branch or not.
+    """
     issue = next((i for i in range(DEPTH) if ready & (1 << i)), None)
     return next(
         (
@@ -38,7 +45,7 @@ def reference_select(ready: int, branch_class: int) -> int | None:
 
 
 async def check_vector(dut: Any, ready: int, branch_class: int) -> None:
-    """Drive one arbitrary vector and compare all outputs with the oracle."""
+    """Drive one input vector and compare all outputs with the reference."""
     ready &= MASK
     branch_class &= MASK
     expected_issue_2 = reference_select(ready, branch_class)
@@ -58,7 +65,7 @@ async def check_vector(dut: Any, ready: int, branch_class: int) -> None:
 
 @cocotb.test()
 async def test_balanced_issue2_matches_serial_reference(dut: Any) -> None:
-    """Cross-check empty, branch, backpressure-contract, and dense vectors."""
+    """Compare with the serial reference on directed, exhaustive, and random vectors."""
     directed = (
         (0x0000, 0x0000),  # empty
         (0x0001, 0x0000),  # only global winner
@@ -75,10 +82,10 @@ async def test_balanced_issue2_matches_serial_reference(dut: Any) -> None:
     for ready, branch_class in directed:
         await check_vector(dut, ready, branch_class)
 
-    # Exhaust all three meaningful states (not ready / ready nonbranch / ready
-    # branch) across the low eight leaves. This exercises every merge shape in
-    # one complete half of the production tree. The standalone formal target
-    # proves all unconstrained full-width input vectors.
+    # Enumerate the three states (not ready, ready non-branch, ready branch)
+    # of each of the low eight entries. That covers every merge case in one
+    # half of this 16-entry tree; the rs_issue2_selector formal target proves
+    # every full-width input.
     for ternary_vector in range(3**8):
         ready = 0
         branch_class = 0
@@ -92,10 +99,9 @@ async def test_balanced_issue2_matches_serial_reference(dut: Any) -> None:
                 branch_class |= 1 << i
         await check_vector(dut, ready, branch_class)
 
-    # The legacy exclusion applies to port 0's selected entry regardless of
-    # whether backpressure lets port 0 fire. The selector has no FU-ready
-    # input, so every ordered winner/candidate location is checked under that
-    # unconditional contract.
+    # Port 1 excludes port 0's pick even when back-pressure stops port 0 from
+    # firing; the selector has no FU-ready input. Check every ordered pair of
+    # port-0 pick and port-1 candidate positions.
     for winner in range(DEPTH):
         for candidate in range(winner + 1, DEPTH):
             await check_vector(dut, (1 << winner) | (1 << candidate), 0)

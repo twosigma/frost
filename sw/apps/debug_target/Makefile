@@ -12,9 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for the debug-module target program (Phase 3 M3): the debuggee the
+# Makefile for the debug-module target program: the debuggee that the
 # debug_test / debug_openocd_test benches and hardware debugger sessions halt,
-# inspect, patch, step and resume. The FPGA loader accepts --debug for this app.
+# inspect, patch, step and resume.
 SRC_C := ../../lib/src/uart.c main.c
 # Assembly sites with exact instruction layouts (breakpoint / step targets,
 # the U-mode loop, the trap entry).

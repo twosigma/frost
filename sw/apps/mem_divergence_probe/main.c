@@ -15,18 +15,16 @@
  */
 
 /*
- * Cached-DDR cold-vs-warm read divergence probe.
- *
- * During rv64 bring-up, repeated FDT passes appeared to read different bytes,
- * and exec's i_writecount plain/LR reads diverged. FROST simulation and hardware
- * reproduced both, while QEMU did not, implicating 32-bit extraction from one
- * half of a dword row across L1-hit and miss/refill-forward paths.
+ * Cached-DDR cold-vs-warm read divergence probe. A read of either 32-bit half
+ * of a dword must return the same data from an L1D hit as from a miss served
+ * by the refill.
  *
  * Each round fills a buffer, dirties its direct-mapped aliases to evict it,
- * records cold reads in BRAM, rereads warm, and compares both with expected.
+ * records cold reads, rereads warm, and compares both with expected.
  * Shapes include ascending and descending 32-bit reads, odd-half-first reads,
  * 64-bit reads, and a cold half-store followed by both half-loads. A mismatch
- * reports address, shape, cold/warm values, and expected value.
+ * reports shape, address, and the values read with their expected values: the
+ * cold and warm reads, or the stored half and its neighbor.
  */
 
 #include <stdint.h>
@@ -47,7 +45,8 @@
 static volatile uint32_t *const buf = (volatile uint32_t *) BUF_BASE;
 static volatile uint32_t *const alias = (volatile uint32_t *) (BUF_BASE ^ ALIAS_XOR);
 
-/* BRAM capture avoids perturbing the DDR lines under test. */
+/* In the default BRAM tier the captures live in low BRAM, away from the DDR
+ * lines under test. */
 static uint32_t cold_val[WORDS];
 static uint32_t warm_val[WORDS];
 
@@ -87,6 +86,23 @@ report_mismatch(const char *shape, uint32_t i, uint32_t got_cold, uint32_t got_w
                     (unsigned) got_cold,
                     (unsigned) got_warm,
                     (unsigned) want);
+    }
+    g_fail++;
+}
+
+/* Store-forward shape: the stored half and its neighbor, each with its own
+ * expected value. */
+static void
+report_stfwd(uint32_t si, uint32_t got_s, uint32_t want_s, uint32_t got_n, uint32_t want_n)
+{
+    if (g_fail < 10u) {
+        uart_printf("DIVERGE shape=stfwd word=%u addr=%x stored=%x want=%x neighbor=%x want=%x\n",
+                    (unsigned) si,
+                    (unsigned) (BUF_BASE + 4u * si),
+                    (unsigned) got_s,
+                    (unsigned) want_s,
+                    (unsigned) got_n,
+                    (unsigned) want_n);
     }
     g_fail++;
 }
@@ -159,21 +175,25 @@ static void shape_dword(uint32_t round)
 
 static void shape_store_forward(uint32_t round)
 {
-    /* Store one half of a cold dword, then immediately load both halves: the
-     * load of the stored half must forward/miss-merge, the neighbor half must
-     * come from the fill. Alternate which half is stored. */
+    /* Store one half of each dword of the evicted buffer, then immediately
+     * load both halves: the stored half must read back the new value and the
+     * neighbor half the refilled one. The stored half alternates within each
+     * line, and the dword that opens a line stores its low half in even lines
+     * and its high half in odd lines. */
     fill_pattern(round);
     evict_buffer(round);
     for (uint32_t i = 0; i < WORDS; i += 2u) {
-        uint32_t hi_first = (i >> 1) & 1u;
+        uint32_t line = i / (LINE_BYTES / 4u);
+        uint32_t hi_first = ((i >> 1) ^ line) & 1u;
         uint32_t si = i + (hi_first ? 1u : 0u);
         uint32_t ni = i + (hi_first ? 0u : 1u);
         uint32_t sv = expect_word(si, round) ^ 0xA5A5A5A5u;
+        uint32_t nv = expect_word(ni, round);
         buf[si] = sv;
         uint32_t got_s = buf[si];
         uint32_t got_n = buf[ni];
-        if (got_s != sv || got_n != expect_word(ni, round)) {
-            report_mismatch("stfwd", si, got_s, got_n, sv);
+        if (got_s != sv || got_n != nv) {
+            report_stfwd(si, got_s, sv, got_n, nv);
         }
     }
 }

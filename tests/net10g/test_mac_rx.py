@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Receive MAC tests with independently constructed Ethernet wire packets.
+"""Receive MAC tests with Ethernet wire packets built in Python.
 
 The expected FCS comes from Python's zlib, not the RTL CRC implementation.
 Wire packets include preamble and XGMII delimiters; expected AXI Stream
@@ -137,7 +137,7 @@ RESERVATION_FILLS, RESERVATION_FREE = reservation_plan()
 
 
 class ReceiveBench:
-    """Drive XGMII and independently capture and check AXI Stream handshakes."""
+    """Drive XGMII words and capture and check the AXI Stream output."""
 
     def __init__(self, dut: Any) -> None:
         """Initialize scoreboard and protocol stability checks."""
@@ -262,7 +262,7 @@ async def good_frames_all_alignments(dut: Any) -> None:
 
 @cocotb.test()
 async def bad_packets_and_recovery(dut: Any) -> None:
-    """Every corrupt packet is followed by a known good packet."""
+    """Drop each malformed frame with a bad-frame event, then receive a good frame."""
     bench = ReceiveBench(dut)
     await bench.reset()
     rng = random.Random(0xBAD_FC5)

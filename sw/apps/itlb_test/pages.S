@@ -17,11 +17,10 @@
 /*
  * Code pages for the Sv39 fetch-translation test.
  *
- * Each page is 4 KiB-aligned and position-independent: it holds constants and
- * ecall only, and the page-crossing jump is a raw relative JAL. The driver can
- * therefore map any of them at any virtual page. Every page has a head marker,
- * so a direct entry reports which page ran. Encodings are written as raw words
- * where the halfword placement matters.
+ * Each page is 4 KiB-aligned and holds no absolute addresses, so the driver
+ * can map any of them at any virtual page. Most pages start with a marker
+ * write to a0, so a direct entry reports which page ran. Encodings are written
+ * as raw words where the halfword placement matters.
  *
  *   page_a   head: a0 = 0xA1; ecall
  *            tail: 0xFF8 addi a1, zero, 0xA4 | 0xFFC c.nop |
@@ -34,16 +33,16 @@
  *   page_b2  head: a0 = 0xB1; ecall
  *   page_j   head: jal x0, +4096 (falls into the next virtual page)
  *   page_e   head: a0 = 0xCC; ecall
- *   page_c   six entries (0x000, 0x040, 0x080, 0x0C0, 0x100, 0xE00): auipc ra, 1;
- *            addi ra, ra, off; jalr x0, 0(ra) -- an indirect jump into the
- *            NEXT virtual page at 0x000, 0x008, 0x010, 0x020, 0x040, 0xFF8;
- *            six more (0x200..0x340) load ra from the data page four
- *            virtual pages up and return through c.jr / jalr at every
- *            window position, all into the next page's head
- *            a seventh (0x380) targets 0x5E0, the vDSO trampoline's offset
- *   page_t   at each of those offsets (and 0x5E0: a0 = 0xD6): a0 = 0xD0 + k; ecall, nop-filled
- *            between them, so a skipped first instruction reports a0 = 0
- *            and a skipped window reports the next pair's marker
+ *   page_c   six entries (0x000, 0x040, 0x080, 0x0C0, 0x100, 0xE00) of
+ *            auipc ra, 1; addi ra, ra, off; jalr x0, 0(ra): an indirect jump
+ *            into the next virtual page at 0x000, 0x008, 0x010, 0x020, 0x040,
+ *            0xFF8; six more (0x200..0x340) that load ra from the data page
+ *            four virtual pages up and return through c.jr / jalr at every
+ *            window position, all into the next page's head; and one at 0x380
+ *            that jumps to 0x5E0, the vDSO trampoline's offset
+ *   page_t   at each of those offsets: a0 = 0xD0 + k; ecall (a0 = 0xD6 at
+ *            0x5E0), nop-filled between them, so a skipped first instruction
+ *            reports a0 = 0 and a skipped window reports the next pair's marker
  */
 
     /* No linker relaxation: with it, .balign emits maximal NOP padding
@@ -133,10 +132,10 @@ itlb_page_c:
     .word 0x00008067            /* jalr x0, 0(ra) */
     /* Load-based returns (the kernel handler epilogue's shape): ra comes
      * from the data page four virtual pages up (auipc t0, 4 lands at this
-     * entry's offset in it), so the jump resolves only after that load's
-     * own walk. The return
-     * instruction sits at every window position: c.jr ra at +0/+2/+4/+6 of
-     * an 8-byte window, and the 32-bit jalr at +0 and +2 (0xF0 blocks). */
+     * entry's offset in it), so after a flush the jump resolves only after
+     * that load's own walk. The return instruction sits at every window
+     * position: c.jr ra at +0/+2/+4/+6 of an 8-byte window, and the 32-bit
+     * jalr at +0 and +2. */
     .org 0x200
     .word 0x00004297            /* auipc t0, 4 */
     .word 0x0002B083            /* ld ra, 0(t0): auipc already carries this entry's offset */
@@ -335,9 +334,9 @@ itlb_ddr_z_s_handler:
     sd   a0, 104(t1)
     sd   a1, 112(t1)
     sd   a7, 120(t1)
-    /* Optional PTE rewrite before the return (the page holding the RAS's
-     * return address goes away or turns S-only, as the kernel's world
-     * differs from the handler's). */
+    /* Optional PTE rewrite before the return: the page holding the RAS's
+     * return address is unmapped or made S-only, so the ret's RAS
+     * prediction fetches a faulting wrong path. */
     ld   t1, 104(t0)
     beqz t1, 3f
     ld   t2, 112(t0)

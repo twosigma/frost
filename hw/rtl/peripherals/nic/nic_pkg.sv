@@ -18,9 +18,7 @@
  * nic_pkg: constants shared by the NIC's blocks, its benches and the
  * software header (sw/lib/include/nic.h mirrors the offsets).
  *
- * Register offsets are byte offsets inside the NIC's 4 KiB window. Slice 2
- * adds the ring, link, PHY and counter registers; the interrupt block's
- * registers are here first.
+ * Register offsets are byte offsets inside the NIC's 4 KiB window.
  */
 package nic_pkg;
   // Identification, control and status.
@@ -111,10 +109,12 @@ package nic_pkg;
   // Interrupt status / mask bits.
   localparam int unsigned IrqBitRx = 0;  // moderated RX completions
   localparam int unsigned IrqBitTx = 1;  // moderated TX completions
-  // A frame was dropped (MAC overflow, filter, bad descriptor).
+  // A received frame was filtered out, completed with ERR or ABORT, or lost to
+  // MAC overflow.
   localparam int unsigned IrqBitRxDrop = 2;
   localparam int unsigned IrqBitLink = 3;  // LINK.CARRIER changed
-  localparam int unsigned IrqBitDescErr = 4;  // a descriptor completed with ERR
+  // A descriptor completed with ERR or ABORT, or an enable was refused.
+  localparam int unsigned IrqBitDescErr = 4;
   localparam int unsigned IrqBits = 5;
 
   // Frame beats inside the NIC (the FIFO entries): 64 data bits and a code,

@@ -14,9 +14,14 @@
  *    limitations under the License.
  */
 
-// Exhaustive public Bare-bypass equivalence with arbitrary address bits.
-// The width variants check only Bare behavior and package input conversion;
-// they do not claim support for translated Sv39 operation at those widths.
+// With translation off (Bare), the IMMU's ports must equal the reference for
+// every PC: PA0 is the PC's low 32 bits, PA1 the address of the next 4-byte
+// word, the fault flags come from riscv_pkg::fetch_verdict, and the remaining
+// flags are constant. Word 1's fault is also checked against pma_fetch_ok of
+// the next page itself, computed with the incrementer that
+// riscv_pkg::pma_fetch_next_page_ok avoids.
+// The XLEN 32 and 72 variants check only Bare behavior and the PC's
+// conversion to riscv_pkg::XLEN, not Sv39 translation at those widths.
 module immu_bare_formal #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
@@ -26,8 +31,11 @@ module immu_bare_formal #(
   logic pa_valid, fault0, fault1, page0, page1, line_after_ok;
   logic [riscv_pkg::XLEN-1:0] package_pc;
   riscv_pkg::fetch_verdict_t reference_verdict;
+  logic [riscv_pkg::XLEN-1:0] next_page_pc;
   assign package_pc = riscv_pkg::XLEN'(pc);
   assign reference_verdict = riscv_pkg::fetch_verdict(package_pc);
+  // The 52-bit page number wraps, as in pma_fetch_next_page_ok.
+  assign next_page_pc = {package_pc[riscv_pkg::XLEN-1:12] + 1'b1, 12'h000};
 
   immu #(
       .XLEN(XLEN)
@@ -56,6 +64,12 @@ module immu_bare_formal #(
     p_bare_pa1_matches_original : assert (pa1 == {pc[31:2] + 30'd1, 2'b00});
     p_bare_fault0_matches_original : assert (fault0 == reference_verdict.bare_fault0);
     p_bare_fault1_matches_original : assert (fault1 == reference_verdict.bare_fault1);
+    p_bare_fault1_matches_next_page_pma :
+    assert (fault1 == (reference_verdict.straddle ? !riscv_pkg::pma_fetch_ok(
+        next_page_pc
+    ) : !riscv_pkg::pma_fetch_ok(
+        package_pc
+    )));
     p_bare_flags_match_original : assert (pa_valid && !page0 && !page1 && line_after_ok);
   end
 endmodule

@@ -17,26 +17,33 @@
 /*
  * DSP-tiled unsigned multiplier.
  *
- * Decomposes a wide unsigned multiply into {27x35} tile multiplies so synthesis
- * can infer DSP48E2-friendly cascaded implementations (27x(18+17)
- * decomposition). A registered binary adder tree reduces the partial products:
- * each stage adds pairs of full PaddedWidth-wide terms, so the tree is
- * ceil(log2(num_terms)) deep.
+ * Decomposes a wide unsigned multiply into 27x35 tile multiplies (the default
+ * A_TILE_WIDTH x B_TILE_WIDTH) so synthesis can infer DSP48E2-friendly
+ * cascaded implementations (27x(18+17) decomposition). A registered binary
+ * adder tree reduces the partial products: each stage adds pairs of full
+ * PaddedWidth-wide terms, so the tree is ceil(log2(num_terms)) deep.
  *
- * ADD_CHUNK_WIDTH only rounds the term width up to a multiple of itself
- * (PaddedWidth, 32 by default). It does not bound the adder width. Total
- * pipeline depth is max(ceil(log2(num_terms)) + 1, 3). The floor of 3 keeps
- * single- and double-precision multiplies at matched latency.
+ * PaddedWidth is the product width rounded up to a multiple of
+ * ADD_CHUNK_WIDTH (32 by default); the adders are not split into chunks.
+ * Total pipeline depth is max(ceil(log2(num_terms)) + 1, 3). The floor of 3
+ * keeps single- and double-precision multiplies at matched latency.
  *
  * o_valid_output pulses when the product is ready, and o_completing_next_cycle
  * pulses one cycle before it.
+ *
+ * INPUT_REGISTER spends a padding stage, when the depth floor leaves one, on
+ * registering the operands instead: the tile multiplies then start from
+ * registers (the DSPs' input registers) rather than from the caller's
+ * operand logic, and the product arrives on the same cycle as without it.
+ * Without a padding stage the parameter has no effect.
  */
 module dsp_tiled_multiplier_unsigned #(
     parameter int unsigned A_WIDTH = 33,
     parameter int unsigned B_WIDTH = 33,
     parameter int unsigned A_TILE_WIDTH = 27,
     parameter int unsigned B_TILE_WIDTH = 35,
-    parameter int unsigned ADD_CHUNK_WIDTH = 32
+    parameter int unsigned ADD_CHUNK_WIDTH = 32,
+    parameter bit INPUT_REGISTER = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -56,18 +63,37 @@ module dsp_tiled_multiplier_unsigned #(
   localparam int unsigned PaddedWidth = NumChunks * ADD_CHUNK_WIDTH;
   localparam int unsigned PartialWidth = A_TILE_WIDTH + B_TILE_WIDTH;
 
-  // Depth comes from the shared staging formula in riscv_pkg, the single
-  // source for it: int_muldiv_shim sizes its tracker from the same function
-  // via riscv_pkg::MulPipeDepth (plan decision D7). The formula keeps the FP
-  // S/D multiply latency matched. SP has only one tile, but it still flows
-  // through padding registers so single- and double-precision results retire
-  // in issue order when a wrapper alternates between them.
+  // Depth comes from riscv_pkg::dsp_tiled_stages, the single source for it:
+  // int_muldiv_shim sizes its MUL tracker from the same function through
+  // riscv_pkg::MulPipeDepth. A single-precision mantissa multiply is one tile
+  // but passes through padding stages to the double-precision depth, so a
+  // wrapper that alternates the two precisions gets its results in issue
+  // order.
   localparam int unsigned PipelineStages = riscv_pkg::dsp_tiled_stages(
       A_WIDTH, B_WIDTH, A_TILE_WIDTH, B_TILE_WIDTH
   );
 
+  localparam int unsigned ReduceStages = (NumTerms <= 1) ? 0 : $clog2(NumTerms);
+  // An input register replaces one padding stage of the reduction pipeline.
+  localparam bit UseInputRegister = INPUT_REGISTER && (PipelineStages > ReduceStages + 1);
+  localparam int unsigned TermStages = UseInputRegister ? PipelineStages - 1 : PipelineStages;
+  logic [A_WIDTH-1:0] operand_a;
+  logic [B_WIDTH-1:0] operand_b;
+  if (UseInputRegister) begin : gen_input_register
+    logic [A_WIDTH-1:0] operand_a_q;
+    logic [B_WIDTH-1:0] operand_b_q;
+    always_ff @(posedge i_clk) begin
+      operand_a_q <= i_operand_a;
+      operand_b_q <= i_operand_b;
+    end
+    assign operand_a = operand_a_q;
+    assign operand_b = operand_b_q;
+  end else begin : gen_no_input_register
+    assign operand_a = i_operand_a;
+    assign operand_b = i_operand_b;
+  end
   logic [PaddedWidth-1:0] aligned_term_comb[NumTerms];
-  logic [PaddedWidth-1:0] pipe_terms[PipelineStages][NumTerms];
+  logic [PaddedWidth-1:0] pipe_terms[TermStages][NumTerms];
   logic [PipelineStages-1:0] valid_pipe;
 
   function automatic int unsigned terms_at_stage(input int unsigned stage);
@@ -83,7 +109,7 @@ module dsp_tiled_multiplier_unsigned #(
       localparam int unsigned AWidthThis =
           ((AOffset + A_TILE_WIDTH) <= A_WIDTH) ? A_TILE_WIDTH : (A_WIDTH - AOffset);
       logic [A_TILE_WIDTH-1:0] a_tile;
-      assign a_tile = {{(A_TILE_WIDTH - AWidthThis) {1'b0}}, i_operand_a[AOffset+:AWidthThis]};
+      assign a_tile = {{(A_TILE_WIDTH - AWidthThis) {1'b0}}, operand_a[AOffset+:AWidthThis]};
 
       for (genvar b = 0; b < NumBTiles; b++) begin : gen_b_tiles
         localparam int unsigned BOffset = b * B_TILE_WIDTH;
@@ -94,7 +120,7 @@ module dsp_tiled_multiplier_unsigned #(
         (* use_dsp = "yes" *)logic [PartialWidth-1:0] tiled_partial_product;
         logic [ PaddedWidth-1:0] aligned_term;
 
-        assign b_tile = {{(B_TILE_WIDTH - BWidthThis) {1'b0}}, i_operand_b[BOffset+:BWidthThis]};
+        assign b_tile = {{(B_TILE_WIDTH - BWidthThis) {1'b0}}, operand_b[BOffset+:BWidthThis]};
         assign tiled_partial_product = PartialWidth'(a_tile * b_tile);
         assign aligned_term = PaddedWidth'(tiled_partial_product) << (AOffset + BOffset);
         assign aligned_term_comb[TermIndex] = aligned_term;
@@ -121,7 +147,7 @@ module dsp_tiled_multiplier_unsigned #(
       pipe_terms[0][t] <= aligned_term_comb[t];
     end
 
-    for (int s = 1; s < PipelineStages; s++) begin
+    for (int s = 1; s < TermStages; s++) begin
       for (int t = 0; t < NumTerms; t++) begin
         if (t < terms_at_stage(s)) begin
           if (((2 * t) + 1) < terms_at_stage(s - 1)) begin
@@ -144,7 +170,7 @@ module dsp_tiled_multiplier_unsigned #(
     end
   endgenerate
 
-  assign o_product_result = pipe_terms[PipelineStages-1][0][ProductWidth-1:0];
+  assign o_product_result = pipe_terms[TermStages-1][0][ProductWidth-1:0];
   assign o_valid_output   = valid_pipe[PipelineStages-1];
 
 endmodule : dsp_tiled_multiplier_unsigned

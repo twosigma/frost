@@ -1,0 +1,21 @@
+[tasks]
+bmc
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read -formal -D SYNTHESIS -D PRED_METADATA_OUTPUT_LOCAL_PROOF -sv prediction_metadata_tracker.sv
+prep -top prediction_metadata_tracker
+select -assert-none t:$assume a:init
+select -assert-none t:$check r:FLAVOR=assume %i
+select -assert-count 3 t:$check
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/prediction_metadata_tracker.sv

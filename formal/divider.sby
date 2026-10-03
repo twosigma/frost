@@ -1,0 +1,31 @@
+[tasks]
+bmc_width8
+prove_width64
+cover_width8
+
+[options]
+bmc_width8: mode bmc
+bmc_width8: depth 14
+prove_width64: mode prove
+prove_width64: depth 3
+cover_width8: mode cover
+cover_width8: depth 14
+
+[engines]
+smtbmc boolector
+
+[script]
+# bmc_width8 and cover_width8 check every result against a reference at 8
+# bits, where division is cheap for the solver. prove_width64 is an induction
+# at the real width with the reference left out.
+bmc_width8: read -formal -sv riscv_pkg.sv divider.sv
+cover_width8: read -formal -sv riscv_pkg.sv divider.sv
+prove_width64: read -formal -D DIVIDER_FORMAL_NO_REFERENCE -sv riscv_pkg.sv divider.sv
+bmc_width8: chparam -set WIDTH 8 divider
+cover_width8: chparam -set WIDTH 8 divider
+prove_width64: chparam -set WIDTH 64 divider
+prep -top divider
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv

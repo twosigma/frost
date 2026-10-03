@@ -14,9 +14,13 @@
  *    limitations under the License.
  */
 
-// Compare zeroed and unqualified invalid-cycle tags at the actual MUL adapter.
-// Production adapter assertions/assumptions are excluded by the .sby read order.
-// After one synchronous reset edge, all inputs remain unconstrained.
+// Checks that the MUL shim may leave its result tag unqualified on invalid
+// cycles. Two fu_cdb_adapters set up like the wrapper's MUL adapter see the
+// same inputs, except that old_adapter gets the tag zeroed while the result
+// is invalid (the reference) and raw_adapter gets it unqualified. Their
+// pending bits, valid outputs, valid payloads, and arbiter inputs must match.
+// The .sby reads the adapter without -formal, so its own assertions and
+// assumptions are left out. Only the first cycle's reset is assumed.
 module mul_completion_tag (
     input logic i_clk
 );
@@ -31,8 +35,9 @@ module mul_completion_tag (
   always_comb begin
     zeroed_tag = raw;
     zeroed_tag.tag = raw.valid ? raw.tag : '0;
-    // The wrapper's test-injection fallback also remains exactly identical,
-    // including invalid packets: it selects adapter payload only when valid.
+    // The wrapper's arbiter input (the adapter output, else the test-injection
+    // port) must match too, even with no valid result: it takes the adapter
+    // payload only when valid.
     old_arb_input = old_out.valid ? old_out : injected;
     raw_arb_input = raw_out.valid ? raw_out : injected;
   end

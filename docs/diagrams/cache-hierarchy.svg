@@ -1,18 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1016" viewBox="0 0 1200 1016" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="826" viewBox="0 0 1200 826" role="img" aria-labelledby="title desc">
   <title id="title">FROST cache hierarchy and tagged arbitration</title>
   <desc id="desc">
     The X3 uses separate L1I and L1D caches, a shared Sv39 walker, and coherent
     DMA from the NIC/test engine. Tagged arbiters prioritize L1D, walker, L1I,
     then DMA with bounded starvation. A shared 2 MiB L2 feeds the AXI bridge
-    and DDR4. All caches are direct-mapped with 32-byte lines. The L1-only
-    configuration is used by unit tests. Request paths are shown; responses
-    route by transaction ID.
+    and DDR4. All caches are direct-mapped with 32-byte lines. Request paths
+    are shown; responses route by transaction ID.
   </desc>
   <!--
     Self-contained SVG; edit the text, boxes and paths directly.
     Source map (paths relative to the repository root):
       hw/rtl/lib/cache/frost_cache_hierarchy.sv: L1s, port order, ID prefixes,
-        optional L2, production cache geometry and tag/data memory selection.
+        the L2, production cache geometry and tag/data memory selection.
       hw/rtl/lib/cache/line_port_arbiter.sv: fixed priority, starvation bound
         and response routing.
       hw/rtl/lib/cache/dma_coherence_sequencer.sv: the DMA port's entry (probes,
@@ -20,8 +19,7 @@
       hw/rtl/lib/cache/walker_coherence_sequencer.sv: the walker's entry
         (probe-clean, acknowledgement, then the shared-level read).
       hw/rtl/lib/cache/line_port_axi_bridge.sv: 256-bit single-beat AXI requests.
-      hw/rtl/lib/cache/frost_cache_test_harness.sv: both unit-test shapes.
-      hw/rtl/cpu_and_mem/cpu_and_mem.sv: HAS_L2=1 and cache/bridge integration.
+      hw/rtl/cpu_and_mem/cpu_and_mem.sv: cache/bridge integration.
       hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv: one shared page-table walker.
       hw/rtl/frost.sv, boards/x3/x3_frost.sv: X3 capacities and DDR backing.
   -->
@@ -49,11 +47,10 @@
       .port { font-size: 17px; fill: #edc37d; }
     </style>
   </defs>
-  <rect width="1200" height="1016" rx="24" fill="url(#background)"/>
+  <rect width="1200" height="826" rx="24" fill="url(#background)"/>
   <rect x="44" y="36" width="5" height="57" rx="2.5" fill="#7ed8bc"/>
   <text x="66" y="67" font-size="36" font-weight="750">Cache hierarchy</text>
   <text x="67" y="94" class="body">FROST · tagged 32-byte line ports · X3 production configuration</text>
-  <text x="1136" y="65" class="label" text-anchor="end">HAS_L2 = 1</text>
 
   <rect x="28" y="122" width="1144" height="676" rx="20" class="panel"/>
   <text x="64" y="160" class="section">DATA ADAPTER</text>
@@ -119,20 +116,4 @@
   </g>
   <text x="600" y="763" class="small center">L1I / L1D / L2: direct-mapped, 32 B lines. Responses route back using prefixed transaction IDs.</text>
   <text x="600" y="787" class="small center">Arrows follow requests; response and maintenance-control paths are omitted.</text>
-
-  <text x="64" y="843" class="section">L1-ONLY UNIT CONFIGURATION / HAS_L2 = 0</text>
-  <g class="center">
-    <rect x="64" y="867" width="304" height="87" rx="12" class="system"/>
-    <text x="216" y="901" class="label">Same four upstream ports</text>
-    <text x="216" y="930" class="body">L1D + walker + L1I + DMA · arbiters</text>
-    <path d="M 368 910 H 448" class="link"/>
-    <rect x="448" y="867" width="304" height="87" rx="12" class="system"/>
-    <text x="600" y="901" class="label">AXI bridge</text>
-    <text x="600" y="930" class="body">L2 is bypassed</text>
-    <path d="M 752 910 H 832" class="link"/>
-    <rect x="832" y="867" width="304" height="87" rx="12" class="system"/>
-    <text x="984" y="901" class="label">Behavioral memory</text>
-    <text x="984" y="930" class="body">Focused cache unit benches</text>
-  </g>
-  <text x="64" y="990" class="small">The lower-level hierarchy supports both shapes; full-system integration uses L2.</text>
 </svg>

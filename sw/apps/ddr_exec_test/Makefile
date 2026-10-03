@@ -14,7 +14,7 @@
 
 # Makefile for the execute-from-DDR test application
 # Places functions in .ddr_text (the cached region) and runs them through the
-# instruction-side path: fetch provider -> L1I -> arbiter -> (L2 ->) memory.
+# instruction-side path: fetch provider -> L1I -> arbiter -> L2 -> memory.
 # Boot, main, the reference computations and the stack stay in low BRAM.
 SRC_C   := ../../lib/src/uart.c ddr_exec_test.c
 include ../../common/common.mk

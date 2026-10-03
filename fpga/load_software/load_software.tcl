@@ -26,8 +26,8 @@ if {$hw_target eq ""} {
     puts stderr "Error: a nonempty exact hardware target is required"
     exit 1
 }
-# has_ddr: the bitstream provides the JTAG DDR-load master (hw_axi_2) and the
-# DDR-backed cached region. Passed by load_software.py from BOARD_CONFIG.
+# has_ddr: the bitstream has the DDR loader's JTAG-AXI master (jtag_axi_ddr) and
+# the DDR-backed cached region. load_software.py passes it from BOARD_CONFIG.
 set has_ddr 0
 if { $argc >= 5 } {
     set has_ddr [lindex $argv 4]
@@ -58,7 +58,8 @@ if { [lsearch -exact $valid_apps $software_application_name] == -1 } {
     exit 1
 }
 
-# Resolve the Vivado-format low-BRAM image.
+# The low-BRAM image. The CoreMark-PRO workloads share one build directory,
+# sw/apps/coremark_pro.
 set firmware_application_name $software_application_name
 if { [lsearch -exact $coremark_pro_apps $software_application_name] != -1 } {
     set firmware_application_name coremark_pro
@@ -80,12 +81,12 @@ frost_hw_session [lindex $argv 3] [lindex $argv 5] $hw_target {
 refresh_hw_device [lindex [get_hw_devices] 0]
 reset_hw_axi [get_hw_axis -of_objects [lindex [get_hw_devices] 0]]
 
-# Fetch-seam ILA (build.py --debug-ila): the refresh above resets the debug
-# hub, so a capture that must see the program this load starts is armed
-# here, from the hook capture_fetch_ila.py writes, before the CPU is released.
+# Fetch ILA (build.py --debug-ila): the refresh above resets an armed ILA, so
+# the hook that capture_fetch_ila.py writes arms it here, before the program
+# this load starts can run.
 if {[info exists ::env(FROST_ILA_ARM_HOOK)] && $::env(FROST_ILA_ARM_HOOK) ne ""} {
     current_hw_device [lindex [get_hw_devices] 0]
-    puts "Arming the fetch-seam ILA from $::env(FROST_ILA_ARM_HOOK)"
+    puts "Arming the fetch ILA from $::env(FROST_ILA_ARM_HOOK)"
     source $::env(FROST_ILA_ARM_HOOK)
 }
 
@@ -93,8 +94,8 @@ if {[info exists ::env(FROST_ILA_ARM_HOOK)] && $::env(FROST_ILA_ARM_HOOK) ne ""}
 # the BRAM loader and the DDR loader, and enumeration order is unstable, so
 # match on the debug-core cell name first. When CELL_NAME is unavailable, write
 # and read back address zero: the DDR master echoes the data, while the BRAM
-# controller's read path is tied off and returns zero. The image load later
-# overwrites the probe data.
+# controller's read path is tied off and returns zero. The probe overwrites
+# word zero; the BRAM load rewrites it, as does a DDR image if one is loaded.
 proc find_hw_axi_by_cell {pattern} {
     foreach axi [get_hw_axis] {
         set cell ""
@@ -129,8 +130,8 @@ set ddr_axi ""
 if {[llength $all_hw_axis] == 1} {
     set bram_axi [get_property NAME [lindex $all_hw_axis 0]]
     if {$has_ddr && [probe_hw_axi_echoes $bram_axi]} {
-        puts "Error: only one JTAG-AXI master enumerated and it echoes like the"
-        puts "DDR loader -- the BRAM loader is missing from the debug chain."
+        puts "Error: only one JTAG-AXI master enumerated, and it echoes like the"
+        puts "DDR loader: the BRAM loader is missing from the debug chain."
         error "BRAM-loader JTAG-AXI master is missing"
     }
 } else {
@@ -166,9 +167,12 @@ if {$has_ddr && [file exists $ddr_text_file] && [file size $ddr_text_file] > 12 
     error "The software has a DDR image but the DDR-loader JTAG-AXI master is missing"
 }
 
-# Load DDR first while low-BRAM writes periodically re-arm the ~4 s image reset.
-# Otherwise the CPU can run a partial multi-MB image. The following BRAM load
-# extends reset, and release re-invalidates caches before DDR is observed.
+# Load DDR first, with the CPU held in reset. The rst_assert write starts the
+# image reset, which releases about 1.67 s (at full rate) after the last
+# low-BRAM write. A multi-MB DDR load takes longer, so file2ddr keeps re-arming
+# it with BRAM writes and the CPU never runs a partial image. The BRAM load
+# that follows extends the reset, and reset invalidates the caches, so the new
+# program cannot hit stale lines from an earlier DDR image.
 if { $has_ddr && $ddr_axi ne "" && [file exists $ddr_text_file] && [file size $ddr_text_file] > 12 } {
     set first_word_fd [open $firmware_text_file r]
     gets $first_word_fd first_word
@@ -184,15 +188,17 @@ if { $has_ddr && $ddr_axi ne "" && [file exists $ddr_text_file] && [file size $d
 # Write the low-BRAM image from address zero.
 file2bram $bram_base_address $firmware_text_file $bram_axi
 
-# Emit a flushed boundary sentinel: earlier UART output belongs to the previous
-# image; the reset CPU begins this image only after loading completes.
+# Print the load sentinel and flush it. The CPU stays in reset until the image
+# reset expires after the last BRAM write, so UART output before this line
+# belongs to the previous program.
 puts "FROST_LOAD_COMPLETE"
 flush stdout
 
-# Fetch-seam ILA (see the arm hook above): wait for the trigger the program
-# just started will fire, and write the capture, in this same session.
+# Fetch ILA (see the arm hook above): wait for the trigger and write the
+# capture, in the session that armed it. This blocks, so it runs after the
+# sentinel to let the host start its UART capture on time.
 if {[info exists ::env(FROST_ILA_COLLECT_HOOK)] && $::env(FROST_ILA_COLLECT_HOOK) ne ""} {
-    puts "Collecting the fetch-seam ILA capture via $::env(FROST_ILA_COLLECT_HOOK)"
+    puts "Collecting the fetch ILA capture via $::env(FROST_ILA_COLLECT_HOOK)"
     source $::env(FROST_ILA_COLLECT_HOOK)
     flush stdout
 }

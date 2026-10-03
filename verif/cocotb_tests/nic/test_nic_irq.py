@@ -14,16 +14,10 @@
 
 """Unit tests for nic_irq (hw/rtl/peripherals/nic/nic_irq.sv).
 
-The interrupt contract slice 2's driver relies on: sticky status with a
-set that wins over a same-cycle clear, a mask with atomic set and clear
-views that never loses an event, and per-direction moderation whose
-interval starts at the acknowledgement. The cases follow the review's list:
-completions placed before, in and after the acknowledgement; a completion
-that lands while the bit is already set; every zero/nonzero combination of
-delay and max; count saturation; a timer expiry in the acknowledgement's
-cycle; parameter changes while an interval is pending; long masking; and
-the driver sequence (acknowledge, scan, unmask) losing nothing under a
-completion at every offset.
+The interrupt rules the driver relies on: sticky status with a set that
+wins over a same-cycle clear, a mask with atomic set and clear views that
+never loses an event, and per-direction moderation whose interval starts at
+the acknowledgement.
 """
 
 from typing import Any
@@ -93,7 +87,7 @@ def _status(dut: Any) -> int:
 
 @cocotb.test()
 async def test_event_latches_and_w1c(dut: Any) -> None:
-    """RX_DROP, LINK and DESC_ERR latch on a pulse and clear on W1C only of themselves."""
+    """RX_DROP, LINK, and DESC_ERR latch on a pulse; a W1C clears only the bits written."""
     await _setup(dut)
     await _pulse(dut, dut.i_rx_drop)
     await _pulse(dut, dut.i_link_change)
@@ -228,7 +222,11 @@ async def test_deadline_never_restarts_and_config_applies_next_interval(
 
 @cocotb.test()
 async def test_ack_before_scan_loses_nothing(dut: Any) -> None:
-    """A completion at any offset around the acknowledgement is notified again."""
+    """No completion near the acknowledgement is lost.
+
+    One before it belongs to the acknowledged interval, which the driver's scan
+    reaps; one in or after its cycle raises the bit again.
+    """
     await _setup(dut)
     await _write(dut, TICK, 1)
     await _write(dut, RX_ITR, (1 << 16) | 100)  # max 1: every completion raises
@@ -267,7 +265,7 @@ async def test_ack_before_scan_loses_nothing(dut: Any) -> None:
 
 @cocotb.test()
 async def test_completion_while_set_reraises_after_ack_only_if_new(dut: Any) -> None:
-    """Completions while the bit is set join that interval; none arrive after the ack, none raise."""
+    """Completions while the bit is set join its interval and raise nothing after the ack."""
     await _setup(dut)
     await _write(dut, RX_ITR, (1 << 16) | 0)
     await _pulse(dut, dut.i_rx_done)

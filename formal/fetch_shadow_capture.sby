@@ -1,0 +1,26 @@
+[tasks]
+prove proof
+cover reach
+prove_victim0 proof zero
+prove_victim1 proof one
+
+[options]
+proof: mode prove
+proof: depth 6
+reach: mode cover
+reach: depth 20
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv imem_predecode_line.sv
+read_verilog -formal -D SYNTHESIS -D FETCH_SHADOW_CAPTURE_PROOF -sv fetch_provider.sv
+zero: chparam -set VICTIM_LINES 0 fetch_provider
+one: chparam -set VICTIM_LINES 1 fetch_provider
+prep -top fetch_provider
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/imem_predecode_line.sv
+../hw/rtl/cpu_and_mem/fetch_provider.sv

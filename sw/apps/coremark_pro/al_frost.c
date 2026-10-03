@@ -15,17 +15,16 @@
  */
 
 /*
- * al_frost.c
- *
  * FROST bare-metal shims for the EEMBC CoreMark-PRO MITH harness.
  *
- * The MITH adaptation layer (mith/al/src/th_al.c, th_lib.c) is compiled with
+ * The MITH layer (mith/al/src/th_al.c, mith/src/th_lib.c) is compiled with
  * -DHOST_EXAMPLE_CODE=1, which routes its "host" functionality through a small
  * set of POSIX / C-library functions: clock_gettime(), vprintf(), exit(),
  * abort(), getenv(), plus the SMP/affinity hooks that normally live in
  * al_smp.c, which this single-context build does not compile. This file
  * provides those functions against FROST hardware (cycle counter and UART) and
- * the FROST libc.
+ * the FROST libc, along with a trap reporter and the C library symbols that
+ * the toolchain's headers and math objects expect.
  *
  * This file is compiled in isolation against the FROST sw/lib headers
  * (-I../../lib/include). It must not be compiled with the MITH include path,
@@ -67,7 +66,7 @@ static volatile uintptr_t trap_s1;
 static volatile uintptr_t trap_s2;
 static volatile uintptr_t trap_s3;
 
-void exit(int code);
+void exit(int code) __attribute__((noreturn));
 
 void frost_coremark_pro_trap_handler(void) __attribute__((noreturn));
 void frost_coremark_pro_trap_entry(void) __attribute__((naked, aligned(4)));
@@ -212,8 +211,8 @@ int clock_gettime(clockid_t clk_id, struct timespec *ts)
     uint64_t freq = (uint64_t) FPGA_CPU_CLK_FREQ;
 
     ts->tv_sec = (time_t) (cycles / freq);
-    /* (cycles % freq) is < freq < 2^32, so the multiply by 1e9 fits in 64 bits
-     * as long as freq <= ~1.8e10, which holds for any realistic clock. */
+    /* (cycles % freq) < freq, so the multiply by 1e9 fits in 64 bits for any
+     * clock below about 1.8e10 Hz. */
     ts->tv_nsec = (long) (((cycles % freq) * 1000000000ull) / freq);
     return 0;
 }
@@ -221,10 +220,10 @@ int clock_gettime(clockid_t clk_id, struct timespec *ts)
 /* ========================================================================== */
 /* Console output: vprintf()                                                  */
 /*                                                                            */
-/* With USE_TH_PRINTF=0, the harness routes th_printf -> al_printf -> vprintf.*/
-/* The text is formatted into a static buffer (single-context build, so no    */
-/* reentrancy concern), scanned for benchmark error tokens, and written to    */
-/* the UART.                                                                  */
+/* With USE_TH_PRINTF=0, the harness routes th_printf -> al_printf ->         */
+/* vprintf. The text is formatted into a static buffer (single-context build, */
+/* so no reentrancy concern), scanned for benchmark error tokens, and written */
+/* to the UART. Each call prints at most 511 characters.                      */
 /* ========================================================================== */
 int vprintf(const char *fmt, va_list ap)
 {
@@ -325,8 +324,8 @@ void __stack_chk_fail_local(void) __attribute__((alias("__stack_chk_fail"), nore
 /* ========================================================================== */
 /* Environment: getenv()                                                      */
 /*                                                                            */
-/* al_getenv() forwards to getenv() under HOST_EXAMPLE_CODE. No environment   */
-/* exists on bare metal; CoreMark-PRO 'core' does not depend on one.          */
+/* al_getenv() forwards to getenv() under HOST_EXAMPLE_CODE. Bare metal has   */
+/* no environment, and no workload reads one.                                 */
 /* ========================================================================== */
 char *getenv(const char *key)
 {
@@ -339,7 +338,7 @@ char *getenv(const char *key)
 /*                                                                            */
 /* The build is single-context (USE_SINGLE_CONTEXT=1) and does not compile    */
 /* al_smp.c. mith_lib.c still calls al_item_setaffinity() in its run loop,    */
-/* and core.c references al_set_hardware_info()/hardware_info via the -P=     */
+/* and every workload's main() calls al_set_hardware_info() for the -P=       */
 /* command-line option (unused on bare metal). The trivial versions here      */
 /* match al_smp.h's declarations. The types are defined locally so this       */
 /* FROST-headers compilation unit does not need the MITH include path.        */
@@ -373,19 +372,21 @@ int al_item_setaffinity(int kernel_id, int instance_id, int item_id, uint32_t co
 /* ========================================================================== */
 /* newlib character-class table: _ctype_                                      */
 /*                                                                            */
-/* Several benchmark kernels (e.g. darkmark/parser's ezxml.c, zlib) include   */
-/* newlib's <ctype.h>, whose isspace()/isalpha()/... are macros that         */
-/* index newlib's global _ctype_[] classification table:                      */
+/* With a newlib toolchain, <ctype.h>'s isspace()/isalpha()/... are macros    */
+/* that index newlib's global _ctype_[] classification table:                 */
 /*     #define isspace(c) ((_ctype_+1)[(int)(c)] & _S)                        */
-/* The FROST sw/lib ctype.c provides is*() as functions, but the system-      */
-/* header macros shadow them at the call sites in MITH code, so the link      */
-/* needs the _ctype_ symbol itself. Retain the newlib ASCII table for external */
-/* toolchain overrides; musl builds leave it unreferenced and discard it.    */
+/* Benchmark kernels such as darkmark/parser's ezxml.c and zlib use them. The */
+/* FROST sw/lib ctype.c provides is*() as functions, but the system-header    */
+/* macros shadow them at the MITH call sites, so the link needs _ctype_       */
+/* itself. The pinned musl toolchain never references the table, so           */
+/* --gc-sections discards it; it stays for newlib toolchains selected with    */
+/* RISCV_PREFIX.                                                              */
 /*                                                                            */
 /* Layout: 257 bytes. Index 0 is the EOF (-1) slot (0); indices 1..256 map    */
-/* characters 0..255. Bit flags: _U=0x01 _L=0x02 _N(digit)=0x04 _S(space)=    */
-/* 0x08 _P(punct)=0x10 _C(control)=0x20 _X(xdigit)=0x40 _B(blank/space)=0x80. */
-/* These bytes were verified to match the rv32 newlib libc.a _ctype_ exactly. */
+/* characters 0..255. Bit flags:                                              */
+/*   _U=0x01 _L=0x02 _N(digit)=0x04 _S(space)=0x08 _P(punct)=0x10             */
+/*   _C(control)=0x20 _X(xdigit)=0x40 _B(blank/space)=0x80                    */
+/* The bytes match the _ctype_ in an rv32 newlib libc.a.                      */
 /* ========================================================================== */
 const char _ctype_[257] = {
     0x00, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x28, 0x28, 0x28, 0x28, 0x28, 0x20,
@@ -411,11 +412,11 @@ const char _ctype_[257] = {
 /* File metadata: stat()                                                      */
 /*                                                                            */
 /* th_al.c's al_fsize() calls stat() to size a file (HAVE_STAT_H path). The   */
-/* file-based workloads (parser, zip) read their input from generated in-     */
-/* memory buffers in the minimal pgo configs, so al_fsize() is never called   */
-/* at runtime, but it is still referenced and must link. With FAKE_FILEIO=1   */
-/* there is no filesystem, so report "no such file": stat() returns -1 and    */
-/* al_fsize() yields 0. Prototype matches the toolchain's <sys/stat.h>.       */
+/* file-based workloads (parser, zip) generate their input in memory, so      */
+/* al_fsize() is never called at runtime, but it is still referenced and must */
+/* link. With FAKE_FILEIO=1 there is no filesystem, so stat() fails (returns  */
+/* -1) and al_fsize() yields 0. Prototype matches the toolchain's             */
+/* <sys/stat.h>.                                                              */
 /* ========================================================================== */
 #include <sys/stat.h>
 int stat(const char *path, struct stat *buf)
@@ -426,19 +427,18 @@ int stat(const char *path, struct stat *buf)
 }
 
 /* ========================================================================== */
-/* Unused libc surface pulled in by dead code: vsscanf / sscanf / fclose      */
+/* Unused libc functions referenced by dead code: vsscanf / sscanf / fclose   */
 /*                                                                            */
-/* A few workloads reference C-library functions only from code paths that    */
-/* the minimal pgo configurations never execute:                              */
-/*   - cjpeg's parse_dataset_cjpeg() calls th_sscanf() (->al_vsscanf->vsscanf)*/
-/*     only for a "-dataname=" option the build does not pass.                */
-/*   - zip's define_params_zip() calls fclose() only in the "-f=<file>" branch*/
-/*     (it generates its input in memory instead).                            */
+/* A few workloads reference C-library functions only from code paths this    */
+/* build never executes:                                                      */
+/*   - cjpeg's parse_dataset_cjpeg() calls th_sscanf() (through al_vsscanf    */
+/*     and vsscanf) only for a "-dataname=" option the build does not pass.   */
+/*   - zip's define_params_zip() calls fclose() only in the "-f=<file>"       */
+/*     branch (it generates its input in memory instead).                     */
 /* These are dead at runtime but must resolve at link time. The toolchain's   */
-/* libc provides full scanf/stdio, but pulling it in would drag in the        */
-/* FILE machinery that the -nostdlib build avoids. Provide inert             */
-/* stubs: vsscanf/sscanf convert nothing (return 0) and fclose succeeds       */
-/* (return 0).                                                                */
+/* libc provides full scanf/stdio, but pulling it in would drag in the FILE   */
+/* machinery that the -nostdlib build avoids. Provide inert stubs:            */
+/* vsscanf/sscanf convert nothing (return 0) and fclose succeeds (return 0).  */
 /* Prototypes match the toolchain's <stdio.h>.                                */
 /* ========================================================================== */
 #include <stdio.h>

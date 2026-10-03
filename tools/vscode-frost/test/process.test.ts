@@ -288,8 +288,8 @@ test('SIGKILL of the owner worker does not falsely confirm native cleanup',
             command: process.execPath, args: [fixture, 'hang'], cwd: process.cwd(),
         });
         t.after(async () => {
-            // The test intentionally kills the cleanup worker. Its tool's PID
-            // came from this OwnedProcess, so explicitly reap only that group.
+            // The test kills the cleanup worker on purpose, so kill the tool's
+            // process group here, by the group ID this OwnedProcess reported.
             try { await child.stop(); }
             catch { /* Unconfirmed cleanup is the expected result here. */ }
             finally { killOwnedGroup(child.pid); }

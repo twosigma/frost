@@ -12,10 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Pytest configuration for tests."""
+"""Pytest markers and session setup for the tests in this directory."""
 
 import os
-import sys
 from typing import Any
 
 import pytest
@@ -40,18 +39,5 @@ def pytest_configure(config: Any) -> None:
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_cocotb_env() -> None:
-    """Set up environment variables for cocotb simulation."""
+    """Select Verilator as the cocotb simulator."""
     os.environ["SIM"] = "verilator"
-
-
-def pytest_collection_modifyitems(config: Any, items: Any) -> None:
-    """Xfail cocotb tests on Python 3.11, where cocotb is unsupported."""
-    if sys.version_info[:2] == (3, 11):
-        reason = (
-            f"Cocotb tests not supported for Python 3.11, "
-            f"running {sys.version_info.major}.{sys.version_info.minor}"
-        )
-        xfail_cocotb = pytest.mark.xfail(reason=reason, raises=Exception)
-        for item in items:
-            if "cocotb" in item.keywords:
-                item.add_marker(xfail_cocotb)

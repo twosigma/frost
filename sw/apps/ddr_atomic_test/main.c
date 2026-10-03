@@ -17,20 +17,17 @@
 /*
  * Directed reproducer for word-form (.w) atomics to the cached DDR region.
  *
- * A no-MMU Linux boot hangs on a store-conditional (sc.w.rl) to a printk
- * ring-buffer descriptor in DDR, so LR/SC to the cached tier deadlocks even
- * though atomics to low BRAM work (FreeRTOS A-extension stress passes).
- *
- * This isolates it: the target variable lives in .ddr_data, the cached tier.
- * Each step prints a progress letter before it runs, so the last letter
- * received over UART pinpoints which operation wedged:
+ * The targets live in .ddr_data, the cached tier. A letter is printed at the
+ * start and after each step, so the last letter received over UART shows
+ * which operation hung:
  *   "S"        started
  *   "SL"       plain DDR store/load OK (hang at the AMO)
  *   "SLA"      one amoadd.w to DDR OK (hang in the AMO loop)
  *   "SLAR"     256 repeated amoadd.w increments OK (hang at the struct AMO)
  *   "SLARP"    amoadd.w into a struct field OK (hang at LR/SC)
  *   "SLARPC"   LR/SC to DDR OK
- *   "<<PASS>>" all DDR atomics work (then the kernel hang is elsewhere)
+ *   "<<PASS>>" every step passed
+ * A wrong value ends the run with <<FAIL>> and the name of the failed check.
  */
 
 #include <stdint.h>
@@ -62,11 +59,11 @@ struct pde_like {
 };
 __attribute__((section(".ddr_data"))) static volatile struct pde_like ddr_pde_like;
 
-/* lp64 + medany cannot materialize .ddr_data addresses PC-relatively from the
- * BRAM-linked text (R_RISCV_PCREL_HI20 tops out ~2 GiB short of 0x8000_0000),
- * so route every access through pointers whose absolute values are link-time
- * R_RISCV_64 data relocs in BRAM. The pointers are volatile-qualified so -O3
- * cannot constant-fold them back into direct (PC-relative) references. */
+/* Under lp64 medany, PC-relative addressing reaches just under 2 GiB above the
+ * PC, which from BRAM text near address 0 falls short of .ddr_data at
+ * 0x8000_0000. Every access therefore goes through pointers whose absolute
+ * values are link-time R_RISCV_64 data relocations in BRAM. The pointers are
+ * volatile so -O3 cannot fold them back into PC-relative references. */
 static volatile uint32_t *volatile dv = &ddr_var;
 static volatile struct pde_like *volatile pde = &ddr_pde_like;
 
@@ -134,7 +131,7 @@ int main(void)
     }
     putc_('P');
 
-    /* 3. LR/SC compare-exchange to DDR (matches the kernel's sc.w.rl). */
+    /* 3. LR/SC exchange on DDR, with the kernel's sc.w.rl form. */
     uint32_t prev;
     __asm__ volatile("1: lr.w    %0, (%1)\n"
                      "   sc.w.rl t0, %2, (%1)\n"

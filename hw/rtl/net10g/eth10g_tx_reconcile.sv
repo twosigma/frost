@@ -19,8 +19,8 @@
 // sets; remote fault sends idles. Fault assertion has priority over recovery.
 //
 // The MAC may finish a packet internally during a fault. After a fault clears,
-// continue sending idles until an enabled, complete MAC idle word is observed,
-// so a suppressed packet can never resume on the wire halfway through. Faults
+// idles continue until an enabled, complete MAC idle word is observed, so a
+// suppressed packet never resumes on the wire halfway through. Faults
 // are remembered on every i_clk edge, including disabled XGMII clocks. Reset
 // similarly suppresses output until an enabled idle word establishes a boundary.
 module eth10g_tx_reconcile (

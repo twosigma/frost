@@ -1,0 +1,25 @@
+[tasks]
+bmc
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read_verilog -formal -D SYNTHESIS -D SQ_LIVE_COUNT_LOCAL_PROOF -sv store_queue.sv
+delete t:sq_forwarding_unit t:mwp_dist_ram t:sdp_dist_ram t:mwp_dist_ram_ohread
+proc
+setundef -undriven -anyseq
+opt
+prep -top store_queue
+select -assert-count 4 t:$check r:FLAVOR=assert %i
+select -assert-none t:$assume a:init
+select -assert-none t:$check r:FLAVOR=assume %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv

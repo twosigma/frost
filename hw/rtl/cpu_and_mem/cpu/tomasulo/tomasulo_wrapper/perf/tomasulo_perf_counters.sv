@@ -17,17 +17,20 @@
 /*
  * Tomasulo back-end performance counters.
  *
- * Owns the 64 back-end profiling counters: ROB head-wait / commit-blocked
- * buckets and their decompositions, per-FU back-pressure, memory disambiguation,
- * occupancy sums, L0$ hit/fill, and widen-commit opportunity/fire/blocker
- * breakdowns. Accumulates each event, snapshots all 64 on demand, and muxes
- * the selected counter to the CSR read port. The snapshot is split into 4
- * fanout banks, each with its own registered capture strobe, so it lands one
- * cycle after the mperfctl trigger commits; CSR serialization makes that
- * cycle invisible to software.
+ * Holds the 64 back-end profiling counters: ROB head-wait and commit-blocked
+ * cycles and their breakdowns, per-FU back-pressure, memory disambiguation,
+ * occupancy sums, L0 hits and fills, and two-wide commit opportunities, fires,
+ * and blockers. Nine slots are reserved and read 0. Accumulates each event,
+ * snapshots all 64 on demand, and muxes the selected counter to the CSR read
+ * port. The snapshot is split into four fanout banks, each with its own
+ * registered capture strobe, so it lands one cycle after the mperfctl trigger
+ * commits; CSR serialization makes that cycle invisible to software. Indices
+ * and definitions are in hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/README.md.
  */
 
-module tomasulo_perf_counters (
+module tomasulo_perf_counters #(
+    parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth
+) (
     input logic i_clk,
     input logic i_rst_n,
 
@@ -43,10 +46,6 @@ module tomasulo_perf_counters (
     input logic i_mem_adapter_result_pending,
     input logic i_fp_rs_fu_ready,
     input logic i_o_fp_rs_empty,
-    input logic i_fmul_rs_fu_ready,
-    input logic i_o_fmul_rs_empty,
-    input logic i_fdiv_rs_fu_ready,
-    input logic i_o_fdiv_rs_empty,
 
     // Memory disambiguation / SQ-LQ status.
     input logic i_sq_check_valid,
@@ -56,15 +55,13 @@ module tomasulo_perf_counters (
     input logic i_o_lq_mem_read_en,
 
     // Occupancy counts.
-    input logic [  riscv_pkg::ReorderBufferTagWidth:0] i_o_rob_count,
-    input logic [    $clog2(riscv_pkg::LqDepth+1)-1:0] i_o_lq_count,
-    input logic [    $clog2(riscv_pkg::SqDepth+1)-1:0] i_o_sq_count,
-    input logic [ $clog2(riscv_pkg::IntRsDepth+1)-1:0] i_o_rs_count,
-    input logic [ $clog2(riscv_pkg::MulRsDepth+1)-1:0] i_o_mul_rs_count,
-    input logic [ $clog2(riscv_pkg::MemRsDepth+1)-1:0] i_o_mem_rs_count,
-    input logic [  $clog2(riscv_pkg::FpRsDepth+1)-1:0] i_o_fp_rs_count,
-    input logic [$clog2(riscv_pkg::FmulRsDepth+1)-1:0] i_o_fmul_rs_count,
-    input logic [$clog2(riscv_pkg::FdivRsDepth+1)-1:0] i_o_fdiv_rs_count,
+    input logic [ riscv_pkg::ReorderBufferTagWidth:0] i_o_rob_count,
+    input logic [   $clog2(riscv_pkg::LqDepth+1)-1:0] i_o_lq_count,
+    input logic [   $clog2(riscv_pkg::SqDepth+1)-1:0] i_o_sq_count,
+    input logic [         $clog2(INT_RS_DEPTH+1)-1:0] i_o_rs_count,
+    input logic [$clog2(riscv_pkg::MulRsDepth+1)-1:0] i_o_mul_rs_count,
+    input logic [$clog2(riscv_pkg::MemRsDepth+1)-1:0] i_o_mem_rs_count,
+    input logic [ $clog2(riscv_pkg::FpRsDepth+1)-1:0] i_o_fp_rs_count,
 
     // L0$ + head-load disambiguation diagnostics.
     input logic i_lq_l0_hit,
@@ -75,14 +72,11 @@ module tomasulo_perf_counters (
     input logic i_lq_head_load_bus_blocked,
     input logic i_lq_head_load_cdb_wait,
     input logic i_lq_head_load_post_lq,
-    input logic i_lq_head_load_bb_issued,
     input logic i_lq_head_load_bb_bus_busy,
-    input logic i_lq_head_load_bb_amo,
     input logic i_lq_head_load_bb_sq_wait,
     input logic i_lq_head_load_bb_staging,
     input logic i_lq_head_load_bbs_other_in_staging,
     input logic i_lq_head_load_bbs_launch_gated,
-    input logic i_lq_head_load_bbs_slow_outstanding,
     input logic i_lq_head_load_bbs_capture_gap,
 
     // head_wait_int decomposition status.
@@ -96,31 +90,27 @@ module tomasulo_perf_counters (
     output logic [63:0] o_perf_counter_data
 );
 
-  // --- Port aliases: keep the extracted body identical to the tomasulo_wrapper original.
+  // --- Port aliases with the wrapper's signal names.
   riscv_pkg::rob_perf_events_t rob_perf_events;
   logic int_rs_fu_ready, o_rs_empty, mul_rs_fu_ready, o_mul_rs_empty;
   riscv_pkg::fu_complete_t mem_fu_to_adapter;
   logic mem_adapter_result_pending;
-  logic fp_rs_fu_ready, o_fp_rs_empty, fmul_rs_fu_ready, o_fmul_rs_empty;
-  logic fdiv_rs_fu_ready, o_fdiv_rs_empty;
+  logic fp_rs_fu_ready, o_fp_rs_empty;
   logic sq_check_valid, sq_all_older_addrs_known, sq_committed_empty;
   logic o_sq_mem_write_en, o_lq_mem_read_en;
   logic [riscv_pkg::ReorderBufferTagWidth:0] o_rob_count;
   logic [$clog2(riscv_pkg::LqDepth+1)-1:0] o_lq_count;
   logic [$clog2(riscv_pkg::SqDepth+1)-1:0] o_sq_count;
-  logic [$clog2(riscv_pkg::IntRsDepth+1)-1:0] o_rs_count;
+  logic [$clog2(INT_RS_DEPTH+1)-1:0] o_rs_count;
   logic [$clog2(riscv_pkg::MulRsDepth+1)-1:0] o_mul_rs_count;
   logic [$clog2(riscv_pkg::MemRsDepth+1)-1:0] o_mem_rs_count;
   logic [$clog2(riscv_pkg::FpRsDepth+1)-1:0] o_fp_rs_count;
-  logic [$clog2(riscv_pkg::FmulRsDepth+1)-1:0] o_fmul_rs_count;
-  logic [$clog2(riscv_pkg::FdivRsDepth+1)-1:0] o_fdiv_rs_count;
   logic lq_l0_hit, lq_l0_fill, lq_mem_outstanding;
   logic lq_head_load_addr_pending, lq_head_load_sq_disambig, lq_head_load_bus_blocked;
   logic lq_head_load_cdb_wait, lq_head_load_post_lq;
-  logic lq_head_load_bb_issued, lq_head_load_bb_bus_busy, lq_head_load_bb_amo;
-  logic lq_head_load_bb_sq_wait, lq_head_load_bb_staging;
+  logic lq_head_load_bb_bus_busy, lq_head_load_bb_sq_wait, lq_head_load_bb_staging;
   logic lq_head_load_bbs_other_in_staging, lq_head_load_bbs_launch_gated;
-  logic lq_head_load_bbs_slow_outstanding, lq_head_load_bbs_capture_gap;
+  logic lq_head_load_bbs_capture_gap;
   logic int_rs_head_in_rs, int_rs_head_rs_ready, int_rs_head_in_stage2;
   assign rob_perf_events                   = i_rob_perf_events;
   assign int_rs_fu_ready                   = i_int_rs_fu_ready;
@@ -131,10 +121,6 @@ module tomasulo_perf_counters (
   assign mem_adapter_result_pending        = i_mem_adapter_result_pending;
   assign fp_rs_fu_ready                    = i_fp_rs_fu_ready;
   assign o_fp_rs_empty                     = i_o_fp_rs_empty;
-  assign fmul_rs_fu_ready                  = i_fmul_rs_fu_ready;
-  assign o_fmul_rs_empty                   = i_o_fmul_rs_empty;
-  assign fdiv_rs_fu_ready                  = i_fdiv_rs_fu_ready;
-  assign o_fdiv_rs_empty                   = i_o_fdiv_rs_empty;
   assign sq_check_valid                    = i_sq_check_valid;
   assign sq_all_older_addrs_known          = i_sq_all_older_addrs_known;
   assign sq_committed_empty                = i_sq_committed_empty;
@@ -147,8 +133,6 @@ module tomasulo_perf_counters (
   assign o_mul_rs_count                    = i_o_mul_rs_count;
   assign o_mem_rs_count                    = i_o_mem_rs_count;
   assign o_fp_rs_count                     = i_o_fp_rs_count;
-  assign o_fmul_rs_count                   = i_o_fmul_rs_count;
-  assign o_fdiv_rs_count                   = i_o_fdiv_rs_count;
   assign lq_l0_hit                         = i_lq_l0_hit;
   assign lq_l0_fill                        = i_lq_l0_fill;
   assign lq_mem_outstanding                = i_lq_mem_outstanding;
@@ -157,22 +141,21 @@ module tomasulo_perf_counters (
   assign lq_head_load_bus_blocked          = i_lq_head_load_bus_blocked;
   assign lq_head_load_cdb_wait             = i_lq_head_load_cdb_wait;
   assign lq_head_load_post_lq              = i_lq_head_load_post_lq;
-  assign lq_head_load_bb_issued            = i_lq_head_load_bb_issued;
   assign lq_head_load_bb_bus_busy          = i_lq_head_load_bb_bus_busy;
-  assign lq_head_load_bb_amo               = i_lq_head_load_bb_amo;
   assign lq_head_load_bb_sq_wait           = i_lq_head_load_bb_sq_wait;
   assign lq_head_load_bb_staging           = i_lq_head_load_bb_staging;
   assign lq_head_load_bbs_other_in_staging = i_lq_head_load_bbs_other_in_staging;
   assign lq_head_load_bbs_launch_gated     = i_lq_head_load_bbs_launch_gated;
-  assign lq_head_load_bbs_slow_outstanding = i_lq_head_load_bbs_slow_outstanding;
   assign lq_head_load_bbs_capture_gap      = i_lq_head_load_bbs_capture_gap;
   assign int_rs_head_in_rs                 = i_int_rs_head_in_rs;
   assign int_rs_head_rs_ready              = i_int_rs_head_rs_ready;
   assign int_rs_head_in_stage2             = i_int_rs_head_in_stage2;
 
-  // Compatibility block: these 64 local indices remain global 42-105.
-  // Cache-hierarchy counters append as a third block in
-  // perf_counter_aggregator; they must never shift this mapping.
+  // Local indices 0-63 are global indices 42-105, a software interface. The
+  // cache-hierarchy block follows at 106 in perf_counter_aggregator; nothing
+  // may renumber these (perf README, "Numbering contract"). Local slots 8, 9,
+  // 19, 20, 32, 33, 47, 49 and 62 (global 50, 51, 61, 62, 74, 75, 89, 91 and
+  // 104) are reserved: nothing drives them, so they read 0.
   localparam int unsigned WrapperPerfCounterCount = 64;
   localparam int unsigned PerfHeadWaitTotal = 0;
   localparam int unsigned PerfHeadWaitInt = 1;
@@ -182,8 +165,7 @@ module tomasulo_perf_counters (
   localparam int unsigned PerfHeadWaitMemStore = 5;
   localparam int unsigned PerfHeadWaitMemAmo = 6;
   localparam int unsigned PerfHeadWaitFp = 7;
-  localparam int unsigned PerfHeadWaitFmul = 8;
-  localparam int unsigned PerfHeadWaitFdiv = 9;
+  // 8 and 9 are reserved.
   localparam int unsigned PerfCommitBlockedCsr = 10;
   localparam int unsigned PerfCommitBlockedFence = 11;
   localparam int unsigned PerfCommitBlockedWfi = 12;
@@ -192,9 +174,8 @@ module tomasulo_perf_counters (
   localparam int unsigned PerfIntBackpressure = 15;
   localparam int unsigned PerfMulBackpressure = 16;
   localparam int unsigned PerfMemResultBackpressure = 17;
-  localparam int unsigned PerfFpAddBackpressure = 18;
-  localparam int unsigned PerfFmulBackpressure = 19;
-  localparam int unsigned PerfFdivBackpressure = 20;
+  localparam int unsigned PerfFpBackpressure = 18;
+  // 19 and 20 are reserved.
   localparam int unsigned PerfMemDisambiguationWait = 21;
   localparam int unsigned PerfSqCommittedPending = 22;
   localparam int unsigned PerfSqMemWriteFire = 23;
@@ -206,8 +187,7 @@ module tomasulo_perf_counters (
   localparam int unsigned PerfMulRsOccupancySum = 29;
   localparam int unsigned PerfMemRsOccupancySum = 30;
   localparam int unsigned PerfFpRsOccupancySum = 31;
-  localparam int unsigned PerfFmulRsOccupancySum = 32;
-  localparam int unsigned PerfFdivRsOccupancySum = 33;
+  // 32 and 33 are reserved.
   localparam int unsigned PerfLqL0Hit = 34;
   localparam int unsigned PerfLqL0Fill = 35;
   localparam int unsigned PerfHeadAndNextDone = 36;
@@ -221,9 +201,9 @@ module tomasulo_perf_counters (
   localparam int unsigned PerfHeadLoadBusBlocked = 44;
   localparam int unsigned PerfHeadLoadCdbWait = 45;
   localparam int unsigned PerfHeadLoadPostLq = 46;
-  localparam int unsigned PerfHeadLoadBbIssued = 47;
+  // 47 is reserved.
   localparam int unsigned PerfHeadLoadBbBusBusy = 48;
-  localparam int unsigned PerfHeadLoadBbAmo = 49;
+  // 49 is reserved.
   localparam int unsigned PerfHeadLoadBbSqWait = 50;
   localparam int unsigned PerfHeadLoadBbStaging = 51;
   localparam int unsigned PerfHeadIntOperandWait = 52;
@@ -237,7 +217,7 @@ module tomasulo_perf_counters (
   // Staging catch-all sub-decomposition (partitions PerfHeadLoadBbStaging).
   localparam int unsigned PerfHeadLoadBbsOtherInStaging = 60;
   localparam int unsigned PerfHeadLoadBbsLaunchGated = 61;
-  localparam int unsigned PerfHeadLoadBbsSlowOutstanding = 62;
+  // 62 is reserved.
   localparam int unsigned PerfHeadLoadBbsCaptureGap = 63;
 
   logic [63:0] perf_live[WrapperPerfCounterCount];
@@ -245,13 +225,12 @@ module tomasulo_perf_counters (
   logic [63:0] perf_inc[WrapperPerfCounterCount];
   logic [63:0] perf_inc_q[WrapperPerfCounterCount];
   localparam int unsigned PerfSnapshotBankSpan = (WrapperPerfCounterCount + 3) / 4;
-  // Registered per-bank capture copies. The trigger arrives from the commit
-  // cone (the mperfctl CSR write commit) and fans into ~1.5k snapshot CE
-  // loads; registering it here keeps that cone off the commit critical path
-  // (x3 post-place: 900+ net-dominated failing endpoints). Capture lands one
-  // cycle after the trigger commit. CSR serialization means the first
-  // snapshot read commits later than that, and deltas between two snapshots
-  // cancel the constant skew.
+  // Registered per-bank capture copies. The trigger comes from the commit of
+  // the mperfctl CSR write and fans out to every snapshot register's clock
+  // enable; registering it keeps that fanout off the commit critical path.
+  // Capture lands one cycle after the trigger commit. CSR serialization means
+  // the first snapshot read commits later than that, and deltas between two
+  // snapshots cancel the constant skew.
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank0;
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank1;
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank2;
@@ -283,8 +262,6 @@ module tomasulo_perf_counters (
     perf_inc[PerfHeadWaitMemStore] = {{63{1'b0}}, rob_perf_events.head_wait_mem_store};
     perf_inc[PerfHeadWaitMemAmo] = {{63{1'b0}}, rob_perf_events.head_wait_mem_amo};
     perf_inc[PerfHeadWaitFp] = {{63{1'b0}}, rob_perf_events.head_wait_fp};
-    perf_inc[PerfHeadWaitFmul] = {{63{1'b0}}, rob_perf_events.head_wait_fmul};
-    perf_inc[PerfHeadWaitFdiv] = {{63{1'b0}}, rob_perf_events.head_wait_fdiv};
     perf_inc[PerfCommitBlockedCsr] = {{63{1'b0}}, rob_perf_events.commit_blocked_csr};
     perf_inc[PerfCommitBlockedFence] = {{63{1'b0}}, rob_perf_events.commit_blocked_fence};
     perf_inc[PerfCommitBlockedWfi] = {{63{1'b0}}, rob_perf_events.commit_blocked_wfi};
@@ -296,9 +273,7 @@ module tomasulo_perf_counters (
     perf_inc[PerfMemResultBackpressure] = {
       {63{1'b0}}, (mem_fu_to_adapter.valid && mem_adapter_result_pending)
     };
-    perf_inc[PerfFpAddBackpressure] = {{63{1'b0}}, (!fp_rs_fu_ready && !o_fp_rs_empty)};
-    perf_inc[PerfFmulBackpressure] = {{63{1'b0}}, (!fmul_rs_fu_ready && !o_fmul_rs_empty)};
-    perf_inc[PerfFdivBackpressure] = {{63{1'b0}}, (!fdiv_rs_fu_ready && !o_fdiv_rs_empty)};
+    perf_inc[PerfFpBackpressure] = {{63{1'b0}}, (!fp_rs_fu_ready && !o_fp_rs_empty)};
     perf_inc[PerfMemDisambiguationWait] = {
       {63{1'b0}}, (sq_check_valid && !sq_all_older_addrs_known)
     };
@@ -312,8 +287,6 @@ module tomasulo_perf_counters (
     perf_inc[PerfMulRsOccupancySum] = {{(64 - $bits(o_mul_rs_count)) {1'b0}}, o_mul_rs_count};
     perf_inc[PerfMemRsOccupancySum] = {{(64 - $bits(o_mem_rs_count)) {1'b0}}, o_mem_rs_count};
     perf_inc[PerfFpRsOccupancySum] = {{(64 - $bits(o_fp_rs_count)) {1'b0}}, o_fp_rs_count};
-    perf_inc[PerfFmulRsOccupancySum] = {{(64 - $bits(o_fmul_rs_count)) {1'b0}}, o_fmul_rs_count};
-    perf_inc[PerfFdivRsOccupancySum] = {{(64 - $bits(o_fdiv_rs_count)) {1'b0}}, o_fdiv_rs_count};
     perf_inc[PerfLqL0Hit] = {{63{1'b0}}, lq_l0_hit};
     perf_inc[PerfLqL0Fill] = {{63{1'b0}}, lq_l0_fill};
     perf_inc[PerfHeadAndNextDone] = {{63{1'b0}}, rob_perf_events.head_and_next_done};
@@ -346,16 +319,9 @@ module tomasulo_perf_counters (
       {63{1'b0}},
       (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_post_lq)
     };
-    perf_inc[PerfHeadLoadBbIssued] = {
-      {63{1'b0}},
-      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_issued)
-    };
     perf_inc[PerfHeadLoadBbBusBusy] = {
       {63{1'b0}},
       (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_bus_busy)
-    };
-    perf_inc[PerfHeadLoadBbAmo] = {
-      {63{1'b0}}, (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_amo)
     };
     perf_inc[PerfHeadLoadBbSqWait] = {
       {63{1'b0}},
@@ -366,7 +332,7 @@ module tomasulo_perf_counters (
       (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_staging)
     };
     // Sub-decomposition of PerfHeadLoadBbStaging: same head-wait qualifier so
-    // the four terms partition counter 93 exactly.
+    // the three terms partition counter 93 exactly.
     perf_inc[PerfHeadLoadBbsOtherInStaging] = {
       {63{1'b0}},
       (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding &&
@@ -375,11 +341,6 @@ module tomasulo_perf_counters (
     perf_inc[PerfHeadLoadBbsLaunchGated] = {
       {63{1'b0}},
       (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bbs_launch_gated)
-    };
-    perf_inc[PerfHeadLoadBbsSlowOutstanding] = {
-      {63{1'b0}},
-      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding &&
-       lq_head_load_bbs_slow_outstanding)
     };
     perf_inc[PerfHeadLoadBbsCaptureGap] = {
       {63{1'b0}},

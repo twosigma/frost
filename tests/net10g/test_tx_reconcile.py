@@ -27,10 +27,10 @@ TERMINATE = (0x0707070707FDCAFE, 0xFC)
 
 
 class ReconcileBench:
-    """Sample the combinational word before its consuming clock edge."""
+    """Drive eth10g_tx_reconcile; sample its combinational output before each edge."""
 
     def __init__(self, dut: Any) -> None:
-        """Initialize stimulus and enabled wire-word counts."""
+        """Zero the counts of start, remote-fault, and idle output words."""
         self.dut = dut
         self.starts = 0
         self.fault_words = 0

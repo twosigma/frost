@@ -17,21 +17,22 @@
 /*
  * Deterministic MRET/store-drain deadlock regression.
  *
- * The bug occurred when MRET reached the ROB head while a committed cached
- * store was still draining. reorder_buffer.sv pulsed o_mret_start for one
- * cycle on the SERIAL_IDLE->SERIAL_MRET_EXEC transition, and trap_unit.sv
- * accepted it only if i_sq_committed_empty was high in that same cycle. There
- * was no retry, so mret_done never asserted, SERIAL_MRET_EXEC held
- * commit_stall, and MIE stayed disabled.
+ * An MRET that reaches the ROB head while committed cached stores are still
+ * draining must wait for the drain and then return. The trap unit takes an
+ * xRET only in a cycle where committed stores have drained, so the ROB waits
+ * in SERIAL_MRET_EXEC and raises o_mret_start once they have. If o_mret_start
+ * could rise only on entry, an MRET that arrived during a drain would never
+ * be taken: the serializer would stay in SERIAL_MRET_EXEC with commit stalled
+ * and MIE never restored.
  *
- * Low-BRAM trap-stack tests missed this window because their stores drain in
- * about one cycle. This test needs no timer: it issues cached-DDR stores to
- * distinct lines and MRETs back to the loop top right after the youngest one.
- * Buggy RTL wedges on the first MRET and the runner times out; fixed RTL waits
- * for the drain and prints <<PASS>>.
+ * Stores to low BRAM drain in about one cycle, too fast to open this window.
+ * This test needs no timer: it issues cached-DDR stores to distinct lines and
+ * MRETs back to the loop top right after the youngest one. A lost MRET wedges
+ * the core on the first iteration and the runner times out; otherwise the
+ * test prints <<PASS>>.
  *
- * The registered simulation uses a deliberately small L2 and slow DDR so cold
- * writebacks drain through the supported hierarchy:
+ * The test registry runs it with a small L2 and slow DDR to lengthen the
+ * drains:
  *   ./scripts/frost.py cocotb mret_drain_deadlock
  */
 
@@ -82,8 +83,8 @@ __attribute__((naked, aligned(4))) static void trap_canary(void)
  * Commit a backlog of stores to distinct cached/DDR lines, then MRET back to
  * the top of the loop, `iters` times. The MRET is the loop back-edge and
  * reaches the ROB head a few cycles after the youngest store commits, while
- * that store and the rest of the backlog are still draining, so the one-shot
- * o_mret_start pulse lands with sq_committed_empty low.
+ * that store and the rest of the backlog are still draining, so it must wait
+ * there with sq_committed_empty low.
  *
  * a0 = cached/DDR buffer base, a1 = iteration count. Naked, because the MRET
  * is the loop branch and the control flow has to stay in assembly. Uses only
@@ -108,13 +109,11 @@ __attribute__((naked)) static void mret_drain_loop(volatile uint32_t *ddr __attr
         /* A few stores to distinct 32 B lines (64 B apart). Enough that the
          * youngest committed store is still in its (cached/DDR) write-back drain
          * when the MRET reaches the ROB head, but few enough not to overflow the
-         * store queue (which would wedge on backpressure, not on the MRET). */
+         * store queue (which would stall on backpressure, not at the MRET). */
         "sw   a1, 0(a0)\n"
         "sw   a1, 64(a0)\n"
         "sw   a1, 128(a0)\n"
         "sw   a1, 192(a0)\n" /* youngest committed store; still draining at MRET */
-        /* The MRET directly follows the youngest store and reaches the ROB head
-         * a couple of cycles later, while the backlog is still draining. */
         "mret\n"
         "3:\n"
         "ret\n" ::
@@ -134,8 +133,8 @@ int main(void)
     uart_puts("running MRET/drain loop...\r\n");
     mret_drain_loop(g_ddr_buf_p, 16u);
 
-    /* Reached only if every MRET completed. On buggy RTL the first MRET wedges
-     * the serializer and this line never prints. */
+    /* Reached only if every MRET completed. A lost MRET wedges the serializer
+     * on the first iteration and this line never prints. */
     uart_puts("survived all MRETs: iters=");
     uart_hex(16u);
     uart_puts("\r\n<<PASS>>\r\n");

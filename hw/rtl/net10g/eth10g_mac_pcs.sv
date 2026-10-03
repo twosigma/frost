@@ -14,14 +14,11 @@
  *    limitations under the License.
  */
 
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 Two Sigma Open Source, LLC
-
 // Standalone full-duplex MAC/PCS with a raw 64-bit PMA-facing interface.
 // TX and RX clocks are independent, nominally 161.1328125 MHz. AXIS TX is
-// synchronous to i_tx_clk and AXIS RX to i_rx_clk. No packet CDC is hidden
-// here. The only crossing is the fault status into TX: registered in the RX
-// domain, then two-flop synchronized by cdc_sync (hw/rtl/lib/cdc).
+// synchronous to i_tx_clk and AXIS RX to i_rx_clk. Packet data never crosses
+// clocks here. The only crossing is the fault status into TX: registered in the
+// RX domain, then two-flop synchronized by cdc_sync (hw/rtl/lib/cdc).
 module eth10g_mac_pcs #(
     parameter int MAX_FRAME_BYTES = 9216,
     parameter int unsigned BER_WINDOW_CYCLES = 20142

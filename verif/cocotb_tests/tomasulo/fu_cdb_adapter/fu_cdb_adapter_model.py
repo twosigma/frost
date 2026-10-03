@@ -15,14 +15,16 @@
 """Golden model for the FU CDB adapter.
 
 Mirrors the RTL holding register and combinational pass-through, tracking
-result_pending and held_result across clock cycles.
+result_pending and held_result across clock cycles. It models the default
+parameters and the full flush only; there is no partial flush.
 """
 
 from dataclasses import dataclass
 
+from config import FLEN
+
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
-FLEN = 64
 EXC_CAUSE_WIDTH = 5
 FP_FLAGS_WIDTH = 5
 
@@ -55,7 +57,7 @@ class FuComplete:
 
 @dataclass
 class AdapterOutput:
-    """Output of one adapter step."""
+    """Adapter outputs for the current cycle."""
 
     fu_complete: FuComplete
     result_pending: bool
@@ -95,7 +97,7 @@ class FuCdbAdapterModel:
         Args:
             fu_result: FU result input during this cycle.
             grant: CDB arbiter grant signal.
-            flush: Pipeline flush signal.
+            flush: Full pipeline flush (i_flush).
         """
         if flush:
             self.result_pending = False
@@ -109,6 +111,6 @@ class FuCdbAdapterModel:
                 # Granted, go idle
                 self.result_pending = False
         elif not self.result_pending and fu_result.valid and not grant:
-            # Pass-through failed, latch
+            # Pass-through not granted: latch
             self.held_result = fu_result.copy()
             self.result_pending = True

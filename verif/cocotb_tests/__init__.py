@@ -14,20 +14,17 @@
 
 """Cocotb block, directed CPU, and compiled-program tests.
 
-Use targets in ``tests/test_run_cocotb.py`` through ``scripts/frost.py cocotb``.
-The random CPU and directed-multicycle harnesses need an OOO scoreboard port;
-see ``verif/README.md`` for supported targets and shared helpers.
+Use targets in ``tests/test_run_cocotb.py`` through ``scripts/frost.py cocotb``;
+see ``verif/README.md`` for the directed CPU targets and shared helpers.
 """
 
 from cocotb_tests.test_common import TestConfig
 from cocotb_tests.test_state import TestState
 from cocotb_tests.test_helpers import DUTInterface, TestStatistics
-from cocotb_tests.instruction_executor import InstructionExecutor
 
 __all__ = [
     "TestConfig",
     "TestState",
     "DUTInterface",
     "TestStatistics",
-    "InstructionExecutor",
 ]

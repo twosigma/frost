@@ -9,7 +9,7 @@ import { pickDebugTarget, PlainLoadUi, RepositoryMetadata } from '../src/plainLo
 function harness(t: TestContext) {
     const user = new Map<string, unknown>([
         ['jtagSerial', 'OLD_SERIAL'], ['vivadoTarget', '127.0.0.1:3121/xilinx_tcf/Xilinx/OLD_TARGET'],
-        ['cpuClockHz', 300000000], ['app', 'hello_world'], ['memory', 'bram'],
+        ['cpuClockHz', 322265625], ['app', 'hello_world'], ['memory', 'bram'],
     ]);
     const writes: Array<{ key: string; value: unknown; target: number }> = [];
     const workspace = new Map<string, unknown>();
@@ -77,13 +77,19 @@ function harness(t: TestContext) {
         writes, messages, metadataRequests, inputAnswers, pickerAnswers, control };
 }
 
-test('settings accept application names beyond the original two-app enum', t => {
+test('settings accept any well-formed application name without reading repository metadata', t => {
     const h = harness(t);
     for (const app of ['coremark', 'coremark_pro_core', 'freertos_demo', 'new_repository_app17']) {
         h.user.set('app', app);
         assert.equal(h.settings.getSettings(h.folder).app, app);
     }
     assert.deepEqual(h.metadataRequests, [], 'Registry eligibility is checked by commands, not by reading settings');
+});
+
+test('CPU clock defaults to the rated X3 clock without configuration', t => {
+    const h = harness(t);
+    h.user.delete('cpuClockHz');
+    assert.equal(h.settings.getSettings(h.folder).cpuClockHz, 322265625);
 });
 
 test('application settings reject paths and malformed names before deriving an ELF path', t => {
@@ -101,8 +107,8 @@ test('ELF settings distinguish explicit overrides from defaults awaiting registr
     const defaults = h.settings.getSettings(h.folder);
     assert.equal(defaults.elfExplicit, false);
     assert.equal(defaults.elf, '/fixture/workspace/selected-repo/sw/apps/coremark_pro_core/sw.elf');
-    // The controller uses elfExplicit=false to replace the display-name path
-    // with metadata.appBuildDirectories; an explicit override must survive.
+    // With elfExplicit false, the controller swaps the app name in this path for
+    // the app's build directory from metadata. An explicit override must stay.
     h.user.set('elf', 'images/exact-loaded-image.elf');
     const explicit = h.settings.getSettings(h.folder);
     assert.equal(explicit.elfExplicit, true);
@@ -111,14 +117,13 @@ test('ELF settings distinguish explicit overrides from defaults awaiting registr
     assert.equal(h.settings.getSettings(h.folder).elfExplicit, false);
 });
 
-for (const cancelledPrompt of ['application', 'clock'] as const) {
+for (const cancelledPrompt of ['application', 'memory'] as const) {
     test(`cancelling Configure Target at its shared ${cancelledPrompt} picker saves no identities or selection`, async t => {
         const h = harness(t);
         const before = new Map(h.user);
         h.inputAnswers.push('NEW_SERIAL', '127.0.0.1:3121/xilinx_tcf/Xilinx/NEW_TARGET');
-        if (cancelledPrompt === 'clock') {
-            h.pickerAnswers.push('coremark_pro_core', 'ddr');
-            h.inputAnswers.push(undefined);
+        if (cancelledPrompt === 'memory') {
+            h.pickerAnswers.push('coremark_pro_core', undefined);
         } else h.pickerAnswers.push(undefined);
         assert.equal(await h.settings.configureTarget(h.folder), false);
         assert.deepEqual(h.user, before);
@@ -131,12 +136,12 @@ for (const cancelledPrompt of ['application', 'clock'] as const) {
 test('Configure Target stores the completed shared CoreMark-PRO selection and trimmed cable identities', async t => {
     const h = harness(t);
     h.user.set('elf', 'images/explicit.elf');
-    h.inputAnswers.push(' NEW_SERIAL ', ' 127.0.0.1:3121/xilinx_tcf/Xilinx/NEW_TARGET ', '150000000');
+    h.inputAnswers.push(' NEW_SERIAL ', ' 127.0.0.1:3121/xilinx_tcf/Xilinx/NEW_TARGET ');
     h.pickerAnswers.push('coremark_pro_core', 'ddr', 'performance');
     assert.equal(await h.settings.configureTarget(h.folder), true);
     assert.deepEqual(Object.fromEntries(h.writes.map(write => [write.key, write.value])), {
         jtagSerial: 'NEW_SERIAL', vivadoTarget: '127.0.0.1:3121/xilinx_tcf/Xilinx/NEW_TARGET',
-        app: 'coremark_pro_core', memory: 'ddr', cpuClockHz: 150000000, coremarkProMode: 'performance',
+        app: 'coremark_pro_core', memory: 'ddr', cpuClockHz: 322265625, coremarkProMode: 'performance',
     });
     assert.ok(h.writes.every(write => write.target === 1));
     assert.equal(h.user.get('elf'), 'images/explicit.elf');
@@ -148,7 +153,7 @@ test('saving a debug selection updates only selection preferences and preserves 
     const h = harness(t);
     h.user.set('elf', 'images/explicit.elf');
     await h.settings.saveDebugSelection(h.folder, {
-        app: 'coremark_pro_core', memory: 'bram', cpuClockHz: 150000000, coremarkMode: 'validation',
+        app: 'coremark_pro_core', memory: 'bram', cpuClockHz: 161132812, coremarkMode: 'validation',
     });
     assert.deepEqual(h.writes.map(write => write.key), ['app', 'memory', 'cpuClockHz', 'coremarkProMode']);
     assert.ok(h.writes.every(write => write.target === 1));
@@ -158,7 +163,7 @@ test('saving a debug selection updates only selection preferences and preserves 
     const current = h.settings.getSettings(h.folder);
     assert.equal(current.app, 'coremark_pro_core');
     assert.equal(current.coremarkMode, 'validation');
-    assert.equal(current.cpuClockHz, 150000000);
+    assert.equal(current.cpuClockHz, 161132812);
 });
 
 test('Configure Target metadata failure leaves existing settings untouched', async t => {
@@ -176,22 +181,22 @@ for (const scope of ['workspace', 'folder'] as const) {
         const h = harness(t);
         h.workspace.set('app', 'hello_world');
         h.workspace.set('memory', 'bram');
-        h.workspace.set('cpuClockHz', 300000000);
+        h.workspace.set('cpuClockHz', 322265625);
         h.workspace.set('coremarkProMode', 'validation');
         if (scope === 'folder') {
             for (const [key, value] of h.workspace) h.workspaceFolder.set(key, value);
         }
         await h.settings.saveDebugSelection(h.folder, {
-            app: 'coremark_pro_core', memory: 'ddr', cpuClockHz: 150000000, coremarkMode: 'performance',
+            app: 'coremark_pro_core', memory: 'ddr', cpuClockHz: 161132812, coremarkMode: 'performance',
         });
         assert.ok(h.writes.every(write => write.target === (scope === 'folder' ? 3 : 2)));
         const selected = h.settings.getSettings(h.folder);
         assert.equal(selected.app, 'coremark_pro_core');
         assert.equal(selected.memory, 'ddr');
-        assert.equal(selected.cpuClockHz, 150000000, 'Subsequent reset waits must use the selected FPGA clock');
+        assert.equal(selected.cpuClockHz, 161132812, 'Subsequent reset waits must use the selected FPGA clock');
         assert.equal(selected.coremarkMode, 'performance');
         assert.equal(h.user.get('app'), 'hello_world');
-        assert.equal(h.user.get('cpuClockHz'), 300000000);
+        assert.equal(h.user.get('cpuClockHz'), 322265625);
         if (scope === 'folder') assert.equal(h.workspace.get('app'), 'hello_world');
     });
 }
@@ -201,9 +206,9 @@ test('Configure Target respects each selection override scope while saving cable
     h.workspace.set('app', 'hello_world');
     h.workspaceFolder.set('app', 'hello_world');
     h.workspace.set('memory', 'bram');
-    h.workspace.set('cpuClockHz', 300000000);
+    h.workspace.set('cpuClockHz', 161132812);
     h.workspaceFolder.set('coremarkProMode', 'validation');
-    h.inputAnswers.push('NEW_SERIAL', '127.0.0.1:3121/xilinx_tcf/Xilinx/NEW_TARGET', '150000000');
+    h.inputAnswers.push('NEW_SERIAL', '127.0.0.1:3121/xilinx_tcf/Xilinx/NEW_TARGET');
     h.pickerAnswers.push('coremark_pro_core', 'ddr', 'performance');
     assert.equal(await h.settings.configureTarget(h.folder), true);
     assert.deepEqual(Object.fromEntries(h.writes.map(write => [write.key, write.target])), {
@@ -211,7 +216,7 @@ test('Configure Target respects each selection override scope while saving cable
     });
     const selected = h.settings.getSettings(h.folder);
     assert.equal(selected.app, 'coremark_pro_core');
-    assert.equal(selected.cpuClockHz, 150000000);
+    assert.equal(selected.cpuClockHz, 161132812);
     assert.equal(selected.jtagSerial, 'NEW_SERIAL');
     assert.equal(selected.vivadoTarget, '127.0.0.1:3121/xilinx_tcf/Xilinx/NEW_TARGET');
 });

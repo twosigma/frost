@@ -15,9 +15,9 @@
  */
 
 /*
- * nic_mac_wrap: the MAC/PCS in its two clock domains and everything that
- * crosses to the core domain: the packet FIFOs, the domain resets, the
- * status levels, the event counters and the raw loopback.
+ * nic_mac_wrap: the MAC/PCS in its two clock domains, everything that
+ * crosses between them and the core domain (the packet FIFOs, the domain
+ * resets, the status levels, the event counters), and the raw loopback.
  *
  * Beats cross as 68-bit FIFO words {code, data} (nic_pkg beat code:
  * {last, bytes - 1}). Each domain's reset comes from nic_domain_reset
@@ -26,7 +26,7 @@
  * i_core_rst_dom. The raw loopback (MAC_LOOPBACK: raw TX into raw RX with
  * no crossing logic, so only for one clock shared by both directions)
  * exists with RAW_LOOPBACK = 1; its select is sampled by the RX domain
- * while it is in reset, so a change takes effect through a MAC-domain
+ * while it is in reset, so a change takes effect through an RX-domain
  * reset. With RAW_LOOPBACK = 0 (independent TX and RX clocks, such as a
  * transceiver's) neither the mux nor its select synchronizer is built, raw
  * RX comes only from the PHY inputs and i_mac_loopback is ignored. Status

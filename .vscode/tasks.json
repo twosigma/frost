@@ -2,12 +2,12 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "FROST: start OpenOCD (Phase A)",
+      "label": "FROST: start OpenOCD",
       "type": "process",
       "command": "bash",
       "args": [
         "-euc",
-        "python3 -c 'import os, socket, sys\nif not os.environ.get(\"FROST_JTAG_SERIAL\", \"\").strip():\n    sys.exit(\"FROST: a JTAG bridge serial is required\")\nwith socket.socket() as port:\n    port.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n    try:\n        port.bind((\"127.0.0.1\", 3333))\n    except OSError as error:\n        sys.exit(\"FROST: GDB port 3333 unavailable; stop its owner before retrying: \" + str(error))'\nexec openocd -c 'bindto 127.0.0.1' -c 'gdb_port 3333' -c 'tcl_port disabled' -c 'telnet_port disabled' -c 'gdb_report_data_abort enable' -f fpga/debug/openocd_x3.cfg -c '$_TARGETNAME configure -event gdb-detach { resume }' > >(tee .vscode/openocd-phase-a.log) 2>&1"
+        "python3 -c 'import os, socket, sys\nif not os.environ.get(\"FROST_JTAG_SERIAL\", \"\").strip():\n    sys.exit(\"FROST: a JTAG bridge serial is required\")\nwith socket.socket() as port:\n    port.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n    try:\n        port.bind((\"127.0.0.1\", 3333))\n    except OSError as error:\n        sys.exit(\"FROST: GDB port 3333 unavailable; stop its owner before retrying: \" + str(error))'\nexec openocd -c 'bindto 127.0.0.1' -c 'gdb_port 3333' -c 'tcl_port disabled' -c 'telnet_port disabled' -c 'gdb_report_data_abort enable' -f fpga/debug/openocd_x3.cfg -c '$_TARGETNAME configure -event gdb-detach { resume }' > >(tee .vscode/openocd.log) 2>&1"
       ],
       "options": {
         "cwd": "${workspaceFolder}",

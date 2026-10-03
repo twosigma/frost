@@ -1,0 +1,26 @@
+[tasks]
+bmc
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv -D SYNTHESIS -D RAS_CHECKPOINT_LOCAL_PROOF riscv_pkg.sv sdp_dist_ram.sv return_address_stack.sv
+hierarchy -top return_address_stack
+delete t:*sdp_dist_ram
+proc
+setundef -undriven -anyseq
+opt
+prep -top return_address_stack
+select -assert-none t:*sdp_dist_ram
+select -assert-count 31 t:$check
+select -assert-none t:$check r:FLAVOR=assume %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/return_address_stack.sv

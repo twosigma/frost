@@ -14,8 +14,10 @@
 
 """Unit tests for the Reservation Station module.
 
-Covers dispatch, two-lane CDB wakeup/replay, issue logic, repair, flush, and
-constrained random.
+Covers dispatch, CDB wakeup on both lanes, done repair, issue, flushes, the
+tag-indexed branch payload, and constrained-random traffic. "Replay" in test
+names is the deferred delivery of a CDB match seen in the dispatch cycle: the
+source becomes ready one cycle after the entry is written.
 """
 
 import random
@@ -1166,9 +1168,9 @@ async def test_dispatch_cdb_replay_back_to_back_lane0_priority(dut: Any) -> None
     cocotb.log.info("=== Test: Dispatch CDB Replay Back-to-Back + Lane Priority ===")
     dut_if, _ = await setup_test(dut)
 
-    # The CDB contract normally gives the two lanes distinct tags.  A same-tag
-    # collision checks that priority is captured in the entry's lane selector,
-    # with lane 0's registered value winning.
+    # The two CDB lanes never carry the same tag in the core. This same-tag
+    # collision checks that the entry's lane select records lane 0, so lane
+    # 0's registered value wins.
     dut_if.drive_dispatch(
         rob_tag=18,
         op=OP_ADD,
@@ -1183,9 +1185,10 @@ async def test_dispatch_cdb_replay_back_to_back_lane0_priority(dut: Any) -> None
     dut_if.drive_cdb_2(tag=18, value=0xA181)
     await dut_if.step()
 
-    # Capture a second allocation while the first entry's pend/lane state and
-    # registered value are being consumed. Nonblocking ordering must preserve
-    # both deliveries.
+    # Dispatch a second entry, with its own dispatch-cycle match, on the edge
+    # that delivers the first entry's value. The lane-value registers reload
+    # on that edge, so each delivery must use the values registered on its
+    # own dispatch edge.
     dut_if.drive_dispatch(
         rob_tag=19,
         op=OP_SUB,
@@ -1220,7 +1223,11 @@ async def test_dispatch_cdb_replay_back_to_back_lane0_priority(dut: Any) -> None
 
 @cocotb.test()
 async def test_first_resident_unrelated_live_cdb_still_bypasses(dut: Any) -> None:
-    """No pending match may suppress a true first-resident lane-1 wakeup."""
+    """A live lane-1 match in an entry's first resident cycle still bypasses.
+
+    The dispatch cycle had a valid CDB lane that did not match, so no source
+    is pending and the same-cycle bypass must stay enabled.
+    """
     cocotb.log.info("=== Test: First Resident Unrelated Live CDB Bypass ===")
     dut_if, _ = await setup_test(dut)
 
@@ -1240,9 +1247,8 @@ async def test_first_resident_unrelated_live_cdb_still_bypasses(dut: Any) -> Non
     dut_if.clear_dispatch()
     dut_if.clear_cdb()
 
-    # During the first-resident cycle, a different live tag does match src1.
-    # It must issue through lane 1 on this edge; blanket token suppression
-    # would add an observable cycle here.
+    # In the first resident cycle, lane 1 carries src1's tag. The entry must
+    # issue on this edge: the bypass is disabled only for pending sources.
     dut_if.drive_cdb_2(tag=7, value=0x7777)
     dut_if.set_fu_ready(True)
     await dut_if.step()
@@ -1256,7 +1262,7 @@ async def test_first_resident_unrelated_live_cdb_still_bypasses(dut: Any) -> Non
 
 @cocotb.test()
 async def test_dispatch_cdb_replay_blocks_tag_aba_live_bypass(dut: Any) -> None:
-    """A same-tag live rebroadcast cannot replace the captured prior value."""
+    """A same-tag live broadcast cannot replace a pending dispatch-cycle value."""
     cocotb.log.info("=== Test: Dispatch CDB Replay Tag ABA ===")
     dut_if, _ = await setup_test(dut)
 
@@ -1275,13 +1281,14 @@ async def test_dispatch_cdb_replay_blocks_tag_aba_live_bypass(dut: Any) -> None:
     dut_if.clear_dispatch()
     dut_if.clear_cdb()
 
-    # Hypothetical immediate ROB-tag reuse: the current lane has the same tag
-    # but a foreign value.  Replay must suppress issue for this edge and its
-    # last data write must retain the dispatch-cycle value.
+    # Model an immediate ROB-tag reuse (unreachable in the core): lane 1
+    # carries the same tag with another producer's value. The pending source
+    # must not issue on this edge, and the deferred delivery, written last,
+    # must leave the dispatch-cycle value in place.
     dut_if.drive_cdb_2(tag=12, value=0xDEAD)
     dut_if.set_fu_ready(True)
     await dut_if.step()
-    assert not dut_if.issue_valid, "true prior replay must suppress ABA live bypass"
+    assert not dut_if.issue_valid, "pending source took the same-tag live bypass"
     dut_if.clear_cdb_2()
 
     await dut_if.step()
@@ -1294,7 +1301,7 @@ async def test_dispatch_cdb_replay_blocks_tag_aba_live_bypass(dut: Any) -> None:
 
 @cocotb.test()
 async def test_dispatch_cdb_replay_ignores_ready_source_tag(dut: Any) -> None:
-    """A ready source keeps its packet value even when its tag matches replay."""
+    """A ready source keeps its dispatch value when a dispatch-cycle CDB tag matches."""
     cocotb.log.info("=== Test: Dispatch CDB Replay Ready Source Immunity ===")
     dut_if, _ = await setup_test(dut)
 
@@ -1313,8 +1320,8 @@ async def test_dispatch_cdb_replay_ignores_ready_source_tag(dut: Any) -> None:
     dut_if.clear_dispatch()
     dut_if.clear_cdb()
 
-    # Hold issue off through the replay edge so a bad replay write cannot be
-    # hidden by a dispatch-cycle issue capture.
+    # Hold issue off through the delivery edge, so a wrong delivery write
+    # cannot be hidden by issuing before it lands.
     await dut_if.step()
     dut_if.set_fu_ready(True)
     await dut_if.step()
@@ -1346,8 +1353,9 @@ async def test_dispatch_cdb_replay_coalesces_indexed_repair(dut: Any) -> None:
     dut_if.clear_dispatch()
     dut_if.clear_cdb()
 
-    # Channel 1 is the slot-1/src1 fixed-position response.  The wrapper's
-    # coalesce contract requires the same producer value as prior-lane replay.
+    # Channel 1 carries slot 1's src1. A repair and a deferred delivery that
+    # reach the same source on one edge carry the same producer's result
+    # (simulation asserts this), so the repair repeats the CDB value.
     dut_if.drive_repair(1, tag=14, value=0xE14E)
     dut_if.set_fu_ready(True)
     await dut_if.step()
@@ -2160,7 +2168,7 @@ async def test_random_with_flush(dut: Any) -> None:
             model.partial_flush(flush_tag=flush_tag, head_tag=head_tag)
             flush_applied = True
 
-        # Flush squashes any pending stage2 instruction
+        # A flush cycle moves no entry into stage2, so nothing issues next.
         if flush_applied:
             prev_model_issue = None
             prev_model_issue_info = None

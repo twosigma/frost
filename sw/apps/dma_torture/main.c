@@ -17,9 +17,9 @@
 /**
  * DMA coherence torture. The DMA test engine
  * (hw/rtl/cpu_and_mem/dma_test_engine.sv) is a second agent reading and
- * writing cached DDR behind the CPU's caches; every check here is a
- * coherence or ordering obligation the cache hierarchy's DMA sequencer and
- * the load queue's coherence port must meet:
+ * writing cached DDR behind the CPU's caches. Each check is an obligation of
+ * the cache hierarchy's DMA sequencer, the load queue's coherence port, or
+ * the engine itself:
  *
  *   copy       the engine reads data the CPU wrote and still holds dirty,
  *              and its writes replace copies the CPU holds (L1D and L0)
@@ -32,14 +32,18 @@
  *   mp_fence   the same with fence r,r
  *   lrsc       an SC after a DMA write to the reserved line fails; without
  *              the write it succeeds
- *   amo        AMO increments on one dword of a line while the engine keeps
- *              rewriting the other dwords of the same line: no increment is
- *              lost and the engine's bytes stay intact
+ *   amo        AMO increments on word 0 of a line while the engine keeps
+ *              rewriting words 2..7 of the same line: no increment is lost
+ *              and the engine's bytes stay intact
  *   irq        the completion interrupt arrives after the status word, and
  *              the data is visible from the handler
  *   abort      an aborted transfer quiesces before the buffer is reused
+ *   abort_read an abort during a copy's first source read writes nothing and
+ *              still raises the interrupt, with ERROR set
+ *   reprogram  registers written while a transfer runs program only the next
+ *              transfer
  *   aperture   an out-of-aperture transfer is refused and moves nothing
- *   stress     random CPU stores and engine writes to disjoint dwords of
+ *   stress     random CPU stores and engine writes to disjoint words of
  *              shared lines, checked against a software model
  *
  * Prints <<PASS>> or <<FAIL>>. Runs in both memory tiers: the buffers live
@@ -69,8 +73,8 @@
 #define LINE_BYTES 32u
 #define LINE_WORDS (LINE_BYTES / 4u)
 
-/* Iteration counts: the sim budget is a few hundred thousand cycles; the
- * hardware run scales them up with EXTRA_CFLAGS=-DDMA_TORTURE_SCALE=<n>. */
+/* Iteration counts: the sim budget is a few hundred thousand cycles; a
+ * hardware run can scale them up with EXTRA_CFLAGS=-DDMA_TORTURE_SCALE=<n>. */
 #ifndef DMA_TORTURE_SCALE
 #define DMA_TORTURE_SCALE 1u
 #endif
@@ -81,8 +85,9 @@
 
 /* Buffers in cached DDR at fixed absolute addresses (16 MiB into the
  * region, above every image), line aligned. Absolute pointers, like
- * ddr_test's, because medany code in low BRAM cannot reach DDR symbols with
- * PC-relative addressing; the app initializes every buffer it uses. */
+ * ddr_test's, because medany code in low BRAM cannot reach addresses this far
+ * into DDR with PC-relative addressing; the app initializes every buffer it
+ * uses. */
 #define BUF_WORDS 256u /* 1 KiB: 32 lines */
 #define DDR_SCRATCH 0x81000000u
 static volatile uint32_t *const g_src = (volatile uint32_t *) (DDR_SCRATCH + 0x0000u);
@@ -188,7 +193,7 @@ static void test_corr(void)
     uint32_t last = 0;
     int ok = 1;
     for (uint32_t r = 1; r <= CORR_ROUNDS; r++) {
-        /* Fill the whole line with r + dword index; dword 0 carries r. */
+        /* Fill the whole line with r + word index; word 0 carries r. */
         start_engine(0, pa(g_line), LINE_BYTES, DMA_ENGINE_MODE_FILL, r, 0, 0);
         for (uint32_t k = 0; k < 64u; k++) {
             uint32_t a = g_line[0];
@@ -294,7 +299,7 @@ static void test_lrsc(void)
           fail_plain == 0 && fail_dma != 0 && v == 200 && fail_other == 0 && g_line[0] == 103);
 }
 
-/* ---- amo: increments on dword 0 while the engine rewrites dwords 2..7 ---- */
+/* ---- amo: increments on word 0 while the engine rewrites words 2..7 ---- */
 static void test_amo(void)
 {
     for (uint32_t i = 0; i < LINE_WORDS; i++)
@@ -302,8 +307,8 @@ static void test_amo(void)
     int ok = 1;
     uint32_t expected = 0;
     for (uint32_t r = 1; r <= AMO_ROUNDS; r++) {
-        /* Engine writes bytes [8, 32) of the line: dword w (2..7) gets
-         * r + (w - 2), PATTERN counting from DST's dword. */
+        /* Engine writes bytes [8, 32) of the line: word w (2..7) gets
+         * r + (w - 2), because PATTERN counts from the word holding DST. */
         start_engine(0, pa(g_amo) + 8u, LINE_BYTES - 8u, DMA_ENGINE_MODE_FILL, r, 0, 0);
         for (uint32_t k = 0; k < 32u; k++) {
             uint32_t old;
@@ -432,7 +437,6 @@ static void test_abort(void)
     check("abort", ok);
 }
 
-/* ---- aperture ---- */
 /* ---- reprogram: writes while BUSY belong to the next transfer ---- */
 static void test_reprogram(void)
 {
@@ -512,6 +516,7 @@ static void test_abort_read(void)
     check("abort_read", ok);
 }
 
+/* ---- aperture ---- */
 static void test_aperture(void)
 {
     /* The stack lives in the low BRAM on both memory tiers (link.ld and
@@ -530,7 +535,7 @@ static void test_aperture(void)
     check("aperture", ok);
 }
 
-/* ---- stress: disjoint dwords of shared lines, software model ---- */
+/* ---- stress: disjoint words of shared lines, software model ---- */
 static uint32_t xorshift(uint32_t *s)
 {
     uint32_t x = *s;
@@ -551,18 +556,18 @@ static void test_stress(void)
     }
     int ok = 1;
     for (uint32_t r = 0; r < STRESS_ROUNDS; r++) {
-        /* Engine fills dwords [2, 6) of every line in a random range of
-         * lines (byte offset 8, length 16 per line, one line at a time). */
+        /* Each round the engine fills words 2..5 of one random line (byte
+         * offset 8, length 16). */
         uint32_t line = xorshift(&seed) % (BUF_WORDS / LINE_WORDS);
         uint32_t pattern = xorshift(&seed);
         start_engine(
             0, pa(&g_stress[line * LINE_WORDS]) + 8u, 16u, DMA_ENGINE_MODE_FILL, pattern, 0, 0);
         for (uint32_t w = 2; w < 6; w++)
             model[line * LINE_WORDS + w] = pattern + (w - 2u);
-        /* Meanwhile the CPU stores to dwords 0, 1, 6, 7 of random lines and
-         * reads random dwords, checking against the model where the engine
-         * cannot be mid-write (its dwords of the line being filled are
-         * checked after completion). */
+        /* Meanwhile the CPU stores to words 0, 1, 6, 7 of random lines and
+         * reads random words, checking against the model where the engine
+         * cannot be mid-write (the final comparison covers the words it is
+         * filling). */
         for (uint32_t k = 0; k < 24u; k++) {
             uint32_t l2 = xorshift(&seed) % (BUF_WORDS / LINE_WORDS);
             uint32_t w =

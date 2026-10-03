@@ -16,7 +16,7 @@
 
 // Balanced selector for the INT reservation station's second issue port. It
 // returns the lowest-index ready nonbranch entry other than the globally
-// lowest-index ready entry. Port 0 stays on reservation_station's serial
+// lowest-index ready entry. Port 0 uses reservation_station's independent
 // priority encoder and does not depend on this tree.
 //
 // The exclusion of the global winner is unconditional: it holds even when

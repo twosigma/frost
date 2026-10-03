@@ -44,7 +44,7 @@ def test_path_precedes_buildroot_cache(
 def test_native_build_uses_cached_compiler(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A native loader can reuse Buildroot without changing the host's PATH."""
+    """With no compiler on PATH, native builds use the cached Buildroot compiler."""
     monkeypatch.setenv("PATH", "")
     compiler = tmp_path / "linux/build-mmu/host/bin/riscv64-linux-gcc"
     compiler.parent.mkdir(parents=True)

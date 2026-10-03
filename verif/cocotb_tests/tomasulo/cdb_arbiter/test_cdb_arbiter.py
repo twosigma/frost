@@ -137,7 +137,7 @@ def assert_grants_match(
 
 
 # ============================================================================
-# Test 1: No FU valid → CDB output invalid, all grants 0
+# No FU valid → CDB output invalid, all grants 0
 # ============================================================================
 @cocotb.test()
 async def test_reset_no_output(dut: Any) -> None:
@@ -159,7 +159,7 @@ async def test_reset_no_output(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 2: kill suppresses broadcast and grants even with valid inputs
+# i_kill suppresses broadcast and grants even with valid inputs
 # ============================================================================
 @cocotb.test()
 async def test_kill_blocks_output_and_grants(dut: Any) -> None:
@@ -186,7 +186,7 @@ async def test_kill_blocks_output_and_grants(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 3: Only ALU valid → ALU result broadcast, ALU granted
+# Only ALU valid → ALU result broadcast, ALU granted
 # ============================================================================
 @cocotb.test()
 async def test_single_fu_alu(dut: Any) -> None:
@@ -210,7 +210,7 @@ async def test_single_fu_alu(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 4: Each FU type alone → correct broadcast and fu_type
+# Each FU type alone → correct broadcast and fu_type
 # ============================================================================
 @cocotb.test()
 async def test_single_fu_each(dut: Any) -> None:
@@ -256,7 +256,7 @@ async def test_single_fu_each(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 5: FP_DIV + ALU → ALU wins
+# FP_DIV + ALU → ALU wins
 # ============================================================================
 @cocotb.test()
 async def test_priority_alu_over_fp_div(dut: Any) -> None:
@@ -279,7 +279,7 @@ async def test_priority_alu_over_fp_div(dut: Any) -> None:
     assert dut_cdb.fu_type == FU_ALU
     assert dut_cdb.tag == 1
     assert dut_grants[FU_ALU] is True
-    # 2-wide CDB: the runner-up is broadcast on lane 1, not denied.
+    # The runner-up goes out on lane 1.
     dut_cdb_2 = dut_if.read_cdb_2_output()
     assert_cdb_match(dut_cdb_2, model_cdb_2, "alu_over_fp_div lane1")
     assert dut_cdb_2.fu_type == FU_FP_DIV
@@ -287,7 +287,7 @@ async def test_priority_alu_over_fp_div(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 6: DIV + MUL → MUL wins
+# DIV + MUL → MUL wins
 # ============================================================================
 @cocotb.test()
 async def test_priority_mul_over_div(dut: Any) -> None:
@@ -309,7 +309,7 @@ async def test_priority_mul_over_div(dut: Any) -> None:
     assert_cdb_match(dut_cdb, model_cdb, "mul_over_div")
     assert dut_cdb.fu_type == FU_MUL
     assert dut_grants[FU_MUL] is True
-    # 2-wide CDB: DIV is the runner-up, broadcast on lane 1.
+    # DIV is the runner-up and goes out on lane 1.
     dut_cdb_2 = dut_if.read_cdb_2_output()
     assert_cdb_match(dut_cdb_2, model_cdb_2, "mul_over_div lane1")
     assert dut_cdb_2.fu_type == FU_DIV
@@ -317,7 +317,7 @@ async def test_priority_mul_over_div(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 6: All 8 FUs valid -> MUL wins (highest priority)
+# All 8 FUs valid -> MUL wins (highest priority)
 # ============================================================================
 @cocotb.test()
 async def test_priority_all_valid(dut: Any) -> None:
@@ -338,7 +338,7 @@ async def test_priority_all_valid(dut: Any) -> None:
     assert_cdb_match(dut_cdb, model_cdb, "all_valid")
     assert dut_cdb.fu_type == FU_MUL
     assert dut_grants[FU_MUL] is True
-    # 2-wide CDB: the second-highest priority (MEM) is granted on lane 1.
+    # MEM, second in priority, is granted on lane 1.
     dut_cdb_2 = dut_if.read_cdb_2_output()
     assert_cdb_match(dut_cdb_2, model_cdb_2, "all_valid lane1")
     assert dut_cdb_2.fu_type == FU_MEM
@@ -555,7 +555,7 @@ async def test_alu_value_source_partitions(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 7: All except MUL -> MEM wins
+# All except MUL -> MEM wins
 # ============================================================================
 @cocotb.test()
 async def test_priority_all_except_highest(dut: Any) -> None:
@@ -577,7 +577,7 @@ async def test_priority_all_except_highest(dut: Any) -> None:
     assert_cdb_match(dut_cdb, model_cdb, "all_except_highest")
     assert dut_cdb.fu_type == FU_MEM
     assert dut_grants[FU_MEM] is True
-    # 2-wide CDB: next priority after MEM is ALU, granted on lane 1.
+    # ALU, next after MEM, is granted on lane 1.
     dut_cdb_2 = dut_if.read_cdb_2_output()
     assert_cdb_match(dut_cdb_2, model_cdb_2, "all_except_highest lane1")
     assert dut_cdb_2.fu_type == FU_ALU
@@ -585,7 +585,7 @@ async def test_priority_all_except_highest(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 8: Grant popcount on the 2-wide CDB: 1 for one requester, 2 for two or more
+# Grant popcount: 1 for one requester, 2 for two or more
 # ============================================================================
 @cocotb.test()
 async def test_grant_exclusivity(dut: Any) -> None:
@@ -611,12 +611,11 @@ async def test_grant_exclusivity(dut: Any) -> None:
         await Timer(1, unit="ns")
 
         grant_raw = dut_if.read_grant_raw()
-        # 2-wide CDB: one grant when a single FU requests, two when >= 2 do.
         num_requesting = len(specs)
         expected_grants = min(num_requesting, 2)
         assert grant_raw != 0, f"combo {i}: grant should not be zero"
         assert bin(grant_raw).count("1") == expected_grants, (
-            f"combo {i}: grant=0b{grant_raw:07b} has "
+            f"combo {i}: grant=0b{grant_raw:08b} has "
             f"{bin(grant_raw).count('1')} bits, expected {expected_grants}"
         )
 
@@ -625,7 +624,7 @@ async def test_grant_exclusivity(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 9: FLEN-wide (64-bit) value correctly forwarded
+# FLEN-wide (64-bit) value correctly forwarded
 # ============================================================================
 @cocotb.test()
 async def test_value_propagation(dut: Any) -> None:
@@ -659,7 +658,7 @@ async def test_value_propagation(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 10: FP flags (nv/dz/of/uf/nx) forwarded from winning FU
+# FP flags (nv/dz/of/uf/nx) forwarded from winning FU
 # ============================================================================
 @cocotb.test()
 async def test_fp_flags_propagation(dut: Any) -> None:
@@ -697,7 +696,7 @@ async def test_fp_flags_propagation(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 11: Exception + cause forwarded correctly
+# Exception + cause forwarded correctly
 # ============================================================================
 @cocotb.test()
 async def test_exception_propagation(dut: Any) -> None:
@@ -731,7 +730,7 @@ async def test_exception_propagation(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 12: ROB tag forwarded correctly
+# ROB tag forwarded correctly
 # ============================================================================
 @cocotb.test()
 async def test_tag_propagation(dut: Any) -> None:
@@ -755,7 +754,7 @@ async def test_tag_propagation(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 13: o_cdb.fu_type matches the granted FU
+# o_cdb.fu_type matches the granted FU
 # ============================================================================
 @cocotb.test()
 async def test_fu_type_field(dut: Any) -> None:
@@ -784,7 +783,7 @@ async def test_fu_type_field(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 14: Different FUs win across consecutive cycles
+# Different FUs win across consecutive cycles
 # ============================================================================
 @cocotb.test()
 async def test_sequential_different_fus(dut: Any) -> None:
@@ -808,15 +807,15 @@ async def test_sequential_different_fus(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 15: FU that lost arbitration: grant=0, must re-present next cycle
+# FU that lost arbitration: grant=0, must re-present next cycle
 # ============================================================================
 @cocotb.test()
 async def test_loser_must_retry(dut: Any) -> None:
     """A third requester (beyond the two CDB lanes) loses and must re-present."""
     dut_if, model = await setup(dut)
 
-    # Cycle 1: MUL + MEM + ALU all valid. 2-wide CDB grants the top two
-    # (MUL on lane 0, MEM on lane 1); ALU loses and must retry.
+    # Cycle 1: MUL, MEM, and ALU all request. MUL takes lane 0 and MEM lane 1;
+    # ALU loses and must retry.
     dut_if.drive_fu_complete(FU_MUL, tag=1, value=0x1111)
     dut_if.drive_fu_complete(FU_MEM, tag=2, value=0x2222)
     dut_if.drive_fu_complete(FU_ALU, tag=3, value=0x3333)
@@ -846,7 +845,7 @@ async def test_loser_must_retry(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 16: Constrained random: random subset of FUs valid, verify model match
+# Constrained random: random subset of FUs valid, verify model match
 # ============================================================================
 @cocotb.test()
 async def test_random_multi_fu_stress(dut: Any) -> None:

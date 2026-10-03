@@ -15,12 +15,12 @@
  */
 
 /*
- * Sstc directed test. Covers menvcfg.STCE, the only
- * implemented menvcfg field, and the stimecmp CSR. While STCE=1 the registered
- * mtime >= stimecmp compare drives the STIP readback and the software STIP bit
- * is dormant. With STCE=0 an S-mode stimecmp access takes an illegal-instruction
- * trap. The last case delivers a delegated S-mode timer interrupt through
- * stimecmp. Self-checks over UART (<<PASS>> / <<FAIL>>).
+ * Sstc directed test. Covers menvcfg.STCE, the only implemented menvcfg
+ * field, and the stimecmp CSR. While STCE=1 the registered mtime >= stimecmp
+ * compare drives the STIP readback and the software STIP bit is dormant. With
+ * STCE=0 an S-mode stimecmp access takes an illegal-instruction trap. The last
+ * case delivers a delegated S-mode timer interrupt through stimecmp.
+ * Self-checks over UART (<<PASS>> / <<FAIL>>).
  *
  * stimecmp (0x14D) and menvcfg (0x30A) are addressed numerically so the
  * test does not depend on Sstc-aware binutils. The privilege scaffolding

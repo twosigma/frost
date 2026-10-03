@@ -1,29 +1,29 @@
-# Cache hierarchy library file list
-# Recursive line-port cache + the bottom-of-hierarchy AXI bridge and the
-# simulation-only behavioral main memory.
+# Cache library file list: the line cache, the line-port arbiter, the two
+# coherence sequencers, the hierarchy, the AXI bridge, the simulation-only DDR
+# model, and the cocotb unit-bench harnesses.
 
-# Packed cache performance-observer types (must precede the cache modules).
+# Per-cache performance event types (must precede the cache modules).
 $(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv
 
-# Write-back direct-mapped line cache (one module for L1 and L2)
+# Write-back direct-mapped line cache (one module for every level)
 $(ROOT)/hw/rtl/lib/cache/frost_cache.sv
 
-# N:1 tagged line-port arbiter. Listed before the hierarchy that instantiates
-# a tree of them, so a parameterized instantiation never forward-references an
-# unparsed module. That saves yosys hierarchy deferral rounds. The
-# reprocess-a-chparam'd-top assert those rounds can trigger is defused at the
-# flow level, see tests/test_run_yosys.py.
+# N:1 tagged line-port arbiter. Listed before the hierarchy, which
+# instantiates a tree of them, so Yosys never meets a parameterized
+# instantiation of a module it has not parsed yet; that saves hierarchy
+# deferral rounds. tests/test_run_yosys.py avoids the Yosys assertion that
+# reprocessing the parameterized hierarchy can trigger.
 $(ROOT)/hw/rtl/lib/cache/line_port_arbiter.sv
 
-# DMA coherence sequencer: probes the L1D and hands the load queue its
-# invalidations before a DMA request reaches the shared level.
+# DMA coherence sequencer: probes the L1D, and for a write runs the load-queue
+# handshake, before a DMA request reaches the L2.
 $(ROOT)/hw/rtl/lib/cache/dma_coherence_sequencer.sv
 
 # Walker coherence sequencer: probes the L1D before a page-table walk read
-# reaches the shared level.
+# reaches the L2.
 $(ROOT)/hw/rtl/lib/cache/walker_coherence_sequencer.sv
 
-# Configurable cache hierarchy wrapper (L1s + walker + DMA ports, optional URAM L2)
+# Cache hierarchy wrapper (L1s + walker + DMA ports + URAM L2)
 $(ROOT)/hw/rtl/lib/cache/frost_cache_hierarchy.sv
 
 # Tagged line-port -> AXI4 master bridge, multiple outstanding (bottom of the hierarchy)
@@ -32,7 +32,7 @@ $(ROOT)/hw/rtl/lib/cache/line_port_axi_bridge.sv
 # Simulation-only AXI main-memory model (stands in for DDR)
 $(ROOT)/hw/rtl/lib/cache/axi_behavioral_memory.sv
 
-# Cocotb unit-bench harness (stack + bridge + behavioral memory)
+# Cocotb unit-bench harness (hierarchy + bridge + behavioral memory)
 $(ROOT)/hw/rtl/lib/cache/frost_cache_test_harness.sv
 
 # Cocotb unit-bench harness (arbiter + bridge + behavioral memory)

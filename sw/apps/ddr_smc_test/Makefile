@@ -17,8 +17,9 @@
 # between write and call must drain the SQ, write the L1D back, and
 # invalidate the L1I + fetch buffer for the calls to see the new code.
 # With -Og, low-BRAM functions can sit close enough to address zero that the
-# rounded medany PC-relative relocation to ddr_code at 0x80000000 overflows.
-# The large model uses literal addresses; keep normal builds unchanged.
+# rounded medany PC-relative relocation to ddr_code at 0x80000000 overflows,
+# so debug builds use the large code model, which loads literal addresses.
+# Normal builds keep medany.
 ifeq ($(FROST_DEBUG),1)
 override APP_TUNE_FLAGS += -mcmodel=large
 endif

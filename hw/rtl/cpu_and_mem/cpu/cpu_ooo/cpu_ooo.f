@@ -1,5 +1,5 @@
-# RISC-V OOO CPU core file list (Tomasulo out-of-order execution)
-# RV64IMACBFD + Zicsr, with IF/PD/ID front-end and Tomasulo back-end
+# FROST CPU core file list: RV64GCB, in-order IF/PD/ID front end,
+# Tomasulo out-of-order back end
 
 # Shared cache-observer types, followed by the package with CPU pipeline types
 # (including the cpu_ooo-internal recovery capture structs).
@@ -33,16 +33,18 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/branch_jump_unit.sv
 # Trap unit (exception/interrupt handling)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/control/trap_unit.sv
 
-# Page-table walker (Phase 3 M4; the DTLB/dmmu ride the wrapper's list)
+# Page-table walker shared by both MMUs (the data MMU and DTLB are in the
+# wrapper's list)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/ptw.sv
 
-# OOO core glue submodules (extracted from cpu_ooo top-level)
+# cpu_ooo glue submodules
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/pipeline_control/ooo_pipeline_control.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/register_files/ooo_register_files.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/recovery/ex_comb_synthesizer.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/perf_counter_aggregator.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/frontend_control/frontend_validity_tracker.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/frontend_control/decoded_bundle_queue.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/commit/commit_actions.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/branch_resolution.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/early_misprediction_recovery.sv
