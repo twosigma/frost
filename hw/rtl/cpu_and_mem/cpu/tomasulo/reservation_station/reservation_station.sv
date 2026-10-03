@@ -1538,11 +1538,16 @@ module reservation_station #(
               issue_src2_bypass_l1 == src2_cdb_bypass_l1[issue_idx]);
       // Case equality: a source the CDB bypass supplies may not have a
       // resident value yet, and both selections then return the same unknown.
-      p_issue_resident_values_match_index :
-      assert (issue_src1_resident === src1_resident[issue_idx] &&
-              issue_src2_resident === src2_resident[issue_idx]);
+      // Without the grouped select both sides are the same indexed read, and
+      // the check would only keep the per-entry resident values alive in the
+      // formal model.
+      if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin
+        p_issue_resident_values_match_index :
+        assert (issue_src1_resident === src1_resident[issue_idx] &&
+                issue_src2_resident === src2_resident[issue_idx]);
+      end
     end
-    if (!$isunknown(entry_ready)) begin
+    if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS && !$isunknown(entry_ready)) begin
       p_issue_idx_matches_scan : assert (issue_idx == issue_idx_scan);
     end
   end
