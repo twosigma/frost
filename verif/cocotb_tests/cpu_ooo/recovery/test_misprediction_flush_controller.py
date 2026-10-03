@@ -303,8 +303,11 @@ async def test_early_recovery_priority_and_checkpoint_free(dut: Any) -> None:
 
     # The backend phase follows the redirect by one edge, as in the core: the
     # early recovery unit's next state is high while active, and the
-    # controller registers flush_en from it.
+    # controller registers flush_en from it. On that edge the unit loads its
+    # backend flush tag from i_early_mispredict_tag, and the controller
+    # registers the flush tag from the same input.
     dut.i_early_backend_recovery_pending_next.value = 1
+    dut.i_early_mispredict_tag.value = 12
     await _advance_cycle(dut)
     dut.i_early_backend_recovery_pending_next.value = 0
     _drive_early_recovery(dut, False)
@@ -334,8 +337,10 @@ async def test_full_flush_sources_override_partial_recovery(dut: Any) -> None:
     for source in ("trap", "mret", "fence"):
         _clear_inputs(dut)
         # The backend recovery stays pending across the flush edge, so its
-        # next state is high on the edge before it and on that edge.
+        # next state is high on the edge before it and on that edge; the unit
+        # loads its backend flush tag from i_early_mispredict_tag then.
         dut.i_early_backend_recovery_pending_next.value = 1
+        dut.i_early_mispredict_tag.value = 8
         await _advance_cycle(dut)
         dut.i_early_backend_recovery_pending.value = 1
         dut.i_early_backend_flush_tag.value = 8

@@ -459,6 +459,20 @@ module misprediction_flush_controller #(
     if (early_backend_recovery_pending) flush_tag = early_backend_flush_tag;
     else if (mispredict_recovery_pending) flush_tag = mispredict_commit_q.tag;
   end
+  // TIMING: the backend reads flush_tag_q, flush_tag registered on the edge
+  // that loads its inputs, from their next states, so the tag's broadcast
+  // starts at registers the fanout cap can replicate beside each consumer
+  // rather than at one select LUT (p_flush_tag_q_exact). Early backend
+  // recovery goes pending only while early_mispredict_active, the cycle that
+  // loads early_backend_flush_tag from early_mispredict_tag, and
+  // mispredict_commit_q loads mispredict_commit_d every cycle.
+  (* max_fanout = 32 *) logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag_q;
+  always_ff @(posedge i_clk) begin
+    if (i_early_backend_recovery_pending_next) flush_tag_q <= i_early_mispredict_tag;
+    else if (!(i_rst || flush_all) && commit_is_misprediction)
+      flush_tag_q <= mispredict_commit_d.tag;
+    else flush_tag_q <= '0;
+  end
 
   // Commit-time mispredict recovery is already a registered 1-cycle pulse.
   assign commit_recovery_flush_after_head = mispredict_recovery_pending;
@@ -549,7 +563,7 @@ module misprediction_flush_controller #(
   assign o_full_flush_side_effect_kill         = full_flush_side_effect_kill;
   assign o_frontend_state_flush                = frontend_state_flush;
   assign o_flush_en                            = flush_en;
-  assign o_flush_tag                           = flush_tag;
+  assign o_flush_tag                           = flush_tag_q;
   assign o_flush_all                           = flush_all;
 
 `ifndef SYNTHESIS
@@ -588,14 +602,16 @@ module misprediction_flush_controller #(
   end
   always_ff @(posedge i_clk) begin
     if (!i_rst && !$isunknown(
-            {flush_all, ref_flush_all, flush_en, ref_flush_en, flush_tag, ref_flush_tag,
-             flush_pipeline, ref_flush_pipeline, frontend_state_flush, ref_frontend_state_flush,
+            {flush_all, ref_flush_all, flush_en, ref_flush_en, flush_tag, flush_tag_q,
+             ref_flush_tag, flush_pipeline, ref_flush_pipeline, frontend_state_flush,
+             ref_frontend_state_flush,
              checkpoint_restore, ref_checkpoint_restore, checkpoint_restore_id,
              ref_checkpoint_restore_id}
         )) begin
       p_flush_all_is_the_pulse_or : assert (flush_all == ref_flush_all);
       p_flush_en_exact : assert (flush_en == ref_flush_en);
       p_flush_tag_exact_when_enabled : assert (!ref_flush_en || flush_tag == ref_flush_tag);
+      p_flush_tag_q_exact : assert (flush_tag_q == flush_tag);
       p_flush_pipeline_exact : assert (flush_pipeline == ref_flush_pipeline);
       p_frontend_state_flush_exact : assert (frontend_state_flush == ref_frontend_state_flush);
       p_checkpoint_restore_exact : assert (checkpoint_restore == ref_checkpoint_restore);
