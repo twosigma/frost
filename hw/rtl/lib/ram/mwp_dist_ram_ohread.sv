@@ -114,7 +114,8 @@ module mwp_dist_ram_ohread #(
   // permits declaration initialization (Verilator >=5.050 enforces this;
   // yosys formal needs the pinned init value either way).
   logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
-  logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
+  // TIMING: capped so synthesis replicates it beside its read-port compares.
+  (* max_fanout = 48 *) logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
 
   always_ff @(posedge i_clk) begin
     for (int wp = 0; wp < NUM_WRITE_PORTS; wp++) begin

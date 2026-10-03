@@ -1146,14 +1146,29 @@ module dispatch #(
     end
   end
 
+  // TIMING: each bypass tag reaches every station's source compares (about
+  // 300 loads); the cap lets synthesis replicate the registers.
+  (* max_fanout = 48 *) logic [riscv_pkg::ReorderBufferTagWidth-1:0]
+      bypass_tag_1_q,
+      bypass_tag_2_q,
+      bypass_tag_3_q,
+      bypass_tag_4_q,
+      bypass_tag_5_q,
+      bypass_tag_6_q;
   always_ff @(posedge i_clk) begin
-    o_bypass_tag_1 <= bypass_tag_1_next;
-    o_bypass_tag_2 <= bypass_tag_2_next;
-    o_bypass_tag_3 <= bypass_tag_3_next;
-    o_bypass_tag_4 <= bypass_tag_4_next;
-    o_bypass_tag_5 <= bypass_tag_5_next;
-    o_bypass_tag_6 <= bypass_tag_6_next;
+    bypass_tag_1_q <= bypass_tag_1_next;
+    bypass_tag_2_q <= bypass_tag_2_next;
+    bypass_tag_3_q <= bypass_tag_3_next;
+    bypass_tag_4_q <= bypass_tag_4_next;
+    bypass_tag_5_q <= bypass_tag_5_next;
+    bypass_tag_6_q <= bypass_tag_6_next;
   end
+  assign o_bypass_tag_1 = bypass_tag_1_q;
+  assign o_bypass_tag_2 = bypass_tag_2_q;
+  assign o_bypass_tag_3 = bypass_tag_3_q;
+  assign o_bypass_tag_4 = bypass_tag_4_q;
+  assign o_bypass_tag_5 = bypass_tag_5_q;
+  assign o_bypass_tag_6 = bypass_tag_6_q;
 
   // Source resolution.
   // RAT lookup: renamed=1 means the source maps to an in-flight ROB entry.

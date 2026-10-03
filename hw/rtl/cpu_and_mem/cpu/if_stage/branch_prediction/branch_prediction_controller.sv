@@ -287,7 +287,9 @@ module branch_prediction_controller #(
   logic                       btb_update_call_q;
   logic                       btb_update_return_q;
   logic                       btb_early_update_active_q;
-  logic [riscv_pkg::XLEN-1:0] btb_early_update_pc_q;
+  // TIMING: capped so synthesis replicates it beside the predictor's
+  // early-update compares and table addresses.
+  (* max_fanout = 48 *)logic [riscv_pkg::XLEN-1:0] btb_early_update_pc_q;
   logic                       btb_early_update_taken_q;
   logic [riscv_pkg::XLEN-1:0] btb_late_update_pc_q;
   logic                       btb_late_update_taken_q;

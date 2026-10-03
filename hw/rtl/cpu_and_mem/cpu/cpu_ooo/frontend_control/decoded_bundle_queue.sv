@@ -82,7 +82,10 @@ module decoded_bundle_queue #(
   // TIMING: out_shadow_q (o_shadow) goes further than the packet mirror: the
   // consumer's highest-fanout bits start at a flop with no select LUT.
   logic [SHADOW_WIDTH-1:0] shadow_q[DEPTH];
-  logic [SHADOW_WIDTH-1:0] head_shadow_q, head_shadow_next, out_shadow_q;
+  logic [SHADOW_WIDTH-1:0] head_shadow_q, head_shadow_next;
+  // TIMING: o_shadow drives dispatch and the register-file and RAT reads
+  // (several hundred loads per bit); the cap lets synthesis replicate it.
+  (* max_fanout = 48 *) logic [SHADOW_WIDTH-1:0] out_shadow_q;
   logic [DEPTH-1:0] indirect_q, live_q;
   logic [PtrBits-1:0] head_q, tail_q;
   logic [PtrBits:0] count_q;

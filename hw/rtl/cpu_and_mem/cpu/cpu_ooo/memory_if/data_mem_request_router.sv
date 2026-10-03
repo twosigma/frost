@@ -538,7 +538,7 @@ module data_mem_request_router #(
   assign fast_read_accepted = lq_mem_read_accepted && !lq_mem_request_is_cached;
 
   // Fast (BRAM/MMIO) 1-cycle valid.
-  logic fast_read_valid;
+  (* max_fanout = 32 *) logic fast_read_valid;
   always_ff @(posedge i_clk) begin
     if (i_rst || i_flush_all) fast_read_valid <= 1'b0;
     else fast_read_valid <= fast_read_accepted;

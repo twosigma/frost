@@ -826,8 +826,9 @@ module cpu_ooo #(
   logic            bypass_p1_int_we_q;
   logic            bypass_p0_fp_we_q;
   logic            bypass_p1_fp_we_q;
-  logic [     4:0] bypass_p0_addr_q;
-  logic [     4:0] bypass_p1_addr_q;
+  // TIMING: capped so synthesis replicates them beside their compare loads.
+  (* max_fanout = 48 *)logic [     4:0] bypass_p0_addr_q;
+  (* max_fanout = 48 *)logic [     4:0] bypass_p1_addr_q;
 
   // Regfile write ports (driven by commit_actions, consumed by
   // ooo_register_files) and retire status.
