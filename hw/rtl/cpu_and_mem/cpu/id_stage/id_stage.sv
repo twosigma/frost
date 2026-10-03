@@ -605,7 +605,7 @@ module id_stage #(
       n.immediate_s_type = immediate_s_type;
       n.immediate_i_type = immediate_i_type;
     end
-    return n;
+    id_next_for = n;
   endfunction
   assign id_next = id_next_for(id_advance);
   assign o_from_id_to_ex_next_go = id_next_for(1'b1);
@@ -1057,7 +1057,7 @@ module id_stage #(
       n.immediate_s_type = immediate_s_type_2;
       n.immediate_i_type = immediate_i_type_2;
     end
-    return n;
+    id_next_2_for = n;
   endfunction
   assign id_next_2 = id_next_2_for(id_advance);
   assign o_from_id_to_ex_next_go_2 = id_next_2_for(1'b1);

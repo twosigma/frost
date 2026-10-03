@@ -1043,7 +1043,7 @@ module cpu_ooo #(
         c.uses_fp_rs2 = d.uses_fp_rs2;
         c.uses_fp_rs3 = d.uses_fp_rs3;
         c.is_real = d.is_real;
-        return c;
+        id_ctrl_of = c;
       endfunction
       assign producer_ctrl_next_go = id_ctrl_of(decoded_packet_next_go);
       assign producer_ctrl_next_go_2 = id_ctrl_of(decoded_packet_next_go_2);
