@@ -196,6 +196,11 @@ module branch_prediction_controller #(
     output logic                       o_slot2_live_target_used_for_pc_cofactor,
     output logic                       o_slot2_predicted_taken,
     output logic [riscv_pkg::XLEN-1:0] o_slot2_predicted_target,
+    // pc_controller's copies of the slot-2 targets. They equal
+    // o_slot2_predicted_target while o_slot2_prediction_used_for_pc, and the
+    // staged typed target while o_slot2_staged_prediction_used_for_pc, the only
+    // cycles pc_controller reads them; otherwise they may differ.
+    output logic [riscv_pkg::XLEN-1:0] o_slot2_predicted_target_for_pc,
     output logic [riscv_pkg::XLEN-1:0] o_slot2_staged_predicted_target,
     output logic [riscv_pkg::XLEN-1:0] o_slot2_live_predicted_target,
     // Type of the entry behind o_slot2_predicted_target.
@@ -249,6 +254,7 @@ module branch_prediction_controller #(
   logic            btb_compressed_2;
   logic            btb_is_call_2;
   logic            btb_is_return_2;
+  logic            btb_entry_is_return_2;
   logic            btb_compressed_2_plus2;
   logic            btb_compressed_2_plus4;
 
@@ -334,6 +340,7 @@ module branch_prediction_controller #(
       .o_btb_compressed_2(btb_compressed_2),
       .o_btb_is_call_2(btb_is_call_2),
       .o_btb_is_return_2(btb_is_return_2),
+      .o_btb_entry_is_return_2(btb_entry_is_return_2),
 
       // Update, through the staging registers above
       .i_update(btb_update_q),
@@ -623,6 +630,14 @@ module branch_prediction_controller #(
   assign slot1_typed_target = (btb_is_return && ras_nonempty) ? ras_top : btb_predicted_target;
   assign slot2_staged_typed_target = (btb_is_return_2 && ras_nonempty) ? ras_top :
                                                                           btb_predicted_target_2;
+  // TIMING: pc_controller's copy of the staged typed target takes its type
+  // from the selected row without the staged hit, so the slot-2 tag compare
+  // does not reach this 64-bit select. pc_controller reads it only while a
+  // staged slot-2 prediction redirects, which requires that hit, and there
+  // the two copies agree (p_slot2_staged_pc_target_exact).
+  logic [XLEN-1:0] slot2_staged_typed_target_for_pc;
+  assign slot2_staged_typed_target_for_pc =
+      (btb_entry_is_return_2 && ras_nonempty) ? ras_top : btb_predicted_target_2;
 
   // ===========================================================================
   // Prediction Gating Logic
@@ -981,7 +996,7 @@ module branch_prediction_controller #(
 
   assign o_slot2_staged_prediction_used_for_pc = slot2_staged_prediction_used_for_pc;
   assign o_slot2_live_target_used_for_pc_cofactor = slot2_live_target_used_for_pc_cofactor;
-  assign o_slot2_staged_predicted_target = slot2_staged_typed_target;
+  assign o_slot2_staged_predicted_target = slot2_staged_typed_target_for_pc;
   assign o_slot2_live_predicted_target = slot1_typed_target;
   assign o_slot2_prediction_used = o_slot2_prediction_used_for_pc && !i_stall;
   assign o_slot2_predicted_taken = o_slot2_prediction_used;
@@ -1008,6 +1023,16 @@ module branch_prediction_controller #(
                                                    slot2_staged_typed_target_halfword,
     i_slot2_valid ? slot2_target_without_valid[0] : slot2_staged_typed_target[0]
   };
+  // pc_controller's slot-2 target: the live or the staged typed target, the
+  // staged one without the hit in its type select (above). It leaves out
+  // i_slot2_valid: every pc_controller use of it is under a slot-2 request
+  // that already requires it. Equal to o_slot2_predicted_target whenever
+  // o_slot2_prediction_used_for_pc (p_slot2_pc_target_exact), since a used
+  // prediction without the live entry is a staged hit.
+  (* keep = "true" *) logic [XLEN-1:0] slot2_target_for_pc;
+  assign slot2_target_for_pc =
+      slot2_live_entry_selected ? slot1_typed_target : slot2_staged_typed_target_for_pc;
+  assign o_slot2_predicted_target_for_pc = slot2_target_for_pc;
   // The type follows the entry the target came from.
   assign o_slot2_predicted_is_call =
       (i_slot2_valid && slot2_live_entry_selected) ? btb_is_call : btb_is_call_2;
@@ -1043,6 +1068,18 @@ module branch_prediction_controller #(
       assert (slot2_live_target_used_for_pc ==
               (slot1_aliases_slot2_candidate &&
                slot2_live_target_used_for_pc_cofactor));
+    end
+    if (o_slot2_prediction_used_for_pc && !$isunknown(
+            {o_slot2_predicted_target, o_slot2_predicted_target_for_pc}
+        )) begin
+      p_slot2_pc_target_exact :
+      assert (o_slot2_predicted_target_for_pc == o_slot2_predicted_target);
+    end
+    if (o_slot2_staged_prediction_used_for_pc && !$isunknown(
+            {slot2_staged_typed_target, o_slot2_staged_predicted_target}
+        )) begin
+      p_slot2_staged_pc_target_exact :
+      assert (o_slot2_staged_predicted_target == slot2_staged_typed_target);
     end
     if (o_slot2_prediction_used_for_pc && !$isunknown(
             {slot2_live_target_used_for_pc, o_slot2_predicted_target}

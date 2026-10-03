@@ -80,6 +80,9 @@ module branch_predictor #(
     // The selected candidate's entry is typed as a call or a return.
     output logic            o_btb_is_call_2,
     output logic            o_btb_is_return_2,
+    // The selected candidate's row return flag without the hit: equal to
+    // o_btb_is_return_2 whenever the selected candidate hits.
+    output logic            o_btb_entry_is_return_2,
 
     // Update interface: at most one selected training write per cycle
     input logic            i_update,             // Update BTB entry
@@ -654,6 +657,8 @@ module branch_predictor #(
                                             (btb_hit_2 && lookup_payload_2.is_call);
   assign o_btb_is_return_2 = i_pc_2_use_alt ?
       (btb_hit_2_alt && lookup_payload_2_alt.is_return) : (btb_hit_2 && lookup_payload_2.is_return);
+  assign o_btb_entry_is_return_2 =
+      i_pc_2_use_alt ? lookup_payload_2_alt.is_return : lookup_payload_2.is_return;
 
   // Early candidate, from the early PC and outcome. Its RAM copies take every
   // selected write, not only early ones, so they always hold the same state as

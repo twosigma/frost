@@ -228,6 +228,7 @@ module if_stage #(
   // pc_controller combines itself for timing.
   logic slot2_predicted_taken;
   logic [XLEN-1:0] slot2_predicted_target;
+  logic [XLEN-1:0] slot2_predicted_target_for_pc;
   logic slot2_prediction_used;
   logic slot2_prediction_used_for_pc;
   logic slot2_staged_prediction_used_for_pc;
@@ -791,6 +792,7 @@ module if_stage #(
       .o_slot2_live_target_used_for_pc_cofactor(slot2_live_target_used_for_pc_cofactor),
       .o_slot2_predicted_taken(slot2_predicted_taken),
       .o_slot2_predicted_target(slot2_predicted_target),
+      .o_slot2_predicted_target_for_pc(slot2_predicted_target_for_pc),
       .o_slot2_staged_predicted_target(slot2_staged_predicted_target),
       .o_slot2_live_predicted_target(slot2_live_predicted_target),
       .o_slot2_predicted_is_call(slot2_predicted_is_call),
@@ -877,7 +879,7 @@ module if_stage #(
       // Slot-2 redirect, plus its staged and live parts (split for timing).
       .i_slot2_prediction_used(slot2_prediction_used),
       .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
-      .i_slot2_predicted_target(slot2_predicted_target),
+      .i_slot2_predicted_target(slot2_predicted_target_for_pc),
       .i_slot2_staged_prediction_used_for_pc(slot2_staged_prediction_used_for_pc),
       .i_slot1_aliases_slot2_candidate(slot1_aliases_slot2_candidate),
       .i_slot2_live_target_used_for_pc_cofactor(slot2_live_target_used_for_pc_cofactor),
