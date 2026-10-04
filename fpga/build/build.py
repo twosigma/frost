@@ -22,8 +22,10 @@ at route, post-route phys-opt, or second route promotes that output to
 final.dcp and skips to the bitstream; the last phys-opt stage always writes
 final.dcp.
 
-On X3, place and both route stages are sweeps that promote the best qualified
-candidate, scored at zero added setup uncertainty. A placement guided by a
+Full-rate X3 placement builds a fresh reference and then incrementally places
+with a constrained instruction-sideband LUT input assignment. Explicit placer
+overrides and both route stages run sweeps, scored at zero added setup uncertainty.
+A placement guided by a
 temporary PC-tail path group is scored only if its audit on a clean reopen
 passes. Every later stage, and the bitstream, checks that its input checkpoint
 descends from the current qualified placement, using the sidecar files written
@@ -1482,6 +1484,23 @@ def copy_results_to_main_work(
     if checkpoint_promoted and report_prefix in {"post_synth", "post_opt"}:
         (main_work / "post_place_gate.txt").unlink(missing_ok=True)
         (main_work / "post_place_gate_binding.json").unlink(missing_ok=True)
+    if checkpoint_promoted and report_prefix in {
+        "post_synth",
+        "post_opt",
+        "post_place",
+    }:
+        # A later synthesis/optimization or an explicitly selected placement
+        # supersedes the default recipe's reference and verification records.
+        for pattern in (
+            "post_place_reference*",
+            "post_place_recipe.json",
+            "post_place_incremental_reuse.rpt",
+            "post_place_verification_timing.rpt",
+            "post_place_route_status.rpt",
+        ):
+            for stale in main_work.glob(pattern):
+                if stale.is_file() or stale.is_symlink():
+                    stale.unlink()
     if report_prefix == "post_place":
         # This decision belongs to this exact promoted placement; never use
         # a glob fallback that could pick up another stage's stale evidence.
@@ -2416,6 +2435,162 @@ def run_x3_step_directive_sweep(
 # Step execution
 
 
+def run_x3_default_place(
+    script_dir: Path,
+    vivado_path: str,
+    build_dir: Path | None = None,
+) -> tuple[bool, float | None, str]:
+    """Place from the current post-opt netlist, entirely in the main work directory.
+
+    Generate a fresh reference, reopen post-opt for incremental placement,
+    then verify the saved result in a third, read-only Vivado process. No
+    archived input, phys-opt pass, or route probe participates in this flow.
+    """
+    board_build = build_dir if build_dir is not None else script_dir / "x3"
+    work = board_build / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    gate_path = work / "post_place_gate.txt"
+    for name in (
+        "post_place_gate.txt",
+        "post_place_gate_binding.json",
+        "post_place_recipe.json",
+    ):
+        (work / name).unlink(missing_ok=True)
+    post_opt = work / "post_opt.dcp"
+    opt_wns = extract_timing_from_report(work / "post_opt_timing.rpt").get("wns_ns")
+    if not post_opt.is_file() or opt_wns is None or not opt_wns >= 0:
+        print(
+            "Error: default X3 placement requires the current post-opt checkpoint with WNS >= 0 ns."
+        )
+        return False, None, ""
+
+    # Explicit sweep controls are handled by the caller. The default recipe's
+    # settings are fixed for both passes, independent of inherited seed values.
+    environment = dict(os.environ)
+    environment["FROST_PLACE_SETUP_UNCERTAINTY"] = "0.300"
+    environment["FROST_PLACE_CELL_BLOAT"] = ""
+    suffixes = (
+        ".dcp",
+        "_timing.rpt",
+        "_util.rpt",
+        "_high_fanout.rpt",
+        "_failing_paths.csv",
+        "_congestion.rpt",
+        "_gate.txt",
+        "_gate_worst.rpt",
+        "_gate_cpu.rpt",
+        "_gate_below.rpt",
+        "_group_audit.txt",
+        "_pc_compressed_tail_timing.rpt",
+    )
+    for prefix in ("post_place", "post_place_reference"):
+        for suffix in suffixes:
+            (work / f"{prefix}{suffix}").unlink(missing_ok=True)
+    for suffix in (
+        "_incremental_reuse.rpt",
+        "_verification_timing.rpt",
+        "_route_status.rpt",
+    ):
+        (work / f"post_place{suffix}").unlink(missing_ok=True)
+
+    def launch(step: str, checkpoint: Path, mode: str, log_name: str) -> bool:
+        command = [
+            vivado_path,
+            "-mode",
+            "batch",
+            "-source",
+            str(script_dir / "build_step.tcl"),
+            "-nojournal",
+            "-log",
+            log_name,
+            "-tclargs",
+            "x3",
+            step,
+            "ExtraNetDelay_high",
+            str(checkpoint),
+            "0",
+        ]
+        if mode:
+            command.extend(["", mode])
+        print(f"\nX3 placement: {mode or step}; work directory: {work}", flush=True)
+        result = subprocess.run(command, cwd=work, env=environment)
+        return result.returncode == 0
+
+    try:
+        post_opt_hash = file_sha256(post_opt)
+        if not launch(
+            "place", post_opt, "reference", "post_place_reference_vivado.log"
+        ):
+            return False, None, ""
+        reference_wns = extract_timing_from_report(work / "post_place_timing.rpt").get(
+            "wns_ns"
+        )
+        if reference_wns is None or not (work / "post_place.dcp").is_file():
+            raise ValueError(
+                "reference placement did not produce a checkpoint and timing report"
+            )
+        read_x3_place_gate(gate_path, reference_wns)
+        if file_sha256(post_opt) != post_opt_hash:
+            raise ValueError("post-opt checkpoint changed during reference placement")
+        for suffix in suffixes:
+            source = work / f"post_place{suffix}"
+            if source.exists():
+                source.replace(work / f"post_place_reference{suffix}")
+        if not launch("place", post_opt, "incremental", "post_place_vivado.log"):
+            return False, None, ""
+        wns = extract_timing_from_report(work / "post_place_timing.rpt").get("wns_ns")
+        if wns is None:
+            raise ValueError("incremental placement did not produce a timing report")
+        placed_gate = read_x3_place_gate(gate_path, wns)
+        placed_hash = file_sha256(work / "post_place.dcp")
+        gate_path.unlink()
+        if not launch(
+            "verify_place", work / "post_place.dcp", "", "post_place_verify_vivado.log"
+        ):
+            return False, wns, "post_place"
+        if (
+            read_x3_place_gate(gate_path, wns) != placed_gate
+            or file_sha256(work / "post_place.dcp") != placed_hash
+        ):
+            raise ValueError(
+                "clean-reopen verification changed the checkpoint or its timing"
+            )
+        if file_sha256(post_opt) != post_opt_hash:
+            raise ValueError("post-opt checkpoint changed during incremental placement")
+        if not placed_gate.passed or Decimal(str(wns)) <= X3_POST_PLACE_GATE_NS:
+            raise ValueError(
+                f"default X3 placement missed the strict {X3_POST_PLACE_GATE_NS} ns target: {wns:.3f} ns"
+            )
+        if not bind_x3_place_gate(work, wns):
+            raise ValueError("could not bind the verified placement to its timing gate")
+        (work / "post_place_recipe.json").write_text(
+            json.dumps(
+                {
+                    "schema": "x3_place_recipe_v1",
+                    "post_opt_sha256": post_opt_hash,
+                    "reference_sha256": file_sha256(work / "post_place_reference.dcp"),
+                    "checkpoint_sha256": placed_hash,
+                    "reference_wns_ns": reference_wns,
+                    "post_place_wns_ns": wns,
+                    "clock_root": "X1Y9",
+                    "placement_uncertainty_ns": 0.300,
+                    "scoring_uncertainty_ns": 0.0,
+                    "clean_reopen_verified": True,
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+    except (OSError, ValueError) as error:
+        print(f"Error: {error}. Placement reports remain in {work}.")
+        (work / "post_place_gate_binding.json").unlink(missing_ok=True)
+        return False, None, "post_place"
+    print(
+        f"\nVerified immediate post-place WNS: {wns:.3f} ns (reference {reference_wns:.3f} ns)"
+    )
+    return True, wns, "post_place"
+
+
 def run_step(
     script_dir: Path,
     board_name: str,
@@ -2646,11 +2821,10 @@ def main() -> None:
 Steps (in order):
   synth                       - Synthesis
   opt                         - Opt design
-  place                       - Place design (x3 sweeps selected placer
-                                directives x uncertainty seeds, up to --jobs
-                                at a time; warn below {gate} ns,
-                                veto congested seeds, keep the best post-place
-                                WNS; no quick-route probe by default)
+  place                       - Place design (full-rate x3 builds a fresh
+                                reference, then incrementally places with
+                                constrained LUT inputs; requires better than
+                                {gate} ns and verifies a clean reopen)
   post_place_physopt          - Phys_opt sweep (always continues to route, even
                                 if timing closes mid-sweep under overconstraint)
   route                       - Route design (with -tns_cleanup; x3 sweeps selected
@@ -2669,7 +2843,18 @@ Behavior:
     Candidates queue and start as slots become free; every candidate still runs.
     Separate build invocations have independent limits. Vivado's per-process
     thread settings are unchanged. Use --jobs 1 for serial execution.
-  * On x3, place ignores --place-directive. By default its grid runs
+  * Full-rate X3 placement starts from this build's closed post_opt.dcp,
+    generates an ExtraNetDelay_high/0.300 reference with CPU clock root X1Y9,
+    then reopens post-opt and reads that reference with RuntimeOptimized
+    incremental reuse. Before the second place_design it assigns the late
+    instruction-sideband BRAM input to the fast A6 LUT input. Each pass runs
+    once; there are no cell, net or pin edits after either place_design.
+    Everything stays in work/, including post_place_reference.dcp and the
+    final post_place.dcp. A separate Vivado process verifies the final saved
+    constraints without changing them. No archived checkpoint is required.
+  * On x3, place ignores --place-directive. Explicit --directives or
+    --num-uncertainties options, or either cell-bloat environment variable,
+    select the placer sweep instead. Its default grid runs
     ExtraNetDelay_high, ExtraPostPlacementOpt, AltSpreadLogic_high, and
     AltSpreadLogic_medium at six overconstraint seeds (0.500 down
     to 0.250 ns pre-place setup uncertainty in 50 ps steps). The off-grid
@@ -2679,7 +2864,7 @@ Behavior:
     candidate runs exactly one place_design, with any physical settings
     applied before it and no netlist or pin edits after it.
     A narrowed grid keeps a bloat variant only if its control is still there.
-    --directives sets the grid to any nonempty unique subset of legal placer
+    --directives sets that grid to any nonempty unique subset of legal placer
     directives, and --num-uncertainties changes its seed count while keeping
     50 ps spacing. Both overrides require a run that includes place.
   * The X3 ExtraNetDelay_high/0.500, ExtraPostPlacementOpt/0.450, and
@@ -2725,7 +2910,7 @@ Behavior:
     its outputs are promoted to final.dcp/final_*, the remaining stages are
     skipped, and the bitstream runs next.
 
-Each non-sweep step uses a tuned default directive unless overridden with --*-directive.
+Synthesis and optimization use tuned defaults unless overridden with --*-directive.
 --route-directive controls the first route on non-x3 boards (default AggressiveExplore);
 --second-route-directive controls the second route on non-x3 boards (default Explore).
 --physopt-directive is currently ignored (kept for backward compatibility).
@@ -2825,7 +3010,8 @@ Examples:
         nargs="+",
         choices=PLACER_DIRECTIVES,
         metavar="DIRECTIVE",
-        help="Set the x3 placer grid to one or more unique directives. "
+        help="Use a placer sweep instead of the full-rate X3 placement recipe; "
+        "set its grid to one or more unique directives. "
         "Each runs at every configured uncertainty; the qualified off-grid "
         "seed is still appended unless already present, and eligible LOW "
         "integer-RS variants are added beside matching grid controls. The run must include "
@@ -2836,7 +3022,8 @@ Examples:
         "--num-uncertainties",
         type=int,
         metavar="N",
-        help="Number of 50 ps-spaced x3 placer uncertainties, starting at "
+        help="Use a placer sweep instead of the full-rate X3 placement recipe; "
+        "set the number of 50 ps-spaced uncertainties, starting at "
         f"{X3_PLACE_BASELINE_UNCERTAINTY_NS:.3f} ns "
         f"(1-{X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT}; default: "
         f"{X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT}). The run must include "
@@ -2998,6 +3185,15 @@ Examples:
         place_uncertainty_count
     )
     route_sweep_directives = functional_policy.route_directives
+    use_default_x3_place = (
+        board_name == "x3"
+        and functional_policy.cpu_clock_div == 1
+        and not placer_sweep_overridden
+        and not any(
+            name in os.environ
+            for name in ("FROST_PLACE_CELL_BLOAT", "FROST_PLACE_CELL_BLOAT_CELLS")
+        )
+    )
     if args.debug_ila:
         if board_name != "x3":
             parser.error("--debug-ila is only supported for x3")
@@ -3023,7 +3219,7 @@ Examples:
                 str(functional_policy.quick_route_count),
             )
     if board_name == "x3":
-        place_directive = "Sweep"
+        place_directive = "Reference+Incremental" if use_default_x3_place else "Sweep"
         route_directive = "Sweep"
         second_route_directive = "Sweep"
     else:
@@ -3069,7 +3265,11 @@ Examples:
     if directives_summary:
         print(f"# Directives: {', '.join(directives_summary)}")
     print(f"# Vivado concurrency: up to {args.jobs} jobs at a time (--jobs)")
-    if board_name == "x3" and "place" in steps_to_run:
+    if use_default_x3_place and "place" in steps_to_run:
+        print("# X3 placement: fresh ExtraNetDelay_high/0.300 reference at X1Y9,")
+        print("#   then incremental placement with pre-place LUT input constraints;")
+        print("#   verify unchanged post_place.dcp in a separate Vivado process.")
+    elif board_name == "x3" and "place" in steps_to_run:
         sweep_source = "custom" if placer_sweep_overridden else "default"
         print(
             f"# X3 placer sweep ({sweep_source}): "
@@ -3157,7 +3357,13 @@ Examples:
         ):
             sys.exit(1)
 
-        if board_name == "x3" and step == "place":
+        if use_default_x3_place and step == "place":
+            success, wns, actual_prefix = run_x3_default_place(
+                script_dir,
+                args.vivado_path,
+                **build_options,
+            )
+        elif board_name == "x3" and step == "place":
             success, wns, actual_prefix = run_x3_step_directive_sweep(
                 script_dir,
                 step,

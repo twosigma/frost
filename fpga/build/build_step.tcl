@@ -697,12 +697,12 @@ proc write_physopt_iteration_outputs {work_directory step board_name physopt_unc
 
 # Arguments
 
-# Arguments: board_name step directive checkpoint_path retiming ?software_mem_dir?
+# Arguments: board_name step directive checkpoint_path retiming ?software_mem_dir? ?x3_place_mode?
 if {$argc < 5} {
     puts "Error: Required arguments: board_name step directive checkpoint_path retiming"
-    puts "Usage: vivado -mode batch -source build_step.tcl -tclargs <board_name> <step> <directive> <checkpoint_path> <retiming> ?software_mem_dir?"
+    puts "Usage: vivado -mode batch -source build_step.tcl -tclargs <board_name> <step> <directive> <checkpoint_path> <retiming> ?software_mem_dir? ?x3_place_mode?"
     puts ""
-    puts "Steps: synth, opt, place, quick_route, post_place_physopt, route, post_route_physopt, second_route, post_second_route_physopt, bitstream"
+    puts "Steps: synth, opt, place, verify_place, quick_route, post_place_physopt, route, post_route_physopt, second_route, post_second_route_physopt, bitstream"
     exit 1
 }
 
@@ -712,6 +712,11 @@ set directive [lindex $argv 2]
 set checkpoint_path [lindex $argv 3]
 set retiming [lindex $argv 4]
 set software_mem_directory ""
+set x3_place_mode [lindex $argv 6]
+if {$x3_place_mode ne "" && ($board_name ne "x3" || $step ne "place" ||
+    $x3_place_mode ni {reference incremental})} {
+    error "Invalid X3 placement mode: $x3_place_mode"
+}
 
 # Add future targets here. Board wrappers, file lists, and constraints follow
 # the <board>/<board>_frost conventions below. DDR-capable targets also provide
@@ -1000,9 +1005,19 @@ if {$step eq "synth"} {
         group_path -name frost_pc_compressed_tail -from $x3_pc_compressed_tail_starts -to $x3_pc_compressed_tail_ends
     }
 
+    if {$x3_place_mode ne ""} {
+        source [file join $script_directory x3_place.tcl]
+        frost_x3_place::prepare $x3_place_mode [file join $work_directory post_place_reference.dcp]
+    }
+
     # One placement per candidate. All physical controls are already applied;
     # the remaining commands restore scoring constraints, audit and report.
     place_design -directive $directive
+
+    if {$x3_place_mode eq "incremental"} {
+        frost_x3_place::verify
+        report_incremental_reuse -file $work_directory/post_place_incremental_reuse.rpt
+    }
 
     if {$use_x3_pc_tail_group} {
         # Reacquire PSIP-created/removed/renamed replicas before restoring the
@@ -1187,6 +1202,21 @@ if {$step eq "synth"} {
     }
 
     puts "** DONE — place_design complete with directive: $directive"
+
+} elseif {$step eq "verify_place"} {
+    # A separate Vivado process checks the final placement's stored constraints.
+    # Do not reset uncertainty or modify the checkpoint in this verification.
+    if {$board_name ne "x3" || $checkpoint_path eq ""} {
+        error "verify_place requires an X3 placement checkpoint"
+    }
+    open_checkpoint $checkpoint_path
+    source [file join $script_directory x3_place.tcl]
+    frost_x3_place::verify
+    source [file join $script_directory x3_post_place_gate.tcl]
+    frost_x3_post_place_gate::write $work_directory
+    report_timing_summary -file $work_directory/post_place_verification_timing.rpt
+    report_route_status -file $work_directory/post_place_route_status.rpt
+    puts "** DONE — verified unchanged post-place checkpoint"
 
 } elseif {$step eq "quick_route"} {
     # X3 seed-ranking probe, not a pipeline step. Clear the overconstraint and

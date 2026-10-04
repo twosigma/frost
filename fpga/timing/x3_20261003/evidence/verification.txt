@@ -1,6 +1,0 @@
-CHECKPOINT=/home/adam-bagley/frost_tooling_update/bugfix_handoff/timing_2026-10-03/mux_fast_input/post_place.dcp
-GATE_PASS=1
-CPU_PERIOD_NS=3.103
-CLOCK=gen_gty_cpu_clock.cpu_clock_source/o_clk USER_CLOCK_ROOT=X1Y9 CLOCK_ROOT=X1Y9
-CLOCK=gen_gty_cpu_clock.cpu_clock_source/o_clk_div4 USER_CLOCK_ROOT=X1Y9 CLOCK_ROOT=X1Y9
-SIDEBAND_MUX=subsystem/frost_processor/cpu_and_memory_subsystem/instruction_memory/bits24_20_predecoded_2_saved[2]_i_5 LOC=SLICE_X22Y497 BEL=SLICEL.A6LUT

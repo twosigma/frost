@@ -265,6 +265,7 @@ def test_build_main_refreshes_actual_completed_report_stage(
         return True
 
     monkeypatch.setattr(fpga_build, "run_step", complete_stage)
+    monkeypatch.setattr(fpga_build, "run_x3_default_place", complete_stage)
     monkeypatch.setattr(fpga_build, "run_x3_step_directive_sweep", complete_stage)
     monkeypatch.setattr(fpga_build, "generate_bitstream", lambda *_args: True)
     monkeypatch.setattr(
@@ -2540,7 +2541,16 @@ def test_build_cli_forwards_job_limit_to_every_sweep(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["build.py", "x3", "--start-at", step, "--stop-after", step, *options],
+        [
+            "build.py",
+            "x3",
+            "--start-at",
+            step,
+            "--stop-after",
+            step,
+            *options,
+            *(["--num-uncertainties", "1"] if step == "place" else []),
+        ],
     )
     monkeypatch.setitem(
         sys.modules, "extract_timing_and_util_summary", timing_util_summary
@@ -2984,6 +2994,199 @@ def test_promoted_opt_checkpoint_survives_worker_cleanup(
     )
     assert not (tmp_path / "x3/work_opt_Explore").exists()
     assert (work / "post_opt.dcp").read_bytes() == b"new optimized checkpoint"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        None,
+        "reference_checkpoint",
+        "verification",
+        "gate_changed",
+        "checkpoint_changed",
+        "target_missed",
+        "post_opt_changed",
+    ),
+)
+def test_default_place_uses_fresh_reference_and_verifies_in_main_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str | None
+) -> None:
+    """A fresh reference feeds the second pass; only unchanged passing evidence binds."""
+    work = _sweep_input(tmp_path, "place")
+    (work / "post_opt.dcp").write_bytes(b"current post-opt")
+    _write_stage_utilization(work, "post_opt", 42)
+    timing = work / "post_opt_timing.rpt"
+    timing.write_text(timing.read_text().replace("-0.100", "0.009"))
+    (work / "post_place_reference.dcp").write_bytes(b"stale reference")
+    (work / "post_place.dcp").write_bytes(b"stale placement")
+    _write_place_gate(work, bind=True)
+    stages = []
+
+    def run(command: list[str], *, cwd: Path, env: dict[str, str]) -> Any:
+        assert cwd == work
+        assert env["FROST_PLACE_SETUP_UNCERTAINTY"] == "0.300"
+        assert env["FROST_PLACE_CELL_BLOAT"] == ""
+        args = command[command.index("-tclargs") + 1 :]
+        stage = args[6] if args[1] == "place" else args[1]
+        stages.append(stage)
+        assert not (work / "post_place_gate_binding.json").exists()
+        if stage == "verify_place":
+            assert Path(args[3]) == work / "post_place.dcp"
+            assert not (work / "post_place_gate.txt").exists()
+            if failure == "verification":
+                return SimpleNamespace(returncode=1)
+            if failure == "checkpoint_changed":
+                (work / "post_place.dcp").write_bytes(b"changed during verification")
+            slack = -0.201 if failure == "target_missed" else -0.189
+            _write_place_gate(work, -0.180 if failure == "gate_changed" else slack)
+        else:
+            assert Path(args[3]) == work / "post_opt.dcp"
+            assert Path(args[3]).read_bytes() == b"current post-opt"
+            assert args[2] == "ExtraNetDelay_high"
+            assert not (work / "post_place.dcp").exists()
+            if stage == "reference":
+                assert not (work / "post_place_reference.dcp").exists()
+            else:
+                assert (work / "post_place_reference.dcp").read_bytes() == b"reference"
+            slack = (
+                -0.222
+                if stage == "reference"
+                else -0.201
+                if failure == "target_missed"
+                else -0.189
+            )
+            _write_stage_utilization(work, "post_place", 42)
+            path = work / "post_place_timing.rpt"
+            path.write_text(path.read_text().replace("-0.100", f"{slack:.3f}"))
+            _write_place_gate(work, slack)
+            if failure != "reference_checkpoint" or stage != "reference":
+                (work / "post_place.dcp").write_bytes(stage.encode())
+            if failure == "post_opt_changed" and stage == "reference":
+                (work / "post_opt.dcp").write_bytes(b"changed mid-run")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(fpga_build.subprocess, "run", run)
+    success, wns, prefix = fpga_build.run_x3_default_place(tmp_path, "unused")
+    assert stages == (
+        ["reference"]
+        if failure in {"reference_checkpoint", "post_opt_changed"}
+        else ["reference", "incremental", "verify_place"]
+    )
+    assert success is (failure is None)
+    if success:
+        assert (wns, prefix) == (-0.189, "post_place")
+        assert fpga_build.require_x3_post_place_gate(work)
+        record = json.loads((work / "post_place_recipe.json").read_text())
+        assert record["post_opt_sha256"] == fpga_build.file_sha256(
+            work / "post_opt.dcp"
+        )
+        assert record["reference_sha256"] == fpga_build.file_sha256(
+            work / "post_place_reference.dcp"
+        )
+    else:
+        assert not (work / "post_place_gate_binding.json").exists()
+        assert not (work / "post_place_recipe.json").exists()
+    assert list((tmp_path / "x3").iterdir()) == [work]
+
+
+def test_default_place_stops_on_failing_post_opt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Never place an unclosed post-opt netlist or retain an older qualification."""
+    work = _sweep_input(tmp_path, "place")
+    _write_stage_utilization(work, "post_opt", 42)
+    (work / "post_place.dcp").write_bytes(b"old placement")
+    _write_place_gate(work, bind=True)
+    monkeypatch.setattr(
+        fpga_build.subprocess,
+        "run",
+        lambda *_a, **_kw: pytest.fail("placed unclosed post-opt"),
+    )
+    assert not fpga_build.run_x3_default_place(tmp_path, "unused")[0]
+    assert not (work / "post_place_gate_binding.json").exists()
+
+
+@pytest.mark.parametrize("stage", ("post_synth", "post_opt", "post_place"))
+def test_replaced_placement_removes_default_recipe_records(
+    tmp_path: Path, stage: str
+) -> None:
+    """New checkpoints cannot inherit a prior default placement's verification files."""
+    source = tmp_path / "source"
+    source.mkdir()
+    main = tmp_path / "work"
+    main.mkdir()
+    (source / f"{stage}.dcp").write_bytes(b"replacement")
+    stale_names = (
+        "post_place_reference.dcp",
+        "post_place_reference_gate.txt",
+        "post_place_recipe.json",
+        "post_place_incremental_reuse.rpt",
+        "post_place_verification_timing.rpt",
+        "post_place_route_status.rpt",
+    )
+    for name in stale_names:
+        (main / name).write_text("obsolete")
+    fpga_build.copy_results_to_main_work(source, main, f"{stage}.dcp", stage)
+    assert not any((main / name).exists() for name in stale_names)
+    assert (main / f"{stage}.dcp").read_bytes() == b"replacement"
+
+
+@pytest.mark.parametrize(
+    ("options", "bloat", "expected"),
+    (
+        ([], None, "default"),
+        (["--num-uncertainties", "1"], None, "sweep"),
+        (["--directives", "ExtraNetDelay_high"], None, "sweep"),
+        ([], "", "sweep"),
+        (["--cpu-clock-div", "2"], None, "sweep"),
+    ),
+)
+def test_cli_selects_default_place_without_explicit_sweep_controls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    options: list[str],
+    bloat: str | None,
+    expected: str,
+) -> None:
+    """Ordinary builds use the recipe; explicit controls and divided clocks keep sweeps."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    monkeypatch.setenv("FROST_PERF_COUNTERS", "0")
+    work = _sweep_input(tmp_path, "place")
+    if "--cpu-clock-div" in options:
+        path = work / fpga_build.X3_NETLIST_CONFIG_NAME
+        config = json.loads(path.read_text())
+        config["cpu_clock_div"] = 2
+        path.write_text(json.dumps(config))
+    monkeypatch.delenv("FROST_PLACE_CELL_BLOAT_CELLS", raising=False)
+    monkeypatch.delenv("FROST_PLACE_CELL_BLOAT", raising=False)
+    if bloat is not None:
+        monkeypatch.setenv("FROST_PLACE_CELL_BLOAT", bloat)
+    monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["build.py", "x3", "--start-at", "place", "--stop-after", "place", *options],
+    )
+    calls = []
+
+    def finish_default(*_args: Any, **_kwargs: Any) -> tuple[bool, float, str]:
+        calls.append("default")
+        return True, -0.189, "post_place"
+
+    def finish_sweep(*_args: Any, **_kwargs: Any) -> tuple[bool, float, str]:
+        calls.append("sweep")
+        return True, -0.1, "post_place"
+
+    monkeypatch.setattr(fpga_build, "run_x3_default_place", finish_default)
+    monkeypatch.setattr(fpga_build, "run_x3_step_directive_sweep", finish_sweep)
+    monkeypatch.setitem(
+        sys.modules, "extract_timing_and_util_summary", timing_util_summary
+    )
+    monkeypatch.setattr(
+        timing_util_summary, "collect_all_board_utilization", lambda *_a, **_kw: {}
+    )
+    fpga_build.main()
+    assert calls == [expected]
 
 
 def test_missing_placement_checkpoint_cannot_defeat_complete_passing_seed(
@@ -3849,6 +4052,11 @@ def test_resumed_build_uses_recorded_configuration_for_readme(
     monkeypatch.setattr(
         fpga_build,
         "run_x3_step_directive_sweep",
+        lambda *_args, **_kwargs: (True, -1.0, "post_place"),
+    )
+    monkeypatch.setattr(
+        fpga_build,
+        "run_x3_default_place",
         lambda *_args, **_kwargs: (True, -1.0, "post_place"),
     )
     monkeypatch.setitem(

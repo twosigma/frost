@@ -163,13 +163,6 @@ Buildroot test image repeatedly.
 
 ## Building
 
-The [2026-10-03 placement recipe](timing/x3_20261003/README.txt) achieved
-**-0.189 ns immediate post-place WNS** at 322.265625 MHz with zero scoring
-uncertainty, before post-place phys-opt or routing. It records the clock-root
-and LUT input constraints, frozen scripts, checkpoint hashes, and two clean
-reopen verifications. Reproduction requires the archived checkpoint bundle;
-the recipe is specific to that netlist and is separate from the default sweep.
-
 `build/build.py` compiles `hello_world` into the initial BRAM contents, then
 runs Vivado: `synth`, `opt`, `place`, `post_place_physopt`, `route`,
 `post_route_physopt`, `second_route`, and `post_second_route_physopt`, then
@@ -181,22 +174,40 @@ X3's board constraints leave the NIC core and MAC unfenced. Even soft pblocks
 can change the CPU's placement and local congestion as the design evolves;
 evaluate any new floorplan against an unfenced placement of the current netlist.
 
-On X3, placement and routing are sweeps. Placement runs several directives,
-each at several setup-uncertainty values, and keeps the best result; both
-route steps try several directives. `--jobs N` (default 12) limits how many
-Vivado processes run at once, so watch memory when running several builds.
-`--directives`, `--num-uncertainties`, and `--route-directives` narrow the
-sweeps. `build.py --help` describes every step and default.
+Full-rate X3 placement starts from the current build's closed post-opt
+checkpoint. It generates a fresh reference with `ExtraNetDelay_high`, 0.300 ns
+placement uncertainty, and CPU clock root `X1Y9`. It then reopens post-opt,
+reads that reference incrementally with `RuntimeOptimized`, and assigns the
+instruction-sideband mux's late BRAM input to its fast A6 LUT input before
+placement. Both passes use the same work directory. The reference is saved as
+`work/post_place_reference.dcp`; the final output is `work/post_place.dcp`.
+A separate Vivado process checks the final checkpoint without altering its
+stored constraints. The default flow requires post-opt WNS >= 0 and immediate
+post-place WNS better than −0.200 ns. It uses no archived checkpoints.
+`work/post_place_recipe.json` records the input and output checkpoint hashes;
+`work/post_place_verification_timing.rpt` records the clean-reopen timing.
 
-If no placement reaches −0.200 ns setup slack, the build warns and continues
-with the best one. The X3 CPU datapath has no false-path or multicycle
-exceptions.
+`--directives` or `--num-uncertainties` selects a placement sweep instead:
+several directives and uncertainty values compete, and the best result is
+kept. Setting either cell-bloat variable below also selects that sweep. If
+none of its candidates reaches −0.200 ns, the sweep warns and continues with
+the best one. The X3 CPU datapath has no false-path or multicycle exceptions.
+
+Both route steps try several directives. `--route-directives` narrows their
+sweeps. `--jobs N` (default 12) limits simultaneous Vivado processes in sweeps;
+the default placement's two passes run sequentially. `build.py --help`
+describes every step and default. To build through placement in the normal
+output directory:
+
+```bash
+./fpga/build/build.py x3 --stop-after place
+```
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `FROST_PLACE_CONGESTION_VETO_LEVEL` | `5` | Among placements that meet timing, drop those whose congestion estimate reaches this level; if that drops them all, keep the least congested |
-| `FROST_PLACE_QUICK_ROUTE_COUNT` | `0` | Quick-route this many passing placements and choose by routed slack |
-| `FROST_PLACE_CELL_BLOAT` | unset | `LOW`, `MEDIUM`, or `HIGH` cell bloat for every placement, or empty for none. Setting this or the next variable turns off the automatic `LOW` variants |
+| `FROST_PLACE_CONGESTION_VETO_LEVEL` | `5` | In placement sweeps, drop passing candidates whose congestion estimate reaches this level; if that drops them all, keep the least congested |
+| `FROST_PLACE_QUICK_ROUTE_COUNT` | `0` | In placement sweeps, quick-route this many passing candidates and choose by routed slack |
+| `FROST_PLACE_CELL_BLOAT` | unset | Select a placement sweep with `LOW`, `MEDIUM`, or `HIGH` cell bloat for every candidate, or empty for none. Setting this or the next variable turns off the automatic `LOW` variants |
 | `FROST_PLACE_CELL_BLOAT_CELLS` | `*u_tomasulo/u_int_rs` | Hierarchy patterns to bloat |
 | `FROST_PHYSOPT_SETUP_UNCERTAINTY` | 0.5 ns after placement, 0 after routing | Added setup uncertainty for every phys_opt step |
 | `FROST_GTY_RX_EQ` | `LPM` | NIC transceiver receive equalizer (`LPM` or `DFE`) |

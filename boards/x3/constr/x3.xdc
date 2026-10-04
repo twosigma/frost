@@ -65,6 +65,8 @@ create_generated_clock -quiet -name clock_from_mmcm [get_pins -quiet [get_proper
 # them, below the core's clock regions. Without this Vivado roots a
 # BUFG_GT-driven clock in the transceiver's region (X4Y7, the device's right
 # edge), which adds skew across the core.
+# Baseline for synthesis, optimization and explicit placer sweeps. The default
+# full-rate placement flow applies X1Y9 immediately before place_design.
 set_property USER_CLOCK_ROOT X2Y7 [get_nets {main_clock divided_clock_by_4}]
 
 # The transceiver's supervisor synchronizes TX reset done, a level that rises
