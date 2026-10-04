@@ -18,7 +18,8 @@ The reference helpers compute Sv39 matching, the physical page, permissions,
 PMA faults, and the two-word fetch window in Python without reading RTL
 state. The directed tests check the visibility rule: a translated result is
 visible only while its tag matches the live registered PC and privilege, and
-turning translation off or an invalidate clears the tag.
+turning translation off or an invalidate clears the tag. Every validity copy
+must agree with that visibility rule.
 """
 
 from dataclasses import dataclass
@@ -224,11 +225,13 @@ def _assert_faults_zero(dut: Any) -> None:
 
 def _assert_invisible(dut: Any) -> None:
     assert int(dut.o_pa_valid.value) == 0
+    assert int(dut.o_pa_valid_copy.value) == 0
     _assert_faults_zero(dut)
 
 
 def _assert_window(dut: Any, expected: Window) -> None:
     assert int(dut.o_pa_valid.value) == 1
+    assert int(dut.o_pa_valid_copy.value) == (1 << len(dut.o_pa_valid_copy)) - 1
     assert int(dut.o_pa0.value) == expected.pa0
     assert int(dut.o_pa1.value) == expected.pa1
     assert int(dut.o_fault0.value) == expected.fault0

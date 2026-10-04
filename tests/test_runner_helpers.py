@@ -303,6 +303,47 @@ def test_cocotb_runner_rejects_zero_exit_without_fresh_passing_tests(
         runner.run_simulation()
 
 
+@pytest.mark.parametrize(
+    "missing_marker",
+    (None, ".last_toplevel", ".last_cocotb_libs", ".last_verilator_extra_args"),
+)
+def test_cocotb_partial_verilation_without_binary_requires_clean(
+    tmp_path: Path, missing_marker: str | None
+) -> None:
+    """A failed compile's Vtop.mk must not build the next test's wrong model."""
+    runner = test_run_cocotb.CocotbRunner(
+        python_test_module="cocotb_tests.if_stage.test_instruction_aligner",
+        hdl_toplevel_module="instruction_aligner",
+    )
+    (tmp_path / "Vtop.mk").write_text("# Generated before a fatal IMMU warning\n")
+    if missing_marker is not None:
+        runner._update_verilator_toplevel_marker(tmp_path)
+        (tmp_path / missing_marker).unlink()
+
+    assert not (tmp_path / "Vtop").exists()
+    assert runner._verilator_needs_rebuild(tmp_path)
+
+
+def test_cocotb_fresh_and_matching_builds_keep_incremental_compilation(
+    tmp_path: Path,
+) -> None:
+    """Allow fresh builds and reuse only artifacts with matching metadata."""
+    runner = test_run_cocotb.CocotbRunner(
+        python_test_module="cocotb_tests.if_stage.test_instruction_aligner",
+        hdl_toplevel_module="instruction_aligner",
+    )
+    build = tmp_path / "sim_build"
+    assert not runner._verilator_needs_rebuild(build)
+    build.mkdir()
+    assert not runner._verilator_needs_rebuild(build)
+
+    (build / "Vtop.mk").write_text("# Correct instruction_aligner build\n")
+    runner._update_verilator_toplevel_marker(build)
+    assert not runner._verilator_needs_rebuild(build)
+    (build / ".last_toplevel").write_text("immu_test_harness")
+    assert runner._verilator_needs_rebuild(build)
+
+
 def test_arch_simulation_turns_off_the_uart_tx_drop_check(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

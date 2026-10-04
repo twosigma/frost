@@ -25,12 +25,16 @@
  * enable: under Sv39 it detects a PC change by comparing the registered PC
  * with its result's tag.
  *
+ * The validity copies are exposed so cocotb checks every consumer's view
+ * across translation, retag, and fault transitions.
+ *
  * The walker response comes in as separate ports because cocotb cannot
  * portably drive fields of a SystemVerilog packed struct.
  */
 module immu_test_harness #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
-    parameter int unsigned NUM_ENTRIES = 8
+    parameter int unsigned NUM_ENTRIES = 8,
+    parameter int unsigned PA_VALID_COPIES = riscv_pkg::FetchPaHoldCopies
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -46,6 +50,7 @@ module immu_test_harness #(
     output logic [31:0] o_pa0,
     output logic [31:0] o_pa1,
     output logic o_pa_valid,
+    output logic [PA_VALID_COPIES-1:0] o_pa_valid_copy,
     output logic o_fault0,
     output logic o_fault0_page,
     output logic o_fault1,
@@ -93,7 +98,8 @@ module immu_test_harness #(
 
   immu #(
       .XLEN(XLEN),
-      .NUM_ENTRIES(NUM_ENTRIES)
+      .NUM_ENTRIES(NUM_ENTRIES),
+      .PA_VALID_COPIES(PA_VALID_COPIES)
   ) u_immu (
       .i_clk(i_clk),
       .i_rst(i_rst),
@@ -104,6 +110,7 @@ module immu_test_harness #(
       .o_pa0(o_pa0),
       .o_pa1(o_pa1),
       .o_pa_valid(o_pa_valid),
+      .o_pa_valid_copy(o_pa_valid_copy),
       .o_fault0(o_fault0),
       .o_fault0_page(o_fault0_page),
       .o_fault1(o_fault1),

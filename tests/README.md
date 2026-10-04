@@ -65,6 +65,12 @@ a regex for the cocotb test function; with pytest, `-k` and `-m` select
 registry targets. A seed sweep gives each run its own build directory and
 prints a command that reproduces each failing seed.
 
+Within a pytest run, compilation reuses generated files only when all build
+markers match the target and tool configuration. Partial files left by a failed
+Verilator invocation are cleaned before the next target, even if no simulator
+binary was produced, so one compile failure cannot select the wrong RTL model
+for a later bench.
+
 Whole-CPU simulations, synthesis, and FPGA builds all use the CPU
 configuration in `riscv_pkg`. The `tomasulo_wrapper_no_early_load` and
 `load_queue_no_prepare_busy` targets cover early load wakeup and busy-port

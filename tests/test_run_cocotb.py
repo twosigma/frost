@@ -1841,7 +1841,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="immu_test_harness",
         description=(
             "Instruction-MMU registered-key, translation visibility, walk-retarget, "
-            "fault, and cross-page tests"
+            "fault, cross-page, and validity-copy tests"
         ),
     ),
     "instruction_aligner": CocotbRunConfig(
@@ -2288,28 +2288,25 @@ class CocotbRunner:
     def _verilator_needs_rebuild(self, sim_build_dir: Path) -> bool:
         """Return True if the existing Verilator build cannot be reused.
 
-        The build is stale when the toplevel, the cocotb libs directory, or
-        the Verilator build signature differs from the recorded markers.
+        Existing artifacts require complete, matching markers for the toplevel,
+        cocotb libs directory, and Verilator build signature. A failed verilation
+        can leave generated files behind before a binary or markers exist.
         """
         toplevel_marker = sim_build_dir / ".last_toplevel"
         cocotb_libs_marker = sim_build_dir / ".last_cocotb_libs"
         verilator_extra_args_marker = sim_build_dir / ".last_verilator_extra_args"
-        verilator_binary = sim_build_dir / "Vtop"
         cocotb_libs_dir = str(
             (Path(cocotb.__file__).resolve().parent / "libs").resolve()
         )
 
-        # A binary with any marker missing cannot be matched to the current
-        # configuration: force a rebuild.
-        if verilator_binary.exists() and (
+        # Even a failed verilation can emit Vtop.mk and C++ for the old top.
+        # Make would reuse those files for the next test unless we clean them.
+        if (
             not toplevel_marker.exists()
             or not cocotb_libs_marker.exists()
             or not verilator_extra_args_marker.exists()
         ):
-            return True
-
-        if not toplevel_marker.exists():
-            return False  # No previous build, let make handle it
+            return sim_build_dir.exists() and any(sim_build_dir.iterdir())
 
         try:
             last_toplevel = toplevel_marker.read_text().strip()
@@ -2321,7 +2318,7 @@ class CocotbRunner:
                 or last_verilator_extra_args != self._verilator_build_signature()
             )
         except OSError:
-            return False
+            return True  # Unreadable metadata cannot qualify cached artifacts.
 
     def _update_verilator_toplevel_marker(self, sim_build_dir: Path) -> None:
         """Record the current build environment for future incremental checks."""
