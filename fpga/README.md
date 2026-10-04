@@ -187,6 +187,15 @@ post-place WNS better than −0.200 ns. It uses no archived checkpoints.
 `work/post_place_recipe.json` records the input and output checkpoint hashes;
 `work/post_place_verification_timing.rpt` records the clean-reopen timing.
 
+Phys-opt and routing remove inherited incremental history when opening their
+input checkpoint. Otherwise `RuntimeOptimized` can make Vivado stop optimizing
+at the reference run's negative WNS. The conversion writes and reopens
+`timing_input.dcp` in the stage's work directory with incremental history
+disabled, and requires identical primitive placement and setup/hold slack.
+It preserves the original input checkpoint and also applies to resumed builds
+and quick-route probes. Phys-opt still repeats until WNS stops improving and
+TNS stops improving at equal WNS, or a pass meets its timing target.
+
 `--directives` or `--num-uncertainties` selects a placement sweep instead:
 several directives and uncertainty values compete, and the best result is
 kept. Setting either cell-bloat variable below also selects that sweep. If

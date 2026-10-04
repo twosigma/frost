@@ -2906,6 +2906,11 @@ Behavior:
     early if a pass closes timing (WNS>=0). Sweeps repeat while they keep
     improving, and each completed sweep writes the current best checkpoint
     and reports.
+  * Phys-opt and routing, including quick-route probes and resumed builds,
+    remove inherited incremental history before optimizing. The conversion
+    preserves primitive placement and setup/hold slack, and leaves the input
+    checkpoint unchanged. This prevents RuntimeOptimized placement's negative
+    reference WNS from becoming the stopping target of later optimization.
   * Early exit: when route, post_route_physopt, or second_route closes timing,
     its outputs are promoted to final.dcp/final_*, the remaining stages are
     skipped, and the bitstream runs next.

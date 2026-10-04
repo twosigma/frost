@@ -1821,6 +1821,14 @@ PHYSOPT_SWEEP_MODEL = r"""
 set true_wns [expr {double($::env(MODEL_TRUE_WNS))}]
 set uncertainty 0.0
 set checkpoint_uncertainty [dict create]
+set checkpoint_state [dict create]
+set write_incremental 1
+set incremental_active [expr {[info exists ::env(MODEL_INCREMENTAL)] && $::env(MODEL_INCREMENTAL)}]
+set initial_incremental $incremental_active
+set progress_remaining 0
+if {[info exists ::env(MODEL_PROGRESS)]} {set progress_remaining $::env(MODEL_PROGRESS)}
+set optimizations 0
+set tns_adjustment 0.0
 
 proc record {line} {
     set fh [open $::env(MODEL_TRACE) a]
@@ -1834,9 +1842,10 @@ proc model_wns {} {
 }
 
 proc write_timing_summary {path} {
+    global tns_adjustment
     set wns [model_wns]
     if {$wns < 0.0} {
-        set tns [expr {$wns * 4.0}]
+        set tns [expr {$wns * 4.0 + $tns_adjustment}]
         set failing 12
     } else {
         set tns 0.0
@@ -1851,9 +1860,26 @@ proc write_timing_summary {path} {
 
 proc unknown {cmd args} {
     global uncertainty checkpoint_uncertainty
+    global checkpoint_state write_incremental incremental_active initial_incremental
+    global true_wns progress_remaining optimizations tns_adjustment
     switch -- $cmd {
         get_clocks {return clock_from_mmcm}
+        get_cells {return primitive}
         close_design {return {}}
+        report_incremental_reuse {
+            if {$incremental_active} {return {| Incremental Directive | RuntimeOptimized |}}
+            return {}
+        }
+        get_param {
+            if {[lindex $args 0] ne "checkpoint.writeIncrFile"} {error "Unexpected parameter $args"}
+            return $write_incremental
+        }
+        set_param {
+            if {[lindex $args 0] ne "checkpoint.writeIncrFile"} {error "Unexpected parameter $args"}
+            set write_incremental [lindex $args 1]
+            record "write_incremental $write_incremental"
+            return {}
+        }
         set_clock_uncertainty {
             set index [lsearch -exact $args -setup]
             set uncertainty [expr {double([lindex $args [expr {$index - 1}]])}]
@@ -1866,12 +1892,21 @@ proc unknown {cmd args} {
             if {[dict exists $checkpoint_uncertainty $path]} {
                 set uncertainty [dict get $checkpoint_uncertainty $path]
             }
+            set incremental_active $initial_incremental
+            if {[dict exists $checkpoint_state $path]} {
+                lassign [dict get $checkpoint_state $path] true_wns tns_adjustment incremental_active
+            }
+            if {[file tail $path] eq "timing_input.dcp" && [info exists ::env(MODEL_BAD_CONVERSION)]} {
+                if {$::env(MODEL_BAD_CONVERSION) eq "history"} {set incremental_active 1}
+                if {$::env(MODEL_BAD_CONVERSION) eq "timing"} {set true_wns [expr {$true_wns - 0.1}]}
+            }
             record "open [file tail $path] at [format %.3f $uncertainty]"
             return {}
         }
         write_checkpoint {
             set path [lindex $args end]
             dict set checkpoint_uncertainty $path $uncertainty
+            dict set checkpoint_state $path [list $true_wns $tns_adjustment [expr {$incremental_active && $write_incremental}]]
             close [open $path w]
             record "checkpoint [file tail $path] at [format %.3f $uncertainty]"
             return {}
@@ -1883,7 +1918,7 @@ proc unknown {cmd args} {
             record "$taken wns [format %.3f [model_wns]]"
             return {}
         }
-        report_utilization - report_high_fanout_nets {
+        report_utilization - report_high_fanout_nets - report_design_analysis {
             close [open [lindex $args end] w]
             return {}
         }
@@ -1893,10 +1928,27 @@ proc unknown {cmd args} {
         }
         get_property {
             if {[lindex $args 0] eq "SLACK"} {return [model_wns]}
+            if {[lindex $args 0] in {NAME LOC BEL REF_NAME}} {return [lindex $args 0]}
             error "Unexpected property request $args"
         }
         phys_opt_design {
             record "phys_opt_design $args"
+            if {$incremental_active && [model_wns] >= -0.546} {
+                record "setup_skipped"
+                return {}
+            }
+            if {$progress_remaining > 0} {
+                incr progress_remaining -1
+                incr optimizations
+                if {$optimizations <= 2} {set true_wns [expr {$true_wns + 0.015}]}
+                set tns_adjustment [expr {$tns_adjustment + 0.005}]
+                record "setup_optimized $optimizations"
+            }
+            return {}
+        }
+        route_design {
+            if {$incremental_active} {error "Router inherited the incremental timing target"}
+            record "route_design $args"
             return {}
         }
         default {error "Unexpected command $cmd $args"}
@@ -1915,6 +1967,10 @@ def _run_physopt_sweep_model(
     true_wns: float,
     setup_uncertainty: str | None = None,
     launch_token: str | None = None,
+    *,
+    incremental: bool = False,
+    progress: int = 0,
+    bad_conversion: str | None = None,
 ) -> tuple[str, list[str], Path]:
     """Sweep one phys-opt stage; return its stdout, trace and main work dir."""
     model = tmp_path / "physopt_model.tcl"
@@ -1935,11 +1991,15 @@ def _run_physopt_sweep_model(
         MODEL_TRACE=str(trace),
         MODEL_TRUE_WNS=str(true_wns),
         MODEL_STEP=step,
+        MODEL_INCREMENTAL=str(int(incremental)),
+        MODEL_PROGRESS=str(progress),
         # One directive plus the appended retime pass keeps the model short.
         FROST_PHYSOPT_SWEEP_ORDER="Explore",
     )
     if setup_uncertainty is not None:
         env["FROST_PHYSOPT_SETUP_UNCERTAINTY"] = setup_uncertainty
+    if bad_conversion is not None:
+        env["MODEL_BAD_CONVERSION"] = bad_conversion
     result = subprocess.run(
         ["tclsh", str(model)],
         cwd=work_dir,
@@ -1949,7 +2009,13 @@ def _run_physopt_sweep_model(
         timeout=60,
         check=False,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
+    if bad_conversion is not None:
+        assert result.returncode != 0
+        assert "Incremental timing target survived" in result.stderr or (
+            "Removing incremental history changed" in result.stderr
+        )
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
     return result.stdout, trace.read_text().splitlines(), tmp_path / "work"
 
 
@@ -2015,6 +2081,57 @@ def test_physopt_uncertainty_override_still_reaches_a_post_route_stage(
     assert "Timing met" not in stdout
     assert (main_work / "post_route_physopt.dcp").exists()
     assert not (main_work / "final.dcp").exists()
+
+
+@pytest.mark.parametrize(
+    "step", ("post_place_physopt", "post_route_physopt", "post_second_route_physopt")
+)
+def test_physopt_continues_past_inherited_target_and_repeats_for_tns(
+    tmp_path: Path, step: str
+) -> None:
+    """A stale negative target must not masquerade as sweep convergence."""
+    stdout, trace, _ = _run_physopt_sweep_model(
+        tmp_path, step, -0.046, incremental=True, progress=4
+    )
+    assert "setup_skipped" not in trace
+    assert sum(line.startswith("setup_optimized") for line in trace) == 4
+    assert sum(line.startswith("phys_opt_design") for line in trace) == 6
+    assert "TNS tie-break" in stdout
+    assert f"No WNS/TNS improvement during {step} sweep iteration 3" in stdout
+    assert "FROST_TIMING_FLOW incremental=off" in stdout
+    assert [line for line in trace if line.startswith("write_incremental")] == [
+        "write_incremental 0",
+        "write_incremental 1",
+    ]
+
+
+@pytest.mark.parametrize("step", ("quick_route", "route", "second_route"))
+@pytest.mark.parametrize("incremental", (False, True))
+def test_routing_resumes_with_the_normal_timing_target(
+    tmp_path: Path, step: str, incremental: bool
+) -> None:
+    """Routing drops an inherited target and accepts ordinary checkpoints."""
+    stdout, trace, _ = _run_physopt_sweep_model(
+        tmp_path, step, -0.046, incremental=incremental
+    )
+    assert sum(line.startswith("route_design") for line in trace) == 1
+    assert ("FROST_TIMING_FLOW incremental=off" in stdout) is incremental
+    assert (tmp_path / f"work_{step}_Sweep/timing_input.dcp").exists() is incremental
+
+
+@pytest.mark.parametrize("bad_conversion", ("history", "timing"))
+def test_failed_incremental_conversion_stops_before_optimization(
+    tmp_path: Path, bad_conversion: str
+) -> None:
+    """Reject conversion if it retains the target or changes input timing."""
+    _, trace, _ = _run_physopt_sweep_model(
+        tmp_path,
+        "post_place_physopt",
+        -0.046,
+        incremental=True,
+        bad_conversion=bad_conversion,
+    )
+    assert not any(line.startswith("phys_opt_design") for line in trace)
 
 
 def test_perf_counters_generic_reaches_synthesis_and_the_cpu() -> None:

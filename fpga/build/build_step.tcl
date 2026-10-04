@@ -18,6 +18,53 @@
 
 # Utilities
 
+# Incremental placement carries its reference's negative WNS target into saved
+# checkpoints. Remove that history before later optimization, without changing
+# the placed/routed design or the original checkpoint bound to the timing gate.
+proc primitive_placement_snapshot {} {
+    set cells [get_cells -hier -filter {IS_PRIMITIVE}]
+    set rows {}
+    foreach name [get_property NAME $cells] loc [get_property LOC $cells] bel [get_property BEL $cells] ref [get_property REF_NAME $cells] {
+        lappend rows [list $name $loc $bel $ref]
+    }
+    return [lsort -index 0 $rows]
+}
+
+proc current_setup_hold_slacks {} {
+    set result {}
+    foreach delay_type {max min} {
+        lappend result [get_property SLACK [get_timing_paths -delay_type $delay_type -max_paths 1]]
+    }
+    return $result
+}
+
+proc open_timing_checkpoint {checkpoint_path work_directory} {
+    open_checkpoint $checkpoint_path
+    # The report is empty for a checkpoint without incremental history.
+    if {[string trim [report_incremental_reuse -return_string]] eq ""} {return}
+
+    set placement [primitive_placement_snapshot]
+    set slacks [current_setup_hold_slacks]
+    set clean_checkpoint [file join $work_directory timing_input.dcp]
+    set write_incremental [get_param checkpoint.writeIncrFile]
+    try {
+        set_param checkpoint.writeIncrFile 0
+        write_checkpoint -force $clean_checkpoint
+    } finally {
+        set_param checkpoint.writeIncrFile $write_incremental
+    }
+    close_design
+    open_checkpoint $clean_checkpoint
+
+    if {[string trim [report_incremental_reuse -return_string]] ne ""} {
+        error "Incremental timing target survived checkpoint conversion"
+    }
+    if {$placement ne [primitive_placement_snapshot] || $slacks ne [current_setup_hold_slacks]} {
+        error "Removing incremental history changed placement or timing"
+    }
+    puts "FROST_TIMING_FLOW incremental=off preserved_cells=[llength $placement] setup_hold_slacks=$slacks"
+}
+
 # Parse timing report to get number of failing setup endpoints
 proc get_failing_endpoint_count {timing_report_file} {
     set setup_count 0
@@ -1226,7 +1273,7 @@ if {$step eq "synth"} {
         puts "Error: quick_route step requires checkpoint_path"
         exit 1
     }
-    open_checkpoint $checkpoint_path
+    open_timing_checkpoint $checkpoint_path $work_directory
 
     if {$board_name eq "x3"} {
         set_clock_uncertainty -from clock_from_mmcm -to clock_from_mmcm 0.0 -setup
@@ -1247,7 +1294,7 @@ if {$step eq "synth"} {
         puts "Error: $step step requires checkpoint_path"
         exit 1
     }
-    open_checkpoint $checkpoint_path
+    open_timing_checkpoint $checkpoint_path $work_directory
 
     # The added setup uncertainty depends on the stage. Post-place phys-opt
     # sweeps under 0.5 ns of added setup uncertainty, so its initial and
@@ -1550,7 +1597,7 @@ if {$step eq "synth"} {
         puts "Error: route step requires checkpoint_path"
         exit 1
     }
-    open_checkpoint $checkpoint_path
+    open_timing_checkpoint $checkpoint_path $work_directory
 
     # Route X3 at zero added setup uncertainty, whatever the input carries.
     if {$board_name eq "x3"} {
@@ -1573,7 +1620,7 @@ if {$step eq "synth"} {
         puts "Error: second_route step requires checkpoint_path"
         exit 1
     }
-    open_checkpoint $checkpoint_path
+    open_timing_checkpoint $checkpoint_path $work_directory
 
     route_design -directive $directive
 
