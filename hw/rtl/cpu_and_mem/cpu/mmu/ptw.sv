@@ -35,8 +35,8 @@
  *     the requester turns into the access fault of the original access type.
  *     Page tables must be in cached DDR because the walk path cannot reach
  *     BRAM or devices.
- *   - reserved bits, V=0, W&!R, a non-leaf at level 0, a misaligned
- *     superpage, or A=0 => DFAULT_PAGE.
+ *   - reserved bits, V=0, W&!R, a non-leaf with D, A, or U set, a non-leaf
+ *     at level 0, a misaligned superpage, or A=0 => DFAULT_PAGE.
  * A clean leaf answers DFAULT_NONE with {ppn, level, RWXUD} and echoes the
  * VPN. The requesting MMU checks permissions at lookup, because SUM, MXR, and
  * the effective privilege are live CSR state, not walk state.
@@ -199,8 +199,11 @@ module ptw #(
   logic pte_is_leaf;
   assign pte_is_leaf = pte_r || pte_x;
 
-  logic pte_invalid;  // V=0 or the reserved R/W combination
-  assign pte_invalid = !pte_v || (!pte_r && pte_w);
+  // V=0, the reserved W&!R encoding, or a non-leaf with D, A, or U set. The
+  // privileged spec reserves those three bits in a non-leaf PTE, and a walk
+  // that finds a reserved bit set raises a page fault.
+  logic pte_invalid;
+  assign pte_invalid = !pte_v || (!pte_r && pte_w) || (!pte_is_leaf && (pte_d || pte_a || pte_u));
 
   logic superpage_misaligned;
   always_comb begin
@@ -396,8 +399,10 @@ module ptw #(
   logic f_g_reserved, f_g_invalid, f_g_leaf, f_g_misaligned, f_g_a0;
   always_comb begin
     f_g_reserved = |f_pte[63:54];
-    f_g_invalid = !f_pte[0] || (!f_pte[1] && f_pte[2]);
     f_g_leaf = f_pte[1] || f_pte[3];
+    // D (7), A (6), and U (4) are reserved in a non-leaf PTE.
+    f_g_invalid = !f_pte[0] || (!f_pte[1] && f_pte[2]) ||
+                  (!f_g_leaf && (f_pte[7] || f_pte[6] || f_pte[4]));
     unique case (f_level)
       2'd2: f_g_misaligned = |f_pte[27:10];
       2'd1: f_g_misaligned = |f_pte[18:10];
@@ -415,6 +420,13 @@ module ptw #(
       if (o_line_req_valid) p_read_in_ddr : assert (o_line_req_addr[31:30] == 2'b10);
       // A poisoned walk never answers.
       if (discard_q || i_discard) p_discard_silent : assert (!o_resp_valid);
+      // A walk descends only through a pointer the reference classification
+      // accepts. DECODE moves to ISSUE only to descend, and f_pte still holds
+      // the PTE that DECODE classified.
+      if (!$past(i_rst) && ($past(state_q) == PTW_DECODE) && (state_q == PTW_ISSUE)) begin
+        p_descend_valid_pointer :
+        assert (f_pte_seen && !f_g_reserved && !f_g_invalid && !f_g_leaf && (f_level != 2'd0));
+      end
       // Response contents against the reference classification.
       if (o_resp_valid) begin
         p_resp_vpn_echo : assert (o_resp.vpn == f_req_vpn);

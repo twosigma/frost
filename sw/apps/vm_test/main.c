@@ -47,7 +47,9 @@
  *   E. MXR: X-only page load with MXR=0 -> 13, MXR=1 -> value.
  *   F. Svade: A=0 load -> 13; D=0 load ok, D=0 store -> 15.
  *   G. Malformed PTEs: V=0 -> 13; W&!R -> 13; reserved high bit -> 13;
- *      misaligned 2 MiB superpage -> 13; non-leaf at level 0 -> 13.
+ *      misaligned 2 MiB superpage -> 13; non-leaf at level 0 -> 13; a
+ *      non-leaf with A, D, or U set (reserved there) -> 13. A non-leaf with
+ *      G set is legal and translates.
  *   H. Out-of-map leaf PPN -> access fault (5 load / 7 store).
  *   I. Walker PMA: interior pointer PTE aimed at BRAM -> access fault of
  *      the original access type (page tables must live in cached DDR).
@@ -224,7 +226,8 @@ static int report_val(const char *name, unsigned long got, unsigned long want)
  *   1G-case touch offset 0x8300_0000 (inside the identity leaf)
  * Virtual layout: 4 KiB pages at 0x0040_0000 + n*4K (vpn2=0, vpn1=2,
  * vpn0=n); 2 MiB leaves at vpn1=16/17 (VA 0x0200_0000 / 0x0220_0000) and
- * vpn1=18 (VA 0x0240_0000, onto PA 0x4000_0000); the 1 GiB identity leaf at
+ * vpn1=18 (VA 0x0240_0000, onto PA 0x4000_0000); L0 A again through flagged
+ * pointers at vpn1=19..22 (VA 0x0260_0000-0x02C0_0000); the 1 GiB identity leaf at
  * vpn2=2 (VA 0x8000_0000); the bad-pointer subtree at vpn2=1 (VA
  * 0x4000_0000); a 1 GiB leaf over the device quadrant at vpn2=3 (VA
  * 0xC000_0000).
@@ -251,6 +254,7 @@ static int report_val(const char *name, unsigned long got, unsigned long want)
 #define PTE_W (1ul << 2)
 #define PTE_X (1ul << 3)
 #define PTE_U (1ul << 4)
+#define PTE_G (1ul << 5)
 #define PTE_A (1ul << 6)
 #define PTE_D (1ul << 7)
 #define PTE_PPN(pa) ((((unsigned long) (pa)) >> 12) << 10)
@@ -295,11 +299,17 @@ static void build_tables(void)
 
     /* L1 A: [2] -> L0 A (the VA_4K window); [16] -> 2 MiB leaf; [17] ->
      * misaligned 2 MiB leaf (its PPN low bits are nonzero); [18] -> 2 MiB
-     * leaf over the start of the device quadrant. */
+     * leaf over the start of the device quadrant; [19..21] -> L0 A through a
+     * pointer with A, D, or U set, which are reserved in a non-leaf PTE;
+     * [22] -> L0 A through a pointer with G set, which a non-leaf may carry. */
     l1_a[2] = PTE_PPN(PT_L0_A) | PTE_V;
     l1_a[16] = PTE_PPN(FRAME_2M) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
     l1_a[17] = PTE_PPN(FRAME(0)) | PTE_V | PTE_R | PTE_A;
     l1_a[18] = PTE_PPN(0x40000000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+    l1_a[19] = PTE_PPN(PT_L0_A) | PTE_V | PTE_A;
+    l1_a[20] = PTE_PPN(PT_L0_A) | PTE_V | PTE_D;
+    l1_a[21] = PTE_PPN(PT_L0_A) | PTE_V | PTE_U;
+    l1_a[22] = PTE_PPN(PT_L0_A) | PTE_V | PTE_G;
 
     /* L0 A permission flavors: VA_4K(n) -> FRAME(n). */
     l0_a[0] = PTE_PPN(FRAME(0)) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
@@ -462,6 +472,21 @@ int main(void)
     RUN_CASE(WIN_S "li t1, 0x0040A000\n" LREG " t2, 0(t1)");
     all_ok &= report3("G5 nonleaf-l0", 13, VA_4K(10), 0, 0);
 
+    /* G6-G8: a level-1 pointer with A, D, or U set -> 13. Each VA reaches
+     * L0 A's R-only leaf [1], so a walker that ignored the reserved bits
+     * would load FRAME(1). */
+    RUN_CASE(WIN_S "li t1, 0x02601000\n" LREG " t2, 0(t1)");
+    all_ok &= report3("G6 nonleaf-a", 13, 0x02601000ul, 0, 0);
+    RUN_CASE(WIN_S "li t1, 0x02801000\n" LREG " t2, 0(t1)");
+    all_ok &= report3("G7 nonleaf-d", 13, 0x02801000ul, 0, 0);
+    RUN_CASE(WIN_S "li t1, 0x02A01000\n" LREG " t2, 0(t1)");
+    all_ok &= report3("G8 nonleaf-u", 13, 0x02A01000ul, 0, 0);
+
+    /* G9: a level-1 pointer with G set is legal -> FRAME(1)'s value. */
+    RUN_CASE(WIN_S "li t1, 0x02C01000\n" LREG " t2, 0(t1)\n" WIN_END "la  t1, g_val\n" SREG
+                   " t2, 0(t1)");
+    all_ok &= report_val("G9 nonleaf-g", g_val, 0x1111111111111111ul);
+
     /* H1: out-of-map leaf, load -> 5. */
     RUN_CASE(WIN_S "li t1, 0x00409000\n" LREG " t2, 0(t1)");
     all_ok &= report3("H1 leaf-above-map-load", 5, VA_4K(9), 0, 0);
@@ -565,6 +590,7 @@ int main(void)
      * timing against the recovery flush. Expected cause: 11 (the trailing
      * ecall). A 64-step cap stops a runaway loop and records its cursor in
      * g_val. */
+    int w_all_ok = 1;
     for (int n = 1; n <= 6; n++) {
         for (int rep = 0; rep < 3; rep++) {
             volatile unsigned long *zl = (volatile unsigned long *) (FRAME(0) + 0x100);
@@ -615,7 +641,7 @@ int main(void)
                     uart_hex(g_val);
                     uart_puts("\r\n");
                 }
-                all_ok &= w_ok;
+                w_all_ok &= w_ok;
             }
             /* Store variant. The squashed iteration's accesses are a load
              * from 16(NULL), which occupies the translation stage with its
@@ -680,12 +706,13 @@ int main(void)
                     uart_hex(end_va);
                     uart_puts("\r\n");
                 }
-                all_ok &= w_ok;
+                w_all_ok &= w_ok;
             }
         }
     }
-    uart_puts(all_ok ? "[PASS] W wrong-path translated loads/stores\r\n"
-                     : "[FAIL] W wrong-path translated loads/stores (see above)\r\n");
+    uart_puts(w_all_ok ? "[PASS] W wrong-path translated loads/stores\r\n"
+                       : "[FAIL] W wrong-path translated loads/stores (see above)\r\n");
+    all_ok &= w_all_ok;
 
     /* R: atomics through device mappings fault with the VA in mtval. The
      * target is the UART RX status word (+0x24), which a read does not
