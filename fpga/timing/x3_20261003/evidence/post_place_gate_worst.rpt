@@ -1,0 +1,109 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version      : Vivado v.2025.2 (lin64) Build 6299465 Fri Nov 14 12:34:56 MST 2025
+| Date              : Sat Oct  3 19:25:24 2026
+| Host              : beast running 64-bit Ubuntu 25.10
+| Command           : report_timing -of_objects [get_timing_paths -delay_type max -sort_by slack -max_paths 1 -nworst 1] -file /home/adam-bagley/frost_tooling_update/bugfix_handoff/timing_2026-10-03/mux_fast_input/post_place_gate_worst.rpt
+| Design            : x3_frost
+| Device            : xcux35-vsva1365
+| Speed File        : -3  PRODUCTION 1.34 01-25-2022
+| Design State      : Fully Placed
+| Temperature Grade : E
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Timing Report
+
+Slack (VIOLATED) :        -0.189ns  (required time - arrival time)
+  Source:                 subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/np_va_q_reg[12]/C
+                            (rising edge-triggered cell FDRE clocked by clock_from_mmcm  {rise@0.000ns fall@1.551ns period=3.103ns})
+  Destination:            subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/pa1_q_reg[15]/D
+                            (rising edge-triggered cell FDRE clocked by clock_from_mmcm  {rise@0.000ns fall@1.551ns period=3.103ns})
+  Path Group:             clock_from_mmcm
+  Path Type:              Setup (Max at Slow Process Corner)
+  Requirement:            3.103ns  (clock_from_mmcm rise@3.103ns - clock_from_mmcm rise@0.000ns)
+  Data Path Delay:        3.182ns  (logic 0.877ns (27.561%)  route 2.305ns (72.439%))
+  Logic Levels:           9  (LUT5=2 LUT6=7)
+  Clock Path Skew:        -0.087ns (DCD - SCD + CPR)
+    Destination Clock Delay (DCD):    2.718ns = ( 5.821 - 3.103 )
+    Source Clock Delay      (SCD):    2.996ns
+    Clock Pessimism Removal (CPR):    0.191ns
+  Clock Uncertainty:      0.046ns  ((TSJ^2 + DJ^2)^1/2) / 2 + PE + UU
+    Total System Jitter     (TSJ):    0.071ns
+    Discrete Jitter          (DJ):    0.060ns
+    Phase Error              (PE):    0.000ns
+    User Uncertainty         (UU):    0.000ns
+  Clock Net Delay (Source):      2.801ns (routing 1.274ns, distribution 1.527ns)
+  Clock Net Delay (Destination): 2.543ns (routing 1.166ns, distribution 1.377ns)
+
+    Pin Reuse     Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
+  ---------------------------------------------------------------------------------    -------------------
+                                       (clock clock_from_mmcm rise edge)
+                                                                    0.000     0.000 r
+                  GTYE4_CHANNEL_X0Y29  GTYE4_CHANNEL                0.000     0.000 r  gen_gty_cpu_clock.cpu_clock_source/u_wiz/inst/gen_gtwizard_gtye4_top.x3_cpu_clock_gty_wiz_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_channel_container[7].gen_enabled_channel.gtye4_channel_wrapper_inst/channel_inst/gtye4_channel_gen.gen_gtye4_channel_inst[0].GTYE4_CHANNEL_PRIM_INST/TXOUTCLK
+                                       net (fo=4, estimated)        0.081     0.081    gen_gty_cpu_clock.cpu_clock_source/txoutclk
+                  BUFG_GT_X0Y184                                                    r  gen_gty_cpu_clock.cpu_clock_source/gen_cpu_clocks.cpu_clock_buffer/I
+                  BUFG_GT_X0Y184       BUFG_GT (Prop_BUFG_GT_I_O)
+                                                                    0.114     0.195 r  gen_gty_cpu_clock.cpu_clock_source/gen_cpu_clocks.cpu_clock_buffer/O
+                  X1Y9 (CLOCK_ROOT)    net (fo=82379, estimated)    2.801     2.996    subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/o_clk
+                  SLICE_X57Y515        FDRE                                         r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/np_va_q_reg[12]/C
+  ---------------------------------------------------------------------------------    -------------------
+    Placement     SLICE_X57Y515        FDRE (Prop_DFF_SLICEL_C_Q)
+                                                                    0.070     3.066 r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/np_va_q_reg[12]/Q
+                                       net (fo=29, estimated)       0.344     3.410    subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[31]_i_46_0[12]
+    Placement     SLICE_X55Y517                                                     r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/vpn1_eq[1]_inferred_i_30/I0
+    Placement     SLICE_X55Y517        LUT6 (Prop_G6LUT_SLICEL_I0_O)
+                                                                    0.134     3.544 r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/vpn1_eq[1]_inferred_i_30/O
+                                       net (fo=2, estimated)        0.292     3.836    subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/vpn1_eq[1]_inferred_i_30_n_0
+    Placement     SLICE_X59Y516                                                     r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[31]_i_35/I4
+    Placement     SLICE_X59Y516        LUT5 (Prop_D6LUT_SLICEL_I4_O)
+                                                                    0.032     3.868 r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[31]_i_35/O
+                                       net (fo=1, estimated)        0.144     4.012    subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[31]_i_35_n_0
+    Placement     SLICE_X60Y516                                                     r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[31]_i_17/I0
+    Placement     SLICE_X60Y516        LUT6 (Prop_H6LUT_SLICEL_I0_O)
+                                                                    0.135     4.147 r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[31]_i_17/O
+                                       net (fo=2, estimated)        0.256     4.403    subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[31]_i_17_n_0
+    Placement     SLICE_X68Y514                                                     r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[31]_i_12/I1
+    Placement     SLICE_X68Y514        LUT6 (Prop_G6LUT_SLICEL_I1_O)
+                                                                    0.114     4.517 r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[31]_i_12/O
+                                       net (fo=22, estimated)       0.461     4.978    subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[31]_i_12_n_0
+    Placement     SLICE_X74Y509                                                     r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[15]_i_6/I0
+    Routing       SLICE_X74Y509        LUT5 (Prop_E6LUT_SLICEL_I0_O)
+                                                                    0.031     5.009 r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[15]_i_6/O
+                                       net (fo=1, estimated)        0.107     5.116    subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[15]_i_6_n_0
+    Routing       SLICE_X74Y509                                                     r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[15]_i_5/I0
+    Placement     SLICE_X74Y509        LUT6 (Prop_H6LUT_SLICEL_I0_O)
+                                                                    0.135     5.251 r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[15]_i_5/O
+                                       net (fo=1, estimated)        0.358     5.609    subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[15]_i_5_n_0
+    Placement     SLICE_X62Y509                                                     r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[15]_i_4/I5
+    Routing       SLICE_X62Y509        LUT6 (Prop_E6LUT_SLICEL_I5_O)
+                                                                    0.031     5.640 r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[15]_i_4/O
+                                       net (fo=1, estimated)        0.198     5.838    subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/tlb_ppn20[1]_959[3]
+    Routing       SLICE_X62Y509                                                     r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[15]_i_2/I1
+    Routing       SLICE_X62Y509        LUT6 (Prop_F6LUT_SLICEL_I1_O)
+                                                                    0.081     5.919 f  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[15]_i_2/O
+                                       net (fo=1, estimated)        0.096     6.015    subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[15]_i_2_n_0
+    Routing       SLICE_X62Y509                                                     f  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[15]_i_1/I0
+    Routing       SLICE_X62Y509        LUT6 (Prop_D6LUT_SLICEL_I0_O)
+                                                                    0.114     6.129 r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb/pa1_q[15]_i_1/O
+                                       net (fo=1, routed)           0.049     6.178    subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/u_itlb_n_40
+    Routing       SLICE_X62Y509        FDRE                                         r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/pa1_q_reg[15]/D
+  ---------------------------------------------------------------------------------    -------------------
+
+                                       (clock clock_from_mmcm rise edge)
+                                                                    3.103     3.103 r
+                  GTYE4_CHANNEL_X0Y29  GTYE4_CHANNEL                0.000     3.103 r  gen_gty_cpu_clock.cpu_clock_source/u_wiz/inst/gen_gtwizard_gtye4_top.x3_cpu_clock_gty_wiz_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_channel_container[7].gen_enabled_channel.gtye4_channel_wrapper_inst/channel_inst/gtye4_channel_gen.gen_gtye4_channel_inst[0].GTYE4_CHANNEL_PRIM_INST/TXOUTCLK
+                                       net (fo=4, estimated)        0.074     3.177    gen_gty_cpu_clock.cpu_clock_source/txoutclk
+                  BUFG_GT_X0Y184                                                    r  gen_gty_cpu_clock.cpu_clock_source/gen_cpu_clocks.cpu_clock_buffer/I
+                  BUFG_GT_X0Y184       BUFG_GT (Prop_BUFG_GT_I_O)
+                                                                    0.101     3.278 r  gen_gty_cpu_clock.cpu_clock_source/gen_cpu_clocks.cpu_clock_buffer/O
+                  X1Y9 (CLOCK_ROOT)    net (fo=82379, estimated)    2.543     5.821    subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/o_clk
+                  SLICE_X62Y509        FDRE                                         r  subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/pa1_q_reg[15]/C
+                                       clock pessimism              0.191     6.012
+                                       clock uncertainty           -0.046     5.966
+                  SLICE_X62Y509        FDRE (Setup_DFF_SLICEL_C_D)
+                                                                    0.023     5.989    subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/u_immu/pa1_q_reg[15]
+  ---------------------------------------------------------------------------------
+                                       required time                          5.989
+                                       arrival time                          -6.178
+  ---------------------------------------------------------------------------------
+                                       slack                                 -0.189

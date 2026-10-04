@@ -1,0 +1,61 @@
+{
+  "source_head": "d74dba7a822e79ea5ae43810f10ed542272ba3fc",
+  "vivado_version": "2025.2",
+  "part": "xcux35-vsva1365-3-e",
+  "cpu_hz": 322265625,
+  "scoring_uncertainty_ns": 0.0,
+  "post_opt_wns_ns": 0.009,
+  "post_place_wns_ns": -0.189,
+  "clock_root": "X1Y9",
+  "placement_uncertainty_ns": 0.3,
+  "initial_directive": "ExtraNetDelay_high",
+  "incremental_directive": "RuntimeOptimized",
+  "rtl_changes": false,
+  "placement_passes": 2,
+  "post_place_phys_opt_run": false,
+  "route_design_run": false,
+  "original_experiment": "/home/adam-bagley/frost_tooling_update/bugfix_handoff/timing_2026-10-03/mux_fast_input",
+  "files_sha256": {
+    "reference/post_opt.dcp": "037ddc1d9f2a274caddd5a066c0e163b96ee5039bb9654424bf8c99b6991169f",
+    "reference/post_opt_timing.rpt": "523b463fc841b262974f0ae50b9a0eadc04868af8b936cae1272718064d19337",
+    "reference/post_place.dcp": "a9e87ad9ab72f52f9d6cdc60276982828aaaeb3081f9cd23fcd85dc1135f1503",
+    "reference/post_place_gate.txt": "314b2689ad0c4385a3c88a662a5bdc5cc4a7b92aa621ca9cb018c598179ba29c",
+    "reference/post_place_timing.rpt": "0b7c4f0eab76d0c69c20144e4c7fbb3cda677b9e466e53fc3735f70df720c06d",
+    "recipe/build_step.tcl": "f9c8875de2df1e87bf009004f3cea6e1ae05bce9ee8567987f108d376d2f992a",
+    "recipe/place_mux_pins.tcl": "4f24915dd9c4201222d52cae08de5f1187ad094274be4ab2ff3904a45cb426f4",
+    "recipe/place_root.tcl": "4ae4be7b1bb300a9fae1c2d5bd441d709963d1cedf05b73e3b10b4a1e0c12439",
+    "recipe/verify_place.tcl": "bf772897448875613ba7d16d60025f93ba0e751eb2e6a09e3fbf5927d72b3ee1",
+    "recipe/x3_post_place_gate.tcl": "2016c188aee16472488f357941f7b455d0e7d12b3340784739130a290a691c0c",
+    "reproduce.py": "c9c57b63923e7ecd9e90827e1a72decf55a18e989bbe5ec6b42cfa3869095df5",
+    "netlist_config.json": "46d739ac9b9da40ae21fc1fbb92c98ff911453abb3c71acfff82de05ccb19042"
+  },
+  "vivado_sw_build": "6299465",
+  "clean_reopen_gate": {
+    "STATUS": "PASS",
+    "THRESHOLD_NS": "-0.200",
+    "CPU_PERIOD_NS": "3.103",
+    "USER_SETUP_UNCERTAINTY_NS": "0.000",
+    "STRICT_BELOW_GATE_PATHS": "0",
+    "WORST_SLACK_NS": "-0.189"
+  },
+  "qualified_checkpoint_sha256": "1218f63cfae1889fa2a24d7406c9bff5aea0f4311c0fcb0362c5c4f93c0f3f88",
+  "reproduction": {
+    "gate": {
+      "STATUS": "PASS",
+      "THRESHOLD_NS": "-0.200",
+      "CPU_PERIOD_NS": "3.103",
+      "USER_SETUP_UNCERTAINTY_NS": "0.000",
+      "STRICT_BELOW_GATE_PATHS": "0",
+      "WORST_SLACK_NS": "-0.189"
+    },
+    "reference_regenerated": false,
+    "reference_sha256": "a9e87ad9ab72f52f9d6cdc60276982828aaaeb3081f9cd23fcd85dc1135f1503",
+    "post_opt_sha256": "037ddc1d9f2a274caddd5a066c0e163b96ee5039bb9654424bf8c99b6991169f",
+    "checkpoint_sha256": "958a4b9cad427b4e3220ff6084aa8cd716305f6f080ceb4068aae03aca2f24b0"
+  },
+  "reproduction_clean_reopen_verified": true,
+  "negative_path_csv_identical": true,
+  "qualification_status": "complete",
+  "artifact_directory": "fpga/build/x3/post_place_20261003",
+  "archived_bundle_manifest_sha256": "83d36966dc7e0e27fdbd03ac8b4a9b99e1a6f65e8b18d7056979d95c5c5c20a0"
+}

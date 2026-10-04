@@ -103,6 +103,9 @@ sw/apps/arch_test/test_src_repaired.S
 .Xil/
 fpga/build/*/work*
 fpga/build/*/SUMMARY_*.md
+# Generated X3 checkpoints, IP, placement sweeps and their reports. Qualified
+# placement recipes and compact verification records live in fpga/timing/.
+/fpga/build/x3/
 
 # Local VS Code extension build/package output
 tools/vscode-frost/node_modules/

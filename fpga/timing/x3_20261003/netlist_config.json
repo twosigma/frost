@@ -1,0 +1,6 @@
+{
+  "schema": "x3_netlist_config_v3",
+  "perf_counters": 0,
+  "cpu_base_clock_hz": 322265625,
+  "cpu_clock_div": 1
+}

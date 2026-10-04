@@ -163,6 +163,13 @@ Buildroot test image repeatedly.
 
 ## Building
 
+The [2026-10-03 placement recipe](timing/x3_20261003/README.txt) achieved
+**-0.189 ns immediate post-place WNS** at 322.265625 MHz with zero scoring
+uncertainty, before post-place phys-opt or routing. It records the clock-root
+and LUT input constraints, frozen scripts, checkpoint hashes, and two clean
+reopen verifications. Reproduction requires the archived checkpoint bundle;
+the recipe is specific to that netlist and is separate from the default sweep.
+
 `build/build.py` compiles `hello_world` into the initial BRAM contents, then
 runs Vivado: `synth`, `opt`, `place`, `post_place_physopt`, `route`,
 `post_route_physopt`, `second_route`, and `post_second_route_physopt`, then
