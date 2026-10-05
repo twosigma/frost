@@ -67,7 +67,7 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | Target | Checks |
 | --- | --- |
 | `branch_prediction_alias` | The slot-1/slot-2 alias output computed from the base PC, which the fetch stage uses when its XLEN matches `riscv_pkg::XLEN`, equals the generic computation under the stage's base+2/base+4 wiring. Only this output is compared, not the whole controller |
-| `branch_prediction_disable` | The prediction-use gates for both slots and slot 2's live/staged target select equal the reference equations, and disabling prediction blocks both the live and the staged path. Predictor outputs are arbitrary |
+| `branch_prediction_disable` | The prediction-use gates for both slots, slot 2's live/staged target select, and the registered metadata next state equal the reference equations, and disabling prediction blocks both the live and the staged path. Predictor outputs and old metadata state are arbitrary |
 | `btb_tag_compare` | The grouped BTB tag compare equals full-width tag equality: 55-bit tags for the 256-entry BTB and 59-bit tags for a 16-entry one, with arbitrary RAM outputs |
 | `c_ext_buffer_next` | The compressed-instruction buffer's next state equals the reference clear/capture/hold priority |
 | `c_ext_state_cofactor` | The same next state with the pending-prediction handoff factored out equals the reference, and a handoff never keeps old-path buffer state. `prediction_release` checks the real producers of these inputs |

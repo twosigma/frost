@@ -751,51 +751,22 @@ module branch_prediction_controller #(
       i_pd_redirect &&
       (!o_prediction_used_r || (o_predicted_target_r != i_pd_redirect_target));
 
-  logic redirect_kills_prediction_metadata;
-  assign redirect_kills_prediction_metadata = pd_redirect_kills_prediction_metadata ||
-                                              o_slot2_prediction_used;
-
-  // Keep branch filtering in prediction_used_effective so registered metadata
-  // tracks only the predictions that were used.
+  // Every PD or slot-2 redirect kills the slot-1 pc_reg handoff, including
+  // across a stall: the redirect outranks it in the next-PC mux. Registered
+  // metadata has different matching-target preservation rules; its update is
+  // factored beside the slot-2 candidate gates below.
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
-      o_prediction_used_r <= 1'b0;
-      o_sel_prediction_r  <= 1'b0;
-    end else if (i_flush) begin
-      // Redirect flushes invalidate any in-flight prediction metadata even if
-      // the front-end is stalled. Keeping the old registered target/live bit
-      // across a stall+flush lets a stale prediction apply to a later
-      // instruction stream with the wrong PC/instruction pairing.
-      o_prediction_used_r <= 1'b0;
-      o_sel_prediction_r  <= 1'b0;
-    end else if (i_pd_redirect || o_slot2_prediction_used) begin
-      // PD redirects and slot-2 prediction redirects kill a slot-1 prediction's
-      // pc_reg handoff the same way a flush does: they outrank it in the
-      // next_pc mux, so the prediction never takes the fetch stream.
-      // For a PD redirect, pc_controller's redirect_kill_pending_q suppression
-      // is a one-cycle pulse that ignores stalls, while this register holds
-      // through a stall, so the handoff is cleared here.
-      // Otherwise a stall starting in the kill cycle would let the dead
-      // handoff fire on release and put pc_reg out of step with the fetched
-      // bytes (test_pd_redirect_with_stall_kills_registered_prediction_handoff
-      // covers this).
-      //
-      // The metadata is killed only when redirect_kills_prediction_metadata is
-      // set: it must survive a PD redirect to the same target, or the in-flight
-      // branch loses its already-redirected marker and PD redirects to the
-      // same target again.
       o_sel_prediction_r <= 1'b0;
-      if (redirect_kills_prediction_metadata) begin
-        o_prediction_used_r <= 1'b0;
-      end else if (~i_stall && i_fetch_progress) begin
-        o_prediction_used_r <= prediction_used_effective;
-      end
+    end else if (i_flush) begin
+      o_sel_prediction_r <= 1'b0;
+    end else if (i_pd_redirect || o_slot2_prediction_used) begin
+      o_sel_prediction_r <= 1'b0;
     end else if (~i_stall && i_fetch_progress) begin
       // i_fetch_progress in the gate: a prediction consumed on the last
-      // cycle must keep its registered metadata and pc_reg handoff armed
-      // across fetch-invalid cycles until the deferred instruction arrives.
-      o_prediction_used_r <= prediction_used_effective;
-      o_sel_prediction_r  <= prediction_used_effective;
+      // cycle must keep its handoff armed across fetch-invalid cycles until
+      // the deferred instruction arrives.
+      o_sel_prediction_r <= prediction_used_effective;
     end
   end
 
@@ -832,7 +803,7 @@ module branch_prediction_controller #(
   // state to the stale-fetch bubble every slot-2 redirect costs.  Prediction
   // is blocked in the bubble, and the holdoff clears on its first delivered
   // cycle.  The slot-2 redirect and its kill of the registered slot-1
-  // metadata take effect on the same edge (above); leaving the slot-2 term
+  // metadata take effect on the same edge; leaving the slot-2 term
   // out of these flops only keeps the instruction-memory sideband logic off
   // their synchronous reset pins.
 
@@ -1012,6 +983,27 @@ module branch_prediction_controller #(
   assign o_slot2_live_predicted_target = slot1_typed_target;
   assign o_slot2_prediction_used = o_slot2_prediction_used_for_pc && !i_stall;
   assign o_slot2_predicted_taken = o_slot2_prediction_used;
+
+  // Preserve the metadata on a stalled PD redirect to the same target, but
+  // clear it on reset, flush, a different-target PD redirect, or slot-2 use.
+  // Slot 2 can win over a simultaneous younger live slot-1 prediction, so its
+  // kill must remain even though old registered metadata implies holdoff.
+  // TIMING: finish the hold/load choice and the slot-2 permission separately.
+  // The late BTB candidate then reaches the register through one final LUT,
+  // rather than traversing the shared slot-2 use and the metadata priority mux.
+  (* keep = "true" *)logic prediction_metadata_next_without_slot2;
+  (* keep = "true" *)logic slot2_metadata_kill_enable;
+  logic prediction_metadata_next;
+  assign prediction_metadata_next_without_slot2 =
+      !i_reset && !i_flush && !pd_redirect_kills_prediction_metadata &&
+      ((!i_stall && i_fetch_progress) ? prediction_used_effective : o_prediction_used_r);
+  assign slot2_metadata_kill_enable = slot2_prediction_permission && !i_stall;
+  assign prediction_metadata_next = prediction_metadata_next_without_slot2 &&
+      !(slot2_metadata_kill_enable && slot2_prediction_candidate_for_pc);
+  always_ff @(posedge i_clk) begin
+    o_prediction_used_r <= prediction_metadata_next;
+  end
+
   // Finish the live/staged target choice before IF's late i_slot2_valid
   // arrives.  An invalid slot 2 shows the staged target, as in the reference;
   // keeping the finished choice stops synthesis from folding the valid back
@@ -1215,6 +1207,27 @@ module branch_prediction_controller #(
 `endif
 
 `ifdef FORMAL
+  // The original nested metadata update, with unconstrained inputs and old
+  // state. In particular, do not assume slot-1 and slot-2 use are exclusive.
+  logic prediction_metadata_next_ref;
+  always_comb begin
+    prediction_metadata_next_ref = o_prediction_used_r;
+    if (i_reset) begin
+      prediction_metadata_next_ref = 1'b0;
+    end else if (i_flush) begin
+      prediction_metadata_next_ref = 1'b0;
+    end else if (i_pd_redirect || o_slot2_prediction_used) begin
+      if (pd_redirect_kills_prediction_metadata || o_slot2_prediction_used)
+        prediction_metadata_next_ref = 1'b0;
+      else if (!i_stall && i_fetch_progress)
+        prediction_metadata_next_ref = prediction_used_effective;
+    end else if (!i_stall && i_fetch_progress) begin
+      prediction_metadata_next_ref = prediction_used_effective;
+    end
+    p_prediction_metadata_next_matches_original :
+    assert (prediction_metadata_next == prediction_metadata_next_ref);
+  end
+
   // Reference checks for the branch_prediction_disable formal target.  Both
   // the staged candidate and the live fallback must obey the selected
   // prediction disable.  Together with pc_controller's readiness implication,

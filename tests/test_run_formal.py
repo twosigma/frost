@@ -462,7 +462,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "branch_prediction_disable.sby",
-        "IF branch prediction - common guards, slot-1/slot-2 factoring, and staged/live disable exclusion",
+        "IF branch prediction - common guards, slot-1/slot-2 factoring, metadata next state, and staged/live disable exclusion",
         tasks=("bmc",),
     ),
     FormalTarget(
