@@ -1497,6 +1497,9 @@ def copy_results_to_main_work(
             "post_place_incremental_reuse.rpt",
             "post_place_verification_timing.rpt",
             "post_place_route_status.rpt",
+            "post_place_mux_reference.tcldict",
+            "post_place_guidance.tcldict",
+            "post_place_drc.rpt",
         ):
             for stale in main_work.glob(pattern):
                 if stale.is_file() or stale.is_symlink():
@@ -2442,8 +2445,8 @@ def run_x3_default_place(
 ) -> tuple[bool, float | None, str]:
     """Place from the current post-opt netlist, entirely in the main work directory.
 
-    Generate a fresh reference, reopen post-opt for incremental placement,
-    then verify the saved result in a third, read-only Vivado process. No
+    Generate a fresh reference, derive local floorplan constraints and place
+    the guided cells, then verify in a third, read-only Vivado process. No
     archived input, phys-opt pass, or route probe participates in this flow.
     """
     board_build = build_dir if build_dir is not None else script_dir / "x3"
@@ -2467,8 +2470,9 @@ def run_x3_default_place(
     # Explicit sweep controls are handled by the caller. The default recipe's
     # settings are fixed for both passes, independent of inherited seed values.
     environment = dict(os.environ)
-    environment["FROST_PLACE_SETUP_UNCERTAINTY"] = "0.300"
-    environment["FROST_PLACE_CELL_BLOAT"] = ""
+    environment["FROST_PLACE_SETUP_UNCERTAINTY"] = "0.325"
+    environment["FROST_PLACE_CELL_BLOAT"] = "MEDIUM"
+    environment["FROST_PLACE_CELL_BLOAT_CELLS"] = "*u_tomasulo/u_int_rs"
     suffixes = (
         ".dcp",
         "_timing.rpt",
@@ -2490,6 +2494,9 @@ def run_x3_default_place(
         "_incremental_reuse.rpt",
         "_verification_timing.rpt",
         "_route_status.rpt",
+        "_mux_reference.tcldict",
+        "_guidance.tcldict",
+        "_drc.rpt",
     ):
         (work / f"post_place{suffix}").unlink(missing_ok=True)
 
@@ -2506,7 +2513,7 @@ def run_x3_default_place(
             "-tclargs",
             "x3",
             step,
-            "ExtraNetDelay_high",
+            "Quick" if mode == "guided" else "ExtraNetDelay_high",
             str(checkpoint),
             "0",
         ]
@@ -2536,11 +2543,13 @@ def run_x3_default_place(
             source = work / f"post_place{suffix}"
             if source.exists():
                 source.replace(work / f"post_place_reference{suffix}")
-        if not launch("place", post_opt, "incremental", "post_place_vivado.log"):
+        reference = work / "post_place_reference.dcp"
+        reference_hash = file_sha256(reference)
+        if not launch("place", reference, "guided", "post_place_vivado.log"):
             return False, None, ""
         wns = extract_timing_from_report(work / "post_place_timing.rpt").get("wns_ns")
         if wns is None:
-            raise ValueError("incremental placement did not produce a timing report")
+            raise ValueError("guided placement did not produce a timing report")
         placed_gate = read_x3_place_gate(gate_path, wns)
         placed_hash = file_sha256(work / "post_place.dcp")
         gate_path.unlink()
@@ -2556,7 +2565,9 @@ def run_x3_default_place(
                 "clean-reopen verification changed the checkpoint or its timing"
             )
         if file_sha256(post_opt) != post_opt_hash:
-            raise ValueError("post-opt checkpoint changed during incremental placement")
+            raise ValueError("post-opt checkpoint changed during guided placement")
+        if file_sha256(reference) != reference_hash:
+            raise ValueError("reference checkpoint changed during guided placement")
         if not placed_gate.passed or Decimal(str(wns)) <= X3_POST_PLACE_GATE_NS:
             raise ValueError(
                 f"default X3 placement missed the strict {X3_POST_PLACE_GATE_NS} ns target: {wns:.3f} ns"
@@ -2566,14 +2577,21 @@ def run_x3_default_place(
         (work / "post_place_recipe.json").write_text(
             json.dumps(
                 {
-                    "schema": "x3_place_recipe_v1",
+                    "schema": "x3_place_recipe_v2",
                     "post_opt_sha256": post_opt_hash,
-                    "reference_sha256": file_sha256(work / "post_place_reference.dcp"),
+                    "reference_sha256": reference_hash,
+                    "guidance_sha256": file_sha256(
+                        work / "post_place_guidance.tcldict"
+                    ),
                     "checkpoint_sha256": placed_hash,
                     "reference_wns_ns": reference_wns,
                     "post_place_wns_ns": wns,
                     "clock_root": "X1Y9",
-                    "placement_uncertainty_ns": 0.300,
+                    "placement_uncertainty_ns": 0.325,
+                    "cell_bloat": "MEDIUM",
+                    "cell_bloat_cells": "*u_tomasulo/u_int_rs",
+                    "final_directive": "Quick",
+                    "guidance": "current-reference local floorplan",
                     "scoring_uncertainty_ns": 0.0,
                     "clean_reopen_verified": True,
                 },
@@ -2844,14 +2862,19 @@ Behavior:
     Separate build invocations have independent limits. Vivado's per-process
     thread settings are unchanged. Use --jobs 1 for serial execution.
   * Full-rate X3 placement starts from this build's closed post_opt.dcp,
-    generates an ExtraNetDelay_high/0.300 reference with CPU clock root X1Y9,
-    then reopens post-opt and reads that reference with RuntimeOptimized
-    incremental reuse. Before the second place_design it assigns the late
-    instruction-sideband BRAM input to the fast A6 LUT input. Each pass runs
-    once; there are no cell, net or pin edits after either place_design.
+    generates an ExtraNetDelay_high/0.325 reference with CPU clock root X1Y9
+    and MEDIUM cell bloat on the integer reservation station. It measures
+    local register sites and LUT input assignments on that fresh reference,
+    retaining changes only when setup and hold slack do not worsen. The
+    second pass preserves the surrounding placement and uses hard local
+    pblocks, BELs and LUT pin constraints to re-place the guided cells with
+    Quick. No cell, net or pin edits follow the final place_design.
     Everything stays in work/, including post_place_reference.dcp and the
     final post_place.dcp. A separate Vivado process verifies the final saved
-    constraints without changing them. No archived checkpoint is required.
+    constraints without changing them. Temporary preservation and pblocks
+    are removed when opening the checkpoint for downstream optimization,
+    with original constraints restored and placement/timing checked.
+    No archived checkpoint is required.
   * On x3, place ignores --place-directive. Explicit --directives or
     --num-uncertainties options, or either cell-bloat environment variable,
     select the placer sweep instead. Its default grid runs
@@ -3224,7 +3247,7 @@ Examples:
                 str(functional_policy.quick_route_count),
             )
     if board_name == "x3":
-        place_directive = "Reference+Incremental" if use_default_x3_place else "Sweep"
+        place_directive = "Reference+Guided" if use_default_x3_place else "Sweep"
         route_directive = "Sweep"
         second_route_directive = "Sweep"
     else:
@@ -3271,8 +3294,11 @@ Examples:
         print(f"# Directives: {', '.join(directives_summary)}")
     print(f"# Vivado concurrency: up to {args.jobs} jobs at a time (--jobs)")
     if use_default_x3_place and "place" in steps_to_run:
-        print("# X3 placement: fresh ExtraNetDelay_high/0.300 reference at X1Y9,")
-        print("#   then incremental placement with pre-place LUT input constraints;")
+        print("# X3 placement: fresh ExtraNetDelay_high/0.325 reference at X1Y9,")
+        print("#   MEDIUM cell bloat on the integer reservation station,")
+        print(
+            "#   then measured local floorplan constraints and a final Quick placement;"
+        )
         print("#   verify unchanged post_place.dcp in a separate Vivado process.")
     elif board_name == "x3" and "place" in steps_to_run:
         sweep_source = "custom" if placer_sweep_overridden else "default"

@@ -175,17 +175,32 @@ can change the CPU's placement and local congestion as the design evolves;
 evaluate any new floorplan against an unfenced placement of the current netlist.
 
 Full-rate X3 placement starts from the current build's closed post-opt
-checkpoint. It generates a fresh reference with `ExtraNetDelay_high`, 0.300 ns
-placement uncertainty, and CPU clock root `X1Y9`. It then reopens post-opt,
-reads that reference incrementally with `RuntimeOptimized`, and assigns the
-instruction-sideband mux's late BRAM input to its fast A6 LUT input before
-placement. Both passes use the same work directory. The reference is saved as
-`work/post_place_reference.dcp`; the final output is `work/post_place.dcp`.
-A separate Vivado process checks the final checkpoint without altering its
-stored constraints. The default flow requires post-opt WNS >= 0 and immediate
-post-place WNS better than −0.200 ns. It uses no archived checkpoints.
-`work/post_place_recipe.json` records the input and output checkpoint hashes;
-`work/post_place_verification_timing.rpt` records the clean-reopen timing.
+checkpoint. It generates a fresh reference with `ExtraNetDelay_high`, 0.325 ns
+placement uncertainty, CPU clock root `X1Y9`, and `MEDIUM` cell bloat on the
+integer reservation station. On that fresh reference it measures balanced
+sites for critical L2 output registers and faster physical LUT inputs on
+critical CPU paths. It retains a change only if the affected path improves
+and global setup and hold slack do not worsen. Logical functions and net
+connectivity are checked, and rejected choices restore the original state.
+
+The final pass preserves the surrounding placement, unplaces the guided
+cells, and constrains their sites with hard local pblocks, BEL assignments,
+and LUT pin mappings. `place_design -directive Quick` then places those
+cells. No cell, net or pin edits follow that final placement. Both passes
+use the normal work directory: `work/post_place_reference.dcp` and
+`work/post_place.dcp`. `work/post_place_guidance.tcldict` records the measured
+choices. A separate Vivado process checks the saved locations, pin mappings,
+clock roots, restoration metadata and timing without altering them.
+
+The default flow requires post-opt WNS >= 0 and immediate post-place WNS
+better than −0.200 ns, scored with zero user setup uncertainty. It uses no
+archived checkpoints. `work/post_place_recipe.json` records checkpoint and
+guidance hashes; `work/post_place_verification_timing.rpt` records the
+clean-reopen timing. Temporary pblocks and preservation locks are removed
+when opening the result for downstream optimization. The original cell
+LOC/BEL/DONT_TOUCH and net DONT_TOUCH/route-fix flags are restored from metadata
+inside the checkpoint. The measured LUT pin assignments remain constrained;
+physical placement and setup/hold slack must remain unchanged during handoff.
 
 Phys-opt and routing remove inherited incremental history when opening their
 input checkpoint. Otherwise `RuntimeOptimized` can make Vivado stop optimizing

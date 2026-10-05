@@ -320,67 +320,80 @@ source $::env(HOOK_SOURCE)
 """
 
 
-@pytest.mark.parametrize("mode", ("reference", "incremental", "verify_place"))
-@pytest.mark.parametrize("bad_init", (False, True))
+@pytest.mark.parametrize(
+    ("mode", "scenario"),
+    (
+        ("reference", "good"),
+        ("guided", "good"),
+        ("verify_place", "good"),
+        ("guided", "bad_root"),
+        ("verify_place", "bad_root"),
+        ("guided", "refine_failure"),
+        ("guided", "verify_failure"),
+        ("verify_place", "verify_failure"),
+    ),
+)
 def test_default_x3_placement_controls_precede_place_and_verification_is_read_only(
-    tmp_path: Path, mode: str, bad_init: bool
+    tmp_path: Path, mode: str, scenario: str
 ) -> None:
-    """Execute the production Tcl branches and reject a changed LUT function."""
+    """Guide before the final placer; both later verifications are read-only."""
     model = r"""
-set properties [dict create REF_NAME LUT5 INIT 32'hAAAACFC0 LOC SLICE_X22Y497 BEL SLICEL.A6LUT LOCK_PINS {I0:A2 I1:A6 I2:A4 I3:A5 I4:A3}]
-if {$::env(BAD_INIT)} {dict set properties INIT 32'hFFFFFFFF}
-proc get_cells {args} {return mux}
 proc get_nets {args} {
     if {[lindex $args end] eq "main_clock divided_clock_by_4"} {return {main_clock divided_clock_by_4}}
     return [lindex $args end]
 }
 proc get_property {property object} {
-    global properties
-    if {$property in {USER_CLOCK_ROOT CLOCK_ROOT}} {return X1Y9}
-    if {$property eq "REF_PIN_NAME"} {return [file tail $object]}
-    return [dict get $properties $property]
-}
-proc set_property {property value objects} {
-    global properties
-    trace set_property $property $value $objects
-    dict set properties $property $value
-}
-proc get_pins {args} {return {mux/I0 mux/I1 mux/I2 mux/I3 mux/I4}}
-proc get_bel_pins {args} {
-    global properties
-    set name [file tail [lindex $args end]]
-    foreach mapping [dict get $properties LOCK_PINS] {
-        lassign [split $mapping :] logical physical
-        if {$name eq $logical} {return SLICE_X22Y497/A6LUT/$physical}
+    if {$property in {USER_CLOCK_ROOT CLOCK_ROOT}} {
+        return [expr {$::env(PLACE_SCENARIO) eq "bad_root" ? "X1Y8" : "X1Y9"}]
     }
-    error "Missing input $name"
+    if {$property eq "GROUP"} {return clock_from_mmcm}
+    error "Unexpected property request: $property $object"
 }
-proc unplace_cell {cell} {trace unplace_cell $cell}
-proc report_incremental_reuse {args} {trace report_incremental_reuse {*}$args}
 proc report_route_status {args} {trace report_route_status {*}$args}
+proc report_drc {args} {trace report_drc {*}$args}
 if {$::env(PLACE_MODE) eq "verify_place"} {
-    set argv [list x3 verify_place ExtraNetDelay_high saved_placement.dcp 0]
+    set argv [list x3 verify_place Quick saved_placement.dcp 0]
 } else {
-    set argv [list x3 place ExtraNetDelay_high fresh_post_opt.dcp 0 {} $::env(PLACE_MODE)]
+    set argv [list x3 place Quick fresh_reference.dcp 0 {} $::env(PLACE_MODE)]
 }
+"""
+    helper = r"""
+    if {[file tail $path] eq "x3_local_placement.tcl"} {
+        namespace eval frost_x3_local_placement {
+            proc refine {work} {
+                trace refine $work
+                if {$::env(PLACE_SCENARIO) eq "refine_failure"} {error "Rejected physical guidance"}
+                return guidance
+            }
+            proc constrain_guidance {guidance} {
+                trace unplace_cell guided_cell
+                trace set_property LOCK_PINS {I0:A6 I1:A2} guided_cell
+                trace create_pblock measured_site
+            }
+            proc verify {work} {
+                trace verify_guidance $work
+                if {$::env(PLACE_SCENARIO) eq "verify_failure"} {error "Guided cell moved"}
+            }
+        }
+        return
+    }
 """
     source = HOOK_MODEL.replace(
         "set argv [list x3 place ExtraNetDelay_high fresh_post_opt.dcp 0]", model
-    )
+    ).replace("proc source {path} {", "proc source {path} {" + helper)
     script = tmp_path / "hook.tcl"
     script.write_text(source)
     trace = tmp_path / "trace.txt"
     trace.touch()
-    (tmp_path / "post_place_reference.dcp").write_text("fresh reference")
     environment = {
         key: value for key, value in os.environ.items() if not key.startswith("FROST_")
     }
     environment.update(
         HOOK_TRACE=str(trace),
         HOOK_SOURCE=str(REPO_ROOT / "fpga/build/build_step.tcl"),
-        FROST_PLACE_SETUP_UNCERTAINTY="0.300",
+        FROST_PLACE_SETUP_UNCERTAINTY="0.325",
         PLACE_MODE=mode,
-        BAD_INIT=str(int(bad_init)),
+        PLACE_SCENARIO=scenario,
     )
     result = subprocess.run(
         ["tclsh", str(script)],
@@ -392,17 +405,7 @@ if {$::env(PLACE_MODE) eq "verify_place"} {
         check=False,
     )
     commands = trace.read_text().splitlines()
-    if bad_init and mode != "reference":
-        assert result.returncode != 0
-        assert "no longer matches" in result.stderr
-        assert not any(
-            command.startswith(("place_design", "write_gate")) for command in commands
-        )
-        return
-    assert result.returncode == 0, result.stdout + result.stderr
-    placements = [
-        i for i, command in enumerate(commands) if command.startswith("place_design")
-    ]
+    placements = [i for i, c in enumerate(commands) if c.startswith("place_design")]
     mutations = [
         i
         for i, command in enumerate(commands)
@@ -411,42 +414,51 @@ if {$::env(PLACE_MODE) eq "verify_place"} {
                 "set_property",
                 "unplace_cell",
                 "place_cell",
+                "create_pblock",
                 "connect_net",
                 "disconnect_net",
             )
         )
     ]
+    if scenario != "good":
+        assert result.returncode != 0
+        assert not any(c.startswith("write_gate") for c in commands)
+        if scenario != "verify_failure" or mode == "verify_place":
+            assert not placements
+        return
+    assert result.returncode == 0, result.stdout + result.stderr
     if mode == "verify_place":
         assert not placements and not mutations
         assert not any(
-            command.startswith(("set_clock_uncertainty", "write_checkpoint"))
-            for command in commands
+            c.startswith(("set_clock_uncertainty", "write_checkpoint", "refine"))
+            for c in commands
         )
     else:
         assert len(placements) == 1
         assert max(mutations) < placements[0]
-        assert (
-            "set_property USER_CLOCK_ROOT X1Y9 {main_clock divided_clock_by_4}"
-            in commands
-        )
-        if mode == "incremental":
-            read = next(
-                i
-                for i, command in enumerate(commands)
-                if command.startswith("read_checkpoint")
+        if mode == "guided":
+            refine = next(i for i, c in enumerate(commands) if c.startswith("refine"))
+            verify = next(
+                i for i, c in enumerate(commands) if c.startswith("verify_guidance")
             )
-            lock = next(
-                i
-                for i, command in enumerate(commands)
-                if command.startswith("set_property LOCK_PINS")
+            assert refine < placements[0] < verify
+            assert any(
+                "0.0 -setup" in c
+                for c in commands[:refine]
+                if c.startswith("set_clock_uncertainty")
             )
-            assert read < lock < placements[0]
-            assert "-directive RuntimeOptimized -force_incr" in commands[read]
+            assert any(
+                "0.325 -setup" in c
+                for c in commands[refine : placements[0]]
+                if c.startswith("set_clock_uncertainty")
+            )
         else:
-            assert not any(
-                command.startswith("read_checkpoint") for command in commands
+            assert (
+                "set_property USER_CLOCK_ROOT X1Y9 {main_clock divided_clock_by_4}"
+                in commands
             )
-    assert commands[-1] == f"write_gate {tmp_path}" or mode == "verify_place"
+            assert not any(c.startswith("refine") for c in commands)
+    assert any(c.startswith("write_gate") for c in commands)
 
 
 @pytest.mark.parametrize("mode", (None, "", "auto", "0", "1", "invalid"))

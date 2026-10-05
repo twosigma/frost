@@ -1829,6 +1829,37 @@ set progress_remaining 0
 if {[info exists ::env(MODEL_PROGRESS)]} {set progress_remaining $::env(MODEL_PROGRESS)}
 set optimizations 0
 set tns_adjustment 0.0
+set preservation_active 0
+set placement_changed 0
+set macro_bels_changed 0
+
+# Exercise the downstream handoff independently of the native lock API, which
+# has its own restoration tests. A bad release must stop before optimization.
+rename source model_source
+proc source {path} {
+    if {[file tail $path] ne "x3_local_placement.tcl" ||
+        ![info exists ::env(MODEL_PRESERVATION)]} {
+        return [uplevel 1 [list model_source $path]]
+    }
+    namespace eval frost_x3_local_placement {
+        proc saved_constraints {} {
+            if {$::preservation_active} {return saved}
+            return {}
+        }
+        proc release {} {
+            set ::preservation_active 0
+            record release_preservation
+            if {[info exists ::env(MODEL_BAD_RELEASE)]} {
+                switch -- $::env(MODEL_BAD_RELEASE) {
+                    timing {set ::true_wns [expr {$::true_wns - 0.1}]}
+                    placement {set ::placement_changed 1}
+                    macro_bel {set ::macro_bels_changed 1}
+                }
+            }
+            return 1
+        }
+    }
+}
 
 proc record {line} {
     set fh [open $::env(MODEL_TRACE) a]
@@ -1863,8 +1894,14 @@ proc unknown {cmd args} {
     global checkpoint_state write_incremental incremental_active initial_incremental
     global true_wns progress_remaining optimizations tns_adjustment
     switch -- $cmd {
+        current_design {return design}
+        list_property {return {}}
         get_clocks {return clock_from_mmcm}
         get_cells {return primitive}
+        get_bels {
+            if {$::macro_bels_changed} {return {SITE/OUTINV OTHER_SITE/OUTBUF}}
+            return {SITE/OUTINV SITE/OUTBUF}
+        }
         close_design {return {}}
         report_incremental_reuse {
             if {$incremental_active} {return {| Incremental Directive | RuntimeOptimized |}}
@@ -1888,6 +1925,8 @@ proc unknown {cmd args} {
         }
         open_checkpoint {
             set path [lindex $args end]
+            set ::preservation_active [expr {[info exists ::env(MODEL_PRESERVATION)] &&
+                [file tail $path] eq "input.dcp"}]
             set uncertainty 0.0
             if {[dict exists $checkpoint_uncertainty $path]} {
                 set uncertainty [dict get $checkpoint_uncertainty $path]
@@ -1928,6 +1967,13 @@ proc unknown {cmd args} {
         }
         get_property {
             if {[lindex $args 0] eq "SLACK"} {return [model_wns]}
+            if {[lindex $args 0] eq "LOC" && $::placement_changed} {return changed_location}
+            if {[lindex $args 0] eq "PRIMITIVE_LEVEL"} {
+                return [expr {[info exists ::env(MODEL_MACRO_ALIAS)] ? "MACRO" : "LEAF"}]
+            }
+            if {[lindex $args 0] eq "BEL" && [info exists ::env(MODEL_MACRO_ALIAS)]} {
+                return [expr {$::preservation_active ? "OUTINV" : "OUTBUF"}]
+            }
             if {[lindex $args 0] in {NAME LOC BEL REF_NAME}} {return [lindex $args 0]}
             error "Unexpected property request $args"
         }
@@ -1971,6 +2017,9 @@ def _run_physopt_sweep_model(
     incremental: bool = False,
     progress: int = 0,
     bad_conversion: str | None = None,
+    preservation: bool = False,
+    bad_release: str | None = None,
+    macro_alias: bool = False,
 ) -> tuple[str, list[str], Path]:
     """Sweep one phys-opt stage; return its stdout, trace and main work dir."""
     model = tmp_path / "physopt_model.tcl"
@@ -2000,6 +2049,12 @@ def _run_physopt_sweep_model(
         env["FROST_PHYSOPT_SETUP_UNCERTAINTY"] = setup_uncertainty
     if bad_conversion is not None:
         env["MODEL_BAD_CONVERSION"] = bad_conversion
+    if preservation:
+        env["MODEL_PRESERVATION"] = "1"
+    if bad_release is not None:
+        env["MODEL_BAD_RELEASE"] = bad_release
+    if macro_alias:
+        env["MODEL_MACRO_ALIAS"] = "1"
     result = subprocess.run(
         ["tclsh", str(model)],
         cwd=work_dir,
@@ -2009,7 +2064,10 @@ def _run_physopt_sweep_model(
         timeout=60,
         check=False,
     )
-    if bad_conversion is not None:
+    if bad_release is not None:
+        assert result.returncode != 0
+        assert "Removing temporary placement constraints changed" in result.stderr
+    elif bad_conversion is not None:
         assert result.returncode != 0
         assert "Incremental timing target survived" in result.stderr or (
             "Removing incremental history changed" in result.stderr
@@ -2017,6 +2075,41 @@ def _run_physopt_sweep_model(
     else:
         assert result.returncode == 0, result.stdout + result.stderr
     return result.stdout, trace.read_text().splitlines(), tmp_path / "work"
+
+
+@pytest.mark.parametrize("step", ("post_place_physopt", "route"))
+@pytest.mark.parametrize("macro_alias", (False, True))
+def test_downstream_releases_temporary_placement_before_optimization(
+    tmp_path: Path, step: str, macro_alias: bool
+) -> None:
+    """Release preservation before physopt or route, allowing macro aliases."""
+    stdout, trace, _ = _run_physopt_sweep_model(
+        tmp_path, step, -0.193, preservation=True, macro_alias=macro_alias
+    )
+    assert "placement_preservation=off" in stdout
+    optimization = next(
+        i
+        for i, line in enumerate(trace)
+        if line.startswith(("phys_opt_design ", "route_design "))
+    )
+    assert trace.index("release_preservation") < optimization
+
+
+@pytest.mark.parametrize("bad_release", ("timing", "placement", "macro_bel"))
+def test_downstream_rejects_placement_release_changes(
+    tmp_path: Path, bad_release: str
+) -> None:
+    """Reject a handoff that changes placement or timing before optimizing."""
+    _, trace, _ = _run_physopt_sweep_model(
+        tmp_path,
+        "post_place_physopt",
+        -0.193,
+        preservation=True,
+        bad_release=bad_release,
+        macro_alias=bad_release == "macro_bel",
+    )
+    assert "release_preservation" in trace
+    assert not any(line.startswith("phys_opt_design ") for line in trace)
 
 
 @pytest.mark.parametrize(
@@ -3123,6 +3216,7 @@ def test_promoted_opt_checkpoint_survives_worker_cleanup(
         "checkpoint_changed",
         "target_missed",
         "post_opt_changed",
+        "reference_changed",
     ),
 )
 def test_default_place_uses_fresh_reference_and_verifies_in_main_work(
@@ -3141,8 +3235,9 @@ def test_default_place_uses_fresh_reference_and_verifies_in_main_work(
 
     def run(command: list[str], *, cwd: Path, env: dict[str, str]) -> Any:
         assert cwd == work
-        assert env["FROST_PLACE_SETUP_UNCERTAINTY"] == "0.300"
-        assert env["FROST_PLACE_CELL_BLOAT"] == ""
+        assert env["FROST_PLACE_SETUP_UNCERTAINTY"] == "0.325"
+        assert env["FROST_PLACE_CELL_BLOAT"] == "MEDIUM"
+        assert env["FROST_PLACE_CELL_BLOAT_CELLS"] == "*u_tomasulo/u_int_rs"
         args = command[command.index("-tclargs") + 1 :]
         stage = args[6] if args[1] == "place" else args[1]
         stages.append(stage)
@@ -3157,14 +3252,24 @@ def test_default_place_uses_fresh_reference_and_verifies_in_main_work(
             slack = -0.201 if failure == "target_missed" else -0.189
             _write_place_gate(work, -0.180 if failure == "gate_changed" else slack)
         else:
-            assert Path(args[3]) == work / "post_opt.dcp"
-            assert Path(args[3]).read_bytes() == b"current post-opt"
-            assert args[2] == "ExtraNetDelay_high"
             assert not (work / "post_place.dcp").exists()
             if stage == "reference":
+                assert Path(args[3]) == work / "post_opt.dcp"
+                assert Path(args[3]).read_bytes() == b"current post-opt"
+                assert args[2] == "ExtraNetDelay_high"
                 assert not (work / "post_place_reference.dcp").exists()
             else:
+                assert stage == "guided"
+                assert Path(args[3]) == work / "post_place_reference.dcp"
+                assert args[2] == "Quick"
                 assert (work / "post_place_reference.dcp").read_bytes() == b"reference"
+                (work / "post_place_guidance.tcldict").write_text(
+                    "fresh measured guidance"
+                )
+                if failure == "reference_changed":
+                    (work / "post_place_reference.dcp").write_bytes(
+                        b"changed reference"
+                    )
             slack = (
                 -0.222
                 if stage == "reference"
@@ -3187,7 +3292,7 @@ def test_default_place_uses_fresh_reference_and_verifies_in_main_work(
     assert stages == (
         ["reference"]
         if failure in {"reference_checkpoint", "post_opt_changed"}
-        else ["reference", "incremental", "verify_place"]
+        else ["reference", "guided", "verify_place"]
     )
     assert success is (failure is None)
     if success:

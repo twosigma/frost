@@ -24,7 +24,16 @@
 proc primitive_placement_snapshot {} {
     set cells [get_cells -hier -filter {IS_PRIMITIVE}]
     set rows {}
-    foreach name [get_property NAME $cells] loc [get_property LOC $cells] bel [get_property BEL $cells] ref [get_property REF_NAME $cells] {
+    foreach name [get_property NAME $cells] loc [get_property LOC $cells] bel [get_property BEL $cells] ref [get_property REF_NAME $cells] level [get_property PRIMITIVE_LEVEL $cells] {
+        # A transformed macro's BEL property is a constraint alias, not its
+        # complete physical placement. Unlocking DDR OBUFDS, for example,
+        # changes that alias from OUTINV to OUTBUF without moving any leaf.
+        # Unplaced leaf aliases can also carry a BEL constraint without any
+        # physical occupancy. Compare actual BELs for those and for macros,
+        # as well as every placed leaf's ordinary LOC/BEL pair.
+        if {$level eq "MACRO" || $loc eq ""} {
+            set bel [lsort [get_bels -quiet -of_objects [get_cells -quiet $name]]]
+        }
         lappend rows [list $name $loc $bel $ref]
     }
     return [lsort -index 0 $rows]
@@ -39,7 +48,18 @@ proc current_setup_hold_slacks {} {
 }
 
 proc open_timing_checkpoint {checkpoint_path work_directory} {
+    global script_directory
     open_checkpoint $checkpoint_path
+    source [file join $script_directory x3_local_placement.tcl]
+    if {[frost_x3_local_placement::saved_constraints] ne ""} {
+        set placement [primitive_placement_snapshot]
+        set slacks [current_setup_hold_slacks]
+        frost_x3_local_placement::release
+        if {$placement ne [primitive_placement_snapshot] || $slacks ne [current_setup_hold_slacks]} {
+            error "Removing temporary placement constraints changed placement or timing"
+        }
+        puts "FROST_TIMING_FLOW placement_preservation=off setup_hold_slacks=$slacks"
+    }
     # The report is empty for a checkpoint without incremental history.
     if {[string trim [report_incremental_reuse -return_string]] eq ""} {return}
 
@@ -761,7 +781,7 @@ set retiming [lindex $argv 4]
 set software_mem_directory ""
 set x3_place_mode [lindex $argv 6]
 if {$x3_place_mode ne "" && ($board_name ne "x3" || $step ne "place" ||
-    $x3_place_mode ni {reference incremental})} {
+    $x3_place_mode ni {reference guided})} {
     error "Invalid X3 placement mode: $x3_place_mode"
 }
 
@@ -1057,16 +1077,22 @@ if {$step eq "synth"} {
 
     if {$x3_place_mode ne ""} {
         source [file join $script_directory x3_place.tcl]
-        frost_x3_place::prepare $x3_place_mode [file join $work_directory post_place_reference.dcp]
+        if {$x3_place_mode eq "guided"} {
+            set_x3_setup_uncertainty $board_name $x3_place_baseline_uncertainty "measure local floorplan choices"
+        }
+        frost_x3_place::prepare $x3_place_mode $work_directory
+        if {$x3_place_mode eq "guided"} {
+            set_x3_setup_uncertainty $board_name $x3_place_uncertainty "final placement guidance"
+        }
     }
 
     # One placement per candidate. All physical controls are already applied;
     # the remaining commands restore scoring constraints, audit and report.
     place_design -directive $directive
 
-    if {$x3_place_mode eq "incremental"} {
-        frost_x3_place::verify
-        report_incremental_reuse -file $work_directory/post_place_incremental_reuse.rpt
+    if {$x3_place_mode eq "guided"} {
+        frost_x3_place::verify $work_directory
+        report_drc -ruledecks placer_checks -file $work_directory/post_place_drc.rpt
     }
 
     if {$use_x3_pc_tail_group} {
@@ -1261,7 +1287,7 @@ if {$step eq "synth"} {
     }
     open_checkpoint $checkpoint_path
     source [file join $script_directory x3_place.tcl]
-    frost_x3_place::verify
+    frost_x3_place::verify $work_directory
     source [file join $script_directory x3_post_place_gate.tcl]
     frost_x3_post_place_gate::write $work_directory
     report_timing_summary -file $work_directory/post_place_verification_timing.rpt
