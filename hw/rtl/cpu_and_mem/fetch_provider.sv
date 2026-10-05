@@ -773,8 +773,9 @@ module fetch_provider #(
       copy_base[p] = copy_reg_ok[p] && vs_hit[p] && !cand_present[p];
     end
     for (int p = 0; p < 2; p++) begin
+      // p is an int: ~p would be -1/-2, outside the two-bit vector.
       copy_now[p] = !i_line_resp_valid && !i_invalidate && copy_base[p] &&
-          ((fill_line0[0] == 1'(p)) || !copy_base[~p]);
+          ((fill_line0[0] == 1'(p)) || !copy_base[p ^ 1]);
     end
   end
   logic copy_slot;

@@ -930,6 +930,9 @@ if {$step eq "synth"} {
     # attached to separate, undriven implicit nets. Reject that ambiguity before
     # Vivado ties those inputs to constants and reports timing on the wrong logic.
     set_msg_config -id {Synth 8-605} -new_severity ERROR
+    # Out-of-range indices can become don't-cares in synthesis even when
+    # simulation truncates the index to the intended vector width.
+    set_msg_config -id {Synth 8-324} -new_severity ERROR
     synth_design {*}$synth_args
 
     if {[getenv_default FROST_DEBUG_ILA 0] eq "1"} {

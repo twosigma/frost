@@ -275,6 +275,7 @@ samples before the fetch fault.
 | Wrong or ambiguous target | Select one with `--target` or `--target-exact` |
 | Timing failure | `build/<board>/work/final_timing.rpt`; try other directives. Changing the CPU clock also means updating the board's MMCM settings and the build and loader clock settings |
 | `Synth 8-605` error | The build treats this Vivado warning as an error. Declare each signal before any generated primitive instance that uses it; a later declaration can leave the primitive on an undriven implicit net |
+| `Synth 8-324` error | An array or vector index is out of range. The build rejects this because synthesis can replace the read with a don't-care while simulation silently truncates the index. Check index widths; for a two-entry vector indexed by an `int p` loop variable, use `p ^ 1` for the other entry, since `~p` is negative |
 | Application does not run | The CPU clock setting (`FROST_CPU_CLK_HZ`), that the program fits in low BRAM, and that any DDR image was loaded |
 
 To add a board, follow the
