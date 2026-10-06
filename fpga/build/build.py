@@ -595,7 +595,7 @@ def quick_route_log_has_congestion_warning(log_path: Path) -> bool:
 def x3_place_cell_bloat_override_is_valid(
     log_path: Path, expected_factor: str, expected_cells: str
 ) -> bool:
-    """Return whether the log shows the recipe's bloat applied to exactly one cell."""
+    """Require the recipe's bloat on one hierarchy per requested pattern."""
     try:
         content = log_path.read_text(errors="replace")
     except OSError:
@@ -606,7 +606,10 @@ def x3_place_cell_bloat_override_is_valid(
         content,
         re.MULTILINE,
     )
-    return matches == [(expected_factor, "1", expected_cells)]
+    patterns = expected_cells.split()
+    return bool(patterns) and matches == [
+        (expected_factor, "1", pattern) for pattern in patterns
+    ]
 
 
 # Predecode sideband predicates mirrored into pinned low-address scalar LUTRAM
@@ -2765,6 +2768,8 @@ def run_x3_guided_place_candidate(
     script_dir: Path,
     vivado_path: str,
     build_dir: Path | None = None,
+    *,
+    cell_bloat_cells: str = X3_PLACE_INT_RS_BLOAT_CELLS,
 ) -> tuple[bool, float | None, str]:
     """Measure a guided candidate from the current post-opt netlist in work/.
 
@@ -2772,6 +2777,8 @@ def run_x3_guided_place_candidate(
     the guided cells, then verify in a third, read-only Vivado process. No
     archived input or phys-opt pass participates. This is not qualification:
     the caller submits the result to the shared congestion/probe selector.
+    ``cell_bloat_cells`` is a space-separated list of hierarchy patterns;
+    every pattern must match exactly one cell in each placement pass.
     """
     board_build = build_dir if build_dir is not None else script_dir / "x3"
     work = board_build / "work"
@@ -2796,7 +2803,7 @@ def run_x3_guided_place_candidate(
     environment = dict(os.environ)
     environment["FROST_PLACE_SETUP_UNCERTAINTY"] = "0.325"
     environment["FROST_PLACE_CELL_BLOAT"] = "MEDIUM"
-    environment["FROST_PLACE_CELL_BLOAT_CELLS"] = "*u_tomasulo/u_int_rs"
+    environment["FROST_PLACE_CELL_BLOAT_CELLS"] = cell_bloat_cells
     suffixes = (
         ".dcp",
         "_timing.rpt",
@@ -2848,7 +2855,7 @@ def run_x3_guided_place_candidate(
         if result.returncode != 0:
             return False
         if step == "place" and not x3_place_cell_bloat_override_is_valid(
-            work / log_name, "MEDIUM", X3_PLACE_INT_RS_BLOAT_CELLS
+            work / log_name, "MEDIUM", cell_bloat_cells
         ):
             raise ValueError(f"{mode} placement did not apply the requested cell bloat")
         return True
@@ -2913,7 +2920,7 @@ def run_x3_guided_place_candidate(
                     "clock_root": "X1Y9",
                     "placement_uncertainty_ns": 0.325,
                     "cell_bloat": "MEDIUM",
-                    "cell_bloat_cells": "*u_tomasulo/u_int_rs",
+                    "cell_bloat_cells": cell_bloat_cells,
                     "final_directive": "Quick",
                     "guidance": "current-reference local floorplan",
                     "scoring_uncertainty_ns": 0.0,

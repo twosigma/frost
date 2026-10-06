@@ -673,6 +673,49 @@ def test_automatic_x3_bloat_match_validation_rejects_wrong_scope(
     )
 
 
+@pytest.mark.parametrize(
+    ("memory_factor", "memory_count", "extra", "valid"),
+    (
+        ("MEDIUM", 1, "", True),
+        ("MEDIUM", 0, "", False),
+        ("MEDIUM", 2, "", False),
+        ("LOW", 1, "", False),
+        (None, 1, "", False),
+        (
+            "MEDIUM",
+            1,
+            "Set CELL_BLOAT_FACTOR MEDIUM on 1 cell(s) matching '*u_tomasulo/u_rob'\n",
+            False,
+        ),
+    ),
+)
+def test_x3_bloat_requires_each_requested_hierarchy_exactly_once(
+    tmp_path: Path,
+    memory_factor: str | None,
+    memory_count: int,
+    extra: str,
+    valid: bool,
+) -> None:
+    """A two-station recipe cannot silently spread only one or extra hierarchies."""
+    log = tmp_path / "vivado.log"
+    log.write_text(
+        "Set CELL_BLOAT_FACTOR MEDIUM on 1 cell(s) matching '*u_tomasulo/u_int_rs'\n"
+        + (
+            f"Set CELL_BLOAT_FACTOR {memory_factor} on {memory_count} cell(s) "
+            "matching '*u_tomasulo/u_mem_rs'\n"
+            if memory_factor is not None
+            else ""
+        )
+        + extra
+    )
+    assert (
+        fpga_build.x3_place_cell_bloat_override_is_valid(
+            log, "MEDIUM", "*u_tomasulo/u_int_rs *u_tomasulo/u_mem_rs"
+        )
+        is valid
+    )
+
+
 @pytest.mark.parametrize("bloat_match_valid", (True, False))
 def test_x3_place_worker_isolates_and_validates_bloat_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bloat_match_valid: bool
@@ -3260,6 +3303,7 @@ def test_promoted_opt_checkpoint_survives_worker_cleanup(
     assert (work / "post_opt.dcp").read_bytes() == b"new optimized checkpoint"
 
 
+@pytest.mark.parametrize("both_stations", (False, True))
 @pytest.mark.parametrize(
     "failure",
     (
@@ -3276,7 +3320,10 @@ def test_promoted_opt_checkpoint_survives_worker_cleanup(
     ),
 )
 def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str | None
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str | None,
+    both_stations: bool,
 ) -> None:
     """Measuring and verifying local guidance never bypasses shared selection."""
     work = _sweep_input(tmp_path, "place")
@@ -3288,12 +3335,15 @@ def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
     (work / "post_place.dcp").write_bytes(b"stale placement")
     _write_place_gate(work, bind=True)
     stages = []
+    bloat_cells = "*u_tomasulo/u_int_rs"
+    if both_stations:
+        bloat_cells += " *u_tomasulo/u_mem_rs"
 
     def run(command: list[str], *, cwd: Path, env: dict[str, str]) -> Any:
         assert cwd == work
         assert env["FROST_PLACE_SETUP_UNCERTAINTY"] == "0.325"
         assert env["FROST_PLACE_CELL_BLOAT"] == "MEDIUM"
-        assert env["FROST_PLACE_CELL_BLOAT_CELLS"] == "*u_tomasulo/u_int_rs"
+        assert env["FROST_PLACE_CELL_BLOAT_CELLS"] == bloat_cells
         args = command[command.index("-tclargs") + 1 :]
         stage = args[6] if args[1] == "place" else args[1]
         stages.append(stage)
@@ -3301,7 +3351,10 @@ def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
             (work / command[command.index("-log") + 1]).write_text(
                 "missing requested bloat\n"
                 if failure == f"{stage}_bloat"
-                else "Set CELL_BLOAT_FACTOR MEDIUM on 1 cell(s) matching '*u_tomasulo/u_int_rs'\n"
+                else "".join(
+                    f"Set CELL_BLOAT_FACTOR MEDIUM on 1 cell(s) matching '{pattern}'\n"
+                    for pattern in bloat_cells.split()
+                )
             )
         assert not (work / "post_place_gate_binding.json").exists()
         if stage == "verify_place":
@@ -3350,7 +3403,14 @@ def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(fpga_build.subprocess, "run", run)
-    success, wns, prefix = fpga_build.run_x3_guided_place_candidate(tmp_path, "unused")
+    if both_stations:
+        success, wns, prefix = fpga_build.run_x3_guided_place_candidate(
+            tmp_path, "unused", cell_bloat_cells=bloat_cells
+        )
+    else:
+        success, wns, prefix = fpga_build.run_x3_guided_place_candidate(
+            tmp_path, "unused"
+        )
     assert stages == (
         ["reference"]
         if failure in {"reference_checkpoint", "post_opt_changed", "reference_bloat"}
@@ -3366,6 +3426,7 @@ def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
         )
         assert not fpga_build.require_x3_post_place_gate(work)
         record = json.loads((work / "post_place_recipe.json").read_text())
+        assert record["cell_bloat_cells"] == bloat_cells
         assert record["post_opt_sha256"] == fpga_build.file_sha256(
             work / "post_opt.dcp"
         )
