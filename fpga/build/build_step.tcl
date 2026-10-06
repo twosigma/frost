@@ -1309,6 +1309,7 @@ if {$step eq "synth"} {
     }
     route_design -directive RuntimeOptimized
 
+    report_route_status -file $work_directory/quick_route_status.rpt
     report_timing_summary -file $work_directory/quick_route_timing.rpt
     report_design_analysis -congestion -file $work_directory/quick_route_congestion.rpt
 

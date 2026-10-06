@@ -534,6 +534,7 @@ class DirectiveSweepRun:
     quick_route_warning: bool = False
     quick_route_returncode: int | None = None
     quick_route_elapsed_s: float | None = None
+    quick_route_error: str | None = None
     pc_tail_guided: bool = False
     # Per-candidate pre-place physical settings.
     cell_bloat_factor: str | None = None
@@ -1030,13 +1031,63 @@ def x3_congestion_veto_level() -> int:
     return level
 
 
+def x3_quick_route_count() -> int:
+    """Resolve and validate the requested probe count before starting Vivado."""
+    count = int(
+        os.environ.get(
+            "FROST_PLACE_QUICK_ROUTE_COUNT",
+            str(X3_PLACE_QUICK_ROUTE_COUNT_DEFAULT if x3_full_rate() else 0),
+        )
+    )
+    if count < 0:
+        raise ValueError("FROST_PLACE_QUICK_ROUTE_COUNT must be nonnegative")
+    return count
+
+
+def read_x3_route_probe(
+    work: Path, prefix: str
+) -> tuple[TimingSummary, dict[str, str]]:
+    """Require real routed timing, complete routing, and a readable clean log."""
+    paths = {
+        name: work / f"{prefix}_{name}"
+        for name in (
+            "timing.rpt",
+            "status.rpt",
+            "vivado.log",
+        )
+    }
+    log = paths["vivado.log"].read_text()
+    if not log.strip():
+        raise ValueError("route probe has an empty Vivado log")
+    if _ROUTER_CONGESTION_WARNING in log:
+        raise ValueError("router congestion capitulation")
+    status = paths["status.rpt"].read_text()
+    counts = {}
+    for name in ("routable nets", "fully routed nets", "nets with routing errors"):
+        matches = re.findall(rf"# of {name}\.+\s*:\s*(\d+)\s*:", status)
+        if len(matches) != 1:
+            raise ValueError(f"missing or ambiguous route-status count: {name}")
+        counts[name] = int(matches[0])
+    if not (
+        counts["routable nets"] > 0
+        and counts["routable nets"] == counts["fully routed nets"]
+        and counts["nets with routing errors"] == 0
+    ):
+        raise ValueError("route probe left incomplete or conflicting routes")
+    timing = extract_timing_from_report(paths["timing.rpt"])
+    wns = timing.get("wns_ns")
+    if wns is None or not Decimal(str(wns)).is_finite():
+        raise ValueError("route probe has no finite WNS")
+    return timing, {name: file_sha256(path) for name, path in paths.items()}
+
+
 def x3_place_binding(
-    work_dir: Path, expected_wns: float | None = None
-) -> dict[str, str | int]:
+    work_dir: Path, expected_wns: float | None = None, *, probe_input: bool = False
+) -> dict[str, object]:
     """Validate placement requirements and hash the evidence for this checkpoint."""
     gate_path = work_dir / "post_place_gate.txt"
     gate = read_x3_place_gate(gate_path, expected_wns)
-    binding: dict[str, str | int] = {
+    binding: dict[str, object] = {
         "schema": "x3_post_place_gate_binding_v1",
         "checkpoint_sha256": file_sha256(work_dir / "post_place.dcp"),
         "gate_sha256": file_sha256(gate_path),
@@ -1061,15 +1112,63 @@ def x3_place_binding(
             congestion_sha256=file_sha256(congestion_path),
             congestion_veto_level=veto,
         )
+        if probe_input:
+            binding["purpose"] = "route_probe_input"
+            return binding
+        selection_path = work_dir / "post_place_selection.json"
+        selection = json.loads(selection_path.read_text())
+        if (
+            not isinstance(selection, dict)
+            or selection.get("schema") != "x3_place_selection_v1"
+        ):
+            raise ValueError("missing or invalid placement-selection record")
+        probe_count = selection.get("quick_route_count")
+        selected = selection.get("selected")
+        candidates = selection.get("candidates")
+        if (
+            type(probe_count) is not int
+            or probe_count < 0
+            or not isinstance(selected, str)
+            or not isinstance(candidates, list)
+        ):
+            raise ValueError("invalid selected placement or probe count")
+        matching = [
+            c for c in candidates if isinstance(c, dict) and c.get("label") == selected
+        ]
+        if len(matching) != 1:
+            raise ValueError("placement-selection record has no unique winner")
+        winner = matching[0]
+        if winner.get("checkpoint_sha256") != binding["checkpoint_sha256"]:
+            raise ValueError("selected placement does not match the checkpoint")
+        if probe_count:
+            timing, hashes = read_x3_route_probe(work_dir, "post_place_quick_route")
+            if (
+                winner.get("quick_route_returncode") != 0
+                or winner.get("quick_route_congestion_warning") is not False
+                or winner.get("quick_route_wns_ns") != timing.get("wns_ns")
+            ):
+                raise ValueError("selected route probe does not match its evidence")
+            binding["probe_sha256"] = hashes
+        elif x3_quick_route_count() != 0:
+            raise ValueError(
+                "placement skipped route probes; explicitly retain that override or rerun selection"
+            )
+        binding.update(
+            schema="x3_post_place_gate_binding_v3",
+            selection_sha256=file_sha256(selection_path),
+            quick_route_count=probe_count,
+        )
     return binding
 
 
-def bind_x3_place_gate(work_dir: Path, expected_wns: float | None = None) -> bool:
+def bind_x3_place_gate(
+    work_dir: Path, expected_wns: float | None = None, *, probe_input: bool = False
+) -> bool:
     """Bind passing timing and congestion evidence to the placed checkpoint."""
     binding_path = work_dir / "post_place_gate_binding.json"
     binding_path.unlink(missing_ok=True)
     try:
-        binding = x3_place_binding(work_dir, expected_wns)
+        binding = x3_place_binding(work_dir, expected_wns, probe_input=probe_input)
     except (OSError, ValueError) as error:
         print(f"Error: cannot qualify X3 placement: {error}")
         return False
@@ -1077,11 +1176,11 @@ def bind_x3_place_gate(work_dir: Path, expected_wns: float | None = None) -> boo
     return True
 
 
-def require_x3_post_place_gate(main_work: Path) -> bool:
+def require_x3_post_place_gate(main_work: Path, *, probe_input: bool = False) -> bool:
     """Require unchanged passing placement evidence before downstream work."""
     path = main_work / "post_place_gate.txt"
     try:
-        expected_binding = x3_place_binding(main_work)
+        expected_binding = x3_place_binding(main_work, probe_input=probe_input)
         binding_path = main_work / "post_place_gate_binding.json"
         try:
             binding = json.loads(binding_path.read_text())
@@ -1354,6 +1453,7 @@ def snapshot_x3_physopt(source_work: Path, build_dir: Path) -> bool:
             "post_place_quick_route_timing.rpt",
             "post_place_quick_route_congestion.rpt",
             "post_place_quick_route_vivado.log",
+            "post_place_quick_route_status.rpt",
         ):
             if (source_work / name).is_file():
                 sources[name] = source_work / name
@@ -1687,12 +1787,16 @@ def run_x3_place_quick_route_probes(
             while next_candidate < len(candidates) and len(active) < max_jobs:
                 run = candidates[next_candidate]
                 next_candidate += 1
+                run.quick_route_wns = None
+                run.quick_route_tns = None
+                run.quick_route_warning = False
+                run.quick_route_error = None
                 checkpoint = run.work_dir / "post_place.dcp"
                 if not checkpoint.exists():
                     run.quick_route_returncode = -1
                     print(f"  quick-route skip {run.label}: missing {checkpoint}")
                     continue
-                if not require_x3_post_place_gate(run.work_dir):
+                if not require_x3_post_place_gate(run.work_dir, probe_input=True):
                     run.quick_route_returncode = -1
                     print(
                         f"  quick-route skip {run.label}: post-place gate not qualified"
@@ -1717,6 +1821,13 @@ def run_x3_place_quick_route_probes(
                 ]
                 stdout_handle = None
                 try:
+                    for name in (
+                        "quick_route_timing.rpt",
+                        "quick_route_status.rpt",
+                        "quick_route_vivado.log",
+                        "quick_route_congestion.rpt",
+                    ):
+                        (run.work_dir / name).unlink(missing_ok=True)
                     stdout_handle = stdout_path.open("w")
                     process = subprocess.Popen(
                         command,
@@ -1743,11 +1854,22 @@ def run_x3_place_quick_route_probes(
                 run.quick_route_returncode = returncode
                 run.quick_route_elapsed_s = time.monotonic() - started
                 if returncode == 0:
-                    timing = extract_timing_from_report(
-                        run.work_dir / "quick_route_timing.rpt"
-                    )
-                    run.quick_route_wns = timing.get("wns_ns")
-                    run.quick_route_tns = timing.get("tns_ns")
+                    try:
+                        if not require_x3_post_place_gate(
+                            run.work_dir, probe_input=True
+                        ):
+                            raise ValueError(
+                                "placement evidence changed during its route probe"
+                            )
+                        timing, _hashes = read_x3_route_probe(
+                            run.work_dir, "quick_route"
+                        )
+                        run.quick_route_wns = timing.get("wns_ns")
+                        run.quick_route_tns = timing.get("tns_ns")
+                    except (OSError, ValueError) as error:
+                        run.quick_route_returncode = -1
+                        run.quick_route_error = str(error)
+                        print(f"  quick-route rejected {run.label}: {error}")
                 run.quick_route_warning = quick_route_log_has_congestion_warning(
                     run.work_dir / "quick_route_vivado.log"
                 )
@@ -1860,21 +1982,14 @@ def select_x3_place_best_run(
         )
 
     survivors_ranked = sorted(survivors, key=directive_sweep_rank_key)
-    quick_route_count = int(
-        os.environ.get(
-            "FROST_PLACE_QUICK_ROUTE_COUNT",
-            str(X3_PLACE_QUICK_ROUTE_COUNT_DEFAULT if full_rate else 0),
-        )
-    )
-    if quick_route_count < 0:
-        raise ValueError("FROST_PLACE_QUICK_ROUTE_COUNT must be nonnegative")
+    quick_route_count = x3_quick_route_count()
     if quick_route_count == 0:
         return survivors_ranked[0]
 
     candidates = [
         run
         for run in survivors_ranked[:quick_route_count]
-        if bind_x3_place_gate(run.work_dir, run.wns)
+        if bind_x3_place_gate(run.work_dir, run.wns, probe_input=True)
     ]
     print(
         f"\nQuick-route probing the top {len(candidates)} surviving seeds "
@@ -2110,6 +2225,9 @@ def run_x3_step_directive_sweep(
         raise ValueError("max_jobs must be positive")
     if additional_place_runs and step != "place":
         raise ValueError("additional placements can only join the place sweep")
+    if step == "place":
+        x3_congestion_veto_level()
+        x3_quick_route_count()
     board_name = "x3"
     tcl_report_prefix = _TCL_REPORT_PREFIX[step]
     board_build = build_dir if build_dir is not None else script_dir / board_name
@@ -2133,6 +2251,20 @@ def run_x3_step_directive_sweep(
     if not input_checkpoint.exists():
         print(f"Error: Required checkpoint not found: {input_checkpoint}")
         return False, None, ""
+    place_input_hash = file_sha256(input_checkpoint) if step == "place" else None
+    for run in additional_place_runs or []:
+        try:
+            recipe = json.loads((run.work_dir / "post_place_recipe.json").read_text())
+            if (
+                not isinstance(recipe, dict)
+                or recipe.get("post_opt_sha256") != place_input_hash
+            ):
+                raise ValueError(
+                    "guided candidate consumed a different post-opt checkpoint"
+                )
+        except (OSError, ValueError) as error:
+            print(f"Error: cannot admit {run.label}: {error}")
+            return False, None, ""
 
     consumed_lineage = None
     if step in STEPS[STEPS.index("place") + 1 :]:
@@ -2372,6 +2504,14 @@ def run_x3_step_directive_sweep(
         raise SystemExit(130)
 
     if step == "place":
+        if (
+            not input_checkpoint.is_file()
+            or file_sha256(input_checkpoint) != place_input_hash
+        ):
+            print(
+                "Error: post-opt checkpoint changed during placement; rerun the sweep."
+            )
+            return False, None, ""
         best_run = select_x3_place_best_run(
             script_dir, runs, vivado_path, max_jobs=max_jobs
         )
@@ -2381,6 +2521,8 @@ def run_x3_step_directive_sweep(
                     "schema": "x3_place_selection_v1",
                     "selected": best_run.label if best_run is not None else None,
                     "congestion_veto_level": x3_congestion_veto_level(),
+                    "quick_route_count": x3_quick_route_count(),
+                    "post_opt_sha256": place_input_hash,
                     "candidates": [
                         {
                             "label": run.label,
@@ -2393,6 +2535,12 @@ def run_x3_step_directive_sweep(
                             "quick_route_wns_ns": run.quick_route_wns,
                             "quick_route_tns_ns": run.quick_route_tns,
                             "quick_route_congestion_warning": run.quick_route_warning,
+                            "quick_route_error": run.quick_route_error,
+                            "checkpoint_sha256": file_sha256(
+                                run.work_dir / "post_place.dcp"
+                            )
+                            if (run.work_dir / "post_place.dcp").is_file()
+                            else None,
                         }
                         for run in runs
                     ],
@@ -2476,6 +2624,7 @@ def run_x3_step_directive_sweep(
             "quick_route_timing.rpt",
             "quick_route_congestion.rpt",
             "quick_route_vivado.log",
+            "quick_route_status.rpt",
         ):
             quick_route_src = best_run.work_dir / quick_route_name
             quick_route_dst = main_work / f"post_place_{quick_route_name}"
@@ -2550,6 +2699,8 @@ def run_x3_default_place(
     keep_temps: bool = False,
 ) -> tuple[bool, float | None, str]:
     """Generate local guidance and submit it to the normal placer selection."""
+    x3_congestion_veto_level()
+    x3_quick_route_count()
     board_build = build_dir if build_dir is not None else script_dir / "x3"
     work = board_build / "work"
     started = time.monotonic()
@@ -2694,7 +2845,13 @@ def run_x3_guided_place_candidate(
             command.extend(["", mode])
         print(f"\nX3 placement: {mode or step}; work directory: {work}", flush=True)
         result = subprocess.run(command, cwd=work, env=environment)
-        return result.returncode == 0
+        if result.returncode != 0:
+            return False
+        if step == "place" and not x3_place_cell_bloat_override_is_valid(
+            work / log_name, "MEDIUM", X3_PLACE_INT_RS_BLOAT_CELLS
+        ):
+            raise ValueError(f"{mode} placement did not apply the requested cell bloat")
+        return True
 
     try:
         post_opt_hash = file_sha256(post_opt)
@@ -3036,8 +3193,8 @@ Behavior:
     second pass preserves the surrounding placement and uses hard local
     pblocks, BELs and LUT pin constraints to re-place the guided cells with
     Quick. No cell, net or pin edits follow the final place_design.
-    Everything stays in work/, including post_place_reference.dcp and the
-    final post_place.dcp. A separate Vivado process verifies the final saved
+    These passes run in work/; their artifacts then join the grid in a normal
+    candidate directory. A separate Vivado process verifies the final saved
     constraints without changing them. Temporary preservation and pblocks
     are removed when opening the checkpoint for downstream optimization,
     with original constraints restored and placement/timing checked.
@@ -3072,7 +3229,8 @@ Behavior:
     Failing or missing evidence disqualifies a candidate; no fallback admits it.
     FROST_PLACE_QUICK_ROUTE_COUNT (default {probes}) quick-routes up to that many
     survivors, including a sole survivor, and ranks by routed WNS, then TNS.
-    Failed probes and router congestion capitulation disqualify a candidate.
+    Failed probes, incomplete routing, missing reports/logs, and router
+    congestion capitulation disqualify a candidate.
     An explicit count of zero disables probes and ranks by post-place WNS.
     If none qualifies, the build stops. Divided-clock builds keep their fast
     policy without the full-rate congestion screen or automatic probes.
@@ -3086,8 +3244,10 @@ Behavior:
     one cell, the integer-RS hierarchy.
   * Quick routes and every later stage, including resumed builds, require
     post_place_gate.txt and post_place_gate_binding.json, which ties the gate
-    to post_place.dcp by hash. Full-rate bindings also require unchanged
-    passing congestion evidence; older timing-only bindings are rejected.
+    to post_place.dcp by hash. Full-rate downstream bindings also require
+    unchanged passing congestion evidence, selection and complete probe
+    reports/logs. Preliminary probe-input and older bindings cannot resume.
+    A zero-probe selection requires that explicit override again on resume.
     Later input checkpoints also need their
     *.lineage.json chain back to that placement; rebuild stale ones from
     post_place_physopt.
@@ -3212,7 +3372,7 @@ Examples:
         nargs="+",
         choices=PLACER_DIRECTIVES,
         metavar="DIRECTIVE",
-        help="Use a placer sweep instead of the full-rate X3 placement recipe; "
+        help="Use only the conventional grid, without the local-guidance candidate; "
         "set its grid to one or more unique directives. "
         "Each runs at every configured uncertainty; the qualified off-grid "
         "seed is still appended unless already present, and eligible LOW "
@@ -3224,7 +3384,7 @@ Examples:
         "--num-uncertainties",
         type=int,
         metavar="N",
-        help="Use a placer sweep instead of the full-rate X3 placement recipe; "
+        help="Use only the conventional grid, without the local-guidance candidate; "
         "set the number of 50 ps-spaced uncertainties, starting at "
         f"{X3_PLACE_BASELINE_UNCERTAINTY_NS:.3f} ns "
         f"(1-{X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT}; default: "
@@ -3421,6 +3581,11 @@ Examples:
                 str(functional_policy.quick_route_count),
             )
     if board_name == "x3":
+        try:
+            x3_congestion_veto_level()
+            x3_quick_route_count()
+        except ValueError as error:
+            parser.error(str(error))
         place_directive = "Guided+Sweep" if use_default_x3_place else "Sweep"
         route_directive = "Sweep"
         second_route_directive = "Sweep"

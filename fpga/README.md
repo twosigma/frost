@@ -198,15 +198,19 @@ Every full-rate candidate must have immediate post-place WNS better than
 −0.200 ns at zero user setup uncertainty and a valid congestion report below
 level 5. Missing reports and congested candidates are rejected, even if that
 leaves no candidate. The best three survivors are quick-routed by default;
-a sole survivor is also probed. Failed probes and router congestion
-capitulation are rejected, and the winner is chosen by routed WNS, then TNS.
+a sole survivor is also probed. Each probe must produce finite timing, a
+readable Vivado log without router congestion capitulation, and a route-status
+report with every routable net fully routed and no routing errors. Failed or
+incomplete probes are rejected; the winner is chosen by routed WNS, then TNS.
 The promoted checkpoint remains the candidate's immediate post-place result.
 If no candidate qualifies, the build stops and leaves the reports for review.
 `work/post_place_selection.json` records every candidate's timing, congestion,
-and probe result.
+and probe result, along with checkpoint hashes and the effective probe count.
 
 The guided candidate additionally requires post-opt WNS >= 0 and uses no
-archived checkpoints. If it wins, `work/post_place_recipe.json` records checkpoint and
+archived checkpoints. A failed reference or guided pass stops the default flow
+before the grid. All candidates must consume the same unchanged post-opt
+checkpoint. If guidance wins, `work/post_place_recipe.json` records checkpoint and
 guidance hashes; `work/post_place_verification_timing.rpt` records the
 clean-reopen timing. Temporary pblocks and preservation locks are removed
 when opening the result for downstream optimization. The original cell
@@ -232,7 +236,8 @@ screen or automatic probes. The X3 CPU datapath has no false-path or multicycle 
 
 Both route steps try several directives. `--route-directives` narrows their
 sweeps. `--jobs N` (default 12) limits simultaneous Vivado processes in sweeps;
-the guided candidate's two passes run sequentially before the grid. `build.py --help`
+the guided candidate's two placement passes and separate verification run
+sequentially before the grid. `build.py --help`
 describes every step and default. To build through placement in the normal
 output directory:
 
@@ -251,9 +256,12 @@ output directory:
 
 Promoted reports and checkpoints always use zero added uncertainty.
 
-Full-rate checkpoint bindings include the congestion report as well as the
-timing gate and placed checkpoint. Resuming rejects missing or changed
-congestion evidence and old bindings that certified timing alone.
+Full-rate checkpoint bindings include the congestion report, selection record,
+and winning probe's timing, route status, and Vivado log, as well as the timing
+gate and placed checkpoint. Resuming rejects missing or changed evidence and
+old or preliminary bindings that do not certify the completed selection.
+If probes were explicitly disabled, resuming also requires
+`FROST_PLACE_QUICK_ROUTE_COUNT=0`; the override cannot carry forward silently.
 
 Resumed steps check the metadata files saved beside each checkpoint, so copy
 a build directory as a whole. A new synthesis or `opt` result invalidates the

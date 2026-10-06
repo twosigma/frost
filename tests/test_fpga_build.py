@@ -46,7 +46,49 @@ def _load_fpga_build() -> Any:
 fpga_build: Any = _load_fpga_build()
 
 
-def _write_place_gate(work_dir: Path, wns: float = -0.1, *, bind: bool = False) -> None:
+def _write_probe_outputs(work_dir: Path, prefix: str, wns: float = -0.1) -> None:
+    """Write usable timing, a native complete-route status, and a clean tool log."""
+    _write_stage_utilization(work_dir, prefix, 42)
+    timing = work_dir / f"{prefix}_timing.rpt"
+    timing.write_text(timing.read_text().replace("-0.100", f"{wns:.3f}"))
+    (work_dir / f"{prefix}_status.rpt").write_text(
+        (REPO_ROOT / "tests/fixtures/x3_quick_route_status_complete.rpt").read_text()
+    )
+    (work_dir / f"{prefix}_vivado.log").write_text(
+        "route_design completed successfully\n"
+    )
+
+
+def _write_test_selection(work_dir: Path, wns: float) -> None:
+    """Certify this test checkpoint as a selected, successfully probed placement."""
+    checkpoint = work_dir / "post_place.dcp"
+    _write_probe_outputs(work_dir, "post_place_quick_route")
+    (work_dir / "post_place_selection.json").write_text(
+        json.dumps(
+            {
+                "schema": "x3_place_selection_v1",
+                "selected": "fixture",
+                "quick_route_count": fpga_build.x3_quick_route_count(),
+                "candidates": [
+                    {
+                        "label": "fixture",
+                        "placed_wns_ns": wns,
+                        "checkpoint_sha256": fpga_build.file_sha256(checkpoint)
+                        if checkpoint.exists()
+                        else None,
+                        "quick_route_returncode": 0,
+                        "quick_route_wns_ns": -0.1,
+                        "quick_route_congestion_warning": False,
+                    }
+                ],
+            }
+        )
+    )
+
+
+def _write_place_gate(
+    work_dir: Path, wns: float = -0.1, *, bind: bool = False, probe_input: bool = False
+) -> None:
     """Write post_place_gate.txt as x3_post_place_gate.tcl does; bind it if asked."""
     passed = wns >= -0.2
     (work_dir / "post_place_gate.txt").write_text(
@@ -63,8 +105,10 @@ def _write_place_gate(work_dir: Path, wns: float = -0.1, *, bind: bool = False) 
                 REPO_ROOT / "tests/fixtures/x3_post_place_congestion_clear.rpt"
             ).read_text()
         )
+    if not probe_input:
+        _write_test_selection(work_dir, wns)
     if bind:
-        assert fpga_build.bind_x3_place_gate(work_dir, wns)
+        assert fpga_build.bind_x3_place_gate(work_dir, wns, probe_input=probe_input)
 
 
 def _write_qualified_descendant(
@@ -1963,7 +2007,7 @@ proc unknown {cmd args} {
             record "$taken wns [format %.3f [model_wns]]"
             return {}
         }
-        report_utilization - report_high_fanout_nets - report_design_analysis {
+        report_utilization - report_high_fanout_nets - report_design_analysis - report_route_status {
             close [open [lindex $args end] w]
             return {}
         }
@@ -2439,11 +2483,15 @@ class _VivadoFleet:
         monkeypatch.setattr(fpga_build.time, "sleep", self.sleep)
         monkeypatch.setattr(fpga_build.time, "monotonic", lambda: float(self.tick))
         monkeypatch.setattr(fpga_build.os, "killpg", self.killpg)
-        monkeypatch.setattr(
-            fpga_build,
-            "extract_timing_from_report",
-            lambda path: {"wns_ns": float(path.read_text()), "tns_ns": -1.0},
-        )
+        original_extract = fpga_build.extract_timing_from_report
+
+        def extract(path: Path) -> Any:
+            try:
+                return {"wns_ns": float(path.read_text()), "tns_ns": -1.0}
+            except ValueError:
+                return original_extract(path)
+
+        monkeypatch.setattr(fpga_build, "extract_timing_from_report", extract)
 
     def popen(self, command: list[str], **kwargs: Any) -> _ScheduledVivado:
         assert kwargs["start_new_session"] is True
@@ -2465,6 +2513,8 @@ class _VivadoFleet:
         (work_dir / f"{prefix}_timing.rpt").write_text(str(wns))
         if step == "place":
             _write_place_gate(work_dir, wns)
+        elif step == "quick_route":
+            _write_probe_outputs(work_dir, "quick_route", wns)
         (work_dir / "vivado.log").write_text("synthetic Vivado output\n")
         return process
 
@@ -2622,7 +2672,7 @@ def _quick_route_candidates(script_dir: Path, count: int = 15) -> list[Any]:
         work_dir.mkdir()
         (work_dir / "post_place.dcp").write_text(f"placement {index}\n")
         wns = round(-0.1 + index / 100.0, 3)
-        _write_place_gate(work_dir, wns, bind=True)
+        _write_place_gate(work_dir, wns, bind=True, probe_input=True)
         candidates.append(
             fpga_build.DirectiveSweepRun(
                 directive=f"Candidate{index}",
@@ -3221,6 +3271,8 @@ def test_promoted_opt_checkpoint_survives_worker_cleanup(
         "target_missed",
         "post_opt_changed",
         "reference_changed",
+        "reference_bloat",
+        "guided_bloat",
     ),
 )
 def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
@@ -3245,6 +3297,12 @@ def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
         args = command[command.index("-tclargs") + 1 :]
         stage = args[6] if args[1] == "place" else args[1]
         stages.append(stage)
+        if args[1] == "place":
+            (work / command[command.index("-log") + 1]).write_text(
+                "missing requested bloat\n"
+                if failure == f"{stage}_bloat"
+                else "Set CELL_BLOAT_FACTOR MEDIUM on 1 cell(s) matching '*u_tomasulo/u_int_rs'\n"
+            )
         assert not (work / "post_place_gate_binding.json").exists()
         if stage == "verify_place":
             assert Path(args[3]) == work / "post_place.dcp"
@@ -3295,7 +3353,9 @@ def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
     success, wns, prefix = fpga_build.run_x3_guided_place_candidate(tmp_path, "unused")
     assert stages == (
         ["reference"]
-        if failure in {"reference_checkpoint", "post_opt_changed"}
+        if failure in {"reference_checkpoint", "post_opt_changed", "reference_bloat"}
+        else ["reference", "guided"]
+        if failure == "guided_bloat"
         else ["reference", "guided", "verify_place"]
     )
     assert success is (failure in {None, "target_missed"})
@@ -4361,6 +4421,7 @@ def test_resume_requires_bound_congestion_evidence(
     monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
     candidate = _quick_route_candidates(tmp_path, 1)[0]
     work = candidate.work_dir
+    _write_place_gate(work, candidate.wns, bind=True)
     assert fpga_build.require_x3_post_place_gate(work)
     report = work / "post_place_congestion.rpt"
     if change == "bytes":
@@ -4420,7 +4481,11 @@ def test_default_guidance_competes_under_the_shared_congestion_and_route_rules(
         (work / "post_place.dcp").write_bytes(b"guided placement")
         (work / "post_place_timing.rpt").write_text("-0.05")
         (work / "post_place_vivado.log").write_text("guided Vivado log")
-        (work / "post_place_recipe.json").write_text("{}")
+        (work / "post_place_recipe.json").write_text(
+            json.dumps(
+                {"post_opt_sha256": fpga_build.file_sha256(work / "post_opt.dcp")}
+            )
+        )
         (work / "post_place_reference.dcp").write_bytes(b"fresh reference")
         _write_place_gate(work, -0.05)
         if guided_congestion:
@@ -4443,6 +4508,7 @@ def test_default_guidance_competes_under_the_shared_congestion_and_route_rules(
             probed.append(run.label)
             run.quick_route_returncode = 0
             run.quick_route_wns = guided_route if run.label == "LocalGuidance" else -0.1
+            _write_probe_outputs(run.work_dir, "quick_route", run.quick_route_wns)
 
     monkeypatch.setattr(fpga_build, "run_x3_place_quick_route_probes", probe)
     success, wns, prefix = fpga_build.run_x3_default_place(
@@ -4455,3 +4521,156 @@ def test_default_guidance_competes_under_the_shared_congestion_and_route_rules(
     assert ("LocalGuidance" in probed) is (guided_congestion < 5)
     assert (work / "post_place_recipe.json").exists() is (expected == "LocalGuidance")
     assert wns == (-0.05 if expected == "LocalGuidance" else -0.1)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    (
+        None,
+        "missing_log",
+        "empty_log",
+        "warning",
+        "missing_status",
+        "incomplete",
+        "conflict",
+        "ambiguous",
+        "missing_timing",
+        "checkpoint",
+        "stale",
+    ),
+)
+def test_route_probe_requires_complete_fresh_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str | None
+) -> None:
+    """Successful process exit cannot substitute for actual complete routing."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "3")
+    fleet = _VivadoFleet(monkeypatch, 1)
+    candidate = _quick_route_candidates(tmp_path, 1)[0]
+    work = candidate.work_dir
+    _write_probe_outputs(work, "quick_route")
+
+    def probe(command: list[str], **kwargs: Any) -> Any:
+        assert not (work / "quick_route_status.rpt").exists()
+        process = fleet.popen(command, **kwargs)
+        log = work / "quick_route_vivado.log"
+        status = work / "quick_route_status.rpt"
+        timing = work / "quick_route_timing.rpt"
+        if damage in {"missing_log", "stale"}:
+            log.unlink()
+        elif damage == "empty_log":
+            log.write_text("")
+        elif damage == "warning":
+            log.write_text(fpga_build._ROUTER_CONGESTION_WARNING)
+        elif damage == "missing_status":
+            status.unlink()
+        elif damage == "incomplete":
+            status.write_text(
+                status.read_text().replace(
+                    "# of fully routed nets............. :      274811",
+                    "# of fully routed nets............. :      274810",
+                )
+            )
+        elif damage == "conflict":
+            status.write_text(
+                status.read_text().replace(
+                    "# of nets with routing errors.......... :           0",
+                    "# of nets with routing errors.......... :           1",
+                )
+            )
+        elif damage == "ambiguous":
+            status.write_text(status.read_text() * 2)
+        elif damage == "missing_timing":
+            timing.unlink()
+        elif damage == "checkpoint":
+            (work / "post_place.dcp").write_bytes(b"changed during probe")
+        return process
+
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", probe)
+    fpga_build.run_x3_place_quick_route_probes(tmp_path, [candidate], "unused")
+    assert candidate.quick_route_returncode == (0 if damage is None else -1)
+    assert (candidate.quick_route_wns is not None) is (damage is None)
+    # Even a completed probe is only an input to selection, not a winner.
+    assert not fpga_build.require_x3_post_place_gate(work)
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "post_place_selection.json",
+        "post_place_quick_route_timing.rpt",
+        "post_place_quick_route_status.rpt",
+        "post_place_quick_route_vivado.log",
+    ),
+)
+@pytest.mark.parametrize("missing", (False, True))
+def test_selected_placement_requires_unchanged_probe_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, missing: bool
+) -> None:
+    """Lost or replaced selection/probe bytes invalidate downstream resume."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "3")
+    (tmp_path / "post_place.dcp").write_bytes(b"selected placement")
+    _write_place_gate(tmp_path, bind=True)
+    assert fpga_build.require_x3_post_place_gate(tmp_path)
+    path = tmp_path / name
+    if missing:
+        path.unlink()
+    else:
+        path.write_text(path.read_text() + "\n")
+    assert not fpga_build.require_x3_post_place_gate(tmp_path)
+
+
+def test_disabled_probes_need_explicit_override_on_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prior probe waiver cannot silently become the default next time."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "0")
+    (tmp_path / "post_place.dcp").write_bytes(b"unprobed placement")
+    _write_place_gate(tmp_path, bind=True)
+    assert fpga_build.require_x3_post_place_gate(tmp_path)
+    monkeypatch.delenv("FROST_PLACE_QUICK_ROUTE_COUNT")
+    assert not fpga_build.require_x3_post_place_gate(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    (
+        ("FROST_PLACE_QUICK_ROUTE_COUNT", "-1"),
+        ("FROST_PLACE_QUICK_ROUTE_COUNT", "bad"),
+        ("FROST_PLACE_CONGESTION_VETO_LEVEL", "4"),
+        ("FROST_PLACE_CONGESTION_VETO_LEVEL", "bad"),
+    ),
+)
+def test_invalid_selection_settings_fail_before_build(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    """Configuration errors must not cost a native implementation run."""
+    monkeypatch.setenv(name, value)
+    monkeypatch.setattr(sys, "argv", ["build.py", "x3"])
+    monkeypatch.setattr(
+        fpga_build, "compile_hello_world", lambda *_a: pytest.fail("build started")
+    )
+    with pytest.raises(SystemExit) as error:
+        fpga_build.main()
+    assert error.value.code == 2
+
+
+def test_placement_sweep_rejects_changed_post_opt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Candidates cannot compete after the shared input changes mid-sweep."""
+    fleet = _VivadoFleet(monkeypatch, 1)
+    work = _sweep_input(tmp_path, "place")
+
+    def place(command: list[str], **kwargs: Any) -> Any:
+        process = fleet.popen(command, **kwargs)
+        (work / "post_opt.dcp").write_bytes(b"replacement netlist")
+        return process
+
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", place)
+    assert not fpga_build.run_x3_step_directive_sweep(
+        tmp_path, "place", ["Explore"], "placer", "unused", max_jobs=1
+    )[0]
+    assert not (work / "post_place_gate_binding.json").exists()
