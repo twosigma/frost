@@ -59,7 +59,13 @@ proc set_property {property value objects} {
             dict set ::pblocks $object $property $value
         } elseif {[dict exists $::nets $object]} {
             dict set ::nets $object $property $value
-        } else {dict set ::model $object $property $value}
+        } else {
+            if {$property eq "LOCK_PINS" && [dict get $::model $object LOC] ne "" &&
+                [dict get $::model $object LOCK_PINS] ne ""} {
+                error "Reset the existing pin lock before setting it on a placed LUT"
+            }
+            dict set ::model $object $property $value
+        }
     }
 }
 proc reset_property {property object} {
@@ -166,9 +172,11 @@ namespace import ::frost_x3_local_placement::*
 set ns ::frost_x3_local_placement
 set original [${ns}::snapshot u/critical]
 switch -- $scenario {
-    restore - failed_place - prior_pin_lock {
-        if {$scenario eq "prior_pin_lock"} {
-            dict set model u/critical LOCK_PINS {I0:A2 I1:A5 I2:A6}
+    restore - failed_place - prior_pin_lock - partial_pin_lock {
+        if {$scenario in {prior_pin_lock partial_pin_lock}} {
+            set pins {I0:A2 I1:A5 I2:A6}
+            if {$scenario eq "partial_pin_lock"} {set pins {I0:A2}}
+            dict set model u/critical LOCK_PINS $pins
             set original [${ns}::snapshot u/critical]
         }
         set fail_place [expr {$scenario eq "failed_place"}]
@@ -247,6 +255,7 @@ puts "PASS $scenario"
         "restore",
         "failed_place",
         "prior_pin_lock",
+        "partial_pin_lock",
         "logic_change",
         "companion_unplaced",
         "release",

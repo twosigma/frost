@@ -239,9 +239,12 @@ namespace eval ::frost_x3_local_placement {
         if {[dict exists $state pins]} {set mapping [dict get $state pins]}
         remap $state [dict get $state LOC]/[dict get $state BEL] $mapping
         if {[dict exists $state pins]} {
-            if {[dict get $state LOCK_PINS] eq ""} {
-                reset_property LOCK_PINS $c
-            } else {
+            # remap installs a complete pin lock before placing the LUT.
+            # Vivado rejects replacing that property on a placed cell, even
+            # with the same value. Clearing it preserves the physical pins
+            # and lets us restore the original full, partial, or empty lock.
+            reset_property LOCK_PINS $c
+            if {[dict get $state LOCK_PINS] ne ""} {
                 set_property LOCK_PINS [dict get $state LOCK_PINS] $c
             }
         }
