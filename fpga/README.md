@@ -204,7 +204,7 @@ report with every routable net fully routed and no routing errors. Failed or
 incomplete probes are rejected; the winner is chosen by routed WNS, then TNS.
 The promoted checkpoint remains the candidate's immediate post-place result.
 If no candidate qualifies, the build stops and leaves the reports for review.
-`work/post_place_selection.json` records every candidate's timing, congestion,
+`work/post_place_selection.json` records every candidate's timing verdict, congestion,
 and probe result, along with checkpoint hashes and the effective probe count.
 
 The guided candidate additionally requires post-opt WNS >= 0 and uses no

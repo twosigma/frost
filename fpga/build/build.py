@@ -527,6 +527,7 @@ class DirectiveSweepRun:
     total_endpoints: int | None = None
     launch_error: str | None = None
     # X3 placement ranking fields.
+    timing_gate_passed: bool | None = None
     congestion_level: int | None = None
     congestion_vetoed: bool = False
     quick_route_wns: float | None = None
@@ -1944,18 +1945,15 @@ def select_x3_place_best_run(
     if not eligible:
         return None
 
+    full_rate = x3_full_rate()
     for run in eligible:
         run.congestion_level = extract_max_congestion_level(
             run.work_dir / "post_place_congestion.rpt"
         )
-
-    full_rate = x3_full_rate()
-    passing = [
-        run
-        for run in eligible
-        if x3_place_gate_passes(run.work_dir / "post_place_gate.txt", run.wns)
-        and (not full_rate or Decimal(str(run.wns)) > X3_POST_PLACE_GATE_NS)
-    ]
+        run.timing_gate_passed = x3_place_gate_passes(
+            run.work_dir / "post_place_gate.txt", run.wns
+        ) and (not full_rate or Decimal(str(run.wns)) > X3_POST_PLACE_GATE_NS)
+    passing = [run for run in eligible if run.timing_gate_passed]
     if not passing:
         print(
             f"\nError: no placement meets the {X3_POST_PLACE_GATE_NS} ns timing requirement."
@@ -2052,6 +2050,8 @@ def print_x3_directive_sweep_matrix(
             status = f"FAIL {run.returncode}"
         elif run.wns is None:
             status = "NO WNS"
+        elif run.timing_gate_passed is False:
+            status = "TIMEVETO"
         elif run.congestion_vetoed:
             status = "CONGVETO"
         else:
@@ -2095,7 +2095,8 @@ def print_x3_directive_sweep_matrix(
         print(
             "    (Cong = worst reported placer congestion window level; "
             "none = no windows reported at the reporting threshold "
-            "(default 5), not zero congestion; CONGVETO = disqualified by "
+            "(default 5), not zero congestion; TIMEVETO = failed timing requirement; "
+            "CONGVETO = disqualified by "
             "reported level; RouteWNS = quick-route probe at real "
             "constraints, '!' = router congestion warning)"
         )
@@ -2532,6 +2533,7 @@ def run_x3_step_directive_sweep(
                             "returncode": run.returncode,
                             "placed_wns_ns": run.wns,
                             "placed_tns_ns": run.tns,
+                            "timing_gate_passed": run.timing_gate_passed,
                             "congestion_level": run.congestion_level,
                             "congestion_vetoed": run.congestion_vetoed,
                             "quick_route_returncode": run.quick_route_returncode,

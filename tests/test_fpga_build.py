@@ -3868,6 +3868,33 @@ def test_congestion_regex_reads_real_vivado_reports(
     assert fpga_build.extract_max_congestion_level(tmp_path / "absent.rpt") is None
 
 
+@pytest.mark.parametrize("wns", (-0.3, -0.2, -0.1))
+def test_completed_placement_still_reports_a_timing_rejection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    wns: float,
+) -> None:
+    """Vivado's zero exit code must not label a timing-rejected placement OK."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "0")
+    candidates = _quick_route_candidates(tmp_path, 2)
+    passing, rejected = candidates
+    rejected.wns = wns
+    _write_place_gate(rejected.work_dir, wns)
+    if wns == -0.1:
+        (rejected.work_dir / "post_place_gate.txt").unlink()
+    selected = fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused")
+    assert selected is passing
+    assert passing.timing_gate_passed is True
+    assert rejected.timing_gate_passed is False
+    fpga_build.print_x3_directive_sweep_matrix(candidates, selected, "Placement")
+    row = next(
+        line for line in capsys.readouterr().out.splitlines() if rejected.label in line
+    )
+    assert "TIMEVETO" in row
+
+
 def test_congestion_veto_decides_on_real_report_levels(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -4579,6 +4606,7 @@ def test_default_guidance_competes_under_the_shared_congestion_and_route_rules(
     assert fpga_build.require_x3_post_place_gate(work)
     selection = json.loads((work / "post_place_selection.json").read_text())
     assert selection["selected"].startswith(expected)
+    assert all(run["timing_gate_passed"] is True for run in selection["candidates"])
     assert ("LocalGuidance" in probed) is (guided_congestion < 5)
     assert (work / "post_place_recipe.json").exists() is (expected == "LocalGuidance")
     assert wns == (-0.05 if expected == "LocalGuidance" else -0.1)
