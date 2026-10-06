@@ -174,8 +174,10 @@ X3's board constraints leave the NIC core and MAC unfenced. Even soft pblocks
 can change the CPU's placement and local congestion as the design evolves;
 evaluate any new floorplan against an unfenced placement of the current netlist.
 
-Full-rate X3 placement starts from the current build's closed post-opt
-checkpoint. It generates a fresh reference with `ExtraNetDelay_high`, 0.325 ns
+Full-rate X3 placement compares the conventional directive/uncertainty sweep
+with a local-guidance candidate generated from the current build's closed
+post-opt checkpoint. The guided candidate starts with a fresh reference
+using `ExtraNetDelay_high`, 0.325 ns
 placement uncertainty, CPU clock root `X1Y9`, and `MEDIUM` cell bloat on the
 integer reservation station. On that fresh reference it measures balanced
 sites for critical L2 output registers and faster physical LUT inputs on
@@ -192,9 +194,19 @@ use the normal work directory: `work/post_place_reference.dcp` and
 choices. A separate Vivado process checks the saved locations, pin mappings,
 clock roots, restoration metadata and timing without altering them.
 
-The default flow requires post-opt WNS >= 0 and immediate post-place WNS
-better than −0.200 ns, scored with zero user setup uncertainty. It uses no
-archived checkpoints. `work/post_place_recipe.json` records checkpoint and
+Every full-rate candidate must have immediate post-place WNS better than
+−0.200 ns at zero user setup uncertainty and a valid congestion report below
+level 5. Missing reports and congested candidates are rejected, even if that
+leaves no candidate. The best three survivors are quick-routed by default;
+a sole survivor is also probed. Failed probes and router congestion
+capitulation are rejected, and the winner is chosen by routed WNS, then TNS.
+The promoted checkpoint remains the candidate's immediate post-place result.
+If no candidate qualifies, the build stops and leaves the reports for review.
+`work/post_place_selection.json` records every candidate's timing, congestion,
+and probe result.
+
+The guided candidate additionally requires post-opt WNS >= 0 and uses no
+archived checkpoints. If it wins, `work/post_place_recipe.json` records checkpoint and
 guidance hashes; `work/post_place_verification_timing.rpt` records the
 clean-reopen timing. Temporary pblocks and preservation locks are removed
 when opening the result for downstream optimization. The original cell
@@ -211,15 +223,16 @@ It preserves the original input checkpoint and also applies to resumed builds
 and quick-route probes. Phys-opt still repeats until WNS stops improving and
 TNS stops improving at equal WNS, or a pass meets its timing target.
 
-`--directives` or `--num-uncertainties` selects a placement sweep instead:
-several directives and uncertainty values compete, and the best result is
-kept. Setting either cell-bloat variable below also selects that sweep. If
-none of its candidates reaches −0.200 ns, the sweep warns and continues with
-the best one. The X3 CPU datapath has no false-path or multicycle exceptions.
+`--directives` or `--num-uncertainties` selects only the conventional placement
+grid and changes its directives or uncertainty count. Setting either cell-bloat
+variable below also selects that grid. These candidates use the same timing,
+congestion, and probe requirements. Divided-clock functional builds retain
+their single placement and route defaults without the full-rate congestion
+screen or automatic probes. The X3 CPU datapath has no false-path or multicycle exceptions.
 
 Both route steps try several directives. `--route-directives` narrows their
 sweeps. `--jobs N` (default 12) limits simultaneous Vivado processes in sweeps;
-the default placement's two passes run sequentially. `build.py --help`
+the guided candidate's two passes run sequentially before the grid. `build.py --help`
 describes every step and default. To build through placement in the normal
 output directory:
 
@@ -229,14 +242,18 @@ output directory:
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `FROST_PLACE_CONGESTION_VETO_LEVEL` | `5` | In placement sweeps, drop passing candidates whose congestion estimate reaches this level; if that drops them all, keep the least congested |
-| `FROST_PLACE_QUICK_ROUTE_COUNT` | `0` | In placement sweeps, quick-route this many passing candidates and choose by routed slack |
+| `FROST_PLACE_CONGESTION_VETO_LEVEL` | `5` | Reject full-rate candidates whose congestion estimate reaches this level; no fallback if all fail |
+| `FROST_PLACE_QUICK_ROUTE_COUNT` | `3` | Quick-route up to this many passing candidates and choose by routed slack; an explicit `0` disables probes (divided-clock default: `0`) |
 | `FROST_PLACE_CELL_BLOAT` | unset | Select a placement sweep with `LOW`, `MEDIUM`, or `HIGH` cell bloat for every candidate, or empty for none. Setting this or the next variable turns off the automatic `LOW` variants |
 | `FROST_PLACE_CELL_BLOAT_CELLS` | `*u_tomasulo/u_int_rs` | Hierarchy patterns to bloat |
 | `FROST_PHYSOPT_SETUP_UNCERTAINTY` | 0.5 ns after placement, 0 after routing | Added setup uncertainty for every phys_opt step |
 | `FROST_GTY_RX_EQ` | `LPM` | NIC transceiver receive equalizer (`LPM` or `DFE`) |
 
 Promoted reports and checkpoints always use zero added uncertainty.
+
+Full-rate checkpoint bindings include the congestion report as well as the
+timing gate and placed checkpoint. Resuming rejects missing or changed
+congestion evidence and old bindings that certified timing alone.
 
 Resumed steps check the metadata files saved beside each checkpoint, so copy
 a build directory as a whole. A new synthesis or `opt` result invalidates the
