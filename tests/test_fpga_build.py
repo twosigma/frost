@@ -1981,7 +1981,7 @@ proc source {path} {
                 }
                 return 1
             }
-            proc candidate_is_legal {timing route} {
+            proc candidate_is_legal {timing route skew} {
                 return [expr {$::env(MODEL_ENDPOINT_RESULT) eq "legal"}]
             }
         }
@@ -2109,7 +2109,7 @@ proc unknown {cmd args} {
             record "$taken wns [format %.3f [model_wns]]"
             return {}
         }
-        report_utilization - report_high_fanout_nets - report_design_analysis - report_route_status {
+        report_utilization - report_high_fanout_nets - report_design_analysis - report_route_status - report_bus_skew {
             close [open [lindex $args end] w]
             return {}
         }
@@ -2306,6 +2306,7 @@ def test_endpoint_fallback_waits_for_plateau_and_checks_legality(
         assert "endpoint_pass EndpointClockEnable" in trace
         assert "endpoint_pass EndpointClockIndividual" in trace
         assert "endpoint_pass EndpointPinRefine" in trace
+        assert "endpoint_pass EndpointRouteRefine" in trace
         if endpoint_result == "error":
             assert "Rejecting failed EndpointAggressive" in stdout
         else:

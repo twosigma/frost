@@ -230,8 +230,22 @@ connectivity, placement, clock routes, board pins, and existing constraints;
 each trial must improve whole-design WNS, or TNS at tied WNS, to be retained.
 The search uses the current timing report, with no fixed cell list. An improvement
 restarts the normal sweep; otherwise it restores the best checkpoint and
-stops at convergence. A failed endpoint optimization or constraint cleanup
-also discards that candidate by reopening the saved best checkpoint.
+continues to a routing fallback. That fallback rebuilds shared data nets on
+failing paths, routing the critical sink first and temporarily fixing that
+branch while completing the other sinks. Unlike rerouting one sink alone,
+this can replace a slow shared trunk. It preserves cell placement, clock
+routes, board pins, timing constraints, and existing route constraints, and
+uses the same whole-design timing, hold, pulse-width, and routing checks.
+Every endpoint fallback candidate must also pass all bus-skew constraints;
+these require a separate report from the setup/hold timing summary. Bitstream
+generation saves `final_bus_skew.rpt` and refuses a bus-skew violation or an
+incomplete report, including a violation whose displayed slack rounds to zero.
+Candidates come from the current timing report, with 2–128 sinks and at least
+100 ps of connection delay; prescribed physical routes are excluded. Each
+shared net is tried once per fallback pass. The sweep stops at convergence
+when these passes produce no improvement. A failed endpoint optimization or
+constraint cleanup also discards that candidate by reopening the saved best
+checkpoint.
 Declaring setup timing met requires nonnegative WNS and TNS and zero failing
 setup endpoints. This applies to sweep termination, final-checkpoint promotion,
 and skipping subsequent routing stages. A negative slack rounded to zero cannot

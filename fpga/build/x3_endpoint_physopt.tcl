@@ -36,6 +36,9 @@ namespace eval frost_x3_endpoint_physopt {
         if {$kind eq "EndpointClockIndividual"} {
             return [refine_clocks $work_directory $sweep_uncertainty]
         }
+        if {$kind eq "EndpointRouteRefine"} {
+            return [refine_routes $work_directory]
+        }
         if {$kind ni {EndpointAggressive EndpointTargeted EndpointClockEnable}} {
             error "Unknown endpoint optimization pass: $kind"
         }
@@ -198,13 +201,13 @@ namespace eval frost_x3_endpoint_physopt {
     proc restore_clock_routes {routes} {
         set after [clock_routes]
         if {[dict keys $after] ne [dict keys $routes]} {
-            error "LUT pin refinement changed the clock network"
+            error "Routed refinement changed the clock network"
         }
         dict for {name saved} $routes {
             # ROUTE is a tree whose branch order can change during checkpoint
             # serialization. The physical nodes and PIPs define the routing.
             if {[lrange [dict get $after $name] 3 end] ne [lrange $saved 3 end]} {
-                error "LUT pin refinement changed clock routing: $name"
+                error "Routed refinement changed clock routing: $name"
             }
         }
         dict for {name saved} $routes {
@@ -216,11 +219,11 @@ namespace eval frost_x3_endpoint_physopt {
         }
         set restored [clock_routes]
         if {[dict keys $restored] ne [dict keys $routes]} {
-            error "LUT pin refinement did not restore the clock network"
+            error "Routed refinement did not restore the clock network"
         }
         dict for {name saved} $routes {
             if {[lrange [dict get $restored $name] 1 end] ne [lrange $saved 1 end]} {
-                error "LUT pin refinement did not restore clock routing constraints: $name"
+                error "Routed refinement did not restore clock routing constraints: $name"
             }
         }
     }
@@ -287,21 +290,29 @@ namespace eval frost_x3_endpoint_physopt {
     proc routed_score {prefix} {
         set timing_file ${prefix}_timing.rpt
         set route_file ${prefix}_route.rpt
+        set skew_file ${prefix}_bus_skew.rpt
         report_timing_summary -file $timing_file
         report_route_status -file $route_file
-        if {![candidate_is_legal $timing_file $route_file]} {return {}}
+        report_bus_skew -max_paths 1 -nworst 1 -file $skew_file
+        if {![candidate_is_legal $timing_file $route_file $skew_file]} {return {}}
         set fh [open $timing_file]
         set report [read $fh]
         close $fh
-        if {![regexp {WNS\(ns\)[^\n]*\n[^\n]*\n\s*([-0-9.]+)\s+([-0-9.]+)} $report -> wns tns]} {
+        if {![regexp {WNS\(ns\)[^\n]*\n[^\n]*\n\s*([-0-9.]+)\s+([-0-9.]+)\s+(\d+)} $report -> wns tns failing]} {
             error "Missing setup summary for routed refinement"
         }
         # Use the same unrounded worst-path slack as the enclosing sweep.
-        return [list [frost_x3_local_placement::slack -delay_type max] $tns]
+        return [list [frost_x3_local_placement::slack -delay_type max] $tns $failing]
+    }
+
+    proc score_setup_closed {score} {
+        return [expr {[llength $score] == 3 && [lindex $score 0] >= 0 &&
+            [lindex $score 1] >= 0 && [lindex $score 2] == 0}]
     }
 
     proc score_improves {candidate baseline} {
-        if {[llength $candidate] != 2 || [llength $baseline] != 2} {return 0}
+        if {[llength $candidate] != 3 || [llength $baseline] != 3} {return 0}
+        if {[score_setup_closed $candidate] && ![score_setup_closed $baseline]} {return 1}
         lassign $candidate wns tns
         lassign $baseline best_wns best_tns
         return [expr {$wns > $best_wns + 0.0005 ||
@@ -367,7 +378,7 @@ namespace eval frost_x3_endpoint_physopt {
                     set best_score $score
                     set improved 1
                     incr accepted
-                    puts "FROST_ENDPOINT_PHYSOPT accepted_clock=$endpoint_name WNS/TNS=$score"
+                    puts "FROST_ENDPOINT_PHYSOPT accepted_clock=$endpoint_name WNS/TNS=[lrange $score 0 1]"
                 }
             } reason options]} {
                 puts "FROST_ENDPOINT_PHYSOPT rejected_clock=$endpoint_name reason=$reason"
@@ -377,7 +388,7 @@ namespace eval frost_x3_endpoint_physopt {
                 catch {close_design}
                 open_checkpoint $checkpoint
             }
-            if {[lindex $best_score 0] >= 0 && [lindex $best_score 1] >= 0} {break}
+            if {[score_setup_closed $best_score]} {break}
         }
         return [expr {$accepted > 0}]
     }
@@ -421,7 +432,7 @@ namespace eval frost_x3_endpoint_physopt {
                             set best_score $score
                             set improved 1
                             incr accepted
-                            puts "FROST_ENDPOINT_PHYSOPT accepted_pin=$pin_name target=$target WNS/TNS=$score"
+                            puts "FROST_ENDPOINT_PHYSOPT accepted_pin=$pin_name target=$target WNS/TNS=[lrange $score 0 1]"
                         }
                     }
                 } reason options]} {
@@ -432,17 +443,55 @@ namespace eval frost_x3_endpoint_physopt {
                     catch {close_design}
                     open_checkpoint $checkpoint
                 }
-                if {[lindex $best_score 0] >= 0 && [lindex $best_score 1] >= 0} {
+                if {[score_setup_closed $best_score]} {
                     break
                 }
             }
-            if {[lindex $best_score 0] >= 0 && [lindex $best_score 1] >= 0} {break}
+            if {[score_setup_closed $best_score]} {break}
         }
-        puts "FROST_ENDPOINT_PHYSOPT pin_refinement trials=$trials accepted=$accepted WNS/TNS=$best_score"
+        puts "FROST_ENDPOINT_PHYSOPT pin_refinement trials=$trials accepted=$accepted WNS/TNS=[lrange $best_score 0 1]"
         return [expr {$accepted > 0}]
     }
 
-    proc candidate_is_legal {timing_file route_file} {
+    proc bus_skew_is_legal {skew_file} {
+        set fh [open $skew_file]
+        set report [read $fh]
+        close $fh
+        set summary [dict create]
+        set measured [dict create]
+        set current ""
+        set valid 1
+        foreach line [split $report "\n"] {
+            # The summary has one row per constraint, beginning with its ID
+            # and XDC position. Require a detailed worst-path result for each.
+            if {[regexp {^([0-9]+)\s+[0-9]+\s+\S} $line -> id]} {
+                dict set summary $id 1
+            }
+            if {[regexp {^Id:\s+([0-9]+)\s*$} $line -> id]} {
+                if {$current ne ""} {error "Missing bus-skew result for constraint $current"}
+                set current $id
+            }
+            if {[regexp {^Slack \((MET|VIOLATED)\)\s*:\s*([-0-9.]+)ns} $line -> status slack]} {
+                if {$current eq "" || [dict exists $measured $current]} {
+                    error "Unexpected duplicate or unassociated bus-skew result"
+                }
+                dict set measured $current 1
+                set current ""
+                # The status catches a negative slack rounded to 0.000 ns.
+                if {$status ne "MET" || $slack < 0} {set valid 0}
+            }
+        }
+        # X3 has board and IP bus-skew constraints. Empty or truncated reports
+        # cannot establish that those constraints are satisfied.
+        if {$current ne "" || ![dict size $summary] ||
+            [lsort -integer [dict keys $summary]] ne [lsort -integer [dict keys $measured]]} {
+            error "Incomplete bus-skew report: $skew_file"
+        }
+        puts "FROST_ENDPOINT_PHYSOPT bus_skew_legal=$valid constraints=[dict size $summary]"
+        return $valid
+    }
+
+    proc candidate_is_legal {timing_file route_file skew_file} {
         set fh [open $timing_file]
         set timing [string map {| " "} [read $fh]]
         close $fh
@@ -463,10 +512,13 @@ namespace eval frost_x3_endpoint_physopt {
                 error "Missing route status $key: $route_file"
             }
         }
-        set valid [expr {$whs >= 0 && $ths >= 0 && $hf == 0 &&
+        set skew_valid [bus_skew_is_legal $skew_file]
+        set valid [expr {$skew_valid && $whs >= 0 && $ths >= 0 && $hf == 0 &&
             $wpws >= 0 && $tpws >= 0 && $pf == 0 &&
             $errors == 0 && $routable > 0 && $routed == $routable}]
         puts "FROST_ENDPOINT_PHYSOPT legal=$valid WHS=$whs THS=$ths WPWS=$wpws routing_errors=$errors fully_routed=$routed/$routable"
         return $valid
     }
 }
+
+source [file join [file dirname [info script]] x3_route_refinement.tcl]

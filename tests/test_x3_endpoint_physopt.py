@@ -22,6 +22,19 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "fpga/build/x3_endpoint_physopt.tcl"
 
+BUS_SKEW_REPORT = """Bus Skew Report
+1. Bus Skew Report Summary
+Id Position From To Corner Requirement(ns) Actual(ns) Slack(ns)
+1 10 source destination Slow 3.000 0.600 2.400
+2 12 source destination Slow 3.000 0.700 2.300
+
+2. Bus Skew Report Per Constraint
+Id: 1
+Slack (MET) : 2.400ns (requirement - actual skew)
+Id: 2
+Slack (MET) : 2.300ns (requirement - actual skew)
+"""
+
 MODEL = r"""
 set uncertainty 0.0
 set groups [dict create]
@@ -168,6 +181,7 @@ def test_disappearing_endpoint_still_restores_uncertainty(tmp_path: Path) -> Non
         ({"errors": "1"}, False),
         ({"routed": "99"}, False),
         ({"routable": "0", "routed": "0"}, False),
+        ({"skew_status": "VIOLATED", "skew_slack": "0.000"}, False),
     ),
 )
 def test_endpoint_candidate_requires_legal_routing_and_hold(
@@ -184,6 +198,8 @@ def test_endpoint_candidate_requires_legal_routing_and_hold(
         "errors": "0",
         "routable": "100",
         "routed": "100",
+        "skew_status": "MET",
+        "skew_slack": "2.300",
         **change,
     }
     timing = tmp_path / "timing.rpt"
@@ -201,13 +217,21 @@ def test_endpoint_candidate_requires_legal_routing_and_hold(
         "# of routable nets................ : {routable}\n"
         "# of fully routed nets............ : {routed}\n".format(**values)
     )
+    skew = tmp_path / "bus_skew.rpt"
+    skew.write_text(
+        BUS_SKEW_REPORT.replace(
+            "Slack (MET) : 2.300",
+            "Slack ({skew_status}) : {skew_slack}".format(**values),
+        )
+    )
     output = run_tcl(
         tmp_path,
         "source $::env(ENDPOINT_SCRIPT)\n"
         "puts [frost_x3_endpoint_physopt::candidate_is_legal "
-        "$::env(TIMING) $::env(ROUTE)]\n",
+        "$::env(TIMING) $::env(ROUTE) $::env(SKEW)]\n",
         TIMING=str(timing),
         ROUTE=str(route),
+        SKEW=str(skew),
     )
     assert output.splitlines()[-1] == str(int(expected))
 
@@ -220,11 +244,101 @@ def test_incomplete_candidate_reports_stop_instead_of_passing(tmp_path: Path) ->
         tmp_path,
         "source $::env(ENDPOINT_SCRIPT)\n"
         "puts [catch {frost_x3_endpoint_physopt::candidate_is_legal "
-        "$::env(TIMING) unused.rpt} reason]\nputs $reason\n",
+        "$::env(TIMING) unused.rpt unused_skew.rpt} reason]\nputs $reason\n",
         TIMING=str(timing),
     )
     assert output.splitlines()[0] == "1"
     assert "Missing whole-design" in output
+
+
+@pytest.mark.parametrize(
+    ("change", "result"),
+    (
+        ("pass", "0 1"),
+        ("negative", "0 0"),
+        ("rounded_violation", "0 0"),
+        ("missing_result", "1 Incomplete bus-skew report"),
+        ("missing_constraint", "1 Incomplete bus-skew report"),
+        ("empty", "1 Incomplete bus-skew report"),
+    ),
+)
+def test_bus_skew_gate_checks_every_constraint_and_unrounded_status(
+    tmp_path: Path, change: str, result: str
+) -> None:
+    """A passing setup report cannot hide a skew violation or missing evidence."""
+    report = BUS_SKEW_REPORT
+    if change in ("negative", "rounded_violation"):
+        slack = "-0.001" if change == "negative" else "0.000"
+        report = report.replace("Slack (MET) : 2.300", f"Slack (VIOLATED) : {slack}")
+    elif change == "missing_result":
+        report = report[: report.index("Slack (MET) : 2.300")]
+    elif change == "missing_constraint":
+        report = report[: report.index("Id: 2")]
+    elif change == "empty":
+        report = ""
+    path = tmp_path / "bus_skew.rpt"
+    path.write_text(report)
+    output = run_tcl(
+        tmp_path,
+        "source $::env(ENDPOINT_SCRIPT)\n"
+        "set failed [catch {frost_x3_endpoint_physopt::bus_skew_is_legal "
+        '$::env(SKEW)} result]\nputs "RESULT $failed $result"\n',
+        SKEW=str(path),
+    )
+    assert f"RESULT {result}" in output
+
+
+@pytest.mark.parametrize("case", ("passing", "violated", "incomplete"))
+def test_bitstream_step_requires_bus_skew_evidence(tmp_path: Path, case: str) -> None:
+    """The real build step must stop before write_bitstream on a bad skew report."""
+    report = BUS_SKEW_REPORT
+    if case == "violated":
+        report = report.replace("Slack (MET) : 2.300", "Slack (VIOLATED) : 0.000")
+    elif case == "incomplete":
+        report = report[: report.index("Id: 2")]
+    fixture = tmp_path / "skew_fixture.rpt"
+    fixture.write_text(report)
+    model = r"""
+cd $::env(WORK)
+proc exit {args} {}
+proc unknown {cmd args} {
+    switch -- $cmd {
+        open_checkpoint {return {}}
+        current_design {return design}
+        list_property - get_ports - get_debug_cores - get_timing_paths {return {}}
+        report_bus_skew {file copy -force $::env(SKEW) [lindex $args end]}
+        report_timing_summary {
+            set fh [open [lindex $args end] w]
+            puts $fh "WNS(ns) TNS(ns) TNS Failing Endpoints TNS Total Endpoints"
+            puts $fh "------- ------- --------------------- -------------------"
+            puts $fh "0.001 0.000 0 100"
+            close $fh
+        }
+        report_utilization - report_high_fanout_nets - report_drc - write_bitstream {
+            close [open [lindex $args end] w]
+        }
+        default {error "Unexpected command $cmd $args"}
+    }
+}
+set argv [list x3 bitstream Default input.dcp 0]
+set argc [llength $argv]
+set failed [catch {source $::env(BUILD)} result]
+puts "RESULT failed=$failed bitstream=[file exists x3_frost.bit] reason=$result"
+"""
+    output = run_tcl(
+        tmp_path,
+        model,
+        WORK=str(tmp_path),
+        SKEW=str(fixture),
+        BUILD=str(SCRIPT.with_name("build_step.tcl")),
+    )
+    passed = case == "passing"
+    assert f"RESULT failed={int(not passed)} bitstream={int(passed)}" in output
+    assert (tmp_path / "final_bus_skew.rpt").read_text() == report
+    if case == "violated":
+        assert "Bus-skew constraints are not met" in output
+    elif case == "incomplete":
+        assert "Incomplete bus-skew report" in output
 
 
 def test_pin_candidates_follow_failing_paths_and_respect_existing_constraints(
@@ -288,10 +402,11 @@ puts [frost_x3_endpoint_physopt::pin_candidates $report]
 @pytest.mark.parametrize(
     ("candidate", "expected"),
     (
-        ("{-0.011 -0.100}", True),
-        ("{-0.012 -0.030}", True),
-        ("{-0.012 -0.043}", False),
-        ("{-0.013 0.000}", False),
+        ("{-0.011 -0.100 10}", True),
+        ("{-0.012 -0.030 2}", True),
+        ("{-0.012 -0.043 3}", False),
+        ("{-0.013 0.000 1}", False),
+        ("{-0.011 -0.100}", False),
         ("{}", False),
     ),
 )
@@ -302,9 +417,254 @@ def test_pin_search_requires_global_timing_improvement(
     output = run_tcl(
         tmp_path,
         "source $::env(ENDPOINT_SCRIPT)\n"
-        f"puts [frost_x3_endpoint_physopt::score_improves {candidate} {{-0.012 -0.043}}]\n",
+        f"puts [frost_x3_endpoint_physopt::score_improves {candidate} {{-0.012 -0.043 3}}]\n",
     )
     assert output.strip() == str(int(expected))
+
+
+@pytest.mark.parametrize(
+    ("candidate", "expected"),
+    (("{0.000 0.000 0}", True), ("{0.000 0.000 1}", False)),
+)
+def test_routed_refinement_retains_closure_at_a_rounded_tie(
+    tmp_path: Path, candidate: str, expected: bool
+) -> None:
+    """Only removing the last failing endpoint turns a zero slack tie into closure."""
+    output = run_tcl(
+        tmp_path,
+        "source $::env(ENDPOINT_SCRIPT)\n"
+        f"puts [frost_x3_endpoint_physopt::score_improves {candidate} {{0.000 0.000 1}}]\n"
+        f"puts [frost_x3_endpoint_physopt::score_setup_closed {candidate}]\n",
+    )
+    assert output.splitlines() == [str(int(expected))] * 2
+
+
+@pytest.mark.parametrize(
+    ("fixed", "flag", "protected", "expected"),
+    (
+        ("", "0", "0", True),
+        ("{}", "0", "0", True),
+        (" { LOGICAL_DRIVER }  ", "0", "0", True),
+        ("{LOGICAL_DRIVER NODE0 NODE1}", "0", "0", False),
+        ("{}", "1", "0", False),
+        ("{}", "0", "1", False),
+    ),
+)
+def test_route_refinement_respects_prescribed_physical_routes(
+    tmp_path: Path, fixed: str, flag: str, protected: str, expected: bool
+) -> None:
+    """A driver placeholder is eligible; actual route constraints are preserved."""
+    model = r"""
+source $::env(ENDPOINT_SCRIPT)
+proc get_property {property object} {
+    switch -- $property {
+        TYPE {return SIGNAL}
+        FIXED_ROUTE {return $::env(FIXED)}
+        IS_ROUTE_FIXED {return $::env(FLAG)}
+        DONT_TOUCH {return $::env(PROTECTED)}
+    }
+    error "Unexpected property $property"
+}
+puts [frost_x3_endpoint_physopt::route_net_eligible data]
+"""
+    output = run_tcl(tmp_path, model, FIXED=fixed, FLAG=flag, PROTECTED=protected)
+    assert output.strip() == str(int(expected))
+
+
+def test_route_candidates_keep_worst_sink_and_skip_irrelevant_paths(
+    tmp_path: Path,
+) -> None:
+    """Rank shared critical connections by delay without retrying net aliases."""
+    model = r"""
+source $::env(ENDPOINT_SCRIPT)
+namespace eval frost_x3_local_placement {
+    proc exact_objects {command names} {return $names}
+}
+proc get_nets {args} {
+    set pin [lindex [lindex $args end] 0]
+    if {$pin in {cpu/a/I0 cpu/b/I0}} {return shared}
+    return $pin
+}
+proc get_property {property object} {
+    switch -- $property {
+        NAME {return $object}
+        TYPE {return SIGNAL}
+        DONT_TOUCH - IS_ROUTE_FIXED {return 0}
+        FIXED_ROUTE {return {{LOGICAL_DRIVER}}}
+    }
+    error "Unexpected property $property"
+}
+set report {
+Slack (VIOLATED) : -0.005ns
+    net (fo=64, routed) 0.557 1.100 shared
+    SLICE_X1Y1 r cpu/a/I0
+    net (fo=1, routed) 0.700 1.900 single
+    SLICE_X1Y1 r cpu/single/I0
+    net (fo=256, routed) 0.800 2.700 oversized
+    SLICE_X1Y1 r cpu/oversized/I0
+    net (fo=4, routed) 0.050 2.800 short
+    SLICE_X1Y1 r cpu/short/I0
+    net (fo=4, routed) 0.600 3.400 other
+    SLICE_X1Y1 f cpu/other/I0
+Slack (VIOLATED) : -0.003ns
+    net (fo=64, routed) 0.900 3.400 alias_of_shared
+    SLICE_X1Y1 r cpu/b/I0
+Slack (MET) : 0.002ns
+    net (fo=64, routed) 0.950 3.400 passing
+    SLICE_X1Y1 r cpu/passing/I0
+}
+puts [frost_x3_endpoint_physopt::route_candidates $report]
+"""
+    assert run_tcl(tmp_path, model).strip() == "cpu/other/I0 cpu/a/I0"
+
+
+@pytest.mark.parametrize("case", ("success", "branch", "placement", "timing", "pins"))
+def test_shared_route_preserves_critical_branch_and_design_constraints(
+    tmp_path: Path, case: str
+) -> None:
+    """Route the worst sink first, preserve it, and restore temporary constraints."""
+    model = r"""
+source $::env(ENDPOINT_SCRIPT)
+set state original
+set mutations {}
+set original_fixed " { LOGICAL_DRIVER }  "
+set fixed_routes [dict create data $original_fixed clock CLOCK_ROUTE]
+set fixed [dict create data 0 clock 1]
+proc get_nets {args} {return data}
+proc get_property {property object} {
+    set object [lindex $object 0]
+    switch -- $property {
+        NAME {return $object}
+        TYPE {return SIGNAL}
+        DONT_TOUCH {return 0}
+        FIXED_ROUTE {return [dict get $::fixed_routes $object]}
+        IS_ROUTE_FIXED {return [dict get $::fixed $object]}
+        ROUTE {return CRITICAL_ROUTE}
+    }
+    error "Unexpected property $property"
+}
+proc set_property {property value object} {
+    set object [lindex $object 0]
+    switch -- $property {
+        FIXED_ROUTE {dict set ::fixed_routes $object $value}
+        IS_ROUTE_FIXED {dict set ::fixed $object [string is true -strict $value]}
+        default {error "Unexpected property $property"}
+    }
+}
+proc get_nodes {args} {
+    if {$::state eq "complete" && $::env(CASE) eq "branch"} {return REPLACED}
+    return CRITICAL_NODE
+}
+proc write_xdc {args} {
+    set file [lindex $args end]
+    set fh [open $file w]
+    puts $fh "# Header names $file"
+    puts $fh "create_clock -period 3.103 port"
+    if {$::state eq "complete" && $::env(CASE) eq "timing"} {
+        puts $fh "set_false_path -through cpu/critical/I0"
+    }
+    close $fh
+}
+proc route_design {args} {
+    if {![dict get $::fixed clock]} {error "Clock was not protected"}
+    if {$args eq "-unroute -nets data" && $::state eq "original"} {
+        set ::state unrouted
+    } elseif {$args eq "-pins cpu/critical/I0 -delay" && $::state eq "unrouted"} {
+        set ::state critical
+    } elseif {$args eq "-preserve" && $::state eq "critical"} {
+        if {![dict get $::fixed data] ||
+            [dict get $::fixed_routes data] ne "CRITICAL_ROUTE"} {
+            error "Critical branch was not protected"
+        }
+        set ::state complete
+    } else {error "Wrong routing order or scope: $::state $args"}
+    lappend ::mutations $::state
+}
+namespace eval frost_x3_local_placement {
+    proc exact_objects {command names} {return $names}
+    proc constraint_flags {} {return original_flags}
+    proc protected_nets {} {return protected}
+    proc port_constraints {} {return board_pins}
+    proc constrained_nets {property} {return $::fixed}
+}
+namespace eval frost_x3_endpoint_physopt {
+    proc placement_signature {} {
+        if {$::state eq "complete" && $::env(CASE) eq "placement"} {return MOVED}
+        return original_placement
+    }
+    proc net_leaf_pins {net} {
+        if {$::state eq "complete" && $::env(CASE) eq "pins"} {return REWIRED}
+        return original_connections
+    }
+    proc clock_signature {} {return original_clocks}
+    proc clock_routes {} {return [dict create clock original]}
+    proc restore_clock_routes {routes} {
+        if {$routes ne [dict create clock original]} {error "Clock state lost"}
+    }
+}
+set failed [catch {
+    frost_x3_endpoint_physopt::reroute_critical_sink cpu/critical/I0 $::env(PREFIX)
+} result]
+puts "RESULT failed=$failed reason=$result"
+puts "ORDER $mutations"
+if {!$failed} {
+    puts "RESTORED [expr {[dict get $fixed data] == 0 &&
+        [dict get $fixed_routes data] eq $original_fixed}]"
+}
+"""
+    output = run_tcl(tmp_path, model, CASE=case, PREFIX=str(tmp_path / "trial"))
+    assert "ORDER unrouted critical complete" in output
+    assert f"RESULT failed={int(case != 'success')}" in output
+    if case == "success":
+        assert "RESTORED 1" in output
+    elif case == "branch":
+        assert "Router replaced the fixed critical branch" in output
+    else:
+        assert "changed placement, connections, or constraints" in output
+
+
+@pytest.mark.parametrize("failure", ("routing", "constraints", "worse"))
+def test_route_trials_rollback_before_trying_the_next_net(
+    tmp_path: Path, failure: str
+) -> None:
+    """Rejected rewiring/route state cannot contaminate the next candidate."""
+    model = r"""
+source $::env(ENDPOINT_SCRIPT)
+set state initial
+set trial 0
+set saved [dict create]
+proc get_timing_paths {args} {return path}
+proc report_timing {args} {return report}
+proc get_pins {args} {return [lindex $args end]}
+proc write_checkpoint {args} {dict set ::saved [lindex $args end] $::state}
+proc close_design {} {set ::state discarded}
+proc open_checkpoint {path} {set ::state [dict get $::saved $path]}
+namespace eval frost_x3_endpoint_physopt {
+    proc route_candidates {report} {return {cpu/a/I0 cpu/b/I0 cpu/c/I0}}
+    proc reroute_critical_sink {pin prefix} {
+        incr ::trial
+        if {$::state ne "initial"} {error "Previous trial state leaked"}
+        if {$::trial == 1} {
+            set ::state $::env(FAILURE)
+            if {$::state eq "constraints"} {error "Changed constraints"}
+        } elseif {$::trial == 2} {set ::state closed} else {error "Ran after closure"}
+    }
+    proc routed_score {prefix} {
+        switch -- $::state {
+            initial {return {0.000 0.000 1}}
+            routing {return {}}
+            worse {return {-0.010 -0.010 1}}
+            closed {return {0.000 0.000 0}}
+        }
+        error "Illegal state $::state"
+    }
+}
+puts "RESULT [frost_x3_endpoint_physopt::refine_routes $::env(WORK)] state=$state trials=$trial"
+"""
+    output = run_tcl(tmp_path, model, WORK=str(tmp_path), FAILURE=failure)
+    assert "state leaked" not in output
+    assert "RESULT 1 state=closed trials=2" in output
+    assert output.count("accepted_route=") == 1
 
 
 @pytest.mark.parametrize("failure", ("routing", "logic", "worse"))
@@ -347,10 +707,10 @@ namespace eval frost_x3_endpoint_physopt {
     }
     proc routed_score {prefix} {
         switch -- $::state {
-            initial {return {-0.032 -0.151}}
-            better {return {-0.019 -0.119}}
+            initial {return {-0.032 -0.151 12}}
+            better {return {-0.019 -0.119 11}}
             routing {return {}}
-            worse {return {-0.040 -0.050}}
+            worse {return {-0.040 -0.050 5}}
         }
         error "Illegal state $::state"
     }
@@ -401,7 +761,7 @@ source $::env(ENDPOINT_SCRIPT)
 namespace eval frost_x3_endpoint_physopt {
     proc routed_score {prefix} {
         if {$::env(CASE) eq "hold" && $::tns == -0.100} {return {}}
-        return [list -0.032 $::tns]
+        return [list -0.032 $::tns 12]
     }
 }
 set result [frost_x3_endpoint_physopt::refine_clocks $::env(WORK) 0.0]

@@ -1388,7 +1388,7 @@ if {$step eq "synth"} {
         $sweep_order_env eq "" && $physopt_uncertainty ne ""} {
         source [file join $script_directory x3_endpoint_physopt.tcl]
         lappend sweep_order EndpointAggressive EndpointTargeted EndpointClockEnable \
-            EndpointClockIndividual EndpointPinRefine
+            EndpointClockIndividual EndpointPinRefine EndpointRouteRefine
         set endpoint_fallback 1
     }
 
@@ -1478,7 +1478,7 @@ if {$step eq "synth"} {
         foreach sweep_pass $sweep_order {
             set endpoint_pass [expr {$endpoint_fallback &&
                 $sweep_pass in {EndpointAggressive EndpointTargeted EndpointClockEnable \
-                    EndpointClockIndividual EndpointPinRefine}}]
+                    EndpointClockIndividual EndpointPinRefine EndpointRouteRefine}}]
             if {$endpoint_pass} {
                 if {$sweep_pass eq "EndpointAggressive"} {
                     set try_endpoint_passes [expr {!$sweep_kept_improvement}]
@@ -1543,9 +1543,11 @@ if {$step eq "synth"} {
             set candidate_valid 1
             if {$endpoint_pass} {
                 set route_report [file rootname $pass_report]_route.rpt
+                set skew_report [file rootname $pass_report]_bus_skew.rpt
                 report_route_status -file $route_report
+                report_bus_skew -max_paths 1 -nworst 1 -file $skew_report
                 set candidate_valid [frost_x3_endpoint_physopt::candidate_is_legal \
-                    $pass_report $route_report]
+                    $pass_report $route_report $skew_report]
             }
 
             set worst_path [lindex [get_timing_paths -delay_type max -nworst 1 -max_paths 1] 0]
@@ -1753,7 +1755,12 @@ if {$step eq "synth"} {
     report_utilization -file $work_directory/final_util.rpt
     report_high_fanout_nets -timing -load_types -max_nets 50 -file $work_directory/final_high_fanout.rpt
     report_drc -file $work_directory/final_drc.rpt
+    report_bus_skew -max_paths 1 -nworst 1 -file $work_directory/final_bus_skew.rpt
     write_failing_paths_csv $work_directory/final_failing_paths.csv $work_directory/final_timing.rpt
+    source [file join $script_directory x3_endpoint_physopt.tcl]
+    if {![frost_x3_endpoint_physopt::bus_skew_is_legal $work_directory/final_bus_skew.rpt]} {
+        error "Bus-skew constraints are not met; refusing bitstream generation. See $work_directory/final_bus_skew.rpt"
+    }
 
     set bitstream_name ${board_name}_frost.bit
     write_bitstream -force $work_directory/$bitstream_name
