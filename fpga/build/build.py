@@ -855,6 +855,19 @@ def extract_timing_from_report(timing_rpt_path: Path) -> TimingSummary:
     return result
 
 
+def setup_timing_met(
+    wns: float | None, tns: float | None, failing_endpoints: int | None
+) -> bool:
+    """Require endpoint counts as well as rounded slack for setup closure."""
+    return (
+        wns is not None
+        and wns >= 0
+        and tns is not None
+        and tns >= 0
+        and failing_endpoints == 0
+    )
+
+
 def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -> bool:
     """Compile hello_world application for initial BRAM contents."""
     app_dir = project_root / "sw" / "apps" / "hello_world"
@@ -2603,7 +2616,9 @@ def run_x3_step_directive_sweep(
         print(f"Leaving {sweep_kind} work directories in place for debugging.")
         return False, None, ""
 
-    timing_met = best_run.wns is not None and best_run.wns >= 0
+    timing_met = setup_timing_met(
+        best_run.wns, best_run.tns, best_run.failing_endpoints
+    )
     if step in FINAL_ELIGIBLE_STEPS and timing_met:
         checkpoint_name = "final.dcp"
         report_prefix = "final"
@@ -3084,7 +3099,9 @@ def run_step(
     timing_rpt = work_dir / f"{tcl_report_prefix}_timing.rpt"
     timing = extract_timing_from_report(timing_rpt)
     wns = timing.get("wns_ns")
-    timing_met = wns is not None and wns >= 0
+    timing_met = setup_timing_met(
+        wns, timing.get("tns_ns"), timing.get("failing_endpoints")
+    )
 
     # Closing stages promote final.*; the last stage already uses that prefix.
     if step in FINAL_ELIGIBLE_STEPS and timing_met:
@@ -3860,7 +3877,7 @@ Examples:
             final_produced = True
 
         # Route-stage closure skips directly to bitstream generation.
-        if step in FINAL_ELIGIBLE_STEPS and wns is not None and wns >= 0:
+        if step in FINAL_ELIGIBLE_STEPS and actual_prefix == "final":
             remaining = steps_to_run[steps_to_run.index(step) + 1 :]
             if remaining:
                 print(

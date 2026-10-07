@@ -116,9 +116,9 @@ proc get_failing_endpoint_count {timing_report_file} {
     return [expr {int($setup_count)}]
 }
 
-# Parse WNS/TNS from the Design Timing Summary setup row in a timing report.
+# Parse slack and the failing endpoint count from the setup summary row.
 proc get_setup_timing_summary {timing_report_file} {
-    set result [dict create wns "" tns ""]
+    set result [dict create wns "" tns "" failing ""]
 
     if {![file exists $timing_report_file]} {
         return $result
@@ -149,10 +149,21 @@ proc get_setup_timing_summary {timing_report_file} {
             dict set result wns [lindex $fields 0]
             dict set result tns [lindex $fields 1]
         }
+        if {[llength $fields] >= 3} {
+            dict set result failing [lindex $fields 2]
+        }
         break
     }
 
     return $result
+}
+
+proc setup_timing_met {summary {wns ""}} {
+    if {$wns eq ""} {set wns [dict get $summary wns]}
+    set tns [dict get $summary tns]
+    set failing [dict get $summary failing]
+    return [expr {$wns ne "" && $wns >= 0.0 && $tns ne "" && $tns >= 0.0 &&
+        [string is integer -strict $failing] && $failing == 0}]
 }
 
 # Generate CSV report of failing setup timing paths
@@ -718,7 +729,8 @@ proc write_physopt_iteration_outputs {work_directory step board_name physopt_unc
 
     set main_checkpoint_name ${step}.dcp
     set main_report_prefix $step
-    set timing_met [expr {$best_wns ne "" && $best_wns >= 0.0}]
+    set timing_met [expr {$best_wns ne "" && $best_wns >= 0.0 &&
+        [setup_timing_met [get_setup_timing_summary $timing_file]]}]
     if {$step eq "post_second_route_physopt" || ($step eq "post_route_physopt" && $timing_met)} {
         set main_checkpoint_name final.dcp
         set main_report_prefix final
@@ -1386,6 +1398,7 @@ if {$step eq "synth"} {
     set early_exit 0
     set best_wns -999999.0
     set best_tns -999999999.0
+    set best_setup_closed 0
     set best_pass 0
     set best_sweep 0
     set best_directive ""
@@ -1433,6 +1446,7 @@ if {$step eq "synth"} {
 
     if {$initial_wns ne ""} {
         set best_wns $initial_wns
+        set best_setup_closed [setup_timing_met $initial_timing_summary $initial_wns]
         if {$initial_tns ne ""} {
             set best_tns $initial_tns
         }
@@ -1543,6 +1557,8 @@ if {$step eq "synth"} {
             }
 
             if {$wns ne "" && $candidate_valid} {
+                set setup_closed [setup_timing_met $timing_summary $wns]
+                set newly_closed [expr {$setup_closed && !$best_setup_closed}]
                 set better_wns [expr {$wns > ($best_wns + $wns_tie_epsilon)}]
                 set same_wns [expr {abs($wns - $best_wns) <= $wns_tie_epsilon}]
                 set better_tns [expr {$tns ne "" && $tns > ($best_tns + $tns_keep_epsilon)}]
@@ -1553,13 +1569,16 @@ if {$step eq "synth"} {
                     puts "  WNS after $pass_display: $wns ns"
                 }
 
-                if {$better_wns || ($same_wns && $better_tns)} {
-                    if {$better_wns} {
+                if {$newly_closed || $better_wns || ($same_wns && $better_tns)} {
+                    if {$newly_closed} {
+                        set improvement_reason "setup closure"
+                    } elseif {$better_wns} {
                         set improvement_reason "WNS"
                     } else {
                         set improvement_reason "TNS tie-break"
                     }
                     set best_wns $wns
+                    set best_setup_closed $setup_closed
                     if {$tns ne ""} {
                         set best_tns $tns
                     }
@@ -1590,10 +1609,9 @@ if {$step eq "synth"} {
                     }
                 }
 
-                # A tiny negative slack can round to zero. Require the full
-                # setup summary to agree before declaring timing closure.
-                if {$wns >= 0.0 && $tns ne "" && $tns >= 0.0 &&
-                    [get_failing_endpoint_count $pass_report] == 0} {
+                # Closure is retained even when rounded slack ties the old
+                # failing checkpoint; only then can the sweep stop early.
+                if {$setup_closed} {
                     puts "  ** Timing met; stopping $step sweep early after $total_passes_run total phys_opt passes"
                     set early_exit 1
                     break

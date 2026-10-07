@@ -233,7 +233,10 @@ restarts the normal sweep; otherwise it restores the best checkpoint and
 stops at convergence. A failed endpoint optimization or constraint cleanup
 also discards that candidate by reopening the saved best checkpoint.
 Declaring setup timing met requires nonnegative WNS and TNS and zero failing
-setup endpoints; a negative slack rounded to zero cannot end the sweep early.
+setup endpoints. This applies to sweep termination, final-checkpoint promotion,
+and skipping subsequent routing stages. A negative slack rounded to zero cannot
+end the flow early. Removing the final setup violation is retained even when
+the displayed WNS and TNS tie the previous failing result.
 A custom `FROST_PHYSOPT_SWEEP_ORDER` replaces this
 default schedule.
 

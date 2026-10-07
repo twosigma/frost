@@ -2136,6 +2136,10 @@ proc unknown {cmd args} {
         }
         phys_opt_design {
             record "phys_opt_design $args"
+            if {[info exists ::env(MODEL_CLOSE_ROUNDED_TIE)]} {
+                set true_wns 0.00004
+                return {}
+            }
             if {$incremental_active && [model_wns] >= -0.546} {
                 record "setup_skipped"
                 return {}
@@ -2179,6 +2183,7 @@ def _run_physopt_sweep_model(
     macro_alias: bool = False,
     endpoint_result: str | None = None,
     round_slack: bool = False,
+    close_rounded_tie: bool = False,
 ) -> tuple[str, list[str], Path]:
     """Sweep one phys-opt stage; return its stdout, trace and main work dir."""
     model = tmp_path / "physopt_model.tcl"
@@ -2216,6 +2221,8 @@ def _run_physopt_sweep_model(
         env["MODEL_MACRO_ALIAS"] = "1"
     if round_slack:
         env["MODEL_ROUND_SLACK"] = "1"
+    if close_rounded_tie:
+        env["MODEL_CLOSE_ROUNDED_TIE"] = "1"
     if endpoint_result is not None:
         env["MODEL_ENDPOINT_RESULT"] = endpoint_result
         env["FROST_PHYSOPT_SWEEP_ORDER"] = ""
@@ -2241,17 +2248,35 @@ def _run_physopt_sweep_model(
     return result.stdout, trace.read_text().splitlines(), tmp_path / "work"
 
 
+@pytest.mark.parametrize("step", ("post_route_physopt", "post_second_route_physopt"))
 @pytest.mark.parametrize("true_wns", (-0.00004, 0.0, 0.00004))
 def test_physopt_closure_requires_zero_failing_setup_endpoints(
-    tmp_path: Path, true_wns: float
+    tmp_path: Path, true_wns: float, step: str
 ) -> None:
     """Rounded zero WNS/TNS must not hide a remaining setup violation."""
-    stdout, trace, _ = _run_physopt_sweep_model(
-        tmp_path, "post_second_route_physopt", true_wns, round_slack=True
+    stdout, trace, work = _run_physopt_sweep_model(
+        tmp_path, step, true_wns, round_slack=True
     )
     assert ("Timing met; stopping" in stdout) == (true_wns >= 0.0)
     passes = [line for line in trace if line.startswith("phys_opt_design")]
     assert len(passes) == (1 if true_wns >= 0.0 else 2)
+    if step == "post_route_physopt":
+        assert (work / "final.dcp").exists() == (true_wns >= 0.0)
+
+
+def test_physopt_retains_closure_when_displayed_slack_ties(tmp_path: Path) -> None:
+    """A sub-picosecond closure must survive restoring the best checkpoint."""
+    stdout, trace, work = _run_physopt_sweep_model(
+        tmp_path,
+        "post_route_physopt",
+        -0.00004,
+        round_slack=True,
+        close_rounded_tie=True,
+    )
+    assert "setup closure" in stdout
+    assert "Timing met; stopping" in stdout
+    assert sum(x.startswith("phys_opt_design") for x in trace) == 1
+    assert "| 0.000 | 0.000 | 0 |" in (work / "final_timing.rpt").read_text()
 
 
 @pytest.mark.parametrize("endpoint_result", ("legal", "illegal", "error"))
@@ -3877,7 +3902,9 @@ def test_completed_final_producer_binds_chain_and_bitstream_checks_actual_file(
             (cwd / f"{prefix}.dcp").write_bytes(b"completed final checkpoint")
             _write_stage_utilization(cwd, prefix, 42)
             report = cwd / f"{prefix}_timing.rpt"
-            report.write_text(report.read_text().replace("-0.100", "0.050"))
+            report.write_text(
+                report.read_text().replace("-0.100 -1.000 1", "0.050 0.000 0")
+            )
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(fpga_build.subprocess, "run", complete)
@@ -3894,6 +3921,101 @@ def test_completed_final_producer_binds_chain_and_bitstream_checks_actual_file(
     (work / "final.dcp").write_bytes(b"different final checkpoint")
     assert not fpga_build.generate_bitstream(script_dir, "x3", "unused", **options)
     assert calls == [stage, "bitstream"]
+
+
+@pytest.mark.parametrize("stage", sorted(fpga_build.FINAL_ELIGIBLE_STEPS))
+@pytest.mark.parametrize(
+    ("wns", "tns", "failing", "closed"),
+    ((0.0, 0.0, 1, False), (0.0, 0.0, 0, True), (0.01, -0.1, 1, False)),
+)
+def test_stage_promotion_requires_complete_setup_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    wns: float,
+    tns: float,
+    failing: int,
+    closed: bool,
+) -> None:
+    """Rounded WNS alone must not promote a routed checkpoint to final."""
+    work = _sweep_input(tmp_path, stage)
+
+    def complete(_command: list[str], *, cwd: Path) -> Any:
+        prefix = fpga_build._TCL_REPORT_PREFIX[stage]
+        (cwd / f"{prefix}.dcp").write_bytes(b"completed checkpoint")
+        _write_stage_utilization(cwd, prefix, 42)
+        report = cwd / f"{prefix}_timing.rpt"
+        report.write_text(
+            report.read_text().replace(
+                "-0.100 -1.000 1", f"{wns:.3f} {tns:.3f} {failing}"
+            )
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(fpga_build.subprocess, "run", complete)
+    expected = "final" if closed else fpga_build.STEP_REPORT_PREFIX[stage]
+    assert fpga_build.run_step(tmp_path, "x3", stage, "Explore", "unused") == (
+        True,
+        wns,
+        expected,
+    )
+    assert (work / "final.dcp").exists() is closed
+
+
+@pytest.mark.parametrize("failing", (0, 1))
+def test_route_sweep_does_not_promote_rounded_setup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: int
+) -> None:
+    """The directive sweep uses the same closure rule as a single run."""
+    _VivadoFleet(monkeypatch, 1)
+    work = _sweep_input(tmp_path, "route")
+    monkeypatch.setattr(
+        fpga_build,
+        "extract_timing_from_report",
+        lambda _path: {"wns_ns": 0.0, "tns_ns": 0.0, "failing_endpoints": failing},
+    )
+    assert fpga_build.run_x3_step_directive_sweep(
+        tmp_path, "route", ["Explore"], "router", "unused", max_jobs=1
+    ) == (True, 0.0, "final" if failing == 0 else "post_route")
+    assert (work / "final.dcp").exists() == (failing == 0)
+
+
+def test_cli_keeps_routing_after_zero_wns_without_closure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-final stage result must continue even when WNS displays zero."""
+    work = _sweep_input(tmp_path, "route")
+    monkeypatch.setitem(
+        sys.modules, "extract_timing_and_util_summary", timing_util_summary
+    )
+    monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build.py",
+            "x3",
+            "--start-at",
+            "route",
+            "--stop-after",
+            "second_route",
+            "--build-dir",
+            str(work.parent),
+        ],
+    )
+    calls = []
+
+    def complete(*args: Any, **_kwargs: Any) -> tuple[bool, float, str]:
+        stage = args[1] if args[1] in fpga_build.STEPS else args[2]
+        calls.append(stage)
+        prefix = fpga_build.STEP_REPORT_PREFIX[stage]
+        _write_stage_utilization(work, prefix, 42)
+        return True, 0.0, prefix
+
+    monkeypatch.setattr(fpga_build, "run_step", complete)
+    monkeypatch.setattr(fpga_build, "run_x3_step_directive_sweep", complete)
+    fpga_build.main()
+    assert calls == ["route", "post_route_physopt", "second_route"]
 
 
 def test_bitstream_resume_cli_preserves_lineage_checks(
