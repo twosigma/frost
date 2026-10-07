@@ -716,6 +716,40 @@ def test_x3_bloat_requires_each_requested_hierarchy_exactly_once(
     )
 
 
+@pytest.mark.parametrize(
+    ("matches", "expected_matches", "valid"),
+    (
+        ((1, 2172), (1, None), True),
+        ((1, 1), (1, None), True),
+        ((1, 0), (1, None), False),
+        ((2, 2172), (1, None), False),
+        ((1, 2172), None, False),
+        ((1, 2172), (1,), False),
+    ),
+)
+def test_leaf_group_bloat_keeps_hierarchy_scope_strict(
+    tmp_path: Path,
+    matches: tuple[int, int],
+    expected_matches: tuple[int | None, ...] | None,
+    valid: bool,
+) -> None:
+    """Only an explicitly declared group may match multiple primitive cells."""
+    patterns = ("*u_tomasulo/u_int_rs", "*u_tomasulo/u_mem_rs/rs_src2_value*")
+    log = tmp_path / "vivado.log"
+    log.write_text(
+        "".join(
+            f"Set CELL_BLOAT_FACTOR MEDIUM on {count} cell(s) matching '{pattern}'\n"
+            for count, pattern in zip(matches, patterns)
+        )
+    )
+    assert (
+        fpga_build.x3_place_cell_bloat_override_is_valid(
+            log, "MEDIUM", " ".join(patterns), expected_matches
+        )
+        is valid
+    )
+
+
 @pytest.mark.parametrize("bloat_match_valid", (True, False))
 def test_x3_place_worker_isolates_and_validates_bloat_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bloat_match_valid: bool
@@ -1505,12 +1539,15 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
         r"fetch_redirect fetch_redirect_inst \((.*?)\n  \);", if_stage, re.S
     )
     assert redirect_block_match is not None
+    # Producer and consumer proofs justify omitting the sequential catch-up arm.
+    assert "npc_cond_for_redirect = npc_cond[riscv_pkg::PcNextArms-1:1];" in if_stage
+    assert "npc_cond_for_redirect[11] = 1'b0;" in if_stage
     redirect_block = redirect_block_match.group(1)
     for port, signal in (
         ("i_clk", "i_clk"),
         ("i_reset", "i_pipeline_ctrl.reset"),
         ("i_pc_update_en", "pc_update_en"),
-        ("i_npc_cond", "npc_cond[riscv_pkg::PcNextArms-1:1]"),
+        ("i_npc_cond", "npc_cond_for_redirect"),
         ("i_npc_seq", "npc_seq[riscv_pkg::PcNextArms-1:1]"),
         ("i_live_prediction_emits_with_output", "live_prediction_emits_with_output"),
         ("o_fetch_redirect", "o_fetch_redirect"),
@@ -3056,11 +3093,25 @@ def test_new_checkpoint_promotion_cannot_retain_old_gate(
     assert not (dest / "post_place_gate_binding.json").exists()
 
 
-def test_place_defaults_to_route_probes_and_ranks_actual_routed_wns(
+@pytest.mark.parametrize(
+    ("warnings", "routed_wns", "routed_tns", "expected"),
+    (
+        ((False, False), (-0.1, -0.3), (-4.0, -2.0), 0),
+        ((True, False), (-0.1, -0.3), (-4.0, -2.0), 1),
+        ((False, True), (-0.3, -0.1), (-4.0, -2.0), 0),
+        ((True, True), (-0.1, -0.3), (-4.0, -2.0), 0),
+        ((True, True), (-0.1, -0.1), (-4.0, -2.0), 1),
+    ),
+)
+def test_place_defaults_to_route_probes_and_ranks_warning_wns_tns(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    warnings: tuple[bool, bool],
+    routed_wns: tuple[float, float],
+    routed_tns: tuple[float, float],
+    expected: int,
 ) -> None:
-    """A better placed score cannot beat the best routed survivor by default."""
+    """Warnings lower rank without preventing an all-warning slate from winning."""
     monkeypatch.delenv("FROST_PLACE_QUICK_ROUTE_COUNT", raising=False)
     candidates = _quick_route_candidates(tmp_path, 2)
     candidates[1].setup_uncertainty_ns = 0.5
@@ -3071,13 +3122,16 @@ def test_place_defaults_to_route_probes_and_ranks_actual_routed_wns(
     def probes(_script: Path, runs: list[Any], _vivado: str, **_kwargs: Any) -> None:
         received.extend(runs)
         for run in runs:
+            index = candidates.index(run)
             run.quick_route_returncode = 0
-            run.quick_route_wns = -0.1 if run is candidates[0] else -0.3
+            run.quick_route_warning = warnings[index]
+            run.quick_route_wns = routed_wns[index]
+            run.quick_route_tns = routed_tns[index]
 
     monkeypatch.setattr(fpga_build, "run_x3_place_quick_route_probes", probes)
     assert (
         fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused")
-        is candidates[0]
+        is candidates[expected]
     )
     assert received == [candidates[1], candidates[0]]
 
@@ -3303,7 +3357,7 @@ def test_promoted_opt_checkpoint_survives_worker_cleanup(
     assert (work / "post_opt.dcp").read_bytes() == b"new optimized checkpoint"
 
 
-@pytest.mark.parametrize("both_stations", (False, True))
+@pytest.mark.parametrize("bloat_scope", ("default", "integer", "hierarchies", "leaf"))
 @pytest.mark.parametrize(
     "failure",
     (
@@ -3323,7 +3377,7 @@ def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     failure: str | None,
-    both_stations: bool,
+    bloat_scope: str,
 ) -> None:
     """Measuring and verifying local guidance never bypasses shared selection."""
     work = _sweep_input(tmp_path, "place")
@@ -3336,8 +3390,18 @@ def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
     _write_place_gate(work, bind=True)
     stages = []
     bloat_cells = "*u_tomasulo/u_int_rs"
-    if both_stations:
+    options: dict[str, Any] = {}
+    if bloat_scope == "default":
+        bloat_cells += " *u_tomasulo/u_mem_rs/rs_src2_value*"
+    elif bloat_scope == "hierarchies":
         bloat_cells += " *u_tomasulo/u_mem_rs"
+        options["cell_bloat_cells"] = bloat_cells
+    elif bloat_scope == "leaf":
+        bloat_cells += " *u_tomasulo/u_mem_rs/rs_src2_value*"
+        options["cell_bloat_cells"] = bloat_cells
+        options["cell_bloat_matches"] = (1, None)
+    else:
+        options["cell_bloat_cells"] = bloat_cells
 
     def run(command: list[str], *, cwd: Path, env: dict[str, str]) -> Any:
         assert cwd == work
@@ -3352,7 +3416,9 @@ def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
                 "missing requested bloat\n"
                 if failure == f"{stage}_bloat"
                 else "".join(
-                    f"Set CELL_BLOAT_FACTOR MEDIUM on 1 cell(s) matching '{pattern}'\n"
+                    f"Set CELL_BLOAT_FACTOR MEDIUM on "
+                    f"{(2184 if stage == 'reference' else 2172) if pattern.endswith('value*') else 1} "
+                    f"cell(s) matching '{pattern}'\n"
                     for pattern in bloat_cells.split()
                 )
             )
@@ -3403,14 +3469,9 @@ def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(fpga_build.subprocess, "run", run)
-    if both_stations:
-        success, wns, prefix = fpga_build.run_x3_guided_place_candidate(
-            tmp_path, "unused", cell_bloat_cells=bloat_cells
-        )
-    else:
-        success, wns, prefix = fpga_build.run_x3_guided_place_candidate(
-            tmp_path, "unused"
-        )
+    success, wns, prefix = fpga_build.run_x3_guided_place_candidate(
+        tmp_path, "unused", **options
+    )
     assert stages == (
         ["reference"]
         if failure in {"reference_checkpoint", "post_opt_changed", "reference_bloat"}
@@ -3427,6 +3488,11 @@ def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
         assert not fpga_build.require_x3_post_place_gate(work)
         record = json.loads((work / "post_place_recipe.json").read_text())
         assert record["cell_bloat_cells"] == bloat_cells
+        assert record["cell_bloat_matches"] == list(
+            (1, None)
+            if bloat_scope == "default"
+            else options.get("cell_bloat_matches", (1,) * len(bloat_cells.split()))
+        )
         assert record["post_opt_sha256"] == fpga_build.file_sha256(
             work / "post_opt.dcp"
         )
@@ -4545,18 +4611,26 @@ def test_single_survivor_must_complete_the_default_route_probe(
     monkeypatch.setattr(fpga_build, "run_x3_place_quick_route_probes", probe)
     winner = fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused")
     assert received == candidates
-    assert winner is (candidates[0] if result == "pass" else None)
+    assert winner is (candidates[0] if result in {"pass", "congestion"} else None)
 
 
 @pytest.mark.parametrize(
-    ("guided_congestion", "guided_route", "expected"),
-    ((5, -0.05, "Ordinary"), (0, -0.3, "Ordinary"), (0, -0.05, "LocalGuidance")),
+    ("guided_congestion", "guided_route", "probe_warnings", "expected"),
+    (
+        (5, -0.05, (False, False), "Ordinary"),
+        (0, -0.3, (False, False), "Ordinary"),
+        (0, -0.05, (False, False), "LocalGuidance"),
+        (0, -0.05, (True, False), "Ordinary"),
+        (0, -0.05, (True, True), "LocalGuidance"),
+        (0, -0.3, (True, True), "Ordinary"),
+    ),
 )
 def test_default_guidance_competes_under_the_shared_congestion_and_route_rules(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     guided_congestion: int,
     guided_route: float,
+    probe_warnings: tuple[bool, bool],
     expected: str,
 ) -> None:
     """The normal entry point cannot privilege the guided candidate's placed WNS."""
@@ -4596,7 +4670,13 @@ def test_default_guidance_competes_under_the_shared_congestion_and_route_rules(
             probed.append(run.label)
             run.quick_route_returncode = 0
             run.quick_route_wns = guided_route if run.label == "LocalGuidance" else -0.1
+            run.quick_route_warning = probe_warnings[
+                0 if run.label == "LocalGuidance" else 1
+            ]
             _write_probe_outputs(run.work_dir, "quick_route", run.quick_route_wns)
+            if run.quick_route_warning:
+                with (run.work_dir / "quick_route_vivado.log").open("a") as stream:
+                    stream.write(fpga_build._ROUTER_CONGESTION_WARNING + "\n")
 
     monkeypatch.setattr(fpga_build, "run_x3_place_quick_route_probes", probe)
     success, wns, prefix = fpga_build.run_x3_default_place(
@@ -4640,7 +4720,8 @@ def test_route_probe_requires_complete_fresh_evidence(
     _write_probe_outputs(work, "quick_route")
 
     def probe(command: list[str], **kwargs: Any) -> Any:
-        assert not (work / "quick_route_status.rpt").exists()
+        for name in ("timing.rpt", "status.rpt", "vivado.log"):
+            assert not (work / f"quick_route_{name}").exists()
         process = fleet.popen(command, **kwargs)
         log = work / "quick_route_vivado.log"
         status = work / "quick_route_status.rpt"
@@ -4677,10 +4758,46 @@ def test_route_probe_requires_complete_fresh_evidence(
 
     monkeypatch.setattr(fpga_build.subprocess, "Popen", probe)
     fpga_build.run_x3_place_quick_route_probes(tmp_path, [candidate], "unused")
-    assert candidate.quick_route_returncode == (0 if damage is None else -1)
-    assert (candidate.quick_route_wns is not None) is (damage is None)
+    accepted = damage in {None, "warning"}
+    assert candidate.quick_route_returncode == (0 if accepted else -1)
+    assert (candidate.quick_route_wns is not None) is accepted
+    assert candidate.quick_route_warning is (damage == "warning")
     # Even a completed probe is only an input to selection, not a winner.
     assert not fpga_build.require_x3_post_place_gate(work)
+
+
+@pytest.mark.parametrize(
+    ("recorded_warning", "log_warning", "accepted"),
+    (
+        (False, False, True),
+        (True, True, True),
+        (False, True, False),
+        (True, False, False),
+        (None, False, False),
+        (0, False, False),
+    ),
+)
+def test_selected_probe_warning_must_match_its_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_warning: bool | int | None,
+    log_warning: bool,
+    accepted: bool,
+) -> None:
+    """A warning is allowed on resume, but the selected evidence must record it."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "3")
+    (tmp_path / "post_place.dcp").write_bytes(b"selected placement")
+    _write_place_gate(tmp_path)
+    selection_path = tmp_path / "post_place_selection.json"
+    selection = json.loads(selection_path.read_text())
+    selection["candidates"][0]["quick_route_congestion_warning"] = recorded_warning
+    selection_path.write_text(json.dumps(selection))
+    if log_warning:
+        with (tmp_path / "post_place_quick_route_vivado.log").open("a") as stream:
+            stream.write(fpga_build._ROUTER_CONGESTION_WARNING + "\n")
+    assert fpga_build.bind_x3_place_gate(tmp_path) is accepted
+    assert fpga_build.require_x3_post_place_gate(tmp_path) is accepted
 
 
 @pytest.mark.parametrize(

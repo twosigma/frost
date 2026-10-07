@@ -24,7 +24,8 @@ final.dcp.
 
 Full-rate X3 placement compares a freshly generated local-guidance candidate
 with the ordinary placer sweep. Every candidate must pass timing and congestion
-checks before the leading survivors are quick-routed and ranked by routed WNS.
+checks before the leading survivors are quick-routed and ranked by congestion
+warning, routed WNS, then TNS.
 Both route stages also run sweeps, scored at zero added setup uncertainty.
 A placement guided by a
 temporary PC-tail path group is scored only if its audit on a clean reopen
@@ -170,6 +171,10 @@ X3_PLACE_INT_RS_BLOAT_CANDIDATES = (
 )
 X3_PLACE_INT_RS_BLOAT_FACTOR = "LOW"
 X3_PLACE_INT_RS_BLOAT_CELLS = "*u_tomasulo/u_int_rs"
+# Memory source-2 capture logic shares the integer station's crowded routing
+# window. Target that group without spreading the rest of the memory station.
+X3_GUIDED_PLACE_BLOAT_CELLS = "*u_tomasulo/u_int_rs *u_tomasulo/u_mem_rs/rs_src2_value*"
+X3_GUIDED_PLACE_BLOAT_MATCHES = (1, None)
 
 
 @dataclass(frozen=True)
@@ -548,7 +553,8 @@ _CONGESTION_ROW_RE = re.compile(
     r"^\|\s*(?:North|South|East|West)\s*\|\s*\S+\s*\|\s*(\d+)\s*\|", re.MULTILINE
 )
 
-# A quick-route probe carrying this timing-capitulation warning is rejected.
+# A completed quick-route probe carrying this warning ranks behind warning-free
+# probes. It can still close timing with the full flow's phys-opt and routing.
 _ROUTER_CONGESTION_WARNING = "Congestion is preventing the router from routing all nets"
 
 
@@ -594,9 +600,16 @@ def quick_route_log_has_congestion_warning(log_path: Path) -> bool:
 
 
 def x3_place_cell_bloat_override_is_valid(
-    log_path: Path, expected_factor: str, expected_cells: str
+    log_path: Path,
+    expected_factor: str,
+    expected_cells: str,
+    expected_matches: tuple[int | None, ...] | None = None,
 ) -> bool:
-    """Require the recipe's bloat on one hierarchy per requested pattern."""
+    """Require every requested bloat scope and its expected match count.
+
+    Hierarchies default to exactly one match. An explicit ``None`` count
+    permits a nonempty leaf-cell group whose size can change during placement.
+    """
     try:
         content = log_path.read_text(errors="replace")
     except OSError:
@@ -608,9 +621,20 @@ def x3_place_cell_bloat_override_is_valid(
         re.MULTILINE,
     )
     patterns = expected_cells.split()
-    return bool(patterns) and matches == [
-        (expected_factor, "1", pattern) for pattern in patterns
-    ]
+    counts = expected_matches if expected_matches is not None else (1,) * len(patterns)
+    return (
+        bool(patterns)
+        and len(matches) == len(patterns) == len(counts)
+        and all(
+            factor == expected_factor
+            and pattern == expected_pattern
+            and int(count) > 0
+            and (expected_count is None or int(count) == expected_count)
+            for (factor, count, pattern), expected_pattern, expected_count in zip(
+                matches, patterns, counts
+            )
+        )
+    )
 
 
 # Predecode sideband predicates mirrored into pinned low-address scalar LUTRAM
@@ -1051,7 +1075,7 @@ def x3_quick_route_count() -> int:
 def read_x3_route_probe(
     work: Path, prefix: str
 ) -> tuple[TimingSummary, dict[str, str]]:
-    """Require real routed timing, complete routing, and a readable clean log."""
+    """Require real routed timing, complete routing, and a readable tool log."""
     paths = {
         name: work / f"{prefix}_{name}"
         for name in (
@@ -1063,8 +1087,6 @@ def read_x3_route_probe(
     log = paths["vivado.log"].read_text()
     if not log.strip():
         raise ValueError("route probe has an empty Vivado log")
-    if _ROUTER_CONGESTION_WARNING in log:
-        raise ValueError("router congestion capitulation")
     status = paths["status.rpt"].read_text()
     counts = {}
     for name in ("routable nets", "fully routed nets", "nets with routing errors"):
@@ -1146,9 +1168,12 @@ def x3_place_binding(
             raise ValueError("selected placement does not match the checkpoint")
         if probe_count:
             timing, hashes = read_x3_route_probe(work_dir, "post_place_quick_route")
+            warning = quick_route_log_has_congestion_warning(
+                work_dir / "post_place_quick_route_vivado.log"
+            )
             if (
                 winner.get("quick_route_returncode") != 0
-                or winner.get("quick_route_congestion_warning") is not False
+                or winner.get("quick_route_congestion_warning") is not warning
                 or winner.get("quick_route_wns_ns") != timing.get("wns_ns")
             ):
                 raise ValueError("selected route probe does not match its evidence")
@@ -1932,8 +1957,9 @@ def select_x3_place_best_run(
     """Select a placement satisfying timing, congestion, and requested probes.
 
     Full-rate candidates cannot fall back past either placement requirement.
-    A requested probe must succeed without router congestion capitulation,
-    including when only one placement survives.
+    A requested probe must complete routing without errors, including when
+    only one placement survives. A congestion warning lowers its rank but
+    cannot predict timing closure after the full flow's phys-opt and routing.
     """
     eligible = [
         run
@@ -1994,7 +2020,7 @@ def select_x3_place_best_run(
     ]
     print(
         f"\nQuick-route probing the top {len(candidates)} surviving seeds "
-        f"(routed WNS decides):"
+        f"(congestion warning, routed WNS, then TNS decide):"
     )
     run_x3_place_quick_route_probes(
         script_dir, candidates, vivado_path, max_jobs=max_jobs
@@ -2003,17 +2029,21 @@ def select_x3_place_best_run(
     probed = [
         run
         for run in candidates
-        if run.quick_route_returncode == 0
-        and run.quick_route_wns is not None
-        and not run.quick_route_warning
+        if run.quick_route_returncode == 0 and run.quick_route_wns is not None
     ]
     if not probed:
         print(
-            "Error: no requested quick-route probe completed with usable timing "
-            "and without router congestion capitulation. No candidate is qualified."
+            "Error: no requested quick-route probe completed routing without "
+            "errors and with usable timing. No candidate is qualified."
         )
         return None
-    return min(probed, key=x3_place_quick_route_rank_key)
+    winner = min(probed, key=x3_place_quick_route_rank_key)
+    if winner.quick_route_warning:
+        print(
+            f"Warning: selected {winner.label} has a route-probe congestion "
+            "warning. Full implementation is still required to assess timing closure."
+        )
+    return winner
 
 
 def print_x3_directive_sweep_matrix(
@@ -2748,7 +2778,7 @@ def run_x3_default_place(
         wns=wns,
         tns=timing.get("tns_ns"),
         cell_bloat_factor="MEDIUM",
-        cell_bloat_cells=X3_PLACE_INT_RS_BLOAT_CELLS,
+        cell_bloat_cells=X3_GUIDED_PLACE_BLOAT_CELLS,
     )
     return run_x3_step_directive_sweep(
         script_dir,
@@ -2771,7 +2801,8 @@ def run_x3_guided_place_candidate(
     vivado_path: str,
     build_dir: Path | None = None,
     *,
-    cell_bloat_cells: str = X3_PLACE_INT_RS_BLOAT_CELLS,
+    cell_bloat_cells: str | None = None,
+    cell_bloat_matches: tuple[int | None, ...] | None = None,
 ) -> tuple[bool, float | None, str]:
     """Measure a guided candidate from the current post-opt netlist in work/.
 
@@ -2779,9 +2810,14 @@ def run_x3_guided_place_candidate(
     the guided cells, then verify in a third, read-only Vivado process. No
     archived input or phys-opt pass participates. This is not qualification:
     the caller submits the result to the shared congestion/probe selector.
-    ``cell_bloat_cells`` is a space-separated list of hierarchy patterns;
-    every pattern must match exactly one cell in each placement pass.
+    ``cell_bloat_cells`` is a space-separated list of cell name patterns;
+    every pattern must match exactly one cell in each placement pass unless
+    ``cell_bloat_matches`` explicitly allows a nonempty group for that pattern.
     """
+    if cell_bloat_cells is None:
+        cell_bloat_cells = X3_GUIDED_PLACE_BLOAT_CELLS
+        if cell_bloat_matches is None:
+            cell_bloat_matches = X3_GUIDED_PLACE_BLOAT_MATCHES
     board_build = build_dir if build_dir is not None else script_dir / "x3"
     work = board_build / "work"
     work.mkdir(parents=True, exist_ok=True)
@@ -2857,7 +2893,7 @@ def run_x3_guided_place_candidate(
         if result.returncode != 0:
             return False
         if step == "place" and not x3_place_cell_bloat_override_is_valid(
-            work / log_name, "MEDIUM", cell_bloat_cells
+            work / log_name, "MEDIUM", cell_bloat_cells, cell_bloat_matches
         ):
             raise ValueError(f"{mode} placement did not apply the requested cell bloat")
         return True
@@ -2923,6 +2959,9 @@ def run_x3_guided_place_candidate(
                     "placement_uncertainty_ns": 0.325,
                     "cell_bloat": "MEDIUM",
                     "cell_bloat_cells": cell_bloat_cells,
+                    "cell_bloat_matches": cell_bloat_matches
+                    if cell_bloat_matches is not None
+                    else [1] * len(cell_bloat_cells.split()),
                     "final_directive": "Quick",
                     "guidance": "current-reference local floorplan",
                     "scoring_uncertainty_ns": 0.0,
@@ -3196,7 +3235,7 @@ Behavior:
     thread settings are unchanged. Use --jobs 1 for serial execution.
   * Full-rate X3 placement includes a local-guidance candidate from this build's closed post_opt.dcp,
     generates an ExtraNetDelay_high/0.325 reference with CPU clock root X1Y9
-    and MEDIUM cell bloat on the integer reservation station. It measures
+    and MEDIUM cell bloat on the integer RS and memory-RS source-2 operand cells. It measures
     local register sites and LUT input assignments on that fresh reference,
     retaining changes only when setup and hold slack do not worsen. The
     second pass preserves the surrounding placement and uses hard local
@@ -3237,9 +3276,11 @@ Behavior:
     congestion evidence below FROST_PLACE_CONGESTION_VETO_LEVEL (default {veto}).
     Failing or missing evidence disqualifies a candidate; no fallback admits it.
     FROST_PLACE_QUICK_ROUTE_COUNT (default {probes}) quick-routes up to that many
-    survivors, including a sole survivor, and ranks by routed WNS, then TNS.
-    Failed probes, incomplete routing, missing reports/logs, and router
-    congestion capitulation disqualify a candidate.
+    survivors, including a sole survivor. Completed probes without a router
+    congestion warning rank first, then routed WNS and TNS decide.
+    The warning alone does not disqualify a completed, error-free probe;
+    the full flow uses phys-opt and stronger routing directives.
+    Failed probes, incomplete routing, and missing reports/logs disqualify it.
     An explicit count of zero disables probes and ranks by post-place WNS.
     If none qualifies, the build stops. Divided-clock builds keep their fast
     policy without the full-rate congestion screen or automatic probes.
@@ -3643,7 +3684,9 @@ Examples:
     print(f"# Vivado concurrency: up to {args.jobs} jobs at a time (--jobs)")
     if use_default_x3_place and "place" in steps_to_run:
         print("# X3 placement: fresh ExtraNetDelay_high/0.325 reference at X1Y9,")
-        print("#   MEDIUM cell bloat on the integer reservation station,")
+        print(
+            "#   MEDIUM cell bloat on the integer RS and memory-RS source-2 operand cells,"
+        )
         print(
             "#   then measured local floorplan constraints and a final Quick placement;"
         )

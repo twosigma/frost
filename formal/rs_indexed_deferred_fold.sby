@@ -1,0 +1,45 @@
+[tasks]
+prove_int int
+prove_mem mem
+prove_src3 src3
+prove_mul mul
+cover_int int
+
+[options]
+prove_int: mode prove
+prove_mem: mode prove
+prove_src3: mode prove
+prove_mul: mode prove
+cover_int: mode cover
+depth 4
+
+[engines]
+smtbmc boolector
+
+[script]
+# PRETAG excludes the full component proof here, as in rs_divide_gate.sby.
+# Its direct pre-issue-tag identity remains as one of the counted assertions.
+read -sv riscv_pkg.sv rs_issue2_selector.sv
+read -formal -D SYNTHESIS -D RS_PRETAG_LOCAL_PROOF -D RS_INDEXED_DEFERRED_FOLD_LOCAL_PROOF -sv reservation_station.sv
+int: chparam -set DEPTH 16 -set HAS_SRC3 0 -set DUAL_ISSUE 1 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set SPECULATIVE_DATA_WRITES 1 -set BROADCAST_FREE_SOURCE_VALUES 1 -set TRUST_DISPATCH_VALID 1 reservation_station
+mul: chparam -set DEPTH 4 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set SPECULATIVE_DATA_WRITES 1 -set DIVIDE_ISSUE_GATE 1 reservation_station
+mem: chparam -set DEPTH 8 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set SPECULATIVE_DATA_WRITES 1 -set TRUST_DISPATCH_VALID 1 reservation_station
+src3: chparam -set DEPTH 8 -set HAS_SRC3 1 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 reservation_station
+hierarchy -top reservation_station
+# Payload RAM outputs are arbitrary; output-only logic is outside this proof.
+delete t:sdp_dist_ram t:mwp_dist_ram t:mwp_dist_ram_ohread
+proc
+setundef -undriven -anyseq
+delete -port reservation_station/o:*
+opt_clean -purge
+opt
+prep -top reservation_station -flatten
+int: select -assert-count 197 t:$check r:FLAVOR=assert %i
+mul: select -assert-count 53 t:$check r:FLAVOR=assert %i
+mem: select -assert-count 101 t:$check r:FLAVOR=assert %i
+src3: select -assert-count 150 t:$check r:FLAVOR=assert %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv

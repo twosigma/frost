@@ -52,6 +52,7 @@ module lq_issue_selector #(
 
     output logic o_issue_cdb_found,
     output logic [$clog2(DEPTH)-1:0] o_issue_cdb_idx,
+    output logic [DEPTH-1:0] o_merged_scan_onehot,
     output logic o_stored_scan_found,
     output logic [$clog2(DEPTH)-1:0] o_stored_scan_idx,
     output logic [$clog2(DEPTH)-1:0] o_stored_scan_pos,
@@ -249,6 +250,29 @@ module lq_issue_selector #(
       end
     end
   end
+
+  // The replacement-enable cone needs the first candidate in the union
+  // of stored and arriving-address entries. Select it before the late
+  // address-valid bit, using physical indices as in Phase A. This avoids
+  // head rotation and a comparison of the two encoded ring positions.
+  // ROB-head priority remains separate in the parent; ring order is not age.
+  logic [DEPTH-1:0] merged_eligible_phys, merged_upper;
+  logic merged_upper_found;
+  (* keep = "true" *) logic [DEPTH-1:0] merged_first_upper, merged_first_any;
+  assign merged_eligible_phys =
+      (mem_eligible_stored_phys | mem_eligible_update_phys) & ~blocked_by_amo_phys_q;
+  assign merged_upper = merged_eligible_phys & at_or_above_head;
+  assign merged_upper_found = |merged_upper;
+  for (genvar g = 0; g < DEPTH; g++) begin : gen_merged_physical
+    if (g == 0) begin : gen_first
+      assign merged_first_upper[g] = merged_upper[g];
+      assign merged_first_any[g]   = merged_eligible_phys[g];
+    end else begin : gen_later
+      assign merged_first_upper[g] = merged_upper[g] && !(|merged_upper[g-1:0]);
+      assign merged_first_any[g]   = merged_eligible_phys[g] && !(|merged_eligible_phys[g-1:0]);
+    end
+  end
+  assign o_merged_scan_onehot = merged_upper_found ? merged_first_upper : merged_first_any;
 
   // Allocation refills the holes that completed and flushed entries leave, so
   // ring order is not always ROB age.  To keep the oldest load from starving

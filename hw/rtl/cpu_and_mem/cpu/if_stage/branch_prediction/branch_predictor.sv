@@ -167,9 +167,10 @@ module branch_predictor #(
   logic [BTB_INDEX_BITS-1:0] slot2_lookup_index_next_q;
 
   logic [1:0] next_counter;
-  // The keep attributes preserve the candidate boundary so synthesis cannot
-  // fold the early result back through the selected-PC RMW cone.
-  (* keep = "true" *) logic [1:0] early_next_counter;
+  // Grouped tag-match nets preserve the independent early RAM read. Let
+  // its counter update combine with the final early/late select, while the
+  // earlier late candidate remains a separate data input.
+  logic [1:0] early_next_counter;
   (* keep = "true" *) logic [1:0] late_next_counter;
 
   // Slot-1 lookup index and tag
@@ -663,8 +664,20 @@ module branch_predictor #(
   // Early candidate, from the early PC and outcome. Its RAM copies take every
   // selected write, not only early ones, so they always hold the same state as
   // the late copies.
-  wire early_tag_matches =
-      btb_valid[early_update_index] && (btb_tag_update_early == early_update_tag);
+  // The update-side tag reads use the same grouped equality as lookups.
+  // Keeping the partial matches avoids a wide carry-chain equality after
+  // the asynchronous tag RAM without changing any counter or table state.
+  (* keep = "true" *) logic [1:0][TagCompareChunks-1:0] update_tag_equal_chunks;
+  for (genvar chunk = 0; chunk < TagCompareChunks; chunk++) begin : gen_update_tag_compare
+    localparam int unsigned FirstBit = chunk * TagCompareChunkBits;
+    localparam int unsigned Bits =
+        (TagBits - FirstBit < TagCompareChunkBits) ? TagBits - FirstBit : TagCompareChunkBits;
+    assign update_tag_equal_chunks[0][chunk] =
+        btb_tag_update_early[FirstBit+:Bits] == early_update_tag[FirstBit+:Bits];
+    assign update_tag_equal_chunks[1][chunk] =
+        btb_tag_update_late[FirstBit+:Bits] == late_update_tag[FirstBit+:Bits];
+  end
+  wire early_tag_matches = btb_valid[early_update_index] && (&update_tag_equal_chunks[0]);
   always_comb begin
     if (!early_tag_matches) begin
       early_next_counter = i_early_update_taken ? WeaklyTaken : WeaklyNotTaken;
@@ -680,7 +693,15 @@ module branch_predictor #(
   // Late candidate, from a PC and outcome that do not depend on
   // i_early_update_active. Its RAM copies also take every selected write,
   // including early ones.
-  wire late_tag_matches = btb_valid[late_update_index] && (btb_tag_update_late == late_update_tag);
+  wire late_tag_matches = btb_valid[late_update_index] && (&update_tag_equal_chunks[1]);
+`ifdef BTB_TAG_COMPARE_LOCAL_PROOF
+  always_comb begin
+    assert (early_tag_matches ==
+        (btb_valid[early_update_index] && (btb_tag_update_early == early_update_tag)));
+    assert (late_tag_matches ==
+        (btb_valid[late_update_index] && (btb_tag_update_late == late_update_tag)));
+  end
+`endif
   always_comb begin
     if (!late_tag_matches) begin
       late_next_counter = i_late_update_taken ? WeaklyTaken : WeaklyNotTaken;

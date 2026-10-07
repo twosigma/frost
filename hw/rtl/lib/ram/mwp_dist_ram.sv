@@ -26,8 +26,9 @@
  * per-entry LVT decode.
  *
  * Ports [NUM_NARROW_WRITE_PORTS-1:0] store only NARROW_DATA_WIDTH low bits;
- * their checked-zero upper bits are reconstructed on read. The ROB's value
- * RAMs declare their allocation ports narrow (XLEN) for zero-extended link
+ * their checked-zero upper bits are reconstructed on read. The ROB's
+ * four-bank value RAMs (SharedLinkBank=0) declare allocation ports narrow
+ * (XLEN) for zero-extended link
  * addresses. With FLEN == XLEN, as in the RV64 core, those banks are full
  * width: the option changes nothing and g_narrow_write_check, the zero
  * check on the upper bits, does not elaborate.
@@ -168,8 +169,8 @@ module mwp_dist_ram #(
   // read address beside the LVT mux, instead of being decoded into every
   // entry ahead of it.  The LVT mux is split at the address MSB into two
   // half-depth muxes, so the override and the MSB select share the select's
-  // last LUT.  For the ROB's 32-entry dispatch-bypass value RAMs (this
-  // module's only staged users) the bank select is three LUT levels from
+  // last LUT. For the ROB's four-bank 32-entry dispatch-bypass value RAMs
+  // (SharedLinkBank=0), the bank select is three LUT levels from
   // registers and the data mux a fourth.
   // ---------------------------------------------------------------------------
   logic [SelWidth-1:0] lvt_eff[RamDepth];
@@ -261,7 +262,7 @@ module mwp_dist_ram #(
   // Same-cycle staged+live writes to one address are legal and resolve
   // staged-wins (see header), so there is no check here.  The dangerous
   // arrival is a live write in the staged address's drain cycle.  The reorder
-  // buffer is the only staged-port user with live write ports.  It excludes
+  // buffer uses these staged ports when SharedLinkBank=0. It excludes
   // and checks that window at the ROB level, where allocation context
   // distinguishes a stale completion from a current one.
 `endif

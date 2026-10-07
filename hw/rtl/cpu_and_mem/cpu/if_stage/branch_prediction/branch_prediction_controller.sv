@@ -313,6 +313,9 @@ module branch_prediction_controller #(
     btb_late_update_taken_q  <= i_btb_late_update_taken;
   end
 
+  // Keep lookup and update logic inside the predictor instead of merging it
+  // into the IF packet-selection cone, which lengthens the PC feedback paths.
+  (* keep_hierarchy = "yes" *)
   branch_predictor #(
       .XLEN(XLEN)
   ) branch_predictor_inst (
@@ -678,8 +681,11 @@ module branch_prediction_controller #(
   // Otherwise pending-PC equality/disable traverses the BTB gates and the PC
   // priority tree on the same cycle.
   (* keep = "true" *)logic prediction_candidate_for_pc;
+  // Taken absorbs the ownership term's (lead_collapsed || taken), leaving
+  // only the alias test on this path. Other ownership consumers retain the
+  // full condition below.
   assign prediction_candidate_for_pc =
-      !slot1_prediction_owned_by_slot2 && !i_fetch_lookup_is_lower_parcel &&
+      !slot1_aliases_slot2_candidate && !i_fetch_lookup_is_lower_parcel &&
       (!i_pc[1] || btb_compressed) && dir_predicted_taken;
   // Mark a prediction used only when IF can consume it. A prediction that
   // fires on the first stall cycle is a hazard for halfword target handoff:

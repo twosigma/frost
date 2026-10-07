@@ -419,19 +419,50 @@ module pc_increment_calculator #(
   // compare of the next pc_reg with the fetch PC (see
   // pc_reg_next_misses_fetch_pc_for_prediction there). Comparing the muxed
   // value would put the wide compare after the late advance select, so each
-  // candidate is compared instead. Every operand comes from a register (i_pc,
-  // i_pc_reg, and the precomputed sums), so the five compares run in parallel
-  // and the late selects pick among 1-bit results. The arms below mirror the
+  // candidate is compared instead. The increment comparisons use local carry
+  // relations between i_pc and i_pc_reg, independently of the wide sums. The
+  // five comparisons run in parallel and the late selects pick among 1-bit
+  // results. The arms below mirror the
   // o_seq_next_pc_reg selection arm for arm, including pc_reg_advance_mux's
   // default to the +2 candidate, so the result equals
   // (o_seq_next_pc_reg != i_pc) exactly.
   logic neq_hold, neq_plus2, neq_plus4, neq_plus6, neq_plus8;
   logic neq_advance_sel;
-  assign neq_hold  = (i_pc_reg != i_pc);
-  assign neq_plus2 = (pc_reg_if_compressed != i_pc);
-  assign neq_plus4 = (pc_reg_if_32bit != i_pc);
-  assign neq_plus6 = (pc_reg_plus_6 != i_pc);
-  assign neq_plus8 = (pc_reg_plus_8 != i_pc);
+  assign neq_hold = (i_pc_reg != i_pc);
+  // For candidate A == base B + constant K, carry into bit i is
+  // A[i] ^ B[i] ^ K[i]. The preceding carry out can be reconstructed
+  // locally from A/B: K[i-1] ? (B[i-1] | ~A[i-1]) :
+  //                             (B[i-1] & ~A[i-1]).
+  // For K in {2,4,6,8}, every relationship at bit 5 or above is shared.
+  // Discarding the final carry preserves modulo-XLEN arithmetic.
+  if (XLEN > 5) begin : gen_increment_relation
+    localparam int HighBits = XLEN - 5;
+    localparam int ChunkBits = 12;
+    localparam int Chunks = (HighBits + ChunkBits - 1) / ChunkBits;
+    wire  [  XLEN-1:0] difference = i_pc ^ i_pc_reg;
+    wire  [  XLEN-1:0] zero_bit_carry = i_pc_reg & ~i_pc;
+    (* keep = "true" *)logic [Chunks-1:0] high_matches;
+    for (genvar g = 0; g < Chunks; g++) begin : gen_match
+      localparam int First = 5 + g * ChunkBits;
+      localparam int Width = (XLEN - First < ChunkBits) ? XLEN - First : ChunkBits;
+      assign high_matches[g] = difference[First+:Width] == zero_bit_carry[First-1+:Width];
+    end
+    function automatic logic low_match(input logic [4:0] increment);
+      logic [3:0] reconstructed_carry;
+      reconstructed_carry = (i_pc_reg[3:0] & ~i_pc[3:0]) |
+          (increment[3:0] & (i_pc_reg[3:0] | ~i_pc[3:0]));
+      low_match = ((difference[4:0] ^ increment) == {reconstructed_carry, 1'b0});
+    endfunction
+    assign neq_plus2 = !((&high_matches) && low_match(5'd2));
+    assign neq_plus4 = !((&high_matches) && low_match(5'd4));
+    assign neq_plus6 = !((&high_matches) && low_match(5'd6));
+    assign neq_plus8 = !((&high_matches) && low_match(5'd8));
+  end else begin : gen_small_increment_reference
+    assign neq_plus2 = (pc_reg_if_compressed != i_pc);
+    assign neq_plus4 = (pc_reg_if_32bit != i_pc);
+    assign neq_plus6 = (pc_reg_plus_6 != i_pc);
+    assign neq_plus8 = (pc_reg_plus_8 != i_pc);
+  end
   // Split by bundle shape as for o_seq_next_pc_reg: the late controls pick
   // last.
   logic neq_advance_sel_shape[NRegShapes];
@@ -462,6 +493,15 @@ module pc_increment_calculator #(
   end
 `endif
 
+`ifdef PC_INCREMENT_RELATION_PROOF
+  always_comb begin
+    assert (neq_plus2 == (pc_reg_if_compressed != i_pc));
+    assert (neq_plus4 == (pc_reg_if_32bit != i_pc));
+    assert (neq_plus6 == (pc_reg_plus_6 != i_pc));
+    assert (neq_plus8 == (pc_reg_plus_8 != i_pc));
+    assert (o_seq_next_pc_reg_neq_pc == (o_seq_next_pc_reg != i_pc));
+  end
+`endif
 endmodule : pc_increment_calculator
 
 // The next fetch PC and that PC + 2 for an advance select.

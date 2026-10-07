@@ -20,17 +20,28 @@
  * Starts each FP_RS issue on fp_engine, which runs every FP compute operation
  * one at a time, and packs the engine's result into fu_complete_t for the CDB
  * adapter. One tag register tracks the operation in the engine. o_fu_busy is
- * high whenever the engine is not idle, its result cycle included, and the
- * wrapper also stops FP_RS while the adapter holds a result, so the engine's
- * one-cycle result always finds the adapter free.
+ * high whenever a nonsquashed operation occupies the engine, its result cycle
+ * included. The wrapper also stops FP_RS while the adapter holds a result,
+ * so the engine's one-cycle result always finds the adapter free.
  *
  * A full flush, or a partial flush that covers the operation (the ROB-age
  * compare the rest of the back end uses), kills it in the engine, which is
- * idle again on the next cycle. An issue the same flush covers never starts.
+ * idle again on the next cycle. With LAUNCH_SQUASH=0, an issue the same flush
+ * covers never starts.
  * A flush in the result cycle itself is left to the adapter, which sees the
  * same flush.
+ *
+ * With LAUNCH_SQUASH, an issue the same flush covers does start, so the
+ * engine's launch enables do not wait for the flush compare. A registered
+ * squash bit kills it in its first decode cycle, where it changes no result
+ * state, and o_fu_busy stays low that cycle, as it would have without the
+ * start. The engine cannot take an issue in that cycle, so LAUNCH_SQUASH
+ * requires that no issue follows a flushed issue on the next cycle. FP_RS
+ * guarantees this: a flush cycle clears its stage 2 and blocks its refill.
  */
-module fp_shim (
+module fp_shim #(
+    parameter bit LAUNCH_SQUASH = 1'b0
+) (
     input logic i_clk,
     input logic i_rst_n,
 
@@ -40,7 +51,7 @@ module fp_shim (
     // FU completion to CDB adapter
     output riscv_pkg::fu_complete_t o_fu_complete,
 
-    // The engine holds an operation
+    // The engine holds a nonsquashed operation
     output logic o_fu_busy,
 
     // Pipeline flush (full)
@@ -71,21 +82,35 @@ module fp_shim (
   riscv_pkg::fp_flags_t eng_flags;
   logic [TagW-1:0] tag_q;
 
-  logic launch_flushed, start, kill;
+  logic launch_flushed, start, kill, squash_q;
   assign launch_flushed = i_flush || (i_flush_en && is_younger(
       i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
   ));
-  assign start = i_rs_issue.valid && eng_idle && !launch_flushed;
-  assign kill = !eng_idle && (i_flush || (i_flush_en && is_younger(
-      tag_q, i_flush_tag, i_rob_head_tag
-  )));
+
+  if (LAUNCH_SQUASH) begin : g_launch_squash
+    assign start = i_rs_issue.valid && eng_idle;
+    assign kill = squash_q || (!eng_idle && (i_flush || (i_flush_en && is_younger(
+        tag_q, i_flush_tag, i_rob_head_tag
+    ))));
+    always_ff @(posedge i_clk) begin
+      if (!i_rst_n) squash_q <= 1'b0;
+      else squash_q <= start && launch_flushed;
+    end
+  end else begin : g_launch_gated
+    assign start = i_rs_issue.valid && eng_idle && !launch_flushed;
+    assign kill = !eng_idle && (i_flush || (i_flush_en && is_younger(
+        tag_q, i_flush_tag, i_rob_head_tag
+    )));
+    assign squash_q = 1'b0;
+  end
 
   always_ff @(posedge i_clk) begin
     if (start) tag_q <= i_rs_issue.rob_tag;
   end
 
 `ifdef FORMAL
-  // The shim proof covers tag and flush control. The engine becomes a model
+  // The default-mode shim proof covers tag and flush control.
+  // formal/fp_launch_squash.sby checks both modes with the real engine. The engine becomes a model
   // that completes an arbitrary number of cycles after its start (its real
   // latency depends on the operation and the operands) and returns to idle on
   // a kill, which keeps completions reachable at small bounded depths.
@@ -131,7 +156,7 @@ module fp_shim (
   );
 `endif
 
-  assign o_fu_busy = !eng_idle;
+  assign o_fu_busy = !eng_idle && !squash_q;
 
   always_comb begin
     o_fu_complete.valid     = eng_done;
@@ -147,6 +172,8 @@ module fp_shim (
   // The RS retires its entry on the issue cycle, so an issue the engine cannot
   // take would be lost. FP_RS's ready input includes !o_fu_busy, and the RS
   // presents an issue only with ready high, so a hit here is a real hazard.
+  // With LAUNCH_SQUASH it also catches an issue in a squashed start's decode
+  // cycle.
   always @(posedge i_clk) begin
     if (i_rst_n && i_rs_issue.valid && !eng_idle) begin
       $error("fp_shim: issue of tag %0d while the engine is busy", i_rs_issue.rob_tag);

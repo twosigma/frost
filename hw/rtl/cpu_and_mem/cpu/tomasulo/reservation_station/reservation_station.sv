@@ -44,6 +44,11 @@ module reservation_station #(
     // MEM_RS: precompute the winner for each combination of the two raw CDB
     // lane valids and the early-load token (eight candidates).
     parameter bit PREISSUE_RAW_WAKEUP = 1'b0,
+    // With PREISSUE_VALID_COFACTOR, also export each candidate's ready vector
+    // and every entry's ROB tag, so the LQ can compare its tags against all
+    // entry tags in parallel with readiness and pick the match with the
+    // ready vector, instead of comparing against an encoded winner's tag.
+    parameter bit PREISSUE_READY_EXPORT = 1'b0,
     parameter bit DISPATCH_REPAIR_BYPASS = 1'b1,
     parameter bit ISSUE_REPAIR_BYPASS = 1'b1,
     // The registered done-repair responses normally carry tags and CAM-snoop
@@ -266,6 +271,12 @@ module reservation_station #(
     output logic [(PREISSUE_RAW_WAKEUP ? 8 : 4)*riscv_pkg::ReorderBufferTagWidth-1:0]
         o_pre_issue_rob_tags,
     output logic [(PREISSUE_RAW_WAKEUP ? 3 : 2)-1:0] o_pre_issue_sel,
+    // PREISSUE_READY_EXPORT: candidate c's ready vector at [c*DEPTH +: DEPTH]
+    // (its winner is the lowest set bit, entry 0 when none is set) and entry
+    // e's ROB tag at [e*ReorderBufferTagWidth +: ReorderBufferTagWidth].
+    // Zero otherwise.
+    output logic [(PREISSUE_RAW_WAKEUP ? 8 : 4)*DEPTH-1:0] o_pre_issue_ready,
+    output logic [DEPTH*riscv_pkg::ReorderBufferTagWidth-1:0] o_pre_issue_entry_tags,
     input logic [2:0] i_pre_issue_raw_valid,
     input logic [3*riscv_pkg::ReorderBufferTagWidth-1:0] i_pre_issue_raw_tags,
     output logic o_pre_issue_needs_lq,
@@ -795,6 +806,76 @@ module reservation_station #(
   logic [DEPTH-1:0] indexed_src2_repair;
   logic [DEPTH-1:0] indexed_src3_repair;
 
+  // In allocation-indexed mode, each pending dispatch-CDB write belongs to
+  // one of the allocation tokens.
+  // Select its registered lane value once per slot/source, before the data
+  // fans out to the entries. The same bus carries that slot's ordinary repair
+  // value when its target has no pending delivery. Entry write priority and
+  // ready/issue timing stay unchanged; repair data need not equal CDB data.
+  function automatic logic [FLEN-1:0] deferred_or_repair(
+      input logic [DEPTH-1:0] target, input logic [DEPTH-1:0] pending,
+      input logic [DEPTH-1:0] pending_lane, input logic [FLEN-1:0] lane0_value,
+      input logic [FLEN-1:0] lane1_value, input logic [FLEN-1:0] repair_value);
+    deferred_or_repair = (|(target & pending)) ?
+        ((|(target & pending & pending_lane)) ? lane1_value : lane0_value) : repair_value;
+  endfunction
+
+  logic [FLEN-1:0] indexed_delivery_1;
+  logic [FLEN-1:0] indexed_delivery_2;
+  logic [FLEN-1:0] indexed_delivery_3;
+  logic [FLEN-1:0] indexed_delivery_4;
+  logic [FLEN-1:0] indexed_delivery_5;
+  logic [FLEN-1:0] indexed_delivery_6;
+
+  assign indexed_delivery_1 = deferred_or_repair(
+      repair_slot1_target_q,
+      src1_cdb_pend,
+      src1_cdb_pend_lane,
+      cdb0_value_q,
+      cdb1_value_q,
+      i_repair_value_1
+  );
+  assign indexed_delivery_2 = deferred_or_repair(
+      repair_slot1_target_q,
+      src2_cdb_pend,
+      src2_cdb_pend_lane,
+      cdb0_value_q,
+      cdb1_value_q,
+      i_repair_value_2
+  );
+  assign indexed_delivery_3 = deferred_or_repair(
+      repair_slot1_target_q,
+      src3_cdb_pend,
+      src3_cdb_pend_lane,
+      cdb0_value_q,
+      cdb1_value_q,
+      i_repair_value_3
+  );
+  assign indexed_delivery_4 = deferred_or_repair(
+      repair_slot2_target_q,
+      src1_cdb_pend,
+      src1_cdb_pend_lane,
+      cdb0_value_q,
+      cdb1_value_q,
+      i_repair_value_4
+  );
+  assign indexed_delivery_5 = deferred_or_repair(
+      repair_slot2_target_q,
+      src2_cdb_pend,
+      src2_cdb_pend_lane,
+      cdb0_value_q,
+      cdb1_value_q,
+      i_repair_value_5
+  );
+  assign indexed_delivery_6 = deferred_or_repair(
+      repair_slot2_target_q,
+      src3_cdb_pend,
+      src3_cdb_pend_lane,
+      cdb0_value_q,
+      cdb1_value_q,
+      i_repair_value_6
+  );
+
   assign indexed_src1_repair = ALLOC_INDEXED_REPAIR ?
       ((repair_slot1_target_q & {DEPTH{i_repair_valid_1}}) |
        (repair_slot2_target_q & {DEPTH{i_repair_valid_4}})) : '0;
@@ -954,18 +1035,63 @@ module reservation_station #(
   // 2-write port: slot-1 dispatch (port 0) + slot-2 dispatch (port 1).
   // Port 1 writes whenever slot-2 dispatches into this RS, with or without
   // slot-1 firing in the same cycle.
-  mwp_dist_ram #(
-      .ADDR_WIDTH     ($clog2(DEPTH)),
-      .DATA_WIDTH     (PayloadWidth),
-      .NUM_WRITE_PORTS(2)
-  ) u_payload_ram (
-      .i_clk,
-      .i_write_enable ({dispatch_fire_2, dispatch_fire}),
-      .i_write_address({alloc_idx_2, free_idx}),
-      .i_read_address (issue_idx),
-      .i_write_data   ({payload_wr_data_2, payload_wr_data}),
-      .o_read_data    (payload_rd_data)
-  );
+  // INT reads each four-entry payload group with its early local winner,
+  // then selects the winning group. This matches the operand selection below
+  // and avoids putting a combined binary issue index ahead of every RAM read.
+  // The direct one-hot winner clears validity; its idle select is entry zero,
+  // exactly like issue_idx, although issue_fire is then false.
+  localparam int unsigned PayloadDepth = 1 << $clog2(DEPTH);
+  localparam int unsigned PayloadGroups = (DEPTH + 3) / 4;
+  localparam int unsigned PayloadGroupIdxWidth = (PayloadGroups > 1) ? $clog2(PayloadGroups) : 1;
+  logic [1:0] payload_group_pick[PayloadGroups];
+  logic [PayloadGroupIdxWidth-1:0] payload_group_idx;
+  (* keep = "true" *) logic [PayloadDepth-1:0] primary_issue_onehot;
+  if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin : gen_primary_payload_grouped
+    for (genvar entry = 0; entry < int'(PayloadDepth); entry++) begin : gen_select
+      if (entry == 0) begin : gen_zero
+        assign primary_issue_onehot[entry] = entry_ready[0] || !any_ready;
+      end else if (entry < int'(DEPTH)) begin : gen_entry
+        assign primary_issue_onehot[entry] = entry_ready[entry] && !(|entry_ready[entry-1:0]);
+      end else begin : gen_padding
+        assign primary_issue_onehot[entry] = 1'b0;
+      end
+    end
+    (* keep = "true" *) logic [PayloadWidth-1:0] group_payload[PayloadGroups];
+    for (genvar g = 0; g < int'(PayloadGroups); g++) begin : gen_payload_group
+      mwp_dist_ram #(
+          .ADDR_WIDTH(2),
+          .DATA_WIDTH(PayloadWidth),
+          .NUM_WRITE_PORTS(2)
+      ) u_payload_ram (
+          .i_clk,
+          .i_write_enable({
+            dispatch_fire_2 && ((int'(alloc_idx_2) >> 2) == g),
+            dispatch_fire && ((int'(free_idx) >> 2) == g)
+          }),
+          .i_write_address({2'(alloc_idx_2), 2'(free_idx)}),
+          .i_read_address(payload_group_pick[g]),
+          .i_write_data({payload_wr_data_2, payload_wr_data}),
+          .o_read_data(group_payload[g])
+      );
+    end
+    assign payload_rd_data = group_payload[payload_group_idx];
+  end else begin : gen_primary_payload_binary
+    assign primary_issue_onehot = '0;
+    assign payload_group_idx = '0;
+    for (genvar g = 0; g < int'(PayloadGroups); g++) assign payload_group_pick[g] = '0;
+    mwp_dist_ram #(
+        .ADDR_WIDTH     ($clog2(DEPTH)),
+        .DATA_WIDTH     (PayloadWidth),
+        .NUM_WRITE_PORTS(2)
+    ) u_payload_ram (
+        .i_clk,
+        .i_write_enable ({dispatch_fire_2, dispatch_fire}),
+        .i_write_address({alloc_idx_2, free_idx}),
+        .i_read_address (issue_idx),
+        .i_write_data   ({payload_wr_data_2, payload_wr_data}),
+        .o_read_data    (payload_rd_data)
+    );
+  end
 
   // Unpack LUTRAM read data (at issue_idx, combinational / zero-latency)
   logic [riscv_pkg::InstrOpWidth-1:0] pl_op_bits;
@@ -1437,6 +1563,8 @@ module reservation_station #(
   // results equal the serial scan's selection (checked below; the flags and
   // values whenever an entry is ready, the index always).
   logic issue_src1_bypass, issue_src1_bypass_l1, issue_src2_bypass, issue_src2_bypass_l1;
+  logic [ReorderBufferTagWidth-1:0] primary_issue_tag;
+  logic primary_issue_use_imm, primary_issue_hint, primary_issue_divide;
   logic [FLEN-1:0] issue_src1_resident, issue_src2_resident;
   logic [FLEN-1:0] src1_resident[DEPTH];
   logic [FLEN-1:0] src2_resident[DEPTH];
@@ -1464,12 +1592,18 @@ module reservation_station #(
     (* keep = "true" *) logic [FLEN-1:0] group_src1_resident[NumGroupSlots];
     (* keep = "true" *) logic [FLEN-1:0] group_src2_resident[NumGroupSlots];
     (* keep = "true" *) logic [3:0] group_bypass[NumGroupSlots];
+    (* keep = "true" *) logic [ReorderBufferTagWidth+2:0] group_metadata[NumGroupSlots];
+    assign payload_group_idx = PayloadGroupIdxWidth'(group_idx);
+    for (genvar g = 0; g < int'(PayloadGroups); g++) begin : gen_payload_pick
+      assign payload_group_pick[g] = group_pick[g];
+    end
     (* keep = "true" *) logic src1_bypass, src1_bypass_l1, src2_bypass, src2_bypass_l1;
     always_comb begin
       for (int g = 0; g < int'(NumGroupSlots); g++) begin
         group_src1_resident[g] = '0;
         group_src2_resident[g] = '0;
         group_bypass[g] = '0;
+        group_metadata[g] = '0;
         for (int j = 0; j < 4; j++) begin
           group_ready[g][j] = ((4 * g + j) < int'(DEPTH)) ? entry_ready[4*g+j] : 1'b0;
         end
@@ -1480,6 +1614,9 @@ module reservation_station #(
             group_ready[g][2] ? 2'd2 : group_ready[g][3] ? 2'd3 : 2'd0;
         for (int j = 0; j < 4; j++) begin
           if (((4 * g + j) < int'(DEPTH)) && (group_pick[g] == 2'(j))) begin
+            group_metadata[g] = {
+              rs_rob_tag[4*g+j], rs_use_imm[4*g+j], rs_writes_cdb_hint[4*g+j], rs_is_divide[4*g+j]
+            };
             group_src1_resident[g] = src1_resident[4*g+j];
             group_src2_resident[g] = src2_resident[4*g+j];
             group_bypass[g] = {
@@ -1496,10 +1633,12 @@ module reservation_station #(
         if (group_any[g]) group_idx = GroupIdxWidth'(g);
       end
     end
-    // The issue index from the same two steps: the payload RAM read and the
-    // per-entry tag and valid updates use it, so it shares the group picks
-    // instead of a second priority encoder over the ready bits.
+    // Reconstruct the same issue index for the remaining indexed consumers
+    // and reference checks. Payload, metadata and validity clear use the
+    // direct selections above rather than decoding this index again.
     assign issue_idx = $clog2(DEPTH)'({group_idx, group_pick[group_idx]});
+    assign {primary_issue_tag, primary_issue_use_imm, primary_issue_hint, primary_issue_divide} =
+        group_metadata[group_idx];
     assign issue_src1_resident = group_src1_resident[group_idx];
     assign issue_src2_resident = group_src2_resident[group_idx];
     assign {src2_bypass_l1, src2_bypass, src1_bypass_l1, src1_bypass} = group_bypass[group_idx];
@@ -1508,6 +1647,12 @@ module reservation_station #(
     assign issue_src2_bypass = src2_bypass;
     assign issue_src2_bypass_l1 = src2_bypass_l1;
   end else begin : gen_issue_bypass_indexed
+    assign {primary_issue_tag, primary_issue_use_imm, primary_issue_hint, primary_issue_divide} = {
+      rs_rob_tag[issue_idx],
+      rs_use_imm[issue_idx],
+      rs_writes_cdb_hint[issue_idx],
+      rs_is_divide[issue_idx]
+    };
     assign issue_idx = issue_idx_scan;
     assign issue_src1_bypass = src1_cdb_bypass[issue_idx];
     assign issue_src1_bypass_l1 = src1_cdb_bypass_l1[issue_idx];
@@ -1601,7 +1746,7 @@ module reservation_station #(
       always_ff @(posedge i_clk) begin
         // stage2_rob_tag is held by the enclosing reset branch, so include
         // i_rst_n here to preserve its exact effective clock enable.
-        if (i_rst_n && issue_fire) stage2_branch_predicate_tag <= rs_rob_tag[issue_idx];
+        if (i_rst_n && issue_fire) stage2_branch_predicate_tag <= primary_issue_tag;
       end
 
       assign o_branch_predicate_tag = stage2_branch_predicate_tag;
@@ -1647,7 +1792,7 @@ module reservation_station #(
 
       always_ff @(posedge i_clk) begin
         // Same effective enable as stage2_rob_tag (see the predicate anchor).
-        if (i_rst_n && issue_fire) stage2_branch_payload_tag <= rs_rob_tag[issue_idx];
+        if (i_rst_n && issue_fire) stage2_branch_payload_tag <= primary_issue_tag;
       end
 
       logic [BranchPayloadWidth-1:0] branch_payload_rd_data;
@@ -1849,7 +1994,8 @@ module reservation_station #(
     // outcomes of the raw lane occupancy and early-load eligibility, keeping
     // lane-occupancy-controlled tag muxes out of every candidate CAM path.
     localparam int NumCandidates = PREISSUE_RAW_WAKEUP ? 8 : 4;
-    (* keep = "true" *) logic [ReorderBufferTagWidth-1:0] candidate_tag[NumCandidates];
+    logic [ReorderBufferTagWidth-1:0] candidate_tag[NumCandidates];
+    logic [DEPTH-1:0] candidate_ready[NumCandidates];
     for (genvar valids = 0; valids < NumCandidates; valids++) begin : gen_candidate
       localparam bit Valid0 = PREISSUE_RAW_WAKEUP ?
           (((valids & 1) != 0) || ((valids & 4) != 0)) : ((valids & 1) != 0);
@@ -1903,10 +2049,69 @@ module reservation_station #(
             found = 1'b1;
           end
         end
-        candidate_tag[valids] = rs_rob_tag[index];
+      end
+      assign candidate_ready[valids] = ready;
+      if (PREISSUE_READY_EXPORT) begin : gen_tag
+        // The LQ matches through the exported ready vectors, so this tag
+        // feeds only the look-ahead tag outputs and their checks.
+        assign candidate_tag[valids] = rs_rob_tag[index];
+      end else begin : gen_tag
+        (* keep = "true" *) logic [ReorderBufferTagWidth-1:0] kept_tag;
+        assign kept_tag = rs_rob_tag[index];
+        assign candidate_tag[valids] = kept_tag;
       end
       assign o_pre_issue_rob_tags[valids*ReorderBufferTagWidth +: ReorderBufferTagWidth] =
           candidate_tag[valids];
+    end
+    if (PREISSUE_READY_EXPORT) begin : gen_ready_export
+      // Each ready vector is kept as its own net, so the LQ's per-entry
+      // picks read it directly instead of an encoded winner index.
+      (* keep = "true" *) logic [DEPTH-1:0] export_ready[NumCandidates];
+      for (genvar c = 0; c < NumCandidates; c++) begin : gen_export
+        // With both raw lanes valid, the early-load token does not change
+        // either merged lane (it only fills an empty one), so candidate 7's
+        // lane valids and tags, and hence its ready vector, equal
+        // candidate 3's. Export candidate 3's vector for both.
+        localparam int Source = (PREISSUE_RAW_WAKEUP && (c == 7)) ? 3 : c;
+        assign export_ready[c] = candidate_ready[Source];
+        assign o_pre_issue_ready[c*DEPTH+:DEPTH] = export_ready[c];
+      end
+      for (genvar e = 0; e < DEPTH; e++) begin : gen_export_tag
+        assign o_pre_issue_entry_tags[e*ReorderBufferTagWidth +: ReorderBufferTagWidth] =
+            rs_rob_tag[e];
+      end
+`ifdef RS_PRETAG_LOCAL_PROOF
+      // Each exported vector's winner (lowest set bit, entry 0 when none, as
+      // the encoders above) carries that candidate's look-ahead tag, and the
+      // selected candidate's winner is the issue select's entry, with the
+      // same any-ready.
+      logic [$clog2(DEPTH)-1:0] f_first[NumCandidates];
+      always_comb begin
+        for (int c = 0; c < NumCandidates; c++) begin
+          f_first[c] = '0;
+          for (int entry = DEPTH - 1; entry >= 0; entry--) begin
+            if (o_pre_issue_ready[c*DEPTH+entry]) f_first[c] = $clog2(DEPTH)'(entry);
+          end
+        end
+      end
+      for (genvar c = 0; c < NumCandidates; c++) begin : gen_f_candidate
+        always_comb begin
+          assert (o_pre_issue_entry_tags[f_first[c]*ReorderBufferTagWidth +:
+                                         ReorderBufferTagWidth] ==
+                  o_pre_issue_rob_tags[c*ReorderBufferTagWidth +: ReorderBufferTagWidth]);
+        end
+      end
+      always_comb begin
+        assert (f_first[o_pre_issue_sel] == issue_idx);
+        assert ((|o_pre_issue_ready[o_pre_issue_sel*DEPTH+:DEPTH]) == any_ready);
+`ifdef RS_PRETAG_READY_VECTOR_PROOF
+        assert (o_pre_issue_ready[o_pre_issue_sel*DEPTH+:DEPTH] == entry_ready);
+`endif
+      end
+`endif
+    end else begin : gen_no_ready_export
+      assign o_pre_issue_ready = '0;
+      assign o_pre_issue_entry_tags = '0;
     end
     if (PREISSUE_RAW_WAKEUP) begin : gen_raw_select
       assign o_pre_issue_sel = i_pre_issue_raw_valid;
@@ -1927,6 +2132,8 @@ module reservation_station #(
     assign o_pre_issue_rob_tag = rs_rob_tag[issue_idx];
     assign o_pre_issue_rob_tags = {(PREISSUE_RAW_WAKEUP ? 8 : 4) {o_pre_issue_rob_tag}};
     assign o_pre_issue_sel = '0;
+    assign o_pre_issue_ready = '0;
+    assign o_pre_issue_entry_tags = '0;
   end
 `ifdef RS_PRETAG_LOCAL_PROOF
   always_comb assert (o_pre_issue_rob_tag == rs_rob_tag[issue_idx]);
@@ -2176,8 +2383,8 @@ module reservation_station #(
       // TIMING: each entry's operand is resolved (live CDB lane over the
       // resident or done-repair value) before the one-hot issue select, so
       // the late selector drives only the final AND-OR. The *_selected
-      // bypass bits below feed only the simulation reference. At most one
-      // live lane matches a source, so the per-entry priority is immaterial.
+      // bypass bits below feed only the simulation reference. Lane 0 has
+      // priority when both lanes match, including generic duplicate tags.
       always_comb begin
         issue2_src1_value_effective = '0;
         issue2_src2_value_effective = '0;
@@ -2471,9 +2678,11 @@ module reservation_station #(
   end
 
   // Port 1 already resolves the selected physical entry as a one-hot mask.
-  // Reuse it for clearing validity, avoiding binary encode/decode after the
-  // ready/tag bypass decision. Gating with issue_fire_2 keeps the mask zero
-  // when port 1 does not fire.
+  // Reuse the direct winners for clearing validity, avoiding binary
+  // encode/decode after the ready/tag bypass decision. Each issue_fire gates
+  // its mask so a port that does not fire clears nothing.
+  logic [DEPTH-1:0] issue1_clear_mask;
+  assign issue1_clear_mask = {DEPTH{issue_fire}} & primary_issue_onehot[DEPTH-1:0];
   logic [DEPTH-1:0] issue2_clear_mask;
   assign issue2_clear_mask = {DEPTH{issue_fire_2}} & issue_sel_2;
 
@@ -2558,11 +2767,15 @@ module reservation_station #(
           end
         end
       end else begin
-        // Both issue updates only clear bits and commute. Apply the port-1
-        // mask to the held vector first, then the indexed port-0 clear and
-        // the later allocation writes.
-        rs_valid <= rs_valid & ~issue2_clear_mask;
-        if (issue_fire) rs_valid[issue_idx] <= 1'b0;
+        // Both issue clears commute. INT uses its direct primary winner;
+        // other stations keep the indexed primary clear. Later allocation
+        // writes retain priority over both issue ports.
+        if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin
+          rs_valid <= rs_valid & ~issue2_clear_mask & ~issue1_clear_mask;
+        end else begin
+          rs_valid <= rs_valid & ~issue2_clear_mask;
+          if (issue_fire) rs_valid[issue_idx] <= 1'b0;
+        end
 
         if (dispatch_fire) begin
           rs_valid[free_idx] <= 1'b1;
@@ -2686,6 +2899,139 @@ module reservation_station #(
     end
   end
 
+  // Resolve scalar write priority once per entry/source. Deferred delivery
+  // and ordinary repair share the same two data buses, so combine their
+  // selects before the wide AND/OR mux instead of muxing those buses twice.
+  function automatic logic [5:0] indexed_write_select(
+      input logic dispatch1, input logic dispatch2, input logic resident, input logic ready,
+      input logic live0, input logic live1, input logic target1, input logic target2,
+      input logic repair1, input logic repair2, input logic pending);
+    logic take_c0, take_c1, take_r1, take_r2, any_resident;
+    begin
+      take_c0 = resident && !ready && live0;
+      take_c1 = resident && !ready && !live0 && live1;
+      take_r1 = resident && !ready && !live0 && !live1 && target1 && repair1;
+      take_r2 = resident && !ready && !live0 && !live1 &&
+          !(target1 && repair1) && target2 && repair2;
+      any_resident = take_c0 || take_c1 || take_r1 || take_r2;
+      indexed_write_select[0] = !pending && !any_resident && !dispatch2 && dispatch1;
+      indexed_write_select[1] = !pending && !any_resident && dispatch2;
+      indexed_write_select[2] = !pending && take_c0;
+      indexed_write_select[3] = !pending && take_c1;
+      indexed_write_select[4] = (pending && target1) || (!pending && take_r1);
+      indexed_write_select[5] = (pending && !target1) || (!pending && take_r2);
+    end
+  endfunction
+
+  function automatic logic [FLEN-1:0] indexed_write_value(
+      input logic [5:0] select, input logic [FLEN-1:0] dispatch1, input logic [FLEN-1:0] dispatch2,
+      input logic [FLEN-1:0] live0, input logic [FLEN-1:0] live1, input logic [FLEN-1:0] delivery1,
+      input logic [FLEN-1:0] delivery2);
+    indexed_write_value =
+        ({FLEN{select[0]}} & dispatch1) | ({FLEN{select[1]}} & dispatch2) |
+        ({FLEN{select[2]}} & live0) | ({FLEN{select[3]}} & live1) |
+        ({FLEN{select[4]}} & delivery1) | ({FLEN{select[5]}} & delivery2);
+  endfunction
+
+  localparam int unsigned EntryIndexWidth = $clog2(DEPTH);
+  logic [DEPTH-1:0] indexed_dispatch1_write, indexed_dispatch2_write;
+  (* keep = "true" *) logic [5:0] indexed_src1_write_sel[DEPTH];
+  logic [FLEN-1:0] indexed_src1_write_data[DEPTH];
+  (* keep = "true" *) logic [5:0] indexed_src2_write_sel[DEPTH];
+  logic [FLEN-1:0] indexed_src2_write_data[DEPTH];
+  (* keep = "true" *) logic [5:0] indexed_src3_write_sel[DEPTH];
+  logic [FLEN-1:0] indexed_src3_write_data[DEPTH];
+  for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_indexed_value_write
+    if (ALLOC_INDEXED_REPAIR) begin : gen_enabled
+      assign indexed_dispatch1_write[entry] = BROADCAST_FREE_SOURCE_VALUES ?
+        (!rs_valid[entry] && !alloc_sel_2[entry]) :
+        (data_write_1_en && free_idx == EntryIndexWidth'(entry));
+      assign indexed_dispatch2_write[entry] = BROADCAST_FREE_SOURCE_VALUES ?
+        (!rs_valid[entry] && alloc_sel_2[entry]) :
+        (data_write_2_en && alloc_idx_2 == EntryIndexWidth'(entry));
+      assign indexed_src1_write_sel[entry] = indexed_write_select(
+          indexed_dispatch1_write[entry],
+          indexed_dispatch2_write[entry],
+          rs_valid[entry],
+          rs_src1_ready[entry],
+          i_cdb.valid && rs_src1_tag[entry] == i_cdb.tag,
+          i_cdb_2.valid && rs_src1_tag[entry] == i_cdb_2.tag,
+          repair_slot1_target_q[entry],
+          repair_slot2_target_q[entry],
+          i_repair_valid_1,
+          i_repair_valid_4,
+          src1_cdb_pend[entry]
+      );
+      assign indexed_src1_write_data[entry] = indexed_write_value(
+          indexed_src1_write_sel[entry],
+          dispatch_src1_stored_value,
+          dispatch_src1_stored_value_2,
+          i_cdb.value,
+          i_cdb_2.value,
+          indexed_delivery_1,
+          indexed_delivery_4
+      );
+      assign indexed_src2_write_sel[entry] = indexed_write_select(
+          indexed_dispatch1_write[entry],
+          indexed_dispatch2_write[entry],
+          rs_valid[entry],
+          rs_src2_ready[entry],
+          i_cdb.valid && rs_src2_tag[entry] == i_cdb.tag,
+          i_cdb_2.valid && rs_src2_tag[entry] == i_cdb_2.tag,
+          repair_slot1_target_q[entry],
+          repair_slot2_target_q[entry],
+          i_repair_valid_2,
+          i_repair_valid_5,
+          src2_cdb_pend[entry]
+      );
+      assign indexed_src2_write_data[entry] = indexed_write_value(
+          indexed_src2_write_sel[entry],
+          dispatch_src2_stored_value,
+          dispatch_src2_stored_value_2,
+          i_cdb.value,
+          i_cdb_2.value,
+          indexed_delivery_2,
+          indexed_delivery_5
+      );
+      if (HAS_SRC3) begin : gen_src3
+        assign indexed_src3_write_sel[entry] = indexed_write_select(
+            indexed_dispatch1_write[entry],
+            indexed_dispatch2_write[entry],
+            rs_valid[entry],
+            rs_src3_ready[entry],
+            i_cdb.valid && rs_src3_tag[entry] == i_cdb.tag,
+            i_cdb_2.valid && rs_src3_tag[entry] == i_cdb_2.tag,
+            repair_slot1_target_q[entry],
+            repair_slot2_target_q[entry],
+            i_repair_valid_3,
+            i_repair_valid_6,
+            src3_cdb_pend[entry]
+        );
+        assign indexed_src3_write_data[entry] = indexed_write_value(
+            indexed_src3_write_sel[entry],
+            dispatch_src3_stored_value,
+            dispatch_src3_stored_value_2,
+            i_cdb.value,
+            i_cdb_2.value,
+            indexed_delivery_3,
+            indexed_delivery_6
+        );
+      end else begin : gen_no_src3
+        assign indexed_src3_write_sel[entry]  = '0;
+        assign indexed_src3_write_data[entry] = '0;
+      end
+    end else begin : gen_disabled
+      assign indexed_dispatch1_write[entry] = 1'b0;
+      assign indexed_dispatch2_write[entry] = 1'b0;
+      assign indexed_src1_write_sel[entry]  = '0;
+      assign indexed_src1_write_data[entry] = '0;
+      assign indexed_src2_write_sel[entry]  = '0;
+      assign indexed_src2_write_data[entry] = '0;
+      assign indexed_src3_write_sel[entry]  = '0;
+      assign indexed_src3_write_data[entry] = '0;
+    end
+  end
+
   // --- Data signals (no reset) ---
   always_ff @(posedge i_clk) begin
     // Keep a physically distinct issue-only tag bank without adding loads to
@@ -2709,6 +3055,8 @@ module reservation_station #(
       end
     end
 
+    // Generic stations use the original broadcast writes below; indexed
+    // stations express the same writes in indexed_dispatch*_write above.
     // In broadcast mode, the wide source-value arrays use only the entry's
     // local valid bit as their dispatch write enable.  Every free entry gets
     // slot 1's values; the exact slot-2 target gets slot 2's values instead.
@@ -2719,7 +3067,7 @@ module reservation_station #(
     // data_write_2_en && alloc_idx_2 == i for every free entry, computed at
     // fixed depth from rs_valid (see its TIMING note); the value D select
     // must not see the binary index decode.
-    if (BROADCAST_FREE_SOURCE_VALUES) begin
+    if (BROADCAST_FREE_SOURCE_VALUES && !ALLOC_INDEXED_REPAIR) begin
       for (int i = 0; i < DEPTH; i++) begin
         if (!rs_valid[i]) begin
           if (alloc_sel_2[i]) begin
@@ -2743,16 +3091,19 @@ module reservation_station #(
 
       // Source 1
       rs_src1_tag[free_idx] <= dispatch_src1_tag;
-      if (!BROADCAST_FREE_SOURCE_VALUES) rs_src1_value[free_idx] <= dispatch_src1_stored_value;
+      if (!BROADCAST_FREE_SOURCE_VALUES && !ALLOC_INDEXED_REPAIR)
+        rs_src1_value[free_idx] <= dispatch_src1_stored_value;
 
       // Source 2
       rs_src2_tag[free_idx] <= dispatch_src2_tag;
-      if (!BROADCAST_FREE_SOURCE_VALUES) rs_src2_value[free_idx] <= dispatch_src2_stored_value;
+      if (!BROADCAST_FREE_SOURCE_VALUES && !ALLOC_INDEXED_REPAIR)
+        rs_src2_value[free_idx] <= dispatch_src2_stored_value;
 
       // Source 3 (FMA only)
       if (HAS_SRC3) begin
         rs_src3_tag[free_idx] <= dispatch_src3_tag;
-        if (!BROADCAST_FREE_SOURCE_VALUES) rs_src3_value[free_idx] <= dispatch_src3_stored_value;
+        if (!BROADCAST_FREE_SOURCE_VALUES && !ALLOC_INDEXED_REPAIR)
+          rs_src3_value[free_idx] <= dispatch_src3_stored_value;
       end
     end
 
@@ -2765,34 +3116,31 @@ module reservation_station #(
       rs_is_divide[alloc_idx_2] <= dispatch_is_divide_2;
 
       rs_src1_tag[alloc_idx_2] <= dispatch_src1_tag_2;
-      if (!BROADCAST_FREE_SOURCE_VALUES) rs_src1_value[alloc_idx_2] <= dispatch_src1_stored_value_2;
+      if (!BROADCAST_FREE_SOURCE_VALUES && !ALLOC_INDEXED_REPAIR)
+        rs_src1_value[alloc_idx_2] <= dispatch_src1_stored_value_2;
 
       rs_src2_tag[alloc_idx_2] <= dispatch_src2_tag_2;
-      if (!BROADCAST_FREE_SOURCE_VALUES) rs_src2_value[alloc_idx_2] <= dispatch_src2_stored_value_2;
+      if (!BROADCAST_FREE_SOURCE_VALUES && !ALLOC_INDEXED_REPAIR)
+        rs_src2_value[alloc_idx_2] <= dispatch_src2_stored_value_2;
 
       if (HAS_SRC3) begin
         rs_src3_tag[alloc_idx_2] <= dispatch_src3_tag_2;
-        if (!BROADCAST_FREE_SOURCE_VALUES)
+        if (!BROADCAST_FREE_SOURCE_VALUES && !ALLOC_INDEXED_REPAIR)
           rs_src3_value[alloc_idx_2] <= dispatch_src3_stored_value_2;
       end
     end
 
     // CDB and done-repair wakeup (data: capture values).
     // i_cdb_2 = 2-wide CDB lane-1 (registered; distinct tag from lane 0).
-    if (i_cdb.valid || i_cdb_2.valid || i_repair_valid_1 || i_repair_valid_2 ||
-        i_repair_valid_3 || i_repair_valid_4 || i_repair_valid_5 || i_repair_valid_6) begin
+    if (!ALLOC_INDEXED_REPAIR && (i_cdb.valid || i_cdb_2.valid ||
+        i_repair_valid_1 || i_repair_valid_2 || i_repair_valid_3 ||
+        i_repair_valid_4 || i_repair_valid_5 || i_repair_valid_6)) begin
       for (int i = 0; i < DEPTH; i++) begin
         if (rs_valid[i]) begin
           if (!rs_src1_ready[i] && i_cdb.valid && rs_src1_tag[i] == i_cdb.tag) begin
             rs_src1_value[i] <= i_cdb.value;
           end else if (!rs_src1_ready[i] && i_cdb_2.valid && rs_src1_tag[i] == i_cdb_2.tag) begin
             rs_src1_value[i] <= i_cdb_2.value;
-          end else if (!rs_src1_ready[i] && ALLOC_INDEXED_REPAIR &&
-                       repair_slot1_target_q[i] && i_repair_valid_1) begin
-            rs_src1_value[i] <= i_repair_value_1;
-          end else if (!rs_src1_ready[i] && ALLOC_INDEXED_REPAIR &&
-                       repair_slot2_target_q[i] && i_repair_valid_4) begin
-            rs_src1_value[i] <= i_repair_value_4;
           end else if (!rs_src1_ready[i] && done_repair_match(rs_src1_tag[i])) begin
             rs_src1_value[i] <= done_repair_value(rs_src1_tag[i]);
           end
@@ -2801,12 +3149,6 @@ module reservation_station #(
             rs_src2_value[i] <= i_cdb.value;
           end else if (!rs_src2_ready[i] && i_cdb_2.valid && rs_src2_tag[i] == i_cdb_2.tag) begin
             rs_src2_value[i] <= i_cdb_2.value;
-          end else if (!rs_src2_ready[i] && ALLOC_INDEXED_REPAIR &&
-                       repair_slot1_target_q[i] && i_repair_valid_2) begin
-            rs_src2_value[i] <= i_repair_value_2;
-          end else if (!rs_src2_ready[i] && ALLOC_INDEXED_REPAIR &&
-                       repair_slot2_target_q[i] && i_repair_valid_5) begin
-            rs_src2_value[i] <= i_repair_value_5;
           end else if (!rs_src2_ready[i] && done_repair_match(rs_src2_tag[i])) begin
             rs_src2_value[i] <= done_repair_value(rs_src2_tag[i]);
           end
@@ -2816,12 +3158,6 @@ module reservation_station #(
           end else if (HAS_SRC3 && !rs_src3_ready[i] && i_cdb_2.valid &&
                        rs_src3_tag[i] == i_cdb_2.tag) begin
             rs_src3_value[i] <= i_cdb_2.value;
-          end else if (HAS_SRC3 && !rs_src3_ready[i] && ALLOC_INDEXED_REPAIR &&
-                       repair_slot1_target_q[i] && i_repair_valid_3) begin
-            rs_src3_value[i] <= i_repair_value_3;
-          end else if (HAS_SRC3 && !rs_src3_ready[i] && ALLOC_INDEXED_REPAIR &&
-                       repair_slot2_target_q[i] && i_repair_valid_6) begin
-            rs_src3_value[i] <= i_repair_value_6;
           end else if (HAS_SRC3 && !rs_src3_ready[i] && done_repair_match(rs_src3_tag[i])) begin
             rs_src3_value[i] <= done_repair_value(rs_src3_tag[i]);
           end
@@ -2835,22 +3171,21 @@ module reservation_station #(
     cdb0_value_q <= i_cdb.value;
     cdb1_value_q <= i_cdb_2.value;
 
-    // Deferred dispatch-CDB delivery (data side): deliver the value the
-    // dispatch cycle matched, from the lane copies registered on that edge
-    // (non-blocking reads above see the previous-cycle capture).  Placed
-    // last in this block: if a done-repair response for the same source
-    // lands on this same edge (the ROB query saw the completing producer),
-    // both writes carry the same producer's result and the delivery wins
-    // harmlessly.
+    // Indexed stations use the factored scalar selects above. Generic
+    // stations retain the original deferred write as their final assignment.
     for (int i = 0; i < DEPTH; i++) begin
-      if (src1_cdb_pend[i]) begin
-        rs_src1_value[i] <= src1_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q;
-      end
-      if (src2_cdb_pend[i]) begin
-        rs_src2_value[i] <= src2_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q;
-      end
-      if (HAS_SRC3 && src3_cdb_pend[i]) begin
-        rs_src3_value[i] <= src3_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q;
+      if (ALLOC_INDEXED_REPAIR) begin
+        if (|indexed_src1_write_sel[i]) rs_src1_value[i] <= indexed_src1_write_data[i];
+        if (|indexed_src2_write_sel[i]) rs_src2_value[i] <= indexed_src2_write_data[i];
+        if (HAS_SRC3 && (|indexed_src3_write_sel[i]))
+          rs_src3_value[i] <= indexed_src3_write_data[i];
+      end else begin
+        if (src1_cdb_pend[i])
+          rs_src1_value[i] <= src1_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q;
+        if (src2_cdb_pend[i])
+          rs_src2_value[i] <= src2_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q;
+        if (HAS_SRC3 && src3_cdb_pend[i])
+          rs_src3_value[i] <= src3_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q;
       end
     end
   end
@@ -2872,9 +3207,9 @@ module reservation_station #(
       // Load stage2 from the RS entry selected by the priority encoder.
       // This covers both the empty-fill and back-to-back (accept + refill) cases.
       stage2_valid <= 1'b1;
-      stage2_rob_tag <= rs_rob_tag[issue_idx];
+      stage2_rob_tag <= primary_issue_tag;
       stage2_op <= riscv_pkg::instr_op_e'(pl_op_bits);
-      stage2_is_divide <= rs_is_divide[issue_idx];
+      stage2_is_divide <= primary_issue_divide;
       if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin
         // Fold the three-arm CDB bypass mux into the operand FF D inputs.
         // Values come from the complete CDB packets; the optional issue-only
@@ -2915,8 +3250,8 @@ module reservation_station #(
       stage2_cdb_value_l1 <= i_cdb_2.value;
       stage2_imm <= pl_imm;
       stage2_jalr_imm <= pl_jalr_imm;
-      stage2_use_imm <= rs_use_imm[issue_idx];
-      stage2_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ? rs_writes_cdb_hint[issue_idx] : 1'b0;
+      stage2_use_imm <= primary_issue_use_imm;
+      stage2_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ? primary_issue_hint : 1'b0;
       stage2_rm <= pl_rm;
       stage2_predicted_taken <= pl_predicted_taken;
       stage2_predicted_target_ok <= pl_predicted_target_ok;
@@ -3583,6 +3918,204 @@ module reservation_station #(
     assert (dispatch_src3_cdb_defer_2 ==
         ((dispatch_src3_cdb0_match_2 || dispatch_src3_cdb1_match_2) &&
          !dispatch_src3_repair_match_2));
+  end
+`endif
+
+`ifdef RS_INDEXED_DEFERRED_FOLD_LOCAL_PROOF
+  function automatic logic [FLEN:0] f_original_indexed_write(
+      input logic dispatch1, input logic dispatch2, input logic resident, input logic ready,
+      input logic live0, input logic live1, input logic target1, input logic target2,
+      input logic repair1, input logic repair2, input logic pending, input logic lane,
+      input logic [FLEN-1:0] d1, input logic [FLEN-1:0] d2, input logic [FLEN-1:0] c0,
+      input logic [FLEN-1:0] c1, input logic [FLEN-1:0] r1, input logic [FLEN-1:0] r2,
+      input logic [FLEN-1:0] q0, input logic [FLEN-1:0] q1);
+    begin
+      f_original_indexed_write = '0;
+      if (dispatch1) f_original_indexed_write = {1'b1, d1};
+      if (dispatch2) f_original_indexed_write = {1'b1, d2};
+      if (resident && !ready) begin
+        if (live0) f_original_indexed_write = {1'b1, c0};
+        else if (live1) f_original_indexed_write = {1'b1, c1};
+        else if (target1 && repair1) f_original_indexed_write = {1'b1, r1};
+        else if (target2 && repair2) f_original_indexed_write = {1'b1, r2};
+      end
+      if (pending) f_original_indexed_write = {1'b1, lane ? q1 : q0};
+    end
+  endfunction
+
+  for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_fold_write_proof
+    wire [FLEN:0] reference_src1 = f_original_indexed_write(
+        indexed_dispatch1_write[entry],
+        indexed_dispatch2_write[entry],
+        rs_valid[entry],
+        rs_src1_ready[entry],
+        i_cdb.valid && rs_src1_tag[entry] == i_cdb.tag,
+        i_cdb_2.valid && rs_src1_tag[entry] == i_cdb_2.tag,
+        repair_slot1_target_q[entry],
+        repair_slot2_target_q[entry],
+        i_repair_valid_1,
+        i_repair_valid_4,
+        src1_cdb_pend[entry],
+        src1_cdb_pend_lane[entry],
+        dispatch_src1_stored_value,
+        dispatch_src1_stored_value_2,
+        i_cdb.value,
+        i_cdb_2.value,
+        i_repair_value_1,
+        i_repair_value_4,
+        cdb0_value_q,
+        cdb1_value_q
+    );
+    always_comb begin
+      if (i_rst_n) begin
+        assert ($onehot0(indexed_src1_write_sel[entry]));
+        assert ((|indexed_src1_write_sel[entry]) == reference_src1[FLEN]);
+        if (reference_src1[FLEN])
+          assert (indexed_src1_write_data[entry] == reference_src1[FLEN-1:0]);
+      end
+    end
+    wire [FLEN:0] reference_src2 = f_original_indexed_write(
+        indexed_dispatch1_write[entry],
+        indexed_dispatch2_write[entry],
+        rs_valid[entry],
+        rs_src2_ready[entry],
+        i_cdb.valid && rs_src2_tag[entry] == i_cdb.tag,
+        i_cdb_2.valid && rs_src2_tag[entry] == i_cdb_2.tag,
+        repair_slot1_target_q[entry],
+        repair_slot2_target_q[entry],
+        i_repair_valid_2,
+        i_repair_valid_5,
+        src2_cdb_pend[entry],
+        src2_cdb_pend_lane[entry],
+        dispatch_src2_stored_value,
+        dispatch_src2_stored_value_2,
+        i_cdb.value,
+        i_cdb_2.value,
+        i_repair_value_2,
+        i_repair_value_5,
+        cdb0_value_q,
+        cdb1_value_q
+    );
+    always_comb begin
+      if (i_rst_n) begin
+        assert ($onehot0(indexed_src2_write_sel[entry]));
+        assert ((|indexed_src2_write_sel[entry]) == reference_src2[FLEN]);
+        if (reference_src2[FLEN])
+          assert (indexed_src2_write_data[entry] == reference_src2[FLEN-1:0]);
+      end
+    end
+    if (HAS_SRC3) begin : gen_src3
+      wire [FLEN:0] reference_src3 = f_original_indexed_write(
+          indexed_dispatch1_write[entry],
+          indexed_dispatch2_write[entry],
+          rs_valid[entry],
+          rs_src3_ready[entry],
+          i_cdb.valid && rs_src3_tag[entry] == i_cdb.tag,
+          i_cdb_2.valid && rs_src3_tag[entry] == i_cdb_2.tag,
+          repair_slot1_target_q[entry],
+          repair_slot2_target_q[entry],
+          i_repair_valid_3,
+          i_repair_valid_6,
+          src3_cdb_pend[entry],
+          src3_cdb_pend_lane[entry],
+          dispatch_src3_stored_value,
+          dispatch_src3_stored_value_2,
+          i_cdb.value,
+          i_cdb_2.value,
+          i_repair_value_3,
+          i_repair_value_6,
+          cdb0_value_q,
+          cdb1_value_q
+      );
+      always_comb begin
+        if (i_rst_n) begin
+          assert ($onehot0(indexed_src3_write_sel[entry]));
+          assert ((|indexed_src3_write_sel[entry]) == reference_src3[FLEN]);
+          if (reference_src3[FLEN])
+            assert (indexed_src3_write_data[entry] == reference_src3[FLEN-1:0]);
+        end
+      end
+    end
+  end
+
+  // Unbounded control and data-substitution proof for the shared delivery
+  // buses. The ordinary standalone dispatch contract is the only environment
+  // restriction beyond reset; repair and CDB values remain arbitrary.
+  reg f_fold_past_valid;
+  initial f_fold_past_valid = 1'b0;
+  always @(posedge i_clk) f_fold_past_valid <= 1'b1;
+  initial assume (!i_rst_n);
+  always @(posedge i_clk) begin
+    if (f_fold_past_valid) assume (i_rst_n);
+  end
+  always_comb begin
+    // Same standalone dispatch contract as the repository's RS proof.
+    if (i_flush_en) begin
+      assume (!dispatch_valid);
+      assume (!dispatch_valid_2);
+    end
+    if (full && !i_flush_all && !i_flush_en) assume (!dispatch_valid);
+    if (dispatch_valid && full_for_2 && !i_flush_all && !i_flush_en) assume (!dispatch_valid_2);
+    if (!dispatch_valid && full && !i_flush_all && !i_flush_en) assume (!dispatch_valid_2);
+    assume (i_intent_1 == dispatch_valid);
+    if (i_rst_n) begin
+      assert ($onehot0(repair_slot1_target_q));
+      assert ($onehot0(repair_slot2_target_q));
+      assert ((src1_cdb_pend & ~(repair_slot1_target_q | repair_slot2_target_q)) == '0);
+      assert ((src2_cdb_pend & ~(repair_slot1_target_q | repair_slot2_target_q)) == '0);
+      if (HAS_SRC3)
+        assert ((src3_cdb_pend & ~(repair_slot1_target_q | repair_slot2_target_q)) == '0);
+      for (int entry = 0; entry < DEPTH; entry++) begin
+        if (repair_slot1_target_q[entry] && !src1_cdb_pend[entry])
+          assert (indexed_delivery_1 == i_repair_value_1);
+        if (repair_slot2_target_q[entry] && !src1_cdb_pend[entry])
+          assert (indexed_delivery_4 == i_repair_value_4);
+        if (src1_cdb_pend[entry])
+          assert ((repair_slot1_target_q[entry] ? indexed_delivery_1 : indexed_delivery_4) ==
+                  (src1_cdb_pend_lane[entry] ? cdb1_value_q : cdb0_value_q));
+        if (repair_slot1_target_q[entry] && !src2_cdb_pend[entry])
+          assert (indexed_delivery_2 == i_repair_value_2);
+        if (repair_slot2_target_q[entry] && !src2_cdb_pend[entry])
+          assert (indexed_delivery_5 == i_repair_value_5);
+        if (src2_cdb_pend[entry])
+          assert ((repair_slot1_target_q[entry] ? indexed_delivery_2 : indexed_delivery_5) ==
+                  (src2_cdb_pend_lane[entry] ? cdb1_value_q : cdb0_value_q));
+        if (HAS_SRC3) begin
+          if (repair_slot1_target_q[entry] && !src3_cdb_pend[entry])
+            assert (indexed_delivery_3 == i_repair_value_3);
+          if (repair_slot2_target_q[entry] && !src3_cdb_pend[entry])
+            assert (indexed_delivery_6 == i_repair_value_6);
+          if (src3_cdb_pend[entry])
+            assert ((repair_slot1_target_q[entry] ? indexed_delivery_3 : indexed_delivery_6) ==
+                  (src3_cdb_pend_lane[entry] ? cdb1_value_q : cdb0_value_q));
+        end
+      end
+      cover (dispatch_fire_2 && !dispatch_fire);
+      cover ((|src1_cdb_pend) && (|src2_cdb_pend));
+      cover ((|src1_cdb_pend) && i_flush_all);
+      cover ((|src2_cdb_pend) && i_flush_en);
+    end
+  end
+`endif
+`ifdef RS_PRIMARY_PAYLOAD_LOCAL_PROOF
+  always_comb begin
+    if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin
+      p_primary_payload_select_matches_index :
+      assert (primary_issue_onehot == (PayloadDepth'(1) << issue_idx));
+    end
+  end
+`endif
+`ifdef RS_PRIMARY_PAYLOAD_LOCAL_PROOF
+  always_comb begin
+    assert ({primary_issue_tag, primary_issue_use_imm, primary_issue_hint, primary_issue_divide} ==
+            {rs_rob_tag[issue_idx], rs_use_imm[issue_idx],
+             rs_writes_cdb_hint[issue_idx], rs_is_divide[issue_idx]});
+    if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin
+      assert (issue1_clear_mask == ({DEPTH{issue_fire}} & index_to_onehot(issue_idx)));
+      assert ($clog2(
+          DEPTH
+      )'({payload_group_idx, payload_group_pick[payload_group_idx]}) == issue_idx);
+    end
   end
 `endif
 

@@ -110,6 +110,13 @@ redirect, served-window resteer, hold while no window arrives, slot-2
 prediction, slot-1 prediction, the pending-prediction and halfword catch-up
 cases, then the sequential PC.
 
+The registered provider-redirect pulse uses the same priority decision. Its
+request vector omits the sequential catch-up arm: catch-up excludes the only
+lower-priority arm that can redirect, the pending hold, and the default is
+sequential. The PC controller proves these conditions; a separate proof
+compares the registered redirect outputs, and simulation checks the pulse
+against the original selected-arm equation.
+
 ### Branch prediction
 
 | Structure | Size | Predicts | Trained by |
@@ -126,6 +133,10 @@ resolves as mispredicted, because a JALR is always taken, and recovers when it
 commits. While an unpredicted JALR is in the front end (slot 1 of IF, PD, or
 ID, or the decoded queue) and a conditional branch or JALR is unresolved,
 `ooo_pipeline_control` stalls the front end to limit wrong-path fetch.
+
+Synthesis preserves the `branch_predictor` hierarchy so that its lookup and
+update logic stays separate from IF's packet-selection logic. This limits
+logic depth on the frontend control and target paths.
 
 The BTB is indexed by PC[9:2]. Its tags include PC[1], so a lookup at one
 halfword of a word never hits an entry trained for the other. A hit predicts
@@ -331,6 +342,15 @@ entry's push or pop also happens once, with the packet that carries the
 prediction. Checked by `branch_prediction_alias`, `branch_prediction_disable`,
 and `prediction_metadata_output`.
 
+The taken slot-1 candidate tests the alias directly: once the direction is
+known taken, the ownership condition's taken-or-collapsed term is already
+true. Other consumers retain the full ownership condition.
+
+The pending-prediction next-PC comparison checks local carry relations for
++2/+4/+6/+8 in parallel, then selects the one-bit result. It does not wait
+for the wide increment sums. `pc_increment_relation` proves equivalence to
+the full-width arithmetic and comparison, including address wraparound.
+
 ### Return address stack recovery
 
 The stack moves only when PD takes a packet whose used prediction came from a
@@ -381,6 +401,13 @@ correct-branch update that loses its cycle is dropped, and a waiting slot-2
 update is replaced by a newer one; both cost accuracy only. Checked by the
 `branch_predictor` cocotb bench and reference-model assertions in
 `branch_predictor.sv`.
+
+The early and late update tag comparisons use the same grouped equality as
+BTB lookups, keeping a wide carry-chain compare out of the RAM-read path.
+The early counter update can combine with the final early/late selection;
+the late candidate keeps its separate boundary. `btb_tag_compare` checks
+both update matches as well as all lookup matches against full-width tag
+equality with arbitrary RAM contents.
 
 ### 4 GiB target limit
 

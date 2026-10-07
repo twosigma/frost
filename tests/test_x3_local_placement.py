@@ -28,12 +28,16 @@ foreach name {u/critical u/protected} fixed {0 1} {
         LOC SLICE_X12Y40 BEL SLICEL.B6LUT IS_LOC_FIXED $fixed IS_BEL_FIXED $fixed \
         DONT_TOUCH $fixed LOCK_PINS {} pins {I0 A2 I1 A5 I2 A6}]
 }
+dict set model u/register [dict create NAME u/register REF_NAME FDRE INIT {} \
+    LOC SLICE_X12Y40 BEL SLICEL.BFF IS_LOC_FIXED 0 IS_BEL_FIXED 0 \
+    DONT_TOUCH 0 LOCK_PINS {} pins {C C D D CE CE R R}]
 set design {}
 set pblocks {}
 set nets [dict create net_protected [dict create NAME net_protected DONT_TOUCH 1 IS_ROUTE_FIXED 1] \
     net_movable [dict create NAME net_movable DONT_TOUCH 0 IS_ROUTE_FIXED 0]]
 set scenario $::env(LOCAL_CASE)
 set fail_place 0
+set fail_cell {}
 set corrupt_logic 0
 proc current_design {} {return design}
 proc list_property {object} {return [dict keys $::design]}
@@ -96,6 +100,12 @@ proc get_cells {args} {
 }
 proc get_pins {args} {
     set c [lindex $args [expr {[lsearch -exact $args -of_objects] + 1}]]
+    if {[dict get $::model $c REF_NAME] eq "FDRE"} {
+        set inputs [list $c/C $c/D $c/CE $c/R]
+        if {[lsearch -exact $args -filter] < 0} {return [concat $inputs $c/Q]}
+        if {[string match {*DIRECTION == OUT*} [lindex $args end]]} {return $c/Q}
+        return $inputs
+    }
     set result {}
     foreach logical [dict keys [dict get $::model $c pins]] {lappend result $c/$logical}
     if {[lsearch -exact $args -filter] < 0} {lappend result $c/O}
@@ -151,20 +161,23 @@ proc unplace_cell {c} {
     dict set ::model $c IS_LOC_FIXED 0
     dict set ::model $c IS_BEL_FIXED 0
 }
-proc place_cell {pair} {
-    lassign $pair c site_bel
+proc place_cell {pairs} {
     if {$::fail_place} {set ::fail_place 0; error "Injected placement failure"}
-    dict set ::model $c LOC [file dirname $site_bel]
-    dict set ::model $c BEL SLICEL.[file tail $site_bel]
-    dict set ::model $c IS_LOC_FIXED 1
-    dict set ::model $c IS_BEL_FIXED 1
-    set pins {}
-    foreach pair [dict get $::model $c LOCK_PINS] {
-        lassign [split $pair :] logical physical
-        dict set pins $logical $physical
+    foreach {c site_bel} $pairs {
+        if {$c eq $::fail_cell} {set ::fail_cell {}; error "Injected partial placement failure"}
+        dict set ::model $c LOC [file dirname $site_bel]
+        dict set ::model $c BEL SLICEL.[file tail $site_bel]
+        dict set ::model $c IS_LOC_FIXED 1
+        dict set ::model $c IS_BEL_FIXED 1
+        if {[dict get $::model $c REF_NAME] eq "FDRE"} {continue}
+        set pins {}
+        foreach pair [dict get $::model $c LOCK_PINS] {
+            lassign [split $pair :] logical physical
+            dict set pins $logical $physical
+        }
+        dict set ::model $c pins $pins
+        if {$::corrupt_logic} {dict set ::model $c INIT 8'hFF}
     }
-    dict set ::model $c pins $pins
-    if {$::corrupt_logic} {dict set ::model $c INIT 8'hFF}
 }
 # The production coordinator sources this file from inside its own namespace.
 namespace eval ::placement_caller {source $::env(LOCAL_SOURCE)}
@@ -238,9 +251,46 @@ switch -- $scenario {
         }
     }
     timing_guard {
-        foreach before {{-0.2 -0.1} {-0.2 -0.1} {-0.2 -0.1}} \
-                after {{-0.19 -0.1} {-0.21 -0.09} {-0.19 -0.11}} expected {1 0 0} {
+        foreach before {{-0.2 -0.1} {-0.2 -0.1} {-0.2 -0.1}
+                        {-0.25 -0.411 -0.25 -0.251} {-0.3 -0.411 -0.25 -0.251}} \
+                after {{-0.19 -0.1} {-0.21 -0.09} {-0.19 -0.11}
+                       {-0.244 -0.411 -0.244 -0.260} {-0.3 -0.411 -0.26 -0.251}} expected {1 0 0 0 0} {
             if {[${ns}::no_worse $before $after] != $expected} {error "Setup/hold tradeoff was accepted"}
+        }
+        if {![catch {${ns}::no_worse {-0.2 -0.1} {-0.19}}]} {error "Incomplete timing guard accepted"}
+    }
+    hold_guard {
+        set before {D -0.1 CE 0.2 output 0.3}
+        foreach after {{D -0.1 CE 0.01 output 0.1} {D -0.11 CE 0.2 output 0.3}
+                       {D -0.1 CE -0.01 output 0.3} {D -0.1 CE 0.2 output -0.01}
+                       {D -0.1 output 0.3}} expected {1 0 0 0 0} {
+            if {[${ns}::hold_no_worse $before $after] != $expected} {error "Hidden local hold regression accepted"}
+        }
+        if {[${ns}::hold_no_worse {} {}]} {error "Unconstrained hold path accepted"}
+    }
+    pair_restore - pair_partial_place - pair_pin_lock - pair_logic_change {
+        if {$scenario eq "pair_pin_lock"} {
+            dict set model u/critical LOCK_PINS {I0:A2}
+            dict set model u/register IS_LOC_FIXED 1
+        }
+        set states [list [${ns}::snapshot u/critical] [${ns}::snapshot u/register]]
+        set baseline [${ns}::unplaced]
+        if {$scenario eq "pair_partial_place"} {set fail_cell u/register}
+        if {$scenario eq "pair_logic_change"} {set corrupt_logic 1}
+        set code [catch {${ns}::pair_place $states {SLICE_X13Y41/C6LUT SLICE_X13Y41/CFF}} result]
+        if {$scenario eq "pair_logic_change"} {
+            if {!$code || ![string match {*changed logic or connectivity*} $result]} {error "Pair logic corruption accepted"}
+        } else {
+            if {$code || $result != ($scenario ne "pair_partial_place")} {error "Unexpected pair placement result: $result"}
+            if {$scenario eq "pair_partial_place" &&
+                ([get_property LOC u/critical] ne "SLICE_X13Y41" || [get_property LOC u/register] ne "")} {
+                error "Partial failure did not exercise mixed placement states"
+            }
+            ${ns}::pair_restore $states
+            ${ns}::require_placed $baseline
+            foreach state $states {
+                if {[${ns}::snapshot [dict get $state cell]] ne $state} {error "Pair rollback changed a cell"}
+            }
         }
     }
     default {error "Unknown scenario $scenario"}
@@ -263,6 +313,11 @@ puts "PASS $scenario"
         "missing_protected_cell",
         "missing_restoration_metadata",
         "timing_guard",
+        "hold_guard",
+        "pair_restore",
+        "pair_partial_place",
+        "pair_pin_lock",
+        "pair_logic_change",
     ),
 )
 def test_guidance_failure_boundaries(tmp_path: Path, scenario: str) -> None:
@@ -272,7 +327,11 @@ def test_guidance_failure_boundaries(tmp_path: Path, scenario: str) -> None:
     source = Path(__file__).resolve().parents[1] / "fpga/build/x3_local_placement.tcl"
     result = subprocess.run(
         ["tclsh", str(script)],
-        env=dict(os.environ, LOCAL_SOURCE=str(source), LOCAL_CASE=scenario),
+        env=dict(
+            os.environ,
+            LOCAL_SOURCE=str(source),
+            LOCAL_CASE=scenario,
+        ),
         capture_output=True,
         text=True,
         timeout=15,

@@ -1,0 +1,27 @@
+[tasks]
+generic32
+generic64
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv pc_reg_precompute.sv
+read -formal -D SYNTHESIS -D PC_INCREMENT_RELATION_PROOF -sv pc_increment_calculator.sv
+generic32: chparam -set XLEN 32 pc_increment_calculator
+generic64: chparam -set XLEN 64 pc_increment_calculator
+hierarchy -top pc_increment_calculator
+proc
+prep -top pc_increment_calculator -flatten
+select -assert-none t:$assume a:init
+select -assert-none t:$check r:FLAVOR=assume %i
+select -assert-count 5 t:$check r:FLAVOR=assert %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/pc_reg_precompute.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv

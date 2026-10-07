@@ -1,0 +1,133 @@
+# Miter: frozen launch-gated reference vs production fp_shim, both with real
+# fp_engine (see fp_launch_squash_miter.sv).
+[tasks]
+on
+off
+cover
+
+[options]
+on: mode prove
+on: depth 1
+off: mode prove
+off: depth 1
+cover: mode cover
+cover: depth 14
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv -D SYNTHESIS riscv_pkg.sv fp_engine.sv fp_launch_squash_reference.sv
+on: read -sv fp_shim.sv
+off: read -sv fp_shim.sv
+cover: read -sv fp_shim.sv
+on: read -formal -D FP_LS_ON fp_launch_squash_miter.sv
+cover: read -formal -D FP_LS_ON fp_launch_squash_miter.sv
+off: read -formal fp_launch_squash_miter.sv
+hierarchy -check -top fp_launch_squash_miter
+# -norom: a decode_op ROM would read undefined (free) words for op codes
+# outside the case list; the RTL's default branch is deterministic.
+proc -norom
+flatten
+connect -nounset -set b_state u_base.u_engine.state_q
+connect -nounset -set b_tag u_base.tag_q
+connect -nounset -set b_payload[207:195] u_base.u_engine.dec_q
+connect -nounset -set b_payload[194:192] u_base.u_engine.rm_q
+connect -nounset -set b_payload[191:128] u_base.u_engine.opa_q
+connect -nounset -set b_payload[127:64] u_base.u_engine.opb_q
+connect -nounset -set b_payload[63:0] u_base.u_engine.opc_q
+connect -nounset -set b_dec1[65:59] u_base.u_engine.ca_q
+connect -nounset -set b_dec1[58:52] u_base.u_engine.cb_q
+connect -nounset -set b_dec1[51:45] u_base.u_engine.cc_q
+connect -nounset -set b_dec1[44:31] u_base.u_engine.ea_q
+connect -nounset -set b_dec1[30:17] u_base.u_engine.eb_q
+connect -nounset -set b_dec1[16:3] u_base.u_engine.ec_q
+connect -nounset -set b_dec1[2:2] u_base.u_engine.f2i_over_q
+connect -nounset -set b_dec1[1:1] u_base.u_engine.f2i_edge_q
+connect -nounset -set b_dec1[0:0] u_base.u_engine.int_zero_q
+connect -nounset -set b_dp[410:298] u_base.u_engine.r_q
+connect -nounset -set b_dp[297:185] u_base.u_engine.x_q
+connect -nounset -set b_dp[184:129] u_base.u_engine.q_q
+connect -nounset -set b_dp[128:115] u_base.u_engine.e_q
+connect -nounset -set b_dp[114:101] u_base.u_engine.ex_q
+connect -nounset -set b_dp[100:95] u_base.u_engine.cnt_q
+connect -nounset -set b_dp[94:88] u_base.u_engine.sh_cnt_q
+connect -nounset -set b_dp[87:87] u_base.u_engine.sh_x_q
+connect -nounset -set b_dp[86:86] u_base.u_engine.sh_collapse_q
+connect -nounset -set b_dp[85:84] u_base.u_engine.ret_q
+connect -nounset -set b_dp[83:83] u_base.u_engine.sr_q
+connect -nounset -set b_dp[82:82] u_base.u_engine.sx_q
+connect -nounset -set b_dp[81:81] u_base.u_engine.zr_q
+connect -nounset -set b_dp[80:80] u_base.u_engine.zx_q
+connect -nounset -set b_dp[79:79] u_base.u_engine.eff_sub_q
+connect -nounset -set b_dp[78:78] u_base.u_engine.first_q
+connect -nounset -set b_dp[77:77] u_base.u_engine.qlast_q
+connect -nounset -set b_dp[76:76] u_base.u_engine.rem_nz_q
+connect -nounset -set b_dp[75:75] u_base.u_engine.tiny_q
+connect -nounset -set b_dp[74:74] u_base.u_engine.inexact_q
+connect -nounset -set b_dp[73:73] u_base.u_engine.round_up_q
+connect -nounset -set b_dp[72:72] u_base.u_engine.oor_q
+connect -nounset -set b_dp[71:71] u_base.u_engine.zero_res_q
+connect -nounset -set b_dp[70:70] u_base.u_engine.mag_lt_q
+connect -nounset -set b_dp[69:69] u_base.u_engine.mag_eq_q
+connect -nounset -set b_dp[68:5] u_base.u_engine.res_q
+connect -nounset -set b_dp[4:0] u_base.u_engine.flags_q
+connect -nounset -set c_state u_cand.u_engine.state_q
+connect -nounset -set c_tag u_cand.tag_q
+connect -nounset -set c_squash u_cand.squash_q
+connect -nounset -set c_payload[207:195] u_cand.u_engine.dec_q
+connect -nounset -set c_payload[194:192] u_cand.u_engine.rm_q
+connect -nounset -set c_payload[191:128] u_cand.u_engine.opa_q
+connect -nounset -set c_payload[127:64] u_cand.u_engine.opb_q
+connect -nounset -set c_payload[63:0] u_cand.u_engine.opc_q
+connect -nounset -set c_dec1[65:59] u_cand.u_engine.ca_q
+connect -nounset -set c_dec1[58:52] u_cand.u_engine.cb_q
+connect -nounset -set c_dec1[51:45] u_cand.u_engine.cc_q
+connect -nounset -set c_dec1[44:31] u_cand.u_engine.ea_q
+connect -nounset -set c_dec1[30:17] u_cand.u_engine.eb_q
+connect -nounset -set c_dec1[16:3] u_cand.u_engine.ec_q
+connect -nounset -set c_dec1[2:2] u_cand.u_engine.f2i_over_q
+connect -nounset -set c_dec1[1:1] u_cand.u_engine.f2i_edge_q
+connect -nounset -set c_dec1[0:0] u_cand.u_engine.int_zero_q
+connect -nounset -set c_dp[410:298] u_cand.u_engine.r_q
+connect -nounset -set c_dp[297:185] u_cand.u_engine.x_q
+connect -nounset -set c_dp[184:129] u_cand.u_engine.q_q
+connect -nounset -set c_dp[128:115] u_cand.u_engine.e_q
+connect -nounset -set c_dp[114:101] u_cand.u_engine.ex_q
+connect -nounset -set c_dp[100:95] u_cand.u_engine.cnt_q
+connect -nounset -set c_dp[94:88] u_cand.u_engine.sh_cnt_q
+connect -nounset -set c_dp[87:87] u_cand.u_engine.sh_x_q
+connect -nounset -set c_dp[86:86] u_cand.u_engine.sh_collapse_q
+connect -nounset -set c_dp[85:84] u_cand.u_engine.ret_q
+connect -nounset -set c_dp[83:83] u_cand.u_engine.sr_q
+connect -nounset -set c_dp[82:82] u_cand.u_engine.sx_q
+connect -nounset -set c_dp[81:81] u_cand.u_engine.zr_q
+connect -nounset -set c_dp[80:80] u_cand.u_engine.zx_q
+connect -nounset -set c_dp[79:79] u_cand.u_engine.eff_sub_q
+connect -nounset -set c_dp[78:78] u_cand.u_engine.first_q
+connect -nounset -set c_dp[77:77] u_cand.u_engine.qlast_q
+connect -nounset -set c_dp[76:76] u_cand.u_engine.rem_nz_q
+connect -nounset -set c_dp[75:75] u_cand.u_engine.tiny_q
+connect -nounset -set c_dp[74:74] u_cand.u_engine.inexact_q
+connect -nounset -set c_dp[73:73] u_cand.u_engine.round_up_q
+connect -nounset -set c_dp[72:72] u_cand.u_engine.oor_q
+connect -nounset -set c_dp[71:71] u_cand.u_engine.zero_res_q
+connect -nounset -set c_dp[70:70] u_cand.u_engine.mag_lt_q
+connect -nounset -set c_dp[69:69] u_cand.u_engine.mag_eq_q
+connect -nounset -set c_dp[68:5] u_cand.u_engine.res_q
+connect -nounset -set c_dp[4:0] u_cand.u_engine.flags_q
+prep -top fp_launch_squash_miter
+# Fails on any undriven wire, so every probe must be connected.
+check -assert
+on: select -assert-count 3 t:$check r:FLAVOR=assume %i
+cover: select -assert-count 3 t:$check r:FLAVOR=assume %i
+off: select -assert-count 2 t:$check r:FLAVOR=assume %i
+select -assert-count 9 t:$check r:FLAVOR=assert %i
+select -assert-none t:$assume t:$assert t:$live t:$fair
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_engine.sv
+fp_launch_squash_reference.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_shim.sv
+fp_launch_squash_miter.sv

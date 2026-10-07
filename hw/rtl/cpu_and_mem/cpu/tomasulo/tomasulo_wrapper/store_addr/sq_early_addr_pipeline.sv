@@ -589,8 +589,71 @@ module sq_early_addr_pipeline (
     end
   end
 
-  assign o_sq_early_addr_update = sq_early_addr_update;
-  assign o_sq_early_addr_update_2 = sq_early_addr_update_2;
+  // Live CDB data arrives after the captured repair channels. Select all
+  // earlier sources in parallel, then select either live sum at the final
+  // address stage. The masks preserve fresh > held > repair priority and
+  // repair channel 1..6 > CDB0 > CDB1 priority, including duplicate tags.
+  wire [1:0] address_fresh = {sq_early_addr_valid_2_q, sq_early_addr_valid_q};
+  wire [1:0] address_held = {sq_early_addr_repair_ready_2_q, sq_early_addr_repair_ready_q};
+  wire [1:0] address_waiting = {sq_early_addr_repair_valid_2_q, sq_early_addr_repair_valid_q};
+  wire [1:0][riscv_pkg::XLEN-1:0] address_fresh_data = {
+    sq_early_effective_addr_2, sq_early_effective_addr
+  };
+  wire [1:0][riscv_pkg::XLEN-1:0] address_held_data = {
+    sq_early_hold_effective_addr_2, sq_early_hold_effective_addr
+  };
+  logic [1:0][riscv_pkg::XLEN-1:0] address_captured_repair;
+  (* keep = "true" *) logic [1:0][riscv_pkg::XLEN-1:0] address_nonlive;
+  (* keep = "true" *) logic [1:0][2:0] address_source_take;
+  logic [1:0][riscv_pkg::XLEN-1:0] address_final;
+  logic [1:0] mmio_captured_repair;
+  (* keep = "true" *) logic [1:0] mmio_nonlive;
+  logic [1:0] mmio_final;
+  for (genvar slot = 0; slot < 2; slot++) begin : gen_live_address_final
+    assign address_captured_repair[slot] = repair_half_matches[slot][0] ?
+        repair_half_sums[slot][0] : repair_pair_matches[slot][2] ?
+        repair_pair_sums[slot][2] : repair_immediates[slot];
+    assign address_nonlive[slot] = address_fresh[slot] ? address_fresh_data[slot] :
+        address_held[slot] ? address_held_data[slot] :
+        address_waiting[slot] ? address_captured_repair[slot] : '0;
+    wire live_allowed = !address_fresh[slot] && !address_held[slot] &&
+        address_waiting[slot] && !(|repair_conditions[slot][5:0]);
+    assign address_source_take[slot][0] = live_allowed && repair_conditions[slot][6];
+    assign address_source_take[slot][1] = live_allowed && !repair_conditions[slot][6] &&
+        repair_conditions[slot][7];
+    assign address_source_take[slot][2] = !(|address_source_take[slot][1:0]);
+    assign mmio_captured_repair[slot] = repair_half_matches[slot][0] ?
+        repair_mmio_halves[slot][0] : repair_pair_matches[slot][2] ?
+        repair_mmio_pairs[slot][2] : (repair_immediates[slot][31:30] == 2'b01);
+    assign mmio_nonlive[slot] = address_fresh[slot] ?
+        (address_fresh_data[slot][31:30] == 2'b01) : address_held[slot] ?
+        (address_held_data[slot][31:30] == 2'b01) :
+        address_waiting[slot] && mmio_captured_repair[slot];
+    assign mmio_final[slot] =
+        (repair_mmio_candidates[slot][6] && address_source_take[slot][0]) ||
+        (repair_mmio_candidates[slot][7] && address_source_take[slot][1]) ||
+        (mmio_nonlive[slot] && address_source_take[slot][2]);
+    assign address_final[slot] =
+        (repair_sums[slot][6] & {riscv_pkg::XLEN{address_source_take[slot][0]}}) |
+        (repair_sums[slot][7] & {riscv_pkg::XLEN{address_source_take[slot][1]}}) |
+        (address_nonlive[slot] & {riscv_pkg::XLEN{address_source_take[slot][2]}});
+  end
+  always_comb begin
+    o_sq_early_addr_update = sq_early_addr_update;
+    o_sq_early_addr_update.address = address_final[0];
+    o_sq_early_addr_update.is_mmio = mmio_final[0];
+    o_sq_early_addr_update_2 = sq_early_addr_update_2;
+    o_sq_early_addr_update_2.address = address_final[1];
+    o_sq_early_addr_update_2.is_mmio = mmio_final[1];
+  end
+`ifdef SQ_LIVE_LAST_LOCAL_PROOF
+  always_comb begin
+    p_slot1_mmio_exact : assert (mmio_final[0] == sq_early_addr_update.is_mmio);
+    p_slot2_mmio_exact : assert (mmio_final[1] == sq_early_addr_update_2.is_mmio);
+    p_slot1_address_exact : assert (address_final[0] == sq_early_addr_update.address);
+    p_slot2_address_exact : assert (address_final[1] == sq_early_addr_update_2.address);
+  end
+`endif
   assign o_sq_early_addr_capture_valid = sq_early_addr_valid_q ||
       sq_early_addr_repair_ready_q || sq_early_addr_repair_valid_q;
   assign o_sq_early_addr_capture_valid_2 = sq_early_addr_valid_2_q ||

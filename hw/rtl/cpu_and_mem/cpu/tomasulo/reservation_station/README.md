@@ -100,6 +100,18 @@ A repair response and a deferred dispatch-cycle delivery can reach the same
 source on the same edge. Both then carry the same producer's result, which
 simulation asserts.
 
+Allocation-indexed stations share one data bus per dispatch slot and source
+between repair and deferred delivery. A slot whose target has a pending
+delivery selects the registered CDB lane value centrally; otherwise it selects
+the repair value. Each entry receives these shared buses instead of separate
+repair and delayed-CDB buses. Deferred delivery retains priority over live CDB,
+repair, and dispatch writes. The transformation preserves arbitrary input data;
+it does not require a repair response to arrive or equal the deferred value.
+Each entry resolves this priority into six mutually exclusive scalar selects
+before its wide data mux. Repair and deferred delivery use the same two selects,
+so the shared data buses appear only once in that mux. The remaining selects
+choose the two dispatch values and two live CDB values.
+
 ## Issue
 
 A station's issue port (port 0 on INT_RS) takes the lowest-index ready entry,
@@ -108,8 +120,9 @@ free entry, so a younger instruction can sit below an older one. With
 `CAPTURE_PRIMARY_EFFECTIVE_OPERANDS` (INT_RS) the choice is made in two steps:
 each group of four entries picks its own lowest ready entry from its four
 ready bits, and the lowest group with a ready entry picks among the groups.
-The issue index, the selected entry's resident operands and its CDB bypass
-flags all come from those two steps; the index equals the serial priority
+The issue index, the selected entry's resident operands, CDB bypass flags,
+ROB tag, and use-immediate, writeback-hint and divide bits all come from those
+two steps; the index equals the serial priority
 encoder's for every ready vector (checked in simulation, and proven for the
 INT_RS parameters).
 
@@ -169,7 +182,11 @@ priority encoder.
 
 Port 1's stage-2 register captures each operand's final value at issue (live
 CDB value, resident value, or repair value), so ALU2 reads its operands straight
-from flip-flops. Port 1 also exports a registered six-bit shift amount,
+from flip-flops. Each entry resolves its operand before the final one-hot selection: live
+CDB lane 0, then lane 1, then the resident or repair value. The late selector
+therefore gates already resolved values. Lane 0 retains priority when both
+lanes match. Port 1 also exports a
+registered six-bit shift amount,
 `o_issue_shift_amount_2`: the immediate's low six bits for an immediate shift,
 otherwise the low six bits of the final src2 value. The choice uses
 `riscv_pkg::projected_shift_controls`, the same decode the ALU uses. ALU2 shifts
@@ -180,12 +197,21 @@ by this amount; port 0's ALU derives its own.
 Fields that every entry must compare or update in parallel live in flip-flops:
 valid and ready bits, source tags and values, the ROB tag, and the few bits the
 port-1 selector and shift amount need. Fields written once at dispatch and read
-once at issue live in a distributed-RAM payload (`mwp_dist_ram`) with one write
+once at issue live in a distributed-RAM payload with one write
 port per dispatch slot: the operation, immediate, JALR offset, rounding mode,
 prediction bits, memory-op flags, CSR address and immediate, checkpoint ID,
 compressed flag, and a branch-class predecode. Port 1 reads its own copy. The
 flip-flop valid bits gate every read, so stale payload behind a free entry is
-never used.
+never used. INT port 0 divides its payload into four-entry `mwp_dist_ram`
+groups: each reads its local issue winner in parallel, then the winning group
+selects the result. Writes go to the addressed group with the original
+write-port priority. This avoids reading the whole payload through the final
+binary issue index. A direct one-hot ready winner clears the issued entry's
+valid bit. Other stations retain a single `mwp_dist_ram` on port 0; every
+port 1 uses `mwp_dist_ram_ohread` with its selector's one-hot winner.
+The `rs_primary_payload` formal target checks INT's metadata, address and
+clear selections, and proves grouped payload storage equal to the original
+RAM through arbitrary writes and same-address port collisions.
 
 ### Branch payload side RAM (INT_RS)
 
@@ -221,16 +247,22 @@ in the same cycle MEM_RS presents the load (see the
 [load queue](../load_queue/README.md)). Under data translation the wrapper
 substitutes the data MMU's own look-ahead tag.
 
-With early load wakeup, MEM_RS runs with `PREISSUE_VALID_COFACTOR=1` and
-`PREISSUE_RAW_WAKEUP=1` and exports eight candidate tags on
-`o_pre_issue_rob_tags`: the winner for each combination of the two registered
-CDB lane valids and the early-load token, with the actual combination on
-`o_pre_issue_sel`. The LQ registers the tag match for all eight candidates and
-selects afterwards, which keeps the lane-occupancy select out of its match
-path. Whenever an entry is ready, the selected candidate is the tag of the
-entry actually chosen, which simulation asserts. `PREISSUE_VALID_COFACTOR=1`
-alone gives four candidates, one per pair of lane valids. With it off, every
-candidate repeats the single tag and the selector is zero.
+With early load wakeup, MEM_RS enables `PREISSUE_VALID_COFACTOR`,
+`PREISSUE_RAW_WAKEUP`, and `PREISSUE_READY_EXPORT`. It exports eight ready
+vectors on `o_pre_issue_ready`, one for each combination of the registered
+CDB lane valids and the early-load token, plus its registered entry tags on
+`o_pre_issue_entry_tags`. `o_pre_issue_sel` identifies the actual combination.
+The LQ compares those entry tags first, then picks each candidate's match
+with the ready vector. It registers all matches and selects afterward,
+keeping the late lane-occupancy select out of the match path. Candidates 3
+and 7 share a ready vector because both registered lanes are occupied.
+
+The original candidate-tag outputs remain available for other callers and
+checks. The selected candidate always carries the issue winner's tag, and
+an empty ready vector selects entry 0. Formal checks cover every exported
+winner and the selected ready vector. With ready export off, the extra
+outputs are zero. `PREISSUE_VALID_COFACTOR=1` alone gives four candidates;
+with it off, every candidate repeats the single tag and the selector is zero.
 
 ## Flushes
 
@@ -273,6 +305,7 @@ issued while another entry was also ready; the wrapper exports it for MEM_RS.
 | `ISSUE_REPAIR_BYPASS` | 1 | 0 everywhere | Tag-matched repair satisfies the ready check at issue |
 | `PREISSUE_VALID_COFACTOR` | 0 | `EARLY_LOAD_WAKEUP` on MEM | Export one look-ahead tag per combination of CDB lane valids (see [Pre-issue look-ahead](#pre-issue-look-ahead)) |
 | `PREISSUE_RAW_WAKEUP` | 0 | 1 on MEM | Eight early-wakeup candidates instead of four |
+| `PREISSUE_READY_EXPORT` | 0 | `EARLY_LOAD_WAKEUP` on MEM | Export candidate ready vectors and entry tags for the LQ's compare-before-select path |
 | `DISPATCH_STATUS_RESERVE` | 0 | Default everywhere | Nonzero: register the full flags from the current count with this many entries held back, instead of exactly |
 | `FORMAL_STANDALONE_ENV` | 1 | 0 everywhere | Formal only. 1 (standalone target): assume the dispatch rules and the side-RAM tag rule, and enable covers. 0 (wrapper target): drop those assumptions and assert the tag rule against the real ROB |
 
@@ -308,6 +341,15 @@ what the station does.
   rule). The `tomasulo_wrapper` formal target checks the 16-entry INT station
   and its eight-entry window against the real allocator. `rs_divide_gate`
   proves MUL_RS's divide gate against a model of the divider.
+- `rs_indexed_deferred_fold` proves that each allocation token is one-hot and
+  that the tokens cover every pending delivery, then checks each shared bus
+  against the original winning data assignment. It also compares the factored
+  write enable and data with the original serial priority chain for every
+  entry and source. These are unbounded proofs
+  at 16-entry INT, 8-entry MEM, and 4-entry MUL capacities, plus an eight-entry
+  three-source configuration. The proof uses the ordinary standalone dispatch
+  contract and arbitrary data, and covers slot-2-only dispatch and deferred
+  deliveries during full and partial flushes.
 - Small formal targets check restructured logic against a plain reference:
   `rs_alloc_parallel`, `rs_issue_clear`, `rs_dispatch_defer`,
   `rs_pretag_cofactor`, and `rs_raw_pretag`.

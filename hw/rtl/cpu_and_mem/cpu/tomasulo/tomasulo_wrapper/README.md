@@ -50,6 +50,7 @@ adapter wiring.
 |-----------|---------|--------|
 | `SPLIT_RS_DISPATCH` | 0 | 1: per-station dispatch packets for both slots, as the CPU uses. 0: the single-slot `i_rs_dispatch` bus, decoded by `rs_type`, for wrapper benches |
 | `ENABLE_DISPATCH_DONE_REPAIR` | 0 | Answers dispatch's done-repair queries from the ROB (see the [reservation station](../reservation_station/README.md#done-repair)) |
+| `ROB_SHARED_LINK_BANK` | 0 | Shares the ROB value memories' allocation link bank when dispatch guarantees at most one branch allocation per cycle; enabled by `cpu_ooo` |
 | `INT_RS_DEPTH` | 16 (`riscv_pkg::IntRsDepth`) | INT_RS entries: a power of two from 2 to 32, the ROB depth. It changes only INT_RS and the width of its occupancy count; port 1's window stays at eight entries, or the whole station if smaller |
 | `EARLY_LOAD_WAKEUP` | 1 (`riscv_pkg::EarlyLoadWakeup`) | [Early dependent memory wakeup](#early-dependent-memory-wakeup) |
 | `PREPARE_LOAD_WHILE_BUSY` | 1 (`riscv_pkg::PrepareLoadWhileBusy`) | LQ: start a load's store-queue check while the memory port is busy |
@@ -57,8 +58,8 @@ adapter wiring.
 | `CACHED_BASE`, `CACHED_SIZE_BYTES` | `0x8000_0000`, `0x4000_0000` | Cached (DDR) region, for LQ and SQ tier tagging |
 | `PERF_COUNTERS` | 1 | 0 leaves out `tomasulo_perf_counters`; `o_perf_counter_data` then reads zero |
 
-`cpu_ooo` sets `SPLIT_RS_DISPATCH=1` and `ENABLE_DISPATCH_DONE_REPAIR=1` and
-passes its own values for the rest. Its `PERF_COUNTERS` defaults to 0; FPGA
+`cpu_ooo` sets `SPLIT_RS_DISPATCH=1`, `ENABLE_DISPATCH_DONE_REPAIR=1`, and
+`ROB_SHARED_LINK_BANK=1`, and passes its own values for the rest. Its `PERF_COUNTERS` defaults to 0; FPGA
 builds choose it with `build.py --perf-counters`.
 
 ## Dispatch routing
@@ -98,6 +99,14 @@ reaches the speculative blocks and the LQ comes from early recovery. The
 wrapper asserts that `i_early_recovery_flush` equals `speculative_flush_en`
 whenever `speculative_flush_all` is low. When they differ, the LQ's full-flush
 input is also high and clears everything visible.
+
+The FP shim enables `LAUNCH_SQUASH`: a launch covered by a flush is killed
+in its first decode cycle instead of gating the engine's launch enables with
+the late flush comparison. Busy stays low for that discarded cycle. This
+relies on FP_RS issuing nothing in the cycle after a flushed issue; the
+station and shim share the same speculative flush signals and ROB head tag.
+The `fp_launch_squash_rs` proof checks the bubble with these wrapper tie-offs,
+and `fp_launch_squash` proves unchanged externally visible completion timing.
 
 `i_backend_recovery_hold` is not a flush. While it is high, the wrapper blocks
 dispatch into every station, blocks issue, and holds the FP dispatch buffer.
@@ -231,7 +240,13 @@ registers, adders, and SQ update port.
 A store whose base is not ready becomes the slot's repair candidate. It waits
 for its base tag on the done-repair channels or either CDB lane, then writes
 its address. The immediate is added to every candidate base in parallel with
-the tag match, which then selects a finished address. If a fresh store holds
+the tag match, which then selects a finished address. The output address and
+MMIO flag select the two live CDB sums in the final stage; fresh, held, and
+captured-repair sources are selected in parallel. The priority remains
+fresh, held, then repair channels 1 through 6, CDB lane 0, and CDB lane 1.
+`sq_live_result_select` checks both packets against the original selection
+for arbitrary state and inputs, including simultaneous matches and invalid
+packets. If a fresh store holds
 the slot's SQ port that cycle, the candidate keeps that address and writes it
 on the next free cycle. A candidate is
 replaced by a newer unready store on the same slot (the old store then gets its
@@ -307,9 +322,14 @@ registered CDB lane on MEM_RS's CDB inputs only. It never displaces a
 registered broadcast; if both lanes are busy, the load wakes MEM_RS through
 the registered copy a cycle later. The merge is enabled only when the LQ result
 is the MEM adapter's input this cycle, with no store fault or SC result ahead
-of it and the adapter idle. MEM_RS's look-ahead then exports eight candidate
-tags so the LQ's pre-issue match can follow the merged lanes (see the
-[reservation station](../reservation_station/README.md#pre-issue-look-ahead)).
+of it and the adapter idle. MEM_RS exports eight candidate ready vectors
+and its entry tags. The LQ compares tags before selecting each candidate's
+match, then registers the matches and selects using the actual lane valids
+(see the [reservation station](../reservation_station/README.md#pre-issue-look-ahead)).
+Under translation, the LQ receives the data MMU's look-ahead tag and the
+translation-active flag separately, so the translation mux follows the
+compares. The issue cycle and the late candidate-selection registers stay
+unchanged.
 
 Why it is safe:
 

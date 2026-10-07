@@ -179,10 +179,19 @@ with a local-guidance candidate generated from the current build's closed
 post-opt checkpoint. The guided candidate starts with a fresh reference
 using `ExtraNetDelay_high`, 0.325 ns
 placement uncertainty, CPU clock root `X1Y9`, and `MEDIUM` cell bloat on the
-integer reservation station. On that fresh reference it measures balanced
-sites for critical L2 output registers and faster physical LUT inputs on
-critical CPU paths. It retains a change only if the affected path improves
-and global setup and hold slack do not worsen. Logical functions and net
+integer reservation station and the memory station's source-2 operand cells
+(`*u_tomasulo/u_mem_rs/rs_src2_value*`). The hierarchy must match exactly once;
+the operand group must be nonempty. These operand cells receive the wide
+CDB and repair buses. On the fresh reference it measures balanced sites for
+critical L2 output registers, then alternates faster physical LUT inputs with
+register placement in up to eight rounds. Separated registers can move toward
+their low-fanout LUT drivers; co-located LUT/register pairs can move together
+toward the preceding critical cell. A change is retained only if the affected path improves
+and global and CPU setup and hold minima do not worsen. Register moves score
+all non-clock inputs and the output. Hold minima through the output and at
+each timed register input must stay nonnegative or, if already negative,
+must not worsen. Register and pair moves must not increase the count of CPU
+endpoints below −0.200 ns. Logical functions and net
 connectivity are checked, and rejected choices restore the original state.
 
 The final pass preserves the surrounding placement, unplaces the guided
@@ -199,9 +208,12 @@ Every full-rate candidate must have immediate post-place WNS better than
 level 5. Missing reports and congested candidates are rejected, even if that
 leaves no candidate. The best three survivors are quick-routed by default;
 a sole survivor is also probed. Each probe must produce finite timing, a
-readable Vivado log without router congestion capitulation, and a route-status
+readable Vivado log, and a route-status
 report with every routable net fully routed and no routing errors. Failed or
-incomplete probes are rejected; the winner is chosen by routed WNS, then TNS.
+incomplete probes are rejected. Completed probes without a router congestion
+warning rank first, followed by routed WNS and TNS. A congestion warning alone
+does not disqualify a candidate: the `RuntimeOptimized` probe does not establish
+whether the full flow's phys-opt and stronger routing directives can close timing.
 The promoted checkpoint remains the candidate's immediate post-place result.
 If no candidate qualifies, the build stops and leaves the reports for review.
 `work/post_place_selection.json` records every candidate's timing verdict, congestion,
@@ -248,9 +260,9 @@ output directory:
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `FROST_PLACE_CONGESTION_VETO_LEVEL` | `5` | Reject full-rate candidates whose congestion estimate reaches this level; no fallback if all fail |
-| `FROST_PLACE_QUICK_ROUTE_COUNT` | `3` | Quick-route up to this many passing candidates and choose by routed slack; an explicit `0` disables probes (divided-clock default: `0`) |
+| `FROST_PLACE_QUICK_ROUTE_COUNT` | `3` | Quick-route up to this many passing candidates; prefer probes without congestion warnings, then rank by routed WNS/TNS. An explicit `0` disables probes (divided-clock default: `0`) |
 | `FROST_PLACE_CELL_BLOAT` | unset | Select a placement sweep with `LOW`, `MEDIUM`, or `HIGH` cell bloat for every candidate, or empty for none. Setting this or the next variable turns off the automatic `LOW` variants |
-| `FROST_PLACE_CELL_BLOAT_CELLS` | `*u_tomasulo/u_int_rs` | Hierarchy patterns to bloat |
+| `FROST_PLACE_CELL_BLOAT_CELLS` | `*u_tomasulo/u_int_rs` | Cell name patterns to bloat (hierarchies or primitive groups) |
 | `FROST_PHYSOPT_SETUP_UNCERTAINTY` | 0.5 ns after placement, 0 after routing | Added setup uncertainty for every phys_opt step |
 | `FROST_GTY_RX_EQ` | `LPM` | NIC transceiver receive equalizer (`LPM` or `DFE`) |
 

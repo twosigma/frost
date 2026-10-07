@@ -36,9 +36,8 @@
  *
  * Users: the reorder buffer's head and head+1 read ports, whose one-hot
  * images (head_clear_mask, head_next_clear_mask) are registers that move in
- * lockstep with head_ptr, and the reservation station's second-issue-port
- * payload copy, read with the one-hot that its issue2 selector already
- * computes.
+ * lockstep with head_ptr, and reservation-station second issue ports, which
+ * use the one-hot winner their issue2 selector already computes.
  */
 module mwp_dist_ram_ohread #(
     parameter int unsigned ADDR_WIDTH             = 5,          // Address width in bits
@@ -230,8 +229,8 @@ module mwp_dist_ram_ohread #(
   // Same-cycle staged+live writes to one address are legal and resolve
   // staged-wins (mwp_dist_ram's header states the full staged-port collision
   // rule), so there is no check here.  The dangerous arrival is a live write
-  // in the staged address's drain cycle.  The reorder buffer is the only
-  // staged-port user, and it excludes and checks that window at the ROB level.
+  // in the staged address's drain cycle. The reorder buffer uses these
+  // staged ports when SharedLinkBank=0 and checks that window at the ROB level.
 `endif
 `endif
 

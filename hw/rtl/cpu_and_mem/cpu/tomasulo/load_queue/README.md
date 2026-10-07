@@ -29,7 +29,8 @@ extracts and sign-extends bytes, halfwords and words from a 64-bit beat.
 | `ENABLE_L0_FAST_PATH` | 1 | Complete loads from the L0 |
 | `ENABLE_SQ_FORWARD_FAST_PATH` | 0; 1 in the core | Complete loads by store-to-load forwarding. With 0, a load that overlaps an older store waits for it to drain |
 | `PREPARE_LOAD_WHILE_BUSY` | `riscv_pkg::PrepareLoadWhileBusy` (1) | Stage the next load while the memory port is busy |
-| `PREISSUE_CANDIDATES`, `PREISSUE_SEL_WIDTH` | 0, 2; 1, 3 in the core | Accept 2^`PREISSUE_SEL_WIDTH` candidate look-ahead tags instead of one (early load wakeup) |
+| `PREISSUE_CANDIDATES`, `PREISSUE_SEL_WIDTH` | 0, 2; 1, 3 in the core | Register 2^`PREISSUE_SEL_WIDTH` look-ahead matches and select afterward (early load wakeup) |
+| `PREISSUE_READY_PICK`, `PREISSUE_RS_DEPTH` | 0, 8; 1, 8 in the core | Compare RS entry tags first, then select a match using each candidate's ready vector |
 | `CACHED_BASE`, `CACHED_SIZE_BYTES` | `0x8000_0000`, 1 GiB | Cached (DDR) region |
 
 ## Allocation and capacity
@@ -53,10 +54,20 @@ dispatch a cycle longer than needed but never report room that is not there.
 
 MEM_RS (or the data MMU, under address translation) sends each load's address
 with its ROB tag (`i_addr_update`), and a CAM on the entries' ROB tags finds
-the entry. The same tag arrives exactly one cycle earlier as a look-ahead
-(`i_pre_issue_rob_tag`, or with `PREISSUE_CANDIDATES=1` a set of candidate
-tags and a selector), so the LQ can register the match and select the load in
-the cycle its address arrives.
+the entry. The look-ahead arrives exactly one cycle earlier, so the LQ
+registers the match and selects the load in the cycle its address arrives.
+The scalar mode compares `i_pre_issue_rob_tag`; the candidate mode registers
+all candidate matches and selects one after the edge.
+
+In the core, `PREISSUE_READY_PICK=1` compares every LQ tag against every
+MEM_RS entry tag in parallel with RS readiness. Each candidate's ready
+vector selects its lowest ready entry's compare result; with no ready entry
+it selects entry 0, preserving the tag encoder's idle behavior. Translation
+selects a separate compare against `i_pre_issue_direct_tag`. The ready-vector
+pick therefore replaces tag encoding, tag muxing and the subsequent compare
+without changing the registers, reset, flush, or issue cycle. The default
+`PREISSUE_READY_PICK=0` accepts candidate tags directly. `rs_lq_prematch`
+proves the connected MEM_RS and LQ against that original CAM.
 
 [`lq_issue_selector.sv`](lq_issue_selector.sv) scans in ring order from
 `head_idx` and finds, in parallel: the first entry holding a result, which
@@ -81,6 +92,16 @@ and drains on its own. A head AMO takes priority only once the committed-store
 queue is empty.
 
 ### Staging and the SQ check
+
+The replacement enable computes two cases before the late address-update
+valid bit arrives. Without an update it tests the stored-address winner;
+with an update it tests the first candidate in the union of stored and
+arriving-address entries. That union winner is found in physical index order
+at or above `head_idx`, wrapping to the lowest index if needed. Both cases
+retain the ROB-head overrides and compare the winner's age to the staged
+load. The data-path selection is unchanged. `lq_replace_select` proves this
+enable equal to the original head-priority and ring-position expression
+without assumptions.
 
 The staging register (`sq_check_*`) holds the selected load while the SQ
 checks it. Disambiguation is conservative: a load reads memory only when every
@@ -379,6 +400,12 @@ response, L0 hit or forwarded value goes straight into it when it is free and
 the selector is not filling it, and the entry frees at once; otherwise the
 result waits in the data RAM. An AMO that does not fault completes through the
 data RAM, and nothing enters `cdb_stage` on a partial-flush cycle.
+
+The value input selects a memory response in its final mux stage, while the
+other sources are selected in parallel. It preserves the original priority:
+a queued completion, a fault, a response, SQ forwarding, then an L0 hit.
+`lq_ram_payload` checks this equality as well as the result-RAM writes;
+capture enables and entry-freeing cycles are unchanged.
 
 A load that faults (misaligned when `i_trap_misaligned_accesses` is set,
 outside the physical memory map, an AMO or LR to the device quadrant, or with

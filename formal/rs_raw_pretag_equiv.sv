@@ -18,8 +18,12 @@
 // issue select, while the raw early-load and registered-lane valids and tags
 // drive the pre-issue look-ahead, as in the MEM station. RS_PRETAG_LOCAL_PROOF
 // asserts that both pick the same ROB tag, for arbitrary station state, tags,
-// occupancy, and eligibility.
-module rs_raw_pretag_equiv (
+// occupancy, and eligibility. With PREISSUE_READY_EXPORT it also asserts that
+// every exported ready vector's lowest entry carries that candidate's tag and
+// that the selected vector's lowest entry is the issue select's entry.
+module rs_raw_pretag_equiv #(
+    parameter bit PREISSUE_READY_EXPORT = 1'b0
+) (
     input logic i_clk
 );
   (* anyseq *) riscv_pkg::fu_complete_t early_load;
@@ -40,6 +44,7 @@ module rs_raw_pretag_equiv (
   reservation_station #(
       .PREISSUE_VALID_COFACTOR(1'b1),
       .PREISSUE_RAW_WAKEUP(1'b1),
+      .PREISSUE_READY_EXPORT(PREISSUE_READY_EXPORT),
       .HAS_SRC3(1'b0),
       .ISSUE_REPAIR_BYPASS(1'b0),
       .ALLOC_INDEXED_REPAIR(1'b1),

@@ -21,7 +21,7 @@ read -sv mwp_dist_ram.sv
 read -sv load_unit.sv
 read -sv lq_l0_cache.sv
 read -sv lq_issue_selector.sv
-read -formal -D SYNTHESIS -D F_LQ_PREMATCH_ONLY -D F_LQ_RAM_PAYLOAD_PROOF -sv load_queue.sv
+read -formal -D SYNTHESIS -D F_LQ_PREMATCH_ONLY -D F_LQ_RAM_PAYLOAD_PROOF -D F_LQ_RESPONSE_FINAL_PROOF -sv load_queue.sv
 cover: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
 bmc_forward: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
 bmc_forward_only: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 -set ENABLE_L0_FAST_PATH 0 load_queue
@@ -31,7 +31,7 @@ setundef -undriven -anyseq
 opt
 prep -top load_queue
 select -assert-none t:$assume a:init
-select -assert-count 5 t:$check r:FLAVOR=assert %i
+select -assert-count 6 t:$check r:FLAVOR=assert %i
 select -assert-count 4 t:$check r:FLAVOR=cover %i
 select -assert-none t:$check r:FLAVOR=assume %i
 

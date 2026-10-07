@@ -55,6 +55,16 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "rs_lq_prematch.sby",
+        "The actual MEM station and LQ match the original pre-issue CAM through the real wakeup merger and translation selection, without assumptions",
+        tasks=("bmc", "prove"),
+    ),
+    FormalTarget(
+        "rob_retire_ready.sby",
+        "Per-entry retirement eligibility equals the original selected-field expressions; proves both producer head masks from initial reset",
+        tasks=("prove",),
+    ),
+    FormalTarget(
         "fetch_shadow_capture.sby",
         "Tracking free fetch shadows preserves every pending tag and payload bit under legal "
         "responses; the per-word slot install matches a whole-slot install",
@@ -108,19 +118,31 @@ FORMAL_TARGETS = [
         tasks=("prove", "prove_integrated", "prove_perf_off"),
     ),
     FormalTarget(
+        "pc_increment_relation.sby",
+        "Local increment relations equal full-width PC comparisons, including wraparound and final selection",
+        tasks=("generic32", "generic64"),
+    ),
+    FormalTarget(
         "pc_increment_holdoff.sby",
         "Both sequential fetch PCs with late redirect/reset holdoff equal the reference for arbitrary selectors",
         tasks=("bmc", "bmc_xilinx"),
     ),
     FormalTarget(
         "rs_raw_pretag.sby",
-        "Raw-wakeup pre-issue candidates match the real merged-lane reservation-station winner",
-        tasks=("bmc",),
+        "Raw-wakeup candidate tags and exported ready vectors match the real merged-lane reservation-station winner",
+        tasks=("bmc", "bmc_export", "bmc_ready_vector"),
     ),
     FormalTarget(
         "lq_ram_payload.sby",
-        "Load-result RAM write enables and every enabled address/data match the reference mux",
+        "Load-result RAM writes and the final CDB value select match their reference muxes",
         tasks=("bmc", "bmc_forward", "bmc_forward_only", "cover"),
+    ),
+    FormalTarget(
+        "lq_replace_select.sby",
+        "Load-queue replacement with a merged physical-order winner equals "
+        "the original head-priority and ring-position selection at depths 4, 8 and 16, "
+        "with no environment assumptions",
+        tasks=("bmc4", "bmc8", "bmc16"),
     ),
     FormalTarget(
         "cache_mshr_payload.sby",
@@ -165,8 +187,21 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "lq_prematch_cofactors.sby",
-        "Registered candidate CAM results equal registering the selected-tag CAM",
-        tasks=("bmc", "prove", "bmc_raw", "prove_raw"),
+        "Candidate matches and their registered selection equal the direct CAM for tag and ready-vector inputs",
+        tasks=(
+            "bmc",
+            "prove",
+            "bmc_raw",
+            "prove_raw",
+            "pick8_bmc",
+            "pick8_prove",
+            "pick4_bmc",
+            "pick4_prove",
+            "pickg4_bmc",
+            "pickg4_prove",
+            "pickg6_bmc",
+            "pickg6_prove",
+        ),
     ),
     FormalTarget(
         "lq_cached_hold.sby",
@@ -201,8 +236,14 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "rs_pretag_cofactor.sby",
-        "Pre-issue ROB tag computed ahead for each CDB-valid combination equals the reference priority select",
-        tasks=("bmc", "bmc_tag_indexed"),
+        "Pre-issue tags, exported ready-vector winners, and selected readiness equal the reference priority select for each CDB-valid combination, including idle",
+        tasks=(
+            "bmc",
+            "bmc_tag_indexed",
+            "bmc_export",
+            "bmc_export_tag_indexed",
+            "bmc_ready_vector",
+        ),
     ),
     FormalTarget(
         "lq_tag_order.sby",
@@ -311,6 +352,65 @@ FORMAL_TARGETS = [
         "Reservation station - dispatch, wakeup, issue, flush, at the module "
         "defaults and with INT features at eight-entry component capacity",
         tasks=("bmc", "cover", "bmc_tag_indexed", "cover_tag_indexed"),
+    ),
+    FormalTarget(
+        "rs_indexed_deferred_fold.sby",
+        "Indexed RS delivery buses - one-hot allocation targets cover deferred "
+        "writes, and shared repair/deferred data with factored scalar selects "
+        "preserve every write enable and winning value "
+        "for arbitrary CDB and repair data; unbounded at INT/MEM/MUL capacities "
+        "and with a third source",
+        tasks=("prove_int", "prove_mem", "prove_mul", "prove_src3", "cover_int"),
+    ),
+    FormalTarget(
+        "rob_alloc_lvt.sby",
+        "ROB allocation payload - packed head/head+1 memories equal the thirteen "
+        "original field memories with the actual production read/write controls; unbounded",
+        tasks=("prove",),
+    ),
+    FormalTarget(
+        "rob_bypass_control.sby",
+        "ROB head completion with a class-independent successful-CDB reduction "
+        "equals the original per-lane bypass OR for arbitrary state and inputs",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "rob_link_value_ram.sby",
+        "Shared ROB link bank - reads equal the four-bank value memory under "
+        "the single-branch allocation and head one-hot contracts; unbounded "
+        "for a watched address, with free-address bounded checks and covers",
+        tasks=(
+            "prove_bin",
+            "prove_oh",
+            "prove_narrow_bin",
+            "prove_narrow_oh",
+            "bmc_free_bin",
+            "bmc_free_oh",
+            "bmc_free_small_bin",
+            "bmc_free_small_oh",
+            "cover_bin",
+            "cover_oh",
+        ),
+    ),
+    FormalTarget(
+        "rob_link_dispatch.sby",
+        "Dispatch supplies the shared ROB link bank's single-branch allocation "
+        "contract in all four bundle-valid and raw-register-value configurations; "
+        "no environment assumptions",
+        tasks=("p00", "p01", "p10", "p11"),
+    ),
+    FormalTarget(
+        "sq_live_result_select.sby",
+        "Early store address and MMIO outputs with live CDB sums selected last "
+        "equal the original priority tree for arbitrary state and inputs",
+        tasks=("prove",),
+    ),
+    FormalTarget(
+        "rs_primary_payload.sby",
+        "Primary RS payload - grouped metadata, payload addresses and direct clear "
+        "match the binary issue index at depths 4, 8 and 16, including idle; "
+        "full-width grouped RAM equivalence under arbitrary writes is unbounded",
+        tasks=("bmc16", "bmc8", "bmc4", "prove"),
     ),
     FormalTarget(
         "rs_divide_gate.sby",
@@ -441,6 +541,16 @@ FORMAL_TARGETS = [
         tasks=("bmc", "prove", "cover"),
     ),
     FormalTarget(
+        "pc_redirect_catchup_producer.sby",
+        "IF catch-up redirect contracts on the actual PC controller, arbitrary state",
+        tasks=("x32", "x64", "x66"),
+    ),
+    FormalTarget(
+        "pc_redirect_catchup_consumer.sby",
+        "IF registered redirect equivalence when the sequential catch-up request is omitted",
+        tasks=("prove",),
+    ),
+    FormalTarget(
         "pc_register_mux.sby",
         "IF architectural PC - reference nested priority for arbitrary generic inputs",
         tasks=("bmc", "bmc_integrated", "bmc_xilinx", "bmc_integrated_xilinx"),
@@ -457,7 +567,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "btb_tag_compare.sby",
-        "BTB tag lookup - grouped equality matches full architectural tags, arbitrary RAM outputs",
+        "BTB lookup and update tags - grouped equality matches full architectural tags, "
+        "with arbitrary RAM outputs",
         tasks=("bmc", "bmc_small_btb"),
     ),
     FormalTarget(
@@ -486,6 +597,16 @@ FORMAL_TARGETS = [
         "and a flushed operation never completes",
     ),
     FormalTarget(
+        "fp_launch_squash.sby",
+        "FP launch squash - cycle-exact shim equivalence with the real engine under the producer bubble contract",
+        tasks=("on", "off", "cover"),
+    ),
+    FormalTarget(
+        "fp_launch_squash_rs.sby",
+        "FP station - no issue after a flushed issue, with actual wrapper tie-offs and no assumptions",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "async_fifo.sby",
         "Asynchronous FIFO - occupancy bound, conservative credits, ready margin, "
         "no underflow, in-order delivery of a watched word under free-running "
@@ -501,6 +622,75 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("x32", "Unbounded catch-up contracts at XLEN 32"),
+    ("x64", "Unbounded catch-up contracts at XLEN 64"),
+    ("x66", "Unbounded catch-up contracts at XLEN 66"),
+    ("on", "Unbounded equivalence with launch squash enabled"),
+    ("off", "Unbounded equivalence with launch squash disabled"),
+    ("prove_bin", "Unbounded shared-link memory equivalence with binary reads"),
+    ("prove_oh", "Unbounded shared-link memory equivalence with one-hot reads"),
+    ("prove_narrow_bin", "Unbounded narrow-link memory equivalence with binary reads"),
+    ("prove_narrow_oh", "Unbounded narrow-link memory equivalence with one-hot reads"),
+    ("bmc_free_bin", "Bounded shared-link memory equivalence with free binary reads"),
+    ("bmc_free_oh", "Bounded shared-link memory equivalence with free one-hot reads"),
+    (
+        "bmc_free_small_bin",
+        "Bounded small-datapath memory equivalence with free binary reads",
+    ),
+    (
+        "bmc_free_small_oh",
+        "Bounded small-datapath memory equivalence with free one-hot reads",
+    ),
+    ("cover_bin", "Shared-link staging and collision reachability with binary reads"),
+    ("cover_oh", "Shared-link staging and collision reachability with one-hot reads"),
+    (
+        "p00",
+        "Dispatch branch contract with direct slot-2 validity and corrected operands",
+    ),
+    ("p01", "Dispatch branch contract with direct slot-2 validity and raw operands"),
+    (
+        "p10",
+        "Dispatch branch contract with bundle slot-2 validity and corrected operands",
+    ),
+    ("p11", "Dispatch branch contract with bundle slot-2 validity and raw operands"),
+    ("bmc_export", "Bounded equivalence with candidate ready vectors exported"),
+    (
+        "bmc_export_tag_indexed",
+        "Bounded ready-vector equivalence with indexed issue tags",
+    ),
+    ("bmc_ready_vector", "Bounded equality of the exported and issue ready vectors"),
+    (
+        "pick8_bmc",
+        "Bounded ready-pick equivalence with eight candidates and eight RS entries",
+    ),
+    (
+        "pick8_prove",
+        "Unbounded ready-pick equivalence with eight candidates and eight RS entries",
+    ),
+    (
+        "pick4_bmc",
+        "Bounded ready-pick equivalence with four candidates and eight RS entries",
+    ),
+    (
+        "pick4_prove",
+        "Unbounded ready-pick equivalence with four candidates and eight RS entries",
+    ),
+    (
+        "pickg4_bmc",
+        "Bounded ready-pick equivalence with four candidates and the generic four-entry pick",
+    ),
+    (
+        "pickg4_prove",
+        "Unbounded ready-pick equivalence with four candidates and the generic four-entry pick",
+    ),
+    (
+        "pickg6_bmc",
+        "Bounded ready-pick equivalence with eight candidates and the generic six-entry pick",
+    ),
+    (
+        "pickg6_prove",
+        "Unbounded ready-pick equivalence with eight candidates and the generic six-entry pick",
+    ),
     (
         "prove_victim0",
         "Unbounded fetch-shadow equivalence with the victim store disabled",
@@ -544,8 +734,13 @@ SBY_TASKS = [
     ("cover_always_mul", "MUL grant, flush and injection reachability"),
     ("prove_always_mem", "Unbounded constant-idle MEM adapter equivalence"),
     ("cover_always_mem", "MEM grant, contention, flush and injection reachability"),
-    ("generic32", "Arbitrary-input portable response-mux equivalence at 32 bits"),
-    ("generic64", "Arbitrary-input portable response-mux equivalence at 64 bits"),
+    ("prove_int", "Unbounded shared delivery-bus equivalence at INT capacity"),
+    ("prove_mem", "Unbounded shared delivery-bus equivalence at MEM capacity"),
+    ("prove_mul", "Unbounded shared delivery-bus equivalence at MUL capacity"),
+    ("prove_src3", "Unbounded shared delivery-bus equivalence with three sources"),
+    ("cover_int", "INT deferred delivery, slot-2-only dispatch and flush reachability"),
+    ("generic32", "Arbitrary-input portable equivalence at 32 bits"),
+    ("generic64", "Arbitrary-input portable equivalence at 64 bits"),
     ("xilinx32", "Arbitrary-input LUT5 response-mux equivalence at 32 bits"),
     ("xilinx64", "Arbitrary-input LUT5 response-mux equivalence at 64 bits"),
     # Parameter-shape variants (chparam'd tops): the ITLB shape of the TLB.

@@ -2051,4 +2051,16 @@ module dispatch #(
   end
 `endif
 
+`ifdef ROB_LINK_DISPATCH_LOCAL_PROOF
+  // cpu_ooo enables the ROB's shared link bank. Dispatch's branch gate
+  // supplies its single-branch allocation contract in every state.
+  always_comb begin
+    p_no_slot2_behind_branch :
+    assert (!(o_rob_alloc_req_2.alloc_valid && o_rob_alloc_req.is_branch));
+    p_single_branch_alloc :
+    assert (!(o_rob_alloc_req.alloc_valid && o_rob_alloc_req.is_branch &&
+              o_rob_alloc_req_2.alloc_valid && o_rob_alloc_req_2.is_branch));
+  end
+`endif
+
 endmodule : dispatch

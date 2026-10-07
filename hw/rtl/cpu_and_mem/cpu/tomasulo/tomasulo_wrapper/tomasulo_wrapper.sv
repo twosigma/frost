@@ -44,6 +44,12 @@ module tomasulo_wrapper #(
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
     parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
+    // reorder_buffer's SharedLinkBank: one shared link bank in the ROB value
+    // RAMs. Set it only when the allocation requester never presents two
+    // accepted branch allocations in one cycle, as cpu_ooo's dispatch
+    // guarantees. The default accepts any allocation pair, as the wrapper
+    // bench and the formal target drive.
+    parameter bit ROB_SHARED_LINK_BANK = 1'b0,
     // 0 leaves out the 64 back-end profiling counters: o_perf_counter_data
     // reads zero and the event sources stay unread (synthesis removes what
     // is not marked keep).
@@ -2376,7 +2382,9 @@ module tomasulo_wrapper #(
   logic rob_sfence_window;
   assign o_tlb_invalidate = rob_sfence_window || i_csr_translation_flush_req;
 
-  reorder_buffer u_rob (
+  reorder_buffer #(
+      .SharedLinkBank(ROB_SHARED_LINK_BANK)
+  ) u_rob (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
 
@@ -2811,6 +2819,8 @@ module tomasulo_wrapper #(
       .o_pre_issue_rob_tag(),
       .o_pre_issue_rob_tags(),
       .o_pre_issue_sel(),
+      .o_pre_issue_ready(),
+      .o_pre_issue_entry_tags(),
       .i_pre_issue_raw_valid('0),
       .i_pre_issue_raw_tags('0),
       .o_pre_issue_needs_lq(),
@@ -2917,6 +2927,8 @@ module tomasulo_wrapper #(
       .o_pre_issue_rob_tag(),
       .o_pre_issue_rob_tags(),
       .o_pre_issue_sel(),
+      .o_pre_issue_ready(),
+      .o_pre_issue_entry_tags(),
       .i_pre_issue_raw_valid('0),
       .i_pre_issue_raw_tags('0),
       .o_pre_issue_needs_lq(),
@@ -2939,13 +2951,15 @@ module tomasulo_wrapper #(
   // ---------------------------------------------------------------------------
   // MEM_RS (depth 8): Loads/stores (both INT and FP)
   // ---------------------------------------------------------------------------
-  riscv_pkg::rs_dispatch_t                                          mem_rs_dispatch;
-  riscv_pkg::rs_dispatch_t                                          mem_rs_dispatch_2;
-  logic                    [  riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tag;
-  logic                                                             mem_rs_pre_issue_needs_lq;
-  logic                    [8*riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tags;
-  logic                    [8*riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tags_final;
-  logic                    [                                   2:0] mem_rs_pre_issue_sel;
+  riscv_pkg::rs_dispatch_t mem_rs_dispatch;
+  riscv_pkg::rs_dispatch_t mem_rs_dispatch_2;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tag;
+  logic mem_rs_pre_issue_needs_lq;
+  logic [8*riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tags;
+  logic [8*riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tags_final;
+  logic [2:0] mem_rs_pre_issue_sel;
+  logic [8*riscv_pkg::MemRsDepth-1:0] mem_rs_pre_issue_ready;
+  logic [riscv_pkg::MemRsDepth*riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_entry_tags;
 
   riscv_pkg::cdb_broadcast_t mem_rs_wakeup_0, mem_rs_wakeup_1;
   riscv_pkg::cdb_broadcast_t mem_rs_cdb_0, mem_rs_cdb_1;
@@ -3032,6 +3046,7 @@ module tomasulo_wrapper #(
       .DEPTH(riscv_pkg::MemRsDepth),
       .PREISSUE_VALID_COFACTOR(EARLY_LOAD_WAKEUP),
       .PREISSUE_RAW_WAKEUP(1'b1),
+      .PREISSUE_READY_EXPORT(EARLY_LOAD_WAKEUP),
       .HAS_SRC3(1'b0),
       .DISPATCH_REPAIR_BYPASS(1'b0),
       .ISSUE_REPAIR_BYPASS(1'b0),
@@ -3090,6 +3105,8 @@ module tomasulo_wrapper #(
       .o_pre_issue_rob_tag(mem_rs_pre_issue_rob_tag),
       .o_pre_issue_rob_tags(mem_rs_pre_issue_rob_tags),
       .o_pre_issue_sel(mem_rs_pre_issue_sel),
+      .o_pre_issue_ready(mem_rs_pre_issue_ready),
+      .o_pre_issue_entry_tags(mem_rs_pre_issue_entry_tags),
       .i_pre_issue_raw_valid(mem_rs_pre_issue_raw_valid),
       .i_pre_issue_raw_tags({
         lq_fu_complete.tag, cdb_bus_2_mem_qualified.tag, cdb_bus_mem_qualified.tag
@@ -3353,6 +3370,8 @@ module tomasulo_wrapper #(
       .o_pre_issue_rob_tag        (),
       .o_pre_issue_rob_tags       (),
       .o_pre_issue_sel            (),
+      .o_pre_issue_ready          (),
+      .o_pre_issue_entry_tags     (),
       .i_pre_issue_raw_valid      ('0),
       .i_pre_issue_raw_tags       ('0),
       .o_pre_issue_needs_lq       (),
@@ -3607,6 +3626,7 @@ module tomasulo_wrapper #(
   // MEM_RS path when translation is inactive, and the data MMU's S2 packet
   // and S1 look-ahead when it is active.
   riscv_pkg::lq_addr_update_t lq_addr_update_final;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] dmmu_pre_rob_tag;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tag_final;
   logic mem_rs_pre_issue_needs_lq_final;
 
@@ -3616,6 +3636,8 @@ module tomasulo_wrapper #(
   load_queue #(
       .PREISSUE_CANDIDATES(EARLY_LOAD_WAKEUP),
       .PREISSUE_SEL_WIDTH(3),
+      .PREISSUE_READY_PICK(EARLY_LOAD_WAKEUP),
+      .PREISSUE_RS_DEPTH(riscv_pkg::MemRsDepth),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
       .CACHED_BASE(CACHED_BASE),
@@ -3644,6 +3666,14 @@ module tomasulo_wrapper #(
       .i_pre_issue_rob_tags(mem_rs_pre_issue_rob_tags_final),
       .i_pre_issue_sel(mem_rs_pre_issue_sel),
       .i_pre_issue_needs_lq(mem_rs_pre_issue_needs_lq_final),
+      // The match itself reads MEM_RS's ready vectors and entry tags, and the
+      // data MMU's look-ahead tag on its own port, so no translation mux
+      // sits between MEM_RS readiness and the LQ compares. The candidate
+      // tags above feed only the LQ's simulation checks.
+      .i_pre_issue_ready(mem_rs_pre_issue_ready),
+      .i_pre_issue_entry_tags(mem_rs_pre_issue_entry_tags),
+      .i_pre_issue_direct(i_translation_active),
+      .i_pre_issue_direct_tag(dmmu_pre_rob_tag),
 
       // SQ disambiguation (internal wiring to store_queue)
       .o_sq_check_valid          (sq_check_valid),
@@ -3923,8 +3953,8 @@ module tomasulo_wrapper #(
   logic dmmu_early_ok, dmmu_early2_ok;
   logic [riscv_pkg::XLEN-1:0] dmmu_early_pa, dmmu_early2_pa;
   logic dmmu_early_is_mmio, dmmu_early2_is_mmio;
-  // The MMU's pre-issue pair (its S1 stage's held op).
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] dmmu_pre_rob_tag;
+  // The MMU's pre-issue pair (its S1 stage's held op); the tag is declared
+  // with the LQ's forward declarations.
   logic dmmu_pre_needs_lq;
 
   dmmu u_dmmu (
@@ -4297,7 +4327,11 @@ module tomasulo_wrapper #(
   // FP Shim: FP_RS issue → fp_engine (every FP compute operation) →
   // fu_complete_t
   // ===========================================================================
-  fp_shim u_fp_shim (
+  // FP_RS guarantees a bubble after an issue covered by a flush.
+  // The shim uses that bubble to squash a launch without delaying its enables.
+  fp_shim #(
+      .LAUNCH_SQUASH(1'b1)
+  ) u_fp_shim (
       .i_clk         (i_clk),
       .i_rst_n       (i_rst_n),
       .i_rs_issue    (fp_rs_issue_w),

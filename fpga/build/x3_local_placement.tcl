@@ -165,15 +165,44 @@ namespace eval ::frost_x3_local_placement {
         return $value
     }
 
-    proc slacks {} {return [list [slack -delay_type max] [slack -delay_type min]]}
+    proc slacks {} {
+        # Another clock domain can hide a regression in the CPU hold minimum.
+        return [list [slack -delay_type max] [slack -delay_type min] \
+            [slack -group clock_from_mmcm -delay_type max] \
+            [slack -group clock_from_mmcm -delay_type min]]
+    }
 
     proc output_slack {c} {
         return [slack -through [get_pins -of_objects $c -filter {DIRECTION == OUT}]]
     }
 
     proc register_slack {c} {
-        set d [get_pins -of_objects $c -filter {REF_PIN_NAME == D}]
-        return [expr {min([slack -to $d], [output_slack $c])}]
+        set inputs [get_pins -of_objects $c -filter {DIRECTION == IN && IS_CLOCK == 0}]
+        return [expr {min([slack -to $inputs], [output_slack $c])}]
+    }
+
+    proc hold_slacks {c} {
+        set result {}
+        if {[get_property REF_NAME $c] eq "FDRE"} {
+            foreach pin [lsort [get_pins -of_objects $c -filter {DIRECTION == IN && IS_CLOCK == 0}]] {
+                if {![llength [get_timing_paths -quiet -delay_type min -to $pin -max_paths 1]]} {continue}
+                dict set result $pin [slack -delay_type min -to $pin]
+            }
+        }
+        set output [get_pins -of_objects $c -filter {DIRECTION == OUT}]
+        if {![llength [get_timing_paths -quiet -delay_type min -through $output -max_paths 1]]} {return {}}
+        dict set result output [slack -delay_type min -through $output]
+        return $result
+    }
+
+    proc hold_no_worse {before after} {
+        if {![dict size $before] || [dict keys $before] ne [dict keys $after]} {return 0}
+        dict for {pin value} $before {
+            # Positive hold margin may be spent, but a negative local minimum
+            # cannot worsen and a previously passing minimum cannot fail.
+            if {[dict get $after $pin] < min($value, 0)} {return 0}
+        }
+        return 1
     }
 
     proc pin_map {c} {
@@ -253,14 +282,135 @@ namespace eval ::frost_x3_local_placement {
     }
 
     proc no_worse {before after} {
-        return [expr {[lindex $after 0] >= [lindex $before 0] &&
-            [lindex $after 1] >= [lindex $before 1]}]
+        if {![llength $before] || [llength $before] != [llength $after]} {
+            error "Incompatible guidance timing measurements"
+        }
+        foreach old $before new $after {if {$new < $old} {return 0}}
+        return 1
     }
 
     proc require_placed {baseline} {
         if {[unplaced] ne $baseline} {
             error "Local guidance unplaced a companion cell; timing cannot be scored"
         }
+    }
+
+    proc below_gate_count {} {
+        set paths [get_timing_paths -quiet -group clock_from_mmcm -delay_type max \
+            -slack_lesser_than -0.200 -max_paths 10000 -nworst 1]
+        if {[llength $paths] >= 10000} {error "Guidance endpoint count reached its query limit"}
+        if {![llength $paths]} {return 0}
+        return [llength [lsort -unique [get_property ENDPOINT_PIN $paths]]]
+    }
+
+    # Pull a separated register toward a low-fanout LUT driver. All of the
+    # register's timed inputs and outputs participate in the acceptance test.
+    proc refine_registers {guidance_variable originally_unplaced {limit 24}} {
+        upvar 1 $guidance_variable guidance
+        require_placed $originally_unplaced
+        set initial [slacks]
+        set candidates {}
+        foreach path [get_timing_paths -quiet -group clock_from_mmcm \
+            -slack_lesser_than -0.195 -max_paths 1000 -nworst 1] {
+            set ep [get_pins -quiet [get_property ENDPOINT_PIN $path]]
+            set c [get_cells -quiet -of_objects $ep]
+            if {[llength $c] != 1 || [get_property REF_NAME $c] ne "FDRE" || [dict exists $candidates $c]} {continue}
+            set original [snapshot $c]
+            if {![pair_movable $c $guidance]} {continue}
+            set nets [get_nets -quiet -segments -of_objects $ep]
+            set drivers [get_pins -quiet -leaf -of_objects $nets -filter {DIRECTION == OUT}]
+            set sinks [get_pins -quiet -leaf -of_objects $nets -filter {DIRECTION == IN}]
+            if {[llength $drivers] != 1 || [llength $sinks] > 16} {continue}
+            set dc [get_cells -quiet -of_objects $drivers]
+            if {![string match LUT* [get_property REF_NAME $dc]]} {continue}
+            if {![regexp {^SLICE_X([0-9]+)Y([0-9]+)$} [dict get $original LOC] -> x y] ||
+                ![regexp {^SLICE_X([0-9]+)Y([0-9]+)$} [get_property LOC $dc] -> tx ty]} {continue}
+            if {abs($x-$tx) < 2 && abs($y-$ty) < 2} {continue}
+            set letter [string index [lindex [split [get_property BEL $dc] .] end] 0]
+            dict set candidates $c [list $x $y $tx $ty $letter]
+            if {[dict size $candidates] >= $limit} {break}
+        }
+        set accepted 0
+        set checked 0
+        dict for {c coordinates} $candidates {
+            if {[slack] > -0.195} {break}
+            incr checked
+            set original [snapshot $c]
+            set before [slacks]
+            set before_hold [hold_slacks $c]
+            if {![dict size $before_hold]} {continue}
+            if {[catch {register_slack $c} before_score]} {continue}
+            if {$before_score > -0.195} {continue}
+            set before_count [below_gate_count]
+            set best_score $before_score
+            set best_guard $before
+            set best_site ""
+            lassign $coordinates x y tx ty letter
+            set sites [list [list $tx $ty]]
+            foreach fraction {0.25 0.5 0.75} {
+                lappend sites [list [expr {round($x+($tx-$x)*$fraction)}] [expr {round($y+($ty-$y)*$fraction)}]]
+            }
+            foreach {dx dy} {-1 0 1 0 0 -1 0 1} {lappend sites [list [expr {$tx+$dx}] [expr {$ty+$dy}]]}
+            set legal 0
+            foreach xy [lsort -unique $sites] {
+                lassign $xy sx sy
+                set site SLICE_X${sx}Y${sy}
+                if {![llength [get_sites -quiet $site]] || $site eq [dict get $original LOC]} {continue}
+                set bels [list ${letter}FF ${letter}FF2 [dict get $original BEL]]
+                foreach b {AFF BFF CFF DFF EFF FFF GFF HFF AFF2 BFF2 CFF2 DFF2 EFF2 FFF2 GFF2 HFF2} {
+                    if {$b ni $bels} {lappend bels $b}
+                }
+                foreach bel $bels {
+                    set b [get_bels -quiet $site/$bel]
+                    if {[llength $b] != 1 || [llength [get_cells -quiet -of_objects $b]]} {continue}
+                    set placed [expr {![catch {remap $original $site/$bel {}}]}]
+                    if {$placed} {
+                        require_placed $originally_unplaced
+                        incr legal
+                        set score [register_slack $c]
+                        set hold [hold_slacks $c]
+                        set guard [slacks]
+                        if {$score >= $before_score+0.010-1e-9 && $score > $best_score &&
+                            [no_worse $best_guard $guard] && [hold_no_worse $before_hold $hold]} {
+                            set count [below_gate_count]
+                            if {$count <= $before_count} {
+                                set best_score $score
+                                set best_hold $hold
+                                set best_guard $guard
+                                set best_count $count
+                                set best_site $site/$bel
+                            }
+                        }
+                    }
+                    restore $original
+                    require_placed $originally_unplaced
+                    if {$placed} {break}
+                }
+                # Illegal letters are never scored. Verify timing after the
+                # site's attempts instead of recomputing it for each rejected
+                # letter; exact cell state and placement are checked above.
+                if {[slacks] ne $before || [register_slack $c] != $before_score || [hold_slacks $c] ne $before_hold} {
+                    error "Register trial failed to restore timing: $c"
+                }
+                if {$best_score >= -0.175} {break}
+            }
+            if {[below_gate_count] != $before_count} {error "Register trial changed unrelated timing after rollback: $c"}
+            if {$best_site ne ""} {
+                remap $original $best_site {}
+                require_placed $originally_unplaced
+                if {[register_slack $c] != $best_score || [hold_slacks $c] ne $best_hold ||
+                    [slacks] ne $best_guard || [below_gate_count] != $best_count} {
+                    restore $original
+                    require_placed $originally_unplaced
+                    error "Accepted register placement did not reproduce: $c"
+                }
+                dict set guidance $c [snapshot $c]
+                incr accepted
+            }
+            puts "FROST_LOCAL_PLACE register_trial=$checked accepted=$accepted cell=$c site=$best_site local=$before_score->$best_score legal_sites=$legal setup_hold=[slacks] below_gate=[below_gate_count]"
+        }
+        if {![no_worse $initial [slacks]]} {error "Register refinement worsened timing"}
+        return $accepted
     }
 
     proc refine {work_directory} {
@@ -279,6 +429,8 @@ namespace eval ::frost_x3_local_placement {
             set original [snapshot $c]
             if {[dict get $original IS_LOC_FIXED] || [dict get $original IS_BEL_FIXED]} {continue}
             set before [slacks]
+            set before_hold [hold_slacks $c]
+            if {![dict size $before_hold]} {continue}
             set best [register_slack $c]
             set best_site [dict get $original LOC]/[dict get $original BEL]
             foreach x {120 128 112} {
@@ -291,7 +443,8 @@ namespace eval ::frost_x3_local_placement {
                         if {![catch {remap $original $site/$bel {}}]} {
                             require_placed $originally_unplaced
                             set score [register_slack $c]
-                            if {$score > $best && [no_worse $before [slacks]]} {
+                            if {$score > $best && [no_worse $before [slacks]] &&
+                                [hold_no_worse $before_hold [hold_slacks $c]]} {
                                 set best $score
                                 set best_site $site/$bel
                             }
@@ -313,7 +466,7 @@ namespace eval ::frost_x3_local_placement {
         for {set round 0} {$round < 8 && [slack] <= -0.195} {incr round} {
             set changes 0
             set paths [get_timing_paths -quiet -group clock_from_mmcm \
-                -slack_lesser_than -0.175 -max_paths 20 -nworst 1]
+                -slack_lesser_than -0.175 -max_paths 40 -nworst 1]
             set candidates {}
             # Visit the worst paths first and skip cells whose paths already
             # improved. This limits unnecessary locks and repeated timing work.
@@ -328,6 +481,8 @@ namespace eval ::frost_x3_local_placement {
                 set original [snapshot $c]
                 if {([dict get $original IS_LOC_FIXED] || [dict get $original IS_BEL_FIXED]) &&
                     ![dict exists $guidance $c]} {continue}
+                set before_hold [hold_slacks $c]
+                if {![dict size $before_hold]} {continue}
                 set site [dict get $original LOC]
                 set bel [dict get $original BEL]
                 if {![string match *6LUT $bel]} {continue}
@@ -360,7 +515,8 @@ namespace eval ::frost_x3_local_placement {
                         require_placed $originally_unplaced
                         set local [output_slack $c]
                         set global [slacks]
-                        if {$local > $best_local && [no_worse $best_global $global]} {
+                        if {$local > $best_local && [no_worse $best_global $global] &&
+                            [hold_no_worse $before_hold [hold_slacks $c]]} {
                             set best $trial
                             set best_local $local
                             set best_global $global
@@ -375,13 +531,22 @@ namespace eval ::frost_x3_local_placement {
                     puts "FROST_LOCAL_PLACE lut=$c pins=$best local_slack=$best_local setup_hold=[slacks]"
                 }
             }
-            puts "FROST_LOCAL_PLACE round=$round changes=$changes setup_hold=[slacks]"
-            if {!$changes} {break}
+            set pairs 0
+            set registers 0
+            if {[slack] <= -0.195} {
+                set pairs [refine_pairs guidance $originally_unplaced 12]
+            }
+            if {[slack] <= -0.195} {
+                set registers [refine_registers guidance $originally_unplaced 16]
+            }
+            puts "FROST_LOCAL_PLACE round=$round pin_changes=$changes pairs=$pairs registers=$registers setup_hold=[slacks] below_gate=[below_gate_count]"
+            if {!$changes && !$pairs && !$registers} {break}
         }
         require_placed $originally_unplaced
         set final [slacks]
         if {![no_worse $initial $final]} {error "Local guidance worsened global timing"}
-        set audit [dict create schema x3_local_placement_v1 initial_slacks $initial \
+        set audit [dict create schema x3_local_placement_v1 \
+            slack_order {global_setup global_hold cpu_setup cpu_hold} initial_slacks $initial \
             final_slacks $final cells $guidance]
         set f [open [file join $work_directory post_place_guidance.tcldict] w]
         puts $f $audit
@@ -416,3 +581,5 @@ namespace eval ::frost_x3_local_placement {
         puts "FROST_LOCAL_PLACE verified cells=[dict size [dict get $audit cells]]"
     }
 }
+
+source [file join [file dirname [info script]] x3_pair_placement.tcl]

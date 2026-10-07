@@ -1037,6 +1037,13 @@ module pc_controller #(
     npc_cmp_val[12] = pending_prediction_allow_cross_pc_mux_q ? pending_prediction_target :
         pending_prediction_pc;
   end
+`ifdef PC_REDIRECT_CATCHUP_PROOF
+  always_comb begin
+    p_catchup_is_sequential : assert (npc_seq[11]);
+    p_default_is_sequential : assert (npc_seq[13]);
+    p_catchup_excludes_pending_hold : assert (!(npc_cond[11] && npc_cond[12]));
+  end
+`endif
   assign o_npc_cond = npc_cond;
   assign o_npc_sel = npc_sel;
   assign o_npc_seq = npc_seq;

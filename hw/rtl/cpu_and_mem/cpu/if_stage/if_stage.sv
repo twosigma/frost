@@ -979,11 +979,20 @@ module if_stage #(
   // prediction, and a slot-2 prediction in parallel, so the late prediction
   // requests only pick among finished values; the simulation check below
   // compares it with the direct equation.
+  // The catch-up arm is sequential and excludes the pending-hold arm,
+  // the only lower-priority arm that could redirect. Omitting catch-up here
+  // leaves the redirect decision unchanged and keeps the late catch-up request
+  // off the registered redirect path.
+  logic [riscv_pkg::PcNextArms-1:1] npc_cond_for_redirect;
+  always_comb begin
+    npc_cond_for_redirect = npc_cond[riscv_pkg::PcNextArms-1:1];
+    npc_cond_for_redirect[11] = 1'b0;
+  end
   fetch_redirect fetch_redirect_inst (
       .i_clk(i_clk),
       .i_reset(i_pipeline_ctrl.reset),
       .i_pc_update_en(pc_update_en),
-      .i_npc_cond(npc_cond[riscv_pkg::PcNextArms-1:1]),
+      .i_npc_cond(npc_cond_for_redirect),
       .i_npc_seq(npc_seq[riscv_pkg::PcNextArms-1:1]),
       .i_live_prediction_emits_with_output(live_prediction_emits_with_output),
       .o_fetch_redirect(o_fetch_redirect)

@@ -2012,6 +2012,10 @@ module cpu_ooo #(
   tomasulo_wrapper #(
       .SPLIT_RS_DISPATCH(1'b1),
       .ENABLE_DISPATCH_DONE_REPAIR(1'b1),
+      // u_dispatch never fires slot 2 behind a slot-1 branch
+      // (slot2_resources_ok), and the requests below reach the ROB with only
+      // alloc_valid cleared, so the ROB value RAMs can share one link bank.
+      .ROB_SHARED_LINK_BANK(1'b1),
       .PERF_COUNTERS(PERF_COUNTERS),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),

@@ -30,6 +30,12 @@ module load_queue #(
     parameter bit ENABLE_L0_FAST_PATH = 1'b1,
     parameter bit PREISSUE_CANDIDATES = 1'b0,
     parameter int unsigned PREISSUE_SEL_WIDTH = 2,
+    // With PREISSUE_CANDIDATES, form each candidate's match from the MEM_RS
+    // ready vectors and entry tags (i_pre_issue_ready/_entry_tags) and the
+    // direct tag (i_pre_issue_direct/_direct_tag) instead of comparing the
+    // candidate tags (i_pre_issue_rob_tags). The matches are identical.
+    parameter bit PREISSUE_READY_PICK = 1'b0,
+    parameter int unsigned PREISSUE_RS_DEPTH = riscv_pkg::MemRsDepth,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
     parameter bit ENABLE_SQ_FORWARD_FAST_PATH = 1'b0,
@@ -84,6 +90,17 @@ module load_queue #(
         i_pre_issue_rob_tags,
     input logic [PREISSUE_SEL_WIDTH-1:0] i_pre_issue_sel,
     input logic i_pre_issue_needs_lq,
+    // PREISSUE_READY_PICK: candidate c's MEM_RS ready vector at
+    // [c*PREISSUE_RS_DEPTH +: PREISSUE_RS_DEPTH] and MEM_RS entry e's ROB tag
+    // at [e*ReorderBufferTagWidth +: ReorderBufferTagWidth]. Candidate c's
+    // tag is the tag of the lowest set bit's entry, or of entry 0 when no bit
+    // is set. While i_pre_issue_direct is high every candidate's tag is
+    // i_pre_issue_direct_tag instead (the data MMU's look-ahead under
+    // translation). Unused otherwise.
+    input logic [(1 << PREISSUE_SEL_WIDTH)*PREISSUE_RS_DEPTH-1:0] i_pre_issue_ready,
+    input logic [PREISSUE_RS_DEPTH*riscv_pkg::ReorderBufferTagWidth-1:0] i_pre_issue_entry_tags,
+    input logic i_pre_issue_direct,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_pre_issue_direct_tag,
 
     // =========================================================================
     // Store Queue Disambiguation (combinational handshake)
@@ -1163,6 +1180,24 @@ module load_queue #(
   logic [DEPTH-1:0] addr_update_pre_match_tags_q;
   logic addr_update_pre_issue_valid_q;
   logic [DEPTH-1:0] addr_update_pre_match_q;
+`ifdef FORMAL
+  // PREISSUE_READY_PICK reference tags: the direct tag, or the tag of each
+  // candidate's lowest ready MEM_RS entry (entry 0 when none is ready).
+  localparam int FNumCandidates = 1 << PREISSUE_SEL_WIDTH;
+  logic [ReorderBufferTagWidth-1:0] f_pick_tag[FNumCandidates];
+  always_comb begin
+    for (int c = 0; c < FNumCandidates; c++) begin
+      f_pick_tag[c] = i_pre_issue_entry_tags[0+:ReorderBufferTagWidth];
+      for (int rs_entry = PREISSUE_RS_DEPTH - 1; rs_entry >= 0; rs_entry--) begin
+        if (i_pre_issue_ready[c*PREISSUE_RS_DEPTH+rs_entry]) begin
+          f_pick_tag[c] =
+              i_pre_issue_entry_tags[rs_entry*ReorderBufferTagWidth +: ReorderBufferTagWidth];
+        end
+      end
+      if (i_pre_issue_direct) f_pick_tag[c] = i_pre_issue_direct_tag;
+    end
+  end
+`endif
 
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
@@ -1177,13 +1212,98 @@ module load_queue #(
     logic [DEPTH-1:0] candidate_match[NumCandidates];
     logic [DEPTH-1:0] candidate_match_q[NumCandidates];
     logic [PREISSUE_SEL_WIDTH-1:0] select_q;
-    for (genvar candidate = 0; candidate < NumCandidates; candidate++) begin : gen_candidate
-      for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry
-        assign candidate_match[candidate][entry] = lq_valid[entry] &&
-            !lq_addr_valid[entry] &&
-            (lq_rob_tag[entry] == i_pre_issue_rob_tags[
-                candidate*ReorderBufferTagWidth +: ReorderBufferTagWidth]);
+    if (PREISSUE_READY_PICK) begin : gen_ready_pick
+      // Each LQ tag is compared against every MEM_RS entry tag. These
+      // compares read only registers, so they run in parallel with MEM_RS
+      // readiness; a candidate's ready vector then picks its winner's
+      // compare result. Because the winner is the lowest ready entry (entry
+      // 0 when none is ready), picking the lowest ready entry's compare
+      // equals comparing against the winner's tag, for every ready vector.
+      (* keep = "true" *) logic [PREISSUE_RS_DEPTH-1:0] pre_tag_eq[DEPTH];
+      logic [DEPTH-1:0] pre_live, pre_direct_match;
+      for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry_compare
+        assign pre_live[entry] = lq_valid[entry] && !lq_addr_valid[entry];
+        assign pre_direct_match[entry] = pre_live[entry] &&
+            (lq_rob_tag[entry] == i_pre_issue_direct_tag);
+        for (genvar rs_entry = 0; rs_entry < PREISSUE_RS_DEPTH; rs_entry++) begin : gen_rs_entry
+          assign pre_tag_eq[entry][rs_entry] = lq_rob_tag[entry] ==
+              i_pre_issue_entry_tags[rs_entry*ReorderBufferTagWidth +: ReorderBufferTagWidth];
+        end
       end
+      for (genvar candidate = 0; candidate < NumCandidates; candidate++) begin : gen_candidate
+        wire [PREISSUE_RS_DEPTH-1:0] ready =
+            i_pre_issue_ready[candidate*PREISSUE_RS_DEPTH +: PREISSUE_RS_DEPTH];
+        logic [DEPTH-1:0] picked;
+        if (PREISSUE_RS_DEPTH == 8) begin : gen_pick8
+          // Lowest-ready pick in two halves, so each step is one LUT: the
+          // low half when any of entries 0-3 is ready, otherwise the high
+          // half, whose last step falls back to entry 0.
+          wire any_low = |ready[3:0];
+          for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry
+            wire [7:0] eq = pre_tag_eq[entry];
+            wire pick23 = ready[2] ? eq[2] : (ready[3] && eq[3]);
+            wire pick_low = ready[0] ? eq[0] : ready[1] ? eq[1] : pick23;
+            wire pick67 = ready[6] ? eq[6] : ready[7] ? eq[7] : eq[0];
+            wire pick_high = ready[4] ? eq[4] : ready[5] ? eq[5] : pick67;
+            assign picked[entry] = any_low ? pick_low : pick_high;
+          end
+        end else begin : gen_pick
+          always_comb begin
+            for (int entry = 0; entry < DEPTH; entry++) begin
+              picked[entry] = pre_tag_eq[entry][0];
+              for (int rs_entry = PREISSUE_RS_DEPTH - 1; rs_entry >= 0; rs_entry--) begin
+                if (ready[rs_entry]) picked[entry] = pre_tag_eq[entry][rs_entry];
+              end
+            end
+          end
+        end
+        assign candidate_match[candidate] = i_pre_issue_direct ? pre_direct_match :
+            (pre_live & picked);
+      end
+`ifndef SYNTHESIS
+      always @(posedge i_clk) begin
+        if (i_rst_n && i_pre_issue_needs_lq) begin
+          assert (candidate_match[i_pre_issue_sel] == addr_update_pre_match);
+        end
+      end
+`endif
+`ifdef FORMAL
+`ifdef F_LQ_PREMATCH_COFACTORS
+      // Every candidate's match equals the CAM of its reference tag.
+      for (genvar f_c = 0; f_c < NumCandidates; f_c++) begin : gen_f_pick
+        for (genvar f_entry = 0; f_entry < DEPTH; f_entry++) begin : gen_f_entry
+          always_comb begin
+            assert (candidate_match[f_c][f_entry] == (lq_valid[f_entry] &&
+                !lq_addr_valid[f_entry] && (lq_rob_tag[f_entry] == f_pick_tag[f_c])));
+          end
+        end
+      end
+`endif
+`ifdef F_LQ_PREMATCH_PAIR
+      // Composed with MEM_RS and the wrapper's translation mux: identical to
+      // the CAM of the candidate tags those drive.
+      for (genvar f_c = 0; f_c < NumCandidates; f_c++) begin : gen_f_pair
+        for (genvar f_entry = 0; f_entry < DEPTH; f_entry++) begin : gen_f_entry
+          always_comb begin
+            assert (candidate_match[f_c][f_entry] == (lq_valid[f_entry] &&
+                !lq_addr_valid[f_entry] && (lq_rob_tag[f_entry] ==
+                i_pre_issue_rob_tags[f_c*ReorderBufferTagWidth +: ReorderBufferTagWidth])));
+          end
+        end
+      end
+`endif
+`endif
+    end else begin : gen_tag_compare
+      for (genvar candidate = 0; candidate < NumCandidates; candidate++) begin : gen_candidate
+        for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry
+          assign candidate_match[candidate][entry] = lq_valid[entry] &&
+              !lq_addr_valid[entry] &&
+              (lq_rob_tag[entry] == i_pre_issue_rob_tags[
+                  candidate*ReorderBufferTagWidth +: ReorderBufferTagWidth]);
+        end
+      end
+    end
+    for (genvar candidate = 0; candidate < NumCandidates; candidate++) begin : gen_candidate_q
       always_ff @(posedge i_clk) begin
         if (!i_rst_n || i_flush_all) candidate_match_q[candidate] <= '0;
         else candidate_match_q[candidate] <= candidate_match[candidate];
@@ -1237,8 +1357,12 @@ module load_queue #(
 `ifdef F_LQ_PREMATCH_COFACTORS
   logic [ReorderBufferTagWidth-1:0] f_selected_tag;
   logic [DEPTH-1:0] f_pre_match_direct;
-  assign f_selected_tag =
-      i_pre_issue_rob_tags[i_pre_issue_sel*ReorderBufferTagWidth +: ReorderBufferTagWidth];
+  if (PREISSUE_READY_PICK) begin : gen_f_selected_pick
+    assign f_selected_tag = f_pick_tag[i_pre_issue_sel];
+  end else begin : gen_f_selected_tag
+    assign f_selected_tag =
+        i_pre_issue_rob_tags[i_pre_issue_sel*ReorderBufferTagWidth +: ReorderBufferTagWidth];
+  end
   for (genvar f_entry = 0; f_entry < DEPTH; f_entry++) begin : gen_f_pre_match
     assign f_pre_match_direct[f_entry] = lq_valid[f_entry] && !lq_addr_valid[f_entry] &&
         (lq_rob_tag[f_entry] == f_selected_tag);
@@ -1292,6 +1416,7 @@ module load_queue #(
   // Issue selection (lq_issue_selector.sv). issue_cdb_idx is the read
   // address of the lq_data LUTRAM, which lives in this module.
   // ===========================================================================
+  logic [DEPTH-1:0] merged_scan_onehot;
   logic stored_scan_found;
   logic [IdxWidth-1:0] stored_scan_idx;
   logic [IdxWidth-1:0] stored_scan_pos;
@@ -1337,6 +1462,7 @@ module load_queue #(
       .i_sq_committed_empty(i_sq_committed_empty),
       .o_issue_cdb_found(issue_cdb_found),
       .o_issue_cdb_idx(issue_cdb_idx),
+      .o_merged_scan_onehot(merged_scan_onehot),
       .o_stored_scan_found(stored_scan_found),
       .o_stored_scan_idx(stored_scan_idx),
       .o_stored_scan_pos(stored_scan_pos),
@@ -1651,8 +1777,30 @@ module load_queue #(
   logic staged_younger_than_candidate;
   assign staged_younger_than_candidate = |(staged_younger_than_entry & issue_mem_onehot);
 
-  assign sq_check_replace = sq_check_pending && issue_mem_found && sq_check_gate_early &&
-      (!sq_check_entry_valid || staged_younger_than_candidate);
+  // Precompute replacement with and without this cycle's address update.
+  // With an update, the first entry in the union of both normal scans is
+  // exactly the earlier of their two winners. Keep the head overrides in
+  // their original priority order, then let the late valid bit select just
+  // one Boolean. A zero winner already means no candidate, and
+  // sq_check_entry_valid equals sq_check_pending, so neither term needs a
+  // second gate here. The local proof checks the original expression below.
+  logic replace_stored_head, replace_update_head, replace_stored_scan, replace_merged_scan;
+  logic replace_without_update, replace_with_update;
+  assign replace_stored_head = |(staged_younger_than_entry & head_mem_stored_onehot);
+  assign replace_update_head = |(staged_younger_than_entry & head_mem_update_onehot);
+  assign replace_stored_scan = |(staged_younger_than_entry & stored_scan_onehot);
+  assign replace_merged_scan = |(staged_younger_than_entry & merged_scan_onehot);
+  assign replace_without_update = head_mem_stored_found ? replace_stored_head : replace_stored_scan;
+  assign replace_with_update = head_mem_stored_found ? replace_stored_head :
+      (head_mem_update_found ? replace_update_head : replace_merged_scan);
+  assign sq_check_replace = sq_check_pending && sq_check_gate_early &&
+      (i_addr_update.valid ? replace_with_update : replace_without_update);
+`ifdef F_LQ_MERGED_REPLACE_LOCAL_PROOF
+  always_comb
+    assert (sq_check_replace ==
+      (sq_check_pending && issue_mem_found && sq_check_gate_early &&
+       (!sq_check_entry_valid || staged_younger_than_candidate)));
+`endif
 
   // Always output registered check parameters regardless of valid.  The SQ
   // gates on i_sq_check_capture_valid at its output register
@@ -2516,11 +2664,31 @@ module load_queue #(
       sq_do_forward ? fwd_bypass_value :
       cache_hit_bypass_value;
 
+  // Keep the late memory response on the final data mux input. All other
+  // sources are selected in parallel with response extraction. The selects
+  // have exactly the original issue > fault/response > forward/cache priority.
+  (* keep = "true" *) logic [FLEN-1:0] cdb_value_nonresponse;
+  (* keep = "true" *) logic cdb_value_select_response;
+  logic [FLEN-1:0] cdb_value_next;
+  assign cdb_value_nonresponse = issue_cdb_found ? issue_cdb_result.value :
+      misalign_bypass_data_sel ? {{(FLEN - XLEN) {1'b0}}, sq_check_addr_q} :
+      sq_do_forward ? fwd_bypass_value : cache_hit_bypass_value;
+  assign cdb_value_select_response = !issue_cdb_found &&
+      !misalign_bypass_data_sel && resp_bypass_data_sel;
+  assign cdb_value_next = cdb_value_select_response ? resp_bypass_value : cdb_value_nonresponse;
+
+`ifdef F_LQ_RESPONSE_FINAL_PROOF
+  always_comb begin
+    p_response_final_mux_exact :
+    assert (cdb_value_next == (issue_cdb_found ? issue_cdb_result.value : bypass_value));
+  end
+`endif
+
   // Entry freeing: once the result is captured into the stage, the queue slot
   // can be released. The staged copy now owns the completion payload.  The
   // bypass path frees the entry the same cycle it completes (no intervening
   // data_valid state).
-  assign free_entry_en = issue_cdb_fire || bypass_fire;
+  assign free_entry_en  = issue_cdb_fire || bypass_fire;
   assign free_entry_idx = issue_cdb_fire ? issue_cdb_idx : bypass_idx;
 
   // ===========================================================================
@@ -3742,15 +3910,14 @@ module load_queue #(
   // grant loop off the payload D cone.
   always_ff @(posedge i_clk) begin
     if (issue_cdb_fire || bypass_fire) begin
+      cdb_stage_data.value <= cdb_value_next;
       if (issue_cdb_found) begin
         cdb_stage_data.tag       <= issue_cdb_result.tag;
-        cdb_stage_data.value     <= issue_cdb_result.value;
         cdb_stage_data.exception <= issue_cdb_result.exception;
         cdb_stage_data.exc_cause <= issue_cdb_result.exc_cause;
         cdb_stage_data.fp_flags  <= issue_cdb_result.fp_flags;
       end else begin
         cdb_stage_data.tag <= bypass_tag;
-        cdb_stage_data.value <= bypass_value;
         cdb_stage_data.exception <= misalign_bypass_data_sel;
         // Cause select. A parked translation-stage kind wins:
         // {MISALIGN, PAGE, ACCESS} map to load causes {4, 13, 5}, promoted

@@ -93,7 +93,8 @@ instead; only the tests and formal proofs use it.
 compute instruction (arithmetic, conversions, compares, min/max, classify,
 sign injection, and the FMV moves) one at a time on a single shared adder.
 One tag register tracks the operation in the engine. `o_fu_busy` is high
-whenever the engine is not idle, its result cycle included, and the wrapper
+while a nonsquashed operation occupies the engine, its result cycle included,
+and the wrapper
 also stops FP_RS while the adapter holds a result, so the engine's one-cycle
 result always finds the adapter free.
 
@@ -136,9 +137,14 @@ result is left to the DIV adapter, which sees the same flush.
 
 `fp_shim` kills a squashed operation inside the engine (`i_kill`), which is
 idle again on the next cycle, so FP_RS can issue without waiting out the rest
-of the operation. An issue the same flush covers never starts. A flush on the
-result cycle itself is left to the FP adapter, which sees the same flush and
-does not keep a squashed result.
+of the operation. With the default `LAUNCH_SQUASH=0`, an issue the same flush
+covers never starts. The wrapper enables `LAUNCH_SQUASH=1`: the issue starts
+without waiting for the flush comparison, and a registered squash kills it
+in the first decode cycle. Busy stays low during that discarded decode cycle,
+and no result appears. This mode requires no issue in the cycle after a
+flushed issue. FP_RS guarantees that bubble because a flush prevents its
+stage-2 register from refilling. A flush on the result cycle itself is left
+to the FP adapter, which sees the same flush and does not keep a squashed result.
 
 ## NaN boxing
 
@@ -168,7 +174,11 @@ back-pressure, and for both `SHORT_WORD_OPS` settings, each completing tracker
 entry matches the multiplier that produced its data, the credit bounds hold,
 and a squashed divide never completes. The `divider` cocotb and formal
 targets check the divider's results against integer division. The `fp_shim`
-proof replaces the engine with a model of arbitrary latency and result; the
+default-mode proof replaces the engine with a model of arbitrary latency and
+result. `fp_launch_squash` compares both launch modes against the old shim
+with the real engine, proving equal busy, result-valid, result data and tags
+on the same cycles. `fp_launch_squash_rs` separately proves the required
+producer bubble on the actual FP station without environment assumptions. The
 `fp_engine_equiv` bench checks the engine itself against Berkeley SoftFloat,
 results and flags bit for bit.
 

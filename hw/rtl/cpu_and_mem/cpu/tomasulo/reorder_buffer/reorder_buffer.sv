@@ -52,7 +52,16 @@ module reorder_buffer #(
     // dispatch -> issue -> FU -> registered CDB exceeds one cycle. The
     // reorder_buffer unit bench drives i_cdb_write directly without that
     // latency, so its build disables the check (tests/Makefile, -G override).
-    parameter bit DrainWindowCheck = 1'b1
+    parameter bit DrainWindowCheck = 1'b1,
+    // Value RAMs with one shared allocation link bank (rob_link_value_ram)
+    // instead of one bank per allocation slot: three value banks per replica
+    // instead of four. Reads are unchanged only if no cycle allocates two
+    // branches at different entries. cpu_ooo's dispatch never does (it does
+    // not fire slot 2 behind a slot-1 branch), so cpu_ooo sets this through
+    // tomasulo_wrapper; the default keeps the per-slot banks, which accept any
+    // allocation pair. g_shared_link_bank_check flags a violation in
+    // simulation.
+    parameter bit SharedLinkBank   = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -561,10 +570,9 @@ module reorder_buffer #(
   // decision spine (head_ready -> commit_stall -> commit_en / store-like)
   // reads its instruction-class conjuncts from these per-entry FF vectors,
   // written once at allocation, instead of from the head-meta LVT LUTRAM
-  // (one-hot bank select + data mux, about 3-4 LUT levels). Each read is a
-  // 2-level onehot_read straight off registers, which shortens the front of
-  // every commit-side critical path (ROB->SQ sq_valid guard, ROB->trap/CSR
-  // arcs). Values are bit-identical to the meta-RAM fields; the meta RAM
+  // (one-hot bank select plus data mux). Each read is an AND-OR reduction
+  // straight off registers; the mapped depth depends on synthesis factoring
+  // and fanout. Values are bit-identical to the meta-RAM fields; the meta RAM
   // still carries the payload copies consumed by the commit record. Entries
   // are only read under head_valid, so no reset is needed (same contract as
   // the data RAMs).
@@ -726,14 +734,12 @@ module reorder_buffer #(
 
   // Commit control signals
   logic head_ready;  // Head is valid and done
-  // TIMING: no synthesis attributes (max_fanout, keep) on commit_stall,
-  // commit_en, commit_2_fire, or the *_early aggregates below. Each forces a
-  // net boundary inside the commit/interrupt critical cone, which hurts
-  // timing. commit_stall is not a late external input: its serializer cone
-  // itself reads the head class bits through the one-hot masks, so mask ->
-  // is_csr/store-like -> FSM stall -> take_trap is one deep
-  // register-to-register cone. The two-term factoring below is plain RTL;
-  // synthesis is free to fuse it back into one tree.
+  // TIMING: commit_stall, commit_en and commit_2_fire have no forced net
+  // boundaries, allowing synthesis to combine their downstream gates. The
+  // explicitly kept *_early aggregates below preserve the split between
+  // retirement permission and the serializer stall. The stall itself also
+  // reads the head class bits, so its complete register-to-register cone
+  // must be checked along with the CDB completion path.
   logic commit_stall;  // Full serializer stall, for perf counters and assertions.
   logic commit_stall_for_retire;  // Consumers also apply retirement permission.
   // Early/late factoring of the commit gates (pure AND re-association,
@@ -804,9 +810,8 @@ module reorder_buffer #(
   // No max_fanout on commit_en: keeping the net's identity blocks opt_design
   // from collapsing the serialization spine (interrupt_pending ->
   // commit_stall -> commit_en -> store-like -> sq_committed_empty_for_trap ->
-  // trap_taken) into shared LUTs, which adds levels to the late
-  // interrupt-pending arc. With the one-hot head reads the head side arrives
-  // early enough that the unsplit net is not the limiter.
+  // trap_taken) into shared LUTs. Keep the head and interrupt paths free to
+  // share those final gates.
   logic commit_en;  // Commit fires this cycle
 
   // Widen-commit ("2-wide") gate. Asserted when commit_en is high this cycle,
@@ -894,7 +899,7 @@ module reorder_buffer #(
   } = head_meta_rd_data;
   assign head_rs_type = riscv_pkg::rs_type_e'(head_rs_type_bits);
   assign head_branch_target = head_is_jal ? head_branch_target_jal : head_branch_target_resolved;
-  // head_fallthrough_pc (pc + 2 or pc + 4) comes from u_rob_fallthrough_pc.
+  // head_fallthrough_pc (pc + 2 or pc + 4) comes from u_rob_alloc_head.
 
   // Head+1 entry fields from FF-backed packed vectors / distributed RAM.
   // Dedicated read-port replicas, instantiated alongside the head RAMs below,
@@ -943,17 +948,23 @@ module reorder_buffer #(
   // Widen-commit hazard gates. Both slots must be plain non-serial
   // instructions for 2-wide to fire; either may be a correctly-predicted
   // branch.
-  assign head_ok_2wide = head_f_ok_2wide_static &&
-      !head_exception && !(head_f_is_branch && head_mispredicted);
+  // Qualify each entry before the registered one-hot head selects it. The
+  // masks choose one entry after reset, so this equals qualifying the
+  // separate selected fields and shortens the head-mask control path.
+  (* keep = "true" *)logic [ReorderBufferDepth-1:0] entry_ok_2wide;
+  (* keep = "true" *)logic [ReorderBufferDepth-1:0] entry_next_ok_2wide;
+  assign entry_ok_2wide = rob_f_ok_2wide_static & ~rob_exception &
+                         ~(rob_f_is_branch & rob_mispredicted);
+  assign entry_next_ok_2wide = rob_f_ok_2wide_static & ~rob_exception &
+                              ~(rob_f_is_branch & (rob_mispredicted | rob_early_recovered));
+  assign head_ok_2wide = onehot_read(entry_ok_2wide, head_clear_mask);
   // head+1 may be a correctly-predicted branch: the second checkpoint-free
   // RAT port and the slot-2 correct-branch training capture handle its
   // retire side effects. Mispredicted (or early-recovered) branches retire
   // 1-wide at the head, which keeps a single recovery path.
   // Allocation-time legality is already stored in head_next_exception, so an
   // FS-Off FP operation cannot retire through slot 2.
-  assign head_next_ok_2wide = head_next_f_ok_2wide_static &&
-      !head_next_exception &&
-      !(head_next_f_is_branch && (head_next_mispredicted || head_next_early_recovered));
+  assign head_next_ok_2wide = onehot_read(entry_next_ok_2wide, head_next_clear_mask);
 
   // Same-cycle CDB bypass for head / head+1. rob_done / rob_value /
   // rob_fp_flags update at the clock edge from the CDB, so without a bypass
@@ -981,13 +992,11 @@ module reorder_buffer #(
   // the same values as i_cdb_write.tag / i_cdb_write_2.tag (asserted below).
   assign head_cdb_match = i_cdb_write.valid && (i_cdb_match_tag == head_idx);
   assign head_cdb_match_l2 = i_cdb_write_2.valid && (i_cdb_match_tag_2 == head_idx);
-  // TIMING: per-lane bypass structure. A single shared bypass select feeding
-  // both the 1-bit control side (head_done_eff -> head_ready -> commit and
-  // trap decisions) and the 64-bit value/fp-flags muxes lets opt_design fuse
-  // the control bit into the wide value-mux LUT cone, adding levels to every
-  // commit-side arc. Splitting per lane gives the value muxes their own
-  // selects and keeps the control OR flat. Bit-identical: the CDB lanes carry
-  // distinct tags, so at most one lane matches the head (resp. head+1).
+  // Per-lane selects drive value/fp-flags forwarding. The head completion
+  // decision below separately combines successful matches before the head
+  // class read, so it does not consume these wide muxes' select nets. The
+  // lanes carry distinct tags, although the control factoring is exact even
+  // if both match.
   logic head_cdb_bypass_l1;
   logic head_cdb_bypass_l2;
   assign head_cdb_bypass_l1 = head_cdb_match && !i_cdb_write.exception && head_f_cdb_bypass_ok;
@@ -1008,14 +1017,20 @@ module reorder_buffer #(
 
   logic head_done_eff;
   logic head_next_done_eff;
-  assign head_done_eff = head_done || head_cdb_bypass;
+  // Keep the class-independent successful-match OR as a control boundary.
+  // Qualifying it once with the head class avoids a path through either
+  // per-lane data-mux select. This is distributivity, with no lane or mask
+  // assumptions and no change to stored done state or bypass latency.
+  (* keep = "true" *)logic head_successful_cdb;
+  assign head_successful_cdb = (head_cdb_match && !i_cdb_write.exception) ||
+      (head_cdb_match_l2 && !i_cdb_write_2.exception);
+  assign head_done_eff = head_done || (head_f_cdb_bypass_ok && head_successful_cdb);
   assign head_next_done_eff = head_next_done || head_next_cdb_bypass;
 
   // Value / fp_flags forwarding applies only to the CDB bypass (stores do not
-  // write these fields). Per-lane selects (see the head_cdb_bypass TIMING
-  // note): the wide muxes never see a combined bypass bit, so the control
-  // side cannot be fused into their LUT cone. At most one lane matches, so
-  // the priority order is immaterial.
+  // write these fields). These muxes retain their per-lane selects and
+  // priority for i_cdb_write. The separate head_successful_cdb reduction feeds only
+  // completion control.
   logic [FLEN-1:0] head_value_eff;
   riscv_pkg::fp_flags_t head_fp_flags_eff;
   logic [FLEN-1:0] head_next_value_eff;
@@ -1302,163 +1317,96 @@ module reorder_buffer #(
   // ===========================================================================
   // Distributed RAM Instances
   // ===========================================================================
-  // Alloc-written fields (read at head / head+1). With 2-wide dispatch these
-  // use mwp_dist_ram_ohread with 2 write ports (slot-1 + slot-2 alloc).
-  // ---------------------------------------------------------------------------
+  // Allocation-only fields share one LVT for each read port because their
+  // enables, addresses, initial contents and port priority are identical.
+  // Port 0 writes slot 1; port 1 writes slot 2 and wins an address collision.
+  // Head+1 omits CSR fields because slot 2 cannot retire a CSR.
+  //
+  // The fall-through PC is allocation's link_addr: pc + (is_compressed ? 2 : 4).
+  // ID precomputes it, and the allocation assertion below checks the sum.
+  // Storing it keeps a 64-bit add off the interrupt-resume, FENCE.I and
+  // not-taken commit redirect paths.
+  localparam int unsigned AllocNextWidth =
+      2 * XLEN + RegAddrWidth + CheckpointIdWidth + HeadMetaWidth;
+  localparam int unsigned AllocHeadWidth = AllocNextWidth + 12 + 3 + XLEN;
 
-  // Two write ports: slot-1 alloc (port 0) + slot-2 alloc (port 1). Port 1
-  // writes when slot 2 allocates its ROB entry in the same cycle as slot 1.
   mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (XLEN),
+      .ADDR_WIDTH(ReorderBufferTagWidth),
+      .DATA_WIDTH(AllocHeadWidth),
       .NUM_WRITE_PORTS(2)
-  ) u_rob_pc (
+  ) u_rob_alloc_head (
       .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_enable({alloc_en_2, alloc_en}),
       .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({i_alloc_req_2.pc, i_alloc_req.pc}),
-      .i_read_address (head_idx),
-      .i_read_onehot  (head_clear_mask),
-      .o_read_data    (head_pc)
-  );
-
-  // Widen-commit replica: head+1 read port for pc.
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (XLEN),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_pc_next (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({i_alloc_req_2.pc, i_alloc_req.pc}),
-      .i_read_address (head_next_idx),
-      .i_read_onehot  (head_next_clear_mask),
-      .o_read_data    (head_next_pc)
-  );
-
-  // TIMING: the fall-through PC, pc + (is_compressed ? 2 : 4), stored at
-  // allocation. The allocation's link_addr is that sum: id_stage computes it
-  // from the same pc and is_compressed that this entry stores (checked at
-  // allocation below). Reading it keeps a 64-bit add off the commit-time
-  // next-PC paths: the interrupt resume PC, the FENCE.I target, and the
-  // not-taken commit redirect.
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (XLEN),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_fallthrough_pc (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({i_alloc_req_2.link_addr, i_alloc_req.link_addr}),
-      .i_read_address (head_idx),
-      .i_read_onehot  (head_clear_mask),
-      .o_read_data    (head_fallthrough_pc)
-  );
-
-  // Widen-commit replica: head+1 read port for the fall-through PC.
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (XLEN),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_fallthrough_pc_next (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({i_alloc_req_2.link_addr, i_alloc_req.link_addr}),
-      .i_read_address (head_next_idx),
-      .i_read_onehot  (head_next_clear_mask),
-      .o_read_data    (head_next_fallthrough_pc)
+      .i_write_data({
+        {
+          i_alloc_req_2.pc,
+          i_alloc_req_2.link_addr,
+          i_alloc_req_2.dest_reg,
+          alloc_checkpoint_id_data_2,
+          alloc_head_meta_data_2,
+          i_alloc_req_2.csr_addr,
+          i_alloc_req_2.csr_op,
+          i_alloc_req_2.csr_write_data
+        },
+        {
+          i_alloc_req.pc,
+          i_alloc_req.link_addr,
+          i_alloc_req.dest_reg,
+          alloc_checkpoint_id_data,
+          alloc_head_meta_data,
+          i_alloc_req.csr_addr,
+          i_alloc_req.csr_op,
+          i_alloc_req.csr_write_data
+        }
+      }),
+      .i_read_address(head_idx),
+      .i_read_onehot(head_clear_mask),
+      .o_read_data({
+        head_pc,
+        head_fallthrough_pc,
+        head_dest_reg,
+        head_checkpoint_id,
+        head_meta_rd_data,
+        head_csr_addr,
+        head_csr_op,
+        head_csr_write_data
+      })
   );
 
   mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (RegAddrWidth),
+      .ADDR_WIDTH(ReorderBufferTagWidth),
+      .DATA_WIDTH(AllocNextWidth),
       .NUM_WRITE_PORTS(2)
-  ) u_rob_dest_reg (
+  ) u_rob_alloc_head_next (
       .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_enable({alloc_en_2, alloc_en}),
       .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({i_alloc_req_2.dest_reg, i_alloc_req.dest_reg}),
-      .i_read_address (head_idx),
-      .i_read_onehot  (head_clear_mask),
-      .o_read_data    (head_dest_reg)
-  );
-
-  // Widen-commit replica: head+1 read port for dest_reg.
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (RegAddrWidth),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_dest_reg_next (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({i_alloc_req_2.dest_reg, i_alloc_req.dest_reg}),
-      .i_read_address (head_next_idx),
-      .i_read_onehot  (head_next_clear_mask),
-      .o_read_data    (head_next_dest_reg)
-  );
-
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (CheckpointIdWidth),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_checkpoint_id (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({alloc_checkpoint_id_data_2, alloc_checkpoint_id_data}),
-      .i_read_address (head_idx),
-      .i_read_onehot  (head_clear_mask),
-      .o_read_data    (head_checkpoint_id)
-  );
-
-  // Widen-commit replica: head+1 read port for checkpoint_id.
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (CheckpointIdWidth),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_checkpoint_id_next (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({alloc_checkpoint_id_data_2, alloc_checkpoint_id_data}),
-      .i_read_address (head_next_idx),
-      .i_read_onehot  (head_next_clear_mask),
-      .o_read_data    (head_next_checkpoint_id)
-  );
-
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (HeadMetaWidth),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_head_meta (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({alloc_head_meta_data_2, alloc_head_meta_data}),
-      .i_read_address (head_idx),
-      .i_read_onehot  (head_clear_mask),
-      .o_read_data    (head_meta_rd_data)
-  );
-
-  // Widen-commit replica: head+1 read port for head_meta. It feeds the slot-2
-  // commit payload, the head+1 early outputs, and perf counters; the 2-wide
-  // gate reads the FF vectors.
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (HeadMetaWidth),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_head_meta_next (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({alloc_head_meta_data_2, alloc_head_meta_data}),
-      .i_read_address (head_next_idx),
-      .i_read_onehot  (head_next_clear_mask),
-      .o_read_data    (head_next_meta_rd_data)
+      .i_write_data({
+        {
+          i_alloc_req_2.pc,
+          i_alloc_req_2.link_addr,
+          i_alloc_req_2.dest_reg,
+          alloc_checkpoint_id_data_2,
+          alloc_head_meta_data_2
+        },
+        {
+          i_alloc_req.pc,
+          i_alloc_req.link_addr,
+          i_alloc_req.dest_reg,
+          alloc_checkpoint_id_data,
+          alloc_head_meta_data
+        }
+      }),
+      .i_read_address(head_next_idx),
+      .i_read_onehot(head_next_clear_mask),
+      .o_read_data({
+        head_next_pc,
+        head_next_fallthrough_pc,
+        head_next_dest_reg,
+        head_next_checkpoint_id,
+        head_next_meta_rd_data
+      })
   );
 
   // ---------------------------------------------------------------------------
@@ -1501,138 +1449,319 @@ module reorder_buffer #(
   // the cycle after an allocation (the drain cycle) wins the LVT, so no CDB
   // write may target the entry then; g_drain_window_check flags one in
   // simulation.
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH            (ReorderBufferTagWidth),
-      .DATA_WIDTH            (FLEN),
-      .NUM_WRITE_PORTS       (4),
-      .NUM_STAGED_LVT_PORTS  (2),
-      .NUM_NARROW_WRITE_PORTS(2),
-      .NARROW_DATA_WIDTH     (XLEN)
-  ) u_rob_value_head (
-      .i_clk,
-      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address(head_idx),
-      .i_read_onehot(head_clear_mask),
-      .o_read_data(head_value)
-  );
+  if (!SharedLinkBank) begin : g_value_lvt
+    mwp_dist_ram_ohread #(
+        .ADDR_WIDTH            (ReorderBufferTagWidth),
+        .DATA_WIDTH            (FLEN),
+        .NUM_WRITE_PORTS       (4),
+        .NUM_STAGED_LVT_PORTS  (2),
+        .NUM_NARROW_WRITE_PORTS(2),
+        .NARROW_DATA_WIDTH     (XLEN)
+    ) u_rob_value_head (
+        .i_clk,
+        .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+        .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+        .i_write_data({
+          i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data
+        }),
+        .i_read_address(head_idx),
+        .i_read_onehot(head_clear_mask),
+        .o_read_data(head_value)
+    );
 
-  // Widen-commit replica: head+1 read port for value.
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH            (ReorderBufferTagWidth),
-      .DATA_WIDTH            (FLEN),
-      .NUM_WRITE_PORTS       (4),
-      .NUM_STAGED_LVT_PORTS  (2),
-      .NUM_NARROW_WRITE_PORTS(2),
-      .NARROW_DATA_WIDTH     (XLEN)
-  ) u_rob_value_head_next (
-      .i_clk,
-      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address(head_next_idx),
-      .i_read_onehot(head_next_clear_mask),
-      .o_read_data(head_next_value)
-  );
+    // Widen-commit replica: head+1 read port for value.
+    mwp_dist_ram_ohread #(
+        .ADDR_WIDTH            (ReorderBufferTagWidth),
+        .DATA_WIDTH            (FLEN),
+        .NUM_WRITE_PORTS       (4),
+        .NUM_STAGED_LVT_PORTS  (2),
+        .NUM_NARROW_WRITE_PORTS(2),
+        .NARROW_DATA_WIDTH     (XLEN)
+    ) u_rob_value_head_next (
+        .i_clk,
+        .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+        .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+        .i_write_data({
+          i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data
+        }),
+        .i_read_address(head_next_idx),
+        .i_read_onehot(head_next_clear_mask),
+        .o_read_data(head_next_value)
+    );
 
-  // Dispatch bypass value read ports (same write data as above, different read addresses)
-  mwp_dist_ram #(
-      .ADDR_WIDTH            (ReorderBufferTagWidth),
-      .DATA_WIDTH            (FLEN),
-      .NUM_WRITE_PORTS       (4),
-      .NUM_STAGED_LVT_PORTS  (2),
-      .NUM_NARROW_WRITE_PORTS(2),
-      .NARROW_DATA_WIDTH     (XLEN)
-  ) u_rob_value_bypass_1 (
-      .i_clk,
-      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address(i_bypass_tag_1),
-      .o_read_data(o_bypass_value_1)
-  );
+    // Dispatch bypass value read ports (same write data as above, different read addresses)
+    mwp_dist_ram #(
+        .ADDR_WIDTH            (ReorderBufferTagWidth),
+        .DATA_WIDTH            (FLEN),
+        .NUM_WRITE_PORTS       (4),
+        .NUM_STAGED_LVT_PORTS  (2),
+        .NUM_NARROW_WRITE_PORTS(2),
+        .NARROW_DATA_WIDTH     (XLEN)
+    ) u_rob_value_bypass_1 (
+        .i_clk,
+        .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+        .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+        .i_write_data({
+          i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data
+        }),
+        .i_read_address(i_bypass_tag_1),
+        .o_read_data(o_bypass_value_1)
+    );
 
-  mwp_dist_ram #(
-      .ADDR_WIDTH            (ReorderBufferTagWidth),
-      .DATA_WIDTH            (FLEN),
-      .NUM_WRITE_PORTS       (4),
-      .NUM_STAGED_LVT_PORTS  (2),
-      .NUM_NARROW_WRITE_PORTS(2),
-      .NARROW_DATA_WIDTH     (XLEN)
-  ) u_rob_value_bypass_2 (
-      .i_clk,
-      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address(i_bypass_tag_2),
-      .o_read_data(o_bypass_value_2)
-  );
+    mwp_dist_ram #(
+        .ADDR_WIDTH            (ReorderBufferTagWidth),
+        .DATA_WIDTH            (FLEN),
+        .NUM_WRITE_PORTS       (4),
+        .NUM_STAGED_LVT_PORTS  (2),
+        .NUM_NARROW_WRITE_PORTS(2),
+        .NARROW_DATA_WIDTH     (XLEN)
+    ) u_rob_value_bypass_2 (
+        .i_clk,
+        .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+        .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+        .i_write_data({
+          i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data
+        }),
+        .i_read_address(i_bypass_tag_2),
+        .o_read_data(o_bypass_value_2)
+    );
 
-  mwp_dist_ram #(
-      .ADDR_WIDTH            (ReorderBufferTagWidth),
-      .DATA_WIDTH            (FLEN),
-      .NUM_WRITE_PORTS       (4),
-      .NUM_STAGED_LVT_PORTS  (2),
-      .NUM_NARROW_WRITE_PORTS(2),
-      .NARROW_DATA_WIDTH     (XLEN)
-  ) u_rob_value_bypass_3 (
-      .i_clk,
-      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address(i_bypass_tag_3),
-      .o_read_data(o_bypass_value_3)
-  );
+    mwp_dist_ram #(
+        .ADDR_WIDTH            (ReorderBufferTagWidth),
+        .DATA_WIDTH            (FLEN),
+        .NUM_WRITE_PORTS       (4),
+        .NUM_STAGED_LVT_PORTS  (2),
+        .NUM_NARROW_WRITE_PORTS(2),
+        .NARROW_DATA_WIDTH     (XLEN)
+    ) u_rob_value_bypass_3 (
+        .i_clk,
+        .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+        .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+        .i_write_data({
+          i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data
+        }),
+        .i_read_address(i_bypass_tag_3),
+        .o_read_data(o_bypass_value_3)
+    );
 
-  // Slot-2 done-repair bypass read ports.
-  mwp_dist_ram #(
-      .ADDR_WIDTH            (ReorderBufferTagWidth),
-      .DATA_WIDTH            (FLEN),
-      .NUM_WRITE_PORTS       (4),
-      .NUM_STAGED_LVT_PORTS  (2),
-      .NUM_NARROW_WRITE_PORTS(2),
-      .NARROW_DATA_WIDTH     (XLEN)
-  ) u_rob_value_bypass_4 (
-      .i_clk,
-      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address(i_bypass_tag_4),
-      .o_read_data(o_bypass_value_4)
-  );
+    // Slot-2 done-repair bypass read ports.
+    mwp_dist_ram #(
+        .ADDR_WIDTH            (ReorderBufferTagWidth),
+        .DATA_WIDTH            (FLEN),
+        .NUM_WRITE_PORTS       (4),
+        .NUM_STAGED_LVT_PORTS  (2),
+        .NUM_NARROW_WRITE_PORTS(2),
+        .NARROW_DATA_WIDTH     (XLEN)
+    ) u_rob_value_bypass_4 (
+        .i_clk,
+        .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+        .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+        .i_write_data({
+          i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data
+        }),
+        .i_read_address(i_bypass_tag_4),
+        .o_read_data(o_bypass_value_4)
+    );
 
-  mwp_dist_ram #(
-      .ADDR_WIDTH            (ReorderBufferTagWidth),
-      .DATA_WIDTH            (FLEN),
-      .NUM_WRITE_PORTS       (4),
-      .NUM_STAGED_LVT_PORTS  (2),
-      .NUM_NARROW_WRITE_PORTS(2),
-      .NARROW_DATA_WIDTH     (XLEN)
-  ) u_rob_value_bypass_5 (
-      .i_clk,
-      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address(i_bypass_tag_5),
-      .o_read_data(o_bypass_value_5)
-  );
+    mwp_dist_ram #(
+        .ADDR_WIDTH            (ReorderBufferTagWidth),
+        .DATA_WIDTH            (FLEN),
+        .NUM_WRITE_PORTS       (4),
+        .NUM_STAGED_LVT_PORTS  (2),
+        .NUM_NARROW_WRITE_PORTS(2),
+        .NARROW_DATA_WIDTH     (XLEN)
+    ) u_rob_value_bypass_5 (
+        .i_clk,
+        .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+        .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+        .i_write_data({
+          i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data
+        }),
+        .i_read_address(i_bypass_tag_5),
+        .o_read_data(o_bypass_value_5)
+    );
 
-  mwp_dist_ram #(
-      .ADDR_WIDTH            (ReorderBufferTagWidth),
-      .DATA_WIDTH            (FLEN),
-      .NUM_WRITE_PORTS       (4),
-      .NUM_STAGED_LVT_PORTS  (2),
-      .NUM_NARROW_WRITE_PORTS(2),
-      .NARROW_DATA_WIDTH     (XLEN)
-  ) u_rob_value_bypass_6 (
-      .i_clk,
-      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address(i_bypass_tag_6),
-      .o_read_data(o_bypass_value_6)
-  );
+    mwp_dist_ram #(
+        .ADDR_WIDTH            (ReorderBufferTagWidth),
+        .DATA_WIDTH            (FLEN),
+        .NUM_WRITE_PORTS       (4),
+        .NUM_STAGED_LVT_PORTS  (2),
+        .NUM_NARROW_WRITE_PORTS(2),
+        .NARROW_DATA_WIDTH     (XLEN)
+    ) u_rob_value_bypass_6 (
+        .i_clk,
+        .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+        .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+        .i_write_data({
+          i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data
+        }),
+        .i_read_address(i_bypass_tag_6),
+        .o_read_data(o_bypass_value_6)
+    );
+  end else begin : g_value_shared_link
+    // SharedLinkBank: rob_link_value_ram in place of the eight instances
+    // above, same names, writes and read addresses. Each keeps one shared XLEN
+    // link bank plus one bank per CDB lane; an allocation's LVT code reads its
+    // link (branch or jump) or a constant zero, which is what alloc_value_data
+    // holds. LVT staging, the staged read override and the drain-cycle rule
+    // are the mwp_dist_ram ones described above. The link bank has one write
+    // port, so two branch allocations in one cycle must target the same entry
+    // (see the SharedLinkBank parameter).
+    rob_link_value_ram #(
+        .ADDR_WIDTH (ReorderBufferTagWidth),
+        .DATA_WIDTH (FLEN),
+        .LINK_WIDTH (XLEN),
+        .ONEHOT_READ(1'b1)
+    ) u_rob_value_head (
+        .i_clk,
+        .i_alloc_enable ({alloc_en_2, alloc_en}),
+        .i_alloc_address({tail_idx_2, tail_idx}),
+        .i_alloc_branch ({i_alloc_req_2.is_branch, i_alloc_req.is_branch}),
+        .i_alloc_link   ({i_alloc_req_2.link_addr, i_alloc_req.link_addr}),
+        .i_cdb_enable   ({cdb_ram_wr_en_2, cdb_ram_wr_en}),
+        .i_cdb_address  ({i_cdb_write_2.tag, i_cdb_write.tag}),
+        .i_cdb_data     ({i_cdb_write_2.value, i_cdb_write.value}),
+        .i_read_address (head_idx),
+        .i_read_onehot  (head_clear_mask),
+        .o_read_data    (head_value)
+    );
+
+    // Widen-commit replica: head+1 read port for value.
+    rob_link_value_ram #(
+        .ADDR_WIDTH (ReorderBufferTagWidth),
+        .DATA_WIDTH (FLEN),
+        .LINK_WIDTH (XLEN),
+        .ONEHOT_READ(1'b1)
+    ) u_rob_value_head_next (
+        .i_clk,
+        .i_alloc_enable ({alloc_en_2, alloc_en}),
+        .i_alloc_address({tail_idx_2, tail_idx}),
+        .i_alloc_branch ({i_alloc_req_2.is_branch, i_alloc_req.is_branch}),
+        .i_alloc_link   ({i_alloc_req_2.link_addr, i_alloc_req.link_addr}),
+        .i_cdb_enable   ({cdb_ram_wr_en_2, cdb_ram_wr_en}),
+        .i_cdb_address  ({i_cdb_write_2.tag, i_cdb_write.tag}),
+        .i_cdb_data     ({i_cdb_write_2.value, i_cdb_write.value}),
+        .i_read_address (head_next_idx),
+        .i_read_onehot  (head_next_clear_mask),
+        .o_read_data    (head_next_value)
+    );
+
+    // Dispatch bypass value read ports (same write data as above, different read addresses)
+    rob_link_value_ram #(
+        .ADDR_WIDTH (ReorderBufferTagWidth),
+        .DATA_WIDTH (FLEN),
+        .LINK_WIDTH (XLEN),
+        .ONEHOT_READ(1'b0)
+    ) u_rob_value_bypass_1 (
+        .i_clk,
+        .i_alloc_enable ({alloc_en_2, alloc_en}),
+        .i_alloc_address({tail_idx_2, tail_idx}),
+        .i_alloc_branch ({i_alloc_req_2.is_branch, i_alloc_req.is_branch}),
+        .i_alloc_link   ({i_alloc_req_2.link_addr, i_alloc_req.link_addr}),
+        .i_cdb_enable   ({cdb_ram_wr_en_2, cdb_ram_wr_en}),
+        .i_cdb_address  ({i_cdb_write_2.tag, i_cdb_write.tag}),
+        .i_cdb_data     ({i_cdb_write_2.value, i_cdb_write.value}),
+        .i_read_address (i_bypass_tag_1),
+        .i_read_onehot  ('0),
+        .o_read_data    (o_bypass_value_1)
+    );
+
+    rob_link_value_ram #(
+        .ADDR_WIDTH (ReorderBufferTagWidth),
+        .DATA_WIDTH (FLEN),
+        .LINK_WIDTH (XLEN),
+        .ONEHOT_READ(1'b0)
+    ) u_rob_value_bypass_2 (
+        .i_clk,
+        .i_alloc_enable ({alloc_en_2, alloc_en}),
+        .i_alloc_address({tail_idx_2, tail_idx}),
+        .i_alloc_branch ({i_alloc_req_2.is_branch, i_alloc_req.is_branch}),
+        .i_alloc_link   ({i_alloc_req_2.link_addr, i_alloc_req.link_addr}),
+        .i_cdb_enable   ({cdb_ram_wr_en_2, cdb_ram_wr_en}),
+        .i_cdb_address  ({i_cdb_write_2.tag, i_cdb_write.tag}),
+        .i_cdb_data     ({i_cdb_write_2.value, i_cdb_write.value}),
+        .i_read_address (i_bypass_tag_2),
+        .i_read_onehot  ('0),
+        .o_read_data    (o_bypass_value_2)
+    );
+
+    rob_link_value_ram #(
+        .ADDR_WIDTH (ReorderBufferTagWidth),
+        .DATA_WIDTH (FLEN),
+        .LINK_WIDTH (XLEN),
+        .ONEHOT_READ(1'b0)
+    ) u_rob_value_bypass_3 (
+        .i_clk,
+        .i_alloc_enable ({alloc_en_2, alloc_en}),
+        .i_alloc_address({tail_idx_2, tail_idx}),
+        .i_alloc_branch ({i_alloc_req_2.is_branch, i_alloc_req.is_branch}),
+        .i_alloc_link   ({i_alloc_req_2.link_addr, i_alloc_req.link_addr}),
+        .i_cdb_enable   ({cdb_ram_wr_en_2, cdb_ram_wr_en}),
+        .i_cdb_address  ({i_cdb_write_2.tag, i_cdb_write.tag}),
+        .i_cdb_data     ({i_cdb_write_2.value, i_cdb_write.value}),
+        .i_read_address (i_bypass_tag_3),
+        .i_read_onehot  ('0),
+        .o_read_data    (o_bypass_value_3)
+    );
+
+    // Slot-2 done-repair bypass read ports.
+    rob_link_value_ram #(
+        .ADDR_WIDTH (ReorderBufferTagWidth),
+        .DATA_WIDTH (FLEN),
+        .LINK_WIDTH (XLEN),
+        .ONEHOT_READ(1'b0)
+    ) u_rob_value_bypass_4 (
+        .i_clk,
+        .i_alloc_enable ({alloc_en_2, alloc_en}),
+        .i_alloc_address({tail_idx_2, tail_idx}),
+        .i_alloc_branch ({i_alloc_req_2.is_branch, i_alloc_req.is_branch}),
+        .i_alloc_link   ({i_alloc_req_2.link_addr, i_alloc_req.link_addr}),
+        .i_cdb_enable   ({cdb_ram_wr_en_2, cdb_ram_wr_en}),
+        .i_cdb_address  ({i_cdb_write_2.tag, i_cdb_write.tag}),
+        .i_cdb_data     ({i_cdb_write_2.value, i_cdb_write.value}),
+        .i_read_address (i_bypass_tag_4),
+        .i_read_onehot  ('0),
+        .o_read_data    (o_bypass_value_4)
+    );
+
+    rob_link_value_ram #(
+        .ADDR_WIDTH (ReorderBufferTagWidth),
+        .DATA_WIDTH (FLEN),
+        .LINK_WIDTH (XLEN),
+        .ONEHOT_READ(1'b0)
+    ) u_rob_value_bypass_5 (
+        .i_clk,
+        .i_alloc_enable ({alloc_en_2, alloc_en}),
+        .i_alloc_address({tail_idx_2, tail_idx}),
+        .i_alloc_branch ({i_alloc_req_2.is_branch, i_alloc_req.is_branch}),
+        .i_alloc_link   ({i_alloc_req_2.link_addr, i_alloc_req.link_addr}),
+        .i_cdb_enable   ({cdb_ram_wr_en_2, cdb_ram_wr_en}),
+        .i_cdb_address  ({i_cdb_write_2.tag, i_cdb_write.tag}),
+        .i_cdb_data     ({i_cdb_write_2.value, i_cdb_write.value}),
+        .i_read_address (i_bypass_tag_5),
+        .i_read_onehot  ('0),
+        .o_read_data    (o_bypass_value_5)
+    );
+
+    rob_link_value_ram #(
+        .ADDR_WIDTH (ReorderBufferTagWidth),
+        .DATA_WIDTH (FLEN),
+        .LINK_WIDTH (XLEN),
+        .ONEHOT_READ(1'b0)
+    ) u_rob_value_bypass_6 (
+        .i_clk,
+        .i_alloc_enable ({alloc_en_2, alloc_en}),
+        .i_alloc_address({tail_idx_2, tail_idx}),
+        .i_alloc_branch ({i_alloc_req_2.is_branch, i_alloc_req.is_branch}),
+        .i_alloc_link   ({i_alloc_req_2.link_addr, i_alloc_req.link_addr}),
+        .i_cdb_enable   ({cdb_ram_wr_en_2, cdb_ram_wr_en}),
+        .i_cdb_address  ({i_cdb_write_2.tag, i_cdb_write.tag}),
+        .i_cdb_data     ({i_cdb_write_2.value, i_cdb_write.value}),
+        .i_read_address (i_bypass_tag_6),
+        .i_read_onehot  ('0),
+        .o_read_data    (o_bypass_value_6)
+    );
+  end : g_value_shared_link
 
   // rob_exc_cause: allocation installs zero or IllegalInstr; only exceptional,
   // valid-qualified CDB completions replace it. On an entry with an
@@ -1751,51 +1880,6 @@ module reorder_buffer #(
       .i_write_data   (i_branch_update.target),
       .i_read_address (head_next_idx),
       .o_read_data    (head_next_branch_target_resolved)
-  );
-
-  // CSR address RAM (12-bit, written at allocation)
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (12),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_csr_addr (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({i_alloc_req_2.csr_addr, i_alloc_req.csr_addr}),
-      .i_read_address (head_idx),
-      .i_read_onehot  (head_clear_mask),
-      .o_read_data    (head_csr_addr)
-  );
-
-  // CSR op RAM (funct3, [1:0] cleared for a CSR pure read; written at allocation)
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (3),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_csr_op (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({i_alloc_req_2.csr_op, i_alloc_req.csr_op}),
-      .i_read_address (head_idx),
-      .i_read_onehot  (head_clear_mask),
-      .o_read_data    (head_csr_op)
-  );
-
-  // CSR write data RAM (XLEN-bit, written at allocation)
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (XLEN),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_csr_write_data (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({i_alloc_req_2.csr_write_data, i_alloc_req.csr_write_data}),
-      .i_read_address (head_idx),
-      .i_read_onehot  (head_clear_mask),
-      .o_read_data    (head_csr_write_data)
   );
 
   // ===========================================================================
@@ -2420,13 +2504,26 @@ module reorder_buffer #(
   // an AND re-association of the flat conjunct set. All early conjuncts are
   // register-sourced and settle well before the stall's interrupt arc, so the
   // late arc traverses exactly one LUT per gate.
-  assign commit_ready_early = head_ready && !head_exception && !i_commit_hold &&
-                              !i_early_recovery_en && !i_flush_en && !i_flush_all &&
-                              !flush_after_head_commit;
+  // Stored completion and bypass permission each combine validity and
+  // exception state before the one-hot read. The live CDB success term still
+  // joins after that read; no state or cycle is added.
+  (* keep = "true" *) logic [ReorderBufferDepth-1:0] entry_stored_ready;
+  (* keep = "true" *) logic [ReorderBufferDepth-1:0] entry_bypass_ready;
+  (* keep = "true" *) logic head_stored_ready;
+  (* keep = "true" *) logic head_bypass_ready;
+  assign entry_stored_ready = rob_valid & rob_done & ~rob_exception;
+  assign entry_bypass_ready = rob_valid & rob_f_cdb_bypass_ok & ~rob_exception;
+  assign head_stored_ready = onehot_read(entry_stored_ready, head_clear_mask);
+  assign head_bypass_ready = onehot_read(entry_bypass_ready, head_clear_mask);
+  assign commit_ready_early =
+      (head_stored_ready || (head_bypass_ready && head_successful_cdb)) && !i_commit_hold &&
+      !i_early_recovery_en && !i_flush_en && !i_flush_all && !flush_after_head_commit;
   assign commit_en = commit_ready_early && !commit_stall_for_retire;
 
   // Raw misprediction at commit (early_recovered handled externally by cpu_ooo)
-  assign commit_misprediction = head_f_is_branch && head_mispredicted;
+  (* keep = "true" *) logic [ReorderBufferDepth-1:0] entry_misprediction;
+  assign entry_misprediction = rob_f_is_branch & rob_mispredicted;
+  assign commit_misprediction = onehot_read(entry_misprediction, head_clear_mask);
   assign o_commit_valid_raw = commit_en;
   assign commit_store_like_early = commit_ready_early && head_f_store_like;
   assign o_commit_store_like_raw = commit_store_like_early && !commit_stall_for_retire;
@@ -3400,6 +3497,20 @@ module reorder_buffer #(
     end
   end : g_drain_window_check
 
+  // SharedLinkBank: the value RAMs' link bank has one write port, so the
+  // accepted allocations of a cycle may hold at most one branch unless both
+  // target the same entry (slot 2 is tail_idx + 1, so two accepted branches
+  // are always an error). Requests the ROB does not accept are not checked.
+  if (SharedLinkBank) begin : g_shared_link_bank_check
+    always @(posedge i_clk) begin
+      if (alloc_en && alloc_en_2 && i_alloc_req.is_branch && i_alloc_req_2.is_branch &&
+          (tail_idx != tail_idx_2)) begin
+        $error("Reorder Buffer: branch allocations at entries %0d and %0d in one cycle", tail_idx,
+               tail_idx_2);
+      end
+    end
+  end : g_shared_link_bank_check
+
   // Informational (rate-limited, non-sticky): stale deliveries to still-free
   // entries, with the distance since the most recent flush, logged for
   // producer-discipline diagnostics. See the analysis above for their
@@ -3522,6 +3633,9 @@ module reorder_buffer #(
 `ifndef ROB_RETIRE_STALL_LOCAL_PROOF
 `ifndef ROB_START_LOCAL_PROOF
 `ifndef ROB_CONTROL_NEXT_LOCAL_PROOF
+`ifndef ROB_ALLOC_LVT_LOCAL_PROOF
+`ifndef ROB_BYPASS_CONTROL_LOCAL_PROOF
+`ifndef ROB_RETIRE_READY_LOCAL_PROOF
 
   initial assume (!i_rst_n);
 
@@ -3900,9 +4014,71 @@ module reorder_buffer #(
     end
   end
 
+`endif  // ROB_RETIRE_READY_LOCAL_PROOF
+`endif  // ROB_BYPASS_CONTROL_LOCAL_PROOF
+`endif  // ROB_ALLOC_LVT_LOCAL_PROOF
 `endif  // ROB_CONTROL_NEXT_LOCAL_PROOF
 `endif  // ROB_START_LOCAL_PROOF
 `endif  // ROB_RETIRE_STALL_LOCAL_PROOF
 `endif  // FORMAL
+
+`ifdef ROB_ALLOC_LVT_LOCAL_PROOF
+  logic [AllocHeadWidth-1:0] f_alloc_head_reference;
+  logic [AllocNextWidth-1:0] f_alloc_next_reference;
+  // Reference keeps the thirteen original field memories, with the actual
+  // production write/read controls. It makes no traffic or one-hot assumptions.
+  rob_alloc_lvt_reference #(
+      .HeadMetaWidth(HeadMetaWidth)
+  ) u_alloc_lvt_reference (
+      .i_clk,
+      .alloc_en,
+      .alloc_en_2,
+      .tail_idx,
+      .tail_idx_2,
+      .head_idx,
+      .head_next_idx,
+      .head_clear_mask,
+      .head_next_clear_mask,
+      .i_alloc_req,
+      .i_alloc_req_2,
+      .alloc_checkpoint_id_data,
+      .alloc_checkpoint_id_data_2,
+      .alloc_head_meta_data,
+      .alloc_head_meta_data_2,
+      .o_head(f_alloc_head_reference),
+      .o_next(f_alloc_next_reference)
+  );
+  always_comb begin
+    assert ({head_pc, head_fallthrough_pc, head_dest_reg, head_checkpoint_id,
+             head_meta_rd_data, head_csr_addr, head_csr_op, head_csr_write_data} ==
+            f_alloc_head_reference);
+    assert ({head_next_pc, head_next_fallthrough_pc, head_next_dest_reg,
+             head_next_checkpoint_id, head_next_meta_rd_data} == f_alloc_next_reference);
+  end
+`endif
+
+`ifdef ROB_BYPASS_CONTROL_LOCAL_PROOF
+  always_comb assert (head_done_eff == (head_done || head_cdb_bypass));
+`endif
+
+`ifdef ROB_RETIRE_READY_LOCAL_PROOF
+  initial assume (!i_rst_n);
+  // Prove the actual producer masks and each replacement together, from reset.
+  // No dispatch, CDB, mask, or entry-state assumptions are supplied.
+  always @(posedge i_clk) begin
+    if (i_rst_n) begin
+      assert ($onehot(head_clear_mask));
+      assert ($onehot(head_next_clear_mask));
+      assert (head_ok_2wide == (head_f_ok_2wide_static &&
+          !head_exception && !(head_f_is_branch && head_mispredicted)));
+      assert (head_next_ok_2wide == (head_next_f_ok_2wide_static &&
+          !head_next_exception &&
+          !(head_next_f_is_branch && (head_next_mispredicted || head_next_early_recovered))));
+      assert (commit_misprediction == (head_f_is_branch && head_mispredicted));
+      assert (commit_ready_early == (head_ready && !head_exception && !i_commit_hold &&
+          !i_early_recovery_en && !i_flush_en && !i_flush_all && !flush_after_head_commit));
+    end
+  end
+`endif
 
 endmodule : reorder_buffer
