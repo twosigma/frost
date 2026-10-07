@@ -1375,7 +1375,8 @@ if {$step eq "synth"} {
     if {$board_name eq "x3" && $step eq "post_second_route_physopt" &&
         $sweep_order_env eq "" && $physopt_uncertainty ne ""} {
         source [file join $script_directory x3_endpoint_physopt.tcl]
-        lappend sweep_order EndpointAggressive EndpointTargeted
+        lappend sweep_order EndpointAggressive EndpointTargeted EndpointClockEnable \
+            EndpointClockIndividual EndpointPinRefine
         set endpoint_fallback 1
     }
 
@@ -1462,7 +1463,8 @@ if {$step eq "synth"} {
 
         foreach sweep_pass $sweep_order {
             set endpoint_pass [expr {$endpoint_fallback &&
-                $sweep_pass in {EndpointAggressive EndpointTargeted}}]
+                $sweep_pass in {EndpointAggressive EndpointTargeted EndpointClockEnable \
+                    EndpointClockIndividual EndpointPinRefine}}]
             if {$endpoint_pass} {
                 if {$sweep_pass eq "EndpointAggressive"} {
                     set try_endpoint_passes [expr {!$sweep_kept_improvement}]
@@ -1493,7 +1495,7 @@ if {$step eq "synth"} {
             puts "------------------------------------------"
             if {$endpoint_pass} {
                 if {[catch {
-                    frost_x3_endpoint_physopt::run $sweep_pass $physopt_uncertainty
+                    frost_x3_endpoint_physopt::run $sweep_pass $physopt_uncertainty $work_directory
                 } endpoint_ran endpoint_error]} {
                     # A changed/removed endpoint may make exact cleanup fail.
                     # Discard the entire trial, including its temporary groups

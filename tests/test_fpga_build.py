@@ -1971,7 +1971,7 @@ proc source {path} {
     if {[file tail $path] eq "x3_endpoint_physopt.tcl" &&
         [info exists ::env(MODEL_ENDPOINT_RESULT)]} {
         namespace eval frost_x3_endpoint_physopt {
-            proc run {kind uncertainty} {
+            proc run {kind uncertainty {work_directory ""}} {
                 record "endpoint_pass $kind"
                 if {$kind ne "EndpointAggressive" || $::endpoint_attempts > 0} {return 0}
                 incr ::endpoint_attempts
@@ -2257,6 +2257,9 @@ def test_endpoint_fallback_waits_for_plateau_and_checks_legality(
     else:
         assert "Timing met; stopping" not in stdout
         assert "report phys_opt_timing.rpt at 0.000 wns -0.016" in trace
+        assert "endpoint_pass EndpointClockEnable" in trace
+        assert "endpoint_pass EndpointClockIndividual" in trace
+        assert "endpoint_pass EndpointPinRefine" in trace
         if endpoint_result == "error":
             assert "Rejecting failed EndpointAggressive" in stdout
         else:
