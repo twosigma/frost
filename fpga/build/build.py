@@ -3310,9 +3310,10 @@ Behavior:
     to --jobs, and promotes only the best-WNS checkpoint/reports.
     --route-directives overrides this list with any legal router directives.
     The route step still uses -tns_cleanup; second_route does not.
-  * Every phys_opt stage runs a directive sweep that starts with
+  * Every phys_opt stage runs an ordinary directive sweep that starts with
     AggressiveExplore and ends with one retime-only pass
-    (phys_opt_design -retime). Each sweep keeps the best-WNS pass and stops
+    (phys_opt_design -retime). Each sweep keeps WNS improvements and TNS
+    improvements when WNS is tied, and stops
     early if a pass closes timing (WNS>=0). Sweeps repeat while they keep
     improving, and each completed sweep writes the current best checkpoint
     and reports.
@@ -3324,6 +3325,10 @@ Behavior:
   * Early exit: when route, post_route_physopt, or second_route closes timing,
     its outputs are promoted to final.dcp/final_*, the remaining stages are
     skipped, and the bitstream runs next.
+  * X3 final phys-opt: after the ordinary sweep stalls, the default schedule
+    also tries endpoint groups with a temporary 30 ps setup margin. It removes
+    the groups and margin before scoring WNS/TNS, and requires legal routing,
+    hold, and pulse-width timing before retaining an endpoint pass.
 
 Synthesis and optimization use tuned defaults unless overridden with --*-directive.
 --route-directive controls the first route on non-x3 boards (default AggressiveExplore);
@@ -3511,6 +3516,7 @@ Examples:
         default="AggressiveExplore",
         help="Ignored: every phys_opt stage (post_place, post_route, "
         "post_second_route) runs a directive sweep plus a retime-only pass. "
+        "X3's final stage also tries endpoint groups when that sweep stalls. "
         "Kept for backward compatibility.",
     )
     args = parser.parse_args()

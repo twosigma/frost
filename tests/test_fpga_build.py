@@ -1962,11 +1962,31 @@ set tns_adjustment 0.0
 set preservation_active 0
 set placement_changed 0
 set macro_bels_changed 0
+set endpoint_attempts 0
 
 # Exercise the downstream handoff independently of the native lock API, which
 # has its own restoration tests. A bad release must stop before optimization.
 rename source model_source
 proc source {path} {
+    if {[file tail $path] eq "x3_endpoint_physopt.tcl" &&
+        [info exists ::env(MODEL_ENDPOINT_RESULT)]} {
+        namespace eval frost_x3_endpoint_physopt {
+            proc run {kind uncertainty} {
+                record "endpoint_pass $kind"
+                if {$kind ne "EndpointAggressive" || $::endpoint_attempts > 0} {return 0}
+                incr ::endpoint_attempts
+                set ::true_wns 0.010
+                if {$::env(MODEL_ENDPOINT_RESULT) eq "error"} {
+                    error "Endpoint disappeared during optimization"
+                }
+                return 1
+            }
+            proc candidate_is_legal {timing route} {
+                return [expr {$::env(MODEL_ENDPOINT_RESULT) eq "legal"}]
+            }
+        }
+        return
+    }
     if {[file tail $path] ne "x3_local_placement.tcl" ||
         ![info exists ::env(MODEL_PRESERVATION)]} {
         return [uplevel 1 [list model_source $path]]
@@ -2152,6 +2172,7 @@ def _run_physopt_sweep_model(
     preservation: bool = False,
     bad_release: str | None = None,
     macro_alias: bool = False,
+    endpoint_result: str | None = None,
 ) -> tuple[str, list[str], Path]:
     """Sweep one phys-opt stage; return its stdout, trace and main work dir."""
     model = tmp_path / "physopt_model.tcl"
@@ -2187,6 +2208,9 @@ def _run_physopt_sweep_model(
         env["MODEL_BAD_RELEASE"] = bad_release
     if macro_alias:
         env["MODEL_MACRO_ALIAS"] = "1"
+    if endpoint_result is not None:
+        env["MODEL_ENDPOINT_RESULT"] = endpoint_result
+        env["FROST_PHYSOPT_SWEEP_ORDER"] = ""
     result = subprocess.run(
         ["tclsh", str(model)],
         cwd=work_dir,
@@ -2207,6 +2231,36 @@ def _run_physopt_sweep_model(
     else:
         assert result.returncode == 0, result.stdout + result.stderr
     return result.stdout, trace.read_text().splitlines(), tmp_path / "work"
+
+
+@pytest.mark.parametrize("endpoint_result", ("legal", "illegal", "error"))
+def test_endpoint_fallback_waits_for_plateau_and_checks_legality(
+    tmp_path: Path, endpoint_result: str
+) -> None:
+    """A promising setup result cannot bypass hold/routing acceptance."""
+    stdout, trace, _ = _run_physopt_sweep_model(
+        tmp_path,
+        "post_second_route_physopt",
+        -0.046,
+        progress=2,
+        endpoint_result=endpoint_result,
+    )
+    first_endpoint = trace.index("endpoint_pass EndpointAggressive")
+    # The improving ordinary sweep finishes, then a full sweep stalls before
+    # endpoint optimization is tried. No fallback runs during that first sweep.
+    assert (
+        sum(line.startswith("phys_opt_design") for line in trace[:first_endpoint]) == 20
+    )
+    if endpoint_result == "legal":
+        assert "Timing met; stopping" in stdout
+        assert "report phys_opt_timing.rpt at 0.000 wns 0.010" in trace
+    else:
+        assert "Timing met; stopping" not in stdout
+        assert "report phys_opt_timing.rpt at 0.000 wns -0.016" in trace
+        if endpoint_result == "error":
+            assert "Rejecting failed EndpointAggressive" in stdout
+        else:
+            assert "Reverting non-improving" in stdout
 
 
 @pytest.mark.parametrize("step", ("post_place_physopt", "route"))

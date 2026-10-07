@@ -214,6 +214,18 @@ implementation does not need to be repeated just to recover its pin flags.
 Use `./fpga/build/build.py x3 --start-at bitstream` to generate the bitstream
 from an existing qualified `final.dcp` without rerunning implementation.
 
+In X3's final post-route phys-opt stage, a stalled ordinary directive sweep
+also tries separate optimization groups for up to 600 CPU endpoints below
+5 ps of setup slack. These passes use 30 ps of additional setup uncertainty
+while optimizing, then restore the original groups and sweep uncertainty
+before measuring whole-design WNS and TNS. Candidates must remain fully
+routed with no routing errors or hold/pulse-width violations. An improvement
+restarts the normal sweep; otherwise it restores the best checkpoint and
+stops at convergence. A failed endpoint optimization or constraint cleanup
+also discards that candidate by reopening the saved best checkpoint.
+A custom `FROST_PHYSOPT_SWEEP_ORDER` replaces this
+default schedule.
+
 Every full-rate candidate must have immediate post-place WNS better than
 −0.200 ns at zero user setup uncertainty and a valid congestion report below
 level 5. Missing reports and congested candidates are rejected, even if that

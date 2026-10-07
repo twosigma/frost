@@ -1361,7 +1361,8 @@ if {$step eq "synth"} {
         ]
     }
 
-    # Always make the non-directive retime pass the final pass in each sweep.
+    # Retiming is the final ordinary pass. On X3's last routed stage, try
+    # endpoint groups only after the ordinary passes stop making progress.
     set directive_sweep_order [list]
     foreach sweep_pass $sweep_order {
         if {$sweep_pass ne "-retime"} {
@@ -1370,6 +1371,13 @@ if {$step eq "synth"} {
     }
     set sweep_order $directive_sweep_order
     lappend sweep_order "-retime"
+    set endpoint_fallback 0
+    if {$board_name eq "x3" && $step eq "post_second_route_physopt" &&
+        $sweep_order_env eq "" && $physopt_uncertainty ne ""} {
+        source [file join $script_directory x3_endpoint_physopt.tcl]
+        lappend sweep_order EndpointAggressive EndpointTargeted
+        set endpoint_fallback 1
+    }
 
     set total_physopt_passes [llength $sweep_order]
     set total_passes_run 0
@@ -1439,6 +1447,7 @@ if {$step eq "synth"} {
 
     while {1} {
         set sweep_kept_improvement 0
+        set try_endpoint_passes 0
         set sweep_start_wns $best_wns
         set sweep_start_tns $best_tns
         set pass_num 1
@@ -1452,7 +1461,19 @@ if {$step eq "synth"} {
         puts "=========================================="
 
         foreach sweep_pass $sweep_order {
-            if {$sweep_pass eq "-retime"} {
+            set endpoint_pass [expr {$endpoint_fallback &&
+                $sweep_pass in {EndpointAggressive EndpointTargeted}}]
+            if {$endpoint_pass} {
+                if {$sweep_pass eq "EndpointAggressive"} {
+                    set try_endpoint_passes [expr {!$sweep_kept_improvement}]
+                }
+                if {!$try_endpoint_passes} {
+                    incr pass_num
+                    continue
+                }
+                set pass_label $sweep_pass
+                set pass_display $sweep_pass
+            } elseif {$sweep_pass eq "-retime"} {
                 set pass_label "retime"
                 set pass_display "-retime"
                 set phys_opt_args [list -retime]
@@ -1470,7 +1491,31 @@ if {$step eq "synth"} {
                 puts "  $step pass $pass_num/$total_physopt_passes: $pass_display"
             }
             puts "------------------------------------------"
-            phys_opt_design {*}$phys_opt_args
+            if {$endpoint_pass} {
+                if {[catch {
+                    frost_x3_endpoint_physopt::run $sweep_pass $physopt_uncertainty
+                } endpoint_ran endpoint_error]} {
+                    # A changed/removed endpoint may make exact cleanup fail.
+                    # Discard the entire trial, including its temporary groups
+                    # and margin, by reopening the saved best implementation.
+                    puts "  Rejecting failed $pass_display: $endpoint_ran"
+                    puts [dict get $endpoint_error -errorinfo]
+                    if {![file exists $best_checkpoint]} {
+                        error "Cannot restore a best checkpoint after failed $pass_display"
+                    }
+                    catch {close_design}
+                    open_checkpoint $best_checkpoint
+                    incr total_passes_run
+                    incr pass_num
+                    continue
+                }
+                if {!$endpoint_ran} {
+                    incr pass_num
+                    continue
+                }
+            } else {
+                phys_opt_design {*}$phys_opt_args
+            }
             incr total_passes_run
             set pass_improved 0
 
@@ -1479,6 +1524,13 @@ if {$step eq "synth"} {
             set timing_summary [get_setup_timing_summary $pass_report]
             set report_wns [dict get $timing_summary wns]
             set tns [dict get $timing_summary tns]
+            set candidate_valid 1
+            if {$endpoint_pass} {
+                set route_report [file rootname $pass_report]_route.rpt
+                report_route_status -file $route_report
+                set candidate_valid [frost_x3_endpoint_physopt::candidate_is_legal \
+                    $pass_report $route_report]
+            }
 
             set worst_path [lindex [get_timing_paths -delay_type max -nworst 1 -max_paths 1] 0]
             set wns ""
@@ -1488,7 +1540,7 @@ if {$step eq "synth"} {
                 set wns $report_wns
             }
 
-            if {$wns ne ""} {
+            if {$wns ne "" && $candidate_valid} {
                 set better_wns [expr {$wns > ($best_wns + $wns_tie_epsilon)}]
                 set same_wns [expr {abs($wns - $best_wns) <= $wns_tie_epsilon}]
                 set better_tns [expr {$tns ne "" && $tns > ($best_tns + $tns_keep_epsilon)}]
@@ -1543,7 +1595,7 @@ if {$step eq "synth"} {
                 }
             }
 
-            if {$repeat_sweeps && !$pass_improved && [file exists $best_checkpoint]} {
+            if {($repeat_sweeps || $endpoint_pass) && !$pass_improved && [file exists $best_checkpoint]} {
                 puts ""
                 puts "  Reverting non-improving $step pass; restoring best WNS=$best_wns ns, TNS=$best_tns ns"
                 close_design
