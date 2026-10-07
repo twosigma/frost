@@ -51,6 +51,7 @@ proc open_timing_checkpoint {checkpoint_path work_directory} {
     global script_directory
     open_checkpoint $checkpoint_path
     source [file join $script_directory x3_local_placement.tcl]
+    frost_x3_local_placement::recover_unfixed_ports $checkpoint_path
     if {[frost_x3_local_placement::saved_constraints] ne ""} {
         set placement [primitive_placement_snapshot]
         set slacks [current_setup_hold_slacks]
@@ -1669,6 +1670,8 @@ if {$step eq "synth"} {
         exit 1
     }
     open_checkpoint $checkpoint_path
+    source [file join $script_directory x3_local_placement.tcl]
+    frost_x3_local_placement::recover_unfixed_ports $checkpoint_path
 
     # Final reports
     report_timing_summary -file $work_directory/final_timing.rpt

@@ -3245,7 +3245,10 @@ Behavior:
     candidate directory. A separate Vivado process verifies the final saved
     constraints without changing them. Temporary preservation and pblocks
     are removed when opening the checkpoint for downstream optimization,
-    with original constraints restored and placement/timing checked.
+    with original cell, net and port constraints restored and
+    placement/timing checked, including every port's pin and fixed-location flag.
+    Older downstream checkpoints with all port flags lost recover those flags
+    from their qualified placed ancestor only when pins and I/O standards match.
     No archived checkpoint is required. This candidate competes with the
     conventional grid under the same timing, congestion, and route-probe
     requirements; it cannot qualify itself from placed WNS alone.
@@ -3336,6 +3339,7 @@ Examples:
   ./build.py x3 --synth-directive PerformanceOptimized  # Override the board default
   ./build.py x3 --start-at route                   # Requires post_place_physopt.dcp
   ./build.py x3 --start-at second_route            # Requires post_route_physopt.dcp
+  ./build.py x3 --start-at bitstream               # Requires qualified final.dcp
 """,
     )
     parser.add_argument(
@@ -3347,7 +3351,7 @@ Examples:
     )
     parser.add_argument(
         "--start-at",
-        choices=STEPS,
+        choices=[*STEPS, "bitstream"],
         default="synth",
         help="Start at this step (requires appropriate checkpoint)",
     )
@@ -3528,6 +3532,21 @@ Examples:
         args.build_dir = args.build_dir.resolve()
 
     board_name = args.board_name
+
+    if args.start_at == "bitstream":
+        if args.stop_after is not None:
+            parser.error("--start-at bitstream cannot be combined with --stop-after")
+        build_options = (
+            {"build_dir": args.build_dir} if args.build_dir is not None else {}
+        )
+        if not generate_bitstream(
+            Path(__file__).parent.resolve(),
+            board_name,
+            args.vivado_path,
+            **build_options,
+        ):
+            sys.exit(1)
+        return
 
     start_idx = STEPS.index(args.start_at)
     stop_idx = STEPS.index(args.stop_after) if args.stop_after else len(STEPS) - 1

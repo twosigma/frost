@@ -1972,6 +1972,7 @@ proc source {path} {
         return [uplevel 1 [list model_source $path]]
     }
     namespace eval frost_x3_local_placement {
+        proc recover_unfixed_ports {checkpoint_path} {return 0}
         proc saved_constraints {} {
             if {$::preservation_active} {return saved}
             return {}
@@ -2027,6 +2028,7 @@ proc unknown {cmd args} {
         current_design {return design}
         list_property {return {}}
         get_clocks {return clock_from_mmcm}
+        get_ports {return {}}
         get_cells {return primitive}
         get_bels {
             if {$::macro_bels_changed} {return {SITE/OUTINV OTHER_SITE/OUTBUF}}
@@ -3814,6 +3816,35 @@ def test_completed_final_producer_binds_chain_and_bitstream_checks_actual_file(
     (work / "final.dcp").write_bytes(b"different final checkpoint")
     assert not fpga_build.generate_bitstream(script_dir, "x3", "unused", **options)
     assert calls == [stage, "bitstream"]
+
+
+def test_bitstream_resume_cli_preserves_lineage_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bitstream-only recovery uses the qualified final and rejects a stale one."""
+    stage = "post_second_route_physopt"
+    work = _sweep_input(tmp_path, stage)
+    final = _write_qualified_descendant(work, stage, final=True)
+    monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
+    monkeypatch.setattr(sys, "argv", ["build.py", "x3", "--start-at", "bitstream"])
+    calls = []
+
+    def bitgen(command: list[str], *, cwd: Path) -> Any:
+        assert cwd == work
+        assert command[command.index("-tclargs") + 2] == "bitstream"
+        assert command[command.index("-tclargs") + 4] == str(final)
+        calls.append(command)
+        (cwd / "x3_frost.bit").write_bytes(b"bitstream fixture")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(fpga_build.subprocess, "run", bitgen)
+    fpga_build.main()
+    assert len(calls) == 1
+    final.write_bytes(b"changed checkpoint")
+    with pytest.raises(SystemExit) as error:
+        fpga_build.main()
+    assert error.value.code == 1
+    assert len(calls) == 1
 
 
 def test_intermediate_physopt_publication_cannot_inherit_prior_completion(

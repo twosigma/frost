@@ -202,6 +202,17 @@ use the normal work directory: `work/post_place_reference.dcp` and
 `work/post_place.dcp`. `work/post_place_guidance.tcldict` records the measured
 choices. A separate Vivado process checks the saved locations, pin mappings,
 clock roots, restoration metadata and timing without altering them.
+Before downstream optimization, the flow removes temporary placement locks
+and restores the original cell, net, and port constraints. Port package pins,
+physical sites, I/O standards, and fixed-location flags are checked explicitly
+so unlocking the design cannot silently lose the board pin assignments.
+When resuming an older downstream checkpoint whose port flags were all lost,
+the flow restores them from its qualified `post_place.dcp` ancestor. Every
+physical pin and I/O standard must still match; a mismatch stops the build.
+This also applies when resuming directly at bitstream generation, so the old
+implementation does not need to be repeated just to recover its pin flags.
+Use `./fpga/build/build.py x3 --start-at bitstream` to generate the bitstream
+from an existing qualified `final.dcp` without rerunning implementation.
 
 Every full-rate candidate must have immediate post-place WNS better than
 −0.200 ns at zero user setup uncertainty and a valid congestion report below

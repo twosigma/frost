@@ -37,6 +37,81 @@ namespace eval ::frost_x3_local_placement {
 
     proc protected_nets {} {return [constrained_nets DONT_TOUCH]}
 
+    proc port_constraints {} {
+        set result {}
+        set ports [get_ports -quiet]
+        if {![llength $ports]} {return $result}
+        foreach name [lsort [get_property NAME $ports]] {
+            set port [exact_objects get_ports [list $name]]
+            set state {}
+            foreach property {PACKAGE_PIN LOC IOSTANDARD IS_LOC_FIXED} {
+                dict set state $property [get_property -quiet $property $port]
+            }
+            dict set result $name $state
+        }
+        return $result
+    }
+
+    proc restore_port_constraints {original} {
+        set actual [port_constraints]
+        if {[dict keys $actual] ne [dict keys $original]} {
+            error "Port set changed while releasing placement constraints"
+        }
+        # Fixing a port must never move it to conceal a bad placement. Check
+        # every physical pin and I/O standard before restoring any flags.
+        dict for {name state} $original {
+            foreach property {PACKAGE_PIN LOC IOSTANDARD} {
+                if {[dict get $actual $name $property] ne [dict get $state $property]} {
+                    error "Port $name changed $property while releasing placement constraints"
+                }
+            }
+        }
+        dict for {name state} $original {
+            set_property IS_LOC_FIXED [dict get $state IS_LOC_FIXED] \
+                [exact_objects get_ports [list $name]]
+        }
+        if {[port_constraints] ne $original} {
+            error "Original port constraints were not restored"
+        }
+    }
+
+    proc recover_unfixed_ports {checkpoint_path} {
+        # The old global unlock lost every port's IS_LOC_FIXED flag. Recover
+        # already-produced downstream checkpoints from their qualified placed
+        # ancestor. build.py validates that ancestry before launching Vivado.
+        # New checkpoints and checkpoints with saved restoration metadata use
+        # the ordinary release path instead.
+        if {[saved_constraints] ne ""} {return 0}
+        set actual [port_constraints]
+        if {![dict size $actual]} {return 0}
+        dict for {name state} $actual {
+            if {[dict get $state IS_LOC_FIXED]} {return 0}
+        }
+        set reference_path [file join [file dirname $checkpoint_path] post_place.dcp]
+        if {[file normalize $reference_path] eq [file normalize $checkpoint_path] ||
+            ![file exists $reference_path]} {
+            error "Cannot recover unfixed ports without the placed ancestor: $reference_path"
+        }
+        close_design
+        try {
+            open_checkpoint $reference_path
+            # Serialize names/properties before closing their owning design.
+            set original [string trim [format "%s\n" [port_constraints]]]
+            if {![dict size $original]} {error "Placed ancestor has no ports"}
+            dict for {name state} $original {
+                if {![dict get $state IS_LOC_FIXED]} {
+                    error "Placed ancestor has an unfixed port: $name"
+                }
+            }
+        } finally {
+            catch {close_design}
+            open_checkpoint $checkpoint_path
+        }
+        restore_port_constraints $original
+        puts "FROST_LOCAL_PLACE recovered [dict size $original] port flags from $reference_path; pins and I/O standards unchanged"
+        return 1
+    }
+
     proc exact_objects {command names} {
         if {![llength $names]} {return {}}
         set result [$command -quiet $names]
@@ -61,7 +136,7 @@ namespace eval ::frost_x3_local_placement {
         set_property $restore_property \
             [dict create schema x3_placement_constraints_v1 flags [constraint_flags] \
                 protected_nets [protected_nets] fixed_routes [constrained_nets IS_ROUTE_FIXED] \
-                pblocks {}] [current_design]
+                ports [port_constraints] pblocks {}] [current_design]
     }
 
     proc constrain_guidance {guidance} {
@@ -119,6 +194,10 @@ namespace eval ::frost_x3_local_placement {
             error "Unknown saved placement constraints"
         }
         set original [dict get $saved flags]
+        # Older placed checkpoints did not record ports. Preserve their
+        # current pin constraints before the global unlock clears them.
+        set original_ports [port_constraints]
+        if {[dict exists $saved ports]} {set original_ports [dict get $saved ports]}
         foreach name [dict get $saved pblocks] {
             set pb [get_pblocks -quiet $name]
             if {[llength $pb] != 1} {error "Missing temporary placement pblock: $name"}
@@ -142,8 +221,9 @@ namespace eval ::frost_x3_local_placement {
         if {[constraint_flags] ne $original} {
             error "Original constraints were not restored"
         }
+        restore_port_constraints $original_ports
         reset_property $restore_property [current_design]
-        puts "FROST_LOCAL_PLACE restored original LOC/BEL/DONT_TOUCH constraints"
+        puts "FROST_LOCAL_PLACE restored original port and cell LOC/BEL/DONT_TOUCH constraints"
         return 1
     }
 

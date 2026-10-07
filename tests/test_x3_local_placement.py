@@ -35,6 +35,12 @@ set design {}
 set pblocks {}
 set nets [dict create net_protected [dict create NAME net_protected DONT_TOUCH 1 IS_ROUTE_FIXED 1] \
     net_movable [dict create NAME net_movable DONT_TOUCH 0 IS_ROUTE_FIXED 0]]
+set ports [dict create uart [dict create NAME uart PACKAGE_PIN AR24 LOC IOB_X0Y55 \
+    IOSTANDARD LVCMOS18 IS_LOC_FIXED 1] \
+    {data[0]} [dict create NAME {data[0]} PACKAGE_PIN AM35 LOC IOB_X0Y179 \
+    IOSTANDARD POD12_DCI IS_LOC_FIXED 1] \
+    movable [dict create NAME movable PACKAGE_PIN AP24 LOC IOB_X0Y54 \
+    IOSTANDARD LVCMOS18 IS_LOC_FIXED 0]]
 set scenario $::env(LOCAL_CASE)
 set fail_place 0
 set fail_cell {}
@@ -42,7 +48,9 @@ set corrupt_logic 0
 proc current_design {} {return design}
 proc list_property {object} {return [dict keys $::design]}
 proc create_property {args} {return [lindex $args end-1]}
-proc get_property {property objects} {
+proc get_property {args} {
+    if {[lindex $args 0] eq "-quiet"} {set args [lrange $args 1 end]}
+    lassign $args property objects
     if {$objects eq "design"} {return [dict get $::design $property]}
     if {$property eq "REF_PIN_NAME"} {return [file tail $objects]}
     set result {}
@@ -51,6 +59,8 @@ proc get_property {property objects} {
             lappend result [dict get $::pblocks $object $property]
         } elseif {[dict exists $::nets $object]} {
             lappend result [dict get $::nets $object $property]
+        } elseif {[dict exists $::ports $object]} {
+            lappend result [dict get $::ports $object $property]
         } else {lappend result [dict get $::model $object $property]}
     }
     if {[llength $result] == 1} {return [lindex $result 0]}
@@ -63,6 +73,10 @@ proc set_property {property value objects} {
             dict set ::pblocks $object $property $value
         } elseif {[dict exists $::nets $object]} {
             dict set ::nets $object $property $value
+        } elseif {[dict exists $::ports $object]} {
+            if {$::scenario ne "port_restore_failure"} {
+                dict set ::ports $object $property $value
+            }
         } else {
             if {$property eq "LOCK_PINS" && [dict get $::model $object LOC] ne "" &&
                 [dict get $::model $object LOCK_PINS] ne ""} {
@@ -95,6 +109,14 @@ proc get_cells {args} {
         } elseif {[regexp {^(\w+) == 1$} $filter -> property]} {
             if {[dict get $state $property]} {lappend result $name}
         } else {error "Unexpected cell query $args"}
+    }
+    return $result
+}
+proc get_ports {args} {
+    if {$args eq {-quiet}} {return [dict keys $::ports]}
+    set result {}
+    foreach name [lindex $args end] {
+        if {[dict exists $::ports $name]} {lappend result $name}
     }
     return $result
 }
@@ -145,6 +167,8 @@ proc lock_design {args} {
     foreach property {DONT_TOUCH IS_ROUTE_FIXED} {
         set_property $property $fixed [dict keys $::nets]
     }
+    # Vivado's global unlock also clears the user-assigned port LOC flags.
+    dict for {name state} $::ports {dict set ::ports $name IS_LOC_FIXED $fixed}
 }
 proc get_pblocks {args} {
     set name [lindex $args end]
@@ -209,9 +233,13 @@ switch -- $scenario {
         if {![catch {${ns}::require_placed $baseline} result] ||
             ![string match {*companion cell*} $result]} {error "Incomplete placement was scored"}
     }
-    release - constrain_guidance {
+    release - constrain_guidance - legacy_release {
         set flags [${ns}::constraint_flags]
+        set original_ports [${ns}::port_constraints]
         ${ns}::remember_constraints
+        if {$scenario eq "legacy_release"} {
+            dict unset design FROST_X3_PLACEMENT_CONSTRAINTS ports
+        }
         if {$scenario eq "constrain_guidance"} {
             ${ns}::remap $original SLICE_X12Y40/B6LUT {I0 A6 I1 A5 I2 A2}
             set chosen [${ns}::snapshot u/critical]
@@ -234,6 +262,7 @@ switch -- $scenario {
             set_property DONT_TOUCH 1 net_movable
         }
         if {![${ns}::release] || [${ns}::constraint_flags] ne $flags} {error "Original constraints were not restored"}
+        if {[${ns}::port_constraints] ne $original_ports} {error "Board pin constraints changed"}
         if {[dict size $pblocks]} {error "Temporary pblocks survived release"}
         if {[${ns}::protected_nets] ne {net_protected}} {error "Original net constraints were not restored"}
         if {[${ns}::constrained_nets IS_ROUTE_FIXED] ne {net_protected}} {error "Original fixed route was not restored"}
@@ -243,6 +272,48 @@ switch -- $scenario {
         ${ns}::remember_constraints
         dict unset model u/protected
         if {![catch {${ns}::release} result]} {error "Missing protected cell was ignored"}
+    }
+    missing_port - moved_port - changed_iostandard - port_restore_failure {
+        ${ns}::remember_constraints
+        switch -- $scenario {
+            missing_port {dict unset ports uart}
+            moved_port {dict set ports uart PACKAGE_PIN WRONG_PIN}
+            changed_iostandard {dict set ports uart IOSTANDARD LVCMOS33}
+        }
+        if {![catch {${ns}::release} result] || ![string match -nocase {*port*} $result]} {
+            error "Damaged board constraints were accepted: $result"
+        }
+        if {[${ns}::saved_constraints] eq ""} {error "Failed restoration lost its metadata"}
+    }
+    recover_routed - recover_moved_port - recover_bad_ancestor - recover_missing_ancestor - recover_already_fixed {
+        set input_path [file join [file dirname [info script]] final.dcp]
+        set reference_path [file join [file dirname $input_path] post_place.dcp]
+        dict set ports movable IS_LOC_FIXED 1
+        set reference_ports $ports
+        set expected [${ns}::port_constraints]
+        if {$scenario ne "recover_already_fixed"} {
+            dict for {name state} $ports {dict set ports $name IS_LOC_FIXED 0}
+        }
+        if {$scenario eq "recover_moved_port"} {dict set ports uart PACKAGE_PIN WRONG_PIN}
+        if {$scenario eq "recover_bad_ancestor"} {dict set reference_ports uart IS_LOC_FIXED 0}
+        set input_ports $ports
+        if {$scenario ni {recover_missing_ancestor recover_already_fixed}} {
+            close [open $reference_path w]
+        }
+        set opened {}
+        proc close_design {} {set ::ports {}}
+        proc open_checkpoint {path} {
+            lappend ::opened $path
+            if {$path eq $::reference_path} {set ::ports $::reference_ports} else {set ::ports $::input_ports}
+        }
+        set code [catch {${ns}::recover_unfixed_ports $input_path} result]
+        if {$scenario in {recover_routed recover_already_fixed}} {
+            if {$code || [${ns}::port_constraints] ne $expected} {error "Port recovery failed: $result"}
+            if {$scenario eq "recover_already_fixed" && [llength $opened]} {error "Reopened a correctly constrained checkpoint"}
+        } else {
+            if {!$code} {error "Invalid recovery was accepted"}
+            if {$ports ne $input_ports} {error "Rejected recovery changed input ports"}
+        }
     }
     missing_restoration_metadata {
         if {![catch {${ns}::verify .} result] ||
@@ -310,7 +381,17 @@ puts "PASS $scenario"
         "companion_unplaced",
         "release",
         "constrain_guidance",
+        "legacy_release",
         "missing_protected_cell",
+        "missing_port",
+        "moved_port",
+        "changed_iostandard",
+        "port_restore_failure",
+        "recover_routed",
+        "recover_moved_port",
+        "recover_bad_ancestor",
+        "recover_missing_ancestor",
+        "recover_already_fixed",
         "missing_restoration_metadata",
         "timing_guard",
         "hold_guard",
