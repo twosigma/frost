@@ -1590,7 +1590,10 @@ if {$step eq "synth"} {
                     }
                 }
 
-                if {$wns >= 0.0} {
+                # A tiny negative slack can round to zero. Require the full
+                # setup summary to agree before declaring timing closure.
+                if {$wns >= 0.0 && $tns ne "" && $tns >= 0.0 &&
+                    [get_failing_endpoint_count $pass_report] == 0} {
                     puts "  ** Timing met; stopping $step sweep early after $total_passes_run total phys_opt passes"
                     set early_exit 1
                     break

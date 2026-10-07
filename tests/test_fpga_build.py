@@ -2118,7 +2118,12 @@ proc unknown {cmd args} {
             return worst_path
         }
         get_property {
-            if {[lindex $args 0] eq "SLACK"} {return [model_wns]}
+            if {[lindex $args 0] eq "SLACK"} {
+                if {[info exists ::env(MODEL_ROUND_SLACK)]} {
+                    return [format %.3f [model_wns]]
+                }
+                return [model_wns]
+            }
             if {[lindex $args 0] eq "LOC" && $::placement_changed} {return changed_location}
             if {[lindex $args 0] eq "PRIMITIVE_LEVEL"} {
                 return [expr {[info exists ::env(MODEL_MACRO_ALIAS)] ? "MACRO" : "LEAF"}]
@@ -2173,6 +2178,7 @@ def _run_physopt_sweep_model(
     bad_release: str | None = None,
     macro_alias: bool = False,
     endpoint_result: str | None = None,
+    round_slack: bool = False,
 ) -> tuple[str, list[str], Path]:
     """Sweep one phys-opt stage; return its stdout, trace and main work dir."""
     model = tmp_path / "physopt_model.tcl"
@@ -2208,6 +2214,8 @@ def _run_physopt_sweep_model(
         env["MODEL_BAD_RELEASE"] = bad_release
     if macro_alias:
         env["MODEL_MACRO_ALIAS"] = "1"
+    if round_slack:
+        env["MODEL_ROUND_SLACK"] = "1"
     if endpoint_result is not None:
         env["MODEL_ENDPOINT_RESULT"] = endpoint_result
         env["FROST_PHYSOPT_SWEEP_ORDER"] = ""
@@ -2231,6 +2239,19 @@ def _run_physopt_sweep_model(
     else:
         assert result.returncode == 0, result.stdout + result.stderr
     return result.stdout, trace.read_text().splitlines(), tmp_path / "work"
+
+
+@pytest.mark.parametrize("true_wns", (-0.00004, 0.0, 0.00004))
+def test_physopt_closure_requires_zero_failing_setup_endpoints(
+    tmp_path: Path, true_wns: float
+) -> None:
+    """Rounded zero WNS/TNS must not hide a remaining setup violation."""
+    stdout, trace, _ = _run_physopt_sweep_model(
+        tmp_path, "post_second_route_physopt", true_wns, round_slack=True
+    )
+    assert ("Timing met; stopping" in stdout) == (true_wns >= 0.0)
+    passes = [line for line in trace if line.startswith("phys_opt_design")]
+    assert len(passes) == (1 if true_wns >= 0.0 else 2)
 
 
 @pytest.mark.parametrize("endpoint_result", ("legal", "illegal", "error"))

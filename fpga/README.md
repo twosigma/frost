@@ -232,6 +232,8 @@ The search uses the current timing report, with no fixed cell list. An improveme
 restarts the normal sweep; otherwise it restores the best checkpoint and
 stops at convergence. A failed endpoint optimization or constraint cleanup
 also discards that candidate by reopening the saved best checkpoint.
+Declaring setup timing met requires nonnegative WNS and TNS and zero failing
+setup endpoints; a negative slack rounded to zero cannot end the sweep early.
 A custom `FROST_PHYSOPT_SWEEP_ORDER` replaces this
 default schedule.
 
