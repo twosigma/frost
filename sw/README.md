@@ -219,7 +219,10 @@ In the BRAM tier the harness normally runs each program twice, with a reset
 but no reload in between, so a program must reinitialize its own state. `crt0.S`
 restores `.data` and clears the BSS sections, but `.ddr_data` is not
 reinitialized and may still hold writes from the first run. DDR-tier
-programs run once.
+programs run once. The long CoreMark-PRO `loops` and `nnet` simulations also
+run once in BRAM to fit CI's six-hour job limit. They retain full workload
+verification and the final success-marker check; they do not exercise the
+second run after reset.
 
 ```bash
 ./scripts/frost.py cocotb hello_world                               # simulate from low BRAM

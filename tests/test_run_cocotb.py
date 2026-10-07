@@ -91,15 +91,18 @@ MAKEFILE_BUILD_VARIABLES = (
 
 # Per-workload simulation settings. test_real_program sees every CoreMark-PRO
 # workload under its build directory's name, coremark_pro, so a workload's own
-# cycle budget has to come from its registry entry. loops runs its
-# single-precision loops on the iterative FP engine: 14.9M cycles from BRAM
-# and 15.3M in the DDR tier. It runs once in both tiers, since a second BRAM
-# run would double a CI job that already approaches the six-hour job limit.
+# cycle budget and run count have to come from its registry entry. loops
+# takes 14.9M cycles from BRAM and 15.3M from DDR; nnet takes about 12.9M.
+# Both run once in either tier. Two nnet BRAM runs exceed CI's six-hour job
+# limit even while making progress. Each retained run still checks the full
+# workload's verification and success marker; other BRAM programs cover reset
+# and rerun.
 COREMARK_PRO_SIMULATION_ENV: dict[str, tuple[tuple[str, str], ...]] = {
     "coremark_pro_loops": (
         ("COCOTB_COREMARK_MAX_CYCLES", "20000000"),
         ("COCOTB_NUM_RUNS", "1"),
     ),
+    "coremark_pro_nnet": (("COCOTB_NUM_RUNS", "1"),),
 }
 
 COREMARK_PRO_TESTS = {
