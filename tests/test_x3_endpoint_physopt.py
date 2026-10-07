@@ -262,6 +262,7 @@ proc get_property {property cell} {
 namespace eval frost_x3_local_placement {
     proc pin_map {cell} {
         if {$cell eq "cpu/fast"} {return {I0 A6 I1 A2}}
+        if {$cell eq "cpu/almost_fast"} {return {I0 A5 I1 A2}}
         return {I0 A2 I1 A6}
     }
 }
@@ -271,6 +272,7 @@ Slack (VIOLATED) : -0.012ns
     SLICE_X1Y1 r cpu/locked/I0
     SLICE_X2Y2 r cpu/shared/I0
     SLICE_X1Y1 f cpu/fast/I0
+    SLICE_X1Y1 r cpu/almost_fast/I0
     SLICE_X1Y1 r cpu/near_endpoint/I0
 Slack (VIOLATED) : -0.008ns
     SLICE_X1Y1 r cpu/slow/I0
@@ -280,7 +282,7 @@ Slack (MET) : 0.010ns
 puts [frost_x3_endpoint_physopt::pin_candidates $report]
 """
     output = run_tcl(tmp_path, model)
-    assert output.strip() == "cpu/near_endpoint/I0 cpu/slow/I0"
+    assert output.strip() == "cpu/near_endpoint/I0 cpu/almost_fast/I0 cpu/slow/I0"
 
 
 @pytest.mark.parametrize(

@@ -224,8 +224,8 @@ optimization pass targets failing clock-enable endpoints separately and
 preserves every clock's period and waveform. With at most 24 failing CPU
 endpoints, the flow tries clock optimization for each remaining endpoint
 individually, accepting only whole-design improvements. An automatic LUT
-pin search then tries faster physical inputs
-along the reported critical paths. It preserves the LUT functions,
+pin search then tries faster physical inputs along the reported critical
+paths, including A5-to-A6 changes for the last few picoseconds. It preserves the LUT functions,
 connectivity, placement, clock routes, board pins, and existing constraints;
 each trial must improve whole-design WNS, or TNS at tied WNS, to be retained.
 The search uses the current timing report, with no fixed cell list. An improvement

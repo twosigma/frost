@@ -132,7 +132,8 @@ namespace eval frost_x3_endpoint_physopt {
             set mapping [frost_x3_local_placement::pin_map $cell]
             set logical [get_property REF_PIN_NAME $pin]
             if {![dict exists $mapping $logical]} {continue}
-            if {[dict get $mapping $logical] ni {A1 A2 A3 A4}} {continue}
+            # A5 can still benefit from A6 when only a few picoseconds remain.
+            if {[dict get $mapping $logical] ni {A1 A2 A3 A4 A5}} {continue}
             dict set seen $name 1
         }
     }
