@@ -163,6 +163,67 @@ namespace eval frost_x3_endpoint_physopt {
         }
     }
 
+    proc clock_routes {} {
+        # Clock definitions alone omit distribution nets after a clock buffer.
+        # Include the nets feeding clock pins, but exclude constant-tied pins.
+        # This also preserves clocks internal to device primitives, even when
+        # they have no separate timing-clock object. Snapshot every alias before
+        # changing any fixed-route flag, then deduplicate and sort the names.
+        set pins [get_pins -hier -filter {IS_CLOCK && DIRECTION == IN}]
+        set nets [concat [get_nets -of_objects [get_clocks]] \
+            [get_nets -of_objects $pins]]
+        set nets [get_nets -top_net_of_hierarchical_group $nets]
+        set routes [dict create]
+        foreach net $nets {
+            set name [get_property NAME $net]
+            if {[dict exists $routes $name] ||
+                [get_property TYPE $net] in {GROUND POWER}} {continue}
+            set route [get_property ROUTE $net]
+            if {$route eq ""} {continue}
+            set nodes [get_nodes -quiet -of_objects $net]
+            set pips [get_pips -quiet -of_objects $net]
+            if {[llength $nodes]} {set nodes [lsort -unique [get_property NAME $nodes]]}
+            if {[llength $pips]} {set pips [lsort -unique [get_property NAME $pips]]}
+            dict set routes $name [list $route [get_property FIXED_ROUTE $net] \
+                [string is true -strict [get_property IS_ROUTE_FIXED $net]] $nodes $pips]
+        }
+        set result [dict create]
+        foreach name [lsort [dict keys $routes]] {
+            dict set result $name [dict get $routes $name]
+        }
+        return $result
+    }
+
+    proc restore_clock_routes {routes} {
+        set after [clock_routes]
+        if {[dict keys $after] ne [dict keys $routes]} {
+            error "LUT pin refinement changed the clock network"
+        }
+        dict for {name saved} $routes {
+            # ROUTE is a tree whose branch order can change during checkpoint
+            # serialization. The physical nodes and PIPs define the routing.
+            if {[lrange [dict get $after $name] 3 end] ne [lrange $saved 3 end]} {
+                error "LUT pin refinement changed clock routing: $name"
+            }
+        }
+        dict for {name saved} $routes {
+            lassign $saved route fixed_route fixed
+            set net [frost_x3_local_placement::exact_objects get_nets [list $name]]
+            set_property IS_ROUTE_FIXED false $net
+            restore_property FIXED_ROUTE $fixed_route $net
+            set_property IS_ROUTE_FIXED $fixed $net
+        }
+        set restored [clock_routes]
+        if {[dict keys $restored] ne [dict keys $routes]} {
+            error "LUT pin refinement did not restore the clock network"
+        }
+        dict for {name saved} $routes {
+            if {[lrange [dict get $restored $name] 1 end] ne [lrange $saved 1 end]} {
+                error "LUT pin refinement did not restore clock routing constraints: $name"
+            }
+        }
+    }
+
     proc remap_routed_pin {pin_name target} {
         set pin [frost_x3_local_placement::exact_objects get_pins [list $pin_name]]
         set cell [get_cells -of_objects $pin]
@@ -187,20 +248,12 @@ namespace eval frost_x3_endpoint_physopt {
         set ports [frost_x3_local_placement::port_constraints]
         set clocks [clock_signature]
         set unplaced [frost_x3_local_placement::unplaced]
-        set routes [dict create]
-        foreach alias [get_nets -of_objects [get_clocks]] {
-            set net [get_nets -top_net_of_hierarchical_group \
-                [list [get_property NAME $alias]]]
-            if {[llength $net] != 1} {error "Ambiguous clock net: $alias"}
-            set name [get_property NAME $net]
-            if {[dict exists $routes $name]} {continue}
-            set route [get_property ROUTE $net]
-            if {$route eq ""} {continue}
-            dict set routes $name [list $route [get_property FIXED_ROUTE $net] \
-                [string is true -strict [get_property IS_ROUTE_FIXED $net]]]
-            set_property IS_ROUTE_FIXED true $net
-        }
+        set routes [clock_routes]
         if {![dict size $routes]} {error "No clock routes to preserve"}
+        dict for {name saved} $routes {
+            set_property IS_ROUTE_FIXED true \
+                [frost_x3_local_placement::exact_objects get_nets [list $name]]
+        }
         # The caller reopens its best checkpoint on any error, including a
         # routing failure. No partially restored candidate can be retained.
         route_design -unroute -pins [get_pins -of_objects $cell -filter {DIRECTION == IN}]
@@ -209,16 +262,7 @@ namespace eval frost_x3_endpoint_physopt {
             [dict get $state LOC]/[dict get $state BEL] $mapping
         frost_x3_local_placement::require_placed $unplaced
         route_design -preserve
-        dict for {name saved} $routes {
-            lassign $saved route fixed_route fixed
-            set net [frost_x3_local_placement::exact_objects get_nets [list $name]]
-            if {[get_property ROUTE $net] ne $route} {
-                error "LUT pin refinement changed clock routing: $name"
-            }
-            set_property IS_ROUTE_FIXED false $net
-            restore_property FIXED_ROUTE $fixed_route $net
-            set_property IS_ROUTE_FIXED $fixed $net
-        }
+        restore_clock_routes $routes
         set cell [frost_x3_local_placement::cell $cell_name]
         if {[frost_x3_local_placement::signature $cell] ne [dict get $state logic] ||
             [frost_x3_local_placement::pin_map $cell] ne $mapping ||

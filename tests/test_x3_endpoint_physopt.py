@@ -411,3 +411,87 @@ puts "RESULT accepted=$result ports=$ports period=$period uncertainty=$uncertain
     assert "ports=original period=3.103 uncertainty=0.0 groups=0" in output
     assert f"RESULT accepted={int(case == 'success')}" in output
     assert output.strip().endswith(f"tns={-0.100 if case == 'success' else -0.151:.3f}")
+
+
+@pytest.mark.parametrize("changed", ("none", "format", "physical"))
+def test_pin_trials_guard_buffered_clock_routes_and_restore_existing_flags(
+    tmp_path: Path, changed: str
+) -> None:
+    """Clock definitions alone must not omit the net after a global buffer."""
+    model = r"""
+source $::env(ENDPOINT_SCRIPT)
+set routes [dict create source SOURCE buffered DISTRIBUTION ground GROUND]
+set fixed_routes [dict create source "" buffered DISTRIBUTION ground ""]
+set fixed [dict create source 0 buffered 1 ground 0]
+proc get_pins {args} {return {clock_pin tied_pin}}
+proc get_nets {args} {
+    if {[lsearch -exact $args -top_net_of_hierarchical_group] >= 0} {
+        return [lindex $args end]
+    }
+    if {[lsearch -exact $args -of_objects] >= 0} {
+        if {[lindex $args end] eq "clock"} {return source}
+        return {buffered buffered ground}
+    }
+    return [lindex $args end]
+}
+proc get_clocks {args} {
+    if {[lsearch -exact $args -of_objects] >= 0 && [lindex $args end] eq "ground"} {
+        return {}
+    }
+    return clock
+}
+proc get_property {property object} {
+    switch -- $property {
+        NAME {return $object}
+        TYPE {
+            if {$object eq "ground"} {return GROUND}
+            return GLOBAL_CLOCK
+        }
+        ROUTE {return [dict get $::routes $object]}
+        FIXED_ROUTE {return [dict get $::fixed_routes $object]}
+        IS_ROUTE_FIXED {return [dict get $::fixed $object]}
+    }
+    error "Unexpected property $property"
+}
+proc get_nodes {args} {
+    set object [lindex $args end]
+    if {[dict get $::routes $object] eq "REROUTED"} {return moved_node}
+    if {[dict get $::routes $object] eq "REORDERED"} {return {leaf root}}
+    return {root leaf}
+}
+proc get_pips {args} {return root_to_leaf}
+proc set_property {property value object} {
+    set object [lindex $object 0]
+    switch -- $property {
+        IS_ROUTE_FIXED {dict set ::fixed $object [string is true -strict $value]}
+        FIXED_ROUTE {dict set ::fixed_routes $object $value}
+        default {error "Unexpected property $property"}
+    }
+}
+proc reset_property {property object} {set_property $property "" $object}
+namespace eval frost_x3_local_placement {
+    proc exact_objects {command names} {return $names}
+}
+set before [frost_x3_endpoint_physopt::clock_routes]
+puts "GUARDED [dict keys $before]"
+dict for {name saved} $before {set_property IS_ROUTE_FIXED true $name}
+if {$::env(CHANGED) eq "physical"} {dict set routes buffered REROUTED}
+if {$::env(CHANGED) eq "format"} {dict set routes buffered REORDERED}
+set failed [catch {frost_x3_endpoint_physopt::restore_clock_routes $before} result]
+puts "RESULT failed=$failed result=$result"
+if {!$failed} {
+    set after [frost_x3_endpoint_physopt::clock_routes]
+    set restored 1
+    dict for {name saved} $before {
+        if {[lrange [dict get $after $name] 1 end] ne [lrange $saved 1 end]} {set restored 0}
+    }
+    puts "RESTORED $restored"
+}
+"""
+    output = run_tcl(tmp_path, model, CHANGED=changed)
+    assert "GUARDED buffered source" in output
+    assert f"RESULT failed={int(changed == 'physical')}" in output
+    if changed == "physical":
+        assert "changed clock routing: buffered" in output
+    else:
+        assert "RESTORED 1" in output
