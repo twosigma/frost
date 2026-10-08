@@ -3012,7 +3012,8 @@ def run_step(
 
     Returns (success, wns_ns, actual_report_prefix). actual_report_prefix is
     "final" when the step's outputs were promoted to final.dcp/final_*.rpt
-    (final-eligible step + WNS>=0, or post_second_route_physopt unconditionally),
+    (final-eligible step with setup timing met, or post_second_route_physopt
+    unconditionally),
     otherwise the step's own prefix from STEP_REPORT_PREFIX.
     """
     board_build = build_dir if build_dir is not None else script_dir / board_name
@@ -3330,10 +3331,10 @@ Behavior:
   * Every phys_opt stage runs an ordinary directive sweep that starts with
     AggressiveExplore and ends with one retime-only pass
     (phys_opt_design -retime). Each sweep keeps WNS improvements and TNS
-    improvements when WNS is tied, and stops
-    early if a pass closes timing (WNS>=0). Sweeps repeat while they keep
-    improving, and each completed sweep writes the current best checkpoint
-    and reports.
+    improvements when WNS is tied, and stops early if a pass closes setup
+    timing: WNS and TNS must be nonnegative, with zero failing setup endpoints.
+    Sweeps repeat while they keep improving, and each completed sweep writes
+    the current best checkpoint and reports.
   * Phys-opt and routing, including quick-route probes and resumed builds,
     remove inherited incremental history before optimizing. The conversion
     preserves primitive placement and setup/hold slack, and leaves the input
@@ -3345,7 +3346,11 @@ Behavior:
   * X3 final phys-opt: after the ordinary sweep stalls, the default schedule
     also tries endpoint groups with a temporary 30 ps setup margin. It removes
     the groups and margin before scoring WNS/TNS, and requires legal routing,
-    hold, and pulse-width timing before retaining an endpoint pass.
+    hold, pulse-width, and bus-skew timing before retaining an endpoint pass.
+    With at most 24 failing CPU endpoints, it also tries individual clock
+    optimization, LUT pin assignments, and routing shared data nets with their
+    critical sink first. Candidates come from the current timing report and
+    must improve whole-design timing while preserving existing constraints.
 
 Synthesis and optimization use tuned defaults unless overridden with --*-directive.
 --route-directive controls the first route on non-x3 boards (default AggressiveExplore);
