@@ -228,9 +228,9 @@ pin search then tries faster physical inputs along the reported critical
 paths, including A5-to-A6 changes for the last few picoseconds. It preserves the LUT functions,
 connectivity, placement, clock routes, board pins, and existing constraints;
 each trial must improve whole-design WNS, or TNS at tied WNS, to be retained.
-The search uses the current timing report, with no fixed cell list. An improvement
-restarts the normal sweep; otherwise it restores the best checkpoint and
-continues to a routing fallback. That fallback rebuilds shared data nets on
+The search uses the current timing report, with no fixed cell list, and restores
+the best checkpoint after each unsuccessful trial. The flow then tries a routing
+fallback for any remaining eligible paths. That fallback rebuilds shared data nets on
 failing paths, routing the critical sink first and temporarily fixing that
 branch while completing the other sinks. Unlike rerouting one sink alone,
 this can replace a slow shared trunk. It preserves cell placement, clock
@@ -242,8 +242,9 @@ generation saves `final_bus_skew.rpt` and refuses a bus-skew violation or an
 incomplete report, including a violation whose displayed slack rounds to zero.
 Candidates come from the current timing report, with 2–128 sinks and at least
 100 ps of connection delay; prescribed physical routes are excluded. Each
-shared net is tried once per fallback pass. The sweep stops at convergence
-when these passes produce no improvement. A failed endpoint optimization or
+shared net is tried once per fallback pass. After the endpoint passes, a retained
+WNS improvement or TNS improvement at tied WNS restarts the normal sweep. The
+sweep stops at convergence when all passes produce no improvement. A failed endpoint optimization or
 constraint cleanup also discards that candidate by reopening the saved best
 checkpoint.
 Declaring setup timing met requires nonnegative WNS and TNS and zero failing
