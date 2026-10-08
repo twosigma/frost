@@ -249,8 +249,10 @@ checkpoint.
 Declaring setup timing met requires nonnegative WNS and TNS and zero failing
 setup endpoints. This applies to sweep termination, final-checkpoint promotion,
 and skipping subsequent routing stages. A negative slack rounded to zero cannot
-end the flow early. Removing the final setup violation is retained even when
-the displayed WNS and TNS tie the previous failing result.
+end the flow early. Pin and routing searches also retain paths marked
+`VIOLATED` when their displayed slack rounds to zero. Removing the final setup
+violation is retained even when the displayed WNS and TNS tie the previous
+failing result.
 A custom `FROST_PHYSOPT_SWEEP_ORDER` replaces this
 default schedule.
 

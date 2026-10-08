@@ -341,8 +341,10 @@ puts "RESULT failed=$failed bitstream=[file exists x3_frost.bit] reason=$result"
         assert "Incomplete bus-skew report" in output
 
 
+@pytest.mark.parametrize("rounded_zero", (False, True))
 def test_pin_candidates_follow_failing_paths_and_respect_existing_constraints(
     tmp_path: Path,
+    rounded_zero: bool,
 ) -> None:
     """Select critical pins while excluding locks, shared LUTs, and passing paths."""
     model = r"""
@@ -395,6 +397,12 @@ Slack (MET) : 0.010ns
 }
 puts [frost_x3_endpoint_physopt::pin_candidates $report]
 """
+    if rounded_zero:
+        model = (
+            model.replace("-0.012ns", "-0.000ns")
+            .replace("-0.008ns", "0.000ns")
+            .replace("0.010ns", "0.000ns")
+        )
     output = run_tcl(tmp_path, model)
     assert output.strip() == "cpu/near_endpoint/I0 cpu/almost_fast/I0 cpu/slow/I0"
 
@@ -471,8 +479,10 @@ puts [frost_x3_endpoint_physopt::route_net_eligible data]
     assert output.strip() == str(int(expected))
 
 
+@pytest.mark.parametrize("rounded_zero", (False, True))
 def test_route_candidates_keep_worst_sink_and_skip_irrelevant_paths(
     tmp_path: Path,
+    rounded_zero: bool,
 ) -> None:
     """Rank shared critical connections by delay without retrying net aliases."""
     model = r"""
@@ -515,6 +525,12 @@ Slack (MET) : 0.002ns
 }
 puts [frost_x3_endpoint_physopt::route_candidates $report]
 """
+    if rounded_zero:
+        model = (
+            model.replace("-0.005ns", "-0.000ns")
+            .replace("-0.003ns", "0.000ns")
+            .replace("0.002ns", "0.000ns")
+        )
     assert run_tcl(tmp_path, model).strip() == "cpu/other/I0 cpu/a/I0"
 
 

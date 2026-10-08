@@ -115,9 +115,9 @@ namespace eval frost_x3_endpoint_physopt {
         return 1
     }
 
-    proc append_pin_candidates {pins slack seen_name} {
+    proc append_pin_candidates {pins failing seen_name} {
         upvar 1 $seen_name seen
-        if {$slack >= 0} {return}
+        if {!$failing} {return}
         # Work back from each endpoint. Shared upstream pins are tried once.
         foreach name [lreverse $pins] {
             if {[dict exists $seen $name]} {continue}
@@ -144,18 +144,20 @@ namespace eval frost_x3_endpoint_physopt {
     proc pin_candidates {report} {
         set seen [dict create]
         set pins {}
-        set slack 0
+        set failing 0
         foreach line [split $report "\n"] {
-            if {[regexp {^Slack[^:]*:\s*([-0-9.]+)ns} $line -> next]} {
-                append_pin_candidates $pins $slack seen
+            if {[regexp {^Slack \((MET|VIOLATED)\)\s*:\s*([-0-9.]+)ns} $line -> status slack]} {
+                append_pin_candidates $pins $failing seen
                 set pins {}
-                set slack $next
+                # A real violation can display as -0.000 ns. The report's
+                # status preserves that distinction from an exactly met path.
+                set failing [expr {$status eq "VIOLATED" || $slack < 0}]
             }
             if {[regexp {^\s+SLICE_X[0-9]+Y[0-9]+\s+[rf]\s+(\S+/I[0-9]+)$} $line -> pin]} {
                 lappend pins $pin
             }
         }
-        append_pin_candidates $pins $slack seen
+        append_pin_candidates $pins $failing seen
         return [dict keys $seen]
     }
 
@@ -301,7 +303,8 @@ namespace eval frost_x3_endpoint_physopt {
         if {![regexp {WNS\(ns\)[^\n]*\n[^\n]*\n\s*([-0-9.]+)\s+([-0-9.]+)\s+(\d+)} $report -> wns tns failing]} {
             error "Missing setup summary for routed refinement"
         }
-        # Use the same unrounded worst-path slack as the enclosing sweep.
+        # Use the same worst-path SLACK property as the enclosing sweep, and
+        # keep the endpoint count to resolve a displayed zero at the boundary.
         return [list [frost_x3_local_placement::slack -delay_type max] $tns $failing]
     }
 

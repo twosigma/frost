@@ -27,14 +27,14 @@ namespace eval frost_x3_endpoint_physopt {
 
     proc route_candidates {report} {
         set candidates [dict create]
-        set slack 0
+        set failing 0
         set pending {}
         foreach line [split $report "\n"] {
-            if {[regexp {^Slack[^:]*:\s*([-0-9.]+)ns} $line -> value]} {
-                set slack $value
+            if {[regexp {^Slack \((MET|VIOLATED)\)\s*:\s*([-0-9.]+)ns} $line -> status slack]} {
+                set failing [expr {$status eq "VIOLATED" || $slack < 0}]
                 set pending {}
             }
-            if {$slack >= 0} {continue}
+            if {!$failing} {continue}
             if {[regexp {net \(fo=([0-9]+), routed\)\s+([-0-9.]+)\s+[-0-9.]+\s+\S+} $line -> fanout delay]} {
                 set pending {}
                 if {$delay >= 0.100 && $fanout >= 2 && $fanout <= 128} {
