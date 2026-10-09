@@ -12,11 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Fetch ILA procedures (build.py --debug-ila), shared by the standalone
-# capture script and the loader's hooks. They act on an open hardware
-# target: the caller has connected and selected the device. Arming, waiting,
-# and collecting must share one session: refresh_hw_device, which every new
-# session performs to see the ILA, resets an armed ILA.
+# Fetch ILA helpers for standalone capture and loader hooks (build.py --debug-ila).
+# The caller connects and selects the device. Arm, wait, and collect in one
+# session because refresh_hw_device resets an armed ILA.
 
 proc frost_ila_attach {ltx_file} {
     # Attach the probes file and return the ILA (error if none).

@@ -284,11 +284,9 @@ class Controller {
                     try {
                         await loader.wait(settings.toolTimeoutMs, signal);
                     } finally {
-                        // A cancelled or failed loader may already have written
-                        // BRAM. Confirm it cannot write again before starting
-                        // the full reset interval. Keep this operation active
-                        // through settling so a following Attach cannot send
-                        // DMI while the previous load still holds the DM reset.
+                        // A failed loader may have written BRAM. Stop it before
+                        // the full reset wait, and keep this operation active so
+                        // a later Attach cannot send DMI while the DM is reset.
                         await this.hardware.stop(loader);
                         await this.serial.afterJtag();
                         progress('Waiting for image-load reset to release');

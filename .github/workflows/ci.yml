@@ -67,8 +67,7 @@ jobs:
           path: /tmp/frost-dev.tar
           retention-days: 1
 
-  # Run real-program shards independently in both memory tiers. Keep the long
-  # benchmarks/torture runs separate and group matching custom Verilator builds.
+  # Run programs in both memory tiers; separate long runs and group matching builds.
   # CPU architecture comes from the shared RTL defaults used by FPGA builds.
   # Unit benches and DDR probes/fetch fuzz run only on the BRAM axis.
   test-verilator:
@@ -173,8 +172,7 @@ jobs:
                 [ddr_test] or [ddr_exec_test] or [ddr_smc_test] or [ddr_heap_test] or [ddr_mlp_test]
                 or [ddr_atomic_test] or [hello_world_fetch_fuzz] or [branch_pred_test_fetch_fuzz] or
                 [c_ext_test_fetch_fuzz] or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz]
-          # OpenSBI smoke: the firmware boot alone runs for millions of cycles,
-          # and its images have a fixed layout, so it gets one runner on one axis.
+          # OpenSBI smoke uses a fixed image layout and a separate long-running job.
           - mem_config: bram
             shard:
               name: Real Programs (OpenSBI smoke)
@@ -266,11 +264,8 @@ jobs:
             tests/net10g/sim_build/synthesis/summary.json
             tests/net10g/sim_build/synthesis/synthesis.ys
 
-  # Architecture tests by extension and execution tier:
-  #   bram - code + data + signature in low BRAM (pure ISA conformance, the
-  #          low tier programs use when they fit).
-  #   ddr  - code + data + signature in cached DDR (also exercises the L1I
-  #          fetch path and the D-side cached tier on every load/store).
+  # Architecture tests by extension: bram puts code, data, and signatures in low
+  # BRAM; ddr puts them in cached DDR to exercise instruction and data caches.
   # Local-only ``icache`` (code in DDR, data/signature in BRAM) isolates fetch;
   # it is diagnostic, not a compliance target.
   test-arch-compliance:
@@ -292,9 +287,7 @@ jobs:
         exclude:
           - extension: Zifencei
             mem_config: bram
-        # F and D run in BRAM only, split into shards balanced by case count
-        # (--shard K/N). Their DDR batches exceed hosted-runner budgets; the
-        # other DDR tiers cover the cache path.
+        # F and D use BRAM shards (--shard K/N); DDR batches exceed runner budgets.
         include:
           - {extension: F, mem_config: bram, shard: 1/4}
           - {extension: F, mem_config: bram, shard: 2/4}
@@ -323,9 +316,7 @@ jobs:
           rm -f /tmp/frost-dev.tar
 
       - name: Run arch compliance tests (${{ matrix.extension }} / ${{ matrix.mem_config }}${{ matrix.shard && format(' / {0}', matrix.shard) || '' }})
-        # The F and D shards' tests take minutes each in bram, so an hour per
-        # test (FROST_ARCH_SIM_TIMEOUT_SEC) keeps one hung test from using up
-        # the job. The runner's default is sized for the largest tests in DDR.
+        # Bound each F/D test to one hour; the runner default allows longer DDR runs.
         run: |
           docker run --rm ${{ matrix.shard && '-e FROST_ARCH_SIM_TIMEOUT_SEC=3600' || '' }} \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
@@ -333,10 +324,8 @@ jobs:
               --mem-config ${{ matrix.mem_config }} \
               ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
 
-  # riscv-tests ISA suites by memory tier and environment. p = physical, no
-  # kernel (the -p variants). v = demand-paged Sv39 user code under the env_v
-  # supervisor kernel (the -v variants: translated fetch and data, delegated
-  # page faults, Svade A/D handling); v runs on DDR only, user-level suites only.
+  # riscv-tests: p runs physically without a kernel; v runs user suites on DDR
+  # under env_v's Sv39 supervisor, with delegated page faults and Svade A/D handling.
   test-riscv-tests:
     name: riscv-tests (${{ matrix.suite }} / ${{ matrix.mem_config }} / ${{ matrix.env }})
     runs-on: ubuntu-26.04
@@ -414,9 +403,8 @@ jobs:
             python3 tests/test_riscv_tests.py --benchmarks ${{ matrix.benchmark }} \
               --mem-config ${{ matrix.mem_config }}
 
-  # RV64 riscv-torture corpus against Spike references, by memory tier, plus
-  # the paged environment (S-mode under an Sv39 identity map: every fetch and
-  # data access of the random stream translated; ddr only).
+  # Compare RV64 torture with Spike in both tiers; the DDR-only paged run uses
+  # an S-mode Sv39 identity map for all instruction and data accesses.
   test-riscv-torture:
     name: riscv-torture Tests (${{ matrix.mem_config }}${{ matrix.paged && ' / paged' || '' }})
     runs-on: ubuntu-26.04
@@ -575,24 +563,15 @@ jobs:
               -m "not cocotb and not synthesis and not formal and not slow" -v
 
   # ---------------------------------------------------------------------------
-  # MMU Linux images: OpenSBI fw_jump, Debian's pinned riscv64 kernel, and the
-  # musl test-initramfs userspace. Buildroot builds no kernel; OpenSBI and the
-  # userspace come from the linux/opensbi and linux/buildroot submodules through
-  # the FROST BR2_EXTERNAL tree, and the kernel and the NIC module built for it
-  # come from linux/debian_kernel.py, which the post-image hook runs. That hook
-  # also runs frost_boot_image.py (firmware at +0, Image at +2 MiB, DTB at
-  # +16 MiB or the first 2 MiB boundary past a larger Image, initramfs after
-  # it), so a broken packer fails this job. The artifact carries the pieces, not
-  # the packed images; load_software.py packs them again for a board. Simulating
-  # this kernel on the RTL is too slow, so Linux is checked on the board (the
-  # hardware regression's Linux stage and fpga/linux_boot_soak.py) and, in CI,
-  # by the QEMU job below.
+  # Build OpenSBI and musl userspace through the FROST BR2_EXTERNAL tree.
+  # The post-image hook supplies Debian's pinned kernel and NIC module via
+  # linux/debian_kernel.py, then checks packing with frost_boot_image.py.
+  # Upload the components for QEMU and board-specific repacking by load_software.py.
   build-frost-linux-mmu:
     name: Build FROST MMU Linux Image (Debian kernel + Buildroot userspace + OpenSBI)
     runs-on: ubuntu-26.04
     needs: build-docker
-    # No kernel is built: the time goes to the Bootlin toolchain and Debian
-    # package downloads, the userspace, OpenSBI, and the NIC module.
+    # Allow for cold toolchain and package downloads as well as compilation.
     timeout-minutes: 60
     env:
       BR2_DEFCONFIG_NAME: frost_rv64_defconfig
@@ -631,8 +610,7 @@ jobs:
           restore-keys: |
             br2-ccache-mmu-${{ hashFiles('Dockerfile', 'linux/buildroot-external/configs/**') }}-
 
-      # Debian's kernel packages, keyed on the file that pins them, so a bumped
-      # pin fetches once and every later run reuses the download.
+      # Invalidate the package cache when the pin changes.
       - name: Cache the Debian kernel packages
         uses: actions/cache@v6.1.0
         with:
@@ -658,9 +636,7 @@ jobs:
               ls -l ${{ env.BUILD_DIR }}/images/
             '
 
-      # Image-debian and rootfs-frost.cpio are exactly what the post-image hook
-      # packed, so the QEMU job below boots the packed pair rather than
-      # reassembling it.
+      # QEMU must boot the same kernel and initramfs that the post-image hook packed.
       - name: Upload FROST MMU Linux boot images
         uses: actions/upload-artifact@v7.0.1
         with:
@@ -675,13 +651,9 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # Boot the same kernel and initramfs under QEMU twice: with QEMU's bundled
-  # OpenSBI (an independent reference) and with the FROST-built fw_jump (the
-  # firmware artifact on a second platform). Both boots must print the NIC
-  # module's load token and the userspace stress token and reach the login
-  # prompt. The init script prints the load token only when the running kernel
-  # is the pinned Debian release and the module built against its headers
-  # loads.
+  # Boot with QEMU's bundled OpenSBI and FROST's fw_jump. Require login and both
+  # module-load and stress tokens. The module loader checks the running kernel
+  # against the pinned release before printing its token.
   linux-boot-qemu-mmu:
     name: QEMU MMU Linux Boot (bundled and FROST OpenSBI)
     runs-on: ubuntu-26.04
@@ -713,18 +685,14 @@ jobs:
           docker run --rm -v /tmp/frost-linux-images:/img frost-dev:latest \
             bash -c '
               set -euo pipefail
-              # The Dockerfile checks that the image has this binary, so a miss
-              # means this container is not the image that was built. Print the
-              # evidence instead of a bare "No such file or directory" from
-              # timeout.
+              # Report image contents if the binary checked by Dockerfile is missing.
               if ! command -v qemu-system-riscv64; then
                 echo "qemu-system-riscv64 missing from this image"
                 echo "PATH=$PATH"
                 ls -l /usr/local/bin/qemu-system-* /usr/local/share/qemu/opensbi* 2>&1 || true
                 exit 1
               fi
-              # The -append string must equal DEFAULT_BOOTARGS in
-              # frost_boot_image.py; tests/test_linux_packaging.py checks it.
+              # Keep -append equal to DEFAULT_BOOTARGS in frost_boot_image.py.
               boot() {
                 timeout -k5 180 qemu-system-riscv64 -M virt -m 256M -nographic \
                   -cpu rv64,sv57=off,sv48=off,zicbom=false,zicboz=false,v=false,h=false \

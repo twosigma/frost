@@ -16,21 +16,17 @@
 
 """Report the X3 DDR4 controller's ECC state over JTAG.
 
-The X3's DDR4 is 72 bits wide, so the controller checks ECC on every read. A
-location not written since power-up holds a check code unrelated to its data,
-and reading it latches an error here. ``boards/x3/x3_ddr_init.sv`` writes the
-whole region after calibration to prevent that; a clean report after a cold
-power cycle and a run confirms it. The report covers only addresses that were
-actually read.
+The 72-bit DDR4 interface checks ECC on reads. Unwritten locations have
+uninitialized check codes; boards/x3/x3_ddr_init.sv initializes the region
+after calibration. Reports cover only addresses read since the status was
+cleared, and cannot establish that every location was initialized.
 
-A report is clean when ECC_ON_OFF enables checking and ECC_STATUS and CE_CNT
-are zero. With checking off the controller captures nothing, so zero counters
-are reported as a failure. ECC_STATUS bit 0 is the uncorrectable error and
-bit 1 the correctable one. CE_CNT saturates at 255, so a full counter means at
-least that many correctable errors. There is no uncorrectable-error counter;
-such an error shows in ECC_STATUS and the UE captures.
+A clean report requires checking enabled and ECC_STATUS and CE_CNT zero.
+With checking disabled, zero counters cannot establish a clean read. ECC_STATUS
+bit 0 is uncorrectable and bit 1 correctable. CE_CNT saturates at 255; there is
+no uncorrectable-error counter, only status and UE capture registers.
 
-Exits with status 2 when the report is not clean and 1 when the read fails.
+Exit 2 for a non-clean report, or 1 if the read fails.
 """
 
 import argparse
@@ -52,9 +48,7 @@ from hw_target import (  # noqa: E402
 
 TCL_SCRIPT = SCRIPT_DIR / "ddr_ecc_status.tcl"
 
-# ECC register offsets within the controller's management window, taken from
-# the generated IP's register map: status and the correctable-error counter
-# first, then the captures that record where an error was and what it held.
+# Management-window offsets from the generated IP's register map.
 ECC_REGISTERS: tuple[tuple[str, int], ...] = (
     ("ECC_STATUS", 0x000),
     ("ECC_EN_IRQ", 0x004),
@@ -68,8 +62,8 @@ ECC_REGISTERS: tuple[tuple[str, int], ...] = (
     ("UE_FFE", 0x280),
 )
 
-# The registers that decide whether the report is clean: whether an error
-# happened, and whether checking was on. The captures only describe an error.
+# Status, error count, and checking enable decide whether the report is clean.
+# Capture registers only describe errors.
 VERDICT_REGISTERS = ("ECC_STATUS", "CE_CNT", "ECC_ON_OFF")
 
 # ECC_STATUS bit order is the controller's: bit 0 uncorrectable, bit 1
@@ -109,8 +103,6 @@ def verdict(values: dict[str, int]) -> tuple[bool, list[str]]:
         return False, [f"{name} was not read" for name in missing]
 
     if not values["ECC_ON_OFF"] & 0x1:
-        # With checking off the controller captures nothing, so zero counters
-        # below would prove nothing.
         problems.append("ECC checking is disabled, so the counters mean nothing")
 
     status = values["ECC_STATUS"]

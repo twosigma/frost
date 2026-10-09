@@ -12,12 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Standalone fetch ILA capture (build.py --debug-ila) for a program that is
-# already running: arm, wait for the trigger, and write the CSV in one
-# Hardware Manager session, which frost_hw_session closes even when a step
-# fails. To capture a program the software loader starts, use the loader hooks
-# (capture_fetch_ila.py hook) instead, because the loader's device refresh
-# resets the ILA. See capture_fetch_ila.py for the arguments.
+# Capture a running program's fetch ILA in one Hardware Manager session.
+# frost_hw_session closes it even on failure. For programs started by the
+# loader, use capture_fetch_ila.py hook: the loader's refresh resets the ILA.
 #
 # Usage: vivado -mode batch -source capture_fetch_ila.tcl -tclargs \
 #            <hw_target> <ltx_file> <csv_file> <fault_probe_glob> \

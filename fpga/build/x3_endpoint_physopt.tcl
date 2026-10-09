@@ -12,9 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Post-route fallback for a CPU clock group whose worst paths remain tied.
-# Giving each near-critical endpoint its own objective lets phys-opt retain
-# improvements away from the one path that defines the clock group's WNS.
+# Post-route fallback when a CPU clock group's worst paths remain tied.
+# Separate endpoint objectives let phys-opt retain improvements beyond the
+# path that defines the clock group's WNS.
 namespace eval frost_x3_endpoint_physopt {
     proc clock_signature {} {
         set result [dict create]
@@ -416,8 +416,7 @@ namespace eval frost_x3_endpoint_physopt {
         write_checkpoint -force $checkpoint
         set accepted 0
         set trials 0
-        # Try the fastest physical input first across the entire critical cone
-        # before spending time on each pin's alternative mappings.
+        # Try each physical input across all candidates, fastest input first.
         foreach target {A6 A5 A4} {
             foreach pin_name $candidates {
                 set pin [get_pins -quiet [list $pin_name]]

@@ -17,46 +17,23 @@
 /*
  * frost_nettest: tests the frost,net10g driver through its loopback feature.
  *
- * The hardware regression's Linux stage types this at the root shell. It
- * uses the interface whose ETHTOOL_GDRVINFO driver is frost_net10g. The
- * driver implements the loopback feature as the NIC's MAC loopback when both
- * MAC directions share one clock and as the transceiver's PMA loopback
- * otherwise; nothing here depends on which. It prints one progress line per
- * step:
- *
- *   1. Find the interface and its "loopback" feature bit; take it down.
- *   2. MTU 9000; loopback on (ETHTOOL_SFEATURES on the "loopback" feature
- *      string, checked with ETHTOOL_GFEATURES); up; carrier within 5 s.
- *   3. One frame at a time: lengths 14..160, 1514, 4096 and 9014. A frame
- *      shorter than 60 bytes arrives padded to 60 with its own bytes first.
- *   4. A burst of 300 frames before receiving, which wraps both rings: order,
- *      contents, no socket drops.
- *   5. A burst of 64 frames, then down at once (the drain; the tx_dropped and
- *      rx_packets deltas are printed, not judged). Loopback off, up for 2 s,
- *      down: nothing in that interval is judged, since the transceiver may
- *      face a link partner that raises the carrier and sends frames
- *      (broadcasts, say); when the carrier first read 1 is printed. Loopback
- *      on, up: a burst of 64 verified.
- *   6. The driver's tx_packets and rx_packets cover the frames of steps 3, 4
- *      and 5's last burst, no frame is counted while none is being sent, and
- *      rx_errors and tx_errors are unchanged. The loopback-off interval is
- *      left out of both the idle and the error checks.
- *   7. Down with loopback off (also after a failure), then the result:
+ * Select the interface whose ETHTOOL_GDRVINFO driver is frost_net10g. Loopback
+ * uses the NIC MAC when both directions share a clock, or the transceiver PMA
+ * otherwise. Check frame contents, order, socket drops, and driver counters.
+ * Exclude the loopback-off interval from idle and error checks because a link
+ * partner may send traffic. Leave the interface down with loopback off, even
+ * on failure, and print:
  *
  *   FROST_NET_LOOPBACK_PASS
  *   FROST_NET_LOOPBACK_FAIL <reason>
  *
- * Frames go from the interface's own address to itself with ethertype 0x88B5
- * over an AF_PACKET socket. A down leaves ENETDOWN pending on a bound socket,
- * so no socket is used across a down: a new one is bound after each up that
- * precedes sending. Each frame carries a tag: a sequence number that is never
- * reused within the run, a run identifier and its length, so a lost,
- * duplicated, reordered, stale (sent before a down or, unless the identifiers
- * collide, by an earlier run) or corrupted frame fails the step. A frame
- * shorter than the 24 bytes of header and tag holds only part of the tag (a
- * 14-byte frame none of it); for those the bytes sent and the padded length
- * are checked. After each verified burst, no further frame may arrive for half
- * a second.
+ * AF_PACKET frames use the interface's own address at both ends and ethertype
+ * 0x88B5. Rebind after each up: a down leaves ENETDOWN pending on bound sockets.
+ * Tags hold a sequence unique within the run, a run identifier, and a length
+ * to detect lost, duplicate, reordered, stale, or corrupt frames. Run identifiers
+ * can collide. Frames below 24 bytes have partial tags (14-byte frames have
+ * none); check their sent bytes and padded length. After each verified burst,
+ * no further frame may arrive for half a second.
  *
  * Every wait the program makes is bounded (one step's frames get 10 s); a
  * system call that never returns is left to the caller's timeout. The test
@@ -417,10 +394,9 @@ static int wait_carrier(uint64_t *elapsed_ms)
     }
 }
 
-/* Loopback off with the interface up for LOOPBACK_OFF_MS. The transceiver then
- * faces whatever it is cabled to, and a link partner may raise the carrier and
- * send frames, so nothing about the carrier is judged here. When the carrier
- * first read 1 is recorded for the progress line (UINT64_MAX: never). */
+/* Observe carrier for LOOPBACK_OFF_MS with loopback off. A link partner may
+ * raise it or send frames, so record the first rise without judging it
+ * (UINT64_MAX means none). */
 static int loopback_off_interval(uint64_t *carrier_ms)
 {
     uint64_t start = now_ms();
@@ -652,10 +628,8 @@ static int burst(unsigned count, const char *what)
     return check_socket_drops(what);
 }
 
-/* After a verified step: wait (bounded) until the driver's counters cover its
- * frames, since TX completions are counted when reaped and can trail the last
- * receive, then require that no further frame (a duplicate) arrives for
- * QUIET_MS. Step 6 judges the counters. */
+/* Wait for counters to cover the step: reaped TX completions may trail RX.
+ * Then reject duplicates for QUIET_MS. Step 6 judges the counters. */
 static int
 settle(const struct net_stats *start, unsigned frames, struct net_stats *end, const char *what)
 {

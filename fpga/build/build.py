@@ -22,16 +22,12 @@ at route, post-route phys-opt, or second route promotes that output to
 final.dcp and skips to the bitstream; the last phys-opt stage always writes
 final.dcp.
 
-Full-rate X3 placement compares a freshly generated local-guidance candidate
-with the ordinary placer sweep. Every candidate must pass timing and congestion
-checks before the leading survivors are quick-routed and ranked by congestion
-warning, routed WNS, then TNS.
-Both route stages also run sweeps, scored at zero added setup uncertainty.
-A placement guided by a
-temporary PC-tail path group is scored only if its audit on a clean reopen
-passes. Every later stage, and the bitstream, checks that its input checkpoint
-descends from the current qualified placement, using the sidecar files written
-beside each checkpoint.
+Full-rate X3 placement compares local guidance with a placer sweep. Candidates
+must pass timing and congestion checks; quick-route probes rank the survivors
+by congestion warning, WNS, then TNS. Placement and route sweeps are scored at
+zero added setup uncertainty. Temporary PC-tail groups must pass an audit on a
+clean reopen. Later stages use checkpoint sidecars to verify that their inputs
+descend from the current qualified placement.
 
 Run natively; see ``fpga/README.md`` and ``--help`` for commands and tuning.
 """
@@ -60,15 +56,11 @@ from riscv_toolchain import default_riscv_prefix  # noqa: E402
 
 # Configuration
 
-# Default cap on concurrent full-design Vivado processes, separate from each
-# process's own thread count. A worker needs about 8 GB, so launching a whole
-# placement sweep at once can exhaust the host's memory.
+# Limit concurrent Vivado processes to bound memory use (about 8 GB per worker).
+# This is separate from each process's thread count.
 DEFAULT_MAX_JOBS = 12
 
-# ``synth_directive`` is the board's default synthesis directive. On x3,
-# PerformanceOptimized improves post-opt timing but maps many more MUXF7/MUXF8
-# cells, which leaves little of that gain after placement and congests routing,
-# so the more routable AlternateRoutability netlist is the default.
+# X3 defaults to AlternateRoutability to limit MUXF7/MUXF8 routing congestion.
 BOARD_CONFIG = {
     "x3": {
         "clock_freq": 322265625,
@@ -115,8 +107,7 @@ PLACER_DIRECTIVES = [
     "WLDrivenBlockPlacement",
 ]
 
-# The AltSpreadLogic directives spread out the densely packed X3 core region
-# and its integer-RS congestion hotspot.
+# AltSpreadLogic spreads the X3 core's integer-RS congestion hotspot.
 X3_PLACER_SWEEP_DIRECTIVES = [
     "ExtraNetDelay_high",
     "ExtraPostPlacementOpt",
@@ -124,22 +115,16 @@ X3_PLACER_SWEEP_DIRECTIVES = [
     "AltSpreadLogic_medium",
 ]
 
-# X3 places with added setup uncertainty (overconstraint). Vivado's placer has
-# no seed option, so each 50 ps step down from the 0.5 ns baseline yields
-# another placement, and the lower values ease packing that at 0.5 ns alone
-# can be too dense to route. build_step.tcl reports at zero added uncertainty
-# after placement, so the seed-grid baseline and the reporting uncertainty are
-# separate constants.
+# Vivado has no placer seed option. Vary added setup uncertainty in 50 ps steps
+# to generate placements and ease packing. Score at zero added uncertainty.
 X3_PLACE_BASELINE_UNCERTAINTY_NS = 0.5
 X3_PLACE_REPORT_UNCERTAINTY_NS = 0.0
 X3_POST_PLACE_GATE_NS = Decimal("-0.200")
-# Vivado reports slack and clock periods to three decimals, and the gate's
-# native queries carry more precision than the timing summary prints. Half a
-# printed digit accepts every value that displays as the expected one and
-# still rejects a different printed number (3.104 ns against 3.103 ns).
+# Vivado's native queries have more precision than its three-decimal reports.
+# Allow half a printed digit for rounding, but reject a different printed value.
 X3_GATE_DISPLAY_TOLERANCE_NS = Decimal("0.0005")
-# XDC constrains the 300 MHz reference to 3.333 ns. Use that physical period
-# and the fixed MMCM recipe, including its rounding, for native timing evidence.
+# Gate validation uses the MMCM fallback's 3.333 ns reference and divide recipe.
+# Full- and half-rate GTY clocks are compared within the reporting tolerance.
 X3_CPU_PERIOD_NS = Decimal("3.333") * 8 * 4 / Decimal("34.375")
 X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS = 0.050
 X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT = 6
@@ -148,8 +133,7 @@ X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT = int(
 )
 # Synthesis-time netlist options recorded beside the checkpoints they produced.
 X3_NETLIST_CONFIG_NAME = "netlist_config.json"
-# Only these pairs receive PC-tail guidance. Every seed, guided or not, is
-# reported at zero added uncertainty.
+# Only these directive/uncertainty pairs receive PC-tail guidance.
 X3_PC_TAIL_GUIDED_CANDIDATES = (
     ("ExtraNetDelay_high", X3_PLACE_BASELINE_UNCERTAINTY_NS),
     ("ExtraPostPlacementOpt", 0.450),
@@ -160,26 +144,23 @@ X3_PC_TAIL_GUIDED_CANDIDATES = (
 # rules as grid seeds.
 X3_PLACE_EXTRA_SEED_CANDIDATES = (("ExtraPostPlacementOpt", 0.425),)
 
-# Integer-RS cell-bloat variants, each added beside its unbloated control; a
-# narrowed grid gets a variant only if its control is still in the grid.
-# Setting either bloat environment variable disables these variants and
-# applies the caller's setting to every candidate (an empty factor means no
-# bloat).
+# Add integer-RS bloat variants only when their controls are in the grid.
+# Either bloat environment variable overrides all candidates; an empty factor
+# disables bloat.
 X3_PLACE_INT_RS_BLOAT_CANDIDATES = (
     ("ExtraNetDelay_high", 0.350),
     ("ExtraPostPlacementOpt", 0.450),
 )
 X3_PLACE_INT_RS_BLOAT_FACTOR = "LOW"
 X3_PLACE_INT_RS_BLOAT_CELLS = "*u_tomasulo/u_int_rs"
-# Memory source-2 capture logic shares the integer station's crowded routing
-# window. Target that group without spreading the rest of the memory station.
+# Target memory source-2 capture logic where it shares integer-RS congestion.
 X3_GUIDED_PLACE_BLOAT_CELLS = "*u_tomasulo/u_int_rs *u_tomasulo/u_mem_rs/rs_src2_value*"
 X3_GUIDED_PLACE_BLOAT_MATCHES = (1, None)
 
 
 @dataclass(frozen=True)
 class DirectiveSweepCandidate:
-    """One single-placement recipe with optional pre-place cell bloat."""
+    """One placement recipe with optional cell bloat."""
 
     directive: str
     setup_uncertainty_ns: float | None = None
@@ -199,9 +180,7 @@ class DirectiveSweepCandidate:
     def environment(self, inherited: Mapping[str, str]) -> dict[str, str]:
         """Copy environment settings without leaking a variant into controls."""
         environment = dict(inherited)
-        # Nothing reads these obsolete switches of the diagnostic flush-guidance
-        # and pin-swap helpers, which never run in production; drop them so no
-        # candidate inherits them.
+        # Production candidates must not inherit diagnostic helper switches.
         environment.pop("FROST_PLACE_FLUSH_INCREMENTAL", None)
         environment.pop("FROST_X3_PD_TARGET_PIN_SWAPS", None)
         if self.setup_uncertainty_ns is not None:
@@ -270,9 +249,7 @@ def make_x3_place_sweep_candidates(
         ):
             candidates.append(DirectiveSweepCandidate(directive, uncertainty))
 
-    # Test presence, not truthiness: an empty factor, or a target pattern with
-    # no factor, still turns off the automatic variants and yields a sweep
-    # without bloat.
+    # Presence disables automatic variants, even with an empty or absent factor.
     manual_bloat = any(
         name in environment
         for name in ("FROST_PLACE_CELL_BLOAT", "FROST_PLACE_CELL_BLOAT_CELLS")
@@ -322,9 +299,8 @@ ULTRASCALE_ROUTER_DIRECTIVES = [
 
 ALL_ROUTER_DIRECTIVES = ROUTER_DIRECTIVES + ULTRASCALE_ROUTER_DIRECTIVES
 
-# Keep the sweep focused on the competitive full-rate X3 candidates. Other
-# legal directives remain available explicitly, including RuntimeOptimized
-# for the divided-clock functional-validation flow.
+# Default full-rate sweep. Other directives can be requested explicitly;
+# divided-clock builds default to RuntimeOptimized.
 ROUTER_SWEEP_DIRECTIVES = [
     "Explore",
     "AggressiveExplore",
@@ -353,7 +329,7 @@ CPU_CLOCK_DIV_CHOICES = (1, 2, 3, 4)
 
 @dataclass(frozen=True)
 class FunctionalBuildPolicy:
-    """What a divided-clock (functional-validation) build changes in the flow."""
+    """Flow settings for a divided-clock functional build."""
 
     cpu_clock_div: int
     clock_freq: int
@@ -383,8 +359,7 @@ def resolve_functional_build_policy(
     divider builds for the board clock divided by N. An explicit
     ``--directives`` or ``--num-uncertainties`` keeps the requested placer
     grid and an explicit ``--route-directives`` keeps the requested router
-    list; otherwise placement and routing each run once with RuntimeOptimized,
-    which is enough for a design with hundreds of picoseconds of margin.
+    list; otherwise placement and routing each run once with RuntimeOptimized.
 
     ``perf_counters`` is ``--perf-counters``/``--no-perf-counters``; ``None``
     leaves the counters out, whatever the divider.
@@ -672,15 +647,11 @@ def x3_pc_tail_group_audit_is_valid(
 ) -> bool:
     """Return whether a guided placement's PC-tail audit passes for this seed.
 
-    Vivado physical synthesis may add, remove, or rename register replicas
-    during placement, and its equivalent-driver rewiring may merge a canonical
-    (non-replica) endpoint into its replicas. So the audit requires the same
-    launch names before and after placement, a canonical endpoint for every
-    bit before placement, an endpoint for every bit after it, and no canonical
-    name after placement that was not there before; then the same full
-    endpoint names across the clean checkpoint reopen. The ``COMPRESSED_*``
-    fields cover the fourteen pinned scalar-overlay launches of the predecode
-    metadata.
+    Placement may change replicas or merge canonical endpoints into them.
+    Require unchanged launch names, a canonical endpoint per bit before
+    placement, an endpoint per bit after it, and no new canonical names.
+    The clean reopen must preserve all endpoint names. ``COMPRESSED_*`` covers
+    the fourteen predecode scalar-overlay launches.
     """
     if not x3_place_uses_pc_tail_guidance(
         expected_directive, expected_setup_uncertainty_ns
@@ -1403,11 +1374,9 @@ def bind_x3_output_lineage(
 def snapshot_x3_physopt(source_work: Path, build_dir: Path) -> bool:
     """Copy a completed post-place phys-opt result into a new build directory.
 
-    The source is either a finished stage, qualified by its lineage sidecar,
-    or the latest completed sweep of an unfinished stage, qualified by its
-    launch manifest and iteration record. Nothing in the source directory
-    changes. The copy gets its own lineage sidecar, so later stages check it
-    like any other checkpoint.
+    Accept a finished stage with a valid sidecar, or a completed sweep with a
+    valid launch manifest and iteration record. Leave the source unchanged
+    and write a new sidecar for downstream validation.
     """
     source_work = source_work.resolve()
     build_dir = build_dir.resolve()
@@ -1646,11 +1615,8 @@ def copy_results_to_main_work(
         break
 
     if checkpoint_promoted and report_prefix == "post_synth":
-        # PERF_COUNTERS is fixed at synthesis and inherited by every later
-        # checkpoint and the bitstream, but no netlist, report, or bitstream
-        # records it. Save the value synthesis read so a later run can tell
-        # whether the profiling counters are present (perf_off_test expects
-        # them absent; tomasulo_perf expects them).
+        # Save the synthesis-time PERF_COUNTERS setting; later artifacts do not
+        # record the option needed to select compatible software.
         perf_counters = int(os.environ.get("FROST_PERF_COUNTERS", "0") == "1")
         (main_work / X3_NETLIST_CONFIG_NAME).write_text(
             json.dumps(
@@ -1722,7 +1688,6 @@ def copy_results_to_main_work(
             if checkpoint_promoted and source_report.is_file():
                 shutil.copy2(source_report, destination_report)
 
-    # Promote reports under the main-directory prefix.
     for suffix in [
         "_timing.rpt",
         "_util.rpt",
@@ -1750,7 +1715,6 @@ def copy_results_to_main_work(
             shutil.copy2(rpt, dst)
             break
 
-    # Preserve the step's Vivado log beside its reports.
     vivado_log = work_dir / "vivado.log"
     if vivado_log.exists():
         dst = main_work / f"{report_prefix}_vivado.log"
@@ -1948,11 +1912,7 @@ def run_x3_place_quick_route_probes(
 
 
 def x3_place_quick_route_rank_key(run: DirectiveSweepRun) -> tuple[int, float, float]:
-    """Rank quick-routed seeds best-first.
-
-    Probes without the router's congestion-capitulation warning come first,
-    then best routed WNS, then routed TNS.
-    """
+    """Rank probes by absence of a congestion warning, then routed WNS and TNS."""
     assert run.quick_route_wns is not None
     return (
         1 if run.quick_route_warning else 0,
@@ -2253,20 +2213,14 @@ def run_x3_step_directive_sweep(
     build_dir: Path | None = None,
     additional_place_runs: list[DirectiveSweepRun] | None = None,
 ) -> tuple[bool, float | None, str]:
-    """Run every x3 candidate with bounded concurrency and promote the best run.
+    """Run X3 candidates with bounded concurrency and promote the best.
 
-    Route sweeps promote the best-WNS run. The place sweep instead uses
-    congestion-aware selection (congestion veto + quick-route probes; see
-    select_x3_place_best_run).
-
-    When setup_uncertainties_ns is given, each directive is launched once per
-    uncertainty value, exported to the job as FROST_PLACE_SETUP_UNCERTAINTY.
-    Vivado's placer has no seed knob, so these overconstraint variants serve
-    as extra placement "seeds" per directive. Eligible LOW integer-RS variants
-    compete alongside their controls unless the caller sets a bloat variable.
-    Each candidate performs one placement without post-place netlist edits.
-    At most ``max_jobs`` Vivado processes run at once, including the later
-    quick-route probes. The cap changes scheduling, not candidate selection.
+    Rank routes by WNS and TNS. Placement uses select_x3_place_best_run for
+    congestion checks and quick-route ranking. Export each requested uncertainty
+    as FROST_PLACE_SETUP_UNCERTAINTY; eligible LOW integer-RS bloat variants join
+    their controls unless a bloat environment variable overrides them.
+    Each candidate places once, without post-place netlist edits. max_jobs caps
+    both placement and probe concurrency without changing selection.
     """
     if max_jobs < 1:
         raise ValueError("max_jobs must be positive")
@@ -2821,10 +2775,9 @@ def run_x3_guided_place_candidate(
 ) -> tuple[bool, float | None, str]:
     """Measure a guided candidate from the current post-opt netlist in work/.
 
-    Generate a fresh reference, derive local floorplan constraints and place
-    the guided cells, then verify in a third, read-only Vivado process. No
-    archived input or phys-opt pass participates. This is not qualification:
-    the caller submits the result to the shared congestion/probe selector.
+    Generate a reference, derive local constraints, place, and verify in a
+    separate read-only Vivado process. The caller must still submit the result
+    to congestion checks and route probes.
     ``cell_bloat_cells`` is a space-separated list of cell name patterns;
     every pattern must match exactly one cell in each placement pass unless
     ``cell_bloat_matches`` explicitly allows a nonempty group for that pattern.
@@ -3020,7 +2973,6 @@ def run_step(
     main_work = board_build / "work"
     main_work.mkdir(parents=True, exist_ok=True)
 
-    # Validate the step's required input checkpoint.
     if (
         board_name == "x3"
         and step in STEPS[STEPS.index("place") + 1 :]
@@ -3072,10 +3024,8 @@ def run_step(
         vivado_command.append(str(software_mem_dir))
 
     if step == "post_place_physopt" and consumed_lineage is not None:
-        # Record the input this launch consumed. --snapshot-physopt-from uses
-        # it to copy a completed sweep while this process still runs, without
-        # qualifying the main directory's checkpoint, which the stage keeps
-        # rewriting.
+        # --snapshot-physopt-from uses this input record to copy completed
+        # sweeps while the stage continues rewriting its main checkpoint.
         (work_dir / "phys_opt_launch.json").write_text(
             json.dumps(
                 {
@@ -3096,7 +3046,6 @@ def run_step(
         print(f"\n  [FAIL] {step} / {directive} (exit code {result.returncode})")
         return False, None, ""
 
-    # Extract timing for promotion and early-exit decisions.
     timing_rpt = work_dir / f"{tcl_report_prefix}_timing.rpt"
     timing = extract_timing_from_report(timing_rpt)
     wns = timing.get("wns_ns")
@@ -3126,7 +3075,6 @@ def run_step(
 
     print(f"  Output: {checkpoint_name} + {report_prefix}_*.rpt")
 
-    # Promote results to the board's main work directory.
     copy_results_to_main_work(
         work_dir,
         main_work,
@@ -3154,7 +3102,6 @@ def run_step(
     ):
         return False, wns, report_prefix
 
-    # Remove the per-step directory unless debugging was requested.
     if not keep_temps:
         shutil.rmtree(work_dir)
 
@@ -3224,138 +3171,54 @@ def main() -> None:
     veto = X3_PLACE_CONGESTION_VETO_LEVEL_DEFAULT
     probes = X3_PLACE_QUICK_ROUTE_COUNT_DEFAULT
     parser = argparse.ArgumentParser(
-        description="FROST FPGA build script",
+        description="Build FROST FPGA bitstreams with Vivado",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Steps (in order):
-  synth                       - Synthesis
-  opt                         - Opt design
-  place                       - Compare guided and conventional placements;
-                                require WNS better than {gate} ns and acceptable
-                                congestion, then select using route probes
-  post_place_physopt          - Phys_opt sweep (always continues to route, even
-                                if timing closes mid-sweep under overconstraint)
-  route                       - Route design (with -tns_cleanup; x3 sweeps selected
-                                router directives, up to --jobs at a time,
-                                and keeps the best-WNS result)
-  post_route_physopt          - Phys_opt directive sweep plus retime pass (serial)
-  second_route                - Route design (without -tns_cleanup; x3 sweeps
-                                selected router directives, up to --jobs at a time,
-                                and keeps the best-WNS result)
-  post_second_route_physopt   - Phys_opt directive sweep plus retime pass (serial);
-                                always writes final.dcp + final_*.rpt + bitstream
+  synth                       - Synthesize the design
+  opt                         - Optimize the netlist
+  place                       - Select a placement; full-rate X3 requires WNS
+                                better than {gate} ns and passing congestion checks
+  post_place_physopt          - Physical optimization after placement (always
+                                continues to route)
+  route                       - Route with -tns_cleanup
+  post_route_physopt          - Run physical optimization and retiming
+  second_route                - Route without -tns_cleanup
+  post_second_route_physopt   - Run final physical optimization; write final.dcp
+                                and reports, then generate the bitstream
 
 Behavior:
   * --jobs / -j limits simultaneous Vivado processes per build (default {jobs}).
-    This covers X3 placement, quick-route probes, and both router sweeps.
-    Candidates queue and start as slots become free; every candidate still runs.
-    Separate build invocations have independent limits. Vivado's per-process
-    thread settings are unchanged. Use --jobs 1 for serial execution.
-  * Full-rate X3 placement includes a local-guidance candidate from this build's closed post_opt.dcp,
-    generates an ExtraNetDelay_high/0.325 reference with CPU clock root X1Y9
-    and MEDIUM cell bloat on the integer RS and memory-RS source-2 operand cells. It measures
-    local register sites and LUT input assignments on that fresh reference,
-    retaining changes only when setup and hold slack do not worsen. The
-    second pass preserves the surrounding placement and uses hard local
-    pblocks, BELs and LUT pin constraints to re-place the guided cells with
-    Quick. No cell, net or pin edits follow the final place_design.
-    These passes run in work/; their artifacts then join the grid in a normal
-    candidate directory. A separate Vivado process verifies the final saved
-    constraints without changing them. Temporary preservation and pblocks
-    are removed when opening the checkpoint for downstream optimization,
-    with original cell, net and port constraints restored and
-    placement/timing checked, including every port's pin and fixed-location flag.
-    Older downstream checkpoints with all port flags lost recover those flags
-    from their qualified placed ancestor only when pins and I/O standards match.
-    No archived checkpoint is required. This candidate competes with the
-    conventional grid under the same timing, congestion, and route-probe
-    requirements; it cannot qualify itself from placed WNS alone.
-  * On x3, place ignores --place-directive. Explicit --directives or
-    --num-uncertainties options, or either cell-bloat environment variable,
-    select only the conventional grid. The default grid runs
-    ExtraNetDelay_high, ExtraPostPlacementOpt, AltSpreadLogic_high, and
-    AltSpreadLogic_medium at six overconstraint seeds (0.500 down
-    to 0.250 ns pre-place setup uncertainty in 50 ps steps). The off-grid
-    ExtraPostPlacementOpt/0.425 seed is appended unless already in the grid,
-    and LOW integer-RS cell-bloat variants are added beside the grid's
-    ExtraNetDelay_high/0.350 and ExtraPostPlacementOpt/0.450 controls. Each
-    candidate runs exactly one place_design, with any physical settings
-    applied before it and no netlist or pin edits after it.
-    A narrowed grid keeps a bloat variant only if its control is still there.
-    --directives sets that grid to any nonempty unique subset of legal placer
-    directives, and --num-uncertainties changes its seed count while keeping
-    50 ps spacing. Both overrides require a run that includes place.
-  * The X3 ExtraNetDelay_high/0.500, ExtraPostPlacementOpt/0.450, and
-    ExtraPostPlacementOpt/0.425 candidates place with a temporary path group
-    from the fourteen predecode-metadata output flops (pinned scalar LUTRAM
-    overlays) to the selected, state, sequential, and pending-valid PC
-    registers. The group is removed after placement. Before such a candidate
-    can be scored or promoted, its audit from a clean reopen of the checkpoint
-    must show no paths left in the group, all of those paths back in
-    clock_from_mmcm, and the candidate's own directive and uncertainty.
-  * Full-rate X3 candidates require WNS better than {gate} ns and valid placer
-    congestion evidence below FROST_PLACE_CONGESTION_VETO_LEVEL (default {veto}).
-    Failing or missing evidence disqualifies a candidate; no fallback admits it.
+    Use --jobs 1 for serial execution. Per-process thread counts are unchanged.
+  * Full-rate X3 compares a guided placement with a conventional grid.
+    --directives or --num-uncertainties selects the grid only and requires place.
+    Full-rate grids also add the ExtraPostPlacementOpt/0.425 ns seed and
+    LOW cell-bloat variants where their matching grid candidates are present.
+  * Full-rate X3 requires WNS better than {gate} ns and congestion below
+    FROST_PLACE_CONGESTION_VETO_LEVEL (default {veto}). Missing evidence fails.
     FROST_PLACE_QUICK_ROUTE_COUNT (default {probes}) quick-routes up to that many
-    survivors, including a sole survivor. Completed probes without a router
-    congestion warning rank first, then routed WNS and TNS decide.
-    The warning alone does not disqualify a completed, error-free probe;
-    the full flow uses phys-opt and stronger routing directives.
-    Failed probes, incomplete routing, and missing reports/logs disqualify it.
-    An explicit count of zero disables probes and ranks by post-place WNS.
-    If none qualifies, the build stops. Divided-clock builds keep their fast
-    policy without the full-rate congestion screen or automatic probes.
-    post_place_selection.json records the selection. Scores and promoted
-    checkpoints/reports use zero added setup uncertainty.
-  * FROST_PLACE_CELL_BLOAT=LOW/MEDIUM/HIGH spreads wire-dense hierarchies
-    (FROST_PLACE_CELL_BLOAT_CELLS, default *u_tomasulo/u_int_rs) in every
-    candidate. Setting either variable, even to an empty value, disables the
-    automatic LOW variants; an empty FROST_PLACE_CELL_BLOAT means no bloat.
-    Each automatic LOW variant's log must show its bloat applied to exactly
-    one cell, the integer-RS hierarchy.
-  * Quick routes and every later stage, including resumed builds, require
-    post_place_gate.txt and post_place_gate_binding.json, which ties the gate
-    to post_place.dcp by hash. Full-rate downstream bindings also require
-    unchanged passing congestion evidence, selection and complete probe
-    reports/logs. Preliminary probe-input and older bindings cannot resume.
-    A zero-probe selection requires that explicit override again on resume.
-    Later input checkpoints also need their
-    *.lineage.json chain back to that placement; rebuild stale ones from
-    post_place_physopt.
-  * On x3, route and second_route ignore --route-directive and
-    --second-route-directive, respectively. Each defaults to Explore,
-    AggressiveExplore, NoTimingRelaxation, and AlternateCLBRouting, subject
-    to --jobs, and promotes only the best-WNS checkpoint/reports.
-    --route-directives overrides this list with any legal router directives.
-    The route step still uses -tns_cleanup; second_route does not.
-  * Every phys_opt stage runs an ordinary directive sweep that starts with
-    AggressiveExplore and ends with one retime-only pass
-    (phys_opt_design -retime). Each sweep keeps WNS improvements and TNS
-    improvements when WNS is tied, and stops early if a pass closes setup
-    timing: WNS and TNS must be nonnegative, with zero failing setup endpoints.
-    Sweeps repeat while they keep improving, and each completed sweep writes
-    the current best checkpoint and reports.
-  * Phys-opt and routing, including quick-route probes and resumed builds,
-    remove inherited incremental history before optimizing. The conversion
-    preserves primitive placement and setup/hold slack, and leaves the input
-    checkpoint unchanged. This prevents RuntimeOptimized placement's negative
-    reference WNS from becoming the stopping target of later optimization.
-  * Early exit: when route, post_route_physopt, or second_route closes timing,
-    its outputs are promoted to final.dcp/final_*, the remaining stages are
-    skipped, and the bitstream runs next.
-  * X3 final phys-opt: after the ordinary sweep stalls, the default schedule
-    also tries endpoint groups with a temporary 30 ps setup margin. It removes
-    the groups and margin before scoring WNS/TNS, and requires legal routing,
-    hold, pulse-width, and bus-skew timing before retaining an endpoint pass.
-    With at most 24 failing CPU endpoints, it also tries individual clock
-    optimization, LUT pin assignments, and routing shared data nets with their
-    critical sink first. Candidates come from the current timing report and
-    must improve whole-design timing while preserving existing constraints.
-
-Synthesis and optimization use tuned defaults unless overridden with --*-directive.
---route-directive controls the first route on non-x3 boards (default AggressiveExplore);
---second-route-directive controls the second route on non-x3 boards (default Explore).
---physopt-directive is currently ignored (kept for backward compatibility).
+    passing candidates. Completed routes without congestion warnings rank first,
+    then routed WNS and TNS decide. Set the count to 0 to rank by placed WNS.
+    The build stops if no candidate qualifies.
+  * FROST_PLACE_CELL_BLOAT=LOW/MEDIUM/HIGH spreads cells in the hierarchies
+    selected by FROST_PLACE_CELL_BLOAT_CELLS (default *u_tomasulo/u_int_rs).
+    Setting either variable, even empty, selects the grid only and disables
+    automatic LOW variants. An empty FROST_PLACE_CELL_BLOAT applies no bloat.
+  * X3 resumes require the saved placement gate, checkpoint bindings, and
+    selection reports to match. Keep these files with the checkpoints.
+    A zero-probe selection requires FROST_PLACE_QUICK_ROUTE_COUNT=0 on resume.
+  * X3 ignores --place-directive, --route-directive, and --second-route-directive.
+    Use --directives for placement and --route-directives for both route stages.
+    Router sweeps keep the best-WNS result and obey --jobs.
+  * Physical optimization runs serial directive sweeps and retiming, keeping
+    timing improvements. X3's final stage also tries endpoint optimization.
+    --physopt-directive is ignored.
+  * Timing closure at route, post_route_physopt, or second_route skips the
+    remaining stages and proceeds to the bitstream.
+  * With --cpu-clock-div greater than 1, placement and routing each default to
+    one RuntimeOptimized run. Explicit sweep options override those defaults.
+    Divided-clock builds skip the full-rate congestion screen and default to
+    no quick-route probes. They do not update the README utilization table.
 
 Examples:
   ./build.py x3                                    # Full build, tuned defaults
@@ -3380,42 +3243,42 @@ Examples:
         "--start-at",
         choices=[*STEPS, "bitstream"],
         default="synth",
-        help="Start at this step (requires appropriate checkpoint)",
+        help="Start at this step (default: synth); later steps require a saved "
+        "checkpoint",
     )
     parser.add_argument(
         "--stop-after",
         choices=STEPS,
-        help="Stop after this step",
+        help="Stop after this step (default: complete the build)",
     )
     parser.add_argument(
         "--build-dir",
         type=Path,
-        help="Board build directory containing work/ and per-stage workers "
-        "(default: fpga/build/<board>). Builds in a custom directory do not "
-        "update the README utilization table.",
+        help="Build directory (default: fpga/build/<board>); custom directories skip "
+        "README updates",
     )
     parser.add_argument(
         "--snapshot-physopt-from",
         type=Path,
         metavar="WORK",
-        help="Freeze a completed post-place phys-opt sweep from WORK into a "
-        "new --build-dir before routing. Requires --start-at route; the "
-        "source phys-opt may continue running in its original directory.",
+        help="Copy a completed post-place phys-opt sweep from WORK into a new "
+        "--build-dir. Requires --start-at route; the source may keep running "
+        "(default: no snapshot).",
     )
     parser.add_argument(
         "--retiming",
         action="store_true",
-        help="Enable global retiming during synthesis",
+        help="Enable synthesis retiming (default: off)",
     )
     parser.add_argument(
         "--vivado-path",
         default="vivado",
-        help="Path to Vivado executable (default: vivado from PATH)",
+        help="Vivado executable (default: vivado from PATH)",
     )
     parser.add_argument(
         "--keep-temps",
         action="store_true",
-        help="Keep temporary work directories",
+        help="Keep temporary work directories (default: remove successful workers)",
     )
     parser.add_argument(
         "--jobs",
@@ -3423,91 +3286,75 @@ Examples:
         type=int,
         default=DEFAULT_MAX_JOBS,
         metavar="N",
-        help="Maximum simultaneous Vivado jobs per build, including X3 place, "
-        "route, and quick-route sweeps. Remaining candidates queue; "
-        f"N must be positive (default: {DEFAULT_MAX_JOBS}; 1 runs serially). "
-        "Does not change Vivado's per-process thread count.",
+        help="Concurrent Vivado processes per build; N must be positive "
+        f"(default: {DEFAULT_MAX_JOBS}; 1 runs serially)",
     )
     parser.add_argument(
         "--synth-directive",
         choices=SYNTH_DIRECTIVES,
         default=None,
-        help="Synthesis directive (default: the board's tuned directive; "
-        "AlternateRoutability on x3)",
+        help="Synthesis directive (default: board setting, AlternateRoutability on x3)",
     )
     parser.add_argument(
         "--opt-directive",
         choices=OPT_DIRECTIVES,
         default="Explore",
-        help="Opt directive (default: Explore)",
+        help="Netlist optimization directive (default: Explore)",
     )
     parser.add_argument(
         "--place-directive",
         choices=PLACER_DIRECTIVES,
         default=None,
-        help="Placer directive for non-x3 boards (default: ExtraTimingOpt). "
-        "Ignored on x3; use --directives to customize the x3 placer sweep.",
+        help="Non-x3 placer directive (default: ExtraTimingOpt); ignored on x3, which "
+        "uses --directives",
     )
     parser.add_argument(
         "--directives",
         nargs="+",
         choices=PLACER_DIRECTIVES,
         metavar="DIRECTIVE",
-        help="Use only the conventional grid, without the local-guidance candidate; "
-        "set its grid to one or more unique directives. "
-        "Each runs at every configured uncertainty; the qualified off-grid "
-        "seed is still appended unless already present, and eligible LOW "
-        "integer-RS variants are added beside matching grid controls. The run must include "
-        "the place step. Default directives: "
-        f"{', '.join(X3_PLACER_SWEEP_DIRECTIVES)}.",
+        help="Unique X3 grid directives (default: "
+        f"{', '.join(X3_PLACER_SWEEP_DIRECTIVES)}). Requires place, disables "
+        "guided placement, and keeps eligible extra seeds.",
     )
     parser.add_argument(
         "--num-uncertainties",
         type=int,
         metavar="N",
-        help="Use only the conventional grid, without the local-guidance candidate; "
-        "set the number of 50 ps-spaced uncertainties, starting at "
+        help="X3 grid seed count at 50 ps spacing from "
         f"{X3_PLACE_BASELINE_UNCERTAINTY_NS:.3f} ns "
         f"(1-{X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT}; default: "
-        f"{X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT}). The run must include "
-        "place.",
+        f"{X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT}). Requires place and "
+        "disables guided placement.",
     )
     parser.add_argument(
         "--route-directive",
         choices=ALL_ROUTER_DIRECTIVES,
         default="AggressiveExplore",
-        help="Router directive for the first route step on non-x3 boards "
-        "(with -tns_cleanup, default: AggressiveExplore). Ignored on x3, "
-        "which uses --route-directives or its default four-directive sweep, "
-        "subject to --jobs.",
+        help="Non-x3 first-route directive (default: AggressiveExplore); ignored on "
+        "x3, which uses --route-directives",
     )
     parser.add_argument(
         "--second-route-directive",
         choices=ALL_ROUTER_DIRECTIVES,
         default="Explore",
-        help="Router directive for the second route step on non-x3 boards "
-        "(without -tns_cleanup, default: Explore). Ignored on x3, which "
-        "uses --route-directives or its default four-directive sweep, "
-        "subject to --jobs.",
+        help="Non-x3 second-route directive (default: Explore); ignored on x3, which "
+        "uses --route-directives",
     )
     parser.add_argument(
         "--route-directives",
         nargs="+",
         choices=ALL_ROUTER_DIRECTIVES,
         metavar="DIRECTIVE",
-        help="Set the x3 router sweep (both route stages) to these legal "
-        "directives, subject to --jobs. One directive is a single route run. "
-        "Default: " + ", ".join(ROUTER_SWEEP_DIRECTIVES) + ".",
+        help="X3 router directives for both route stages (default: "
+        + ", ".join(ROUTER_SWEEP_DIRECTIVES)
+        + "). Obeys --jobs.",
     )
     parser.add_argument(
         "--debug-ila",
         action="store_true",
-        help="Add the fetch debug ILA (x3): synthesis compiles in the "
-        "FROST_DEBUG_FETCH_ILA mirrors of fetch, translation, commit, and trap "
-        "signals and inserts one ILA on the CPU clock over every marked net; "
-        "the bitstream step writes the probes file beside the bitstream. Takes "
-        "effect only when the run includes synthesis. Capture with "
-        "fpga/debug/capture_fetch_ila.py.",
+        help="Add the x3 fetch debug ILA and bitstream probes file (default: off). "
+        "Requires synthesis; capture with fpga/debug/capture_fetch_ila.py.",
     )
     parser.add_argument(
         "--cpu-clock-div",
@@ -3515,31 +3362,22 @@ Examples:
         choices=CPU_CLOCK_DIV_CHOICES,
         default=1,
         metavar="N",
-        help="Functional-validation build at 322265625 Hz divided by N (x3): the board top's "
-        "CPU_CLK_DIV generic divides the MMCM output, the DDR block design "
-        "declares the divided clocks, and hello_world is compiled for it. "
-        "Unless --directives/--num-uncertainties/--route-directives say "
-        "otherwise, runs one RuntimeOptimized placement without probes or "
-        "the off-grid seed, routes with RuntimeOptimized only, and leaves "
-        "the README utilization table alone. Run the board with "
-        "FROST_CPU_CLK_HZ set to the divided clock.",
+        help="Divide the x3 CPU clock of 322265625 Hz by N (default: 1). Larger values "
+        "select the fast validation flow. When running the board, set "
+        "FROST_CPU_CLK_HZ to the divided frequency.",
     )
     parser.add_argument(
         "--perf-counters",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Include the profiling counters (the mperf* CSRs) "
-        "through the board top's PERF_COUNTERS generic. Default: left out, "
-        "at any --cpu-clock-div.",
+        help="Include mperf* profiling counters at synthesis (default: off at every "
+        "clock divider)",
     )
     parser.add_argument(
         "--physopt-directive",
         choices=PHYS_OPT_DIRECTIVES,
         default="AggressiveExplore",
-        help="Ignored: every phys_opt stage (post_place, post_route, "
-        "post_second_route) runs a directive sweep plus a retime-only pass. "
-        "X3's final stage also tries endpoint groups when that sweep stalls. "
-        "Kept for backward compatibility.",
+        help="Ignored; physical optimization uses directive sweeps and retiming",
     )
     args = parser.parse_args()
 
@@ -3620,7 +3458,6 @@ Examples:
     script_dir = Path(__file__).parent.resolve()
     project_root = script_dir.parent.parent
 
-    # Resolve board-specific clock and implementation settings.
     board_config = BOARD_CONFIG[board_name]
     clock_freq = board_config["clock_freq"]
     is_ultrascale = board_config["is_ultrascale"]
@@ -3814,7 +3651,6 @@ Examples:
         ):
             sys.exit(1)
 
-    # Execute the requested pipeline range.
     final_produced = False
     bitstream_generated = False
     last_report_prefix = None

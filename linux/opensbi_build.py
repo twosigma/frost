@@ -16,11 +16,10 @@
 
 """Build OpenSBI fw_jump for the FROST boot layout.
 
-Builds the generic platform with ``opensbi_frost_defconfig``, the firmware at
-0x80000000 and the payload at +2 MiB. An empty FW_JUMP_FDT_OFFSET passes the
-packer's DTB address in a1 through unchanged, and FDT_ASSUME_MASK=7 lets
-libfdt trust that DTB. The linux/opensbi submodule is unmodified: every
-setting is an OpenSBI Make variable.
+Build the generic platform with ``opensbi_frost_defconfig``, firmware at
+0x80000000, and payload at +2 MiB. FW_JUMP_FDT_OFFSET is empty to preserve the
+packer's DTB address in a1; FDT_ASSUME_MASK=7 lets libfdt trust it. Configure
+linux/opensbi through Make variables without modifying the submodule.
 
 Writes <out>/platform/generic/firmware/fw_jump.{bin,elf}. The default cross
 prefix is riscv64-linux- (the Bootlin toolchain). FROST_LINUX_CROSS_COMPILE or

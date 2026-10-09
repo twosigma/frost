@@ -26,8 +26,7 @@ repos:
     rev: v2.3.1
     hooks:
       - id: mypy
-        # Match the simulator/test environment; a floating cocotb here can
-        # expose different typing APIs from the version exercised by CI.
+        # Match CI's cocotb typing APIs.
         additional_dependencies: [pytest==9.1.1, cocotb==2.1.0]
         args: [--config-file=pyproject.toml]
         pass_filenames: false
@@ -39,11 +38,9 @@ repos:
     hooks:
       - id: clang-format
         types_or: [c, c++]
-        # env_v/: the riscv-tests virtual-memory environment adapted from
-        # upstream (its own license and form), like riscv_test.h.
-        # linux/frost-net10g/: a Linux driver in the kernel's coding style
-        # (scripts/checkpatch.pl) and the kernel's license, GPL-2.0-only OR
-        # BSD-2-Clause; the insert-license hooks below skip it too.
+        # env_v/ and riscv_test.h retain upstream style and licensing.
+        # linux/frost-net10g/ follows scripts/checkpatch.pl and uses
+        # GPL-2.0-only OR BSD-2-Clause; the license hooks also skip it.
         exclude: |
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
@@ -53,10 +50,8 @@ repos:
             linux/frost-net10g/.*
           )$
 
-  # C/C++ - clang-tidy via a wrapper script that sets the RISC-V target and
-  # include paths. Compiler diagnostics are errors; the broader .clang-tidy
-  # checks are reported as advisory counts until the repository has a clean
-  # baseline.
+  # C/C++ - clang-tidy with RISC-V flags. Compiler diagnostics are errors;
+  # other checks are advisory.
   - repo: local
     hooks:
       - id: clang-tidy
@@ -65,14 +60,10 @@ repos:
         language: system
         verbose: true
         types_or: [c, c++]
-        # The buildroot package sources are Linux-userspace programs; the
-        # wrapper uses bare-metal flags and FROST runtime include paths rather
-        # than those packages' Linux build configuration. linux/frost-net10g/
-        # is kernel code, which needs a kernel tree's headers. pgo_dump.c
-        # includes GCC's own gcov.h and walks the __gcov_info_* symbols the
-        # compiler emits, none of which clang resolves. hw/sim/ C files are
-        # host-side simulation code (DPI-C) built against the frost image's
-        # libraries, not FROST software.
+        # Buildroot programs need their Linux build flags; frost-net10g needs
+        # kernel headers. pgo_dump.c needs GCC's gcov.h and __gcov_info_*
+        # symbols. hw/sim/ uses host libraries for DPI-C. The wrapper's FROST
+        # software flags do not support these contexts.
         exclude: |
           (?x)^(
             hw/sim/.*|
@@ -160,11 +151,9 @@ repos:
           - --license-filepath=.license-header.txt
           - --comment-style=#
 
-  # General file checks. tests/fixtures/*.log are board UART captures kept byte
-  # for byte (carriage returns, terminal escapes, a shell prompt's trailing
-  # space), because the parsers under test must handle what a board really
-  # sends. Both fixers would rewrite those bytes, so the captures are exempt;
-  # the reports and other fixtures are not.
+  # General file checks. Preserve tests/fixtures/*.log byte for byte so parser
+  # tests see the board's carriage returns, terminal escapes, and trailing
+  # spaces. Other fixtures still pass through both fixers.
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:

@@ -12,9 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Run one Vivado build step with one directive, using the current directory as
-# its work directory. build.py runs the candidates of a place or route sweep as
-# separate Vivado processes, up to --jobs at a time.
+# Run one Vivado stage in the current directory. build.py launches place and
+# route candidates in separate processes, bounded by --jobs.
 
 # Utilities
 
@@ -25,12 +24,9 @@ proc primitive_placement_snapshot {} {
     set cells [get_cells -hier -filter {IS_PRIMITIVE}]
     set rows {}
     foreach name [get_property NAME $cells] loc [get_property LOC $cells] bel [get_property BEL $cells] ref [get_property REF_NAME $cells] level [get_property PRIMITIVE_LEVEL $cells] {
-        # A transformed macro's BEL property is a constraint alias, not its
-        # complete physical placement. Unlocking DDR OBUFDS, for example,
-        # changes that alias from OUTINV to OUTBUF without moving any leaf.
-        # Unplaced leaf aliases can also carry a BEL constraint without any
-        # physical occupancy. Compare actual BELs for those and for macros,
-        # as well as every placed leaf's ordinary LOC/BEL pair.
+        # A macro's BEL can be a constraint alias: unlocking DDR OBUFDS changes
+        # OUTINV to OUTBUF without moving a leaf. Unplaced aliases can also have
+        # BEL constraints. Compare actual BELs for both and LOC/BEL for placed leaves.
         if {$level eq "MACRO" || $loc eq ""} {
             set bel [lsort [get_bels -quiet -of_objects [get_cells -quiet $name]]]
         }
@@ -563,9 +559,8 @@ proc validate_x3_pc_tail_scalar_family {
         canonical $canonical_count]
 }
 
-# Placement may merge a canonical endpoint into its replicas, which removes the
-# canonical name, but it never creates one. Require the post-place canonical
-# names to be pre-place canonical names and log any that were merged away.
+# Placement may merge canonical endpoints into replicas. Reject new canonical
+# names and log those removed by placement.
 proc require_x3_pc_tail_canonical_names_within {family_label post_names pre_names} {
     set pre_dict [dict create]
     foreach name $pre_names {
@@ -589,10 +584,8 @@ proc require_x3_pc_tail_canonical_names_within {family_label post_names pre_name
     }
 }
 
-# Existence and namespace checks alone cannot distinguish a preserved but
-# disconnected launch from a live timing source. Require an independently
-# discoverable max path from every launch to its intended endpoint family at
-# every pre-place, post-place, and clean-reopen validation point.
+# Names alone do not establish connectivity. Require a max path from each
+# launch to its endpoint family before placement, after it, and on clean reopen.
 proc validate_x3_pc_tail_start_connectivity {
     scope_label family_label starts ends
 } {
@@ -743,12 +736,9 @@ proc write_physopt_iteration_outputs {work_directory step board_name physopt_unc
         file copy -force [file join $work_directory "phys_opt$suffix"] [file join $main_work_directory "$main_report_prefix$suffix"]
     }
 
-    # build.py --snapshot-physopt-from can copy a completed post-place sweep
-    # while the stage is still running. Record the checkpoint's hash only after
-    # all reports are written. The launch token keeps an earlier run's
-    # iteration record from vouching for a reused worker directory. build.py
-    # still writes the stage's lineage sidecar, and only when the whole stage
-    # succeeds.
+    # --snapshot-physopt-from needs the hash after all sweep reports are written.
+    # The launch token rejects stale iteration records in reused directories.
+    # build.py writes the stage's sidecar only after the whole stage succeeds.
     set launch_file [file join $work_directory phys_opt_launch.json]
     if {$board_name eq "x3" && $step eq "post_place_physopt" && [file exists $launch_file]} {
         set launch_handle [open $launch_file r]
@@ -940,9 +930,8 @@ if {$step eq "synth"} {
     if {$retiming eq "1"} {
         lappend synth_args -global_retiming on
     }
-    # Functional-validation builds divide the CPU clock: build.py
-    # --cpu-clock-div exports FROST_CPU_CLK_DIV, and the board top takes it
-    # as its CPU_CLK_DIV parameter (MMCM output divide, CLK_FREQ_HZ).
+    # build.py --cpu-clock-div exports FROST_CPU_CLK_DIV as the board's CPU_CLK_DIV.
+    # It selects the GTY or MMCM clock division and the software clock frequency.
     set cpu_clk_div [getenv_default FROST_CPU_CLK_DIV 1]
     if {$cpu_clk_div ne "1"} {
         lappend synth_args -generic CPU_CLK_DIV=$cpu_clk_div
@@ -1038,23 +1027,18 @@ if {$step eq "synth"} {
         }
     }
 
-    # X3 places with added setup uncertainty (overconstraint). build.py steps it
-    # down from 0.500 ns in 0.050 ns steps, as substitute seeds and to ease
-    # packing; 0.500 ns is also the default here. Published checkpoints and
-    # scores use zero added uncertainty (X3_PLACE_REPORT_UNCERTAINTY_NS).
+    # Vary setup uncertainty to generate placements and ease packing. build.py
+    # uses 0.050 ns steps from 0.500 ns; published checkpoints and scores use zero.
     set x3_place_seed_baseline_uncertainty 0.5
     set x3_place_baseline_uncertainty 0.0
     set x3_place_uncertainty [getenv_default FROST_PLACE_SETUP_UNCERTAINTY $x3_place_seed_baseline_uncertainty]
     set_x3_setup_uncertainty $board_name $x3_place_uncertainty "place overconstraint"
 
-    # The guided X3 seeds (ExtraNetDelay_high/0.500, ExtraPostPlacementOpt/0.450,
-    # and ExtraPostPlacementOpt/0.425) place with one temporary path group, not
-    # a timing exception, from the fourteen predecode-metadata scalar launches
-    # to their selected, state, sequential, and pending-valid PC consumers. The
-    # group is removed after placement, and a clean reopen must show all of
-    # those paths back in clock_from_mmcm. This list must match
-    # X3_PC_TAIL_GUIDED_CANDIDATES in build.py; the 0.425 seed is off the 50 ps
-    # grid, so build.py adds it through X3_PLACE_EXTRA_SEED_CANDIDATES.
+    # Guided seeds use a temporary path group from the fourteen predecode scalar
+    # launches to selected, state, sequential, and pending-valid PC consumers.
+    # It is not a timing exception. Remove it after placement; a clean reopen
+    # must put every path back in clock_from_mmcm. Keep these seeds aligned with
+    # X3_PC_TAIL_GUIDED_CANDIDATES in build.py, including its off-grid 0.425 seed.
     set use_x3_pc_tail_group [expr {
         $board_name eq "x3" &&
         (($directive eq "ExtraNetDelay_high" &&
@@ -1099,8 +1083,7 @@ if {$step eq "synth"} {
         }
     }
 
-    # One placement per candidate. All physical controls are already applied;
-    # the remaining commands restore scoring constraints, audit and report.
+    # Physical controls must be applied before this single placement pass.
     place_design -directive $directive
 
     if {$x3_place_mode eq "guided"} {
@@ -1276,10 +1259,8 @@ if {$step eq "synth"} {
     report_utilization -file $work_directory/post_place_util.rpt
     report_high_fanout_nets -timing -load_types -max_nets 50 -file $work_directory/post_place_high_fanout.rpt
     write_failing_paths_csv $work_directory/post_place_failing_paths.csv $work_directory/post_place_timing.rpt
-    # build.py vetoes seeds at the configured congestion level (default 5),
-    # because overconstrained post-place WNS can favor unroutable density.
-    # This report lists only windows at its default threshold of 5 or above,
-    # so an empty list does not mean zero congestion.
+    # build.py rejects congestion at the configured level (default 5).
+    # This report omits windows below 5; an empty list does not mean zero congestion.
     report_design_analysis -congestion -file $work_directory/post_place_congestion.rpt
     if {$use_x3_pc_tail_group} {
         report_timing -from $x3_pc_compressed_tail_starts_score -to $x3_pc_compressed_tail_ends_score -delay_type max -max_paths 1000 -nworst 10 -file $work_directory/post_place_pc_compressed_tail_timing.rpt
@@ -1339,13 +1320,10 @@ if {$step eq "synth"} {
     }
     open_timing_checkpoint $checkpoint_path $work_directory
 
-    # The added setup uncertainty depends on the stage. Post-place phys-opt
-    # sweeps under 0.5 ns of added setup uncertainty, so its initial and
-    # per-pass probe reports are pessimistic. The post-route sweeps run at
-    # 0.000 ns, the uncertainty the routed checkpoint already carries, so the
-    # WNS that drives their early exit and the final.dcp decision is the real
-    # one. Promoted reports and checkpoints are always taken at 0.000 ns.
-    # FROST_PHYSOPT_SETUP_UNCERTAINTY overrides the stage default.
+    # Post-place phys-opt defaults to 0.5 ns added setup uncertainty; post-route
+    # defaults to zero so closure decisions use real constraints.
+    # FROST_PHYSOPT_SETUP_UNCERTAINTY overrides these defaults. Promoted reports
+    # and checkpoints always use zero added uncertainty.
     if {$step eq "post_place_physopt"} {
         set physopt_uncertainty_default 0.5
     } else {

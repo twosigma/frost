@@ -14,43 +14,32 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Pack a FROST boot image: OpenSBI, an S-mode payload, the DTB, an initramfs.
+"""Pack OpenSBI, an S-mode payload, a DTB, and an optional initramfs for FROST.
 
-The low-BRAM shim sets a0 = 0 (the hart ID) and a1 = the DTB address and jumps
-to OpenSBI fw_jump, which passes a1 through (it is built without an FDT
-offset). The rest goes in the cached-DDR image, at these offsets from
-0x8000_0000 (linux/README.md, "Memory map"):
+The low-BRAM shim sets a0 to hart 0 and a1 to the DTB address, then jumps to
+fw_jump, built to pass a1 through. DDR offsets from 0x8000_0000 are:
 
   +0          OpenSBI fw_jump.bin (FW_TEXT_START), at most FW_MAX_BYTES
-  +2 MiB      the S-mode payload: a Linux ``Image`` or a raw binary
-              (2 MiB alignment is the rv64 kernel's PMD requirement)
-  +D          the DTB, in a 64 KiB slot (OpenSBI grows it in place)
-  +D+64K      the initramfs cpio, when given (bounds via linux,initrd-*)
+  +2 MiB      Linux Image or raw S-mode payload (rv64 PMD alignment)
+  +D          DTB in a 64 KiB slot, with room for OpenSBI's in-place fixups
+  +D+64K      Optional initramfs cpio, bounded by linux,initrd-* properties
 
   D = align_up(max(16 MiB, 2 MiB + footprint), 2 MiB)
 
-The footprint is a Linux ``Image``'s header ``image_size`` (text plus bss;
-the header magic identifies an Image) or a raw payload's length. Linux (rv64,
-STRICT_KERNEL_RWX) reserves its image up to the next 2 MiB boundary and drops
-an initramfs that overlaps a reservation, so the DTB starts at or above that
-boundary and the initramfs follows the DTB slot. The 16 MiB floor
-(DTB_MIN_OFFSET) is not a Linux or OpenSBI requirement: it keeps the DTB at
-+16 MiB for every payload of at most 14 MiB. The DTB slot, and the initramfs
-when given, must end inside the memory node, whose size is --mem-size
-(MEM_SIZE, 64 MiB, by default). main() plans one Layout, and every address in
-the outputs comes from it: the shim's a1, the /chosen initramfs bounds and
-both DDR images.
+The footprint is the Image header's image_size (including bss), or the raw
+payload's length. With STRICT_KERNEL_RWX, Linux reserves through the next
+2 MiB boundary and rejects an overlapping initramfs. The 16 MiB floor preserves
+the layout for payloads up to 14 MiB. The DTB slot and initramfs must fit inside
+--mem-size (default 64 MiB). One Layout supplies every output address.
 
-Outputs (in --out):
-  sw.{mem,txt}      the low-BRAM shim
-  sw_ddr.{mem,txt}  the DDR image, sparse ``.mem`` (readmemh address
-                    directives) and dense ``.txt`` (the JTAG loader's stream)
-  frost.{dts,dtb}   the generated device tree
+Outputs in --out:
+  sw.{mem,txt}      Low-BRAM shim
+  sw_ddr.{mem,txt}  Sparse readmemh image and dense JTAG word stream
+  frost.{dts,dtb}   Device tree
 
---nfsroot makes an NFS export the root (see nfsroot_bootargs). With --initrd,
-the initramfs mounts it through initramfs-tools' NFS boot, which a kernel with
-no NFS root of its own, such as Debian's, needs. --mac replaces the NIC's
-local-mac-address, which boards sharing a network must not share.
+--nfsroot selects an NFS export (nfsroot_bootargs). With --initrd, use
+initramfs-tools' NFS boot, required when the kernel lacks NFS-root support.
+--mac replaces local-mac-address; boards on one network need distinct values.
 """
 
 import argparse
@@ -68,9 +57,7 @@ PAYLOAD_OFFSET = 0x20_0000
 # The rv64 kernel's PMD: the Image loads on a PMD boundary, and Linux (with
 # STRICT_KERNEL_RWX) reserves it up to the next boundary past its end.
 PMD_BYTES = 0x20_0000
-# The lowest DTB offset. Not a Linux or OpenSBI requirement: it keeps the DTB
-# at +16 MiB and the initramfs at +16 MiB + 64 KiB for every payload of at most
-# 14 MiB.
+# Layout floor for payloads up to 14 MiB, not a Linux or OpenSBI requirement.
 DTB_MIN_OFFSET = 0x100_0000
 DTB_SLOT_BYTES = 0x1_0000
 # The /memory node's size unless --mem-size gives a board's: 64 MiB, the
@@ -80,9 +67,8 @@ MEM_SIZE = 0x400_0000
 # CACHED_SIZE_BYTES): the most memory the CPU, and so Linux, can reach.
 CACHED_REGION_BYTES = 0x4000_0000
 
-# fw_jump.bin is well under FW_MAX_BYTES; its runtime rw/heap/scratch regions
-# follow the binary and OpenSBI reserves them below the payload (banner
-# "Firmware Size").
+# Leave room after fw_jump.bin for OpenSBI's runtime data, heap, and scratch
+# below the payload (the banner's "Firmware Size").
 FW_MAX_BYTES = 0x10_0000
 # OpenSBI's fdt fixups each open the tree with +1 KiB of headroom; keep the
 # slot roomy beyond that.
@@ -106,10 +92,8 @@ ISA_STRING = (
     "rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbs_zbkb_zicond_zihintpause_sstc_svade"
 )
 
-# ipv6.disable=1 because Debian's kernel builds IPv6 in: the autoconfiguration
-# frames it sends whenever an interface comes up return through the NIC's
-# loopback and fail frost_nettest's idle checks, which require that no frame is
-# counted while none is being sent. Nothing in the initramfs needs IPv6.
+# Disable IPv6 autoconfiguration traffic, which returns through NIC loopback
+# and fails frost_nettest's idle checks. The initramfs needs no IPv6.
 DEFAULT_BOOTARGS = "earlycon console=ttyS0 rdinit=/sbin/init ipv6.disable=1"
 # The ip= for an NFS root when --ip is not given.
 DEFAULT_NFSROOT_IP = "dhcp"
@@ -134,11 +118,9 @@ PLIC_NDEV = 4  # 1 = ns16550, 2 = board pin, 3 = DMA test engine, 4 = NIC
 DMA_ENGINE_BASE = 0x4002_0000
 DMA_ENGINE_SIZE = 0x1000
 DMA_ENGINE_PLIC_SOURCE = 3
-# The NIC (hw/rtl/peripherals/nic): its register window closes the strongly
-# ordered MMIO region (hw/rtl/cpu_and_mem/cpu_and_mem.sv MmioSizeBytes). The
-# node follows the binding in linux/buildroot-external/board/frost/
-# frost,net10g.yaml; the frost_net10g driver that binds it is
-# linux/frost-net10g.
+# NIC register window at the end of strongly ordered MMIO (cpu_and_mem.sv,
+# MmioSizeBytes). See frost,net10g.yaml for the binding, linux/frost-net10g for
+# the driver, and hw/rtl/peripherals/nic for the RTL.
 NIC_BASE = 0x4003_0000
 NIC_SIZE = 0x1000
 NIC_PLIC_SOURCE = 4
@@ -189,13 +171,9 @@ def payload_footprint(payload: bytes) -> int:
 
 
 def plan_layout(footprint: int) -> Layout:
-    """Place the DTB and the initramfs above a payload of this footprint.
+    """Place the DTB at the first PMD boundary at or above the payload and DTB_MIN_OFFSET.
 
-    The DTB takes the first PMD boundary at or above both the payload's end
-    and DTB_MIN_OFFSET, and the initramfs follows the DTB slot. Linux (with
-    STRICT_KERNEL_RWX) reserves its image up to the PMD boundary past its end
-    and drops an initramfs that overlaps a reservation, so both regions start
-    clear of that reservation.
+    The initramfs follows the DTB slot, clear of Linux's PMD-rounded reservation.
     """
     lowest = max(DTB_MIN_OFFSET, PAYLOAD_OFFSET + footprint)
     dtb_offset = (lowest + PMD_BYTES - 1) // PMD_BYTES * PMD_BYTES
@@ -493,12 +471,7 @@ def write_images(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse the command line.
-
-    Environment variables supply defaults for the Buildroot post-image hook
-    (FROST_FIRMWARE, FROST_IMAGE, FROST_INITRD, FROST_OUTDIR,
-    FROST_CROSS_COMPILE, FROST_DTC, FROST_SHIM_MARCH/MABI, FPGA_CPU_CLK_FREQ).
-    """
+    """Parse options, using environment defaults for the Buildroot post-image hook."""
     env = os.environ.get
     parser = argparse.ArgumentParser(description="Pack a FROST OpenSBI boot image.")
     parser.add_argument("--firmware", default=env("FROST_FIRMWARE"), help="fw_jump.bin")

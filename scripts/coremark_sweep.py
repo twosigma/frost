@@ -16,10 +16,8 @@
 
 """Run and archive cycle-exact CoreMark simulations in the frost Docker image.
 
-The sweep covers seed sets, link orders, compressed code and memory tiers, and
-archives what each run needs to be reproduced. Each CoreMark report covers one
-iteration with a synthetic timer, so its CoreMark/MHz is only a diagnostic for
-comparing cycle counts, not a benchmark score.
+Archive the inputs needed to reproduce each run. Reports use one iteration and
+a synthetic timer; CoreMark/MHz compares cycle counts, not benchmark scores.
 """
 
 import argparse

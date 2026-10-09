@@ -16,19 +16,10 @@
 
 # Buildroot post-image hook for frost_rv64_defconfig.
 #
-# Buildroot runs this after the image stage with BINARIES_DIR and HOST_DIR
-# exported. It builds the OpenSBI firmware from the linux/opensbi submodule with
-# Buildroot's (PIE-capable) toolchain, stages Debian's pinned kernel and the
-# test initramfs with the FROST NIC module appended (linux/debian_kernel.py),
-# then packs firmware + Image + DTB + initramfs into the boot images with
-# frost_boot_image.py:
-#
-#   $BINARIES_DIR/fw_jump.bin        OpenSBI fw_jump
-#   $BINARIES_DIR/Image-debian       Debian's riscv64 kernel, the packed payload
-#   $BINARIES_DIR/rootfs-frost.cpio  rootfs.cpio + the NIC module and its loader
-#   $BINARIES_DIR/sw.{mem,txt}       low-BRAM boot shim
-#   $BINARIES_DIR/sw_ddr.{mem,txt}   firmware + Image + DTB + initramfs in DDR
-#   $BINARIES_DIR/frost.{dts,dtb}    the generated device tree
+# Buildroot exports BINARIES_DIR and HOST_DIR after the image stage. Build
+# OpenSBI with its PIE-capable toolchain, stage Debian's kernel and the
+# module-augmented initramfs via linux/debian_kernel.py, then run
+# frost_boot_image.py. All outputs go to BINARIES_DIR.
 #
 # sw/apps/linux_boot packs its own boot images for each board load, from this
 # build's fw_jump.bin and rootfs.cpio. For the boot interface, see
@@ -50,9 +41,8 @@ if [ -z "${gcc_path}" ]; then
 fi
 cross_compile="${gcc_path%gcc}"
 
-# Prefer Buildroot's host dtc (HOST_DIR/bin), then PATH. This build has no
-# kernel tree to borrow scripts/dtc from, so a machine without dtc needs
-# BR2_PACKAGE_HOST_DTC=y (the frost Docker image installs device-tree-compiler).
+# Prefer HOST_DIR/bin/dtc, then PATH. Without a system dtc, enable
+# BR2_PACKAGE_HOST_DTC=y; the frost image provides device-tree-compiler.
 dtc_path="${HOST_DIR}/bin/dtc"
 if [ ! -x "${dtc_path}" ]; then
     dtc_path="$(command -v dtc || true)"
@@ -71,9 +61,7 @@ cp "${BINARIES_DIR}/opensbi/platform/generic/firmware/fw_jump.elf" "${BINARIES_D
 
 echo "post-image-mmu.sh: staging Debian's kernel and the NIC module"
 debian_kernel="${REPO_ROOT}/linux/debian_kernel.py"
-# The helper keeps stdout for the answer and reports progress on stderr, so this
-# is one path even when it downloads and extracts first. Check it anyway: a
-# stray line here would turn into a confusing cp failure.
+# The helper reserves stdout for one path. Check it before copying.
 debian_image="$(python3 "${debian_kernel}" image)"
 if [ ! -f "${debian_image}" ]; then
     echo "post-image-mmu.sh: 'debian_kernel.py image' did not print one existing" \

@@ -121,17 +121,11 @@ MITH_TIME_TOLERANCE = 2e-5
 def parse_workload_perf(serial_buf: str, workload: str) -> dict[str, Any]:
     """Extract workload iterations and seconds, then derive iter/s.
 
-    The values come from the workload's ``iterations``, ``time(secs)`` and
-    ``secs/workload`` lines, which MITH prints in that order. The -v1 item
-    blocks repeat the ``time(secs)`` key, and an item can share the workload's
-    name (core's does), but no item block has those three lines, and every item
-    block comes after them, so lost bytes cannot bring an item's time to that
-    place. Each number must end its line in the form %g prints, and iterations
-    times secs/workload must match time(secs) within %g's rounding. Lost bytes
-    that leave a malformed number (``1.5e-``, ``12.``) or a well-formed wrong
-    one (``12.5`` read as ``1.5`` or ``125``) make both values read as missing.
-    A zero time still reads as 0, but it cannot confirm the iteration count,
-    which then reads as missing.
+    Require consecutive iterations, time(secs), and secs/workload lines. MITH's
+    -v1 item blocks can reuse the name and time key but lack this sequence.
+    Require complete %g numbers and count * secs/workload to agree with total
+    time within the rounding tolerance. Reject malformed or inconsistent data.
+    A zero total remains 0 but cannot confirm iterations, which stays missing.
     """
     name = re.escape(workload)
     report = re.search(

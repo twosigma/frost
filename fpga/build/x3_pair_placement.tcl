@@ -12,11 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Move a critical LUT together with the register it alone drives toward the
-# LUT's critical predecessor, extending the guidance refine derives from the
-# fresh reference placement. Requires x3_local_placement.tcl. The caller still
-# runs place_design and scores that result separately. No logic,
-# connectivity, clock constraints, or timing exceptions are changed.
+# Move a LUT and its sole sink register toward the LUT's predecessor on the
+# worst path. Requires x3_local_placement.tcl and extends its reference
+# placement guidance. The caller runs place_design and scores its result.
+# Logic, connectivity, clock constraints, and timing exceptions stay unchanged.
 namespace eval ::frost_x3_local_placement {
     proc pair_names {objects} {
         # Converting a large collection to a string truncates it; ask for names.

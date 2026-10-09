@@ -17,10 +17,8 @@
 """Run clang-tidy with each RISC-V source file's build flags.
 
 Make supplies the ABI, defines, and include paths. Compiler diagnostics are
-errors. Findings from the bugprone, misc, performance, and readability checks
-in ``.clang-tidy`` are advisory until the repository is clean of them: the
-count is reported for each file that has any, and
-``FROST_CLANG_TIDY_SHOW_ADVISORIES=1`` prints the findings themselves.
+errors; other checks are advisory. Report advisory counts per file, or set
+``FROST_CLANG_TIDY_SHOW_ADVISORIES=1`` to print the findings.
 """
 
 import os
@@ -119,8 +117,7 @@ __frost_clang_tidy_config:
 def extract_flags_from_common_mk(root_dir: Path) -> tuple[str, str]:
     """Evaluate RISCV_FLAGS and FPGA_CPU_CLK_FREQ from common.mk.
 
-    Make itself expands the file, so ``?=`` defaults, recursive variables such
-    as ``$(MABI)``, and environment overrides all apply.
+    Make expands defaults, recursive variables, and environment overrides.
 
     Returns:
         Tuple of (riscv_flags, fpga_clk_freq)
@@ -272,15 +269,8 @@ def run_clang_tidy(
     riscv_flags: str,
     fpga_clk_freq: str,
 ) -> bool:
-    """Run clang-tidy on a single file.
-
-    Returns:
-        True if clang-tidy passed, False otherwise
-    """
-    # App Makefiles usually put -DFPGA_CPU_CLK_FREQ in their own flags. A second
-    # definition risks clang's macro-redefinition diagnostic, which the
-    # --warnings-as-errors setting below makes fatal. Add the clock only when
-    # the flags lack it (the common.mk fallback context).
+    """Run clang-tidy on a file and return whether it passed."""
+    # Duplicate clock definitions can trigger fatal macro-redefinition warnings.
     resolved_flags = shlex.split(riscv_flags) if riscv_flags else []
     clang_tidy_flags = ["--target=riscv64-unknown-linux-musl"]
     if not any(flag.startswith("-DFPGA_CPU_CLK_FREQ=") for flag in resolved_flags):

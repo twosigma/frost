@@ -76,11 +76,9 @@ namespace eval ::frost_x3_local_placement {
     }
 
     proc recover_unfixed_ports {checkpoint_path} {
-        # The old global unlock lost every port's IS_LOC_FIXED flag. Recover
-        # already-produced downstream checkpoints from their qualified placed
-        # ancestor. build.py validates that ancestry before launching Vivado.
-        # New checkpoints and checkpoints with saved restoration metadata use
-        # the ordinary release path instead.
+        # If all ports are unfixed and restoration metadata is absent, recover
+        # flags from the placed ancestor validated by build.py. Checkpoints
+        # with saved metadata use release instead.
         if {[saved_constraints] ne ""} {return 0}
         set actual [port_constraints]
         if {![dict size $actual]} {return 0}
@@ -95,7 +93,7 @@ namespace eval ::frost_x3_local_placement {
         close_design
         try {
             open_checkpoint $reference_path
-            # Serialize names/properties before closing their owning design.
+            # Serialize names and properties before closing the design.
             set original [string trim [format "%s\n" [port_constraints]]]
             if {![dict size $original]} {error "Placed ancestor has no ports"}
             dict for {name state} $original {
@@ -173,9 +171,8 @@ namespace eval ::frost_x3_local_placement {
             add_cells_to_pblock $pb $cells
             lappend pblocks $name
         }
-        # LOC would immediately place a cell. Hard one-site pblocks constrain
-        # the chosen sites while leaving the cells genuinely unplaced for the
-        # final place_design, which must legalize and place them itself.
+        # LOC would place cells immediately. Hard one-site pblocks leave them
+        # unplaced for place_design to legalize and place.
         if {[unplaced] ne [lsort [concat $baseline [dict keys $guidance]]]} {
             error "Guided placement did not leave exactly the intended cells unplaced"
         }
@@ -194,8 +191,7 @@ namespace eval ::frost_x3_local_placement {
             error "Unknown saved placement constraints"
         }
         set original [dict get $saved flags]
-        # Older placed checkpoints did not record ports. Preserve their
-        # current pin constraints before the global unlock clears them.
+        # Without saved port metadata, preserve current constraints across unlock.
         set original_ports [port_constraints]
         if {[dict exists $saved ports]} {set original_ports [dict get $saved ports]}
         foreach name [dict get $saved pblocks] {
@@ -502,9 +498,7 @@ namespace eval ::frost_x3_local_placement {
             -slack_lesser_than -0.175 -max_paths 1000 -nworst 1]
         set registers [get_cells -quiet -of_objects $paths -filter \
             {NAME =~ *l2_cache/data_array/u_xpm_ram/*doutb_pipe_reg* && REF_NAME == FDRE}]
-        # Balance URAM-to-register and register-to-cache delay in the middle
-        # columns. Every site is evaluated on the current netlist; no archived
-        # cell names, placements, or timing measurements are reused.
+        # Balance URAM-to-register and register-to-cache delay in the middle columns.
         foreach c [lsort $registers] {
             set original [snapshot $c]
             if {[dict get $original IS_LOC_FIXED] || [dict get $original IS_BEL_FIXED]} {continue}

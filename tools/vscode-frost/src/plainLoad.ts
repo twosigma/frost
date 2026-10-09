@@ -131,9 +131,8 @@ export interface PlainLoadUi {
     showInputBox(options: vscode.InputBoxOptions, token?: vscode.CancellationToken): Thenable<string | undefined>;
 }
 
-// Drive the prompt's CancellationToken from `signal`. The token is built by
-// hand so a test that supplies its own UI never loads vscode at runtime.
-// Cancelling dismisses the prompt and rejects at once, even if the UI answers late.
+// Build the token from `signal` without importing vscode, allowing an injected UI.
+// Cancellation dismisses and rejects immediately, even if the UI answers late.
 async function prompt<T>(signal: AbortSignal | undefined,
     show: (token?: vscode.CancellationToken) => Thenable<T>): Promise<T> {
     signal?.throwIfAborted();

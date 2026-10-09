@@ -193,9 +193,8 @@ static u32 frost_ctrl_value(const struct frost_priv *priv)
 }
 
 /*
- * Request a poll from outside the hard interrupt handler (open's link refresh
- * and the refill timer): mask, flush the store with a read, then schedule, so
- * the device is masked from the request on, as after an interrupt.
+ * Request a poll outside the interrupt handler. Flush the mask write before
+ * scheduling so the device stays masked from the request through the poll.
  */
 static void frost_schedule(struct frost_priv *priv)
 {
@@ -228,12 +227,11 @@ static void frost_refill_timer(struct timer_list *t)
 }
 
 /*
- * Post RX buffers at rx_tail until 127 are outstanding or an allocation or
- * mapping fails; return how many this call posted. Only the slot at rx_tail
- * is written, never a descriptor the NIC may already hold. The NIC uses a
- * descriptor only from a read accepted after TAIL covered it, and dma_wmb()
- * orders the four word stores ahead of the doorbell store, so that read sees
- * the posted words.
+ * Fill RX to 127 outstanding buffers; stop on allocation or mapping failure
+ * and return the number posted. Write only rx_tail, never a descriptor the
+ * NIC may hold.
+ * The NIC uses reads accepted after TAIL covers the descriptor; dma_wmb()
+ * orders its four words before the doorbell so those reads see the new data.
  */
 static unsigned int frost_rx_fill(struct frost_priv *priv, gfp_t gfp)
 {
@@ -378,15 +376,12 @@ static int frost_rx_reap(struct frost_priv *priv, int budget)
 }
 
 /*
- * Re-enable the directions the NIC disabled on its own. While the interface
- * runs, CTRL shows a direction disabled only after its MAC domain lost READY.
- * Once STATUS shows that direction READY again, one CTRL write with both
- * enables and PROMISC is accepted for it, since its ring registers are still
- * valid, and the NIC resumes fetching descriptors at HEAD. A direction that is
- * disabled and still not READY is refused by that write (CONFIG_ERR and a
- * masked DESC_ERR event) and is retried at the LINK event that follows its
- * READY return. Only the poll calls this, and the poll never runs while open
- * or stop has RESET in progress, so the write is never dropped as busy.
+ * Re-enable directions disabled by loss of MAC READY. Write both enables and
+ * PROMISC; each direction accepts its enable when it is READY and its ring is
+ * valid, and resumes at HEAD.
+ * A direction still not READY rejects the write with CONFIG_ERR and masked
+ * DESC_ERR; retry on the LINK event after READY returns. Only the poll calls
+ * this, outside open/stop RESET, so RESET_BUSY cannot discard the write.
  */
 static void frost_reenable(struct frost_priv *priv)
 {
@@ -446,14 +441,11 @@ static int frost_poll(struct napi_struct *napi, int budget)
 	readl(priv->base + NET10G_IRQ_MASK);
 
 	/*
-	 * Acknowledge before scanning. RX and TX are moderated notifications:
-	 * writing 1 starts a new interval, and a completion after that write
-	 * raises the bit again (ITR 0, the reset value, raises on the first
-	 * completion). A completion before the acknowledgment is found by the
-	 * scans below; one after it raises its bit, which asserts the line when
-	 * this poll unmasks. Acknowledging after the final scan could erase a
-	 * completion the scan missed. The read flushes the acknowledgment, so
-	 * every descriptor load below comes after it.
+	 * Acknowledge before scanning: the scans find earlier completions,
+	 * and later ones reassert the bit for unmasking. A late acknowledgment
+	 * could erase a completion the scan missed. Writing 1 starts a new
+	 * moderation interval; ITR defaults to 0, raising the first completion.
+	 * The read flushes the acknowledgment before descriptor loads.
 	 */
 	st = readl(priv->base + NET10G_IRQ_STATUS);
 	writel(st | NET10G_IRQ_RX | NET10G_IRQ_TX,
@@ -461,11 +453,9 @@ static int frost_poll(struct napi_struct *napi, int budget)
 	readl(priv->base + NET10G_IRQ_STATUS);
 
 	/*
-	 * The carrier has one writer, this poll. LINK is read after the
-	 * acknowledgment, so a later change raises the event again. A MAC
-	 * domain restart drops the carrier, and the event for its return comes
-	 * only after READY has returned, so the event is also where a direction
-	 * that lost READY is re-enabled.
+	 * The poll updates carrier; probe and teardown also clear it. Read LINK
+	 * after acknowledgment so later changes reassert the event. Carrier returns
+	 * after MAC READY, making LINK the retry point for lost enables.
 	 */
 	refresh = xchg(&priv->link_refresh, false);
 	if ((st & NET10G_IRQ_LINK) || refresh) {
@@ -533,14 +523,10 @@ static int frost_alloc_rings(struct frost_priv *priv)
 }
 
 /*
- * RESET the NIC, then free what was published to it. RESET drains the NIC's
- * DMA path: RESET_BUSY clears only once no request the NIC issued still owes
- * a response, and after that nothing further can be issued, so only then may
- * published memory be unmapped and freed. The caller has already stopped
- * every other writer to the NIC (xmit, NAPI, the refill timer and the
- * interrupt), since configuration writes are dropped while RESET is busy.
- * A RESET that does not complete never authorizes a free: the rings and every
- * posted buffer are leaked, and the device is marked broken and detached.
+ * Free published memory only after RESET_BUSY clears: all DMA responses have
+ * returned and no new requests can issue. The caller must stop xmit, NAPI,
+ * the refill timer, and interrupts; RESET_BUSY discards configuration writes.
+ * On timeout, leak the rings and posted buffers, mark broken, and detach.
  */
 static void frost_reset_and_free(struct frost_priv *priv)
 {
@@ -596,10 +582,9 @@ static void frost_reset_and_free(struct frost_priv *priv)
 }
 
 /*
- * Stop the poll, the refill timer and the interrupt, as frost_reset_and_free()
- * requires. Stop does this, and so does open when it fails after enabling
- * NAPI: busy polling can run the poll with no interrupt, and a poll can arm
- * the refill timer and unmask the device.
+ * Quiesce before frost_reset_and_free(), including failed opens after NAPI
+ * was enabled. Busy polling needs no interrupt and can arm the refill timer
+ * or unmask the device.
  */
 static void frost_quiesce(struct frost_priv *priv)
 {
@@ -631,21 +616,16 @@ static int frost_up(struct net_device *ndev)
 	priv->tx_head = 0;
 	priv->rx_buf_len = ndev->mtu + ETH_HLEN + VLAN_HLEN;
 
-	/* Bookkeeping comes back zeroed: no skb recorded in any slot */
 	err = frost_alloc_rings(priv);
 	if (err)
 		return err;
 
 	/*
-	 * PHY_CTRL before RESET. MAC loopback needs one clock for both MAC
-	 * directions (PHY_STATUS.CLK_SHARED) and is sampled while the RX MAC
-	 * domain is in reset, so this RESET applies it. PMA loopback is the
-	 * transceiver's: a change restarts its receiver, which takes READY
-	 * down until the receiver is back, possibly only after the wait for
-	 * READY below has passed; the enable step allows for that. Nothing
-	 * else is written until RESET_BUSY clears, because configuration
-	 * writes are dropped while it is set; READY returns only after that
-	 * and is awaited separately.
+	 * Write PHY_CTRL before RESET. MAC loopback requires CLK_SHARED and
+	 * is sampled during RX MAC reset. PMA loopback restarts the receiver;
+	 * READY can fall after the wait below, so enable retries allow for it.
+	 * RESET_BUSY discards configuration writes. Wait for it to clear,
+	 * then wait separately for READY.
 	 */
 	if (ndev->features & NETIF_F_LOOPBACK) {
 		if (readl(priv->base + NET10G_PHY_STATUS) &
@@ -660,9 +640,8 @@ static int frost_up(struct net_device *ndev)
 			       !(status & NET10G_STATUS_RESET_BUSY),
 			       FROST_POLL_US, FROST_RESET_TIMEOUT_US)) {
 		/*
-		 * Nothing of this open reached the NIC, and the previous stop
-		 * completed its own RESET, so the rings may be freed. The
-		 * device is detached as in frost_reset_and_free().
+		 * These rings have not been published, and any previous stop
+		 * completed RESET, so they can be freed before detaching.
 		 */
 		netdev_err(ndev, "RESET did not complete (STATUS %#x)\n",
 			   status);
@@ -714,11 +693,9 @@ static int frost_up(struct net_device *ndev)
 	spin_unlock_bh(&priv->ctrl_lock);
 
 	/*
-	 * An enable is refused unless its direction is READY and its ring
-	 * valid. The ring registers were read back above, but READY may have
-	 * fallen since the wait for it (a transceiver restarting its receiver
-	 * for a PMA loopback change), so wait for READY again and repeat the
-	 * write, a bounded number of times.
+	 * Enables require READY and valid rings. Ring registers were checked,
+	 * but PMA loopback can drop READY after the wait; retry a bounded
+	 * number of times.
 	 */
 	for (tries = 1; (readl(priv->base + NET10G_CTRL) & enables) != enables;
 	     tries++) {
@@ -839,9 +816,8 @@ static int frost_set_features(struct net_device *ndev,
 			      netdev_features_t features)
 {
 	/*
-	 * Loopback, MAC or PMA, takes effect through the RESET that only open
-	 * issues. While down, the core records the new features and the next
-	 * open applies them.
+	 * Change loopback only while down. The next open applies the recorded
+	 * feature through PHY_CTRL and RESET.
 	 */
 	if (((ndev->features ^ features) & NETIF_F_LOOPBACK) &&
 	    netif_running(ndev))
