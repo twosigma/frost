@@ -49,8 +49,7 @@ response: valid  id[ID_BITS]  rdata[256]
   accepted before a write never sees it. Each cache is the ordering point for
   its level and never relies on the level below to order a read against a
   write. The AXI bridge gives no such order (it can issue a read while an
-  earlier write still waits), so the hierarchy above it owns same-line
-  ordering.
+  earlier write still waits), so same-line ordering is the hierarchy's job.
 - Writes carry byte strobes. A write with all 32 strobes set allocates
   without fetching the line, the usual case for an eviction from the level
   above. Such a write installs even while a probe withholds the line's fills
@@ -148,13 +147,12 @@ Each probe holds a probe slot from its decision until the requester releases
 it, after the level below has ordered the requester's own access. While a
 PROBE_INVAL slot is held, the cache issues no fill of that line. A miss that
 follows the invalidation waits in its miss slot and fetches the line after
-the release, instead of fetching the old data again. A whole-line write
-would install without waiting for the release. If a walk's PROBE_CLEAN then
-wrote it back ahead of the DMA write, the cache would keep a clean copy older
-than the level below's, which is why a probed cache must never receive one
-(see Line protocol). A fill of the line allocated before
-the probe's decision is never withheld: the probe waits for it and
-invalidates what it installs.
+the release, instead of fetching the old data again. A whole-line write would
+install without waiting for the release, and a walk's PROBE_CLEAN could then
+write it back ahead of the DMA write, leaving a clean copy older than the
+level below's; that is why a probed cache must never receive one (see Line
+protocol). A fill of the line allocated before the probe's decision is never
+withheld: the probe waits for it and invalidates what it installs.
 
 Pending probe acknowledgements take the response port ahead of ordinary
 acknowledgements and hold off new read hits, so a stream of hits cannot
@@ -235,10 +233,10 @@ prefix-free code in `UP_ID_BITS + 2` bits:
 
 The L2 sees those 5 bits and gives its own downstream requests 5-bit ids as
 well, the AXI id width the X3 DDR block design provides
-(`fpga/build/x3_ddr_bd.tcl`).
-The L1I spends one of its 2 bits on the fill/writeback type, leaving 2 miss
-slots, which is all its master, the two-line fetch buffer, ever uses. The
-walker keeps one walk in flight and uses id 0.
+(`fpga/build/x3_ddr_bd.tcl`). The L1I spends one of its 2 bits on the
+fill/writeback type, leaving 2 miss slots, which is all its master, the
+two-line fetch buffer, ever uses. The walker keeps one walk in flight and
+uses id 0.
 
 The bridge drops any response whose id is not in flight. That is how a
 transaction interrupted by an image-load CPU reset drains harmlessly on
@@ -259,8 +257,8 @@ land before the loader's first DDR write.
 The interconnect's own reset is different. While it is in reset, AXI
 requires every VALID low, so the bridge takes that reset as a second input
 (`frost`'s `i_ddr_axi_rst_n`, which X3 drives from the SmartConnect's
-CPU-side reset, the CPU clock's lock). It gates the held VALIDs off in the cycle
-the reset arrives and drops those beats, so none is presented after the
+CPU-side reset, the CPU clock's lock). It gates the held VALIDs off in the
+cycle the reset arrives and drops those beats, so none is presented after the
 interconnect restarts. The behavioral DDR model in simulation resets with
 the CPU, so there the CPU reset serves as both.
 
@@ -289,8 +287,8 @@ architecture forbids: a walk may return any translation valid since the last
 
 `walker_coherence_sequencer` prevents this. Every walk read first sends a
 PROBE_CLEAN to the L1D, so a dirty copy is written back and ordered at the
-L2 ahead of the read, and stays valid and clean in the L1D. Stores
-still in the store queue are not covered, and need not be. They drain to the
+L2 ahead of the read, and stays valid and clean in the L1D. Stores still in
+the store queue are not covered, and need not be. They drain to the
 L1D in program order, so a walk that sees a later page-table store sees
 every earlier one, and a walk that sees neither returns the old translation,
 which is still permitted.
@@ -376,9 +374,9 @@ the first's entry to retire.
 
 Progress: a probe waits only on L1D transients that resolve through the L2
 and DDR, because a fill of the probed line allocated before the probe's
-decision is never withheld. A withheld fill waits only for the release,
-which depends on the load queue and the L2 alone. Nothing
-below the sequencer waits on the DMA port. The admit and invalidate
+decision is never withheld. A withheld fill waits only for the release, which
+depends on the load queue and the L2 alone. Nothing below the sequencer waits
+on the DMA port. The admit and invalidate
 handshakes hold a latched request until the load queue answers, so the core
 may take several cycles to answer.
 
@@ -399,8 +397,7 @@ the exact names. The benches live in
 [`verif/cocotb_tests/cache`](../../../../verif/cocotb_tests/cache/). The
 full-system programs `dma_torture` and `ptw_coherence_test` check DMA and
 walker coherence against the running CPU. Formal targets cover the bridge
-(`line_port_axi_bridge`: AXI handshakes, also across a CPU reset, VALIDs
-low through the AXI side's reset, id conservation, and stale-response
-drops), the arbiter grant
-(`line_arbiter_grant`), and the miss-slot byte merge (`cache_mshr_payload`);
-see the [formal guide](../../../../formal/README.md).
+(`line_port_axi_bridge`: AXI handshakes, also across a CPU reset, VALIDs low
+through the AXI side's reset, id conservation, and stale-response drops), the
+arbiter grant (`line_arbiter_grant`), and the miss-slot byte merge
+(`cache_mshr_payload`); see the [formal guide](../../../../formal/README.md).

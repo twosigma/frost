@@ -23,9 +23,9 @@ control-flow serialization stall in `ooo_pipeline_control`, which holds the
 front end while a conditional branch or JALR is unresolved. That stall only
 limits wrong-path fetch past the jump; recovery does not depend on it. IF
 supplies slot 1's indirect class from the instruction memory's predecode
-metadata, so the tracker does not decode the fetched parcel. The PD
-and ID per-class signals (conditional branch, JAL, indirect) feed only
-[profiling counters](../perf/README.md) 20–22.
+metadata, so the tracker does not decode the fetched parcel. The PD and ID
+per-class signals (conditional branch, JAL, indirect) feed only
+[profiling counters](../perf/README.md) 20 to 22.
 
 ## Decoded bundle queue
 
@@ -62,23 +62,12 @@ because a CSR's CDB broadcast carries only its write operand.
 
 The queue takes every bundle with a real instruction in either slot. It also
 reports any queued unpredicted JALR (`o_indirect_pending`) to the
-control-flow serialization stall. For timing, dispatch reads a flop copy of
-the head bundle rather than the queue RAM, and takes its narrow control fields
-from a register (`o_shadow`) loaded a cycle early from ID's next-cycle value
-(`o_from_id_to_ex_next`). `cpu_ooo` also loads private copies of the shadow's
-source-register fields from its next value (`o_shadow_next`), one each for
-the INT RAT lookups, the FP RAT lookups, and the register files' commit-bypass
-compares, so those address nets do not share the shadow fields' fanout to the
-register-file RAMs. The shadow's next value applies ID's stall at its last
-LUT (`SPLIT_SHADOW_STALL`): ID also exports its next value for both outcomes
-(`o_from_id_to_ex_next_go`, `o_from_id_to_ex_next_hold`), each outcome goes
-through the queue's bypass select, and one LUT per bit picks between them from
-the stall's terms. The latest of those, the fetch translation hold, comes from
-private IMMU copies rather than the stall's wide fanout. Neither the RAM write
-nor the head copy's data
-depends on the pop: the RAM writes the tail row whenever the queue is not full
-(that row is free then), and the pop only enables the head copy's load, one
-enable per 128-bit group.
+control-flow serialization stall. Dispatch reads a register copy of the head
+bundle rather than the queue RAM, and takes its narrow control fields from a
+register (`o_shadow`) loaded a cycle early from ID's next-cycle value
+(`o_from_id_to_ex_next`). `cpu_ooo` keeps further copies of the shadow's
+source-register fields (from `o_shadow_next`) for the INT and FP RAT lookups
+and the register files' commit-bypass compares.
 
 ## Verification
 

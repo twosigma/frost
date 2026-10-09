@@ -45,8 +45,8 @@ elsewhere, register it:
 Apps in `VALID_APPS` also run in the
 [hardware regression](../fpga/README.md#hardware-regression), which by default
 passes an app on `<<PASS>>`. Exclude an app that cannot pass unattended, such
-as one that waits for a debugger, in `fpga/hw_regression.py`. Programs that share one
-build directory, like the CoreMark-PRO workloads, are described in
+as one that waits for a debugger, in `fpga/hw_regression.py`. Programs that
+share one build directory, like the CoreMark-PRO workloads, are described in
 `sw/apps/software_registry.py`.
 
 Describe the app's purpose and expected output at the top of its main source,

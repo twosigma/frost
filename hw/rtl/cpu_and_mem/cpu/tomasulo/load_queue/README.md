@@ -11,9 +11,9 @@ order; device loads, LRs and AMOs wait for the head of the reorder buffer
 (ROB). The LQ also holds the LR reservation, runs each AMO's
 read-modify-write, and reports loads to the DMA coherence logic.
 
-An entry's life: allocate at dispatch → receive its address → check the SQ →
-take a forwarded value, hit the L0, or read memory → move into `cdb_stage` →
-free.
+An entry's life: allocate at dispatch, receive its address, check the SQ,
+take a forwarded value, hit the L0, or read memory, move into `cdb_stage`,
+and free.
 
 The queue is [`load_queue.sv`](load_queue.sv). Issue selection is in
 [`lq_issue_selector.sv`](lq_issue_selector.sv), the L0 in
@@ -42,8 +42,9 @@ physical order is not program order: age always comes from ROB tags, and
 its result enters `cdb_stage`, before the CDB broadcast.
 
 Allocation requests on a flush cycle are dropped, as the ROB drops them.
-Dispatch does not flush-gate its requests, and accepting one would create an
-entry for a ROB tag that was never allocated.
+Dispatch can present one on a trap, xRET, or FENCE-class flush, because the
+front-end kill arrives a cycle late, and accepting it would create an entry
+for a ROB tag that was never allocated.
 
 Dispatch sees the registered `o_dispatch_full` and `o_dispatch_full_for_2`,
 which take no credit for this cycle's frees or flushes: they may stall
@@ -57,17 +58,11 @@ with its ROB tag (`i_addr_update`), and a CAM on the entries' ROB tags finds
 the entry. The look-ahead arrives exactly one cycle earlier, so the LQ
 registers the match and selects the load in the cycle its address arrives.
 The scalar mode compares `i_pre_issue_rob_tag`; the candidate mode registers
-all candidate matches and selects one after the edge.
-
-In the core, `PREISSUE_READY_PICK=1` compares every LQ tag against every
-MEM_RS entry tag in parallel with RS readiness. Each candidate's ready
-vector selects its lowest ready entry's compare result; with no ready entry
-it selects entry 0, preserving the tag encoder's idle behavior. Translation
-selects a separate compare against `i_pre_issue_direct_tag`. The ready-vector
-pick therefore replaces tag encoding, tag muxing and the subsequent compare
-without changing the registers, reset, flush, or issue cycle. The default
-`PREISSUE_READY_PICK=0` accepts candidate tags directly. `rs_lq_prematch`
-proves the connected MEM_RS and LQ against that original CAM.
+all candidate matches and selects one after the edge. In the core
+(`PREISSUE_READY_PICK=1`) the LQ compares its tags against every MEM_RS entry
+tag, and each candidate's ready vector picks the compare result of that
+candidate's winner (entry 0 when nothing is ready). Under translation it
+compares `i_pre_issue_direct_tag` instead.
 
 [`lq_issue_selector.sv`](lq_issue_selector.sv) scans in ring order from
 `head_idx` and finds, in parallel: the first entry holding a result, which
@@ -93,23 +88,14 @@ queue is empty.
 
 ### Staging and the SQ check
 
-The replacement enable computes two cases before the late address-update
-valid bit arrives. Without an update it tests the stored-address winner;
-with an update it tests the first candidate in the union of stored and
-arriving-address entries. That union winner is found in physical index order
-at or above `head_idx`, wrapping to the lowest index if needed. Both cases
-retain the ROB-head overrides and compare the winner's age to the staged
-load. The data-path selection is unchanged. `lq_replace_select` proves this
-enable equal to the original head-priority and ring-position expression
-without assumptions.
-
 The staging register (`sq_check_*`) holds the selected load while the SQ
 checks it. Disambiguation is conservative: a load reads memory only when every
 older store address is known and none overlaps it. The SQ answers in the next
-cycle. If the newest overlapping older store covers every byte, the load
-extracts its bytes from that store's aligned-dword image with its own
-`load_unit`; if it covers only part of the load, the load waits and probes
-again; with no overlap, the load completes from the L0 or launches.
+cycle. If the newest overlapping older store covers every byte and has its
+data, the load extracts its bytes from that store's aligned-dword image with
+its own `load_unit`; if it covers only part of the load or has no data yet,
+the load waits and probes again; with no overlap, the load completes from the
+L0 or launches.
 Forwarding also needs every older store address known, because an older store
 with an unknown address could overlap the load and be newer than the store
 the SQ picked. The
@@ -129,8 +115,8 @@ exists.
 
 The SQ's forwarding result register captures under
 `o_sq_check_capture_valid`, which is `o_sq_check_valid` without the flush
-terms and without the cached-region commit interlock (`sq_commit_check_block`);
-this keeps the trap pulse off the wide capture register. On a cycle with no
+terms and without the cached-region commit interlock (`sq_commit_check_block`).
+On a cycle with no
 capture the register reads "addresses not known, no match", so each result is
 visible for exactly one cycle. The LQ uses it only through `sq_can_issue`
 (which also gates the L0 hit) and `sq_do_forward`, and both require:
@@ -151,18 +137,18 @@ point, and so younger than the load.
 
 | Tier | Addresses | Response | In flight |
 |------|-----------|----------|-----------|
-| Low BRAM | `0x0000_0000`, 256 KiB | The cycle after launch | One owner; the next launch can overlap its response |
+| Low BRAM | `0x0000_0000`, 256 KiB | The cycle after launch | One; the next launch can overlap its response |
 | Device | `addr[31:30] == 2'b01` | The cycle after the router accepts it, at least four cycles after handoff | One, and it blocks every other handoff |
 | Cached (DDR) | `CACHED_BASE`, `CACHED_SIZE_BYTES` | Variable: an L1D hit after a few cycles, a miss after a fill round trip | Up to four (`riscv_pkg::CachedLoadSlots`), answered in any order |
 
 Every response is one aligned 64-bit beat (see the
 [memory map](../../../../README.md#memory-map) and the
 [data-tier bus contract](../../../../README.md#data-tier-bus-contract)).
-Low-BRAM and device loads share one fast owner (`mem_outstanding`); each
-cached load holds a `cs_*` slot whose id travels with the request
-(`o_mem_read_id`) and the response (`i_mem_read_is_cached`, `i_mem_read_id`).
-A launch snapshots the load's attributes into its owner, so the response path
-does not read the entry's fields. While all four slots are busy, or for a
+Low-BRAM and device loads share one in-flight tracker (`mem_outstanding` and
+the `fast_*` registers); each cached load holds a `cs_*` slot whose id travels
+with the request (`o_mem_read_id`) and the response (`i_mem_read_is_cached`,
+`i_mem_read_id`). A launch copies the load's attributes into its tracker or
+slot, so the response path does not read the entry's fields. While all four slots are busy, or for a
 cycle after the router held a cached response behind a fast one
 (`i_cached_resp_held`), a registered hold stops every launch, low-BRAM and
 device ones included; L0 hits and forwards continue. The one-cycle hold keeps
@@ -174,9 +160,8 @@ and may already hold a new load, so a later flush must never judge a
 drop-marked slot by its stale index and ROB tag (`cs_flushed` requires
 `!cs_drop`). Doing so could clear the issued bit of the entry's new load,
 which would launch twice and could hand its second response to the next load
-in that entry. Likewise the fast owner's flush kill reads its own snapshot,
-not the response-owner mux, so a cached response in the flush cycle cannot
-hide it.
+in that entry. Likewise the fast tracker's flush kill reads its own copy, not the
+response mux, so a cached response in the flush cycle cannot hide it.
 
 ## Device loads
 
@@ -399,13 +384,9 @@ CDB adapter (`o_fu_complete`, advanced by `i_result_accepted`). A memory
 response, L0 hit or forwarded value goes straight into it when it is free and
 the selector is not filling it, and the entry frees at once; otherwise the
 result waits in the data RAM. An AMO that does not fault completes through the
-data RAM, and nothing enters `cdb_stage` on a partial-flush cycle.
-
-The value input selects a memory response in its final mux stage, while the
-other sources are selected in parallel. It preserves the original priority:
-a queued completion, a fault, a response, SQ forwarding, then an L0 hit.
-`lq_ram_payload` checks this equality as well as the result-RAM writes;
-capture enables and entry-freeing cycles are unchanged.
+data RAM, and nothing enters `cdb_stage` on a partial-flush cycle. When
+several results are ready, `cdb_stage` takes a queued completion first, then
+a memory response, a fault, an SQ forward, and an L0 hit.
 
 A load that faults (misaligned when `i_trap_misaligned_accesses` is set,
 outside the physical memory map, an AMO or LR to the device quadrant, or with
@@ -450,8 +431,8 @@ and ROB-tag reuse against slow, reordered DDR responses. The wrapper and
 router suites (`tomasulo_coherence`, `data_mem_request_router` and others)
 check the connected handshakes, and simulation assertions check cached-slot
 identity, AMO write stability, the device-read shield, and that every launched
-load other than an AMO keeps an owner (the fast owner or a cached slot) until
-its data is valid or a flush removes it.
+load other than an AMO stays tracked (by the fast tracker or a cached slot)
+until its data is valid or a flush removes it.
 
 Formally, `load_queue` checks queue invariants from reset,
 `load_queue_amo_compute` the AMO datapath with no reset or admission

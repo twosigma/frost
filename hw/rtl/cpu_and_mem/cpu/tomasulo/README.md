@@ -65,8 +65,10 @@ L0 cache or memory. See the
 
 Stores write memory only after they commit. An MMIO load issues only at the
 ROB head, and its device read also waits for committed stores to drain, so no
-device access is speculative. There is no memory-dependence prediction or
-replay; the conservative gate costs some IPC on memory-heavy code.
+device access is speculative. There is no memory-dependence prediction, so
+no load is replayed for a store conflict (loads are replayed only for DMA
+coherence; see the [load queue](load_queue/README.md#dma-coherence)). The
+conservative gate costs some IPC on memory-heavy code.
 
 ### Two-tier branch recovery
 
@@ -125,9 +127,9 @@ MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
 The FP engine completes on the `FP_ADD` slot; the `FP_DIV` and `FP_MUL` slots
 have no unit behind them. A completion that loses waits in its
 [`fu_cdb_adapter`](fu_cdb_adapter/README.md) and competes again the next
-cycle; the pipelined MUL path also queues results in a FIFO, and the divider holds its result until its adapter is free. On a full flush the arbiter's `i_kill`
-suppresses both lanes, which keeps the widely fanned flush signal out of the
-adapters' output logic.
+cycle; the pipelined MUL path also queues results in a FIFO, and the divider
+holds its result until its adapter is free. On a full flush the arbiter's
+`i_kill` suppresses both lanes.
 
 ROB tags are reused as soon as the tail rewinds. The ROB tolerates a stray
 completion only while its entry is free. Once the tag is reallocated, the ROB
@@ -157,11 +159,11 @@ entry. The MEM slot needs care here, because store faults, SC results, and
 load results share it, in that priority order. The LQ pops its result exactly
 when the MEM mux presents it. Outside a full flush, a presented MEM result
 always wins a lane, because only MUL outranks MEM on a two-lane bus. The MEM
-adapter is therefore never left holding a result, and a result from the
-store-fault or SC register, which presents it for only one cycle, is broadcast
-unless a flush squashes it.
+adapter is therefore never left holding a result. A store fault, which its
+register presents for only one cycle, is broadcast unless a flush squashes
+it; an SC result waits in its register only behind a store fault.
 
-### Instruction → reservation station routing
+### Reservation station routing
 
 | RS         | Depth | Instructions |
 |------------|-------|--------------|

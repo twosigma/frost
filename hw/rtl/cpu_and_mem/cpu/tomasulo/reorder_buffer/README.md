@@ -10,7 +10,7 @@ the name the rest of the back end uses for the instruction: the RAT maps
 registers to tags, reservation stations wait on tags, and the CDB broadcasts
 results by tag.
 
-An entry's life: allocate at dispatch → complete → retire at the head.
+An entry's life: allocate at dispatch, complete, retire at the head.
 
 [`reorder_buffer.sv`](reorder_buffer.sv) holds the entries, and
 [`rob_serializer.sv`](rob_serializer.sv) pins the head while an instruction
@@ -25,50 +25,37 @@ Head and tail pointers carry an extra wrap bit to tell full from empty.
 
 Multi-bit fields live in distributed RAM: PC, fall-through PC, destination
 register, checkpoint ID, head metadata, value, exception cause, FP flags,
-branch target, and the CSR address, op, and write data. The generic RAM with several
-write ports keeps one bank per port and a Live Value Table (LVT) recording
+branch target, and the CSR address, op, and write data. A RAM with several
+write ports keeps one bank per port and a live value table (LVT) that records
 which bank holds each entry's newest value. Allocation-only fields have two
-write ports, one per dispatch slot. PC, fall-through PC, destination,
-checkpoint ID, metadata and CSR fields share a packed head memory and one
-LVT; the head+1 copy omits the CSR fields. They have identical write controls
-and initialization, so packing them preserves every read while removing
-duplicate LVT state and selection logic. `rob_alloc_lvt` proves the packed
-reads equal the original thirteen field memories without traffic assumptions.
-The FP-flag and exception-cause RAMs add one port per CDB lane. Value
-storage uses the four-bank implementation or the shared link bank below. The branch target is split by producer instead:
-JAL targets go into an allocation-written RAM, and branch and JALR targets
-into a single-port RAM written on branch update, so the branch-update path
-has no LVT. The head selects between the two. Single-bit state (`valid`,
-`done`, `exception`, the replay flag, and the branch flags) stays in
-flip-flops, so reset and flushes can clear any set of entries at once.
+write ports, one per dispatch slot, and share one packed memory and LVT (the
+head+1 copy leaves out the CSR fields). The FP-flag and exception-cause RAMs
+add one port per CDB lane. The branch target is split by producer: JAL
+targets go into an allocation-written RAM, and branch and JALR targets into a
+single-port RAM written on branch update, and the head selects between the
+two. Single-bit state (`valid`, `done`, `exception`, the replay flag, and the
+branch flags) stays in flip-flops, so reset and flushes can clear any set of
+entries at once.
 
 The value field has eight copies with identical writes and different read
 addresses: head, head+1, and six dispatch done-repair reads (three sources
-per slot). With `SharedLinkBank=0` (the module default), each copy has
-four banks and accepts any pair of allocations. With `SharedLinkBank=1`,
-`rob_link_value_ram` uses three banks: one shared allocation link bank and
-one per CDB lane. A non-branch allocation selects constant zero through
-the LVT. This removes one allocation bank from each read copy without
-changing the ROB capacity, ports, staging, or retirement cycles.
+per slot). With `SharedLinkBank=0` (the module default), each copy has four
+banks and accepts any pair of allocations. With `SharedLinkBank=1`,
+`rob_link_value_ram` uses three: one allocation bank shared by both slots for
+link addresses, and one per CDB lane; a non-branch allocation selects zero
+through the LVT. The shared bank requires that two branch allocations in one
+cycle never target different entries. Only `cpu_ooo` enables it (through the
+wrapper's `ROB_SHARED_LINK_BANK`), because its dispatch never allocates slot
+2 behind a slot-1 branch; a simulation assertion checks this in the ROB. The
+head and head+1 copies of this memory also need the ROB's one-hot head masks
+to match their binary read addresses.
 
-The shared bank requires that two accepted branch allocations in one cycle
-never target different entries. Only `cpu_ooo` enables it, through the
-wrapper's `ROB_SHARED_LINK_BANK` parameter: dispatch never allocates slot 2
-behind a slot-1 branch. `rob_link_dispatch` proves that gate without
-assumptions, and a simulation assertion checks accepted allocations in the
-ROB. `rob_link_value_ram` proves the memory reads equal the four-bank
-implementation under this contract, including arbitrary CDB collisions.
-The head variants also require the ROB's one-hot head masks to match their
-read addresses, as the existing head-mask proofs establish after reset.
-
-Both value implementations update their LVT one cycle after an allocation
-(`NUM_STAGED_LVT_PORTS` in the four-bank implementation), which keeps the late dispatch enable off the LVT;
-reads stay exact. The price is one rule: no CDB write may target an entry in
-the cycle after its allocation. In that cycle a live write would win the LVT
-over the staged allocation and corrupt the new entry. No real completion is
-that fast: dispatch, issue, execution, and the registered CDB take more than
-one cycle. A simulation check flags violations; the unit bench, which drives
-the CDB directly, disables it with `DrainWindowCheck=0`.
+Both value implementations update their LVT one cycle after an allocation,
+which imposes one rule: no CDB write may target an entry in the cycle after
+its allocation, or the live write would win the LVT over the staged
+allocation and corrupt the new entry. No real completion is that fast. A
+simulation check flags violations; the unit bench, which drives the CDB
+directly, turns it off with `DrainWindowCheck=0`.
 
 A CDB write reaches a free entry only if it is stale: a completion for a tag
 that was flushed or has already retired (a JALR's wakeup broadcast can trail
@@ -159,23 +146,7 @@ stored done bit (an assertion checks this). At head+1 the bypass excludes
 only exceptional completions, since the two-wide hazard gate below already
 keeps the serializing classes off slot 2.
 
-The head's completion control first ORs the successful CDB tag matches,
-then qualifies that result with the head's bypass eligibility. A kept
-boundary on the class-independent OR separates this control path from the
-per-lane selects used by the value and FP-flag muxes. `rob_bypass_control`
-proves the factored done expression equal to the original lane-by-lane OR
-without assumptions about masks, CDB tags, or traffic. Forwarded values,
-stored done state, and retirement latency are unchanged.
-
 ## Retirement
-
-Stored completion, bypass permission, two-wide eligibility and branch
-misprediction are qualified per entry before the registered one-hot head
-masks select them. The live successful-CDB term still joins after the read.
-This equals qualifying the separately selected fields, while shortening
-the head-mask control path. `rob_retire_ready` proves both actual masks stay
-one-hot and each replacement matches its original equation, with only an
-initial-reset assumption. It adds no storage or retirement cycle.
 
 The head retires when it is valid and done, has no exception, the serializer
 does not stall it, and retirement is permitted: no commit hold from cpu_ooo,
@@ -198,9 +169,8 @@ Slot 2 carries the register write, store commit, and RAT clear, plus branch
 and checkpoint fields for a correctly predicted branch; its strobe
 `o_commit_correct_branch_2_raw` frees the checkpoint and trains the
 predictors. Its `misprediction` bit is always 0, and for a branch its
-`redirect_pc` is just the next PC. Fields slot 2 retires have a `_next`
-memory copy that reads head+1, with the allocation-only fields packed together.
-Slot 2 never retires an exception or a CSR, so the exception-cause and CSR
+`redirect_pc` is the next PC. Fields that slot 2 retires have a `_next`
+memory copy that reads head+1. Slot 2 never retires an exception or a CSR, so the exception-cause and CSR
 fields have no head+1 copy.
 
 When both slots write the same register, slot 2 holds the newer value. The
@@ -379,14 +349,13 @@ cycle does not count as waiting.
 
 ## Verification
 
-The `reorder_buffer` cocotb target covers allocation, completion, branch
+The `reorder_buffer` cocotb bench covers allocation, completion, branch
 resolution, two-wide commit, serialization (including translation CSRs),
 allocation-time faults, flushes, and tag reuse. The `reorder_buffer` formal
 target checks pointer and occupancy invariants, allocation into free entries,
-retirement, serializer invariants, and FENCE-class event timing.
-`rob_control_next`, `rob_retire_stall`, and `rob_start_cofactor` prove the
-restructured next-state, retirement, and CSR/xRET start logic equal to
-reference equations.
+retirement, serializer invariants, and FENCE-class event timing, and smaller
+`rob_*` targets check restructured control and storage against reference
+equations.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

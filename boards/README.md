@@ -51,8 +51,9 @@ The CPU clock comes from its own GTY channel, X0Y29 in the NIC's quad: a
 CPLL at 3.22265625 GHz from the Ethernet reference clock, a 6.4453125 Gb/s
 transmitter that carries no data (held in electrical idle), and TXOUTCLK from
 the transmitter's programmable divider (the CPLL clock ÷ 10). Two BUFG_GTs
-make the CPU and CPU/4 clocks, rooted at X2Y7 by the XDC (Vivado would
-otherwise root them at the transceiver, on the device's right edge). The
+make the CPU and CPU/4 clocks. The XDC roots them at X2Y7 (Vivado would
+otherwise root them at the transceiver, on the device's right edge), and the
+guided placement candidate moves the root to X1Y9. The
 channel shares only the reference clock buffer with the NIC, so a NIC PHY
 reset, which resets the NIC's QPLL0 and channel, leaves the CPU clock
 running. A small supervisor on the 150 MHz clock restarts the channel's reset

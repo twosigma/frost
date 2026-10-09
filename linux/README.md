@@ -74,7 +74,7 @@ The board and simulation share one physical map.
 | `[0x4000_1000, +0x100)` | ns16550a UART alias, PLIC source 1, with `reg-shift=2` and `reg-io-width=4` |
 | `[0x4001_0000, +0xC000)` | SiFive CLINT alias: `msip` at `+0`, `mtimecmp` at `+0x4000`, `mtime` at `+0xBFF8` |
 | `[0x4003_0000, +4 KiB)` | DMA-coherent NIC, bound by the `frost_net10g` driver ([device-tree binding](buildroot-external/board/frost/frost,net10g.yaml)) |
-| `[0x4400_0000, +4 MiB)` | PLIC with M and S contexts for hart 0. Sources 1–4 are the UART, external pin, DMA test engine, and NIC. OpenSBI hides the M context from Linux. |
+| `[0x4400_0000, +4 MiB)` | PLIC with M and S contexts for hart 0. Sources 1 to 4 are the UART, external pin, DMA test engine, and NIC. OpenSBI hides the M context from Linux. |
 | `[0x8000_0000, +1 GiB)` | Cached DDR. The DTB advertises the board's DDR size: 1 GiB on X3. |
 
 The PMA map has four regions: the BRAM, the MMIO register window
@@ -84,9 +84,8 @@ quadrant `[0x4000_0000, 0x8000_0000)` and any address with bits 63:32 set,
 raises a precise access fault (cause 1, 5, or 7 for a fetch, load, or store)
 with the exact address in `mtval`, except that an untranslated store to the
 rest of the device quadrant (from M-mode firmware, say) is ignored instead.
-Under Sv39, a misaligned-address or page
-fault takes priority over it; for an untranslated access, the access fault
-takes priority over misalignment. Instruction fetch from the device windows
+Under Sv39, a misaligned-address or page fault takes priority over it; for an
+untranslated access, the access fault takes priority over misalignment. Instruction fetch from the device windows
 also faults, and so does an AMO, LR, or SC to them (cause 7, 5, or 7):
 devices take loads and stores only. Addresses outside the map never alias
 onto it.

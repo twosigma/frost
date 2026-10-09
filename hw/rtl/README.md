@@ -34,7 +34,7 @@ DDR controller on hardware.
 | PD | `cpu_and_mem/cpu/pd_stage/` | Compressed-instruction decoding and early branch redirects |
 | ID | `cpu_and_mem/cpu/id_stage/` | Decode and prepare up to two instructions for dispatch |
 
-The back end has a 32-entry ROB, separate integer and FP rename tables, six
+The back end has a 32-entry ROB, separate integer and FP rename tables, four
 reservation stations, load and store queues, and two result-broadcast lanes.
 The integer station issues to two ALUs, and branches use the first; the other
 stations issue one operation per cycle. See the
@@ -91,9 +91,8 @@ unmapped: a fetch, load, store, or AMO there raises a precise access fault
 (cause 1, 5, or 7) and never aliases onto the map. Fetch also faults in the
 low BRAM above its 128 KiB code region `[0, 0x2_0000)`. The one exception is a
 store to the rest of the device quadrant with translation off: the
-store-issue check covers the whole quadrant (it has no time for the exact
-window compares at 322 MHz), so the store issues and the device bus ignores
-it. Under Sv39, a misaligned-address or page fault takes priority over the
+store-issue check covers the whole quadrant, so the store issues and the
+device bus ignores it. Under Sv39, a misaligned-address or page fault takes priority over the
 access fault; for an untranslated access, the access fault takes priority
 over misalignment.
 
@@ -210,9 +209,9 @@ lane *i* is byte address `{addr[31:3], i}`. Producers position data by
   `riscv_pkg::CachedLoadSlots` slots on each cached launch, the adapter
   carries that id on the line port, and the response returns it beside the
   beat, so several cached loads can be in flight and complete in any order.
-  Low-BRAM and MMIO loads keep the untagged fixed-latency response, which owns
-  the response port in its cycle; a cached response that arrives then waits
-  in the adapter.
+  Low-BRAM and MMIO loads keep the untagged fixed-latency response, which has
+  the response port to itself in its cycle; a cached response that arrives
+  then waits in the adapter.
 
 The MMIO bus follows the same rules. The dword-aligned timer pairs, native
 and CLINT alias, support 64-bit access: an 8-byte load of `mtime`
@@ -224,7 +223,8 @@ only the addressed word. The PLIC, DMA test engine, and NIC windows take
 store writes only the upper register. Devices take loads and stores only, and
 only inside the MMIO and PLIC windows. A load or store elsewhere in the device
 quadrant raises an access fault (cause 5 or 7), and so does an AMO, LR, or SC
-anywhere in the quadrant (cause 7, 5, or 7). The device sees neither a read
+anywhere in the quadrant (cause 7, 5, or 7); the one exception is an
+untranslated store, which the device bus ignores. The device sees neither a read
 nor a write, and the [memory map](#memory-map) gives how these faults rank
 against misaligned-address and page faults.
 
@@ -262,8 +262,9 @@ the DTM reporting busy, and is handled when the reset ends, with `dmactive` 0.
 `debug_slice_writer` writes the module's words into the slice through the
 BRAM programming port. It also mirrors Debug-Mode stores to the low BRAM's
 code region into the instruction copy, so software breakpoints and debugger
-writes to BRAM code are fetched. For code in DDR, OpenOCD executes `fence.i`, which publishes its
-writes. Debug CSRs and `dret` are illegal outside Debug Mode.
+writes to BRAM code are fetched. For code in DDR, OpenOCD executes `fence.i`,
+which publishes its writes. Debug CSRs and `dret` are illegal outside Debug
+Mode.
 
 For OpenOCD, GDB, and VS Code use, see the
 [FPGA guide](../../fpga/README.md#vs-code-debugging).

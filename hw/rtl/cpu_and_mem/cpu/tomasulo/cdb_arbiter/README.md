@@ -30,10 +30,10 @@ holds its result until its adapter is free; the FP engine runs one operation
 at a time and issues no more until its adapter is free.
 
 The order matters for the MEM slot. Store faults, SC results, and loads share
-it, and the fault and SC registers present each result for only one cycle.
-Because only MUL outranks MEM, a MEM result that reaches the arbiter always
-wins one of the two lanes outside a full flush, so the MEM adapter is never
-left holding a result when the next one arrives. See
+it; a store fault cannot wait, and an SC result can wait only behind a store
+fault. Because only MUL outranks MEM, a MEM result that reaches the arbiter
+always wins one of the two lanes outside a full flush, so the MEM adapter is
+never left holding a result when the next one arrives. See
 [tag reuse](../README.md#cdb-priority-and-tag-reuse) in the back-end overview.
 
 ## Structure
@@ -96,9 +96,7 @@ which packets are selected; `o_grant_raw` shows the grants before the kill,
 and the wrapper leaves it unconnected. The wrapper drives `i_kill` on every
 full flush, including commit-time misprediction recovery
 (`speculative_flush_all`). The same signal clears every adapter, so a
-completion the kill suppresses is discarded, not retried. Applying the kill
-once here keeps the widely fanned flush signal out of the eight adapters'
-output logic.
+completion the kill suppresses is discarded, not retried.
 
 ## Verification
 

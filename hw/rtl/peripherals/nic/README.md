@@ -77,7 +77,7 @@ transceiver, wrapped by `boards/x3/x3_nic_gty.sv`:
 | Channel | Channel 0 of quad 231 (GTYE4_CHANNEL_X0Y28), lane 1 of the DSFP28 cage labelled 2 |
 | Line | Raw 64-bit PMA at 10.3125 Gb/s; the soft PCS does the 64b/66b coding |
 | Clocks | QPLL0 from the card's 161.1328125 MHz Ethernet reference clock. The TX USRCLK2 and the recovered RX USRCLK2 are the MAC clocks |
-| Supervisor | Runs on a free-running 150 MHz clock and owns the transceiver's resets |
+| Supervisor | Runs on a free-running 150 MHz clock and controls the transceiver's resets |
 
 A direction's clock-OK means its user clock is running and no reset that
 stops that clock is pending (an RX PCS reset leaves it up); every low
@@ -88,9 +88,9 @@ clock.
 
 If block lock stays absent for 100 ms, the supervisor resets the RX PCS,
 which keeps both clocks and READY, and retries after each further 100 ms
-without lock. Every tenth retry in a row is a full RX reset (GTRXRESET) instead.
-UG578 asks for that after the receive inputs are connected or the far end
-powers up, so a fiber plugged in later can still lock. Block lock, or any
+without lock. Every tenth retry in a row is a full RX reset (GTRXRESET)
+instead. UG578 asks for that after the receive inputs are connected or the
+far end powers up, so a fiber plugged in later can still lock. Block lock, or any
 reset other than the PCS reset, restarts the count.
 
 These events take clock-OK down:
@@ -132,9 +132,9 @@ X3). Each MAC domain's reset comes from a handshake:
   `applied_valid` bit keeps the generation's reset value from ever counting
   as an answer.
 - After the controller drops the request, the reset stays asserted for at
-  least another `HOLD_CYCLES` domain clocks, with no gap in between. A gap would
-  let the core side see the domain out of reset and report it READY while
-  the reset came back.
+  least another `HOLD_CYCLES` domain clocks, with no gap in between. A gap
+  would let the core side see the domain out of reset and report it READY
+  while the reset came back.
 
 A domain is READY when its current generation has been applied, it is out of
 reset, and its clock is reported present. Until then the domain's core-side
@@ -214,7 +214,7 @@ that the frame reached the wire.
 `nic_dma_front` puts both engines on the one DMA port. Every request an
 engine hands it gets exactly one response.
 
-- It owns four entries, and the port id is the entry index, so every
+- It has four entries, and the port id is the entry index, so every
   accepted request has a place for its response. Each engine may hold at most
   three, so the other always finds one.
 - It presents RX before TX, but a TX request that has watched
@@ -267,9 +267,9 @@ dword. A 64-bit load returns an aligned register pair; read each counter
 whole with one 64-bit load.
 
 - An enable is accepted only while the direction is READY and its ring is
-  valid: BASE 32-byte aligned, SIZE in 2..16, and the whole ring inside
-  cached DDR. A refused enable sets the direction's CONFIG_ERR and raises
-  DESC_ERR.
+  valid: SIZE in 2..16 and the whole ring inside cached DDR. BASE ignores the
+  low five bits of a write, so it is always 32-byte aligned. A refused enable
+  sets the direction's CONFIG_ERR and raises DESC_ERR.
 - Clearing an enable stops new frames and descriptor fetches; a frame already
   admitted finishes, and one not yet admitted waits for the next enable. The
   direction's IDLE bit shows when nothing is in flight.

@@ -79,7 +79,7 @@ WAVES=1 ./scripts/frost.py cocotb directed_traps
 FPGA builds and board tools run natively on a host with Vivado:
 
 ```bash
-# 1. Build the bitstream (30-90 minutes)
+# 1. Build the bitstream (takes hours)
 ./fpga/build/build.py x3
 
 # 2. Program the FPGA
@@ -104,8 +104,8 @@ selection, debugging, and the hardware regression, and the
 
 ### Supported RISC-V Extensions
 
-FROST implements RV64GCB (G = IMAFD). The table lists every supported
-extension and privilege mode.
+FROST implements RV64GCB (G = IMAFD, Zicsr, and Zifencei). The table lists
+every supported extension and privilege mode.
 
 | Extension        | Description                                    |
 |------------------|------------------------------------------------|
@@ -124,6 +124,7 @@ extension and privilege mode.
 | **Zihintpause**  | Pause hint for spin-wait loops                 |
 | **Machine Mode** | M-mode privilege (mret, wfi, ecall, ebreak)    |
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
+| **Svade**        | Software-managed accessed and dirty bits: an access that needs one set raises a page fault |
 | **User Mode**    | U-mode privilege and system calls |
 
 ### Microarchitecture

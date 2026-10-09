@@ -29,7 +29,7 @@
 
 ### Erez Strauss ([@erez-strauss](https://github.com/erez-strauss))
 
-- Implemented portable `sprintf`/`snprintf` library with full format support (`%d`, `%f`, `%e`, `%g`, `%x`, flags, width, precision, length modifiers)
+- Implemented the portable `sprintf`/`snprintf` library (`%d`, `%f`, `%e`, `%g`, `%x`, flags, width, precision, length modifiers)
 - Created the ~260-case integer, floating-point, string, and truncation test suite
 
 ## External
