@@ -38,3 +38,9 @@
 
 - Johns Hopkins University Applied Physics Laboratory
 - Advisor for architecting and developing the Tomasulo out-of-order back-end
+
+### Prof. John Goodacre ([@goodacre-manchester](https://github.com/goodacre-manchester))
+
+- Professor at the University of Manchester, contributing in a personal capacity
+- Found four RISC-V conformance bugs by differential testing against the Sail model ([#58](https://github.com/twosigma/frost/issues/58))
+- Co-authored the fixes that make the machine HPM counters read-only zero and that page-fault on a non-leaf PTE with D, A, or U set
