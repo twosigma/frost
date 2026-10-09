@@ -20,31 +20,12 @@
  * With FS Off every F/D instruction raises illegal-instruction (mcause 2,
  * mtval 0) before it touches memory: an FP load reads no device register, and
  * no address fault takes the place of the illegal-instruction cause. A write
- * to mstatus.FS applies from the next instruction on. Self-checks over UART
- * (<<PASS>>/<<FAIL>>), all with mtvec set:
+ * to mstatus.FS applies to the next instruction.
  *
- *   A. FLD from an unmapped address: cause 2, not the access fault (5).
- *   B. Misaligned FSD: cause 2, not the misaligned-store fault (6); memory is
- *      unchanged.
- *   C. FADD.S: cause 2.
- *   D. FLW right after an integer instruction (so it can be the second
- *      instruction of a fetch pair): cause 2 at the FLW.
- *   E. FLW from MMIO FIFO0 holding two words: cause 2, and the FIFO still
- *      returns both words in order.
- *   F. `csrs mstatus` setting FS directly followed by FLD: no trap, and the
- *      load returns the data.
- *   G. `csrc mstatus` clearing FS directly followed by FLW: cause 2.
- *   H. FLW from UART RX data (0x4000_0004) with a byte waiting: cause 2, and
- *      the byte is still there afterwards. The cocotb bench sends the byte.
- *   I. `csrs sstatus` setting FS directly followed by FLD: no trap, and the
- *      load returns the data.
- *   J. `csrc sstatus` clearing FS directly followed by FLW: cause 2.
- *
- * Each case uses the M-mode bounce from pma_fault_test: the handler records
- * mcause, mepc and mtval for the case's first trap and returns to the
- * continuation in mscratch. Every trigger is followed by an ecall, so a
- * trigger that does not trap records cause 11. The FS=Off window opens and
- * closes inside each case's asm block, so no compiled code runs with FS Off.
+ * The mtvec handler records mcause, mepc and mtval for the first trap and
+ * returns to the continuation in mscratch. An ecall follows each trigger,
+ * so a trigger that does not trap records cause 11. Each asm block restores
+ * FS to Dirty before returning to compiled code.
  */
 
 #include <stdint.h>
@@ -58,7 +39,7 @@
 #define FIFO0_PA 0x40000008ul
 #define UNMAPPED_PA 0x00100000ul /* the hole above the 256 KiB BRAM */
 #define RX_BYTE 0x5A             /* what the cocotb bench sends */
-#define RX_WAIT_CYCLES 200000    /* well inside the cocotb run budget */
+#define RX_WAIT_CYCLES 200000    /* Maximum wait for the UART byte. */
 
 static int g_ok = 1;
 static volatile unsigned long g_cause;
@@ -211,9 +192,8 @@ int main(void)
                      : "t0", "t1", "t2", "t3", "ft0", "memory");
     report("G csrc FS then FLW", illegal_at(trig_g));
 
-    /* H: a trapping FLW must not consume a waiting UART RX byte. The wait for
-     * the bench's byte is bounded, so a missing byte fails H rather than
-     * running the simulation out of cycles. */
+    /* H: a trapping FLW must not consume a waiting UART RX byte. A bounded
+     * wait makes a missing byte fail the case. */
     uint64_t wait_start = rdcycle64();
     while (!uart_rx_available() && rdcycle64() - wait_start < RX_WAIT_CYCLES) {
     }

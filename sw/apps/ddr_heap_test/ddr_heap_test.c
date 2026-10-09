@@ -22,12 +22,8 @@
  * static data, and stack remain in low BRAM. The 64 MiB simulation model covers
  * the 9 MiB used here.
  *
- * Checks:
- *   1. An 8 MiB allocation lands in the cached region.
- *   2. One word per 4 KiB plus the final word detects address aliasing.
- *   3. A non-overlapping 1 MiB allocation leaves the first intact.
- *
- * Sparse verification uses about 2,000 points across 8 MiB.
+ * Check one word per 4 KiB and the final word of an 8 MiB allocation, then
+ * verify that a separate 1 MiB allocation leaves the first intact.
  */
 
 #include <stddef.h>

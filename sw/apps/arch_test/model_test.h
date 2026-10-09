@@ -44,10 +44,8 @@
 //-----------------------------------------------------------------------
 // RVMODEL_HALT: dump signature via UART, then print <<PASS>> and loop.
 //
-// Iterates from begin_signature to end_signature, printing each 32-bit
-// word as 8 lowercase hex characters followed by a newline.
-// After the signature, prints "<<PASS>>" so the cocotb test_real_program
-// harness terminates the simulation.
+// Print each 32-bit signature word as eight lowercase hex digits and a
+// newline, followed by "<<PASS>>" to terminate the simulation.
 //
 // The dump does not check UART_TX_STATUS, so on the serial line a dump
 // larger than the 16 KiB transmit FIFO loses bytes. The suite runs only in
@@ -108,11 +106,8 @@
 //-----------------------------------------------------------------------
 // RVMODEL_DATA_BEGIN / RVMODEL_DATA_END: signature area markers
 //
-// The alignment must match the Spike reference env exactly: the region
-// [begin_signature, end_signature) includes the trailing .align padding,
-// so a mismatched end alignment shows up as missing/extra zero words in
-// the signature compare. The env uses the riscof convention's 16-byte
-// bounds; generate_references.py stops with an error if the two differ.
+// Match the Spike env's 16-byte bounds: the signature includes trailing
+// alignment padding. generate_references.py rejects mismatched bounds.
 //-----------------------------------------------------------------------
 #define FROST_SIG_ALIGN 4
 

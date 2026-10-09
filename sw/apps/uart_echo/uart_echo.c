@@ -15,11 +15,8 @@
  */
 
 /**
- * UART echo demo. Exercises the UART RX path three ways: echo of each
- * character as it arrives, line-at-a-time reads, and non-blocking reception
- * in count mode.
- *
- * Drive it from a serial terminal (minicom, screen, picocom) at 115200 baud.
+ * UART echo demo with character, line and non-blocking reception modes.
+ * Use a serial terminal at 115200 baud.
  */
 
 #include <stdint.h>

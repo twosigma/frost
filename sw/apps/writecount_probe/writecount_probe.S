@@ -12,31 +12,22 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Directed probe for lr.w sign extension in the Linux exec write-deny path.
-# On X3 hardware a zero-extending lr.w caused an ETXTBSY storm: the first
-# exec of an inode succeeded, and every later exec of the same inode failed
-# with "Text file busy".  deny_write_access is
-# atomic_dec_unless_positive(&inode->i_writecount); the riscv kernel asm is
+# Probe lr.w sign extension in the Linux exec write-deny path.
+# deny_write_access calls atomic_dec_unless_positive(&inode->i_writecount):
 #     0: lr.w p, (c); bgtz p, 1f; addi rc, p, -1; sc.w.rl rc, rc, (c);
 #        bnez rc, 0b; fence rw, rw; 1:
-# LR.W must write back sign-extended at RV64.  LR is OPC_AMO, not a load
-# opcode, so dispatch.sv mem_signed has its own is_lr term.  In the failing
-# design mem_signed keyed on is_load_instruction (opcode==OPC_LOAD) alone,
-# which excludes LR, so the LQ entry's sign_ext was 0.  A
-# zero-extended -1 reads positive to the raw 64-bit bgtz, so the loop skips
-# its decrement while the C tail still reports success.  The leaked deny
-# counts, over-released by the exit path's amoadd.w, drift i_writecount
-# permanently positive under overlapping exec/exit interleavings, and from
-# then on every exec of the inode fails.
+# LR.W must sign-extend on RV64. LR uses OPC_AMO, so dispatch.sv's mem_signed
+# includes is_lr as well as is_load_instruction. A zero-extended -1 appears
+# positive to bgtz, skipping the decrement while the C tail reports success.
+# The exit path's amoadd.w then over-releases the deny count. Overlapping
+# exec/exit calls can leave i_writecount positive and cause ETXTBSY.
 #
-# This probe replays that sequence and its neighborhood word-exact, with the
-# same opcodes including sc.w.rl and the trailing fence, on both dword
-# lanes.  The neighboring word holds a positive pattern, so a wrong-lane
-# read looks different from a mis-extension (val=0x00000000ffffffff).  A
-# failing check prints its number and s4, the value the failing comparison
-# tested, and <<PASS>> appears only if every check passes.
+# Replay the sequence, including sc.w.rl and its fence, on both dword lanes.
+# A positive neighboring word distinguishes wrong-lane reads from a
+# zero-extended -1 (0x00000000ffffffff). Failures print the check number and
+# s4, the compared value. <<PASS>> requires every check to pass.
 
-.equ NEIGHBOR, 0x7A7A7A7A     # positive, distinctive wrong-lane tell
+.equ NEIGHBOR, 0x7A7A7A7A     # Positive pattern identifies wrong-lane reads.
 .equ LAPS, 8
 
     .section .text
@@ -104,9 +95,8 @@ deny3_fail:
     j       fail
 
 # --- check 4: kernel deny loop on cell==-1 (the second exec) ----------
-# The case a zero-extending lr.w breaks: lr.w of the -1 written by check 3's
-# sc.w.rl must read -1 rather than a positive value, and the loop must
-# decrement it to -2.
+# LR.W must sign-extend the -1 written by check 3's sc.w.rl so the loop
+# decrements it to -2.
 check4:
     li      s0, 4
 0:  lr.w    t2, (s1)
@@ -194,8 +184,7 @@ deny7_fail:
     j       fail
 
 # --- check 8: exec1 ... exec2 with line pressure between --------------
-# The hardware execs are far apart: touch a stride of other lines so the
-# cell's L0/L1 state is disturbed between the two deny loops.
+# Touch other lines between the two deny loops to vary cache state.
 check8:
     li      s0, 8
     sw      zero, 0(s1)
@@ -250,7 +239,7 @@ fail:
     addi    a0, a0, 48
     la      t0, digit_buf
     sb      a0, 0(t0)
-    sb      zero, 1(t0)          # .data is not loaded in the bram tier
+    sb      zero, 1(t0)          # No crt0 initializes .data in BRAM.
     la      a0, digit_buf
     jal     ra, print_string
     la      a0, msg_val
@@ -312,14 +301,11 @@ scratch_arena:
 digit_buf:
     .byte 0, 0
 
-    # Strings live in .rodata: at MEM_CONFIG=bram, .data is a crt0-copied
-    # section (VMA in RAM, LMA in ROM) and standalone-asm apps have no
-    # crt0, so .data initializers never reach RAM there.  .rodata is
-    # used in place in both tiers.  The cells and digit_buf are fine in
-    # .data: the code writes them before it reads them, and the pressure
-    # loop does not depend on scratch_arena's contents.  The .balign
-    # keeps the section's load address word-aligned for objcopy's
-    # verilog writer.
+    # BRAM .data needs crt0 to copy its ROM initializers to RAM; this app has
+    # no crt0. .rodata is used in place in both tiers. The code initializes
+    # cells and digit_buf before reading them, and ignores scratch_arena's
+    # initial contents. .balign keeps the load address word-aligned for
+    # objcopy's verilog writer.
     .section .rodata
     .balign 4
 msg_banner:

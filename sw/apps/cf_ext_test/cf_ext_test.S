@@ -16,11 +16,8 @@
 
 # Compressed Double-Precision FP (Zcd) Extension Test
 #
-# Zcf (C.FLW/C.FSW and the SP forms) is rv32-only. At rv64 those encodings
-# are C.LD/C.SD (+SP forms), which c_ext_test covers, so this app tests only
-# Zcd. Subtests 1 and 2 would be the Zcf forms, so numbering starts at 3:
-#   3. C.FLD / C.FSD using compressed registers (f8-f15, x8-x15 base)
-#   4. C.FLDSP / C.FSDSP using stack-pointer base
+# Zcf is RV32-only: RV64 uses those encodings for C.LD and C.SD, including
+# stack-pointer forms. This app tests Zcd with register and stack bases.
 #
 # Prints <<PASS>> on success. A failing subtest prints FAIL with its name and
 # then <<FAIL>>, and stops.

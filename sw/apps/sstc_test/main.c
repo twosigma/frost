@@ -15,24 +15,20 @@
  */
 
 /*
- * Sstc directed test. Covers menvcfg.STCE, the only implemented menvcfg
- * field, and the stimecmp CSR. While STCE=1 the registered mtime >= stimecmp
- * compare drives the STIP readback and the software STIP bit is dormant. With
- * STCE=0 an S-mode stimecmp access takes an illegal-instruction trap. The last
- * case delivers a delegated S-mode timer interrupt through stimecmp.
- * Self-checks over UART (<<PASS>> / <<FAIL>>).
+ * Test stimecmp and menvcfg.STCE. With STCE=1, the registered comparison
+ * mtime >= stimecmp drives STIP and the software STIP bit is dormant.
+ * With STCE=0, S-mode stimecmp access is illegal.
  *
- * stimecmp (0x14D) and menvcfg (0x30A) are addressed numerically so the
- * test does not depend on Sstc-aware binutils. The privilege scaffolding
- * (naked M/S handlers with an mscratch continuation, run_in_s) follows
- * smode_test's run_at_priv.
+ * Use numeric CSR addresses (stimecmp=0x14D, menvcfg=0x30A) so the test does
+ * not need Sstc-aware binutils. Handlers return through an mscratch
+ * continuation, as in smode_test's run_at_priv.
  */
 
 #include <stdint.h>
 
 #include "trap.h"
 
-/* ---- minimal UART (UART_TX is provided by mmio.h via trap.h) ---- */
+/* ---- UART ---- */
 static void uart_putc(char c)
 {
     UART_TX = (uint8_t) c;
@@ -187,14 +183,14 @@ int main(void)
     ok &= report("B stimecmp-rw", csr_read_num(0x14D), 0x1122334455667788ul);
     csr_write_num(0x14D, ~0ul);
 
-    /* C: with STCE=0, software STIP injection behaves pre-Sstc. */
+    /* C: with STCE=0, software controls STIP. */
     csr_set(mip, MIP_STIP);
     ok &= report("C sw-stip", csr_read(mip) & MIP_STIP, MIP_STIP);
     csr_clear(mip, MIP_STIP);
     ok &= report("C sw-stip-clear", csr_read(mip) & MIP_STIP, 0);
 
-    /* D: S-mode stimecmp access with STCE=0 is illegal. medeleg is clear, so
-     * the trap is taken in M. The MRET entry itself proves the S round-trip. */
+    /* D: STCE=0 makes S-mode stimecmp access illegal. medeleg=0 sends
+     * the trap to M-mode. */
     csr_write(medeleg, 0);
     cause = run_in_s(&s_read_stimecmp);
     ok &= report("D s-stce0-illegal", cause, 2);
@@ -219,9 +215,8 @@ int main(void)
     csr_write(mideleg, 1ul << 5);
     csr_write(stvec, (unsigned long) &s_trap_handler);
     csr_write(sie, 1ul << 5);
-    /* mstatus.SIE gates S-level takes while in S. MRET does not restore SIE
-     * from SPIE (SRET does that), so set SIE directly. In M it has no effect on
-     * M execution. */
+    /* Set SIE directly: MRET does not restore it from SPIE. SIE gates
+     * S-level interrupts in S-mode and has no effect while in M-mode. */
     csr_set(mstatus, 1ul << 1);
     csr_write_num(0x14D, rdmtime() + 300);
     cause = run_in_s(&s_spin);

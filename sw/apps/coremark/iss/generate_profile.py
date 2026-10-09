@@ -21,17 +21,14 @@ from the official profile data set: ``TOTAL_DATA_SIZE`` 1200 with seeds
 benchmark sources against the Spike port layer with ``-fprofile-arcs
 -fprofile-info-section``, runs it under Spike, streams the gcda out over the
 HTIF syscall proxy, converts the stream with ``gcov-tool merge-stream``, and
-installs the five benchmark-source ``.gcda`` files next to the app Makefile.
+installs the benchmark ``.gcda`` files next to the app Makefile.
 
 Edge counts are architectural, so Spike's match the RTL's, except in
 ``core_main.c``'s checks of elapsed time: the Spike port's ``get_time()``
-always returns 1, while FROST's measures cycles. Spike also avoids the tens of
-millions of simulated cycles the FROST UART would need to print the profile.
-Only the five benchmark translation units get a profile; ``uart.c``,
-``core_portme.c`` and ``tomasulo_profile_cache.c`` sit outside the timed
-region and build without one.
+always returns 1, while FROST's measures cycles. Only benchmark translation
+units get profiles; the port layer and libraries build without them.
 
-Two build details matter and are easy to get wrong:
+Build requirements:
 
 * The benchmark sources must be compiled from the app directory with the same
   relative path spellings the app Makefile uses. GCC folds the source path
@@ -59,7 +56,7 @@ APP_DIR = HERE.parent
 COREMARK_DIR = APP_DIR / "coremark"
 RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv64-linux-")
 EXTENSIONS = "imafd_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause"
-# The five benchmark translation units; the port layer is deliberately excluded.
+# Profile only benchmark translation units, excluding the port layer.
 PROFILED_SOURCES = (
     "core_list_join",
     "core_main",

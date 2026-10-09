@@ -54,9 +54,8 @@ __attribute__((naked, aligned(4))) static void wfi_drain_trap_handler(void)
                      "sd   t0, 0(sp)\n"
                      "sd   t1, 8(sp)\n"
                      "csrr t0, mepc\n"
-                     /* la (auipc-based under medany): absolute lui cannot
-                      * materialize this DDR-resident image's 0x8xxx_xxxx
-                      * data addresses at lp64. */
+                     /* PC-relative la reaches DDR; RV64 lui sign-extends
+                      * addresses in the 0x8xxx_xxxx range. */
                      "la   t1, g_mepc\n"
                      "sw   t0, 0(t1)\n"
                      "la   t1, g_taken\n"
@@ -93,12 +92,9 @@ int main(void)
         g_mepc = 0;
         set_timer_cmp(rdmtime() + margin); /* armed; MIE still 0 until the asm */
 
-        /*
-         * mscratch (the handler's continuation, label 2) is set before MIE is
-         * enabled. The cold-miss DDR store directly before the WFI must still
-         * be draining when the IRQ is taken. The handler returns to label 2
-         * whatever mepc holds.
-         */
+        /* Set mscratch before enabling MIE. The cold store must still be
+         * draining when WFI reaches the head; interrupt entry waits for the
+         * drain. The handler returns to label 2 regardless of saved mepc. */
         __asm__ volatile("la    %[res], 2f\n"
                          "csrw  mscratch, %[res]\n"
                          "csrsi mstatus, 8\n" /* enable MIE (interrupts) after mscratch is valid */

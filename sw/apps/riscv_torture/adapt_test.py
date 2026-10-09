@@ -16,13 +16,8 @@
 
 """Adapt generated riscv-torture assembly for FROST.
 
-Takes a raw riscv-torture output .S file and wraps it with:
-  - frost_header.S at the top (startup, FPU init, data copy)
-  - frost_footer.S at the bottom (register dump, UART signature, PASS marker)
-
-The result is self-contained and directly compilable. generate_tests.py writes
-its tests already wrapped, so the committed corpus does not go through this
-script.
+Wrap raw assembly with frost_header.S for startup and frost_footer.S for
+signature output. generate_tests.py produces wrapped tests directly.
 
 Usage:
     ./adapt_test.py input.S output.S
@@ -37,23 +32,11 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 
 
 def adapt_test(input_path: Path, output_path: Path) -> bool:
-    """Adapt a single riscv-torture test for FROST.
+    """Wrap a raw test with FROST startup and signature output.
 
-    The adapted file structure:
-      1. #include "frost_header.S"   (provides _start, startup code)
-      2. _torture_test_begin:        (label that frost_header jumps to)
-      3. [original torture test code, with modifications]
-      4. j _torture_test_end         (jump to footer)
-      5. [original data sections]
-      6. #include "frost_footer.S"   (register dump, signature, PASS)
-
-    Modifications to the original code:
-      - Remove any existing _start label (frost_header provides it)
-      - Remove the riscv_test.h and test_macros.h includes, TEST_DATA, and
-        the other RVTEST_* macros (RVTEST_CODE_BEGIN defines _start too)
-      - Remove tohost/fromhost references
-      - Replace `ecall`, `RVTEST_PASS` and `RVTEST_FAIL` with
-        `j _torture_test_end`
+    Remove upstream startup macros, _start and HTIF references. Route ecall,
+    RVTEST_PASS and RVTEST_FAIL to the footer, which dumps registers. Place
+    the original data sections after the test body.
     """
     try:
         lines = input_path.read_text().splitlines()
@@ -82,7 +65,6 @@ def adapt_test(input_path: Path, output_path: Path) -> bool:
     for line in lines:
         stripped = line.strip()
 
-        # Skip blank lines at start
         if not code_lines and not data_lines and not stripped:
             continue
 
@@ -96,12 +78,11 @@ def adapt_test(input_path: Path, output_path: Path) -> bool:
         if stripped == "RVTEST_CODE_BEGIN":
             continue
 
-        # Detect data section
         if stripped.startswith(".data") or stripped.startswith(".section .data"):
             in_data = True
 
-        # Drop tohost/fromhost declarations together with the directive lines
-        # that follow them, up to the next blank line.
+        # Drop tohost/fromhost lines and following directives. A blank or
+        # non-directive line ends the group.
         if "tohost" in stripped or "fromhost" in stripped:
             skip_tohost = True
             continue
@@ -111,7 +92,6 @@ def adapt_test(input_path: Path, output_path: Path) -> bool:
             continue
         skip_tohost = False
 
-        # Remove existing _start label
         if stripped == "_start:" or stripped == ".globl _start":
             continue
 
@@ -128,7 +108,6 @@ def adapt_test(input_path: Path, output_path: Path) -> bool:
             else:
                 code_lines.append(line)
 
-    # Build adapted file
     adapted = []
     adapted.append("// Adapted riscv-torture test for FROST")
     adapted.append(f"// Original: {input_path.name}")

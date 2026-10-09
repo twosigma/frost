@@ -20,23 +20,19 @@ The instruction memory is split into even and odd word banks, and each bank's
 data into a 28-bit cold block-RAM image and a four-bit frontend-hot image of
 word bits ``{15, 10, 7, 6}``. Each word also has an 80-bit predecode sideband:
 twelve fetch-control predicates plus, for each halfword, the full 32-bit RVC
-expansion and its illegal flag and whether an indirect jump starts there. Expansion bits [19:15] (rs1) are split between
-the source-hot lane (rs1[2:1]) and the rs1-rest lane, bits [24:20] have their
-own lane, and the RVC-extra field holds the rest, so no bit is stored twice.
+expansion, its illegal flag, and an indirect-jump flag. Expansion bits
+[19:15] (rs1) are split between the source-hot lane (rs1[2:1]) and the
+rs1-rest lane. Bits [24:20] have their own lane; RVC-extra holds the rest,
+so no bit is stored twice.
 The sideband and the four-lane high-parcel block-RAM replica each get their
 own image, and every sideband predicate the IF next-PC logic reads
 (``SCALAR_REPLICA_BITS``) gets one scalar LUTRAM overlay image per parity bank.
 The generator writes the full overlay image; the RTL reads the prefix selected
 by ``PC_METADATA_OVERLAY_ADDR_WIDTH``.
 
-Simulation derives all of these memories from sw.mem inside SystemVerilog.
-Vivado initializes each synthesized memory more reliably from its own file,
-which is why this generator exists. The predecode functions below mirror their
-riscv_pkg counterparts (``imem_compressed_control``, ``imem_indirect_parcel``,
-``imem_native_*``,
-``imem_rvc_expand``, ``imem_rvc_source_hot``, ``imem_rvc_rs1_rest``,
-``imem_rvc_bits24_20``, and ``imem_make_sideband``); the imem_predecode_line
-cocotb bench cross-checks the RTL against this script.
+Simulation derives these memories from sw.mem. Vivado uses a separate init
+file for each synthesized memory. The predecode functions mirror those in
+riscv_pkg, including ``imem_make_sideband`` and ``imem_rvc_expand``.
 """
 
 from __future__ import annotations
@@ -347,11 +343,11 @@ def rvc_bits24_20(parcel: int) -> int:
 
 
 def rvc_source_fields(parcel: int) -> tuple[int, int]:
-    """Return rs1 and an rs2 carrier whose bit 1 matches the RVC expansion.
+    """Return rs1 and an rs2 value whose bit 1 matches the RVC expansion.
 
     All rs1 bits and rs2[1] are exact literal instruction fields, including
-    unused fields and reserved encodings. The other rs2 bits are not part of
-    this helper's contract; use ``rvc_bits24_20`` for the complete rs2 field.
+    unused fields and reserved encodings. The other rs2 bits are unspecified;
+    use ``rvc_bits24_20`` for the complete rs2 field.
     This mirrors ``riscv_pkg::imem_rvc_source_fields``.
     """
     parcel &= 0xFFFF
@@ -415,11 +411,11 @@ def rvc_source_fields(parcel: int) -> tuple[int, int]:
     if quadrant == 0b00:
         if funct3 == 0b000:  # C.ADDI4SPN
             rs1, rs2 = 2, imm_addi4spn & 0x1F
-        elif funct3 in {0b010, 0b011}:  # C.LW / C.FLW
+        elif funct3 in {0b010, 0b011}:  # C.LW / C.LD
             rs1, rs2 = rs1_prime, imm_lw_sw & 0x1F
         elif funct3 == 0b001:  # C.FLD
             rs1, rs2 = rs1_prime, imm_ld_sd & 0x1F
-        elif funct3 in {0b101, 0b110, 0b111}:  # C.FSD / C.SW / C.FSW
+        elif funct3 in {0b101, 0b110, 0b111}:  # C.FSD / C.SW / C.SD
             rs1, rs2 = rs1_prime, rs2_prime
     elif quadrant == 0b01:
         if funct3 == 0b000:  # C.ADDI / C.NOP
@@ -449,7 +445,7 @@ def rvc_source_fields(parcel: int) -> tuple[int, int]:
     elif quadrant == 0b10:
         if funct3 == 0b000:  # C.SLLI
             rs1, rs2 = rd_full, shamt
-        elif funct3 in {0b010, 0b011}:  # C.LWSP / C.FLWSP
+        elif funct3 in {0b010, 0b011}:  # C.LWSP / C.LDSP
             rs1, rs2 = 2, imm_lwsp & 0x1F
         elif funct3 == 0b001:  # C.FLDSP
             rs1, rs2 = 2, imm_ldsp & 0x1F
@@ -466,7 +462,7 @@ def rvc_source_fields(parcel: int) -> tuple[int, int]:
                     rs1, rs2 = rd_full, 0
             else:  # C.ADD
                 rs1, rs2 = rd_full, rs2_full
-        elif funct3 in {0b101, 0b110, 0b111}:  # C.FSDSP / C.SWSP / C.FSWSP
+        elif funct3 in {0b101, 0b110, 0b111}:  # C.FSDSP / C.SWSP / C.SDSP
             rs1, rs2 = 2, rs2_full
 
     return rs1, rs2

@@ -15,18 +15,14 @@
  */
 
 /*
- * A wrong-path WFI at the ROB head while commit-time recovery is pending.
+ * Delay an indirect jump's target through a divide so wrong-path WFIs can
+ * dispatch behind it. When the jump retires with recovery pending, a WFI
+ * may reach the ROB head. It must not seed the interrupt resume PC: a trap
+ * before the target's first retirement would otherwise resume on the wrong
+ * path. A second divide runs at the target.
  *
- * `jr t0` is a JALR that neither the BTB nor the return address stack
- * predicts, so it always mispredicts and recovers when it commits. Its target
- * comes out of a divide, so it resolves late and the front end dispatches the
- * WFIs after it, on the wrong path. When the jump retires, the first of them
- * is the ROB head in the cycle recovery is pending. cpu_ooo must not seed the
- * interrupt resume PC from that WFI: an interrupt taken before the first
- * target instruction retires would return past a WFI that never ran, onto
- * the wrong path. The bench (test_real_program, app wfi_seed_recovery)
- * watches for that head and checks the resume PC; this program only makes the
- * case happen, with and without a second divide in flight.
+ * This program supplies the sequence; verif/cocotb_tests/test_real_program.py
+ * checks the WFI head and resume PC.
  */
 
 #include <stdint.h>

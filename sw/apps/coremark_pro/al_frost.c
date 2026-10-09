@@ -17,14 +17,9 @@
 /*
  * FROST bare-metal shims for the EEMBC CoreMark-PRO MITH harness.
  *
- * The MITH layer (mith/al/src/th_al.c, mith/src/th_lib.c) is compiled with
- * -DHOST_EXAMPLE_CODE=1, which routes its "host" functionality through a small
- * set of POSIX / C-library functions: clock_gettime(), vprintf(), exit(),
- * abort(), getenv(), plus the SMP/affinity hooks that normally live in
- * al_smp.c, which this single-context build does not compile. This file
- * provides those functions against FROST hardware (cycle counter and UART) and
- * the FROST libc, along with a trap reporter and the C library symbols that
- * the toolchain's headers and math objects expect.
+ * HOST_EXAMPLE_CODE routes MITH's host calls to these cycle-counter, UART,
+ * process-control, and libc shims. This file also supplies trap diagnostics
+ * and the library symbols required by toolchain math objects.
  *
  * This file is compiled in isolation against the FROST sw/lib headers
  * (-I../../lib/include). It must not be compiled with the MITH include path,
@@ -218,12 +213,9 @@ int clock_gettime(clockid_t clk_id, struct timespec *ts)
 }
 
 /* ========================================================================== */
-/* Console output: vprintf()                                                  */
-/*                                                                            */
-/* With USE_TH_PRINTF=0, the harness routes th_printf -> al_printf ->         */
-/* vprintf. The text is formatted into a static buffer (single-context build, */
-/* so no reentrancy concern), scanned for benchmark error tokens, and written */
-/* to the UART. Each call prints at most 511 characters.                      */
+/* Console output: vprintf() */
+/* Format up to 511 characters in a static buffer, latch benchmark errors, */
+/* then write to UART. USE_SINGLE_CONTEXT=1 makes the buffer safe to share. */
 /* ========================================================================== */
 int vprintf(const char *fmt, va_list ap)
 {
@@ -235,18 +227,14 @@ int vprintf(const char *fmt, va_list ap)
 }
 
 /* ========================================================================== */
-/* Process control: exit() / abort()                                          */
-/*                                                                            */
-/* th_al.c's al_exit() calls exit(code). exit() writes a PASS/FAIL marker so  */
-/* a simulation harness watching the UART can detect the self-verifying       */
-/* result, then spins forever (there is no OS to return to). Prototypes match */
-/* the toolchain's noreturn exit()/abort().                                   */
+/* Process control: exit() / abort() */
+/* al_exit() calls exit(), which emits the UART PASS/FAIL marker and spins. */
+/* Match the toolchain's noreturn declarations. */
 /* ========================================================================== */
 void exit(int code)
 {
     uart_puts(code == 0 ? "<<PASS>>\n" : "<<FAIL>>\n");
     for (;;) {
-        /* spin */
     }
 }
 
@@ -256,15 +244,10 @@ void abort(void)
 }
 
 /* ========================================================================== */
-/* newlib reentrancy anchor: _impure_ptr                                      */
-/*                                                                            */
-/* th_lib.c's redirect_std_files() reads stdin/stdout/stderr, which newlib    */
-/* expands to _impure_ptr->_stdin/_stdout/_stderr. With -nostdlib there is no */
-/* newlib _impure_ptr, so provide one pointing at a zeroed struct _reent. The */
-/* stored stdin/stdout/stderr values land in th_stdin/th_stdout/th_stderr     */
-/* (declared 'void *' in th_lib.c) and are never dereferenced as files,       */
-/* because FAKE_FILEIO=1 turns every al_* file op into a no-op stub. So the   */
-/* members only need to be readable, not valid FILE handles.                  */
+/* newlib reentrancy state: _impure_ptr */
+/* redirect_std_files() reads the zeroed _reent's file pointers into MITH's */
+/* opaque handles. FAKE_FILEIO=1 never dereferences them, so they need only */
+/* be readable, not valid FILE objects. */
 /* ========================================================================== */
 #if __has_include(<sys/reent.h>)
 #include <sys/reent.h>
@@ -272,14 +255,9 @@ static struct _reent frost_impure_reent;
 struct _reent *_impure_ptr = &frost_impure_reent;
 
 /* ========================================================================== */
-/* newlib errno accessor: __errno()                                           */
-/*                                                                            */
-/* The toolchain's libm, used by the floating-point workloads (linpack,       */
-/* loops, nnet, radix2) for sqrtf/powf/sinf/..., reports domain/range errors  */
-/* by writing errno, which newlib expands to *__errno() ==                    */
-/* _impure_ptr->_errno. With -nostdlib there is no newlib __errno(), so       */
-/* provide one backed by the _impure_ptr reent above. The benchmarks never    */
-/* read errno; the function only satisfies the libm references.               */
+/* newlib errno accessor: __errno() */
+/* Math objects write errno through this accessor. Back it with the local */
+/* _reent because the bare-metal link supplies no newlib runtime. */
 /* ========================================================================== */
 int *__errno(void)
 {
@@ -322,10 +300,8 @@ void __stack_chk_fail_local(void) __attribute__((alias("__stack_chk_fail"), nore
 #endif
 
 /* ========================================================================== */
-/* Environment: getenv()                                                      */
-/*                                                                            */
-/* al_getenv() forwards to getenv() under HOST_EXAMPLE_CODE. Bare metal has   */
-/* no environment, and no workload reads one.                                 */
+/* Environment: getenv() */
+/* HOST_EXAMPLE_CODE calls getenv(); bare metal has no environment. */
 /* ========================================================================== */
 char *getenv(const char *key)
 {
@@ -334,14 +310,9 @@ char *getenv(const char *key)
 }
 
 /* ========================================================================== */
-/* SMP / affinity hooks normally in mith/al/src/al_smp.c                      */
-/*                                                                            */
-/* The build is single-context (USE_SINGLE_CONTEXT=1) and does not compile    */
-/* al_smp.c. mith_lib.c still calls al_item_setaffinity() in its run loop,    */
-/* and every workload's main() calls al_set_hardware_info() for the -P=       */
-/* command-line option (unused on bare metal). The trivial versions here      */
-/* match al_smp.h's declarations. The types are defined locally so this       */
-/* FROST-headers compilation unit does not need the MITH include path.        */
+/* SMP / affinity hooks from mith/al/src/al_smp.c */
+/* USE_SINGLE_CONTEXT=1 omits al_smp.c, but MITH still calls these hooks. */
+/* Local types match al_smp.h without adding MITH's include path here. */
 /* ========================================================================== */
 typedef struct hardware_info_s {
     int num_processors;
@@ -409,14 +380,10 @@ const char _ctype_[257] = {
 };
 
 /* ========================================================================== */
-/* File metadata: stat()                                                      */
-/*                                                                            */
-/* th_al.c's al_fsize() calls stat() to size a file (HAVE_STAT_H path). The   */
-/* file-based workloads (parser, zip) generate their input in memory, so      */
-/* al_fsize() is never called at runtime, but it is still referenced and must */
-/* link. With FAKE_FILEIO=1 there is no filesystem, so stat() fails (returns  */
-/* -1) and al_fsize() yields 0. Prototype matches the toolchain's             */
-/* <sys/stat.h>.                                                              */
+/* File metadata: stat() */
+/* al_fsize() references stat() through HAVE_STAT_H. FAKE_FILEIO workloads */
+/* generate input in memory; stat() returns -1 and al_fsize() yields 0. */
+/* Match the toolchain's sys/stat.h prototype. */
 /* ========================================================================== */
 #include <sys/stat.h>
 int stat(const char *path, struct stat *buf)
@@ -427,19 +394,11 @@ int stat(const char *path, struct stat *buf)
 }
 
 /* ========================================================================== */
-/* Unused libc functions referenced by dead code: vsscanf / sscanf / fclose   */
-/*                                                                            */
-/* A few workloads reference C-library functions only from code paths this    */
-/* build never executes:                                                      */
-/*   - cjpeg's parse_dataset_cjpeg() calls th_sscanf() (through al_vsscanf    */
-/*     and vsscanf) only for a "-dataname=" option the build does not pass.   */
-/*   - zip's define_params_zip() calls fclose() only in the "-f=<file>"       */
-/*     branch (it generates its input in memory instead).                     */
-/* These are dead at runtime but must resolve at link time. The toolchain's   */
-/* libc provides full scanf/stdio, but pulling it in would drag in the FILE   */
-/* machinery that the -nostdlib build avoids. Provide inert stubs:            */
-/* vsscanf/sscanf convert nothing (return 0) and fclose succeeds (return 0).  */
-/* Prototypes match the toolchain's <stdio.h>.                                */
+/* Unused file and parsing hooks: vsscanf, sscanf, fclose */
+/* cjpeg's -dataname option uses th_sscanf(), and zip's -f option uses */
+/* fclose(). These builds pass neither option. Resolve the references */
+/* without pulling in libc's FILE runtime: scans convert nothing and */
+/* fclose succeeds. Match the toolchain's stdio.h prototypes. */
 /* ========================================================================== */
 #include <stdio.h>
 int vsscanf(const char *str, const char *fmt, va_list ap)

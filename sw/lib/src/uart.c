@@ -17,11 +17,8 @@
 /**
  * uart.c: console I/O over the memory-mapped UART, with a small printf.
  *
- * Output converts "\n" to CR+LF. uart_printf understands %c, %s, %d, %u, %x,
- * %X and %% with l/ll length modifiers, a field width with optional zero
- * padding (%08x, %4d), and %f with a precision when UART_PRINTF_ENABLE_FLOAT
- * is set (otherwise it prints "%f"). %f does not round its last digit. Input
- * is polled: uart_getchar and the line editor uart_getline.
+ * See uart.h for conversions and limits. %f truncates its last digit.
+ * Input is polled; uart_getline provides line editing.
  */
 
 #include "uart.h"
@@ -90,7 +87,6 @@ static void uart_put_unsigned_decimal_raw(unsigned long long val)
         val /= 10;
     }
 
-    /* Print digits in forward order (most significant first) */
     while (--count >= 0)
         uart_putchar(buf[count]);
 }
@@ -133,11 +129,9 @@ static void uart_put_hex(unsigned long long val, int ndigits, int uppercase)
         val >>= 4;
     } while (val && i < (int) sizeof(buf));
 
-    /* Pad with zeros to reach requested number of digits */
     while (i < ndigits)
         buf[i++] = '0';
 
-    /* Print digits in forward order (most significant first) */
     while (i--)
         uart_putchar(buf[i]);
 }
@@ -209,7 +203,7 @@ static void uart_put_float(double value, int precision)
 #endif
 
 /* ------------------------------------------------------------------------- */
-/* very small printf                                                         */
+/* printf                                                                    */
 /* ------------------------------------------------------------------------- */
 void uart_printf(const char *fmt, ...)
 {
@@ -228,7 +222,6 @@ void uart_printf(const char *fmt, ...)
         int precision = -1;
 
         if (*++p == '0') {
-            /* Leading '0' flag: pad with zeros instead of spaces */
             zero_pad = 1;
             ++p;
         }
@@ -259,11 +252,9 @@ void uart_printf(const char *fmt, ...)
         int is_long = 0;
         int is_longlong = 0;
         if (*p == 'l') {
-            /* %lu / %ld / %lx / %lX */
             is_long = 1;
             ++p;
             if (*p == 'l') {
-                /* %llu / %lld - long long variant */
                 is_longlong = 1;
                 is_long = 0;
                 ++p;
@@ -277,7 +268,6 @@ void uart_printf(const char *fmt, ...)
 
         switch (*p) {
             case 'c': {
-                /* %c - print single character */
                 char ch = (char) va_arg(args, int);
                 uart_put_padding(width - 1, ' ');
                 uart_putchar(ch);
@@ -285,7 +275,6 @@ void uart_printf(const char *fmt, ...)
             }
 
             case 's': {
-                /* %s - print null-terminated string */
                 const char *s = va_arg(args, const char *);
                 if (s == NULL)
                     s = "(null)";
@@ -298,7 +287,6 @@ void uart_printf(const char *fmt, ...)
             }
 
             case 'd': {
-                /* %d / %ld / %lld - signed decimal integer */
                 if (is_longlong)
                     uart_put_signed_decimal(va_arg(args, long long), width, zero_pad);
                 else if (is_long)
@@ -309,7 +297,6 @@ void uart_printf(const char *fmt, ...)
             }
 
             case 'u': {
-                /* %u / %lu / %llu - unsigned decimal integer */
                 if (is_longlong)
                     uart_put_unsigned_decimal(va_arg(args, unsigned long long), width, zero_pad);
                 else if (is_long)
@@ -331,7 +318,6 @@ void uart_printf(const char *fmt, ...)
 
                 int ndigits = uart_hex_digits(hexval);
 
-                /* Use field width if larger than needed digits */
                 if (width < ndigits)
                     width = ndigits;
                 int padding = width - ndigits;
@@ -345,7 +331,6 @@ void uart_printf(const char *fmt, ...)
 
             case 'f': {
 #if UART_PRINTF_ENABLE_FLOAT
-                /* %f - floating point (double promoted) */
                 uart_put_float(va_arg(args, double), precision);
 #else
                 (void) va_arg(args, double);
@@ -356,7 +341,6 @@ void uart_printf(const char *fmt, ...)
             }
 
             case '%': {
-                /* %% - print literal percent sign */
                 uart_putchar('%');
                 break;
             }

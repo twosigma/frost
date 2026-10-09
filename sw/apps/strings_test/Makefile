@@ -12,8 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Test suite for the in-tree C library. It covers the string.c, ctype.c and
-# stdlib.c entry points listed at the top of strings_test.c, not every function
-# those files define.
+# Tests selected in-tree string, character and conversion routines.
 SRC_C   := ../../lib/src/uart.c ../../lib/src/string.c ../../lib/src/ctype.c ../../lib/src/stdlib.c strings_test.c
 include ../../common/common.mk

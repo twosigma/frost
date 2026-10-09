@@ -15,23 +15,13 @@
  */
 
 /*
- * PAUSE decode directed test.
+ * PAUSE decode test. Zihintpause encodes PAUSE as 0x0100000F: FENCE with
+ * fm=0, pred=W, succ=0 and rd=rs1=x0. FROST treats it as a NOP, without a
+ * committed-store drain. Other FENCE encodings, including fence r,0
+ * (0x0200000F), must still wait for committed stores.
  *
- * PAUSE (Zihintpause) is the FENCE encoding with fm=0, pred=W, succ=0 and
- * rd=rs1=x0, exactly 0x0100000F. FROST runs it as a NOP, so it must retire
- * without the committed-store drain that a FENCE waits for at the ROB head.
- * Every other FENCE encoding, fence r,0 (0x0200000F) included, must retire as
- * a FENCE. Self-checks over UART (<<PASS>>/<<FAIL>>):
- *
- *   A. The assembler's `pause` is 0x0100000F.
- *   B. Stores each followed by PAUSE add nothing to the COMMIT_BLOCKED_FENCE
- *      profiling counter. The same stores each followed by fence w,w, or by
- *      any FENCE word from C, add to it: each of those words waits for the
- *      drain like any FENCE. Needs the profiling counters (PERF_COUNTERS=1,
- *      as the cocotb entry builds); without them the check reports SKIP.
- *   C. PAUSE, the FENCE encodings that differ from it in one field, fence
- *      rw,rw and fence.tso retire, and execution continues past each. An
- *      instruction that never retires keeps the run from reaching <<PASS>>.
+ * Check the assembler encoding, drain behavior and retirement. The drain
+ * check needs PERF_COUNTERS=1 and reports SKIP if counters are absent.
  */
 
 #include <stdint.h>
@@ -73,8 +63,7 @@ static uint64_t fence_blocked_cycles(void)
         (out) = fence_blocked_cycles() - before_;                                                  \
     } while (0)
 
-/* Check B for one instruction: a FENCE word waits for the stores before it to
- * drain, PAUSE does not. */
+/* FENCE must wait for the stores to drain; PAUSE must not. */
 static void report_drain(const char *insn, uint64_t blocked, int drains)
 {
     int ok = drains ? blocked != 0 : blocked == 0;

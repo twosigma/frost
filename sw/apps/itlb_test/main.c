@@ -27,90 +27,6 @@
  * first fetch misses the ITLB and walks; the warm chain pass (T2) and the
  * satp switches (V2, V3) skip it, since that is what they test. The chain
  * case fills more pages than the ITLB holds.
- *
- * Matrix (faults check cause, epc and tval; hits check the markers):
- *   A. 4 KiB non-identity code page, S-mode: page head runs, ecall (9).
- *   B. 2 MiB (bram) / 1 GiB (ddr) identity superpage: a .text snippet runs
- *      at its own address under translation.
- *   C. Page-crossing window: entry at page_a+0xFF8 executes the tail
- *      markers, the 32-bit instruction straddling into page_b, then
- *      page_b's ecall (a1 = 0xA4, a0 = 0xA3, epc = page_b + 2).
- *   D. Straddle into an unmapped page: instruction page fault with
- *      epc = the straddling instruction (page_a' + 0xFFE) and tval = the
- *      second page's base (the faulting portion).
- *   E. Compressed pair at the page end, next page mapped: page_b2's head
- *      runs (a0 = 0xB1).
- *   F. Same pair, next page unmapped: fault with epc = tval = next page.
- *   G. U-mode page from U: runs, ecall from U (8). Same page from S: 12.
- *   H. S page from U: 12.  I. X=0 page: 12.  J. A=0 page (Svade): 12.
- *   K. Leaf into the device quadrant: access fault 1 (fetch PMA).
- *   L. Leaf above the 4 GiB map: 1.  M. Interior pointer into BRAM
- *      (page tables must live in cached DDR): 1.
- *   N. V=0: 12.  O. W&!R: 12.  P. Reserved PTE bit: 12.
- *   Q. Misaligned 2 MiB superpage: 12.  R. Non-leaf at level 0: 12.
- *   S. Non-canonical target VA: 12 with epc = tval = the VA, no walk.
- *   T. Chain through 12 consecutive virtual pages (11 relative jumps into
- *      the next page + the end marker): ITLB replacement + back-to-back
- *      misses; run twice (second pass warm).
- *   U. sfence.vma visibility: a code page remapped to another frame runs
- *      the new frame's marker after sfence.
- *   V. satp switch: a second root maps the same VA elsewhere; the satp
- *      write alone retargets fetch (no sfence).
- *   W. Bare after satp := 0: the driver's own code keeps running (implicit
- *      throughout), and a wild PC raises access fault 1.
- *   X. Indirect jump into a cold page, the shape of a jump to the vDSO
- *      sigreturn trampoline: a caller page's auipc+jalr lands at six offsets
- *      of the next virtual page, each holding "a0 = marker; ecall". Cold
- *      (sfence first, so both the caller and the target walk) and warm, from
- *      U and from S. A skipped first instruction reports a0 = 0; a skipped
- *      window reports the next pair's marker and epc. Six more entries load
- *      ra from a data page (the handler epilogue's shape: after a flush the
- *      jump resolves only after that load's own walk) and return through
- *      c.jr / jalr at every window position.
- *   Y. Fetch fault, then retry (the kernel maps the vDSO lazily: the first
- *      ever fetch of the trampoline page faults, the kernel installs the
- *      PTE, sfence.vma, and srets back to the same PC). The target page
- *      starts unmapped; the caller's jump into it takes an instruction
- *      page fault; the Y handler installs the PTE, sfence.vma, and mrets
- *      to the faulting PC at the same privilege; the head must then run.
- *      Variants: target 0x000 and 0x5E0 (the vDSO trampoline's offset),
- *      the return address computed or loaded, the caller's page unmapped
- *      too (two faults in a row); from U and from S with the M handler,
- *      then from U with the fault delegated to an S handler that installs
- *      the PTE, sfence.vma's the address and srets (the kernel's privilege
- *      and return), at the low VAs and at Linux-shaped high VAs (a
- *      0x3fb39bc000 subtree of its own). ITLB_Y_ITERS repeats the high-VA
- *      mode (default 1); the S handler records the scause/stval/sepc it
- *      was entered with, printed on a failure.
- *   Z. The Linux signal return, from DDR-resident pages (the cached fetch
- *      tier; in a BRAM build every other case's code page is in the low
- *      BRAM). An S-mode "kernel" in .ddr_text delivers a signal to a U body
- *      whose call has left a user return address on the RAS: it writes a
- *      frame, srets to the handler, and the handler's ret lands on the
- *      vDSO-shaped stub (`li a7, 139; ecall` at 0x5E0, zeros around it). The
- *      stub's ecall must arrive with a7 = 139 and sepc = stub + 4; a lost
- *      `li` reports a7 = 0x104, a skipped window the illegal word at stub + 8.
- *      Before each of ITLB_Z_ITERS iterations a 16.5 KiB straight-line run in
- *      DDR evicts the stub's line from the L1I and the provider buffers, and
- *      sfence.vma evicts its translation. FROST also runs every sfence.vma as
- *      a fence.i cache sync (L1D writeback, L1I invalidate). Variants: the
- *      stub at 0x7E8 (line offset 8) and 0x000, no thrash and no sfence.vma
- *      (warm-L1I: after the first iteration the stub's line stays in the L1I
- *      and its translation in the ITLB), thrash without sfence.vma
- *      (warm-ITLB), a body without the call, a jalr handler, 64 KiB of L1D
- *      lines dirtied after main's sfence.vma (so the S handler's sfence.vma
- *      writes back at least 64 KiB), the handler's jalr at a line start,
- *      the handler page at a low VA (busybox is a static binary below 2 GiB
- *      while the vDSO sits above it, so the ret and the RAS's wrong-path
- *      target change 4 GiB region), the lazy vDSO map (the stub page starts
- *      unmapped; the S handler installs the PTE on the fetch fault,
- *      sfence.vma's the address and srets back), and a RAS whose predicted
- *      return lands in a page the kernel has just unmapped or made S-only,
- *      so the ret's wrong path fetches a fault window just before the stub.
- *      -DITLB_Z_L2_THRASH adds a 4 MiB store sweep per iteration so the
- *      stub's line is L2-cold too (board only: too slow for simulation).
- *      Compiled out with -DITLB_NO_CACHED_FETCH (the fetch-fuzz sim build
- *      serves the low BRAM only).
  */
 
 #include <stdint.h>
@@ -706,10 +622,10 @@ int main(void)
     RUN_AT(VA_4K(VP_REMAP), MPP_S);
     all_ok &= report_run("V3 root-a-switch", 9, VA_4K(VP_REMAP) + 4, 0xA1, 0);
 
-    /* X: indirect jumps into a cold page. Twelve caller entries jump into the
-     * next virtual page, cold (sfence first) and warm, from U (ecall 8) and
-     * from S (ecall 9). Only failures print, then one summary line per
-     * mode. */
+    /* X: indirect jumps into the next virtual page, cold (sfence first) and
+     * warm, from U (ecall 8) and S (ecall 9). A skipped head leaves a0 = 0;
+     * a skipped window reaches the next marker and ecall. Only failures
+     * print before the summary for each mode. */
     {
         /* k 0-5: ra computed (auipc/addi), jalr; k 6-11: ra loaded from the
          * data page (a walk of its own after the flush), returning through
@@ -765,15 +681,16 @@ int main(void)
         }
     }
 
-    /* Y: fetch fault, then retry (see the header). Variants per mode:
+    /* Y: install a PTE on a fetch fault and retry the same PC. Variants:
      *   0: entry 0x000 (auipc ra), target 0x000
      *   1: entry 0x380 (auipc ra), target 0x5E0 (the vDSO trampoline's offset)
      *   2: entry 0x200 (ra loaded from the data page), target 0x000
      *   3: as 0, with the caller's page unmapped too: two faults in a row
      * Modes: 0 U code + M handler (mret); 1 S code + M handler; 2 U code +
      * the fault delegated to an S handler (sret); 3 as 2 at the Linux-shaped
-     * high VAs. Each fault is handled by installing the PTE, sfence.vma
-     * addr, xret to the faulting PC. */
+     * high VAs, repeated ITLB_Y_ITERS times (default 1). Each fault installs
+     * a PTE, executes sfence.vma for the address and returns to the faulting
+     * PC with mret or sret. */
     {
         static const unsigned long y_entry[4] = {0x000, 0x380, 0x200, 0x000};
         static const unsigned long y_target[4] = {0x000, 0x5E0, 0x000, 0x000};
@@ -878,15 +795,26 @@ int main(void)
         }
     }
 
-    /* Z: the Linux signal return from DDR-resident pages (see the header).
+    /* Z: a DDR-resident S-mode kernel writes a signal frame and srets to a
+     * U-mode handler. Its ret reaches a vDSO stub: li a7, 139; ecall. The
+     * stub must report a7 = 139 and sepc = stub + 4. A skipped li leaves
+     * a7 = 0x104; a skipped window reaches the illegal word at stub + 8.
      * The S handler in .ddr_text runs at its physical address through the
      * 1 GiB identity leaf; sscratch points at its control block. Only ecall
      * from U and instruction page faults are delegated: the S handler
      * services a fault in the stub page (the lazy map) and reports any other
      * as a0 = 0xEE, and an illegal instruction or an access fault goes
-     * straight to the M recording handler. The fetch-fuzz sim build has no
-     * cached fetch tier (its wrapper serves the low BRAM only), so that build
-     * compiles the case out. */
+     * straight to the M recording handler. ITLB_NO_CACHED_FETCH omits this
+     * case for the fetch-fuzz build, which serves only low BRAM.
+     *
+     * Thrashing runs 16.5 KiB of DDR instructions to evict the stub from
+     * L1I and the provider buffers. sfence.vma evicts its translation and
+     * performs a fence.i cache sync (L1D writeback and L1I invalidation).
+     * With neither, the stub stays warm after the first iteration. Thrashing
+     * without sfence keeps its ITLB entry warm. ITLB_Z_L2_THRASH adds a
+     * 4 MiB store sweep to make it L2-cold (board only).
+     * The low-VA variants put the handler below 2 GiB, like static busybox,
+     * so the return and the RAS prediction target different 4 GiB regions. */
 #ifdef ITLB_NO_CACHED_FETCH
     uart_puts("[SKIP] Z ddr-signal-return (no cached fetch tier in this build)\r\n");
 #else

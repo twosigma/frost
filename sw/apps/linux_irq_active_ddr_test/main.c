@@ -17,18 +17,12 @@
 /*
  * Linux-like active-code timer IRQ test, linked and executed from cached DDR.
  *
- * A machine timer interrupt must not corrupt the interrupted context; the
- * failure this guards against is an illegal-instruction panic with
- * ra == epc == 0x00000cc0 after the first timer interrupt from idle. The test
- * keeps the kernel's ingredients: DDR code, data and stack, wfi idle, timer
- * IRQs landing in active code, a Linux-style trap frame on the current stack,
- * and the csrrw tp,mscratch,tp swap.
- *
- * Four phases run in order: wfi idle with exact epc/ra/sp/tp frame checks,
- * wfi idle followed by a transient ra poison of 0xcc0, nested active calls
- * that keep loading 0xcc0 into t5 until the IRQ lands, and a sentinel window
- * with the s-registers pinned to known values so their frame slots can be
- * checked. ra must remain a DDR address at every interrupt boundary.
+ * Timer interrupts must preserve the context in idle and active code. The
+ * Linux-style trap entry saves GPRs on the current DDR stack and swaps tp
+ * through mscratch. Idle checks compare exact epc, ra, sp and tp values;
+ * active checks require DDR addresses and validate pinned s-register values.
+ * Poison ra after wfi and t5 during nested calls with 0xcc0 to detect stale
+ * data. ra must remain a DDR address at every interrupt boundary.
  */
 
 #include <stdint.h>

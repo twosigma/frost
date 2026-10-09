@@ -14,38 +14,28 @@
 
 # Return address stack repair after a misprediction
 #
-# Both phases run ITERATIONS iterations that call f_slow and then g_short.
-# f_slow's conditional branch waits on a divide and alternates direction, so
-# it mispredicts often, and fetch runs down the wrong path past it while the
-# divide runs: it predicts f_slow's return, which pops the stack, and goes on
-# to what the caller does next.
-#   Control: the caller runs FILLER ALU instructions before it calls g_short,
-#            so the wrong path pops but does not push.
-#   Repair:  the caller calls g_short right away, so the wrong path's push
-#            writes g_short's link address over the entry that f_slow's
-#            correct-path return needs.
-# Recovery restores the stack pointer and count from the branch's checkpoint
-# and writes back the entry that was on top when the branch was fetched.
-# Without that write-back, f_slow's correct-path return predicts g_short's
-# link address and mispredicts. The phases run the same instructions in a
-# different order, so <<PASS>> needs the repair phase's flush-recovery cycles
-# to stay within FLUSH_MARGIN of the control phase's.
+# f_slow's branch waits for a divide and alternates direction. Wrong-path
+# fetch can pop its return address and reach the caller's next instructions:
+#   Control: FILLER ALU instructions delay the next call, so no push occurs.
+#   Repair:  g_short is called immediately, overwriting the popped entry.
+# Recovery must restore the checkpoint's pointer, count and top entry.
+# Otherwise f_slow's correct-path return predicts g_short's link address.
+# Both phases execute the same instructions in a different order. The repair
+# phase's flush-recovery cycles must stay within FLUSH_MARGIN of control.
 #
-# Each call and return follows two never-taken `bnez x0` branches. A branch
-# ends its fetch bundle, so the second one always starts a bundle of its own,
-# whatever the pairing before it, and the call or return after it gets its
-# own slot-1 prediction. The flush-recovery count (global counter 3,
-# TOMASULO_PERF_FLUSH_RECOVERY in sw/lib/include/tomasulo_profile.h) needs a
-# build with the profiling counters (PERF_COUNTERS=1); without them the
-# program prints <<FAIL>>.
+# Two never-taken bnez x0 branches precede each call and return. A branch ends
+# its bundle, so the second branch starts a bundle and the following call or
+# return gets a slot-1 prediction regardless of earlier pairing.
+# Counter 3 is TOMASULO_PERF_FLUSH_RECOVERY
+# (sw/lib/include/tomasulo_profile.h).
+# PERF_COUNTERS=1 is required; absent counters produce <<FAIL>>.
 
     .equ ITERATIONS, 200
     .equ FLUSH_MARGIN, ITERATIONS / 8
-    # Fetch runs at most about 45 instructions past the stalled divide (32
-    # reorder buffer entries, the decoded bundle queue, and the PD and ID
-    # registers). FILLER keeps the control phase's wrong path from reaching
-    # its call to g_short, and the repair phase's from reaching the next call
-    # to f_slow, which would push the overwritten entry's value back.
+    # FILLER exceeds the roughly 45-instruction speculative window (32 ROB
+    # entries plus queued and pipelined bundles). It prevents the control
+    # phase from reaching g_short and the repair phase from reaching f_slow
+    # again, which would restore the overwritten value before recovery.
     .equ FILLER, 48
     .equ CSR_MPERFSEL, 0x7C0
     .equ CSR_MPERFCTL, 0x7C1
@@ -53,9 +43,8 @@
     .equ CSR_MPERFCOUNT, 0xFC2
     .equ PERF_FLUSH_RECOVERY, 3
 
-    # Snapshot the counters, then read the low 32 bits of the flush-recovery
-    # count into \flushes and the cycle count into \cycles. The macro makes no
-    # call, so the measured window contains only the phase's own loop.
+    # Snapshot flush-recovery cycles (low 32 bits) into \flushes and cycle
+    # count into \cycles. Avoid calls inside the measured window.
     .macro READ_COUNTERS flushes, cycles
     li      t0, 1
     csrw    CSR_MPERFCTL, t0
@@ -65,9 +54,8 @@
     rdcycle \cycles
     .endm
 
-    # Independent ALU instructions: the two ALUs keep up with dispatch, so
-    # the filler never backs up into fetch. A fetch stall drops the lookup
-    # in flight, which could cost a call or return its prediction.
+    # Independent ALU work lets dispatch keep pace without stalling fetch.
+    # A fetch stall discards the lookup in flight and may lose a prediction.
     .macro FILL count
     .rept \count
     addi    t3, zero, 1
@@ -157,10 +145,8 @@ done:
 never:
     j       never
 
-# f_slow: a branch on the loop counter's low bit, through a divide, so it
-# resolves late and changes direction every iteration. Both directions reach
-# the return within a few instructions, which fetch reaches well before the
-# divide finishes.
+# f_slow: the loop counter's low bit passes through a divide, delaying
+# branch resolution. Both paths reach the return before the divide finishes.
 f_slow:
     andi    t2, s1, 1
     div     t0, t2, s3

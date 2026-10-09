@@ -15,20 +15,15 @@
  */
 
 /**
- * Execute-from-DDR test for the fetch provider, two-line buffer, L1I, arbiter,
- * L2, and main memory. Branches, calls, loops, and ordinary RVC output
- * cover straddles, prefetch, BTB/RAS, and miss/fill paths.
- *
- * Checks a leaf, a branchy checksum, DDR-to-BRAM calls, DDR recursion, a body
- * larger than the fetch buffer, and matching cold/warm results.
+ * Check execution through the cached instruction path with branches, calls,
+ * recursion, and a body larger than the fetch buffer. Cold and warm results
+ * must match the BRAM reference computations.
  */
 
 #include "../../lib/include/uart.h"
 
-/* noipa (which implies noinline) keeps each DDR function a real call whose body
- * runs on the caller's arguments. With noinline alone, GCC clones the functions
- * for main's constant arguments and folds the long body and the leaf to
- * constants. */
+/* noipa prevents inlining and constant-argument cloning, so the DDR bodies
+ * execute rather than folding to constants. */
 #define DDR_TEXT __attribute__((section(".ddr_text"), noipa))
 
 /* Low-BRAM target for calls from DDR code. */

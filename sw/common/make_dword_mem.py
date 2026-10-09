@@ -15,12 +15,9 @@
 
 """Pair a 32-bit-word verilog-hex image into 64-bit-dword rows.
 
-The data memory BRAM is one MemDataBits(=64)-wide byte-enabled RAM
-(hw/rtl/README.md, "Data-tier bus contract"), so its ``$readmemh`` init
-file needs one 64-bit token per dword row. The instruction BRAM (with its
-per-word predecode sideband) and the JTAG loaders keep 32-bit words, so
-this script derives the dword file from ``sw.mem`` rather than changing
-the objcopy flow.
+Data BRAM needs 64-bit ``$readmemh`` tokens (hw/rtl/README.md, "Data-tier bus
+contract"). Derive them from ``sw.mem``; instruction BRAM and JTAG loaders
+use 32-bit words.
 
 Input is objcopy ``-O verilog --verilog-data-width 4`` output: ``@ADDR``
 records in word units followed by 8-hex-digit little-endian word tokens.

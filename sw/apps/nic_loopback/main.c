@@ -17,19 +17,12 @@
 /*
  * NIC loopback test (hw/rtl/peripherals/nic, sw/lib/include/nic.h).
  *
- * Drives the NIC the way the Linux driver does: bring-up through READY, a
- * loopback selected through a RESET, station address, rings in cached DDR,
- * descriptors posted with a TAIL doorbell, completions read from the
- * descriptors (DD), counters, the completion and link interrupts, the
- * moderation registers, a RESET in the middle of traffic, and the filter.
- * The loopback follows PHY_STATUS.CLK_SHARED: with one clock shared by both
- * MAC directions, the MAC wrapper's raw loopback (MAC_LOOPBACK); with a
- * transceiver's independent clocks, its PMA loopback (PMA_LOOPBACK). Frames
- * go out through TX, around the loopback and back into RX buffers, where
- * every byte is compared.
+ * Send frames through loopback and compare every received byte. Use
+ * MAC_LOOPBACK with a shared MAC clock and PMA_LOOPBACK with independent
+ * transceiver clocks; select_loopback explains the clock constraint.
  *
- * Prints <<PASS>> or <<FAIL>>. Runs in both memory tiers: rings and buffers
- * live at fixed DDR addresses above every image.
+ * Print <<PASS>> or <<FAIL>>. Rings and buffers use fixed DDR addresses above
+ * the program image in either memory configuration.
  */
 #include <stdint.h>
 
@@ -42,12 +35,11 @@
 #define MCAUSE_INTERRUPT_BIT (1ul << 63)
 #endif
 
-/* Polling budgets in loop iterations (an MMIO read each, tens of cycles):
- * sized so a failed wait reports inside the simulation's cycle budget while
- * leaving the hardware milliseconds. A transceiver link
- * (CLK_SHARED = 0) comes up through the transceiver's resets, CDR and block
- * lock in hundreds of milliseconds, so there the waits for READY and CARRIER
- * take WAIT_LINK_TRANSCEIVER instead: seconds at a 161 or 322 MHz CPU clock. */
+/* Polling budgets count loop iterations: register waits read MMIO, and
+ * descriptor and interrupt-flag waits poll memory. Short waits fit the
+ * simulation budget. With CLK_SHARED = 0, reset, CDR and block lock
+ * take hundreds of milliseconds; WAIT_LINK_TRANSCEIVER allows seconds at
+ * 161 or 322 MHz. */
 #define WAIT_READY 4000u
 #define WAIT_CARRIER 12000u
 #define WAIT_LINK_TRANSCEIVER 20000000u
@@ -83,10 +75,8 @@ static const uint8_t other[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
 
 static uint32_t g_failures;
 static uint32_t g_rx_posted, g_rx_reaped, g_tx_posted;
-/* Set by select_loopback: whether the MAC clocks come from a transceiver,
- * PHY_CTRL's loopback bit for this build (programmed in bring-up and expected
- * back after the RESET in test_reset), and the READY and CARRIER budgets and
- * enable tries that go with it. */
+/* select_loopback sets the clock mode, PHY_CTRL loopback bit, wait budgets
+ * and retry count. The loopback bit must survive RESET. */
 static int g_transceiver;
 static uint32_t g_loopback_ctrl;
 static uint32_t g_wait_link_ready, g_wait_carrier, g_enable_tries;
@@ -216,16 +206,11 @@ static void select_loopback(void)
     uart_printf("PHY_STATUS %x: PHY_CTRL loopback %x\n", phy_status, g_loopback_ctrl);
 }
 
-/* READY can also fall after an accepted enable, since the transceiver restarts
- * its receiver for a PMA loopback change on its own schedule. The NIC then
- * disables that direction itself, keeping its ring registers and HEAD. The
- * transceiver drops its signal before that restart, so the carrier is down
- * across it and returns only after READY has; once the carrier is up, a
- * direction that CTRL shows disabled and STATUS shows READY is enabled again,
- * as the Linux driver does on a LINK event. The write carries both enables
- * and CTRL's current PROMISC, because every CTRL write other than RESET
- * reloads PROMISC. Returns 0 if a direction is still disabled afterwards,
- * since the frame tests that follow need both. */
+/* A PMA loopback change can restart the receiver after enable, dropping
+ * READY. The NIC disables that direction but preserves ring registers and
+ * HEAD. CARRIER stays down through the restart and returns after READY.
+ * Re-enable ready directions, preserving PROMISC because non-RESET CTRL
+ * writes reload it. Return 0 unless both directions are enabled. */
 static int reenable_after_ready_loss(void)
 {
     const uint32_t enables = NIC_CTRL_RX_EN | NIC_CTRL_TX_EN;
@@ -290,11 +275,9 @@ static int bringup(int loopback)
     nic_write(NIC_RX_ITR, 0);
     nic_write(NIC_TX_ITR, 0);
     nic_write(NIC_IRQ_STATUS, NIC_IRQ_RX | NIC_IRQ_TX | NIC_IRQ_RX_DROP | NIC_IRQ_DESC_ERR);
-    /* An enable is refused (CONFIG_ERR) unless its direction is READY and its
-     * ring valid. With a transceiver, the receiver restart for the PMA
-     * loopback change can take READY down after the wait for it above, so a
-     * refused enable is written again once READY is back, up to
-     * g_enable_tries writes in all. A shared MAC clock gets one write. */
+    /* Enable requires READY and a valid ring. A PMA loopback restart can
+     * drop READY after the wait above; retry when READY returns, up to
+     * g_enable_tries writes. A shared MAC clock gets one attempt. */
     const uint32_t enables = NIC_CTRL_RX_EN | NIC_CTRL_TX_EN;
     const uint32_t ready = NIC_STATUS_RX_READY | NIC_STATUS_TX_READY;
     nic_write(NIC_CTRL, enables);
@@ -320,7 +303,7 @@ static int bringup(int loopback)
     return 1;
 }
 
-/* ---- frames of every shape around the loopback ---- */
+/* ---- Loopback frame sizes and padding ---- */
 static void test_frames(void)
 {
     static const uint32_t lengths[] = {60u, 61u, 100u, 1518u, 9000u, 20u, 200u, 64u};
@@ -330,8 +313,8 @@ static void test_frames(void)
         uint64_t t0 = rdmtime();
         uint32_t idx = send_tx(lengths[k], station, k + 1u);
         int got = reap_rx(lengths[k], station, k + 1u, "frames");
-        /* The round trip in mtime ticks: doorbell to DD seen, including the
-         * software checks. */
+        /* Elapsed mtime ticks include frame preparation, transmission,
+         * reception and byte checks. */
         uart_printf("frame %u bytes: %u ticks\n", lengths[k], (uint32_t) (rdmtime() - t0));
         if (!got)
             ok = 0;
@@ -495,9 +478,8 @@ static void test_filter(void)
 static void test_reset(void)
 {
     int ok = 1;
-    /* Queue more frames than the RX ring has descriptors (the ring keeps
-     * the descriptors the earlier tests left unreaped plus two): the last
-     * ones pile up in the FIFO and the MAC while the RX ring runs dry. */
+    /* Exceed the available RX descriptors so frames remain in the FIFO and
+     * MAC when the RX ring runs dry. */
     post_rx(2u);
     uint32_t available = g_rx_posted - g_rx_reaped;
     for (uint32_t k = 0; k < available + 3u; k++)

@@ -1,13 +1,9 @@
 /* DDR-tier linker script for FreeRTOS on FROST.
  *
- * The ddr counterpart to link_freertos.ld, selected by the Makefile when
- * MEM_CONFIG=ddr. A boot stub (../../common/crt0_ddr_boot.S, section .boot)
- * runs from the low BRAM ROM and far-jumps to the DDR-resident _start. The
- * whole program, meaning code, data, bss and the FreeRTOS ucHeap in .bss,
- * lives in the cached DDR region at 0x8000_0000, fetched through the L1I and
- * loaded and stored through the L1D. The stack stays in low BRAM, which is
- * fast and uncached. FreeRTOS task stacks are carved from its heap, so they
- * move to DDR with it.
+ * MEM_CONFIG=ddr selects this script. The .boot stub in crt0_ddr_boot.S
+ * runs from low BRAM and jumps to _start in cached DDR at 0x8000_0000.
+ * Code uses L1I; data and the FreeRTOS heap use L1D. The startup stack
+ * stays in uncached BRAM; task stacks come from the DDR heap.
  *
  * DDR sections load in place (LMA == VMA): the sim preloads the behavioral DDR
  * from sw_ddr.mem, so crt0's .data copy loop self-copies (a no-op).
@@ -33,7 +29,7 @@ MEMORY
     MMIO (rw)  : ORIGIN = 0x40000000, LENGTH = 44     /* Peripherals: UART, FIFOs, Timer, MSIP */
 }
 
-/* Stack stays in low BRAM (fast, uncached). sp is initialized to this in crt0.S */
+/* crt0.S initializes the startup stack in uncached BRAM. */
 _end_of_stack = ORIGIN(RAM) + LENGTH(RAM);
 PROVIDE(_stack_top = _end_of_stack);
 
@@ -54,23 +50,19 @@ SECTIONS
      * DDR: the whole program (code + data + bss), loaded in place
      * ================================================================ */
 
-    /* .text section - Executable code */
     .text : {
         KEEP(*(.init))      /* Startup code (crt0.S): first; the boot stub jumps to 0x80000000 */
         *(.text*)           /* All code sections */
         *(.text.*)
     } > DDR
 
-    /* .rodata section - Read-only data (constants, strings) */
     .rodata : {
         *(.rodata*)         /* Large read-only data */
         *(.rodata.*)
-        *(.srodata*)        /* Small read-only data (accessed via gp) */
+        *(.srodata*)        /* Small read-only data */
         . = ALIGN(4);
     } > DDR
 
-    /* .data section - Initialized global/static variables.
-     * LMA == VMA: crt0's ROM->RAM copy loop self-copies (a no-op). */
     .data : {
         __data_load_start = .;                 /* Source address (== dest in DDR) */
         __data_start      = .;                 /* Destination address */
@@ -78,7 +70,6 @@ SECTIONS
         . = ALIGN(4);
     } > DDR
 
-    /* .sdata section - Small initialized data (accessed via global pointer) */
     .sdata : {
         *(.sdata*)          /* Small initialized data */
         . = ALIGN(4);
@@ -89,7 +80,6 @@ SECTIONS
      * BSS SECTIONS (zeroed by crt0.S; includes the FreeRTOS ucHeap)
      * ================================================================ */
 
-    /* .sbss section - Small uninitialized data (accessed via gp) */
     .sbss : {
         __sbss_start = .;
         *(.sbss*)           /* Small uninitialized data */
@@ -98,7 +88,6 @@ SECTIONS
         __sbss_end = .;
     } > DDR
 
-    /* .bss section - Uninitialized global/static variables (FreeRTOS ucHeap) */
     .bss : {
         __bss_start = .;
         *(.bss*)            /* Uninitialized data */
@@ -123,13 +112,12 @@ SECTIONS
      * GLOBAL SYMBOLS
      * ================================================================ */
 
-    /* Global pointer: gp must be within +/-0x800 of every .sdata/.sbss object,
-     * so it sits 0x800 past the start of small data. */
+    /* gp-relative offsets span -2048 to 2047 bytes. This covers the first
+     * 4 KiB of small data. */
     PROVIDE(__global_pointer$ = ADDR(.sdata) + 0x800);
 
-    /* Cached-region BSS bounds: nothing placed in the opt-in .ddr_bss section by
-     * this script; empty bounds keep crt0's .ddr_bss zeroing loop a no-op (the
-     * program's own .bss above is zeroed by the regular .bss loop). */
+    /* Empty .ddr_bss bounds skip crt0's optional DDR zeroing loop.
+     * The regular .bss loop clears the program's BSS. */
     PROVIDE(__ddr_bss_start = 0);
     PROVIDE(__ddr_bss_end = 0);
 
@@ -149,7 +137,5 @@ SECTIONS
     PROVIDE(UART_TX_STATUS_ADDR = 0x40000028); /* UART TX status (bit 0 = TX ready) */
 }
 
-/* crt0_ddr_boot.S jumps to the constant 0x8000_0000, which is correct only while
- * _start sits at the DDR origin. The ASSERT turns a reordering of the DDR
- * sections into a link failure instead of a jump to the wrong address. */
+/* crt0_ddr_boot.S jumps to 0x8000_0000, so _start must be at the DDR origin. */
 ASSERT(_start == ORIGIN(DDR), "link_freertos_ddr.ld: _start must sit at ORIGIN(DDR) (the rv64 boot stub jumps to the constant 0x80000000)")

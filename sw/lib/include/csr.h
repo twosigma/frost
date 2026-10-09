@@ -33,15 +33,6 @@
  *   - mcountinhibit: CY (bit 0) and IR (bit 2) stop cycle/instret while set;
  *     TM reads 0 and the HPM bits are WARL-0
  *
- * Machine-mode CSRs (for RTOS support):
- *   - mstatus: Global interrupt enable and privilege state
- *   - mie/mip: Interrupt enable and pending bits
- *   - mtvec: Trap vector base address
- *   - mepc: Exception program counter (saved PC on trap)
- *   - mcause: Trap cause (interrupt bit + cause code)
- *   - mtval: Trap value (faulting address or instruction)
- *   - mscratch: Scratch register for trap handlers
- *
  * Usage:
  *   uint64_t start = rdcycle64();
  *   // ... code to benchmark ...
@@ -166,9 +157,7 @@
     } while (0)
 
 /**
- * Set bits in a CSR (read-modify-write: CSR |= val)
- *
- * Uses the CSRRS instruction to atomically set bits.
+ * Atomically set CSR bits with CSRRS (CSR |= val).
  */
 #define csr_set(csr, val)                                                                          \
     do {                                                                                           \
@@ -176,9 +165,7 @@
     } while (0)
 
 /**
- * Clear bits in a CSR (read-modify-write: CSR &= ~val)
- *
- * Uses the CSRRC instruction to atomically clear bits.
+ * Atomically clear CSR bits with CSRRC (CSR &= ~val).
  */
 #define csr_clear(csr, val)                                                                        \
     do {                                                                                           \
@@ -186,9 +173,7 @@
     } while (0)
 
 /**
- * Swap CSR value (write new value, return old value)
- *
- * Uses the CSRRW instruction.
+ * Write a CSR with CSRRW and return its old value.
  */
 #define csr_swap(csr, val)                                                                         \
     ({                                                                                             \
@@ -198,9 +183,7 @@
     })
 
 /**
- * Read a CSR by numeric immediate ID
- *
- * Use this for custom CSRs that do not have assembler mnemonics.
+ * Read a CSR by numeric immediate ID, for CSRs without assembler mnemonics.
  */
 #define csr_read_imm(csr_num)                                                                      \
     ({                                                                                             \
@@ -210,9 +193,7 @@
     })
 
 /**
- * Write a CSR by numeric immediate ID
- *
- * Use this for custom CSRs that do not have assembler mnemonics.
+ * Write a CSR by numeric immediate ID, for CSRs without assembler mnemonics.
  */
 #define csr_write_imm(csr_num, val)                                                                \
     do {                                                                                           \

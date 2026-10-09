@@ -1,8 +1,6 @@
-    // CoreMark-PRO startup. Unlike sw/common/crt0.S, it installs an early trap
-    // vector that prints <<BOOT_TRAP>>, and its .data copy runs backward when
-    // the destination is above the load image, so the copy stays correct even
-    // if the two ranges overlap. Build with COREMARK_PRO_TRACE=1 for UART boot
-    // markers.
+    // CoreMark-PRO startup installs a <<BOOT_TRAP>> vector and copies .data
+    // backward when the destination is above the source, to handle overlap.
+    // COREMARK_PRO_TRACE=1 adds UART boot markers.
     .section .init
     .option  push
     .option  norelax

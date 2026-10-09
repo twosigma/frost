@@ -18,36 +18,24 @@
  * lq_stale_slot_probe: a cached load must complete with its own data across
  * two partial flushes and ROB-tag reuse.
  *
- * The load queue keeps up to four cached-tier loads in flight in its slots.
- * A partial flush that kills a slot's load drop-marks the slot (cs_drop),
- * which stays busy until the response lands and is drained, while the killed
- * load's queue entry frees at once. A live load can then be allocated into
- * that entry and launch while the slot still names the dead load's ROB tag
- * and queue index. A second partial flush must not judge that slot by the
- * stale tag. If the tag read as younger than the flush point, the flush would
- * clear the live entry's issued bit; the live load could launch a second
- * time, its first response would complete it and free the entry, and the
- * next load allocated there could take the second response as its own data.
+ * The load queue tracks up to four cached responses. A partial flush marks a
+ * killed response's slot with cs_drop. The slot stays busy until its
+ * response drains, but the queue entry is freed immediately. A later load
+ * can reuse that entry while the slot records the killed load's ROB tag.
+ * A second flush must ignore this stale tag: clearing the live entry's
+ * issued bit could launch it twice, letting its second response complete
+ * the next load allocated there.
  *
- * iter.S builds the shape. When B1's arm X is the wrong path, it leaves three
- * cached loads in flight past the recovery. Arm Y's first load, N, reads a -1
- * marker, and B2 resolves a fixed time after N launches, while N is in
- * flight. Ten line loads P follow, more than the queue holds, so a P is
- * waiting to take N's entry when it frees. Every probed line carries its own
- * signature, so a P that reads -1 took N's second response. Branch directions
- * are random; the hazard needs rnd bit 0 set (arm Y correct) and both
- * branches mispredicted. Should the hazard occur in simulation, the load
- * queue's live-slot identity check fires first, the cycle after the flush,
- * and stops the run. The data check is weaker: N's relaunch would coalesce
- * with its first request, so the two responses would land back to back, and
- * a wrong value reaches a P only when an allocation falls in that one-cycle
- * gap.
+ * iter.S creates two branch recoveries around a marker load N and ten
+ * following loads P. The hazard needs rnd bit 0 set (arm Y correct) and both
+ * branches mispredicted. A P result of -1 identifies N's second response.
+ * The live-slot identity assertion detects the cleared issued bit on the
+ * cycle after the flush. The data check needs an allocation between N's
+ * coalesced, back-to-back responses, so it catches fewer failures.
  *
- * Before the measured loop the probe writes its own pool and marker lines and
- * pushes them out of both cache levels (prepare_pool), so it depends on no
- * prior DRAM contents. Each probed line is loaded at most once, and each
- * block's line 0 is recorded so a pool that did not hold its signatures is
- * reported.
+ * prepare_pool writes and evicts all pool signatures and -1 marker lines;
+ * no prior DRAM contents are required. Each probed line is loaded at most
+ * once. Recording each block's line 0 also checks that initialization held.
  */
 
 #include "uart.h"

@@ -15,96 +15,20 @@
  */
 
 /*
- * S-mode (supervisor privilege) directed test.
+ * Supervisor privilege tests across M, S and U modes.
  *
- * Exercises the Machine+Supervisor+User privilege architecture end-to-end on
- * the real core and self-checks over UART (<<PASS>> / <<FAIL>>). Two trap
- * handlers cooperate. The M handler (mtvec) records mcause and MPP, then
- * bounces to a continuation stashed in mscratch, the same mechanism
- * umode_test uses. The S handler (stvec) records scause, sepc, stval and SPP,
- * then takes one of two exits: it ecalls out to M, ending the case with
- * mcause=9, or it clears sie.STIE and sie.SSIE, then SRETs to resume the S
- * body.
- *
- *   A. MRET with MPP=S enters S-mode: sstatus is readable there; the ending
- *      ecall reports cause 9 (ecall-from-S) with mstatus.MPP=S at M.
- *   B. Undelegated ecall-from-U -> M with mcause=8 (baseline against C).
- *   C. Delegated ecall-from-U (medeleg[8]=1) -> S handler: scause=8,
- *      sstatus.SPP=U, sepc=the U body; handler ecalls out (mcause=9).
- *   D. SRET round-trip: S drops to U via SRET with SPP=U preloaded, the U
- *      body ecalls, and with medeleg[8] still set the S handler takes it.
- *      That shows the SRET landed in U and the trap still routes to S.
- *   E. Delegated illegal-from-S (medeleg[2]=1): reading an M CSR from S
- *      traps to the S handler itself with scause=2 and SPP=S.
- *   F. TSR: with mstatus.TSR=1, SRET in S is an illegal instruction
- *      (mcause=2 at M; medeleg[2] cleared for this case).
- *   G. TVM: with mstatus.TVM=1, reading satp in S traps illegal (mcause=2);
- *      with TVM=0 the same read succeeds (case ends with ecall, cause 9).
- *   H. TVM gates SFENCE.VMA the same way; with TVM=0 SFENCE.VMA executes to
- *      completion in S (exercising its serialized fence machinery).
- *   I. SFENCE.VMA in U is illegal regardless (mcause=2).
- *   J. WFI in U is illegal (matches the pinned Spike: WFI requires S).
- *   K. TW: with TW=1, WFI in S is illegal (mcause=2); with TW=0 and a
- *      pending (masked) interrupt, WFI in S completes.
- *   L. Delegated supervisor timer interrupt: M injects mip.STIP with
- *      mideleg[STI]=1 and sie.STIE=1; entering S with sstatus.SIE=1 traps to
- *      the S handler (scause=INT|5), which clears sie.STIE and SRETs to
- *      resume the body. That covers S-side interrupt entry, sepc resume, and
- *      handler SRET.
- *  L2. The sstatus.SIE csrsi/csrci race: an interrupt made eligible by
- *      `csrsi sstatus,2` is still taken when the very next instruction
- *      clears SIE again.
- *   M. Undelegated supervisor software interrupt: mip.SSIP with
- *      mideleg[SSI]=0 and mie.SSIE=1 targets M, and is taken in M-mode with
- *      MIE=1 (mcause=INT|1).
- *   N. Machine timer interrupt preempts S-mode with MIE=0 (mcause=INT|7,
- *      from priv S): M-target interrupts always fire below M.
- *   O. sstatus is a strict view: with mstatus.MPIE set, sstatus read from S
- *      shows zeros in the M-only fields, and so does sstatus read from M
- *      with mstatus.MIE, MPIE and MPP=M set; SUM/MXR round-trip through
- *      sstatus writes.
- *   P. sie visibility follows mideleg: with mie.SSIE=1 but mideleg[SSI]=0,
- *      sie reads 0 in bit 1 and sie writes cannot set it; delegating makes
- *      the same bit visible/writable. sip.SSIP is S-writable when delegated.
- *   Q. scounteren chain: U-mode counter reads need mcounteren AND
- *      scounteren; S-mode reads need mcounteren only.
- *   R. CSR existence. An unimplemented CSR traps illegal at every
- *      privilege: mseccfg (0x747, no Smepmp) and the addresses next to the
- *      HPM ranges (0xB01, 0x322, 0xB20) from M, and the user hpmcounters (no
- *      Zihpm) from M (0xC03, 0xC1F) and S (0xC03). The machine HPM CSRs
- *      exist and are read-only zero, the privileged spec's minimum
- *      implementation: from M, mhpmcounter3/31 and mhpmevent3/31 read 0, an
- *      all-ones write leaves 0, and OpenSBI's counter probe (write 1, then
- *      swap the old value back) reads 0, so it finds no counter. From S,
- *      mhpmcounter3 traps like any M-only CSR.
- *   S. WARL: medeleg all-ones reads back the implemented mask 0xB3FF;
- *      mideleg all-ones reads back 0x222; mstatus.MPP write of the reserved
- *      encoding 2'b10 folds to U.
- *   V. Signal-return restart, the Linux sigreturn and syscall-restart
- *      sequence: a U ecall is "interrupted" by the S handler, which saves
- *      a0-a7 and the ecall PC, and SRETs into a U handler with ra = a
- *      trampoline; the trampoline ecalls (rt_sigreturn), the S handler
- *      restores a0-a7 and SRETs back onto the ORIGINAL ecall (restart); that
- *      ecall must trap with sepc = its own PC and the restored registers, and
- *      its return must land after it. A word of zeros follows the trampoline
- *      ecall, like the vDSO, so a stale sepc surfaces as an illegal
- *      instruction. V2 repeats the sequence with an Sstc timer interrupt
- *      armed at the sigreturn SRET, sweeping its delay cycle by cycle, so the
- *      interrupt lands before, on, or after the restarted ecall; every
- *      interrupt entry must report a resume PC inside the U code.
- *   T. Delegated ebreak from U (medeleg[3]=1): scause=3 and stval = the U
- *      body's address (breakpoint tval = faulting PC, steered to stval).
- *
- * Every S/U body ends in a trapping instruction, or spins until an injected
- * interrupt fires, so a missing gate fails with a recorded cause instead of
- * hanging.
+ * The M handler records mcause and MPP, then returns to an mscratch
+ * continuation. The S handler records scause, sepc, stval and SPP, then
+ * either ecalls to M (cause 9) or clears STIE/SSIE and resumes with SRET.
+ * Case V uses a separate S handler to model signal delivery, sigreturn
+ * and restart at the original U-mode ecall, with timer interrupts near SRET.
  */
 
 #include <stdint.h>
 
 #include "trap.h"
 
-/* ---- minimal UART (UART_TX is provided by mmio.h via trap.h) ---- */
+/* ---- UART ---- */
 static void uart_putc(char c)
 {
     UART_TX = (uint8_t) c;
@@ -228,9 +152,8 @@ __attribute__((naked, aligned(4), used)) static void u_v_handler(void);
 __attribute__((naked, aligned(4), used)) static void u_v_tramp(void);
 extern const char u_v_syscall_pc[], u_v_done_pc[], u_v_tramp_pc[];
 
-/* The S handler for case V. Only t0-t3 are clobbered, like the M and S
- * handlers above; the U registers a0-a7 stay live across the handler and
- * are saved/restored by hand like the kernel's signal frame. */
+/* Case V uses t0-t3 as scratch. Save and restore a0-a7 by hand to model
+ * the kernel's signal frame; these registers stay live between traps. */
 __attribute__((naked, aligned(4))) static void s_v_handler(void)
 {
     __asm__ volatile(
@@ -415,9 +338,7 @@ static void reset_s_record(void)
     g_s_resume = 0;
 }
 
-/* ---- S/U test bodies: naked, no prologue. Each ends in a trapping
- *      instruction, or spins until an injected interrupt fires, so a
- *      missing gate fails rather than hangs. */
+/* ---- S/U bodies: naked, ending in a trap or an interrupt wait ---- */
 __attribute__((naked)) static void b_ecall(void)
 {
     __asm__ volatile("ecall\n j .");
@@ -493,16 +414,11 @@ __attribute__((naked)) static void b_wfi_then_ecall(void)
     __asm__ volatile("wfi\n ecall\n j .");
 }
 
-/* S body for the sstatus.SIE csrsi/csrci race (L2), the S-mode form of the
- * kernel idle loop's `csrsi mstatus,MIE; ...; csrci`. With a delegated STIP
- * already pending and sie.STIE set, `csrsi sstatus,2` makes the interrupt
- * eligible at an instruction boundary that the immediately following
- * `csrci sstatus,2` is younger than, so the trap has to be taken before the
- * csrci retires, even though the trap unit's registered pending latch and
- * arming cycle put a few cycles between that boundary and the take. The trap
- * squashes the csrci, which re-executes after the handler. The handler runs
- * in resume mode: it records, clears sie.STIE, and SRETs, and the ecall ends
- * the case. A lost interrupt leaves g_s_trap_seen=0. */
+/* With delegated STIP pending and STIE set, csrsi makes the interrupt
+ * eligible before the following csrci. The trap must squash csrci before
+ * it retires, despite the registered interrupt-take delay. The handler
+ * clears STIE and SRETs; csrci then re-executes. A lost interrupt leaves
+ * g_s_trap_seen=0. */
 __attribute__((naked)) static void b_sie_toggle_race(void)
 {
     __asm__ volatile("csrsi sstatus, 0x2\n"
@@ -522,7 +438,7 @@ __attribute__((naked)) static void b_capture_views(void)
                      "ecall\n j .");
 }
 
-/* S body for sie/sip write-through checks (P): try to set sie.SSIP/sip.SSIP
+/* S body for sie/sip write-through checks (P): try to set sie.SSIE/sip.SSIP
  * from S and capture what reads back. */
 static volatile unsigned long g_seen_sie_after;
 static volatile unsigned long g_seen_sip_after;
@@ -639,11 +555,10 @@ int main(void)
     all_ok &= report("D scause", g_s_cause, 8u);
     all_ok &= report("D s-spp", g_s_spp, 0u);
 
-    /* V: signal-return restart (see the header). Delegated U ecalls, a
-     * dedicated S handler; the case ends via M with cause 9 from the S
-     * handler's final ecall. A stale sepc on the restarted ecall would
-     * instead resume at the trampoline's zero word: illegal instruction,
-     * cause 2 at M (undelegated). */
+    /* V: deliver a signal, restore the saved registers on sigreturn, then
+     * restart the original U ecall. A stale sepc lands on the trampoline's
+     * zero word and causes an undelegated illegal-instruction trap. The
+     * normal path ends with the S handler's ecall to M (cause 9). */
     {
         unsigned long v_ecall = (unsigned long) u_v_syscall_pc;
         unsigned long v_done = (unsigned long) u_v_done_pc;
@@ -839,10 +754,8 @@ int main(void)
     csr_write(mideleg, 0);
     csr_clear(sstatus, 1u << 1);
 
-    /* L2: the sstatus.SIE csrsi/csrci race (see b_sie_toggle_race). An
-     * interrupt made eligible by csrsi has to survive the immediately
-     * following csrci. Enter S with SIE=0; the body sets SIE and clears it
-     * again in the next instruction. */
+    /* L2: enter with SIE=0, then set and immediately clear it. The newly
+     * eligible interrupt must still be taken (see b_sie_toggle_race). */
     csr_write(mideleg, 1u << 5);
     csr_set(mie, 1u << 5);
     csr_clear(sstatus, 1u << 1);
@@ -870,10 +783,7 @@ int main(void)
                      "li   t0, 0x2\n"
                      "csrs mip, t0\n"       /* inject SSIP */
                      "csrsi mstatus, 0x8\n" /* MIE = 1 */
-                     /* The trap unit latches and then arms an interrupt over
-                      * a few cycles, and the two-wide core retires about two
-                      * nops per cycle, so the nops give the take a wide
-                      * window before MIE drops again. */
+                     /* Leave time for the registered interrupt take before MIE drops. */
                      "nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n"
                      "nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n"
                      "nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n"
@@ -975,8 +885,9 @@ int main(void)
     cause = run_at_priv(&b_read_hpm3, PRIV_S);
     all_ok &= report("R unimpl-csr-from-S", cause, 2u);
 
-    /* R: the machine HPM CSRs read 0 from M and ignore writes. A trapped
-     * access reports the 0x5A5A seed. */
+    /* R: machine HPM CSRs read zero and ignore writes, the privileged
+     * specification's minimum implementation. A trap leaves the 0x5A5A
+     * seed; OpenSBI's write/read probe must instead see zero. */
     M_CSR_PROBE("csrr %0, 0xB03", hpm_val); /* mhpmcounter3 */
     all_ok &= report("R mhpmcounter3-read", hpm_val, 0);
     M_CSR_PROBE("csrr %0, 0xB1F", hpm_val); /* mhpmcounter31 */

@@ -15,13 +15,10 @@
  */
 
 /*
- * Profiling counters absent: the production configuration (PERF_COUNTERS=0).
- *
- * The custom mperf* CSRs still decode but hold no state: mperfsel and
- * mperfctl ignore writes, all five read zero, and the profiling library sees
- * zero counters. The Zicntr counters (cycle, instret) are untouched by the
- * option and must keep counting. Each check reports over UART; the run ends
- * with <<PASS>> or <<FAIL>>.
+ * With PERF_COUNTERS=0, all five mperf* CSRs read zero; mperfsel and mperfctl
+ * ignore writes, and writes to the read-only ones still trap.
+ * The profiling library must report no counters, while the Zicntr cycle
+ * and instret counters keep counting.
  */
 
 #include <stdint.h>

@@ -12,18 +12,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# OpenSBI smoke test: the real fw_jump firmware (linux/opensbi, built by
-# linux/opensbi_build.py) boots a bare S-mode payload through the FROST boot
-# layout (frost_boot_image.py: firmware +0, payload +2 MiB, DTB at +16 MiB or
-# above; link.ld's 14M length keeps the program, bss and stack included, below
-# +16 MiB). The outputs are the standard sw.{mem,txt} (low-BRAM shim),
-# sw64.mem, and sw_ddr.{mem,txt} images that cocotb and the JTAG loader
-# consume.
+# OpenSBI fw_jump boots an S-mode payload using the FROST boot layout.
+# linux/opensbi_build.py builds the firmware from linux/opensbi; link.ld
+# keeps the payload below the DTB. MEM_CONFIG is ignored.
 #
-# The firmware build is cached under build/opensbi (make clean keeps it;
-# distclean removes it) so a board reload after a container build does not
-# need the Linux-targeted toolchain on the host. MEM_CONFIG is ignored: the
-# layout is fixed by the firmware.
+# Keep the firmware cache in build/opensbi across make clean so board reloads
+# do not need a host Linux toolchain. distclean removes the cache.
 
 FROST_ROOT := $(abspath $(CURDIR)/../../..)
 BOARD_DIR  := $(FROST_ROOT)/linux/buildroot-external/board/frost

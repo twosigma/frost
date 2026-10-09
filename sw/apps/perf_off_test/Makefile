@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for the profiling-counters-absent directed test
+# Test with profiling counters absent.
 SRC_C := ../../lib/src/uart.c main.c
 include ../../common/common.mk

@@ -1,12 +1,5 @@
-// FROST startup for riscv-tests benchmarks
-//
-// Benchmarks are C programs that use _init() as their entry point
-// (defined in syscalls_frost.c). This crt0:
-// 1. Zeroes all integer registers
-// 2. Enables the FPU (mstatus.FS) and initializes FP registers
-// 3. Sets up trap vector, stack pointer, global pointer
-// 4. Copies .data from ROM to RAM, zeros BSS
-// 5. Calls _init(cid=0, nc=1)
+// FROST benchmark startup: initialize registers and memory, then call
+// _init(cid=0, nc=1) in syscalls_frost.c.
 
 #include "encoding.h"
 
@@ -97,17 +90,14 @@ _start:
     fmv.s.x f31, x0
 1:
 
-    // Set up trap handler
     la t0, _frost_bench_trap
     csrw mtvec, t0
 
-    // Initialize global pointer
     .option push
     .option norelax
     la gp, __global_pointer$
     .option pop
 
-    // Initialize stack pointer
     la sp, _stack_top
 
     // Copy .data/.sdata from ROM to RAM

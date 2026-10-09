@@ -31,22 +31,7 @@
  * its backing store with D never set, which trips env_v's evict() assertion
  * (`user_llpt[...] & PTE_D`).
  *
- * Cases (all in an MPRV S-window over Sv39, the vm_test mechanism):
- *   A. baseline: store then load through an A=1,D=1 page.
- *   B. clear D (keep A), sfence, store -> must fault 15.
- *   C. set D again, sfence, store -> succeeds; the value lands.
- *   D. clear A and D, sfence, load -> must fault 13.
- *   E. set A (D still 0), sfence, load -> succeeds; store -> must fault 15.
- *   F. env_v's exact shape: A=1,D=1 -> touch -> rewrite to A=0,D=0 with an
- *      address-specific sfence.vma, then store -> must fault 15.
- *   G. after F's fault, software sets A and D, sfence, store -> succeeds and
- *      the page content matches what was written (the divergence the pager's
- *      memcmp would otherwise see).
- *   H. the demand copy itself: 4 KiB of translated stores into a fresh
- *      frame, then a physical word-by-word compare against the backing. A
- *      store lost in the L1D write-allocate merge path also trips the
- *      assertion.
- * Self-checks over UART (<<PASS>> / <<FAIL>>).
+ * Data accesses use an MPRV S-mode window over Sv39.
  */
 
 #include <stdint.h>
@@ -285,10 +270,8 @@ int main(void)
     val = *(volatile unsigned long *) FRAME0;
     ok &= report("G frame0-matches", val, 0x00c0ffeeul);
 
-    /* H: the pager's demand copy itself: 4 KiB of translated stores into a
-     * fresh frame, then a physical compare against the backing. If the copy
-     * drops a store in the L1D write-allocate merge path, the frame diverges
-     * from the backing with D never set, which also trips the evict() assert. */
+    /* H: copy 4 KiB through a translated mapping with A=D=1, then compare
+     * the physical frame against its backing to detect lost stores. */
     {
         volatile unsigned long *backing = (volatile unsigned long *) BACKING;
         volatile unsigned long *frame = (volatile unsigned long *) FRAME2;

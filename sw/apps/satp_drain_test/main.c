@@ -15,20 +15,11 @@
  */
 
 /*
- * Committed-store drain before translation CSR writes.
- *
- * A store committed immediately before a write to satp, mstatus, or sstatus
- * must drain before that CSR retires and triggers its full flush. The flush
- * empties the store queue, so retiring first would lose a store that is
- * architecturally committed but not yet written to the cached tier. That is
- * the shape of page-table setup (sd PTE; csrw satp). Every iteration stores
- * to cached DDR, which drains slowly, and writes the CSR in the next few
- * instructions.
- *
- * Case 1: sd to cached DDR; csrw satp (any satp write flushes, even Bare to
- *         Bare); ld back and compare.
- * Case 2: the same with an mstatus.SUM value toggle, read back after the
- *         flush, then restored and read back after the second flush.
+ * Committed stores must drain before translation CSR writes retire and
+ * flush the pipeline. A flush empties the store queue; flushing before the
+ * drain would lose committed stores, as in page-table setup followed by
+ * csrw satp. Test cached-DDR stores followed by satp writes and mstatus.SUM
+ * changes. Even a Bare-to-Bare satp write must flush.
  */
 
 #include <stdint.h>
@@ -44,10 +35,8 @@ int main(void)
 {
     int fail = 0;
 
-    /* Two back-to-back stores per iteration: the cached tier drains one store
-     * at a time, so the second is still committed but undrained when the CSR
-     * reaches the head. The serializer has to hold the CSR until both drain.
-     * The slots are adjacent dwords of one line, the page-table-setup shape. */
+    /* Adjacent dword stores model page-table setup. The cached tier drains
+     * one store at a time; the CSR must wait for both committed stores. */
     for (int i = 0; i < N / 2; i++) {
         ddr_slots[2 * i] = 0xA5A5000000000000ULL + (uint64_t) (2 * i);
         ddr_slots[2 * i + 1] = 0xA5A5000000000000ULL + (uint64_t) (2 * i + 1);

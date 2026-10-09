@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for the wrong-path WFI recovery test
+# Wrong-path WFI recovery test.
 SRC_C := ../../lib/src/uart.c main.c
 include ../../common/common.mk

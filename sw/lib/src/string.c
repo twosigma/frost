@@ -113,19 +113,16 @@ void *memmove(void *dst, const void *src, size_t n)
     const unsigned char *s = src;
 
     if (d < s) {
-        /* Forward copy */
         while (n--) {
             *d++ = *s++;
         }
     } else if (d > s) {
-        /* Backward copy to handle overlap */
         d += n;
         s += n;
         while (n--) {
             *--d = *--s;
         }
     }
-    /* If d == s, no copy needed */
     frost_memory_write_fence();
     return dst;
 }
@@ -148,7 +145,6 @@ int memcmp(const void *s1, const void *s2, size_t n)
     return 0;
 }
 
-/* Calculate length of null-terminated string */
 size_t strlen(const char *s)
 {
     const char *p = s;
@@ -175,7 +171,6 @@ char *strncpy(char *dst, const char *src, size_t n)
     return dst;
 }
 
-/* Compare two strings lexicographically */
 int strcmp(const char *s1, const char *s2)
 {
     while (*s1 != '\0' && *s1 == *s2) {
@@ -185,7 +180,6 @@ int strcmp(const char *s1, const char *s2)
     return (*(unsigned char *) s1 - *(unsigned char *) s2);
 }
 
-/* Compare up to n characters of two strings lexicographically */
 int strncmp(const char *s1, const char *s2, size_t n)
 {
     while (n > 0 && *s1 != '\0' && *s1 == *s2) {
@@ -198,7 +192,6 @@ int strncmp(const char *s1, const char *s2, size_t n)
     return (*(unsigned char *) s1 - *(unsigned char *) s2);
 }
 
-/* Find first occurrence of character in string */
 char *strchr(const char *s, int c)
 {
     while (*s != '\0') {
@@ -209,7 +202,6 @@ char *strchr(const char *s, int c)
     return (c == '\0') ? (char *) s : NULL;
 }
 
-/* Find first occurrence of needle in haystack */
 char *strstr(const char *haystack, const char *needle)
 {
     const size_t nlen = strlen(needle);
@@ -226,7 +218,6 @@ char *strstr(const char *haystack, const char *needle)
     return NULL;
 }
 
-/* Calculate length of string, examining at most n bytes */
 size_t strnlen(const char *s, size_t n)
 {
     const char *p = s;
@@ -235,7 +226,6 @@ size_t strnlen(const char *s, size_t n)
     return (size_t) (p - s);
 }
 
-/* Copy null-terminated string including terminator */
 char *strcpy(char *dst, const char *src)
 {
     char *d = dst;
@@ -245,7 +235,6 @@ char *strcpy(char *dst, const char *src)
     return dst;
 }
 
-/* Append src to the end of dst */
 char *strcat(char *dst, const char *src)
 {
     char *d = dst;
@@ -257,7 +246,6 @@ char *strcat(char *dst, const char *src)
     return dst;
 }
 
-/* Find last occurrence of character in string */
 char *strrchr(const char *s, int c)
 {
     const char *last = NULL;
@@ -268,7 +256,6 @@ char *strrchr(const char *s, int c)
     return (char *) last;
 }
 
-/* Length of initial span of s consisting only of bytes in accept */
 size_t strspn(const char *s, const char *accept)
 {
     const char *p = s;
@@ -277,7 +264,6 @@ size_t strspn(const char *s, const char *accept)
     return (size_t) (p - s);
 }
 
-/* Length of initial span of s consisting of bytes not in reject */
 size_t strcspn(const char *s, const char *reject)
 {
     const char *p = s;
@@ -286,7 +272,6 @@ size_t strcspn(const char *s, const char *reject)
     return (size_t) (p - s);
 }
 
-/* Find first occurrence in s of any byte from accept */
 char *strpbrk(const char *s, const char *accept)
 {
     for (; *s; s++)
@@ -295,7 +280,6 @@ char *strpbrk(const char *s, const char *accept)
     return NULL;
 }
 
-/* Duplicate a string into a freshly malloc'd buffer (caller frees) */
 char *strdup(const char *s)
 {
     size_t n = strlen(s) + 1;

@@ -1,10 +1,5 @@
-# FPU assembly test
-#
-# Directed FP hazard cases, each repeated 256 times:
-#   1A) An FLD squashed by a taken branch must not update f1 or pass its value on.
-#   1B) An FLD squashed by a JAL must not update f1 or pass its value on.
-#   2A) FLD immediately followed by a dependent FADD.D, right after a single-cycle FSGNJ.D.
-#   2B) Two dependent FADD.D operations and a check of their result, then the same load-use pair.
+# FP squash and load-use hazards, each repeated 256 times.
+# A squashed FLD must neither update f1 nor forward its value.
 
     .section .init
     .option push
@@ -36,14 +31,11 @@ _start:
 
     li      t6, 256
 test1a_loop:
-    # Seed f1 = 3.0
     la      t0, data_three
     fld     f1, 0(t0)
 
-    # Address for the squashed load (1.0)
     la      t1, data_one
 
-    # The taken branch must squash the following FLD
     beq     x0, x0, test1a_target
     fld     f1, 0(t1)        # must be squashed
     nop
@@ -82,14 +74,11 @@ test1b_start:
 
     li      t6, 256
 test1b_loop:
-    # Seed f1 = 3.0
     la      t0, data_three
     fld     f1, 0(t0)
 
-    # Address for the squashed load (1.0)
     la      t1, data_one
 
-    # The JAL must squash the following FLD
     jal     x0, test1b_target
     fld     f1, 0(t1)        # must be squashed
     nop

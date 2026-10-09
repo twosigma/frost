@@ -64,8 +64,7 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_PRED_FENCE_BRANCH = 20,
     TOMASULO_PERF_PRED_FENCE_JAL = 21,
     TOMASULO_PERF_PRED_FENCE_INDIRECT = 22,
-    /* 2-wide width funnel: IF->PD delivery width + slot-2 kill causes +
-     * slot-2 BTB predicted-taken events. */
+    /* Fetch delivery width, slot-2 kill causes, and slot-2 BTB taken predictions. */
     TOMASULO_PERF_IF_DELIVER1 = 23,
     TOMASULO_PERF_IF_DELIVER2 = 24,
     TOMASULO_PERF_IF_S2KILL_S1_NATIVE_CTRL = 25,
@@ -75,7 +74,7 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_IF_S2KILL_WINDOW_LIMIT = 29,
     TOMASULO_PERF_IF_S2KILL_TRANSIENT = 30,
     TOMASULO_PERF_IF_SLOT2_PRED_TAKEN = 31,
-    /* 2-wide width funnel: dispatch fire-2 + slot-2 blocked causes. */
+    /* Dual dispatch and slot-2 blocking causes. */
     TOMASULO_PERF_DISPATCH_FIRE_2 = 32,
     TOMASULO_PERF_DISPATCH_SLOT2_PRESENT = 33,
     TOMASULO_PERF_DISPATCH_SLOT2_FP_SERIALIZED = 34,
@@ -84,7 +83,7 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_DISPATCH_SLOT2_BLOCK_RS_FULL2 = 37,
     TOMASULO_PERF_DISPATCH_SLOT2_BLOCK_LSQ_FULL2 = 38,
     TOMASULO_PERF_DISPATCH_SLOT2_BLOCK_CKPT = 39,
-    /* 2-wide width funnel: back-end single-resource limiters. */
+    /* Back-end limits from shared resources. */
     TOMASULO_PERF_MEM_RS_TWO_READY_ONE_ISSUED = 40,
     TOMASULO_PERF_CDB_OVERSUBSCRIBED = 41,
     /* Back-end (tomasulo_wrapper) block: global indices 42-105. */
@@ -145,7 +144,7 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_SERIAL = 99,
     TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_BRANCH_MISPRED = 100,
     TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_BRANCH_CORRECT = 101,
-    /* Staging catch-all sub-decomposition (partitions HEAD_LOAD_BB_STAGING). */
+    /* Partition of HEAD_LOAD_BB_STAGING. */
     TOMASULO_PERF_HEAD_LOAD_BBS_OTHER_IN_STAGING = 102,
     TOMASULO_PERF_HEAD_LOAD_BBS_LAUNCH_GATED = 103,
     /* 104 is reserved and reads 0. */
@@ -359,10 +358,8 @@ static inline uint32_t tomasulo_profile_ratio_scaled(uint64_t value, uint64_t to
         }
     }
 
-    /* The exact fallback represents products as three 32-bit limbs. Avoiding
-     * an approximate right shift preserves low-order bits around rounding
-     * boundaries, while binary search avoids libgcc's 128-bit division
-     * helper. */
+    /* Three 32-bit limbs preserve exact products at rounding boundaries.
+     * Binary search avoids libgcc's 128-bit division helper. */
     numerator = tomasulo_profile_mul_u64_u32(value, scale);
     product = tomasulo_profile_mul_u64_u32(total, UINT32_MAX);
     if (tomasulo_profile_cmp_u96(numerator, product) >= 0) {
@@ -555,9 +552,7 @@ static inline void tomasulo_profile_pick_top_backend_cause(const tomasulo_profil
 }
 
 /*
- * Every report starts by saying whether the build has the counters, so a run
- * on a build without them (PERF_COUNTERS=0) is marked as having no data rather
- * than printing zeros, and the profiling simulations can require the counters.
+ * Report whether counters are present. PERF_COUNTERS=0 means no data.
  */
 static inline void tomasulo_profile_print_presence(void)
 {

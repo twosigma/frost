@@ -12,26 +12,20 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Served-window resteer under the fetch-latency fuzz
+# Served-window resteer with FETCH_VALID_FUZZ=1
 #
-# if_stage squashes a packet whose fetch window cannot hold pc_reg's bytes and
-# resteers fetch to pc_reg's word (window_cannot_serve_pc_reg). With
-# fixed-latency fetch no program reaches that. Built with FETCH_VALID_FUZZ=1
-# (the served_window_resteer_fetch_fuzz test), this loop reaches it in about
-# half its iterations:
-#   - The two never-taken `bnez x0` end their bundles, so the loop branch is
-#     slot 1 of a bundle of its own and the BTB predicts it from its own
-#     lookup, while pc_reg still holds the branch before it.
-#   - The loop head is a compressed instruction in the upper half of a word.
-#     The first window at that target arrives in the lead-restoring bubble
-#     after the redirect and is dropped, so the provider must serve the
-#     target's word again.
-#   - When a fuzz gap holds that response, fetch moves on to the next word,
-#     which cancels it, and the window that arrives is the next word's. It
-#     cannot hold pc_reg's packet, so IF resteers.
-# The bench (test_real_program) counts the resteers and fails the run if there
-# are none. The loop keeps a count and a sum, which a packet decoded from the
-# wrong word would corrupt, and prints <<PASS>> only if both are right.
+# IF must discard a fetch window that cannot serve pc_reg and request the
+# correct word again (window_cannot_serve_pc_reg). This loop creates the
+# condition by delaying fetch responses:
+#   - Two never-taken bnez x0 branches give the loop branch its own bundle
+#     and BTB lookup while pc_reg still holds the preceding branch.
+#   - The target is a compressed instruction in the upper half of a word.
+#     Its first window arrives in the post-redirect lead-restoring bubble
+#     and is dropped, requiring the provider to serve that word again.
+#   - A fuzz gap delays the response until fetch advances and cancels it.
+#     The next word's window cannot serve pc_reg, requiring a resteer.
+# The harness requires at least one resteer. Count and sum checks detect
+# instructions decoded from the wrong word.
 
     .equ ITERATIONS, 2000
     .equ UART_TX, 0x40000000

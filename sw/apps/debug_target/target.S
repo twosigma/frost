@@ -65,9 +65,7 @@ u_loop:
     ld      t1, 0(t0)
     addi    t1, t1, 1
     sd      t1, 0(t0)
-    # ecall only every 64th iteration, so the hart spends most of the phase
-    # in U-mode: a halt request lands in the loop far more often than in the
-    # M-mode handler, whatever the debugger's cadence.
+    # ecall every 64th iteration to keep most execution in U-mode.
     andi    t2, t1, 63
     bnez    t2, 1b
 u_ecall_site:

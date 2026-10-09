@@ -17,17 +17,12 @@
 /*
  * Directed CSR test.
  *
- * Tests 1-3: write mstatus with MIE=0 and then MIE=1, check that execution
- * continues past each write, and print mip.
- *
- * Tests 4-8: the M-mode counter controls that OpenSBI's SBI PMU
- * and Sstc setup depend on. mcountinhibit exists and is WARL over {CY, IR};
- * CY stops cycle and IR stops instret while set; mcycle and minstret accept
- * full 64-bit M-mode writes that the user views (cycle/instret) then reflect;
- * M-mode reads of the writable aliases cost no ticks (the commit stage
- * raises the CSR write enable for pure reads too); and a minstret write
- * replaces the writing instruction's own increment, with write intent taken
- * from the encoding (the rs1/uimm field), not from the value.
+ * Check interrupt-enable writes and the counter controls used by OpenSBI's
+ * SBI PMU and Sstc setup. mcountinhibit implements CY and IR; writable
+ * counter aliases must preserve all 64 bits.
+ * Pure reads must not suppress counter increments. Writes to minstret
+ * replace the writing instruction's increment; write intent comes from the
+ * rs1/uimm encoding, even when a nonzero rs1 names a register containing zero.
  *
  * The UART helpers are inline here rather than taken from lib/src/uart.c, so
  * that a fault in the library cannot mask or cause a failure on the CSR path
@@ -251,8 +246,7 @@ static void counter_tests(void)
     uart_puts("\r\nTest 8: a minstret write replaces the writer's own increment\r\n");
     /* Zicsr: the value an instruction writes to minstret is the value the
      * next instruction reads. Each sequence is one asm statement, so nothing
-     * runs between its instructions. instret_test covers the instructions
-     * that retire without an ordinary commit. */
+     * runs between its instructions. */
     const uint64_t v = 0x1000;
     const uint64_t zero = 0;
     __asm volatile("csrw 0xB02, %1\n\tcsrr %0, 0xB02" : "=r"(a) : "r"(v));
@@ -333,7 +327,7 @@ int main(void)
     uart_hex(val);
     uart_puts("\r\n");
 
-    /* Test 3: Read mip again to confirm no spurious interrupts */
+    /* Test 3: print mip after the interrupt-enable writes. */
     __asm volatile("csrr %0, mip" : "=r"(val));
     uart_puts("mip after: ");
     uart_hex(val);

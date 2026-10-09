@@ -18,10 +18,6 @@
  * Cached-DDR tier test. Low-BRAM code accesses the 1 GiB region at 0x8000_0000
  * through volatile absolute pointers, checking address routing and the
  * write-back hierarchy.
- *
- * Covers word accesses across 8 MiB (beyond the 128 KiB L1 and 2 MiB L2), BRAM
- * non-aliasing, byte strobes, an L1-sized-stride eviction/fill sweep, tight
- * store->load RAW, the preloaded .ddr_rodata image, and cached AMOs.
  */
 
 #include <stdint.h>
@@ -163,10 +159,8 @@ int main(void)
     }
 
     /* --- Phase 5: tight store->load RAW to the same cached word. ----------- */
-    /* Each iteration stores a word and immediately loads it back from the same
-     * address, which is the ordering the write-done handshake has to preserve.
-     * The address and the value change every iteration, so neither an L0 line
-     * nor a constant value can mask a stale read. */
+    /* Store completion must preserve same-address ordering. Vary both
+     * address and value so a cached or constant value cannot hide stale data. */
     {
         const uint32_t raw_base = OFF_MID_A + 64u; /* distinct in-bounds region */
         int raw_fail = 0;
@@ -249,12 +243,8 @@ int main(void)
     }
 
     /* --- Phase 8: atomic read-modify-write (AMO) on cached words. --------- */
-    /* The LQ executes AMOs: it reads the old value through the cached tier,
-     * computes the new value, and writes it back through the same tier. The
-     * router has to forward that modified word to the cache hierarchy as a
-     * single-cycle line write rather than dropping it. Each case seeds a known
-     * word, runs one amo*.w, and checks both the returned old value and the
-     * word left in memory. */
+    /* Check both the old value returned by amo*.w and the word it writes.
+     * The router must send the LQ's modified word as a single-cycle line write. */
     {
         const uint32_t amo_off = OFF_MID_B + 32u; /* distinct cached word */
         volatile uint32_t *p = &ddr[amo_off];

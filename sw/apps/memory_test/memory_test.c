@@ -14,12 +14,7 @@
  *    limitations under the License.
  */
 
-/*
- * Arena allocator and malloc/free tests. Covers arena_alloc, arena_push,
- * arena_push_zero, arena_push_align, arena_pop, and arena_clear, then malloc,
- * free, block coalescing, freelist reuse, and calloc/realloc including size
- * overflow rejection and growth on a full heap.
- */
+/* Arena allocator and heap allocation tests. */
 
 #include "memory.h"
 #include "string.h"
@@ -71,9 +66,8 @@ static void test_arena_push(void)
     check("second alloc after first", (uintptr_t) p2 == (uintptr_t) p1 + 16);
     check("position after second", arena.pos == 24);
 
-    /* arena_push aligns the start of each push to the malloc granule
-     * (2*sizeof(void*), 16 on lp64), so the position after a 32-byte push from
-     * pos 24 depends on that granule. */
+    /* arena_push aligns each allocation to 2*sizeof(void*) bytes (16 on
+     * LP64), so a push from position 24 may first need padding. */
     void *p3 = arena_push(&arena, 32);
     check("third alloc non-null", p3 != 0);
     {
@@ -236,10 +230,8 @@ static void test_malloc_coalescing(void)
     free(right);
     free(middle);
 
-    /* Three 16-byte payloads plus their metadata coalesce into one free
-     * region; request the payload that refills it exactly (the metadata
-     * slot is the malloc granule, 2*sizeof(void*), so the exact-refit
-     * size is 80 at lp64). */
+    /* Refill the merged region exactly: three payloads and two reclaimed
+     * metadata slots, or 80 bytes on LP64. */
     size_t granule = 2 * sizeof(void *);
     void *combined = malloc(3u * (granule + 16u) - granule);
     check("both neighbors combined", combined == left);
@@ -338,10 +330,9 @@ static void test_calloc_realloc(void)
 /* NOLINTNEXTLINE(bugprone-reserved-identifier) */
 char *_sbrk(int incr);
 
-/* realloc asks for twice the old payload and, when that does not fit, for
- * exactly the requested size. With the untouched top of the heap used up, only
- * a freed hole is left, and it fits the exact size but not the doubled one.
- * This runs last because it leaves the heap exhausted. */
+/* Exhaust the heap so only a freed hole fits this growth request. realloc
+ * must fall back from twice the old payload to the exact requested size.
+ * Run last because this leaves the heap exhausted. */
 static void test_realloc_exact_fit(void)
 {
     uart_printf("\n=== realloc on a full heap ===\n");

@@ -15,21 +15,16 @@
  */
 
 /**
- * Return-address-stack stress with CoreMark-like control flow: calls mixed
- * with loop branches, data-dependent calls through a function pointer table,
- * calls at each node of a linked-list walk, nested and alternating call
- * depths, conditional calls, calls between loads, and a CRC loop. Unlike
- * ras_test's mostly straight-line call sequences, every case here interleaves
- * calls with conditional branches.
- *
- * Tests 1-7 check fixed results, test 8 only reports its result, and test 9
- * must give the same result twice. The run ends with <<PASS>> or <<FAIL>>.
+ * Return-address-stack stress with CoreMark-like control flow. Interleave
+ * calls and conditional branches. Check fixed results except for the
+ * memory/call case, which only reports a result, and the long loop, which
+ * checks repeatability.
  */
 
 #include "uart.h"
 #include <stdint.h>
 
-/* Preserve calls so they exercise the RAS. */
+/* Prevent inlining so calls can exercise the RAS. */
 #define NOINLINE __attribute__((noinline))
 
 /* Prevent optimization of test state. */
@@ -67,7 +62,6 @@ NOINLINE uint32_t xor_pattern(uint32_t x)
 
 /* ========================================================================== */
 /* Test 1: Loop with branches and function calls                              */
-/* Each iteration exercises the BTB for the branch and the RAS for the call   */
 /* ========================================================================== */
 
 NOINLINE uint32_t test_loop_with_branch_and_call(void)
@@ -75,7 +69,6 @@ NOINLINE uint32_t test_loop_with_branch_and_call(void)
     uint32_t sum = 0;
 
     for (int i = 0; i < 100; i++) {
-        /* Loop branch through the BTB, call through the RAS, every iteration. */
         if (i & 1) {
             sum += add_one(i);
         } else {
@@ -99,7 +92,6 @@ NOINLINE uint32_t test_data_dependent_calls(void)
 {
     uint32_t result = 0;
 
-    /* Function pointer table, like CoreMark's dispatch. */
     op_func_t ops[4] = {add_one, add_two, add_three, multiply_two};
 
     for (int i = 0; i < 80; i++) {
@@ -149,7 +141,6 @@ NOINLINE uint32_t test_list_traversal(void)
     while (current != (void *) 0) {
         /* Call inside the traversal, like CoreMark's list operations. */
         checksum += process_node(current);
-        /* The loop condition is the BTB-predicted branch. */
         current = current->next;
     }
 
@@ -296,7 +287,6 @@ NOINLINE uint32_t test_conditional_calls(void)
     uint32_t sum = 0;
 
     for (int i = 0; i < 100; i++) {
-        /* Conditional nested call based on data */
         sum += maybe_call(i, i & 1);
     }
 
@@ -460,7 +450,6 @@ int main(void)
     result = test_memory_with_calls();
     uart_printf("result=0x%08x (no expected check)\n", result);
 
-    /* Test 9 runs the same code many times. */
     uart_puts("Test 9: Long-running (50 iters)... ");
     result = long_running_test(50);
     uart_printf("result=0x%08x\n", result);
@@ -476,7 +465,6 @@ int main(void)
         failed++;
     }
 
-    /* Summary */
     uart_printf("\n=== Summary ===\n");
     uart_printf("Passed: %d\n", passed);
     uart_printf("Failed: %d\n", failed);

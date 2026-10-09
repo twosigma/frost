@@ -17,23 +17,15 @@
 /*
  * Memory-level parallelism probe for the cached (DDR) tier.
  *
- * The simulation registry shrinks the L1D and the L2 to 4 KiB, so a short
- * sweep misses in both and each miss goes to the DDR model. Two passes run
- * over a region larger than both caches, each touching one word per line so
- * that every access is a demand miss:
- *   1. independent loads (a strided sum). The load queue can keep several
- *      misses in flight, so L1D_MISS_OVERLAP_CYCLES has to be non-zero.
- *   2. a pointer chase through the same lines. Every load depends on the
- *      previous one, so the misses serialize and the overlap count stays at
- *      its pass-1 value. The chase is the control.
- * A store burst to cold lines follows: every store misses, and the early
- * acknowledgement lets their fills overlap as well.
+ * Simulation uses 4 KiB L1D and L2 caches. Sweep a larger region with
+ * independent loads, then a dependent pointer chase, then cold stores.
+ * Evict the region before each pass.
  *
- * The independent sum, the chase's final pointer, and a sample of the stored
- * words are checked, and the cache counters are printed. <<PASS>> also needs
- * the independent pass to miss on at least half its lines, overlapped misses
- * in that pass and in the store burst, and an independent pass that takes
- * fewer cycles than the chase.
+ * Check the sum, final pointer, and sampled stores. Passing requires misses
+ * on at least half the independent loads, overlapping misses in the
+ * independent-load and store passes, and fewer cycles for independent loads
+ * than for the chase. Report each pass's cache-counter deltas; the chase is
+ * the serialized control.
  */
 
 #include <stdint.h>

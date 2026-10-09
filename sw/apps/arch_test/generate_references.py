@@ -121,19 +121,11 @@ def spike_env() -> Path:
 # compressed code, except for the tests in NO_COMPRESS_TESTS below.
 FROST_MARCH = "rv64imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond"
 
-# Misaligned load/store trap tests whose test op must not be compressed. The
-# framework trap handler (arch_test.h) resumes at (mepc & ~3) + 8, which
-# assumes a 4-byte op and two 2-byte c.nops before the next test case. A
-# compressed c.sd/c.ld/c.sw/c.lw leaves only 6 bytes, so the resume lands
-# mid-instruction and the misdecoded code that follows faults on absolute
-# addresses. The handler's region checks then make the signature depend on
-# the link map, which differs between the Spike env's link.ld and FROST's
-# linker scripts. Building these tests without C keeps every trap on the
-# intended, link-independent path; the C suite and rv64uc cover the
-# compressed encodings. This set must mirror NO_COMPRESS_TESTS in the app
-# Makefile. The lh/lhu/sh/lwu tests need no entry because those ops have no
-# C forms, and the branch/jump misalign tests need C for target-legality
-# semantics.
+# arch_test.h resumes at (mepc & ~3) + 8, requiring a 4-byte test op
+# plus two c.nops. Compression makes it resume mid-instruction and makes
+# signatures depend on the link map. Keep this set equal to the Makefile.
+# lh, lhu, sh, and lwu have no compressed forms. Branch and jump misalignment
+# tests retain C because it changes target alignment requirements.
 NO_COMPRESS_TESTS = {
     "misalign-ld-01",
     "misalign-lw-01",
@@ -305,10 +297,8 @@ def generate_one_reference(
             msg = result.stderr.strip().split("\n")[-1] if result.stderr else "unknown"
             return test_name, "SKIP", f"Compile failed: {msg}"
 
-        # The signature area is at least 8-byte aligned (checked in spike_env),
-        # so FLEN=64 signature stores never misalign and no --misaligned
-        # support is needed. Tests that misalign by design install the
-        # framework trap handler and trap identically here and on FROST.
+        # spike_env checks alignment for FLEN=64 signature stores. Deliberate
+        # misalignment tests install the framework trap handler.
         spike = os.environ.get("FROST_SPIKE", "spike")
         spike_cmd = [
             spike,

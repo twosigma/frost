@@ -16,10 +16,8 @@
 #
 # Usage: make TEST_SRC=tests_rv64/test_001.S
 #
-# Each test .S file includes frost_header.S at the top and frost_footer.S at
-# the bottom: generate_tests.py writes its tests that way, and adapt_test.py
-# wraps raw riscv-torture output the same way. The file is self-contained:
-# compile and link it.
+# generate_tests.py and adapt_test.py wrap tests with frost_header.S and
+# frost_footer.S so each .S file can be compiled and linked on its own.
 
 TEST_SRC ?=
 
@@ -28,9 +26,8 @@ include ../../common/arch.mk
 ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 ABI  = $(FROST_INT_ABI)
 
-# lp64 needs PC-relative addressing for the DDR-resident image (on RV64,
-# medlow's absolute lui cannot form 0x8xxx_xxxx); matches the riscv_tests /
-# arch_test / Spike-reference builds.
+# RV64 medlow sign-extends lui, so it cannot address the DDR image at
+# 0x8xxx_xxxx. Use medany for PC-relative addressing.
 CMODEL = -mcmodel=medany
 
 # Tools
@@ -42,15 +39,9 @@ OBJDUMP = $(RISCV_PREFIX)objdump
 # Include paths (for encoding.h used by frost_header.S)
 INCLUDES = -I. -I../riscv_tests/riscv-tests/env
 
-# Memory configuration. Selects the linker script and, for ddr, the ROM boot
-# stub plus the sections split out of the low BRAM image into the DDR image
-# (sw_ddr.mem). tests/test_riscv_torture.py passes this via MEM_CONFIG.
-#   bram (default): code + data + signature all in low BRAM, a pure ISA
-#                   path with neither cached tier involved.
-#   ddr:            a ROM boot stub far-jumps to the DDR-resident test. Code,
-#                   data and signature live in the cached DDR region, which
-#                   exercises both the L1I fetch path and the D-side cached
-#                   load/store path.
+# tests/test_riscv_torture.py selects MEM_CONFIG:
+#   bram (default): code, data and signature in low BRAM, bypassing caches.
+#   ddr: a ROM stub jumps to code, data and signature in cached DDR.
 MEM_CONFIG ?= bram
 
 ifeq ($(MEM_CONFIG),bram)
@@ -65,13 +56,11 @@ else
 $(error MEM_CONFIG must be one of: bram, ddr (got '$(MEM_CONFIG)'))
 endif
 
-# Paged environment (tests/test_riscv_torture.py passes this via PAGED):
-# PAGED=1 makes frost_header.S enter S-mode under an Sv39 identity map, so
-# the whole test, including the footer's signature dump, runs translated
-# through the ITLB/DTLB and the walker over 1 GiB leaves. The root table
-# lives in .data, so this needs the ddr config: the page-table walker reads
-# only cached DDR. The Spike references are unchanged, because translation
-# does not alter the architectural register state the signature captures.
+# tests/test_riscv_torture.py selects PAGED=1 for S-mode under an Sv39 identity
+# map with 1 GiB leaves. The test and signature dump use the ITLB, DTLB and PTW.
+# The root table lives in .data, so MEM_CONFIG=ddr is required: the PTW reads
+# only cached DDR. Identity translation preserves the register state captured
+# in the signature, so the Spike references apply unchanged.
 PAGED ?= 0
 ifeq ($(PAGED),1)
 ifneq ($(MEM_CONFIG),ddr)
@@ -93,9 +82,8 @@ DISASSEMBLY_FILE     = sw.S
 # Build targets
 all: $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(DDR_VERILOG_HEX_FILE) $(DISASSEMBLY_FILE)
 
-# Compile the torture test (header + test + footer as a single .S file).
-# The ddr config also assembles the ROM boot stub ($(BOOT_STUB)); the bram
-# config leaves it empty (frost_header's _start already sits at 0x0).
+# Compile header, test and footer as one .S file. DDR builds also link a ROM
+# stub; BRAM builds place frost_header's _start at 0x0.
 $(EXECUTABLE_ELF_FILE): $(TEST_SRC) frost_header.S frost_footer.S $(BOOT_STUB) $(LINKER_SCRIPT)
 ifndef TEST_SRC
 	$(error TEST_SRC is not set. Usage: make TEST_SRC=tests_rv64/test_001.S)

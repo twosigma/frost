@@ -12,41 +12,18 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Builds the FROST memory images for the MMU Linux boot: Debian's own riscv64
-# kernel, the OpenSBI firmware from the linux/opensbi submodule, and the test
-# initramfs from the linux/buildroot submodule driven by the FROST BR2_EXTERNAL
-# tree (linux/buildroot-external). frost_boot_image.py packs them into the
-# low-BRAM shim (sw.{mem,txt}) plus the DDR image (sw_ddr.{mem,txt}) that
-# fpga/load_software consumes. Everything is fetched or built from pinned
-# sources, so a fresh `git clone --recurse-submodules` can build it.
-# FROST_LINUX_KERNEL and FROST_LINUX_INITRD (below) swap in a kernel and an
-# initramfs built elsewhere.
+# Build Linux boot images from Debian's pinned riscv64 kernel, OpenSBI
+# (linux/opensbi), and Buildroot's initramfs (linux/buildroot, configured by
+# linux/buildroot-external). frost_boot_image.py emits a low-BRAM shim
+# (sw.mem, sw.txt) and a DDR image (sw_ddr.mem, sw_ddr.txt) for fpga/load_software.
 #
-# Three stages, split so that re-loading for a different board is cheap:
-#
-#   Stage 1a (board-independent): Buildroot downloads its cross toolchain and
-#     builds OpenSBI and the rootfs.cpio userspace, but no kernel (the kernel
-#     is Debian's). A few minutes the first time, mostly the download; cached
-#     in the build dir afterwards. Runs only when that initramfs or the
-#     firmware is missing or older than the userspace sources its rule names,
-#     so it does not re-run on every load.
-#
-#   Stage 1b (board-independent): linux/debian_kernel.py fetches Debian's
-#     pinned kernel and builds the NIC driver as a module for it, then appends
-#     that module and the init script that insmods it to Buildroot's
-#     rootfs.cpio. Debian's kernel has no FROST driver built in, and
-#     frost_nettest needs one. Cached under linux/debian-kernel.
-#
-#   Stage 2 (fast, board-dependent): frost_boot_image.py regenerates the DTB
-#     (timebase + UART clock = FPGA_CPU_CLK_FREQ, memory = FROST_LINUX_MEM_SIZE)
-#     and repacks the firmware, kernel and initramfs into the DDR image (with
-#     FROST_LINUX_NFSROOT, an image that boots from an NFS root; see below).
-#     `load_software.py <board> linux_boot` sets both per board and `make
-#     clean`s first, so the DDR image is always repacked for the target board
-#     while the Buildroot build and the Debian kernel cache are reused.
-#
-# sw_ddr.mem depends on the kernel Image, the initramfs, the firmware and the
-# packer, so a newer one forces a repack.
+# Stage 1a builds OpenSBI and userspace with Buildroot's downloaded toolchain.
+# Stage 1b fetches Debian's kernel and adds the matching FROST NIC module and
+# loader script to the initramfs; Debian's kernel lacks this driver.
+# Stage 2 repacks the images and DTB for FPGA_CPU_CLK_FREQ (timer and UART)
+# and FROST_LINUX_MEM_SIZE. The loader cleans Stage 2 before each load while
+# reusing the Buildroot build and linux/debian-kernel cache.
+# Kernel and initramfs overrides are described below.
 
 # Repo-root-relative paths (this Makefile lives in sw/apps/linux_boot).
 FROST_ROOT   := $(abspath $(CURDIR)/../../..)
@@ -70,11 +47,8 @@ DEBIAN_KERNEL := $(FROST_ROOT)/linux/debian_kernel.py
 DEBIAN_IMAGE  := $(shell python3 "$(DEBIAN_KERNEL)" image --no-fetch)
 DRIVER_DIR    := $(FROST_ROOT)/linux/frost-net10g
 INITRD_IMG    := $(CURDIR)/rootfs.cpio
-# The module is built with a Linux-target riscv64 cross toolchain. Prefer the
-# one Buildroot's build just produced, so a host that has none installed (the
-# Vivado host runs the loader natively) still builds it; the helper falls back
-# to FROST_LINUX_CROSS_COMPILE, which the Docker image sets. Expanded when the
-# recipe runs, by which time Buildroot has been built.
+# Prefer Buildroot's Linux-target toolchain, available when the recipe runs.
+# The helper falls back to FROST_LINUX_CROSS_COMPILE, set by the Docker image.
 BR2_CROSS      = $(BR2_OUT)/host/bin/riscv64-linux-
 MODULE_CROSS   = $(if $(wildcard $(BR2_CROSS)gcc),--cross "$(BR2_CROSS)")
 ifeq ($(DEBIAN_IMAGE),)
@@ -105,11 +79,10 @@ FPGA_CPU_CLK_FREQ ?= 322265625
 # own. load_software.py passes these through from the environment, like
 # FROST_LINUX_PREBUILT.
 PAYLOAD := $(or $(FROST_LINUX_KERNEL),$(DEBIAN_IMAGE))
-# What to pack as the initramfs, empty for an NFS root that the kernel mounts
-# itself. Naming it once keeps the composed initramfs out of the prerequisites
-# when an override supplies one or an NFS root needs none, so the module rule
-# below does not run; with FROST_LINUX_KERNEL set too, neither does the fetch
-# rule. Buildroot's post-image hook still does both whenever Stage 1a runs.
+# An initramfs override or a kernel-mounted NFS root skips the
+# composed-initramfs rule; setting FROST_LINUX_KERNEL as well skips the kernel
+# fetch rule. Buildroot's post-image hook still runs both helpers whenever
+# Stage 1a runs.
 ifdef FROST_LINUX_NFSROOT
 PACK_INITRD := $(FROST_LINUX_INITRD)
 PACK_ARGS := --nfsroot "$(FROST_LINUX_NFSROOT)" \
@@ -130,12 +103,11 @@ unexport FROST_INITRD
 # sw/apps/compile_app.py keeps simulation builds from inheriting a board's size.
 PACK_ARGS += $(if $(FROST_LINUX_MEM_SIZE),--mem-size "$(FROST_LINUX_MEM_SIZE)")
 
-# Cross prefix for the tiny boot shim, which disables PIE itself: the first
-# of RISCV_PREFIX, riscv64-linux- on PATH, and Buildroot's toolchain whose gcc
-# exists. load_software.py picks RISCV_PREFIX before a cold build has installed
-# Buildroot's toolchain, so the prefix it passes can name nothing yet. Expanded
-# when the recipe runs, like MODULE_CROSS above. With none of them,
-# frost_boot_image.py's default, riscv64-linux-, reports the missing compiler.
+# Select the first available boot-shim compiler: RISCV_PREFIX, riscv64-linux-
+# on PATH, or Buildroot's toolchain. Resolve it when the recipe runs, after
+# Buildroot can install its compiler; the loader's prefix may not exist yet.
+# With none available, frost_boot_image.py reports the missing riscv64-linux-gcc.
+# The shim build disables PIE.
 resolves   = $(if $(shell command -v "$(1)gcc" 2>/dev/null),$(1))
 SHIM_PREFIX = $(or $(if $(RISCV_PREFIX),$(call resolves,$(RISCV_PREFIX))),\
   $(call resolves,riscv64-linux-),$(if $(wildcard $(BR2_CROSS)gcc),$(BR2_CROSS)))
@@ -144,19 +116,13 @@ SHIM_CROSS = $(if $(SHIM_PREFIX),FROST_CROSS_COMPILE=$(SHIM_PREFIX))
 .PHONY: all clean distclean
 
 # --- Prebuilt-image mode ------------------------------------------------------
-# Images built elsewhere (another checkout, or a machine that can run Buildroot)
-# can be staged here and loaded on a board. load_software.py does
-# `make clean` + `make` on this app before every load. Without a Buildroot build
-# in the clone, that clean would delete the staged images and the build
-# would kick off a full Buildroot rebuild that overwrites them.
-# FROST_LINUX_PREBUILT=1 declares the staged images authoritative: `make`
-# verifies they exist and touches nothing; `make clean` keeps them and only
-# removes packer scratch files.
+# The loader runs `make clean` and `make` before loading. Set
+# FROST_LINUX_PREBUILT=1 to preserve staged images: make checks they exist and
+# derives sw64.mem; clean removes only that derived image and packer scratch.
 ifeq ($(FROST_LINUX_PREBUILT),1)
 
-# sw64.mem is a re-encoding of the staged sw.mem: dword rows for the 64-bit data
-# BRAM, per hw/rtl/README.md "Data-tier bus contract". Deriving it locally does
-# not contradict treating the staged images as authoritative.
+# Convert staged sw.mem to dword rows for the 64-bit data BRAM
+# (hw/rtl/README.md, "Data-tier bus contract").
 all: sw64.mem
 	@test -f sw.mem -a -f sw_ddr.mem || { \
 	  echo "ERROR: FROST_LINUX_PREBUILT=1 but sw.mem / sw_ddr.mem are not staged here."; \
@@ -183,37 +149,19 @@ all: sw_ddr.mem sw64.mem
 sw64.mem: sw.mem ../../common/make_dword_mem.py
 	python3 ../../common/make_dword_mem.py '$<' '$@'
 
-# Stage 1a: the test initramfs + OpenSBI via Buildroot. Runs when either file
-# is missing or older than a frost-stress source or the overlay inittab.
-# Grouped target (&:): one Buildroot invocation produces both files. A plain
-# multi-target rule would run the recipe once per missing file, and under -j it
-# could run two Buildroot makes concurrently in the same O= dir.
+# Stage 1a: build the test initramfs and OpenSBI. A grouped target prevents
+# parallel Buildroot invocations in the same O= directory.
+# Package-source and inittab prerequisites trigger frost-stress-rebuild;
+# Buildroot does not detect package-source edits itself. check_base_initramfs
+# in debian_kernel.py also rejects frost_stress without the counter token.
 #
-# Buildroot does not notice an edited package source by itself, so without
-# these prerequisites an existing archive would keep the old programs, and the
-# boot soak (fpga/linux_boot_soak.py), which boots this image, would run them.
-# Naming the sources here rebuilds just that package. debian_kernel.py's
-# check_base_initramfs, which refuses a frost_stress without the counter token,
-# is the backstop for an archive whose timestamps lie.
+# Pass BR2_EXTERNAL on every call. The saved absolute BR2_EXTERNAL_FROST_PATH
+# still cannot be overridden this way, so reject builds configured through
+# another filesystem path rather than silently rerunning defconfig.
 #
-# BR2_EXTERNAL goes on every Buildroot invocation, not just the defconfig.
-# Buildroot would reuse the value the defconfig saved, but naming it keeps each
-# call independent of that saved state.
-#
-# The build directory still belongs to one view of the checkout: its .config
-# stores BR2_EXTERNAL_FROST_PATH as an absolute path, which a command-line
-# BR2_EXTERNAL does not override. Re-running the defconfig is the only way to
-# move it, and that is not something to do behind someone's back, so a
-# directory configured elsewhere (a container build reached from a native
-# loader, or the reverse) is reported rather than reconfigured.
-#
-# A directory configured by a tree that built its own kernel is reported too.
-# Its .config selects BR2_LINUX_KERNEL and points BR2_GLOBAL_PATCH_DIR at
-# board/frost/patches, which does not exist in this tree, so Buildroot stops
-# with "BR2_GLOBAL_PATCH_DIR contains nonexistent directory" before any target
-# runs. Re-running the defconfig over it would clear those symbols but leave
-# perf and elfutils installed in target/ (Buildroot does not uninstall a
-# deselected package), so the fix is to start over, and the message says so.
+# Reject configurations that build a kernel: their patch directory is absent
+# here. Rerunning defconfig would leave perf and elfutils in target/, since
+# Buildroot does not uninstall deselected packages; these builds need a new tree.
 FROST_STRESS_SRC := $(wildcard $(BR2_EXTERNAL)/package/frost-stress/src/*.c)
 BR2_OVERLAY := $(wildcard $(BOARD_DIR)/rootfs-overlay-mmu/etc/inittab)
 BR2_RECORDED = $(patsubst "%",%,$(shell sed -n \
@@ -277,19 +225,15 @@ sw_ddr.mem sw.mem sw_ddr.txt sw.txt &: $(PAYLOAD) $(PACK_INITRD) $(FW_JUMP) \
 	    --firmware "$(FW_JUMP)" --payload "$(PAYLOAD)" $(PACK_ARGS) \
 	    --out "$(CURDIR)"
 
-# Light clean: drop only the board-dependent pack outputs (Stage 2) and the
-# composed initramfs, which is cheap to rebuild once the module is cached. The
-# Buildroot build and the Debian kernel cache (Stage 1) survive, so a re-pack
-# for another board is fast. This is what load_software.py runs before every
-# load.
+# Clean the board images and composed initramfs before each load. Keep the
+# Buildroot build and Debian kernel cache for repacking on another board.
 clean:
 	rm -f sw.mem sw64.mem sw.txt sw_ddr.mem sw_ddr.txt rootfs.cpio \
 	      shim.elf shim.bin frost_boot_shim.S \
 	      frost.dts frost.dtb
 
-# Full clean: also wipe the (slow) Buildroot build tree, forcing a Stage 1a
-# rebuild. The Debian kernel cache is a download cache, like linux/dl, and is
-# left alone; remove linux/debian-kernel by hand to force a refetch.
+# Also remove the Buildroot build tree. The Debian kernel download cache
+# remains; remove linux/debian-kernel manually to force a refetch.
 distclean: clean
 	rm -rf "$(BR2_OUT)"
 

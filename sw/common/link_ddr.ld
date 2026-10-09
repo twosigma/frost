@@ -1,10 +1,10 @@
 /* Unified DDR-tier linker script for FROST RISC-V bare-metal programs.
  *
  * The ddr counterpart to link.ld, selected by common.mk and the per-app
- * Makefiles when MEM_CONFIG=ddr.  A boot stub (crt0_ddr_boot.S, .boot) runs
- * from the low BRAM ROM and far-jumps to the DDR-resident _start.  The whole
+ * Makefiles when MEM_CONFIG=ddr. A boot stub (crt0_ddr_boot.S, .boot) runs
+ * from the low BRAM ROM and far-jumps to the DDR-resident _start. The whole
  * program, code and data and bss, lives in the cached DDR region at
- * 0x8000_0000, fetched through the L1I and loaded/stored through the L1D.  The
+ * 0x8000_0000, fetched through the L1I and accessed through the L1D. The
  * opt-in .ddr_* sections stay in DDR after the relocated program, and the heap
  * follows.  The stack stays in low BRAM (fast).
  *
@@ -121,11 +121,9 @@ SECTIONS
     } > DDR
 
     /*
-     * The cache-profile report runs only after the measured work. Its loadable
-     * sections come after every other program section, including .ddr_bss, so
-     * linking the report in moves neither the program's code and data nor the
-     * section bounds crt0 reads. common.mk includes both output sections in the
-     * DDR image and removes them from the boot-only low image.
+     * Place the optional cache report after .ddr_bss to preserve program
+     * addresses and the bounds crt0 reads. common.mk emits these sections
+     * only in the DDR image.
      */
     .cache_profile_text : {
         *(.cache_profile_text*)
@@ -169,9 +167,6 @@ SECTIONS
     PROVIDE(NIC_ADDR         = 0x40030000);  /* NIC register window */
 }
 
-/* The rv64 boot stub (crt0_ddr_boot.S) jumps to the materialized constant
- * 0x8000_0000 rather than `la _start`, because lp64 PCREL cannot reach DDR
- * from ROM. That is correct only while _start sits at the DDR origin, so the
- * ASSERT below turns any reordering of the DDR sections into a link failure
- * instead of a jump to the wrong address. */
+/* crt0_ddr_boot.S jumps to the constant 0x8000_0000 because RV64 PCREL cannot
+ * reach DDR from ROM. Keep _start at that address. */
 ASSERT(_start == ORIGIN(DDR), "link_ddr.ld: _start must sit at ORIGIN(DDR) (the rv64 boot stub jumps to the constant 0x80000000)")

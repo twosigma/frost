@@ -1,11 +1,6 @@
-/* Linker script for riscv-torture tests on FROST, bram memory config.
- *
- * ROM holds: code (header + test + footer) + data load image
- * RAM holds: data runtime copy (including signature area) + BSS + stack
- *
- * Uses the 256KiB low-BRAM map shared with sw/common/link.ld: 95K ROM, the
- * 1K debug slice, 160K RAM.
- */
+/* BRAM layout shared with sw/common/link.ld: 95 KiB ROM, 1 KiB reserved for
+ * debug, and 160 KiB RAM. ROM holds code and the data load image; RAM holds
+ * runtime data, the signature, BSS and stack. */
 
 ENTRY(_start)
 

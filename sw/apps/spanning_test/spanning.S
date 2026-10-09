@@ -17,13 +17,10 @@
 /*
  * uint64_t span_chain(uint64_t x, uint64_t *scratch)
  *
- * After the leading c.nop every instruction is 32-bit and starts at PC[1]=1,
- * so each one spans a word boundary, and every other one also ends in the next
- * 8-byte fetch window. The sequence covers register and immediate ALU forms,
- * lui, mul, a store and load through scratch, a taken and a not-taken branch,
- * a jump, and the return. For the inputs main.c uses, the result depends on
- * the reloaded value and on every branch and jump outcome. main.c's
- * span_chain_ref is the same computation.
+ * After c.nop, every instruction is 32-bit at PC[1]=1. Each spans a word
+ * boundary; every other instruction also crosses an 8-byte fetch window.
+ * The result depends on the reload and control flow for main.c's inputs.
+ * span_chain_ref in main.c computes the expected result.
  */
     .option push
     .option norelax

@@ -6,9 +6,7 @@
  *   - data and the signature area (.data/.sdata/.bss) live in the low BRAM
  *     and are loaded/stored directly, not through the D-side cached tier.
  *
- * A pass here shows that instruction fetch from DDR is ISA-compliant
- * independent of the D-side cached-tier load/store path, which the `ddr`
- * config (link_arch_test.ld) exercises by putting data in DDR too.
+ * The ddr config (link_arch_test.ld) also exercises cached data accesses.
  *
  * The low BRAM matches the 256 KiB hardware map. .data is initialized in
  * place (LMA == VMA in RAM): the simulator preloads the data BRAM from the

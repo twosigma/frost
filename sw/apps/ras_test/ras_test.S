@@ -1,22 +1,7 @@
-# Return Address Stack test suite
+# Return address stack tests
 #
-# Covers nested calls up to and past the 8-entry RAS depth, returns with an
-# empty RAS, mixed 32-bit and compressed returns, calls at halfword offsets,
-# back-to-back and looped calls, x5 (t0) as the link register, and coroutine
-# swaps, with counter checks and diagnostic output.
-#
-# The checks prove only that each return lands at the right address. Whether
-# the RAS predicted it affects only the cycle count, which this test does not
-# measure.
-#
-# Test Categories:
-#   A. Basic functionality (simple call/return)
-#   B. Stack depth tests (nested calls, overflow, underflow)
-#   C. Instruction encoding tests (32-bit, compressed, mixed)
-#   D. Calls placed after a 2-byte c.nop (halfword-shifted call sites)
-#   E. Edge cases (tight loops, back-to-back calls, x5 as the link register,
-#      coroutine swaps)
-#   F. Stress tests (rapid call/return patterns)
+# Check return destinations. Prediction affects performance, which this
+# test does not measure.
 
 # The nested helpers spill ra with sd/ld in 8-byte frames. In the DDR build,
 # return addresses have bit 31 set, so a 32-bit lw reload would sign-extend ra
@@ -31,7 +16,6 @@ _start:
     lui     sp, %hi(_stack_top)
     addi    sp, sp, %lo(_stack_top)
 
-    # Load UART address into s0 (callee-saved)
     lui     s0, 0x40000
 
     li      s1, 0           # Test pass counter
@@ -769,7 +753,6 @@ test_f2_start:
 
     li      t0, 0
 
-    # Alternate between different nesting depths
     jal     ra, func_increment_t0           # Depth 1
     jal     ra, func_nested_2_level1        # Depth 2 (adds 11)
     jal     ra, func_increment_t0           # Depth 1
@@ -807,7 +790,6 @@ tests_done:
     la      a0, msg_summary
     jal     ra, print_string
 
-    # Print pass count
     la      a0, msg_passed
     jal     ra, print_string
     mv      a0, s1
@@ -815,7 +797,6 @@ tests_done:
     la      a0, msg_newline
     jal     ra, print_string
 
-    # Print fail count
     la      a0, msg_failed
     jal     ra, print_string
     mv      a0, s2
@@ -823,7 +804,6 @@ tests_done:
     la      a0, msg_newline
     jal     ra, print_string
 
-    # Print total tests
     la      a0, msg_total
     jal     ra, print_string
     mv      a0, s3
@@ -831,7 +811,6 @@ tests_done:
     la      a0, msg_newline
     jal     ra, print_string
 
-    # Print final status
     bnez    s2, final_fail
 
     la      a0, msg_pass_marker

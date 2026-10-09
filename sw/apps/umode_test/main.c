@@ -15,53 +15,19 @@
  */
 
 /*
- * U-mode (User privilege) directed test.
+ * U-mode privilege and counter-access tests.
  *
- * Exercises the Machine+User privilege support end-to-end on the real core and
- * self-checks over UART (<<PASS>> / <<FAIL>>):
- *
- *   A. ECALL from U-mode            -> mcause = 8  (ExcEcallUmode; 11 is M-mode)
- *   B. Machine timer interrupt while in U-mode with mstatus.MIE = 0
- *                                   -> trap taken, mcause = interrupt bit | 7.
- *      Checks that machine interrupts fire while running below M regardless
- *      of MIE, so the timer can preempt user code, and that the interrupt
- *      mcause carries both the interrupt bit (bit 63) and the code.
- *   C. Reading an M-mode CSR from U -> illegal instruction (mcause = 2).
- *      Requires the U-mode CSR-permission check. If that check is absent the
- *      trailing ECALL traps instead (mcause = 8), so the test fails rather
- *      than hanging.
- *   D. Executing MRET from U-mode   -> illegal instruction (mcause = 2).
- *      MRET is an M-mode-only instruction. The trailing ECALL is the cause-8
- *      fallback, so a missing check fails the test rather than hanging it.
- *   E-K. mcounteren gating of the Zicntr counter CSRs from U-mode, both
- *      polarities and per-bit: with a counter's enable bit set the U-mode
- *      read succeeds (first trap is the trailing ECALL, mcause = 8); with it
- *      clear the read is an illegal instruction (mcause = 2). U-mode access
- *      also needs the scounteren bit, which stays at its reset value (0x7),
- *      so mcounteren alone decides here. Setting only some bits checks
- *      selectivity: TM-only allows time but still blocks cycle, and each of
- *      CY/TM/IR is exercised blocked while another bit is set. The RV32
- *      high-half CSR addresses do not exist at RV64, and K checks that
- *      cycleh traps illegal even with every mcounteren bit set, so E reads
- *      only the three low forms.
- *   L. mcounteren is WARL: only CY/TM/IR (bits [2:0]) are implemented; a
- *      write of all-ones reads back as 0x7 (also exercises the csrrs RMW
- *      current-value path).
- *   M. M-mode counter reads are never gated (mcounteren gates only the
- *      privilege levels below M), even with mcounteren = 0.
- *
- * Each case drops to U-mode via MRET (mstatus.MPP = U) into a small naked
- * U-mode function that triggers the trap. A naked M-mode handler records
- * mcause and the privilege the trap came from (mstatus.MPP), pushes mtimecmp to
- * max so a timer interrupt cannot refire, and returns to M-mode at a fixed
- * continuation address stashed in mscratch (forcing MPP=M for its MRET).
+ * Enter naked U-mode bodies through MRET. The M handler records the first
+ * trap's mcause and MPP, postpones the timer, and returns to an mscratch
+ * continuation with MPP=M. Counter tests leave scounteren at its reset
+ * value, 0x7, so mcounteren alone controls U-mode access.
  */
 
 #include <stdint.h>
 
 #include "trap.h"
 
-/* ---- minimal UART (UART_TX is provided by mmio.h via trap.h) ---- */
+/* ---- UART ---- */
 static void uart_putc(char c)
 {
     UART_TX = (uint8_t) c;
@@ -92,18 +58,15 @@ static volatile uint32_t g_from_priv; /* mstatus.MPP at trap entry = prev priv *
 #define SREG "sd"
 
 /*
- * Naked M-mode trap handler. Records mcause and the trapping privilege, pushes
- * mtimecmp to max (so a timer interrupt cannot refire), then returns to M-mode
- * at the continuation address run_in_umode stashed in mscratch. Forces MPP=M so
- * the MRET lands back in M-mode. Bouncing to a fixed continuation (rather than
- * resuming the U-mode code) means clobbering temporaries here is safe.
+ * Record the first trap, postpone the timer and return to run_in_umode's
+ * mscratch continuation with MPP=M. Temporary registers may be clobbered
+ * because the handler resumes at that fixed continuation.
  */
 __attribute__((naked, aligned(4))) static void umode_trap_handler(void)
 {
     __asm__ volatile("csrr t0, mcause\n"
-                     /* la (auipc-based under medany): absolute lui %hi cannot
-                      * materialize the ddr build's 0x8xxx_xxxx data addresses
-                      * at lp64. */
+                     /* PC-relative la reaches DDR; RV64 lui sign-extends
+                      * addresses in the 0x8xxx_xxxx range. */
                      "la   t1, g_cause\n" LREG " t2, 0(t1)\n"
                      "li   t3, -1\n" /* sentinel: only the first trap of each test records */
                      "bne  t2, t3, 2f\n" SREG " t0, 0(t1)\n"
@@ -113,7 +76,7 @@ __attribute__((naked, aligned(4))) static void umode_trap_handler(void)
                      "la   t1, g_from_priv\n"
                      "sw   t0, 0(t1)\n"
                      "2:\n"
-                     "li   t1, 0x4000001C\n" /* MTIMECMP_HI: push compare to max to ack timer */
+                     "li   t1, 0x4000001C\n" /* MTIMECMP_HI: postpone the timer */
                      "li   t0, -1\n"
                      "sw   t0, 0(t1)\n"
                      "csrr t0, mscratch\n" /* M-mode continuation set by run_in_umode */
@@ -168,27 +131,22 @@ __attribute__((naked)) static void u_read_mcsr(void)
 
 __attribute__((naked)) static void u_mret_umode(void)
 {
-    /* Executing MRET from U is illegal (cause 2) because MRET is M-mode-only.
-     * The ecall is the cause-8 fallback, so a missing check fails the test
-     * rather than hanging it. */
+    /* MRET is illegal in U (cause 2). The trailing ecall is a fallback. */
     __asm__ volatile("mret\n ecall\n j .");
 }
 
 __attribute__((naked)) static void u_read_counters(void)
 {
-    /* RV64: the three counters are single full-width CSRs. The *h addresses
-     * do not exist and trap at any privilege regardless of mcounteren (see
-     * test K), so only the low forms belong in the enabled-legal set. */
+    /* RV64 counters use full-width CSRs. Their RV32 high-half addresses
+     * are illegal regardless of mcounteren. */
     __asm__ volatile("csrr t0, cycle\n"
                      "csrr t2, time\n"
                      "csrr t4, instret\n"
                      "ecall\n j .");
 }
 
-/* Each single-counter body reads one Zicntr CSR. The read is illegal (cause
- * 2) from U when its mcounteren bit is clear, and falls through to the cause-8
- * ecall when the bit is set, so one body serves both polarities and a missing
- * gate fails the test rather than hanging it. */
+/* With scounteren enabled, a clear mcounteren bit makes the U read illegal
+ * (cause 2); a set bit lets it reach the trailing ecall (cause 8). */
 __attribute__((naked)) static void u_read_cycle(void)
 {
     __asm__ volatile("csrr t0, cycle\n ecall\n j .");

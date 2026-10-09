@@ -15,10 +15,8 @@
  */
 
 /*
- * Phase-swept M-mode ret_from_exception restore-window stress.
- *
- * Models the exit sequence of the Linux M-mode (no-MMU) ret_from_exception;
- * timer ticks are re-armed at drifting offsets so they sweep across it:
+ * Model Linux M-mode ret_from_exception (no MMU). Vary timer offsets to
+ * sweep interrupts across the restore sequence:
  *
  *   <MIE=1 region>                      ticks become eligible
  *   rw_irqoff:  csrci mstatus, 8        disable IRQs before exit
@@ -97,10 +95,7 @@ static void uart_hex(uint32_t v)
 
 volatile uint32_t g_iter;      /* progress marker for hang triage            */
 volatile uint32_t g_irq;       /* machine-timer tick count                   */
-volatile uint32_t g_irq_pad;   /* ticks delivered at a landing pad, a proxy
-                                * for ticks held across the MIE=0 window
-                                * until after the MRET, the window-crossing
-                                * mechanism under test                       */
+volatile uint32_t g_irq_pad;   /* pad ticks approximate interrupts held across the MIE=0 window */
 volatile uint32_t g_pad;       /* landing-pad executions                     */
 volatile uint32_t g_fail;      /* invariant violations                       */
 volatile uint32_t g_fail_mepc; /* first violation: offending mepc            */
@@ -130,9 +125,8 @@ __attribute__((naked, aligned(4))) static void rw_trap_handler(void)
                      "li   t1, 8\n"
                      "beq  t0, t1, 5f\n" /* ecall from U: pad handoff */
                      /* ---- unexpected synchronous trap (illegal instr = the signature) */
-                     /* la (auipc-based under medany), here and below: absolute
-                      * lui %hi cannot materialize the ddr build's 0x8xxx_xxxx
-                      * data addresses at lp64. */
+                     /* PC-relative la reaches DDR; RV64 lui sign-extends
+                      * addresses in the 0x8xxx_xxxx range. */
                      "la   t1, g_fail\n"
                      "lw   t2, 0(t1)\n"
                      "addi t2, t2, 1\n"
@@ -263,9 +257,8 @@ run_window(uint32_t image, volatile rw_word_t *frame, uint32_t arm_lr, uint32_t 
                      "slli t1, t1, 3\n"
                      "xor  t1, t1, t0\n"
                      "andi t1, t1, 255\n"
-                     /* variant: a cached-region AMO with interrupts enabled, so swept
-                      * ticks land while the AMO is at the ROB head and exercise the
-                      * AMO interrupt shield right before the window */
+                     /* Run a cached AMO with interrupts enabled to exercise the
+                      * AMO interrupt shield immediately before the window. */
                      "beqz %3, 8f\n"
                      "addi t1, %1, " XAMO_OFF "\n"
                      "amoswap.w t2, t1, (t1)\n"
@@ -308,11 +301,9 @@ int main(void)
         g_iter = i;
         uint32_t pad_before = g_pad;
 
-        /* Rotate the frame across 64 slots. Write it, then dirty its L1D alias
-         * (same index, 128 KiB direct-mapped) so the just-written frame line is
-         * evicted: its write-back drains below the L1D and the window's PT_EPC
-         * load and SC miss cold. That refill in turn evicts the dirty alias
-         * line, keeping a write-back draining inside the window. */
+        /* Rotate across 64 frames and dirty each frame's L1D alias. The
+         * frame's refill then evicts the dirty alias, creating writeback
+         * traffic during the restore window. */
         volatile rw_word_t *frame =
             (volatile rw_word_t *) (uintptr_t) (FRAME_BASE + ((i & 63u) << 6));
         volatile rw_word_t *alias = (volatile rw_word_t *) ((uintptr_t) frame ^ FRAME_ALIAS_XOR);

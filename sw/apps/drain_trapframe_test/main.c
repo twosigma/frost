@@ -32,7 +32,7 @@
  * Failure codes distinguish:
  *   29: the incoming architectural s2 was already wrong.
  *   30: the saved value was wrong before the eviction.
- *   31: s2 was correct before the eviction, but s2 or a witness slot (s3, s4)
+ *   31: s2 was correct before the eviction, but s2 or a neighboring slot (s3, s4)
  *       read wrong after it.
  *
  * Timer margins 0..255, each with a post-store gap of margin & 15, sweep the
@@ -211,7 +211,7 @@ __attribute__((naked, used, aligned(4))) static void trapframe_irq_entry(void)
                      "la   t2, g_last_actual\n"
                      "sd   t0, 0(t2)\n"
                      "6:\n"
-                     /* ---- witnesses: s3@152 shares s2's line, s4@160 sits in the next
+                     /* ---- s3@152 shares s2's line; s4@160 sits in the next
                       * line as a plain visibility check ---- */
                      "ld   t0, 152(sp)\n"
                      "li   t1, 0x51000003\n"
@@ -297,13 +297,10 @@ __attribute__((naked, used, aligned(4))) static void trapframe_irq_entry(void)
 }
 
 /*
- * Naked per-margin window. Preserves main's callee-saved registers, sets up the
- * cached-DDR frame stack + poison + drain store, arms the timer, loads the
- * s0..s11 sentinels, enables MIE, and spins until the handler fires (or a
- * bounded spin runs out). The handler redirects mepc to label 9 (the fixed
- * continuation). The window and the handler read their per-margin inputs
- * (g_timer_margin, g_drain_addr, g_gap, g_expected_s2) from globals that main
- * sets before the call.
+ * Per-margin interrupt window. Preserve main's callee-saved registers, poison
+ * the DDR frame, and issue a cold store before arming the timer. Load register
+ * sentinels and wait with a bounded spin. The handler resumes at label 9; main
+ * supplies the timer margin, drain address, gap, and expected s2 in globals.
  */
 __attribute__((naked, used, noinline)) static void irq_window(void)
 {

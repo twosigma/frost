@@ -15,21 +15,14 @@
  */
 
 /**
- * fix.c: parsers for two FIX (Financial Information eXchange) field formats.
- *
- *   - Timestamps: "YYYYMMDD-HH:MM:SS.mmm" -> nanoseconds
- *   - Prices: decimal strings -> fixed point with TARGET_SCALE decimal places
- *
- * The timestamp conversion uses 30-day months and 365-day years, so the result
- * is not a real epoch time. It serves latency-sensitive code that does not
- * need exact calendar math.
+ * FIX timestamp and fixed-point price parsers. See fix.h for formats and
+ * the timestamp conversion's calendar approximation.
  */
 
 #include "fix.h"
 #include <stdbool.h>
 #include <stddef.h>
 
-/* Parse a FIX timestamp string to nanoseconds. */
 uint64_t parse_timestamp(const char *timestamp_string)
 {
     /* Expected format: "YYYYMMDD-HH:MM:SS.mmm", so at least 21 characters. A
@@ -50,7 +43,6 @@ uint64_t parse_timestamp(const char *timestamp_string)
     int month = (timestamp_string[4] - '0') * 10 + (timestamp_string[5] - '0');
     int day = (timestamp_string[6] - '0') * 10 + (timestamp_string[7] - '0');
 
-    /* Advance past the date and the dash */
     timestamp_string += 9;
 
     /* Extract time components (HH:MM:SS.mmm format) */
@@ -97,7 +89,6 @@ fix_price_t parse_price(const char *price_string)
         parse_pointer++;
     }
 
-    /* If no decimal point found, treat entire string as whole number */
     if (!decimal_point_position) {
         decimal_point_position = parse_pointer; /* Point to null terminator */
     }
@@ -126,7 +117,6 @@ fix_price_t parse_price(const char *price_string)
 
     uint64_t result = whole_number_part;
 
-    /* Shift whole part by number of fractional digits parsed */
     for (int i = 0; i < fractional_digits_count; i++) {
         result *= 10;
     }

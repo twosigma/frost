@@ -15,39 +15,15 @@
  */
 
 /**
- * DMA coherence torture. The DMA test engine
- * (hw/rtl/cpu_and_mem/dma_test_engine.sv) is a second agent reading and
- * writing cached DDR behind the CPU's caches. Each check is an obligation of
- * the cache hierarchy's DMA sequencer, the load queue's coherence port, or
- * the engine itself:
+ * DMA coherence torture using hw/rtl/cpu_and_mem/dma_test_engine.sv.
  *
- *   copy       the engine reads data the CPU wrote and still holds dirty,
- *              and its writes replace copies the CPU holds (L1D and L0)
- *   corr       a CPU reader of a line the engine keeps rewriting never sees
- *              a value go backwards, including two loads of one address
- *   mp         message passing without an explicit fence: a status load and
- *              a data load in program order with no dependency, so the data
- *              load may execute first; the replay of loads that observed
- *              memory before the DMA write keeps the pair consistent
- *   mp_fence   the same with fence r,r
- *   lrsc       an SC after a DMA write to the reserved line fails; without
- *              the write it succeeds
- *   amo        AMO increments on word 0 of a line while the engine keeps
- *              rewriting words 2..7 of the same line: no increment is lost
- *              and the engine's bytes stay intact
- *   irq        the completion interrupt arrives after the status word, and
- *              the data is visible from the handler
- *   abort      an aborted transfer quiesces before the buffer is reused
- *   abort_read an abort during a copy's first source read writes nothing and
- *              still raises the interrupt, with ERROR set
- *   reprogram  registers written while a transfer runs program only the next
- *              transfer
- *   aperture   an out-of-aperture transfer is refused and moves nothing
- *   stress     random CPU stores and engine writes to disjoint words of
- *              shared lines, checked against a software model
+ * CPU and DMA accesses must preserve dirty data and coherent cached copies.
+ * The unfenced message-passing case relies on replay: a data load that
+ * executes before an older status load must not retire stale data after that
+ * status reports completion. Fenced message passing checks explicit ordering.
  *
- * Prints <<PASS>> or <<FAIL>>. Runs in both memory tiers: the buffers live
- * at fixed addresses in cached DDR either way.
+ * Buffers use fixed cached-DDR addresses in both memory tiers. Each case
+ * checks data or completion behavior and contributes to <<PASS>> or <<FAIL>>.
  */
 #include <stdint.h>
 
@@ -73,8 +49,7 @@
 #define LINE_BYTES 32u
 #define LINE_WORDS (LINE_BYTES / 4u)
 
-/* Iteration counts: the sim budget is a few hundred thousand cycles; a
- * hardware run can scale them up with EXTRA_CFLAGS=-DDMA_TORTURE_SCALE=<n>. */
+/* Scale iterations with EXTRA_CFLAGS=-DDMA_TORTURE_SCALE=<n>. */
 #ifndef DMA_TORTURE_SCALE
 #define DMA_TORTURE_SCALE 1u
 #endif
@@ -186,7 +161,7 @@ static void test_copy(void)
     dma_engine_ack();
 }
 
-/* ---- corr: values never go backwards, two loads of one address agree ---- */
+/* ---- corr: successive loads of one address never go backwards ---- */
 static void test_corr(void)
 {
     g_line[0] = 0;
@@ -440,11 +415,8 @@ static void test_abort(void)
 /* ---- reprogram: writes while BUSY belong to the next transfer ---- */
 static void test_reprogram(void)
 {
-    /* A long fill with a status word; every register is rewritten while it
-     * runs. The running transfer must keep its own destination, pattern,
-     * status address and value, and the rewritten registers must describe
-     * the next transfer exactly (its length is 0, so it only writes the
-     * status word). */
+    /* Reprogram while a fill runs. It must retain its latched parameters;
+     * the next transfer has length 0 and writes only the new status word. */
     for (uint32_t i = 0; i < BUF_WORDS; i++)
         g_dst[i] = 0;
     g_line[0] = 0;
@@ -519,10 +491,8 @@ static void test_abort_read(void)
 /* ---- aperture ---- */
 static void test_aperture(void)
 {
-    /* The stack lives in the low BRAM on both memory tiers (link.ld and
-     * link_ddr.ld), so a stack word is outside the engine's aperture
-     * whichever tier the program runs from; static data moves to DDR on the
-     * ddr tier and would be a legal destination there. */
+    /* Both linker scripts keep the stack in low BRAM, outside the DMA
+     * aperture. Static data would be a legal destination in the DDR tier. */
     volatile uint32_t stack_canary = 0xC0FFEE11u;
     uint32_t status = run_engine(0, pa(&stack_canary), 4u, DMA_ENGINE_MODE_FILL, 1, 0, 0);
     int ok = (status & DMA_ENGINE_STATUS_ERROR) && !(status & DMA_ENGINE_STATUS_DONE) &&

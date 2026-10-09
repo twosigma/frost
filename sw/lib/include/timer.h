@@ -25,10 +25,8 @@
 #endif
 
 /**
- * Read the low 32 bits of the cycle counter CSR (Zicntr extension)
- *
- * Reads the CSR rather than an MMIO timer register, so it costs one
- * instruction. read_timer64() returns the full 64-bit counter.
+ * Read the low 32 bits of the cycle counter CSR (Zicntr extension).
+ * read_timer64() returns the full counter.
  */
 static inline __attribute__((always_inline)) uint32_t read_timer(void)
 {

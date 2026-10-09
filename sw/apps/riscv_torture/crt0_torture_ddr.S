@@ -1,19 +1,11 @@
-// FROST ROM boot stub for the riscv-torture DDR memory config.
-//
-// In the ddr config the test image is linked into the cached DDR region:
-// frost_header's _start, the test body, frost_footer, data and the signature
-// area.  This stub is the only code left in ROM, where the core resets at
-// PC=0.  It far-jumps to the DDR-resident _start, which is beyond JAL range,
-// hence the register jump.  The bram config does not link this stub.  There,
-// frost_header's _start already sits at 0x0.
+// DDR reset stub. Jump from low-BRAM PC=0 to frost_header.S's _start in
+// cached DDR. The BRAM configuration starts at _start without this stub.
 
     .section .boot, "ax", @progbits
     .globl _frost_torture_boot
 _frost_torture_boot:
-    // Under lp64, la (auipc) cannot reach the 0x8xxx_xxxx DDR _start from
-    // ROM-at-0: the displacement exceeds PCREL_HI20's reach. Load the
-    // absolute address from a local literal pool instead. norvc keeps the
-    // stub in 4-byte encodings, matching crt0_riscv_tests_ddr.
+    // RV64 PCREL_HI20 cannot reach DDR from PC=0. Load the address from a
+    // local literal pool. norvc keeps the stub's encodings 4 bytes wide.
     .option push
     .option norvc
     ld   t0, _frost_torture_boot_target

@@ -17,23 +17,10 @@
 #
 #   make WORKLOAD=<name>
 #
-# builds the standard images (sw.elf, sw.mem, ...) for one of the nine
-# CoreMark-PRO workloads:
+# builds the standard images for the selected workload.
 #
-#   core                       (default; integer CoreMark)
-#   cjpeg-rose7-preset         (JPEG compress; libjpeg + libbmp)
-#   linear_alg-mid-100x100-sp  (LINPACK, single precision)
-#   loops-all-mid-10k-sp       (Livermore/SciMark loops, single precision)
-#   nnet_test                  (back-propagation neural net)
-#   parser-125k                (XML/ezxml parser)
-#   radix2-big-64k             (radix-2 FFT)
-#   sha-test                   (SHA-256)
-#   zip-test                   (zlib deflate/inflate)
-#
-# By default each workload runs a small but still verified dataset, so it
-# finishes in a simulation-friendly cycle count and remains an end-to-end
-# correctness check. Most workloads get it from upstream's PGO training
-# selector: pgo_training_run picks each benchmark's smallest verified preset.
+# Simulation uses small verified datasets, selected through pgo_training_run
+# for most workloads.
 # cjpeg and zip instead use FROST wrappers with small generated inputs, and
 # linear_alg's preset 5 comes from frost_linpack_tiny_f32.c. See the
 # per-workload notes below and frost_mith_main.c.
@@ -44,29 +31,16 @@
 # pgo_training_run off and builds the datasets and macros the EEMBC README
 # specifies.
 #
-# MITH runs a single outer iteration whenever verify_output is set (the
-# default; see mith_main_loop in mith_lib.c), so the workloads' default outer
-# loops (radix2 1000, sha/cjpeg/nnet 10, linpack/loops 50) collapse to one
-# verified pass. Simulation builds therefore size the run through the preset,
-# not the iteration count.
+# verify_output forces one outer iteration (mith_main_loop in mith_lib.c).
+# Size simulation runs through the preset, not the iteration count.
 #
 # ----------------------------------------------------------------------------
 # Header shadowing. Read this before editing the include paths.
 #
-# The MITH and workload sources need the toolchain's <string.h>/<stdlib.h>/
-# <time.h> for the full libc declarations. The FROST sw/lib headers are named
-# string.h / stdlib.h / ... and would shadow the toolchain headers if their
-# directory were on the MITH compile include path, so compilation is split:
-#
-#   * FROST libc sources (sw/lib/src/*.c) and al_frost.c compile in isolation
-#     with -I../../lib/include, because they want the FROST headers.
-#   * MITH and workload sources compile with the MITH include dirs plus the
-#     toolchain's system headers, and never -I../../lib/include.
-#
-# All objects then link together: the libc definitions come from the FROST
-# objects (math from the toolchain's libc.a), and the MITH code saw the system
-# header declarations at compile time. sw/apps/riscv_tests/Makefile.bench
-# compiles frostlib_*.o separately for the same reason.
+# MITH and workloads need full system-header declarations. Compile them
+# without sw/lib/include, which would shadow string.h, stdlib.h, and others.
+# FROST libc and al_frost.c compile separately with -I../../lib/include.
+# Link their definitions with the MITH objects and the toolchain's math code.
 # ============================================================================
 
 # --- Workload / run selection ----------------------------------------------
@@ -88,10 +62,8 @@ SIZE    := $(RISCV_PREFIX)size
 NM      := $(RISCV_PREFIX)nm
 
 # --- CoreMark-PRO source (git submodule) -----------------------------------
-# Vendored as a pinned submodule at sw/apps/coremark_pro/coremark-pro, the way
-# sw/apps/coremark/coremark vendors eembc/coremark. The path is relative to this
-# Makefile's directory, which is where the build runs, including under cocotb.
-# Override it with `make CMP_DIR=/abs/path/to/coremark-pro`.
+# Pinned submodule, relative to this Makefile. Override with
+# make CMP_DIR=/abs/path/to/coremark-pro.
 CMP_DIR ?= coremark-pro
 
 # --- FROST target architecture / ABI (see arch.mk) --------------------------
@@ -102,21 +74,13 @@ ABI  := $(FROST_FP_ABI)
 # medany, as common.mk's FROST_CMODEL does.
 FROST_CMODEL := -mcmodel=medany
 
-# Clock that clock_gettime() in al_frost.c converts cycles with. The FPGA loader
-# passes the board clock; simulation builds use this default. MITH times a run
-# in whole milliseconds, and several simulation datasets finish their timed
-# region within one millisecond at the board clock, where they would report a
-# time of 0 and an infinite workloads/sec. At 30 MHz a millisecond is 30,000
-# cycles, which most of them exceed.
+# clock_gettime() converts cycles with this frequency; board flows override it.
+# A lower simulation clock lets short runs exceed MITH's 1 ms timer granularity.
 FPGA_CPU_CLK_FREQ ?= 30000000
 
-# Optimization level for every CoreMark-PRO translation unit and the link.
-# -O3 matches common.mk's default. EEMBC's util/make/gcc*.mak files use -O2,
-# but the coremark-pro README's "Run Rules" allow any build options as long as
-# every workload is compiled and linked with the same flags and the flags are
-# disclosed with published scores. OPT_LEVEL feeds BASE_FLAGS, which every
-# translation unit and the link share. Override it for A/B runs with
-# `make OPT_LEVEL=-O2`.
+# Share optimization flags across translation units and the link. CoreMark-PRO's
+# README "Run Rules" allows build options if applied uniformly and disclosed
+# with published scores. Override with make OPT_LEVEL=-O2 for comparisons.
 OPT_LEVEL ?= -O3
 
 # Source-debug profile for every workload, libc shim, startup and final link.
@@ -506,18 +470,12 @@ INTERPOSE_CFLAGS := $(MITH_CFLAGS) -DCMP_PGO_TRAINING=$(WL_PGO) \
                     '-DCOREMARK_PRO_RUN_ARGS="$(COREMARK_PRO_RUN_ARGS)"'
 
 # --- Linker / memory configuration -----------------------------------------
-# MEM_CONFIG selects the linker script and image split:
-#   bram (default): sw/common/link.ld. Code, data and stack sit in the 256 KiB
-#                   low BRAM. The heap and any opt-in .ddr_* sections, such as
-#                   radix2's FFT tables, sit in the DDR-backed 1 GiB cached
-#                   region at 0x8000_0000. sw.mem = the whole low-BRAM program.
-#   ddr:            sw/common/link_ddr.ld. Code, data and bss move to the
-#                   cached DDR region behind a ROM boot stub (crt0_ddr_boot.S);
-#                   the stack stays in low BRAM. The core resets at PC=0 in low
-#                   BRAM and far-jumps to the DDR-resident _start. sw.mem = the
-#                   ROM boot stub only; sw_ddr.mem = the whole program,
-#                   region-relative. Exercises the L1I fetch path plus the
-#                   D-side cached load/store path.
+# MEM_CONFIG selects the linker and image split:
+#   bram: link.ld puts the program in low BRAM, with heap and opt-in sections
+#         in DDR. sw.mem holds BRAM; sw_ddr.mem holds the DDR sections.
+#   ddr:  link_ddr.ld puts the program in DDR, with the stack in low BRAM.
+#         sw.mem holds the ROM boot stub; sw_ddr.mem holds the program.
+# DDR images use addresses relative to 0x8000_0000.
 MEM_CONFIG ?= bram
 
 ifeq ($(MEM_CONFIG),bram)
@@ -618,11 +576,8 @@ DDR_HEX_FILE        := sw_ddr.mem
 DDR_TXT_FILE        := sw_ddr.txt
 DISASSEMBLY_FILE    := sw.S
 
-# Workload/tier/tool/flag changes share output and object names. Make cannot
-# infer those command-line changes from timestamps, so keep one stamp file that
-# changes only when the configuration does, and make every compiled object
-# depend on it. This keeps shared MITH objects from carrying one workload's
-# defines into the next incremental build.
+# Shared objects depend on this stamp, rewritten only when configuration
+# changes, so incremental builds cannot reuse another workload's defines.
 EFFECTIVE_BUILD_CONFIG = WORKLOAD=$(WORKLOAD)|WORKLOAD_SRC=$(WORKLOAD_SRC)|COREMARK_PRO_RUN_ARGS=$(COREMARK_PRO_RUN_ARGS)|COREMARK_PRO_OFFICIAL=$(COREMARK_PRO_OFFICIAL)|COREMARK_PRO_TRACE=$(COREMARK_PRO_TRACE)|FROST_MALLOC_DISABLE_FREE=$(FROST_MALLOC_DISABLE_FREE)|FROST_MALLOC_GUARD_FREE=$(FROST_MALLOC_GUARD_FREE)|FROST_MALLOC_EVICT_FREE=$(FROST_MALLOC_EVICT_FREE)|FROST_MEMORY_FENCE_WRITES=$(FROST_MEMORY_FENCE_WRITES)|CMP_DIR=$(CMP_DIR)|MEM_CONFIG=$(MEM_CONFIG)|FROST_DEBUG=$(FROST_DEBUG)|FPGA_CPU_CLK_FREQ=$(strip $(FPGA_CPU_CLK_FREQ))|FROST_DEBUG_FLAGS=$(FROST_DEBUG_FLAGS)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|ARCH=$(ARCH)|ABI=$(ABI)|BASE_FLAGS=$(BASE_FLAGS)|MITH_CFLAGS=$(MITH_CFLAGS)|FROST_CFLAGS=$(FROST_CFLAGS)|INTERPOSE_CFLAGS=$(INTERPOSE_CFLAGS)|LDFLAGS=$(LDFLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|DDR_BOOT_STUB=$(DDR_BOOT_STUB)|DDR_SPLIT_SECTIONS=$(DDR_SPLIT_SECTIONS)|ALL_MITH_SRC=$(ALL_MITH_SRC)|COMPILED_OBJS=$(COMPILED_OBJS)
 shell_quote = '$(subst ','"'"',$(1))'
 

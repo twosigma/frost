@@ -32,17 +32,13 @@ APP_SIM_SETTINGS: dict[str, dict[str, str]] = {
     "coremark": {
         # Keep simulation short.
         "ITERATIONS": "1",
-        # At 20 kHz, 200k cycles count as ten seconds, so a one-iteration run of
-        # at least that length passes CoreMark's ten-second check, which would
-        # otherwise count an error and suppress the validation and score lines.
-        # Board runs use the real clock and ITERATIONS=14000.
+        # At 20 kHz, 200k cycles meet CoreMark's ten-second check, allowing
+        # validation and score output. Board runs use the real clock.
         "FPGA_CPU_CLK_FREQ": "20000",
     },
     "freertos_demo": {
-        # The demo waits for timer ticks. At 10 MHz the 1 ms tick is 10,000
-        # cycles, which keeps the run inside the default cycle budget; at the
-        # board clock a tick is about 322,000 cycles. Board runs use the real
-        # clock.
+        # A 10 MHz clock makes the 1 ms timer tick 10,000 cycles for simulation.
+        # Board runs use the real clock.
         "FPGA_CPU_CLK_FREQ": "10000000",
     },
 }
@@ -203,11 +199,9 @@ def compile_app(
             _report_command_failure(app_name, action, result)
             return False
 
-        # Both memory images must exist. The cocotb runner symlinks sw.mem and
-        # sw_ddr.mem for every app; a missing sw_ddr.mem would leave a dangling
-        # link and the simulation would run with zeroed DDR without complaint.
-        # Every app's build emits both files (sw_ddr.mem is a single zero word
-        # when the app has no DDR data).
+        # Both images are required: the runner symlinks both, and a missing
+        # DDR image can silently leave zeroed memory. Apps without DDR data
+        # emit a single zero word.
         for mem_name in ("sw.mem", "sw_ddr.mem"):
             if not (app_dir / mem_name).exists():
                 print(f"Error: {mem_name} not created for {app_name}", file=sys.stderr)

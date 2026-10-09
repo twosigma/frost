@@ -1,5 +1,4 @@
-# Build outputs: the payload, the packed boot images, the generated DTB and
-# shim, and the cached OpenSBI build (build/opensbi; see the Makefile).
+# Boot images and cached OpenSBI build (see Makefile).
 payload.elf
 payload.bin
 payload.S

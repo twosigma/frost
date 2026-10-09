@@ -18,26 +18,16 @@
  * Directed instret test: minstret counts every retired instruction, including
  * the ones that retire without an ordinary commit.
  *
- * Every measured block is straight-line code of 4-byte instructions, so the
- * number of instructions that retire between two points is their distance
- * divided by 4. A block starts with `csrr start, minstret`, and either ends
- * with a second minstret read or is cut short by an interrupt whose handler
- * reads minstret in its first instruction. In the second case mepc marks the
- * cut, and the count must equal (mepc - block start) / 4 wherever it lands.
+ * Each block starts with `csrr start, minstret` and ends with a second read
+ * or an interrupt. The handler reads minstret in its first instruction.
+ * Blocks measured by interrupts use straight-line 4-byte instructions, so
+ * their count must equal (mepc - block start) / 4.
  *
- *   1. NOPs: runs of `nop` and `c.nop` fill both slots of a fetch pair and
- *      whole pairs, at two alignments.
- *   2. MRET, FENCE.I and SFENCE.VMA, which each end in a full flush: an
- *      M-to-M return to the next instruction retires the MRET, and each fence
- *      retires once.
- *   3. A WFI that a timer interrupt ends. The timer margin sweeps the take
- *      across the block, and at least one take must find the WFI waiting
- *      (mepc past it: the WFI retired).
- *   4. A software interrupt raised by a store, followed by a device-register
- *      load. The load waits for the store to drain, and its interrupt shield
- *      holds off the take until the load commits, so the take shares its
- *      cycle with the next instruction's commit. At least one take must land
- *      after the load.
+ * The timer sweep must interrupt at least one waiting WFI (mepc past it).
+ * The software-interrupt test follows the MSIP store with a device load.
+ * The load waits for the store to drain and shields interrupts until it
+ * commits, allowing the interrupt to coincide with the next instruction's
+ * commit. At least one interrupt must land after the load.
  */
 
 #include <stdint.h>
@@ -94,7 +84,8 @@ __attribute__((naked, aligned(4))) static void instret_trap_handler(void)
 }
 
 /* Seven NOPs between two minstret reads: the reads differ by 8, the first
- * read and the seven NOPs. `pad` shifts the block by one instruction. */
+ * read and the seven NOPs. The second sequence shifts the block by one
+ * instruction; the third uses compressed NOPs. */
 static void nop_tests(void)
 {
     uint64_t a, b;

@@ -15,26 +15,18 @@
  */
 
 /*
- * PLIC directed test. Exercises the register file (reset values and
- * priority/enable/threshold WARL widths), the level gateway (claim /
- * complete / re-raise / spurious claim), threshold masking, priority 0
- * never interrupting, both contexts' EIP lines through the mip.MEIP and
- * mip.SEIP readbacks, an M-mode external interrupt that the handler
- * claims and completes, and completions from contexts that do not enable
- * the source, which must leave the gateway closed.
+ * PLIC register, gateway and interrupt-delivery tests.
  *
- * The level source is the ns16550 THRE interrupt (PLIC source 1): while
- * the UART transmit FIFO has room, setting IER[1] holds the level high and
- * clearing IER[1] drops it. Source 2 (the board pin) stays low
- * in simulation and is only register-tested. Self-checks over UART
- * (<<PASS>> / <<FAIL>>).
+ * Source 1 is the ns16550 THRE level: IER[1] asserts it while the UART TX
+ * FIFO has room. Source 2, the board pin, stays low in simulation and is
+ * only register-tested. Results are reported over UART.
  */
 
 #include <stdint.h>
 
 #include "trap.h"
 
-/* ---- minimal UART (UART_TX is provided by mmio.h via trap.h) ---- */
+/* ---- UART ---- */
 static void uart_putc(char c)
 {
     UART_TX = (uint8_t) c;
@@ -95,8 +87,7 @@ static void wait_tx_idle(void)
     }
 }
 
-/* Bounded mip poll. The path from a PLIC source to mip is a few registers
- * deep, so 20000 reads leave ample margin. */
+/* Allow for registered propagation from the PLIC source to mip. */
 static unsigned long poll_mip(unsigned long mask, unsigned long want)
 {
     for (int i = 0; i < 20000; i++) {
@@ -106,9 +97,8 @@ static unsigned long poll_mip(unsigned long mask, unsigned long want)
     return csr_read(mip) & mask;
 }
 
-/* The mask bits of mip, or of the pending word, seen set in any of 200
- * reads, for checks that a line or a gateway stays quiet. Both paths are a
- * few registers deep, so 200 reads leave ample margin. */
+/* Accumulate masked bits over 200 reads to detect transient assertions in
+ * mip or the pending word, allowing for registered propagation. */
 static unsigned long mip_seen(unsigned long mask)
 {
     unsigned long seen = 0;
@@ -237,11 +227,9 @@ int main(void)
     ok &= report("I meip-clear", poll_mip(MIP_MEIP, 0), 0);
     PLIC_EN_M = 0;
 
-    /* J: a completion counts only from a context that enables the source.
-     * Source 1 is claimed from M and its level stays high. A completion from
-     * S, which has it disabled since case H, and one from M after disabling
-     * it there must each leave the gateway closed; a completion from M with
-     * the source enabled reopens it. */
+    /* J: only a context that enables the source may complete it. Completions
+     * from disabled S and M contexts must leave the gateway closed; enabling
+     * M before completing must reopen it. */
     PLIC_EN_M = 0x2;
     NS16550_IER = 0x2;
     wait_tx_idle();

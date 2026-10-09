@@ -32,7 +32,7 @@
 
 #include "trap.h"
 
-/* ---- minimal UART (UART_TX is provided by mmio.h via trap.h) ---- */
+/* ---- UART ---- */
 static void uart_putc(char c)
 {
     UART_TX = (uint8_t) c;
@@ -65,9 +65,8 @@ static volatile uint32_t g_from_priv;  /* mstatus.MPP at trap entry = prev priv 
 __attribute__((naked, aligned(4))) static void mret_timer_trap_handler(void)
 {
     __asm__ volatile("csrr t0, mcause\n"
-                     /* la (auipc-based under medany): absolute lui %hi cannot
-                      * materialize the ddr build's 0x8xxx_xxxx data addresses
-                      * at lp64. */
+                     /* PC-relative la reaches DDR; RV64 lui sign-extends
+                      * addresses in the 0x8xxx_xxxx range. */
                      "la   t1, g_cause\n"
                      "ld   t2, 0(t1)\n"
                      "li   t3, -1\n" /* sentinel: only the first trap records */
@@ -82,7 +81,7 @@ __attribute__((naked, aligned(4))) static void mret_timer_trap_handler(void)
                      "la   t1, g_from_priv\n"
                      "sw   t0, 0(t1)\n"
                      "2:\n"
-                     "li   t1, 0x4000001C\n" /* MTIMECMP_HI: push compare to max to ack timer */
+                     "li   t1, 0x4000001C\n" /* MTIMECMP_HI: postpone the timer */
                      "li   t0, -1\n"
                      "sw   t0, 0(t1)\n"
                      "csrr t0, mscratch\n" /* continuation set by run_in_umode_pending_timer */
@@ -117,9 +116,8 @@ static unsigned long run_in_umode_pending_timer(void (*ufn)(void))
     return g_cause;
 }
 
-/* U-mode body: spin in place. naked so its first and only instruction is the
- * jump, which makes the architectural resume PC of any preempting interrupt
- * exactly &u_spin. */
+/* Naked so an interrupt that preempts u_spin saves &u_spin in mepc; the
+ * handler then redirects to the M-mode continuation. */
 __attribute__((naked)) static void u_spin(void)
 {
     __asm__ volatile("j .");
@@ -136,10 +134,8 @@ int main(void)
     csr_clear(mstatus, MSTATUS_MPIE);
     enable_timer_interrupt(); /* mie.MTIE = 1 */
 
-    /* Make the machine timer permanently pending before the MRET-to-U so it
-     * preempts at the first eligible cycle after privilege drops to U. That can
-     * be before any U instruction commits, so interrupt_resume_pc must already
-     * hold the MRET target, not the MRET's own PC. */
+    /* Keep the timer pending through MRET so it preempts U-mode as soon as
+     * eligible, possibly before any U instruction commits. */
     set_timer_cmp(0); /* mtime >= 0 always => MTIP asserted */
 
     unsigned long cause = run_in_umode_pending_timer(&u_spin);

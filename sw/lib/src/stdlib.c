@@ -114,19 +114,16 @@ long strtol(const char *s, char **endptr, int base)
     return -(long) result;
 }
 
-/* Convert string to integer */
 int atoi(const char *s)
 {
     return (int) strtol(s, NULL, 10);
 }
 
-/* Convert string to long */
 long atol(const char *s)
 {
     return strtol(s, NULL, 10);
 }
 
-/* Absolute value of an integer */
 int abs(int n)
 {
     return n < 0 ? -n : n;

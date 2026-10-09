@@ -12,10 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Directed "skipped fall-through fetch window" reproducer with a self-defined
-# _start (no crt0.S). M covers the driver's remu and the divu backpressure
-# subtest, C the compressed code in every victim, and Zba+Zbb the sh1add.uw and
-# minu in subtest G, a byte-for-byte copy of compiled zlib code.
+# Skipped fall-through fetch window reproducer with its own _start (no crt0.S).
+# M covers remu and divu; C covers compressed instructions. Subtest G uses
+# Zba's sh1add.uw and Zbb's minu to match the compiled zlib instruction layout.
 include ../../common/arch.mk
 ARCH := $(FROST_XLEN_PREFIX)imac_zicsr_zba_zbb
 ABI := $(FROST_INT_ABI)

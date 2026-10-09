@@ -15,16 +15,11 @@
  */
 
 /*
- * Cached-DDR cold-vs-warm read divergence probe. A read of either 32-bit half
- * of a dword must return the same data from an L1D hit as from a miss served
- * by the refill.
+ * Cached-DDR read divergence probe. Each half of a dword must return the
+ * same value on L1D hits and refills.
  *
- * Each round fills a buffer, dirties its direct-mapped aliases to evict it,
- * records cold reads, rereads warm, and compares both with expected.
- * Shapes include ascending and descending 32-bit reads, odd-half-first reads,
- * 64-bit reads, and a cold half-store followed by both half-loads. A mismatch
- * reports shape, address, and the values read with their expected values: the
- * cold and warm reads, or the stored half and its neighbor.
+ * Each round fills a buffer, evicts it through direct-mapped aliases, then
+ * compares cold and warm reads with the expected values.
  */
 
 #include <stdint.h>
@@ -36,7 +31,7 @@
 #define N_ROUNDS 64u
 #endif
 
-/* Clear of restore_window_stress frames; +0x20000 aliases in the 128 KiB L1D. */
+/* +0x20000 aliases in the 128 KiB L1D. */
 #define BUF_BASE 0x82900000u
 #define ALIAS_XOR 0x20000u
 #define WORDS 512u /* 2 KiB, DTB-sized */
@@ -68,8 +63,7 @@ static void fill_pattern(uint32_t round)
 
 static void evict_buffer(uint32_t round)
 {
-    /* Dirty every alias line so each buffer line is evicted (write-back +
-     * replace in the direct-mapped L1D), making the next reads true misses. */
+    /* Dirty aliases evict every buffer line from the direct-mapped L1D. */
     for (uint32_t i = 0; i < WORDS; i += LINE_BYTES / 4u)
         alias[i] = i ^ round;
     __asm__ volatile("fence" ::: "memory");
@@ -140,8 +134,8 @@ static void shape_desc32(uint32_t round)
 
 static void shape_oddfirst(uint32_t round)
 {
-    /* Read the %8==4 half of every dword before its %8==0 half: the cold miss
-     * is triggered by the high half, the low half then hits the fresh fill. */
+    /* Read high halves first so each line's first miss requests a high half;
+     * the low halves then hit the refill. */
     fill_pattern(round);
     evict_buffer(round);
     for (uint32_t i = 1; i < WORDS; i += 2u)
@@ -175,11 +169,10 @@ static void shape_dword(uint32_t round)
 
 static void shape_store_forward(uint32_t round)
 {
-    /* Store one half of each dword of the evicted buffer, then immediately
-     * load both halves: the stored half must read back the new value and the
-     * neighbor half the refilled one. The stored half alternates within each
-     * line, and the dword that opens a line stores its low half in even lines
-     * and its high half in odd lines. */
+    /* After eviction, store one half and load both. The stored half must
+     * return the new value; its neighbor must retain the refilled value.
+     * Alternate halves within each line, starting low on even lines and
+     * high on odd lines. */
     fill_pattern(round);
     evict_buffer(round);
     for (uint32_t i = 0; i < WORDS; i += 2u) {

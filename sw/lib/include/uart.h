@@ -61,16 +61,13 @@ void uart_printf(const char *fmt, ...);
 /* UART Receive Functions                                                    */
 /* ========================================================================= */
 
-/* Check if received data is available in the RX buffer
- * Returns: 1 if data available, 0 if buffer empty */
+/* Return 1 if RX data is available, or 0 if the buffer is empty. */
 int uart_rx_available(void);
 
-/* Receive a single character from UART (blocking)
- * Waits until data is available, then returns the received byte */
+/* Wait for and return one received byte. */
 char uart_getchar(void);
 
-/* Receive a single character from UART (non-blocking)
- * Returns: received byte if available, -1 if no data available */
+/* Return a received byte, or -1 if no data is available. */
 int uart_getchar_nonblocking(void);
 
 /* Read a line from UART into buffer (blocking)

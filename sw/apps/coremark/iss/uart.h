@@ -17,10 +17,8 @@
 #ifndef FROST_ISS_UART_H
 #define FROST_ISS_UART_H
 
-/* Stands in for sw/lib/include/uart.h so the app's unmodified ../core_portme.h
- * compiles in count_instructions.py's build, which does not put sw/lib/include
- * on the include path. uart_printf is a sink (see stub.c). Reusing the app's
- * port header rather than copying it keeps the two builds from drifting. */
+/* Let ../core_portme.h compile without sw/lib/include in the Spike build.
+ * uart_printf is a sink defined in stub.c. */
 int uart_printf(const char *format, ...);
 
 #endif /* FROST_ISS_UART_H */

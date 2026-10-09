@@ -23,9 +23,8 @@
  * delivery waits for the csrsi. Re-arm periods of 24..87 cycles sweep the
  * deadline phase across WFI, csrsi, and MRET.
  *
- * Each idle iteration arms one deadline and takes one trap, so g_jiffies ends
- * at the iteration count. The test tolerates a shortfall of 4; anything more
- * is a lost tick.
+ * Expect one trap per idle iteration, with each trap re-arming the timer.
+ * Allow g_jiffies to fall at most four ticks behind the iteration count.
  */
 
 #include <stdint.h>
@@ -68,9 +67,8 @@ __attribute__((naked, aligned(4))) static void clint_like_handler(void)
                      "sd   t2, 16(sp)\n"
                      "li   t0, 0x80\n"     /* mie.MTIE */
                      "csrrc x0, mie, t0\n" /* csr_clear(mie, MTIE) on handler entry */
-                     /* la (auipc-based under medany): absolute lui %hi cannot
-                      * materialize the ddr build's 0x8xxx_xxxx data addresses
-                      * at lp64. */
+                     /* PC-relative la reaches DDR; RV64 lui sign-extends
+                      * addresses in the 0x8xxx_xxxx range. */
                      "la   t0, g_jiffies\n"
                      "lw   t1, 0(t0)\n"
                      "addi t1, t1, 1\n"
@@ -121,9 +119,7 @@ int main(void)
     uart_hex(jiffies);
     uart_puts("\r\n");
 
-    /* Every WFI wake produces one tick. Falling more than 4 behind means a
-     * machine-timer trap was dropped: a lost tick, and timekeeping that no
-     * longer advances. */
+    /* Allow at most four fewer ticks than idle iterations. */
     if (jiffies + 4u >= ITERS) {
         uart_puts("<<PASS>>\r\n");
     } else {

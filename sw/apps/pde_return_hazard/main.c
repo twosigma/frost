@@ -15,20 +15,13 @@
  */
 
 /*
- * Return-value hazard in a Linux pde_subdir_find()-shaped epilogue: the
- * function computes its result in s1 (the rb_node pointer minus the node's
- * offset in proc_dir_entry), moves it to a0, and restores the caller's s1 right
- * after. The caller must receive the proc_dir_entry base, never the node pointer.
+ * Test a pde_subdir_find()-style return hazard. The epilogue subtracts the
+ * rb_node offset from s1, copies s1 to a0, then restores the caller's s1.
+ * The caller must receive the proc_dir_entry base, never the node pointer.
  *
- * The test runs the bare epilogue, then fake /proc lookups: pde_subdir_find()
- * walks a small rb-tree of proc_dir_entry-shaped records, and the result passes
- * through a proc_lookup_de()-style reference-count AMO to a fake
- * proc_get_inode(), which records the pointer and the fields it reads. Lookups
- * cover a one-entry tree, a five-entry tree, and an entry written by a burst of
- * mixed-width stores just before the lookup; the last two also run after cache
- * churn. Halfword and word store-to-load forwarding cases, one after an AMO, run
- * last. The Makefile forces MEM_CONFIG=ddr, so code and static data are in
- * cached DDR.
+ * Exercise the epilogue through fake /proc lookups and reference-count AMOs,
+ * including freshly stored records and store-to-load forwarding. The
+ * Makefile forces code and static data into cached DDR.
  */
 
 #include <stdint.h>
@@ -433,12 +426,9 @@ static void setup_multi_proc_tree(void)
     init_multi_pde(MULTI_VERSION, version_name);
 
     /*
-     * A small rb-tree keyed (namelen, then name) like /proc root. set_rb_links
-     * takes (node, right, left). The lookup walk in pde_subdir_find_asm compares
-     * length first: a search name shorter than the node descends left, longer
-     * descends right. "maps" (len 4) is shorter than every other node (len 7),
-     * so it must live on the left spine to be reachable: loadavg.left=cmdline,
-     * cmdline.left=maps.
+     * Order the tree by name length, then name. set_rb_links takes
+     * (node, right, left). "maps" has length 4; all other names have length 7,
+     * so it must be on the left spine: loadavg.left=cmdline, cmdline.left=maps.
      */
     write32(root_pde, PDE_SUBDIR_ROOT_OFFSET, multi_node(MULTI_LOADAVG));
     set_rb_links(MULTI_LOADAVG, MULTI_MEMINFO, MULTI_CMDLINE);

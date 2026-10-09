@@ -15,62 +15,22 @@
  */
 
 /*
- * PMA access-fault directed test. Out-of-map physical addresses, including
- * any with bits [63:32] set, must raise precise access faults with exact
- * mepc/mtval instead of aliasing onto the map. Self-checks over UART
- * (<<PASS>>/<<FAIL>>):
+ * PMA access-fault tests. Invalid physical addresses, including any with
+ * bits [63:32] set, must fault with exact mepc and mtval rather than alias.
+ * Aligned, untranslated stores to unserved addresses in the device quadrant
+ * [0x4000_0000, 0x8000_0000) are ignored without trapping (misalignment
+ * checks still apply).
  *
- *   Physical map: the BRAM code region [0, 128 KiB) and cached DDR
- *   [0x8000_0000, 0xC000_0000) take fetch, loads, stores and atomics. The
- *   rest of the BRAM, [128 KiB, 256 KiB), takes loads, stores and atomics
- *   but no fetch. The device windows, the MMIO registers [0x4000_0000,
- *   0x4003_1000) and the PLIC [0x4400_0000, 0x4440_0000), take loads and
- *   stores only. Everything else faults, including the rest of the device
- *   quadrant [0x4000_0000, 0x8000_0000).
+ * Physical map:
+ *   [0, 128 KiB) BRAM and [0x8000_0000, 0xC000_0000) DDR support fetch,
+ *   loads, stores and atomics. BRAM [128 KiB, 256 KiB) supports loads, stores
+ *   and atomics, but no fetch.
+ *   MMIO [0x4000_0000, 0x4003_1000) and PLIC [0x4400_0000, 0x4440_0000)
+ *   support loads and stores, but no fetch or atomics.
  *
- *   A. Load from a wild 64-bit address        -> cause 5, mtval exact.
- *   B. Load from the BRAM hole (0x0010_0000)  -> cause 5.
- *   C. Load from above cached DDR (0xC000_0000) -> cause 5.
- *   D. Load from [63:32]-aliased BRAM address -> cause 5 (0x1_0000_1000
- *      must fault, not read BRAM+0x1000).
- *   E. Store to a wild address                -> cause 7, mtval exact.
- *   F. AMO to the BRAM hole                   -> cause 7 (an AMO reports
- *      the store/AMO access fault).
- *   G. LR from a wild address                 -> cause 5.
- *   H. Misaligned load in-map                 -> cause 4;
- *      misaligned and out-of-map              -> cause 5 (the access fault
- *      takes priority over misalignment).
- *   I. JALR to a wild 64-bit target           -> cause 1, mepc = mtval =
- *      the exact wild target (the jump itself must not fault; the fetch
- *      does).
- *   J. JALR into the BRAM hole                -> cause 1.
- *   J2. JALR into BRAM above the code region  -> cause 1, mepc = mtval =
- *      0x0002_0000 (data accesses reach it; fetch does not).
- *   K. JALR into the device quadrant          -> cause 1 (no fetch from
- *      MMIO).
- *   L. In-map accesses do not trap: device reads (UART status, a PLIC
- *      priority, the last dwords of the MMIO and PLIC windows) and a
- *      load/store round trip on a cached-DDR word.
- *   L2. An AMO on a stack word, in the BRAM above the code region, does not
- *      trap and updates the word.
- *   M. Atomics to a device register fault before any device access: AMO
- *      -> cause 7, LR -> cause 5, SC -> cause 7 (also while a reservation
- *      on RAM is held), mtval exact, and the ns16550 scratch register keeps
- *      its value. An AMO to an unserved device address that aliases a
- *      low-BRAM word -> cause 7, and the word is unchanged.
- *   N. Plain loads from unserved device addresses fault (lw/ld -> cause 5
- *      at the address that aliases the low-BRAM word, and loads just past the
- *      MMIO window, on both sides of the PLIC, and at the top of the
- *      quadrant). With translation off, stores there issue and the device
- *      bus ignores them: sw/sd to the aliasing address and a store whose
- *      immediate carries it past the end of the MMIO window do not trap, and
- *      the low-BRAM word is unchanged.
- *
- * Each case uses the M-mode bounce from umode_test: the mtvec handler records
- * mcause/mepc/mtval for the first trap of the case, then returns to the
- * continuation stashed in mscratch. Every trigger is followed by an ecall, so
- * a data access that does not fault records cause 11. The JALR triggers jump
- * away from it, so they have no such fallback.
+ * The M-mode handler records the first trap and returns to the continuation
+ * in mscratch. An ecall after each data-access trigger records cause 11 if
+ * the access does not fault. JALR triggers leave that fallback behind.
  */
 
 #include <stdint.h>

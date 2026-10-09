@@ -15,13 +15,8 @@
  */
 
 /**
- * memory.c: heap allocation for bare-metal use, two ways.
- *
- * 1. Arena: bump-pointer allocation, reset in bulk with arena_clear(), for
- *    allocations that share a lifetime (per frame, per request).
- *
- * 2. malloc/free: first-fit freelist allocator that coalesces adjacent free
- *    blocks, for allocations with mixed lifetimes.
+ * Arena allocation and a first-fit, coalescing malloc/free allocator.
+ * Arenas reset in bulk with arena_clear(); malloc/free supports mixed lifetimes.
  *
  * Both draw from one bounds-checked bump-pointer heap that grows from
  * _heap_start toward _heap_end (both defined in the linker script). _sbrk()
@@ -195,10 +190,8 @@ void arena_clear(arena_t *arena)
 void arena_release(arena_t *arena)
 {
     (void) arena;
-    /* No-op. The heap is a bump pointer (heap_grow/_sbrk) and cannot reclaim a
-     * region from the middle. Arenas suit allocations that last the whole program
-     * or are reset in bulk with arena_clear(); use malloc/free when individual
-     * blocks must be returned. */
+    /* The bump-pointer heap cannot reclaim individual arenas. Use arena_clear()
+     * to reuse one, or malloc/free for allocations that must be returned. */
 }
 
 /* ========================================================================== */
@@ -248,7 +241,6 @@ void *malloc(size_t size)
             result = (char *) slot + slot->size + ALIGNED_METADATA_SIZE;
 
             if (slot->size == 0) {
-                /* Delete this node from the freelist */
                 *p = slot->next;
             }
             break;
@@ -304,9 +296,7 @@ void free(void *ptr)
         return;
 #if FROST_MALLOC_DISABLE_FREE
     /*
-     * Diagnostic mode for one-shot heap-heavy bare-metal workloads.  Leaking
-     * freed blocks avoids allocator reuse while leaving malloc/realloc call
-     * sites intact, which helps isolate stale-cache/reuse corruption.
+     * Leak freed blocks to isolate corruption caused by allocator reuse.
      */
     (void) ptr;
 #else
@@ -344,7 +334,6 @@ void free(void *ptr)
 #endif
 }
 
-/* Allocate and zero an array of nmemb elements of `size` bytes each. */
 void *calloc(size_t nmemb, size_t size)
 {
     size_t total = nmemb * size;
@@ -357,7 +346,6 @@ void *calloc(size_t nmemb, size_t size)
     return p;
 }
 
-/* Resize a previously malloc'd block, preserving its existing contents. */
 void *realloc(void *ptr, size_t size)
 {
     if (ptr == NULL)
@@ -367,9 +355,7 @@ void *realloc(void *ptr, size_t size)
         return NULL;
     }
 
-    /* Recover the old payload size from the metadata malloc wrote ahead of the
-     * block, so the copy covers exactly the old payload and never reads past
-     * its end. */
+    /* The metadata bounds the copy to the old allocated payload. */
     struct metadata *md = (struct metadata *) ptr - 1;
     uint32_t old_payload = md->size - ALIGNED_METADATA_SIZE;
 

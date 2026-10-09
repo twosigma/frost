@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# ns16550a UART face directed test.
+# ns16550a UART interface test.
 SRC_C := main.c
 include ../../common/common.mk

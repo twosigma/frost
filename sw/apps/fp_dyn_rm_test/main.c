@@ -17,29 +17,17 @@
 /*
  * Dynamic rounding mode directed test. An FP instruction whose rm field is
  * DYN (111) reads frm, and frm values 5 to 7 are reserved: FROST raises
- * illegal-instruction for such an instruction, as it does for the reserved
- * static modes. Self-checks over UART (<<PASS>>/<<FAIL>>):
+ * illegal-instruction with mcause 2, mepc at the instruction and mtval 0.
+ * The destination and fflags must remain unchanged. Static rounding modes
+ * and instructions without an rm field ignore frm.
  *
- *   A-F, K, L. With frm = 5, 6 or 7, a DYN add (under each of the three),
- *      double multiply, square root, FMA, float-to-int and int-to-float
- *      conversion, divide, and widening conversion each trap with mcause 2,
- *      mepc at the instruction and mtval 0. The destination keeps its old
- *      value and fflags stay clear (the divide would otherwise raise DZ).
- *      A trapping instruction still executes on its FP unit first: frm 5
- *      and 6 reach the unit as the rounding mode and frm 7 reaches it as
- *      RNE, so the square root and divide run under both. The int-to-float
- *      conversion reads x0, so its rs1 field is 0.
- *   G. Static rounding modes ignore frm: with frm = 5, fadd.s rne rounds to
- *      nearest, and with frm = 7, fadd.s rup rounds up.
- *   H. Instructions without an rm field (fsgnj.s, feq.s, fmin.s) do not
- *      trap with frm = 7.
- *   I, J, M. With a valid frm, DYN uses it: fadd.s rounds up under RUP and
- *      to nearest under RMM, and fcvt.w.s of 2.5 gives 3 under RUP.
+ * A trapping instruction still executes on its FP unit first: frm 5 and 6
+ * reach the unit unchanged; frm 7 becomes RNE. Square root and divide test
+ * both paths. The int-to-float conversion reads x0 (rs1 = 0).
  *
- * Each case uses the M-mode bounce from pma_fault_test: the mtvec handler
- * records mcause/mepc/mtval for the first trap of the case and returns to the
- * continuation stashed in mscratch. An ecall follows the instruction under
- * test, so an instruction that does not trap records cause 11.
+ * The mtvec handler records the first trap's mcause, mepc and mtval and
+ * returns to the continuation in mscratch. An ecall follows the instruction
+ * under test, so an instruction that does not trap records cause 11.
  */
 
 #include <stdint.h>

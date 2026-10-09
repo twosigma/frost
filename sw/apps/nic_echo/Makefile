@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# NIC echo: frames from the wire come back out, driven like the driver.
+# Interrupt-driven NIC frame echo.
 SRC_C   := ../../lib/src/uart.c main.c
 include ../../common/common.mk

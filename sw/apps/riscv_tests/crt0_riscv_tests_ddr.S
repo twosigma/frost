@@ -1,18 +1,7 @@
-// FROST ROM boot stub for the riscv-tests DDR memory config.
-//
-// In the ddr config the test image is linked into the cached DDR region: the
-// _start from RVTEST_CODE_BEGIN, env_v/entry.S (ENV=v), or crt0_bench.S, plus
-// the code and data. This stub is the only code left in ROM, where the core
-// resets at PC=0. It far-jumps to the DDR-resident _start, which is beyond JAL
-// range, hence the register jump. The bram config does not link this stub;
-// there, _start already sits at 0x0.
-//
-// Under lp64 the DDR-resident _start sits about 2 GiB above this stub, beyond
-// PCREL_HI20 reach (la) and medlow's absolute lui range. _start is the DDR
-// region base itself (linker ORIGIN 0x8000_0000), so the stub builds it as a
-// constant with lui and slli, needing no relocation and no data-side load from
-// the boot ROM. link_riscv_tests_ddr.ld and link_riscv_tests_v.ld ASSERT that
-// placement.
+// Reset stub for the DDR configuration. Jump from PC=0 to _start at
+// 0x8000_0000, beyond JAL and RV64 PCREL_HI20 reach. Construct the address
+// without a relocation or ROM data load. link_riscv_tests_ddr.ld and
+// link_riscv_tests_v.ld assert that _start is at the DDR origin.
 
     .section .boot, "ax", @progbits
     .globl _frost_riscv_tests_boot

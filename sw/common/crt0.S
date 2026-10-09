@@ -38,14 +38,9 @@ _start:
     addi    t0, t0, 4
     j       5b
 
-    // Zero the cached-region BSS (.ddr_bss). Unless the linker script places
-    // zero-init sections in the DDR-backed cached region, the two bounds are
-    // equal and the loop does not run; the freertos scripts instead PROVIDE
-    // both symbols as 0.
-    // lp64: la (auipc+addi) cannot reach the 0x8xxx_xxxx cached region from
-    // the low-BRAM .init, because the displacement exceeds PCREL_HI20's +2 GiB
-    // reach. Load the bounds from a local literal pool of absolute dwords
-    // instead, as the arch_test boot stub (crt0_arch_test.S) does.
+    // Zero .ddr_bss; equal bounds skip the loop. FreeRTOS scripts provide
+    // both bounds as 0. Load absolute dwords: from low BRAM, la cannot reach
+    // DDR beyond PCREL_HI20's positive range on RV64.
 6:  ld      t0, ddr_bss_bounds
     ld      t1, ddr_bss_bounds+8
 8:  bgeu    t0, t1, 9f

@@ -15,11 +15,10 @@
  */
 
 /*
- * Cached store-to-load visibility across the trap path, in the Linux
- * handle_exception pattern. Pointers round-trip through sd/ld, the REG_S/REG_L
- * width of the rv64 handle_exception. A 32-bit sw/lw round trip would
- * sign-extend a pointer with bit 31 set (any DDR address) to an address outside
- * the physical map, and the frame saves through it would take access faults.
+ * Test cached store-to-load visibility across Linux-style handle_exception.
+ * Save pointers with sd/ld, matching RV64 REG_S/REG_L. Using sw/lw would
+ * sign-extend DDR pointers with bit 31 set outside the physical map, causing
+ * access faults during frame saves.
  *
  * The handler increments cached g_ctr and main waits for it to reach TARGET.
  * A store hidden from later loads stalls the count, and an mtime watchdog
@@ -66,10 +65,9 @@ static void clint_arm(uint64_t cmp)
     CLINT_MTIMECMP_HI = (uint32_t) (cmp >> 32);
 }
 
-/* Match the rv64 handle_exception: swap tp/mscratch; store sp at 8(tp) and
- * 16(tp) (REG_S = sd); reload sp from 8(tp) (REG_L = ld); then save GPRs to
- * that stack. main poisons 8(tp) before every trap, so if a reload misses the
- * store to 8(tp), sp is invalid and the saves re-trap. */
+/* Swap tp with mscratch, save sp at 8(tp) and 16(tp), then reload it from
+ * 8(tp) before saving GPRs. Main poisons that slot before every trap, so a
+ * stale reload gives an invalid sp and the saves trap again. */
 __attribute__((naked, aligned(4))) static void ctr_entry(void)
 {
     __asm__ volatile("csrrw tp, mscratch, tp\n" /* kernel: tp=0, mscratch=old tp(&g_percpu) */
@@ -78,7 +76,7 @@ __attribute__((naked, aligned(4))) static void ctr_entry(void)
                      "sd    sp, 8(tp)\n"    /* *(tp+8) = sp */
                      "1:\n"
                      "sd    sp, 16(tp)\n"
-                     "ld    sp, 8(tp)\n" /* sp = *(tp+8)  <-- cached store->load INTO sp */
+                     "ld    sp, 8(tp)\n" /* Reload the cached sp before using it. */
                      "addi  sp, sp, -64\n"
                      "sd    ra, 0(sp)\n" /* GPR saves to the reloaded sp (fault if sp bad) */
                      "sd    t0, 8(sp)\n"

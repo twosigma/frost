@@ -29,15 +29,10 @@ class CoremarkProProgram:
     workload: str
     description: str
     # -v0 iteration count per board (keys match BOARD_CONFIG in load_software.py).
-    # Each is calibrated so the score run clears CoreMark-PRO's 10 s score-rule
-    # minimum on that board, with at least ~0.1 s headroom where integer
-    # granularity permits; fpga/sweep_coremark_pro.py warns when a run falls
-    # short. Each newly supported board needs its own calibration.
+    # Calibrate each board above the 10 s score-rule minimum, with about 0.1 s
+    # margin where possible. fpga/sweep_coremark_pro.py warns on short runs.
     hardware_iterations: dict[str, int]
-    # A workload can need substantially more wall time than its measured score
-    # interval because the hardware timeout also covers building, loading, and
-    # untimed setup. Board-specific floors keep those runs from being mistaken
-    # for hangs without weakening the common timeout for every other workload.
+    # Per-board timeout floors include building, loading, and untimed setup.
     hardware_timeout_minimums: dict[str, float] = field(default_factory=dict)
     hardware_supported: bool = True
     hardware_unsupported_reason: str = ""
@@ -54,7 +49,7 @@ class CoremarkProProgram:
 
     @property
     def simulation_run_args(self) -> str:
-        """Return no run args; simulation keeps the verified single-iteration run."""
+        """Use the default single-iteration verification run in simulation."""
         return ""
 
     def hardware_performance_run_args(self, board: str) -> str:
@@ -127,11 +122,9 @@ COREMARK_PRO_PROGRAMS = (
         workload="zip-test",
         description="CoreMark-PRO zlib workload",
         # ~3.3 MiB heap, satisfied by the DDR-backed cached region.
-        # Before the timed interval, the official 1 MiB input generator builds
-        # its input with repeated strcat calls, an O(n^2) setup that takes
-        # several minutes on X3. The source must stay conforming, so the
-        # timeout floor gives the hardware run time to reach the scored
-        # workload.
+        # The official 1 MiB input generator uses repeated strcat calls.
+        # Allow time for its quadratic untimed setup without changing the
+        # conforming source.
         hardware_iterations={"x3": 27},
         hardware_timeout_minimums={"x3": 600.0},
     ),

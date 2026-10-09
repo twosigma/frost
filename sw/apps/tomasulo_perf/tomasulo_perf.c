@@ -15,35 +15,12 @@
  */
 
 /**
- * Measures Zicntr cycle/instret IPC across dependent and independent chains.
- * The comparison shows out-of-order latency hiding and available ILP. IPC is
- * reported as IPC*100 (150 means 1.50).
+ * Measure cycle/instret IPC across dependent and independent chains to
+ * compare latency hiding. IPC*100 = 150 means 1.50 instructions per cycle.
  *
- * Benchmarks (integer):
- *   1. Dependent ADD chain      (worst-case ILP: serialized)
- *   2. Independent ADD chains   (best-case ILP: fully parallel)
- *   3. Dependent MUL chain      (long-latency serialized)
- *   4. Independent MUL chains   (long-latency parallel)
- *   5. Mixed MUL + ADD          (latency hiding)
- *   6. Load-store throughput    (memory subsystem)
- *   7. Branch-heavy loop        (branch prediction + OOO)
- *
- * Benchmarks (floating-point, double-precision):
- *   8. Dependent FADD.D chain   (FP ALU serialized)
- *   9. Independent FADD.D chains (FP engine takes one at a time)
- *  10. Dependent FMUL.D chain   (FP MUL serialized)
- *  11. Independent FMUL.D chains (FP engine takes one at a time)
- *  12. Dependent FMADD.D chain  (fused multiply-add serialized)
- *  13. Mixed FP + INT           (cross-unit parallelism)
- *
- * Benchmarks (atomics):
- *  14. Load + younger AMOADD.W  (head-load wait with an AMO in flight)
- *
- * With TOMASULO_PERF_ENABLE_PROFILE=1 and the counters present, each report
- * also checks that the hardware reports every snapshot counter (0-105), that
- * the head-load wait split adds up (counters 90, 92 and 93 sum to 86; 102, 103
- * and 105 sum to 93) and that the reserved counters (12, 13, 50, 51, 61, 62,
- * 74, 75, 89, 91 and 104) read 0. A failed check ends the run with <<FAIL>>.
+ * With TOMASULO_PERF_ENABLE_PROFILE=1 and counters present, also require
+ * all legacy snapshot counters, check that head-load wait splits sum to
+ * their totals, and check that reserved counters read zero.
  */
 
 #include "csr.h"
@@ -167,7 +144,6 @@ int main(void)
     /* ===================================================================== */
     /* Benchmark 1: Dependent ADD chain (100 instructions)                   */
     /* Each ADD reads the result of the previous one, so there is no ILP.    */
-    /* This is the baseline case: OOO execution cannot help.                 */
     /* ===================================================================== */
     uart_printf("Bench 1: Dependent ADD chain (100 instrs)\n");
     BENCH_PROFILE_BEGIN();
@@ -187,8 +163,7 @@ int main(void)
 
     /* ===================================================================== */
     /* Benchmark 2: Independent ADD chains (4 x 25 = 100 instructions)       */
-    /* 4 chains with no cross-dependencies, ideal for OOO execution.         */
-    /* IPC should be higher than Bench 1 if OOO is working.                  */
+    /* Four chains have no dependencies between them. */
     /* ===================================================================== */
     uart_printf("Bench 2: Independent ADD chains (4x25 = 100 instrs)\n");
     BENCH_PROFILE_BEGIN();
@@ -214,7 +189,6 @@ int main(void)
 
     /* ===================================================================== */
     /* Benchmark 3: Dependent MUL chain (50 instructions)                    */
-    /* MUL has multi-cycle latency, so a dependent chain is very slow.       */
     /* Multiply by 1 to keep the value stable (avoids overflow).             */
     /* ===================================================================== */
     uart_printf("Bench 3: Dependent MUL chain (50 instrs)\n");
@@ -265,7 +239,6 @@ int main(void)
     /* ===================================================================== */
     /* Benchmark 5: Mixed MUL + independent ADD (50 pairs = 100 instrs)      */
     /* Tests whether short-latency ADDs can execute while MUL is in flight.  */
-    /* An OOO machine should overlap the ADD with the MUL stall.             */
     /* ===================================================================== */
     uart_printf("Bench 5: Mixed MUL+ADD (50 pairs = 100 instrs)\n");
     BENCH_PROFILE_BEGIN();
@@ -348,7 +321,6 @@ int main(void)
     /* ===================================================================== */
     /* Benchmark 8: Dependent FADD.D chain (100 instructions)                */
     /* Each FADD.D reads the result of the previous one, so there is no ILP. */
-    /* FP analogue of Bench 1.                                               */
     /* ===================================================================== */
     uart_printf("Bench 8: Dependent FADD.D chain (100 instrs)\n");
     {
@@ -369,9 +341,8 @@ int main(void)
 
     /* ===================================================================== */
     /* Benchmark 9: Independent FADD.D chains (4 x 25 = 100 instructions)    */
-    /* 4 chains with no cross-dependencies, ideal for OOO execution.         */
-    /* FP analogue of Bench 2. The FP engine runs one operation at a time,   */
-    /* so the chains cannot overlap.                                         */
+    /* Four chains have no dependencies between them. */
+    /* The FP engine runs one operation at a time; these cannot overlap. */
     /* ===================================================================== */
     uart_printf("Bench 9: Independent FADD.D chains (4x25 = 100 instrs)\n");
     {
@@ -396,8 +367,7 @@ int main(void)
 
     /* ===================================================================== */
     /* Benchmark 10: Dependent FMUL.D chain (50 instructions)                */
-    /* FMUL.D has multi-cycle latency, so a dependent chain is very slow.    */
-    /* Multiply by 1.0 to keep the value stable. FP analogue of Bench 3.     */
+    /* Multiply by 1.0 to keep the value stable. */
     /* ===================================================================== */
     uart_printf("Bench 10: Dependent FMUL.D chain (50 instrs)\n");
     {
@@ -418,8 +388,7 @@ int main(void)
 
     /* ===================================================================== */
     /* Benchmark 11: Independent FMUL.D chains (4 x 12 = 48 instructions)    */
-    /* 4 independent FMUL.D chains. FP analogue of Bench 4. The FP engine    */
-    /* runs one operation at a time, so the chains cannot overlap.           */
+    /* The FP engine runs one operation at a time; these cannot overlap. */
     /* ===================================================================== */
     uart_printf("Bench 11: Independent FMUL.D chains (4x12 = 48 instrs)\n");
     {
@@ -465,8 +434,7 @@ int main(void)
 
     /* ===================================================================== */
     /* Benchmark 13: Mixed FP + INT (50 pairs = 100 instructions)            */
-    /* Tests cross-unit parallelism: FP and INT units should work in         */
-    /* parallel since there are no data dependencies between them.           */
+    /* FP and INT chains have no dependencies between them and can overlap. */
     /* ===================================================================== */
     uart_printf("Bench 13: Mixed FP+INT (50 pairs = 100 instrs)\n");
     {

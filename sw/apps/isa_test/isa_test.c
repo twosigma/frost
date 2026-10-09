@@ -15,21 +15,7 @@
  */
 
 /**
- * Self-checks the extensions FROST implements (RV64IMAFDCB):
- *   - RV64I:  Base integer instruction set
- *   - M:      Integer multiply/divide
- *   - A:      Atomic memory operations
- *   - F:      Single-precision floating-point
- *   - D:      Double-precision floating-point
- *   - C:      Compressed 16-bit instructions
- *   - B:      Bit manipulation (B = Zba + Zbb + Zbs)
- *   - Zicsr:  CSR access instructions
- *   - Zicntr: Base counters (cycle, time, instret)
- *   - Zifencei: Instruction fetch fence
- *   - Zicond: Conditional zero operations
- *   - Zbkb:   Bit manipulation for cryptography
- *   - Zihintpause: Pause hint for spin-wait loops
- * plus machine-mode CSRs and traps.
+ * Self-checks FROST's RV64 instructions, machine-mode CSRs and traps.
  *
  * Each check runs an instruction on known inputs; the summary reports results by
  * extension. TEST compares the low 32 bits of a result and TEST64 all 64. A 32-bit
@@ -44,9 +30,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* ========================================================================== */
-/* Test Framework                                                             */
-/* ========================================================================== */
+/* -- Test Framework -- */
 /* Per-extension test capacity. */
 #define MAX_TESTS_PER_EXT 64
 
@@ -109,7 +93,6 @@ static const char *failed_instructions[EXT_COUNT][MAX_TESTS_PER_EXT];
 static uint32_t failed_count[EXT_COUNT];
 #endif
 
-/* Current extension being tested */
 static extension_id_t current_ext;
 static uint32_t current_test_index;
 
@@ -213,9 +196,7 @@ static uint32_t current_test_index;
         current_test_index++;                                                                      \
     } while (0)
 
-/* ========================================================================== */
-/* RV64I Base Integer Tests                                                   */
-/* ========================================================================== */
+/* -- RV64I Base Integer Tests -- */
 
 static void test_rv64i(void)
 {
@@ -531,9 +512,7 @@ static void test_rv64i(void)
     END_EXTENSION();
 }
 
-/* ========================================================================== */
-/* M Extension Tests (Multiply/Divide)                                        */
-/* ========================================================================== */
+/* -- M Extension Tests (Multiply/Divide) -- */
 
 static void test_m_extension(void)
 {
@@ -640,7 +619,7 @@ static void test_m_extension(void)
     TEST("DIVU MAX/2", result, 0xFFFFFFFF);
     __asm__ volatile("divu %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(0x80000000));
     TEST("DIVU x/x", result, 1);
-    /* DIVU by zero (RISC-V spec: returns 0xFFFFFFFF) */
+    /* DIVU by zero (RISC-V spec: returns all ones across XLEN bits). */
     __asm__ volatile("divu %0, %1, %2" : "=r"(result) : "r"(42), "r"(0));
     TEST("DIVU by zero", result, 0xFFFFFFFF);
 
@@ -676,9 +655,7 @@ static void test_m_extension(void)
     END_EXTENSION();
 }
 
-/* ========================================================================== */
-/* A Extension Tests (Atomics)                                                */
-/* ========================================================================== */
+/* -- A Extension Tests (Atomics) -- */
 
 static void test_a_extension(void)
 {
@@ -871,9 +848,7 @@ static void test_a_extension(void)
     END_EXTENSION();
 }
 
-/* ========================================================================== */
-/* C Extension Tests (Compressed 16-bit Instructions)                         */
-/* ========================================================================== */
+/* -- C Extension Tests (Compressed 16-bit Instructions) -- */
 
 /* Trap handler state for C.EBREAK test */
 static volatile uint32_t c_trap_taken = 0;
@@ -884,11 +859,10 @@ static volatile uint32_t c_trap_cause = 0;
 __attribute__((naked, aligned(4))) static void c_test_trap_handler(void)
 {
     __asm__ volatile(
-        /* Save mcause to global */
+        /* Save mcause */
         "csrr t0, mcause\n"
         "la t1, c_trap_cause\n"
         "sw t0, 0(t1)\n"
-        /* Set trap_taken flag */
         "li t0, 1\n"
         "la t1, c_trap_taken\n"
         "sw t0, 0(t1)\n"
@@ -1183,9 +1157,7 @@ static void test_c_extension(void)
     END_EXTENSION();
 }
 
-/* ========================================================================== */
-/* F Extension Tests (Single-Precision Floating-Point)                        */
-/* ========================================================================== */
+/* -- F Extension Tests (Single-Precision Floating-Point) -- */
 
 /* IEEE 754 single-precision constants */
 #define FP_POS_ZERO 0x00000000U   /* +0.0 */
@@ -1296,9 +1268,7 @@ static void test_f_extension(void)
 
     uart_printf("  F: Starting FMV tests\n");
 
-    /* ===================================================================== */
-    /* FMV.W.X / FMV.X.W - Move between integer and FP registers             */
-    /* ===================================================================== */
+    /* -- FMV.W.X / FMV.X.W - Move between integer and FP registers -- */
 
     /* FMV.W.X: Move bits from integer register to FP register */
     /* FMV.X.W: Move bits from FP register to integer register */
@@ -1325,9 +1295,7 @@ static void test_f_extension(void)
                      : "ft0");
     TEST("FMV NaN", result, FP_QNAN);
 
-    /* ===================================================================== */
-    /* FLW / FSW - Floating-Point Load/Store                                 */
-    /* ===================================================================== */
+    /* -- FLW / FSW - Floating-Point Load/Store -- */
 
     /* FSW: Store float to memory */
     fresult = u32_to_float(FP_PI);
@@ -1353,9 +1321,7 @@ static void test_f_extension(void)
                      : "ft2", "memory");
     TEST("FLW offset", result, FP_POS_TWO);
 
-    /* ===================================================================== */
-    /* FSGNJ.S / FSGNJN.S / FSGNJX.S - Sign Injection                        */
-    /* ===================================================================== */
+    /* -- FSGNJ.S / FSGNJN.S / FSGNJX.S - Sign Injection -- */
 
     /* FSGNJ.S: result = |rs1| with sign of rs2 */
     __asm__ volatile("fmv.w.x ft0, %1\n\t"
@@ -1432,9 +1398,7 @@ static void test_f_extension(void)
                      : "ft0", "ft1");
     TEST("FNEG +1 -> -1", result, FP_NEG_ONE);
 
-    /* ===================================================================== */
-    /* FCLASS.S - Classify floating-point value                              */
-    /* ===================================================================== */
+    /* -- FCLASS.S - Classify floating-point value -- */
 
     __asm__ volatile("fmv.w.x ft0, %1\n\t"
                      "fclass.s %0, ft0"
@@ -1506,9 +1470,7 @@ static void test_f_extension(void)
                      : "ft0");
     TEST("FCLASS qNaN", result, FCLASS_QNAN);
 
-    /* ===================================================================== */
-    /* FEQ.S / FLT.S / FLE.S - Floating-Point Comparisons                    */
-    /* ===================================================================== */
+    /* -- FEQ.S / FLT.S / FLE.S - Floating-Point Comparisons -- */
 
     /* FEQ.S: rd = (rs1 == rs2) ? 1 : 0 */
     __asm__ volatile("fmv.w.x ft0, %1\n\t"
@@ -1601,9 +1563,7 @@ static void test_f_extension(void)
                      : "ft0", "ft1");
     TEST("FLE 2<=1", result, 0);
 
-    /* ===================================================================== */
-    /* FMIN.S / FMAX.S - Minimum and Maximum                                 */
-    /* ===================================================================== */
+    /* -- FMIN.S / FMAX.S - Minimum and Maximum -- */
 
     __asm__ volatile("fmv.w.x ft0, %1\n\t"
                      "fmv.w.x ft1, %2\n\t"
@@ -1678,9 +1638,7 @@ static void test_f_extension(void)
                      : "ft0", "ft1", "ft2");
     TEST("FMAX NaN,2", result, FP_POS_TWO);
 
-    /* ===================================================================== */
-    /* FCVT.W.S / FCVT.WU.S - Float to Integer Conversion                    */
-    /* ===================================================================== */
+    /* -- FCVT.W.S / FCVT.WU.S - Float to Integer Conversion -- */
 
     /* FCVT.W.S: Convert float to signed 32-bit integer */
     __asm__ volatile("fmv.w.x ft0, %1\n\t"
@@ -1751,9 +1709,7 @@ static void test_f_extension(void)
                      : "ft0");
     TEST("FCVT.WU.S -1.0", result, 0);
 
-    /* ===================================================================== */
-    /* FCVT.S.W / FCVT.S.WU - Integer to Float Conversion                    */
-    /* ===================================================================== */
+    /* -- FCVT.S.W / FCVT.S.WU - Integer to Float Conversion -- */
 
     /* FCVT.S.W: Convert signed 32-bit integer to float */
     __asm__ volatile("fcvt.s.w ft0, %1\n\t"
@@ -1792,9 +1748,7 @@ static void test_f_extension(void)
                      : "ft0");
     TEST("FCVT.S.WU 2", result, FP_POS_TWO);
 
-    /* ===================================================================== */
-    /* FADD.S / FSUB.S - Floating-Point Addition and Subtraction             */
-    /* ===================================================================== */
+    /* -- FADD.S / FSUB.S - Floating-Point Addition and Subtraction -- */
 
     /* FADD.S: rd = rs1 + rs2 */
     __asm__ volatile("fmv.w.x ft0, %1\n\t"
@@ -1862,9 +1816,7 @@ static void test_f_extension(void)
                      : "ft0", "ft1", "ft2");
     TEST("FSUB 1-1=0", result, FP_POS_ZERO);
 
-    /* ===================================================================== */
-    /* FMUL.S - Floating-Point Multiplication                                */
-    /* ===================================================================== */
+    /* -- FMUL.S - Floating-Point Multiplication -- */
 
     __asm__ volatile("fmv.w.x ft0, %1\n\t"
                      "fmv.w.x ft1, %2\n\t"
@@ -1911,9 +1863,7 @@ static void test_f_extension(void)
                      : "ft0", "ft1", "ft2");
     TEST("FMUL 1*0=0", result, FP_POS_ZERO);
 
-    /* ===================================================================== */
-    /* FDIV.S - Floating-Point Division                                      */
-    /* ===================================================================== */
+    /* -- FDIV.S - Floating-Point Division -- */
 
     __asm__ volatile("fmv.w.x ft0, %1\n\t"
                      "fmv.w.x ft1, %2\n\t"
@@ -1971,9 +1921,7 @@ static void test_f_extension(void)
                      : "ft0", "ft1", "ft2");
     TEST("FDIV 0/0=NaN", result, FP_QNAN);
 
-    /* ===================================================================== */
-    /* FSQRT.S - Floating-Point Square Root                                  */
-    /* ===================================================================== */
+    /* -- FSQRT.S - Floating-Point Square Root -- */
 
     __asm__ volatile("fmv.w.x ft0, %1\n\t"
                      "fsqrt.s ft1, ft0\n\t"
@@ -2024,9 +1972,7 @@ static void test_f_extension(void)
                      : "ft0", "ft1");
     TEST("FSQRT -1=NaN", result, FP_QNAN);
 
-    /* ===================================================================== */
-    /* FMADD.S / FMSUB.S / FNMADD.S / FNMSUB.S - Fused Multiply-Add          */
-    /* ===================================================================== */
+    /* -- FMADD.S / FMSUB.S / FNMADD.S / FNMSUB.S - Fused Multiply-Add -- */
 
     /* FMADD.S: rd = (rs1 * rs2) + rs3 */
     __asm__ volatile("fmv.w.x ft0, %1\n\t"
@@ -2102,9 +2048,7 @@ static void test_f_extension(void)
                      : "ft0", "ft1", "ft2", "ft3");
     TEST("FNMSUB -(2*2)+1=-3", result, 0xC0400000); /* -3.0 */
 
-    /* ===================================================================== */
-    /* FP CSR Tests - fflags, frm, fcsr                                      */
-    /* ===================================================================== */
+    /* -- FP CSR Tests - fflags, frm, fcsr -- */
 
     /* Clear fflags before testing */
     __asm__ volatile("csrw fflags, zero");
@@ -2170,9 +2114,7 @@ static void test_f_extension(void)
     END_EXTENSION();
 }
 
-/* ========================================================================== */
-/* D Extension Tests (Double-Precision Floating-Point)                        */
-/* ========================================================================== */
+/* -- D Extension Tests (Double-Precision Floating-Point) -- */
 
 static void test_d_extension(void)
 {
@@ -2182,9 +2124,7 @@ static void test_d_extension(void)
     uint64_t result64;
     double dresult;
 
-    /* ===================================================================== */
-    /* FLD / FSD - Double-Precision Load/Store                               */
-    /* ===================================================================== */
+    /* -- FLD / FSD - Double-Precision Load/Store -- */
 
     dresult = u64_to_double(DP_PI);
     __asm__ volatile("fsd %0, 0(%1)" ::"f"(dresult), "r"(&fp_test_mem_d[0]) : "memory");
@@ -2201,9 +2141,7 @@ static void test_d_extension(void)
     result64 = double_to_u64(dresult);
     TEST64("FLD offset", result64, DP_POS_TWO);
 
-    /* ===================================================================== */
-    /* FSGNJ.D / FSGNJN.D / FSGNJX.D - Sign Injection                        */
-    /* ===================================================================== */
+    /* -- FSGNJ.D / FSGNJN.D / FSGNJX.D - Sign Injection -- */
 
     __asm__ volatile("fsgnj.d %0, %1, %2"
                      : "=f"(dresult)
@@ -2241,9 +2179,7 @@ static void test_d_extension(void)
     __asm__ volatile("fneg.d %0, %1" : "=f"(dresult) : "f"(u64_to_double(DP_POS_ONE)));
     TEST64("FNEG +1 -> -1", double_to_u64(dresult), DP_NEG_ONE);
 
-    /* ===================================================================== */
-    /* FCLASS.D - Classify floating-point value                              */
-    /* ===================================================================== */
+    /* -- FCLASS.D - Classify floating-point value -- */
 
     __asm__ volatile("fclass.d %0, %1" : "=r"(result) : "f"(u64_to_double(DP_NEG_INF)));
     TEST("FCLASS -inf", result, FCLASS_NEG_INF);
@@ -2275,9 +2211,7 @@ static void test_d_extension(void)
     __asm__ volatile("fclass.d %0, %1" : "=r"(result) : "f"(u64_to_double(DP_QNAN)));
     TEST("FCLASS qNaN", result, FCLASS_QNAN);
 
-    /* ===================================================================== */
-    /* FEQ.D / FLT.D / FLE.D - Floating-Point Comparisons                    */
-    /* ===================================================================== */
+    /* -- FEQ.D / FLT.D / FLE.D - Floating-Point Comparisons -- */
 
     __asm__ volatile("feq.d %0, %1, %2"
                      : "=r"(result)
@@ -2334,9 +2268,7 @@ static void test_d_extension(void)
                      : "f"(u64_to_double(DP_POS_TWO)), "f"(u64_to_double(DP_POS_ONE)));
     TEST("FLE 2<=1", result, 0);
 
-    /* ===================================================================== */
-    /* FMIN.D / FMAX.D - Minimum and Maximum                                 */
-    /* ===================================================================== */
+    /* -- FMIN.D / FMAX.D - Minimum and Maximum -- */
 
     __asm__ volatile("fmin.d %0, %1, %2"
                      : "=f"(dresult)
@@ -2378,9 +2310,7 @@ static void test_d_extension(void)
                      : "f"(u64_to_double(DP_QNAN)), "f"(u64_to_double(DP_POS_TWO)));
     TEST64("FMAX NaN,2", double_to_u64(dresult), DP_POS_TWO);
 
-    /* ===================================================================== */
-    /* FCVT.W.D / FCVT.WU.D - Double to Integer Conversion                   */
-    /* ===================================================================== */
+    /* -- FCVT.W.D / FCVT.WU.D - Double to Integer Conversion -- */
 
     __asm__ volatile("fcvt.w.d %0, %1, rtz" : "=r"(result) : "f"(u64_to_double(DP_POS_ONE)));
     TEST("FCVT.W.D 1.0", result, 1);
@@ -2409,9 +2339,7 @@ static void test_d_extension(void)
     __asm__ volatile("fcvt.wu.d %0, %1, rtz" : "=r"(result) : "f"(u64_to_double(DP_NEG_ONE)));
     TEST("FCVT.WU.D -1.0", result, 0);
 
-    /* ===================================================================== */
-    /* FCVT.D.W / FCVT.D.WU - Integer to Double Conversion                   */
-    /* ===================================================================== */
+    /* -- FCVT.D.W / FCVT.D.WU - Integer to Double Conversion -- */
 
     __asm__ volatile("fcvt.d.w %0, %1" : "=f"(dresult) : "r"(1));
     TEST64("FCVT.D.W 1", double_to_u64(dresult), DP_POS_ONE);
@@ -2428,9 +2356,7 @@ static void test_d_extension(void)
     __asm__ volatile("fcvt.d.wu %0, %1" : "=f"(dresult) : "r"(2U));
     TEST64("FCVT.D.WU 2", double_to_u64(dresult), DP_POS_TWO);
 
-    /* ===================================================================== */
-    /* FCVT.S.D / FCVT.D.S - Convert between single and double               */
-    /* ===================================================================== */
+    /* -- FCVT.S.D / FCVT.D.S - Convert between single and double -- */
 
     fp_test_mem_d[0] = u64_to_double(DP_POS_ONE);
     __asm__ volatile("fld ft0, 0(%1)\n\t"
@@ -2450,9 +2376,7 @@ static void test_d_extension(void)
     result64 = double_to_u64(fp_test_mem_d[1]);
     TEST64("FCVT.D.S 1", result64, DP_POS_ONE);
 
-    /* ===================================================================== */
-    /* FADD.D / FSUB.D - Floating-Point Addition and Subtraction             */
-    /* ===================================================================== */
+    /* -- FADD.D / FSUB.D - Floating-Point Addition and Subtraction -- */
 
     __asm__ volatile("fadd.d %0, %1, %2"
                      : "=f"(dresult)
@@ -2489,9 +2413,7 @@ static void test_d_extension(void)
                      : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_ONE)));
     TEST64("FSUB 1-1=0", double_to_u64(dresult), DP_POS_ZERO);
 
-    /* ===================================================================== */
-    /* FMUL.D - Floating-Point Multiplication                                */
-    /* ===================================================================== */
+    /* -- FMUL.D - Floating-Point Multiplication -- */
 
     __asm__ volatile("fmul.d %0, %1, %2"
                      : "=f"(dresult)
@@ -2518,9 +2440,7 @@ static void test_d_extension(void)
                      : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_ZERO)));
     TEST64("FMUL 1*0=0", double_to_u64(dresult), DP_POS_ZERO);
 
-    /* ===================================================================== */
-    /* FDIV.D - Floating-Point Division                                      */
-    /* ===================================================================== */
+    /* -- FDIV.D - Floating-Point Division -- */
 
     __asm__ volatile("fdiv.d %0, %1, %2"
                      : "=f"(dresult)
@@ -2552,9 +2472,7 @@ static void test_d_extension(void)
                      : "f"(u64_to_double(DP_POS_ZERO)), "f"(u64_to_double(DP_POS_ZERO)));
     TEST64("FDIV 0/0=NaN", double_to_u64(dresult), DP_QNAN);
 
-    /* ===================================================================== */
-    /* FSQRT.D - Floating-Point Square Root                                  */
-    /* ===================================================================== */
+    /* -- FSQRT.D - Floating-Point Square Root -- */
 
     __asm__ volatile("fsqrt.d %0, %1" : "=f"(dresult) : "f"(u64_to_double(DP_POS_FOUR)));
     TEST64("FSQRT 4=2", double_to_u64(dresult), DP_POS_TWO);
@@ -2574,9 +2492,7 @@ static void test_d_extension(void)
     __asm__ volatile("fsqrt.d %0, %1" : "=f"(dresult) : "f"(u64_to_double(DP_NEG_ONE)));
     TEST64("FSQRT -1=NaN", double_to_u64(dresult), DP_QNAN);
 
-    /* ===================================================================== */
-    /* FMADD.D / FMSUB.D / FNMADD.D / FNMSUB.D - Fused Multiply-Add          */
-    /* ===================================================================== */
+    /* -- FMADD.D / FMSUB.D / FNMADD.D / FNMSUB.D - Fused Multiply-Add -- */
 
     __asm__ volatile("fmadd.d %0, %1, %2, %3"
                      : "=f"(dresult)
@@ -2627,9 +2543,7 @@ static void test_d_extension(void)
                        "f"(u64_to_double(DP_POS_ONE)));
     TEST64("FNMSUB -(2*2)+1=-3", double_to_u64(dresult), 0xC008000000000000ull);
 
-    /* ===================================================================== */
-    /* FP CSR Tests - fflags, frm, fcsr                                      */
-    /* ===================================================================== */
+    /* -- FP CSR Tests - fflags, frm, fcsr -- */
 
     __asm__ volatile("csrw fflags, zero");
 
@@ -2680,9 +2594,7 @@ static void test_d_extension(void)
     END_EXTENSION();
 }
 
-/* ========================================================================== */
-/* Zicsr Tests (CSR Instructions)                                             */
-/* ========================================================================== */
+/* -- Zicsr Tests (CSR Instructions) -- */
 
 static void test_zicsr(void)
 {
@@ -2709,9 +2621,7 @@ static void test_zicsr(void)
     END_EXTENSION();
 }
 
-/* ========================================================================== */
-/* Zicntr Tests (Counter Instructions)                                        */
-/* ========================================================================== */
+/* -- Zicntr Tests (Counter Instructions) -- */
 
 static void test_zicntr(void)
 {
@@ -2725,7 +2635,7 @@ static void test_zicntr(void)
     __asm__ volatile("rdcycle %0" : "=r"(result2));
     TEST("RDCYCLE (advancing)", (result2 > result1) ? 1 : 0, 1);
 
-    /* RDTIME: read time counter low (mtime, which counts every core cycle) */
+    /* RDTIME: read the low word of mtime. */
     __asm__ volatile("rdtime %0" : "=r"(result1));
     __asm__ volatile("rdtime %0" : "=r"(result2));
     TEST("RDTIME (advancing)", (result2 > result1) ? 1 : 0, 1);
@@ -2735,16 +2645,14 @@ static void test_zicntr(void)
     __asm__ volatile("nop\n nop\n nop\n nop\n rdinstret %0" : "=r"(result2));
     TEST("RDINSTRET (advancing)", (result2 > result1) ? 1 : 0, 1);
 
-    /* Test 64-bit counter read (using library function) */
+    /* Read the full 64-bit cycle counter. */
     result64 = rdcycle64();
     TEST("rdcycle64 (non-zero)", (result64 > 0) ? 1 : 0, 1);
 
     END_EXTENSION();
 }
 
-/* ========================================================================== */
-/* Zifencei Tests (Instruction Fence)                                         */
-/* ========================================================================== */
+/* -- Zifencei Tests (Instruction Fence) -- */
 
 static void test_zifencei(void)
 {
@@ -2760,9 +2668,7 @@ static void test_zifencei(void)
     END_EXTENSION();
 }
 
-/* ========================================================================== */
-/* Zba Tests (Address Generation)                                             */
-/* ========================================================================== */
+/* -- Zba Tests (Address Generation) -- */
 
 static void test_zba(void)
 {
@@ -2780,7 +2686,7 @@ static void test_zba(void)
     __asm__ volatile("sh1add %0, %1, %2" : "=r"(result) : "r"(0x40000000), "r"(0));
     TEST("SH1ADD large", result, 0x80000000);
     __asm__ volatile("sh1add %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(0));
-    TEST("SH1ADD ovf", result, 0); /* Overflow wraps */
+    TEST("SH1ADD ovf", result, 0); /* The low 32 bits are zero. */
     __asm__ volatile("sh1add %0, %1, %2" : "=r"(result) : "r"(0xFFFFFFFF), "r"(0xFFFFFFFF));
     TEST("SH1ADD MAX", result, 0xFFFFFFFD); /* -1 + (-2) = -3 */
 
@@ -2807,9 +2713,7 @@ static void test_zba(void)
     END_EXTENSION();
 }
 
-/* ========================================================================== */
-/* Zbb Tests (Basic Bit Manipulation)                                         */
-/* ========================================================================== */
+/* -- Zbb Tests (Basic Bit Manipulation) -- */
 
 static void test_zbb(void)
 {
@@ -2985,9 +2889,7 @@ static void test_zbb(void)
     END_EXTENSION();
 }
 
-/* ========================================================================== */
-/* Zbs Tests (Single-Bit Operations)                                          */
-/* ========================================================================== */
+/* -- Zbs Tests (Single-Bit Operations) -- */
 
 static void test_zbs(void)
 {
@@ -3076,9 +2978,7 @@ static void test_zbs(void)
     END_EXTENSION();
 }
 
-/* ========================================================================== */
-/* Zicond Tests (Conditional Zero Operations)                                 */
-/* ========================================================================== */
+/* -- Zicond Tests (Conditional Zero Operations) -- */
 
 static void test_zicond(void)
 {
@@ -3128,9 +3028,7 @@ static void test_zicond(void)
     END_EXTENSION();
 }
 
-/* ========================================================================== */
-/* Zbkb Tests (Bit Manipulation for Cryptography)                             */
-/* ========================================================================== */
+/* -- Zbkb Tests (Bit Manipulation for Cryptography) -- */
 
 static void test_zbkb(void)
 {
@@ -3178,9 +3076,7 @@ static void test_zbkb(void)
     END_EXTENSION();
 }
 
-/* ========================================================================== */
-/* Zihintpause Tests (Pause Hint)                                             */
-/* ========================================================================== */
+/* -- Zihintpause Tests (Pause Hint) -- */
 
 static void test_zihintpause(void)
 {
@@ -3198,9 +3094,7 @@ static void test_zihintpause(void)
     END_EXTENSION();
 }
 
-/* ========================================================================== */
-/* Machine Mode Tests (RTOS Support)                                          */
-/* ========================================================================== */
+/* -- Machine Mode Tests (RTOS Support) -- */
 
 /* Flag set by trap handler to indicate trap was taken */
 static volatile uint32_t trap_taken = 0;
@@ -3212,11 +3106,10 @@ static volatile uint32_t trap_cause = 0;
 __attribute__((naked, aligned(4))) static void test_trap_handler(void)
 {
     __asm__ volatile(
-        /* Save mcause to global using symbol addressing */
+        /* Save mcause */
         "csrr t0, mcause\n"
         "la t1, trap_cause\n"
         "sw t0, 0(t1)\n"
-        /* Set trap_taken flag */
         "li t0, 1\n"
         "la t1, trap_taken\n"
         "sw t0, 0(t1)\n"
@@ -3231,7 +3124,6 @@ __attribute__((naked, aligned(4))) static void test_trap_handler(void)
         "addi t0, t0, 2\n" /* It's 32-bit, add 2 more (total 4) */
         "1:\n"
         "csrw mepc, t0\n"
-        /* Return from trap */
         "mret\n");
 }
 
@@ -3274,7 +3166,7 @@ static void test_mmode(void)
     __asm__ volatile("csrr %0, mstatus" : "=r"(result1));
     TEST("MSTATUS readable", 1, 1);
 
-    /* Toggle MIE, then restore it. */
+    /* Check clearing and setting MIE. */
     __asm__ volatile("csrc mstatus, %0" ::"r"(0x8)); /* Clear MIE */
     __asm__ volatile("csrr %0, mstatus" : "=r"(result1));
     TEST("MSTATUS MIE clear", (result1 & 0x8), 0);
@@ -3296,7 +3188,7 @@ static void test_mmode(void)
     __asm__ volatile("csrr %0, mie" : "=r"(result1));
     TEST("MIE MTIE clear", (result1 & 0x80), 0);
 
-    /* ===== MIP: Machine Interrupt Pending (read-only) ===== */
+    /* ===== MIP: Machine Interrupt Pending ===== */
     __asm__ volatile("csrr %0, mip" : "=r"(result1));
     TEST("MIP readable", 1, 1);
 
@@ -3353,9 +3245,7 @@ static void test_mmode(void)
     END_EXTENSION();
 }
 
-/* ========================================================================== */
-/* Result Summary                                                             */
-/* ========================================================================== */
+/* -- Result Summary -- */
 
 static void print_summary(void)
 {
@@ -3369,7 +3259,6 @@ static void print_summary(void)
     uint32_t extensions_passed = 0;
     uint32_t extensions_failed = 0;
 
-    /* Print per-extension results */
     for (int i = 0; i < EXT_COUNT; i++) {
         uint32_t passed = results[i].tests_passed;
         uint32_t failed = results[i].tests_failed;
@@ -3393,7 +3282,6 @@ static void print_summary(void)
                     (unsigned long) (passed + failed));
 
 #if !COMPACT_MODE
-        /* List failed instructions for this extension (not available in compact mode) */
         if (failed > 0) {
             uart_printf("    Failed: ");
             for (uint32_t j = 0; j < failed_count[i] && j < MAX_TESTS_PER_EXT; j++) {
@@ -3424,9 +3312,7 @@ static void print_summary(void)
     }
 }
 
-/* ========================================================================== */
-/* Main Entry Point                                                           */
-/* ========================================================================== */
+/* -- Main Entry Point -- */
 
 int main(void)
 {
@@ -3469,7 +3355,7 @@ int main(void)
     print_summary();
 
     for (;;) {
-        __asm__ volatile("pause" :::); /* Low-power spin loop */
+        __asm__ volatile("pause" :::); /* Spin with PAUSE hints. */
     }
 
     return 0;

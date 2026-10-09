@@ -15,18 +15,16 @@
  */
 
 /*
- * ptw_coherence_test: Sv39 page-table walks must see page-table stores that
+ * Sv39 page-table walks must see page-table stores that
  * are still dirty in the L1D, with no sfence.vma in between.
  *
  * The walker reads PTEs below the L1D, from L2 (or memory when there is no
  * L2). walker_coherence_sequencer probes the L1D before each walk read, so a
  * dirty page-table line is written back first (see "The page-table walker
- * port" in hw/rtl/lib/cache/README.md). This test builds the state that Linux
- * __set_memory -> split_linear_mapping creates: a 2 MiB PMD leaf replaced by a
- * pointer to a newly filled 4 KiB PTE table and used before the closing
- * sfence.vma, with the PMD line evicted to L2 while the table's lines are
- * still dirty in the L1D. A walk that read only L2 would combine the new
- * pointer with the stale table, a translation that never existed.
+ * port" in hw/rtl/lib/cache/README.md). Model Linux's __set_memory and
+ * split_linear_mapping sequence: replace a 2 MiB leaf with a new 4 KiB PTE
+ * table before sfence.vma. Evict the PMD to L2 while leaving the table dirty
+ * in L1D. Reading only L2 would combine the new pointer with stale PTEs.
  *
  * Each iteration uses a 2 MiB VA region R, a new child PTE page T, and a
  * target page tp inside R:
@@ -37,7 +35,7 @@
  *   S3  Load from R to install its DTLB entry and check the P1 signature.
  *   S4  Evict R's DTLB entry by touching 24 other superpages.
  *   S5  Fill T with leaves mapping R -> P1 page by page, fence w,w, and point
- *       PMD[R] at T. T's lines and the PMD line are now dirty in the L1D.
+ *       PMD[R] at T. T's lines and the PMD line are dirty in the L1D.
  *   S6  Evict only the PMD line to L2 and confirm L2 holds the new pointer.
  *   S7  Load R+tp. The DTLB misses, and the walk reads the new PMD pointer
  *       and then T's entry, whose line is still dirty in the L1D.
@@ -45,19 +43,14 @@
  * No sfence.vma or fence.i may run from S5 through S7: both write the L1D
  * back, which would clean T's lines before the walk.
  *
- * The INVALID seed is all zero (V=0), so a torn walk takes a load page fault
- * (cause 13). The DECOY seed holds legal leaves (A and D set, since Svade
- * faults a leaf with A=0) that map a decoy frame, so a torn walk reads the
- * decoy signature without faulting and a fix that only handles faults cannot
- * pass. An iteration passes with no fault and the exact P1 signature; a walker
- * that read only L2 fails every iteration.
+ * INVALID seeds V=0, so stale PTEs cause a load page fault (13). DECOY seeds
+ * legal leaves pointing to a decoy frame, so stale PTEs return wrong data
+ * without faulting. Set A and D to avoid Svade faults. Both cases require
+ * the exact P1 signature without a fault.
  *
- * As in vm_test, M-mode fetch stays untranslated and every translated data
- * access runs in a short MPRV window (MPP=S, MPRV=1). The page tables and data
- * regions are at fixed addresses in cached DDR, so the test runs in either
- * memory tier; the stack is in uncached low BRAM. The isolated DMMU bench and
- * the ptw formal target supply synthetic walk and line responses, so only a
- * full-SoC program runs this sequence end to end.
+ * M-mode fetch stays untranslated; data accesses use short MPRV windows
+ * (MPP=S, MPRV=1). Fixed DDR addresses hold page tables and data in either
+ * memory configuration; the stack stays in uncached low BRAM.
  */
 
 #include "uart.h"
@@ -73,7 +66,7 @@
  *   block 1  PT_PMD       0x8300_1000  level-1 table (R + filler entries)
  *   block 2  T page 0     0x8300_2000  child level-0 table
  *   block 3  DECOY_FRAME  0x8300_3000  wrong-data frame for the DECOY flavor
- *   block 4  OUT_SCRATCH  0x8300_4000  critical-window outputs (safe index)
+ *   block 4  OUT_SCRATCH  0x8300_4000  test-window outputs (safe index)
  *   block 6  T page 1     0x8300_6000
  *   block 10 T page 2     0x8300_A000
  *   block 1  ALIAS        0x8302_1xxx  PMD_line + 0x20000 (evict scratch)
@@ -190,8 +183,7 @@ static inline void write_satp(unsigned long v)
 
 /* One translated (S-mode, MPRV) load of `va`. Returns the loaded value on the
  * no-fault path; g_cause stays ~0 on success, or holds the trap cause on a
- * fault. The result goes to a global, so it is used only outside the critical
- * window. */
+ * fault. The result goes to a global, so use this only outside S5 through S7. */
 static unsigned long translated_load(unsigned long va)
 {
     g_cause = ~0ul;
@@ -317,9 +309,8 @@ static int do_iter(unsigned iter, const struct iter_cfg *c)
         }
     }
 
-    /* Outputs live at a fixed L1D index (block 4) distinct from T, so writing
-     * them mid-window cannot evict a dirty child line. Presets before the
-     * critical window (T is still clean here). */
+    /* Output stores use L1D block 4, distinct from T, so they cannot evict
+     * dirty child lines. Initialize them before the test window. */
     sd_phys(OUT_SCRATCH + 0, 0xBADul); /* pmd readback  */
     sd_phys(OUT_SCRATCH + 8, 0xBADul); /* S7 load value */
     g_cause = ~0ul;
@@ -385,9 +376,8 @@ static int do_iter(unsigned iter, const struct iter_cfg *c)
     unsigned long r_val = ld_phys(OUT_SCRATCH + 8);
     int faulted = (g_cause != ~0ul);
 
-    /* pmd_readback confirms the eviction/writeback landed (L2 has the pointer).
-     * If it did not, the walk would have found the old 2 MiB leaf and a pass
-     * would mean nothing, so flag it. */
+    /* Require the new PMD pointer in L2. Otherwise the old 2 MiB leaf could
+     * satisfy the load and hide a walker coherence failure. */
     int conditions_ok = (pmd_readback == pmd_ptr);
 
     int ok = conditions_ok && !faulted && (r_val == sig1);

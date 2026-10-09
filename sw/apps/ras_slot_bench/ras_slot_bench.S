@@ -27,13 +27,10 @@
 # bundle, which puts the next instruction in slot 1, and an ALU instruction
 # pairs with the call or return after it, which puts that one in slot 2.
 #
-# Each phase snapshots the profiling counters before and after its loop and
-# prints the cycles and the flush-recovery cycles it took (global counter 3,
-# TOMASULO_PERF_FLUSH_RECOVERY in sw/lib/include/tomasulo_profile.h). Once the
-# predictors are trained, a correctly predicted jump or return causes no
-# flush, so <<PASS>> needs every phase to stay under FLUSH_LIMIT flush-recovery
-# cycles. The count needs a build with the profiling counters
-# (PERF_COUNTERS=1); without them the program prints <<FAIL>>.
+# Each phase reports cycles and flush-recovery cycles (counter 3,
+# TOMASULO_PERF_FLUSH_RECOVERY in sw/lib/include/tomasulo_profile.h).
+# Correct predictions do not flush, so every phase must stay below
+# FLUSH_LIMIT. PERF_COUNTERS=1 is required; absent counters produce <<FAIL>>.
 
     .equ ITERATIONS, 200
     .equ FLUSH_LIMIT, ITERATIONS / 4
@@ -43,9 +40,8 @@
     .equ CSR_MPERFCOUNT, 0xFC2
     .equ PERF_FLUSH_RECOVERY, 3
 
-    # Snapshot the counters, then read the low 32 bits of the flush-recovery
-    # count into \flushes and the cycle count into \cycles. The macro makes no
-    # call, so the measured window contains only the phase's own loop.
+    # Snapshot flush-recovery cycles (low 32 bits) into \flushes and cycle
+    # count into \cycles. Avoid calls inside the measured window.
     .macro READ_COUNTERS flushes, cycles
     li      t0, 1
     csrw    CSR_MPERFCTL, t0

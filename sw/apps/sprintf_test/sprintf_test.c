@@ -15,15 +15,9 @@
  */
 
 /*
- * sprintf_test.c
- *
- * Bare-metal test suite for sprintf / snprintf.
- *
- * Expected values are compile-time string and integer constants, and the
- * reporting path uses uart_puts / uart_putchar only. Nothing on the checking
- * path calls printf, sprintf or snprintf, so the formatter under test never
- * validates itself. The final line is a <<PASS>> / <<FAIL>> marker for the
- * cocotb harness.
+ * Bare-metal sprintf/snprintf tests. Expected values are constants; checks
+ * and reports use only uart_puts and uart_putchar so the formatter cannot
+ * validate itself. End with <<PASS>> or <<FAIL>>.
  */
 
 #include <sprintf.h>
@@ -34,9 +28,9 @@
 #include <stdint.h>
 #include <string.h> /* strcmp, strlen, memset, memcmp */
 
-/* ──────────────────────────────────────────────────────────────────────────
+/* --------------------------------------------------------------------------
  * Report helpers: UART only, no sprintf
- * ────────────────────────────────────────────────────────────────────────── */
+ * -------------------------------------------------------------------------- */
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -79,9 +73,9 @@ static void print_str_escaped(const char *s)
     uart_putchar(']');
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
+/* --------------------------------------------------------------------------
  * Core check function
- * ────────────────────────────────────────────────────────────────────────── */
+ * -------------------------------------------------------------------------- */
 
 static void check(
     const char *name, const char *expected_str, int expected_ret, const char *got_str, int got_ret)
@@ -190,7 +184,6 @@ static void check_fp(
         check_fp((name), (expected_str), (expected_ret), _got, _gr);                               \
     } while (0)
 
-/* section header */
 static void section(const char *s)
 {
     uart_puts("\n=== ");
@@ -198,11 +191,11 @@ static void section(const char *s)
     uart_puts(" ===\n");
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
+/* ==========================================================================
  * Test groups
- * ══════════════════════════════════════════════════════════════════════════ */
+ * ========================================================================== */
 
-/* ── Literals / %% ───────────────────────────────────────────────────────── */
+/* -- Literals / %% --------------------------------------------------------- */
 static void test_literal(void)
 {
     section("Literal / %%");
@@ -215,7 +208,7 @@ static void test_literal(void)
     T("percent between", "a%b", 3, "a%%b");
 }
 
-/* ── %c ──────────────────────────────────────────────────────────────────── */
+/* -- %c -------------------------------------------------------------------- */
 static void test_char(void)
 {
     section("%c");
@@ -229,7 +222,7 @@ static void test_char(void)
     T("char in string", "char=Q", 6, "char=%c", 'Q');
 }
 
-/* ── %s ──────────────────────────────────────────────────────────────────── */
+/* -- %s -------------------------------------------------------------------- */
 static void test_string(void)
 {
     section("%s");
@@ -256,7 +249,7 @@ static void test_string(void)
     }
 }
 
-/* ── %d / %i ─────────────────────────────────────────────────────────────── */
+/* -- %d / %i --------------------------------------------------------------- */
 static void test_int_d(void)
 {
     section("%d / %i");
@@ -291,7 +284,7 @@ static void test_int_d(void)
     T("d neg star width", "42      |", 9, "%*d|", -8, 42);
 }
 
-/* ── %u ──────────────────────────────────────────────────────────────────── */
+/* -- %u -------------------------------------------------------------------- */
 static void test_uint(void)
 {
     section("%u");
@@ -310,7 +303,7 @@ static void test_uint(void)
     T("u prec 0 zero", "", 0, "%.0u", 0u);
 }
 
-/* ── %o ──────────────────────────────────────────────────────────────────── */
+/* -- %o -------------------------------------------------------------------- */
 static void test_octal(void)
 {
     section("%o");
@@ -327,7 +320,7 @@ static void test_octal(void)
     T("o prec 0 zero", "", 0, "%.0o", 0);
 }
 
-/* ── %x / %X ─────────────────────────────────────────────────────────────── */
+/* -- %x / %X --------------------------------------------------------------- */
 static void test_hex(void)
 {
     section("%x / %X");
@@ -351,7 +344,7 @@ static void test_hex(void)
     T("x lx", "ffffffff", 8, "%lx", 4294967295UL);
 }
 
-/* ── %f ──────────────────────────────────────────────────────────────────── */
+/* -- %f -------------------------------------------------------------------- */
 static void test_float_f(void)
 {
     section("%f");
@@ -386,7 +379,7 @@ static void test_float_f(void)
     TFP("f neg zero", "-0.000000", 9, "%f", -0.0);
 }
 
-/* ── %e / %E ─────────────────────────────────────────────────────────────── */
+/* -- %e / %E --------------------------------------------------------------- */
 static void test_float_e(void)
 {
     section("%e / %E");
@@ -408,7 +401,7 @@ static void test_float_e(void)
     TFP("e 9.99e-5", "9.990000e-05", 12, "%e", 9.99e-5);
 }
 
-/* ── %g / %G ─────────────────────────────────────────────────────────────── */
+/* -- %g / %G --------------------------------------------------------------- */
 static void test_float_g(void)
 {
     section("%g / %G");
@@ -434,7 +427,7 @@ static void test_float_g(void)
     TFP("g plus", "+3.14", 5, "%+.3g", 3.14);
 }
 
-/* ── Mixed ───────────────────────────────────────────────────────────────── */
+/* -- Mixed ----------------------------------------------------------------- */
 static void test_mixed(void)
 {
     section("Mixed");
@@ -454,7 +447,7 @@ static void test_mixed(void)
     T("multi width", "   1  22 333", 12, "%4d%4d%4d", 1, 22, 333);
 }
 
-/* ── snprintf truncation / return-value semantics ────────────────────────── */
+/* -- snprintf truncation / return-value semantics -------------------------- */
 static void test_snprintf_trunc(void)
 {
     section("snprintf truncation / return value");
@@ -505,7 +498,7 @@ static void test_snprintf_trunc(void)
         check("int trunc ret=6", "123", 6, got, r);
     }
 
-    /* Truncation of float */
+    /* Exact fit for a formatted float, including the NUL. */
     {
         char got[5];
         int r = snprintf(got, 5, "%.2f", 3.14);
@@ -592,7 +585,7 @@ static void test_large_precision_safety(void)
     }
 }
 
-/* ── Flags edge cases ────────────────────────────────────────────────────── */
+/* -- Flags edge cases ------------------------------------------------------ */
 static void test_flags(void)
 {
     section("Flags edge cases");
@@ -614,7 +607,7 @@ static void test_flags(void)
     T("prec 0 uint zero", "", 0, "%.0u", 0u);
 }
 
-/* ── Length modifiers ────────────────────────────────────────────────────── */
+/* -- Length modifiers ------------------------------------------------------ */
 static void test_length_mods(void)
 {
     section("Length modifiers");
@@ -635,7 +628,7 @@ static void test_length_mods(void)
     T("lX", "FFFFFFFFFFFFFFFF", 16, "%llX", 18446744073709551615ULL);
 }
 
-/* ── Pointer %p ──────────────────────────────────────────────────────────── */
+/* -- Pointer %p ------------------------------------------------------------ */
 static void test_pointer(void)
 {
     section("%p");
@@ -684,7 +677,7 @@ static void test_pointer(void)
     }
 }
 
-/* ── Precision on integers ───────────────────────────────────────────────── */
+/* -- Precision on integers ------------------------------------------------- */
 static void test_int_precision(void)
 {
     section("Integer precision");
@@ -699,7 +692,7 @@ static void test_int_precision(void)
     T("d w+p left", "00042      |", 12, "%-11.5d|", 42);
 }
 
-/* ── Star width / precision ──────────────────────────────────────────────── */
+/* -- Star width / precision ------------------------------------------------ */
 static void test_star(void)
 {
     section("Star width / precision");
@@ -712,7 +705,7 @@ static void test_star(void)
     T("star w=0", "42", 2, "%*d", 0, 42);
 }
 
-/* ── %n ──────────────────────────────────────────────────────────────────── */
+/* -- %n -------------------------------------------------------------------- */
 static void test_n(void)
 {
     section("%n");
@@ -746,7 +739,7 @@ static void test_n(void)
     }
 }
 
-/* ── Exotic / regression ─────────────────────────────────────────────────── */
+/* -- Exotic / regression --------------------------------------------------- */
 static void test_regression(void)
 {
     section("Regression / exotic");
@@ -787,7 +780,7 @@ static void test_regression(void)
     T("all zeros fmt", "000/000/0000", 12, "%03d/%03d/%04d", 0, 0, 0);
 }
 
-/* ── z and t with every integer conversion ───────────────────────────────── */
+/* -- z and t with every integer conversion --------------------------------- */
 static void test_size_modifiers(void)
 {
     section("z / t");
@@ -805,7 +798,7 @@ static void test_size_modifiers(void)
     T("#zx width", "  0x123456789abcdef", 19, "%#19zx", (size_t) 0x123456789abcdefULL);
 }
 
-/* ── '#' with a zero value and with precision ────────────────────────────── */
+/* -- '#' with a zero value and with precision ------------------------------ */
 static void test_alt_form(void)
 {
     section("# with precision");
@@ -817,7 +810,7 @@ static void test_alt_form(void)
     T("o hash short prec", "010", 3, "%#.2o", 8);
 }
 
-/* ── Floating point across the double range ──────────────────────────────── */
+/* -- Floating point across the double range -------------------------------- */
 static void test_float_range(void)
 {
     section("Float range");
@@ -852,7 +845,7 @@ static void test_float_range(void)
     }
 }
 
-/* ── Rounding: to nearest, ties to even ──────────────────────────────────── */
+/* -- Rounding: to nearest, ties to even ------------------------------------ */
 static void test_float_rounding(void)
 {
     section("Float rounding");
@@ -873,7 +866,7 @@ static void test_float_rounding(void)
     T("#.3g carry", "1.00e+03", 8, "%#.3g", 999.5);
 }
 
-/* ── Infinity and NaN ────────────────────────────────────────────────────── */
+/* -- Infinity and NaN ------------------------------------------------------ */
 static void test_float_special(void)
 {
     section("inf / nan");
@@ -893,7 +886,7 @@ static void test_float_special(void)
     T("INF left", "INF   |", 7, "%-6F|", inf);
 }
 
-/* ── %n length modifiers ─────────────────────────────────────────────────── */
+/* -- %n length modifiers --------------------------------------------------- */
 static void test_n_modifiers(void)
 {
     section("%n length modifiers");
@@ -933,9 +926,9 @@ static void test_n_modifiers(void)
     check_bool("%tn writes eight bytes", v.raw == 3U);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* ===========================================================================
  * main
- * ══════════════════════════════════════════════════════════════════════════ */
+ * ========================================================================== */
 
 int main(void)
 {
@@ -986,7 +979,6 @@ int main(void)
         uart_puts("<<FAIL>>\n");
     }
 
-    /* Halt */
     for (;;) {
     }
 }
