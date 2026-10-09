@@ -433,8 +433,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="smode_test",
         description=(
             "S-mode delegation, sret, TSR/TVM/TW, supervisor CSR views, counter "
-            "permissions, illegal CSRs, interrupts, and signal-return restart with exact "
-            "PC/register restoration."
+            "permissions, CSR existence (illegal CSRs, read-only-zero machine HPM "
+            "CSRs), interrupts, and signal-return restart with exact PC/register "
+            "restoration."
         ),
     ),
     "csr_rmw_test": CocotbRunConfig(

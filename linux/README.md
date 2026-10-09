@@ -152,7 +152,8 @@ is an illegal instruction (`mcause` 2, `mtval` 0).
 | `mcounteren`, `scounteren` | Only the CY, TM, and IR bits (2:0) exist; bits 31:3 read zero and ignore writes. Both reset to `0x7`. |
 | `mcountinhibit` (0x320) | CY (bit 0) and IR (bit 2) stop `cycle` and `instret` while set. TM reads 0, and bits 31:3 read zero. |
 | `mcycle` (0xB00), `minstret` (0xB02) | Accept full 64-bit M-mode writes |
-| `hpmcounter*`, `mhpmcounter*` | Not implemented. An unimplemented CSR raises an illegal instruction at every privilege, which lets firmware probe optional CSRs by trapping. |
+| `mhpmcounter3`-`31` (0xB03-0xB1F), `mhpmevent3`-`31` (0x323-0x33F) | Read-only zero in M-mode, the privileged spec's minimum implementation: reads return 0 and writes are ignored. OpenSBI finds a counter by writing 1 and reading it back, so it finds none. |
+| `hpmcounter3`-`31` (0xC03-0xC1F) | Not implemented (no Zihpm). An unimplemented CSR raises an illegal instruction at every privilege, which lets firmware probe optional CSRs by trapping. |
 
 OpenSBI's SBI PMU uses `mcountinhibit`, `mcycle`, and `minstret` to stop,
 start, and preload the fixed counters, and its privileged-version probe

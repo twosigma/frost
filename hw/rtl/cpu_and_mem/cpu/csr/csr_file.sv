@@ -88,6 +88,11 @@
       this CSR before it enables Sstc, and its SBI PMU uses it with the
       mcycle/minstret writes to stop, start, and preload the counters for
       Linux perf.
+    - mhpmcounter3..31 (0xB03-0xB1F) and mhpmevent3..31 (0x323-0x33F): FROST
+      counts no HPM events, so every pair is read-only 0, the privileged
+      spec's minimum implementation. They have no storage here: the read mux
+      returns 0 for them and no write arm matches them. Their user aliases
+      hpmcounter3..31 (Zihpm) do not exist.
   An mcycle/minstret write replaces the whole counter and takes the place
   of the increment it coincides with (Zicsr): mcycle does not tick on the
   write edge, and the writing instruction does not count itself in
