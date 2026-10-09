@@ -14,10 +14,12 @@
  *    limitations under the License.
  */
 
-// Compare the enabled CSR half path with the original full-width CSR port.
-// Both use the actual aggregator and commit-bus register, including immediate
-// flush masking. The default-off CSR instance receives a deliberately wrong
-// hint so equality also checks that the optional input is ignored there.
+// Checks the preselected mperfdata/mperfdatah half (PreselectCsrHalf in
+// perf_counter_aggregator, UsePerfCsrHalf in csr_file) against the full-width
+// read. Two csr_file instances, with and without UsePerfCsrHalf, share one
+// aggregator and take their accesses from a real commit_bus_pipeline, including
+// its same-cycle flush mask. The full-width instance gets the inverted half, so
+// the equality checks also show that it ignores i_perf_counter_csr_half.
 module perf_csr_half_test_harness (
     input logic i_clk,
     input logic i_rst,
@@ -216,8 +218,11 @@ module perf_csr_half_test_harness (
     );
   end
 
-  // Same-cycle combinational equality and the following registered response.
-  // Qualification is the real commit-time expression, not a test assumption.
+  // At every edge outside reset, both CSR files must agree on the combinational
+  // and registered read data and on the counter select, capture, and bank-select
+  // outputs. On a committing read of mperfdata or mperfdatah, the preselected
+  // half must equal that half of the aggregator's 64-bit value. o_read_enable
+  // is the same expression as the core's csr_commit_fire (commit_actions).
   always @(posedge i_clk) begin
     if (!i_rst) begin
       assert (read_comb[0] == read_comb[1]);

@@ -12,7 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""PTY-only serial transport tests; run with scripts/frost.py run pytest."""
+"""Test resources/serial_bridge.py over pseudo-terminals, without serial hardware.
+
+Run from the repository root:
+./scripts/frost.py run pytest tools/vscode-frost/test/test_serial_bridge.py
+"""
 
 import base64
 import errno
@@ -40,7 +44,7 @@ class Client:
     """Subprocess client with bounded NDJSON reads for PTY tests."""
 
     def __init__(self, port, *args):
-        """Start the actual packaged helper without opening physical devices."""
+        """Run the packaged serial_bridge.py on `port` with extra `args`."""
         self.process = subprocess.Popen(
             [sys.executable, str(SCRIPT), "--port", str(port), *args],
             stdin=subprocess.PIPE,
@@ -79,7 +83,7 @@ class Client:
 
 @pytest.fixture
 def uart():
-    """Allocate an isolated PTY and clean up every fixture child."""
+    """Yield (master fd, device path, start) for a new PTY; stop every helper after."""
     master, slave = os.openpty()
     path = Path(os.ttyname(slave))
     os.close(slave)
@@ -112,7 +116,10 @@ def read_bytes(fd, length):
 
 
 def test_raw_binary_bidirectional_and_fragmented_commands(uart):
-    """Verify raw binary bidirectional and fragmented commands."""
+    """Relay all byte values both ways and accept a command split across pipe writes.
+
+    The port must be left in raw mode at the requested baud.
+    """
     master, path, start = uart
     client = start("--baud", "230400")
     assert client.event() == {"type": "ready", "port": str(path), "baud": 230400}
@@ -143,7 +150,7 @@ def test_raw_binary_bidirectional_and_fragmented_commands(uart):
 
 @pytest.mark.parametrize("finish", ["close", "eof", "term"])
 def test_close_eof_and_host_termination_release_owned_fd(uart, finish):
-    """Verify close eof and host termination release owned fd."""
+    """Exit 0 and release the port on a close command, stdin EOF, or SIGTERM."""
     _, path, start = uart
     client = start()
     assert client.event()["type"] == "ready"
@@ -161,7 +168,10 @@ def test_close_eof_and_host_termination_release_owned_fd(uart, finish):
 
 
 def test_external_reader_is_refused_without_termios_changes(uart):
-    """Verify external reader is refused without termios changes."""
+    """Refuse a port that another process holds, and name that process's PID.
+
+    The other reader's termios settings must stay unchanged.
+    """
     _, path, start = uart
     external = os.open(path, os.O_RDWR | os.O_NOCTTY)
     try:
@@ -179,7 +189,7 @@ def test_external_reader_is_refused_without_termios_changes(uart):
 
 
 def test_device_alias_does_not_bypass_an_external_reader(uart, tmp_path):
-    """Verify device alias does not bypass an external reader."""
+    """Detect another reader when the port is opened through a symlink."""
     _, path, _ = uart
     alias = tmp_path / "serial-alias"
     alias.symlink_to(path)
@@ -196,7 +206,7 @@ def test_device_alias_does_not_bypass_an_external_reader(uart, tmp_path):
 
 
 def test_disconnected_device_reports_error_and_exits(uart):
-    """Verify disconnected device reports error and exits."""
+    """Report an error, then closed, and exit 1 when the device goes away."""
     master, _, start = uart
     client = start()
     assert client.event()["type"] == "ready"
@@ -207,7 +217,10 @@ def test_disconnected_device_reports_error_and_exits(uart):
 
 
 def test_second_bridge_cannot_adopt_first_descriptor(uart):
-    """Verify second bridge cannot adopt first descriptor."""
+    """Refuse a second helper, or any plain open, on a port the first one holds.
+
+    The first helper keeps its termios settings and keeps receiving data.
+    """
     master, path, start = uart
     first = start()
     assert first.event()["type"] == "ready"
@@ -225,7 +238,10 @@ def test_second_bridge_cannot_adopt_first_descriptor(uart):
 
 
 def test_opener_race_is_detected_before_changing_termios(uart, monkeypatch):
-    """Verify opener race is detected before changing termios."""
+    """Catch a reader that opens the port after the first /proc check.
+
+    The recheck after locking must refuse the port before termios changes.
+    """
     master, path, _ = uart
     before = termios.tcgetattr(master)
     original = bridge.require_unused
@@ -251,7 +267,7 @@ def test_opener_race_is_detected_before_changing_termios(uart, monkeypatch):
 
 
 def test_reconfigure_restores_baud_without_flushing_received_bytes(uart):
-    """Verify reconfigure restores baud without flushing received bytes."""
+    """Reapply the configured baud on reconfigure without dropping received bytes."""
     master, _, start = uart
     client = start()
     assert client.event()["type"] == "ready"
@@ -285,7 +301,10 @@ def test_reconfigure_restores_baud_without_flushing_received_bytes(uart):
     ],
 )
 def test_invalid_or_oversized_commands_fail_closed(uart, command):
-    """Verify invalid or oversized commands fail closed."""
+    """Fail closed on bad base64, an oversized write, or an unknown command.
+
+    The helper reports an error, closes, exits 1, and releases the port.
+    """
     _, path, start = uart
     client = start()
     assert client.event()["type"] == "ready"
@@ -298,7 +317,11 @@ def test_invalid_or_oversized_commands_fail_closed(uart, command):
 
 
 def test_stable_selection_explicit_override_and_ambiguity(tmp_path, monkeypatch):
-    """Verify stable selection explicit override and ambiguity."""
+    """Check UART selection by fallback, exact serial match, and explicit path.
+
+    Two candidate links with no serial given, a serial that is only a prefix of
+    a real one, and a wildcard serial are refused.
+    """
     by_id = tmp_path / "by-id"
     by_id.mkdir()
     first = tmp_path / "ttyUSB3"
@@ -333,7 +356,7 @@ def test_only_a_different_xilinx_board_never_falls_back(tmp_path, monkeypatch):
 
 
 def test_regular_file_and_invalid_baud_are_rejected_before_open(tmp_path, monkeypatch):
-    """Verify regular file and invalid baud are rejected before open."""
+    """Refuse a regular file and an unsupported baud without touching the file."""
     path = tmp_path / "not-a-device"
     path.write_text("untouched")
     with pytest.raises(bridge.BridgeError, match="character device"):
@@ -348,7 +371,10 @@ def test_regular_file_and_invalid_baud_are_rejected_before_open(tmp_path, monkey
 def test_hidden_descriptors_do_not_hide_readable_owners(
     uart, tmp_path, monkeypatch, denied, visible_reader
 ):
-    """Skip permission-denied fds uniformly while refusing visible owners."""
+    """Skip descriptors hidden by permission errors but still refuse a visible reader.
+
+    The check must not read process status, open files, or change termios.
+    """
     _, port, _ = uart
     device = port.stat()
     before = termios.tcgetattr(uart[0])
@@ -400,7 +426,7 @@ def test_hidden_descriptors_do_not_hide_readable_owners(
 def test_unexpected_proc_io_failure_still_refuses_open(
     uart, tmp_path, monkeypatch, failed
 ):
-    """Do not treat actual proc I/O failures as permission-based invisibility."""
+    """Fail the open on a /proc I/O error, which is not skipped like a permission error."""
     _, port, _ = uart
     process = tmp_path / "proc" / "424244"
     descriptors = process / "fd"

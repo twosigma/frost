@@ -12,8 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Hardened self-modifying-code (fence.i) reproducer. Sweeps the store-to-fence.i
-# timing and layout knobs the boot hang implicates: gap, warm and cold L1D,
-# write-allocate miss, tight self-modify loops.
+# Self-modifying code with fence.i. Sweeps the store-to-fence.i gap, warm and
+# cold L1D (a cold line makes the patch store a write-allocate miss), and tight
+# self-modify loops.
 SRC_C   := ../../lib/src/uart.c main.c
 include ../../common/common.mk

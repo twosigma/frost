@@ -17,14 +17,26 @@
 #include "tomasulo_profile.h"
 
 /*
- * This code runs only after a measured region ends. Its own linker sections
- * sit after the legacy program image, so adding it leaves the code and data
- * addresses at the timing boundary unchanged, and with them the warm
- * microarchitectural state.
+ * Cache-counter drain and report for tomasulo_profile.h. It runs only after a
+ * measured region ends. Its code and strings go in their own linker sections,
+ * placed after the rest of the program image, so linking it in moves none of
+ * the program's code or static data and leaves the warm microarchitectural
+ * state at the timing boundary unchanged.
+ *
+ * GCC can emit out-of-line copies of the static inline tomasulo_profile.h
+ * helpers into ordinary .text (at -O2, -Os, or -Og), so the functions here
+ * that call them are flattened (CACHE_PROFILE_FLATTEN), which inlines every
+ * helper whenever optimization is on. tomasulo_profile_read_cache_pair() is
+ * noinline, so link-time optimization cannot inline it, and the bank reads it
+ * calls, into a caller in .text.
  */
 #define CACHE_PROFILE_TEXT __attribute__((section(".cache_profile_text")))
+#define CACHE_PROFILE_FLATTEN __attribute__((flatten))
 #define CACHE_PROFILE_RODATA __attribute__((section(".cache_profile_rodata"), aligned(1)))
 
+/* Defined by a benchmark that uses the default-report entry point
+ * (TOMASULO_PROFILE_USE_DEFAULT_REPORT_SNAPSHOTS). Weak, so programs that do
+ * not define them still link. */
 extern tomasulo_profile_snapshot_t tomasulo_profile_default_report_start __attribute__((weak));
 extern tomasulo_profile_snapshot_t tomasulo_profile_default_report_end __attribute__((weak));
 
@@ -33,9 +45,9 @@ static const char u64_hex_format[] CACHE_PROFILE_RODATA = "0x%08x%08x";
 static const char metric_suffix[] CACHE_PROFILE_RODATA = " (%lu.%01lu%%)\n";
 static const char no_accesses[] CACHE_PROFILE_RODATA = "  %s hit rate: n/a (no accesses)\n";
 static const char hit_rate[] CACHE_PROFILE_RODATA = "  %s hit rate: %lu.%01lu%%\n";
-static const char no_misses[] CACHE_PROFILE_RODATA = "  %s average miss latency: n/a (no misses)\n";
-static const char miss_latency[] CACHE_PROFILE_RODATA =
-    "  %s average miss latency: %lu.%02lu cycles\n";
+static const char no_misses[] CACHE_PROFILE_RODATA = "  %s slot-cycles per miss: n/a (no misses)\n";
+static const char slot_cycles_per_miss[] CACHE_PROFILE_RODATA =
+    "  %s slot-cycles per miss: %lu.%02lu\n";
 static const char cache_header[] CACHE_PROFILE_RODATA = "  Cache hierarchy:\n";
 static const char cache_absent[] CACHE_PROFILE_RODATA =
     "  Cache hierarchy: n/a (cache counters absent)\n";
@@ -67,10 +79,10 @@ static const char l1d_overlap_label[] CACHE_PROFILE_RODATA = "L1D >=2 misses in 
 static const char l2_overlap_label[] CACHE_PROFILE_RODATA = "L2 >=2 misses in flight";
 
 /*
- * Cache counters the hardware actually implements, clamped to the sidecar
- * storage. The counters are a build option (PERF_COUNTERS) and mperfcount
- * covers the whole bank, so anything the CPU does not implement must stay
- * out of the fixed-size arrays rather than be selected and read back.
+ * Number of cache counters the CPU implements, clamped to the size of a
+ * cache-counter array. mperfcount also counts the counters below the cache
+ * block, and reads 0 in a build without PERF_COUNTERS. Counters past this
+ * count are never selected: their array entries are zeroed instead.
  */
 static CACHE_PROFILE_TEXT uint32_t cache_bank_counter_count(void)
 {
@@ -86,6 +98,11 @@ static CACHE_PROFILE_TEXT uint32_t cache_bank_counter_count(void)
     return count;
 }
 
+/*
+ * Read one cache bank into cache_counters. control goes to mperfctl: 0 selects
+ * the current cache snapshot and 2 (bit 1) the preceding one; neither takes a
+ * snapshot.
+ */
 static CACHE_PROFILE_TEXT void read_cache_bank(uint64_t *cache_counters, uint32_t control)
 {
     uint32_t available = cache_bank_counter_count();
@@ -102,8 +119,14 @@ static CACHE_PROFILE_TEXT void read_cache_bank(uint64_t *cache_counters, uint32_
     }
 }
 
-CACHE_PROFILE_TEXT void tomasulo_profile_read_cache_pair(tomasulo_profile_snapshot_t *start,
-                                                         tomasulo_profile_snapshot_t *end)
+/*
+ * The end snapshot is the current cache bank and the start snapshot the
+ * preceding one, so call this after the end snapshot and before the next.
+ * The bank select is left on the current bank.
+ */
+CACHE_PROFILE_TEXT __attribute__((noinline)) void
+tomasulo_profile_read_cache_pair(tomasulo_profile_snapshot_t *start,
+                                 tomasulo_profile_snapshot_t *end)
 {
     uint64_t *start_cache = (uint64_t *) (uintptr_t) start->cache_counters_addr;
     uint64_t *end_cache = (uint64_t *) (uintptr_t) end->cache_counters_addr;
@@ -115,7 +138,8 @@ CACHE_PROFILE_TEXT void tomasulo_profile_read_cache_pair(tomasulo_profile_snapsh
     csr_write_imm(CSR_MPERFCTL, 0U);
 }
 
-static CACHE_PROFILE_TEXT void print_metric(const char *label, uint64_t value, uint64_t total)
+static CACHE_PROFILE_TEXT CACHE_PROFILE_FLATTEN void
+print_metric(const char *label, uint64_t value, uint64_t total)
 {
     uint32_t pct_x10 = tomasulo_profile_pct_x10(value, total);
     uart_printf(metric_prefix, label);
@@ -123,7 +147,8 @@ static CACHE_PROFILE_TEXT void print_metric(const char *label, uint64_t value, u
     uart_printf(metric_suffix, (unsigned long) (pct_x10 / 10U), (unsigned long) (pct_x10 % 10U));
 }
 
-static CACHE_PROFILE_TEXT void print_hit_rate(const char *label, uint64_t hits, uint64_t accesses)
+static CACHE_PROFILE_TEXT CACHE_PROFILE_FLATTEN void
+print_hit_rate(const char *label, uint64_t hits, uint64_t accesses)
 {
     if (accesses == 0U) {
         uart_printf(no_accesses, label);
@@ -136,17 +161,23 @@ static CACHE_PROFILE_TEXT void print_hit_rate(const char *label, uint64_t hits, 
     }
 }
 
-static CACHE_PROFILE_TEXT void
-print_miss_latency(const char *label, uint64_t miss_cycles_sum, uint64_t misses)
+/*
+ * The miss-cycle sum adds the miss-status slots in use each cycle, and the
+ * miss count includes requests that merge into or wait on an in-flight miss
+ * without taking a slot, so the quotient is slot-cycles per miss. It equals
+ * the average miss latency only when every miss takes its own slot.
+ */
+static CACHE_PROFILE_TEXT CACHE_PROFILE_FLATTEN void
+print_slot_cycles_per_miss(const char *label, uint64_t miss_cycles_sum, uint64_t misses)
 {
     if (misses == 0U) {
         uart_printf(no_misses, label);
     } else {
-        uint32_t latency_x100 = tomasulo_profile_ratio_scaled(miss_cycles_sum, misses, 100U);
-        uart_printf(miss_latency,
+        uint32_t per_miss_x100 = tomasulo_profile_ratio_scaled(miss_cycles_sum, misses, 100U);
+        uart_printf(slot_cycles_per_miss,
                     label,
-                    (unsigned long) (latency_x100 / 100U),
-                    (unsigned long) (latency_x100 % 100U));
+                    (unsigned long) (per_miss_x100 / 100U),
+                    (unsigned long) (per_miss_x100 % 100U));
     }
 }
 
@@ -186,9 +217,9 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
     uint64_t l2_overlap;
 
     /*
-     * Every delta below indexes the whole bank, so report nothing unless the
-     * hardware implements all of it and both snapshots saw counters. A short
-     * bank would otherwise print differences of counters that do not exist.
+     * Every delta below indexes the whole bank, so print n/a unless the CPU
+     * implements all of it and both snapshots saw counters. A short bank would
+     * otherwise print differences of counters that do not exist.
      */
     if (start->counter_count == 0U || end->counter_count == 0U ||
         cache_bank_counter_count() < TOMASULO_PROFILE_CACHE_COUNTER_COUNT) {
@@ -198,9 +229,10 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
     }
 
     /*
-     * Full-report users may omit sidecars. Drain into post-timing stack
-     * storage in that case; otherwise reuse the pair already drained by the
-     * caller. No further snapshot may occur between the end capture and here.
+     * Callers need not bind cache-counter arrays. If either snapshot has none,
+     * drain both banks into local arrays here, which is valid only if no
+     * snapshot was taken after the end one. Otherwise use the arrays the
+     * caller already filled with tomasulo_profile_read_cache_pair().
      */
     if (start_cache == NULL || end_cache == NULL) {
         read_cache_bank(end_local, 0U);
@@ -210,6 +242,8 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
         end_cache = end_local;
     }
 
+    /* Cache-block indices: each counter's tomasulo_profile_counter_idx value
+     * minus TOMASULO_PROFILE_LEGACY_COUNTER_COUNT. */
 #define CACHE_DELTA(index) (end_cache[(index)] - start_cache[(index)])
     l1i_access = CACHE_DELTA(0);
     l1i_hit = CACHE_DELTA(1);
@@ -257,8 +291,8 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
     print_hit_rate(l2, l2_hit, l2_access);
 
     print_metric(l1i_stall_label, l1i_fetch_miss_stall, cycles);
-    print_miss_latency(l1d, l1d_miss_cycles, l1d_miss);
-    print_miss_latency(l2, l2_miss_cycles, l2_miss);
+    print_slot_cycles_per_miss(l1d, l1d_miss_cycles, l1d_miss);
+    print_slot_cycles_per_miss(l2, l2_miss_cycles, l2_miss);
     print_metric(l1i_hum_label, l1i_hum, l1i_hit);
     print_metric(l1d_hum_label, l1d_hum, l1d_hit);
     print_metric(l2_hum_label, l2_hum, l2_hit);

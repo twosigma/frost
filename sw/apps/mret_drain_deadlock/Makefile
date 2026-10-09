@@ -12,11 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-#    Copyright 2026 Two Sigma Open Source, LLC
-#    SPDX-License-Identifier: Apache-2.0
-# MRET-drain deadlock directed test (one-shot o_mret_start vs a draining store).
-# The program runs from BRAM. Only the store buffer lives in the cached DDR
-# region, in a loaded .ddr_data section, so the behavioral DDR model serves its
-# lines and cached stores drain far enough for sq_committed_empty to toggle.
+# MRET-drain deadlock directed test: an MRET behind draining cached stores must
+# wait for them, then return. The program runs from BRAM. Only the buffer it
+# stores to lives in the cached DDR region, in a loaded .ddr_data section, so
+# the behavioral DDR model serves its lines and cached stores drain far enough
+# for sq_committed_empty to toggle.
 SRC_C := main.c
 include ../../common/common.mk

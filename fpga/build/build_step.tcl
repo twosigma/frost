@@ -12,9 +12,79 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Run one Vivado build step and directive; build.py uses this for parallel sweeps.
+# Run one Vivado build step with one directive, using the current directory as
+# its work directory. build.py runs the candidates of a place or route sweep as
+# separate Vivado processes, up to --jobs at a time.
 
 # Utilities
+
+# Incremental placement carries its reference's negative WNS target into saved
+# checkpoints. Remove that history before later optimization, without changing
+# the placed/routed design or the original checkpoint bound to the timing gate.
+proc primitive_placement_snapshot {} {
+    set cells [get_cells -hier -filter {IS_PRIMITIVE}]
+    set rows {}
+    foreach name [get_property NAME $cells] loc [get_property LOC $cells] bel [get_property BEL $cells] ref [get_property REF_NAME $cells] level [get_property PRIMITIVE_LEVEL $cells] {
+        # A transformed macro's BEL property is a constraint alias, not its
+        # complete physical placement. Unlocking DDR OBUFDS, for example,
+        # changes that alias from OUTINV to OUTBUF without moving any leaf.
+        # Unplaced leaf aliases can also carry a BEL constraint without any
+        # physical occupancy. Compare actual BELs for those and for macros,
+        # as well as every placed leaf's ordinary LOC/BEL pair.
+        if {$level eq "MACRO" || $loc eq ""} {
+            set bel [lsort [get_bels -quiet -of_objects [get_cells -quiet $name]]]
+        }
+        lappend rows [list $name $loc $bel $ref]
+    }
+    return [lsort -index 0 $rows]
+}
+
+proc current_setup_hold_slacks {} {
+    set result {}
+    foreach delay_type {max min} {
+        lappend result [get_property SLACK [get_timing_paths -delay_type $delay_type -max_paths 1]]
+    }
+    return $result
+}
+
+proc open_timing_checkpoint {checkpoint_path work_directory} {
+    global script_directory
+    open_checkpoint $checkpoint_path
+    source [file join $script_directory x3_local_placement.tcl]
+    frost_x3_local_placement::recover_unfixed_ports $checkpoint_path
+    if {[frost_x3_local_placement::saved_constraints] ne ""} {
+        set placement [primitive_placement_snapshot]
+        set slacks [current_setup_hold_slacks]
+        frost_x3_local_placement::release
+        if {$placement ne [primitive_placement_snapshot] || $slacks ne [current_setup_hold_slacks]} {
+            error "Removing temporary placement constraints changed placement or timing"
+        }
+        puts "FROST_TIMING_FLOW placement_preservation=off setup_hold_slacks=$slacks"
+    }
+    # The report is empty for a checkpoint without incremental history.
+    if {[string trim [report_incremental_reuse -return_string]] eq ""} {return}
+
+    set placement [primitive_placement_snapshot]
+    set slacks [current_setup_hold_slacks]
+    set clean_checkpoint [file join $work_directory timing_input.dcp]
+    set write_incremental [get_param checkpoint.writeIncrFile]
+    try {
+        set_param checkpoint.writeIncrFile 0
+        write_checkpoint -force $clean_checkpoint
+    } finally {
+        set_param checkpoint.writeIncrFile $write_incremental
+    }
+    close_design
+    open_checkpoint $clean_checkpoint
+
+    if {[string trim [report_incremental_reuse -return_string]] ne ""} {
+        error "Incremental timing target survived checkpoint conversion"
+    }
+    if {$placement ne [primitive_placement_snapshot] || $slacks ne [current_setup_hold_slacks]} {
+        error "Removing incremental history changed placement or timing"
+    }
+    puts "FROST_TIMING_FLOW incremental=off preserved_cells=[llength $placement] setup_hold_slacks=$slacks"
+}
 
 # Parse timing report to get number of failing setup endpoints
 proc get_failing_endpoint_count {timing_report_file} {
@@ -46,9 +116,9 @@ proc get_failing_endpoint_count {timing_report_file} {
     return [expr {int($setup_count)}]
 }
 
-# Parse WNS/TNS from the Design Timing Summary setup row in a timing report.
+# Parse slack and the failing endpoint count from the setup summary row.
 proc get_setup_timing_summary {timing_report_file} {
-    set result [dict create wns "" tns ""]
+    set result [dict create wns "" tns "" failing ""]
 
     if {![file exists $timing_report_file]} {
         return $result
@@ -79,10 +149,21 @@ proc get_setup_timing_summary {timing_report_file} {
             dict set result wns [lindex $fields 0]
             dict set result tns [lindex $fields 1]
         }
+        if {[llength $fields] >= 3} {
+            dict set result failing [lindex $fields 2]
+        }
         break
     }
 
     return $result
+}
+
+proc setup_timing_met {summary {wns ""}} {
+    if {$wns eq ""} {set wns [dict get $summary wns]}
+    set tns [dict get $summary tns]
+    set failing [dict get $summary failing]
+    return [expr {$wns ne "" && $wns >= 0.0 && $tns ne "" && $tns >= 0.0 &&
+        [string is integer -strict $failing] && $failing == 0}]
 }
 
 # Generate CSV report of failing setup timing paths
@@ -165,9 +246,9 @@ proc getenv_default {name default_value} {
 }
 
 # build.py --debug-ila: gather every MARK_DEBUG net (the FROST_DEBUG_FETCH_ILA
-# mirrors in the fetch seam) into one ILA on the CPU clock, one probe per
-# bus, bit 0 first. Runs on the synthesized design before the checkpoint is
-# written; write_bitstream then also writes the probes file.
+# mirrors) into one ILA on the CPU clock, one probe per bus, bit 0 first. Runs
+# on the synthesized design before the checkpoint is written; the bitstream
+# step then also writes the probes file.
 proc frost_insert_fetch_ila {clock_net_name depth} {
     set marked [get_nets -hierarchical -filter {MARK_DEBUG == 1}]
     if {[llength $marked] == 0} {
@@ -213,7 +294,7 @@ proc frost_insert_fetch_ila {clock_net_name depth} {
     # The core is implemented when the opt step reopens the checkpoint in
     # non-project mode; here (project mode) implement_debug_core insists on
     # a saved design. The definitions travel in the checkpoint's constraints.
-    puts "Fetch-seam ILA: $probe_index probes, depth $depth, clock $clock_net_name"
+    puts "Fetch ILA: $probe_index probes, depth $depth, clock $clock_net_name"
 }
 
 proc split_env_list {value} {
@@ -257,12 +338,14 @@ proc set_x3_setup_uncertainty {board_name uncertainty reason} {
     puts "Set x3 CPU setup clock uncertainty to $uncertainty ns ($reason)"
 }
 
-# Validate the selected-PC endpoint family of the X3 metadata-to-PC cost group:
-# one canonical FD* selected-PC endpoint per bit [63:0] (the PC carries the
-# full architectural width since Phase 3 M2 retired the producer-side 32-bit
-# masking), all on clock_from_mmcm, and no unexpected o_pc_reg* D-pin family
-# beyond selected PC and the excluded o_pc_reg_reg state family.
-proc validate_x3_pc_tail_scope {scope_label} {
+# Validate the selected-PC endpoint family of the X3 metadata-to-PC path group:
+# at least one FD* endpoint per PC bit [63:0], all clocked by clock_from_mmcm,
+# and no o_pc_reg* D pins outside the selected family and the o_pc_reg_reg
+# state family, which is validated separately. Before placement each bit has
+# exactly one canonical (non-replica) endpoint. Placement's equivalent-driver
+# rewiring may move all of a register's loads to its replicas and remove it,
+# so with require_canonical 0 a bit may have no canonical endpoint left.
+proc validate_x3_pc_tail_scope {scope_label {require_canonical 1}} {
     set selected_end_re {^.*/pc_controller_inst/o_pc_reg\[([0-9]+)\](_rep.*)?/D$}
     set state_end_re {^.*/pc_controller_inst/o_pc_reg_reg\[([0-9]+)\](_rep.*)?/D$}
     set broad_end_re {^.*/pc_controller_inst/o_pc_reg[^/]*/D$}
@@ -330,8 +413,13 @@ proc validate_x3_pc_tail_scope {scope_label} {
         if {![dict exists $selected_bit_counts $bit_index]} {
             error "$scope_label X3 PC-tail selected endpoint family is missing PC bit $bit_index"
         }
-        if {![dict exists $canonical_bit_counts $bit_index] || [dict get $canonical_bit_counts $bit_index] != 1} {
+        set canonical_count [expr {[dict exists $canonical_bit_counts $bit_index] ?
+            [dict get $canonical_bit_counts $bit_index] : 0}]
+        if {$require_canonical && $canonical_count != 1} {
             error "$scope_label X3 PC-tail PC bit $bit_index does not have exactly one canonical non-replica endpoint"
+        }
+        if {$canonical_count > 1} {
+            error "$scope_label X3 PC-tail PC bit $bit_index has more than one canonical non-replica endpoint"
         }
     }
 
@@ -343,9 +431,10 @@ proc validate_x3_pc_tail_scope {scope_label} {
 }
 
 # Validate an indexed PC-state family, accepting placer replicas but no other
-# namespace members. Each bit retains one canonical FD* CPU-clock endpoint.
+# namespace members. Each bit keeps at least one FD* CPU-clock endpoint, and
+# exactly one canonical one unless require_canonical is 0 (after placement).
 proc validate_x3_pc_tail_indexed_family {
-    scope_label family_label endpoint_re broad_end_re last_bit
+    scope_label family_label endpoint_re broad_end_re last_bit {require_canonical 1}
 } {
     set endpoints [get_pins -quiet -hierarchical -regexp $endpoint_re]
     set broad_ends [get_pins -quiet -hierarchical -regexp $broad_end_re]
@@ -399,8 +488,13 @@ proc validate_x3_pc_tail_indexed_family {
         if {![dict exists $bit_counts $bit_index]} {
             error "$scope_label X3 $family_label endpoint family is missing bit $bit_index"
         }
-        if {![dict exists $canonical_bit_counts $bit_index] || [dict get $canonical_bit_counts $bit_index] != 1} {
+        set canonical_count [expr {[dict exists $canonical_bit_counts $bit_index] ?
+            [dict get $canonical_bit_counts $bit_index] : 0}]
+        if {$require_canonical && $canonical_count != 1} {
             error "$scope_label X3 $family_label bit $bit_index does not have exactly one canonical non-replica endpoint"
+        }
+        if {$canonical_count > 1} {
+            error "$scope_label X3 $family_label bit $bit_index has more than one canonical non-replica endpoint"
         }
     }
 
@@ -411,10 +505,11 @@ proc validate_x3_pc_tail_indexed_family {
         bits [dict size $bit_counts]]
 }
 
-# Validate a scalar PC-control family: one canonical endpoint plus optional
-# placer replicas, with no unmatched suffix family.
+# Validate a scalar PC-control family: at least one endpoint, of which one is
+# canonical (at most one when require_canonical is 0, after placement), plus
+# optional placer replicas, with no unmatched suffix family.
 proc validate_x3_pc_tail_scalar_family {
-    scope_label family_label endpoint_re broad_end_re
+    scope_label family_label endpoint_re broad_end_re {require_canonical 1}
 } {
     set endpoints [get_pins -quiet -hierarchical -regexp $endpoint_re]
     set broad_ends [get_pins -quiet -hierarchical -regexp $broad_end_re]
@@ -454,8 +549,11 @@ proc validate_x3_pc_tail_scalar_family {
             error "$scope_label X3 $family_label endpoint is not clocked exactly by clock_from_mmcm ($endpoint_clock_names): $endpoint_name"
         }
     }
-    if {[llength $endpoints] < 1 || $canonical_count != 1} {
+    if {[llength $endpoints] < 1 || ($require_canonical && $canonical_count != 1)} {
         error "$scope_label X3 $family_label expected at least one endpoint and exactly one canonical endpoint: total=[llength $endpoints] canonical=$canonical_count"
+    }
+    if {$canonical_count > 1} {
+        error "$scope_label X3 $family_label has more than one canonical endpoint: canonical=$canonical_count"
     }
 
     return [dict create \
@@ -463,6 +561,32 @@ proc validate_x3_pc_tail_scalar_family {
         end_names $endpoint_names \
         canonical_end_names [lsort -unique $canonical_end_names] \
         canonical $canonical_count]
+}
+
+# Placement may merge a canonical endpoint into its replicas, which removes the
+# canonical name, but it never creates one. Require the post-place canonical
+# names to be pre-place canonical names and log any that were merged away.
+proc require_x3_pc_tail_canonical_names_within {family_label post_names pre_names} {
+    set pre_dict [dict create]
+    foreach name $pre_names {
+        dict set pre_dict $name 1
+    }
+    set post_dict [dict create]
+    foreach name $post_names {
+        if {![dict exists $pre_dict $name]} {
+            error "post-place X3 $family_label canonical endpoint is not a pre-place canonical endpoint: $name"
+        }
+        dict set post_dict $name 1
+    }
+    set merged [list]
+    foreach name $pre_names {
+        if {![dict exists $post_dict $name]} {
+            lappend merged $name
+        }
+    }
+    if {[llength $merged] > 0} {
+        puts "FROST_PC_TAIL_MERGED_CANONICAL family=$family_label count=[llength $merged] names=$merged"
+    }
 }
 
 # Existence and namespace checks alone cannot distinguish a preserved but
@@ -484,12 +608,13 @@ proc validate_x3_pc_tail_start_connectivity {
     return $connected
 }
 
-# Discover the X3 metadata-to-PC cost group: the fourteen pinned scalar LUTRAM
-# overlay output-FF launches of the predecode metadata (seven sideband
+# Discover the X3 metadata-to-PC path group: the fourteen output-FF launches of
+# the pinned scalar LUTRAM overlays of the predecode metadata (seven sideband
 # predicates on both IMEM parities, imem_predecode.sv) feeding four disjoint PC
-# state/control families. Historical ``compressed`` procedure, key, group,
-# audit, and report names remain part of the artifact schema.
-proc validate_x3_pc_compressed_tail_scope {scope_label} {
+# state/control families. The ``compressed`` in the procedure, key, group,
+# audit, and report names covers all fourteen launches; build.py reads the
+# audit keys and the report name.
+proc validate_x3_pc_compressed_tail_scope {scope_label {require_canonical 1}} {
     set compressed_start_re {^.*/instruction_memory/u_(even|odd)_(is_compressed_lo|is_compressed_hi|even_local_pair_valid|pairable_native_lo|pairable_compressed_hi|pairable_native_hi|slot2_start_valid_lo)_bank/read_q_reg/C$}
     set state_end_re {^.*/pc_controller_inst/o_pc_reg_reg\[([0-9]+)\](_rep.*)?/D$}
     set state_broad_end_re {^.*/pc_controller_inst/o_pc_reg_reg[^/]*/D$}
@@ -498,7 +623,7 @@ proc validate_x3_pc_compressed_tail_scope {scope_label} {
     set pending_end_re {^.*/pc_controller_inst/pending_prediction_valid_reg(_rep.*)?/D$}
     set pending_broad_end_re {^.*/pc_controller_inst/pending_prediction_valid_reg[^/]*/D$}
 
-    set selected_scope [validate_x3_pc_tail_scope $scope_label]
+    set selected_scope [validate_x3_pc_tail_scope $scope_label $require_canonical]
     set expected_compressed_start_keys [list]
     foreach predicate [list is_compressed_lo is_compressed_hi even_local_pair_valid \
                            pairable_native_lo pairable_compressed_hi pairable_native_hi \
@@ -527,11 +652,12 @@ proc validate_x3_pc_compressed_tail_scope {scope_label} {
     }
 
     set state_scope [validate_x3_pc_tail_indexed_family \
-        $scope_label o_pc_reg_reg $state_end_re $state_broad_end_re 63]
+        $scope_label o_pc_reg_reg $state_end_re $state_broad_end_re 63 $require_canonical]
     set seq_scope [validate_x3_pc_tail_indexed_family \
-        $scope_label seq_next_pc_reg_hw_q $seq_end_re $seq_broad_end_re 62]
+        $scope_label seq_next_pc_reg_hw_q $seq_end_re $seq_broad_end_re 62 $require_canonical]
     set pending_scope [validate_x3_pc_tail_scalar_family \
-        $scope_label pending_prediction_valid $pending_end_re $pending_broad_end_re]
+        $scope_label pending_prediction_valid $pending_end_re $pending_broad_end_re \
+        $require_canonical]
 
     set compressed_start_names [lsort -unique [get_property NAME $compressed_starts]]
 
@@ -603,7 +729,8 @@ proc write_physopt_iteration_outputs {work_directory step board_name physopt_unc
 
     set main_checkpoint_name ${step}.dcp
     set main_report_prefix $step
-    set timing_met [expr {$best_wns ne "" && $best_wns >= 0.0}]
+    set timing_met [expr {$best_wns ne "" && $best_wns >= 0.0 &&
+        [setup_timing_met [get_setup_timing_summary $timing_file]]}]
     if {$step eq "post_second_route_physopt" || ($step eq "post_route_physopt" && $timing_met)} {
         set main_checkpoint_name final.dcp
         set main_report_prefix final
@@ -616,11 +743,12 @@ proc write_physopt_iteration_outputs {work_directory step board_name physopt_unc
         file copy -force [file join $work_directory "phys_opt$suffix"] [file join $main_work_directory "$main_report_prefix$suffix"]
     }
 
-    # A running post-place sweep may be forked into a separate build directory.
-    # Publish its exact completed checkpoint identity only after all reports
-    # are written. The launch token prevents an earlier run's iteration record
-    # from authorizing a reused worker directory. Canonical lineage is still
-    # written by Python only when the entire stage exits successfully.
+    # build.py --snapshot-physopt-from can copy a completed post-place sweep
+    # while the stage is still running. Record the checkpoint's hash only after
+    # all reports are written. The launch token keeps an earlier run's
+    # iteration record from vouching for a reused worker directory. build.py
+    # still writes the stage's lineage sidecar, and only when the whole stage
+    # succeeds.
     set launch_file [file join $work_directory phys_opt_launch.json]
     if {$board_name eq "x3" && $step eq "post_place_physopt" && [file exists $launch_file]} {
         set launch_handle [open $launch_file r]
@@ -649,12 +777,12 @@ proc write_physopt_iteration_outputs {work_directory step board_name physopt_unc
 
 # Arguments
 
-# Arguments: board_name step directive checkpoint_path retiming ?software_mem_dir?
+# Arguments: board_name step directive checkpoint_path retiming ?software_mem_dir? ?x3_place_mode?
 if {$argc < 5} {
     puts "Error: Required arguments: board_name step directive checkpoint_path retiming"
-    puts "Usage: vivado -mode batch -source build_step.tcl -tclargs <board_name> <step> <directive> <checkpoint_path> <retiming> ?software_mem_dir?"
+    puts "Usage: vivado -mode batch -source build_step.tcl -tclargs <board_name> <step> <directive> <checkpoint_path> <retiming> ?software_mem_dir? ?x3_place_mode?"
     puts ""
-    puts "Steps: synth, opt, place, quick_route, post_place_physopt, route, post_route_physopt, second_route, post_second_route_physopt, bitstream"
+    puts "Steps: synth, opt, place, verify_place, quick_route, post_place_physopt, route, post_route_physopt, second_route, post_second_route_physopt, bitstream"
     exit 1
 }
 
@@ -664,6 +792,11 @@ set directive [lindex $argv 2]
 set checkpoint_path [lindex $argv 3]
 set retiming [lindex $argv 4]
 set software_mem_directory ""
+set x3_place_mode [lindex $argv 6]
+if {$x3_place_mode ne "" && ($board_name ne "x3" || $step ne "place" ||
+    $x3_place_mode ni {reference guided})} {
+    error "Invalid X3 placement mode: $x3_place_mode"
+}
 
 # Add future targets here. Board wrappers, file lists, and constraints follow
 # the <board>/<board>_frost conventions below. DDR-capable targets also provide
@@ -739,9 +872,10 @@ if {$step eq "synth"} {
     ] [get_ips axi_bram_ctrl_0]
 
     if {$board_has_gty} {
-        # The NIC's transceiver wizard core; the board top's transceiver
-        # wrapper instantiates it. FROST_GTY_RX_EQ selects the receive
-        # equalizer (LPM by default, or DFE).
+        # The board's transceiver wizard cores (on X3 the NIC's and the CPU
+        # clock's); the board top's transceiver wrappers instantiate them.
+        # FROST_GTY_RX_EQ selects the NIC's receive equalizer (LPM by
+        # default, or DFE).
         source [file join [file dirname [info script]] ${board_name}_gty_ip.tcl]
         set create_gty_ip_proc create_${board_name}_gty_ip
         $create_gty_ip_proc [getenv_default FROST_GTY_RX_EQ LPM]
@@ -775,7 +909,7 @@ if {$step eq "synth"} {
             lappend current_verilog_defines $define_name
         }
     }
-    # build.py --debug-ila compiles the fetch-seam ILA mirrors in.
+    # build.py --debug-ila compiles the fetch ILA mirrors in.
     if {[getenv_default FROST_DEBUG_ILA 0] eq "1" &&
         [lsearch -exact $current_verilog_defines FROST_DEBUG_FETCH_ILA] < 0} {
         lappend current_verilog_defines FROST_DEBUG_FETCH_ILA
@@ -825,6 +959,13 @@ if {$step eq "synth"} {
         lappend synth_args -generic PERF_COUNTERS=1
         puts "Profiling counters included (generic PERF_COUNTERS)"
     }
+    # A late module-level declaration can leave generated primitive inputs
+    # attached to separate, undriven implicit nets. Reject that ambiguity before
+    # Vivado ties those inputs to constants and reports timing on the wrong logic.
+    set_msg_config -id {Synth 8-605} -new_severity ERROR
+    # Out-of-range indices can become don't-cares in synthesis even when
+    # simulation truncates the index to the intended vector width.
+    set_msg_config -id {Synth 8-324} -new_severity ERROR
     synth_design {*}$synth_args
 
     if {[getenv_default FROST_DEBUG_ILA 0] eq "1"} {
@@ -847,14 +988,13 @@ if {$step eq "synth"} {
     }
     open_checkpoint $checkpoint_path
 
-    # build.py --debug-ila: the synthesis step defined the fetch-seam ILA;
+    # build.py --debug-ila: the synthesis step defined the fetch ILA;
     # instantiate it (and the debug hub) before optimization.
     if {[getenv_default FROST_DEBUG_ILA 0] eq "1" && [llength [get_debug_cores -quiet]] > 0} {
         implement_debug_core
-        puts "Fetch-seam ILA implemented: [llength [get_debug_cores]] debug core(s)"
+        puts "Fetch ILA implemented: [llength [get_debug_cores]] debug core(s)"
     }
 
-    # opt_design -merge_equivalent_drivers -hier_fanout_limit 512
     opt_design -directive $directive
 
     write_checkpoint -force $work_directory/post_opt.dcp
@@ -871,8 +1011,8 @@ if {$step eq "synth"} {
         puts "Error: place step requires checkpoint_path"
         exit 1
     }
-    # These diagnostics belonged to retired multi-place/pin-edit recipes.
-    # No environment toggle can enable them in a production placement.
+    # Delete audits written by the diagnostic pin-swap and flush-guidance
+    # helpers; the production place step never runs those helpers.
     file delete $work_directory/post_place_pin_swap_audit.txt
     file delete $work_directory/post_place_flush_guidance_audit.tcldict
     open_checkpoint $checkpoint_path
@@ -898,26 +1038,23 @@ if {$step eq "synth"} {
         }
     }
 
-    # X3 needs setup overconstraint for 300 MHz. build.py varies it downward
-    # from 0.500 ns in 0.050 ns steps as surrogate seeds and to ease packing.
-    # Guidance seeds retain their 0.500 ns starting point. Published checkpoints
-    # and scores use zero added uncertainty (X3_PLACE_REPORT_UNCERTAINTY_NS).
+    # X3 places with added setup uncertainty (overconstraint). build.py steps it
+    # down from 0.500 ns in 0.050 ns steps, as substitute seeds and to ease
+    # packing; 0.500 ns is also the default here. Published checkpoints and
+    # scores use zero added uncertainty (X3_PLACE_REPORT_UNCERTAINTY_NS).
     set x3_place_seed_baseline_uncertainty 0.5
     set x3_place_baseline_uncertainty 0.0
     set x3_place_uncertainty [getenv_default FROST_PLACE_SETUP_UNCERTAINTY $x3_place_seed_baseline_uncertainty]
     set_x3_setup_uncertainty $board_name $x3_place_uncertainty "place overconstraint"
 
-    # Qualified X3 seeds use one PC-tail placer cost group, not timing
-    # exceptions: the fourteen predecode-metadata scalar launches to selected,
-    # state, sequential, and pending-valid consumers. Remove it after placement
-    # and verify all paths return to clock_from_mmcm on a clean reopen.
-    # Qualified solutions: ExtraNetDelay_high/0.500 (the accepted control),
-    # ExtraPostPlacementOpt/0.450, and ExtraPostPlacementOpt/0.425. The 0.425
-    # seed is the phase11 off-grid seed that first passed the post-demolition
-    # gate under the then-active fetch pblock (score -0.699, raw -0.199;
-    # 2026-08-20) and routed to closure. It remains competitive after that
-    # pblock's retirement, so build.py appends 0.425 through
-    # X3_PLACE_EXTRA_SEED_CANDIDATES.
+    # The guided X3 seeds (ExtraNetDelay_high/0.500, ExtraPostPlacementOpt/0.450,
+    # and ExtraPostPlacementOpt/0.425) place with one temporary path group, not
+    # a timing exception, from the fourteen predecode-metadata scalar launches
+    # to their selected, state, sequential, and pending-valid PC consumers. The
+    # group is removed after placement, and a clean reopen must show all of
+    # those paths back in clock_from_mmcm. This list must match
+    # X3_PC_TAIL_GUIDED_CANDIDATES in build.py; the 0.425 seed is off the 50 ps
+    # grid, so build.py adds it through X3_PLACE_EXTRA_SEED_CANDIDATES.
     set use_x3_pc_tail_group [expr {
         $board_name eq "x3" &&
         (($directive eq "ExtraNetDelay_high" &&
@@ -951,14 +1088,32 @@ if {$step eq "synth"} {
         group_path -name frost_pc_compressed_tail -from $x3_pc_compressed_tail_starts -to $x3_pc_compressed_tail_ends
     }
 
+    if {$x3_place_mode ne ""} {
+        source [file join $script_directory x3_place.tcl]
+        if {$x3_place_mode eq "guided"} {
+            set_x3_setup_uncertainty $board_name $x3_place_baseline_uncertainty "measure local floorplan choices"
+        }
+        frost_x3_place::prepare $x3_place_mode $work_directory
+        if {$x3_place_mode eq "guided"} {
+            set_x3_setup_uncertainty $board_name $x3_place_uncertainty "final placement guidance"
+        }
+    }
+
     # One placement per candidate. All physical controls are already applied;
     # the remaining commands restore scoring constraints, audit and report.
     place_design -directive $directive
 
+    if {$x3_place_mode eq "guided"} {
+        frost_x3_place::verify $work_directory
+        report_drc -ruledecks placer_checks -file $work_directory/post_place_drc.rpt
+    }
+
     if {$use_x3_pc_tail_group} {
         # Reacquire PSIP-created/removed/renamed replicas before restoring the
-        # clock group. Canonical endpoints remain exact; replica names may vary.
-        set x3_pc_tail_scope_after [validate_x3_pc_compressed_tail_scope "post-place"]
+        # clock group. Replica names may vary, and equivalent-driver rewiring
+        # may merge a canonical endpoint into its replicas, but every bit keeps
+        # an endpoint and no canonical name is new.
+        set x3_pc_tail_scope_after [validate_x3_pc_compressed_tail_scope "post-place" 0]
         set x3_pc_compressed_tail_starts_after [dict get $x3_pc_tail_scope_after compressed_starts]
         set x3_pc_tail_ends_after [dict get $x3_pc_tail_scope_after selected_ends]
         set x3_pc_compressed_tail_ends_after [dict get $x3_pc_tail_scope_after union_ends]
@@ -985,18 +1140,14 @@ if {$step eq "synth"} {
         if {$x3_pc_compressed_tail_post_start_names ne $x3_pc_compressed_tail_pre_start_names} {
             error "post-place X3 PC-metadata tail start names differ from the pre-place scope"
         }
-        if {$x3_pc_tail_post_canonical_end_names ne $x3_pc_tail_pre_canonical_end_names} {
-            error "post-place X3 selected PC-tail canonical endpoint names differ from the pre-place scope"
-        }
-        if {$x3_pc_tail_post_state_canonical_end_names ne $x3_pc_tail_pre_state_canonical_end_names} {
-            error "post-place X3 state PC-tail canonical endpoint names differ from the pre-place scope"
-        }
-        if {$x3_pc_tail_post_seq_canonical_end_names ne $x3_pc_tail_pre_seq_canonical_end_names} {
-            error "post-place X3 sequential PC-tail canonical endpoint names differ from the pre-place scope"
-        }
-        if {$x3_pc_tail_post_pending_canonical_end_names ne $x3_pc_tail_pre_pending_canonical_end_names} {
-            error "post-place X3 pending PC-tail canonical endpoint names differ from the pre-place scope"
-        }
+        require_x3_pc_tail_canonical_names_within "selected PC-tail" \
+            $x3_pc_tail_post_canonical_end_names $x3_pc_tail_pre_canonical_end_names
+        require_x3_pc_tail_canonical_names_within "state PC-tail" \
+            $x3_pc_tail_post_state_canonical_end_names $x3_pc_tail_pre_state_canonical_end_names
+        require_x3_pc_tail_canonical_names_within "sequential PC-tail" \
+            $x3_pc_tail_post_seq_canonical_end_names $x3_pc_tail_pre_seq_canonical_end_names
+        require_x3_pc_tail_canonical_names_within "pending PC-tail" \
+            $x3_pc_tail_post_pending_canonical_end_names $x3_pc_tail_pre_pending_canonical_end_names
         group_path -default -from $x3_pc_compressed_tail_starts_after -to $x3_pc_compressed_tail_ends_after
     }
 
@@ -1005,14 +1156,14 @@ if {$step eq "synth"} {
     set_x3_setup_uncertainty $board_name $x3_place_baseline_uncertainty "real post-place scoring"
 
     if {$use_x3_pc_tail_group} {
-        # At the clean-reopen scoring boundary, test path ownership because
-        # Vivado may retain empty group objects.
+        # After the clean reopen, check which group the paths belong to: Vivado
+        # may keep an empty group object, so its existence proves nothing.
         write_checkpoint -force $work_directory/post_place.dcp
         close_design
         open_checkpoint $work_directory/post_place.dcp
         set_x3_setup_uncertainty $board_name $x3_place_baseline_uncertainty "clean-reopen place scoring"
 
-        set x3_pc_tail_scope_score [validate_x3_pc_compressed_tail_scope "clean-reopen"]
+        set x3_pc_tail_scope_score [validate_x3_pc_compressed_tail_scope "clean-reopen" 0]
         set x3_pc_compressed_tail_starts_score [dict get $x3_pc_tail_scope_score compressed_starts]
         set x3_pc_tail_ends_score [dict get $x3_pc_tail_scope_score selected_ends]
         set x3_pc_compressed_tail_ends_score [dict get $x3_pc_tail_scope_score union_ends]
@@ -1097,10 +1248,10 @@ if {$step eq "synth"} {
         puts $x3_pc_tail_audit "POST_PENDING_CANONICAL=$x3_pc_tail_post_pending_canonical"
         puts $x3_pc_tail_audit "POST_UNION_ENDS=$x3_pc_tail_post_union_end_count"
         puts $x3_pc_tail_audit "PRE_COMPRESSED_START_NAMES_MATCH_POST=1"
-        puts $x3_pc_tail_audit "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST=1"
-        puts $x3_pc_tail_audit "PRE_STATE_CANONICAL_NAMES_MATCH_POST=1"
-        puts $x3_pc_tail_audit "PRE_SEQ_CANONICAL_NAMES_MATCH_POST=1"
-        puts $x3_pc_tail_audit "PRE_PENDING_CANONICAL_NAMES_MATCH_POST=1"
+        puts $x3_pc_tail_audit "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE=1"
+        puts $x3_pc_tail_audit "POST_STATE_CANONICAL_NAMES_WITHIN_PRE=1"
+        puts $x3_pc_tail_audit "POST_SEQ_CANONICAL_NAMES_WITHIN_PRE=1"
+        puts $x3_pc_tail_audit "POST_PENDING_CANONICAL_NAMES_WITHIN_PRE=1"
         puts $x3_pc_tail_audit "SCORE_COMPRESSED_STARTS=$x3_pc_compressed_tail_score_start_count"
         puts $x3_pc_tail_audit "SCORE_ENDS=$x3_pc_tail_score_end_count"
         puts $x3_pc_tail_audit "SCORE_PC_BITS=$x3_pc_tail_score_bit_count"
@@ -1127,8 +1278,8 @@ if {$step eq "synth"} {
     write_failing_paths_csv $work_directory/post_place_failing_paths.csv $work_directory/post_place_timing.rpt
     # build.py vetoes seeds at the configured congestion level (default 5),
     # because overconstrained post-place WNS can favor unroutable density.
-    # This report also defaults to threshold 5. No listed windows does not
-    # measure zero congestion or exclude smaller congestion windows.
+    # This report lists only windows at its default threshold of 5 or above,
+    # so an empty list does not mean zero congestion.
     report_design_analysis -congestion -file $work_directory/post_place_congestion.rpt
     if {$use_x3_pc_tail_group} {
         report_timing -from $x3_pc_compressed_tail_starts_score -to $x3_pc_compressed_tail_ends_score -delay_type max -max_paths 1000 -nworst 10 -file $work_directory/post_place_pc_compressed_tail_timing.rpt
@@ -1141,20 +1292,37 @@ if {$step eq "synth"} {
 
     puts "** DONE — place_design complete with directive: $directive"
 
+} elseif {$step eq "verify_place"} {
+    # A separate Vivado process checks the final placement's stored constraints.
+    # Do not reset uncertainty or modify the checkpoint in this verification.
+    if {$board_name ne "x3" || $checkpoint_path eq ""} {
+        error "verify_place requires an X3 placement checkpoint"
+    }
+    open_checkpoint $checkpoint_path
+    source [file join $script_directory x3_place.tcl]
+    frost_x3_place::verify $work_directory
+    source [file join $script_directory x3_post_place_gate.tcl]
+    frost_x3_post_place_gate::write $work_directory
+    report_timing_summary -file $work_directory/post_place_verification_timing.rpt
+    report_route_status -file $work_directory/post_place_route_status.rpt
+    puts "** DONE — verified unchanged post-place checkpoint"
+
 } elseif {$step eq "quick_route"} {
-    # X3 seed-ranking probe, not a pipeline step. Clear overconstraint and run
-    # the cheapest route; emit reports but promote the original post_place.dcp.
+    # X3 seed-ranking probe, not a pipeline step. Clear the overconstraint and
+    # run the cheapest route for its reports only; build.py still promotes the
+    # unrouted post_place.dcp.
     if {$checkpoint_path eq ""} {
         puts "Error: quick_route step requires checkpoint_path"
         exit 1
     }
-    open_checkpoint $checkpoint_path
+    open_timing_checkpoint $checkpoint_path $work_directory
 
     if {$board_name eq "x3"} {
         set_clock_uncertainty -from clock_from_mmcm -to clock_from_mmcm 0.0 -setup
     }
     route_design -directive RuntimeOptimized
 
+    report_route_status -file $work_directory/quick_route_status.rpt
     report_timing_summary -file $work_directory/quick_route_timing.rpt
     report_design_analysis -congestion -file $work_directory/quick_route_congestion.rpt
 
@@ -1169,17 +1337,15 @@ if {$step eq "synth"} {
         puts "Error: $step step requires checkpoint_path"
         exit 1
     }
-    open_checkpoint $checkpoint_path
+    open_timing_checkpoint $checkpoint_path $work_directory
 
-    # The added setup uncertainty is stage-scoped. Post-place phys-opt sweeps
-    # under 0.5 ns, the overconstraint the placed checkpoint carried until it
-    # began to be written at zero (2026-09-11), so its initial and per-pass
-    # probe reports read pessimistic. The post-route sweeps run at 0.000 ns,
-    # the uncertainty route_design leaves in the checkpoint it writes, so the
-    # WNS driving their early exit and their promoted final.dcp decision is
-    # the real one. Every promoted report and every checkpoint handed on is
-    # taken at 0.000 ns either way. FROST_PHYSOPT_SETUP_UNCERTAINTY overrides
-    # the stage default.
+    # The added setup uncertainty depends on the stage. Post-place phys-opt
+    # sweeps under 0.5 ns of added setup uncertainty, so its initial and
+    # per-pass probe reports are pessimistic. The post-route sweeps run at
+    # 0.000 ns, the uncertainty the routed checkpoint already carries, so the
+    # WNS that drives their early exit and the final.dcp decision is the real
+    # one. Promoted reports and checkpoints are always taken at 0.000 ns.
+    # FROST_PHYSOPT_SETUP_UNCERTAINTY overrides the stage default.
     if {$step eq "post_place_physopt"} {
         set physopt_uncertainty_default 0.5
     } else {
@@ -1207,7 +1373,8 @@ if {$step eq "synth"} {
         ]
     }
 
-    # Always make the non-directive retime pass the final pass in each sweep.
+    # Retiming is the final ordinary pass. On X3's last routed stage, try
+    # endpoint groups only after the ordinary passes stop making progress.
     set directive_sweep_order [list]
     foreach sweep_pass $sweep_order {
         if {$sweep_pass ne "-retime"} {
@@ -1216,6 +1383,14 @@ if {$step eq "synth"} {
     }
     set sweep_order $directive_sweep_order
     lappend sweep_order "-retime"
+    set endpoint_fallback 0
+    if {$board_name eq "x3" && $step eq "post_second_route_physopt" &&
+        $sweep_order_env eq "" && $physopt_uncertainty ne ""} {
+        source [file join $script_directory x3_endpoint_physopt.tcl]
+        lappend sweep_order EndpointAggressive EndpointTargeted EndpointClockEnable \
+            EndpointClockIndividual EndpointPinRefine EndpointRouteRefine
+        set endpoint_fallback 1
+    }
 
     set total_physopt_passes [llength $sweep_order]
     set total_passes_run 0
@@ -1223,6 +1398,7 @@ if {$step eq "synth"} {
     set early_exit 0
     set best_wns -999999.0
     set best_tns -999999999.0
+    set best_setup_closed 0
     set best_pass 0
     set best_sweep 0
     set best_directive ""
@@ -1270,6 +1446,7 @@ if {$step eq "synth"} {
 
     if {$initial_wns ne ""} {
         set best_wns $initial_wns
+        set best_setup_closed [setup_timing_met $initial_timing_summary $initial_wns]
         if {$initial_tns ne ""} {
             set best_tns $initial_tns
         }
@@ -1285,6 +1462,7 @@ if {$step eq "synth"} {
 
     while {1} {
         set sweep_kept_improvement 0
+        set try_endpoint_passes 0
         set sweep_start_wns $best_wns
         set sweep_start_tns $best_tns
         set pass_num 1
@@ -1298,7 +1476,20 @@ if {$step eq "synth"} {
         puts "=========================================="
 
         foreach sweep_pass $sweep_order {
-            if {$sweep_pass eq "-retime"} {
+            set endpoint_pass [expr {$endpoint_fallback &&
+                $sweep_pass in {EndpointAggressive EndpointTargeted EndpointClockEnable \
+                    EndpointClockIndividual EndpointPinRefine EndpointRouteRefine}}]
+            if {$endpoint_pass} {
+                if {$sweep_pass eq "EndpointAggressive"} {
+                    set try_endpoint_passes [expr {!$sweep_kept_improvement}]
+                }
+                if {!$try_endpoint_passes} {
+                    incr pass_num
+                    continue
+                }
+                set pass_label $sweep_pass
+                set pass_display $sweep_pass
+            } elseif {$sweep_pass eq "-retime"} {
                 set pass_label "retime"
                 set pass_display "-retime"
                 set phys_opt_args [list -retime]
@@ -1316,7 +1507,31 @@ if {$step eq "synth"} {
                 puts "  $step pass $pass_num/$total_physopt_passes: $pass_display"
             }
             puts "------------------------------------------"
-            phys_opt_design {*}$phys_opt_args
+            if {$endpoint_pass} {
+                if {[catch {
+                    frost_x3_endpoint_physopt::run $sweep_pass $physopt_uncertainty $work_directory
+                } endpoint_ran endpoint_error]} {
+                    # A changed/removed endpoint may make exact cleanup fail.
+                    # Discard the entire trial, including its temporary groups
+                    # and margin, by reopening the saved best implementation.
+                    puts "  Rejecting failed $pass_display: $endpoint_ran"
+                    puts [dict get $endpoint_error -errorinfo]
+                    if {![file exists $best_checkpoint]} {
+                        error "Cannot restore a best checkpoint after failed $pass_display"
+                    }
+                    catch {close_design}
+                    open_checkpoint $best_checkpoint
+                    incr total_passes_run
+                    incr pass_num
+                    continue
+                }
+                if {!$endpoint_ran} {
+                    incr pass_num
+                    continue
+                }
+            } else {
+                phys_opt_design {*}$phys_opt_args
+            }
             incr total_passes_run
             set pass_improved 0
 
@@ -1325,6 +1540,15 @@ if {$step eq "synth"} {
             set timing_summary [get_setup_timing_summary $pass_report]
             set report_wns [dict get $timing_summary wns]
             set tns [dict get $timing_summary tns]
+            set candidate_valid 1
+            if {$endpoint_pass} {
+                set route_report [file rootname $pass_report]_route.rpt
+                set skew_report [file rootname $pass_report]_bus_skew.rpt
+                report_route_status -file $route_report
+                report_bus_skew -max_paths 1 -nworst 1 -file $skew_report
+                set candidate_valid [frost_x3_endpoint_physopt::candidate_is_legal \
+                    $pass_report $route_report $skew_report]
+            }
 
             set worst_path [lindex [get_timing_paths -delay_type max -nworst 1 -max_paths 1] 0]
             set wns ""
@@ -1334,7 +1558,9 @@ if {$step eq "synth"} {
                 set wns $report_wns
             }
 
-            if {$wns ne ""} {
+            if {$wns ne "" && $candidate_valid} {
+                set setup_closed [setup_timing_met $timing_summary $wns]
+                set newly_closed [expr {$setup_closed && !$best_setup_closed}]
                 set better_wns [expr {$wns > ($best_wns + $wns_tie_epsilon)}]
                 set same_wns [expr {abs($wns - $best_wns) <= $wns_tie_epsilon}]
                 set better_tns [expr {$tns ne "" && $tns > ($best_tns + $tns_keep_epsilon)}]
@@ -1345,13 +1571,16 @@ if {$step eq "synth"} {
                     puts "  WNS after $pass_display: $wns ns"
                 }
 
-                if {$better_wns || ($same_wns && $better_tns)} {
-                    if {$better_wns} {
+                if {$newly_closed || $better_wns || ($same_wns && $better_tns)} {
+                    if {$newly_closed} {
+                        set improvement_reason "setup closure"
+                    } elseif {$better_wns} {
                         set improvement_reason "WNS"
                     } else {
                         set improvement_reason "TNS tie-break"
                     }
                     set best_wns $wns
+                    set best_setup_closed $setup_closed
                     if {$tns ne ""} {
                         set best_tns $tns
                     }
@@ -1382,14 +1611,16 @@ if {$step eq "synth"} {
                     }
                 }
 
-                if {$wns >= 0.0} {
+                # Closure is retained even when rounded slack ties the old
+                # failing checkpoint; only then can the sweep stop early.
+                if {$setup_closed} {
                     puts "  ** Timing met; stopping $step sweep early after $total_passes_run total phys_opt passes"
                     set early_exit 1
                     break
                 }
             }
 
-            if {$repeat_sweeps && !$pass_improved && [file exists $best_checkpoint]} {
+            if {($repeat_sweeps || $endpoint_pass) && !$pass_improved && [file exists $best_checkpoint]} {
                 puts ""
                 puts "  Reverting non-improving $step pass; restoring best WNS=$best_wns ns, TNS=$best_tns ns"
                 close_design
@@ -1474,9 +1705,9 @@ if {$step eq "synth"} {
         puts "Error: route step requires checkpoint_path"
         exit 1
     }
-    open_checkpoint $checkpoint_path
+    open_timing_checkpoint $checkpoint_path $work_directory
 
-    # Remove X3's placement overconstraint.
+    # Route X3 at zero added setup uncertainty, whatever the input carries.
     if {$board_name eq "x3"} {
         set_clock_uncertainty -from clock_from_mmcm -to clock_from_mmcm 0.0 -setup
     }
@@ -1497,7 +1728,7 @@ if {$step eq "synth"} {
         puts "Error: second_route step requires checkpoint_path"
         exit 1
     }
-    open_checkpoint $checkpoint_path
+    open_timing_checkpoint $checkpoint_path $work_directory
 
     route_design -directive $directive
 
@@ -1516,13 +1747,20 @@ if {$step eq "synth"} {
         exit 1
     }
     open_checkpoint $checkpoint_path
+    source [file join $script_directory x3_local_placement.tcl]
+    frost_x3_local_placement::recover_unfixed_ports $checkpoint_path
 
     # Final reports
     report_timing_summary -file $work_directory/final_timing.rpt
     report_utilization -file $work_directory/final_util.rpt
     report_high_fanout_nets -timing -load_types -max_nets 50 -file $work_directory/final_high_fanout.rpt
     report_drc -file $work_directory/final_drc.rpt
+    report_bus_skew -max_paths 1 -nworst 1 -file $work_directory/final_bus_skew.rpt
     write_failing_paths_csv $work_directory/final_failing_paths.csv $work_directory/final_timing.rpt
+    source [file join $script_directory x3_endpoint_physopt.tcl]
+    if {![frost_x3_endpoint_physopt::bus_skew_is_legal $work_directory/final_bus_skew.rpt]} {
+        error "Bus-skew constraints are not met; refusing bitstream generation. See $work_directory/final_bus_skew.rpt"
+    }
 
     set bitstream_name ${board_name}_frost.bit
     write_bitstream -force $work_directory/$bitstream_name

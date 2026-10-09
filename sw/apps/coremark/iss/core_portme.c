@@ -14,13 +14,14 @@
  *    limitations under the License.
  */
 
-/* CoreMark port layer for the Spike instruction-count harness.
+/* CoreMark port layer for the Spike harness (count_instructions.py and
+ * generate_profile.py).
  *
  * No MMIO and no timer: start_time()/stop_time() each execute one
- * `csrr x0, cycle`, and nothing else in the program touches a CSR, so the
- * commit log can be sliced to exactly the timed region (count_instructions.py).
- * The seed block matches ../core_portme.c so both builds run the same
- * workload; only the port functions differ. */
+ * `csrr x0, cycle`, the program's only reads of cycle, so count_instructions.py
+ * can slice the commit log to exactly the timed region. get_time() always
+ * returns 1, so CoreMark sees a one-second run. The seed block matches
+ * ../core_portme.c so both builds run the same workload. */
 
 #include "coremark.h"
 

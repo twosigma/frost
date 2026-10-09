@@ -16,8 +16,8 @@
 
 /*
  * Multi-write-port distributed RAM using a live-value table (LVT). Each write
- * port owns one RAM bank; the per-address LVT selects the newest bank for the
- * asynchronous read. Among ordinary same-cycle writes, the highest-numbered
+ * port has its own RAM bank; the per-address LVT selects the newest bank for
+ * the asynchronous read. Among ordinary same-cycle writes, the highest-numbered
  * port wins. Duplicate the module with shared writes for additional reads.
  *
  * Ports [NUM_STAGED_LVT_PORTS-1:0] may stage their LVT update by one cycle.
@@ -26,8 +26,12 @@
  * per-entry LVT decode.
  *
  * Ports [NUM_NARROW_WRITE_PORTS-1:0] store only NARROW_DATA_WIDTH low bits;
- * their checked-zero upper bits are reconstructed on read. ROB allocation
- * ports use this for zero-extended XLEN link addresses.
+ * their checked-zero upper bits are reconstructed on read. The ROB's
+ * four-bank value RAMs (SharedLinkBank=0) declare allocation ports narrow
+ * (XLEN) for zero-extended link
+ * addresses. With FLEN == XLEN, as in the RV64 core, those banks are full
+ * width: the option changes nothing and g_narrow_write_check, the zero
+ * check on the upper bits, does not elaborate.
  *
  * Staged ports must have the lowest indices. Their collision rules differ:
  *   - A same-cycle staged/live collision is legal and the staged write wins.
@@ -98,7 +102,8 @@ module mwp_dist_ram #(
   // Live Value Table (register-based)
   //
   // Tracks which bank holds the most recent write for each address.
-  // Highest-indexed write port wins on simultaneous same-address writes.
+  // Highest-indexed write port wins on simultaneous same-address writes,
+  // except that a staged port beats a live one (see header).
   //
   // Staged ports (indices < NUM_STAGED_LVT_PORTS): the LVT update runs one
   // cycle late from the staging registers below, so the port's (late) enable
@@ -117,17 +122,12 @@ module mwp_dist_ram #(
   // 9.2.2.4 forbids an always_ff variable being written by another process but
   // permits declaration initialization (Verilator >=5.050 enforces this;
   // yosys formal needs the pinned init value either way).
-  // Timing: do not put max_fanout on these staging registers.  A 24-cap
-  // experiment made synthesis replicate them and re-expand each replica's
-  // per-entry lvt_eff override cone in every read-port instance.  The ROB
-  // value head grew 1,505 -> 4,991 cells (3.3x, +3,486 cells, the whole
-  // design's LUT delta), and that wiring sits in the operand-delivery
-  // neighborhood of the int-RS capture fabric, which collapsed the X3 placer
-  // sweep to congestion-level-5 vetoes.  The staged registers' routed-timing
-  // family sat below the WNS pin with or without the cap, so the replication
-  // bought nothing measurable.
+  // Timing: do not put max_fanout on these staging registers.  They load the
+  // per-entry LVT drain decode and each read port's override compares;
+  // replicas would only add copies of that logic, for no timing gain.
   logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
-  logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
+  // TIMING: capped so synthesis replicates it beside its read-port compares.
+  (* max_fanout = 48 *) logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
 
   always_ff @(posedge i_clk) begin
     for (int wp = 0; wp < NUM_WRITE_PORTS; wp++) begin
@@ -157,12 +157,21 @@ module mwp_dist_ram #(
   // Read mux: select the bank indicated by the effective LVT
   //
   // lvt_eff overrides the staged entries' still-stale LVT bits during the
-  // one-cycle drain gap.  The override terms are pure functions of staging
-  // registers, so they fold into the early side of the select cone; the late
-  // read address sees the same RamDepth-to-1 depth as the unstaged module.
-  // The staged port's bank was written in the enable cycle, so the corrected
-  // select returns the new data.  Reads are cycle-exact against the unstaged
-  // module.
+  // one-cycle drain gap.  The staged port's bank was written in the enable
+  // cycle, so the corrected select returns the new data.  Apart from a
+  // same-cycle staged/live collision (see header), reads match the unstaged
+  // module cycle for cycle.  Without staged ports lvt_eff is the LVT itself.
+  //
+  // With staged ports the read computes the same select for the read address
+  // only (g_read_staged): a staged port whose staging address equals the read
+  // address selects its own bank (the highest such port, matching lvt_eff).
+  // TIMING: compare, then select.  Each staging address is compared with the
+  // read address beside the LVT mux, instead of being decoded into every
+  // entry ahead of it.  The LVT mux is split at the address MSB into two
+  // half-depth muxes, so the override and the MSB select share the select's
+  // last LUT. For the ROB's four-bank 32-entry dispatch-bypass value RAMs
+  // (SharedLinkBank=0), the bank select is three LUT levels from
+  // registers and the data mux a fourth.
   // ---------------------------------------------------------------------------
   logic [SelWidth-1:0] lvt_eff[RamDepth];
 
@@ -178,7 +187,39 @@ module mwp_dist_ram #(
     end
   end
 
-  assign o_read_data = bank_read_data[lvt_eff[i_read_address]];
+  if (StagedLvtPorts == 0) begin : g_read_live
+    assign o_read_data = bank_read_data[lvt_eff[i_read_address]];
+  end else begin : g_read_staged
+    // The kept nets fix the split described above; without them synthesis
+    // folds the override back into the full-depth mux.
+    (* keep = "true" *) logic [SelWidth-1:0] lvt_read_lo;
+    (* keep = "true" *) logic [SelWidth-1:0] lvt_read_hi;
+    (* keep = "true" *) logic [StagedLvtPorts-1:0] staged_read_hit;
+    (* keep = "true" *) logic [SelWidth-1:0] lvt_read_sel;
+
+    if (ADDR_WIDTH > 1) begin : g_split
+      assign lvt_read_lo = lvt[{1'b0, i_read_address[ADDR_WIDTH-2:0]}];
+      assign lvt_read_hi = lvt[{1'b1, i_read_address[ADDR_WIDTH-2:0]}];
+    end else begin : g_no_split
+      assign lvt_read_lo = lvt[0];
+      assign lvt_read_hi = lvt[RamDepth-1];
+    end
+
+    always_comb begin
+      for (int wp = 0; wp < StagedLvtPorts; wp++) begin
+        staged_read_hit[wp] = staged_lvt_we_q[wp] && (staged_lvt_addr_q[wp] == i_read_address);
+      end
+    end
+
+    always_comb begin
+      lvt_read_sel = i_read_address[ADDR_WIDTH-1] ? lvt_read_hi : lvt_read_lo;
+      for (int wp = 0; wp < StagedLvtPorts; wp++) begin
+        if (staged_read_hit[wp]) lvt_read_sel = SelWidth'(wp);
+      end
+    end
+
+    assign o_read_data = bank_read_data[lvt_read_sel];
+  end : g_read_staged
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
@@ -199,9 +240,9 @@ module mwp_dist_ram #(
     end
   end
 
-  // Narrow write ports must be given zero-extended data.  A nonzero upper half
-  // here would be silently dropped by the narrow bank, so treat it as an error
-  // at the write edge.
+  // Narrow write ports must be given zero-extended data.  Nonzero upper bits
+  // here would be silently dropped by the narrow bank, so treat them as an
+  // error at the write edge.
   if (NUM_NARROW_WRITE_PORTS > 0 && NARROW_DATA_WIDTH < DATA_WIDTH) begin : g_narrow_write_check
     localparam int NarrowPorts = int'(NUM_NARROW_WRITE_PORTS);
     always @(posedge i_clk) begin
@@ -221,7 +262,7 @@ module mwp_dist_ram #(
   // Same-cycle staged+live writes to one address are legal and resolve
   // staged-wins (see header), so there is no check here.  The dangerous
   // arrival is a live write in the staged address's drain cycle.  The reorder
-  // buffer is the only staged-port user with live write ports.  It excludes
+  // buffer uses these staged ports when SharedLinkBank=0. It excludes
   // and checks that window at the ROB level, where allocation context
   // distinguishes a stale completion from a current one.
 `endif

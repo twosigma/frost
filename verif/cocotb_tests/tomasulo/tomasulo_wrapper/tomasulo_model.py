@@ -15,7 +15,7 @@
 """Composed ROB + RAT + multi-RS golden model for integration verification.
 
 Imports and composes the individual models, wiring the commit bus internally
-(mirroring the RTL wrapper). Models six RS instances with dispatch routing
+(mirroring the RTL wrapper). Models four RS instances with dispatch routing
 based on rs_type.
 """
 
@@ -43,18 +43,14 @@ RS_INT = 0
 RS_MUL = 1
 RS_MEM = 2
 RS_FP = 3
-RS_FMUL = 4
-RS_FDIV = 5
 RS_NONE = 6
 
 # RS depths (mirrors riscv_pkg parameters)
 RS_DEPTHS = {
-    RS_INT: 8,
+    RS_INT: 16,
     RS_MUL: 4,
     RS_MEM: 8,
-    RS_FP: 6,
-    RS_FMUL: 4,
-    RS_FDIV: 2,
+    RS_FP: 2,
 }
 
 
@@ -62,28 +58,24 @@ class TomasuloModel:
     """Composed ROB + RAT + multi-RS model mirroring tomasulo_wrapper RTL."""
 
     def __init__(self) -> None:
-        """Initialize composed ROB + RAT + 6 RS model."""
+        """Initialize composed ROB + RAT + 4 RS model."""
         self.rob = ReorderBufferModel()
         self.rat = RATModel()
 
-        # Six RS instances matching RTL parameterization
+        # Four RS instances matching RTL parameterization
         self.int_rs = RSModel(depth=RS_DEPTHS[RS_INT])
         self.mul_rs = RSModel(depth=RS_DEPTHS[RS_MUL])
         self.mem_rs = RSModel(depth=RS_DEPTHS[RS_MEM])
         self.fp_rs = RSModel(depth=RS_DEPTHS[RS_FP])
-        self.fmul_rs = RSModel(depth=RS_DEPTHS[RS_FMUL])
-        self.fdiv_rs = RSModel(depth=RS_DEPTHS[RS_FDIV])
 
         self._rs_map: dict[int, RSModel] = {
             RS_INT: self.int_rs,
             RS_MUL: self.mul_rs,
             RS_MEM: self.mem_rs,
             RS_FP: self.fp_rs,
-            RS_FMUL: self.fmul_rs,
-            RS_FDIV: self.fdiv_rs,
         }
 
-        # Backward compat: self.rs aliases INT_RS
+        # Shorthand: self.rs is INT_RS.
         self.rs = self.int_rs
 
     def _all_rs(self) -> list[RSModel]:
@@ -189,12 +181,12 @@ class TomasuloModel:
                 )
             )
         except ValueError:
-            pass  # RTL silently ignores CDB to invalid ROB entries
+            pass  # the RTL ignores CDB writes to invalid ROB entries
         for rs in self._all_rs():
             rs.cdb_snoop(tag, value)
 
-    # Backward-compat methods route through fu_complete. The model does not
-    # read the slot index, so FU_MEM is only a placeholder.
+    # Shorthands that route through fu_complete. The model ignores the slot
+    # index, so FU_MEM is only a placeholder.
     def cdb_write(self, write: CDBWrite) -> None:
         """CDB write to ROB + snoop all RS (arbiter always broadcasts both)."""
         self.fu_complete(
@@ -218,7 +210,7 @@ class TomasuloModel:
         exc_cause: int = 0,
         fp_flags: int = 0,
     ) -> None:
-        """Write CDB to ROB and snoop to all RS (backward compat)."""
+        """Write CDB to ROB and snoop to all RS."""
         self.fu_complete(
             FU_MEM,
             tag=tag,

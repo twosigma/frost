@@ -14,7 +14,9 @@
  *    limitations under the License.
  */
 
-// Independent clocked controls for block synchronization, BER and RS faults.
+// Link monitors for test_link.py, on separate inputs: block lock, two BER
+// monitors (a 128-clock window and the default) that share the ber_* inputs,
+// and the RS fault monitor.
 module link_tb (
     input logic clk,
     input logic rst,

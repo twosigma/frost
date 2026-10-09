@@ -70,9 +70,12 @@ repos:
         # than those packages' Linux build configuration. linux/frost-net10g/
         # is kernel code, which needs a kernel tree's headers. pgo_dump.c
         # includes GCC's own gcov.h and walks the __gcov_info_* symbols the
-        # compiler emits, none of which clang resolves.
+        # compiler emits, none of which clang resolves. hw/sim/ C files are
+        # host-side simulation code (DPI-C) built against the frost image's
+        # libraries, not FROST software.
         exclude: |
           (?x)^(
+            hw/sim/.*|
             sw/FreeRTOS-Kernel/.*|
             sw/apps/coremark/coremark/.*|
             sw/apps/coremark/iss/pgo_dump\.c|
@@ -157,11 +160,11 @@ repos:
           - --license-filepath=.license-header.txt
           - --comment-style=#
 
-  # General file checks. tests/fixtures/*.log are captures kept byte for byte --
-  # a board's UART console, carriage returns, terminal escapes, the trailing
-  # space of a shell prompt and all -- because the parsers under test are
-  # measured against what a board really sends. Both fixers would rewrite those
-  # bytes, so the captures are exempt; the reports and other fixtures are not.
+  # General file checks. tests/fixtures/*.log are board UART captures kept byte
+  # for byte (carriage returns, terminal escapes, a shell prompt's trailing
+  # space), because the parsers under test must handle what a board really
+  # sends. Both fixers would rewrite those bytes, so the captures are exempt;
+  # the reports and other fixtures are not.
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:

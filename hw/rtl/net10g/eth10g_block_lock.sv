@@ -14,9 +14,6 @@
  *    limitations under the License.
  */
 
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 Two Sigma Open Source, LLC
-
 // Clause 49 block synchronization: 64 consecutive good headers to acquire;
 // 16 invalid headers in a 64-block observation window to lose lock.
 module eth10g_block_lock (

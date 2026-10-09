@@ -1,0 +1,39 @@
+[tasks]
+prove control
+prove_alignment alignment
+prove_fallback control fallback
+prove_alignment_fallback alignment fallback
+cover control
+
+[options]
+prove: mode prove
+prove: depth 3
+prove_alignment: mode prove
+prove_fallback: mode prove
+prove_fallback: depth 3
+prove_alignment_fallback: mode prove
+cover: mode cover
+cover: depth 40
+
+[engines]
+prove: smtbmc boolector
+prove_alignment: abc pdr
+prove_fallback: smtbmc boolector
+prove_alignment_fallback: abc pdr
+cover: smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -sv dsp_tiled_multiplier_unsigned.sv multiplier.sv divider.sv sdp_dist_ram.sv
+control: read -formal -sv int_muldiv_shim.sv
+alignment: read -formal -D F_MULDIV_ALIGNMENT -sv int_muldiv_shim.sv
+fallback: chparam -set SHORT_WORD_OPS 0 int_muldiv_shim
+prep -top int_muldiv_shim -flatten
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/multiplier.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/int_muldiv_shim.sv

@@ -13,10 +13,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# SPDX-License-Identifier: Apache-2.0
-# Copyright 2026 Two Sigma Open Source, LLC
+"""Run the standalone Ethernet MAC/PCS benches in the frost image.
 
-"""Run independent Ethernet benches inside frost, cleaning each target first."""
+Each target is cleaned before it builds; its results go to sim_build/<target>/.
+"""
 
 import argparse
 import os
@@ -36,8 +36,8 @@ TARGETS: dict[str, tuple[str, str, int | None]] = {
     "tx_reconcile": ("eth10g_tx_reconcile", "test_tx_reconcile", None),
     "mac_tx": ("eth10g_mac_tx", "test_mac_tx", None),
     "mac_rx": ("eth10g_mac_rx", "test_mac_rx", None),
-    # Small limits put the receive MAC's capacity corners within a few frames;
-    # at both, the largest frame plus FCS ends on a word boundary.
+    # Small limits bring the receive MAC's storage limits within a few frames;
+    # at both, the largest frame plus its FCS ends on a word boundary.
     "mac_rx_60": ("eth10g_mac_rx", "test_mac_rx", 60),
     "mac_rx_124": ("eth10g_mac_rx", "test_mac_rx", 124),
     "integration": ("eth10g_mac_pcs", "test_integration", None),
@@ -45,12 +45,14 @@ TARGETS: dict[str, tuple[str, str, int | None]] = {
 
 
 def main() -> None:
-    """Build and execute requested benches without the core test registry."""
+    """Build and run each requested bench and check its JUnit result."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("targets", nargs="*", choices=[*TARGETS, "all"])
     args = parser.parse_args()
     if not Path("/.dockerenv").exists():
-        parser.error("run through ./scripts/frost.py run python3 tests/net10g/run.py")
+        parser.error(
+            "run in the frost image: ./scripts/frost.py run python3 tests/net10g/run.py"
+        )
     selected = args.targets or ["all"]
     if "all" in selected:
         selected = list(TARGETS)

@@ -12,11 +12,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Fast tests for the native FPGA build orchestration."""
+"""Tests for the native FPGA build: build.py, build_step.tcl, and what they rely on."""
 
 import importlib.util
 import json
 import os
+from decimal import Decimal
 from pathlib import Path
 import re
 import subprocess
@@ -45,24 +46,75 @@ def _load_fpga_build() -> Any:
 fpga_build: Any = _load_fpga_build()
 
 
-def _write_place_gate(work_dir: Path, wns: float = -0.1, *, bind: bool = False) -> None:
-    """Model the native gate producer; hashes are only added for promotions."""
+def _write_probe_outputs(work_dir: Path, prefix: str, wns: float = -0.1) -> None:
+    """Write usable timing, a native complete-route status, and a clean tool log."""
+    _write_stage_utilization(work_dir, prefix, 42)
+    timing = work_dir / f"{prefix}_timing.rpt"
+    timing.write_text(timing.read_text().replace("-0.100", f"{wns:.3f}"))
+    (work_dir / f"{prefix}_status.rpt").write_text(
+        (REPO_ROOT / "tests/fixtures/x3_quick_route_status_complete.rpt").read_text()
+    )
+    (work_dir / f"{prefix}_vivado.log").write_text(
+        "route_design completed successfully\n"
+    )
+
+
+def _write_test_selection(work_dir: Path, wns: float) -> None:
+    """Certify this test checkpoint as a selected, successfully probed placement."""
+    checkpoint = work_dir / "post_place.dcp"
+    _write_probe_outputs(work_dir, "post_place_quick_route")
+    (work_dir / "post_place_selection.json").write_text(
+        json.dumps(
+            {
+                "schema": "x3_place_selection_v1",
+                "selected": "fixture",
+                "quick_route_count": fpga_build.x3_quick_route_count(),
+                "candidates": [
+                    {
+                        "label": "fixture",
+                        "placed_wns_ns": wns,
+                        "checkpoint_sha256": fpga_build.file_sha256(checkpoint)
+                        if checkpoint.exists()
+                        else None,
+                        "quick_route_returncode": 0,
+                        "quick_route_wns_ns": -0.1,
+                        "quick_route_congestion_warning": False,
+                    }
+                ],
+            }
+        )
+    )
+
+
+def _write_place_gate(
+    work_dir: Path, wns: float = -0.1, *, bind: bool = False, probe_input: bool = False
+) -> None:
+    """Write post_place_gate.txt as x3_post_place_gate.tcl does; bind it if asked."""
     passed = wns >= -0.2
     (work_dir / "post_place_gate.txt").write_text(
         f"STATUS={'PASS' if passed else 'FAIL'}\n"
-        "THRESHOLD_NS=-0.200\nCPU_PERIOD_NS=3.333\n"
+        "THRESHOLD_NS=-0.200\nCPU_PERIOD_NS=3.103\n"
         "USER_SETUP_UNCERTAINTY_NS=0.000\n"
         f"STRICT_BELOW_GATE_PATHS={0 if passed else 1}\n"
         f"WORST_SLACK_NS={wns}\n"
     )
+    congestion = work_dir / "post_place_congestion.rpt"
+    if not congestion.exists():
+        congestion.write_text(
+            (
+                REPO_ROOT / "tests/fixtures/x3_post_place_congestion_clear.rpt"
+            ).read_text()
+        )
+    if not probe_input:
+        _write_test_selection(work_dir, wns)
     if bind:
-        assert fpga_build.bind_x3_place_gate(work_dir, wns)
+        assert fpga_build.bind_x3_place_gate(work_dir, wns, probe_input=probe_input)
 
 
 def _write_qualified_descendant(
     work_dir: Path, stage: str, *, final: bool = False
 ) -> Path:
-    """Create a simulated completed downstream output through the real binder."""
+    """Write a finished output of stage and record it with bind_x3_output_lineage()."""
     consumed = fpga_build.capture_x3_input_lineage(
         work_dir, fpga_build.STEP_REQUIRES_CHECKPOINT[stage]
     )
@@ -102,7 +154,7 @@ def _write_stage_utilization(work_dir: Path, stage: str, luts: int) -> None:
         "WNS(ns) TNS(ns) Failing Total WHS THS Failing Total\n"
         "------- -------\n"
         "-0.100 -1.000 1 10 0.010 0.000 0 10\n"
-        "clock_from_mmcm {0.000 1.667} 3.333 300.000\n"
+        "clock_from_mmcm {0.000 1.667} 3.103 322.266\n"
     )
 
 
@@ -143,7 +195,7 @@ def test_readme_stage_override_ignores_stale_later_reports(
         util["luts_used"]
         == {None: 999, "post_opt": 40, "post_place": 42}[override_stage]
     )
-    assert util["clock_freq_mhz"] == 300.0
+    assert util["clock_freq_mhz"] == 322.266
     assert util["timing_met"] is False
     if override_stage == "post_place":
         provenance = (
@@ -227,6 +279,15 @@ def test_build_main_refreshes_actual_completed_report_stage(
     script_dir = tmp_path / "fpga/build"
     work_dir = script_dir / "x3/work"
     work_dir.mkdir(parents=True)
+    (work_dir / fpga_build.X3_NETLIST_CONFIG_NAME).write_text(
+        json.dumps(
+            {
+                "schema": "x3_netlist_config_v3",
+                "cpu_base_clock_hz": 322265625,
+                "cpu_clock_div": 1,
+            }
+        )
+    )
     (work_dir / fpga_build.STEP_REQUIRES_CHECKPOINT[step]).write_text(
         "checkpoint fixture\n"
     )
@@ -255,6 +316,7 @@ def test_build_main_refreshes_actual_completed_report_stage(
         return True
 
     monkeypatch.setattr(fpga_build, "run_step", complete_stage)
+    monkeypatch.setattr(fpga_build, "run_x3_default_place", complete_stage)
     monkeypatch.setattr(fpga_build, "run_x3_step_directive_sweep", complete_stage)
     monkeypatch.setattr(fpga_build, "generate_bitstream", lambda *_args: True)
     monkeypatch.setattr(
@@ -287,7 +349,7 @@ Set x3 CPU setup clock uncertainty to 0.5 ns (place overconstraint)
     monkeypatch.setattr(
         timing_util_summary,
         "extract_utilization",
-        lambda _report: {"clock_freq_mhz": 300.0},
+        lambda _report: {"clock_freq_mhz": 322.266},
     )
 
     utilization = timing_util_summary.collect_all_board_utilization(tmp_path)
@@ -296,7 +358,7 @@ Set x3 CPU setup clock uncertainty to 0.5 ns (place overconstraint)
 
     section = timing_util_summary.format_readme_utilization_section(utilization)
     assert (
-        "**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; "
+        "**Alveo X3522PV** (Virtex UltraScale+ @ 322 MHz; "
         "`ExtraNetDelay_high`/0.500 post-place report)" in section
     )
 
@@ -315,7 +377,7 @@ Set x3 CPU setup clock uncertainty to 0.5 ns (place overconstraint)
 
 
 def test_x3_place_provenance_records_manual_bloat_targets() -> None:
-    """Multiple manual targets remain reproducible in generated provenance."""
+    """Provenance lists every manual cell-bloat pattern that matched cells."""
     log = (
         "# Command line : vivado -tclargs x3 place ExtraPostPlacementOpt input.dcp 0\n"
         "Set x3 CPU setup clock uncertainty to 0.45 ns (place overconstraint)\n"
@@ -331,19 +393,22 @@ def test_x3_place_provenance_records_manual_bloat_targets() -> None:
     )
 
 
-def test_hello_world_compile_clears_retired_init_images(
+def test_hello_world_compile_replaces_obsolete_init_images(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Reused app and board output directories cannot retain old replicas."""
+    """compile_hello_world deletes obsolete init images and writes the scalar-replica ones.
+
+    common.mk, the init generator, and build_step.tcl agree on the replica list.
+    """
     app_dir = tmp_path / "sw/apps/hello_world"
     output_dir = tmp_path / "board-work/hello_world"
     app_dir.mkdir(parents=True)
     output_dir.mkdir(parents=True)
 
-    retired_names = fpga_build.IMEM_RETIRED_INIT_IMAGE_NAMES
-    assert "sw_imem_even_pc_metadata.mem" in retired_names
-    assert "sw_imem_odd_pc_metadata_bit3.mem" in retired_names
-    for name in retired_names:
+    obsolete_names = fpga_build.IMEM_OBSOLETE_INIT_IMAGE_NAMES
+    assert "sw_imem_even_pc_metadata.mem" in obsolete_names
+    assert "sw_imem_odd_pc_metadata_bit3.mem" in obsolete_names
+    for name in obsolete_names:
         (output_dir / name).write_text("stale\n")
 
     def fake_run(command: list[str], **_kwargs: Any) -> Any:
@@ -354,7 +419,7 @@ def test_hello_world_compile_clears_retired_init_images(
 
     monkeypatch.setattr(fpga_build.subprocess, "run", fake_run)
 
-    assert fpga_build.compile_hello_world(tmp_path, output_dir, 300_000_000)
+    assert fpga_build.compile_hello_world(tmp_path, output_dir, 322_265_625)
     scalar_replicas = fpga_build.IMEM_SCALAR_REPLICA_NAMES
     assert scalar_replicas == (
         "is_compressed_lo",
@@ -378,12 +443,12 @@ def test_hello_world_compile_clears_retired_init_images(
     )
     for name in new_init_names:
         assert (output_dir / name).is_file()
-    for name in retired_names:
+    for name in obsolete_names:
         assert not (output_dir / name).exists()
 
     common_mk = (REPO_ROOT / "sw/common/common.mk").read_text()
     clean_rule = common_mk[common_mk.index("clean:") :]
-    for name in retired_names:
+    for name in obsolete_names:
         assert name in clean_rule
     for variable, name in zip(new_init_variables, new_init_names, strict=True):
         assert f"{variable} := {name}" in common_mk
@@ -425,16 +490,16 @@ def test_hello_world_compile_clears_retired_init_images(
         "read_mem [file join $software_mem_directory "
         "sw_imem_odd_${scalar_replica}.mem]" in build_tcl
     )
-    for retired_name in retired_names:
-        assert retired_name not in build_tcl
+    for obsolete_name in obsolete_names:
+        assert obsolete_name not in build_tcl
 
 
 def test_default_x3_sweep_contains_every_guided_pc_tail_candidate() -> None:
-    """Every vetted directive/uncertainty pair stays reproducible.
+    """The default sweep has every PC-tail-guided directive/uncertainty pair.
 
-    The two grid pairs must sit on the default 50 ps sweep grid; the off-grid
-    0.425 seed must instead be delivered by the always-appended extra-seed
-    list, and every guided pair must receive the PC-tail guidance.
+    Two pairs are on the default 50 ps grid. The off-grid 0.425 seed comes from
+    the extra-seed list, which every full-rate sweep appends. Every pair gets
+    the PC-tail guidance.
     """
     uncertainties = fpga_build.make_x3_place_setup_uncertainties_ns(
         fpga_build.X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT
@@ -455,8 +520,8 @@ def test_default_x3_sweep_contains_every_guided_pc_tail_candidate() -> None:
             or (directive, uncertainty) in fpga_build.X3_PLACE_EXTRA_SEED_CANDIDATES
         )
         assert fpga_build.x3_place_uses_pc_tail_guidance(directive, uncertainty)
-    # The vetted extra seed sits off the 50 ps grid: on-grid values are
-    # already covered by the Cartesian sweep.
+    # The extra seed is off the 50 ps grid; the grid already covers on-grid
+    # values.
     for _, uncertainty in fpga_build.X3_PLACE_EXTRA_SEED_CANDIDATES:
         assert uncertainty not in uncertainties
 
@@ -519,7 +584,10 @@ def test_default_x3_place_sweep_retains_controls_and_adds_low_variants() -> None
 def test_x3_low_variants_require_their_requested_grid_control(
     directives: list[str], uncertainties: list[float], variant_labels: list[str]
 ) -> None:
-    """Narrowing directives or uncertainty must not add unrelated treatments."""
+    """A narrowed grid gets a LOW variant only beside its control.
+
+    It still gets the off-grid seed, exactly once.
+    """
     candidates = fpga_build.make_x3_place_sweep_candidates(
         directives, uncertainties, {}
     )
@@ -552,7 +620,10 @@ def test_x3_low_variants_require_their_requested_grid_control(
 def test_explicit_x3_bloat_environment_preserves_manual_sweep(
     manual_environment: dict[str, str],
 ) -> None:
-    """Even empty or target-only settings retain their previous semantics."""
+    """Setting either bloat variable, even to empty, drops the LOW variants.
+
+    Every candidate then inherits the caller's settings unchanged.
+    """
     inherited = {"FROST_TEST_MARKER": "retained", **manual_environment}
     candidates = fpga_build.make_x3_place_sweep_candidates(
         fpga_build.X3_PLACER_SWEEP_DIRECTIVES,
@@ -585,7 +656,7 @@ def test_explicit_x3_bloat_environment_preserves_manual_sweep(
 def test_automatic_x3_bloat_match_validation_rejects_wrong_scope(
     tmp_path: Path, contents: str
 ) -> None:
-    """A successful Vivado process alone does not qualify a bloat treatment."""
+    """A LOW variant counts only if its one bloat line sets LOW on one int-RS cell."""
     log = tmp_path / "vivado.log"
     assert not fpga_build.x3_place_cell_bloat_override_is_valid(
         log, "LOW", "*u_tomasulo/u_int_rs"
@@ -602,11 +673,91 @@ def test_automatic_x3_bloat_match_validation_rejects_wrong_scope(
     )
 
 
+@pytest.mark.parametrize(
+    ("memory_factor", "memory_count", "extra", "valid"),
+    (
+        ("MEDIUM", 1, "", True),
+        ("MEDIUM", 0, "", False),
+        ("MEDIUM", 2, "", False),
+        ("LOW", 1, "", False),
+        (None, 1, "", False),
+        (
+            "MEDIUM",
+            1,
+            "Set CELL_BLOAT_FACTOR MEDIUM on 1 cell(s) matching '*u_tomasulo/u_rob'\n",
+            False,
+        ),
+    ),
+)
+def test_x3_bloat_requires_each_requested_hierarchy_exactly_once(
+    tmp_path: Path,
+    memory_factor: str | None,
+    memory_count: int,
+    extra: str,
+    valid: bool,
+) -> None:
+    """A two-station recipe cannot silently spread only one or extra hierarchies."""
+    log = tmp_path / "vivado.log"
+    log.write_text(
+        "Set CELL_BLOAT_FACTOR MEDIUM on 1 cell(s) matching '*u_tomasulo/u_int_rs'\n"
+        + (
+            f"Set CELL_BLOAT_FACTOR {memory_factor} on {memory_count} cell(s) "
+            "matching '*u_tomasulo/u_mem_rs'\n"
+            if memory_factor is not None
+            else ""
+        )
+        + extra
+    )
+    assert (
+        fpga_build.x3_place_cell_bloat_override_is_valid(
+            log, "MEDIUM", "*u_tomasulo/u_int_rs *u_tomasulo/u_mem_rs"
+        )
+        is valid
+    )
+
+
+@pytest.mark.parametrize(
+    ("matches", "expected_matches", "valid"),
+    (
+        ((1, 2172), (1, None), True),
+        ((1, 1), (1, None), True),
+        ((1, 0), (1, None), False),
+        ((2, 2172), (1, None), False),
+        ((1, 2172), None, False),
+        ((1, 2172), (1,), False),
+    ),
+)
+def test_leaf_group_bloat_keeps_hierarchy_scope_strict(
+    tmp_path: Path,
+    matches: tuple[int, int],
+    expected_matches: tuple[int | None, ...] | None,
+    valid: bool,
+) -> None:
+    """Only an explicitly declared group may match multiple primitive cells."""
+    patterns = ("*u_tomasulo/u_int_rs", "*u_tomasulo/u_mem_rs/rs_src2_value*")
+    log = tmp_path / "vivado.log"
+    log.write_text(
+        "".join(
+            f"Set CELL_BLOAT_FACTOR MEDIUM on {count} cell(s) matching '{pattern}'\n"
+            for count, pattern in zip(matches, patterns)
+        )
+    )
+    assert (
+        fpga_build.x3_place_cell_bloat_override_is_valid(
+            log, "MEDIUM", " ".join(patterns), expected_matches
+        )
+        is valid
+    )
+
+
 @pytest.mark.parametrize("bloat_match_valid", (True, False))
 def test_x3_place_worker_isolates_and_validates_bloat_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bloat_match_valid: bool
 ) -> None:
-    """Actual launch/promotion wiring cannot leak LOW or rank a failed match."""
+    """Only the LOW variant's worker gets the bloat variables.
+
+    The variant is promoted only if its bloat matched.
+    """
     monkeypatch.delenv("FROST_PLACE_CELL_BLOAT", raising=False)
     monkeypatch.delenv("FROST_PLACE_CELL_BLOAT_CELLS", raising=False)
     monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "0")
@@ -623,7 +774,6 @@ def test_x3_place_worker_isolates_and_validates_bloat_environment(
         (work_dir / "post_place.dcp").write_text(work_dir.name)
         _write_place_gate(work_dir, -0.1 if "bloatLOW" in str(work_dir) else -0.15)
         (work_dir / "post_place_timing.rpt").write_text("timing fixture\n")
-        (work_dir / "post_place_congestion.rpt").write_text("no congestion\n")
         (work_dir / "vivado.log").write_text("placement fixture\n")
         if environment.get("FROST_PLACE_CELL_BLOAT") == "LOW" and bloat_match_valid:
             kwargs["stdout"].write(
@@ -671,7 +821,12 @@ def test_x3_place_worker_isolates_and_validates_bloat_environment(
 
 
 def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
-    """Replica churn is accepted only with complete canonical invariants."""
+    """The PC-tail audit passes only for its own guided seed, with every check met.
+
+    Exactly the expected fields must appear, once each and well formed. Replica
+    counts may change, and placement may merge a canonical endpoint into its
+    replicas, but the pre-place scope must have every canonical endpoint.
+    """
     audit = tmp_path / "post_place_group_audit.txt"
     valid_audit = (
         "\n".join(
@@ -700,10 +855,10 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
                 "POST_PENDING_CANONICAL=1",
                 "POST_UNION_ENDS=343",
                 "PRE_COMPRESSED_START_NAMES_MATCH_POST=1",
-                "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST=1",
-                "PRE_STATE_CANONICAL_NAMES_MATCH_POST=1",
-                "PRE_SEQ_CANONICAL_NAMES_MATCH_POST=1",
-                "PRE_PENDING_CANONICAL_NAMES_MATCH_POST=1",
+                "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE=1",
+                "POST_STATE_CANONICAL_NAMES_WITHIN_PRE=1",
+                "POST_SEQ_CANONICAL_NAMES_WITHIN_PRE=1",
+                "POST_PENDING_CANONICAL_NAMES_WITHIN_PRE=1",
                 "SCORE_COMPRESSED_STARTS=14",
                 "SCORE_ENDS=183",
                 "SCORE_PC_BITS=64",
@@ -725,9 +880,19 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
     )
     audit.write_text(valid_audit)
 
-    # Placement deleted one noncanonical state-PC replica (93 -> 92). Exact
-    # canonical identity and bit coverage still make this a valid audit (the
-    # PC families cover the full 64-bit architectural width since Phase 3 M2).
+    # Placement removed one noncanonical state-PC replica (93 -> 92). The audit
+    # still passes: no canonical name is new, and the selected and state PC
+    # families still cover all 64 bits.
+    assert fpga_build.x3_pc_tail_group_audit_is_valid(
+        audit, "ExtraNetDelay_high", 0.500
+    )
+
+    # Equivalent-driver rewiring merged the canonical pending-valid register
+    # into its replica: every scope still has a pending-valid endpoint.
+    merged_pending_audit = valid_audit.replace(
+        "POST_PENDING_CANONICAL=1", "POST_PENDING_CANONICAL=0"
+    ).replace("SCORE_PENDING_CANONICAL=1", "SCORE_PENDING_CANONICAL=0")
+    audit.write_text(merged_pending_audit)
     assert fpga_build.x3_pc_tail_group_audit_is_valid(
         audit, "ExtraNetDelay_high", 0.500
     )
@@ -759,6 +924,9 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
         valid_audit.replace("SCORE_SEQ_ENDS=66", "SCORE_SEQ_ENDS=65"),
         valid_audit.replace("PRE_UNION_ENDS=261", "PRE_UNION_ENDS=260"),
         valid_audit.replace("POST_PENDING_CANONICAL=1", "POST_PENDING_CANONICAL=2"),
+        valid_audit.replace("PRE_PENDING_CANONICAL=1", "PRE_PENDING_CANONICAL=0"),
+        valid_audit.replace("POST_PENDING_CANONICAL=1", "POST_PENDING_CANONICAL=0"),
+        valid_audit.replace("SCORE_PENDING_CANONICAL=1", "SCORE_PENDING_CANONICAL=0"),
         valid_audit.replace("SCORE_COMPRESSED_STARTS=14", "SCORE_COMPRESSED_STARTS=13"),
         valid_audit.replace("PRE_COMPRESSED_STARTS=14", "PRE_COMPRESSED_STARTS=15"),
         valid_audit.replace("SCORE_PC_BITS=64", "SCORE_PC_BITS=63"),
@@ -769,23 +937,39 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
             "PRE_COMPRESSED_START_NAMES_MATCH_POST=0",
         ),
         valid_audit.replace(
-            "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST=1",
-            "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST=0",
+            "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE=1",
+            "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE=0",
         ),
         valid_audit.replace(
+            "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE=1",
+            "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST=1",
+        ),
+        valid_audit.replace(
+            "POST_STATE_CANONICAL_NAMES_WITHIN_PRE=1",
+            "POST_STATE_CANONICAL_NAMES_WITHIN_PRE=0",
+        ),
+        valid_audit.replace(
+            "POST_STATE_CANONICAL_NAMES_WITHIN_PRE=1",
             "PRE_STATE_CANONICAL_NAMES_MATCH_POST=1",
-            "PRE_STATE_CANONICAL_NAMES_MATCH_POST=0",
         ),
         valid_audit.replace(
+            "POST_SEQ_CANONICAL_NAMES_WITHIN_PRE=1",
+            "POST_SEQ_CANONICAL_NAMES_WITHIN_PRE=0",
+        ),
+        valid_audit.replace(
+            "POST_SEQ_CANONICAL_NAMES_WITHIN_PRE=1",
             "PRE_SEQ_CANONICAL_NAMES_MATCH_POST=1",
-            "PRE_SEQ_CANONICAL_NAMES_MATCH_POST=0",
         ),
         valid_audit.replace(
+            "POST_PENDING_CANONICAL_NAMES_WITHIN_PRE=1",
+            "POST_PENDING_CANONICAL_NAMES_WITHIN_PRE=0",
+        ),
+        valid_audit.replace(
+            "POST_PENDING_CANONICAL_NAMES_WITHIN_PRE=1",
             "PRE_PENDING_CANONICAL_NAMES_MATCH_POST=1",
-            "PRE_PENDING_CANONICAL_NAMES_MATCH_POST=0",
         ),
         valid_audit.replace(
-            "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST=1",
+            "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE=1",
             "PRE_ENDPOINTS_SUBSET_POST=1",
         ),
         valid_audit.replace(
@@ -825,7 +1009,10 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
 
 
 def test_place_guidance_evidence_is_promoted(tmp_path: Path) -> None:
-    """The winning guided seed keeps its clean-reopen and cone evidence."""
+    """Promoting a guided placement keeps its group audit and PC-tail report.
+
+    The gate reports come with it; a pin-swap audit does not.
+    """
     seed_work = tmp_path / "seed"
     main_work = tmp_path / "main"
     seed_work.mkdir()
@@ -856,7 +1043,7 @@ def test_place_guidance_evidence_is_promoted(tmp_path: Path) -> None:
 
 
 def test_non_guided_winner_clears_stale_guidance_evidence(tmp_path: Path) -> None:
-    """Optional audit files may never describe a different promoted DCP."""
+    """Promoting an unguided placement deletes guidance audits left by an older one."""
     seed_work = tmp_path / "seed"
     main_work = tmp_path / "main"
     seed_work.mkdir()
@@ -923,7 +1110,11 @@ def test_post_opt_promotion_clears_stale_audits(tmp_path: Path) -> None:
 
 
 def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
-    """The tracked placement group is fail-closed and removed before scoring."""
+    """The PC-tail path group is validated and used only for placement.
+
+    It is removed before the post-place checkpoint is written, reopened, and
+    scored.
+    """
     tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
     trigger = tcl.index("set use_x3_pc_tail_group")
     place = tcl.index("place_design -directive $directive", trigger)
@@ -962,7 +1153,7 @@ def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
     assert '$directive eq "ExtraPostPlacementOpt"' in trigger_text
     assert "abs(double($x3_place_uncertainty)" in trigger_text
     assert "abs(double($x3_place_uncertainty) - 0.450)" in trigger_text
-    assert 'validate_x3_pc_compressed_tail_scope "pre-place"' in trigger_text
+    assert 'validate_x3_pc_compressed_tail_scope "pre-place"]' in trigger_text
     assert "broad endpoint family is not the selected/state disjoint union" in tcl
     assert "broad endpoint namespace contains an unexpected family" in tcl
     assert "pending_prediction_valid_reg(_rep.*)?/D" in tcl
@@ -984,26 +1175,25 @@ def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
     assert "legacy" not in tcl[trigger:]
     assert "does not have exactly one canonical non-replica endpoint" in tcl
     assert "expected at least one endpoint and exactly one canonical endpoint" in tcl
+    assert "has more than one canonical non-replica endpoint" in tcl
+    assert "if {$require_canonical && $canonical_count != 1}" in tcl
     assert "is not clocked exactly by clock_from_mmcm" in tcl
     assert "-filter {IS_CLOCK == 1}" in tcl
     assert "PRE_ENDS=112" not in tcl
     assert "PC-metadata tail start names differ" in tcl[place:remove_compressed_group]
-    assert (
-        "selected PC-tail canonical endpoint names differ"
-        in tcl[place:remove_compressed_group]
-    )
-    assert (
-        "state PC-tail canonical endpoint names differ"
-        in tcl[place:remove_compressed_group]
-    )
-    assert (
-        "sequential PC-tail canonical endpoint names differ"
-        in tcl[place:remove_compressed_group]
-    )
-    assert (
-        "pending PC-tail canonical endpoint names differ"
-        in tcl[place:remove_compressed_group]
-    )
+    # After placement a bit may have lost its canonical endpoint to
+    # equivalent-driver rewiring, but no canonical name may be new.
+    post_place_checks = tcl[place:remove_compressed_group]
+    assert 'validate_x3_pc_compressed_tail_scope "post-place" 0]' in post_place_checks
+    for family in ("selected", "state", "sequential", "pending"):
+        assert (
+            f'require_x3_pc_tail_canonical_names_within "{family} PC-tail"'
+            in post_place_checks
+        )
+    assert "canonical endpoint names differ" not in tcl
+    assert "is not a pre-place canonical endpoint" in tcl
+    assert "FROST_PC_TAIL_MERGED_CANONICAL" in tcl
+    assert 'validate_x3_pc_compressed_tail_scope "clean-reopen" 0]' in tcl[reopen:]
     assert "require_x3_pc_tail_name_subset" not in tcl
     assert "start names differ from the post-place scope" in tcl
     assert "endpoint names differ from the post-place scope" in tcl
@@ -1015,10 +1205,14 @@ def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
     assert "START_SETS_DISJOINT" not in tcl
     assert '"PRE_START_NAMES_MATCH_POST=1"' not in tcl
     assert '"PRE_COMPRESSED_START_NAMES_MATCH_POST=1"' in tcl
-    assert '"PRE_SELECTED_CANONICAL_NAMES_MATCH_POST=1"' in tcl
-    assert '"PRE_STATE_CANONICAL_NAMES_MATCH_POST=1"' in tcl
-    assert '"PRE_SEQ_CANONICAL_NAMES_MATCH_POST=1"' in tcl
-    assert '"PRE_PENDING_CANONICAL_NAMES_MATCH_POST=1"' in tcl
+    assert '"POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE=1"' in tcl
+    assert "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST" not in tcl
+    assert '"POST_STATE_CANONICAL_NAMES_WITHIN_PRE=1"' in tcl
+    assert "PRE_STATE_CANONICAL_NAMES_MATCH_POST" not in tcl
+    assert '"POST_SEQ_CANONICAL_NAMES_WITHIN_PRE=1"' in tcl
+    assert "PRE_SEQ_CANONICAL_NAMES_MATCH_POST" not in tcl
+    assert '"POST_PENDING_CANONICAL_NAMES_WITHIN_PRE=1"' in tcl
+    assert "PRE_PENDING_CANONICAL_NAMES_MATCH_POST" not in tcl
     assert '"SCORE_PC_BITS=$x3_pc_tail_score_bit_count"' in tcl
     assert '"SCORE_START_NAMES_MATCH_POST=1"' not in tcl
     assert '"SCORED_GROUPS=' not in tcl
@@ -1049,13 +1243,15 @@ def test_x3_opt_does_not_except_fence_deassertion() -> None:
 
 
 def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
-    """IF PC metadata uses a bounded overlay and folded slow fallback.
+    """IF's PC predicates come from a LUTRAM overlay, with a redecoded fallback.
 
-    The low 64 KiB launches through the bounded per-predicate LUTRAM copies. The
-    canonical sideband block RAM remains the full-depth equivalence oracle but
-    never directly supplies the seven PC predicates. Outside the overlay,
-    a repeated request aligns raw payload with predicates redecoded into the
-    same scalar-bank output FFs, without a second register or output mux.
+    In the low 64 KiB, each of the seven predicates launches from its own LUTRAM
+    copy in each parity bank. The full-depth sideband block RAM is the
+    simulation reference for the copies and never feeds those predicates
+    directly. Outside the overlay, a repeated request loads the predicate
+    redecoded from the fetched word into the same output flop, with no second
+    register or output mux. The test also checks the low-BRAM fetch presenter
+    in each fetch build and IF's registered fetch redirect.
     """
     imem = (REPO_ROOT / "hw/rtl/cpu_and_mem/imem_predecode.sv").read_text()
     assert len(re.findall(r"^module ", imem, re.M)) == 2
@@ -1128,7 +1324,7 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     ):
         assert retired not in imem
     assert "logic [FastLaneWidth-1:0] memory_even_compressed[HalfDepth];" in imem
-    assert "localparam int unsigned FastLaneWidth = 5;" in imem
+    assert "localparam int unsigned FastLaneWidth = 4;" in imem
     assert "even_sideband_with_fast_metadata[1:0] = even_pc_metadata[1:0];" in imem
     assert "odd_sideband_with_fast_metadata[1:0] = odd_pc_metadata[1:0];" in imem
     overwritten_predicates = {
@@ -1160,7 +1356,7 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
 
     generator = (REPO_ROOT / "sw/common/generate_imem_predecode_init.py").read_text()
     assert "def make_sideband_bit_replica(" in generator
-    assert "FAST_REPLICA_WIDTH = 5" in generator
+    assert "FAST_REPLICA_WIDTH = 4" in generator
     assert "make_pc_metadata_bank_replica" not in generator
     assert "make_compressed_hi_replica" not in generator
 
@@ -1185,7 +1381,16 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     provider_block = cpu_and_mem[provider_start:direct_start]
     direct_block = cpu_and_mem[direct_start:fetch_assertions_start]
     for block in (fuzz_block, provider_block, direct_block):
-        assert block.count("low_bram_fetch_presenter u_low_bram_fetch_presenter") == 1
+        assert (
+            len(
+                re.findall(
+                    r"low_bram_fetch_presenter(?:\s*#\s*\(.*?\))?\s+u_low_bram_fetch_presenter",
+                    block,
+                    re.DOTALL,
+                )
+            )
+            == 1
+        )
         assert block.count(".i_response_ready(bram_fetch_response_ready)") == 1
         assert block.count(".i_response_claim(fetch_live_claim)") == 1
         assert block.count(".o_response_valid(low_bram_response_valid)") == 1
@@ -1218,9 +1423,9 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     assert "cached_fetch_valid_local_q <= cached_fetch_valid_next;" in provider_block
     assert ".o_instr_valid_next(cached_fetch_valid_next)" in provider_block
     assert "cached_fetch_valid_local_q == cached_fetch_valid" in provider_block
-    # Cached PC-sideband parity is normalized on the provider's payload edge.
-    # Rebuilding it from the registered bank selector reopens the served-window
-    # coverage -> PC recurrence by one LUT and a general-routing hop.
+    # The provider selects the cached PC sideband by parity before its payload
+    # register. Selecting it afterwards, from the registered bank select, would
+    # lengthen the served-window coverage -> PC path by a LUT and a routing hop.
     for port, signal, declaration in (
         (
             "o_pc_metadata_by_parity",
@@ -1262,7 +1467,16 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     assert ".i_owner_low(1'b1)" in direct_block
     assert ".i_retarget(fetch_redirect)" in direct_block
 
-    assert cpu_and_mem.count("low_bram_fetch_presenter u_low_bram_fetch_presenter") == 3
+    assert (
+        len(
+            re.findall(
+                r"low_bram_fetch_presenter(?:\s*#\s*\(.*?\))?\s+u_low_bram_fetch_presenter",
+                cpu_and_mem,
+                re.DOTALL,
+            )
+        )
+        == 3
+    )
     assert cpu_and_mem.count(".i_response_ready(bram_fetch_response_ready)") == 3
     assert ".o_port_b_response_ready(bram_fetch_response_ready)" in cpu_and_mem
     assert ".o_port_b_window_overlay_hit(bram_fetch_window_overlay_hit)" in cpu_and_mem
@@ -1301,14 +1515,22 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     assert re.search(r"\bresponse_published_q\b", presenter) is None
     for output_name, live_name, held_name in (
         ("o_fetch_address", "i_pc", "presented_pc_q"),
-        ("o_fetch_pa0", "i_pa0", "presented_pa0_q"),
-        ("o_fetch_pa1", "i_pa1", "presented_pa1_q"),
         ("o_fetch_pa_valid", "i_pa_valid", "presented_pa_valid_q"),
     ):
         assert (
             f"assign {output_name} = repeat_presented ? {held_name} : {live_name};"
             in presenter
         )
+    # Only PA bits [15:0] take the separate address retarget; the VA, PA[31:16],
+    # and the other outputs keep the full retarget.
+    assert "parameter bit SEPARATE_ADDRESS_RETARGET = 1'b0" in presenter
+    assert ".SEPARATE_ADDRESS_RETARGET(1'b1)" in provider_block
+    assert ".i_address_retarget(fetch_redirect)" in provider_block
+    for pa in ("pa0", "pa1"):
+        assert (
+            f"repeat_presented ? presented_{pa}_q[31:16] : i_{pa}[31:16]" in presenter
+        )
+        assert f"repeat_address ? presented_{pa}_q[15:0] : i_{pa}[15:0]" in presenter
     assert "presented_pc_q          <= o_fetch_address;" in presenter
     assert "i_response_ready && !i_retarget" not in presenter
 
@@ -1317,19 +1539,22 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
         r"fetch_redirect fetch_redirect_inst \((.*?)\n  \);", if_stage, re.S
     )
     assert redirect_block_match is not None
+    # Producer and consumer proofs justify omitting the sequential catch-up arm.
+    assert "npc_cond_for_redirect = npc_cond[riscv_pkg::PcNextArms-1:1];" in if_stage
+    assert "npc_cond_for_redirect[11] = 1'b0;" in if_stage
     redirect_block = redirect_block_match.group(1)
     for port, signal in (
         ("i_clk", "i_clk"),
         ("i_reset", "i_pipeline_ctrl.reset"),
         ("i_pc_update_en", "pc_update_en"),
-        ("i_npc_cond", "npc_cond[riscv_pkg::PcNextArms-1:1]"),
+        ("i_npc_cond", "npc_cond_for_redirect"),
         ("i_npc_seq", "npc_seq[riscv_pkg::PcNextArms-1:1]"),
         ("i_live_prediction_emits_with_output", "live_prediction_emits_with_output"),
         ("o_fetch_redirect", "o_fetch_redirect"),
     ):
         assert f".{port}({signal})" in redirect_block
-    # The local helper proof checks arbitrary raw requests. IF separately
-    # checks its registered output against the original actual winner bus.
+    # fetch_redirect's formal proof covers arbitrary inputs. IF also checks its
+    # registered output in simulation against the direct equation on npc_sel.
     assert re.search(
         r"fetch_redirect_reference_q\s*<=\s*!i_pipeline_ctrl.reset\s*&&\s*"
         r"pc_update_en\s*&&\s*\|\(npc_sel\s*&\s*~npc_seq\)\s*&&\s*"
@@ -1357,15 +1582,13 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
 
 
 def test_x3_flow_carries_no_timing_exceptions() -> None:
-    """The CPU build flow adds no false, multicycle, or max-delay exceptions.
+    """build_step.tcl adds no false-path, multicycle, or max-delay exceptions.
 
-    Existing board, IP, and crossing constraints are separate from this
-    build_step.tcl guard. A functional false path through the front end would
-    need the released control to be stable across the cycle before every
-    sensitive cycle; the
-    prediction-release companion can arm a pending episode in the very next
-    cycle, so no such cut is sound. The one that was tried was worth 12 ps of
-    post-opt WNS and was retired.
+    Board, IP, and clock-crossing constraints live elsewhere and are not checked
+    here. A false path through the front end's buffer-release control would need
+    that control to be stable during the cycle before every cycle that depends on
+    it, but a pending prediction can start in the cycle right after a buffer
+    release, so no such exception is safe.
     """
     tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
     for exception in ("set_false_path", "set_multicycle_path", "set_max_delay"):
@@ -1373,39 +1596,10 @@ def test_x3_flow_carries_no_timing_exceptions() -> None:
     assert "prediction_release" not in tcl
 
 
-def test_x3_fetch_cluster_pblock_stays_retired() -> None:
-    """The stale fetch attraction halo must not silently return."""
+def test_x3_constraints_define_no_fetch_cluster_pblock() -> None:
+    """x3.xdc defines no frost_fetch_cluster pblock."""
     xdc = (REPO_ROOT / "boards/x3/constr/x3.xdc").read_text()
     assert "frost_fetch_cluster" not in xdc
-
-
-def test_x3_nic_fences_are_soft_and_cover_the_nic() -> None:
-    """The NIC fences bias placement only and hold every 300 MHz NIC block."""
-    xdc = (REPO_ROOT / "boards/x3/constr/x3.xdc").read_text()
-    for pblock, region in (
-        ("frost_nic_core", "CLOCKREGION_X1Y4:CLOCKREGION_X1Y4"),
-        ("frost_nic_mac", "CLOCKREGION_X2Y4:CLOCKREGION_X2Y4"),
-    ):
-        block = xdc[xdc.index(f"create_pblock {pblock}") :]
-        block = block[: block.index("add_cells_to_pblock") + 400]
-        assert f"resize_pblock [get_pblocks {pblock}] -add {region}" in block
-        assert f"set_property IS_SOFT true [get_pblocks {pblock}]" in block
-        assert f"set_property CONTAIN_ROUTING false [get_pblocks {pblock}]" in block
-        assert f"set_property EXCLUDE_PLACEMENT false [get_pblocks {pblock}]" in block
-    core = xdc[
-        xdc.index("create_pblock frost_nic_core") : xdc.index(
-            "create_pblock frost_nic_mac"
-        )
-    ]
-    for child in ("u_rx", "u_tx", "u_front", "u_csr", "u_irq", "u_reset"):
-        assert (
-            f"gen_cached_tier.nic/{child} " in core
-            or f"gen_cached_tier.nic/{child}]" in core
-        )
-    assert "gen_cached_tier.dma_engine" in core
-    assert (
-        "gen_cached_tier.nic/u_mac" in xdc[xdc.index("create_pblock frost_nic_mac") :]
-    )
 
 
 def test_board_ddr_generation_is_capability_gated() -> None:
@@ -1470,8 +1664,29 @@ def test_board_gty_generation_is_capability_gated() -> None:
     ):
         assert setting in gty
 
+    # The CPU clock's core: a CPLL-only channel (no COMMON, so the NIC core
+    # keeps the quad's QPLL0) whose TXOUTCLK is 322.265625 MHz.
+    assert "proc create_x3_cpu_clock_gty_ip {}" in gty
+    assert gty.index("proc create_x3_cpu_clock_gty_ip") > gty.index(
+        "  create_x3_cpu_clock_gty_ip\n"
+    )
+    for setting in (
+        "CONFIG.CHANNEL_ENABLE {X0Y29}",
+        "CONFIG.TX_REFCLK_SOURCE {X0Y29 clk0}",
+        "CONFIG.TX_PLL_TYPE {CPLL}",
+        "CONFIG.RX_PLL_TYPE {CPLL}",
+        "CONFIG.TX_LINE_RATE {6.4453125}",
+        "CONFIG.TX_INT_DATA_WIDTH {20}",
+        "CONFIG.TX_OUTCLK_SOURCE {TXPROGDIVCLK}",
+        "CONFIG.LOCATE_TX_USER_CLOCKING {EXAMPLE_DESIGN}",
+    ):
+        assert setting in gty
+
     files = (REPO_ROOT / "boards/x3/x3_frost.f").read_text()
     assert files.index("boards/x3/x3_nic_gty.sv") < files.index("boards/x3/x3_frost.sv")
+    assert files.index("boards/x3/x3_cpu_clock_gty.sv") < files.index(
+        "boards/x3/x3_frost.sv"
+    )
     top = (REPO_ROOT / "boards/x3/x3_frost.sv").read_text()
     assert ".RAW_LOOPBACK(0)" in top
     assert "CLKOUT1" not in top
@@ -1483,11 +1698,13 @@ def test_board_gty_generation_is_capability_gated() -> None:
 
 
 def test_step_arm_state_is_declared_before_first_use() -> None:
-    """Vivado must not infer an implicit step wire or warn on done-state use."""
+    """cpu_ooo declares each debug-step signal once, before its first use.
+
+    An earlier use would make Vivado infer an implicit net or warn.
+    """
     cpu = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv").read_text()
     first_uses = {
         "step_armed_q": "csr_debug_mode || step_armed_q",
-        "step_armed_fe_q": ".i_keep_nops(step_armed_fe_q)",
         "step_armed_rob_q": "widen_commit_ok && !step_armed_rob_q",
         "step_done_q": "step_done_set || step_done_q",
         "step_done_set": "step_done_set || step_done_q",
@@ -1499,7 +1716,10 @@ def test_step_arm_state_is_declared_before_first_use() -> None:
 
 
 def test_mispredict_dispatch_recovery_has_one_structural_gate() -> None:
-    """Preflush candidates reach dispatch only through its direct flush gate."""
+    """Dispatch takes the preflush candidates and applies the flush itself.
+
+    No timing exception covers that path.
+    """
     tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
     assert "apply_x3_mispredict_dispatch_false_path" not in tcl
     assert "mispredict-dispatch exception" not in tcl
@@ -1529,8 +1749,10 @@ def test_mispredict_dispatch_recovery_has_one_structural_gate() -> None:
     assert "p_id_valid_gate_matches_legacy" in pipeline_control
 
     cpu = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv").read_text()
-    assert ".o_id_valid_preflush(id_valid_preflush)" in cpu
-    assert ".o_id_valid_2_preflush(id_valid_2_preflush)" in cpu
+    assert ".o_id_valid_preflush(direct_id_valid_preflush)" in cpu
+    assert "assign id_valid_preflush = direct_id_valid_preflush;" in cpu
+    assert ".o_id_valid_2_preflush(direct_id_valid_2_preflush)" in cpu
+    assert "assign id_valid_2_preflush = direct_id_valid_2_preflush;" in cpu
     assert ".i_valid(id_valid_preflush)" in cpu
     assert ".i_valid_2(id_valid_2_preflush)" in cpu
     assert ".i_flush(dispatch_flush)" in cpu
@@ -1583,10 +1805,10 @@ def test_route_directives_override_the_x3_router_sweep() -> None:
 def test_functional_build_policy_leaves_full_rate_builds_alone() -> None:
     """A divider of 1 returns the caller's settings and the README refresh."""
     policy = fpga_build.resolve_functional_build_policy(
-        1, 300_000_000, ["ExtraNetDelay_high"], 6, False, ["Explore"], False
+        1, 322_265_625, ["ExtraNetDelay_high"], 6, False, ["Explore"], False
     )
     assert policy.cpu_clock_div == 1
-    assert policy.clock_freq == 300_000_000
+    assert policy.clock_freq == 322_265_625
     assert policy.place_directives == ["ExtraNetDelay_high"]
     assert policy.place_uncertainty_count == 6
     assert policy.include_extra_seeds
@@ -1596,17 +1818,17 @@ def test_functional_build_policy_leaves_full_rate_builds_alone() -> None:
 
 
 def test_functional_build_policy_collapses_the_sweeps_at_half_clock() -> None:
-    """--cpu-clock-div 2 builds for 150 MHz with single RuntimeOptimized runs."""
+    """--cpu-clock-div 2 builds for 161 MHz with single RuntimeOptimized runs."""
     policy = fpga_build.resolve_functional_build_policy(
         2,
-        300_000_000,
+        322_265_625,
         fpga_build.X3_PLACER_SWEEP_DIRECTIVES,
         fpga_build.X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT,
         False,
         fpga_build.ROUTER_SWEEP_DIRECTIVES,
         False,
     )
-    assert policy.clock_freq == 150_000_000
+    assert policy.clock_freq == 161_132_812
     assert policy.place_directives == ["RuntimeOptimized"]
     assert policy.place_uncertainty_count == 1
     assert not policy.include_extra_seeds
@@ -1618,7 +1840,7 @@ def test_functional_build_policy_collapses_the_sweeps_at_half_clock() -> None:
 def test_functional_build_policy_honors_explicit_sweep_overrides() -> None:
     """Explicit placer and router requests survive the divided-clock policy."""
     policy = fpga_build.resolve_functional_build_policy(
-        2, 300_000_000, ["ExtraTimingOpt"], 2, True, ["Explore", "Default"], True
+        2, 322_265_625, ["ExtraTimingOpt"], 2, True, ["Explore", "Default"], True
     )
     assert policy.place_directives == ["ExtraTimingOpt"]
     assert policy.place_uncertainty_count == 2
@@ -1626,7 +1848,7 @@ def test_functional_build_policy_honors_explicit_sweep_overrides() -> None:
     assert not policy.include_extra_seeds
     with pytest.raises(ValueError):
         fpga_build.resolve_functional_build_policy(
-            5, 300_000_000, ["ExtraTimingOpt"], 1, True, ["Explore"], True
+            5, 322_265_625, ["ExtraTimingOpt"], 1, True, ["Explore"], True
         )
 
 
@@ -1660,9 +1882,38 @@ def test_cpu_clock_divider_reaches_synthesis_and_the_block_design() -> None:
     ).read_text()
     assert "parameter int unsigned CPU_CLK_DIV = 1" in top
     assert "localparam real CpuClkOutDivide = 4.0 * CPU_CLK_DIV;" in top
-    assert "localparam int unsigned CpuClkHz = 300_000_000 / CPU_CLK_DIV;" in top
+    assert "localparam int unsigned CpuClkHz = 322_265_625 / CPU_CLK_DIV;" in top
     assert ".CLKOUT0_DIVIDE_F(CpuClkOutDivide)" in top
     assert ".CLK_FREQ_HZ(CpuClkHz)," in top
+
+
+@pytest.mark.parametrize("divider", (1, 2, 3, 4))
+def test_x3_place_gate_requires_the_mmcm_cpu_period(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, divider: int
+) -> None:
+    """At each divider, the gate rejects the 300 MHz reference period times the divider.
+
+    Only the MMCM-derived CPU period passes. The build policy's clock and README
+    refresh follow the divider.
+    """
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", str(divider))
+    _write_place_gate(tmp_path)
+    gate = tmp_path / "post_place_gate.txt"
+    text = gate.read_text()
+    gate.write_text(
+        text.replace("CPU_PERIOD_NS=3.103", f"CPU_PERIOD_NS={3.333 * divider:.3f}")
+    )
+    assert not fpga_build.x3_place_gate_passes(gate)
+    target_period = 3.333 * 8 * 4 * divider / 34.375
+    gate.write_text(
+        text.replace("CPU_PERIOD_NS=3.103", f"CPU_PERIOD_NS={target_period:.3f}")
+    )
+    assert fpga_build.x3_place_gate_passes(gate)
+    policy = fpga_build.resolve_functional_build_policy(
+        divider, 322_265_625, ["ExtraNetDelay_high"], 6, False, ["Explore"], False
+    )
+    assert policy.clock_freq == 322_265_625 // divider
+    assert policy.update_readme is (divider == 1)
 
 
 def test_only_post_place_physopt_overconstrains_by_default() -> None:
@@ -1691,15 +1942,75 @@ def test_only_post_place_physopt_overconstrains_by_default() -> None:
     )
 
 
-# Bounded Vivado model for one phys-opt sweep. It tracks the added setup
-# uncertainty in force and answers every slack query with the true 0.000 ns
-# slack minus that uncertainty, so a stage sweeping overconstrained measures a
-# pessimistic WNS and one sweeping at 0.000 measures the real one. Checkpoints
-# remember the uncertainty they were written under, as Vivado's carry theirs.
+# A Vivado stand-in for one phys-opt sweep. It tracks the added setup
+# uncertainty in force and answers every slack query with the slack at zero
+# added uncertainty minus that uncertainty, so a stage sweeping overconstrained
+# measures a pessimistic WNS and one sweeping at 0.000 measures the real one.
+# Checkpoints remember the uncertainty they were written under, as Vivado's do.
 PHYSOPT_SWEEP_MODEL = r"""
 set true_wns [expr {double($::env(MODEL_TRUE_WNS))}]
 set uncertainty 0.0
 set checkpoint_uncertainty [dict create]
+set checkpoint_state [dict create]
+set write_incremental 1
+set incremental_active [expr {[info exists ::env(MODEL_INCREMENTAL)] && $::env(MODEL_INCREMENTAL)}]
+set initial_incremental $incremental_active
+set progress_remaining 0
+if {[info exists ::env(MODEL_PROGRESS)]} {set progress_remaining $::env(MODEL_PROGRESS)}
+set optimizations 0
+set tns_adjustment 0.0
+set preservation_active 0
+set placement_changed 0
+set macro_bels_changed 0
+set endpoint_attempts 0
+
+# Exercise the downstream handoff independently of the native lock API, which
+# has its own restoration tests. A bad release must stop before optimization.
+rename source model_source
+proc source {path} {
+    if {[file tail $path] eq "x3_endpoint_physopt.tcl" &&
+        [info exists ::env(MODEL_ENDPOINT_RESULT)]} {
+        namespace eval frost_x3_endpoint_physopt {
+            proc run {kind uncertainty {work_directory ""}} {
+                record "endpoint_pass $kind"
+                if {$kind ne "EndpointAggressive" || $::endpoint_attempts > 0} {return 0}
+                incr ::endpoint_attempts
+                set ::true_wns 0.010
+                if {$::env(MODEL_ENDPOINT_RESULT) eq "error"} {
+                    error "Endpoint disappeared during optimization"
+                }
+                return 1
+            }
+            proc candidate_is_legal {timing route skew} {
+                return [expr {$::env(MODEL_ENDPOINT_RESULT) eq "legal"}]
+            }
+        }
+        return
+    }
+    if {[file tail $path] ne "x3_local_placement.tcl" ||
+        ![info exists ::env(MODEL_PRESERVATION)]} {
+        return [uplevel 1 [list model_source $path]]
+    }
+    namespace eval frost_x3_local_placement {
+        proc recover_unfixed_ports {checkpoint_path} {return 0}
+        proc saved_constraints {} {
+            if {$::preservation_active} {return saved}
+            return {}
+        }
+        proc release {} {
+            set ::preservation_active 0
+            record release_preservation
+            if {[info exists ::env(MODEL_BAD_RELEASE)]} {
+                switch -- $::env(MODEL_BAD_RELEASE) {
+                    timing {set ::true_wns [expr {$::true_wns - 0.1}]}
+                    placement {set ::placement_changed 1}
+                    macro_bel {set ::macro_bels_changed 1}
+                }
+            }
+            return 1
+        }
+    }
+}
 
 proc record {line} {
     set fh [open $::env(MODEL_TRACE) a]
@@ -1713,9 +2024,10 @@ proc model_wns {} {
 }
 
 proc write_timing_summary {path} {
+    global tns_adjustment
     set wns [model_wns]
     if {$wns < 0.0} {
-        set tns [expr {$wns * 4.0}]
+        set tns [expr {$wns * 4.0 + $tns_adjustment}]
         set failing 12
     } else {
         set tns 0.0
@@ -1730,9 +2042,33 @@ proc write_timing_summary {path} {
 
 proc unknown {cmd args} {
     global uncertainty checkpoint_uncertainty
+    global checkpoint_state write_incremental incremental_active initial_incremental
+    global true_wns progress_remaining optimizations tns_adjustment
     switch -- $cmd {
+        current_design {return design}
+        list_property {return {}}
         get_clocks {return clock_from_mmcm}
+        get_ports {return {}}
+        get_cells {return primitive}
+        get_bels {
+            if {$::macro_bels_changed} {return {SITE/OUTINV OTHER_SITE/OUTBUF}}
+            return {SITE/OUTINV SITE/OUTBUF}
+        }
         close_design {return {}}
+        report_incremental_reuse {
+            if {$incremental_active} {return {| Incremental Directive | RuntimeOptimized |}}
+            return {}
+        }
+        get_param {
+            if {[lindex $args 0] ne "checkpoint.writeIncrFile"} {error "Unexpected parameter $args"}
+            return $write_incremental
+        }
+        set_param {
+            if {[lindex $args 0] ne "checkpoint.writeIncrFile"} {error "Unexpected parameter $args"}
+            set write_incremental [lindex $args 1]
+            record "write_incremental $write_incremental"
+            return {}
+        }
         set_clock_uncertainty {
             set index [lsearch -exact $args -setup]
             set uncertainty [expr {double([lindex $args [expr {$index - 1}]])}]
@@ -1741,9 +2077,19 @@ proc unknown {cmd args} {
         }
         open_checkpoint {
             set path [lindex $args end]
+            set ::preservation_active [expr {[info exists ::env(MODEL_PRESERVATION)] &&
+                [file tail $path] eq "input.dcp"}]
             set uncertainty 0.0
             if {[dict exists $checkpoint_uncertainty $path]} {
                 set uncertainty [dict get $checkpoint_uncertainty $path]
+            }
+            set incremental_active $initial_incremental
+            if {[dict exists $checkpoint_state $path]} {
+                lassign [dict get $checkpoint_state $path] true_wns tns_adjustment incremental_active
+            }
+            if {[file tail $path] eq "timing_input.dcp" && [info exists ::env(MODEL_BAD_CONVERSION)]} {
+                if {$::env(MODEL_BAD_CONVERSION) eq "history"} {set incremental_active 1}
+                if {$::env(MODEL_BAD_CONVERSION) eq "timing"} {set true_wns [expr {$true_wns - 0.1}]}
             }
             record "open [file tail $path] at [format %.3f $uncertainty]"
             return {}
@@ -1751,6 +2097,7 @@ proc unknown {cmd args} {
         write_checkpoint {
             set path [lindex $args end]
             dict set checkpoint_uncertainty $path $uncertainty
+            dict set checkpoint_state $path [list $true_wns $tns_adjustment [expr {$incremental_active && $write_incremental}]]
             close [open $path w]
             record "checkpoint [file tail $path] at [format %.3f $uncertainty]"
             return {}
@@ -1762,7 +2109,7 @@ proc unknown {cmd args} {
             record "$taken wns [format %.3f [model_wns]]"
             return {}
         }
-        report_utilization - report_high_fanout_nets {
+        report_utilization - report_high_fanout_nets - report_design_analysis - report_route_status - report_bus_skew {
             close [open [lindex $args end] w]
             return {}
         }
@@ -1771,11 +2118,44 @@ proc unknown {cmd args} {
             return worst_path
         }
         get_property {
-            if {[lindex $args 0] eq "SLACK"} {return [model_wns]}
+            if {[lindex $args 0] eq "SLACK"} {
+                if {[info exists ::env(MODEL_ROUND_SLACK)]} {
+                    return [format %.3f [model_wns]]
+                }
+                return [model_wns]
+            }
+            if {[lindex $args 0] eq "LOC" && $::placement_changed} {return changed_location}
+            if {[lindex $args 0] eq "PRIMITIVE_LEVEL"} {
+                return [expr {[info exists ::env(MODEL_MACRO_ALIAS)] ? "MACRO" : "LEAF"}]
+            }
+            if {[lindex $args 0] eq "BEL" && [info exists ::env(MODEL_MACRO_ALIAS)]} {
+                return [expr {$::preservation_active ? "OUTINV" : "OUTBUF"}]
+            }
+            if {[lindex $args 0] in {NAME LOC BEL REF_NAME}} {return [lindex $args 0]}
             error "Unexpected property request $args"
         }
         phys_opt_design {
             record "phys_opt_design $args"
+            if {[info exists ::env(MODEL_CLOSE_ROUNDED_TIE)]} {
+                set true_wns 0.00004
+                return {}
+            }
+            if {$incremental_active && [model_wns] >= -0.546} {
+                record "setup_skipped"
+                return {}
+            }
+            if {$progress_remaining > 0} {
+                incr progress_remaining -1
+                incr optimizations
+                if {$optimizations <= 2} {set true_wns [expr {$true_wns + 0.015}]}
+                set tns_adjustment [expr {$tns_adjustment + 0.005}]
+                record "setup_optimized $optimizations"
+            }
+            return {}
+        }
+        route_design {
+            if {$incremental_active} {error "Router inherited the incremental timing target"}
+            record "route_design $args"
             return {}
         }
         default {error "Unexpected command $cmd $args"}
@@ -1794,6 +2174,16 @@ def _run_physopt_sweep_model(
     true_wns: float,
     setup_uncertainty: str | None = None,
     launch_token: str | None = None,
+    *,
+    incremental: bool = False,
+    progress: int = 0,
+    bad_conversion: str | None = None,
+    preservation: bool = False,
+    bad_release: str | None = None,
+    macro_alias: bool = False,
+    endpoint_result: str | None = None,
+    round_slack: bool = False,
+    close_rounded_tie: bool = False,
 ) -> tuple[str, list[str], Path]:
     """Sweep one phys-opt stage; return its stdout, trace and main work dir."""
     model = tmp_path / "physopt_model.tcl"
@@ -1814,11 +2204,28 @@ def _run_physopt_sweep_model(
         MODEL_TRACE=str(trace),
         MODEL_TRUE_WNS=str(true_wns),
         MODEL_STEP=step,
+        MODEL_INCREMENTAL=str(int(incremental)),
+        MODEL_PROGRESS=str(progress),
         # One directive plus the appended retime pass keeps the model short.
         FROST_PHYSOPT_SWEEP_ORDER="Explore",
     )
     if setup_uncertainty is not None:
         env["FROST_PHYSOPT_SETUP_UNCERTAINTY"] = setup_uncertainty
+    if bad_conversion is not None:
+        env["MODEL_BAD_CONVERSION"] = bad_conversion
+    if preservation:
+        env["MODEL_PRESERVATION"] = "1"
+    if bad_release is not None:
+        env["MODEL_BAD_RELEASE"] = bad_release
+    if macro_alias:
+        env["MODEL_MACRO_ALIAS"] = "1"
+    if round_slack:
+        env["MODEL_ROUND_SLACK"] = "1"
+    if close_rounded_tie:
+        env["MODEL_CLOSE_ROUNDED_TIE"] = "1"
+    if endpoint_result is not None:
+        env["MODEL_ENDPOINT_RESULT"] = endpoint_result
+        env["FROST_PHYSOPT_SWEEP_ORDER"] = ""
     result = subprocess.run(
         ["tclsh", str(model)],
         cwd=work_dir,
@@ -1828,8 +2235,117 @@ def _run_physopt_sweep_model(
         timeout=60,
         check=False,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
+    if bad_release is not None:
+        assert result.returncode != 0
+        assert "Removing temporary placement constraints changed" in result.stderr
+    elif bad_conversion is not None:
+        assert result.returncode != 0
+        assert "Incremental timing target survived" in result.stderr or (
+            "Removing incremental history changed" in result.stderr
+        )
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
     return result.stdout, trace.read_text().splitlines(), tmp_path / "work"
+
+
+@pytest.mark.parametrize("step", ("post_route_physopt", "post_second_route_physopt"))
+@pytest.mark.parametrize("true_wns", (-0.00004, 0.0, 0.00004))
+def test_physopt_closure_requires_zero_failing_setup_endpoints(
+    tmp_path: Path, true_wns: float, step: str
+) -> None:
+    """Rounded zero WNS/TNS must not hide a remaining setup violation."""
+    stdout, trace, work = _run_physopt_sweep_model(
+        tmp_path, step, true_wns, round_slack=True
+    )
+    assert ("Timing met; stopping" in stdout) == (true_wns >= 0.0)
+    passes = [line for line in trace if line.startswith("phys_opt_design")]
+    assert len(passes) == (1 if true_wns >= 0.0 else 2)
+    if step == "post_route_physopt":
+        assert (work / "final.dcp").exists() == (true_wns >= 0.0)
+
+
+def test_physopt_retains_closure_when_displayed_slack_ties(tmp_path: Path) -> None:
+    """A sub-picosecond closure must survive restoring the best checkpoint."""
+    stdout, trace, work = _run_physopt_sweep_model(
+        tmp_path,
+        "post_route_physopt",
+        -0.00004,
+        round_slack=True,
+        close_rounded_tie=True,
+    )
+    assert "setup closure" in stdout
+    assert "Timing met; stopping" in stdout
+    assert sum(x.startswith("phys_opt_design") for x in trace) == 1
+    assert "| 0.000 | 0.000 | 0 |" in (work / "final_timing.rpt").read_text()
+
+
+@pytest.mark.parametrize("endpoint_result", ("legal", "illegal", "error"))
+def test_endpoint_fallback_waits_for_plateau_and_checks_legality(
+    tmp_path: Path, endpoint_result: str
+) -> None:
+    """A promising setup result cannot bypass hold/routing acceptance."""
+    stdout, trace, _ = _run_physopt_sweep_model(
+        tmp_path,
+        "post_second_route_physopt",
+        -0.046,
+        progress=2,
+        endpoint_result=endpoint_result,
+    )
+    first_endpoint = trace.index("endpoint_pass EndpointAggressive")
+    # The improving ordinary sweep finishes, then a full sweep stalls before
+    # endpoint optimization is tried. No fallback runs during that first sweep.
+    assert (
+        sum(line.startswith("phys_opt_design") for line in trace[:first_endpoint]) == 20
+    )
+    if endpoint_result == "legal":
+        assert "Timing met; stopping" in stdout
+        assert "report phys_opt_timing.rpt at 0.000 wns 0.010" in trace
+    else:
+        assert "Timing met; stopping" not in stdout
+        assert "report phys_opt_timing.rpt at 0.000 wns -0.016" in trace
+        assert "endpoint_pass EndpointClockEnable" in trace
+        assert "endpoint_pass EndpointClockIndividual" in trace
+        assert "endpoint_pass EndpointPinRefine" in trace
+        assert "endpoint_pass EndpointRouteRefine" in trace
+        if endpoint_result == "error":
+            assert "Rejecting failed EndpointAggressive" in stdout
+        else:
+            assert "Reverting non-improving" in stdout
+
+
+@pytest.mark.parametrize("step", ("post_place_physopt", "route"))
+@pytest.mark.parametrize("macro_alias", (False, True))
+def test_downstream_releases_temporary_placement_before_optimization(
+    tmp_path: Path, step: str, macro_alias: bool
+) -> None:
+    """Release preservation before physopt or route, allowing macro aliases."""
+    stdout, trace, _ = _run_physopt_sweep_model(
+        tmp_path, step, -0.193, preservation=True, macro_alias=macro_alias
+    )
+    assert "placement_preservation=off" in stdout
+    optimization = next(
+        i
+        for i, line in enumerate(trace)
+        if line.startswith(("phys_opt_design ", "route_design "))
+    )
+    assert trace.index("release_preservation") < optimization
+
+
+@pytest.mark.parametrize("bad_release", ("timing", "placement", "macro_bel"))
+def test_downstream_rejects_placement_release_changes(
+    tmp_path: Path, bad_release: str
+) -> None:
+    """Reject a handoff that changes placement or timing before optimizing."""
+    _, trace, _ = _run_physopt_sweep_model(
+        tmp_path,
+        "post_place_physopt",
+        -0.193,
+        preservation=True,
+        bad_release=bad_release,
+        macro_alias=bad_release == "macro_bel",
+    )
+    assert "release_preservation" in trace
+    assert not any(line.startswith("phys_opt_design ") for line in trace)
 
 
 @pytest.mark.parametrize(
@@ -1896,6 +2412,57 @@ def test_physopt_uncertainty_override_still_reaches_a_post_route_stage(
     assert not (main_work / "final.dcp").exists()
 
 
+@pytest.mark.parametrize(
+    "step", ("post_place_physopt", "post_route_physopt", "post_second_route_physopt")
+)
+def test_physopt_continues_past_inherited_target_and_repeats_for_tns(
+    tmp_path: Path, step: str
+) -> None:
+    """A stale negative target must not masquerade as sweep convergence."""
+    stdout, trace, _ = _run_physopt_sweep_model(
+        tmp_path, step, -0.046, incremental=True, progress=4
+    )
+    assert "setup_skipped" not in trace
+    assert sum(line.startswith("setup_optimized") for line in trace) == 4
+    assert sum(line.startswith("phys_opt_design") for line in trace) == 6
+    assert "TNS tie-break" in stdout
+    assert f"No WNS/TNS improvement during {step} sweep iteration 3" in stdout
+    assert "FROST_TIMING_FLOW incremental=off" in stdout
+    assert [line for line in trace if line.startswith("write_incremental")] == [
+        "write_incremental 0",
+        "write_incremental 1",
+    ]
+
+
+@pytest.mark.parametrize("step", ("quick_route", "route", "second_route"))
+@pytest.mark.parametrize("incremental", (False, True))
+def test_routing_resumes_with_the_normal_timing_target(
+    tmp_path: Path, step: str, incremental: bool
+) -> None:
+    """Routing drops an inherited target and accepts ordinary checkpoints."""
+    stdout, trace, _ = _run_physopt_sweep_model(
+        tmp_path, step, -0.046, incremental=incremental
+    )
+    assert sum(line.startswith("route_design") for line in trace) == 1
+    assert ("FROST_TIMING_FLOW incremental=off" in stdout) is incremental
+    assert (tmp_path / f"work_{step}_Sweep/timing_input.dcp").exists() is incremental
+
+
+@pytest.mark.parametrize("bad_conversion", ("history", "timing"))
+def test_failed_incremental_conversion_stops_before_optimization(
+    tmp_path: Path, bad_conversion: str
+) -> None:
+    """Reject conversion if it retains the target or changes input timing."""
+    _, trace, _ = _run_physopt_sweep_model(
+        tmp_path,
+        "post_place_physopt",
+        -0.046,
+        incremental=True,
+        bad_conversion=bad_conversion,
+    )
+    assert not any(line.startswith("phys_opt_design") for line in trace)
+
+
 def test_perf_counters_generic_reaches_synthesis_and_the_cpu() -> None:
     """--perf-counters reaches synthesis and every level down to cpu_ooo."""
     root = Path(__file__).resolve().parent.parent
@@ -1922,15 +2489,21 @@ def test_perf_counters_generic_reaches_synthesis_and_the_cpu() -> None:
 
 @pytest.mark.parametrize(
     "divider,override,expected",
-    ((1, None, False), (2, None, True), (1, True, True), (2, False, False)),
+    (
+        (1, None, False),
+        (2, None, False),
+        (1, True, True),
+        (2, True, True),
+        (2, False, False),
+    ),
 )
-def test_perf_counters_default_follows_the_clock_divider(
+def test_perf_counters_are_left_out_unless_requested(
     divider: int, override: bool | None, expected: bool
 ) -> None:
-    """Counters are left out at full rate and included in divided-clock builds."""
+    """Counters are in only with --perf-counters, whatever the clock divider."""
     policy = fpga_build.resolve_functional_build_policy(
         divider,
-        300_000_000,
+        322_265_625,
         ["RuntimeOptimized"],
         1,
         False,
@@ -1959,7 +2532,7 @@ def test_perf_counters_cli_default_overrides_stale_environment(
     with pytest.raises(SystemExit) as stopped:
         fpga_build.main()
     assert stopped.value.code == 1
-    assert observed == [(300_000_000, "0")]
+    assert observed == [(322_265_625, "0")]
 
 
 def test_read_log_tail_streams_appended_text_and_survives_truncation(
@@ -2050,7 +2623,7 @@ def test_ila_capture_trigger_value_masks_the_page_number() -> None:
 
 
 class _ScheduledVivado:
-    """A process whose first job is slow enough to expose batch barriers."""
+    """Fake Vivado process; the first job runs longest, exposing any batch barrier."""
 
     def __init__(self, fleet: "_VivadoFleet", index: int, stdout: Any) -> None:
         self.fleet = fleet
@@ -2096,11 +2669,15 @@ class _VivadoFleet:
         monkeypatch.setattr(fpga_build.time, "sleep", self.sleep)
         monkeypatch.setattr(fpga_build.time, "monotonic", lambda: float(self.tick))
         monkeypatch.setattr(fpga_build.os, "killpg", self.killpg)
-        monkeypatch.setattr(
-            fpga_build,
-            "extract_timing_from_report",
-            lambda path: {"wns_ns": float(path.read_text()), "tns_ns": -1.0},
-        )
+        original_extract = fpga_build.extract_timing_from_report
+
+        def extract(path: Path) -> Any:
+            try:
+                return {"wns_ns": float(path.read_text()), "tns_ns": -1.0}
+            except ValueError:
+                return original_extract(path)
+
+        monkeypatch.setattr(fpga_build, "extract_timing_from_report", extract)
 
     def popen(self, command: list[str], **kwargs: Any) -> _ScheduledVivado:
         assert kwargs["start_new_session"] is True
@@ -2122,6 +2699,8 @@ class _VivadoFleet:
         (work_dir / f"{prefix}_timing.rpt").write_text(str(wns))
         if step == "place":
             _write_place_gate(work_dir, wns)
+        elif step == "quick_route":
+            _write_probe_outputs(work_dir, "quick_route", wns)
         (work_dir / "vivado.log").write_text("synthetic Vivado output\n")
         return process
 
@@ -2151,6 +2730,15 @@ def _sweep_input(script_dir: Path, step: str) -> Path:
     work_dir = script_dir / "x3/work"
     work_dir.mkdir(parents=True)
     (work_dir / fpga_build.STEP_REQUIRES_CHECKPOINT[step]).write_text("input\n")
+    (work_dir / fpga_build.X3_NETLIST_CONFIG_NAME).write_text(
+        json.dumps(
+            {
+                "schema": "x3_netlist_config_v3",
+                "cpu_base_clock_hz": 322265625,
+                "cpu_clock_div": 1,
+            }
+        )
+    )
     if fpga_build.STEPS.index(step) > fpga_build.STEPS.index("place"):
         (work_dir / "post_place.dcp").write_text("qualified placement\n")
         _write_place_gate(work_dir, bind=True)
@@ -2270,7 +2858,7 @@ def _quick_route_candidates(script_dir: Path, count: int = 15) -> list[Any]:
         work_dir.mkdir()
         (work_dir / "post_place.dcp").write_text(f"placement {index}\n")
         wns = round(-0.1 + index / 100.0, 3)
-        _write_place_gate(work_dir, wns, bind=True)
+        _write_place_gate(work_dir, wns, bind=True, probe_input=True)
         candidates.append(
             fpga_build.DirectiveSweepRun(
                 directive=f"Candidate{index}",
@@ -2405,7 +2993,16 @@ def test_build_cli_forwards_job_limit_to_every_sweep(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["build.py", "x3", "--start-at", step, "--stop-after", step, *options],
+        [
+            "build.py",
+            "x3",
+            "--start-at",
+            step,
+            "--stop-after",
+            step,
+            *options,
+            *(["--num-uncertainties", "1"] if step == "place" else []),
+        ],
     )
     monkeypatch.setitem(
         sys.modules, "extract_timing_and_util_summary", timing_util_summary
@@ -2441,6 +3038,24 @@ def test_build_cli_rejects_invalid_job_limits_before_starting_work(
     assert "--jobs" in capsys.readouterr().err
 
 
+def test_build_help_quotes_the_defaults_the_build_uses(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The help's job limit, post-place gate, veto level and probe count follow the code."""
+    monkeypatch.setattr(fpga_build, "DEFAULT_MAX_JOBS", 7)
+    monkeypatch.setattr(fpga_build, "X3_POST_PLACE_GATE_NS", Decimal("-0.321"))
+    monkeypatch.setattr(fpga_build, "X3_PLACE_CONGESTION_VETO_LEVEL_DEFAULT", 4)
+    monkeypatch.setattr(fpga_build, "X3_PLACE_QUICK_ROUTE_COUNT_DEFAULT", 2)
+    monkeypatch.setattr(sys, "argv", ["build.py", "--help"])
+    with pytest.raises(SystemExit):
+        fpga_build.main()
+    text = capsys.readouterr().out
+    assert "processes per build (default 7)." in text
+    assert "-0.321 ns" in text and "-0.200" not in text
+    assert "FROST_PLACE_CONGESTION_VETO_LEVEL (default 4)" in text
+    assert "(default 2) quick-routes" in text
+
+
 @pytest.mark.parametrize("max_jobs", (0, -1))
 def test_sweep_apis_reject_nonpositive_limits_before_creating_work(
     tmp_path: Path, max_jobs: int
@@ -2459,7 +3074,7 @@ def test_sweep_apis_reject_nonpositive_limits_before_creating_work(
 
 @pytest.mark.parametrize("passed", (False, True))
 def test_native_gate_decides_rounded_boundary(tmp_path: Path, passed: bool) -> None:
-    """Identical displayed WNS can represent either native threshold decision."""
+    """At a displayed WNS of -0.200, the gate file's native STATUS decides."""
     _write_place_gate(tmp_path, -0.2)
     gate = tmp_path / "post_place_gate.txt"
     if not passed:
@@ -2478,9 +3093,9 @@ def test_native_gate_decides_rounded_boundary(tmp_path: Path, passed: bool) -> N
         ("STATUS=PASS", "STATUS=FAIL"),
         ("STATUS=PASS", "STATUS=UNKNOWN"),
         ("THRESHOLD_NS=-0.200", "THRESHOLD_NS=-0.201"),
-        ("CPU_PERIOD_NS=3.333", "CPU_PERIOD_NS=6.666"),
-        ("CPU_PERIOD_NS=3.333", "CPU_PERIOD_NS=3.334"),
-        ("CPU_PERIOD_NS=3.333", "CPU_PERIOD_NS=NaN"),
+        ("CPU_PERIOD_NS=3.103", "CPU_PERIOD_NS=6.205"),
+        ("CPU_PERIOD_NS=3.103", "CPU_PERIOD_NS=3.104"),
+        ("CPU_PERIOD_NS=3.103", "CPU_PERIOD_NS=NaN"),
         ("USER_SETUP_UNCERTAINTY_NS=0.000", "USER_SETUP_UNCERTAINTY_NS=0.500"),
         ("STRICT_BELOW_GATE_PATHS=0", "STRICT_BELOW_GATE_PATHS=2"),
         ("WORST_SLACK_NS=-0.1", "WORST_SLACK_NS=-0.201"),
@@ -2494,7 +3109,11 @@ def test_native_gate_decides_rounded_boundary(tmp_path: Path, passed: bool) -> N
 def test_native_gate_rejects_invalid_or_wrong_clock_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, old: str, new: str
 ) -> None:
-    """Malformed or incompatible evidence cannot authorize downstream work."""
+    """A malformed gate file fails, as does one for another clock or threshold.
+
+    A gate taken with added uncertainty fails too, and none of these files can be
+    bound to the placement.
+    """
     monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
     _write_place_gate(tmp_path)
     gate = tmp_path / "post_place_gate.txt"
@@ -2508,12 +3127,12 @@ def test_native_gate_rejects_invalid_or_wrong_clock_evidence(
 @pytest.mark.parametrize(
     "divider,period,valid",
     (
-        (2, "6.666", True),
-        (2, "6.667", True),
-        (2, "6.668", False),
-        (3, "9.999", True),
-        (4, "13.332", True),
-        (4, "13.334", False),
+        (2, "6.205", True),
+        (2, "6.206", True),
+        (2, "6.207", False),
+        (3, "9.308", True),
+        (4, "12.411", True),
+        (4, "12.413", False),
     ),
 )
 def test_gate_checks_actual_divided_cpu_period(
@@ -2523,24 +3142,27 @@ def test_gate_checks_actual_divided_cpu_period(
     period: str,
     valid: bool,
 ) -> None:
-    """Allow only the documented one-picosecond divided-clock display range."""
+    """A divided clock's reported CPU period may be off by at most 1 ps."""
     monkeypatch.setenv("FROST_CPU_CLK_DIV", str(divider))
     _write_place_gate(tmp_path)
     gate = tmp_path / "post_place_gate.txt"
     gate.write_text(
-        gate.read_text().replace("CPU_PERIOD_NS=3.333", f"CPU_PERIOD_NS={period}")
+        gate.read_text().replace("CPU_PERIOD_NS=3.103", f"CPU_PERIOD_NS={period}")
     )
     assert fpga_build.x3_place_gate_passes(gate) is valid
 
 
 @pytest.mark.parametrize("changed", ("checkpoint", "gate", "binding", "unbound"))
-@pytest.mark.parametrize("wns", (-0.1, -0.201))
+@pytest.mark.parametrize("wns", (-0.1, -0.199))
 def test_promoted_gate_is_bound_to_exact_checkpoint_and_gate(
     tmp_path: Path,
     changed: str,
     wns: float,
 ) -> None:
-    """Changing either artifact or removing its binding requires fresh evidence."""
+    """Changing the checkpoint, gate file, or binding invalidates the gate.
+
+    So does deleting the binding.
+    """
     checkpoint = tmp_path / "post_place.dcp"
     checkpoint.write_bytes(b"qualified checkpoint")
     _write_place_gate(tmp_path, wns, bind=True)
@@ -2549,7 +3171,7 @@ def test_promoted_gate_is_bound_to_exact_checkpoint_and_gate(
         checkpoint.write_bytes(b"different checkpoint")
     elif changed == "gate":
         with (tmp_path / "post_place_gate.txt").open("a") as stream:
-            stream.write("\n")  # Semantically equal still has different provenance.
+            stream.write("\n")  # Same values, different bytes.
     elif changed == "binding":
         (tmp_path / "post_place_gate_binding.json").write_text("{}")
     else:
@@ -2564,7 +3186,7 @@ def test_new_checkpoint_promotion_cannot_retain_old_gate(
     tmp_path: Path,
     stage: str,
 ) -> None:
-    """Promoting a new source or placement invalidates the old qualification."""
+    """Promoting a new synth, opt, or place checkpoint deletes the old place gate."""
     source, dest = tmp_path / "source", tmp_path / "dest"
     source.mkdir()
     dest.mkdir()
@@ -2577,25 +3199,47 @@ def test_new_checkpoint_promotion_cannot_retain_old_gate(
     assert not (dest / "post_place_gate_binding.json").exists()
 
 
-def test_place_ranks_actual_zero_uncertainty_reports_and_defaults_to_no_route(
+@pytest.mark.parametrize(
+    ("warnings", "routed_wns", "routed_tns", "expected"),
+    (
+        ((False, False), (-0.1, -0.3), (-4.0, -2.0), 0),
+        ((True, False), (-0.1, -0.3), (-4.0, -2.0), 1),
+        ((False, True), (-0.3, -0.1), (-4.0, -2.0), 0),
+        ((True, True), (-0.1, -0.3), (-4.0, -2.0), 0),
+        ((True, True), (-0.1, -0.1), (-4.0, -2.0), 1),
+    ),
+)
+def test_place_defaults_to_route_probes_and_ranks_warning_wns_tns(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    warnings: tuple[bool, bool],
+    routed_wns: tuple[float, float],
+    routed_tns: tuple[float, float],
+    expected: int,
 ) -> None:
-    """Placement selection uses measured WNS and performs no default routing."""
+    """Warnings lower rank without preventing an all-warning slate from winning."""
     monkeypatch.delenv("FROST_PLACE_QUICK_ROUTE_COUNT", raising=False)
     candidates = _quick_route_candidates(tmp_path, 2)
     candidates[1].setup_uncertainty_ns = 0.5
     assert fpga_build.directive_sweep_rank_wns(candidates[1]) == -0.09
     assert fpga_build.placement_seed_wns(candidates[1]) == pytest.approx(-0.59)
-    monkeypatch.setattr(
-        fpga_build,
-        "run_x3_place_quick_route_probes",
-        lambda *_a, **_kw: pytest.fail("default placement launched quick routing"),
-    )
+    received = []
+
+    def probes(_script: Path, runs: list[Any], _vivado: str, **_kwargs: Any) -> None:
+        received.extend(runs)
+        for run in runs:
+            index = candidates.index(run)
+            run.quick_route_returncode = 0
+            run.quick_route_warning = warnings[index]
+            run.quick_route_wns = routed_wns[index]
+            run.quick_route_tns = routed_tns[index]
+
+    monkeypatch.setattr(fpga_build, "run_x3_place_quick_route_probes", probes)
     assert (
         fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused")
-        is candidates[1]
+        is candidates[expected]
     )
+    assert received == [candidates[1], candidates[0]]
 
 
 def test_explicit_quick_route_only_receives_native_passing_candidates(
@@ -2611,6 +3255,9 @@ def test_explicit_quick_route_only_receives_native_passing_candidates(
 
     def probes(_script: Path, runs: list[Any], _vivado: str, **_kwargs: Any) -> None:
         received.extend(runs)
+        for run in runs:
+            run.quick_route_returncode = 0
+            run.quick_route_wns = run.wns
 
     monkeypatch.setattr(fpga_build, "run_x3_place_quick_route_probes", probes)
     assert (
@@ -2621,13 +3268,13 @@ def test_explicit_quick_route_only_receives_native_passing_candidates(
 
 
 @pytest.mark.parametrize("sweep", (False, True))
-def test_below_threshold_place_warns_and_allows_physopt(
+def test_below_threshold_place_cannot_promote_or_start_physopt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     sweep: bool,
 ) -> None:
-    """Below-threshold placement succeeds and can resume through phys-opt."""
+    """Neither a sweep nor a single worker may qualify a failing placement."""
     fleet = _VivadoFleet(monkeypatch, 1)
     original_popen = fleet.popen
 
@@ -2667,26 +3314,16 @@ def test_below_threshold_place_warns_and_allows_physopt(
         )
     else:
         result = fpga_build.run_step(tmp_path, "x3", "place", "Better", "unused")
-    assert result == (True, -0.201, "post_place")
+    assert not result[0]
     assert len(fleet.attempts) == (2 if sweep else 0)
-    assert (main_work / "post_place.dcp").read_text() == "work_place_Better"
-    assert (main_work / "post_place_timing.rpt").read_text() == "-0.201"
-    assert (main_work / "post_place_gate_binding.json").exists()
-    assert "Warning: post-place WNS -0.201 ns is below -0.200 ns" in (
-        capsys.readouterr().out
-    )
-    assert fpga_build.run_step(
+    assert not (main_work / "post_place_gate_binding.json").exists()
+    assert "Error:" in capsys.readouterr().out
+    assert not fpga_build.run_step(
         tmp_path, "x3", "post_place_physopt", "Sweep", "unused"
-    ) == (True, -0.1, "post_place_physopt")
-    assert calls == (
-        ["post_place_physopt"] if sweep else ["place", "post_place_physopt"]
-    )
-    assert "Warning: post-place WNS -0.201 ns is below -0.200 ns" in (
-        capsys.readouterr().out
-    )
+    )[0]
+    assert calls == ([] if sweep else ["place"])
     assert (
-        fpga_build.capture_x3_input_lineage(main_work, "post_place_physopt.dcp")
-        is not None
+        fpga_build.capture_x3_input_lineage(main_work, "post_place_physopt.dcp") is None
     )
 
 
@@ -2735,14 +3372,19 @@ def test_quick_route_rejects_stale_placement_binding(
     assert candidates[0].quick_route_returncode == -1
 
 
-def test_default_cpu_cli_overrides_stale_environment_before_software_build(
+@pytest.mark.parametrize("divider", (1, 2, 3, 4))
+def test_cpu_cli_controls_clock_before_software_build(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    divider: int,
 ) -> None:
-    """CLI default full rate controls software and synthesis despite inherited env."""
+    """Default and divided clocks reach software and RTL despite inherited env."""
     monkeypatch.setenv("FROST_CPU_CLK_DIV", "2")
     monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
-    monkeypatch.setattr(sys, "argv", ["build.py", "x3", "--stop-after", "place"])
+    arguments = ["build.py", "x3", "--stop-after", "place"]
+    if divider != 1:
+        arguments += ["--cpu-clock-div", str(divider)]
+    monkeypatch.setattr(sys, "argv", arguments)
     observed = []
 
     def compile_firmware(_root: Path, _output: Path, clock: int) -> bool:
@@ -2753,7 +3395,36 @@ def test_default_cpu_cli_overrides_stale_environment_before_software_build(
     with pytest.raises(SystemExit) as stopped:
         fpga_build.main()
     assert stopped.value.code == 1
-    assert observed == [(300_000_000, "1")]
+    assert observed == [(322_265_625 // divider, str(divider))]
+
+
+@pytest.mark.parametrize("source", ("flag", "environment"))
+def test_cpu_base_clock_selector_is_rejected_before_building(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    source: str,
+) -> None:
+    """Reject --cpu-base-clock-hz and FROST_CPU_BASE_CLK_HZ before building."""
+    arguments = ["build.py", "x3"]
+    if source == "flag":
+        arguments += ["--cpu-base-clock-hz", "300000000"]
+    else:
+        monkeypatch.setenv("FROST_CPU_BASE_CLK_HZ", "300000000")
+    monkeypatch.setattr(sys, "argv", arguments)
+    monkeypatch.setattr(
+        fpga_build,
+        "compile_hello_world",
+        lambda *_: pytest.fail("rejected clock selector launched a build"),
+    )
+    with pytest.raises(SystemExit) as stopped:
+        fpga_build.main()
+    assert stopped.value.code == 2
+    message = capsys.readouterr().err
+    assert (
+        "--cpu-base-clock-hz" in message
+        if source == "flag"
+        else "no longer supported" in message
+    )
 
 
 def test_place_gate_cannot_qualify_a_fallback_checkpoint(tmp_path: Path) -> None:
@@ -2792,11 +3463,259 @@ def test_promoted_opt_checkpoint_survives_worker_cleanup(
     assert (work / "post_opt.dcp").read_bytes() == b"new optimized checkpoint"
 
 
+@pytest.mark.parametrize("bloat_scope", ("default", "integer", "hierarchies", "leaf"))
+@pytest.mark.parametrize(
+    "failure",
+    (
+        None,
+        "reference_checkpoint",
+        "verification",
+        "gate_changed",
+        "checkpoint_changed",
+        "target_missed",
+        "post_opt_changed",
+        "reference_changed",
+        "reference_bloat",
+        "guided_bloat",
+    ),
+)
+def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str | None,
+    bloat_scope: str,
+) -> None:
+    """Measuring and verifying local guidance never bypasses shared selection."""
+    work = _sweep_input(tmp_path, "place")
+    (work / "post_opt.dcp").write_bytes(b"current post-opt")
+    _write_stage_utilization(work, "post_opt", 42)
+    timing = work / "post_opt_timing.rpt"
+    timing.write_text(timing.read_text().replace("-0.100", "0.009"))
+    (work / "post_place_reference.dcp").write_bytes(b"stale reference")
+    (work / "post_place.dcp").write_bytes(b"stale placement")
+    _write_place_gate(work, bind=True)
+    stages = []
+    bloat_cells = "*u_tomasulo/u_int_rs"
+    options: dict[str, Any] = {}
+    if bloat_scope == "default":
+        bloat_cells += " *u_tomasulo/u_mem_rs/rs_src2_value*"
+    elif bloat_scope == "hierarchies":
+        bloat_cells += " *u_tomasulo/u_mem_rs"
+        options["cell_bloat_cells"] = bloat_cells
+    elif bloat_scope == "leaf":
+        bloat_cells += " *u_tomasulo/u_mem_rs/rs_src2_value*"
+        options["cell_bloat_cells"] = bloat_cells
+        options["cell_bloat_matches"] = (1, None)
+    else:
+        options["cell_bloat_cells"] = bloat_cells
+
+    def run(command: list[str], *, cwd: Path, env: dict[str, str]) -> Any:
+        assert cwd == work
+        assert env["FROST_PLACE_SETUP_UNCERTAINTY"] == "0.325"
+        assert env["FROST_PLACE_CELL_BLOAT"] == "MEDIUM"
+        assert env["FROST_PLACE_CELL_BLOAT_CELLS"] == bloat_cells
+        args = command[command.index("-tclargs") + 1 :]
+        stage = args[6] if args[1] == "place" else args[1]
+        stages.append(stage)
+        if args[1] == "place":
+            (work / command[command.index("-log") + 1]).write_text(
+                "missing requested bloat\n"
+                if failure == f"{stage}_bloat"
+                else "".join(
+                    f"Set CELL_BLOAT_FACTOR MEDIUM on "
+                    f"{(2184 if stage == 'reference' else 2172) if pattern.endswith('value*') else 1} "
+                    f"cell(s) matching '{pattern}'\n"
+                    for pattern in bloat_cells.split()
+                )
+            )
+        assert not (work / "post_place_gate_binding.json").exists()
+        if stage == "verify_place":
+            assert Path(args[3]) == work / "post_place.dcp"
+            assert not (work / "post_place_gate.txt").exists()
+            if failure == "verification":
+                return SimpleNamespace(returncode=1)
+            if failure == "checkpoint_changed":
+                (work / "post_place.dcp").write_bytes(b"changed during verification")
+            slack = -0.201 if failure == "target_missed" else -0.189
+            _write_place_gate(work, -0.180 if failure == "gate_changed" else slack)
+        else:
+            assert not (work / "post_place.dcp").exists()
+            if stage == "reference":
+                assert Path(args[3]) == work / "post_opt.dcp"
+                assert Path(args[3]).read_bytes() == b"current post-opt"
+                assert args[2] == "ExtraNetDelay_high"
+                assert not (work / "post_place_reference.dcp").exists()
+            else:
+                assert stage == "guided"
+                assert Path(args[3]) == work / "post_place_reference.dcp"
+                assert args[2] == "Quick"
+                assert (work / "post_place_reference.dcp").read_bytes() == b"reference"
+                (work / "post_place_guidance.tcldict").write_text(
+                    "fresh measured guidance"
+                )
+                if failure == "reference_changed":
+                    (work / "post_place_reference.dcp").write_bytes(
+                        b"changed reference"
+                    )
+            slack = (
+                -0.222
+                if stage == "reference"
+                else -0.201
+                if failure == "target_missed"
+                else -0.189
+            )
+            _write_stage_utilization(work, "post_place", 42)
+            path = work / "post_place_timing.rpt"
+            path.write_text(path.read_text().replace("-0.100", f"{slack:.3f}"))
+            _write_place_gate(work, slack)
+            if failure != "reference_checkpoint" or stage != "reference":
+                (work / "post_place.dcp").write_bytes(stage.encode())
+            if failure == "post_opt_changed" and stage == "reference":
+                (work / "post_opt.dcp").write_bytes(b"changed mid-run")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(fpga_build.subprocess, "run", run)
+    success, wns, prefix = fpga_build.run_x3_guided_place_candidate(
+        tmp_path, "unused", **options
+    )
+    assert stages == (
+        ["reference"]
+        if failure in {"reference_checkpoint", "post_opt_changed", "reference_bloat"}
+        else ["reference", "guided"]
+        if failure == "guided_bloat"
+        else ["reference", "guided", "verify_place"]
+    )
+    assert success is (failure in {None, "target_missed"})
+    if success:
+        assert (wns, prefix) == (
+            -0.201 if failure == "target_missed" else -0.189,
+            "post_place",
+        )
+        assert not fpga_build.require_x3_post_place_gate(work)
+        record = json.loads((work / "post_place_recipe.json").read_text())
+        assert record["cell_bloat_cells"] == bloat_cells
+        assert record["cell_bloat_matches"] == list(
+            (1, None)
+            if bloat_scope == "default"
+            else options.get("cell_bloat_matches", (1,) * len(bloat_cells.split()))
+        )
+        assert record["post_opt_sha256"] == fpga_build.file_sha256(
+            work / "post_opt.dcp"
+        )
+        assert record["reference_sha256"] == fpga_build.file_sha256(
+            work / "post_place_reference.dcp"
+        )
+    else:
+        assert not (work / "post_place_recipe.json").exists()
+    assert not (work / "post_place_gate_binding.json").exists()
+    assert list((tmp_path / "x3").iterdir()) == [work]
+
+
+def test_default_place_stops_on_failing_post_opt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Never place an unclosed post-opt netlist or retain an older qualification."""
+    work = _sweep_input(tmp_path, "place")
+    _write_stage_utilization(work, "post_opt", 42)
+    (work / "post_place.dcp").write_bytes(b"old placement")
+    _write_place_gate(work, bind=True)
+    monkeypatch.setattr(
+        fpga_build.subprocess,
+        "run",
+        lambda *_a, **_kw: pytest.fail("placed unclosed post-opt"),
+    )
+    assert not fpga_build.run_x3_default_place(tmp_path, "unused")[0]
+    assert not (work / "post_place_gate_binding.json").exists()
+
+
+@pytest.mark.parametrize("stage", ("post_synth", "post_opt", "post_place"))
+def test_replaced_placement_removes_default_recipe_records(
+    tmp_path: Path, stage: str
+) -> None:
+    """New checkpoints cannot inherit a prior default placement's verification files."""
+    source = tmp_path / "source"
+    source.mkdir()
+    main = tmp_path / "work"
+    main.mkdir()
+    (source / f"{stage}.dcp").write_bytes(b"replacement")
+    stale_names = (
+        "post_place_reference.dcp",
+        "post_place_reference_gate.txt",
+        "post_place_recipe.json",
+        "post_place_incremental_reuse.rpt",
+        "post_place_verification_timing.rpt",
+        "post_place_route_status.rpt",
+    )
+    for name in stale_names:
+        (main / name).write_text("obsolete")
+    fpga_build.copy_results_to_main_work(source, main, f"{stage}.dcp", stage)
+    assert not any((main / name).exists() for name in stale_names)
+    assert (main / f"{stage}.dcp").read_bytes() == b"replacement"
+
+
+@pytest.mark.parametrize(
+    ("options", "bloat", "expected"),
+    (
+        ([], None, "default"),
+        (["--num-uncertainties", "1"], None, "sweep"),
+        (["--directives", "ExtraNetDelay_high"], None, "sweep"),
+        ([], "", "sweep"),
+        (["--cpu-clock-div", "2"], None, "sweep"),
+    ),
+)
+def test_cli_selects_default_place_without_explicit_sweep_controls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    options: list[str],
+    bloat: str | None,
+    expected: str,
+) -> None:
+    """Ordinary builds use the recipe; explicit controls and divided clocks keep sweeps."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    monkeypatch.setenv("FROST_PERF_COUNTERS", "0")
+    work = _sweep_input(tmp_path, "place")
+    if "--cpu-clock-div" in options:
+        path = work / fpga_build.X3_NETLIST_CONFIG_NAME
+        config = json.loads(path.read_text())
+        config["cpu_clock_div"] = 2
+        path.write_text(json.dumps(config))
+    monkeypatch.delenv("FROST_PLACE_CELL_BLOAT_CELLS", raising=False)
+    monkeypatch.delenv("FROST_PLACE_CELL_BLOAT", raising=False)
+    if bloat is not None:
+        monkeypatch.setenv("FROST_PLACE_CELL_BLOAT", bloat)
+    monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["build.py", "x3", "--start-at", "place", "--stop-after", "place", *options],
+    )
+    calls = []
+
+    def finish_default(*_args: Any, **_kwargs: Any) -> tuple[bool, float, str]:
+        calls.append("default")
+        return True, -0.189, "post_place"
+
+    def finish_sweep(*_args: Any, **_kwargs: Any) -> tuple[bool, float, str]:
+        calls.append("sweep")
+        return True, -0.1, "post_place"
+
+    monkeypatch.setattr(fpga_build, "run_x3_default_place", finish_default)
+    monkeypatch.setattr(fpga_build, "run_x3_step_directive_sweep", finish_sweep)
+    monkeypatch.setitem(
+        sys.modules, "extract_timing_and_util_summary", timing_util_summary
+    )
+    monkeypatch.setattr(
+        timing_util_summary, "collect_all_board_utilization", lambda *_a, **_kw: {}
+    )
+    fpga_build.main()
+    assert calls == [expected]
+
+
 def test_missing_placement_checkpoint_cannot_defeat_complete_passing_seed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A gate file without its output checkpoint is not a usable sweep result."""
-    monkeypatch.delenv("FROST_PLACE_QUICK_ROUTE_COUNT", raising=False)
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "0")
     candidates = _quick_route_candidates(tmp_path, 2)
     (candidates[1].work_dir / "post_place.dcp").unlink()
     assert (
@@ -2808,10 +3727,14 @@ def test_missing_placement_checkpoint_cannot_defeat_complete_passing_seed(
 
 
 @pytest.mark.parametrize("extras", [False, True])
-def test_retired_toggles_cannot_add_or_modify_placement_candidates(
+def test_unused_placement_switches_cannot_add_or_modify_candidates(
     extras: bool,
 ) -> None:
-    """Retired requests neither add a second-pass variant nor change manual bloat."""
+    """The unused flush-guidance and pin-swap switches affect no candidate.
+
+    They add none, are dropped from each candidate's environment, and leave
+    manual bloat alone.
+    """
     inherited = {
         "FROST_PLACE_FLUSH_INCREMENTAL": "1",
         "FROST_X3_PD_TARGET_PIN_SWAPS": "auto",
@@ -2835,10 +3758,13 @@ def test_retired_toggles_cannot_add_or_modify_placement_candidates(
     assert inherited["FROST_PLACE_FLUSH_INCREMENTAL"] == "1"
 
 
-def test_retired_flags_do_not_launch_an_extra_worker(
+def test_unused_placement_switches_do_not_launch_an_extra_worker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Only the requested control and retained off-grid candidate launch."""
+    """With the unused switches set, only the requested seed and off-grid seed run.
+
+    Neither worker inherits the switches.
+    """
     monkeypatch.setenv("FROST_PLACE_FLUSH_INCREMENTAL", "1")
     monkeypatch.setenv("FROST_X3_PD_TARGET_PIN_SWAPS", "1")
     monkeypatch.setenv("FROST_PLACE_CELL_BLOAT", "LOW")
@@ -2879,26 +3805,26 @@ def test_retired_flags_do_not_launch_an_extra_worker(
     assert not (main_work / "post_place_pin_swap_audit.txt").exists()
 
 
-def test_new_300mhz_gate_cannot_authorize_retained_150mhz_physopt(
+def test_new_placement_gate_cannot_requalify_the_previous_physopt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A valid new placement gate cannot lend its clock qualification to an old child."""
+    """A new placement's gate cannot requalify a phys-opt checkpoint of the old one."""
     work = tmp_path / "x3/work"
     work.mkdir(parents=True)
     monkeypatch.setenv("FROST_CPU_CLK_DIV", "2")
-    (work / "post_place.dcp").write_bytes(b"150 MHz placement")
+    (work / "post_place.dcp").write_bytes(b"161 MHz placement")
     _write_place_gate(work)
     gate = work / "post_place_gate.txt"
     gate.write_text(
-        gate.read_text().replace("CPU_PERIOD_NS=3.333", "CPU_PERIOD_NS=6.666")
+        gate.read_text().replace("CPU_PERIOD_NS=3.103", "CPU_PERIOD_NS=6.205")
     )
     assert fpga_build.bind_x3_place_gate(work)
     child = _write_qualified_descendant(work, "post_place_physopt")
     report = work / "post_place_physopt_timing.rpt"
-    report.write_text("preserved 150 MHz report")
+    report.write_text("preserved 161 MHz report")
     old_child, old_report = child.read_bytes(), report.read_bytes()
     monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
-    (work / "post_place.dcp").write_bytes(b"new 300 MHz placement")
+    (work / "post_place.dcp").write_bytes(b"new 322 MHz placement")
     _write_place_gate(work, bind=True)
     assert fpga_build.require_x3_post_place_gate(work)
     monkeypatch.setattr(
@@ -2919,7 +3845,10 @@ def test_new_300mhz_gate_cannot_authorize_retained_150mhz_physopt(
 def test_downstream_chain_rejects_missing_or_changed_provenance(
     tmp_path: Path, change: str
 ) -> None:
-    """Every consumed chain edge and the placement anchor must still match."""
+    """Changing any checkpoint, lineage record, or place gate in the chain breaks it.
+
+    The disqualified checkpoint is kept.
+    """
     work = _sweep_input(tmp_path, "post_route_physopt")
     child = work / "post_route.dcp"
     record_path = child.with_suffix(".lineage.json")
@@ -2950,7 +3879,10 @@ def test_downstream_chain_rejects_missing_or_changed_provenance(
 def test_completed_final_producer_binds_chain_and_bitstream_checks_actual_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str, custom_directory: bool
 ) -> None:
-    """Each legal final producer qualifies only its exact output for bitstream use."""
+    """A stage that writes final.dcp records its lineage.
+
+    The bitstream step then refuses a final.dcp that has changed since.
+    """
     work = _sweep_input(tmp_path, stage)
     script_dir = tmp_path / "scripts" if custom_directory else tmp_path
     options = {"build_dir": work.parent} if custom_directory else {}
@@ -2971,7 +3903,9 @@ def test_completed_final_producer_binds_chain_and_bitstream_checks_actual_file(
             (cwd / f"{prefix}.dcp").write_bytes(b"completed final checkpoint")
             _write_stage_utilization(cwd, prefix, 42)
             report = cwd / f"{prefix}_timing.rpt"
-            report.write_text(report.read_text().replace("-0.100", "0.050"))
+            report.write_text(
+                report.read_text().replace("-0.100 -1.000 1", "0.050 0.000 0")
+            )
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(fpga_build.subprocess, "run", complete)
@@ -2990,10 +3924,137 @@ def test_completed_final_producer_binds_chain_and_bitstream_checks_actual_file(
     assert calls == [stage, "bitstream"]
 
 
+@pytest.mark.parametrize("stage", sorted(fpga_build.FINAL_ELIGIBLE_STEPS))
+@pytest.mark.parametrize(
+    ("wns", "tns", "failing", "closed"),
+    ((0.0, 0.0, 1, False), (0.0, 0.0, 0, True), (0.01, -0.1, 1, False)),
+)
+def test_stage_promotion_requires_complete_setup_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    wns: float,
+    tns: float,
+    failing: int,
+    closed: bool,
+) -> None:
+    """Rounded WNS alone must not promote a routed checkpoint to final."""
+    work = _sweep_input(tmp_path, stage)
+
+    def complete(_command: list[str], *, cwd: Path) -> Any:
+        prefix = fpga_build._TCL_REPORT_PREFIX[stage]
+        (cwd / f"{prefix}.dcp").write_bytes(b"completed checkpoint")
+        _write_stage_utilization(cwd, prefix, 42)
+        report = cwd / f"{prefix}_timing.rpt"
+        report.write_text(
+            report.read_text().replace(
+                "-0.100 -1.000 1", f"{wns:.3f} {tns:.3f} {failing}"
+            )
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(fpga_build.subprocess, "run", complete)
+    expected = "final" if closed else fpga_build.STEP_REPORT_PREFIX[stage]
+    assert fpga_build.run_step(tmp_path, "x3", stage, "Explore", "unused") == (
+        True,
+        wns,
+        expected,
+    )
+    assert (work / "final.dcp").exists() is closed
+
+
+@pytest.mark.parametrize("failing", (0, 1))
+def test_route_sweep_does_not_promote_rounded_setup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: int
+) -> None:
+    """The directive sweep uses the same closure rule as a single run."""
+    _VivadoFleet(monkeypatch, 1)
+    work = _sweep_input(tmp_path, "route")
+    monkeypatch.setattr(
+        fpga_build,
+        "extract_timing_from_report",
+        lambda _path: {"wns_ns": 0.0, "tns_ns": 0.0, "failing_endpoints": failing},
+    )
+    assert fpga_build.run_x3_step_directive_sweep(
+        tmp_path, "route", ["Explore"], "router", "unused", max_jobs=1
+    ) == (True, 0.0, "final" if failing == 0 else "post_route")
+    assert (work / "final.dcp").exists() == (failing == 0)
+
+
+def test_cli_keeps_routing_after_zero_wns_without_closure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-final stage result must continue even when WNS displays zero."""
+    work = _sweep_input(tmp_path, "route")
+    monkeypatch.setitem(
+        sys.modules, "extract_timing_and_util_summary", timing_util_summary
+    )
+    monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build.py",
+            "x3",
+            "--start-at",
+            "route",
+            "--stop-after",
+            "second_route",
+            "--build-dir",
+            str(work.parent),
+        ],
+    )
+    calls = []
+
+    def complete(*args: Any, **_kwargs: Any) -> tuple[bool, float, str]:
+        stage = args[1] if args[1] in fpga_build.STEPS else args[2]
+        calls.append(stage)
+        prefix = fpga_build.STEP_REPORT_PREFIX[stage]
+        _write_stage_utilization(work, prefix, 42)
+        return True, 0.0, prefix
+
+    monkeypatch.setattr(fpga_build, "run_step", complete)
+    monkeypatch.setattr(fpga_build, "run_x3_step_directive_sweep", complete)
+    fpga_build.main()
+    assert calls == ["route", "post_route_physopt", "second_route"]
+
+
+def test_bitstream_resume_cli_preserves_lineage_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bitstream-only recovery uses the qualified final and rejects a stale one."""
+    stage = "post_second_route_physopt"
+    work = _sweep_input(tmp_path, stage)
+    final = _write_qualified_descendant(work, stage, final=True)
+    monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
+    monkeypatch.setattr(sys, "argv", ["build.py", "x3", "--start-at", "bitstream"])
+    calls = []
+
+    def bitgen(command: list[str], *, cwd: Path) -> Any:
+        assert cwd == work
+        assert command[command.index("-tclargs") + 2] == "bitstream"
+        assert command[command.index("-tclargs") + 4] == str(final)
+        calls.append(command)
+        (cwd / "x3_frost.bit").write_bytes(b"bitstream fixture")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(fpga_build.subprocess, "run", bitgen)
+    fpga_build.main()
+    assert len(calls) == 1
+    final.write_bytes(b"changed checkpoint")
+    with pytest.raises(SystemExit) as error:
+        fpga_build.main()
+    assert error.value.code == 1
+    assert len(calls) == 1
+
+
 def test_intermediate_physopt_publication_cannot_inherit_prior_completion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failed run retains intermediate DCP/report bytes with no valid lineage."""
+    """A failed phys-opt run leaves its partial output without lineage.
+
+    The final.dcp built on the previous output is disqualified too.
+    """
     work = _sweep_input(tmp_path, "route")
     _write_qualified_descendant(work, "route", final=True)
     assert fpga_build.capture_x3_input_lineage(work, "final.dcp") is not None
@@ -3059,11 +4120,11 @@ def test_downstream_completion_rechecks_prelaunch_parent_and_promoted_output(
     assert (tmp_path / "x3/work_route_Explore").exists()
 
 
-# Trimmed but genuine ``report_design_analysis -congestion`` output kept beside
-# this file: two placements that reported windows (X3 Long/Short level 5,
+# Trimmed but genuine ``report_design_analysis -congestion`` output in
+# tests/fixtures: two placements that reported windows (X3 Long/Short level 5,
 # genesys2 Global level 6) and one that reported none. Only the Host/Command
 # header lines were rewritten; the tables are as Vivado wrote them. A veto that
-# silently parses nothing is invisible, so the row regex is measured against
+# silently parses nothing is invisible, so the row regex is checked against
 # real reports instead of hand-written ones.
 CONGESTION_FIXTURES = REPO_ROOT / "tests/fixtures"
 
@@ -3103,6 +4164,33 @@ def test_congestion_regex_reads_real_vivado_reports(
     copied.write_text(text)
     assert fpga_build.extract_max_congestion_level(copied) == expected_max
     assert fpga_build.extract_max_congestion_level(tmp_path / "absent.rpt") is None
+
+
+@pytest.mark.parametrize("wns", (-0.3, -0.2, -0.1))
+def test_completed_placement_still_reports_a_timing_rejection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    wns: float,
+) -> None:
+    """Vivado's zero exit code must not label a timing-rejected placement OK."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "0")
+    candidates = _quick_route_candidates(tmp_path, 2)
+    passing, rejected = candidates
+    rejected.wns = wns
+    _write_place_gate(rejected.work_dir, wns)
+    if wns == -0.1:
+        (rejected.work_dir / "post_place_gate.txt").unlink()
+    selected = fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused")
+    assert selected is passing
+    assert passing.timing_gate_passed is True
+    assert rejected.timing_gate_passed is False
+    fpga_build.print_x3_directive_sweep_matrix(candidates, selected, "Placement")
+    row = next(
+        line for line in capsys.readouterr().out.splitlines() if rejected.label in line
+    )
+    assert "TIMEVETO" in row
 
 
 def test_congestion_veto_decides_on_real_report_levels(
@@ -3146,24 +4234,24 @@ def test_congestion_veto_decides_on_real_report_levels(
 @pytest.mark.parametrize(
     ("period", "valid"),
     (
-        ("3.333", True),
+        ("3.103", True),
         # A clock object carrying more precision than the report prints.
-        ("3.3334", True),
-        ("3.3326", True),
-        # A different printed period is still wrong evidence.
-        ("3.334", False),
-        ("3.332", False),
+        ("3.10272", True),
+        ("3.1027", True),
+        # A different printed period is rejected.
+        ("3.104", False),
+        ("3.102", False),
     ),
 )
 def test_full_rate_gate_period_allows_only_display_rounding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, period: str, valid: bool
 ) -> None:
-    """A 300 MHz build cannot fail on digits Vivado never printed."""
+    """A 322 MHz build cannot fail on digits Vivado never printed."""
     monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
     _write_place_gate(tmp_path)
     gate = tmp_path / "post_place_gate.txt"
     gate.write_text(
-        gate.read_text().replace("CPU_PERIOD_NS=3.333", f"CPU_PERIOD_NS={period}")
+        gate.read_text().replace("CPU_PERIOD_NS=3.103", f"CPU_PERIOD_NS={period}")
     )
     assert fpga_build.x3_place_gate_passes(gate) is valid
 
@@ -3183,7 +4271,7 @@ def test_full_rate_gate_period_allows_only_display_rounding(
 def test_gate_and_timing_report_agree_within_display_rounding(
     tmp_path: Path, native: float, reported: float, valid: bool
 ) -> None:
-    """Two native queries of one slack cannot disqualify a passing placement."""
+    """Gate and timing-report WNS may differ by display rounding, and no more."""
     _write_place_gate(tmp_path, native)
     gate = tmp_path / "post_place_gate.txt"
     assert fpga_build.x3_place_gate_passes(gate, reported) is valid
@@ -3210,11 +4298,16 @@ def test_missing_lineage_sidecar_names_the_file_and_the_recovery(
 
 
 @pytest.mark.parametrize("perf_counters", ("0", "1"))
+@pytest.mark.parametrize("divider", ("1", "2"))
 def test_post_synth_promotion_stamps_the_netlist_perf_counters(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, perf_counters: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    perf_counters: str,
+    divider: str,
 ) -> None:
-    """The synthesis-time counter option is recorded with its checkpoint."""
+    """Synthesis options are recorded once with their checkpoint."""
     monkeypatch.setenv("FROST_PERF_COUNTERS", perf_counters)
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", divider)
     source, dest = tmp_path / "source", tmp_path / "dest"
     source.mkdir()
     dest.mkdir()
@@ -3222,19 +4315,24 @@ def test_post_synth_promotion_stamps_the_netlist_perf_counters(
     fpga_build.copy_results_to_main_work(source, dest, "post_synth.dcp", "post_synth")
     stamp = dest / fpga_build.X3_NETLIST_CONFIG_NAME
     assert json.loads(stamp.read_text()) == {
-        "schema": "x3_netlist_config_v1",
+        "schema": "x3_netlist_config_v3",
         "perf_counters": int(perf_counters),
+        "cpu_base_clock_hz": 322265625,
+        "cpu_clock_div": int(divider),
     }
     # Later stages inherit the netlist, so they must not restamp it: a resumed
     # run's environment says nothing about the checkpoint it was handed.
     monkeypatch.setenv("FROST_PERF_COUNTERS", "1" if perf_counters == "0" else "0")
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "123")
     (source / "post_opt.dcp").write_bytes(b"optimized netlist")
     fpga_build.copy_results_to_main_work(source, dest, "post_opt.dcp", "post_opt")
     assert json.loads(stamp.read_text())["perf_counters"] == int(perf_counters)
+    assert json.loads(stamp.read_text())["cpu_base_clock_hz"] == 322265625
+    assert json.loads(stamp.read_text())["cpu_clock_div"] == int(divider)
 
 
 def test_failed_synthesis_leaves_the_previous_netlist_stamp(tmp_path: Path) -> None:
-    """No promoted checkpoint means no claim about what the work dir holds."""
+    """Without a promoted checkpoint, no netlist config is written."""
     source, dest = tmp_path / "source", tmp_path / "dest"
     source.mkdir()
     dest.mkdir()
@@ -3272,7 +4370,10 @@ def _live_physopt_fixture(tmp_path: Path) -> tuple[Path, Path]:
         )
     )
     _write_stage_utilization(worker, "phys_opt", 42)
-    (source / fpga_build.X3_NETLIST_CONFIG_NAME).write_text('{"perf_counters": 0}\n')
+    stamp = source / fpga_build.X3_NETLIST_CONFIG_NAME
+    config = json.loads(stamp.read_text())
+    config["perf_counters"] = 0
+    stamp.write_text(json.dumps(config))
     return source, worker
 
 
@@ -3293,7 +4394,11 @@ def test_physopt_tcl_publishes_completed_sweep_identity(tmp_path: Path) -> None:
 
 
 def test_live_physopt_snapshot_survives_source_replacement(tmp_path: Path) -> None:
-    """A completed sweep is usable before stage exit and stays independent."""
+    """A completed sweep can be snapshotted while its stage still runs.
+
+    The snapshot leaves the source untouched, and later source changes do not
+    affect it.
+    """
     source, worker = _live_physopt_fixture(tmp_path)
     before = {p: p.read_bytes() for p in source.parent.rglob("*") if p.is_file()}
     fork = tmp_path / "early_route"
@@ -3333,7 +4438,11 @@ def test_physopt_snapshot_rejects_unqualified_or_incomplete_input(
     tmp_path: Path,
     change: str,
 ) -> None:
-    """Missing completion evidence and reused or torn files never launch work."""
+    """A snapshot needs a completed sweep of the current placement and clock.
+
+    Without one, or with a destination that exists, it fails and creates
+    nothing.
+    """
     source, worker = _live_physopt_fixture(tmp_path)
     fork = tmp_path / "early_route"
     if change == "missing_launch":
@@ -3348,7 +4457,7 @@ def test_physopt_snapshot_rejects_unqualified_or_incomplete_input(
         _write_place_gate(source, bind=True)
     elif change == "wrong_clock":
         gate = source / "post_place_gate.txt"
-        gate.write_text(gate.read_text().replace("3.333", "6.666"))
+        gate.write_text(gate.read_text().replace("3.103", "6.205"))
     elif change in ("changed_checkpoint", "broken_zip"):
         (worker / "phys_opt.dcp").write_bytes(b"incomplete ZIP data")
         if change == "broken_zip":
@@ -3375,7 +4484,7 @@ def test_physopt_snapshot_detects_publication_during_copy(
     monkeypatch: pytest.MonkeyPatch,
     change: str,
 ) -> None:
-    """A new sweep or placement arriving mid-copy cannot create mixed ancestry."""
+    """A sweep, iteration record, or placement published mid-copy fails the snapshot."""
     source, worker = _live_physopt_fixture(tmp_path)
     fork = tmp_path / "early_route"
     original = fpga_build.shutil.copy2
@@ -3401,7 +4510,7 @@ def test_physopt_snapshot_detects_publication_during_copy(
 def test_completed_physopt_stage_can_be_snapshotted_without_launch_manifest(
     tmp_path: Path,
 ) -> None:
-    """Legacy runs become forkable on clean completion without being restarted."""
+    """A completed stage with valid lineage can be snapshotted with no launch record."""
     source, worker = _live_physopt_fixture(tmp_path)
     consumed = fpga_build.capture_x3_input_lineage(source, "post_place.dcp")
     (source / "post_place_physopt.dcp").write_bytes(
@@ -3427,7 +4536,7 @@ def test_route_sweep_uses_only_custom_build_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """All route workers and their output chain use the frozen parent directory."""
+    """A route sweep given build_dir runs its workers and writes its outputs there."""
     source, _worker = _live_physopt_fixture(tmp_path)
     fork = tmp_path / "early_route"
     assert fpga_build.snapshot_x3_physopt(source, fork)
@@ -3454,7 +4563,10 @@ def test_snapshot_cli_isolates_route_bitstream_and_readme(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The CLI carries the selected directory through closure and bitstream."""
+    """--snapshot-physopt-from with --build-dir routes and writes the bitstream there.
+
+    It builds no software and leaves the README alone.
+    """
     source, _worker = _live_physopt_fixture(tmp_path)
     fork = tmp_path / "early_route"
     monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
@@ -3513,7 +4625,10 @@ def test_physopt_launch_allows_fork_only_after_this_runs_completed_sweep(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Launch replaces stale sweep evidence before the native process starts."""
+    """Each phys-opt launch writes a new launch record before Vivado starts.
+
+    A snapshot then needs a sweep that this run completed.
+    """
     source, worker = _live_physopt_fixture(tmp_path)
     consumed = fpga_build.capture_x3_input_lineage(source, "post_place.dcp")
     fork = tmp_path / "early_route"
@@ -3537,8 +4652,8 @@ def test_physopt_launch_allows_fork_only_after_this_runs_completed_sweep(
             )
         )
         assert fpga_build.snapshot_x3_physopt(source, fork)
-        # An interruption after this completed sweep cannot invalidate the
-        # fork or incorrectly qualify the unfinished canonical stage.
+        # A failure after this sweep leaves the fork valid, and the main
+        # directory's unfinished stage without lineage.
         return SimpleNamespace(returncode=1)
 
     monkeypatch.setattr(fpga_build.subprocess, "run", running)
@@ -3550,3 +4665,450 @@ def test_physopt_launch_allows_fork_only_after_this_runs_completed_sweep(
         fpga_build.capture_x3_input_lineage(fork / "work", "post_place_physopt.dcp")
         is not None
     )
+
+
+def test_single_core_performance_flag_is_not_an_option(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--single-core-performance is not an option."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["build.py", "x3", "--stop-after", "synth", "--single-core-performance"],
+    )
+    with pytest.raises(SystemExit) as stopped:
+        fpga_build.main()
+    assert stopped.value.code == 2
+    assert (
+        "unrecognized arguments: --single-core-performance" in capsys.readouterr().err
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides, publish",
+    [
+        ({}, True),
+        ({"schema": "x3_netlist_config_v2", "single_core_performance": 0}, False),
+        ({"schema": "x3_netlist_config_v2", "single_core_performance": 1}, False),
+        ({"cpu_base_clock_hz": 300000000}, False),
+        ({"cpu_clock_div": 2}, False),
+        ({"schema": "x3_netlist_config_v1"}, False),
+        (None, False),
+    ],
+)
+def test_resumed_build_uses_recorded_configuration_for_readme(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict | None,
+    publish: bool,
+) -> None:
+    """The README refresh uses the netlist config recorded at synthesis.
+
+    An older schema skips the refresh; a missing config or another clock stops
+    the build.
+    """
+    work = _sweep_input(tmp_path, "place")
+    if overrides is not None:
+        config = {
+            "schema": "x3_netlist_config_v3",
+            "cpu_base_clock_hz": 322265625,
+            "cpu_clock_div": 1,
+            **overrides,
+        }
+        (work / fpga_build.X3_NETLIST_CONFIG_NAME).write_text(json.dumps(config))
+    else:
+        (work / fpga_build.X3_NETLIST_CONFIG_NAME).unlink()
+    monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["build.py", "x3", "--start-at", "place", "--stop-after", "place"],
+    )
+    monkeypatch.setattr(
+        fpga_build,
+        "run_x3_step_directive_sweep",
+        lambda *_args, **_kwargs: (True, -1.0, "post_place"),
+    )
+    monkeypatch.setattr(
+        fpga_build,
+        "run_x3_default_place",
+        lambda *_args, **_kwargs: (True, -1.0, "post_place"),
+    )
+    monkeypatch.setitem(
+        sys.modules, "extract_timing_and_util_summary", timing_util_summary
+    )
+    calls = []
+    monkeypatch.setattr(
+        timing_util_summary,
+        "collect_all_board_utilization",
+        lambda *_args, **_kwargs: {"x3": {}},
+    )
+    monkeypatch.setattr(
+        timing_util_summary,
+        "update_readme_utilization",
+        lambda *_args: calls.append("publish"),
+    )
+    incompatible_clock = overrides is None or any(
+        key in overrides for key in ("cpu_base_clock_hz", "cpu_clock_div")
+    )
+    if incompatible_clock:
+        with pytest.raises(SystemExit) as stopped:
+            fpga_build.main()
+        assert stopped.value.code == 1
+    else:
+        fpga_build.main()
+    assert bool(calls) is publish
+
+
+@pytest.mark.parametrize("evidence", ("congested", "missing", "malformed"))
+def test_no_placement_falls_back_past_congestion_requirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, evidence: str
+) -> None:
+    """Even the only timing-passing seed must have acceptable congestion evidence."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    candidates = _quick_route_candidates(tmp_path, 1)
+    report = candidates[0].work_dir / "post_place_congestion.rpt"
+    if evidence == "congested":
+        report.write_text(
+            (CONGESTION_FIXTURES / "x3_post_place_congestion.rpt").read_text()
+        )
+    elif evidence == "missing":
+        report.unlink()
+    else:
+        report.write_text("not a Vivado congestion report\n")
+    monkeypatch.setattr(
+        fpga_build,
+        "run_x3_place_quick_route_probes",
+        lambda *_a, **_kw: pytest.fail("unqualified placement reached routing"),
+    )
+    assert fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused") is None
+    assert candidates[0].congestion_vetoed
+    assert not fpga_build.bind_x3_place_gate(candidates[0].work_dir)
+    assert not fpga_build.require_x3_post_place_gate(candidates[0].work_dir)
+
+
+@pytest.mark.parametrize("wns", (-0.201, -0.200, -0.199))
+def test_full_rate_qualification_requires_strict_timing_margin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wns: float
+) -> None:
+    """A rounded boundary or failing slack cannot receive a full-rate binding."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    (tmp_path / "post_place.dcp").write_bytes(b"placement")
+    _write_place_gate(tmp_path, wns)
+    assert fpga_build.bind_x3_place_gate(tmp_path) is (wns > -0.2)
+    assert fpga_build.require_x3_post_place_gate(tmp_path) is (wns > -0.2)
+
+
+@pytest.mark.parametrize("change", ("bytes", "missing", "legacy_binding"))
+def test_resume_requires_bound_congestion_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """Resume must reject changed congestion reports and timing-only bindings."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    candidate = _quick_route_candidates(tmp_path, 1)[0]
+    work = candidate.work_dir
+    _write_place_gate(work, candidate.wns, bind=True)
+    assert fpga_build.require_x3_post_place_gate(work)
+    report = work / "post_place_congestion.rpt"
+    if change == "bytes":
+        report.write_text(report.read_text() + "\n")
+    elif change == "missing":
+        report.unlink()
+    else:
+        binding = work / "post_place_gate_binding.json"
+        record = json.loads(binding.read_text())
+        record["schema"] = "x3_post_place_gate_binding_v1"
+        record.pop("congestion_sha256")
+        record.pop("congestion_veto_level")
+        binding.write_text(json.dumps(record))
+    assert not fpga_build.require_x3_post_place_gate(work)
+
+
+@pytest.mark.parametrize("result", ("pass", "error", "no_timing", "congestion"))
+def test_single_survivor_must_complete_the_default_route_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, result: str
+) -> None:
+    """A lone candidate gets the same probe requirement as a larger slate."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    monkeypatch.delenv("FROST_PLACE_QUICK_ROUTE_COUNT", raising=False)
+    candidates = _quick_route_candidates(tmp_path, 1)
+    received = []
+
+    def probe(_script: Path, runs: list[Any], _vivado: str, **_kw: Any) -> None:
+        received.extend(runs)
+        runs[0].quick_route_returncode = 1 if result == "error" else 0
+        runs[0].quick_route_wns = None if result == "no_timing" else -0.15
+        runs[0].quick_route_warning = result == "congestion"
+
+    monkeypatch.setattr(fpga_build, "run_x3_place_quick_route_probes", probe)
+    winner = fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused")
+    assert received == candidates
+    assert winner is (candidates[0] if result in {"pass", "congestion"} else None)
+
+
+@pytest.mark.parametrize(
+    ("guided_congestion", "guided_route", "probe_warnings", "expected"),
+    (
+        (5, -0.05, (False, False), "Ordinary"),
+        (0, -0.3, (False, False), "Ordinary"),
+        (0, -0.05, (False, False), "LocalGuidance"),
+        (0, -0.05, (True, False), "Ordinary"),
+        (0, -0.05, (True, True), "LocalGuidance"),
+        (0, -0.3, (True, True), "Ordinary"),
+    ),
+)
+def test_default_guidance_competes_under_the_shared_congestion_and_route_rules(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    guided_congestion: int,
+    guided_route: float,
+    probe_warnings: tuple[bool, bool],
+    expected: str,
+) -> None:
+    """The normal entry point cannot privilege the guided candidate's placed WNS."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    monkeypatch.delenv("FROST_PLACE_QUICK_ROUTE_COUNT", raising=False)
+    _VivadoFleet(monkeypatch, 2)
+    work = _sweep_input(tmp_path, "place")
+
+    def guidance(*_args: Any, **_kwargs: Any) -> tuple[bool, float, str]:
+        (work / "post_place.dcp").write_bytes(b"guided placement")
+        (work / "post_place_timing.rpt").write_text("-0.05")
+        (work / "post_place_vivado.log").write_text("guided Vivado log")
+        (work / "post_place_recipe.json").write_text(
+            json.dumps(
+                {"post_opt_sha256": fpga_build.file_sha256(work / "post_opt.dcp")}
+            )
+        )
+        (work / "post_place_reference.dcp").write_bytes(b"fresh reference")
+        _write_place_gate(work, -0.05)
+        if guided_congestion:
+            (work / "post_place_congestion.rpt").write_text(
+                (CONGESTION_FIXTURES / "x3_post_place_congestion.rpt").read_text()
+            )
+        return True, -0.05, "post_place"
+
+    monkeypatch.setattr(fpga_build, "run_x3_guided_place_candidate", guidance)
+    monkeypatch.setattr(
+        fpga_build,
+        "make_x3_place_sweep_candidates",
+        lambda *_a, **_kw: [fpga_build.DirectiveSweepCandidate("Ordinary", 0.3)],
+    )
+    probed = []
+
+    def probe(_script: Path, runs: list[Any], _vivado: str, *, max_jobs: int) -> None:
+        assert max_jobs == 2
+        for run in runs:
+            probed.append(run.label)
+            run.quick_route_returncode = 0
+            run.quick_route_wns = guided_route if run.label == "LocalGuidance" else -0.1
+            run.quick_route_warning = probe_warnings[
+                0 if run.label == "LocalGuidance" else 1
+            ]
+            _write_probe_outputs(run.work_dir, "quick_route", run.quick_route_wns)
+            if run.quick_route_warning:
+                with (run.work_dir / "quick_route_vivado.log").open("a") as stream:
+                    stream.write(fpga_build._ROUTER_CONGESTION_WARNING + "\n")
+
+    monkeypatch.setattr(fpga_build, "run_x3_place_quick_route_probes", probe)
+    success, wns, prefix = fpga_build.run_x3_default_place(
+        tmp_path, "unused", max_jobs=2, keep_temps=True
+    )
+    assert success and prefix == "post_place"
+    assert fpga_build.require_x3_post_place_gate(work)
+    selection = json.loads((work / "post_place_selection.json").read_text())
+    assert selection["selected"].startswith(expected)
+    assert all(run["timing_gate_passed"] is True for run in selection["candidates"])
+    assert ("LocalGuidance" in probed) is (guided_congestion < 5)
+    assert (work / "post_place_recipe.json").exists() is (expected == "LocalGuidance")
+    assert wns == (-0.05 if expected == "LocalGuidance" else -0.1)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    (
+        None,
+        "missing_log",
+        "empty_log",
+        "warning",
+        "missing_status",
+        "incomplete",
+        "conflict",
+        "ambiguous",
+        "missing_timing",
+        "checkpoint",
+        "stale",
+    ),
+)
+def test_route_probe_requires_complete_fresh_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str | None
+) -> None:
+    """Successful process exit cannot substitute for actual complete routing."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "3")
+    fleet = _VivadoFleet(monkeypatch, 1)
+    candidate = _quick_route_candidates(tmp_path, 1)[0]
+    work = candidate.work_dir
+    _write_probe_outputs(work, "quick_route")
+
+    def probe(command: list[str], **kwargs: Any) -> Any:
+        for name in ("timing.rpt", "status.rpt", "vivado.log"):
+            assert not (work / f"quick_route_{name}").exists()
+        process = fleet.popen(command, **kwargs)
+        log = work / "quick_route_vivado.log"
+        status = work / "quick_route_status.rpt"
+        timing = work / "quick_route_timing.rpt"
+        if damage in {"missing_log", "stale"}:
+            log.unlink()
+        elif damage == "empty_log":
+            log.write_text("")
+        elif damage == "warning":
+            log.write_text(fpga_build._ROUTER_CONGESTION_WARNING)
+        elif damage == "missing_status":
+            status.unlink()
+        elif damage == "incomplete":
+            status.write_text(
+                status.read_text().replace(
+                    "# of fully routed nets............. :      274811",
+                    "# of fully routed nets............. :      274810",
+                )
+            )
+        elif damage == "conflict":
+            status.write_text(
+                status.read_text().replace(
+                    "# of nets with routing errors.......... :           0",
+                    "# of nets with routing errors.......... :           1",
+                )
+            )
+        elif damage == "ambiguous":
+            status.write_text(status.read_text() * 2)
+        elif damage == "missing_timing":
+            timing.unlink()
+        elif damage == "checkpoint":
+            (work / "post_place.dcp").write_bytes(b"changed during probe")
+        return process
+
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", probe)
+    fpga_build.run_x3_place_quick_route_probes(tmp_path, [candidate], "unused")
+    accepted = damage in {None, "warning"}
+    assert candidate.quick_route_returncode == (0 if accepted else -1)
+    assert (candidate.quick_route_wns is not None) is accepted
+    assert candidate.quick_route_warning is (damage == "warning")
+    # Even a completed probe is only an input to selection, not a winner.
+    assert not fpga_build.require_x3_post_place_gate(work)
+
+
+@pytest.mark.parametrize(
+    ("recorded_warning", "log_warning", "accepted"),
+    (
+        (False, False, True),
+        (True, True, True),
+        (False, True, False),
+        (True, False, False),
+        (None, False, False),
+        (0, False, False),
+    ),
+)
+def test_selected_probe_warning_must_match_its_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_warning: bool | int | None,
+    log_warning: bool,
+    accepted: bool,
+) -> None:
+    """A warning is allowed on resume, but the selected evidence must record it."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "3")
+    (tmp_path / "post_place.dcp").write_bytes(b"selected placement")
+    _write_place_gate(tmp_path)
+    selection_path = tmp_path / "post_place_selection.json"
+    selection = json.loads(selection_path.read_text())
+    selection["candidates"][0]["quick_route_congestion_warning"] = recorded_warning
+    selection_path.write_text(json.dumps(selection))
+    if log_warning:
+        with (tmp_path / "post_place_quick_route_vivado.log").open("a") as stream:
+            stream.write(fpga_build._ROUTER_CONGESTION_WARNING + "\n")
+    assert fpga_build.bind_x3_place_gate(tmp_path) is accepted
+    assert fpga_build.require_x3_post_place_gate(tmp_path) is accepted
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "post_place_selection.json",
+        "post_place_quick_route_timing.rpt",
+        "post_place_quick_route_status.rpt",
+        "post_place_quick_route_vivado.log",
+    ),
+)
+@pytest.mark.parametrize("missing", (False, True))
+def test_selected_placement_requires_unchanged_probe_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, missing: bool
+) -> None:
+    """Lost or replaced selection/probe bytes invalidate downstream resume."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "3")
+    (tmp_path / "post_place.dcp").write_bytes(b"selected placement")
+    _write_place_gate(tmp_path, bind=True)
+    assert fpga_build.require_x3_post_place_gate(tmp_path)
+    path = tmp_path / name
+    if missing:
+        path.unlink()
+    else:
+        path.write_text(path.read_text() + "\n")
+    assert not fpga_build.require_x3_post_place_gate(tmp_path)
+
+
+def test_disabled_probes_need_explicit_override_on_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prior probe waiver cannot silently become the default next time."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "0")
+    (tmp_path / "post_place.dcp").write_bytes(b"unprobed placement")
+    _write_place_gate(tmp_path, bind=True)
+    assert fpga_build.require_x3_post_place_gate(tmp_path)
+    monkeypatch.delenv("FROST_PLACE_QUICK_ROUTE_COUNT")
+    assert not fpga_build.require_x3_post_place_gate(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    (
+        ("FROST_PLACE_QUICK_ROUTE_COUNT", "-1"),
+        ("FROST_PLACE_QUICK_ROUTE_COUNT", "bad"),
+        ("FROST_PLACE_CONGESTION_VETO_LEVEL", "4"),
+        ("FROST_PLACE_CONGESTION_VETO_LEVEL", "bad"),
+    ),
+)
+def test_invalid_selection_settings_fail_before_build(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    """Configuration errors must not cost a native implementation run."""
+    monkeypatch.setenv(name, value)
+    monkeypatch.setattr(sys, "argv", ["build.py", "x3"])
+    monkeypatch.setattr(
+        fpga_build, "compile_hello_world", lambda *_a: pytest.fail("build started")
+    )
+    with pytest.raises(SystemExit) as error:
+        fpga_build.main()
+    assert error.value.code == 2
+
+
+def test_placement_sweep_rejects_changed_post_opt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Candidates cannot compete after the shared input changes mid-sweep."""
+    fleet = _VivadoFleet(monkeypatch, 1)
+    work = _sweep_input(tmp_path, "place")
+
+    def place(command: list[str], **kwargs: Any) -> Any:
+        process = fleet.popen(command, **kwargs)
+        (work / "post_opt.dcp").write_bytes(b"replacement netlist")
+        return process
+
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", place)
+    assert not fpga_build.run_x3_step_directive_sweep(
+        tmp_path, "place", ["Explore"], "placer", "unused", max_jobs=1
+    )[0]
+    assert not (work / "post_place_gate_binding.json").exists()

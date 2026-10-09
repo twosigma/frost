@@ -1,0 +1,41 @@
+[tasks]
+bmc4
+bmc8
+bmc16
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -sv sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv lq_l0_cache.sv lq_issue_selector.sv
+read -formal -D SYNTHESIS -D F_LQ_PREMATCH_ONLY -D F_LQ_RAM_PAYLOAD_PROOF -D F_LQ_MERGED_REPLACE_LOCAL_PROOF -sv load_queue.sv
+bmc4: chparam -set DEPTH 4 load_queue
+bmc8: chparam -set DEPTH 8 -set PREISSUE_CANDIDATES 1 -set PREISSUE_SEL_WIDTH 3 -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
+bmc16: chparam -set DEPTH 16 load_queue
+# RAM/cache data are arbitrary; retain the actual selector and replacement
+# logic. No reset, tag-uniqueness, head-match or pre-match assumptions.
+delete t:lq_l0_cache t:mwp_dist_ram t:sdp_dist_ram
+proc
+delete -port load_queue/o:*
+setundef -undriven -anyseq
+opt
+prep -top load_queue
+select -assert-none t:$assume a:init
+select -assert-none t:$check r:FLAVOR=assume %i
+# Replacement identity plus the five existing RAM write-selection identities.
+select -assert-count 6 t:$check r:FLAVOR=assert %i
+select -assert-count 4 t:$check r:FLAVOR=cover %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv

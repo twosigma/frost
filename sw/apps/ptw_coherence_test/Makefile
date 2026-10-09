@@ -12,9 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Page-table-walker vs dirty-L1D coherence directed test. The walker reads
-# PTEs from the shared level (L2/memory) and never from the write-back L1D, so
-# a PTE table left dirty in the L1D while its PMD pointer reaches L2 yields a
-# torn walk (Sv39, M-mode/MPRV windows; page tables in cached DDR).
+# Page-table walker vs dirty-L1D coherence directed test: Sv39 walks must see
+# page-table stores still dirty in the L1D, with no sfence.vma in between
+# (M-mode MPRV windows; page tables in cached DDR).
 SRC_C := ../../lib/src/uart.c main.c
 include ../../common/common.mk

@@ -1,0 +1,27 @@
+[tasks]
+bmc
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv cache_perf_pkg.sv sdp_block_ram.sv sdp_ram_byte_en.sv sdp_packed_tag_uram.sv
+read -formal -D SYNTHESIS -D CACHE_MSHR_PAYLOAD_PROOF -sv frost_cache.sv
+chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 frost_cache
+prep -top frost_cache -flatten
+memory_map
+opt
+select -assert-none t:$assume
+select -assert-count 8 t:$check
+
+[files]
+../hw/rtl/lib/cache/cache_perf_pkg.sv
+../hw/rtl/lib/cache/frost_cache.sv
+
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv

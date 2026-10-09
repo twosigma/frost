@@ -17,10 +17,10 @@
 
 The data memory BRAM is one MemDataBits(=64)-wide byte-enabled RAM
 (hw/rtl/README.md, "Data-tier bus contract"), so its ``$readmemh`` init
-file needs one 64-bit token per dword row. Every other consumer of the
-software image (imem with its per-word predecode sideband, the JTAG
-loaders, sw.txt) keeps the 32-bit-word ``sw.mem`` format, so this script
-derives the dword file rather than changing the objcopy flow.
+file needs one 64-bit token per dword row. The instruction BRAM (with its
+per-word predecode sideband) and the JTAG loaders keep 32-bit words, so
+this script derives the dword file from ``sw.mem`` rather than changing
+the objcopy flow.
 
 Input is objcopy ``-O verilog --verilog-data-width 4`` output: ``@ADDR``
 records in word units followed by 8-hex-digit little-endian word tokens.

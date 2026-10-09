@@ -27,15 +27,18 @@
 #define TOMASULO_PROFILE_LEGACY_COUNTER_COUNT 106U
 #define TOMASULO_PROFILE_CACHE_COUNTER_COUNT 24U
 /*
- * The original 106-counter snapshot layout and capture loop stay intact. The
- * 24 appended cache counters (indices 106-129) live in a caller-owned sidecar
- * whose 32-bit address occupies the old four-byte alignment hole at offset
- * 20. Hardware retains the preceding cache snapshot, so software can drain
- * both cache endpoints after timing has stopped. Every legacy counter address
- * and the benchmark's pre-timer instruction/store sequence are preserved
- * while the architectural index space grows to 130. A build without the
- * counters (PERF_COUNTERS=0, the production configuration) reads mperfcount
- * as 0: snapshots then hold no counters and every delta is 0.
+ * Counter indices must match the RTL; see "Numbering contract" in
+ * hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/README.md.
+ *
+ * A snapshot captures counters 0-105. The capture loop runs before a
+ * benchmark's timed region, so it and the snapshot layout stay fixed: changing
+ * either changes the code and stores that precede the timer. The 24 cache
+ * counters (106-129) are read after the region instead, into caller-bound
+ * arrays. Hardware keeps the preceding cache snapshot, so both ends of the
+ * region are still available then. A snapshot holds its array's address in
+ * cache_counters_addr, a 32-bit field in what would otherwise be alignment
+ * padding at offset 20. A build without the counters (PERF_COUNTERS=0) reads
+ * mperfcount as 0: snapshots then hold no counters and every delta is 0.
  */
 
 enum tomasulo_profile_counter_idx {
@@ -51,8 +54,7 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_DISPATCH_STALL_MUL_RS_FULL = 9,
     TOMASULO_PERF_DISPATCH_STALL_MEM_RS_FULL = 10,
     TOMASULO_PERF_DISPATCH_STALL_FP_RS_FULL = 11,
-    TOMASULO_PERF_DISPATCH_STALL_FMUL_RS_FULL = 12,
-    TOMASULO_PERF_DISPATCH_STALL_FDIV_RS_FULL = 13,
+    /* 12 and 13 are reserved and read 0. */
     TOMASULO_PERF_DISPATCH_STALL_LQ_FULL = 14,
     TOMASULO_PERF_DISPATCH_STALL_SQ_FULL = 15,
     TOMASULO_PERF_DISPATCH_STALL_CHECKPOINT_FULL = 16,
@@ -85,7 +87,7 @@ enum tomasulo_profile_counter_idx {
     /* 2-wide width funnel: back-end single-resource limiters. */
     TOMASULO_PERF_MEM_RS_TWO_READY_ONE_ISSUED = 40,
     TOMASULO_PERF_CDB_OVERSUBSCRIBED = 41,
-    /* Wrapper (tomasulo) compatibility block: fixed global indices 42-105. */
+    /* Back-end (tomasulo_wrapper) block: global indices 42-105. */
     TOMASULO_PERF_HEAD_WAIT_TOTAL = 42,
     TOMASULO_PERF_HEAD_WAIT_INT = 43,
     TOMASULO_PERF_HEAD_WAIT_BRANCH = 44,
@@ -94,8 +96,7 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_HEAD_WAIT_MEM_STORE = 47,
     TOMASULO_PERF_HEAD_WAIT_MEM_AMO = 48,
     TOMASULO_PERF_HEAD_WAIT_FP = 49,
-    TOMASULO_PERF_HEAD_WAIT_FMUL = 50,
-    TOMASULO_PERF_HEAD_WAIT_FDIV = 51,
+    /* 50 and 51 are reserved and read 0. */
     TOMASULO_PERF_COMMIT_BLOCKED_CSR = 52,
     TOMASULO_PERF_COMMIT_BLOCKED_FENCE = 53,
     TOMASULO_PERF_COMMIT_BLOCKED_WFI = 54,
@@ -104,9 +105,8 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_INT_BACKPRESSURE = 57,
     TOMASULO_PERF_MUL_BACKPRESSURE = 58,
     TOMASULO_PERF_MEM_RESULT_BACKPRESSURE = 59,
-    TOMASULO_PERF_FP_ADD_BACKPRESSURE = 60,
-    TOMASULO_PERF_FMUL_BACKPRESSURE = 61,
-    TOMASULO_PERF_FDIV_BACKPRESSURE = 62,
+    TOMASULO_PERF_FP_BACKPRESSURE = 60,
+    /* 61 and 62 are reserved and read 0. */
     TOMASULO_PERF_MEM_DISAMBIGUATION_WAIT = 63,
     TOMASULO_PERF_SQ_COMMITTED_PENDING = 64,
     TOMASULO_PERF_SQ_MEM_WRITE_FIRE = 65,
@@ -118,8 +118,7 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_MUL_RS_OCCUPANCY_SUM = 71,
     TOMASULO_PERF_MEM_RS_OCCUPANCY_SUM = 72,
     TOMASULO_PERF_FP_RS_OCCUPANCY_SUM = 73,
-    TOMASULO_PERF_FMUL_RS_OCCUPANCY_SUM = 74,
-    TOMASULO_PERF_FDIV_RS_OCCUPANCY_SUM = 75,
+    /* 74 and 75 are reserved and read 0. */
     TOMASULO_PERF_LQ_L0_HIT = 76,
     TOMASULO_PERF_LQ_L0_FILL = 77,
     TOMASULO_PERF_HEAD_AND_NEXT_DONE = 78,
@@ -133,9 +132,9 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_HEAD_LOAD_BUS_BLOCKED = 86,
     TOMASULO_PERF_HEAD_LOAD_CDB_WAIT = 87,
     TOMASULO_PERF_HEAD_LOAD_POST_LQ = 88,
-    TOMASULO_PERF_HEAD_LOAD_BB_ISSUED = 89,
+    /* 89 is reserved and reads 0. */
     TOMASULO_PERF_HEAD_LOAD_BB_BUS_BUSY = 90,
-    TOMASULO_PERF_HEAD_LOAD_BB_AMO = 91,
+    /* 91 is reserved and reads 0. */
     TOMASULO_PERF_HEAD_LOAD_BB_SQ_WAIT = 92,
     TOMASULO_PERF_HEAD_LOAD_BB_STAGING = 93,
     TOMASULO_PERF_HEAD_INT_OPERAND_WAIT = 94,
@@ -149,12 +148,11 @@ enum tomasulo_profile_counter_idx {
     /* Staging catch-all sub-decomposition (partitions HEAD_LOAD_BB_STAGING). */
     TOMASULO_PERF_HEAD_LOAD_BBS_OTHER_IN_STAGING = 102,
     TOMASULO_PERF_HEAD_LOAD_BBS_LAUNCH_GATED = 103,
-    TOMASULO_PERF_HEAD_LOAD_BBS_SLOW_OUTSTANDING = 104,
+    /* 104 is reserved and reads 0. */
     TOMASULO_PERF_HEAD_LOAD_BBS_CAPTURE_GAP = 105,
     /*
-     * Cache-hierarchy counters are an appended third block. Keeping them
-     * after the unchanged top-level (0-41) and wrapper (42-105) blocks
-     * preserves every pre-existing profile index.
+     * Cache-hierarchy block: global indices 106-129. Indices are a software
+     * interface: add new counters at the end and never renumber existing ones.
      */
     TOMASULO_PERF_L1I_ACCESS = 106,
     TOMASULO_PERF_L1I_HIT = 107,
@@ -199,10 +197,10 @@ _Static_assert(sizeof(tomasulo_profile_snapshot_t) == 872U,
                "legacy profile snapshot size must remain unchanged");
 
 /*
- * A snapshot object must be zero-initialized (static storage and `{0}`
- * already are) or initialized here before its first capture. Capture leaves
- * cache_counters_addr alone so a caller-bound sidecar survives repeated
- * samples.
+ * Before its first capture, a snapshot object must be zero-initialized (static
+ * storage and `{0}` already are), initialized here, or bound with
+ * tomasulo_profile_bind_cache_counters(). Capture leaves cache_counters_addr
+ * alone, so a bound array survives repeated samples.
  */
 static inline void tomasulo_profile_init_snapshot(tomasulo_profile_snapshot_t *snapshot)
 {
@@ -217,10 +215,10 @@ tomasulo_profile_bind_cache_counters(tomasulo_profile_snapshot_t *snapshot,
 }
 
 /*
- * Drain the current (end) and preceding (start) cache banks into the
- * caller-bound sidecars. Implemented in tomasulo_profile_cache.c, in the
- * post-timing linker sections outside the legacy benchmark text/rodata
- * layout.
+ * Read the current (end) and preceding (start) cache snapshots into the arrays
+ * bound to end and start. Call it after the end snapshot and before the next
+ * capture, which advances both banks. Implemented in tomasulo_profile_cache.c,
+ * whose code sits in its own linker sections after the program image.
  */
 void tomasulo_profile_read_cache_pair(tomasulo_profile_snapshot_t *start,
                                       tomasulo_profile_snapshot_t *end);
@@ -289,8 +287,8 @@ typedef struct tomasulo_profile_u96 {
     uint32_t hi;
 } tomasulo_profile_u96_t;
 
-/* Multiply a 64-bit value by a 32-bit value without requiring a 64-bit
- * multiply. Each partial product is only 32x32->64. */
+/* Multiply a 64-bit value by a 32-bit value into a 96-bit result. Each partial
+ * product is 32x32->64, so it fits in a uint64_t. */
 static inline tomasulo_profile_u96_t tomasulo_profile_mul_u64_u32(uint64_t value,
                                                                   uint32_t multiplier)
 {
@@ -363,7 +361,8 @@ static inline uint32_t tomasulo_profile_ratio_scaled(uint64_t value, uint64_t to
 
     /* The exact fallback represents products as three 32-bit limbs. Avoiding
      * an approximate right shift preserves low-order bits around rounding
-     * boundaries, while binary search avoids a 64-bit division helper. */
+     * boundaries, while binary search avoids libgcc's 128-bit division
+     * helper. */
     numerator = tomasulo_profile_mul_u64_u32(value, scale);
     product = tomasulo_profile_mul_u64_u32(total, UINT32_MAX);
     if (tomasulo_profile_cmp_u96(numerator, product) >= 0) {
@@ -467,16 +466,6 @@ tomasulo_profile_pick_top_dispatch_cause(const tomasulo_profile_snapshot_t *star
     tomasulo_profile_consider_top(
         label,
         value,
-        "fmul_rs",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_DISPATCH_STALL_FMUL_RS_FULL));
-    tomasulo_profile_consider_top(
-        label,
-        value,
-        "fdiv_rs",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_DISPATCH_STALL_FDIV_RS_FULL));
-    tomasulo_profile_consider_top(
-        label,
-        value,
         "lq",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_DISPATCH_STALL_LQ_FULL));
     tomasulo_profile_consider_top(
@@ -513,10 +502,6 @@ static inline void tomasulo_profile_pick_top_retire_cause(const tomasulo_profile
         label, value, "amo", tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_MEM_AMO));
     tomasulo_profile_consider_top(
         label, value, "fp", tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_FP));
-    tomasulo_profile_consider_top(
-        label, value, "fmul", tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_FMUL));
-    tomasulo_profile_consider_top(
-        label, value, "fdiv", tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_FDIV));
     tomasulo_profile_consider_top(
         label, value, "csr", tomasulo_profile_delta(start, end, TOMASULO_PERF_COMMIT_BLOCKED_CSR));
     tomasulo_profile_consider_top(
@@ -556,20 +541,7 @@ static inline void tomasulo_profile_pick_top_backend_cause(const tomasulo_profil
         "mem_bp",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_MEM_RESULT_BACKPRESSURE));
     tomasulo_profile_consider_top(
-        label,
-        value,
-        "fp_bp",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_FP_ADD_BACKPRESSURE));
-    tomasulo_profile_consider_top(
-        label,
-        value,
-        "fmul_bp",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_FMUL_BACKPRESSURE));
-    tomasulo_profile_consider_top(
-        label,
-        value,
-        "fdiv_bp",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_FDIV_BACKPRESSURE));
+        label, value, "fp_bp", tomasulo_profile_delta(start, end, TOMASULO_PERF_FP_BACKPRESSURE));
     tomasulo_profile_consider_top(
         label,
         value,
@@ -583,9 +555,9 @@ static inline void tomasulo_profile_pick_top_backend_cause(const tomasulo_profil
 }
 
 /*
- * Every report starts by saying whether the build has the counters, so a
- * run on a production image (PERF_COUNTERS=0) is visibly zero-data rather
- * than silently zero, and the profiling simulations can require presence.
+ * Every report starts by saying whether the build has the counters, so a run
+ * on a build without them (PERF_COUNTERS=0) is marked as having no data rather
+ * than printing zeros, and the profiling simulations can require the counters.
  */
 static inline void tomasulo_profile_print_presence(void)
 {
@@ -665,17 +637,18 @@ static inline void tomasulo_profile_print_brief_report(const char *label,
 }
 
 /*
- * Implemented in a separately linked source so its post-run-only strings do
- * not move legacy benchmark initialization data and perturb warm cache state.
+ * Implemented in tomasulo_profile_cache.c, whose strings are used only after
+ * the run and sit in their own linker section, so they do not move the
+ * benchmark's initialized data or disturb its warm cache state.
  */
 void tomasulo_profile_print_cache_report_and_diagnostic_header(
     const tomasulo_profile_snapshot_t *start, const tomasulo_profile_snapshot_t *end);
 #if defined(TOMASULO_PROFILE_USE_DEFAULT_REPORT_SNAPSHOTS)
 /*
  * A benchmark that exports tomasulo_profile_default_report_start/end can use
- * the legacy one-argument diagnostic-header call shape. This keeps its
- * pre-timing code and read-only-data layout stable while the cache report
- * itself remains in the dedicated post-timing linker section.
+ * this one-argument form instead. It keeps the benchmark's pre-timing code and
+ * read-only data layout fixed while the cache report itself stays in the
+ * post-timing linker sections.
  */
 void tomasulo_profile_print_default_cache_report_and_diagnostic_header(
     const char *diagnostic_header);
@@ -756,7 +729,8 @@ static inline void tomasulo_profile_print_report(const char *label,
 
         /* Each funnel stage prints value plus percent of its own denominator:
          * IF-2wide%   = 2-wide handoffs / all IF->PD handoffs
-         * kill causes = share of the 1-wide handoffs (partition)
+         * kill causes = share of the 1-wide handoffs; mutually exclusive, but a
+         *               handoff held 1-wide by a pending prediction may have none
          * s2 pred tkn = slot-2 taken-prediction events / 2-wide handoffs
          * disp-2wide% = slot-2 fires / slot-1 fires
          * mem-rs/cdb  = limiter cycles / elapsed cycles
@@ -852,14 +826,6 @@ static inline void tomasulo_profile_print_report(const char *label,
         tomasulo_profile_delta(start, end, TOMASULO_PERF_DISPATCH_STALL_FP_RS_FULL),
         cycles);
     tomasulo_profile_print_metric(
-        "FMUL RS full",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_DISPATCH_STALL_FMUL_RS_FULL),
-        cycles);
-    tomasulo_profile_print_metric(
-        "FDIV RS full",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_DISPATCH_STALL_FDIV_RS_FULL),
-        cycles);
-    tomasulo_profile_print_metric(
         "LQ full",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_DISPATCH_STALL_LQ_FULL),
         cycles);
@@ -898,11 +864,7 @@ static inline void tomasulo_profile_print_report(const char *label,
         tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_MEM_AMO),
         cycles);
     tomasulo_profile_print_metric(
-        "Head wait FP add", tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_FP), cycles);
-    tomasulo_profile_print_metric(
-        "Head wait FMUL", tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_FMUL), cycles);
-    tomasulo_profile_print_metric(
-        "Head wait FDIV", tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_FDIV), cycles);
+        "Head wait FP", tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_FP), cycles);
     tomasulo_profile_print_metric(
         "Commit blocked CSR",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_COMMIT_BLOCKED_CSR),
@@ -937,18 +899,9 @@ static inline void tomasulo_profile_print_report(const char *label,
         "MEM result backpressure",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_MEM_RESULT_BACKPRESSURE),
         cycles);
-    tomasulo_profile_print_metric(
-        "FP add downstream block",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_FP_ADD_BACKPRESSURE),
-        cycles);
-    tomasulo_profile_print_metric(
-        "FMUL downstream block",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_FMUL_BACKPRESSURE),
-        cycles);
-    tomasulo_profile_print_metric(
-        "FDIV downstream block",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_FDIV_BACKPRESSURE),
-        cycles);
+    tomasulo_profile_print_metric("FP downstream block",
+                                  tomasulo_profile_delta(start, end, TOMASULO_PERF_FP_BACKPRESSURE),
+                                  cycles);
     tomasulo_profile_print_metric(
         "Load disambiguation wait",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_MEM_DISAMBIGUATION_WAIT),
@@ -1026,16 +979,8 @@ static inline void tomasulo_profile_print_report(const char *label,
         tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_POST_LQ),
         cycles);
     tomasulo_profile_print_metric(
-        "Head load bus-blocked: issued (post-launch)",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BB_ISSUED),
-        cycles);
-    tomasulo_profile_print_metric(
         "Head load bus-blocked: bus_busy",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BB_BUS_BUSY),
-        cycles);
-    tomasulo_profile_print_metric(
-        "Head load bus-blocked: AMO blocked",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BB_AMO),
         cycles);
     tomasulo_profile_print_metric(
         "Head load bus-blocked: SQ phase2 wait",
@@ -1052,10 +997,6 @@ static inline void tomasulo_profile_print_report(const char *label,
     tomasulo_profile_print_metric(
         "  staging: head staged, launch gated",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BBS_LAUNCH_GATED),
-        cycles);
-    tomasulo_profile_print_metric(
-        "  staging: cached slots full",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BBS_SLOW_OUTSTANDING),
         cycles);
     tomasulo_profile_print_metric(
         "  staging: capture gap",
@@ -1108,10 +1049,6 @@ static inline void tomasulo_profile_print_report(const char *label,
         "MEM RS", tomasulo_profile_delta(start, end, TOMASULO_PERF_MEM_RS_OCCUPANCY_SUM), cycles);
     tomasulo_profile_print_average(
         "FP RS", tomasulo_profile_delta(start, end, TOMASULO_PERF_FP_RS_OCCUPANCY_SUM), cycles);
-    tomasulo_profile_print_average(
-        "FMUL RS", tomasulo_profile_delta(start, end, TOMASULO_PERF_FMUL_RS_OCCUPANCY_SUM), cycles);
-    tomasulo_profile_print_average(
-        "FDIV RS", tomasulo_profile_delta(start, end, TOMASULO_PERF_FDIV_RS_OCCUPANCY_SUM), cycles);
 }
 
 #endif /* TOMASULO_PROFILE_H */

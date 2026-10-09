@@ -17,7 +17,7 @@
 /*
  * NIC loopback test (hw/rtl/peripherals/nic, sw/lib/include/nic.h).
  *
- * Drives the NIC the way the Linux driver will: bring-up through READY, a
+ * Drives the NIC the way the Linux driver does: bring-up through READY, a
  * loopback selected through a RESET, station address, rings in cached DDR,
  * descriptors posted with a TAIL doorbell, completions read from the
  * descriptors (DD), counters, the completion and link interrupts, the
@@ -44,10 +44,10 @@
 
 /* Polling budgets in loop iterations (an MMIO read each, tens of cycles):
  * sized so a failed wait reports inside the simulation's cycle budget while
- * leaving the hardware (300 MHz) milliseconds. A transceiver link
+ * leaving the hardware milliseconds. A transceiver link
  * (CLK_SHARED = 0) comes up through the transceiver's resets, CDR and block
  * lock in hundreds of milliseconds, so there the waits for READY and CARRIER
- * take WAIT_LINK_TRANSCEIVER instead: seconds at a 150 or 300 MHz CPU clock. */
+ * take WAIT_LINK_TRANSCEIVER instead: seconds at a 161 or 322 MHz CPU clock. */
 #define WAIT_READY 4000u
 #define WAIT_CARRIER 12000u
 #define WAIT_LINK_TRANSCEIVER 20000000u
@@ -126,7 +126,7 @@ static void post_rx(uint32_t n)
 {
     for (uint32_t k = 0; k < n; k++) {
         uint32_t i = g_rx_posted % ENTRIES;
-        rx_ring[i].addr = RX_BUF(i) + (g_rx_posted % 7u) * 9u; /* odd offsets */
+        rx_ring[i].addr = RX_BUF(i) + (g_rx_posted % 7u) * 9u; /* varied alignments */
         rx_ring[i].len = RX_BUF_LEN;
         rx_ring[i].status = 0;
         g_rx_posted++;
@@ -135,12 +135,17 @@ static void post_rx(uint32_t n)
     nic_write(NIC_RX_TAIL, g_rx_posted % ENTRIES);
 }
 
+/* Byte i of the frame sent as (da, seed): the destination MAC, then a
+ * pattern. */
+static uint8_t frame_byte(uint32_t i, const uint8_t *da, uint32_t seed)
+{
+    return i < 6 ? da[i] : (uint8_t) (seed * 31u + i * 7u + (i >> 8));
+}
+
 static void fill_frame(uint8_t *buf, uint32_t len, const uint8_t *da, uint32_t seed)
 {
-    for (uint32_t i = 0; i < 6 && i < len; i++)
-        buf[i] = da[i];
-    for (uint32_t i = 6; i < len; i++)
-        buf[i] = (uint8_t) (seed * 31u + i * 7u + (i >> 8));
+    for (uint32_t i = 0; i < len; i++)
+        buf[i] = frame_byte(i, da, seed);
 }
 
 static uint32_t send_tx(uint32_t len, const uint8_t *da, uint32_t seed)
@@ -157,7 +162,8 @@ static uint32_t send_tx(uint32_t len, const uint8_t *da, uint32_t seed)
     return i;
 }
 
-/* The RX descriptor g_rx_reaped holds the frame sent as (len, da, seed)? */
+/* Reap the next RX descriptor and check that it holds the frame sent as
+ * (len, da, seed). */
 static int reap_rx(uint32_t len, const uint8_t *da, uint32_t seed, const char *what)
 {
     uint32_t i = g_rx_reaped % ENTRIES;
@@ -178,15 +184,8 @@ static int reap_rx(uint32_t len, const uint8_t *da, uint32_t seed, const char *w
     }
     __asm__ volatile("fence r, r" ::: "memory"); /* DD before the data */
     const volatile uint8_t *buf = (const volatile uint8_t *) (uintptr_t) rx_ring[i].addr;
-    uint8_t want[8];
     for (uint32_t b = 0; b < expected_len; b++) {
-        uint8_t w;
-        if (b < len) {
-            fill_frame(want, 1, da, seed); /* unused: recompute below */
-            w = b < 6 ? da[b] : (uint8_t) (seed * 31u + b * 7u + (b >> 8));
-        } else {
-            w = 0; /* the MAC pads with zeros */
-        }
+        uint8_t w = b < len ? frame_byte(b, da, seed) : 0; /* the MAC pads with zeros */
         if (buf[b] != w) {
             uart_printf("%s: byte %u got %x want %x\n", what, b, buf[b], w);
             return 0;
@@ -332,7 +331,7 @@ static void test_frames(void)
         uint32_t idx = send_tx(lengths[k], station, k + 1u);
         int got = reap_rx(lengths[k], station, k + 1u, "frames");
         /* The round trip in mtime ticks: doorbell to DD seen, including the
-         * software checks; the envelope record in the slice notes reads it. */
+         * software checks. */
         uart_printf("frame %u bytes: %u ticks\n", lengths[k], (uint32_t) (rdmtime() - t0));
         if (!got)
             ok = 0;
@@ -436,7 +435,8 @@ static void test_irq(void)
     if (!reap_rx(81u, station, 2u, "moderation"))
         ok = 0;
     uint64_t t_wait = rdmtime();
-    while (rdmtime() - t_wait < 400u) /* an observable interval, longer than the moderation delay */
+    /* Long enough for an early raise to show, well inside the 0xFFFF-tick deadline. */
+    while (rdmtime() - t_wait < 400u)
         ;
     if (g_irq_seen & NIC_IRQ_RX) {
         uart_printf("moderation: RX raised after two completions\n");

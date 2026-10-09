@@ -37,8 +37,8 @@ MEMORY
 _end_of_stack = ORIGIN(RAM) + LENGTH(RAM);
 PROVIDE(_stack_top = _end_of_stack);
 
-/* Kept for the upstream RISC-V port. port_frost_asm.S runs traps on the
- * interrupted task's stack and does not reference it. */
+/* Only the upstream RISC-V port uses this symbol. port_frost_asm.S runs traps
+ * on the interrupted task's stack. */
 __freertos_irq_stack_top = _end_of_stack;
 
 SECTIONS
@@ -56,7 +56,7 @@ SECTIONS
 
     /* .text section - Executable code */
     .text : {
-        KEEP(*(.init))      /* Startup code (crt0.S) - must be first */
+        KEEP(*(.init))      /* Startup code (crt0.S): first; the boot stub jumps to 0x80000000 */
         *(.text*)           /* All code sections */
         *(.text.*)
     } > DDR
@@ -139,12 +139,17 @@ SECTIONS
     PROVIDE(UART_RX_DATA_ADDR  = 0x40000004);  /* UART receive data (read pops byte) */
     PROVIDE(FIFO0_ADDR          = 0x40000008);  /* MMIO FIFO 0 */
     PROVIDE(FIFO1_ADDR          = 0x4000000C);  /* MMIO FIFO 1 */
-    /* CLINT-compatible timer registers (for RTOS support) */
+    /* Machine timer registers */
     PROVIDE(MTIME_LO_ADDR       = 0x40000010);  /* mtime[31:0] - Machine timer low */
     PROVIDE(MTIME_HI_ADDR       = 0x40000014);  /* mtime[63:32] - Machine timer high */
     PROVIDE(MTIMECMP_LO_ADDR    = 0x40000018);  /* mtimecmp[31:0] - Timer compare low */
     PROVIDE(MTIMECMP_HI_ADDR    = 0x4000001C);  /* mtimecmp[63:32] - Timer compare high */
     PROVIDE(MSIP_ADDR           = 0x40000020);  /* Machine software interrupt pending */
     PROVIDE(UART_RX_STATUS_ADDR = 0x40000024); /* UART RX status (bit 0 = data available) */
-    PROVIDE(UART_TX_STATUS_ADDR = 0x40000028); /* UART TX status (bit 0 = can accept byte) */
+    PROVIDE(UART_TX_STATUS_ADDR = 0x40000028); /* UART TX status (bit 0 = TX ready) */
 }
+
+/* crt0_ddr_boot.S jumps to the constant 0x8000_0000, which is correct only while
+ * _start sits at the DDR origin. The ASSERT turns a reordering of the DDR
+ * sections into a link failure instead of a jump to the wrong address. */
+ASSERT(_start == ORIGIN(DDR), "link_freertos_ddr.ld: _start must sit at ORIGIN(DDR) (the rv64 boot stub jumps to the constant 0x80000000)")

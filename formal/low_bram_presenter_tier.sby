@@ -1,0 +1,21 @@
+[tasks]
+bmc
+prove
+
+[options]
+bmc: mode bmc
+bmc: depth 12
+prove: mode prove
+prove: depth 6
+
+[engines]
+bmc: smtbmc boolector
+prove: abc pdr
+
+[script]
+read -formal -sv -D SYNTHESIS low_bram_fetch_presenter.sv low_bram_presenter_tier_equiv.sv
+prep -top low_bram_presenter_tier_equiv
+
+[files]
+../hw/rtl/cpu_and_mem/low_bram_fetch_presenter.sv
+low_bram_presenter_tier_equiv.sv

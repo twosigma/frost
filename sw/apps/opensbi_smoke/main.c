@@ -16,17 +16,18 @@
 
 /*
  * OpenSBI smoke test: a bare S-mode payload booted by the real fw_jump
- * firmware through the FROST boot layout. It checks, from the
- * supervisor's point of view, everything Linux will rely on the firmware for:
+ * firmware through the FROST boot layout. It checks, from the supervisor's
+ * point of view, firmware services that Linux relies on:
  *
- *   A. SBI base: spec/impl ids, extension probes, mvendorid/marchid/mimpid.
- *   B. Entry state: satp Bare, time-only U-mode scounteren policy,
- *      S-mode time/cycle readable, U-mode time allowed and cycle/instret denied, stimecmp
- *      accessible (menvcfg.STCE set by the firmware: the mcountinhibit
- *      privileged-version probe), sfence.vma forms, HSM status.
+ *   A. SBI base: spec/impl ids, extension probes, mvendorid/marchid/mimpid,
+ *      HSM status.
+ *   B. Entry state: satp Bare, time-only U-mode scounteren policy, S-mode
+ *      time/cycle readable, U-mode time allowed and cycle/instret denied,
+ *      stimecmp accessible (menvcfg.STCE set by the firmware: the
+ *      mcountinhibit privileged-version probe), sfence.vma forms.
  *   C. Timers: an S-timer interrupt through stimecmp, and through
  *      sbi_set_timer (which writes stimecmp under Sstc).
- *   D. IPI to self through the SBI (SSIP injection) and an RFENCE call.
+ *   D. IPI to self through the SBI (SSIP injection) and two RFENCE calls.
  *   E. Console: SBI DBCN write and the legacy putchar.
  *   F. Misaligned loads/stores emulated by OpenSBI in M-mode (they are not
  *      delegated by default): every scalar width, the RV64 compressed forms,

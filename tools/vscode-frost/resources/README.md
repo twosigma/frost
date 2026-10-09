@@ -1,8 +1,10 @@
 # FROST core register description
 
-`frost-core.xml` is an opt-in GDB target description for FROST's RV64 core.
-It exposes 68 core and floating-point registers, avoiding unsupported optional
-CSRs such as `vcsr` that can make GDB's bulk register reads fail.
+`frost-core.xml` is an optional GDB target description for FROST's RV64 core.
+It describes the integer registers, `pc`, the floating-point registers, and
+the floating-point CSRs, and leaves out optional CSRs such as `vcsr` that can
+make GDB's bulk register reads fail. The extension uses it when
+`frost.registerDescription` is `core`.
 
 | Registers | OpenOCD remote register numbers | Wire width |
 | --- | --- | --- |
@@ -10,47 +12,46 @@ CSRs such as `vcsr` that can make GDB's bulk register reads fail.
 | `f0`–`f31`, using ABI names | 33–64 | 64 bits |
 | `fflags`, `frm`, `fcsr` | 66, 67, 68 | 64 bits |
 
-The explicit register numbers preserve the server's numbering, including the
-gap at 65. Do not renumber registers when pruning this file. Floating-point
-registers retain OpenOCD's `FPU_FD` union with single- and double-precision
-interpretations. The floating-point CSRs retain `save-restore="no"` and their
-64-bit transfer width. FROST implements `fflags` in bits 4:0, `frm` in bits 2:0,
-and `fcsr` as `{frm, fflags}` in bits 7:0; the remaining bits read zero. See
-[the CSR implementation](../../../hw/rtl/cpu_and_mem/cpu/csr/csr_file.sv).
-
-Keep all CPU and FPU registers required by the target-description features;
-pruning individual members can make GDB reject the description.
+Each register carries an explicit `regnum` that matches OpenOCD's numbering,
+including the gap at 65. Do not renumber registers when editing this file.
+Keep every register that the CPU and FPU features require: GDB can reject a
+description with a member missing. The floating-point registers keep
+OpenOCD's `FPU_FD` union of single and double views, and the floating-point
+CSRs keep `save-restore="no"` and their 64-bit transfer width. FROST
+implements `fflags` in bits 4:0, `frm` in bits 2:0, and `fcsr` as
+`{frm, fflags}` in bits 7:0; the other bits read zero (see the
+[CSR file](../../../hw/rtl/cpu_and_mem/cpu/csr/csr_file.sv)).
 
 ## Loading the description
 
-Set the filename in a fresh GDB session **before** connecting to OpenOCD:
+Set the file in a fresh GDB session, **before** connecting to OpenOCD:
 
 ```text
 set tdesc filename /absolute/path/to/resources/frost-core.xml
 target extended-remote 127.0.0.1:3333
 ```
 
-The extension supplies its installed resource path in `cppdbg` setup commands.
-This setting replaces the target-supplied description for that GDB session;
-it does not change OpenOCD or the processor. `unset tdesc filename` restores
-target-supplied descriptions. Start a fresh debug session when changing this
-option because the adapter caches register metadata.
+The extension passes its installed copy's path in the `cppdbg` setup
+commands. The setting replaces the target's own description for that GDB
+session only; OpenOCD and the processor are unchanged. `unset tdesc filename`
+returns to the target's description. Start a new debug session after
+changing it, because the adapter caches register metadata.
 
-GDB's `set tdesc filename` takes the entire remaining text as the filename,
-including spaces. Do not add quotation marks around the filename: GDB
-includes those marks in the filename and only emits a warning when opening it
-fails. When using `-interpreter-exec console`, escape the whole command as an MI
-string; do not separately quote the filename inside it.
+GDB takes everything after `set tdesc filename` as the file name, spaces
+included. Do not quote it: GDB treats the quotes as part of the name and only
+warns when the open fails. With `-interpreter-exec console`, quote the whole
+command as one MI string and nothing inside it.
 
-## Validation and limits
+## Limits
 
-The description supports register reads and refreshes while stepping code in
-BRAM or DDR. FROST's debug module implements abstract GPR access; OpenOCD uses its program
-buffer fallback for floating-point and CSR access. Individual register Watches
-and explicit `info registers pc sp ra a0` also remain available.
+The description supports reading and refreshing registers while stepping in
+BRAM or DDR. FROST's debug module reads GPRs through abstract commands;
+OpenOCD reads floating-point registers and CSRs through its program buffer
+fallback. Individual register watches and `info registers pc sp ra a0` also
+work.
 
-This file intentionally provides no general CSR, profiling-counter, or vector
-register view. Changing the server's remote register numbering or using a core
-with a different XLEN/FLEN requires a matching target description. The underlying
-server behavior can be inspected in the exact
-[OpenOCD CSR exposure logic](https://github.com/openocd-org/openocd/blob/b6ee13720/src/target/riscv/riscv.c#L4231).
+The file has no general CSR, profiling-counter, or vector registers. A server
+with different remote register numbers, or a core with a different XLEN or
+FLEN, needs its own description. OpenOCD's
+[CSR exposure logic](https://github.com/openocd-org/openocd/blob/b6ee13720/src/target/riscv/riscv.c#L4231)
+shows what the server itself reports.

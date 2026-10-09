@@ -12,20 +12,16 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the high-address fetch_provider (fetch buffer, fills).
+"""Unit tests for fetch_provider, the instruction fetch provider for cached DDR.
 
-The bench plays both of the provider's neighbours: the core, which drives i_pc
-like pc_controller would and consumes valid windows, and the L1I line port
-slave, which accepts fill requests and returns patterned lines. The tests cover
-low addresses staying out of the provider, DDR fills with the sequential walk
-across a line boundary (straddle plus next-line prefetch), ask retargeting when
-a redirect lands while unserved or immediately after an accepted window,
-back-to-back publish throughput, and the invalidate-discard of an in-flight
-fill. The RTL also carries a simulation-only cycle-by-cycle oracle for the
-folded registered readiness/tag-match state.
+The bench stands in for the core, which drives i_pc as pc_controller would and
+consumes valid windows, and for the L1I line port, which accepts fill requests
+and returns patterned lines. The RTL's simulation-only reference check of the
+folded valid bit (window_ready_q) runs throughout.
 """
 
 import importlib.util
+from collections.abc import Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -114,21 +110,25 @@ async def _line_slave(
     latency: int,
     log: list[int],
     *,
-    reorder: bool = False,
+    latencies: Sequence[int] = (),
     accept_gap: int = 0,
     inflight: list[tuple[int, int]] | None = None,
+    responses: list[tuple[int, int]] | None = None,
 ) -> None:
     """Serve patterned lines on the line port with several requests in flight.
 
     Every request is accepted (after ``accept_gap`` idle cycles) and answered
-    ``latency`` cycles later, tagged with its id. With ``reorder`` the slave
-    answers the most recent request first whenever two are pending, so the
-    provider's id routing is exercised. ``inflight`` (if given) mirrors the
-    slave's pending (id, addr) list for the tests to inspect.
+    ``latency`` cycles later, tagged with its id. Request n uses
+    ``latencies[n]`` instead while the sequence lasts, so a later request can
+    be answered before an earlier one. One response goes out per cycle, the
+    earliest due first. ``inflight`` (if given) mirrors the slave's pending
+    (id, addr) list, and ``responses`` records the (id, addr) of each response
+    in the order sent.
     """
-    pending: list[tuple[int, int, int]] = []  # (due_cycle, id, addr)
+    pending: list[tuple[int, int, int, int]] = []  # (due_cycle, seq, id, addr)
     cycle = 0
     gap = 0
+    accepted = 0
     while True:
         await FallingEdge(dut.i_clk)
         cycle += 1
@@ -136,11 +136,13 @@ async def _line_slave(
         dut.i_line_resp_valid.value = 0
         due = [e for e in pending if e[0] <= cycle]
         if due:
-            entry = due[-1] if reorder else due[0]
+            entry = min(due)
             pending.remove(entry)
             dut.i_line_resp_valid.value = 1
-            dut.i_line_resp_id.value = entry[1]
-            dut.i_line_resp_rdata.value = _line_at(entry[2])
+            dut.i_line_resp_id.value = entry[2]
+            dut.i_line_resp_rdata.value = _line_at(entry[3])
+            if responses is not None:
+                responses.append((entry[2], entry[3]))
         # Request side: accept one per cycle unless in an accept gap.
         dut.i_line_req_ready.value = 0
         if gap > 0:
@@ -149,11 +151,13 @@ async def _line_slave(
             addr = int(dut.o_line_req_addr.value)
             rid = int(dut.o_line_req_id.value)
             log.append(addr)
-            pending.append((cycle + latency, rid, addr))
+            wait = latencies[accepted] if accepted < len(latencies) else latency
+            pending.append((cycle + wait, accepted, rid, addr))
+            accepted += 1
             dut.i_line_req_ready.value = 1
             gap = accept_gap
         if inflight is not None:
-            inflight[:] = [(e[1], e[2]) for e in pending]
+            inflight[:] = [(e[2], e[3]) for e in pending]
 
 
 async def _wait_valid(dut: Any) -> None:
@@ -167,10 +171,9 @@ async def _wait_valid(dut: Any) -> None:
 async def _wait_window(dut: Any, addr: int) -> None:
     """Wait until the valid window for addr is presented, then verify it.
 
-    Used for initial alignment after a pc jump. Per the contract, valid
-    cycles for the previous owed ask (the post-reset ask 0, or the stale
-    post-redirect window) may pass first. The core squashes those with its
-    holdoff; the bench skips them.
+    Used for initial alignment after a PC jump. Under the fetch contract,
+    valid windows for an earlier ask may pass first; the core squashes those
+    with its holdoff, and the bench skips them.
     """
     base = addr & ~0x3
     want0 = _word_at(base)
@@ -258,7 +261,7 @@ async def test_low_addresses_stay_idle(dut: Any) -> None:
 
 @cocotb.test()
 async def test_ddr_fill_walk_and_straddle(dut: Any) -> None:
-    """DDR quadrant: fill, sequential walk, line straddle, prefetch."""
+    """DDR fill, sequential walk, line straddle, and next-line prefetch."""
     await _setup(dut)
     reqs: list[int] = []
     cocotb.start_soon(_line_slave(dut, latency=6, log=reqs))
@@ -266,8 +269,8 @@ async def test_ddr_fill_walk_and_straddle(dut: Any) -> None:
     await FallingEdge(dut.i_clk)
     _drive_pc(dut, DDR_BASE)
     await _wait_window(dut, DDR_BASE)
-    # The straddle rule requires word DDR_BASE+4 too (same line here), and
-    # the prefetch should already be chasing the next line.
+    # The window's second word, DDR_BASE+4, is in the same line, so the first
+    # request is that line; the next-line prefetch follows it.
     assert reqs[0] == DDR_BASE
 
     # Walk the whole first line; the boundary window (offset 0x1C) needs the
@@ -334,7 +337,7 @@ async def test_redirect_while_unserved_retargets(dut: Any) -> None:
 
 @cocotb.test()
 async def test_explicit_redirect_after_accepted_window_retargets(dut: Any) -> None:
-    """An architectural pulse overrides accepted-PC movement classification."""
+    """i_retarget replaces the owed ask on the cycle right after an accepted window."""
     await _setup(dut)
     reqs: list[int] = []
     cocotb.start_soon(_line_slave(dut, latency=3, log=reqs))
@@ -354,9 +357,9 @@ async def test_explicit_redirect_after_accepted_window_retargets(dut: Any) -> No
     assert int(dut.ask_q.value) == old_ask
     assert int(dut.o_instr_valid.value) == 0
 
-    # A recovery now lands immediately after that accepted cycle. Movement by
-    # itself is classified as flow here, so the narrow architectural pulse has
-    # to override it and replace the unresolved ask at the next edge.
+    # A recovery lands on the cycle right after that accepted window. PC
+    # movement alone counts as flow here, so i_retarget must override it and
+    # replace the unresolved ask at the next edge.
     target = DDR_BASE + 0x2000
     _drive_pc(dut, target)
     dut.i_pa_valid.value = 1
@@ -378,7 +381,11 @@ async def test_explicit_redirect_after_accepted_window_retargets(dut: Any) -> No
 async def test_accepted_leading_prediction_keeps_branch_ask_until_served(
     dut: Any,
 ) -> None:
-    """Accepted-PC movement without a retarget pulse preserves the owed ask."""
+    """A PC move right after an accepted window, without i_retarget, keeps the ask.
+
+    The branch's window stays owed until it is served; only then does the ask
+    advance to the live PC.
+    """
     await _setup(dut)
     reqs: list[int] = []
     cocotb.start_soon(_line_slave(dut, latency=12, log=reqs))
@@ -396,9 +403,9 @@ async def test_accepted_leading_prediction_keeps_branch_ask_until_served(
     assert int(dut.ask_q.value) == branch_pc
     assert not dut.o_instr_valid.value
 
-    # Model a leading slot-1 prediction: fetch moves to the target immediately,
-    # but IF supplies no cached-provider retarget pulse. The accepted-predecessor
-    # classifier must keep the branch response owed.
+    # Model a leading slot-1 prediction: fetch moves to the target at once, and
+    # IF raises no i_retarget. The move follows an accepted window, so
+    # accepted_prev_q masks it and the branch's window stays owed.
     _drive_pc(dut, target)
     await Timer(1, unit="ns")
     assert not dut.i_retarget.value
@@ -476,24 +483,41 @@ async def test_cold_redirect_keeps_two_fills_in_flight(dut: Any) -> None:
 
 @cocotb.test()
 async def test_out_of_order_fill_responses(dut: Any) -> None:
-    """The following line may land before the window's own line."""
+    """The following line's fill lands before the window's own line.
+
+    The slave holds the first request's response back, so the provider has to
+    route each response by its echoed id. No window may publish before the
+    window's own line lands, and every window across the line boundary must
+    be correct without another request for either line.
+    """
     await _setup(dut)
     reqs: list[int] = []
-    cocotb.start_soon(_line_slave(dut, latency=8, log=reqs, reorder=True))
+    responses: list[tuple[int, int]] = []
+    cocotb.start_soon(
+        _line_slave(dut, latency=8, log=reqs, latencies=(16, 3), responses=responses)
+    )
 
     await FallingEdge(dut.i_clk)
     _drive_pc(dut, DDR_BASE)
-    await _wait_window(dut, DDR_BASE)
+    await _wait_valid(dut)
+    # The window line is even (slot 0, id 0) and the following line odd.
+    assert responses[:2] == [(1, DDR_BASE + 32), (0, DDR_BASE)], (
+        f"responses before the first window: {[(i, hex(a)) for i, a in responses]}"
+    )
+    _check_window(dut, DDR_BASE)
     assert reqs[:2] == [DDR_BASE, DDR_BASE + 32]
 
-    # Walk across the boundary and through the second line; every window is
-    # correct even though the lines arrived reversed.
+    # Walk across the boundary and through the second line. Both lines must
+    # already sit in their own slots.
     pc = DDR_BASE
-    for _ in range(12):
+    for _ in range(15):
         pc += 4
         _drive_pc(dut, pc)
         await _wait_valid(dut)
         _check_window(dut, pc)
+    assert reqs.count(DDR_BASE) == 1 and reqs.count(DDR_BASE + 32) == 1, (
+        f"a reordered line was requested again: {[hex(r) for r in reqs]}"
+    )
 
 
 @cocotb.test()
@@ -513,7 +537,7 @@ async def test_invalidate_discards_two_inflight_fills(dut: Any) -> None:
     await FallingEdge(dut.i_clk)
     dut.i_invalidate.value = 0
 
-    # Both lines must be fetched again before the window can publish.
+    # Both lines are requested again by the time the window publishes.
     await _wait_valid(dut)
     _check_window(dut, DDR_BASE)
     assert reqs.count(DDR_BASE) >= 2 and reqs.count(DDR_BASE + 32) >= 2, f"reqs={reqs}"
@@ -562,9 +586,8 @@ async def _walk_lines(dut: Any, start: int, lines: int) -> None:
 async def test_victim_store_serves_reentered_lines(dut: Any) -> None:
     """A loop body that fits the slots plus the store re-enters with no L1I request.
 
-    Six lines plus the next-line prefetch occupy the two slots and the
-    six-entry store exactly; the second pass must be served entirely from
-    them.
+    Six lines plus the next-line prefetch fit in the two slots and the
+    six-entry store, so the second pass must be served entirely from them.
     """
     await _setup(dut)
     reqs: list[int] = []
@@ -618,6 +641,71 @@ async def test_victim_store_evicts_beyond_capacity(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_victim_store_keeps_outer_loop_lines(dut: Any) -> None:
+    """An inner loop's store traffic goes to free entries, not the outer loop's lines.
+
+    A four-line outer loop encloses a two-line inner loop that runs three
+    times per pass. Each inner re-entry copies lines back from the store,
+    which frees their entries, and writes the lines the copies replace. The
+    seven-line footprint (six lines plus the line after the inner loop) fits
+    the two slots and the six-entry store, so after the first outer pass no
+    line is fetched again.
+    """
+    await _setup(dut)
+    reqs: list[int] = []
+    cocotb.start_soon(_line_slave(dut, latency=6, log=reqs))
+
+    outer = DDR_BASE
+    inner = DDR_BASE + 4 * LINE_BYTES
+    await FallingEdge(dut.i_clk)
+    first_pass = 0
+    for outer_pass in range(4):
+        _drive_pc(dut, outer)
+        await _walk_lines(dut, outer, 4)
+        for _ in range(3):
+            _drive_pc(dut, inner)
+            await _walk_lines(dut, inner, 2)
+        if outer_pass == 0:
+            first_pass = len(reqs)
+    refetched = reqs[first_pass:]
+    assert not refetched, (
+        f"lines fetched again after the first pass: {[hex(r) for r in refetched]}"
+    )
+
+
+@cocotb.test()
+async def test_line_wanted_on_its_way_to_the_store_is_not_fetched_again(
+    dut: Any,
+) -> None:
+    """A slot's old line wanted back before it reaches the store is copied, not fetched.
+
+    A loop runs from the middle of an even line A through the first window of
+    the odd line B after it. Entering B, the next-line prefetch puts the line
+    after B into A's slot, and one cycle later the loop is back in A while A
+    is still in the slot's shadow on its way to the store. A must come back
+    from the store: no line is fetched twice, and the store never holds a
+    line twice (the RTL checks that on every store write).
+    """
+    await _setup(dut)
+    reqs: list[int] = []
+    cocotb.start_soon(_line_slave(dut, latency=6, log=reqs))
+
+    line_a = DDR_BASE + 8 * LINE_BYTES
+    line_b = line_a + LINE_BYTES
+    await FallingEdge(dut.i_clk)
+    for _ in range(6):
+        _drive_pc(dut, line_a + 16)
+        await _wait_window(dut, line_a + 16)
+        for pc in (line_a + 20, line_a + 24, line_a + 28, line_b):
+            _drive_pc(dut, pc)
+            await _wait_valid(dut)
+            _check_window(dut, pc)
+    assert sorted(reqs) == [line_a, line_b, line_b + LINE_BYTES], (
+        f"line requests: {[hex(r) for r in reqs]}"
+    )
+
+
+@cocotb.test()
 async def test_invalidate_drops_the_victim_store(dut: Any) -> None:
     """fence.i (i_invalidate) must not let a stored line be copied back."""
     await _setup(dut)
@@ -648,15 +736,15 @@ async def test_perf_miss_stall_qualifies_frontend_progress(dut: Any) -> None:
         await FallingEdge(dut.i_clk)
     assert int(dut.o_instr_valid.value) == 0
 
-    # The cache's source-registered outstanding level is registered once more
-    # at this seam; with no window available it becomes a stall event.
+    # The provider registers the cache's miss-outstanding level once more; with
+    # no window available, it counts as a stall.
     dut.i_l1i_miss_outstanding.value = 1
     await FallingEdge(dut.i_clk)
     assert int(dut.o_perf_miss_stall.value) == 1
 
-    # A backend pipeline stall is the competing cause. The live qualifier
-    # suppresses the onset immediately; pipeline_stall_q also suppresses the
-    # provider's registered tail after the live stall drops.
+    # A backend pipeline stall is the competing cause. The live i_pipeline_stall
+    # term suppresses the count at once, and pipeline_stall_q suppresses it for
+    # one more cycle after the stall drops.
     dut.i_pipeline_stall.value = 1
     await FallingEdge(dut.i_clk)
     assert int(dut.o_perf_miss_stall.value) == 0

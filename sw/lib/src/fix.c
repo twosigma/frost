@@ -26,13 +26,12 @@
  */
 
 #include "fix.h"
+#include <stdbool.h>
 #include <stddef.h>
 
 /* Parse a FIX timestamp string to nanoseconds. */
 uint64_t parse_timestamp(const char *timestamp_string)
 {
-    /* Approximate: 30-day months, 365-day years, no leap years (see the file header). */
-
     /* Expected format: "YYYYMMDD-HH:MM:SS.mmm", so at least 21 characters. A
      * shorter string would be over-read below. */
     int length = 0;
@@ -72,14 +71,22 @@ uint64_t parse_timestamp(const char *timestamp_string)
     return timestamp_in_nanoseconds;
 }
 
-/* Parse decimal price string to fixed-point representation */
+/* Parse a decimal price string with an optional leading '-' to fixed point
+ * with TARGET_SCALE decimal places. Fraction digits past TARGET_SCALE are
+ * truncated. The magnitude is built and negated in uint64_t, so the most
+ * negative amount parses exactly and no input overflows signed arithmetic;
+ * an amount outside the int64_t range is not detected and wraps modulo 2^64. */
 fix_price_t parse_price(const char *price_string)
 {
     fix_price_t parsed_price;
-    int64_t whole_number_part = 0;
-    int64_t fractional_part = 0;
+    uint64_t whole_number_part = 0;
+    uint64_t fractional_part = 0;
     int fractional_digits_count = 0;
     const char *decimal_point_position = NULL;
+    bool negative = *price_string == '-';
+
+    if (negative)
+        price_string++;
     const char *parse_pointer = price_string;
 
     while (*parse_pointer) {
@@ -114,11 +121,10 @@ fix_price_t parse_price(const char *price_string)
         }
     }
 
-    /* Example: "94.0000" gives whole=94, fractional=0, fractional_digits=4 */
-    /* Target: 94.00000000 in fixed point with scale 8 */
-    /* Result: 9400000000 (stored as integer with implied 8 decimal places) */
+    /* Example: "94.0000" gives whole=94, fractional=0, and 4 fractional digits,
+     * for a result of 9400000000 (8 implied decimal places). */
 
-    int64_t result = whole_number_part;
+    uint64_t result = whole_number_part;
 
     /* Shift whole part by number of fractional digits parsed */
     for (int i = 0; i < fractional_digits_count; i++) {
@@ -132,7 +138,8 @@ fix_price_t parse_price(const char *price_string)
         result *= 10;
     }
 
-    parsed_price.amount = result;
+    /* GCC converts an out-of-range value to int64_t modulo 2^64. */
+    parsed_price.amount = (int64_t) (negative ? 0U - result : result);
     parsed_price.scale = TARGET_SCALE;
 
     return parsed_price;

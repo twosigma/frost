@@ -120,7 +120,7 @@ class Controller {
     }
 
     private async folder(): Promise<vscode.WorkspaceFolder> {
-        if (process.platform !== 'linux') throw new Error('FROST v1 runs on the Linux FPGA host, locally or through Remote-SSH.');
+        if (process.platform !== 'linux') throw new Error('FROST runs only on the Linux FPGA host, locally or through Remote-SSH.');
         if (!vscode.workspace.isTrusted) throw new Error('Trust this repository before running its FPGA tools.');
         const folders = vscode.workspace.workspaceFolders ?? [];
         if (folders.length === 1) return folders[0];
@@ -232,8 +232,8 @@ class Controller {
             FROST_CPU_CLK_HZ: String(settings.cpuClockHz) };
         if (settings.memory === 'ddr') buildEnvironment.MEM_CONFIG = 'ddr';
         else delete buildEnvironment.MEM_CONFIG;
-        // Managed load has no ILA operation; inherited capture hooks must not
-        // turn this command into an unsolicited capture workflow.
+        // load_software.tcl runs the ILA capture hooks these variables name.
+        // Drop inherited values so a managed load never starts a capture.
         delete buildEnvironment.FROST_ILA_ARM_HOOK;
         delete buildEnvironment.FROST_ILA_COLLECT_HOOK;
         const symbolsDirectory = path.join(this.context.globalStorageUri.fsPath, 'symbols');
@@ -343,8 +343,8 @@ class Controller {
             progress(`Building and loading ${selection.app}`);
             const env: NodeJS.ProcessEnv = { ...process.env,
                 FROST_CPU_CLK_HZ: String(selection.cpuClockHz), FROST_DEBUG: '0' };
-            // With no --ddr request the app's Makefile owns its layout. Some
-            // apps deliberately combine BRAM and DDR despite that default.
+            // Without --ddr the app's Makefile chooses the layout, so drop any
+            // inherited MEM_CONFIG. Some apps place code or data in DDR by default.
             if (selection.memory === 'ddr') env.MEM_CONFIG = 'ddr';
             else delete env.MEM_CONFIG;
             delete env.FROST_ILA_ARM_HOOK;
@@ -360,7 +360,7 @@ class Controller {
             }
             signal.throwIfAborted();
         } finally { await this.hardware.stop(server); }
-        this.output.appendLine(`${selection.app} loaded and running. Owned hardware server stopped. Open FROST: Open Serial Console to view UART output.`);
+        this.output.appendLine(`${selection.app} loaded and running. Owned hardware server stopped. Run FROST: Open Serial Console to view UART output.`);
     }
 
     private async startDebug(folder: vscode.WorkspaceFolder, settings: FrostSettings,
@@ -404,7 +404,7 @@ class Controller {
                         await bounded(record.session.customRequest('disconnect', { terminateDebuggee: false }), 5000);
                         await bounded(record.ended.promise, 5000);
                     } catch (error) {
-                        this.output.appendLine(`Graceful detach was not confirmed: ${String(error)}. Reload before relying on breakpoint restoration.`);
+                        this.output.appendLine(`Graceful detach was not confirmed: ${String(error)}. Reload the image, because software breakpoints may still be in memory.`);
                         await bounded(vscode.debug.stopDebugging(record.session), 5000).catch(() => {});
                     }
                 }

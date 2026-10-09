@@ -15,26 +15,28 @@
  */
 
 /*
- * Tomasulo dispatch unit: sits between the ID stage and the out-of-order
- * backend. Takes decoded instructions (from_id_to_ex_t) and:
+ * Tomasulo dispatch unit: moves a bundle of up to two decoded instructions
+ * (from_id_to_ex_t) from the front end into the out-of-order back end. For
+ * each instruction it fires, it:
  *   1. Allocates a ROB entry
  *   2. Looks up source registers in the RAT (via tomasulo_wrapper ports)
  *   3. Renames the destination register in the RAT
- *   4. Routes the instruction to the correct Reservation Station
- *   5. Allocates a checkpoint for branches/jumps
- *   6. Generates back-pressure (stall) when resources are exhausted
+ *   4. Routes the instruction to its reservation station
+ *   5. Saves a checkpoint for a branch or jump
+ * and it stalls the bundle when a resource it needs is full.
  *
- * Dispatch is mostly combinational: outputs derive from the registered
- * from_id_to_ex pipeline register in the same cycle. The exception is the
- * done-repair bypass valid/tag channels, which are registered and appear one
- * cycle after the dispatch fire.
+ * Slot 2 fires only when slot 1 does, and the bundle fires or stalls as a
+ * unit, so slot 2 never allocates alone. Dispatch is combinational apart from
+ * the done-repair channels, which are registered and appear one cycle after
+ * the fire.
  *
- * Stall conditions (any one stalls the front-end):
+ * Stall conditions (any one stalls the bundle):
  *   - ROB full
  *   - Target RS full
- *   - LQ full (for loads)
- *   - SQ full (for stores)
- *   - No checkpoint available (for branches/jumps)
+ *   - LQ full (loads, LR, AMOs)
+ *   - SQ full (stores, SC)
+ *   - No checkpoint available (branches and jumps)
+ *   - i_hold (early back-end recovery)
  *
  * Source operand resolution consults the RAT for each source register:
  *   - Renamed (maps to a ROB tag): src_ready=0, src_tag=ROB tag, and the CDB
@@ -43,12 +45,27 @@
  *     done and, if so, wakes the RS with the ROB value.
  *   - Architectural (no rename): src_ready=1, src_value=regfile value.
  *
- * Instructions that need no RS (JAL, WFI, MRET/SRET/DRET, PAUSE) go to the
- * ROB only (rs_type=RS_NONE). The ROB completes and commits them from the
- * per-op flags in the allocation request.
+ * Instructions that need no RS (JAL, WFI, MRET/SRET/DRET) go to the ROB only
+ * (rs_type=RS_NONE). The ROB completes and commits them from the per-op flags
+ * in the allocation request.
  */
 
-module dispatch (
+module dispatch #(
+    // Set when the decoded queue drives the inputs; the queue guarantees
+    // i_valid_2 == i_valid && packet2.is_real. Slot 2's presence then comes
+    // from the registered is_real bit, which keeps the shared queue-valid
+    // signal out of slot 2's blocking gate. With the default 0, dispatch uses
+    // i_valid_2.
+    parameter bit SLOT2_VALID_FROM_BUNDLE = 1'b0,
+    // Set when i_int_rf_* carry the bypassed integer register-file reads that
+    // also feed the RAT's regfile-data inputs. The per-RS packet values are
+    // then formed from those reads with a single mask per packet (that
+    // packet's use of the source together with the x0 test), not from the
+    // RAT lookup value, whose x0 select is a second mask on the same path.
+    // The packet values are unchanged (p_*_value_exact). With the default 0
+    // the i_int_rf_* inputs are unused.
+    parameter bit RAW_INT_RF_VALUES = 1'b0
+) (
     input logic i_clk,
     input logic i_rst_n,
 
@@ -96,12 +113,6 @@ module dispatch (
     output riscv_pkg::reorder_buffer_alloc_req_t  o_rob_alloc_req_2,
     input  riscv_pkg::reorder_buffer_alloc_resp_t i_rob_alloc_resp_2,
 
-    // ROB entry-done vector. Unused here; kept for interface stability. The
-    // old slot-2 missed-CDB conservative gate went away when dispatch grew
-    // channels 4/5/6 for slot-2 done-repair, and the registered bypass path
-    // in the wrapper/RS now repairs missed-CDB operands.
-    input logic [riscv_pkg::ReorderBufferDepth-1:0] i_rob_entry_done,
-
     // =========================================================================
     // RAT Source Lookups (combinational, from tomasulo_wrapper)
     // =========================================================================
@@ -134,6 +145,14 @@ module dispatch (
     input riscv_pkg::rat_lookup_t i_fp_src1_2,
     input riscv_pkg::rat_lookup_t i_fp_src2_2,
     input riscv_pkg::rat_lookup_t i_fp_src3_2,
+
+    // Bypassed integer register-file reads at i_rs1_addr/i_rs2_addr (slot 1)
+    // and i_rs1_addr_2/i_rs2_addr_2 (slot 2): the RAT lookups' value source.
+    // Used only with RAW_INT_RF_VALUES.
+    input logic [riscv_pkg::XLEN-1:0] i_int_rf_rs1_data,
+    input logic [riscv_pkg::XLEN-1:0] i_int_rf_rs2_data,
+    input logic [riscv_pkg::XLEN-1:0] i_int_rf_rs1_data_2,
+    input logic [riscv_pkg::XLEN-1:0] i_int_rf_rs2_data_2,
 
     // =========================================================================
     // RAT Rename (to tomasulo_wrapper: writes the dest mapping)
@@ -178,8 +197,6 @@ module dispatch (
     output riscv_pkg::rs_dispatch_t o_mul_rs_dispatch,
     output riscv_pkg::rs_dispatch_t o_mem_rs_dispatch,
     output riscv_pkg::rs_dispatch_t o_fp_rs_dispatch,
-    output riscv_pkg::rs_dispatch_t o_fmul_rs_dispatch,
-    output riscv_pkg::rs_dispatch_t o_fdiv_rs_dispatch,
 
     // Slot-2 per-RS dispatch packets (2-wide dispatch).  The dispatch unit
     // routes slot-2 to the RS family matching its rs_type and asserts
@@ -188,8 +205,6 @@ module dispatch (
     output riscv_pkg::rs_dispatch_t o_mul_rs_dispatch_2,
     output riscv_pkg::rs_dispatch_t o_mem_rs_dispatch_2,
     output riscv_pkg::rs_dispatch_t o_fp_rs_dispatch_2,
-    output riscv_pkg::rs_dispatch_t o_fmul_rs_dispatch_2,
-    output riscv_pkg::rs_dispatch_t o_fdiv_rs_dispatch_2,
 
     // =========================================================================
     // Checkpoint Management (to/from tomasulo_wrapper)
@@ -205,12 +220,23 @@ module dispatch (
     // Slot-2-branch flag: when slot-2 is the branch the snapshot must
     // overlay slot-1's same-cycle rename.
     output logic                                        o_checkpoint_save_for_slot2,
+    // Early candidates for the RAT's writes, not qualified by the dispatch
+    // decision. A bundle fires whole, so slot 2 fires exactly when the bundle
+    // does and slot 2 is present: o_rat_alloc_valid is the fire and
+    // o_alloc_has_dest, o_rat_alloc_valid_2 the fire and o_alloc_has_dest_2,
+    // and o_checkpoint_save_for_slot2 equals o_checkpoint_slot2_candidate
+    // whenever o_checkpoint_save asserts. The RAT builds its write selects from
+    // these and applies the late fire last.
+    output logic                                        o_alloc_has_dest,
+    output logic                                        o_alloc_has_dest_2,
+    output logic                                        o_checkpoint_slot2_candidate,
 
     // RAS state to save with checkpoint
     input  logic [riscv_pkg::RasPtrBits-1:0] i_ras_tos,
     input  logic [  riscv_pkg::RasPtrBits:0] i_ras_valid_count,
     output logic [riscv_pkg::RasPtrBits-1:0] o_ras_tos,
     output logic [  riscv_pkg::RasPtrBits:0] o_ras_valid_count,
+    output logic [      riscv_pkg::XLEN-1:0] o_ras_top,
 
     // ROB checkpoint recording
     output logic                                    o_rob_checkpoint_valid,
@@ -224,8 +250,6 @@ module dispatch (
     input logic i_mul_rs_full,
     input logic i_mem_rs_full,
     input logic i_fp_rs_full,
-    input logic i_fmul_rs_full,
-    input logic i_fdiv_rs_full,
     input logic i_lq_full,
     input logic i_sq_full,
 
@@ -237,8 +261,6 @@ module dispatch (
     input logic i_mul_rs_full_for_2,
     input logic i_mem_rs_full_for_2,
     input logic i_fp_rs_full_for_2,
-    input logic i_fmul_rs_full_for_2,
-    input logic i_fdiv_rs_full_for_2,
     input logic i_lq_full_for_2,
     input logic i_sq_full_for_2,
 
@@ -279,11 +301,9 @@ module dispatch (
 
   // Pre-decoded in id_stage and registered into from_id_to_ex_t to keep the
   // op-classification decode out of the dispatch -> RS-write critical path.
-  // The id_stage helper applies the same is_illegal -> ILLEGAL override used
-  // below to construct `op`, so these flags are equivalent to re-running the
-  // has_fp_dest(op) / has_int_dest(op) functions here.  Removes the
-  // 4-LUT-deep decode chain from instruction_operation that fed
-  // has_int_dest_flag1 on the worst-case ID->RS path (post-synth WNS=-1.576ns).
+  // The id_stage helper (instr_operand_classifier) applies the same illegal
+  // and fetch-fault overrides that build `op` above, so these flags equal the
+  // has_fp_dest(op) / has_int_dest(op) functions evaluated here.
   logic has_fp_dest_flag;
   logic has_int_dest_flag;
   assign has_fp_dest_flag  = i_from_id_to_ex.has_fp_dest;
@@ -316,14 +336,16 @@ module dispatch (
   logic op_has_fp_flags;
 
   // uses_fp_rs1/rs2/rs3 and uses_int_rs1/rs2 are pre-decoded in id_stage and
-  // registered into from_id_to_ex_t; see has_*_dest_flag above for the ID->RS
-  // path that motivated the move.
+  // registered into from_id_to_ex_t for the same ID->RS timing reason as
+  // has_*_dest_flag above.
   assign uses_fp_rs1_flag = i_from_id_to_ex.uses_fp_rs1;
   assign uses_fp_rs2_flag = i_from_id_to_ex.uses_fp_rs2;
   assign uses_fp_rs3_flag = i_from_id_to_ex.uses_fp_rs3;
   assign uses_int_rs1     = i_from_id_to_ex.uses_int_rs1;
   assign uses_int_rs2     = i_from_id_to_ex.uses_int_rs2;
 
+  // An illegal FSW or FSD (FS=Off) keeps its decoded is_fp_store; the mask
+  // keeps it from reaching the ROB and the reservation station as a store.
   assign is_store_flag    = i_from_id_to_ex.is_int_store;
   assign is_fp_store_flag = i_from_id_to_ex.is_fp_store && !i_from_id_to_ex.is_illegal_instruction;
   assign is_load_flag     = i_from_id_to_ex.is_load_instruction;
@@ -376,14 +398,10 @@ module dispatch (
     // needs no extension.
     //
     // LR.W is a sign-extending word load as well, but it is not
-    // is_load_instruction (opcode OPC_AMO), so it needs its own term.  This
-    // flag becomes the LQ entry's sign_ext, and without it LR.W wrote back
-    // zero-extended at XLEN=64.  A zero-extended negative i_writecount made
-    // the kernel's atomic_dec_unless_positive lr.w/bgtz loop skip its
-    // decrement while still reporting success; the leaked counts drifted
-    // positive and every later exec of the inode failed ETXTBSY (the rv64
-    // Linux "Text file busy" storm).  LR.D is size-DOUBLE and takes the raw
-    // full beat regardless of this flag.
+    // is_load_instruction (opcode OPC_AMO), so it needs its own term. This
+    // flag becomes the LQ entry's sign_ext; without it LR.W would write back
+    // zero-extended at XLEN=64. LR.D is size-DOUBLE and takes the raw full
+    // beat regardless of this flag.
     mem_signed = (i_from_id_to_ex.is_load_instruction || i_from_id_to_ex.is_lr) &&
                  !i_from_id_to_ex.is_load_unsigned;
   end
@@ -463,7 +481,7 @@ module dispatch (
         imm     = i_from_id_to_ex.jal_target_precomputed;
       end
 
-      // Fetch-fault pseudo-ops (M5): ID precomputed PC + the offset of the
+      // Fetch-fault pseudo-ops: ID precomputed PC + the offset of the
       // faulting portion within the instruction (2 when only the second
       // halfword of a page-straddling instruction faulted, else 0); the INT
       // ALU shim reports the immediate as the exception's xtval.
@@ -484,10 +502,7 @@ module dispatch (
   logic [riscv_pkg::XLEN-1:0] predicted_target;
 
   always_comb begin
-    if (i_from_id_to_ex.ras_predicted) begin
-      predicted_taken  = 1'b1;
-      predicted_target = i_from_id_to_ex.ras_predicted_target;
-    end else if (i_from_id_to_ex.btb_predicted_taken) begin
+    if (i_from_id_to_ex.btb_predicted_taken) begin
       predicted_taken  = 1'b1;
       predicted_target = i_from_id_to_ex.btb_predicted_target;
     end else begin
@@ -496,12 +511,10 @@ module dispatch (
     end
   end
 
-  // Direct-branch target check, selected from the same prediction source as
-  // predicted_target above.  ID compared its precomputed PC-relative target
-  // against both predictions; JALR resolves its own target at execute.
+  // Direct-branch target check: ID compared its precomputed PC-relative target
+  // with the BTB prediction; JALR resolves its own target at execute.
   logic predicted_target_ok;
-  assign predicted_target_ok = i_from_id_to_ex.ras_predicted ?
-      i_from_id_to_ex.ras_correct_non_jalr : i_from_id_to_ex.btb_correct_non_jalr;
+  assign predicted_target_ok = i_from_id_to_ex.btb_correct_non_jalr;
 
   // Branch target (pre-computed in ID stage)
   logic [riscv_pkg::XLEN-1:0] branch_target;
@@ -513,9 +526,9 @@ module dispatch (
   // ===========================================================================
   // Slot-2 Instruction Classification (mirrors slot-1 above)
   // ===========================================================================
-  // Decoded the same way as slot-1 but driven from i_from_id_to_ex_2 / i_valid_2.
-  // When the bundle has no valid slot-2 (i_valid_2='0), these signals collapse
-  // to defaults and feed an all-zero slot-2 dispatch packet.
+  // Decoded the same way as slot 1, from i_from_id_to_ex_2. When slot 2 does
+  // not fire, its ROB, RAT, RS, and checkpoint valids stay low, and its
+  // registered done-repair valids stay low on the next cycle.
 
   riscv_pkg::instr_op_e op_2;
   assign op_2 = i_from_id_to_ex_2.is_fetch_fault ?
@@ -613,8 +626,7 @@ module dispatch (
       end
     endcase
 
-    // Includes is_lr for LR.W's sign extension; see the slot-1 mem_signed
-    // comment (the rv64 ETXTBSY fix).
+    // Includes is_lr for LR.W's sign extension; see slot 1's mem_signed.
     mem_signed_2 = (i_from_id_to_ex_2.is_load_instruction || i_from_id_to_ex_2.is_lr) &&
                    !i_from_id_to_ex_2.is_load_unsigned;
   end
@@ -702,10 +714,7 @@ module dispatch (
   logic [riscv_pkg::XLEN-1:0] predicted_target_2;
 
   always_comb begin
-    if (i_from_id_to_ex_2.ras_predicted) begin
-      predicted_taken_2  = 1'b1;
-      predicted_target_2 = i_from_id_to_ex_2.ras_predicted_target;
-    end else if (i_from_id_to_ex_2.btb_predicted_taken) begin
+    if (i_from_id_to_ex_2.btb_predicted_taken) begin
       predicted_taken_2  = 1'b1;
       predicted_target_2 = i_from_id_to_ex_2.btb_predicted_target;
     end else begin
@@ -716,8 +725,7 @@ module dispatch (
 
   // Slot-2 direct-branch target check (see slot 1).
   logic predicted_target_ok_2;
-  assign predicted_target_ok_2 = i_from_id_to_ex_2.ras_predicted ?
-      i_from_id_to_ex_2.ras_correct_non_jalr : i_from_id_to_ex_2.btb_correct_non_jalr;
+  assign predicted_target_ok_2 = i_from_id_to_ex_2.btb_correct_non_jalr;
 
   // Slot-2 branch target.
   logic [riscv_pkg::XLEN-1:0] branch_target_2;
@@ -730,27 +738,29 @@ module dispatch (
   // Stall Logic
   // ===========================================================================
 
-  logic rs_full;
+  // TIMING: rs_full selects among the stations' registered full flags with
+  // the registered RS route; keep holds it as its own net so the late
+  // dispatch_common_ready meets it in one LUT of the fire cone rather than
+  // being repeated across a two-LUT rebuild of this select.
+  (* keep = "true" *) logic rs_full;
   always_comb begin
     case (rs_type)
       riscv_pkg::RS_INT: rs_full = i_int_rs_full;
       riscv_pkg::RS_MUL: rs_full = i_mul_rs_full;
       riscv_pkg::RS_MEM: rs_full = i_mem_rs_full;
       riscv_pkg::RS_FP: rs_full = i_fp_rs_full;
-      riscv_pkg::RS_FMUL: rs_full = i_fmul_rs_full;
-      riscv_pkg::RS_FDIV: rs_full = i_fdiv_rs_full;
       riscv_pkg::RS_NONE: rs_full = 1'b0;  // No RS needed
       default: rs_full = 1'b0;
     endcase
   end
 
+  // Whether the instruction takes a load- or store-queue entry, registered
+  // in ID from the operand classifier: clear for an illegal instruction (an
+  // FS=Off FLW or FSD among them) or a fetch fault, which routes to INT_RS, so
+  // neither waits on a full queue.
   logic need_lq, need_sq;
-  assign need_lq = is_load_flag || is_fp_load_flag ||
-                   i_from_id_to_ex.is_lr ||
-                   (i_from_id_to_ex.is_amo_instruction &&
-                    !i_from_id_to_ex.is_lr &&
-                    !i_from_id_to_ex.is_sc);
-  assign need_sq = is_store_flag || is_fp_store_flag || i_from_id_to_ex.is_sc;
+  assign need_lq = i_from_id_to_ex.needs_lq;
+  assign need_sq = i_from_id_to_ex.needs_sq;
 
   logic need_checkpoint;
   assign need_checkpoint = is_branch_flag;
@@ -758,26 +768,18 @@ module dispatch (
   logic dispatch_valid;
   assign dispatch_valid = i_valid && !i_flush;
 
-  // Slot-2 resource needs.  When slot-2 isn't firing (i_valid_2=0) all of
-  // these are don't-cares for the bundle gate and o_stall collapses to the
-  // 1-wide form.
+  // Slot-2 resource needs. When slot 2 is absent these are don't-cares:
+  // slot2_bundle_ok is 1 and o_stall reduces to slot 1's condition.
   logic need_lq_2, need_sq_2;
-  assign need_lq_2 = is_load_flag_2 || is_fp_load_flag_2 ||
-                     i_from_id_to_ex_2.is_lr ||
-                     (i_from_id_to_ex_2.is_amo_instruction &&
-                      !i_from_id_to_ex_2.is_lr &&
-                      !i_from_id_to_ex_2.is_sc);
-  assign need_sq_2 = is_store_flag_2 || is_fp_store_flag_2 || i_from_id_to_ex_2.is_sc;
+  assign need_lq_2 = i_from_id_to_ex_2.needs_lq;
+  assign need_sq_2 = i_from_id_to_ex_2.needs_sq;
 
   logic need_checkpoint_2;
   assign need_checkpoint_2 = is_branch_flag_2;
 
   logic dispatch_valid_2;
   logic slot2_fp_compute_serialized;
-  assign slot2_fp_compute_serialized =
-      (rs_type_2 == riscv_pkg::RS_FP) ||
-      (rs_type_2 == riscv_pkg::RS_FMUL) ||
-      (rs_type_2 == riscv_pkg::RS_FDIV);
+  assign slot2_fp_compute_serialized = (rs_type_2 == riscv_pkg::RS_FP);
   assign dispatch_valid_2 = i_valid_2 && !i_flush && !slot2_fp_compute_serialized;
 
   // Slot-2's RS-room check.  Same-RS-as-slot-1 needs room for 2; otherwise
@@ -791,11 +793,11 @@ module dispatch (
       rs_full_for_slot2 = (rs_type == riscv_pkg::RS_MUL) ? i_mul_rs_full_for_2 : i_mul_rs_full;
       riscv_pkg::RS_MEM:
       rs_full_for_slot2 = (rs_type == riscv_pkg::RS_MEM) ? i_mem_rs_full_for_2 : i_mem_rs_full;
-      // Slot-2 FP compute dispatch is serialized off before the bundle gate
-      // (`dispatch_valid_2=0`), so these fullness inputs are don't-cares for
-      // slot-2.  Keeping them out of the slot-2 room mux prevents FP RS
-      // fullness from gating unrelated integer/memory dispatch packets.
-      riscv_pkg::RS_FP, riscv_pkg::RS_FMUL, riscv_pkg::RS_FDIV: rs_full_for_slot2 = 1'b0;
+      // An FP-compute slot 2 is treated as absent before the bundle gate
+      // (dispatch_valid_2=0), so FP_RS fullness is a don't-care for slot 2.
+      // Keeping it out of the slot-2 room mux stops it from gating unrelated
+      // integer and memory dispatch packets.
+      riscv_pkg::RS_FP: rs_full_for_slot2 = 1'b0;
       riscv_pkg::RS_NONE: rs_full_for_slot2 = 1'b0;
       default: rs_full_for_slot2 = 1'b0;
     endcase
@@ -807,6 +809,9 @@ module dispatch (
   assign lq_full_for_slot2 = need_lq ? i_lq_full_for_2 : i_lq_full;
   assign sq_full_for_slot2 = need_sq ? i_sq_full_for_2 : i_sq_full;
 
+  (* max_fanout = 64 *)logic bundle_fire_ok;  // Whole bundle fires (slot-1 + optional slot-2)
+  logic slot2_only_block;
+
   // Stall: back-pressure when any needed resource is full
   always_comb begin
     o_status = '0;
@@ -816,8 +821,6 @@ module dispatch (
     o_status.mul_rs_full = dispatch_valid && (rs_type == riscv_pkg::RS_MUL) && i_mul_rs_full;
     o_status.mem_rs_full = dispatch_valid && (rs_type == riscv_pkg::RS_MEM) && i_mem_rs_full;
     o_status.fp_rs_full = dispatch_valid && (rs_type == riscv_pkg::RS_FP) && i_fp_rs_full;
-    o_status.fmul_rs_full = dispatch_valid && (rs_type == riscv_pkg::RS_FMUL) && i_fmul_rs_full;
-    o_status.fdiv_rs_full = dispatch_valid && (rs_type == riscv_pkg::RS_FDIV) && i_fdiv_rs_full;
     o_status.lq_full = dispatch_valid && need_lq && i_lq_full;
     o_status.sq_full = dispatch_valid && need_sq && i_sq_full;
     o_status.checkpoint_full = dispatch_valid && need_checkpoint && !i_checkpoint_available;
@@ -835,71 +838,57 @@ module dispatch (
                                                           (need_sq_2 && sq_full_for_slot2));
     o_status.slot2_block_ckpt = slot2_only_block && need_checkpoint_2 && !i_checkpoint_available;
 
-    // Stall semantics ("simpler stall"):
-    //   o_stall = !(slot1_can_fire && (!slot2_valid || slot2_can_fire))
-    // If slot-2 is invalid this reduces to !slot1_can_fire, identical to the
-    // 1-wide baseline.  When slot-2 is valid but cannot fire, both slots
-    // stall so the front-end re-presents the bundle next cycle (there is no
-    // skid buffer).
+    // Stall:
+    //   o_stall = dispatch_valid && !(slot1_can_fire && (!slot2_valid || slot2_can_fire))
+    // With no valid slot 2 this reduces to slot 1's own condition. When a
+    // valid slot 2 cannot fire, both slots stall and the front end presents
+    // the bundle again next cycle (there is no skid buffer).
     //
-    // o_stall must keep the dispatch-validity qualifier.  The resource-only
-    // form (`!i_flush && !bundle_resource_ok`, commit c393c75) asserted extra
-    // stalls in invalid-bundle states keyed to a stale, killed ID packet's
-    // resource needs, and CoreMark-PRO loops/parser/sha silently corrupted
-    // data.  The dispatch-stall source is not a generic hold: it feeds
-    // replay_after_dispatch_stall_q, whose pulse overrides id_stall_q and
-    // re-validates the held ID image (frontend_validity_tracker), so this
-    // source must mean "a valid dispatch was blocked".  Concrete failure: a
-    // valid instruction X dispatches while another front-end stall holds ID;
-    // next cycle X is invalidated by id_stall_q; if X's now-stale decoded
-    // resource is full, the resource-only stall manufactures a replay pulse
-    // that re-validates X once room returns, and X dispatches (allocates)
-    // twice.  Other global-stall sources (CSR fences, serialization) may
-    // assert while dispatch is invalid; the invariant binds only this source
-    // and its replay pulse.  Empirically, coremark_pro loops/parser (run 1)
-    // and sha (run 2) failed deterministically under c393c75's semantics,
-    // and restoring the qualifier alone heals all three.  If the x3 timing
-    // gain is re-attempted, split the signals (a resource-only term may
-    // drive only the high-fanout front-end hold, while the replay pulse
-    // keeps the validity-qualified term), or add a one-entry ID->dispatch
-    // skid buffer.  A bare registered stall without capture capacity is not
-    // sufficient.
+    // o_stall must keep the dispatch_valid qualifier. It is not a generic
+    // hold: it feeds replay_after_dispatch_stall_q, whose pulse overrides
+    // id_stall_q and re-validates the held ID image (frontend_validity_tracker),
+    // so it must mean "a valid dispatch was blocked". A stall on resource status
+    // alone can dispatch an instruction twice: X dispatches while another
+    // front-end stall holds ID, and the next cycle id_stall_q invalidates X's
+    // held image. If X's resource is full by then, the unqualified stall raises
+    // a replay pulse that re-validates X, and X dispatches again once room
+    // returns. Other front-end stall sources (CSR fences, serialization) may
+    // assert while dispatch is invalid; the rule binds only this source and
+    // its replay pulse. For timing, a resource-only term may drive the
+    // high-fanout front-end hold as long as the replay pulse keeps the
+    // qualified term; a registered stall also needs capture capacity, such as
+    // a one-entry ID-to-dispatch skid buffer.
     o_stall = dispatch_valid && !bundle_fire_ok;
-    // Perf counter must keep counting true dispatch backpressure, so it stays
-    // validity-qualified even if o_stall is ever split per the note above.
+    // The perf counter counts real dispatch back-pressure, so it stays
+    // validity-qualified even if o_stall is ever split as described above.
     o_status.stall = dispatch_valid && !bundle_fire_ok;
   end
 
-  // Dispatch fires when valid and not stalled.  Split per-RS dispatch outputs
+  // Dispatch fires when valid and not stalled. Split per-RS dispatch outputs
   // use RS-specific fire terms so unrelated full signals do not feed every
   // reservation station's input registers through the shared rs_full mux.
-  // Timing: the fire/ready gates aggregate every full/hold source and then
-  // broadcast into RAT/ROB/LQ/SQ/checkpoint write gating across the die.  The
-  // RS dispatch_full_q -> stall-tree -> write-enable cone is a top post-place
-  // failing-path family, and capping only the source registers re-anchored
-  // it on another RS's full bit.  Capping the aggregation nets lets the
-  // driver LUTs replicate per consumer region.
+  // Timing: the fire/ready gates aggregate every full and hold source and then
+  // fan out to the RAT, ROB, LQ, SQ, and checkpoint write enables across the
+  // die. max_fanout on these aggregation nets lets the driver LUTs replicate
+  // per consumer region; capping only the source registers just moves the
+  // critical path to another RS's full bit.
   (* max_fanout = 64 *)logic dispatch_common_ready;
   (* max_fanout = 64 *)logic dispatch_fire;
   (* max_fanout = 64 *)logic slot1_can_fire;  // Slot-1 standalone gate
-  (* max_fanout = 64 *)logic slot2_can_fire;  // Slot-2 gate, conditional on slot1_can_fire
+  // Slot-2 gate, conditional on slot1_can_fire.
+  (* keep = "true", max_fanout = 64 *)logic slot2_can_fire;
   logic slot2_resources_ok;
   (* max_fanout = 64 *)logic slot2_bundle_ok;
-  (* max_fanout = 64 *)logic bundle_fire_ok;  // Whole bundle fires (slot-1 + optional slot-2)
   logic int_rs_dispatch_fire;
   logic mul_rs_dispatch_fire;
   logic mem_rs_dispatch_fire;
   logic fp_rs_dispatch_fire;
-  logic fmul_rs_dispatch_fire;
-  logic fdiv_rs_dispatch_fire;
   // Slot-2 per-RS fire signals.  Each independently requires the bundle to
   // fire and routes slot-2's packet into exactly one RS family.
   logic int_rs_dispatch_fire_2;
   logic mul_rs_dispatch_fire_2;
   logic mem_rs_dispatch_fire_2;
   logic fp_rs_dispatch_fire_2;
-  logic fmul_rs_dispatch_fire_2;
-  logic fdiv_rs_dispatch_fire_2;
 
   assign dispatch_common_ready =
       dispatch_valid &&
@@ -909,17 +898,16 @@ module dispatch (
       !(need_sq && i_sq_full) &&
       !(need_checkpoint && !i_checkpoint_available);
   assign slot1_can_fire = dispatch_common_ready && !rs_full;
-  // A slot-1 branch terminates the bundle, so slot-2 never fires behind one.
+  // A slot-1 branch or jump ends the bundle, so slot 2 never fires behind one.
   // Slot-2 alloc requires slot-1 alloc to fire as well, so slot1_can_fire is
-  // part of the gate.  Resource room counts are "for 2" when both slots
+  // part of the gate. Resource room counts are "for 2" when both slots
   // target the same structure and plain "full" when they don't
   // (rs_full_for_slot2, lq_full_for_slot2 and sq_full_for_slot2 already
   // encode this).
   //
-  // There is no conservative slot2_source_done_pending gate any more.
-  // Slot-2 has its own done-repair coverage via dispatch's bypass channels
-  // 4/5/6 -> wrapper -> RS i_repair_valid_4/5/6, so an already-done slot-2
-  // source is repaired the cycle after dispatch, just like slot-1.
+  // A slot-2 source whose producer is already done needs no gate here: done
+  // repair channels 4 and 5 (to the wrapper and the RS's i_repair_valid_4/5)
+  // wake it the cycle after dispatch, as channels 1 to 3 do for slot 1.
 
   assign slot2_resources_ok = !is_branch_flag &&  // slot-1 not a branch
       !i_rob_full_for_2 &&
@@ -927,17 +915,49 @@ module dispatch (
       !(need_lq_2 && lq_full_for_slot2) &&
       !(need_sq_2 && sq_full_for_slot2) &&
       !(need_checkpoint_2 && !i_checkpoint_available);
-  assign slot2_can_fire = slot1_can_fire && dispatch_valid_2 && slot2_resources_ok;
-  assign slot2_bundle_ok = !dispatch_valid_2 || slot2_resources_ok;
+  logic slot2_present_for_admission;
+  assign slot2_present_for_admission = SLOT2_VALID_FROM_BUNDLE ?
+      (i_from_id_to_ex_2.is_real && !slot2_fp_compute_serialized) : dispatch_valid_2;
+  assign slot2_can_fire = slot1_can_fire && slot2_present_for_admission && slot2_resources_ok;
+  assign slot2_bundle_ok = !slot2_present_for_admission || slot2_resources_ok;
   // Width-funnel profiling: cycles where a valid slot-2 alone holds the
   // bundle (slot-1 could have fired).  Decomposed per cause into o_status.
-  logic slot2_only_block;
   assign slot2_only_block = dispatch_valid_2 && slot1_can_fire && !slot2_resources_ok;
   // The whole bundle fires together: either both slots fire or neither.
   // When slot-2 isn't valid the OR collapses to 1 and the bundle gate
   // matches slot-1's standalone gate.
   assign bundle_fire_ok = slot1_can_fire && slot2_bundle_ok;
   assign dispatch_fire = bundle_fire_ok;
+
+`ifndef SYNTHESIS
+  always @(posedge i_clk) begin
+    if (!$isunknown({dispatch_valid, dispatch_valid_2, slot2_present_for_admission})) begin
+      p_queued_slot2_valid_contract :
+      assert (!SLOT2_VALID_FROM_BUNDLE || !dispatch_valid ||
+              (dispatch_valid_2 == slot2_present_for_admission));
+      p_bundle_admission_exact :
+      assert (bundle_fire_ok == (slot1_can_fire && (!dispatch_valid_2 || slot2_resources_ok)));
+      p_slot2_admission_exact :
+      assert (slot2_can_fire == (slot1_can_fire && dispatch_valid_2 && slot2_resources_ok));
+    end
+  end
+`endif
+`ifdef DISPATCH_ADMISSION_LOCAL_PROOF
+  always_comb begin
+    if (SLOT2_VALID_FROM_BUNDLE && dispatch_valid) assume (i_valid_2 == i_from_id_to_ex_2.is_real);
+    // The operand classifier's contract (instr_operand_classifier target):
+    // only FMA ops, which go to FP_RS, read FP source 3. ID and the decoded
+    // queue carry both fields together, resetting and flushing them to RS_INT
+    // without it.
+    if (i_from_id_to_ex_2.uses_fp_rs3) assume (rs_type_2 == riscv_pkg::RS_FP);
+    p_slot2_no_fp_source3 : assert (!(slot2_can_fire && uses_fp_rs3_flag_2));
+    p_bundle_admission_formal :
+    assert (bundle_fire_ok == (slot1_can_fire && (!dispatch_valid_2 || slot2_resources_ok)));
+    p_slot2_admission_formal :
+    assert (slot2_can_fire == (slot1_can_fire && dispatch_valid_2 && slot2_resources_ok));
+  end
+`endif
+
 
   assign int_rs_dispatch_fire =
       dispatch_common_ready && (rs_type == riscv_pkg::RS_INT) && !i_int_rs_full &&
@@ -951,28 +971,15 @@ module dispatch (
   assign fp_rs_dispatch_fire =
       dispatch_common_ready && (rs_type == riscv_pkg::RS_FP) && !i_fp_rs_full &&
       slot2_bundle_ok;
-  assign fmul_rs_dispatch_fire =
-      dispatch_common_ready && (rs_type == riscv_pkg::RS_FMUL) && !i_fmul_rs_full &&
-      slot2_bundle_ok;
-  assign fdiv_rs_dispatch_fire =
-      dispatch_common_ready && (rs_type == riscv_pkg::RS_FDIV) && !i_fdiv_rs_full &&
-      slot2_bundle_ok;
 
-  // Slot-2 per-RS dispatch fire signals.  Each gates on bundle_fire_ok plus
-  // slot-2's specific RS family.  Like the slot-1 per-RS signals, only the
+  // Slot-2 per-RS dispatch fire signals use the direct two-slot admission
+  // gate rather than passing valid_2 through slot2_bundle_ok and back out.
+  // Like the slot-1 per-RS signals, only the
   // RS family targeted by slot-2 has its valid bit asserted.
-  assign int_rs_dispatch_fire_2  = bundle_fire_ok && dispatch_valid_2 &&
-                                   (rs_type_2 == riscv_pkg::RS_INT);
-  assign mul_rs_dispatch_fire_2  = bundle_fire_ok && dispatch_valid_2 &&
-                                   (rs_type_2 == riscv_pkg::RS_MUL);
-  assign mem_rs_dispatch_fire_2  = bundle_fire_ok && dispatch_valid_2 &&
-                                   (rs_type_2 == riscv_pkg::RS_MEM);
-  assign fp_rs_dispatch_fire_2   = bundle_fire_ok && dispatch_valid_2 &&
-                                   (rs_type_2 == riscv_pkg::RS_FP);
-  assign fmul_rs_dispatch_fire_2 = bundle_fire_ok && dispatch_valid_2 &&
-                                   (rs_type_2 == riscv_pkg::RS_FMUL);
-  assign fdiv_rs_dispatch_fire_2 = bundle_fire_ok && dispatch_valid_2 &&
-                                   (rs_type_2 == riscv_pkg::RS_FDIV);
+  assign int_rs_dispatch_fire_2 = slot2_can_fire && (rs_type_2 == riscv_pkg::RS_INT);
+  assign mul_rs_dispatch_fire_2 = slot2_can_fire && (rs_type_2 == riscv_pkg::RS_MUL);
+  assign mem_rs_dispatch_fire_2 = slot2_can_fire && (rs_type_2 == riscv_pkg::RS_MEM);
+  assign fp_rs_dispatch_fire_2 = slot2_can_fire && (rs_type_2 == riscv_pkg::RS_FP);
 
   // ===========================================================================
   // RAT Source Address Outputs
@@ -1065,7 +1072,14 @@ module dispatch (
     end
   end
 
-  // Slot-2 done-repair channels (4/5/6), mirror of slot-1.  Use the
+  // Effective slot-2 lookup results after intra-bundle RAW override.
+  riscv_pkg::rat_lookup_t int_src1_2_eff;
+  riscv_pkg::rat_lookup_t int_src2_2_eff;
+  riscv_pkg::rat_lookup_t fp_src1_2_eff;
+  riscv_pkg::rat_lookup_t fp_src2_2_eff;
+  riscv_pkg::rat_lookup_t fp_src3_2_eff;
+
+  // Slot-2 done-repair channels (4 and 5), mirror of slot-1.  Use the
   // intra-bundle-RAW-resolved `*_2_eff` views: when slot-2 reads slot-1's
   // dest the eff tag is slot-1's just-allocated ROB tag (not yet done at
   // T+1, so the bypass channel produces no spurious wake), and when not
@@ -1091,19 +1105,29 @@ module dispatch (
       bypass_tag_5_next   = int_src2_2_eff.tag;
     end
 
+    // Channel 6 would carry slot 2's FP source 3, which only the FMA ops
+    // read. Those are FMA ops, and slot 2 never dispatches an FP compute
+    // op (slot2_fp_compute_serialized), so the channel is never valid. It
+    // stays tied off, which lets synthesis drop its ROB value copy and every
+    // consumer's channel-6 repair logic.
     bypass_valid_6_next = 1'b0;
     bypass_tag_6_next   = '0;
-    if (uses_fp_rs3_flag_2) begin
-      bypass_valid_6_next = fp_src3_2_eff.renamed;
-      bypass_tag_6_next   = fp_src3_2_eff.tag;
-    end
   end
 
-  // Register repair-read addresses so the ROB done/value lookup is no longer in
-  // the dispatch source-ready/value cone.  Tags are covered by the valid bits.
-  // Slot-2 channels (4/5/6) gate on `bundle_fire_ok && dispatch_valid_2` rather
-  // than `dispatch_fire` alone: slot-2's bypass valid means something only
-  // when slot-2 itself fires, not just when slot-1 does.
+`ifndef SYNTHESIS
+  // The tie-off above is exact: a firing slot 2 never reads FP source 3.
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n)
+      assert (!(slot2_can_fire && uses_fp_rs3_flag_2))
+      else $error("dispatch: slot 2 fired with an FP source 3");
+  end
+`endif
+
+  // Register the repair-read addresses so the ROB done/value lookup stays out
+  // of the dispatch source-ready/value cone. The tags need no reset; the valid
+  // bits qualify them. Slot-2 channels (4 and 5) gate on slot2_can_fire rather
+  // than dispatch_fire alone: slot 2's bypass valid means something only when
+  // slot 2 itself fires, not just when slot 1 does.
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       o_bypass_valid_1 <= 1'b0;
@@ -1116,20 +1140,35 @@ module dispatch (
       o_bypass_valid_1 <= dispatch_fire && bypass_valid_1_next;
       o_bypass_valid_2 <= dispatch_fire && bypass_valid_2_next;
       o_bypass_valid_3 <= dispatch_fire && bypass_valid_3_next;
-      o_bypass_valid_4 <= bundle_fire_ok && dispatch_valid_2 && bypass_valid_4_next;
-      o_bypass_valid_5 <= bundle_fire_ok && dispatch_valid_2 && bypass_valid_5_next;
-      o_bypass_valid_6 <= bundle_fire_ok && dispatch_valid_2 && bypass_valid_6_next;
+      o_bypass_valid_4 <= slot2_can_fire && bypass_valid_4_next;
+      o_bypass_valid_5 <= slot2_can_fire && bypass_valid_5_next;
+      o_bypass_valid_6 <= slot2_can_fire && bypass_valid_6_next;
     end
   end
 
+  // TIMING: each bypass tag reaches every station's source compares (about
+  // 300 loads); the cap lets synthesis replicate the registers.
+  (* max_fanout = 48 *) logic [riscv_pkg::ReorderBufferTagWidth-1:0]
+      bypass_tag_1_q,
+      bypass_tag_2_q,
+      bypass_tag_3_q,
+      bypass_tag_4_q,
+      bypass_tag_5_q,
+      bypass_tag_6_q;
   always_ff @(posedge i_clk) begin
-    o_bypass_tag_1 <= bypass_tag_1_next;
-    o_bypass_tag_2 <= bypass_tag_2_next;
-    o_bypass_tag_3 <= bypass_tag_3_next;
-    o_bypass_tag_4 <= bypass_tag_4_next;
-    o_bypass_tag_5 <= bypass_tag_5_next;
-    o_bypass_tag_6 <= bypass_tag_6_next;
+    bypass_tag_1_q <= bypass_tag_1_next;
+    bypass_tag_2_q <= bypass_tag_2_next;
+    bypass_tag_3_q <= bypass_tag_3_next;
+    bypass_tag_4_q <= bypass_tag_4_next;
+    bypass_tag_5_q <= bypass_tag_5_next;
+    bypass_tag_6_q <= bypass_tag_6_next;
   end
+  assign o_bypass_tag_1 = bypass_tag_1_q;
+  assign o_bypass_tag_2 = bypass_tag_2_q;
+  assign o_bypass_tag_3 = bypass_tag_3_q;
+  assign o_bypass_tag_4 = bypass_tag_4_q;
+  assign o_bypass_tag_5 = bypass_tag_5_q;
+  assign o_bypass_tag_6 = bypass_tag_6_q;
 
   // Source resolution.
   // RAT lookup: renamed=1 means the source maps to an in-flight ROB entry.
@@ -1206,13 +1245,6 @@ module dispatch (
   assign intra_bundle_fp_src2_2 = slot1_dest_fp && (dest_reg == i_rs2_addr_2);
   assign intra_bundle_fp_src3_2 = slot1_dest_fp && (dest_reg == i_fp_rs3_addr_2);
 
-  // Effective slot-2 lookup results after intra-bundle RAW override.
-  riscv_pkg::rat_lookup_t int_src1_2_eff;
-  riscv_pkg::rat_lookup_t int_src2_2_eff;
-  riscv_pkg::rat_lookup_t fp_src1_2_eff;
-  riscv_pkg::rat_lookup_t fp_src2_2_eff;
-  riscv_pkg::rat_lookup_t fp_src3_2_eff;
-
   always_comb begin
     if (intra_bundle_int_src1_2) begin
       int_src1_2_eff.renamed = 1'b1;
@@ -1287,6 +1319,57 @@ module dispatch (
     fp_src3_2_value  = fp_src3_2_eff.value;
   end
 
+  // ---------------------------------------------------------------------------
+  // INT source values for the per-RS packets
+  // ---------------------------------------------------------------------------
+  // A packet value is its INT read under one mask: the packet's use of that
+  // source, the x0 test (x0 reads zero) and, for slot 2, no intra-bundle RAW
+  // (that value then arrives from slot 1's result). This equals masking the
+  // lookup value int_src*_value (which already carries the x0 test and the
+  // RAW override) by the packet's use. TIMING: with RAW_INT_RF_VALUES the
+  // read is the register file's bypassed data itself, so the read-to-packet
+  // path has one mask LUT instead of the RAT's x0 select plus the packet
+  // mask; each packet gets its own mask, so no shared masked net is kept.
+  logic [riscv_pkg::FLEN-1:0] int_src1_read, int_src2_read;
+  logic [riscv_pkg::FLEN-1:0] int_src1_2_read, int_src2_2_read;
+  assign int_src1_read = RAW_INT_RF_VALUES ?
+      {{(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, i_int_rf_rs1_data} : i_int_src1.value;
+  assign int_src2_read = RAW_INT_RF_VALUES ?
+      {{(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, i_int_rf_rs2_data} : i_int_src2.value;
+  assign int_src1_2_read = RAW_INT_RF_VALUES ?
+      {{(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, i_int_rf_rs1_data_2} : i_int_src1_2.value;
+  assign int_src2_2_read = RAW_INT_RF_VALUES ?
+      {{(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, i_int_rf_rs2_data_2} : i_int_src2_2.value;
+
+  // Read qualifiers: for slot 2, no RAW on slot 1's destination, and with
+  // RAW_INT_RF_VALUES a nonzero source register (the lookup value already
+  // reads x0 as zero).
+  logic int_src1_read_ok, int_src2_read_ok, int_src1_2_read_ok, int_src2_2_read_ok;
+  assign int_src1_read_ok = !RAW_INT_RF_VALUES || (i_rs1_addr != '0);
+  assign int_src2_read_ok = !RAW_INT_RF_VALUES || (i_rs2_addr != '0);
+  assign int_src1_2_read_ok = (!RAW_INT_RF_VALUES || (i_rs1_addr_2 != '0)) &&
+                              !intra_bundle_int_src1_2;
+  assign int_src2_2_read_ok = (!RAW_INT_RF_VALUES || (i_rs2_addr_2 != '0)) &&
+                              !intra_bundle_int_src2_2;
+
+  // Packet masks: INT_RS and MEM_RS read INT rs1 when they use it, INT_RS
+  // and the INT form of MEM_RS rs2 likewise, MUL_RS always reads both, and
+  // FP_RS (and the combined packet) read INT rs1 only without an FP rs1.
+  logic int_use1_mask, int_use2_mask, mul_use1_mask, mul_use2_mask;
+  logic fp_int_use1_mask;
+  logic int_use1_mask_2, int_use2_mask_2, mul_use1_mask_2, mul_use2_mask_2;
+  logic fp_int_use1_mask_2;
+  assign int_use1_mask      = uses_int_rs1 && int_src1_read_ok;
+  assign int_use2_mask      = uses_int_rs2 && int_src2_read_ok;
+  assign mul_use1_mask      = int_src1_read_ok;
+  assign mul_use2_mask      = int_src2_read_ok;
+  assign fp_int_use1_mask   = !uses_fp_rs1_flag && uses_int_rs1 && int_src1_read_ok;
+  assign int_use1_mask_2    = uses_int_rs1_2 && int_src1_2_read_ok;
+  assign int_use2_mask_2    = uses_int_rs2_2 && int_src2_2_read_ok;
+  assign mul_use1_mask_2    = int_src1_2_read_ok;
+  assign mul_use2_mask_2    = int_src2_2_read_ok;
+  assign fp_int_use1_mask_2 = !uses_fp_rs1_flag_2 && uses_int_rs1_2 && int_src1_2_read_ok;
+
   // ===========================================================================
   // ROB Allocation Request
   // ===========================================================================
@@ -1310,14 +1393,14 @@ module dispatch (
     o_rob_alloc_req.is_return = is_return_flag;
     o_rob_alloc_req.link_addr = i_from_id_to_ex.link_address;
     // A fetch-fault (or page-fault) pseudo-op carries the faulting page's
-    // garbage bytes, which decode normally: is_jal/is_fence/is_wfi/is_mret
-    // come from raw decode and are NOT overridden by the fault. If left set,
-    // the ROB marks the entry done at allocation (JAL/FENCE/WFI/MRET are
-    // done-at-alloc) with exception=0, so it retires benign before the INT
-    // ALU shim's fault completion arrives on the CDB -- the fault is lost and
-    // a later instruction traps with the wrong PC (the lazily-mapped vDSO
-    // sigreturn crash). Suppress the done-at-alloc classes for a fetch fault
-    // so the entry waits for its exception completion and traps at its PC.
+    // garbage bytes. Their raw decode can set is_jal, is_jalr, is_wfi, or
+    // is_mret (which covers every xRET), and the fault does not override them.
+    // The ROB marks a JAL, FENCE, FENCE.I, WFI, or xRET entry done at
+    // allocation with no exception, so such an entry would retire before the
+    // INT ALU shim's fault completion arrived on the CDB: the fault would be
+    // lost and a later instruction would trap with the wrong PC. Dispatch
+    // clears the JAL, JALR, FENCE, FENCE.I, WFI, and xRET class bits for a
+    // fetch fault, so the entry waits for its exception and traps at its PC.
     o_rob_alloc_req.is_jal = is_jal_flag && !i_from_id_to_ex.is_fetch_fault;
     o_rob_alloc_req.is_jalr = is_jalr_flag && !i_from_id_to_ex.is_fetch_fault;
     o_rob_alloc_req.is_csr = i_from_id_to_ex.is_csr_instruction;
@@ -1336,30 +1419,46 @@ module dispatch (
     // CSR info (stored in ROB for commit-time serialized execution)
     // Zicsr write intent: CSRRW/CSRRWI (funct3[1:0]==01) always write; the
     // set/clear forms write only when the rs1/uimm field (same bits) is
-    // nonzero. Pre-decoded here so the ROB can trap write-intending
-    // accesses to read-only CSRs without carrying the rs1 field.
+    // nonzero, whatever the register holds. Pre-decoded here so the ROB can
+    // trap write-intending accesses to read-only CSRs without carrying the
+    // rs1 field. csr_op is funct3 for every instruction, except that a CSR
+    // with no write intent has [1:0] cleared, so csr_file sees the same intent
+    // at commit.
     o_rob_alloc_req.csr_write_intent =
         (i_from_id_to_ex.instruction.funct3[1:0] == 2'b01) ||
         (i_from_id_to_ex.instruction.source_reg_1 != 5'b0);
     o_rob_alloc_req.csr_addr = i_from_id_to_ex.csr_address;
-    o_rob_alloc_req.csr_op = i_from_id_to_ex.instruction.funct3;
-    // CSR write data: rs1 for register-based ops, zero-extended imm for immediate ops
+    o_rob_alloc_req.csr_op =
+        (i_from_id_to_ex.is_csr_instruction && !o_rob_alloc_req.csr_write_intent) ?
+        {i_from_id_to_ex.instruction.funct3[2], 2'b00} : i_from_id_to_ex.instruction.funct3;
+    // CSR write data: the zero-extended immediate for immediate forms, else 0.
+    // A register form's rs1 value is not known until its source operand
+    // resolves; the INT ALU shim sends the write operand on the CDB, and the
+    // CSR is read and written at commit.
     o_rob_alloc_req.csr_write_data =
       i_from_id_to_ex.is_csr_imm ?
       {{(riscv_pkg::XLEN - 5) {1'b0}}, i_from_id_to_ex.csr_imm} :
-    // For register-based CSR ops the rs1 value is not known until the
-    // source operand resolves; the ALU shim reads rs1 at RS issue and
-    // computes the CSR result.
     '0;
 
     // FP flags validity: FP compute ops produce flags, FP loads do not.
-    // Pre-decoded in id_stage from the same illegal-overridden op view that
-    // builds `op` here, and registered into from_id_to_ex_t.
+    // Pre-decoded in id_stage with the same illegal and fetch-fault overrides
+    // that build `op` here, and registered into from_id_to_ex_t.
     o_rob_alloc_req.has_fp_flags = op_has_fp_flags;
 
-    // D15 FS classification: the ROB snapshots mstatus.FS at allocation and
-    // records an illegal-instruction exception when it is Off.
+    // FS check: while mstatus.FS is Off, ID decodes every F/D instruction as
+    // illegal, so it dispatches to INT_RS as ILLEGAL. The ROB's allocation
+    // check records the same illegal-instruction exception from this flag and
+    // also covers fflags/frm/fcsr accesses.
     o_rob_alloc_req.is_fp_instruction = i_from_id_to_ex.is_fp_instruction;
+
+    // Reserved-frm check: the ROB marks an F/D instruction with rm = DYN
+    // illegal at allocation while frm is 5 to 7. The rm field is funct3, and
+    // every legal F/D instruction without an rm field has a funct3 of 011 or
+    // less. TIMING: funct3 is read from the instruction word, which comes
+    // from the decoded-bundle queue's registered shadow like
+    // is_fp_instruction; fp_rm comes through the queue's bypass select.
+    o_rob_alloc_req.fp_dyn_rm = i_from_id_to_ex.is_fp_instruction &&
+        (i_from_id_to_ex.instruction.funct3 == riscv_pkg::FRM_DYN);
   end
 
   // Slot-2 ROB alloc request: same field shape, slot-2 inputs.  alloc_valid
@@ -1368,7 +1467,7 @@ module dispatch (
   always_comb begin
     o_rob_alloc_req_2 = '0;
 
-    o_rob_alloc_req_2.alloc_valid = bundle_fire_ok && dispatch_valid_2;
+    o_rob_alloc_req_2.alloc_valid = slot2_can_fire;
     o_rob_alloc_req_2.pc = i_from_id_to_ex_2.program_counter;
     o_rob_alloc_req_2.rs_type = rs_type_2;
     o_rob_alloc_req_2.dest_rf = dest_rf_2;
@@ -1403,7 +1502,9 @@ module dispatch (
         (i_from_id_to_ex_2.instruction.funct3[1:0] == 2'b01) ||
         (i_from_id_to_ex_2.instruction.source_reg_1 != 5'b0);
     o_rob_alloc_req_2.csr_addr = i_from_id_to_ex_2.csr_address;
-    o_rob_alloc_req_2.csr_op = i_from_id_to_ex_2.instruction.funct3;
+    o_rob_alloc_req_2.csr_op =
+        (i_from_id_to_ex_2.is_csr_instruction && !o_rob_alloc_req_2.csr_write_intent) ?
+        {i_from_id_to_ex_2.instruction.funct3[2], 2'b00} : i_from_id_to_ex_2.instruction.funct3;
     o_rob_alloc_req_2.csr_write_data =
       i_from_id_to_ex_2.is_csr_imm ?
       {{(riscv_pkg::XLEN - 5) {1'b0}}, i_from_id_to_ex_2.csr_imm} :
@@ -1412,6 +1513,8 @@ module dispatch (
     o_rob_alloc_req_2.has_fp_flags = op_has_fp_flags_2;
 
     o_rob_alloc_req_2.is_fp_instruction = i_from_id_to_ex_2.is_fp_instruction;
+    o_rob_alloc_req_2.fp_dyn_rm = i_from_id_to_ex_2.is_fp_instruction &&
+        (i_from_id_to_ex_2.instruction.funct3 == riscv_pkg::FRM_DYN);
   end
 
   // ===========================================================================
@@ -1429,7 +1532,7 @@ module dispatch (
   // the ROB and has a destination register (matches slot-1's gate).  The ROB
   // returns slot-2's tag as i_rob_alloc_resp_2.alloc_tag (= tail+1).
   always_comb begin
-    o_rat_alloc_valid_2    = bundle_fire_ok && dispatch_valid_2 && has_dest_2;
+    o_rat_alloc_valid_2    = slot2_can_fire && has_dest_2;
     o_rat_alloc_dest_rf_2  = dest_rf_2;
     o_rat_alloc_dest_reg_2 = dest_reg_2;
     o_rat_alloc_rob_tag_2  = i_rob_alloc_resp_2.alloc_tag;
@@ -1503,44 +1606,38 @@ module dispatch (
     o_mul_rs_dispatch = rs_dispatch_base;
     o_mem_rs_dispatch = rs_dispatch_base;
     o_fp_rs_dispatch = rs_dispatch_base;
-    o_fmul_rs_dispatch = rs_dispatch_base;
-    o_fdiv_rs_dispatch = rs_dispatch_base;
 
     o_int_rs_dispatch.valid = int_rs_dispatch_fire;
     o_mul_rs_dispatch.valid = mul_rs_dispatch_fire;
     o_mem_rs_dispatch.valid = mem_rs_dispatch_fire;
     o_fp_rs_dispatch.valid = fp_rs_dispatch_fire;
-    o_fmul_rs_dispatch.valid = fmul_rs_dispatch_fire;
-    o_fdiv_rs_dispatch.valid = fdiv_rs_dispatch_fire;
 
     // INT_RS: integer-only sources.  LUI/AUIPC/JAL-like operations keep the
-    // default ready constants for unused slots.
-    if (uses_int_rs1) begin
-      o_int_rs_dispatch.src1_ready = int_src1_ready;
-      o_int_rs_dispatch.src1_tag   = int_src1_tag;
-      o_int_rs_dispatch.src1_value = int_src1_value;
-    end
-    if (uses_int_rs2) begin
-      o_int_rs_dispatch.src2_ready = int_src2_ready;
-      o_int_rs_dispatch.src2_tag   = int_src2_tag;
-      o_int_rs_dispatch.src2_value = int_src2_value;
-    end
+    // default ready constants for unused slots.  The tag of an unused
+    // (ready) source is never read by a station (every tag compare there is
+    // qualified by not-ready), so INT_RS and MEM_RS take the INT lookup tag
+    // unmasked. TIMING: the tag then reaches the station's dispatch CDB
+    // compare without a use-mask LUT.
+    o_int_rs_dispatch.src1_tag = int_src1_tag;
+    o_int_rs_dispatch.src2_tag = int_src2_tag;
+    o_int_rs_dispatch.src1_value = int_use1_mask ? int_src1_read : '0;
+    o_int_rs_dispatch.src2_value = int_use2_mask ? int_src2_read : '0;
+    if (uses_int_rs1) o_int_rs_dispatch.src1_ready = int_src1_ready;
+    if (uses_int_rs2) o_int_rs_dispatch.src2_ready = int_src2_ready;
 
     // MUL_RS: M-extension operations always consume integer rs1/rs2.
     o_mul_rs_dispatch.src1_ready = int_src1_ready;
     o_mul_rs_dispatch.src1_tag   = int_src1_tag;
-    o_mul_rs_dispatch.src1_value = int_src1_value;
+    o_mul_rs_dispatch.src1_value = mul_use1_mask ? int_src1_read : '0;
     o_mul_rs_dispatch.src2_ready = int_src2_ready;
     o_mul_rs_dispatch.src2_tag   = int_src2_tag;
-    o_mul_rs_dispatch.src2_value = int_src2_value;
+    o_mul_rs_dispatch.src2_value = mul_use2_mask ? int_src2_read : '0;
 
     // MEM_RS: base address is integer rs1 when present; store data is integer
     // rs2 for integer stores/AMOs and FP rs2 for FP stores.
-    if (uses_int_rs1) begin
-      o_mem_rs_dispatch.src1_ready = int_src1_ready;
-      o_mem_rs_dispatch.src1_tag   = int_src1_tag;
-      o_mem_rs_dispatch.src1_value = int_src1_value;
-    end
+    o_mem_rs_dispatch.src1_tag   = int_src1_tag;
+    o_mem_rs_dispatch.src1_value = int_use1_mask ? int_src1_read : '0;
+    if (uses_int_rs1) o_mem_rs_dispatch.src1_ready = int_src1_ready;
     if (uses_fp_rs2_flag) begin
       o_mem_rs_dispatch.src2_ready = fp_src2_ready;
       o_mem_rs_dispatch.src2_tag   = fp_src2_tag;
@@ -1548,11 +1645,12 @@ module dispatch (
     end else if (uses_int_rs2) begin
       o_mem_rs_dispatch.src2_ready = int_src2_ready;
       o_mem_rs_dispatch.src2_tag   = int_src2_tag;
-      o_mem_rs_dispatch.src2_value = int_src2_value;
+      o_mem_rs_dispatch.src2_value = int_use2_mask ? int_src2_read : '0;
     end
 
     // FP_RS: most operations use FP rs1; int-to-FP moves/conversions use INT
-    // rs1.  Source 2, when present, is always FP for this RS.
+    // rs1.  Sources 2 and 3, when present, are always FP (source 3 only for
+    // the FMA ops).
     if (uses_fp_rs1_flag) begin
       o_fp_rs_dispatch.src1_ready = fp_src1_ready;
       o_fp_rs_dispatch.src1_tag   = fp_src1_tag;
@@ -1560,40 +1658,23 @@ module dispatch (
     end else if (uses_int_rs1) begin
       o_fp_rs_dispatch.src1_ready = int_src1_ready;
       o_fp_rs_dispatch.src1_tag   = int_src1_tag;
-      o_fp_rs_dispatch.src1_value = int_src1_value;
+      o_fp_rs_dispatch.src1_value = fp_int_use1_mask ? int_src1_read : '0;
     end
     if (uses_fp_rs2_flag) begin
       o_fp_rs_dispatch.src2_ready = fp_src2_ready;
       o_fp_rs_dispatch.src2_tag   = fp_src2_tag;
       o_fp_rs_dispatch.src2_value = fp_src2_value;
     end
-
-    // FMUL_RS: FP multiply/FMA.  FMUL uses src1/src2; FMA also uses src3.
-    o_fmul_rs_dispatch.src1_ready = fp_src1_ready;
-    o_fmul_rs_dispatch.src1_tag   = fp_src1_tag;
-    o_fmul_rs_dispatch.src1_value = fp_src1_value;
-    o_fmul_rs_dispatch.src2_ready = fp_src2_ready;
-    o_fmul_rs_dispatch.src2_tag   = fp_src2_tag;
-    o_fmul_rs_dispatch.src2_value = fp_src2_value;
     if (uses_fp_rs3_flag) begin
-      o_fmul_rs_dispatch.src3_ready = fp_src3_ready;
-      o_fmul_rs_dispatch.src3_tag   = fp_src3_tag;
-      o_fmul_rs_dispatch.src3_value = fp_src3_value;
+      o_fp_rs_dispatch.src3_ready = fp_src3_ready;
+      o_fp_rs_dispatch.src3_tag   = fp_src3_tag;
+      o_fp_rs_dispatch.src3_value = fp_src3_value;
     end
 
-    // FDIV_RS: FDIV uses src1/src2; FSQRT uses only src1.
-    o_fdiv_rs_dispatch.src1_ready = fp_src1_ready;
-    o_fdiv_rs_dispatch.src1_tag   = fp_src1_tag;
-    o_fdiv_rs_dispatch.src1_value = fp_src1_value;
-    if (uses_fp_rs2_flag) begin
-      o_fdiv_rs_dispatch.src2_ready = fp_src2_ready;
-      o_fdiv_rs_dispatch.src2_tag   = fp_src2_tag;
-      o_fdiv_rs_dispatch.src2_value = fp_src2_value;
-    end
-
-    // Backward-compatible combined dispatch observation used by existing unit
-    // tests and debug taps.  Keep this equivalent to the old single-bus source
-    // selection; the full CPU's split wrapper path uses the per-RS outputs.
+    // Combined dispatch packet, read by the dispatch unit tests; cpu_ooo leaves
+    // it unconnected and the wrapper uses the per-RS packets. Each source comes
+    // from the FP lookup when the instruction reads that FP register, from the
+    // INT lookup when it reads the INT register, and is otherwise ready.
     o_rs_dispatch       = rs_dispatch_base;
     o_rs_dispatch.valid = dispatch_fire && (rs_type != riscv_pkg::RS_NONE);
     if (uses_fp_rs1_flag) begin
@@ -1678,42 +1759,32 @@ module dispatch (
     o_mul_rs_dispatch_2 = rs_dispatch_base_2;
     o_mem_rs_dispatch_2 = rs_dispatch_base_2;
     o_fp_rs_dispatch_2 = rs_dispatch_base_2;
-    o_fmul_rs_dispatch_2 = rs_dispatch_base_2;
-    o_fdiv_rs_dispatch_2 = rs_dispatch_base_2;
 
     o_int_rs_dispatch_2.valid = int_rs_dispatch_fire_2;
     o_mul_rs_dispatch_2.valid = mul_rs_dispatch_fire_2;
     o_mem_rs_dispatch_2.valid = mem_rs_dispatch_fire_2;
     o_fp_rs_dispatch_2.valid = fp_rs_dispatch_fire_2;
-    o_fmul_rs_dispatch_2.valid = fmul_rs_dispatch_fire_2;
-    o_fdiv_rs_dispatch_2.valid = fdiv_rs_dispatch_fire_2;
 
-    // INT_RS slot-2: integer-only sources.
-    if (uses_int_rs1_2) begin
-      o_int_rs_dispatch_2.src1_ready = int_src1_2_ready;
-      o_int_rs_dispatch_2.src1_tag   = int_src1_2_tag;
-      o_int_rs_dispatch_2.src1_value = int_src1_2_value;
-    end
-    if (uses_int_rs2_2) begin
-      o_int_rs_dispatch_2.src2_ready = int_src2_2_ready;
-      o_int_rs_dispatch_2.src2_tag   = int_src2_2_tag;
-      o_int_rs_dispatch_2.src2_value = int_src2_2_value;
-    end
+    // INT_RS slot-2: integer-only sources (unmasked tags as in slot 1).
+    o_int_rs_dispatch_2.src1_tag = int_src1_2_tag;
+    o_int_rs_dispatch_2.src2_tag = int_src2_2_tag;
+    o_int_rs_dispatch_2.src1_value = int_use1_mask_2 ? int_src1_2_read : '0;
+    o_int_rs_dispatch_2.src2_value = int_use2_mask_2 ? int_src2_2_read : '0;
+    if (uses_int_rs1_2) o_int_rs_dispatch_2.src1_ready = int_src1_2_ready;
+    if (uses_int_rs2_2) o_int_rs_dispatch_2.src2_ready = int_src2_2_ready;
 
     // MUL_RS slot-2: M-extension always consumes integer rs1/rs2.
     o_mul_rs_dispatch_2.src1_ready = int_src1_2_ready;
     o_mul_rs_dispatch_2.src1_tag   = int_src1_2_tag;
-    o_mul_rs_dispatch_2.src1_value = int_src1_2_value;
+    o_mul_rs_dispatch_2.src1_value = mul_use1_mask_2 ? int_src1_2_read : '0;
     o_mul_rs_dispatch_2.src2_ready = int_src2_2_ready;
     o_mul_rs_dispatch_2.src2_tag   = int_src2_2_tag;
-    o_mul_rs_dispatch_2.src2_value = int_src2_2_value;
+    o_mul_rs_dispatch_2.src2_value = mul_use2_mask_2 ? int_src2_2_read : '0;
 
     // MEM_RS slot-2: base = INT rs1; data = INT rs2 or FP rs2 for FP stores.
-    if (uses_int_rs1_2) begin
-      o_mem_rs_dispatch_2.src1_ready = int_src1_2_ready;
-      o_mem_rs_dispatch_2.src1_tag   = int_src1_2_tag;
-      o_mem_rs_dispatch_2.src1_value = int_src1_2_value;
-    end
+    o_mem_rs_dispatch_2.src1_tag   = int_src1_2_tag;
+    o_mem_rs_dispatch_2.src1_value = int_use1_mask_2 ? int_src1_2_read : '0;
+    if (uses_int_rs1_2) o_mem_rs_dispatch_2.src1_ready = int_src1_2_ready;
     if (uses_fp_rs2_flag_2) begin
       o_mem_rs_dispatch_2.src2_ready = fp_src2_2_ready;
       o_mem_rs_dispatch_2.src2_tag   = fp_src2_2_tag;
@@ -1721,7 +1792,7 @@ module dispatch (
     end else if (uses_int_rs2_2) begin
       o_mem_rs_dispatch_2.src2_ready = int_src2_2_ready;
       o_mem_rs_dispatch_2.src2_tag   = int_src2_2_tag;
-      o_mem_rs_dispatch_2.src2_value = int_src2_2_value;
+      o_mem_rs_dispatch_2.src2_value = int_use2_mask_2 ? int_src2_2_read : '0;
     end
 
     // FP_RS slot-2: most ops use FP rs1; INT-to-FP conversions use INT rs1.
@@ -1732,35 +1803,12 @@ module dispatch (
     end else if (uses_int_rs1_2) begin
       o_fp_rs_dispatch_2.src1_ready = int_src1_2_ready;
       o_fp_rs_dispatch_2.src1_tag   = int_src1_2_tag;
-      o_fp_rs_dispatch_2.src1_value = int_src1_2_value;
+      o_fp_rs_dispatch_2.src1_value = fp_int_use1_mask_2 ? int_src1_2_read : '0;
     end
     if (uses_fp_rs2_flag_2) begin
       o_fp_rs_dispatch_2.src2_ready = fp_src2_2_ready;
       o_fp_rs_dispatch_2.src2_tag   = fp_src2_2_tag;
       o_fp_rs_dispatch_2.src2_value = fp_src2_2_value;
-    end
-
-    // FMUL_RS slot-2: FP multiply / FMA.
-    o_fmul_rs_dispatch_2.src1_ready = fp_src1_2_ready;
-    o_fmul_rs_dispatch_2.src1_tag   = fp_src1_2_tag;
-    o_fmul_rs_dispatch_2.src1_value = fp_src1_2_value;
-    o_fmul_rs_dispatch_2.src2_ready = fp_src2_2_ready;
-    o_fmul_rs_dispatch_2.src2_tag   = fp_src2_2_tag;
-    o_fmul_rs_dispatch_2.src2_value = fp_src2_2_value;
-    if (uses_fp_rs3_flag_2) begin
-      o_fmul_rs_dispatch_2.src3_ready = fp_src3_2_ready;
-      o_fmul_rs_dispatch_2.src3_tag   = fp_src3_2_tag;
-      o_fmul_rs_dispatch_2.src3_value = fp_src3_2_value;
-    end
-
-    // FDIV_RS slot-2: FDIV uses src1/src2; FSQRT uses only src1.
-    o_fdiv_rs_dispatch_2.src1_ready = fp_src1_2_ready;
-    o_fdiv_rs_dispatch_2.src1_tag   = fp_src1_2_tag;
-    o_fdiv_rs_dispatch_2.src1_value = fp_src1_2_value;
-    if (uses_fp_rs2_flag_2) begin
-      o_fdiv_rs_dispatch_2.src2_ready = fp_src2_2_ready;
-      o_fdiv_rs_dispatch_2.src2_tag   = fp_src2_2_tag;
-      o_fdiv_rs_dispatch_2.src2_value = fp_src2_2_value;
     end
   end
 
@@ -1780,7 +1828,18 @@ module dispatch (
   logic checkpoint_save_slot1;
   logic checkpoint_save_slot2;
   assign checkpoint_save_slot1 = dispatch_fire && need_checkpoint;
-  assign checkpoint_save_slot2 = bundle_fire_ok && dispatch_valid_2 && need_checkpoint_2;
+  assign checkpoint_save_slot2 = slot2_can_fire && need_checkpoint_2;
+
+  // Early form of checkpoint_save_slot2 for the saved data (branch tag and
+  // RAS state), which matters only in a cycle with a save. A slot-1 branch
+  // ends the bundle, so a bundle that saves either has slot 1 as the branch
+  // and no slot 2, or has slot 2 as the branch; either way this equals
+  // checkpoint_save_slot2 in every saving cycle.
+  logic checkpoint_slot2_candidate;
+  assign checkpoint_slot2_candidate = slot2_present_for_admission && need_checkpoint_2;
+  assign o_checkpoint_slot2_candidate = checkpoint_slot2_candidate;
+  assign o_alloc_has_dest = has_dest;
+  assign o_alloc_has_dest_2 = slot2_present_for_admission && has_dest_2;
 
   always_comb begin
     // Single save signal: slot-1 or slot-2, never both (one branch per bundle).
@@ -1788,8 +1847,10 @@ module dispatch (
     o_checkpoint_save_for_slot2 = checkpoint_save_slot2;
     o_checkpoint_id = i_checkpoint_alloc_id;
     // branch_tag selects which ROB entry the checkpoint protects.  When
-    // slot-2 is the branch, the ROB allocates it at tail+1.
-    o_checkpoint_branch_tag = checkpoint_save_slot2 ?
+    // slot-2 is the branch, the ROB allocates it at tail+1. The branch tag
+    // and the RAS state below are saved only with a checkpoint, so they
+    // select on the early candidate.
+    o_checkpoint_branch_tag = checkpoint_slot2_candidate ?
                               i_rob_alloc_resp_2.alloc_tag :
                               i_rob_alloc_resp.alloc_tag;
 
@@ -1797,12 +1858,14 @@ module dispatch (
     // includes every older pipelined RAS operation, but precedes this
     // instruction's own push or pop. Use slot 2's IF capture when slot 2 is the
     // branch.
-    if (checkpoint_save_slot2) begin
+    if (checkpoint_slot2_candidate) begin
       o_ras_tos         = i_from_id_to_ex_2.ras_checkpoint_tos;
       o_ras_valid_count = i_from_id_to_ex_2.ras_checkpoint_valid_count;
+      o_ras_top         = i_from_id_to_ex_2.ras_checkpoint_top;
     end else begin
       o_ras_tos         = i_from_id_to_ex.ras_checkpoint_tos;
       o_ras_valid_count = i_from_id_to_ex.ras_checkpoint_valid_count;
+      o_ras_top         = i_from_id_to_ex.ras_checkpoint_top;
     end
 
     // ROB checkpoint recording (separate from the RAT checkpoint).  The ROB's
@@ -1814,11 +1877,10 @@ module dispatch (
   end
 
 `ifndef SYNTHESIS
-  // Loud misclassification checks (M3 audit): a memory-class op missing from
-  // the mem_size lists would silently dispatch as a word access.  Fail the
-  // sim instead of corrupting memory traffic.  Qualified on the LQ/SQ-need
-  // bits: FENCE and other sizeless memory-class ops dispatch RS_MEM with no
-  // queue slot and no size.
+  // Misclassification checks: a memory op missing from the mem_size lists
+  // would silently dispatch as a word access, so fail the simulation instead.
+  // Qualified on the LQ/SQ-need bits: FENCE and other sizeless memory-class
+  // ops dispatch to RS_MEM with no queue slot and no size.
   always_comb begin
     if (dispatch_valid && rs_type == riscv_pkg::RS_MEM && (need_lq || need_sq) && !$isunknown(
             op
@@ -1869,16 +1931,20 @@ module dispatch (
               o_mul_rs_dispatch.valid,
               o_mem_rs_dispatch.valid,
               o_fp_rs_dispatch.valid,
-              o_fmul_rs_dispatch.valid,
-              o_fdiv_rs_dispatch.valid,
               o_int_rs_dispatch_2.valid,
               o_mul_rs_dispatch_2.valid,
               o_mem_rs_dispatch_2.valid,
-              o_fp_rs_dispatch_2.valid,
-              o_fmul_rs_dispatch_2.valid,
-              o_fdiv_rs_dispatch_2.valid
+              o_fp_rs_dispatch_2.valid
             }
         )) begin
+      // The early allocation candidates, qualified by the bundle fire, are
+      // the allocation outputs themselves (see the o_alloc_* ports).
+      p_alloc_candidates_match_fire :
+      assert ((o_rat_alloc_valid == (dispatch_fire && o_alloc_has_dest)) &&
+              (o_rat_alloc_valid_2 == (dispatch_fire && o_alloc_has_dest_2)) &&
+              (slot2_can_fire == (dispatch_fire && slot2_present_for_admission)) &&
+              (!o_checkpoint_save ||
+               (o_checkpoint_save_for_slot2 == o_checkpoint_slot2_candidate)));
       p_flush_blocks_dispatch_side_effects :
       assert (!i_flush ||
               (!dispatch_valid && !dispatch_valid_2 && !dispatch_fire && !o_stall &&
@@ -1887,23 +1953,18 @@ module dispatch (
                !o_checkpoint_save_for_slot2 && !o_rob_checkpoint_valid &&
                !o_rs_dispatch.valid && !o_int_rs_dispatch.valid &&
                !o_mul_rs_dispatch.valid && !o_mem_rs_dispatch.valid &&
-               !o_fp_rs_dispatch.valid && !o_fmul_rs_dispatch.valid &&
-               !o_fdiv_rs_dispatch.valid && !o_int_rs_dispatch_2.valid &&
+               !o_fp_rs_dispatch.valid && !o_int_rs_dispatch_2.valid &&
                !o_mul_rs_dispatch_2.valid && !o_mem_rs_dispatch_2.valid &&
-               !o_fp_rs_dispatch_2.valid && !o_fmul_rs_dispatch_2.valid &&
-               !o_fdiv_rs_dispatch_2.valid));
+               !o_fp_rs_dispatch_2.valid));
     end
   end
 `endif
 
 
 `ifndef SYNTHESIS
-  // A fetch-fault (page-fault) pseudo-op must never carry a done-at-allocation
-  // class (JAL/JALR/FENCE/FENCE.I/WFI/MRET). Those come from raw decode of the
-  // faulting page's garbage bytes and are not overridden by the fault; if one
-  // reached the ROB the entry would retire benign before its exception
-  // completion (the lazily-mapped vDSO sigreturn crash). The gate above forces
-  // them low; this pins it.
+  // A fetch-fault (page-fault) pseudo-op never reaches the ROB with a JAL,
+  // JALR, FENCE, FENCE.I, WFI, or xRET class bit set (see the gating in the
+  // ROB allocation request above).
   always_ff @(posedge i_clk) begin
     if (i_rst_n) begin
       p_fetch_fault_not_done_at_alloc :
@@ -1922,9 +1983,9 @@ module dispatch (
 
 `ifndef SYNTHESIS
   // The one-bit direct-branch target check forwarded to the INT station must
-  // agree with the XLEN compare it replaces, for every dispatched conditional
-  // branch that was predicted taken (the only case branch_resolution consults
-  // it).  Branches dispatch to the INT station only.
+  // equal the full XLEN target compare for every dispatched conditional branch
+  // that was predicted taken (the only case branch_resolution consults it).
+  // Branches dispatch to the INT station only.
   always_ff @(posedge i_clk) begin
     if (i_rst_n && int_rs_dispatch_fire && is_branch_flag && !is_jalr_flag && predicted_taken) begin
       assert (predicted_target_ok == (predicted_target == branch_target))
@@ -1935,6 +1996,70 @@ module dispatch (
       assert (predicted_target_ok_2 == (predicted_target_2 == branch_target_2))
       else $error("dispatch: slot-2 predicted_target_ok disagrees with the target compare");
     end
+  end
+`endif
+
+`ifndef SYNTHESIS
+  // The per-RS packet values equal the lookup values masked by each packet's
+  // use of the source (their form before the single-mask build above), for
+  // either source of the reads, and a not-ready source carries the lookup
+  // tag (the only case in which a station reads a dispatched tag).
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n) begin
+      p_int_rs_src1_value_exact :
+      assert (o_int_rs_dispatch.src1_value == (uses_int_rs1 ? int_src1_value : '0));
+      p_int_rs_src2_value_exact :
+      assert (o_int_rs_dispatch.src2_value == (uses_int_rs2 ? int_src2_value : '0));
+      p_mul_rs_src1_value_exact : assert (o_mul_rs_dispatch.src1_value == int_src1_value);
+      p_mul_rs_src2_value_exact : assert (o_mul_rs_dispatch.src2_value == int_src2_value);
+      p_mem_rs_src1_value_exact :
+      assert (o_mem_rs_dispatch.src1_value == (uses_int_rs1 ? int_src1_value : '0));
+      p_mem_rs_src2_value_exact :
+      assert (o_mem_rs_dispatch.src2_value ==
+              (uses_fp_rs2_flag ? fp_src2_value : (uses_int_rs2 ? int_src2_value : '0)));
+      p_fp_rs_src1_value_exact :
+      assert (o_fp_rs_dispatch.src1_value ==
+              (uses_fp_rs1_flag ? fp_src1_value : (uses_int_rs1 ? int_src1_value : '0)));
+      p_int_rs_src1_value_2_exact :
+      assert (o_int_rs_dispatch_2.src1_value == (uses_int_rs1_2 ? int_src1_2_value : '0));
+      p_int_rs_src2_value_2_exact :
+      assert (o_int_rs_dispatch_2.src2_value == (uses_int_rs2_2 ? int_src2_2_value : '0));
+      p_mul_rs_src1_value_2_exact : assert (o_mul_rs_dispatch_2.src1_value == int_src1_2_value);
+      p_mul_rs_src2_value_2_exact : assert (o_mul_rs_dispatch_2.src2_value == int_src2_2_value);
+      p_mem_rs_src1_value_2_exact :
+      assert (o_mem_rs_dispatch_2.src1_value == (uses_int_rs1_2 ? int_src1_2_value : '0));
+      p_mem_rs_src2_value_2_exact :
+      assert (o_mem_rs_dispatch_2.src2_value ==
+              (uses_fp_rs2_flag_2 ? fp_src2_2_value :
+               (uses_int_rs2_2 ? int_src2_2_value : '0)));
+      p_fp_rs_src1_value_2_exact :
+      assert (o_fp_rs_dispatch_2.src1_value ==
+              (uses_fp_rs1_flag_2 ? fp_src1_2_value :
+               (uses_int_rs1_2 ? int_src1_2_value : '0)));
+      p_int_rs_unready_tags_exact :
+      assert ((o_int_rs_dispatch.src1_ready || o_int_rs_dispatch.src1_tag == int_src1_tag) &&
+              (o_int_rs_dispatch.src2_ready || o_int_rs_dispatch.src2_tag == int_src2_tag) &&
+              (o_int_rs_dispatch_2.src1_ready ||
+               o_int_rs_dispatch_2.src1_tag == int_src1_2_tag) &&
+              (o_int_rs_dispatch_2.src2_ready ||
+               o_int_rs_dispatch_2.src2_tag == int_src2_2_tag));
+      p_mem_rs_unready_base_tags_exact :
+      assert ((o_mem_rs_dispatch.src1_ready || o_mem_rs_dispatch.src1_tag == int_src1_tag) &&
+              (o_mem_rs_dispatch_2.src1_ready ||
+               o_mem_rs_dispatch_2.src1_tag == int_src1_2_tag));
+    end
+  end
+`endif
+
+`ifdef ROB_LINK_DISPATCH_LOCAL_PROOF
+  // cpu_ooo enables the ROB's shared link bank. Dispatch's branch gate
+  // supplies its single-branch allocation contract in every state.
+  always_comb begin
+    p_no_slot2_behind_branch :
+    assert (!(o_rob_alloc_req_2.alloc_valid && o_rob_alloc_req.is_branch));
+    p_single_branch_alloc :
+    assert (!(o_rob_alloc_req.alloc_valid && o_rob_alloc_req.is_branch &&
+              o_rob_alloc_req_2.alloc_valid && o_rob_alloc_req_2.is_branch));
   end
 `endif
 

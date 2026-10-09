@@ -21,13 +21,11 @@ port used by FMA, commit clears and commit tag mismatches, same-cycle
 collisions of rename against commit, flush_all against everything, restore
 against commit and save against free, and checkpoint save, restore, free,
 bulk-free mask, RAS state, and the allocation priority encoder up to
-exhaustion. Three constrained-random tests interleave those operations and
-compare the resulting RAT and checkpoint state against the model.
+exhaustion. Constrained-random tests interleave those operations and compare
+the final state against the model.
 
-Usage:
-    cd frost/tests
-    make clean
-    ./test_run_cocotb.py register_alias_table
+Usage (from repository root, through the pinned tools):
+    ./scripts/frost.py cocotb register_alias_table
 """
 
 import cocotb
@@ -96,10 +94,7 @@ def check_lookup(actual: Any, expected: Any, label: str) -> None:
         assert actual.tag == expected.tag, (
             f"{label}: tag mismatch: got {actual.tag}, expected {expected.tag}"
         )
-    else:
-        assert actual.tag == 0, (
-            f"{label}: tag should be 0 when not renamed, got {actual.tag}"
-        )
+    # An unrenamed source carries architectural data and an unspecified tag.
     assert actual.value == expected.value, (
         f"{label}: value mismatch: got {actual.value:#x}, expected {expected.value:#x}"
     )
@@ -658,11 +653,20 @@ async def test_checkpoint_restore_ras_state(dut: Any) -> None:
     # Save checkpoint with specific RAS state
     ras_tos = 5
     ras_valid_count = 7
+    ras_top = 0xFEDC_BA98_7654_3210
     await dut_if.checkpoint_save(
-        checkpoint_id=1, branch_tag=2, ras_tos=ras_tos, ras_valid_count=ras_valid_count
+        checkpoint_id=1,
+        branch_tag=2,
+        ras_tos=ras_tos,
+        ras_valid_count=ras_valid_count,
+        ras_top=ras_top,
     )
     model.checkpoint_save(
-        checkpoint_id=1, branch_tag=2, ras_tos=ras_tos, ras_valid_count=ras_valid_count
+        checkpoint_id=1,
+        branch_tag=2,
+        ras_tos=ras_tos,
+        ras_valid_count=ras_valid_count,
+        ras_top=ras_top,
     )
 
     # Restore and check RAS state
@@ -672,6 +676,7 @@ async def test_checkpoint_restore_ras_state(dut: Any) -> None:
     # RAS outputs are combinational from the checkpoint RAM read
     actual_tos = dut_if.ras_tos
     actual_count = dut_if.ras_valid_count
+    actual_top = dut_if.ras_top
     await FallingEdge(dut_if.clock)
     dut_if.clear_checkpoint_restore()
 
@@ -680,6 +685,9 @@ async def test_checkpoint_restore_ras_state(dut: Any) -> None:
     )
     assert actual_count == ras_valid_count, (
         f"RAS valid count mismatch: got {actual_count}, expected {ras_valid_count}"
+    )
+    assert actual_top == ras_top, (
+        f"RAS top mismatch: got {actual_top:#x}, expected {ras_top:#x}"
     )
 
     cocotb.log.info("=== Test Passed ===")
@@ -699,7 +707,7 @@ async def test_checkpoint_free(dut: Any) -> None:
     # Checkpoint 0 should now be in use; next free should be 1
     await RisingEdge(dut_if.clock)
     assert dut_if.checkpoint_available, (
-        "Checkpoint should still be available (1-3 free)"
+        "Checkpoint should still be available (1-7 free)"
     )
     assert dut_if.checkpoint_alloc_id == 1, "Next free should be 1"
 
@@ -1096,7 +1104,10 @@ async def test_checkpoint_restore_priority_over_commit(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_save_free_same_cycle_precedence(dut: Any) -> None:
-    """Test deterministic same-cycle behavior for checkpoint save/free."""
+    """Test same-cycle checkpoint save and free.
+
+    On the same slot the save wins; on different slots both take effect.
+    """
     cocotb.log.info("=== Test: Checkpoint Save/Free Same-Cycle Precedence ===")
 
     dut_if, model = await setup_test(dut)
@@ -1138,6 +1149,80 @@ async def test_checkpoint_save_free_same_cycle_precedence(dut: Any) -> None:
     assert dut_if.checkpoint_alloc_id == 0, (
         "Slot 0 should be next free after save(slot1)+free(slot0)"
     )
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_checkpoint_free_second_port(dut: Any) -> None:
+    """The second free port releases a checkpoint alone or beside the first.
+
+    Slot-2 branch retirement frees its checkpoint through i_checkpoint_free_2,
+    possibly in the same cycle as a slot-1 free. A save to the same slot in
+    that cycle still wins.
+    """
+    cocotb.log.info("=== Test: Checkpoint Free Second Port ===")
+
+    dut_if, model = await setup_test(dut)
+
+    for slot in range(4):
+        await dut_if.checkpoint_save(checkpoint_id=slot, branch_tag=slot + 8)
+        model.checkpoint_save(slot, slot + 8, 0, 0)
+    assert dut_if.checkpoint_alloc_id == 4, "Slots 0-3 should be in use"
+
+    async def free_cycle(
+        free_1: int | None, free_2: int | None, save: int | None = None
+    ) -> None:
+        await FallingEdge(dut_if.clock)
+        if free_1 is not None:
+            dut_if.drive_checkpoint_free(free_1)
+        if free_2 is not None:
+            dut_if.drive_checkpoint_free_2(free_2)
+        if save is not None:
+            dut_if.drive_checkpoint_save(checkpoint_id=save, branch_tag=save + 16)
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        dut_if.clear_checkpoint_free()
+        dut_if.clear_checkpoint_free_2()
+        dut_if.clear_checkpoint_save()
+        for slot in (free_1, free_2):
+            if slot is not None:
+                model.checkpoint_free(slot)
+        if save is not None:
+            model.checkpoint_save(save, save + 16, 0, 0)
+
+    def check(label: str) -> None:
+        avail, alloc_id = model.checkpoint_available()
+        assert dut_if.checkpoint_available == avail, f"{label}: availability"
+        if avail:
+            assert dut_if.checkpoint_alloc_id == alloc_id, (
+                f"{label}: next free slot DUT={dut_if.checkpoint_alloc_id} "
+                f"model={alloc_id}"
+            )
+
+    # Port 2 alone.
+    await free_cycle(None, 2)
+    check("port 2 frees slot 2")
+    assert dut_if.checkpoint_alloc_id == 2
+
+    # Both ports in one cycle, different slots.
+    await free_cycle(0, 3)
+    check("port 1 frees slot 0, port 2 frees slot 3")
+    assert dut_if.checkpoint_alloc_id == 0
+
+    # Refill, then free the same slot on both ports.
+    for slot in (0, 2, 3):
+        await dut_if.checkpoint_save(checkpoint_id=slot, branch_tag=slot + 8)
+        model.checkpoint_save(slot, slot + 8, 0, 0)
+    check("slots 0-3 in use again")
+    await free_cycle(1, 1)
+    check("both ports free slot 1")
+    assert dut_if.checkpoint_alloc_id == 1
+
+    # A save to the slot port 2 frees in the same cycle wins.
+    await free_cycle(None, 1, save=1)
+    check("save wins over a same-slot port-2 free")
+    assert dut_if.checkpoint_alloc_id == 4
 
     cocotb.log.info("=== Test Passed ===")
 
@@ -1688,13 +1773,17 @@ async def test_random_checkpoint_operations(dut: Any) -> None:
                 branch_tag = random.randint(0, 31)
                 ras_tos = random.randint(0, 7)
                 ras_count = random.randint(0, 8)
-                dut_if.drive_checkpoint_save(slot_id, branch_tag, ras_tos, ras_count)
+                ras_top = random.getrandbits(64)
+                dut_if.drive_checkpoint_save(
+                    slot_id, branch_tag, ras_tos, ras_count, ras_top=ras_top
+                )
                 model.checkpoint_save(
                     slot_id,
                     branch_tag,
                     ras_tos,
                     ras_count,
                     rob_entry_epoch=dut_if.rob_entry_epoch_mask,
+                    ras_top=ras_top,
                 )
                 await RisingEdge(dut_if.clock)
                 await FallingEdge(dut_if.clock)
@@ -1723,13 +1812,18 @@ async def test_random_checkpoint_operations(dut: Any) -> None:
             if valid_slots:
                 slot_id = random.choice(valid_slots)
                 dut_if.drive_checkpoint_restore(slot_id)
-                model.checkpoint_restore(
+                expected_ras = model.checkpoint_restore(
                     slot_id,
                     dut_if.rob_entry_valid_mask,
                     dut_if.rob_entry_epoch_mask,
                     dut_if.rob_head_tag,
                 )
                 await RisingEdge(dut_if.clock)
+                actual_ras = (dut_if.ras_tos, dut_if.ras_valid_count, dut_if.ras_top)
+                assert actual_ras == expected_ras, (
+                    f"Restored RAS state of checkpoint {slot_id}: "
+                    f"got {actual_ras}, expected {expected_ras}"
+                )
                 await FallingEdge(dut_if.clock)
                 dut_if.clear_checkpoint_restore()
 

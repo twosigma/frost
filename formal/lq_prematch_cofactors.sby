@@ -1,0 +1,53 @@
+# Candidate matches equal the direct CAM, including idle-entry fallback and
+# translation, before and after the registered candidate selection.
+[tasks]
+bmc m_bmc legacy1
+prove m_prove legacy1
+bmc_raw m_bmc legacy1 sel3
+prove_raw m_prove legacy1 sel3
+pick8_bmc m_bmc pick65 g_pick8
+pick8_prove m_prove pick65 g_pick8
+pick4_bmc m_bmc pick33 g_pick4
+pick4_prove m_prove pick33 g_pick4
+pickg4_bmc m_bmc pick33 g_pickg4
+pickg4_prove m_prove pick33 g_pickg4
+pickg6_bmc m_bmc pick65 g_pickg6
+pickg6_prove m_prove pick65 g_pickg6
+
+[options]
+m_bmc: mode bmc
+m_bmc: depth 5
+m_prove: mode prove
+m_prove: depth 2
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -sv sdp_dist_ram.sv
+read -sv mwp_dist_ram.sv
+read -sv load_unit.sv
+read -sv lq_l0_cache.sv
+read -sv lq_issue_selector.sv
+read -formal -D F_LQ_PREMATCH_ONLY -D SYNTHESIS -D F_LQ_PREMATCH_COFACTORS -sv load_queue.sv
+chparam -set PREISSUE_CANDIDATES 1 load_queue
+sel3: chparam -set PREISSUE_SEL_WIDTH 3 load_queue
+g_pick8: chparam -set PREISSUE_SEL_WIDTH 3 -set PREISSUE_READY_PICK 1 -set PREISSUE_RS_DEPTH 8 load_queue
+g_pick4: chparam -set PREISSUE_SEL_WIDTH 2 -set PREISSUE_READY_PICK 1 -set PREISSUE_RS_DEPTH 8 load_queue
+g_pickg4: chparam -set PREISSUE_SEL_WIDTH 2 -set PREISSUE_READY_PICK 1 -set PREISSUE_RS_DEPTH 4 load_queue
+g_pickg6: chparam -set PREISSUE_SEL_WIDTH 3 -set PREISSUE_READY_PICK 1 -set PREISSUE_RS_DEPTH 6 load_queue
+prep -top load_queue
+select -assert-none t:$assume
+legacy1: select -assert-count 1 t:$check
+pick65: select -assert-count 65 t:$check
+pick33: select -assert-count 33 t:$check
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv

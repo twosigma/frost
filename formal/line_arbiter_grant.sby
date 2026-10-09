@@ -1,0 +1,22 @@
+[tasks]
+bmc
+bmc_xilinx
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+bmc_xilinx: read_verilog -formal +/xilinx/cells_sim.v
+bmc: read -formal -D SYNTHESIS -D LINE_ARBITER_GRANT_PROOF -sv line_port_arbiter.sv
+bmc_xilinx: read -formal -D SYNTHESIS -D LINE_ARBITER_GRANT_PROOF -D FROST_XILINX_PRIMS -sv line_port_arbiter.sv
+chparam -set NUM_PORTS 3 -set STARVATION_LIMIT 4 line_port_arbiter
+prep -top line_port_arbiter -flatten
+select -assert-none t:$assume
+select -assert-count 1 t:$check
+
+[files]
+../hw/rtl/lib/cache/line_port_arbiter.sv

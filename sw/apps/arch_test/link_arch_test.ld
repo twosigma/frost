@@ -1,17 +1,15 @@
-/* Linker script for riscv-arch-test on Frost
+/* Linker script for riscv-arch-test on FROST, ddr config (the default).
  *
  * Hardware memory map: the boot stub runs from the low BRAM ROM and the test
  * itself (code, data and the signature area) lives in the cached DDR region,
- * fetched through the L1I and loaded/stored through the L1D. The big
- * compliance tests (fadd/fmadd/... with thousands of generated cases) compile
- * to several hundred KiB, well beyond the 96 KiB low ROM. Executing from DDR
- * removes that ceiling, so the suite uses the same image shape as real
- * software (sw.mem = low BRAM stub, sw_ddr.mem = DDR sections) instead of an
- * oversized sim-only memory.
+ * fetched through the L1I and loaded/stored through the L1D. The largest
+ * tests do not fit the 95 KiB ROM. Executing from DDR removes that limit and
+ * gives the suite the same image shape as other software (sw.mem = low BRAM
+ * stub, sw_ddr.mem = DDR sections).
  *
  * DDR sections load in place (LMA == VMA): the simulator preloads the
- * behavioral DDR from sw_ddr.mem and the JTAG loader bursts the same image
- * on hardware, so the boot stub only zeroes .bss/.sbss and jumps.
+ * behavioral DDR from sw_ddr.mem, so the boot stub only zeroes .bss/.sbss and
+ * jumps.
  */
 
 ENTRY(_start)

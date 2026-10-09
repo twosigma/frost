@@ -1,5 +1,5 @@
 # CPU and memory subsystem file list
-# Includes RISC-V CPU core and main memory
+# The RISC-V CPU core, memories, cache hierarchy, and peripherals
 
 # Library dependencies (RAM primitives used by regfile, cache, main memory)
 -f $(ROOT)/hw/rtl/lib/ram/ram.f
@@ -25,22 +25,22 @@ $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode.sv
 # Per-line predecode sideband generation (L1I fill path)
 $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode_line.sv
 
-# High-address fetch window provider (two-line L1I buffer)
+# High-address fetch provider (fetch buffer in front of the L1I)
 $(ROOT)/hw/rtl/cpu_and_mem/fetch_provider.sv
 
 # Exact request repeater for low-BRAM metadata fallback misses
 $(ROOT)/hw/rtl/cpu_and_mem/low_bram_fetch_presenter.sv
 
-# Platform-level interrupt controller (Phase 3 M6)
+# Platform-level interrupt controller and the coherent DMA test engine
 $(ROOT)/hw/rtl/cpu_and_mem/plic.sv
 $(ROOT)/hw/rtl/cpu_and_mem/dma_test_engine.sv
-# RISC-V debug module + JTAG DTM (Phase 3 M3); after the core (riscv_pkg)
+# RISC-V debug module + JTAG DTM; after the core (riscv_pkg)
 -f $(ROOT)/hw/rtl/cpu_and_mem/debug/debug.f
 
 # On-silicon hang triage (synthesizable boot-hang classifier over UART)
 $(ROOT)/hw/rtl/cpu_and_mem/hang_triage.sv
 
-# Complete fast-BRAM/MMIO/cached response selection at the integrated boundary
+# Data-port read response mux (low BRAM, MMIO, cached tier)
 $(ROOT)/hw/rtl/cpu_and_mem/data_mem_response_mux.sv
 
 # CPU and memory integration module

@@ -86,6 +86,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_early_mispredict_active.value = 0
     dut.i_early_mispredict_pending.value = 0
     dut.i_early_backend_recovery_pending.value = 0
+    dut.i_early_backend_recovery_pending_next.value = 0
     dut.i_head_tag.value = 0
     dut.i_early_mispredict_tag.value = 0
     dut.i_early_backend_flush_tag.value = 0
@@ -131,7 +132,7 @@ def _drive_early_recovery(dut: Any, active: bool) -> None:
     """Drive the early-recovery redirect phase.
 
     The controller decodes its broadcasts from the registered pending flag,
-    so the system's ``active`` (pending qualified by the full-flush sources)
+    so the core's ``active`` (pending qualified by the full-flush sources)
     never appears without ``pending``.
     """
     dut.i_early_mispredict_pending.value = int(active)
@@ -141,10 +142,10 @@ def _drive_early_recovery(dut: Any, active: bool) -> None:
 async def _raise_full_flush(
     dut: Any, *, trap: bool = False, mret: bool = False, fence_i: bool = False
 ) -> None:
-    """Assert a full-flush source the way the system does.
+    """Assert a full-flush source the way the core does.
 
-    The semantic source event (trap/MRET taken or serializer-owned FENCE-class
-    retirement) arrives one cycle ahead of its registered twin. The controller
+    The source event (trap or MRET taken, or a FENCE-class retirement from the
+    serializer) arrives one cycle before its registered copy. The controller
     registers that event into the full-flush kill, so the flush broadcasts
     appear with the registered inputs on the following cycle.
     """
@@ -286,7 +287,7 @@ async def test_same_branch_early_recovery_suppresses_commit_mispredict(
 
 @cocotb.test()
 async def test_early_recovery_priority_and_checkpoint_free(dut: Any) -> None:
-    """Early frontend/backend phases drive the expected flush/checkpoint policy."""
+    """The early redirect phase restores the checkpoint; the backend phase frees it."""
     await _setup_test(dut)
 
     _drive_early_recovery(dut, True)
@@ -300,6 +301,15 @@ async def test_early_recovery_priority_and_checkpoint_free(dut: Any) -> None:
     assert int(dut.o_checkpoint_restore_id.value) == 6
     assert not dut.o_checkpoint_free.value
 
+    # The backend phase follows the redirect by one edge, as in the core: the
+    # early recovery unit's next state is high while active, and the
+    # controller registers flush_en from it. On that edge the unit loads its
+    # backend flush tag from i_early_mispredict_tag, and the controller
+    # registers the flush tag from the same input.
+    dut.i_early_backend_recovery_pending_next.value = 1
+    dut.i_early_mispredict_tag.value = 12
+    await _advance_cycle(dut)
+    dut.i_early_backend_recovery_pending_next.value = 0
     _drive_early_recovery(dut, False)
     dut.i_early_backend_recovery_pending.value = 1
     dut.i_early_backend_flush_tag.value = 12
@@ -314,6 +324,7 @@ async def test_early_recovery_priority_and_checkpoint_free(dut: Any) -> None:
     assert not dut.o_checkpoint_restore.value
 
     await _advance_cycle(dut)
+    dut.i_early_backend_recovery_pending.value = 0
 
     assert int(dut.o_checkpoint_flush_free_mask.value) == 0b01010010
 
@@ -325,6 +336,12 @@ async def test_full_flush_sources_override_partial_recovery(dut: Any) -> None:
 
     for source in ("trap", "mret", "fence"):
         _clear_inputs(dut)
+        # The backend recovery stays pending across the flush edge, so its
+        # next state is high on the edge before it and on that edge; the unit
+        # loads its backend flush tag from i_early_mispredict_tag then.
+        dut.i_early_backend_recovery_pending_next.value = 1
+        dut.i_early_mispredict_tag.value = 8
+        await _advance_cycle(dut)
         dut.i_early_backend_recovery_pending.value = 1
         dut.i_early_backend_flush_tag.value = 8
         dut.i_early_mispredict_checkpoint_id.value = 2
@@ -343,7 +360,9 @@ async def test_full_flush_sources_override_partial_recovery(dut: Any) -> None:
         assert not dut.o_checkpoint_restore.value
         assert not dut.o_checkpoint_free.value
 
+        dut.i_early_backend_recovery_pending_next.value = 0
         await _lower_full_flush(dut)
+        dut.i_early_backend_recovery_pending.value = 0
 
 
 @cocotb.test()
@@ -481,6 +500,70 @@ async def test_correct_branch_commit_frees_only_live_owned_checkpoint(
 
 
 @cocotb.test()
+async def test_held_slot2_free_is_one_shot_across_checkpoint_reuse(dut: Any) -> None:
+    """A held slot-2 record frees its checkpoint once, even if the id returns at its tag.
+
+    C0: slot-1 X (tag 5, checkpoint 4) and slot-2 A (tag 6, checkpoint 0)
+    retire as correct branches. C1: slot-1 B (tag 7, checkpoint 2) retires, so
+    slot-1 training holds A's record; A's free pulses once. C2: checkpoint 0 is
+    free. C3: a new branch R holds checkpoint 0 at A's recycled ROB tag 6 while
+    A's record is still held; the record must not free R's live checkpoint. A
+    later slot-2 capture still gets its own free.
+    """
+    await _setup_test(dut)
+
+    in_use = (1 << 4) | (1 << 0) | (1 << 2)
+    owners = {4: 5, 0: 6, 2: 7}
+    dut.i_checkpoint_in_use.value = in_use
+    dut.i_checkpoint_owner_tag.value = _pack_checkpoint_owner_tags(owners)
+    _drive_commit(dut, {"valid": True, "tag": 5, "checkpoint_id": 4, "is_branch": True})
+    dut.i_rob_commit_correct_branch_raw.value = 1
+    _drive_commit_2(
+        dut, {"valid": True, "tag": 6, "checkpoint_id": 0, "is_branch": True}
+    )
+    dut.i_rob_commit_correct_branch_2_raw.value = 1
+    await _advance_cycle(dut)  # C1
+
+    dut.i_rob_commit_correct_branch_2_raw.value = 0
+    _drive_commit(dut, {"valid": True, "tag": 7, "checkpoint_id": 2, "is_branch": True})
+    dut.i_rob_commit_correct_branch_raw.value = 1
+    await _settle()
+    assert dut.o_checkpoint_free_2.value, "A's checkpoint must be freed once"
+    assert int(dut.o_checkpoint_free_id_2.value) == 0
+    await _advance_cycle(dut)  # C2
+
+    in_use &= ~((1 << 4) | (1 << 0))
+    dut.i_checkpoint_in_use.value = in_use
+    dut.i_rob_commit_correct_branch_raw.value = 0
+    await _settle()
+    assert not dut.o_checkpoint_free_2.value
+    await _advance_cycle(dut)  # C3
+
+    in_use |= 1 << 0
+    owners[0] = 6
+    dut.i_checkpoint_in_use.value = in_use
+    dut.i_checkpoint_owner_tag.value = _pack_checkpoint_owner_tags(owners)
+    await _settle()
+    assert dut.o_correct_branch_commit_pending_2_raw.value, (
+        "the scenario needs A's record still held at C3"
+    )
+    assert not dut.o_checkpoint_free_2.value, (
+        "the held record freed a reallocated live checkpoint"
+    )
+
+    # A new slot-2 capture of R (tag 6, checkpoint 0) gets its own free.
+    _drive_commit_2(
+        dut, {"valid": True, "tag": 6, "checkpoint_id": 0, "is_branch": True}
+    )
+    dut.i_rob_commit_correct_branch_2_raw.value = 1
+    await _advance_cycle(dut)
+    dut.i_rob_commit_correct_branch_2_raw.value = 0
+    await _settle()
+    assert dut.o_checkpoint_free_2.value
+    assert int(dut.o_checkpoint_free_id_2.value) == 0
+
+
+@cocotb.test()
 async def test_raw_slot2_training_pending_survives_early_recovery_until_service(
     dut: Any,
 ) -> None:
@@ -514,7 +597,7 @@ async def test_raw_slot2_training_pending_survives_early_recovery_until_service(
 
     # The raw output is the registered held state, not the early-qualified
     # service pulse. It must stay visible combinationally and stay held over
-    # the edge while early recovery owns the BTB transaction.
+    # the edge while early recovery drives the BTB transaction.
     _clear_inputs(dut)
     _drive_early_recovery(dut, True)
     await _settle()

@@ -32,10 +32,18 @@ APP_SIM_SETTINGS: dict[str, dict[str, str]] = {
     "coremark": {
         # Keep simulation short.
         "ITERATIONS": "1",
-        # The synthetic clock avoids timing overflow and lets one simulated
-        # iteration pass CoreMark's ten-second reporting check down to 200k ticks.
-        # Board runs use the actual clock and ITERATIONS=11000.
+        # At 20 kHz, 200k cycles count as ten seconds, so a one-iteration run of
+        # at least that length passes CoreMark's ten-second check, which would
+        # otherwise count an error and suppress the validation and score lines.
+        # Board runs use the real clock and ITERATIONS=14000.
         "FPGA_CPU_CLK_FREQ": "20000",
+    },
+    "freertos_demo": {
+        # The demo waits for timer ticks. At 10 MHz the 1 ms tick is 10,000
+        # cycles, which keeps the run inside the default cycle budget; at the
+        # board clock a tick is about 322,000 cycles. Board runs use the real
+        # clock.
+        "FPGA_CPU_CLK_FREQ": "10000000",
     },
 }
 
@@ -105,8 +113,8 @@ def compile_app(
     app_dir_name = app_build_directory_name(app_name)
     app_dir = apps_dir / app_dir_name
     # When set (for example COCOTB_COREMARK_PRO_HW_ARGS="-v0 -i1"), build with
-    # the official EEMBC datasets instead of the FASTEST inputs and pass the
-    # given run arguments. Unset builds the fast verified simulation recipe.
+    # the official EEMBC datasets instead of the small simulation inputs and
+    # pass the given run arguments.
     coremark_pro_hw_args = os.environ.get("COCOTB_COREMARK_PRO_HW_ARGS", "")
     if coremark_pro_hw_args:
         make_vars = coremark_pro_make_vars(

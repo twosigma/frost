@@ -1,0 +1,27 @@
+[tasks]
+bmc
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read -formal -D SYNTHESIS -D ROB_BYPASS_CONTROL_LOCAL_PROOF -sv reorder_buffer.sv
+hierarchy -top reorder_buffer
+delete t:sdp_dist_ram t:mwp_dist_ram t:mwp_dist_ram_ohread t:rob_serializer
+proc
+setundef -undriven -anyseq
+delete -port reorder_buffer/o:*
+opt
+prep -top reorder_buffer -flatten
+select -assert-none t:$assume a:init
+select -assert-none t:$check r:FLAVOR=assume %i
+select -assert-count 1 t:$check r:FLAVOR=assert %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv

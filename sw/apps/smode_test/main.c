@@ -15,15 +15,16 @@
  */
 
 /*
- * S-mode (supervisor privilege) directed test, Phase 3 M1.
+ * S-mode (supervisor privilege) directed test.
  *
  * Exercises the Machine+Supervisor+User privilege architecture end-to-end on
  * the real core and self-checks over UART (<<PASS>> / <<FAIL>>). Two trap
  * handlers cooperate. The M handler (mtvec) records mcause and MPP, then
  * bounces to a continuation stashed in mscratch, the same mechanism
- * umode_test uses. The S handler (stvec) records scause, sepc, stval and SPP, then takes
- * one of two exits: it ecalls out to M, ending the case with mcause=9, or it
- * clears the firing sie bit and SRETs to resume the S body.
+ * umode_test uses. The S handler (stvec) records scause, sepc, stval and SPP,
+ * then takes one of two exits: it ecalls out to M, ending the case with
+ * mcause=9, or it clears sie.STIE and sie.SSIE, then SRETs to resume the S
+ * body.
  *
  *   A. MRET with MPP=S enters S-mode: sstatus is readable there; the ending
  *      ecall reports cause 9 (ecall-from-S) with mstatus.MPP=S at M.
@@ -58,8 +59,9 @@
  *      MIE=1 (mcause=INT|1).
  *   N. Machine timer interrupt preempts S-mode with MIE=0 (mcause=INT|7,
  *      from priv S): M-target interrupts always fire below M.
- *   O. sstatus is a strict view: with mstatus.MPIE/MPP set, sstatus read
- *      from S shows zeros in the M-only fields; SUM/MXR round-trip through
+ *   O. sstatus is a strict view: with mstatus.MPIE set, sstatus read from S
+ *      shows zeros in the M-only fields, and so does sstatus read from M
+ *      with mstatus.MIE, MPIE and MPP=M set; SUM/MXR round-trip through
  *      sstatus writes.
  *   P. sie visibility follows mideleg: with mie.SSIE=1 but mideleg[SSI]=0,
  *      sie reads 0 in bit 1 and sie writes cannot set it; delegating makes
@@ -67,24 +69,22 @@
  *   Q. scounteren chain: U-mode counter reads need mcounteren AND
  *      scounteren; S-mode reads need mcounteren only.
  *   R. Unimplemented CSRs trap illegal at every privilege (mhpmcounter3
- *      0xB03 from M; hpmcounter3 0xC03 from S). mcountinhibit (0x320) was the
- *      M-mode probe until Phase 3 M7 implemented it for OpenSBI.
+ *      0xB03 from M; hpmcounter3 0xC03 from S).
  *   S. WARL: medeleg all-ones reads back the implemented mask 0xB3FF;
  *      mideleg all-ones reads back 0x222; mstatus.MPP write of the reserved
  *      encoding 2'b10 folds to U.
- *   V. Signal-return restart (the Linux sigreturn + syscall-restart dance,
- *      which crashed busybox on the MMU lane's first board boot): a U
- *      ecall is "interrupted" by the S handler, which saves a0-a7 and the
- *      ecall PC, and SRETs into a U handler with ra = a trampoline; the
- *      trampoline ecalls (rt_sigreturn), the S handler restores a0-a7 and
- *      SRETs back onto the ORIGINAL ecall (restart); that ecall must trap
- *      with sepc = its own PC and the restored registers, and its return
- *      must land after it. A word of zeros follows the trampoline ecall,
- *      like the vDSO, so a stale sepc surfaces as an illegal instruction.
- *      V2 repeats the sequence with an Sstc timer interrupt armed at the
- *      sigreturn SRET, sweeping its delay cycle by cycle, so the interrupt
- *      lands before, on, or after the restarted ecall; every interrupt
- *      entry must report a resume PC inside the U code.
+ *   V. Signal-return restart, the Linux sigreturn and syscall-restart
+ *      sequence: a U ecall is "interrupted" by the S handler, which saves
+ *      a0-a7 and the ecall PC, and SRETs into a U handler with ra = a
+ *      trampoline; the trampoline ecalls (rt_sigreturn), the S handler
+ *      restores a0-a7 and SRETs back onto the ORIGINAL ecall (restart); that
+ *      ecall must trap with sepc = its own PC and the restored registers, and
+ *      its return must land after it. A word of zeros follows the trampoline
+ *      ecall, like the vDSO, so a stale sepc surfaces as an illegal
+ *      instruction. V2 repeats the sequence with an Sstc timer interrupt
+ *      armed at the sigreturn SRET, sweeping its delay cycle by cycle, so the
+ *      interrupt lands before, on, or after the restarted ecall; every
+ *      interrupt entry must report a resume PC inside the U code.
  *   T. Delegated ebreak from U (medeleg[3]=1): scause=3 and stval = the U
  *      body's address (breakpoint tval = faulting PC, steered to stval).
  *
@@ -134,9 +134,9 @@ static volatile uint32_t g_s_trap_seen;  /* set by the S handler */
 
 /*
  * Naked M-mode trap handler. Records mcause and the trapping privilege once
- * per case, pushes mtimecmp to max so a timer interrupt cannot refire, clears
- * the injected software-pending bits, and returns to M-mode at the
- * continuation stashed in mscratch.
+ * per case, sets mtimecmp's high word to all ones so a timer interrupt cannot
+ * refire, clears the injected supervisor pending bits (SSIP, STIP, SEIP), and
+ * returns to M-mode at the continuation stashed in mscratch.
  */
 __attribute__((naked, aligned(4))) static void m_trap_handler(void)
 {
@@ -153,7 +153,7 @@ __attribute__((naked, aligned(4))) static void m_trap_handler(void)
                      "li   t1, 0x4000001C\n" /* MTIMECMP_HI: ack any timer */
                      "li   t0, -1\n"
                      "sw   t0, 0(t1)\n"
-                     "li   t0, 0x222\n" /* drop injected S software-pending bits */
+                     "li   t0, 0x222\n" /* drop injected SSIP/STIP/SEIP */
                      "csrc mip, t0\n"
                      "csrr t0, mscratch\n" /* M-mode continuation */
                      "csrw mepc, t0\n"
@@ -470,25 +470,26 @@ __attribute__((naked)) static void b_read_hpm3(void)
     __asm__ volatile("csrr t0, 0xC03\n ecall\n j .");
 }
 
-/* S body for the delegated-interrupt resume case (L). The wfi parks until the
- * injected STIP wakes it; a pending bit wakes WFI regardless of the enables.
- * The delegated STI traps to the S handler, which SRETs back here, and the
- * ecall ends the case. If the interrupt never fires the wfi still completes,
- * because STIP is pending, and the case fails on g_s_trap_seen. */
+/* S body for the delegated-interrupt resume case (L). STIP is pending on
+ * entry, and a pending bit wakes WFI regardless of the enables, so the wfi
+ * never blocks. The delegated STI traps to the S handler, which SRETs back
+ * into this body, and the ecall ends the case. If the interrupt is never
+ * taken, the case fails on g_s_trap_seen. */
 __attribute__((naked)) static void b_wfi_then_ecall(void)
 {
     __asm__ volatile("wfi\n ecall\n j .");
 }
 
-/* S body for the sstatus.SIE csrsi/csrci race (L2), the S-mode analog of the
- * M-mode lost-tick hold. With a delegated STIP already pending and sie.STIE
- * set, `csrsi sstatus,2` makes the interrupt eligible at an instruction
- * boundary that the immediately following `csrci sstatus,2` is younger than,
- * so the trap has to be taken even though the live global enable has dropped
- * by the time the registered take fires. The csrci is squashed and
- * re-executed after the handler. The handler runs in resume mode: it records,
- * clears sie.STIE, and SRETs, and the ecall ends the case. A lost tick leaves
- * g_s_trap_seen=0. */
+/* S body for the sstatus.SIE csrsi/csrci race (L2), the S-mode form of the
+ * kernel idle loop's `csrsi mstatus,MIE; ...; csrci`. With a delegated STIP
+ * already pending and sie.STIE set, `csrsi sstatus,2` makes the interrupt
+ * eligible at an instruction boundary that the immediately following
+ * `csrci sstatus,2` is younger than, so the trap has to be taken before the
+ * csrci retires, even though the trap unit's registered pending latch and
+ * arming cycle put a few cycles between that boundary and the take. The trap
+ * squashes the csrci, which re-executes after the handler. The handler runs
+ * in resume mode: it records, clears sie.STIE, and SRETs, and the ecall ends
+ * the case. A lost interrupt leaves g_s_trap_seen=0. */
 __attribute__((naked)) static void b_sie_toggle_race(void)
 {
     __asm__ volatile("csrsi sstatus, 0x2\n"
@@ -804,10 +805,10 @@ int main(void)
     csr_write(mideleg, 0);
     csr_clear(sstatus, 1u << 1);
 
-    /* L2: the sstatus.SIE csrsi/csrci race. An interrupt made eligible by
-     * csrsi has to survive the immediately following csrci, the S-mode analog
-     * of the M-mode held-tick contract. Enter S with SIE=0; the body toggles
-     * SIE around nothing. */
+    /* L2: the sstatus.SIE csrsi/csrci race (see b_sie_toggle_race). An
+     * interrupt made eligible by csrsi has to survive the immediately
+     * following csrci. Enter S with SIE=0; the body sets SIE and clears it
+     * again in the next instruction. */
     csr_write(mideleg, 1u << 5);
     csr_set(mie, 1u << 5);
     csr_clear(sstatus, 1u << 1);
@@ -835,9 +836,10 @@ int main(void)
                      "li   t0, 0x2\n"
                      "csrs mip, t0\n"       /* inject SSIP */
                      "csrsi mstatus, 0x8\n" /* MIE = 1 */
-                     /* Interrupt entry is registered + armed (a few cycles);
-                      * the 2-wide core retires ~2 nops/cycle, so give the
-                      * take a wide window before MIE drops again. */
+                     /* The trap unit latches and then arms an interrupt over
+                      * a few cycles, and the two-wide core retires about two
+                      * nops per cycle, so the nops give the take a wide
+                      * window before MIE drops again. */
                      "nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n"
                      "nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n"
                      "nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n"
@@ -860,13 +862,27 @@ int main(void)
     disable_timer_interrupt();
 
     /* O: sstatus is a strict view (M fields invisible) and SUM/MXR
-     * round-trip through it. MPIE is set by the MRET sequence in
-     * run_at_priv; MPP is nonzero while in S. */
+     * round-trip through it. The MRET in run_at_priv sets MPIE, so an M-only
+     * field is nonzero while the S body reads sstatus. That MRET also sets
+     * MPP to U, so the S read cannot see MPP leak. The M-mode read sets MIE,
+     * MPIE and MPP = M itself, with mie cleared so MIE=1 takes no interrupt. */
     reset_s_record();
     cause = run_at_priv(&b_capture_views, PRIV_S);
     all_ok &= report("O view-case-ends", cause, 9u);
     all_ok &= report(
         "O sstatus-m-fields-zero", g_seen_sstatus & ((1ul << 3) | (1ul << 7) | (3ul << 11)), 0ul);
+    {
+        unsigned long saved_mstatus = csr_read(mstatus);
+        unsigned long saved_mie = csr_read(mie);
+        csr_write(mie, 0);
+        csr_set(mstatus, MSTATUS_MIE | MSTATUS_MPP | MSTATUS_MPIE);
+        unsigned long seen_from_m = csr_read(sstatus);
+        csr_write(mstatus, saved_mstatus);
+        csr_write(mie, saved_mie);
+        all_ok &= report("O sstatus-m-fields-zero-from-M",
+                         seen_from_m & ((1ul << 3) | (1ul << 7) | (3ul << 11)),
+                         0ul);
+    }
     reset_s_record();
     cause = run_at_priv(&b_poke_sum_mxr, PRIV_S);
     all_ok &= report("O sum-mxr-roundtrip-ends", cause, 9u);

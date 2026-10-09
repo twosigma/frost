@@ -2,7 +2,7 @@
   <title id="title">FROST Tomasulo back-end: allocation, execution, completion and commit</title>
   <desc id="desc">
     Two-wide dispatch renames registers and allocates ROB and reservation-station
-    entries; memory issue allocates load and store queue entries. Six stations issue independently; INT has two ALUs. Arithmetic
+    entries; memory issue allocates load and store queue entries. Four stations issue independently; INT has two ALUs. Arithmetic
     completions and translated memory results feed two CDB lanes. Successful
     ordinary stores complete the ROB directly. Up to two instructions retire
     in order, updating registers and releasing stores. A and S badges mark
@@ -15,7 +15,7 @@
       hw/rtl/cpu_and_mem/cpu/tomasulo/dispatch/dispatch.sv:
         two-wide rename, ROB/RS/queue allocation and branch checkpoints.
       hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv:
-        six RS instances, two INT ALUs, independent FU adapters, CDB wakeup,
+        four RS instances, two INT ALUs, independent FU adapters, CDB wakeup,
         direct successful-store completion, DMMU and LQ/SQ update routing.
       hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv:
         direct-mapped 128-entry, eight-byte-granule L0 cache.
@@ -100,7 +100,7 @@
   <text x="380" y="252" class="small">Allocates ROB / RS entries; checks LQ / SQ space</text>
   <circle cx="1024" cy="188" r="15" class="allocation"/><text x="1024" y="194" class="badge-text">A</text>
 
-  <!-- Dispatch allocates the six stations independently of ROB completion. -->
+  <!-- Dispatch allocates the four stations independently of ROB completion. -->
   <path d="M 703 264 V 294 H 216 M 703 294 H 880" class="flow"/>
   <g class="flow" marker-end="url(#flow-arrow)">
     <path d="M 216 294 V 325"/><path d="M 536 294 V 325"/><path d="M 880 294 V 325"/>
@@ -114,22 +114,18 @@
 
   <g class="center">
     <rect x="90" y="382" width="120" height="75" rx="10" class="station"/>
-    <text x="150" y="412" class="label">INT RS</text><text x="150" y="439" class="body">8 entries</text>
+    <text x="150" y="412" class="label">INT RS</text><text x="150" y="439" class="body">16 entries</text>
     <rect x="224" y="382" width="120" height="75" rx="10" class="station"/>
     <text x="284" y="412" class="label">MUL RS</text><text x="284" y="439" class="body">4 entries</text>
-    <rect x="408" y="382" width="78" height="75" rx="10" class="station"/>
-    <text x="447" y="412" class="label">FP</text><text x="447" y="439" class="body">6</text>
-    <rect x="498" y="382" width="78" height="75" rx="10" class="station"/>
-    <text x="537" y="412" class="label">FMUL</text><text x="537" y="439" class="body">4</text>
-    <rect x="588" y="382" width="78" height="75" rx="10" class="station"/>
-    <text x="627" y="412" class="label">FDIV</text><text x="627" y="439" class="body">2</text>
+    <rect x="408" y="382" width="258" height="75" rx="10" class="station"/>
+    <text x="537" y="412" class="label">FP RS</text><text x="537" y="439" class="body">2 entries</text>
     <rect x="730" y="382" width="300" height="75" rx="10" class="station"/>
     <text x="880" y="412" class="label">MEM RS · 8 entries</text>
     <text x="880" y="439" class="body">Loads · stores · atomics</text>
   </g>
   <g class="flow" marker-end="url(#flow-arrow)">
     <path d="M 150 457 V 497"/><path d="M 284 457 V 497"/>
-    <path d="M 447 457 V 497"/><path d="M 537 457 V 497"/><path d="M 627 457 V 497"/>
+    <path d="M 537 457 V 497"/>
     <path d="M 880 457 V 497"/>
   </g>
   <g class="center">
@@ -140,10 +136,10 @@
     <text x="284" y="530" class="label">MUL / DIV</text><text x="284" y="559" class="small">Multiply</text>
     <text x="284" y="584" class="small">Divide / rem.</text><text x="284" y="611" class="small">1 issue port</text>
     <rect x="408" y="497" width="258" height="128" rx="10" class="execution"/>
-    <text x="537" y="528" class="label">FP execution shims</text>
-    <text x="537" y="557" class="small">FP: add / compare / convert</text>
-    <text x="537" y="583" class="small">FMUL: multiply / FMA</text>
-    <text x="537" y="609" class="small">FDIV: divide / square root</text>
+    <text x="537" y="528" class="label">FP engine</text>
+    <text x="537" y="557" class="small">Every F / D compute op</text>
+    <text x="537" y="583" class="small">Iterative, one at a time</text>
+    <text x="537" y="609" class="small">1 issue port</text>
     <rect x="730" y="497" width="300" height="128" rx="10" class="memory"/>
     <text x="880" y="529" class="label">Address generation + DMMU</text>
     <text x="880" y="559" class="body">Sv39 DTLB · 16 entries</text>
@@ -157,11 +153,11 @@
   </g>
   <rect x="90" y="690" width="576" height="95" rx="13" class="result"/>
   <text x="378" y="724" class="heading center">Arithmetic completion adapters</text>
-  <text x="378" y="753" class="body center">Seven FU slots · ungranted results wait</text>
+  <text x="378" y="753" class="body center">Five FU slots · ungranted results wait</text>
   <text x="378" y="777" class="small center">Pipelined shims also buffer results in FIFOs</text>
   <path d="M 378 785 V 809 H 78 V 1020" class="broadcast" marker-end="url(#result-arrow)"/>
   <rect x="110" y="831" width="556" height="130" rx="13" class="panel"/>
-  <text x="132" y="862" class="label">Six independent reservation stations</text>
+  <text x="132" y="862" class="label">Four independent reservation stations</text>
   <text x="132" y="892" class="body">Ready operands + available FU allow issue.</text>
   <text x="132" y="919" class="body">INT issues twice; each other RS issues once.</text>
   <text x="132" y="946" class="body">Both CDB lanes wake waiting operands.</text>
@@ -206,13 +202,12 @@
 
   <rect x="70" y="1020" width="980" height="90" rx="14" class="result"/>
   <text x="560" y="1057" class="heading center">Common data bus · up to 2 results per cycle</text>
-  <text x="560" y="1088" class="body center">Eight FU sources · fixed-priority top-two arbiter · tags + values + exception / FP status</text>
-  <!-- The feedback bus reaches all six stations, independently of issue. -->
+  <text x="560" y="1088" class="body center">Six FU sources · fixed-priority top-two arbiter · tags + values + exception / FP status</text>
+  <!-- The feedback bus reaches all four stations, independently of issue. -->
   <path d="M 70 1065 H 43 V 374 H 1020" class="broadcast" stroke-dasharray="6 5"/>
   <g class="broadcast" marker-end="url(#result-arrow)">
     <path d="M 105 374 V 382"/><path d="M 239 374 V 382"/>
-    <path d="M 423 374 V 382"/><path d="M 513 374 V 382"/>
-    <path d="M 603 374 V 382"/><path d="M 745 374 V 382"/>
+    <path d="M 423 374 V 382"/><path d="M 745 374 V 382"/>
   </g>
   <path d="M 450 1110 V 1190" class="broadcast" marker-end="url(#result-arrow)"/>
   <text x="340" y="1139" class="small">Mark done</text>

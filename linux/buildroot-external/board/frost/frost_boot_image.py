@@ -16,10 +16,10 @@
 
 """Pack a FROST boot image: OpenSBI, an S-mode payload, the DTB, an initramfs.
 
-The pieces are placed in the cached-DDR image and the low-BRAM shim jumps to
-the firmware.
-
-Layout in cached DDR (offsets from 0x8000_0000; see linux/README.md):
+The low-BRAM shim sets a0 = 0 (the hart ID) and a1 = the DTB address and jumps
+to OpenSBI fw_jump, which passes a1 through (it is built without an FDT
+offset). The rest goes in the cached-DDR image, at these offsets from
+0x8000_0000 (linux/README.md, "Memory map"):
 
   +0          OpenSBI fw_jump.bin (FW_TEXT_START), at most FW_MAX_BYTES
   +2 MiB      the S-mode payload: a Linux ``Image`` or a raw binary
@@ -29,20 +29,17 @@ Layout in cached DDR (offsets from 0x8000_0000; see linux/README.md):
 
   D = align_up(max(16 MiB, 2 MiB + footprint), 2 MiB)
 
-The footprint is a Linux ``Image``'s header ``image_size`` (text plus bss), or
-a raw payload's length. Linux (rv64, STRICT_KERNEL_RWX) reserves its image up
-to the next 2 MiB boundary and drops an initramfs that overlaps a reservation,
-so the DTB starts at or above that boundary and the initramfs follows the DTB
-slot. The 16 MiB floor
-(DTB_MIN_OFFSET) is for compatibility only: every payload of at most 14 MiB
-packs exactly as it did when the DTB offset was fixed. The DTB slot, and the
-initramfs when given, must end inside the memory node, whose size is
---mem-size (MEM_SIZE, 64 MiB, by default).
-
-The boot shim in low BRAM sets a0 = hart id, a1 = the DTB address and jumps to
-the firmware; fw_jump passes a1 through (it is built without an FDT offset).
-main() plans one Layout, and every address in the outputs comes from it: the
-shim's a1, the /chosen initramfs bounds and both DDR images.
+The footprint is a Linux ``Image``'s header ``image_size`` (text plus bss;
+the header magic identifies an Image) or a raw payload's length. Linux (rv64,
+STRICT_KERNEL_RWX) reserves its image up to the next 2 MiB boundary and drops
+an initramfs that overlaps a reservation, so the DTB starts at or above that
+boundary and the initramfs follows the DTB slot. The 16 MiB floor
+(DTB_MIN_OFFSET) is not a Linux or OpenSBI requirement: it keeps the DTB at
++16 MiB for every payload of at most 14 MiB. The DTB slot, and the initramfs
+when given, must end inside the memory node, whose size is --mem-size
+(MEM_SIZE, 64 MiB, by default). main() plans one Layout, and every address in
+the outputs comes from it: the shim's a1, the /chosen initramfs bounds and
+both DDR images.
 
 Outputs (in --out):
   sw.{mem,txt}      the low-BRAM shim
@@ -50,17 +47,10 @@ Outputs (in --out):
                     directives) and dense ``.txt`` (the JTAG loader's stream)
   frost.{dts,dtb}   the generated device tree
 
-A Linux ``Image`` is recognized by its header magic and placed by the header's
-``image_size`` rather than the file size. Every region is asserted to be
-ordered and inside the memory node, and the DTB is given growth slack for
-OpenSBI's reserved-memory and cpu fixups.
-
-With --nfsroot the root is an NFS export: the bootargs (nfsroot_bootargs)
-configure the interface from --ip (ip=, dhcp by default) and mount the export.
-Without --initrd the kernel does both itself; with one, the initramfs does,
-through initramfs-tools' NFS boot (boot=nfs), for a kernel with no NFS root of
-its own, such as Debian's. --mac replaces the NIC's local-mac-address, which
-boards sharing a network must not share.
+--nfsroot makes an NFS export the root (see nfsroot_bootargs). With --initrd,
+the initramfs mounts it through initramfs-tools' NFS boot, which a kernel with
+no NFS root of its own, such as Debian's, needs. --mac replaces the NIC's
+local-mac-address, which boards sharing a network must not share.
 """
 
 import argparse
@@ -78,12 +68,12 @@ PAYLOAD_OFFSET = 0x20_0000
 # The rv64 kernel's PMD: the Image loads on a PMD boundary, and Linux (with
 # STRICT_KERNEL_RWX) reserves it up to the next boundary past its end.
 PMD_BYTES = 0x20_0000
-# The lowest DTB offset. A compatibility floor, not a Linux or OpenSBI
-# requirement: it was the fixed DTB offset, so payloads that fit below it keep
-# their DTB and initramfs addresses and pack bit-identically.
+# The lowest DTB offset. Not a Linux or OpenSBI requirement: it keeps the DTB
+# at +16 MiB and the initramfs at +16 MiB + 64 KiB for every payload of at most
+# 14 MiB.
 DTB_MIN_OFFSET = 0x100_0000
 DTB_SLOT_BYTES = 0x1_0000
-# The memory /memory advertises unless --mem-size names a board's: 64 MiB, the
+# The /memory node's size unless --mem-size gives a board's: 64 MiB, the
 # simulation DDR model's default size (tests/Makefile DDR_MODEL_BYTES).
 MEM_SIZE = 0x400_0000
 # The cached DDR region at DDR_BASE (hw/rtl/cpu_and_mem/cpu_and_mem.sv
@@ -102,8 +92,9 @@ LINUX_IMAGE_MAGIC = b"RISCV\x00\x00\x00"  # header offset 0x30
 LINUX_IMAGE_SIZE_OFFSET = 0x10  # u64 image_size (text + bss)
 
 # What the DT advertises: the ISA the core implements, in the spelling both
-# OpenSBI and Linux parse. Keep it in sync with sw/common/arch.mk and
-# hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv (misa), and linux/README.md.
+# OpenSBI and Linux parse. Keep it in sync with FROST_MARCH_EXTENSIONS in
+# sw/common/common.mk, misa (MisaValue in hw/rtl/cpu_and_mem/cpu/csr/csr_file.sv),
+# and linux/README.md ("Advertised ISA").
 ISA_BASE = "rv64i"
 ISA_EXTENSIONS = (
     "i", "m", "a", "f", "d", "c",
@@ -128,7 +119,7 @@ DEFAULT_NFSROOT_IP = "dhcp"
 # but 2 and 3.
 NFSROOT_OPTIONS = "vers=3,tcp,hard"
 DEFAULT_MODEL = "FROST RV64 (Sv39, OpenSBI)"
-DEFAULT_CLK_HZ = 300_000_000  # X3
+DEFAULT_CLK_HZ = 322_265_625  # X3
 DEFAULT_SHIM_MARCH = "rv64i_zicsr"
 DEFAULT_SHIM_MABI = "lp64"
 
@@ -425,8 +416,8 @@ def build_shim(
         cmd.append("-march=" + march)
     if mabi:
         cmd.append("-mabi=" + mabi)
-    # -static -no-pie: a Linux-targeted toolchain (the Buildroot lane's)
-    # defaults to a dynamic PIE link, which has no place in a 24-byte ROM shim.
+    # -static -no-pie: a Linux-targeted toolchain (Buildroot's, for one)
+    # defaults to a dynamic PIE link; the shim is a bare binary linked at 0.
     cmd += ["-nostdlib", "-static", "-no-pie", "-Wl,-Ttext=0", "-o", str(elf), str(src)]
     subprocess.run(cmd, check=True)
     subprocess.run([cross + "objcopy", "-O", "binary", str(elf), str(binf)], check=True)
@@ -527,7 +518,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     root = parser.add_mutually_exclusive_group()
     root.add_argument(
-        "--bootargs", default=DEFAULT_BOOTARGS, help='"" to omit bootargs'
+        "--bootargs", default=DEFAULT_BOOTARGS, help='kernel command line ("" for none)'
     )
     root.add_argument(
         "--nfsroot",

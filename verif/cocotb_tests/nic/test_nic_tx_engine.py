@@ -14,13 +14,11 @@
 
 """Unit tests for nic_tx_engine (hw/rtl/peripherals/nic/nic_tx_engine.sv).
 
-Against the DMA model (memory, out-of-order responses) and a beat sink
-standing in for the TX FIFO: buffers at any byte offset come out as
-contiguous beats with the right final count and last flag, reading
-exactly the lines the buffer covers; invalid descriptors complete with
-DD|ERR and send nothing; DD follows the last beat; abort completes with
-DD|ERR|ABORT and pushes nothing more; the drain reaches idle without a
-completion; with the ring empty nothing is read.
+The engine runs against the DMA model of dma_model.py (a memory with
+out-of-order responses) and a beat sink standing in for the TX FIFO. A
+buffer at any byte offset must come out as contiguous beats with the right
+final count and last flag, and the engine must read exactly the lines the
+buffer covers.
 """
 
 import random
@@ -210,7 +208,7 @@ def _expected_lines(addr: int, length: int) -> list[int]:
 
 @cocotb.test()
 async def test_frames_out(dut: Any) -> None:
-    """Buffers at every kind of offset come out byte-exact, reading exactly their lines."""
+    """Buffers at random byte offsets come out byte-exact, reading exactly their lines."""
     env = await _setup(dut, 1)
     lengths = [1, 8, 9, 31, 32, 33, 60, 64, 65, 100, 1518, 1500, 9216, 4000, 7]
     plan = []
@@ -255,7 +253,7 @@ async def test_reorder_under_slow_memory(dut: Any) -> None:
 
 @cocotb.test()
 async def test_one_status_write_in_flight(dut: Any) -> None:
-    """Status responses slower than whole frames: the next status write waits for the previous response."""
+    """With slow status responses, each status write waits for the previous one's response."""
     env = await _setup(dut, 7, latency=(1, 4), sink_gap=0.0, status_latency=(150, 150))
     plan = [env.place(i, BUF + i * 0x1000 + 3, 64) for i in range(4)]
     await env.doorbell(4)
@@ -272,7 +270,11 @@ async def test_one_status_write_in_flight(dut: Any) -> None:
 
 @cocotb.test()
 async def test_invalid_descriptors(dut: Any) -> None:
-    """Length 0, oversize, missing SOP or EOP, outside or straddling the aperture: DD|ERR, nothing sent."""
+    """Invalid descriptors complete with DD|ERR and send nothing.
+
+    The cases: length 0, oversize, missing SOP or EOP, and a buffer outside the
+    aperture or straddling its end.
+    """
     env = await _setup(dut, 3)
     env.place(0, BUF + 1, 0)
     env.place(1, BUF + 0x3000, 9217)
@@ -324,9 +326,10 @@ async def test_abort_mid_frame(dut: Any) -> None:
 
 @cocotb.test()
 async def test_withdrawn_status_write_completes_nothing(dut: Any) -> None:
-    """A status write the drain withdrew (an error response) frees the slot and.
+    """A status write the drain withdrew (an error response) reports no completion.
 
-    reports no completion; the next frame's completion is reported.
+    It still frees the status-write slot, so the next frame's completion is
+    reported.
     """
     env = await _setup(dut, 8, latency=(1, 4))
     env.model.withdraw_status = True
@@ -379,4 +382,41 @@ async def test_empty_ring_reads_nothing(dut: Any) -> None:
         await FallingEdge(dut.i_clk)
     assert env.model.log == []
     assert int(dut.o_idle.value) == 1
+    env.stop()
+
+
+@cocotb.test()
+async def test_disable_in_the_admit_cycle_sends_nothing(dut: Any) -> None:
+    """A disable in the cycle the engine moves to S_ADMIT cancels the admission.
+
+    Nothing is read or sent and HEAD stays put. After re-enable descriptor 0
+    is sent once, then descriptor 1, and HEAD counts both.
+    """
+    env = await _setup(dut, 9)
+    first = env.place(0, BUF + 3, 200)
+    second = env.place(1, BUF + 0x3000 + 5, 90)
+    await env.doorbell(1)
+    # state_q becomes S_ADMIT (1) on a rising edge; clearing the enable at the
+    # next falling edge makes the S_ADMIT cycle see it disabled.
+    for _ in range(400):
+        await FallingEdge(dut.i_clk)
+        if int(dut.state_q.value) == 1:
+            dut.i_enable.value = 0
+            break
+    else:
+        raise AssertionError("the engine never reached S_ADMIT")
+    for _ in range(200):
+        await FallingEdge(dut.i_clk)
+    assert env.lines_read() == [], "the buffer was read after the disable"
+    assert env.sink.beats == 0 and env.completions == []
+    assert int(dut.o_head.value) == 0
+    dut.i_enable.value = 1
+    await env.doorbell(2)
+    await env.wait_completions(2)
+    await env.wait_idle()
+    assert env.sink.frames == [first, second]
+    assert desc_status(env.mem, RING, 0) == DD
+    assert desc_status(env.mem, RING, 1) == DD
+    assert int(dut.o_head.value) == 2
+    assert not env.model.violations, env.model.violations
     env.stop()

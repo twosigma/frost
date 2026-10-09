@@ -14,7 +14,10 @@
  *    limitations under the License.
  */
 
-// Public alias equivalence under IF's structural base+2/base+4 wiring.
+// Checks branch_prediction_controller's slot-1/slot-2 alias output with
+// SLOT2_PC_FROM_BASE=1 (computed from the base PC) against the generic
+// comparison, with the slot-2 candidates wired as the IF stage wires them:
+// base+2 and base+4. Only the alias output is compared.
 module branch_prediction_alias_formal (
     input wire [riscv_pkg::XLEN-1:0] live_pc,
     input wire [riscv_pkg::XLEN-1:0] base_pc,
@@ -23,11 +26,14 @@ module branch_prediction_alias_formal (
     output wire reference_alias,
     output wire candidate_alias
 );
-  // Matching-width IF uses these exact candidate widths and constants.
+  // The IF stage sets SLOT2_PC_FROM_BASE when its XLEN matches
+  // riscv_pkg::XLEN, and then builds the candidates with these widths and
+  // constants.
   wire [riscv_pkg::XLEN-1:0] pc_plus2 = base_pc + riscv_pkg::PcIncrementCompressed;
   wire [riscv_pkg::XLEN-1:0] pc_plus4 = base_pc + riscv_pkg::PcIncrement32bit;
 
-  // Pin the generic oracle explicitly so the two parameter modes are tested.
+  // The reference pins the generic mode explicitly rather than relying on the
+  // default, so the proof always compares the two modes.
   branch_prediction_controller #(
       .SLOT2_PC_FROM_BASE(1'b0)
   ) reference (
@@ -52,8 +58,9 @@ module branch_prediction_alias_formal (
       .o_slot1_aliases_slot2_candidate(candidate_alias)
   );
 
-  // Independent valids expose each predicate separately through the OR output.
-  // No alignment, one-hot, fetch-valid, or architectural-PC assumptions.
+  // The two valids are independent, so each candidate's comparison is checked
+  // on its own through the ORed output. There are no assumptions about PC
+  // alignment, one-hot valids, fetch valid, or the architectural PC.
   always_comb begin
     assert (reference_alias == candidate_alias);
   end

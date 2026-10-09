@@ -12,12 +12,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Encoders for the RV64C compressed-instruction table.
+"""Encoders for a subset of the RV64C compressed instructions.
 
 Compressed instructions are recognized by bits [1:0] != 2'b11.
 
 The C extension defines three quadrants based on bits [1:0]:
-    - Quadrant 0 (00): Stack-relative loads/stores, wide immediates
+    - Quadrant 0 (00): Loads/stores with an rs1' base, C.ADDI4SPN
     - Quadrant 1 (01): Control flow, arithmetic, immediates
     - Quadrant 2 (10): Register ops, stack-pointer-relative ops
 
@@ -32,8 +32,8 @@ Example::
     >>> hex(instr)  # 16-bit compressed instruction
     '0x515'
 
-Encoders return 16-bit values; the test framework packs them into 32-bit
-words according to PC alignment.
+Encoders return 16-bit values; the caller packs them into 32-bit instruction
+words.
 """
 
 from dataclasses import dataclass
@@ -78,7 +78,7 @@ def compress_reg(reg: int) -> int:
 
 
 def is_compressible_reg(reg: int) -> bool:
-    """Check if register can be used in compressed instructions.
+    """Check if a register fits a 3-bit compressed field (rd', rs1', rs2').
 
     Args:
         reg: Register index (0-31)
@@ -246,12 +246,12 @@ def enc_c_lui(rd: int, nzimm: int) -> int:
 
 
 def enc_c_addi16sp(nzimm: int) -> int:
-    """Encode C.ADDI16SP: addi sp, sp, nzimm*16.
+    """Encode C.ADDI16SP: addi sp, sp, nzimm.
 
-    Add scaled immediate to stack pointer. Used for stack frame setup/teardown.
+    Add a multiple of 16 to the stack pointer. Used for stack frame setup/teardown.
 
     Args:
-        nzimm: Non-zero immediate, scaled by 16, range [-512, 496]
+        nzimm: Non-zero byte offset, a multiple of 16, range [-512, 496]
 
     Returns:
         16-bit encoded instruction

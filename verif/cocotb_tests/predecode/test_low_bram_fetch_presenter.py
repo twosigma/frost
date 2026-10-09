@@ -12,13 +12,13 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the low-BRAM slow-metadata request presenter.
+"""Unit tests for low_bram_fetch_presenter, the low-BRAM fetch request repeater.
 
-The bench models the registered response-ready bit from ``imem_predecode``.
-It verifies that an unready low request repeats exactly after the preceding
-response publishes, that a ready response is held until publication is
-allowed, and that ready requests, high-tier traffic, retargets, and unresolved
-translations continue to expose the live seam.
+The bench drives imem_predecode's registered response-ready and overlay-hit
+bits directly. It checks that an unready low request repeats exactly, that a
+ready response waits while publication is held, that a claimed slow response
+publishes only once, and that ready responses, high-tier traffic, retargets,
+and unresolved translations pass the live request through.
 """
 
 from typing import Any
@@ -90,18 +90,18 @@ async def test_exact_repeat_and_live_bypass(dut: Any) -> None:
     await RisingEdge(dut.i_clk)
     dut.i_rst.value = 0
 
-    # Overlay hit is the registered proof that the preceding memory request
-    # belongs to the timed low range. Its old always-valid contract must not
-    # depend on the slow presenter's owner/PA-valid state. That dependency
-    # would put these state flops at the head of the fast PC recurrence.
+    # A registered overlay hit proves the preceding request was in the overlay
+    # range, so the response is valid whatever the presenter's owner and
+    # PA-valid state. Using those flops would put them at the head of the
+    # fetch-valid -> PC path.
     _drive_request(dut, 0x8000_0000, pa_valid=0, owner_low=0)
     dut.i_response_ready.value = 1
     dut.i_response_overlay_hit.value = 1
     await _settle()
     assert int(dut.o_response_valid.value) == 1
 
-    # Ready overlay responses retain the old live-through behavior, including
-    # arbitrary live movement such as the PC movement around a pipeline stall.
+    # Ready overlay responses keep the live request on the pins and stay valid
+    # however the live PC moves, including under publication hold.
     overlay_pc = 0x1200
     _drive_request(dut, overlay_pc)
     dut.i_response_ready.value = 1
@@ -162,8 +162,8 @@ async def test_exact_repeat_and_live_bypass(dut: Any) -> None:
 
     # A response that becomes ready while publication is held must retain its
     # exact request and remain invalid until the hold is released. Start this
-    # independent episode with a retarget pulse, the contract's own way to
-    # cancel the still-owed live successor from the preceding slow publication.
+    # episode with a retarget pulse, which cancels the live successor still
+    # owed from the preceding slow publication.
     held_pc = 0x7000
     held_pa = 0x0001_7000
     _drive_request(dut, held_pc, pa0=held_pa)
@@ -188,10 +188,10 @@ async def test_exact_repeat_and_live_bypass(dut: Any) -> None:
     assert int(dut.o_response_valid.value) == 1
     _check_presented(dut, 0x7800, 0x0001_7800)
 
-    # Start an independent episode in which the pins still carry the same slow
-    # request when it publishes on the raw first stall cycle. Preserve that
-    # identity-qualified fact through the registered hold; release must chase
-    # the live successor without publishing the old response a second time.
+    # Next, a slow request publishes on the first stall cycle, before the
+    # registered hold rises, while the pins still carry it. Its published flag
+    # must survive the hold, so release moves the pins to the live successor
+    # without publishing the old response a second time.
     residual_pc = 0x7900
     residual_pa = 0x0001_7900
     dut.i_response_ready.value = 0
@@ -231,8 +231,8 @@ async def test_exact_repeat_and_live_bypass(dut: Any) -> None:
     await _settle()
     _check_presented(dut, target_pc, target_pc)
 
-    # An unresolved request never owns a retry. The resolved live PA must be
-    # sampled instead of deadlocking on the placeholder physical address.
+    # An unresolved request is never repeated: the live PA must be sampled
+    # until it resolves, instead of deadlocking on the placeholder address.
     dut.i_response_ready.value = 1
     unresolved_pc = 0x3800
     _drive_request(dut, unresolved_pc, pa0=0, pa_valid=0)
@@ -270,8 +270,8 @@ async def test_only_claimed_slow_identity_waits_for_live_change(dut: Any) -> Non
     await RisingEdge(dut.i_clk)
     dut.i_rst.value = 0
 
-    # A ready response that IF squashes is not publication. While the live seam
-    # still carries the exact same request it must remain eligible every cycle.
+    # A ready response that IF squashes (no claim) is not a publication. While
+    # the live request stays exactly the same, it must stay valid every cycle.
     held_pc = 0x5200
     held_pa = 0x0001_5200
     held_faults = (1, 0, 0, 1)

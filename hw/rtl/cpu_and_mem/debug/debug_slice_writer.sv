@@ -90,19 +90,20 @@ module debug_slice_writer #(
   logic fifo_out_valid, fifo_pop;
   dc_fifo #(
       .DATA_WIDTH(ReqBits),
-      .DEPTH(DEPTH),
-      .READY_MARGIN(1)
+      .DEPTH(DEPTH)
   ) u_req_fifo (
-      .i_clk  (i_clk),
-      .i_rst  (i_rst),
-      .i_data ({i_req_mirror, i_req_word_addr, i_req_data}),
-      .i_valid(i_req_valid),
-      .o_ready(fifo_ready),
-      .o_clk  (i_clk_div4),
-      .o_rst  (i_rst_div4),
-      .o_data (fifo_out),
-      .o_valid(fifo_out_valid),
-      .i_ready(fifo_pop)
+      .i_clk        (i_clk),
+      .i_rst        (i_rst),
+      .i_data       ({i_req_mirror, i_req_word_addr, i_req_data}),
+      .i_valid      (i_req_valid),
+      .o_ready      (fifo_ready),
+      .o_almost_full(),
+      .o_empty      (),
+      .o_clk        (i_clk_div4),
+      .o_rst        (i_rst_div4),
+      .o_data       (fifo_out),
+      .o_valid      (fifo_out_valid),
+      .i_ready      (fifo_pop)
   );
 
   // ---------------------------------------------------------------------------
@@ -124,23 +125,9 @@ module debug_slice_writer #(
   assign req_byte_addr = 32'(req_word_addr) << 2;
 
   // The programming port is driven for exactly one cycle per WRITE, and
-  // one read cycle plus one write cycle per MIRROR. dc_fifo's registered RAM
-  // read lags its read pointer by one cycle (see its header), so o_data is
-  // only trustworthy two cycles after the pointer last moved: after the load
-  // that raised o_valid, and after every pop. pop_ok enforces both: o_valid
-  // must already have been high last cycle and no pop may have fired last
-  // cycle.
-  logic pop_q, valid_q, pop_ok;
-  always_ff @(posedge i_clk_div4) begin
-    if (i_rst_div4) begin
-      pop_q   <= 1'b0;
-      valid_q <= 1'b0;
-    end else begin
-      pop_q   <= fifo_pop;
-      valid_q <= fifo_out_valid;
-    end
-  end
-  assign pop_ok = fifo_out_valid && valid_q && !pop_q;
+  // one read cycle plus one write cycle per MIRROR. The request FIFO's o_data
+  // is valid whenever o_valid is high, so the engine takes a request as soon
+  // as one is presented.
   logic write_fire;
   logic imem_write;
   always_comb begin
@@ -151,7 +138,7 @@ module debug_slice_writer #(
     o_port_a_data = req_data;
     unique case (state_q)
       Idle: begin
-        if (pop_ok && !i_port_busy) begin
+        if (fifo_out_valid && !i_port_busy) begin
           if (req_mirror) begin
             // Present the read address; the data copy's registered port-A
             // read returns the row in MirrorWrite.
@@ -184,7 +171,7 @@ module debug_slice_writer #(
       state_q <= Idle;
     end else begin
       unique case (state_q)
-        Idle: if (pop_ok && !i_port_busy && req_mirror) state_q <= MirrorRead;
+        Idle: if (fifo_out_valid && !i_port_busy && req_mirror) state_q <= MirrorRead;
         // The loader owning the port in either mirror cycle restarts the
         // read (the row register then holds the loader's row).
         MirrorRead: if (!i_port_busy) state_q <= MirrorWrite;

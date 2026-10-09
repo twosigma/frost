@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Contract test for the adapter's simplified payload write enable."""
+"""Contract test for the simplified payload write enable (ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0)."""
 
 from typing import Any
 
@@ -27,7 +27,7 @@ CLOCK_PERIOD_NS = 10
 
 @cocotb.test()
 async def test_payload_write_without_refill_qualification(dut: Any) -> None:
-    """Exercise capture, drain, and the post-Q value tap under valid -> !pending."""
+    """Check capture, drain, and o_held_value when inputs arrive only while idle."""
     Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     dut_if = FuCdbAdapterInterface(dut)
     await dut_if.reset_dut()
@@ -42,9 +42,9 @@ async def test_payload_write_without_refill_qualification(dut: Any) -> None:
     held = dut_if.read_fu_complete()
     assert held.valid and held.tag == 3 and held.value == 0x1234
 
-    # While pending, this mode's integration contract keeps the FU input
-    # invalid. A grant therefore drains the held payload through the
-    # ALLOW_GRANT_REFILL state transition, which this mode leaves unchanged.
+    # This mode requires the FU input to stay invalid while pending, so the
+    # grant drains the held result. ALLOW_GRANT_REFILL_PAYLOAD_WRITE does not
+    # affect result_pending.
     dut_if.drive_grant()
     await dut_if.step()
     dut_if.clear_grant()
@@ -61,6 +61,7 @@ async def test_payload_write_without_refill_qualification(dut: Any) -> None:
     assert not dut_if.read_result_pending()
     # The granted pass-through leaves result_pending low, but held_result
     # still captured its value on the grant edge (valid alone is the write
-    # enable in this mode). The wrapper's post-Q CDB restore reads that Q via
-    # o_held_value, selected by a live-source flag captured on the same edge.
+    # enable in this mode). After the CDB register, the wrapper restores a live
+    # ALU value from o_held_value, using live selects registered on the same
+    # edge (CDB arbiter README, "Live ALU values").
     assert dut_if.read_held_value() == 0x5678

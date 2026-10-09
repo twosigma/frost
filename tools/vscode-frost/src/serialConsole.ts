@@ -62,7 +62,10 @@ interface Connection {
     reconfigured?: () => void;
 }
 
-/** An extension-owned terminal: no shell, miniterm command, or shared descriptor. */
+/**
+ * The FROST Serial terminal: a pseudoterminal bridged to serial_bridge.py,
+ * with no shell and no shared UART descriptor.
+ */
 export class SerialConsole {
     private terminal?: vscode.Terminal;
     private pty?: ConsoleTerminal;
@@ -115,8 +118,8 @@ export class SerialConsole {
         if (!vscode.workspace.getConfiguration('frost', folder.uri).get('serial.autoOpen', true)) return;
         try { await this.show(folder, true, signal); }
         catch (error) {
-            // An external serial terminal does not prevent an otherwise valid
-            // FPGA operation. The console reports the owner without changing it.
+            // A failed connection, for example because another program has the
+            // port open, must not stop an otherwise valid FPGA operation.
             this.status(`Could not connect: ${String(error)}. Use FROST: Open Serial Console to retry.`);
         }
     }

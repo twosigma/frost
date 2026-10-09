@@ -1,0 +1,55 @@
+[tasks]
+bmc16 selector
+bmc8 selector
+bmc4 selector
+prove ram
+
+[options]
+selector: mode bmc
+selector: depth 1
+ram: mode prove
+ram: depth 2
+
+[engines]
+smtbmc boolector
+
+[script]
+selector: read -sv riscv_pkg.sv rs_issue2_selector.sv
+selector: read -formal -D SYNTHESIS -D RS_PRETAG_LOCAL_PROOF -D RS_PRIMARY_PAYLOAD_LOCAL_PROOF -sv reservation_station.sv
+bmc16: chparam -set DEPTH 16 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 reservation_station
+bmc8: chparam -set DEPTH 8 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 reservation_station
+bmc4: chparam -set DEPTH 4 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 reservation_station
+selector: hierarchy -top reservation_station
+# All readiness states, with arbitrary RAM outputs and no environment assumptions.
+selector: delete t:sdp_dist_ram t:mwp_dist_ram t:mwp_dist_ram_ohread
+selector: proc
+selector: setundef -undriven -anyseq
+selector: delete -port reservation_station/o:*
+selector: opt
+selector: prep -top reservation_station -flatten
+selector: select -assert-none a:init
+# Check the metadata, group/local address, direct clear and one-hot winner,
+# plus the existing pre-issue tag identity from rs_issue_clear.sby.
+selector: select -assert-count 5 t:$check r:FLAVOR=assert %i
+
+# Compare one full-width payload RAM against four groups of four entries.
+# An arbitrary constant watched address proves equality at every address for
+# all time; reads do not change state, so changing read addresses is covered.
+# Write data, enables and addresses are free, including port collisions.
+ram: read -sv riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv
+ram: read -formal -D SYNTHESIS -sv rs_primary_payload_equiv.sv
+ram: prep -top rs_primary_payload_equiv -flatten
+ram: memory_map
+ram: techmap
+ram: opt
+ram: select -assert-count 1 t:$check r:FLAVOR=assert %i
+select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv
+rs_primary_payload_equiv.sv

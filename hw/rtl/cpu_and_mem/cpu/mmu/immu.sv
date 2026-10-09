@@ -15,37 +15,36 @@
  */
 
 /*
- * immu: instruction-side Sv39 translation.
+ * immu: instruction-side Sv39 translation of the fetch PC.
  *
- * The translation key is pc_controller's registered fetch PC.  No
- * combinational next-PC selector payload enters this module.  That boundary
- * keeps the branch/redirect selector out of the ITLB, permission, PMA and
- * physical-result cones.
+ * The translation key is pc_controller's registered fetch PC (i_pc). No
+ * combinational next-PC select enters this module, which keeps the
+ * branch/redirect select out of the ITLB, permission, PMA, and physical-address
+ * cones.
  *
- * Bare mode is a combinational, cycle-exact bypass from i_pc.  It never
- * bubbles and preserves the pre-translation physical-fetch contract:
- *   pa0 = i_pc[31:0]
- *   pa1 = the aligned word after i_pc, with 32-bit wrap
- *   faults = the full-XLEN Bare PMA verdict
+ * With translation off (Bare mode or M-mode), the outputs are a combinational,
+ * cycle-exact function of i_pc and never bubble:
+ *   pa0    = i_pc[31:0]
+ *   pa1    = the aligned word after i_pc, with 32-bit wrap
+ *   faults = the Bare PMA check of the full-XLEN PC
  *
- * Sv39 state is tagged with {i_pc, i_priv_u}.  A tag mismatch is immediately
- * invisible (valid and all fault bits are zero), then the stable registered PC
- * is captured and resolved.  A warm non-crossing fetch therefore has one
- * translation bubble after PC movement.  A 4 KiB crossing can have a second
- * bubble while the registered next-page lookup key catches up.  Misses retain
- * the tag and stall IF until the shared walker returns.
+ * Under Sv39 the registered result is tagged with {i_pc, i_priv_u}. On a tag
+ * mismatch it is invisible at once (valid and all fault bits low), and the next
+ * edge captures and resolves the current PC. A warm fetch whose window stays in
+ * one page therefore costs one bubble after each PC change; a 4 KiB crossing
+ * can cost a second while the registered next-page key catches up. A miss keeps
+ * its tag and stalls IF until the shared walker answers.
  *
- * An accepted walk records its owner: the tagged key at acceptance.  Retargets,
- * privilege changes and mode changes do not cancel that owner: a late response
- * may still populate the ITLB or the refusal memo, but it may bypass into the
- * live result only when its saved owner tag still matches.  A one-cycle recheck
- * after every response lets a stale installation become visible before a new
- * request can issue.  Flash invalidate clears both translation state and walk
- * ownership and suppresses a simultaneous response.
+ * An accepted walk records the key it was issued for. Retargets, privilege
+ * changes, and mode changes do not cancel it: a late response still fills the
+ * ITLB or the fault memo, but it bypasses into the live result only while its
+ * saved key matches the live tag. An invalidate clears the ITLB, the memo, the
+ * tag, and the outstanding walk, and ignores a response in the same cycle.
  */
 module immu #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
-    parameter int unsigned NUM_ENTRIES = 8
+    parameter int unsigned NUM_ENTRIES = 8,
+    parameter int unsigned PA_VALID_COPIES = 1
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -54,24 +53,28 @@ module immu #(
     input logic i_active,
     input logic i_priv_u,
 
-    // sfence.vma / satp-write flash invalidate.
+    // Invalidate on SFENCE.VMA, any satp access, or an mstatus/sstatus write
+    // that changes translation.
     input logic i_tlb_invalidate,
 
-    // pc_controller's registered PC. Exact tag comparison makes any result
-    // captured for a pre-load value invisible as soon as this register moves;
-    // Bare output is always formed directly from i_pc.
+    // pc_controller's registered fetch PC. The exact tag compare hides a result
+    // captured for an earlier value as soon as this register changes; the Bare
+    // outputs are formed directly from it.
     input logic [XLEN-1:0] i_pc,
 
     output logic [31:0] o_pa0,
     output logic [31:0] o_pa1,
     output logic o_pa_valid,
+    // Copies of o_pa_valid, each its own LUT, for consumers that should not
+    // share o_pa_valid's fanout (the decoded queue's shadow select).
+    output logic [PA_VALID_COPIES-1:0] o_pa_valid_copy,
     output logic o_fault0,
     output logic o_fault0_page,
     output logic o_fault1,
     output logic o_fault1_page,
     output logic o_line_after_ok,
 
-    // Shared page-table walker seam; D-side arbitration is outside this unit.
+    // Shared page-table walker port; cpu_ooo arbitrates it with the data side.
     output logic o_walk_req_valid,
     input logic i_walk_req_ready,
     output logic [riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
@@ -83,14 +86,15 @@ module immu #(
   localparam int unsigned NpBits  = XLEN - riscv_pkg::Sv39PageOffsetBits;
 
   // ---------------------------------------------------------------------------
-  // Bare bypass: this is the default low-memory/CoreMark path.
+  // Bare bypass (translation off).
   // ---------------------------------------------------------------------------
   riscv_pkg::fetch_verdict_t bare_verdict;
   logic [31:0] bare_pa1;
-  // Match the package function's input width, including its zero-extension
-  // or truncation for a caller with a different local XLEN. Keep the high
-  // zero reduction separate from Sv39 canonicality/miss logic: sharing those
-  // partial reductions can serialize the Bare fault into seven LUT levels.
+  // Convert i_pc to the package XLEN the way a call to
+  // riscv_pkg::fetch_verdict would (zero-extend or truncate), for a caller with
+  // a different local XLEN. The keep attributes hold the high-bits-zero
+  // reduction apart from the Sv39 canonicality and miss logic: sharing those
+  // partial reductions can put the Bare fault behind a long serial LUT chain.
   localparam int unsigned PmaHighBits   = riscv_pkg::XLEN - 32;
   localparam int unsigned PmaHighChunks = (PmaHighBits + 5) / 6;
   logic [riscv_pkg::XLEN-1:0] bare_pma_pc;
@@ -103,12 +107,48 @@ module immu #(
     assign bare_pma_high_zero_chunk[k] = (bare_pma_pc[32+6*k+:ChunkBits] == '0);
   end
   assign bare_pma_high_zero = &bare_pma_high_zero_chunk;
-  assign bare_pma_low_ok = (bare_pma_pc[31:18] == '0) || (bare_pma_pc[31:30] == 2'b10);
+  assign bare_pma_low_ok = (bare_pma_pc[31:riscv_pkg::LowBramCodeAddrBits] == '0) ||
+      (bare_pma_pc[31:30] == 2'b10);
   assign bare_verdict.straddle = &bare_pma_pc[11:2];
   assign bare_verdict.bare_fault0 = !(bare_pma_high_zero && bare_pma_low_ok);
-  assign bare_verdict.bare_fault1 = bare_verdict.straddle ? !riscv_pkg::pma_fetch_next_page_ok(
-      bare_pma_pc
-  ) : bare_verdict.bare_fault0;
+  // The next-page check (riscv_pkg::pma_fetch_next_page_ok) with its PC
+  // reductions as kept nets: the high-bits-zero chunks above, and the code
+  // region's, the cached region's, and the all-ones reductions below. TIMING:
+  // kept, synthesis builds each as its own tree beside the Bare fault; left
+  // to itself it has shared them as one LUT chain that put five levels
+  // between the PC and the fault.
+  (* keep = "true" *) logic [PmaHighChunks-1:0] bare_pma_high_ones_chunk;
+  (* keep = "true" *) logic bare_pma_high_ones;
+  (* keep = "true" *) logic bare_pma_low_ones;
+  (* keep = "true" *) logic bare_pma_code_low_zero;
+  (* keep = "true" *) logic bare_pma_code_page_ones;
+  (* keep = "true" *) logic bare_pma_cached_page_ones;
+  logic bare_next_page_ok;
+  for (genvar k = 0; k < PmaHighChunks; k++) begin : gen_bare_pma_high_ones
+    localparam int unsigned ChunkBits = ((PmaHighBits - 6 * k) < 6) ? (PmaHighBits - 6 * k) : 6;
+    assign bare_pma_high_ones_chunk[k] = &bare_pma_pc[32+6*k+:ChunkBits];
+  end
+  assign bare_pma_high_ones = &bare_pma_high_ones_chunk;
+  assign bare_pma_low_ones = &bare_pma_pc[31:12];
+  assign bare_pma_code_low_zero = (bare_pma_pc[31:riscv_pkg::LowBramCodeAddrBits] == '0);
+  assign bare_pma_code_page_ones = &bare_pma_pc[riscv_pkg::LowBramCodeAddrBits-1:12];
+  assign bare_pma_cached_page_ones = &bare_pma_pc[29:12];
+  assign bare_next_page_ok =
+      (bare_pma_high_zero && bare_pma_code_low_zero && !bare_pma_code_page_ones) ||
+      (bare_pma_high_ones && bare_pma_low_ones) ||
+      (bare_pma_high_zero &&
+       (((bare_pma_pc[31:30] == 2'b10) && !bare_pma_cached_page_ones) ||
+        ((bare_pma_pc[31:30] == 2'b01) && bare_pma_cached_page_ones)));
+  assign bare_verdict.bare_fault1 = bare_verdict.straddle ? !bare_next_page_ok :
+                                                            bare_verdict.bare_fault0;
+`ifndef SYNTHESIS
+  always_comb begin
+    if (!$isunknown(bare_pma_pc)) begin
+      p_bare_next_page_ok_exact :
+      assert (bare_next_page_ok == riscv_pkg::pma_fetch_next_page_ok(bare_pma_pc));
+    end
+  end
+`endif
   assign bare_verdict.line_after_in_page =
       (bare_pma_pc[11:5] != 7'h7F) || (bare_pma_pc[4:2] == 3'b111);
   assign bare_pa1 = {i_pc[31:2] + 30'd1, 2'b00};
@@ -124,7 +164,7 @@ module immu #(
 `endif
 
   // ---------------------------------------------------------------------------
-  // Registered selected-VA identity.
+  // Tag of the registered result: the {PC, privilege} it was computed for.
   // ---------------------------------------------------------------------------
   logic key_valid_q;
   logic [XLEN-1:0] key_va_q;
@@ -149,8 +189,9 @@ module immu #(
   assign pc_np_va = i_pc[XLEN-1:12] + 1'b1;
   assign pc_plus4_lo = i_pc[11:2] + 1'b1;
 
-  // Port 1 uses a registered sample so no increment/canonicality cone is
-  // serial with the ITLB.  Its full identity is checked before use.
+  // ITLB port 1 looks up a registered next-page VA (np_va_q), so the page
+  // increment and its canonicality check are not in series with the ITLB.
+  // np_sample_matches confirms the sample belongs to the live PC before use.
   logic [NpBits-1:0] np_va_q;
   logic np_sample_matches;
   logic np_noncanon;
@@ -158,8 +199,8 @@ module immu #(
   assign np_noncanon = !riscv_pkg::sv39_va_canonical({np_va_q, 12'h000});
 
   // ---------------------------------------------------------------------------
-  // Walker ownership.  Declared before the ITLB because an install or a memo
-  // update requires a response for the outstanding walk (walk_resp_matches).
+  // Outstanding walk. Declared before the ITLB because an install or a memo
+  // update requires a response to the outstanding walk (walk_resp_matches).
   // ---------------------------------------------------------------------------
   logic walk_outstanding_q;
   logic [VpnBits-1:0] walk_vpn_q;
@@ -184,6 +225,11 @@ module immu #(
   logic [1:0] tlb_hi_nonzero;
   logic [1:0] tlb_r, tlb_w, tlb_x, tlb_u, tlb_d;
   logic [1:0][1:0] tlb_level;
+  // TIMING: the fetch permission and PMA verdicts of each port's hit, formed
+  // per entry inside the ITLB and selected beside the PPN, so the PA select
+  // below sees the fault at the same depth as the PPN instead of after a
+  // PMA check of the selected PPN (p_itlb_fetch_verdicts_exact).
+  logic [1:0] tlb_fetch_perm_fault, tlb_fetch_pma_bad, tlb_fetch_next_pma_bad;
   logic tlb_install;
 
   assign tlb_vpn[0] = pc_vpn;
@@ -192,8 +238,9 @@ module immu #(
       (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && !i_tlb_invalidate;
 
   dtlb #(
-      .NUM_ENTRIES(NUM_ENTRIES),
-      .NUM_PORTS  (2)
+      .NUM_ENTRIES   (NUM_ENTRIES),
+      .NUM_PORTS     (2),
+      .FETCH_VERDICTS(1'b1)
   ) u_itlb (
       .i_clk(i_clk),
       .i_rst_n(!i_rst),
@@ -209,12 +256,25 @@ module immu #(
       .o_perm_x(tlb_x),
       .o_perm_u(tlb_u),
       .o_perm_d(tlb_d),
-      .o_level(tlb_level)
+      .o_level(tlb_level),
+      .o_device_page(),  // fetch never reaches a device window
+      // The data MMU's leaf checks; fetch uses its own.
+      .i_perm_store('0),
+      .i_perm_priv_u(1'b0),
+      .i_perm_sum(1'b0),
+      .i_perm_mxr(1'b0),
+      .o_perm_ok(),
+      .o_atomic_page(),
+      .i_fetch_priv_u(i_priv_u),
+      .o_fetch_perm_fault(tlb_fetch_perm_fault),
+      .o_fetch_pma_bad(tlb_fetch_pma_bad),
+      .o_fetch_next_pma_bad(tlb_fetch_next_pma_bad)
   );
 
   // ---------------------------------------------------------------------------
-  // One-entry walk-refusal memo.  A refusal is an address-space fact, not a
-  // privilege fact, and remains valid until the same invalidate as the ITLB.
+  // One-entry memo of the last faulting walk (resp_refused). A walk fault
+  // depends on the page tables, not on privilege, so the memo carries no
+  // privilege tag and stays valid until the next invalidate, like the ITLB.
   // ---------------------------------------------------------------------------
   logic memo_valid_q;
   logic [VpnBits-1:0] memo_vpn_q;
@@ -234,10 +294,10 @@ module immu #(
   end
 
   // ---------------------------------------------------------------------------
-  // Resolve one translated page.  The response bypass is enabled only when the
-  // saved owner tag matches the live tagged state (resp_for_live_key); a stale
-  // response still installs, for the recheck cycle to pick up, but cannot make
-  // unrelated payload visible.
+  // Resolve one translated page. The walk response bypasses into the result
+  // only when the walk's saved key matches the live tag (resp_for_live_key). A
+  // stale response still fills the ITLB or memo for the recheck cycle to pick
+  // up, but it cannot make another key's payload visible.
   // ---------------------------------------------------------------------------
   function automatic logic [19:0] ppn20_from_resp(input riscv_pkg::ptw_resp_t resp,
                                                   input logic [VpnBits-1:0] vpn);
@@ -258,17 +318,20 @@ module immu #(
     logic clean_hit;
   } port_res_t;
 
+  // A hit's permission and PMA verdicts come from the ITLB's per-entry
+  // checks (tlb_perm_fault, tlb_pma_bad); only the walk-response bypass
+  // checks the fields it selects.
   function automatic port_res_t resolve_port(
       input logic noncanon, input logic [VpnBits-1:0] vpn, input logic hit,
-      input logic [19:0] ppn20, input logic hi_nonzero, input logic perm_x, input logic perm_u,
-      input logic [1:0] level, input logic priv_u, input logic invalidate, input logic resp_valid,
-      input riscv_pkg::ptw_resp_t resp, input logic memo_valid, input logic [VpnBits-1:0] memo_vpn,
-      input logic memo_page);
+      input logic [19:0] ppn20, input logic hi_nonzero, input logic tlb_perm_fault,
+      input logic tlb_pma_bad, input logic [1:0] level, input logic priv_u, input logic invalidate,
+      input logic resp_valid, input riscv_pkg::ptw_resp_t resp, input logic memo_valid,
+      input logic [VpnBits-1:0] memo_vpn, input logic memo_page);
     port_res_t r;
     logic resp_match, use_resp_leaf, have;
-    logic e_x, e_u, e_hi_nonzero;
+    logic e_hi_nonzero;
     logic [19:0] e_ppn20;
-    logic [ 1:0] e_level;
+    logic [1:0] e_level;
     logic perm_ok, pma_bad;
     begin
       r = '0;
@@ -276,20 +339,18 @@ module immu #(
       use_resp_leaf = resp_match && (resp.fault_kind == riscv_pkg::DFAULT_NONE);
       have = (hit && !invalidate) || use_resp_leaf;
       if (use_resp_leaf && !(hit && !invalidate)) begin
-        e_x = resp.perm_x;
-        e_u = resp.perm_u;
         e_hi_nonzero = |resp.ppn[riscv_pkg::PtePpnBits-1:20];
         e_ppn20 = ppn20_from_resp(resp, vpn);
         e_level = resp.level;
+        perm_ok = resp.perm_x && (resp.perm_u == priv_u);
+        pma_bad = e_hi_nonzero || !riscv_pkg::pma_fetch_ok({32'b0, e_ppn20, 12'h000});
       end else begin
-        e_x = perm_x;
-        e_u = perm_u;
         e_hi_nonzero = hi_nonzero;
         e_ppn20 = ppn20;
         e_level = level;
+        perm_ok = !tlb_perm_fault;
+        pma_bad = tlb_pma_bad;
       end
-      perm_ok = e_x && (e_u == priv_u);
-      pma_bad = e_hi_nonzero || !riscv_pkg::pma_fetch_ok({32'b0, e_ppn20, 12'h000});
       r.ppn20 = e_ppn20;
       r.hi_nonzero = e_hi_nonzero;
       r.level = e_level;
@@ -328,8 +389,8 @@ module immu #(
       tlb_hit[0],
       tlb_ppn20[0],
       tlb_hi_nonzero[0],
-      tlb_x[0],
-      tlb_u[0],
+      tlb_fetch_perm_fault[0],
+      tlb_fetch_pma_bad[0],
       tlb_level[0],
       i_priv_u,
       i_tlb_invalidate,
@@ -345,8 +406,8 @@ module immu #(
       tlb_hit[1],
       tlb_ppn20[1],
       tlb_hi_nonzero[1],
-      tlb_x[1],
-      tlb_u[1],
+      tlb_fetch_perm_fault[1],
+      tlb_fetch_pma_bad[1],
       tlb_level[1],
       i_priv_u,
       i_tlb_invalidate,
@@ -357,13 +418,38 @@ module immu #(
       memo_page_q
   );
 
+`ifndef SYNTHESIS
+  // The per-entry verdicts equal the checks of the selected hit's fields.
+  always_comb begin
+    for (int p = 0; p < 2; p++) begin
+      if (tlb_hit[p] && !$isunknown(
+              {tlb_x[p], tlb_u[p], tlb_hi_nonzero[p], tlb_ppn20[p], i_priv_u,
+               tlb_fetch_perm_fault[p], tlb_fetch_pma_bad[p]}
+          )) begin
+        p_itlb_fetch_verdicts_exact :
+        assert (tlb_fetch_perm_fault[p] == !(tlb_x[p] && (tlb_u[p] == i_priv_u)) &&
+                tlb_fetch_pma_bad[p] ==
+                (tlb_hi_nonzero[p] || !riscv_pkg::pma_fetch_ok(
+            {32'b0, tlb_ppn20[p], 12'h000}
+        )));
+      end
+    end
+  end
+`endif
+
   // The aligned successor word can be derived inside the same 2 MiB/1 GiB
   // leaf. At the superpage end the carry enters the entry key, so port 1 must
   // resolve the exact next VPN instead.
+  // The next page's PMA verdict comes from the ITLB's per-entry check when
+  // the result is an ITLB hit, and from the selected fields only for the
+  // walk-response bypass (p_super_next_pma_exact).
   logic super_end;
   logic super_next_ok;
   logic [19:0] super_next_ppn20;
   logic super_next_pma_bad;
+  logic super_next_pma_bad_selected;
+  logic res0_from_tlb;
+  assign res0_from_tlb = tlb_hit[0] && !i_tlb_invalidate;
   always_comb begin
     unique case (res0.level)
       2'd2: begin
@@ -381,10 +467,19 @@ module immu #(
     endcase
   end
   assign super_next_ok = res0.clean_hit && (res0.level != 2'd0) && !super_end;
-  assign super_next_pma_bad = !riscv_pkg::pma_fetch_ok({32'b0, super_next_ppn20, 12'h000});
+  assign super_next_pma_bad_selected = !riscv_pkg::pma_fetch_ok({32'b0, super_next_ppn20, 12'h000});
+  assign super_next_pma_bad = res0_from_tlb ? tlb_fetch_next_pma_bad[0] :
+                                              super_next_pma_bad_selected;
+`ifndef SYNTHESIS
+  always_comb begin
+    if (super_next_ok && !$isunknown({super_next_pma_bad, super_next_pma_bad_selected})) begin
+      p_super_next_pma_exact : assert (super_next_pma_bad == super_next_pma_bad_selected);
+    end
+  end
+`endif
 
   // ---------------------------------------------------------------------------
-  // Atomic tagged-state capture.
+  // Tag and result capture. The key and its result always load together.
   // ---------------------------------------------------------------------------
   logic [31:0] pa0_d, pa1_d;
   logic resolved_d, f0_d, f0p_d, f1_d, f1p_d, after_ok_d;
@@ -475,7 +570,7 @@ module immu #(
   end
 
   // ---------------------------------------------------------------------------
-  // Walk request and owner lifetime.
+  // Walk request and outstanding-walk tracking.
   // ---------------------------------------------------------------------------
   logic walk_needed;
   assign walk_needed = tag_match && !resolved_q && (miss0_q || miss1_q);
@@ -491,9 +586,10 @@ module immu #(
       walk_key_priv_u_q <= 1'b0;
       walk_recheck_q <= 1'b0;
     end else begin
-      // High for exactly the cycle following an owned response.  A current
-      // response normally resolves through bypass; a stale response needs
-      // this quiet cycle for its ITLB/memo write to reach the resolver.
+      // High for the one cycle after a response to the outstanding walk, and
+      // no new request issues in that cycle. A response for the live key
+      // normally resolves through the bypass; a stale one needs this quiet
+      // cycle for its ITLB or memo write to reach the resolver.
       walk_recheck_q <= walk_resp_arrived;
       if (walk_resp_arrived) begin
         walk_outstanding_q <= 1'b0;
@@ -507,23 +603,37 @@ module immu #(
   end
 
   // ---------------------------------------------------------------------------
-  // Visibility boundary.  Invalid translated payload may be stale/arbitrary;
-  // fault bits are forced low so no consumer can observe a mismatched tag.
+  // Outputs. While a translated result is invisible, the PA bits may be stale
+  // and o_pa_valid and every fault bit are low, so no consumer can act on a
+  // result for the wrong tag.
   // ---------------------------------------------------------------------------
+  // Translation preserves the page offset, and a visible result's tag equals
+  // the live PC, so the offset bits are formed from i_pc in both modes. That
+  // keeps the translation-mode select off the offset bits of the low-BRAM read
+  // address.
+  assign o_pa0 = {i_active ? pa0_q[31:12] : i_pc[31:12], i_pc[11:0]};
+  assign o_pa1 = {i_active ? pa1_q[31:12] : bare_pa1[31:12], pc_plus4_lo, 2'b00};
+  // TIMING: o_pa_valid feeds the front-end stall, and the compare of the live
+  // PC with the key is its latest term, so the other terms of
+  // translated_visible are finished first and the compare meets them in the
+  // last LUT.
+  (* keep = "true" *) logic visible_before_pc_compare;
+  assign visible_before_pc_compare = !i_tlb_invalidate && key_valid_q &&
+                                     (key_priv_u_q == i_priv_u) && resolved_q;
+  assign o_pa_valid = !i_active || (visible_before_pc_compare && (key_va_q == i_pc));
+  for (genvar copy = 0; copy < PA_VALID_COPIES; copy++) begin : gen_pa_valid_copy
+    (* keep = "true", dont_touch = "true" *) logic pa_valid_copy;
+    assign pa_valid_copy = !i_active || (visible_before_pc_compare && (key_va_q == i_pc));
+    assign o_pa_valid_copy[copy] = pa_valid_copy;
+  end
   always_comb begin
     if (!i_active) begin
-      o_pa0 = i_pc[31:0];
-      o_pa1 = bare_pa1;
-      o_pa_valid = 1'b1;
       o_fault0 = bare_verdict.bare_fault0;
       o_fault0_page = 1'b0;
       o_fault1 = bare_verdict.bare_fault1;
       o_fault1_page = 1'b0;
       o_line_after_ok = 1'b1;
     end else begin
-      o_pa0 = pa0_q;
-      o_pa1 = pa1_q;
-      o_pa_valid = translated_visible;
       o_fault0 = translated_visible && f0_q;
       o_fault0_page = translated_visible && f0p_q;
       o_fault1 = translated_visible && f1_q;
@@ -533,8 +643,8 @@ module immu #(
   end
 
 `ifndef SYNTHESIS
-  // Simulation assertions.  Directed cocotb tests provide the independent
-  // translation model; these pin the timing and ownership boundary above.
+  // Simulation assertions. Directed cocotb tests provide the independent
+  // translation model; these check the timing and tag rules above.
   always_comb begin
     if (!$isunknown(
             {
@@ -560,6 +670,8 @@ module immu #(
         p_invisible_invalid : assert (!o_pa_valid);
         p_invisible_faults_zero :
         assert (!o_fault0 && !o_fault0_page && !o_fault1 && !o_fault1_page);
+      end else begin
+        p_visible_valid : assert (o_pa_valid);
       end
     end
   end
@@ -567,6 +679,8 @@ module immu #(
   always_ff @(posedge i_clk) begin
     if (!i_rst && !$isunknown({i_pc, i_priv_u, np_va_q, o_walk_req_valid, o_walk_vpn})) begin
       if (translated_visible) begin
+        p_visible_pa0_exact : assert (o_pa0 == pa0_q);
+        p_visible_pa1_exact : assert (o_pa1 == pa1_q);
         p_visible_tag_exact :
         assert (key_valid_q && (key_va_q == i_pc) && (key_priv_u_q == i_priv_u) && resolved_q);
       end
@@ -585,10 +699,28 @@ module immu #(
   end
 `endif
 
+`ifdef IMMU_PAGE_OFFSET_LOCAL_PROOF
+  // The translation result and its VA key load together. Prove that the page
+  // offset is preserved even for arbitrary ITLB answers, faults, and retargets,
+  // and that the output PAs equal the registered result whenever it is visible.
+  logic f_offset_past_valid = 1'b0;
+  logic [11:0] f_key_next_offset;
+  assign f_key_next_offset = {key_va_q[11:2] + 10'd1, 2'b00};
+  always @(posedge i_clk) begin
+    f_offset_past_valid <= 1'b1;
+    if (!f_offset_past_valid) assume (i_rst);
+    if (f_offset_past_valid) begin
+      p_key_pa0_offset : assert (!key_valid_q || pa0_q[11:0] == key_va_q[11:0]);
+      p_key_pa1_offset : assert (!key_valid_q || pa1_q[11:0] == f_key_next_offset);
+      p_public_pa0_exact : assert (!translated_visible || o_pa0 == pa0_q);
+      p_public_pa1_exact : assert (!translated_visible || o_pa1 == pa1_q);
+    end
+  end
+`endif
+
 `ifdef FROST_DEBUG_FETCH_ILA
-  // Fetch-seam ILA mirrors (build.py --debug-ila). Marked aliases the debug
-  // core probes; nothing here feeds the design. Low address bits suffice:
-  // the capture is keyed on a page offset.
+  // Fetch ILA probes (build.py --debug-ila): marked copies that the debug core
+  // samples. Nothing here feeds the design.
   (* mark_debug = "true" *)logic dbg_ila_immu_active;
   (* mark_debug = "true" *)logic dbg_ila_immu_tag_match;
   (* mark_debug = "true" *)logic dbg_ila_immu_resolved;

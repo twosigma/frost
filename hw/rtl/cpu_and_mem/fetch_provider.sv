@@ -15,75 +15,84 @@
  */
 
 /*
- * Variable-latency provider for the high-address fetch seam
- * ({instr64, sideband36, parity-normalized PC metadata, hi_rd_is_x2[1:0],
- * bank_sel_r, served word tags} + valid) from a two-line fetch buffer over the L1I line
- * port. cpu_and_mem derives the two hi_rd_is_x2 bits directly from this
- * block's registered instruction payload; this block supplies the other
- * high-address fields. The low instruction BRAM fast path is selected in
- * cpu_and_mem and drives imem_predecode directly from o_pc; this block never
- * drives the low-BRAM address pins. The registered valid also exports its
- * exact non-reset combinational next value so cpu_and_mem can sample a
- * cycle-identical timing twin beside IF without pulling this provider's state
- * flop into the low/default fetch recurrence. Each filled line carries per-word
- * predecode sideband computed on fill (imem_predecode_line), so DDR code
- * predecodes bit-identically to BRAM code. The buffer's two slots are
- * parity-mapped (line address bit 0), so the current line and the prefetched
- * next line can never collide, and a window spanning a line boundary always
- * has both halves resident before valid asserts.
+ * Variable-latency fetch provider for code in cached DDR (windows whose
+ * physical address has bit 31 set): a two-line fetch buffer over the L1I line
+ * port. It returns {instr64, predecode sideband, per-parity PC metadata,
+ * bank_sel_r, served word tags, fault flags} plus a valid. It never drives
+ * the low-BRAM address pins, which cpu_and_mem drives through
+ * low_bram_fetch_presenter.
+ * o_instr_valid_next is o_instr_valid's next value outside reset and
+ * invalidate, so cpu_and_mem can keep an identical registered copy beside IF
+ * without pulling this block's state into the low-BRAM fetch-valid -> PC
+ * path.
+ *
+ * Each filled line gets its per-word predecode sideband on fill
+ * (imem_predecode_line), identical to what low BRAM stores for the same
+ * words. The buffer's two slots are parity-mapped (line address bit 0), so
+ * the current line and the following line never collide, and a window
+ * spanning a line boundary always has both halves resident before valid
+ * asserts.
  *
  * Fetch contract (with if_stage):
- *   The provider owns the 1-deep owed-ask register. Each served cycle latches
- *   the live PC as the next owed ask. While unserved the ask holds. It
- *   retargets only when the PC moves on a cycle whose predecessor was not
- *   accepted and the movement was not a stall-replay consumption. Accepted
- *   means o_instr_valid with i_pipeline_stall low: a window presented on a
- *   stalled cycle was not consumed. The registered i_fetch_replay_consume
- *   classifies the replay case. Any other movement is a backend redirect,
- *   because the core otherwise holds PC. The window data and the address it
- *   was fetched for are registered together, and readiness and the
- *   served-address/next-ask match collapse into one registered publishability
- *   bit on that same edge. A redirected stale window can therefore sit on the
- *   payload wires without being accepted as the new ask's instruction, while
- *   the wide tag comparison stays off the same-cycle fetch-progress -> PC path.
+ *   The provider keeps a one-entry owed-ask register. Each served cycle
+ *   latches the live PC as the next owed ask, and an unserved ask holds
+ *   unless it retargets (retarget_now): on i_retarget, on a PC move after a
+ *   cycle that accepted nothing, and in one page-fault case. Accepted means
+ *   o_instr_valid with i_pipeline_stall low: a window presented on a stalled
+ *   cycle was not consumed. After an unaccepted cycle the core holds its PC,
+ *   so a move is a backend redirect, unless the registered
+ *   i_fetch_replay_consume marks it as a stall-replay consumption. The window
+ *   data and the address it was fetched for are registered together, and on
+ *   that same edge readiness and the served-address/next-ask match fold into
+ *   one registered valid bit. A stale window left by a redirect can therefore
+ *   sit on the payload wires without being accepted as the new ask's
+ *   instruction, and the wide tag compare stays off the fetch-progress -> PC
+ *   path.
  *
- *   Physical side. i_pc is the virtual fetch address and stays
- *   the window's identity: the ask and served tags, and the retarget compare.
- *   The core's current physical result is latched with the ask, and is what
- *   the buffer lookup and the fills use. That result is i_pa0/i_pa1 for the
- *   window's two words, i_pa_valid, the per-word fault flags, and
- *   i_line_after_ok. An ask whose result is not yet visible forms no window
- *   and starts no fill. The core holds its PC at such an ask, so the ask keeps
- *   re-sampling the live pair until it resolves. A faulted word needs no fill:
- *   the window is ready with the flag set, and IF delivers the fault-tagged
- *   bundle. Ordinary redirects are detected from unaccepted live-PC movement.
- *   i_retarget is the narrower registered architectural/epoch pulse. It covers
- *   landed EX/PD recovery, slot-2 prediction, already-emitted no-lead slot-1
- *   prediction, served-window resteer following an accepted window, and
- *   trap/xRET/FENCE state changes. It excludes leading slot-1 prediction so a
- *   leading fetch PC cannot abandon the predicted branch response still owed
- *   to pc_reg. The pulse also forces a re-latch when the VA did not move, so a
- *   translation or cache-state change cannot leave the old physical request in
- *   the ask. With translation off the physical window is derived from the VA
- *   with no added bubble.
+ *   i_pc is the virtual fetch address and stays the window's identity: the
+ *   ask and served tags, and the retarget compare. The core's physical result
+ *   (i_pa0/i_pa1 for the window's two words, i_pa_valid, the per-word fault
+ *   flags, and i_line_after_ok) is latched with the ask, and the buffer lookup
+ *   and the fills use it. An ask whose result is not yet visible forms no
+ *   window and starts no fill. The core holds its PC at such an ask, so the
+ *   ask keeps re-sampling the live result until it resolves. A faulted word
+ *   needs no fill: the window is ready with the flag set, and IF delivers the
+ *   fault-tagged bundle. With translation off the physical result is derived
+ *   from the VA with no added bubble.
+ *
+ *   i_retarget is if_stage's registered retarget pulse. It covers landed EX
+ *   and PD recovery, slot-2 predictions, slot-1 predictions emitted with
+ *   their branch, served-window resteers after an accepted window, and trap,
+ *   xRET, and FENCE-class flushes. It excludes a leading slot-1 prediction, so
+ *   a fetch PC that runs ahead to the target cannot abandon the predicted
+ *   branch's window, which is still owed to pc_reg. The pulse also forces a
+ *   re-latch when the VA did not move, so a translation or cache-state change
+ *   cannot leave the old physical request in the ask.
  *
  * The miss engine is one line-port master per buffer slot, so the window's
  * line and the following line fill concurrently. The following line is the
  * straddle's second half when the window crosses a line boundary, and the
- * prefetch otherwise. Each slot's engine fetches the absent candidate of its
- * parity, tagged with the slot number. A fill in flight when the ask retargets
- * completes into its slot, because the line protocol has no abort. A fill in
- * flight across i_invalidate completes discarded, so pre-invalidate data can
- * never re-validate a slot. fence.i relies on that.
+ * next-line prefetch otherwise. Each slot's engine fetches the absent
+ * candidate of its parity, tagged with the slot number. A fill in flight when
+ * the ask retargets completes into its slot, because the line protocol has no
+ * abort. A fill in flight across i_invalidate completes discarded, so
+ * pre-invalidate data can never re-validate a slot. fence.i relies on that.
  *
  * Behind the two slots sits a VICTIM_LINES-deep victim store. A line a slot
  * replaces is kept there, and a wanted line found there is copied back into
- * its slot in one cycle instead of taking the L1I round trip. Loop bodies of
- * up to 2 + VICTIM_LINES lines therefore re-enter without touching the L1I.
- * With two slots alone, every re-entered line cost a hit round trip even at a
- * 99.8% L1I hit rate. The store is looked up from the registered candidate
- * lines only, so nothing of it reaches the window path, and an invalidate
- * drops it with the slots.
+ * its slot in one cycle instead of taking the L1I round trip. The slots and
+ * the store hold 2 + VICTIM_LINES lines, and the line after a loop's end,
+ * brought in by the next-line prefetch, takes one of them. A straight-line
+ * loop body of up to VICTIM_LINES lines re-enters without touching the L1I;
+ * with the default six-line store, a seven-line body, which with the
+ * prefetched line fills all eight places, does too. A store write takes a
+ * free entry when there is one (copying a line back frees its entry) and
+ * otherwise overwrites the entry at a round-robin pointer, so an inner loop
+ * that cycles lines through the store reuses the entries it frees instead of
+ * evicting an enclosing loop's lines.
+ * The store is looked up from the registered candidate lines only, so
+ * nothing of it reaches the window path, and an invalidate drops it with the
+ * slots.
  */
 module fetch_provider #(
     parameter int unsigned LINE_BYTES   = 32,
@@ -91,20 +100,18 @@ module fetch_provider #(
     // in flight, tagged with the slot number (ids 0 and 1); the echo is
     // checked in simulation.
     parameter int unsigned LINE_ID_BITS = 3,
-    // Victim store behind the two window slots: lines a slot evicts are kept
-    // here and copied back in one cycle when wanted again, so a loop body of
-    // up to 2 + VICTIM_LINES lines re-enters without an L1I round trip. 0
-    // disables the store.
+    // Depth of the victim store behind the two window slots (see the header
+    // for the loop sizes it covers). 0 disables the store.
     parameter int unsigned VICTIM_LINES = 6
 ) (
     input logic i_clk,
     input logic i_rst,
 
-    // Core fetch seam. i_fetch_replay_consume is registered by the core, so
-    // the consume happened last cycle. It classifies the PC movement observed
-    // this cycle as flow rather than redirect. The owed ask itself needs no
-    // update, because o_pc stays frozen at it through any stall the replay
-    // bundle survives.
+    // Fetch request from the core. i_fetch_replay_consume is registered by
+    // the core, so the consume happened last cycle. It classifies the PC
+    // movement observed this cycle as flow rather than redirect. The owed ask
+    // itself needs no update, because o_pc stays frozen at it through any
+    // stall the replay bundle survives.
     input logic [31:0] i_pc,
     // Physical side of the ask (see the contract above).
     input logic [31:0] i_pa0,
@@ -115,24 +122,23 @@ module fetch_provider #(
     input logic i_fault1,
     input logic i_fault1_page,
     input logic i_line_after_ok,
-    // Registered landed recovery/emitted-prediction/resteer or
-    // translation/cache epoch pulse. Leading slot-1 prediction stays on the
-    // movement detector below.
+    // if_stage's registered retarget pulse (see the header). A leading slot-1
+    // prediction is left to the PC-movement detector (retarget_now).
     input logic i_retarget,
     input logic i_fetch_replay_consume,
     // Front-end pipeline stall (cpu_ooo pipeline_ctrl.stall). While high the
-    // decode cannot consume a window, so publish-valid is withheld and the
-    // owed ask is held: a window the stalled decode cannot accept is never
-    // presented, and the ask never drifts to the leading PC. This feeds
-    // publish-valid and the owed-ask bookkeeping, not the imem/fill address
-    // path.
+    // decode cannot consume a window, so publication is withheld (from a
+    // registered copy; see o_instr_valid) and the owed ask is held rather
+    // than drifting to the leading PC. It feeds publication, the owed-ask
+    // bookkeeping, and the miss-stall counter, never the fill address path.
     input logic i_pipeline_stall,
     output logic [63:0] o_instr,
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_instr_sideband,
-    // Payload-aligned IF timing replicas in physical {odd,even} word order.
-    // Normalize the positional {next,current} sideband on the same edge that
-    // captures it.  That keeps the registered bank selector out of IF's
-    // served-window -> PC recurrence without adding a response cycle.
+    // Payload-aligned IF timing replicas in physical {odd,even} word order,
+    // each word selected by its parity position directly on the edge that
+    // captures the window (see even_pos, odd_pos). That keeps the registered
+    // bank selector out of IF's served-window -> PC recurrence without
+    // adding a response cycle.
     output logic [7:0] o_pc_metadata_by_parity,
     output logic [3:0] o_pc_pairability_by_parity,
     output logic [1:0] o_slot2_start_valid_lo_by_parity,
@@ -149,10 +155,9 @@ module fetch_provider #(
     output logic o_served_fault1,
     output logic o_served_fault1_page,
     output logic o_instr_valid,
-    // Exact non-reset D input of the registered publish-valid result.
-    // cpu_and_mem mirrors reset/invalidate around its same-edge physical timing
-    // twin; this signal does not add a fetch cycle or change this provider's
-    // owed-ask bookkeeping.
+    // Next value of o_instr_valid, without the reset and invalidate clears,
+    // which cpu_and_mem applies to its own registered copy. It adds no fetch
+    // cycle and does not affect the owed-ask bookkeeping.
     output logic o_instr_valid_next,
     // Passive performance observer: the cache supplies a source-registered
     // "demand miss outstanding" level. This block adds the fetch-progress
@@ -172,7 +177,8 @@ module fetch_provider #(
     input logic [LINE_ID_BITS-1:0] i_line_resp_id,
     input logic [LINE_BYTES*8-1:0] i_line_resp_rdata,
 
-    // Drop both buffer lines (fence.i; reset also invalidates).
+    // Drop both buffer lines and the victim store (the FENCE-class flush;
+    // reset also invalidates).
     input logic i_invalidate
 );
 
@@ -199,30 +205,31 @@ module fetch_provider #(
   logic accepted_now;
   assign accepted_now = o_instr_valid && !i_pipeline_stall;
 
-  // Retarget has three arms. The first is a PC move between two un-accepted
-  // cycles, which means a backend redirect: the core's hold arms keep the PC
-  // still on every other un-accepted cycle, and a replay consumption's advance
-  // is classified out by the registered i_fetch_replay_consume. The second is
-  // the core's registered translation/cache epoch pulse. Slot-1 prediction
-  // movement rides the first arm rather than the pulse, because a broad
-  // explicit pulse could abandon the predicted branch response that pc_reg
-  // still owes while the fetch PC is already running at its target. Slot-2 and
-  // served-window movement are explicit, because they can follow an accepted
-  // window, where accepted_prev_q masks movement.
+  // Retarget has three arms. The first is a PC move after a cycle that
+  // accepted nothing, which means a backend redirect: the core's hold arms keep
+  // the PC still after any other unaccepted cycle, and a replay
+  // consumption's advance is classified out by the registered
+  // i_fetch_replay_consume. The second is i_retarget, the core's registered
+  // retarget pulse. A leading slot-1 prediction's movement rides the first arm
+  // rather than the pulse, because a broad explicit pulse could abandon the
+  // predicted branch response that pc_reg still owes while the fetch PC is
+  // already running at its target. Slot-2 and served-window movement are
+  // explicit, because they can follow an accepted window, where
+  // accepted_prev_q masks movement.
   //
-  // The third arm re-syncs the ask. The owed-ask contract is that
-  // while unserved the core holds o_pc at the ask. A cross-tier page-straddle
-  // can break it. o_pc runs one word ahead into a faulting second page, this
+  // The third arm re-syncs the ask. The owed-ask contract is that while
+  // unserved the core holds o_pc at the ask. A cross-tier page straddle can
+  // break it. o_pc runs one word ahead into a faulting second page, this
   // provider serves the covering straddle window and advances its ask to that
   // lead, and then the core resteers o_pc back. That resteer rides the cycle
   // after an accepted serve, so accepted_prev_q masks the redirect arm and the
-  // ask is stranded on the faulted lead. A faulted-word0 ask is the one
-  // address the cached provider can never make ready, since its PA is a low VA
-  // and so fetch_high is 0. When the latched ask has a faulted word0 yet o_pc
-  // has moved off it, re-sync the ask to o_pc. A clean ask is served or filled
-  // and never stranded, and when o_pc equals the faulted ask the low-BRAM arm
-  // delivers the fault, so this arm fires only on the genuine cross-tier
-  // strand.
+  // ask is stranded on the faulted lead. A faulted word0 reports its VA as its
+  // PA, and in this cross-tier case that address is low, so fetch_high is 0
+  // and the cached provider can never make the ask ready. When the latched ask
+  // has a faulted word0 yet o_pc has moved off it, re-sync the ask to o_pc. A
+  // clean ask is served or filled and never stranded, and when o_pc equals
+  // the faulted ask the low-BRAM path delivers the fault, so this arm fires
+  // only on the real cross-tier strand.
   logic retarget_now;
   assign retarget_now = (!accepted_prev_q && !i_fetch_replay_consume && (i_pc != pc_prev_q)) ||
       i_retarget || (!o_instr_valid && ask_fault0_q && (i_pc != ask_q));
@@ -237,30 +244,26 @@ module fetch_provider #(
   // The ask presented this cycle. Its window is due next cycle, along with the
   // decision on that window's validity.
   logic [31:0] fetch_addr;
-  // Serve rate (regression fix): on a serving cycle (o_instr_valid high) the
-  // window for the core's live next PC has to be formed in the same cycle, so
-  // that the next window publishes back-to-back at one window per cycle.
-  // Forming the window from the registered ask alone (fetch_addr = ask_q, the
-  // x3 timing experiment) inserts a dead tag-mismatch cycle after every
-  // consume, halving the high/DDR fetch bandwidth. DDR-resident straight-line
-  // code is fetch-bound, including the no-MMU Linux machine-timer handler and
-  // the linux_clksrc_faithful/linux_irq_*/mtimer_stress-in-DDR programs. At half
-  // rate the trap->handler->MRET round trip and the preempted foreground both
-  // slow to the point that a Linux-cadence re-arming timer (deadline ~256..760
-  // cycles) saturates the core and the foreground crawls, giving CI timeouts
-  // and the hardware IRQ failure. The x3 WNS cone this reopens (live i_pc ->
-  // window_ready_q/ddr_instr_q) has to be re-closed by pipelining candidate
-  // windows and a late narrow select, not by degrading the serve rate.
+  // Serve rate: on a serving cycle (o_instr_valid high) the window for the
+  // core's live next PC has to be formed in the same cycle, so that windows
+  // publish back to back at one per cycle. Forming it from the registered ask
+  // alone (fetch_addr = ask_q) would insert a tag-mismatch cycle after every
+  // consumed window and halve DDR fetch bandwidth. Straight-line code in DDR
+  // is fetch-bound: at half rate, trap handlers in DDR run slowly enough that
+  // a timer re-armed at Linux rates saturates the core. The cost is a timing
+  // path from the live i_pc to window_ready_q and ddr_instr_q. Timing work on
+  // that path must keep the serve rate (for example, by pipelining candidate
+  // windows with a late narrow select).
   // Timing: neither the retarget 32-bit compare nor the pipeline stall lives in
   // this combinational mux. Both would otherwise stack with the presence
-  // compares into the fill path. The low BRAM address pins are not driven from
-  // this mux: cpu_and_mem keeps that path direct from o_pc. The stall gates
-  // publish-valid only (below). While stalled o_instr_valid is held low, so
-  // this mux holds ask_q and the owed window persists for the stalled decode
-  // instead of advancing to the leading PC. On a retarget cycle this address is
-  // the stale old ask for one extra cycle. The window it yields is squashed by
-  // the core's control-flow holdoff, which the redirect that caused the
-  // retarget has already armed and which extends through no-progress cycles.
+  // compares on the window-ready path. The low BRAM address pins are not
+  // driven from this mux. The stall gates publication only (see o_instr_valid).
+  // While o_instr_valid is held low this mux holds ask_q, so the owed window
+  // persists for the stalled decode instead of advancing to the leading PC. On
+  // a retarget cycle this address is the stale old ask for one extra cycle.
+  // The window it yields is squashed by the core's control-flow holdoff, which
+  // the redirect that caused the retarget has already armed and which extends
+  // through no-progress cycles.
   assign fetch_addr = o_instr_valid ? i_pc : ask_q;
 
   // The physical pair of the window being formed (same select as fetch_addr).
@@ -290,31 +293,76 @@ module fetch_provider #(
   // until the selected-VA result is visible. The core holds o_pc at the ask
   // until then, so the live pair is the ask's.
   logic [31:0] ask_pa0_q, ask_pa1_q;
+  // Whether the window straddles a line, loaded with the ask so the
+  // fetchability check reads a register instead of a reduction of ask_pa0_q
+  // (p_ask_straddle_matches). The line after ask_pa0_q's, loaded the same
+  // way (p_ask_line_next_matches), is one source of the candidate line's
+  // simulation reference (cand_line_ref); the lookups themselves use the
+  // registered candidate line, cand_line_q.
+  logic [LineAddrBits-1:0] ask_line_next_q;
+  (* max_fanout = 64 *) logic ask_straddle_q;
   logic ask_pa_valid_q;
   logic ask_fault0_q, ask_fault0_page_q, ask_fault1_q, ask_fault1_page_q;
   logic ask_after_ok_q;
   logic ask_pa_load;
   assign ask_pa_load = o_instr_valid || retarget_now || !ask_pa_valid_q;
 
+  // The candidate line of each slot parity (see cand_line below), loaded
+  // with the ask from the same i_pa0/i_pa1 values as ask_pa0_q, ask_pa1_q,
+  // ask_line_next_q, and ask_straddle_q. The slot, victim-store, and shadow
+  // lookups then each compare one register pair instead of three
+  // comparisons selected by the straddle and parity bits
+  // (p_cand_line_q_exact).
+  logic [1:0][LineAddrBits-1:0] cand_line_q;
+  logic [LineAddrBits-1:0] load_line0, load_line_next, load_line_after;
+  assign load_line0 = i_pa0[31:OffsetBits];
+  assign load_line_next = load_line0 + 1'b1;
+  assign load_line_after = (&i_pa0[OffsetBits-1:2]) ? i_pa1[31:OffsetBits] : load_line_next;
+
+  // Word positions of the ask inside the slot lines, {line parity, word
+  // index}, for the window muxes below: word 1 (the aligned successor of
+  // word 0) and the even-addressed word of the pair. Loaded with the ask so
+  // the live window muxes select between the live PA's positions and these
+  // registers in one LUT.
+  localparam int unsigned WordPosBits = WordSelBits + 1;
+  logic [WordPosBits-1:0] load_word0_pos, load_word1_pos, load_even_pos;
+  logic [WordPosBits-1:0] ask_word1_pos_q, ask_even_pos_q;
+  assign load_word0_pos = i_pa0[OffsetBits:2];
+  assign load_word1_pos = load_word0_pos + 1'b1;
+  assign load_even_pos  = i_pa0[2] ? load_word1_pos : load_word0_pos;
+
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       ask_pa0_q         <= '0;
       ask_pa1_q         <= 32'd4;
+      ask_line_next_q   <= LineAddrBits'(1);
+      ask_straddle_q    <= 1'b0;
       ask_pa_valid_q    <= 1'b0;
       ask_fault0_q      <= 1'b0;
       ask_fault0_page_q <= 1'b0;
       ask_fault1_q      <= 1'b0;
       ask_fault1_page_q <= 1'b0;
       ask_after_ok_q    <= 1'b1;
+      cand_line_q[0]    <= '0;
+      cand_line_q[1]    <= LineAddrBits'(1);
+      ask_word1_pos_q   <= WordPosBits'(1);
+      ask_even_pos_q    <= '0;
     end else if (ask_pa_load) begin
       ask_pa0_q         <= i_pa0;
       ask_pa1_q         <= i_pa1;
+      ask_line_next_q   <= load_line_next;
+      ask_straddle_q    <= &i_pa0[OffsetBits-1:2];
       ask_pa_valid_q    <= i_pa_valid;
       ask_fault0_q      <= i_fault0;
       ask_fault0_page_q <= i_fault0_page;
       ask_fault1_q      <= i_fault1;
       ask_fault1_page_q <= i_fault1_page;
       ask_after_ok_q    <= i_line_after_ok;
+      for (int p = 0; p < 2; p++) begin
+        cand_line_q[p] <= (load_line0[0] == 1'(p)) ? load_line0 : load_line_after;
+      end
+      ask_word1_pos_q <= load_word1_pos;
+      ask_even_pos_q  <= load_even_pos;
     end
   end
 
@@ -343,44 +391,104 @@ module fetch_provider #(
   assign present1 = slot_valid_q[win_line1[0]] && (slot_line_q[win_line1[0]] == win_line1);
 
   // Word extraction for the (about to be registered) DDR window.
-  logic [WordSelBits-1:0] word_sel0, word_sel1;
-  assign word_sel0 = win_addr0[2+:WordSelBits];
-  assign word_sel1 = win_addr1[2+:WordSelBits];
+  //
+  // Word positions, {line parity, word index}. Word 0 sits at fetch_pa0's
+  // own position. Word 1 is the aligned successor of word 0, so its position
+  // is word 0's plus one, with the carry flipping the line parity: the IMMU
+  // forms both physical addresses' page offsets from the one PC (o_pa1's is
+  // o_pa0's plus 4, in both translation modes), and the ask copies load
+  // together, so fetch_pa1[OffsetBits:2] == fetch_pa0[OffsetBits:2] + 1 on
+  // every cycle (p_window_pair_offset_contract). The even-addressed word of
+  // the pair is word 0 when fetch_pa0[2] is 0 and word 1 otherwise; the odd
+  // word always lies in word 0's line at index {fetch_pa0[OffsetBits-1:3], 1}.
+  // Forming every position from fetch_pa0 keeps the live PA's +4 adder off
+  // the window muxes, and the registered ask positions let each live select
+  // be one LUT: the live PA's position or the ask's.
+  logic [WordPosBits-1:0] word0_pos, word1_pos, even_pos, odd_pos;
+  logic [WordPosBits-1:0] live_word0_pos, live_word1_pos;
+  assign live_word0_pos = i_pa0[OffsetBits:2];
+  assign live_word1_pos = live_word0_pos + 1'b1;
+  assign word0_pos = fetch_pa0[OffsetBits:2];
+  assign word1_pos = o_instr_valid ? live_word1_pos : ask_word1_pos_q;
+  assign even_pos = o_instr_valid ? (i_pa0[2] ? live_word1_pos : live_word0_pos) : ask_even_pos_q;
+  assign odd_pos = {fetch_pa0[OffsetBits:3], 1'b1};
 
   logic [31:0] ddr_word0, ddr_word1;
-  logic [SbWidth-1:0] ddr_sb0, ddr_sb1;
-  assign ddr_word0 = slot_data_q[win_line0[0]][word_sel0*32+:32];
-  assign ddr_word1 = slot_data_q[win_line1[0]][word_sel1*32+:32];
-  assign ddr_sb0   = slot_sb_q[win_line0[0]][word_sel0*SbWidth+:SbWidth];
-  assign ddr_sb1   = slot_sb_q[win_line1[0]][word_sel1*SbWidth+:SbWidth];
+  logic [SbWidth-1:0] ddr_sb0, ddr_sb1, ddr_sb_even, ddr_sb_odd;
+  assign ddr_word0 = slot_data_q[word0_pos[WordSelBits]][word0_pos[WordSelBits-1:0]*32+:32];
+  assign ddr_word1 = slot_data_q[word1_pos[WordSelBits]][word1_pos[WordSelBits-1:0]*32+:32];
+  assign ddr_sb0 = slot_sb_q[word0_pos[WordSelBits]][word0_pos[WordSelBits-1:0]*SbWidth+:SbWidth];
+  assign ddr_sb1 = slot_sb_q[word1_pos[WordSelBits]][word1_pos[WordSelBits-1:0]*SbWidth+:SbWidth];
+  assign ddr_sb_even = slot_sb_q[even_pos[WordSelBits]][even_pos[WordSelBits-1:0]*SbWidth+:SbWidth];
+  assign ddr_sb_odd = slot_sb_q[odd_pos[WordSelBits]][odd_pos[WordSelBits-1:0]*SbWidth+:SbWidth];
 
-  // Per-word subsets consumed by IF's PC/dispatch timing replicas. ddr_sb0 is
-  // the current word and ddr_sb1 the following word. fetch_addr[2] says which
-  // one is physically odd, so selecting here produces a stable {odd,even}
-  // register beside the positional payload register below.
-  logic [3:0] ddr_pc_metadata0, ddr_pc_metadata1;
-  logic [1:0] ddr_pc_pairability0, ddr_pc_pairability1;
-  logic ddr_slot2_start_valid_lo0, ddr_slot2_start_valid_lo1;
-  assign ddr_pc_metadata0 = {
-    ddr_sb0[riscv_pkg::ImemSbPairableNativeHi],
-    ddr_sb0[riscv_pkg::ImemSbPairableCompressedHi],
-    ddr_sb0[riscv_pkg::ImemSbIsCompressedHi],
-    ddr_sb0[riscv_pkg::ImemSbIsCompressedLo]
+  // Per-word subsets consumed by IF's PC/dispatch timing replicas, selected
+  // by physical parity directly (ddr_sb_even, ddr_sb_odd), so the {odd,even}
+  // registers below take one mux each instead of the positional
+  // {next,current} muxes followed by a swap.
+  logic [3:0] ddr_pc_metadata_even, ddr_pc_metadata_odd;
+  logic [1:0] ddr_pc_pairability_even, ddr_pc_pairability_odd;
+  logic ddr_slot2_start_valid_lo_even, ddr_slot2_start_valid_lo_odd;
+  assign ddr_pc_metadata_even = {
+    ddr_sb_even[riscv_pkg::ImemSbPairableNativeHi],
+    ddr_sb_even[riscv_pkg::ImemSbPairableCompressedHi],
+    ddr_sb_even[riscv_pkg::ImemSbIsCompressedHi],
+    ddr_sb_even[riscv_pkg::ImemSbIsCompressedLo]
   };
-  assign ddr_pc_metadata1 = {
-    ddr_sb1[riscv_pkg::ImemSbPairableNativeHi],
-    ddr_sb1[riscv_pkg::ImemSbPairableCompressedHi],
-    ddr_sb1[riscv_pkg::ImemSbIsCompressedHi],
-    ddr_sb1[riscv_pkg::ImemSbIsCompressedLo]
+  assign ddr_pc_metadata_odd = {
+    ddr_sb_odd[riscv_pkg::ImemSbPairableNativeHi],
+    ddr_sb_odd[riscv_pkg::ImemSbPairableCompressedHi],
+    ddr_sb_odd[riscv_pkg::ImemSbIsCompressedHi],
+    ddr_sb_odd[riscv_pkg::ImemSbIsCompressedLo]
   };
-  assign ddr_pc_pairability0 = {
-    ddr_sb0[riscv_pkg::ImemSbPairableNativeLo], ddr_sb0[riscv_pkg::ImemSbEvenLocalPairValid]
+  assign ddr_pc_pairability_even = {
+    ddr_sb_even[riscv_pkg::ImemSbPairableNativeLo], ddr_sb_even[riscv_pkg::ImemSbEvenLocalPairValid]
   };
-  assign ddr_pc_pairability1 = {
-    ddr_sb1[riscv_pkg::ImemSbPairableNativeLo], ddr_sb1[riscv_pkg::ImemSbEvenLocalPairValid]
+  assign ddr_pc_pairability_odd = {
+    ddr_sb_odd[riscv_pkg::ImemSbPairableNativeLo], ddr_sb_odd[riscv_pkg::ImemSbEvenLocalPairValid]
   };
-  assign ddr_slot2_start_valid_lo0 = ddr_sb0[riscv_pkg::ImemSbSlot2StartValidLo];
-  assign ddr_slot2_start_valid_lo1 = ddr_sb1[riscv_pkg::ImemSbSlot2StartValidLo];
+  assign ddr_slot2_start_valid_lo_even = ddr_sb_even[riscv_pkg::ImemSbSlot2StartValidLo];
+  assign ddr_slot2_start_valid_lo_odd = ddr_sb_odd[riscv_pkg::ImemSbSlot2StartValidLo];
+
+`ifndef SYNTHESIS
+  // The positional selection by fetch_pa1 and the {odd,even} selection by
+  // fetch_addr[2], which the pa0-derived positions replace.
+  logic [WordSelBits-1:0] word_sel1_ref;
+  logic [SbWidth-1:0] ddr_sb1_ref;
+  logic [31:0] ddr_word1_ref;
+  logic [SbWidth-1:0] ddr_sb_even_ref, ddr_sb_odd_ref;
+  assign word_sel1_ref = win_addr1[2+:WordSelBits];
+  assign ddr_word1_ref = slot_data_q[win_line1[0]][word_sel1_ref*32+:32];
+  assign ddr_sb1_ref = slot_sb_q[win_line1[0]][word_sel1_ref*SbWidth+:SbWidth];
+  assign ddr_sb_even_ref = fetch_addr[2] ? ddr_sb1_ref : ddr_sb0;
+  assign ddr_sb_odd_ref = fetch_addr[2] ? ddr_sb0 : ddr_sb1_ref;
+  // Armed after the first reset, like the ask checks below: before it the
+  // ask registers hold no related pair.
+  always_ff @(posedge i_clk) begin
+    if (ask_line_next_armed_q && !i_rst && !$isunknown({fetch_pa0, fetch_pa1, fetch_addr[2]})) begin
+      p_window_pair_offset_contract :
+      assert (fetch_pa1[OffsetBits:2] == WordPosBits'(fetch_pa0[OffsetBits:2] + 1'b1) &&
+              fetch_addr[2] == fetch_pa0[2]);
+    end
+    if (ask_line_next_armed_q && !i_rst && !$isunknown(
+            {word1_pos, win_line1[0], word_sel1_ref, even_pos, odd_pos}
+        )) begin
+      p_window_word_positions_exact :
+      assert (word1_pos == {win_line1[0], word_sel1_ref} &&
+              ask_word1_pos_q == WordPosBits'(ask_pa0_q[OffsetBits:2] + 1'b1) &&
+              ask_even_pos_q == (ask_pa0_q[2] ? WordPosBits'(ask_pa0_q[OffsetBits:2] + 1'b1) :
+                                                ask_pa0_q[OffsetBits:2]));
+    end
+    if (ask_line_next_armed_q && !i_rst && !$isunknown(
+            {ddr_word1, ddr_word1_ref, ddr_sb1, ddr_sb1_ref,
+                     ddr_sb_even, ddr_sb_even_ref, ddr_sb_odd, ddr_sb_odd_ref}
+        )) begin
+      p_window_word1_exact : assert (ddr_word1 == ddr_word1_ref && ddr_sb1 == ddr_sb1_ref);
+      p_window_parity_words_exact :
+      assert (ddr_sb_even == ddr_sb_even_ref && ddr_sb_odd == ddr_sb_odd_ref);
+    end
+  end
+`endif
 
   // ===========================================================================
   // Window readiness (computed for the presented ask, registered with its tag)
@@ -401,8 +509,10 @@ module fetch_provider #(
   // bit-identical to comparing those two registers a cycle later.
   logic [63:0] ddr_instr_q;
   logic [2*SbWidth-1:0] ddr_sb_pair_q;
-  // Intentional payload-edge timing cut. Keep these physical registers so
-  // hierarchy flattening cannot reconstruct the former post-Q bank mux.
+  // Timing cut at the payload edge: the {odd,even} words are selected by
+  // physical parity directly into these registers (see even_pos, odd_pos).
+  // The keep attribute stops hierarchy flattening from rebuilding the
+  // selection as a bank mux after the payload register.
   (* keep = "true", max_fanout = 16 *) logic [7:0] pc_metadata_by_parity_q;
   (* keep = "true", max_fanout = 16 *) logic [3:0] pc_pairability_by_parity_q;
   (* keep = "true", max_fanout = 16 *) logic [1:0] slot2_start_valid_lo_by_parity_q;
@@ -415,16 +525,17 @@ module fetch_provider #(
   logic window_ready_q;
   logic pipeline_stall_q;
 
-  // Publish-valid is withheld while the front end is stalled (above). The owed
-  // window stays parked, with fetch_addr holding ask_q, and is published only
-  // when the decode can accept it. A miss that completes mid-stall therefore
+  // Publication is withheld while the front end is stalled. The owed window
+  // stays parked, with fetch_addr holding ask_q, and is published only when
+  // the decode can accept it. A miss that completes mid-stall therefore
   // delivers the owed window on release, instead of flashing it for one
   // unconsumable cycle and then drifting to the leading PC. The registered
   // stall preserves the IF stage's first-cycle stall capture, and the replay
   // path holds fetch_progress for the rest of the stall.
-  // window_ready already contains fetch_addr[31], and the registered folded
-  // match below proves that served_addr_q is the address whose readiness was
-  // captured, so no live served_addr_q == ask_q comparison is needed here.
+  // window_ready already includes the tier check (fetch_pa0[31]), and the
+  // registered folded match below proves that served_addr_q is the address
+  // whose readiness was captured, so no live served_addr_q == ask_q
+  // comparison is needed here.
   assign o_instr_valid = window_ready_q && !pipeline_stall_q;
   assign o_instr_valid_next = window_ready && (fetch_addr == ask_d) && !i_pipeline_stall;
 
@@ -436,27 +547,23 @@ module fetch_provider #(
       window_ready_q   <= window_ready && (fetch_addr == ask_d);
       pipeline_stall_q <= i_pipeline_stall;
     end
-    served_addr_q            <= fetch_addr;
+    served_addr_q <= fetch_addr;
     // Window identity stays virtual: word 1 is always VA word 0 + 1.
-    served_last_word_q       <= fetch_addr[31:2] + 1'b1;
-    served_prev_word_q       <= fetch_addr[31:2] - 1'b1;
+    served_last_word_q <= fetch_addr[31:2] + 1'b1;
+    served_prev_word_q <= fetch_addr[31:2] - 1'b1;
     served_prev_word_valid_q <= |fetch_addr[31:2];
-    served_fault0_q          <= fetch_fault0;
-    served_fault0_page_q     <= fetch_fault0_page;
-    served_fault1_q          <= fetch_fault1;
-    served_fault1_page_q     <= fetch_fault1_page;
-    bank_sel_q               <= fetch_addr[2];
-    ddr_instr_q              <= {ddr_word1, ddr_word0};
-    ddr_sb_pair_q            <= {ddr_sb1, ddr_sb0};
-    if (fetch_addr[2]) begin
-      pc_metadata_by_parity_q          <= {ddr_pc_metadata0, ddr_pc_metadata1};
-      pc_pairability_by_parity_q       <= {ddr_pc_pairability0, ddr_pc_pairability1};
-      slot2_start_valid_lo_by_parity_q <= {ddr_slot2_start_valid_lo0, ddr_slot2_start_valid_lo1};
-    end else begin
-      pc_metadata_by_parity_q          <= {ddr_pc_metadata1, ddr_pc_metadata0};
-      pc_pairability_by_parity_q       <= {ddr_pc_pairability1, ddr_pc_pairability0};
-      slot2_start_valid_lo_by_parity_q <= {ddr_slot2_start_valid_lo1, ddr_slot2_start_valid_lo0};
-    end
+    served_fault0_q <= fetch_fault0;
+    served_fault0_page_q <= fetch_fault0_page;
+    served_fault1_q <= fetch_fault1;
+    served_fault1_page_q <= fetch_fault1_page;
+    bank_sel_q <= fetch_addr[2];
+    ddr_instr_q <= {ddr_word1, ddr_word0};
+    ddr_sb_pair_q <= {ddr_sb1, ddr_sb0};
+    pc_metadata_by_parity_q <= {ddr_pc_metadata_odd, ddr_pc_metadata_even};
+    pc_pairability_by_parity_q <= {ddr_pc_pairability_odd, ddr_pc_pairability_even};
+    slot2_start_valid_lo_by_parity_q <= {
+      ddr_slot2_start_valid_lo_odd, ddr_slot2_start_valid_lo_even
+    };
   end
 
   assign o_instr = ddr_instr_q;
@@ -484,7 +591,7 @@ module fetch_provider #(
   // straddling window. The engines work from the registered ask only, through
   // their own presence comparators, so the o_pc/served muxing never reaches
   // the line-port request logic. On ask transitions the wanted line lags one
-  // cycle, which is noise against a multi-cycle miss.
+  // cycle, which is small against a multi-cycle miss.
   // The following line is word 1's line when the window straddles a line
   // boundary, and the next page's first line when it also crosses a page. The
   // two always have opposite parity, because a page holds an even number of
@@ -494,27 +601,67 @@ module fetch_provider #(
   logic [LineAddrBits-1:0] fill_line0, fill_line_after;
   logic fill_straddle;
   assign fill_line0 = ask_pa0_q[31:OffsetBits];
-  assign fill_straddle = &ask_pa0_q[OffsetBits-1:2];
-  assign fill_line_after = fill_straddle ? ask_pa1_q[31:OffsetBits] : fill_line0 + 1'b1;
+  assign fill_straddle = ask_straddle_q;
+  assign fill_line_after = fill_straddle ? ask_pa1_q[31:OffsetBits] : ask_line_next_q;
+
+`ifndef SYNTHESIS
+  logic ask_line_next_armed_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) ask_line_next_armed_q <= 1'b1;
+    if (ask_line_next_armed_q) begin
+      p_ask_line_next_matches : assert (ask_line_next_q == fill_line0 + 1'b1);
+      p_ask_straddle_matches : assert (ask_straddle_q == &ask_pa0_q[OffsetBits-1:2]);
+    end
+  end
+`endif
 
   // Candidate line per slot parity, its presence, and whether it may be
   // fetched at all. A faulted word's line is never fetchable, and the prefetch
   // line only inside the page.
+  // TIMING: the candidate line is the register cand_line_q, loaded with the
+  // ask (see there), so every lookup below is one comparison of two
+  // registers. The selection it stands in for, by the registered straddle
+  // and parity bits among the three registered sources (fill_line0,
+  // ask_pa1_q's line, ask_line_next_q), is the simulation reference
+  // cand_line_ref.
+  logic [1:0] cand_is_line0;
   logic [1:0][LineAddrBits-1:0] cand_line;
   logic [1:0] cand_present;
   logic [1:0] cand_fetchable;
   always_comb begin
     for (int p = 0; p < 2; p++) begin
-      if (fill_line0[0] == 1'(p)) begin
-        cand_line[p] = fill_line0;
+      cand_is_line0[p] = (fill_line0[0] == 1'(p));
+      cand_line[p] = cand_line_q[p];
+      if (cand_is_line0[p]) begin
         cand_fetchable[p] = !ask_fault0_q;
       end else begin
-        cand_line[p] = fill_line_after;
         cand_fetchable[p] = !ask_fault0_q && (fill_straddle ? !ask_fault1_q : ask_after_ok_q);
       end
-      cand_present[p] = slot_valid_q[p] && (slot_line_q[p] == cand_line[p]);
+      // The valid bit joins the comparison as one more equal bit, inside the
+      // carry chain, instead of an AND after it.
+      cand_present[p] = ({slot_valid_q[p], slot_line_q[p]} == {1'b1, cand_line_q[p]});
     end
   end
+
+`ifndef SYNTHESIS
+  logic [LineAddrBits-1:0] line_pa1;
+  logic [1:0][LineAddrBits-1:0] cand_line_ref;
+  assign line_pa1 = ask_pa1_q[31:OffsetBits];
+  function automatic logic cand_pick(input logic is_line0, input logic straddle,
+                                     input logic eq_line0, input logic eq_pa1, input logic eq_next);
+    cand_pick = is_line0 ? eq_line0 : (straddle ? eq_pa1 : eq_next);
+  endfunction
+  always_comb begin
+    for (int p = 0; p < 2; p++) begin
+      cand_line_ref[p] = cand_is_line0[p] ? fill_line0 : fill_line_after;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (ask_line_next_armed_q && !$isunknown({cand_line_q, cand_line_ref})) begin
+      p_cand_line_q_exact : assert (cand_line_q == cand_line_ref);
+    end
+  end
+`endif
 
   logic [1:0] fill_busy_q;
   logic [1:0] fill_sent_q;
@@ -523,11 +670,12 @@ module fetch_provider #(
   (* keep = "true" *) logic perf_miss_stall_q;
 
   // ---- Victim store ----------------------------------------------------------
-  // Lines evicted from a window slot are kept here (round-robin); a wanted
-  // line found here is copied into its slot in one cycle instead of being
-  // refetched. Lookups use the registered candidate lines only, so nothing
-  // here touches the window path. Each line lives in one place: a copied
-  // entry is invalidated, and a slot's old line is stored when replaced.
+  // Lines evicted from a window slot are written here, into a free entry if
+  // there is one and otherwise at the round-robin pointer (see the header).
+  // Each line lives in one place: a copied entry is invalidated, a slot's old
+  // line is stored when replaced, and the slot's engine does not fetch that
+  // line while it is on its way to the store (see want_fill). A simulation
+  // check at the end of the module tests every store write for a duplicate.
   localparam int unsigned VictimLines   = (VICTIM_LINES > 0) ? VICTIM_LINES : 1;
   localparam int unsigned VictimPtrBits = (VictimLines > 1) ? $clog2(VictimLines) : 1;
   logic [VictimLines-1:0] vs_valid_q;
@@ -543,42 +691,114 @@ module fetch_provider #(
   logic [1:0][LineBits-1:0] ev_data_q;
   logic [1:0][LineSbBits-1:0] ev_sb_q;
 
+  // Victim-store lookup per slot parity: one comparison per entry against
+  // the registered candidate line, with the entry's valid bit folded into the
+  // comparison as one more equal bit. A line lives in one place, so at most
+  // one entry matches (p_vs_hit_onehot) and the index is a plain OR of the
+  // matching entries' numbers, which keeps a priority chain and the
+  // comparison select out of the LUTRAM read address. The fanout cap
+  // replicates the index LUTs beside the store's address pins.
+  logic [1:0][VictimLines-1:0] vs_hit_vec;
   logic [1:0] vs_hit;
-  logic [1:0][VictimPtrBits-1:0] vs_hit_idx;
+  (* max_fanout = 64 *) logic [1:0][VictimPtrBits-1:0] vs_hit_idx;
   always_comb begin
     for (int p = 0; p < 2; p++) begin
-      vs_hit[p] = 1'b0;
       vs_hit_idx[p] = '0;
       for (int v = 0; v < int'(VictimLines); v++) begin
-        if ((VICTIM_LINES > 0) && vs_valid_q[v] && (vs_line_q[v] == cand_line[p])) begin
-          vs_hit[p] = 1'b1;
-          vs_hit_idx[p] = VictimPtrBits'(v);
+        vs_hit_vec[p][v] = (VICTIM_LINES > 0) &&
+            ({vs_valid_q[v], vs_line_q[v]} == {1'b1, cand_line_q[p]});
+        vs_hit_idx[p] |= {VictimPtrBits{vs_hit_vec[p][v]}} & VictimPtrBits'(v);
+      end
+      vs_hit[p] = |vs_hit_vec[p];
+    end
+  end
+
+`ifndef SYNTHESIS
+  // The lookup it replaces: the three comparisons selected by cand_pick,
+  // with the highest matching entry winning.
+  logic [1:0] vs_hit_ref;
+  logic [1:0][VictimPtrBits-1:0] vs_hit_idx_ref;
+  always_comb begin
+    for (int p = 0; p < 2; p++) begin
+      vs_hit_ref[p] = 1'b0;
+      vs_hit_idx_ref[p] = '0;
+      for (int v = 0; v < int'(VictimLines); v++) begin
+        if ((VICTIM_LINES > 0) && vs_valid_q[v] && cand_pick(
+                cand_is_line0[p],
+                fill_straddle,
+                vs_line_q[v] == fill_line0,
+                vs_line_q[v] == line_pa1,
+                vs_line_q[v] == ask_line_next_q
+            )) begin
+          vs_hit_ref[p] = 1'b1;
+          vs_hit_idx_ref[p] = VictimPtrBits'(v);
         end
       end
     end
   end
+  always_ff @(posedge i_clk) begin
+    if (ask_line_next_armed_q && !$isunknown({vs_hit_vec, vs_hit_ref, vs_hit_idx_ref})) begin
+      p_vs_hit_onehot : assert ($onehot0(vs_hit_vec[0]) && $onehot0(vs_hit_vec[1]));
+      p_vs_hit_idx_exact : assert (vs_hit == vs_hit_ref && vs_hit_idx == vs_hit_idx_ref);
+    end
+  end
+`endif
 
   // A wanted candidate: absent from its slot with the slot's engine free. If
   // the store holds it, it is copied, one slot per cycle and never in a cycle
   // where a fill response lands or an invalidate fires, so the single victim
   // write port and the slot write are uncontended. Otherwise it is fetched.
+  // A copy waits while the slot's shadow is pending (ev_pending_q, the cycle
+  // after the slot write), and so does a fill of the line the shadow holds:
+  // that line is copied back once it reaches the store rather than fetched a
+  // second time. A fill of any other line starts at once.
+  // TIMING: the copy decision folds its registered terms first
+  // (copy_reg_ok), joins the two comparison results (copy_base), and ranks
+  // the parities last: the window's own line (parity fill_line0[0]) copies
+  // first, the other only when it does not. Each copy_now is then one LUT of
+  // the two copy_base bits, the registered rank, and the two global vetoes,
+  // and the slot write enables follow in one more
+  // (p_copy_now_exact).
   logic [1:0] want_cand, want_fill, copy_now;
+  logic [1:0] copy_reg_ok;
+  logic [1:0] copy_base;
   always_comb begin
     for (int p = 0; p < 2; p++) begin
       want_cand[p] = ask_pa_valid_q && ask_pa0_q[31] && cand_fetchable[p] && !cand_present[p] &&
           !fill_busy_q[p];
-      want_fill[p] = want_cand[p] && !vs_hit[p];
+      want_fill[p] = want_cand[p] && !vs_hit[p] &&
+          !((VICTIM_LINES > 0) && ev_pending_q[p] && (ev_line_q[p] == cand_line_q[p]));
+      copy_reg_ok[p] = ask_pa_valid_q && ask_pa0_q[31] && cand_fetchable[p] && !fill_busy_q[p] &&
+          !ev_pending_q[p];
+      copy_base[p] = copy_reg_ok[p] && vs_hit[p] && !cand_present[p];
     end
-    copy_now = '0;
-    if (!i_line_resp_valid && !i_invalidate) begin
-      if (want_cand[fill_line0[0]] && vs_hit[fill_line0[0]] && !ev_pending_q[fill_line0[0]])
-        copy_now[fill_line0[0]] = 1'b1;
-      else if (want_cand[~fill_line0[0]] && vs_hit[~fill_line0[0]] && !ev_pending_q[~fill_line0[0]])
-        copy_now[~fill_line0[0]] = 1'b1;
+    for (int p = 0; p < 2; p++) begin
+      // p is an int: ~p would be -1/-2, outside the two-bit vector.
+      copy_now[p] = !i_line_resp_valid && !i_invalidate && copy_base[p] &&
+          ((fill_line0[0] == 1'(p)) || !copy_base[p ^ 1]);
     end
   end
   logic copy_slot;
   assign copy_slot = copy_now[1];
+
+`ifndef SYNTHESIS
+  // The priority form it replaces.
+  logic [1:0] copy_now_ref;
+  always_comb begin
+    copy_now_ref = '0;
+    if (!i_line_resp_valid && !i_invalidate) begin
+      if (want_cand[fill_line0[0]] && vs_hit[fill_line0[0]] && !ev_pending_q[fill_line0[0]])
+        copy_now_ref[fill_line0[0]] = 1'b1;
+      else if (want_cand[~fill_line0[0]] && vs_hit[~fill_line0[0]] && !ev_pending_q[~fill_line0[0]])
+        copy_now_ref[~fill_line0[0]] = 1'b1;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (ask_line_next_armed_q && !$isunknown({copy_now, copy_now_ref})) begin
+      p_copy_now_exact : assert (copy_now == copy_now_ref);
+    end
+  end
+`endif
 
   // Request presentation: the window's own line (parity of L) first, then
   // the following line. One request per cycle on the port.
@@ -610,59 +830,127 @@ module fetch_provider #(
       .o_sideband(fill_sideband)
   );
 
+  // Engine next state, shared by the engine registers and the per-group
+  // copies of busy and discard below. A response ends its engine's fill. An
+  // invalidate marks in-flight fills discarded: the line port has no abort,
+  // so they complete, but their pre-invalidate data must not re-validate a
+  // slot.
+  logic [1:0] resp_for_slot;
+  logic [1:0] fill_busy_next;
+  logic [1:0] fill_discard_next;
+  always_comb begin
+    for (int p = 0; p < 2; p++) begin
+      resp_for_slot[p] = i_line_resp_valid && (resp_slot == 1'(p));
+      if (i_rst) begin
+        fill_busy_next[p]    = 1'b0;
+        fill_discard_next[p] = 1'b0;
+      end else begin
+        fill_busy_next[p] = fill_busy_q[p] ? !resp_for_slot[p] : want_fill[p];
+        fill_discard_next[p] = (fill_busy_q[p] && resp_for_slot[p]) ? 1'b0 :
+            (fill_discard_q[p] || (i_invalidate && fill_busy_q[p]));
+      end
+    end
+  end
+
   always_ff @(posedge i_clk) begin
+    fill_busy_q    <= fill_busy_next;
+    fill_discard_q <= fill_discard_next;
     if (i_rst) begin
-      fill_busy_q     <= '0;
       fill_sent_q     <= '0;
-      fill_discard_q  <= '0;
       slot_valid_q[0] <= 1'b0;
       slot_valid_q[1] <= 1'b0;
     end else begin
       if (i_invalidate) begin
         slot_valid_q[0] <= 1'b0;
         slot_valid_q[1] <= 1'b0;
-        // In-flight fills have to complete, because the line port has no
-        // abort, but their pre-invalidate data must not re-validate a slot.
-        fill_discard_q  <= fill_discard_q | fill_busy_q;
       end
 
       for (int p = 0; p < 2; p++) begin
         if (!fill_busy_q[p]) begin
           if (want_fill[p]) begin
-            fill_busy_q[p] <= 1'b1;
             fill_sent_q[p] <= 1'b0;
             fill_line_q[p] <= cand_line[p];
           end
         end else begin
           if (o_line_req_valid && i_line_req_ready && (req_sel == 1'(p))) fill_sent_q[p] <= 1'b1;
-          if (i_line_resp_valid && (resp_slot == 1'(p))) begin
-            fill_busy_q[p] <= 1'b0;
+          if (resp_for_slot[p]) begin
             fill_sent_q[p] <= 1'b0;
-            if (!fill_discard_q[p] && !i_invalidate) begin
-              slot_valid_q[p] <= 1'b1;
-              slot_line_q[p]  <= fill_line_q[p];
-              slot_data_q[p]  <= i_line_resp_rdata;
-              slot_sb_q[p]    <= fill_sideband;
-            end
-            fill_discard_q[p] <= 1'b0;
+            if (!fill_discard_q[p] && !i_invalidate) slot_valid_q[p] <= 1'b1;
           end
         end
-        // Copy from the victim store into the slot. copy_now is built to
-        // exclude cycles carrying a response or an invalidate.
-        if (copy_now[p]) begin
-          slot_valid_q[p] <= 1'b1;
-          slot_line_q[p]  <= cand_line[p];
-          slot_data_q[p]  <= vs_data_q[vs_hit_idx[p]];
-          slot_sb_q[p]    <= vs_sb_q[vs_hit_idx[p]];
-        end
+        // A copy from the victim store validates the slot. copy_now is built
+        // to exclude cycles carrying a response or an invalidate.
+        if (copy_now[p]) slot_valid_q[p] <= 1'b1;
       end
     end
   end
 
-  // Victim store bookkeeping. A slot write, either an installed fill response
-  // or a store copy, shadows the slot's previous content with the same enable
-  // the slot registers use. A registered pending bit writes the shadow into
-  // the store on a later cycle, one write per cycle with slot 0 first. A slot
+  // Slot payload install. A response installs only while its engine is
+  // busy, and a victim copy only while it is idle (copy_now requires
+  // !fill_busy_q), so the registered busy bit selects the payload source
+  // whenever a write happens and the late copy decision reaches only the
+  // write enables. Each slot's payload is split into one group per word (its
+  // data word and sideband) plus the line tag. Every group has same-edge
+  // copies of its engine's busy and discard bits (equal to fill_busy_q and
+  // fill_discard_q on every cycle) and so its own write-enable LUT, placed
+  // beside its registers instead of one LUT driving the whole line.
+  // DONT_TOUCH keeps synthesis from merging the copies back.
+  localparam int unsigned SlotGroups = WordsPerLine + 1;  // the words, then the tag
+  localparam int unsigned TagGroup   = WordsPerLine;
+  (* dont_touch = "true" *)logic [1:0][SlotGroups-1:0] grp_busy_q;
+  (* dont_touch = "true" *)logic [1:0][SlotGroups-1:0] grp_discard_q;
+  logic [1:0][SlotGroups-1:0] grp_install;
+  always_ff @(posedge i_clk) begin
+    for (int p = 0; p < 2; p++) begin
+      grp_busy_q[p]    <= {SlotGroups{fill_busy_next[p]}};
+      grp_discard_q[p] <= {SlotGroups{fill_discard_next[p]}};
+    end
+  end
+  always_comb begin
+    for (int p = 0; p < 2; p++) begin
+      for (int g = 0; g < SlotGroups; g++) begin
+        grp_install[p][g] = !i_rst && (copy_now[p] ||
+            (grp_busy_q[p][g] && resp_for_slot[p] && !grp_discard_q[p][g] && !i_invalidate));
+      end
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    for (int p = 0; p < 2; p++) begin
+      for (int w = 0; w < WordsPerLine; w++) begin
+        if (grp_install[p][w]) begin
+          slot_data_q[p][w*32+:32] <= grp_busy_q[p][w] ?
+              i_line_resp_rdata[w*32+:32] : vs_data_q[vs_hit_idx[p]][w*32+:32];
+          slot_sb_q[p][w*SbWidth+:SbWidth] <= grp_busy_q[p][w] ?
+              fill_sideband[w*SbWidth+:SbWidth] : vs_sb_q[vs_hit_idx[p]][w*SbWidth+:SbWidth];
+        end
+      end
+      if (grp_install[p][TagGroup]) begin
+        slot_line_q[p] <= grp_busy_q[p][TagGroup] ? fill_line_q[p] : cand_line[p];
+      end
+    end
+  end
+
+`ifndef SYNTHESIS
+  // The copies take the engine's next state, so they agree from the first
+  // edge.
+  logic grp_copies_armed_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    grp_copies_armed_q <= 1'b1;
+    if (grp_copies_armed_q) begin
+      for (int p = 0; p < 2; p++) begin
+        p_group_busy_copies_match : assert (grp_busy_q[p] == {SlotGroups{fill_busy_q[p]}});
+        p_group_discard_copies_match : assert (grp_discard_q[p] == {SlotGroups{fill_discard_q[p]}});
+      end
+    end
+  end
+`endif
+
+  // Victim store bookkeeping. A free shadow tracks its slot's old contents
+  // every cycle. A slot write (an installed response or victim copy) marks
+  // that captured value pending, and the shadow then holds until it drains.
+  // This keeps the late slot-write decision off the wide payload enables.
+  // The registered pending bit writes the shadow into the store on a later
+  // cycle, one write per cycle with slot 0 first. A slot
   // whose shadow is still pending is not copied into (copy_now), and
   // consecutive responses to one slot are impossible because the engine has to
   // be re-issued, so a shadow is never overwritten before it is stored. A
@@ -687,15 +975,34 @@ module fetch_provider #(
     end else begin
       if (ev_write) ev_pending_q[ev_sel] <= 1'b0;
       for (int p = 0; p < 2; p++) begin
-        if (slot_write[p]) begin
-          ev_pending_q[p] <= slot_valid_q[p];
-          ev_line_q[p]    <= slot_line_q[p];
-          ev_data_q[p]    <= slot_data_q[p];
-          ev_sb_q[p]      <= slot_sb_q[p];
+        if (slot_write[p]) ev_pending_q[p] <= slot_valid_q[p];
+        if (!ev_pending_q[p]) begin
+          ev_line_q[p] <= slot_line_q[p];
+          ev_data_q[p] <= slot_data_q[p];
+          ev_sb_q[p]   <= slot_sb_q[p];
         end
       end
     end
   end
+
+  // Store write entry: the lowest free entry, else the round-robin pointer,
+  // which advances only when it is used. The choice decodes registers only,
+  // like ev_write, so the write enables stay off the fill-response cone. An
+  // entry released this cycle still reads as valid here.
+  logic vs_free_found;
+  logic [VictimPtrBits-1:0] vs_free_idx;
+  logic [VictimPtrBits-1:0] vs_wr_idx;
+  always_comb begin
+    vs_free_found = 1'b0;
+    vs_free_idx   = '0;
+    for (int v = int'(VictimLines) - 1; v >= 0; v--) begin
+      if (!vs_valid_q[v]) begin
+        vs_free_found = 1'b1;
+        vs_free_idx   = VictimPtrBits'(v);
+      end
+    end
+  end
+  assign vs_wr_idx = vs_free_found ? vs_free_idx : vs_wr_ptr_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst || i_invalidate) begin
@@ -706,18 +1013,19 @@ module fetch_provider #(
       // case where the round-robin pointer happens to sit there.
       if (|copy_now) vs_valid_q[vs_hit_idx[copy_slot]] <= 1'b0;
       if (ev_write && (VICTIM_LINES > 0)) begin
-        vs_valid_q[vs_wr_ptr_q] <= 1'b1;
-        vs_line_q[vs_wr_ptr_q] <= ev_line_q[ev_sel];
-        vs_data_q[vs_wr_ptr_q] <= ev_data_q[ev_sel];
-        vs_sb_q[vs_wr_ptr_q] <= ev_sb_q[ev_sel];
-        vs_wr_ptr_q <= (vs_wr_ptr_q == VictimPtrBits'(VictimLines - 1)) ? '0 : vs_wr_ptr_q + 1'b1;
+        vs_valid_q[vs_wr_idx] <= 1'b1;
+        vs_line_q[vs_wr_idx] <= ev_line_q[ev_sel];
+        vs_data_q[vs_wr_idx] <= ev_data_q[ev_sel];
+        vs_sb_q[vs_wr_idx] <= ev_sb_q[ev_sel];
+        if (!vs_free_found)
+          vs_wr_ptr_q <= (vs_wr_ptr_q == VictimPtrBits'(VictimLines - 1)) ? '0 : vs_wr_ptr_q + 1'b1;
       end
     end
   end
 
-  // Register at the fetch seam so the observer cannot extend either the L1I
-  // tag path or the window-ready -> PC progress cone. A cycle counts only when
-  // a confirmed L1I demand miss is outstanding, the live fetch still selects
+  // Registered here so the counter logic stays off both the L1I tag path and
+  // the window-ready -> PC progress path. A cycle counts only when a
+  // confirmed L1I demand miss is outstanding, the live fetch still selects
   // the high/cached tier, and its missing line prevents publication. Backend
   // stalls, low-BRAM progress, and discarded pre-fence fills are excluded.
   always_ff @(posedge i_clk) begin
@@ -731,13 +1039,11 @@ module fetch_provider #(
   end
 
 `ifndef SYNTHESIS
-  // Equivalence oracle for the folded publishability register. A
-  // simulation-only copy of the raw readiness state proves that the folded bit
-  // equals the retired live expression on every initialized cycle:
+  // Reference check for the folded valid bit. A simulation-only copy of the
+  // raw readiness checks that window_ready_q equals the reference expression
+  // on every cycle except the first after a reset or invalidate:
   //   served-high && raw-ready && served-address == current owed ask.
-  // This covers ordinary sequential service, redirects and retargets, stalls,
-  // and invalidate recovery without recreating the comparison in synthesized
-  // RTL.
+  // This checks the fold without adding the comparison to synthesized logic.
   logic window_ready_reference_q;
   logic publishability_oracle_valid_q;
   always_ff @(posedge i_clk) begin
@@ -762,14 +1068,91 @@ module fetch_provider #(
         $error("fetch_provider: line response id %0d (expected 0 or 1)", i_line_resp_id);
       if (i_line_resp_valid && !(fill_busy_q[resp_slot] && fill_sent_q[resp_slot]))
         $error("fetch_provider: line response for slot %0d with no fill in flight", resp_slot);
+      if (!i_invalidate) begin
+        for (int p = 0; p < 2; p++) begin
+          if (slot_write[p])
+            assert (!ev_pending_q[p])
+            else $error("fetch_provider: slot %0d overwrote a pending eviction shadow", p);
+        end
+      end
+    end
+  end
+
+  // A store write never duplicates a valid entry. An entry a copy releases
+  // on the same edge holds a line of the other parity, so it cannot match.
+  logic vs_write_line_stored;
+  always_comb begin
+    vs_write_line_stored = 1'b0;
+    for (int v = 0; v < int'(VictimLines); v++) begin
+      if (vs_valid_q[v] && (vs_line_q[v] == ev_line_q[ev_sel])) vs_write_line_stored = 1'b1;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && !i_invalidate && ev_write && (VICTIM_LINES > 0)) begin
+      p_victim_store_write_is_unique : assert (!vs_write_line_stored);
+    end
+  end
+`endif
+
+`ifdef FETCH_SHADOW_CAPTURE_PROOF
+  // Reference captures only on the original slot-write enable. While a
+  // shadow is pending, every tag/data/predecode bit must equal that reference.
+  // All architectural consumers of the shadow are gated by its pending bit.
+  localparam int unsigned ShadowPayloadBits = LineAddrBits + LineBits + LineSbBits;
+  logic [1:0][ShadowPayloadBits-1:0] f_shadow_ref;
+  logic f_shadow_past_valid = 1'b0;
+  always_ff @(posedge i_clk) begin
+    f_shadow_past_valid <= 1'b1;
+    if (!f_shadow_past_valid) assume (i_rst);
+    if (!i_rst && i_line_resp_valid) begin
+      assume (i_line_resp_id <= LINE_ID_BITS'(1));
+      assume (fill_busy_q[resp_slot] && fill_sent_q[resp_slot]);
+    end
+    for (int p = 0; p < 2; p++) begin
+      if (!i_rst && !i_invalidate && slot_write[p])
+        f_shadow_ref[p] <= {slot_line_q[p], slot_data_q[p], slot_sb_q[p]};
+      if (f_shadow_past_valid) begin
+        if (!i_rst && !i_invalidate && slot_write[p]) assert (!ev_pending_q[p]);
+        if (ev_pending_q[p]) assert ({ev_line_q[p], ev_data_q[p], ev_sb_q[p]} == f_shadow_ref[p]);
+      end
+    end
+    if (f_shadow_past_valid && !i_rst) begin
+      cover (!i_invalidate && ev_pending_q[0] && slot_write[1]);
+      cover (!i_invalidate && ev_pending_q[1] && slot_write[0]);
+      cover (i_invalidate && (|ev_pending_q));
+    end
+  end
+
+  // The grouped slot install writes exactly what a whole-slot install on the
+  // original conditions writes: a reference that takes those writes matches
+  // every slot register once the slot has been written, and every group's
+  // busy and discard copies match the engine's.
+  logic [1:0][ShadowPayloadBits-1:0] f_slot_ref;
+  logic [1:0] f_slot_ref_valid = 2'b00;
+  always_ff @(posedge i_clk) begin
+    for (int p = 0; p < 2; p++) begin
+      if (!i_rst && fill_busy_q[p] && resp_for_slot[p] && !fill_discard_q[p] && !i_invalidate) begin
+        f_slot_ref[p] <= {fill_line_q[p], i_line_resp_rdata, fill_sideband};
+        f_slot_ref_valid[p] <= 1'b1;
+      end
+      if (!i_rst && copy_now[p]) begin
+        f_slot_ref[p] <= {cand_line[p], vs_data_q[vs_hit_idx[p]], vs_sb_q[vs_hit_idx[p]]};
+        f_slot_ref_valid[p] <= 1'b1;
+      end
+      if (f_shadow_past_valid) begin
+        assert (grp_busy_q[p] == {SlotGroups{fill_busy_q[p]}});
+        assert (grp_discard_q[p] == {SlotGroups{fill_discard_q[p]}});
+        if (f_slot_ref_valid[p])
+          assert ({slot_line_q[p], slot_data_q[p], slot_sb_q[p]} == f_slot_ref[p]);
+      end
     end
   end
 `endif
 
 `ifdef FROST_DEBUG_FETCH_ILA
-  // Fetch-seam ILA mirrors (build.py --debug-ila). Marked aliases the debug
-  // core probes; nothing here feeds the design. Low address bits suffice:
-  // the capture is keyed on a page offset.
+  // Fetch ILA mirrors (build.py --debug-ila). Marked aliases the debug core
+  // probes; nothing here feeds the design. Low address bits suffice: the
+  // capture is keyed on a page offset.
   (* mark_debug = "true" *) logic [15:0] dbg_ila_fp_pc;
   (* mark_debug = "true" *) logic [15:0] dbg_ila_fp_ask;
   (* mark_debug = "true" *) logic [15:0] dbg_ila_fp_served;

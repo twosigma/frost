@@ -17,7 +17,7 @@
 /*
  * Combinational BEQ/BNE/BLT/BGE/BLTU/BGEU and JAL/JALR resolution. ID
  * precomputes branch and JAL PC-relative targets; JALR computes
- * (rs1 + imm_i) & ~1 here because it needs the forwarded rs1 value.
+ * (rs1 + imm_i) & ~1 here because it needs the rs1 value.
  */
 module branch_jump_unit #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -45,7 +45,7 @@ module branch_jump_unit #(
     output logic [XLEN-1:0] o_branch_target_address  // Target PC
 );
 
-  // JALR target computed here (needs forwarded rs1 value)
+  // JALR target computed here (needs the rs1 value)
   logic [XLEN-1:0] jalr_target;
   logic [XLEN-1:0] target_selected;
   assign jalr_target = (i_operand_a + XLEN'(signed'(i_immediate_i_type))) & ~XLEN'(1);
@@ -68,7 +68,7 @@ module branch_jump_unit #(
       riscv_pkg::BRLTU: o_branch_taken = unsigned_less_than;
       riscv_pkg::BRGEU: o_branch_taken = !unsigned_less_than;
       riscv_pkg::JUMP:  o_branch_taken = i_is_jump_and_link_register | i_is_jump_and_link;
-      riscv_pkg::NULL:  o_branch_taken = i_is_jump_and_link;  // JAL may use NULL; always taken
+      riscv_pkg::NULL:  o_branch_taken = i_is_jump_and_link;  // a JAL is taken even with NULL
     endcase
 
     unique case ({
@@ -79,10 +79,9 @@ module branch_jump_unit #(
       default: target_selected = i_branch_target_precomputed;  // Branch: use pre-computed
     endcase
 
-    // the resolved target flows at full width, with no masking.
-    // A wild JALR target reaches the PC unchanged and page/PMA-faults at
-    // fetch instead of aliasing, and predictor-trained targets compare
-    // against the full architectural value.
+    // The target is not masked: a wild JALR target reaches the PC at full
+    // width and takes a page or access fault at fetch instead of aliasing,
+    // and predicted targets are checked against the full value.
     o_branch_target_address = target_selected;
   end
 

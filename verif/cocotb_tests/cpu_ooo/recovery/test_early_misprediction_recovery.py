@@ -52,7 +52,6 @@ def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to their idle values."""
     dut.i_branch_update.value = 0
     dut.i_rs_issue_int.value = 0
-    dut.i_head_tag.value = 0
     dut.i_is_jalr_issue.value = 0
     dut.i_branch_taken_resolved.value = 0
     dut.i_branch_target_resolved.value = 0
@@ -100,7 +99,11 @@ def _drive_mispredict(
     """Drive a coherent branch-resolution transaction.
 
     The RS packet carries is_compressed as a dispatch-time bit; by default it
-    is derived from the link/pc pair the way the front end would set it.
+    is derived from the link/pc pair the way the front end would set it. Its
+    prediction agrees with ``mispredicted``: a misprediction predicted the
+    other direction, a correct prediction the resolved direction and target.
+    The fire reads the prediction for conditional branches, and a simulation
+    check compares that form with the update's flag.
     """
     dut.i_branch_update.value = _pack_branch_update(
         {
@@ -126,6 +129,8 @@ def _drive_mispredict(
             ),
             "has_checkpoint": has_checkpoint,
             "checkpoint_id": checkpoint_id,
+            "predicted_taken": branch_taken != mispredicted,
+            "predicted_target_ok": True,
             "is_branch_class": True,
             "is_jal": False,
             "is_jalr": is_jalr,
@@ -143,6 +148,7 @@ def _assert_idle(dut: Any) -> None:
     """Assert that no recovery phase is active."""
     assert not dut.o_early_mispredict_active.value
     assert not dut.o_early_backend_recovery_pending.value
+    assert not dut.o_early_backend_recovery_pending_next.value
     assert not dut.o_early_recovery_en.value
     assert not dut.o_early_backend_recovery_hold.value
 
@@ -167,6 +173,7 @@ async def test_taken_mispredict_redirects_then_flushes_backend(dut: Any) -> None
     assert dut.o_early_recovery_en.value
     assert dut.o_early_backend_recovery_hold.value
     assert not dut.o_early_backend_recovery_pending.value
+    assert dut.o_early_backend_recovery_pending_next.value
     assert int(dut.o_early_mispredict_tag.value) == 9
     assert int(dut.o_early_mispredict_redirect_pc.value) == 0x80000200
     assert int(dut.o_early_mispredict_checkpoint_id.value) == 5
@@ -252,11 +259,11 @@ async def test_unqualified_mispredictions_do_not_fire(dut: Any) -> None:
 
 @cocotb.test()
 async def test_issue_local_payload_capture_is_inert_without_fire(dut: Any) -> None:
-    """Eligible payload capture may be permissive; only qualified fire launches."""
+    """Payload registers may capture without a fire; only a qualified fire starts recovery."""
     await _setup_test(dut)
 
-    # A correctly predicted checkpointed conditional branch is an eligible
-    # issue-local payload capture, but it must not launch any recovery state.
+    # A correctly predicted checkpointed conditional branch updates the payload
+    # registers but must not start any recovery phase.
     _drive_mispredict(
         dut,
         tag=12,
@@ -302,7 +309,7 @@ async def test_issue_local_payload_capture_is_inert_without_fire(dut: Any) -> No
 async def test_local_fence_copy_only_gates_active_pulse(dut: Any) -> None:
     """The local registered FENCE.I copy kills active without changing its hold.
 
-    In production the local copy is rob_commit.is_fence_i, and tomasulo_wrapper
+    In the core the local copy is rob_commit.is_fence_i, and tomasulo_wrapper
     asserts that it implies the shared fence_i_flush pulse: a native FENCE.I
     raises both, a translation-CSR flush raises only the shared one. Driving
     them apart here is a structural isolation check: only the late active gate
@@ -335,16 +342,13 @@ async def test_local_fence_copy_only_gates_active_pulse(dut: Any) -> None:
 async def test_commit_recovery_next_cycle_drops_coincident_fire(dut: Any) -> None:
     """A fire coinciding with a head-mispredict commit is dropped one cycle later.
 
-    This is the one-cycle collision the fire-time gates cannot see. A younger
-    branch fires (capture succeeds, i_mispredict_recovery_pending still 0) in
-    the same cycle an older head-mispredict commits. The commit-time launch
-    registers into mispredict_recovery_pending on the next cycle, and the
+    The fire-time gates cannot see this collision: a younger branch fires
+    (capture succeeds, i_mispredict_recovery_pending still 0) in the same cycle
+    an older head-mispredict commits. The commit-time launch registers into
+    mispredict_recovery_pending on the next cycle, and the
     !i_mispredict_recovery_pending term in early_mispredict_active must drop
     the early pulse there, before any redirect, RAT restore,
-    rob_early_recovered write, or backend flush. This guard replaced the
-    removed fire-time candidate gate (see the comment on
-    rob_head_commit_misprediction_candidate in branch_resolution.sv). No other
-    test or formal property pins it.
+    rob_early_recovered write, or backend flush.
     """
     await _setup_test(dut)
 
@@ -397,7 +401,7 @@ async def test_backend_phase_blocks_new_capture(dut: Any) -> None:
     assert not dut.o_early_mispredict_active.value
     # The pending/active guards hold the first branch's recovery payload while
     # the second branch appears at issue. A capture that cannot fire never
-    # replaces data still owned by the active recovery.
+    # replaces data the active recovery still uses.
     assert int(dut.o_early_mispredict_tag.value) == 3
     assert int(dut.o_early_mispredict_pc.value) == 0x1000
     assert int(dut.o_early_mispredict_branch_target.value) == 0x700
@@ -406,6 +410,39 @@ async def test_backend_phase_blocks_new_capture(dut: Any) -> None:
     await _settle_after_edge(dut)
 
     _assert_idle(dut)
+
+
+@cocotb.test()
+async def test_backend_pending_next_state_matches_register(dut: Any) -> None:
+    """The exported next state is what the backend-pending register loads.
+
+    The flush controller registers flush_en from it, so it must drop with a
+    trap cancellation and with reset, and the register must follow it.
+    """
+    await _setup_test(dut)
+
+    _drive_mispredict(dut, tag=7)
+    await _settle_after_edge(dut)
+    assert dut.o_early_mispredict_active.value
+    assert dut.o_early_backend_recovery_pending_next.value
+
+    dut.i_flush_for_trap.value = 1
+    await Timer(1, unit="ns")
+    assert not dut.o_early_backend_recovery_pending_next.value
+    await _settle_after_edge(dut)
+    assert not dut.o_early_backend_recovery_pending.value
+
+    _clear_inputs(dut)
+    _drive_mispredict(dut, tag=8)
+    await _settle_after_edge(dut)
+    assert dut.o_early_backend_recovery_pending_next.value
+    dut.i_rst.value = 1
+    await Timer(1, unit="ns")
+    assert not dut.o_early_backend_recovery_pending_next.value
+    await _settle_after_edge(dut)
+    assert not dut.o_early_backend_recovery_pending.value
+    dut.i_rst.value = 0
+    _clear_inputs(dut)
 
 
 @cocotb.test()

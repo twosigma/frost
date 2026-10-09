@@ -12,31 +12,29 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Directed probe for the rv64 Linux exec ETXTBSY storm seen on X3 hardware:
-# the first exec of an inode succeeds, and every later exec of the same
-# inode fails with "Text file busy".  deny_write_access is
+# Directed probe for lr.w sign extension in the Linux exec write-deny path.
+# On X3 hardware a zero-extending lr.w caused an ETXTBSY storm: the first
+# exec of an inode succeeded, and every later exec of the same inode failed
+# with "Text file busy".  deny_write_access is
 # atomic_dec_unless_positive(&inode->i_writecount); the riscv kernel asm is
 #     0: lr.w p, (c); bgtz p, 1f; addi rc, p, -1; sc.w.rl rc, rc, (c);
 #        bnez rc, 0b; fence rw, rw; 1:
-# Root cause, fixed in dispatch.sv mem_signed: LR.W wrote back zero-extended
-# at rv64.  mem_signed keyed on is_load_instruction (opcode==OPC_LOAD),
-# which excludes LR (OPC_AMO), so the LQ entry's sign_ext was 0.  A
+# LR.W must write back sign-extended at RV64.  LR is OPC_AMO, not a load
+# opcode, so dispatch.sv mem_signed has its own is_lr term.  In the failing
+# design mem_signed keyed on is_load_instruction (opcode==OPC_LOAD) alone,
+# which excludes LR, so the LQ entry's sign_ext was 0.  A
 # zero-extended -1 reads positive to the raw 64-bit bgtz, so the loop skips
 # its decrement while the C tail still reports success.  The leaked deny
 # counts, over-released by the exit path's amoadd.w, drift i_writecount
 # permanently positive under overlapping exec/exit interleavings, and from
 # then on every exec of the inode fails.
 #
-# This probe replays that scene and its neighborhood word-exact, with the
+# This probe replays that sequence and its neighborhood word-exact, with the
 # same opcodes including sc.w.rl and the trailing fence, on both dword
 # lanes.  The neighboring word holds a positive pattern, so a wrong-lane
-# read looks different from a mis-extension: before the fix, check 2 failed
-# with val=0x00000000ffffffff, which is the mis-extension.  Each numbered
-# check prints its number and the loaded value on failure, and <<PASS>>
-# appears only if every check passes.
-#
-# History: the rv32-era twin of this probe was a sanity lane because the
-# hardware failure was rv64-only.
+# read looks different from a mis-extension (val=0x00000000ffffffff).  A
+# failing check prints its number and s4, the value the failing comparison
+# tested, and <<PASS>> appears only if every check passes.
 
 .equ NEIGHBOR, 0x7A7A7A7A     # positive, distinctive wrong-lane tell
 .equ LAPS, 8
@@ -106,7 +104,7 @@ deny3_fail:
     j       fail
 
 # --- check 4: kernel deny loop on cell==-1 (the second exec) ----------
-# This is where the hardware failed: lr.w of the -1 written by check 3's
+# The case a zero-extending lr.w breaks: lr.w of the -1 written by check 3's
 # sc.w.rl must read -1 rather than a positive value, and the loop must
 # decrement it to -2.
 check4:
@@ -134,12 +132,15 @@ check5:
     li      s0, 5
     li      t0, 1
     amoadd.w t2, t0, (s1)        # -2 -> -1, old = -2
+    mv      s4, t2
     li      t3, -2
     bne     t2, t3, fail
     amoadd.w t2, t0, (s1)        # -1 -> 0, old = -1
+    mv      s4, t2
     li      t3, -1
     bne     t2, t3, fail
     lw      t5, 0(s1)
+    mv      s4, t5
     bnez    t5, fail
 
 # --- check 6: lr.w immediately after sc.w.rl, no fence between --------
@@ -150,9 +151,11 @@ check5:
     sc.w.rl t4, t4, (s1)         # store -1
     bnez    t4, 0b
     lr.w    t2, (s1)             # read it straight back
+    mv      s4, t2
     li      t3, -1
     bne     t2, t3, fail
     lw      t5, 4(s1)            # neighbor untouched
+    mv      s4, t5
     li      t6, NEIGHBOR
     bne     t5, t6, fail
 
@@ -178,9 +181,11 @@ check5:
     li      t3, -1
     bne     t2, t3, fail
     lw      t5, 4(s2)
+    mv      s4, t5
     li      t6, -2
     bne     t5, t6, fail
     lw      t5, 0(s2)            # neighbor untouched
+    mv      s4, t5
     li      t6, NEIGHBOR
     bne     t5, t6, fail
     j       check8
@@ -201,8 +206,8 @@ check8:
     sc.w.rl t4, t4, (s1)
     bnez    t4, 0b
     fence   rw, rw
-    la      t0, scratch_arena    # pressure: walk 64 lines rw (lw/sw is
-    li      t1, 64               # XLEN-portable; width is irrelevant here)
+    la      t0, scratch_arena    # pressure: read and rewrite one word in
+    li      t1, 64               # each of 64 lines, 64 bytes apart
 2:  lw      t2, 0(t0)
     addi    t2, t2, 1
     sw      t2, 0(t0)
@@ -245,11 +250,12 @@ fail:
     addi    a0, a0, 48
     la      t0, digit_buf
     sb      a0, 0(t0)
+    sb      zero, 1(t0)          # .data is not loaded in the bram tier
     la      a0, digit_buf
     jal     ra, print_string
     la      a0, msg_val
     jal     ra, print_string
-    mv      a0, s4               # the offending loaded value
+    mv      a0, s4               # the value the failing comparison tested
     jal     ra, print_hex64
     la      a0, msg_nl
     jal     ra, print_string
@@ -308,9 +314,10 @@ digit_buf:
 
     # Strings live in .rodata: at MEM_CONFIG=bram, .data is a crt0-copied
     # section (VMA in RAM, LMA in ROM) and standalone-asm apps have no
-    # crt0, so .data initializers read as zeros there.  .rodata is
-    # execute-in-place in both tiers.  The cells above are fine in .data:
-    # every one is written at runtime before it is read.  The .balign
+    # crt0, so .data initializers never reach RAM there.  .rodata is
+    # used in place in both tiers.  The cells and digit_buf are fine in
+    # .data: the code writes them before it reads them, and the pressure
+    # loop does not depend on scratch_arena's contents.  The .balign
     # keeps the section's load address word-aligned for objcopy's
     # verilog writer.
     .section .rodata

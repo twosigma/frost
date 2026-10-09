@@ -12,10 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# SPDX-License-Identifier: Apache-2.0
-# Copyright 2026 Two Sigma Open Source, LLC
-
-"""Independent raw-wire peers exercise both directions of the complete design."""
+"""Test the whole MAC/PCS in both directions against software raw-bitstream peers."""
 
 from collections import deque
 import random
@@ -32,7 +29,11 @@ from net10g.test_scrambler import SerialReference
 def frame_words(
     payload: bytes, lane: int = 0, bad_crc: bool = False
 ) -> list[tuple[int, int]]:
-    """Build XGMII symbols with independently computed FCS and legal spacing."""
+    """Return one frame's XGMII words: /S/, preamble, body, zlib FCS, /T/, idles.
+
+    /S/ is on ``lane`` (0 or 4), the body is padded to 60 bytes, ``bad_crc``
+    flips one FCS bit, and at least 16 idles follow /T/.
+    """
     body = payload.ljust(60, b"\0")
     crc = zlib.crc32(body) ^ int(bad_crc)
     symbols = [(7, 1)] * lane + [(0xFB, 1)]
@@ -57,7 +58,10 @@ def frame_words(
 
 
 def raw_stream(words: list[tuple[int, int]], offset: int = 0) -> deque[int]:
-    """Encode/scramble in software, then serialize into arbitrarily phased words."""
+    """Encode and scramble words, then pack the 66-bit blocks into 64-bit raw words.
+
+    The first block starts ``offset`` bits in, after that many one bits.
+    """
     scrambler = SerialReference()
     reservoir, count = (1 << offset) - 1, offset
     result: deque[int] = deque()
@@ -77,7 +81,7 @@ def raw_stream(words: list[tuple[int, int]], offset: int = 0) -> deque[int]:
 
 
 class WireReceiver:
-    """Check DUT transmission against an independent software Ethernet receiver."""
+    """Software receiver for the DUT's raw transmit stream; checks each frame."""
 
     def __init__(self) -> None:
         """Start at the reset stream's first sync-header bit."""
@@ -88,7 +92,7 @@ class WireReceiver:
         self.frames: list[bytes] = []
 
     def word(self, value: int) -> None:
-        """Unpack raw bits and validate every completed Ethernet frame."""
+        """Consume one raw word and check every frame it completes."""
         self.reservoir |= value << self.count
         self.count += 64
         while self.count >= 66:
@@ -115,13 +119,13 @@ class WireReceiver:
                         self.frames.append(body)
                         self.active = None
                     elif self.active is not None:
-                        raise AssertionError("unexpected wire frame truncation")
+                        raise AssertionError("unexpected control character in a frame")
                 elif self.active is not None:
                     self.active.append(byte)
 
 
 async def initialize(dut: Any) -> None:
-    """Reset both independent clock domains and initialize their external ports."""
+    """Reset both clock domains with idle inputs, then release reset with signal OK."""
     dut.i_tx_clk.value = 0
     dut.i_rx_clk.value = 0
     dut.i_tx_rst.value = 1
@@ -158,7 +162,13 @@ async def exchange(
     stalls: bool = True,
     signal_loss: range = range(0),
 ) -> None:
-    """Drive two independent peers; check wire TX, AXIS RX, and held handshakes."""
+    """Run both directions at once and check each end.
+
+    ``tx_frames`` go in over AXIS and must appear on the raw transmit stream.
+    ``incoming`` raw words go in, and the AXIS output must match
+    ``rx_expected`` and hold steady while stalled. The PMA signal is down on
+    the cycles in ``signal_loss``.
+    """
     tx_beats: deque[tuple[int, int, int]] = deque()
     for frame in tx_frames:
         for pos in range(0, len(frame), 8):
@@ -252,7 +262,7 @@ async def exchange(
 
 @cocotb.test()
 async def independent_full_duplex_peers(dut: Any) -> None:
-    """Validate mixed frame sizes, independent traffic, CRC rejection and stalls."""
+    """Check mixed frame sizes both ways, CRC rejection, /T/ lookahead, and stalls."""
     rng = random.Random(0x10_64_66)
     await initialize(dut)
     idle = (0x0707070707070707, 255)
@@ -264,8 +274,8 @@ async def independent_full_duplex_peers(dut: Any) -> None:
         words += frame_words(frame, 4 * (index % 2))
         if index == 3:
             words += frame_words(rng.randbytes(137), bad_crc=True)
-            # A correct FCS does not rescue a /T/ followed by an illegal
-            # next block. Verify that PCS lookahead prevents MAC publication.
+            # A /T/ followed by an illegal next block fails the frame even with a
+            # correct FCS: the PCS lookahead must keep the MAC from publishing it.
             for following in [
                 (rng.getrandbits(64), 0),
                 (0x07070707070707FD, 255),
@@ -292,7 +302,7 @@ async def independent_full_duplex_peers(dut: Any) -> None:
 
 @cocotb.test()
 async def every_receive_bit_phase(dut: Any) -> None:
-    """Acquire the externally generated stream at every possible block phase."""
+    """Lock to the raw stream at each of the 66 bit offsets and receive a frame."""
     rng = random.Random(66)
     idle = (0x0707070707070707, 255)
     for offset in range(66):
@@ -304,7 +314,7 @@ async def every_receive_bit_phase(dut: Any) -> None:
 
 @cocotb.test()
 async def signal_loss_discards_partial_frame_and_relocks(dut: Any) -> None:
-    """Drop a live RX frame on PMA signal loss and recover at a new raw phase."""
+    """Drop the frame in progress on PMA signal loss, then relock for the next one."""
     rng = random.Random(0x1055)
     await initialize(dut)
     idle = (0x0707070707070707, 255)

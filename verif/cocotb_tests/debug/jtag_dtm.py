@@ -11,7 +11,7 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-"""JTAG / DTM / Debug Module driver for the frost toplevel (Phase 3 M3).
+"""JTAG, DTM, and debug-module driver for the frost toplevel.
 
 ``JtagDriver`` bit-bangs frost's ``i_jtag_*`` pins from cocotb through the
 generic 5-bit-IR TAP. ``Dtm`` speaks the RISC-V Debug Spec 0.13.2 dtmcs / dmi
@@ -126,23 +126,23 @@ INSN_C_EBREAK = 0x9002
 
 
 def csrr(rd: int, csr: int) -> int:
-    """Csrrs rd, csr, x0."""
+    """Encode csrrs rd, csr, x0."""
     return (csr << 20) | (0 << 15) | (2 << 12) | (rd << 7) | 0x73
 
 
 def csrw(csr: int, rs1: int) -> int:
-    """Csrrw x0, csr, rs1."""
+    """Encode csrrw x0, csr, rs1."""
     return (csr << 20) | (rs1 << 15) | (1 << 12) | (0 << 7) | 0x73
 
 
 def load(rd: int, rs1: int, size: int, imm: int = 0, unsigned: bool = False) -> int:
-    """lb/lh/lw/ld (or lbu/lhu/lwu) rd, imm(rs1)."""
+    """Encode lb/lh/lw/ld (or lbu/lhu/lwu) rd, imm(rs1)."""
     funct3 = {1: 0, 2: 1, 4: 2, 8: 3}[size] | (4 if unsigned and size < 8 else 0)
     return ((imm & 0xFFF) << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | 0x03
 
 
 def store(rs2: int, rs1: int, size: int, imm: int = 0) -> int:
-    """sb/sh/sw/sd rs2, imm(rs1)."""
+    """Encode sb/sh/sw/sd rs2, imm(rs1)."""
     funct3 = {1: 0, 2: 1, 4: 2, 8: 3}[size]
     imm &= 0xFFF
     return (
@@ -156,7 +156,7 @@ def store(rs2: int, rs1: int, size: int, imm: int = 0) -> int:
 
 
 def addi(rd: int, rs1: int, imm: int) -> int:
-    """Addi rd, rs1, imm."""
+    """Encode addi rd, rs1, imm."""
     return ((imm & 0xFFF) << 20) | (rs1 << 15) | (0 << 12) | (rd << 7) | 0x13
 
 
@@ -166,10 +166,11 @@ def addi(rd: int, rs1: int, imm: int) -> int:
 class JtagDriver:
     """Drive a JTAG TAP through frost's i_jtag_* pins.
 
-    ``half_period`` is the number of core clock cycles per TCK half period;
-    the DTM's request/response handshake crosses TCK<->core through two-flop
-    synchronizers, so a slow TCK keeps the busy path deterministic while a
-    fast one exercises it.
+    ``half_period`` is the number of core clock cycles per TCK half period.
+    The DTM's request/response handshake crosses between TCK and the core
+    clock through two-flop synchronizers, so the TCK rate sets how often a
+    scan arrives while the previous request is still in flight (the
+    sticky-busy path).
     """
 
     def __init__(self, dut: Any, half_period: int = 4) -> None:
@@ -525,7 +526,11 @@ class DebugModule:
         await self.write_gpr(self.S0, saved)
 
     async def read_mem(self, addr: int, size: int, expect: int = CMDERR_NONE) -> int:
-        """Read memory via a progbuf load; ``expect`` admits a cmderr."""
+        """Read memory via a progbuf load, preserving s0.
+
+        ``expect`` is the cmderr the load must produce. A load that fails as
+        expected returns 0 and leaves cmderr cleared.
+        """
         saved = await self.read_gpr(self.S0)
         await self.write_gpr(self.S0, addr)
         err = await self.exec_progbuf(

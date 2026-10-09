@@ -14,9 +14,13 @@
  *    limitations under the License.
  */
 
-// Exact-cycle integrated payload seam: unchanged router on each side.
-// The reference receives the original procedural MMIO mux and raw cached data;
-// the candidate receives one helper payload at both router data inputs.
+// Bench for data_mem_response_mux. Two data_mem_request_router instances run
+// side by side. The reference gets the plain selection (MMIO data while MMIO
+// is valid, otherwise BRAM data) and the cached data on separate inputs; the
+// candidate gets the mux's merged payload on both. Every other input is
+// shared, and the test compares every router output on every cycle. The
+// standalone 32- and 64-bit instances take their cached select from
+// i_helper_cached_read_ready.
 module data_mem_response_mux_tb #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
@@ -56,6 +60,8 @@ module data_mem_response_mux_tb #(
     output logic [riscv_pkg::MemStrbBits-1:0] o_ref_data_mem_per_byte_wr_en,
     output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_bram_byte_wr_en,
     output logic [riscv_pkg::MemStrbBits-1:0] o_ref_data_mem_bram_byte_wr_en,
+    output logic o_data_mem_bram_write_any,
+    output logic o_ref_data_mem_bram_write_any,
     output logic o_data_mem_read_enable,
     output logic o_ref_data_mem_read_enable,
     output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_cached_byte_wr_en,
@@ -110,7 +116,7 @@ module data_mem_response_mux_tb #(
 
   data_mem_response_mux #(
       .DATA_WIDTH(riscv_pkg::MemDataBits)
-  ) u_seam (
+  ) u_mux (
       .i_bram_read_data(i_data_mem_rd_data),
       .i_mmio_read_data(i_mmio_read_data),
       .i_cached_read_data(i_cached_read_data),
@@ -141,6 +147,15 @@ module data_mem_response_mux_tb #(
       .o_read_data(o_standalone64)
   );
 
+  // AMO write tier flag. In the core the load queue registers it beside the
+  // AMO write address from the same source, so on every cycle it equals the
+  // decode of that address; the bench derives it from the driven address
+  // with the router's default cached window instead of asking the test to
+  // keep a second input consistent.
+  logic amo_mem_write_is_cached;
+  assign amo_mem_write_is_cached = (i_amo_mem_write_addr >= XLEN'(32'h8000_0000)) &&
+      (i_amo_mem_write_addr < (XLEN'(32'h8000_0000) + XLEN'(32'h4000_0000)));
+
   data_mem_request_router #(
       .XLEN(XLEN)
   ) u_reference (
@@ -157,6 +172,7 @@ module data_mem_response_mux_tb #(
       .i_amo_mem_write_addr(i_amo_mem_write_addr),
       .i_amo_mem_write_data(i_amo_mem_write_data),
       .i_amo_mem_write_is_dword(i_amo_mem_write_is_dword),
+      .i_amo_mem_write_is_cached(amo_mem_write_is_cached),
       .i_lq_mem_read_en(i_lq_mem_read_en),
       .i_lq_mem_read_addr(i_lq_mem_read_addr),
       .i_lq_mem_addr_valid(i_lq_mem_addr_valid),
@@ -174,6 +190,7 @@ module data_mem_response_mux_tb #(
       .o_data_mem_wr_data(o_ref_data_mem_wr_data),
       .o_data_mem_per_byte_wr_en(o_ref_data_mem_per_byte_wr_en),
       .o_data_mem_bram_byte_wr_en(o_ref_data_mem_bram_byte_wr_en),
+      .o_data_mem_bram_write_any(o_ref_data_mem_bram_write_any),
       .o_data_mem_read_enable(o_ref_data_mem_read_enable),
       .o_data_mem_cached_byte_wr_en(o_ref_data_mem_cached_byte_wr_en),
       .o_data_mem_cached_wr_data(o_ref_data_mem_cached_wr_data),
@@ -211,6 +228,7 @@ module data_mem_response_mux_tb #(
       .i_amo_mem_write_addr(i_amo_mem_write_addr),
       .i_amo_mem_write_data(i_amo_mem_write_data),
       .i_amo_mem_write_is_dword(i_amo_mem_write_is_dword),
+      .i_amo_mem_write_is_cached(amo_mem_write_is_cached),
       .i_lq_mem_read_en(i_lq_mem_read_en),
       .i_lq_mem_read_addr(i_lq_mem_read_addr),
       .i_lq_mem_addr_valid(i_lq_mem_addr_valid),
@@ -228,6 +246,7 @@ module data_mem_response_mux_tb #(
       .o_data_mem_wr_data(o_data_mem_wr_data),
       .o_data_mem_per_byte_wr_en(o_data_mem_per_byte_wr_en),
       .o_data_mem_bram_byte_wr_en(o_data_mem_bram_byte_wr_en),
+      .o_data_mem_bram_write_any(o_data_mem_bram_write_any),
       .o_data_mem_read_enable(o_data_mem_read_enable),
       .o_data_mem_cached_byte_wr_en(o_data_mem_cached_byte_wr_en),
       .o_data_mem_cached_wr_data(o_data_mem_cached_wr_data),

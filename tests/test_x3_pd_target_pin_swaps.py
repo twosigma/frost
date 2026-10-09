@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Check the diagnostic pin helper and production single-placement boundary."""
+"""Test the diagnostic pin-swap helper and the place step's single placement."""
 
 import os
 from pathlib import Path
@@ -210,7 +210,13 @@ puts "PASS $scenario"
 def test_pin_refinement_modes_and_failure_boundaries(
     tmp_path: Path, scenario: str
 ) -> None:
-    """Only matched, measured non-regressing changes may keep a PASS audit."""
+    """Only a matched swap that leaves global WNS and WHS no worse keeps a PASS audit.
+
+    Auto mode skips a recipe mismatch, or a regression or failed swap that it
+    rolled back exactly. Strict-mode mismatches and regressions, failed
+    rollbacks, audit-write failures, and unexpected errors in the recipe check
+    are fatal, and only a PASS leaves an audit file.
+    """
     script = tmp_path / "model.tcl"
     script.write_text(TCL_MODEL)
     env = dict(
@@ -314,12 +320,161 @@ source $::env(HOOK_SOURCE)
 """
 
 
+@pytest.mark.parametrize(
+    ("mode", "scenario"),
+    (
+        ("reference", "good"),
+        ("guided", "good"),
+        ("verify_place", "good"),
+        ("guided", "bad_root"),
+        ("verify_place", "bad_root"),
+        ("guided", "refine_failure"),
+        ("guided", "verify_failure"),
+        ("verify_place", "verify_failure"),
+    ),
+)
+def test_default_x3_placement_controls_precede_place_and_verification_is_read_only(
+    tmp_path: Path, mode: str, scenario: str
+) -> None:
+    """Guide before the final placer; both later verifications are read-only."""
+    model = r"""
+proc get_nets {args} {
+    if {[lindex $args end] eq "main_clock divided_clock_by_4"} {return {main_clock divided_clock_by_4}}
+    return [lindex $args end]
+}
+proc get_property {property object} {
+    if {$property in {USER_CLOCK_ROOT CLOCK_ROOT}} {
+        return [expr {$::env(PLACE_SCENARIO) eq "bad_root" ? "X1Y8" : "X1Y9"}]
+    }
+    if {$property eq "GROUP"} {return clock_from_mmcm}
+    error "Unexpected property request: $property $object"
+}
+proc report_route_status {args} {trace report_route_status {*}$args}
+proc report_drc {args} {trace report_drc {*}$args}
+if {$::env(PLACE_MODE) eq "verify_place"} {
+    set argv [list x3 verify_place Quick saved_placement.dcp 0]
+} else {
+    set argv [list x3 place Quick fresh_reference.dcp 0 {} $::env(PLACE_MODE)]
+}
+"""
+    helper = r"""
+    if {[file tail $path] eq "x3_local_placement.tcl"} {
+        namespace eval frost_x3_local_placement {
+            proc refine {work} {
+                trace refine $work
+                if {$::env(PLACE_SCENARIO) eq "refine_failure"} {error "Rejected physical guidance"}
+                return guidance
+            }
+            proc constrain_guidance {guidance} {
+                trace unplace_cell guided_cell
+                trace set_property LOCK_PINS {I0:A6 I1:A2} guided_cell
+                trace create_pblock measured_site
+            }
+            proc verify {work} {
+                trace verify_guidance $work
+                if {$::env(PLACE_SCENARIO) eq "verify_failure"} {error "Guided cell moved"}
+            }
+        }
+        return
+    }
+"""
+    source = HOOK_MODEL.replace(
+        "set argv [list x3 place ExtraNetDelay_high fresh_post_opt.dcp 0]", model
+    ).replace("proc source {path} {", "proc source {path} {" + helper)
+    script = tmp_path / "hook.tcl"
+    script.write_text(source)
+    trace = tmp_path / "trace.txt"
+    trace.touch()
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("FROST_")
+    }
+    environment.update(
+        HOOK_TRACE=str(trace),
+        HOOK_SOURCE=str(REPO_ROOT / "fpga/build/build_step.tcl"),
+        FROST_PLACE_SETUP_UNCERTAINTY="0.325",
+        PLACE_MODE=mode,
+        PLACE_SCENARIO=scenario,
+    )
+    result = subprocess.run(
+        ["tclsh", str(script)],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    commands = trace.read_text().splitlines()
+    placements = [i for i, c in enumerate(commands) if c.startswith("place_design")]
+    mutations = [
+        i
+        for i, command in enumerate(commands)
+        if command.startswith(
+            (
+                "set_property",
+                "unplace_cell",
+                "place_cell",
+                "create_pblock",
+                "connect_net",
+                "disconnect_net",
+            )
+        )
+    ]
+    if scenario != "good":
+        assert result.returncode != 0
+        assert not any(c.startswith("write_gate") for c in commands)
+        if scenario != "verify_failure" or mode == "verify_place":
+            assert not placements
+        return
+    assert result.returncode == 0, result.stdout + result.stderr
+    if mode == "verify_place":
+        assert not placements and not mutations
+        assert not any(
+            c.startswith(("set_clock_uncertainty", "write_checkpoint", "refine"))
+            for c in commands
+        )
+    else:
+        assert len(placements) == 1
+        assert max(mutations) < placements[0]
+        if mode == "guided":
+            refine = next(i for i, c in enumerate(commands) if c.startswith("refine"))
+            verify = next(
+                i for i, c in enumerate(commands) if c.startswith("verify_guidance")
+            )
+            assert refine < placements[0] < verify
+            assert any(
+                "0.0 -setup" in c
+                for c in commands[:refine]
+                if c.startswith("set_clock_uncertainty")
+            )
+            assert any(
+                "0.325 -setup" in c
+                for c in commands[refine : placements[0]]
+                if c.startswith("set_clock_uncertainty")
+            )
+        else:
+            assert (
+                "set_property USER_CLOCK_ROOT X1Y9 {main_clock divided_clock_by_4}"
+                in commands
+            )
+            assert not any(c.startswith("refine") for c in commands)
+    assert any(c.startswith("write_gate") for c in commands)
+
+
 @pytest.mark.parametrize("mode", (None, "", "auto", "0", "1", "invalid"))
 @pytest.mark.parametrize("guided", [False, True])
-def test_production_places_once_and_never_invokes_retired_hooks(
+def test_production_places_once_and_runs_no_diagnostic_helper(
     tmp_path: Path, mode: str | None, guided: bool
 ) -> None:
-    """Controls precede one place; zero scoring, reports and gate follow it."""
+    """The place step places once and runs no diagnostic helper.
+
+    Placement controls come first; zero-uncertainty scoring, checkpoints,
+    timing reports, and the gate follow in that order, and nothing after
+    placement edits cells, nets, or properties. A guided seed adds its
+    temporary path group before placement, removes it after, and reopens the
+    design once. Stale helper audits are deleted, and
+    FROST_X3_PD_TARGET_PIN_SWAPS has no effect.
+    """
     script = tmp_path / "hook.tcl"
     script.write_text(HOOK_MODEL)
     trace = tmp_path / "trace.txt"

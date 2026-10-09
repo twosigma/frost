@@ -1,8 +1,8 @@
 # RV64 smoke test
 #
-# The smallest end-to-end rv64 program: proves the base RV64I decode/ALU/
-# load-unit slice retires real 64-bit results through the OoO core and the
-# 64-bit data tier. Built -march=rv64i (no compressed code, no M/A/F).
+# The smallest end-to-end rv64 program: checks that base RV64I decode, the
+# ALU, and the load unit produce correct 64-bit results through the OoO core
+# and the 64-bit data tier. Built -march=rv64i (no compressed code, no M/A/F).
 #
 # Coverage, each self-checked against constants built from independent ops:
 #   1. LUI/ADDIW sign semantics (sext32 results, 0x7FFFFFFF+1 wrap)
@@ -13,7 +13,7 @@
 #   6. 64-bit ADD carries across bit 31 (no 32-bit wrap in the base ALU)
 #   7. SD/LD round trip through the 64-bit data tier
 #   8. LW sign-extension vs LWU zero-extension from a stored dword
-#   9. LBU/LHU byte/half extraction across the beat's addr[2] boundary
+#   9. LBU/LHU/LB extraction on both sides of the beat's addr[2] boundary
 #
 # Register discipline: print_string clobbers t1 and t2, and returns with t1
 # holding the NUL terminator, so any value that has to survive a print lives
@@ -165,7 +165,7 @@ _start:
     jal     ra, print_string
 
     # =========================================================
-    # Test 9: sub-word extraction across the beat boundary
+    # Test 9: sub-word extraction from both halves of the beat
     # =========================================================
     la      a1, buf
     lbu     t5, 5(a1)           # byte 5 of the pattern = 0xBE

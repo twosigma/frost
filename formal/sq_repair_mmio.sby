@@ -1,0 +1,20 @@
+[tasks]
+bmc
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read -formal -D SYNTHESIS -D SQ_REPAIR_MMIO_LOCAL_PROOF -sv sq_early_addr_pipeline.sv
+prep -top sq_early_addr_pipeline
+select -assert-none t:$assume
+select -assert-count 2 t:$check
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/store_addr/sq_early_addr_pipeline.sv

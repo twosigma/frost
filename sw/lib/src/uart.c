@@ -20,7 +20,8 @@
  * Output converts "\n" to CR+LF. uart_printf understands %c, %s, %d, %u, %x,
  * %X and %% with l/ll length modifiers, a field width with optional zero
  * padding (%08x, %4d), and %f with a precision when UART_PRINTF_ENABLE_FLOAT
- * is set. Input is polled: uart_getchar and the line editor uart_getline.
+ * is set (otherwise it prints "%f"). %f does not round its last digit. Input
+ * is polled: uart_getchar and the line editor uart_getline.
  */
 
 #include "uart.h"
@@ -118,7 +119,8 @@ static void uart_put_signed_decimal(long long value, int width, int zero_pad)
     uart_put_unsigned_decimal_raw(magnitude);
 }
 
-/* Print hexadecimal value with specified number of digits */
+/* Print val in hex, zero-padded to at least ndigits digits. ndigits must not
+ * exceed 16, the size of buf. */
 static void uart_put_hex(unsigned long long val, int ndigits, int uppercase)
 {
     char buf[16];
@@ -166,8 +168,8 @@ static void uart_put_float(double value, int precision)
     }
 
     /* Converting a floating value outside the unsigned long long range to an
-     * integer is undefined in C. Rather than carry a 39-digit big-number path,
-     * this formatter reports values beyond its range as "ovf". */
+     * integer is undefined in C, so magnitudes of 2^64 or more print as "ovf"
+     * or "-ovf". */
     if (value >= 0x1p64) {
         uart_puts("ovf");
         return;
@@ -425,7 +427,7 @@ size_t uart_getline(char *buf, size_t maxlen)
             continue;
         }
 
-        /* Ignore non-printable characters (except those handled above) */
+        /* Ignore the remaining control characters (below 0x20) */
         if (c < 32)
             continue;
 

@@ -17,8 +17,12 @@
 /*
  * CDB Arbiter
  *
- * Combinational two-lane fixed-priority arbitration for functional unit
- * completions, built as a balanced top-two merge tree:
+ * Combinational two-lane fixed-priority arbitration of the eight functional
+ * unit completions. Lane 0 carries the highest-priority valid completion and
+ * lane 1 the next, in this order:
+ *   MUL > MEM > ALU > ALU2 > DIV > FP_DIV > FP_MUL > FP_ADD
+ *
+ * One balanced top-two merge tree computes both winners at once:
  *
  *   [MUL, MEM] [ALU, ALU2] [DIV, FP_DIV] [FP_MUL, FP_ADD]
  *        \          /             \              /
@@ -27,26 +31,19 @@
  *                         root
  *
  * Every node carries its two highest-priority packets and their one-hot FU
- * identities.  A merge of a higher-priority list A with a lower-priority
- * list B chooses A.first/B.first for lane 0, then A.second, B.first, or
- * B.second for lane 1 according to whether A contains two, one, or zero
- * requests.  One shared three-stage tree computes both winners and drops the
- * old serial primary-encoder -> availability-mask -> secondary-encoder
- * dependency.
+ * grants. A merge of a higher-priority list A with a lower-priority list B
+ * chooses A.first/B.first for lane 0, then A.second, B.first, or B.second for
+ * lane 1 according to whether A contains two, one, or zero requests.
  *
- * A live, non-pending value from either combinational integer ALU travels
- * beside the tree and is restored once its winner is known.  Held adapter
- * values and test-injected values stay ordinary tree payloads.  The wrapper
- * supplies the live/fallback partition documented with the ports below and
- * proves that contract at its own level rather than assuming it here (see
- * FORMAL_ASSUME_VALUE_SOURCE_CONTRACT).  The split keeps the timing-dominant
- * stage2 -> ALU -> CDB live-value path to one final three-arm value mux, and
- * leaves packet and arbitration semantics unchanged.
+ * A live value from either integer ALU (a result passing straight through its
+ * idle adapter) travels beside the tree and is restored once its winner is
+ * known, which keeps the INT RS -> ALU -> CDB path to one final three-arm value
+ * mux. Held adapter values and test-injected values stay ordinary tree
+ * payloads. The wrapper must keep the live/fallback contract described at the
+ * ports below; it proves the contract itself rather than assuming it here (see
+ * FORMAL_ASSUME_VALUE_SOURCE_CONTRACT).
  *
- * Exact priority:
- *   MUL > MEM > ALU > ALU2 > DIV > FP_DIV > FP_MUL > FP_ADD
- *
- * i_clk/i_rst_n exist only for the formal harness.  Arbitration has no state
+ * i_clk/i_rst_n exist only for the formal harness. Arbitration has no state
  * and adds no result latency.
  */
 
@@ -76,8 +73,8 @@ module cdb_live_value_restore #(
 endmodule : cdb_live_value_restore
 
 module cdb_arbiter #(
-    // The standalone formal top assumes the documented auxiliary-value
-    // contract.  The wrapper sets this to 0 and proves the contract itself,
+    // The standalone formal top assumes the ALU value-source contract (see the
+    // ports). The wrapper sets this to 0 and proves the contract itself,
     // avoiding a submodule assumption that could make that proof vacuous.
     parameter bit FORMAL_ASSUME_VALUE_SOURCE_CONTRACT = 1'b1
 ) (
@@ -93,14 +90,14 @@ module cdb_arbiter #(
     input riscv_pkg::fu_complete_t i_fu_complete_6,  // FP_DIV
     input riscv_pkg::fu_complete_t i_fu_complete_7,  // ALU2
 
-    // Auxiliary value paths for the two combinational ALUs.  Exactly one side
-    // of each partition is meaningful for a valid packet:
-    //   value_is_live  -> live_value == i_fu_complete_N.value
+    // Value paths for the two combinational ALUs. The wrapper must keep this
+    // contract for each:
+    //   value_is_live  -> the packet is valid and live_value == i_fu_complete_N.value
     //   !value_is_live -> tree_fallback_value == i_fu_complete_N.value
-    // The wrapper uses live only for a valid, non-pending shim pass-through;
-    // held adapter and test-injection values use the fallback side.  The held
-    // fallback comes from the adapter payload-register Q, not from its
-    // effective pending/live output mux.
+    // The wrapper sets value_is_live only for a valid shim result passing
+    // through an idle adapter; held adapter and test-injection values use the
+    // fallback side. The held fallback comes from the adapter's payload
+    // register Q, not from its pending/live output mux.
     input logic                       i_alu_value_is_live,
     input logic [riscv_pkg::FLEN-1:0] i_alu_live_value,
     input logic [riscv_pkg::FLEN-1:0] i_alu_tree_fallback_value,
@@ -108,17 +105,18 @@ module cdb_arbiter #(
     input logic [riscv_pkg::FLEN-1:0] i_alu2_live_value,
     input logic [riscv_pkg::FLEN-1:0] i_alu2_tree_fallback_value,
 
-    // Suppress visible broadcasts/grants during speculative full recovery.
-    // Payload selection and o_grant_raw remain independent of this kill.
+    // Kill on the wrapper's speculative_flush_all (a full flush, or commit-time
+    // mispredict recovery): clears both lane valids and o_grant. Payload
+    // selection and o_grant_raw ignore it.
     input logic i_kill,
 
     output riscv_pkg::cdb_broadcast_t o_cdb,
     output riscv_pkg::cdb_broadcast_t o_cdb_2,
 
-    // Pre-restore lane values and valid-qualified live-source selects.  These
-    // are exact aliases of the merge-tree outputs and the selectors used by
-    // o_cdb/o_cdb_2.  The wrapper captures them at its existing CDB edge and
-    // performs the same value restore after Q for registered consumers.
+    // Pre-restore lane values and valid-qualified live-source selects. These
+    // are exact aliases of the merge-tree outputs and the selects used by
+    // o_cdb/o_cdb_2. The wrapper captures them in its CDB register and repeats
+    // the value restore after it for registered consumers.
     output logic [riscv_pkg::FLEN-1:0] o_lane0_tree_fallback_value,
     output logic [riscv_pkg::FLEN-1:0] o_lane1_tree_fallback_value,
     output logic                       o_lane0_select_alu_live,
@@ -200,10 +198,9 @@ module cdb_arbiter #(
   top_two_t low_four;
   top_two_t tree_root;
 
-  // The tree always sees the independently constructed fallback value.  In a
-  // live-shim cycle that value goes unused, and it carries no dependency on
-  // the live ALU data.  Held and test-injected values remain ordinary payloads
-  // and keep the generic tree behavior.
+  // The ALU leaves always carry the fallback value, which the wrapper builds
+  // with no dependency on the live ALU data. When the value is live, the lane
+  // restore replaces it. Held and test-injected values are ordinary payloads.
   riscv_pkg::fu_complete_t alu_tree_request;
   riscv_pkg::fu_complete_t alu2_tree_request;
   always_comb begin
@@ -350,9 +347,9 @@ module cdb_arbiter #(
     valid_vec[riscv_pkg::FU_ALU2]   = i_fu_complete_7.valid;
   end
 
-  // Independent flat reference: the previous implementation's primary
-  // encoder, lane-0 subtraction, and secondary encoder.  The equivalence
-  // assertions below prove that the balanced tree changes topology only.
+  // Independent flat reference: a priority encoder for lane 0, then a second
+  // priority encoder over the requests lane 0 did not take. The assertions
+  // below prove the tree matches it.
   logic                                            f_ref_found0;
   logic                                            f_ref_found1;
   riscv_pkg::fu_complete_t                         f_ref_data0;

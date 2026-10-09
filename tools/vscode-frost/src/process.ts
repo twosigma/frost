@@ -38,7 +38,8 @@ export class OwnedProcess {
         this.spawned = new Promise((resolve, reject) => {
             this.markSpawn = resolve; this.failSpawn = reject;
         });
-        // Handle immediate ENOENT even if the caller is still arranging waits.
+        // Spawn can fail (ENOENT) before any caller awaits `spawned`; avoid an
+        // unhandled rejection.
         void this.spawned.catch(() => {});
         this.worker = fork(path.join(__dirname, 'processWorker.js'), [], {
             execArgv: [], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
@@ -124,7 +125,8 @@ export class OwnedProcess {
                 if (Date.now() - start >= timeoutMs) throw new Error(this.failure('startup timed out'));
                 if (this.group && await bounded(Promise.resolve(predicate(this.tail, this.group)),
                     Math.max(1, timeoutMs - (Date.now() - start)), signal)) {
-                    // The predicate can yield while the process exits.
+                    // Cancellation, the deadline, or process exit can arrive while
+                    // an async predicate runs: check them again before returning.
                     signal?.throwIfAborted();
                     if (Date.now() - start >= timeoutMs) throw new Error(this.failure('startup timed out'));
                     if (this.result) throw new Error(this.failure('exited during readiness'));
@@ -187,8 +189,9 @@ export async function requireFreePort(port: number): Promise<void> {
     });
 }
 
-// Read-only ownership check: a random listener cannot satisfy readiness. This
-// also handles Vivado's shell launcher with the real server in a child process.
+// Read-only check that a process in `group` holds the loopback listener on
+// `port`, so an unrelated listener cannot satisfy readiness. Matching the process
+// group also covers Vivado's shell launcher, which runs the real server as a child.
 export async function ownsTcpListener(port: number, group: number): Promise<boolean> {
     const inodes = new Set<string>();
     const table = await fs.readFile('/proc/net/tcp', 'utf8');

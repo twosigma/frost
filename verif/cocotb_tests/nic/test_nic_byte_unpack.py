@@ -17,8 +17,7 @@
 The mirror of the packer's invariant: the LEN bytes at offset OFF of the
 lines fed in order come out as contiguous 8-byte beats, the last carrying
 the remaining 1..8 bytes with the last flag, whatever the stalls on the
-beat output or the line input. Swept over every offset, lengths 1..100 and
-long ones, with a stalled final beat and lines arriving late.
+beat output or the line input.
 """
 
 import random
@@ -125,7 +124,7 @@ async def _run(
 
 @cocotb.test()
 async def test_every_offset_short_lengths(dut: Any) -> None:
-    """Every offset with lengths 1..100."""
+    """Every offset in a line, lengths 1-19 and selected ones up to 100."""
     await _setup(dut)
     rng = random.Random(5)
     for offset in range(32):

@@ -12,10 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Independent wire-level checks for the isolated Ethernet transmitter.
+"""Wire-level checks of the transmit MAC on its own.
 
-No RX RTL is involved: the monitor checks XGMII framing and compares each FCS
-with Python's zlib implementation. Enabled clocks are the XGMII word cadence.
+No RX RTL is involved: the monitor checks XGMII framing itself and compares
+each FCS with zlib. Each enabled clock carries one XGMII word.
 """
 
 import os
@@ -31,13 +31,13 @@ IDLE_WORD = 0x0707070707070707
 
 
 def wire_frame(payload: bytes) -> bytes:
-    """Frame bytes following SFD and before /T/, including padding and FCS."""
+    """Return the bytes between SFD and /T/: payload padded to 60 bytes, then FCS."""
     padded = payload + bytes(max(0, 60 - len(payload)))
     return padded + zlib.crc32(padded).to_bytes(4, "little")
 
 
 class TxBench:
-    """Drive AXIS while independently checking every emitted XGMII word."""
+    """Drive AXIS and check every XGMII word the MAC emits."""
 
     def __init__(self, dut: Any, seed: int = 0x10A0) -> None:
         """Initialize deterministic random stimulus and wire monitor state."""
@@ -178,7 +178,7 @@ class TxBench:
 
 @cocotb.test()
 async def padding_crc_stalls_and_lane_endings(dut: Any) -> None:
-    """Check payload preservation, padding, independent FCS and clock gating."""
+    """Check payloads, padding, the FCS, and clock-enable pauses."""
     bench = TxBench(dut)
     await bench.reset()
     sizes = [1, 7, 8, 9, *range(55, 81), 127, 1518, 1522, 9014, MAX_FRAME_BYTES]
@@ -231,7 +231,7 @@ async def back_to_back_packets_exercise_both_buffers(dut: Any) -> None:
     await bench.reset()
     expected = []
     # Small packets fill both buffers faster than preamble/padding/FCS/IFG drain
-    # them, forcing genuine backpressure even though the wire never pauses.
+    # them, forcing backpressure even though the wire never pauses.
     for index in range(50):
         payload = bytes([index]) * 8
         expected.append(wire_frame(payload))

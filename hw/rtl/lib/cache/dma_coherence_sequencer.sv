@@ -16,69 +16,74 @@
 
 /*
  * dma_coherence_sequencer: makes a DMA agent's line traffic coherent with the
- * L1D and the load queue before it reaches the L2, the ordering point ("home")
- * for every L2-bound port.
+ * L1D and the load queue before it reaches the L2, the ordering point for all
+ * traffic below the L1s (hw/rtl/lib/cache/README.md, "The DMA port and
+ * coherence").
  *
- * The DMA port is an ordinary tagged line port (hw/rtl/lib/cache/README.md).
- * Each accepted request mans one lock entry and walks these phases:
+ * The DMA port is an ordinary tagged line port. Each accepted request holds
+ * one lock entry and goes through these phases:
  *
  *   write:  ADMIT      the load queue admits the line: no AMO or SC on it is
- *                      between its read and its write, and from now until
- *                      RELEASE the queue starts no AMO/LR/SC on it;
+ *                      between its read and its write, and until the release
+ *                      at ISSUE the queue starts no AMO, LR, or SC on it;
  *           PROBE      PROBE_INVAL to the L1D: a dirty copy is written back
- *                      (accepted by the L2 before the acknowledgement) and
+ *                      (and acknowledged by the L2 before the probe is) and
  *                      every copy is invalidated. From the probe's decision
  *                      until this entry's release the L1D issues no fill of
- *                      the line: the L1D holds no copy, so a miss that fetched
- *                      before the write is ordered would carry the pre-write
- *                      line back into it;
+ *                      the line: it holds no copy, so a miss that fetched
+ *                      before the write is ordered would bring the pre-write
+ *                      line back;
  *           INVAL      the load queue drops its dword (L0) copies of the
  *                      line, flags executed-but-unretired loads of it for
  *                      replay, marks in-flight loads of it as not-to-fill and
  *                      in-flight LRs as reservation-suppressed, and clears a
  *                      matching reservation;
- *           ISSUE      the write is presented downstream through a request
+ *           ISSUE      the write is presented downstream from a request
  *                      register; its acceptance by the L2 orders it,
- *                      releases the L1D probe slot (the withheld fills now
- *                      fetch the post-write line) and pulses o_coh_release
- *                      for the queue's mirror;
- *           RESP       the L2's completion is forwarded to the DMA port.
+ *                      releases the L1D probe slot (the withheld fills then
+ *                      fetch the new line), and pulses o_coh_release to the
+ *                      load queue;
+ *           RESP       the L2's completion becomes the DMA port's response.
  *   read:   PROBE      PROBE_CLEAN to the L1D: a dirty copy is written back
- *                      (accepted by the L2 before the acknowledgement) and
+ *                      (and acknowledged by the L2 before the probe is) and
  *                      stays valid and clean;
  *           ISSUE/RESP as above, with the read data forwarded; the probe slot
  *                      is released at the L2's acceptance as well.
  *
  * Contract toward the DMA agent. A write's response means the write is
- * ordered at the home: every CPU load that observes memory after it sees the
- * new bytes, and the L1D held no copy from the probe until the write was
- * ordered. A load that observed memory before the write may still return its
- * old value afterwards; that is legal in coherence order, and the load
+ * ordered at the L2: every CPU load that observes memory after it sees the
+ * new bytes. A load that observed memory before the write may still return
+ * the old value afterwards; that is legal in coherence order, and the load
  * queue's replay of executed-but-unretired loads keeps program-order
  * consequences correct. A read's response carries the line as ordered at the
- * home behind any dirty L1D data. Requests to different lines are NOT ordered
+ * L2 behind any dirty L1D data. Requests to different lines are not ordered
  * with respect to each other (an agent orders dependent writes by waiting for
- * responses); requests to the same line serialize in acceptance order because
- * the second one waits for the first one's entry to retire.
+ * responses); requests to the same line serialize in acceptance order,
+ * because the second waits for the first's entry to free.
  *
  * Progress. A probe waits only on L1D transients that resolve through the L2
- * and DDR: a fill of the probed line in flight before the probe's decision is
- * never withheld, and the withholding that starts at the decision ends at
- * this entry's release, which depends on the load queue and the L2 alone.
- * Nothing below waits on the DMA port. Ready for a new request depends on the
+ * and DDR, because a fill of the probed line allocated before the probe's
+ * decision is never withheld. A write's fill withholding ends at its entry's
+ * release, which depends on the load queue and the L2 alone, and nothing
+ * below waits on the DMA port. Ready for a new request depends on the
  * presented address (a free entry and no active entry on the same line),
  * which the line protocol permits.
  *
  * Timing. The admit and inval handshakes present a latched entry until it
- * fires, so the core may pipeline its answer; the probe is captured by a
- * register stage in the hierarchy; the downstream request is a register
- * loaded from the issuing entry; the release pulses are registered.
+ * fires, so the core may take several cycles to answer; the hierarchy
+ * captures the probe in a register stage; the downstream request is a
+ * register loaded from the issuing entry; the downstream response is
+ * registered before it is decoded; the release pulses are registered. The
+ * two inputs decoded live, the L1D's probe acknowledgement and the
+ * presented request's same-line check, enter each entry's state enable at
+ * its last level.
  */
 module dma_coherence_sequencer #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 32,
-    // DMA-port ids; forwarded downstream unchanged (unique among admitted
-    // requests because every admitted request holds an entry).
+    // DMA-port ids, forwarded downstream unchanged. They stay unique there:
+    // the master keeps them unique among its in-flight requests, and each
+    // admitted request holds its entry until its response.
     parameter int unsigned ID_BITS = 3,
     // Lock entries: DMA requests in flight between acceptance and response.
     parameter int unsigned NUM_LOCK = 3,
@@ -202,11 +207,11 @@ module dma_coherence_sequencer #(
   assign dma_req_fire = i_dma_req_valid && o_dma_req_ready;
 
   // ---------------------------------------------------------------------------
-  // Per-phase selection. Probe presents the lowest entry each cycle (its
-  // payload is consistent at the fire); issue copies the lowest entry into
-  // the request register below. Admit and inval latch their entry until it
-  // fires, so the core's pipelined answer names the entry it was computed
-  // for.
+  // Per-phase selection. Probe presents the lowest entry in E_PROBE each
+  // cycle, and the choice may change before it fires, as the line protocol
+  // allows; issue copies the lowest entry in E_ISSUE into the request
+  // register below. Admit and inval latch their entry until it fires, so the
+  // core's pipelined answer names the entry it was computed for.
   // ---------------------------------------------------------------------------
   logic admit_any, probe_any, inval_any, issue_any;
   logic [LockBits-1:0] admit_sel, probe_sel, inval_sel, issue_sel;
@@ -259,28 +264,30 @@ module dma_coherence_sequencer #(
   logic probe_fire;
   assign probe_fire = probe_any && i_probe_req_ready;
 
-  // Probe acknowledgement decode: the id names the entry.
+  // Probe acknowledgement decode: the id names the entry. Only entry k
+  // probes with id probe_id_of(k), so at most one entry matches, and each
+  // match is its entry's enable term directly (see "Entry state").
+  (* keep = "true" *) logic [NUM_LOCK-1:0] ack_match;
   logic ack_hit;
-  logic [LockBits-1:0] ack_sel;
   always_comb begin
-    ack_hit = 1'b0;
-    ack_sel = '0;
     for (int k = 0; k < int'(NUM_LOCK); k++) begin
-      if (i_probe_ack_valid && (state_q[k] == E_PROBE_WAIT) && (i_probe_ack_id == probe_id_of(
-              LockBits'(k)
-          ))) begin
-        ack_hit = 1'b1;
-        ack_sel = LockBits'(k);
-      end
+      ack_match[k] = i_probe_ack_valid && (state_q[k] == E_PROBE_WAIT) &&
+          (i_probe_ack_id == probe_id_of(LockBits'(k)));
     end
   end
+  assign ack_hit = |ack_match;
 
   // Registered downstream request. The lowest entry in E_ISSUE is copied
-  // here when the register is free and moves to E_RESP at the copy; the
-  // register presents the request until the arbiter accepts it, and the
-  // release pulses fire at that acceptance (the L2's ordering point). This
-  // keeps the entry state decode and the payload mux off the arbiter's
-  // select and the L2's accept path.
+  // here when the register is empty and moves to E_RESP at the copy. The
+  // register presents the request until the arbiter accepts it; that
+  // acceptance is the L2's ordering point, and the registered release pulses
+  // follow it. Releasing at acceptance is enough because the L2 applies
+  // same-line requests in acceptance order, so a fill the probe withheld
+  // reaches the L2 behind the write and returns the new line. A level that
+  // could let a read overtake an accepted write, as the AXI bridge below the
+  // L2 does, would need the release to wait for the write's response. The
+  // register keeps the entry state decode and the payload mux off the
+  // arbiter's select and the L2's accept path.
   logic out_valid_q, out_write_q;
   logic [LockBits-1:0] out_slot_q;
   logic [LineAddrBits-1:0] out_line_q;
@@ -297,13 +304,12 @@ module dma_coherence_sequencer #(
   assign o_down_req_wstrb = out_wstrb_q;
   assign o_down_req_id    = out_id_q;
 
-  // Downstream response, registered before it is decoded.  The L2 presents
-  // its response port combinationally from its MSHR selection (a dozen levels
-  // from the MSHR state registers), so decoding it live put that cone on
-  // every entry's state enable.  The response is a one-cycle pulse that the
-  // L2 never waits on, so a plain register keeps every value and only adds
-  // one cycle to the DMA port's response latency; the entry stays in E_RESP
-  // for that cycle and nothing else observes the response.
+  // Downstream response, registered before it is decoded. The L2 drives its
+  // response port combinationally from its MSHR selection, a deep cone that
+  // decoding the response live would put on every entry's state enable. The
+  // response is a one-cycle pulse with no backpressure, so a plain register
+  // loses nothing and adds one cycle to the DMA port's response latency; the
+  // entry stays in E_RESP for that cycle.
   logic                    down_resp_valid_q;
   logic [     ID_BITS-1:0] down_resp_id_q;
   logic [LINE_BYTES*8-1:0] down_resp_rdata_q;
@@ -329,8 +335,39 @@ module dma_coherence_sequencer #(
   end
 
   // ---------------------------------------------------------------------------
-  // Entry state
+  // Entry state. Each event names one entry: the admit and inval fires their
+  // latched slots, the probe fire probe_sel, an acknowledgement its match,
+  // the request register's load issue_sel, a response resp_sel, and an
+  // accepted request free_idx. An entry named by several takes the last in
+  // that order (an entry is in one state, so at most one applies). The
+  // events that depend only on registered state and the handshakes merge
+  // into one kept net per entry, as does the request's valid and free-entry
+  // half, so the acknowledgement match and the same-line check, the latest
+  // inputs, reach each entry's enable through a single level.
   // ---------------------------------------------------------------------------
+  logic [NUM_LOCK-1:0] take_admit, take_inval, take_probe, take_issue, take_resp, take_req;
+  (* keep = "true" *) logic [NUM_LOCK-1:0] state_early_en, req_free;
+  logic [NUM_LOCK-1:0] state_en;
+  entry_state_e state_low_d[NUM_LOCK], state_rest_d[NUM_LOCK], state_d[NUM_LOCK];
+  always_comb begin
+    for (int k = 0; k < int'(NUM_LOCK); k++) begin
+      take_admit[k] = admit_fire && (admit_slot_q == LockBits'(k));
+      take_inval[k] = inval_fire && (inval_slot_q == LockBits'(k));
+      take_probe[k] = probe_fire && (probe_sel == LockBits'(k));
+      take_issue[k] = issue_load && (issue_sel == LockBits'(k));
+      take_resp[k] = resp_hit && (resp_sel == LockBits'(k));
+      req_free[k] = i_dma_req_valid && free_any && (free_idx == LockBits'(k));
+      take_req[k] = req_free[k] && !same_line_active;
+      state_early_en[k] = take_admit[k] || take_inval[k] || take_probe[k] ||
+          take_issue[k] || take_resp[k];
+      state_en[k] = state_early_en[k] || ack_match[k] || take_req[k];
+      state_low_d[k] = take_probe[k] ? E_PROBE_WAIT : take_inval[k] ? E_ISSUE : E_PROBE;
+      state_rest_d[k] = take_resp[k] ? E_FREE : take_issue[k] ? E_RESP :
+          ack_match[k] ? (write_q[k] ? E_INVAL : E_ISSUE) : state_low_d[k];
+      state_d[k] = take_req[k] ? (i_dma_req_write ? E_ADMIT : E_PROBE) : state_rest_d[k];
+    end
+  end
+
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       for (int k = 0; k < int'(NUM_LOCK); k++) state_q[k] <= E_FREE;
@@ -345,24 +382,24 @@ module dma_coherence_sequencer #(
       o_coh_release_valid   <= 1'b0;
       o_probe_release_valid <= 1'b0;
 
+      for (int k = 0; k < int'(NUM_LOCK); k++) begin
+        if (state_en[k]) state_q[k] <= state_d[k];
+      end
+
       // Latch the admit and inval presentations until they fire.
       if (admit_fire) begin
-        admit_active_q        <= 1'b0;
-        state_q[admit_slot_q] <= E_PROBE;
+        admit_active_q <= 1'b0;
       end else if (!admit_active_q && admit_any) begin
         admit_active_q <= 1'b1;
         admit_slot_q   <= admit_sel;
       end
       if (inval_fire) begin
-        inval_active_q        <= 1'b0;
-        state_q[inval_slot_q] <= E_ISSUE;
+        inval_active_q <= 1'b0;
       end else if (!inval_active_q && inval_any) begin
         inval_active_q <= 1'b1;
         inval_slot_q   <= inval_sel;
       end
 
-      if (probe_fire) state_q[probe_sel] <= E_PROBE_WAIT;
-      if (ack_hit) state_q[ack_sel] <= write_q[ack_sel] ? E_INVAL : E_ISSUE;
       if (out_fire) begin
         out_valid_q           <= 1'b0;
         o_probe_release_valid <= 1'b1;
@@ -373,23 +410,20 @@ module dma_coherence_sequencer #(
         end
       end
       if (issue_load) begin
-        state_q[issue_sel] <= E_RESP;
-        out_valid_q        <= 1'b1;
-        out_slot_q         <= issue_sel;
-        out_write_q        <= write_q[issue_sel];
-        out_line_q         <= line_q[issue_sel];
-        out_wdata_q        <= wdata_q[issue_sel];
-        out_wstrb_q        <= write_q[issue_sel] ? wstrb_q[issue_sel] : '0;
-        out_id_q           <= id_q[issue_sel];
+        out_valid_q <= 1'b1;
+        out_slot_q  <= issue_sel;
+        out_write_q <= write_q[issue_sel];
+        out_line_q  <= line_q[issue_sel];
+        out_wdata_q <= wdata_q[issue_sel];
+        out_wstrb_q <= write_q[issue_sel] ? wstrb_q[issue_sel] : '0;
+        out_id_q    <= id_q[issue_sel];
       end
       if (resp_hit) begin
-        state_q[resp_sel] <= E_FREE;
-        o_dma_resp_valid  <= 1'b1;
-        o_dma_resp_id     <= id_q[resp_sel];
-        o_dma_resp_rdata  <= down_resp_rdata_q;
+        o_dma_resp_valid <= 1'b1;
+        o_dma_resp_id    <= id_q[resp_sel];
+        o_dma_resp_rdata <= down_resp_rdata_q;
       end
       if (dma_req_fire) begin
-        state_q[free_idx] <= i_dma_req_write ? E_ADMIT : E_PROBE;
         line_q[free_idx]  <= in_line;
         write_q[free_idx] <= i_dma_req_write;
         wdata_q[free_idx] <= i_dma_req_wdata;

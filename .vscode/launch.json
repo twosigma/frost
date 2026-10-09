@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "FROST: X3 loaded hello_world (Phase A)",
+      "name": "FROST: X3 loaded hello_world",
       "type": "cppdbg",
       "request": "launch",
       "program": "${workspaceFolder}/sw/apps/hello_world/sw.elf",
@@ -14,7 +14,7 @@
       "stopAtConnect": true,
       "stopAtEntry": false,
       "launchCompleteCommand": "None",
-      "preLaunchTask": "FROST: start OpenOCD (Phase A)",
+      "preLaunchTask": "FROST: start OpenOCD",
       "setupCommands": [
         {
           "text": "mem 0 0x40000 rw",

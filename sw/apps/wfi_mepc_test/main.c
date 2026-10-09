@@ -17,9 +17,10 @@
 /*
  * Timer-at-WFI mepc regression.
  *
- * WFI drains the ROB. The bug sourced mepc from head_pc without head_valid, so
- * an idle-loop timer could save stale state instead of the post-WFI PC. Fire a
- * timer in WFI and require mepc to equal the following instruction.
+ * The test fires a timer while WFI waits at the ROB head. The pending
+ * interrupt releases the WFI, which retires, and the interrupt is taken at the
+ * next instruction, so mepc must be the address after the WFI, not a stale PC.
+ * wfi_drain_mepc_test covers an interrupt taken before the WFI retires.
  */
 
 #include <stdint.h>
@@ -68,7 +69,8 @@ int main(void)
     enable_interrupts();
 
     /* Stash the post-WFI continuation in mscratch, capture its address as the
-     * expected resume PC, then WFI (drains the ROB). The timer fires here. */
+     * expected resume PC, then WFI, which waits at the ROB head. The timer
+     * fires here. */
     __asm__ volatile("la   t0, 1f\n"
                      "csrw mscratch, t0\n"
                      "la   %0, 1f\n"
@@ -80,9 +82,9 @@ int main(void)
                       * handler clobbers t0 and t1: it uses t1 to address
                       * g_mepc/g_taken and then to ack MTIMECMP_HI. Both are
                       * listed so the compiler cannot keep a live value pinned in
-                      * t1 across the wfi, such as g_taken's base. If it does, the
-                      * post-wfi `while(!g_taken)` reads a stale clobbered address
-                      * (DDR layout: 2008(t1=0x4000001C)=0x400007f4) and spins. */
+                      * t1 across the wfi, such as g_taken's base; the post-wfi
+                      * `while(!g_taken)` would then read through the clobbered
+                      * address and spin. */
                      : "t0", "t1", "memory");
 
     while (!g_taken) {
@@ -93,7 +95,7 @@ int main(void)
         uart_printf("<<PASS>>\n");
     } else {
         uart_printf(
-            "<<FAIL>> interrupt-from-empty-ROB saved a stale mepc (not the WFI resume PC)\n");
+            "<<FAIL>> interrupt after the WFI saved a stale mepc (not the WFI resume PC)\n");
     }
     for (;;) {
     }

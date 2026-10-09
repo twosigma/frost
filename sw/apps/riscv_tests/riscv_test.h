@@ -14,11 +14,11 @@
  *    limitations under the License.
  */
 
-// Frost-specific riscv_test.h for riscv-tests ISA tests
+// FROST riscv_test.h for the riscv-tests ISA tests
 //
-// Replaces riscv-tests/env/p/riscv_test.h.
-// Uses UART at 0x40000000 for <<PASS>>/<<FAIL>> output instead of tohost.
-// Frost implements M, S, and U modes, single core.
+// Replaces riscv-tests/env/p/riscv_test.h. Tests report <<PASS>> or <<FAIL>>
+// on the UART at 0x40000000 instead of through tohost. FROST has one hart,
+// with M, S, and U modes.
 
 #ifndef _FROST_RISCV_TEST_H
 #define _FROST_RISCV_TEST_H
@@ -26,7 +26,7 @@
 #include "encoding.h"
 
 //-----------------------------------------------------------------------
-// TESTNUM register — same as upstream (gp / x3)
+// TESTNUM register: gp (x3), as upstream
 //-----------------------------------------------------------------------
 #define TESTNUM gp
 
@@ -62,8 +62,8 @@
     li a0, MSTATUS_MPP;                                                                            \
     csrs mstatus, a0;
 
-/* Upstream shape: MPP = S and the supervisor software/timer interrupt
- * classes delegated (rv64si tests assume both). */
+/* As upstream: MPP = S, and the supervisor software and timer interrupts
+ * delegated (the rv64si tests assume both). */
 #define RVTEST_ENABLE_SUPERVISOR                                                                   \
     li a0, MSTATUS_MPP &(MSTATUS_MPP >> 1);                                                        \
     csrs mstatus, a0;                                                                              \
@@ -162,7 +162,7 @@
     INTERRUPT_HANDLER;                                                                             \
     handle_exception:                                                                              \
     other_exception:                                                                               \
-    /* unhandled exception — mark as fail */                                                       \
+    /* unhandled exception: mark as fail */                                                        \
     ori TESTNUM, TESTNUM, 1337;                                                                    \
     j _frost_uart_fail;                                                                            \
     _frost_ecall_handler:                                                                          \
@@ -195,7 +195,7 @@
                                                                                                    \
     _frost_uart_fail:                                                                              \
     li t0, 0x40000000;                                                                             \
-    /* Print TESTNUM (gp) as hex BEFORE <<FAIL>> so sim captures */                                \
+    /* Print TESTNUM (gp) in hex first: the simulation harness stops at <<FAIL>> */                \
     li t1, '#';                                                                                    \
     sb t1, 0(t0);                                                                                  \
     mv t2, gp;                                                                                     \
@@ -256,7 +256,7 @@
     csrw mtvec, t0;                                                                                \
     CHECK_XLEN;                                                                                    \
     /* if an stvec_handler is defined, delegate its exceptions to it
-     * (upstream p-env shape, needed by the rv64si suite) */                                       \
+     * (as upstream's p env does; the rv64si suite needs it) */                                    \
     la t0, stvec_handler;                                                                          \
     beqz t0, _frost_no_stvec;                                                                      \
     csrw stvec, t0;                                                                                \
@@ -284,8 +284,9 @@
 //-----------------------------------------------------------------------
 // Pass/Fail Macro
 //
-// Same as upstream: ecall with a0=0 (pass) or a0=TESTNUM (fail).
-// Our trap handler above routes ecall to UART output.
+// Same as upstream: ecall with a0=0 (pass) or a0=TESTNUM (fail), after
+// RVTEST_FAIL sets TESTNUM to (TESTNUM << 1) | 1. The trap handler in
+// RVTEST_CODE_BEGIN turns the ecall into UART output.
 //-----------------------------------------------------------------------
 
 #define RVTEST_PASS                                                                                \

@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Independent table-driven tests for the Clause 49 block format.
+"""Table-driven tests of the Clause 49 64b/66b block encoder and decoder.
 
 The test represents Figure 49-7 as a sequence of fields in transmission order;
 its packing logic does not share the RTL's case branches or helper functions.
@@ -70,7 +70,7 @@ def pack_octets(octets: list[int]) -> int:
 
 
 def pack_format(fmt: tuple[int, str, str], octets: list[int], padding: int = 0) -> int:
-    """Serialize a table row into its payload fields."""
+    """Pack a word's octets into a block payload with a table row's field layout."""
     block_type, _, fields = fmt
     result, offset = block_type, 8
     for field in fields.split():
@@ -92,7 +92,10 @@ def pack_format(fmt: tuple[int, str, str], octets: list[int], padding: int = 0) 
 
 
 def encode_reference(octets: list[int], ctrl: int) -> tuple[int, int, int]:
-    """Find a representable XGMII word in the independent format table."""
+    """Encode an XGMII word with the format table, as (payload, header, bad).
+
+    A word that matches no format becomes an error block.
+    """
     if ctrl == 0:
         return pack_octets(octets), 2, 0
     for fmt in FORMATS:
@@ -114,7 +117,10 @@ def encode_reference(octets: list[int], ctrl: int) -> tuple[int, int, int]:
 
 
 def decode_reference(payload: int, header: int) -> tuple[int, int, int]:
-    """Decode a payload by iterating the independent format description."""
+    """Decode a block with the format table, as (data, ctrl, bad).
+
+    An invalid block decodes to eight error characters.
+    """
     if header == 2:
         return payload, 0, 0
     if header != 1 or payload & 255 not in FORMAT_BY_TYPE:

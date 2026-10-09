@@ -1,0 +1,27 @@
+[tasks]
+x32
+x64
+x66
+[options]
+mode prove
+depth 1
+[engines]
+smtbmc boolector
+[script]
+read -sv riscv_pkg.sv
+read -sv -D SYNTHESIS -D PC_REDIRECT_CATCHUP_PROOF pc_controller.sv
+x32: chparam -set XLEN 32 pc_controller
+x66: chparam -set XLEN 66 pc_controller
+hierarchy -top pc_controller
+delete t:control_flow_tracker t:pc_increment_calculator
+proc
+setundef -undriven -anyseq
+delete -port pc_controller/o:*
+opt
+prep -top pc_controller -flatten
+select -assert-count 3 t:$check r:FLAVOR=assert %i
+select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv

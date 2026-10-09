@@ -1,4 +1,4 @@
-// Generated RV64IMAFDC torture test for Frost (seed=20260808)
+// Generated RV64IMAFDC torture test for FROST (seed=20260808)
 // nseqs=200 memsize=1024
 
 #include "frost_header.S"

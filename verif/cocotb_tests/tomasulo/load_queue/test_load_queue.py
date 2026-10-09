@@ -12,21 +12,24 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the Load Queue.
+"""Unit tests for the load queue.
 
-Tests cover reset, allocation, address update, full load flows (LW, LB, LBU,
-LH, LHU), SQ forwarding, SQ disambiguation stall, MMIO ordering (ROB-head
-handoff and registered-router-pending serialization), single-beat FLD, FLW
-NaN-boxing, flush, AMO dependency ordering, normal-AMO compute/cancel/coherence,
-.W/.D MIN/MAX width, equality, and stall semantics, CDB back-pressure, and constrained random.
-Registered dispatch-capacity tests additionally prove that completion/flush
-can cause only a conservative one-cycle stall, never a stale-low admission.
+Covers allocation on one or both slots, load sizes and sign extension, SQ
+disambiguation and forwarding, the L0 cache, MMIO loads and the router's
+pending handshake, overlapped cached-tier loads, dword responses, flushes,
+LR reservations, AMO ordering, compute, and cancellation, DMA coherence, CDB
+back-pressure, and a constrained-random sequence. The dispatch-capacity tests
+check that the registered dispatch-full flags may lag a completion or flush
+by a cycle but never report room that is not there. "Normal" AMOs (SWAP, ADD,
+XOR, AND, OR) spend one cycle in AMO_COMPUTE; MIN and MAX do not.
 
-Bus contract (hw/rtl/README.md, "Data-tier bus contract"): memory responses are aligned
-64-bit beats; the LQ extracts by addr[2:0]. drive_mem_response replicates a
-word across both beat lanes (correct at either addr[2]) unless dword=True.
+Expected values follow hw/rtl/README.md, "Data-tier bus contract": memory
+responses are aligned 64-bit beats and the LQ extracts by addr[2:0].
+drive_mem_response replicates a word across both beat lanes (correct at
+either addr[2]) unless dword=True.
 """
 
+import os
 import random
 from typing import Any
 
@@ -57,7 +60,9 @@ def wbeat(word: int) -> int:
     return (word << 32) | word
 
 
-AMO_RESCUE_THRESHOLD = 16384
+# Set by the load_queue_sq_forward target, which builds the LQ with
+# ENABLE_SQ_FORWARD_FAST_PATH=1 as the core does.
+SQ_FORWARD_FAST_PATH = os.environ.get("FROST_TEST_SQ_FORWARD_FAST_PATH", "0") == "1"
 
 
 async def setup(dut: Any) -> tuple[LQInterface, LQModel]:
@@ -92,7 +97,10 @@ async def alloc_and_addr(
 
 
 async def wait_for_fu_complete(dut_if: LQInterface, max_cycles: int = 4) -> FuComplete:
-    """Allow staged completion timing before declaring the result missing."""
+    """Poll the FU completion output for up to `max_cycles` cycles.
+
+    Returns the first valid result, or the last sample on timeout.
+    """
     await Timer(1, unit="ns")
     result = dut_if.read_fu_complete()
     for _ in range(max_cycles):
@@ -106,7 +114,10 @@ async def wait_for_fu_complete(dut_if: LQInterface, max_cycles: int = 4) -> FuCo
 async def wait_for_sq_check(
     dut_if: LQInterface, max_cycles: int = 4
 ) -> dict[str, int | bool]:
-    """Allow the staged SQ-check launch path to present a valid candidate."""
+    """Poll the SQ-check outputs for up to `max_cycles` cycles.
+
+    Returns the first valid check, or the last sample on timeout.
+    """
     await Timer(1, unit="ns")
     sq_check = dut_if.read_sq_check()
     for _ in range(max_cycles):
@@ -120,7 +131,10 @@ async def wait_for_sq_check(
 async def wait_for_mem_request(
     dut_if: LQInterface, max_cycles: int = 4
 ) -> dict[str, int | bool]:
-    """Allow the staged memory-launch path to present a request."""
+    """Poll the memory read request for up to `max_cycles` cycles.
+
+    Returns the first request with `en` set, or the last sample on timeout.
+    """
     await Timer(1, unit="ns")
     mem_req = dut_if.read_mem_request()
     for _ in range(max_cycles):
@@ -137,10 +151,10 @@ async def accept_fu_complete(dut_if: LQInterface) -> None:
 
 
 async def advance_normal_amo_compute(dut_if: LQInterface) -> None:
-    """Require exactly one inert compute cycle before a normal AMO write."""
+    """Check that a normal AMO has not started its write, then step past AMO_COMPUTE."""
     await Timer(1, unit="ns")
     assert not dut_if.read_amo_mem_write()["en"], "Normal AMO skipped its compute cycle"
-    # The result must use captured operands, not the now-unowned response bus.
+    # Invert the response bus: the result must come from the captured operands.
     dut_if.dut.i_mem_read_data.value = MASK64 ^ int(dut_if.dut.i_mem_read_data.value)
     await dut_if.step()
 
@@ -159,7 +173,12 @@ async def complete_prepared_amo(
     is_minmax: bool = False,
     response_beat: int | None = None,
 ) -> None:
-    """Check exact normal/MINMAX write latency, payload stalls, and old-value CDB."""
+    """Run an allocated, addressed AMO at the ROB head through to its CDB result.
+
+    Checks the write latency (one AMO_COMPUTE cycle unless MIN/MAX), the write
+    address and beat, that the write holds for `stall_cycles` cycles without
+    write-done, and the old value on the CDB.
+    """
     is_dword = size == MEM_SIZE_DOUBLE
     dut_if.drive_rob_head_tag(rob_tag)
     dut_if.drive_sq_all_older_known(True)
@@ -191,8 +210,8 @@ async def complete_prepared_amo(
     assert amo_write["is_dword"] == is_dword, (
         f"{description}: expected is_dword={is_dword}, got {amo_write['is_dword']}"
     )
-    # .W rides the beat replicated ({2{result}}), with router word strobes
-    # selecting the addressed half. .D writes the complete beat.
+    # A .W write replicates the word across the beat ({2{result}}) and the
+    # router's word strobes select the addressed half. A .D write fills the beat.
     expected_beat = (
         expected_write & MASK64
         if is_dword
@@ -211,9 +230,9 @@ async def complete_prepared_amo(
             f"{description}: strict MIN/MAX equality must select rs2"
         )
 
-    # With write_done withheld, the active request must hold exactly. This
-    # checks that MIN/MAX depends only on response-captured relations/operands,
-    # not on live issued-entry state, and that the split added no pulse behavior.
+    # With write-done withheld, the write request must hold unchanged: its data
+    # depends only on the operands and MIN/MAX relation captured at the
+    # response, not on live entry state, and it is a level, not a pulse.
     for stall_cycle in range(stall_cycles):
         await dut_if.step()
         stalled_write = dut_if.read_amo_mem_write()
@@ -279,7 +298,10 @@ async def complete_load_fast_path_or_memory(
     mem_data: int,
     expected_addr: int,
 ) -> tuple[FuComplete, bool]:
-    """Complete a disambiguated load via fast path when enabled or via memory."""
+    """Complete a disambiguated load from an L0 hit or, on a miss, from memory.
+
+    Returns the result and whether it came from the L0.
+    """
     await Timer(1, unit="ns")
     result = dut_if.read_fu_complete()
     mem_req = dut_if.read_mem_request()
@@ -399,9 +421,9 @@ async def test_alloc_slot1_slot2_pair_completes_in_order(dut: Any) -> None:
 
     assert dut_if.count == 2, f"Expected two allocated entries, got {dut_if.count}"
 
-    # Distinct dwords: with dword-granule L0 lines, a same-dword pair would
-    # let the second load hit the line filled by the first response instead
-    # of exercising the ordered memory-issue path this test locks.
+    # Use distinct dwords. The L0 holds dword lines, so a second load in the
+    # same dword would hit the line the first response filled and skip the
+    # ordered memory path under test.
     dut_if.drive_addr_update(rob_tag=10, address=0x1100)
     model.addr_update(10, 0x1100)
     await dut_if.step()
@@ -451,7 +473,7 @@ async def test_alloc_to_full(dut: Any) -> None:
 async def test_dispatch_backpressure_lags_free_without_understating_capacity(
     dut: Any,
 ) -> None:
-    """Free exact capacity immediately while registered dispatch lags one edge."""
+    """The exact o_full clears on the freeing edge; o_dispatch_full one edge later."""
     dut_if, _ = await setup(dut)
 
     for tag in range(LQ_DEPTH):
@@ -485,9 +507,9 @@ async def test_dispatch_backpressure_lags_free_without_understating_capacity(
         result = await wait_for_fu_complete(dut_if, max_cycles=8)
         assert result.valid and result.tag == tag
 
-    # The completion capture frees tag 0 from an exactly-full queue. Exact
-    # capacity changes to seven entries on that edge; dispatch_full ignores the
-    # completion cone and stays high for this one conservative cycle.
+    # Capturing tag 0's result frees its entry in the full queue. The exact
+    # count drops to seven on that edge, but o_dispatch_full takes no credit
+    # for the free and stays high for one more cycle.
     await complete_tag(tag=0, address=0xE300, data=0x1111_0000)
     assert dut_if.count == LQ_DEPTH - 1
     exact_full_after_first_free = dut_if.full
@@ -503,9 +525,8 @@ async def test_dispatch_backpressure_lags_free_without_understating_capacity(
     )
     assert bool(dut.o_dispatch_full_for_2.value)
 
-    # Freeing a second entry makes exact two-wide capacity available at count 6.
-    # Its registered counterpart likewise remains conservatively asserted only
-    # through the free edge, then releases on the following quiet edge.
+    # Freeing a second entry (count 6) clears o_full_for_2 on the free edge;
+    # o_dispatch_full_for_2 stays high through that edge and clears on the next.
     await complete_tag(tag=1, address=0xE308, data=0x2222_0000)
     assert dut_if.count == LQ_DEPTH - 2
     exact_full_after_second_free = dut_if.full
@@ -529,7 +550,7 @@ async def test_dispatch_backpressure_lags_free_without_understating_capacity(
 async def test_dispatch_reservation_on_partial_flush_cannot_create_ghost(
     dut: Any,
 ) -> None:
-    """A raw request may over-stall dispatch on flush, never write an LQ row."""
+    """A request on a partial-flush cycle may stall dispatch but never allocates."""
     dut_if, _ = await setup(dut)
     dut_if.drive_rob_head_tag(0)
 
@@ -544,9 +565,9 @@ async def test_dispatch_reservation_on_partial_flush_cannot_create_ghost(
     assert not exact_full_before_flush
     assert exact_full_for_2_before_flush
 
-    # The raw request is visible to the timing-only dispatch reservation, while
-    # the local write enable mirrors the ROB flush gate. The partial flush keeps
-    # tag 0 and kills tags 1..6; tag 20 must not become a ghost allocation.
+    # The registered dispatch-full flags count the raw request, but the entry
+    # write is flush-gated, as the ROB's allocation is. The partial flush keeps
+    # tag 0 and kills tags 1..6; tag 20 must not allocate.
     dut_if.drive_alloc(rob_tag=20, size=MEM_SIZE_WORD)
     dut_if.drive_partial_flush(flush_tag=0)
     await dut_if.step()
@@ -576,7 +597,11 @@ async def test_dispatch_reservation_on_partial_flush_cannot_create_ghost(
 async def test_dispatch_reservation_covers_dual_alloc_with_simultaneous_free(
     dut: Any,
 ) -> None:
-    """Two reserved allocs plus a same-edge free may overstate, never understate."""
+    """Dual allocation with a same-edge free: dispatch-full errs toward full.
+
+    The registered flags ignore the free, so they may overstate occupancy but
+    never understate it.
+    """
     dut_if, _ = await setup(dut)
 
     for tag in range(LQ_DEPTH - 2):
@@ -740,7 +765,12 @@ async def test_lhu_unsigned(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_sq_forward(dut: Any) -> None:
-    """SQ match completes immediately when enabled, otherwise after conflict clears."""
+    """An SQ match that can forward completes the load with the store's data.
+
+    With ENABLE_SQ_FORWARD_FAST_PATH=1 (the load_queue_sq_forward target) the
+    load completes from the forwarded data without reading memory. With 0 it
+    waits while the match holds and reads memory once the match clears.
+    """
     dut_if, model = await setup(dut)
 
     await alloc_and_addr(dut_if, model, rob_tag=10, address=0x3000)
@@ -752,13 +782,23 @@ async def test_sq_forward(dut: Any) -> None:
     sq_check = await wait_for_sq_check(dut_if)
     assert sq_check["valid"], "Expected forwarded load to reach SQ check stage"
 
-    # While SQ still reports a match, the load must not issue to memory.
-    mem_req = dut_if.read_mem_request()
-    assert not mem_req["en"], "Should not issue memory read when SQ forwards"
-
-    result = await wait_for_fu_complete(dut_if)
+    # While the SQ reports a match, the load must never read memory.
+    result = dut_if.read_fu_complete()
+    for _ in range(6):
+        assert not dut_if.read_mem_request()["en"], (
+            "Load read memory while the SQ reported a matching older store"
+        )
+        if result.valid:
+            break
+        await dut_if.step()
+        result = dut_if.read_fu_complete()
+    assert result.valid == SQ_FORWARD_FAST_PATH, (
+        "Load should complete by forwarding exactly when forwarding is enabled "
+        f"(ENABLE_SQ_FORWARD_FAST_PATH={int(SQ_FORWARD_FAST_PATH)})"
+    )
     if not result.valid:
-        # Conservative timing config: release the SQ match and let memory complete.
+        # Forwarding disabled: release the SQ match and let memory complete
+        # the load.
         dut_if.clear_sq_forward()
         mem_req = await wait_for_mem_request(dut_if)
         assert mem_req["en"], "Expected memory read once SQ conflict is released"
@@ -773,7 +813,6 @@ async def test_sq_forward(dut: Any) -> None:
     else:
         dut_if.clear_sq_forward()
         dut_if.drive_sq_all_older_known(False)
-        result = await wait_for_fu_complete(dut_if)
 
     assert result.valid, "Load should complete via SQ fast path or memory fallback"
     assert result.tag == 10
@@ -847,26 +886,26 @@ async def test_mmio_load(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 13b: Router pending feedback serializes mandatory MMIO staging
+# Test 13b: The router's pending bit serializes MMIO handoffs
 # ============================================================================
 @cocotb.test()
 async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
-    """Router pending feedback blocks younger launches until terminal accept.
+    """The router's pending bit blocks younger launches until it accepts the MMIO load.
 
-    The LQ does not consume the committed-store drain status for MMIO loads. It
-    hands the ROB-head request to the downstream router, which always registers
-    the device read before applying drain. The pending Q returns through
-    ``i_mem_bus_busy`` and prevents another handoff through terminal accept.
-    The fixed response and the next handoff may then share a cycle. MMIO
-    itself takes no cached load slot.
+    The LQ hands the ROB-head MMIO load to the router without waiting for
+    committed stores to drain; the router parks the read and checks the drain
+    before accepting it. The pending bit reaches the LQ through
+    ``i_mem_bus_busy`` and stays high through the accept cycle, so no second
+    handoff happens. The device response and the next handoff may share a
+    cycle. An MMIO load takes no cached-load slot.
     """
     dut_if, model = await setup(dut)
 
     mmio_addr = 0x4000_0000
     younger_addr = 0x1800
 
-    # Allocate the head MMIO owner and a younger ordinary load that would
-    # otherwise be ready to launch on a following cycle.
+    # Allocate the MMIO load at the ROB head and a younger ordinary load that
+    # would otherwise be ready to launch on a following cycle.
     await alloc_and_addr(dut_if, model, rob_tag=5, address=mmio_addr, is_mmio=True)
     await alloc_and_addr(dut_if, model, rob_tag=6, address=younger_addr)
     dut_if.drive_rob_head_tag(5)
@@ -874,12 +913,10 @@ async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
     dut_if.drive_sq_forward(match=False, can_forward=False)
     dut_if.drive_sq_committed_empty(False)
 
-    # The committed-store status is held closed: MMIO ordering belongs at the
-    # router boundary, so the initial handoff still happens exactly once.
-    # The younger load may already occupy the SQ-check staging slot from the
-    # address-update setup cycles. Head-priority replacement is allowed to
-    # evict it. The externally visible requirement is that only the head MMIO
-    # request reaches the router.
+    # Committed stores have not drained. The router enforces that wait, so the
+    # LQ still hands off the MMIO load, exactly once. The younger load may
+    # already hold the staging register from the setup cycles, and ROB-head
+    # priority may evict it; only the head MMIO request may reach the router.
     mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "head MMIO request never reached the router boundary"
     assert mem_req["addr"] == mmio_addr
@@ -893,10 +930,9 @@ async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
     )
     assert model_req is not None and model_req["addr"] == mmio_addr
 
-    # Register the handoff, then model the router's registered pending output
-    # feeding directly back through the wrapper's LQ bus-busy expression. Even
-    # though the younger load can complete SQ disambiguation, it must not
-    # produce a second router request while the first request is parked.
+    # Register the handoff, then drive the router's pending bit and the LQ
+    # bus-busy that the wrapper derives from it. The younger load has no SQ
+    # conflict but must not send a second request while the first is parked.
     await dut_if.step()
     assert dut_if.mem_outstanding
     dut_if.drive_mem_request_pending(True)
@@ -908,16 +944,22 @@ async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
         )
         await dut_if.step()
 
-    # The pending Q remains high throughout the terminal-accept cycle and
-    # clears at its closing edge. Model the following fixed-response cycle by
-    # dropping feedback and returning data together. The younger staged load
-    # may resume once that response closes the older ownership window.
+    # The pending bit stays high through the accept cycle and clears on its
+    # closing edge; the response arrives in the next cycle, with pending low.
+    # A launch does not wait for the fast owner's response, so the younger
+    # staged load may launch as soon as i_mem_bus_busy drops.
     dut_if.drive_sq_committed_empty(True)
     dut_if.drive_mem_request_pending(False)
     dut_if.drive_mem_bus_busy(False)
     dut_if.drive_mem_response(0xA55A_1234)
     model.mem_response(0xA55A_1234)
     await Timer(1, unit="ns")
+    # The staged younger load may launch in the response cycle itself. Sample
+    # that cycle too, or the check below would miss its one-cycle request.
+    release_request = dut_if.read_mem_request()
+    younger_seen = release_request["en"]
+    if younger_seen:
+        assert release_request["addr"] == younger_addr
     await dut_if.step()
     dut_if.clear_mem_response()
     dut_if.drive_sq_committed_empty(False)
@@ -925,7 +967,6 @@ async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
     # Sample both signals before every edge so the younger request's one-cycle
     # pulse cannot be hidden by waiting for the independently held CDB result.
     result = dut_if.read_fu_complete()
-    younger_seen = False
     for _ in range(10):
         mem_req = dut_if.read_mem_request()
         if mem_req["en"]:
@@ -938,9 +979,9 @@ async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
     assert result.valid and result.tag == 5
     assert result.value == 0xA55A_1234
 
-    # The router-pending release enabled that younger request, not an MMIO
-    # slow window: committed-store status stayed low, and ordinary low-BRAM
-    # loads do not consume the router-only device fence.
+    # The younger load launched once the router's pending bit dropped. Ordinary
+    # low-BRAM loads never wait for committed stores to drain; for device
+    # reads the router applies that wait.
     assert younger_seen
 
 
@@ -948,7 +989,7 @@ async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
 async def test_mmio_full_flush_cancels_router_pending_without_response_debt(
     dut: Any,
 ) -> None:
-    """Canceling a still-pending router request must not arm a phantom drop."""
+    """After a full flush cancels a request parked in the router, no response is owed."""
     dut_if, model = await setup(dut)
 
     mmio_addr = 0x4000_0000
@@ -964,9 +1005,9 @@ async def test_mmio_full_flush_cancels_router_pending_without_response_debt(
     mem_outstanding_after_handoff = dut_if.mem_outstanding
     assert mem_outstanding_after_handoff
 
-    # The mandatory router stage owns the request but has not accepted it.
-    # Full flush cancels that state, so the LQ must clear mem_outstanding
-    # without transferring it into drop_mem_response_pending.
+    # The router holds the request but has not accepted it. A full flush
+    # cancels it there, so the LQ must clear mem_outstanding without setting
+    # drop_mem_response_pending.
     dut_if.drive_mem_request_pending(True)
     dut_if.drive_mem_bus_busy(True)
     dut_if.drive_flush_all()
@@ -983,7 +1024,7 @@ async def test_mmio_full_flush_cancels_router_pending_without_response_debt(
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
-    assert mem_req["en"], "canceled router request left phantom response debt"
+    assert mem_req["en"], "canceled router request left a response owed"
     assert mem_req["addr"] == replacement_addr
 
 
@@ -991,12 +1032,11 @@ async def test_mmio_full_flush_cancels_router_pending_without_response_debt(
 async def test_cached_full_flush_after_accept_drains_stale_response(
     dut: Any,
 ) -> None:
-    """A terminally accepted cached read retains response debt on full flush.
+    """After a full flush, a cached read the router accepted still owes its response.
 
-    The debt lives in the load's cached slot: a replacement load launches
-    freely meanwhile (it takes another slot, or the fast tier). When the
-    stale response lands it is drained with no completion and no L0 fill,
-    and the slot is released.
+    Only the load's cached slot waits for it: a replacement load launches
+    meanwhile, through another slot or the fast tier. When the stale response
+    lands it is drained with no completion and no L0 fill, and the slot frees.
     """
     dut_if, model = await setup(dut)
 
@@ -1011,13 +1051,14 @@ async def test_cached_full_flush_after_accept_drains_stale_response(
     assert mem_req["en"] and mem_req["addr"] == cached_addr
     stale_slot = mem_req["id"]
     await dut_if.step()
-    # A cached request accepts without using the router hold, then may owe its
-    # response for arbitrarily long. The exact pending Q is therefore low.
+    # With the write port free, the router accepts a cached request in the
+    # cycle it arrives, so the pending bit stays low; the response may take
+    # any number of cycles.
     dut_if.drive_mem_request_pending(False)
     dut_if.drive_mem_bus_busy(False)
 
-    # Kill the architectural owner after the handoff. A replacement load may
-    # allocate, stage and launch: the stale debt is confined to its slot.
+    # Flush the load after the handoff. A replacement load may allocate, stage
+    # and launch; only the flushed load's slot waits for the stale response.
     dut_if.drive_flush_all()
     model.flush_all()
     await dut_if.step()
@@ -1031,7 +1072,7 @@ async def test_cached_full_flush_after_accept_drains_stale_response(
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
-    assert mem_req["en"], "replacement blocked by another slot's stale debt"
+    assert mem_req["en"], "replacement blocked by another slot's stale response"
     assert mem_req["addr"] == replacement_addr
     await dut_if.step()
     # The fast-tier replacement answers next cycle and completes normally.
@@ -1057,7 +1098,7 @@ async def test_cached_full_flush_after_accept_drains_stale_response(
 async def test_mmio_response_coincident_with_full_flush_drains_immediately(
     dut: Any,
 ) -> None:
-    """An accepted fixed-latency MMIO response on full flush creates no debt."""
+    """An MMIO response arriving with a full flush is drained at once; nothing is owed."""
     dut_if, model = await setup(dut)
 
     mmio_addr = 0x4000_0000
@@ -1073,8 +1114,8 @@ async def test_mmio_response_coincident_with_full_flush_drains_immediately(
     mem_outstanding_after_handoff = dut_if.mem_outstanding
     assert mem_outstanding_after_handoff
 
-    # Model the mandatory pending stage and its terminal-accept edge. On the
-    # following fixed-response cycle pending is low and read_valid is high.
+    # Model the router's pending cycle and its accept edge. In the next cycle
+    # pending is low and the response arrives.
     dut_if.drive_mem_request_pending(True)
     dut_if.drive_mem_bus_busy(True)
     await dut_if.step()
@@ -1097,7 +1138,7 @@ async def test_mmio_response_coincident_with_full_flush_drains_immediately(
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
-    assert mem_req["en"], "coincident MMIO response left stale-response debt"
+    assert mem_req["en"], "coincident MMIO response left a response owed"
     assert mem_req["addr"] == replacement_addr
 
 
@@ -1108,7 +1149,12 @@ async def test_mmio_response_coincident_with_full_flush_drains_immediately(
 async def test_misaligned_mmio_completes_without_device_read_during_drain(
     dut: Any,
 ) -> None:
-    """The LQ may report a no-read fault while the trap unit waits for drain."""
+    """A misaligned MMIO load faults with no device read, even while stores drain.
+
+    With i_trap_misaligned_accesses set, the LQ completes the load with its
+    fault while committed stores are still draining; the trap unit waits for
+    the drain before taking the trap.
+    """
     dut_if, model = await setup(dut)
 
     mmio_addr = 0x4000_0002
@@ -1142,6 +1188,69 @@ async def test_misaligned_mmio_completes_without_device_read_during_drain(
     assert not dut_if.read_mem_request()["en"], (
         "misaligned MMIO must not access the device"
     )
+
+
+# ============================================================================
+# Test 13d: Device-window atomics and unserved device addresses fault
+# ============================================================================
+@cocotb.test()
+async def test_device_atomics_and_unserved_device_loads_fault_without_a_read(
+    dut: Any,
+) -> None:
+    """AMO and LR to a device window, and loads outside the windows, fault with no read.
+
+    The device windows take loads but no atomics (AMO cause 7, LR cause 5), and
+    a device-quadrant address outside them is unmapped (load cause 5). Each
+    fault completes at the ROB head with its address as the trap value; a load
+    inside a window still reads the device.
+    """
+    from .lq_interface import AMOSWAP_W, LR_W
+
+    # (name, address, is_amo, is_lr, amo_op, cause); cause None: the load reads.
+    cases: list[tuple[str, int, bool, bool, int, int | None]] = [
+        ("amo-mmio-window", 0x4000_101C, True, False, AMOSWAP_W, 7),
+        ("lr-mmio-window", 0x4000_101C, False, True, LR_W, 5),
+        ("amo-plic-window", 0x4400_0004, True, False, AMOSWAP_W, 7),
+        ("amo-unserved", 0x4011_8000, True, False, AMOSWAP_W, 7),
+        ("load-unserved", 0x4011_8000, False, False, 0, 5),
+        ("load-past-mmio-window", 0x4003_1000, False, False, 0, 5),
+        ("load-past-plic-window", 0x4440_0000, False, False, 0, 5),
+        ("load-mmio-window", 0x4000_101C, False, False, 0, None),
+        ("load-plic-window", 0x4400_0004, False, False, 0, None),
+    ]
+    dut_if, _ = await setup(dut)
+    for name, address, is_amo, is_lr, amo_op, cause in cases:
+        await dut_if.reset_dut()
+        dut_if.drive_rob_head_tag(6)
+        dut_if.drive_alloc(
+            6, size=MEM_SIZE_WORD, is_lr=is_lr, is_amo=is_amo, amo_op=amo_op
+        )
+        await dut_if.step()
+        dut_if.clear_alloc()
+        dut_if.drive_addr_update(6, address, is_mmio=True)
+        await dut_if.step()
+        dut_if.clear_addr_update()
+        dut_if.drive_sq_all_older_known(True)
+        dut_if.drive_sq_forward(match=False, can_forward=False)
+        dut_if.drive_sq_committed_empty(True)
+
+        launched = False
+        result = dut_if.read_fu_complete()
+        for _ in range(8):
+            await Timer(1, unit="ns")
+            launched |= bool(dut_if.read_mem_request()["en"])
+            result = dut_if.read_fu_complete()
+            if result.valid or launched:
+                break
+            await dut_if.step()
+        if cause is None:
+            assert launched, f"{name}: the in-window load did not read the device"
+            continue
+        assert not launched, f"{name}: the faulting access reached the device"
+        assert result.valid, f"{name}: no fault completion"
+        assert result.tag == 6 and result.exception, name
+        assert result.exc_cause == cause, f"{name}: cause {result.exc_cause}"
+        assert result.value == address, f"{name}: trap value 0x{result.value:x}"
 
 
 # ============================================================================
@@ -1182,6 +1291,178 @@ async def test_fld_single_beat(dut: Any) -> None:
         f"Expected 0x{fld_beat:016x}, got 0x{result.value:016x}"
     )
     await accept_fu_complete(dut_if)
+
+
+@cocotb.test()
+async def test_dword_response_bypass(dut: Any) -> None:
+    """LD/FLD/LR.D complete at response capture in both tiers, exactly once."""
+    from .lq_interface import LR_D
+
+    dut_if, _ = await setup(dut)
+    for cached in (False, True):
+        for kind in ("ld", "fld", "lr.d"):
+            await dut_if.reset_dut()
+            address = (0x8000_0000 if cached else 0) + 0x6800
+            value = 0x8765_4321_FEDC_BA98
+            dut_if.drive_rob_head_tag(3)
+            dut_if.drive_alloc(
+                3,
+                is_fp=kind == "fld",
+                size=MEM_SIZE_DOUBLE,
+                is_lr=kind == "lr.d",
+                amo_op=LR_D if kind == "lr.d" else 0,
+            )
+            await dut_if.step()
+            dut_if.clear_alloc()
+            dut_if.drive_addr_update(3, address)
+            await dut_if.step()
+            dut_if.clear_addr_update()
+            dut_if.drive_sq_all_older_known(True)
+            dut_if.drive_sq_forward(match=False, can_forward=False)
+            request = await wait_for_mem_request(dut_if)
+            assert request["en"] and request["addr"] == address
+            await dut_if.step()
+            dut_if.drive_mem_response(value, dword=True)
+            await dut_if.step()
+            dut_if.clear_mem_response()
+
+            # No polling here: the latency itself is the contract under test.
+            result = dut_if.read_fu_complete()
+            assert result.valid, f"{kind}, cached={cached}: missed response bypass"
+            assert result.tag == 3 and result.value == value and not result.exception
+            assert bool(dut.o_reservation_valid.value) == (kind == "lr.d")
+            for _ in range(3):
+                await dut_if.step()
+                assert dut_if.read_fu_complete() == result, "blocked result changed"
+                assert not dut_if.read_mem_request()["en"], "duplicate memory read"
+            await accept_fu_complete(dut_if)
+            for _ in range(5):
+                await dut_if.step()
+                assert not dut_if.read_fu_complete().valid, "duplicate completion"
+            assert dut_if.empty
+
+
+@cocotb.test()
+async def test_dword_response_backpressure_and_reordering(dut: Any) -> None:
+    """A held younger dword completion forces the older response to the RAM path."""
+    dut_if, model = await setup(dut)
+    requests = []
+    values = {1: 0x0123_4567_89AB_CDEF, 2: 0xFEDC_BA98_7654_3210}
+    for tag in (1, 2):
+        await alloc_and_addr(
+            dut_if,
+            model,
+            tag,
+            0x8000_7000 + tag * 8,
+            is_fp=tag == 2,
+            size=MEM_SIZE_DOUBLE,
+        )
+        dut_if.drive_sq_all_older_known(True)
+        dut_if.drive_sq_forward(match=False, can_forward=False)
+        request = await wait_for_mem_request(dut_if)
+        assert request["en"]
+        requests.append(request)
+        await dut_if.step()
+    assert requests[0]["id"] != requests[1]["id"]
+
+    dut_if.drive_mem_response(
+        values[2], dword=True, cached=True, slot=int(requests[1]["id"])
+    )
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    result = dut_if.read_fu_complete()
+    assert result.valid and result.tag == 2 and result.value == values[2]
+
+    dut_if.drive_mem_response(
+        values[1], dword=True, cached=True, slot=int(requests[0]["id"])
+    )
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    for _ in range(3):
+        assert dut_if.read_fu_complete() == result, "response overwrote held CDB result"
+        await dut_if.step()
+    await accept_fu_complete(dut_if)
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid and result.tag == 1 and result.value == values[1]
+    await accept_fu_complete(dut_if)
+    for _ in range(5):
+        await dut_if.step()
+        assert not dut_if.read_fu_complete().valid, "response completed twice"
+    assert dut_if.empty
+
+
+@cocotb.test()
+async def test_dword_response_flush_boundary(dut: Any) -> None:
+    """A flush that kills a dword load drains its response; a surviving load completes."""
+    dut_if, _ = await setup(dut)
+    for cached in (False, True):
+        for flush in ("full", "younger", "older"):
+            await dut_if.reset_dut()
+            model = LQModel()
+            address = (0x8000_0000 if cached else 0) + 0x7400
+            await alloc_and_addr(dut_if, model, 4, address, size=MEM_SIZE_DOUBLE)
+            dut_if.drive_sq_all_older_known(True)
+            dut_if.drive_sq_forward(match=False, can_forward=False)
+            request = await wait_for_mem_request(dut_if)
+            assert request["en"]
+            await dut_if.step()
+            if flush == "full":
+                dut_if.drive_flush_all()
+            else:
+                dut_if.drive_partial_flush(
+                    2 if flush == "younger" else 6, early_recovery=True
+                )
+            value = 0x9876_5432_10FE_DCBA
+            dut_if.drive_mem_response(value, dword=True)
+            await dut_if.step()
+            dut_if.clear_mem_response()
+            dut_if.clear_flush_all()
+            dut_if.clear_partial_flush()
+            result = await wait_for_fu_complete(dut_if)
+            if flush == "older":
+                assert result.valid and result.tag == 4 and result.value == value
+                await accept_fu_complete(dut_if)
+            else:
+                assert not result.valid, f"{flush} flush leaked a dword completion"
+            for _ in range(5):
+                await dut_if.step()
+                assert not dut_if.read_fu_complete().valid
+
+
+@cocotb.test()
+async def test_lr_d_response_dma_invalidation(dut: Any) -> None:
+    """DMA invalidation on LR.D response suppresses reservation, not its value."""
+    from .lq_interface import LR_D
+
+    dut_if, _ = await setup(dut)
+    address = 0x8000_7800
+    dut_if.drive_rob_head_tag(1)
+    dut_if.drive_alloc(1, size=MEM_SIZE_DOUBLE, is_lr=True, amo_op=LR_D)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.drive_addr_update(1, address)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    request = await wait_for_mem_request(dut_if)
+    assert request["en"]
+    await dut_if.step()
+    dut.i_coh_inval_valid.value = 1
+    dut.i_coh_inval_addr.value = address
+    value = 0xABCD_EF01_2345_6789
+    dut_if.drive_mem_response(value, dword=True)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    dut.i_coh_inval_valid.value = 0
+    result = dut_if.read_fu_complete()
+    assert result.valid and result.tag == 1 and result.value == value
+    assert not bool(dut.o_reservation_valid.value)
+    await accept_fu_complete(dut_if)
+    for _ in range(5):
+        await dut_if.step()
+        assert not dut_if.read_fu_complete().valid
+        assert not bool(dut.o_reservation_valid.value)
 
 
 # ============================================================================
@@ -1484,11 +1765,11 @@ async def test_empty_sq_skips_disambiguation_query(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 21: Constrained random
+# Test 21b: Constrained random
 # ============================================================================
 @cocotb.test()
 async def test_constrained_random(dut: Any) -> None:
-    """Randomized alloc/addr/forward/mem/flush over many cycles."""
+    """Random allocations, memory traffic, and full flushes; check count/full/empty."""
     dut_if, _model = await setup(dut)
     dut_if.drive_sq_empty(True)
 
@@ -1563,7 +1844,7 @@ async def test_constrained_random(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 22: Stale response after partial flush (drain approach)
+# Test 22: Stale response after partial flush
 # ============================================================================
 @cocotb.test()
 async def test_stale_response_after_partial_flush(dut: Any) -> None:
@@ -1626,8 +1907,8 @@ async def test_partial_flush_coincident_response_fills_l0_only(dut: Any) -> None
     """A killed load's coincident ordinary response may fill L0, not complete.
 
     The branch-recovery flush does not change architectural memory, so an
-    ordinary non-MMIO response remains a valid cache image.  Its speculative
-    LQ owner must nevertheless be removed without producing an FU completion.
+    ordinary non-MMIO response remains a valid cache image. The killed load
+    must still leave the LQ without an FU completion.
     """
     dut_if, model = await setup(dut)
 
@@ -1668,7 +1949,7 @@ async def test_partial_flush_coincident_response_fills_l0_only(dut: Any) -> None
     dut_if.drive_sq_all_older_known(False)
     dut_if.clear_sq_forward()
 
-    assert dut_if.empty, "Partial flush did not remove the response owner"
+    assert dut_if.empty, "Partial flush did not remove the killed load"
     assert dut_if.count == 0
     assert not (await wait_for_fu_complete(dut_if, max_cycles=2)).valid, (
         "Drained response produced a delayed FU completion"
@@ -1825,11 +2106,11 @@ async def test_cache_hit_bypasses_memory(dut: Any) -> None:
 
 @cocotb.test()
 async def test_cache_hit_blocked_while_mem_bus_busy(dut: Any) -> None:
-    """A warm L0 hit must wait while SQ/AMO owns the memory bus.
+    """A warm L0 hit must wait while a store or AMO write holds the memory port.
 
-    Regression for a phase-2 SQ-checked load that completed from L0 while
-    i_mem_bus_busy was high, one cycle before the matching store invalidation
-    reached the cache.
+    The write can hold the port before its L0 invalidation takes effect, so a
+    load that has passed the SQ check must not complete from the L0 while
+    i_mem_bus_busy is high.
     """
     dut_if, model = await setup(dut)
 
@@ -1877,22 +2158,16 @@ async def test_cache_hit_blocked_while_mem_bus_busy(dut: Any) -> None:
 
 @cocotb.test()
 async def test_cache_hit_blocked_until_delayed_store_invalidation(dut: Any) -> None:
-    """A warm L0 line must die at the store's write launch, never hit stale.
+    """A store's write launch invalidates the warm L0 line, so it never hits stale.
 
-    Cached-tier stores keep their write in flight for cycles after the SQ write
-    pulse drops. A younger same-address load must not consume the stale L0
-    line in that gap; this is the window that exposed the parser failure on
-    hardware.
-
-    The SQ fires the L0 invalidate in the write launch cycle, so the line is
-    dead before the flight starts. The launch cycle itself is covered by
-    i_mem_bus_busy plus the L0's same-cycle invalidate suppress. In the flight
-    gap the load misses and may issue to memory; ordering the read behind the
-    in-flight write is the router's job
-    (test_load_queued_behind_cached_write_inflight). Earlier designs blocked
-    the gap in the LQ instead, first by stretching busy a trailing cycle,
-    which taxed every BRAM store drain ~2% CoreMark, then via a routed busy
-    term that broke timing closure.
+    A cached-tier store's write stays in flight for cycles after the SQ write
+    pulse drops, and a younger load to the same address must not use the stale
+    L0 line in that gap. The SQ invalidates the line in the launch cycle, where
+    i_mem_bus_busy and the L0's same-cycle invalidate suppression also block
+    the hit. In the core, i_mem_bus_busy stays high for the whole write flight
+    (the wrapper ORs in i_slow_write_inflight), so the load can neither hit nor
+    launch in the gap. This bench drops busy right after the launch cycle to
+    check that the invalidation alone makes the load miss.
     """
     dut_if, model = await setup(dut)
 
@@ -1938,11 +2213,10 @@ async def test_cache_hit_blocked_until_delayed_store_invalidation(dut: Any) -> N
     await dut_if.step()
     dut_if.clear_cache_invalidate()
 
-    # Cached-tier delayed-write gap: the write pulse and busy are gone while the
-    # store is still in its write pipeline. The line was invalidated at launch,
-    # so the load must miss: no stale hit, no stale completion. Issuing to
-    # memory here is fine because the router orders the read behind the
-    # in-flight write.
+    # Cached-tier delayed-write gap: the write pulse is gone while the store is
+    # still in its write pipeline. The core keeps busy high until the write
+    # completes; the bench drops it here. The line was invalidated at launch,
+    # so the load must miss: no stale hit, no stale completion.
     dut_if.drive_mem_bus_busy(False)
     await Timer(1, unit="ns")
     assert not bool(dut.o_l0_hit.value), (
@@ -1979,12 +2253,12 @@ async def test_cache_hit_blocked_until_delayed_store_invalidation(dut: Any) -> N
 
 @cocotb.test()
 async def test_cached_response_after_invalidate_does_not_refill_l0(dut: Any) -> None:
-    """A delayed cached-tier response must not refill L0 after a same-word store.
+    """A cached-tier response must not fill L0 after a store hit its dword in flight.
 
-    A multi-cycle cached-tier load can be older than a later committed store. If that
-    store invalidates the L0 line before the load response returns, the response
-    must still complete the older load but must not repopulate L0 with the
-    pre-store word. Otherwise a still-younger load can hit stale data.
+    An older store to the other word of the same dword does not conflict with
+    the load, so the load can launch before the store drains, and its beat may
+    then hold the pre-store word. The response still completes the load but
+    must not fill L0, or a younger load could hit stale data.
     """
     dut_if, model = await setup(dut)
 
@@ -2004,12 +2278,12 @@ async def test_cached_response_after_invalidate_does_not_refill_l0(dut: Any) -> 
     assert mem_req["addr"] == addr
     await dut_if.step()
 
-    # A younger store to the same word commits before the delayed cached response.
+    # A store write invalidates the load's dword while its read is in flight.
     dut_if.drive_cache_invalidate(addr)
     await dut_if.step()
     dut_if.clear_cache_invalidate()
 
-    # The older load still completes with the pre-store value.
+    # The load still completes with the value its read returned.
     await dut_if.step()
     dut_if.drive_mem_response(stale_word)
     model.mem_response(stale_word)
@@ -2118,7 +2392,7 @@ async def test_cached_response_during_flush_all_does_not_refill_l0(dut: Any) -> 
 # ============================================================================
 @cocotb.test()
 async def test_cache_miss_fills_cache(dut: Any) -> None:
-    """Cache miss -> fill -> subsequent load uses fast path or memory fallback."""
+    """A load that misses fills the L0, and a later load to it hits."""
     dut_if, model = await setup(dut)
 
     # First load at 0x3000 misses the cold cache and goes to memory
@@ -2134,12 +2408,13 @@ async def test_cache_miss_fills_cache(dut: Any) -> None:
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
 
-    result, _ = await complete_load_fast_path_or_memory(
+    result, used_fast_path = await complete_load_fast_path_or_memory(
         dut_if, model, mem_data=0x1234_5678, expected_addr=0x3000
     )
     assert result.valid, "Second load should complete after warm-cache lookup"
     assert result.tag == 4
     assert result.value == 0x1234_5678
+    assert used_fast_path, "Second load should hit the line the first load filled"
 
 
 # ============================================================================
@@ -2248,10 +2523,10 @@ async def test_cache_hit_halfword_uses_fast_path(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_cache_mmio_bypass(dut: Any) -> None:
-    """MMIO address always misses cache, even if data is present."""
+    """An MMIO load at the ROB head reads memory; the L0 never serves MMIO."""
     dut_if, model = await setup(dut)
 
-    # MMIO address: >= 0x40000000
+    # MMIO quadrant: addr[31:30] == 2'b01
     mmio_addr = 0x4000_0000
 
     # A load from an MMIO address must go through memory
@@ -2269,7 +2544,7 @@ async def test_cache_mmio_bypass(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 30: FLD fills both cache words, subsequent LW hits correct addresses
+# Test 29b: FLD fills both cache words, subsequent LW hits correct addresses
 # ============================================================================
 @cocotb.test()
 async def test_fld_cache_fill_both_words(dut: Any) -> None:
@@ -2311,10 +2586,11 @@ async def test_fld_cache_fill_both_words(dut: Any) -> None:
 
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
-    result, _ = await complete_load_fast_path_or_memory(
+    result, used_fast_path = await complete_load_fast_path_or_memory(
         dut_if, model, mem_data=low_word, expected_addr=base_addr
     )
     assert result.valid, "LW at base_addr should complete"
+    assert used_fast_path, "LW at base_addr should hit the line the FLD filled"
     assert result.tag == 2
     assert result.value == low_word, (
         f"LW at base_addr: expected 0x{low_word:08x}, got 0x{result.value:08x} "
@@ -2326,10 +2602,11 @@ async def test_fld_cache_fill_both_words(dut: Any) -> None:
 
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
-    result, _ = await complete_load_fast_path_or_memory(
+    result, used_fast_path = await complete_load_fast_path_or_memory(
         dut_if, model, mem_data=high_word, expected_addr=base_addr + 4
     )
     assert result.valid, "LW at base_addr+4 should complete"
+    assert used_fast_path, "LW at base_addr+4 should hit the line the FLD filled"
     assert result.tag == 3
     assert result.value == high_word, (
         f"LW at base_addr+4: expected 0x{high_word:08x}, got 0x{result.value:08x}"
@@ -2337,13 +2614,16 @@ async def test_fld_cache_fill_both_words(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 29: MMIO load blocks SQ forwarding even when SQ says can_forward
+# Test 29c: MMIO load blocks SQ forwarding even when SQ says can_forward
 # ============================================================================
 @cocotb.test()
 async def test_mmio_load_blocks_sq_forward(dut: Any) -> None:
-    """MMIO load must go to device even if SQ reports can_forward=True.
+    """An MMIO load never takes forwarded data, even when the SQ reports can_forward.
 
-    Exercises the LQ-side guard: sq_do_forward requires !lq_is_mmio.
+    With a matching older store it stalls instead. With
+    ENABLE_SQ_FORWARD_FAST_PATH=1 (the load_queue_sq_forward target) this
+    checks sq_do_forward's !sq_check_is_mmio_q term; with 0 no load forwards,
+    so only the stall is checked.
     """
     dut_if, model = await setup(dut)
 
@@ -2362,22 +2642,19 @@ async def test_mmio_load_blocks_sq_forward(dut: Any) -> None:
     sq_check = await wait_for_sq_check(dut_if)
     assert sq_check["valid"], "MMIO load at head should check SQ"
 
-    # Despite can_forward=True, the MMIO guard blocks forwarding, so the load
-    # gets no forwarded data. It does not issue to memory either: sq_can_issue
-    # is false while match=True, so it stalls. That is the required behavior;
-    # an MMIO load with a matching store waits for the store to commit.
-    mem_req = dut_if.read_mem_request()
-    assert not mem_req["en"], (
-        "MMIO load with SQ match should stall, not issue to memory"
-    )
-
-    # Step to ensure no forwarding occurred (entry should not become data_valid)
-    await dut_if.step()
-
-    # Verify no CDB broadcast happened (load is still waiting)
-    await Timer(1, unit="ns")
-    result = dut_if.read_fu_complete()
-    assert not result.valid, "MMIO load should not have been forwarded"
+    # Despite can_forward=True the load gets no forwarded data. It does not
+    # issue to memory either: sq_can_issue is false while match=True, so it
+    # stalls. That is the required behavior; an MMIO load behind a matching
+    # store waits until that store has drained.
+    for _ in range(6):
+        await Timer(1, unit="ns")
+        assert not dut_if.read_mem_request()["en"], (
+            "MMIO load with SQ match should stall, not issue to memory"
+        )
+        assert not dut_if.read_fu_complete().valid, (
+            "MMIO load completed from forwarded store data"
+        )
+        await dut_if.step()
 
     dut_if.drive_sq_all_older_known(False)
     dut_if.clear_sq_forward()
@@ -2640,9 +2917,9 @@ async def test_head_amo_ignores_physically_earlier_younger_amo(dut: Any) -> None
 
     from .lq_interface import AMOSWAP_W
 
-    # Physical order: younger pending AMO, then the true ROB-head AMO. Exact
-    # ROB-age dependency rows must not mistake that physical order for age, so
-    # the head AMO remains eligible.
+    # Physical order: younger pending AMO, then the ROB-head AMO. Dependency
+    # rows are built from ROB-tag age, not physical order, so the head AMO
+    # stays eligible.
     dut_if.drive_alloc(rob_tag=1, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOSWAP_W)
     model.alloc(1, False, MEM_SIZE_WORD, False, is_amo=True, amo_op=AMOSWAP_W)
     await dut_if.step()
@@ -2667,7 +2944,7 @@ async def test_head_amo_ignores_physically_earlier_younger_amo(dut: Any) -> None
     dut_if.drive_sq_empty(True)
     dut_if.drive_sq_committed_empty(True)
 
-    mem_req = await wait_for_mem_request(dut_if, max_cycles=AMO_RESCUE_THRESHOLD + 8)
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
     assert mem_req["en"], "ROB-head AMO should ignore physically earlier younger AMO"
     assert mem_req["addr"] == 0x9004, (
         f"Expected head AMO addr=0x9004, got 0x{mem_req['addr']:x}"
@@ -3003,7 +3280,7 @@ async def test_partial_flush_dependency_row_cannot_poison_reused_slot(
     await dut_if.step()
     dut_if.clear_alloc()
 
-    # The generation detector runs one cycle behind allocation.
+    # Dependency rows are built in the cycle after allocation.
     await dut_if.step()
     assert int(dut.lq_valid.value) == 0b0000_0111, "Unexpected initial physical layout"
     assert int(dut.older_amo_block_q.value) == (1 << 2), (
@@ -3032,7 +3309,7 @@ async def test_partial_flush_dependency_row_cannot_poison_reused_slot(
     )
     assert dut_if.count == 1, f"Expected one retained entry, got {dut_if.count}"
     assert int(dut.older_amo_block_q.value) == (1 << 2), (
-        "Partial-flush cleanup unexpectedly reintroduced the live recovery cone"
+        "Partial flush cleared the dependency row on its own edge, not the next"
     )
     assert not dut_if.read_sq_check()["valid"], (
         "Invalid stale-high row entered SQ check"
@@ -3117,9 +3394,9 @@ async def test_dependency_row_drains_on_immediate_next_edge_slot_reuse(
         await dut_if.step()
         dut_if.clear_alloc()
 
-    # Drain the final generation-detect pulse. Eight single-slot bundles also
-    # wrap the free-search cursor back to slot 0, so slot 1 will be the first
-    # and only hole after the flush.
+    # Step once so the last allocation's dependency row is built. Eight
+    # single-slot bundles also wrap the free-search cursor back to slot 0, so
+    # slot 1 will be the first and only hole after the flush.
     await dut_if.step()
     assert int(dut.lq_valid.value) == 0xFF
     assert int(dut.older_amo_block_q.value) == (1 << 1), (
@@ -3135,9 +3412,9 @@ async def test_dependency_row_drains_on_immediate_next_edge_slot_reuse(
         "Expected one dead-cycle stale-high dependency"
     )
 
-    # Reuse the sole hole immediately, with no cleanup idle cycle.
-    # Dependency D observes pre-edge !lq_valid[1] and clears the old row while
-    # allocation initializes the new physical generation with no ready state.
+    # Reuse the sole hole immediately, with no idle cycle between. On this edge
+    # the dependency logic sees !lq_valid[1] and clears the old row, while
+    # allocation writes the new entry with no ready state.
     dut_if.drive_alloc(rob_tag=16, size=MEM_SIZE_WORD)
     await dut_if.step()
     dut_if.clear_alloc()
@@ -3287,18 +3564,18 @@ async def test_amo_add(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 37b: Slot-2-only AMO uses the compact staged operation kind
+# Test 37b: Slot-2-only AMO gets its compact kind from the delayed write
 # ============================================================================
 @cocotb.test()
 async def test_slot2_only_amo_uses_compact_staged_kind(dut: Any) -> None:
-    """A slot-2-only AMO uses its compact kind after one-cycle write staging."""
+    """A slot-2-only AMO uses its compact kind, written one cycle after allocation."""
     dut_if, model = await setup(dut)
 
     from .lq_interface import AMOADD_W
 
-    # Allocate through slot 2 only, then send the earliest normal address
-    # update. The compact-kind request drains on this address-update edge,
-    # before SQ-check phase 2 can launch the AMO read.
+    # Allocate through slot 2 only, then send the address update as early as
+    # possible. The delayed compact-kind write lands on the address-update
+    # edge, before SQ-check phase 2 can launch the AMO read.
     rs2_val = 11
     old_val = 7
     dut_if.drive_alloc_2(
@@ -3359,11 +3636,11 @@ async def test_slot2_only_amo_uses_compact_staged_kind(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 37c: Every compact AMO kind preserves the original arithmetic
+# Test 37c: Every compact AMO kind computes the right result
 # ============================================================================
 @cocotb.test()
 async def test_all_compact_amo_kinds_preserve_arithmetic(dut: Any) -> None:
-    """Exercise all nine compact kinds, including signed/unsigned edge cases."""
+    """Check all nine compact AMO kinds, including signed and unsigned edge cases."""
     dut_if, _ = await setup(dut)
 
     from .lq_interface import (
@@ -3449,7 +3726,7 @@ async def test_all_compact_amo_kinds_preserve_arithmetic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 37d: MIN/MAX relation split preserves width, equality, and stalls
+# Test 37d: MIN/MAX width, equality, and write stalls
 # ============================================================================
 @cocotb.test()
 async def test_amo_minmax_relation_split_width_equality_and_stall(dut: Any) -> None:
@@ -3771,9 +4048,9 @@ async def test_rejected_slot2_amo_cannot_overwrite_slot1_kind(dut: Any) -> None:
         await dut_if.step()
         dut_if.clear_alloc()
 
-    # The tail update is deferred until the prior allocation's physical-generation
-    # pulse drains. Advance once more so tail points at the sole free entry and
-    # the missing second target defaults to that same index.
+    # tail_ptr advances one cycle after each allocation bundle. Step once more
+    # so it points at the sole free entry, where the missing second target
+    # also points.
     await dut_if.step()
 
     assert dut_if.count == LQ_DEPTH - 1
@@ -4027,29 +4304,25 @@ async def test_amo_write_invalidates_l0_cache(dut: Any) -> None:
 async def test_head_mmio_preempts_younger_fenced_hog(dut: Any) -> None:
     """ROB-head MMIO load issues despite younger loads monopolizing the slot.
 
-    The call_stress UART poll-load liveness wedge in miniature. Three loads,
-    ring order = physical slot order (head_ptr=0):
-      slot 0 hog   (age 4): staged first, then fenced behind a non-forwardable
-                            older store (match=1, can_forward=0), so it camps
-                            in the staging slot indefinitely.
+    Three loads, ring order = physical slot order (head_ptr=0):
+      slot 0 hog   (age 4): staged first, then held by an older store that
+                            overlaps it but cannot forward (match=1,
+                            can_forward=0), so it keeps the staging slot.
       slot 1 block (age 8): younger than hog, so it is the first eligible
-                            stored-scan pick once hog is in flight. Being
+                            stored-scan pick once hog is staged. Being
                             younger than the staged hog it cannot replace it
                             (sq_check_replace needs an older candidate), so
-                            the scan parks here and never advances to the head.
-      slot 2 head  (age 0): the ROB-head MMIO poll load, after block in ring
-                            order.
-    Normal eligibility includes the head MMIO in slot 2, but the ring encoder
-    still selects the earlier candidate in slot 1. The dedicated head path must
-    override that normal winner, after which sq_check_replace evicts the hog
-    (age 4 > head age 0). The second younger load keeps the competing
-    normal-scan winner present, so the test shows the head path winning while
-    preserving the original call_stress topology.
+                            the scan stops here and never reaches the head.
+      slot 2 head  (age 0): the ROB-head MMIO load, after block in ring order.
+    Normal eligibility includes the head MMIO load in slot 2, but the ring
+    encoder still selects the earlier candidate in slot 1. The ROB-head path
+    must override that winner, after which sq_check_replace evicts the hog
+    (age 4 > head age 0).
     """
     dut_if, model = await setup(dut)
 
-    head_tag = 2  # oldest (ROB head): the MMIO poll load, age 0
-    hog_tag = 6  # age 4: staged first, fenced, camps
+    head_tag = 2  # oldest (ROB head): the MMIO load, age 0
+    hog_tag = 6  # age 4: staged first, then held by the SQ match
     block_tag = 10  # age 8: younger than hog, parks the ring-order scan
     mmio_addr = 0x4000_0000  # UART region -> is_mmio
 
@@ -4176,9 +4449,9 @@ async def test_flush_cycle_cached_response_does_not_hide_fast_kill(dut: Any) -> 
     """A cached response in a partial-flush cycle must not mask the fast load's kill.
 
     The flush kill of the fast-tier owner is evaluated from its own launch
-    snapshot, not from the response-owner view that a same-cycle cached
-    response swings to its slot. Otherwise the flushed fast load would keep
-    its response debt unarmed and the stale data would complete it.
+    snapshot, not from the response-owner mux, which a same-cycle cached
+    response switches to its slot. Otherwise the flushed fast load's response
+    would not be marked for draining, and the stale data would complete it.
     """
     dut_if, model = await setup(dut)
     dut_if.drive_rob_head_tag(1)
@@ -4239,7 +4512,8 @@ async def test_full_flush_frees_the_router_canceled_cached_slot(dut: Any) -> Non
     dut_if.drive_mem_request_pending(False)
 
     parked = await _launch_cached(dut_if, model, rob_tag=1, address=0x8000_1500)
-    # The router parked the request (store-fire skew) and reports it pending.
+    # The router holds the request unaccepted (as when a write holds the port)
+    # and reports it pending.
     dut_if.drive_mem_request_pending(True)
     await dut_if.step()
     dut_if.drive_flush_all()
@@ -4266,8 +4540,9 @@ async def test_held_cached_response_skips_one_launch(dut: Any) -> None:
     """The router's held-response flag blocks exactly the next launch.
 
     A cached response held behind a fast beat is registered into the launch
-    hold: the cycle after the flag, no load launches (so the fast tier's
-    response port frees up), and the launch resumes the cycle after that.
+    hold: the cycle after the flag, no load launches, so back-to-back fast
+    launches cannot starve the held response, and the launch resumes the
+    cycle after that.
     """
     dut_if, model = await setup(dut)
     dut_if.drive_rob_head_tag(1)
@@ -4304,7 +4579,7 @@ async def test_store_invalidation_guards_only_the_hit_slot(dut: Any) -> None:
     hit = await _launch_cached(dut_if, model, rob_tag=1, address=0x8000_1300)
     clean = await _launch_cached(dut_if, model, rob_tag=2, address=0x8000_2300)
 
-    # A younger store commits into the first load's dword while both are in flight.
+    # A store write hits the first load's dword while both loads are in flight.
     dut_if.drive_cache_invalidate(0x8000_1300)
     await dut_if.step()
     dut_if.clear_cache_invalidate()
@@ -4397,7 +4672,7 @@ async def enter_normal_amo_compute(
 
 @cocotb.test()
 async def test_normal_amo_compute_widths_and_stalls(dut: Any) -> None:
-    """Every normal kind uses captured W/D operands, including both W lanes."""
+    """Every normal AMO computes from its captured W or D operands, in either W lane."""
     dut_if, _ = await setup(dut)
     from . import lq_interface as ops
 
@@ -4454,7 +4729,11 @@ async def test_normal_amo_compute_widths_and_stalls(dut: Any) -> None:
 async def test_amo_compute_retains_coherence_and_ignores_premature_done(
     dut: Any,
 ) -> None:
-    """A freed response slot leaves no DMA gap or premature AMO completion."""
+    """An AMO in AMO_COMPUTE keeps DMA admission busy and cannot complete early.
+
+    Its response slot is already free, so a repeated response and an early
+    write-done must not change its result or retire it.
+    """
     dut_if, _ = await setup(dut)
     address = 0x8000_0104
     dut.i_coh_query_addr.value = address
@@ -4478,7 +4757,7 @@ async def test_amo_compute_retains_coherence_and_ignores_premature_done(
     assert write["en"] and write["addr"] == address
     assert write["data"] == wbeat(1), "Compute used a newer response operand"
     assert not dut_if.read_fu_complete().valid
-    assert not int(dut.lq_data_valid.value), "Premature done released the owner"
+    assert not int(dut.lq_data_valid.value), "Premature done completed the AMO"
     assert bool(dut.o_coh_query_busy.value)
     for _ in range(3):
         await dut_if.step()
@@ -4497,7 +4776,10 @@ async def test_amo_compute_retains_coherence_and_ignores_premature_done(
 
 @cocotb.test()
 async def test_amo_compute_canceled_before_write(dut: Any) -> None:
-    """Full/reset/partial kills cancel COMPUTE even with a premature done."""
+    """A full flush, reset, or killing partial flush cancels an AMO in AMO_COMPUTE.
+
+    Write-done is also raised early, in the kill cycle.
+    """
     dut_if, _ = await setup(dut)
     for kill in ("full", "reset", "partial", "partial_all"):
         await dut_if.reset_dut()
@@ -4508,12 +4790,12 @@ async def test_amo_compute_canceled_before_write(dut: Any) -> None:
         elif kill == "reset":
             dut.i_rst_n.value = 0
         elif kill == "partial":
-            # Exercise the local owner-kill contract independently of the
-            # integrated ROB-head guarantee (which normally protects this AMO).
+            # Exercise the LQ's own kill logic. In the core the AMO is at the
+            # ROB head, so no partial flush reaches it.
             dut_if.drive_rob_head_tag(4)
             dut_if.drive_partial_flush(4, early_recovery=True)
         else:
-            dut_if.drive_partial_flush(4)  # head5 == flush_tag+1: flush-all-entries
+            dut_if.drive_partial_flush(4)  # head 5 == flush_tag + 1: flush_all_entries
         await dut_if.step()
         dut_if.clear_flush_all()
         dut_if.clear_partial_flush()
@@ -4521,9 +4803,9 @@ async def test_amo_compute_canceled_before_write(dut: Any) -> None:
         dut.i_rst_n.value = 1
         for _ in range(4):
             await Timer(1, unit="ns")
-            assert not dut_if.read_amo_mem_write()["en"], f"{kill}: killed owner wrote"
+            assert not dut_if.read_amo_mem_write()["en"], f"{kill}: killed AMO wrote"
             assert not dut_if.read_fu_complete().valid, (
-                f"{kill}: killed owner completed"
+                f"{kill}: the killed AMO completed"
             )
             assert not bool(dut.amo_cache_inv.value)
             await dut_if.step()
@@ -4532,7 +4814,7 @@ async def test_amo_compute_canceled_before_write(dut: Any) -> None:
 
 @cocotb.test()
 async def test_amo_compute_survives_younger_partial_flush(dut: Any) -> None:
-    """A younger recovery does not discard the surviving AMO head owner."""
+    """A partial flush of younger entries leaves an AMO in AMO_COMPUTE intact."""
     dut_if, _ = await setup(dut)
     await enter_normal_amo_compute(dut_if)
     dut_if.drive_partial_flush(6, early_recovery=True)
@@ -4546,3 +4828,42 @@ async def test_amo_compute_survives_younger_partial_flush(dut: Any) -> None:
     result = await wait_for_fu_complete(dut_if, max_cycles=8)
     assert result.valid and result.tag == 5
     await accept_fu_complete(dut_if)
+
+
+@cocotb.test(skip=os.environ.get("FROST_TEST_PREPARE_LOAD_WHILE_BUSY", "1") != "1")
+async def test_busy_port_prepares_load_without_probe_or_launch(dut: Any) -> None:
+    """While the memory port is busy, a load may be staged but goes no further.
+
+    It must not probe the SQ, complete from the L0, or launch until the port frees.
+    """
+    dut_if, model = await setup(dut)
+    address = 0x1800
+    dut_if.drive_mem_bus_busy(True)
+    dut_if.drive_sq_empty(False)
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+    await alloc_and_addr(dut_if, model, rob_tag=3, address=address)
+    for _ in range(6):
+        assert not dut_if.read_mem_request()["en"]
+        assert not dut_if.read_sq_check()["valid"]
+        assert not int(dut.o_sq_check_capture_valid.value)
+        assert not dut_if.read_fu_complete().valid
+        await dut_if.step()
+    assert int(dut.sq_check_pending.value), "Busy port prevented inert load staging"
+    assert int(dut.sq_check_addr_q.value) == address
+
+    dut_if.drive_mem_bus_busy(False)
+    await Timer(1, unit="ns")
+    check = dut_if.read_sq_check()
+    assert check["valid"] and check["addr"] == address
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    await dut_if.step()
+    request = dut_if.read_mem_request()
+    assert request["en"] and request["addr"] == address
+    await dut_if.step()
+    dut_if.drive_mem_response(0x1234ABCD)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid and result.tag == 3 and result.value == 0x1234ABCD

@@ -25,10 +25,14 @@
 
 #include "../../lib/include/uart.h"
 
-#define DDR_TEXT __attribute__((section(".ddr_text"), noinline))
+/* noipa (which implies noinline) keeps each DDR function a real call whose body
+ * runs on the caller's arguments. With noinline alone, GCC clones the functions
+ * for main's constant arguments and folds the long body and the leaf to
+ * constants. */
+#define DDR_TEXT __attribute__((section(".ddr_text"), noipa))
 
-/* Low-BRAM target for a cross-quadrant call. */
-__attribute__((noinline)) static int bram_scale(int x)
+/* Low-BRAM target for calls from DDR code. */
+__attribute__((noipa)) static int bram_scale(int x)
 {
     return 3 * x + 1;
 }
@@ -138,8 +142,9 @@ DDR_TEXT static unsigned ddr_long_body(unsigned v)
 }
 
 /* Reference computations compiled into low-BRAM text: they must match the DDR
- * versions exactly. noinline keeps each one a separate body. */
-__attribute__((noinline)) static unsigned ref_checksum(unsigned seed, int rounds)
+ * versions exactly. noipa keeps each one a separate body that computes its
+ * result at run time. */
+__attribute__((noipa)) static unsigned ref_checksum(unsigned seed, int rounds)
 {
     unsigned acc = seed;
     for (int i = 0; i < rounds; i++) {
@@ -155,7 +160,7 @@ __attribute__((noinline)) static unsigned ref_checksum(unsigned seed, int rounds
     return acc;
 }
 
-__attribute__((noinline)) static unsigned ref_long_body(unsigned v)
+__attribute__((noipa)) static unsigned ref_long_body(unsigned v)
 {
     STEP(0x01);
     STEP(0x02);

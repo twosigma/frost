@@ -18,8 +18,8 @@
   Generic RISC-V register file, parameterized by data width, number of read and
   write ports, and whether register 0 is hardwired to zero.
 
-  Used for both the integer register file (8 read ports, x0 hardwired zero,
-  XLEN = 64 bits) and the FP register file (12 read ports, no hardwired zero,
+  Used for both the integer register file (4 read ports, x0 hardwired zero,
+  XLEN = 64 bits) and the FP register file (6 read ports, no hardwired zero,
   64 bits for the D extension).
 
   Each read port is a separate RAM instance: sdp_dist_ram when NUM_WRITE_PORTS
@@ -30,7 +30,7 @@
 
   Parameters:
     DATA_WIDTH      - Register width in bits (64 for both the integer and FP files)
-    NUM_READ_PORTS  - Number of simultaneous read ports (8 for integer, 12 for FP/FMA)
+    NUM_READ_PORTS  - Number of simultaneous read ports (4 for integer, 6 for FP/FMA)
     NUM_WRITE_PORTS - Number of simultaneous write ports (1, or 2 for widen-commit)
     HARDWIRE_ZERO   - When 1, writes to register 0 are blocked (RISC-V x0 convention)
     DEPTH           - Number of registers (32)

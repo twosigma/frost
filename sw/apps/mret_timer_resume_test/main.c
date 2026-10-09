@@ -17,14 +17,15 @@
 /*
  * MRET-to-U-mode interrupt-resume-PC regression.
  *
- * The bug left interrupt_resume_pc at the MRET instruction because MRET uses a
- * full-flush path rather than normal commit. A timer already pending when
- * privilege dropped to U could trap before the first U instruction committed,
- * save that stale PC in mepc, and later make U-mode execute the kernel's MRET.
+ * MRET retires through a full flush rather than normal commit, so a timer
+ * already pending when privilege drops to U can trap before the first U
+ * instruction commits. That trap must save the MRET target in mepc. A stale
+ * interrupt_resume_pc would save the MRET's own PC instead and later make
+ * U-mode execute the kernel's MRET.
  *
  * With MIE clear, set mtimecmp=0 and MRET into `u_spin`. The first trap records
  * mcause, mepc, and MPP. PASS requires mcause=(1<<63)|7, MPP=U, and
- * mepc=&u_spin; the bug records the MRET PC instead.
+ * mepc=&u_spin.
  */
 
 #include <stdint.h>
@@ -43,17 +44,17 @@ static void uart_puts(const char *s)
         uart_putc(*s++);
 }
 
-static void uart_hex(uint32_t v)
+static void uart_hex(unsigned long v)
 {
     static const char hex[] = "0123456789ABCDEF";
     uart_puts("0x");
-    for (int i = 28; i >= 0; i -= 4)
+    for (int i = (int) (sizeof(unsigned long) * 8) - 4; i >= 0; i -= 4)
         uart_putc(hex[(v >> i) & 0xF]);
 }
 
 /* ---- trap state shared with the naked handler ---- */
 static volatile unsigned long g_cause; /* full XLEN mcause */
-static volatile uint32_t g_mepc;       /* resume PC saved by the first trap     */
+static volatile unsigned long g_mepc;  /* full XLEN resume PC saved by the first trap */
 static volatile uint32_t g_from_priv;  /* mstatus.MPP at trap entry = prev priv */
 
 /*
@@ -74,7 +75,7 @@ __attribute__((naked, aligned(4))) static void mret_timer_trap_handler(void)
                      "sd   t0, 0(t1)\n"
                      "csrr t0, mepc\n" /* saved resume PC of this trap */
                      "la   t1, g_mepc\n"
-                     "sw   t0, 0(t1)\n"
+                     "sd   t0, 0(t1)\n"
                      "csrr t0, mstatus\n"
                      "srli t0, t0, 11\n"
                      "andi t0, t0, 0x3\n" /* mstatus.MPP */
@@ -84,7 +85,7 @@ __attribute__((naked, aligned(4))) static void mret_timer_trap_handler(void)
                      "li   t1, 0x4000001C\n" /* MTIMECMP_HI: push compare to max to ack timer */
                      "li   t0, -1\n"
                      "sw   t0, 0(t1)\n"
-                     "csrr t0, mscratch\n" /* M-mode continuation set by run_in_umode */
+                     "csrr t0, mscratch\n" /* continuation set by run_in_umode_pending_timer */
                      "csrw mepc, t0\n"
                      "li   t0, 0x1800\n" /* MPP = M (0b11 << 11) */
                      "csrs mstatus, t0\n"
@@ -136,15 +137,16 @@ int main(void)
     enable_timer_interrupt(); /* mie.MTIE = 1 */
 
     /* Make the machine timer permanently pending before the MRET-to-U so it
-     * preempts at the first eligible cycle after privilege drops to U. That is
-     * the window in which interrupt_resume_pc may still hold the MRET's own PC. */
+     * preempts at the first eligible cycle after privilege drops to U. That can
+     * be before any U instruction commits, so interrupt_resume_pc must already
+     * hold the MRET target, not the MRET's own PC. */
     set_timer_cmp(0); /* mtime >= 0 always => MTIP asserted */
 
     unsigned long cause = run_in_umode_pending_timer(&u_spin);
     disable_timer_interrupt();
 
-    uint32_t mepc = g_mepc;
-    uint32_t want_pc = (uint32_t) &u_spin;
+    unsigned long mepc = g_mepc;
+    unsigned long want_pc = (unsigned long) &u_spin;
     int ok = (cause == ((1ul << 63) | 7u)) /* MTI: interrupt bit at XLEN-1 */
              && (g_from_priv == 0u) && (mepc == want_pc);
 

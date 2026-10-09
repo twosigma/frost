@@ -1,8 +1,9 @@
 // Copyright 2026 Two Sigma Open Source, LLC
 // SPDX-License-Identifier: Apache-2.0
 
-// One disposable worker owns one native process group. IPC closure means the
-// extension host died: cleanup must not depend on VS Code calling deactivate().
+// A single-use worker that runs one native tool in its own process group. It
+// kills the group when the IPC channel closes, so cleanup still happens if the
+// extension host dies without VS Code calling deactivate().
 import { ChildProcess, spawn } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 
@@ -87,11 +88,12 @@ process.on('message', (message: {
     child.once('spawn', () => send({ type: 'spawn', pid: child!.pid }));
     child.stdout!.on('data', data => send({ type: 'output', text: data.toString() }));
     child.stderr!.on('data', data => send({ type: 'output', stream: 'stderr', text: data.toString() }));
-    // Write callbacks report EPIPE to the caller; don't crash the owner worker.
+    // Write callbacks already report EPIPE to the caller. Without this listener
+    // the stream's 'error' event would crash the worker.
     child.stdin?.on('error', () => {});
     child.once('error', error => send({ type: 'error', message: error.message }));
-    // If a launcher exits with descendants still holding its streams, clean
-    // those descendants too. Success is reported only after the streams close.
+    // When the launcher exits, stop the rest of its process group too. Exit is
+    // reported only after the streams close and no live group member remains.
     child.once('exit', stop);
     child.once('close', (code, signal) => {
         finishWhenReleased(code, signal);

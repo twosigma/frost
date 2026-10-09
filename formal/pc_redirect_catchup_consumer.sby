@@ -1,0 +1,18 @@
+[tasks]
+prove
+
+[options]
+mode prove
+depth 2
+[engines]
+smtbmc boolector
+[script]
+read -sv -D SYNTHESIS riscv_pkg.sv fetch_redirect.sv
+read -formal -sv pc_redirect_catchup_consumer.sv
+prep -top pc_redirect_catchup_consumer -flatten
+select -assert-count 1 t:$check r:FLAVOR=assert %i
+select -assert-count 3 t:$check r:FLAVOR=assume %i
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/fetch_redirect.sv
+pc_redirect_catchup_consumer.sv

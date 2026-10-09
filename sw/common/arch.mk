@@ -13,7 +13,6 @@
 #    limitations under the License.
 
 # Architecture strings for the rv64/lp64 software build. The core is RV64-only.
-# rv32 support was retired after Phase 1.
 #
 # App and backend Makefiles compose their -march strings from
 # $(FROST_XLEN_PREFIX) plus their own extension suffix, and pick the

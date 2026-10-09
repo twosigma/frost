@@ -16,15 +16,15 @@
 
 /*
  * RISC-V Debug Module (Debug Spec 0.13.2 chapter 3),
- * minimal profile: one hart (the hartsel plumbing is WARL-0 for now; Phase 6
- * widens it), halt/resume/single-step through the core's Debug Mode take
- * class, abstract "access register" commands for the GPRs, an 8-word program
- * buffer with impebreak, abstractauto over data0/data1, ndmreset, no system
- * bus access (memory is reached through the program buffer, which is what
- * OpenOCD does anyway), authentication absent (always authenticated).
+ * minimal profile: one hart (hartsel reads as 0), halt/resume/single-step
+ * through the core's Debug Mode take class, abstract "access register"
+ * commands for the GPRs, an 8-word program buffer with impebreak,
+ * abstractauto over data0/data1, ndmreset, no system bus access (memory is
+ * reached through the program buffer, as OpenOCD does), authentication absent
+ * (always authenticated).
  *
  * How commands execute. The hart, once halted, sits in the debug slice's
- * park loop (riscv_pkg::DebugParkAddr). The module owns the slice's words
+ * park loop (riscv_pkg::DebugParkAddr). The module holds the slice's words
  * and lands them in the low BRAM through debug_slice_writer: the fixed words
  * (park, nop, the terminating ebreak, the resume dret) plus the abstract
  * words a0..a2 and the program buffer. An abstract command becomes
@@ -53,6 +53,13 @@
  * was not halted and parked, or was resuming), 7 other (the store mirror
  * overflowed during the command, see debug_slice_writer). dmactive = 0 holds
  * every other register in reset.
+ *
+ * Reset: i_rst is cpu_and_mem's system reset (the board-level reset, which
+ * on X3 follows the clock lock and DDR readiness, and the image-load reset),
+ * and it resets this module too, dmactive included. Debug Spec 0.13.2
+ * section 3.2 resets the module only at power-up and while dmactive is 0; on
+ * an FPGA these resets serve as power-up. ndmreset resets only the core and
+ * leaves the module's state.
  */
 module debug_module #(
     parameter int unsigned MEM_BYTE_ADDR_WIDTH = 18
@@ -69,7 +76,7 @@ module debug_module #(
     output logic [31:0] o_dmi_resp_data,
     output logic [ 1:0] o_dmi_resp_op,
 
-    // Hart 0 (cpu_ooo's debug seam)
+    // Hart 0 (cpu_ooo's debug interface)
     output logic        o_haltreq,
     output logic        o_go,
     output logic [31:0] o_go_addr,
@@ -175,9 +182,20 @@ module debug_module #(
   // ---------------------------------------------------------------------------
   // DMI decode
   // ---------------------------------------------------------------------------
+  // A request that arrives while the module is in reset waits, and is
+  // handled and answered once the reset ends, like any access then (with
+  // dmactive 0); dtm_core reports busy meanwhile. dtm_core holds the
+  // request's payload until its answer, so the payload is still on the inputs
+  // then. Every request is answered exactly once: dtm_core waits for every
+  // answer.
+  logic dmi_req_pending_q = 1'b0;
+  logic dmi_req_valid;
+  assign dmi_req_valid = (i_dmi_req_valid || dmi_req_pending_q) && !i_rst;
+  always_ff @(posedge i_clk) dmi_req_pending_q <= (i_dmi_req_valid || dmi_req_pending_q) && i_rst;
+
   logic dmi_read, dmi_write;
-  assign dmi_read  = i_dmi_req_valid && (i_dmi_req_op == 2'd1);
-  assign dmi_write = i_dmi_req_valid && (i_dmi_req_op == 2'd2);
+  assign dmi_read  = dmi_req_valid && (i_dmi_req_op == 2'd1);
+  assign dmi_write = dmi_req_valid && (i_dmi_req_op == 2'd2);
   logic [ 6:0] addr;
   logic [31:0] wdata;
   assign addr  = i_dmi_req_addr;
@@ -248,7 +266,7 @@ module debug_module #(
       o_dmi_resp_data  <= '0;
       o_dmi_resp_op    <= 2'd0;
     end else begin
-      o_dmi_resp_valid <= i_dmi_req_valid;
+      o_dmi_resp_valid <= dmi_req_valid;
       o_dmi_resp_data  <= rdata;
       o_dmi_resp_op    <= 2'd0;
     end

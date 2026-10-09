@@ -15,15 +15,15 @@
 """Unit tests for the frost_cache hierarchy (frost_cache_test_harness DUT).
 
 The harness wires the same backside topology the CPU integration uses:
-frost_cache_hierarchy (L1s + walker port, optional L2) ->
-line_port_axi_bridge -> axi_behavioral_memory. The bench drives raw tagged
-line-port transactions on all three upstream ports (up = D-side, iup =
-I-side, wup = page-table walker) and checks every read against a
-byte-granular reference model and every response id against the request that
-carried it. The harness defaults make the caches tiny (L1 1 KiB / L2 4 KiB)
-so evictions and thrash are constantly exercised; the registry runs the same
-tests in both optional-L2 topologies via -GHAS_L2={0,1} and with the memory
-model completing ids out of order via -GMEM_REORDER=1.
+frost_cache_hierarchy -> line_port_axi_bridge -> axi_behavioral_memory. The
+bench drives raw tagged line-port transactions on the data, instruction, and
+walker ports (up = D-side, iup = I-side, wup = page-table walker) and checks
+every read against a byte-granular reference model and every response id
+against the request that carried it. The harness defaults make the caches
+tiny (L1 1 KiB / L2 4 KiB) so evictions and thrash are constantly exercised;
+the registry also runs the same tests with fast maintenance via
+-GSIM_FAST_MAINT=1 and with the memory model completing ids out of order via
+-GMEM_REORDER=1.
 """
 
 import itertools
@@ -43,9 +43,10 @@ BASE_ADDR = 0x8000_0000
 # larger than L1 (1 KiB) and L2 (4 KiB) so both levels evict constantly.
 WINDOW_LINES = 1024
 
-# Each test gets a disjoint 256 KiB region: the behavioral DDR persists across
-# the in-run resets between cocotb tests (like real DDR), so a fresh
-# zero-default reference model is only valid in untouched address space.
+# Per-test regions 256 KiB apart; tests that share a region use different
+# lines. The behavioral DDR persists across the in-run resets between cocotb
+# tests (like real DDR), so a fresh zero-default reference model is only valid
+# in untouched address space.
 SMOKE_BASE = BASE_ADDR + 0x00000
 PARTIAL_BASE = BASE_ADDR + 0x40000
 EVICT_BASE = BASE_ADDR + 0x80000
@@ -64,14 +65,11 @@ WALK2_BASE = BASE_ADDR + 0x380000
 WALK3_BASE = BASE_ADDR + 0x3C0000
 
 RESP_TIMEOUT_CYCLES = 20_000
-# Harness default MEM_LATENCY; the overlap test bounds response spread by it.
-MEM_LATENCY_CYCLES = 12
 SWEEP_TIMEOUT_CYCLES = 200_000
 
 # The harness's up/iup/dma ports carry UP_ID_BITS=3 ids and the walker port
-# UP_ID_BITS-1 (its slot under the id tree's 2-bit prefix); each port's
-# driver cycles through its id space so consecutive transactions never
-# share one.
+# UP_ID_BITS-1 (the walker/L1I arbiter prefixes one bit); each port's driver
+# cycles through its id space so consecutive transactions never share one.
 UP_ID_BITS = 3
 _port_ids = {
     "up": itertools.cycle(range(1 << UP_ID_BITS)),
@@ -143,15 +141,12 @@ def _clear_inputs(dut: Any) -> None:
 
 
 def _l2_sweeping(dut: Any) -> bool:
-    """Report whether the optional L2's reset tag sweep still refuses requests.
+    """Report whether the L2's reset tag sweep still refuses requests.
 
-    The walker port's ready used to reach the bench through the arbiter tree
-    from the L2, so it doubled as the L2's ready; the walker sequencer now
-    answers ready itself, so the L2's maintenance state is read directly.
+    No upstream ready reflects the L2 (the walker sequencer answers ready
+    itself), so the bench reads the L2's maintenance state directly.
     """
-    if int(dut.o_has_l2.value) == 0:
-        return False
-    return int(dut.cache_hierarchy.gen_l2.l2_cache.o_maint_busy.value) == 1
+    return int(dut.cache_hierarchy.l2_cache.o_maint_busy.value) == 1
 
 
 async def _setup(dut: Any) -> None:
@@ -178,14 +173,16 @@ async def _setup(dut: Any) -> None:
 async def _port_transaction(
     dut: Any, port: str, *, write: bool, addr: int, wdata: int = 0, wstrb: int = 0
 ) -> int:
-    """Run one tagged line transaction on one of the three upstream ports.
+    """Run one tagged line transaction on an upstream port.
 
-    Ports: "up" = D-side, "iup" = I-side, "wup" = page-table walker.
+    Ports: "up" = D-side, "iup" = I-side, "wup" = page-table walker,
+    "dma" = DMA.
 
-    Returns the 256-bit read data (0 for writes). Inputs are driven at
-    falling edges so they are stable across the rising edge that samples
-    them; ready / resp_valid are likewise sampled mid-cycle at falling edges.
-    The request carries the port's next id and the response must echo it.
+    Returns the response's 256-bit rdata, which is don't-care for a write.
+    Inputs are driven at falling edges so they are stable across the rising
+    edge that samples them; ready / resp_valid are likewise sampled mid-cycle
+    at falling edges. The request carries the port's next id and the response
+    must echo it.
     """
     req_valid = getattr(dut, f"i_{port}_req_valid")
     req_ready = getattr(dut, f"o_{port}_req_ready")
@@ -201,12 +198,12 @@ async def _port_transaction(
     getattr(dut, f"i_{port}_req_wdata").value = wdata
     getattr(dut, f"i_{port}_req_wstrb").value = wstrb
     getattr(dut, f"i_{port}_req_id").value = req_id
-    # Let the deposit propagate before the first ready sample. The walker
-    # port's ready is request-dependent: the comb arbiter tree presents the
-    # winning payload to the bridge, whose ready depends on the presented
-    # request, so raising valid can itself raise ready mid-cycle. Sampling
-    # the pre-deposit value would miss the fire at the next rising edge and
-    # leave valid high, which is a same-id double request.
+    # Let the deposit propagate before the first ready sample. A port's ready
+    # may depend on the presented request (the DMA sequencer refuses a line
+    # one of its entries holds), so the new request can itself raise ready
+    # mid-cycle. Sampling the pre-deposit value would miss the fire at the
+    # next rising edge and leave valid high, which is a same-id double
+    # request.
     await Timer(1, unit="ns")
 
     # Hold valid until a cycle where ready is high: that rising edge fires.
@@ -307,6 +304,17 @@ def _copy_perf_counts(
     return {level: dict(values) for level, values in counts.items()}
 
 
+def _perf_field(dut: Any, level: str, field: str) -> int:
+    """Read one field of one instance from the packed hierarchy event bundle."""
+    raw = int(dut.o_perf_events.value)
+    shift = PERF_INSTANCE_SHIFTS[level] + PERF_INSTANCE_WIDTH
+    for name in PERF_FIELDS:
+        shift -= PERF_FIELD_WIDTHS[name]
+        if name == field:
+            return (raw >> shift) & ((1 << PERF_FIELD_WIDTHS[name]) - 1)
+    raise KeyError(field)
+
+
 async def _check_read(dut: Any, model: ReferenceModel, addr: int) -> None:
     got = await _line_transaction(dut, write=False, addr=addr)
     expected = model.read_line(addr)
@@ -344,7 +352,7 @@ async def test_partial_write_merges_on_miss(dut: Any) -> None:
 
 @cocotb.test()
 async def test_dirty_eviction_roundtrip(dut: Any) -> None:
-    """Two lines aliasing the same L1 index: dirty victim must survive."""
+    """Lines aliasing one L1 index: every dirty victim must survive eviction."""
     await _setup(dut)
     model = ReferenceModel()
     full = (1 << LINE_BYTES) - 1
@@ -360,7 +368,7 @@ async def test_dirty_eviction_roundtrip(dut: Any) -> None:
 
 @cocotb.test()
 async def test_word_strobe_writes(dut: Any) -> None:
-    """4-byte strobe groups in every lane (the adapter's store pattern)."""
+    """4-byte strobe groups in every word lane (cached_tier_adapter's word-store pattern)."""
     await _setup(dut)
     model = ReferenceModel()
     addr = STROBE_BASE + 64 * LINE_BYTES
@@ -390,7 +398,7 @@ async def test_random_traffic_vs_model(dut: Any) -> None:
             if style < 0.4:
                 wstrb = full  # whole line (eviction-shaped)
             elif style < 0.8:
-                wstrb = 0xF << (4 * rng.randrange(8))  # one word (CPU store shape)
+                wstrb = 0xF << (4 * rng.randrange(8))  # one word (a CPU word store)
             else:
                 wstrb = rng.getrandbits(32)  # arbitrary sparse bytes
                 if wstrb == 0:
@@ -402,7 +410,7 @@ async def test_random_traffic_vs_model(dut: Any) -> None:
         else:
             await _check_read(dut, model, addr)
 
-    # Final sweep: every line the model knows about must read back exactly.
+    # Final sweep: every 7th line of the window must read back exactly.
     for line in range(0, WINDOW_LINES, 7):
         await _check_read(dut, model, RANDOM_BASE + line * LINE_BYTES)
 
@@ -467,7 +475,7 @@ async def test_iport_reads_written_back_data(dut: Any) -> None:
 
 @cocotb.test()
 async def test_iport_does_not_snoop_l1d_dirty(dut: Any) -> None:
-    """v1 semantics: L1D-dirty data is invisible to the I-side.
+    """L1D-dirty data is invisible to the I-side.
 
     The I-side fills from the shared level below the arbiter; fence.i exists
     to force dirty data down before refetching.
@@ -536,13 +544,12 @@ async def test_mixed_id_traffic(dut: Any) -> None:
 
 @cocotb.test()
 async def test_ports_overlap_below_arbiter(dut: Any) -> None:
-    """Simultaneous D and I misses both fire downstream without a grant lock.
+    """Simultaneous D and I misses are in flight at the L2 together.
 
-    One request from each L1 reaches the tagged arbiter, which lets both reach
-    the bridge back to back. In the L1-only shape the two DDR reads therefore
-    overlap and the responses land within one memory latency of each other;
-    the L2 shape spaces their launches through its serialized tag front-end,
-    so there only the data and id routing are checked.
+    One request from each L1 reaches the tagged arbiter, which has no grant
+    lock, so the second reaches the L2 without waiting for the first's
+    response and both fetch at once: the L2's outstanding-miss count must
+    reach 2, and each response must carry its own data and id.
     """
     await _setup(dut)
     model = ReferenceModel()
@@ -556,8 +563,8 @@ async def test_ports_overlap_below_arbiter(dut: Any) -> None:
         await _line_transaction(dut, write=True, addr=addr, wdata=data, wstrb=full)
     # Push both lines out of every cache level with reads of aliasing lines
     # (the harness caches are tiny: 256 lines overflow L1D and L2 alike), so
-    # the demand misses below find clean victims and go straight to their
-    # fills. A dirty victim would serialize a writeback ahead of the fill.
+    # the demand misses below find clean victims and send nothing downstream
+    # but their fills.
     for line in range(256):
         addr = OVERLAP_BASE + 0x10000 + line * LINE_BYTES
         got = await _line_transaction(dut, write=False, addr=addr)
@@ -565,11 +572,15 @@ async def test_ports_overlap_below_arbiter(dut: Any) -> None:
 
     done_cycle: dict[str, int] = {}
     cycle = [0]
+    peak_l2_misses = [0]
 
     async def _count_cycles() -> None:
         while True:
             await FallingEdge(dut.i_clk)
             cycle[0] += 1
+            peak_l2_misses[0] = max(
+                peak_l2_misses[0], _perf_field(dut, "l2", "miss_outstanding")
+            )
 
     counter = cocotb.start_soon(_count_cycles())
 
@@ -588,14 +599,12 @@ async def test_ports_overlap_below_arbiter(dut: Any) -> None:
 
     spread = abs(done_cycle["up"] - done_cycle["iup"])
     dut._log.info(
-        f"overlap test: responses {spread} cycles apart (has_l2={int(dut.o_has_l2.value)})"
+        f"overlap test: responses {spread} cycles apart, "
+        f"peak L2 misses outstanding {peak_l2_misses[0]}"
     )
-    if int(dut.o_has_l2.value) == 0:
-        # Both fills were in flight at once: the second response cannot trail
-        # the first by a whole memory round trip.
-        assert spread < MEM_LATENCY_CYCLES, (
-            f"misses did not overlap: {spread} cycles apart"
-        )
+    assert peak_l2_misses[0] >= 2, (
+        f"the two misses never fetched at the L2 together (peak {peak_l2_misses[0]})"
+    )
 
 
 @cocotb.test()
@@ -624,14 +633,12 @@ async def test_walker_port_reads_shared_level(dut: Any) -> None:
 
 @cocotb.test()
 async def test_three_ports_overlap_below_arbiters(dut: Any) -> None:
-    """Simultaneous D, I, and walker misses all fire downstream together.
+    """Simultaneous D, I, and walker misses are in flight at the L2 together.
 
-    The arbiter tree has no grant lock at either level, so three tagged
-    reads (one per master) can be in flight below it at once. In the
-    L1-only shape the three DDR reads overlap and the responses land within
-    one memory latency of each other; the L2 shape spaces their launches
-    through its serialized tag front-end, so there only the data and id
-    routing are checked.
+    The arbiter tree has no grant lock at either level, so each of three
+    tagged reads (one per master) reaches the L2 without waiting for another's
+    response, and all three fetch at once: the L2's outstanding-miss count
+    must reach 3, and each response must carry its own data and id.
     """
     await _setup(dut)
     model = ReferenceModel()
@@ -652,11 +659,15 @@ async def test_three_ports_overlap_below_arbiters(dut: Any) -> None:
 
     done_cycle: dict[str, int] = {}
     cycle = [0]
+    peak_l2_misses = [0]
 
     async def _count_cycles() -> None:
         while True:
             await FallingEdge(dut.i_clk)
             cycle[0] += 1
+            peak_l2_misses[0] = max(
+                peak_l2_misses[0], _perf_field(dut, "l2", "miss_outstanding")
+            )
 
     counter = cocotb.start_soon(_count_cycles())
 
@@ -676,12 +687,12 @@ async def test_three_ports_overlap_below_arbiters(dut: Any) -> None:
 
     spread = max(done_cycle.values()) - min(done_cycle.values())
     dut._log.info(
-        f"3-port overlap: responses {spread} cycles apart (has_l2={int(dut.o_has_l2.value)})"
+        f"3-port overlap: responses {spread} cycles apart, "
+        f"peak L2 misses outstanding {peak_l2_misses[0]}"
     )
-    if int(dut.o_has_l2.value) == 0:
-        assert spread < MEM_LATENCY_CYCLES, (
-            f"misses did not overlap: {spread} cycles apart"
-        )
+    assert peak_l2_misses[0] >= 3, (
+        f"the three misses never fetched at the L2 together (peak {peak_l2_misses[0]})"
+    )
 
 
 @cocotb.test()
@@ -886,38 +897,39 @@ class _WritebackHazardMonitor:
         self._task.cancel()
 
 
-async def _fire_iup_read(dut: Any, addr: int) -> None:
-    """Present one instruction-side read and return once it has fired.
+async def _fire_read(dut: Any, port: str, addr: int) -> None:
+    """Present one read on a port and return once it has fired.
 
     Its response is never collected: the read exists only to occupy a miss
-    slot of the shared level for one memory round trip.
+    slot of the L2 for one memory round trip, or for as long as the bench
+    holds the level below.
     """
-    req_id = next(_port_ids["iup"])
+    req_id = next(_port_ids[port])
     await FallingEdge(dut.i_clk)
-    dut.i_iup_req_valid.value = 1
-    dut.i_iup_req_write.value = 0
-    dut.i_iup_req_addr.value = addr
-    dut.i_iup_req_id.value = req_id
+    getattr(dut, f"i_{port}_req_valid").value = 1
+    getattr(dut, f"i_{port}_req_write").value = 0
+    getattr(dut, f"i_{port}_req_addr").value = addr
+    getattr(dut, f"i_{port}_req_id").value = req_id
     await Timer(1, unit="ns")
     for _ in range(RESP_TIMEOUT_CYCLES):
-        if int(dut.o_iup_req_ready.value) == 1:
+        if int(getattr(dut, f"o_{port}_req_ready").value) == 1:
             break
         await FallingEdge(dut.i_clk)
     else:
-        raise AssertionError(f"iup request never accepted (addr=0x{addr:08x})")
+        raise AssertionError(f"{port} request never accepted (addr=0x{addr:08x})")
     await FallingEdge(dut.i_clk)
-    dut.i_iup_req_valid.value = 0
+    getattr(dut, f"i_{port}_req_valid").value = 0
 
 
 async def _hold_shared_level(
     dut: Any, model: ReferenceModel, base: int, k: int
 ) -> None:
-    """Fill the shared level's miss slots so its next miss stalls a round trip.
+    """Fill the L2's miss slots so its next miss stalls a round trip.
 
     Three data-side partial-write misses, acknowledged at allocation, and two
-    instruction-side reads fired between them leave five fills in flight
-    (the shared level has four miss slots), so a writeback that misses there
-    right afterwards waits in its tag stage until the first fill returns from
+    instruction-side reads fired between them leave five fills in flight at
+    the L2, which has four miss slots, so a writeback that misses there right
+    afterwards waits in its tag stage until the first fill returns from
     memory. Every line has an L1 index of its own, never revisited, so none
     of this evicts anything or writes anything back.
     """
@@ -926,7 +938,7 @@ async def _hold_shared_level(
     await _line_transaction(dut, write=True, addr=lines[0], wdata=0, wstrb=1)
     model.write_line(lines[0], 0, 1)
     for addr in instr:
-        await _fire_iup_read(dut, addr)
+        await _fire_read(dut, "iup", addr)
     for addr in lines[1:]:
         await _line_transaction(dut, write=True, addr=addr, wdata=0, wstrb=1)
         model.write_line(addr, 0, 1)
@@ -1050,6 +1062,76 @@ async def test_no_fetch_refill_waits_for_own_writeback(dut: Any) -> None:
     )
 
 
+# fence_state_e ordinal of FENCE_L1I_REQ (frost_cache_hierarchy.sv): IDLE,
+# L1D_REQ, L1D_WAIT, L1I_REQ, ...
+FENCE_L1I_REQ = 3
+
+
+@cocotb.test()
+async def test_fence_request_raised_again_mid_sequence(dut: Any) -> None:
+    """A request raised again mid-sequence is answered after a fresh writeback.
+
+    A full flush (an interrupt taken while fence.i waits for the cache sync)
+    drops the request once the sequence's L1D writeback walk has ended, and
+    the sweeps run to their end anyway. A store that reaches the L1D after
+    that walk, followed by the re-executed fence.i raising the request again
+    before the old sequence finishes, must not be answered by the old
+    sequence: done may rise only after a writeback-all that covers the
+    store, so the next L1I fill returns it. The bench keeps the old sequence
+    in its L1I phase by holding an L1I miss at the L2 (i_down_hold): the L1I
+    cannot start its invalidate-all until that miss completes.
+    """
+    await _setup(dut)
+    model = ReferenceModel()
+    full = (1 << LINE_BYTES) - 1
+    hierarchy = dut.cache_hierarchy
+    code = FENCE2_BASE + 0x20000 + 5 * LINE_BYTES
+    held = FENCE2_BASE + 0x30000 + 9 * LINE_BYTES
+
+    await FallingEdge(dut.i_clk)
+    dut.i_down_hold.value = 1
+    await _fire_read(dut, "iup", held)
+
+    # The first request: nothing is dirty, so the L1D walk ends at once and
+    # the sequence waits in its L1I phase.
+    dut.i_fence_sync.value = 1
+    for _ in range(SWEEP_TIMEOUT_CYCLES):
+        await FallingEdge(dut.i_clk)
+        if int(hierarchy.fence_state_q.value) == FENCE_L1I_REQ:
+            break
+    else:
+        raise AssertionError("the fence sequence never reached its L1I phase")
+    # The flush drops the request, and a store then reaches the L1D. A
+    # whole-line write installs without a fetch, so it completes while the
+    # level below is held.
+    dut.i_fence_sync.value = 0
+    wdata = _line_int(bytes([(0x6B + 3 * b) & 0xFF for b in range(32)]))
+    model.write_line(code, wdata, full)
+    await _line_transaction(dut, write=True, addr=code, wdata=wdata, wstrb=full)
+    # The re-executed fence.i raises the request again before the old
+    # sequence has finished.
+    await FallingEdge(dut.i_clk)
+    assert int(hierarchy.fence_state_q.value) == FENCE_L1I_REQ, (
+        "the old sequence left its L1I phase before the request came back"
+    )
+    dut.i_fence_sync.value = 1
+    await FallingEdge(dut.i_clk)
+    dut.i_down_hold.value = 0
+    for _ in range(SWEEP_TIMEOUT_CYCLES):
+        await FallingEdge(dut.i_clk)
+        if int(dut.o_fence_done.value) == 1:
+            break
+    else:
+        raise AssertionError("fence sync never completed")
+    dut.i_fence_sync.value = 0
+    await _settle(dut)
+
+    got = await _port_transaction(dut, "iup", write=False, addr=code)
+    assert got == model.read_line(code), (
+        "fence.i was answered by a sequence whose writeback missed the store"
+    )
+
+
 @cocotb.test()
 async def test_fence_sync_idle_cache(dut: Any) -> None:
     """A fence with nothing dirty completes and disturbs nothing."""
@@ -1134,28 +1216,111 @@ async def test_perf_events_partition_known_traffic_and_exclude_maintenance(
     assert counts["l1i"]["hit"] + counts["l1i"]["miss"] == counts["l1i"]["access"]
     assert counts["l1d"]["hit"] + counts["l1d"]["miss"] == counts["l1d"]["access"]
 
-    if int(dut.o_has_l2.value) != 0:
-        # Cold D/I reads + three ordinary dirty L1D victims written to L2.
-        assert counts["l2"]["access"] == 5
-        assert counts["l2"]["hit"] == 0
-        assert counts["l2"]["miss"] == 5
-        assert counts["l2"]["writeback"] == 1
-        assert counts["l2"]["miss_outstanding"] > 0
-        assert counts["l2"]["hit"] + counts["l2"]["miss"] == counts["l2"]["access"]
-    else:
-        assert counts["l2"] == {field: 0 for field in PERF_FIELDS}
+    # Cold D/I reads + three ordinary dirty L1D victims written to L2.
+    assert counts["l2"]["access"] == 5
+    assert counts["l2"]["hit"] == 0
+    assert counts["l2"]["miss"] == 5
+    assert counts["l2"]["writeback"] == 1
+    assert counts["l2"]["miss_outstanding"] > 0
+    assert counts["l2"]["hit"] + counts["l2"]["miss"] == counts["l2"]["access"]
 
     before_fence = _copy_perf_counts(counts)
     await _fence_sync(dut)
     await _settle(dut)
     await Timer(1, unit="ns")
 
-    # dirty_l2_alias_2 is written through L1D and collides with
-    # dirty_l2_alias in L2, inducing another L2 victim writeback. Neither the
-    # walk nor that lower-level work is ordinary traffic, so no event or
-    # miss-occupancy total may move.
+    # The fence writes dirty_l2_alias_2 back from the L1D; in the L2 it
+    # collides with dirty_l2_alias, still dirty there, and forces another L2
+    # victim writeback. Neither the walk nor that lower-level work is ordinary
+    # traffic, so no event or miss-occupancy total may move.
     assert counts == before_fence
 
     stop[0] = True
     await FallingEdge(dut.i_clk)
     await monitor
+
+
+@cocotb.test()
+async def test_l2_stall_events_exclude_fence_writebacks(dut: Any) -> None:
+    """The L2's stall events leave out the stalls of fence.i writeback traffic.
+
+    Fills held at the L2 (i_down_hold) make a fence's L1D writeback, which
+    carries the maintenance bit, stall there: first on an index conflict
+    with a pending fill, then with every L2 miss slot taken by pending
+    fills. A monitor of the L2's decision stage must see both stalls while
+    the L2's conflict and slot-full events stay at zero. The bench's
+    ordinary traffic never stalls at the L2, which the monitor checks too.
+    """
+    await _setup(dut)
+    l2 = dut.cache_hierarchy.l2_cache
+    counts = _new_perf_counts()
+    stop = [False]
+    monitor = cocotb.start_soon(_monitor_perf_events(dut, counts, stop))
+    stalls = {"maint_conflict": 0, "maint_full": 0, "plain": 0}
+
+    async def _watch_l2_decisions() -> None:
+        while True:
+            await FallingEdge(dut.i_clk)
+            if not int(l2.decide.value):
+                continue
+            conflict = int(l2.stall_conflict.value) | int(l2.stall_wb_snapshot.value)
+            full = int(l2.stall_full.value)
+            if int(l2.t_maint_q.value):
+                stalls["maint_conflict"] += conflict
+                stalls["maint_full"] += full
+            else:
+                stalls["plain"] += conflict | full
+
+    watcher = cocotb.start_soon(_watch_l2_decisions())
+    full = (1 << LINE_BYTES) - 1
+    base = PERF_BASE + 0x20000
+
+    async def _fence_behind_held_fills(
+        dirty: int, reads: list[tuple[str, int]]
+    ) -> None:
+        """Dirty one L1D line, hold fills of `reads` at the L2, and fence."""
+        wdata = _line_int(bytes([(0xA7 + b) & 0xFF for b in range(32)]))
+        await _line_transaction(dut, write=True, addr=dirty, wdata=wdata, wstrb=full)
+        await FallingEdge(dut.i_clk)
+        dut.i_down_hold.value = 1
+        for port, addr in reads:
+            await _fire_read(dut, port, addr)
+        await _settle(dut, 20)
+        fence = cocotb.start_soon(_fence_sync(dut))
+        await _settle(dut, 100)
+        dut.i_down_hold.value = 0
+        await fence
+        await _settle(dut)
+
+    # An L1I miss on the dirty line's L2 index (another tag) is pending when
+    # the writeback arrives.
+    dirty = base + 5 * LINE_BYTES
+    await _fence_behind_held_fills(dirty, [("iup", dirty + 4096)])
+    # Two L1I misses, a walk and a DMA read take the L2's four miss slots.
+    reads = base + 0x4000
+    await _fence_behind_held_fills(
+        base + 0x2000 + 6 * LINE_BYTES,
+        [
+            ("iup", reads + 9 * LINE_BYTES),
+            ("iup", reads + 12 * LINE_BYTES),
+            ("wup", reads + 15 * LINE_BYTES),
+            ("dma", reads + 18 * LINE_BYTES),
+        ],
+    )
+
+    stop[0] = True
+    await FallingEdge(dut.i_clk)
+    await monitor
+    watcher.cancel()
+    assert stalls["plain"] == 0, f"ordinary traffic stalled at the L2: {stalls}"
+    assert stalls["maint_conflict"] > 0, (
+        "the fence's writeback never met an index conflict at the L2"
+    )
+    assert stalls["maint_full"] > 0, (
+        "the fence's writeback never found the L2's miss slots full"
+    )
+    counted = (counts["l2"]["conflict_stall"], counts["l2"]["slot_full_stall"])
+    assert counted == (0, 0), (
+        f"the L2 counted {counted[0]} conflict stalls and {counted[1]} slot-full "
+        "stalls of fence.i writebacks"
+    )

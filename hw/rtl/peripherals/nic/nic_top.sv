@@ -19,14 +19,13 @@
  * controller, DMA front-end, RX and TX engines) around nic_mac_wrap (the
  * MAC/PCS in its own clock domains, the packet FIFOs and the crossings).
  *
- * Toward the SoC: the register window (32-bit lane writes and a 64-bit
- * read pair by byte offset), one DMA line port (ids of IdBits), a level
- * interrupt, the MAC clocks, the raw PMA interface and the board's PHY
- * status and control lines, and the PCS block lock for a board-level
- * transceiver supervisor. RAW_LOOPBACK selects whether the raw TX-to-RX
- * loopback exists (nic_mac_wrap): 1 for one MAC clock shared by both
- * directions, 0 for independent TX and RX clocks, where PHY_STATUS reads
- * CLK_SHARED as 0.
+ * Toward the SoC: the register window (32-bit writes and a 64-bit read pair,
+ * by byte offset), one DMA line port (ids of IdBits), and a level interrupt.
+ * Toward the board: the MAC clocks, the raw PMA interface, the PHY status and
+ * control lines, and the PCS block lock for a board-level transceiver
+ * supervisor. RAW_LOOPBACK selects whether the raw TX-to-RX loopback exists
+ * (nic_mac_wrap): 1 for one MAC clock shared by both directions, 0 for
+ * independent TX and RX clocks, where PHY_STATUS reads CLK_SHARED as 0.
  *
  * i_rst carries the next-cycle value of the caller's registered subsystem
  * reset (the D input of cpu_and_mem's rst_core). nic_top registers it
@@ -91,9 +90,9 @@ module nic_top #(
   // rst_q reproduces the caller's registered reset exactly (i_rst is its next
   // value). nic_rst_q equals rst_q || soft_rst in every cycle, computed one
   // cycle ahead from i_rst and the reset controller's next core-reset value.
-  // Both are registers with replication headroom: the OR gate they replace
-  // fanned out to about 1300 enables and write enables across the engines,
-  // served from wherever the CPU's reset replica sat.
+  // Both are local registers that synthesis can replicate (max_fanout), so the
+  // engines' many enables and write enables are not all driven from wherever
+  // the CPU's reset replica sits.
   logic core_rst_next;
   (* keep = "true", equivalent_register_removal = "no", max_fanout = 64 *)logic rst_q;
   (* keep = "true", equivalent_register_removal = "no", max_fanout = 128 *)logic nic_rst_q;

@@ -1,6 +1,6 @@
-// Frost header for riscv-torture tests
+// FROST header for riscv-torture tests
 //
-// Included at the top of each adapted torture test. It supplies _start in
+// Included at the top of each torture test. It supplies _start in
 // .text.init, which:
 //   1. Sets up the stack pointer and global pointer
 //   2. Copies .data/.sdata from ROM to RAM
@@ -49,7 +49,7 @@ _start:
     addi t0, t0, 4
     j 5b
 
-    // Enable FPU (mstatus.FS = Initial)
+    // Enable the FPU (mstatus.FS = Dirty) and clear fcsr
 6:  li t0, MSTATUS_FS
     csrs mstatus, t0
     csrwi fcsr, 0
@@ -62,13 +62,13 @@ _start:
     // Paged environment: run the test body, and the footer's
     // signature dump, in S-mode under an Sv39 identity map, so every fetch
     // and data access translates through the ITLB/DTLB and the walker over
-    // 1 GiB leaves. The root table sits in .data, 4 KiB-aligned. The ddr
-    // config keeps .data in cached DDR, which is where page tables have to
-    // live. Its three entries are [0] PA 0, the BRAM and the rest of the low
-    // map, RWX; [1] PA 0x4000_0000, the devices including the UART the footer
-    // prints through, RW; [2] PA 0x8000_0000, DDR holding code, data and the
-    // signature, RWX. A=D=1 everywhere, so Svade never traps. Traps still
-    // land in M-mode at _frost_torture_trap, since medeleg=0.
+    // 1 GiB leaves. The root table sits in .data, 4 KiB-aligned; the ddr
+    // config keeps .data in cached DDR, the only memory the walker reads.
+    // The table's three entries are [0] PA 0, the BRAM and the rest of the
+    // low map, RWX; [1] PA 0x4000_0000, the devices including the UART the
+    // footer prints through, RW; [2] PA 0x8000_0000, DDR holding code, data
+    // and the signature, RWX. A=D=1 everywhere, so Svade never traps. Traps
+    // still land in M-mode at _frost_torture_trap, since medeleg resets to 0.
     la t0, _frost_torture_root_pt
     li t1, 0xCF                                   // V|R|W|X|A|D, PPN 0
     sd t1, 0(t0)

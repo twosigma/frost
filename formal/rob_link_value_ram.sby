@@ -1,0 +1,63 @@
+[tasks]
+prove_bin prove bin wide
+prove_oh prove oh wide
+prove_narrow_bin prove bin narrow
+prove_narrow_oh prove oh narrow
+bmc_free_bin bmc_free bin wide
+bmc_free_oh bmc_free oh wide
+bmc_free_small_bin bmc_free bin small
+bmc_free_small_oh bmc_free oh small
+cover_bin cover bin wide
+cover_oh cover oh wide
+
+[options]
+prove: mode prove
+prove: depth 4
+bmc_free: mode bmc
+bmc_free_bin: depth 4
+bmc_free_oh: depth 4
+bmc_free_small_bin: depth 8
+bmc_free_small_oh: depth 8
+cover: mode cover
+cover: depth 8
+# Counterexample replay solver for the abc tasks (the image has no yices).
+small: aigsmt boolector
+
+[engines]
+~small: smtbmc boolector
+# Boolector stalls on some small free-read BMC steps; bit-level BMC does not.
+small: abc bmc3
+
+[script]
+read -formal -sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv
+read -formal -sv rob_link_value_ram.sv rob_link_value_equiv.sv
+oh: chparam -set ONEHOT_READ 1 rob_link_value_equiv
+narrow: chparam -set LINK_WIDTH 32 rob_link_value_equiv
+small: chparam -set DATA_WIDTH 8 -set LINK_WIDTH 4 rob_link_value_equiv
+bmc_free: chparam -set WATCH_READ 0 rob_link_value_equiv
+prep -top rob_link_value_equiv
+~cover: chformal -remove -cover
+# Guard against a run that proves nothing: exact property/assumption counts.
+select -assert-count 1 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 7 t:$check r:FLAVOR=cover %i
+~cover: select -assert-none t:$check r:FLAVOR=cover %i
+select -assert-none t:$assert t:$assume t:$cover
+prove_bin: select -assert-count 2 t:$check r:FLAVOR=assume %i
+prove_narrow_bin: select -assert-count 2 t:$check r:FLAVOR=assume %i
+prove_oh: select -assert-count 3 t:$check r:FLAVOR=assume %i
+prove_narrow_oh: select -assert-count 3 t:$check r:FLAVOR=assume %i
+bmc_free_bin: select -assert-count 1 t:$check r:FLAVOR=assume %i
+bmc_free_oh: select -assert-count 2 t:$check r:FLAVOR=assume %i
+bmc_free_small_bin: select -assert-count 1 t:$check r:FLAVOR=assume %i
+bmc_free_small_oh: select -assert-count 2 t:$check r:FLAVOR=assume %i
+cover_bin: select -assert-count 2 t:$check r:FLAVOR=assume %i
+cover_oh: select -assert-count 3 t:$check r:FLAVOR=assume %i
+# Exactly one anyconst (the watched address) and no other free state.
+~bmc_free: select -assert-count 1 t:$anyconst
+
+[files]
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_link_value_ram.sv
+rob_link_value_equiv.sv

@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Demo that prints the FPGA clock frequency over UART.
+# Prints the FPGA_CPU_CLK_FREQ build parameter over UART.
 SRC_C   := ../../lib/src/uart.c print_clock_speed.c
 include ../../common/common.mk

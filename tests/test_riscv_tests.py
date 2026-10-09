@@ -14,7 +14,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Run self-checking riscv-tests ISA tests and benchmarks on Frost.
+"""Run self-checking riscv-tests ISA tests and benchmarks on FROST.
 
 Tests report ``<<PASS>>`` or ``<<FAIL>>`` through UART; no signature
 comparison is needed.
@@ -40,7 +40,7 @@ from typing import Any
 
 import pytest
 
-from test_run_cocotb import CocotbRunner
+from test_run_cocotb import CocotbRunner, run_in_process_group
 
 # Directory layout
 TESTS_DIR = Path(__file__).parent.resolve()
@@ -64,9 +64,9 @@ ISA_TEST_SUITES = {
     "rv64uzbkb": "RV64 Zbkb Extension",
     "rv64mi": "RV64 Machine-Mode",
     "rv64si": "RV64 Supervisor-Mode",  # S-mode
-    # rv64uzbc: skipped, Frost does not implement Zbc
-    # rv64uzbkx: skipped, Frost does not implement Zbkx
-    # rv64uzfh: skipped, Frost does not implement Zfh
+    # rv64uzbc: skipped, FROST does not implement Zbc
+    # rv64uzbkx: skipped, FROST does not implement Zbkx
+    # rv64uzfh: skipped, FROST does not implement Zfh
 }
 
 # Memory configurations, passed to the riscv_tests Makefiles as MEM_CONFIG,
@@ -78,14 +78,15 @@ MEM_CONFIGS = ("bram", "ddr")
 DEFAULT_MEM_CONFIG = "bram"
 
 # Test environments, passed to the riscv_tests Makefile as ENV:
-#   p (default): the physical environment (bare M-mode, the upstream -p
-#                variants).
-#   v:           the virtual environment (the upstream -v variants, Phase 3
-#                M5). The test runs as demand-paged Sv39 user code under a
-#                supervisor kernel (env_v/), so fetch and data are translated,
-#                page faults are delegated to S, and the kernel's fault handler
-#                manages the A/D bits (Svade). DDR-only, since page tables and
-#                user frames live in cached DDR; user-level suites only.
+#   p (default): the physical environment (the upstream -p variants): no
+#                kernel, and each test runs in the mode its RVTEST_RV64*
+#                macro selects (user mode for rv64u*).
+#   v:           the virtual environment (the upstream -v variants). The test
+#                runs as demand-paged Sv39 user code under a supervisor kernel
+#                (env_v/), so fetch and data are translated, page faults are
+#                delegated to S, and the kernel's fault handler manages the A/D
+#                bits (Svade). DDR-only, since page tables and user frames live
+#                in cached DDR; user-level suites only.
 ENVS = ("p", "v")
 DEFAULT_ENV = "p"
 V_ENV_SUITES = frozenset(
@@ -110,25 +111,25 @@ PARALLEL_UNSAFE_MESSAGE = (
 # ISA exclusions applied in every tier.
 ISA_SKIP_TESTS: dict[str, set[str]] = {
     "rv64ui": {
-        "ma_data",  # Frost traps on misaligned access rather than handling in hardware
+        # Needs misaligned loads and stores done in hardware; FROST traps them
+        # (the test environment installs a trap vector).
+        "ma_data",
     },
     "rv64mi": {
         "breakpoint",  # Requires debug trigger module
-        "pmpaddr",  # PMP not implemented on Frost
-        "ma_addr",  # Expects misaligned loads to complete with data; Frost traps instead
-        "instret_overflow",  # Excluded pending revalidation with writable machine counters
+        "pmpaddr",  # PMP not implemented on FROST
     },
     "rv64si": {
-        # Expects the hardware to set the PTE A/D bits; Frost is Svade (A=0 /
+        # Expects the hardware to set the PTE A/D bits; FROST is Svade (A=0 /
         # D=0 trap and software sets them), so the test's D-bit check cannot
         # pass.
         "dirty",
     },
 }
 
-# ISA tests to skip in the virtual environment only. Empty today, since the
-# demand pager handles every rv64u* case, but kept as the hook for env-specific
-# skips (a bare `{...}` with only comments would be a dict, not a set).
+# ISA tests to skip in the virtual environment only. It is empty because the
+# demand pager handles every rv64u* test. Each entry's value must be a set:
+# braces holding only comments make an empty dict.
 ISA_SKIP_TESTS_V: dict[str, set[str]] = {}
 
 # ISA tests to skip in the bram tier only. They exercise the cached DDR tier
@@ -142,11 +143,11 @@ ISA_SKIP_TESTS_BRAM: dict[str, set[str]] = {
         "fence_i",
     },
     "rv64si": {
-        # Sv39 page-table walk: Frost's page tables must live in cached DDR
-        # (the walker's line port reaches the cached tier, not low BRAM: the
-        # PMA rule); in the bram tier this test's page tables sit in low BRAM
-        # and every walk is refused. It runs in the ddr tier, where the whole
-        # image (page tables included) is cached-DDR-resident.
+        # Sv39 page-table walk: FROST's page tables must live in cached DDR
+        # (the walker's line port reaches only the cached tier, so it refuses
+        # any other PTE address); in the bram tier this test's page tables sit
+        # in low BRAM and every walk is refused. It runs in the ddr tier, where
+        # the whole image (page tables included) is cached-DDR-resident.
         "icache-alias",
     },
 }
@@ -189,9 +190,6 @@ def discover_isa_tests(
         return []
 
     tests = sorted(suite_dir.glob("*.S"))
-
-    # Makefrag is not a test.
-    tests = [t for t in tests if t.stem != "Makefrag"]
 
     # Apply skip lists: always-skip, plus the bram-only skips in the bram tier
     # and the virtual-environment skips.
@@ -309,14 +307,7 @@ def run_simulation(
             f"make COCOTB_TEST_MODULES='cocotb_tests.test_real_program' "
             f"TOPLEVEL=frost"
         )
-        result = subprocess.run(
-            ["bash", "-c", cmd],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-            timeout=7200,
-        )
+        result = run_in_process_group(["bash", "-c", cmd], env=env, timeout=7200)
 
         if simulator == "verilator" and result.returncode == 0:
             runner._update_verilator_toplevel_marker(sim_build_dir)
@@ -346,7 +337,7 @@ def check_pass_fail(sim_result: subprocess.CompletedProcess[str]) -> tuple[str, 
     # may contain the literal '<<PASS>>' string, causing a false positive.
     if sim_result.returncode != 0:
         if "<<FAIL>>" in combined_output:
-            # Extract test number from <<FAIL>> #XXXXXXXX output
+            # Report the <<FAIL>> line, which carries the failing test number.
             for line in combined_output.splitlines():
                 if "<<FAIL>>" in line:
                     return "FAIL", f"Test reported failure: {line.strip()}"
@@ -526,9 +517,9 @@ class TestRiscvBenchmarks:
 
 
 def main() -> int:
-    """Run riscv-tests on Frost."""
+    """Run riscv-tests on FROST."""
     parser = argparse.ArgumentParser(
-        description="Run riscv-tests ISA tests and benchmarks on Frost",
+        description="Run riscv-tests ISA tests and benchmarks on FROST",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Examples:
@@ -581,7 +572,7 @@ Available benchmarks: {", ".join(BENCHMARKS.keys())}
         type=int,
         default=1,
         metavar="N",
-        help="Number of workers; currently only 1 is safe and supported",
+        help="Number of workers; only 1 is supported",
     )
     parser.add_argument(
         "--mem-config",
@@ -599,7 +590,7 @@ Available benchmarks: {", ".join(BENCHMARKS.keys())}
         default=DEFAULT_ENV,
         help=(
             f"Test environment: {', '.join(ENVS)} (default: {DEFAULT_ENV}). "
-            "p = bare M-mode (the -p variants); v = demand-paged Sv39 user "
+            "p = physical, no kernel (the -p variants); v = demand-paged Sv39 user "
             "code under the env_v supervisor kernel (the -v variants; "
             "requires --mem-config ddr, user-level suites only)."
         ),

@@ -12,7 +12,13 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Cycle-exact performance CSR half selection through actual RTL boundaries."""
+"""Cycle-exact tests of the performance-counter CSR half select.
+
+The harness feeds the real commit-bus register and aggregator into two csr_file
+instances. One returns the aggregator's preselected 32-bit half
+(UsePerfCsrHalf); the reference selects the half from the full 64-bit counter.
+Their outputs must match on every cycle.
+"""
 
 import random
 from typing import Any
@@ -27,16 +33,16 @@ MPERF_DATAH = 0xFC1
 MASK32 = (1 << 32) - 1
 
 
-class Seam:
-    """Drive raw commit inputs; compare before and after every actual clock edge."""
+class CsrPathChecker:
+    """Drive raw commit inputs; compare both CSR paths before and after every clock edge."""
 
     def __init__(self, dut: Any) -> None:
-        """Bind the actual RTL seam and start the diagnostic cycle counter."""
+        """Bind the harness and start the diagnostic cycle counter."""
         self.dut = dut
         self.cycles = 0
 
     async def step(self, **inputs: int) -> int:
-        """Change inputs before one edge and check the original capture value."""
+        """Apply inputs, check both paths, clock one edge, and return the pre-edge data."""
         d = self.dut
         d.i_clk.value = 0
         for name, value in inputs.items():
@@ -68,8 +74,8 @@ class Seam:
         for _ in range(count):
             await self.step(raw_valid=0, **inputs)
 
-    async def access(self, address: int, value: int = 0, op: int = 2) -> int:
-        """Launch one raw CSR access and collect its next-cycle read capture."""
+    async def access(self, address: int, value: int = 0, op: int = 0) -> int:
+        """Launch one raw CSR access (a csrr by default); return its next-cycle read capture."""
         await self.step(
             raw_address=address,
             raw_value=value,
@@ -81,7 +87,7 @@ class Seam:
         return await self.step(raw_valid=0)
 
 
-async def setup(dut: Any) -> Seam:
+async def setup(dut: Any) -> CsrPathChecker:
     """Reset both CSR implementations and their shared upstream pipeline."""
     for name in (
         "clk",
@@ -101,7 +107,7 @@ async def setup(dut: Any) -> Seam:
         "mtime",
     ):
         getattr(dut, "i_" + name).value = 0
-    s = Seam(dut)
+    s = CsrPathChecker(dut)
     await s.step(rst=1)
     await s.step(rst=1)
     await s.step(rst=0)
@@ -110,7 +116,7 @@ async def setup(dut: Any) -> Seam:
 
 @cocotb.test()
 async def test_consecutive_halves_use_same_edge_payload_and_address(dut: Any) -> None:
-    """Changing raw address and both data halves every cycle cannot cross-pair."""
+    """Each half read pairs data and address from the same edge, even when both change."""
     s = await setup(dut)
     await s.access(MPERF_SEL, 42, 1)  # Wrapper block has controllable 64-bit data.
     await s.idle(3)
@@ -121,7 +127,7 @@ async def test_consecutive_halves_use_same_edge_payload_and_address(dut: Any) ->
             raw_address=MPERF_DATAH if n & 1 else MPERF_DATA,
             raw_valid=1,
             raw_is_csr=1,
-            raw_op=2,
+            raw_op=0,
             raw_value=0,
             wrapper_data=word,
         )
@@ -131,7 +137,7 @@ async def test_consecutive_halves_use_same_edge_payload_and_address(dut: Any) ->
 
 @cocotb.test()
 async def test_snapshot_selector_and_previous_cache_bank_phase(dut: Any) -> None:
-    """Actual CSR writes drive selector, snapshot strobes and previous-bank state."""
+    """CSR writes drive the selector, the snapshot capture, and the previous-bank select."""
     s = await setup(dut)
     await s.idle(7, dispatch_event=1, cache_access=1)
     await s.idle(2, dispatch_event=0, cache_access=0)
@@ -151,15 +157,16 @@ async def test_snapshot_selector_and_previous_cache_bank_phase(dut: Any) -> None
     await s.idle(3)
     assert int(dut.o_previous.value) == 1
     assert await s.access(MPERF_DATA) == 7
-    # No software spacing here: check the documented old-data pipeline while
-    # counter selection and the CSR half address change on adjacent cycles.
+    # Back-to-back accesses change the selector and the half address on
+    # adjacent cycles. Read data lags the selector (perf README, "CSR
+    # interface"), and both paths must return the same value.
     for address, value, op in (
         (MPERF_SEL, 42, 1),
-        (MPERF_DATAH, 0, 2),
+        (MPERF_DATAH, 0, 0),
         (MPERF_SEL, 130, 1),
-        (MPERF_DATA, 0, 2),
+        (MPERF_DATA, 0, 0),
         (MPERF_CTL, 1, 1),
-        (MPERF_DATAH, 0, 2),
+        (MPERF_DATAH, 0, 0),
     ):
         await s.step(
             raw_address=address,
@@ -174,15 +181,32 @@ async def test_snapshot_selector_and_previous_cache_bank_phase(dut: Any) -> None
 
 
 @cocotb.test()
+async def test_mperfctl_read_keeps_previous_bank_select(dut: Any) -> None:
+    """A read of mperfctl leaves the bank select; only a write sets or clears it."""
+    s = await setup(dut)
+    await s.access(MPERF_CTL, 2, 1)  # csrrw: select the preceding bank
+    await s.idle(3)
+    assert int(dut.o_previous.value) == 1
+    # A csrr, or a set/clear with rs1 = x0 (dispatch clears op[1:0]): mperfctl
+    # reads 0, so a write-back of the read value would clear the select.
+    await s.access(MPERF_CTL)
+    await s.idle(3)
+    assert int(dut.o_previous.value) == 1, "a read of mperfctl cleared the bank select"
+    await s.access(MPERF_CTL, 2, 3)  # csrrc with bit 1: a write, so it clears
+    await s.idle(3)
+    assert int(dut.o_previous.value) == 0
+
+
+@cocotb.test()
 async def test_flush_exception_bubbles_and_reset_keep_current_qualification(
     dut: Any,
 ) -> None:
-    """A captured hint cannot revive a killed read or add a reset to CSR output."""
+    """A captured half cannot revive a killed read; reset does not clear the CSR output."""
     s = await setup(dut)
     await s.access(MPERF_SEL, 42, 1)
     await s.idle(3, wrapper_data=0xA5A5A5A55A5A5A5A)
     await s.step(
-        raw_valid=1, raw_is_csr=1, raw_address=MPERF_DATAH, raw_value=0, raw_op=2
+        raw_valid=1, raw_is_csr=1, raw_address=MPERF_DATAH, raw_value=0, raw_op=0
     )
     assert int(dut.o_reference_comb.value) == 0xA5A5A5A5
     # Immediate flush after commit capture masks valid before the next edge.
@@ -215,14 +239,16 @@ async def test_ordinary_csr_and_same_cycle_fp_forwarding_unchanged(dut: Any) -> 
     s = await setup(dut)
     await s.access(0x340, 0x0123456789ABCDEF, 1)  # mscratch
     assert await s.access(0x340) == 0x0123456789ABCDEF
-    await s.step(raw_address=0xC01, raw_valid=1, raw_is_csr=1, raw_op=2, raw_value=0)
+    await s.step(raw_address=0xC01, raw_valid=1, raw_is_csr=1, raw_op=0, raw_value=0)
     assert await s.step(raw_valid=0, mtime=0xDEADBEEF87654321) == 0xDEADBEEF87654321
     await s.access(0x001, 0, 1)  # Clear fflags.
-    await s.step(raw_address=0x001, raw_valid=1, raw_is_csr=1, raw_op=2, raw_value=0)
+    await s.step(raw_address=0x001, raw_valid=1, raw_is_csr=1, raw_op=0, raw_value=0)
     assert await s.step(raw_valid=0, fp_flags=0b10001, fp_flags_valid=1) == 0b10001
     await s.idle(1, fp_flags_valid=0)
-    # Existing write priority takes the CSRRS value from stored fflags (zero),
-    # while the read forwards 10001; the next-cycle replay is suppressed.
+    # The read's write-back (csr_file writes every committed CSR access) has
+    # priority over the same-cycle flag accumulation and takes its value from
+    # the stored fflags (zero), while the read forwards 10001; the next-cycle
+    # replay is suppressed.
     assert await s.access(0x003) == 0
     # A distinct FP commit without a CSR write still accumulates normally.
     await s.idle(1, fp_flags=0b00110, fp_flags_valid=1)
@@ -233,7 +259,7 @@ async def test_ordinary_csr_and_same_cycle_fp_forwarding_unchanged(dut: Any) -> 
 
 @cocotb.test()
 async def test_random_raw_commit_and_snapshot_histories(dut: Any) -> None:
-    """Stress phase equality across changing data and nonserialized raw histories."""
+    """Both paths agree under random back-to-back commits, flushes, resets, and snapshots."""
     s = await setup(dut)
     rng = random.Random(0xC5A32)
     addresses = (
@@ -249,7 +275,7 @@ async def test_random_raw_commit_and_snapshot_histories(dut: Any) -> None:
     )
     for _ in range(1024):
         address = rng.choice(addresses)
-        value, op = 0, 2
+        value, op = 0, 0
         if address == MPERF_SEL:
             value, op = rng.choice((0, 7, 42, 49, 106, 129, 130, 255)), 1
         elif address == MPERF_CTL:

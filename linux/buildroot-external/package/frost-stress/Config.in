@@ -15,11 +15,10 @@
 config BR2_PACKAGE_FROST_STRESS
 	bool "frost-stress"
 	help
-	  Boot-time userspace stress: a timer/signal storm, vfork/exec,
-	  futex ping-pong over MAP_SHARED, two-process LR/SC contention,
-	  and cycles/instret/time/ipc_x1000 deltas around a fixed workload.
-	  QEMU reports counters=unavailable because Zicntr is not U-readable.
-	  QEMU CI and the hardware soak check
+	  Boot-time userspace stress: a timer/signal storm, fork/exec with
+	  copy-on-write checks, futex ping-pong over MAP_SHARED, two-process
+	  atomic-add contention, and cycles/instret/time/ipc_x1000 deltas
+	  around a fixed workload. QEMU CI and the hardware boot soak check
 	  FROST_USERSPACE_STRESS_PASS/_FAIL.
 
 	  Also installs frost_sigprobe, the signal-return probe inittab

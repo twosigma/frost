@@ -1,6 +1,5 @@
-# X3 board top-level file list
-# Includes FROST core plus X3-specific clock generation, the NIC transceiver
-# and JTAG interface
+# X3 board file list: the FROST RTL, the common Xilinx subsystem, and the X3
+# board modules
 
 # FROST RISC-V processor core and all submodules
 -f $(ROOT)/hw/rtl/frost.f
@@ -13,6 +12,9 @@ $(ROOT)/boards/x3/x3_ddr_init.sv
 
 # X3 NIC transceiver (GTY wizard core from fpga/build/x3_gty_ip.tcl)
 $(ROOT)/boards/x3/x3_nic_gty.sv
+
+# X3 CPU clock transceiver (GTY wizard core from fpga/build/x3_gty_ip.tcl)
+$(ROOT)/boards/x3/x3_cpu_clock_gty.sv
 
 # X3 board wrapper with UltraScale+ FPGA primitives
 $(ROOT)/boards/x3/x3_frost.sv

@@ -15,17 +15,17 @@
 """Unit bench for x3_ddr_init, the board's power-up DDR4 region writer.
 
 The module exists so no read of the ECC-checked array precedes a write of
-it, and the board top trusts three things about it: that it covers the whole
-region, that every write is a full controller word so the controller never
-reads the array to recompute a check code, and that o_done means finished
-rather than started. An AXI write slave here records what the module asks
-for and the tests hold it to those three, under an accepting slave and under
-one that stalls both channels and delays responses. A fourth test holds the
-module past o_done and requires the channels to stay quiet, since the board
-top hands them back to the CPU there.
+it, and the board top relies on three properties: it covers the whole region,
+every write is a full controller word (so the controller never reads the
+array to recompute a check code), and o_done means finished, not started. A
+recording AXI write slave checks those properties, once accepting every
+request and once stalling both channels and delaying responses. Other tests
+cover idle channels before i_start and after o_done (when the board top hands
+them to the CPU), the AXI handshake rules, and a refused write, which must
+withhold o_done.
 
-The region is shrunk to a few kibibytes with -GREGION_BYTES so a run covers
-it completely; on the board it is a gibibyte.
+The registry shrinks the region with -GREGION_BYTES so a run covers all of
+it; on the board it is 1 GiB.
 """
 
 import os
@@ -38,9 +38,10 @@ from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
 
 CLOCK_PERIOD_NS = 10
 
-# The registry passes the same values as -G parameters and as environment, so
-# one bench covers every shape it registers. The defaults are the module's own
-# where it has one, so a bare run still describes a real configuration.
+# Each registry entry sets these environment variables to the module's
+# REGION_BYTES and MAX_OUTSTANDING (given with -G or left at the default), so
+# one bench covers every registered shape. The fallbacks match the main
+# x3_ddr_init entry; DATA_BITS and BEATS_PER_BURST are the module's defaults.
 REGION_BYTES = int(os.environ.get("DDR_INIT_REGION_BYTES", "4096"))
 MAX_OUTSTANDING = int(os.environ.get("DDR_INIT_MAX_OUTSTANDING", "4"))
 DATA_BITS = 256
@@ -68,9 +69,9 @@ class WriteSlave:
     and ``b_delay`` the cycles a response waits behind its burst, so one
     class covers both the accepting and the stalling slave.
 
-    ``address_waits_for_data`` makes it the hostile-but-legal slave: it holds
-    AWREADY low until it has seen WVALID. AXI permits that, and a master that
-    held WVALID back until AWREADY would deadlock against it.
+    ``address_waits_for_data`` holds AWREADY low until the slave has seen
+    WVALID. AXI permits that, and a master that held WVALID back until
+    AWREADY would deadlock against it.
     """
 
     def __init__(  # noqa: D107 - the class docstring covers the arguments
@@ -185,11 +186,10 @@ class WriteSlave:
 
             await RisingEdge(dut.i_clk)
             self._queued = [max(0, delay - 1) for delay in self._queued]
-            # A response exists only once BOTH the address and the whole
-            # burst's data have been accepted. Queuing on the data alone would
-            # let a response precede its address, which the protocol forbids
-            # and which would let the module's completion rule be tested
-            # against something no real slave does.
+            # Queue a response only once both the address and the whole
+            # burst's data have been accepted. Queuing on the data alone could
+            # send a response before its address, which AXI forbids and no
+            # real slave does.
             if aw_fire:
                 self._addresses_accepted += 1
             if w_last:
@@ -323,13 +323,13 @@ async def test_quiet_after_done(dut: Any) -> None:
 
 @cocotb.test()
 async def test_starts_with_the_default_outstanding_cap(dut: Any) -> None:
-    """The cap must not truncate against the counters and stall the start.
+    """The outstanding cap must not truncate to zero and block the start.
 
-    The cap is compared at the counter width, which is sized by the burst
-    count, so a region small enough for a narrow counter and a cap wider than
-    it would leave the comparison reading zero: the address channel would
-    never assert and nothing would be written. The registry runs this bench
-    once in exactly that shape.
+    The cap is compared at the counter width, which the burst count sets. With
+    a region small enough for a narrow counter, an unclamped cap wider than
+    the counter would truncate to zero, both valids would stay low, and
+    nothing would be written. The x3_ddr_init_shallow registry entry runs this
+    bench in that shape.
     """
     await _reset(dut)
     slave = WriteSlave(dut, random.Random(23))
@@ -356,12 +356,12 @@ async def test_address_may_wait_for_data(dut: Any) -> None:
 
 @cocotb.test()
 async def test_requests_do_not_wait_for_ready(dut: Any) -> None:
-    """Both request channels must offer while the level below never accepts.
+    """Both request channels must assert valid while ready stays low.
 
-    A valid gated by its own ready satisfies every handshake the other tests
-    count -- it just completes each one in the cycle ready happens to be high
-    -- and is never seen waiting, so no persistence check can catch it. Holding
-    both readys low does: the module still has to present its request.
+    A valid gated by its own ready completes every handshake the other tests
+    count (each in a cycle where ready happens to be high) and is never seen
+    waiting, so the persistence check cannot catch it. Holding both readys low
+    does: the module still has to present its request.
     """
     await _reset(dut)
     dut.i_awready.value = 0
@@ -370,7 +370,7 @@ async def test_requests_do_not_wait_for_ready(dut: Any) -> None:
     await FallingEdge(dut.i_clk)
     dut.i_start.value = 1
 
-    # Address is offered first; data follows it by a cycle at the earliest.
+    # Give the module a few cycles to latch i_start before checking.
     for _ in range(4):
         await RisingEdge(dut.i_clk)
     for cycle in range(40):
@@ -393,8 +393,8 @@ async def test_a_refused_write_never_completes(dut: Any) -> None:
 
     The memory controller answers OKAY unconditionally, but the interconnect
     between it and this module answers a request it cannot route with DECERR,
-    and a run that took one has not written what it thinks it has. Reporting
-    done there would release the board onto memory nobody established.
+    and that write did not happen. Reporting done then would release the board
+    onto memory that was never fully written.
     """
     await _reset(dut)
     slave = WriteSlave(dut, random.Random(41), bresp=RESP_DECERR)

@@ -14,8 +14,20 @@
 
 """Typed RAT DUT access and packed-struct conversion helpers.
 
-Verilator flattens packed structs into bit vectors, so this interface packs
-and unpacks their fields.
+Verilator flattens packed structs into bit vectors, so this interface unpacks
+the lookup results. It also keeps a shadow RATModel and drives synthetic
+ROB-valid, epoch, and head-tag inputs in place of a real ROB.
+
+The synthetic ROB-valid mask counts a tag live from its rename or checkpoint
+save until a commit that matches the shadow RAT's current mapping of its
+destination, or a full flush. So a tag renamed again before it commits, a tag
+committed without a destination, and a checkpoint owner's branch tag stay
+live until the next full flush. The tests rely on this: their models ignore
+ROB validity, and they commit tags that a real ROB would not retire. Epoch
+bits flip only when a checkpoint owner allocates; a test that needs the
+post-allocation epoch of a renamed tag sets it with add_rob_entry_epoch_bits.
+The DUT and the shadow model see the same mask, so restores agree, but a
+restore rarely finds a dead tag to filter out.
 """
 
 from typing import Any
@@ -63,11 +75,19 @@ class RATInterface:
         self._pending_rename_2: tuple[int, int, int] | None = None
         self._pending_commit: tuple[int, int, int, bool] | None = None
         self._pending_commit_2: tuple[int, int, int, bool] | None = None
-        self._pending_checkpoint_save: tuple[int, int, int, int, bool] | None = None
+        self._pending_checkpoint_save: tuple[int, int, int, int, int, bool] | None = (
+            None
+        )
         self._pending_checkpoint_restore: int | None = None
         self._pending_checkpoint_free: int | None = None
+        self._pending_checkpoint_free_2: int | None = None
         self._pending_checkpoint_bulk_free_mask = 0
         self._pending_flush_all = False
+        # Driven rename/save valids, mirrored onto dispatch's candidate inputs.
+        self._alloc_valid_drv = 0
+        self._alloc_valid_2_drv = 0
+        self._checkpoint_save_drv = 0
+        self._checkpoint_save_for_slot2_drv = 0
 
     # =========================================================================
     # Clock and Reset
@@ -125,6 +145,7 @@ class RATInterface:
         self._pending_checkpoint_save = None
         self._pending_checkpoint_restore = None
         self._pending_checkpoint_free = None
+        self._pending_checkpoint_free_2 = None
         self._pending_checkpoint_bulk_free_mask = 0
         self._pending_flush_all = False
 
@@ -135,8 +156,7 @@ class RATInterface:
         self.dut.i_fp_src2_addr.value = 0
         self.dut.i_fp_src3_addr.value = 0
 
-        # Source lookup addresses - slot 2 (2-wide dispatch).  Verilator
-        # zero-initializes top-level inputs anyway, so these only mirror slot 1.
+        # Source lookup addresses - slot 2 (2-wide dispatch)
         self.dut.i_int_src1_addr_2.value = 0
         self.dut.i_int_src2_addr_2.value = 0
         self.dut.i_fp_src1_addr_2.value = 0
@@ -187,18 +207,29 @@ class RATInterface:
         self.dut.i_checkpoint_branch_tag.value = 0
         self.dut.i_ras_tos.value = 0
         self.dut.i_ras_valid_count.value = 0
+        self.dut.i_ras_top.value = 0
         # Slot-2-branch checkpoint flag: selects the snapshot overlay of
         # slot-1's same-cycle rename.
         self.dut.i_checkpoint_save_for_slot2.value = 0
+
+        # Dispatch's early allocation candidates and the bundle fire, kept
+        # consistent with the drives above by _drive_alloc_candidates.
+        self._alloc_valid_drv = 0
+        self._alloc_valid_2_drv = 0
+        self._checkpoint_save_drv = 0
+        self._checkpoint_save_for_slot2_drv = 0
+        self._drive_alloc_candidates()
 
         # Checkpoint restore
         self.dut.i_checkpoint_restore.value = 0
         self.dut.i_checkpoint_restore_id.value = 0
         self.dut.i_checkpoint_restore_reclaim_all.value = 0
 
-        # Checkpoint free
+        # Checkpoint free (both ports) and the bulk free mask
         self.dut.i_checkpoint_free.value = 0
         self.dut.i_checkpoint_free_id.value = 0
+        self.dut.i_checkpoint_free_2.value = 0
+        self.dut.i_checkpoint_free_id_2.value = 0
         self.dut.i_checkpoint_flush_free_mask.value = 0
 
         # Flush
@@ -242,14 +273,14 @@ class RATInterface:
         return self._rob_head_tag
 
     def _drive_rob_entry_valid(self) -> None:
-        """Drive the synthetic ROB-valid vector used by standalone RAT tests."""
+        """Drive the synthetic ROB-valid, epoch, and head-tag inputs."""
         rob_valid_mask = self.rob_entry_valid_mask
         self.dut.i_rob_entry_valid.value = rob_valid_mask
         self.dut.i_rob_entry_epoch.value = self.rob_entry_epoch_mask
         self.dut.i_rob_head_tag.value = self._rob_head_tag
 
     def _apply_pending_cycle_updates(self) -> None:
-        """Apply queued same-cycle effects to the synthetic ROB-valid vector."""
+        """Apply the cycle's queued operations to the shadow RAT and synthetic ROB."""
         if (
             self._pending_rename is None
             and self._pending_rename_2 is None
@@ -258,6 +289,7 @@ class RATInterface:
             and self._pending_checkpoint_save is None
             and self._pending_checkpoint_restore is None
             and self._pending_checkpoint_free is None
+            and self._pending_checkpoint_free_2 is None
             and self._pending_checkpoint_bulk_free_mask == 0
             and not self._pending_flush_all
         ):
@@ -282,10 +314,18 @@ class RATInterface:
             if self._pending_checkpoint_free is not None:
                 self._shadow_rat.checkpoint_free(self._pending_checkpoint_free)
 
+            if self._pending_checkpoint_free_2 is not None:
+                self._shadow_rat.checkpoint_free(self._pending_checkpoint_free_2)
+
             if self._pending_checkpoint_save is not None:
-                checkpoint_id, branch_tag, ras_tos, ras_valid_count, for_slot2 = (
-                    self._pending_checkpoint_save
-                )
+                (
+                    checkpoint_id,
+                    branch_tag,
+                    ras_tos,
+                    ras_valid_count,
+                    ras_top,
+                    for_slot2,
+                ) = self._pending_checkpoint_save
                 overlay_rename = self._pending_rename if for_slot2 else None
                 self._shadow_rat.checkpoint_save(
                     checkpoint_id,
@@ -294,6 +334,7 @@ class RATInterface:
                     ras_valid_count,
                     overlay_rename,
                     rob_entry_epoch=self.rob_entry_epoch_mask,
+                    ras_top=ras_top,
                 )
                 self._mark_checkpoint_owner_allocated(branch_tag)
 
@@ -369,6 +410,7 @@ class RATInterface:
         self._pending_checkpoint_save = None
         self._pending_checkpoint_restore = None
         self._pending_checkpoint_free = None
+        self._pending_checkpoint_free_2 = None
         self._pending_checkpoint_bulk_free_mask = 0
         self._pending_flush_all = False
 
@@ -470,9 +512,31 @@ class RATInterface:
     # Rename Write Interface
     # =========================================================================
 
+    def _drive_alloc_candidates(self) -> None:
+        """Drive dispatch's candidate inputs to match the rename and save drives.
+
+        In the core, i_alloc_valid is the bundle fire and slot 1's destination,
+        i_alloc_valid_2 the fire and slot 2's, a save implies the fire, and a
+        save's slot-2 flag equals the slot-2 checkpoint candidate.
+        """
+        self.dut.i_alloc_has_dest.value = self._alloc_valid_drv
+        self.dut.i_alloc_has_dest_2.value = self._alloc_valid_2_drv
+        self.dut.i_alloc_fire.value = int(
+            bool(
+                self._alloc_valid_drv
+                or self._alloc_valid_2_drv
+                or self._checkpoint_save_drv
+            )
+        )
+        self.dut.i_checkpoint_slot2_candidate.value = (
+            self._checkpoint_save_for_slot2_drv
+        )
+
     def drive_rename(self, dest_rf: int, dest_reg: int, rob_tag: int) -> None:
         """Drive rename write signals."""
         self.dut.i_alloc_valid.value = 1
+        self._alloc_valid_drv = 1
+        self._drive_alloc_candidates()
         self.dut.i_alloc_dest_rf.value = dest_rf & 1
         self.dut.i_alloc_dest_reg.value = dest_reg & MASK_REG
         self.dut.i_alloc_rob_tag.value = rob_tag & MASK_TAG
@@ -481,11 +545,15 @@ class RATInterface:
     def clear_rename(self) -> None:
         """Clear rename write signals."""
         self.dut.i_alloc_valid.value = 0
+        self._alloc_valid_drv = 0
+        self._drive_alloc_candidates()
         self._apply_pending_cycle_updates()
 
     def drive_rename_2(self, dest_rf: int, dest_reg: int, rob_tag: int) -> None:
         """Drive slot-2 rename write signals."""
         self.dut.i_alloc_valid_2.value = 1
+        self._alloc_valid_2_drv = 1
+        self._drive_alloc_candidates()
         self.dut.i_alloc_dest_rf_2.value = dest_rf & 1
         self.dut.i_alloc_dest_reg_2.value = dest_reg & MASK_REG
         self.dut.i_alloc_rob_tag_2.value = rob_tag & MASK_TAG
@@ -498,6 +566,8 @@ class RATInterface:
     def clear_rename_2(self) -> None:
         """Clear slot-2 rename write signals."""
         self.dut.i_alloc_valid_2.value = 0
+        self._alloc_valid_2_drv = 0
+        self._drive_alloc_candidates()
         self._apply_pending_cycle_updates()
 
     async def rename(self, dest_rf: int, dest_reg: int, rob_tag: int) -> None:
@@ -601,6 +671,7 @@ class RATInterface:
         ras_tos: int = 0,
         ras_valid_count: int = 0,
         for_slot2: bool = False,
+        ras_top: int = 0,
     ) -> None:
         """Drive checkpoint save signals."""
         self.dut.i_checkpoint_save.value = 1
@@ -608,12 +679,17 @@ class RATInterface:
         self.dut.i_checkpoint_branch_tag.value = branch_tag & MASK_TAG
         self.dut.i_ras_tos.value = ras_tos & 0x7
         self.dut.i_ras_valid_count.value = ras_valid_count & 0xF
+        self.dut.i_ras_top.value = ras_top & MASK_XLEN
         self.dut.i_checkpoint_save_for_slot2.value = 1 if for_slot2 else 0
+        self._checkpoint_save_drv = 1
+        self._checkpoint_save_for_slot2_drv = 1 if for_slot2 else 0
+        self._drive_alloc_candidates()
         self._pending_checkpoint_save = (
             checkpoint_id & 0x7,
             branch_tag & MASK_TAG,
             ras_tos & 0x7,
             ras_valid_count & 0xF,
+            ras_top & MASK_XLEN,
             for_slot2,
         )
 
@@ -621,6 +697,9 @@ class RATInterface:
         """Clear checkpoint save signals."""
         self.dut.i_checkpoint_save.value = 0
         self.dut.i_checkpoint_save_for_slot2.value = 0
+        self._checkpoint_save_drv = 0
+        self._checkpoint_save_for_slot2_drv = 0
+        self._drive_alloc_candidates()
         self._apply_pending_cycle_updates()
 
     async def checkpoint_save(
@@ -630,11 +709,12 @@ class RATInterface:
         ras_tos: int = 0,
         ras_valid_count: int = 0,
         for_slot2: bool = False,
+        ras_top: int = 0,
     ) -> None:
         """Perform checkpoint save transaction."""
         await FallingEdge(self.clock)
         self.drive_checkpoint_save(
-            checkpoint_id, branch_tag, ras_tos, ras_valid_count, for_slot2
+            checkpoint_id, branch_tag, ras_tos, ras_valid_count, for_slot2, ras_top
         )
         await RisingEdge(self.clock)
         await FallingEdge(self.clock)
@@ -658,17 +738,19 @@ class RATInterface:
         self.dut.i_checkpoint_restore_reclaim_all.value = 0
         self._apply_pending_cycle_updates()
 
-    async def checkpoint_restore(self, checkpoint_id: int) -> tuple[int, int]:
+    async def checkpoint_restore(self, checkpoint_id: int) -> tuple[int, int, int]:
         """Perform checkpoint restore transaction.
 
-        Returns (ras_tos, ras_valid_count).
+        Returns (ras_tos, ras_valid_count, ras_top), read in the restore
+        cycle: the outputs follow the restore ID combinationally.
         """
         await FallingEdge(self.clock)
         self.drive_checkpoint_restore(checkpoint_id)
         await RisingEdge(self.clock)
+        restored = (self.ras_tos, self.ras_valid_count, self.ras_top)
         await FallingEdge(self.clock)
         self.clear_checkpoint_restore()
-        return self.ras_tos, self.ras_valid_count
+        return restored
 
     # =========================================================================
     # Checkpoint Free Interface
@@ -683,6 +765,17 @@ class RATInterface:
     def clear_checkpoint_free(self) -> None:
         """Clear checkpoint free signals."""
         self.dut.i_checkpoint_free.value = 0
+        self._apply_pending_cycle_updates()
+
+    def drive_checkpoint_free_2(self, checkpoint_id: int) -> None:
+        """Drive the second checkpoint free port (slot-2 branch retirement)."""
+        self.dut.i_checkpoint_free_2.value = 1
+        self.dut.i_checkpoint_free_id_2.value = checkpoint_id & 0x7
+        self._pending_checkpoint_free_2 = checkpoint_id & 0x7
+
+    def clear_checkpoint_free_2(self) -> None:
+        """Clear the second checkpoint free port."""
+        self.dut.i_checkpoint_free_2.value = 0
         self._apply_pending_cycle_updates()
 
     def drive_checkpoint_bulk_free(self, free_mask: int) -> None:
@@ -760,3 +853,8 @@ class RATInterface:
     def ras_valid_count(self) -> int:
         """Get restored RAS valid count."""
         return int(self.dut.o_ras_valid_count.value)
+
+    @property
+    def ras_top(self) -> int:
+        """Get restored RAS top entry."""
+        return int(self.dut.o_ras_top.value)

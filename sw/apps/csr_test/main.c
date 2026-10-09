@@ -17,19 +17,21 @@
 /*
  * Directed CSR test.
  *
- * Tests 1-3: writes mstatus with MIE=1 and checks that execution continues
- * past the write.
+ * Tests 1-3: write mstatus with MIE=0 and then MIE=1, check that execution
+ * continues past each write, and print mip.
  *
- * Tests 4-7: the M-mode counter controls that OpenSBI's SBI PMU
+ * Tests 4-8: the M-mode counter controls that OpenSBI's SBI PMU
  * and Sstc setup depend on. mcountinhibit exists and is WARL over {CY, IR};
  * CY stops cycle and IR stops instret while set; mcycle and minstret accept
  * full 64-bit M-mode writes that the user views (cycle/instret) then reflect;
- * and M-mode reads of the writable aliases cost no ticks (the commit stage
- * raises the CSR write enable for pure reads too).
+ * M-mode reads of the writable aliases cost no ticks (the commit stage
+ * raises the CSR write enable for pure reads too); and a minstret write
+ * replaces the writing instruction's own increment, with write intent taken
+ * from the encoding (the rs1/uimm field), not from the value.
  *
- * The UART helpers are inline here rather than taken from lib/uart.c, so that a
- * fault in the library cannot mask or cause a failure on the CSR path under
- * test.
+ * The UART helpers are inline here rather than taken from lib/src/uart.c, so
+ * that a fault in the library cannot mask or cause a failure on the CSR path
+ * under test.
  */
 
 #include <stdint.h>
@@ -68,7 +70,7 @@ static inline void uart_hex64(uint64_t val)
 
 static int g_failed;
 
-/* Report one named check; a failure is remembered for the final verdict. */
+/* Report one named check; any failure makes the run end with <<FAIL>>. */
 static void check(const char *name, int ok)
 {
     uart_puts(ok ? "  ok   " : "  FAIL ");
@@ -225,9 +227,9 @@ static void counter_tests(void)
     uart_puts("\r\nTest 7: M-mode reads of mcycle/minstret are pure reads\r\n");
     /* The commit stage raises the CSR write enable for every CSR
      * instruction. If a csrr of the M-mode alias were treated as a write of
-     * the value it read, every read would swallow one cycle tick (and drop
-     * the staged retirements for minstret). Time the same read loop against
-     * the M alias and the read-only alias: they must agree closely. */
+     * the value it read, every read would swallow one cycle tick (and, for
+     * minstret, its own retirement). Time the same read loop against the M
+     * alias and the read-only alias: they must agree closely. */
     c = read_loop_delta(0xC00);
     a = read_loop_delta(0xB00);
     uart_puts("  cycle-loop deltas via cycle/mcycle: ");
@@ -245,6 +247,41 @@ static void counter_tests(void)
     uart_puts("\r\n");
     check("minstret reads drop no retirements",
           a + READ_LOOP_TOLERANCE > c && a < c + READ_LOOP_TOLERANCE);
+
+    uart_puts("\r\nTest 8: a minstret write replaces the writer's own increment\r\n");
+    /* Zicsr: the value an instruction writes to minstret is the value the
+     * next instruction reads. Each sequence is one asm statement, so nothing
+     * runs between its instructions. instret_test covers the instructions
+     * that retire without an ordinary commit. */
+    const uint64_t v = 0x1000;
+    const uint64_t zero = 0;
+    __asm volatile("csrw 0xB02, %1\n\tcsrr %0, 0xB02" : "=r"(a) : "r"(v));
+    uart_puts("  csrw minstret, V; csrr minstret: ");
+    uart_hex64(a);
+    uart_puts("\r\n");
+    check("the next instruction reads V", a == v);
+    __asm volatile("csrw 0xB02, %1\n\tli t0, 0\n\tcsrr %0, 0xB02" : "=r"(a) : "r"(v) : "t0");
+    check("one instruction later reads V + 1", a == v + 1);
+    /* Write intent comes from the encoding: a set or clear with a nonzero
+     * rs1 writes even when that register holds 0, while rs1 = x0 or
+     * uimm = 0 makes a pure read, which counts itself. */
+    __asm volatile("csrw 0xB02, %1\n\tcsrs 0xB02, %2\n\tcsrr %0, 0xB02"
+                   : "=r"(a)
+                   : "r"(v), "r"(zero));
+    check("csrs with a zero register is a write", a == v);
+    __asm volatile("csrw 0xB02, %1\n\tcsrc 0xB02, %2\n\tcsrr %0, 0xB02"
+                   : "=r"(a)
+                   : "r"(v), "r"(zero));
+    check("csrc with a zero register is a write", a == v);
+    __asm volatile("csrw 0xB02, %1\n\tcsrrs x0, 0xB02, x0\n\tcsrr %0, 0xB02" : "=r"(a) : "r"(v));
+    check("csrrs with rs1 = x0 is a read", a == v + 1);
+    __asm volatile("csrw 0xB02, %1\n\tcsrrci x0, 0xB02, 0\n\tcsrr %0, 0xB02" : "=r"(a) : "r"(v));
+    check("csrrci with uimm = 0 is a read", a == v + 1);
+    /* With mcountinhibit.IR set nothing counts, so a write reads back V. */
+    csr_set(0x320, 0x4);
+    __asm volatile("csrw 0xB02, %1\n\tcsrr %0, 0xB02" : "=r"(a) : "r"(v));
+    csr_clear(0x320, 0x4);
+    check("with IR set the next instruction reads V", a == v);
 }
 
 int main(void)
@@ -280,7 +317,7 @@ int main(void)
     uart_hex(val);
     uart_puts("\r\n");
 
-    /* Test 2: write mstatus with MIE=1, the case this test was written for. */
+    /* Test 2: write mstatus with MIE=1. */
     uart_puts("\r\nTest 2: csrw mstatus with MIE=1\r\n");
     uart_putc('C');
     uart_puts(" - About to set MIE=1...\r\n");

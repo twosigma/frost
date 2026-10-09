@@ -16,22 +16,22 @@
 
 """Build FPGA bitstreams through checkpointed Vivado stages.
 
-Pipeline: synth, opt, place, post-place phys-opt, route, post-route phys-opt,
-second route, post-second-route phys-opt, bitstream. Closure at route through
-second route promotes final.dcp and skips to bitstream; post-place closure
-does not. The last phys-opt stage always writes the final checkpoint.
+Stages run in order: synth, opt, place, post-place phys-opt, route, post-route
+phys-opt, second route, post-second-route phys-opt, bitstream. Closing timing
+at route, post-route phys-opt, or second route promotes that output to
+final.dcp and skips to the bitstream; the last phys-opt stage always writes
+final.dcp.
 
-Place/route sweeps promote the best qualified candidate. Phys-opt retains the
-best WNS and stops on closure. Placement scoring uses zero added uncertainty;
-resumed stages require checkpoint-bound placement and parent metadata.
-Temporary PC-tail cost groups must be removed and audited on reopen before
-scoring, including for cell-bloat variants.
-
-``--jobs`` limits concurrent Vivado jobs. ``--build-dir`` isolates outputs;
-``--snapshot-physopt-from`` copies a completed, qualified sweep for early route.
-Divided-clock builds default to RuntimeOptimized placement/route and profiling
-counters; full-rate builds default to counters off. Software must match the
-bitstream clock. ``netlist_config.json`` records synthesis-time options.
+Full-rate X3 placement compares a freshly generated local-guidance candidate
+with the ordinary placer sweep. Every candidate must pass timing and congestion
+checks before the leading survivors are quick-routed and ranked by congestion
+warning, routed WNS, then TNS.
+Both route stages also run sweeps, scored at zero added setup uncertainty.
+A placement guided by a
+temporary PC-tail path group is scored only if its audit on a clean reopen
+passes. Every later stage, and the bitstream, checks that its input checkpoint
+descends from the current qualified placement, using the sidecar files written
+beside each checkpoint.
 
 Run natively; see ``fpga/README.md`` and ``--help`` for commands and tuning.
 """
@@ -60,20 +60,18 @@ from riscv_toolchain import default_riscv_prefix  # noqa: E402
 
 # Configuration
 
-# Bound full-design Vivado processes independently of each process's threads.
-# The 27-job NIC-enabled placement sweep exhausted the build host's RAM.
-# Twelve leaves room for growth beyond the observed ~8 GB per worker.
+# Default cap on concurrent full-design Vivado processes, separate from each
+# process's own thread count. A worker needs about 8 GB, so launching a whole
+# placement sweep at once can exhaust the host's memory.
 DEFAULT_MAX_JOBS = 12
 
-# ``synth_directive`` is the board's default synthesis directive. On x3
-# PerformanceOptimized reaches -0.081 ns / 4 endpoints post-opt against
-# AlternateRoutability's -0.178 ns / 143, but it maps 1.6x the MUXF7/MUXF8
-# count: the placer sweep on that netlist gained only 0.07 ns (-0.372 against
-# -0.442 WNS at zero uncertainty) and its quick route fell to -0.957 ns under
-# router congestion warnings, so the routable netlist stays the default.
+# ``synth_directive`` is the board's default synthesis directive. On x3,
+# PerformanceOptimized improves post-opt timing but maps many more MUXF7/MUXF8
+# cells, which leaves little of that gain after placement and congests routing,
+# so the more routable AlternateRoutability netlist is the default.
 BOARD_CONFIG = {
     "x3": {
-        "clock_freq": 300000000,
+        "clock_freq": 322265625,
         "is_ultrascale": True,
         "synth_directive": "AlternateRoutability",
     },
@@ -117,8 +115,8 @@ PLACER_DIRECTIVES = [
     "WLDrivenBlockPlacement",
 ]
 
-# The spread directives relieve the ~93%-occupied X3 core band and its integer
-# RS East congestion hotspot.
+# The AltSpreadLogic directives spread out the densely packed X3 core region
+# and its integer-RS congestion hotspot.
 X3_PLACER_SWEEP_DIRECTIVES = [
     "ExtraNetDelay_high",
     "ExtraPostPlacementOpt",
@@ -126,19 +124,23 @@ X3_PLACER_SWEEP_DIRECTIVES = [
     "AltSpreadLogic_medium",
 ]
 
-# X3 needs pre-place setup overconstraint for 300 MHz. With no Vivado seed knob,
-# each 50 ps reduction creates another solution while easing the packing that
-# made the flat 0.5 ns flow unroutably dense. build_step.tcl reports at zero
-# added uncertainty after placement. Keep its seed-grid baseline separate
-# from the real reporting uncertainty.
+# X3 places with added setup uncertainty (overconstraint). Vivado's placer has
+# no seed option, so each 50 ps step down from the 0.5 ns baseline yields
+# another placement, and the lower values ease packing that at 0.5 ns alone
+# can be too dense to route. build_step.tcl reports at zero added uncertainty
+# after placement, so the seed-grid baseline and the reporting uncertainty are
+# separate constants.
 X3_PLACE_BASELINE_UNCERTAINTY_NS = 0.5
 X3_PLACE_REPORT_UNCERTAINTY_NS = 0.0
 X3_POST_PLACE_GATE_NS = Decimal("-0.200")
 # Vivado reports slack and clock periods to three decimals, and the gate's
 # native queries carry more precision than the timing summary prints. Half a
 # printed digit accepts every value that displays as the expected one and
-# still rejects a different printed number (3.334 ns against 3.333 ns).
+# still rejects a different printed number (3.104 ns against 3.103 ns).
 X3_GATE_DISPLAY_TOLERANCE_NS = Decimal("0.0005")
+# XDC constrains the 300 MHz reference to 3.333 ns. Use that physical period
+# and the fixed MMCM recipe, including its rounding, for native timing evidence.
+X3_CPU_PERIOD_NS = Decimal("3.333") * 8 * 4 / Decimal("34.375")
 X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS = 0.050
 X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT = 6
 X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT = int(
@@ -158,16 +160,21 @@ X3_PC_TAIL_GUIDED_CANDIDATES = (
 # rules as grid seeds.
 X3_PLACE_EXTRA_SEED_CANDIDATES = (("ExtraPostPlacementOpt", 0.425),)
 
-# Keep the unbloated controls and compare only the measured integer-RS
-# spreading recipes. Narrowed grids gain a variant only beside its control.
-# An explicit bloat environment variable selects the legacy manual override
-# behavior instead, including an empty factor for no-bloat controls.
+# Integer-RS cell-bloat variants, each added beside its unbloated control; a
+# narrowed grid gets a variant only if its control is still in the grid.
+# Setting either bloat environment variable disables these variants and
+# applies the caller's setting to every candidate (an empty factor means no
+# bloat).
 X3_PLACE_INT_RS_BLOAT_CANDIDATES = (
     ("ExtraNetDelay_high", 0.350),
     ("ExtraPostPlacementOpt", 0.450),
 )
 X3_PLACE_INT_RS_BLOAT_FACTOR = "LOW"
 X3_PLACE_INT_RS_BLOAT_CELLS = "*u_tomasulo/u_int_rs"
+# Memory source-2 capture logic shares the integer station's crowded routing
+# window. Target that group without spreading the rest of the memory station.
+X3_GUIDED_PLACE_BLOAT_CELLS = "*u_tomasulo/u_int_rs *u_tomasulo/u_mem_rs/rs_src2_value*"
+X3_GUIDED_PLACE_BLOAT_MATCHES = (1, None)
 
 
 @dataclass(frozen=True)
@@ -192,7 +199,9 @@ class DirectiveSweepCandidate:
     def environment(self, inherited: Mapping[str, str]) -> dict[str, str]:
         """Copy environment settings without leaking a variant into controls."""
         environment = dict(inherited)
-        # Retired diagnostic toggles cannot re-enable production edits.
+        # Nothing reads these obsolete switches of the diagnostic flush-guidance
+        # and pin-swap helpers, which never run in production; drop them so no
+        # candidate inherits them.
         environment.pop("FROST_PLACE_FLUSH_INCREMENTAL", None)
         environment.pop("FROST_X3_PD_TARGET_PIN_SWAPS", None)
         if self.setup_uncertainty_ns is not None:
@@ -208,14 +217,13 @@ class DirectiveSweepCandidate:
 
 
 # Congestion level 5+ makes the router sacrifice timing for completion, so the
-# selector vetoes those seeds. Explicit quick-route requests rank the leading
-# gate-passing survivors by routed WNS. Environment overrides:
+# selector rejects those seeds and probes the leading passing survivors.
+# Environment overrides:
 #   FROST_PLACE_CONGESTION_VETO_LEVEL  (default 5)
-#   FROST_PLACE_QUICK_ROUTE_COUNT      (default 0; positive counts enable
-#                                       probes for gate-passing seeds only;
-#                                       zero ranks by actual post-place WNS)
+#   FROST_PLACE_QUICK_ROUTE_COUNT      (default 3; zero explicitly disables
+#                                       probes and ranks by post-place WNS)
 X3_PLACE_CONGESTION_VETO_LEVEL_DEFAULT = 5
-X3_PLACE_QUICK_ROUTE_COUNT_DEFAULT = 0
+X3_PLACE_QUICK_ROUTE_COUNT_DEFAULT = 3
 
 
 def make_x3_place_setup_uncertainties_ns(count: int) -> list[float]:
@@ -241,10 +249,10 @@ def make_x3_place_sweep_candidates(
     environment: Mapping[str, str],
     include_extra_seeds: bool = True,
 ) -> list[DirectiveSweepCandidate]:
-    """Retain the control grid and append eligible bloat variants.
+    """Return the control grid plus the off-grid seed and eligible bloat variants.
 
-    ``include_extra_seeds`` False (functional-validation builds) keeps the
-    grid exactly as requested: no off-grid seed or bloat variants.
+    With ``include_extra_seeds`` false (divided-clock builds), return the grid
+    exactly as requested.
     """
     candidates = [
         DirectiveSweepCandidate(directive, uncertainty)
@@ -262,8 +270,9 @@ def make_x3_place_sweep_candidates(
         ):
             candidates.append(DirectiveSweepCandidate(directive, uncertainty))
 
-    # Presence, rather than truthiness, lets an explicitly empty factor retain
-    # the old no-bloat sweep. A target-only override also keeps its old effect.
+    # Test presence, not truthiness: an empty factor, or a target pattern with
+    # no factor, still turns off the automatic variants and yields a sweep
+    # without bloat.
     manual_bloat = any(
         name in environment
         for name in ("FROST_PLACE_CELL_BLOAT", "FROST_PLACE_CELL_BLOAT_CELLS")
@@ -371,19 +380,18 @@ def resolve_functional_build_policy(
     """Return the flow settings for ``--cpu-clock-div``.
 
     A divider of 1 keeps every setting as resolved by the caller. A larger
-    divider builds for 300/N MHz: an explicit ``--directives`` or
-    ``--num-uncertainties`` keeps the requested placer grid, an explicit
-    ``--route-directives`` keeps the requested router list, and everything
-    else collapses to the single RuntimeOptimized runs a design with hundreds
-    of picoseconds of margin needs.
+    divider builds for the board clock divided by N. An explicit
+    ``--directives`` or ``--num-uncertainties`` keeps the requested placer
+    grid and an explicit ``--route-directives`` keeps the requested router
+    list; otherwise placement and routing each run once with RuntimeOptimized,
+    which is enough for a design with hundreds of picoseconds of margin.
 
     ``perf_counters`` is ``--perf-counters``/``--no-perf-counters``; ``None``
-    leaves the counters out of a full-rate build and includes them in a
-    divided-clock build, where they are the point.
+    leaves the counters out, whatever the divider.
     """
     if cpu_clock_div not in CPU_CLOCK_DIV_CHOICES:
         raise ValueError(f"unsupported CPU clock divider: {cpu_clock_div}")
-    include_counters = (cpu_clock_div != 1) if perf_counters is None else perf_counters
+    include_counters = bool(perf_counters)
     if cpu_clock_div == 1:
         return FunctionalBuildPolicy(
             1,
@@ -461,7 +469,7 @@ STEP_PRODUCES_CHECKPOINT = {
     "post_second_route_physopt": "final.dcp",
 }
 
-# Canonical report prefix in the main work directory.
+# Report prefix in the main work directory.
 STEP_REPORT_PREFIX = {
     "synth": "post_synth",
     "opt": "post_opt",
@@ -524,6 +532,7 @@ class DirectiveSweepRun:
     total_endpoints: int | None = None
     launch_error: str | None = None
     # X3 placement ranking fields.
+    timing_gate_passed: bool | None = None
     congestion_level: int | None = None
     congestion_vetoed: bool = False
     quick_route_wns: float | None = None
@@ -531,6 +540,7 @@ class DirectiveSweepRun:
     quick_route_warning: bool = False
     quick_route_returncode: int | None = None
     quick_route_elapsed_s: float | None = None
+    quick_route_error: str | None = None
     pc_tail_guided: bool = False
     # Per-candidate pre-place physical settings.
     cell_bloat_factor: str | None = None
@@ -543,8 +553,8 @@ _CONGESTION_ROW_RE = re.compile(
     r"^\|\s*(?:North|South|East|West)\s*\|\s*\S+\s*\|\s*(\d+)\s*\|", re.MULTILINE
 )
 
-# A quick-route probe whose log carries this timing-capitulation warning
-# ranks last.
+# A completed quick-route probe carrying this warning ranks behind warning-free
+# probes. It can still close timing with the full flow's phys-opt and routing.
 _ROUTER_CONGESTION_WARNING = "Congestion is preventing the router from routing all nets"
 
 
@@ -552,9 +562,9 @@ def extract_max_congestion_level(congestion_rpt_path: Path) -> int | None:
     """Return the worst reported congestion window level.
 
     Parses report_design_analysis -congestion output. Zero is an internal
-    sentinel for no parsed window rows, NOT a measured congestion level.
+    sentinel for an explicit report of no windows, not a measured level.
     The default report threshold is 5, so smaller windows remain unmeasured.
-    Returns None if the report is missing/unreadable.
+    Returns None if the report is missing, unreadable, or unrecognized.
     """
     if not congestion_rpt_path.exists():
         return None
@@ -563,7 +573,16 @@ def extract_max_congestion_level(congestion_rpt_path: Path) -> int | None:
     except OSError:
         return None
     levels = [int(m.group(1)) for m in _CONGESTION_ROW_RE.finditer(content)]
-    return max(levels, default=0)
+    if levels:
+        return max(levels)
+    clear = re.search(r"No congestion windows are found above level (\d+)", content)
+    if (
+        "Placer Final Level Congestion Reporting" in content
+        and clear
+        and int(clear[1]) <= 5
+    ):
+        return 0
+    return None
 
 
 def quick_route_log_has_congestion_warning(log_path: Path) -> bool:
@@ -581,9 +600,16 @@ def quick_route_log_has_congestion_warning(log_path: Path) -> bool:
 
 
 def x3_place_cell_bloat_override_is_valid(
-    log_path: Path, expected_factor: str, expected_cells: str
+    log_path: Path,
+    expected_factor: str,
+    expected_cells: str,
+    expected_matches: tuple[int | None, ...] | None = None,
 ) -> bool:
-    """Require exactly one successful match for an automatic bloat recipe."""
+    """Require every requested bloat scope and its expected match count.
+
+    Hierarchies default to exactly one match. An explicit ``None`` count
+    permits a nonempty leaf-cell group whose size can change during placement.
+    """
     try:
         content = log_path.read_text(errors="replace")
     except OSError:
@@ -594,7 +620,21 @@ def x3_place_cell_bloat_override_is_valid(
         content,
         re.MULTILINE,
     )
-    return matches == [(expected_factor, "1", expected_cells)]
+    patterns = expected_cells.split()
+    counts = expected_matches if expected_matches is not None else (1,) * len(patterns)
+    return (
+        bool(patterns)
+        and len(matches) == len(patterns) == len(counts)
+        and all(
+            factor == expected_factor
+            and pattern == expected_pattern
+            and int(count) > 0
+            and (expected_count is None or int(count) == expected_count)
+            for (factor, count, pattern), expected_pattern, expected_count in zip(
+                matches, patterns, counts
+            )
+        )
+    )
 
 
 # Predecode sideband predicates mirrored into pinned low-address scalar LUTRAM
@@ -610,8 +650,8 @@ IMEM_SCALAR_REPLICA_NAMES = (
     "slot2_start_valid_lo",
 )
 X3_PC_TAIL_SCALAR_LAUNCH_COUNT = 2 * len(IMEM_SCALAR_REPLICA_NAMES)
-# Init images of retired timing replicas, cleared from reused build directories.
-IMEM_RETIRED_INIT_IMAGE_NAMES = (
+# Obsolete IMEM init images, deleted from reused build directories.
+IMEM_OBSOLETE_INIT_IMAGE_NAMES = (
     "sw_imem_even_pc_compressed.mem",
     "sw_imem_odd_pc_compressed.mem",
     "sw_imem_even_compressed_hi.mem",
@@ -630,14 +670,17 @@ def x3_pc_tail_group_audit_is_valid(
     expected_directive: str,
     expected_setup_uncertainty_ns: float,
 ) -> bool:
-    """Validate topology proofs and the exact guided placement seed.
+    """Return whether a guided placement's PC-tail audit passes for this seed.
 
-    Vivado physical synthesis may add, remove, or rename noncanonical register
-    replicas during placement. The audit therefore proves exact launch and
-    canonical architectural-endpoint continuity across placement, then exact
-    full endpoint-name continuity across the clean checkpoint reopen. The
-    historical ``COMPRESSED_*`` field names describe the fourteen pinned
-    scalar-overlay launches of the predecode metadata.
+    Vivado physical synthesis may add, remove, or rename register replicas
+    during placement, and its equivalent-driver rewiring may merge a canonical
+    (non-replica) endpoint into its replicas. So the audit requires the same
+    launch names before and after placement, a canonical endpoint for every
+    bit before placement, an endpoint for every bit after it, and no canonical
+    name after placement that was not there before; then the same full
+    endpoint names across the clean checkpoint reopen. The ``COMPRESSED_*``
+    fields cover the fourteen pinned scalar-overlay launches of the predecode
+    metadata.
     """
     if not x3_place_uses_pc_tail_guidance(
         expected_directive, expected_setup_uncertainty_ns
@@ -679,10 +722,10 @@ def x3_pc_tail_group_audit_is_valid(
             "POST_PENDING_CANONICAL",
             "POST_UNION_ENDS",
             "PRE_COMPRESSED_START_NAMES_MATCH_POST",
-            "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST",
-            "PRE_STATE_CANONICAL_NAMES_MATCH_POST",
-            "PRE_SEQ_CANONICAL_NAMES_MATCH_POST",
-            "PRE_PENDING_CANONICAL_NAMES_MATCH_POST",
+            "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE",
+            "POST_STATE_CANONICAL_NAMES_WITHIN_PRE",
+            "POST_SEQ_CANONICAL_NAMES_WITHIN_PRE",
+            "POST_PENDING_CANONICAL_NAMES_WITHIN_PRE",
             "SCORE_COMPRESSED_STARTS",
             "SCORE_ENDS",
             "SCORE_PC_BITS",
@@ -709,6 +752,7 @@ def x3_pc_tail_group_audit_is_valid(
             and not field_name.endswith(
                 (
                     "NAMES_MATCH_POST",
+                    "NAMES_WITHIN_PRE",
                     "ENDPOINT_NAMES_MATCH_POST",
                     "SCORED_GROUPS",
                     "UNCERTAINTY_NS",
@@ -730,7 +774,11 @@ def x3_pc_tail_group_audit_is_valid(
             return False
         if counts[f"{phase}_SEQ_PC_BITS"] != 63:
             return False
-        if counts[f"{phase}_PENDING_CANONICAL"] != 1:
+        # Placement may merge the canonical pending-valid register into a
+        # replica, so only the pre-place scope must still have it.
+        if counts[f"{phase}_PENDING_CANONICAL"] not in (
+            (1,) if phase == "PRE" else (0, 1)
+        ):
             return False
         if counts[f"{phase}_ENDS"] < 64:
             return False
@@ -751,7 +799,13 @@ def x3_pc_tail_group_audit_is_valid(
 
     # Replica counts may change during placement, but the audited clean reopen
     # must preserve the complete post-place topology.
-    for endpoint_field in ("ENDS", "STATE_ENDS", "SEQ_ENDS", "PENDING_ENDS"):
+    for endpoint_field in (
+        "ENDS",
+        "STATE_ENDS",
+        "SEQ_ENDS",
+        "PENDING_ENDS",
+        "PENDING_CANONICAL",
+    ):
         if counts[f"SCORE_{endpoint_field}"] != counts[f"POST_{endpoint_field}"]:
             return False
     if counts["SCORE_UNION_ENDS"] != counts["POST_UNION_ENDS"]:
@@ -759,10 +813,10 @@ def x3_pc_tail_group_audit_is_valid(
 
     proof_fields = (
         "PRE_COMPRESSED_START_NAMES_MATCH_POST",
-        "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST",
-        "PRE_STATE_CANONICAL_NAMES_MATCH_POST",
-        "PRE_SEQ_CANONICAL_NAMES_MATCH_POST",
-        "PRE_PENDING_CANONICAL_NAMES_MATCH_POST",
+        "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE",
+        "POST_STATE_CANONICAL_NAMES_WITHIN_PRE",
+        "POST_SEQ_CANONICAL_NAMES_WITHIN_PRE",
+        "POST_PENDING_CANONICAL_NAMES_WITHIN_PRE",
         "SCORE_COMPRESSED_START_NAMES_MATCH_POST",
         "SCORE_ENDPOINT_NAMES_MATCH_POST",
         "SCORE_COMPRESSED_ENDPOINT_NAMES_MATCH_POST",
@@ -801,6 +855,19 @@ def extract_timing_from_report(timing_rpt_path: Path) -> TimingSummary:
     return result
 
 
+def setup_timing_met(
+    wns: float | None, tns: float | None, failing_endpoints: int | None
+) -> bool:
+    """Require endpoint counts as well as rounded slack for setup closure."""
+    return (
+        wns is not None
+        and wns >= 0
+        and tns is not None
+        and tns >= 0
+        and failing_endpoints == 0
+    )
+
+
 def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -> bool:
     """Compile hello_world application for initial BRAM contents."""
     app_dir = project_root / "sw" / "apps" / "hello_world"
@@ -835,11 +902,12 @@ def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -
             variable = f"IMEM_{parity.upper()}_{replica_name.upper()}_FILE"
             outputs[variable] = output_dir / f"sw_imem_{parity}_{replica_name}.mem"
 
-    # Remove retired images from reused board build directories.
-    retired_init_outputs = tuple(
-        output_dir / name for name in IMEM_RETIRED_INIT_IMAGE_NAMES
+    # Delete obsolete images left in reused build directories, and this build's
+    # outputs so the existence check below sees only files this build wrote.
+    obsolete_init_outputs = tuple(
+        output_dir / name for name in IMEM_OBSOLETE_INIT_IMAGE_NAMES
     )
-    for output_path in (*outputs.values(), *retired_init_outputs):
+    for output_path in (*outputs.values(), *obsolete_init_outputs):
         output_path.unlink(missing_ok=True)
 
     env = os.environ.copy()
@@ -885,7 +953,7 @@ def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -
 
 @dataclass(frozen=True)
 class X3PlaceGate:
-    """Native calculated-slack decision at the actual CPU clock and zero UU."""
+    """Post-place gate result at the actual CPU clock and zero added uncertainty."""
 
     passed: bool
     cpu_period_ns: Decimal
@@ -893,12 +961,14 @@ class X3PlaceGate:
 
 
 def read_x3_place_gate(path: Path, expected_wns: float | None = None) -> X3PlaceGate:
-    """Reject absent, malformed, contradictory or wrong-clock native evidence.
+    """Parse and check the six-field record that x3_post_place_gate.tcl writes.
 
-    The Tcl producer checks the actual unrestricted setup control before
-    writing this six-field record. Displayed -0.200 alone never decides PASS.
-    Recorded numbers that differ only within Vivado's three-decimal display
-    rounding agree; a different printed number is still wrong evidence.
+    Raise OSError if the file is missing, and ValueError if the record is
+    malformed, contradicts itself or ``expected_wns``, or used another clock
+    period, threshold, or added setup uncertainty. PASS comes from Vivado's
+    strict search for paths below -0.200 ns, never from the printed worst
+    slack. Numbers that differ only within Vivado's three-decimal rounding
+    agree; a different printed number is wrong evidence.
     """
     values: dict[str, str] = {}
     for line in path.read_text().splitlines():
@@ -936,12 +1006,14 @@ def read_x3_place_gate(path: Path, expected_wns: float | None = None) -> X3Place
     if divider not in CPU_CLOCK_DIV_CHOICES:
         raise ValueError("unsupported CPU divider for post-place gate")
     period = numbers["CPU_PERIOD_NS"]
-    expected_period = Decimal("3.333") * divider
-    # A divided clock's expectation is itself a product of the rounded base
-    # period, so it keeps the documented one-picosecond display range.
+    expected_period = X3_CPU_PERIOD_NS * divider
+    # A divided clock's expected period is a multiple of the rounded base
+    # period, so it gets a full printed digit (1 ps) of tolerance.
     tolerance = X3_GATE_DISPLAY_TOLERANCE_NS if divider == 1 else Decimal("0.001")
     if abs(period - expected_period) > tolerance:
-        raise ValueError("post-place CPU period does not match --cpu-clock-div")
+        raise ValueError(
+            "post-place CPU period does not match the selected clock and divider"
+        )
     if numbers["THRESHOLD_NS"] != X3_POST_PLACE_GATE_NS or numbers[
         "USER_SETUP_UNCERTAINTY_NS"
     ] != Decimal(str(X3_PLACE_REPORT_UNCERTAINTY_NS)):
@@ -982,34 +1054,175 @@ def file_sha256(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def bind_x3_place_gate(work_dir: Path, expected_wns: float | None = None) -> bool:
-    """Bind valid native timing evidence, regardless of the advisory threshold."""
+def x3_full_rate() -> bool:
+    """Whether this invocation implements the full-rate CPU clock."""
+    return int(os.environ.get("FROST_CPU_CLK_DIV", "1")) == 1
+
+
+def x3_congestion_veto_level() -> int:
+    """Return the configured congestion limit, rejecting invalid limits."""
+    level = int(
+        os.environ.get(
+            "FROST_PLACE_CONGESTION_VETO_LEVEL",
+            str(X3_PLACE_CONGESTION_VETO_LEVEL_DEFAULT),
+        )
+    )
+    if level < 5:
+        raise ValueError("the placer congestion report only measures levels >= 5")
+    return level
+
+
+def x3_quick_route_count() -> int:
+    """Resolve and validate the requested probe count before starting Vivado."""
+    count = int(
+        os.environ.get(
+            "FROST_PLACE_QUICK_ROUTE_COUNT",
+            str(X3_PLACE_QUICK_ROUTE_COUNT_DEFAULT if x3_full_rate() else 0),
+        )
+    )
+    if count < 0:
+        raise ValueError("FROST_PLACE_QUICK_ROUTE_COUNT must be nonnegative")
+    return count
+
+
+def read_x3_route_probe(
+    work: Path, prefix: str
+) -> tuple[TimingSummary, dict[str, str]]:
+    """Require real routed timing, complete routing, and a readable tool log."""
+    paths = {
+        name: work / f"{prefix}_{name}"
+        for name in (
+            "timing.rpt",
+            "status.rpt",
+            "vivado.log",
+        )
+    }
+    log = paths["vivado.log"].read_text()
+    if not log.strip():
+        raise ValueError("route probe has an empty Vivado log")
+    status = paths["status.rpt"].read_text()
+    counts = {}
+    for name in ("routable nets", "fully routed nets", "nets with routing errors"):
+        matches = re.findall(rf"# of {name}\.+\s*:\s*(\d+)\s*:", status)
+        if len(matches) != 1:
+            raise ValueError(f"missing or ambiguous route-status count: {name}")
+        counts[name] = int(matches[0])
+    if not (
+        counts["routable nets"] > 0
+        and counts["routable nets"] == counts["fully routed nets"]
+        and counts["nets with routing errors"] == 0
+    ):
+        raise ValueError("route probe left incomplete or conflicting routes")
+    timing = extract_timing_from_report(paths["timing.rpt"])
+    wns = timing.get("wns_ns")
+    if wns is None or not Decimal(str(wns)).is_finite():
+        raise ValueError("route probe has no finite WNS")
+    return timing, {name: file_sha256(path) for name, path in paths.items()}
+
+
+def x3_place_binding(
+    work_dir: Path, expected_wns: float | None = None, *, probe_input: bool = False
+) -> dict[str, object]:
+    """Validate placement requirements and hash the evidence for this checkpoint."""
+    gate_path = work_dir / "post_place_gate.txt"
+    gate = read_x3_place_gate(gate_path, expected_wns)
+    binding: dict[str, object] = {
+        "schema": "x3_post_place_gate_binding_v1",
+        "checkpoint_sha256": file_sha256(work_dir / "post_place.dcp"),
+        "gate_sha256": file_sha256(gate_path),
+    }
+    if x3_full_rate():
+        if not gate.passed or gate.worst_slack_ns <= X3_POST_PLACE_GATE_NS:
+            raise ValueError(
+                f"post-place WNS must be better than {X3_POST_PLACE_GATE_NS} ns "
+                f"(measured {gate.worst_slack_ns} ns)"
+            )
+        congestion_path = work_dir / "post_place_congestion.rpt"
+        level = extract_max_congestion_level(congestion_path)
+        veto = x3_congestion_veto_level()
+        if level is None:
+            raise ValueError("missing or unrecognized post-place congestion report")
+        if level >= veto:
+            raise ValueError(
+                f"post-place congestion level {level} reaches limit {veto}"
+            )
+        binding.update(
+            schema="x3_post_place_gate_binding_v2",
+            congestion_sha256=file_sha256(congestion_path),
+            congestion_veto_level=veto,
+        )
+        if probe_input:
+            binding["purpose"] = "route_probe_input"
+            return binding
+        selection_path = work_dir / "post_place_selection.json"
+        selection = json.loads(selection_path.read_text())
+        if (
+            not isinstance(selection, dict)
+            or selection.get("schema") != "x3_place_selection_v1"
+        ):
+            raise ValueError("missing or invalid placement-selection record")
+        probe_count = selection.get("quick_route_count")
+        selected = selection.get("selected")
+        candidates = selection.get("candidates")
+        if (
+            type(probe_count) is not int
+            or probe_count < 0
+            or not isinstance(selected, str)
+            or not isinstance(candidates, list)
+        ):
+            raise ValueError("invalid selected placement or probe count")
+        matching = [
+            c for c in candidates if isinstance(c, dict) and c.get("label") == selected
+        ]
+        if len(matching) != 1:
+            raise ValueError("placement-selection record has no unique winner")
+        winner = matching[0]
+        if winner.get("checkpoint_sha256") != binding["checkpoint_sha256"]:
+            raise ValueError("selected placement does not match the checkpoint")
+        if probe_count:
+            timing, hashes = read_x3_route_probe(work_dir, "post_place_quick_route")
+            warning = quick_route_log_has_congestion_warning(
+                work_dir / "post_place_quick_route_vivado.log"
+            )
+            if (
+                winner.get("quick_route_returncode") != 0
+                or winner.get("quick_route_congestion_warning") is not warning
+                or winner.get("quick_route_wns_ns") != timing.get("wns_ns")
+            ):
+                raise ValueError("selected route probe does not match its evidence")
+            binding["probe_sha256"] = hashes
+        elif x3_quick_route_count() != 0:
+            raise ValueError(
+                "placement skipped route probes; explicitly retain that override or rerun selection"
+            )
+        binding.update(
+            schema="x3_post_place_gate_binding_v3",
+            selection_sha256=file_sha256(selection_path),
+            quick_route_count=probe_count,
+        )
+    return binding
+
+
+def bind_x3_place_gate(
+    work_dir: Path, expected_wns: float | None = None, *, probe_input: bool = False
+) -> bool:
+    """Bind passing timing and congestion evidence to the placed checkpoint."""
     binding_path = work_dir / "post_place_gate_binding.json"
     binding_path.unlink(missing_ok=True)
-    gate_path = work_dir / "post_place_gate.txt"
     try:
-        gate = read_x3_place_gate(gate_path, expected_wns)
-        binding = {
-            "schema": "x3_post_place_gate_binding_v1",
-            "checkpoint_sha256": file_sha256(work_dir / "post_place.dcp"),
-            "gate_sha256": file_sha256(gate_path),
-        }
-    except (OSError, ValueError):
+        binding = x3_place_binding(work_dir, expected_wns, probe_input=probe_input)
+    except (OSError, ValueError) as error:
+        print(f"Error: cannot qualify X3 placement: {error}")
         return False
     binding_path.write_text(json.dumps(binding, indent=2) + "\n")
-    if not gate.passed:
-        print(
-            f"Warning: post-place WNS {gate.worst_slack_ns} ns is below "
-            "-0.200 ns; continuing with downstream optimization."
-        )
     return True
 
 
-def require_x3_post_place_gate(main_work: Path) -> bool:
-    """Require valid bound timing evidence; below-threshold slack only warns."""
+def require_x3_post_place_gate(main_work: Path, *, probe_input: bool = False) -> bool:
+    """Require unchanged passing placement evidence before downstream work."""
     path = main_work / "post_place_gate.txt"
     try:
-        gate = read_x3_place_gate(path)
+        expected_binding = x3_place_binding(main_work, probe_input=probe_input)
         binding_path = main_work / "post_place_gate_binding.json"
         try:
             binding = json.loads(binding_path.read_text())
@@ -1019,20 +1232,13 @@ def require_x3_post_place_gate(main_work: Path) -> bool:
                 "unqualified: rerun the placement step, or restore the "
                 "sidecar alongside the checkpoint it was written with"
             ) from error
-        if binding != {
-            "schema": "x3_post_place_gate_binding_v1",
-            "checkpoint_sha256": file_sha256(main_work / "post_place.dcp"),
-            "gate_sha256": file_sha256(path),
-        }:
-            raise ValueError("post-place checkpoint or gate binding changed")
+        if binding != expected_binding:
+            raise ValueError(
+                "post-place checkpoint, timing, or congestion binding changed"
+            )
     except (OSError, ValueError) as error:
         print(f"Error: x3 downstream work requires a valid {path}: {error}")
         return False
-    if not gate.passed:
-        print(
-            f"Warning: post-place WNS {gate.worst_slack_ns} ns is below "
-            "-0.200 ns; continuing with downstream optimization."
-        )
     return True
 
 
@@ -1054,10 +1260,11 @@ def _x3_downstream_outputs(step: str) -> set[str]:
 def capture_x3_input_lineage(
     main_work: Path, checkpoint_name: str
 ) -> X3InputLineage | None:
-    """Validate the actual consumed checkpoint's chain to the current gate.
+    """Return the provenance of ``checkpoint_name``, or print why and return None.
 
-    Legacy or stale descendants remain on disk but cannot borrow a newer
-    placement's qualification. The existing gate binding stays version 1.
+    Follow the ``.lineage.json`` sidecars back to post_place.dcp and require
+    every recorded hash to match, so an older checkpoint left on disk cannot
+    pass as a descendant of a newer qualified placement.
     """
     if not require_x3_post_place_gate(main_work):
         return None
@@ -1194,12 +1401,13 @@ def bind_x3_output_lineage(
 
 
 def snapshot_x3_physopt(source_work: Path, build_dir: Path) -> bool:
-    """Freeze a completed phys-opt stage or sweep for an independent route.
+    """Copy a completed post-place phys-opt result into a new build directory.
 
-    A sweep's launch manifest and completed-iteration digest replace the
-    canonical completion sidecar only while making this private copy. No
-    live file is qualified or modified, and subsequent stages verify the
-    ordinary lineage chain against the copied placement and gate.
+    The source is either a finished stage, qualified by its lineage sidecar,
+    or the latest completed sweep of an unfinished stage, qualified by its
+    launch manifest and iteration record. Nothing in the source directory
+    changes. The copy gets its own lineage sidecar, so later stages check it
+    like any other checkpoint.
     """
     source_work = source_work.resolve()
     build_dir = build_dir.resolve()
@@ -1231,9 +1439,9 @@ def snapshot_x3_physopt(source_work: Path, build_dir: Path) -> bool:
             iteration_path = source_dir / "phys_opt_iteration.json"
             if not launch_path.exists():
                 raise ValueError(
-                    "the running phys-opt was started before snapshot support; "
-                    "its launch manifest is absent. Let that stage finish; "
-                    "no restart is needed"
+                    "phys_opt_launch.json is missing: post-place phys-opt has "
+                    "not started, or it was launched without that file and can "
+                    "be snapshotted only after it finishes; no restart is needed"
                 )
             if not iteration_path.exists():
                 raise ValueError(
@@ -1281,6 +1489,16 @@ def snapshot_x3_physopt(source_work: Path, build_dir: Path) -> bool:
                 "post_place_gate_binding.json",
             )
         }
+        for name in (
+            "post_place_congestion.rpt",
+            "post_place_selection.json",
+            "post_place_quick_route_timing.rpt",
+            "post_place_quick_route_congestion.rpt",
+            "post_place_quick_route_vivado.log",
+            "post_place_quick_route_status.rpt",
+        ):
+            if (source_work / name).is_file():
+                sources[name] = source_work / name
         config = source_work / X3_NETLIST_CONFIG_NAME
         if config.exists():
             sources[config.name] = config
@@ -1295,8 +1513,8 @@ def snapshot_x3_physopt(source_work: Path, build_dir: Path) -> bool:
                 sources[f"post_place_physopt{suffix}"] = report
         digests = {name: file_sha256(path) for name, path in sources.items()}
 
-        # Real copies are essential: the older Tcl publisher rewrites the same
-        # inode, so a hard link or symlink would not freeze its checkpoint.
+        # Copy rather than link: the running stage may rewrite the source, and a
+        # symlink or hard link could then see the new content.
         build_dir.mkdir(parents=True, exist_ok=False)
         created = True
         work = build_dir / "work"
@@ -1355,6 +1573,41 @@ def snapshot_x3_physopt(source_work: Path, build_dir: Path) -> bool:
         return False
 
 
+def is_reference_x3_netlist(main_work: Path) -> bool:
+    """Return whether the options recorded at synthesis describe a full-rate X3 build.
+
+    Resumed runs rely on this record rather than on their own default options.
+    """
+    try:
+        config = json.loads((main_work / X3_NETLIST_CONFIG_NAME).read_text())
+    except (OSError, ValueError):
+        return False
+    return (
+        isinstance(config, dict)
+        and config.get("schema") == "x3_netlist_config_v3"
+        and config.get("cpu_base_clock_hz") == BOARD_CONFIG["x3"]["clock_freq"]
+        and config.get("cpu_clock_div") == 1
+    )
+
+
+def require_x3_netlist_clock(main_work: Path, cpu_clock_div: int) -> bool:
+    """Resume only a checkpoint built for the requested X3 clock divider."""
+    try:
+        config = json.loads((main_work / X3_NETLIST_CONFIG_NAME).read_text())
+        if not isinstance(config, dict) or (
+            config.get("cpu_base_clock_hz") != BOARD_CONFIG["x3"]["clock_freq"]
+            or config.get("cpu_clock_div") != cpu_clock_div
+        ):
+            raise ValueError("checkpoint clock differs from the requested X3 clock")
+    except (OSError, ValueError) as error:
+        print(
+            f"Error: cannot resume X3 clock configuration: {error}. "
+            "Use the checkpoint's --cpu-clock-div or restart synthesis."
+        )
+        return False
+    return True
+
+
 def copy_results_to_main_work(
     work_dir: Path,
     main_work: Path,
@@ -1362,17 +1615,16 @@ def copy_results_to_main_work(
     report_prefix: str,
     source_report_prefix: str | None = None,
 ) -> None:
-    """Copy checkpoint and reports from step work dir to main work directory.
+    """Promote a step's checkpoint and reports into the main work directory.
 
-    Ad hoc ``audit_post_opt_*`` reports carry no provenance tying them to the
-    promoted checkpoint. Retired ``post_opt_fence_*`` diagnostics described a
-    setup exception that is no longer applied. Invalidate both families when
-    installing a new post-opt checkpoint so stale evidence cannot be mistaken
-    for evidence about the new DCP.
-    A promoted post-synth checkpoint also records the synthesis-time netlist
-    options (``netlist_config.json``) that nothing downstream can recover.
+    Each report name is cleared before promotion, so reports about an older
+    checkpoint never remain beside a new one. A new post-opt checkpoint also
+    deletes the ad hoc ``audit_post_opt_*`` and obsolete ``post_opt_fence_*``
+    reports, which nothing ties to a checkpoint. A new post-synth checkpoint
+    records the synthesis-time netlist options (``netlist_config.json``) that
+    nothing downstream can recover.
     """
-    # Promote the checkpoint under its canonical name.
+    # Promote the checkpoint under its main-directory name.
     checkpoint_candidates = []
     if source_report_prefix:
         checkpoint_candidates.append(work_dir / f"{source_report_prefix}.dcp")
@@ -1394,16 +1646,20 @@ def copy_results_to_main_work(
         break
 
     if checkpoint_promoted and report_prefix == "post_synth":
-        # PERF_COUNTERS is decided here and inherited by every later
-        # checkpoint and the bitstream built from them, but nothing in a
-        # netlist, report or bitstream says which way it went. Record the
-        # value synthesis actually read, beside the checkpoints it produced,
-        # so a later run can tell whether the profiling counters are present
-        # (perf_off_test expects them absent; tomasulo_perf expects them).
+        # PERF_COUNTERS is fixed at synthesis and inherited by every later
+        # checkpoint and the bitstream, but no netlist, report, or bitstream
+        # records it. Save the value synthesis read so a later run can tell
+        # whether the profiling counters are present (perf_off_test expects
+        # them absent; tomasulo_perf expects them).
         perf_counters = int(os.environ.get("FROST_PERF_COUNTERS", "0") == "1")
         (main_work / X3_NETLIST_CONFIG_NAME).write_text(
             json.dumps(
-                {"schema": "x3_netlist_config_v1", "perf_counters": perf_counters},
+                {
+                    "schema": "x3_netlist_config_v3",
+                    "perf_counters": perf_counters,
+                    "cpu_base_clock_hz": BOARD_CONFIG["x3"]["clock_freq"],
+                    "cpu_clock_div": int(os.environ.get("FROST_CPU_CLK_DIV", "1")),
+                },
                 indent=2,
             )
             + "\n"
@@ -1422,6 +1678,26 @@ def copy_results_to_main_work(
     if checkpoint_promoted and report_prefix in {"post_synth", "post_opt"}:
         (main_work / "post_place_gate.txt").unlink(missing_ok=True)
         (main_work / "post_place_gate_binding.json").unlink(missing_ok=True)
+    if checkpoint_promoted and report_prefix in {
+        "post_synth",
+        "post_opt",
+        "post_place",
+    }:
+        # A later synthesis/optimization or an explicitly selected placement
+        # supersedes the default recipe's reference and verification records.
+        for pattern in (
+            "post_place_reference*",
+            "post_place_recipe.json",
+            "post_place_incremental_reuse.rpt",
+            "post_place_verification_timing.rpt",
+            "post_place_route_status.rpt",
+            "post_place_mux_reference.tcldict",
+            "post_place_guidance.tcldict",
+            "post_place_drc.rpt",
+        ):
+            for stale in main_work.glob(pattern):
+                if stale.is_file() or stale.is_symlink():
+                    stale.unlink()
     if report_prefix == "post_place":
         # This decision belongs to this exact promoted placement; never use
         # a glob fallback that could pick up another stage's stale evidence.
@@ -1431,7 +1707,8 @@ def copy_results_to_main_work(
         source_gate = work_dir / "post_place_gate.txt"
         if checkpoint_promoted and source_gate.is_file():
             shutil.copy2(source_gate, destination)
-        # Retired multi-place/pin-edit audits cannot describe this candidate.
+        # Audits from the diagnostic pin-swap and flush-guidance helpers cannot
+        # describe this placement.
         for retired_audit in (
             "post_place_flush_guidance_audit.tcldict",
             "post_place_pin_swap_audit.txt",
@@ -1445,7 +1722,7 @@ def copy_results_to_main_work(
             if checkpoint_promoted and source_report.is_file():
                 shutil.copy2(source_report, destination_report)
 
-    # Promote reports under canonical names.
+    # Promote reports under the main-directory prefix.
     for suffix in [
         "_timing.rpt",
         "_util.rpt",
@@ -1539,7 +1816,7 @@ def run_x3_place_quick_route_probes(
 ) -> None:
     """Quick-route candidates at real constraints and record their timing.
 
-    The cheapest router directive scores every seed equally. Probe results fill
+    Every probe uses the same, cheapest router directive. Probe results fill
     ``quick_route_*``; promotion still uses the untouched ``post_place.dcp``.
     At most ``max_jobs`` probes run concurrently.
     """
@@ -1552,12 +1829,16 @@ def run_x3_place_quick_route_probes(
             while next_candidate < len(candidates) and len(active) < max_jobs:
                 run = candidates[next_candidate]
                 next_candidate += 1
+                run.quick_route_wns = None
+                run.quick_route_tns = None
+                run.quick_route_warning = False
+                run.quick_route_error = None
                 checkpoint = run.work_dir / "post_place.dcp"
                 if not checkpoint.exists():
                     run.quick_route_returncode = -1
                     print(f"  quick-route skip {run.label}: missing {checkpoint}")
                     continue
-                if not require_x3_post_place_gate(run.work_dir):
+                if not require_x3_post_place_gate(run.work_dir, probe_input=True):
                     run.quick_route_returncode = -1
                     print(
                         f"  quick-route skip {run.label}: post-place gate not qualified"
@@ -1582,6 +1863,13 @@ def run_x3_place_quick_route_probes(
                 ]
                 stdout_handle = None
                 try:
+                    for name in (
+                        "quick_route_timing.rpt",
+                        "quick_route_status.rpt",
+                        "quick_route_vivado.log",
+                        "quick_route_congestion.rpt",
+                    ):
+                        (run.work_dir / name).unlink(missing_ok=True)
                     stdout_handle = stdout_path.open("w")
                     process = subprocess.Popen(
                         command,
@@ -1608,11 +1896,22 @@ def run_x3_place_quick_route_probes(
                 run.quick_route_returncode = returncode
                 run.quick_route_elapsed_s = time.monotonic() - started
                 if returncode == 0:
-                    timing = extract_timing_from_report(
-                        run.work_dir / "quick_route_timing.rpt"
-                    )
-                    run.quick_route_wns = timing.get("wns_ns")
-                    run.quick_route_tns = timing.get("tns_ns")
+                    try:
+                        if not require_x3_post_place_gate(
+                            run.work_dir, probe_input=True
+                        ):
+                            raise ValueError(
+                                "placement evidence changed during its route probe"
+                            )
+                        timing, _hashes = read_x3_route_probe(
+                            run.work_dir, "quick_route"
+                        )
+                        run.quick_route_wns = timing.get("wns_ns")
+                        run.quick_route_tns = timing.get("tns_ns")
+                    except (OSError, ValueError) as error:
+                        run.quick_route_returncode = -1
+                        run.quick_route_error = str(error)
+                        print(f"  quick-route rejected {run.label}: {error}")
                 run.quick_route_warning = quick_route_log_has_congestion_warning(
                     run.work_dir / "quick_route_vivado.log"
                 )
@@ -1668,10 +1967,12 @@ def select_x3_place_best_run(
     vivado_path: str,
     max_jobs: int = DEFAULT_MAX_JOBS,
 ) -> DirectiveSweepRun | None:
-    """Select the best x3 place seed with congestion awareness.
+    """Select a placement satisfying timing, congestion, and requested probes.
 
-    Gate-passing seeds compete first. Optional quick-route probes only receive
-    those seeds. If none passes, continue with the best measured placement.
+    Full-rate candidates cannot fall back past either placement requirement.
+    A requested probe must complete routing without errors, including when
+    only one placement survives. A congestion warning lowers its rank but
+    cannot predict timing closure after the full flow's phys-opt and routing.
     """
     eligible = [
         run
@@ -1683,46 +1984,37 @@ def select_x3_place_best_run(
     if not eligible:
         return None
 
+    full_rate = x3_full_rate()
     for run in eligible:
         run.congestion_level = extract_max_congestion_level(
             run.work_dir / "post_place_congestion.rpt"
         )
-
-    passing = [
-        run
-        for run in eligible
-        if x3_place_gate_passes(run.work_dir / "post_place_gate.txt", run.wns)
-    ]
+        run.timing_gate_passed = x3_place_gate_passes(
+            run.work_dir / "post_place_gate.txt", run.wns
+        ) and (not full_rate or Decimal(str(run.wns)) > X3_POST_PLACE_GATE_NS)
+    passing = [run for run in eligible if run.timing_gate_passed]
     if not passing:
-        print("\nNo placement meets -0.200 ns; selecting the best measured result.")
-        return min(eligible, key=directive_sweep_rank_key)
+        print(
+            f"\nError: no placement meets the {X3_POST_PLACE_GATE_NS} ns timing requirement."
+        )
+        return None
     eligible = passing
 
-    veto_level = int(
-        os.environ.get(
-            "FROST_PLACE_CONGESTION_VETO_LEVEL",
-            str(X3_PLACE_CONGESTION_VETO_LEVEL_DEFAULT),
-        )
-    )
+    veto_level = x3_congestion_veto_level()
     survivors = [
         run
         for run in eligible
-        if run.congestion_level is None or run.congestion_level < veto_level
+        if not full_rate
+        or (run.congestion_level is not None and run.congestion_level < veto_level)
     ]
     for run in eligible:
         run.congestion_vetoed = run not in survivors
     if not survivors:
-        known_levels = [
-            run.congestion_level for run in eligible if run.congestion_level is not None
-        ]
-        min_level = min(known_levels)
-        survivors = [run for run in eligible if run.congestion_level == min_level]
-        for run in survivors:
-            run.congestion_vetoed = False
         print(
-            f"\nWARNING: every place seed reached congestion level >= "
-            f"{veto_level}; falling back to the level-{min_level} seeds"
+            f"\nError: no timing-passing placement has valid congestion evidence "
+            f"below level {veto_level}. No candidate is qualified."
         )
+        return None
     elif len(survivors) < len(eligible):
         print(
             f"\nCongestion veto (level >= {veto_level}) removed "
@@ -1730,20 +2022,18 @@ def select_x3_place_best_run(
         )
 
     survivors_ranked = sorted(survivors, key=directive_sweep_rank_key)
-    quick_route_count = int(
-        os.environ.get(
-            "FROST_PLACE_QUICK_ROUTE_COUNT", str(X3_PLACE_QUICK_ROUTE_COUNT_DEFAULT)
-        )
-    )
-    if quick_route_count <= 0 or len(survivors_ranked) <= 1:
+    quick_route_count = x3_quick_route_count()
+    if quick_route_count == 0:
         return survivors_ranked[0]
 
-    candidates = survivors_ranked[:quick_route_count]
-    for run in candidates:
-        bind_x3_place_gate(run.work_dir, run.wns)
+    candidates = [
+        run
+        for run in survivors_ranked[:quick_route_count]
+        if bind_x3_place_gate(run.work_dir, run.wns, probe_input=True)
+    ]
     print(
         f"\nQuick-route probing the top {len(candidates)} surviving seeds "
-        f"(routed WNS decides):"
+        f"(congestion warning, routed WNS, then TNS decide):"
     )
     run_x3_place_quick_route_probes(
         script_dir, candidates, vivado_path, max_jobs=max_jobs
@@ -1756,11 +2046,17 @@ def select_x3_place_best_run(
     ]
     if not probed:
         print(
-            "WARNING: no quick-route probe produced usable timing; "
-            "falling back to post-place WNS ranking among surviving seeds"
+            "Error: no requested quick-route probe completed routing without "
+            "errors and with usable timing. No candidate is qualified."
         )
-        return survivors_ranked[0]
-    return min(probed, key=x3_place_quick_route_rank_key)
+        return None
+    winner = min(probed, key=x3_place_quick_route_rank_key)
+    if winner.quick_route_warning:
+        print(
+            f"Warning: selected {winner.label} has a route-probe congestion "
+            "warning. Full implementation is still required to assess timing closure."
+        )
+    return winner
 
 
 def print_x3_directive_sweep_matrix(
@@ -1797,6 +2093,8 @@ def print_x3_directive_sweep_matrix(
             status = f"FAIL {run.returncode}"
         elif run.wns is None:
             status = "NO WNS"
+        elif run.timing_gate_passed is False:
+            status = "TIMEVETO"
         elif run.congestion_vetoed:
             status = "CONGVETO"
         else:
@@ -1840,7 +2138,8 @@ def print_x3_directive_sweep_matrix(
         print(
             "    (Cong = worst reported placer congestion window level; "
             "none = no windows reported at the reporting threshold "
-            "(default 5), not zero congestion; CONGVETO = disqualified by "
+            "(default 5), not zero congestion; TIMEVETO = failed timing requirement; "
+            "CONGVETO = disqualified by "
             "reported level; RouteWNS = quick-route probe at real "
             "constraints, '!' = router congestion warning)"
         )
@@ -1923,10 +2222,9 @@ def terminate_x3_directive_sweep_runs(
 def read_log_tail(path: Path, offset: int) -> tuple[str, int]:
     """Return the text appended to ``path`` since ``offset`` and the new offset.
 
-    A missing file yields no text; a truncated one (offset past the end) is
-    read again from the beginning. Partial UTF-8 at the
-    end of a write is replaced rather than raised, since Vivado logs mix
-    encodings.
+    A missing file yields no text; a truncated one (offset past the end) is read
+    again from the beginning. Partial UTF-8 at the end of a write is replaced
+    rather than raised, since Vivado logs mix encodings.
     """
     try:
         size = path.stat().st_size
@@ -1953,6 +2251,7 @@ def run_x3_step_directive_sweep(
     include_extra_seeds: bool = True,
     max_jobs: int = DEFAULT_MAX_JOBS,
     build_dir: Path | None = None,
+    additional_place_runs: list[DirectiveSweepRun] | None = None,
 ) -> tuple[bool, float | None, str]:
     """Run every x3 candidate with bounded concurrency and promote the best run.
 
@@ -1971,6 +2270,11 @@ def run_x3_step_directive_sweep(
     """
     if max_jobs < 1:
         raise ValueError("max_jobs must be positive")
+    if additional_place_runs and step != "place":
+        raise ValueError("additional placements can only join the place sweep")
+    if step == "place":
+        x3_congestion_veto_level()
+        x3_quick_route_count()
     board_name = "x3"
     tcl_report_prefix = _TCL_REPORT_PREFIX[step]
     board_build = build_dir if build_dir is not None else script_dir / board_name
@@ -1985,6 +2289,7 @@ def run_x3_step_directive_sweep(
     if step == "place":
         (main_work / "post_place_gate.txt").unlink(missing_ok=True)
         (main_work / "post_place_gate_binding.json").unlink(missing_ok=True)
+        (main_work / "post_place_selection.json").unlink(missing_ok=True)
     required_checkpoint = STEP_REQUIRES_CHECKPOINT[step]
     if required_checkpoint is None:
         print(f"Error: x3 {step} sweep requires an input checkpoint")
@@ -1993,6 +2298,20 @@ def run_x3_step_directive_sweep(
     if not input_checkpoint.exists():
         print(f"Error: Required checkpoint not found: {input_checkpoint}")
         return False, None, ""
+    place_input_hash = file_sha256(input_checkpoint) if step == "place" else None
+    for run in additional_place_runs or []:
+        try:
+            recipe = json.loads((run.work_dir / "post_place_recipe.json").read_text())
+            if (
+                not isinstance(recipe, dict)
+                or recipe.get("post_opt_sha256") != place_input_hash
+            ):
+                raise ValueError(
+                    "guided candidate consumed a different post-opt checkpoint"
+                )
+        except (OSError, ValueError) as error:
+            print(f"Error: cannot admit {run.label}: {error}")
+            return False, None, ""
 
     consumed_lineage = None
     if step in STEPS[STEPS.index("place") + 1 :]:
@@ -2050,10 +2369,10 @@ def run_x3_step_directive_sweep(
 
     # A sweep of one job has nothing to compare, so its Vivado output streams
     # to the terminal instead of sitting silently in the work directory.
-    stream_single_job = len(sweep_jobs) == 1
+    stream_single_job = len(sweep_jobs) + len(additional_place_runs or []) == 1
     stream_offset = 0
 
-    runs: list[DirectiveSweepRun] = []
+    runs: list[DirectiveSweepRun] = list(additional_place_runs or [])
     next_candidate = 0
     pending: set[int] = set()
     try:
@@ -2232,8 +2551,51 @@ def run_x3_step_directive_sweep(
         raise SystemExit(130)
 
     if step == "place":
+        if (
+            not input_checkpoint.is_file()
+            or file_sha256(input_checkpoint) != place_input_hash
+        ):
+            print(
+                "Error: post-opt checkpoint changed during placement; rerun the sweep."
+            )
+            return False, None, ""
         best_run = select_x3_place_best_run(
             script_dir, runs, vivado_path, max_jobs=max_jobs
+        )
+        (main_work / "post_place_selection.json").write_text(
+            json.dumps(
+                {
+                    "schema": "x3_place_selection_v1",
+                    "selected": best_run.label if best_run is not None else None,
+                    "congestion_veto_level": x3_congestion_veto_level(),
+                    "quick_route_count": x3_quick_route_count(),
+                    "post_opt_sha256": place_input_hash,
+                    "candidates": [
+                        {
+                            "label": run.label,
+                            "returncode": run.returncode,
+                            "placed_wns_ns": run.wns,
+                            "placed_tns_ns": run.tns,
+                            "timing_gate_passed": run.timing_gate_passed,
+                            "congestion_level": run.congestion_level,
+                            "congestion_vetoed": run.congestion_vetoed,
+                            "quick_route_returncode": run.quick_route_returncode,
+                            "quick_route_wns_ns": run.quick_route_wns,
+                            "quick_route_tns_ns": run.quick_route_tns,
+                            "quick_route_congestion_warning": run.quick_route_warning,
+                            "quick_route_error": run.quick_route_error,
+                            "checkpoint_sha256": file_sha256(
+                                run.work_dir / "post_place.dcp"
+                            )
+                            if (run.work_dir / "post_place.dcp").is_file()
+                            else None,
+                        }
+                        for run in runs
+                    ],
+                },
+                indent=2,
+            )
+            + "\n"
         )
     else:
         eligible_runs = [
@@ -2248,11 +2610,15 @@ def run_x3_step_directive_sweep(
     )
 
     if best_run is None:
-        print(f"\nError: No x3 {sweep_kind} directive completed with usable WNS data")
+        print(
+            f"\nError: No x3 {sweep_kind} candidate satisfies the selection requirements"
+        )
         print(f"Leaving {sweep_kind} work directories in place for debugging.")
         return False, None, ""
 
-    timing_met = best_run.wns is not None and best_run.wns >= 0
+    timing_met = setup_timing_met(
+        best_run.wns, best_run.tns, best_run.failing_endpoints
+    )
     if step in FINAL_ELIGIBLE_STEPS and timing_met:
         checkpoint_name = "final.dcp"
         report_prefix = "final"
@@ -2298,10 +2664,17 @@ def run_x3_step_directive_sweep(
 
     # Preserve the winning probe before deleting per-seed directories.
     if step == "place":
+        # Keep the selected guidance's provenance, but never attach another
+        # candidate's reference or pin constraints to a conventional winner.
+        for name in X3_GUIDED_PLACE_EVIDENCE:
+            source = best_run.work_dir / name
+            if source.is_file():
+                shutil.copy2(source, main_work / name)
         for quick_route_name in (
             "quick_route_timing.rpt",
             "quick_route_congestion.rpt",
             "quick_route_vivado.log",
+            "quick_route_status.rpt",
         ):
             quick_route_src = best_run.work_dir / quick_route_name
             quick_route_dst = main_work / f"post_place_{quick_route_name}"
@@ -2353,6 +2726,277 @@ def run_x3_step_directive_sweep(
 # Step execution
 
 
+X3_GUIDED_PLACE_EVIDENCE = (
+    "post_place_recipe.json",
+    "post_place_reference.dcp",
+    "post_place_reference_timing.rpt",
+    "post_place_reference_congestion.rpt",
+    "post_place_reference_gate.txt",
+    "post_place_reference_vivado.log",
+    "post_place_guidance.tcldict",
+    "post_place_verification_timing.rpt",
+    "post_place_verify_vivado.log",
+    "post_place_route_status.rpt",
+    "post_place_drc.rpt",
+)
+
+
+def run_x3_default_place(
+    script_dir: Path,
+    vivado_path: str,
+    build_dir: Path | None = None,
+    max_jobs: int = DEFAULT_MAX_JOBS,
+    keep_temps: bool = False,
+) -> tuple[bool, float | None, str]:
+    """Generate local guidance and submit it to the normal placer selection."""
+    x3_congestion_veto_level()
+    x3_quick_route_count()
+    board_build = build_dir if build_dir is not None else script_dir / "x3"
+    work = board_build / "work"
+    started = time.monotonic()
+    success, wns, prefix = run_x3_guided_place_candidate(
+        script_dir, vivado_path, build_dir=build_dir
+    )
+    if not success:
+        return False, wns, prefix
+
+    candidate_work = board_build / "work_place_LocalGuidance"
+    if candidate_work.exists():
+        shutil.rmtree(candidate_work)
+    candidate_work.mkdir(parents=True)
+    standard_files = (
+        "post_place.dcp",
+        "post_place_timing.rpt",
+        "post_place_util.rpt",
+        "post_place_high_fanout.rpt",
+        "post_place_failing_paths.csv",
+        "post_place_congestion.rpt",
+        "post_place_gate.txt",
+        "post_place_gate_cpu.rpt",
+        "post_place_gate_worst.rpt",
+        "post_place_gate_below.rpt",
+    )
+    for name in (*standard_files, *X3_GUIDED_PLACE_EVIDENCE):
+        source = work / name
+        if source.is_file():
+            source.replace(candidate_work / name)
+    (work / "post_place_vivado.log").replace(candidate_work / "vivado.log")
+    timing = extract_timing_from_report(candidate_work / "post_place_timing.rpt")
+    candidate = DirectiveSweepRun(
+        directive="Quick",
+        label="LocalGuidance",
+        work_dir=candidate_work,
+        stdout_path=candidate_work / "vivado.log",
+        returncode=0,
+        elapsed_s=time.monotonic() - started,
+        setup_uncertainty_ns=0.325,
+        wns=wns,
+        tns=timing.get("tns_ns"),
+        cell_bloat_factor="MEDIUM",
+        cell_bloat_cells=X3_GUIDED_PLACE_BLOAT_CELLS,
+    )
+    return run_x3_step_directive_sweep(
+        script_dir,
+        "place",
+        X3_PLACER_SWEEP_DIRECTIVES,
+        "placer",
+        vivado_path,
+        keep_temps=keep_temps,
+        setup_uncertainties_ns=make_x3_place_setup_uncertainties_ns(
+            X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT
+        ),
+        max_jobs=max_jobs,
+        build_dir=build_dir,
+        additional_place_runs=[candidate],
+    )
+
+
+def run_x3_guided_place_candidate(
+    script_dir: Path,
+    vivado_path: str,
+    build_dir: Path | None = None,
+    *,
+    cell_bloat_cells: str | None = None,
+    cell_bloat_matches: tuple[int | None, ...] | None = None,
+) -> tuple[bool, float | None, str]:
+    """Measure a guided candidate from the current post-opt netlist in work/.
+
+    Generate a fresh reference, derive local floorplan constraints and place
+    the guided cells, then verify in a third, read-only Vivado process. No
+    archived input or phys-opt pass participates. This is not qualification:
+    the caller submits the result to the shared congestion/probe selector.
+    ``cell_bloat_cells`` is a space-separated list of cell name patterns;
+    every pattern must match exactly one cell in each placement pass unless
+    ``cell_bloat_matches`` explicitly allows a nonempty group for that pattern.
+    """
+    if cell_bloat_cells is None:
+        cell_bloat_cells = X3_GUIDED_PLACE_BLOAT_CELLS
+        if cell_bloat_matches is None:
+            cell_bloat_matches = X3_GUIDED_PLACE_BLOAT_MATCHES
+    board_build = build_dir if build_dir is not None else script_dir / "x3"
+    work = board_build / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    gate_path = work / "post_place_gate.txt"
+    for name in (
+        "post_place_gate.txt",
+        "post_place_gate_binding.json",
+        "post_place_recipe.json",
+    ):
+        (work / name).unlink(missing_ok=True)
+    post_opt = work / "post_opt.dcp"
+    opt_wns = extract_timing_from_report(work / "post_opt_timing.rpt").get("wns_ns")
+    if not post_opt.is_file() or opt_wns is None or not opt_wns >= 0:
+        print(
+            "Error: default X3 placement requires the current post-opt checkpoint with WNS >= 0 ns."
+        )
+        return False, None, ""
+
+    # Explicit sweep controls are handled by the caller. The default recipe's
+    # settings are fixed for both passes, independent of inherited seed values.
+    environment = dict(os.environ)
+    environment["FROST_PLACE_SETUP_UNCERTAINTY"] = "0.325"
+    environment["FROST_PLACE_CELL_BLOAT"] = "MEDIUM"
+    environment["FROST_PLACE_CELL_BLOAT_CELLS"] = cell_bloat_cells
+    suffixes = (
+        ".dcp",
+        "_timing.rpt",
+        "_util.rpt",
+        "_high_fanout.rpt",
+        "_failing_paths.csv",
+        "_congestion.rpt",
+        "_gate.txt",
+        "_gate_worst.rpt",
+        "_gate_cpu.rpt",
+        "_gate_below.rpt",
+        "_group_audit.txt",
+        "_pc_compressed_tail_timing.rpt",
+    )
+    for prefix in ("post_place", "post_place_reference"):
+        for suffix in suffixes:
+            (work / f"{prefix}{suffix}").unlink(missing_ok=True)
+    for suffix in (
+        "_incremental_reuse.rpt",
+        "_verification_timing.rpt",
+        "_route_status.rpt",
+        "_mux_reference.tcldict",
+        "_guidance.tcldict",
+        "_drc.rpt",
+    ):
+        (work / f"post_place{suffix}").unlink(missing_ok=True)
+
+    def launch(step: str, checkpoint: Path, mode: str, log_name: str) -> bool:
+        command = [
+            vivado_path,
+            "-mode",
+            "batch",
+            "-source",
+            str(script_dir / "build_step.tcl"),
+            "-nojournal",
+            "-log",
+            log_name,
+            "-tclargs",
+            "x3",
+            step,
+            "Quick" if mode == "guided" else "ExtraNetDelay_high",
+            str(checkpoint),
+            "0",
+        ]
+        if mode:
+            command.extend(["", mode])
+        print(f"\nX3 placement: {mode or step}; work directory: {work}", flush=True)
+        result = subprocess.run(command, cwd=work, env=environment)
+        if result.returncode != 0:
+            return False
+        if step == "place" and not x3_place_cell_bloat_override_is_valid(
+            work / log_name, "MEDIUM", cell_bloat_cells, cell_bloat_matches
+        ):
+            raise ValueError(f"{mode} placement did not apply the requested cell bloat")
+        return True
+
+    try:
+        post_opt_hash = file_sha256(post_opt)
+        if not launch(
+            "place", post_opt, "reference", "post_place_reference_vivado.log"
+        ):
+            return False, None, ""
+        reference_wns = extract_timing_from_report(work / "post_place_timing.rpt").get(
+            "wns_ns"
+        )
+        if reference_wns is None or not (work / "post_place.dcp").is_file():
+            raise ValueError(
+                "reference placement did not produce a checkpoint and timing report"
+            )
+        read_x3_place_gate(gate_path, reference_wns)
+        if file_sha256(post_opt) != post_opt_hash:
+            raise ValueError("post-opt checkpoint changed during reference placement")
+        for suffix in suffixes:
+            source = work / f"post_place{suffix}"
+            if source.exists():
+                source.replace(work / f"post_place_reference{suffix}")
+        reference = work / "post_place_reference.dcp"
+        reference_hash = file_sha256(reference)
+        if not launch("place", reference, "guided", "post_place_vivado.log"):
+            return False, None, ""
+        wns = extract_timing_from_report(work / "post_place_timing.rpt").get("wns_ns")
+        if wns is None:
+            raise ValueError("guided placement did not produce a timing report")
+        placed_gate = read_x3_place_gate(gate_path, wns)
+        placed_hash = file_sha256(work / "post_place.dcp")
+        gate_path.unlink()
+        if not launch(
+            "verify_place", work / "post_place.dcp", "", "post_place_verify_vivado.log"
+        ):
+            return False, wns, "post_place"
+        if (
+            read_x3_place_gate(gate_path, wns) != placed_gate
+            or file_sha256(work / "post_place.dcp") != placed_hash
+        ):
+            raise ValueError(
+                "clean-reopen verification changed the checkpoint or its timing"
+            )
+        if file_sha256(post_opt) != post_opt_hash:
+            raise ValueError("post-opt checkpoint changed during guided placement")
+        if file_sha256(reference) != reference_hash:
+            raise ValueError("reference checkpoint changed during guided placement")
+        (work / "post_place_recipe.json").write_text(
+            json.dumps(
+                {
+                    "schema": "x3_place_recipe_v2",
+                    "post_opt_sha256": post_opt_hash,
+                    "reference_sha256": reference_hash,
+                    "guidance_sha256": file_sha256(
+                        work / "post_place_guidance.tcldict"
+                    ),
+                    "checkpoint_sha256": placed_hash,
+                    "reference_wns_ns": reference_wns,
+                    "post_place_wns_ns": wns,
+                    "clock_root": "X1Y9",
+                    "placement_uncertainty_ns": 0.325,
+                    "cell_bloat": "MEDIUM",
+                    "cell_bloat_cells": cell_bloat_cells,
+                    "cell_bloat_matches": cell_bloat_matches
+                    if cell_bloat_matches is not None
+                    else [1] * len(cell_bloat_cells.split()),
+                    "final_directive": "Quick",
+                    "guidance": "current-reference local floorplan",
+                    "scoring_uncertainty_ns": 0.0,
+                    "clean_reopen_verified": True,
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+    except (OSError, ValueError) as error:
+        print(f"Error: {error}. Placement reports remain in {work}.")
+        (work / "post_place_gate_binding.json").unlink(missing_ok=True)
+        return False, None, "post_place"
+    print(
+        f"\nMeasured guided placement WNS: {wns:.3f} ns "
+        f"(reference {reference_wns:.3f} ns); congestion/probe selection still required"
+    )
+    return True, wns, "post_place"
+
+
 def run_step(
     script_dir: Path,
     board_name: str,
@@ -2368,8 +3012,9 @@ def run_step(
 
     Returns (success, wns_ns, actual_report_prefix). actual_report_prefix is
     "final" when the step's outputs were promoted to final.dcp/final_*.rpt
-    (final-eligible step + WNS>=0, or post_second_route_physopt unconditionally),
-    otherwise the step's non-final canonical prefix.
+    (final-eligible step with setup timing met, or post_second_route_physopt
+    unconditionally),
+    otherwise the step's own prefix from STEP_REPORT_PREFIX.
     """
     board_build = build_dir if build_dir is not None else script_dir / board_name
     main_work = board_build / "work"
@@ -2427,9 +3072,10 @@ def run_step(
         vivado_command.append(str(software_mem_dir))
 
     if step == "post_place_physopt" and consumed_lineage is not None:
-        # The running process keeps its own captured input. A completed sweep
-        # can be forked before this process exits, without qualifying a mutable
-        # canonical checkpoint for a concurrent build in the same directory.
+        # Record the input this launch consumed. --snapshot-physopt-from uses
+        # it to copy a completed sweep while this process still runs, without
+        # qualifying the main directory's checkpoint, which the stage keeps
+        # rewriting.
         (work_dir / "phys_opt_launch.json").write_text(
             json.dumps(
                 {
@@ -2454,7 +3100,9 @@ def run_step(
     timing_rpt = work_dir / f"{tcl_report_prefix}_timing.rpt"
     timing = extract_timing_from_report(timing_rpt)
     wns = timing.get("wns_ns")
-    timing_met = wns is not None and wns >= 0
+    timing_met = setup_timing_met(
+        wns, timing.get("tns_ns"), timing.get("failing_endpoints")
+    )
 
     # Closing stages promote final.*; the last stage already uses that prefix.
     if step in FINAL_ELIGIBLE_STEPS and timing_met:
@@ -2570,18 +3218,21 @@ def generate_bitstream(
 
 def main() -> None:
     """Run FPGA build."""
+    # The defaults the epilog quotes.
+    jobs = DEFAULT_MAX_JOBS
+    gate = X3_POST_PLACE_GATE_NS
+    veto = X3_PLACE_CONGESTION_VETO_LEVEL_DEFAULT
+    probes = X3_PLACE_QUICK_ROUTE_COUNT_DEFAULT
     parser = argparse.ArgumentParser(
         description="FROST FPGA build script",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=f"""
 Steps (in order):
   synth                       - Synthesis
   opt                         - Opt design
-  place                       - Place design (x3 sweeps selected placer
-                                directives x uncertainty seeds, up to --jobs
-                                at a time; warn below -0.200 ns,
-                                veto congested seeds, keep the best post-place
-                                WNS; no quick-route probe by default)
+  place                       - Compare guided and conventional placements;
+                                require WNS better than {gate} ns and acceptable
+                                congestion, then select using route probes
   post_place_physopt          - Phys_opt sweep (always continues to route, even
                                 if timing closes mid-sweep under overconstraint)
   route                       - Route design (with -tns_cleanup; x3 sweeps selected
@@ -2595,66 +3246,113 @@ Steps (in order):
                                 always writes final.dcp + final_*.rpt + bitstream
 
 Behavior:
-  * --jobs / -j limits simultaneous Vivado processes per build (default 12).
+  * --jobs / -j limits simultaneous Vivado processes per build (default {jobs}).
     This covers X3 placement, quick-route probes, and both router sweeps.
     Candidates queue and start as slots become free; every candidate still runs.
     Separate build invocations have independent limits. Vivado's per-process
     thread settings are unchanged. Use --jobs 1 for serial execution.
-  * On x3, place ignores --place-directive. By default its grid runs
+  * Full-rate X3 placement includes a local-guidance candidate from this build's closed post_opt.dcp,
+    generates an ExtraNetDelay_high/0.325 reference with CPU clock root X1Y9
+    and MEDIUM cell bloat on the integer RS and memory-RS source-2 operand cells. It measures
+    local register sites and LUT input assignments on that fresh reference,
+    retaining changes only when setup and hold slack do not worsen. The
+    second pass preserves the surrounding placement and uses hard local
+    pblocks, BELs and LUT pin constraints to re-place the guided cells with
+    Quick. No cell, net or pin edits follow the final place_design.
+    These passes run in work/; their artifacts then join the grid in a normal
+    candidate directory. A separate Vivado process verifies the final saved
+    constraints without changing them. Temporary preservation and pblocks
+    are removed when opening the checkpoint for downstream optimization,
+    with original cell, net and port constraints restored and
+    placement/timing checked, including every port's pin and fixed-location flag.
+    Older downstream checkpoints with all port flags lost recover those flags
+    from their qualified placed ancestor only when pins and I/O standards match.
+    No archived checkpoint is required. This candidate competes with the
+    conventional grid under the same timing, congestion, and route-probe
+    requirements; it cannot qualify itself from placed WNS alone.
+  * On x3, place ignores --place-directive. Explicit --directives or
+    --num-uncertainties options, or either cell-bloat environment variable,
+    select only the conventional grid. The default grid runs
     ExtraNetDelay_high, ExtraPostPlacementOpt, AltSpreadLogic_high, and
     AltSpreadLogic_medium at six overconstraint seeds (0.500 down
-    to 0.250 ns pre-place setup uncertainty in 50 ps steps). The qualified
-    ExtraPostPlacementOpt/0.425 seed is appended unless already in the grid.
-    LOW integer-RS cell-bloat variants are added beside the grid's
-    ExtraNetDelay_high/0.350 and ExtraPostPlacementOpt/0.450 controls.
-    These make 27 jobs with the original 25 controls. Every candidate runs
-    exactly one place_design; supported physical controls precede it.
-    No automatic post-place netlist or input-pin edits run.
-    Narrowed grids gain only variants whose matching control remains present.
-    --directives sets the grid to any nonempty unique subset of legal placer
-    directives, and --num-uncertainties changes its seed count while retaining
+    to 0.250 ns pre-place setup uncertainty in 50 ps steps). The off-grid
+    ExtraPostPlacementOpt/0.425 seed is appended unless already in the grid,
+    and LOW integer-RS cell-bloat variants are added beside the grid's
+    ExtraNetDelay_high/0.350 and ExtraPostPlacementOpt/0.450 controls. Each
+    candidate runs exactly one place_design, with any physical settings
+    applied before it and no netlist or pin edits after it.
+    A narrowed grid keeps a bloat variant only if its control is still there.
+    --directives sets that grid to any nonempty unique subset of legal placer
+    directives, and --num-uncertainties changes its seed count while keeping
     50 ps spacing. Both overrides require a run that includes place.
   * The X3 ExtraNetDelay_high/0.500, ExtraPostPlacementOpt/0.450, and
-    ExtraPostPlacementOpt/0.425 candidates temporarily group the fourteen
-    pinned scalar LUTRAM overlay output-FF launches of the predecode metadata to the
-    selected, state, sequential, and pending-valid PC consumers.
-    The group is removed after placement; a clean DCP reopen must prove zero
-    lingering custom paths, canonical clock_from_mmcm grouping, and the exact
-    directive/place-uncertainty identity before any candidate can be scored at
-    zero added uncertainty or promoted.
-  * X3 place-seed selection is congestion-aware: seeds whose placer
-    congestion estimate reaches FROST_PLACE_CONGESTION_VETO_LEVEL (default 5)
-    are disqualified among native gate-passing seeds. Reports use actual
-    zero added uncertainty. FROST_PLACE_QUICK_ROUTE_COUNT defaults to 0;
-    a positive override probes only passing seeds and ranks by routed WNS.
-    Without probes, passing seeds rank by actual post-place WNS. FROST_PLACE_CELL_BLOAT=LOW/MEDIUM/HIGH optionally
-    spreads wire-dense hierarchies (FROST_PLACE_CELL_BLOAT_CELLS, default
-    *u_tomasulo/u_int_rs). Explicitly setting either variable disables the
-    automatic LOW variants and applies the caller's environment to the original
-    control sweep. An empty FROST_PLACE_CELL_BLOAT requests no bloat. Automatic
-    LOW variants must prove exactly one integer-RS hierarchy match in their log.
-    The winning checkpoint/report have zero added setup uncertainty.
-    A native post_place_gate.txt and its checkpoint/hash binding are required
-    before quick routes or any downstream stage, including resumed builds.
-    Later input checkpoints also require their .lineage.json parent chain;
-    old or stale descendants must be rebuilt from post_place_physopt.
-    If no seed meets -0.200 ns, warn and continue with the best DCP/reports.
+    ExtraPostPlacementOpt/0.425 candidates place with a temporary path group
+    from the fourteen predecode-metadata output flops (pinned scalar LUTRAM
+    overlays) to the selected, state, sequential, and pending-valid PC
+    registers. The group is removed after placement. Before such a candidate
+    can be scored or promoted, its audit from a clean reopen of the checkpoint
+    must show no paths left in the group, all of those paths back in
+    clock_from_mmcm, and the candidate's own directive and uncertainty.
+  * Full-rate X3 candidates require WNS better than {gate} ns and valid placer
+    congestion evidence below FROST_PLACE_CONGESTION_VETO_LEVEL (default {veto}).
+    Failing or missing evidence disqualifies a candidate; no fallback admits it.
+    FROST_PLACE_QUICK_ROUTE_COUNT (default {probes}) quick-routes up to that many
+    survivors, including a sole survivor. Completed probes without a router
+    congestion warning rank first, then routed WNS and TNS decide.
+    The warning alone does not disqualify a completed, error-free probe;
+    the full flow uses phys-opt and stronger routing directives.
+    Failed probes, incomplete routing, and missing reports/logs disqualify it.
+    An explicit count of zero disables probes and ranks by post-place WNS.
+    If none qualifies, the build stops. Divided-clock builds keep their fast
+    policy without the full-rate congestion screen or automatic probes.
+    post_place_selection.json records the selection. Scores and promoted
+    checkpoints/reports use zero added setup uncertainty.
+  * FROST_PLACE_CELL_BLOAT=LOW/MEDIUM/HIGH spreads wire-dense hierarchies
+    (FROST_PLACE_CELL_BLOAT_CELLS, default *u_tomasulo/u_int_rs) in every
+    candidate. Setting either variable, even to an empty value, disables the
+    automatic LOW variants; an empty FROST_PLACE_CELL_BLOAT means no bloat.
+    Each automatic LOW variant's log must show its bloat applied to exactly
+    one cell, the integer-RS hierarchy.
+  * Quick routes and every later stage, including resumed builds, require
+    post_place_gate.txt and post_place_gate_binding.json, which ties the gate
+    to post_place.dcp by hash. Full-rate downstream bindings also require
+    unchanged passing congestion evidence, selection and complete probe
+    reports/logs. Preliminary probe-input and older bindings cannot resume.
+    A zero-probe selection requires that explicit override again on resume.
+    Later input checkpoints also need their
+    *.lineage.json chain back to that placement; rebuild stale ones from
+    post_place_physopt.
   * On x3, route and second_route ignore --route-directive and
     --second-route-directive, respectively. Each defaults to Explore,
     AggressiveExplore, NoTimingRelaxation, and AlternateCLBRouting, subject
     to --jobs, and promotes only the best-WNS checkpoint/reports.
     --route-directives overrides this list with any legal router directives.
     The route step still uses -tns_cleanup; second_route does not.
-  * All phys_opt stages run a hardcoded sweep, starting with AggressiveExplore
-    and ending with one retime-only pass (phys_opt_design -retime). Each sweep
-    preserves the best-WNS pass and stops early if a pass closes timing
-    (WNS>=0). Repeated sweeps write the current best checkpoint and reports
-    after every completed sweep iteration.
-  * Pipeline early-exit at route, post_route_physopt, or second_route: when
-    one of these closes timing, its outputs are promoted to final.dcp/final_*
-    and remaining stages are skipped — bitstream runs next.
+  * Every phys_opt stage runs an ordinary directive sweep that starts with
+    AggressiveExplore and ends with one retime-only pass
+    (phys_opt_design -retime). Each sweep keeps WNS improvements and TNS
+    improvements when WNS is tied, and stops early if a pass closes setup
+    timing: WNS and TNS must be nonnegative, with zero failing setup endpoints.
+    Sweeps repeat while they keep improving, and each completed sweep writes
+    the current best checkpoint and reports.
+  * Phys-opt and routing, including quick-route probes and resumed builds,
+    remove inherited incremental history before optimizing. The conversion
+    preserves primitive placement and setup/hold slack, and leaves the input
+    checkpoint unchanged. This prevents RuntimeOptimized placement's negative
+    reference WNS from becoming the stopping target of later optimization.
+  * Early exit: when route, post_route_physopt, or second_route closes timing,
+    its outputs are promoted to final.dcp/final_*, the remaining stages are
+    skipped, and the bitstream runs next.
+  * X3 final phys-opt: after the ordinary sweep stalls, the default schedule
+    also tries endpoint groups with a temporary 30 ps setup margin. It removes
+    the groups and margin before scoring WNS/TNS, and requires legal routing,
+    hold, pulse-width, and bus-skew timing before retaining an endpoint pass.
+    With at most 24 failing CPU endpoints, it also tries individual clock
+    optimization, LUT pin assignments, and routing shared data nets with their
+    critical sink first. Candidates come from the current timing report and
+    must improve whole-design timing while preserving existing constraints.
 
-Each non-sweep step uses a tuned default directive unless overridden with --*-directive.
+Synthesis and optimization use tuned defaults unless overridden with --*-directive.
 --route-directive controls the first route on non-x3 boards (default AggressiveExplore);
 --second-route-directive controls the second route on non-x3 boards (default Explore).
 --physopt-directive is currently ignored (kept for backward compatibility).
@@ -2668,6 +3366,7 @@ Examples:
   ./build.py x3 --synth-directive PerformanceOptimized  # Override the board default
   ./build.py x3 --start-at route                   # Requires post_place_physopt.dcp
   ./build.py x3 --start-at second_route            # Requires post_route_physopt.dcp
+  ./build.py x3 --start-at bitstream               # Requires qualified final.dcp
 """,
     )
     parser.add_argument(
@@ -2679,7 +3378,7 @@ Examples:
     )
     parser.add_argument(
         "--start-at",
-        choices=STEPS,
+        choices=[*STEPS, "bitstream"],
         default="synth",
         help="Start at this step (requires appropriate checkpoint)",
     )
@@ -2692,7 +3391,8 @@ Examples:
         "--build-dir",
         type=Path,
         help="Board build directory containing work/ and per-stage workers "
-        "(default: fpga/build/<board>). Custom directories leave README alone.",
+        "(default: fpga/build/<board>). Builds in a custom directory do not "
+        "update the README utilization table.",
     )
     parser.add_argument(
         "--snapshot-physopt-from",
@@ -2753,7 +3453,8 @@ Examples:
         nargs="+",
         choices=PLACER_DIRECTIVES,
         metavar="DIRECTIVE",
-        help="Set the x3 placer grid to one or more unique directives. "
+        help="Use only the conventional grid, without the local-guidance candidate; "
+        "set its grid to one or more unique directives. "
         "Each runs at every configured uncertainty; the qualified off-grid "
         "seed is still appended unless already present, and eligible LOW "
         "integer-RS variants are added beside matching grid controls. The run must include "
@@ -2764,7 +3465,8 @@ Examples:
         "--num-uncertainties",
         type=int,
         metavar="N",
-        help="Number of 50 ps-spaced x3 placer uncertainties, starting at "
+        help="Use only the conventional grid, without the local-guidance candidate; "
+        "set the number of 50 ps-spaced uncertainties, starting at "
         f"{X3_PLACE_BASELINE_UNCERTAINTY_NS:.3f} ns "
         f"(1-{X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT}; default: "
         f"{X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT}). The run must include "
@@ -2800,11 +3502,12 @@ Examples:
     parser.add_argument(
         "--debug-ila",
         action="store_true",
-        help="Instrument the fetch seam with a Vivado ILA (x3): synthesis "
-        "compiles the FROST_DEBUG_FETCH_ILA mirrors in and inserts one ILA on "
-        "the CPU clock over every marked net; the bitstream step writes the "
-        "probes file beside the bitstream. Takes effect only when the run "
-        "includes synthesis. Capture with fpga/debug/capture_fetch_ila.py.",
+        help="Add the fetch debug ILA (x3): synthesis compiles in the "
+        "FROST_DEBUG_FETCH_ILA mirrors of fetch, translation, commit, and trap "
+        "signals and inserts one ILA on the CPU clock over every marked net; "
+        "the bitstream step writes the probes file beside the bitstream. Takes "
+        "effect only when the run includes synthesis. Capture with "
+        "fpga/debug/capture_fetch_ila.py.",
     )
     parser.add_argument(
         "--cpu-clock-div",
@@ -2812,7 +3515,7 @@ Examples:
         choices=CPU_CLOCK_DIV_CHOICES,
         default=1,
         metavar="N",
-        help="Functional-validation build at 300/N MHz (x3): the board top's "
+        help="Functional-validation build at 322265625 Hz divided by N (x3): the board top's "
         "CPU_CLK_DIV generic divides the MMCM output, the DDR block design "
         "declares the divided clocks, and hello_world is compiled for it. "
         "Unless --directives/--num-uncertainties/--route-directives say "
@@ -2825,21 +3528,26 @@ Examples:
         "--perf-counters",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Include the profiling counters (the mperf* CSRs, about 24k cells) "
-        "through the board top's PERF_COUNTERS generic. Default: left out of a "
-        "full-rate build, included in a --cpu-clock-div N>1 build; "
-        "--no-perf-counters overrides the latter.",
+        help="Include the profiling counters (the mperf* CSRs) "
+        "through the board top's PERF_COUNTERS generic. Default: left out, "
+        "at any --cpu-clock-div.",
     )
     parser.add_argument(
         "--physopt-directive",
         choices=PHYS_OPT_DIRECTIVES,
         default="AggressiveExplore",
-        help="Currently ignored — all phys_opt stages (post_place, post_route, "
-        "post_second_route) run a hardcoded directive sweep plus a retime-only "
-        "pass. Kept for backward compatibility.",
+        help="Ignored: every phys_opt stage (post_place, post_route, "
+        "post_second_route) runs a directive sweep plus a retime-only pass. "
+        "X3's final stage also tries endpoint groups when that sweep stalls. "
+        "Kept for backward compatibility.",
     )
     args = parser.parse_args()
 
+    if os.environ.get("FROST_CPU_BASE_CLK_HZ"):
+        parser.error(
+            "FROST_CPU_BASE_CLK_HZ is no longer supported; X3 uses 322265625 Hz. "
+            "Unset it and use --cpu-clock-div for a divided-clock build."
+        )
     if args.jobs < 1:
         parser.error("--jobs must be positive")
     if args.snapshot_physopt_from is not None and (
@@ -2852,6 +3560,21 @@ Examples:
         args.build_dir = args.build_dir.resolve()
 
     board_name = args.board_name
+
+    if args.start_at == "bitstream":
+        if args.stop_after is not None:
+            parser.error("--start-at bitstream cannot be combined with --stop-after")
+        build_options = (
+            {"build_dir": args.build_dir} if args.build_dir is not None else {}
+        )
+        if not generate_bitstream(
+            Path(__file__).parent.resolve(),
+            board_name,
+            args.vivado_path,
+            **build_options,
+        ):
+            sys.exit(1)
+        return
 
     start_idx = STEPS.index(args.start_at)
     stop_idx = STEPS.index(args.stop_after) if args.stop_after else len(STEPS) - 1
@@ -2921,6 +3644,15 @@ Examples:
         place_uncertainty_count
     )
     route_sweep_directives = functional_policy.route_directives
+    use_default_x3_place = (
+        board_name == "x3"
+        and functional_policy.cpu_clock_div == 1
+        and not placer_sweep_overridden
+        and not any(
+            name in os.environ
+            for name in ("FROST_PLACE_CELL_BLOAT", "FROST_PLACE_CELL_BLOAT_CELLS")
+        )
+    )
     if args.debug_ila:
         if board_name != "x3":
             parser.error("--debug-ila is only supported for x3")
@@ -2932,7 +3664,7 @@ Examples:
         os.environ["FROST_DEBUG_ILA"] = "1"
     if board_name == "x3":
         # The CLI is authoritative even at divider 1; an inherited override
-        # must not silently change synthesis/BD clocks while software says 300 MHz.
+        # must not silently change synthesis/BD clocks away from the board rate.
         os.environ["FROST_CPU_CLK_DIV"] = str(functional_policy.cpu_clock_div)
     # The CLI is authoritative for the counters as well: synthesis reads
     # FROST_PERF_COUNTERS, and an inherited value must not change the netlist.
@@ -2946,7 +3678,12 @@ Examples:
                 str(functional_policy.quick_route_count),
             )
     if board_name == "x3":
-        place_directive = "Sweep"
+        try:
+            x3_congestion_veto_level()
+            x3_quick_route_count()
+        except ValueError as error:
+            parser.error(str(error))
+        place_directive = "Guided+Sweep" if use_default_x3_place else "Sweep"
         route_directive = "Sweep"
         second_route_directive = "Sweep"
     else:
@@ -2954,7 +3691,8 @@ Examples:
         route_directive = args.route_directive
         second_route_directive = args.second_route_directive
 
-    # Tcl owns the phys-opt sweeps; ``Sweep`` labels their banners and work dirs.
+    # build_step.tcl runs the phys-opt sweeps itself; ``Sweep`` only labels their
+    # banners and work directories.
     step_directives = {
         "synth": args.synth_directive or board_config["synth_directive"],
         "opt": args.opt_directive,
@@ -2983,7 +3721,7 @@ Examples:
     elif functional_policy.perf_counters:
         print("# Profiling counters included (PERF_COUNTERS generic)")
     if args.debug_ila:
-        print("# Fetch-seam ILA: FROST_DEBUG_FETCH_ILA mirrors + one ILA on main_clock")
+        print("# Fetch ILA: FROST_DEBUG_FETCH_ILA mirrors + one ILA on main_clock")
     print(f"# UltraScale: {'Yes' if is_ultrascale else 'No'}")
     directives_summary = [
         f"{s}={d}" for s, d in step_directives.items() if d != "Default"
@@ -2991,7 +3729,19 @@ Examples:
     if directives_summary:
         print(f"# Directives: {', '.join(directives_summary)}")
     print(f"# Vivado concurrency: up to {args.jobs} jobs at a time (--jobs)")
-    if board_name == "x3" and "place" in steps_to_run:
+    if use_default_x3_place and "place" in steps_to_run:
+        print("# X3 placement: fresh ExtraNetDelay_high/0.325 reference at X1Y9,")
+        print(
+            "#   MEDIUM cell bloat on the integer RS and memory-RS source-2 operand cells,"
+        )
+        print(
+            "#   then measured local floorplan constraints and a final Quick placement;"
+        )
+        print("#   verify unchanged post_place.dcp in a separate Vivado process.")
+        print(
+            "#   Compare it with the conventional grid under congestion and route-probe selection."
+        )
+    elif board_name == "x3" and "place" in steps_to_run:
         sweep_source = "custom" if placer_sweep_overridden else "default"
         print(
             f"# X3 placer sweep ({sweep_source}): "
@@ -3059,6 +3809,10 @@ Examples:
             print(f"Required checkpoint not found: {checkpoint_path}")
             sys.exit(1)
         print(f"Starting from checkpoint: {checkpoint_path}")
+        if board_name == "x3" and not require_x3_netlist_clock(
+            main_work, functional_policy.cpu_clock_div
+        ):
+            sys.exit(1)
 
     # Execute the requested pipeline range.
     final_produced = False
@@ -3075,7 +3829,15 @@ Examples:
         ):
             sys.exit(1)
 
-        if board_name == "x3" and step == "place":
+        if use_default_x3_place and step == "place":
+            success, wns, actual_prefix = run_x3_default_place(
+                script_dir,
+                args.vivado_path,
+                max_jobs=args.jobs,
+                keep_temps=args.keep_temps,
+                **build_options,
+            )
+        elif board_name == "x3" and step == "place":
             success, wns, actual_prefix = run_x3_step_directive_sweep(
                 script_dir,
                 step,
@@ -3120,11 +3882,11 @@ Examples:
             final_produced = True
 
         # Route-stage closure skips directly to bitstream generation.
-        if step in FINAL_ELIGIBLE_STEPS and wns is not None and wns >= 0:
+        if step in FINAL_ELIGIBLE_STEPS and actual_prefix == "final":
             remaining = steps_to_run[steps_to_run.index(step) + 1 :]
             if remaining:
                 print(
-                    f"\nTiming met at {step} — skipping subsequent stages: "
+                    f"\nTiming met at {step}; skipping the remaining stages: "
                     f"{', '.join(remaining)}"
                 )
             break
@@ -3143,7 +3905,8 @@ Examples:
         update_readme_utilization,
     )
 
-    if functional_policy.update_readme and args.build_dir is None:
+    reference_netlist = board_name != "x3" or is_reference_x3_netlist(main_work)
+    if functional_policy.update_readme and args.build_dir is None and reference_netlist:
         all_util = collect_all_board_utilization(
             script_dir,
             stage_overrides={board_name: last_report_prefix}
@@ -3154,8 +3917,9 @@ Examples:
             update_readme_utilization(script_dir, all_util)
     else:
         print(
-            "\nREADME utilization table left alone: custom-directory and "
-            "divided-clock builds are not the reference implementation."
+            "\nREADME utilization table not updated: it tracks only full-rate "
+            "builds in the default build directory whose netlist_config.json "
+            "records the reference configuration."
         )
 
     # Summarize the last completed step, including partial/resumed runs.

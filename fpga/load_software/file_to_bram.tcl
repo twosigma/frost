@@ -34,7 +34,8 @@ proc file2bram {base_memory_address firmware_filename {axi_interface_name hw_axi
     set total_words 0
     set first_word ""
 
-    # Bound batches so image reset cannot expire inside one run_hw_axi call.
+    # Bounded batches keep the image reset from expiring inside one run_hw_axi
+    # call; after each full batch, rewriting the first word re-arms it.
     while {[gets $file_descriptor word_hex_value] >= 0} {
         set word_hex_value [string trim $word_hex_value]
         if {$word_hex_value eq ""} {

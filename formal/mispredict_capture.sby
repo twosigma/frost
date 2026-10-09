@@ -1,0 +1,23 @@
+[tasks]
+bmc
+prove
+
+[options]
+bmc: mode bmc
+bmc: depth 5
+prove: mode prove
+prove: depth 2
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -formal -D SYNTHESIS -D MISPREDICT_CAPTURE_LOCAL_PROOF -sv misprediction_flush_controller.sv
+prep -top misprediction_flush_controller
+select -assert-none t:$assume
+select -assert-count 1 t:$check
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/misprediction_flush_controller.sv

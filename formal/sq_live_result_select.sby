@@ -1,0 +1,23 @@
+[tasks]
+prove
+
+[options]
+mode prove
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv -D SYNTHESIS -D SQ_LIVE_LAST_LOCAL_PROOF riscv_pkg.sv sq_early_addr_pipeline.sv
+hierarchy -top sq_early_addr_pipeline
+proc
+opt
+prep -top sq_early_addr_pipeline -flatten
+select -assert-none t:$assume a:init
+select -assert-count 4 t:$check r:FLAVOR=assert %i
+select -assert-none t:$check r:FLAVOR=assume %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/store_addr/sq_early_addr_pipeline.sv
