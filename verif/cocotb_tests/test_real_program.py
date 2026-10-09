@@ -14,18 +14,13 @@
 
 """Run complete programs on the simulated CPU and memories.
 
-The test watches the CPU's UART output for success and failure markers:
-- Test programs print "<<PASS>>" on success or "<<FAIL>>" on failure.
-- hello_world passes once it prints "Hello, world!".
-- CoreMark builds with ITERATIONS=1 in simulation and must print "<<PASS>>".
+Programs report success with <<PASS>> and failure with <<FAIL>>;
+hello_world passes on "Hello, world!". CoreMark uses ITERATIONS=1 in simulation.
+Each program runs twice by default, with reset between runs.
 
-By default each program runs twice with a reset between runs to check that it
-tolerates reset and reinitializes all state.
-
-With FROST_UART_LINE_CHECK=1, each run also decodes the serial TX pin and
-requires it to carry exactly the bytes the CPU wrote, which checks the TX
-FIFO's clock crossing and the transmitter. The registry sets it, together
-with a lower CLK_FREQ_HZ that shortens the bit time, for a few programs.
+FROST_UART_LINE_CHECK=1 also compares serial TX bytes with CPU UART writes
+to check the TX FIFO crossing and transmitter. Registry entries can lower
+CLK_FREQ_HZ to shorten the simulated bit time.
 """
 
 import importlib.util
@@ -168,13 +163,10 @@ def _load_symbol_ranges(
 
 
 async def generate_divided_clock(dut: Any) -> None:
-    """Generate i_clk_div4 as a 4:1 divided clock from i_clk.
+    """Generate i_clk_div4 with four times i_clk's period and aligned rising edges.
 
-    The dc_fifo clock domain crossing assumes both clocks come from one source
-    (an MMCM on hardware) and crosses binary pointers without Gray coding, so
-    the two clocks must keep a fixed phase relationship. Toggling i_clk_div4
-    every second rising edge of i_clk gives a clock with four times the period
-    whose rising edges always coincide with rising edges of i_clk.
+    The dc_fifo crosses binary pointers without Gray coding and requires
+    related clocks. Toggle i_clk_div4 on every second i_clk rising edge.
     """
     counter = 0
     dut.i_clk_div4.value = 0
@@ -193,17 +185,15 @@ NIC_MAC_CLK_PERIOD_PS = 2 * int(CLK_PERIOD_NS * 875)
 
 
 def start_nic_mac_clocks(dut: Any) -> None:
-    """Start both NIC MAC clocks with identical edges and drive the PHY levels.
+    """Drive aligned NIC MAC clocks and PHY status.
 
-    frost.sv builds the NIC's raw loopback (RAW_LOOPBACK = 1), which feeds the
-    raw TX word into the RX PCS with no crossing logic, so the TX and RX
-    clocks must be one clock: both start in the same step with one period,
-    and check_nic_mac_clocks_aligned, run from each clock toward the other,
-    confirms they toggle together. The port defaults in frost.sv apply to
-    instantiations that omit the ports, not to a simulation top, so every
-    level is driven here: both clocks present, PHY status "clock shared,
-    transceiver ready", no wire (the raw loopback carries frames for
-    nic_loopback; nic_echo's peer drives the wire).
+    RAW_LOOPBACK=1 in frost.sv feeds raw TX words to RX without crossing logic,
+    so both clocks must toggle in the same evaluation. Check alignment in both
+    directions with check_nic_mac_clocks_aligned.
+
+    Top-level simulation ports do not inherit defaults for omitted instance
+    ports. Drive shared-clock and transceiver-ready status here. nic_loopback
+    uses raw loopback; nic_echo's peer drives the wire.
     """
     for mac_clock in (dut.i_nic_tx_clk, dut.i_nic_rx_clk):
         Clock(mac_clock, NIC_MAC_CLK_PERIOD_PS, unit="ps").start()
@@ -220,13 +210,11 @@ def start_nic_mac_clocks(dut: Any) -> None:
 async def check_nic_mac_clocks_aligned(
     watched: Any, other: Any, cycles: int = 16
 ) -> None:
-    """Fail unless the other clock changes in the same evaluation as the watched one.
+    """Require both clocks to change in the same evaluation.
 
-    An edge callback runs after the evaluation that moved the watched clock,
-    so a clock that moves in a later evaluation of the same step still reads
-    its old level here. Run once from each clock, the pair also catches a
-    clock that moves in an earlier evaluation. Both clocks have a fixed
-    period, so the first cycles decide.
+    An edge callback sees the other clock's old level if it changes in a later
+    evaluation of the same step. Running the check in both directions catches
+    either ordering. The clocks have fixed periods, so check the first cycles.
     """
     for _ in range(cycles):
         for edge, level in ((RisingEdge, 1), (FallingEdge, 0)):
@@ -243,19 +231,15 @@ async def check_nic_mac_clocks_aligned(
 # COCOTB_MAX_CYCLES raises it for tests that need more (e.g. the arch tests).
 MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 500000))
 
-# Number of runs (reset-and-rerun cycles) per test invocation. The default of 2
-# checks that programs survive a reset and rerun.
+# Reset and rerun to check that the program reinitializes its state.
 # Set to 1 for ISA tests that modify .text-resident data (e.g. riscv-tests rvc).
 NUM_RUNS = int(os.environ.get("COCOTB_NUM_RUNS", 2))
 
-# CoreMark-style benchmarks run the real benchmark body even with ITERATIONS=1.
-# The memory-heavy list and matrix phases exceed the generic program budget,
-# so they get a larger default with an env override.
+# CoreMark's list and matrix phases exceed the generic budget even at
+# ITERATIONS=1.
 COREMARK_MAX_CYCLES = int(os.environ.get("COCOTB_COREMARK_MAX_CYCLES", 15000000))
-# nic_loopback and nic_echo share this budget. Each bring-up waits out the
-# PCS's BER window before CARRIER (about 35k cycles at the simulated clock
-# ratio), frames are checked or copied byte by byte, and nic_loopback also
-# resets the NIC with traffic in flight.
+# nic_loopback and nic_echo wait for the PCS BER window before CARRIER,
+# then process frames byte by byte. nic_loopback also resets during traffic.
 NIC_LOOPBACK_MAX_CYCLES = int(os.environ.get("COCOTB_NIC_LOOPBACK_MAX_CYCLES", 1500000))
 
 # sprintf_test's FP formatting cases need more than the generic budget.
@@ -264,10 +248,10 @@ SPRINTF_TEST_MAX_CYCLES = 2000000
 # Cover the complete lookup/cache-churn and store-forwarding sweep.
 PDE_RETURN_HAZARD_MAX_CYCLES = 2000000
 
-# The 3000-iteration sweep includes DDR cold-fetch and per-tick latency.
+# Allow for DDR cold-fetch and per-tick latency.
 WFI_LOST_TICK_MAX_CYCLES = 800000
 
-# Cover 800 restore-window iterations with cold-DDR frame eviction.
+# Allow for cold-DDR frame eviction in the restore-window sweep.
 RESTORE_WINDOW_STRESS_MAX_CYCLES = 1000000
 
 # DDR boot and BSS clearing exceed the generic budget before the first banner.
@@ -279,9 +263,8 @@ AMO_IRQ_TORTURE_MAX_CYCLES = int(
 # Cover DDR BSS clearing and the simulation-scale timer-torture workset.
 TICK_TORTURE_MAX_CYCLES = int(os.environ.get("COCOTB_TICK_TORTURE_MAX_CYCLES", 6000000))
 
-# mem_divergence_probe sweeps evict/refill rounds over cached DDR; the
-# registry entries pin a sim-scale round count via EXTRA_CFLAGS, and this
-# budget covers it with headroom (the app prints <<PASS>>/<<FAIL>> itself).
+# Allow for cached-DDR eviction and refill. The registry sets the round
+# count through EXTRA_CFLAGS.
 MEM_DIVERGENCE_PROBE_MAX_CYCLES = int(
     os.environ.get("COCOTB_MEM_DIVERGENCE_PROBE_MAX_CYCLES", 20000000)
 )
@@ -351,14 +334,12 @@ def _uart_bit_cycles(dut: Any) -> int:
 
 
 class UartLineMonitor:
-    """Decode the serial TX pin (o_uart_tx, 8N1) into bytes.
+    """Decode o_uart_tx as 8N1 bytes, sampling bit centers on i_clk_div4.
 
-    UartMonitor reads the CPU's UART writes ahead of the TX FIFO. This decoder
-    reads what leaves frost after the FIFO's clock crossing and the
-    transmitter, sampling each bit in its middle on i_clk_div4, the
-    transmitter's clock. A frame starts only where the line falls after
-    being high, so the low level before reset is not taken for a start bit.
-    A stop bit that reads low is a framing error.
+    This observes bytes after the TX FIFO crossing and transmitter;
+    UartMonitor observes CPU writes before the FIFO. Require a high-to-low
+    start transition so reset's low level cannot start a frame. A low stop
+    bit is a framing error.
     """
 
     def __init__(self, dut: Any) -> None:
@@ -478,11 +459,7 @@ def _first_signal(dut: Any, paths: list[str]) -> Any | None:
 
 
 def _load_rvc_expand() -> Callable[[int], tuple[int, bool]]:
-    """Return rvc_expand from sw/common/generate_imem_predecode_init.py.
-
-    The offline IMEM predecode generator holds the RVC expansion model that
-    the decompressor bench checks the RTL against.
-    """
+    """Load the RVC expansion model from sw/common/generate_imem_predecode_init.py."""
     path = (
         Path(__file__).resolve().parents[2]
         / "sw"
@@ -523,15 +500,7 @@ def _read_bool(signal: Any) -> bool | None:
 
 
 def _require_signals(check: str, handles: dict[str, Any]) -> None:
-    """Fail an opt-in check whose signal handles did not all resolve.
-
-    Args:
-        check: The environment variable that enabled the check
-        handles: Signal path to the handle _get_signal returned for it
-
-    Raises:
-        AssertionError: If any handle is None.
-    """
+    """Fail if any handle is None; check names the enabling environment variable."""
     missing = sorted(path for path, handle in handles.items() if handle is None)
     if missing:
         raise AssertionError(
@@ -586,11 +555,7 @@ def _packed_struct(
 
 
 class _StructField:
-    """One member of a packed struct, which _read_int and _read_bool accept.
-
-    Verilator's VPI has no handles for packed-struct members, so this reads
-    the whole vector through _PackedStruct and extracts the member.
-    """
+    """Expose a _PackedStruct member to _read_int and _read_bool."""
 
     def __init__(self, struct: _PackedStruct, name: str) -> None:
         """Bind the struct and the member's name."""
@@ -619,15 +584,12 @@ def _struct_field(
 
 
 async def ddr_write_watch(dut: Any) -> None:
-    """Log every behavioral-DDR line write landing in a watched window.
+    """Log behavioral-DDR writes in a watched window.
 
-    Enabled by FROST_DDR_WATCH_LO/FROST_DDR_WATCH_HI (hex, region-relative
-    model addresses: absolute 0x8xxxxxxx minus 0x80000000). Each AW address is
-    queued on the AW handshake and paired with the next W beat; in-window beats
-    log sim time, the line address (relative and absolute), the strobe mask,
-    and the full line data. Debug instrumentation only: match a logged
-    timestamp against a retire trace to see what the core was running when
-    the line reached DDR.
+    FROST_DDR_WATCH_LO and FROST_DDR_WATCH_HI are hex addresses relative to
+    0x80000000. Pair accepted AW addresses with W beats and log their time,
+    relative and absolute addresses, strobes, and full line data. Timestamps
+    can be compared with a retire trace.
     """
     lo = int(os.environ.get("FROST_DDR_WATCH_LO", "0"), 16)
     hi = int(os.environ.get("FROST_DDR_WATCH_HI", "0"), 16)
@@ -757,11 +719,9 @@ class WfiRecoveryWatch:
 
 
 class CoverageCounter:
-    """Count the cycles a one-bit signal is high while the core is out of reset.
+    """Count cycles high outside reset for a COVERAGE_POINTS signal.
 
-    For an app listed in COVERAGE_POINTS: the test fails if the count stays
-    at zero, so the program cannot stop producing the case it exists for
-    without the bench noticing.
+    The program must exercise the signal at least once to pass.
     """
 
     def __init__(self, dut: Any, path: str, label: str) -> None:
@@ -1294,17 +1254,15 @@ class UartMmioDebugMonitor:
 
 
 class NicEchoPeer:
-    """The wire-side peer of the NIC for the nic_echo app.
+    """Drive the NIC wire for nic_echo and check returned frames.
 
-    Feeds a continuous 10GBASE-R stream (idles with frames spliced in, one
-    scrambler state for the run) into the raw RX interface on the RX MAC
-    clock, decodes the raw TX stream on the TX MAC clock with the net10g
-    software receiver (restarted at every gap in valid: the PCS TX emits
-    continuously once out of reset), and checks that every frame the app
-    should echo comes back intact. The plan is fixed and known to the app
-    (sw/apps/nic_echo/main.c): 24 frames that land in the ring, two of them
-    longer than the buffers (truncated, not echoed), plus two frames for
-    another station (filtered).
+    Send continuous 10GBASE-R idles and frames on the RX MAC clock with one
+    scrambler state per run. Decode raw TX on its MAC clock using net10g's
+    software receiver, restarting after each valid gap; PCS TX runs
+    continuously outside reset.
+
+    The plan matches sw/apps/nic_echo/main.c: intact frames must echo,
+    oversize frames truncate without echo, and foreign frames are filtered.
     """
 
     STATION = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
@@ -1442,14 +1400,10 @@ class NicEchoPeer:
 
 
 def get_expected_behavior() -> tuple[str | None, str | None, bool, str | None]:
-    """Determine expected behavior based on the program being tested.
+    """Return (success_marker, initial_text, has_defined_endpoint, app_name).
 
-    Returns:
-        Tuple of (success_marker, initial_text, has_defined_endpoint, app_name)
-        - success_marker: Text that indicates test passed (None for open-ended tests)
-        - initial_text: Text that must appear for test to pass (for open-ended tests)
-        - has_defined_endpoint: True if test has a clear pass/fail endpoint
-        - app_name: Name of the application being tested (for timeout selection)
+    Open-ended tests use initial_text instead of a success marker.
+    app_name selects the timeout.
     """
     # The sw.mem symlink identifies the program under test. It lives in the
     # current working directory (tests/), not next to this file.
@@ -1474,7 +1428,6 @@ def get_expected_behavior() -> tuple[str | None, str | None, bool, str | None]:
                     # All other tests (including coremark) have pass/fail markers
                     return (PASS_MARKER, None, True, app_name)
 
-    # Default: expect pass marker
     return (PASS_MARKER, None, True, None)
 
 
@@ -1488,20 +1441,12 @@ async def run_until_complete(
     run_number: int,
     app_name: str | None = None,
 ) -> None:
-    """Run the program until it passes, fails, or times out.
+    """Run until a UART success marker, failure marker, or timeout.
 
-    Args:
-        dut: Device under test
-        uart_monitor: UART monitor instance (should already be started)
-        success_marker: Text that indicates test passed
-        initial_text: Text that must appear for open-ended tests
-        has_defined_endpoint: True if test has a clear pass/fail endpoint
-        max_cycles: Maximum cycles before timeout
-        run_number: 1-based run index, for logging
-        app_name: Program under test; selects per-app tracing and diagnostics
-
-    Raises:
-        AssertionError: If test fails or times out
+    uart_monitor must already be running. Open-ended tests use initial_text
+    instead of success_marker. max_cycles bounds the run; run_number is a
+    1-based log index, and app_name selects tracing and diagnostics.
+    Raise AssertionError on failure or timeout.
     """
     test_passed = False
     test_failed = False
@@ -3269,13 +3214,10 @@ async def run_until_complete(
                     irq_precision_events.append(event)
                     cocotb.log.info(event)
 
-                # Only the registered commit bus counts. An unregistered
-                # commit can share the take cycle; the full flush that follows
-                # masks it on the registered bus (commit_bus_pipeline), and
-                # the instruction at the saved PC runs again after the handler.
-                # A registered commit has already advanced
-                # interrupt_resume_pc, so the rule also flags a correct take
-                # inside a one- or two-instruction loop whose first
+                # Check registered commits, which commit_bus_pipeline masks
+                # during a full flush. A registered commit has already
+                # advanced interrupt_resume_pc. PC equality can still flag a
+                # valid take in a one- or two-instruction loop whose first
                 # instruction writes x1 or x2.
                 sensitive_pc_write = reg0_sensitive or reg1_sensitive
                 if irq_precision_strict and (sensitive_pc_write or stale_sp_body):
@@ -3517,16 +3459,11 @@ async def run_until_complete(
             and coremark_if_check_rvc_expand is not None
             and _read_bool(coremark_if_check_alloc_sig)
         ):
-            # Compare each instruction as it dispatches: the decoded bundle
-            # queue pops its head bundle when ROB allocation fires, and slot
-            # 2 dispatches with slot 1 exactly when its is_real bit is set.
-            # A slot-2 instruction follows slot 1 sequentially (a slot-1
-            # branch ends the bundle), so slot 2 is read only near the
-            # function. A compressed instruction reaches decode expanded, so a
-            # 16-bit parcel is compared with its expansion by rvc_expand, the
-            # offline predecode generator's model. CoreMark takes no fetch
-            # faults, so every dispatched packet holds the word fetched from
-            # its PC.
+            # ROB allocation pops a bundle; slot 2 dispatches if is_real is
+            # set. It follows slot 1 sequentially because a slot-1 branch
+            # ends the bundle, so read slot 2 only near the traced function.
+            # Compare compressed parcels after rvc_expand. This assumes
+            # CoreMark takes no fetch faults and dispatches the word at its PC.
             slot1_pc = _read_int(id_pc_sig)
             dispatched = [(1, slot1_pc, _read_int(id_instr_sig))]
             if (
@@ -4205,14 +4142,7 @@ async def run_uart_echo_interaction(
 
 @cocotb.test()
 async def test_real_program(dut: Any) -> None:
-    """Reset the system and run the program NUM_RUNS times, checking each run.
-
-    The test watches UART output for success and failure markers. Test suites
-    (isa_test, strings_test, ...) and CoreMark must print "<<PASS>>";
-    hello_world must print "Hello, world!". The default of two runs with a
-    reset in between checks that programs tolerate reset and reinitialize all
-    their state.
-    """
+    """Reset and run the loaded program NUM_RUNS times, checking UART each run."""
     Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start()
     # i_clk_div4 exists only in frost.sv, not in the cpu_tb.sv testbench. It is
     # derived from i_clk rather than started as an independent Clock because the
@@ -4264,8 +4194,7 @@ async def test_real_program(dut: Any) -> None:
     elif app_name == "mem_divergence_probe":
         max_cycles = MEM_DIVERGENCE_PROBE_MAX_CYCLES
     elif app_name == "linux_irq_active_ddr_test":
-        # 72 timer ticks and the 30k-iteration sentinel spin-waits run just
-        # past the generic budget.
+        # Allow for timer ticks and sentinel spin-waits.
         max_cycles = int(os.environ.get("COCOTB_MAX_CYCLES", 2000000))
     else:
         max_cycles = MAX_CYCLES
@@ -4284,7 +4213,7 @@ async def test_real_program(dut: Any) -> None:
         line_monitor = UartLineMonitor(dut)
         await line_monitor.start()
 
-    # Optional trap/MRET deadlock wedge observer (pure instrumentation).
+    # Optional trap and MRET hang diagnostics.
     if os.environ.get("FROST_WEDGE_MONITOR") == "1":
         cocotb.start_soon(wedge_monitor(dut, uart_monitor))
     cocotb.start_soon(ddr_write_watch(dut))
@@ -4314,7 +4243,6 @@ async def test_real_program(dut: Any) -> None:
 
     for run_number in range(1, NUM_RUNS + 1):
         if run_number > 1:
-            # Reset between runs
             cocotb.log.info(f"=== Asserting reset for {RESET_CYCLES} cycles ===")
             uart_monitor.clear()
             if line_monitor is not None:
@@ -4328,7 +4256,6 @@ async def test_real_program(dut: Any) -> None:
                 await RisingEdge(dut.i_clk)
             dut.i_rst_n.value = 1
         else:
-            # Apply initial reset
             dut.i_instr_mem_en.value = 0
             dut.i_rst_n.value = 0
             if hasattr(dut, "i_uart_rx"):
@@ -4379,7 +4306,7 @@ async def test_real_program(dut: Any) -> None:
         debug_monitor.stop()
 
     if wfi_watch is not None:
-        # Without a hit the program no longer produces the case under test.
+        # Require the program to exercise the case under test.
         assert wfi_watch.hits > 0, "no wrong-path WFI reached the ROB head in recovery"
         cocotb.log.info(
             f"wrong-path WFI at the ROB head in recovery: {wfi_watch.hits} cycles"

@@ -12,15 +12,13 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Cycle-exact tests of data_mem_response_mux feeding a real data_mem_request_router.
+"""Compare data_mem_response_mux with direct selection through two real routers.
 
-The testbench runs two routers side by side. The reference router gets the plain
-selection (MMIO data while MMIO is valid, otherwise BRAM data) and the cached data
-separately; the other gets the mux's merged payload on both data inputs. Every
-router output is compared before and after every edge, valid or not. Separate
-checks cover the response port, ids, and destructive device pulses. The same tests
-run on the portable and Xilinx LUT5 builds, and standalone 32- and 64-bit
-instances cover all 32 LUT truth-table rows.
+The reference receives MMIO data when valid, otherwise BRAM data, plus a
+separate cached payload. The other router receives the merged payload on
+both inputs. Compare all outputs before and after each edge, even when
+invalid. Standalone 32- and 64-bit instances check the LUT truth table;
+the same tests run with portable logic and Xilinx LUT5s.
 """
 
 import random

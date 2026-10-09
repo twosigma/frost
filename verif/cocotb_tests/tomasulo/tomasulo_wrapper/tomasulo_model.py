@@ -12,12 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Composed ROB + RAT + multi-RS golden model for integration verification.
-
-Imports and composes the individual models, wiring the commit bus internally
-(mirroring the RTL wrapper). Models four RS instances with dispatch routing
-based on rs_type.
-"""
+"""Composed ROB, RAT, and RS reference model for wrapper tests."""
 
 from typing import Any
 
@@ -55,14 +50,13 @@ RS_DEPTHS = {
 
 
 class TomasuloModel:
-    """Composed ROB + RAT + multi-RS model mirroring tomasulo_wrapper RTL."""
+    """Route dispatch and broadcast results among the ROB, RAT, and RS models."""
 
     def __init__(self) -> None:
         """Initialize composed ROB + RAT + 4 RS model."""
         self.rob = ReorderBufferModel()
         self.rat = RATModel()
 
-        # Four RS instances matching RTL parameterization
         self.int_rs = RSModel(depth=RS_DEPTHS[RS_INT])
         self.mul_rs = RSModel(depth=RS_DEPTHS[RS_MUL])
         self.mem_rs = RSModel(depth=RS_DEPTHS[RS_MEM])
@@ -75,7 +69,6 @@ class TomasuloModel:
             RS_FP: self.fp_rs,
         }
 
-        # Shorthand: self.rs is INT_RS.
         self.rs = self.int_rs
 
     def _all_rs(self) -> list[RSModel]:
@@ -161,14 +154,9 @@ class TomasuloModel:
         exc_cause: int = 0,
         fp_flags: int = 0,
     ) -> None:
-        """Simulate FU completion through the CDB arbiter to ROB + all RS.
+        """Apply a completion to the ROB and all RS models without arbitration or delay.
 
-        With the CDB arbiter inside the wrapper, any FU completion broadcasts
-        to both ROB (cdb_write) and all RS (cdb_snoop). Tests drive one FU at
-        a time, so the arbiter always grants immediately.
-
-        A write to an invalid ROB entry is dropped instead of raising, as in
-        the RTL.
+        Ignore writes to invalid ROB entries, as the RTL does.
         """
         try:
             self.rob.cdb_write(
@@ -188,7 +176,7 @@ class TomasuloModel:
     # Shorthands that route through fu_complete. The model ignores the slot
     # index, so FU_MEM is only a placeholder.
     def cdb_write(self, write: CDBWrite) -> None:
-        """CDB write to ROB + snoop all RS (arbiter always broadcasts both)."""
+        """Write the ROB and snoop all RS models."""
         self.fu_complete(
             FU_MEM,
             tag=write.tag,
@@ -199,7 +187,7 @@ class TomasuloModel:
         )
 
     def cdb_snoop(self, tag: int, value: int) -> None:
-        """CDB snoop + ROB write (arbiter always broadcasts both)."""
+        """Snoop all RS models and write the ROB."""
         self.fu_complete(FU_MEM, tag=tag, value=value)
 
     def cdb_write_and_snoop(

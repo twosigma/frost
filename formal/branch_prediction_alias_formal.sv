@@ -32,8 +32,6 @@ module branch_prediction_alias_formal (
   wire [riscv_pkg::XLEN-1:0] pc_plus2 = base_pc + riscv_pkg::PcIncrementCompressed;
   wire [riscv_pkg::XLEN-1:0] pc_plus4 = base_pc + riscv_pkg::PcIncrement32bit;
 
-  // The reference pins the generic mode explicitly rather than relying on the
-  // default, so the proof always compares the two modes.
   branch_prediction_controller #(
       .SLOT2_PC_FROM_BASE(1'b0)
   ) reference (

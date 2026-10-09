@@ -11,9 +11,8 @@ smtbmc boolector
 [script]
 read -sv riscv_pkg.sv
 read_verilog -formal -D SYNTHESIS -sv branch_prediction_controller.sv
-# Cut the predictor submodules so their outputs are arbitrary: the properties
-# concern only the controller's prediction-use gates, whatever the lookups
-# return.
+# Make predictor outputs arbitrary to check the controller's prediction-use
+# gates independently of lookup results.
 delete t:branch_predictor t:direction_predictor t:return_address_stack
 proc
 setundef -undriven -anyseq

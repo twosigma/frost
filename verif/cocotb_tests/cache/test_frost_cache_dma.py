@@ -12,26 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""DMA coherence tests for the frost_cache hierarchy (frost_cache_test_harness).
+"""Test DMA coherence through frost_cache_test_harness.
 
-Same harness as test_frost_cache, driving its fourth upstream port (dma) and
-playing the load queue on the DMA sequencer's admit / inval / release
-handshake. Checked: a DMA write becomes visible to the data side whether the
-line was absent, clean or dirty in the L1D (partial DMA strobes preserve the
-CPU's dirty neighbouring bytes); a DMA read returns the CPU's dirty data and
-leaves the line valid and clean; a probe to a line whose fill is in flight
-waits for the fill; a data-side miss issued while the sequencer holds the
-line (long load-queue invalidation) is served with the post-write line rather
-than resurrecting the pre-write one; same-line DMA requests serialize; the
-load-queue handshake fires admit, inval and release once per DMA write and
-never for a DMA read; a DMA write concurrent with fence.i's writeback-all
-completes with correct data; a DMA request under a data-side miss flood still
-completes; concurrent DMA and data-side traffic on disjoint lines stays exact,
-with walker reads of the data side's dirty lines contending with the DMA
-probes; a data-side reader of lines a DMA agent is writing only ever sees
-values in coherence order (the sequence it observes per line never goes
-backwards); and random sequential CPU / DMA / walker traffic matches the
-model with no fence before any walker read.
+Drive the DMA port and model the load queue's admit, invalidate, and release
+handshakes. CPU, DMA, and walker reads are checked against shared memory
+state without fences before walker reads.
 """
 
 import random
@@ -326,14 +311,11 @@ async def test_probe_waits_for_fill_in_flight(dut: Any) -> None:
 
 @cocotb.test()
 async def test_lock_serves_post_write_line_to_racing_miss(dut: Any) -> None:
-    """The resurrection race: a miss issued during the lock waits for the write.
+    """A CPU miss during a DMA write's lock must return the post-write line.
 
-    The load queue is slow to complete the invalidation, so the window
-    between the L1D invalidation and the write's acceptance is long. A CPU
-    read issued inside it misses (the probe invalidated the copy) and its
-    fill is withheld by the L1D until the sequencer releases the probe after
-    the DMA write has been ordered, so it returns the post-write line, and
-    the L1D ends up holding that line rather than the pre-write one.
+    Delay load-queue invalidation and issue a CPU read after L1D invalidation.
+    The L1D must hold its fill until the sequencer orders the DMA write and
+    releases the probe, preventing the old line from being reinstalled.
     """
     await _setup(dut)
     lq = LoadQueueStub(dut, inval_delay=60)

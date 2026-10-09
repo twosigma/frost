@@ -12,13 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Equivalence of fp_engine with Berkeley SoftFloat for every F and D compute op.
+"""Compare fp_engine values and flags bit for bit with Berkeley SoftFloat.
 
-The harness computes the reference for each vector through DPI-C and compares
-the engine's value and flags bit for bit. These tests drive directed corners
-through its injection port (special operands, cancellation, overflow and
-underflow boundaries, conversion limits), run its internal random generator,
-and kill operations mid-flight.
+The harness computes references through DPI-C. Drive directed vectors
+through its injection port, run its random generator, and kill operations
+in flight.
 """
 
 import os
@@ -264,7 +262,7 @@ def _check_counters(dut: Any, expected_vectors: int | None = None) -> None:
 
 
 # ============================================================================
-# Test 1: special and boundary operands for every operation
+# Special and boundary operands
 # ============================================================================
 @cocotb.test()
 async def test_directed_corners(dut: Any) -> None:
@@ -312,7 +310,7 @@ async def test_directed_corners(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 2: cancellation in add and fused multiply-add
+# Cancellation in add and fused multiply-add
 # ============================================================================
 @cocotb.test()
 async def test_cancellation(dut: Any) -> None:
@@ -357,7 +355,7 @@ async def test_cancellation(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 3: conversions at the integer limits
+# Conversions at integer limits
 # ============================================================================
 @cocotb.test()
 async def test_conversion_limits(dut: Any) -> None:
@@ -389,7 +387,7 @@ async def test_conversion_limits(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 4: randomized sweep driven by the harness generator
+# Randomized sweep driven by the harness
 # ============================================================================
 @cocotb.test()
 async def test_random_sweep(dut: Any) -> None:
@@ -419,7 +417,7 @@ async def test_random_sweep(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 5: the kill path
+# Kill behavior
 # ============================================================================
 @cocotb.test()
 async def test_kill_leaves_no_residue(dut: Any) -> None:

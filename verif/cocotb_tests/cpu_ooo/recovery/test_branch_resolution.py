@@ -94,7 +94,7 @@ def _read_branch_update(dut: Any) -> dict[str, Any]:
 
 
 def _pack_checkpoint_owner_tags(owner_tags: Mapping[int, int]) -> int:
-    """Pack checkpoint owner tags for a packed [NumCheckpoints-1:0][tag] port."""
+    """Pack checkpoint ROB tags for a packed [NumCheckpoints-1:0][tag] port."""
     packed = 0
     for checkpoint_id, tag in owner_tags.items():
         assert 0 <= checkpoint_id < NUM_CHECKPOINTS
@@ -163,8 +163,7 @@ def _drive_issue(dut: Any, fields: Mapping[str, int | bool]) -> None:
             "pc", int(issue["link_addr"]) - (2 if issue.get("is_compressed") else 4)
         )
     dut.i_rs_issue_int.value = _pack_rs_issue(issue)
-    # In the core this is a same-edge FF twin of the INT stage2 rob_tag. Its
-    # keep/dont_touch attributes stop synthesis from merging the two back.
+    # The core duplicates the INT stage2 rob_tag with the same capture enable.
     dut.i_branch_predicate_tag.value = int(issue["rob_tag"])
 
 
@@ -254,7 +253,7 @@ async def test_direction_and_target_mispredictions_are_flagged(dut: Any) -> None
 
 @cocotb.test()
 async def test_jalr_resolves_computed_target_and_reports_issue(dut: Any) -> None:
-    """JALR resolves with rs1+imm masked even and still updates the ROB."""
+    """JALR adds sign-extended jalr_imm to rs1, clears bit 0, and updates the ROB."""
     await _setup_test(dut)
 
     _drive_issue(
@@ -264,7 +263,7 @@ async def test_jalr_resolves_computed_target_and_reports_issue(dut: Any) -> None
             "op": OP_JALR,
             "src1_value": 0x80000011,
             "jalr_imm": 0x13,
-            "imm": 0x80000004,  # link address; not consumed here
+            "imm": 0x80000004,  # Link address; the target uses jalr_imm
             "predicted_taken": True,
             "predicted_target": 0x80000024,
             # JALR ignores the direct-branch bit: its target compare is live.
@@ -313,7 +312,7 @@ async def test_jal_resolves_target_without_branch_update(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_owner_validation_filters_stale_branches(dut: Any) -> None:
-    """Checkpointed issues resolve only when the checkpoint owner still matches."""
+    """Checkpointed issues resolve only when the checkpoint's ROB tag still matches."""
     await _setup_test(dut)
 
     _drive_issue(dut, {"rob_tag": 11, "has_checkpoint": True, "checkpoint_id": 3})
@@ -359,9 +358,8 @@ async def test_checkpoint_qualification_is_late_to_raw_resolution(dut: Any) -> N
     dut.i_checkpoint_owner_tag.value = _pack_checkpoint_owner_tags({4: 12})
     await _settle()
 
-    # Owner validation runs in parallel with target selection, so the raw
-    # stage2 JALR bit still selects the computed target. A stale checkpoint
-    # owner suppresses only the qualified outputs.
+    # The raw JALR bit selects the target. A stale checkpoint ROB tag
+    # suppresses only the qualified outputs.
     _assert_no_branch_update(dut)
     assert not dut.o_is_jalr_issue.value
     assert dut.o_branch_taken_resolved.value
@@ -380,7 +378,7 @@ async def test_checkpoint_qualification_is_late_to_raw_resolution(dut: Any) -> N
 
 @cocotb.test()
 async def test_prediction_wrong_is_masked_only_at_branch_update(dut: Any) -> None:
-    """A stale checkpoint owner masks a direction mismatch only at the branch update."""
+    """A stale checkpoint tag masks a direction mismatch only at the branch update."""
     await _setup_test(dut)
 
     _drive_issue(
@@ -403,7 +401,7 @@ async def test_prediction_wrong_is_masked_only_at_branch_update(dut: Any) -> Non
     assert dut.o_branch_taken_resolved.value
     _assert_no_branch_update(dut)
 
-    # Once the owner matches, the already-computed mismatch becomes visible.
+    # Once the checkpoint tag matches, the computed mismatch becomes visible.
     # Neither the condition result nor the target changes.
     dut.i_checkpoint_owner_tag.value = _pack_checkpoint_owner_tags({2: 14})
     await _settle()
@@ -568,7 +566,7 @@ async def test_jalr_negative_offset_resolves_through_jalr_imm(dut: Any) -> None:
             "op": OP_JALR,
             "src1_value": 0x80000025,
             "jalr_imm": 0xFF0,  # -16
-            "imm": 0x80000104,  # link address; not consumed here
+            "imm": 0x80000104,  # Link address; the target uses jalr_imm
             "predicted_taken": True,
             "predicted_target": 0x80000014,
         },

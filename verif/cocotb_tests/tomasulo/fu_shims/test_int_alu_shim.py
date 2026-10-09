@@ -12,15 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the int_alu_shim module.
+"""Integer ALU shim tests.
 
-Tests ADD, ADDI, SUB, shifts, LUI, AUIPC, the JAL/JALR link value, the CSR
-write operand, branch no-writeback, busy signalling, a sample of Zb*/Zicond
-ops, and operand patterns that only carry meaning at XLEN=64. Exhaustive
-shift-amount sweeps run every full-width and word shift and rotate with
-conflicting register and immediate amounts, toggle use_imm independently of
-the op, and cover every one-hot operand bit. The ALU is combinational, so no
-test needs a polling loop.
+The ALU is combinational, so results need no polling loop.
 """
 
 from typing import Any
@@ -60,7 +54,7 @@ async def setup(dut: Any) -> IntAluShimInterface:
 
 
 # ============================================================================
-# Test 1: After reset, outputs are idle
+# After reset, outputs are idle
 # ============================================================================
 @cocotb.test()
 async def test_reset_state(dut: Any) -> None:
@@ -73,7 +67,7 @@ async def test_reset_state(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 2: ADD basic (10 + 20 = 30)
+# ADD basic (10 + 20 = 30)
 # ============================================================================
 @cocotb.test()
 async def test_add_basic(dut: Any) -> None:
@@ -101,7 +95,7 @@ async def test_add_basic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 3: ADDI basic (100 + imm 50 = 150)
+# ADDI basic (100 + imm 50 = 150)
 # ============================================================================
 @cocotb.test()
 async def test_addi_basic(dut: Any) -> None:
@@ -131,7 +125,7 @@ async def test_addi_basic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 4: SUB basic (50 - 30 = 20)
+# SUB basic (50 - 30 = 20)
 # ============================================================================
 @cocotb.test()
 async def test_sub_basic(dut: Any) -> None:
@@ -159,7 +153,7 @@ async def test_sub_basic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 5: SLLI (1 << 4 = 16)
+# SLLI (1 << 4 = 16)
 # ============================================================================
 @cocotb.test()
 async def test_slli(dut: Any) -> None:
@@ -189,7 +183,7 @@ async def test_slli(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 6: LUI (loads upper immediate)
+# LUI (loads upper immediate)
 # ============================================================================
 @cocotb.test()
 async def test_lui(dut: Any) -> None:
@@ -221,7 +215,7 @@ async def test_lui(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 7: AUIPC (PC + upper immediate, precomputed and carried in imm)
+# AUIPC (PC + upper immediate, precomputed and carried in imm)
 # ============================================================================
 @cocotb.test()
 async def test_auipc(dut: Any) -> None:
@@ -259,7 +253,7 @@ async def test_auipc(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 8: JAL and JALR return the link address carried in imm
+# JAL and JALR return the link address carried in imm
 # ============================================================================
 @cocotb.test()
 async def test_jal_link(dut: Any) -> None:
@@ -294,7 +288,7 @@ async def test_jal_link(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 9: SEXT_H sign-extends low 16 bits
+# SEXT_H sign-extends low 16 bits
 # ============================================================================
 @cocotb.test()
 async def test_sext_h(dut: Any) -> None:
@@ -325,7 +319,7 @@ async def test_sext_h(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 10: PACK with rs2=0 zero-extends the low word (RV64 zext.h is PACKW)
+# PACK with rs2=0 zero-extends the low word (RV64 zext.h is PACKW)
 # ============================================================================
 @cocotb.test()
 async def test_pack_rs2_zero(dut: Any) -> None:
@@ -359,7 +353,7 @@ async def test_pack_rs2_zero(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 11: SH2ADD computes rs2 + (rs1 << 2)
+# SH2ADD computes rs2 + (rs1 << 2)
 # ============================================================================
 @cocotb.test()
 async def test_sh2add(dut: Any) -> None:
@@ -387,7 +381,7 @@ async def test_sh2add(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 12: REV8 reverses byte order
+# REV8 reverses byte order
 # ============================================================================
 @cocotb.test()
 async def test_rev8(dut: Any) -> None:
@@ -418,7 +412,7 @@ async def test_rev8(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 13: BREV8 reverses bits within each byte
+# BREV8 reverses bits within each byte
 # ============================================================================
 @cocotb.test()
 async def test_brev8(dut: Any) -> None:
@@ -448,7 +442,7 @@ async def test_brev8(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 14: BEXTI extracts a single immediate-selected bit
+# BEXTI extracts a single immediate-selected bit
 # ============================================================================
 @cocotb.test()
 async def test_bexti(dut: Any) -> None:
@@ -478,7 +472,7 @@ async def test_bexti(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 15: CZERO.EQZ zeros the value when rs2 is zero
+# CZERO.EQZ zeros the value when rs2 is zero
 # ============================================================================
 @cocotb.test()
 async def test_czero_eqz(dut: Any) -> None:
@@ -506,7 +500,7 @@ async def test_czero_eqz(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 16: CZERO.NEZ zeros the value when rs2 is nonzero
+# CZERO.NEZ zeros the value when rs2 is nonzero
 # ============================================================================
 @cocotb.test()
 async def test_czero_nez(dut: Any) -> None:
@@ -534,7 +528,7 @@ async def test_czero_nez(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 17: PACK packs the low words of rs1 and rs2
+# PACK packs the low words of rs1 and rs2
 # ============================================================================
 @cocotb.test()
 async def test_pack_general(dut: Any) -> None:
@@ -570,7 +564,7 @@ async def test_pack_general(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 18: busy is always 0 (ALU is single-cycle)
+# busy is always 0 (ALU is single-cycle)
 # ============================================================================
 @cocotb.test()
 async def test_never_busy(dut: Any) -> None:
@@ -595,7 +589,7 @@ async def test_never_busy(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 19: Branch ops (BEQ) produce valid=0 (no writeback)
+# Branch ops (BEQ) produce valid=0 (no writeback)
 # ============================================================================
 @cocotb.test()
 async def test_branch_no_valid(dut: Any) -> None:
@@ -619,7 +613,7 @@ async def test_branch_no_valid(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 20: CSRRS completes with its write operand (rs1)
+# CSRRS completes with its write operand (rs1)
 # ============================================================================
 @cocotb.test()
 async def test_csr_read(dut: Any) -> None:

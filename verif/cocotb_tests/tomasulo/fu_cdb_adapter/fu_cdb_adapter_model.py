@@ -12,11 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Golden model for the FU CDB adapter.
+"""Reference model for the FU CDB adapter's holding register and pass-through.
 
-Mirrors the RTL holding register and combinational pass-through, tracking
-result_pending and held_result across clock cycles. It models the default
-parameters and the full flush only; there is no partial flush.
+Models the default parameters and full flush; partial flush is not modeled.
 """
 
 from dataclasses import dataclass
@@ -77,14 +75,7 @@ class FuCdbAdapterModel:
         self.held_result = FuComplete()
 
     def get_output(self, fu_result: FuComplete) -> AdapterOutput:
-        """Get combinational output (before clock edge).
-
-        Args:
-            fu_result: Current FU result input.
-
-        Returns:
-            AdapterOutput with the current output and pending state.
-        """
+        """Return completion and pending state before the clock edge."""
         if self.result_pending:
             out = self.held_result.copy()
         else:
@@ -108,7 +99,6 @@ class FuCdbAdapterModel:
                 self.held_result = fu_result.copy()
                 self.result_pending = True
             else:
-                # Granted, go idle
                 self.result_pending = False
         elif not self.result_pending and fu_result.valid and not grant:
             # Pass-through not granted: latch

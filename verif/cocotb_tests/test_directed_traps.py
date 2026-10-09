@@ -12,33 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Directed trap and interrupt tests.
+"""Directed trap and interrupt tests with controlled CSR and interrupt timing.
 
-These tests live outside the random regression because trap handling needs
-exact CSR setup (mtvec, mepc, mcause), interrupt tests drive an external
-signal (i_interrupts_reg), and trap/interrupt collisions need deterministic
-sequences.
-
-Tests:
-    Traps and MRET:
-        - ECALL: environment call from M-mode (mcause=11)
-        - EBREAK: breakpoint exception (mcause=3)
-        - Illegal instruction (mcause=2)
-        - MRET: return from the machine-mode trap handler
-
-    Interrupts:
-        - Timer interrupt trap entry (mstatus.MIE cleared, MPIE saved)
-        - MTIP swept across an MRET: the entry's mepc and MPP match the
-          retirement order, and no MRET the entry flushes is taken
-        - Interrupts at a waiting WFI: one taken at an illegal (U-mode) WFI
-          saves the WFI's PC, and an M interrupt right after an S interrupt
-          entry at a WFI saves the S handler's address
-        - CSRSI enabling MIE with an interrupt already pending
-        - Precise-interrupt sweep: mepc versus the committed prefix
-
-Trap entry writes mepc and mcause, copies mstatus.MIE into MPIE, clears MIE,
-and jumps to mtvec. MRET copies MPIE back into MIE, sets MPIE, and returns to
-mepc.
+Machine trap entry writes mepc and mcause, copies mstatus.MIE into MPIE,
+clears MIE, and jumps to mtvec. MRET restores MIE from MPIE, sets MPIE,
+and returns to mepc.
 
 Usage: ``./scripts/frost.py cocotb directed_traps``.
 """
@@ -56,16 +34,11 @@ from cocotb_tests.test_common import TestConfig, execute_nop
 
 
 async def run_directed_trap_test(dut: Any, config: TestConfig | None = None) -> None:
-    """Directed test for machine-mode trap handling (ECALL, EBREAK, MRET).
+    """Check machine trap entry and MRET using CSR readback.
 
-    Point mtvec at a trap handler address, run ECALL, read mepc and mcause
-    back with CSR reads, return with MRET, then repeat with EBREAK. The ECALL
-    checks mepc against its exact instruction PC and mcause against 11; the
-    EBREAK check expects mcause 3.
-
-    Args:
-        dut: Device under test (cocotb SimHandle)
-        config: Test configuration. If None, uses default configuration.
+    ECALL must save its exact PC in mepc and set mcause=11. After MRET,
+    EBREAK must set mcause=3. config supplies clock and reset settings,
+    or uses defaults if None.
     """
     from encoders.op_tables import TRAP_INSTRS, CSRS
     from encoders.instruction_encode import CSRAddress
@@ -74,7 +47,7 @@ async def run_directed_trap_test(dut: Any, config: TestConfig | None = None) -> 
         config = TestConfig(num_loops=100)
 
     # ========================================================================
-    # Initialization Phase
+    # Initialization
     # ========================================================================
     dut_if = DUTInterface(dut)
     state = TestState()
@@ -108,7 +81,7 @@ async def run_directed_trap_test(dut: Any, config: TestConfig | None = None) -> 
     state.register_file_previous = state.register_file_current.copy()
 
     # ========================================================================
-    # Warmup: Let pipeline stabilize
+    # Pipeline warmup
     # ========================================================================
     cocotb.log.info("=== Warming up pipeline ===")
     for _ in range(8):
@@ -138,7 +111,7 @@ async def run_directed_trap_test(dut: Any, config: TestConfig | None = None) -> 
 
     cocotb.log.info(f"Set mtvec = 0x{trap_handler_address:08X}")
 
-    # Let the CSR write complete through pipeline
+    # Wait for the CSR write.
     for _ in range(PIPELINE_DEPTH):
         await execute_nop(dut_if, state)
 
@@ -152,10 +125,8 @@ async def run_directed_trap_test(dut: Any, config: TestConfig | None = None) -> 
 
     await FallingEdge(dut_if.clock)
     await dut_if.wait_ready()
-    # cpu_tb registers instruction_from_testbench together with the current
-    # fetch request. TestState starts its synthetic PC at zero, whereas the
-    # DUT's directed-test reset vector is non-zero, so use the real request PC
-    # that will travel with this ECALL.
+    # cpu_tb registers the instruction with the fetch request PC. Use that
+    # PC; TestState's synthetic PC does not track the DUT's reset vector.
     ecall_pc = int(dut.o_pc.value)
     cocotb.log.info(f"ECALL fetch request PC=0x{ecall_pc:08X}")
     dut_if.instruction = instr_ecall
@@ -174,7 +145,7 @@ async def run_directed_trap_test(dut: Any, config: TestConfig | None = None) -> 
 
     cocotb.log.info("ECALL executed, expecting jump to trap handler")
 
-    # Wait for trap to be taken and pipeline to stabilize
+    # Wait for trap entry.
     for _ in range(10):
         await execute_nop(dut_if, state)
 
@@ -341,7 +312,7 @@ async def run_directed_trap_test(dut: Any, config: TestConfig | None = None) -> 
     state.register_file_current_expected_queue.append(
         state.register_file_current.copy()
     )
-    state.program_counter_expected_values_queue.append(0)  # Will be mepc
+    state.program_counter_expected_values_queue.append(0)  # Unused PC placeholder
     state.update_program_counter(0)
     state.advance_register_state()
 
@@ -372,15 +343,11 @@ async def test_directed_trap_handling(dut: Any) -> None:
 async def run_directed_interrupt_trap_test(
     dut: Any, config: TestConfig | None = None
 ) -> None:
-    """Check that interrupt trap entry clears mstatus.MIE.
+    """Check that interrupt entry saves MIE into MPIE and clears MIE.
 
-    On interrupt entry the hardware saves MIE (bit 3) into MPIE (bit 7) and
-    clears MIE, so no further interrupt is taken inside the handler. After the
-    timer source clears, no machine interrupt may stay pending.
-
-    Args:
-        dut: Device under test (cocotb SimHandle)
-        config: Test configuration. If None, uses default configuration.
+    MIE (bit 3) is saved in MPIE (bit 7) and cleared, which blocks further
+    machine interrupts while the handler runs in M-mode. After the timer source clears, no machine
+    interrupt may remain pending. config uses defaults if None.
     """
     from encoders.op_tables import CSRS
     from encoders.instruction_encode import CSRAddress
@@ -389,7 +356,7 @@ async def run_directed_interrupt_trap_test(
         config = TestConfig(num_loops=100)
 
     # ========================================================================
-    # Initialization Phase
+    # Initialization
     # ========================================================================
     dut_if = DUTInterface(dut)
     state = TestState()
@@ -509,9 +476,7 @@ async def run_directed_interrupt_trap_test(
     # ========================================================================
     cocotb.log.info("=== Verifying mstatus before interrupt ===")
 
-    # The CSR write is serialized, so it lands after a variable delay. Poll
-    # mstatus until MIE is set, and fail the test (not just log a warning) if
-    # this precondition never holds.
+    # CSR write latency varies; require MIE to be set before triggering MTIP.
     for _ in range(PIPELINE_DEPTH * 3):
         await execute_nop(dut_if, state)
         mstatus_before = int(dut.device_under_test.csr_file_inst.mstatus.value)
@@ -647,16 +612,13 @@ MSTATUS_MPIE = 1 << 7
 async def sweep_mret_interrupt_race(
     dut: Any, config: TestConfig | None = None
 ) -> list[dict[str, Any]]:
-    """Sweep MTIP's rise across an MRET and record what each offset retired.
+    """Sweep MTIP's rise across an MRET and record each offset's retirements.
 
-    The core runs in M-mode with mstatus.MIE=1, MPIE=1, MPP=U, mie.MTIE=1,
-    mtvec=0x1000 and mepc=0x2000, then an MRET is fed. For each offset in
-    0..23, MTIP rises that many cycles after the MRET enters the feed and stays
-    high. Each result holds the cycles of the interrupt takes and MRET takes
-    after the feed, mepc/mcause/mstatus sampled right after the first take,
-    and the mepc expected from the retirements before that take: the PC after
-    the last retired instruction (all are 32 bits wide), or the MRET target if
-    the MRET retired last.
+    Start in M-mode with MIE=1, MPIE=1, MPP=U, MTIE=1, mtvec=0x1000, and
+    mepc=0x2000. Hold MTIP high from each offset after the MRET feed.
+    Results include interrupt and MRET take cycles, post-entry CSR values,
+    and the expected mepc: the PC after the last retired 32-bit instruction,
+    or the target if MRET retired last.
     """
     from encoders.op_tables import I_ALU, CSRS, TRAP_INSTRS
     from encoders.instruction_encode import CSRAddress
@@ -974,10 +936,10 @@ class WfiBench:
         await RisingEdge(self.clk)
 
     async def write_csr(self, address: int, rd: int, value: int, op: str = "w") -> None:
-        """Write (or set bits of) a CSR from scratch register rd and let it drain.
+        """Write or set CSR bits using scratch register rd, then feed NOPs.
 
-        The value is a 12-bit immediate shifted left, built with addi and
-        slli steps of at most 31 (the shift encoder keeps five bits).
+        Build value from a signed 12-bit ADDI immediate and SLLI steps of
+        at most 31 bits.
         """
         shift = 0
         while value >> shift > 0x7FF:
@@ -1081,15 +1043,12 @@ async def test_directed_interrupt_at_illegal_wfi_resumes_at_it(dut: Any) -> None
 async def test_directed_interrupt_after_s_entry_at_wfi_saves_the_handler(
     dut: Any,
 ) -> None:
-    """An M interrupt right after an S interrupt entry saves the S handler's address.
+    """An M interrupt after S interrupt entry must save the S handler's address.
 
-    An S timer interrupt (Sstc, delegated) reaches S-mode code at a WFI; its
-    arrival is swept 0 to 11 clock cycles after the WFI is fetched, so some
-    entries are taken with the WFI at the ROB head, which leaves it the valid
-    head in the entry's flush cycle. A machine timer interrupt raised right
-    after each entry is taken before any handler instruction retires, so mepc
-    must be the S handler's first instruction. The sweep must include entries
-    taken at the WFI.
+    Sweep a delegated Sstc timer interrupt across a WFI in S-mode, including
+    takes that leave WFI at the ROB head during the entry's flush cycle.
+    Raise MTIP immediately after each entry, before a handler instruction
+    retires; mepc must point to the first S handler instruction.
     """
     from encoders.instruction_encode import CSRAddress
 
@@ -1249,8 +1208,7 @@ async def run_directed_csrsi_enable_mie_test(
     cocotb.log.info("=== Asserting timer interrupt (MIE still 0) ===")
     dut.i_interrupts_reg.value = 0b010  # mtip = 1
 
-    # Check that MIE is still 0. This test already depends on the exposed
-    # hierarchy, so a missing signal or failed precondition must fail the test.
+    # Require MIE=0; a missing signal must fail this check.
     mstatus_before = int(dut.device_under_test.csr_file_inst.mstatus.value)
     cocotb.log.info(f"Before CSRSI: mstatus=0x{mstatus_before:08X}")
     assert (mstatus_before & 0x8) == 0, "MIE should be 0 before CSRSI!"
@@ -1273,15 +1231,12 @@ async def run_directed_csrsi_enable_mie_test(
     await dut_if.wait_ready()
     dut_if.instruction = instr_csrsi_mstatus
     await RisingEdge(dut_if.clock)
-    # Park a NOP so exactly one CSRSI enters the pipe (the harness keeps
-    # presenting dut_if.instruction every fetch; without this the trap handler
-    # would fetch CSRSIs and re-enable MIE in a trap loop).
+    # Park a NOP after the CSRSI. Repeated CSRSIs would re-enable MIE in
+    # the handler and cause a trap loop.
     dut_if.instruction = 0x00000013
 
-    # Poll for the trap. A CSR instruction is serialized: it waits for the ROB
-    # head, runs the csr_done handshake, and commits, and its write lands from
-    # the registered commit bus. Only then is the pending interrupt taken, so
-    # the delay varies; the budget is generous.
+    # The interrupt waits for the serialized CSR write to land from the
+    # registered commit bus, so trap latency varies.
     cocotb.log.info("=== Waiting for CSRSI commit + interrupt trap ===")
     trap_seen_cycle = -1
     for cycle in range(100):
@@ -1361,25 +1316,9 @@ async def test_directed_csrsi_enable_mie(dut: Any) -> None:
 async def run_directed_illegal_instruction_test(
     dut: Any, config: TestConfig | None = None
 ) -> None:
-    """Directed test for illegal instruction detection (mcause=2).
+    """Check mcause=2 for illegal encodings, then MRET between cases.
 
-    Inject encodings that match no RISC-V instruction and, for each one,
-    assert that mcause reads 2, then MRET back so the next case can run.
-
-    Illegal encodings tested:
-        - Unknown opcode (0x7F, all ones in the opcode field)
-        - Reserved funct3 in BRANCH (funct3=010)
-        - Reserved funct7 in OP (funct7=0x7F, funct3=000)
-        - Reserved funct3 in LOAD (funct3=111, reserved at both XLENs;
-          011 is a legal LD at RV64)
-        - Reserved funct3 in STORE (funct3=111, reserved at both XLENs;
-          011 is a legal SD at RV64)
-        - Reserved rounding mode rm=101 on FADD.S
-        - Reserved rounding mode rm=110 on FMADD.S
-
-    Args:
-        dut: Device under test (cocotb SimHandle)
-        config: Test configuration. If None, uses default configuration.
+    config supplies clock and reset settings, or uses defaults if None.
     """
     from encoders.op_tables import TRAP_INSTRS, CSRS
     from encoders.instruction_encode import (
@@ -1398,7 +1337,7 @@ async def run_directed_illegal_instruction_test(
         config = TestConfig(num_loops=100)
 
     # ========================================================================
-    # Initialization Phase
+    # Initialization
     # ========================================================================
     dut_if = DUTInterface(dut)
     state = TestState()
@@ -1432,7 +1371,7 @@ async def run_directed_illegal_instruction_test(
     state.register_file_previous = state.register_file_current.copy()
 
     # ========================================================================
-    # Warmup: Let pipeline stabilize
+    # Pipeline warmup
     # ========================================================================
     cocotb.log.info("=== Warming up pipeline ===")
     for _ in range(8):
@@ -1462,7 +1401,7 @@ async def run_directed_illegal_instruction_test(
 
     cocotb.log.info(f"Set mtvec = 0x{trap_handler_address:08X}")
 
-    # Let the CSR write complete through pipeline
+    # Wait for the CSR write.
     for _ in range(PIPELINE_DEPTH):
         await execute_nop(dut_if, state)
 
@@ -1516,7 +1455,7 @@ async def run_directed_illegal_instruction_test(
             f"expecting jump to trap handler"
         )
 
-        # Wait for trap to be taken and pipeline to stabilize
+        # Wait for trap entry.
         for _ in range(10):
             await execute_nop(dut_if, state)
 
@@ -1534,7 +1473,7 @@ async def run_directed_illegal_instruction_test(
         state.update_program_counter(expected_pc)
         state.advance_register_state()
 
-        # Let read complete through pipeline
+        # Wait for the CSR read.
         for _ in range(PIPELINE_DEPTH):
             await execute_nop(dut_if, state)
 
@@ -1556,13 +1495,13 @@ async def run_directed_illegal_instruction_test(
         state.register_file_current_expected_queue.append(
             state.register_file_current.copy()
         )
-        state.program_counter_expected_values_queue.append(0)  # Will be mepc
+        state.program_counter_expected_values_queue.append(0)  # Unused PC placeholder
         state.update_program_counter(0)
         state.advance_register_state()
 
         cocotb.log.info("MRET executed, returning from trap handler")
 
-        # Wait for MRET to complete and pipeline to stabilize
+        # Wait for MRET.
         for _ in range(10):
             await execute_nop(dut_if, state)
 
@@ -1658,10 +1597,8 @@ async def run_directed_interrupt_commit_race_test(
     enc_csrrw = CSRS["csrrw"]
     enc_lw = LOADS["lw"][0]
 
-    # Iteration-unique expected destination value: distinct per (stream index,
-    # generation) and never 0, so a leftover value from a prior sweep iteration
-    # can never masquerade as a commit in the current one (neither the regfile
-    # RAM nor the data BRAM is reset between runs).
+    # Values are distinct per (stream index, generation) and nonzero, so stale
+    # RAM contents cannot pass a commit check. Neither RAM clears on reset.
     def expected_val(i: int, gen: int) -> int:
         if mode == "load":
             # 32-bit memory word loaded into the dest register.
@@ -1703,7 +1640,7 @@ async def run_directed_interrupt_commit_race_test(
                 f"gen_read_port[0].gen_multi_write.read_port_ram.{{lvt,g_banks[*].u_bank.ram}}"
             ) from e
 
-    # one clock for the whole sweep
+    # Keep one clock running throughout the sweep.
     Clock(clk, config.clock_period_ns, unit="ns").start()
 
     async def feed(instr: int) -> None:
@@ -1887,7 +1824,7 @@ async def run_directed_interrupt_commit_race_test(
         r: int | None = None
         no_trap = res["trap_c"] is None
         if mepc is not None and not no_trap:
-            # Expected #committed stream instrs == those with PC < mepc.
+            # Exactly the stream instructions with PC < mepc must have committed.
             r = sum(1 for pc in stream_pcs if pc < mepc)
             for i in range(n_stream):
                 if stream_pcs[i] < mepc and not committed[i]:
@@ -1939,7 +1876,7 @@ async def run_directed_interrupt_commit_race_test(
 
     violations = [r for r in results if r["an"]["violation"]]
 
-    # ---- detailed evidence for each violation ------------------------------
+    # ---- violation details -------------------------------------------------
     for r in violations[:8]:
         an = r["an"]
         gen = r["gen"]

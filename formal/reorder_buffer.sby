@@ -4,10 +4,8 @@ cover
 
 [options]
 bmc: mode bmc
-# The BMC checks local safety invariants and one-cycle interface contracts.
-# It runs on btormc, which handles this model much faster than smtbmc. Depth
-# 12 leaves margin under the runner's 40-minute per-task timeout but does not
-# reach a full buffer with pointer wraparound.
+# Check local safety invariants and one-cycle interface contracts. Depth 12
+# limits runtime but does not reach a full buffer with pointer wraparound.
 bmc: depth 12
 cover: mode cover
 cover: depth 30

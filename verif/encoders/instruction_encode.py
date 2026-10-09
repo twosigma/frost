@@ -14,8 +14,7 @@
 
 """Encode 32-bit RISC-V instructions from register and immediate fields.
 
-Includes R/I/S/B/U/J, atomic, R4, and floating-point formats. Use
-``encoders.op_tables`` to select an encoder by mnemonic.
+Use ``encoders.op_tables`` to select an encoder by mnemonic.
 """
 
 from dataclasses import dataclass
@@ -144,26 +143,12 @@ class InstructionEncoder:
 
     @staticmethod
     def _pack_bits(*fields: tuple[int, int, int]) -> int:
-        """Pack bit fields into an instruction word.
+        """Pack (value, position, mask) triples into an instruction word.
 
-        Each field is masked, shifted to its position, and ORed into the
-        result.
-
-        Args:
-            fields: (value, position, mask) tuples:
-                - value: the value to insert
-                - position: bit position (LSB) of the field
-                - mask: bit mask for the field width
-
-        Returns:
-            32-bit packed instruction word
+        Each value is masked and shifted to position, the field's LSB.
 
         Example:
-            >>> # Pack rd=5 at bits[11:7] and opcode=0x33 at bits[6:0]
-            >>> InstructionEncoder._pack_bits(
-            ...     (5, 7, 0x1F),      # rd: 5-bit value at position 7
-            ...     (0x33, 0, 0x7F)    # opcode: 7-bit value at position 0
-            ... )  # 0x2b3 == 0b..._0010_1011_0011 (rd=5 | opcode=0x33)
+            >>> InstructionEncoder._pack_bits((5, 7, 0x1F), (0x33, 0, 0x7F))
             691
         """
         result = 0
@@ -176,7 +161,7 @@ class RType(InstructionEncoder):
     """R-type instruction format encoder.
 
     Format: funct7[31:25] | rs2[24:20] | rs1[19:15] | funct3[14:12] | rd[11:7] | opcode[6:0]
-    Used for: register-register operations (ADD, SUB, AND, OR, XOR, shifts, etc.)
+    Used for register-register operations.
     """
 
     @staticmethod
@@ -259,7 +244,7 @@ class BType(InstructionEncoder):
     """B-type instruction format encoder.
 
     Format: imm[12|10:5][31:25] | rs2[24:20] | rs1[19:15] | funct3[14:12] | imm[4:1|11][11:7] | opcode[6:0]
-    Used for: conditional branch instructions (BEQ, BNE, BLT, BGE, BLTU, BGEU)
+    Used for conditional branches.
     The 13-bit immediate is scattered across two fields. Bit 0 is implicit and
     always 0.
     """
@@ -375,9 +360,6 @@ class AMOType(InstructionEncoder):
             destination_register: rd register (old memory value, or SC.W status)
             aq: Acquire bit (memory ordering, default 0)
             rl: Release bit (memory ordering, default 0)
-
-        Returns:
-            32-bit encoded instruction
         """
         return InstructionEncoder._pack_bits(
             (funct5_code, 27, 0x1F),  # funct5[31:27]
@@ -421,9 +403,6 @@ class R4Type(InstructionEncoder):
             destination_register: rd register
             opcode: Instruction opcode
             fmt: Format (0=S single precision, 1=D double precision)
-
-        Returns:
-            32-bit encoded instruction
         """
         return InstructionEncoder._pack_bits(
             (source_register_3, 27, 0x1F),  # rs3[31:27]
@@ -484,9 +463,6 @@ class UType(InstructionEncoder):
             immediate_20bit: 20-bit immediate value (placed in bits [31:12])
             destination_register: Destination register (rd)
             opcode: Instruction opcode (LUI=0x37, AUIPC=0x17)
-
-        Returns:
-            32-bit encoded instruction
         """
         return InstructionEncoder._pack_bits(
             (immediate_20bit, 12, 0xFFFFF),  # imm[31:12]
@@ -545,9 +521,6 @@ def enc_lui(rd: int, immediate_20bit: int) -> int:
     Args:
         rd: Destination register
         immediate_20bit: 20-bit immediate value (upper 20 bits of result)
-
-    Returns:
-        32-bit encoded instruction
     """
     return UType.encode(immediate_20bit & 0xFFFFF, rd, Opcode.LUI)
 
@@ -630,9 +603,6 @@ def enc_csr(csr_address: int, rs1: int, funct3: int, rd: int) -> int:
         rs1: Source register (or zimm for immediate variants)
         funct3: CSR operation (CSRRW=1, CSRRS=2, CSRRC=3, CSRRWI=5, CSRRSI=6, CSRRCI=7)
         rd: Destination register
-
-    Returns:
-        32-bit encoded instruction
     """
     return IType.encode(csr_address & 0xFFF, rs1, funct3, rd, Opcode.SYSTEM)
 

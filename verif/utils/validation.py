@@ -14,14 +14,9 @@
 
 """Assertions and validators with structured failure context.
 
-Every check here raises ValidationError, an AssertionError that keeps the
-values behind the failure in a context dict and appends them to the message.
-assert_equals also accepts caller context, such as the cycle and register, and
-logs cocotb.RANDOM_SEED before raising, because reproducing a failure from
-random stimulus needs the seed.
-
-HardwareAssertions layers the RISC-V register-index bound [0, 31] on top of
-the generic range check.
+Failed checks raise ValidationError with a context dict included in the
+message. assert_equals accepts caller context and logs cocotb.RANDOM_SEED
+so random failures can be reproduced.
 
 Example:
     >>> try:

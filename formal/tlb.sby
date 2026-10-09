@@ -20,9 +20,9 @@ smtbmc boolector
 [script]
 read -formal -sv riscv_pkg.sv
 read -formal -sv dtlb.sv
-# The itlb tasks run the same dtlb at the instruction MMU's shape: 8 entries
-# and 2 ports. chparam sets the parameters on the module before prep, because
-# yosys 0.64 cannot reprocess a hierarchy once its top has been -chparam'd.
+# Match the IMMU's dtlb configuration: eight entries and two ports. Set
+# parameters before prep; Yosys 0.64 cannot reprocess a hierarchy after
+# changing its top's parameters.
 bmc_itlb: chparam -set NUM_ENTRIES 8 -set NUM_PORTS 2 dtlb
 cover_itlb: chparam -set NUM_ENTRIES 8 -set NUM_PORTS 2 dtlb
 prep -top dtlb

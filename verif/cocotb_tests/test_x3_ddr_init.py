@@ -12,20 +12,15 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit bench for x3_ddr_init, the board's power-up DDR4 region writer.
+"""Check x3_ddr_init's power-up DDR4 initialization.
 
-The module exists so no read of the ECC-checked array precedes a write of
-it, and the board top relies on three properties: it covers the whole region,
-every write is a full controller word (so the controller never reads the
-array to recompute a check code), and o_done means finished, not started. A
-recording AXI write slave checks those properties, once accepting every
-request and once stalling both channels and delaying responses. Other tests
-cover idle channels before i_start and after o_done (when the board top hands
-them to the CPU), the AXI handshake rules, and a refused write, which must
-withhold o_done.
+Every location must be written before an ECC-checked read. Writes cover full
+controller words to avoid read-modify-write of uninitialized data, and o_done
+must wait for every write response. A refused write must withhold o_done.
+The write channels stay idle before i_start and after o_done, when the board
+hands them to the CPU.
 
-The registry shrinks the region with -GREGION_BYTES so a run covers all of
-it; on the board it is 1 GiB.
+The registry reduces REGION_BYTES for simulation; the board initializes 1 GiB.
 """
 
 import os
@@ -38,10 +33,8 @@ from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
 
 CLOCK_PERIOD_NS = 10
 
-# Each registry entry sets these environment variables to the module's
-# REGION_BYTES and MAX_OUTSTANDING (given with -G or left at the default), so
-# one bench covers every registered shape. The fallbacks match the main
-# x3_ddr_init entry; DATA_BITS and BEATS_PER_BURST are the module's defaults.
+# Registry environment values must match REGION_BYTES and MAX_OUTSTANDING.
+# Fallbacks match x3_ddr_init; DATA_BITS and BEATS_PER_BURST use RTL defaults.
 REGION_BYTES = int(os.environ.get("DDR_INIT_REGION_BYTES", "4096"))
 MAX_OUTSTANDING = int(os.environ.get("DDR_INIT_MAX_OUTSTANDING", "4"))
 DATA_BITS = 256
@@ -63,15 +56,12 @@ RUN_TIMEOUT_CYCLES = 200 * TOTAL_BURSTS + 1000
 
 
 class WriteSlave:
-    """AXI4 write slave that records the bursts and beats it accepts.
+    """Record accepted AXI4 write bursts and beats.
 
-    ``aw_ready_p`` and ``w_ready_p`` are per-cycle acceptance probabilities
-    and ``b_delay`` the cycles a response waits behind its burst, so one
-    class covers both the accepting and the stalling slave.
-
-    ``address_waits_for_data`` holds AWREADY low until the slave has seen
-    WVALID. AXI permits that, and a master that held WVALID back until
-    AWREADY would deadlock against it.
+    aw_ready_p and w_ready_p are per-cycle acceptance probabilities;
+    b_delay is the response delay in cycles. address_waits_for_data holds
+    AWREADY low until WVALID appears. AXI permits this, so a master that
+    waits for AWREADY before asserting WVALID would deadlock.
     """
 
     def __init__(  # noqa: D107 - the class docstring covers the arguments
@@ -186,10 +176,8 @@ class WriteSlave:
 
             await RisingEdge(dut.i_clk)
             self._queued = [max(0, delay - 1) for delay in self._queued]
-            # Queue a response only once both the address and the whole
-            # burst's data have been accepted. Queuing on the data alone could
-            # send a response before its address, which AXI forbids and no
-            # real slave does.
+            # AXI permits a response only after both the address and the
+            # burst's entire data have been accepted.
             if aw_fire:
                 self._addresses_accepted += 1
             if w_last:
@@ -323,13 +311,10 @@ async def test_quiet_after_done(dut: Any) -> None:
 
 @cocotb.test()
 async def test_starts_with_the_default_outstanding_cap(dut: Any) -> None:
-    """The outstanding cap must not truncate to zero and block the start.
+    """The outstanding cap must not truncate to zero and block startup.
 
-    The cap is compared at the counter width, which the burst count sets. With
-    a region small enough for a narrow counter, an unclamped cap wider than
-    the counter would truncate to zero, both valids would stay low, and
-    nothing would be written. The x3_ddr_init_shallow registry entry runs this
-    bench in that shape.
+    The burst count sets the counter width. For a small region, an
+    unclamped cap can truncate to zero and hold both request valids low.
     """
     await _reset(dut)
     slave = WriteSlave(dut, random.Random(23))
@@ -358,10 +343,8 @@ async def test_address_may_wait_for_data(dut: Any) -> None:
 async def test_requests_do_not_wait_for_ready(dut: Any) -> None:
     """Both request channels must assert valid while ready stays low.
 
-    A valid gated by its own ready completes every handshake the other tests
-    count (each in a cycle where ready happens to be high) and is never seen
-    waiting, so the persistence check cannot catch it. Holding both readys low
-    does: the module still has to present its request.
+    Gating valid with ready never leaves a request waiting, so the
+    persistence check alone cannot detect it.
     """
     await _reset(dut)
     dut.i_awready.value = 0

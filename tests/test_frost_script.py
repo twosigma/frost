@@ -597,10 +597,7 @@ def test_doctor_successfully_aggregates_a_valid_image_inventory(
 def test_fast_checks_run_exact_lanes_keep_going_and_report_first_failure(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Without fail-fast, both lanes run in order and are timed.
-
-    The status is the first failure's.
-    """
+    """Run both lanes in order, time each, and return the first failure status."""
     commands: list[list[str]] = []
     statuses = iter((3, 4))
     clock = iter((10.0, 11.25, 20.0, 22.5))

@@ -14,14 +14,15 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Run adapted riscv-torture cases and compare UART signatures with Spike.
+"""Run riscv-torture cases and compare UART signatures with Spike.
 
-Can be run standalone:
-    ./test_riscv_torture.py --all
-    ./test_riscv_torture.py --test test_001
+Run in the frost image from the repository root, cleaning tests/ before
+each invocation:
 
-Or via pytest:
-    pytest test_riscv_torture.py -v -m slow
+    ./scripts/frost.py run make -C tests clean
+    ./scripts/frost.py run python3 tests/test_riscv_torture.py --all
+    ./scripts/frost.py run python3 tests/test_riscv_torture.py --test test_001
+    ./scripts/frost.py run pytest tests/test_riscv_torture.py -v -m slow
 """
 
 import argparse
@@ -135,7 +136,6 @@ def run_simulation(simulator: str) -> subprocess.CompletedProcess[str] | None:
     # One run per test: the behavioral DDR model persists across reset and the
     # ddr tier loads .data in place (LMA == VMA), so a torture test's heavy
     # memory mutations would carry into a second run and corrupt its signature.
-    # The signature is dumped once anyway (mirrors test_riscv_tests.py).
     env["COCOTB_NUM_RUNS"] = "1"
 
     original_dir = os.getcwd()
@@ -213,8 +213,7 @@ def load_reference(ref_path: Path) -> list[str]:
     return lines
 
 
-# Signature geometry: the GPR block is 32 registers at 2 words each; the
-# FP block is 32 doubles = 64 words. Total 64+64=128.
+# Signature layout: 32 GPRs followed by 32 FP registers, two words each.
 _TOTAL_WORDS = 128
 # The generator pins layout-dependent addresses to a known register set:
 # x2/sp, x3/gp, the x30 AMO-address temporary, and the x31 memory base (see
@@ -227,12 +226,9 @@ _RV64_SKIP_WORDS = frozenset(
 
 
 def compare_signatures(actual: list[str], expected: list[str]) -> tuple[bool, str]:
-    """Compare actual vs expected signatures.
+    """Return (match, diff_message), excluding link-map-dependent register values.
 
-    Every word is compared except the known address-holding registers:
-    sp/gp, the x30 AMO-address temporary, and the x31 memory base hold
-    link-map-dependent values, and the Spike reference link differs from
-    FROST's by design.
+    _RV64_ADDR_REGS names the registers whose addresses differ from Spike's.
     """
     total_words = _TOTAL_WORDS
     if len(actual) != total_words:
@@ -273,9 +269,7 @@ def run_single_test(
         return TestResult(test_name, "SKIP", "No reference output")
 
     if not compile_test(test_src, mem_config, paged):
-        # FAIL rather than SKIP: torture tests fit both tiers, so a compile
-        # failure is a build regression (a broken ddr linker script or boot
-        # stub, say) and has to turn the CI job red.
+        # These tests fit both tiers; compilation failure must fail the run.
         return TestResult(test_name, "FAIL", "Compilation failed")
 
     result = run_simulation(simulator)

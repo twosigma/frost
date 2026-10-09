@@ -41,20 +41,11 @@ from dataclasses import dataclass
 
 @dataclass
 class CompressedEncoder:
-    """Holder for the bit-packing helper shared by the encoders below."""
+    """Shared bit-packing helper for compressed instructions."""
 
     @staticmethod
     def _pack_bits(*fields: tuple[int, int, int]) -> int:
-        """Pack bit fields into a 16-bit instruction word.
-
-        Args:
-            fields: (value, position, mask) triples. Each value is masked to
-                the field width and shifted up to position, the LSB of the
-                field.
-
-        Returns:
-            16-bit packed instruction word
-        """
+        """Pack (value, LSB position, mask) triples."""
         result = 0
         for value, position, mask in fields:
             result |= (value & mask) << position
@@ -62,30 +53,13 @@ class CompressedEncoder:
 
 
 def compress_reg(reg: int) -> int:
-    """Convert full register index (8-15) to compressed 3-bit field.
-
-    Args:
-        reg: Register index (must be 8-15 for compressed encoding)
-
-    Returns:
-        3-bit compressed register field
-
-    Raises:
-        AssertionError: If register is not in range 8-15
-    """
+    """Encode x8-x15 in three bits; assert on other registers."""
     assert 8 <= reg <= 15, f"Compressed register must be x8-x15, got x{reg}"
     return reg - 8
 
 
 def is_compressible_reg(reg: int) -> bool:
-    """Check if a register fits a 3-bit compressed field (rd', rs1', rs2').
-
-    Args:
-        reg: Register index (0-31)
-
-    Returns:
-        True if register is x8-x15 (compressible)
-    """
+    """Return whether the register is x8-x15, valid for rd', rs1', and rs2'."""
     return 8 <= reg <= 15
 
 
@@ -97,15 +71,10 @@ def is_compressible_reg(reg: int) -> bool:
 def enc_c_lw(rd_prime: int, rs1_prime: int, uimm: int) -> int:
     """Encode C.LW: lw rd', offset(rs1').
 
-    Loads a 32-bit value from memory into rd'.
-
     Args:
         rd_prime: Destination register (x8-x15)
         rs1_prime: Base address register (x8-x15)
         uimm: Unsigned offset, must be multiple of 4, range [0, 124]
-
-    Returns:
-        16-bit encoded instruction
     """
     assert 8 <= rd_prime <= 15 and 8 <= rs1_prime <= 15
     assert uimm % 4 == 0 and 0 <= uimm <= 124, "uimm must be 0-124, multiple of 4"
@@ -125,15 +94,10 @@ def enc_c_lw(rd_prime: int, rs1_prime: int, uimm: int) -> int:
 def enc_c_sw(rs1_prime: int, rs2_prime: int, uimm: int) -> int:
     """Encode C.SW: sw rs2', offset(rs1').
 
-    Stores a 32-bit value from rs2' to memory.
-
     Args:
         rs1_prime: Base address register (x8-x15)
         rs2_prime: Source register (x8-x15)
         uimm: Unsigned offset, must be multiple of 4, range [0, 124]
-
-    Returns:
-        16-bit encoded instruction
     """
     assert 8 <= rs1_prime <= 15 and 8 <= rs2_prime <= 15
     assert uimm % 4 == 0 and 0 <= uimm <= 124
@@ -156,25 +120,16 @@ def enc_c_sw(rs1_prime: int, rs2_prime: int, uimm: int) -> int:
 
 
 def enc_c_nop() -> int:
-    """Encode C.NOP: no operation.
-
-    Returns:
-        16-bit encoded instruction (0x0001)
-    """
+    """Encode C.NOP (0x0001)."""
     return 0x0001  # C.NOP is C.ADDI x0, 0
 
 
 def enc_c_addi(rd: int, nzimm: int) -> int:
     """Encode C.ADDI: addi rd, rd, nzimm.
 
-    Adds sign-extended 6-bit immediate to rd.
-
     Args:
         rd: Destination/source register (x1-x31)
         nzimm: Non-zero signed immediate, range [-32, 31]
-
-    Returns:
-        16-bit encoded instruction
     """
     assert 1 <= rd <= 31, "rd must be x1-x31 for C.ADDI"
     assert nzimm != 0, "nzimm must be non-zero for C.ADDI"
@@ -195,14 +150,9 @@ def enc_c_addi(rd: int, nzimm: int) -> int:
 def enc_c_li(rd: int, imm: int) -> int:
     """Encode C.LI: addi rd, x0, imm.
 
-    Load immediate into rd.
-
     Args:
         rd: Destination register (x1-x31)
         imm: Signed immediate, range [-32, 31]
-
-    Returns:
-        16-bit encoded instruction
     """
     assert 1 <= rd <= 31, "rd must be x1-x31 for C.LI"
     assert -32 <= imm <= 31
@@ -221,14 +171,9 @@ def enc_c_li(rd: int, imm: int) -> int:
 def enc_c_lui(rd: int, nzimm: int) -> int:
     """Encode C.LUI: lui rd, nzimm.
 
-    Load upper immediate.
-
     Args:
         rd: Destination register (x1-x31, except x2)
         nzimm: Non-zero immediate for bits [17:12], range [-32, 31] (sign-extended)
-
-    Returns:
-        16-bit encoded instruction
     """
     assert 1 <= rd <= 31 and rd != 2, "rd must be x1-x31 except x2"
     assert nzimm != 0, "nzimm must be non-zero for C.LUI"
@@ -248,13 +193,8 @@ def enc_c_lui(rd: int, nzimm: int) -> int:
 def enc_c_addi16sp(nzimm: int) -> int:
     """Encode C.ADDI16SP: addi sp, sp, nzimm.
 
-    Add a multiple of 16 to the stack pointer. Used for stack frame setup/teardown.
-
     Args:
         nzimm: Non-zero byte offset, a multiple of 16, range [-512, 496]
-
-    Returns:
-        16-bit encoded instruction
     """
     assert nzimm != 0 and nzimm % 16 == 0, "nzimm must be non-zero multiple of 16"
     assert -512 <= nzimm <= 496, f"nzimm out of range: {nzimm}"
@@ -277,14 +217,9 @@ def enc_c_addi16sp(nzimm: int) -> int:
 def enc_c_srli(rd_prime: int, shamt: int) -> int:
     """Encode C.SRLI: srli rd', rd', shamt.
 
-    Logical right shift by immediate.
-
     Args:
         rd_prime: Destination/source register (x8-x15)
-        shamt: Shift amount (1-63; bit 5 rides instruction bit 12)
-
-    Returns:
-        16-bit encoded instruction
+        shamt: Shift amount (1-63; bit 5 occupies instruction bit 12)
     """
     assert 8 <= rd_prime <= 15
     assert 1 <= shamt <= 63, "shamt must be 1-63"
@@ -302,14 +237,9 @@ def enc_c_srli(rd_prime: int, shamt: int) -> int:
 def enc_c_srai(rd_prime: int, shamt: int) -> int:
     """Encode C.SRAI: srai rd', rd', shamt.
 
-    Arithmetic right shift by immediate.
-
     Args:
         rd_prime: Destination/source register (x8-x15)
-        shamt: Shift amount (1-63; bit 5 rides instruction bit 12)
-
-    Returns:
-        16-bit encoded instruction
+        shamt: Shift amount (1-63; bit 5 occupies instruction bit 12)
     """
     assert 8 <= rd_prime <= 15
     assert 1 <= shamt <= 63
@@ -327,14 +257,9 @@ def enc_c_srai(rd_prime: int, shamt: int) -> int:
 def enc_c_andi(rd_prime: int, imm: int) -> int:
     """Encode C.ANDI: andi rd', rd', imm.
 
-    AND with sign-extended 6-bit immediate.
-
     Args:
         rd_prime: Destination/source register (x8-x15)
         imm: Signed immediate, range [-32, 31]
-
-    Returns:
-        16-bit encoded instruction
     """
     assert 8 <= rd_prime <= 15
     assert -32 <= imm <= 31
@@ -414,13 +339,8 @@ def enc_c_and(rd_prime: int, rs2_prime: int) -> int:
 def enc_c_j(imm: int) -> int:
     """Encode C.J: jal x0, offset.
 
-    Unconditional jump (no link).
-
     Args:
         imm: Signed offset, must be even, range [-2048, 2046]
-
-    Returns:
-        16-bit encoded instruction
     """
     assert imm % 2 == 0
     assert -2048 <= imm <= 2046
@@ -445,14 +365,9 @@ def enc_c_j(imm: int) -> int:
 def enc_c_beqz(rs1_prime: int, imm: int) -> int:
     """Encode C.BEQZ: beq rs1', x0, offset.
 
-    Branch if rs1' equals zero.
-
     Args:
         rs1_prime: Source register (x8-x15)
         imm: Signed offset, must be even, range [-256, 254]
-
-    Returns:
-        16-bit encoded instruction
     """
     assert 8 <= rs1_prime <= 15
     assert imm % 2 == 0
@@ -476,14 +391,9 @@ def enc_c_beqz(rs1_prime: int, imm: int) -> int:
 def enc_c_bnez(rs1_prime: int, imm: int) -> int:
     """Encode C.BNEZ: bne rs1', x0, offset.
 
-    Branch if rs1' is non-zero.
-
     Args:
         rs1_prime: Source register (x8-x15)
         imm: Signed offset, must be even, range [-256, 254]
-
-    Returns:
-        16-bit encoded instruction
     """
     assert 8 <= rs1_prime <= 15
     assert imm % 2 == 0
@@ -511,14 +421,9 @@ def enc_c_bnez(rs1_prime: int, imm: int) -> int:
 def enc_c_slli(rd: int, shamt: int) -> int:
     """Encode C.SLLI: slli rd, rd, shamt.
 
-    Logical left shift by immediate.
-
     Args:
         rd: Destination/source register (x1-x31)
-        shamt: Shift amount (1-63; bit 5 rides instruction bit 12)
-
-    Returns:
-        16-bit encoded instruction
+        shamt: Shift amount (1-63; bit 5 occupies instruction bit 12)
     """
     assert 1 <= rd <= 31
     assert 1 <= shamt <= 63
@@ -535,14 +440,9 @@ def enc_c_slli(rd: int, shamt: int) -> int:
 def enc_c_lwsp(rd: int, uimm: int) -> int:
     """Encode C.LWSP: lw rd, offset(sp).
 
-    Load word from stack-pointer-relative address.
-
     Args:
         rd: Destination register (x1-x31)
         uimm: Unsigned offset, must be multiple of 4, range [0, 252]
-
-    Returns:
-        16-bit encoded instruction
     """
     assert 1 <= rd <= 31
     assert uimm % 4 == 0 and 0 <= uimm <= 252
@@ -561,13 +461,8 @@ def enc_c_lwsp(rd: int, uimm: int) -> int:
 def enc_c_jr(rs1: int) -> int:
     """Encode C.JR: jalr x0, rs1, 0.
 
-    Jump register (no link).
-
     Args:
         rs1: Jump target register (x1-x31)
-
-    Returns:
-        16-bit encoded instruction
     """
     assert 1 <= rs1 <= 31
 
@@ -583,14 +478,9 @@ def enc_c_jr(rs1: int) -> int:
 def enc_c_mv(rd: int, rs2: int) -> int:
     """Encode C.MV: add rd, x0, rs2.
 
-    Move register.
-
     Args:
         rd: Destination register (x1-x31)
         rs2: Source register (x1-x31)
-
-    Returns:
-        16-bit encoded instruction
     """
     assert 1 <= rd <= 31 and 1 <= rs2 <= 31
 
@@ -606,13 +496,8 @@ def enc_c_mv(rd: int, rs2: int) -> int:
 def enc_c_jalr(rs1: int) -> int:
     """Encode C.JALR: jalr ra, rs1, 0.
 
-    Jump and link register.
-
     Args:
         rs1: Jump target register (x1-x31)
-
-    Returns:
-        16-bit encoded instruction
     """
     assert 1 <= rs1 <= 31
 
@@ -628,14 +513,9 @@ def enc_c_jalr(rs1: int) -> int:
 def enc_c_add(rd: int, rs2: int) -> int:
     """Encode C.ADD: add rd, rd, rs2.
 
-    Add registers.
-
     Args:
         rd: Destination/first source register (x1-x31)
         rs2: Second source register (x1-x31)
-
-    Returns:
-        16-bit encoded instruction
     """
     assert 1 <= rd <= 31 and 1 <= rs2 <= 31
 
@@ -651,14 +531,9 @@ def enc_c_add(rd: int, rs2: int) -> int:
 def enc_c_swsp(rs2: int, uimm: int) -> int:
     """Encode C.SWSP: sw rs2, offset(sp).
 
-    Store word to stack-pointer-relative address.
-
     Args:
         rs2: Source register (x0-x31)
         uimm: Unsigned offset, must be multiple of 4, range [0, 252]
-
-    Returns:
-        16-bit encoded instruction
     """
     assert 0 <= rs2 <= 31
     assert uimm % 4 == 0 and 0 <= uimm <= 252

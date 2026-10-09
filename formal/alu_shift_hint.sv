@@ -14,15 +14,11 @@
  *    limitations under the License.
  */
 
-// Shift-amount hint equivalence for the ALU. Both instances are the real ALU,
-// and all operation bits, operands and instruction fields are unconstrained.
-// The hinted instance (USE_SHIFT_AMOUNT_HINT=1) gets the amount the generic
-// one selects for itself, the immediate shamt or b[5:0]; the generic instance
-// gets an arbitrary hint, which it ignores. Their results must match, and for
-// every operation that reads the shared shift amount the generic ALU must
-// match a plain shift and rotate reference. This checks the ALU's
-// combinational use of the hint, not how the reservation station captures and
-// holds it (the rs_issue2_shamt cocotb test covers that).
+// Compare ALUs with and without USE_SHIFT_AMOUNT_HINT for arbitrary inputs.
+// The hinted ALU receives the generic ALU's shift amount: the immediate shamt
+// or b[5:0]. The generic ALU ignores its arbitrary hint. Results must match.
+// The listed shifts and rotates also match a reference. This checks the
+// hint's combinational use, not its capture or retention in the station.
 module alu_shift_hint (
     input riscv_pkg::instr_t instruction,
     input riscv_pkg::instr_op_e op,

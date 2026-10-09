@@ -193,9 +193,7 @@ async def test_early_mispredict_has_priority_and_restores_ras(dut: Any) -> None:
     assert output["ras_restore_top"] == 0x8000_0000_0000_0104
     assert not output["ras_pop_after_restore"]
     assert not output["ras_push_after_restore"]
-    # The bus selects the early transaction. The late candidate is formed
-    # independently and still resolves the commit-time arm, with no early
-    # qualifier in its path.
+    # Early recovery selects the bus but does not qualify the late candidate.
     _assert_late_btb_candidate(dut, pc=0x22222222, taken=True)
 
 
@@ -395,7 +393,7 @@ async def test_commit_mispredict_call_restores_and_pushes_link(dut: Any) -> None
 
 @cocotb.test()
 async def test_commit_mispredict_coroutine_replays_pop_then_push(dut: Any) -> None:
-    """is_return+is_call is the swap encoding: replay both halves, not just push."""
+    """With is_return and is_call set, recovery must replay both pop and push."""
     await _setup_test(dut)
 
     dut.i_restored_ras_tos.value = 2

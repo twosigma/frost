@@ -12,35 +12,16 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Directed RISC-V A-extension tests for LR.W and SC.W.
+"""Directed LR.W/SC.W tests with explicit reservation tracking.
 
-LR/SC stays out of the random regression because the reservation register
-makes it stateful: whether an SC.W succeeds depends on the preceding LR.W and
-on everything issued between them, which a random instruction stream does not
-control.
+LR.W sign-extends a word to XLEN and reserves its aligned doubleword. SC.W
+stores rs2 and writes 0 to rd if the reservation covers its address;
+otherwise it writes 1 without storing. Either outcome clears the reservation.
 
-Test cases:
-    1. LR.W + SC.W success: load-reserved then store-conditional to the same
-       address
-    2. SC.W without LR.W: fails (no reservation)
-    3. SC.W to the wrong address: LR to addr A, SC to addr B, fails
-    4. Back-to-back LR.W/SC.W with no instruction between them
-    5. LR.W + intervening NOPs + SC.W: the reservation persists
-    6. LR.W to one word, SC.W to the other word of the same doubleword:
-       succeeds, because FROST reserves the aligned doubleword
-
-LR.W loads a word, sign-extended to XLEN, and reserves the doubleword that
-holds it. SC.W stores rs2 and writes 0 to rd only if the reservation covers
-its address; otherwise it writes 1 and does not store. Either way it clears
-the reservation.
-
-The core writes an instruction's destination register at ROB commit and its
-store after commit, both a variable number of cycles after the harness feeds
-it. LR and SC resolve only at the ROB head. Register checks therefore wait for
-the commit on the registered ROB commit bus (wait_for_int_reg_commit), and
-store checks wait for the memory monitor to see the write
-(wait_for_memory_writes). The monitor does not compare byte strobes, so each
-store is also read back from the DUT memory (check_memory_dword).
+LR and SC resolve at the ROB head. Register checks wait for the registered
+ROB commit bus; store checks wait for the memory monitor. The monitor does
+not compare byte strobes, so each store is also read back with
+check_memory_dword.
 
 Usage: ``./scripts/frost.py cocotb directed_atomics``.
 """
@@ -68,12 +49,9 @@ from cocotb_tests.test_common import (
 async def wait_for_memory_writes(
     dut_if: DUTInterface, state: TestState, what: str
 ) -> None:
-    """Wait until every queued expected memory write has been performed.
+    """Wait for the memory monitor to check all queued writes.
 
-    The MemoryModel monitor pops (and value/address-checks) one entry from the
-    expected-write queues per write it observes on the DUT memory port, so an
-    empty queue means all modeled stores have drained to memory. Pads two more
-    NOPs afterwards so the last write is visible in the memory array.
+    Feed two more NOPs so the last write is visible in the memory array.
     """
     await drive_nops_until(
         dut_if,
@@ -167,7 +145,6 @@ async def execute_lr_sc_instruction(
 
     if operation == "lr.w":
         assert expected_sc_success is None, "expected_sc_success applies to SC.W only"
-        # LR.W: load the word sign-extended to XLEN, set the reservation
         mem_model.read_address = address
         state.set_reservation(address)
         writeback_value = lw(mem_model, address)
@@ -181,7 +158,6 @@ async def execute_lr_sc_instruction(
             f"instr=0x{instr:08X}"
         )
     else:
-        # SC.W: check reservation, conditionally store
         success = state.check_reservation(address)
         state.clear_reservation()
         writeback_value = 0 if success else 1
@@ -196,7 +172,7 @@ async def execute_lr_sc_instruction(
         )
 
         if success:
-            # Model memory write (word data rides the beat replicated)
+            # Replicate the word across the memory beat.
             write_data = state.register_file_previous[rs2]
             state.memory_write_address_expected_queue.append(address)
             state.memory_write_data_expected_queue.append(
@@ -213,7 +189,6 @@ async def execute_lr_sc_instruction(
                 f"FAILED (rd=1, no write)"
             )
 
-        # Record the SC outcome in TestState.
         state.last_sc_succeeded = success
         state.last_sc_address = address
         state.last_sc_data = state.register_file_previous[rs2]
@@ -244,17 +219,9 @@ async def execute_store(
     rs2: int,
     imm: int = 0,
 ) -> None:
-    """Execute a SW (store word) instruction.
+    """Execute and model SW to initialize memory for LR/SC tests.
 
-    Used by directed tests to initialize memory before testing LR/SC sequences.
-
-    Args:
-        dut_if: DUT interface for signal access
-        state: Test state for tracking expectations
-        mem_model: Memory model for store operations
-        rs1: Base address register
-        rs2: Data register
-        imm: Immediate offset (default 0)
+    Store rs2 at the address in rs1 plus imm.
     """
     from encoders.op_tables import STORES
 
@@ -267,7 +234,7 @@ async def execute_store(
     address = (state.register_file_previous[rs1] + imm) & MASK_XLEN
     write_data = state.register_file_previous[rs2] & MASK32
 
-    # Queue expected memory write (word data rides the beat replicated)
+    # Replicate the word across the memory beat.
     state.memory_write_address_expected_queue.append(address)
     state.memory_write_data_expected_queue.append(
         replicate_store_data_for_beat("sw", write_data)
@@ -279,7 +246,6 @@ async def execute_store(
         f"SW x{rs2}, {imm}(x{rs1}): addr=0x{address:08X}, data=0x{write_data:08X}"
     )
 
-    # Queue expected outputs (no register change for store)
     state.register_file_current_expected_queue.append(
         state.register_file_current.copy()
     )
@@ -296,17 +262,15 @@ async def execute_store(
 
 
 async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) -> None:
-    """Run the directed LR.W/SC.W cases listed in the module docstring.
+    """Check LR.W/SC.W results, reservation behavior, and stored data.
 
-    Args:
-        dut: Device under test (cocotb SimHandle)
-        config: Test configuration. If None, uses default configuration.
+    config sets the clock and reset timing, or uses defaults if None.
     """
     if config is None:
         config = TestConfig(num_loops=100)
 
     # ========================================================================
-    # Initialization Phase
+    # Initialization
     # ========================================================================
     dut_if = DUTInterface(dut)
     state = TestState()
@@ -336,7 +300,6 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     # x22 = the other word of addr1's doubleword
     state.register_file_current[22] = test_address_1 + 4
 
-    # Write all register values to the DUT.
     for i in range(1, 32):
         dut_if.write_register(i, state.register_file_current[i])
 
@@ -362,7 +325,7 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     state.register_file_previous = state.register_file_current.copy()
 
     # ========================================================================
-    # Warmup: Let pipeline stabilize
+    # Pipeline warmup
     # ========================================================================
     cocotb.log.info("=== Warming up pipeline ===")
     for i in range(8):
@@ -381,9 +344,8 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     # SW x21, 0(x11) - store test_value_2 to test_address_2
     await execute_store(dut_if, state, mem_model, rs1=11, rs2=21)
 
-    # Wait for both stores to drain to memory. On the OOO core stores leave
-    # the store queue only after ROB commit, so this takes a variable number
-    # of cycles. The MemoryModel monitor checks each write as it happens.
+    # Stores leave the store queue after ROB commit; wait for the memory
+    # monitor to check both writes.
     cocotb.log.info("=== Waiting for stores to complete ===")
     await wait_for_memory_writes(dut_if, state, "init stores to reach memory")
 
@@ -408,8 +370,7 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         expected_sc_success=None,  # N/A for LR.W
     )
 
-    # Wait for the LR.W to retire: its architectural x5 write lands at ROB
-    # commit, a variable number of cycles after issue on the OOO core.
+    # Wait for the architectural x5 write at ROB commit.
     await wait_for_int_reg_commit(
         dut, dut_if, state, 5, "Test Case 1 LR.W x5 to commit"
     )
@@ -436,7 +397,6 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         expected_sc_success=True,
     )
 
-    # Verify SC.W result after it retires
     await wait_for_int_reg_commit(
         dut, dut_if, state, 6, "Test Case 1 SC.W x6 to commit"
     )
@@ -471,7 +431,6 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         expected_sc_success=False,
     )
 
-    # Verify SC.W failure after it retires
     await wait_for_int_reg_commit(
         dut, dut_if, state, 7, "Test Case 2 SC.W x7 to commit"
     )
@@ -556,7 +515,6 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         expected_sc_success=True,
     )
 
-    # Verify back-to-back SC.W success
     await wait_for_int_reg_commit(
         dut, dut_if, state, 14, "Test Case 4 SC.W x14 to commit"
     )
@@ -608,7 +566,6 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         expected_sc_success=True,
     )
 
-    # Verify SC.W success after intervening NOPs
     await wait_for_int_reg_commit(
         dut, dut_if, state, 16, "Test Case 5 SC.W x16 to commit"
     )
@@ -684,7 +641,7 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     check_memory_dword(dut, mem_model, test_address_1, "Test Case 6 SC.W store")
 
     # ========================================================================
-    # Cleanup: Flush pipeline with NOPs
+    # Cleanup: Drain pending instructions with NOPs
     # ========================================================================
     cocotb.log.info("=== Flushing pipeline ===")
     for _ in range(10):

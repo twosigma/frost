@@ -12,41 +12,15 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Directed tests for RISC-V C-extension instructions.
+"""Directed and random RISC-V C-extension tests.
 
-Compressed instructions are 16 bits wide, sit on 2-byte boundaries, and are
-identified by bits [1:0] != 0b11. Most common instructions have a compressed
-form, and some of those reach only registers x8-x15 (s0-s1/a0-a5).
+Compressed instructions are 16 bits wide, sit on 2-byte boundaries, and have
+bits [1:0] != 0b11. The rd' and rs2' fields encode x8-x15 by adding 8 to the
+three-bit field.
 
-Compressed instruction categories:
-    ┌─────────────────────────────────────────────────────────────────┐
-    │ Register Operations (full register set x1-x31):                │
-    │   C.LI   rd, imm    - Load immediate (rd = sign_extend(imm))   │
-    │   C.ADDI rd, nzimm  - Add immediate (rd = rd + nzimm)          │
-    │   C.MV   rd, rs2    - Move register (rd = rs2)                 │
-    │   C.ADD  rd, rs2    - Add register (rd = rd + rs2)             │
-    │   C.SLLI rd, shamt  - Shift left logical (rd = rd << shamt)    │
-    │                                                                 │
-    │ Register Operations (limited to x8-x15 only):                   │
-    │   C.SUB  rd', rs2'  - Subtract (rd' = rd' - rs2')              │
-    │   C.AND  rd', rs2'  - AND (rd' = rd' & rs2')                   │
-    │   C.OR   rd', rs2'  - OR (rd' = rd' | rs2')                    │
-    │   C.XOR  rd', rs2'  - XOR (rd' = rd' ^ rs2')                   │
-    │   C.SRLI rd', shamt - Shift right logical                      │
-    │   C.SRAI rd', shamt - Shift right arithmetic                   │
-    │   C.ANDI rd', imm   - AND immediate                            │
-    └─────────────────────────────────────────────────────────────────┘
-
-    rd' and rs2' are the 3-bit compressed register encoding: add 8 to get the
-    architectural register number, which is why they cover only x8-x15.
-
-The directed test runs one compressed instruction type at a time and reads
-back the register value it commits; negative immediates and the shift forms
-are covered. The random test cycles through the compressed ALU forms in the
-op_tables C_* tables with random operands, seeded by the cocotb random seed,
-and checks each result against the table's evaluator. About half of its words
-carry a second random instruction in the high half, so the two halves also
-dispatch as one bundle.
+The tests check committed register values against the op_tables evaluators.
+The random stream uses cocotb's seed and can put instructions in both halves
+of a word to exercise bundled dispatch.
 
 Usage: ``./scripts/frost.py cocotb compressed``.
 """
@@ -93,28 +67,14 @@ async def settle_check_reg(
     desc: str,
     budget: int = EVENT_WAIT_BUDGET_CYCLES,
 ) -> None:
-    """Check a committed register value, tolerating OOO retirement latency.
+    """Poll a committed register until it equals expected or budget expires.
 
-    An architectural register write lands at ROB commit, a variable number of
-    cycles after the harness feeds the instruction, so a fixed NOP fill after
-    the instruction is not enough. Poll the committed value until it equals
-    ``expected``, then assert. Every checked instruction writes a value that
-    differs from the register's prior contents (the directed test starts from
-    zeroed registers, and the random test draws only operands that change
-    rd), so a stale read cannot end the poll early. The instruction bus still
-    carries the NOP filler driven by the preceding execute helper, so waiting
-    only has to advance clock cycles.
+    ROB commit latency varies. Each checked instruction must change its
+    register, so a stale value cannot end the poll early. The preceding execute
+    helper leaves NOP filler on the instruction bus while this helper waits.
 
-    Args:
-        dut_if: DUT interface (for the clock)
-        read_fn: Zero-argument callable returning the masked register value
-        reg_name: Register name for messages (e.g. "x10", "f9")
-        expected: Expected (masked) value
-        desc: Check description for logging
-        budget: Maximum cycles to wait before failing
-
-    Raises:
-        AssertionError: If the register never reaches ``expected``.
+    read_fn returns the masked register value; expected must use the same mask.
+    reg_name and desc identify failures. budget is measured in clock cycles.
     """
     for _ in range(budget):
         if read_fn() == expected:
@@ -142,15 +102,11 @@ class CompressedHarness:
     async def start(
         self, config: TestConfig, registers: list[int] | None = None
     ) -> None:
-        """Load x1-x31, start the clock, reset, and flush the pipeline.
+        """Load x1-x31, start the clock, reset, and feed NOPs.
 
-        Reset does not clear the register file, so each test loads it (with
-        zeros by default): otherwise a test would inherit the registers an
-        earlier test in the same simulation left behind.
-
-        Args:
-            config: Clock and reset settings
-            registers: Values for x0-x31 (x0 is ignored); zeros if None
+        Reset does not clear the register file. Initialize every register to avoid
+        inheriting values from another test. registers supplies x0-x31 (x0 is
+        ignored), or None to load zeros. config sets the clock and reset timing.
         """
         for reg in range(1, 32):
             self.dut_if.write_register(reg, registers[reg] if registers else 0)
@@ -169,24 +125,18 @@ class CompressedHarness:
         cocotb.log.info(f"Pipeline flushed, PC = {int(self.dut_if.dut.o_pc.value)}")
 
     async def flush_pipeline(self) -> None:
-        """Flush the pipeline with compressed NOPs."""
+        """Feed compressed NOPs while pending instructions drain."""
         for _ in range(PIPELINE_DEPTH * 2):
             await FallingEdge(self.dut_if.clock)
             self.dut_if.instruction = self.nop_packed
             await RisingEdge(self.dut_if.clock)
 
     async def execute(self, instr_16bit: int, high_16bit: int | None = None) -> None:
-        """Drive one word of compressed instructions, then NOP filler behind it.
+        """Drive a word of compressed instructions, followed by NOP filler.
 
-        A compressed instruction advances the PC by 2, so the PC can end up
-        on an odd half-word. Wait for word alignment before driving the next
-        instruction. The filler does not wait for commit; check polls for
-        the result.
-
-        Args:
-            instr_16bit: 16-bit compressed instruction for the low half
-            high_16bit: 16-bit compressed instruction for the high half, which
-                runs second (C.NOP if None)
+        Wait for word alignment before driving instr_16bit in the low half and
+        high_16bit in the high half (C.NOP if None). The low half runs first.
+        This does not wait for commit; check polls for the result.
         """
         # With PC[1]=1 and prev_was_compressed_at_lo=1 the CPU reads from
         # instr_buffer rather than i_instr, so an instruction driven now would
@@ -195,14 +145,11 @@ class CompressedHarness:
             pc_val = int(self.dut_if.dut.o_pc.value)
             if (pc_val & 0x2) == 0:  # PC[1] == 0, word-aligned
                 break
-            # Wait one more cycle to let CPU process hi half
             await FallingEdge(self.dut_if.clock)
             self.dut_if.instruction = self.nop_packed
             await RisingEdge(self.dut_if.clock)
 
-        # The CPU runs both halves of the word, low half first; the two can
-        # dispatch together as one bundle. A C.NOP in the high half leaves
-        # the low instruction as the only one with an effect.
+        # The two halves can dispatch together as one bundle.
         high = self.c_nop if high_16bit is None else high_16bit
         packed = (high << 16) | instr_16bit
         await FallingEdge(self.dut_if.clock)
@@ -216,16 +163,7 @@ class CompressedHarness:
             await RisingEdge(self.dut_if.clock)
 
     async def check(self, reg: int, expected: int, desc: str) -> None:
-        """Check that x<reg> commits the expected XLEN-wide value.
-
-        Args:
-            reg: Register number to check
-            expected: Expected value (negative values are two's complement)
-            desc: Description for logging
-
-        Raises:
-            AssertionError: If register value doesn't match expected
-        """
+        """Check that x<reg> commits expected, masked to XLEN bits."""
         await settle_check_reg(
             self.dut_if,
             lambda: self.dut_if.read_register(reg) & MASK_XLEN,
@@ -238,18 +176,10 @@ class CompressedHarness:
 async def run_compressed_instruction_test(
     dut: Any, config: TestConfig | None = None
 ) -> None:
-    """Test compressed (16-bit) instruction execution.
+    """Check committed results of directed compressed instructions.
 
-    Each step encodes one compressed instruction, packs it into a 32-bit word
-    with a NOP in the high half, drives it through the pipeline, and checks
-    the register value it commits.
-
-    Tests: C.LI, C.ADDI, C.MV, C.ADD, C.SUB, C.AND, C.OR, C.XOR, C.SLLI,
-           C.SRLI, C.SRAI, C.ANDI
-
-    Args:
-        dut: Device under test (cocotb SimHandle)
-        config: Test configuration (clock and reset). If None, uses defaults.
+    Each instruction is packed with a C.NOP in the high half of a word.
+    config sets the clock and reset timing, or uses defaults if None.
     """
     harness = CompressedHarness(dut)
     await harness.start(config or TestConfig())
@@ -281,7 +211,6 @@ async def run_compressed_instruction_test(
     # Test 3: C.MV (Move Register)
     # ========================================================================
     cocotb.log.info("=== Test 3: C.MV ===")
-    # Set up x12 with a known value first
     await execute_compressed_instr(enc_c_li(rd=12, imm=17))
     await execute_compressed_instr(enc_c_mv(rd=13, rs2=12))
     await check_reg(13, 17, "c.mv x13, x12 (copy 17)")
@@ -298,7 +227,6 @@ async def run_compressed_instruction_test(
     # Test 5: C.SUB (Subtract Registers) - uses x8-x15 only
     # ========================================================================
     cocotb.log.info("=== Test 5: C.SUB ===")
-    # Set up x8 = 93, x9 = 30
     await execute_compressed_instr(enc_c_li(rd=8, imm=31))  # Max positive imm is 31
     await execute_compressed_instr(enc_c_addi(rd=8, nzimm=31))  # 31 + 31 = 62
     await execute_compressed_instr(enc_c_addi(rd=8, nzimm=31))  # 62 + 31 = 93
@@ -490,23 +418,16 @@ def _draw_high_parcel(
 
 
 async def run_random_compressed_test(dut: Any, config: TestConfig) -> None:
-    """Drive random compressed ALU instructions and check each against the model.
+    """Check random compressed ALU instructions against the model.
 
-    The registers start at random 64-bit values, and the test cycles through
-    every form with operands whose result changes the destination, so each
-    check can pass only once that instruction has committed. The rd'/rs2'
-    forms can leave x8-x15 in a state no operands of a form change (all
-    equal, for example); a checked C.LI then loads x8 with a value after
-    which every form has such operands. About half of the words also carry a
-    random instruction in the high half, which the core runs second and can
-    dispatch in the same bundle (slot 2). The run ends by comparing x1-x31
-    with the model, checking that every form ran at least
-    config.min_coverage_count times, and checking that some word pairs
-    dispatched as one bundle.
+    Each instruction must change its destination so a stale value cannot pass
+    the commit check. If a form has no such operands in x8-x15, a checked C.LI
+    refreshes x8. A random high-half instruction can dispatch in slot 2; if both
+    halves write the same register, the final value must differ from its value
+    before the word.
 
-    Args:
-        dut: Device under test (cocotb SimHandle)
-        config: Test configuration; num_loops sets how many forms are drawn
+    config.num_loops sets the number of draws. Check the final register file,
+    config.min_coverage_count for each recorded form, and nonzero slot-2 dispatch.
     """
     rng = random.Random(cocotb.RANDOM_SEED)
     cocotb.log.info(f"Random compressed stream seeded with {cocotb.RANDOM_SEED}")

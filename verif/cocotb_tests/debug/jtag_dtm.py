@@ -13,14 +13,11 @@
 #    limitations under the License.
 """JTAG, DTM, and debug-module driver for the frost toplevel.
 
-``JtagDriver`` bit-bangs frost's ``i_jtag_*`` pins from cocotb through the
-generic 5-bit-IR TAP. ``Dtm`` speaks the RISC-V Debug Spec 0.13.2 dtmcs / dmi
-protocol, including the sticky-busy rule and dmireset retries as OpenOCD
-implements them. ``DebugModule`` wraps the module's register-level protocol
-into the operations a debugger performs: halt / resume / step, abstract GPR
-access, program-buffer execution, and the progbuf-based CSR and memory access
-OpenOCD falls back to when the module advertises no abstract CSR access and
-no system bus.
+``JtagDriver`` drives ``i_jtag_*`` through the generic 5-bit-IR TAP. ``Dtm``
+implements the RISC-V Debug Spec 0.13.2 dtmcs and dmi protocol, including
+sticky-busy handling and OpenOCD-style dmireset retries. ``DebugModule``
+provides debugger operations, using the program buffer for CSR and memory
+access when abstract CSR access and a system bus are unavailable.
 """
 
 from __future__ import annotations
@@ -164,13 +161,11 @@ def addi(rd: int, rs1: int, imm: int) -> int:
 # JTAG bit-bang
 # --------------------------------------------------------------------------
 class JtagDriver:
-    """Drive a JTAG TAP through frost's i_jtag_* pins.
+    """Drive frost's JTAG TAP.
 
-    ``half_period`` is the number of core clock cycles per TCK half period.
-    The DTM's request/response handshake crosses between TCK and the core
-    clock through two-flop synchronizers, so the TCK rate sets how often a
-    scan arrives while the previous request is still in flight (the
-    sticky-busy path).
+    ``half_period`` counts core cycles per TCK half period. Requests and
+    responses cross two-flop synchronizers, so faster TCK can encounter
+    sticky busy while a previous request is still in flight.
     """
 
     def __init__(self, dut: Any, half_period: int = 4) -> None:
@@ -545,7 +540,7 @@ class DebugModule:
     async def write_mem(
         self, addr: int, size: int, value: int, fence: bool = True
     ) -> None:
-        """Write memory via a progbuf store, preserving s0/s1."""
+        """Write memory via a progbuf store, preserving s0 and s1."""
         saved0 = await self.read_gpr(self.S0)
         saved1 = await self.read_gpr(self.S1)
         await self.write_gpr(self.S0, addr)

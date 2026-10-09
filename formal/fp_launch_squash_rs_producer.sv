@@ -14,11 +14,10 @@
  *    limitations under the License.
  */
 
-// fp_launch_squash producer proof: the REAL reservation_station, instantiated
-// with u_fp_rs's parameters and tie-offs from tomasulo_wrapper.sv, plus the
-// wrapper's backend-recovery-hold gate that forms the shim's issue valid.
-// Every other RS input is a free top-level input; there are no assumptions.
-// The RS is read without FORMAL, so none of its own assumptions are present.
+// Check the LAUNCH_SQUASH issue rule on reservation_station with u_fp_rs's
+// parameters, tie-offs, and recovery-hold gate from tomasulo_wrapper.sv.
+// Other inputs are arbitrary. The proof has no assumptions; the RS is read
+// without FORMAL. Cover tasks assume an initial reset.
 //
 // The shim and FP_RS share their flush inputs in the wrapper:
 //   shim i_flush        = speculative_flush_all = RS i_flush_all
@@ -163,7 +162,7 @@ module fp_launch_squash_rs_producer (
 
   always_ff @(posedge i_clk) begin
     if (!f_init) begin
-      // A partial-flush-covered issue happened in the previous cycle.
+      // A full or partial flush covered the previous cycle's issue.
       c_flushed_issue : cover (f_prev_flushed_issue && i_rst_n);
       // FP_RS issues again two cycles after a flushed issue.
       c_issue_after_flush_gap : cover (f_prev2_flushed_issue && i_rst_n && shim_issue_valid);

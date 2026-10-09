@@ -12,11 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Tests for the Linux configurations, device tree, and boot images.
-
-Covers the OpenSBI boot-image packer, linux_boot's Makefile, the pinned Debian
-kernel, and the images built around it.
-"""
+"""Tests for Linux configurations, the device tree, and boot-image packaging."""
 
 import hashlib
 import importlib.util
@@ -160,10 +156,7 @@ def test_sbi_layout_slots_are_ordered_and_aligned() -> None:
 DEBIAN_KERNEL_FOOTPRINT = 0x1E6B000
 
 
-# Payload footprints below, at and above the 14 MiB that fit under +16 MiB: a
-# small raw binary, a 0xce7000-byte kernel, exactly 14 MiB, one byte more, a
-# kernel with every option Buildroot's systemd package enables, and Debian's
-# kernel.
+# Payload footprints around the 14 MiB limit below the +16 MiB DTB slot.
 @pytest.mark.parametrize(
     "footprint",
     [0x100, 0xCE7000, 0xE00000, 0xE00001, 0xF03000, DEBIAN_KERNEL_FOOTPRINT],
@@ -298,14 +291,11 @@ def test_sbi_packer_recognizes_linux_image_header() -> None:
 
 
 def test_sbi_packer_places_the_dtb_by_image_size(tmp_path: Path) -> None:
-    """The Image header's image_size places the DTB, and every output agrees.
+    """Use Image.image_size, including bss, to place the DTB in every output.
 
-    The file is exactly 14 MiB, so its length would leave the DTB at +16 MiB,
-    but its bss (image_size 0xe01000) crosses that boundary and moves the DTB
-    to +18 MiB. The shim's a1, the /chosen initramfs bounds, the sparse
-    sw_ddr.mem that simulation reads and the dense sw_ddr.txt that the JTAG
-    loader streams must all carry that one layout. Needs dtc and the
-    riscv64-linux- toolchain (both in the Docker image).
+    The 14 MiB file fits below +16 MiB, but image_size 0xe01000 moves the DTB to
+    +18 MiB. Check the shim's a1, /chosen initramfs bounds, sparse sw_ddr.mem,
+    and dense sw_ddr.txt. Requires dtc and the image's RISC-V toolchain.
     """
     packer = _load_module(SBI_PACKER)
     image = _linux_image(packer, image_size=0xE01000, length=0xE00000)
@@ -376,11 +366,10 @@ STATIC_IP = "192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off"
 def test_sbi_packer_nfsroot_packs_no_initramfs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ip_args: list[str], ip: str
 ) -> None:
-    """--nfsroot alone packs the kernel's NFS-root bootargs, ip=dhcp unless --ip.
+    """--nfsroot alone uses NFS bootargs and defaults to ip=dhcp.
 
-    No initramfs is packed: /chosen has no linux,initrd-* and sw_ddr.mem holds
-    the firmware, the payload and the DTB only. Needs dtc and the
-    riscv64-linux- toolchain (both in the Docker image).
+    /chosen must omit linux,initrd-*; sw_ddr.mem holds only firmware, payload,
+    and DTB. Requires dtc and the image's RISC-V toolchain.
     """
     monkeypatch.delenv("FROST_INITRD", raising=False)
     packer = _load_module(SBI_PACKER)
@@ -454,12 +443,10 @@ KLIBC_NFSMOUNT_FLAG_OPTIONS = frozenset(
 
 
 def test_sbi_nfsroot_options_suit_the_kernel_and_initramfs_tools() -> None:
-    """Both NFS roots mount NFSv3 over TCP, hard, with options klibc accepts.
+    """Both boot paths use hard NFSv3 over TCP with klibc-compatible options.
 
-    The kernel's NFS root and initramfs-tools' NFS boot both split nfsroot= at
-    its first comma into the export and the mount options. initramfs-tools
-    hands the options to klibc's nfsmount, whose option names are not nfs(5)'s,
-    so every option must be one it knows.
+    Each splits nfsroot= at the first comma. initramfs-tools passes the options
+    to klibc's nfsmount, whose accepted names differ from nfs(5).
     """
     packer = _load_module(SBI_PACKER)
     assert packer.NFSROOT_OPTIONS == "vers=3,tcp,hard"
@@ -488,12 +475,10 @@ def test_sbi_nfsroot_options_suit_the_kernel_and_initramfs_tools() -> None:
 def test_sbi_packer_nfsroot_through_an_initramfs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ip_args: list[str], ip: str
 ) -> None:
-    """--nfsroot with --initrd packs the initramfs and initramfs-tools NFS bootargs.
+    """--nfsroot with --initrd packs the initramfs after the DTB slot.
 
-    boot=nfs selects initramfs-tools' NFS boot; ip= and the nfsroot= options
-    are the ones the kernel's own NFS root gets. The initramfs is packed after
-    the DTB slot as usual. Needs dtc and the riscv64-linux- toolchain (both in
-    the Docker image).
+    boot=nfs selects initramfs-tools; ip= and nfsroot= match the kernel's NFS
+    boot settings. Requires dtc and the image's RISC-V toolchain.
     """
     monkeypatch.delenv("FROST_INITRD", raising=False)
     packer = _load_module(SBI_PACKER)
@@ -639,11 +624,10 @@ def test_sbi_layout_checks_use_the_memory_size(
 
 
 def test_sbi_layout_fits_debian_kernel_and_initramfs_in_1_gib() -> None:
-    """Debian's kernel puts the DTB at +34 MiB; its initramfs needs a board's memory.
+    """Debian's kernel places the DTB at +34 MiB.
 
-    A 40 MB initramfs after it ends past the 64 MiB default memory node, and
-    the failure names the node's size and --mem-size. It fits the X3's 1 GiB,
-    which load_software.py advertises.
+    Adding a 40 MB initramfs exceeds the 64 MiB default but fits the X3's 1 GiB.
+    The failure must name the memory size and --mem-size.
     """
     packer = _load_module(SBI_PACKER)
     layout = packer.plan_layout(DEBIAN_KERNEL_FOOTPRINT)
@@ -696,12 +680,10 @@ def test_sbi_memory_bounds_match_the_rtl_and_the_ddr_model() -> None:
 def test_load_software_takes_each_board_ddr_from_its_block_design(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The board's DDR size is the CPU port's range in fpga/build/<board>_ddr_bd.tcl.
+    """Use the CPU port's DDR range from fpga/build/<board>_ddr_bd.tcl.
 
-    Every board the loader runs linux_boot on (those with DDR) has one the
-    packer accepts; the X3 maps the whole 1 GiB cached region, as much as its
-    CPU port (S00_AXI) addresses. The range of the JTAG master's port does not
-    count.
+    Every DDR board's range must fit the packer; the X3 uses the full 1 GiB
+    cached region. Ignore the JTAG master's range.
     """
     loader = _load_script("linux_packaging_loader", LOADER)
     packer = _load_module(SBI_PACKER)
@@ -859,14 +841,12 @@ NFS_EXPORT = "192.0.2.1:/srv/nfs/debian"
 
 
 def _linux_boot_tree(tmp_path: Path) -> Path:
-    """Lay out linux_boot's Makefile, the packer, and synthetic build inputs.
+    """Build a temporary linux_boot tree and return its app directory.
 
-    The Makefile finds the packer, Buildroot's images (fw_jump.bin,
-    rootfs.cpio) and the Debian kernel helper relative to the directory make
-    runs in, not its own file (a symlink here), so make packs those and writes
-    only under tmp_path. The Debian cache holds a synthetic kernel Image and
-    the NIC module a synthetic .ko, so no make in these tests downloads
-    anything or needs a cross toolchain. Returns the app directory.
+    The symlinked Makefile resolves inputs relative to make's working directory.
+    Synthetic Buildroot images, a cached Debian Image, and a NIC module avoid
+    downloads and kernel or module builds. The boot shim still needs the
+    cross toolchain. All output stays under tmp_path.
     """
     packer = _load_module(SBI_PACKER)
     helper = _load_module(DEBIAN_KERNEL)
@@ -904,12 +884,10 @@ def _linux_boot_tree(tmp_path: Path) -> Path:
 
 
 def _make_linux_boot(app: Path, **variables: str) -> subprocess.CompletedProcess[str]:
-    """Run make clean, then make, in the app with only these FROST_* variables set.
+    """Clean and build with only the supplied FROST_* environment variables.
 
-    They go in the environment, and make cleans first, as load_software.py and
-    compile_app.py do. The shim builds with the packer's default cross prefix,
-    and the clock is the Makefile's default. The Debian cache and the prebuilt
-    module are the synthetic ones _linux_boot_tree laid down.
+    Use the packer's default cross prefix, the Makefile's default clock, and
+    the synthetic cache and module from _linux_boot_tree.
     """
     tree = app.parents[2]
     env = {
@@ -941,12 +919,11 @@ def _output_digests(app: Path) -> dict[str, str]:
 
 
 def test_linux_boot_make_substitutes_the_kernel_and_initramfs(tmp_path: Path) -> None:
-    """FROST_LINUX_KERNEL and _INITRD replace Debian's Image and the initramfs.
+    """Pass FROST_LINUX_KERNEL and FROST_LINUX_INITRD through to the packer.
 
-    Substitutes with the default inputs' bytes pack every output exactly as the
-    defaults do. Other files are packed in their place, the DTB placed by the
-    substituted Image's header, with the default bootargs. Needs make, dtc and
-    the riscv64-linux- toolchain (all in the Docker image).
+    Identical substitutes must produce identical outputs. Other files use their
+    Image header for DTB placement and retain default bootargs. Requires make,
+    dtc, and the image's RISC-V toolchain.
     """
     packer = _load_module(SBI_PACKER)
     helper = _load_module(DEBIAN_KERNEL)
@@ -1014,12 +991,11 @@ def test_linux_boot_make_substitutes_the_kernel_and_initramfs(tmp_path: Path) ->
 def test_linux_boot_make_nfsroot(
     tmp_path: Path, variables: dict[str, str], initramfs: bool, ip: str
 ) -> None:
-    """FROST_LINUX_NFSROOT boots from the export; FROST_LINUX_INITRD mounts it.
+    """FROST_LINUX_NFSROOT selects the export; FROST_LINUX_INITRD mounts it.
 
-    Without FROST_LINUX_INITRD nothing follows the DTB and the kernel mounts
-    the export, even with the packer's own FROST_INITRD in the environment;
-    with it, that initramfs is packed and mounts it (boot=nfs). Needs make,
-    dtc and the riscv64-linux- toolchain (all in the Docker image).
+    Without FROST_LINUX_INITRD, omit the initramfs even if FROST_INITRD is set.
+    With it, pack the initramfs and select boot=nfs. Requires make, dtc, and
+    the image's RISC-V toolchain.
     """
     packer = _load_module(SBI_PACKER)
     app = _linux_boot_tree(tmp_path)
@@ -1081,14 +1057,11 @@ def test_linux_boot_make_rejects(
 def test_linux_boot_make_refuses_a_build_directory_that_built_a_kernel(
     tmp_path: Path,
 ) -> None:
-    """A Buildroot directory whose .config still builds a kernel is reported.
+    """Reject a Buildroot tree configured to build a kernel before invoking it.
 
-    Such a .config selects BR2_LINUX_KERNEL and points BR2_GLOBAL_PATCH_DIR at
-    board/frost/patches, which does not exist, so Buildroot would stop with
-    "BR2_GLOBAL_PATCH_DIR contains nonexistent directory" before running any
-    target. The Makefile has to catch that first and name the fix, and it must
-    not invoke Buildroot: re-running the defconfig would clear the symbols but
-    leave the deselected perf and elfutils installed in target/.
+    Its BR2_GLOBAL_PATCH_DIR may name the absent board/frost/patches directory.
+    Reapplying defconfig would leave deselected perf and elfutils in target/;
+    require cleanup instead.
     """
     app = _linux_boot_tree(tmp_path)
     # A frost-stress source newer than the images, so the Buildroot stage runs.
@@ -1120,11 +1093,10 @@ def test_linux_boot_make_refuses_a_build_directory_that_built_a_kernel(
 
 
 def test_debian_kernel_pin_is_self_consistent() -> None:
-    """Every pinned package names one snapshot, version, size and sha256.
+    """Require pinned package names, versions, sizes, and hashes to agree.
 
-    The pin is the only place the kernel is named, so a hand edit that leaves a
-    filename and a release disagreeing has to fail here rather than at a
-    download that returns the wrong kernel.
+    Reject filename/release mismatches before a download can select the wrong
+    kernel.
     """
     helper = _load_module(DEBIAN_KERNEL)
     assert helper.KERNEL_RELEASE.startswith(helper.KERNEL_ABI + "-")
@@ -1160,11 +1132,10 @@ def test_debian_kernel_pin_is_self_consistent() -> None:
 
 
 def test_debian_kernel_paths_need_no_network() -> None:
-    """The path queries are pure: no download, and they honor the cache override.
+    """Resolve cache paths without downloads and honor the cache override.
 
-    Every published directory is named after a digest of its inputs, so a
-    changed pin or extraction revision names a new one instead of rewriting the
-    one a concurrent reader is using.
+    Input digests name directories, so changed inputs cannot overwrite one
+    that a concurrent reader is using.
     """
     helper = _load_module(DEBIAN_KERNEL)
     cache = Path("/tmp/frost-debian-cache")
@@ -1184,12 +1155,10 @@ def test_debian_kernel_paths_need_no_network() -> None:
 def test_debian_kernel_entries_are_keyed_on_their_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A changed pin, extraction revision or toolchain names a new directory.
+    """Change cache directories when the pin, extraction revision, or toolchain changes.
 
-    kbuild records the compiler by Debian's riscv64-linux-gnu-gcc name and the
-    headers by path, so nothing inside a build directory changes when the
-    toolchain behind that name does; keying the directory is what keeps stale
-    objects out.
+    kbuild records the compiler name and header path, not toolchain contents;
+    changing the cache directory prevents reuse of stale objects.
     """
     helper = _load_module(DEBIAN_KERNEL)
     cache = Path("/tmp/frost-debian-cache")
@@ -1208,9 +1177,7 @@ def test_debian_kernel_entries_are_keyed_on_their_inputs(
 
 
 # --- a cold cache, offline ------------------------------------------------------
-# The packages are rebuilt here rather than downloaded: verifying the CLI's
-# contract on a cold cache is the point (a warm one hides it), and the real .debs
-# are large and need the network.
+# Synthetic packages exercise cold-cache behavior without downloads.
 
 
 def _ar_archive(members: list[tuple[str, bytes]]) -> bytes:
@@ -1248,10 +1215,10 @@ def _data_tar(entries: list[tuple[str, str, bytes]]) -> bytes:
 
 
 def _synthetic_packages(helper: ModuleType) -> dict[str, bytes]:
-    """Return one synthetic .deb per pinned package, keyed by file name.
+    """Return synthetic pinned .debs keyed by filename.
 
-    Each carries exactly the members the extraction selects, including the two
-    the fixups rewrite and check, so a cold run exercises them for real.
+    Include the members that extraction selects and fixups rewrite, so a cold
+    run exercises both.
     """
     release, abi = helper.KERNEL_RELEASE, helper.KERNEL_ABI
     headers = f"usr/src/linux-headers-{release}"
@@ -1342,11 +1309,9 @@ def _offline_download(helper: ModuleType, monkeypatch: pytest.MonkeyPatch) -> li
 def test_debian_kernel_cli_prints_only_the_path_on_a_cold_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Stdout is the answer; the work it had to do first goes to stderr.
+    """Keep stdout to one path, including on a cold cache; send progress to stderr.
 
-    Buildroot's post-image hook captures `image` in a shell substitution, so a
-    progress line on stdout would make the captured value a multiline blob and
-    the next command fail. A warm cache hides that, which is why this runs cold.
+    Buildroot captures the image command's stdout as a filename.
     """
     helper = _load_module(DEBIAN_KERNEL)
     fetched = _offline_download(helper, monkeypatch)
@@ -1422,11 +1387,9 @@ def test_debian_kernel_rejects_packaging_that_moved(
 def test_debian_kernel_revalidates_a_damaged_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A truncated or partly deleted extraction is replaced, not trusted.
+    """Validate published entries against their manifests before reuse.
 
-    The published directory is the only record that the work finished, and it is
-    validated against the manifest written with it, so an interrupted run or a
-    stray delete cannot be mistaken for a complete tree.
+    Replace incomplete or damaged trees; directory existence is insufficient.
     """
     helper = _load_module(DEBIAN_KERNEL)
     fetched = _offline_download(helper, monkeypatch)
@@ -1535,11 +1498,10 @@ def test_debian_kernel_download_rejects_a_wrong_payload(
 def test_debian_kernel_verifies_the_module_it_builds(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A module is published only if its metadata and symbol CRCs are the pin's.
+    """Publish modules only when metadata and symbol CRCs match the pin.
 
-    With CONFIG_MODVERSIONS the kernel ignores vermagic's release field, so the
-    release is checked here; the CRCs then tie the module to the pinned tree's
-    exported symbols, which a build against other headers would not match.
+    CONFIG_MODVERSIONS makes the kernel ignore vermagic's release field, so
+    check it explicitly as well as CRCs of the pinned tree's exported symbols.
     """
     helper = _load_module(DEBIAN_KERNEL)
     release = helper.KERNEL_RELEASE
@@ -1651,11 +1613,10 @@ BASE_ENTRIES = [
 def test_debian_kernel_initramfs_appends_a_second_real_archive(
     tmp_path: Path,
 ) -> None:
-    """The composed initramfs is two real cpio archives, base first, unmodified.
+    """Append a module cpio archive without changing the base archive's bytes.
 
-    The kernel unpacks concatenated archives in order, which is how the module
-    reaches Buildroot's userspace without rebuilding it; the base must come
-    through byte for byte, and both archives' members must still parse.
+    The kernel unpacks concatenated archives in order, adding the module to
+    Buildroot userspace without rebuilding it. Both archives must still parse.
     """
     helper = _load_module(DEBIAN_KERNEL)
     base_bytes = _newc_archive(BASE_ENTRIES)
@@ -1689,11 +1650,10 @@ def test_debian_kernel_initramfs_appends_a_second_real_archive(
 def test_debian_kernel_loader_script_checks_the_running_release(
     tmp_path: Path,
 ) -> None:
-    """The script compares uname -r before it loads, and says so when it differs.
+    """Check uname -r before insmod and report mismatches.
 
-    CONFIG_MODVERSIONS makes the kernel skip vermagic's release field once a
-    module carries symbol CRCs, so a successful insmod does not identify the
-    kernel; this test is what keeps the release check in the script.
+    With symbol CRCs and CONFIG_MODVERSIONS, insmod ignores vermagic's release
+    field; successful loading alone cannot identify the running kernel.
     """
     helper = _load_module(DEBIAN_KERNEL)
     members = dict(
@@ -1749,9 +1709,8 @@ def test_debian_kernel_initramfs_rejects_an_unaligned_base(tmp_path: Path) -> No
     module.write_bytes(b"ko")
     base = tmp_path / "rootfs.cpio"
 
-    # A complete archive with no block padding: every newc member is already
-    # four-byte aligned, so this is acceptable even though 512 does not divide
-    # it. Requiring 512 would refuse an archive the kernel accepts.
+    # newc members require four-byte alignment; 512-byte archive padding is
+    # optional and must not be required here.
     unpadded = _newc_archive(BASE_ENTRIES).rstrip(b"\0")
     unpadded += b"\0" * (-len(unpadded) % helper.CPIO_ALIGN)
     assert len(unpadded) % helper.CPIO_ALIGN == 0
@@ -1811,11 +1770,10 @@ def test_qemu_ci_job_boots_the_packed_debian_pair() -> None:
 def test_debian_kernel_refuses_a_base_that_cannot_drive_the_gates(
     tmp_path: Path,
 ) -> None:
-    """A base archive whose frost_stress predates the counter mode is refused.
+    """Reject base archives with no frost_stress or no counter-mode token.
 
-    Buildroot does not notice an edited package source, so an archive can be
-    older than the programs it should hold. The refusal names the rebuild, and a
-    base with no frost_stress is refused too.
+    Buildroot does not detect package source edits, so cached payloads can be
+    stale. Report how to rebuild them.
     """
     helper = _load_module(DEBIAN_KERNEL)
     module = tmp_path / "frost_net10g.ko"
@@ -1889,11 +1847,7 @@ def test_linux_boot_make_rebuilds_a_stale_test_userspace() -> None:
 
 
 def test_linux_boot_make_passes_br2_external_to_every_buildroot_call() -> None:
-    """Every Buildroot call in the linux_boot Makefile names BR2_EXTERNAL.
-
-    Buildroot would reuse the value the defconfig saved, but naming it keeps
-    each call independent of that saved state.
-    """
+    """Pass BR2_EXTERNAL on every call, independent of the value saved by defconfig."""
     text = LINUX_BOOT_MAKEFILE.read_text()
     calls = [line for line in text.splitlines() if '$(MAKE) -C "$(BR2_SRC)"' in line]
     assert len(calls) == 3, calls  # defconfig, frost-stress-rebuild, the build

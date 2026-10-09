@@ -164,10 +164,7 @@ def test_program_passes_selected_file_and_endpoint(
 def test_loader_build_only_never_discovers(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """--debug --build-only builds and prints one debug-build record.
-
-    The cable is never touched.
-    """
+    """--debug --build-only emits a debug-build record without cable access."""
     monkeypatch.setattr(
         sys,
         "argv",
@@ -275,10 +272,9 @@ def test_clean_failure_does_not_build(
 def test_debug_profile_emits_dwarf_and_validates_settings(
     tmp_path: Path, mode: str, app: str
 ) -> None:
-    """A debug build in a scratch tree keeps DWARF despite -O3 -g0 tuning flags.
+    """Keep DWARF despite -O3 -g0 tuning flags.
 
-    Validation then rejects another clock, debug setting, or memory mode, and a
-    corrupt image.
+    Reject mismatched build settings and corrupt images before loading.
     """
     sw = tmp_path / "sw"
     (sw / "apps").mkdir(parents=True)
@@ -437,11 +433,10 @@ def write_prebuilt(directory: Path, elf: bytes, **fields: str) -> None:
 def test_elf_determines_safe_startup(
     tmp_path: Path, main: bool, writable_ddr: bool, entry: int, strategy: str
 ) -> None:
-    """The ELF, not the BRAM setting alone, decides whether a restart is safe.
+    """Restart only with entry 0 and no initialized writable DDR data.
 
-    A restart (to main, or from reset without main) needs entry 0 and no
-    initialized writable DDR data, since it does not reload DDR; anything
-    else attaches.
+    Restarting at main or reset does not reload DDR. Other ELFs must attach,
+    regardless of the BRAM setting.
     """
     directory = tmp_path / "hello_world"
     write_prebuilt(
@@ -613,10 +608,7 @@ def test_composite_debug_rejected_before_build(
 def test_normal_coremark_pro_load_preserves_inherited_diagnostics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An ordinary CoreMark-PRO load builds with the inherited diagnostic settings.
-
-    The prebuilt-image checks do not run.
-    """
+    """Preserve inherited diagnostics on ordinary loads; prebuilt checks do not run."""
     monkeypatch.setenv("FROST_MALLOC_DISABLE_FREE", "1")
     monkeypatch.setattr(
         sys, "argv", ["load_software.py", "x3", "coremark_pro_core", "-v1"]
@@ -776,10 +768,9 @@ source $actual_script
 
 @pytest.mark.parametrize("app", [*loader.VALID_APPS, "unregistered_app"])
 def test_tcl_loader_app_preflight_never_opens_manager(tmp_path: Path, app: str) -> None:
-    """load_software.tcl accepts every app in VALID_APPS and rejects others.
+    """Validate apps before opening the hardware manager.
 
-    Both fail before the hardware manager opens: a listed app on its missing
-    BRAM image, any other on its name.
+    Listed apps fail on their missing BRAM image; unlisted apps fail on name.
     """
     harness = tmp_path / "mock.tcl"
     harness.write_text("""
@@ -888,8 +879,7 @@ source $actual_script
 
 # --- DDR4 ECC state ----------------------------------------------------------
 #
-# The hardware regression's last stage relies on these register offsets and on
-# verdict(), and only a board run exercises them, so they are tested here.
+# The hardware regression consumes these ECC offsets and verdict() results.
 
 
 def test_ecc_register_offsets_match_the_controller() -> None:
@@ -926,7 +916,7 @@ def test_ecc_verdict_named_every_way_the_board_can_be_dirty() -> None:
     """Clean needs checking on and both registers zero; each fault is named."""
     assert ecc.verdict({"ECC_STATUS": 0, "CE_CNT": 0, "ECC_ON_OFF": 1}) == (True, [])
 
-    # What a board reported after reading DDR before it was initialized.
+    # ECC errors from reading uninitialized DDR.
     clean, problems = ecc.verdict({"ECC_STATUS": 0x3, "CE_CNT": 0xFF, "ECC_ON_OFF": 1})
     assert not clean
     assert any("saturated" in p for p in problems)

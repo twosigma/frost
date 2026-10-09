@@ -12,11 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the FU CDB Adapter.
-
-Tests the holding register, combinational pass-through, back-pressure,
-flush behavior, and constrained-random stress scenarios.
-"""
+"""FU CDB adapter unit tests."""
 
 import random
 from typing import Any
@@ -77,7 +73,7 @@ def assert_output_match(
 
 
 # ============================================================================
-# Test 1: After reset, output invalid and not pending
+# After reset, output invalid and not pending
 # ============================================================================
 @cocotb.test()
 async def test_reset_idle(dut: Any) -> None:
@@ -90,7 +86,7 @@ async def test_reset_idle(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 2: Input valid, no grant -> output valid (pass-through), then pending
+# Input valid, no grant -> output valid (pass-through), then pending
 # ============================================================================
 @cocotb.test()
 async def test_passthrough_no_grant(dut: Any) -> None:
@@ -108,13 +104,12 @@ async def test_passthrough_no_grant(dut: Any) -> None:
     model.step(fu_result, grant=False, flush=False)
     await dut_if.step()
 
-    # Now result should be pending
     assert dut_if.read_result_pending(), "Should be pending after no grant"
     assert_output_match(dut_if, model, fu_result, "pending")
 
 
 # ============================================================================
-# Test 3: Input valid + grant same cycle -> no pending (zero latency)
+# Input valid + grant same cycle -> no pending (zero latency)
 # ============================================================================
 @cocotb.test()
 async def test_passthrough_with_grant(dut: Any) -> None:
@@ -126,14 +121,12 @@ async def test_passthrough_with_grant(dut: Any) -> None:
     dut_if.drive_grant()
     await Timer(1, unit="ns")
 
-    # Pass-through should be valid
     assert_output_match(dut_if, model, fu_result, "pass-through-granted")
 
     # Clock: granted same cycle, stay idle
     model.step(fu_result, grant=True, flush=False)
     await dut_if.step()
 
-    # Clear inputs
     dut_if.clear_fu_result()
     dut_if.clear_grant()
     await Timer(1, unit="ns")
@@ -144,7 +137,7 @@ async def test_passthrough_with_grant(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 4: Tag correct in both pass-through and pending states
+# Tag correct in both pass-through and pending states
 # ============================================================================
 @cocotb.test()
 async def test_tag_propagation(dut: Any) -> None:
@@ -172,7 +165,7 @@ async def test_tag_propagation(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 5: 64-bit FLEN value correctly forwarded/latched
+# 64-bit FLEN value correctly forwarded/latched
 # ============================================================================
 @cocotb.test()
 async def test_value_propagation(dut: Any) -> None:
@@ -212,7 +205,7 @@ async def test_value_propagation(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 6: Exception + exc_cause forwarded correctly
+# Exception + exc_cause forwarded correctly
 # ============================================================================
 @cocotb.test()
 async def test_exception_propagation(dut: Any) -> None:
@@ -237,7 +230,7 @@ async def test_exception_propagation(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 7: FP flags (5-bit) forwarded correctly
+# FP flags (5-bit) forwarded correctly
 # ============================================================================
 @cocotb.test()
 async def test_fp_flags_propagation(dut: Any) -> None:
@@ -279,7 +272,7 @@ async def test_fp_flags_propagation(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 8: Grant clears pending state
+# Grant clears pending state
 # ============================================================================
 @cocotb.test()
 async def test_grant_clears_pending(dut: Any) -> None:
@@ -309,7 +302,7 @@ async def test_grant_clears_pending(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 9: Held result stable while pending (no grant)
+# Held result stable while pending (no grant)
 # ============================================================================
 @cocotb.test()
 async def test_result_stable_while_pending(dut: Any) -> None:
@@ -336,7 +329,7 @@ async def test_result_stable_while_pending(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 10: Back-to-back: grant + new input while pending
+# Back-to-back: grant + new input while pending
 # ============================================================================
 @cocotb.test()
 async def test_back_to_back(dut: Any) -> None:
@@ -360,7 +353,6 @@ async def test_back_to_back(dut: Any) -> None:
     dut_if.clear_grant()
     await Timer(1, unit="ns")
 
-    # Should still be pending with the new result
     assert dut_if.read_result_pending(), "Should remain pending with new result"
     dut_out = dut_if.read_fu_complete()
     assert dut_out.tag == 2, f"Should hold new tag=2, got {dut_out.tag}"
@@ -370,21 +362,19 @@ async def test_back_to_back(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 11: Flush clears pending result
+# Flush clears pending result
 # ============================================================================
 @cocotb.test()
 async def test_flush_clears_pending(dut: Any) -> None:
     """i_flush while pending -> clears, becomes idle."""
     dut_if, model = await setup(dut)
 
-    # Make pending
     fu_result = FuComplete(valid=True, tag=11, value=0xF1F2)
     dut_if.drive_fu_result(tag=11, value=0xF1F2)
     model.step(fu_result, grant=False, flush=False)
     await dut_if.step()
     assert dut_if.read_result_pending()
 
-    # Flush
     dut_if.clear_fu_result()
     dut_if.drive_flush()
     no_input = FuComplete()
@@ -399,7 +389,7 @@ async def test_flush_clears_pending(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 12: Flush during idle has no effect
+# Flush during idle has no effect
 # ============================================================================
 @cocotb.test()
 async def test_flush_during_idle(dut: Any) -> None:
@@ -419,7 +409,7 @@ async def test_flush_during_idle(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 13: Multi-cycle contention (pending for 3 cycles, then granted)
+# Multi-cycle contention (pending for 3 cycles, then granted)
 # ============================================================================
 @cocotb.test()
 async def test_multi_cycle_contention(dut: Any) -> None:
@@ -454,14 +444,13 @@ async def test_multi_cycle_contention(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 14: o_result_pending mirrors internal state
+# o_result_pending mirrors internal state
 # ============================================================================
 @cocotb.test()
 async def test_result_pending_output(dut: Any) -> None:
     """o_result_pending mirrors internal result_pending state."""
     dut_if, model = await setup(dut)
 
-    # Initially not pending
     assert not dut_if.read_result_pending()
 
     # Drive result, don't grant -> pending after edge
@@ -485,7 +474,7 @@ async def test_result_pending_output(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 15: New input valid while pending (no grant) -> output shows held result
+# New input valid while pending (no grant) -> output shows held result
 # ============================================================================
 @cocotb.test()
 async def test_input_ignored_while_pending(dut: Any) -> None:
@@ -512,9 +501,8 @@ async def test_input_ignored_while_pending(dut: Any) -> None:
 
 
 # ============================================================================
-# Grant-refill partial-flush filter: a flushed-younger input on the grant
-# cycle must not be captured as held state, or it would be presented after
-# the flush, possibly to a reallocated ROB tag.
+# A younger input must not refill the holding register during a partial flush:
+# it could broadcast after the flush to a reused ROB tag.
 # ============================================================================
 @cocotb.test()
 async def test_grant_refill_partial_flush_filtered(dut: Any) -> None:
@@ -544,9 +532,8 @@ async def test_grant_refill_partial_flush_filtered(dut: Any) -> None:
     )
     assert not dut_if.read_fu_complete().valid
 
-    # Negative control: an input older than the flush boundary refills
-    # normally under the same grant+flush alignment. The held tag=2 is older
-    # too, so partial_flush_held stays low.
+    # An older input may refill on a grant during partial flush. The held
+    # tag=2 is also older, so partial_flush_held stays low.
     dut_if.drive_fu_result(tag=2, value=0x2222)
     await dut_if.step()
     assert dut_if.read_result_pending()
@@ -565,7 +552,7 @@ async def test_grant_refill_partial_flush_filtered(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 16: Random stress test, model match every cycle
+# Random stress test, model match every cycle
 # ============================================================================
 @cocotb.test()
 async def test_random_stress(dut: Any) -> None:
@@ -576,7 +563,6 @@ async def test_random_stress(dut: Any) -> None:
     num_cycles = 300
 
     for cycle in range(num_cycles):
-        # Random FU result (~60% chance of valid)
         if rng.random() < 0.6:
             fu_result = FuComplete(
                 valid=True,
@@ -597,7 +583,6 @@ async def test_random_stress(dut: Any) -> None:
             fu_result = FuComplete()
             dut_if.clear_fu_result()
 
-        # Random grant (~40% when there's something to grant)
         grant = False
         if rng.random() < 0.4 and (model.result_pending or fu_result.valid):
             grant = True
@@ -605,7 +590,6 @@ async def test_random_stress(dut: Any) -> None:
         else:
             dut_if.clear_grant()
 
-        # Random flush (~5%)
         flush = rng.random() < 0.05
         if flush:
             dut_if.drive_flush()
@@ -616,7 +600,6 @@ async def test_random_stress(dut: Any) -> None:
         await Timer(1, unit="ns")
         assert_output_match(dut_if, model, fu_result, f"cycle {cycle} pre-edge")
 
-        # Advance clock
         model.step(fu_result, grant=grant, flush=flush)
         await dut_if.step()
 

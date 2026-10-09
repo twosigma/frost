@@ -12,18 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the FP shim.
+"""FP shim tests that drive fp_engine without an RS or CDB adapter.
 
-The shim starts each FP_RS issue on fp_engine, which runs one operation at a
-time, and presents the engine's one-cycle result as fu_complete_t. These tests
-drive the shim directly, with no reservation station or CDB adapter, and cover
-the operand, rounding-mode and tag hand-off, the busy window, back-to-back
-issue, and flushes: an issue flushed on its launch cycle never starts, an
-operation flushed while it runs never completes, a partial flush spares an
-older operation, and a flush on the result cycle leaves the result for the
-adapter to drop. The fp_engine_equiv bench checks the engine's arithmetic
-against Berkeley SoftFloat; the expected values here come from exact rational
-arithmetic rounded to the nearest double.
+The engine runs one operation at a time and pulses its result for one cycle.
+Random arithmetic expectations use exact fractions rounded to double;
+square root uses math.sqrt.
 """
 
 import math
@@ -220,11 +213,7 @@ async def check_op(
 
 @cocotb.test()
 async def test_double_ops_through_shim(dut: Any) -> None:
-    """Random double operands through every arithmetic op, three distinct sources.
-
-    Distinct values on all three sources, on tags that change every issue,
-    show that src1, src2, src3, the op and the tag reach the engine unswapped.
-    """
+    """Check operand, opcode, and tag routing with distinct random sources."""
     iface = await setup(dut)
     rng = random.Random(0x5EED_F9)
     ops = [
@@ -253,7 +242,7 @@ async def test_double_ops_through_shim(dut: Any) -> None:
 
 @cocotb.test()
 async def test_rounding_mode_reaches_engine(dut: Any) -> None:
-    """Each static rounding mode picks its own result for an inexact operation."""
+    """Check inexact results for each static rounding mode."""
     iface = await setup(dut)
     up = DP_1_0 + 1  # 1 + 2^-52
     neg_one = DP_1_0 | (1 << 63)
@@ -358,12 +347,10 @@ async def test_back_to_back_issue(dut: Any) -> None:
 
 @cocotb.test()
 async def test_full_flush_at_every_cycle(dut: Any) -> None:
-    """A full flush at each cycle of a divide kills it; the tag is then reused.
+    """Flush a divide before its result cycle, then reuse its tag.
 
-    The flush cycle sweeps the whole operation up to, but not including, its
-    result cycle (test_flush_on_result_cycle covers that one). The engine must
-    be idle on the next cycle, never complete the flushed operation, and then
-    run a new operation under the same tag to its own result.
+    The engine must be idle on the next cycle and never return the killed
+    result. The replacement operation must complete with its own result.
     """
     iface = await setup(dut)
     expected, flags = rne_reference("FDIV_D", DP_1_0, DP_3_0, 0)
@@ -462,10 +449,10 @@ async def test_issue_on_flush_cycle(dut: Any) -> None:
 
 @cocotb.test()
 async def test_flush_on_result_cycle(dut: Any) -> None:
-    """A flush on the result cycle: the result still shows, then the shim is idle.
+    """A result-cycle flush leaves the result visible until the next edge.
 
-    The CDB adapter sees the same flush and drops the result, so the shim does
-    not gate it; the engine returns to idle as it would anyway.
+    The CDB arbiter suppresses broadcasts on a full flush; the adapter filters
+    partial flushes. The engine returns to idle on the next cycle.
     """
     iface = await setup(dut)
     expected, flags = rne_reference("FDIV_D", DP_1_0, DP_7_0, 0)

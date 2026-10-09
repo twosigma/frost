@@ -22,8 +22,7 @@ VERILOG_SOURCES += $(filter-out %_pkg.sv,$(sort $(wildcard $(RTL)/*.sv)))
 VERILOG_SOURCES += $(ROOT)/hw/rtl/lib/cdc/cdc_sync.sv
 VERILOG_SOURCES += $(sort $(wildcard $(CURDIR)/*_tb.sv))
 EXTRA_ARGS += -j 2
-# A frame limit other than the default applies to the top's MAX_FRAME_BYTES
-# and to the tests that size their stimulus from it (run.py's mac_rx_* targets).
+# Pass the same frame limit to the RTL and stimulus generators.
 ifdef NET10G_MAX_FRAME_BYTES
 COMPILE_ARGS += -GMAX_FRAME_BYTES=$(NET10G_MAX_FRAME_BYTES)
 export NET10G_MAX_FRAME_BYTES

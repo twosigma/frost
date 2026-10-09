@@ -155,8 +155,7 @@ def _sweep_one_capture(
     def select(
         readable: list[int], _write: list[int], _error: list[int], _timeout: float
     ) -> tuple[list[int], list[int], list[int]]:
-        # The UART reports data only once the loader is done, as on a board,
-        # where the program starts after the load sentinel.
+        # Model UART output arriving after the loader exits.
         if loader_fd in readable:
             return [], [], []
         return [fd for fd in readable if pending[fd]], [], []
@@ -239,11 +238,10 @@ def test_sweep_never_reports_an_item_time_as_the_workload_time(
 
 
 def test_workload_perf_ignores_an_item_named_like_its_workload() -> None:
-    """Only the workload block is parsed; CoreMark-PRO's core has an item named core.
+    """Parse only the workload block, even when an item has the same name.
 
-    With the workload's own time(secs) line lost, alone or with every line up to
-    the item's, the item's time must not stand in for it, or the iter/s, and so
-    the official mark, would come from the item.
+    A missing workload time must not be replaced by an item's time: that would
+    corrupt the iteration rate and official mark.
     """
     lines = [
         "-- Workload:core=490760323",
@@ -309,13 +307,12 @@ def test_workload_perf_ignores_an_item_named_like_its_workload() -> None:
 def test_workload_perf_reads_a_damaged_value_as_missing(
     iterations: str, total: str, each: str, expected: tuple[int | None, float | None]
 ) -> None:
-    """Values count only from an intact report of the workload's times.
+    """Reject damaged values in workload time reports.
 
-    Every number must end its line in a form %g prints, and iterations times
-    secs/workload must match time(secs) within %g's six-digit rounding. A number
-    that lost UART bytes, such as ``1.5e-``, ``12.``, or ``12.5`` read as
-    ``1.5`` or ``125``, makes both values read as missing instead of as others.
-    A zero time reads as 0 with the iteration count missing.
+    Require a complete %g value at line end and iterations * secs/workload equal
+    to time(secs) within six-digit rounding. Reject both values for malformed
+    numbers such as "1.5e-" or "12.", or a timing mismatch when "12.5" becomes
+    "1.5" or "125". A zero time is reported as 0 with no iteration count.
     """
     lines = [
         "-- Workload:core=490760323",

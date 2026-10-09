@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Tests for the native FPGA build: build.py, build_step.tcl, and what they rely on."""
+"""Tests for the native FPGA build scripts and their dependencies."""
 
 import importlib.util
 import json
@@ -396,10 +396,7 @@ def test_x3_place_provenance_records_manual_bloat_targets() -> None:
 def test_hello_world_compile_replaces_obsolete_init_images(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """compile_hello_world deletes obsolete init images and writes the scalar-replica ones.
-
-    common.mk, the init generator, and build_step.tcl agree on the replica list.
-    """
+    """Replace obsolete init images with the scalar replicas used by the build."""
     app_dir = tmp_path / "sw/apps/hello_world"
     output_dir = tmp_path / "board-work/hello_world"
     app_dir.mkdir(parents=True)
@@ -495,12 +492,7 @@ def test_hello_world_compile_replaces_obsolete_init_images(
 
 
 def test_default_x3_sweep_contains_every_guided_pc_tail_candidate() -> None:
-    """The default sweep has every PC-tail-guided directive/uncertainty pair.
-
-    Two pairs are on the default 50 ps grid. The off-grid 0.425 seed comes from
-    the extra-seed list, which every full-rate sweep appends. Every pair gets
-    the PC-tail guidance.
-    """
+    """Include guided seeds from both the 50 ps grid and the off-grid seed list."""
     uncertainties = fpga_build.make_x3_place_setup_uncertainties_ns(
         fpga_build.X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT
     )
@@ -520,8 +512,7 @@ def test_default_x3_sweep_contains_every_guided_pc_tail_candidate() -> None:
             or (directive, uncertainty) in fpga_build.X3_PLACE_EXTRA_SEED_CANDIDATES
         )
         assert fpga_build.x3_place_uses_pc_tail_guidance(directive, uncertainty)
-    # The extra seed is off the 50 ps grid; the grid already covers on-grid
-    # values.
+    # Extra seeds must not duplicate grid points.
     for _, uncertainty in fpga_build.X3_PLACE_EXTRA_SEED_CANDIDATES:
         assert uncertainty not in uncertainties
 
@@ -533,7 +524,7 @@ def test_default_x3_sweep_contains_every_guided_pc_tail_candidate() -> None:
 
 
 def test_default_x3_place_sweep_retains_controls_and_adds_low_variants() -> None:
-    """Two LOW variants get distinct directories beside all 25 controls."""
+    """Give each LOW variant its own directory while retaining every control."""
     directives = fpga_build.X3_PLACER_SWEEP_DIRECTIVES
     uncertainties = fpga_build.make_x3_place_setup_uncertainties_ns(6)
     candidates = fpga_build.make_x3_place_sweep_candidates(
@@ -620,9 +611,9 @@ def test_x3_low_variants_require_their_requested_grid_control(
 def test_explicit_x3_bloat_environment_preserves_manual_sweep(
     manual_environment: dict[str, str],
 ) -> None:
-    """Setting either bloat variable, even to empty, drops the LOW variants.
+    """Either bloat variable, even empty, disables automatic LOW variants.
 
-    Every candidate then inherits the caller's settings unchanged.
+    Every candidate inherits the caller's settings.
     """
     inherited = {"FROST_TEST_MARKER": "retained", **manual_environment}
     candidates = fpga_build.make_x3_place_sweep_candidates(
@@ -754,10 +745,7 @@ def test_leaf_group_bloat_keeps_hierarchy_scope_strict(
 def test_x3_place_worker_isolates_and_validates_bloat_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bloat_match_valid: bool
 ) -> None:
-    """Only the LOW variant's worker gets the bloat variables.
-
-    The variant is promoted only if its bloat matched.
-    """
+    """Give bloat settings only to the LOW worker and require a match for promotion."""
     monkeypatch.delenv("FROST_PLACE_CELL_BLOAT", raising=False)
     monkeypatch.delenv("FROST_PLACE_CELL_BLOAT_CELLS", raising=False)
     monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "0")
@@ -821,11 +809,10 @@ def test_x3_place_worker_isolates_and_validates_bloat_environment(
 
 
 def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
-    """The PC-tail audit passes only for its own guided seed, with every check met.
+    """Accept a guided seed's audit only with complete, unique, well-formed fields.
 
-    Exactly the expected fields must appear, once each and well formed. Replica
-    counts may change, and placement may merge a canonical endpoint into its
-    replicas, but the pre-place scope must have every canonical endpoint.
+    Replica counts may change and canonical endpoints may merge into replicas
+    after placement. Pre-place scope must contain every canonical endpoint.
     """
     audit = tmp_path / "post_place_group_audit.txt"
     valid_audit = (
@@ -880,9 +867,8 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
     )
     audit.write_text(valid_audit)
 
-    # Placement removed one noncanonical state-PC replica (93 -> 92). The audit
-    # still passes: no canonical name is new, and the selected and state PC
-    # families still cover all 64 bits.
+    # Removing a noncanonical replica is valid if both PC families still
+    # cover all 64 bits and no canonical name is new.
     assert fpga_build.x3_pc_tail_group_audit_is_valid(
         audit, "ExtraNetDelay_high", 0.500
     )
@@ -1009,10 +995,7 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
 
 
 def test_place_guidance_evidence_is_promoted(tmp_path: Path) -> None:
-    """Promoting a guided placement keeps its group audit and PC-tail report.
-
-    The gate reports come with it; a pin-swap audit does not.
-    """
+    """Promote guidance and gate reports with placement; exclude pin-swap audits."""
     seed_work = tmp_path / "seed"
     main_work = tmp_path / "main"
     seed_work.mkdir()
@@ -1110,10 +1093,9 @@ def test_post_opt_promotion_clears_stale_audits(tmp_path: Path) -> None:
 
 
 def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
-    """The PC-tail path group is validated and used only for placement.
+    """Use PC-tail groups only during placement.
 
-    It is removed before the post-place checkpoint is written, reopened, and
-    scored.
+    Remove them before writing, reopening, and scoring the checkpoint.
     """
     tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
     trigger = tcl.index("set use_x3_pc_tail_group")
@@ -1243,15 +1225,11 @@ def test_x3_opt_does_not_except_fence_deassertion() -> None:
 
 
 def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
-    """IF's PC predicates come from a LUTRAM overlay, with a redecoded fallback.
+    """Check the low-BRAM predicate overlay, fallback, and fetch integration.
 
-    In the low 64 KiB, each of the seven predicates launches from its own LUTRAM
-    copy in each parity bank. The full-depth sideband block RAM is the
-    simulation reference for the copies and never feeds those predicates
-    directly. Outside the overlay, a repeated request loads the predicate
-    redecoded from the fetched word into the same output flop, with no second
-    register or output mux. The test also checks the low-BRAM fetch presenter
-    in each fetch build and IF's registered fetch redirect.
+    Each predicate has a LUTRAM copy per parity in the low 64 KiB. Full-depth
+    sideband BRAM provides the simulation reference. Outside the overlay, a
+    repeated request loads redecoded predicates into the same output register.
     """
     imem = (REPO_ROOT / "hw/rtl/cpu_and_mem/imem_predecode.sv").read_text()
     assert len(re.findall(r"^module ", imem, re.M)) == 2
@@ -1365,9 +1343,8 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     assert "bram_fetch_odd_slot2_start_valid_lo_read_available" not in cpu_and_mem
     assert "bram_fetch_compressed_hi_read_available" not in cpu_and_mem
 
-    # All three low-BRAM build shapes use the common request presenter. Check
-    # each generate arm separately so an accidental duplicate in one arm cannot
-    # compensate for a missing instance in another.
+    # Check each generate arm separately: a duplicate presenter in one arm
+    # must not hide a missing instance in another.
     fuzz_start = cpu_and_mem.index("if (FETCH_VALID_FUZZ != 0) begin : gen_fetch_fuzz")
     provider_start = cpu_and_mem.index(
         "end else if (ENABLE_CACHED_TIER != 0) begin : gen_fetch_provider",
@@ -1423,9 +1400,7 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     assert "cached_fetch_valid_local_q <= cached_fetch_valid_next;" in provider_block
     assert ".o_instr_valid_next(cached_fetch_valid_next)" in provider_block
     assert "cached_fetch_valid_local_q == cached_fetch_valid" in provider_block
-    # The provider selects the cached PC sideband by parity before its payload
-    # register. Selecting it afterwards, from the registered bank select, would
-    # lengthen the served-window coverage -> PC path by a LUT and a routing hop.
+    # Select the cached PC sideband by parity before registering it, for timing.
     for port, signal, declaration in (
         (
             "o_pc_metadata_by_parity",
@@ -1539,7 +1514,7 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
         r"fetch_redirect fetch_redirect_inst \((.*?)\n  \);", if_stage, re.S
     )
     assert redirect_block_match is not None
-    # Producer and consumer proofs justify omitting the sequential catch-up arm.
+    # The sequential catch-up arm does not cause a fetch redirect.
     assert "npc_cond_for_redirect = npc_cond[riscv_pkg::PcNextArms-1:1];" in if_stage
     assert "npc_cond_for_redirect[11] = 1'b0;" in if_stage
     redirect_block = redirect_block_match.group(1)
@@ -1553,8 +1528,7 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
         ("o_fetch_redirect", "o_fetch_redirect"),
     ):
         assert f".{port}({signal})" in redirect_block
-    # fetch_redirect's formal proof covers arbitrary inputs. IF also checks its
-    # registered output in simulation against the direct equation on npc_sel.
+    # IF compares the registered redirect with the direct npc_sel equation.
     assert re.search(
         r"fetch_redirect_reference_q\s*<=\s*!i_pipeline_ctrl.reset\s*&&\s*"
         r"pc_update_en\s*&&\s*\|\(npc_sel\s*&\s*~npc_seq\)\s*&&\s*"
@@ -1582,13 +1556,11 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
 
 
 def test_x3_flow_carries_no_timing_exceptions() -> None:
-    """build_step.tcl adds no false-path, multicycle, or max-delay exceptions.
+    """Reject false-path, multicycle, and max-delay exceptions in build_step.tcl.
 
-    Board, IP, and clock-crossing constraints live elsewhere and are not checked
-    here. A false path through the front end's buffer-release control would need
-    that control to be stable during the cycle before every cycle that depends on
-    it, but a pending prediction can start in the cycle right after a buffer
-    release, so no such exception is safe.
+    Board, IP, and clock-crossing constraints are outside this check. A pending
+    prediction can start the cycle after buffer release, so the release control
+    cannot be assumed stable for a false-path exception.
     """
     tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
     for exception in ("set_false_path", "set_multicycle_path", "set_max_delay"):
@@ -1627,11 +1599,7 @@ def test_board_ddr_generation_is_capability_gated() -> None:
 
 
 def test_board_gty_generation_is_capability_gated() -> None:
-    """The NIC transceiver core is created only for boards that declare one.
-
-    It is created before the synth step generates and synthesizes the IP
-    cores, so it goes through the same generate_target and synth_ip calls.
-    """
+    """Create GTY IP only on boards that declare it, before synth generates the IP."""
     tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
     registry = tcl.index("set board_build_configs")
     capability = tcl.index(
@@ -1698,10 +1666,7 @@ def test_board_gty_generation_is_capability_gated() -> None:
 
 
 def test_step_arm_state_is_declared_before_first_use() -> None:
-    """cpu_ooo declares each debug-step signal once, before its first use.
-
-    An earlier use would make Vivado infer an implicit net or warn.
-    """
+    """Declare debug-step signals once, before use, to avoid implicit nets."""
     cpu = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv").read_text()
     first_uses = {
         "step_armed_q": "csr_debug_mode || step_armed_q",
@@ -1779,7 +1744,7 @@ def test_store_queue_drain_fire_selects_parallel_priority_scans_late() -> None:
 
 
 def test_route_directives_override_the_x3_router_sweep() -> None:
-    """Default to four candidates while allowing any legal explicit override."""
+    """Accept legal explicit router directives in place of the default sweep."""
     full = fpga_build.resolve_x3_route_sweep_directives(None)
     assert full == [
         "Explore",
@@ -1942,11 +1907,8 @@ def test_only_post_place_physopt_overconstrains_by_default() -> None:
     )
 
 
-# A Vivado stand-in for one phys-opt sweep. It tracks the added setup
-# uncertainty in force and answers every slack query with the slack at zero
-# added uncertainty minus that uncertainty, so a stage sweeping overconstrained
-# measures a pessimistic WNS and one sweeping at 0.000 measures the real one.
-# Checkpoints remember the uncertainty they were written under, as Vivado's do.
+# Model slack as zero-uncertainty slack minus the active setup uncertainty.
+# Checkpoints retain that uncertainty so the sweep must restore it correctly.
 PHYSOPT_SWEEP_MODEL = r"""
 set true_wns [expr {double($::env(MODEL_TRUE_WNS))}]
 set uncertainty 0.0
@@ -3159,10 +3121,7 @@ def test_promoted_gate_is_bound_to_exact_checkpoint_and_gate(
     changed: str,
     wns: float,
 ) -> None:
-    """Changing the checkpoint, gate file, or binding invalidates the gate.
-
-    So does deleting the binding.
-    """
+    """Reject changed checkpoints, gate files, or bindings, and missing bindings."""
     checkpoint = tmp_path / "post_place.dcp"
     checkpoint.write_bytes(b"qualified checkpoint")
     _write_place_gate(tmp_path, wns, bind=True)
@@ -3378,7 +3337,7 @@ def test_cpu_cli_controls_clock_before_software_build(
     monkeypatch: pytest.MonkeyPatch,
     divider: int,
 ) -> None:
-    """Default and divided clocks reach software and RTL despite inherited env."""
+    """Pass the selected clock to software and RTL despite inherited environment values."""
     monkeypatch.setenv("FROST_CPU_CLK_DIV", "2")
     monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
     arguments = ["build.py", "x3", "--stop-after", "place"]
@@ -3730,10 +3689,9 @@ def test_missing_placement_checkpoint_cannot_defeat_complete_passing_seed(
 def test_unused_placement_switches_cannot_add_or_modify_candidates(
     extras: bool,
 ) -> None:
-    """The unused flush-guidance and pin-swap switches affect no candidate.
+    """Drop unused flush-guidance and pin-swap switches from candidate environments.
 
-    They add none, are dropped from each candidate's environment, and leave
-    manual bloat alone.
+    They must add no candidates or alter manual bloat settings.
     """
     inherited = {
         "FROST_PLACE_FLUSH_INCREMENTAL": "1",
@@ -3761,10 +3719,7 @@ def test_unused_placement_switches_cannot_add_or_modify_candidates(
 def test_unused_placement_switches_do_not_launch_an_extra_worker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With the unused switches set, only the requested seed and off-grid seed run.
-
-    Neither worker inherits the switches.
-    """
+    """Run only the requested and off-grid seeds; neither inherits unused switches."""
     monkeypatch.setenv("FROST_PLACE_FLUSH_INCREMENTAL", "1")
     monkeypatch.setenv("FROST_X3_PD_TARGET_PIN_SWAPS", "1")
     monkeypatch.setenv("FROST_PLACE_CELL_BLOAT", "LOW")
@@ -3845,10 +3800,7 @@ def test_new_placement_gate_cannot_requalify_the_previous_physopt(
 def test_downstream_chain_rejects_missing_or_changed_provenance(
     tmp_path: Path, change: str
 ) -> None:
-    """Changing any checkpoint, lineage record, or place gate in the chain breaks it.
-
-    The disqualified checkpoint is kept.
-    """
+    """Keep but disqualify checkpoints with missing or changed provenance."""
     work = _sweep_input(tmp_path, "post_route_physopt")
     child = work / "post_route.dcp"
     record_path = child.with_suffix(".lineage.json")
@@ -3879,10 +3831,7 @@ def test_downstream_chain_rejects_missing_or_changed_provenance(
 def test_completed_final_producer_binds_chain_and_bitstream_checks_actual_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str, custom_directory: bool
 ) -> None:
-    """A stage that writes final.dcp records its lineage.
-
-    The bitstream step then refuses a final.dcp that has changed since.
-    """
+    """Record final.dcp's provenance and reject later changes before bitstream output."""
     work = _sweep_input(tmp_path, stage)
     script_dir = tmp_path / "scripts" if custom_directory else tmp_path
     options = {"build_dir": work.parent} if custom_directory else {}
@@ -4051,9 +4000,9 @@ def test_bitstream_resume_cli_preserves_lineage_checks(
 def test_intermediate_physopt_publication_cannot_inherit_prior_completion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failed phys-opt run leaves its partial output without lineage.
+    """Leave partial phys-opt output unqualified after failure.
 
-    The final.dcp built on the previous output is disqualified too.
+    Also disqualify final.dcp built from the preceding output.
     """
     work = _sweep_input(tmp_path, "route")
     _write_qualified_descendant(work, "route", final=True)
@@ -4120,12 +4069,10 @@ def test_downstream_completion_rechecks_prelaunch_parent_and_promoted_output(
     assert (tmp_path / "x3/work_route_Explore").exists()
 
 
-# Trimmed but genuine ``report_design_analysis -congestion`` output in
-# tests/fixtures: two placements that reported windows (X3 Long/Short level 5,
-# genesys2 Global level 6) and one that reported none. Only the Host/Command
-# header lines were rewritten; the tables are as Vivado wrote them. A veto that
-# silently parses nothing is invisible, so the row regex is checked against
-# real reports instead of hand-written ones.
+# Vivado report_design_analysis -congestion fixtures retain the original
+# tables; only Host/Command headers are rewritten. They include X3 Long/Short
+# level 5, genesys2 Global level 6, and no-window reports. Check real tables
+# so a regex that silently matches no rows cannot disable the veto.
 CONGESTION_FIXTURES = REPO_ROOT / "tests/fixtures"
 
 
@@ -4394,10 +4341,9 @@ def test_physopt_tcl_publishes_completed_sweep_identity(tmp_path: Path) -> None:
 
 
 def test_live_physopt_snapshot_survives_source_replacement(tmp_path: Path) -> None:
-    """A completed sweep can be snapshotted while its stage still runs.
+    """Snapshot a completed sweep while its producer runs, without changing the source.
 
-    The snapshot leaves the source untouched, and later source changes do not
-    affect it.
+    Later source changes must not affect the snapshot.
     """
     source, worker = _live_physopt_fixture(tmp_path)
     before = {p: p.read_bytes() for p in source.parent.rglob("*") if p.is_file()}
@@ -4438,10 +4384,9 @@ def test_physopt_snapshot_rejects_unqualified_or_incomplete_input(
     tmp_path: Path,
     change: str,
 ) -> None:
-    """A snapshot needs a completed sweep of the current placement and clock.
+    """Require a completed sweep of the current placement and clock.
 
-    Without one, or with a destination that exists, it fails and creates
-    nothing.
+    Invalid input or an existing destination must fail without creating files.
     """
     source, worker = _live_physopt_fixture(tmp_path)
     fork = tmp_path / "early_route"
@@ -4510,7 +4455,7 @@ def test_physopt_snapshot_detects_publication_during_copy(
 def test_completed_physopt_stage_can_be_snapshotted_without_launch_manifest(
     tmp_path: Path,
 ) -> None:
-    """A completed stage with valid lineage can be snapshotted with no launch record."""
+    """A completed stage with valid provenance needs no launch record for a snapshot."""
     source, worker = _live_physopt_fixture(tmp_path)
     consumed = fpga_build.capture_x3_input_lineage(source, "post_place.dcp")
     (source / "post_place_physopt.dcp").write_bytes(
@@ -4625,10 +4570,7 @@ def test_physopt_launch_allows_fork_only_after_this_runs_completed_sweep(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Each phys-opt launch writes a new launch record before Vivado starts.
-
-    A snapshot then needs a sweep that this run completed.
-    """
+    """Write a fresh launch record and require its completed sweep for a snapshot."""
     source, worker = _live_physopt_fixture(tmp_path)
     consumed = fpga_build.capture_x3_input_lineage(source, "post_place.dcp")
     fork = tmp_path / "early_route"
@@ -4653,7 +4595,7 @@ def test_physopt_launch_allows_fork_only_after_this_runs_completed_sweep(
         )
         assert fpga_build.snapshot_x3_physopt(source, fork)
         # A failure after this sweep leaves the fork valid, and the main
-        # directory's unfinished stage without lineage.
+        # directory's unfinished stage without provenance.
         return SimpleNamespace(returncode=1)
 
     monkeypatch.setattr(fpga_build.subprocess, "run", running)

@@ -35,9 +35,8 @@ module mul_completion_tag (
   always_comb begin
     zeroed_tag = raw;
     zeroed_tag.tag = raw.valid ? raw.tag : '0;
-    // The wrapper's arbiter input (the adapter output, else the test-injection
-    // port) must match too, even with no valid result: it takes the adapter
-    // payload only when valid.
+    // The arbiter uses the adapter payload only when valid, otherwise the
+    // injected payload. Its input must match even when neither is valid.
     old_arb_input = old_out.valid ? old_out : injected;
     raw_arb_input = raw_out.valid ? raw_out : injected;
   end

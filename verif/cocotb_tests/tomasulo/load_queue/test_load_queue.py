@@ -12,21 +12,15 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the load queue.
+"""Load queue unit tests.
 
-Covers allocation on one or both slots, load sizes and sign extension, SQ
-disambiguation and forwarding, the L0 cache, MMIO loads and the router's
-pending handshake, overlapped cached-tier loads, dword responses, flushes,
-LR reservations, AMO ordering, compute, and cancellation, DMA coherence, CDB
-back-pressure, and a constrained-random sequence. The dispatch-capacity tests
-check that the registered dispatch-full flags may lag a completion or flush
-by a cycle but never report room that is not there. "Normal" AMOs (SWAP, ADD,
-XOR, AND, OR) spend one cycle in AMO_COMPUTE; MIN and MAX do not.
+Registered dispatch-full flags may lag a completion or flush by one cycle,
+but must never overstate free capacity. SWAP, ADD, XOR, AND, and OR AMOs spend
+one cycle in AMO_COMPUTE; MIN and MAX skip it.
 
-Expected values follow hw/rtl/README.md, "Data-tier bus contract": memory
-responses are aligned 64-bit beats and the LQ extracts by addr[2:0].
-drive_mem_response replicates a word across both beat lanes (correct at
-either addr[2]) unless dword=True.
+Memory responses are aligned 64-bit beats; addr[2:0] selects the lane
+(hw/rtl/README.md, "Data-tier bus contract"). drive_mem_response replicates
+a word into both lanes unless dword=True.
 """
 
 import os
@@ -230,9 +224,8 @@ async def complete_prepared_amo(
             f"{description}: strict MIN/MAX equality must select rs2"
         )
 
-    # With write-done withheld, the write request must hold unchanged: its data
-    # depends only on the operands and MIN/MAX relation captured at the
-    # response, not on live entry state, and it is a level, not a pulse.
+    # Hold the write request until write-done. Its data uses captured operands
+    # and the captured MIN/MAX relation, not live entry state.
     for stall_cycle in range(stall_cycles):
         await dut_if.step()
         stalled_write = dut_if.read_amo_mem_write()
@@ -341,7 +334,7 @@ async def complete_load_fast_path_or_memory(
 
 
 # ============================================================================
-# Test 1: Reset state
+# Reset state
 # ============================================================================
 @cocotb.test()
 async def test_reset_state(dut: Any) -> None:
@@ -358,7 +351,7 @@ async def test_reset_state(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 2: Allocate single entry
+# Allocate single entry
 # ============================================================================
 @cocotb.test()
 async def test_alloc_single(dut: Any) -> None:
@@ -376,7 +369,7 @@ async def test_alloc_single(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 2b: Allocate slot 2 only
+# Allocate slot 2 only
 # ============================================================================
 @cocotb.test()
 async def test_alloc_slot2_only(dut: Any) -> None:
@@ -404,11 +397,11 @@ async def test_alloc_slot2_only(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 2c: Allocate slot 1 + slot 2 in the same cycle
+# Allocate slot 1 + slot 2 in the same cycle
 # ============================================================================
 @cocotb.test()
 async def test_alloc_slot1_slot2_pair_completes_in_order(dut: Any) -> None:
-    """Two simultaneous load allocations preserve program-order completion."""
+    """Complete paired allocations in order with sequential memory responses."""
     dut_if, model = await setup(dut)
 
     dut_if.drive_alloc(rob_tag=10, size=MEM_SIZE_WORD)
@@ -421,9 +414,7 @@ async def test_alloc_slot1_slot2_pair_completes_in_order(dut: Any) -> None:
 
     assert dut_if.count == 2, f"Expected two allocated entries, got {dut_if.count}"
 
-    # Use distinct dwords. The L0 holds dword lines, so a second load in the
-    # same dword would hit the line the first response filled and skip the
-    # ordered memory path under test.
+    # Use distinct dwords so an L0 hit cannot bypass the memory path under test.
     dut_if.drive_addr_update(rob_tag=10, address=0x1100)
     model.addr_update(10, 0x1100)
     await dut_if.step()
@@ -448,7 +439,7 @@ async def test_alloc_slot1_slot2_pair_completes_in_order(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 3: Allocate to full
+# Allocate to full
 # ============================================================================
 @cocotb.test()
 async def test_alloc_to_full(dut: Any) -> None:
@@ -467,7 +458,7 @@ async def test_alloc_to_full(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 3b: Dispatch back-pressure conservatively lags entry frees
+# Dispatch back-pressure conservatively lags entry frees
 # ============================================================================
 @cocotb.test()
 async def test_dispatch_backpressure_lags_free_without_understating_capacity(
@@ -507,9 +498,8 @@ async def test_dispatch_backpressure_lags_free_without_understating_capacity(
         result = await wait_for_fu_complete(dut_if, max_cycles=8)
         assert result.valid and result.tag == tag
 
-    # Capturing tag 0's result frees its entry in the full queue. The exact
-    # count drops to seven on that edge, but o_dispatch_full takes no credit
-    # for the free and stays high for one more cycle.
+    # Capturing tag 0 frees an entry on this edge; o_dispatch_full ignores the
+    # free and remains high for one more cycle.
     await complete_tag(tag=0, address=0xE300, data=0x1111_0000)
     assert dut_if.count == LQ_DEPTH - 1
     exact_full_after_first_free = dut_if.full
@@ -544,7 +534,7 @@ async def test_dispatch_backpressure_lags_free_without_understating_capacity(
 
 
 # ============================================================================
-# Test 3c: Flush-cycle requests reserve conservatively but never allocate
+# Flush-cycle requests reserve conservatively but never allocate
 # ============================================================================
 @cocotb.test()
 async def test_dispatch_reservation_on_partial_flush_cannot_create_ghost(
@@ -591,7 +581,7 @@ async def test_dispatch_reservation_on_partial_flush_cannot_create_ghost(
 
 
 # ============================================================================
-# Test 3d: Dual allocation and response-bypass free remain conservative
+# Dual allocation and response-bypass free remain conservative
 # ============================================================================
 @cocotb.test()
 async def test_dispatch_reservation_covers_dual_alloc_with_simultaneous_free(
@@ -618,10 +608,8 @@ async def test_dispatch_reservation_covers_dual_alloc_with_simultaneous_free(
     assert mem_req["en"] and mem_req["addr"] == 0xE380
     await dut_if.step()
 
-    # Both allocations see only physical slots 6 and 7 free in the pre-edge
-    # mask. The response bypass simultaneously frees slot 0. The actual mask is
-    # therefore 0xFE (seven entries), while dispatch conservatively predicts
-    # six + two reservations == full and ignores the free.
+    # Allocation takes free slots 6 and 7 while the response frees slot 0.
+    # The resulting mask is 0xFE, but dispatch predicts full by ignoring the free.
     dut_if.drive_alloc(rob_tag=6, size=MEM_SIZE_WORD)
     dut_if.drive_alloc_2(rob_tag=7, size=MEM_SIZE_WORD)
     dut_if.drive_mem_response(0x3333_0000)
@@ -645,7 +633,7 @@ async def test_dispatch_reservation_covers_dual_alloc_with_simultaneous_free(
 
 
 # ============================================================================
-# Test 4: Address update
+# Address update
 # ============================================================================
 @cocotb.test()
 async def test_addr_update(dut: Any) -> None:
@@ -667,7 +655,7 @@ async def test_addr_update(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 5: Simple LW flow
+# Simple LW flow
 # ============================================================================
 @cocotb.test()
 async def test_simple_lw(dut: Any) -> None:
@@ -683,7 +671,7 @@ async def test_simple_lw(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 6: LB signed
+# LB signed
 # ============================================================================
 @cocotb.test()
 async def test_lb_signed(dut: Any) -> None:
@@ -703,7 +691,7 @@ async def test_lb_signed(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 7: LBU unsigned
+# LBU unsigned
 # ============================================================================
 @cocotb.test()
 async def test_lbu_unsigned(dut: Any) -> None:
@@ -723,7 +711,7 @@ async def test_lbu_unsigned(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 8: LH signed
+# LH signed
 # ============================================================================
 @cocotb.test()
 async def test_lh_signed(dut: Any) -> None:
@@ -742,7 +730,7 @@ async def test_lh_signed(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 9: LHU unsigned
+# LHU unsigned
 # ============================================================================
 @cocotb.test()
 async def test_lhu_unsigned(dut: Any) -> None:
@@ -761,7 +749,7 @@ async def test_lhu_unsigned(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 10: SQ forward
+# SQ forward
 # ============================================================================
 @cocotb.test()
 async def test_sq_forward(dut: Any) -> None:
@@ -775,7 +763,6 @@ async def test_sq_forward(dut: Any) -> None:
 
     await alloc_and_addr(dut_if, model, rob_tag=10, address=0x3000)
 
-    # SQ says: match, can forward, data = 0xCAFEBABE
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=True, can_forward=True, data=0xCAFE_BABE)
     model.apply_forward(SQForwardResult(match=True, can_forward=True, data=0xCAFE_BABE))
@@ -820,7 +807,7 @@ async def test_sq_forward(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 11: SQ disambiguation stall
+# SQ disambiguation stall
 # ============================================================================
 @cocotb.test()
 async def test_sq_disambig_stall(dut: Any) -> None:
@@ -829,7 +816,6 @@ async def test_sq_disambig_stall(dut: Any) -> None:
 
     await alloc_and_addr(dut_if, model, rob_tag=11, address=0x4000)
 
-    # SQ says: not all older addresses known
     dut_if.drive_sq_all_older_known(False)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     await Timer(1, unit="ns")
@@ -839,7 +825,7 @@ async def test_sq_disambig_stall(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 12: SQ match but no forward
+# SQ match but no forward
 # ============================================================================
 @cocotb.test()
 async def test_sq_match_no_forward(dut: Any) -> None:
@@ -857,7 +843,7 @@ async def test_sq_match_no_forward(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 13: MMIO load waits for head
+# MMIO load waits for head
 # ============================================================================
 @cocotb.test()
 async def test_mmio_load(dut: Any) -> None:
@@ -886,18 +872,16 @@ async def test_mmio_load(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 13b: The router's pending bit serializes MMIO handoffs
+# The router's pending bit serializes MMIO handoffs
 # ============================================================================
 @cocotb.test()
 async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
-    """The router's pending bit blocks younger launches until it accepts the MMIO load.
+    """Router pending feedback blocks a second handoff until MMIO acceptance.
 
-    The LQ hands the ROB-head MMIO load to the router without waiting for
-    committed stores to drain; the router parks the read and checks the drain
-    before accepting it. The pending bit reaches the LQ through
-    ``i_mem_bus_busy`` and stays high through the accept cycle, so no second
-    handoff happens. The device response and the next handoff may share a
-    cycle. An MMIO load takes no cached-load slot.
+    The LQ hands off a ROB-head MMIO load before committed stores drain.
+    The router parks it until they drain, holding i_mem_bus_busy through
+    acceptance. The next handoff may coincide with the device response.
+    MMIO uses the fast tracker, not a cached slot.
     """
     dut_if, model = await setup(dut)
 
@@ -913,10 +897,8 @@ async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
     dut_if.drive_sq_forward(match=False, can_forward=False)
     dut_if.drive_sq_committed_empty(False)
 
-    # Committed stores have not drained. The router enforces that wait, so the
-    # LQ still hands off the MMIO load, exactly once. The younger load may
-    # already hold the staging register from the setup cycles, and ROB-head
-    # priority may evict it; only the head MMIO request may reach the router.
+    # The router waits for committed stores, so the LQ may hand off MMIO now.
+    # ROB-head priority must evict any staged younger load.
     mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "head MMIO request never reached the router boundary"
     assert mem_req["addr"] == mmio_addr
@@ -930,9 +912,8 @@ async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
     )
     assert model_req is not None and model_req["addr"] == mmio_addr
 
-    # Register the handoff, then drive the router's pending bit and the LQ
-    # bus-busy that the wrapper derives from it. The younger load has no SQ
-    # conflict but must not send a second request while the first is parked.
+    # Model the parked request with pending and bus-busy. The younger load
+    # must wait despite having no SQ conflict.
     await dut_if.step()
     assert dut_if.mem_outstanding
     dut_if.drive_mem_request_pending(True)
@@ -944,10 +925,8 @@ async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
         )
         await dut_if.step()
 
-    # The pending bit stays high through the accept cycle and clears on its
-    # closing edge; the response arrives in the next cycle, with pending low.
-    # A launch does not wait for the fast owner's response, so the younger
-    # staged load may launch as soon as i_mem_bus_busy drops.
+    # Pending clears on the acceptance edge; the response arrives next cycle.
+    # The younger load may launch as soon as i_mem_bus_busy drops.
     dut_if.drive_sq_committed_empty(True)
     dut_if.drive_mem_request_pending(False)
     dut_if.drive_mem_bus_busy(False)
@@ -1143,7 +1122,7 @@ async def test_mmio_response_coincident_with_full_flush_drains_immediately(
 
 
 # ============================================================================
-# Test 13c: Misaligned MMIO completes without a device read during SQ drain
+# Misaligned MMIO completes without a device read during SQ drain
 # ============================================================================
 @cocotb.test()
 async def test_misaligned_mmio_completes_without_device_read_during_drain(
@@ -1191,7 +1170,7 @@ async def test_misaligned_mmio_completes_without_device_read_during_drain(
 
 
 # ============================================================================
-# Test 13d: Device-window atomics and unserved device addresses fault
+# Device-window atomics and unserved device addresses fault
 # ============================================================================
 @cocotb.test()
 async def test_device_atomics_and_unserved_device_loads_fault_without_a_read(
@@ -1254,7 +1233,7 @@ async def test_device_atomics_and_unserved_device_loads_fault_without_a_read(
 
 
 # ============================================================================
-# Test 14: FLD single beat
+# FLD single beat
 # ============================================================================
 @cocotb.test()
 async def test_fld_single_beat(dut: Any) -> None:
@@ -1466,7 +1445,7 @@ async def test_lr_d_response_dma_invalidation(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 15: FLW NaN-boxing
+# FLW NaN-boxing
 # ============================================================================
 @cocotb.test()
 async def test_flw_nan_boxing(dut: Any) -> None:
@@ -1486,7 +1465,7 @@ async def test_flw_nan_boxing(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 16: Flush all
+# Flush all
 # ============================================================================
 @cocotb.test()
 async def test_flush_all(dut: Any) -> None:
@@ -1511,7 +1490,7 @@ async def test_flush_all(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 16b: Flush-cycle SQ-check payload capture contract
+# Flush-cycle SQ-check payload capture contract
 # ============================================================================
 @cocotb.test()
 async def test_flush_cycle_sq_check_payload_capture_contract(dut: Any) -> None:
@@ -1575,7 +1554,7 @@ async def test_flush_cycle_sq_check_payload_capture_contract(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_pre_issue()
 
-    # With ROB head 0, flushing after tag 2 kills tag 3.  Unlike full flush,
+    # With ROB head 0, flushing after tag 2 kills tag 3. Unlike full flush,
     # this selective flush must prevent the coincident candidate from ever
     # becoming staged.
     dut_if.drive_addr_update(partial_flush_tag, partial_flush_addr)
@@ -1611,7 +1590,7 @@ async def test_flush_cycle_sq_check_payload_capture_contract(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 17: Partial flush
+# Partial flush
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush(dut: Any) -> None:
@@ -1639,7 +1618,7 @@ async def test_partial_flush(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 18: Oldest first ordering
+# Oldest first ordering
 # ============================================================================
 @cocotb.test()
 async def test_oldest_first_ordering(dut: Any) -> None:
@@ -1660,7 +1639,7 @@ async def test_oldest_first_ordering(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 19: CDB back-pressure
+# CDB back-pressure
 # ============================================================================
 @cocotb.test()
 async def test_cdb_backpressure(dut: Any) -> None:
@@ -1697,7 +1676,7 @@ async def test_cdb_backpressure(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 20: Back-to-back loads
+# Back-to-back loads
 # ============================================================================
 @cocotb.test()
 async def test_back_to_back_loads(dut: Any) -> None:
@@ -1714,10 +1693,8 @@ async def test_back_to_back_loads(dut: Any) -> None:
     dut_if.drive_sq_all_older_known(False)
     dut_if.clear_sq_forward()
 
-    # Free the entry (step past CDB broadcast)
     await dut_if.step()
 
-    # Second load should now be the issue candidate
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     await Timer(1, unit="ns")
@@ -1728,7 +1705,7 @@ async def test_back_to_back_loads(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 21: Empty SQ skips the SQ query round-trip
+# Empty SQ skips the SQ query round-trip
 # ============================================================================
 @cocotb.test()
 async def test_empty_sq_skips_disambiguation_query(dut: Any) -> None:
@@ -1765,7 +1742,7 @@ async def test_empty_sq_skips_disambiguation_query(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 21b: Constrained random
+# Constrained random
 # ============================================================================
 @cocotb.test()
 async def test_constrained_random(dut: Any) -> None:
@@ -1780,10 +1757,9 @@ async def test_constrained_random(dut: Any) -> None:
     for cycle in range(num_cycles):
         action = rng.random()
 
-        # Priority 1: drain any DUT staged result.  The LQ has response/cache
-        # bypass paths that can free an entry in the same cycle they create the
-        # staged CDB payload, so this random test checks interface invariants
-        # instead of mirroring every bypass cycle in a Python scoreboard.
+        # Drain staged results first. Response and cache bypasses free entries
+        # as they stage results; check interface invariants without modeling
+        # each bypass cycle.
         dut_cdb = dut_if.read_fu_complete()
         if dut_cdb.valid:
             dut_if.drive_result_accepted(True)
@@ -1799,13 +1775,11 @@ async def test_constrained_random(dut: Any) -> None:
 
         # Priority 3: Random action
         elif action < 0.05:
-            # Flush all
             dut_if.drive_flush_all()
             await dut_if.step()
             dut_if.clear_flush_all()
 
         elif action < 0.35 and not dut_if.full:
-            # Allocate + address update
             tag = next_tag % 32
             next_tag += 1
             size = rng.choice([MEM_SIZE_BYTE, MEM_SIZE_HALF, MEM_SIZE_WORD])
@@ -1844,7 +1818,7 @@ async def test_constrained_random(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 22: Stale response after partial flush
+# Stale response after partial flush
 # ============================================================================
 @cocotb.test()
 async def test_stale_response_after_partial_flush(dut: Any) -> None:
@@ -1855,7 +1829,6 @@ async def test_stale_response_after_partial_flush(dut: Any) -> None:
 
     await alloc_and_addr(dut_if, model, rob_tag=5, address=0x1000)
 
-    # Issue to memory
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     mem_req = await wait_for_mem_request(dut_if)
@@ -1900,7 +1873,7 @@ async def test_stale_response_after_partial_flush(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 22b: Partial-flush-coincident response warms L0 but is still discarded
+# Partial-flush-coincident response warms L0 but is still discarded
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_coincident_response_fills_l0_only(dut: Any) -> None:
@@ -1928,7 +1901,7 @@ async def test_partial_flush_coincident_response_fills_l0_only(dut: Any) -> None
     assert model_req is not None and model_req["addr"] == addr
     await dut_if.step()
 
-    # Tag 5 is younger than the tag-2 flush boundary.  Present its response in
+    # Tag 5 is younger than the tag-2 flush boundary. Present its response in
     # the same cycle as the flush: the cache fill pulse must fire, while the
     # LQ response-accept path remains suppressed.
     dut_if.drive_partial_flush(flush_tag=2, early_recovery=True)
@@ -1969,7 +1942,7 @@ async def test_partial_flush_coincident_response_fills_l0_only(dut: Any) -> None
 
 
 # ============================================================================
-# Test 23: Tail reclamation after partial flush
+# Tail reclamation after partial flush
 # ============================================================================
 @cocotb.test()
 async def test_tail_reclamation_after_partial_flush(dut: Any) -> None:
@@ -1998,7 +1971,6 @@ async def test_tail_reclamation_after_partial_flush(dut: Any) -> None:
         "LQ should NOT be full after partial flush with tail reclamation"
     )
 
-    # Should be able to allocate new entries
     dut_if.drive_alloc(rob_tag=20, size=MEM_SIZE_WORD)  # type: ignore[unreachable]
     model.alloc(20, False, MEM_SIZE_WORD, False)
     await dut_if.step()
@@ -2008,7 +1980,7 @@ async def test_tail_reclamation_after_partial_flush(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 24: Non-contiguous hole reuse without immediate tail compaction
+# Non-contiguous hole reuse without immediate tail compaction
 # ============================================================================
 @cocotb.test()
 async def test_tail_retraction_non_contiguous_hole(dut: Any) -> None:
@@ -2066,14 +2038,11 @@ async def test_tail_retraction_non_contiguous_hole(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 25: L0 cache hit delivers data after SQ disambiguation
+# L0 cache hit delivers data after SQ disambiguation
 # ============================================================================
 @cocotb.test()
 async def test_cache_hit_bypasses_memory(dut: Any) -> None:
-    """L0-warm load completes from fast path or falls back to memory.
-
-    Flow: first load -> memory -> fills cache -> second load same addr -> cache hit.
-    """
+    """A repeated load uses the L0 fast path or falls back to memory."""
     dut_if, model = await setup(dut)
 
     # First load: fill the cache via memory
@@ -2082,13 +2051,11 @@ async def test_cache_hit_bypasses_memory(dut: Any) -> None:
     assert result.valid and result.tag == 1
     assert result.value == 0xAAAA_BBBB
 
-    # Free entry (step to consume CDB broadcast)
     await dut_if.step()
 
     # Second load at the same address should hit L0 after SQ disambiguation
     await alloc_and_addr(dut_if, model, rob_tag=2, address=0x2000)
 
-    # Drive SQ disambiguation: no older conflicting store
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
 
@@ -2158,16 +2125,11 @@ async def test_cache_hit_blocked_while_mem_bus_busy(dut: Any) -> None:
 
 @cocotb.test()
 async def test_cache_hit_blocked_until_delayed_store_invalidation(dut: Any) -> None:
-    """A store's write launch invalidates the warm L0 line, so it never hits stale.
+    """A store launch invalidates the L0 line before a younger load can hit stale data.
 
-    A cached-tier store's write stays in flight for cycles after the SQ write
-    pulse drops, and a younger load to the same address must not use the stale
-    L0 line in that gap. The SQ invalidates the line in the launch cycle, where
-    i_mem_bus_busy and the L0's same-cycle invalidate suppression also block
-    the hit. In the core, i_mem_bus_busy stays high for the whole write flight
-    (the wrapper ORs in i_slow_write_inflight), so the load can neither hit nor
-    launch in the gap. This bench drops busy right after the launch cycle to
-    check that the invalidation alone makes the load miss.
+    The core holds i_mem_bus_busy through the write via i_slow_write_inflight.
+    This test drops busy after launch to check that invalidation alone
+    forces a miss during the remaining write latency.
     """
     dut_if, model = await setup(dut)
 
@@ -2195,9 +2157,7 @@ async def test_cache_hit_blocked_until_delayed_store_invalidation(dut: Any) -> N
     dut_if.drive_sq_forward(match=False, can_forward=False)
     await dut_if.step()
 
-    # Store launch cycle: the memory port is busy and the SQ fires the L0
-    # invalidate for the written address in this same cycle. The warm line
-    # must not hit (busy gate + same-cycle invalidate suppress).
+    # Store launch: busy and same-cycle L0 invalidation both suppress hits.
     dut_if.drive_mem_bus_busy(True)
     dut_if.drive_cache_invalidate(addr)
     await Timer(1, unit="ns")
@@ -2213,10 +2173,8 @@ async def test_cache_hit_blocked_until_delayed_store_invalidation(dut: Any) -> N
     await dut_if.step()
     dut_if.clear_cache_invalidate()
 
-    # Cached-tier delayed-write gap: the write pulse is gone while the store is
-    # still in its write pipeline. The core keeps busy high until the write
-    # completes; the bench drops it here. The line was invalidated at launch,
-    # so the load must miss: no stale hit, no stale completion.
+    # Drop busy before the modeled write completes. Launch invalidation alone
+    # must prevent a stale hit.
     dut_if.drive_mem_bus_busy(False)
     await Timer(1, unit="ns")
     assert not bool(dut.o_l0_hit.value), (
@@ -2388,7 +2346,7 @@ async def test_cached_response_during_flush_all_does_not_refill_l0(dut: Any) -> 
 
 
 # ============================================================================
-# Test 26: Cache miss fills cache, subsequent hit
+# Cache miss fills cache, subsequent hit
 # ============================================================================
 @cocotb.test()
 async def test_cache_miss_fills_cache(dut: Any) -> None:
@@ -2404,7 +2362,6 @@ async def test_cache_miss_fills_cache(dut: Any) -> None:
     # Second load at 0x3000 should hit the cache after SQ disambiguation
     await alloc_and_addr(dut_if, model, rob_tag=4, address=0x3000)
 
-    # Drive SQ disambiguation: no older conflicting store
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
 
@@ -2418,7 +2375,7 @@ async def test_cache_miss_fills_cache(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 27: Warm-cache LBU uses the fast path
+# Warm-cache LBU uses the fast path
 # ============================================================================
 @cocotb.test()
 async def test_cache_hit_lbu_uses_fast_path(dut: Any) -> None:
@@ -2457,7 +2414,7 @@ async def test_cache_hit_lbu_uses_fast_path(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 28: Warm-cache LH/LHU use the fast path
+# Warm-cache LH/LHU use the fast path
 # ============================================================================
 @cocotb.test()
 async def test_cache_hit_halfword_uses_fast_path(dut: Any) -> None:
@@ -2519,7 +2476,7 @@ async def test_cache_hit_halfword_uses_fast_path(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 29: MMIO address always misses cache
+# MMIO address always misses cache
 # ============================================================================
 @cocotb.test()
 async def test_cache_mmio_bypass(dut: Any) -> None:
@@ -2529,7 +2486,6 @@ async def test_cache_mmio_bypass(dut: Any) -> None:
     # MMIO quadrant: addr[31:30] == 2'b01
     mmio_addr = 0x4000_0000
 
-    # A load from an MMIO address must go through memory
     await alloc_and_addr(dut_if, model, rob_tag=5, address=mmio_addr, is_mmio=True)
 
     # Set ROB head to tag 5 (MMIO loads must be at head)
@@ -2538,13 +2494,12 @@ async def test_cache_mmio_bypass(dut: Any) -> None:
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
 
-    # Memory should be issued (cache always misses MMIO)
     mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "MMIO load should issue to memory, not cache"
 
 
 # ============================================================================
-# Test 29b: FLD fills both cache words, subsequent LW hits correct addresses
+# FLD fills both cache words, subsequent LW hits correct addresses
 # ============================================================================
 @cocotb.test()
 async def test_fld_cache_fill_both_words(dut: Any) -> None:
@@ -2573,7 +2528,6 @@ async def test_fld_cache_fill_both_words(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_mem_response()
 
-    # CDB broadcast for FLD
     dut_if.drive_sq_all_older_known(False)
     dut_if.clear_sq_forward()
     result = await wait_for_fu_complete(dut_if)
@@ -2614,16 +2568,14 @@ async def test_fld_cache_fill_both_words(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 29c: MMIO load blocks SQ forwarding even when SQ says can_forward
+# MMIO load blocks SQ forwarding even when SQ says can_forward
 # ============================================================================
 @cocotb.test()
 async def test_mmio_load_blocks_sq_forward(dut: Any) -> None:
-    """An MMIO load never takes forwarded data, even when the SQ reports can_forward.
+    """MMIO cannot use SQ forwarding and waits for a matching store to drain.
 
-    With a matching older store it stalls instead. With
-    ENABLE_SQ_FORWARD_FAST_PATH=1 (the load_queue_sq_forward target) this
-    checks sq_do_forward's !sq_check_is_mmio_q term; with 0 no load forwards,
-    so only the stall is checked.
+    With ENABLE_SQ_FORWARD_FAST_PATH=1 this checks sq_do_forward's MMIO
+    filter; with forwarding disabled it checks only the stall.
     """
     dut_if, model = await setup(dut)
 
@@ -2642,10 +2594,7 @@ async def test_mmio_load_blocks_sq_forward(dut: Any) -> None:
     sq_check = await wait_for_sq_check(dut_if)
     assert sq_check["valid"], "MMIO load at head should check SQ"
 
-    # Despite can_forward=True the load gets no forwarded data. It does not
-    # issue to memory either: sq_can_issue is false while match=True, so it
-    # stalls. That is the required behavior; an MMIO load behind a matching
-    # store waits until that store has drained.
+    # A matching store blocks both forwarding and memory issue for MMIO.
     for _ in range(6):
         await Timer(1, unit="ns")
         assert not dut_if.read_mem_request()["en"], (
@@ -2661,7 +2610,7 @@ async def test_mmio_load_blocks_sq_forward(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 30: LR waits for ROB head
+# LR waits for ROB head
 # ============================================================================
 @cocotb.test()
 async def test_lr_waits_for_rob_head(dut: Any) -> None:
@@ -2694,7 +2643,7 @@ async def test_lr_waits_for_rob_head(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 31: LR sets reservation
+# LR sets reservation
 # ============================================================================
 @cocotb.test()
 async def test_lr_sets_reservation(dut: Any) -> None:
@@ -2735,7 +2684,7 @@ async def test_lr_sets_reservation(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 32: LR reservation cleared by flush_all
+# LR reservation cleared by flush_all
 # ============================================================================
 @cocotb.test()
 async def test_lr_reservation_cleared_by_flush(dut: Any) -> None:
@@ -2778,7 +2727,7 @@ async def test_lr_reservation_cleared_by_flush(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 33: LR reservation cleared by SC
+# LR reservation cleared by SC
 # ============================================================================
 @cocotb.test()
 async def test_lr_reservation_cleared_by_sc(dut: Any) -> None:
@@ -2821,7 +2770,7 @@ async def test_lr_reservation_cleared_by_sc(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 34: LR reservation cleared by snoop
+# LR reservation cleared by snoop
 # ============================================================================
 @cocotb.test()
 async def test_lr_reservation_cleared_by_snoop(dut: Any) -> None:
@@ -2864,7 +2813,7 @@ async def test_lr_reservation_cleared_by_snoop(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 35: AMO waits for ROB head and SQ committed empty
+# AMO waits for ROB head and SQ committed empty
 # ============================================================================
 @cocotb.test()
 async def test_amo_waits_for_rob_head_and_sq_committed_empty(dut: Any) -> None:
@@ -2908,7 +2857,7 @@ async def test_amo_waits_for_rob_head_and_sq_committed_empty(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 35b: ROB-head AMO ignores a physically earlier younger AMO
+# ROB-head AMO ignores a physically earlier younger AMO
 # ============================================================================
 @cocotb.test()
 async def test_head_amo_ignores_physically_earlier_younger_amo(dut: Any) -> None:
@@ -2952,7 +2901,7 @@ async def test_head_amo_ignores_physically_earlier_younger_amo(dut: Any) -> None
 
 
 # ============================================================================
-# Test 35c: AMO write fence orders younger loads behind the head AMO
+# AMO write fence orders younger loads behind the head AMO
 # ============================================================================
 @cocotb.test()
 async def test_blocked_head_amo_does_not_preempt_normal_candidate(dut: Any) -> None:
@@ -3012,14 +2961,14 @@ async def test_blocked_head_amo_does_not_preempt_normal_candidate(dut: Any) -> N
 
 
 # ============================================================================
-# Test 35d: AMO write fence evicts a fenced younger load from SQ-check
+# AMO write fence evicts a fenced younger load from SQ-check
 # ============================================================================
 @cocotb.test()
 async def test_blocked_head_amo_does_not_replace_busy_sq_check(dut: Any) -> None:
     """A staged load fenced by older AMOs releases SQ-check for the head AMO.
 
     Once older un-written AMOs exist, the staged younger load must not issue
-    (it would read pre-AMO memory).  It releases staging instead, and the
+    (it would read pre-AMO memory). It releases staging instead, and the
     eligible ROB-head AMO takes the memory port.
     """
     dut_if, model = await setup(dut)
@@ -3039,7 +2988,7 @@ async def test_blocked_head_amo_does_not_replace_busy_sq_check(dut: Any) -> None
     assert sq_check["rob_tag"] == 2
 
     # Physical order after the staged load: younger pending AMO, then the true
-    # ROB-head AMO.  Both AMOs are architecturally older than the staged load
+    # ROB-head AMO. Both AMOs are architecturally older than the staged load
     # (tags 0 and 1 vs 2), so the AMO write fence must evict the staged load
     # and the head AMO must reach the memory port.
     dut_if.drive_alloc(rob_tag=1, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOSWAP_W)
@@ -3072,7 +3021,7 @@ async def test_blocked_head_amo_does_not_replace_busy_sq_check(dut: Any) -> None
 
 
 # ============================================================================
-# Test 35e: Every older-AMO dependency must retire independently
+# Every older-AMO dependency must retire independently
 # ============================================================================
 @cocotb.test()
 async def test_younger_load_waits_for_every_older_amo_dependency(dut: Any) -> None:
@@ -3127,7 +3076,7 @@ async def test_younger_load_waits_for_every_older_amo_dependency(dut: Any) -> No
 
 
 # ============================================================================
-# Test 35f: Reusing an AMO's physical slot starts a new dependency generation
+# Reusing an AMO's physical slot starts a new dependency generation
 # ============================================================================
 @cocotb.test()
 async def test_younger_amo_slot_reuse_does_not_revive_stale_dependency(
@@ -3202,7 +3151,7 @@ async def test_younger_amo_slot_reuse_does_not_revive_stale_dependency(
 
 
 # ============================================================================
-# Test 35g: Slot-2 sees a simultaneous older slot-1 AMO
+# Slot-2 sees a simultaneous older slot-1 AMO
 # ============================================================================
 @cocotb.test()
 async def test_dual_alloc_slot2_load_depends_on_slot1_amo(dut: Any) -> None:
@@ -3246,7 +3195,7 @@ async def test_dual_alloc_slot2_load_depends_on_slot1_amo(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 35h: Partial-flush dependency state cannot poison physical-slot reuse
+# Partial-flush dependency state cannot poison physical-slot reuse
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_dependency_row_cannot_poison_reused_slot(
@@ -3327,8 +3276,7 @@ async def test_partial_flush_dependency_row_cannot_poison_reused_slot(
         "Invalid-cycle dependency cleanup stalled"
     )
 
-    # With the free-search cursor at slot 3, these occupy 3..7 and then slot 1,
-    # leaving only the formerly dependent physical slot 2 free.
+    # Starting at slot 3, fill slots 3..7 and 1, leaving only the dependent slot 2.
     for filler_tag in range(3, 9):
         dut_if.drive_alloc(rob_tag=filler_tag, size=MEM_SIZE_WORD)
         await dut_if.step()
@@ -3359,7 +3307,7 @@ async def test_partial_flush_dependency_row_cannot_poison_reused_slot(
 
 
 # ============================================================================
-# Test 35i: Earliest legal reuse drains the prior dependency generation
+# Earliest legal reuse drains the prior dependency generation
 # ============================================================================
 @cocotb.test()
 async def test_dependency_row_drains_on_immediate_next_edge_slot_reuse(
@@ -3436,7 +3384,7 @@ async def test_dependency_row_drains_on_immediate_next_edge_slot_reuse(
 
 
 # ============================================================================
-# Test 36: AMO SWAP
+# AMO SWAP
 # ============================================================================
 @cocotb.test()
 async def test_amo_swap(dut: Any) -> None:
@@ -3502,7 +3450,7 @@ async def test_amo_swap(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 37: AMO ADD
+# AMO ADD
 # ============================================================================
 @cocotb.test()
 async def test_amo_add(dut: Any) -> None:
@@ -3564,7 +3512,7 @@ async def test_amo_add(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 37b: Slot-2-only AMO gets its compact kind from the delayed write
+# Slot-2-only AMO gets its compact kind from the delayed write
 # ============================================================================
 @cocotb.test()
 async def test_slot2_only_amo_uses_compact_staged_kind(dut: Any) -> None:
@@ -3636,7 +3584,7 @@ async def test_slot2_only_amo_uses_compact_staged_kind(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 37c: Every compact AMO kind computes the right result
+# Every compact AMO kind computes the right result
 # ============================================================================
 @cocotb.test()
 async def test_all_compact_amo_kinds_preserve_arithmetic(dut: Any) -> None:
@@ -3726,7 +3674,7 @@ async def test_all_compact_amo_kinds_preserve_arithmetic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 37d: MIN/MAX width, equality, and write stalls
+# MIN/MAX width, equality, and write stalls
 # ============================================================================
 @cocotb.test()
 async def test_amo_minmax_relation_split_width_equality_and_stall(dut: Any) -> None:
@@ -3977,7 +3925,7 @@ async def test_amo_minmax_relation_split_width_equality_and_stall(dut: Any) -> N
 
 
 # ============================================================================
-# Test 37e: Simultaneous dual AMO allocations retain distinct compact kinds
+# Simultaneous dual AMO allocations retain distinct compact kinds
 # ============================================================================
 @cocotb.test()
 async def test_dual_allocated_amos_keep_distinct_compact_kinds(dut: Any) -> None:
@@ -4031,7 +3979,7 @@ async def test_dual_allocated_amos_keep_distinct_compact_kinds(dut: Any) -> None
 
 
 # ============================================================================
-# Test 37f: Rejected slot-2 AMO cannot overwrite an accepted slot-1 AMO
+# Rejected slot-2 AMO cannot overwrite an accepted slot-1 AMO
 # ============================================================================
 @cocotb.test()
 async def test_rejected_slot2_amo_cannot_overwrite_slot1_kind(dut: Any) -> None:
@@ -4091,7 +4039,7 @@ async def test_rejected_slot2_amo_cannot_overwrite_slot1_kind(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 37g: Full/partial flush followed by physical-entry reuse
+# Full/partial flush followed by physical-entry reuse
 # ============================================================================
 @cocotb.test()
 async def test_amo_kind_staging_survives_flush_and_entry_reuse(dut: Any) -> None:
@@ -4185,18 +4133,11 @@ async def test_amo_kind_staging_survives_flush_and_entry_reuse(dut: Any) -> None
 
 
 # ============================================================================
-# Test 38: AMO write completion invalidates L0 cache
+# AMO write completion invalidates L0 cache
 # ============================================================================
 @cocotb.test()
 async def test_amo_write_invalidates_l0_cache(dut: Any) -> None:
-    """After AMO write completes, L0 cache at that address is invalidated.
-
-    Flow:
-      1. Regular LW at addr fills L0 cache.
-      2. Free that entry via CDB.
-      3. AMOSWAP at same addr: read, write, complete.
-      4. New LW at same addr should miss L0 (go to memory), proving invalidation.
-    """
+    """An AMO write invalidates a warm L0 line; a later load must read memory."""
     dut_if, model = await setup(dut)
 
     from .lq_interface import AMOSWAP_W
@@ -4247,7 +4188,6 @@ async def test_amo_write_invalidates_l0_cache(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_addr_update()
 
-    # Issue AMO
     dut_if.drive_rob_head_tag(1)
     mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "AMO should issue memory read"
@@ -4302,22 +4242,15 @@ async def test_amo_write_invalidates_l0_cache(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_head_mmio_preempts_younger_fenced_hog(dut: Any) -> None:
-    """ROB-head MMIO load issues despite younger loads monopolizing the slot.
+    """ROB-head MMIO overrides the ring-order scan and evicts a younger staged load.
 
-    Three loads, ring order = physical slot order (head_ptr=0):
-      slot 0 hog   (age 4): staged first, then held by an older store that
-                            overlaps it but cannot forward (match=1,
-                            can_forward=0), so it keeps the staging slot.
-      slot 1 block (age 8): younger than hog, so it is the first eligible
-                            stored-scan pick once hog is staged. Being
-                            younger than the staged hog it cannot replace it
-                            (sq_check_replace needs an older candidate), so
-                            the scan stops here and never reaches the head.
-      slot 2 head  (age 0): the ROB-head MMIO load, after block in ring order.
-    Normal eligibility includes the head MMIO load in slot 2, but the ring
-    encoder still selects the earlier candidate in slot 1. The ROB-head path
-    must override that winner, after which sq_check_replace evicts the hog
-    (age 4 > head age 0).
+    With head_ptr=0, the physical slots are:
+      slot 0, age 4: staged first, held by an SQ match that cannot forward.
+      slot 1, age 8: the first eligible ring-scan candidate after slot 0 stages.
+      slot 2, age 0: the ROB-head MMIO load.
+    The slot-1 candidate is too young to replace slot 0, and hides slot 2
+    from the ring scan. The ROB-head path must select slot 2 so
+    sq_check_replace can evict slot 0.
     """
     dut_if, model = await setup(dut)
 
@@ -4446,12 +4379,11 @@ async def test_partial_flush_kills_only_the_younger_cached_slot(dut: Any) -> Non
 
 @cocotb.test()
 async def test_flush_cycle_cached_response_does_not_hide_fast_kill(dut: Any) -> None:
-    """A cached response in a partial-flush cycle must not mask the fast load's kill.
+    """A cached response must not mask a same-cycle partial flush of the fast load.
 
-    The flush kill of the fast-tier owner is evaluated from its own launch
-    snapshot, not from the response-owner mux, which a same-cycle cached
-    response switches to its slot. Otherwise the flushed fast load's response
-    would not be marked for draining, and the stale data would complete it.
+    The fast tracker uses its launch snapshot for the flush comparison.
+    The response mux selects the answering cached slot, so using that tag
+    would miss the fast load's kill and let its later response complete.
     """
     dut_if, model = await setup(dut)
     dut_if.drive_rob_head_tag(1)
@@ -4475,8 +4407,8 @@ async def test_flush_cycle_cached_response_does_not_hide_fast_kill(dut: Any) -> 
     await dut_if.step()
     dut_if.clear_partial_flush()
     dut_if.clear_mem_response()
-    # The kill took effect on the fast owner: no live fast request, and its
-    # stale response is owed a drain (the entry may be reallocated meanwhile).
+    # The fast tracker is killed but still owes a response to drain.
+    # Its LQ entry may be reallocated before that response arrives.
     assert not bool(dut.mem_outstanding.value), (
         "flushed fast load still counted as outstanding"
     )
@@ -4500,11 +4432,10 @@ async def test_flush_cycle_cached_response_does_not_hide_fast_kill(dut: Any) -> 
 
 @cocotb.test()
 async def test_full_flush_frees_the_router_canceled_cached_slot(dut: Any) -> None:
-    """A cached load still parked in the router at a full flush gives its slot back.
+    """Full flush frees the slot of a cached request still parked in the router.
 
-    The router cancels an unaccepted request on the full-flush pulse, so no
-    response will ever arrive for it: the slot must be freed outright (a
-    drop-marked slot would wait forever and leak one of the four credits).
+    The router cancels the unaccepted request. Marking the slot for draining
+    would leak a credit because no response can arrive.
     """
     dut_if, model = await setup(dut)
     dut_if.drive_rob_head_tag(1)
@@ -4537,12 +4468,10 @@ async def test_full_flush_frees_the_router_canceled_cached_slot(dut: Any) -> Non
 
 @cocotb.test()
 async def test_held_cached_response_skips_one_launch(dut: Any) -> None:
-    """The router's held-response flag blocks exactly the next launch.
+    """A held cached response blocks the following cycle's launch.
 
-    A cached response held behind a fast beat is registered into the launch
-    hold: the cycle after the flag, no load launches, so back-to-back fast
-    launches cannot starve the held response, and the launch resumes the
-    cycle after that.
+    Registering this hold prevents repeated fast launches from starving the
+    cached response. Launches resume the cycle after the hold clears.
     """
     dut_if, model = await setup(dut)
     dut_if.drive_rob_head_tag(1)
@@ -4746,7 +4675,8 @@ async def test_amo_compute_retains_coherence_and_ignores_premature_done(
     assert not int(dut.dep_done_oh.value)
 
     # Repeat the already-consumed response with hostile data and an early done.
-    # Neither has a live response/write owner, so neither may retire this AMO.
+    # Neither has an active response tracker or write request, so neither
+    # may retire this AMO.
     dut_if.drive_mem_response(0x1111_2222_3333_4444, dword=True)
     dut_if.drive_amo_mem_write_done(True)
     await dut_if.step()

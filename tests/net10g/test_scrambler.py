@@ -12,10 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Check the scrambler and descrambler against published vectors and a serial model.
-
-The tests cover enable pauses, resets, and channel-error propagation.
-"""
+"""Check scrambling and descrambling against published vectors and a serial model."""
 
 import random
 

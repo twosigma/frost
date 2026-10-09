@@ -12,14 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Early load wakeup through the MEM_RS inside tomasulo_wrapper.
-
-A dependent load or store is dispatched at a range of cycles around the
-producer load's early and registered result copies, with zero, one, or two
-registered CDB lanes busy, and must capture the loaded value and issue
-exactly once. Recovery cases flush in the early-copy cycle: a flushed
-dependent must never issue, and a surviving one issues once, after the flush.
-"""
+"""Early-load wakeup tests through the wrapper's MEM_RS."""
 
 from typing import Any
 
@@ -41,13 +34,11 @@ OPS = _parse_instr_op_enum()
 
 @cocotb.test()
 async def test_load_wakeup_dispatch_and_recovery(dut: Any) -> None:
-    """An early load wakes dependent loads/stores without losing registered CDBs.
+    """Check dependent load/store wakeups around early and registered load results.
 
-    Recovery does not qualify the early token: MEM_RS cannot issue in a
-    recovery cycle, and a flushed consumer must never issue afterwards,
-    whether recovery keeps the producer ("partial") or discards it too
-    ("producer", "full"). A consumer that survives recovery ("survivor")
-    keeps the early value and issues exactly once, after recovery.
+    Busy CDB lanes must retain their broadcasts. Recovery does not gate the
+    early result: MEM_RS blocks issue during recovery, killed consumers
+    never issue, and surviving consumers keep the value and issue once.
     """
     iface, _ = await setup_test(dut)
     for store in (False, True):

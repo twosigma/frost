@@ -11,4 +11,4 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-"""FROST RISC-V debug-module benches: JTAG DTM driver, directed test, OpenOCD-in-the-loop."""
+"""FROST RISC-V debug-module tests and JTAG driver."""

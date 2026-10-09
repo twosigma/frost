@@ -11,25 +11,14 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-"""RISC-V debug module directed test.
+"""Exercise the RISC-V debug module while ``debug_target`` runs.
 
-A cocotb debugger (cocotb_tests.debug.jtag_dtm) drives frost's JTAG pins
-while `debug_target` runs and walks the debug spec's contract end to end:
-DTM identification and the sticky-busy protocol, dmactive, the hartsel WARL
-probe OpenOCD performs, halt with dcsr.cause/prv, abstract GPR access in both
-sizes, progbuf-based CSR and memory access across the BRAM / MMIO / DDR
-tiers, abstractauto, a progbuf exception, software breakpoints planted in
-BRAM code, single stepping over 32-bit / RVC instructions, a ret, a div
-into a wfi (dpc must land on the wfi, which the next step retires as a nop),
-and an ecall (dpc must land on the trap handler), a halt in U-mode with the
-privilege round-trip through dcsr.prv, the program observing the debugger's
-memory writes (its PASS banner is gated on them), a halt out of a wfi loop,
-and ndmreset with havereset/ackhavereset.
+The cocotb debugger in cocotb_tests.debug.jtag_dtm drives frost's JTAG pins.
+The program's PASS banner depends on observing the debugger's memory writes.
 
-The breakpoints are a 32-bit ebreak and a halfword c.ebreak. Both depend on
-the Debug-Mode store mirror: the instruction copy of BRAM code is written
-only through the programming port, and the mirror is what sends a debugger's
-store there.
+The 32-bit ebreak and halfword c.ebreak breakpoints in BRAM require the
+Debug-Mode store mirror: it sends debugger stores to the programming port,
+the only write path to the instruction copy.
 """
 
 from __future__ import annotations
@@ -303,7 +292,6 @@ async def test_debug(dut: Any) -> None:
     # ---- A progbuf exception: unmapped address -> cmderr 3 -------------------
     await dm.read_mem(0xDEAD_0000_0000, 8, expect=CMDERR_EXCEPTION)
     assert (await dm.cmderr()) == 0
-    # The hart is still parked and usable afterwards.
     assert (await dm.read_gpr(0)) == 0
 
     # ---- abstractauto: OpenOCD's block read loop -----------------------------
@@ -402,12 +390,9 @@ async def test_debug(dut: Any) -> None:
     await dm.write_mem(syms["flag"], 8, 1)
     await dm.resume()
     await _wait_text(monitor, dut, BANNER_PHASE_U)
-    # A halt lands either in the U loop or in its M-mode ecall handler; retry
-    # until it lands in U (the loop ecalls only every 64th iteration). The
-    # wait grows by a prime stride per attempt: the simulation is
-    # deterministic, so a fixed cadence samples one phase of the loop's
-    # period on every attempt, and a timing shift anywhere in the core can
-    # pin that phase inside the handler for every attempt.
+    # Retry halts in the M-mode handler until one lands in the U loop, which
+    # ecalls every 64 iterations. Vary the wait by a prime stride to avoid
+    # repeatedly sampling the same handler phase.
     for _attempt in range(8):
         await ClockCycles(dut.i_clk, 2000 + 97 * _attempt)
         await dm.halt()

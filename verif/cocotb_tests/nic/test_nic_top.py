@@ -12,21 +12,15 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Tests for the whole NIC (hw/rtl/peripherals/nic/nic_top.sv).
+"""Test nic_top across core, TX, and RX clocks.
 
-Three clocks: the core clock and the MAC's TX and RX clocks. The DMA line
-port is answered by a memory model with out-of-order responses; registers
-are driven the way the SoC does (32-bit lane writes, a 64-bit read pair by
-offset). Frames go around through the raw loopback inside nic_mac_wrap, or
-come from the net10g software wire model (an independent 64b/66b encoder)
-and go out to its receiver.
+The DMA memory model reorders responses. Register accesses match the SoC:
+32-bit write lanes and 64-bit read pairs selected by offset. Frames use
+nic_mac_wrap's raw loopback or the independent net10g 64b/66b wire model.
 
-The module runs in two builds. With RAW_LOOPBACK = 1 (registry entry
-nic_top) the TX and RX clocks are one period and phase-aligned, as for one
-clock shared by both directions, and every case but the unrelated-clock one
-runs. With RAW_LOOPBACK = 0 (nic_top_unrelated_clocks) only that case runs:
-no shared clock in PHY_STATUS, unrelated TX and RX periods and phases, frames
-both ways over the wire.
+RAW_LOOPBACK=1 uses aligned TX and RX clocks. RAW_LOOPBACK=0 runs the
+unrelated-clock case, reports no shared clock in PHY_STATUS, and exchanges
+frames in both directions over the wire.
 """
 
 import random
@@ -45,8 +39,7 @@ from net10g.test_scrambler import SerialReference
 
 CORE_PS = 3334
 MAC_PS = 6206
-# Unrelated MAC clocks: another RX period, and an RX start offset that is not
-# a fraction of either period.
+# Give RX a different period and offset its first edge from TX.
 UNRELATED_RX_PS = 5818
 UNRELATED_RX_DELAY_PS = 2011
 LINE = 32
@@ -405,7 +398,7 @@ async def _start(
 @cocotb.skipif(not RAW_LOOPBACK, reason="runs in the RAW_LOOPBACK = 1 build")
 @cocotb.test()
 async def test_registers_and_bringup(dut: Any) -> None:
-    """ID, defaults, a refused enable, an accepted one, ring register rules, RESET."""
+    """Check reset defaults, enable validation, and ring-register write rules."""
     nic = await _start(dut, 1, loopback=False)
     assert await nic.rd(ID) == 0x4E49_4301
     assert await nic.rd(TICK) == 300
@@ -622,7 +615,7 @@ async def test_reset_mid_traffic(dut: Any) -> None:
     for n in (9000, 9000, 9000, 9000):
         await nic.send_tx(nic.frame(n))
     await nic.wait_dd(RX_RING, 0)
-    # The ring is now empty with frames still arriving; reset in the middle of that.
+    # Reset with an empty ring while frames are still arriving.
     await nic.cycles(500)
     await nic.wr(CTRL, CTRL_RESET)
     await nic.wait_status(ST_RESET_BUSY, 0, limit=100000, what="RESET done")

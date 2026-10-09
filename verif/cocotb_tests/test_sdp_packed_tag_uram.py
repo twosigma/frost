@@ -12,12 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Tests for sdp_packed_tag_uram, the width-generic packed tag UltraRAM.
-
-The registry runs this bench with 13-bit entries (four per row) in the
-hardware branch at the production address width and in the bulk-clear
-branch, and with 22-bit entries (two per row) in the hardware branch.
-"""
+"""Check sdp_packed_tag_uram packing, latency, and optional bulk clear."""
 
 import os
 from typing import Any
@@ -76,7 +71,7 @@ def _slots_per_row(data_width: int) -> int:
 
 @cocotb.test()
 async def test_packed_tag_uram(dut: Any) -> None:
-    """Cover packing, timing, collisions, gaps, and optional bulk clear."""
+    """Check packed tags against a model across writes and delayed reads."""
     Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     _drive_idle(dut)
     await _tick(dut)

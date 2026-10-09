@@ -12,11 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Typed RS DUT access and packed-struct conversion helpers.
-
-Verilator flattens packed structs into bit vectors, so this interface packs
-and unpacks their fields.
-"""
+"""Reservation station DUT access and packed-struct helpers."""
 
 from typing import Any
 from cocotb.triggers import RisingEdge, FallingEdge
@@ -98,7 +94,6 @@ def pack_rs_dispatch(
     val = 0
     bit = 0
 
-    # Pack from LSB to MSB (reverse of struct declaration order)
     val |= (1 if is_return else 0) << bit
     bit += 1
     val |= (1 if is_call else 0) << bit
@@ -311,11 +306,7 @@ class RSInterface:
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
         self.dut.i_dispatch.value = 0
-        # Slot-2 dispatch port; tests drive it through drive_dispatch_2.
         self.dut.i_dispatch_2.value = 0
-        # Fast slot-1 intent. The RTL selects alloc_idx_2 from it regardless
-        # of SPECULATIVE_DATA_WRITES, so drive_dispatch raises it together
-        # with i_dispatch.
         self.dut.i_intent_1.value = 0
         self.dut.i_cdb.value = 0
         self.dut.i_cdb_2.value = 0
@@ -352,10 +343,8 @@ class RSInterface:
     def drive_dispatch(self, **kwargs: Any) -> None:
         """Drive dispatch signals. Pass keyword args matching pack_rs_dispatch."""
         kwargs["valid"] = True
-        # The wrapper raises the fast slot-1 intent from the same per-RS
-        # decode that drives i_dispatch.valid, so the bench does the same.
-        # While it is high the RTL steers a simultaneous slot-2 dispatch to
-        # the second free entry.
+        # Raise slot-1 intent with dispatch so slot 2 takes the second free
+        # entry, even when SPECULATIVE_DATA_WRITES is disabled.
         self.set_intent_1(True)
         self.dut.i_dispatch.value = pack_rs_dispatch(**kwargs)
 
@@ -365,7 +354,10 @@ class RSInterface:
         self.dut.i_dispatch.value = 0
 
     def drive_dispatch_2(self, intent_1: bool = False, **kwargs: Any) -> None:
-        """Drive slot-2 dispatch signals."""
+        """Drive slot 2 and set slot-1 intent.
+
+        Use intent_1=True when both slots dispatch.
+        """
         kwargs["valid"] = True
         self.dut.i_dispatch_2.value = pack_rs_dispatch(**kwargs)
         self.set_intent_1(intent_1)

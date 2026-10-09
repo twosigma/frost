@@ -1,8 +1,7 @@
-# Actual MEM_RS and LQ composed through the wrapper slice in
-# rs_lq_prematch_equiv.sv. No assumptions. Checks: MEM_RS 11 (look-ahead
-# tag, 8 exported-pick tags, selected index, any-ready) and LQ 65 (64 candidate
-# x entry matches against the candidate-tag CAM, 1 registered selected match
-# against the registered CAM of the look-ahead tag).
+# Compose MEM_RS and LQ through rs_lq_prematch_equiv.sv without assumptions.
+# Compare exported picks with issue selection, candidate matches with the
+# tag CAM, and the registered selected match with the registered look-ahead
+# tag CAM result.
 [tasks]
 bmc
 prove

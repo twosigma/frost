@@ -12,12 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for hang_triage (hw/rtl/cpu_and_mem/hang_triage.sv).
+"""Test hang_triage (hw/rtl/cpu_and_mem/hang_triage.sv) with short timeout windows.
 
-The registry builds the module with short quiet and re-emit windows. Checked:
-a quiet console starts a snapshot that begins with the "!!HANG" prefix, and
-the takeover never shares an edge with a CPU byte entering the console, the
-case in which cpu_and_mem's output mux would drop that byte.
+Takeover must not share an edge with a CPU console byte, or cpu_and_mem's
+output mux would drop that byte.
 """
 
 import random

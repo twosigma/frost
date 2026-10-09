@@ -12,17 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the store queue.
+"""Store queue unit tests.
 
-Covers allocation on one or both slots, address and data capture, commit and
-the pipelined drain, store-to-load forwarding, L0 invalidation, flushes, SC
-discard, the live count and committed-empty status, and a constrained-random
-sequence.
-
-Expected values follow hw/rtl/README.md, "Data-tier bus contract": each drain
-is one aligned 64-bit beat whose 8-lane strobe selects the addressed bytes,
-with sub-dword store data replicated across the beat. Forwarding returns the
-aligned-dword memory image, with the store data shifted to its byte lanes.
+Each drain is one aligned 64-bit beat with an 8-lane byte strobe and replicated
+sub-dword data. Forwarding returns the aligned-dword image with store data
+in its byte lanes (hw/rtl/README.md, "Data-tier bus contract").
 """
 
 import random
@@ -87,7 +81,7 @@ async def alloc_addr_data(
     size: int = MEM_SIZE_WORD,
     is_mmio: bool = False,
 ) -> None:
-    """Allocate an entry, step, then update address and data, step."""
+    """Allocate a store, then supply its address and data on the next cycle."""
     dut_if.drive_alloc(rob_tag, is_fp=is_fp, size=size)
     model.alloc(rob_tag, is_fp, size)
     await dut_if.step()
@@ -125,9 +119,8 @@ async def commit_and_write(
     await dut_if.step()
     dut_if.clear_mem_write_done()
 
-    # Extra cycle for head pointer advancement (head_advance_target is
-    # computed from registered sq_valid, so the head advances one cycle
-    # after the entry is freed).
+    # head_advance_target uses registered sq_valid, so head advances one
+    # cycle after the entry is freed.
     await dut_if.step()
 
     return write_req
@@ -171,12 +164,10 @@ async def wait_for_mem_write(dut_if: SQInterface, max_cycles: int = 4) -> MemWri
 async def drain_pipelined_writes(
     dut_if: SQInterface, model: SQModel, count: int
 ) -> list[MemWriteReq]:
-    """Collect `count` drain writes, sampling the write bus every cycle.
+    """Collect count consecutive write launches, sampling the bus every cycle.
 
-    Drives each write's done one cycle after its bus cycle, as the router does
-    for plain BRAM stores. The pipelined drain can launch a write every cycle,
-    so a one-write-at-a-time handshake would miss back-to-back launches.
-    Asserts that the launches were consecutive.
+    Acknowledge each write one cycle later, as the router does for BRAM.
+    Waiting for one write at a time would miss pipelined launches.
     """
     writes: list[MemWriteReq] = []
     launch_cycles: list[int] = []
@@ -211,7 +202,7 @@ async def drain_pipelined_writes(
 
 
 # ============================================================================
-# Test 1: Reset state
+# Reset state
 # ============================================================================
 @cocotb.test()
 async def test_reset_state(dut: Any) -> None:
@@ -226,7 +217,7 @@ async def test_reset_state(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 2: Allocate single entry
+# Allocate single entry
 # ============================================================================
 @cocotb.test()
 async def test_alloc_single(dut: Any) -> None:
@@ -244,7 +235,7 @@ async def test_alloc_single(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 2b: Allocate with address already known
+# Allocate with address already known
 # ============================================================================
 @cocotb.test()
 async def test_alloc_with_initial_address(dut: Any) -> None:
@@ -272,7 +263,7 @@ async def test_alloc_with_initial_address(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 2c: Slot-2-only allocation with initial address
+# Slot-2-only allocation with initial address
 # ============================================================================
 @cocotb.test()
 async def test_slot2_only_alloc_with_initial_address(dut: Any) -> None:
@@ -304,7 +295,7 @@ async def test_slot2_only_alloc_with_initial_address(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 2d: Dual allocation, dual early-address update, and widen commit
+# Dual allocation, dual early-address update, and widen commit
 # ============================================================================
 @cocotb.test()
 async def test_slot1_slot2_dual_alloc_early_addr_and_widen_commit(dut: Any) -> None:
@@ -392,10 +383,8 @@ async def test_live_count_same_edge_event_union(dut: Any) -> None:
     dut_if.clear_alloc()
     dut_if.clear_alloc_2()
 
-    # Compare against the model oracle rather than asserting truthiness:
-    # mypy narrows the `empty` property to Literal[False] on a truthiness
-    # check and (assuming property purity) carries that across later step()
-    # calls, marking the later `assert dut_if.empty` sites unreachable.
+    # Compare with the model so mypy does not keep a narrowed empty value
+    # across step() calls and mark later assertions unreachable.
     assert dut_if.count == model.count == 2
     assert dut_if.empty == model.empty
     assert int(dut.o_dispatch_count.value) == model.count
@@ -452,7 +441,7 @@ async def test_live_count_same_edge_event_union(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 2e: Slot-2 store is newest forwarding candidate
+# Slot-2 store is newest forwarding candidate
 # ============================================================================
 @cocotb.test()
 async def test_slot2_store_forwarding_newest_wins(dut: Any) -> None:
@@ -503,7 +492,7 @@ async def test_slot2_store_forwarding_newest_wins(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 3: Allocate to full
+# Allocate to full
 # ============================================================================
 @cocotb.test()
 async def test_alloc_to_full(dut: Any) -> None:
@@ -522,7 +511,7 @@ async def test_alloc_to_full(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 4: Address and data update
+# Address and data update
 # ============================================================================
 @cocotb.test()
 async def test_addr_data_update(dut: Any) -> None:
@@ -657,7 +646,7 @@ async def test_early_payload_capture_stays_hidden_and_normal_update_wins(
 
 
 # ============================================================================
-# Test 5: Simple SW commit and write
+# Simple SW commit and write
 # ============================================================================
 @cocotb.test()
 async def test_simple_sw(dut: Any) -> None:
@@ -678,7 +667,7 @@ async def test_simple_sw(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 6: SH commit and write
+# SH commit and write
 # ============================================================================
 @cocotb.test()
 async def test_sh_lower(dut: Any) -> None:
@@ -694,14 +683,13 @@ async def test_sh_lower(dut: Any) -> None:
     assert write_req.byte_en == 0x03, (
         f"Expected byte_en=0x03, got 0x{write_req.byte_en:x}"
     )
-    # Data is replicated across the beat: {4{data[15:0]}}
     assert write_req.data == hbeat(0x1234), (
         f"Expected replicated 0x1234 beat, got 0x{write_req.data:x}"
     )
 
 
 # ============================================================================
-# Test 7: SH at upper halfword
+# SH at upper halfword
 # ============================================================================
 @cocotb.test()
 async def test_sh_upper(dut: Any) -> None:
@@ -723,7 +711,7 @@ async def test_sh_upper(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 8: SB commit and write
+# SB commit and write
 # ============================================================================
 @cocotb.test()
 async def test_sb(dut: Any) -> None:
@@ -745,7 +733,7 @@ async def test_sb(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 9: FSW commit and write
+# FSW commit and write
 # ============================================================================
 @cocotb.test()
 async def test_fsw(dut: Any) -> None:
@@ -771,7 +759,7 @@ async def test_fsw(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 10: FSD single-beat commit
+# FSD single-beat commit
 # ============================================================================
 @cocotb.test()
 async def test_fsd_single_beat(dut: Any) -> None:
@@ -817,11 +805,11 @@ async def test_fsd_single_beat(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 11: Store-to-load forwarding (SW → LW same address)
+# Store-to-load forwarding at the same address
 # ============================================================================
 @cocotb.test()
 async def test_forward_sw_to_lw(dut: Any) -> None:
-    """SW at addr, LW check at same addr → match, can_forward, correct data."""
+    """An SW forwards its data to a younger LW at the same address."""
     dut_if, model = await setup(dut)
 
     store_data = 0xDEADBEEF
@@ -845,11 +833,11 @@ async def test_forward_sw_to_lw(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 12: Forwarding - no match (different address)
+# Forwarding - no match (different address)
 # ============================================================================
 @cocotb.test()
 async def test_forward_no_match(dut: Any) -> None:
-    """SW at addr A, LW check at addr B → no match."""
+    """A store in a different aligned dword does not match the load."""
     dut_if, model = await setup(dut)
 
     await alloc_addr_data(dut_if, model, rob_tag=3, address=0x2000, data=0xAAAA)
@@ -867,14 +855,13 @@ async def test_forward_no_match(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 13: Forwarding stall - older store without address
+# Forwarding stall - older store without address
 # ============================================================================
 @cocotb.test()
 async def test_forward_stall_no_addr(dut: Any) -> None:
-    """Older store without addr_valid → all_older_addrs_known = false."""
+    """An unresolved older store clears all_older_addrs_known."""
     dut_if, model = await setup(dut)
 
-    # Allocate store without address update
     dut_if.drive_alloc(rob_tag=2, size=MEM_SIZE_WORD)
     model.alloc(2, False, MEM_SIZE_WORD)
     await dut_if.step()
@@ -890,14 +877,13 @@ async def test_forward_stall_no_addr(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 14: Forwarding stall - address match but data not ready
+# Forwarding stall - address match but data not ready
 # ============================================================================
 @cocotb.test()
 async def test_forward_match_no_data(dut: Any) -> None:
-    """Store with addr but no data → match, can_forward=false."""
+    """A matching store without data cannot forward."""
     dut_if, model = await setup(dut)
 
-    # Allocate and update address only (no data)
     dut_if.drive_alloc(rob_tag=3, size=MEM_SIZE_WORD)
     model.alloc(3, False, MEM_SIZE_WORD)
     await dut_if.step()
@@ -919,15 +905,13 @@ async def test_forward_match_no_data(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 15: Forwarding - word store covers a sub-word load (SW → LB)
+# Word store covers a sub-word load
 # ============================================================================
 @cocotb.test()
 async def test_forward_covered_subword_load(dut: Any) -> None:
-    """SW at addr, LB check in the same word → forwards the store's memory image.
+    """An SW forwards the aligned-dword image to a covered sub-word load.
 
-    A word store covers any byte or halfword load inside it. The SQ returns
-    the aligned-dword image and the LQ extracts the load's bytes (byte 1 here
-    is 0xAA).
+    The LQ extracts the load's bytes; byte 1 here is 0xAA.
     """
     dut_if, model = await setup(dut)
 
@@ -945,14 +929,14 @@ async def test_forward_covered_subword_load(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 15a: Forwarding - sub-word store covering / not covering the load
+# Forwarding - sub-word store covering / not covering the load
 # ============================================================================
 @cocotb.test()
 async def test_forward_subword_store_cover(dut: Any) -> None:
-    """SH@2 forwards to LB@3 (image-shifted); SB@0 cannot serve LH@0."""
+    """An SH at offset 2 covers an LB at offset 3; an SB cannot cover an LH."""
     dut_if, model = await setup(dut)
 
-    # SH 0xBEEF at 0x3002 → memory image word 0xBEEF0000
+    # SH 0xBEEF at 0x3002 gives the memory image 0xBEEF0000.
     await alloc_addr_data(
         dut_if, model, rob_tag=2, address=0x3002, data=0xBEEF, size=MEM_SIZE_HALF
     )
@@ -983,11 +967,11 @@ async def test_forward_subword_store_cover(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 15b: Disjoint halfwords in same word do not conflict
+# Disjoint halfwords in same word do not conflict
 # ============================================================================
 @cocotb.test()
 async def test_forward_disjoint_halfwords_no_match(dut: Any) -> None:
-    """SH at addr, LH at addr+2 → no match because byte lanes do not overlap."""
+    """Disjoint halfword accesses in the same word do not match."""
     dut_if, model = await setup(dut)
 
     await alloc_addr_data(
@@ -1008,7 +992,7 @@ async def test_forward_disjoint_halfwords_no_match(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 16: Forwarding - newer store overwrites older
+# Forwarding - newer store overwrites older
 # ============================================================================
 @cocotb.test()
 async def test_forward_newest_wins(dut: Any) -> None:
@@ -1030,11 +1014,11 @@ async def test_forward_newest_wins(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 17: FSD forwarding to FLD
+# FSD forwarding to FLD
 # ============================================================================
 @cocotb.test()
 async def test_forward_fsd_to_fld(dut: Any) -> None:
-    """FSD at addr, FLD check at same addr → forward full 64-bit data."""
+    """An FSD forwards all 64 bits to an FLD at the same address."""
     dut_if, model = await setup(dut)
 
     fp64_data = 0x400921FB54442D18
@@ -1128,8 +1112,8 @@ async def test_forward_metadata_survives_same_edge_store_free(dut: Any) -> None:
     assert write_req.en, "Committed halfword store should launch a write"
     model.mem_write_initiate()
 
-    # The memory bus acknowledges one cycle after launch. On that same edge,
-    # capture a younger load's SQ probe while the selected store is freed.
+    # Capture the younger load's probe on the write-acknowledgment edge,
+    # one cycle after launch, as the selected store is freed.
     await dut_if.step()
     dut_if.drive_mem_write_done()
     model.mem_write_done()
@@ -1169,10 +1153,8 @@ async def test_forward_metadata_survives_flush_capture_edge(dut: Any) -> None:
     )
     dut_if.drive_rob_head_tag(0)
 
-    # In the core, the LQ discards a result captured on a full-flush cycle.
-    # The forwarding unit still captures on that edge, so its registered
-    # winner metadata must still deliver the store's dword image after the
-    # flush clears SQ control state.
+    # Full flush clears SQ control state, but the captured forwarding result
+    # must still carry the store's image. The core's LQ discards this result.
     dut_if.drive_sq_check(addr=0x4004, rob_tag=5, size=MEM_SIZE_WORD)
     dut_if.drive_flush_all()
     model.flush_all()
@@ -1194,11 +1176,11 @@ async def test_forward_metadata_survives_flush_capture_edge(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 18: Full flush empties SQ
+# Full flush empties SQ
 # ============================================================================
 @cocotb.test()
 async def test_flush_all(dut: Any) -> None:
-    """Full flush resets all state."""
+    """Full flush clears the queue's live count and asserts empty."""
     dut_if, model = await setup(dut)
 
     for i in range(4):
@@ -1219,7 +1201,7 @@ async def test_flush_all(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 19: Partial flush - uncommitted entries flushed
+# Partial flush - uncommitted entries flushed
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_uncommitted(dut: Any) -> None:
@@ -1246,7 +1228,7 @@ async def test_partial_flush_uncommitted(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 20: Partial flush - committed entries survive
+# Partial flush - committed entries survive
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_committed_survives(dut: Any) -> None:
@@ -1281,14 +1263,11 @@ async def test_partial_flush_committed_survives(dut: Any) -> None:
 
 @cocotb.test()
 async def test_partial_flush_spares_registered_commits_on_both_slots(dut: Any) -> None:
-    """A partial flush spares the stores whose registered commits arrive with it.
+    """Partial flush preserves stores with same-cycle registered commits.
 
-    Two stores get their registered commit pulses on slots 1 and 2 in the
-    flush cycle, before sq_committed is set, with the ROB head already past
-    both. By age alone they rank younger than the flush tag, so each commit
-    port must exempt its store from the kill, or its memory write is lost.
-    The core retires no store in the cycle before a partial flush, so this
-    checks the SQ's guard on its own.
+    The head has passed both stores, so age alone would kill them. Each
+    commit port must exempt its store before sq_committed is set. This
+    checks the SQ guard directly; the core excludes this overlap.
     """
     dut_if, model = await setup(dut)
     dut_if.drive_rob_head_tag(2)
@@ -1329,7 +1308,7 @@ async def test_partial_flush_spares_registered_commits_on_both_slots(dut: Any) -
 
 
 # ============================================================================
-# Test 21: In-order commit and write for multiple stores
+# In-order commit and write for multiple stores
 # ============================================================================
 @cocotb.test()
 async def test_in_order_write(dut: Any) -> None:
@@ -1350,7 +1329,7 @@ async def test_in_order_write(dut: Any) -> None:
         await dut_if.step()
         dut_if.clear_commit()
 
-    # Writes must leave in program order (tag 0, 1, 2).  The pipelined drain
+    # Writes must leave in program order (tag 0, 1, 2). The pipelined drain
     # launches them back-to-back, so collect with per-cycle sampling.
     writes = await drain_pipelined_writes(dut_if, model, 3)
     assert len(writes) == 3, f"Expected 3 drain writes, got {len(writes)}"
@@ -1366,7 +1345,7 @@ async def test_in_order_write(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 22: No write without commit
+# No write without commit
 # ============================================================================
 @cocotb.test()
 async def test_no_write_without_commit(dut: Any) -> None:
@@ -1382,14 +1361,13 @@ async def test_no_write_without_commit(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 23: No write without data
+# No write without data
 # ============================================================================
 @cocotb.test()
 async def test_no_write_without_data(dut: Any) -> None:
     """Committed store without data does not write to memory."""
     dut_if, model = await setup(dut)
 
-    # Allocate, update address only (no data)
     dut_if.drive_alloc(rob_tag=3, size=MEM_SIZE_WORD)
     model.alloc(3, False, MEM_SIZE_WORD)
     await dut_if.step()
@@ -1419,7 +1397,7 @@ async def test_no_write_without_data(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 24: Cache invalidation on write launch
+# Cache invalidation on write launch
 # ============================================================================
 @cocotb.test()
 async def test_cache_invalidation(dut: Any) -> None:
@@ -1464,11 +1442,11 @@ async def test_cache_invalidation(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 25: Forwarding - load older than store (no forward)
+# Forwarding - load older than store (no forward)
 # ============================================================================
 @cocotb.test()
 async def test_forward_load_older_than_store(dut: Any) -> None:
-    """Load older than store → store is not checked (no match)."""
+    """A store cannot forward to an older load."""
     dut_if, model = await setup(dut)
 
     await alloc_addr_data(dut_if, model, rob_tag=5, address=0x2000, data=0xAAAA)
@@ -1484,18 +1462,16 @@ async def test_forward_load_older_than_store(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 25b: Commit-visible forwarding when ROB head has advanced
+# Commit-visible forwarding when ROB head has advanced
 # ============================================================================
 @cocotb.test()
 async def test_forward_same_cycle_commit_after_head_advance(dut: Any) -> None:
-    """A store whose commit is not yet latched must still block/forward a younger load.
+    """A same-cycle commit makes a store visible to a younger load's forwarding scan.
 
-    The forwarding unit's registered head copy already sits at the load's tag,
-    so the store's tag ranks it younger than the load and only the same-cycle
-    i_commit_valid term makes it an older store; without that term the load
-    could issue to memory in front of the store. In the core the registered
-    head still ranks the store older in its commit-pulse cycle, so this checks
-    the term on its own.
+    Advance the registered head to the load's tag so age alone misranks the
+    store as younger. Only the commit term prevents the load from passing
+    it. In the core, the registered head still ranks the store older during
+    the commit pulse; this test isolates the guard.
     """
     dut_if, model = await setup(dut)
 
@@ -1532,12 +1508,10 @@ async def test_forward_same_cycle_commit_after_head_advance(dut: Any) -> None:
 
 @cocotb.test()
 async def test_forward_same_cycle_slot2_commit_after_head_advance(dut: Any) -> None:
-    """A store committing on slot 2 must also block/forward a younger load.
+    """The slot-2 commit guard preserves forwarding after the head advances.
 
-    The slot-2 counterpart of test_forward_same_cycle_commit_after_head_advance:
-    two stores commit together on slots 1 and 2 while the registered head copy
-    already sits at the load's tag, so only the slot-2 commit term makes the
-    store older in the forwarding scan.
+    Commit both slots with the head at the load's tag, so only the slot-2
+    commit term identifies the matching store as older.
     """
     dut_if, model = await setup(dut)
 
@@ -1577,11 +1551,11 @@ async def test_forward_same_cycle_slot2_commit_after_head_advance(dut: Any) -> N
 
 
 # ============================================================================
-# Test 26: FSD → LW overlap at +4 address
+# FLW overlaps an FSD at byte offset 4
 # ============================================================================
 @cocotb.test()
 async def test_forward_fsd_overlap_plus4(dut: Any) -> None:
-    """FSD at addr A, FLW at addr A+4 → match + forward the dword image."""
+    """An FSD forwards its dword image to an FLW at byte offset 4."""
     dut_if, model = await setup(dut)
 
     fp64_data = 0x1234567890ABCDEF
@@ -1610,11 +1584,11 @@ async def test_forward_fsd_overlap_plus4(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 27: MMIO store does not forward
+# MMIO store does not forward
 # ============================================================================
 @cocotb.test()
 async def test_mmio_store_no_forward(dut: Any) -> None:
-    """MMIO store at same address → match but can_forward=False."""
+    """An MMIO store matches the address but cannot forward."""
     dut_if, model = await setup(dut)
 
     mmio_addr = 0x40000000
@@ -1633,7 +1607,7 @@ async def test_mmio_store_no_forward(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 28: Non-MMIO store forwards when MMIO store also present
+# Non-MMIO store forwards when MMIO store also present
 # ============================================================================
 @cocotb.test()
 async def test_non_mmio_forwards_over_mmio(dut: Any) -> None:
@@ -1660,7 +1634,7 @@ async def test_non_mmio_forwards_over_mmio(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 29: FSD single-launch cache invalidation covers its dword
+# FSD single-launch cache invalidation covers its dword
 # ============================================================================
 @cocotb.test()
 async def test_fsd_cache_invalidation_single_beat(dut: Any) -> None:
@@ -1707,11 +1681,11 @@ async def test_fsd_cache_invalidation_single_beat(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 30: FLW at FSD base → forwards the dword image
+# FLW at FSD base
 # ============================================================================
 @cocotb.test()
 async def test_forward_flw_at_fsd_base(dut: Any) -> None:
-    """FSD at addr, FLW at addr → forwards the dword image (LQ takes [31:0])."""
+    """An FSD forwards its dword image to an FLW at its base; the LQ takes [31:0]."""
     dut_if, model = await setup(dut)
 
     fp64_data = 0xDEADBEEF_CAFEBABE
@@ -1740,11 +1714,11 @@ async def test_forward_flw_at_fsd_base(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 31: FLW at FSD addr+4 → forwards the dword image
+# FLW at FSD byte offset 4
 # ============================================================================
 @cocotb.test()
 async def test_forward_flw_at_fsd_plus4(dut: Any) -> None:
-    """FSD at addr, FLW at addr+4 → forwards the dword image (LQ takes [63:32])."""
+    """An FSD forwards to an FLW at byte offset 4; the LQ takes [63:32]."""
     dut_if, model = await setup(dut)
 
     fp64_data = 0xDEADBEEF_CAFEBABE
@@ -1773,11 +1747,11 @@ async def test_forward_flw_at_fsd_plus4(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 32: LB at FSD base → forwards the dword image
+# LB at FSD base
 # ============================================================================
 @cocotb.test()
 async def test_forward_lb_at_fsd_base(dut: Any) -> None:
-    """LB at the FSD's address → forwards the dword image (LQ takes byte 0)."""
+    """An FSD forwards its dword image to an LB at its base; the LQ takes byte 0."""
     dut_if, model = await setup(dut)
 
     fp64_data = 0xDEADBEEF_CAFEBABE
@@ -1805,7 +1779,7 @@ async def test_forward_lb_at_fsd_base(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 33: Constrained random
+# Constrained random
 # ============================================================================
 def store_beat(data: int, size: int) -> int:
     """Return the drain beat of a store: sub-dword data replicated across 64 bits."""
@@ -1841,19 +1815,17 @@ class RandomStore:
 
 @cocotb.test()
 async def test_constrained_random(dut: Any) -> None:
-    """Drive random stores, commits, drains and flushes against a reference.
+    """Compare random stores, commits, drains, and flushes with a reference.
 
-    The write bus is sampled every cycle, because the pipelined drain can
-    launch a write every cycle, and each write must be the oldest committed
-    store not yet written, with its address, replicated data and byte strobe.
-    A partial flush removes the uncommitted stores younger than its tag, and a
-    commit-time recovery flush (its tag already behind the ROB head) removes
-    every uncommitted store; either can meet registered commits on one or both
-    commit slots in the same cycle. The core never produces that overlap, and
-    its slot-2 commit is always the tag after slot 1's, but the SQ must handle
-    both. A full flush comes only when no committed store is pending, as in the
-    core. The live count must match the reference every cycle, and every
-    committed store must drain.
+    Sample every cycle to catch pipelined writes. Each must be the oldest
+    committed, unwritten store, with matching address, beat, and strobe.
+    Check live count every cycle and drain every committed store.
+
+    Partial flush kills younger uncommitted stores; commit-time recovery
+    kills all uncommitted stores. Exercise same-cycle registered commits
+    on either slot, including nonadjacent tags. The core excludes this
+    overlap and uses adjacent commit tags. Full flush waits for committed
+    stores to drain, as in the core.
     """
     dut_if, _ = await setup(dut)
     rng = random.Random(42)
@@ -2095,7 +2067,7 @@ async def test_constrained_random(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 34: SC discard on failure
+# SC discard on failure
 # ============================================================================
 @cocotb.test()
 async def test_sc_discard_on_failure(dut: Any) -> None:
@@ -2123,7 +2095,7 @@ async def test_sc_discard_on_failure(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 35: committed_empty signal
+# committed_empty signal
 # ============================================================================
 @cocotb.test()
 async def test_committed_empty_signal(dut: Any) -> None:
@@ -2177,11 +2149,7 @@ async def test_committed_empty_signal(dut: Any) -> None:
 
 @cocotb.test()
 async def test_forward_fld_from_fsw_stalls(dut: Any) -> None:
-    """FSW at addr, FLD at same addr → match=1, can_forward=0 (size mismatch).
-
-    The store is WORD (FSW), but the load is DOUBLE (FLD). The SQ cannot
-    forward a 32-bit store to satisfy a 64-bit load, so it stalls.
-    """
+    """An FSW matches an FLD at the same address but cannot cover all its bytes."""
     dut_if, model = await setup(dut)
 
     await alloc_addr_data(
@@ -2208,11 +2176,7 @@ async def test_forward_fld_from_fsw_stalls(dut: Any) -> None:
 
 @cocotb.test()
 async def test_forward_lh_from_fsd_both_words(dut: Any) -> None:
-    """FSD at addr, LH at base and at the high word → both forward.
-
-    An FSD writes all eight lanes, so a halfword load anywhere in its dword
-    forwards the dword image.
-    """
+    """An FSD forwards its dword image to covered halfword loads in either word."""
     dut_if, model = await setup(dut)
 
     fp64_data = 0xDEADBEEF_CAFEBABE
@@ -2317,43 +2281,31 @@ async def test_no_forward_while_older_addr_unknown(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_stale_head_reused_tag_misrank_window(dut: Any) -> None:
-    """A same-cycle-reused ROB tag must not corrupt forwarding age ranking.
+    """Check forwarding with a reused tag and a stale registered ROB head.
 
-    The forwarding CAM computes load/entry ages against rob_head_tag_q,
-    which lags i_rob_head_tag by one cycle. When the ROB head advances
-    (tag H retires) in the same cycle dispatch reuses tag H for a new
-    youngest store, the stale reference ranks that store age-0 (oldest)
-    for one scan cycle. Two properties keep the window harmless, and this
-    test checks both: (1) the core allocates stores without an address, so
-    during the stale cycle the misranked store surfaces as an unresolved
-    "older" store and o_sq_all_older_addrs_known must read 0 (the LQ
-    forward gate blocks); (2) once the reference catches up and the store's
-    address resolves, it ranks younger than the load and must not forward
-    to it.
+    rob_head_tag_q lags i_rob_head_tag by one cycle. Force a reused store tag
+    to rank oldest for that cycle. As in the core, allocate it without an
+    address: all_older_addrs_known must be false, blocking forwarding.
+    After the head catches up and the address resolves, the store must
+    rank younger than the load and cannot forward to it.
     """
     dut_if, model = await setup(dut)
 
-    # Cycle W: the ROB presents head H=4 while dispatch reuses tag 4 for a
-    # new store (in hardware: tag-4 retires and its tag is re-allocated on
-    # the same edge under a full ROB).  Both land at W's closing edge, so
-    # next cycle the store is visible while rob_head_tag_q still holds the
-    # stale H=4.
+    # Cycle W: allocate tag 4 with head 4, then advance the input head.
+    # This forces stale-head ranking without modeling ROB allocation timing.
     dut_if.drive_rob_head_tag(4)
     dut_if.drive_alloc(rob_tag=4, size=MEM_SIZE_WORD)
     model.alloc(4, False, MEM_SIZE_WORD)
     await dut_if.step()
     dut_if.clear_alloc()
 
-    # Cycle X (the stale window): true head is now 5, but the scan still
-    # ranks against rob_head_tag_q=4, so the reused-tag store computes age
-    # 0 (oldest).  A load (tag 6, older than that store) probes.
+    # Cycle X: head is 5 but rob_head_tag_q is 4. Probe with the older load
+    # at tag 6 while the reused store is misranked as age 0.
     dut_if.drive_rob_head_tag(5)
     dut_if.drive_sq_check(addr=0x7000, rob_tag=6, size=MEM_SIZE_WORD)
     await dut_if.step()
 
-    # Stale-window scan: the reused-tag store is misranked oldest, but its
-    # address cannot be valid yet, so the coherent all-known flag is low
-    # and nothing forwards.
+    # The addressless store must keep all-known low during the stale scan.
     assert not dut_if.read_all_older_addrs_known(), (
         "Misranked reused-tag store must surface as an unresolved older "
         "store during the stale-reference cycle (LQ forward gate blocks)"
@@ -2363,9 +2315,8 @@ async def test_stale_head_reused_tag_misrank_window(dut: Any) -> None:
     dut_if.clear_sq_check()
     await dut_if.step()
 
-    # Reference caught up (rob_head_tag_q = 5): the tag-4 store is youngest
-    # by ROB-tag age.  Resolve it at the probe address; the older load must
-    # not receive its data, and no older store is unresolved anymore.
+    # With rob_head_tag_q=5, store 4 ranks younger. Resolve it at the probe
+    # address; it must neither forward to nor block the older load.
     dut_if.drive_addr_update(4, 0x7000)
     model.addr_update(4, 0x7000, False)
     dut_if.drive_data_update(4, 0xDEADBEEF)
@@ -2387,20 +2338,17 @@ async def test_stale_head_reused_tag_misrank_window(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 38: Capacity after a flush tail pullback and an SC-discard hole
+# Capacity after a flush tail pullback and an SC-discard hole
 # ============================================================================
 @cocotb.test()
 async def test_pointer_full_with_hole(dut: Any) -> None:
-    """Flush holes are reclaimed; an sc_discard hole keeps consuming capacity.
+    """A flush reclaims tail slots; an SC-discard hole still consumes ring capacity.
 
-    Phase 1: allocate tags 0,1,2,5,6,7 in program order; partial flush at
-    tag 4 kills the suffix (5,6,7) and the tail pulls back, so the queue
-    reports 3 entries and five immediately reusable slots (full at exactly 8).
-
-    Phase 2: with the queue full, discarding a failed SC mid-window leaves a
-    hole that pure-tail allocation must not reuse: the queue stays
-    window-full at count 7 (capacity returns only when the head drains past
-    the hole).
+    Allocate tags 0,1,2,5,6,7, then flush after tag 4. Once the tail pulls
+    back on the next edge, three entries remain and five slots are reusable.
+    Fill the queue, then discard an SC in the middle: the ring stays full with
+    seven live entries, and the discarded slot stays unavailable until the
+    head passes it.
     """
     dut_if, model = await setup(dut)
     dut_if.drive_rob_head_tag(0)
@@ -2415,11 +2363,8 @@ async def test_pointer_full_with_hole(dut: Any) -> None:
     assert dut_if.count == 6, f"Expected 6 entries, got {dut_if.count}"
     assert model.count == 6
 
-    # Partial flush: tags 5, 6, 7 flushed (younger than 4 relative to head 0).
-    # The killed entries are a program-order suffix. The tail pulls back over
-    # their slots in the cycle after the flush, and dispatch cannot allocate
-    # that early because of redirect/refill latency, so settle one cycle
-    # before resuming allocation.
+    # Flush the suffix at tags 5, 6, and 7. Wait one cycle for tail pullback
+    # before allocating, as redirect/refill latency requires in the core.
     dut_if.drive_partial_flush(flush_tag=4)
     model.partial_flush(4, 0)
     await dut_if.step()
@@ -2433,11 +2378,8 @@ async def test_pointer_full_with_hole(dut: Any) -> None:
     assert not dut_full_after_flush, "SQ should not be full after partial flush"
     assert not model_full_after_flush, "Model should not be full after partial flush"
 
-    # Five allocations fit in the reclaimed window; full at exactly 8.
-    # The full reads go through per-iteration locals so mypy does not narrow
-    # the dut_if.full/model.full member expressions themselves (it would
-    # carry `not full` past the loop and call the post-loop asserts
-    # unreachable).
+    # Five allocations refill the window. Use locals so mypy does not carry
+    # narrowed full properties out of the loop and mark assertions unreachable.
     for i in range(5):
         dut_full_now = dut_if.full
         model_full_now = model.full
@@ -2475,13 +2417,11 @@ async def test_pointer_full_with_hole(dut: Any) -> None:
 async def test_partial_flush_hole_reuse_does_not_strand_committed_stores(
     dut: Any,
 ) -> None:
-    """Committed stores keep draining in order after flush slots are reused.
+    """Reused flush slots must preserve program-order store drain.
 
-    Stores dispatched after the flush must take ring slots in program order.
-    If a younger store took a slot that the drain reaches before an older
-    store's, the older store would strand behind the younger, uncommitted
-    one (a deadlock once a load waits on it), and same-address stores could
-    drain out of program order (stale memory).
+    Putting a younger uncommitted store before an older one can block the
+    older store indefinitely, deadlocking a load that waits for it. It can
+    also reorder same-address writes and leave stale memory.
     """
     dut_if, model = await setup(dut)
     dut_if.drive_rob_head_tag(2)
@@ -2524,10 +2464,8 @@ async def test_partial_flush_hole_reuse_does_not_strand_committed_stores(
         dut_if.clear_mem_write_done()
         await dut_if.step()
 
-    # Commit+drain the flush survivors (tags 2..8) in lockstep, then the
-    # post-flush stores in program order. Tags 10/12 must drain when
-    # committed, while 14 and 16 are still uncommitted: nothing older
-    # remains. If tag 14 sat ahead of them in ring order, they would strand.
+    # Drain survivors 2..8, then the replacements. Tags 10 and 12 must drain
+    # while 14 and 16 remain uncommitted; incorrect ring order would block them.
     for tag in [2, 4, 6, 8]:
         await commit_and_drain(tag, f"survivor tag {tag}")
     await commit_and_drain(10, "oldest post-flush store (tag 10)")
@@ -2550,17 +2488,13 @@ async def test_partial_flush_hole_reuse_does_not_strand_committed_stores(
 async def test_commit_cycle_registered_guard_survives_flush_after_head(
     dut: Any,
 ) -> None:
-    """A store whose registered commit lands in the flush cycle must survive.
+    """Commit-time recovery preserves a store whose registered commit arrives with it.
 
-    The store's combinational commit fired the cycle before the flush. The
-    ROB never fires a combinational commit in a flush cycle (asserted in
-    store_queue and assumed in formal), so in the flush cycle the SQ sees
-    only the registered i_commit_valid for that store, before sq_committed
-    is set. A commit-time recovery flush (i_flush_after_head_commit) removes
-    every uncommitted store regardless of age, so flush_kill_base must
-    exempt entries that match the registered commit, or the store's memory
-    write is lost. In the core the mispredicted branch retires alone in the
-    cycle before this flush, so this checks the SQ's guard on its own.
+    The combinational commit preceded the flush; the SQ has not yet latched
+    sq_committed. i_flush_after_head_commit kills all uncommitted stores,
+    so the matching registered commit must exempt this store. The core
+    retires the mispredicted branch alone before recovery; this test
+    isolates the SQ guard.
     """
     dut_if, model = await setup(dut)
     dut_if.drive_rob_head_tag(3)

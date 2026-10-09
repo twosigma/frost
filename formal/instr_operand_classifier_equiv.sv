@@ -360,7 +360,6 @@ module instr_operand_classifier_equiv (
       default: uses_fp_rs3_pre = 1'b0;
     endcase
 
-    // INT rs1: most ops, except pure-FP-rs1 / PC-relative / system / CSR-imm.
     uses_int_rs1_pre = !uses_fp_rs1_pre && (
       op_for_pre_decode != riscv_pkg::LUI &&
       op_for_pre_decode != riscv_pkg::AUIPC &&
@@ -381,7 +380,6 @@ module instr_operand_classifier_equiv (
       op_for_pre_decode != riscv_pkg::ILLEGAL &&
       op_for_pre_decode != riscv_pkg::FETCH_FAULT);
 
-    // INT rs2: branches, R-type ALU, integer stores, AMO/SC.
     case (op_for_pre_decode)
       riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT,
       riscv_pkg::BGE, riscv_pkg::BLTU, riscv_pkg::BGEU,
@@ -479,8 +477,8 @@ module instr_operand_classifier_equiv (
     p_has_fp_flags : assert (has_fp_flags_direct == has_fp_flags_pre);
     p_needs_lq : assert (needs_lq_direct == needs_lq_pre);
     p_needs_sq : assert (needs_sq_direct == needs_sq_pre);
-    // Dispatch relies on this contract: only FMA ops, which go to FP_RS, read
-    // FP source 3, so slot 2 (which takes no FP compute op) never does.
+    // Only FMA operations read FP source 3. Dispatch sends them to FP_RS
+    // through slot 1, so slot 2 never needs that source.
     p_fp_rs3_only_fp_rs : assert (!uses_fp_rs3_direct || (rs_type_direct == riscv_pkg::RS_FP));
   end
 endmodule : instr_operand_classifier_equiv

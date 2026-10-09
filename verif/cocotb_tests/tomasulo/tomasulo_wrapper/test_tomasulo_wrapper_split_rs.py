@@ -12,15 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Tomasulo wrapper tests with split-RS dispatch (SPLIT_RS_DISPATCH=1), as cpu_ooo uses it.
-
-Directed coverage of per-station routing for both dispatch slots, INT_RS's
-16-entry capacity and eight-entry second-issue window, port 0's same-cycle
-CDB bypass capture from each lane, store-address repair timing through the
-SQ's local CDB copies, FP done repair under recovery hold, the LQ's
-partial-flush input, and the ALU and ALU2 CDB packets from test injection, a
-live adapter, and a held adapter.
-"""
+"""Tomasulo wrapper tests with SPLIT_RS_DISPATCH=1, as used by cpu_ooo."""
 
 from typing import Any
 
@@ -237,10 +229,8 @@ async def test_lq_partial_flush_timing_companion_is_full_flush_dominated(
     assert dut.lq_partial_flush_en.value
     assert not dut.speculative_flush_all.value
 
-    # Commit-time recovery turns the flush into a full flush for the LQ.
-    # speculative_flush_en is masked, but lq_partial_flush_en (the registered
-    # i_early_recovery_flush) may stay high: the LQ's full flush clears every
-    # visible update, so the difference cannot be observed.
+    # Commit-time recovery fully flushes the LQ. lq_partial_flush_en may
+    # remain high while speculative_flush_en is masked; full flush wins.
     dut.i_flush_after_head_commit.value = 1
     await Timer(1, unit="ns")
     assert dut.speculative_flush_all.value
@@ -364,9 +354,8 @@ async def test_split_rs_int_pair_at_issue_window_and_capacity(
     await dut_if.step()
     assert_rs_counts(dut_if, {RS_INT: count})
 
-    # Entries 6/7 may issue together; entries 14/15 must use port 0 in
-    # successive cycles. This catches accidentally growing ISSUE2_WINDOW
-    # together with the reservation station's capacity.
+    # Entries 6 and 7 may issue together. Entries 14 and 15 are outside
+    # ISSUE2_WINDOW and must use port 0 on successive cycles.
     dut_if.set_fu_ready(RS_INT, True)
     await dut_if.step()
     issue = dut_if.read_rs_issue_for(RS_INT)
@@ -470,9 +459,8 @@ async def test_split_int_primary_capture_uses_both_issue_cdb_anchors(
             value=wake_value,
         )
 
-        # The ordinary INT-local CDB packet and INT_RS's issue-compare copy
-        # register on the same edge. The entry is now combinationally ready,
-        # but port 0 has not yet captured it into stage2.
+        # Both INT CDB copies register together. The entry is ready, but
+        # port 0 captures it into stage2 only on the next edge.
         await dut_if.step()
         dut_if.clear_fu_complete(FU_FP_ADD)
         if target_lane == 1:
@@ -560,7 +548,7 @@ async def test_split_rs_ignores_legacy_single_bus_dispatch(dut: Any) -> None:
 
 @cocotb.test()
 async def test_split_sq_local_cdb_lanes_preserve_repair_timing(dut: Any) -> None:
-    """Each SQ-local CDB lane copy repairs an unready store without adding a cycle."""
+    """Each SQ-local CDB lane repairs an unready store on the expected edge."""
     cocotb.log.info("=== Test: Split SQ-Local CDB Lane Repair Timing ===")
     dut_if = await setup_test(dut)
 
@@ -633,9 +621,8 @@ async def test_split_sq_local_cdb_lanes_preserve_repair_timing(dut: Any) -> None
         assert not read_sq_early_addr_update(dut)[0]
         assert not dut_if.read_rs_issue_for(RS_MEM)["valid"]
 
-        # First edge: the selected combinational lane enters its SQ-local and
-        # generic CDB registers.  The early update must appear immediately,
-        # while both the SQ state write and MEM_RS stage-2 issue remain pending.
+        # First edge: both CDB copies register and the early update appears.
+        # The SQ write and MEM_RS stage2 capture wait for the next edge.
         await dut_if.step()
         dut_if.clear_fu_complete(FU_FP_ADD)
         if target_lane == 1:
@@ -655,9 +642,8 @@ async def test_split_sq_local_cdb_lanes_preserve_repair_timing(dut: Any) -> None
         assert not (int(dut.u_sq.sq_addr_valid.value) & 1)
         assert not dut_if.read_rs_issue_for(RS_MEM)["valid"]
 
-        # Second edge: SQ consumes that early update and MEM_RS exposes the
-        # store from stage 2 with the same repaired base.  An extra register in
-        # either SQ-local copy would move sq_addr_valid to a later edge.
+        # Second edge: SQ consumes the update; MEM_RS stage2 presents the
+        # store with the same repaired base.
         await dut_if.step()
         assert not read_sq_early_addr_update(dut)[0]
         assert int(dut.u_sq.sq_addr_valid.value) & 1

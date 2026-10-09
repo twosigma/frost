@@ -20,13 +20,6 @@ an evaluator that computes the expected result in software. Tables typed
 ``dict[str, Callable]`` hold encoders only; the tests model those instructions'
 effects themselves.
 
-    - R_ALU: register-register operations (add, sub, mul, div, ...)
-    - I_ALU: immediate ALU operations (addi, andi, slli, ...)
-    - LOADS: loads (lw, lh, lb, lhu, lbu)
-    - STORES: stores (sw, sh, sb), encoder only
-    - BRANCHES: conditional branches (beq, bne, blt, ...), encoder only
-    - JUMPS: jumps (jal, jalr), encoder only
-
 Example::
 
     encoder, evaluator = R_ALU["add"]
@@ -352,8 +345,7 @@ def make_branch_encoder(f3: int) -> Callable:
     return lambda rs2, rs1, offset: enc_b(rs2, rs1, f3, offset)
 
 
-# Operation tables: mnemonic -> (encoder, evaluator). The encoder builds the raw
-# bits driven into the DUT. The evaluator models the expected result.
+# Operation tables: mnemonic -> (encoder, evaluator).
 R_ALU: dict[str, tuple[Callable, Callable]] = {
     # base-ISA
     "add": (make_r_encoder(0x00, 0x0), add),
@@ -627,22 +619,6 @@ C_JUMPS: dict[str, Callable] = {
 # registers are 64 bits wide, so the evaluators unbox single-precision operands
 # and NaN-box single-precision results (unbox32, box32). FMV.X.W is the
 # exception: it moves the raw low word without a NaN-box check.
-#
-# FP instruction categories:
-#   - FP_ARITH_2OP: two-operand arithmetic (rd, rs1, rs2)
-#   - FP_ARITH_1OP: single-operand arithmetic (rd, rs1), such as fsqrt
-#   - FP_FMA: fused multiply-add (rd, rs1, rs2, rs3)
-#   - FP_SGNJ: sign injection (rd, rs1, rs2)
-#   - FP_MINMAX: min/max (rd, rs1, rs2)
-#   - FP_CMP: comparison (rd, rs1, rs2), result in an integer register
-#   - FP_CVT_F2I: FP to int conversion (rd=int, rs1=fp)
-#   - FP_CVT_I2F: int to FP conversion (rd=fp, rs1=int)
-#   - FP_CVT_F2F: FP to FP conversion (rd=fp, rs1=fp)
-#   - FP_MV_F2I: move FP bits to int (rd=int, rs1=fp)
-#   - FP_MV_I2F: move int bits to FP (rd=fp, rs1=int)
-#   - FP_CLASS: classify an FP value (rd=int, rs1=fp)
-#   - FP_LOADS: load from memory into an FP register (rd=fp, rs1=int, imm)
-#   - FP_STORES: store an FP register to memory (rs2=fp, rs1=int, imm)
 #
 # Two-operand entries are (encoder, evaluator):
 #   encoder: lambda rd, rs1, rs2 -> 32-bit instruction

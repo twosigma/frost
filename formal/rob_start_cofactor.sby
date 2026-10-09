@@ -11,10 +11,8 @@ smtbmc boolector
 [script]
 read -formal -D ROB_START_LOCAL_PROOF -sv riscv_pkg.sv
 read_verilog -formal -D ROB_START_LOCAL_PROOF -sv reorder_buffer.sv
-# The properties hold whatever the payload RAMs and the serializer return,
-# so cut them; their outputs become arbitrary before any optimization. The
-# real allocation-class and valid flip-flops and the one-hot head-mask
-# updates stay.
+# Make RAM and serializer outputs arbitrary before optimization. Retain
+# allocation-class and valid registers and one-hot head-mask updates.
 delete t:sdp_dist_ram t:mwp_dist_ram t:mwp_dist_ram_ohread t:rob_serializer
 proc
 setundef -undriven -anyseq

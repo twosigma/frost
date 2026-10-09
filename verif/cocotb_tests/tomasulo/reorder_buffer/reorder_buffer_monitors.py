@@ -12,15 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Monitors for Reorder Buffer verification.
-
-Monitors run as background coroutines that check DUT outputs every cycle.
-
-Monitors:
-- CommitMonitor: Verifies commit outputs against queued expected commits
-- AllocationMonitor: Verifies allocation responses against queued expectations
-- StatusMonitor: Checks that the status signals (full, empty, count) agree
-"""
+"""Background monitors for ROB commits, allocations, and status."""
 
 import cocotb
 from cocotb.triggers import RisingEdge, ReadOnly
@@ -37,20 +29,16 @@ from .reorder_buffer_interface import (
 
 
 class CommitMonitor:
-    """Monitor for commit output verification.
+    """Compare slot-1 commits with queued expectations each cycle.
 
-    Checks the slot-1 commit bus every cycle. When the DUT commits an entry,
-    the monitor pops the next expected commit and compares the fields listed
-    in _check_commit_dict, some only when they apply: value only with a
-    destination, exc_cause only on an exception, redirect_pc only on a
-    misprediction or MRET, and so on.
+    _check_commit_dict checks only applicable fields: value requires a
+    destination, exc_cause an exception, and redirect_pc a misprediction or
+    MRET. check_serializing controls checks of serializer flags.
 
     Usage:
         expected_commits = deque()
         monitor = CommitMonitor(dut, expected_commits)
         cocotb.start_soon(monitor.run())
-
-        # In test:
         expected_commits.append(ExpectedCommit(...))
     """
 
@@ -85,7 +73,6 @@ class CommitMonitor:
             if not self.dut.i_rst_n.value:
                 continue
 
-            # Unpack the commit struct (Verilator flattens packed structs)
             commit = read_commit_output(self.dut)
 
             if commit["valid"]:
@@ -240,17 +227,12 @@ class CommitMonitor:
 
 
 class AllocationMonitor:
-    """Monitor for allocation response verification.
-
-    Verifies that slot-1 allocation responses (ready, tag) match expected
-    values.
+    """Compare slot-1 allocation responses with queued (ready, tag) expectations.
 
     Usage:
         expected_allocs = deque()
         monitor = AllocationMonitor(dut, expected_allocs)
         cocotb.start_soon(monitor.run())
-
-        # In test:
         expected_allocs.append((True, expected_tag))
     """
 
@@ -333,16 +315,12 @@ class AllocationMonitor:
 
 
 class StatusMonitor:
-    """Monitor for status signal verification.
+    """Check full, empty, and count each cycle.
 
-    Continuously checks that full, empty, and count signals are consistent.
-    o_full is the registered dispatch flag. It is set when the previous
-    cycle's occupancy plus its allocations filled the ROB (after a flush,
-    when the surviving entries do), with no credit for that cycle's
-    retirements. It therefore equals whether count plus the previous cycle's
-    retirements (the registered o_commit and o_commit_2 valids) reaches the
-    depth. The check relies on the dispatch contract that no allocation is
-    requested while the ROB is full.
+    o_full predicts occupancy without credit for same-cycle retirement.
+    After the edge, count plus the registered commit valids must reach depth
+    exactly when full is set. After a flush, use the surviving entries.
+    This relies on dispatch never requesting allocation while full.
 
     Usage:
         monitor = StatusMonitor(dut)
@@ -385,7 +363,6 @@ class StatusMonitor:
 
         errors = []
 
-        # Count should match full/empty
         if empty and count != 0:
             errors.append(f"empty=True but count={count}")
 
@@ -398,11 +375,9 @@ class StatusMonitor:
         if not full and not empty and count == 0:
             errors.append("count=0 but empty=False")
 
-        # Can't be both full and empty
         if full and empty:
             errors.append("Both full and empty are True")
 
-        # Count should be in valid range
         if count > self.depth:
             errors.append(f"count={count} exceeds depth={self.depth}")
 

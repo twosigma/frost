@@ -14,11 +14,8 @@
 
 """IEEE 754 reference models for RISC-V F and D operations.
 
-Bit patterns are converted to and from Python floats with ``struct``. Both
-precisions cover arithmetic (add, sub, mul, div, sqrt, fma), sign injection,
-min/max, comparison, float/int conversion and classification; the bit moves
-(FMV.X.W, FMV.W.X) are single precision only. Each fused multiply-add result
-is the exact value rounded once.
+Bit patterns are converted to and from Python floats with ``struct``.
+Fused multiply-add returns the exact result rounded once.
 
 NaN results are the canonical quiet NaN (0x7FC00000 single,
 0x7FF8000000000000 double); sign injection, the bit moves and the FP loads
@@ -49,10 +46,9 @@ if TYPE_CHECKING:
 def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
     """Compute single-precision ``(a * b) + c`` with one rounding step.
 
-    Going through Python float64 would round twice, once to double and once
-    to single. Instead the operands become exact ``Decimal`` values, the
-    product and sum are formed at 150 digits of precision, and the result is
-    rounded once to float32 with explicit guard, round and sticky bits.
+    Python float64 would round twice. Compute the product and sum with
+    ``Decimal`` at 150 digits of precision, then round to float32 with
+    explicit guard, round, and sticky bits.
     Infinities and inf * 0 are resolved before the Decimal path.
 
     Returns:
@@ -77,7 +73,7 @@ def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
     a_zero = _is_zero(a_bits)
     b_zero = _is_zero(b_bits)
 
-    # inf * 0 = NaN. Callers check this too; kept so the helper stands alone.
+    # inf * 0 = NaN, even when callers have not screened it.
     if (a_inf and b_zero) or (a_zero and b_inf):
         return FP_CANONICAL_NAN
 
@@ -101,9 +97,8 @@ def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
         c_sign = _get_sign(c_bits)
         return FP_NEG_INF if c_sign else FP_POS_INF
 
-    # All operands are finite. localcontext() keeps the precision and rounding
-    # settings out of the global Decimal context. The precision has to hold
-    # the 48-bit product plus the alignment shift against the addend.
+    # Keep Decimal settings local. Precision must hold the 48-bit product
+    # plus its alignment shift against the addend.
     with localcontext() as ctx:
         ctx.prec = 150
         ctx.rounding = ROUND_HALF_EVEN
@@ -121,7 +116,7 @@ def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
 
             if exp == 0:
                 if mant == 0:
-                    return Decimal("0") if sign == 0 else Decimal("-0")  # ±0
+                    return Decimal("0") if sign == 0 else Decimal("-0")  # Signed zero
                 # Subnormal: (-1)^sign * 2^(-126) * (0.mant)
                 value = Decimal(mant) * Decimal(2) ** Decimal(-149)
             else:
@@ -146,10 +141,8 @@ def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
             sign = 1 if d < 0 else 0
             d_abs = abs(d)
 
-            # Find e with 2^e <= d_abs < 2^(e+1) by stepping through powers of
-            # two, so no floating-point log is involved. The search is not
-            # clamped to the float32 range: values beyond it still need an
-            # exponent for the overflow and underflow checks below.
+            # Find e with 2^e <= d_abs < 2^(e+1) by stepping through powers of two.
+            # Search beyond the float32 range for overflow and underflow.
             two = Decimal(2)
 
             if d_abs >= 1:
@@ -270,9 +263,8 @@ def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
 def _fma_float64(a_bits: int, b_bits: int, c_bits: int) -> int:
     """Compute double-precision fused multiply-add with single rounding.
 
-    Integer arithmetic on the unpacked significands keeps the product and sum
-    exact; the only rounding is the final one to double. It also gives the
-    same answer everywhere, whether or not ``math.fma`` exists.
+    Integer arithmetic keeps the product and sum exact until rounding to
+    double, independent of ``math.fma`` availability.
     """
 
     def _unpack(bits: int) -> tuple[int, int, int]:

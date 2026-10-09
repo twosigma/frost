@@ -179,7 +179,7 @@ def test_divided_clock_and_explicit_zero_uncertainty(tmp_path: Path) -> None:
         # A clock carrying more precision than report_timing prints.
         ("3.3333", "3.333", True),
         ("3.333", "3.3334", True),
-        # A genuinely different requirement, one printed digit away.
+        # A different requirement, one printed digit away.
         ("3.333", "3.334", False),
         ("3.333", "6.666", False),
     ],

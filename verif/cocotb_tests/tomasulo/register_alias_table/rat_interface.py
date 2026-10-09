@@ -18,16 +18,16 @@ Verilator flattens packed structs into bit vectors, so this interface unpacks
 the lookup results. It also keeps a shadow RATModel and drives synthetic
 ROB-valid, epoch, and head-tag inputs in place of a real ROB.
 
-The synthetic ROB-valid mask counts a tag live from its rename or checkpoint
-save until a commit that matches the shadow RAT's current mapping of its
-destination, or a full flush. So a tag renamed again before it commits, a tag
-committed without a destination, and a checkpoint owner's branch tag stay
-live until the next full flush. The tests rely on this: their models ignore
-ROB validity, and they commit tags that a real ROB would not retire. Epoch
-bits flip only when a checkpoint owner allocates; a test that needs the
-post-allocation epoch of a renamed tag sets it with add_rob_entry_epoch_bits.
-The DUT and the shadow model see the same mask, so restores agree, but a
-restore rarely finds a dead tag to filter out.
+The synthetic ROB counts references from renames and checkpoint saves. Only
+a commit matching the shadow RAT's current mapping decrements a reference;
+a full flush clears all references. Overwritten mappings, commits without
+destinations, and checkpoint branch references can therefore keep tags live
+until a full flush. Tests can commit tags a real ROB would not retire.
+
+Epochs toggle automatically only for checkpoint branches. Tests set renamed
+tags' epochs explicitly with add_rob_entry_epoch_bits when needed. The DUT and
+shadow model share the validity and epoch masks for restore filtering; model
+lookups use only RAT validity. This synthetic ROB often leaves tags live.
 """
 
 from typing import Any
@@ -104,11 +104,7 @@ class RATInterface:
         return self.dut.i_rst_n
 
     async def reset_dut(self, cycles: int = 5) -> None:
-        """Reset the DUT.
-
-        After reset completes, returns at a falling edge so that signals
-        driven immediately after reset will be stable before the next rising edge.
-        """
+        """Reset for cycles rising edges; return at a falling edge to drive inputs."""
         self._init_inputs()
         self.dut.i_rst_n.value = 0
 
@@ -124,7 +120,7 @@ class RATInterface:
         await FallingEdge(self.clock)
 
     async def wait_rising(self) -> None:
-        """Wait for the rising edge before sampling outputs."""
+        """Wait for a rising edge."""
         await RisingEdge(self.clock)
 
     async def step(self) -> None:
@@ -208,12 +204,10 @@ class RATInterface:
         self.dut.i_ras_tos.value = 0
         self.dut.i_ras_valid_count.value = 0
         self.dut.i_ras_top.value = 0
-        # Slot-2-branch checkpoint flag: selects the snapshot overlay of
-        # slot-1's same-cycle rename.
+        # A slot-2 checkpoint includes slot 1's same-cycle rename.
         self.dut.i_checkpoint_save_for_slot2.value = 0
 
-        # Dispatch's early allocation candidates and the bundle fire, kept
-        # consistent with the drives above by _drive_alloc_candidates.
+        # Keep dispatch candidates consistent with the rename/save drives.
         self._alloc_valid_drv = 0
         self._alloc_valid_2_drv = 0
         self._checkpoint_save_drv = 0
@@ -262,7 +256,7 @@ class RATInterface:
         self._drive_rob_entry_valid()
 
     def _mark_checkpoint_owner_allocated(self, branch_tag: int) -> None:
-        """Model the ROB allocation that owns a same-cycle checkpoint save."""
+        """Record the branch's ROB allocation on a checkpoint save."""
         tag = branch_tag & MASK_TAG
         self._rob_tag_refcounts[tag] += 1
         self._rob_entry_epoch_mask ^= 1 << tag
@@ -513,11 +507,10 @@ class RATInterface:
     # =========================================================================
 
     def _drive_alloc_candidates(self) -> None:
-        """Drive dispatch's candidate inputs to match the rename and save drives.
+        """Drive candidates consistent with dispatch's rename/save contract.
 
-        In the core, i_alloc_valid is the bundle fire and slot 1's destination,
-        i_alloc_valid_2 the fire and slot 2's, a save implies the fire, and a
-        save's slot-2 flag equals the slot-2 checkpoint candidate.
+        Each alloc_valid equals fire AND has_dest. A save requires fire and
+        a slot-2 flag equal to the slot-2 checkpoint candidate.
         """
         self.dut.i_alloc_has_dest.value = self._alloc_valid_drv
         self.dut.i_alloc_has_dest_2.value = self._alloc_valid_2_drv
@@ -571,7 +564,7 @@ class RATInterface:
         self._apply_pending_cycle_updates()
 
     async def rename(self, dest_rf: int, dest_reg: int, rob_tag: int) -> None:
-        """Perform rename transaction: drive on falling, wait rising+falling, clear."""
+        """Drive a rename between falling edges, then clear it."""
         await FallingEdge(self.clock)
         self.drive_rename(dest_rf, dest_reg, rob_tag)
         await RisingEdge(self.clock)
@@ -739,7 +732,7 @@ class RATInterface:
         self._apply_pending_cycle_updates()
 
     async def checkpoint_restore(self, checkpoint_id: int) -> tuple[int, int, int]:
-        """Perform checkpoint restore transaction.
+        """Restore a checkpoint.
 
         Returns (ras_tos, ras_valid_count, ras_top), read in the restore
         cycle: the outputs follow the restore ID combinationally.

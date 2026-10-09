@@ -53,14 +53,10 @@ REFERENCES_DIR = ARCH_TEST_APP_DIR / "references"
 
 SUITE_ROOT = ARCH_TEST_DIR / "riscv-test-suite"
 
-# Suite directories under riscv-test-suite that each extension's tests come
-# from. rv64i_m holds the RV64 tests. The F and D tests that RV32 and RV64
-# share (fadd, fmadd, fdiv, fsqrt, fcvt.w.s, fcvt.s.d, ...) exist only under
-# rv32i_m; rv64i_m/F and rv64i_m/D hold just the RV64-only conversions and
-# moves. Only tests whose RVTEST_ISA lists RV64 run, and only the .S files
-# directly in each src directory (the *_b15 fused multiply-add sets in its
-# subdirectories do not). This must match EXTENSION_SUITES in
-# sw/apps/arch_test/generate_references.py.
+# rv32i_m holds F and D tests shared with RV64; rv64i_m holds RV64-only
+# tests. Select only RVTEST_ISA strings naming RV64 and .S files directly in
+# src/, excluding nested *_b15 sets. Keep this mapping aligned with
+# EXTENSION_SUITES in sw/apps/arch_test/generate_references.py.
 DEFAULT_SUITES = ("rv64i_m",)
 EXTENSION_SUITES: dict[str, tuple[str, ...]] = {
     "F": ("rv64i_m", "rv32i_m"),
@@ -93,8 +89,7 @@ SUPPORTED_EXTENSIONS = [
 # (SM3/SM4).
 # privilege: FROST implements M, S, and U modes but no hypervisor. The envcfg
 # tests are left out: they declare Zicbom, Zicboz, and Ssdtso, and FROST's
-# menvcfg implements only STCE. The directed sw/apps/umode_test covers U-mode,
-# including illegal M-CSR and MRET access from U.
+# menvcfg implements only STCE.
 EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "K": {"pack", "packh", "packw", "brev8"},
     "privilege": {"ebreak", "ecall", "misalign"},
@@ -119,9 +114,7 @@ SIM_MAX_TEST_CASES = 5000
 # fused multiply-add *_b1 sets that --no-sim-filter adds, in the ddr tier.
 ARCH_SIM_TIMEOUT_SEC = int(os.environ.get("FROST_ARCH_SIM_TIMEOUT_SEC", "12600"))
 
-# Memory configurations decide where a test's code, data, and signature live,
-# so a failure points at one path. Selected with --mem-config and passed to the
-# arch_test Makefile as MEM_CONFIG, which picks the linker script and crt0.
+# --mem-config sets the Makefile's MEM_CONFIG, selecting linker script and crt0.
 #   bram   - code, data, and signature in low BRAM (pure ISA conformance).
 #   icache - code in DDR (the L1I fetch path under test), data and signature in
 #            low BRAM (isolates instruction fetch from the D-side cached tier).
@@ -241,12 +234,10 @@ def get_reference_path(test_src: Path) -> Path:
 def compile_test(
     test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG
 ) -> tuple[bool, str]:
-    """Compile a single arch test.
+    """Compile an arch test; return (success, combined_make_output).
 
-    Returns (success, combined_make_output). mem_config selects the linker
-    script and crt0 (and the BRAM/DDR section split) through the arch_test
-    Makefile's MEM_CONFIG variable. The output lets the caller tell a low-BRAM
-    capacity overflow (a DDR-only test) from a real compile failure.
+    mem_config selects the linker script and crt0 through MEM_CONFIG. The caller
+    uses the output to distinguish low-BRAM overflow from other build failures.
     """
     env = dict(os.environ)
     subprocess.run(
@@ -280,14 +271,9 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
 
     os.environ["SIM"] = "verilator"
     env = runner.setup_environment()
-    # Arch tests use the hardware memory map: the boot stub always comes from
-    # the 256 KiB low BRAM (sw.mem). How much of the test's code, data, and
-    # signature lives in the cached DDR region (sw_ddr.mem, preloaded into the
-    # behavioral DDR) depends on --mem-config: all of it for ddr, the code for
-    # icache, and none for bram (which emits an empty sw_ddr.mem). The build
-    # uses the shared sim_build directory.
+    # The boot stub uses 256 KiB low BRAM. MEM_CONFIG selects which test
+    # sections the DDR model preloads from sw_ddr.mem; see MEMORY_CONFIGS.
     sim_build_dir = runner._get_sim_build_dir(env)
-    # A 50M-cycle budget instead of the 500K application default.
     env["COCOTB_MAX_CYCLES"] = "50000000"
     # RVMODEL_HALT writes the signature without checking the UART TX status, so
     # a large dump overflows the transmit FIFO. The dump is read from the CPU's
@@ -306,7 +292,6 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
         if needs_clean:
             subprocess.run(["make", "clean"], check=False, env=env)
 
-        # Point the sw.mem / sw64.mem / sw_ddr.mem symlinks at the compiled test
         for mem_name in ("sw.mem", "sw64.mem", "sw_ddr.mem"):
             mem_path = Path(mem_name)
             if mem_path.exists() or mem_path.is_symlink():
@@ -339,29 +324,20 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
 
 
 def extract_signature(sim_output: str) -> list[str]:
-    """Extract hex signature lines from simulation UART output.
+    """Collect lowercase hex words before a line starting with <<PASS>>.
 
-    The RVMODEL_HALT macro prints each signature word as 8 lowercase hex
-    characters followed by a newline, then <<PASS>>. Every 8-character hex line
-    up to the standalone <<PASS>> marker is collected (the marker must start
-    the line; "success_marker=<<PASS>>" inside a log message does not count).
-    Interspersed cocotb log lines are ignored.
+    RVMODEL_HALT prints one 8-digit word per line, then the marker. The program
+    prints no other bare 8-digit hex lines. Ignore interspersed simulator logs;
+    a marker embedded in a log message does not end the dump.
     """
     lines = sim_output.splitlines()
     sig_lines: list[str] = []
     for line in lines:
         stripped = line.strip()
-        # Signature words are exactly 8 hex characters, one per line.
         if len(stripped) == 8 and all(c in "0123456789abcdefABCDEF" for c in stripped):
             sig_lines.append(stripped.lower())
         elif sig_lines and stripped.startswith("<<PASS>>"):
-            # The signature dump is terminated by the standalone <<PASS>> marker.
             break
-        # Any other line (cocotb logs, banners, blanks) is skipped without
-        # discarding the words collected so far: cocotb logs periodically
-        # during a long dump, so its lines can fall between signature words.
-        # Signature words are the only bare 8-hex-digit lines the program
-        # prints, so collecting them all up to <<PASS>> is exact.
     return sig_lines
 
 

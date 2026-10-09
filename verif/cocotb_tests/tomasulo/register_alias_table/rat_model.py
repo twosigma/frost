@@ -12,17 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Software model of Register Alias Table RTL behavior.
-
-Tracks:
-- INT and FP rename table entries (valid + tag per register)
-- Source lookup results (renamed flag, tag, value)
-- Commit clear with tag matching
-- Checkpoint save/restore/free
-- Flush all behavior
-
-Tests compare its expected outputs with the DUT.
-"""
+"""Register Alias Table reference model for comparison with the DUT."""
 
 from dataclasses import dataclass, field
 
@@ -82,27 +72,7 @@ class CheckpointSlot:
 
 
 class RATModel:
-    """Software model of the Register Alias Table.
-
-    Tracks the expected RAT state and computes the outputs the tests compare
-    against the DUT.
-
-    Usage:
-        model = RATModel()
-
-        # Rename a register
-        model.rename(dest_rf=0, dest_reg=5, rob_tag=3)
-
-        # Look up source
-        result = model.lookup_int(addr=5, regfile_data=0)
-        assert result.renamed
-        assert result.tag == 3
-
-        # Commit clear
-        model.commit(dest_rf=0, dest_reg=5, tag=3)
-        result = model.lookup_int(addr=5, regfile_data=42)
-        assert not result.renamed
-    """
+    """Track expected RAT state and compute lookup results."""
 
     def __init__(self) -> None:
         """Initialize RAT model."""
@@ -130,7 +100,7 @@ class RATModel:
             return LookupResult(renamed=False, tag=0, value=0)
 
         entry = self.int_rat[addr]
-        # Zero-extend XLEN to FLEN
+        # Regfile values are 64 bits.
         value = regfile_data & MASK64
         if entry.valid:
             return LookupResult(renamed=True, tag=entry.tag, value=value)
@@ -217,11 +187,11 @@ class RATModel:
             branch_tag: ROB tag of the branch instruction.
             ras_tos: RAS top-of-stack pointer.
             ras_valid_count: RAS valid entry count.
-            overlay_rename: Optional same-cycle slot-1 rename to include in
-                the saved image for a slot-2 branch checkpoint.
-            rob_entry_epoch: Current ROB epoch bitmask. Checkpoint snapshots
-                store producer epochs and the checkpoint branch's post-alloc
-                epoch so restore can reject recycled tags.
+            overlay_rename: Optional (dest_rf, dest_reg, rob_tag) for slot 1's
+                same-cycle rename when the branch is in slot 2.
+            rob_entry_epoch: Current ROB epoch bitmask. Save current producer
+                epochs, but post-allocation epochs for the branch and overlay,
+                so restore can reject reused tags.
             ras_top: RAS top entry.
         """
         slot = self.checkpoints[checkpoint_id]

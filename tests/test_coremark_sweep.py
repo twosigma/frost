@@ -60,10 +60,7 @@ def test_reject_bad_measurements(log: str, seeds: str, runs: int) -> None:
 
 
 def test_ensemble_is_deterministic_and_contains_all_sources() -> None:
-    """Link orders are reproducible and distinct, and each holds every source.
-
-    The first is the natural order.
-    """
+    """Link orders are distinct, with the natural order first."""
     orders = link_orders(120)
     assert orders == link_orders(120)
     assert orders[0] == SOURCES

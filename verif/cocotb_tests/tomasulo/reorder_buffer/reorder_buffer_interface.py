@@ -38,8 +38,7 @@ from cocotb_tests.cpu_structs import (
 # =============================================================================
 # Struct Bit Field Definitions
 # =============================================================================
-# These define the bit positions for fields in packed structs.
-# SystemVerilog packed structs are MSB-first (first field is at highest bits).
+# SystemVerilog packed structs place the first field at the highest bits.
 
 # reorder_buffer_alloc_req_t contains five XLEN fields: pc,
 # predicted_target, branch_target, link_addr, and csr_write_data. The other
@@ -49,10 +48,7 @@ ALLOC_REQ_WIDTH = 50 + (5 * XLEN)
 
 
 def pack_alloc_request(req: AllocationRequest) -> int:
-    """Pack AllocationRequest into a bit vector for driving i_alloc_req.
-
-    The struct fields are packed MSB-first per SystemVerilog semantics.
-    """
+    """Pack AllocationRequest into the MSB-first i_alloc_req bit vector."""
     val = 0
     bit = 0
 
@@ -281,11 +277,7 @@ def read_commit_output_2(dut: Any) -> dict[str, Any]:
 
 
 class ReorderBufferInterface:
-    """Interface to Reorder Buffer DUT.
-
-    Packs and unpacks struct signals, since Verilator flattens packed structs
-    into single bit vectors.
-    """
+    """Drive ROB requests and read packed outputs."""
 
     def __init__(self, dut: Any):
         """Initialize interface with DUT handle."""
@@ -356,9 +348,8 @@ class ReorderBufferInterface:
         self.dut.i_checkpoint_valid.value = 0
         self.dut.i_checkpoint_id.value = 0
         self.dut.i_sq_committed_empty.value = 1
-        # Zero-latency cache sync by default, as in a build without the cached
-        # tier (done tied to req): FENCE.I retires in its first
-        # SERIAL_FENCE_I_SYNC cycle.
+        # Default to immediate cache sync, as without a cached tier:
+        # FENCE.I retires in its first SERIAL_FENCE_I_SYNC cycle.
         self.dut.i_fence_i_sync_done.value = 1
         self.dut.i_widen_commit_ok.value = 1
         self.dut.i_commit_hold.value = 0
@@ -378,14 +369,12 @@ class ReorderBufferInterface:
         self.dut.i_wfi_illegal.value = 0
         self.dut.i_priv_is_u.value = 0
         self.dut.i_debug_mode.value = 0
-        # All counters enabled (the reset value). The ROB does not use this
-        # input; allocation legality reads i_counter_blocked.
+        # Enable all counters. Allocation legality uses i_counter_blocked,
+        # not this input.
         self.dut.i_mcounteren.value = 0b111
-        # FS not Off (the reset value is Initial), so the allocation-time
-        # FS-Off check never marks an FP instruction illegal.
+        # FS=Initial allows FP allocation.
         self.dut.i_mstatus_fs_off.value = 0
-        # frm = RNE (the reset value), so the reserved-frm check never marks a
-        # dynamic-rounding FP instruction illegal.
+        # frm=RNE allows dynamic-rounding FP allocation.
         self.dut.i_frm.value = 0
         self.dut.i_interrupt_pending.value = 0
         self.dut.i_flush_en.value = 0
@@ -435,10 +424,9 @@ class ReorderBufferInterface:
         return unpack_alloc_response(val)
 
     async def allocate(self, req: AllocationRequest) -> int | None:
-        """Perform allocation transaction.
+        """Drive an allocation at a falling edge; clear it at the next falling edge.
 
-        Drive on falling edge, wait for rising edge (allocation happens), then clear.
-        Returns allocated tag or None if full.
+        Return the tag if accepted at the intervening rising edge, otherwise None.
         """
         await FallingEdge(self.clock)
         self.drive_alloc_request(req)
@@ -457,9 +445,7 @@ class ReorderBufferInterface:
     def drive_cdb_write(self, write: CDBWrite) -> None:
         """Drive CDB write signals. Call on falling edge."""
         self.dut.i_cdb_write.value = pack_cdb_write(write)
-        # Mirror the tag onto the private head-match duplicate. In hardware it
-        # is a register copy of the same arbiter output, and the ROB asserts
-        # the two are equal.
+        # The private head-match tag must equal the CDB tag.
         self.dut.i_cdb_match_tag.value = write.tag
 
     def clear_cdb_write(self) -> None:

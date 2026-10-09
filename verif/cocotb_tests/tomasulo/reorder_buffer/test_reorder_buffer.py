@@ -12,28 +12,15 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Reorder buffer unit tests.
+"""Reorder buffer unit tests using ReorderBufferInterface and ReorderBufferModel.
 
-The tests drive the standalone reorder_buffer module through
-ReorderBufferInterface and, where a reference is useful, compare against
-ReorderBufferModel. They are grouped by the section banners below: directed
-tests (allocation in one and two lanes, CDB completion, in-order and 2-wide
-commit, branches and checkpoints, the serializing classes FENCE, FENCE.I,
-SFENCE.VMA, CSR, WFI and MRET, flushes, and allocation-time legality faults),
-constrained random tests, error-condition tests, coverage-gap tests,
-non-interference tests, and atomics. The six dispatch done-repair read ports
-(i_bypass_tag_*) are checked across staged LVT updates, tag wrap and reuse,
-and legal same-cycle stale CDB writes on every allocation slot and CDB lane.
+Drive clocked requests while the clock is low; they take effect on the next
+rising edge. Read settled registered outputs (count, empty, head_done) at
+the following falling edge. Sample combinational handshakes and the
+pre-update o_commit_comb bus immediately on RisingEdge, before state updates
+settle. reset_dut returns at a falling edge, ready for the first request.
 
-Clocked requests are driven while the clock is low and take effect on the
-next rising edge.
-Under Verilator a registered output (count, empty, head_done) is not visible
-until the falling edge after that rising edge, while combinational outputs
-(alloc_ready, alloc_tag, and the o_commit_comb mirror that read_commit
-returns) can be read right after the edge. reset_dut returns at a falling
-edge, so a test can drive its first request immediately.
-
-Usage (from repository root, through the pinned tools):
+Run from the repository root with the pinned tools:
     ./scripts/frost.py cocotb reorder_buffer
 """
 
@@ -110,13 +97,7 @@ def sample_flush_phase(
 
 
 async def setup_test(dut: Any) -> tuple[ReorderBufferInterface, ReorderBufferModel]:
-    """Set up test environment.
-
-    Start clock, reset DUT, initialize model.
-
-    Returns:
-        Tuple of (interface, model).
-    """
+    """Start the clock, reset the DUT, and return (interface, model)."""
     dut_if = ReorderBufferInterface(dut)
     model = ReorderBufferModel()
 
@@ -223,17 +204,11 @@ async def drive_single_alloc(
 
 @cocotb.test()
 async def test_basic_allocation(dut: Any) -> None:
-    """Allocate one entry, complete it over the CDB, and check the commit.
-
-    The sampling convention from the module docstring shows up here:
-    alloc_ready and alloc_tag are read right after the rising edge, count,
-    empty and head_done at the following falling edge.
-    """
+    """Allocate, complete over CDB, and check the commit."""
     cocotb.log.info("=== Test: Basic Allocation and Commit ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Start monitors
     commit_queue: deque[ExpectedCommit] = deque()
     commit_mon = CommitMonitor(dut, commit_queue)
     status_mon = StatusMonitor(dut)
@@ -278,7 +253,6 @@ async def test_basic_allocation(dut: Any) -> None:
 
     assert dut_if.empty, "Should be empty after commit"
     assert dut_if.count == 0, "Count should be 0"  # type: ignore[unreachable]
-    # Wait a few cycles and check monitors
     await ClockCycles(dut_if.clock, 5)
     commit_mon.check_complete()
     status_mon.check_complete()
@@ -293,7 +267,6 @@ async def test_allocation_full(dut: Any) -> None:
 
     dut_if, model = await setup_test(dut)
 
-    # Fill the buffer
     for i in range(REORDER_BUFFER_DEPTH):
         # Drive on falling edge
         await FallingEdge(dut_if.clock)
@@ -312,7 +285,6 @@ async def test_allocation_full(dut: Any) -> None:
     # Sample final state on rising edge
     await RisingEdge(dut_if.clock)
 
-    # Verify full
     assert dut_if.full, "Should be full after DEPTH allocations"
     assert dut_if.count == REORDER_BUFFER_DEPTH, (
         f"Count should be {REORDER_BUFFER_DEPTH}"
@@ -1257,12 +1229,7 @@ async def test_xlen_wide_branch_metadata(dut: Any) -> None:
 
 @cocotb.test()
 async def test_commit_struct_with_monitor(dut: Any) -> None:
-    """Check every commit field for a predicted-taken branch resolved not taken.
-
-    The CommitMonitor compares the whole commit struct against an explicit
-    ExpectedCommit, so a regression in a field no directed assert names is
-    still caught.
-    """
+    """Check monitored fields when a taken prediction resolves not taken."""
     cocotb.log.info("=== Test: Commit Struct with Monitor ===")
 
     dut_if, model = await setup_test(dut)
@@ -1337,10 +1304,7 @@ async def test_commit_struct_with_monitor(dut: Any) -> None:
 
 @cocotb.test()
 async def test_mret_commit_struct_with_monitor(dut: Any) -> None:
-    """Check every commit field for an MRET, including redirect_pc = mepc.
-
-    MRET serializes through a handshake with the trap unit.
-    """
+    """Check MRET commit metadata and redirect_pc=mepc through the trap handshake."""
     cocotb.log.info("=== Test: MRET Commit Struct with Monitor ===")
 
     dut_if, model = await setup_test(dut)
@@ -1946,10 +1910,8 @@ async def test_csr_serialization(dut: Any) -> None:
     dut_if, model = await setup_test(dut)
 
     await FallingEdge(dut_if.clock)
-    # csr_addr must name an implemented CSR. The ROB's allocation-time
-    # legality check turns an unimplemented address (such as the dataclass
-    # default 0x000) into an illegal-instruction trap at the head, with no
-    # csr_start. mscratch (0x340) is a harmless target.
+    # Use implemented CSR mscratch (0x340). The default 0x000 would record
+    # an allocation fault and trap at the head without asserting csr_start.
     req = AllocationRequest(
         pc=0x1000, dest_reg=5, dest_valid=True, is_csr=True, csr_addr=0x340
     )
@@ -2028,11 +1990,8 @@ async def test_translation_csr_done_is_held_until_sq_drain(dut: Any) -> None:
 
     assert dut_if.csr_start, "translation CSR did not start at the ready head"
 
-    # Mimic cpu_ooo's registered csr_done_q: high for one cycle while the
-    # serializer is in CSR_EXEC, then low. The serializer must record the
-    # pulse by moving to CSR_TRANSLATION_DRAIN, because the pulse does not
-    # repeat when the SQ drains. The first edge moves the serializer into
-    # CSR_EXEC; the single done cycle follows.
+    # Enter CSR_EXEC, then pulse done for one cycle as cpu_ooo's csr_done_q
+    # does. CSR_TRANSLATION_DRAIN must remember it until the SQ drains.
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
     dut_if.set_csr_done(True)
@@ -2345,8 +2304,8 @@ async def test_fs_off_slot2_blocks_widen_commit_then_traps(dut: Any) -> None:
     assert model.allocate(req_1) == tag_1
     assert model.allocate(req_2, exception=True, exc_cause=EXC_ILLEGAL_INSTR) == tag_2
 
-    # As above, remove the live gate after allocation so only the stored fault
-    # can block widened retirement and drive the later trap.
+    # Clear the live gate after allocation; the stored fault must still
+    # block widened retirement and cause the trap.
     dut.i_mstatus_fs_off.value = 0
 
     cdb_2 = CDBWrite(tag=tag_2, value=0x2222)
@@ -2380,15 +2339,12 @@ async def test_fs_off_slot2_blocks_widen_commit_then_traps(dut: Any) -> None:
 
 @cocotb.test()
 async def test_dyn_rm_with_reserved_frm_is_illegal(dut: Any) -> None:
-    """An FP op flagged fp_dyn_rm is illegal at allocation while frm is 5, 6, or 7.
+    """fp_dyn_rm captures an allocation fault when frm is 5, 6, or 7.
 
-    For each reserved frm the op allocates in slot 1, then in slot 2 beside
-    an ordinary instruction. frm returns to RNE right after allocation, and
-    the op must still trap with IllegalInstr at the head while the slot-1
-    instruction retires alone. The trapping requests carry csr_op values
-    other than 111, so the check depends on fp_dyn_rm alone. fp_dyn_rm with
-    a valid frm, a static rounding mode under a reserved frm, and a non-FP
-    instruction with funct3 111 all retire normally.
+    Restore frm=RNE after allocation; the stored fault must still block
+    widened retirement and trap. Use csr_op values other than 111 to check
+    that only fp_dyn_rm controls this fault. Valid frm, static rounding, and
+    non-FP instructions with funct3=111 remain legal.
     """
     dut_if, _ = await setup_test(dut)
 
@@ -2515,15 +2471,11 @@ async def test_same_cycle_stale_exception_does_not_override_alloc_illegal(
 
 @cocotb.test()
 async def test_stale_cdb_fp_flags_lose_to_reallocation(dut: Any) -> None:
-    """A stale CDB write in a tag's reallocation cycle leaves no FP flags behind.
+    """Reallocation clears FP flags despite a same-tag stale CDB write.
 
-    A store or a conditional branch never completes on the CDB, so the flags
-    it retires with are the zero that allocation writes. A stale completion
-    with every flag set lands on each allocation slot's tag, from each CDB
-    lane, in the cycle that tag is reallocated to a store or a branch; the
-    pair then retires two-wide, which reads the head and head+1 FP-flag RAMs,
-    and both commits must carry zero flags. Legal completions on later tags
-    must still retire their flags through both commit slots.
+    The stores and branches here complete without CDB, so their flags must
+    stay zero. Exercise both allocation ports, CDB lanes, and commit slots;
+    later legal completions must still retire their flags.
     """
     dut_if, _ = await setup_test(dut)
     dut.i_commit_hold.value = 1
@@ -2709,7 +2661,6 @@ async def test_random_allocation_commit(dut: Any) -> None:
             dut_if.clear_cdb_write()
 
         else:
-            # Idle cycle.
             await RisingEdge(dut_if.clock)
             await FallingEdge(dut_if.clock)
 
@@ -3094,16 +3045,13 @@ async def test_back_to_back_commits(dut: Any) -> None:
 
 
 # =============================================================================
-# Coverage Gap Tests
+# Checkpoints, control flow, and serialization tests
 # =============================================================================
 
 
 @cocotb.test()
 async def test_checkpoint_assignment(dut: Any) -> None:
-    """A branch allocated with checkpoint_id=2 commits with has_checkpoint set.
-
-    The commit must carry has_checkpoint=True and checkpoint_id=2.
-    """
+    """Check that a branch commits with has_checkpoint=True and checkpoint_id=2."""
     cocotb.log.info("=== Test: Checkpoint Assignment ===")
 
     dut_if, model = await setup_test(dut)
@@ -3451,11 +3399,7 @@ async def test_exception_on_csr(dut: Any) -> None:
 
 @cocotb.test()
 async def test_flush_during_serialization(dut: Any) -> None:
-    """flush_all during SERIAL_CSR_EXEC empties the buffer and resets the serializer.
-
-    A plain instruction is allocated and committed afterwards to show the
-    serializer is back in IDLE.
-    """
+    """Full flush resets SERIAL_CSR_EXEC; an ordinary instruction can then retire."""
     cocotb.log.info("=== Test: Flush During Serialization ===")
 
     dut_if, model = await setup_test(dut)
@@ -3515,7 +3459,7 @@ async def test_flush_during_serialization(dut: Any) -> None:
 
 
 # =============================================================================
-# Non-Interference & Additional Coverage Tests
+# Concurrent updates and recovery tests
 # =============================================================================
 
 
@@ -3600,11 +3544,7 @@ async def test_simultaneous_alloc_cdb_branch_noninterference(dut: Any) -> None:
 
 @cocotb.test()
 async def test_fp_flags_commit_verification(dut: Any) -> None:
-    """FP exception flags written over the CDB appear unchanged in the commit.
-
-    The CDB write carries overflow + inexact (0b00101); the commit struct must
-    carry the same value.
-    """
+    """CDB overflow and inexact flags (0b00101) reach the commit unchanged."""
     cocotb.log.info("=== Test: FP Flags Commit Verification ===")
 
     dut_if, model = await setup_test(dut)
@@ -3733,11 +3673,7 @@ async def test_lr_sc_commit_behavior(dut: Any) -> None:
 
 @cocotb.test()
 async def test_flush_during_wfi(dut: Any) -> None:
-    """flush_all during WFI_WAIT empties the buffer and returns the serializer to IDLE.
-
-    A plain instruction is allocated and committed afterwards as the recovery
-    check.
-    """
+    """Full flush resets WFI_WAIT; an ordinary instruction can then retire."""
     cocotb.log.info("=== Test: Flush During WFI ===")
 
     dut_if, model = await setup_test(dut)
@@ -3761,7 +3697,6 @@ async def test_flush_during_wfi(dut: Any) -> None:
     assert dut_if.empty, "Buffer should be empty after flush_all during WFI_WAIT"
     assert dut_if.count == 0, "Count should be 0"  # type: ignore[unreachable]
 
-    # Recovery check.
     await FallingEdge(dut_if.clock)
     req = make_simple_alloc_request(pc=0x5000, rd=1)
     dut_if.drive_alloc_request(req)
@@ -3786,11 +3721,7 @@ async def test_flush_during_wfi(dut: Any) -> None:
 
 @cocotb.test()
 async def test_flush_during_mret(dut: Any) -> None:
-    """flush_all during MRET_EXEC empties the buffer and returns the serializer to IDLE.
-
-    A plain instruction is allocated and committed afterwards as the recovery
-    check.
-    """
+    """Full flush resets MRET_EXEC; an ordinary instruction can then retire."""
     cocotb.log.info("=== Test: Flush During MRET ===")
 
     dut_if, model = await setup_test(dut)
@@ -3817,7 +3748,6 @@ async def test_flush_during_mret(dut: Any) -> None:
     assert dut_if.empty, "Buffer should be empty after flush_all during MRET_EXEC"
     assert dut_if.count == 0, "Count should be 0"  # type: ignore[unreachable]
 
-    # Recovery check.
     await FallingEdge(dut_if.clock)
     req = make_simple_alloc_request(pc=0x7000, rd=2)
     dut_if.drive_alloc_request(req)
@@ -3886,8 +3816,7 @@ async def test_sequential_serializing_instructions(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.set_csr_done(False)
 
-    # The FENCE is now at the head. It was marked done at allocation and the
-    # SQ is empty by default, so it commits without further input.
+    # The head FENCE is already done and the SQ is empty, so it may commit.
     await ClockCycles(dut_if.clock, 5)
     await FallingEdge(dut_if.clock)
 
@@ -3898,11 +3827,7 @@ async def test_sequential_serializing_instructions(dut: Any) -> None:
 
 @cocotb.test()
 async def test_alloc_ready_deasserts_during_flush(dut: Any) -> None:
-    """alloc_ready is low while flush_en or flush_all is asserted.
-
-    It reasserts once the flush input clears. This pins the current behavior
-    so a change to the allocation gate is caught.
-    """
+    """alloc_ready stays low during either flush and reasserts when the input clears."""
     cocotb.log.info("=== Test: alloc_ready Deasserts During Flush ===")
 
     dut_if, model = await setup_test(dut)

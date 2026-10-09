@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Contract test for the simplified payload write enable (ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0)."""
+"""Test payload capture with ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0."""
 
 from typing import Any
 
@@ -59,9 +59,8 @@ async def test_payload_write_without_refill_qualification(dut: Any) -> None:
     assert passthrough.valid and passthrough.tag == 4 and passthrough.value == 0x5678
     await dut_if.step()
     assert not dut_if.read_result_pending()
-    # The granted pass-through leaves result_pending low, but held_result
-    # still captured its value on the grant edge (valid alone is the write
-    # enable in this mode). After the CDB register, the wrapper restores a live
-    # ALU value from o_held_value, using live selects registered on the same
-    # edge (CDB arbiter README, "Live ALU values").
+    # A granted pass-through still writes held_result: valid is the write
+    # enable in this mode. The wrapper uses o_held_value and live selects
+    # registered on this edge to restore the ALU value after the CDB register
+    # (CDB arbiter README, "Live ALU values").
     assert dut_if.read_held_value() == 0x5678

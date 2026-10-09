@@ -15,21 +15,16 @@
  */
 
 /*
- * Frozen pre-launch-squash FP shim reference (real engine, no FORMAL model).
- * Keep its behavior independent of the optimized shim.
+ * Launch-gated FP shim reference with the real engine. Keep its behavior
+ * independent of the production shim.
  *
- * Starts each FP_RS issue on fp_engine, which runs every FP compute operation
- * one at a time, and packs the engine's result into fu_complete_t for the CDB
- * adapter. One tag register tracks the operation in the engine. o_fu_busy is
- * high whenever the engine is not idle, its result cycle included, and the
- * wrapper also stops FP_RS while the adapter holds a result, so the engine's
- * one-cycle result always finds the adapter free.
+ * The engine runs one operation at a time, tracked by tag_q. o_fu_busy stays
+ * high through the result cycle. The wrapper also blocks FP_RS while the CDB
+ * adapter holds a result, so the engine's one-cycle result finds it free.
  *
- * A full flush, or a partial flush that covers the operation (the ROB-age
- * compare the rest of the back end uses), kills it in the engine, which is
- * idle again on the next cycle. An issue the same flush covers never starts.
- * A flush in the result cycle itself is left to the adapter, which sees the
- * same flush.
+ * A full flush, or a partial flush covering the operation's ROB tag, kills
+ * it; the engine is idle next cycle. A flushed issue never starts. A flush
+ * in the result cycle is handled by the adapter, which sees the same flush.
  */
 module fp_launch_squash_reference (
     input logic i_clk,
@@ -113,8 +108,5 @@ module fp_launch_squash_reference (
   end
 
 
-  // ===========================================================================
-  // Formal Verification
-  // ===========================================================================
 
 endmodule : fp_launch_squash_reference

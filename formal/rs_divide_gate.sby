@@ -14,16 +14,14 @@ smtbmc boolector
 [script]
 read -sv riscv_pkg.sv rs_issue2_selector.sv
 read -formal -D SYNTHESIS -D RS_PRETAG_LOCAL_PROOF -D RS_DIVIDE_GATE_LOCAL_PROOF -sv reservation_station.sv
-# u_mul_rs's shape: four entries, no src3, the allocation-indexed repair,
-# speculative data writes, and the divide gate.
+# Exercise the MUL station's divide gate.
 chparam -set DEPTH 4 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set SPECULATIVE_DATA_WRITES 1 -set DIVIDE_ISSUE_GATE 1 reservation_station
 hierarchy -top reservation_station
 # The gate proof holds whatever the payload RAMs return, initial contents included.
 delete t:sdp_dist_ram t:mwp_dist_ram t:mwp_dist_ram_ohread
 proc
 setundef -undriven -anyseq
-# Only the properties matter here. Without the output ports, opt drops the
-# operand and payload logic that feeds nothing else.
+# Drop output ports so opt can prune logic unused by the properties.
 delete -port reservation_station/o:*
 opt_clean -purge
 opt

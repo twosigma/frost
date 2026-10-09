@@ -52,24 +52,17 @@ class TestConfig:
     reset_cycles: int = DEFAULT_RESET_CYCLES
 
 
-# Cycle budget for event-based waits in directed tests. Hitting it means the
-# DUT never produced the awaited architectural effect (an instruction that
-# never retired, for example). That is a hard failure; do not raise the
-# budget to make it go away.
+# Timeout for architectural effects such as retirement. A timeout is a
+# failure to investigate, not a reason to increase the budget.
 EVENT_WAIT_BUDGET_CYCLES = 300
 
 
 def rob_commit_writes_int_reg(dut: Any, reg: int) -> bool:
-    """Return True when the registered ROB commit bus is retiring a write to x<reg>.
+    """Return whether either registered commit slot writes integer register reg.
 
-    Checks both slots of the 2-wide commit. The registered commit bus
-    (dbg_rob_commit_reg_* / dbg_rob_commit_2_reg_* debug taps on cpu_ooo) is
-    what drives the architectural regfile write ports, so a hit here means the
-    regfile write lands on the next rising edge.
-
-    Args:
-        dut: cpu_tb toplevel handle (probes dut.device_under_test)
-        reg: Architectural integer register index being watched (1-31)
+    reg is an architectural index in 1-31. Probe cpu_tb.device_under_test's
+    registered commit taps, which drive the regfile ports: a match means
+    the write lands on the next rising edge.
     """
     d = dut.device_under_test
     for prefix in ("dbg_rob_commit_reg", "dbg_rob_commit_2_reg"):
@@ -90,26 +83,11 @@ async def drive_nops_until(
     what: str,
     budget: int = EVENT_WAIT_BUDGET_CYCLES,
 ) -> None:
-    """Feed NOPs and sample ``done()`` once per clock cycle until it holds.
+    """Feed NOPs and check done() after every rising edge, including stalls.
 
-    The cpu_ooo core retires instructions at ROB commit, a variable number of
-    cycles after the cpu_tb harness feeds them (longer still for serialized
-    ops like LR/SC/AMO/CSR), so directed tests must wait for the architectural
-    effect instead of counting a fixed in-order pipeline depth.
-
-    Unlike execute_nop(), this samples every clock cycle, including front-end
-    stall cycles where no new NOP is consumed, so a single-cycle event such
-    as the registered commit-bus pulse cannot be missed.
-
-    Args:
-        dut_if: DUT interface for signal access
-        state: Test state (cycle counter kept in sync)
-        done: Zero-argument callable sampled after each rising edge
-        what: Description of the awaited event (for the timeout error)
-        budget: Maximum cycles to wait before failing the test
-
-    Raises:
-        AssertionError: If ``done()`` never holds within ``budget`` cycles.
+    OOO retirement has variable latency. Sampling every edge prevents missing
+    a one-cycle commit pulse while the front end is stalled. Update state's
+    cycle count and raise AssertionError with what if budget cycles expire.
     """
     for _ in range(budget):
         await FallingEdge(dut_if.clock)
@@ -146,16 +124,9 @@ async def wait_for_int_reg_commit(
 async def execute_nop(
     dut_if: DUTInterface, state: TestState, log_instr: bool = False
 ) -> None:
-    """Execute a NOP instruction (addi x0, x0, 0).
+    """Issue ADDI x0, x0, 0 and advance the reference PC by four bytes.
 
-    Used to warm up the pipeline and to pad cycles while earlier instructions
-    take effect. The NOP writes the hardwired-zero x0 (no effect) and advances
-    the PC by 4.
-
-    Args:
-        dut_if: DUT interface for signal access
-        state: Test state for tracking expectations
-        log_instr: If True, log the NOP execution for debugging
+    Queue the unchanged register state. log_instr enables diagnostic logging.
     """
     from encoders.op_tables import I_ALU
 

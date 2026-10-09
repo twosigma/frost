@@ -12,12 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the CDB Arbiter.
-
-Tests exhaustive request-vector/kill equivalence, priority arbitration, grant
-exclusivity, complete packet propagation, both ALU live/fallback value
-partitions, and constrained-random stress.
-"""
+"""CDB arbiter unit tests."""
 
 import random
 from typing import Any
@@ -78,10 +73,7 @@ def drive_and_check(
     """Drive FU completes to the DUT and return the model's (cdb, cdb_2, grants)."""
     from .cdb_arbiter_interface import pack_fu_complete
 
-    # By default ALU takes the live path and ALU2 the fallback path. The
-    # interface helper drives each inactive arm with the complement of the
-    # effective value, so selecting the wrong arm cannot be masked by
-    # identical test data.
+    # ALU uses the live value; ALU2 uses the fallback value by default.
     if live_alu_fus is None:
         live_alu_fus = {FU_ALU}
     for i, req in enumerate(fu_completes):
@@ -137,14 +129,13 @@ def assert_grants_match(
 
 
 # ============================================================================
-# No FU valid → CDB output invalid, all grants 0
+# Without requests, both CDB lanes are invalid and all grants are zero
 # ============================================================================
 @cocotb.test()
 async def test_reset_no_output(dut: Any) -> None:
-    """No FU valid → CDB output invalid, all grants 0."""
+    """Without requests, both CDB lanes are invalid and all grants are zero."""
     dut_if, model = await setup(dut)
 
-    # All FU completes already cleared by reset
     await Timer(1, unit="ns")  # Let combinational logic settle
 
     cdb = dut_if.read_cdb_output()
@@ -186,11 +177,11 @@ async def test_kill_blocks_output_and_grants(dut: Any) -> None:
 
 
 # ============================================================================
-# Only ALU valid → ALU result broadcast, ALU granted
+# A lone ALU request is granted and broadcast
 # ============================================================================
 @cocotb.test()
 async def test_single_fu_alu(dut: Any) -> None:
-    """Only ALU valid → ALU result broadcast, ALU granted."""
+    """A lone ALU request is granted and broadcast."""
     dut_if, model = await setup(dut)
 
     fu_completes = make_fu_completes(
@@ -210,11 +201,11 @@ async def test_single_fu_alu(dut: Any) -> None:
 
 
 # ============================================================================
-# Each FU type alone → correct broadcast and fu_type
+# A lone request broadcasts its payload and FU type
 # ============================================================================
 @cocotb.test()
 async def test_single_fu_each(dut: Any) -> None:
-    """Each FU type alone → correct broadcast and fu_type."""
+    """A lone request broadcasts its payload and FU type."""
     dut_if, model = await setup(dut)
 
     fu_names = {
@@ -256,11 +247,11 @@ async def test_single_fu_each(dut: Any) -> None:
 
 
 # ============================================================================
-# FP_DIV + ALU → ALU wins
+# ALU takes lane 0 ahead of FP_DIV
 # ============================================================================
 @cocotb.test()
 async def test_priority_alu_over_fp_div(dut: Any) -> None:
-    """FP_DIV + ALU → ALU wins."""
+    """ALU takes lane 0 ahead of FP_DIV."""
     dut_if, model = await setup(dut)
 
     fu_completes = make_fu_completes(
@@ -287,11 +278,11 @@ async def test_priority_alu_over_fp_div(dut: Any) -> None:
 
 
 # ============================================================================
-# DIV + MUL → MUL wins
+# MUL takes lane 0 ahead of DIV
 # ============================================================================
 @cocotb.test()
 async def test_priority_mul_over_div(dut: Any) -> None:
-    """DIV + MUL → MUL wins."""
+    """MUL takes lane 0 ahead of DIV."""
     dut_if, model = await setup(dut)
 
     fu_completes = make_fu_completes(
@@ -317,11 +308,11 @@ async def test_priority_mul_over_div(dut: Any) -> None:
 
 
 # ============================================================================
-# All 8 FUs valid -> MUL wins (highest priority)
+# All FUs contend
 # ============================================================================
 @cocotb.test()
 async def test_priority_all_valid(dut: Any) -> None:
-    """All 8 FUs valid -> MUL wins (highest priority)."""
+    """With all FUs valid, MUL wins lane 0 and MEM wins lane 1."""
     dut_if, model = await setup(dut)
 
     specs = {}
@@ -343,7 +334,6 @@ async def test_priority_all_valid(dut: Any) -> None:
     assert_cdb_match(dut_cdb_2, model_cdb_2, "all_valid lane1")
     assert dut_cdb_2.fu_type == FU_MEM
     assert dut_grants[FU_MEM] is True
-    # Every FU except the two lane winners should be denied.
     for i in range(NUM_FUS):
         if i not in (FU_MUL, FU_MEM):
             assert dut_grants[i] is False, f"FU {i} should not be granted"
@@ -555,11 +545,11 @@ async def test_alu_value_source_partitions(dut: Any) -> None:
 
 
 # ============================================================================
-# All except MUL -> MEM wins
+# All FUs except MUL contend
 # ============================================================================
 @cocotb.test()
 async def test_priority_all_except_highest(dut: Any) -> None:
-    """All except MUL -> MEM wins."""
+    """Without MUL, MEM takes lane 0 and ALU takes lane 1."""
     dut_if, model = await setup(dut)
 
     specs = {}
@@ -790,7 +780,6 @@ async def test_sequential_different_fus(dut: Any) -> None:
     """Different FUs win across consecutive cycles."""
     dut_if, model = await setup(dut)
 
-    # Cycle through FU types: each cycle, a different single FU is valid
     for cycle, fu_idx in enumerate(PRIORITY_ORDER):
         dut_if.clear_all_fu_completes()
         dut_if.drive_fu_complete(fu_idx, tag=cycle, value=cycle * 0x1000)
@@ -830,7 +819,7 @@ async def test_loser_must_retry(dut: Any) -> None:
     assert dut_grants[FU_MEM] is True
     assert dut_grants[FU_ALU] is False  # lost arbitration, must retry
 
-    # Cycle 2: MUL + MEM clear (were granted), ALU still valid → ALU wins lane 0.
+    # Cycle 2: MUL + MEM clear (were granted), ALU remains valid and wins lane 0.
     dut_if.clear_fu_complete(FU_MUL)
     dut_if.clear_fu_complete(FU_MEM)
     await dut_if.step()
@@ -856,7 +845,6 @@ async def test_random_multi_fu_stress(dut: Any) -> None:
     num_cycles = 200
 
     for cycle in range(num_cycles):
-        # Random subset of FUs valid (each with ~50% probability)
         fu_completes = [FuComplete() for _ in range(NUM_FUS)]
         for fu_idx in range(NUM_FUS):
             if rng.random() < 0.5:

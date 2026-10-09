@@ -224,7 +224,7 @@ async def _setup(
 
 @cocotb.test()
 async def test_frames_into_buffers(dut: Any) -> None:
-    """Seven frames at random offsets: byte-exact data, status words, nothing stray."""
+    """Frames at random offsets preserve data and status without stray writes."""
     env = await _setup(dut, 1)
     frames = []
     ranges = []
@@ -459,7 +459,7 @@ async def test_abort_mid_frame(dut: Any) -> None:
 
 @cocotb.test()
 async def test_abort_after_last_beat_completes_cleanly(dut: Any) -> None:
-    """A MAC-domain reset after the frame's last beat is in cuts nothing.
+    """A MAC-domain reset after the last beat is accepted preserves the frame.
 
     The frame completes clean and whole, since its writes need only the DMA port.
     """

@@ -51,8 +51,7 @@ OPC_AMO = 0b0101111
 OPC_LOAD_FP = 0b0000111
 OPC_OP_FP = 0b1010011
 
-# Parsed from riscv_pkg.sv so the values track instr_op_e. Hardcoded values
-# would go stale whenever a member is inserted earlier in the enum.
+# Parse instr_op_e from riscv_pkg.sv so the values follow enum insertions.
 _INSTR_OPS = _parse_instr_op_enum()
 ADD = _INSTR_OPS["ADD"]
 ADDI = _INSTR_OPS["ADDI"]

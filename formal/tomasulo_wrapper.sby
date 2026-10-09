@@ -15,13 +15,9 @@ fp_repair_bmc: depth 4
 [engines]
 bmc: smtbmc boolector
 cover: smtbmc boolector
-# fp_repair_bmc runs without smtbmc's presat query, which boolector cannot
-# finish within the runner's 40-minute per-task timeout on this configuration,
-# although the assertion checks themselves finish quickly. presat only checks
-# that the harness is satisfiable before the assertions are checked, and the
-# bmc task above runs it over the same harness and assumptions (the tasks
-# differ only in ENABLE_DISPATCH_DONE_REPAIR, which is internal logic), so a
-# harness that constrained itself into vacuity would still be caught there.
+# Skip presat for runtime. The bmc task checks satisfiability with the same
+# harness and assumptions; only the internal ENABLE_DISPATCH_DONE_REPAIR
+# logic differs. This retains a check against contradictory assumptions.
 fp_repair_bmc: smtbmc --nopresat boolector
 
 [script]
@@ -33,10 +29,9 @@ read -sv rob_serializer.sv
 read -sv reorder_buffer.sv
 read -sv register_alias_table.sv
 read -formal -sv rs_issue2_selector.sv
-# -formal: every station elaborates with FORMAL_STANDALONE_ENV=0, so this
-# brings in the reservation station's own assertions without its standalone
-# environment assumptions or covers. They include the branch-payload side
-# RAM's ROB-tag rule, which only this proof has a real allocator to check.
+# FORMAL_STANDALONE_ENV=0 retains station assertions without standalone
+# assumptions or covers. The real allocator exercises the branch-payload
+# RAM's rule against reusing a live ROB tag.
 read -formal -sv reservation_station.sv
 read -sv cdb_arbiter.sv
 read -sv fu_cdb_adapter.sv

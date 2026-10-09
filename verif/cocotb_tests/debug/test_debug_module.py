@@ -12,14 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for debug_module's DMI face (hw/rtl/cpu_and_mem/debug/debug_module.sv).
+"""Test debug_module's DMI interface (hw/rtl/cpu_and_mem/debug/debug_module.sv).
 
-dtm_core waits for an answer to every request it issues, so the module must
-answer each one exactly once: the next cycle, or, for a request that arrives
-while the module is in reset, once the reset ends, when the request is also
-handled. Like dtm_core, the bench holds a request's payload until the
-answer. The hart and slice-writer inputs sit idle: no hart is halted and no
-command runs.
+Each request requires one answer: the next cycle, or after reset ends if
+it arrives during reset. Hold the payload until the answer, as dtm_core
+does. Hart and slice-writer inputs stay idle.
 """
 
 from typing import Any

@@ -12,18 +12,14 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the frost_cache hierarchy (frost_cache_test_harness DUT).
+"""Test tagged line transactions through frost_cache_test_harness.
 
-The harness wires the same backside topology the CPU integration uses:
-frost_cache_hierarchy -> line_port_axi_bridge -> axi_behavioral_memory. The
-bench drives raw tagged line-port transactions on the data, instruction, and
-walker ports (up = D-side, iup = I-side, wup = page-table walker) and checks
-every read against a byte-granular reference model and every response id
-against the request that carried it. The harness defaults make the caches
-tiny (L1 1 KiB / L2 4 KiB) so evictions and thrash are constantly exercised;
-the registry also runs the same tests with fast maintenance via
--GSIM_FAST_MAINT=1 and with the memory model completing ids out of order via
--GMEM_REORDER=1.
+The topology matches CPU integration:
+frost_cache_hierarchy -> line_port_axi_bridge -> axi_behavioral_memory.
+Ports up, iup, and wup serve data, instructions, and page-table walks.
+Reads are checked against a byte-granular model and responses must echo
+request ids. Small caches (L1 1 KiB, L2 4 KiB) force evictions. The registry
+also runs with SIM_FAST_MAINT=1 and out-of-order responses (MEM_REORDER=1).
 """
 
 import itertools
@@ -198,12 +194,8 @@ async def _port_transaction(
     getattr(dut, f"i_{port}_req_wdata").value = wdata
     getattr(dut, f"i_{port}_req_wstrb").value = wstrb
     getattr(dut, f"i_{port}_req_id").value = req_id
-    # Let the deposit propagate before the first ready sample. A port's ready
-    # may depend on the presented request (the DMA sequencer refuses a line
-    # one of its entries holds), so the new request can itself raise ready
-    # mid-cycle. Sampling the pre-deposit value would miss the fire at the
-    # next rising edge and leave valid high, which is a same-id double
-    # request.
+    # Ready can depend on the deposited request. Wait for it to settle;
+    # a stale sample could miss acceptance and send the same id twice.
     await Timer(1, unit="ns")
 
     # Hold valid until a cycle where ready is high: that rising edge fires.
@@ -214,7 +206,7 @@ async def _port_transaction(
     else:
         raise AssertionError(f"{port} request never accepted (addr=0x{addr:08x})")
 
-    await FallingEdge(dut.i_clk)  # now in the cycle after the fire
+    await FallingEdge(dut.i_clk)  # Cycle after acceptance
     req_valid.value = 0
 
     for cycle in range(RESP_TIMEOUT_CYCLES):
@@ -544,12 +536,10 @@ async def test_mixed_id_traffic(dut: Any) -> None:
 
 @cocotb.test()
 async def test_ports_overlap_below_arbiter(dut: Any) -> None:
-    """Simultaneous D and I misses are in flight at the L2 together.
+    """D and I misses overlap at the L2 without a grant lock.
 
-    One request from each L1 reaches the tagged arbiter, which has no grant
-    lock, so the second reaches the L2 without waiting for the first's
-    response and both fetch at once: the L2's outstanding-miss count must
-    reach 2, and each response must carry its own data and id.
+    The outstanding-miss count must reach 2, and both responses must return
+    the requested data and id.
     """
     await _setup(dut)
     model = ReferenceModel()
@@ -561,10 +551,8 @@ async def test_ports_overlap_below_arbiter(dut: Any) -> None:
     for addr, data in ((d_addr, d_data), (i_addr, i_data)):
         model.write_line(addr, data, full)
         await _line_transaction(dut, write=True, addr=addr, wdata=data, wstrb=full)
-    # Push both lines out of every cache level with reads of aliasing lines
-    # (the harness caches are tiny: 256 lines overflow L1D and L2 alike), so
-    # the demand misses below find clean victims and send nothing downstream
-    # but their fills.
+    # Evict both lines with 256 aliasing reads so the demand misses find
+    # clean victims and send only fills downstream.
     for line in range(256):
         addr = OVERLAP_BASE + 0x10000 + line * LINE_BYTES
         got = await _line_transaction(dut, write=False, addr=addr)
@@ -633,12 +621,10 @@ async def test_walker_port_reads_shared_level(dut: Any) -> None:
 
 @cocotb.test()
 async def test_three_ports_overlap_below_arbiters(dut: Any) -> None:
-    """Simultaneous D, I, and walker misses are in flight at the L2 together.
+    """D, I, and walker misses overlap through both arbiter levels.
 
-    The arbiter tree has no grant lock at either level, so each of three
-    tagged reads (one per master) reaches the L2 without waiting for another's
-    response, and all three fetch at once: the L2's outstanding-miss count
-    must reach 3, and each response must carry its own data and id.
+    The L2 outstanding-miss count must reach 3, and each response must return
+    the requested data and id.
     """
     await _setup(dut)
     model = ReferenceModel()
@@ -848,7 +834,7 @@ async def test_walker_sees_dirty_l1d_lines(dut: Any) -> None:
     # The probe left the line valid and clean: a partial store re-dirties it
     # in place, and the next walk's probe finds a dirty hit again.
     wdata2 = _line_int(bytes([(0x5A ^ b) & 0xFF for b in range(32)]))
-    wstrb2 = 0x0000_00F0  # bytes 4-7: one PTE's worth
+    wstrb2 = 0x0000_00F0  # Bytes 4-7
     model.write_line(addr, wdata2, wstrb2)
     await _line_transaction(dut, write=True, addr=addr, wdata=wdata2, wstrb=wstrb2)
     got = await _port_transaction(dut, "wup", write=False, addr=addr)
@@ -861,14 +847,11 @@ async def test_walker_sees_dirty_l1d_lines(dut: Any) -> None:
 
 
 class _WritebackHazardMonitor:
-    """Count, per cycle, the L1D states its writeback-slot rules act on.
+    """Count cycles when a writeback of the same line blocks progress.
 
-    hit_stalls: cycles a write hit was held in T because a writeback slot
-    still held its line (frost_cache.sv stall_wb_snapshot). install_waits:
-    cycles an MSHR sat in MS_WRITE with a writeback of its own line still
-    pending (mshr_wb_wait_q, which keeps it out of the install pick). The
-    tests below assert each happened, so they know they reached the state
-    the rule exists for rather than merely passing on quiet timing.
+    hit_stalls counts write hits held in T by stall_wb_snapshot.
+    install_waits counts MS_WRITE entries blocked by mshr_wb_wait_q.
+    Tests require nonzero counts to confirm that the hazards occurred.
     """
 
     MS_WRITE = 4  # mshr_state_e ordinal: FREE, PEND, SENT, MERGE, WRITE, ...
@@ -924,14 +907,11 @@ async def _fire_read(dut: Any, port: str, addr: int) -> None:
 async def _hold_shared_level(
     dut: Any, model: ReferenceModel, base: int, k: int
 ) -> None:
-    """Fill the L2's miss slots so its next miss stalls a round trip.
+    """Submit five fills to the L2's four miss slots to delay the next miss.
 
-    Three data-side partial-write misses, acknowledged at allocation, and two
-    instruction-side reads fired between them leave five fills in flight at
-    the L2, which has four miss slots, so a writeback that misses there right
-    afterwards waits in its tag stage until the first fill returns from
-    memory. Every line has an L1 index of its own, never revisited, so none
-    of this evicts anything or writes anything back.
+    Interleave three early-acknowledged partial writes with two I-side reads.
+    A following writeback miss waits for a memory response. Distinct L1
+    indices avoid evictions and writebacks from this setup.
     """
     lines = [base + (8 + 3 * k + n) * LINE_BYTES for n in range(3)]
     instr = [base + 0x800 + (2 * k + n) * LINE_BYTES for n in range(2)]
@@ -946,20 +926,16 @@ async def _hold_shared_level(
 
 @cocotb.test()
 async def test_store_after_walker_probe_then_evict(dut: Any) -> None:
-    """A store right behind a walk's probe, then an eviction, keeps the store.
+    """A store after a walk's probe must survive a subsequent eviction.
 
-    PROBE_CLEAN snapshots the dirty line into a writeback slot and leaves the
-    copy valid and clean. A store that re-dirties the copy while that
-    snapshot is still in its slot, followed by an eviction that snapshots the
-    newer copy into a second slot, would let the two writebacks reach the
-    shared level in either order; the L1D therefore holds such a store until
-    the first writeback has been acknowledged (stall_wb_snapshot), and its
-    protocol checks flag a write hit committing to a line a slot still holds.
-    Each round uses a page the shared level has never seen, so the snapshot
-    misses there and, with its miss slots held full, waits a memory round
-    trip before it is acknowledged; the store and the aliasing write follow
-    the probe as closely as the port allows; the monitor must see the store
-    held at least once; and every reader must then see the store.
+    PROBE_CLEAN snapshots a dirty line and leaves it valid and clean. A store
+    must wait for that writeback's acknowledgement (stall_wb_snapshot), or
+    an eviction could send a newer copy ahead of the snapshot.
+
+    Use a fresh line that misses in L2 each round, and hold the L2 miss slots
+    full so its snapshot writeback waits; then issue the store and eviction
+    immediately after the probe. The monitor must see a stall,
+    and every reader must see the store.
     """
     await _setup(dut)
     mon = _WritebackHazardMonitor(dut)
@@ -1005,20 +981,15 @@ async def test_store_after_walker_probe_then_evict(dut: Any) -> None:
 
 @cocotb.test()
 async def test_no_fetch_refill_waits_for_own_writeback(dut: Any) -> None:
-    """A whole-line write to a line whose eviction is still in flight waits.
+    """A whole-line write waits for its line's pending eviction writeback.
 
-    Evicting a dirty line snapshots it into a writeback slot. A whole-line
-    write to that line allocates without a fetch and could install the new
-    copy dirty beside the older snapshot; a second eviction would then put
-    two writebacks of the line in flight, which the shared level may apply
-    older-last. The L1D keeps the install out of the pick until the first
-    writeback has been acknowledged (mshr_wb_wait_q), and its protocol
-    checks flag an install of a line a slot still holds. Each round uses a
-    page the shared level has never seen, so the snapshot misses there and,
-    with its miss slots held full, waits a memory round trip before it is
-    acknowledged; three tags rotate through one index; the monitor must see
-    the install held at least once; and every reader must see the last
-    write.
+    Without mshr_wb_wait_q, the no-fetch install could create a newer dirty
+    copy whose eviction overtakes the old writeback. Protocol checks reject
+    installs while a writeback of the same line remains pending.
+
+    Use fresh lines that miss in L2, hold the L2 miss slots full to delay the
+    snapshot, and rotate three tags through one L1 index. The monitor must see an install wait, and every
+    reader must see the last write.
     """
     await _setup(dut)
     mon = _WritebackHazardMonitor(dut)
@@ -1069,17 +1040,13 @@ FENCE_L1I_REQ = 3
 
 @cocotb.test()
 async def test_fence_request_raised_again_mid_sequence(dut: Any) -> None:
-    """A request raised again mid-sequence is answered after a fresh writeback.
+    """A repeated fence request requires a writeback covering intervening stores.
 
-    A full flush (an interrupt taken while fence.i waits for the cache sync)
-    drops the request once the sequence's L1D writeback walk has ended, and
-    the sweeps run to their end anyway. A store that reaches the L1D after
-    that walk, followed by the re-executed fence.i raising the request again
-    before the old sequence finishes, must not be answered by the old
-    sequence: done may rise only after a writeback-all that covers the
-    store, so the next L1I fill returns it. The bench keeps the old sequence
-    in its L1I phase by holding an L1I miss at the L2 (i_down_hold): the L1I
-    cannot start its invalidate-all until that miss completes.
+    Model a flush dropping sync after the L1D walk, then a store and a
+    re-executed fence.i before the first sequence ends. The old sequence
+    must not acknowledge the new request. Hold an L1I miss at the L2 with
+    i_down_hold to delay invalidation, then check that the next fetch sees
+    the store.
     """
     await _setup(dut)
     model = ReferenceModel()

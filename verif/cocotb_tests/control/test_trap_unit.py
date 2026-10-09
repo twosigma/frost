@@ -72,7 +72,7 @@ async def _reset(dut: Any) -> None:
 
 @cocotb.test()
 async def test_mret_defers_registered_timer_interrupt(dut: Any) -> None:
-    """Verify that a pending timer interrupt is deferred while MRET is in flight."""
+    """A pending timer interrupt waits while MRET is in flight."""
     Clock(dut.i_clk, 10, unit="ns").start()
     await _reset(dut)
 
@@ -122,7 +122,7 @@ async def test_mret_defers_registered_timer_interrupt(dut: Any) -> None:
 
 @cocotb.test()
 async def test_timer_interrupt_still_traps_without_mret(dut: Any) -> None:
-    """Verify that a latched timer interrupt traps when no MRET is in flight."""
+    """A latched timer interrupt traps when no MRET is in flight."""
     Clock(dut.i_clk, 10, unit="ns").start()
     await _reset(dut)
 
@@ -212,7 +212,7 @@ async def test_device_read_shield_does_not_defer_exceptions(dut: Any) -> None:
 
 @cocotb.test()
 async def test_registered_interrupt_requires_current_mie(dut: Any) -> None:
-    """Verify that a held interrupt is only taken when current MIE is asserted."""
+    """A held interrupt requires current MIE before it is taken."""
     Clock(dut.i_clk, 10, unit="ns").start()
     await _reset(dut)
 
@@ -236,10 +236,8 @@ async def test_registered_interrupt_requires_current_mie(dut: Any) -> None:
     await Timer(1, unit="ns")
     assert int(dut.o_trap_taken.value) == 0
 
-    # The latch holds the timer interrupt across the MIE-low window, so it is
-    # eligible on the cycle MIE is restored, a cycle before a re-latch would
-    # be. Taking it still requires the live mstatus.MIE
-    # (m_int_globally_enabled).
+    # The held interrupt is eligible when MIE is restored, one cycle before
+    # re-latching would allow. The take still requires m_int_globally_enabled.
     dut.i_mstatus.value = MSTATUS_MIE
     dut.i_mstatus_mie_direct.value = 1
     await Timer(1, unit="ns")

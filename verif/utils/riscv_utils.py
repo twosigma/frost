@@ -31,19 +31,12 @@ __all__ = [
 
 
 def sign_extend(val: int, bits: int) -> int:
-    """Sign-extend the low ``bits`` bits of ``val``.
-
-    Args:
-        val: Value to sign-extend
-        bits: Number of bits in the original value
-
-    Returns:
-        Sign-extended value as a Python int (unbounded)
+    """Sign-extend the low ``bits`` bits of ``val`` to a Python int.
 
     Example:
-        >>> sign_extend(0xFF, 8)  # Extend 8-bit -1 to full width
+        >>> sign_extend(0xFF, 8)
         -1
-        >>> sign_extend(0x7F, 8)  # Extend 8-bit +127 to full width
+        >>> sign_extend(0x7F, 8)
         127
     """
     sign = 1 << (bits - 1)
@@ -51,48 +44,20 @@ def sign_extend(val: int, bits: int) -> int:
 
 
 def to_signed_xlen(val: int) -> int:
-    """Cast to a signed XLEN-bit integer.
-
-    Args:
-        val: Value to convert.
-
-    Returns:
-        Signed XLEN-bit integer.
-    """
+    """Cast to a signed XLEN-bit integer."""
     return sign_extend(val & MASK_XLEN, XLEN)
 
 
 def to_unsigned_xlen(val: int) -> int:
-    """Cast to an unsigned XLEN-bit integer.
-
-    Args:
-        val: Value to convert.
-
-    Returns:
-        Unsigned XLEN-bit integer (0 to 2**XLEN - 1).
-    """
+    """Cast to an unsigned XLEN-bit integer (0 to 2**XLEN - 1)."""
     return val & MASK_XLEN
 
 
 def to_signed32(val: int) -> int:
-    """Cast to signed 32-bit integer.
-
-    Args:
-        val: Value to convert (any int)
-
-    Returns:
-        Signed 32-bit integer representation
-    """
+    """Cast to a signed 32-bit integer."""
     return sign_extend(val & MASK32, 32)
 
 
 def to_unsigned32(val: int) -> int:
-    """Cast to unsigned 32-bit integer.
-
-    Args:
-        val: Value to convert (any int)
-
-    Returns:
-        Unsigned 32-bit integer (0 to 2^32-1)
-    """
+    """Cast to an unsigned 32-bit integer (0 to 2**32 - 1)."""
     return val & MASK32

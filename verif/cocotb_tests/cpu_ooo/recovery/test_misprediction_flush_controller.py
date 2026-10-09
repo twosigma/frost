@@ -68,7 +68,7 @@ def _read_correct_branch_commit_q_2(dut: Any) -> dict[str, Any]:
 
 
 def _pack_checkpoint_owner_tags(owner_tags: Mapping[int, int]) -> int:
-    """Pack checkpoint owner tags for a packed [NumCheckpoints-1:0][tag] port."""
+    """Pack checkpoint ROB tags for a packed [NumCheckpoints-1:0][tag] port."""
     packed = 0
     for checkpoint_id, tag in owner_tags.items():
         assert 0 <= checkpoint_id < NUM_CHECKPOINTS
@@ -301,11 +301,9 @@ async def test_early_recovery_priority_and_checkpoint_free(dut: Any) -> None:
     assert int(dut.o_checkpoint_restore_id.value) == 6
     assert not dut.o_checkpoint_free.value
 
-    # The backend phase follows the redirect by one edge, as in the core: the
-    # early recovery unit's next state is high while active, and the
-    # controller registers flush_en from it. On that edge the unit loads its
-    # backend flush tag from i_early_mispredict_tag, and the controller
-    # registers the flush tag from the same input.
+    # The backend phase follows the redirect by one edge. While active, the
+    # recovery unit's next state drives the controller's registered flush_en.
+    # Both units capture i_early_mispredict_tag on that edge.
     dut.i_early_backend_recovery_pending_next.value = 1
     dut.i_early_mispredict_tag.value = 12
     await _advance_cycle(dut)
@@ -434,7 +432,7 @@ async def test_fence_i_captures_fallthrough_and_flushes_frontend(dut: Any) -> No
 async def test_correct_branch_commit_frees_only_live_owned_checkpoint(
     dut: Any,
 ) -> None:
-    """Correct branch commits free checkpoints only when owner validation passes."""
+    """Correct branch commits free checkpoints only when their ROB tags match."""
     await _setup_test(dut)
 
     dut.i_checkpoint_in_use.value = 1 << 4

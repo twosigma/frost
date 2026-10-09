@@ -307,14 +307,12 @@ async def test_issue_local_payload_capture_is_inert_without_fire(dut: Any) -> No
 
 @cocotb.test()
 async def test_local_fence_copy_only_gates_active_pulse(dut: Any) -> None:
-    """The local registered FENCE.I copy kills active without changing its hold.
+    """The local FENCE.I copy gates active; pending and hold use the shared pulse.
 
-    In the core the local copy is rob_commit.is_fence_i, and tomasulo_wrapper
-    asserts that it implies the shared fence_i_flush pulse: a native FENCE.I
-    raises both, a translation-CSR flush raises only the shared one. Driving
-    them apart here is a structural isolation check: only the late active gate
-    may use the local copy, while pending/hold and the fire-time gate keep the
-    shared pulse.
+    The core's rob_commit.is_fence_i implies fence_i_flush, as asserted in
+    tomasulo_wrapper. A translation-CSR flush raises only the shared pulse.
+    Drive the copies independently to check that only the active gate uses
+    the local copy; the fire-time gate must still use the shared pulse.
     """
     await _setup_test(dut)
 
@@ -340,15 +338,11 @@ async def test_local_fence_copy_only_gates_active_pulse(dut: Any) -> None:
 
 @cocotb.test()
 async def test_commit_recovery_next_cycle_drops_coincident_fire(dut: Any) -> None:
-    """A fire coinciding with a head-mispredict commit is dropped one cycle later.
+    """A head-mispredict commit cancels a coincident early fire one cycle later.
 
-    The fire-time gates cannot see this collision: a younger branch fires
-    (capture succeeds, i_mispredict_recovery_pending still 0) in the same cycle
-    an older head-mispredict commits. The commit-time launch registers into
-    mispredict_recovery_pending on the next cycle, and the
-    !i_mispredict_recovery_pending term in early_mispredict_active must drop
-    the early pulse there, before any redirect, RAT restore,
-    rob_early_recovered write, or backend flush.
+    The younger branch can fire before i_mispredict_recovery_pending rises.
+    When that registered flag arrives, early_mispredict_active must drop
+    before a redirect, RAT restore, rob_early_recovered write, or backend flush.
     """
     await _setup_test(dut)
 
@@ -361,17 +355,15 @@ async def test_commit_recovery_next_cycle_drops_coincident_fire(dut: Any) -> Non
     dut.i_mispredict_recovery_pending.value = 1
     await Timer(1, unit="ns")
 
-    # The pulse is dropped: no active phase, no RAT restore enable. Only the
-    # one-cycle dispatch hold remains, which is harmless because the
-    # commit-time recovery is flushing dispatch in this cycle anyway.
+    # Only the one-cycle dispatch hold remains; commit-time recovery flushes
+    # dispatch in this cycle, so the hold is harmless.
     assert not dut.o_early_mispredict_active.value
     assert not dut.o_early_recovery_en.value
     assert dut.o_early_backend_recovery_hold.value
 
     await _settle_after_edge(dut)
 
-    # Cycle N+2: recovery_pending was a one-cycle pulse. The dropped fire must
-    # leave no residue, in particular no phantom backend flush.
+    # Cycle N+2: after recovery_pending drops, no backend flush may remain.
     _clear_inputs(dut)
     await Timer(1, unit="ns")
 

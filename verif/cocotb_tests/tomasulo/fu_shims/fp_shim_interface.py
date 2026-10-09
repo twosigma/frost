@@ -12,12 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""DUT interface for fp_shim verification.
-
-Packs rs_issue_t, unpacks fu_complete_t, and wraps the DUT handles for
-driving stimulus and reading results. The other shim interfaces and several
-other benches import the packing helpers and the instr_op_e parser from here.
-"""
+"""FP shim interface and shared rs_issue_t packing and instr_op_e helpers."""
 
 import re
 from pathlib import Path
@@ -218,10 +213,7 @@ def unpack_fu_complete(raw: int) -> dict:
 # NaN-boxing helper
 # =============================================================================
 def nan_box_f32(f32_bits: int) -> int:
-    """NaN-box a 32-bit single-precision float into a 64-bit FLEN value.
-
-    Upper 32 bits are set to all-ones per RISC-V NaN-boxing convention.
-    """
+    """Set the upper 32 bits to ones, per the RISC-V NaN-boxing convention."""
     return NAN_BOX_MASK | (f32_bits & MASK32)
 
 
@@ -231,11 +223,11 @@ def nan_box_f32(f32_bits: int) -> int:
 
 
 def _parse_instr_op_enum() -> dict[str, int]:
-    """Parse the instr_op_e enum from riscv_pkg.sv and return name->value map.
+    """Return instr_op_e names and values from riscv_pkg.sv.
 
-    Handles both implicit sequential values and explicit assignments
-    (e.g. ``FOO = 5``, ``BAR = 32'HDEAD_BEEF``).  Raises RuntimeError
-    on parse failures so silent mis-numbering cannot occur.
+    Accept implicit values and assignments such as FOO = 5 or
+    BAR = 32'HDEAD_BEEF. Raise RuntimeError on a parse failure to avoid
+    silently misnumbering operations.
     """
     pkg_path = (
         Path(__file__).resolve().parents[4]
@@ -275,7 +267,6 @@ def _parse_instr_op_enum() -> dict[str, int]:
         if em:
             digits = em.group(2).replace("_", "")
             base = 10
-            # Detect base from the format specifier preceding the digits
             bm = re.search(r"'([bBdDhHoO])", line)
             if bm:
                 base = {"b": 2, "d": 10, "h": 16, "o": 8}[bm.group(1).lower()]
@@ -291,7 +282,6 @@ def _parse_instr_op_enum() -> dict[str, int]:
             result[line] = next_val
             next_val += 1
             continue
-        # Any other non-blank line inside the enum is a parse failure.
         raise RuntimeError(f"Cannot parse instr_op_e entry: {line!r}")
     if not result:
         raise RuntimeError("instr_op_e enum body is empty")
@@ -304,11 +294,7 @@ def _parse_instr_op_enum() -> dict[str, int]:
 
 
 class FpShimInterface:
-    """Interface to the fp_shim DUT.
-
-    Drives rs_issue_t input, reads fu_complete_t output, and controls the
-    flush and reset signals.
-    """
+    """Drive FP issues and flushes; read completions and busy."""
 
     def __init__(self, dut: Any) -> None:
         """Initialize interface with DUT handle."""
@@ -328,11 +314,7 @@ class FpShimInterface:
         self.dut.i_rob_head_tag.value = 0
 
     async def reset(self, cycles: int = 3) -> None:
-        """Reset the DUT for the given number of cycles.
-
-        Drives all inputs low, asserts reset (active-low), waits, then
-        deasserts reset and settles on the falling edge.
-        """
+        """Clear inputs, pulse active-low reset, and return at a falling edge."""
         self._init_inputs()
         self.dut.i_rst_n.value = 0
 

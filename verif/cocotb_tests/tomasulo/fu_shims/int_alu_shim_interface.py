@@ -12,15 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""DUT interface for int_alu_shim verification.
-
-pack_rs_issue and unpack_fu_complete come from fp_shim_interface.
-
-The ALU shim is combinational and has no flush ports. Besides rs_issue_t,
-drive_issue drives the two RS-side hints: i_issue_writes_cdb_hint, which
-gates o_fu_complete.valid and is low for conditional branches, and
-i_shift_amount_hint, which only shifts and rotates use.
-"""
+"""Interface for the combinational ALU shim, which has no flush ports."""
 
 from typing import Any
 
@@ -43,9 +35,8 @@ _BRANCH_OPS = {
 }
 
 
-# Barrel-shifter ops that take their amount from the immediate, listed by
-# name independently of riscv_pkg::projected_shift_controls. Every other op
-# either shifts by rs2 or does not use the barrel shifter, so its hint can be rs2.
+# Immediate barrel-shifter operations, independent of projected_shift_controls.
+# Other operations use rs2 or ignore the shift hint.
 _IMMEDIATE_BARREL_OPS = {
     _INSTR_OP[name]
     for name in ("SLLI", "SRLI", "SRAI", "RORI", "SLLIW", "SRLIW", "SRAIW", "RORIW")
@@ -71,11 +62,7 @@ class IntAluShimInterface:
         self.dut.i_shift_amount_hint.value = 0
 
     async def reset(self, cycles: int = 3) -> None:
-        """Reset the DUT for the given number of cycles.
-
-        Drives all inputs low, asserts reset (active-low), waits, then
-        deasserts reset and settles on the falling edge.
-        """
+        """Clear inputs, pulse active-low reset, and return at a falling edge."""
         self._init_inputs()
         self.dut.i_rst_n.value = 0
 
@@ -103,14 +90,12 @@ class IntAluShimInterface:
         pc: int = 0,
         link_addr: int = 0,
     ) -> None:
-        """Pack and drive an rs_issue_t onto i_rs_issue, with both RS-side hints.
+        """Drive rs_issue_t and the CDB-valid and shift-amount hints.
 
-        The shim consumes imm and use_imm; imm also carries the precomputed
-        AUIPC value and the link address. pc and link_addr are packed for
-        completeness only (the shim and ALU take no PC and read the link from
-        imm). The CDB hint is low for conditional branches and high otherwise,
-        as the RS predecodes it. The shift-amount hint is imm for
-        _IMMEDIATE_BARREL_OPS and src2_value otherwise.
+        The shim reads the precomputed AUIPC value and link address from imm;
+        it ignores pc and link_addr. Conditional branches clear the CDB hint.
+        The shift hint uses imm for _IMMEDIATE_BARREL_OPS and src2_value
+        otherwise, matching the RS.
         """
         packed = pack_rs_issue(
             valid=valid,

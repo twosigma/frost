@@ -12,14 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""DUT interface for the CDB arbiter.
-
-Packs fu_complete_t requests, unpacks cdb_broadcast_t outputs, and drives or
-reads the DUT ports.
-
-The RTL has one completion port per FU (i_fu_complete_0 .. i_fu_complete_7)
-plus live and fallback value inputs for the two integer ALUs.
-"""
+"""DUT interface for CDB completion inputs and broadcasts."""
 
 from typing import Any
 from cocotb.triggers import RisingEdge, FallingEdge
@@ -47,7 +40,7 @@ FU_COMPLETE_WIDTH = FP_FLAGS_WIDTH + EXC_CAUSE_WIDTH + 1 + FLEN + ROB_TAG_WIDTH 
 
 
 def pack_fu_complete(req: FuComplete) -> int:
-    """Pack an FuComplete into a bit vector matching fu_complete_t layout."""
+    """Pack a FuComplete into the fu_complete_t bit layout."""
     val = 0
     bit = 0
 
@@ -168,10 +161,10 @@ class CdbArbiterInterface:
         effective_value: int,
         value_is_live: bool,
     ) -> None:
-        """Drive one ALU's value-source inputs within the live/fallback contract.
+        """Drive one ALU's live and fallback value inputs.
 
-        The unused source carries the bitwise complement of the effective
-        value, so a test cannot pass by selecting the wrong one.
+        The unused source carries the complement of the effective value so a
+        wrong selection cannot pass.
         """
         if fu_index == FU_ALU:
             prefix = "alu"
@@ -225,7 +218,7 @@ class CdbArbiterInterface:
         return unpack_cdb_broadcast(raw)
 
     def read_cdb_2_output(self) -> CdbBroadcast:
-        """Read the lane-1 CDB broadcast output (2-wide CDB secondary lane)."""
+        """Read the lane-1 CDB broadcast."""
         raw = int(self.dut.o_cdb_2.value)
         return unpack_cdb_broadcast(raw)
 
