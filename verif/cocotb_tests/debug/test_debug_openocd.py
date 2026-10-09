@@ -11,19 +11,14 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-"""OpenOCD-in-the-loop debug test.
+"""Run OpenOCD against ``debug_target`` through a localhost remote_bitbang server.
 
-The bench serves OpenOCD's `remote_bitbang` protocol on a localhost TCP port
-and toggles frost's JTAG pins on OpenOCD's behalf, so a real `openocd`
-(the pinned container image installs it) examines the debug module and runs
-a scripted session against `debug_target`: halt, read/write registers and
-memory (the program observes the writes), plant a software breakpoint,
-resume to it, single-step, halt in U-mode, resume to the pass banner, and
-`reset halt`. On boards, OpenOCD speaks the same dtmcs/dmi protocol over the
-FPGA's BSCAN chains (configurations in fpga/debug/).
+The server translates OpenOCD requests into frost JTAG pin transitions.
+Board configurations in fpga/debug/ use the same dtmcs/dmi protocol over
+FPGA BSCAN chains.
 
-Without `openocd` on PATH the test logs a warning and passes; set
-FROST_REQUIRE_OPENOCD=1 to make that a failure (CI does).
+If openocd is missing from PATH, the test warns and passes. Set
+FROST_REQUIRE_OPENOCD=1 to fail instead, as CI does.
 """
 
 from __future__ import annotations

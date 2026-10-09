@@ -12,16 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Software model of the CPU data memory.
+"""Little-endian, byte-addressable model initialized from DUT data memory.
 
-A little-endian, byte-addressable dict mirrors the DUT's data memory and
-supplies load values to the instruction models. The constructor copies the
-DUT's initial memory contents so both sides start from the same state.
-``driver_and_monitor`` checks every store the DUT makes against the expected
-queues.
-
-There is no global instance. A test builds one model and passes it to whatever
-needs memory access:
+Pass a MemoryModel instance to the load models. ``driver_and_monitor``
+checks DUT stores against the expected queues.
 
     mem_model = MemoryModel(dut)
 
@@ -113,14 +107,7 @@ class MemoryModel:
     """
 
     def __init__(self, device_under_test: Any) -> None:
-        """Initialize the model from the DUT's current memory contents.
-
-        Copying at construction leaves software and hardware memory identical
-        before the test drives its first instruction.
-
-        Args:
-            device_under_test: cocotb DUT handle with data_memory_for_simulation
-        """
+        """Copy the current contents of device_under_test.data_memory_for_simulation."""
         self.dut = device_under_test
         self.read_address: int = 0
         self.ram_bytes: dict[int, int] = {}
@@ -136,34 +123,15 @@ class MemoryModel:
             )
 
     def read_byte(self, address: int) -> int:
-        """Read a single byte from memory at the specified address.
-
-        Args:
-            address: Byte address to read from
-
-        Returns:
-            8-bit value at that address (0 if uninitialized)
-        """
+        """Read a byte at address; return zero if it is uninitialized."""
         return self.ram_bytes.get(address & MEMORY_ADDRESS_MASK, 0)
 
     def write_byte(self, address: int, value: int) -> None:
-        """Write a single byte to memory at the specified address.
-
-        Args:
-            address: Byte address to write to
-            value: 8-bit value to write
-        """
+        """Write the low eight bits of value at the byte address."""
         self.ram_bytes[address & MEMORY_ADDRESS_MASK] = value & 0xFF
 
     def read_word(self, address: int) -> int:
-        """Read a full 32-bit word from memory (little-endian).
-
-        Args:
-            address: Byte address (will be aligned to 4-byte boundary)
-
-        Returns:
-            32-bit word value assembled from 4 bytes
-        """
+        """Read a little-endian word, rounding the byte address down to four bytes."""
         aligned_address = address & MEMORY_WORD_ALIGN_MASK
         return (
             self.read_byte(aligned_address)
@@ -173,12 +141,7 @@ class MemoryModel:
         )
 
     def write_word(self, address: int, value: int = 0) -> None:
-        """Write a full 32-bit word to memory (little-endian).
-
-        Args:
-            address: Byte address (will be aligned to 4-byte boundary)
-            value: 32-bit word value to write
-        """
+        """Write a little-endian word, rounding the byte address down to four bytes."""
         aligned_address = address & MEMORY_WORD_ALIGN_MASK
 
         self.write_byte(aligned_address, value & 0xFF)
@@ -187,26 +150,14 @@ class MemoryModel:
         self.write_byte(aligned_address + 3, (value >> 24) & 0xFF)
 
     def read_dword(self, address: int) -> int:
-        """Read a full aligned 64-bit dword from memory (little-endian).
-
-        Args:
-            address: Byte address (will be aligned to 8-byte boundary)
-
-        Returns:
-            64-bit dword value assembled from 8 bytes
-        """
+        """Read a little-endian dword, rounding the byte address down to eight bytes."""
         aligned_address = address & MEMORY_DWORD_ALIGN_MASK
         return self.read_word(aligned_address) | (
             self.read_word(aligned_address + 4) << 32
         )
 
     def write_dword(self, address: int, value: int = 0) -> None:
-        """Write a full aligned 64-bit dword to memory (little-endian).
-
-        Args:
-            address: Byte address (will be aligned to 8-byte boundary)
-            value: 64-bit dword value to write
-        """
+        """Write a little-endian dword at the address rounded down to eight bytes."""
         aligned_address = address & MEMORY_DWORD_ALIGN_MASK
         self.write_word(aligned_address, value & MASK32)
         self.write_word(aligned_address + 4, (value >> 32) & MASK32)
@@ -216,23 +167,10 @@ class MemoryModel:
         write_data_expected_queue: list[int],
         write_address_expected_queue: list[int],
     ) -> None:
-        """Check DUT memory writes against the expected-write queues.
+        """Check DUT writes after reset against the expected address and data queues.
 
-        Runs concurrently with the test, watching the DUT's data memory
-        interface. Once reset de-asserts, every write the DUT drives has to
-        match the address and data at the head of the expected queues. A write
-        arriving with the queues empty fails the test.
-
-        Despite the name, the coroutine is check-only. It does not write back
-        into the software memory model and does not drive read data to the CPU.
-
-        Args:
-            write_data_expected_queue: Queue of expected write data values
-            write_address_expected_queue: Queue of expected write addresses
-
-        Raises:
-            AssertionError: If write address or data doesn't match expected,
-                          or if unexpected write occurs
+        An unexpected write or a mismatch raises AssertionError. This coroutine
+        neither updates the software memory model nor drives CPU read data.
         """
         await RisingEdge(self.dut.i_clk)
         while bool(self.dut.i_rst.value):

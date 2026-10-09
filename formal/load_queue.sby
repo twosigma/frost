@@ -7,8 +7,7 @@ prove_pre_match
 
 [options]
 bmc: mode bmc
-# Depth 10 keeps the run inside the runner's 40-minute per-task timeout; the
-# four cached-load slots make the model large.
+# Limit depth for runtime; the four cached-load slots make the model large.
 bmc: depth 10
 bmc_no_prepare_busy: mode bmc
 bmc_no_prepare_busy: depth 10

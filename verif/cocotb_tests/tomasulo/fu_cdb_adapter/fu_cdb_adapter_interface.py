@@ -12,10 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""DUT interface for the FU CDB adapter.
-
-Packs and unpacks fu_complete_t, drives stimulus, and reads results.
-"""
+"""DUT interface for FU CDB adapter requests and results."""
 
 from typing import Any
 
@@ -39,7 +36,7 @@ FU_COMPLETE_WIDTH = FP_FLAGS_WIDTH + EXC_CAUSE_WIDTH + 1 + FLEN + ROB_TAG_WIDTH 
 
 
 def pack_fu_complete(req: FuComplete) -> int:
-    """Pack an FuComplete into a bit vector matching fu_complete_t layout."""
+    """Pack a FuComplete into the fu_complete_t bit layout."""
     val = 0
     bit = 0
 
@@ -59,7 +56,7 @@ def pack_fu_complete(req: FuComplete) -> int:
 
 
 def unpack_fu_complete(raw: int) -> FuComplete:
-    """Unpack a fu_complete_t bit vector into an FuComplete."""
+    """Unpack a fu_complete_t bit vector into a FuComplete."""
     bit = 0
 
     fp_flags = (raw >> bit) & 0x1F
@@ -162,7 +159,7 @@ class FuCdbAdapterInterface:
         self.dut.i_rob_head_tag.value = rob_head_tag & MASK_TAG
 
     def clear_partial_flush(self) -> None:
-        """Deassert i_flush_en."""
+        """Clear the partial-flush enable, boundary tag, and head tag."""
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_rob_head_tag.value = 0

@@ -12,12 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Static checks that the frost_net10g driver, DKMS package, and module build agree.
+"""Check consistency of the frost_net10g driver and its module builds.
 
-linux/frost-net10g is a DKMS package that builds the driver as a module for
-Debian's kernels. linux/debian_kernel.py builds the same module for the pinned
-kernel and puts it in the test initramfs. The Kconfig and the kbuild Makefile
-also support an in-tree build, and dkms.conf repeats the Kconfig dependencies.
+DKMS and linux/debian_kernel.py build the same module; the latter installs it
+in the test initramfs. Kconfig and the kbuild Makefile also support an in-tree
+build. dkms.conf repeats the Kconfig dependencies.
 """
 
 import importlib.util
@@ -164,11 +163,9 @@ def _debian_kernel() -> ModuleType:
 
 
 def test_debian_module_build_matches_the_dkms_package() -> None:
-    """The module FROST boots is this directory, built the way DKMS builds it.
+    """The boot module uses DKMS's sources, command, and module name.
 
-    linux/debian_kernel.py runs DKMS's default command, ``make -C <kernel build
-    dir> M=<build dir> modules``, over copies of the files DKMS would build, and
-    installs the module DKMS names.
+    Both run make -C <kernel build dir> M=<build dir> modules.
     """
     helper = _debian_kernel()
     conf = _dkms_conf()

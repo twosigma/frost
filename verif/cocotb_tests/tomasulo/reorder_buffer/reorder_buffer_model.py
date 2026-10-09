@@ -12,18 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Software model of Reorder Buffer RTL behavior.
-
-Tracks:
-- Entry allocation and deallocation
-- Head and tail pointers
-- CDB writes marking entries as done
-- Branch updates and misprediction
-- Commit sequencing
-- Serializing instruction state
-
-Monitors compare its expected outputs with the DUT.
-"""
+"""ROB reference model for allocation, completion, retirement, and serialization."""
 
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -52,12 +41,7 @@ class SerialState(Enum):
 
 @dataclass
 class ReorderBufferEntry:
-    """Model of a single Reorder Buffer entry.
-
-    Mirrors the per-entry state reorder_buffer.sv keeps as parallel flag vectors
-    (rob_valid/rob_done/rob_exception/branch metadata) plus the multi-bit fields
-    it holds in distributed RAM.
-    """
+    """Model an entry's flag vectors and distributed-RAM fields in reorder_buffer.sv."""
 
     # Core fields
     valid: bool = False
@@ -120,11 +104,7 @@ class ReorderBufferEntry:
 
     @property
     def csr_may_change_translation(self) -> bool:
-        """Mirror the ROB's allocation-time class of translation CSRs.
-
-        The class is any satp access, and any mstatus or sstatus access with
-        write intent.
-        """
+        """True for any satp access or a write to mstatus or sstatus."""
         return self.is_csr and (
             self.csr_addr == 0x180
             or (self.csr_write_intent and self.csr_addr in (0x100, 0x300))
@@ -247,32 +227,14 @@ class ExpectedCommit:
 
 
 class ReorderBufferModel:
-    """Software model of the Reorder Buffer.
-
-    Tracks the expected state of the Reorder Buffer and generates expected
-    outputs for the monitors. It models:
-
-    - Circular buffer with head/tail pointers
-    - Entry allocation and deallocation
-    - CDB writes marking entries done
-    - Branch updates and misprediction detection
-    - In-order commit sequencing
-    - Serializing instruction handling
-    - Flush behavior (partial and full)
+    """Track ROB state and produce expected commits for the monitors.
 
     Usage:
         model = ReorderBufferModel()
-
-        # Allocate entry
         tag = model.allocate(request)
-
-        # Mark done via CDB
         model.cdb_write(CDBWrite(tag=tag, value=result))
-
-        # Check for commit
         if model.can_commit():
             expected = model.commit()
-            # Compare with DUT output
     """
 
     def __init__(self, depth: int = REORDER_BUFFER_DEPTH):
@@ -280,7 +242,6 @@ class ReorderBufferModel:
         self.depth = depth
         self.tag_mask = depth - 1
 
-        # Entry storage
         self.entries: list[ReorderBufferEntry] = [
             ReorderBufferEntry() for _ in range(depth)
         ]
@@ -393,7 +354,7 @@ class ReorderBufferModel:
         entry.branch_target = req.branch_target & MASK_XLEN if req.is_jal else 0
         entry.predicted_taken = req.predicted_taken
         entry.predicted_target = req.predicted_target & MASK_XLEN
-        entry.mispredicted = False  # Set by branch_update
+        entry.mispredicted = False  # Set below for JAL, otherwise by branch_update.
         entry.is_call = req.is_call
         entry.is_return = req.is_return
         entry.is_jal = req.is_jal
@@ -460,12 +421,10 @@ class ReorderBufferModel:
         # the entry done (for example, a serializing instruction).
         entry.done = True
         entry.value = write.value & MASK64
-        # Allocation-time legality is already a precise exception. A normal
-        # FU completion supplies value/done but must not erase that fault or
-        # its cause. An exceptional completion replaces the cause; in the core
-        # the only one that can reach an entry with an allocation-time fault
-        # and name a different cause is an instruction fetch fault, which
-        # ranks above illegal-instruction.
+        # A normal completion must preserve an allocation-time fault and cause.
+        # An exceptional completion replaces the cause. In the core, only a
+        # fetch fault can replace an allocation fault with a different cause;
+        # it has priority over illegal-instruction.
         if write.exception:
             entry.exception = True
             entry.exc_cause = write.exc_cause
@@ -540,7 +499,6 @@ class ReorderBufferModel:
         if not entry.valid or not entry.done:
             return False
 
-        # Handle serialization state machine
         if self.serial_state == SerialState.IDLE:
             if entry.exception:
                 self.serial_state = SerialState.TRAP_WAIT
@@ -621,11 +579,9 @@ class ReorderBufferModel:
         if not entry.valid or not entry.done:
             return False
 
-        # The serializer leaves IDLE only while retirement is permitted. Any
-        # other state except FENCE_I_SYNC and CSR_TRANSLATION_DRAIN can return
-        # to IDLE without the permit (for example CSR_EXEC when an ordinary CSR
-        # finishes its handshake), but the retire_permit check below blocks
-        # retirement in that cycle.
+        # Leaving IDLE requires retire_permit. Except for FENCE_I_SYNC and
+        # CSR_TRANSLATION_DRAIN, active states may finish without it, but the
+        # final permit check still blocks retirement.
         if self.serial_state == SerialState.IDLE and not self.retire_permit:
             return False
 

@@ -137,15 +137,9 @@ def sltu(operand_a: int, operand_b: int) -> int:
 def _load_halfword_from_memory(
     memory: MemoryReader, memory_address: int, is_signed: bool
 ) -> int:
-    """Load 16-bit halfword from memory with optional sign extension.
+    """Read a little-endian halfword, rounding the byte address down to two bytes.
 
-    Args:
-        memory: Memory model to read from
-        memory_address: Byte address (rounded down to a 2-byte boundary)
-        is_signed: If True, sign-extend; if False, zero-extend
-
-    Returns:
-        The halfword sign- or zero-extended to XLEN
+    Sign-extend to XLEN if is_signed is True; otherwise zero-extend.
     """
     aligned_address = memory_address & ~0x1
     # Read two bytes in little-endian order
@@ -159,29 +153,13 @@ def _load_halfword_from_memory(
 
 # Load operations (I-type instructions)
 def lw(memory: MemoryReader, memory_address: int) -> int:
-    """Load a 32-bit word from memory (LW instruction).
-
-    Args:
-        memory: Memory model to read from
-        memory_address: Byte address (rounded down to a 4-byte boundary)
-
-    Returns:
-        Word value sign-extended to XLEN, as RV64 LW writes rd
-    """
+    """Load a word at the byte address rounded down to four bytes; sign-extend to XLEN."""
     aligned_word = memory.read_word(memory_address & ~0x3)
     return sign_extend(aligned_word, 32) & MASK_XLEN
 
 
 def ld(memory: MemoryReader, memory_address: int) -> int:
-    """Load a 64-bit doubleword from memory (LD instruction).
-
-    Args:
-        memory: Memory model to read from
-        memory_address: Byte address (rounded down to an 8-byte boundary)
-
-    Returns:
-        64-bit value from memory (little-endian)
-    """
+    """Load a little-endian dword at the byte address rounded down to eight bytes."""
     aligned_address = memory_address & ~0x7
     low_word = memory.read_word(aligned_address)
     high_word = memory.read_word(aligned_address + 4)
@@ -189,54 +167,22 @@ def ld(memory: MemoryReader, memory_address: int) -> int:
 
 
 def lb(memory: MemoryReader, memory_address: int) -> int:
-    """Load a byte and sign-extend it to XLEN (LB instruction).
-
-    Args:
-        memory: Memory model to read from
-        memory_address: Byte address to load from
-
-    Returns:
-        Byte value sign-extended to XLEN
-    """
+    """Load a byte and sign-extend it to XLEN."""
     return sign_extend(memory.read_byte(memory_address), 8) & MASK_XLEN
 
 
 def lbu(memory: MemoryReader, memory_address: int) -> int:
-    """Load a byte and zero-extend it to XLEN (LBU instruction).
-
-    Args:
-        memory: Memory model to read from
-        memory_address: Byte address to load from
-
-    Returns:
-        Byte value zero-extended to XLEN
-    """
+    """Load a byte and zero-extend it to XLEN."""
     return memory.read_byte(memory_address) & MASK_XLEN
 
 
 def lh(memory: MemoryReader, memory_address: int) -> int:
-    """Load 16 bits and sign-extend them to XLEN (LH instruction).
-
-    Args:
-        memory: Memory model to read from
-        memory_address: Byte address (rounded down to a 2-byte boundary)
-
-    Returns:
-        Halfword value sign-extended to XLEN
-    """
+    """Load a halfword at the byte address rounded down to two bytes; sign-extend to XLEN."""
     return _load_halfword_from_memory(memory, memory_address, is_signed=True)
 
 
 def lhu(memory: MemoryReader, memory_address: int) -> int:
-    """Load 16 bits and zero-extend them to XLEN (LHU instruction).
-
-    Args:
-        memory: Memory model to read from
-        memory_address: Byte address (rounded down to a 2-byte boundary)
-
-    Returns:
-        Halfword value zero-extended to XLEN
-    """
+    """Load a halfword at the byte address rounded down to two bytes; zero-extend to XLEN."""
     return _load_halfword_from_memory(memory, memory_address, is_signed=False)
 
 
@@ -249,21 +195,21 @@ def mul(operand_a: int, operand_b: int) -> int:
 
 @mask_to_xlen
 def mulh(operand_a: int, operand_b: int) -> int:
-    """Multiply signed × signed: upper XLEN bits of the 2*XLEN product."""
+    """Multiply signed by signed: upper XLEN bits of the 2*XLEN product."""
     product = to_signed_xlen(operand_a) * to_signed_xlen(operand_b)
     return product >> XLEN
 
 
 @mask_to_xlen
 def mulhsu(operand_a: int, operand_b: int) -> int:
-    """Multiply signed × unsigned: upper XLEN bits (MULHSU instruction)."""
+    """Multiply signed by unsigned: upper XLEN bits (MULHSU instruction)."""
     product = to_signed_xlen(operand_a) * to_unsigned_xlen(operand_b)
     return product >> XLEN
 
 
 @mask_to_xlen
 def mulhu(operand_a: int, operand_b: int) -> int:
-    """Multiply unsigned × unsigned: upper XLEN bits (MULHU instruction)."""
+    """Multiply unsigned by unsigned: upper XLEN bits (MULHU instruction)."""
     product = to_unsigned_xlen(operand_a) * to_unsigned_xlen(operand_b)
     return product >> XLEN
 
@@ -351,28 +297,19 @@ remu = DivisionOperations.remu
 # Zba extension - address generation operations
 @mask_to_xlen
 def sh1add(operand_a: int, operand_b: int) -> int:
-    """Shift left by 1 and add (SH1ADD instruction).
-
-    Computes (rs1 << 1) + rs2, useful for array indexing with 2-byte elements.
-    """
+    """Compute (rs1 << 1) + rs2 for indexing 2-byte elements."""
     return (operand_a << 1) + operand_b
 
 
 @mask_to_xlen
 def sh2add(operand_a: int, operand_b: int) -> int:
-    """Shift left by 2 and add (SH2ADD instruction).
-
-    Computes (rs1 << 2) + rs2, useful for array indexing with 4-byte elements.
-    """
+    """Compute (rs1 << 2) + rs2 for indexing 4-byte elements."""
     return (operand_a << 2) + operand_b
 
 
 @mask_to_xlen
 def sh3add(operand_a: int, operand_b: int) -> int:
-    """Shift left by 3 and add (SH3ADD instruction).
-
-    Computes (rs1 << 3) + rs2, useful for array indexing with 8-byte elements.
-    """
+    """Compute (rs1 << 3) + rs2 for indexing 8-byte elements."""
     return (operand_a << 3) + operand_b
 
 
@@ -418,64 +355,43 @@ def bext(operand_a: int, operand_b: int) -> int:
 
 # Zbb extension - basic bit manipulation operations
 def andn(operand_a: int, operand_b: int) -> int:
-    """AND with complement (ANDN instruction).
-
-    Computes rs1 & ~rs2.
-    """
+    """Compute rs1 & ~rs2 (ANDN)."""
     return (operand_a & ~operand_b) & MASK_XLEN
 
 
 def orn(operand_a: int, operand_b: int) -> int:
-    """OR with complement (ORN instruction).
-
-    Computes rs1 | ~rs2.
-    """
+    """Compute rs1 | ~rs2 (ORN)."""
     return (operand_a | (~operand_b & MASK_XLEN)) & MASK_XLEN
 
 
 def xnor(operand_a: int, operand_b: int) -> int:
-    """Exclusive NOR (XNOR instruction).
-
-    Computes ~(rs1 ^ rs2).
-    """
+    """Compute ~(rs1 ^ rs2) (XNOR)."""
     return (~(operand_a ^ operand_b)) & MASK_XLEN
 
 
 def max_rv(operand_a: int, operand_b: int) -> int:
-    """Maximum signed (MAX instruction).
-
-    Returns the larger of rs1 and rs2 (signed comparison).
-    """
+    """Return the larger signed operand (MAX)."""
     signed_a = to_signed_xlen(operand_a)
     signed_b = to_signed_xlen(operand_b)
     return operand_a if signed_a > signed_b else operand_b
 
 
 def maxu(operand_a: int, operand_b: int) -> int:
-    """Maximum unsigned (MAXU instruction).
-
-    Returns the larger of rs1 and rs2 (unsigned comparison).
-    """
+    """Return the larger unsigned operand (MAXU)."""
     unsigned_a = operand_a & MASK_XLEN
     unsigned_b = operand_b & MASK_XLEN
     return operand_a if unsigned_a > unsigned_b else operand_b
 
 
 def min_rv(operand_a: int, operand_b: int) -> int:
-    """Minimum signed (MIN instruction).
-
-    Returns the smaller of rs1 and rs2 (signed comparison).
-    """
+    """Return the smaller signed operand (MIN)."""
     signed_a = to_signed_xlen(operand_a)
     signed_b = to_signed_xlen(operand_b)
     return operand_a if signed_a < signed_b else operand_b
 
 
 def minu(operand_a: int, operand_b: int) -> int:
-    """Minimum unsigned (MINU instruction).
-
-    Returns the smaller of rs1 and rs2 (unsigned comparison).
-    """
+    """Return the smaller unsigned operand (MINU)."""
     unsigned_a = operand_a & MASK_XLEN
     unsigned_b = operand_b & MASK_XLEN
     return operand_a if unsigned_a < unsigned_b else operand_b

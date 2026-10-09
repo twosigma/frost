@@ -29,9 +29,8 @@ module pc_increment_calculator #(
     input logic i_sel_nop,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
-    // The real module's selects by bundle shape and the slot-2 validity that
-    // picks the two-wide shape, between which i_sel_nop and i_slot2_valid
-    // pick last. Unused here, like the merged selects.
+    // Selects for each bundle shape; i_sel_nop and i_slot2_valid choose the
+    // shape in the real calculator. All selects are unused in this model.
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_one,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_two,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_one,

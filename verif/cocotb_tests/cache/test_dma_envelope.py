@@ -12,29 +12,16 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""DMA-port service envelope measurement (frost_cache_test_harness).
+"""Measure tagged DMA throughput and latency with frost_cache_test_harness.
 
-No performance limits: it streams tagged line requests through the coherent
-DMA port with a chosen number in flight and reports, per scenario and depth,
-the cycles per line, the mean and maximum request latency, and the average
-residence of a request in each sequencer phase (ADMIT, PROBE, PROBE_WAIT,
-INVAL, ISSUE, RESP). The registry builds it once per candidate lock count
-(`dma_envelope_lock<N>`, -GNUM_DMA_LOCK), once more for three locks at the
-full-system DDR model latency (`dma_envelope_lock3_mem30`), and once with the
-production 2 MiB L2 (`dma_envelope_lock3_big_l2`); each build measures every
-scenario its geometry supports at every producer depth. Scenarios: full-line
-writes to absent lines, to lines clean or dirty in the L1D, and to lines the
-L2 holds but the L1D does not (`write_l2_only`, only with an L2 more than
-twice the L1D, which keeps the lines in the L2 while aliasing reads evict
-them from the L1D); partial-strobe writes to absent lines (a fetch from
-memory at the L2); reads of absent lines and of lines dirty in the L1D;
-writes under a data-side miss flood; and a stream four times the L2
-(`write_beyond_l2`, only with the harness's 4 KiB L2).
+Report cycles per line, mean and maximum latency, and time in each sequencer
+phase; no performance limit is asserted. The load-queue stub delays admit
+and invalidation by one cycle. Results include geometry and memory latency
+in ``results/dma_envelope_lock<N>_mem<latency>_l2_<KiB>k.json``.
 
-The bench plays the load queue with a one-cycle admit and invalidation delay,
-and checks that every write_l2_only write hits in the L2. Results also land in
-`results/dma_envelope_lock<N>_mem<latency>_l2_<KiB>k.json`, which records the
-geometry and the memory latency.
+``write_l2_only`` requires an L2 larger than twice the L1D so aliasing reads
+evict from L1D without evicting from L2; every DMA write must then hit L2.
+``write_beyond_l2`` requires a stream at least four times the L2 size.
 """
 
 import json

@@ -12,27 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Directed DMA-coherence tests at the Tomasulo wrapper.
+"""DMA coherence tests at the Tomasulo wrapper.
 
-The bench plays the cache hierarchy's coherence sequencer on the wrapper's
-``i_coh_*`` / ``o_coh_*`` handshake (admit a line, invalidate it, release
-it) against the core-side machinery in ``coherence/lq_coherence_port.sv``,
-the load queue and the SC pending unit. The races are decided by single
-cycles, so most tests sweep the admission or a flush across the cycles
-around the event it races with and check the order that results:
-
-- an AMO never launches its read between the admission of its line and the
-  release, whichever side comes first (an AMO already in flight refuses the
-  admission until its write has completed);
-- an SC never fires between the admission of its line and the release
-  (an SC that fired first keeps the admission refused until its store has
-  drained);
-- a full flush landing on an SC's fire or on its window's opening cycle
-  leaves the line admittable;
-- a load that took its value from the store queue is validated like any
-  other memory observation: a DMA write to its line flags it for replay. A
-  partial flush around the forward removes the observation only when it
-  kills the load itself.
+Drive the cache sequencer's admit, invalidate, and release handshakes against
+coherence/lq_coherence_port.sv, the LQ, and the SC pending unit. Sweep cycle
+alignments to check ordering with memory operations and flushes.
 """
 
 from typing import Any
@@ -107,10 +91,9 @@ def _mirror_holds(dut: Any) -> bool:
 async def _wait_admitted(
     dut: Any, dut_if: TomasuloInterface, max_cycles: int = 16
 ) -> None:
-    """With the admission presented, return with it dropped in the cycle after it fired.
+    """Drop admission in the cycle after it fires, using the mirror if needed.
 
-    A fire the caller did not watch for shows in the port's mirror; presenting
-    the slot any longer would re-admit a held line (the port asserts on it).
+    Leaving it asserted would re-admit the held line and trip the port check.
     """
     for _ in range(max_cycles):
         if _mirror_holds(dut):
@@ -157,11 +140,7 @@ async def _dispatch_amo(dut_if: TomasuloInterface) -> int:
 async def _serve_amo(
     dut: Any, dut_if: TomasuloInterface, *, admit_presented: bool
 ) -> None:
-    """Answer the AMO's read and complete its write.
-
-    With the admission presented, prove it stays refused until the write has
-    completed.
-    """
+    """Complete the AMO read and write; admission must wait until the write completes."""
     dut_if.drive_lq_mem_response(0x0)
     for label in ("before the AMO's response", "in the AMO's response cycle"):
         if admit_presented:
@@ -194,11 +173,7 @@ async def _serve_amo(
 async def _finish_amo(
     dut_if: TomasuloInterface, tag: int, seen_cdb: bool = False
 ) -> None:
-    """See the AMO through to retirement.
-
-    It is the only instruction, so an empty ROB is its commit, however many
-    cycles ago that happened.
-    """
+    """Wait for the sole instruction, an AMO, to retire; an empty ROB confirms it."""
     if not seen_cdb:
         cdb = await wait_for_cdb(dut_if)
         assert cdb.tag == tag
@@ -488,8 +463,8 @@ async def test_flushed_sc_leaves_line_admittable(dut: Any) -> None:
         dut_if.clear_flush_all()
         dut_if.set_fu_ready(RS_MEM, False)
 
-        # An SC that committed before the flush owns a store that must drain;
-        # a squashed one owns nothing. Either way the line is admittable soon.
+        # Drain any store committed before the flush; a squashed SC has none.
+        # In either case, the line must become admittable.
         _present_admit(dut)
         for _ in range(40):
             if (
@@ -517,7 +492,7 @@ async def test_forwarded_load_is_validated(dut: Any) -> None:
     dut_if, _ = await setup_test(dut)
     dut_if.set_fu_ready(RS_MEM, True)
 
-    # An SW to WORD that stays uncommitted in the store queue ...
+    # Hold an SW to WORD uncommitted in the store queue.
     tag_sw = await dut_if.dispatch(make_store_req(pc=0x3000))
     dut_if.drive_rs_dispatch(**_mem_rs(tag_sw, OP_SW, WORD, value=0x1111_2222))
     await dut_if.step()
@@ -529,7 +504,7 @@ async def test_forwarded_load_is_validated(dut: Any) -> None:
     else:
         raise AssertionError("SW never issued")
 
-    # ... and a younger LW to WORD that forwards from it, never touching memory.
+    # A younger LW to WORD forwards from it without reading memory.
     # Commits are held so both stay in flight while the DMA write lands.
     dut_if.set_commit_hold(True)
     tag_lw = await dut_if.dispatch(make_int_req(pc=0x3004, rd=7))
@@ -577,11 +552,11 @@ async def test_forwarded_load_is_validated(dut: Any) -> None:
 
 @cocotb.test()
 async def test_flushed_forward_is_not_observed(dut: Any) -> None:
-    """A forward killed by a partial flush in its own cycle leaves no table entry for its tag.
+    """A partial flush must remove a killed load's forwarding observation.
 
-    The tag is reused right away by a load to another line; a DMA write to
-    the flushed load's line must not flag it. The flush is swept across the
-    forward's cycle.
+    Reuse its tag for an ALU operation that creates no memory observation.
+    A DMA write to the old line must not flag the reused tag. Sweep the
+    flush across the forwarding cycle.
     """
     dut_if, _ = await setup_test(dut)
     for offset in range(0, 5):

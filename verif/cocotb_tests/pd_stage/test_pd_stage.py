@@ -534,7 +534,7 @@ async def test_sel_nop_overrides_instruction_and_sources(dut: Any) -> None:
     assert packet["program_counter"] == BASE_PC
     assert (
         packet["inject_nop"] == 1
-    )  # slot-1 marks a bubble via inject_nop (instruction passes through un-NOP'd)
+    )  # inject_nop marks the bubble; the instruction passes through
     assert packet["is_compressed"] is False
     assert packet["source_reg_1_early"] == 0
     assert packet["source_reg_2_early"] == 0
@@ -584,7 +584,7 @@ async def test_illegal_compressed_flag_ignores_nop_slots(dut: Any) -> None:
     packet = _read_pd_packet(dut)
     assert (
         packet["inject_nop"] == 1
-    )  # slot-1 marks a bubble via inject_nop (instruction passes through un-NOP'd)
+    )  # inject_nop marks the bubble; the instruction passes through
     assert packet["illegal_instruction"] is False
     assert packet["source_reg_1_early"] == 0
     assert packet["source_reg_2_early"] == 0
@@ -1028,9 +1028,8 @@ async def test_unqualified_redirect_candidate_keeps_all_visible_vetoes(
         await _advance_cycle(dut)
         assert bool(dut.o_pd_redirect.value) is False
 
-    # Flush and reset clear the candidate even during a stall. Keep a
-    # predicted-taken branch on the input in both cases so an idle input cannot
-    # hide stale state.
+    # Flush and reset clear the candidate even under stall. Keep a branch
+    # predicted taken on the input so idle data cannot hide stale state.
     _drive_pipeline_ctrl(dut, {"flush": True, "stall": True})
     _drive_if_packet(
         dut,

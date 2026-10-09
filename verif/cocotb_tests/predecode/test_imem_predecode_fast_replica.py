@@ -12,28 +12,19 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Programming and fetch checks for imem_predecode's replica and overlay banks.
+"""Check imem_predecode programming, replica banks, and scalar overlay.
 
-imem_predecode stores each word as 28 cold bits plus four frontend-hot bits
-``{word[15], word[10], word[7], word[6]}``, and keeps a four-lane block-RAM
-replica of high-parcel ``C[15]``, ``C[13]``, ``C[12]``, and
-AllowsSlot2AfterHi. Each sideband predicate that the IF
-next-PC logic reads (``SCALAR_REPLICA_BITS``) comes from a per-parity LUTRAM
-overlay of the low addresses, through an output register. Outside the overlay
-the first response is withheld while those registers capture the predicates
-redecoded from the fetched words; presenting the same address pair again
-publishes them.
+Each word stores 28 cold bits and four frontend-hot bits
+``{word[15], word[10], word[7], word[6]}``. A four-lane BRAM replica holds
+high-parcel C[15], C[13], C[12], and AllowsSlot2AfterHi. Registered per-parity
+LUTRAM overlays supply SCALAR_REPLICA_BITS for low addresses. Outside the
+overlay, the first read captures redecoded predicates; only a repeated
+address pair publishes the aligned response.
 
-This bench makes the overlay half the IMEM, programs both interleaved banks
-through port A, and checks data, predicates, and the full sideband for windows
-inside and outside the overlay, both PC[2] swap cases, and read-enable hold.
-After each programming pass it runs the init-file generator on the same words
-and compares every image it writes with the matching memory, row for row:
-Vivado loads those files, while simulation packs the memories itself. It
-also rewrites an out-of-overlay word while fetch stays on it and checks
-that readiness is withheld until the new word and its redecoded predicates
-line up. Port A runs at a quarter of port B's clock rate, as in production;
-the write-quarantine synchronizer depends on that ratio.
+Use an overlay half the IMEM size. Compare data and sidebands across bank
+swaps and programming writes, and compare every memory row with the init
+files Vivado loads. Port A runs at one quarter of port B's rate, as required
+by the write-quarantine synchronizer.
 """
 
 import importlib.util
@@ -130,7 +121,7 @@ def _expected_compressed_control(parcel: int) -> bool:
 
 
 def _expected_allows_slot2_after_hi(word: int) -> int:
-    """Independently model the timing-facing high allows-slot-2 lane."""
+    """Independently model the high-parcel AllowsSlot2AfterHi lane."""
     hi = (word >> 16) & 0xFFFF
     opcode = hi & 0x7F
     compressed = (hi & 0x3) != 0b11
@@ -830,10 +821,8 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
     for current_index in range(len(words)):
         await _fetch_window(dut, words, current_index)
 
-    # Every scalar LUTRAM uses an asynchronous primitive read followed by an
-    # enabled output register. Prove that changing the address to a row whose
-    # predicate differs cannot leak through while the shared fetch enable is
-    # disabled, for every predicate on both physical parities.
+    # Scalar LUTRAM reads feed enabled output registers. Changing addresses
+    # while fetch is disabled must not change any predicate on either parity.
     def parity_word_indices(index: int) -> tuple[int, int]:
         even_index = index if index % 2 == 0 else index + 1
         odd_index = index + 1 if index % 2 == 0 else index

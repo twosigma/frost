@@ -12,13 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""DUT interface for int_muldiv_shim verification.
-
-pack_rs_issue and unpack_fu_complete come from fp_shim_interface.
-
-The MUL/DIV shim has two result ports (o_mul_fu_complete, o_div_fu_complete)
-and supports full and partial flush.
-"""
+"""MUL/DIV shim interface with separate completion ports and both flush forms."""
 
 from typing import Any
 
@@ -50,11 +44,7 @@ class IntMulDivShimInterface:
         self.dut.i_div_accepted.value = 0
 
     async def reset(self, cycles: int = 3) -> None:
-        """Reset the DUT for the given number of cycles.
-
-        Drives all inputs low, asserts reset (active-low), waits, then
-        deasserts reset and settles on the falling edge.
-        """
+        """Clear inputs, pulse active-low reset, and return at a falling edge."""
         self._init_inputs()
         self.dut.i_rst_n.value = 0
 
@@ -103,7 +93,7 @@ class IntMulDivShimInterface:
         return unpack_fu_complete(raw)
 
     def read_busy(self) -> bool:
-        """Read o_fu_busy (the multiplier path's credits are exhausted)."""
+        """Read MUL busy for exhausted credits or a completion-slot collision."""
         return bool(int(self.dut.o_fu_busy.value))
 
     def read_div_busy(self) -> bool:

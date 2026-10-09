@@ -12,22 +12,13 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Reset tests for line_port_axi_bridge against an AXI slave that keeps running.
+"""Test line_port_axi_bridge resets against a continuously running AXI slave.
 
-The bridge resets with the CPU, while on hardware the DDR controller and its
-interconnect keep running through the image-load reset and the debug
-ndmreset. The bench plays that slave in Python: it accepts AW and W
-independently and pairs them in arrival order, as an interconnect does, and
-only the bridge's AXI-side reset (i_axi_rst) resets it. Checked: a beat
-presented before a CPU-side reset stays presented, with a stable payload,
-until the slave accepts it (AXI's VALID-until-READY rule, which a slave that
-is not being reset relies on); a reset between the AW and W handshakes of
-one write leaves no orphaned beat, so the next write lands at its own
-address; the reverse split and a wholly unaccepted write complete the same
-way; a read presented across a reset completes and its response, now stale,
-never reaches the line port; the AXI-side reset drops every VALID at once
-and no withdrawn beat returns; and every transaction issued after a reset
-completes normally.
+The DDR controller and interconnect remain active during CPU image-load and
+ndmreset resets. The Python slave pairs independent AW and W beats in
+arrival order and resets only with i_axi_rst. Across CPU reset, presented
+beats must obey AXI's VALID-until-READY rule and stale responses must not
+reach the line port. AXI reset withdraws beats and clears pending work.
 """
 
 from collections import deque
@@ -46,17 +37,15 @@ RESET_CYCLES = 3
 
 
 class _AxiSlave:
-    """AXI4 slave for single-beat bursts, reset only by the bridge's i_axi_rst.
+    """Single-beat AXI4 slave reset only by i_axi_rst.
 
-    Handshakes are evaluated mid-cycle, after the bench drives the ready
-    lines at the falling edge: a channel fires at the next rising edge when
-    its valid and ready are both high then. Accepted AW and W beats queue
-    separately and pair in arrival order; each pair is written into a
-    byte-addressed memory and answered on B. Reads are answered on R a few
-    cycles after AR. Every cycle the slave also checks the master's side of
-    the rules: a valid presented without a handshake must stay high, with
-    the same payload, in the next cycle, and every valid must be low while
-    i_axi_rst holds the slave in reset, which drops its queued work.
+    Drive ready at falling edges and sample handshakes after settling for
+    the next rising edge. Queue AW and W separately, pair them in arrival
+    order, update byte-addressed memory, and respond on B. Respond to AR
+    on R after a delay.
+
+    Check that VALID and payload remain stable until acceptance. During
+    i_axi_rst, require all master VALIDs low and drop queued work.
     """
 
     def __init__(self, dut: Any) -> None:

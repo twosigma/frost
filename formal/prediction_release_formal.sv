@@ -116,9 +116,8 @@ module prediction_release_formal #(
   // PENDING_HANDOFF_EXCLUDES_SLOT2, the slot-2 request gets IF's
   // pending-holdoff mask when the window can serve (WCS=0; WCS is
   // i_window_cannot_serve_raw). When it cannot (WCS=1), IF disables
-  // prediction outright; the harness applies the WCS=1 pending holdoff
-  // instead, which admits more requests. branch_prediction_disable separately
-  // proves that the real predictor applies this mask to every slot-2 source.
+  // prediction outright; the harness applies the WCS=1 pending holdoff,
+  // which admits more requests.
   assign prediction_used_for_pc =
       i_prediction_request && !i_reset && !i_trap_taken && !i_mret_taken &&
       !stall_registered && !any_holdoff_safe && !prediction_holdoff;
@@ -215,11 +214,8 @@ module prediction_release_formal #(
       .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .i_slot2_prediction_used_for_fetch_mux(slot2_prediction_used_for_pc),
       .i_slot2_predicted_target,
-      // Every slot-2 request enters as a staged prediction, with the
-      // live-alias selects tied low. That is a legal use of the split
-      // interface and leaves the request and target arbitrary. The live-alias
-      // split is checked at its producer and by pc_controller's simulation
-      // assertions.
+      // Slot-2 requests use the staged path; live-alias selects are tied low.
+      // The request and target remain arbitrary.
       .i_slot2_staged_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .i_slot1_aliases_slot2_candidate(1'b0),
       .i_slot2_live_target_used_for_pc_cofactor(1'b0),
@@ -250,9 +246,7 @@ module prediction_release_formal #(
       .o_pending_prediction_fetch_holdoff_wcs(pending_prediction_fetch_holdoff_wcs),
       .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
       .o_pending_prediction_redirect_kill(),
-      // Translation starts from the registered o_pc, so the next-PC value and
-      // the next-PC selector observation ports do not matter here and stay
-      // unconnected.
+      // Translation uses registered o_pc; next-PC observations are unused.
       .o_next_pc(),
       .o_next_pc_holds(),
       .o_pc_update_en(),

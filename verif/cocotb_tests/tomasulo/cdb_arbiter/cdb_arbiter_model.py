@@ -12,12 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Golden model for the CDB Arbiter.
-
-Mirrors the RTL two-lane fixed-priority arbitration logic. Given a list of FU
-completion requests, selects the two highest-priority valid requests and returns
-both CDB broadcast results plus the per-FU grant vector (up to 2-hot).
-"""
+"""Reference model for two-lane, fixed-priority CDB arbitration."""
 
 from dataclasses import dataclass
 
@@ -93,11 +88,10 @@ def _broadcast_from(req: FuComplete, fu_idx: int) -> CdbBroadcast:
 
 
 class CdbArbiterModel:
-    """Golden model for CDB arbiter priority arbitration (2-wide CDB).
+    """Select the two highest-priority valid requests.
 
-    Lane 0 = highest-priority valid request; lane 1 = highest-priority valid
-    request among those lane 0 did not take. Both winners are granted, so the
-    grant vector is 2-hot when two or more FUs request the CDB.
+    Lane 0 takes the first winner and lane 1 takes the second. Each winner
+    sets its bit in the per-FU grant vector.
     """
 
     def arbitrate(

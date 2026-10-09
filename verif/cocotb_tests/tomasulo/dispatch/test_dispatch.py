@@ -12,12 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the Dispatch module.
-
-Covers stall logic, RS routing, source operand resolution, RAT rename,
-checkpoint management, immediate selection, memory attributes, flush,
-CSR info, FP flags, prediction passthrough, and rounding mode resolution.
-"""
+"""Dispatch unit tests."""
 
 from typing import Any
 
@@ -98,9 +93,7 @@ async def _setup(dut: Any) -> DispatchInterface:
     Clock(dut.i_clk, 10, unit="ns").start()
     dut_if = DispatchInterface(dut)
     await dut_if.reset_dut(cycles=5)
-    # Defaults: the ROB accepts both slots (tags 0 and 1, not full) and a
-    # checkpoint is available. Tests that need a stall, or a specific tag,
-    # override them.
+    # Default to accepting both slots with tags 0 and 1 and a checkpoint.
     dut_if.drive_rob_alloc_resp(alloc_ready=1, alloc_tag=0, full=0)
     dut_if.drive_rob_alloc_resp_2(alloc_ready=1, alloc_tag=1, full=0)
     dut_if.drive_checkpoint(available=True, alloc_id=0)
@@ -507,7 +500,6 @@ async def test_source_ready_from_regfile(dut: Any) -> None:
     """RAT not renamed -> src_ready=1, value from regfile."""
     dut_if = await _setup(dut)
 
-    # INT src1 not renamed, value=0xDEADBEEF
     dut_if.drive_int_src1(renamed=0, tag=0, value=0xDEADBEEF)
     dut_if.drive_int_src2(renamed=0, tag=0, value=0xCAFEBABE)
 
@@ -534,7 +526,6 @@ async def test_source_not_ready_renamed(dut: Any) -> None:
     """RAT renamed -> src_ready=0, tag set."""
     dut_if = await _setup(dut)
 
-    # INT src1 renamed to ROB tag 7
     dut_if.drive_int_src1(renamed=1, tag=7, value=0)
     dut_if.drive_int_src2(renamed=0, tag=0, value=42)
 
@@ -1093,7 +1084,6 @@ async def test_memory_signed(dut: Any) -> None:
     """LB sets mem_signed=1, LBU sets mem_signed=0."""
     dut_if = await _setup(dut)
 
-    # LB: signed
     dut_if.drive_instruction(
         valid=True,
         instruction_operation=LB,
@@ -1105,7 +1095,6 @@ async def test_memory_signed(dut: Any) -> None:
     rs = dut_if.read_rs_dispatch()
     assert rs["mem_signed"] == 1, "LB should have mem_signed=1"
 
-    # LBU: unsigned
     dut_if.drive_instruction(
         valid=True,
         instruction_operation=LBU,
@@ -1120,11 +1109,7 @@ async def test_memory_signed(dut: Any) -> None:
 
 @cocotb.test()
 async def test_rv64_ops_dispatch_with_decoded_flags(dut: Any) -> None:
-    """RV64-only ops get their station, destination, sources and memory size.
-
-    The packets carry the flags id_stage registers for each op, as
-    build_from_id_to_ex derives them.
-    """
+    """Check RV64 routing, operands, and memory size using ID's derived flags."""
     dut_if = await _setup(dut)
     # Both INT sources are renamed, so a source the op reads is not ready.
     dut_if.drive_int_src1(renamed=1, tag=7, value=0)
@@ -1261,11 +1246,11 @@ async def test_csr_info_in_rob_alloc(dut: Any) -> None:
 
 @cocotb.test()
 async def test_csr_write_intent_from_encoding(dut: Any) -> None:
-    """A set or clear form with rs1/uimm = 0 reaches the ROB as a pure read.
+    """CSR set/clear with rs1/uimm=0 is a pure read in either slot.
 
-    Its csr_op keeps funct3[2] with bits [1:0] cleared and csr_write_intent is
-    0. A nonzero rs1 field writes whatever the register holds, and
-    CSRRW/CSRRWI always write; both keep funct3. Checked on both slots.
+    It clears csr_write_intent and csr_op[1:0], preserving funct3[2].
+    A nonzero rs1 field denotes a write regardless of the register value;
+    CSRRW and CSRRWI always write. These cases preserve funct3.
     """
     dut_if = await _setup(dut)
 
@@ -1422,7 +1407,6 @@ async def test_dynamic_rounding_mode(dut: Any) -> None:
     """FP instruction with rm=7 (DYN) should resolve from frm_csr."""
     dut_if = await _setup(dut)
 
-    # Set frm CSR to RDN (0b010)
     dut_if.set_frm_csr(0b010)
     dut_if.drive_instruction(
         valid=True,
@@ -1439,12 +1423,10 @@ async def test_dynamic_rounding_mode(dut: Any) -> None:
 
 @cocotb.test()
 async def test_fp_dyn_rm_predecode(dut: Any) -> None:
-    """Both slots flag exactly the F/D instructions whose rm field (funct3) is DYN.
+    """Both slots identify F/D instructions with funct3=DYN, even with rs1=0.
 
-    The flag depends on funct3 alone, so a DYN op whose rs1 field is 0 is
-    flagged. A static rounding mode and an integer instruction with funct3
-    111 are not. Slot 2 never allocates an FP compute op, but its request
-    carries the same pre-decode.
+    Static rounding and integer ops with funct3=111 leave fp_dyn_rm clear.
+    Slot 2 carries this pre-decode even though it cannot allocate FP compute.
     """
     dut_if = await _setup(dut)
 
@@ -1477,7 +1459,7 @@ async def test_fp_dyn_rm_predecode(dut: Any) -> None:
 
 
 # =============================================================================
-# PC-derived immediates: values ID precomputes from the PC travel in the RS imm
+# PC-derived immediates
 # =============================================================================
 
 

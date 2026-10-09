@@ -25,7 +25,7 @@ small: aigsmt boolector
 
 [engines]
 ~small: smtbmc boolector
-# Boolector stalls on some small free-read BMC steps; bit-level BMC does not.
+# Use bit-level BMC for the small model's free reads.
 small: abc bmc3
 
 [script]
@@ -37,7 +37,7 @@ small: chparam -set DATA_WIDTH 8 -set LINK_WIDTH 4 rob_link_value_equiv
 bmc_free: chparam -set WATCH_READ 0 rob_link_value_equiv
 prep -top rob_link_value_equiv
 ~cover: chformal -remove -cover
-# Guard against a run that proves nothing: exact property/assumption counts.
+# Reject missing properties or unexpected assumptions.
 select -assert-count 1 t:$check r:FLAVOR=assert %i
 cover: select -assert-count 7 t:$check r:FLAVOR=cover %i
 ~cover: select -assert-none t:$check r:FLAVOR=cover %i

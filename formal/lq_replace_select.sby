@@ -27,7 +27,7 @@ opt
 prep -top load_queue
 select -assert-none t:$assume a:init
 select -assert-none t:$check r:FLAVOR=assume %i
-# Replacement identity plus the five existing RAM write-selection identities.
+# Check replacement and RAM write-selection identities.
 select -assert-count 6 t:$check r:FLAVOR=assert %i
 select -assert-count 4 t:$check r:FLAVOR=cover %i
 

@@ -218,7 +218,7 @@ async def _idle(dut: Any, limit: int = 2000) -> None:
 
 @cocotb.test()
 async def test_steering_and_data(dut: Any) -> None:
-    """Mixed RX/TX reads and writes: every response to its owner with kind, tag and data."""
+    """Route mixed RX/TX responses with the correct kind, tag, and data."""
     await _setup(dut)
     port = _PortModel(dut, seed=1)
     bus = _ReqBus(dut)

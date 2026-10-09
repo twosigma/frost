@@ -39,8 +39,7 @@ CLOCK_PERIOD_NS = 10
 LINE_BYTES = 32
 BASE_ADDR = 0x8000_0000
 
-# Generous: the slow reset sweep walks every L2 line (65,536) before the L2
-# takes a request.
+# The slow reset sweep visits all 65,536 L2 lines before accepting requests.
 READY_TIMEOUT_CYCLES = 100_000
 RESP_TIMEOUT_CYCLES = 20_000
 FENCE_TIMEOUT_CYCLES = 200_000
@@ -144,6 +143,5 @@ async def test_fence_i_maintenance_cycles(dut: Any) -> None:
         f"L1=128KiB/4096 lines, L1I=16KiB/512 lines, L2=2MiB)"
     )
 
-    # Sanity only: completion within the timeout. The slow vs fast comparison is
-    # read from the logged FENCE_I_MAINT_CYCLES line across the two builds.
+    # Compare the builds using their logged FENCE_I_MAINT_CYCLES values.
     assert cycles < FENCE_TIMEOUT_CYCLES, "fence.i maintenance did not complete"

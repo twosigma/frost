@@ -12,15 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Shared test statistics and DUT-access helpers.
-
-TestStatistics counts instructions by mnemonic, branch outcomes, and memory
-operations, then formats a report and checks coverage thresholds.
-
-DUTInterface reaches DUT signals through configurable hierarchy paths, so a
-test never spells out the hierarchy itself. It also wraps the operations every
-bench needs: reset, waiting for ready, and register-file reads and writes.
-"""
+"""Test statistics and DUT access through configurable hierarchy paths."""
 
 from typing import Any
 from dataclasses import dataclass, field
@@ -66,12 +58,7 @@ class TestStatistics:
     def record_instruction(
         self, operation: str, branch_was_taken: bool | None = None
     ) -> None:
-        """Record execution of a single instruction for statistics tracking.
-
-        Args:
-            operation: Instruction mnemonic (e.g., "add", "lw", "beq")
-            branch_was_taken: For branch instructions, whether branch was taken
-        """
+        """Count a mnemonic and, when supplied, its branch outcome."""
         self.instructions_executed += 1
         self.coverage[operation] = self.coverage.get(operation, 0) + 1
 
@@ -103,16 +90,7 @@ class TestStatistics:
         return "\n".join(lines)
 
     def check_coverage(self, minimum_execution_count: int = 50) -> list[str]:
-        """Check which instructions didn't meet minimum coverage threshold.
-
-        An instruction passes once it has run minimum_execution_count times.
-
-        Args:
-            minimum_execution_count: Minimum times each instruction should execute
-
-        Returns:
-            List of instructions that didn't meet threshold
-        """
+        """Return coverage failures for recorded mnemonics below minimum_execution_count."""
         issues = []
         for operation, execution_count in self.coverage.items():
             if execution_count < minimum_execution_count:
@@ -126,21 +104,12 @@ class DUTInterface:
     """DUT signal access through configurable hierarchy paths."""
 
     def __init__(self, dut: Any, signal_paths: DUTSignalPaths | None = None):
-        """Initialize DUT interface.
-
-        Args:
-            dut: The device under test (cocotb SimHandle)
-            signal_paths: Optional custom signal paths configuration.
-                         If None, uses default paths from config.
-        """
+        """Bind the DUT, using config.DUTSignalPaths unless custom paths are supplied."""
         self.dut = dut
         self.paths = signal_paths or DUTSignalPaths()
 
-        # The cpu_tb tests drive instructions in directly, bypassing fetch,
-        # but the PC still flows through the IF stage and its branch
-        # prediction. Once the BTB has accumulated entries, predictions
-        # redirect the PC and it no longer matches the sequential PC the test
-        # expects, so prediction stays off.
+        # Injected instructions bypass fetch, but their PCs still use IF.
+        # Disable prediction so trained BTB entries cannot redirect those PCs.
         self.dut.i_disable_branch_prediction.value = 1
 
     @property
@@ -169,13 +138,10 @@ class DUTInterface:
         self.dut.instruction_from_testbench.value = value
 
     def is_stalled(self) -> bool:
-        """Check if CPU is stalled.
+        """Read the combinational stall signal.
 
-        Reads the combinational stall signal rather than the registered one so
-        the test sees a stall on the cycle it starts. With the registered
-        signal, the end of a multi-cycle stall leaves a 1-cycle window where
-        the test still believes the stall is in progress while the IF stage
-        reads the same instruction from i_instr again, executing it twice.
+        A registered stall would remain high on release while IF accepts the
+        held instruction again, causing the driver to issue it twice.
         """
         return bool(self.dut.pipeline_stall_comb.value)
 
@@ -188,29 +154,14 @@ class DUTInterface:
         return not (self.is_stalled() or self.is_in_reset())
 
     def _navigate_signal_path(self, path: str) -> Any:
-        """Navigate to a signal using dot-separated path string.
-
-        Args:
-            path: Dot-separated path (e.g.,
-                "device_under_test.ooo_register_files_inst.regfile_inst")
-
-        Returns:
-            Signal object at the path
-        """
+        """Resolve a dot-separated path relative to the DUT handle."""
         obj = self.dut
         for attr in path.split("."):
             obj = getattr(obj, attr)
         return obj
 
     def _get_regfile_ram(self, ram_index: int = 0) -> Any:
-        """Get register file RAM instance.
-
-        Args:
-            ram_index: 0 for rs1 RAM, 1 for rs2 RAM
-
-        Returns:
-            Register file RAM array
-        """
+        """Return the configured RAM handle (ram_index: 0 for rs1, otherwise rs2)."""
         if ram_index == 0:
             path = self.paths.regfile_ram_rs1_path
         else:
@@ -300,10 +251,7 @@ class DUTInterface:
             return
         regfile_inst = self._int_regfile_inst()
         if regfile_inst is not None:
-            # Each read port has its own RAM, so the value goes into all of
-            # them. For a banked RAM the deposit also covers both banks and
-            # clears the live-value table, so every dispatch read port and the
-            # snapshot read return the deposited value.
+            # Deposit into every read port so dispatch and snapshot reads agree.
             self._deposit_regfile_value(
                 regfile_inst, self._INT_RF_READ_PORTS, reg, value
             )
@@ -316,11 +264,7 @@ class DUTInterface:
         ram_rs2[reg].value = value
 
     async def wait_ready(self) -> int:
-        """Wait for DUT to be ready.
-
-        Returns:
-            Number of clock cycles spent waiting (for CSR counter sync)
-        """
+        """Wait for readiness; return elapsed cycles for CSR counter synchronization."""
         wait_cycles = 0
         while not self.is_ready():
             await FallingEdge(self.clock)
@@ -334,9 +278,6 @@ class DUTInterface:
         o_rst_done. The RTL cycle counter holds at zero during reset and runs
         during the wait, so a CSR counter model starts from the count minus
         ``cycles``.
-
-        Returns:
-            Number of clock cycles elapsed during reset sequence
         """
         self.reset = 1
         cycle_count = 0

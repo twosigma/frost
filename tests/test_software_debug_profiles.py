@@ -95,7 +95,7 @@ def section_names(path: Path) -> set[str]:
 def test_custom_backends_rebuild_on_debug_profile_changes(
     tmp_path: Path, app: str
 ) -> None:
-    """Normal→debug→normal rebuilds the assembly app and every CoreMark-PRO object."""
+    """Switching to debug and back rebuilds the assembly and CoreMark-PRO objects."""
     if app == "coremark_pro" and not CMP_WORKLOAD.is_file():
         pytest.skip("CoreMark-PRO submodule is not checked out")
     app_dir = scratch_app(tmp_path, app)

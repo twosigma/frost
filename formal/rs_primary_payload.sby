@@ -28,8 +28,8 @@ selector: delete -port reservation_station/o:*
 selector: opt
 selector: prep -top reservation_station -flatten
 selector: select -assert-none a:init
-# Check the metadata, group/local address, direct clear and one-hot winner,
-# plus the existing pre-issue tag identity from rs_issue_clear.sby.
+# Check metadata, group and local addresses, direct clear, the one-hot
+# winner, and the pre-issue tag identity.
 selector: select -assert-count 5 t:$check r:FLAVOR=assert %i
 
 # Compare one full-width payload RAM against four groups of four entries.

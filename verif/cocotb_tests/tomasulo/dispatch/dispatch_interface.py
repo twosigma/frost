@@ -65,9 +65,7 @@ MEM_SIZE_WORD = 2
 MEM_SIZE_DOUBLE = 3
 
 # =============================================================================
-# instr_op_e constants, parsed from riscv_pkg.sv so every value tracks the
-# RTL enum. Hardcoded values would go stale whenever a member is inserted
-# mid-enum.
+# instr_op_e constants parsed from riscv_pkg.sv to track the RTL enum.
 # =============================================================================
 _INSTR_OPS = _parse_instr_op_enum()
 # base-ISA integer ops
@@ -307,9 +305,7 @@ FMV_D_X = _INSTR_OPS["FMV_D_X"]
 # =============================================================================
 # from_id_to_ex_t field offsets
 # =============================================================================
-# (field_name, bit_width) in declaration order. SystemVerilog packed structs
-# place the first-declared field at the highest bit positions, so offsets are
-# computed from the LSB and the last field sits at offset 0.
+# Fields are in declaration order, MSB first; the last field has offset 0.
 
 
 _FROM_ID_TO_EX_TOTAL_WIDTH = sum(w for _, w in FROM_ID_TO_EX_FIELDS)
@@ -326,11 +322,9 @@ assert _offset == 0, f"Offset mismatch: {_offset}"
 # =============================================================================
 # Pre-decoded operand-classification helpers
 # =============================================================================
-# These mirror the riscv_pkg.sv functions of the same names (has_int_dest,
-# uses_fp_rs1, ...), so build_from_id_to_ex can derive the pre-decoded flags
-# from instruction_operation and tests need not set each one. In the CPU,
-# id_stage runs the same decode and registers the flags, and dispatch reads
-# them without re-decoding. The tables cover every instr_op_e member.
+# Mirror the riscv_pkg.sv operand classifiers so build_from_id_to_ex can
+# derive flags from instruction_operation. ID registers these flags for
+# dispatch to consume without re-decoding.
 _HAS_FP_DEST_OPS: frozenset[int] = frozenset(
     {
         FLW,
@@ -631,9 +625,7 @@ _USES_FP_RS3_OPS: frozenset[int] = frozenset(
     }
 )
 
-# Ops with no integer rs1: LUI, AUIPC, JAL, fences, system ops, CSR
-# immediates, and the illegal and fetch-fault markers. Ops that read an FP rs1
-# are excluded separately.
+# Operations with no integer rs1. FP rs1 users are excluded separately.
 _NOT_USES_INT_RS1_OPS: frozenset[int] = frozenset(
     {
         LUI,
@@ -1034,11 +1026,8 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
         "is_fp_instruction": 1 if op in _FP_INSTRUCTION_OPS else 0,
         "is_fp_load": 1 if op in _FP_LOAD_OPS else 0,
         "is_fp_store": 1 if op in _FP_STORE_OPS else 0,
-        # id_stage sets is_real for a real instruction and clears it for a
-        # bubble (PD's inject_nop). Test packets default to 1 like a real
-        # instruction, although this bench's DUT takes slot-2 presence from
-        # i_valid_2 (SLOT2_VALID_FROM_BUNDLE = 0). Pass is_real=0 to model a
-        # bubble.
+        # Match ID's is_real flag; pass 0 for a PD-injected bubble. This
+        # bench uses i_valid_2 for slot 2 (SLOT2_VALID_FROM_BUNDLE=0).
         "is_real": 1,
     }
 
@@ -1067,15 +1056,11 @@ _CLASSIFIER_FIELDS: tuple[str, ...] = (
 
 
 def build_from_id_to_ex(**kwargs: int) -> int:
-    """Pack from_id_to_ex_t fields into a single bit vector.
+    """Pack from_id_to_ex_t; reject unknown field names with ValueError.
 
-    All fields default to 0. Keyword arguments matching struct field names set
-    those fields; any other name raises ValueError.
-
-    Pre-decoded dispatch fields that the caller does not set are derived from
-    instruction_operation, mirroring what id_stage computes and registers. For
-    an illegal instruction or a fetch fault, the operand-classifier fields take
-    ID's neutral class instead (INT_RS, no operands, no destination).
+    Derive unspecified dispatch flags from instruction_operation, as ID does.
+    For illegal instructions and fetch faults, classifier fields use INT_RS
+    with no operands or destination. Other unspecified fields default to zero.
     """
     unknown = sorted(set(kwargs) - set(_FROM_ID_TO_EX_OFFSETS))
     if unknown:
@@ -1246,11 +1231,7 @@ def unpack_rs_dispatch(raw: int) -> dict[str, int]:
 
 
 class DispatchInterface:
-    """Interface to the Dispatch DUT.
-
-    Packs and unpacks struct signals, since Verilator flattens packed structs
-    into single bit vectors.
-    """
+    """Drive dispatch inputs and unpack its output structs."""
 
     def __init__(self, dut: Any) -> None:
         """Initialize interface with DUT handle."""
@@ -1286,20 +1267,16 @@ class DispatchInterface:
         """Initialize all input signals to safe defaults."""
         self.dut.i_from_id_to_ex.value = 0
         self.dut.i_valid.value = 0
-        # Slot-2 instruction (2-wide dispatch). Default inactive; tests that
-        # exercise 2-wide behavior drive it.
         self.dut.i_from_id_to_ex_2.value = 0
         self.dut.i_valid_2.value = 0
         self.dut.i_rs1_addr.value = 0
         self.dut.i_rs2_addr.value = 0
         self.dut.i_fp_rs3_addr.value = 0
-        # Slot-2 source register addresses (2-wide dispatch).
         self.dut.i_rs1_addr_2.value = 0
         self.dut.i_rs2_addr_2.value = 0
         self.dut.i_fp_rs3_addr_2.value = 0
         self.dut.i_frm_csr.value = 0
         self.dut.i_rob_alloc_resp.value = 0
-        # Slot-2 ROB alloc resp (2-wide dispatch).
         self.dut.i_rob_alloc_resp_2.value = 0
         self.dut.i_int_src1.value = 0
         self.dut.i_int_src2.value = 0

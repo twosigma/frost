@@ -12,12 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the L0 load cache (lq_l0_cache).
-
-A Python model of the direct-mapped array checks every lookup: capacity,
-replacement, fill data, MMIO misses, the two per-address invalidation ports,
-the DMA line port, same-cycle hit suppression, and flush.
-"""
+"""Check the L0 load cache against a direct-mapped Python model."""
 
 import os
 import random

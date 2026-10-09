@@ -12,16 +12,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Check the iterative divider against integer division, cycle by cycle.
+"""Check the iterative divider against control and integer-arithmetic models.
 
-A model of the divider's control runs beside it and every cycle checks o_idle,
-o_done and, while done, o_result. A result must appear exactly WIDTH steps
-after its start (WIDTH/2 for a W form), stay until accepted, and equal the
-RISC-V result, which the scoreboard computes with Python integer division:
-quotient and remainder, signed and unsigned, divide by zero, signed overflow,
-and W forms, whose operands are the low halves and whose result is
-sign-extended. Operands change while an operation runs, and kills, accept
-delays, back-to-back starts and a reset in flight are mixed in.
+Check o_idle and o_done each cycle, and o_result while done. Results appear
+exactly WIDTH steps after start (WIDTH/2 for W forms) and stay until accepted.
+W forms use the low operand halves and sign-extend the result. Vary live
+inputs during operations to check that the captured operands are retained.
 """
 
 import random

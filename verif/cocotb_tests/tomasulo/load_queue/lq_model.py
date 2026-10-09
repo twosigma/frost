@@ -12,12 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Load queue golden model.
+"""Behavioral load queue model with one outstanding memory response.
 
-Mirrors the RTL circular buffer, entry state machine, issue selection,
-SQ disambiguation, memory response handling, and CDB broadcast logic. It
-tracks a single outstanding memory response and has no L0 cache; tests report
-an L0 hit with cache_hit_complete.
+The model has no L0 storage; tests report hits through cache_hit_complete.
 """
 
 from dataclasses import dataclass
@@ -110,11 +107,9 @@ def sign_extend_half(val: int, unsigned: bool) -> int:
 
 
 def load_unit_model(size: int, sign_ext: bool, address: int, raw_data: int) -> int:
-    """Model the load_unit: extract from the 64-bit beat and sign extend.
+    """Extract and extend a byte, halfword, or word from an aligned 64-bit beat.
 
-    The data tier returns the aligned dword at addr[31:3]; the load unit
-    selects the addressed byte/half/word by addr[2:0]
-    (hw/rtl/README.md, "Data-tier bus contract").
+    addr[2:0] selects the lane (hw/rtl/README.md, "Data-tier bus contract").
     """
     raw_data = raw_data & MASK64
     if size == MEM_SIZE_BYTE:
@@ -262,13 +257,12 @@ class LQModel:
         rob_head_tag: int = 0,
         sq_committed_empty: bool = True,
     ) -> tuple[int | None, int | None]:
-        """Priority scan from head to tail. Returns (cdb_idx, mem_idx).
+        """Return (cdb_idx, mem_idx), giving the ROB-head load issue priority.
 
-        LR entries require rob_tag == rob_head_tag.
-        AMO entries require rob_tag == rob_head_tag and sq_committed_empty.
-        MMIO entries require rob_tag == rob_head_tag, but their LQ handoff is
-        independent of sq_committed_empty: the downstream memory router parks
-        device-quadrant reads until every committed store reaches the device.
+        Other entries are scanned in physical ring order. LR, AMO, and MMIO
+        loads require rob_tag == rob_head_tag. AMOs also require
+        sq_committed_empty. The router holds MMIO reads until committed stores
+        drain; the LQ may hand them off before then.
         """
         cdb_idx = None
         mem_idx = None
@@ -278,12 +272,8 @@ class LQModel:
             if e.valid:
                 if cdb_idx is None and e.data_valid:
                     cdb_idx = idx
-        # Match the RTL head_mem_stored/head_mem_update shortcut: a load at
-        # the ROB head bypasses the physical-order scan so it does not starve
-        # behind a younger blocked entry after sparse-hole reuse. Head MMIO and
-        # LR loads are admitted the same way. An MMIO load's committed-store
-        # drain fence is in the memory router, not the LQ launch path; a head
-        # AMO still waits for sq_committed_empty here.
+        # ROB-head priority prevents starvation behind a younger blocked entry
+        # after a hole is reused (RTL head_mem_stored/head_mem_update).
         for idx, e in enumerate(self.entries):
             if (
                 e.valid
@@ -301,9 +291,7 @@ class LQModel:
                 idx = (self.head_idx + i) % self.depth
                 e = self.entries[idx]
                 if e.valid and e.addr_valid and not e.issued and not e.data_valid:
-                    # The RTL's normal scan also admits a head MMIO, but the
-                    # dedicated head loop above always wins. This launch-level
-                    # model keeps the head qualification.
+                    # Keep MMIO head-qualified, as in the RTL's normal scan.
                     if e.is_mmio and e.rob_tag != (rob_head_tag & MASK_TAG):
                         continue
                     if e.is_lr and e.rob_tag != (rob_head_tag & MASK_TAG):
@@ -328,19 +316,14 @@ class LQModel:
             e.data = sq_forward.data & MASK64
 
     def cache_hit_complete(self) -> None:
-        """Model the L0 cache-hit fast path for the current memory-issue candidate.
-
-        On an L0 cache hit, the DUT marks the candidate's data as valid without
-        issuing a memory request.
-        """
+        """Mark the issue candidate's data valid on an L0 hit, with no memory read."""
         _, mem_idx = self._issue_scan()
         if mem_idx is None:
             return
 
         e = self.entries[mem_idx]
 
-        # Mirror load_queue.sv cache_hit_fast_path gating (every size is
-        # L0-eligible on the dword-line cache, including FLD).
+        # All sizes can hit the dword-line L0, including FLD.
         if e.is_mmio:
             return
         if e.is_lr or e.is_amo:
@@ -483,7 +466,7 @@ class LQModel:
         """Handle memory response with drain logic.
 
         If the issued entry was flushed, discard the response and clear
-        mem_outstanding.  Otherwise process normally.
+        mem_outstanding. Otherwise process normally.
         """
         if not self.mem_outstanding:
             return
@@ -496,16 +479,11 @@ class LQModel:
         self.mem_response(data)
 
     def partial_flush(self, flush_tag: int, rob_head_tag: int) -> None:
-        """Partial flush: invalidate entries younger than flush_tag.
+        """Invalidate entries younger than flush_tag, leaving holes and the tail unchanged.
 
-        When the in-flight entry is flushed, the model keeps mem_outstanding
-        set because the response is still owed; the RTL clears its
-        mem_outstanding and tracks the owed response with
-        drop_mem_response_pending instead. mem_response_drain sees the invalid
-        entry and discards the response.
-
-        Flushed entries stay as holes; the tail is not retracted, matching
-        the sparse-hole RTL.
+        Keep mem_outstanding set for an owed response; mem_response_drain
+        discards it if the entry is invalid. The RTL's fast tier instead clears
+        mem_outstanding and records the debt in drop_mem_response_pending.
         """
         for e in self.entries:
             if e.valid and is_younger(

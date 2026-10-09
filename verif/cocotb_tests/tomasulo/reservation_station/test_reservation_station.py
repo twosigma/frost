@@ -12,12 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the Reservation Station module.
+"""Reservation station unit tests.
 
-Covers dispatch, CDB wakeup on both lanes, done repair, issue, flushes, the
-tag-indexed branch payload, and constrained-random traffic. "Replay" in test
-names is the deferred delivery of a CDB match seen in the dispatch cycle: the
-source becomes ready one cycle after the entry is written.
+"Replay" means deferred delivery of a dispatch-cycle CDB match: the source
+becomes ready one cycle after the entry is written.
 """
 
 import random
@@ -527,10 +525,8 @@ async def test_indexed_repair_back_to_back_and_cdb_priority(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_dispatch()
 
-    # The old allocation consumes channel 1 while a new allocation captures
-    # the next cycle's channel-1 target.  The repair and CDB values differ so
-    # the issued value shows which source won; the priority is
-    # CDB0 > CDB1 > repair.
+    # Repair the old channel-1 target while capturing the new one. Distinct
+    # values check priority: CDB0 > CDB1 > repair.
     dut_if.drive_dispatch(
         rob_tag=23,
         op=OP_SUB,
@@ -589,7 +585,7 @@ async def test_indexed_repair_flush_discards_target(dut: Any) -> None:
     dut.i_flush_all.value = 0
     assert dut_if.empty
 
-    # Reuse the low-index entry.  It must remain blocked until its own repair
+    # Reuse the low-index entry. It must remain blocked until its own repair
     # arrives; the flushed packet's response cannot leak into it.
     dut_if.drive_dispatch(
         rob_tag=25,
@@ -1078,9 +1074,8 @@ async def test_cdb_bypass_at_dispatch(dut: Any) -> None:
     dut_if.clear_dispatch()
     dut_if.clear_cdb()
 
-    # Deferred dispatch-CDB capture: the entry wakes one cycle later than a
-    # resident wakeup would.  The delivery cycle moves the registered lane
-    # copy into the value array and sets ready, and only then can issue fire.
+    # Dispatch-cycle matches wake one cycle later than resident matches.
+    # Deliver the registered lane value and set ready before issue can fire.
     dut_if.set_fu_ready(True)
     await dut_if.step()  # rising edge: deferred delivery lands ready+value
     assert not dut_if.issue_valid, "dispatch-cycle CDB wake must defer one cycle"
@@ -1168,9 +1163,8 @@ async def test_dispatch_cdb_replay_back_to_back_lane0_priority(dut: Any) -> None
     cocotb.log.info("=== Test: Dispatch CDB Replay Back-to-Back + Lane Priority ===")
     dut_if, _ = await setup_test(dut)
 
-    # The two CDB lanes never carry the same tag in the core. This same-tag
-    # collision checks that the entry's lane select records lane 0, so lane
-    # 0's registered value wins.
+    # The core never broadcasts the same tag on both lanes. Here, force a
+    # collision to check that lane 0's registered value wins.
     dut_if.drive_dispatch(
         rob_tag=18,
         op=OP_ADD,
@@ -1185,10 +1179,8 @@ async def test_dispatch_cdb_replay_back_to_back_lane0_priority(dut: Any) -> None
     dut_if.drive_cdb_2(tag=18, value=0xA181)
     await dut_if.step()
 
-    # Dispatch a second entry, with its own dispatch-cycle match, on the edge
-    # that delivers the first entry's value. The lane-value registers reload
-    # on that edge, so each delivery must use the values registered on its
-    # own dispatch edge.
+    # Dispatch the second match as the first is delivered. Each delivery
+    # must use its dispatch edge's value despite reloading the lane registers.
     dut_if.drive_dispatch(
         rob_tag=19,
         op=OP_SUB,
@@ -1353,9 +1345,8 @@ async def test_dispatch_cdb_replay_coalesces_indexed_repair(dut: Any) -> None:
     dut_if.clear_dispatch()
     dut_if.clear_cdb()
 
-    # Channel 1 carries slot 1's src1. A repair and a deferred delivery that
-    # reach the same source on one edge carry the same producer's result
-    # (simulation asserts this), so the repair repeats the CDB value.
+    # Channel 1 repairs slot 1's src1. A simultaneous repair and deferred
+    # delivery to one source must carry the same producer value.
     dut_if.drive_repair(1, tag=14, value=0xE14E)
     dut_if.set_fu_ready(True)
     await dut_if.step()
@@ -1444,7 +1435,7 @@ async def test_dispatch_cdb_replay_survives_partial_flush(dut: Any) -> None:
     dut_if.clear_dispatch()
     dut_if.clear_cdb()
 
-    # rob_tag 1 is older than the boundary at tag 2 relative to head 0.  Issue
+    # rob_tag 1 is older than the boundary at tag 2 relative to head 0. Issue
     # is suppressed during flush, but replay must still update this survivor.
     dut_if.drive_partial_flush(flush_tag=2, head_tag=0)
     dut_if.set_fu_ready(True)
@@ -1557,7 +1548,7 @@ async def test_use_imm_bypasses_src2(dut: Any) -> None:
     cocotb.log.info("=== Test: Use Imm Bypasses Src2 ===")
     dut_if, model = await setup_test(dut)
 
-    # The RS ready check does not look at use_imm.  Dispatch marks the unused
+    # The RS ready check does not look at use_imm. Dispatch marks the unused
     # src2 ready before the entry arrives, so src2_ready=True here.
     dut_if.drive_dispatch(
         rob_tag=6,
@@ -1598,7 +1589,7 @@ async def test_use_imm_bypasses_src2(dut: Any) -> None:
 
 @cocotb.test()
 async def test_issue_output_fields(dut: Any) -> None:
-    """Verify all rs_issue_t fields match dispatched values."""
+    """Check dispatched operands and metadata against the model."""
     cocotb.log.info("=== Test: Issue Output Fields ===")
     dut_if, model = await setup_test(dut)
 
@@ -1898,7 +1889,7 @@ async def test_cdb_wakeup_during_partial_flush(dut: Any) -> None:
 
     head_tag = 0
 
-    # Entry 0: older (rob_tag=1), src1 pending on tag=10.  It survives the flush.
+    # Entry 0: older (rob_tag=1), src1 pending on tag=10. It survives the flush.
     dut_if.drive_dispatch(
         rob_tag=1,
         op=OP_ADD,
@@ -1920,7 +1911,7 @@ async def test_cdb_wakeup_during_partial_flush(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_dispatch()
 
-    # Entry 1: younger (rob_tag=5).  The flush removes it.
+    # Entry 1: younger (rob_tag=5). The flush removes it.
     dut_if.drive_dispatch(
         rob_tag=5,
         op=OP_ADD,
@@ -1978,7 +1969,7 @@ async def test_cdb_wakeup_during_partial_flush(dut: Any) -> None:
 
 @cocotb.test()
 async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
-    """200 random operations mixing dispatch, CDB wakeup, and issue."""
+    """Compare random dispatch, CDB wakeup, and issue against the model."""
     cocotb.log.info("=== Test: Random Dispatch/Wakeup/Issue ===")
     log_random_seed()
     dut_if, model = await setup_test(dut)
@@ -1995,7 +1986,6 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
     for cycle in range(200):
         await Timer(1, unit="ps")
 
-        # Read DUT state from settled registered state
         dut_full = dut_if.full
         dut_count = dut_if.count
 
@@ -2009,14 +1999,11 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
         else:
             assert not issue["valid"], f"Cycle {cycle}: DUT issued but model did not"
 
-        # Consume the previous cycle's issued entry from the model
         if prev_model_issue_info is not None:
             model.consume_issue(prev_model_issue_info[0])
 
-        # Drive this cycle's inputs.  The CDB is driven before the model peek
-        # so a same-cycle CDB bypass wakeup is reflected.  Dispatch is driven
-        # after the peek because a newly dispatched entry takes one extra
-        # cycle to register in the DUT RS.
+        # Apply CDB before peeking to include same-cycle wakeup. Dispatch
+        # after peeking: a new entry becomes resident on the next edge.
         action = random.choice(["dispatch", "cdb", "idle"])
 
         if action == "cdb" and dut_count > 0:
@@ -2025,8 +2012,7 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
             dut_if.drive_cdb(tag=cdb_tag, value=cdb_value)
             model.cdb_snoop(tag=cdb_tag, value=cdb_value)
 
-        # Peek what the model issues this cycle; it appears on the DUT next
-        # cycle.  Peek after the CDB snoop and before dispatch.
+        # The model's pick appears at the DUT output next cycle.
         model_issue_info = model.peek_issue(fu_ready=True)
         prev_model_issue = model_issue_info[1] if model_issue_info is not None else None
         prev_model_issue_info = model_issue_info
@@ -2036,10 +2022,8 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
         del recent_issue_tags[:-3]
 
         if action == "dispatch" and not dut_full:
-            # ROB allocation never hands out a tag that is still live, and the
-            # station's tag-indexed branch payload relies on that: keep the
-            # random tag away from resident entries and the packets still
-            # crossing stage2.
+            # Tag-indexed branch data requires a new ROB tag. Exclude resident
+            # entries and packets still crossing stage2.
             live_tags = {e.rob_tag for e in model.entries if e.valid}
             live_tags.update(recent_issue_tags)
             rob_tag = random.choice([t for t in range(32) if t not in live_tags])
@@ -2087,7 +2071,6 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
                 imm=imm,
             )
 
-        # Step: DUT registers inputs, issue_fire loads stage2, CDB wakeup
         await dut_if.step()
         dut_if.clear_dispatch()
         dut_if.clear_cdb()
@@ -2123,7 +2106,6 @@ async def test_random_with_flush(dut: Any) -> None:
     for cycle in range(200):
         await Timer(1, unit="ps")
 
-        # Read DUT state from settled registered state
         dut_full = dut_if.full
         dut_count = dut_if.count
 
@@ -2135,14 +2117,11 @@ async def test_random_with_flush(dut: Any) -> None:
         else:
             assert not issue["valid"], f"Cycle {cycle}: DUT issued but model did not"
 
-        # Consume the previous cycle's issued entry from the model
         if prev_model_issue_info is not None:
             model.consume_issue(prev_model_issue_info[0])
 
-        # Drive this cycle's inputs.  CDB and flush are driven before the model
-        # peek so a same-cycle CDB bypass wakeup is reflected.  Dispatch is
-        # driven after the peek because a newly dispatched entry takes one
-        # extra cycle to register in the DUT.
+        # Apply CDB and flush before peeking; dispatch after peeking because
+        # a new entry becomes resident on the next edge.
         action = random.choices(
             ["dispatch", "cdb", "flush_all", "partial_flush", "idle"],
             weights=[40, 30, 5, 10, 15],
@@ -2186,10 +2165,8 @@ async def test_random_with_flush(dut: Any) -> None:
             del recent_issue_tags[:-3]
 
         if action == "dispatch" and not dut_full:
-            # ROB allocation never hands out a tag that is still live, and the
-            # station's tag-indexed branch payload relies on that: keep the
-            # random tag away from resident entries and the packets still
-            # crossing stage2.
+            # Tag-indexed branch data requires a new ROB tag. Exclude resident
+            # entries and packets still crossing stage2.
             live_tags = {e.rob_tag for e in model.entries if e.valid}
             live_tags.update(recent_issue_tags)
             rob_tag = random.choice([t for t in range(32) if t not in live_tags])
@@ -2231,7 +2208,6 @@ async def test_random_with_flush(dut: Any) -> None:
                 imm=imm,
             )
 
-        # Step: DUT registers inputs, issue_fire loads stage2, flush/CDB
         await dut_if.step()
         dut_if.clear_dispatch()
         dut_if.clear_cdb()
@@ -2261,7 +2237,6 @@ async def test_next_issue_is_sc_output(dut: Any) -> None:
     cocotb.log.info("=== Test: Next Issue Is SC Output ===")
     dut_if, _ = await setup_test(dut)
 
-    # No entries yet, so the output is low.
     sc_sig = dut.o_next_issue_is_sc
     assert not int(sc_sig.value), "o_next_issue_is_sc should be low when RS empty"
 
@@ -2324,7 +2299,7 @@ def _branch_payload_fields(tag: int, seed: int) -> dict[str, Any]:
 
 @cocotb.test()
 async def test_tag_indexed_branch_payload_follows_the_packet(dut: Any) -> None:
-    """pc/link/predicted_target follow each packet's ROB tag across live rows, reuse, holds."""
+    """PC, link, and predicted target follow the ROB tag through reuse and stalls."""
     cocotb.log.info("=== Test: Tag-Indexed Branch Payload ===")
     dut_if, model = await setup_test(dut)
 
@@ -2403,10 +2378,8 @@ async def test_tag_indexed_branch_payload_two_slots_and_flushes(dut: Any) -> Non
         await dut_if.step()
         check_issue(dut_if.read_issue(), model.try_issue(fu_ready=True), label)
 
-    # An older survivor and a younger victim of a partial flush (the boundary
-    # tag itself survives, so the flush tag sits between them): the victim's
-    # tag is reallocated with different words, and the survivor still reads
-    # its own row afterwards.
+    # Flush between two tags, then reuse the younger tag with new data.
+    # The older survivor must still read its own row.
     survivor = _branch_payload_fields(4, 8)
     survivor.update({"src1_ready": False, "src1_tag": 30})
     victim = _branch_payload_fields(20, 9)

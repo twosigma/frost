@@ -15,19 +15,17 @@
  */
 
 /*
- * Formal equivalence harness: rob_link_value_ram against the current
- * production mwp_dist_ram / mwp_dist_ram_ohread value configuration
- * (4 ports, ports 0/1 staged and narrow at LINK_WIDTH).
+ * Compare rob_link_value_ram with mwp_dist_ram or mwp_dist_ram_ohread using
+ * four ports, with ports 0 and 1 staged and narrowed to LINK_WIDTH.
  *
- * Both sides receive identical, otherwise unconstrained writes.  The reference
- * gets the ROB's allocation data `branch ? zext(link) : 0`.  Assumptions:
+ * Both sides receive identical writes, subject to the assumptions below.
+ * The reference gets allocation data `branch ? zext(link) : 0`. Assumptions:
  *   - SINGLE_BRANCH_CONTRACT: two enabled branch allocations in one cycle
  *     target the same address (weaker than "at most one per cycle").
- *   - ONEHOT_READ: i_read_onehot == 1 << i_read_address (head-port contract,
- *     proved for the ROB's head masks by p_head_mask_onehot and
- *     p_head_next_mask_onehot).
+ *   - ONEHOT_READ: i_read_onehot == 1 << i_read_address, as required by the
+ *     ROB head ports.
  *   - WATCH_READ: the read address is one arbitrary constant for the whole
- *     trace.  Reads do not change state, so this covers every read address.
+ *     trace. Reads do not change state, so this covers every read address.
  * No assumption touches CDB enables, addresses or data, or internal state.
  */
 module rob_link_value_equiv #(
@@ -136,7 +134,7 @@ module rob_link_value_equiv #(
     p_read_equivalent : assert (new_read_data == ref_read_data);
   end
 
-  // Reachability witnesses for the cases the task list names (cover tasks).
+  // Reachability covers.
   logic f_past_alloc0_at_read;
   logic f_past_cdb_at_read;
   logic f_past_branch0_at_read;

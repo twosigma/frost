@@ -298,15 +298,12 @@ async def test_slot1_btb_prediction_registers_metadata_and_holdoffs(dut: Any) ->
 async def test_slot2_collision_kills_metadata_and_quarantines_holdoffs(
     dut: Any,
 ) -> None:
-    """A slot-2 redirect wins over a simultaneous younger slot-1 prediction.
+    """A slot-2 redirect kills the younger slot-1 handoff and metadata.
 
-    The redirect kills slot 1's registered handoff and metadata on the same
-    edge. The two holdoff flops leave that clear out, which keeps the late
-    instruction-memory sideband logic off their synchronous reset pins, so the
-    slot-1 hit may still load them for the redirect bubble. Hold the bubble
-    through a fetch-invalid stretch and a registered stall, then check that
-    the holdoffs clear on its first delivered cycle without reviving slot-1
-    state.
+    The holdoff flops are not cleared by this redirect, so the slot-1 hit
+    may set them for the bubble. Stretch that bubble with invalid fetches
+    and a stall. The holdoffs must clear on its first delivered cycle,
+    without reviving slot-1 state.
     """
     await _setup_test(dut)
     await _btb_update(dut, pc=PC_A, target=TARGET_A)
@@ -352,9 +349,8 @@ async def test_slot2_collision_kills_metadata_and_quarantines_holdoffs(
     assert not dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value
 
-    # The registered redirect bubble remains a prediction blocker on its first
-    # delivered cycle.  Releasing the stretch therefore loads zeros and adds no
-    # extra holdoff cycle.
+    # The bubble blocks prediction on its first delivered cycle, clearing
+    # the holdoffs without adding another cycle.
     dut.i_stall.value = 0
     dut.i_stall_registered.value = 0
     await _advance_cycle(dut)
@@ -1086,8 +1082,8 @@ async def test_blocked_ghost_slot2_candidate_preserves_direction_snapshot(
     assert dut.o_dir_predicted_taken.value
     assert int(dut.o_dir_idx.value) == ghost_idx
 
-    # direction_predictor RAM is not reset between cocotb tests.  Return this
-    # dedicated row to strongly not-taken so later tests remain order-neutral.
+    # Reset does not clear direction_predictor RAM. Restore this row to
+    # strongly not-taken so later tests do not depend on test order.
     await _dir_update(dut, idx=ghost_idx, taken=False)
     await _dir_update(dut, idx=ghost_idx, taken=False)
 

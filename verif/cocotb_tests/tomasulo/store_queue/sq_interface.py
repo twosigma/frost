@@ -12,12 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Store queue DUT interface.
-
-Packs sq_alloc_req_t, sq_addr_update_t and sq_data_update_t, unpacks
-sq_forward_result_t, and wraps the DUT ports in transaction helpers for
-driving stimulus and reading results.
-"""
+"""Store queue DUT access and packed transaction helpers."""
 
 from typing import Any
 
@@ -145,11 +140,9 @@ class SQInterface:
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
         self.dut.i_alloc.value = 0
-        # Slot-2 alloc port for 2-wide dispatch.
         self.dut.i_alloc_2.value = 0
         self.dut.i_early_addr_update.value = 0
         self.dut.i_early_addr_capture_valid.value = 0
-        # Slot-2 early-addr update (dual-ported SQ early addr).
         self.dut.i_early_addr_update_2.value = 0
         self.dut.i_early_addr_capture_valid_2.value = 0
         self.dut.i_addr_update.value = 0
@@ -162,21 +155,15 @@ class SQInterface:
         self.dut.i_commit_valid_2.value = 0
         self.dut.i_commit_rob_tag_2.value = 0
         self.dut.i_commit_valid_comb_2.value = 0
-        # Commit pulses for the forwarding scan: i_commit_valid/_2 without the
-        # full-flush mask, so the two differ only in a full-flush cycle. The
-        # bench never commits in one, and drive_commit* raise both together.
+        # Scan commits omit the full-flush mask. Tests never commit during full
+        # flush, so drive_commit* raises both versions together.
         self.dut.i_commit_valid_scan.value = 0
         self.dut.i_commit_valid_scan_2.value = 0
-        # Capture enable for the forwarding result register: the LQ's probe
-        # valid without its flush and commit-block terms. drive_sq_check
-        # raises it. test_forward_metadata_survives_flush_capture_edge
-        # overlaps a check with a full flush, whose captured result the LQ
-        # would discard.
+        # Forwarding capture omits the LQ probe's flush and commit-block gates.
+        # drive_sq_check raises it; the LQ discards captures during full flush.
         self.dut.i_sq_check_capture_valid.value = 0
         self.dut.i_sq_check_addr.value = 0
-        # Copies of i_sq_check_addr. The LQ drives all four with the same
-        # value, one per two-entry quarter of the SQ, to keep the compare
-        # logic local.
+        # All four address copies must match; each feeds one SQ quarter.
         self.dut.i_sq_check_addr_b.value = 0
         self.dut.i_sq_check_addr_c.value = 0
         self.dut.i_sq_check_addr_d.value = 0

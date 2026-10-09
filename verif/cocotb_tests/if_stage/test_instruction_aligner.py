@@ -263,9 +263,8 @@ def _clear_inputs(dut: Any) -> None:
     )
     dut.i_instr_sideband.value = fetch_sideband
     dut.i_instr_bank_sel_r.value = 0
-    # The bench presents i_instr as the cached provider's window (i_instr_high),
-    # which the aligner treats exactly as before; IF's benches and cpu_tb drive
-    # the low BRAM's physical-order words.
+    # Present the cached provider's i_instr_high window. IF and cpu_tb also
+    # exercise the low BRAM's words in physical bank order.
     dut.i_instr_window_high.value = 1
     dut.i_instr_low_by_parity.value = 0
     dut.i_instr_pc_metadata_served_high.value = 0

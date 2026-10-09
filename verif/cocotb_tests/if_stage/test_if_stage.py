@@ -405,23 +405,17 @@ def _clear_inputs(dut: Any) -> None:
 
 
 def _start_served_addr_tracker(dut: Any, *, word_offset: int = 0) -> None:
-    """Drive both providers' served-window tags to follow pc_reg.
+    """Drive both providers' word tags once per edge to follow pc_reg.
 
-    The served-window guard squashes the IF packet and holds pc_reg when the
-    window does not hold every word the packet needs. With S the served word
-    and P pc_reg's word, it accepts S=P, S=P-1 unless the packet needs P+1,
-    and S=P+1 only while the instruction buffer supplies P. Without the
-    buffer, only a native slot 1 in P's upper half needs P+1; with it, any
-    packet that starts in P's upper half does, because an RVC slot 1 there
-    can pair with a slot 2 in P+1. The guard covers both providers, but the
-    low-BRAM provider's arm is off during saved-packet replay. Like the real
-    providers, the tracker drives S+1, S-1, and S != 0 beside S. pc_reg
-    changes only on a clock edge, so updating once per edge keeps the tags
-    aligned between reads.
+    The guard squashes uncovered packets and holds pc_reg.
+    For served word S and pc_reg word P, the guard accepts S=P, S=P-1
+    unless the packet needs P+1, and S=P+1 only if the buffer supplies P.
+    Without the buffer, only an upper-half native slot 1 needs P+1. With
+    the buffer, any upper-half packet may need P+1 for slot 2. Saved-packet
+    replay bypasses the low-BRAM guard.
 
-    A positive word_offset puts the served window that many words ahead of
-    pc_reg (1 is the F=W+1 case), so the guard is exercised instead of
-    always passing.
+    Drive S+1, S-1, and S != 0 with S, as the providers do. word_offset
+    places S that many words ahead of P to exercise the guard.
     """
     phys_mask = (1 << 30) - 1
 
@@ -1586,11 +1580,9 @@ async def test_leading_slot1_prediction_keeps_provider_branch_ask_owed(
     )
     await _redirect_to(dut, BASE_PC)
 
-    # Fixed-latency operation looks up branch_pc one request ahead while IF is
-    # still presenting BASE_PC. Both providers must retain branch_pc as their
-    # owed ask after fetch moves to target. The cache has its own accepted-PC
-    # movement classifier. IF preserves the low presenter's request by
-    # withholding its retarget pulse.
+    # The lookup leads IF by one request. Both providers must retain the
+    # branch_pc request after fetch redirects. The cache classifies accepted
+    # PC changes; IF preserves the low-BRAM request by withholding retarget.
     _drive_fetch(dut, current_word=ADD_INSTR_A, next_word=ADD_INSTR_B)
     dut.i_disable_branch_prediction.value = 0
     await _settle()
@@ -1939,14 +1931,12 @@ async def test_fence_i_redirect_uses_target_and_bubbles_fetch(dut: Any) -> None:
 async def test_no_lead_prediction_keeps_first_delayed_target_response_as_bubble(
     dut: Any,
 ) -> None:
-    """A prediction on an already-emitted packet cannot duplicate its target.
+    """An already-emitted predicted branch must not duplicate its target.
 
-    A variable-latency fetch can collapse the usual one-window lead so the BTB
-    lookup PC and the instruction PC are equal.  The predicted branch then
-    emits on the redirect cycle itself.  If the target response is delayed,
-    prediction_holdoff must not exempt that response from the registered
-    control-flow bubble while pc_reg is still held on the target; doing so
-    presents the same target packet again after the served-window resteer.
+    A fetch gap can make the lookup PC equal the instruction PC, emitting
+    the branch on the redirect cycle. The first target response must still
+    be a control-flow bubble, even with prediction_holdoff set, or the
+    served-window retry can emit the target twice.
     """
     await _setup_test(dut)
 
@@ -2156,14 +2146,11 @@ async def test_no_lead_btb_miss_uses_and_replays_live_direction_metadata(
 async def test_pd_redirect_with_stall_kills_registered_prediction_handoff(
     dut: Any,
 ) -> None:
-    """A PD+BTB collision must kill the pc_reg handoff even across a stall.
+    """A PD redirect kills a coincident BTB handoff across a stall.
 
-    A BTB hit arms the registered slot-1 prediction handoff
-    (o_sel_prediction_r / o_predicted_target_r) in the same cycle a PD
-    redirect takes the PC stream.  pc_controller's one-cycle redirect-kill
-    pulse is not enough when a stall starting in that cycle holds the handoff
-    register: on release the dead prediction's target would reach pc_reg
-    while fetch follows the PD path, pairing fetched bytes with wrong PCs.
+    The stall can outlast pc_controller's one-cycle redirect-kill pulse.
+    If the registered handoff survives, pc_reg takes the dead prediction's
+    target on release while fetch supplies bytes from the PD path.
     """
     await _setup_test(dut)
     dut.i_disable_branch_prediction.value = 0
@@ -2236,17 +2223,13 @@ async def test_pd_redirect_with_stall_kills_registered_prediction_handoff(
 async def test_pd_redirect_btb_collision_stall_keeps_wrong_path_bubble(
     dut: Any,
 ) -> None:
-    """A stalled PD-redirect wrong-path bubble must not dispatch on release.
+    """A PD-redirect bubble must stay squashed through a stall and release.
 
-    A PD redirect moves both PCs to the target, and the next cycle is a
-    lead-restoring bubble: fetch advances while pc_reg holds.  Here a BTB
-    prediction is used in the redirect cycle; the redirect kills it, so
-    prediction_holdoff stays clear and the control-flow-holdoff NOP squashes
-    the bubble (pd_redirect_q forces it too).  control_flow_holdoff,
-    prediction_holdoff, and pd_redirect_q all hold through a stall.  If the
-    squash ended during a stall that covers the bubble cycle, the bubble would
-    dispatch on release and the next cycle would present the same pc_reg
-    again, allocating it twice in the ROB.
+    The redirect kills a coincident BTB prediction, then restores the fetch
+    lead with a bubble: fetch advances while pc_reg holds. Keep
+    control_flow_holdoff, prediction_holdoff, and pd_redirect_q stable
+    during the stall, or the bubble can dispatch on release and duplicate
+    the next packet's PC in the ROB.
     """
     await _setup_test(dut)
     dut.i_disable_branch_prediction.value = 0
@@ -2326,22 +2309,13 @@ async def test_pd_redirect_btb_collision_stall_keeps_wrong_path_bubble(
 
 @cocotb.test()
 async def test_pd_redirect_kills_pending_saved_prediction_metadata(dut: Any) -> None:
-    """A PD redirect must kill the pending-saved prediction metadata too.
+    """A PD redirect must clear the pending prediction's saved metadata.
 
-    A taken BTB hit is used while pc_reg is still two compressed parcels
-    behind the fetch PC, so the pending pc_reg handoff arms and
-    prediction_metadata_tracker saves the metadata.  A PD redirect for one of
-    the older instructions (an unpredicted taken branch whose target is the
-    predicted instruction itself) then kills the pending state in
-    pc_controller.  If the saved metadata survived that kill, the refetched
-    instruction would emit marked as already redirected to its own target
-    while fetch falls through.  For a JAL the ROB trusts that metadata at
-    allocation, sees no misprediction, and skips the callee.
-
-    The pending state needs pc_reg strictly behind fetch, which the
-    jal_target_seam app reaches only through the variable-latency L1I path.
-    Here a run of unpairable compressed instructions sets it up
-    deterministically.
+    Unpairable compressed instructions leave pc_reg behind fetch when a
+    taken BTB hit redirects it. An older PD branch then redirects to that
+    predicted instruction, killing the pending handoff. Its refetched
+    packet must be unpredicted: stale taken metadata would make the ROB
+    trust a JAL's canceled redirect and skip the callee.
     """
     await _setup_test(dut)
     dut.i_disable_branch_prediction.value = 0
@@ -2688,13 +2662,11 @@ async def test_pending_owner_is_not_emitted_as_predecessor_slot2(
 async def test_pending_native_slot2_owner_uses_precomputed_plus4_tag(
     dut: Any,
 ) -> None:
-    """Behind a native slot 1, a pending slot-2 branch is matched through the P-4 tag.
+    """A pending branch behind native slot 1 matches the saved P-4 tag.
 
-    The test deposits a pending prediction directly.  The late slot-1 size
-    selects between two equality compares of registered values, and the native
-    arm must use the precomputed P-4 tag, not the compressed P-2 tag.  The
-    pending hold keeps the deposited state from dispatching anything; the
-    combinational slot-2 match and kill are the real paths under test.
+    Deposit a pending prediction and hold dispatch. The slot-1 size must
+    select P-4 rather than the compressed P-2 comparison for slot-2 match
+    and kill.
     """
     await _setup_test(dut)
 
@@ -3030,16 +3002,12 @@ async def test_atomic_compressed_owner_discards_wrong_path_high_buffer(
 async def test_pending_prediction_owner_keeps_predict_time_direction_index(
     dut: Any,
 ) -> None:
-    """A pending predicted branch keeps its own bimodal training index.
+    """A pending branch retains its predict-time direction and training index.
 
-    With a prediction pending, pc_reg still has to emit an older compressed
-    branch while fetch has already redirected.  The edge that arms the
-    prediction replaces BPC's one-cycle direction snapshot with the pending
-    branch's entry.  The released predecessor must keep its own direction and
-    index, and the pending branch must get its predict-time index back even
-    after later lookups and through a stall replay.  Otherwise the
-    predecessor can redirect wrongly and either packet can train an
-    unrelated predictor entry.
+    An older compressed branch can emit after fetch redirects and replaces
+    the direction snapshot. Each branch must retain its own direction and
+    index, including through stall replay, or the predecessor can redirect
+    incorrectly and either branch can train an unrelated entry.
     """
     await _setup_test(dut)
     dut.i_disable_branch_prediction.value = 0
@@ -3150,11 +3118,8 @@ async def test_pending_prediction_owner_keeps_predict_time_direction_index(
             break
         await _advance_cycle(dut)
     assert owner_seen, "pending branch never emitted"
-    # Model the target-path lookup that happens in between by forcing the
-    # snapshot; the branch_prediction_controller bench checks separately that
-    # cycles with fetch progress replace it. A fixed stale value keeps the
-    # pending-branch index mux from passing through an accidental low-bit
-    # match.
+    # Force a target-path snapshot with different low bits so an accidental
+    # match cannot hide use of the wrong prediction index.
     stale_idx = (target >> 1) & ((1 << BP_DIR_IDX_BITS) - 1)
     assert stale_idx != branch_idx
     dut.branch_prediction_controller_inst.pred_idx_snapshot_r.value = stale_idx
@@ -3326,11 +3291,10 @@ async def test_fetch_invalid_compressed_pair_resume(dut: Any) -> None:
 
 @cocotb.test()
 async def test_pd_redirect_stall_32bit_target_no_plus2_desync(dut: Any) -> None:
-    """PD-redirect+BTB-collision+stall must not advance pc_reg +2 into a 32-bit insn.
+    """A stalled PD redirect colliding with a BTB hit must not split a 32-bit instruction.
 
-    Same race as test_pd_redirect_with_stall_kills_registered_prediction_handoff,
-    checked for a wrong +2 advance instead of a wrong target: a 32-bit stream
-    runs at the PD target, and every dispatched PC must be 4-byte aligned.
+    Run a 32-bit stream at the PD target and require every dispatched PC to
+    remain four-byte aligned.
     """
     await _setup_test(dut)
     dut.i_disable_branch_prediction.value = 0

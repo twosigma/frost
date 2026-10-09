@@ -95,7 +95,7 @@ async def _save_pending_prediction(
     target: int = TARGET_A,
     owner_pc: int = PENDING_BRANCH_PC,
 ) -> None:
-    """Capture a pending prediction, then present its owner with the target handoff."""
+    """Capture a prediction, then present its branch with the target handoff."""
     _drive_live_prediction(dut, used=True, target=target)
     dut.i_pending_prediction_active.value = 1
     dut.i_pending_prediction_pc.value = owner_pc
@@ -196,10 +196,8 @@ async def test_registered_target_wins_over_same_pc_live_payload(dut: Any) -> Non
 
     _assert_metadata(dut, taken=True, target=TARGET_A)
 
-    # A self-targeting prediction whose RAS entry has already popped: the live
-    # lookup at the same packet PC now shows a different target while a
-    # holdoff invalidates the output. The registered target stays on the
-    # output.
+    # After a self-targeting return pops the RAS, the live lookup has another
+    # target. Holdoff clears validity but must retain the registered target.
     dut.i_pending_prediction_fetch_holdoff.value = 1
     await _settle()
     _assert_metadata(dut, taken=False, target=TARGET_A)
@@ -342,7 +340,7 @@ async def test_pending_prediction_waits_for_exact_owner_after_predecessor_replay
     assert bool(dut.prediction_pending_saved_valid.value)
     assert int(dut.prediction_pc_pending_saved.value) == PENDING_BRANCH_PC
 
-    # Only the exact owner receives and consumes the saved prediction.
+    # Only the matching branch receives and consumes the saved prediction.
     dut.i_use_saved_values.value = 0
     dut.i_output_pc.value = PENDING_BRANCH_PC
     dut.i_pending_prediction_target_handoff.value = 1
@@ -360,7 +358,7 @@ async def test_pending_prediction_waits_for_exact_owner_after_predecessor_replay
 async def test_exact_pending_owner_replays_through_stall_then_consumes(
     dut: Any,
 ) -> None:
-    """A stalled owner remains valid and consumes only on its release edge."""
+    """A stalled branch retains valid metadata until its release edge."""
     await _setup_test(dut)
     await _save_pending_prediction(dut)
 
@@ -383,7 +381,7 @@ async def test_exact_pending_owner_replays_through_stall_then_consumes(
 async def test_pending_episode_cannot_be_recaptured_by_later_prediction(
     dut: Any,
 ) -> None:
-    """The saved owner PC and target do not change until consumed or killed."""
+    """The saved branch PC and target do not change until consumed or killed."""
     await _setup_test(dut)
     await _save_pending_prediction(dut, target=TARGET_A)
 
@@ -410,7 +408,7 @@ async def test_pending_episode_cannot_be_recaptured_by_later_prediction(
 async def test_pending_owner_kill_clears_saved_metadata_and_new_episode_reuses_pc(
     dut: Any,
 ) -> None:
-    """A killed owner cannot leak into a later prediction at the same PC."""
+    """Killed metadata cannot reach a later prediction at the same PC."""
     await _setup_test(dut)
     await _save_pending_prediction(dut, target=TARGET_A)
 
@@ -456,7 +454,7 @@ async def test_kill_on_first_pending_cycle_beats_capture(dut: Any) -> None:
     assert bool(dut.pending_prediction_capture.value)
     await _advance_cycle(dut)
 
-    # The kill won: nothing was saved, so the owner presented with the target
+    # The kill saved nothing, so the branch presented with the target
     # handoff after the redirect gets no prediction.
     dut.i_pending_prediction_kill.value = 0
     dut.i_pending_prediction_active.value = 0
@@ -545,7 +543,7 @@ async def test_raw_wcs_predecessor_captures_without_prior_fetch_holdoff(
 async def test_first_pending_owner_consumes_registered_metadata_without_replay(
     dut: Any,
 ) -> None:
-    """An owner on the first pending cycle consumes the metadata without saving a copy."""
+    """A branch in the first pending cycle consumes metadata without saving a copy."""
     await _setup_test(dut)
 
     _drive_live_prediction(dut, used=True, target=TARGET_A)

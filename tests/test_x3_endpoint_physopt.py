@@ -346,7 +346,7 @@ def test_pin_candidates_follow_failing_paths_and_respect_existing_constraints(
     tmp_path: Path,
     rounded_zero: bool,
 ) -> None:
-    """Select critical pins while excluding locks, shared LUTs, and passing paths."""
+    """Select pins on failing paths, excluding locks and shared LUTs."""
     model = r"""
 source $::env(ENDPOINT_SCRIPT)
 proc get_pins {args} {return [lindex $args end]}
@@ -484,7 +484,7 @@ def test_route_candidates_keep_worst_sink_and_skip_irrelevant_paths(
     tmp_path: Path,
     rounded_zero: bool,
 ) -> None:
-    """Rank shared critical connections by delay without retrying net aliases."""
+    """Rank shared connections on failing paths by delay without retrying aliases."""
     model = r"""
 source $::env(ENDPOINT_SCRIPT)
 namespace eval frost_x3_local_placement {

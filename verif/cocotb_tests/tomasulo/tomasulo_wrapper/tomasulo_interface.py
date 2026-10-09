@@ -12,13 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""DUT interface for Tomasulo integration wrapper verification.
+"""DUT interface for the Tomasulo wrapper.
 
-Reuses the packing/unpacking functions from the ROB, RAT, and RS interfaces
-and adds a compound ``dispatch`` that drives ROB alloc, RAT rename, and the
-checkpoint save in one cycle. Covers six RS instances with per-RS
-issue/status/fu_ready access and an observation helper for the dual-issue INT
-station's second issue port.
+Reuse ROB, RAT, and RS packing helpers. dispatch drives ROB allocation,
+RAT rename, and optional checkpoint save together.
 """
 
 import re
@@ -209,10 +206,8 @@ def _mem_size_for_op(op: int) -> int:
     return 2
 
 
-# Per-RS DUT signal names for issue, fu_ready, full, empty, and count. Of
-# INT_RS's five, only the full flag (o_int_rs_full) has a station prefix; the
-# others are o_rs_issue, i_rs_fu_ready, o_rs_empty, and o_rs_count. o_rs_full
-# is the full flag of whichever station i_rs_dispatch targets.
+# Use each station's full flag. o_rs_full instead follows the station
+# targeted by i_rs_dispatch; the INT-only flag is o_int_rs_full.
 _RS_SIGNAL_MAP = {
     RS_INT: {
         "issue": "o_rs_issue",
@@ -303,7 +298,7 @@ class TomasuloInterface:
         await FallingEdge(self.clock)
 
     def _sample_lq_launch(self) -> None:
-        """Remember the request presented on o_lq_mem_read_* (if any)."""
+        """Remember the LQ launch, assuming addresses stay below the cached-window limit."""
         if bool(self.dut.o_lq_mem_read_en.value):
             addr = int(self.dut.o_lq_mem_read_addr.value)
             self.last_lq_launch_cached = addr >= CACHED_BASE
@@ -352,9 +347,8 @@ class TomasuloInterface:
         # FENCE.I cache sync completes at once, as in a build without the
         # cached tier.
         self.dut.i_fence_i_sync_done.value = 1
-        # M-mode privilege view: nothing blocked, nothing illegal, FP on. The
-        # ROB checks legality at allocation, and an op that fails traps at the
-        # ROB head instead of committing.
+        # Use M-mode with FP enabled. Allocation still checks instruction
+        # legality; a fault traps at the head instead of committing.
         self.dut.i_sepc.value = 0
         self.dut.i_dpc.value = 0
         self.dut.i_debug_mode.value = 0
@@ -568,19 +562,14 @@ class TomasuloInterface:
         exc_cause: int = 0,
         fp_flags: int = 0,
     ) -> None:
-        """Drive a single FU completion request to the CDB arbiter.
+        """Inject one FU completion into the two-lane CDB feeding ROB and RS.
 
-        The arbiter broadcasts to both the ROB (cdb_write) and all RS (cdb
-        broadcast for wakeup).
+        Internal adapters take priority on slots 0-4 and 7 (ALU, MUL, DIV, MEM,
+        FP, ALU2). Injection reaches those slots only while their adapters have
+        no valid output. Slots 5 and 6 always accept injection.
 
-        Slots 0-4 and 7 have an internal adapter (0-3: ALU, MUL, DIV, MEM;
-        4: FP; 7: ALU2), and the wrapper's ``cdb_arb_in_*`` muxes give it
-        priority: an injection on ``i_fu_complete_N`` reaches the arbiter only
-        in cycles when that slot's adapter presents nothing. Slots 5 and 6
-        have no unit behind them, so an injection there always reaches the
-        arbiter. On the two ALU slots, an injected value goes through the
-        arbiter tree, not the live-value bypass (CDB arbiter README, "Live ALU
-        values").
+        Injected ALU values use the arbiter tree, not its live-value bypass
+        (CDB arbiter README, "Live ALU values").
         """
         req = FuComplete(
             valid=True,
@@ -614,10 +603,7 @@ class TomasuloInterface:
         """Read the CDB grant vector."""
         return int(self.dut.o_cdb_grant.value)
 
-    # CDB shorthands. They inject on FU_FP_ADD (slot 4) rather than slots 0-3,
-    # which the ALU, MUL, DIV, and MEM adapters drive. Slot 4 has the FP
-    # adapter, so an injection lands only while that adapter is idle (see
-    # drive_fu_complete).
+    # CDB shorthands inject on FU_FP_ADD (slot 4) while its adapter is idle.
     def drive_cdb(
         self,
         tag: int,
@@ -775,12 +761,10 @@ class TomasuloInterface:
         return bool((valid & done) >> tag & 1)
 
     async def read_rob_entry_value(self, tag: int) -> int:
-        """Read ROB entry tag's value through done-repair channel 6.
+        """Read the ROB value through done-repair channel 6, waiting 1 ps to settle.
 
-        Drives i_bypass_tag_6 with i_bypass_valid_6 left low, so no repair
-        request is made, and waits 1 ps for the asynchronous read; call it
-        away from a rising edge. Tests that drive channel 6 themselves must
-        not overlap with this read.
+        Call away from a rising edge with i_bypass_valid_6 low. This helper
+        changes only the tag; it must not overlap a channel-6 repair query.
         """
         self.dut.i_bypass_tag_6.value = tag
         await Timer(1, unit="ps")
@@ -1205,7 +1189,6 @@ class TomasuloInterface:
             self.drive_checkpoint_save(cp_id, tag, ras_tos, ras_valid_count)
             self.drive_rob_checkpoint(cp_id)
 
-        # All modules register on this edge.
         await RisingEdge(self.clock)
         await FallingEdge(self.clock)
         self.record_allocated_tags(tag)
@@ -1275,17 +1258,11 @@ class TomasuloInterface:
         cached: bool | None = None,
         slot: int | None = None,
     ) -> None:
-        """Drive an LQ memory response beat (data + valid).
+        """Drive an aligned 64-bit LQ response (hw/rtl/README.md, "Data-tier bus contract").
 
-        The data tier returns aligned 64-bit beats (hw/rtl/README.md,
-        "Data-tier bus contract"). A 32-bit word is replicated into both lanes
-        so the response is correct at either addr[2]; pass ``dword=True`` with
-        a full 64-bit value for dword loads such as LD and FLD.
-
-        A response answers either the fast tier's single outstanding request
-        or one cached slot: ``cached``/``slot`` default to the tier and slot
-        of the most recent launch seen by ``step``/``read_lq_mem_request``
-        (the router tags real responses the same way).
+        Use dword=True for LD or FLD. Otherwise replicate the low word into both
+        lanes so either addr[2] selects it. cached and slot default to the
+        latest launch sampled by step or read_lq_mem_request.
         """
         if dword:
             self.dut.i_lq_mem_read_data.value = data & MASK64

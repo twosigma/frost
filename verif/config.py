@@ -12,11 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Shared verification constants and DUT signal-path configuration.
+"""Shared verification constants and DUT signal paths.
 
-Sections, in file order: memory, register file, data type masks, immediate
-fields, DUT signal paths, test defaults, ISA constants, pipeline offsets, and
-division edge cases.
+To retarget the framework, set MEMORY_ADDRESS_WIDTH and MEMORY_SIZE_WORDS
+for data memory, DUTSignalPaths for the hierarchy, and DEFAULT_* for test
+length, coverage floor, clock period, and reset length.
 
 Usage::
 
@@ -25,11 +25,6 @@ Usage::
 
     >>> from config import DUTSignalPaths
     >>> custom_paths = DUTSignalPaths(regfile_ram_rs1_path="my.path.here")
-
-To retarget the framework to another DUT, start with MEMORY_ADDRESS_WIDTH and
-MEMORY_SIZE_WORDS for its data memory, DUTSignalPaths for its hierarchy, and
-the DEFAULT_* constants for test length, coverage floor, clock period, and
-reset length.
 """
 
 from dataclasses import dataclass
@@ -110,23 +105,15 @@ INSTR_OP_WIDTH: Final[int] = 8
 
 @dataclass
 class DUTSignalPaths:
-    """Configurable paths to DUT internal signals.
+    """Dot-separated paths to DUT internal signals, relative to the DUT handle.
 
-    Tests reach DUT internals through these paths, so a different hierarchy
-    only needs a new DUTSignalPaths instance; test code stays the same.
+    The defaults select the cpu_ooo architectural register files under
+    ``ooo_register_files_inst``, written at ROB commit. Each read port has a
+    ``gen_multi_write`` RAM with one bank per write port and a live-value table.
+    Read committed values with ``cocotb_tests.test_helpers.read_port_ram_entry``
+    to select the bank through that table.
 
-    A path is a dot-separated hierarchy traversal. For instance
-    "device_under_test.ooo_register_files_inst.regfile_inst" resolves to
-    dut.device_under_test.ooo_register_files_inst.regfile_inst.
-
-    The defaults point at the cpu_ooo architectural register files under
-    ``ooo_register_files_inst``; ROB commit writes them. Each generic_regfile
-    read port owns a RAM inside a ``gen_multi_write`` scope
-    (mwp_dist_ram: one bank per commit write port plus a per-address
-    live-value table), so a committed register value has to be read through
-    the LVT. Call ``cocotb_tests.test_helpers.read_port_ram_entry`` instead
-    of indexing the handle. For different module names or hierarchy, build a
-    custom instance:
+    Pass a custom instance to DUTInterface for a different hierarchy:
 
         >>> custom_paths = DUTSignalPaths(
         ...     regfile_ram_rs1_path="cpu_core.registers.port_a.data",

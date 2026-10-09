@@ -466,14 +466,11 @@ if {$::env(PLACE_MODE) eq "verify_place"} {
 def test_production_places_once_and_runs_no_diagnostic_helper(
     tmp_path: Path, mode: str | None, guided: bool
 ) -> None:
-    """The place step places once and runs no diagnostic helper.
+    """Place once, then score at zero uncertainty, checkpoint, report, and gate.
 
-    Placement controls come first; zero-uncertainty scoring, checkpoints,
-    timing reports, and the gate follow in that order, and nothing after
-    placement edits cells, nets, or properties. A guided seed adds its
-    temporary path group before placement, removes it after, and reopens the
-    design once. Stale helper audits are deleted, and
-    FROST_X3_PD_TARGET_PIN_SWAPS has no effect.
+    No post-place cell, net, or property edits are allowed. Guided seeds add and
+    remove a temporary path group around placement and reopen the design once.
+    Delete stale audits; FROST_X3_PD_TARGET_PIN_SWAPS must have no effect.
     """
     script = tmp_path / "hook.tcl"
     script.write_text(HOOK_MODEL)

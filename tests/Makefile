@@ -12,74 +12,59 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Verilator build for the cocotb simulations that the runners in this directory
-# start. TOPLEVEL selects the RTL sources below; any other toplevel, including
-# frost and cpu_tb, compiles the full RTL list in hw/rtl/frost.f.
+# Verilator build for cocotb. TOPLEVEL selects sources below; unlisted tops,
+# including frost and cpu_tb, use hw/rtl/frost.f.
 
 # Simulation configuration:
 SIM             := verilator
-# HDL language (verilog or vhdl)
 TOPLEVEL_LANG   ?= verilog
-# Top-level module name for simulation
 TOPLEVEL        ?= cpu_tb
 # Python test module(s) to run (comma-separated for multiple)
 COCOTB_TEST_MODULES ?= cocotb_tests.test_directed_traps
 # Git repository root (with fallback for Docker/non-git contexts)
 ROOT            ?= $(shell git rev-parse --show-toplevel 2>/dev/null || echo /workspace)
-# Whether to generate a waveform file
 WAVES           ?= 0
 
-# Export variables for Cocotb
 export TOPLEVEL COCOTB_TEST_MODULES TOPLEVEL_LANG SIM ROOT
 
-# Compilation arguments - RTL file list (varies by toplevel)
+# RTL sources by toplevel
 ifeq ($(TOPLEVEL),reorder_buffer)
-# Reorder Buffer unit test - minimal dependencies
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.f
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),register_alias_table)
-# Register Alias Table unit test - minimal dependencies
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.f
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),reservation_station)
-# Reservation Station unit test - minimal dependencies
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.f
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),rs_issue2_selector)
-# Balanced INT-RS second-port selector unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),cdb_arbiter)
-# CDB arbiter unit test
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/cdb_arbiter/cdb_arbiter.f
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),fu_cdb_adapter)
-# FU CDB adapter unit test
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_cdb_adapter/fu_cdb_adapter.f
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),load_queue)
-# Load Queue unit test
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.f
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),store_queue)
-# Store Queue unit test
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.f
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),int_alu_shim)
-# Integer ALU shim unit test
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fu_shims.f
 VERILOG_SOURCES := $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 else ifeq ($(TOPLEVEL),int_muldiv_shim)
-# Integer MUL/DIV shim unit test
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fu_shims.f
 VERILOG_SOURCES := $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
@@ -100,42 +85,35 @@ COMPILE_ARGS := \
         -LDFLAGS '-L/usr/local/lib -Wl,-rpath,/usr/local/lib -lsoftfloat'
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),dispatch)
-# Dispatch unit test
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/dispatch/dispatch.f
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),branch_jump_unit)
-# EX-stage branch/jump resolution unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/branch_jump_unit.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),commit_actions)
-# CPU OOO commit-actions unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/commit/commit_actions.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),ex_comb_synthesizer)
-# CPU OOO from_ex_comb synthesizer unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/recovery/ex_comb_synthesizer.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),early_misprediction_recovery)
-# CPU OOO early misprediction recovery unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/early_misprediction_recovery.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),misprediction_flush_controller)
-# CPU OOO misprediction flush controller unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/misprediction_flush_controller.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),branch_resolution)
-# CPU OOO branch resolution unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/branch_jump_unit.sv \
@@ -152,7 +130,6 @@ COMPILE_ARGS := \
         $(ROOT)/hw/sim/data_mem_response_mux_tb.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),data_mem_request_router)
-# CPU OOO data-memory request router unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv
@@ -170,7 +147,6 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/frontend_control/frontend_validity_tracker.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),perf_counter_aggregator)
-# CPU OOO performance-counter aggregator unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
@@ -188,13 +164,11 @@ COMPILE_ARGS := \
         $(ROOT)/hw/sim/perf_csr_half_test_harness.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),ooo_pipeline_control)
-# CPU OOO pipeline-control unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/pipeline_control/ooo_pipeline_control.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),ooo_register_files)
-# CPU OOO architectural register-files unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
@@ -203,14 +177,12 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/register_files/ooo_register_files.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),return_address_stack)
-# IF-stage return-address stack unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/return_address_stack.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),branch_predictor)
-# IF-stage branch target buffer predictor unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
@@ -218,14 +190,12 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),direction_predictor)
-# IF-stage branch direction predictor unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/direction_predictor.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),branch_prediction_controller)
-# IF-stage branch prediction controller unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
@@ -236,26 +206,22 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction_controller.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),prediction_metadata_tracker)
-# IF-stage prediction metadata tracker unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/prediction_metadata_tracker.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),control_flow_tracker)
-# IF-stage control-flow holdoff tracker unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/control_flow_tracker.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),pc_increment_calculator)
-# IF-stage PC increment calculator unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_reg_precompute.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),pc_controller)
-# IF-stage PC controller unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/control_flow_tracker.sv \
@@ -279,19 +245,16 @@ COMPILE_ARGS := \
         $(ROOT)/hw/sim/immu_test_harness.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),instruction_aligner)
-# IF-stage instruction aligner unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/instruction_aligner.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),rvc_decompressor)
-# IF-stage RVC decompressor unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),c_ext_state)
-# IF-stage C-extension state controller unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/c_ext_state.sv
@@ -308,7 +271,6 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.f
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),pd_stage)
-# PD-stage top-level unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv \
@@ -316,7 +278,6 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/pd_stage/pd_stage.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),id_stage)
-# ID-stage top-level unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/id_stage/id_stage.f
@@ -383,12 +344,10 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/peripherals/nic/nic_dma_front.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),nic_byte_pack)
-# NIC RX byte packer unit bench
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/peripherals/nic/nic_byte_pack.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),nic_byte_unpack)
-# NIC TX byte unpacker unit bench
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/peripherals/nic/nic_byte_unpack.sv
 VERILOG_SOURCES :=
@@ -457,7 +416,6 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),low_bram_fetch_presenter)
-# Low-BRAM fetch request repeater unit bench
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/low_bram_fetch_presenter.sv
 VERILOG_SOURCES :=
@@ -473,7 +431,6 @@ else
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/frost.f \
 
-# Conditional Verilog sources based on toplevel module
 ifeq ($(TOPLEVEL),cpu_tb)
 VERILOG_SOURCES := \
         $(ROOT)/hw/sim/cpu_tb.sv  # Include testbench wrapper
@@ -492,11 +449,8 @@ export PYTHONPATH := $(ROOT)/verif:$(ROOT)/tests:$(PYTHONPATH)
 # the environment to share the host with other runs.
 NUMBER_OF_CPU_CORES ?= $(shell nproc)
 
-# Verilator threading: the simulation runs single-threaded (VERILATOR_THREADS=1)
-# because the VPI overhead of a multithreaded runtime costs more than it gains
-# under cocotb. The build is parallel instead. VERILATOR_MAKE_FLAGS sets the C++
-# compile jobs, and the -j in EXTRA_ARGS below parallelises verilation, the
-# HDL-to-C++ conversion.
+# Use one simulation thread to avoid multithreaded VPI overhead. Parallelize
+# C++ compilation with VERILATOR_MAKE_FLAGS and HDL conversion with EXTRA_ARGS -j.
 export VERILATOR_THREADS := 1
 export VERILATOR_MAKE_FLAGS := -j$(NUMBER_OF_CPU_CORES)
 
@@ -522,10 +476,8 @@ SIM_MEM_SIZE_BYTES ?= 262144
 ENABLE_CACHED_TIER ?= 1
 DDR_MODEL_BYTES ?= 67108864
 DDR_MODEL_LATENCY ?= 30
-# Fast cache maintenance for fence.i (simulation only): invalidate-all and
-# writeback-all take far fewer cycles with the same effect, so the Linux
-# kernel's frequent fence.i during code patching stays affordable in
-# simulation. The RTL default is 0, and board builds never set it.
+# Accelerate fence.i invalidate-all and writeback-all in simulation.
+# The RTL default is 0; board builds leave it disabled.
 SIM_FAST_MAINT ?= 1
 ifeq ($(TOPLEVEL),frost)
 	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES) -GENABLE_CACHED_TIER=$(ENABLE_CACHED_TIER) -GDDR_MODEL_BYTES=$(DDR_MODEL_BYTES) -GDDR_MODEL_LATENCY=$(DDR_MODEL_LATENCY) -GSIM_FAST_MAINT=$(SIM_FAST_MAINT)
@@ -539,20 +491,17 @@ ifneq ($(strip $(FROST_VERILATOR_EXTRA_ARGS)),)
 	EXTRA_ARGS += $(FROST_VERILATOR_EXTRA_ARGS)
 endif
 
-# The reorder_buffer unit bench drives i_cdb_write directly, without the full
-# machine's alloc-to-completion latency, so the staged-LVT drain-window check
-# (fatal in every latency-realistic sim) is disabled for that build only.
+# The ROB bench drives i_cdb_write without allocation-to-completion latency.
+# Disable its staged-LVT drain-window check only for this bench.
 ifeq ($(TOPLEVEL),reorder_buffer)
 	EXTRA_ARGS += -GDrainWindowCheck=0
 endif
 
-# Include Cocotb simulation makefile rules
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
-# Cocotb's sim target makes result cleanup and regression sibling prerequisites.
-# With parallel make, regression can see the previous XML before cleanup and
-# skip this simulation. Make cleanup a normal prerequisite of the result itself
-# so every invocation runs the simulator, after removing the preceding report.
+# Cocotb makes cleanup and regression sibling prerequisites. Under parallel
+# make, stale XML can suppress execution. Require cleanup before the result
+# target so every invocation runs the simulator.
 $(COCOTB_RESULTS_FILE): _rm_results
 
 clean:: clean-local

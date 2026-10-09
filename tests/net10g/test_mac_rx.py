@@ -243,7 +243,7 @@ class ReceiveBench:
 
 @cocotb.test()
 async def good_frames_all_alignments(dut: Any) -> None:
-    """Both start lanes, all terminate lanes, min/max sizes, consecutive packets."""
+    """Check start and terminate lanes, size limits, and consecutive good packets."""
     bench = ReceiveBench(dut)
     await bench.reset()
     rng = random.Random(0x10_64_66)
@@ -401,7 +401,7 @@ async def ring_wrap_and_mixed_line_rate(dut: Any) -> None:
 
 @cocotb.test()
 async def descriptor_full_and_post_terminate_noise(dut: Any) -> None:
-    """Exact full queue, release timing, and isolation of interframe symbols."""
+    """Check queue capacity, release timing, and isolation from interframe symbols."""
     bench = ReceiveBench(dut)
     await bench.reset()
     rng = random.Random(0xD35C)
@@ -412,12 +412,10 @@ async def descriptor_full_and_post_terminate_noise(dut: Any) -> None:
     await bench.send(rng.randbytes(60), ready=False)
     assert (bench.bad_frames, bench.bad_fcs, bench.overflows) == (1, 0, 1)
 
-    # The stalled output register holds the first two beats of packets[0], so
-    # seven handshakes leave its final beat there. The next /S/ arrives on the
-    # clock whose handshake consumes that beat. The reader copied the beat
-    # earlier, but the descriptor is released by the handshake and reaches the
-    # word stage two clocks later: this start is refused although seven freed
-    # words are already visible.
+    # Two beats of packets[0] are buffered; seven handshakes leave its final
+    # beat. Present /S/ on that beat's handshake clock. The descriptor is
+    # released by the handshake, not the earlier read, and reaches the word
+    # stage two clocks later. Refuse /S/ despite seven visible free words.
     for _ in range(7):
         await bench.step()
     await bench.step(wire_words(rng.randbytes(60))[0])
@@ -431,9 +429,8 @@ async def descriptor_full_and_post_terminate_noise(dut: Any) -> None:
     await bench.step(ready=False)
     assert (bench.bad_frames, bench.bad_fcs, bench.overflows) == (2, 0, 2)
 
-    # Full again, with packets[1] now at the output from its second beat.
-    # Seven handshakes consume it, and a start on the following clock, with the
-    # output stalled and full, is admitted.
+    # packets[1] has seven beats left. Admit a start on the clock after its
+    # final handshake, with the output stalled and full.
     for _ in range(7):
         await bench.step()
     second = rng.randbytes(60)
@@ -559,7 +556,7 @@ async def preamble_corruption_every_position(dut: Any) -> None:
 
 @cocotb.test()
 async def runts_and_fcs_errors_every_termination_lane(dut: Any) -> None:
-    """Short frames, including /T/ right after the SFD, and bad FCS at every lane."""
+    """Check runts, including /T/ after SFD, and bad FCS at every terminate lane."""
     bench = ReceiveBench(dut)
     await bench.reset()
     rng = random.Random(0x7E12)
@@ -704,11 +701,10 @@ async def reservation_sees_output_credit_two_clocks_later(dut: Any) -> None:
     bench = ReceiveBench(dut)
     rng = random.Random(0xC4ED17)
     free = RESERVATION_FREE
-    # Handshake clocks relative to the word whose lane 0 needs one word more
-    # than is free, and whether the frame survives. A handshake on that word's
-    # clock is two clocks too late; one clock earlier is in time. The output
-    # register holds one beat at the decision when the word's own clock
-    # handshakes, two otherwise; free words are one, then two, before it.
+    # Handshake times are relative to the word whose lane 0 needs another
+    # free word. A handshake on that clock is too late; one clock earlier
+    # suffices. At the decision, the output holds one beat if the word's own
+    # clock handshakes, otherwise two. Free words advance from one to two.
     for handshakes, accepted in (
         ((), False),
         ((0,), False),
@@ -731,14 +727,12 @@ async def reservation_sees_output_credit_two_clocks_later(dut: Any) -> None:
 
 @cocotb.test(skip=DESCRIPTOR_SLOTS != 2)
 async def descriptor_release_with_empty_output(dut: Any) -> None:
-    """With two descriptors, starts decided while the output register is empty."""
+    """With two descriptors, check starts decided while the output is empty."""
     bench = ReceiveBench(dut)
     rng = random.Random(0xE0D7)
-    # The first packet's eight beats are consumed on eight clocks; the second
-    # packet's /T/ word and the third packet's /S/ word are placed around the
-    # last of them. On the decision clock nothing is left to copy, so the
-    # output register is empty. Refused: the consumed packet's release is
-    # still in flight. Admitted: it has landed.
+    # Consume the first packet's eight beats on eight clocks. Place the next
+    # /T/ and /S/ around its final handshake, leaving the output empty at the
+    # decision. Admit /S/ only after the descriptor release arrives.
     for terminate_clock, start_clock, accepted in ((7, 8, False), (8, 9, True)):
         await bench.reset()
         first, second, third = (rng.randbytes(60) for _ in range(3))
@@ -810,9 +804,8 @@ async def reset_clears_pipeline_and_output(dut: Any) -> None:
     assert bench.received == []
     assert bench.events() == (0, 0, 0)
 
-    # Storage is whole again, without the credit that was in flight: after
-    # packets leaving eight words free, a nine-word frame (where the limit
-    # allows one) overflows and an eight-word frame fits.
+    # Reset restores storage and discards pending credit. Leave eight words
+    # free: a nine-word frame, where allowed, must overflow; eight words fit.
     fills = [rng.randbytes(n) for n in fill_plan(MEMORY_WORDS - 8)]
     for packet in fills:
         await bench.send(packet, ready=False)

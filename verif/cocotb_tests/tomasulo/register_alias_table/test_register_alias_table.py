@@ -14,15 +14,8 @@
 
 """Register Alias Table unit tests.
 
-Each test drives the RAT through RATInterface and compares its lookups
-against RATModel. The directed tests cover reset state, the x0 hardwire,
-INT and FP rename and lookup on both dispatch slots including the FP src3
-port used by FMA, commit clears and commit tag mismatches, same-cycle
-collisions of rename against commit, flush_all against everything, restore
-against commit and save against free, and checkpoint save, restore, free,
-bulk-free mask, RAS state, and the allocation priority encoder up to
-exhaustion. Constrained-random tests interleave those operations and compare
-the final state against the model.
+Tests drive the RAT through RATInterface and use RATModel for expected
+lookups. Random tests compare the final state with the model.
 
 Usage (from repository root, through the pinned tools):
     ./scripts/frost.py cocotb register_alias_table
@@ -67,13 +60,7 @@ def log_random_seed() -> int:
 
 
 async def setup_test(dut: Any) -> tuple[RATInterface, RATModel]:
-    """Set up test environment.
-
-    Start the clock, reset the DUT, and reset the model.
-
-    Returns:
-        Tuple of (interface, model).
-    """
+    """Start the clock and return (interface, model) with both reset."""
     dut_if = RATInterface(dut)
     model = RATModel()
 
@@ -107,13 +94,12 @@ def check_lookup(actual: Any, expected: Any, label: str) -> None:
 
 @cocotb.test()
 async def test_reset_state(dut: Any) -> None:
-    """Test that all entries are clear after reset."""
+    """Check reset lookups and the first free checkpoint ID."""
     cocotb.log.info("=== Test: Reset State ===")
 
     dut_if, model = await setup_test(dut)
 
-    # None of these INT registers should be renamed. Lookups are
-    # combinational, so the edge below only lets the driven inputs settle.
+    # Lookups are combinational; the edge only lets driven inputs settle.
     for addr in [0, 1, 5, 15, 31]:
         regfile_val = addr * 100
         dut_if.set_int_src1(addr, regfile_val)
@@ -122,7 +108,6 @@ async def test_reset_state(dut: Any) -> None:
         expected = model.lookup_int(addr, regfile_val)
         check_lookup(result, expected, f"INT x{addr}")
 
-    # Check a few FP registers
     for addr in [0, 1, 16, 31]:
         regfile_val = 0xDEAD0000 + addr
         dut_if.set_fp_src1(addr, regfile_val)
@@ -131,7 +116,6 @@ async def test_reset_state(dut: Any) -> None:
         expected = model.lookup_fp(addr, regfile_val)
         check_lookup(result, expected, f"FP f{addr}")
 
-    # All checkpoint slots should be available
     assert dut_if.checkpoint_available, "Checkpoint should be available after reset"
     assert dut_if.checkpoint_alloc_id == 0, "First free checkpoint should be 0"
 
@@ -140,12 +124,11 @@ async def test_reset_state(dut: Any) -> None:
 
 @cocotb.test()
 async def test_x0_hardwired_zero(dut: Any) -> None:
-    """Test that x0 always returns renamed=0, value=0 regardless of regfile data."""
+    """x0 returns renamed=0 and value=0 even with nonzero regfile data."""
     cocotb.log.info("=== Test: x0 Hardwired Zero ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Even with non-zero regfile data, x0 should return value=0
     dut_if.set_int_src1(0, 0xDEADBEEF)
     dut_if.set_int_src2(0, 0x12345678)
     await RisingEdge(dut_if.clock)
@@ -163,7 +146,7 @@ async def test_x0_hardwired_zero(dut: Any) -> None:
 
 @cocotb.test()
 async def test_rv64_regfile_value_passthrough(dut: Any) -> None:
-    """Test all integer lookup ports with values that use bits 63:32."""
+    """Check all integer lookup ports with values that use bits 63:32."""
     cocotb.log.info("=== Test: RV64 Regfile Value Passthrough ===")
 
     dut_if, model = await setup_test(dut)
@@ -188,22 +171,17 @@ async def test_rv64_regfile_value_passthrough(dut: Any) -> None:
 
 @cocotb.test()
 async def test_int_rename_and_lookup(dut: Any) -> None:
-    """Test basic INT rename and source lookup.
-
-    Renames x5 to ROB tag 3, then looks it up.
-    """
+    """Look up a renamed INT register and an untouched register."""
     cocotb.log.info("=== Test: INT Rename and Lookup ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Rename x5 -> ROB[3]
     dut_if.drive_rename(dest_rf=0, dest_reg=5, rob_tag=3)
     model.rename(dest_rf=0, dest_reg=5, rob_tag=3)
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
     dut_if.clear_rename()
 
-    # x5 should now be renamed
     regfile_val = 0x42
     dut_if.set_int_src1(5, regfile_val)
     await RisingEdge(dut_if.clock)
@@ -215,7 +193,6 @@ async def test_int_rename_and_lookup(dut: Any) -> None:
     assert result.renamed, "x5 should be renamed"
     assert result.tag == 3, f"x5 tag should be 3, got {result.tag}"
 
-    # x10 was never written, so it is not renamed
     dut_if.set_int_src2(10, 0xABCD)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src2()
@@ -228,22 +205,17 @@ async def test_int_rename_and_lookup(dut: Any) -> None:
 
 @cocotb.test()
 async def test_fp_rename_and_lookup(dut: Any) -> None:
-    """Test basic FP rename and source lookup.
-
-    Renames f0 to ROB tag 7 (FP f0 is renameable, unlike INT x0).
-    """
+    """Rename and look up f0, which is renameable unlike x0."""
     cocotb.log.info("=== Test: FP Rename and Lookup ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Rename f0 -> ROB[7]. Unlike x0, f0 is renameable.
     dut_if.drive_rename(dest_rf=1, dest_reg=0, rob_tag=7)
     model.rename(dest_rf=1, dest_reg=0, rob_tag=7)
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
     dut_if.clear_rename()
 
-    # Lookup f0
     regfile_val = 0x3FF0000000000000  # 1.0 in double
     dut_if.set_fp_src1(0, regfile_val)
     await RisingEdge(dut_if.clock)
@@ -259,16 +231,14 @@ async def test_fp_rename_and_lookup(dut: Any) -> None:
 
 @cocotb.test()
 async def test_fp_src3_lookup(dut: Any) -> None:
-    """Test FP source 3 lookup (for FMA instructions)."""
+    """Check renamed and unrenamed operands on FP source 3, used by FMA."""
     cocotb.log.info("=== Test: FP Source 3 Lookup ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Rename f10 -> ROB[15]
     await dut_if.rename(dest_rf=1, dest_reg=10, rob_tag=15)
     model.rename(dest_rf=1, dest_reg=10, rob_tag=15)
 
-    # Lookup f10 via src3
     regfile_val = 0x4000000000000000  # 2.0 in double
     dut_if.set_fp_src3(10, regfile_val)
     await RisingEdge(dut_if.clock)
@@ -278,7 +248,6 @@ async def test_fp_src3_lookup(dut: Any) -> None:
     check_lookup(result, expected, "FP f10 via src3")
     assert result.renamed, "f10 should be renamed via src3"
 
-    # Lookup unrenamed f20 via src3
     dut_if.set_fp_src3(20, 0xCAFE)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_fp_src3()
@@ -291,12 +260,11 @@ async def test_fp_src3_lookup(dut: Any) -> None:
 
 @cocotb.test()
 async def test_multiple_renames(dut: Any) -> None:
-    """Test renaming multiple registers sequentially."""
+    """Sequential renames preserve earlier mappings and leave x0 at zero."""
     cocotb.log.info("=== Test: Multiple Renames ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Rename several INT registers
     renames = [(1, 0), (5, 3), (10, 7), (31, 15)]  # (reg, tag)
     for reg, tag in renames:
         dut_if.drive_rename(dest_rf=0, dest_reg=reg, rob_tag=tag)
@@ -305,7 +273,6 @@ async def test_multiple_renames(dut: Any) -> None:
         await FallingEdge(dut_if.clock)
         dut_if.clear_rename()
 
-    # Verify all are renamed
     for reg, tag in renames:
         dut_if.set_int_src1(reg, reg * 100)
         await RisingEdge(dut_if.clock)
@@ -315,7 +282,6 @@ async def test_multiple_renames(dut: Any) -> None:
         assert result.renamed, f"x{reg} should be renamed"
         assert result.tag == tag, f"x{reg} tag mismatch"
 
-    # x0 should still be hardwired zero
     dut_if.set_int_src1(0, 0xFFFF)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
@@ -327,26 +293,22 @@ async def test_multiple_renames(dut: Any) -> None:
 
 @cocotb.test()
 async def test_rename_overwrites_previous(dut: Any) -> None:
-    """Test that a newer rename overwrites an older mapping."""
+    """A newer rename overwrites an older mapping."""
     cocotb.log.info("=== Test: Rename Overwrites Previous ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Rename x5 -> ROB[3]
     await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=3)
     model.rename(dest_rf=0, dest_reg=5, rob_tag=3)
 
-    # Verify tag 3
     dut_if.set_int_src1(5, 0)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
     assert result.tag == 3
 
-    # Rename x5 -> ROB[10] (overwrites)
     await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=10)
     model.rename(dest_rf=0, dest_reg=5, rob_tag=10)
 
-    # Verify tag 10
     dut_if.set_int_src1(5, 0)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
@@ -358,26 +320,22 @@ async def test_rename_overwrites_previous(dut: Any) -> None:
 
 @cocotb.test()
 async def test_commit_clears_entry(dut: Any) -> None:
-    """Test that commit clears RAT entry when tag matches."""
+    """Commit clears the RAT entry when its tag matches."""
     cocotb.log.info("=== Test: Commit Clears Entry ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Rename x5 -> ROB[3]
     await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=3)
     model.rename(dest_rf=0, dest_reg=5, rob_tag=3)
 
-    # Verify renamed
     dut_if.set_int_src1(5, 0x42)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
     assert result.renamed, "x5 should be renamed before commit"
 
-    # Commit with matching tag
     await dut_if.commit(tag=3, dest_rf=0, dest_reg=5)
     model.commit(dest_rf=0, dest_reg=5, tag=3)
 
-    # Verify no longer renamed
     dut_if.set_int_src1(5, 0x42)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
@@ -390,20 +348,17 @@ async def test_commit_clears_entry(dut: Any) -> None:
 
 @cocotb.test()
 async def test_commit_tag_mismatch_preserves(dut: Any) -> None:
-    """Test that commit with wrong tag preserves the RAT entry."""
+    """Commit with a mismatched tag preserves the RAT entry."""
     cocotb.log.info("=== Test: Commit Tag Mismatch Preserves ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Rename x5 -> ROB[3]
     await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=3)
     model.rename(dest_rf=0, dest_reg=5, rob_tag=3)
 
-    # Commit with a mismatched tag (7, not 3)
     await dut_if.commit(tag=7, dest_rf=0, dest_reg=5)
     model.commit(dest_rf=0, dest_reg=5, tag=7)
 
-    # x5 stays renamed with tag 3
     dut_if.set_int_src1(5, 0x42)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
@@ -417,20 +372,14 @@ async def test_commit_tag_mismatch_preserves(dut: Any) -> None:
 
 @cocotb.test()
 async def test_rename_and_commit_same_cycle(dut: Any) -> None:
-    """Test that rename takes priority over commit to the same register.
-
-    When both rename and commit target the same register in the same cycle,
-    the new rename mapping should win.
-    """
+    """Rename wins over commit to the same register in the same cycle."""
     cocotb.log.info("=== Test: Rename and Commit Same Cycle ===")
 
     dut_if, model = await setup_test(dut)
 
-    # First rename x5 -> ROB[3]
     await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=3)
     model.rename(dest_rf=0, dest_reg=5, rob_tag=3)
 
-    # Same cycle: commit tag 3 from x5 and rename x5 -> ROB[10]
     await FallingEdge(dut_if.clock)
     dut_if.drive_rename(dest_rf=0, dest_reg=5, rob_tag=10)
     dut_if.drive_commit(tag=3, dest_rf=0, dest_reg=5)
@@ -444,7 +393,6 @@ async def test_rename_and_commit_same_cycle(dut: Any) -> None:
     dut_if.clear_rename()
     dut_if.clear_commit()
 
-    # x5 should be renamed with tag 10 (rename wins)
     dut_if.set_int_src1(5, 0)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
@@ -458,12 +406,11 @@ async def test_rename_and_commit_same_cycle(dut: Any) -> None:
 
 @cocotb.test()
 async def test_flush_all_clears_everything(dut: Any) -> None:
-    """Test that flush_all clears all RAT entries and checkpoints."""
+    """Check INT/FP lookup and checkpoint availability after a full flush."""
     cocotb.log.info("=== Test: Flush All Clears Everything ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Rename several registers
     for i in range(1, 8):
         await dut_if.rename(dest_rf=0, dest_reg=i, rob_tag=i)
         model.rename(dest_rf=0, dest_reg=i, rob_tag=i)
@@ -472,21 +419,17 @@ async def test_flush_all_clears_everything(dut: Any) -> None:
         await dut_if.rename(dest_rf=1, dest_reg=i, rob_tag=i + 20)
         model.rename(dest_rf=1, dest_reg=i, rob_tag=i + 20)
 
-    # Save a checkpoint
     await dut_if.checkpoint_save(checkpoint_id=0, branch_tag=5)
     model.checkpoint_save(checkpoint_id=0, branch_tag=5, ras_tos=0, ras_valid_count=0)
 
-    # Verify some are renamed
     dut_if.set_int_src1(5, 0)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
     assert result.renamed, "x5 should be renamed before flush"
 
-    # Flush all
     await dut_if.flush_all()
     model.flush_all()
 
-    # Verify all INT entries cleared
     for addr in [1, 5, 7, 31]:
         dut_if.set_int_src1(addr, addr * 10)
         await RisingEdge(dut_if.clock)
@@ -495,7 +438,6 @@ async def test_flush_all_clears_everything(dut: Any) -> None:
         check_lookup(result, expected, f"INT x{addr} after flush")
         assert not result.renamed, f"x{addr} should not be renamed after flush"
 
-    # Verify all FP entries cleared
     for addr in [0, 1, 3]:
         dut_if.set_fp_src1(addr, addr * 10)
         await RisingEdge(dut_if.clock)
@@ -504,7 +446,6 @@ async def test_flush_all_clears_everything(dut: Any) -> None:
         check_lookup(result, expected, f"FP f{addr} after flush")
         assert not result.renamed, f"f{addr} should not be renamed after flush"
 
-    # All checkpoints should be free
     assert dut_if.checkpoint_available, "Checkpoint should be available after flush"
     assert dut_if.checkpoint_alloc_id == 0, "First free checkpoint should be 0"
 
@@ -513,26 +454,22 @@ async def test_flush_all_clears_everything(dut: Any) -> None:
 
 @cocotb.test()
 async def test_fp_commit_clears_entry(dut: Any) -> None:
-    """Test that FP commit clears the correct FP RAT entry."""
+    """FP commit clears a matching FP RAT entry."""
     cocotb.log.info("=== Test: FP Commit Clears Entry ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Rename f10 -> ROB[12]
     await dut_if.rename(dest_rf=1, dest_reg=10, rob_tag=12)
     model.rename(dest_rf=1, dest_reg=10, rob_tag=12)
 
-    # Verify renamed
     dut_if.set_fp_src1(10, 0x1234)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_fp_src1()
     assert result.renamed, "f10 should be renamed"
 
-    # Commit FP with matching tag
     await dut_if.commit(tag=12, dest_rf=1, dest_reg=10)
     model.commit(dest_rf=1, dest_reg=10, tag=12)
 
-    # Verify cleared
     dut_if.set_fp_src1(10, 0x1234)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_fp_src1()
@@ -545,20 +482,17 @@ async def test_fp_commit_clears_entry(dut: Any) -> None:
 
 @cocotb.test()
 async def test_commit_no_dest_valid(dut: Any) -> None:
-    """Test that commit with dest_valid=False does not clear any entry."""
+    """Commit with dest_valid=False preserves the targeted mapping."""
     cocotb.log.info("=== Test: Commit No Dest Valid ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Rename x5 -> ROB[3]
     await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=3)
     model.rename(dest_rf=0, dest_reg=5, rob_tag=3)
 
-    # Commit with dest_valid=False (like a store commit)
     await dut_if.commit(tag=3, dest_rf=0, dest_reg=5, dest_valid=False)
-    # Model: no commit action since dest_valid=False
+    # No model commit: dest_valid is false.
 
-    # x5 should still be renamed
     dut_if.set_int_src1(5, 0)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
@@ -575,39 +509,31 @@ async def test_commit_no_dest_valid(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_save_restore(dut: Any) -> None:
-    """Test checkpoint save and restore round-trip.
-
-    Saves state, modifies RAT, restores, verifies original state.
-    """
+    """Restore saved mappings after overwriting and adding rename entries."""
     cocotb.log.info("=== Test: Checkpoint Save and Restore ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Rename x5 -> ROB[3], x10 -> ROB[7]
     await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=3)
     model.rename(dest_rf=0, dest_reg=5, rob_tag=3)
     await dut_if.rename(dest_rf=0, dest_reg=10, rob_tag=7)
     model.rename(dest_rf=0, dest_reg=10, rob_tag=7)
 
-    # Save checkpoint 0
     await dut_if.checkpoint_save(
         checkpoint_id=0, branch_tag=10, ras_tos=2, ras_valid_count=5
     )
     model.checkpoint_save(checkpoint_id=0, branch_tag=10, ras_tos=2, ras_valid_count=5)
 
-    # Modify RAT further (post-checkpoint renames)
     await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=20)
     model.rename(dest_rf=0, dest_reg=5, rob_tag=20)
     await dut_if.rename(dest_rf=0, dest_reg=15, rob_tag=25)
     model.rename(dest_rf=0, dest_reg=15, rob_tag=25)
 
-    # Verify post-checkpoint state
     dut_if.set_int_src1(5, 0)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
     assert result.tag == 20, "x5 tag should be 20 (post-checkpoint rename)"
 
-    # Restore checkpoint 0
     await FallingEdge(dut_if.clock)
     dut_if.drive_checkpoint_restore(0)
     await RisingEdge(dut_if.clock)
@@ -616,7 +542,6 @@ async def test_checkpoint_save_restore(dut: Any) -> None:
 
     model.checkpoint_restore(0)
 
-    # Verify restored state: x5 should have tag 3 (pre-checkpoint value)
     dut_if.set_int_src1(5, 0x42)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
@@ -624,7 +549,6 @@ async def test_checkpoint_save_restore(dut: Any) -> None:
     check_lookup(result, expected, "INT x5 after restore")
     assert result.tag == 3, f"x5 tag should be 3 after restore, got {result.tag}"
 
-    # x10 should still have tag 7 (was in checkpoint)
     dut_if.set_int_src2(10, 0)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src2()
@@ -632,7 +556,6 @@ async def test_checkpoint_save_restore(dut: Any) -> None:
     check_lookup(result, expected, "INT x10 after restore")
     assert result.tag == 7, f"x10 tag should be 7 after restore, got {result.tag}"
 
-    # x15 was renamed after the checkpoint, so the restore clears it
     dut_if.set_int_src1(15, 0)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
@@ -645,12 +568,11 @@ async def test_checkpoint_save_restore(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_restore_ras_state(dut: Any) -> None:
-    """Test that a checkpoint captures and restores RAS state."""
+    """A checkpoint restores the RAS pointer, valid count, and top entry."""
     cocotb.log.info("=== Test: Checkpoint Restore RAS State ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Save checkpoint with specific RAS state
     ras_tos = 5
     ras_valid_count = 7
     ras_top = 0xFEDC_BA98_7654_3210
@@ -669,7 +591,6 @@ async def test_checkpoint_restore_ras_state(dut: Any) -> None:
         ras_top=ras_top,
     )
 
-    # Restore and check RAS state
     await FallingEdge(dut_if.clock)
     dut_if.drive_checkpoint_restore(1)
     await RisingEdge(dut_if.clock)
@@ -695,27 +616,23 @@ async def test_checkpoint_restore_ras_state(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_free(dut: Any) -> None:
-    """Test that freeing a checkpoint makes it available again."""
+    """Freeing a checkpoint makes its slot available again."""
     cocotb.log.info("=== Test: Checkpoint Free ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate checkpoint 0
     await dut_if.checkpoint_save(checkpoint_id=0, branch_tag=5)
     model.checkpoint_save(checkpoint_id=0, branch_tag=5, ras_tos=0, ras_valid_count=0)
 
-    # Checkpoint 0 should now be in use; next free should be 1
     await RisingEdge(dut_if.clock)
     assert dut_if.checkpoint_available, (
         "Checkpoint should still be available (1-7 free)"
     )
     assert dut_if.checkpoint_alloc_id == 1, "Next free should be 1"
 
-    # Free checkpoint 0
     await dut_if.checkpoint_free(0)
     model.checkpoint_free(0)
 
-    # Checkpoint 0 should be free again
     await RisingEdge(dut_if.clock)
     assert dut_if.checkpoint_available, "Checkpoint should be available after free"
     assert dut_if.checkpoint_alloc_id == 0, "Next free should be 0 again"
@@ -725,35 +642,30 @@ async def test_checkpoint_free(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_availability(dut: Any) -> None:
-    """Test checkpoint availability priority encoder."""
+    """Checkpoint allocation selects the lowest free slot."""
     cocotb.log.info("=== Test: Checkpoint Availability ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Initially all free, alloc_id = 0
     assert dut_if.checkpoint_available
     assert dut_if.checkpoint_alloc_id == 0
 
-    # Allocate 0
     await dut_if.checkpoint_save(checkpoint_id=0, branch_tag=1)
     model.checkpoint_save(0, 1, 0, 0)
     await RisingEdge(dut_if.clock)
     assert dut_if.checkpoint_alloc_id == 1, "Next free should be 1"
 
-    # Allocate 1
     await dut_if.checkpoint_save(checkpoint_id=1, branch_tag=2)
     model.checkpoint_save(1, 2, 0, 0)
     await RisingEdge(dut_if.clock)
     assert dut_if.checkpoint_alloc_id == 2, "Next free should be 2"
 
-    # Free 0, allocate 2
     await dut_if.checkpoint_free(0)
     model.checkpoint_free(0)
     await dut_if.checkpoint_save(checkpoint_id=2, branch_tag=3)
     model.checkpoint_save(2, 3, 0, 0)
 
     await RisingEdge(dut_if.clock)
-    # 0 is free, 1 and 2 are in use
     assert dut_if.checkpoint_alloc_id == 0, "Next free should be 0 (freed earlier)"
 
     cocotb.log.info("=== Test Passed ===")
@@ -761,12 +673,11 @@ async def test_checkpoint_availability(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_exhaustion(dut: Any) -> None:
-    """Test that all checkpoint slots can be allocated (exhaustion)."""
+    """Exhaust the checkpoints, then free a slot and check availability."""
     cocotb.log.info("=== Test: Checkpoint Exhaustion ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate all checkpoint slots
     for i in range(NUM_CHECKPOINTS):
         await dut_if.checkpoint_save(checkpoint_id=i, branch_tag=i + 10)
         model.checkpoint_save(i, i + 10, 0, 0)
@@ -777,7 +688,6 @@ async def test_checkpoint_exhaustion(dut: Any) -> None:
     avail, _ = model.checkpoint_available()
     assert not avail, "Model should also show no checkpoints available"
 
-    # Free one and verify availability returns
     await dut_if.checkpoint_free(2)
     model.checkpoint_free(2)
     await RisingEdge(dut_if.clock)
@@ -789,24 +699,18 @@ async def test_checkpoint_exhaustion(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_restore_undoes_renames(dut: Any) -> None:
-    """Test that checkpoint restore fully reverts to pre-checkpoint state.
-
-    Registers renamed after the checkpoint are cleared by the restore.
-    """
+    """Restore keeps a saved mapping and clears entries renamed after save."""
     cocotb.log.info("=== Test: Checkpoint Restore Undoes Renames ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Initial state: x1 -> ROB[1]
     await dut_if.rename(dest_rf=0, dest_reg=1, rob_tag=1)
     model.rename(0, 1, 1)
 
-    # Checkpoint 0 (captures x1 -> ROB[1], everything else clear).  The
-    # branch tag must be younger than the captured producers.
+    # The checkpoint branch must be younger than the saved producers.
     await dut_if.checkpoint_save(checkpoint_id=0, branch_tag=5)
     model.checkpoint_save(0, 5, 0, 0)
 
-    # Post-checkpoint: rename x2->ROB[2], x3->ROB[3], f5->ROB[4]
     await dut_if.rename(dest_rf=0, dest_reg=2, rob_tag=2)
     model.rename(0, 2, 2)
     await dut_if.rename(dest_rf=0, dest_reg=3, rob_tag=3)
@@ -814,7 +718,6 @@ async def test_checkpoint_restore_undoes_renames(dut: Any) -> None:
     await dut_if.rename(dest_rf=1, dest_reg=5, rob_tag=4)
     model.rename(1, 5, 4)
 
-    # Verify post-checkpoint state
     dut_if.set_int_src1(2, 0)
     await RisingEdge(dut_if.clock)
     assert dut_if.read_int_src1().renamed, "x2 should be renamed"
@@ -823,7 +726,6 @@ async def test_checkpoint_restore_undoes_renames(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     assert dut_if.read_fp_src1().renamed, "f5 should be renamed"
 
-    # Restore checkpoint 0
     await FallingEdge(dut_if.clock)
     dut_if.drive_checkpoint_restore(0)
     await RisingEdge(dut_if.clock)
@@ -831,14 +733,12 @@ async def test_checkpoint_restore_undoes_renames(dut: Any) -> None:
     dut_if.clear_checkpoint_restore()
     model.checkpoint_restore(0)
 
-    # x1 should still be renamed (was in checkpoint)
     dut_if.set_int_src1(1, 0)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
     assert result.renamed, "x1 should still be renamed after restore"
     assert result.tag == 1
 
-    # x2, x3 were renamed after the checkpoint, so they are cleared
     dut_if.set_int_src1(2, 0)
     await RisingEdge(dut_if.clock)
     assert not dut_if.read_int_src1().renamed, "x2 should not be renamed after restore"
@@ -847,7 +747,6 @@ async def test_checkpoint_restore_undoes_renames(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     assert not dut_if.read_int_src1().renamed, "x3 should not be renamed after restore"
 
-    # f5 was renamed after the checkpoint, so it is cleared
     dut_if.set_fp_src1(5, 0)
     await RisingEdge(dut_if.clock)
     assert not dut_if.read_fp_src1().renamed, "f5 should not be renamed after restore"
@@ -857,7 +756,7 @@ async def test_checkpoint_restore_undoes_renames(dut: Any) -> None:
 
 @cocotb.test()
 async def test_multiple_checkpoint_round_trips(dut: Any) -> None:
-    """Test multiple checkpoint save/restore sequences."""
+    """Restore empty and populated snapshots in successive round trips."""
     cocotb.log.info("=== Test: Multiple Checkpoint Round Trips ===")
 
     dut_if, model = await setup_test(dut)
@@ -884,7 +783,6 @@ async def test_multiple_checkpoint_round_trips(dut: Any) -> None:
         "x1 should not be renamed after first restore"
     )
 
-    # Free checkpoint 0
     await dut_if.checkpoint_free(0)
     model.checkpoint_free(0)
 
@@ -909,7 +807,6 @@ async def test_multiple_checkpoint_round_trips(dut: Any) -> None:
     dut_if.clear_checkpoint_restore()
     model.checkpoint_restore(1)
 
-    # x5 should have tag 15 (checkpoint value, not 20)
     dut_if.set_int_src1(5, 0)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
@@ -917,7 +814,6 @@ async def test_multiple_checkpoint_round_trips(dut: Any) -> None:
         f"x5 should have tag 15, got {result.tag}"
     )
 
-    # f0 was renamed after the checkpoint, so it is cleared
     dut_if.set_fp_src1(0, 0)
     await RisingEdge(dut_if.clock)
     assert not dut_if.read_fp_src1().renamed, "f0 should not be renamed after restore"
@@ -927,12 +823,11 @@ async def test_multiple_checkpoint_round_trips(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_with_fp_state(dut: Any) -> None:
-    """Test that a checkpoint captures and restores FP RAT state."""
+    """A checkpoint restores FP mappings after further renames."""
     cocotb.log.info("=== Test: Checkpoint with FP State ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Rename several FP registers
     await dut_if.rename(dest_rf=1, dest_reg=0, rob_tag=1)
     model.rename(1, 0, 1)
     await dut_if.rename(dest_rf=1, dest_reg=10, rob_tag=2)
@@ -940,17 +835,14 @@ async def test_checkpoint_with_fp_state(dut: Any) -> None:
     await dut_if.rename(dest_rf=1, dest_reg=31, rob_tag=3)
     model.rename(1, 31, 3)
 
-    # Checkpoint
     await dut_if.checkpoint_save(checkpoint_id=2, branch_tag=5)
     model.checkpoint_save(2, 5, 0, 0)
 
-    # Modify FP RAT
     await dut_if.rename(dest_rf=1, dest_reg=0, rob_tag=20)
     model.rename(1, 0, 20)
     await dut_if.rename(dest_rf=1, dest_reg=10, rob_tag=21)
     model.rename(1, 10, 21)
 
-    # Restore
     await FallingEdge(dut_if.clock)
     dut_if.drive_checkpoint_restore(2)
     await RisingEdge(dut_if.clock)
@@ -958,7 +850,6 @@ async def test_checkpoint_with_fp_state(dut: Any) -> None:
     dut_if.clear_checkpoint_restore()
     model.checkpoint_restore(2)
 
-    # Verify FP state restored
     for reg, expected_tag in [(0, 1), (10, 2), (31, 3)]:
         dut_if.set_fp_src1(reg, 0)
         await RisingEdge(dut_if.clock)
@@ -972,23 +863,20 @@ async def test_checkpoint_with_fp_state(dut: Any) -> None:
 
 @cocotb.test()
 async def test_flush_all_after_checkpoints(dut: Any) -> None:
-    """Test flush_all clears checkpoints too."""
+    """A full flush restores availability after checkpoint exhaustion."""
     cocotb.log.info("=== Test: Flush All After Checkpoints ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate all checkpoint slots
     for i in range(NUM_CHECKPOINTS):
         await dut_if.checkpoint_save(checkpoint_id=i, branch_tag=i)
         model.checkpoint_save(i, i, 0, 0)
 
     assert not dut_if.checkpoint_available, "Should be exhausted"
 
-    # Flush
     await dut_if.flush_all()
     model.flush_all()
 
-    # All checkpoints should be free
     assert dut_if.checkpoint_available, "All checkpoints should be free after flush"
     assert dut_if.checkpoint_alloc_id == 0  # type: ignore[unreachable]
 
@@ -1002,12 +890,11 @@ async def test_flush_all_after_checkpoints(dut: Any) -> None:
 
 @cocotb.test()
 async def test_flush_all_priority_over_commit_save_free(dut: Any) -> None:
-    """Test flush_all dominates commit/checkpoint save/checkpoint free in same cycle."""
+    """Full flush wins over commit, checkpoint save, and free in the same cycle."""
     cocotb.log.info("=== Test: Flush All Priority Over Commit/Save/Free ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Seed state: renamed INT entries and two active checkpoints.
     await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=3)
     model.rename(0, 5, 3)
     await dut_if.rename(dest_rf=0, dest_reg=6, rob_tag=4)
@@ -1017,11 +904,6 @@ async def test_flush_all_priority_over_commit_save_free(dut: Any) -> None:
     await dut_if.checkpoint_save(checkpoint_id=1, branch_tag=11)
     model.checkpoint_save(1, 11, 0, 0)
 
-    # Collision cycle:
-    # - commit would clear x5
-    # - save would allocate checkpoint 2
-    # - free would release checkpoint 0
-    # - flush_all should dominate and clear everything regardless
     await FallingEdge(dut_if.clock)
     dut_if.drive_commit(tag=3, dest_rf=0, dest_reg=5)
     dut_if.drive_checkpoint_save(
@@ -1037,7 +919,6 @@ async def test_flush_all_priority_over_commit_save_free(dut: Any) -> None:
     dut_if.clear_flush_all()
     model.flush_all()
 
-    # All renamed state must be gone.
     for reg in [5, 6]:
         dut_if.set_int_src1(reg, 0x1234)
         await RisingEdge(dut_if.clock)
@@ -1046,7 +927,6 @@ async def test_flush_all_priority_over_commit_save_free(dut: Any) -> None:
         check_lookup(result, expected, f"INT x{reg} after flush collision")
         assert not result.renamed, f"x{reg} should not be renamed after flush collision"
 
-    # Checkpoint save/free in collision cycle must not matter: flush leaves all free.
     assert dut_if.checkpoint_available, (
         "Checkpoint should be available after flush collision"
     )
@@ -1059,27 +939,22 @@ async def test_flush_all_priority_over_commit_save_free(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_restore_priority_over_commit(dut: Any) -> None:
-    """Test checkpoint_restore dominates same-cycle commit updates."""
+    """Restore a saved mapping while committing its tag in the same cycle."""
     cocotb.log.info("=== Test: Checkpoint Restore Priority Over Commit ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Pre-checkpoint mapping: x5 -> ROB[1]
     await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=1)
     model.rename(0, 5, 1)
 
-    # Save this state.
     await dut_if.checkpoint_save(checkpoint_id=0, branch_tag=20)
     model.checkpoint_save(0, 20, 0, 0)
 
-    # Post-checkpoint mapping: x5 -> ROB[2]
     await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=2)
     model.rename(0, 5, 2)
 
-    # Collision cycle:
-    # - restore should bring x5 back to tag 1
-    # - commit(tag=1) would clear x5 if commit logic ran this cycle
-    # Expected: restore wins, x5 remains renamed tag 1.
+    # Commit tag 1 differs from the active tag 2 and cannot clear it. Restore
+    # reinstates tag 1; this does not test a clear matching the active mapping.
     await FallingEdge(dut_if.clock)
     dut_if.drive_checkpoint_restore(0)
     dut_if.drive_commit(tag=1, dest_rf=0, dest_reg=5)
@@ -1104,15 +979,12 @@ async def test_checkpoint_restore_priority_over_commit(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_save_free_same_cycle_precedence(dut: Any) -> None:
-    """Test same-cycle checkpoint save and free.
-
-    On the same slot the save wins; on different slots both take effect.
-    """
+    """Save wins over a same-slot free; different-slot updates both take effect."""
     cocotb.log.info("=== Test: Checkpoint Save/Free Same-Cycle Precedence ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Same slot: save+free for slot 0 in same cycle -> save wins in RTL.
+    # Save wins over a same-slot free.
     await FallingEdge(dut_if.clock)
     dut_if.drive_checkpoint_save(checkpoint_id=0, branch_tag=1)
     dut_if.drive_checkpoint_free(checkpoint_id=0)
@@ -1130,8 +1002,7 @@ async def test_checkpoint_save_free_same_cycle_precedence(dut: Any) -> None:
         "Slot 0 should remain allocated when save+free target the same slot"
     )
 
-    # Different slots: save slot 1 and free slot 0 in same cycle.
-    # Slot 0 is already valid from the previous save+free collision.
+    # Different slots update independently.
     await FallingEdge(dut_if.clock)
     dut_if.drive_checkpoint_save(checkpoint_id=1, branch_tag=3)
     dut_if.drive_checkpoint_free(checkpoint_id=0)
@@ -1142,7 +1013,6 @@ async def test_checkpoint_save_free_same_cycle_precedence(dut: Any) -> None:
     model.checkpoint_free(0)
     model.checkpoint_save(1, 3, 0, 0)
 
-    # Slot 0 should now be free, slot 1 should be in use, so next free is 0.
     assert dut_if.checkpoint_available, (
         "Checkpoint should be available after save/free on different slots"
     )
@@ -1155,12 +1025,7 @@ async def test_checkpoint_save_free_same_cycle_precedence(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_free_second_port(dut: Any) -> None:
-    """The second free port releases a checkpoint alone or beside the first.
-
-    Slot-2 branch retirement frees its checkpoint through i_checkpoint_free_2,
-    possibly in the same cycle as a slot-1 free. A save to the same slot in
-    that cycle still wins.
-    """
+    """Port 2 frees alone or with port 1; save wins over a same-slot free."""
     cocotb.log.info("=== Test: Checkpoint Free Second Port ===")
 
     dut_if, model = await setup_test(dut)
@@ -1234,29 +1099,22 @@ async def test_checkpoint_free_second_port(dut: Any) -> None:
 
 @cocotb.test()
 async def test_int_fp_independence(dut: Any) -> None:
-    """Test that INT and FP tables are independent.
-
-    Renaming x5 should not affect f5, and vice versa.
-    """
+    """INT and FP mappings are independent at the same register index."""
     cocotb.log.info("=== Test: INT/FP Independence ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Rename x5 -> ROB[3]
     await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=3)
     model.rename(0, 5, 3)
 
-    # f5 is untouched by the x5 rename
     dut_if.set_fp_src1(5, 0xABCD)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_fp_src1()
     assert not result.renamed, "f5 should not be affected by x5 rename"
 
-    # Rename f5 -> ROB[7]
     await dut_if.rename(dest_rf=1, dest_reg=5, rob_tag=7)
     model.rename(1, 5, 7)
 
-    # Both should be renamed with different tags
     dut_if.set_int_src1(5, 0)
     dut_if.set_fp_src1(5, 0)
     await RisingEdge(dut_if.clock)
@@ -1267,7 +1125,6 @@ async def test_int_fp_independence(dut: Any) -> None:
     assert int_result.renamed and int_result.tag == 3, "x5 should have tag 3"
     assert fp_result.renamed and fp_result.tag == 7, "f5 should have tag 7"
 
-    # Commit x5 (INT) should not affect f5 (FP)
     await dut_if.commit(tag=3, dest_rf=0, dest_reg=5)
     model.commit(0, 5, 3)
 
@@ -1291,11 +1148,7 @@ async def test_int_fp_independence(dut: Any) -> None:
 
 @cocotb.test()
 async def test_regfile_value_passthrough(dut: Any) -> None:
-    """Test that lookup results pass the regfile data through.
-
-    The value field carries the regfile data whether or not the register is
-    renamed. For x0 the value is always 0.
-    """
+    """Regfile data passes through whether or not a source is renamed; x0 reads 0."""
     cocotb.log.info("=== Test: Regfile Value Passthrough ===")
 
     dut_if, model = await setup_test(dut)
@@ -1315,7 +1168,6 @@ async def test_regfile_value_passthrough(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
     assert result.renamed
-    # Value should still be the regfile data (zero-extended to FLEN)
     assert result.value == 0xCAFEBABE, f"Value mismatch: {result.value:#x}"
 
     # Test FP value passthrough
@@ -1336,7 +1188,7 @@ async def test_regfile_value_passthrough(dut: Any) -> None:
 
 @cocotb.test()
 async def test_slot2_source_lookups(dut: Any) -> None:
-    """Test slot-2 INT/FP lookup ports."""
+    """Check slot-2 lookups with renamed, unrenamed, and x0 sources."""
     cocotb.log.info("=== Test: Slot-2 Source Lookups ===")
 
     dut_if, model = await setup_test(dut)
@@ -1384,7 +1236,7 @@ async def test_slot2_source_lookups(dut: Any) -> None:
 
 @cocotb.test()
 async def test_slot2_rename_and_lookup(dut: Any) -> None:
-    """Test slot-2-only rename writes INT and FP RAT entries."""
+    """Slot-2 renames write INT and FP entries without a slot-1 rename."""
     cocotb.log.info("=== Test: Slot-2 Rename and Lookup ===")
 
     dut_if, model = await setup_test(dut)
@@ -1414,7 +1266,7 @@ async def test_slot2_rename_and_lookup(dut: Any) -> None:
 
 @cocotb.test()
 async def test_dual_rename_slot2_wins_same_register(dut: Any) -> None:
-    """Same-cycle slot1/slot2 rename collision leaves slot 2 as newest."""
+    """Slot 2 wins rename collisions; INT/FP writes at one index are independent."""
     cocotb.log.info("=== Test: Dual Rename Slot 2 Wins Same Register ===")
 
     dut_if, model = await setup_test(dut)
@@ -1460,7 +1312,7 @@ async def test_dual_rename_slot2_wins_same_register(dut: Any) -> None:
 
 @cocotb.test()
 async def test_slot2_commit_clears_entry(dut: Any) -> None:
-    """Test widen-commit slot 2 clears a matching RAT entry."""
+    """Slot-2 commit clears a matching RAT entry."""
     cocotb.log.info("=== Test: Slot-2 Commit Clears Entry ===")
 
     dut_if, model = await setup_test(dut)
@@ -1644,10 +1496,7 @@ async def test_checkpoint_bulk_free_mask(dut: Any) -> None:
 
 @cocotb.test()
 async def test_random_rename_commit_sequence(dut: Any) -> None:
-    """Test random interleaving of renames and commits.
-
-    Randomly renames and commits registers, verifying model matches DUT.
-    """
+    """Compare final RAT state after random renames and commits."""
     cocotb.log.info("=== Test: Random Rename/Commit Sequence ===")
     seed = log_random_seed()
 
@@ -1717,7 +1566,7 @@ async def test_random_rename_commit_sequence(dut: Any) -> None:
 
 @cocotb.test()
 async def test_random_checkpoint_operations(dut: Any) -> None:
-    """Test random checkpoint save/restore/free with rename operations."""
+    """Compare RAS restores and final RAT/checkpoint state after random operations."""
     cocotb.log.info("=== Test: Random Checkpoint Operations ===")
     seed = log_random_seed()
 
@@ -1767,7 +1616,6 @@ async def test_random_checkpoint_operations(dut: Any) -> None:
             dut_if.clear_commit()
 
         elif action == "checkpoint_save":
-            # Find a free slot
             avail, slot_id = model.checkpoint_available()
             if avail:
                 branch_tag = random.randint(0, 31)
@@ -1792,7 +1640,6 @@ async def test_random_checkpoint_operations(dut: Any) -> None:
                 pass  # Skip if all checkpoints in use
 
         elif action == "checkpoint_free":
-            # Find a valid slot to free
             valid_slots = [
                 i for i in range(NUM_CHECKPOINTS) if model.checkpoints[i].valid
             ]
@@ -1805,7 +1652,6 @@ async def test_random_checkpoint_operations(dut: Any) -> None:
                 dut_if.clear_checkpoint_free()
 
         elif action == "checkpoint_restore":
-            # Find a valid slot to restore
             valid_slots = [
                 i for i in range(NUM_CHECKPOINTS) if model.checkpoints[i].valid
             ]
@@ -1859,7 +1705,7 @@ async def test_random_checkpoint_operations(dut: Any) -> None:
 
 @cocotb.test()
 async def test_random_mixed_stress(dut: Any) -> None:
-    """Stress test with all operation types including flush_all."""
+    """Compare final RAT state with random slot-1 activity, checkpoints, and flushes."""
     cocotb.log.info("=== Test: Random Mixed Stress ===")
     seed = log_random_seed()
 
@@ -1871,7 +1717,6 @@ async def test_random_mixed_stress(dut: Any) -> None:
         r = random.random()
 
         if r < 0.30:
-            # Rename INT
             reg = random.randint(1, 31)
             tag = random.randint(0, 31)
             dut_if.drive_rename(dest_rf=0, dest_reg=reg, rob_tag=tag)
@@ -1881,7 +1726,6 @@ async def test_random_mixed_stress(dut: Any) -> None:
             dut_if.clear_rename()
 
         elif r < 0.45:
-            # Rename FP
             reg = random.randint(0, 31)
             tag = random.randint(0, 31)
             dut_if.drive_rename(dest_rf=1, dest_reg=reg, rob_tag=tag)
@@ -1891,7 +1735,6 @@ async def test_random_mixed_stress(dut: Any) -> None:
             dut_if.clear_rename()
 
         elif r < 0.65:
-            # Commit
             rf = random.randint(0, 1)
             reg = random.randint(0 if rf == 1 else 1, 31)
             tag = random.randint(0, 31)
@@ -1902,7 +1745,6 @@ async def test_random_mixed_stress(dut: Any) -> None:
             dut_if.clear_commit()
 
         elif r < 0.75:
-            # Checkpoint save
             avail, slot_id = model.checkpoint_available()
             if avail:
                 bt = random.randint(0, 31)
@@ -1921,7 +1763,6 @@ async def test_random_mixed_stress(dut: Any) -> None:
                 dut_if.clear_checkpoint_save()
 
         elif r < 0.82:
-            # Checkpoint free
             valid_slots = [
                 i for i in range(NUM_CHECKPOINTS) if model.checkpoints[i].valid
             ]
@@ -1934,7 +1775,6 @@ async def test_random_mixed_stress(dut: Any) -> None:
                 dut_if.clear_checkpoint_free()
 
         elif r < 0.92:
-            # Checkpoint restore
             valid_slots = [
                 i for i in range(NUM_CHECKPOINTS) if model.checkpoints[i].valid
             ]
@@ -1952,7 +1792,6 @@ async def test_random_mixed_stress(dut: Any) -> None:
                 dut_if.clear_checkpoint_restore()
 
         else:
-            # Flush all (~8% probability)
             dut_if.drive_flush_all()
             model.flush_all()
             await RisingEdge(dut_if.clock)

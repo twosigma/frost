@@ -12,19 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the tagged N:1 line-port arbiter (line_port_arbiter_test_harness).
+"""Test the tagged N:1 line-port arbiter with a 2:1 harness.
 
-The harness drains a 2:1 arbiter into the same backside the cache hierarchy
-sits on (line_port_axi_bridge -> axi_behavioral_memory); the bench drives
-both upstream ports itself, so it can time contention to the cycle. Port 0
-has priority, up to the starvation bound (STARVATION_LIMIT). Checked:
-per-port data integrity and id echo, response isolation (one pulse per
-transaction, never cross-routed), priority on simultaneous requests, the
-absence of a grant lock (a later port-0 request fires while port 1's
-transaction is still in flight), several tagged transactions in flight per
-port with responses collected by id in whatever order the memory completes
-them, random mixed traffic on both ports, and the starvation bound under
-downstream backpressure.
+Both upstream ports feed line_port_axi_bridge -> axi_behavioral_memory.
+Port 0 has priority up to STARVATION_LIMIT competing grants. The drivers
+control contention cycle by cycle and match responses by id.
 """
 
 import random
@@ -111,14 +103,11 @@ async def _fire_request(
     wdata: int = 0,
     wstrb: int = 0,
 ) -> None:
-    """Present one request on a port and return once it has fired.
+    """Present a request and return after acceptance with valid low.
 
-    Inputs are driven at falling edges (the cache-bench discipline). Ready is
-    sampled in the ReadOnly phase of the same timestep: port 1's ready is
-    combinational on port 0's valid, which another coroutine may drive at the
-    very same falling edge, so the sample must come after all deltas settle.
-    That settled value is exactly what the next rising edge fires on. On
-    return the bus is in the cycle after the fire with valid dropped.
+    Drive at falling edges and sample ready in ReadOnly after all deltas.
+    Port 1's ready depends on port 0's valid, which another coroutine may
+    drive at the same edge. The settled value applies to the next rising edge.
     """
     req_valid = getattr(dut, f"i_up{port}_req_valid")
     req_ready = getattr(dut, f"o_up{port}_req_ready")
@@ -139,7 +128,7 @@ async def _fire_request(
     else:
         raise AssertionError(f"port {port}: request never accepted (addr=0x{addr:08x})")
 
-    await FallingEdge(dut.i_clk)  # now in the cycle after the fire
+    await FallingEdge(dut.i_clk)  # Cycle after acceptance
     req_valid.value = 0
 
 
@@ -373,7 +362,7 @@ async def test_random_interleaved_traffic(dut: Any) -> None:
     """Two masters hammer the arbiter concurrently with random traffic.
 
     Each port works a disjoint window against its own reference model
-    (cross-routed data or responses surface as mismatches/timeouts), with
+    (cross-routing causes mismatches or timeouts), with
     exactly one response pulse per transaction enforced by the collectors.
     """
     await _setup(dut)

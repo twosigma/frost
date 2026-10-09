@@ -12,11 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Tests for rs_issue2_selector, the balanced-tree selector for INT_RS port 1.
-
-The DUT is the standalone 16-entry selector, compared against a serial
-reference.
-"""
+"""Compare the 16-entry INT_RS port-1 tree selector with a serial reference."""
 
 import random
 from typing import Any
@@ -82,10 +78,8 @@ async def test_balanced_issue2_matches_serial_reference(dut: Any) -> None:
     for ready, branch_class in directed:
         await check_vector(dut, ready, branch_class)
 
-    # Enumerate the three states (not ready, ready non-branch, ready branch)
-    # of each of the low eight entries. That covers every merge case in one
-    # half of this 16-entry tree; the rs_issue2_selector formal target proves
-    # every full-width input.
+    # Enumerate not-ready, ready non-branch, and ready branch states for each
+    # low-half entry to cover that half of the merge tree.
     for ternary_vector in range(3**8):
         ready = 0
         branch_class = 0

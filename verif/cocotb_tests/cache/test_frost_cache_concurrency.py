@@ -12,21 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Concurrency tests for the non-blocking frost_cache hierarchy.
+"""Test concurrent tagged transactions through frost_cache_test_harness.
 
-Same harness as test_frost_cache (frost_cache_test_harness), but the driver
-keeps several tagged transactions in flight per port and collects responses
-by id in whatever order the cache completes them. Checked: pipelined hits
-(one per cycle), hit-under-miss, miss-under-miss overlap at every level,
-early acknowledgement of write misses with merging into the pending fill,
-the read waiter, index conflicts, a fill of a line whose writeback is still
-pending, the downstream pick's progress bounds under a bench-paced downstream
-(a writeback against a fill stream that would otherwise starve it, and one
-writeback slot against a dirty-victim stream recycling the other), a delayed
-tag response racing a same-index fill install, a read racing an MSHR slot
-reallocated to another line, fence.i with pending misses, and random mixed
-traffic with same-line sequences checked against a reference model in
-acceptance order.
+Keep multiple requests in flight per port and collect responses by id.
+Check same-line traffic against the reference model in acceptance order.
 """
 
 import random
@@ -432,9 +421,8 @@ async def test_fill_waits_for_pending_writeback(dut: Any) -> None:
     model.write_line(x, seed, FULL)
     await _transaction(dut, "up", col, write=True, addr=x, wdata=seed, wstrb=FULL)
     await _settle(dut)
-    # Now: x dirty in L1D. Evict it with a write to its alias (x's writeback
-    # goes to a slot), and immediately re-read x: its fill must not overtake
-    # the writeback.
+    # Evict dirty x through its alias, then re-read x. Its fill must not
+    # overtake the writeback.
     w = _line_int(bytes([0x33] * 32))
     model.write_line(alias, w, FULL)
     ida, idb = _ids.take("up"), _ids.take("up")
@@ -443,7 +431,7 @@ async def test_fill_waits_for_pending_writeback(dut: Any) -> None:
     await col.wait_for(ida)
     _, got = await col.wait_for(idb)
     assert got == seed, f"fill overtook the writeback: 0x{got:064x}"
-    # The alias is dirty in L1D now; read it back too.
+    # Read back the dirty alias too.
     assert await _transaction(dut, "up", col, write=False, addr=alias) == w
     col.stop()
 
@@ -626,28 +614,17 @@ async def _release_downstream_once(dut: Any) -> tuple[bool, bool, int]:
 
 @cocotb.test()
 async def test_writeback_wins_within_bound_under_fill_stream(dut: Any) -> None:
-    """A writeback that fills keep beating is loaded within the pick's bound.
+    """A writeback fires within WB_STARVE_LIMIT + 1 fill acceptances of becoming pending.
 
-    The downstream request register takes a pending fill ahead of a pending
-    writeback. Under a level below that accepts slowly, fills that complete
-    and re-allocate between its acceptances keep a fill pending at every load
-    of the register, and a writeback would sit in its slot for as long as the
-    stream lasts, with the store, install, probe or fill waiting for its
-    acknowledgement (frost_cache.sv) waiting behind it. The cache bounds the
-    loss: after WbStarveLimit loads to fills, the next load is a writeback's.
+    The downstream pick normally prefers fills. WbStarveLimit bounds how
+    many register loads a writeback can lose before it gets a turn.
 
-    The bench builds the stream at the L2, whose downstream is the bridge: it
-    holds the bridge through the harness's i_down_hold, releasing one
-    acceptance every STARVE_GRANT_SPACING cycles, while four readers keep a
-    miss of a fresh line in flight on every miss slot, each re-issuing as
-    soon as its fill returns. The first read aliases a line dirty in the L2
-    (pushed down from the L1D first), so its fill evicts the line into a
-    writeback slot behind the fill the register holds. The writeback must
-    lose at least one acceptance, so the contention the bound exists for was
-    reached, and must fire within WB_STARVE_LIMIT + 1 fill acceptances of
-    becoming pending. Without the bound, the cache's tripwire stops the run
-    once the writeback has lost 32 loads; the bench's STARVE_GIVE_UP_FILLS is
-    the backstop. The lines then read back through the drained hierarchy.
+    Hold the bridge with i_down_hold and release one acceptance every
+    STARVE_GRANT_SPACING cycles. Four readers keep L2 fills pending; the
+    first evicts a dirty line into a writeback slot. Require the writeback
+    to lose at least one acceptance, then meet the bound. The cache's
+    32-load tripwire and STARVE_GIVE_UP_FILLS catch starvation. Read back
+    the data after the hierarchy drains.
     """
     await _setup(dut)
     col = _Collector(dut, "up")
@@ -728,29 +705,18 @@ async def test_writeback_wins_within_bound_under_fill_stream(dut: Any) -> None:
 
 @cocotb.test()
 async def test_writeback_slots_take_turns_under_dirty_victim_stream(dut: Any) -> None:
-    """A slot whose neighbour is recycled between writeback loads still gets its turn.
+    """A pending writeback slot gets a turn while another slot is recycled.
 
-    The fill bound alone says some writeback loads within four loads of the
-    register, not which: picked lowest-index-first, slot 1 would lose every
-    writeback load to slot 0 whenever the level below acknowledges slot 0 and
-    a parked dirty-victim miss reoccupies it before the next one. The pick
-    therefore rotates from the slot after the last one loaded, so a pending
-    slot is loaded within NUM_WB writeback loads, WB_SLOT_TURN_BOUND loads in
-    all.
+    The pick rotates after each writeback load, bounding a slot's wait by
+    NUM_WB writeback loads, or WB_SLOT_TURN_BOUND total register loads.
 
-    The bench builds the recycling at the L2, whose downstream is the bridge:
-    it dirties a run of lines there, holds the bridge, and reads their
-    aliases one at a time, each as a slot frees, so the first two fill both
-    slots and every later one takes slot 0 the moment its acknowledgement
-    (one memory latency) frees it, without parking in the L2's decision
-    stage where it would hold up the fills behind it; two readers of fresh
-    lines keep fills pending so that writeback loads are three loads apart,
-    time enough for the recycling. Slot 1's line must lose at least one
-    writeback load to slot 0, so the contention the rotation exists for was
-    reached, and must fire within WB_SLOT_TURN_BOUND + 1 acceptances of the
-    first release. Without the rotation, the cache's tripwire stops the run
-    once slot 1 has lost 32 loads; STARVE_GIVE_UP_FILLS is the backstop.
-    Every line then reads back through the drained hierarchy.
+    At the L2, gate dirty-victim reads on a free slot so they recycle slot 0
+    without blocking the decision stage. Two other readers keep fills
+    pending between writebacks. Slot 1 must lose at least one writeback
+    grant to slot 0, then fire within WB_SLOT_TURN_BOUND + 1 acceptances
+    of the first bridge release.
+    The cache's 32-load tripwire and STARVE_GIVE_UP_FILLS catch starvation.
+    Read every line back after the hierarchy drains.
     """
     await _setup(dut)
     col = _Collector(dut, "up")
@@ -838,19 +804,13 @@ async def test_writeback_slots_take_turns_under_dirty_victim_stream(dut: Any) ->
 
 @cocotb.test()
 async def test_l2_fill_tag_install_races_resident_lookup(dut: Any) -> None:
-    """A tag lookup spanning a same-index fill install retries and then hits.
+    """A tag lookup spanning a same-index fill install retries and hits.
 
-    Three reads of one cold line reach the shared level in a deterministic
-    order: the walker, launched two cycles ahead because its read first
-    probes the L1D (a miss there), allocates the line, one cached-side
-    request takes the MSHR's single waiter, and the other must wait until the
-    fill installs its tag. With a multi-cycle L2 tag RAM, that last request
-    can have an old tag response in flight across the MSHR tag write. It must
-    discard that response and read the tag again, not allocate a duplicate
-    miss from the stale tag contents.
-
-    The exact L2 event counts pin that path regardless of response latency:
-    the allocation and the waiter count as misses, and the retry as a hit.
+    Launch a walker read two cycles before I-side and D-side reads of the
+    same cold line. The walker allocates, one cached request takes the MSHR
+    waiter, and the other waits for installation. A tag response spanning
+    that install must be discarded and retried to avoid a duplicate miss.
+    Require two misses (allocation and waiter) and one hit (retry).
     """
     await _setup(dut)
     cols = {port: _Collector(dut, port) for port in ("up", "iup", "wup")}
@@ -912,21 +872,15 @@ async def test_l2_fill_tag_install_races_resident_lookup(dut: Any) -> None:
 
 @cocotb.test()
 async def test_stale_match_recycled_slot(dut: Any) -> None:
-    """Reads racing reallocated MSHR slots keep their own lines' data.
+    """A read must not attach to an MSHR reallocated to another line.
 
-    A request's slot matches are computed in stage A and carried into T,
-    where the slots' valid bits mask them. If a retired slot whose line
-    register still names the request's line is reallocated to another line
-    while the request waits, a stale match would attach the read as the new
-    line's waiter and serve it that line's data. T refreshes its matches
-    every held cycle, and p_secondary_targets_own_line flags a waiter or
-    merge on an MSHR fetching another line.
+    Stage A's matches pass into T, where valid bits mask them. T refreshes
+    matches while held; p_secondary_targets_own_line rejects a waiter or
+    merge targeting another line.
 
-    Each round leaves slot 3 retired with its line register naming X (prime
-    X through slot 3, evict X through slot 0), holds slots 0-2 busy with
-    cold misses, reallocates slot 3 to Y, and fires the read of X k cycles
-    behind Y, sweeping the offset. Every response must carry its own line's
-    data.
+    Retire slot 3 with its line register naming X, occupy slots 0-2, then
+    reallocate slot 3 to Y. Sweep the delay before a read of X and check
+    that each response contains its own line's data.
     """
     await _setup(dut)
     col = _Collector(dut, "up")

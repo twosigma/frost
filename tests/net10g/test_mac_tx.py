@@ -230,8 +230,8 @@ async def back_to_back_packets_exercise_both_buffers(dut: Any) -> None:
     bench = TxBench(dut, 0xB0FF)
     await bench.reset()
     expected = []
-    # Small packets fill both buffers faster than preamble/padding/FCS/IFG drain
-    # them, forcing backpressure even though the wire never pauses.
+    # Framing overhead makes small packets fill both buffers and force
+    # backpressure despite continuous wire output.
     for index in range(50):
         payload = bytes([index]) * 8
         expected.append(wire_frame(payload))

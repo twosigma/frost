@@ -12,13 +12,13 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for low_bram_fetch_presenter, the low-BRAM fetch request repeater.
+"""Test low_bram_fetch_presenter by driving registered IMEM response flags.
 
-The bench drives imem_predecode's registered response-ready and overlay-hit
-bits directly. It checks that an unready low request repeats exactly, that a
-ready response waits while publication is held, that a claimed slow response
-publishes only once, and that ready responses, high-tier traffic, retargets,
-and unresolved translations pass the live request through.
+Unready low-BRAM requests must repeat exactly. Publication holds retain ready
+slow responses (overlay responses stay valid, with the request pins following
+the live inputs), and a claimed slow response must publish only once.
+Retargets cancel repeats, and a request captured with its physical address
+unresolved is not repeated, so the live address can resolve.
 """
 
 from typing import Any
@@ -90,10 +90,8 @@ async def test_exact_repeat_and_live_bypass(dut: Any) -> None:
     await RisingEdge(dut.i_clk)
     dut.i_rst.value = 0
 
-    # A registered overlay hit proves the preceding request was in the overlay
-    # range, so the response is valid whatever the presenter's owner and
-    # PA-valid state. Using those flops would put them at the head of the
-    # fetch-valid -> PC path.
+    # A registered overlay hit identifies the preceding request, so response
+    # validity is independent of the live provider selection and PA validity.
     _drive_request(dut, 0x8000_0000, pa_valid=0, owner_low=0)
     dut.i_response_ready.value = 1
     dut.i_response_overlay_hit.value = 1
@@ -243,8 +241,8 @@ async def test_exact_repeat_and_live_bypass(dut: Any) -> None:
     await _settle()
     _check_presented(dut, unresolved_pc, resolved_pa)
 
-    # Cached high-tier traffic never owns the low BRAM, so an unready wrapped
-    # alias cannot delay a subsequent low request.
+    # Cached traffic does not use low BRAM. Its unready wrapped alias must
+    # not delay a subsequent low request.
     dut.i_response_ready.value = 1
     _drive_request(dut, 0x8000_1000, owner_low=0)
     await RisingEdge(dut.i_clk)
@@ -324,8 +322,8 @@ async def test_only_claimed_slow_identity_waits_for_live_change(dut: Any) -> Non
     _check_presented(dut, held_pc, changed_pa, faults=changed_faults)
     await RisingEdge(dut.i_clk)
 
-    # Changing ownership at the same VA/PA also ends the low request's
-    # identity. High-tier traffic can never publish through this presenter.
+    # Switching providers at the same VA and PA ends the low request.
+    # High-tier traffic must never publish through this presenter.
     _drive_request(
         dut,
         held_pc,

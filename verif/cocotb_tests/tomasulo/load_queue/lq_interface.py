@@ -12,12 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Load queue DUT interface.
-
-Packs lq_alloc_req_t, lq_addr_update_t and sq_forward_result_t, unpacks
-fu_complete_t, and wraps the per-signal drive/read helpers the load
-queue tests use.
-"""
+"""Load queue DUT access and packed request/response helpers."""
 
 from typing import Any
 
@@ -27,17 +22,16 @@ from .lq_model import FuComplete
 from ..fu_shims.fp_shim_interface import _parse_instr_op_enum
 from config import FLEN, INSTR_OP_WIDTH, MASK32, MASK64, MASK_XLEN, XLEN
 
-# A launched load at or above this address uses the cached tier (a cs_* slot);
-# one below it uses the fast tier (low BRAM or device). Matches the LQ's
-# CACHED_BASE default.
+# The response helper classifies addresses at or above CACHED_BASE as cached.
+# Tests must stay below the RTL's cached-window limit, 0xC000_0000; addresses
+# below CACHED_BASE use the fast tier. The base matches the RTL default.
 CACHED_BASE = 0x8000_0000
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
-# instr_op_e values for atomics, parsed from riscv_pkg.sv by name so adding or
-# removing an enum member cannot skew these ordinals.
+# Atomic instr_op_e values parsed by name from riscv_pkg.sv.
 _INSTR_OPS = _parse_instr_op_enum()
 OP_WIDTH = INSTR_OP_WIDTH
 LR_W = _INSTR_OPS["LR_W"]
@@ -94,7 +88,6 @@ def pack_lq_alloc(
     """Pack lq_alloc_req_t into bit vector (LSB-first matching SV packed struct)."""
     val = 0
     bit = 0
-    # Fields packed from LSB (last declared in SV) to MSB (first declared)
     val |= (amo_op & ((1 << OP_WIDTH) - 1)) << bit
     bit += OP_WIDTH
     val |= (1 if is_amo else 0) << bit
@@ -223,7 +216,6 @@ class LQInterface:
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
         self.dut.i_alloc.value = 0
-        # Second dispatch slot's allocation port.
         self.dut.i_alloc_2.value = 0
         self.dut.i_addr_update.value = 0
         self.dut.i_pre_issue_rob_tag.value = 0
@@ -401,19 +393,13 @@ class LQInterface:
         cached: bool | None = None,
         slot: int | None = None,
     ) -> None:
-        """Drive a memory read response beat.
+        """Drive an aligned 64-bit response (hw/rtl/README.md, "Data-tier bus contract").
 
-        The data tier returns aligned 64-bit beats (hw/rtl/README.md,
-        "Data-tier bus contract").  For a full-beat (FLD) response pass
-        ``dword=True`` with the 64-bit value.  Otherwise ``data`` is a
-        32-bit word: it is replicated into both word lanes so the response
-        is correct at either ``addr[2]``, mirroring how word data is
-        positioned on the store side.
+        Use dword=True for a full beat. Otherwise replicate the low 32 bits
+        into both word lanes so either addr[2] selects the supplied word.
 
-        A response answers either the fast tier's single outstanding request
-        or one cached slot: ``cached``/``slot`` default to the tier and slot
-        of the most recent launch seen by ``step``/``read_mem_request`` (the
-        router tags real responses the same way).
+        cached and slot default to the most recent launch sampled by step or
+        read_mem_request. They identify the fast tracker or a cached slot.
         """
         if dword:
             self.dut.i_mem_read_data.value = data & MASK64

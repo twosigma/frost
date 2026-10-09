@@ -14,18 +14,17 @@
  *    limitations under the License.
  */
 
-// fp_launch_squash miter: pre-squash fp_shim reference and the
-// production fp_shim, each with its own copy of the REAL fp_engine, driven by
-// the same inputs. Read with -formal; the shims and engine are read without
-// FORMAL, so neither shim uses its abstract engine model.
+// Compare the launch-gated reference and production fp_shim with identical
+// inputs and separate fp_engine instances. Only the miter is read with
+// -formal, so both shims use the real engine.
 //
 // The b_*/c_* probe wires are left undriven here and connected after flatten
 // by `connect -set` in fp_launch_squash.sby to the engine/shim registers.
 // `check -assert` there fails the run if any probe stays undriven.
 //
 // Defines:
-//   FP_LS_ON        candidate built with LAUNCH_SQUASH=1 and the added
-//                   no-issue-after-flushed-issue contract assumed.
+//   FP_LS_ON        enables LAUNCH_SQUASH and assumes no issue in the cycle
+//                   after a flushed issue.
 //   FP_LS_NO_CONTRACT  with FP_LS_ON, drop that assumption (expected FAIL).
 module fp_launch_squash_miter (
     input logic                                                        i_clk,
@@ -120,15 +119,14 @@ module fp_launch_squash_miter (
     end
   end
 
-  // A2: the existing generic fp_shim issue contract.
+  // A2: issue only when the reference shim is idle.
   always_comb begin
     if (i_rst_n) a_issue_not_busy : assume (!i_rs_issue.valid || !b_busy);
   end
 
 `ifdef FP_LS_ON
 `ifndef FP_LS_NO_CONTRACT
-  // A3: the added LAUNCH_SQUASH contract: no issue on the cycle after an
-  // issue that a flush covered (proved for FP_RS in fp_launch_squash_rs.sby).
+  // A3: LAUNCH_SQUASH requires no issue in the cycle after a flushed issue.
   always_comb begin
     if (i_rst_n && f_prev_flushed_issue)
       a_no_issue_after_flushed_issue : assume (!i_rs_issue.valid);
@@ -169,7 +167,7 @@ module fp_launch_squash_miter (
   end
 
   // ---------------------------------------------------------------------------
-  // Covers (non-vacuity of the corners).
+  // Reachability covers.
   // ---------------------------------------------------------------------------
   logic [TagW-1:0] f_phantom_tag;
   logic f_seen_phantom, f_restart_after_phantom, f_same_tag_restart;

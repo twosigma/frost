@@ -12,12 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Tests for the port-1 shift amount of a dual-issue reservation station.
+"""Check the dual-issue RS port-1 shift amount registered with its operands.
 
-o_issue_shift_amount_2 is registered with port 1's operands. For a shift or
-rotate that uses the ALU barrel shifter, it holds the immediate's low six bits
-for an immediate form and the low six bits of the final src2 value for a
-register form. The DUT is the reservation_station module itself.
+Barrel shifts and rotates use imm[5:0] for immediate forms and the final
+src2_value[5:0] for register forms.
 """
 
 from typing import Any
@@ -123,9 +121,9 @@ async def test_every_barrel_amount_and_operation(dut: Any) -> None:
 
 @cocotb.test()
 async def test_live_cdb_hold_refill_and_flush(dut: Any) -> None:
-    """Check CDB capture on both lanes, a held packet, refill, flushes, and reset.
+    """Port 1 captures CDB operands and holds its packet and amount while stalled.
 
-    While port 1 is held, CDB traffic must not change its packet or amount.
+    Check refill, flush, and reset around the held packet.
     """
     Clock(dut.i_clk, 10, unit="ns").start()
     iface = RSInterface(dut)

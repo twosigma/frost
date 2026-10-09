@@ -12,11 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Golden model for the Store Queue.
+"""Store queue model with a circular buffer and writes in allocation order.
 
-Mirrors the RTL circular buffer, entry state machine, and commit-ordered
-single-beat memory writes (every size drains in one 64-bit beat;
-hw/rtl/README.md "Data-tier bus contract").
+Every size drains in one 64-bit beat (hw/rtl/README.md, "Data-tier bus contract").
 """
 
 from dataclasses import dataclass

@@ -703,15 +703,12 @@ async def test_generic_slot2_prediction_vetoes_ready_pending_handoff(dut: Any) -
 
 
 async def _exercise_high_half_pending_retry(dut: Any, *, target: int) -> None:
-    """Check that a served-window retry returns fetch to the saved target.
+    """Check that a served-window retry returns both PCs to the saved target.
 
-    A variable-latency provider can return the prediction target's window
-    while ``pc_reg`` reaches a compressed predicted branch in the upper half
-    of a word. The served-window resteer sends fetch back to the branch's
-    word. When the window covering the branch arrives, the handoff must move
-    both PCs to the saved target; advancing fetch sequentially from the
-    branch's word would fetch the branch again and repeat the prediction
-    forever.
+    If the provider returns the target window before the upper-half branch
+    emits, fetch retries the branch's word. When that word arrives, the
+    pending handoff must restore the target; sequential fetch would repeat
+    the branch and its prediction.
     """
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
@@ -792,14 +789,11 @@ async def test_high_half_pending_retry_returns_fetch_to_halfword_target(
 async def test_prediction_holdoff_predecessor_release_advances_pc_reg(
     dut: Any,
 ) -> None:
-    """A released predecessor advances pc_reg on the same edge and never replays.
+    """A released predecessor must advance pc_reg on the same edge.
 
-    A taken prediction registers a control-flow holdoff while the compressed
-    instruction just before the pending branch has not been emitted yet. That
-    predecessor is released during ``i_prediction_holdoff``, and its packet
-    and the ``pc_reg`` advance must happen on the same edge; leaving
-    ``pc_reg`` behind lets a later served-window retry dispatch the
-    predecessor a second time.
+    The compressed instruction before a pending branch can emit during
+    i_prediction_holdoff. Leaving pc_reg behind would let a served-window
+    retry dispatch that predecessor twice.
     """
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)

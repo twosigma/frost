@@ -230,7 +230,7 @@ def _assert_decode(
 
 @cocotb.test()
 async def test_all_rvc_source_metadata_matches_decompressor(dut: Any) -> None:
-    """All 49,152 RVC parcels match the predecode model's expansion and source bits."""
+    """All RVC parcels match the predecode model's expansion and source bits."""
     for raw in range(1 << 16):
         if raw & 0x3 == 0x3:
             continue
@@ -256,7 +256,7 @@ async def test_all_rvc_source_metadata_matches_decompressor(dut: Any) -> None:
 
 @cocotb.test()
 async def test_all_rvc_bits24_20_metadata_matches_decompressor(dut: Any) -> None:
-    """All 49,152 RVC parcels produce the sideband's exact expanded bits [24:20]."""
+    """All RVC parcels produce the sideband's exact expanded bits [24:20]."""
     for raw in range(1 << 16):
         if raw & 0x3 == 0x3:
             continue
@@ -608,9 +608,8 @@ async def test_quadrant2_jr_jalr_ebreak_and_illegal_rd_zero(dut: Any) -> None:
 async def test_shift_and_lwsp_rd_zero_illegal_cases(dut: Any) -> None:
     """C.SLLI bit12 decodes as shamt[5]; C.LWSP rd=x0 is reserved.
 
-    C.SLLI with bit12=1 is a legal 6-bit shamt on RV64; the slot was
-    reserved on RV32. C.SLLI rd=x0 is a HINT, not illegal; see
-    test_rvc_rd0_hints_are_legal_nops.
+    C.SLLI bit12=1 is legal on RV64 and designated for custom extensions
+    on RV32. C.SLLI rd=x0 is a HINT, not illegal.
     """
     slli_bit12_raw = _pack_compressed(
         funct3=0b000, quadrant=0b10, bits12_2=(1 << 10) | (3 << 5)

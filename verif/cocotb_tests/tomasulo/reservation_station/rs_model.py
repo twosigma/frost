@@ -12,10 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Golden model for the Reservation Station.
-
-Mirrors the RTL logic: dispatch, CDB snoop, issue selection, and flush.
-"""
+"""Reference model for RS dispatch, CDB wakeup, issue, and flush."""
 
 from dataclasses import dataclass
 
@@ -46,10 +43,8 @@ class RSEntry:
     src3_tag: int = 0
     src3_value: int = 0
 
-    # Deferred delivery of a CDB match in the dispatch cycle. The RTL keeps a
-    # pending bit and lane select per source plus two registered lane values;
-    # the model stores the pending value itself, which is equivalent at its
-    # outputs.
+    # For dispatch-cycle CDB matches, store the pending value directly.
+    # RTL uses per-source pending bits and lane selects with registered values.
     src1_pend: bool = False
     src1_pend_value: int = 0
     src2_pend: bool = False
@@ -88,20 +83,14 @@ class RSModel:
         """Initialize RS model with given depth."""
         self.depth = depth
         self.entries: list[RSEntry] = [RSEntry() for _ in range(depth)]
-        # Optional cycle-exact allocation. The RTL clears an issued entry's
-        # valid bit at the clock edge, so the free-slot priority encoder sees
-        # that slot only in the next cycle. With this set, a slot consumed in
-        # a bench cycle stays unavailable to dispatch until tick(); otherwise
-        # model and DUT slot indices diverge, and when two entries wake
-        # together the lowest-index rule picks different ones. Cycle-driven
-        # tests set it and call tick() once per cycle; directed tests leave it
-        # off and reuse slots immediately.
+        # Delay reuse of consumed slots until tick(), matching the RTL's
+        # free-slot encoder. This preserves lowest-index issue order when
+        # several entries wake together. Cycle-driven tests enable it and
+        # tick once per cycle; directed tests reuse slots immediately.
         self.strict_alloc_timing = False
         self._alloc_blocked: set[int] = set()
-        # dispatch() runs before the RTL edge that writes the entry, so the
-        # first tick() after it arms a deferred CDB delivery and the second
-        # applies it, as the RTL sets the source ready on the edge after the
-        # dispatch edge.
+        # The first tick after dispatch arms deferred CDB delivery; the second
+        # applies it, one edge after the RTL writes the entry.
         self._pending_delivery_armed: set[tuple[int, int]] = set()
 
     def reset(self) -> None:
@@ -274,11 +263,10 @@ class RSModel:
         return idx
 
     def deliver_pending(self) -> None:
-        """Apply deferred dispatch-cycle CDB deliveries (one RTL cycle later).
+        """Deliver dispatch-cycle CDB matches one RTL cycle later.
 
-        As in the RTL, delivery ignores the entry's valid bit (an entry flushed
-        in the meantime gets writes that nothing reads), and the pending state
-        lasts only that one cycle.
+        Delivery ignores entry validity: writes to flushed entries are unused.
+        Pending state lasts only this cycle.
         """
         for e in self.entries:
             if e.src1_pend:

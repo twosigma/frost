@@ -12,16 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""RTL-vs-python cross-check for predecode sideband generation.
+"""Compare RTL predecode sidebands with sw/common/generate_imem_predecode_init.py.
 
-The DUT is imem_predecode_line: riscv_pkg::imem_make_sideband applied to
-every 32-bit word of a cache line, the exact structure the L1I fill path
-uses. The golden model is sw/common/generate_imem_predecode_init.py, the
-offline generator that produces the Vivado power-up sideband images. It is
-imported directly so the two predecode definitions cannot drift apart
-silently. Any mismatch here means low-BRAM code (python-generated or
-write-time sideband) and DDR code (fill-time sideband) would predecode
-differently.
+imem_predecode_line applies riscv_pkg::imem_make_sideband to each cache-line
+word, as the L1I fill path does. The generator supplies Vivado's power-up
+images; both definitions must agree so BRAM and DDR code decode identically.
 """
 
 import importlib.util

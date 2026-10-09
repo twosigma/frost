@@ -12,9 +12,8 @@ smtbmc boolector
 read -sv riscv_pkg.sv sdp_dist_ram.sv sdp_block_ram.sv branch_predictor.sv direction_predictor.sv return_address_stack.sv branch_prediction_controller.sv
 read -formal -sv branch_prediction_alias_formal.sv
 hierarchy -check -top branch_prediction_alias_formal
-# The property observes only a combinational cone. Remove the keep attributes
-# and prune all unobserved state before any memory mapping; the select then
-# checks that no memory, register, latch or FSM is left.
+# Prune unobserved state before mapping memories. The property is
+# combinational; the select below rejects any remaining state.
 setattr -unset keep
 setattr -unset keep_hierarchy
 setattr -mod -unset keep

@@ -16,18 +16,17 @@
 
 """Run self-checking riscv-tests ISA tests and benchmarks on FROST.
 
-Tests report ``<<PASS>>`` or ``<<FAIL>>`` through UART; no signature
-comparison is needed.
+Tests report <<PASS>> or <<FAIL>> through UART; no signature comparison is
+needed. Run in the frost image from the repository root, cleaning tests/
+before each invocation:
 
-Can be run standalone:
-    ./test_riscv_tests.py --suites rv64ui rv64um
-    ./test_riscv_tests.py --all
-    ./test_riscv_tests.py --test rv64ui/add
-    ./test_riscv_tests.py --benchmarks median qsort
-    ./test_riscv_tests.py --all-benchmarks
-
-Or via pytest:
-    pytest test_riscv_tests.py -v -m slow
+    ./scripts/frost.py run make -C tests clean
+    ./scripts/frost.py run python3 tests/test_riscv_tests.py --suites rv64ui rv64um
+    ./scripts/frost.py run python3 tests/test_riscv_tests.py --all
+    ./scripts/frost.py run python3 tests/test_riscv_tests.py --test rv64ui/add
+    ./scripts/frost.py run python3 tests/test_riscv_tests.py --benchmarks median qsort
+    ./scripts/frost.py run python3 tests/test_riscv_tests.py --all-benchmarks
+    ./scripts/frost.py run pytest tests/test_riscv_tests.py -v -m slow
 """
 
 import argparse
@@ -127,14 +126,11 @@ ISA_SKIP_TESTS: dict[str, set[str]] = {
     },
 }
 
-# ISA tests to skip in the virtual environment only. It is empty because the
-# demand pager handles every rv64u* test. Each entry's value must be a set:
-# braces holding only comments make an empty dict.
+# Virtual-environment exclusions. Values must be sets, including empty ones.
 ISA_SKIP_TESTS_V: dict[str, set[str]] = {}
 
-# ISA tests to skip in the bram tier only. They exercise the cached DDR tier
-# and are meaningless in the low Harvard BRAM (separate I/D memories), so they
-# run only in ddr (cf. the arch suite's Zifencei being ddr-only in CI).
+# These tests require cached DDR; low BRAM has separate instruction and data
+# memories and cannot exercise the same behavior.
 ISA_SKIP_TESTS_BRAM: dict[str, set[str]] = {
     "rv64ui": {
         # fence.i SMC: a store reaches only the data BRAM, while fence.i's
@@ -143,11 +139,8 @@ ISA_SKIP_TESTS_BRAM: dict[str, set[str]] = {
         "fence_i",
     },
     "rv64si": {
-        # Sv39 page-table walk: FROST's page tables must live in cached DDR
-        # (the walker's line port reaches only the cached tier, so it refuses
-        # any other PTE address); in the bram tier this test's page tables sit
-        # in low BRAM and every walk is refused. It runs in the ddr tier, where
-        # the whole image (page tables included) is cached-DDR-resident.
+        # The walker's line port reaches only cached DDR. Low-BRAM page
+        # tables are rejected; the ddr tier places the whole image in DDR.
         "icache-alias",
     },
 }
@@ -191,8 +184,6 @@ def discover_isa_tests(
 
     tests = sorted(suite_dir.glob("*.S"))
 
-    # Apply skip lists: always-skip, plus the bram-only skips in the bram tier
-    # and the virtual-environment skips.
     skip_set = set(ISA_SKIP_TESTS.get(suite, set()))
     if mem_config == "bram":
         skip_set |= ISA_SKIP_TESTS_BRAM.get(suite, set())
@@ -367,8 +358,7 @@ def run_single_isa_test(
     test_name = test_src.stem
 
     if not compile_isa_test(test_src, mem_config, env):
-        # FAIL (not SKIP): these tests fit both tiers, so a compile failure is a
-        # real build regression (e.g. a broken ddr linker/boot stub).
+        # These tests fit both tiers; compilation failure must fail the run.
         return TestResult(test_name, suite, "FAIL", "Compilation failed")
 
     # The virtual environment demand-pages every user page through the

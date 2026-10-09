@@ -12,19 +12,14 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the int_muldiv_shim module.
+"""Integer multiply/divide shim tests.
 
-Covers MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU and the word forms,
-every pair of corner operands for the full-width multiplies, divide by zero,
-signed overflow, result acceptance, busy signalling, and full and partial
-flushes. Full-width MUL takes 6 cycles and MULW 3 on the word
-multiplier. The divider takes one operation at a time and holds its result
-until accepted: 64 cycles for DIV and REM, 32 for the word forms. Tests present
-a divide only while o_div_busy is low, as MUL_RS's divide gate does.
-Mixed-width tests exercise the MUL path's shared completion slots, backpressure,
-and flushes at every position. FROST_TEST_SHORT_WORD_OPS=0 selects the
-expectations for a DUT built with SHORT_WORD_OPS=0, which runs MULW through the
-full-width multiplier.
+Full-width MUL takes 6 cycles; the word multiplier takes 3. DIV and REM take
+64 cycles, or 32 for word forms, and hold results until accepted. Issue a
+divide only while o_div_busy is low, as MUL_RS does.
+
+Set FROST_TEST_SHORT_WORD_OPS=0 for a DUT built with SHORT_WORD_OPS=0, which
+runs MULW through the full-width multiplier.
 """
 
 import os
@@ -81,12 +76,9 @@ async def setup(dut: Any) -> IntMulDivShimInterface:
 async def wait_for_mul_complete(
     iface: IntMulDivShimInterface, max_cycles: int = MAX_LATENCY
 ) -> dict:
-    """Wait until o_mul_fu_complete.valid is asserted, return the result.
+    """Wait for a valid MUL result, accept it for one cycle, and return it.
 
-    After capturing a valid result, drives i_mul_accepted for one cycle
-    to pop the FIFO entry.
-
-    Raises AssertionError if valid is not seen within max_cycles.
+    Raise AssertionError if no result arrives within max_cycles.
     """
     for _ in range(max_cycles):
         await RisingEdge(iface.clock)
@@ -106,12 +98,9 @@ async def wait_for_mul_complete(
 async def wait_for_div_complete(
     iface: IntMulDivShimInterface, max_cycles: int = MAX_LATENCY
 ) -> dict:
-    """Wait until o_div_fu_complete.valid is asserted, return the result.
+    """Wait for a valid DIV result, accept it for one cycle, and return it.
 
-    After capturing a valid result, drives i_div_accepted for one cycle
-    to take it from the divider.
-
-    Raises AssertionError if valid is not seen within max_cycles.
+    Raise AssertionError if no result arrives within max_cycles.
     """
     for _ in range(max_cycles):
         await RisingEdge(iface.clock)
@@ -129,7 +118,7 @@ async def wait_for_div_complete(
 
 
 # ============================================================================
-# Test 1: After reset, outputs are idle
+# After reset, outputs are idle
 # ============================================================================
 @cocotb.test()
 async def test_reset_state(dut: Any) -> None:
@@ -144,7 +133,7 @@ async def test_reset_state(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 2: MUL basic (7 * 6 = 42, low 64 bits)
+# MUL basic (7 * 6 = 42, low 64 bits)
 # ============================================================================
 @cocotb.test()
 async def test_mul_basic(dut: Any) -> None:
@@ -171,7 +160,7 @@ async def test_mul_basic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 3: MULH basic (signed * signed, high 64 bits)
+# MULH basic (signed * signed, high 64 bits)
 # ============================================================================
 @cocotb.test()
 async def test_mulh_basic(dut: Any) -> None:
@@ -203,7 +192,7 @@ async def test_mulh_basic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 4: MULHSU basic (signed * unsigned, high 64 bits)
+# MULHSU basic (signed * unsigned, high 64 bits)
 # ============================================================================
 @cocotb.test()
 async def test_mulhsu_basic(dut: Any) -> None:
@@ -235,7 +224,7 @@ async def test_mulhsu_basic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 5: MULHU basic (unsigned * unsigned, high 64 bits)
+# MULHU basic (unsigned * unsigned, high 64 bits)
 # ============================================================================
 @cocotb.test()
 async def test_mulhu_basic(dut: Any) -> None:
@@ -267,7 +256,7 @@ async def test_mulhu_basic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 6: DIV basic (42 / 7 = 6)
+# DIV basic (42 / 7 = 6)
 # ============================================================================
 @cocotb.test()
 async def test_div_basic(dut: Any) -> None:
@@ -294,7 +283,7 @@ async def test_div_basic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 7: DIVU basic (unsigned divide)
+# DIVU basic (unsigned divide)
 # ============================================================================
 @cocotb.test()
 async def test_divu_basic(dut: Any) -> None:
@@ -326,7 +315,7 @@ async def test_divu_basic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 8: REM with a negative dividend (-43 % 7 = -1)
+# REM with a negative dividend (-43 % 7 = -1)
 # ============================================================================
 @cocotb.test()
 async def test_rem_basic(dut: Any) -> None:
@@ -356,7 +345,7 @@ async def test_rem_basic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 9: Single MUL does not assert busy (credit-based)
+# Single MUL does not assert busy (credit-based)
 # ============================================================================
 @cocotb.test()
 async def test_single_mul_not_busy(dut: Any) -> None:
@@ -388,7 +377,7 @@ async def test_single_mul_not_busy(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 10: A DIV raises o_div_busy until its result is taken, never o_fu_busy
+# A DIV raises o_div_busy until its result is taken, never o_fu_busy
 # ============================================================================
 @cocotb.test()
 async def test_single_div_busy(dut: Any) -> None:
@@ -428,7 +417,7 @@ async def test_single_div_busy(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 11: Flush clears in-flight MUL
+# Flush clears in-flight MUL
 # ============================================================================
 @cocotb.test()
 async def test_flush_clears_mul(dut: Any) -> None:
@@ -458,7 +447,7 @@ async def test_flush_clears_mul(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 12: Flush clears in-flight DIV
+# Flush clears in-flight DIV
 # ============================================================================
 @cocotb.test()
 async def test_flush_clears_div(dut: Any) -> None:
@@ -492,7 +481,7 @@ async def test_flush_clears_div(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 13: REMU basic (unsigned remainder)
+# REMU basic (unsigned remainder)
 # ============================================================================
 @cocotb.test()
 async def test_remu_basic(dut: Any) -> None:
@@ -518,7 +507,7 @@ async def test_remu_basic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 14: DIV by zero -> quotient = all ones
+# DIV by zero -> quotient = all ones
 # ============================================================================
 @cocotb.test()
 async def test_div_by_zero(dut: Any) -> None:
@@ -546,7 +535,7 @@ async def test_div_by_zero(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 15: DIVU by zero -> quotient = all ones
+# DIVU by zero -> quotient = all ones
 # ============================================================================
 @cocotb.test()
 async def test_divu_by_zero(dut: Any) -> None:
@@ -574,7 +563,7 @@ async def test_divu_by_zero(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 16: REM by zero -> remainder = dividend
+# REM by zero -> remainder = dividend
 # ============================================================================
 @cocotb.test()
 async def test_rem_by_zero(dut: Any) -> None:
@@ -603,7 +592,7 @@ async def test_rem_by_zero(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 16b: REM by zero with a negative dividend -> remainder = dividend
+# REM by zero with a negative dividend -> remainder = dividend
 # (sign must be preserved; a divider that returns |dividend| is wrong)
 # ============================================================================
 @cocotb.test()
@@ -633,7 +622,7 @@ async def test_rem_by_zero_negative_dividend(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 17: Signed DIV with a negative dividend truncates toward zero
+# Signed DIV with a negative dividend truncates toward zero
 # ============================================================================
 @cocotb.test()
 async def test_div_negative_dividend(dut: Any) -> None:
@@ -665,7 +654,7 @@ async def test_div_negative_dividend(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 18: REM signed overflow (INT64_MIN % -1 = 0)
+# REM signed overflow (INT64_MIN % -1 = 0)
 # ============================================================================
 @cocotb.test()
 async def test_rem_signed_overflow(dut: Any) -> None:
@@ -696,7 +685,7 @@ async def test_rem_signed_overflow(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 19: Partial flush suppresses younger in-flight MUL
+# Partial flush suppresses younger in-flight MUL
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_suppresses_younger(dut: Any) -> None:
@@ -729,7 +718,7 @@ async def test_partial_flush_suppresses_younger(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 20: Partial flush keeps older in-flight MUL
+# Partial flush keeps older in-flight MUL
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_keeps_older(dut: Any) -> None:
@@ -761,7 +750,7 @@ async def test_partial_flush_keeps_older(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 21: Partial flush suppresses younger in-flight DIV
+# Partial flush suppresses younger in-flight DIV
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_suppresses_younger_div(dut: Any) -> None:
@@ -794,7 +783,7 @@ async def test_partial_flush_suppresses_younger_div(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 22: Partial flush keeps older in-flight DIV
+# Partial flush keeps older in-flight DIV
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_keeps_older_div(dut: Any) -> None:
@@ -826,7 +815,7 @@ async def test_partial_flush_keeps_older_div(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 23: Back-to-back MUL results advance through the accepted handshake
+# Back-to-back MUL results advance through the accepted handshake
 # ============================================================================
 @cocotb.test()
 async def test_back_to_back_mul_acceptance(dut: Any) -> None:
@@ -859,14 +848,14 @@ async def test_back_to_back_mul_acceptance(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 24: Back-to-back DIVs (each issued as soon as the divider is free)
+# Back-to-back DIVs (each issued as soon as the divider is free)
 # ============================================================================
 @cocotb.test()
 async def test_back_to_back_div(dut: Any) -> None:
-    """Each DIV issues in the first cycle o_div_busy is low; all four results are right.
+    """Issue each divide as soon as o_div_busy clears.
 
-    The result is taken in its first valid cycle, so the divider is free again
-    on the next cycle.
+    Accept each result in its first valid cycle, freeing the divider for the
+    next cycle.
     """
     iface = await setup(dut)
 
@@ -907,7 +896,7 @@ async def test_back_to_back_div(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 25: MUL during in-flight DIV (both complete correctly)
+# MUL during in-flight DIV (both complete correctly)
 # ============================================================================
 @cocotb.test()
 async def test_mul_during_inflight_div(dut: Any) -> None:
@@ -945,7 +934,7 @@ async def test_mul_during_inflight_div(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 26: A full flush frees the divider for the next DIV
+# A full flush frees the divider for the next DIV
 # ============================================================================
 @cocotb.test()
 async def test_flush_frees_divider(dut: Any) -> None:
@@ -989,7 +978,7 @@ async def test_flush_frees_divider(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 27: Partial flush age compare across ROB-tag wraparound
+# Partial flush age compare across ROB-tag wraparound
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_mixed_ages(dut: Any) -> None:
@@ -1026,7 +1015,7 @@ async def test_partial_flush_mixed_ages(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 28: A held DIV result blocks only divides, never multiplies
+# A held DIV result blocks only divides, never multiplies
 # ============================================================================
 @cocotb.test()
 async def test_held_div_result_does_not_block_mul(dut: Any) -> None:
@@ -1076,14 +1065,14 @@ async def test_held_div_result_does_not_block_mul(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 29: Partial flush on the divider's last step
+# Partial flush on the divider's last step
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_at_completion(dut: Any) -> None:
     """A partial flush on the edge that would end a younger DIV's last step drops it."""
     iface = await setup(dut)
 
-    # Issue a DIV with a younger tag (tag=10, head=0)
+    # Tag 10 is younger than the flush boundary at 5 (head=0).
     iface.drive_issue(
         valid=True,
         rob_tag=10,
@@ -1117,7 +1106,7 @@ async def test_partial_flush_at_completion(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 30: Partial flush of a held DIV result
+# Partial flush of a held DIV result
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_held_result(dut: Any) -> None:
@@ -1216,13 +1205,10 @@ async def test_rv64_mulh_64(dut: Any) -> None:
 
 @cocotb.test()
 async def test_full_width_mul_corner_cross_product(dut: Any) -> None:
-    """MUL, MULH, MULHSU and MULHU match the model on every pair of corner operands.
+    """Compare full-width products across signs and the 27- and 35-bit tile boundaries.
 
-    The operands cover each sign combination, the most negative and most
-    positive values, all ones, and carries across the 27- and 35-bit tile
-    boundaries. Ops issue back to back whenever the multiplier has a credit
-    and every result is accepted at once, so neighbouring products move
-    through the pipeline together.
+    Issue whenever credits allow and accept each result immediately so
+    adjacent products pass through the pipeline together.
     """
     iface = await setup(dut)
     rng = random.Random(0x5167)
@@ -1391,11 +1377,10 @@ async def test_word_completion_slot_collision(dut: Any) -> None:
 
 @cocotb.test()
 async def test_mixed_word_full_random_backpressure(dut: Any) -> None:
-    """Random mixed-width ops match the model under random back-pressure.
+    """Check that each mixed-width operation completes once on the correct port.
 
-    Each op completes exactly once, on its own port, with the model's value.
-    Until every op has issued, each presented result is accepted with probability 1/4.
-    A divide issues only while o_div_busy is low, as MUL_RS's divide gate ensures.
+    Accept results with probability 1/4 until all operations have issued,
+    then drain them. Issue divides only while o_div_busy is low.
     """
     iface = await setup(dut)
     rng = random.Random(0x6432)

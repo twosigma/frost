@@ -230,8 +230,7 @@ def main() -> None:
     run_logged(
         [
             str(frontend),
-            # Leaves out simulation-only code ($error, assertions), as the CPU's
-            # Yosys flow in tests/test_run_yosys.py does.
+            # Exclude simulation-only assertions and $error calls.
             "-DSYNTHESIS",
             f"--top={TOP}",
             f"--write={converted}",

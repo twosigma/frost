@@ -28,14 +28,7 @@ import pytest
 
 
 def _compile_hello_world(root_dir: Path) -> bool:
-    """Compile hello_world application for synthesis.
-
-    Args:
-        root_dir: Path to the repository root directory
-
-    Returns:
-        True if compilation succeeded, False on failure.
-    """
+    """Compile hello_world under root_dir for synthesis; return True on success."""
     apps_dir = root_dir / "sw" / "apps"
     sys.path.insert(0, str(apps_dir))
     try:
@@ -65,17 +58,16 @@ def _xilinx_family(synth_command: str) -> str | None:
 
 
 def _hierarchy_command(synth_command: str) -> str:
-    """Build the Yosys hierarchy command(s) for this synthesis target.
+    """Build hierarchy commands for the target.
 
-    The supported Xilinx target is synthesized in the X3 hardware shape: the
-    cached tier is enabled with its AXI export because the behavioral DDR
-    model is simulation-only. Other targets keep the module defaults.
+    The UltraScale+ target (-family xcup) enables the X3 cached tier and its
+    AXI export; the DDR model is simulation-only. Other targets use module
+    defaults.
 
-    Apply the parameters with `chparam -set`, rather than `hierarchy -chparam`:
-    in Yosys 0.69 the latter fails a duplicate-module assertion
-    (`modules_.count(module->name) == 0`) when the cache/walker hierarchy is
-    reprocessed. Yosys may still specialize and rename this top, so later
-    checks must follow its top attribute.
+    Use chparam -set: hierarchy -chparam in Yosys 0.69 fails a duplicate-module
+    assertion (modules_.count(module->name) == 0) when reprocessing the cache and
+    walker hierarchy. Later checks must follow the top attribute because Yosys
+    may specialize and rename the top.
     """
     family = _xilinx_family(synth_command)
     commands = []
@@ -87,18 +79,12 @@ def _hierarchy_command(synth_command: str) -> str:
 
 
 def _get_timeout_seconds(synth_command: str) -> int:
-    """Get synthesis timeout in seconds, with target-aware defaults.
+    """Return the synthesis timeout in seconds.
 
-    Defaults:
-      - Generic target (synth): 1800s
-      - Other non-Xilinx targets: 7200s
-      - Xilinx targets (synth_xilinx*): 7200s (full CPU and NIC synthesis can
-        take close to an hour; the rest is margin for slower CI hosts)
-
-    Environment overrides:
-      - FROST_YOSYS_GENERIC_TIMEOUT_SEC
-      - FROST_YOSYS_TIMEOUT_SEC
-      - FROST_YOSYS_XILINX_TIMEOUT_SEC
+    Defaults are 1800 for generic synth and 7200 for other targets. Overrides:
+    FROST_YOSYS_GENERIC_TIMEOUT_SEC for generic synth,
+    FROST_YOSYS_XILINX_TIMEOUT_SEC for Xilinx, and FROST_YOSYS_TIMEOUT_SEC for
+    other targets. Generic synth also falls back to FROST_YOSYS_TIMEOUT_SEC.
     """
     default_generic_timeout = 1800
     default_timeout = 7200
@@ -131,13 +117,11 @@ def _get_timeout_seconds(synth_command: str) -> int:
         return fallback
 
 
-# Synthesis targets for pytest runs
-# Additional targets can be run manually: ./test_run_yosys.py --target <name>
+# Pytest synthesis targets. Run others with:
+# ./scripts/frost.py synthesis --target <name>
 #
-# Full generic `synth` maps RAMs and wide state arrays into generic flops and
-# gates.  For the full CPU that can spend hours in repeated OPT passes before
-# ABC.  Keep the generic target as a technology-independent front-end/coarse
-# synthesis check; the Xilinx target below still exercises complete synthesis.
+# Stop generic synthesis before mapping RAMs and wide arrays to flops, for
+# runtime. The Xilinx target performs full synthesis.
 GENERIC_SYNTH_COMMAND = "synth -top cpu_and_mem -run coarse"
 SYNTHESIS_TARGETS = [
     ("generic", GENERIC_SYNTH_COMMAND, "Generic/ASIC (coarse synthesis)"),
@@ -156,11 +140,7 @@ class YosysRunner:
     """Run Yosys synthesis on a design filelist."""
 
     def __init__(self, filelist_key: str = "frost") -> None:
-        """Initialize runner with paths.
-
-        Args:
-            filelist_key: Key from DESIGN_FILELISTS dict (currently only "frost").
-        """
+        """Initialize paths for a filelist_key from DESIGN_FILELISTS."""
         self.test_dir = Path(__file__).parent.resolve()
         self.root_dir = self.test_dir.parent
         self.filelist_key = filelist_key
@@ -196,13 +176,10 @@ class YosysRunner:
             mem_link.symlink_to(mem_target)
 
     def parse_filelist(self, filelist_path: Path) -> list[str]:
-        """Parse a filelist file and return deduplicated list of Verilog files.
+        """Return Verilog paths in first-occurrence order, removing duplicates.
 
-        Sub-module filelists are self-contained (they include their own package
-        and RAM primitive dependencies) so they work standalone for cocotb unit
-        tests. Nested inside a full-chip filelist they produce duplicates that
-        Yosys rejects as module redefinitions, so the list is deduplicated here
-        in first-occurrence order.
+        Standalone filelists repeat package and RAM dependencies when nested in the
+        full-chip list. Yosys rejects those as module redefinitions.
         """
         seen: set[str] = set()
         files: list[str] = []
@@ -300,10 +277,8 @@ class YosysRunner:
         if not verilog_files:
             raise ValueError("No Verilog files found in filelist")
 
-        # -DSYNTHESIS is the usual guard that excludes simulation-only code
-        # ($warning, assertions) from synthesis. -DFROST_XILINX_PRIMS enables
-        # Xilinx primitive instantiations for synth_xilinx targets only, so
-        # generic/ASIC synthesis stays technology-agnostic.
+        # Exclude simulation-only code. Enable Xilinx primitives only for
+        # synth_xilinx targets.
         defines = "-DSYNTHESIS"
         if synth_command.startswith("synth_xilinx"):
             defines += " -DFROST_XILINX_PRIMS"
@@ -328,9 +303,8 @@ class YosysRunner:
                 yosys_script.append(f"read_verilog -sv {defines} {vfile}")
 
             yosys_script.append(_hierarchy_command(synth_command))
-            # The eight-lane RX parser's symbolic next-state logic makes FSM
-            # transition-table extraction expand unnecessarily. Preserve its
-            # encoding, as in the standalone net10g synthesis check.
+            # Preserve RX parser encoding to avoid expanding its symbolic
+            # transitions into a table.
             yosys_script.append(
                 'setattr -set fsm_encoding "none" *eth10g_mac_rx*/w:state'
             )
