@@ -68,8 +68,15 @@
  *      the same bit visible/writable. sip.SSIP is S-writable when delegated.
  *   Q. scounteren chain: U-mode counter reads need mcounteren AND
  *      scounteren; S-mode reads need mcounteren only.
- *   R. Unimplemented CSRs trap illegal at every privilege (mhpmcounter3
- *      0xB03 from M; hpmcounter3 0xC03 from S).
+ *   R. CSR existence. An unimplemented CSR traps illegal at every
+ *      privilege: mseccfg (0x747, no Smepmp) and the addresses next to the
+ *      HPM ranges (0xB01, 0x322, 0xB20) from M, and the user hpmcounters (no
+ *      Zihpm) from M (0xC03, 0xC1F) and S (0xC03). The machine HPM CSRs
+ *      exist and are read-only zero, the privileged spec's minimum
+ *      implementation: from M, mhpmcounter3/31 and mhpmevent3/31 read 0, an
+ *      all-ones write leaves 0, and OpenSBI's counter probe (write 1, then
+ *      swap the old value back) reads 0, so it finds no counter. From S,
+ *      mhpmcounter3 traps like any M-only CSR.
  *   S. WARL: medeleg all-ones reads back the implemented mask 0xB3FF;
  *      mideleg all-ones reads back 0x222; mstatus.MPP write of the reserved
  *      encoding 2'b10 folds to U.
@@ -470,6 +477,12 @@ __attribute__((naked)) static void b_read_hpm3(void)
     __asm__ volatile("csrr t0, 0xC03\n ecall\n j .");
 }
 
+__attribute__((naked)) static void b_read_mhpm3(void)
+{
+    /* mhpmcounter3 (0xB03) exists but is M-only -> illegal from S. */
+    __asm__ volatile("csrr t0, 0xB03\n ecall\n j .");
+}
+
 /* S body for the delegated-interrupt resume case (L). STIP is pending on
  * entry, and a pending bit wakes WFI regardless of the enables, so the wfi
  * never blocks. The delegated STI traps to the S handler, which SRETs back
@@ -558,6 +571,26 @@ static int report(const char *name, unsigned long got, unsigned long want)
     return ok;
 }
 
+/*
+ * Run M-mode CSR accesses `insns` with t1 = all ones and %0 seeded with
+ * 0x5A5A, and store %0 to `out`. A trap lands in m_trap_handler, which records
+ * mcause in g_cause and resumes after `insns`, so a trapped access leaves the
+ * seed in `out`.
+ */
+#define M_CSR_PROBE(insns, out)                                                                    \
+    do {                                                                                           \
+        unsigned long v_ = 0x5A5Aul;                                                               \
+        g_cause = ~0ul;                                                                            \
+        __asm__ volatile("la   t0, 1f\n"                                                           \
+                         "csrw mscratch, t0\n"                                                     \
+                         "li   t1, -1\n" insns "\n"                                                \
+                         "1:\n"                                                                    \
+                         : "+r"(v_)                                                                \
+                         :                                                                         \
+                         : "t0", "t1", "t2", "t3", "memory");                                      \
+        (out) = v_;                                                                                \
+    } while (0)
+
 #define MCAUSE_INT_BIT (1ul << 63)
 #define PRIV_U 0ul
 #define PRIV_S 1ul
@@ -566,6 +599,7 @@ int main(void)
 {
     int all_ok = 1;
     unsigned long cause;
+    unsigned long hpm_val;
 
     uart_puts("\r\n=== S-mode privilege test ===\r\n");
     set_trap_handler(&m_trap_handler);
@@ -926,15 +960,39 @@ int main(void)
     csr_write(mcounteren, 0x7u);
 
     /* R: unimplemented CSRs trap at every privilege. */
-    g_cause = ~0ul;
-    __asm__ volatile("la   t0, 1f\n"
-                     "csrw mscratch, t0\n"
-                     "csrr t0, 0xB03\n" /* mhpmcounter3: unimplemented */
-                     "1:\n" ::
-                         : "t0", "memory");
+    M_CSR_PROBE("csrr %0, 0x747", hpm_val); /* mseccfg: no Smepmp */
     all_ok &= report("R unimpl-csr-from-M", g_cause, 2u);
+    M_CSR_PROBE("csrr %0, 0xB01", hpm_val); /* below mhpmcounter3 */
+    all_ok &= report("R unimpl-0xB01-from-M", g_cause, 2u);
+    M_CSR_PROBE("csrr %0, 0x322", hpm_val); /* below mhpmevent3 */
+    all_ok &= report("R unimpl-0x322-from-M", g_cause, 2u);
+    M_CSR_PROBE("csrr %0, 0xB20", hpm_val); /* above mhpmcounter31 */
+    all_ok &= report("R unimpl-0xB20-from-M", g_cause, 2u);
+    M_CSR_PROBE("csrr %0, 0xC03", hpm_val); /* hpmcounter3: no Zihpm */
+    all_ok &= report("R unimpl-0xC03-from-M", g_cause, 2u);
+    M_CSR_PROBE("csrr %0, 0xC1F", hpm_val); /* hpmcounter31: no Zihpm */
+    all_ok &= report("R unimpl-0xC1F-from-M", g_cause, 2u);
     cause = run_at_priv(&b_read_hpm3, PRIV_S);
     all_ok &= report("R unimpl-csr-from-S", cause, 2u);
+
+    /* R: the machine HPM CSRs read 0 from M and ignore writes. A trapped
+     * access reports the 0x5A5A seed. */
+    M_CSR_PROBE("csrr %0, 0xB03", hpm_val); /* mhpmcounter3 */
+    all_ok &= report("R mhpmcounter3-read", hpm_val, 0);
+    M_CSR_PROBE("csrr %0, 0xB1F", hpm_val); /* mhpmcounter31 */
+    all_ok &= report("R mhpmcounter31-read", hpm_val, 0);
+    M_CSR_PROBE("csrr %0, 0x323", hpm_val); /* mhpmevent3 */
+    all_ok &= report("R mhpmevent3-read", hpm_val, 0);
+    M_CSR_PROBE("csrr %0, 0x33F", hpm_val); /* mhpmevent31 */
+    all_ok &= report("R mhpmevent31-read", hpm_val, 0);
+    M_CSR_PROBE("csrw 0xB1F, t1\n csrr %0, 0xB1F", hpm_val);
+    all_ok &= report("R mhpmcounter31-write-ignored", hpm_val, 0);
+    M_CSR_PROBE("csrw 0x323, t1\n csrr %0, 0x323", hpm_val);
+    all_ok &= report("R mhpmevent3-write-ignored", hpm_val, 0);
+    M_CSR_PROBE("li t2, 1\n csrw 0xB03, t2\n csrrw %0, 0xB03, zero", hpm_val);
+    all_ok &= report("R mhpmcounter3-opensbi-probe", hpm_val, 0);
+    cause = run_at_priv(&b_read_mhpm3, PRIV_S);
+    all_ok &= report("R mhpmcounter3-from-S", cause, 2u);
 
     /* S: WARL masks and the MPP reserved-encoding fold. */
     csr_write(medeleg, ~0ul);

@@ -404,10 +404,10 @@ module reorder_buffer #(
 
   // One-hot {IR, TM, CY}, in mcounteren bit order, for a CSR access to the
   // Zicntr user counters cycle, time, or instret (0xC00-0xC02); addr[1:0]
-  // picks the bit. Nothing else matches. The RV32 high halves and the
-  // hpmcounters do not exist here, so csr_static_illegal rejects them, and
-  // the machine aliases (0xBxx) have their own privilege check in
-  // alloc_legality_fault.
+  // picks the bit. Nothing else matches. The RV32 high halves and the user
+  // hpmcounters (0xC03-0xC1F; no Zihpm) do not exist here, so
+  // csr_static_illegal rejects them, and the machine aliases (0xBxx) have
+  // their own privilege check in alloc_legality_fault.
   function automatic logic [2:0] ucounter_onehot(input logic is_csr, input logic [11:0] addr);
     logic m;
     // Assigns the function name rather than using a return statement: Yosys's
@@ -419,13 +419,26 @@ module reorder_buffer #(
     };
   endfunction
 
+  // The machine HPM counters mhpmcounter3..31 (0xB03-0xB1F) and their event
+  // selectors mhpmevent3..31 (0x323-0x33F). FROST counts no HPM events, but
+  // the privileged spec defines all 29 pairs and makes a read-only-zero pair
+  // the minimum legal implementation, so they exist: csr_file's read mux
+  // returns 0 for them and no write arm matches them. Both ranges are M-only
+  // by address. OpenSBI finds a counter by writing 1 and reading it back, so
+  // a zero counter is not advertised.
+  function automatic logic csr_is_mhpm(input logic [11:0] addr);
+    csr_is_mhpm = ((addr[11:5] == 7'b1011_000) || (addr[11:5] == 7'b0011_001)) &&
+                  (addr[4:0] >= 5'd3);
+  endfunction
+
   // CSR existence map. An access to an address outside this set raises
   // illegal-instruction at every privilege, as the privileged spec requires.
   // S-mode firmware (OpenSBI) probes optional CSRs by catching that trap, so
   // reading unimplemented CSRs as zero would advertise missing features.
   // senvcfg exists with no fields (RAZ/WI; S/U make it mandatory), and the
   // read-only id registers mvendorid/marchid/mimpid/mconfigptr exist and
-  // read 0.
+  // read 0. The machine HPM counters and event selectors (csr_is_mhpm) exist
+  // and read 0 with writes ignored.
   function automatic logic csr_addr_exists(input logic [11:0] addr);
     unique case (addr)
       // F extension
@@ -456,7 +469,7 @@ module reorder_buffer #(
       riscv_pkg::CsrMperfSel, riscv_pkg::CsrMperfCtl, riscv_pkg::CsrMperfData,
       riscv_pkg::CsrMperfDataH, riscv_pkg::CsrMperfCount:
       csr_addr_exists = 1'b1;
-      default: csr_addr_exists = 1'b0;
+      default: csr_addr_exists = csr_is_mhpm(addr);
     endcase
   endfunction
 

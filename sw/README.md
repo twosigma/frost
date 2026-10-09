@@ -316,7 +316,7 @@ can be debugged and where each one first stops.
 | `served_window_resteer/` | A BTB-predicted loop branch to an upper-half target; under the fetch-latency fuzz its target window arrives after fetch has moved on, so IF resteers (`served_window_resteer_fetch_fuzz`) |
 | `slot2_fault_test/` | A fetch fault on the second instruction of a fetch pair, one whose bytes encode a NOP included, must trap at that instruction with exact `mepc` and `mtval` |
 | `smc_fencei_test/` | Self-modifying code with `fence.i` across store-to-fence gaps, warm and cold L1D, and tight loops |
-| `smode_test/` | S-mode: delegation, `sret`, TSR/TVM/TW, supervisor CSRs, counter permissions, and interrupts |
+| `smode_test/` | S-mode: delegation, `sret`, TSR/TVM/TW, supervisor CSRs, counter permissions, CSR existence (illegal CSRs and the read-only-zero machine HPM CSRs), and interrupts |
 | `spanning_test/` | 32-bit instructions that straddle a fetch-word boundary |
 | `sprintf_test/` | `sprintf`/`snprintf` checked against constant expected strings |
 | `sstc_test/` | Sstc: `menvcfg.STCE`, `stimecmp` access rules, and an S-mode timer interrupt through `stimecmp` |
