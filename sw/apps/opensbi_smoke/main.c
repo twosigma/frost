@@ -15,33 +15,9 @@
  */
 
 /*
- * OpenSBI smoke test: a bare S-mode payload booted by the real fw_jump
- * firmware through the FROST boot layout. It checks, from the supervisor's
- * point of view, firmware services that Linux relies on:
- *
- *   A. SBI base: spec/impl ids, extension probes, mvendorid/marchid/mimpid,
- *      HSM status.
- *   B. Entry state: satp Bare, time-only U-mode scounteren policy, S-mode
- *      time/cycle readable, U-mode time allowed and cycle/instret denied,
- *      stimecmp accessible (menvcfg.STCE set by the firmware: the
- *      mcountinhibit privileged-version probe), sfence.vma forms.
- *   C. Timers: an S-timer interrupt through stimecmp, and through
- *      sbi_set_timer (which writes stimecmp under Sstc).
- *   D. IPI to self through the SBI (SSIP injection) and two RFENCE calls.
- *   E. Console: SBI DBCN write and the legacy putchar.
- *   F. Misaligned loads/stores emulated by OpenSBI in M-mode (they are not
- *      delegated by default): every scalar width, the RV64 compressed forms,
- *      FP fld/fsd and C.FLD/C.FSD with FS dirtying, under satp Bare and
- *      under an Sv39 map through a non-identity alias, from S and from U,
- *      plus an emulated access that page-faults (S touching a U page with
- *      SUM=0) and must be redirected to S with the faulting VA in stval.
- *   G. FWFT misaligned delegation (the Linux path): after
- *      SBI_FWFT_MISALIGNED_EXC_DELEG=1 the traps arrive in S-mode instead.
- *   H. SBI PMU on the fixed counters: stop, config-match, start with a
- *      2^63-class initial value, read, stop (inhibit) and a second round.
- *
- * Output goes to the native UART (the bench captures every byte); the run
- * ends with <<PASS>> or <<FAIL>>.
+ * S-mode payload booted by OpenSBI fw_jump through the FROST boot layout.
+ * Check firmware services and entry state used by Linux, reporting results
+ * through the native UART and ending with <<PASS>> or <<FAIL>>.
  */
 
 #include <stdint.h>
@@ -291,12 +267,11 @@ static uintptr_t u_alias(const void *p)
     return (uintptr_t) p - PAYLOAD_PA + U_ALIAS_VA;
 }
 
-/* ---- misaligned access bodies ----
- * Each takes the buffer address as its argument, touches only its stack and
- * arguments (so it can run at any alias and in U-mode), and returns a value
- * folded from the results. The 32-bit forms are forced uncompressed and the
- * compressed forms are spelled explicitly, so the trap handler's length
- * arithmetic and the emulator's decode see the intended encodings. */
+/* ---- Misaligned access bodies ----
+ * Each body touches only its stack and arguments so it can run through
+ * either alias in S-mode or U-mode. Force uncompressed 32-bit instructions
+ * and spell compressed forms explicitly to test the intended decode and
+ * trap-handler instruction lengths. Results are folded into one value. */
 
 static uint64_t __attribute__((noinline)) body_scalar_loads(uint8_t *b)
 {
@@ -311,7 +286,7 @@ static uint64_t __attribute__((noinline)) body_scalar_loads(uint8_t *b)
                      : "=&r"(w), "=&r"(d), "=&r"(h), "=&r"(hu), "=&r"(wu)
                      : "r"(b)
                      : "memory");
-    /* Fold: the pattern is byte i = i + base. */
+    /* The input pattern is byte i = i + base. */
     return w ^ (d << 1) ^ (h << 2) ^ (hu << 3) ^ (wu << 4);
 }
 
@@ -717,8 +692,7 @@ int main(unsigned long hartid, unsigned long fdt)
     check("at least the three fixed counters", r.error == 0 && r.value >= 3);
     r = sbi_ecall(SBI_EXT_PMU, 1, 0, 0, 0, 0);
     check("counter 0 is a hardware counter", r.error == 0 && ((uint64_t) r.value >> 63) == 0);
-    /* The bare payload has no Linux-style stop-all: stop cycle and instret
-     * first (they run out of reset), then follow the Linux sequence. */
+    /* Stop cycle and instret before configuring them; both run from reset. */
     r = sbi_ecall(SBI_EXT_PMU, 4, 0, 0x5, 0, 0);
     check("counter_stop(cycle, instret)", r.error == 0 || r.error == SBI_ERR_ALREADY_STOPPED);
     uint64_t cy1 = csr_read(cycle);

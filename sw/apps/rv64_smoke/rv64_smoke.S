@@ -1,26 +1,9 @@
-# RV64 smoke test
+# RV64I arithmetic and load/store smoke test, built with -march=rv64i.
+# Check results against constants formed with independent instructions.
 #
-# The smallest end-to-end rv64 program: checks that base RV64I decode, the
-# ALU, and the load unit produce correct 64-bit results through the OoO core
-# and the 64-bit data tier. Built -march=rv64i (no compressed code, no M/A/F).
-#
-# Coverage, each self-checked against constants built from independent ops:
-#   1. LUI/ADDIW sign semantics (sext32 results, 0x7FFFFFFF+1 wrap)
-#   2. ADDW/SUBW 32-bit wrap + sign extension
-#   3. 64-bit base shifts with 6-bit shamts (slli/srli/srai by 32..63)
-#   4. SLLIW/SRLIW/SRAIW (5-bit shamts, sext32 results)
-#   5. SLLW/SRLW/SRAW (register shamt masks to [4:0])
-#   6. 64-bit ADD carries across bit 31 (no 32-bit wrap in the base ALU)
-#   7. SD/LD round trip through the 64-bit data tier
-#   8. LW sign-extension vs LWU zero-extension from a stored dword
-#   9. LBU/LHU/LB extraction on both sides of the beat's addr[2] boundary
-#
-# Register discipline: print_string clobbers t1 and t2, and returns with t1
-# holding the NUL terminator, so any value that has to survive a print lives
-# in an s-register:
+# print_string clobbers t1/t2 and leaves t1=0. Keep persistent values here:
 #   s0 = UART base            s4 = 0xFFFFFFFF_80000000 (sext 0x80000000)
 #   s3 = SD/LD test pattern   s5 = 0x00000000_7FFFFFFF
-# t-registers never carry state across a print call.
 
     .section .init
     .option push
@@ -30,7 +13,6 @@
 _start:
     # No stack: everything runs in registers + one .data dword buffer.
 
-    # UART base for print_string
     lui     s0, 0x40000
 
     # Shared reference constants (never clobbered)

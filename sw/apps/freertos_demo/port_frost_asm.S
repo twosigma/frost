@@ -10,7 +10,6 @@
 .global pxCurrentTCB
 .global xPortStartFirstTask
 
-/* FreeRTOS external functions */
 .extern vPortTimerTickHandler
 .extern freertos_risc_v_application_exception_handler
 .extern freertos_risc_v_application_interrupt_handler
@@ -39,7 +38,6 @@
  */
 .align 4
 freertos_risc_v_trap_handler:
-    /* Save context on current stack */
     addi sp, sp, -portCONTEXT_SIZE
 
     /* Save x1 and x5-x31 */
@@ -72,15 +70,12 @@ freertos_risc_v_trap_handler:
     STORE x30, 26*XB(sp)
     STORE x31, 27*XB(sp)
 
-    /* Save mepc */
     csrr t0, mepc
     STORE t0, 28*XB(sp)
 
-    /* Save mstatus */
     csrr t1, mstatus
     STORE t1, 29*XB(sp)
 
-    /* Save uxCriticalNesting to stack */
     la t0, uxCriticalNesting
     LOAD t1, 0(t0)
     STORE t1, 30*XB(sp)
@@ -98,7 +93,6 @@ skip_save_sp:
     li t1, 1
     STORE t1, 0(t0)
 
-    /* Check if interrupt or exception */
     csrr t0, mcause
     blt t0, zero, handle_interrupt
 
@@ -107,7 +101,6 @@ handle_exception:
     li t1, 11
     beq t0, t1, handle_yield
 
-    /* Other exception - call application handler */
     call freertos_risc_v_application_exception_handler
     j trap_exit
 
@@ -117,17 +110,13 @@ handle_yield:
     addi t0, t0, 4
     STORE t0, 28*XB(sp)
 
-    /* Save sp and the TCB before calling vTaskSwitchContext
-     * s0 = original sp (the saved context lives here)
-     * s1 = original pxCurrentTCB pointer */
+    /* Preserve the context's sp in s0 and the original TCB in s1. */
     mv s0, sp
     la t0, pxCurrentTCB
     LOAD s1, 0(t0)
 
-    /* Select the next task */
     call vTaskSwitchContext
 
-    /* Check if pxCurrentTCB changed */
     la t0, pxCurrentTCB
     LOAD t1, 0(t0)
     beq t1, s1, yield_same_task  /* same task: keep the saved sp */
@@ -147,14 +136,11 @@ handle_interrupt:
     li t1, MCAUSE_MTI_LITERAL
     beq t0, t1, handle_timer
 
-    /* Other interrupt - call application handler */
     call freertos_risc_v_application_interrupt_handler
     j trap_exit
 
 handle_timer:
-    /* Save sp and the TCB before calling the handler
-     * s0 = original sp (the saved context lives here)
-     * s1 = original pxCurrentTCB pointer */
+    /* Preserve the context's sp in s0 and the original TCB in s1. */
     mv s0, sp
     la t0, pxCurrentTCB
     LOAD s1, 0(t0)
@@ -165,7 +151,6 @@ handle_timer:
     LOAD a0, 30*XB(sp)
     call vPortTimerTickHandler
 
-    /* Check if pxCurrentTCB changed */
     la t0, pxCurrentTCB
     LOAD t1, 0(t0)
     beq t1, s1, timer_same_task  /* same task: keep the saved sp */
@@ -181,16 +166,13 @@ timer_same_task:
     /* Fall through to trap_exit */
 
 trap_exit:
-    /* Restore uxCriticalNesting from stack */
     LOAD t1, 30*XB(sp)
     la t0, uxCriticalNesting
     STORE t1, 0(t0)
 
-    /* Restore mstatus */
     LOAD t1, 29*XB(sp)
     csrw mstatus, t1
 
-    /* Restore mepc */
     LOAD t0, 28*XB(sp)
     csrw mepc, t0
 
@@ -236,21 +218,17 @@ trap_exit:
  * mstatus.MIE from the frame's MPIE (1 in a new task's frame); never returns.
  */
 xPortStartFirstTask:
-    /* Load stack pointer from pxCurrentTCB */
     la t0, pxCurrentTCB
     LOAD t1, 0(t0)
     LOAD sp, 0(t1)
 
-    /* Restore uxCriticalNesting from stack */
     LOAD t1, 30*XB(sp)
     la t0, uxCriticalNesting
     STORE t1, 0(t0)
 
-    /* Restore mstatus */
     LOAD t1, 29*XB(sp)
     csrw mstatus, t1
 
-    /* Restore mepc */
     LOAD t0, 28*XB(sp)
     csrw mepc, t0
 

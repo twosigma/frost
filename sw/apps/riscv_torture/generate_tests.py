@@ -16,14 +16,9 @@
 
 """Generate FROST riscv-torture tests and Spike references.
 
-Workflow:
-  1. Generate random RV64 IMAFDC .S test files
-  2. Compile for Spike, run Spike, save signature as golden reference
-  3. Store .S files in tests_rv64/ and references in references_rv64/
-
-The stream includes W-form ALU/MUL, LD/SD/LWU, and .d atomics. Register seeds
-are 64-bit; x30 holds AMO addresses so other non-address GPRs remain comparable
-with Spike. The committed corpus uses --seed 20260803.
+Generate random RV64 IMAFDC assembly in tests_rv64/ and save Spike signatures
+in references_rv64/. Seeds fill 64-bit registers; x30 holds AMO addresses so
+layout-dependent values stay out of the compared GPRs.
 
 Usage:
     # Generate new tests and Spike references:
@@ -275,7 +270,6 @@ def generate_test(seed: int, nseqs: int = 200, memsize: int = 1024) -> str:
     lines.append("_torture_test_begin:")
     lines.append("")
 
-    # Initialize GPRs with random 64-bit values
     lines.append("    // Initialize integer registers")
     for reg in COMPUTE_GPRS:
         val = rng.randint(0, gpr_max)
@@ -283,18 +277,16 @@ def generate_test(seed: int, nseqs: int = 200, memsize: int = 1024) -> str:
     lines.append(f"    la {MEM_BASE_REG}, _torture_data")
     lines.append("")
 
-    # Initialize FP registers from data section
     lines.append("    // Initialize FP registers from data section")
-    # Use x1 temporarily as FP data pointer (will be restored after)
+    # Use x1 for the FP data pointer, then reseed it below.
     lines.append("    la x1, _torture_fp_init")
     for i in range(32):
         lines.append(f"    fld f{i}, {i * 8}(x1)")
-    # Restore x1 to a random value
+    # Replace the FP pointer with a fresh random value.
     val = rng.randint(0, gpr_max)
     lines.append(f"    li x1, 0x{val:0{gpr_digits}x}")
     lines.append("")
 
-    # Generate random instruction sequences
     branch_id = 0
     # Sequence type weights: alu, mem, branch, fp, mul, amo
     weights = [50, 10, 20, 10, 5, 5]
@@ -377,9 +369,8 @@ def generate_one_reference(
             "-fno-pie",
             "-no-pie",
             "-fno-stack-protector",
-            # lp64 needs PC-relative addressing for the 0x8xxx_xxxx Spike
-            # link (on RV64, medlow's absolute lui cannot form those
-            # addresses).
+            # PC-relative addressing reaches DDR; RV64 lui sign-extends
+            # addresses in the 0x8xxx_xxxx range.
             "-mcmodel=medany",
             "-nostdlib",
             "-nostartfiles",
@@ -504,7 +495,6 @@ def main() -> int:
         )
         print(f"Output: {TESTS_DIR}/")
 
-        # Generate test .S files
         for i in range(args.count):
             test_name = f"test_{i + 1:03d}"
             test_path = TESTS_DIR / f"{test_name}.S"
@@ -517,7 +507,6 @@ def main() -> int:
         print(f"Generated {args.count} tests")
         print()
 
-        # Generate Spike references
         print("Generating Spike references...")
         tests = discover_tests()
         work_items = [(str(t), args.verbose) for t in tests]

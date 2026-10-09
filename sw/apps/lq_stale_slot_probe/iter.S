@@ -15,28 +15,22 @@
  */
 
 /*
- * The probe loop. Every iteration has the shape that exposes the load-queue
- * cached-slot hazard (see main.c), with no store between the settle point
- * of the previous iteration and the probed loads, so nothing holds the
- * memory bus while they launch:
+ * Probe the cached-slot hazard described in main.c. No stores occur between
+ * the previous iteration's settle point and the probed loads:
  *
- *   B1 (its condition is rnd bit 0 behind STALE_B1_DIV_CHAIN dependent
- *       divides, 65 cycles each, so it resolves late and at a known time)
+ *   B1 waits for rnd bit 0 through STALE_B1_DIV_CHAIN dependent divides
+ *      (65 cycles each).
  *     arm X: STALE_A_MUL_CHAIN dependent multiplies (and STALE_A_DIV_CHAIN
  *            divides, none by default: the divider takes one divide at a
  *            time, so a divide here would wait for B1's chain) delay
- *            A1..A3, three loads of untouched lines that launch to the
- *            cached tier and miss before B1 resolves, so their responses
- *            are still in flight well after the recovery.
+ *            A1..A3, whose cache misses remain in flight after recovery.
  *            STALE_A_FILLERS independent fillers in front of them give
  *            A1..A3 ROB tags beyond the ones arm Y allocates up to B2, so
- *            once the recovery reuses the tags, the drained slots' stale
- *            tags read as younger than B2's. Five more loads, A4..A8, wait
- *            on A1's value for their addresses: on the wrong path they
- *            hold queue entries but never launch, and they bring the
- *            path's load count to eight, the load queue's depth, so the
- *            next allocation wraps onto A1's entry. When arm X is the
- *            wrong path every one of these is flushed.
+ *            after tag reuse the stale tags compare as younger than B2.
+ *            A4..A8 depend on A1 for their addresses. On the wrong path
+ *            they hold entries without launching, filling the eight-entry
+ *            queue so allocation wraps to A1's entry. Recovery flushes all
+ *            arm X loads.
  *     arm Y: N, a load of the untouched marker line (-1), a chain of
  *            STALE_ADD_CHAIN dependent adds on B2's condition (register
  *            resolved, so B2 recovers a fixed number of cycles after N
@@ -48,10 +42,9 @@
  * P1..P10 are written to out[i*16 + 0..10]; the block's line 0 is then
  * loaded and written to out[i*16 + 11] (it checks that the pool held its
  * signatures without taking a cached slot during the probe), and a FENCE
- * and a short delay settle the machine before the next iteration. The
- * windows scale with the DDR latency: the test registry runs the simulation
- * DDR model at 150 cycles, so the drained responses stay in flight across
- * the second recovery.
+ * and a short delay settle the machine before the next iteration. Simulation
+ * uses 150-cycle DDR latency to keep responses in flight across both
+ * recoveries; tune the delay chains with the DDR latency.
  *
  *   void lq_stale_run(unsigned long iters, unsigned long pool,
  *                     unsigned long markers, unsigned long *out,
@@ -228,10 +221,10 @@ lq_stale_run:
     sd   t6, 72(a3)
     sd   t1, 80(a3)
     ld   a0, 0(a1)              /* the block's line 0, loaded after the probe so */
-    sd   a0, 88(a3)             /* it takes no slot: out[11], its signature */
+    sd   a0, 88(a3)             /* it uses no slot during the probe: out[11] */
     li   s11, 1
     fence
-    li   t0, 64                 /* settle: stores drained, ROB empty */
+    li   t0, 64                 /* Delay after draining stores. */
 1:  addi t0, t0, -1
     bnez t0, 1b
     addi s7, s7, 1

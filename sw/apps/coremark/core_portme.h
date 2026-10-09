@@ -32,61 +32,41 @@ limitations under the License.
 Original Author: Shay Gal-on
 */
 
-/* Topic : Description
-        This file contains configuration constants required to execute on
-   different platforms
-*/
+/* CoreMark platform configuration. */
 #ifndef CORE_PORTME_H
 #define CORE_PORTME_H
 /************************/
 /* Data types and settings */
 /************************/
-/* Configuration : HAS_FLOAT
-        Define to 1 if the platform supports floating point.
-*/
+/* Set to 1 for floating-point support. */
 #ifndef HAS_FLOAT
 #define HAS_FLOAT 1
 #endif
-/* Configuration : HAS_TIME_H
-        Define to 1 if platform has the time.h header file,
-        and implementation of functions thereof.
-*/
+/* Set to 1 when time.h and its functions are available. */
 #ifndef HAS_TIME_H
 #define HAS_TIME_H 0
 #endif
-/* Configuration : USE_CLOCK
-        Define to 1 to time with clock() from time.h. This port times with the
-        cycle counter and ignores it.
-*/
+/* Ignored by this port, which uses the cycle counter instead of clock(). */
 #ifndef USE_CLOCK
 #define USE_CLOCK 0
 #endif
-/* Configuration : HAS_STDIO
-        Define to 1 if the platform has stdio.h.
-*/
+/* Set to 1 when stdio.h is available. */
 #ifndef HAS_STDIO
 #define HAS_STDIO 0
 #endif
-/* Configuration : HAS_PRINTF
-        Define to 1 if the platform implements printf. This port maps it to
-   uart_printf.
-*/
+/* Set to 1 for printf support; this port maps printf to uart_printf. */
 #ifndef HAS_PRINTF
 #define HAS_PRINTF 1
 #endif
 #include "uart.h"
 #define printf uart_printf
 
-/* Configuration : CORE_TICKS
-        Define type of return from the timing functions.
- */
+/* Timing functions return a 64-bit cycle count. */
 #include <stddef.h>
 #include <stdint.h>
 typedef uint64_t CORE_TICKS;
 
-/* Definitions : COMPILER_VERSION, COMPILER_FLAGS, MEM_LOCATION
-        Initialize these strings per platform
-*/
+/* Build-identification strings reported by the benchmark. */
 #ifndef COMPILER_VERSION
 #ifdef __GNUC__
 #define COMPILER_VERSION "GCC"__VERSION__
@@ -101,14 +81,7 @@ typedef uint64_t CORE_TICKS;
 #define MEM_LOCATION "STACK"
 #endif
 
-/* Data Types :
-        To avoid compiler issues, define the data types that need to be used for
-   8b, 16b and 32b in <core_portme.h>.
-
-        *Important* :
-        ee_ptr_int needs to be the data type used to hold pointers, otherwise
-   coremark may fail.
-*/
+/* ee_ptr_int must hold a pointer without truncation. */
 typedef signed short ee_s16;
 typedef unsigned short ee_u16;
 typedef signed int ee_s32;
@@ -118,42 +91,23 @@ typedef unsigned char ee_u8;
 typedef unsigned int ee_u32;
 typedef uintptr_t ee_ptr_int;
 typedef size_t ee_size_t;
-/* align_mem :
-        This macro is used to align an offset to point to a 32b value. It is
-   used in the Matrix algorithm to initialize the input memory blocks.
-*/
+/* Round up to a 4-byte boundary for the matrix input blocks. */
 #define align_mem(x) (void *) (4 + (((ee_ptr_int) (x) - 1) & ~3))
 
-/* Configuration : SEED_METHOD
-        Defines method to get seed values that cannot be computed at compile
-   time.
-
-        Valid values :
-        SEED_ARG - from command line.
-        SEED_FUNC - from a system function.
-        SEED_VOLATILE - from volatile variables.
-*/
+/* Runtime seed source: SEED_ARG uses argv, SEED_FUNC calls a system
+ * function, and SEED_VOLATILE reads volatile variables. */
 #ifndef SEED_METHOD
 #define SEED_METHOD SEED_VOLATILE
 #endif
 
-/* Configuration : MEM_METHOD
-        Defines method to get a block of memory.
-
-        Valid values :
-        MEM_MALLOC - for platforms that implement malloc and have malloc.h.
-        MEM_STATIC - to use a static memory array.
-        MEM_STACK - to allocate the data block on the stack.
-*/
+/* Workspace allocation: MEM_MALLOC uses malloc, MEM_STATIC uses a static
+ * array, and MEM_STACK uses the stack. */
 #ifndef MEM_METHOD
 #define MEM_METHOD MEM_STACK
 #endif
 
-/* Configuration : MULTITHREAD
-        Number of contexts to run in parallel. This port supports only 1: a
-   larger value needs <core_start_parallel> and <core_stop_parallel>, which
-   <core_portme.c> does not provide.
-*/
+/* This port supports one context. More require core_start_parallel and
+ * core_stop_parallel implementations in core_portme.c. */
 #ifndef MULTITHREAD
 #define MULTITHREAD 1
 #define USE_PTHREAD 0
@@ -161,31 +115,17 @@ typedef size_t ee_size_t;
 #define USE_SOCKET 0
 #endif
 
-/* Configuration : MAIN_HAS_NOARGC
-        Needed if platform does not support getting arguments to main.
-
-        Valid values :
-        0 - argc/argv to main is supported
-        1 - argc/argv to main is not supported
-*/
+/* Set to 1 when main takes no argc/argv. */
 #ifndef MAIN_HAS_NOARGC
 #define MAIN_HAS_NOARGC 1
 #endif
 
-/* Configuration : MAIN_HAS_NORETURN
-        Needed if platform does not support returning a value from main.
-
-        Valid values :
-        0 - main returns an int, and return value will be 0.
-        1 - platform does not support returning a value from main
-*/
+/* Set to 1 when main returns no value; 0 selects an int return of zero. */
 #ifndef MAIN_HAS_NORETURN
 #define MAIN_HAS_NORETURN 1
 #endif
 
-/* Variable : default_num_contexts
-        Number of contexts; must be 1 for this port.
-*/
+/* Must be 1 for this port. */
 extern ee_u32 default_num_contexts;
 
 typedef struct CORE_PORTABLE_S {

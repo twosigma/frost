@@ -15,15 +15,9 @@
  */
 
 /**
- * Spanning instruction test: 32-bit instructions that straddle a fetch word
- * boundary must execute correctly. With the compressed extension the
- * instruction stream mixes 16-bit and 32-bit encodings, so a 32-bit
- * instruction can start in the upper half of one word and finish in the next.
- *
- * Tests 1-3 format strings with snprintf, compiled with the C extension like
- * the rest of the program, and compare each with its expected text. Test 4
- * runs span_chain (spanning.S), whose 32-bit instructions all start at
- * PC[1]=1, and compares its results with span_chain_ref.
+ * Check 32-bit instructions that straddle fetch words in a compressed
+ * instruction stream. snprintf exercises compiled code; span_chain in
+ * spanning.S forces PC[1]=1 and is checked against span_chain_ref.
  */
 #include <stdint.h>
 
@@ -33,7 +27,6 @@
 
 uint64_t span_chain(uint64_t x, uint64_t *scratch);
 
-/* The computation span_chain performs. */
 static uint64_t span_chain_ref(uint64_t x)
 {
     uint64_t t0 = x + 0x123u;
@@ -78,7 +71,6 @@ int main(void)
     snprintf(buf, sizeof buf, "%s", "Hello");
     check_text(buf, sizeof buf, "Hello");
 
-    /* The loop repeats the call, covering PC handling across iterations. */
     uart_puts("Test 2: snprintf in loop... ");
     len = 0;
     for (int i = 0; i < 3; i++) {

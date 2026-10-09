@@ -16,10 +16,8 @@
 #
 # Usage: make TEST_SRC=riscv-tests/isa/rv64ui/add.S
 #
-# ISA tests define their own _start via RVTEST_CODE_BEGIN (env_v/entry.S
-# supplies it for ENV=v), so no crt0 is needed. The riscv_test.h in this
-# directory overrides the upstream env header: -I. takes precedence over
-# -Iriscv-tests/env/p.
+# RVTEST_CODE_BEGIN supplies _start for ENV=p; env_v/entry.S supplies it for
+# ENV=v. No crt0 is needed.
 
 TEST_SRC ?=
 
@@ -27,9 +25,8 @@ TEST_SRC ?=
 include ../../common/arch.mk
 ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 ABI  = $(FROST_INT_ABI)
-# medany, as in sw/apps/arch_test: on RV64, medlow's sign-extended lui cannot
-# form the 0x8xxx_xxxx addresses of the DDR-resident image, so ddr links would
-# fail with truncated relocations.
+# RV64 medlow sign-extends lui, so it cannot address the DDR image at
+# 0x8xxx_xxxx. Use medany to avoid truncated relocations.
 CMODEL = -mcmodel=medany
 
 # Tools - use same prefix as common.mk
@@ -48,16 +45,11 @@ OBJDUMP = $(RISCV_PREFIX)objdump
 #                the user frames live in cached DDR.
 ENV ?= p
 
-# Include paths:
-#   -Ienv_v (v only)                  picks up the virtual-env riscv_test.h
-#   -I.                               picks up FROST's riscv_test.h (overrides upstream)
-#   -Iriscv-tests/isa/macros/scalar   picks up test_macros.h
-#   -Iriscv-tests/env/p               upstream's p env (-I. shadows its riscv_test.h)
-#   -Iriscv-tests/env                 picks up encoding.h (riscv_test.h #includes it)
+# env_v takes precedence for ENV=v. Otherwise, -I. selects FROST's
+# riscv_test.h over the upstream env/p header.
 ifeq ($(ENV),v)
 INCLUDES = -Ienv_v -I. -Iriscv-tests/isa/macros/scalar -Iriscv-tests/env/p -Iriscv-tests/env
-# The kernel: entry (reset, trap frame), the demand pager, freestanding
-# string routines. ENTROPY seeds the pager's frame order per test.
+# ENTROPY seeds the demand pager's frame order per test.
 ENV_SRC = env_v/entry.S env_v/vm.c env_v/string.c
 ENV_CFLAGS = -std=gnu99 -O2 -DENTROPY=$(ENTROPY) -Wno-implicit-function-declaration
 ENTROPY ?= 0x$(shell printf '%s' '$(TEST_SRC)' | cksum | cut -d' ' -f1 | xargs printf '%x')
@@ -69,13 +61,9 @@ else
 $(error ENV must be one of: p, v (got '$(ENV)'))
 endif
 
-# Memory configuration. Selects the linker script and, for ddr, the ROM boot
-# stub plus the sections split out of the low BRAM image into the DDR image
-# (sw_ddr.mem). tests/test_riscv_tests.py passes this via MEM_CONFIG.
-#   bram (default): code + data in low BRAM, a pure ISA path.
-#   ddr:            a ROM boot stub far-jumps to the DDR-resident test. Code
-#                   and data live in the cached DDR region, which exercises
-#                   the L1I fetch path and the D-side cached load/store path.
+# tests/test_riscv_tests.py selects MEM_CONFIG:
+#   bram (default): code and data in low BRAM.
+#   ddr: a ROM stub jumps to code and data in cached DDR.
 MEM_CONFIG ?= bram
 
 ifeq ($(ENV),v)
@@ -108,8 +96,8 @@ DISASSEMBLY_FILE     = sw.S
 # Build targets
 all: $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(DDR_VERILOG_HEX_FILE) $(DISASSEMBLY_FILE)
 
-# Compile and link the .S test with gcc, which runs the preprocessor. The ddr
-# config also links a ROM boot stub ($(BOOT_STUB)) that far-jumps to _start.
+# GCC preprocesses the .S test. DDR builds also link a ROM stub that jumps
+# to _start.
 $(EXECUTABLE_ELF_FILE): $(TEST_SRC) riscv_test.h $(BOOT_STUB) $(LINKER_SCRIPT) $(ENV_SRC)
 ifndef TEST_SRC
 	$(error TEST_SRC is not set. Usage: make TEST_SRC=riscv-tests/isa/rv64ui/add.S)

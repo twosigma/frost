@@ -14,11 +14,7 @@
  *    limitations under the License.
  */
 
-/**
- * Tests string.c (memset, memcpy, memmove, memcmp, strlen, strncpy, strcmp,
- * strncmp, strchr, strstr), ctype.c (isdigit, isalpha, isupper, islower,
- * toupper, tolower, isspace), and stdlib.c (strtol, atoi, atol).
- */
+/** Tests for the in-tree string, character and integer-conversion routines. */
 
 #include "ctype.h"
 #include "stdlib.h"
@@ -180,13 +176,13 @@ static void test_strncpy(void)
 
     char dst[16];
 
-    /* Source shorter than n: should copy and pad with nulls */
+    /* A short source must be padded with NULs. */
     memset(dst, 'X', sizeof(dst));
     strncpy(dst, "Hi", 8);
     check("short src copy", dst[0] == 'H' && dst[1] == 'i' && dst[2] == '\0');
     check("short src padding", dst[3] == '\0' && dst[7] == '\0');
 
-    /* Source longer than n: should truncate, no null terminator */
+    /* A source longer than n must be truncated without a NUL. */
     memset(dst, 'X', sizeof(dst));
     strncpy(dst, "Hello, World!", 5);
     check("long src truncate", dst[0] == 'H' && dst[4] == 'o');
@@ -576,7 +572,6 @@ int main(void)
         uart_printf("<<FAIL>>\n");
     }
 
-    /* Halt after reporting. */
     for (;;) {
     }
 }

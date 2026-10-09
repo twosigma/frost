@@ -12,10 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# MRET-drain deadlock directed test: an MRET behind draining cached stores must
-# wait for them, then return. The program runs from BRAM. Only the buffer it
-# stores to lives in the cached DDR region, in a loaded .ddr_data section, so
-# the behavioral DDR model serves its lines and cached stores drain far enough
-# for sq_committed_empty to toggle.
+# MRET must wait for cached stores to drain, then return. The default build
+# keeps code in BRAM and the loaded .ddr_data buffer in cached DDR.
 SRC_C := main.c
 include ../../common/common.mk

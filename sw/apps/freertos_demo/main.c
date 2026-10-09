@@ -46,7 +46,6 @@ static QueueHandle_t xDataQueue = NULL;
 static SemaphoreHandle_t xUartMutex = NULL;
 static TaskHandle_t xConsumerTaskHandle = NULL;
 
-/* Counters for demonstration */
 static volatile uint32_t ulProducerCount = 0;
 static volatile uint32_t ulConsumerCount = 0;
 static volatile uint32_t ulAtomicCounter = 0;
@@ -57,8 +56,7 @@ static volatile uint32_t ulStackMisaligned = 0;
 /*-----------------------------------------------------------*/
 /* Stack alignment */
 
-/* The psABI keeps sp 16-byte aligned and every frame a multiple of 16 bytes, so sp here is
- * misaligned only if the task started with a misaligned sp. */
+/* The psABI requires 16-byte aligned frames, so this also checks the initial sp. */
 static void prvCheckStackAlignment(void)
 {
     uintptr_t uxSp;
@@ -81,7 +79,7 @@ static void safe_print(const char *msg)
 }
 
 /*-----------------------------------------------------------*/
-/* Producer Task - generates data and sends to queue */
+/* Producer task */
 
 static void vProducerTask(void *pvParameters)
 {
@@ -129,7 +127,7 @@ static inline void atomic_inc_amo(volatile uint32_t *target)
 }
 
 /*-----------------------------------------------------------*/
-/* Atomic worker task - stress A extension under preemption */
+/* Atomic workers under preemption */
 
 static void vAtomicWorkerTask(void *pvParameters)
 {
@@ -217,9 +215,7 @@ static TickCheckResult_t prvTickInCriticalSection(void)
      * asked for can run the helper. */
     csr_clear(mie, MIE_MTIE);
     if ((TickType_t) (xTaskGetTickCount() - xStart) != 1U) {
-        /* A second tick, taken only if the next one is already due when the first
-         * returns, could undo a switch made by the first and hide it from the checks
-         * below. */
+        /* A second tick could switch back to this task and hide a premature switch. */
         uart_puts("[Consumer] More than one tick in the critical section\r\n");
         uart_puts("\r\nFAIL\r\n<<FAIL>>\r\n");
         for (;;) {
@@ -241,7 +237,7 @@ static TickCheckResult_t prvTickInCriticalSection(void)
 }
 
 /*-----------------------------------------------------------*/
-/* Consumer Task - receives data from queue */
+/* Consumer task */
 
 static void vConsumerTask(void *pvParameters)
 {
@@ -286,7 +282,6 @@ static void vConsumerTask(void *pvParameters)
     xAtomicOk = (ulAtomicCounter == ulAtomicExpected);
     xStackOk = (ulStackMisaligned == 0U);
 
-    /* Print summary */
     if (xSemaphoreTake(xUartMutex, portMAX_DELAY) == pdTRUE) {
         uart_puts("\r\n");
         uart_puts("=== Demo Complete ===\r\n");
@@ -320,7 +315,6 @@ static void vConsumerTask(void *pvParameters)
         xSemaphoreGive(xUartMutex);
     }
 
-    /* Disable interrupts and halt */
     __asm volatile("csrci mstatus, 0x08");
     for (;;) {
     }
@@ -354,7 +348,6 @@ int main(void)
 
     prvSetupTrapHandler();
 
-    /* Create the mutex for UART protection */
     xUartMutex = xSemaphoreCreateMutex();
     if (xUartMutex == NULL) {
         uart_puts("[ERROR] Mutex creation failed\r\n");
@@ -363,7 +356,6 @@ int main(void)
     }
     uart_puts("[Main] Created UART mutex\r\n");
 
-    /* Create the data queue */
     xDataQueue = xQueueCreate(QUEUE_LENGTH, sizeof(uint32_t));
     if (xDataQueue == NULL) {
         uart_puts("[ERROR] Queue creation failed\r\n");
@@ -372,7 +364,6 @@ int main(void)
     }
     uart_puts("[Main] Created data queue (depth=3)\r\n");
 
-    /* Create producer task (priority 1) */
     if (xTaskCreate(vProducerTask, "Producer", TASK_STACK_SIZE, NULL, tskIDLE_PRIORITY + 1, NULL) !=
         pdPASS) {
         uart_puts("[ERROR] Producer task creation failed\r\n");
@@ -381,7 +372,7 @@ int main(void)
     }
     uart_puts("[Main] Created Producer task (priority 1)\r\n");
 
-    /* Create consumer task (priority 2: preempts the producer whenever the queue has data) */
+    /* The consumer preempts the producer whenever the queue has data. */
     if (xTaskCreate(vConsumerTask,
                     "Consumer",
                     TASK_STACK_SIZE,
@@ -394,7 +385,6 @@ int main(void)
     }
     uart_puts("[Main] Created Consumer task (priority 2)\r\n");
 
-    /* Create atomic stress workers (priority 1) */
     if (xTaskCreate(vAtomicWorkerTask,
                     "Atomic1",
                     ATOMIC_TASK_STACK_SIZE,
@@ -423,7 +413,6 @@ int main(void)
     /* Start the scheduler - never returns */
     vTaskStartScheduler();
 
-    /* Should never reach here */
     uart_puts("[ERROR] Scheduler returned!\r\n");
     for (;;)
         ;

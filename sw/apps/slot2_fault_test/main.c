@@ -17,12 +17,10 @@
 /*
  * Fetch fault on the second instruction of a fetch pair.
  *
- * IF pairs a good slot-1 instruction with a slot-2 instruction taken from
- * the next word. When that word's fetch faults, slot 2 must still reach
- * dispatch and trap at its own PC, even when its bytes happen to encode a
- * NOP (0x00000013), which decode otherwise drops. Each case runs, in S-mode,
- * an instruction at the end of a code page whose next virtual page is mapped
- * without X, so the partner's fetch raises an instruction page fault (12):
+ * A slot-2 fetch fault must reach dispatch and trap at its own PC, even if
+ * its bytes encode a NOP (0x00000013) that decode would otherwise drop.
+ * Run slot 1 at a page boundary in S-mode with the next page mapped without
+ * X, causing an instruction page fault (12):
  *
  *   A. A 32-bit slot 1 in the page's last word; slot 2 is the next page's
  *      word 0: mepc = mtval = the next page.

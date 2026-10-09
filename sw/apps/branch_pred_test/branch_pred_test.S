@@ -1,13 +1,7 @@
 # Branch prediction test: self-checking control-flow cases.
 #
-# Each test runs one branch, loop, call, or indirect-jump pattern, counts
-# the steps it takes, compares the count with the expected value, and
-# prints OK or FAIL. s1 and s2 accumulate the pass and fail counts. The
-# summary prints <<PASS>> when s2 is zero and <<FAIL>> otherwise; the cocotb
-# harness keys on those markers. Tests 1-34 cover plain, compressed,
-# halfword-aligned, and word-spanning branches, loops, and calls. Tests 35
-# onward cover load-use into JALR and JR, a jump table, a JALR to a
-# spanning target, and the uart_printf decimal-print loops.
+# Each pattern checks its step count. s1 and s2 count passes and failures;
+# the summary prints <<PASS>> when s2 is zero and <<FAIL>> otherwise.
 
     .section .init
     .option push
@@ -17,7 +11,6 @@
 _start:
     .option norvc           # Force 32-bit for setup
 
-    # Initialize the stack.
     la      sp, _stack_top
 
     # UART address in a callee-saved register.
@@ -27,7 +20,6 @@ _start:
     li      s1, 0           # Test pass counter
     li      s2, 0           # Test fail counter
 
-    # Print header
     la      a0, msg_header
     jal     ra, print_string
 
@@ -44,7 +36,6 @@ _start:
 test1_skip:
     addi    t0, t0, 1       # t0 = 2
 
-    # Verify: t0 should be 2
     li      t2, 2
     beq     t0, t2, test1_pass
     j       test1_fail
@@ -74,7 +65,6 @@ test2_start:
 test2_skip:
     addi    t0, t0, 1       # t0 = 2
 
-    # Verify: t0 should be 2 (1 + skipped + 1)
     li      t2, 2
     beq     t0, t2, test2_pass
     j       test2_fail
@@ -103,7 +93,6 @@ test3_loop:
     addi    t1, t1, -1      # Decrement loop count
     bnez    t1, test3_loop  # Branch back if not done
 
-    # Verify: t0 should be 5
     li      t2, 5
     beq     t0, t2, test3_pass
     j       test3_fail
@@ -130,7 +119,6 @@ test4_start:
     jal     ra, test4_func  # Call function
     addi    t0, t0, 1       # t0 = 3 (after call)
 
-    # Verify: t0 should be 3
     li      t2, 3
     beq     t0, t2, test4_pass
     j       test4_fail
@@ -165,7 +153,6 @@ test5_loop:
     addi    t1, t1, -1
     bnez    t1, test5_loop
 
-    # Verify: t0 should be 10
     li      t2, 10
     beq     t0, t2, test5_pass
     j       test5_fail
@@ -194,7 +181,6 @@ test6_start:
     jal     ra, increment_t0  # Call 4
     jal     ra, increment_t0  # Call 5
 
-    # Verify: t0 should be 5
     li      t2, 5
     beq     t0, t2, test6_pass
     j       test6_fail
@@ -234,7 +220,6 @@ test7_inner:
     addi    t1, t1, -1
     bnez    t1, test7_outer
 
-    # Verify: t0 should be 12 (3 * 4)
     li      t2, 12
     beq     t0, t2, test7_pass
     j       test7_fail
@@ -257,10 +242,9 @@ test8_start:
     jal     ra, print_string
 
     li      t0, 0
-    li      t1, 1           # For taken branches
-    li      t2, 0           # For not-taken branches
+    li      t1, 1           # bnez takes; beqz falls through.
+    li      t2, 0           # Takes the first beqz.
 
-    # Series of branches
     beqz    t2, test8_br1   # Taken
     addi    t0, t0, 100     # Skipped
 test8_br1:
@@ -274,7 +258,6 @@ test8_br2:
 test8_br3:
     addi    t0, t0, 1       # t0 = 4
 
-    # Verify: t0 should be 4
     li      t2, 4
     beq     t0, t2, test8_pass
     j       test8_fail
@@ -315,7 +298,6 @@ test9_skip1:
 test9_skip2:
     addi    t0, t0, 1       # t0 = 2
 
-    # Verify: t0 should be 2
     li      t2, 2
     beq     t0, t2, test9_pass
     j       test9_fail
@@ -345,7 +327,6 @@ test10_loop:
     c.bnez  a2, test10_loop # Compressed backward branch
     .option norvc
 
-    # Verify: t0 should be 5
     li      t2, 5
     beq     t0, t2, test10_pass
     j       test10_fail
@@ -373,7 +354,6 @@ test11_start:
     jalr    ra, t3, 0              # Indirect jump
     addi    t0, t0, 1              # t0 = 3 (after return)
 
-    # Verify: t0 should be 3
     li      t2, 3
     beq     t0, t2, test11_pass
     j       test11_fail
@@ -410,7 +390,6 @@ test12_loop:
     # Loop exit: the BTB predicts taken and the branch falls through
     addi    t0, t0, 1       # t0 = 21 (executed after loop exit)
 
-    # Verify: t0 should be 21 (20 iterations + 1 after)
     li      t2, 21
     beq     t0, t2, test12_pass
     j       test12_fail
@@ -437,7 +416,7 @@ test13_start:
     li      t0, 0
     li      t4, 1                  # Store value 1
     sw      t4, -4(sp)             # Store to stack
-    nop                            # Clear any hazard
+    nop                            # Separate the store and load.
     nop
     lw      t4, -4(sp)             # Load value back (t4 = 1)
     bnez    t4, test13_taken       # Branch based on loaded value
@@ -446,7 +425,6 @@ test13_start:
 test13_taken:
     addi    t0, t0, 1              # t0 = 1
 test13_verify:
-    # Verify: t0 should be 1
     li      t2, 1
     beq     t0, t2, test13_pass
     j       test13_fail
@@ -478,7 +456,6 @@ test14_start:
     la      t3, test14_func2
     jalr    ra, t3, 0              # Call func2 again
 
-    # Verify: t0 should be 6 (1+2+1+2)
     li      t2, 6
     beq     t0, t2, test14_pass
     j       test14_fail
@@ -521,7 +498,6 @@ test15_loop:
     c.bnez  a3, test15_loop # Compressed branch at PC[1]=1
     .option norvc
 
-    # Verify: t0 should be 3
     li      t2, 3
     beq     t0, t2, test15_pass
     j       test15_fail
@@ -550,7 +526,6 @@ test16_loop:
     addi    t1, t1, -1
     bnez    t1, test16_loop
 
-    # Verify: t0 should be 5
     li      t2, 5
     beq     t0, t2, test16_pass
     j       test16_fail
@@ -581,7 +556,6 @@ test17_start:
     li      t0, 0
     jal     ra, test17_A
 
-    # Verify: t0 should be 4 (A + B + C + D)
     li      t2, 4
     beq     t0, t2, test17_pass
     j       test17_fail
@@ -636,13 +610,13 @@ test18_start:
     la      a0, msg_test18
     jal     ra, print_string
 
-    li      t0, 0           # Counter for taken
-    li      t1, 0           # Counter for not-taken
+    li      t0, 0           # Fall-through count
+    li      t1, 0           # Taken-branch count
     li      t2, 10          # Number of iterations
-    li      t3, 0           # Toggle: 0=taken, 1=not-taken
+    li      t3, 0           # Toggle: 0=fall-through, 1=taken
 test18_loop:
     bnez    t3, test18_not_taken
-    # Taken path
+    # Fall-through path
     addi    t0, t0, 1
     j       test18_continue
 test18_not_taken:
@@ -652,7 +626,6 @@ test18_continue:
     addi    t2, t2, -1
     bnez    t2, test18_loop
 
-    # Verify: t0 should be 5, t1 should be 5
     li      t4, 5
     bne     t0, t4, test18_fail
     bne     t1, t4, test18_fail
@@ -696,7 +669,6 @@ test19_target:
     .option norvc
 
 test19_verify:
-    # Verify: t0 should be 1
     li      t2, 1
     beq     t0, t2, test19_pass
     j       test19_fail
@@ -733,7 +705,6 @@ test20_start:
 test20_skip:
     addi    t0, t0, 1       # t0 = 2
 
-    # Verify: t0 should be 2
     li      t2, 2
     beq     t0, t2, test20_pass
     j       test20_fail
@@ -767,7 +738,6 @@ test21_loop:
     c.bnez  a2, test21_loop # 16-bit branch
     .option norvc
 
-    # Verify: t0 should be 10 (5 iterations * 2 increments)
     li      t2, 10
     beq     t0, t2, test21_pass
     j       test21_fail
@@ -815,7 +785,6 @@ test22_loop3:
     bnez    t1, test22_loop3
     # Third misprediction
 
-    # Verify: t0 should be 9 (3+3+3)
     li      t2, 9
     beq     t0, t2, test22_pass
     j       test22_fail
@@ -843,7 +812,6 @@ test23_loop:
     addi    t1, t1, -1
     bnez    t1, test23_loop
 
-    # Verify: t0 should be 100
     li      t2, 100
     beq     t0, t2, test23_pass
     j       test23_fail
@@ -876,7 +844,6 @@ test24_inner:
     addi    t1, t1, -1
     bnez    t1, test24_outer
 
-    # Verify: t0 should be 9 (3*3)
     li      t3, 9
     beq     t0, t3, test24_pass
     j       test24_fail
@@ -943,7 +910,6 @@ test26_start:
     li      a0, 5           # Recursion depth
     jal     ra, test26_recurse
 
-    # Verify: t0 should be 5 (counted on way down)
     li      t2, 5
     beq     t0, t2, test26_pass
     j       test26_fail
@@ -1058,7 +1024,6 @@ test29_loop:
     addi    t1, t1, -1      # 4 bytes at PC[1]=1: spans
     bnez    t1, test29_loop # 4 bytes at PC[1]=1: spans
 
-    # Verify: t0 should be 5
     li      t2, 5
     beq     t0, t2, test29_pass
     j       test29_fail
@@ -1091,7 +1056,6 @@ test30_start:
     jal     ra, test30_fn
     jal     ra, test30_fn
     jal     ra, test30_fn
-    # 10 calls
 
     li      t2, 10
     beq     t0, t2, test30_pass
@@ -1205,7 +1169,6 @@ test32_loop5:
     addi    t1, t1, -1
     bnez    t1, test32_loop5
 
-    # Verify: t0 should be 15 (5 loops * 3 iter)
     li      t2, 15
     beq     t0, t2, test32_pass
     j       test32_fail
@@ -1257,7 +1220,7 @@ test34_start:
 
     li      t0, 0
     li      t1, 0           # Taken
-    li      t2, 1           # Not taken
+    li      t2, 1           # Takes the final bnez.
 
     beqz    t1, test34_br2      # Taken -> go to br2
     addi    t0, t0, 100
@@ -1296,14 +1259,12 @@ test35_start:
 
     li      t0, 0
 
-    # Load target address then jump to it
     la      t3, test35_target_addr  # Get address of pointer
     ld      t4, 0(t3)               # Load the target address
     addi    t0, t0, 1               # t0 = 1 (before jump)
     jalr    ra, t4, 0               # Jump to loaded address
     addi    t0, t0, 1               # t0 = 3 (after return)
 
-    # Verify: t0 should be 3
     li      t2, 3
     beq     t0, t2, test35_pass
     j       test35_fail
@@ -1342,13 +1303,11 @@ test36_start:
 
     li      t0, 0
 
-    # Load, then jalr with nothing in between
     la      t3, test36_target_addr
     ld      t4, 0(t3)               # Load target
     jalr    ra, t4, 0               # Load-use hazard
     addi    t0, t0, 1               # t0 = 2 after return
 
-    # Verify: t0 should be 2
     li      t2, 2
     beq     t0, t2, test36_pass
     j       test36_fail
@@ -1441,14 +1400,12 @@ test38_start:
 
     li      t0, 0
 
-    # Load target address then jump
     la      t3, test38_target_addr
     ld      t4, 0(t3)
     addi    t0, t0, 1               # t0 = 1
     jalr    ra, t4, 0               # Jump to the halfword-aligned target
     addi    t0, t0, 1               # t0 = 3 after return
 
-    # Verify: t0 should be 3
     li      t2, 3
     beq     t0, t2, test38_pass
     j       test38_fail
@@ -1685,7 +1642,7 @@ test42_start:
 
 test42_loop:
     # Multiply by reciprocal of 10
-    mul     t0, a4, a2          # 33x32-bit product fits in 64 bits
+    mul     t0, a4, a2          # The 32x32-bit product fits in 64 bits.
     srli    t1, t0, 35          # t1 = a4 / 10
 
     # Compute remainder: a4 - (t1 * 10)
@@ -1697,10 +1654,8 @@ test42_loop:
     # Only the digit count matters.
     addi    a3, a3, 1           # Count digits
 
-    # Update value for next iteration
     mv      a4, t1              # a4 = quotient
 
-    # Exit if quotient is zero
     beqz    a4, test42_done
 
     # Bound the iteration count in case the divide is wrong
@@ -1924,7 +1879,7 @@ test45_start:
 
     # Place test45_loop_top at PC[1]=1.
     .balign 4
-    c.nop                       # 2 bytes, now at halfword boundary
+    c.nop                       # Put the next instruction at PC[1]=1.
 
 test45_loop_top:
     # Compressed mv at a halfword-aligned address.
@@ -1970,7 +1925,6 @@ tests_done:
     la      a0, msg_summary
     jal     ra, print_string
 
-    # Print pass count
     la      a0, msg_passed
     jal     ra, print_string
     mv      a0, s1
@@ -1978,7 +1932,6 @@ tests_done:
     la      a0, msg_newline
     jal     ra, print_string
 
-    # Print fail count
     la      a0, msg_failed
     jal     ra, print_string
     mv      a0, s2
@@ -1986,7 +1939,6 @@ tests_done:
     la      a0, msg_newline
     jal     ra, print_string
 
-    # Check if all passed
     bnez    s2, all_failed
     la      a0, msg_all_pass
     jal     ra, print_string
@@ -2027,9 +1979,8 @@ print_string:
 # =========================================
     .balign 4
 print_decimal:
-    # Prints a0 + '0' as one byte. That is a decimal digit only for
-    # a0 <= 9; a full pass of 45 tests prints ']'. The harness keys on the
-    # <<PASS>>/<<FAIL>> markers, not on this line.
+    # Prints a0 + '0' as one byte, a decimal digit only for a0 <= 9.
+    # The harness uses the <<PASS>>/<<FAIL>> markers, not this count.
     addi    t1, a0, '0'
     sb      t1, 0(s0)
     ret

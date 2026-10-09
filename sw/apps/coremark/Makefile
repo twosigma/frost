@@ -15,8 +15,7 @@
 # EEMBC CoreMark: the unmodified sources in coremark/ plus FROST's port layer.
 # docs/single_core_performance.md describes the benchmark configuration.
 
-# COREMARK_SOURCE_ORDER sets the link order of the five unmodified benchmark
-# sources, for link-order sweeps.
+# COREMARK_SOURCE_ORDER sets benchmark link order for placement sweeps.
 COREMARK_SOURCES := core_list_join core_main core_matrix core_state core_util
 COREMARK_SOURCE_ORDER ?= $(COREMARK_SOURCES)
 ifneq ($(sort $(COREMARK_SOURCE_ORDER)),$(sort $(COREMARK_SOURCES)))
@@ -74,7 +73,7 @@ COREMARK_LTO_TUNE := -flto --param max-completely-peeled-insns=0 \
 # configuration (docs/single_core_performance.md). COREMARK_PGO=0 builds
 # without the profiles, with the static-layout and LTO flags instead.
 #
-# iss/generate_profile.py writes profiles for the five benchmark sources; the
+# iss/generate_profile.py writes profiles for the benchmark sources; the
 # port layer and libraries build without one. The existence check stops a
 # missing profile from silently changing the build. See iss/README.md.
 COREMARK_PGO_TUNE := -fbranch-probabilities -fprofile-correction \
@@ -96,7 +95,7 @@ else
 $(error COREMARK_PGO must be 0 or 1)
 endif
 
-# At 4 CoreMark/MHz and 322.265625 MHz, 14000 iterations exceeds ten seconds.
+# Set enough iterations to exceed the ten-second minimum on the target board.
 ITERATIONS ?= 14000
 
 # CoreMark allocates its workspace on the stack. Both settings stay

@@ -1,16 +1,10 @@
-/* Linker script for riscv-tests on FROST, virtual environment (-v).
- *
- * The upstream env/v layout in the cached DDR region: the kernel
- * (env_v/entry.S + vm.c) and the user test share one image at DRAM_BASE;
- * user pages are demand-paged copies of that image (user VA = image
- * offset) into frames above it, and the kernel runs translated through a
- * 2 MiB superpage at the top of the address space. A ROM boot stub
- * (crt0_riscv_tests_ddr.S) far-jumps to the DDR-resident _start; DDR
- * sections load in place from sw_ddr.mem; entry.S zeroes .sbss and .bss
- * (page tables, free lists). The image and the 16 KiB kernel stack above it
- * must stay below the user frames (DRAM_BASE + 64 pages); the ASSERTs at the
- * end check this and that _start sits at DRAM_BASE.
- */
+/* Virtual riscv-tests environment in cached DDR. env_v/entry.S and vm.c
+ * share an image with the user test at DRAM_BASE. The kernel uses a 2 MiB
+ * superpage at the top of the address space; user pages are demand-paged
+ * copies into frames above the image, with VAs equal to image offsets.
+ * crt0_riscv_tests_ddr.S boots from ROM; entry.S zeroes .sbss and .bss.
+ * Assertions keep _start at DRAM_BASE and the image plus 16 KiB kernel
+ * stack below the user frames at DRAM_BASE + 64 pages. */
 
 ENTRY(_start)
 
@@ -61,13 +55,10 @@ SECTIONS
     } > DDR
 
     .sbss : {
-        /* Page-aligned like .bss below: env_v's kernel globals (freelist
-         * head/tail, the translated flag) must not share a 4 KiB page with
-         * test data. User pages are demand-paged copies of this image, so a
-         * kernel write through its own VA to a page the user also maps
-         * diverges the copy from its backing, and evict()'s frame-vs-backing
-         * memcmp then trips its PTE_D assertion on a page the test only
-         * read. */
+        /* Kernel globals must not share a page with user test data. A kernel
+         * write would change the backing image without changing the user's
+         * copy, falsely failing evict()'s PTE_D check on a page the test has
+         * only read. */
         . = ALIGN(0x1000);
         __sbss_start = .;
         *(.sbss*)

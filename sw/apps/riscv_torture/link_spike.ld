@@ -1,8 +1,4 @@
-/* Linker script for running torture tests on Spike (reference generation)
- *
- * Uses 0x80000000 base (Spike default) instead of FROST's 0x00000000.
- * Code and data both in RAM since Spike doesn't need ROM/RAM split.
- */
+/* Spike reference layout: code and data share RAM at 0x80000000. */
 
 ENTRY(_start)
 
@@ -30,8 +26,7 @@ SECTIONS
         . = ALIGN(4);
     } > RAM
 
-    /* For Spike, data loads in place (LMA == VMA), so frost_header's copy
-     * loop is a no-op (load address == store address). */
+    /* LMA == VMA: startup copies each data word onto itself. */
     .data : {
         __data_load_start = .;
         __data_start      = .;

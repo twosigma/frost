@@ -3,10 +3,8 @@
 # Checks for a front-end defect: stepping PC by +2 instead of +4 on a 32-bit
 # instruction (decoding it as compressed), which lands mid-instruction.
 #
-# The defect needs the cached L1I fetch path: a fetch stall (!fetch_progress ->
-# sel_nop) from a 32-byte line-fill coinciding with a 32-bit instruction near a
-# line boundary. The stream therefore runs cold from cached DDR (.ddr_text):
-# every line is a miss and causes a line-fill stall, as during boot.
+# Run a cold DDR stream to exercise line-fill stalls near 32-bit instructions
+# at line boundaries. A stall selects sel_nop when fetch_progress is false.
 #
 # The stream is [compressed-nop run][32-bit nops] blocks; a compressed run length
 # of 3..6 sweeps the 32-bit nops across every alignment against the line

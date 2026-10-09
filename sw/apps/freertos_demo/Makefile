@@ -15,14 +15,10 @@
 # FreeRTOS demo on FROST. The kernel is the sw/FreeRTOS-Kernel submodule, built
 # unmodified. The port layer (port_frost.c, port_frost_asm.S) is FROST-specific.
 
-# MEM_CONFIG selects the FreeRTOS linker script. common.mk then supplies the ROM
-# boot stub (DDR_BOOT_STUB) and the image split (DDR_SPLIT_SECTIONS) for the ddr
-# tier.
-#   bram (default): whole program in low BRAM, FreeRTOS heap and stacks included.
-#   ddr:            whole program, including the FreeRTOS heap in .bss, relocated
-#                   to the cached DDR region behind a ROM boot stub.
-# LINKER_SCRIPT has to be set before common.mk is included, because common.mk
-# assigns it with ?=.
+# MEM_CONFIG selects the linker script; common.mk supplies the DDR boot stub
+# and image split. BRAM holds the whole program in bram mode; ddr mode places
+# it, including the FreeRTOS heap and task stacks, in cached DDR.
+# Set LINKER_SCRIPT before common.mk assigns its ?= default.
 MEM_CONFIG ?= bram
 
 ifeq ($(MEM_CONFIG),ddr)

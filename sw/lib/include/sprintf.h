@@ -26,12 +26,12 @@
  *   %o        unsigned octal integer
  *   %x / %X   unsigned hex integer (lower / upper)
  *   %f / %F   decimal floating-point  ([-]ddd.dddddd)
- *   %e / %E   scientific notation     ([-]d.ddde±dd)
+ *   %e / %E   scientific notation     ([-]d.ddde+/-dd)
  *   %g / %G   %e style when the rounded exponent is < -4 or >= the precision,
  *             else %f
  *   %c        character
  *   %s        NUL-terminated string
- *   %p        pointer (0x…)
+ *   %p        pointer (0x...)
  *   %n        store the count written so far (int *, or the type a length
  *             modifier names)
  *   %%        literal '%'

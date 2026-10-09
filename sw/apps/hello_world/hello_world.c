@@ -17,10 +17,8 @@
 /**
  * Hello world: UART and cycle-counter smoke test.
  *
- * Prints a greeting once a second with uart_printf, waits with
- * delay_1_second(), and reports the cycle-counter delta between iterations,
- * which should track FPGA_CPU_CLK_FREQ. A good first program to run when
- * bringing up new hardware.
+ * Prints a greeting once a second and reports the cycle-counter delta,
+ * which should track FPGA_CPU_CLK_FREQ.
  */
 
 #include <stdint.h>

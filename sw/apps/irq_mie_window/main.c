@@ -51,8 +51,7 @@ static void uart_hex(uint32_t v)
         uart_putc(hex[(v >> i) & 0xF]);
 }
 
-/* Naked handler: count the trap, ack the timer, mret. The ack pushes
- * mtimecmp_hi to its maximum so mtip drops and cannot re-fire. */
+/* Acknowledge the timer by setting mtimecmp_hi to its maximum. */
 __attribute__((naked, aligned(4))) static void timer_handler(void)
 {
     __asm__ volatile("addi sp, sp, -16\n"
@@ -86,9 +85,7 @@ int main(void)
     MTIMECMP_LO = 0;
     enable_timer_interrupt(); /* mie.MTIE = 1 */
 
-    /* Pulse mstatus.MIE high for one instruction, repeatedly. Each csrsi makes the
-     * pending timer eligible at the very next instruction boundary, and the
-     * adjacent csrci must not be able to retroactively cancel it. */
+    /* The pending timer must be taken between the adjacent MIE set and clear. */
     for (uint32_t i = 0; i < PULSES; i++) {
         __asm__ volatile("csrsi mstatus, 8\n" /* mstatus.MIE = 1 for one instruction */
                          "csrci mstatus, 8\n" /* mstatus.MIE = 0 */

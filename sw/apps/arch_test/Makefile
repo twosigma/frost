@@ -35,14 +35,10 @@ XLEN_DEFINE = -DXLEN=64
 CMODEL      = -mcmodel=medany
 ABI  = $(FROST_INT_ABI)
 
-# Misaligned load/store trap tests whose test op must not be compressed. The
-# framework trap handler (arch_test.h) resumes at (mepc & ~3) + 8, which
-# assumes a 4-byte op and two c.nops before the next case. A compressed
-# c.sd/c.ld/c.sw/c.lw leaves only 6 bytes, so the resume lands mid-instruction
-# and the misdecoded code that follows traps on absolute addresses. The
-# signature then depends on the link map, which differs between the Spike
-# reference build and this one. Keep this list equal to NO_COMPRESS_TESTS in
-# generate_references.py so both builds agree on compression for every test.
+# arch_test.h resumes at (mepc & ~3) + 8, requiring a 4-byte test op
+# plus two c.nops. Compressing the op makes it resume mid-instruction and
+# makes signatures depend on the link map. Keep NO_COMPRESS_TESTS equal to
+# generate_references.py.
 NO_COMPRESS_TESTS = misalign-ld-01 misalign-lw-01 misalign-sw-01 misalign-sd-01
 TEST_NAME = $(basename $(notdir $(TEST_SRC)))
 ifneq ($(filter $(TEST_NAME),$(NO_COMPRESS_TESTS)),)
@@ -58,18 +54,11 @@ OBJDUMP = $(RISCV_PREFIX)objdump
 # Include paths: model_test.h is in this directory, arch_test.h is in env/
 INCLUDES = -I. -Iriscv-arch-test/riscv-test-suite/env
 
-# Which memory tiers a test exercises, so a failure is attributable to one
-# path. tests/test_arch_compliance.py sets it from its --mem-config option
+# tests/test_arch_compliance.py selects this with --mem-config
 # (FROST_ARCH_MEM_CONFIG under pytest).
-#   ddr    (default): code + data + signature in the cached DDR region, so
-#                     both the L1I fetch path and the D-side cached-tier
-#                     load/store path are exercised.
-#   icache:           code in DDR (L1I fetch path under test), data +
-#                     signature in low BRAM, loaded and stored directly
-#                     rather than through the D-side cached tier. Isolates
-#                     instruction fetch.
-#   bram:             code + data + signature all in low BRAM. Pure ISA
-#                     conformance, neither cached tier involved.
+#   ddr:    code, data, and signature in cached DDR (default).
+#   icache: code in DDR; data and signature in uncached low BRAM.
+#   bram:   code, data, and signature in low BRAM; neither cache is used.
 MEM_CONFIG ?= ddr
 
 # Each config picks a linker script, a boot stub, and the set of sections

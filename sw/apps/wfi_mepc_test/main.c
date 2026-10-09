@@ -20,7 +20,6 @@
  * The test fires a timer while WFI waits at the ROB head. The pending
  * interrupt releases the WFI, which retires, and the interrupt is taken at the
  * next instruction, so mepc must be the address after the WFI, not a stale PC.
- * wfi_drain_mepc_test covers an interrupt taken before the WFI retires.
  */
 
 #include <stdint.h>
@@ -39,9 +38,8 @@ static volatile uint32_t g_taken;
 __attribute__((naked, aligned(4))) static void wfi_trap_handler(void)
 {
     __asm__ volatile("csrr t0, mepc\n"
-                     /* la (auipc-based under medany): absolute lui %hi cannot
-                      * materialize the ddr build's 0x8xxx_xxxx data addresses
-                      * at lp64. */
+                     /* PC-relative la reaches DDR; RV64 lui sign-extends
+                      * addresses in the 0x8xxx_xxxx range. */
                      "la   t1, g_mepc\n"
                      "sw   t0, 0(t1)\n"
                      "li   t0, 1\n"
@@ -68,9 +66,7 @@ int main(void)
     set_timer_cmp(rdmtime() + 300); /* fire ~300 cycles out: lands during WFI */
     enable_interrupts();
 
-    /* Stash the post-WFI continuation in mscratch, capture its address as the
-     * expected resume PC, then WFI, which waits at the ROB head. The timer
-     * fires here. */
+    /* Set mscratch and capture the expected post-WFI PC before waiting. */
     __asm__ volatile("la   t0, 1f\n"
                      "csrw mscratch, t0\n"
                      "la   %0, 1f\n"
@@ -78,13 +74,8 @@ int main(void)
                      "1:\n"
                      : "=r"(resume_pc)
                      :
-                     /* The timer interrupt fires during the wfi and the naked
-                      * handler clobbers t0 and t1: it uses t1 to address
-                      * g_mepc/g_taken and then to ack MTIMECMP_HI. Both are
-                      * listed so the compiler cannot keep a live value pinned in
-                      * t1 across the wfi, such as g_taken's base; the post-wfi
-                      * `while(!g_taken)` would then read through the clobbered
-                      * address and spin. */
+                     /* The handler clobbers t0 and t1. List both so values live
+                      * across WFI cannot be allocated to them. */
                      : "t0", "t1", "memory");
 
     while (!g_taken) {

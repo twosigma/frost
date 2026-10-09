@@ -15,28 +15,16 @@
  */
 
 /*
- * PASS/FAIL bridge for running CoreMark-PRO workloads on FROST.
+ * PASS/FAIL bridge for CoreMark-PRO.
  *
- * The CoreMark-PRO workload entry (e.g. workloads/core/core.c) calls
- * mith_main(), which runs and verifies the workload, prints the score, and
- * returns. The workload's main() then returns 0 unconditionally (it discards
- * the harness result) and never calls exit(). Some workloads also print error
- * lines without incrementing MITH's per-item ->failed counter. On FROST, crt0
- * spins after main() returns, so nothing would ever print the "<<PASS>>" or
- * "<<FAIL>>" marker that the simulation and board harnesses watch for.
+ * Workload main() discards MITH's result. Some errors only print a message
+ * without setting a work item's failed counter. Wrap mith_main_real() to
+ * check both item failures and al_frost.c's error latch, then call exit()
+ * to emit the UART result marker.
  *
- * Interposing the harness entry point avoids forking the upstream
- * (EEMBC-licensed) workload source. mith_lib.c is compiled with
- * -Dmith_main=mith_main_real (see the Makefile), so the real harness routine is
- * exported as mith_main_real(). The FROST-specific mith_main() below wraps it.
- * It runs the real harness, then inspects each work item's verification result
- * and the FROST AL's benchmark-error latch, and exits with 0 (all checks clean)
- * or 1 (an item failed or an error line was printed). al_frost.c's exit() turns
- * that into the "<<PASS>>" / "<<FAIL>>" UART marker.
- *
- * This file is compiled against the MITH headers and types, not the FROST
- * sw/lib headers. exit() is declared by the toolchain's <stdlib.h> and defined
- * in al_frost.c; the link resolves it.
+ * The Makefile renames mith_lib.c's entry with -Dmith_main=mith_main_real.
+ * Compile this wrapper with MITH headers, not sw/lib headers; the toolchain
+ * declares exit(), and al_frost.c defines it.
  */
 
 #include <stdlib.h> /* exit */
@@ -90,39 +78,17 @@ int mith_main(ee_workload *workload,
 }
 
 /*
- * FROST entry point.
+ * FROST main builds argv from COREMARK_PRO_RUN_ARGS and calls the workload
+ * main, renamed cmp_workload_main by the Makefile.
  *
- * Every CoreMark-PRO workload's own main() is renamed to a single fixed symbol,
- * cmp_workload_main(), via -Dmain=cmp_workload_main on the workload wrapper
- * object (see the Makefile). This FROST main() builds argv from a compile-time
- * string and then calls it, so the entry point is workload-agnostic.
+ * CMP_PGO_TRAINING=1 selects each workload's small verified PGO preset and
+ * bypasses dataset arguments. Official builds use 0. The cjpeg and zip
+ * simulation wrappers also use 0 because they generate their own input.
+ * Upstream cjpeg must keep it off: PGO selects goose data absent from the
+ * Rose256 build.
  *
- * Minimal-but-verified configuration
- * ----------------------------------
- * Each workload's default preset is large (core runs the CoreMark body 10000x
- * over a ~13k-element dataset; sha hashes 1 MiB; radix2 is a 64k-point FFT),
- * which is impractical for a cycle-accurate Verilator run. CoreMark-PRO's PGO
- * "training" path selects each benchmark's smallest preset, each of which has
- * its own known-good expected CRC / reference data. pgo_training_run != 0 makes
- * every benchmark's define_params_*() pick that small preset and skip the
- * command-line dataset overrides, which simulation builds do not use.
- * Verification remains an end-to-end correctness check on the small dataset.
- *
- * CMP_PGO_TRAINING is set per workload by the Makefile (WL_PGO):
- *   1 -> enable pgo_training_run, so the workload picks its smallest preset.
- *        Simulation builds of every workload except cjpeg-rose7-preset and
- *        zip-test take this path.
- *   0 -> leave it 0. Official builds use 0 and run each workload's default
- *        preset. The cjpeg and zip simulation builds also use 0; their FROST
- *        wrappers (frost_cjpeg_tiny.c, frost_zip_darkmark_sim.c) supply their
- *        own generated input. Upstream cjpeg must not enable it:
- *        pgo_training_run selects index 1 (goose), whose data the Rose256
- *        build does not compile.
- *
- * Hardware builds compile with CMP_PGO_TRAINING=0 and pass an argv string at
- * build time, such as COREMARK_PRO_RUN_ARGS="-v0 -i100" for a score run.
- * Without -v0, verify_output remains enabled and mith_main_loop() forces
- * num_iterations to 1.
+ * Hardware score runs pass -v0 and a board-specific -i count. Without -v0,
+ * verify_output makes mith_main_loop() force one iteration.
  */
 #ifndef CMP_PGO_TRAINING
 #define CMP_PGO_TRAINING 1

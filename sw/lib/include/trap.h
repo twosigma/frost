@@ -55,13 +55,9 @@
 /**
  * WFI - Wait For Interrupt
  *
- * Stalls the processor until an interrupt is pending. A masked interrupt
- * wakes it too: mie gates whether the trap is then taken, not the wake-up
- * itself. Useful for low-power idle loops in RTOS or bare-metal code.
- *
- * If an interrupt is already pending when WFI executes, the processor does
- * not stall: it continues immediately, or takes the interrupt if it is
- * enabled.
+ * Wait until an interrupt is pending, including a masked interrupt.
+ * Interrupt enables control trap entry, not wake-up. An interrupt already
+ * pending at WFI wakes the processor without waiting for a new source.
  */
 static inline __attribute__((always_inline)) void wfi(void)
 {
@@ -82,8 +78,8 @@ static inline __attribute__((always_inline)) void ecall(void)
 /**
  * EBREAK - Breakpoint
  *
- * Generates a breakpoint exception (mcause = 3).
- * Used for debugging.
+ * Raises a breakpoint exception (mcause = 3), or enters Debug Mode when
+ * the current privilege's dcsr.ebreak bit is set.
  */
 static inline __attribute__((always_inline)) void ebreak(void)
 {
@@ -179,9 +175,8 @@ static inline __attribute__((always_inline)) void disable_external_interrupt(voi
 /**
  * Set the trap handler address
  *
- * The trap handler is entered on every exception and interrupt. It must be
- * 4-byte aligned: the low two bits of mtvec are the MODE field, and an
- * aligned address selects direct mode, so every trap enters at the handler.
+ * Handles traps taken into M-mode. The address must be 4-byte aligned:
+ * mtvec[1:0] selects the mode, and zero selects direct entry at the handler.
  *
  * @param handler  Function pointer to the trap handler
  *
@@ -194,7 +189,7 @@ static inline void set_trap_handler(void (*handler)(void))
 }
 
 /**
- * Get the current trap handler address
+ * Read mtvec, including its low two MODE bits.
  */
 static inline uintptr_t get_trap_handler(void)
 {
@@ -208,9 +203,9 @@ static inline uintptr_t get_trap_handler(void)
 /**
  * Read the 64-bit machine timer (mtime)
  *
- * mtime increments every clock cycle and is used for RTOS scheduling. The
- * high word is read again after the low word, so a carry between the two
- * 32-bit reads is retried rather than returned as a torn value.
+ * mtime advances each cycle by SIM_TIMER_SPEEDUP (normally 1), except when
+ * written. Retry if the high word changes across the low-word read to
+ * avoid a torn value.
  */
 static inline uint64_t rdmtime(void)
 {
@@ -229,9 +224,9 @@ static inline uint64_t rdmtime(void)
  * The timer interrupt (MTIP) is asserted while mtime >= mtimecmp. To
  * acknowledge it, write a new compare value greater than mtime.
  *
- * The 64-bit compare is written as three 32-bit stores: high word to
- * 0xFFFFFFFF, then the low word, then the real high word. The intermediate
- * value stays above mtime, so the update cannot fire a spurious interrupt.
+ * Write the high word as 0xFFFFFFFF before updating the low word and then
+ * the real high word. This prevents a spurious interrupt while mtime
+ * remains below the intermediate compare value.
  */
 static inline void set_timer_cmp(uint64_t cmp)
 {
@@ -243,8 +238,7 @@ static inline void set_timer_cmp(uint64_t cmp)
 /**
  * Trigger a software interrupt
  *
- * Sets the MSIP bit, which causes a software interrupt (if enabled).
- * The handler must clear this by writing 0 to MSIP.
+ * Set MSIP; the handler must clear it by writing 0.
  */
 static inline void trigger_software_interrupt(void)
 {

@@ -1,14 +1,5 @@
-// FROST header for riscv-torture tests
-//
-// Included at the top of each torture test. It supplies _start in
-// .text.init, which:
-//   1. Sets up the stack pointer and global pointer
-//   2. Copies .data/.sdata from ROM to RAM
-//   3. Zeros .sbss and .bss
-//   4. Enables the FPU (mstatus.FS)
-//   5. Installs the trap vector
-//   6. Enters the test body at _torture_test_begin (under FROST_PAGED, by
-//      mret into S-mode)
+// Torture-test startup: initialize memory, the FPU and trap handling, then
+// enter _torture_test_begin. FROST_PAGED enters S-mode through MRET.
 
 #include "encoding.h"
 
@@ -59,16 +50,10 @@ _start:
     csrw mtvec, t0
 
 #ifdef FROST_PAGED
-    // Paged environment: run the test body, and the footer's
-    // signature dump, in S-mode under an Sv39 identity map, so every fetch
-    // and data access translates through the ITLB/DTLB and the walker over
-    // 1 GiB leaves. The root table sits in .data, 4 KiB-aligned; the ddr
-    // config keeps .data in cached DDR, the only memory the walker reads.
-    // The table's three entries are [0] PA 0, the BRAM and the rest of the
-    // low map, RWX; [1] PA 0x4000_0000, the devices including the UART the
-    // footer prints through, RW; [2] PA 0x8000_0000, DDR holding code, data
-    // and the signature, RWX. A=D=1 everywhere, so Svade never traps. Traps
-    // still land in M-mode at _frost_torture_trap, since medeleg resets to 0.
+    // Run the body and signature dump in S-mode through Sv39 1 GiB leaves.
+    // The root table must be in cached DDR, the only memory the walker reads.
+    // Identity-map low memory RWX, devices RW and DDR RWX. Set A and D to
+    // avoid Svade faults. medeleg=0 keeps traps in M-mode.
     la t0, _frost_torture_root_pt
     li t1, 0xCF                                   // V|R|W|X|A|D, PPN 0
     sd t1, 0(t0)

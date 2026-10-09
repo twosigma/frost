@@ -15,7 +15,7 @@
  */
 
 /* Freestanding support for the Spike harness: a printf sink plus the handful
- * of libc entry points GCC may synthesize calls to.  CoreMark's timed region
+ * of libc entry points GCC may synthesize calls to. CoreMark's timed region
  * calls none of these; they exist so the link succeeds without linking libc. */
 
 #include <stddef.h>

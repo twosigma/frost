@@ -18,11 +18,7 @@
 #define SYNC_H
 
 /**
- * Synchronization primitives for RISC-V (Zifencei extension)
- *
- * Memory and instruction barriers for bare-metal code: fence_i() after
- * writing instructions to memory, fence() to order memory accesses against
- * other agents and devices.
+ * Memory and instruction barriers for RISC-V (Zifencei extension).
  *
  * On FROST, fence waits at the ROB head until committed stores have drained.
  * fence.i also waits for the L1D to write back its dirty lines and the L1I to
@@ -47,13 +43,8 @@ static inline __attribute__((always_inline)) void fence(void)
 /**
  * FENCE.I - Instruction fetch fence (Zifencei extension)
  *
- * Synchronizes the instruction stream with data memory. Required after
- * writing instructions to memory (self-modifying code, JIT compilation,
- * dynamic code loading) so the processor fetches the new instructions.
- *
- * On FROST this drains committed stores, writes back the L1D, invalidates the
- * L1I, and refetches. A build without the cache hierarchy
- * (ENABLE_CACHED_TIER=0) skips the cache steps.
+ * Required after writing instructions to memory. A build without the cache
+ * hierarchy (ENABLE_CACHED_TIER=0) skips the cache steps described above.
  */
 static inline __attribute__((always_inline)) void fence_i(void)
 {

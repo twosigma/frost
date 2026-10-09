@@ -14,10 +14,8 @@
 
 # Shared build backend for self-starting assembly applications.
 #
-# The including Makefile must define ARCH, ABI, and ASM_SRC. These applications
-# cannot use common.mk's C runtime because their assembly source defines _start,
-# but they still need the same BRAM/DDR image semantics and incremental-build
-# guarantees as ordinary software applications.
+# The including Makefile must define ARCH, ABI, and ASM_SRC. These sources
+# define _start and use no C runtime. Images follow common.mk's BRAM/DDR layout.
 
 ifndef ARCH
 $(error ARCH must be set before including standalone_asm.mk)
@@ -90,10 +88,8 @@ else ifneq ($(FROST_DEBUG),0)
 $(error FROST_DEBUG must be 0 or 1)
 endif
 
-# Make cannot otherwise tell that the shared output names were produced with a
-# different tier, ISA/ABI, tool override, linker, or section split. Keep one
-# stamp holding the effective build configuration, rewritten (so its mtime
-# changes) only when that configuration changes.
+# Rewrite the stamp only when the effective configuration changes, so shared
+# output names cannot reuse artifacts from another configuration.
 EFFECTIVE_BUILD_CONFIG = MEM_CONFIG=$(MEM_CONFIG)|FROST_DEBUG=$(FROST_DEBUG)|FPGA_CPU_CLK_FREQ=$(strip $(FPGA_CPU_CLK_FREQ))|ARCH=$(ARCH)|ABI=$(ABI)|AS=$(AS)|LD=$(LD)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|ASM_FLAGS=$(ASM_FLAGS)|BOOT_CFLAGS=$(BOOT_CFLAGS)|FROST_ASM_DEBUG_FLAGS=$(FROST_ASM_DEBUG_FLAGS)|FROST_BOOT_DEBUG_FLAGS=$(FROST_BOOT_DEBUG_FLAGS)|LINK_FLAGS=$(LINK_FLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|BOOT_STUB_OBJ=$(BOOT_STUB_OBJ)|DDR_SECTIONS=$(DDR_SECTIONS)|ASM_SRC=$(ASM_SRC)
 shell_quote = '$(subst ','"'"',$(1))'
 
@@ -113,8 +109,7 @@ $(BUILD_CONFIG_FILE): FORCE
 	    mv "$$tmp" '$@'; \
 	fi
 
-# The DDR boot stub is configuration-dependent too: changing ARCH/ABI or the
-# selected tool must not silently reuse an object assembled by an older build.
+# Rebuild the DDR boot stub when its configuration or tools change.
 $(DDR_BOOT_STUB_OBJ): $(DDR_BOOT_STUB_SRC) $(BUILD_CONFIG_FILE) $(BUILD_MAKEFILES)
 	@set -e; \
 	tmp='$@.tmp'; \
@@ -122,9 +117,8 @@ $(DDR_BOOT_STUB_OBJ): $(DDR_BOOT_STUB_SRC) $(BUILD_CONFIG_FILE) $(BUILD_MAKEFILE
 	$(CC) $(BOOT_CFLAGS) $(FROST_BOOT_DEBUG_FLAGS) -c -o "$$tmp" '$<'; \
 	mv "$$tmp" '$@'
 
-# Assemble and link through temporary files so a failed tool invocation cannot
-# replace a previously valid ELF. Switching tiers in either direction changes
-# the configuration stamp and therefore always reaches this recipe.
+# Temporary files preserve the previous ELF on failure. The configuration
+# stamp forces a rebuild when switching tiers.
 $(EXECUTABLE_ELF_FILE): $(ASM_SRC) $(BOOT_STUB_OBJ) $(LINKER_SCRIPT) \
                         $(BUILD_CONFIG_FILE) $(BUILD_MAKEFILES)
 	@set -e; \
@@ -146,10 +140,8 @@ $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 $(DWORD_HEX_FILE): $(VERILOG_HEX_FILE) ../../common/make_dword_mem.py
 	python3 ../../common/make_dword_mem.py '$<' '$@'
 
-# Generate the cached-region image atomically. An empty selected-section set is
-# valid in the BRAM tier and becomes one zero word, so consumers can $readmemh
-# the file unconditionally. Any objcopy error is fatal and leaves an old target
-# untouched rather than blessing stale data.
+# Write the DDR image atomically. With no selected sections, emit one zero
+# word for $readmemh. Any objcopy error preserves the previous target and fails.
 $(DDR_VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	@set -e; \
 	tmp="$@.$$$$.tmp"; \

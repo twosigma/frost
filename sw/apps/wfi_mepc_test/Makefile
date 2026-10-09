@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for the timer-interrupt-at-WFI mepc directed test
+# Check mepc for a timer interrupt at WFI.
 SRC_C := ../../lib/src/uart.c main.c
 include ../../common/common.mk

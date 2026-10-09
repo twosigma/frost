@@ -59,11 +59,8 @@ struct pde_like {
 };
 __attribute__((section(".ddr_data"))) static volatile struct pde_like ddr_pde_like;
 
-/* Under lp64 medany, PC-relative addressing reaches just under 2 GiB above the
- * PC, which from BRAM text near address 0 falls short of .ddr_data at
- * 0x8000_0000. Every access therefore goes through pointers whose absolute
- * values are link-time R_RISCV_64 data relocations in BRAM. The pointers are
- * volatile so -O3 cannot fold them back into PC-relative references. */
+/* Use absolute R_RISCV_64 pointer values: DDR exceeds medany's positive
+ * reach from low BRAM. volatile prevents folding into PC-relative accesses. */
 static volatile uint32_t *volatile dv = &ddr_var;
 static volatile struct pde_like *volatile pde = &ddr_pde_like;
 
@@ -71,7 +68,7 @@ int main(void)
 {
     putc_('S');
 
-    /* 1. Plain DDR store/load. ddr_test already covers this path. */
+    /* 1. Plain DDR store/load. */
     *dv = 0x20;
     if (*dv != 0x20) {
         puts_("\r\n<<FAIL>> ddr store/load\r\n");
@@ -80,7 +77,7 @@ int main(void)
     }
     putc_('L');
 
-    /* 2. AMO to DDR (amoadd.w). Hangs here if AMO-to-cached deadlocks. */
+    /* 2. A single amoadd.w to DDR. */
     uint32_t old_amo;
     __asm__ volatile("amoadd.w %0, %2, (%1)" : "=r"(old_amo) : "r"(dv), "r"(1u) : "memory");
     if (old_amo != 0x20) {

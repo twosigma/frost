@@ -1,11 +1,8 @@
 // FROST ROM boot stub for MEM_CONFIG=ddr builds.
 //
-// With MEM_CONFIG=ddr the whole program is linked into the cached DDR region:
-// crt0.S's _start, or a custom app's own _start, plus code and data.  The
-// core resets at PC=0 in the low instruction BRAM, where this stub is the
-// only code.  It jumps to the DDR-resident _start, which is out of JAL range
-// and so needs a register jump.  The bram config does not link this stub;
-// there _start already sits at 0x0.
+// The core resets at PC=0 in low BRAM. This stub uses a register jump to
+// reach _start in DDR, beyond JAL range. BRAM builds put _start at 0 and
+// omit the stub.
 
     .section .boot, "ax", @progbits
     .globl _frost_ddr_boot
@@ -15,9 +12,8 @@ _frost_ddr_boot:
     // 0x8000_0000. Materialize the DDR origin as a constant instead.
     // link_ddr.ld and freertos_demo's link_freertos_ddr.ld ASSERT that _start
     // sits at ORIGIN(DDR) = 0x8000_0000.
-    // lui+slli builds the address as a positive 64-bit value, so there is no
-    // lui sign-extension hazard, and .option norvc keeps the small ROM image
-    // all-4-byte. The riscv_tests DDR stub has the same shape.
+    // lui+slli forms a positive 64-bit address; .option norvc keeps every
+    // instruction four bytes wide.
     .option push
     .option norvc
     lui  t0, 0x40000

@@ -17,10 +17,8 @@
 /*
  * CLINT timer re-arm under heavy cached-DDR traffic.
  *
- * A timer tick that stops arriving freezes jiffies and hangs Linux. Here a
- * foreground loop thrashes DDR while the machine-timer handler re-arms on a much
- * shorter period than the kernel's, writing mtimecmp as hi=-1, lo, hi and
- * reading mtime as hi, lo, hi. Three detectors catch failures:
+ * Thrash DDR while the machine-timer handler re-arms. Write mtimecmp as
+ * hi=-1, lo, hi and read mtime as hi, lo, hi. Detect failures through:
  *
  *   D1: an immediate mtimecmp readback catches dropped or mispaired stores.
  *   D2: no tick for WATCHDOG_PERIODS periods past the armed deadline fails the
@@ -189,9 +187,8 @@ __attribute__((naked, aligned(4))) static void tick_irq_entry(void)
         "mret\n");
 }
 
-/* One streaming sweep over the working set: line-stride stores force
- * continuous write-allocate fills + evictions; the xor-reduce read pass
- * keeps the read port busy too. Returns a value so nothing is elided. */
+/* Line-stride stores force write allocation and eviction; an XOR-reduced
+ * read pass adds load traffic. Return the result to keep the reads live. */
 __attribute__((noinline)) static uint32_t thrash_sweep(uint32_t salt)
 {
     uint32_t acc = salt;
@@ -278,7 +275,7 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
             }
         }
 
-        /* D3: periodic Linux-like WFI idle phase, bounded. */
+        /* D3: WFI idle phase; check the deadline after each wake. */
         if ((sweeps % WFI_PHASE_EVERY) == 0u) {
             uint32_t before = g_ticks;
             uint64_t deadline = clint_rdmtime() + (uint64_t) WATCHDOG_PERIODS * PERIOD_CYCLES;
@@ -297,7 +294,7 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
     disable_interrupts();
     clint_set_timer_cmp(0xFFFFFFFFFFFFFFFFull);
 
-    if (!g_fail_seen && acc != 0x600DBEEFu) { /* acc consumed, never taken */
+    if (!g_fail_seen && acc != 0x600DBEEFu) { /* Consume the sweep result. */
         uart_printf("ticks=%u sweeps=%u catchups=%u acc=%08x\n", g_ticks, sweeps, g_catchups, acc);
         uart_printf("<<PASS>>\n");
     } else {

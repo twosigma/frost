@@ -1,12 +1,6 @@
-/* Linker script for riscv-tests on FROST, DDR memory config.
- *
- * A minimal boot stub (crt0_riscv_tests_ddr.S, .boot) runs from the low BRAM
- * ROM and far-jumps to the DDR-resident _start. The test's code and data
- * (including BSS and the heap) live in the cached DDR region, so fetches go
- * through the L1I and loads and stores through the L1D. DDR sections load in
- * place (LMA == VMA): the simulator preloads the behavioral DDR from
- * sw_ddr.mem. The stack stays in low BRAM for fast access.
- */
+/* crt0_riscv_tests_ddr.S boots from low BRAM and jumps to _start in cached
+ * DDR. Code, data, BSS and heap use DDR; the stack stays in low BRAM.
+ * sw_ddr.mem loads DDR sections in place (LMA == VMA). */
 
 ENTRY(_start)
 
@@ -44,8 +38,7 @@ SECTIONS
         . = ALIGN(4);
     } > DDR
 
-    /* Loaded in place from sw_ddr.mem (LMA == VMA), so the startup's data-copy
-     * loop is a no-op (load address == store address). */
+    /* LMA == VMA: startup copies each data word onto itself. */
     .data : {
         __data_load_start = .;
         __data_start      = .;
@@ -75,9 +68,8 @@ SECTIONS
         __bss_end = .;
     } > DDR
 
-    /* .tohost is upstream's HTIF mailbox. Neither FROST's riscv_test.h nor
-     * syscalls_frost.c emits one (both report over the UART), but any .tohost
-     * input stays in DDR so it cannot orphan into the low BRAM image. */
+    /* Keep any upstream HTIF mailbox in DDR so it cannot become an orphan
+     * section in low BRAM. FROST reports through UART and emits no mailbox. */
     .tohost : {
         *(.tohost)
     } > DDR

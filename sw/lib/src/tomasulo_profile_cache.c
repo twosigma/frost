@@ -17,18 +17,13 @@
 #include "tomasulo_profile.h"
 
 /*
- * Cache-counter drain and report for tomasulo_profile.h. It runs only after a
- * measured region ends. Its code and strings go in their own linker sections,
- * placed after the rest of the program image, so linking it in moves none of
- * the program's code or static data and leaves the warm microarchitectural
- * state at the timing boundary unchanged.
+ * Cache-counter reporting runs after the measured region. Its code and
+ * strings use linker sections after the program image to preserve the
+ * benchmark's code and data layout at the timing boundary.
  *
- * GCC can emit out-of-line copies of the static inline tomasulo_profile.h
- * helpers into ordinary .text (at -O2, -Os, or -Og), so the functions here
- * that call them are flattened (CACHE_PROFILE_FLATTEN), which inlines every
- * helper whenever optimization is on. tomasulo_profile_read_cache_pair() is
- * noinline, so link-time optimization cannot inline it, and the bank reads it
- * calls, into a caller in .text.
+ * CACHE_PROFILE_FLATTEN keeps optimized helper copies out of ordinary .text.
+ * tomasulo_profile_read_cache_pair() is noinline so LTO cannot move the bank
+ * reads into a caller in .text.
  */
 #define CACHE_PROFILE_TEXT __attribute__((section(".cache_profile_text")))
 #define CACHE_PROFILE_FLATTEN __attribute__((flatten))
@@ -217,9 +212,8 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
     uint64_t l2_overlap;
 
     /*
-     * Every delta below indexes the whole bank, so print n/a unless the CPU
-     * implements all of it and both snapshots saw counters. A short bank would
-     * otherwise print differences of counters that do not exist.
+     * The deltas require the full bank. Print n/a if counters are absent
+     * or the bank is incomplete.
      */
     if (start->counter_count == 0U || end->counter_count == 0U ||
         cache_bank_counter_count() < TOMASULO_PROFILE_CACHE_COUNTER_COUNT) {

@@ -17,8 +17,7 @@
 # Each burst starts from an idle transmitter (ns16550 LSR.TEMT) and writes its
 # bytes with consecutive stores from preloaded registers, so the next byte is
 # already in the transmit FIFO when the FIFO presents the first one to the
-# idle uart_tx, which takes it at once. The C programs pace every byte on the
-# TX status register and never queue one that early.
+# idle uart_tx, which takes it at once.
 #
 # The bench decodes the serial TX line (FROST_UART_LINE_CHECK, set by the
 # registry) and requires it to carry every byte the CPU wrote, once and in

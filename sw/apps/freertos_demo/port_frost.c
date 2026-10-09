@@ -33,8 +33,7 @@ static volatile uint32_t ulPortYieldPending = 0;
 
 /* Next mtimecmp value */
 static uint64_t ullNextTime = 0;
-/* mtime advances once per core cycle, so a tick is configCPU_CLOCK_HZ / configTICK_RATE_HZ
- * cycles. */
+/* With SIM_TIMER_SPEEDUP=1, mtime advances once per core cycle. */
 static const uint64_t ullTimerIncrementForOneTick =
     (uint64_t) (configCPU_CLOCK_HZ / configTICK_RATE_HZ);
 
@@ -64,8 +63,7 @@ void vPortExitCritical(void)
 
 void vPortYield(void)
 {
-    /* ecall from M-mode traps with mcause = 11; the trap handler treats that as a yield
-     * and switches context. */
+    /* The trap handler treats M-mode ecall (mcause 11) as a yield. */
     __asm volatile("ecall");
 }
 
@@ -82,17 +80,15 @@ void vPortYieldWithinAPI(void)
 
 /*-----------------------------------------------------------*/
 
-/* Arm mtimecmp for the first tick and enable the timer interrupt. mstatus.MIE stays clear, as
- * vTaskStartScheduler left it: the first task's mret sets it from the frame's MPIE, so no tick
- * can be taken before a task context is loaded. */
+/* Keep mstatus.MIE clear until the first task's mret sets it from MPIE, so no
+ * tick can interrupt before a task context is loaded. */
 static void prvSetupTimerInterrupt(void)
 {
-    /* rdmtime rereads the high word, so a carry out of the low word between its two 32-bit
-     * reads cannot put the first tick about 2^32 cycles late. */
+    /* rdmtime retries if the low word wraps between its 32-bit reads. */
     ullNextTime = rdmtime() + ullTimerIncrementForOneTick;
 
-    /* Park the high word at all-ones first so no intermediate 64-bit compare value lies
-     * below mtime and fires early. */
+    /* Write all-ones to the high word first to avoid an early timer interrupt
+     * while mtime is below that intermediate compare value. */
     MTIMECMP_HI = 0xFFFFFFFF;
     MTIMECMP_LO = (uint32_t) (ullNextTime & 0xFFFFFFFF);
     MTIMECMP_HI = (uint32_t) (ullNextTime >> 32);
@@ -148,13 +144,11 @@ extern void xPortStartFirstTask(void);
 
 BaseType_t xPortStartScheduler(void)
 {
-    /* Set up timer interrupt for first tick */
     prvSetupTimerInterrupt();
 
     /* Load first task context and start it (never returns) */
     xPortStartFirstTask();
 
-    /* Should never get here */
     return pdFALSE;
 }
 

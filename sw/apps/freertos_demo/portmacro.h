@@ -15,10 +15,7 @@
  */
 
 /*
- * FreeRTOS port macros for FROST.
- *
- * Minimal port configuration for the FROST RISC-V core in M-mode: the types
- * and macros the FreeRTOS kernel requires.
+ * FreeRTOS port types and macros for FROST in M-mode.
  */
 
 #ifndef PORTMACRO_H

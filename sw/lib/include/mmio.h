@@ -35,10 +35,8 @@
 /* Linker-provided symbols                                                    */
 /* ========================================================================== */
 
-/* Every anchor is declared volatile, never const. Only its address is used,
- * but GCC treats loads through the casts below as loads of the declared
- * object, so for a const or plain object it may treat the value as invariant
- * between stores and hoist a status poll's load out of its loop. */
+/* Keep linker symbols volatile and non-const: GCC can treat loads through
+ * these casts as loads of the declared object and hoist a nonvolatile poll. */
 extern volatile unsigned long UART_ADDR;
 extern volatile unsigned long UART_RX_DATA_ADDR;
 extern volatile unsigned long UART_RX_STATUS_ADDR;
@@ -51,12 +49,9 @@ extern volatile uint32_t MTIMECMP_LO_ADDR;
 extern volatile uint32_t MTIMECMP_HI_ADDR;
 extern volatile uint32_t MSIP_ADDR;
 
-/* The 32-bit registers declared `unsigned long` are accessed through a
- * narrower lvalue, which is a type pun. -fno-strict-aliasing (common.mk) makes
- * that harmless, but an app may turn strict aliasing back on (coremark does),
- * and GCC could then warn (-Wstrict-aliasing) and assume the two lvalues do
- * not alias. may_alias keeps the accesses correct under either setting.
- * uint8_t needs no such marker: a character type may alias anything.
+/* may_alias permits 32-bit accesses to the unsigned long linker symbols,
+ * including in apps that override common.mk with strict aliasing enabled.
+ * uint8_t needs no marker: a character type may alias anything.
  */
 typedef uint32_t __attribute__((may_alias)) mmio_u32_t;
 

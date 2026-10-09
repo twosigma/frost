@@ -16,9 +16,8 @@
 
 // FROST replacement for riscv-tests/benchmarks/common/syscalls.c
 //
-// Replaces the tohost/fromhost proxy syscall mechanism with direct
-// UART output at 0x40000000. Provides the same functions, so the
-// benchmark sources compile unchanged.
+// Report through UART at 0x40000000 instead of HTIF so benchmarks can use
+// their existing syscall interface.
 
 #include <limits.h>
 #include <stdarg.h>
@@ -161,7 +160,6 @@ void _init(int cid, int nc)
 {
     thread_entry(cid, nc);
 
-    // Only single-threaded programs reach here
     int ret = main(0, 0);
 
     char buf[NUM_COUNTERS * 32] __attribute__((aligned(64)));
@@ -391,7 +389,5 @@ int sprintf(char *str, const char *fmt, ...)
 // -----------------------------------------------------------------------
 // Standard library functions
 //
-// memcpy, memset, strlen, strnlen, strcmp, strcpy, malloc, free, calloc,
-// realloc, and atol come from sw/lib (string.c, memory.c, stdlib.c), which
-// Makefile.bench links in.
+// Makefile.bench links the standard library implementations from sw/lib.
 // -----------------------------------------------------------------------

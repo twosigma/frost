@@ -68,7 +68,7 @@ typedef uint64_t frame_word_t;
 /* Cycle offsets spanning the burst; mtime runs at the hardware core clock. */
 #define K_MIN 64u
 #define K_SPAN 8192u
-#define K_STEP 37u /* co-prime-ish with burst structure for dense coverage */
+#define K_STEP 37u /* Sweep the timer offset in 37-cycle steps. */
 
 volatile uint32_t g_ticks;
 volatile uint32_t g_spurious;
@@ -88,8 +88,8 @@ static uint64_t clint_rdmtime(void)
     return ((uint64_t) hi << 32) | lo;
 }
 
-/* Three 32-bit stores: hi=-1, lo, hi. The intermediate value stays above mtime,
- * so the update cannot fire a spurious interrupt. */
+/* Write hi=-1, lo, hi to avoid a premature interrupt while mtime remains
+ * below the intermediate compare value. */
 static void clint_set_timer_cmp(uint64_t cmp)
 {
     CLINT_MTIMECMP_HI = 0xFFFFFFFFu;
@@ -191,9 +191,7 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
         for (uint32_t b = 0; b < BURST_AMOS; b++) {
             amo_add1(&g_counters[counter_idx * COUNTER_STRIDE_WORDS]);
             counter_idx = (counter_idx + 1u) % COUNTERS;
-            /* Stream two lines through L1 so each counter's line is evicted
-             * before its next AMO. The AMO then misses, which opens the widest
-             * in-flight window. */
+            /* Evict counter lines before reuse to make AMOs miss in L1D. */
             g_evict[evict_idx] ^= iter + b;
             g_evict[evict_idx + EVICT_TOUCH_STRIDE] ^= iter ^ b;
             evict_idx = (evict_idx + 2u * EVICT_TOUCH_STRIDE) % EVICT_WORDS;

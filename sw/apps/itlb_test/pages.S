@@ -204,17 +204,14 @@ itlb_page_t:
     .word 0x00000073            /* ecall */
 
     /*
-     * Z (cached tier): DDR-resident twins of the Linux signal-return pages,
-     * fetched through the L1I fetch provider rather than the low-BRAM
-     * presenter. The layouts mirror the kernel's: a user text page holding
-     * the interrupted body and the handler, and a text page whose stub at
-     * 0x5E0 is the vDSO's `li a7, 139; ecall` followed by zero padding, with
-     * the line before it zero as well. Control stubs sit at 0x000 (a line
-     * start at the page head) and 0x7E8 (line offset 8). Every instruction
-     * is a fixed encoding.
+     * Z: DDR-resident signal-return pages fetched through L1I. A user text
+     * page holds the interrupted body and handler. The vDSO-style stub at
+     * 0x5E0 is `li a7, 139; ecall`, with zeros before and after it. Control
+     * stubs sit at 0x000 (a line start) and 0x7E8 (line offset 8).
+     * Every instruction is a fixed encoding.
      *
      *   ddr_page_u  0x000: li a7, 0x104 (the "wait4" number); jal ra, 0x100
-     *                      (the RAS now holds 0x008, a user return address);
+     *                      (the RAS holds 0x008, a user return address);
      *                      0x008: li a7, 0x105; ecall (the done marker, only
      *                      reached if the wrapper returns)
      *               0x100: ecall (the interrupted syscall); ret

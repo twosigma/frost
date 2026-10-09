@@ -1,15 +1,6 @@
-// FROST footer for riscv-torture tests
-//
-// Included at the end of each torture test, where it:
-//   1. Dumps all integer registers (x0-x31) to the signature area
-//   2. Dumps all FP registers (f0-f31) to the signature area
-//   3. Prints the signature over the UART as hex, one word per line
-//   4. Prints the <<PASS>> marker
-//   5. Writes tohost, which ends the Spike run, and halts
-//
-// Integer registers dump at their natural width (sd, 8 bytes). FP registers
-// are 64-bit fsd (FLEN=64). The UART dump loop is width-agnostic: it walks
-// 32-bit words to the end label.
+// Capture integer and FP registers, print the signature as 32-bit hex
+// words, then print <<PASS>>. Write tohost to end the Spike reference run.
+// Registers occupy 8 bytes each (XLEN=FLEN=64); the dump walks 32-bit words.
 
 #define XSTORE sd
 #define XB 8
@@ -67,12 +58,10 @@ _torture_test_end:
     XSTORE x30, (30*XB)(t0)
     XSTORE x31, (31*XB)(t0)
 
-    // x5 (t0) now holds the signature base, so its original value is gone.
-    // Store 0 in its slot as a placeholder.
+    // t0 holds the signature base; its input value is lost. Use a zero slot.
     XSTORE zero, (5*XB)(t0)
 
-    // Store FP registers (as 64-bit doubles via fsd, 8 bytes each),
-    // starting right after the integer block.
+    // Store the FP block after the integer block, 8 bytes per register.
     fsd f0,  (32*XB + 0)(t0)
     fsd f1,  (32*XB + 8)(t0)
     fsd f2,  (32*XB + 16)(t0)
@@ -177,8 +166,7 @@ tohost:     .dword 0
     .globl fromhost
 fromhost:   .dword 0
 
-    // Signature area: 32 integer regs * XB bytes + 32 FP regs * 8 bytes
-    // (512 bytes)
+    // Signature storage (layout above).
     .section .data
     .align 3
     .globl _frost_torture_signature

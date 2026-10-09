@@ -16,7 +16,7 @@
 
 /*
  * Machine-timer/MRET deadlock stress: frequent timer interrupts preempt an
- * M-mode loop, and each handler returns with a real MRET. Re-arming at
+ * M-mode loop, and the handler returns with MRET. Re-arming at
  * mtime + 512..575 sweeps timer phase across the loop and MRET. A deadlock
  * stops progress and the harness times out before <<PASS>>.
  */
@@ -59,9 +59,8 @@ __attribute__((naked, aligned(4))) static void mtimer_handler(void)
                      "sd   t0, 0(sp)\n"
                      "sd   t1, 8(sp)\n"
                      "sd   t2, 16(sp)\n"
-                     /* la (auipc-based under medany): absolute lui %hi cannot
-                      * materialize the ddr build's 0x8xxx_xxxx data addresses
-                      * at lp64. */
+                     /* PC-relative la reaches DDR; RV64 lui sign-extends
+                      * addresses in the 0x8xxx_xxxx range. */
                      "la   t0, g_irq\n"
                      "lw   t1, 0(t0)\n"
                      "andi t2, t1, 0x3f\n"
@@ -87,15 +86,13 @@ int main(void)
     for (int i = 0; i < 64; i++)
         buf[i] = (uint32_t) i;
 
-    /* Arm a frequent machine timer. The handler re-arms it each tick, which is
-     * what sweeps the phase. */
+    /* The handler varies the timer period to sweep its phase. */
     MTIMECMP_HI = 0;
     MTIMECMP_LO = (uint32_t) rdmtime() + 40;
     enable_timer_interrupt(); /* mie.MTIE */
     enable_interrupts();      /* mstatus.MIE */
 
-    /* Loop with loads/stores/ALU so the timer preempts varied pipeline state
-     * (in-flight memory ops, branches) at every swept phase. */
+    /* Mix memory and ALU operations so interrupts see varied pipeline state. */
     uint32_t acc = 0;
     for (uint32_t i = 0; i < 20000u; i++) {
         g_loop = i;

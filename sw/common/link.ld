@@ -66,9 +66,7 @@ MEMORY
 _end_of_stack = ORIGIN(RAM) + LENGTH(RAM);
 PROVIDE(_stack_top = _end_of_stack);
 
-/* 112KiB is the measured stack high-water mark of the CoreMark-PRO parser
- * workload. The RAM fit check below keeps that much stack free in every
- * program. */
+/* Reserve 112 KiB for the CoreMark-PRO parser stack in the RAM fit check. */
 __stack_reserve = 112K;
 
 /* FreeRTOS ISR stack top - reuses main's stack after scheduler starts */
@@ -92,7 +90,7 @@ SECTIONS
      * opt in with __attribute__((section(".ddr_rodata"))). */
     .rodata : {
         *(EXCLUDE_FILE(*data3_big*) .rodata*)   /* radix2-big-64k FFT tables -> DDR */
-        *(.srodata*)        /* Small read-only data (accessed via gp) */
+        *(.srodata*)        /* Small read-only data */
         . = ALIGN(4);
     } > ROM
 
@@ -116,10 +114,8 @@ SECTIONS
     } > RAM
 
     /*
-     * The cache-profile report runs only after the measured region. Its code
-     * and data follow the .data/.sdata load image, outside the ordinary
-     * .text/.rodata sections, so linking the optional report in leaves the
-     * measured program's addresses and initial cache state unchanged.
+     * Keep the optional cache report after the data load image to preserve
+     * the measured program's code and data addresses.
      */
     .cache_profile_text LOADADDR(.sdata) + SIZEOF(.sdata) : {
         *(.cache_profile_text*)
@@ -213,9 +209,8 @@ SECTIONS
      * GLOBAL SYMBOLS
      * ================================================================ */
 
-    /* Global pointer for gp-relative small-data access. gp-relative offsets
-     * reach ±2048 bytes (±0x800), so this gp covers the first 4KiB of
-     * .sdata/.sbss. */
+    /* gp-relative offsets range from -2048 to 2047, covering the first 4 KiB
+     * of .sdata/.sbss. */
     PROVIDE(__global_pointer$ = ADDR(.sdata) + 0x800);
 
     /* Memory-mapped I/O peripheral addresses. These must match the hardware

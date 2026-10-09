@@ -17,29 +17,22 @@
 /*
  * Linux clocksource-switch timer stressor (M-mode, DDR-resident).
  *
- * Unlike the linux_irq_* tests, this one mirrors the CLINT timer driver
- * (timer-clint.c) that an M-mode (no-MMU) Linux kernel switches to as its
- * clocksource:
+ * Mirrors the M-mode, no-MMU Linux CLINT driver (timer-clint.c):
  *
  *   - clint_clock_next_event() enables MTIE, then writes mtimecmp low word
  *     first, as an RV32 kernel's writeq_relaxed (io-64-nonatomic-lo-hi) does.
  *     That exposes the old deadline and a torn {old_hi,new_lo} value.
  *   - clint_timer_interrupt() clears MTIE, then the event handler re-arms it.
  *
- * The idle loop departs from Linux, whose idle loop executes wfi with
- * interrupts disabled and enables them afterward: here mstatus.MIE stays
- * set, so ticks also interrupt the wfi itself. Before each wfi the loop
- * churns one to four cached-DDR lines, each fetched from DDR (see
- * CHURN_BASE), so ticks land both during these bursts, when misses can be
- * in flight, and at the wfi. The handler counts ticks taken during a burst
- * and ticks taken outside one.
+ * Linux idles in wfi with interrupts disabled, then enables them. Here
+ * mstatus.MIE stays set, so a tick can interrupt wfi. Before each wfi,
+ * churn one to four cached-DDR lines (see CHURN_BASE). Count ticks both
+ * during these bursts, when misses can be in flight, and outside them.
  *
- * The registered simulation uses a deliberately small L2 and
- * DDR_MODEL_LATENCY>=70, so the misses go to DDR. Frame violations report a
- * failure code. So does a run in which fewer than MIN_TICKS_EACH ticks land
- * during the bursts or outside them (code 7): the timing no longer covers
- * both cases, and the burst lengths need retuning. A deadlock fails the run
- * when the simulation cycle budget runs out.
+ * Simulation uses a small L2 and DDR_MODEL_LATENCY>=70 to exercise DDR
+ * misses. Frame violations fail the run. Code 7 means fewer than
+ * MIN_TICKS_EACH ticks landed in either category; retune the bursts to cover
+ * both. A deadlock exhausts the simulation cycle budget.
  */
 
 #include <stdint.h>
@@ -64,15 +57,11 @@
 #define MIN_TICKS_EACH (TARGET_TICKS / 8u)
 #define DDR_STACK_SIZE 4096u
 
-/* The idle loop churns CHURN_WORDS words (8 KiB) in CHURN_SLICES slices
- * placed CHURN_STRIDE apart in DDR past the program image, and the handler
- * touches HANDLER_LINES, a slice-sized region one stride above the last
- * slice; nothing else uses either. The caches are direct-mapped and the stride
- * is a multiple of their sizes (the 128 KiB L1D, the registered simulation's
- * 4 KiB L2), so the lines at one offset in every slice and in HANDLER_LINES
- * map to the same line of each cache. The idle loop walks the slices in turn,
- * so by the time it churns a line the other slices have evicted it, and the
- * line comes from DDR. */
+/* CHURN_SLICES slices hold 8 KiB past the DDR program image. HANDLER_LINES
+ * occupies another slice one stride later; neither region overlaps other data.
+ * The 1 MiB stride aliases in the direct-mapped 128 KiB L1D and simulation's
+ * 4 KiB L2. Cycling through slices evicts earlier lines at each offset, so
+ * subsequent accesses fetch them from DDR. */
 #define CHURN_BASE 0x80800000u
 #define CHURN_STRIDE 0x00100000u /* 1 MiB */
 #define CHURN_SLICES 8u
@@ -171,7 +160,6 @@ static uint32_t churn_ddr(uint32_t seed, uint32_t first, uint32_t count)
     return acc;
 }
 
-/* Linux clint_timer_interrupt(): clear MTIE, then re-arm through the handler. */
 /* link_ddr.ld places .text, then .rodata, then .data, which starts at
  * __data_load_start. */
 extern char _start[];
@@ -218,8 +206,7 @@ __attribute__((noinline, used)) void faithful_irq_c(struct linux_pt_regs *frame)
         record_failure(6u);
     }
 
-    /* A light cached touch (one line, rotating through HANDLER_LINES) keeps
-     * the handler short; the idle loop does the churning. */
+    /* Touch one line per interrupt; leave longer bursts to the idle loop. */
     {
         uint32_t off = (g_ticks * LINE_WORDS * 4u) & (CHURN_SLICE_WORDS * 4u - 1u);
         volatile uint32_t *line = (volatile uint32_t *) (uintptr_t) (HANDLER_LINES + off);
@@ -299,10 +286,8 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
     clint_clock_next_event(clint_rdmtime() + 384u);
     enable_interrupts();
 
-    /* Idle: wfi with MIE on. Each iteration first churns the next one to four
-     * lines. The burst length varies so that some bursts end before the next
-     * tick and some do not, and with the handler's varying delta this puts
-     * ticks both in the churn and at the wfi. */
+    /* Vary burst length against the timer delta so ticks cover both churn
+     * and wfi. MIE stays on throughout. */
     uint32_t spin = 0x2468ACE0u;
     uint32_t next = 0u;
     for (uint32_t iter = 0u; g_ticks < TARGET_TICKS && !g_fail_seen; iter++) {

@@ -15,14 +15,11 @@
  */
 
 /*
- * ns16550 interrupt-driven console test. The entire message is transmitted
- * from the external-interrupt handler. THRE raises PLIC source 1; the handler
- * claims, writes exactly one byte to the THR, completes, and returns. The
- * next THRE level re-raises through the level gateway for the following
- * byte. Main only arms the machinery and waits, then checks that every byte
- * was sent from the handler and that the claim count matches. The result
- * (<<PASS>> or <<FAIL>>) goes out over the native UART TX register after
- * interrupts are off.
+ * ns16550 interrupt-driven console test. THRE drives PLIC source 1. Each
+ * handler invocation claims, sends one byte and completes; the asserted
+ * level triggers the next invocation. After the message, one final claim
+ * disables IER. Main then disables interrupts, checks the byte and claim
+ * counts, and reports through the native UART TX register.
  */
 
 #include <stdint.h>
@@ -58,11 +55,8 @@ static volatile uint32_t g_sent;
 static volatile uint32_t g_claims;
 static volatile uint32_t g_bad_claim;
 
-/* Naked M external-interrupt handler. Claim, and if bytes remain, send one
- * through the THR and complete. THRE stays set while the transmit FIFO has
- * room, so the source raises again for the next byte. When the
- * message is done, disable IER before completing so the level drops for
- * good. */
+/* Send one byte per claim while THRE indicates FIFO space. At the end of
+ * the message, disable IER before completing to stop further interrupts. */
 __attribute__((naked, aligned(4))) static void m_irq_handler(void)
 {
     __asm__ volatile("addi sp, sp, -32\n"
@@ -124,7 +118,7 @@ int main(void)
     enable_external_interrupt();
     enable_interrupts();
 
-    /* The whole message transmits from the handler; wait it out. */
+    /* Wait for the handler to finish the message and disable IER. */
     for (int i = 0; i < 4000000 && (g_sent < msg_len || NS16550_IER != 0); i++)
         __asm__ volatile("nop");
 

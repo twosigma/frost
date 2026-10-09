@@ -19,11 +19,8 @@
  * -fprofile-info-section puts one gcov_info pointer per translation unit in
  * .gcov_info; __gcov_info_to_gcda() turns each into a gcda byte stream, and
  * __gcov_filename_to_gcfn() prefixes it with the name gcov-tool merge-stream
- * needs.  The stream leaves over Spike's HTIF syscall proxy as raw bytes on
- * stdout.  Measurement tooling only: generate_profile.py links this, and no
- * FROST image ever does.  The FROST port cannot host it, because printing a
- * few kilobytes over the modelled UART costs tens of millions of simulated
- * cycles. */
+ * needs. The stream leaves over Spike's HTIF syscall proxy as raw bytes on
+ * stdout. generate_profile.py links this dumper only for Spike. */
 
 #include <gcov.h>
 #include <stddef.h>
@@ -144,9 +141,7 @@ size_t fread(void *pointer, size_t size, size_t count, void *stream)
     return 0;
 }
 
-/* Report and stop the simulator rather than spinning, so a failure in the
- * dump, such as an undersized arena, is visible instead of looking like a hung
- * training run. */
+/* Report dump failures, such as an undersized arena, and stop the simulator. */
 void abort(void)
 {
     static const char message[] = "\n<<GCOV-ABORT>>\n";

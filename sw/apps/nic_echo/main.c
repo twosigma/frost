@@ -17,15 +17,10 @@
 /*
  * NIC echo (hw/rtl/peripherals/nic, sw/lib/include/nic.h).
  *
- * The NIC faces a link partner: in simulation, the bench's wire-side
- * peer (verif/cocotb_tests/test_real_program.py), which sends frames into the
- * raw RX interface and decodes the raw TX interface. This program echoes every
- * intact frame it receives, interrupt-driven with moderation, reposting RX
- * descriptors as it goes. The peer's plan (a fixed count of frames landing
- * in the ring, of which two are truncated by the buffer length, plus two
- * frames for another station that the filter drops) is known here, so the
- * counters are checked at the end. Prints "echo ready" when the peer may
- * start, then <<PASS>> or <<FAIL>>.
+ * Echo intact frames with moderated interrupts and repost RX descriptors.
+ * The simulation peer is NicEchoPeer in verif/cocotb_tests/test_real_program.py;
+ * EXPECT_* below describes its traffic. Print "echo ready" before the peer
+ * starts, then check the counters and print <<PASS>> or <<FAIL>>.
  */
 #include <stdint.h>
 
@@ -62,15 +57,13 @@ static volatile struct nic_desc *const tx_ring =
 
 static const uint8_t station[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
 
-/* Polling budgets in loop iterations, sized so a failed wait reports inside
- * the simulation's cycle budget. A transceiver link (PHY_STATUS.CLK_SHARED =
- * 0) comes up through the transceiver's resets, block lock and the link
- * partner's fault handshake in hundreds of milliseconds, so there the waits
- * for READY and CARRIER (an MMIO read each, tens of cycles) take
- * WAIT_LINK_TRANSCEIVER instead: seconds at a 161 or 322 MHz CPU clock.
- * WAIT_IDLE needs no more there: an echo's TX descriptor completes once the
- * frame has entered the NIC's TX FIFO, which the MAC drains while CARRIER
- * holds. */
+/* Polling budgets count loop iterations: register waits read MMIO, and
+ * descriptor waits poll memory. Short waits fit the simulation budget. With
+ * PHY_STATUS.CLK_SHARED = 0, reset, block lock and the peer's fault handshake
+ * take hundreds of milliseconds; WAIT_LINK_TRANSCEIVER allows seconds at 161
+ * or 322 MHz.
+ * WAIT_IDLE stays short: TX completes when the frame enters the TX FIFO,
+ * which the MAC drains while CARRIER holds. */
 #define WAIT_READY 4000u
 #define WAIT_CARRIER 12000u
 #define WAIT_LINK_TRANSCEIVER 20000000u
@@ -134,16 +127,11 @@ static void post_rx_one(uint32_t i)
     rx_ring[i].status = 0;
 }
 
-/* A transceiver reset during the seconds-long wait for CARRIER drops READY
- * for the directions it resets (the X3 resets its receiver about once a
- * second while block lock is absent, for example until the link partner
- * transmits). The NIC then disables those directions itself, keeping their
- * ring registers and HEAD, and the carrier returns only after READY has; once
- * the carrier is up, a direction that CTRL shows disabled and STATUS shows
- * READY is enabled again, as sw/apps/nic_loopback and the Linux driver do.
- * The write carries both enables and CTRL's current PROMISC, because every
- * CTRL write other than RESET reloads PROMISC. Returns 0 if a direction is
- * still disabled afterwards, since the echo needs both. */
+/* A transceiver reset drops READY and disables the affected NIC direction,
+ * preserving ring registers and HEAD. The X3 retries about once a second
+ * without block lock. CARRIER returns after READY; then re-enable any
+ * disabled direction that is ready. Preserve PROMISC because non-RESET CTRL
+ * writes reload it. Return 0 unless both directions are enabled. */
 static int reenable_after_ready_loss(void)
 {
     const uint32_t enables = NIC_CTRL_RX_EN | NIC_CTRL_TX_EN;
@@ -281,9 +269,9 @@ static uint32_t scan_rx(void)
             echo(i, len);
             g_echoed++;
         }
-        /* Post the producer's slot (the one freed a ring ago, its buffer
-         * long echoed), never the slot just consumed: the ring stays
-         * ENTRIES - 1 deep and the slot behind TAIL is always written. */
+        /* Post the producer's slot, whose buffer has already been echoed,
+         * rather than the slot just consumed. Keep ENTRIES - 1 descriptors
+         * posted and initialize each slot before advancing TAIL. */
         g_rx_next++;
         post_rx_one(g_rx_posted % RX_ENTRIES);
         g_rx_posted++;
@@ -309,9 +297,7 @@ int main(void)
         reap_tx();
         handled += n;
         if (n == 0) {
-            /* Sleep until the NIC interrupts (a completion may already be
-             * pending: the level stays up until acknowledged, so wfi returns
-             * at once). */
+            /* Sleep for a NIC interrupt. An unacknowledged level wakes WFI. */
             wfi();
             if (++idle_polls > 2000000u) {
                 uart_printf("stalled: handled %u status %x irq %x\n",
@@ -323,7 +309,7 @@ int main(void)
             }
         }
     }
-    /* Every echo has left through the TX ring. */
+    /* Wait for all posted echoes to complete in the TX ring. */
     uint32_t budget = WAIT_IDLE;
     while (budget-- && g_tx_reaped < g_tx_posted)
         reap_tx();

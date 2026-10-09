@@ -1,15 +1,12 @@
 # Directed test: a 4-byte jal entered as a taken-branch target at dword
-# offset 4. It mirrors the code of one Linux kernel build around
-# of_core_init's __of_find_all_nodes call site at 0x802c69ac. The shape
-# is one aligned dword holding
+# offset 4, matching Linux's of_core_init call to __of_find_all_nodes
+# at 0x802c69ac in the reference build. One aligned dword holds
 #   +0: compressed conditional branch, target = +4 (same dword)
 #   +2: one compressed instruction (skipped when the branch takes)
 #   +4: 4-byte jal (the branch target)
-# The first lap reaches the jal sequentially, branch not taken, which is how
-# the kernel's first of_core_init lap trained the predictor. Every later lap
-# enters it through the taken branch. Failure mode under test: the jal
-# retires and writes ra, but fetch falls through and the callee never
-# executes.
+# The first lap trains the jal by reaching it sequentially. Later laps take
+# the branch to it. A lost redirect lets the jal retire and write ra while
+# fetch falls through without executing the callee.
 #
 # The hazard (pc_controller and prediction_metadata_tracker): the
 # branch's own BTB hit lands in a redirect-bubble holdoff, so it emits
@@ -67,7 +64,6 @@ seam_jal:
     li      a5, 1            # arm the branch for laps 2+
     blt     s1, s2, loop_head
 
-    # Check the callee count
     la      t0, callee_count
     lw      t1, 0(t0)
     beq     t1, s2, pass
@@ -106,12 +102,10 @@ print_string:
 callee_count:
     .word 0
 
-    # Strings live in .rodata: at MEM_CONFIG=bram, .data is a crt0-copied
-    # section (VMA in RAM, LMA in ROM) and standalone-asm apps have no
-    # crt0, so .data initializers read as zeros there.  .rodata is
-    # read in place in both tiers.  The .balign keeps the section's
-    # load address word-aligned (this .text ends on a halfword and
-    # objcopy's verilog writer rejects unaligned section starts).
+    # Use .rodata: standalone assembly has no crt0 to copy BRAM .data from
+    # ROM to RAM. Both tiers read .rodata in place. .balign word-aligns its
+    # load address after the halfword-aligned .text. The Verilog writer in
+    # objcopy rejects unaligned section starts.
     .section .rodata
     .balign 4
 msg_banner:

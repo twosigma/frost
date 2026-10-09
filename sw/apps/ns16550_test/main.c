@@ -15,17 +15,11 @@
  */
 
 /*
- * ns16550a UART face directed test.
- *
- * FROST presents a word-stride 16550 register face at 0x4000_1000 (DTB
- * reg-shift=2, reg-io-width=4) that aliases the native UART TX/RX, so a stock
- * Linux 8250 console driver can drive it. This test runs the 8250
- * initialization sequence (DLAB/baud, 8N1, FIFO, MCR), checks the register
- * file and the LSR transmit bits, and transmits a banner through the face,
- * which must appear on the UART TX line. LSR.TEMT must drop as soon as a
- * byte is written and return only once it has been sent, while THRE (room
- * in the transmit FIFO) stays set. PASS/FAIL goes out over the known-good
- * native UART, so the result does not depend on the face under test.
+ * Test the 16550 register interface at 0x4000_1000. Its word stride matches
+ * DTB reg-shift=2 and reg-io-width=4 for the Linux 8250 driver. Registers
+ * alias the native UART TX/RX. Run console initialization, check readback
+ * and transmit a banner. TEMT must stay low from a THR write until the byte
+ * has been sent; THRE indicates FIFO space. Report through the native UART.
  */
 
 #include <stdint.h>
@@ -35,7 +29,7 @@
 /* One UART bit time in CPU cycles (115200 baud). */
 #define UART_BIT_CYCLES (FPGA_CPU_CLK_FREQ / 115200u)
 
-/* Native FROST UART, known good. Used only for the PASS/FAIL marker. */
+/* Native UART for the PASS/FAIL marker. */
 #define NATIVE_TX (*(volatile uint32_t *) 0x40000000u)
 #define NATIVE_TX_ST (*(volatile uint32_t *) 0x40000028u)
 static void n_putc(char c)
@@ -50,7 +44,7 @@ static void n_puts(const char *s)
         n_putc(*s++);
 }
 
-/* ns16550a face @ 0x4000_1000, word stride. */
+/* ns16550a registers, with word stride. */
 #define NS(off) (*(volatile uint32_t *) (uintptr_t) (0x40001000u + (off)))
 #define NS_THR NS(0x00)
 #define NS_IER NS(0x04)
@@ -118,8 +112,7 @@ int main(void)
     NS_SCR = 0x5Au;
     ok &= ((NS_SCR & 0xFFu) == 0x5Au);
 
-    /* Transmit the rest of the banner (its '[' went out above) through the
-     * ns16550 face. It must reach the UART TX. */
+    /* Transmit the rest of the banner through the 16550 interface. */
     ns_puts("ns16550 face: TX path OK]\r\n");
 
     n_puts(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");

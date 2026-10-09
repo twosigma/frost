@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for the U-mode (User privilege) directed test
+# U-mode (user privilege) directed test.
 SRC_C := main.c
 include ../../common/common.mk

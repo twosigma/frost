@@ -23,31 +23,26 @@
 
 #include "ctype.h"
 
-/* Check if character is a decimal digit (0-9) */
 int isdigit(int c)
 {
     return c >= '0' && c <= '9';
 }
 
-/* Check if character is an alphabetic letter (a-z or A-Z) */
 int isalpha(int c)
 {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }
 
-/* Check if character is an uppercase letter (A-Z) */
 int isupper(int c)
 {
     return c >= 'A' && c <= 'Z';
 }
 
-/* Check if character is a lowercase letter (a-z) */
 int islower(int c)
 {
     return c >= 'a' && c <= 'z';
 }
 
-/* Convert character to uppercase */
 int toupper(int c)
 {
     if (islower(c))
@@ -55,7 +50,6 @@ int toupper(int c)
     return c;
 }
 
-/* Convert character to lowercase */
 int tolower(int c)
 {
     if (isupper(c))
@@ -63,7 +57,6 @@ int tolower(int c)
     return c;
 }
 
-/* Check if character is whitespace */
 int isspace(int c)
 {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';

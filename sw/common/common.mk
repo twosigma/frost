@@ -26,10 +26,8 @@ SIZE    := $(RISCV_PREFIX)size     # Size analyzer
 # CPU clock used by software timing calculations; board flows override it.
 FPGA_CPU_CLK_FREQ ?= 322265625  # X3 CPU clock
 
-# Toolchain identification passed to programs that report their build (CoreMark
-# prints it as "Compiler version"). The -D below always defines
-# COMPILER_VERSION, so an empty value would print nothing instead of falling
-# back to core_portme.h's __VERSION__.
+# Compiler identification for build reports. Keep a nonempty default: the -D
+# overrides core_portme.h's __VERSION__ fallback even when the value is empty.
 COMPILER_VERSION ?= $(shell $(CC) --version 2>/dev/null | head -1)
 
 # Apps may override optimization before including common.mk (isa_test uses -O2).
@@ -67,11 +65,8 @@ MABI ?= $(FROST_FP_ABI)
 
 # Compilation flags
 
-# ISA extension string appended to $(FROST_XLEN_PREFIX) to form -march.
-# IMAFDC plus explicit Zba/Zbb/Zbs, Zicsr, Zicntr, Zifencei, Zicond, Zbkb, and
-# Zihintpause; the explicit B subsets support older toolchain spelling. Apps may
-# narrow it before including this file: coremark builds without C by default
-# (see its Makefile).
+# Extensions appended to $(FROST_XLEN_PREFIX) for -march. Explicit B subsets
+# support older toolchains. Apps may narrow this before including common.mk.
 FROST_MARCH_EXTENSIONS ?= imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 
 # Bare-metal builds omit libc/start files and runtime unwind metadata (the debug
@@ -87,11 +82,8 @@ FROST_MARCH_EXTENSIONS ?= imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_z
 # and Spike references otherwise use the same default model.
 FROST_CMODEL = -mcmodel=medany
 
-# Per-app codegen tuning, appended after ordinary defaults (see the ELF rule),
-# so an app can override a default set below, for example restoring
-# -fstrict-aliasing for a program that builds warning-clean under it.
-# Keep ordinary additive flags in EXTRA_CFLAGS; this hook is for last-wins
-# overrides. FROST_DEBUG's final profile flags take precedence when enabled.
+# Per-app overrides follow ordinary defaults; use EXTRA_CFLAGS for additive
+# flags. FROST_DEBUG's final flags take precedence over these overrides.
 APP_TUNE_FLAGS ?=
 
 RISCV_FLAGS  = -march=$(FROST_XLEN_PREFIX)$(FROST_MARCH_EXTENSIONS) -mabi=$(MABI) $(FROST_CMODEL) -Wall -Wextra \
@@ -205,11 +197,8 @@ IMEM_INIT_TARGETS := $(IMEM_EVEN_COLD_INIT_FILE) $(IMEM_ODD_COLD_INIT_FILE) \
                      $(IMEM_SCALAR_INIT_FILES)
 endif
 
-# The build-config stamp holds this string, so changing any setting in it
-# (tools, flags, ABI, memory tier, sources) triggers a rebuild. The stamp is
-# rewritten only when the string differs from its contents, so identical
-# invocations keep its mtime; switching back to an earlier configuration still
-# counts as a change.
+# Rewrite the build-config stamp only when this string changes. Its mtime
+# triggers a rebuild, including when returning to a previous configuration.
 EFFECTIVE_BUILD_CONFIG = MEM_CONFIG=$(MEM_CONFIG)|FROST_DEBUG=$(FROST_DEBUG)|FPGA_CPU_CLK_FREQ=$(strip $(FPGA_CPU_CLK_FREQ))|FROST_DEBUG_FLAGS=$(FROST_DEBUG_FLAGS)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|CFLAGS=$(CFLAGS)|LDFLAGS=$(LDFLAGS)|APP_TUNE_FLAGS=$(APP_TUNE_FLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|DDR_BOOT_STUB=$(DDR_BOOT_STUB)|ASSEMBLY_STARTUP_FILE=$(ASSEMBLY_STARTUP_FILE)|EXTRA_ASM_SRC=$(EXTRA_ASM_SRC)|SRC_C=$(SRC_C)|DDR_SPLIT_SECTIONS=$(DDR_SPLIT_SECTIONS)
 
 # Quote a single-line make value; CFLAGS contains literal single quotes.
@@ -254,11 +243,9 @@ $(EXECUTABLE_ELF_FILE): $(SRC_C) $(DDR_BOOT_STUB) $(ASSEMBLY_STARTUP_FILE) $(EXT
 $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJDUMP) -d $< > $@
 
-# Verilog hex image for $readmemh, used by simulation and synthesis: one 32-bit
-# word per line in hexadecimal, little-endian. The cached-region sections in
-# DDR_SPLIT_SECTIONS are excluded because they live at 0x8000_0000 and would
-# emit @-records far beyond the low BRAM. They ship separately in
-# $(DDR_HEX_FILE).
+# Low-BRAM $readmemh image: little-endian 32-bit words. Exclude the DDR
+# sections (byte addresses from 0x8000_0000), whose @-records would land far
+# beyond the low BRAM; they go in $(DDR_HEX_FILE).
 $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id \
 	      $(addprefix -R ,$(DDR_SPLIT_SECTIONS)) $< $@
@@ -275,16 +262,9 @@ $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O binary -R .comment -R .note.gnu.build-id \
 	      $(addprefix -R ,$(DDR_SPLIT_SECTIONS)) $< $@
 
-# The cached-region (DDR) image holds the DDR_SPLIT_SECTIONS loaded sections:
-# .ddr_* only in the bram tier, the whole program in the ddr tier. They are
-# rebased so file offset 0 is the cached-region base, 0x8000_0000. Simulation
-# loads this image into the behavioral DDR model, hardware through the JTAG
-# loader.
-# Programs with no selected loaded sections get a single zero word so consumers
-# can always $readmemh the file. objcopy exits zero and writes an empty file in
-# that case, so any nonzero objcopy status is a real build failure.
-# The output goes to a temporary file first, so a failed conversion leaves no
-# partial image with a fresh timestamp and keeps the previous image.
+# DDR $readmemh image: subtract 0x8000_0000 from selected section addresses.
+# With no loaded sections, emit one zero word. Treat objcopy errors as failures;
+# write through a temporary file to preserve the previous image on failure.
 $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	@set -e; \
 	tmp='$@.$$$$.tmp'; \
@@ -294,11 +274,9 @@ $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	if [ ! -s "$$tmp" ]; then printf '00000000\n' > "$$tmp"; fi; \
 	mv "$$tmp" '$@'
 
-# DDR image for the JTAG loader: dense 32-bit words from the region base, since
-# the selected sections start exactly at 0x8000_0000. The file is empty when the
-# program places nothing in the cached region, and the loader skips empty files.
-# As above, the temporary files keep a failed step from leaving a partial image
-# with a fresh timestamp.
+# JTAG DDR image: dense 32-bit words starting at 0x8000_0000. With no DDR
+# sections, emit an empty file, which the loader skips. Temporary files
+# preserve the previous image on failure.
 $(DDR_TXT_FILE): $(EXECUTABLE_ELF_FILE)
 	@set -e; \
 	bin_tmp='sw_ddr.bin.$$$$.tmp'; \
@@ -356,10 +334,8 @@ endif
 size: $(EXECUTABLE_ELF_FILE)
 	$(SIZE) $<
 
-# Clean all build artifacts. The literal sw_imem_* names at the end are obsolete
-# init images that no current rule writes (fpga/build/build.py lists the same
-# names in IMEM_OBSOLETE_INIT_IMAGE_NAMES); deleting them keeps a reused app
-# directory free of stale images.
+# Also remove obsolete sw_imem_* images from reused app directories; see
+# IMEM_OBSOLETE_INIT_IMAGE_NAMES in fpga/build/build.py.
 clean:
 	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
 	      $(DDR_TXT_FILE) sw_ddr.bin $(DISASSEMBLY_FILE) $(BUILD_CONFIG_FILE) $(DEPENDENCY_FILE) \

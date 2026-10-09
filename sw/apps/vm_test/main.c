@@ -15,72 +15,18 @@
  */
 
 /*
- * Sv39 data-translation directed test.
+ * Sv39 data-translation tests. M-mode sets MPP=S or U and MPRV=1 for each
+ * translated access; fetch and checks stay physical. With medeleg=0, the
+ * handler records the first fault and returns to an mscratch continuation.
+ * A no-fault case reaches the trailing ecall (cause 11).
  *
- * Every translated access runs through an MPRV window: M-mode sets
- * mstatus.MPP to S or U and MPRV=1, performs exactly the accesses under test,
- * and drops MPRV. Code fetch and the checker stay physical throughout
- * (itlb_test covers fetch translation). All traps come to M (medeleg=0) and
- * are recorded by the pma_fault_test-style bounce handler. The first fault
- * in a case wins; a case that does not fault falls through to an ecall,
- * which records cause 11. A trap inside a window is benign: the trap sets
- * MPP=M, so the handler runs untranslated even with MPRV still up. Its MRET
- * back to M leaves MPRV set with MPP=U, so the continuation must make no data
- * access before the case epilogue clears MPRV.
+ * Trap entry sets MPP=M, so handler data accesses stay physical despite
+ * MPRV. MRET back to M leaves MPRV set and resets MPP to U: the continuation
+ * must clear MPRV before any data access.
  *
- * Page tables live in cached DDR. The test builds every table up front and
- * publishes them with one sfence, which is the software contract. Case K
- * rewrites a PTE mid-test and issues its own sfence. Data seeds need no
- * publishing: translated loads and stores use the same PA-indexed L1D that
- * the M-mode seeds dirtied.
- *
- * Matrix (fault cases check cause and mtval; loads also check the value):
- *   Q. M-mode accesses stay untranslated while satp holds Sv39 (MPRV=0).
- *   A. 4 KiB non-identity R/W page: translated store/load round-trip, with
- *      the backing frame verified physically. The VA sits in the
- *      BRAM-to-device hole, so untranslated leakage would PMA-fault.
- *   B. 2 MiB superpage round-trip through a level-1 leaf.
- *   C. 1 GiB identity leaf over DDR.
- *   D. Permissions: store to R-only -> 15; load from R-only ok; U-page
- *      from S with SUM=0 -> 13, SUM=1 -> ok; U-page from U -> ok; S-page
- *      from U -> 13.
- *   E. MXR: X-only page load with MXR=0 -> 13, MXR=1 -> value.
- *   F. Svade: A=0 load -> 13; D=0 load ok, D=0 store -> 15.
- *   G. Malformed PTEs: V=0 -> 13; W&!R -> 13; reserved high bit -> 13;
- *      misaligned 2 MiB superpage -> 13; non-leaf at level 0 -> 13; a
- *      non-leaf with A, D, or U set (reserved there) -> 13. A non-leaf with
- *      G set is legal and translates.
- *   H. Out-of-map leaf PPN -> access fault (5 load / 7 store).
- *   I. Walker PMA: interior pointer PTE aimed at BRAM -> access fault of
- *      the original access type (page tables must live in cached DDR).
- *   J. Non-canonical VA -> 13 without walking, mtval = the full VA.
- *   K. sfence.vma visibility: PTE rewritten to a new frame, sfence, next
- *      access sees the new frame.
- *   L. satp switch: writing satp to a second pre-built root retargets the
- *      same VA with no explicit sfence (a satp write flushes the TLBs).
- *   W. Wrong-path loads and stores under translation: a loop that walks a
- *      NULL-terminated pointer list (the kernel's zonelist shape) exits on a
- *      mispredicted branch, so the squashed iteration's loads/stores from
- *      NULL+offset miss the DTLB and start walks that refuse. Neither a
- *      fault nor a stale address may reach the correct-path accesses that
- *      reuse the squashed ROB tags; a squashed memory op that issues in the
- *      flush cycle must not survive in the translation stage.
- *   M. LR/SC translated: LR+SC round-trip on R/W succeeds (rd=0); a bare
- *      SC to an R-only page -> 15 (SC must translate and fault; the
- *      may-fail-for-any-reason allowance never suppresses exceptions).
- *   N. AMO translated: amoadd round-trip on R/W; AMO to R-only -> 15.
- *   O. Device page: mtime readable through a page mapped onto MMIO.
- *   P. Translation off (M-mode): misaligned SC -> 6 and misaligned AMO -> 6,
- *      mtval exact.
- *   R. Atomics through device mappings: AMO -> 7, LR -> 5, SC -> 7 through
- *      the 4 KiB device page, on the walk and on a DTLB hit, and AMOs
- *      through a 2 MiB and a 1 GiB leaf over the device quadrant; mtval is
- *      the VA.
- *   X. Leaves onto unserved device addresses: loads -> 5 and stores -> 7
- *      with the VA in mtval, through a 4 KiB page (on the walk), a 2 MiB
- *      leaf (on a DTLB hit), and a 1 GiB leaf (on the walk and on a DTLB
- *      hit). Served addresses in the same superpages (mtime, a PLIC
- *      priority) still load without a trap.
+ * Page tables live in cached DDR and are published with sfence.vma. Case K
+ * rewrites a PTE and fences again. Data seeds need no writeback because
+ * physical and translated accesses use the same PA-indexed L1D.
  */
 
 #include <stdint.h>
@@ -152,10 +98,8 @@ __attribute__((naked, aligned(4))) static void vm_trap_handler(void)
         __asm__ volatile("li t0, 0x20000\n csrc mstatus, t0" ::: "t0");                            \
     } while (0)
 
-/* Window preambles: set MPP (S = 01, U = 00) then MPRV. WIN_END drops MPRV
- * on the in-body no-fault path. The trailing ecall would run physical
- * either way, since ecall from M keeps the privilege at M; dropping MPRV
- * bounds the window to the accesses under test. */
+/* Set MPP (S=01, U=00) before MPRV. WIN_END clears MPRV on success;
+ * RUN_CASE clears it after a fault. M-mode ecall and trap entry stay physical. */
 #define WIN_S                                                                                      \
     "li   t4, 0x1800\n"                                                                            \
     "csrc mstatus, t4\n"                                                                           \
@@ -533,7 +477,8 @@ int main(void)
         all_ok = 0;
     }
 
-    /* M2: bare SC to an R-only page -> 15 (SC translates and faults). */
+    /* M2: SC to an R-only page must translate and fault (15), even without
+     * a reservation. Permission faults cannot be replaced by SC failure. */
     RUN_CASE(WIN_S "li t1, 0x00401000\n"
                    "sc.d t3, t2, (t1)");
     all_ok &= report3("M2 sc-page-fault", 15, VA_4K(1), 0, 0);
@@ -577,19 +522,14 @@ int main(void)
              "amoadd.w t3, t2, (t1)");
     all_ok &= report3("P2 misaligned-amo", 6, 0x81103002ul, 0, 0);
 
-    /* W: wrong-path NULL-pointer loads/stores under translation. The list
-     * has n live zonerefs then a NULL; the loop branch, trained taken by
-     * earlier iterations, is mispredicted at the exit. The squashed
-     * iteration's accesses from NULL (loads at 16/32/136; store variant: a
-     * load at 16 and a store at 32) miss the DTLB (VA 0 is unmapped in root
-     * A) and start walks that refuse. The correct path continues with loads
-     * (stores) that take the very ROB tags the squashed accesses held, with
-     * their base register set before the loop so no other instruction sits
-     * between the branch and them; they must complete unfaulted with their
-     * own addresses and data. Several list lengths and repeats vary the issue
-     * timing against the recovery flush. Expected cause: 11 (the trailing
-     * ecall). A 64-step cap stops a runaway loop and records its cursor in
-     * g_val. */
+    /* W: a NULL-terminated list trains the loop branch taken. At exit,
+     * wrong-path accesses to NULL+16/32/136 start refused walks. The store
+     * variant loads NULL+16 and stores NULL+32. The correct-path base is
+     * loaded before the loop, so the accesses right after the exit branch
+     * reuse those ROB tags; they must keep their own addresses and data
+     * without a fault. An access issued during recovery must not survive the flush.
+     * Vary list lengths and repeats to shift issue timing. A 64-step cap
+     * records a runaway cursor in g_val; success reaches ecall (cause 11). */
     int w_all_ok = 1;
     for (int n = 1; n <= 6; n++) {
         for (int rep = 0; rep < 3; rep++) {
@@ -643,20 +583,14 @@ int main(void)
                 }
                 w_all_ok &= w_ok;
             }
-            /* Store variant. The squashed iteration's accesses are a load
-             * from 16(NULL), which occupies the translation stage with its
-             * walk, then a store to 32(NULL), which issues in the recovery
-             * cycle. The correct path's second instruction after the branch
-             * is a store on that same tag: the cursor to VA_4K(13)+0x108 (a
-             * load from +0x100 takes the first tag), then t1 (0 at exit) to
-             * +0x110. The early store ports would otherwise prefill the
-             * correct-path store's address from a DTLB hit, three cycles
-             * after dispatch and ahead of the squashed store's refused walk,
-             * so the target page is one the loop never touches and the DTLB
-             * is flushed first: the prefill drops, and the issue port
-             * translates the store behind the squashed one. The squashed
-             * store's fault leaking onto the correct-path store shows as
-             * cause 15, mtval 0x20. */
+            /* The squashed load at NULL+16 occupies the translation stage; the
+             * store at NULL+32 issues during recovery. Correct-path accesses
+             * reuse those tags: load +0x100, store the cursor at +0x108, then
+             * store t1=0 at +0x110 in VA_4K(13).
+             * Flush the DTLB first and use a page untouched by the loop.
+             * Otherwise early store prefill could hit three cycles after
+             * dispatch, ahead of the refused walk, hiding the fault leak.
+             * A leak produces cause 15 with mtval=0x20. */
             g_val = 0;
             *(volatile unsigned long *) (FRAME(13) + 0x100) = 0x0D0D0D0D0D0D0D0Dul;
             *(volatile unsigned long *) (FRAME(13) + 0x108) = 0;

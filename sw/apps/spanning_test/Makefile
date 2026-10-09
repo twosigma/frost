@@ -12,10 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Directed test for 32-bit instructions that straddle a fetch word boundary.
-# The C extension mixes 16- and 32-bit encodings, so a 32-bit instruction can
-# start in the upper half of one word and finish in the next.
-# Test 4's instruction sequence is placed by hand in spanning.S.
+# Test 32-bit instructions that straddle a fetch word boundary.
+# spanning.S fixes test 4's instruction layout.
 SRC_C  := ../../lib/src/uart.c ../../lib/src/string.c ../../lib/src/sprintf.c main.c
 EXTRA_ASM_SRC := spanning.S
 include ../../common/common.mk

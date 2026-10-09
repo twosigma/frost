@@ -15,17 +15,17 @@
 
 """Repair the malformed data constants in the pinned riscv-arch-test F/D tests.
 
-In 99 of the F and D sources, most `NAN_BOXED(value,width,FLEN)` data entries
-run the intended hex value together with its own decimal digits, less the
-first: 0x7f7fffff (2139095039) appears as 0x7f7fffff139095039. The assembler
-truncates such a value to the field width with a warning, so the test loads
-other operands than its comments name, and some special cases never run.
+Malformed `NAN_BOXED(value,width,FLEN)` entries append decimal digits to
+the intended hex value, omitting the first decimal digit: 0x7f7fffff
+(2139095039) appears as 0x7f7fffff139095039. The assembler truncates the value
+to the field width with a warning, so the test loads different operands and
+some special cases never run.
 
 A value wider than its field is split into the hex prefix that fits the field
 and a suffix that must be a leading part of the prefix's decimal digits, less
-the first (one entry carries only the first suffix digit). Exactly one split
-satisfies that for every entry in the pinned suite; the script stops with an
-error on a value that has none or several. Values that fit are left alone.
+the first (one entry carries only the first suffix digit). Require exactly
+one split; stop with an error if none or several match. Values that fit are
+left alone.
 
 Both builds use the repaired copy: the arch_test Makefile for FROST and
 generate_references.py for the Spike reference.

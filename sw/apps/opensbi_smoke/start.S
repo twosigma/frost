@@ -17,10 +17,8 @@
 // S-mode payload entry and trap plumbing for the OpenSBI smoke test.
 //
 // fw_jump enters _start in S-mode with a0 = hart id, a1 = DTB, satp = 0 and
-// sstatus.SIE = 0. The trap entry below is the only stvec target: it keeps the
-// S stack pointer in sscratch while U-mode code runs (the usual swap-on-entry
-// idiom), saves the full integer frame, and hands it to handle_trap() in C.
-// handle_trap returns 0 to sret back to the frame, or 1 to unwind to the
+// sstatus.SIE = 0. trap_entry saves the integer frame for handle_trap() in C.
+// handle_trap returns 0 to sret into the frame, or 1 to unwind to the
 // run_in_umode() caller with the frame's a0 as the return value.
 
     .section .init, "ax", @progbits
@@ -32,8 +30,7 @@ _start:
     la      gp, __global_pointer$
     mv      s0, a0
     mv      s1, a1
-    // Zero .sbss/.bss (contiguous by the linker script; the gap between them
-    // is zeroed too).
+    // Zero .sbss, .bss and their alignment gap.
     la      t0, __bss_start
     la      t1, __bss_end
 1:  bgeu    t0, t1, 2f

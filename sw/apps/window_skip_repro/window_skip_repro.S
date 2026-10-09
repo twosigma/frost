@@ -1,49 +1,15 @@
-# Directed reproducer for the "skipped fall-through fetch window" bug.
+# Reproduce a skipped fall-through fetch window after a trained-taken loop
+# exits. Skipping the aligned 8-byte restore window leaves stale s0/s1 while
+# the next window pops the frame and returns.
 #
-# A loop-back branch that the front end has trained taken resolves not-taken
-# on loop exit, and early misprediction recovery redirects to the fall-through
-# PC. The bug: the front end skips exactly one aligned 8-byte fetch window, the
-# fall-through window, and executes the next window instead. In zlib
-# longest_match (as compiled for coremark_pro_zip) the skipped window holds the
-# callee-saved restores {c.ld s0,24(sp); minu a0,a7,s1; c.ld s1,16(sp)} and
-# the next one {c.addi16sp sp,32; ret}, which runs correctly on its own, so
-# the caller silently continues with stale s0/s1.
+# The caller seeds s0/s1 with canaries. Each victim saves them, poisons the
+# registers, and restores them in one fetch window. A skipped restore prints
+# <<WINDOW-SKIP>> and <<FAIL>>; all successful restores produce <<PASS>>.
 #
-# The canary mechanism is the same in every victim: the caller puts good values
-# in s0/s1, the victim's prologue saves them, the body overwrites them with
-# poison, and the epilogue's one-window restore puts them back. If that restore
-# window is skipped, the caller sees stale s0/s1, prints a
-# <<WINDOW-SKIP>> line, and ends with <<FAIL>>. The sim assertion
-# p_bram_served_window_covers_pc_reg in if_stage.sv fires on the same event:
-# in the default BRAM build all victim code is fetched from low BRAM, where
-# that assertion is armed. When every call restores, the run ends in <<PASS>>.
-#
-# Victims / subtests (each sweeps exit iteration N over 8..64):
-#   A  victim       BRAM array, fast 1-cycle loads (baseline)
-#   B  victim       DDR array @0x80100000, load-latency delays resolution
-#                   (start block swept across 8 KiB for cache churn)
-#   C  victim_div   BRAM array + divu backpressure in the loop body
-#   D  victim_t4    loop-back target at window+4, not window-aligned; bltu at
-#                   window+4 and the one-window restore epilogue as in A.
-#                   Changes the aligner/fetch state on every taken iteration
-#                   and at the final redirect.
-#   E  victim_t2    loop-back target at window+2 with an rvc-mixed head, so the
-#                   target is halfword-aligned on every taken iteration
-#   F  victim_span  loop body mixes rvc and 32-bit ops, with the 32-bit
-#                   pointer-advance addi spanning an 8-byte window boundary
-#                   each iteration. Exercises the served_eq_pc_word_p1 term
-#                   of the if_stage served-window check (use_instr_buffer
-#                   case), which the norvc loops never reach; bltu at
-#                   window+4, same restore.
-#   G  victim_real  the zlib longest_match inner-loop reload tail + epilogue,
-#                   copied byte for byte, with the loop-back bltu at window+4
-#                   targeting a head at window+4 as in the original. A
-#                   synthetic prev[] hash chain drives it, so the bltu is
-#                   taken about N times, then falls through. Deviations are
-#                   noted at victim_real.
-#
-# The victims use doubleword compressed save/restore pairs (c.sdsp/c.ldsp),
-# 32-byte frames, and an 8-byte array stride; subtest G also uses Zba/Zbb.
+# Each subtest sweeps exit iteration N over 8..64. The victims use compressed
+# doubleword saves and restores with 32-byte frames. A through F use an 8-byte
+# array stride. G walks 16-bit prev entries and uses Zba and Zbb to follow the
+# zlib longest_match reload tail (coremark_pro_zip).
 
     .section .init
     .option push
@@ -53,21 +19,13 @@
 
     .equ GOOD_S0, 0x000600D0
     .equ GOOD_S1, 0x000600D1
-    .equ V1_CALLS, 1200            # calls per subtest A/B, kept low to leave
-                                   # cycle budget for D-G
-    .equ DIV_CALLS, 400            # calls for subtest C: the divider runs one
-                                   # divide at a time, so every iteration of
-                                   # victim_div's loop costs a whole divide;
-                                   # 400 calls walk the sweep 7 times
-    .equ V2_CALLS, 800             # calls per subtest D/E/F/G; the exit
-                                   # iteration N sweeps 57 values, so 800 calls
-                                   # walk the whole sweep 14 times
+    .equ V1_CALLS, 1200            # Calls per subtest A/B.
+    .equ DIV_CALLS, 400            # C: limit calls because divides serialize.
+    .equ V2_CALLS, 800             # Calls per subtest D/E/F/G.
     .equ DDR_BLOCKS, 8             # 8 * 1024 B = 8 KiB swept for subtest B
 
 # ---------------------------------------------------------------------------
-# SHIM (inline macro, no call frame): put the good canaries in s0/s1, call the
-# current victim (s2), and check that the victim restored them. Every victim
-# shares the save/poison/restore canary shape, so one shim serves them all.
+# SHIM: seed s0/s1, call the victim at s2, and check the restored canaries.
 # \@ makes the local labels unique per expansion.
 # ---------------------------------------------------------------------------
     .macro SHIM
@@ -91,10 +49,8 @@
     .endm
 
 # ---------------------------------------------------------------------------
-# _start / driver. Persistent state lives only in s2..s11. The victims write no
-# s-registers other than s0/s1/s2 and each restores the ones it writes, and the
-# print helpers use only a and t registers, so driver state survives calls and
-# prints.
+# Driver state lives in s2..s11. Victims restore the s-registers they write;
+# print helpers use only a and t registers.
 #     s2 = current victim fn ptr   s3 = call index   s4 = calls this subtest
 #     s5 = BRAM array base         s6 = DDR array base (0x80100000)
 #     s7 = subtest char            s9 = stale value    s10 = failing-reg char
@@ -132,7 +88,7 @@ _start:
     addi    t0, t0, 1
     blt     t4, t5, 2b
 
-    # ---- fill prev_array[k] = k-1 (u16) for the real-bytes hash chain ----
+    # ---- Fill prev_array[k] = k-1 (u16) for victim_real's hash chain. ----
     la      t3, prev_array
     li      t0, 0
     li      t2, 128
@@ -226,7 +182,7 @@ subF_loop:
     addi    s3, s3, 1
     blt     s3, s4, subF_loop
 
-    # ========= Subtest G: real-bytes longest_match lift (victim_real) =====
+    # ========= Subtest G: longest_match reload tail (victim_real) ========
     la      s2, victim_real
     li      s7, 'G'
     li      s3, 0
@@ -275,12 +231,9 @@ fail_halt:
     j       fail_halt
 
 # ===========================================================================
-# VICTIMS. Every victim has the same shape: an rvc prologue saves s0/s1, norvc
-# code poisons them, a loop whose loop-back bltu sits at its window+4 trains
-# taken and then exits, the rvc fall-through restore window of exactly 8 bytes
-# restores s0/s1, and the next window pops the frame and returns. Every layout
-# depends on the .balign 8 before each loop head; the offsets noted below
-# match objdump.
+# VICTIMS. Each bltu sits at window+4, trains taken, then falls through to an
+# 8-byte window that restores s0/s1. The next window pops the frame and returns.
+# These layouts depend on the .balign 8 before each loop head.
 # ===========================================================================
 
 # --- victim: subtests A/B. Loop head window-aligned (baseline). -------------
@@ -391,8 +344,8 @@ victim_t2_head:
     .option norvc
 
 # --- victim_span: subtest F. A 32-bit op spans an 8-byte window boundary. ----
-# Head window-aligned; c.nop pushes the pointer-advance addi to window+6 so its
-# 4 bytes cross window+8 (spanning). bltu at window+4; same restore epilogue.
+# c.nop places addi at window+6; bltu sits at window+4. The spanning addi uses
+# if_stage's instruction buffer and served_eq_pc_word_p1 window check.
     .balign 8
 victim_span:
     .option rvc
@@ -424,31 +377,22 @@ victim_span_head:                  # window+0 (loop-back target)
     .option norvc
 
 # --- victim_real: subtest G. ------------------------------------------------
-# A byte-for-byte copy of the inner-loop reload tail and epilogue of zlib
-# longest_match (as compiled for coremark_pro_zip), with the loop-back bltu at
-# window+4 targeting the loop head at window+4, as in the original. A synthetic
-# prev[] hash chain drives it: a1 walks prev[a1]=a1-1 down from N+2 to the
-# threshold t1=2, so the bltu is taken about N times and then falls through,
-# which is the event under test.
+# Reproduce the zlib longest_match reload tail and epilogue (coremark_pro_zip).
+# The bltu and its loop-head target both sit at window+4. A synthetic prev[]
+# chain walks a1 from N+2 down to t1=2, then bltu falls through to the restore.
 #
-# Deviations from the whole function, all of which keep the fetch geometry:
-#   - the byte-scan middle is left out: the head's beqz falls
-#     straight through to the reload tail, so head and tail are adjacent. Their
-#     window offsets match the original; only the distance between the two
-#     windows is smaller.
-#   - s2 is saved in the prologue (mid-scan in the original) so the tail's
-#     byte-exact `ld s2,8(sp)` reads a valid slot.
-#   - branch immediates differ (targets are local); opcodes and registers match.
-#   - the lbu reload addresses point at a dead scratch buffer (their loaded
-#     values feed the omitted scan); they still add real load traffic.
-# Hex values below are the instruction encodings, as in the original.
+# The byte-scan middle is omitted, leaving the head and reload tail adjacent.
+# Their window offsets, opcodes and registers match the compiled function;
+# branch immediates use local targets. Save s2 in the prologue so the tail's
+# ld s2,8(sp) reads a valid slot. The lbu loads use a scratch buffer because
+# only the omitted scan needs their values. Hex comments give the encodings.
     .balign 8
 victim_real:
     .option rvc
     c.addi16sp sp, -32
     c.sdsp  s0, 24(sp)
     c.sdsp  s1, 16(sp)
-    c.sdsp  s2, 8(sp)              # slot for the tail's ld s2,8(sp) (see note)
+    c.sdsp  s2, 8(sp)              # Valid slot for the tail's ld s2,8(sp).
     .option norvc
     li      s0, 128                # poison (nice_match = 128 in the original)
     li      s1, 0                  # poison
@@ -461,7 +405,7 @@ victim_real:
     li      a3, 4096               # chain-length safety (bltu exits first)
     .balign 8
     nop                            # 4B filler -> head at window+4
-    .option rvc                    # head/reload/epilogue are byte-faithful RVC
+    .option rvc                    # Preserve compressed instruction widths.
 victim_real_head:
     addiw   a3, a3, -1             # 36fd     window+4 (bltu target)
     beqz    a3, victim_real_exit   # rvc      window+6, chain-exhausted exit

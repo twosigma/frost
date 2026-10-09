@@ -17,29 +17,16 @@
 /**
  * Self-modifying code with fence.i.
  *
- * Models the kernel's runtime code-patching contract (patch_insn_write +
- * fence.i): store a new instruction word into cached-DDR code, fence.i to
- * sync, then fetch and execute it. The sequence the fence.i has to produce:
+ * Model patch_insn_write followed by fence.i: patch a cached-DDR instruction,
+ * synchronize it, then execute it. Required ordering:
  *   store -> SQ -> L1D (dirty) ... new code invisible to fetch
  *   fence.i: drain committed SQ -> L1D writeback-all -> L1I invalidate-all
  *            -> fetch-buffer invalidate
  *   call -> L1I miss -> fill returns the freshly written code
  *
- * ddr_smc_test covers the basic sequence. This test sweeps the timing and
- * layout around the fence.i, so a timing-dependent failure shows up
- * deterministically and can be read off a waveform:
- *   - store->fence.i freshness gap (0/1/2/3/4/8 nops): how fresh the committed
- *     store is when fence.i drains the store queue.
- *   - Warm L1D (write hit) versus cold L1D (write-allocate miss). The L1D is
- *     128 KiB direct-mapped with 32 B lines, so a single read at +128 KiB
- *     shares the index but not the tag and conflict-evicts the ddr_code line.
- *     The next patch store then misses and races the fence.i writeback walk.
- *   - Tight alternating self-modify loops, where a stale read is always a
- *     detectable mismatch.
- *
- * Prints "<<PASS>>" if every post-fence.i call returns its freshly written
- * value, "<<FAIL>>" with detail otherwise. A wedge (stale garbage executed)
- * shows up as a simulation or UART timeout.
+ * Sweep the store-to-fence.i gap and use warm and cold cache lines. A cold
+ * patch store needs write allocation before fence.i can write it back.
+ * Alternate return values so executing stale code produces a mismatch.
  */
 
 #include <stdint.h>
@@ -52,9 +39,8 @@
 /* Executable + writable patch target in the cached DDR region, aligned to a
  * 32-byte cache line. ddr_code[0] is the entry (patched); [1] is `ret`. */
 __attribute__((section(".ddr_data"), aligned(32))) static volatile uint32_t ddr_code[8];
-/* PCREL_HI20 cannot reach the DDR region from low-BRAM code at lp64, so
- * hold the address as a link-time data relocation (same idiom as
- * ddr_atomic_test); volatile stops -O3 from folding it back. */
+/* PCREL_HI20 cannot reach DDR from low BRAM on LP64. Keep the address in a
+ * data relocation; volatile prevents -O3 from folding it back. */
 static volatile uint32_t *volatile ddr_code_p = &ddr_code[0];
 
 /* Direct-mapped L1D = 128 KiB. */
@@ -62,9 +48,8 @@ static volatile uint32_t *volatile ddr_code_p = &ddr_code[0];
 
 typedef int (*fn_t)(void);
 
-/* Patch word[0] with `addi a0,x0,imm`, then the gap nops, then fence.i. The
- * single 32-bit store mirrors patch_insn_write. The gap varies how fresh the
- * committed store is when the fence.i serializer drains the SQ. */
+/* Store a 32-bit patch_insn_write-style instruction, wait the chosen NOP
+ * gap, then fence.i. Vary the store's age when the serializer drains it. */
 #define MK_PATCH(name, nops)                                                                       \
     static inline void name(uint32_t imm)                                                          \
     {                                                                                              \

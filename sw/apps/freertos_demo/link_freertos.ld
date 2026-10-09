@@ -35,27 +35,23 @@ SECTIONS
      * ROM SECTIONS (read-only)
      * ================================================================ */
 
-    /* .text section - Executable code */
     .text : {
         KEEP(*(.init))      /* Startup code (crt0.S): first, at the reset PC 0 */
         *(.text*)           /* All code sections */
         *(.text.*)
     } > ROM
 
-    /* .rodata section - Read-only data (constants, strings) */
     .rodata : {
         *(.rodata*)         /* Large read-only data */
         *(.rodata.*)
-        *(.srodata*)        /* Small read-only data (accessed via gp) */
+        *(.srodata*)        /* Small read-only data */
         . = ALIGN(4);       /* Word-align for efficient access */
     } > ROM
 
     /* ================================================================
-     * RAM SECTIONS (read-write, copied from ROM by crt0.S)
+     * INITIALIZED RAM (copied from ROM by crt0.S)
      * ================================================================ */
 
-    /* .data section - Initialized global/static variables
-     * Stored in ROM, copied to RAM by crt0.S before main() */
     .data : AT(ADDR(.rodata) + SIZEOF(.rodata)) {
         __data_load_start = LOADADDR(.data);   /* Source address in ROM */
         __data_start      = .;                 /* Destination address in RAM */
@@ -64,7 +60,6 @@ SECTIONS
         . = ALIGN(4);
     } > RAM
 
-    /* .sdata section - Small initialized data, addressed gp-relative (within +/-2KB of gp) */
     .sdata : AT(LOADADDR(.data) + SIZEOF(.data)) {
         *(.sdata*)          /* Small initialized data */
         . = ALIGN(4);
@@ -75,8 +70,6 @@ SECTIONS
      * BSS SECTIONS (zeroed by crt0.S)
      * ================================================================ */
 
-    /* .sbss section - Small uninitialized data (accessed via gp)
-     * Zeroed by crt0.S before main() */
     .sbss : {
         __sbss_start = .;
         *(.sbss*)           /* Small uninitialized data */
@@ -85,8 +78,6 @@ SECTIONS
         __sbss_end = .;
     } > RAM
 
-    /* .bss section - Uninitialized global/static variables
-     * Zeroed by crt0.S before main() */
     .bss : {
         __bss_start = .;
         *(.bss*)            /* Uninitialized data */
@@ -111,8 +102,8 @@ SECTIONS
      * GLOBAL SYMBOLS
      * ================================================================ */
 
-    /* Global pointer: gp must be within +/-0x800 of every .sdata/.sbss object,
-     * so it sits 0x800 past the start of small data. */
+    /* gp-relative offsets span -2048 to 2047 bytes. This covers the first
+     * 4 KiB of small data. */
     PROVIDE(__global_pointer$ = ADDR(.sdata) + 0x800);
 
     /* Cached-region BSS bounds: nothing placed there by this script; empty

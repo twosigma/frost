@@ -15,9 +15,8 @@
  */
 
 /*
- * FreeRTOS configuration for the FROST demo: a minimal kernel build for a
- * single RV64GCB hart (mhartid = 0) that runs every task in M-mode, with the
- * tick from the native mtime/mtimecmp timer and the software build's CPU clock.
+ * FreeRTOS configuration for one RV64GCB hart (mhartid = 0). Tasks run in
+ * M-mode; mtime/mtimecmp drives the tick using the configured CPU frequency.
  */
 
 #ifndef FREERTOS_CONFIG_H
@@ -59,7 +58,7 @@
 #define configSTACK_DEPTH_TYPE uint16_t
 #define configMESSAGE_BUFFER_LENGTH_TYPE size_t
 
-/* Feature trim. Task notifications stay on: the consumer waits on one per atomic worker. */
+/* The consumer waits for one notification per atomic worker. */
 #define configUSE_TASK_NOTIFICATIONS 1
 #define configTASK_NOTIFICATION_ARRAY_ENTRIES 1
 #define configUSE_NEWLIB_REENTRANT 0
@@ -102,8 +101,7 @@
 #define configUSE_TRACE_FACILITY 0
 #define configUSE_STATS_FORMATTING_FUNCTIONS 0
 
-/* Set the following definitions to 1 to include the API function, or zero
- * to exclude the API function. */
+/* Set an API's definition to 1 to include it. */
 #define INCLUDE_vTaskPrioritySet 0
 #define INCLUDE_uxTaskPriorityGet 0
 #define INCLUDE_vTaskDelete 1

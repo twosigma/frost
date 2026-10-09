@@ -15,23 +15,8 @@
  */
 
 /**
- * Tomasulo correctness tests. Each hazard sequence is pinned inside one
- * inline-assembly block, and every expected result holds for any internal
- * execution order.
- *
- * Tests:
- *   1. RAW (Read After Write) - true data dependency through CDB
- *   2. WAR (Write After Read) - anti-dependency via register renaming
- *   3. WAW (Write After Write) - output dependency via register renaming
- *   4. Independent instructions - parallel execution in functional units
- *   5. Long-latency bypass - MUL vs ADD latency differences
- *   6. Reservation station saturation - long dependency chains
- *   7. Load/store dependencies - memory disambiguation
- *   8. Complex mixed dependency chains
- *   9. Branch with loop - speculative execution / branch prediction
- *  10. CDB contention - multiple simultaneous completions
- *  11. FP hazards - RAW/WAR/WAW/crossover with double-precision FP
- *  12. Profile arithmetic - overflow-safe scaled counter ratios
+ * Tomasulo correctness tests. Pin each hazard sequence in one assembly block
+ * and check results independently of internal execution order.
  */
 
 #include "tomasulo_profile.h"
@@ -68,7 +53,6 @@ static uint32_t tests_failed;
 
 /* ========================================================================== */
 /* Test 1: RAW (Read After Write) Hazard                                      */
-/* Tests: Data forwarding through CDB, reservation station waiting            */
 /* ========================================================================== */
 
 static void test_raw_hazard(void)
@@ -103,7 +87,6 @@ static void test_raw_hazard(void)
 
 /* ========================================================================== */
 /* Test 2: WAR (Write After Read) Hazard                                      */
-/* Tests: Register renaming eliminates false dependency                        */
 /* ========================================================================== */
 
 static void test_war_hazard(void)
@@ -138,7 +121,6 @@ static void test_war_hazard(void)
 
 /* ========================================================================== */
 /* Test 3: WAW (Write After Write) Hazard                                     */
-/* Tests: Register renaming, only final write architecturally visible          */
 /* ========================================================================== */
 
 static void test_waw_hazard(void)
@@ -168,7 +150,6 @@ static void test_waw_hazard(void)
 
 /* ========================================================================== */
 /* Test 4: Independent Instructions (Out-of-Order Execution)                  */
-/* Tests: Parallel execution in multiple functional units                      */
 /* ========================================================================== */
 
 static void test_independent_ooo(void)
@@ -217,7 +198,6 @@ static void test_independent_ooo(void)
 
 /* ========================================================================== */
 /* Test 5: Long Latency Operation Bypass                                      */
-/* Tests: Short operations can complete before longer ones                     */
 /* ========================================================================== */
 
 static void test_latency_bypass(void)
@@ -255,7 +235,6 @@ static void test_latency_bypass(void)
 
 /* ========================================================================== */
 /* Test 6: Reservation Station Saturation                                     */
-/* Tests: Long dependent chains waiting in the reservation station            */
 /* ========================================================================== */
 
 static void test_rs_saturation(void)
@@ -329,7 +308,6 @@ static void test_rs_saturation(void)
 
 /* ========================================================================== */
 /* Test 7: Load/Store with Dependencies                                       */
-/* Tests: Memory disambiguation, load/store ordering                          */
 /* ========================================================================== */
 
 static void test_memory_deps(void)
@@ -376,7 +354,7 @@ static void test_memory_deps(void)
                      : "t0", "memory");
     TEST("Store-overwrite-load", overwrite_val, 222);
 
-    /* Load from address, store to different address, load from first again */
+    /* Load one address, then store and reload a different address. */
     data[0] = 500;
     data[1] = 0;
     uint32_t ld1, ld2;
@@ -395,14 +373,13 @@ static void test_memory_deps(void)
 
 /* ========================================================================== */
 /* Test 8: Complex Mixed Dependency Chain                                     */
-/* Tests: Multiple hazard types combined in one sequence                       */
 /* ========================================================================== */
 
 static void test_complex_deps(void)
 {
     uart_printf("Test 8:  Complex deps...");
 
-    /* Chain: ADD -> SUB(RAW) -> ADD(RAW+WAR) -> MUL(RAW) -> ADD(RAW) */
+    /* RAW chain: ADD, SUB, ADD, MUL, ADD. */
     uint32_t t2, t3, t0_new, t4, t5;
     __asm__ volatile(
         "add  %[t2], %[v10], %[v20]\n" /* t2 = 10 + 20 = 30 */
@@ -441,7 +418,6 @@ static void test_complex_deps(void)
 
 /* ========================================================================== */
 /* Test 9: Branch with Loop                                                   */
-/* Tests: Speculative execution, branch misprediction recovery                */
 /* ========================================================================== */
 
 static void test_branch_loop(void)
@@ -490,7 +466,6 @@ static void test_branch_loop(void)
 
 /* ========================================================================== */
 /* Test 10: CDB Contention                                                    */
-/* Tests: Multiple instructions completing simultaneously                     */
 /* ========================================================================== */
 
 static void test_cdb_contention(void)
@@ -513,7 +488,7 @@ static void test_cdb_contention(void)
     TEST("CDB c", c, 3);
     TEST("CDB d", d, 5);
 
-    /* 8 independent operations: maximum CDB pressure */
+    /* Eight independent operations contend for CDB lanes. */
     uint32_t e, f, g, h;
     __asm__ volatile("add  %[a], %[s1], %[s1]\n" /* 1+1 = 2 */
                      "add  %[b], %[s2], %[s2]\n" /* 2+2 = 4 */
@@ -549,7 +524,6 @@ static void test_cdb_contention(void)
 
 /* ========================================================================== */
 /* Test 11: Floating-Point Hazards (double-precision)                         */
-/* Tests: FP RAW/WAR/WAW, FP-INT crossover, FMADD chain, independent FP ops  */
 /* ========================================================================== */
 
 static void test_fp_hazards(void)
@@ -634,7 +608,6 @@ static void test_fp_hazards(void)
 
 /* ========================================================================== */
 /* Test 12: Profile Helper Arithmetic                                          */
-/* Tests: Scaled ratios remain correct at the uint32/uint64 boundaries         */
 /* ========================================================================== */
 
 static void test_profile_arithmetic(void)

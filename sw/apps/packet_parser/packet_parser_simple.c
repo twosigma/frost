@@ -94,7 +94,6 @@ static uint32_t extract_client_order_id(uint64_t mapped_order_id)
     return (uint32_t) ((mapped_order_id >> 8) & 0xFFFFFFFF);
 }
 
-/* Read one word from the selected FIFO. */
 static inline uint32_t fifo_read_word(int fifo_id)
 {
     return (fifo_id == 0) ? fifo0_read() : fifo1_read();

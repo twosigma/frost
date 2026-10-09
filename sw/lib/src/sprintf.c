@@ -17,16 +17,10 @@
 /*
  * sprintf.c: portable sprintf / snprintf family with no <stdio.h> dependency.
  *
- * Floating-point conversions are exact. They expand |d| into its decimal
- * digits with integer arithmetic and round once, to nearest with ties to even,
- * so every finite double prints as a correctly rounding C library prints it in
- * the default rounding mode. No floating-point arithmetic is involved, so the
- * dynamic rounding mode in frm does not change the output.
- *
- * Supported: %d %i %u %o %x %X %f %F %e %E %g %G %c %s %p %n %%
- * Flags:     - + space 0 #
- * Width / precision: literal or *
- * Length modifiers:  hh h l ll z t
+ * Floating-point conversions expand |d| into exact decimal digits using
+ * integer arithmetic, then round once to nearest with ties to even. No
+ * floating-point arithmetic is used, so frm does not affect the output.
+ * See sprintf.h for supported conversions.
  */
 
 #include <limits.h>
@@ -40,7 +34,7 @@
 /* z and t read size_t and ptrdiff_t as each other's unsigned and signed forms. */
 _Static_assert(sizeof(size_t) == sizeof(ptrdiff_t), "size_t and ptrdiff_t differ in width");
 
-/* ── Output context ────────────────────────────────────────────────────── */
+/* -- Output context -- */
 
 typedef struct {
     char *buf;
@@ -89,7 +83,7 @@ static void ctx_term(OutCtx *c)
         c->buf[(c->pos < c->size) ? c->pos : c->size - 1] = '\0';
 }
 
-/* ── Integer conversion ────────────────────────────────────────────────── */
+/* -- Integer conversion -- */
 
 #define IBUF 66
 static const char *u64str(uint64_t v, unsigned base, bool up, char buf[IBUF], size_t *ol)
@@ -109,7 +103,7 @@ static const char *u64str(uint64_t v, unsigned base, bool up, char buf[IBUF], si
     return &buf[i];
 }
 
-/* ── Floating-point digits ─────────────────────────────────────────────── */
+/* -- Floating-point digits -- */
 
 static inline uint64_t dbits(double d)
 {
@@ -408,7 +402,7 @@ static void sp_special(OutCtx *c, bool nan, char sgn, bool up, int w, bool lj)
         ctx_repeat(c, ' ', pad);
 }
 
-/* ── %f %F %e %E %g %G ─────────────────────────────────────────────────── */
+/* -- %f %F %e %E %g %G -- */
 static void
 do_fp(OutCtx *c, double d, int prec, char conv, bool fp, bool fsp, bool fh, int w, bool lj, bool zp)
 {
@@ -484,7 +478,7 @@ do_fp(OutCtx *c, double d, int prec, char conv, bool fp, bool fsp, bool fh, int 
         ctx_repeat(c, ' ', pad);
 }
 
-/* ── Integer emit ──────────────────────────────────────────────────────── */
+/* -- Integer emit -- */
 static void emit_int(OutCtx *c,
                      uint64_t uv,
                      bool sgnd,
@@ -563,7 +557,7 @@ static void emit_int(OutCtx *c,
         ctx_repeat(c, ' ', pad);
 }
 
-/* ── Core engine ─────────────────────────────────────────────────────── */
+/* -- Core engine -- */
 
 typedef enum { LM_NONE, LM_HH, LM_H, LM_L, LM_LL, LM_Z, LM_T } LenMod;
 
@@ -682,16 +676,13 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
         }
 
         if (*p == '\0') {
-            /* Likewise, do not advance beyond an incomplete conversion. */
+            /* Do not advance beyond an incomplete conversion. */
             break;
         }
 
-        /* A precision larger than INT_MAX does not itself imply that the
-         * formatted output is too long: for example, it may merely bound a
-         * one-character string. Integer precision, however, is a minimum
-         * digit count, so a clamped integer precision necessarily exceeds the
-         * representable snprintf return range. Do this after consuming length
-         * modifiers so *p names the actual conversion. */
+        /* Integer precision is a minimum digit count, so a clamped value
+         * exceeds snprintf's return range. String precision only limits output
+         * and need not overflow. Check after length modifiers, at the conversion. */
         if (precision_clamped &&
             (*p == 'd' || *p == 'i' || *p == 'u' || *p == 'o' || *p == 'x' || *p == 'X')) {
             ctx.overflow = true;

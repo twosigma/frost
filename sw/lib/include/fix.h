@@ -35,10 +35,7 @@ typedef enum {
     FIX_TAG_TRANSACT_TIME = 60   /* Transaction timestamp */
 } fix_tags_t;
 
-/* Fixed-point price representation structure
- * Stores price as integer with implied decimal scale
- * Example: $94.50 with scale=2 stored as amount=9450, scale=2
- */
+/* Fixed-point price: $94.50 is amount=9450 with scale=2. */
 typedef struct __attribute__((packed)) {
     int64_t amount; /* Price value scaled by 10^scale */
     uint8_t scale;  /* Number of decimal places */

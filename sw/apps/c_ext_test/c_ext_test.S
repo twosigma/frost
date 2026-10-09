@@ -7,14 +7,6 @@
 # and C.FLW/C.FSW (+SP forms) become C.LD/C.SD (+SP forms), with C.SUBW and
 # C.ADDW added. Each of these RV64C-only encodings gets a value self-check;
 # a wrong result prints <<FAIL>> and halts.
-#
-# Tests:
-#   1. 32-bit JAL to function
-#   2. C.ADDIW (sext32 add check)
-#   3. Nested calls, mixed sizes
-#   4. C.LD/C.SD + C.LDSP/C.SDSP roundtrip
-#   5. C.JALR (indirect call)
-#   6. C.SUBW/C.ADDW (sext32 arith checks)
 
     .section .init
     .option push

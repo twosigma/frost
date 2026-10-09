@@ -12,12 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Directed repro of a load-queue cached-slot hazard: a flushed cached load
-# whose response is still outstanding keeps its slot (drained on arrival),
-# and a second partial flush must not judge that dead slot by its stale ROB
-# tag and clear the issued bit of the live load now occupying its queue
-# entry (iter.S has the instruction shape). Either tier: the probed loads
-# always target cached DDR.
+# Probe stale cached-response slots across two partial flushes (see main.c
+# and iter.S). Both memory tiers run the probed loads from cached DDR.
 EXTRA_ASM_SRC := iter.S
 SRC_C := ../../lib/src/uart.c main.c
 include ../../common/common.mk
