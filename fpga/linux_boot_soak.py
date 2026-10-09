@@ -16,15 +16,12 @@
 
 """Repeatedly load and score Linux boots from the board UART.
 
-The boot is Debian's pinned riscv64 kernel with the Buildroot test initramfs
-(``linux/debian_kernel.py``). Before the login prompt, a boot must print the
-NIC module's ``FROST_NET10G_MODULE_PASS <release>`` line (Debian's kernel has
-no FROST driver built in, and the line names the running release) and the
-``FROST_USERSPACE_STRESS_PASS`` token; ``--login-only`` requires only the
-prompt. A crash signature or a timeout fails the boot, and so does
-``counters=unavailable``: the boot image's DTB maps the cycle and instruction
-events to FROST's fixed counters, so the SBI PMU must serve them to the stress
-payload's ``perf_event_open``.
+Boot Debian's pinned kernel with the Buildroot test initramfs
+(``linux/debian_kernel.py``). Require the module's
+``FROST_NET10G_MODULE_PASS <release>`` line and ``FROST_USERSPACE_STRESS_PASS``
+by login. Reject crashes, timeouts, and unavailable counters: the DTB maps cycle
+and instruction events to the SBI PMU's fixed counters. ``--login-only`` skips
+token and counter checks.
 
 The script reads the UART at 115200 8N1 through termios and sets the speed
 again after every load, because Vivado hw_server's FTDI probes can corrupt the
@@ -57,11 +54,9 @@ from hw_defaults import DEFAULT_SERIALS  # noqa: E402
 
 PASS_TOKEN = "FROST_USERSPACE_STRESS_PASS"
 FAIL_TOKEN = "FROST_USERSPACE_STRESS_FAIL"
-# Both are printed from sysinit entries, so both precede the login prompt. The
-# module line carries the release its init script read from ``uname -r``. The
-# whole line must match, up to a boundary, so a longer release cannot satisfy
-# it. The pinned kernel sets CONFIG_MODVERSIONS, so Linux ignores the release
-# field of vermagic and a successful insmod alone does not identify the kernel.
+# sysinit prints both before login. Match the uname -r release at a boundary
+# to reject longer releases. CONFIG_MODVERSIONS can ignore vermagic's release,
+# so successful insmod alone does not identify the kernel.
 BOOT_TOKENS = (
     (MODULE_PASS_LINE, MODULE_PASS_RE),
     (PASS_TOKEN, re.compile(re.escape(PASS_TOKEN))),
@@ -134,8 +129,8 @@ def score_boot(fd: int, expect_stress: bool, timeout_s: int) -> tuple[str, str]:
     """Watch the UART until the boot passes, crashes, or times out.
 
     Returns (result, transcript), where result is PASS, FAIL(...) or
-    TIMEOUT(...). PASS requires the login prompt and, when expect_stress,
-    every BOOT_TOKENS entry before it.
+    TIMEOUT(...). PASS requires login and, when expect_stress, every BOOT_TOKENS
+    entry in the capture when login is detected.
     """
     deadline = time.monotonic() + timeout_s
     transcript = b""

@@ -21,7 +21,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Import shared hardware-target selection.
 sys.path.insert(0, str(Path(__file__).parent.parent / "common"))
 from hw_target import (
     BOARD_VENDOR_INFO,
@@ -104,7 +103,6 @@ def main() -> None:
     except OSError as error:
         parser.error(f"cannot read bitstream: {error}")
 
-    # Select by board vendor and optional target pattern.
     selected_target = select_target(
         args.vivado_path,
         args.remote_host,
@@ -133,7 +131,6 @@ def main() -> None:
         args.hw_server_url or "",
     ]
 
-    # Run Vivado and propagate programming failures.
     subprocess.run(vivado_command, check=True)
 
 

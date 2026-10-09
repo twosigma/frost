@@ -12,12 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# FROST BR2_EXTERNAL makefile.
-#
-# Standard BR2_EXTERNAL package hook. frost-stress runs from the overlay
-# inittab and prints FROST_USERSPACE_STRESS_PASS/_FAIL for CI.
-#
-# This tree builds no kernel: FROST boots Debian's pinned one (../README.md,
-# "Kernel"), and the frost_net10g driver is built as a module for it by
-# ../debian_kernel.py, so there are no kernel hooks here.
+# FROST BR2_EXTERNAL packages. The overlay inittab runs frost-stress.
+# There are no kernel hooks: ../debian_kernel.py supplies Debian's kernel and
+# the NIC module (../README.md, "Kernel").
 include $(sort $(wildcard $(BR2_EXTERNAL_FROST_PATH)/package/*/*.mk))

@@ -14,19 +14,14 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Run board applications, CoreMark-PRO, Debian NFS boot, and DDR ECC checks.
+"""Run board applications and Linux boots, then check DDR ECC state.
 
 Apps rebuild and load through JTAG; UART checks and score gates determine pass.
-CoreMark scores use 64-bit ticks. Apps that need a debugger or a 10G link
-partner are excluded. ``perf_off_test`` checks that the profiling counters
-are absent, as they are unless the build asked for them with
-``build.py --perf-counters``.
+Debugger-driven apps and apps needing a 10G link partner are excluded.
+``perf_off_test`` requires a bitstream built without ``--perf-counters``.
 
-Linux setup comes from ``fpga/site.env`` or overriding environment variables.
-Preflight validates NFS, the pinned kernel/initramfs, console autologin, and
-cross-compilation before board access; setup errors report ``ENV_FAIL``.
-The Linux stage checks systemd, stress, counters, NIC loopback, and NFS recovery.
-ECC errors are checked after all application traffic.
+Linux preflight reads ``fpga/site.env`` and environment overrides before board
+access. Setup errors report ``ENV_FAIL``. ECC is checked after all traffic.
 
 Run natively: ``./fpga/hw_regression.py --board x3 [stage ...]``.
 See ``fpga/README.md`` and ``docs/debian_nfsroot.md`` for setup and limits.
@@ -100,11 +95,9 @@ SWEEP_STAGE = "coremark_pro"
 LINUX_STAGE = "linux_boot"
 ECC_STAGE = "ddr_ecc"
 
-# The ECC stage reads the DDR4 controller's own error state over JTAG rather
-# than running a program. It runs last so the report covers every earlier
-# stage's DRAM reads: a clean report means the whole run read nothing the array
-# had never been written with. A dirty report's register dump includes the
-# first failing address the controller captured.
+# Read the DDR4 controller over JTAG after all application traffic. A clean
+# report means checking is enabled and no ECC errors are recorded. A dirty
+# report includes the first captured failing address.
 ECC_STAGE_SCRIPT = "./fpga/ddr_ecc/ddr_ecc_status.py"
 ECC_STAGE_TIMEOUT_S = 600.0
 # ddr_ecc_status.py exits 2 for a dirty report and 1 for a read that failed.
@@ -123,23 +116,15 @@ ECHO_EXPECTED = f'You typed: "{ECHO_PROBE}" ({len(ECHO_PROBE)} chars)'
 #
 # Hardware regression boots Debian over NFS; CI separately checks the test initramfs.
 #
-# The stage passes the loader four values. Two are site facts no checkout can
-# know: which host exports the root, and which address the board takes on that
-# network. The other two are derived unless overridden: the kernel is the
-# release this repository pins, at the path debian_kernel.py computes, and the
-# initramfs is that release's image inside the export.
-#
-# The two site values are read from SITE_ENV_FILE, an ignored file beside this
-# script, so a lab sets them once instead of prefixing every run. The
-# environment wins over the file, and a missing value is an environment
-# failure reported before any stage runs (docs/debian_nfsroot.md builds the
-# root).
+# The site supplies the NFS export and board IP in SITE_ENV_FILE or the
+# environment, which takes precedence. Default kernel and initramfs paths use
+# the pinned release. Check all settings before running stages; see
+# docs/debian_nfsroot.md for root setup.
 LINUX_NFSROOT_ENV = "FROST_LINUX_NFSROOT"
 LINUX_IP_ENV = "FROST_LINUX_IP"
 LINUX_KERNEL_ENV = "FROST_LINUX_KERNEL"
 LINUX_INITRD_ENV = "FROST_LINUX_INITRD"
-# What a caller has to supply. The other two are derived; both stay
-# overridable, which is how a replacement kernel is tested.
+# Required site settings; kernel and initramfs paths have overridable defaults.
 LINUX_ROOT_ENV_VARS = (
     LINUX_NFSROOT_ENV,
     LINUX_IP_ENV,
@@ -152,12 +137,10 @@ SITE_ENV_FILE = SCRIPT_DIR / "site.env"
 
 
 def read_site_env(path: Path | None = None) -> dict[str, str]:
-    """Read ``NAME=value`` lines from the ignored site file, if it exists.
+    """Read allowed ``NAME=value`` settings from the optional site file.
 
-    Only the variables in ``LINUX_ROOT_ENV_VARS`` and ``LINUX_DERIVED_ENV_VARS``
-    are taken from it; other names are ignored. Blank lines and ``#`` comments
-    are skipped, and a malformed line is ignored rather than failing a run that
-    may not need the file at all.
+    Accept only ``LINUX_ROOT_ENV_VARS`` and ``LINUX_DERIVED_ENV_VARS``.
+    Ignore blank lines, comments, malformed lines, and other names.
     """
     # Resolved per call, not bound as a default, so SITE_ENV_FILE can be
     # pointed elsewhere.
@@ -179,9 +162,7 @@ def read_site_env(path: Path | None = None) -> dict[str, str]:
     return values
 
 
-# Every preflight message starts with this, and the stage result that carries
-# one is not a FAIL: a server that is down, an export that is not prepared or a
-# host with no cross compiler must never read as an RTL regression.
+# Report setup failures as ENV_FAIL so they cannot be mistaken for RTL failures.
 ENV_NOT_READY = "environment not ready (not a board failure)"
 ENV_FAIL_STATUS = "ENV_FAIL"
 
@@ -194,19 +175,10 @@ class LinuxEnvironmentError(RuntimeError):
     """
 
 
-# This console is an interactive terminal, so it carries escape sequences, and
-# they land exactly where the stage reads values. Debian's bash drives bracketed
-# paste, turning it off as it starts a command and on again with the next
-# prompt, so the first line of a command's output arrives as
-# ``ESC[?2004l CR <output>``, and an anchored pattern would find the escape
-# where the line should start. systemd colours its greeting and its status
-# lines the same way. Every predicate therefore matches against the capture
-# with the escapes removed; nothing this stage looks for is one.
-# The pattern covers CSI (colours, bracketed paste, cursor moves), OSC (a window
-# title, which the prompt sets under some TERMs) and the two-character escapes.
-# The OSC body stops at a newline as well as at its terminators, so an escape
-# that never finishes (a capture read in the middle of one, or a stray byte
-# from a program) cannot swallow the line after it.
+# Strip terminal escapes before matching console output: bracketed-paste
+# controls and systemd colours can precede the text an anchored pattern needs.
+# Match CSI, OSC, and two-character escapes. Stop OSC at a newline so an
+# incomplete escape cannot swallow the next line.
 ANSI_ESCAPE_RE = re.compile(
     r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b\n]*(?:\x07|\x1b\\)?|[@-Z\\-_])"
 )
@@ -228,13 +200,9 @@ LINUX_SUCCESS_MARKERS = (KERNEL_BANNER, DEBIAN_OS_NAME, LINUX_LOGIN_PROMPT)
 LINUX_FAILURE_MARKERS = ("<<TRAP>>", "Kernel panic", "Oops", "BUG:", "Kernel BUG")
 LINUX_SHELL_PROMPT = "# "
 
-# Debian's initramfs loads the NIC driver with a quiet modprobe, so the line
-# that proves the module is in the kernel is the driver's own probe message
-# (frost_net10g.c, netdev_info); it prints before the root is mounted, so it
-# precedes the login prompt. The line does not name the running release, and
-# CONFIG_MODVERSIONS lets a module load into any ABI-compatible kernel, so the
-# kernel's own banner above certifies the release; the module is the DKMS
-# build for the release the banner names.
+# Quiet modprobe leaves the driver's probe message (frost_net10g.c, netdev_info)
+# as the load check before login. It does not identify the kernel release;
+# CONFIG_MODVERSIONS permits ABI-compatible modules, so also check the banner.
 LINUX_DRIVER_LINE = "FROST net10g, IRQ "
 
 # The stress payload. Debian's root does not start it, so the stage types it at
@@ -245,32 +213,17 @@ LINUX_TOKEN_FAIL = "FROST_USERSPACE_STRESS_FAIL"
 LINUX_ROOT_BIN = "/usr/local/bin"
 LINUX_STRESS_COMMAND = f"{LINUX_ROOT_BIN}/frost_stress --boot"
 
-# Only the real root can show these two. ``findmnt`` names what ``/`` is
-# mounted from, which must be the export the loader packed, over NFS, at the
-# version the initramfs asks for; ``systemctl`` must report a finished startup
-# with no failed unit. The failed units are listed before the state so that a
-# degraded system says why in the same capture.
-# Three raw fields are parsed: fstype, source, and the comma-separated options,
-# in which ``vers=3`` has to be one whole option (``mountvers=3`` is a different
-# thing, and an NFSv2 mount can carry it). findmnt has no colour option of its
-# own and libsmartcols prints raw output plain, so the fields arrive as they are
-# even though this console is a tty.
+# Require the packed export as / over NFSv3. Parse raw fstype, source, and
+# comma-separated options; ``vers=3`` must be a whole option, not ``mountvers=3``.
 LINUX_ROOT_MOUNT_COMMAND = "findmnt -rno FSTYPE,SOURCE,OPTIONS /"
-# The pattern ends on a newline, not ``$``: this runs on a capture that grows
-# byte by byte, and ``$`` also matches at the end of the buffer, so a line still
-# arriving would be read as a complete one.
+# Require a newline; ``$`` would also match an incomplete line at the buffer end.
 LINUX_ROOT_MOUNT_RE = re.compile(
     r"^\r*(nfs\d*)[ \t]+(\S+)[ \t]+(\S+)[ \t\r]*\n", re.MULTILINE
 )
 LINUX_ROOT_MOUNT_VERS = "vers=3"
-# ``--wait`` returns when the startup finishes, however slow the board is, and
-# the outer ``timeout`` bounds it so that a startup which never finishes prints
-# ``starting`` (a terminal state, named in the failure note) instead of running
-# the whole stage out on its deadline. The state is printed through ``state=``, a
-# prefix the echoed command line cannot produce because there it reads
-# ``state=$(...)``. Matching a bare ``running`` line instead would depend on
-# where the terminal wrapped the echo of this command, which carries that word
-# inside its own name.
+# Bound systemd startup, then print failed units and the current state.
+# ``state=`` distinguishes output from the echoed ``state=$(...)`` command,
+# even when the terminal wraps it.
 LINUX_SYSTEMD_WAIT_S = 300
 # ``--no-pager``, because a long enough list of failed units would otherwise
 # open a pager on this console, which reads the input the stage has typed ahead.
@@ -281,35 +234,25 @@ LINUX_SYSTEMD_COMMAND = (
     "echo state=$(systemctl is-system-running)"
 )
 LINUX_SYSTEMD_RUNNING = "running"
-# Any state but ``running`` is terminal, so a degraded boot ends the capture
-# instead of waiting out the stage timeout, and it is reported by name.
-# On a newline, like the mount pattern above: a capture that stops inside
-# ``state=running`` would otherwise read as the state ``r`` and fail the stage.
+# Any complete state other than ``running`` ends capture as a failure.
+# Require a newline so a partial ``state=running`` cannot be read as ``state=r``.
 LINUX_SYSTEMD_STATE_RE = re.compile(r"^\r*state=(\w+)[ \t\r]*\n", re.MULTILINE)
 
-# ``frost_stress --counters`` reads the SBI PMU's cycle and instret counters
-# through perf_event_open and prints them on its own line. ``perf`` itself is
-# not packed for the target: it builds only against a kernel tree, and this
-# tree builds no kernel. Like ``perf stat``, the counters cover a child
-# measured from its exec to its exit.
+# frost_stress reads SBI PMU cycle and instret counters through perf_event_open,
+# measuring a child from exec to exit without a target ``perf`` binary.
 LINUX_COUNTER_EVENTS = ("cycles", "instret")
 LINUX_COUNTER_COMMAND = f"{LINUX_ROOT_BIN}/frost_stress --counters"
 LINUX_COUNTER_LINE = f"{INITRAMFS_COUNTER_TOKEN}:"
 LINUX_COUNTER_RE = re.compile(
     LINUX_COUNTER_LINE + r"((?: \w+=[\w.+-]+)+) verdict=PASS", re.MULTILINE
 )
-# A run that could not read the counters prints ``verdict=FAIL``. Matching it
-# ends the capture at once; otherwise the stage would match neither success
-# nor failure and run to the timeout.
+# End capture on counter failure instead of waiting for a pass until timeout.
 LINUX_COUNTER_FAIL_RE = re.compile(
     LINUX_COUNTER_LINE + r"(?: \w+=[\w.+-]+)* verdict=FAIL", re.MULTILINE
 )
 
-# At the next shell prompt the stage types frost_nettest (the frost-stress
-# package), which runs the frost,net10g driver through its loopback feature
-# (the NIC's raw loopback or the transceiver's PMA loopback) and ends with one
-# of these tokens. On this root that interface carries the root filesystem, so
-# ``nettest_command`` wraps it; see there.
+# frost_nettest checks NIC or PMA loopback. nettest_command restores the link
+# afterward because this interface also carries the root filesystem.
 LINUX_NET_COMMAND = "frost_nettest"
 LINUX_NET_TOKEN = "FROST_NET_LOOPBACK_PASS"
 LINUX_NET_TOKEN_FAIL = "FROST_NET_LOOPBACK_FAIL"
@@ -318,15 +261,9 @@ LINUX_TMPFS = "/dev/shm"
 # The interface the initramfs configures when ``ip=`` names none, and the name
 # the docs' root keeps by masking udev's predictable naming.
 DEFAULT_NIC_INTERFACE = "eth0"
-# The root has to survive the loopback test, which takes its link down: the link
-# comes back, the route with it, the server answers again, and the board's writes
-# reach it. Creating a file proves the first three, because an NFS create is a
-# round trip to the server (a bare ``sync`` over a tree with nothing dirty left
-# would return without one), and the ``sync`` then flushes what the boot wrote.
-# The status is printed through a ``=<status>`` the echoed command line cannot
-# carry, where it reads ``=$?``. The bound keeps a server that never answers from
-# becoming a bare stage timeout, and ``-k`` follows it with a kill, because a
-# hard mount's wait ignores the first signal.
+# Create a file after loopback to require a server round trip; sync alone may
+# have nothing to flush. Bound the check and follow with a kill for hard-mount
+# waits. The numeric status cannot match the echoed command's ``=$?``.
 LINUX_ROOT_ALIVE_TOKEN = "FROST_ROOT_ALIVE"
 LINUX_ROOT_ALIVE_FILE = "/root/.frost_alive"
 LINUX_ROOT_ALIVE_RE = re.compile(
@@ -403,12 +340,11 @@ def _default_failure_done(serial_buf: str) -> bool:
 
 @dataclass
 class UartStage:
-    """UART end-of-capture predicates, pass/fail judge, and optional stimuli.
+    """UART completion predicates, result checks, and optional stimuli.
 
-    Done predicates end capture; ``judge`` evaluates all post-sentinel output.
-    ``stimuli`` are ``(trigger, text)`` pairs typed in order: each text is sent
-    once when its trigger appears in the output captured after the previous
-    stimulus was sent.
+    Done predicates end capture; ``judge`` checks all post-sentinel output.
+    Send each ``(trigger, text)`` stimulus once, in order, searching after the
+    previous trigger's end.
     """
 
     app: str
@@ -553,15 +489,12 @@ def linux_root_from_env(
     environment: Mapping[str, str] = os.environ,
     site: Mapping[str, str] | None = None,
 ) -> LinuxRoot:
-    """Build the LinuxRoot, deriving what the checkout already knows.
+    """Resolve the NFS root from environment settings, then site-file values.
 
-    Only the two site values have to be supplied, and the site file supplies
-    them when the environment does not. A wrong guess at those would boot a
-    board against somebody else's export, so they are never defaulted. The
-    kernel is the release this repository pins and the initramfs is that
-    release's image inside the export, so both are derived, and both remain
-    overridable. ``FROST_LINUX_NFSROOT`` must read ``<server>:/<path>``, the
-    form the packer and the initramfs both take.
+    The server/export and board IP must be supplied; guessing could select
+    another site's root. ``FROST_LINUX_NFSROOT`` must be ``<server>:/<path>``.
+    Default the kernel and export's initramfs to the pinned release; both paths
+    can be overridden.
     """
     site = read_site_env() if site is None else site
     values = {
@@ -622,11 +555,8 @@ def linux_loader_env(root: LinuxRoot) -> dict[str, str]:
     }
 
 
-# An ONC RPC NULL call for the NFS program, version 3: the question the
-# initramfs's ``vers=3,tcp`` mount asks first. rpcinfo would answer it too, but
-# the host that runs the loader is a Vivado host and need not carry the NFS
-# client tools, and NULL touches no export, so no mount and no privileged
-# source port are involved.
+# Probe NFSv3 with ONC RPC NULL, without NFS client tools, an export mount,
+# or a privileged source port.
 NFS_PROGRAM = 100003
 NFS_VERSION = 3
 NFS_PORT = 2049
@@ -635,10 +565,8 @@ RPC_REPLY = 1
 RPC_MSG_ACCEPTED = 0
 RPC_SUCCESS = 0
 RPC_PROG_MISMATCH = 2
-# An accepted reply is xid, message type, reply status, the verifier's flavor
-# and length, and the acceptance status. A NULL reply is exactly that, so a
-# record claiming to be much longer is not one and is reported rather than read:
-# the bound is what keeps both the read and the decoding finite.
+# An accepted reply has xid, message type, reply status, verifier flavor and
+# length, padded verifier data, and acceptance status. Bound reads and decoding.
 RPC_REPLY_HEAD = 24
 RPC_REPLY_MAX = 128
 RPC_LAST_FRAGMENT = 0x8000_0000
@@ -648,9 +576,7 @@ RPC_FRAGMENT_SIZE = 0x7FFF_FFFF
 def _recv_exactly(sock: socket.socket, count: int, deadline: float) -> bytes:
     """Read up to ``count`` bytes until the peer closes or ``deadline`` passes.
 
-    The deadline is the whole probe's, not each read's: a peer that answers one
-    byte at a time just inside the socket timeout would otherwise keep the
-    preflight waiting a byte at a time.
+    Use one deadline for the probe so a trickling peer cannot extend the wait.
     """
     chunks: list[bytes] = []
     have = 0
@@ -670,11 +596,10 @@ def _recv_exactly(sock: socket.socket, count: int, deadline: float) -> bytes:
 def probe_nfs3_tcp(
     server: str, port: int = NFS_PORT, timeout_s: float = 5.0
 ) -> str | None:
-    """Return None when the server serves NFSv3 over TCP, else the reason.
+    """Return None if the server answers an NFSv3 NULL call over TCP.
 
-    The reason is written for an operator: it says what answered and what to
-    check, because a server that is down or NFSv4-only must not be mistaken for
-    a board that will not boot.
+    Otherwise return an operator-facing reason to distinguish setup failures
+    from board failures.
     """
     call = struct.pack(
         ">10I",
@@ -710,9 +635,8 @@ def probe_nfs3_tcp(
             f"{server}:{port} did not answer ({error}). The export must be "
             "served by nfs-kernel-server over TCP, reachable from this host."
         )
-    # One final fragment carrying at least an accepted reply's head is the only
-    # shape a NULL reply takes; anything else is reported rather than decoded,
-    # so a short or split record cannot become a traceback.
+    # Accept only a bounded final fragment. Reject short or split records before
+    # decoding so they cannot cause a traceback.
     if (
         not marker & RPC_LAST_FRAGMENT
         or not RPC_REPLY_HEAD <= wanted <= RPC_REPLY_MAX
@@ -731,9 +655,8 @@ def probe_nfs3_tcp(
             f"{server}:{port} denied the NFSv3 NULL call (RPC reply_stat "
             f"{reply_stat}); check the server's authentication and firewall"
         )
-    # The verifier is opaque data, which XDR pads to a multiple of four; a
-    # server that answers with AUTH_NONE sends none, but the padding is what
-    # says where the acceptance status is either way.
+    # XDR pads the opaque verifier to a multiple of four bytes; the acceptance
+    # status follows the padded data.
     verifier_length = struct.unpack(">I", body[16:20])[0]
     accept_at = 20 + ((verifier_length + 3) & ~3)
     if len(body) < accept_at + 4:
@@ -753,14 +676,8 @@ def probe_nfs3_tcp(
     return f"{server}:{port} refused the NFSv3 NULL call (accept_stat {accept_stat})"
 
 
-# The two programs the stage types at the root shell. Buildroot builds them
-# against musl and installs them in the test initramfs, so that image's copies
-# cannot run on a glibc Debian root; the preflight cross-compiles these sources
-# statically instead and installs them in the export. Building rather than
-# requiring them keeps what the stage types in step with this checkout (the
-# linux_boot Makefile likewise names these sources as prerequisites of the test
-# initramfs), and static linking is what lets frost_nettest run with the root's
-# link down (see ``nettest_command``).
+# Build current sources statically for Debian: the Buildroot copies need musl,
+# and frost_nettest must run while its NFS root's link is down.
 ROOT_PROGRAM_SRC = Path("linux/buildroot-external/package/frost-stress/src")
 ROOT_PROGRAMS = ("frost_stress", "frost_nettest")
 ROOT_PROGRAM_CFLAGS = ("-O2", "-static")
@@ -793,12 +710,10 @@ def resolve_cross_compile(
 
 
 def install_root_programs(repo: Path, export: Path, cross: str) -> str:
-    """Build the two programs statically and install them in the export.
+    """Build the programs statically, install them in the export, and return a note.
 
-    Returns the note naming what was installed. The export tree belongs to
-    root, so its ``usr/local/bin`` has to be writable by whoever runs the
-    regression; each program is staged beside its target and renamed into
-    place, so a board never sees a half-written one.
+    The caller must be able to write ``usr/local/bin``. Stage each program
+    beside its target and rename atomically so boards cannot see partial files.
     """
     target = export / LINUX_ROOT_BIN.lstrip("/")
     if not target.is_dir():
@@ -849,20 +764,17 @@ def install_root_programs(repo: Path, export: Path, cross: str) -> str:
     return f"installed {', '.join(names)} in {target} ({cross}gcc, static)"
 
 
-# The kernel's own banner inside a flat Linux ``Image``: the same string the
-# stage requires on the console, so the packed file can be checked against the
-# pin before the load. The release is the field after ``Linux version``, and the
-# trailing space is what ``KERNEL_BANNER`` matches on, so a truncated read at a
-# chunk boundary does not match half a release.
+# Match the console's kernel release before loading the flat Image. The trailing
+# space prevents a read ending at a chunk boundary from matching half a release.
 KERNEL_BANNER_RE = re.compile(rb"Linux version (\d[\w.+~-]*) ")
 KERNEL_SCAN_OVERLAP = 256
 
 
 def kernel_image_release(image: Path, limit: int = 128 << 20) -> str | None:
-    """Return the release in a flat Linux Image's banner, or None if it has none.
+    """Return the release from the first Linux version banner within the limit.
 
-    A compressed image (Debian's ``vmlinuz-*``) carries no readable banner and
-    returns None, as does anything that is not a kernel.
+    Flat Images contain a readable banner; compressed images may hide it.
+    Return None if no banner is found. This does not validate the image format.
     """
     window = b""
     with image.open("rb") as handle:
@@ -884,15 +796,11 @@ DRIVER_MODULE = "frost_net10g"
 
 
 def initrd_driver_note(initrd: Path, limit: int = 8 << 20) -> list[str]:
-    """Note the NIC driver's module if the initramfs names it in the clear.
+    """Report a NIC module name visible in the initramfs, without failing preflight.
 
-    initramfs-tools puts the already-compressed modules in an uncompressed cpio
-    segment, so ``usr/lib/modules/<release>/updates/dkms/frost_net10g.ko.xz``
-    usually appears as a plain member name; a compressed image hides it. Finding
-    it is evidence and not finding it says nothing, so this never fails the
-    preflight. The ``lsinitramfs`` check in docs/debian_nfsroot.md step 3 is
-    the definitive one, and an initramfs without the driver mounts no root at
-    all.
+    initramfs-tools can put compressed modules in an uncompressed cpio segment,
+    leaving their names readable. Absence here is inconclusive; use the
+    ``lsinitramfs`` check in docs/debian_nfsroot.md, step 3.
     """
     with initrd.open("rb") as handle:
         head = handle.read(limit)
@@ -902,13 +810,10 @@ def initrd_driver_note(initrd: Path, limit: int = 8 << 20) -> list[str]:
 
 
 def subnet_note(root: LinuxRoot) -> list[str]:
-    """Note whether the export's server shares the board's subnet.
+    """Report whether the NFS server shares the board's subnet.
 
-    It matters for one reason: frost_nettest takes the root's interface down,
-    and the kernel restores that interface's connected route by itself but not a
-    route through a gateway. A server on the board's own subnet therefore comes
-    back on its own; one reached through the gateway may not, and the stage's
-    liveness check is what would report it (``nettest_command``).
+    After loopback drops the link, the connected route returns automatically;
+    a gateway route may not. ``nettest_command`` checks root access afterward.
     """
     fields = root.ip.split(":")
     if len(fields) < 4:
@@ -947,8 +852,7 @@ def console_autologin_files(export: Path) -> list[Path]:
             text = candidate.read_text(errors="replace")
         except OSError:
             continue
-        # A commented-out drop-in configures nothing, and pasting one is the
-        # likeliest way to have the option present but inactive.
+        # A commented-out drop-in does not enable autologin.
         live = [
             line
             for line in text.splitlines()
@@ -962,13 +866,10 @@ def console_autologin_files(export: Path) -> list[Path]:
 def linux_root_preflight(
     root: LinuxRoot, repo: Path, environment: Mapping[str, str] = os.environ
 ) -> list[str]:
-    """Check the operator's NFS root and install the programs the stage types.
+    """Check the NFS root, install test programs, and return diagnostic notes.
 
-    Returns the notes to print. Every failure raises ``LinuxEnvironmentError``
-    with a message that starts by saying the environment is not ready, so that
-    a server that is down, an export that is not prepared, a kernel that is not
-    the pinned release or a host with no cross compiler can never be read as an
-    RTL regression.
+    Raise ``LinuxEnvironmentError`` with an ``ENV_NOT_READY`` message for setup
+    failures so they are not reported as RTL regressions.
     """
     notes = []
     if not root.export.is_dir():
@@ -1036,38 +937,20 @@ def linux_root_preflight(
 
 
 def nettest_command(interface: str) -> str:
-    """Return the shell line that runs frost_nettest and gives the link back.
+    """Return a shell command that runs frost_nettest and restores the root's link.
 
-    The program takes the interface down, sets MTU 9000, drives the loopback and
-    leaves the interface down with loopback off. On this root that interface
-    carries the root filesystem, a hard mount, so the line around it does four
-    things.
+    Copy the static binary to tmpfs so instruction or library faults cannot
+    block on the root while loopback takes the link down. Disable IPv6 during
+    the test: autoconfiguration traffic returning through loopback fails idle
+    checks. The test leaves the interface down and loopback off.
 
-    It runs the program from a tmpfs copy: a page fault on its own text while
-    the link is down would block until the link came back, and this program is
-    what brings it back. It is statically linked, so there is no interpreter or
-    library to fault in either.
+    Restore the saved MTU and flags using shell built-ins, then enable IPv6.
+    The login shell still maps the NFS root; reclaim of its pages can block
+    recovery. The bounded helper's exec can also block if the link stays down,
+    causing a stage TIMEOUT.
 
-    It disables IPv6 on the interface first. Debian's kernel builds IPv6 in, and
-    the autoconfiguration frames it sends whenever an interface comes up return
-    through the loopback and fail the program's idle checks; the packer's own
-    bootargs carry ``ipv6.disable=1`` for exactly that reason, and an NFS root's
-    do not, because the root is IPv4.
-
-    It restores the MTU and flags it read first (sysfs) and the IPv6 setting
-    (procfs) with shell built-ins, so nothing has to be read from the root or
-    exec'd from it before the link is up again. The shell itself is still the
-    login shell mapped from the root, which has run every command before this
-    one, so its pages are resident; a reclaim under memory pressure could still
-    leave it faulting on a dead mount, as could the bounded helper's own exec if
-    the link never comes back, since an NFS open revalidates against the server.
-    The stage then ends in a TIMEOUT rather than a specific failure, and the
-    printed transcript still shows what happened.
-
-    And it writes a file on the root and syncs, bounded, and prints the status:
-    that is how the stage learns that the link, the route and the server all came
-    back, rather than reporting a pass over a dead root, and it leaves the
-    board's writes on the server for the next load.
+    Create a file on the root, sync, and remove it under a timeout. The printed
+    status checks that the link, route, server access, and writes recovered.
     """
     sysfs = f"/sys/class/net/{interface}"
     ipv6 = f"/proc/sys/net/ipv6/conf/{interface}/disable_ipv6"
@@ -1084,12 +967,11 @@ def nettest_command(interface: str) -> str:
 
 
 def counter_values(serial_buf: str) -> dict[str, str]:
-    """Return the fields of a passing ``frost_stress --counters`` line, by name.
+    """Return fields from passing ``frost_stress --counters`` lines.
 
-    The line reads ``FROST_COUNTERS: scope=exec-child cycles=N instret=N time=N
-    ipc_x1000=N verdict=PASS``; a run that could not read the counters prints
-    ``counters=unavailable verdict=FAIL`` instead and matches nothing here, so
-    ``LINUX_COUNTER_FAIL_RE`` is what ends the capture for it.
+    The format is ``FROST_COUNTERS: scope=exec-child cycles=N instret=N time=N
+    ipc_x1000=N verdict=PASS``. ``LINUX_COUNTER_FAIL_RE`` handles unavailable
+    counters and other failures.
     """
     counts: dict[str, str] = {}
     for fields in LINUX_COUNTER_RE.findall(serial_buf):
@@ -1104,24 +986,16 @@ def systemd_state(serial_buf: str) -> str | None:
 
 
 def root_alive_status(serial_buf: str) -> int | None:
-    """Return the status of the bounded ``sync`` after frost_nettest, if printed.
+    """Return the last post-loopback root-access status, or None if absent.
 
-    Zero means the interface came back up, the route and the server with it, and
-    the board's writes reached the export; anything else means the root did not
-    survive the loopback test, which is the NIC's own recovery path and part of
-    what this stage is here to check.
+    Zero means the file creation, sync, and removal all succeeded.
     """
     matches = LINUX_ROOT_ALIVE_RE.findall(serial_buf)
     return int(matches[-1]) if matches else None
 
 
 def root_mount_verdict(serial_buf: str, nfsroot: str) -> tuple[bool, str]:
-    """Judge the ``findmnt`` line for ``/`` against the export that was packed.
-
-    Only the real root can fail this: the initramfs mounted it over the NIC
-    before Debian started, so the line proves the driver carried an NFSv3 mount
-    of this export and that userspace is running from it.
-    """
+    """Require ``findmnt`` to report the packed NFS export mounted with ``vers=3``."""
     match = LINUX_ROOT_MOUNT_RE.search(serial_buf)
     if match is None:
         return False, f"{LINUX_ROOT_MOUNT_COMMAND}: no nfs line for '/'"
@@ -1131,8 +1005,7 @@ def root_mount_verdict(serial_buf: str, nfsroot: str) -> tuple[bool, str]:
     if got_path.rstrip("/") != want_path.rstrip("/"):
         return False, (f"/ is {fstype} from {source}, not the packed export {nfsroot}")
     if got_server != want_server:
-        # The path is this export, so the two name one server differently: a
-        # hostname against the address the mount actually used, most likely.
+        # Require an exact server match, including hostname versus address.
         return False, (
             f"/ is {fstype} from {source}, and {LINUX_NFSROOT_ENV} names that "
             f"server {want_server}; give it as the address the mount shows"
@@ -1145,28 +1018,15 @@ def root_mount_verdict(serial_buf: str, nfsroot: str) -> tuple[bool, str]:
 
 
 def linux_stage(root: LinuxRoot) -> UartStage:
-    """Build the linux_boot stage for Debian on ``root``, booted over the NIC.
+    """Build UART checks for Debian booting from the NFS root.
 
-    Before the login prompt the stage needs the pinned kernel's own banner and
-    the NIC driver's probe line, which the initramfs's modprobe produces on the
-    way to mounting the root. Then it logs in on the console and types four
-    programs: ``findmnt``, whose line must show ``/`` mounted from this export
-    over NFSv3; ``systemctl``, which must report a finished startup with no
-    failed unit; the stress payload, whose pass token must follow the prompt;
-    and ``frost_stress --counters``, which must report a nonzero count for
-    every name in ``LINUX_COUNTER_EVENTS``. Last comes
-    ``frost_nettest``, which needs its pass token and then the root back: that
-    test takes the root's own link down, so the stage requires the bounded
-    ``sync`` after it to report success (``nettest_command``). Any program's
-    failure token, a systemd state other than ``running``, a root that does
-    not come back, a trap, panic, ``Oops`` or ``BUG`` fails the stage and ends
-    the capture rather than leaving it to the timeout.
+    Require the pinned kernel and driver before login. After login, check the
+    NFSv3 mount, systemd startup, stress result, nonzero counters, and loopback
+    with root access restored. Explicit failures end capture immediately.
     """
     failure_markers = LINUX_FAILURE_MARKERS + (LINUX_TOKEN_FAIL, LINUX_NET_TOKEN_FAIL)
-    # Lines that must appear before the login prompt, each with the pattern
-    # that requires it. Debian's initramfs runs none of this tree's init
-    # scripts, so only the driver's own probe message qualifies; the stage
-    # types everything else it checks.
+    # Debian's initramfs does not run this tree's init scripts. Require the
+    # driver's own probe message before login.
     boot_lines = ((LINUX_DRIVER_LINE, re.compile(re.escape(LINUX_DRIVER_LINE))),)
 
     def lx_login(serial_buf: str) -> bool:
@@ -1284,11 +1144,9 @@ def send_uart_probe(serial_fd: int, text: str) -> None:
 def run_ecc_stage(
     repo: Path, board: str, target: str, timeout_s: float
 ) -> dict[str, Any]:
-    """Read the DDR4 controller's ECC state and pass only on a clean report.
+    """Read DDR ECC state over JTAG after application traffic.
 
-    No program and no UART: the controller counted the errors itself while the
-    earlier stages ran, and this reads that count. The script's own exit code
-    decides the result, so the two agree on what clean means.
+    Use ddr_ecc_status.py's exit code to decide whether the report is clean.
     """
     started = time.monotonic()
     # ``target`` is a pattern here, the same one the loader stages take, so it
@@ -1437,7 +1295,7 @@ def run_uart_stage(
                     "loader_tail": list(loader_tail),
                 }
 
-        # The sentinel is the loader's final line, so both conditions are needed.
+        # Require loader completion and the sentinel before judging the new image.
         if (
             loader_done
             and program_started
@@ -1486,12 +1344,10 @@ def run_sweep_stage(
     loader_extra: list[str],
     tolerance_pct: float,
 ) -> dict[str, Any]:
-    """Run the -v0 CoreMark-PRO sweep and judge its status and mark.
+    """Run the -v0 CoreMark-PRO sweep and check its status and official mark.
 
-    The sweep holds the UART exclusively and times each workload. It can raise
-    this stage's base timeout to a workload-specific registry minimum. Its
-    status covers all nine workloads; its printed official mark is checked
-    against the board baseline.
+    The sweep holds the UART exclusively. Each workload's registry minimum can
+    raise the base timeout; check the printed mark against the board baseline.
     """
     cmd = [
         "./fpga/sweep_coremark_pro.py",
@@ -1554,29 +1410,20 @@ def run_sweep_stage(
     }
 
 
-# Apps that need a debugger driving them cannot pass unattended: debug_target
-# spins until a debugger writes its flag, so a UART-judged run can only time
-# out. They stay in VALID_APPS so load_software.py and the VS Code extension
-# can load them; the regression leaves them out.
+# debug_target waits for a debugger to write its flag, so UART-only runs time out.
+# Keep it loadable through VALID_APPS, but exclude it from regression.
 DEBUGGER_DRIVEN_APPS = frozenset({"debug_target"})
 
-# Apps that need a link partner on the 10G port. nic_echo expects the frames
-# the cocotb wire peer sends, which no hardware regression setup provides, so
-# it cannot pass; nic_loopback is the NIC stage. They stay in VALID_APPS so
-# load_software.py can load them; the regression neither runs nor accepts them
-# until such a partner exists.
+# nic_echo requires a 10G link partner. Keep it loadable through VALID_APPS;
+# use nic_loopback for unattended regression.
 EXTERNAL_LINK_APPS = frozenset({"nic_echo"})
 
 
 def regression_stages() -> list[str]:
-    """Return every stage in run order: apps, the PRO sweep, Linux, then ECC.
+    """Return stages in order: hello_world, other apps, PRO, Linux, then ECC.
 
-    hello_world runs first as the bring-up smoke test, the remaining apps in
-    VALID_APPS order, then the CoreMark-PRO sweep. linux_boot is the longest,
-    whole-system stage and runs after those, and ddr_ecc reads the memory
-    controller's error state after all of it. Debugger-driven apps
-    (DEBUGGER_DRIVEN_APPS) and apps that need an external link
-    (EXTERNAL_LINK_APPS) are excluded.
+    Exclude debugger-driven apps and those needing an external link partner.
+    Keep ECC last so it covers all earlier traffic.
     """
     phase1 = [
         app
@@ -1714,11 +1561,8 @@ def main() -> int:
         print("Close it (or pass another --serial) and re-run.", file=sys.stderr)
         return 1
 
-    # The NFS root the Linux stage boots is the operator's, so it is resolved
-    # and checked before any stage runs: a long regression should not reach the
-    # Linux stage only to find that the export is not serving. Without
-    # --keep-going nothing runs at all; with it the other stages still do, and
-    # the summary carries the linux_boot stage as ENV_FAIL rather than FAIL.
+    # Check NFS setup before any stage. On failure, --keep-going runs the other
+    # stages and reports Linux as ENV_FAIL; otherwise stop here.
     linux_root: LinuxRoot | None = None
     linux_env_error: str | None = None
     if LINUX_STAGE in selected:
@@ -1727,10 +1571,7 @@ def main() -> int:
             for note in linux_root_preflight(linux_root, args.repo):
                 print(f"[hw_regression] Linux root: {note}", flush=True)
         except (LinuxEnvironmentError, OSError) as error:
-            # An OSError here is the export or this host refusing a read or a
-            # write (a permission, a full filesystem, a server that went away
-            # mid-check). That is an environment failure just as much as the
-            # checks that raise deliberately, and must not be a traceback.
+            # Host or export I/O errors are setup failures, not tracebacks.
             linux_env_error = (
                 str(error)
                 if isinstance(error, LinuxEnvironmentError)

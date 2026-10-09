@@ -13,22 +13,18 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Hold one Linux UART exclusively and bridge its bytes over newline-delimited JSON.
+"""Hold one Linux UART exclusively and bridge bytes over newline-delimited JSON.
 
-Commands on stdin: {"type":"write","data":"<base64>"}, {"type":"reconfigure"}
-and {"type":"close"}. Events on stdout: ready(port, baud), data(base64),
-reconfigured(port, baud), error(message) and closed. A malformed command is an
-error that ends the bridge. Stdin EOF, SIGTERM or SIGINT closes the port. No
-command flushes pending input.
+Commands: {"type":"write","data":"<base64>"}, {"type":"reconfigure"},
+{"type":"close"}. Events: ready(port, baud), data(base64),
+reconfigured(port, baud), error(message), closed. Malformed commands end the
+bridge with an error. Stdin EOF, SIGTERM, and SIGINT close the port.
+No command flushes input, and closing does not restore prior termios settings.
 
-Before changing termios, the bridge looks in /proc for other processes holding
-the device, takes flock and TIOCEXCL, then looks again to catch a process that
-opened it between the first look and the open. TIOCEXCL refuses later
-unprivileged opens; flock coordinates cooperating clients. Linux may hide a
-process's descriptors even from the same user, and those are skipped, so a
-holder the bridge cannot see goes undetected; a CAP_SYS_ADMIN process can also
-bypass TIOCEXCL. The bridge never touches another process or its descriptors,
-and does not restore the old termios settings on close.
+Before changing termios, check /proc for other processes holding the device,
+take flock and TIOCEXCL, and check again for racing opens. flock coordinates cooperating clients;
+TIOCEXCL blocks later unprivileged opens. Hidden descriptors cannot be detected,
+and CAP_SYS_ADMIN can bypass TIOCEXCL. Leave other processes and descriptors alone.
 """
 
 from __future__ import annotations

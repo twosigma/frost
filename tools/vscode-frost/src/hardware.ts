@@ -11,11 +11,10 @@ export const HW_PORT = 3121;
 export const HW_URL = `127.0.0.1:${HW_PORT}`;
 
 export function imageResetDelayMs(cpuClockHz: number): number {
-    // Every JTAG write to BRAM restarts xilinx_frost_subsystem's 27-bit counter
-    // on the CPU/4 clock, and frost.sv then synchronizes the reset release into
-    // the CPU clock domain. A DMI pulse while the debug module is in reset can be
-    // lost permanently, so do not poll over DMI for the release. Start the full
-    // interval after the loader exits, which is later than its last BRAM write.
+    // JTAG writes through the BRAM programming port restart a 27-bit counter at
+    // CPU/4 (ordinary CPU stores do not); frost.sv synchronizes reset
+    // release into the CPU clock. DMI pulses during reset can be lost, so wait
+    // the full interval after loader exit instead of polling through DMI.
     const milliseconds = Math.ceil(4 * 2 ** 27 * 1000 / cpuClockHz) + 250;
     if (!Number.isFinite(milliseconds) || cpuClockHz <= 0 || milliseconds > 2147483647) {
         throw new Error('CPU clock cannot define a supported image-reset wait');
@@ -35,12 +34,9 @@ const LOADER_REPORT_OPTIONS = new Set(['--list', '--verify', '--list-tunables',
     '--list-diagnostics', '--help', '--version']);
 
 /**
- * Return whether a process's argv (from /proc/<pid>/cmdline) is an OpenOCD or
- * hw_server: the tool itself, or the dynamic loader running it. A program that
- * only names one in its arguments, such as `man openocd` or a shell whose script
- * or command string names one, is not. A launcher that starts the tool as a
- * process of its own, such as Vivado's bin/hw_server and bin/loader scripts,
- * leaves that process to be found.
+ * Match OpenOCD or hw_server in /proc/<pid>/cmdline, directly or through a
+ * dynamic loader. Ignore tools merely named in arguments, such as `man openocd`.
+ * For shell launchers, process discovery finds the child running the tool.
  */
 export function isHardwareTool(argv: readonly string[]): boolean {
     const isTool = (arg = '') => HARDWARE_TOOLS.includes(path.basename(arg));
@@ -201,9 +197,8 @@ export function parseDebugBuild(output: string, settings: FrostSettings, buildDi
     return result as unknown as DebugBuild;
 }
 
-// SHA-256 digests of the app's build outputs. The controller compares them
-// across a debug load and against its private ELF copy, and refuses to debug
-// if anything changed, so the debugger's symbols match the loaded image.
+// The controller compares image hashes across loading and against its private
+// ELF copy, rejecting changes so symbols match the loaded image.
 export async function imageDigests(directory: string): Promise<Map<string, string>> {
     const values = new Map<string, string>();
     for (const file of ['sw.elf', 'sw.txt', 'sw_ddr.txt', '.frost-build-config.bin']) {

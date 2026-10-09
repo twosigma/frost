@@ -32,7 +32,6 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 
-# Import the shared FPGA, software, and Linux helpers.
 sys.path.insert(0, str(SCRIPT_DIR.parent / "common"))
 sys.path.insert(0, str(PROJECT_ROOT / "sw" / "apps"))
 sys.path.insert(0, str(PROJECT_ROOT / "linux"))
@@ -222,9 +221,7 @@ def _linux_boot_preflight() -> None:
             file=sys.stderr,
         )
 
-    # The kernel is Debian's, fetched and cached by linux/debian_kernel.py
-    # (linux/README.md, "Kernel"). The helper names the cache entry after the
-    # pinned version, so ask it for the path.
+    # Ask debian_kernel.py for the versioned cache path (linux/README.md, "Kernel").
     if not kernel_image().exists():
         print(
             "Note: no cached Debian kernel found; linux_boot will download it "
@@ -250,12 +247,10 @@ def compile_app_for_board(
     ddr_bytes, for linux_boot, is the board's DDR size (board_ddr_bytes), which
     the device tree advertises in place of the simulation-sized default.
     """
-    # Start from the caller's toolchain environment.
     env = os.environ.copy()
     if "RISCV_PREFIX" not in env:
         env["RISCV_PREFIX"] = default_riscv_prefix(PROJECT_ROOT)
 
-    # Apply board-dependent clock, memory and CoreMark settings.
     env["FPGA_CPU_CLK_FREQ"] = str(clock_freq)
     if ddr_bytes is not None:
         env["FROST_LINUX_MEM_SIZE"] = str(ddr_bytes)
@@ -266,10 +261,8 @@ def compile_app_for_board(
     if mem_config:
         env["MEM_CONFIG"] = mem_config
 
-    # A cold linux_boot build downloads the cross toolchain and Debian's kernel
-    # packages, a few minutes; the timeout stays generous for a slow link. Its
-    # clean target preserves the cached Buildroot build and the Debian kernel
-    # cache, and removes only board-specific packed output.
+    # Allow time for cold toolchain and kernel downloads. linux_boot clean
+    # preserves Buildroot and kernel caches, removing only packed board outputs.
     is_linux_boot = app_name == "linux_boot"
     clean_timeout = 300 if is_linux_boot else 30
     build_timeout = 5400 if is_linux_boot else 120
@@ -286,7 +279,6 @@ def compile_app_for_board(
             check=True,
         )
 
-        # Build with any workload-specific Make overrides.
         print(f"Compiling {app_name}...")
         make_command = ["make"]
         if make_vars:
@@ -298,7 +290,7 @@ def compile_app_for_board(
             make_command,
             cwd=app_dir,
             env=env,
-            capture_output=False,  # Show output
+            capture_output=False,  # Stream build progress.
             text=True,
             timeout=build_timeout,
         )
@@ -712,7 +704,6 @@ def main() -> None:
         )
         return
 
-    # All loading modes require an application.
     if not args.software_app:
         parser.error("software_app is required unless using --list-targets")
     if (args.debug or args.skip_build) and args.software_app not in DEBUG_APPS:
@@ -775,7 +766,6 @@ def main() -> None:
     if args.software_app == "linux_boot":
         _linux_boot_preflight()
 
-    # Resolve board settings and the application build directory.
     board_config = BOARD_CONFIG[args.board]
     try:
         clock_freq, clock_overridden = board_clock_freq(args.board)
@@ -936,7 +926,6 @@ def main() -> None:
     vivado_command.append("1" if BOARD_CONFIG[args.board]["has_ddr"] else "0")
     vivado_command.append(args.hw_server_url or "")
 
-    # Run Vivado and propagate loader failures.
     subprocess.run(vivado_command, check=True)
 
 

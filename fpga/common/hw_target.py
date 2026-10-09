@@ -74,7 +74,6 @@ def filter_targets(targets: list[str], pattern: str) -> list[str]:
             return [targets[index]]
         return []
 
-    # Other patterns match any case-insensitive substring.
     pattern_lower = pattern.lower()
     return [t for t in targets if pattern_lower in t.lower()]
 
@@ -162,7 +161,6 @@ def select_target(
         vendor_name = None
         targets = all_targets
 
-    # List mode stops before target selection.
     if list_only:
         if vendor_name:
             print_target_list(
@@ -182,7 +180,6 @@ def select_target(
         print(f"Selected target: {target_exact}")
         return target_exact
 
-    # Apply an explicit index or substring pattern.
     if target_pattern is not None:
         matching = filter_targets(targets, target_pattern)
 
@@ -197,19 +194,16 @@ def select_target(
             print(f"Selected target: {matching[0]}")
             return matching[0]
 
-        # Ambiguous patterns require a choice.
         if non_interactive:
             print("Error: Multiple targets match; use --target-exact", file=sys.stderr)
             sys.exit(1)
         print(f"Multiple targets match pattern '{target_pattern}':")
         return prompt_target_selection(matching)
 
-    # Auto-select a sole vendor match.
     if len(targets) == 1:
         print(f"Using target: {targets[0]}")
         return targets[0]
 
-    # Otherwise prompt within the vendor-filtered list.
     if non_interactive:
         print("Error: Multiple hardware targets; use --target-exact", file=sys.stderr)
         sys.exit(1)

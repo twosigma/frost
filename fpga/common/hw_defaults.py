@@ -14,10 +14,8 @@
 
 """Shared board defaults for FPGA hardware runners."""
 
-# Default --target pattern per board for the hardware regression and the
-# CoreMark-PRO sweep. Target selection keeps the board vendor's targets, then
-# matches this pattern among them. The X3 default names one lab board by its
-# serial; pass --target to select another board.
+# Match --target within the board vendor's targets. The X3 default selects one
+# lab board by serial; override it for another board.
 DEFAULT_TARGETS = {
     "x3": "localhost:3121/xilinx_tcf/Xilinx/507711333S8VAA",
 }

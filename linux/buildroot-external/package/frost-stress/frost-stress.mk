@@ -14,9 +14,7 @@
 
 ################################################################################
 #
-# frost-stress: FROST userspace boot stress payload (src/frost_stress.c),
-# the signal-return probe (src/frost_sigprobe.c) and the NIC driver loopback
-# test (src/frost_nettest.c)
+# FROST userspace stress and diagnostic programs.
 #
 ################################################################################
 

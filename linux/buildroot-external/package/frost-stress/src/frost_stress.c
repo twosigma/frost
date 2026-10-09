@@ -15,43 +15,23 @@
  */
 
 /*
- * FROST userspace boot stress payload for the OpenSBI + Sv39 kernel: fork,
- * copy-on-write and mmap phases, futexes, atomics, and counters read through
- * perf_event_open.
+ * FROST userspace boot stress for the OpenSBI + Sv39 kernel.
  *
- * The test image's inittab runs it once after rcS and before the getty; the
- * hardware regression runs it at the Debian root's shell. It prints a
- * machine-readable summary and a token that QEMU CI, the hardware boot soak,
- * and the hardware regression check:
+ * The test inittab runs it after rcS and before getty; hardware regression
+ * invokes it from the Debian shell. The summary and result token are:
  *
  *   FROST_USERSPACE_STRESS: forks=.. pages=.. ticks=.. execs=.. futex=..
  *       atomics=.. cycles=.. instret=.. time=.. ipc_x1000=.. verdict=..
  *   FROST_USERSPACE_STRESS_PASS   (or _FAIL)
  *
- * If the counters cannot be read, the counter fields become
+ * Read cycle and instret through the SBI PMU with perf_event_open; the kernel
+ * disables userspace rdcycle. Read time with rdtime. Unreadable counters produce
  * ``counters=unavailable`` (phase 5).
  *
- * ``--counters`` prints its own line; the hardware regression's Linux stage
- * runs it at the shell after logging in. Like ``perf stat <command>``, it
- * measures a child from its exec to its exit:
+ * ``--counters`` measures a child from exec to exit, like ``perf stat``:
  *
  *   FROST_COUNTERS: scope=exec-child cycles=.. instret=.. time=.. ipc_x1000=.. verdict=PASS
  *   FROST_COUNTERS: scope=exec-child counters=unavailable verdict=FAIL
- *
- * Phases:
- *   1. A 5 ms SIGALRM storm covers timer traps and signal delivery.
- *   2. A fork whose child rewrites the parent's heap copy, which must stay
- *      intact (copy-on-write), an anonymous mapping walked page by page
- *      (demand faults), and repeated fork+exec (process creation and
- *      scheduling).
- *   3. FUTEX_WAIT/FUTEX_WAKE ping-pong over a MAP_SHARED file mapping covers
- *      the shared-memory and wait-queue paths.
- *   4. Two processes increment a shared counter with atomic adds (amoadd.w)
- *      while timer interrupts preempt them; the final count must be exact.
- *   5. Counter deltas and ipc_x1000 around a fixed workload: cycles and
- *      instructions through perf_event_open (the SBI PMU on the fixed
- *      counters; the kernel keeps direct rdcycle from userspace disabled),
- *      plus rdtime.
  *
  * Exit code 0 means PASS. Failures print verdict=FAIL(reason) and exit nonzero;
  * inittab ignores the status, so consumers must check the token.
@@ -287,10 +267,7 @@ static int perf_open(uint32_t config)
     return (int) syscall(SYS_perf_event_open, &attr, 0, -1, -1, 0);
 }
 
-/* A counter on another task, armed to start at its exec and to follow the
- * children it makes. This is the shape perf stat uses for `perf stat <command>`,
- * and the shape the hardware regression's counter check needs: the measured
- * work happens in a task that execs and then exits. */
+/* Count another task from exec, including descendants, as perf stat does. */
 static int perf_open_child(uint32_t config, pid_t pid)
 {
     struct perf_event_attr attr;
@@ -348,14 +325,9 @@ static int counter_deltas(uint64_t *cycles, uint64_t *instret, uint64_t *time)
  * exit. Returns 1 with the counts and the elapsed time written, 0 on any
  * failure.
  *
- * It counts what `perf stat -e cycles,instructions <command>` would, and the
- * coverage is in the shape, not the numbers: the events are created on a task
- * that has not exec'd yet, enable_on_exec arms them at the exec (so the fork
- * and the pipe handshake before it are not counted), inherit follows the
- * descendants, and the counts are read after the task has exited, which only
- * works if the kernel propagated them out of a dead task. A pipe each way
- * sequences it: the child announces itself, waits for the parent to open the
- * events, then execs. */
+ * Two pipes make the child wait until the parent opens its events before exec.
+ * enable_on_exec excludes fork and the handshake; inherit includes descendants.
+ * Reading after exit checks that the kernel retains the dead task's counts. */
 static int child_counter_deltas(uint64_t *cycles, uint64_t *instret, uint64_t *time)
 {
     int ready[2], go[2];
@@ -431,12 +403,8 @@ static int child_counter_deltas(uint64_t *cycles, uint64_t *instret, uint64_t *t
     return ok;
 }
 
-/* Counters only: what the hardware regression's Linux stage types at the shell
- * prompt after logging in, in place of ``perf stat``, which builds only against
- * a kernel tree and so is not packed for the target. Like perf stat, it measures
- * a child through an exec (see child_counter_deltas). Its own token keeps the
- * line distinct from the boot payload's summary, so the stage cannot mistake
- * that earlier line for this run's counts. */
+/* Measure a child through exec (child_counter_deltas). A separate token keeps
+ * these counts distinct from the boot summary in hardware regression. */
 static int run_counters(void)
 {
     uint64_t cycles = 0, instret = 0, time = 0;
@@ -518,7 +486,8 @@ int main(int argc, char **argv)
         execs++;
     }
 
-    /* ---- Phases 3+4: shared-memory peer (futex, then atomic adds) ---- */
+    /* ---- Phases 3+4: shared-memory peer (futex, then atomic adds) ----
+     * Both processes increment the counter; its final count must be exact. */
     struct shared *sh = map_shared(1);
     if (!sh)
         return fail("mmap-shared");

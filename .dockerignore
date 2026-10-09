@@ -1,7 +1,5 @@
-# The image installs its core tools from pinned upstream releases; source and
-# build products reach the container only through the /workspace mount at run
-# time. The image copies in Dockerfile and docker_entrypoint.py, which
-# `frost.py doctor` compares with the checkout.
+# Source and build products are mounted at /workspace at runtime. Copy only
+# the image inputs that `frost.py doctor` compares with the checkout.
 **
 !Dockerfile
 !docker_entrypoint.py

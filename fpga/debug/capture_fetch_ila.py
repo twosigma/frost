@@ -16,17 +16,12 @@
 
 r"""Capture the fetch ILA of a ``build.py --debug-ila`` bitstream.
 
-The ILA samples the IF stage, the fetch provider, the instruction MMU, the PD
-packet, and the commit and trap pulses on the CPU clock. It triggers on the IF
-stage's fetch-fault packet at a given page offset. Arming, waiting, and
-collecting must share one Hardware Manager session, because the device refresh
-that every new session performs resets the ILA, and the software loader's own
-refresh would reset a capture armed before it. So ``hook`` writes two scripts
-that the loader (``load_software.py``, and so ``hw_regression.py``) sources:
-``FROST_ILA_ARM_HOOK`` right after its refresh, before the CPU is released,
-and ``FROST_ILA_COLLECT_HOOK`` after the load, to wait for the trigger and
-write the CSV. ``capture`` is the standalone form for a program that is
-already running.
+Sample fetch, MMU, predecode, commit, and trap signals on the CPU clock.
+Trigger on an IF fetch-fault packet at the selected page offset. Arm, wait,
+and collect in one Hardware Manager session: device refresh resets the ILA.
+``hook`` writes FROST_ILA_ARM_HOOK for the loader to source after refresh and
+before CPU release, and FROST_ILA_COLLECT_HOOK to wait and write CSV after loading.
+``capture`` handles a program already running.
 
     ./fpga/debug/capture_fetch_ila.py x3 hook --offset 5e4
     FROST_ILA_ARM_HOOK=fpga/build/x3/work/ila_arm_hook.tcl \\

@@ -302,9 +302,8 @@ async function harness(t: TestContext) {
         },
     };
 
-    // Fake the vscode API and the modules that reach hardware, the UART,
-    // settings, and repository metadata. The controller itself is real: every
-    // test drives the commands, provider, and event handlers activate() registers.
+    // Fake the controller's dependencies; exercise the commands, provider, and
+    // event handlers registered by the real activate().
     const Module = require('node:module') as {
         _load(request: string, parent: NodeModule | undefined, isMain: boolean): unknown;
     };
@@ -910,7 +909,7 @@ test('manual serial commands reach the console without acquiring JTAG', async t 
 });
 
 test('image-reset hold times cover the half-rate and full-rate X3 board clocks', () => {
-    // Contract from xilinx_frost_subsystem.sv: a 27-bit inactivity counter on
+    // xilinx_frost_subsystem.sv uses a 27-bit inactivity counter on
     // CPU/4, plus the extension's 250 ms reset-synchronization margin.
     assert.equal(imageResetDelayMs(161132812), 3582);
     assert.equal(imageResetDelayMs(322265625), 1916);

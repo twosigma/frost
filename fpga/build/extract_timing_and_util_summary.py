@@ -95,9 +95,7 @@ def extract_x3_place_provenance(vivado_log: str) -> str | None:
         uncertainty = float(uncertainty_match.group(1))
         provenance += f"/{uncertainty:.3f}"
 
-    # build_step.tcl logs each applied cell-bloat factor with its hierarchy
-    # pattern. Include them, so a LOW-bloat variant is not described as the
-    # same recipe without bloat.
+    # Include bloat factors and hierarchy patterns in the placement recipe.
     bloat_matches = re.findall(
         r"^Set CELL_BLOAT_FACTOR (LOW|MEDIUM|HIGH) on ([1-9]\d*) cell\(s\) "
         r"matching '([^']+)'$",
@@ -106,9 +104,7 @@ def extract_x3_place_provenance(vivado_log: str) -> str | None:
     )
     for factor, _count, pattern in bloat_matches:
         provenance += f" + {factor} CELL_BLOAT_FACTOR on `{pattern}`"
-    # Match only the pin-swap helper's final success line, which it prints after
-    # validating both swaps. A Tcl source echo, or a request that failed before
-    # either swap, does not count.
+    # Only the final success line confirms both swaps; source echoes do not count.
     if re.search(
         r"^Applied two X3 PD target physical pin maps; logical function, "
         r"location and fixed flags unchanged$",
@@ -277,7 +273,6 @@ def collect_all_board_utilization(
                 util_rpt = util_rpt_path.read_text()
                 util = extract_utilization(util_rpt)
 
-                # Merge clock and timing status when the matching report exists.
                 if timing_rpt_path.exists():
                     timing_rpt = timing_rpt_path.read_text()
                     clocks = extract_clock_info(timing_rpt)
@@ -347,7 +342,6 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
         util = all_util[board]
         info = BOARD_INFO[board]
 
-        # Include frequency when the timing report supplied it.
         fmax = util.get("clock_freq_mhz")
         fmax_str = f" @ {fmax:.0f} MHz" if fmax else ""
         stage = str(util.get("stage", "")).replace("_", "-")
@@ -433,7 +427,6 @@ def update_readme_utilization(
     new_section = format_readme_utilization_section(all_util)
 
     if README_UTIL_START in readme_content and README_UTIL_END in readme_content:
-        # Replace the existing generated section.
         pattern = re.compile(
             re.escape(README_UTIL_START) + r".*?" + re.escape(README_UTIL_END),
             re.DOTALL,

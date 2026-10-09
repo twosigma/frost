@@ -15,10 +15,8 @@
  */
 
 /*
- * frost_sigprobe: signal-return probe. Each variant takes a signal in a
- * different shape and returns through the vDSO sigreturn trampoline. Each runs
- * in a forked runner, so a crash is reported instead of ending the probe, and
- * the probe prints one line per variant:
+ * Exercise signal returns through the vDSO sigreturn trampoline. Fork each
+ * variant so crashes can be reported without ending the probe:
  *
  *   FROST_SIGPROBE v<n> <name>: ok | signal <k> | exit <k>
  *
