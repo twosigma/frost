@@ -104,13 +104,8 @@ module frost_cache_hierarchy #(
     output logic [  UP_ID_BITS-1:0] o_iup_resp_id,
     output logic [LINE_BYTES*8-1:0] o_iup_resp_rdata,
 
-    // Upstream line port (slave): page-table walker. It has no cache of its
-    // own, because walks are short chains of dependent reads that the L2
-    // serves. Each read probes the L1D through
-    // walker_coherence_sequencer, then enters the arbiter tree between the
-    // L1D and the L1I in priority. Read-only: the write pins exist for
-    // protocol symmetry and are ignored (simulation flags a write). Its ids
-    // carry UP_ID_BITS-1 bits, the WalkIdBits localparam in the body.
+    // Walker reads probe L1D, then go to L2 without a private cache. Write
+    // inputs are ignored and flagged in simulation. IDs have UP_ID_BITS-1 bits.
     input  logic                    i_wup_req_valid,
     output logic                    o_wup_req_ready,
     input  logic                    i_wup_req_write,
@@ -238,20 +233,14 @@ module frost_cache_hierarchy #(
   logic l1d_writeback_req, l1i_invalidate_req;
 
   // ---------------------------------------------------------------------------
-  // Probe injection in front of the L1D's upstream port. The L1D takes ids
-  // with one more bit than the up port: a probe carries {1'b1, index}, the
-  // CPU adapter's request {1'b0, id}. Index k < NUM_DMA_LOCK is DMA entry k
-  // (id ProbeIdBase + k) and index NUM_DMA_LOCK is the walker (WalkProbeId);
-  // the index field is UP_ID_BITS wide unless NUM_DMA_LOCK + 1 ids need
-  // more. A probe is captured into a one-entry register stage, which takes
-  // the port while it holds a probe, so the probe reaches the L1D from flops,
-  // the CPU adapter's ready is qualified by the stage's valid flop alone, and
-  // the adapter's request waits. The walker wins the stage: with one read in
-  // flight it presents at most one probe per round trip, so it cannot starve
-  // the DMA entries, which can present back to back. Responses are steered
-  // by the top id bit: probe acknowledgements to the sequencer whose id they
-  // carry, the rest to the up port. wdata/wstrb need no mux: a probe never
-  // writes.
+  // Probe injection before L1D. IDs use a high probe bit, with DMA entry k
+  // at ProbeIdBase + k and the walker at WalkProbeId. CPU IDs are zero-extended.
+  // The index has at least UP_ID_BITS bits and room for NUM_DMA_LOCK + 1 probes.
+  //
+  // A held probe blocks CPU requests. The walker wins capture, but has at
+  // most one probe per read round trip, leaving capture opportunities for DMA.
+  // Response IDs route acknowledgements to their sequencer. Probes never
+  // write, so wdata and wstrb need no mux.
   // ---------------------------------------------------------------------------
   localparam int unsigned ProbeIdxBitsMin = $clog2(NUM_DMA_LOCK + 1);
   localparam int unsigned ProbeIdxBits =
@@ -438,9 +427,7 @@ module frost_cache_hierarchy #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_SIZE_BYTES(L1_CACHE_BYTES),
       .LINE_BYTES(LINE_BYTES),
-      // At least one more upstream id bit than the up port (L1dIdBits): probes
-      // use the ids with the top bit set (see the probe injection above), the
-      // CPU adapter the ids below.
+      // The high ID bit distinguishes probes from CPU requests.
       .UP_ID_BITS(L1dIdBits),
       .DOWN_ID_BITS(UP_ID_BITS),
       .NUM_PROBE(NumL1dProbe),
@@ -490,11 +477,8 @@ module frost_cache_hierarchy #(
       .CACHE_SIZE_BYTES(L1I_CACHE_BYTES),
       .LINE_BYTES(LINE_BYTES),
       .UP_ID_BITS(UP_ID_BITS),
-      // One prefix bit narrower than the L1D (see the id tree in the header),
-      // which at the default UP_ID_BITS caps the miss/writeback slots at 2
-      // each. The fetch provider is a two-line buffer with at most 2 requests
-      // in flight, so 2 miss slots lose nothing; the L1I is read-only so its
-      // writeback slots stay idle.
+      // One fewer ID bit than L1D. At the default width, two miss slots cover
+      // both fetch-provider fills. Read-only L1I never uses its writeback slots.
       .DOWN_ID_BITS(WalkIdBits),
       .NUM_MSHR(2),
       .NUM_WB(2),
@@ -538,14 +522,8 @@ module frost_cache_hierarchy #(
       .o_perf_events(l1i_perf_events)
   );
 
-  // Arbiter tree: a 2:1 walker/instruction arbiter feeds a 3:1 arbiter
-  // shared with data and DMA. Their id prefixes compose to the prefix-free
-  // code in the header; the top arbiter also bounds starvation.
-  //
-  // Sub-arbiter: the walker sequencer on port 0 (a walk unblocks a load that
-  // is stalling commit), instruction side on port 1 (fetch runs ahead through
-  // its buffer). Neither issues maintenance traffic, and the walker never
-  // writes.
+  // Prioritize walker reads, which unblock demand accesses, over buffered
+  // instruction fetches. Neither port carries maintenance traffic.
   line_port_arbiter #(
       .NUM_PORTS (2),
       .ADDR_WIDTH(ADDR_WIDTH),
@@ -578,11 +556,8 @@ module frost_cache_hierarchy #(
       .i_down_resp_rdata(wi_down_resp_rdata)
   );
 
-  // Top arbiter: the data side on port 0, first because its misses stall
-  // committed work; the walker/L1I pair on port 1; the DMA sequencer on port
-  // 2. The starvation bound (DMA_STARVATION_LIMIT) guarantees the DMA port
-  // progress under a sustained stream of CPU-side misses. The L1D's
-  // maintenance bit rides its requests.
+  // Prioritize data misses, then walker/L1I, then DMA. The starvation bound
+  // permits DMA progress under sustained CPU traffic; maintenance follows L1D.
   line_port_arbiter #(
       .NUM_PORTS(3),
       .ADDR_WIDTH(ADDR_WIDTH),
@@ -639,15 +614,10 @@ module frost_cache_hierarchy #(
   assign l1i_invalidate_req = (fence_state_q == FENCE_L1I_REQ);
   assign o_fence_done = (fence_state_q == FENCE_DONE);
 
-  // Once started, a sequence always runs to its end: the sweeps cannot be
-  // aborted. It answers only a request held since it started. When the
-  // requester drops i_fence_sync mid-sequence (a full flush, such as an
-  // interrupt taken while fence.i waits), stores can reach the L1D after the
-  // sequence's writeback walk has ended; if the re-executed fence.i raises
-  // the request again before the old sequence finishes, that sequence must
-  // not answer it. So a sequence whose request dropped returns to idle
-  // without raising done, and a request held again starts a fresh sequence
-  // from the L1D writeback.
+  // Sweeps cannot abort. Complete only a request held throughout the sequence.
+  // If it drops, later stores may miss this writeback walk; a re-executed
+  // fence.i therefore needs a fresh sequence, even if it arrives before this
+  // one ends. Finish the abandoned sequence without raising done.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       fence_state_q       <= FENCE_IDLE;
@@ -678,9 +648,7 @@ module frost_cache_hierarchy #(
       .DATA_MEMORY_PRIMITIVE("ultra"),
       .DATA_READ_LATENCY(L2_DATA_READ_LATENCY),
       .DATA_WRITE_LATENCY(L2_DATA_WRITE_LATENCY),
-      // With SIM_FAST_MAINT the L2's reset sweep takes one cycle. The full
-      // sweep walks every tag (65,536 at 2 MiB) and refuses upstream
-      // traffic meanwhile, which no test needs.
+      // Fast simulation reset bulk-clears tags; hardware sweeps one per cycle.
       .SIM_FAST_MAINT(SIM_FAST_MAINT)
   ) l2_cache (
       .i_clk(i_clk),
@@ -732,9 +700,7 @@ module frost_cache_hierarchy #(
       $error("frost_cache_hierarchy: walker probe release while one is still held");
   end
 
-  // Downstream watchdog: the L1D holding a downstream request unaccepted for
-  // this long means the level below has wedged. Print the L1, walker, and
-  // arbiter links so the log alone locates it.
+  // Dump the links if L1D remains blocked downstream for 2048 cycles.
   int unsigned down_stall_cnt;
   always_ff @(posedge i_clk) begin
     if (i_rst || !(l1_down_req_valid && !l1_down_req_ready)) begin

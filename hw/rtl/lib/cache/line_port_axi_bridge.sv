@@ -32,18 +32,11 @@
  * accepted while a write's AW/W are still waiting. Ready therefore depends on
  * the presented request's write bit, which the protocol allows.
  *
- * Two resets. i_rst resets the bridge with the CPU, while the memory
- * controller and its interconnect keep running (through the image-load reset
- * and the debug ndmreset), so it does not withdraw a presented beat: a VALID
- * must stay asserted until its handshake. A write whose AW was accepted and
- * whose W was not would otherwise leave the interconnect pairing the next
- * write's data with the old address. A beat presented at i_rst stays
- * presented, payload unchanged, until the slave takes it, and o_req_ready
- * stays low through the reset. i_axi_rst is the AXI side's own reset: while
- * the interconnect below is in reset, AXI requires VALID low, so i_axi_rst
- * gates the three issue valids off at once and clears them, and no beat
- * from before it is presented afterward. The declaration initializers are
- * the power-up state.
+ * i_rst stops acceptance and clears response tracking, but holds presented
+ * AXI beats until accepted: the controller keeps running through CPU resets.
+ * Withdrawing W after AW was accepted could pair the next data with the old
+ * address. i_axi_rst instead gates all issue VALIDs low immediately and
+ * clears them on the clock edge. Initializers define power-up state.
  *
  * Response path: R and B land in one-entry output registers. R has priority
  * onto the single line response port and is always accepted, since its
@@ -285,10 +278,8 @@ module line_port_axi_bridge #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // Stall watchdog (simulation only: under formal the counter's free initial
-  // value would fire it spuriously). A request refused for 1024 cycles means
-  // an issue register or the AXI side wedged. Dump the handshake so the log
-  // alone diagnoses it.
+  // Dump a request blocked for 1024 cycles. Exclude formal: an unconstrained
+  // initial counter could trigger the watchdog spuriously.
   int unsigned req_stall_cnt;
   always_ff @(posedge i_clk) begin
     if (i_rst || !(i_req_valid && !o_req_ready)) begin
@@ -314,9 +305,7 @@ module line_port_axi_bridge #(
   initial f_past_valid = 1'b0;
   always @(posedge i_clk) f_past_valid <= 1'b1;
 
-  // Line-protocol obligation of the master: an id is unique among its
-  // in-flight requests (the caches above never reuse one before its
-  // response; the simulation check above flags a reuse).
+  // The master must keep IDs unique among in-flight requests.
   always_comb begin
     if (!i_rst && i_req_valid) begin
       a_unique_inflight_id : assume (!inflight_q[i_req_id]);

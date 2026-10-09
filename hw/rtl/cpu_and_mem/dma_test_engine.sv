@@ -15,12 +15,9 @@
  */
 
 /*
- * dma_test_engine: a small DMA master on the cache hierarchy's coherent DMA
- * port, driven from memory-mapped registers. It is the second agent the
- * coherence tests need (a device that reads and writes cached DDR behind the
- * CPU's caches), and it keeps the completion order the NIC's ring engines
- * also keep: data writes complete before the status write, and the interrupt
- * follows the status write's completion.
+ * MMIO-controlled DMA master on the cache hierarchy's coherent port.
+ * Data writes complete before an optional status write; the interrupt follows
+ * the final write's completion.
  *
  * Registers (32-bit, word stride; the CPU sees them as a strongly ordered
  * device window, see hw/rtl/README.md "Memory Map"):
@@ -51,13 +48,13 @@
  * issued, and the status write has completed before DONE and the interrupt
  * are raised.
  *
- * Aperture: SRC, DST and STATUS_ADDR must fall inside the cached region
- * [APERTURE_BASE, APERTURE_BASE + APERTURE_BYTES) and a transfer must not
- * wrap out of it; otherwise START sets ERROR and moves nothing (and raises
- * no interrupt). START copies every transfer register into the active
- * transfer, so writes while BUSY program the next transfer only.
+ * DST and its transfer range must lie within
+ * [APERTURE_BASE, APERTURE_BASE + APERTURE_BYTES). Copy mode also checks SRC;
+ * status-write mode checks STATUS_ADDR and its word alignment. Invalid START
+ * sets ERROR without moving data or raising an interrupt. START snapshots
+ * configuration, so writes while BUSY program only the next transfer.
  *
- * ABORT issues nothing further (no data line, no status write), waits for
+ * Once latched, ABORT issues no further data or status request, waits for
  * any outstanding response, then reports ERROR without DONE and raises the
  * interrupt if the transfer enabled it. Requests already accepted are never
  * cancelled, so the caller must not reuse the buffers until BUSY falls. An
@@ -313,10 +310,8 @@ module dma_test_engine #(
             end
           end
         end
-        // Every issuing state checks the abort before firing (the request is
-        // withheld above), so an abort landing in any wait state or on a
-        // response edge ends the transfer at the next boundary with nothing
-        // else issued.
+        // The latched abort blocks new requests. A response still drains before
+        // the transfer finishes, including when ABORT arrives on its edge.
         S_READ: begin
           if (abort_pending_q) state_q <= S_FINISH;
           else if (req_fire) state_q <= S_READ_WAIT;

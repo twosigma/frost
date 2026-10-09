@@ -103,8 +103,7 @@ module line_port_arbiter #(
   if (STARVATION_LIMIT != 0) begin : gen_starvation
     localparam int unsigned WaitBits = $clog2(STARVATION_LIMIT + 1);
     logic [WaitBits-1:0] wait_q[NUM_PORTS];
-    // The registered half of starved, kept as its own net so the grant below
-    // is a single level from the request valids (see there).
+    // Preserve the limit comparison separately from live request validity.
     always_comb begin
       for (int p = 0; p < int'(NUM_PORTS); p++) begin
         at_limit[p] = (wait_q[p] == WaitBits'(STARVATION_LIMIT));
@@ -126,16 +125,8 @@ module line_port_arbiter #(
     assign at_limit = '0;
   end
 
-  // Grant, one-hot: the lowest starved requesting port, else the lowest
-  // requesting port, else port 0 while nothing requests (the idle payload is
-  // then port 0's, as an encoded select of 0 presents it; ready and the fire
-  // are qualified by any_valid). Each grant bit is a flat function of the
-  // port valids and limit flags, not a priority chain, and synthesis keeps
-  // the nets, so a request valid reaches the downstream payload through one
-  // grant level and one select level. The downstream (the L2 in the full
-  // system) makes its own accept decision from that payload in the same
-  // cycle. p_grant_is_priority checks the grant against the priority rule in
-  // its encoded form.
+  // Grant is one-hot: lowest starved requester, else lowest requester.
+  // When idle, select port 0's payload but qualify the handshake with any_valid.
   (* dont_touch = "true" *)logic [NUM_PORTS-1:0] grant;
   logic [NUM_PORTS-1:0] grant_generic;
   logic [NUM_PORTS-1:0] valid_below, starved_below;  // any lower port
@@ -158,10 +149,7 @@ module line_port_arbiter #(
 
 `ifdef FROST_XILINX_PRIMS
   if ((NUM_PORTS == 3) && (STARVATION_LIMIT != 0)) begin : gen_three_port_grant
-    // Three request bits plus three registered limit flags fit one LUT6 per
-    // grant bit. Explicit LUTs keep synthesis from sharing the any-starved
-    // term, which would add a logic level between the late request valid and
-    // the downstream accept.
+    // Explicit LUT6 grants preserve the request/limit selection for timing.
     function automatic logic [63:0] grant_truth(input int winner);
       logic [2:0] requests, limits;
       int selected;
@@ -216,8 +204,7 @@ module line_port_arbiter #(
   end
 `endif
 
-  // Pass-through request path: the granted port's payload, AND-OR selected by
-  // the one-hot grant (one LUT level per bit for up to three ports).
+  // Select the pass-through payload with the one-hot grant.
   logic dn_write, dn_maint;
   logic [  ADDR_WIDTH-1:0] dn_addr;
   logic [LINE_BYTES*8-1:0] dn_wdata;
@@ -247,10 +234,8 @@ module line_port_arbiter #(
   assign o_down_req_id          = {sel, dn_id};
   assign o_down_req_maintenance = dn_maint;
 
-  // Ready mirrors the downstream ready, so an upstream fire and its
-  // downstream fire happen in the same cycle. A requesting port is ready only
-  // while it holds the grant, which is what enforces the priority. With
-  // nothing requesting, every port sees the downstream ready.
+  // Upstream and downstream fire together. Only the granted requester sees
+  // ready; when idle, every port sees downstream ready.
   always_comb begin
     for (int p = 0; p < int'(NUM_PORTS); p++) begin
       o_up_req_ready[p] = i_down_req_ready && (!any_valid || grant[p]);

@@ -15,25 +15,15 @@
  */
 
 /*
-  Generic RISC-V register file, parameterized by data width, number of read and
-  write ports, and whether register 0 is hardwired to zero.
-
-  Used for both the integer register file (4 read ports, x0 hardwired zero,
-  XLEN = 64 bits) and the FP register file (6 read ports, no hardwired zero,
-  64 bits for the D extension).
-
-  Each read port is a separate RAM instance: sdp_dist_ram when NUM_WRITE_PORTS
-  == 1, mwp_dist_ram with NUM_WRITE_PORTS shared write ports when
-  NUM_WRITE_PORTS >= 2. Read data is combinational (zero-latency). For
-  widen-commit, slot 1 (primary) and slot 2 (widen) can drive independent
-  write ports in the same cycle.
+  Register file with combinational reads and shared write ports. Each read
+  port has its own RAM. Integer instances hardwire x0; FP instances do not.
 
   Parameters:
-    DATA_WIDTH      - Register width in bits (64 for both the integer and FP files)
-    NUM_READ_PORTS  - Number of simultaneous read ports (4 for integer, 6 for FP/FMA)
-    NUM_WRITE_PORTS - Number of simultaneous write ports (1, or 2 for widen-commit)
-    HARDWIRE_ZERO   - When 1, writes to register 0 are blocked (RISC-V x0 convention)
-    DEPTH           - Number of registers (32)
+    DATA_WIDTH      - Register width in bits
+    NUM_READ_PORTS  - Number of simultaneous reads
+    NUM_WRITE_PORTS - Number of simultaneous writes
+    HARDWIRE_ZERO   - Block writes to register 0, which initializes to zero
+    DEPTH           - Number of registers
 */
 module generic_regfile #(
     parameter  int unsigned DATA_WIDTH      = 32,
@@ -44,14 +34,12 @@ module generic_regfile #(
     localparam int unsigned AddrWidth       = $clog2(DEPTH)
 ) (
     input  logic                                  i_clk,
-    // Packed write ports.  Bit/lane index 0 is the primary (slot 1) writer;
-    // higher indices are auxiliary writers (slot 2 in the widen-commit case).
-    // Highest-indexed port wins on simultaneous same-address writes.
+    // Packed write ports: port 0 is slot 1; port 1 is slot 2.
+    // The highest-indexed port wins simultaneous same-address writes.
     input  logic [           NUM_WRITE_PORTS-1:0] i_write_enable,
     input  logic [ NUM_WRITE_PORTS*AddrWidth-1:0] i_write_addr,
     input  logic [NUM_WRITE_PORTS*DATA_WIDTH-1:0] i_write_data,
     input  logic                                  i_stall,
-    // Packed vectors keep the module interface simple for synthesis and cocotb.
     input  logic [  NUM_READ_PORTS*AddrWidth-1:0] i_read_addr,
     output logic [ NUM_READ_PORTS*DATA_WIDTH-1:0] o_read_data
 );
@@ -78,9 +66,8 @@ module generic_regfile #(
     assign mwp_data[wp]  = i_write_data[wp*DATA_WIDTH+:DATA_WIDTH];
   end : gen_mwp_pack
 
-  // For NUM_WRITE_PORTS == 1, fall back to sdp_dist_ram per read port (the
-  // baseline path). For NUM_WRITE_PORTS >= 2, use mwp_dist_ram per read
-  // port with a Live Value Table steering reads to the most recent writer.
+  // Each read port has its own RAM. With multiple write ports, the Live Value
+  // Table selects the most recent writer.
   for (genvar i = 0; i < NUM_READ_PORTS; i++) begin : gen_read_port
     logic [DATA_WIDTH-1:0] rd;
     if (NUM_WRITE_PORTS == 1) begin : gen_single_write

@@ -17,15 +17,9 @@
 /*
  * Tomasulo back-end performance counters.
  *
- * Holds the 64 back-end profiling counters: ROB head-wait and commit-blocked
- * cycles and their breakdowns, per-FU back-pressure, memory disambiguation,
- * occupancy sums, L0 hits and fills, and two-wide commit opportunities, fires,
- * and blockers. Nine slots are reserved and read 0. Accumulates each event,
- * snapshots all 64 on demand, and muxes the selected counter to the CSR read
- * port. The snapshot is split into four fanout banks, each with its own
- * registered capture strobe, so it lands one cycle after the mperfctl trigger
- * commits; CSR serialization makes that cycle invisible to software. Indices
- * and definitions are in hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/README.md.
+ * Accumulate back-end events and snapshot counters for CSR reads. Reserved
+ * slots read zero. Definitions and indices are in
+ * hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/README.md.
  */
 
 module tomasulo_perf_counters #(
@@ -225,12 +219,9 @@ module tomasulo_perf_counters #(
   logic [63:0] perf_inc[WrapperPerfCounterCount];
   logic [63:0] perf_inc_q[WrapperPerfCounterCount];
   localparam int unsigned PerfSnapshotBankSpan = (WrapperPerfCounterCount + 3) / 4;
-  // Registered per-bank capture copies. The trigger comes from the commit of
-  // the mperfctl CSR write and fans out to every snapshot register's clock
-  // enable; registering it keeps that fanout off the commit critical path.
-  // Capture lands one cycle after the trigger commit. CSR serialization means
-  // the first snapshot read commits later than that, and deltas between two
-  // snapshots cancel the constant skew.
+  // Register capture per bank for fanout. The snapshot lands one cycle after
+  // the mperfctl write commits, before CSR serialization allows the first
+  // snapshot read to commit. Snapshot deltas cancel the constant cycle skew.
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank0;
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank1;
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank2;

@@ -34,27 +34,18 @@
 module tomasulo_wrapper #(
     parameter bit SPLIT_RS_DISPATCH = 1'b0,
     parameter bit ENABLE_DISPATCH_DONE_REPAIR = 1'b0,
-    // Cached memory tier (high-address region). The load queue uses these to
-    // decode is_cached and give a cached load one of its tagged slots; the
-    // store queue uses them to tag cached stores so the router can steer
-    // their write enables to the cached tier.
+    // Address range for tagged cached-load slots and cached-store routing.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
     parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
-    // reorder_buffer's SharedLinkBank: one shared link bank in the ROB value
-    // RAMs. Set it only when the allocation requester never presents two
-    // accepted branch allocations in one cycle, as cpu_ooo's dispatch
-    // guarantees. The default accepts any allocation pair, as the wrapper
-    // bench and the formal target drive.
+    // Share the ROB value RAM's link bank only when at most one branch allocates
+    // per cycle, as cpu_ooo dispatch guarantees. The default allows any pair.
     parameter bit ROB_SHARED_LINK_BANK = 1'b0,
-    // 0 leaves out the 64 back-end profiling counters: o_perf_counter_data
-    // reads zero and the event sources stay unread (synthesis removes what
-    // is not marked keep).
-    // cpu_ooo passes its build option; the unit default keeps the counters
-    // for the wrapper bench and the formal target.
+    // Disable back-end profiling counters and return zero when 0. cpu_ooo
+    // passes its build option; the standalone default enables counters.
     parameter int unsigned PERF_COUNTERS = 1
 ) (
     input logic i_clk,
@@ -123,10 +114,9 @@ module tomasulo_wrapper #(
     output logic                              o_commit_correct_branch_2_raw,
     output logic                              o_head_commit_misprediction_candidate,
 
-    // Widen-commit slot 2 (head+1).  Non-null only when the
-    // 2-wide gate inside the ROB fires; otherwise valid bits are low and
-    // payload is '0.  cpu_ooo consumes these in parallel with slot 1 for
-    // two-wide architectural retirement.
+    // Commit slot 2 (head+1), valid only for two-wide retirement. Registered
+    // outputs follow one cycle later; full flush masks valid. Consumers must
+    // ignore invalid payloads.
     output riscv_pkg::reorder_buffer_commit_t o_commit_2,
     output riscv_pkg::reorder_buffer_commit_t o_commit_comb_2,
     output logic                              o_commit_2_valid_raw,
@@ -227,22 +217,16 @@ module tomasulo_wrapper #(
     input logic                                        i_flush_all,
     input logic                                        i_flush_after_head_commit,
     input logic                                        i_backend_recovery_hold,
-    // A slow-tier (cached-region) store is in flight between the memory
-    // request router and the cache hierarchy. Folded into the LQ bus-busy
-    // gate so load launches wait instead of piling into the router's
-    // one-entry queued-load register, which holds exactly one blocked load;
-    // a handshake-latency store would otherwise overwrite it.
+    // A cached store is in flight. Block LQ launches throughout its handshake
+    // to avoid overwriting the router's single pending-load register.
     input logic                                        i_slow_write_inflight,
     // A cached load response is held behind the fast tier's fixed-latency
     // beat this cycle (router). The LQ registers it into its launch hold so
     // one launch is skipped and the held response gets the port.
     input logic                                        i_cached_read_held,
-    // Registered pending bit from the data-memory router's one-entry LQ hold.
-    // Feed it directly into the LQ bus-busy gate, with no added register: a
-    // mandatory-staged device request must block the very next LQ handoff and
-    // remain blocked through terminal accept. The LQ also consumes this exact
-    // Q separately during full flush, so cancellation of an unaccepted request
-    // cannot be mistaken for an owed stale response.
+    // Router pending status must block the next LQ handoff through acceptance,
+    // without another register. On full flush it distinguishes canceled pending
+    // requests from accepted requests whose responses must still drain.
     input logic                                        i_lq_mem_request_pending,
 
     // DMA coherence handshake: the cache hierarchy's sequencer to
@@ -391,13 +375,10 @@ module tomasulo_wrapper #(
     // slot-1's same-cycle rename onto the snapshot when this asserts.
     input logic                                        i_checkpoint_save_for_slot2,
 
-    // Early allocation candidates from dispatch (see dispatch.sv o_alloc_*)
-    // and the bundle fire they combine with. A bundle fires whole, so
-    // i_rat_alloc_valid is i_alloc_fire && i_alloc_has_dest,
-    // i_rat_alloc_valid_2 is i_alloc_fire && i_alloc_has_dest_2, and a
-    // checkpoint save's slot-2 flag equals i_checkpoint_slot2_candidate. The
-    // RAT builds its write selects from the candidates and applies the fire
-    // last.
+    // Dispatch candidates are qualified by atomic bundle fire:
+    // i_rat_alloc_valid = i_alloc_fire && i_alloc_has_dest, likewise for slot 2.
+    // A saved checkpoint's slot-2 flag equals i_checkpoint_slot2_candidate.
+    // The RAT applies fire after selecting candidates for timing.
     input logic i_alloc_fire,
     input logic i_alloc_has_dest,
     input logic i_alloc_has_dest_2,
@@ -570,20 +551,12 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Internal commit bus: ROB -> RAT / SQ / SC
   // ===========================================================================
-  // commit_bus is the combinational output from the ROB. It stays on the
-  // zero-cycle control path for cpu_ooo misprediction detection.
-  //
-  // commit_bus_q is a one-cycle pipeline register that breaks the critical
-  // timing path from ROB head_ready/commit_en through SQ/RAT to LQ.
-  // Internal consumers (RAT, SQ commit, SC logic) use the registered
-  // version.  The SQ also takes the raw ROB store-commit pulses, only to
-  // clear its committed-empty status early.  The registered valid is masked
-  // in a full-flush cycle.  A registered commit overlaps a full flush only
-  // for non-store instructions (traps, xRET, FENCE-class instructions), so
-  // SQ and SC commits are unaffected.
+  // The combinational bus supports same-cycle misprediction detection.
+  // Registered commits feed RAT, SQ, SC, and coherence for timing, with valid
+  // masked during full flush. Only non-stores overlap a full flush. The SQ
+  // also uses raw ROB store-commit pulses to clear committed-empty early.
   riscv_pkg::reorder_buffer_commit_t commit_bus;
-  // Split commit_bus_q into separate valid + data to prevent Vivado from
-  // dragging the reset net onto payload register bits.
+  // Separate valid from payload so only valid resets.
   logic commit_bus_q_valid;
   // Pre-flush-mask registered valid (scan-only consumers; see
   // commit_bus_pipeline port comment).
@@ -599,10 +572,8 @@ module tomasulo_wrapper #(
   logic commit_valid_raw;
   logic commit_store_like_raw;
 
-  // Widen-commit slot 2 parallel to commit_bus / commit_bus_q.  Slot 2 is
-  // never SC/AMO/LR by construction (excluded by the ROB hazard gate), so
-  // its decoded fields have no SC terms.  Like commit_bus_q, the valid bit
-  // is split out so the reset cone does not touch the payload register bits.
+  // Slot 2 never carries SC, AMO, or LR, so it needs no SC fields. Reset its
+  // valid separately from payload, as for slot 1.
   riscv_pkg::reorder_buffer_commit_t commit_bus_2;
   riscv_pkg::reorder_buffer_commit_t commit_bus_2_q;
   logic commit_bus_2_q_valid;
@@ -740,19 +711,15 @@ module tomasulo_wrapper #(
   (* max_fanout = 32 *)logic speculative_flush_all;
   logic speculative_flush_en;
   logic lq_partial_flush_en;
-  // Keep the CDB kill as a small, local copy so speculative full-flush does
-  // not have to route back through every adapter output-valid cone.
+  // Keep a local CDB kill copy for fanout.
   (* keep = "true" *)logic cdb_kill;
   assign full_flush_all = i_flush_all;
   assign speculative_flush_all = full_flush_all || i_flush_after_head_commit;
   assign speculative_flush_en = i_flush_en && !i_flush_after_head_commit;
-  // TIMING: every partial flush that reaches the LQ is an early-recovery
-  // flush, because commit-time recovery and architectural full flushes both
-  // arrive as speculative_flush_all. The LQ therefore takes the registered
-  // i_early_recovery_flush directly, which keeps the full-flush priority
-  // logic out of its SQ-check capture path. In a cycle where the two partial
-  // terms differ, speculative_flush_all is high and resets or kills every
-  // architecturally visible LQ update; a payload captured then is never used.
+  // Only early recovery reaches the LQ as partial flush. Feed it directly for
+  // timing; commit recovery and architectural flush use speculative_flush_all.
+  // If the partial signals differ, full flush clears every visible LQ update,
+  // so any coincident payload capture is unused.
   assign lq_partial_flush_en = i_early_recovery_flush;
   assign cdb_kill = speculative_flush_all;
 
@@ -768,7 +735,7 @@ module tomasulo_wrapper #(
 `endif
 
   // ===========================================================================
-  // CDB Arbiter: FU completions → 2-lane CDB broadcast (o_cdb + o_cdb_2)
+  // CDB Arbiter: FU completions -> 2-lane CDB broadcast (o_cdb + o_cdb_2)
   // ===========================================================================
   riscv_pkg::cdb_broadcast_t cdb_bus_comb;  // combinational from arbiter
   // Registered metadata plus the arbiter's value-tree fallback value.
@@ -776,12 +743,9 @@ module tomasulo_wrapper #(
   // (below).
   (* equivalent_register_removal = "no" *)riscv_pkg::cdb_broadcast_t cdb_bus_q;
   riscv_pkg::cdb_broadcast_t cdb_bus;
-  // CDB copies for the store early-address repair only, registered on the
-  // same edge as cdb_bus_q.  That logic places far from the shared value
-  // register, so each lane gets exactly one narrow copy beside it: the
-  // repair path uses only valid, tag, and the XLEN value.  No max_fanout:
-  // replicating these wide copies multiplies the routed payload bundles and
-  // causes severe routing congestion.
+  // CDB copies for early store-address repair, sampled with cdb_bus_q. Keep
+  // one XLEN value, tag, and valid copy per lane for fanout; avoid replicating
+  // the wide payload further.
   typedef struct packed {
     logic                                        valid;
     logic [riscv_pkg::ReorderBufferTagWidth-1:0] tag;
@@ -795,45 +759,25 @@ module tomasulo_wrapper #(
   riscv_pkg::cdb_broadcast_t sq_cdb_bus_2;
   // same-cycle INT_RS-local copy
   (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_int_rs;
-  // TIMING: keep + equivalent_register_removal="no" preserve separate INT_RS
-  // copies while max_fanout permits replication per entry bank. Do not use
-  // dont_touch here: it prevents Vivado from honoring max_fanout.
+  // Preserve separate INT_RS copies while allowing max_fanout replication.
+  // Do not use dont_touch here; it prevents that replication.
   (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_int_rs_tag;
-  // XLEN wide: INT_RS only consumes value[XLEN-1:0] (its ops are integer
-  // ALU/branch/CSR).  The qualified-struct assembly below zero-extends it to
-  // FLEN.
-  //
-  // dont_touch on the value copies keeps synthesis from replicating these
-  // 64-bit registers: each replica drags another 64-bit wire bundle through
-  // the congested INT_RS capture logic on x3.  The tag copies stay
-  // replicable, since five-bit replicas help wakeup timing at little wiring
-  // cost.
+  // INT_RS reads only value[XLEN-1:0]; its packet zero-extends to FLEN.
+  // Keep value copies unreplicated to limit wiring; tag copies may replicate.
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
   logic [riscv_pkg::XLEN-1:0] cdb_bus_int_rs_value;
   riscv_pkg::cdb_broadcast_t cdb_bus_2_comb;  // 2-wide CDB lane-1, combinational
   // Registered lane-1 metadata/fallback and its reconstructed view.
   (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_2_q;
   riscv_pkg::cdb_broadcast_t cdb_bus_2;
-  // Lane-0 and lane-1 tag copies for FP_RS.
-  //
-  // u_fp_rs places next to its execution shim, far from the shared CDB tag
-  // registers, so the path
-  //   cdb_bus_q[tag] -> FP-RS wakeup -> stage2_src*_bypass_mask
-  // is dominated by routing.  A local copy shortens it without adding
-  // latency: these sample the arbiter on the same edge as the shared
-  // registers.
-  //
-  // Tag only, and not replicable: replicating the wide value is what
-  // congests routing (see cdb_bus_int_rs_value), and the consumer is one
-  // compact cluster that needs a single local copy, not per-bank replicas.
+  // Same-edge tag copies for FP_RS, for fanout. Keep one per lane without
+  // replicating the wide value.
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_fp_tag;
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_2_fp_tag;
-  // Same-edge tag copy pairs for MUL_RS and MEM_RS, for the same reason: one
-  // narrow local pair per station lets the placer keep each wakeup CAM next
-  // to its own copy.
+  // Same-edge tag copies for MUL_RS and MEM_RS, for fanout.
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_mul_tag;
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
@@ -846,12 +790,11 @@ module tomasulo_wrapper #(
   (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_2_int_rs;
   (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_2_int_rs_tag;
-  // XLEN wide for the same reason as cdb_bus_int_rs_value above; value
-  // copy pinned against replication for the same congestion reason.
+  // XLEN-wide lane-1 value copy, kept unreplicated to limit wiring.
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
   logic [riscv_pkg::XLEN-1:0] cdb_bus_2_int_rs_value;
 
-  // Forward declarations: adapter→arbiter signals (used here, defined below)
+  // Forward declarations: adapter->arbiter signals (used here, defined below)
   riscv_pkg::fu_complete_t alu_adapter_to_arbiter;
   riscv_pkg::fu_complete_t mul_adapter_to_arbiter;
   riscv_pkg::fu_complete_t div_adapter_to_arbiter;
@@ -869,8 +812,8 @@ module tomasulo_wrapper #(
   logic [riscv_pkg::FLEN-1:0] alu_tree_fallback_value;
   logic [riscv_pkg::FLEN-1:0] alu2_tree_fallback_value;
 
-  // Arbiter-side pre-restore values/selects.  Only these auxiliaries, never
-  // cdb_bus{,_2}_comb.value, feed the registered CDB value D inputs.
+  // Only fallback values feed the CDB value registers; live ALU values use
+  // the registered restore selects below.
   logic [riscv_pkg::FLEN-1:0] cdb_lane0_tree_fallback_value_comb;
   logic [riscv_pkg::FLEN-1:0] cdb_lane1_tree_fallback_value_comb;
   logic cdb_lane0_select_alu_live_comb;
@@ -878,9 +821,8 @@ module tomasulo_wrapper #(
   logic cdb_lane1_select_alu_live_comb;
   logic cdb_lane1_select_alu2_live_comb;
 
-  // The four select bits are registered with the CDB.  After the edge, the
-  // restore muxes take a live ALU value from the ALU adapters' held payload
-  // registers, so no second wide live-value register bank is needed.
+  // Register the selects with the CDB. Restore live ALU values from the
+  // adapters' held payloads after the edge, avoiding duplicate value registers.
   logic cdb_lane0_select_alu_live_q;
   logic cdb_lane0_select_alu2_live_q;
   logic cdb_lane1_select_alu_live_q;
@@ -915,15 +857,10 @@ module tomasulo_wrapper #(
     cdb_arb_in_7 = alu2_adapter_to_arbiter.valid ? alu2_adapter_to_arbiter : i_fu_complete_7;
   end
 
-  // Split each ALU value into mutually exclusive live and fallback paths.
-  // Adapter-valid while non-pending is the qualified shim pass-through case;
-  // partial-flush suppression clears adapter-valid.  The fallback carries only
-  // a held adapter value or a test-injection value, so it has no live-shim
-  // arm.  The pending arm names the exposed held-register Q directly.  That Q
-  // equals the adapter output value in the pending state, but naming the
-  // pending/live output mux instead would let synthesis retain a live-shim
-  // dependency in the fallback D cone.  cdb_arb_in_* is the exact effective
-  // packet; the formal section checks the split against it.
+  // Split ALU values into live and fallback paths. Valid with no pending
+  // result selects the shim; partial flush suppresses valid. Fallback selects
+  // held adapter data or test injection. Read held-register Q directly to
+  // avoid a live-shim dependency for timing.
   assign alu_value_is_live = alu_adapter_to_arbiter.valid && !alu_adapter_result_pending;
   assign alu2_value_is_live = alu2_adapter_to_arbiter.valid && !alu2_adapter_result_pending;
   assign alu_tree_fallback_value =
@@ -933,10 +870,8 @@ module tomasulo_wrapper #(
       (alu2_adapter_result_pending && alu2_adapter_to_arbiter.valid) ?
       alu2_adapter_held_value : i_fu_complete_7.value;
 
-  // Width-funnel perf observer (profiling only): >=3 FU completions request
-  // the 2-lane CDB this cycle, so at least one requester must hold its
-  // result and retry.  Registered so the tap adds no load to the arbiter
-  // cone; drives nothing but a perf counter.
+  // Register CDB oversubscription for profiling: three or more completions
+  // request two lanes, so at least one must wait.
   logic [3:0] perf_cdb_request_count;
   logic       perf_cdb_oversubscribed_q;
   assign perf_cdb_request_count =
@@ -986,12 +921,8 @@ module tomasulo_wrapper #(
       .o_grant_raw                ()
   );
 
-  // Pipeline register: break the CDB arbiter → RS/ROB wakeup critical path.
-  // Grants stay combinational (back to adapters); only the broadcast fanout
-  // to RS snoop + ROB CDB-write is registered.
-  // Split valid from data to prevent Vivado from dragging reset onto payload.
-  // The valid has a large fanout (the RS snoops and the ROB CDB write) and
-  // drives into the flush-recovery logic, so max_fanout replicates it.
+  // Register broadcasts to RS and ROB for timing; grants remain combinational.
+  // Reset only valid, with max_fanout for its consumers.
   (* max_fanout = 32 *)logic cdb_bus_valid;
   (* equivalent_register_removal = "no", max_fanout = 32 *)logic cdb_bus_int_rs_valid;
 
@@ -1032,11 +963,9 @@ module tomasulo_wrapper #(
     cdb_lane0_select_alu2_live_q <= cdb_lane0_select_alu2_live_comb;
   end
 
-  // Restore a live ALU value after the register edge from that ALU adapter's
-  // held_result register, which captured the same value on the same edge.
-  // Fallback values, metadata, and selectors are registered with the CDB.
-  // The shared, INT_RS, and SQ copies each get their own mux, so each stays
-  // near its consumers, and no wide live-value register is added.
+  // Restore live ALU data from the adapter's held_result, captured on the same
+  // edge as CDB metadata, fallback values, and selectors. Use separate restore
+  // muxes for shared, INT_RS, and SQ consumers for fanout.
   cdb_live_value_restore u_cdb_lane0_registered_live_value_restore (
       .i_tree_fallback_value(cdb_bus_q.value),
       .i_select_alu_live    (cdb_lane0_select_alu_live_q),
@@ -1103,10 +1032,7 @@ module tomasulo_wrapper #(
     cdb_bus_mem_qualified.tag = cdb_bus_mem_tag;
   end
 
-  // INT_RS can be physically far from the shared CDB register and
-  // snoops many value bits in parallel.  Give it an equivalent same-cycle CDB
-  // register so placement can keep that high-fanout payload local without
-  // changing wakeup latency.
+  // Use an equivalent same-edge CDB copy for INT_RS fanout.
   riscv_pkg::cdb_broadcast_t cdb_bus_int_rs_qualified;
   always_comb begin
     cdb_bus_int_rs_qualified = cdb_bus_int_rs;
@@ -1130,13 +1056,7 @@ module tomasulo_wrapper #(
     cdb_write_from_arbiter.fp_flags  = cdb_bus.fp_flags;
   end
 
-  // Private CDB tag copies for the ROB head-match compares (the same-cycle
-  // commit CDB bypass). The shared cdb_bus.tag inside the ROB also drives
-  // every distributed-RAM write address, a large fanout that would delay the
-  // head_cdb_match compare, which feeds the commit -> SQ/trap path. These
-  // copies load only the two 5-bit comparators, keeping the compare source
-  // local. Same pattern as cdb_bus_int_rs; values are identical to
-  // cdb_bus.tag / cdb_bus_2.tag.
+  // Identical CDB tag copies for ROB head-match bypass comparisons, for fanout.
   (* equivalent_register_removal = "no" *)
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_rob_match_tag;
   (* equivalent_register_removal = "no" *)
@@ -1252,10 +1172,8 @@ module tomasulo_wrapper #(
     };
   end
 
-  // Reconstruct the standard port type with only the fields consumed by
-  // sq_early_addr_pipeline populated.  Both local copies sample the same
-  // combinational broadcasts on the same edges as the generic CDB registers,
-  // so this changes placement only, never the observed completion cycle.
+  // Populate only fields used by sq_early_addr_pipeline. These copies sample
+  // the same broadcasts on the same edges as the shared CDB registers.
   always_comb begin
     sq_cdb_bus = '0;
     sq_cdb_bus.valid = sq_cdb_bus_q.valid;
@@ -1269,11 +1187,8 @@ module tomasulo_wrapper #(
   end
 
 `ifndef SYNTHESIS
-  // The placement-only local copies must match the shared CDB registers
-  // (valid and tag in every cycle, value whenever the lane is valid), and the
-  // post-Q restore muxes must select as specified.  Checked only after reset
-  // because the payload/select registers carry no reset and are hidden
-  // behind the registered valid.
+  // Check local copies against shared CDB registers and restore selection.
+  // Skip pre-reset payload checks because payload/select registers are unreset.
   always_comb begin
     if (i_rst_n) begin
       p_cdb_lane0_post_q_restore_mux :
@@ -1420,10 +1335,7 @@ module tomasulo_wrapper #(
   logic mul_rs_full_for_2_w;
   logic mem_rs_full_for_2_w;
   logic fp_rs_full_for_2_raw;
-  // TIMING: the FP pending-stage valid gates the pending-payload capture and
-  // folds into full_for_2 back-pressure, which reaches ROB allocation, so it
-  // has a large fanout.  It is capped like the other 1-bit dispatch-control
-  // nets.
+  // Limit FP pending-valid fanout to capture and dispatch back-pressure.
   (* max_fanout = 32 *) logic fp_dispatch_pending_valid;
   riscv_pkg::rs_dispatch_t fp_dispatch_pending;
   riscv_pkg::rs_dispatch_t fp_rs_dispatch_to_rs;
@@ -1434,14 +1346,9 @@ module tomasulo_wrapper #(
   // High in E1, the cycle after an FP packet is captured, when the done-repair
   // response to its source queries (channels 1 to 3) arrives.
   logic fp_pending_repair_capture_q;
-  // The E1 hold decision, registered at capture from the packet's
-  // unresolved-source bits.  Under the production dispatch contract (a source
-  // is unresolved iff its query is valid), it equals the E1 test of queried,
-  // unresolved sources in every cycle; an unresolved source without a query
-  // is outside that contract.  A queried, unresolved packet stays buffered
-  // through E1, and the merged packet passes into the RS on a later edge.
-  // Registering the decision keeps the buffered payload bits out of the broad
-  // dispatch-room logic.
+  // Register whether the packet has unresolved sources at capture for timing.
+  // Production dispatch queries every unresolved source. Keep such a packet
+  // through E1, then pass the repaired packet into FP_RS on a later edge.
   (* max_fanout = 32 *) logic fp_pending_repair_wait_q;
   logic fp_repair_window_block;
 
@@ -1492,7 +1399,7 @@ module tomasulo_wrapper #(
   ) - 1) {1'b0}}, fp_dispatch_pending_valid};
 
   // ===========================================================================
-  // ALU Pipeline: INT_RS issue → shim → adapter → CDB arbiter slot 0
+  // ALU Pipeline: INT_RS issue -> shim -> adapter -> CDB arbiter slot 0
   // ===========================================================================
   riscv_pkg::rs_issue_t int_rs_issue_raw;  // INT_RS issue output
   riscv_pkg::rs_issue_t int_rs_issue_w;  // INT_RS issue output
@@ -1514,12 +1421,12 @@ module tomasulo_wrapper #(
       ~i_backend_recovery_hold;
 
   // ===========================================================================
-  // MUL/DIV Pipeline: MUL_RS issue → shim → adapters → CDB arbiter slots 1,2
+  // MUL/DIV Pipeline: MUL_RS issue -> shim -> adapters -> CDB arbiter slots 1,2
   // ===========================================================================
   riscv_pkg::rs_issue_t    mul_rs_issue_raw;  // MUL_RS issue output (internal)
   riscv_pkg::rs_issue_t    mul_rs_issue_w;  // MUL_RS issue output (internal)
-  riscv_pkg::fu_complete_t mul_shim_out;  // shim MUL → adapter
-  riscv_pkg::fu_complete_t div_shim_out;  // shim DIV → adapter
+  riscv_pkg::fu_complete_t mul_shim_out;  // shim MUL -> adapter
+  riscv_pkg::fu_complete_t div_shim_out;  // shim DIV -> adapter
   // mul/div_adapter_to_arbiter declared above (forward declaration)
   logic                    mul_adapter_result_pending;
   logic                    div_adapter_result_pending;
@@ -1534,10 +1441,8 @@ module tomasulo_wrapper #(
   // holds them back itself while div_busy is high.
   assign mul_rs_fu_ready = i_mul_rs_fu_ready & ~muldiv_busy & ~i_backend_recovery_hold;
 
-  // The shim hands a result over only when its adapter is idle.  If an adapter
-  // is pending and receives a CDB grant, it drains first; the MUL FIFO head or
-  // the divider's held result is taken on the following cycle.  That keeps the
-  // cross-FU CDB priority encoder out of the FIFO count and divider state CEs.
+  // Accept a shim result only when its adapter is idle. A pending result
+  // drains first, then the FIFO/divider result transfers next cycle, for timing.
   logic mul_result_accepted;
   assign mul_result_accepted = !mul_adapter_result_pending && mul_shim_out.valid;
 
@@ -1545,9 +1450,9 @@ module tomasulo_wrapper #(
   assign div_result_accepted = !div_adapter_result_pending && div_shim_out.valid;
 
   // ===========================================================================
-  // MEM (Load) Pipeline: LQ → adapter → CDB arbiter slot 3
+  // MEM (Load) Pipeline: LQ -> adapter -> CDB arbiter slot 3
   // ===========================================================================
-  riscv_pkg::fu_complete_t lq_fu_complete;  // LQ → adapter
+  riscv_pkg::fu_complete_t lq_fu_complete;  // LQ -> adapter
   logic lq_fu_complete_staged;  // registered LQ CDB-stage occupancy, flush-free
   // mem_adapter_to_arbiter declared above (forward declaration)
   logic mem_adapter_result_pending;
@@ -1580,14 +1485,12 @@ module tomasulo_wrapper #(
   endfunction
 
   // ===========================================================================
-  // SQ ↔ LQ Internal Wiring (store-to-load forwarding)
+  // SQ <-> LQ Internal Wiring (store-to-load forwarding)
   // ===========================================================================
   logic sq_check_valid;
   logic sq_check_capture_valid;  // flush-free capture-enable variant
   logic [riscv_pkg::XLEN-1:0] sq_check_addr;
-  // Replicas of sq_check_addr: separate LQ registers loaded on the same
-  // edges, kept distinct through the wrapper so each two-entry quarter of the
-  // SQ CAM has its own nearby copy.
+  // Identical same-edge LQ address copies, one per SQ CAM quarter, for fanout.
   logic [riscv_pkg::XLEN-1:0] sq_check_addr_b;
   logic [riscv_pkg::XLEN-1:0] sq_check_addr_c;
   logic [riscv_pkg::XLEN-1:0] sq_check_addr_d;
@@ -1611,11 +1514,11 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Atomics Wiring (LR/SC/AMO support)
   // ===========================================================================
-  // Reservation register (LQ → SC resolution and the snoop invalidate below)
+  // Reservation register (LQ -> SC resolution and the snoop invalidate below)
   logic lq_reservation_valid;
   logic [riscv_pkg::XLEN-1:0] lq_reservation_addr;
 
-  // SQ committed-empty (SQ → SC resolution, coherence port, and
+  // SQ committed-empty (SQ -> SC resolution, coherence port, and
   // o_sq_committed_empty). The ROB, the LQ, and the trap unit take the store
   // queue's placement copies of the same register.
   logic sq_committed_empty;
@@ -1623,8 +1526,7 @@ module tomasulo_wrapper #(
   logic sq_committed_empty_lq;
   assign o_sq_committed_empty = sq_committed_empty;
 
-  // Any SC commit, success or failure, clears the reservation.
-  // Uses the pipelined commit bus to break the ROB → LQ/SQ critical path.
+  // Any SC commit, success or failure, clears the reservation via registered commit.
   logic sc_clear_reservation;
   assign sc_clear_reservation = commit_bus_q_valid && commit_q_is_sc;
 
@@ -1637,14 +1539,11 @@ module tomasulo_wrapper #(
       (sq_cache_invalidate_addr[riscv_pkg::XLEN-1:3] ==
        lq_reservation_addr[riscv_pkg::XLEN-1:3]);
 
-  // SC discard: a failed SC invalidates its SQ entry.
-  // Uses the pipelined commit bus to break the ROB → SQ critical path.
+  // A failed SC invalidates its SQ entry via registered commit.
   logic sc_discard;
   assign sc_discard = commit_bus_q_valid && commit_q_sc_failed;
 
-  // Store commit pulses.  The LQ instance consumes them (i_sq_commit_pending)
-  // before the SQ instance, so they are declared here beside the other
-  // commit-bus-derived SC/SQ wires instead of at the store_queue instantiation.
+  // Store commits feed both the LQ commit interlock and the SQ.
   logic sq_commit_valid;
   assign sq_commit_valid = commit_bus_q_valid && commit_q_is_store_like && !sc_discard;
   // Widen-commit slot 2: a second simultaneous store retire.  Slot 2 can
@@ -1652,17 +1551,9 @@ module tomasulo_wrapper #(
   logic sq_commit_valid_2;
   assign sq_commit_valid_2 = commit_bus_2_q_valid && commit_q_2_is_store_like;
 
-  // Scan-only commit pulses for the SQ forwarding probe.  Identical to
-  // sq_commit_valid/_2 except built from the raw (pre-flush-mask) registered
-  // valids: the !i_flush_all mask is the registered trap/xRET/FENCE-class
-  // pulse, and leaving it out keeps the trap logic off every o_sq_forward
-  // capture D-pin.  The variants differ from the architectural pulses only in
-  // the full-flush cycle, where the probe's captured result can never be
-  // used: o_sq_check_valid is flush-gated low, sq_check_phase2 is cleared,
-  // and every consumer requires a phase-2 result.  This is the same
-  // capture-then-kill contract that lets the capture enable omit its flush
-  // terms.  Never use these for an architectural side effect; sq_committed,
-  // committed_empty and the flush_kill exemptions use the masked pulses.
+  // Forwarding scan pulses omit the full-flush mask for timing. LQ phase-2
+  // state clears on that edge, making the captured result unused. Architectural
+  // side effects, committed-empty, and flush exemptions must use masked pulses.
   logic sc_discard_raw;
   assign sc_discard_raw = commit_bus_q_valid_raw && commit_q_sc_failed;
   logic sq_commit_valid_scan;
@@ -1678,8 +1569,7 @@ module tomasulo_wrapper #(
   // Forward declaration (assigned in SQ address section below)
   logic [riscv_pkg::XLEN-1:0] sq_effective_addr;
 
-  // Age comparison for the FP pending-dispatch and store-misalign flush
-  // guards (identical to the load_queue / reservation_station / sc_pending_unit copies)
+  // Compare ROB ages for FP pending-dispatch and store-fault flush guards.
   function automatic logic is_younger(input logic [riscv_pkg::ReorderBufferTagWidth-1:0] entry_tag,
                                       input logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag,
                                       input logic [riscv_pkg::ReorderBufferTagWidth-1:0] head);
@@ -1698,54 +1588,37 @@ module tomasulo_wrapper #(
   logic store_misalign_issue;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] store_complete_tag;
 
-  // Store completion: stores are "done" immediately after MEM_RS issue
-  // (address + data go to the SQ; the ROB only needs to know the store
-  // completed).  SC_W/SC_D never mark done here, since success/failure
-  // completes through sc_pending_unit, but they are not excluded from the
-  // fault strobes: a misaligned SC "will generate" its exception and an SC
-  // without write permission "raises a store page-fault" per the specs.
-  // The may-fail-for-any-reason allowance covers only the retired failure
-  // result, never exception suppression; Spike agrees, and Linux's futex
-  // COW break depends on it.
+  // Plain stores mark the ROB done at MEM_RS issue without translation, or
+  // at a successful MMU S2 result with translation. SC completes through
+  // sc_pending_unit, but still takes issue-time faults: the specs require
+  // misaligned and permission-faulting SCs to raise exceptions even if their
+  // reservations fail. Spike follows this rule; Linux futex COW depends on it.
   //
-  // A store's PMA access fault (cause 7) uses the same issue-time trap
-  // strobe as misalignment.  The store completes with an exception instead
-  // of being marked done, so its SQ entry can never drain (the
-  // launched-implies-in-map invariant).  With translation off, an access
-  // fault outranks misalignment (the privileged spec allows either order;
-  // the data MMU checks misalignment first).  The PMA term ignores
-  // i_trap_misaligned_accesses so the invariant always holds.  An SC is
-  // checked against the atomic map, so an SC to the device quadrant faults.
+  // PMA faults (cause 7) share the misalignment strobe. Faulting stores never
+  // commit or drain. Without translation, PMA faults outrank misalignment
+  // (the privileged spec allows either order; the MMU checks alignment first).
+  // PMA checks apply even when i_trap_misaligned_accesses is clear. SC uses the
+  // atomic map, which excludes the device quadrant.
   //
-  // While data translation is active, every store-family fault (misalignment
-  // on the VA, page fault, access fault on the translated PA) comes from the
-  // data MMU's S2 stage instead; store_misalign_issue_legacy is gated off,
-  // and launched-implies-in-map holds because the SQ address packet then
-  // carries only MMU-checked PAs.
+  // With translation, all store faults come from MMU S2: VA misalignment,
+  // page faults, or PA access faults. The legacy strobe is disabled, and SQ
+  // address updates require an MMU-checked PA.
   logic store_pma_issue;
   logic store_misalign_issue_legacy;
   logic dmmu_store_fault;
   logic dmmu_store_ok;
 
-  // TIMING: Every store-family immediate is either a sign-extended S-immediate
-  // or zero (SC), so adding it can move the base by at most one 4 KiB page.
-  // Split the effective-address add at bit 12: the low 13-bit unsigned sum
-  // supplies both the page carry and the final alignment bits, while the PMA
-  // classification of the base page runs in parallel.  The legal store pages
-  // are [0, 0x3f] and [0x40000, 0xbffff] (riscv_pkg::pma_store_ok): the whole
-  // device quadrant, not just the device windows, because the exact window
-  // compares put this path over the cycle at 322 MHz. A store to an unserved
-  // device address therefore issues, and the device bus ignores it. Moving
-  // one page changes membership only at the four interval entry/exit
-  // boundaries in each direction, so the page choices below are exactly
-  // pma_store_ok(src1 + sext12(imm)) without putting the PMA/ROB and
-  // PMA/SC-table paths behind the 64-bit carry chain.  An SC's immediate is
-  // zero, so its address is the base page, and the base-page check leaves the
-  // device quadrant out for an SC, which makes the result pma_atomic_ok(src1)
-  // for an SC.
-  // Keep the 13-bit tap explicit so synthesis cannot re-expand this predicate
-  // through sq_effective_addr; that full-width sum is the architectural
-  // SQ/xtval payload below.
+  // Store immediates are sign-extended S-immediates or zero (SC), so they can
+  // move the base by at most one 4 KiB page. The low 13-bit sum supplies the
+  // page carry and alignment bits. Legal store pages are [0, 0x3f] and
+  // [0x40000, 0xbffff], as in riscv_pkg::pma_store_ok. The device quadrant
+  // includes unserved addresses, whose writes the device bus ignores.
+  //
+  // A one-page move changes membership only at interval boundaries. The
+  // boundary checks below compute pma_store_ok(src1 + sext12(imm)). SC has a
+  // zero immediate and excludes device pages, yielding pma_atomic_ok(src1).
+  // Keep the 13-bit tap explicit for synthesis; sq_effective_addr retains the
+  // full address for the SQ and xtval.
   (* keep = "true" *) logic [12:0] store_page_offset_sum;
   logic store_base_z18;
   logic store_base_z19;
@@ -1806,10 +1679,8 @@ module tomasulo_wrapper #(
       store_base_page_eq_3ffff || store_base_page_eq_bffff;
   assign store_page_dec_toggle = store_base_page_eq_0 || store_base_page_eq_40 ||
       store_base_page_eq_40000 || store_base_page_eq_c0000;
-  // Complete both page classifications before the offset carry selects one.
-  // With no carry, only a negative immediate can leave the base page; with
-  // carry, only a nonnegative immediate can do so. Keep these scalar results
-  // so the wide base-page comparisons and the offset adder meet at one mux.
+  // Without a carry, only a negative immediate changes the page. With a
+  // carry, only a nonnegative immediate does. Select between both cases.
   assign store_pma_without_page_carry = store_base_pma_ok ^
       (o_mem_rs_issue.imm[11] && store_page_dec_toggle);
   assign store_pma_with_page_carry = store_base_pma_ok ^
@@ -1838,14 +1709,8 @@ module tomasulo_wrapper #(
   // pulse split by fault/ok and routed by its needs_sq echo).
   logic dmmu_out_is_sc;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] dmmu_out_tag;
-  // In the untranslated arm, absorb the common valid/needs-SQ product out of
-  // store_misalign_issue and use the same page-split predicates directly.
-  // Exception generation uses store_misalign_issue above, which keeps
-  // PMA-over-misalignment priority and all fault behavior; only the ROB
-  // "done" pulse gets the shallower, Boolean-equivalent form.
-  // Finish both eligibility arms independently of the late PMA result. Keep
-  // them so PMA reaches the ROB through one final gate instead of being
-  // absorbed into the valid, opcode, alignment and translation priority cone.
+  // Factor the untranslated done predicate for timing. It uses the same PMA
+  // and alignment checks as store_misalign_issue; fault priority is unchanged.
   (* keep = "true" *) logic store_issue_translated;
   (* keep = "true" *) logic store_issue_untranslated_without_pma;
   assign store_issue_translated = dmmu_store_ok && !dmmu_out_is_sc;
@@ -1923,24 +1788,12 @@ module tomasulo_wrapper #(
 
   riscv_pkg::fu_complete_t store_misalign_fu_complete_reg;
 
-  // TIMING: register SC completion to keep the fence/flush/fire cone off the
-  // MEM adapter and CDB. SC pays one cycle; plain loads keep their bypass.
-  // A presenting registered store fault takes priority because it cannot hold
-  // and another fault may follow next cycle. SC holds its captured payload
-  // and cannot fire again until that completion is consumed. Gate on the
-  // registered fault presentation, keeping live address/PMA logic off SC writes.
+  // Register SC completion for timing, adding one cycle. A registered store
+  // fault has priority because it cannot wait and another fault may follow.
+  // SC holds its completion and cannot fire again until that result is consumed.
   //
-  // p_sc_completion_release_adapter_idle, p_sc_completion_release_is_granted,
-  // and p_sc_completion_token_conserved check exactly one CDB delivery.
-  // test_sc_completion_release_under_cdb_contention checks contended release.
-  //
-  // TIMING: the payload loads in every cycle no completion waits, not only
-  // on the fire, so the head-tag match and fire cone stay off the payload
-  // enables.  The payload is read only while sc_fu_complete_reg.valid, and
-  // valid rises only on a fire (the unit never fires while a completion
-  // waits, p_sc_fire_needs_free_completion_reg), so every payload read is the
-  // firing SC's; a waiting completion holds exactly as before.
-  // p_sc_completion_payload_exact checks this against the fire-enabled copy.
+  // Capture payload whenever no completion waits. Valid rises only on SC fire,
+  // so the visible payload belongs to that SC and stays fixed until consumed.
   riscv_pkg::fu_complete_t sc_fu_complete_reg;
   logic sc_completion_held;
   assign sc_completion_held = sc_fu_complete_reg.valid && store_misalign_fu_complete_reg.valid;
@@ -1966,14 +1819,9 @@ module tomasulo_wrapper #(
   end
 `endif
 
-  // TIMING: same-edge copies of sc_fu_complete_reg.valid, one per consumer
-  // group (the MEM presentation mux, LQ result acceptance, MEM_RS issue
-  // readiness, and the early-wakeup enable), so each copy can launch beside
-  // its own loads instead of one register reaching all of them. A copy has
-  // the owner's reset and transition function and holds on its own state, so
-  // every copy equals sc_fu_complete_reg.valid on every cycle
-  // (p_sc_valid_copies_match below). DONT_TOUCH keeps synthesis from merging
-  // them back into one register.
+  // Copies of sc_fu_complete_reg.valid for fanout. Each has the same reset
+  // and transition function, so all copies stay equal. DONT_TOUCH prevents
+  // synthesis from merging them.
   (* dont_touch = "true" *)logic sc_valid_adapter_q;
   (* dont_touch = "true" *)logic sc_valid_lq_q;
   (* dont_touch = "true" *)logic sc_valid_issue_q;
@@ -2029,20 +1877,17 @@ module tomasulo_wrapper #(
       store_misalign_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(
           store_pma_issue ? riscv_pkg::ExcStoreAccessFault[riscv_pkg::ExcCauseWidth-1:0] :
                             riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]);
-      // Park the faulting address in the (otherwise unused) value slot so the
-      // ROB can forward it as xtval at trap entry (the privileged spec allows
-      // zero, but a nonzero xtval must be the faulting virtual address).
+      // Carry the faulting VA in value for the ROB's xtval. The privileged spec
+      // allows zero; a nonzero xtval must be the faulting VA.
       store_misalign_fu_complete.value = {
         {(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, sq_effective_addr
       };
     end
   end
 
-  // TIMING: register store faults to keep address/PMA logic off the MEM
-  // adapter and CDB. Faults pay one cycle; plain LQ results keep their bypass.
-  // Reject incoming faults younger than a partial flush. The adapter filters
-  // a killed held packet, so always capture the next incoming strobe: an
-  // older store fault may arrive on the same cycle that a younger one dies.
+  // Register store faults for timing, adding one cycle. Reject faults younger
+  // than a partial flush. The adapter filters a killed held packet; still
+  // capture a new fault, which may be older and survive that flush.
   logic store_misalign_input_flushed;
   assign store_misalign_input_flushed = speculative_flush_en &&
       store_misalign_fu_complete.valid &&
@@ -2064,12 +1909,10 @@ module tomasulo_wrapper #(
     store_misalign_fu_complete_reg.fp_flags <= store_misalign_fu_complete.fp_flags;
   end
 
-  // MUX: store fault > SC > LQ for MEM adapter input.  The fault register
-  // cannot hold, the SC completion register can (above).  Putting SC on top
-  // would deliver it under a presented fault and then hold it for a second
-  // delivery; p_sc_completion_token_conserved below catches that.
-  // Plain stores that do not fault mark the ROB done directly and do not
-  // occupy the CDB.
+  // MEM priority is store fault, then SC, then LQ. Store faults cannot wait;
+  // SC holds while a fault is present. Giving SC priority would broadcast it
+  // while also holding it for a duplicate delivery.
+  // Nonfaulting plain stores mark the ROB done directly without using the CDB.
   riscv_pkg::fu_complete_t mem_fu_to_adapter;
   always_comb begin
     if (store_misalign_fu_complete_reg.valid) begin
@@ -2082,15 +1925,11 @@ module tomasulo_wrapper #(
     end
   end
 
-  // LQ yields MEM to a registered SC completion. SC fires only while the LQ
-  // has no result, keeping the live SC head-tag comparison off LQ/CDB
-  // back-pressure.
-  //
-  // Acceptance must match the presentation mux exactly. Unless cdb_kill is
-  // high, a presented MEM result always wins one of the two CDB lanes (only
-  // MUL has higher priority) and must pop once; retaining it would rebroadcast
-  // a tag that may be recycled. A live store fault needs no yield: its register
-  // takes the MEM slot on the next cycle.
+  // LQ yields to registered SC completions and store faults. SC fires only
+  // when the LQ has no result. Acceptance must match the presentation mux.
+  // Unless cdb_kill is set, MEM always wins one of two CDB lanes: only MUL
+  // outranks it. Pop each result once to avoid rebroadcasting a recycled tag.
+  // A live store fault takes the MEM slot next cycle and needs no yield yet.
   assign lq_result_accepted = lq_fu_complete.valid &&
                               !sc_valid_lq_q &&
                               !store_misalign_fu_complete_reg.valid &&
@@ -2098,39 +1937,21 @@ module tomasulo_wrapper #(
 
 `ifndef SYNTHESIS
   // ---------------------------------------------------------------------------
-  // SC completion handoff: broadcast on the CDB exactly once.
+  // SC completion must broadcast exactly once. Observe the actual MEM packet
+  // and grant: inferring delivery from mux priority could hide an SC broadcast
+  // while a store fault holds it, followed by a duplicate on release.
   //
-  // These checks state that the cycle in which sc_completion_held releases
-  // is always consumed.  They are compiled for simulation (Verilator runs
-  // assertions in every cocotb build) and for the tomasulo_wrapper formal
-  // target (the .sby reads this file with read -formal), and left out of
-  // synthesis.
-  //
-  // The delivery event is taken from what the MEM slot actually broadcasts,
-  // not from the mux priority.  Deriving it from "the fault register is
-  // idle, so the SC must be the packet" would make the checks blind to the
-  // one mutation they most need to catch: an SC-above-fault mux order
-  // delivers the SC while the fault register is still valid, and a
-  // priority-derived observer would score that cycle as no delivery at all
-  // and the replay one cycle later as the first.
-  //
-  // The MEM adapter is instantiated with ALLOW_GRANT_REFILL = 0, so an input
-  // arriving while it is pending is neither latched nor re-armed: it is
-  // simply lost.  mem_adapter_to_arbiter is therefore the adapter's idle
-  // pass-through of mem_fu_to_adapter, valid-filtered by its own partial
-  // flush check, and a granted MEM broadcast carrying the SC's ROB tag is the
-  // handoff completing.  No other MEM-slot source can carry that tag: the
-  // fault register holds the faulting store's tag and the LQ result a load's,
-  // and an SC that faults in its issue cycle has its table entry killed
-  // before it can fire, so it never reaches sc_fu_complete_reg at all.
+  // The MEM adapter must be idle on release; ALLOW_GRANT_REFILL=0 cannot accept
+  // input while pending. A granted MEM packet with the SC tag completes the
+  // handoff. Other MEM sources cannot carry this tag: faulting SCs lose their
+  // table entries before they can fire, and LQ results belong to loads.
   logic sc_cdb_transfer;
   assign sc_cdb_transfer = sc_fu_complete_reg.valid && mem_adapter_to_arbiter.valid &&
       o_cdb_grant[riscv_pkg::FU_MEM] &&
       (mem_adapter_to_arbiter.tag == sc_fu_complete_reg.tag);
 
-  // Shadow copies rather than $past: this block is compiled by Verilator as
-  // well as by the formal front end.  sc_check_armed keeps an unconstrained
-  // initial state from failing a check before reset has been seen.
+  // Use shadow registers so these checks work in simulation and formal.
+  // sc_check_armed suppresses checks until reset initializes the state.
   /* verilator lint_off MULTIDRIVEN */  // power-up value plus the reset arm below
   logic sc_check_armed;
   /* verilator lint_on MULTIDRIVEN */
@@ -2156,65 +1977,44 @@ module tomasulo_wrapper #(
 
   always @(posedge i_clk) begin
     if (i_rst_n && sc_check_armed) begin
-      // 1. The unit never fires while a completion waits, so the payload
-      //    register is never overwritten under an undelivered packet and the
-      //    conservation law below has no re-arm case to disentangle.
+      // 1. A new SC must not overwrite an undelivered completion.
       if (sc_fu_complete.valid) begin
         p_sc_fire_needs_free_completion_reg : assert (!sc_fu_complete_reg.valid);
       end
 
-      // 2. The release never lands on a busy adapter, which is what "the
-      //    cycle is consumed" rests on.  The adapter is never pending: MEM
-      //    sits second in the CDB's fixed priority (MUL > MEM > ALU > ...) on
-      //    a two-lane bus, so a presented MEM packet always wins a lane, and
-      //    the one thing that withholds the grant (cdb_kill, which is
-      //    speculative_flush_all) is also the adapter's i_flush and clears
-      //    it on the same edge.  A CDB priority change, another producer
-      //    ranked above MEM, or enabling ALLOW_GRANT_REFILL would surface
-      //    here rather than as a lost SC result.
+      // 2. Release requires an idle adapter. MEM is second in priority on a
+      //    two-lane CDB, so every presented packet wins a lane unless cdb_kill
+      //    also flushes the adapter. Recheck this if arbitration changes.
       if (sc_fu_complete_reg.valid && !store_misalign_fu_complete_reg.valid) begin
         p_sc_completion_release_adapter_idle : assert (!mem_adapter_result_pending);
       end
 
-      // 3. A partial flush can never squash a waiting SC completion, so
-      //    check 5 needs no escape hatch for one.  The SC resolves at the ROB
-      //    head and its entry cannot retire before this result arrives, so
-      //    head_tag still equals the packet's tag and a partial-flush
-      //    boundary is never older than the head.  Asserted rather than
-      //    assumed: an escape hatch here would let a genuinely dropped packet
-      //    pass as a legitimate squash.
+      // 3. A waiting SC is still the ROB head: it cannot retire before its
+      //    result arrives. No partial-flush boundary can be older than it.
       if (sc_fu_complete_reg.valid && speculative_flush_en && !speculative_flush_all) begin
         p_sc_completion_partial_flush_cannot_kill :
         assert (!is_younger(sc_fu_complete_reg.tag, i_flush_tag, head_tag));
       end
 
-      // 4. The release cycle is consumed: whenever no registered store fault
-      //    is presenting above it and no full flush is killing the broadcast,
-      //    the waiting SC completion is granted the MEM lane this cycle.
-      //    This is the release-is-consumed claim itself, stated on the grant.
+      // 4. Without a higher-priority fault or full flush, the SC must broadcast.
       if (sc_fu_complete_reg.valid && !store_misalign_fu_complete_reg.valid &&
           !speculative_flush_all) begin
         p_sc_completion_release_is_granted : assert (sc_cdb_transfer);
       end
 
-      // 5. Exactly once, as a conservation law on the register: the packet
-      //    stays exactly until it is broadcast, and a full flush is the only
-      //    other way for it to leave.  Releasing the hold early makes the
-      //    register clear with no transfer; an SC-above-fault mux order makes
-      //    it stay valid after one, and both are mismatches here.
+      // 5. A completion stays valid until broadcast or full flush. Clearing it
+      //    early loses a result; holding it after broadcast duplicates one.
       p_sc_completion_token_conserved :
       assert (sc_fu_complete_reg.valid ==
               (!sc_completion_flush_all_q &&
                (sc_completion_fire_q || (sc_completion_valid_q && !sc_cdb_transfer_q))));
 
-      // 6. Every placement copy of the completion valid matches the owner.
+      // 6. All completion-valid copies must agree.
       p_sc_valid_copies_match :
       assert ({sc_valid_adapter_q, sc_valid_lq_q, sc_valid_issue_q, sc_valid_wakeup_q} ==
               {4{sc_fu_complete_reg.valid}});
 
-      // 7. A waiting completion carries the firing SC's payload: the payload
-      //    register, which loads whenever no completion waits, equals the
-      //    copy loaded only on the fire.
+      // 7. Idle payload capture must match capture enabled only by SC fire.
       if (sc_fu_complete_reg.valid) begin
         p_sc_completion_payload_exact :
         assert (sc_fu_complete_reg.tag == sc_fu_complete_payload_ref_q.tag &&
@@ -2319,11 +2119,11 @@ module tomasulo_wrapper #(
   );
 
   // ===========================================================================
-  // FP Pipeline: FP_RS issue → fp_shim → adapter → CDB arbiter slot 4
+  // FP Pipeline: FP_RS issue -> fp_shim -> adapter -> CDB arbiter slot 4
   // ===========================================================================
   riscv_pkg::rs_issue_t fp_rs_issue_raw;  // FP_RS issue output (internal)
   riscv_pkg::rs_issue_t fp_rs_issue_w;  // FP_RS issue output (internal)
-  riscv_pkg::fu_complete_t fp_shim_out;  // shim → adapter
+  riscv_pkg::fu_complete_t fp_shim_out;  // shim -> adapter
   // fp_adapter_to_arbiter declared above (forward declaration)
   logic fp_adapter_result_pending;
   logic fp_busy;
@@ -2353,9 +2153,8 @@ module tomasulo_wrapper #(
                                 !i_backend_recovery_hold &&
                                 !dmmu_stall;
 
-  // Registered SC completion is already included in mem_rs_fu_ready_base.  The
-  // SC fire cycle is kept off the MEM_RS ready cone to avoid feeding SC tag
-  // compare into ordinary issue timing.
+  // mem_rs_fu_ready_base includes registered SC completion, avoiding the live
+  // SC tag comparison for timing.
   assign mem_rs_fu_ready = mem_rs_fu_ready_base;
 
   always_comb begin
@@ -2422,10 +2221,7 @@ module tomasulo_wrapper #(
       .o_commit_correct_branch_2_raw        (o_commit_correct_branch_2_raw),
       .o_head_commit_misprediction_candidate(o_head_commit_misprediction_candidate),
 
-      // Widen-commit slot 2, tapped into a parallel commit_bus_2 / _q
-      // pair.  The registered copy goes to o_commit_2, and the
-      // combinational view is exposed as o_commit_comb_2 for the same-cycle
-      // path cpu_ooo consumes.
+      // Slot 2 has matching registered and combinational commit outputs.
       .o_commit_2               (),
       .o_commit_comb_2          (commit_bus_2),
       .o_commit_2_valid_raw     (commit_2_valid_raw),
@@ -2581,7 +2377,7 @@ module tomasulo_wrapper #(
       .i_alloc_dest_reg_2(i_rat_alloc_dest_reg_2),
       .i_alloc_rob_tag_2 (i_rat_alloc_rob_tag_2),
 
-      // Commit clear (pipelined: breaks the ROB → RAT critical path)
+      // Registered RAT commit clear, delayed one cycle for timing.
       .i_commit_valid     (commit_bus_q_valid),
       .i_commit_dest_valid(commit_q_dest_valid),
       .i_commit_dest_rf   (commit_q_dest_rf),
@@ -2647,10 +2443,8 @@ module tomasulo_wrapper #(
   riscv_pkg::rs_dispatch_t                                        int_rs_dispatch;
   riscv_pkg::rs_dispatch_t                                        int_rs_dispatch_2;
   logic                                                           int_rs_issue_writes_cdb_hint;
-  // Valid and tag copies of both CDB lanes for INT_RS's issue-time compares.
-  // They sample the same arbiter outputs on the same edge as the ordinary
-  // INT-local CDB packets.  Only u_int_rs's live issue/readiness compares
-  // consume them; there is no wide value duplicate.
+  // CDB valid/tag copies for INT_RS issue compares, for fanout. They sample
+  // the same edge as the INT-local packets; values are not duplicated.
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
   logic                                                           int_rs_issue_cdb_valid;
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
@@ -2659,9 +2453,8 @@ module tomasulo_wrapper #(
   logic                                                           int_rs_issue_cdb_2_valid;
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
   logic                    [riscv_pkg::ReorderBufferTagWidth-1:0] int_rs_issue_cdb_2_tag;
-  // Head-wait diagnostic observation from INT_RS (combinational scan of
-  // rs_valid/rs_rob_tag against head_tag). Used to decompose head_wait_int
-  // into sub-buckets: operand_wait / rs_ready_not_issued / stage2 / post_rs.
+  // INT_RS head-tag scan splits head_wait_int into operand wait, ready but
+  // not issued, stage2, and post-RS cycles.
   logic                                                           int_rs_head_in_rs;
   logic                                                           int_rs_head_rs_ready;
   logic                                                           int_rs_head_in_stage2;
@@ -2710,61 +2503,36 @@ module tomasulo_wrapper #(
       .DEPTH(INT_RS_DEPTH),
       .HAS_SRC3(1'b0),
       .DISPATCH_REPAIR_BYPASS(1'b0),
-      // ISSUE_REPAIR_BYPASS disabled on INT_RS: the in-issue
-      //   rob_done_reg → done_repair_valid → src*_repair_sel → entry_ready
-      //   → issue_idx → entry-select mux → stage2_src*_value/D
-      // chain would be a critical timing path.  Without it, an entry whose
-      // source becomes done-via-repair waits one extra cycle (until the
-      // registered repair sets rs_src_ready) before it can issue.
-      // For CoreMark-relevant INT ops this case is rare: the common wakeup
-      // is a same-cycle CDB broadcast (handled by src*_cdb_bypass), not a
-      // missed-CDB repair.
+      // Disable issue-time repair for timing. A source completed through repair
+      // waits one extra cycle for registered rs_src_ready before issue.
       .ISSUE_REPAIR_BYPASS(1'b0),
-      // The ROB response is exactly one cycle behind this immediate RS
-      // allocation.  Remember the local entry and update its fixed source
-      // directly instead of broadcasting six tags through every entry.
+      // The ROB repair response follows allocation by one cycle. Save the local
+      // entry index and update its source directly.
       .ALLOC_INDEXED_REPAIR(1'b1),
       .TRACK_INT_WRITEBACK_HINT(1'b1),
-      // SPECULATIVE_DATA_WRITES decouples the per-entry data CE from the slow
-      // dispatch_fire.  Without it, INT_RS rs_*_value_reg/CE inherits the
-      // bundle_fire_ok cone and (when slot-1 targets another station) that
-      // station's count_reg → full chain.  Pairs with i_intent_1 below.
+      // Speculative data writes use i_intent_1 for timing; rs_valid gates visibility.
       .SPECULATIVE_DATA_WRITES(1'b1),
-      // Prefill every free entry's wide source-value flops, then select the
-      // slot-2 payload only on alloc_idx_2.  rs_valid remains the sole commit
-      // point.  This keeps the free-entry priority decoder out of the 64-bit
-      // value-flop clock enables without changing dispatch or issue timing.
+      // Prefill free entries for timing, selecting slot-2 payload only at
+      // alloc_idx_2. rs_valid alone makes an entry visible.
       .BROADCAST_FREE_SOURCE_VALUES(1'b1),
-      // Keep issue-time CDB tag matches physically separate from the identical
-      // comparisons that control the resident source-value writes.  Shadow
-      // tags use the same speculative indexed writes as the architectural
-      // tags, differ only for non-targeting slots, and equal the
-      // architectural tags for every valid entry.
+      // Separate issue-time CDB tag matches from resident-value writes for timing.
+      // Shadow tags may differ in unused entries but must match in every valid entry.
       .ISSUE2_WINDOW(riscv_pkg::IntRsIssue2Window),
       .ISSUE_CDB_TAG_SHADOW(1'b1),
       .ISSUE_CDB_META_ANCHORS(1'b1),
       .CAPTURE_PRIMARY_EFFECTIVE_OPERANDS(1'b1),
       .BRANCH_PREDICATE_TAG_ANCHOR(1'b1),
-      // Dispatch has already checked INT_RS exact full/full_for_2 status
-      // before asserting these per-RS valid bits (slot-1 valid carries
-      // !i_int_rs_full; slot-2 valid carries bundle_fire_ok, whose
-      // rs_full_for_slot2 mux applies full_for_2 when both slots target
-      // INT).  Trusting it keeps count_reg-derived full flags out of the
-      // rs_valid / count commit cones.
+      // Dispatch checks full for slot 1 and full_for_2 when both slots target
+      // INT_RS. Trust those checks when accepting per-RS valid bits.
       .TRUST_DISPATCH_VALID(1'b1),
       .DUAL_ISSUE(1'b1),
-      // The branch pc, link address, and predicted target (three XLEN words)
-      // live in a ROB-tag-indexed side RAM read behind port 0's stage2 tag
-      // instead of the per-entry payload, which shrinks the payload RAM, the
-      // issue-index fanout, and both stage2 banks.
+      // Keep the branch PC, link address, and predicted target in a ROB-tag-indexed
+      // side RAM, read with port 0's stage2 tag, to reduce resident payload width.
       .TAG_INDEXED_BRANCH_PAYLOAD(1'b1),
-      // The station's own formal top assumes its dispatch contract and holds
-      // its covers.  This proof carries the real ROB and the routing and
-      // occupancy logic behind those inputs, so tomasulo_wrapper.sby reads
-      // reservation_station.sv with -formal and this instance proves the
-      // side RAM's ROB-tag rule rather than assuming it.  The dispatch unit
-      // itself sits outside this boundary; the assumptions under "RS dispatch
-      // tag coordination" model its tag handling.
+      // tomasulo_wrapper.sby reads reservation_station.sv with -formal. Disable
+      // its standalone environment assumptions: this wrapper includes the ROB
+      // and routing logic. Dispatch is outside this boundary; the "RS dispatch
+      // tag coordination" assumptions below model its tag handling.
       .FORMAL_STANDALONE_ENV(1'b0)
   ) u_int_rs (
       .i_clk  (i_clk),
@@ -2863,18 +2631,13 @@ module tomasulo_wrapper #(
   reservation_station #(
       .DEPTH(riscv_pkg::MulRsDepth),
       .HAS_SRC3(1'b0),
-      // Keep current RAT source tags out of the ROB-done repair value mux on
-      // the MUL dispatch write path. Already-done operands are repaired by the
-      // allocation-indexed registered response one cycle later.
+      // Repair already-done operands through the indexed response one cycle
+      // after allocation, for timing.
       .DISPATCH_REPAIR_BYPASS(1'b0),
-      // Match INT/MEM timing: do not let live ROB-done repair participate in
-      // the MUL issue-select/stage2 operand mux cone. The indexed response
-      // wakes the entry for the following cycle.
+      // Register repair before issue, as in INT_RS and MEM_RS.
       .ISSUE_REPAIR_BYPASS(1'b0),
       .ALLOC_INDEXED_REPAIR(1'b1),
-      // SPECULATIVE_DATA_WRITES + i_intent_1 keep the data CE off the slow
-      // dispatch_fire chain (same rationale as INT_RS / MEM_RS).
-      // Proved, not assumed, at this level (see u_int_rs).
+      // Use the integrated formal environment, as in u_int_rs.
       .FORMAL_STANDALONE_ENV(1'b0),
       .SPECULATIVE_DATA_WRITES(1'b1),
       // The divider takes one divide at a time: divides wait in the station
@@ -2977,19 +2740,13 @@ module tomasulo_wrapper #(
   // bit for bit (invalid payloads included), with no merge logic between.
   assign mem_rs_cdb_0 = EARLY_LOAD_WAKEUP ? mem_rs_wakeup_0 : cdb_bus_mem_qualified;
   assign mem_rs_cdb_1 = EARLY_LOAD_WAKEUP ? mem_rs_wakeup_1 : cdb_bus_2_mem_qualified;
-  // TIMING: the early token is formed from registered state only. It is
-  // lq_result_accepted without the recovery terms carried by
-  // lq_fu_complete.valid, and recovery does not qualify it either: those
-  // pulses would sit ahead of every MEM_RS tag comparator, the issue selector
-  // and the LQ pre-issue CAM. Recovery needs no qualification here. MEM_RS
-  // suppresses issue and dispatch whenever speculative_flush_all/en is high,
-  // so a token delivered in a recovery cycle can only set source-ready state
-  // (and capture the staged value) in surviving entries. A surviving
-  // consumer is older than the recovery point, so its producer load is too:
-  // that load is not discarded, only delayed, and its staged value is final
-  // (cdb_stage clears only on acceptance or recovery). A consumer of a
-  // discarded load is younger than it and is discarded in the same cycle.
-  // In-flight ROB tags are unique, so no survivor can name a discarded tag.
+  // The early token uses registered state and omits recovery gating for timing.
+  // MEM_RS blocks new issue selection and dispatch during recovery. A retained
+  // wakeup belongs to a surviving consumer, whose producer load is older and
+  // also survives. That load's staged value is final, even if broadcast is
+  // delayed: cdb_stage clears only on acceptance or recovery. Consumers of
+  // killed loads are younger and die too. Unique live ROB tags prevent a
+  // surviving consumer from matching a killed load.
   riscv_pkg::fu_complete_t lq_early_wakeup_load;
   always_comb begin
     lq_early_wakeup_load       = lq_fu_complete;
@@ -2998,10 +2755,8 @@ module tomasulo_wrapper #(
   mem_wakeup_merge #(
       .FORMAL_STANDALONE_ENV(1'b0)
   ) u_mem_wakeup_merge (
-      // No reset term: MEM_RS entries, stage2 and pend flags and the LQ
-      // pre-issue registers all clear on reset, so a reset-cycle token has no
-      // effect after the edge. A reset term would put i_rst_n's fanout ahead
-      // of wakeup.
+      // No reset gate is needed: MEM_RS entries, stage2, pending flags, and LQ
+      // pre-issue state clear on reset, so a reset-cycle token has no lasting effect.
       .i_enable(mem_rs_early_wakeup_enable),
       .i_load(lq_early_wakeup_load),
       .i_registered_0(cdb_bus_mem_qualified),
@@ -3012,10 +2767,9 @@ module tomasulo_wrapper #(
   );
 
 `ifndef SYNTHESIS
-  // Outside recovery, the early token is an observation of a real CDB
-  // broadcast, never a speculative prediction of a result or a second
-  // producer completion. During recovery it may precede a delayed broadcast
-  // of the same final value (see above), and MEM_RS cannot issue.
+  // Outside recovery, the early token observes a real CDB broadcast; it is
+  // neither a prediction nor a second completion. During recovery it may
+  // precede that broadcast, while MEM_RS blocks new issue selection.
   always @(posedge i_clk) begin
     if (i_rst_n && mem_rs_early_load_injected) begin
       p_early_load_accepted_or_recovering :
@@ -3052,10 +2806,8 @@ module tomasulo_wrapper #(
       .ISSUE_REPAIR_BYPASS(1'b0),
       .ALLOC_INDEXED_REPAIR(1'b1),
       .SPECULATIVE_DATA_WRITES(1'b1),
-      // Dispatch has already checked MEM_RS exact full/full_for_2 status
-      // before asserting these per-RS valid bits. Avoid re-feeding full into
-      // the MEM_RS count update, which is on a critical timing path.
-      // Proved, not assumed, at this level (see u_int_rs).
+      // Dispatch checks MEM_RS full and full_for_2 before asserting valid.
+      // Use the integrated formal environment, as in u_int_rs.
       .FORMAL_STANDALONE_ENV(1'b0),
       .TRUST_DISPATCH_VALID(1'b1)
   ) u_mem_rs (
@@ -3130,13 +2882,10 @@ module tomasulo_wrapper #(
   assign o_mem_rs_issue = mem_rs_issue_w;
 
   // ---------------------------------------------------------------------------
-  // Resolve FRM_DYN at dispatch time, before FP_RS. In the full core
-  // dispatch has already replaced DYN with frm, so DYN arrives here only when
-  // frm holds 7. An FP instruction that reads a reserved frm (5 to 7) through
-  // DYN is illegal: the ROB records the fault at allocation and the
-  // instruction traps at the head, so no result or flag it computes
-  // retires. The clamp to RNE only keeps DYN out of the FP station (checked
-  // in simulation below); frm values 5 and 6 pass through unchanged.
+  // Resolve FRM_DYN before FP_RS. Production dispatch substitutes frm first,
+  // so DYN arrives here only when frm is 7. Reserved frm values (5 to 7) used
+  // through DYN fault at ROB allocation, so their results and flags cannot
+  // retire. Clamp DYN to RNE for the station; values 5 and 6 pass unchanged.
   // ---------------------------------------------------------------------------
   wire [2:0] frm_safe = (i_frm_csr > riscv_pkg::FRM_RMM) ? riscv_pkg::FRM_RNE : i_frm_csr;
   function automatic logic [2:0] resolve_dispatch_rm(input logic [2:0] rm);
@@ -3172,13 +2921,10 @@ module tomasulo_wrapper #(
     end
   end
 
-  // FP dispatch data capture (no reset; gated by fp_dispatch_pending_valid).
-  // The raw packet is captured first; the E1 done-repair response and either
-  // CDB lane then update this local packet before it crosses the register
-  // boundary into the RS, which keeps the ROB-done lookup out of the 64-bit
-  // resident operand flops. CDB lane 0 wins over lane 1, and both win over
-  // done repair, matching resident-RS wakeup priority. Source k takes its
-  // repair from channel k.
+  // Capture the FP dispatch payload without reset; pending-valid gates its use.
+  // Before RS insertion, update it from E1 done repair and the CDB. Lane 0 wins
+  // over lane 1, and both beat repair, matching resident-RS wakeup priority.
+  // Source k uses repair channel k.
   always_ff @(posedge i_clk) begin
     if (fp_rs_dispatch.valid && fp_dispatch_slot_available &&
         !speculative_flush_all && !speculative_flush_en) begin
@@ -3234,11 +2980,9 @@ module tomasulo_wrapper #(
     end
   end
 
-  // The production dispatch contract registers a slot-1 packet's source
-  // queries onto channels 1/2/3 for exactly the following cycle, E1. These
-  // bits mark E1 for a packet captured this cycle. A queried, unresolved
-  // packet stays pending through E1; a query in any later cycle must never be
-  // matched to it.
+  // Dispatch registers source queries on channels 1/2/3 for E1, the cycle
+  // after packet capture. An unresolved queried packet waits through E1;
+  // queries from later cycles must not update it.
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       fp_pending_repair_capture_q <= 1'b0;
@@ -3247,9 +2991,8 @@ module tomasulo_wrapper #(
       fp_pending_repair_capture_q <=
           ENABLE_DISPATCH_DONE_REPAIR && fp_rs_dispatch.valid && fp_dispatch_slot_available &&
           !speculative_flush_all && !speculative_flush_en;
-      // Dispatch registers bypass-valid from these same source-ready bits.
-      // Capture the one-bit E1 hold decision now so an unresolved packet still
-      // waits for its E1 response without feeding payload Qs into refill.
+      // These source-ready bits also drive dispatch's registered bypass-valid.
+      // Capture whether this packet must wait for its E1 response.
       fp_pending_repair_wait_q <=
           ENABLE_DISPATCH_DONE_REPAIR && fp_rs_dispatch.valid && fp_dispatch_slot_available &&
           !speculative_flush_all && !speculative_flush_en &&
@@ -3296,24 +3039,16 @@ module tomasulo_wrapper #(
 `endif
 `endif
 
-  // Slot-2 FP dispatch is permanently held off by slot2_fp_compute_serialized
-  // in dispatch.sv, so fp_rs_dispatch_fire_2 is always 0.  Hard-zero the
-  // entire slot-2 packet to the FP RS so Vivado does not trace the dispatch
-  // unit's slot-2 bypass cone (RAT tag → ROB-done bypass → bypass mux) into
-  // the FP RS rs_src*_value FF D inputs.  That path never carries a packet,
-  // but if left wired it is long enough to limit timing at the FP RAT
-  // lookup; since slot 2 never dispatches FP, tying it off changes nothing
-  // functionally.
+  // dispatch.sv serializes slot-2 FP compute, so fp_rs_dispatch_fire_2 is
+  // always zero. Tie the unused packet to zero for timing.
   riscv_pkg::rs_dispatch_t fp_rs_dispatch_to_rs_2;
   assign fp_rs_dispatch_to_rs_2 = '0;
 
   reservation_station #(
       .DEPTH(riscv_pkg::FpRsDepth),
       .HAS_SRC3(1'b1),
-      // Registered ROB-done repair is captured in the pending packet before
-      // insertion; later ordinary wakeups use the CDB. Keep the global repair
-      // CAM out of the resident issue/stage2 source-value cone.
-      // Proved, not assumed, at this level (see u_int_rs).
+      // Capture ROB-done repair in the pending packet before insertion; resident
+      // entries use CDB wakeup. Use the integrated formal environment, as in u_int_rs.
       .FORMAL_STANDALONE_ENV(1'b0),
       .ISSUE_REPAIR_BYPASS(1'b0)
   ) u_fp_rs (
@@ -3321,10 +3056,8 @@ module tomasulo_wrapper #(
       .i_rst_n                    (i_rst_n),
       .i_dispatch                 (fp_rs_dispatch_to_rs),
       .i_dispatch_2               (fp_rs_dispatch_to_rs_2),
-      // FP_RS has slot-2 dispatch held off (see slot2_fp_compute_serialized
-      // in dispatch.sv), so dispatch_fire_2 is always 0 and alloc_idx_2 never
-      // chooses a real commit target.  i_intent_1 is wired anyway for symmetry;
-      // there is no alternate "always free_idx" code path.
+      // FP dispatch is single-slot, so alloc_idx_2 never selects a real allocation.
+      // i_intent_1 follows the other stations' wiring.
       .i_intent_1                 (fp_rs_intent_1),
       .o_full                     (fp_rs_full_raw),
       .o_full_for_2               (fp_rs_full_for_2_raw),
@@ -3334,9 +3067,7 @@ module tomasulo_wrapper #(
       .i_issue_cdb_tag            (cdb_bus_fp_qualified.tag),
       .i_issue_cdb_2_valid        (cdb_bus_2_fp_qualified.valid),
       .i_issue_cdb_2_tag          (cdb_bus_2_fp_qualified.tag),
-      // The aligned ROB-done response is registered in fp_dispatch_pending
-      // before dequeue. Once resident, normal CDB snooping suffices; disconnect
-      // the all-entry repair-tag CAM.
+      // Repair is complete before dequeue; resident entries need only CDB snooping.
       .i_repair_valid_1           (1'b0),
       .i_repair_tag_1             ('0),
       .i_repair_value_1           ('0),
@@ -3392,7 +3123,7 @@ module tomasulo_wrapper #(
   assign o_fp_rs_issue = fp_rs_issue_w;
 
   // ===========================================================================
-  // ALU Shim: translate rs_issue_t → ALU → fu_complete_t
+  // ALU Shim: translate rs_issue_t -> ALU -> fu_complete_t
   // ===========================================================================
   int_alu_shim u_alu_shim (
       .i_clk                  (i_clk),
@@ -3408,10 +3139,8 @@ module tomasulo_wrapper #(
   // ALU CDB Adapter: result holding register between ALU and CDB arbiter
   // ===========================================================================
   fu_cdb_adapter #(
-      // A pending ALU adapter deasserts int_rs_fu_ready, so the shim-valid
-      // and pending states are mutually exclusive (asserted below).  Keep the
-      // grant-refill state transition, but remove pending/grant from the wide
-      // held-result write enable.
+      // Pending deasserts int_rs_fu_ready, so shim-valid and pending are mutually
+      // exclusive. The held-payload write enable can omit grant-refill checks.
       .ALLOW_GRANT_REFILL_PAYLOAD_WRITE(1'b0)
   ) u_alu_adapter (
       .i_clk           (i_clk),
@@ -3445,10 +3174,8 @@ module tomasulo_wrapper #(
   );
 
   fu_cdb_adapter #(
-      // A pending ALU2 adapter deasserts int_rs_fu_ready_2, so the shim-valid
-      // and pending states are mutually exclusive (asserted below).  Keep the
-      // grant-refill state transition, but remove pending/grant from the wide
-      // held-result write enable.
+      // Pending deasserts int_rs_fu_ready_2, so shim-valid and pending are mutually
+      // exclusive. The held-payload write enable can omit grant-refill checks.
       .ALLOW_GRANT_REFILL_PAYLOAD_WRITE(1'b0)
   ) u_alu2_adapter (
       .i_clk           (i_clk),
@@ -3465,10 +3192,8 @@ module tomasulo_wrapper #(
   );
 
 `ifndef SYNTHESIS
-  // These integration invariants are the contracts that permit both ALU
-  // adapters' simplified held-result write enables.  Each matching INT-RS
-  // ready input is gated by adapter-pending, and the RS qualifies its stage-2
-  // issue valid with that ready input.
+  // Pending gates each INT_RS ready input, which qualifies stage2 issue valid.
+  // These checks protect the ALU adapters' simplified payload write enables.
   always_comb begin
     if (i_rst_n) begin
       p_alu_pending_blocks_payload_refill :
@@ -3480,7 +3205,7 @@ module tomasulo_wrapper #(
 `endif
 
   // ===========================================================================
-  // MUL/DIV Shim: translate rs_issue_t → multiplier/divider → fu_complete_t
+  // MUL/DIV Shim: translate rs_issue_t -> multiplier/divider -> fu_complete_t
   // ===========================================================================
   int_muldiv_shim u_muldiv_shim (
       .i_clk            (i_clk),
@@ -3499,12 +3224,10 @@ module tomasulo_wrapper #(
   );
 
   // ===========================================================================
-  // MUL CDB Adapter: result pass-through → CDB arbiter slot 1
+  // MUL CDB Adapter: result pass-through -> CDB arbiter slot 1
   // ===========================================================================
-  // MUL always wins lane 0 when valid. A full-flush kill is the only reason
-  // it can lose its grant, and that flush discards the result on the same
-  // edge. Its pending state is therefore unreachable; mul_adapter_grant
-  // proves the constant-idle implementation against the actual arbiter.
+  // MUL always wins lane 0 unless full flush discards its result on the same
+  // edge, so adapter pending state is unreachable.
   fu_cdb_adapter #(
       .ALLOW_GRANT_REFILL(1'b0),
       .ALWAYS_GRANTED(1'b1)
@@ -3523,7 +3246,7 @@ module tomasulo_wrapper #(
   );
 
   // ===========================================================================
-  // DIV CDB Adapter: result holding register → CDB arbiter slot 2
+  // DIV CDB Adapter: result holding register -> CDB arbiter slot 2
   // ===========================================================================
   fu_cdb_adapter #(
       .ALLOW_GRANT_REFILL(1'b0),
@@ -3545,9 +3268,7 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Load Queue: Allocation from Dispatch
   // ===========================================================================
-  // Helper to derive an lq_alloc_req from a per-slot mem_rs_dispatch packet.
-  // Same logic for slot-1 and slot-2; the only difference is which packet
-  // and which routed valid signal feeds in.
+  // Build either slot's LQ allocation from its routed MEM_RS packet.
   function automatic riscv_pkg::lq_alloc_req_t make_lq_alloc(
       input logic valid_routed, input riscv_pkg::rs_dispatch_t dispatch);
     riscv_pkg::lq_alloc_req_t r;
@@ -3594,11 +3315,8 @@ module tomasulo_wrapper #(
   // Load Queue: Address Update from MEM_RS Issue
   // ===========================================================================
   logic [riscv_pkg::XLEN-1:0] lq_effective_addr;
-  // The AGU output goes to the LQ at full width. An out-of-map address
-  // raises the PMA access fault at the LQ's staged-entry check (beside the
-  // misalignment test) before any launch, so downstream region decodes only
-  // ever see launched, in-map addresses; the full value is kept for an
-  // exact xtval.
+  // Keep the full AGU address for xtval. The LQ checks PMA and alignment
+  // before launch, so downstream decodes see only in-map addresses.
   assign lq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
 
   // MMIO detection: the 01 address quadrant [0x4000_0000, 0x8000_0000),
@@ -3666,10 +3384,8 @@ module tomasulo_wrapper #(
       .i_pre_issue_rob_tags(mem_rs_pre_issue_rob_tags_final),
       .i_pre_issue_sel(mem_rs_pre_issue_sel),
       .i_pre_issue_needs_lq(mem_rs_pre_issue_needs_lq_final),
-      // The match itself reads MEM_RS's ready vectors and entry tags, and the
-      // data MMU's look-ahead tag on its own port, so no translation mux
-      // sits between MEM_RS readiness and the LQ compares. The candidate
-      // tags above feed only the LQ's simulation checks.
+      // Match MEM_RS ready vectors and tags directly; the MMU look-ahead has a
+      // separate port. Candidate tags above feed only simulation checks.
       .i_pre_issue_ready(mem_rs_pre_issue_ready),
       .i_pre_issue_entry_tags(mem_rs_pre_issue_entry_tags),
       .i_pre_issue_direct(i_translation_active),
@@ -3702,14 +3418,11 @@ module tomasulo_wrapper #(
       // full-flush bookkeeping uses it to distinguish a canceled staged read
       // from an accepted read whose stale response is still owed.
       .i_mem_request_pending(i_lq_mem_request_pending),
-      // AMO writes share the same external data-memory port as load reads.
-      // Treat them as bus-busy so the LQ cannot issue a younger load or
-      // take a stale L0-cache fast path in the AMO write-completion cycle.
-      // A slow-tier (cached) store in flight is also bus-busy, which holds
-      // launches through the whole (arbitrarily long) handshake write flight.
-      // These terms cover every router write-port-busy term, so a read
-      // handoff never meets a busy write port (cpu_ooo checks this in
-      // simulation), and the router's one-entry hold serves only device reads.
+      // AMO writes share the load port. Block younger loads and L0 hits through
+      // AMO completion to avoid stale data. Cached stores hold busy throughout
+      // their variable-latency handshake.
+      // Cover every router write-busy term so read handoff cannot overlap a busy
+      // write port. The router's one-entry hold is reserved for device reads.
       .i_mem_bus_busy  (o_sq_mem_write_en || o_amo_mem_write_en || i_backend_recovery_hold ||
                         i_slow_write_inflight || i_lq_mem_request_pending),
       .i_cached_resp_held(i_cached_read_held),
@@ -3797,11 +3510,10 @@ module tomasulo_wrapper #(
   );
 
   // ===========================================================================
-  // MEM CDB Adapter: result pass-through → CDB arbiter slot 3
+  // MEM CDB Adapter: result pass-through -> CDB arbiter slot 3
   // ===========================================================================
-  // Only MUL outranks MEM on the two-lane bus, so MEM also always receives a
-  // grant unless full flush discards it. The MEM variant of mul_adapter_grant
-  // proves that removing its pending state preserves every output bit.
+  // Only MUL outranks MEM on the two-lane bus. MEM always wins a grant unless
+  // full flush discards it, so pending state is unreachable.
   fu_cdb_adapter #(
       .ALLOW_GRANT_REFILL(1'b0),
       .ALWAYS_GRANTED(1'b1)
@@ -3822,10 +3534,9 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Store Queue: Allocation from Dispatch
   // ===========================================================================
-  // Helper to derive an sq_alloc_req from a per-slot mem_rs_dispatch packet.
-  // Address is computed in a pipelined stage (sq_early_addr_pipeline below) to
-  // break the critical RAT → dispatch → XLEN-wide adder → SQ path, so it stays
-  // empty at alloc time for both slots.
+  // Build either slot's SQ allocation with the address invalid.
+  // sq_early_addr_pipeline supplies it a cycle later when the base is ready;
+  // otherwise it waits for operand repair or MEM_RS issue.
   function automatic riscv_pkg::sq_alloc_req_t make_sq_alloc(
       input logic valid_routed, input riscv_pkg::rs_dispatch_t dispatch);
     riscv_pkg::sq_alloc_req_t r;
@@ -3854,10 +3565,8 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Pipelined early store address: register dispatch base+imm, compute next cycle
   // ===========================================================================
-  // Early store-address pipeline -> store_addr/sq_early_addr_pipeline.sv.
-  // Breaks the RAT -> ROB bypass -> dispatch value -> CARRY8 adder -> SQ critical
-  // path by deferring the XLEN-wide addition by one cycle.  Dual-ported (slot-1 /
-  // slot-2): each slot has its own register set, adders, and SQ update packet.
+  // store_addr/sq_early_addr_pipeline.sv registers each slot's base and
+  // immediate, then adds them the next cycle for timing.
   riscv_pkg::sq_addr_update_t sq_early_addr_update;
   riscv_pkg::sq_addr_update_t sq_early_addr_update_2;
   logic sq_early_addr_capture_valid;
@@ -3904,16 +3613,12 @@ module tomasulo_wrapper #(
   );
 
   // ===========================================================================
-  // Data MMU translation stage. Everything here is
-  // inert while i_translation_active is low: the *_final packet muxes
-  // below select the combinational bypass paths, and the
-  // quasi-static active select only changes under a translation-CSR/trap/xRET flush.
+  // Data MMU translation stage. Inactive translation selects the bypass
+  // packets. i_translation_active changes only under a translation-CSR,
+  // trap, or xRET flush.
   // ===========================================================================
-  // The issue feed fires exactly when the wrapper's MEM issue fires: the
-  // LQ leg is the lq_addr_update peek expression, the SQ leg the RS
-  // stage-2 present (o_mem_rs_issue.valid already includes fu_ready).
-  // Loads and stores share one adder value (lq_effective_addr and
-  // sq_effective_addr are the same sum).
+  // The MMU takes LQ issue from lq_addr_update and SQ issue from MEM_RS
+  // stage2 valid, which includes fu_ready. Both use the same base+imm sum.
   logic dmmu_iss_valid;
   assign dmmu_iss_valid = i_translation_active &&
       ((mem_rs_next_issue_valid && mem_rs_next_issue_needs_lq && mem_rs_fu_ready_base) ||
@@ -3921,10 +3626,8 @@ module tomasulo_wrapper #(
 
   logic [riscv_pkg::XLEN-1:0] dmmu_out_store_data;
 
-  // AMO classification at issue: the MMU's permission class (AMOs and SC
-  // require write permission and a set D bit; LR is a load). Inline
-  // equality chain because yosys cannot resolve enum members inside a
-  // package function elaborated from this formal target.
+  // AMOs and SC require write permission and D; LR needs read permission.
+  // Inline enum comparisons work around Yosys package-function elaboration.
   logic dmmu_iss_is_amo;
   assign dmmu_iss_is_amo =
       (o_mem_rs_issue.op == riscv_pkg::AMOSWAP_W) || (o_mem_rs_issue.op == riscv_pkg::AMOADD_W) ||
@@ -4017,18 +3720,11 @@ module tomasulo_wrapper #(
   assign dmmu_store_ok = dmmu_out_valid && dmmu_out_needs_sq &&
       (dmmu_out_fault == riscv_pkg::DFAULT_NONE);
 
-  // The early packets themselves, delayed two cycles to align with the
-  // registered early lookups (VA registered, then the result registered:
-  // the TLB cone must not reach the SQ CAM combinationally).  A flush drops
-  // whatever is in the delay: the pipeline kills its own candidates on the
-  // flush edge, but a packet already in flight here would otherwise emerge
-  // two cycles later, when a partial flush may have re-issued its ROB tag to
-  // the correct path, and the SQ keeps the first address written to an entry.
-  // The front end's refill latency also keeps dispatch quiet for longer than
-  // the delay (the SQ's post-flush allocation contract), but with the drop
-  // nothing relies on that timing.  Dropping an older packet is harmless: the
-  // issue port translates every store and writes its address either way.
-  // The payload shifts unconditionally; only the valids see the flush.
+  // Delay early packets two cycles to align with registered MMU lookups.
+  // Flush drops delayed valids: otherwise a stale address could reach a
+  // reused ROB tag, and the SQ keeps the first address written. Dropping a
+  // surviving store's early packet is safe because issue translates every
+  // store and supplies its address. Payload shifts unconditionally.
   riscv_pkg::sq_addr_update_t sq_early_addr_update_q, sq_early_addr_update_2_q;
   riscv_pkg::sq_addr_update_t sq_early_addr_update_q2, sq_early_addr_update_2_q2;
   logic sq_early_delay_drop;
@@ -4046,11 +3742,9 @@ module tomasulo_wrapper #(
     end
   end
 
-  // Final early packets: combinational pass-through when inactive; the
-  // twice-delayed packet with the MMU's PA when its opportunistic lookup
-  // fully succeeded (store permission, D set, in-map), silently dropped
-  // otherwise.  The issue port re-translates every store and reports every
-  // fault.
+  // Without translation, early packets pass through. With translation, accept
+  // the delayed packet and PA only on a permitted, dirty, in-map hit. Drop
+  // other results; issue re-translates every store and reports faults.
   riscv_pkg::sq_addr_update_t sq_early_addr_update_final, sq_early_addr_update_2_final;
   logic sq_early_addr_capture_valid_final, sq_early_addr_capture_valid_2_final;
   always_comb begin
@@ -4075,17 +3769,13 @@ module tomasulo_wrapper #(
     end
   end
 
-  // LQ packet under translation: the MMU's S2 pulse with the PA (or the VA
-  // and fault kind).  Its LQ-only valid omits recovery/full-flush kills:
-  // a killed update can refresh payload on the kill edge, but LQ visibility
-  // and SQ-check control are cleared or blocked on that same edge.  Omitting
-  // the kills keeps the registered full-flush/age logic off the LQ RAM write
-  // controls.
-  // Every other consumer except the SQ's payload capture (below) keeps the
-  // killed pulse (dmmu_out_valid).
-  // The pre-issue pair is the MMU's S1 stage itself.  It holds the op
-  // through every cycle before its delivery, so the LQ's T-1/T pairing
-  // contract holds by construction for hits and misses of any length.
+  // The translated LQ packet carries the S2 PA, or VA and fault kind. Its
+  // valid omits recovery kills for timing: killed updates may write payload,
+  // but LQ visibility and SQ-check control clear or block on that edge. Only
+  // LQ and SQ payload capture use raw pulses; other consumers use dmmu_out_valid.
+  //
+  // S1 holds the operation until S2 delivery, preserving the LQ pre-issue
+  // T-1/T pairing through hits and variable-latency misses.
   always_comb begin
     if (i_translation_active) begin
       lq_addr_update_final.valid = dmmu_out_lq_capture_valid;
@@ -4111,24 +3801,18 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Store Queue: Address + Data Update from MEM_RS Issue
   // ===========================================================================
-  // Effective address: base (src1) + immediate (declared above near SC pending).
-  // Full width like the LQ AGU output; without translation, an out-of-map
-  // store faults at the issue check (store_pma_issue, above) before its SQ
-  // entry can ever drain.
+  // Keep the full store address for xtval. Without translation, store_pma_issue
+  // rejects out-of-map stores before their SQ entries can drain.
   assign sq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
 
   logic sq_addr_is_mmio;
   // MMIO quadrant test; see lq_addr_is_mmio above.
   assign sq_addr_is_mmio = (sq_effective_addr[31:30] == 2'b01);
 
-  // While translation is active, the issue-time SQ updates come from the
-  // data MMU's S2 stage: the PA-verified address, and the data held in the
-  // MMU-aligned sideband register. The issue-time update of a faulted store
-  // sets neither the SQ's address- nor its data-valid bit (dmmu_store_ok
-  // excludes it). An early prefill may already have set its address, but
-  // its data never becomes valid and the store never commits, so it never
-  // drains, which keeps the launched-implies-in-map invariant under
-  // translation.
+  // With translation, MMU S2 supplies the checked PA and aligned store data.
+  // Faulting updates set neither address-valid nor data-valid. Early prefill
+  // may already have set address-valid, but data stays invalid and the store
+  // never commits or drains.
   riscv_pkg::sq_addr_update_t sq_addr_update;
   logic sq_addr_update_capture_valid;
   always_comb begin
@@ -4145,13 +3829,10 @@ module tomasulo_wrapper #(
       sq_addr_update.is_mmio = sq_addr_is_mmio;
     end
   end
-  // A faulted store's issue-time update leaves the SQ's address-valid bit
-  // clear, and a killed store's entry is invalid from the same edge, so
-  // neither payload is ever used.  Capture that dead payload anyway to keep
-  // the VA misalignment/PMA and recovery decisions off all per-entry payload
-  // enables.
-  // Under translation this is the DMMU's raw store S2 pulse, symmetric to the
-  // LQ-only pulse above; architectural SQ control stays on dmmu_store_ok.
+  // Capture payload even on faults and flushes for timing. Faults leave data
+  // invalid even if early prefill set address-valid; flush invalidates killed
+  // entries, so neither can drain. Under translation, raw S2 drives capture
+  // while dmmu_store_ok controls visibility.
   assign sq_addr_update_capture_valid = i_translation_active ?
       dmmu_out_sq_capture_valid :
       (o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq);
@@ -4228,12 +3909,8 @@ module tomasulo_wrapper #(
       .o_dispatch_full(o_sq_full),
       .o_dispatch_full_for_2(o_sq_full_for_2),
 
-      // Early address update (pipelined dispatch-time base+imm).
-      // Dual-ported: slot-1 and slot-2 each emit their own packet.  CAM-by-
-      // rob_tag in SQ targets distinct entries (different rob_tags), so no NBA
-      // collision across the two updates. Under active translation the
-      // packets come from the MMU's opportunistic lookup (the PA, two cycles
-      // later, dropped on anything short of a full-permission hit).
+      // The slots have distinct ROB tags, so early updates target distinct SQ
+      // entries. Translation adds two cycles and requires a permitted MMU hit.
       .i_early_addr_update(sq_early_addr_update_final),
       .i_early_addr_update_2(sq_early_addr_update_2_final),
       .i_early_addr_capture_valid(sq_early_addr_capture_valid_final),
@@ -4247,12 +3924,11 @@ module tomasulo_wrapper #(
       .i_data_update              (sq_data_update),
       .i_data_update_capture_valid(sq_data_update_capture_valid),
 
-      // Commit (pipelined: breaks the ROB → SQ critical path)
+      // Registered SQ commit, delayed one cycle for timing.
       .i_commit_valid  (sq_commit_valid),
       .i_commit_rob_tag(commit_q_tag),
 
-      // Widen-commit slot 2 retire, pipelined the same way.  commit_q_2_tag
-      // is the head+1 tag when 2-wide commit fires and zero otherwise.
+      // Registered slot-2 commit; the tag is meaningful only when valid.
       .i_commit_valid_2  (sq_commit_valid_2),
       .i_commit_rob_tag_2(commit_q_2_tag),
 
@@ -4262,13 +3938,9 @@ module tomasulo_wrapper #(
       .i_commit_valid_scan  (sq_commit_valid_scan),
       .i_commit_valid_scan_2(sq_commit_valid_scan_2),
 
-      // Raw store-commit pulses from the ROB, a cycle ahead of the registered
-      // commit.  The SQ uses them only to clear committed-empty early, so a
-      // trap such as a timer interrupt cannot see an empty SQ and full-flush
-      // a store that has committed but not yet reached the SQ.  The ROB never
-      // commits in a flush cycle, so the flush kill needs no guard for them.
-      // The narrow raw pulse keeps the wide commit payload logic off the
-      // committed-empty path.
+      // Raw ROB store commits clear committed-empty one cycle before registered
+      // commit reaches the SQ. Otherwise a trap could see an empty SQ and flush
+      // a retired store. ROB commit is suppressed during flush.
       .i_commit_valid_comb(commit_store_like_raw),
 
       // Slot 2 likewise: commit_bus_2_q_valid is still one cycle away from
@@ -4324,7 +3996,7 @@ module tomasulo_wrapper #(
   );
 
   // ===========================================================================
-  // FP Shim: FP_RS issue → fp_engine (every FP compute operation) →
+  // FP Shim: FP_RS issue -> fp_engine (every FP compute operation) ->
   // fu_complete_t
   // ===========================================================================
   // FP_RS guarantees a bubble after an issue covered by a flush.
@@ -4344,7 +4016,7 @@ module tomasulo_wrapper #(
   );
 
   // ===========================================================================
-  // FP CDB Adapter: result holding register → CDB arbiter slot 4
+  // FP CDB Adapter: result holding register -> CDB arbiter slot 4
   // ===========================================================================
   fu_cdb_adapter #(
       .ALLOW_GRANT_REFILL(1'b0),
@@ -4366,8 +4038,7 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Backend Profiling Counters
   // ===========================================================================
-  // The 64 back-end profiling counters live in tomasulo_perf_counters when
-  // PERF_COUNTERS is set.
+  // PERF_COUNTERS enables tomasulo_perf_counters.
   generate
     if (PERF_COUNTERS != 0) begin : gen_perf_counters
       tomasulo_perf_counters #(
@@ -4441,11 +4112,9 @@ module tomasulo_wrapper #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // Integration invariant: the router can only raise pending for a handoff
-  // the LQ has already recorded as outstanding (lq_mem_outstanding), so the
-  // LQ is the one that takes its response. Full-flush cancellation relies on
-  // this to tell an unaccepted staged request from an accepted one whose
-  // stale response is still due.
+  // Router pending requires an LQ-tracked request. Full-flush cancellation
+  // uses this to distinguish an unaccepted staged request from an accepted
+  // one whose stale response is still due.
   always @(posedge i_clk) begin
     if (i_rst_n && i_lq_mem_request_pending && !lq_mem_outstanding)
       $error("tomasulo_wrapper: router pending request has no LQ response owner");
@@ -4463,10 +4132,7 @@ module tomasulo_wrapper #(
   // initial reset edge; its combinational identities also hold before reset.
   initial assume (!i_rst_n);
 
-  // The wrapper formal target covers translation-inactive bypass paths.
-  // TLB and PTW have separate targets; reorder_buffer proves that each
-  // FENCE-class flush event matches its instruction's retirement. vm_test
-  // covers composed translation in simulation.
+  // These checks constrain translation to the inactive bypass path.
   always_comb assume (!i_translation_active);
   always_comb assume (!i_csr_translation_flush_req);
 
@@ -4478,18 +4144,14 @@ module tomasulo_wrapper #(
     if (f_past_valid) assume (i_rst_n);
   end
 
-  // The dedicated fp_repair_bmc task enables production done repair. Model
-  // the dispatch unit's registered fixed-channel query contract, then prove
-  // the pending packet is the only place the E1 response lands.
+  // Model dispatch's registered query channels to check that E1 repair
+  // updates only the matching pending packet.
   generate
     if (ENABLE_DISPATCH_DONE_REPAIR) begin : g_formal_fp_pending_repair
       always_comb begin
         if (fp_pending_repair_capture_q) begin
-          // dispatch.sv registers one ROB query-valid bit for every renamed
-          // (therefore not-ready) FP source on the same edge that captures
-          // this packet. Model that composed contract explicitly: under it,
-          // the registered one-bit wait decision equals the payload/query
-          // test (p_fp_repair_wait_matches_retired_query_gate) every cycle.
+          // dispatch.sv registers a ROB query for each renamed FP source on the
+          // packet-capture edge. The E1 wait decision must match these queries.
           a_fp_repair_channel1_valid_matches_src1 :
           assume (i_bypass_valid_1 == !fp_dispatch_pending.src1_ready);
           a_fp_repair_channel2_valid_matches_src2 :
@@ -4714,10 +4376,8 @@ module tomasulo_wrapper #(
     end
   endgenerate
 
-  // Assume/guarantee half of the router's one-entry conservation contract.
-  // The router proves its held payload is conserved assuming no second live
-  // request while its pending Q is set; this wrapper guarantees that producer
-  // discipline for every value of the otherwise-unconstrained formal input.
+  // The router holds one request. While pending, the LQ must not hand off
+  // another; otherwise the held payload could be overwritten.
   always_comb begin
     if (i_rst_n && i_lq_mem_request_pending) begin
       // The router is outside this standalone formal top. Constrain its input
@@ -4727,10 +4387,8 @@ module tomasulo_wrapper #(
     end
   end
 
-  // Prove the live/fallback split against the generic effective packets
-  // (adapter output, else test injection).  These assertions discharge the
-  // cdb_arbiter interface contract; that instance has its standalone contract
-  // assumptions disabled above.
+  // Check live/fallback values against the effective adapter or test-injection
+  // packet. These checks replace the arbiter's standalone input assumptions.
   riscv_pkg::fu_complete_t f_cdb_arb_in_0_generic;
   riscv_pkg::fu_complete_t f_cdb_arb_in_7_generic;
   always_comb begin
@@ -4803,8 +4461,7 @@ module tomasulo_wrapper #(
   // Slot-2 RAT alloc can fire without slot-1 RAT alloc when slot-1 has no
   // destination (no formal assumption needed).
 
-  // Dispatch's early candidates, qualified by the bundle fire, are the
-  // allocation requests (dispatch.sv p_alloc_candidates_match_fire).
+  // Dispatch qualifies early allocation candidates with bundle fire.
   always_comb begin
     assume (i_alloc_fire == i_alloc_req.alloc_valid);
     assume (i_rat_alloc_valid == (i_alloc_fire && i_alloc_has_dest));
@@ -4855,14 +4512,8 @@ module tomasulo_wrapper #(
     end
   end
 
-  // RS dispatch tag coordination.  dispatch.sv builds every rs_dispatch packet
-  // from the same cycle's allocation response
-  // (rs_dispatch_base.rob_tag = i_rob_alloc_resp.alloc_tag) and only routes a
-  // packet to an RS as part of an allocating bundle (o_rs_dispatch.valid
-  // requires dispatch_fire, which is o_rob_alloc_req.alloc_valid).
-  // Modelling that plumbing is what turns the INT station's branch-payload
-  // ROB-tag property into a statement about this proof's real allocator
-  // rather than about a free tag input.
+  // dispatch.sv routes an RS packet only with allocation and uses that cycle's
+  // allocated ROB tag. Model this to check the side RAM against real allocation.
   always_comb begin
     if (i_rs_dispatch.valid) begin
       assume (i_alloc_req.alloc_valid);
@@ -4870,12 +4521,10 @@ module tomasulo_wrapper #(
     end
   end
 
-  // A partial flush always names a live ROB entry: it is the mispredicting or
-  // faulting instruction's own tag, and the recovery controller only raises
-  // i_flush_en while that entry is still in the window.  The ROB rewinds its
-  // tail to that tag + 1, so an out-of-window flush tag would rewind the
-  // allocator past entries the back end keeps: an aliasing the core cannot
-  // produce, but a free i_flush_tag can.
+  // This formal environment requires a live ROB tag for partial flush. Tail
+  // rewinds to tag + 1; an arbitrary out-of-window tag could alias retained
+  // entries. Production commit-time recovery can instead name a retired head
+  // and sets i_flush_after_head_commit.
   always_comb begin
     if (i_flush_en && !i_flush_all) begin
       assume (!o_rob_empty);
@@ -4956,8 +4605,7 @@ module tomasulo_wrapper #(
       p_commit_observation_identity : assert (o_commit == commit_bus_q_qualified);
       p_commit_requires_head_ready : assert (!commit_bus.valid || (o_head_valid && o_head_done));
       p_commit_tag_is_head : assert (!commit_bus.valid || (commit_bus.tag == o_head_tag));
-      // Slot 2 identity + subordination to slot 1: slot 2 can only be
-      // valid when slot 1 is also valid (2-wide never fires alone).
+      // Slot 2 cannot retire without slot 1.
       p_commit_2_output_identity : assert (o_commit_comb_2 == commit_bus_2);
       p_commit_2_observation_identity : assert (o_commit_2 == commit_bus_2_q_qualified);
       p_commit_2_implies_commit_1 : assert (!commit_bus_2.valid || commit_bus.valid);
@@ -4970,35 +4618,22 @@ module tomasulo_wrapper #(
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
 
-      // o_fence_i_flush is the registered image of the ROB's
-      // o_fence_class_flush_event, which has two mutually exclusive kinds
-      // (reorder_buffer p_fence_event_flavors_are_exclusive):
-      //   native      = commit_en && head is FENCE.I/SFENCE.VMA, combinational
-      //                 from the serializer's SERIAL_FENCE_I_SYNC state;
-      //   translation = a translation-relevant CSR (satp, or a write to
-      //                 mstatus/sstatus) retiring out of
-      //                 SERIAL_CSR_TRANSLATION_DRAIN, carrying one extra
-      //                 register so csr_file consumes the registered commit
-      //                 payload before the flush lands.
+      // o_fence_i_flush registers two mutually exclusive ROB events:
+      //   native: FENCE.I/SFENCE.VMA retires from SERIAL_FENCE_I_SYNC.
+      //   translation: satp or mstatus/sstatus writes retire from
+      //     SERIAL_CSR_TRANSLATION_DRAIN. An extra register lets csr_file
+      //     consume the registered commit before flush.
       //
-      // A registered native FENCE.I commit therefore always produces the
-      // global pulse. The converse does not hold, for two reasons on the
-      // translation kind: the retiring instruction is a CSR, so it never sets
-      // the commit payload's native FENCE.I class bit; and its extra register
-      // means that by the flush cycle commit_bus_q has already advanced past
-      // that CSR entirely. Concretely, a satp write retiring at T puts the CSR
-      // in commit_bus_q at T+1 alongside o_translation_csr_commit_shadow, and
-      // raises o_fence_i_flush at T+2 with commit_bus_q.is_fence_i low.
-      // satp_drain_test and vm_test hit this on every translation-CSR
-      // retirement.
+      // A native FENCE.I commit implies flush, but the converse is false:
+      // translation CSR commits have no is_fence_i bit and precede flush by
+      // an extra cycle. A satp write retiring at T appears in commit_bus_q
+      // with o_translation_csr_commit_shadow at T+1, then raises flush at
+      // T+2 with commit_bus_q.is_fence_i low.
       p_registered_native_fence_implies_flush :
       assert (!commit_bus_q.is_fence_i || o_fence_i_flush);
 
-      // Full equality is still available once the translation kind is
-      // subtracted: the shadow leads the flush by exactly one cycle, so a
-      // pulse that is not the previous cycle's translation event is
-      // necessarily the native one. This strictly implies the one-way
-      // property above and additionally rejects an unexplained pulse.
+      // The translation shadow leads flush by one cycle. Excluding that event
+      // leaves exactly the native FENCE.I commit and rejects unexplained pulses.
       p_native_fence_copy_matches_non_translation_flush :
       assert (commit_bus_q.is_fence_i == (o_fence_i_flush && !$past(
           o_translation_csr_commit_shadow
@@ -5201,9 +4836,6 @@ module tomasulo_wrapper #(
       // Commit fires
       cover_commit : cover (commit_bus.valid);
 
-      // No RS-full cover here: it needs 9+ steps (8 dispatches + reset) but
-      // the wrapper cover depth is 6.  reservation_station.sby covers it at
-      // depth 20.
 
       // Commit clears tracked INT register
       cover_commit_clears_int :
@@ -5255,24 +4887,11 @@ module tomasulo_wrapper #(
       cover_sq_alloc : cover (sq_alloc_req.valid);
 
 `ifdef FORMAL_DEEP_COVER
-      // Deep integration paths, kept out of the default wrapper cover task
-      // because the LQ/SQ module targets already cover the same events
-      // (load_queue.cover_mem_issue, SQ write covers) and these chains
-      // dominate solver runtime: each needs the deepest unrolling of the
-      // whole wrapper.  The LQ read chain is dispatch -> LQ alloc -> MEM RS
-      // issue -> SQ disambiguation -> launch, reachable only at step 5, and
-      // that single query costs far more than all the other wrapper covers,
-      // which finish by step 3.
+      // Optional deep covers for memory issue.
       cover_lq_mem_issue : cover (o_lq_mem_read_en);
       cover_sq_mem_write : cover (o_sq_mem_write_en);
 
-      // These two step-4 integration covers are also scoped out of the
-      // default wrapper task.  Keeping them in the same whole-wrapper query
-      // makes the solver explore the production FP-pending feedback cone
-      // even though the events themselves are already covered
-      // compositionally: reservation_station.cover_dispatch_and_issue proves
-      // RS issue reachability, and store_queue.cover_commit proves SQ commit
-      // reachability.  Define FORMAL_DEEP_COVER to run them.
+      // Optional deep covers for RS issue and SQ commit.
       cover_rs_issue : cover (o_rs_issue.valid);
       cover_sq_commit : cover (sq_commit_valid);
 `endif
@@ -5293,19 +4912,11 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Simulation-only: stale-CDB producer diagnostics.
   //
-  // The ROB's own diagnostics (its free-entry warnings and drain-window check
-  // in reorder_buffer.sv) report deliveries to free entries but cannot name
-  // the producer, because fu_type does not cross the
-  // reorder_buffer_cdb_write_t boundary.  Here both registered CDB lanes
-  // still carry it, so a delivery targeting a free ROB entry is logged with
-  // the FU slot that produced it.  Any hit means a producer broke the
-  // tag-reuse rule: either a missed flushed-tag kill (adapter age-kill, shim
-  // flush-marking, LQ cdb_stage kill, arbiter kill) or a duplicate broadcast
-  // (a source's accept disagreeing with what it presented, which is why
-  // lq_result_accepted must match the MEM mux exactly).  None is expected:
-  // even when the ROB absorbs a logged delivery, the same escape arriving at
-  // another time can corrupt a reallocated entry, and one in the ROB's drain
-  // window is fatal (see the analysis before the ROB's diagnostics).
+  // reorder_buffer.sv detects free-entry deliveries but loses fu_type at its
+  // input. Registered CDB lanes retain the producer here. A delivery outside
+  // the recent-commit exception below indicates a missed flush kill or a
+  // duplicate broadcast. Even if the ROB absorbs it, the same error after
+  // tag reuse could corrupt a live entry; delivery in its drain window is fatal.
   // ===========================================================================
   int unsigned dbg_stale_cyc_since_flush;
   int unsigned dbg_stale_logged;
@@ -5313,14 +4924,11 @@ module tomasulo_wrapper #(
     if (!i_rst_n || i_flush_all || i_flush_en) dbg_stale_cyc_since_flush <= 0;
     else dbg_stale_cyc_since_flush <= dbg_stale_cyc_since_flush + 1;
   end
-  // Benign-delivery filter: a broadcast whose tag committed within the last
-  // two cycles is taken to be the known JALR double-completion.  The link
-  // value is stored at alloc and done comes from branch_update, so the commit
-  // can beat the CDB wakeup broadcast by a cycle when the ALU adapter is
-  // contended.  With a full ROB the committed entry can be reallocated inside
-  // this window, so the filter can also hide a stray write in that
-  // reallocation cycle, which the ROB's allocation absorbs.  Deliveries to a
-  // free entry outside the window stay loud.
+  // Filter tags committed in the last two cycles for JALR's double completion:
+  // its link value is stored at allocation and branch_update marks it done,
+  // so commit can precede a contended ALU broadcast. A full ROB can reuse a
+  // tag within this window; the filter may also hide a stray write on that
+  // allocation cycle, which the ROB absorbs. Report later free-entry writes.
   logic [3:0] dbg_recent_commit_valid;
   logic [3:0][riscv_pkg::ReorderBufferTagWidth-1:0] dbg_recent_commit_tag;
   always @(posedge i_clk) begin
@@ -5341,10 +4949,9 @@ module tomasulo_wrapper #(
       end
     end
   endfunction
-  // Grant-cycle snapshot of the MEM-slot sources: the registered broadcast
-  // lands one cycle after the grant, so when a stale MEM delivery is
-  // detected these name which sub-source (SC reg / misalign reg / LQ
-  // cdb_stage passthrough / adapter held) supplied it.
+  // Snapshot MEM sources at grant: the broadcast arrives one cycle later.
+  // This identifies whether a stale result came from SC, a store fault,
+  // LQ cdb_stage, or the held adapter packet.
   logic dbg_prev_sc_valid, dbg_prev_mis_valid, dbg_prev_lq_valid;
   logic dbg_prev_adapter_pending;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] dbg_prev_lq_tag, dbg_prev_adapter_tag;
@@ -5381,11 +4988,8 @@ module tomasulo_wrapper #(
     end
   end
 
-  // Capture-time check on the LQ cdb_stage: a captured completion whose tag
-  // the ROB no longer tracks means the LQ's Phase-A issue path or a bypass
-  // let a dead load through; if deliveries above are stale but captures here
-  // are clean, the escape is instead in the cdb_stage kill between capture
-  // and grant.
+  // A stale tag at cdb_stage capture points to the LQ issue or bypass path.
+  // If capture is live but delivery is stale, check the kill before grant.
   always @(posedge i_clk) begin
     if (i_rst_n && dbg_stale_logged < 16) begin
       if (u_lq.issue_cdb_fire && !u_rob.rob_valid[u_lq.issue_cdb_result.tag]) begin

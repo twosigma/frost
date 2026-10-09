@@ -15,9 +15,7 @@
  */
 
 /*
- * nic_mac_wrap: the MAC/PCS in its two clock domains, everything that
- * crosses between them and the core domain (the packet FIFOs, the domain
- * resets, the status levels, the event counters), and the raw loopback.
+ * MAC/PCS clock crossings, packet FIFOs, resets, and raw loopback.
  *
  * Beats cross as 68-bit FIFO words {code, data} (nic_pkg beat code:
  * {last, bytes - 1}). Each domain's reset comes from nic_domain_reset
@@ -83,8 +81,7 @@ module nic_mac_wrap #(
 );
   logic tx_rst, rx_rst;
 
-  // One registered copy of the core reset per domain: the flop that launches
-  // the asynchronous assertion into a MAC domain fans out nowhere else.
+  // Separate registered resets launch asynchronous assertion into each MAC domain.
   logic rst_for_tx_q, rst_for_rx_q;
   always_ff @(posedge i_clk) begin
     rst_for_tx_q <= i_rst;

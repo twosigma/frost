@@ -22,14 +22,10 @@
 // packet really broadcasts this cycle.
 //
 // Contract: an early packet never carries the tag of a valid registered lane.
-// In-flight ROB tags are unique, and an accepted load leaves the LQ's staged
-// register before its registered broadcast, so the caller's staged load and
-// a registered lane never name the same tag. Checking it in logic would put a
-// tag comparator ahead of every MEM_RS wakeup, so simulation asserts it, and
-// formal assumes it standalone (FORMAL_STANDALONE_ENV=1) and asserts it
-// integrated after the enclosing harness's initial reset edge. The integrated
-// caller intentionally leaves enable unqualified by reset; its consumers reset
-// too.
+// In-flight ROB tags are unique, and an accepted load leaves LQ staging
+// before its registered broadcast. Simulation asserts this requirement;
+// formal assumes it standalone and asserts it after reset when integrated.
+// The caller does not gate enable with reset; consumers reset too.
 module mem_wakeup_merge #(
     parameter bit FORMAL_STANDALONE_ENV = 1'b1
 ) (
@@ -53,10 +49,8 @@ module mem_wakeup_merge #(
     o_wakeup_0 = i_registered_0;
     o_wakeup_1 = i_registered_1;
     o_injected = 1'b0;
-    // Choose the payload using registered lane occupancy alone. Recovery
-    // and acceptance qualify only valid; routing them through the wide tag
-    // mux would put them ahead of every RS tag comparator and issue selector.
-    // An invalid lane's payload is unspecified, just like the normal CDB.
+    // Registered occupancy alone selects the lane; enable, load validity and
+    // the exception bit qualify only valid. Invalid payloads are unspecified.
     if (!i_registered_0.valid) begin
       o_wakeup_0 = early_packet;
       o_wakeup_0.valid = eligible;
@@ -78,8 +72,7 @@ module mem_wakeup_merge #(
     if (FORMAL_STANDALONE_ENV) begin
       assume (!duplicates_registered_lane);
     end else if (!$initstate) begin
-      // Before the first reset edge, the caller's staging/CDB registers are
-      // arbitrary. This is a reachable-state contract, not an initial-state one.
+      // Caller registers are arbitrary before the first reset edge.
       assert (!duplicates_registered_lane);
     end
   end

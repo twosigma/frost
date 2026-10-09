@@ -98,9 +98,7 @@ module cpu_tb
   logic o_fence_i_sync_req;
   logic i_fence_i_sync_done;
   logic o_fence_i_flush;
-  // Cached (high-address) tier request outputs and response inputs. They are
-  // tied idle: the directed programs touch only the low BRAM range, never
-  // CACHED_BASE.
+  // Cached tier is inactive; directed programs use only low BRAM.
   logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_cached_byte_wr_en;
   logic [riscv_pkg::MemDataBits-1:0] o_data_mem_cached_wr_data;
   logic o_data_mem_cached_read_enable;
@@ -112,12 +110,8 @@ module cpu_tb
   logic i_cached_write_done;
   logic i_cached_write_inflight;
   cache_perf_pkg::cache_perf_events_t i_cache_perf_events;
-  // Translated-fetch ports. This bench models the one-cycle low-BRAM fetch
-  // path, so the served window never comes from the high (cached) provider.
-  // The fault flags the core computes for a fetch address come back registered
-  // with that window one cycle later. Translation stays in Bare mode, so the PA
-  // is the VA's low bits. The directed programs never fetch outside the memory
-  // map, so the fault flags stay clear.
+  // Low-BRAM fetch: register the core's faults with the window. Directed
+  // programs use in-range Bare-mode addresses, so those faults stay clear.
   logic [31:0] o_fetch_pa0;
   logic [31:0] o_fetch_pa1;
   logic o_fetch_pa_valid;
@@ -134,10 +128,7 @@ module cpu_tb
   logic i_instr_fault1_page;
   logic i_served_high;
   logic tb_fault0_q, tb_fault0_page_q, tb_fault1_q, tb_fault1_page_q;
-  // Page-table walker line port. No page-table memory sits behind
-  // this bench, so the port has no slave, exactly like cpu_and_mem's
-  // no-cached-tier stub. A walk would stall, and the directed programs stay in
-  // Bare mode.
+  // No page-table memory: a walk would stall. Programs must stay in Bare mode.
   logic o_walk_line_req_valid;
   logic i_walk_line_req_ready;
   logic [31:0] o_walk_line_req_addr;
@@ -165,9 +156,7 @@ module cpu_tb
   assign i_dbg_go_addr = '0;
   assign i_dbg_data = '0;
 
-  // DMA coherence ports: no DMA agent in this bench, so the sequencer's
-  // admit/inval/release handshake stays idle and the core's answers are
-  // unobserved.
+  // No DMA agent; coherence requests idle and responses are unobserved.
   logic i_coh_admit_valid;
   logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_admit_slot;
   logic [riscv_pkg::XLEN-1:0] i_coh_admit_addr;
@@ -211,7 +200,6 @@ module cpu_tb
 
   // Pipeline stage that mimics the block-RAM instruction memory latency.
   always_ff @(posedge i_clk) begin
-    // Stall signal from CPU observed on next rising edge
     pipeline_stall_from_cpu <= device_under_test.pipeline_ctrl.stall;
     // The word for the address requested on o_pc this cycle is presented on
     // the next cycle.
@@ -221,22 +209,15 @@ module cpu_tb
     tb_served_last_word_q <= o_pc[31:2] + 1'b1;
     tb_served_prev_word_q <= o_pc[31:2] - 1'b1;
     tb_served_prev_word_valid_q <= |o_pc[31:2];
-    // Fetch fault flags, registered with the window (see above).
     tb_fault0_q <= o_fetch_fault0;
     tb_fault0_page_q <= o_fetch_fault0_page;
     tb_fault1_q <= o_fetch_fault1;
     tb_fault1_page_q <= o_fetch_fault1_page;
   end
 
-  // 64-bit fetch window {next_word, current_word}. The testbench feeds
-  // exactly one instruction per cycle, so the next-word half must never be
-  // consumed. A NOP there would pair with any pairable 32-bit slot-1
-  // instruction and advance the PC by 8, breaking this bench's
-  // one-instruction-per-step model. ECALL cannot be slot 2 (a native SYSTEM
-  // instruction; its slot-2-start-valid predecode bit is 0), so the aligner
-  // emits slot 1 alone and the PC steps by 4 as this bench expects. The ECALL
-  // never executes: the bench serves every executed instruction through
-  // tb_cur_word.
+  // The bench supplies one instruction per step. A NOP in the next-word half
+  // could pair and advance PC by eight. ECALL cannot start slot 2, so it blocks
+  // pairing without executing; every executed instruction comes from tb_cur_word.
   localparam logic [31:0] TbSlot2Blocker = 32'h0000_0073;  // ecall (SYSTEM)
   assign i_instr = {TbSlot2Blocker, tb_cur_word};
   // The same window in physical bank order, {odd, even}, as the low BRAM
@@ -327,8 +308,7 @@ module cpu_tb
   // Fixed 1-cycle provider: the fetch window is always valid.
   assign i_instr_valid = 1'b1;
 
-  // FENCE.I cache-sync handshake completes immediately (no I-cache here; the
-  // directed programs never issue FENCE.I, so o_fence_i_sync_req stays low).
+  // No I-cache: complete FENCE.I synchronization immediately.
   assign i_fence_i_sync_done = o_fence_i_sync_req;
 
   // Cached (high-address) tier response inputs tied inactive (tier unused).
@@ -370,7 +350,6 @@ module cpu_tb
       .o_port_b_read_data(i_data_mem_rd_data)
   );
 
-  // Connect reset from DUT for monitoring
   assign reset_to_cpu = device_under_test.pipeline_ctrl.reset;
 
   // Unregistered stall, so the test framework sees it in the same cycle. AMO

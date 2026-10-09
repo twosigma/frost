@@ -20,11 +20,10 @@
   the high half, and the fetch word saved at stall entry for replay. Parcel
   selection and PC updates live elsewhere.
 
-  State updates are blocked during flush so garbage instructions from the old
-  PC path cannot corrupt state. i_flush is if_stage's frontend_state_flush: a
-  short pulse, decoded from registered state, per event (mispredict recovery,
-  FENCE-class recovery, trap, xRET). It is not asserted for BTB predictions
-  or PD redirects; control_flow_tracker handles those changes with holdoffs.
+  Flush clears saved instruction data and blocks instruction-buffer writes.
+  i_flush is if_stage's frontend_state_flush, a pulse from registered state
+  for mispredict recovery, FENCE-class recovery, traps, and xRET. BTB
+  predictions and PD redirects use control_flow_tracker's holdoffs instead.
 */
 module c_ext_state #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -34,13 +33,13 @@ module c_ext_state #(
     // Pipeline control
     input logic i_reset,
     input logic i_stall,
-    input logic i_flush,  // Frontend flush: blocks state updates
+    input logic i_flush,  // Frontend flush: clears saved data and blocks buffer writes
     input logic i_stall_registered,
 
     // Control flow signals (from control flow tracker)
     input logic i_control_flow_holdoff,  // Registered: stale instruction cycle
     input logic i_any_holdoff_safe,  // Holdoff using only registered signals
-    input logic i_prediction_holdoff,  // Registered: prediction happened last cycle (clear state)
+    input logic i_prediction_holdoff,  // Registered prediction holdoff
     input logic i_prediction_reset_state,  // Registered: slot-1 or slot-2 prediction last cycle
     input logic i_pending_prediction_active,  // pc_reg still consumes old-path instruction sizes
     input logic i_pending_prediction_target_handoff,  // Old-path control-flow op just redirected
@@ -53,11 +52,8 @@ module c_ext_state #(
     // Instruction type detection (from instruction aligner)
     input logic i_is_compressed,  // Current parcel is compressed
     input logic i_sel_nop,  // IF is outputting a stale/invalid bubble this cycle
-    // Fetch progress: a live window is valid, or a stall-replay bundle is
-    // presented. The buffer state machines below enumerate registered bubble
-    // sources one at a time rather than consuming the BRAM-late i_sel_nop. A
-    // no-progress fetch cycle is another bubble source they must exclude,
-    // except when the consumed data comes from the saved stall snapshot.
+    // A live window or saved stall snapshot is available. Buffer updates
+    // exclude no-progress cycles and the registered bubble sources below.
     input logic i_fetch_progress,
     input logic [riscv_pkg::ImemSidebandWidth-1:0] i_instr_sideband,
     // Fetch-fault status of the current effective word ({fault, page kind}).
@@ -82,7 +78,6 @@ module c_ext_state #(
   // ===========================================================================
   // Stall State Preservation
   // ===========================================================================
-  // Save state at stall start for restoration.
 
   logic [31:0] effective_instr_saved;
   logic is_compressed_saved;
@@ -91,12 +86,9 @@ module c_ext_state #(
   logic saved_values_valid;  // Track if saved values are valid (not invalidated by flush)
   logic invalidate_saved_values_holdoff;
   logic capture_valid_stall_values;
-  // A stall-captured IF word must remain replayable for the rest of the stall.
-  // Registered prediction/control-flow holdoffs can arrive a cycle later than
-  // the captured instruction; if they cleared saved_values_valid mid-stall, IF
-  // would fall back to the live BRAM word while the PC metadata stays held,
-  // pairing an instruction with the wrong PC. So they invalidate the saved
-  // values only outside a registered stall.
+  // Holdoffs may arrive after stall capture. They invalidate saved values
+  // only outside a registered stall, so replay cannot pair live data with
+  // the held PC.
   assign invalidate_saved_values_holdoff =
       !i_stall_registered &&
       (i_control_flow_holdoff || i_prediction_holdoff || i_prediction_reset_state);
@@ -107,16 +99,13 @@ module c_ext_state #(
   // halfword boundary immediately after a spanning instruction.
   always_ff @(posedge i_clk) begin
     if (i_flush) begin
-      // A registered control-flow change means fetch went to a different PC,
-      // so the saved word is stale. The data is cleared here, the valid bit in
-      // the block below.
+      // Redirects invalidate the saved word and its separate valid bit.
       effective_instr_saved <= '0;
       is_compressed_saved   <= 1'b0;
       sideband_saved        <= '0;
       fault_saved           <= '0;
     end else if (i_stall & ~i_stall_registered) begin
       if (capture_valid_stall_values) begin
-        // Save real instructions at stall start.
         effective_instr_saved <= i_effective_instr;
         is_compressed_saved   <= i_is_compressed;
         sideband_saved        <= i_instr_sideband;
@@ -144,14 +133,8 @@ module c_ext_state #(
     end
   end
 
-  // Use saved values when coming out of stall. The mux select uses only
-  // registered signals, which breaks the critical path
-  // trap_taken -> stall -> is_compressed_for_buffer -> PC.
-  //
-  // Testing ~i_stall as well would be redundant:
-  //   - If unstalling: saved values are correct
-  //   - If still stalled: value isn't consumed anyway (gated by ~stall elsewhere)
-  //   - If no stall is registered: live values are used
+  // Use the snapshot on stall release. No live !i_stall term is needed:
+  // while still stalled, consumers do not use the selected values.
   logic use_saved_values;
   assign use_saved_values = i_stall_registered && saved_values_valid;
 
@@ -164,7 +147,6 @@ module c_ext_state #(
 
   assign effective_instr_for_buffer = use_saved_values ? effective_instr_saved : i_effective_instr;
 
-  // Sideband mux: use saved sideband when restoring from stall, live BRAM sideband otherwise
   logic [riscv_pkg::ImemSidebandWidth-1:0] effective_sideband_for_buffer;
   assign effective_sideband_for_buffer = use_saved_values ? sideband_saved : i_instr_sideband;
   logic [1:0] effective_fault_for_buffer;
@@ -174,19 +156,16 @@ module c_ext_state #(
       i_prediction_reset_state &&
       is_compressed_for_buffer &&
       !i_pc_reg[1];
-  // While a pending prediction waits and pc_reg is at an older compressed
-  // instruction in a low half, keep the word so its upper sibling is available
-  // to the next sequential packet. Keep the raw data capture independent of
-  // the handoff control cone: stale payload is harmless whenever its one-bit
-  // valid state is clear.
+  // Preserve the upper sibling of an older low-half compressed instruction
+  // while a prediction is pending. Raw capture can ignore target handoff
+  // because data with a clear valid bit cannot be selected.
   assign capture_pending_prediction_buffer =
       i_pending_prediction_active &&
       i_prediction_holdoff &&
       is_compressed_for_buffer &&
       !i_pc_reg[1];
-  // If the exact owner and target handoff are consumed atomically, that upper
-  // sibling is wrong-path. Let the handoff clear dominate only the validity
-  // override so no broad data/sideband/fault CE inherits the PC apply cone.
+  // If the predicted instruction and target handoff occur together, its
+  // upper sibling is wrong-path. The handoff must clear buffer validity.
   assign capture_pending_prediction_buffer_state =
       capture_pending_prediction_buffer &&
       !i_pending_prediction_target_handoff;
@@ -214,9 +193,8 @@ module c_ext_state #(
     if (!$isunknown(
             {i_pending_prediction_target_handoff, capture_pending_prediction_buffer_state}
         )) begin
-      // An atomically consumed owner makes its upper-half sibling wrong-path.
-      // The handoff clear must dominate the older-packet preservation path or
-      // that stale sibling can be selected as the first target instruction.
+      // A target handoff must override old-path buffer preservation, or its
+      // wrong-path upper sibling could become the first target instruction.
       p_pending_handoff_excludes_old_path_buffer_valid :
       assert (!(i_pending_prediction_target_handoff && capture_pending_prediction_buffer_state));
     end
@@ -236,10 +214,8 @@ module c_ext_state #(
   // prediction_holdoff in the following cycle still clears the state before the
   // predicted target starts executing.
 
-  // i_slot2_valid arrives late, from alignment and holdoff arbitration, so
-  // compute the next buffer-valid state for both of its values, including the
-  // pending handoff clear, and select last. prev_was_compressed_at_lo_without_handoff
-  // (the next state before the handoff clear) feeds only the simulation check.
+  // Compute both slot-2 cases before selecting, for timing. The next state
+  // without the handoff clear feeds only the simulation check.
   logic prev_was_compressed_at_lo_without_handoff;
   logic [1:0] prev_without_handoff_cases;
   (* keep = "true" *) logic [1:0] prev_compressed_next_cases;
@@ -303,12 +279,9 @@ module c_ext_state #(
   end
 `endif
 
-  // Data register: no reset needed. o_prev_was_compressed_at_lo gates when
-  // buffer data is used, and that signal is reset. After reset, buffer data
-  // cannot be selected until valid data has been written. Leaving these FFs
-  // off the reset tree helps timing and area. Exclude prediction holdoff so
-  // stale post-redirect data cannot enter the buffer and later be selected by
-  // use_instr_buffer.
+  // Data needs no reset: the reset valid bit prevents selection until a
+  // write. Exclude prediction holdoff unless preserving an older packet,
+  // so stale post-redirect data cannot become valid.
   always_ff @(posedge i_clk) begin
     if (!i_stall && (i_fetch_progress || use_saved_values) &&
         (!i_any_holdoff_safe || capture_pending_prediction_buffer) &&
@@ -325,11 +298,9 @@ module c_ext_state #(
 
 `ifdef FORMAL
 `ifndef C_EXT_STATE_LOCAL_PROOF
-  // With the real producers (the prediction_release and prediction_handoff
-  // targets), a pending buffer capture is reachable both with and without a
-  // coinciding target handoff. c_ext_buffer_next proves for any inputs that
-  // the handoff leaves the buffer's valid state clear, so the owner's raw
-  // word may be captured but its wrong-path upper sibling never selected.
+  // Cover pending captures with and without target handoff. Handoff clears
+  // validity even if the raw word is captured, so its wrong-path upper
+  // sibling cannot be selected.
   always_ff @(posedge i_clk) begin
     if (!i_reset) begin
       cover_pending_prediction_episode : cover (i_pending_prediction_active);

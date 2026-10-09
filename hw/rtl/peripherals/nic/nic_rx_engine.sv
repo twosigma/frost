@@ -17,19 +17,16 @@
 /*
  * nic_rx_engine: frames from the RX FIFO into ring buffers.
  *
- * One frame per descriptor, in ring order. A frame is admitted only when an
- * eligible descriptor is cached (the FIFO holds it otherwise, so a ring-empty
- * window costs no frame); its first beat is examined for the filter
- * (PROMISC, a group address, or the station address) and a rejected frame
- * is consumed without touching a descriptor. An accepted frame takes the
- * descriptor: a buffer of length 0 or outside the aperture consumes the
- * frame and completes with DD|ERR; otherwise the beats go through
- * nic_byte_pack to strobed line writes at the buffer address, bytes beyond
- * the buffer length dropped (TRUNC). After the last beat, once every data
- * write has its response, the status word (descriptor word 2: received
- * length, DD, TRUNC, ERR, ABORT) is written; on its response the completion
- * is reported. One status write is in flight at a time, so DD becomes
- * visible in ring order; the next frame's data may start meanwhile.
+ * One frame per descriptor, in ring order. The FIFO holds a frame until an
+ * eligible descriptor is cached. The first beat passes the filter if PROMISC
+ * is set, its destination is a group address, or it matches the station.
+ * Rejected frames consume no descriptor. Accepted frames with zero-length or
+ * out-of-aperture buffers complete with DD|ERR. Other frames pass through
+ * nic_byte_pack; bytes beyond the buffer length are dropped and set TRUNC.
+ * After the last beat and all data responses, write descriptor word 2
+ * (received length, DD, TRUNC, ERR, ABORT). Its response reports completion.
+ * Only one status write is in flight, preserving DD order while the next
+ * frame's data may start.
  *
  * i_abort (the MAC domain is resetting) abandons a frame still owed beats:
  * no more are taken, the packer is flushed and its held write withdrawn, the
@@ -193,13 +190,9 @@ module nic_rx_engine #(
         (last_plus_one <= (33'(APERTURE_BASE) + 33'(APERTURE_BYTES)));
   endfunction
 
-  // Admission takes two cycles: S_IDLE registers the filter and descriptor
-  // decisions from the head descriptor and the FIFO's first beat (both
-  // stable until taken), S_ADMIT acts on them, so the packer's start and
-  // the descriptor take come from registers. S_ADMIT requires i_enable as
-  // well: nic_desc_fetch ignores a take while the direction is disabled, so
-  // a disable in that cycle cancels the admission instead of admitting a
-  // frame whose descriptor HEAD never passes.
+  // S_IDLE registers filter and descriptor checks; S_ADMIT acts on them.
+  // The first beat and descriptor stay stable until taken. Recheck i_enable
+  // in S_ADMIT so a disable cancels admission before the descriptor is taken.
   logic accept, desc_ok;
   assign accept  = i_promisc || i_fifo_data[0] || (i_fifo_data[47:0] == i_mac);
   assign desc_ok = (df_word1[15:0] != 16'd0) && in_aperture(df_word0, df_word1[15:0]);
@@ -226,11 +219,9 @@ module nic_rx_engine #(
   logic trunc;
   assign trunc = frame_len_q > buf_len_q;
 
-  // Abandoning a frame: the packer is flushed and presents no more writes,
-  // its beats stop, the writes already accepted are awaited in S_DRAIN. A
-  // MAC-domain reset (i_abort) cuts a frame only while beats are still
-  // owed (S_DATA); a frame whose last beat is in needs nothing from the MAC
-  // any more and completes normally. The drain (i_stop) cuts either.
+  // Abort only while S_DATA still needs MAC beats. S_FLUSH can finish after
+  // a MAC reset. i_stop abandons either state. Flush the packer and wait in
+  // S_DRAIN for accepted writes.
   logic abandon;
   assign abandon = (i_stop && ((state_q == S_DATA) || (state_q == S_FLUSH))) ||
       (i_abort && (state_q == S_DATA));
@@ -250,9 +241,8 @@ module nic_rx_engine #(
   };
   logic [OffsetBits-1:0] status_off;
   assign status_off = status_addr_q[OffsetBits-1:0];
-  // A write the packer holds is withdrawn from the front-end in the cycle
-  // the frame is abandoned (the flush drops it), so nothing of an abandoned
-  // frame is written after the abort.
+  // Withdraw the packer's held write on abandonment. Writes already accepted
+  // by the front-end still drain.
   logic pk_wr_present;
   assign pk_wr_present = pk_wr_valid && !abandon;
   always_comb begin

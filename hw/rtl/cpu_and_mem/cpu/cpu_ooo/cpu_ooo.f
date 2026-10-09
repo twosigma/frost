@@ -1,8 +1,7 @@
 # FROST CPU core file list: RV64GCB, in-order IF/PD/ID front end,
 # Tomasulo out-of-order back end
 
-# Shared cache-observer types, followed by the package with CPU pipeline types
-# (including the cpu_ooo-internal recovery capture structs).
+# Shared cache and CPU types.
 $(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 

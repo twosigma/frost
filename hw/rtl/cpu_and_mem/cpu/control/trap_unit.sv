@@ -15,48 +15,36 @@
  */
 
 /*
- * Takes exceptions, interrupts, xRETs, and Debug Mode entries for M/S/U
- * privilege with delegation. A trap enters M through mtvec, or S through
- * stvec when delegated (medeleg[cause] for exceptions from below M;
- * mideleg[i] sends the supervisor interrupt classes to S). Entry saves
- * xepc/xcause/xtval on the target side, moves xIE to xPIE, and redirects to
- * xtvec (o_trap_to_s tells csr_file which side). MRET and SRET restore their
- * side and redirect to mepc or sepc. Every take waits for committed stores to
- * drain, and interrupt and Debug Mode takes are also held off while an AMO or
- * device read at the ROB head could be repeated; see the port comments.
+ * Trap and return control for M/S/U privilege and Debug Mode.
+ * Trap entry saves xepc/xcause/xtval, moves xIE to xPIE, and redirects to
+ * xtvec. medeleg selects S for exceptions from below M; mideleg delegates
+ * supervisor interrupts. MRET/SRET restore state and redirect to xepc.
+ * Every take waits for committed stores to drain. AMO and device-read
+ * shields also defer interrupts and Debug Mode requests; see the ports.
  *
- * Interrupt eligibility is evaluated per target class, never as one chain
- * over the raw pending bits. When both classes are armed, the M-target take
- * wins, and cause priority applies within a class:
+ * Interrupt eligibility is evaluated per target class:
  *   M-target (mideleg[i]=0, including all machine classes):
  *     pending && mie[i] && (priv < M || mstatus.MIE)
  *   S-target (mideleg[i]=1, supervisor classes only):
- *     pending && mie[i] && (priv == U || (priv == S && sstatus.SIE));
- *     never taken while in M.
- * Within a class the cause priority is MEI > MSI > MTI > SEI > SSI > STI (M,
- * with undelegated supervisor sources last) and SEI > SSI > STI (S).
+ *     pending && mie[i] && (priv == U || (priv == S && sstatus.SIE))
+ * An armed M request takes priority over an armed S request. Within M,
+ * priority is MEI > MSI > MTI > SEI > SSI > STI; within S, SEI > SSI > STI.
  *
- * Debug Mode (RISC-V Debug Spec 0.13.2) is a third take class, D, with the
- * same latch, arm, shield, and drain steps as M and S:
- *   halt sources (dmcontrol.haltreq, the single-step completion request)
- *     are eligible only outside Debug Mode and take precedence over both
- *     interrupt classes; entry (o_trap_to_d) saves dpc/dcsr in csr_file and
- *     redirects to the debug module's park word;
- *   ebreak with dcsr.ebreak{m,s,u} set for the current privilege routes the
- *     cause-3 exception to D (dpc = the ebreak's PC, nothing else saved);
- *   in Debug Mode every exception re-parks the hart with no CSR side effect
- *     (o_trap_no_csr): the terminating ebreak of a debug command, or a
- *     command exception (o_dbg_park_exception). The M/S interrupt classes
- *     are masked in Debug Mode and while a single step is armed (stepie=0);
- *   go (i_dbg_go, Debug Mode only) is the debug module's CSR-free redirect
- *     into its abstract-command / resume words;
- *   DRET uses the MRET handshake (inhibit, drain) and redirects to dpc;
- *     csr_file restores dcsr.prv on o_dret_taken.
+ * Debug Mode (RISC-V Debug Spec 0.13.2) uses a third take class, D:
+ *   - haltreq and step completion enter Debug Mode, save dpc/dcsr, and
+ *     redirect to the park word. They take priority over M/S interrupts.
+ *   - ebreak enters Debug Mode when the current privilege's dcsr.ebreak bit
+ *     is set; dpc points at the ebreak.
+ *   - Debug Mode exceptions re-park without CSR writes. Memory-order replays
+ *     instead restart at the faulting PC, in every mode, without CSR writes.
+ *   - M/S interrupts are masked in Debug Mode and during a step (stepie=0).
+ *   - go redirects to the debug module's requested target without CSR writes.
+ *   - DRET uses the xRET drain/inhibit protocol, redirects to dpc, and
+ *     restores dcsr.prv through csr_file.
  *
- * The WFI logic is unused in cpu_ooo: i_wfi_start is tied low,
- * o_stall_for_wfi is unconnected, and the ROB holds WFI at its head instead.
- * It stalls until any interrupt is pending, then resumes at the next
- * instruction, or takes the trap if the interrupt is also enabled.
+ * cpu_ooo ties i_wfi_start low and leaves o_stall_for_wfi unconnected;
+ * the ROB holds WFI at its head. WFI wakes on any pending interrupt, or
+ * takes the interrupt if enabled.
  *
  * See csr_file, cpu_ooo, and ooo_pipeline_control for state and redirects.
  */
@@ -75,29 +63,23 @@ module trap_unit #(
     input  logic i_sq_committed_empty,
     output logic o_trap_drain_wait,
 
-    // AMO interrupt shield (registered in cpu_ooo). An interrupt between the
-    // AMO's read issue and its commit could flush AMO_WRITE_ACTIVE after the
-    // write launched, while the router's amo_cached_inflight hides that
-    // write's completion from the SQ. The AMO would then execute twice, and a
-    // colliding handler store could leave the SQ's write_inflight_cnt stuck
-    // nonzero. The deferral is bounded: an AMO issues only once no committed
-    // stores remain in the SQ, and commit stays enabled, so the interrupt
-    // follows the AMO's commit. The registered shield rises one cycle after
-    // the AMO reaches the head, before its earliest write launch (at least
-    // three cycles after); an earlier flush is handled by the LQ's
-    // drop_mem_response_pending. Exceptions stay enabled because an AMO faults
-    // before it touches memory.
+    // AMO interrupt shield, registered in cpu_ooo. A flush after the write
+    // launches could repeat the AMO and discard its completion while
+    // amo_cached_inflight hides it from the SQ, stranding write_inflight_cnt
+    // for a colliding handler store. AMOs issue after committed stores drain,
+    // and commit stays enabled during deferral, so the interrupt follows commit.
+    // The shield rises one cycle after the AMO reaches the head, before its
+    // earliest write launch (at least three cycles later). Earlier flushes use
+    // the LQ's drop_mem_response_pending. Exceptions remain enabled because
+    // AMOs fault before accessing memory.
     input logic i_amo_at_head,
 
-    // Device-read interrupt shield (registered in cpu_ooo). An interrupt taken
-    // from just before the device accepts the read until the load commits
-    // would repeat an irrevocable access such as a FIFO pop or a
-    // clear-on-read register. The router waits a full shielded cycle before
-    // arming the read. The deferral is bounded: arming requires the committed
-    // stores to have drained, and the deferred take is already armed
-    // (*_take_armed_q), so neither term of o_trap_drain_wait holds commit and
-    // the interrupt follows the load's commit. Misalignment exceptions stay
-    // enabled; they perform no device access.
+    // Device-read interrupt shield, registered in cpu_ooo. A flush between
+    // acceptance and commit could repeat an irrevocable read, such as a FIFO
+    // pop. The router waits a full shielded cycle before arming the read.
+    // Arming requires drained stores. The deferred take is already armed, so
+    // neither term of o_trap_drain_wait holds commit; the interrupt follows the
+    // load's commit. Misalignment faults remain enabled and access no device.
     input logic i_device_read_at_head,
 
     // CSR values from csr_file
@@ -108,7 +90,7 @@ module trap_unit #(
     input logic [XLEN-1:0] i_stvec,
     input logic [XLEN-1:0] i_sepc,
 
-    // Direct MIE/SIE bit inputs keep mstatus bit extraction out of this path.
+    // Direct copies of the MIE/SIE bits, for timing.
     input logic i_mstatus_mie_direct,
     input logic i_sstatus_sie_direct,
 
@@ -156,7 +138,7 @@ module trap_unit #(
 
     // Trap control outputs
     output logic o_trap_taken,  // Trap is being taken this cycle
-    output logic o_trap_to_s,  // ...targeting S (delegated); else M
+    output logic o_trap_to_s,  // Entry targets S-mode CSRs
     output logic o_mret_taken,  // MRET is being executed
     output logic o_sret_taken,  // SRET is being executed
     // Same-cycle OR of trap and all xRET takes, factored before arbitration.
@@ -165,17 +147,16 @@ module trap_unit #(
     // Trap-entry target before xRET selection; meaningful on o_trap_taken.
     output logic [XLEN-1:0] o_trap_entry_target,
 
-    // To CSR file for trap entry (written to the o_trap_to_s side)
-    output logic [XLEN-1:0] o_trap_pc,     // PC to save to mepc/sepc
+    // Trap-entry data for csr_file
+    output logic [XLEN-1:0] o_trap_pc,     // PC to save to mepc, sepc, or dpc
     output logic [XLEN-1:0] o_trap_cause,  // Cause to save to mcause/scause
     output logic [XLEN-1:0] o_trap_value,  // Value to save to mtval/stval
 
-    // Debug Mode take qualifiers, valid with o_trap_taken:
-    //   o_trap_to_d:   Debug Mode entry (csr_file saves dpc/dcsr, priv <- M)
-    //   o_trap_no_csr: a Debug Mode redirect with no CSR side effect (go, or
-    //                  an exception re-parking the hart); cpu_ooo withholds
-    //                  csr_file's i_trap_taken for these
-    //   o_dbg_cause:   dcsr.cause for an entry (1 ebreak, 3 haltreq, 4 step)
+    // Redirect qualifiers, valid with o_trap_taken:
+    //   o_trap_to_d: Debug Mode entry; csr_file saves dpc/dcsr and sets priv=M.
+    //   o_trap_no_csr: go, debug exception, or memory replay; cpu_ooo withholds
+    //                  csr_file's i_trap_taken.
+    //   o_dbg_cause: dcsr.cause for entry (1 ebreak, 3 haltreq, 4 step).
     output logic       o_trap_to_d,
     output logic       o_trap_no_csr,
     output logic [2:0] o_dbg_cause,
@@ -188,7 +169,6 @@ module trap_unit #(
     output logic o_stall_for_wfi  // Stall pipeline for WFI
 );
 
-  // Use direct mstatus_mie/sstatus_sie inputs instead of re-extracting.
   logic mstatus_mie;
   assign mstatus_mie = i_mstatus_mie_direct;
   logic sstatus_sie;
@@ -211,20 +191,10 @@ module trap_unit #(
   logic deleg_sei, deleg_sti, deleg_ssi;
   assign {deleg_sei, deleg_sti, deleg_ssi} = i_mideleg_s;
 
-  // trap_taken_prev holds o_trap_taken for one cycle so the trap cannot
-  // re-assert immediately after the CSR update (this breaks the combinational
-  // loop through mstatus_mie). The mret/sret/dret_taken_prev markers cover the
-  // xRET handoff: CSR privilege/MIE state changes on the raw xRET pulse, while
-  // the OOO front/back-end flush is registered one cycle later. During that
-  // cycle an old registered interrupt must not trap with mepc equal to the
-  // xRET instruction itself.
-  // TIMING: identical registered trap and xRET pulses broadcast into the
-  // RS/LQ/SQ and the front end as recovery qualifiers. max_fanout lets
-  // synthesis replicate these registers per consumer region (the D inputs and
-  // reset are unchanged). keep and equivalent_register_removal are needed as
-  // well: without them synthesis merges these into the identical registered
-  // pulses in ooo_pipeline_control, one merged flop then serves every
-  // consumer, and the max_fanout is lost with the merge.
+  // trap_taken_prev prevents re-entry in the cycle after a CSR update.
+  // The xRET markers cover the next cycle's registered flush: an old
+  // interrupt sample must not trap with xepc pointing at the retired xRET.
+  // The attributes retain separate trap/xRET registers for fanout.
   (* keep = "true", equivalent_register_removal = "no", max_fanout = 32 *)
   logic trap_taken_prev;
   (* keep = "true", equivalent_register_removal = "no", max_fanout = 32 *)
@@ -247,16 +217,10 @@ module trap_unit #(
     end
   end
 
-  // The interrupt inhibit uses the registered xRET starts, for timing: the
-  // starts come from the ROB's o_mret_start (head_ready and serializer logic,
-  // including the same-cycle CDB head-done bypass), and using them directly
-  // would put that cone in front of take_trap and every trap-side CSR write.
-  // So an interrupt already eligible in an xRET's first start cycle may win
-  // take_trap. That is architecturally sound: the xRET yields to the trap,
-  // the interrupt's xepc is the xRET's own PC (i_interrupt_pc has not
-  // advanced past the uncommitted xRET), the trap's full flush resets the
-  // serializer out of SERIAL_MRET_EXEC, and the handler returns to re-execute
-  // the xRET. From the second start cycle on, the inhibit holds.
+  // Register the xRET starts for timing. An eligible interrupt may win in
+  // the first start cycle: xepc points at the uncommitted xRET, and the full
+  // flush resets the serializer so xRET re-executes after the handler.
+  // From the second start cycle, the inhibit defers interrupts.
   logic mret_start_q;
   logic sret_start_q;
   logic dret_start_q;
@@ -320,47 +284,25 @@ module trap_unit #(
   assign ssip_s_enabled = ssip && mie_ssie && deleg_ssi && s_int_globally_enabled &&
       !trap_taken_prev && !mret_interrupt_inhibit;
 
-  // The per-class pending latches are registered to keep the raw interrupt
-  // inputs off the take_trap -> stall -> cache path. The extra cycle of
-  // detection latency is harmless because interrupts are asynchronous.
-  // mtip and meip are already registered in cpu_and_mem.sv for the same
-  // reason; the supervisor pending bits are registered CSR state.
+  // Register interrupt detection for timing, adding one cycle of latency.
   logic m_int_pending_comb, s_int_pending_comb;
   logic m_int_pending, s_int_pending;
-  // The !take_trap_m/!take_trap_s gates keep a still-pending interrupt from
-  // being re-latched on the cycle its own class's trap is taken (a latched
-  // value would otherwise fire a second, spurious entry the next cycle). This
-  // is not a combinational loop: the takes derive from the registered
-  // latches, so the feedback passes through a flop. A class that loses the
-  // take mux to the other class is not retained through the entry
-  // (trap_taken_prev drops its source-live for one cycle, clearing the
-  // latch). Delivery relies on the source being a level (every FROST
-  // supervisor source is: the mip software bits, the PLIC S-context line,
-  // and the Sstc compare), so it re-latches as soon as its class is eligible
-  // again, inside the winning handler where permitted or after its xRET.
+  // Suppress re-latching on the class's own take to prevent double entry.
+  // Feedback passes through the pending register. trap_taken_prev clears
+  // the losing class next cycle; delivery relies on level sources that
+  // re-latch when eligible again (mip bits, the PLIC line, and Sstc compare).
   logic take_trap_m, take_trap_s;
   assign m_int_pending_comb =
       (meip_enabled || mtip_enabled || msip_enabled ||
        seip_m_enabled || ssip_m_enabled || stip_m_enabled) && !take_trap_m;
   assign s_int_pending_comb = (seip_s_enabled || ssip_s_enabled || stip_s_enabled) && !take_trap_s;
 
-  // Source-level qualification: pending, locally enabled (mie.x), targeting
-  // this class, and not in the cycle after a trap (trap_taken_prev). It is
-  // not gated by the live per-class global enable, nor by the xRET inhibit.
-  //
-  // A set latch is retained while any source of its class stays pending,
-  // enabled in mie, and aimed at the class, even while the class's global
-  // enable (xIE or the Debug Mode mask) is off or the xRET inhibit is up.
-  // The eligible term still requires the live enable and no inhibit, so a
-  // retained latch can neither trap nor request a commit hold while its
-  // class is masked. When the gates reopen with its cause still valid,
-  // arming starts a cycle earlier than re-latching would allow; that head
-  // start can also let a retained S request be taken ahead of an M request
-  // that became pending while the xRET inhibit was up. The latch clears when
-  // no source of the class is live (pending drops, mie.x is cleared, or
-  // mideleg moves the source to the other class, which keeps it from being
-  // taken with the old class's CSRs), on its own class's take, and after any
-  // trap (trap_taken_prev).
+  // Keep a latch while any source is pending, locally enabled, and targeting
+  // its class, across global-enable drops and the xRET inhibit. The latch
+  // cannot trap or hold commit while masked. Retention saves a re-latch
+  // cycle and can let an S request precede a newly pending M request.
+  // Clear when no source qualifies, on the class's own take, or after any
+  // trap. Recheck delegation so a retargeted source cannot use the old CSRs.
   logic m_int_source_live, s_int_source_live;
   assign m_int_source_live =
       ((i_interrupts.meip && mie_meie) || (i_interrupts.mtip && mie_mtie) ||
@@ -378,21 +320,17 @@ module trap_unit #(
     end else begin
       if (m_int_pending_comb) m_int_pending <= 1'b1;  // latch when fully eligible
       else if (m_int_pending && m_int_source_live && !take_trap_m)
-        m_int_pending <= 1'b1;  // hold a live source across a global-enable drop and xRET inhibit
-      else m_int_pending <= 1'b0;  // clear stale (no live source) / on take
+        m_int_pending <= 1'b1;  // Retain a live source while masked.
+      else m_int_pending <= 1'b0;  // Clear when stale or taken.
       if (s_int_pending_comb) s_int_pending <= 1'b1;
       else if (s_int_pending && s_int_source_live && !take_trap_s) s_int_pending <= 1'b1;
       else s_int_pending <= 1'b0;
     end
   end
 
-  // Debug Mode take class D. The halt sources (haltreq, step-done) are live
-  // only outside Debug Mode and go is live only in Debug Mode, so the two
-  // never overlap. Every source is a level held by its requester until the
-  // take it requests lands (the debug module drops go on o_dbg_go_taken, the
-  // step request clears on entry, haltreq is the debugger's), so the latch
-  // needs no hold-across-disable term: it re-latches while the source is
-  // live and clears on its own take.
+  // Class D halt sources are live only outside Debug Mode; go is live only
+  // inside it. Requesters hold these levels until the requested take, so
+  // the latch needs no hold-across-disable term.
   logic take_trap_d;
   logic d_halt_source_live, d_go_source_live, d_source_live;
   assign d_halt_source_live = (i_dbg_haltreq || i_dbg_step_req) && !i_debug_mode;
@@ -421,16 +359,12 @@ module trap_unit #(
   assign dcsr_ebreak_here = (i_priv == riscv_pkg::PrivM) ? i_dcsr_ebreak[2] :
                             (i_priv == riscv_pkg::PrivS) ? i_dcsr_ebreak[1] : i_dcsr_ebreak[0];
 
-  // Register synchronous exceptions from the ROB head before trap entry.
-  // This adds one cycle to synchronous-exception handling, but removes the
-  // ROB-head exception -> trap_taken -> front-end redirect cone from the
-  // same cycle. Interrupts have their own registered path (the latches above).
+  // Register ROB-head exceptions for timing, adding one cycle to trap entry.
   logic            exception_pending;
   logic [XLEN-1:0] exception_cause_q;
   logic [XLEN-1:0] exception_tval_q;
   logic [XLEN-1:0] exception_pc_q;
-  // The replay class is decoded at capture, so the no-CSR qualification of
-  // trap_taken (a CSR counter and commit-event input) starts from a flop.
+  // Register the replay class with the exception, for timing.
   logic            exception_replay_q;
 
   always_ff @(posedge i_clk) begin
@@ -439,10 +373,9 @@ module trap_unit #(
     end else if (o_trap_taken) begin
       exception_pending <= 1'b0;
     end else if (trap_taken_prev) begin
-      // Hold cleared one extra cycle: i_exception_valid (the ROB's trap_pending)
-      // stays high until the trap is acked (~1 cycle after o_trap_taken), so
-      // without this the exception re-arms and the trap is taken a second time
-      // (now in M, corrupting mstatus.MPP / mcause for a U-mode trap).
+      // Keep clear through the ROB's delayed acknowledgment. Otherwise its
+      // still-high trap_pending re-arms the exception and a second entry
+      // corrupts MPP and mcause for a U-mode trap.
       exception_pending <= 1'b0;
     end else if (i_exception_valid) begin
       exception_pending  <= 1'b1;
@@ -453,10 +386,9 @@ module trap_unit #(
     end
   end
 
-  // Vectored mode offset: 4 * cause_code (fits in 6 bits, so the adders stay
-  // small). M side: MEI=44, MSI=12, MTI=28, plus the undelegated supervisor
-  // classes SEI=36, SSI=4, STI=20. S side: SEI=36, SSI=4, STI=20. Registered
-  // so it stays in step with the pending latches.
+  // Vectored offset is 4 * cause, registered with the pending latches.
+  // M: MEI=44, MSI=12, MTI=28; undelegated SEI=36, SSI=4, STI=20.
+  // S: SEI=36, SSI=4, STI=20. All offsets fit in six bits.
   logic [5:0] m_vectored_offset_comb, s_vectored_offset_comb;
   logic [5:0] m_vectored_offset, s_vectored_offset;
   always_comb begin
@@ -496,9 +428,7 @@ module trap_unit #(
     end
   end
 
-  // WFI stall. o_stall_for_wfi is registered to break the path from the
-  // pending latches through the stall computation to cache writes. The extra
-  // cycle on stall release costs nothing: the pipeline is already stalled.
+  // Register WFI stall for timing; release is delayed one cycle.
   logic stall_for_wfi_comb;
   assign stall_for_wfi_comb = wfi_active && !(m_int_pending || s_int_pending);
 
@@ -553,11 +483,9 @@ module trap_unit #(
   end
 
   always_ff @(posedge i_clk) begin
-    // Hold each cause while its class latch is held (across a global-enable
-    // drop or the xRET inhibit) and its own source remains pending; the comb
-    // causes are built from the gated *_enabled so they decay to 0 there,
-    // which would leave the held interrupt ineligible when it can finally
-    // trap.
+    // Retain the cause while its class is held and its source is pending.
+    // The gated combinational cause becomes zero while masked, which would
+    // otherwise leave the held interrupt ineligible on re-enable.
     if (m_int_cause_comb != '0) m_int_cause <= m_int_cause_comb;
     else if (m_int_pending && m_int_source_live && m_int_cause_source_pending)
       m_int_cause <= m_int_cause;
@@ -568,11 +496,8 @@ module trap_unit #(
     else s_int_cause <= '0;
   end
 
-  // A registered interrupt request must still be enabled, and still targeting
-  // the same class, when it reaches the trap decision. This keeps raw
-  // interrupt inputs out of the take_trap cone while letting CSR writes (an
-  // mstatus restore, an mie/mideleg rewrite) cancel a stale one-cycle sample
-  // before an xRET.
+  // Recheck enable and delegation at the take decision so CSR writes can
+  // cancel a stale registered interrupt request.
   logic m_latched_source_enabled;
   always_comb begin
     unique case (m_int_cause)
@@ -607,15 +532,11 @@ module trap_unit #(
       !trap_taken_prev &&
       !mret_interrupt_inhibit;
 
-  // Interrupt arming: an interrupt may only take a trap the cycle after it
-  // first became eligible. The arming cycle raises o_trap_drain_wait (below),
-  // which lands in the registered commit hold, so on the take cycle no new
-  // ROB commit can fire, and any store-like commit from the arming cycle has
-  // already pessimistically cleared the SQ's registered committed-empty
-  // status. The take_trap cone therefore needs no same-cycle raw commit
-  // guards; interrupt entry pays one arming cycle.
-  // Exceptions need no arming: an exception at the ROB head already blocks
-  // every commit (commit_ready_early), so no store commit can race the take.
+  // Interrupts arm for one cycle before taking. o_trap_drain_wait registers
+  // a commit hold; a store committed while arming has already cleared the
+  // SQ's registered committed-empty status before a take can fire.
+  // Exceptions need no arming: the ROB head already blocks every commit
+  // through commit_ready_early, so no store commit can race the take.
   logic m_take_armed_q, s_take_armed_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -627,14 +548,10 @@ module trap_unit #(
     end
   end
 
-  // A trap is taken for a ready interrupt or a pending exception when the
-  // pipeline is not stalled (the WFI stall does not count; an interrupt ends
-  // it) and no committed store is still draining (see i_sq_committed_empty).
-  // A shielded AMO or device read at the head holds off interrupt takes. An
-  // armed M-target take always precedes an armed S-target take (the spec's
-  // cross-class ordering); the losing S source is a level and re-latches
-  // once eligibility returns (inside the M handler after mideleg'd sources
-  // re-qualify, or after MRET).
+  // Takes require an unstalled pipeline and drained committed stores.
+  // WFI stall does not count. AMO and device-read shields defer interrupts.
+  // When both classes are armed, M takes priority over S; the losing level
+  // source re-latches when eligible again.
   logic m_int_take_ready, s_int_take_ready;
   assign m_int_take_ready = m_int_eligible && m_take_armed_q &&
       !i_amo_at_head && !i_device_read_at_head;
@@ -645,10 +562,9 @@ module trap_unit #(
   // exception waits at the head with commit held, so priv and medeleg are
   // stable across the wait). Exceptions from M never delegate.
   logic exception_to_s;
-  // Debug Mode: an ebreak whose dcsr.ebreak bit is set for the current
-  // privilege enters Debug Mode; every exception raised in Debug Mode
-  // re-parks the hart with no CSR side effect. Both take precedence over
-  // delegation (priv is M in Debug Mode, so exception_to_s is 0 there).
+  // An ebreak with its dcsr.ebreak bit set enters Debug Mode. Exceptions
+  // in Debug Mode re-park without CSR writes, except memory replays below.
+  // These routes take precedence over delegation.
   logic exception_ebreak_to_d, exception_in_debug;
   assign exception_ebreak_to_d = exception_pending && !i_debug_mode && dcsr_ebreak_here &&
       (exception_cause_q == riscv_pkg::ExcBreakpoint);
@@ -666,15 +582,9 @@ module trap_unit #(
   assign trap_requested =
       d_int_take_ready || m_int_take_ready || s_int_take_ready || exception_pending;
   assign take_trap = trap_requested && !i_pipeline_stall && i_sq_committed_empty;
-  // Interrupt-only take strobes for the per-class latch guards: the take
-  // gate on a class latch fires only when its own interrupt is the one being
-  // taken. An exception take does not gate off a held interrupt (eligibility
-  // gating alone prevents a spurious post-entry take: the entry's priv/xIE
-  // update makes the held class ineligible until software re-enables it),
-  // and a cross-class interrupt take does not gate off the loser, whose
-  // level source re-latches for delivery once its eligibility returns.
-  // Class D precedes both interrupt classes (a halt is precise at any
-  // instruction boundary; a go/park redirect has nothing else pending).
+  // Clear each class's latch on its own take. trap_taken_prev clears other
+  // pending classes next cycle; their level sources re-latch when eligible.
+  // Class D takes priority over both interrupt classes.
   assign take_trap_d = take_trap && d_int_take_ready;
   assign take_trap_m = take_trap && !d_int_take_ready && m_int_take_ready;
   assign take_trap_s = take_trap && !d_int_take_ready && !m_int_take_ready && s_int_take_ready;
@@ -698,16 +608,12 @@ module trap_unit #(
                                                           riscv_pkg::DcsrCauseStep) :
                                           riscv_pkg::DcsrCauseEbreak;
 
-  // xRET execution. Synchronous exceptions are structurally impossible with
-  // an xRET at the ROB head; pending interrupts are deferred across the xRET
-  // recovery window above so the return redirect stays precise. MRET, SRET,
-  // and DRET are mutually exclusive at the head (one instruction).
-  //
-  // No xRET is taken in the cycle after a trap (trap_taken_prev). The trap's
-  // full flush lands in that cycle and removes every ROB entry, but the commit
-  // hold does not cover it, so the ROB can raise an xRET start there: for an
-  // xRET allocated in the take cycle, or one whose start the take cycle's
-  // commit hold kept low. Taking it would return before the handler runs.
+  // MRET, SRET, and DRET are mutually exclusive at the ROB head and cannot
+  // coincide with a synchronous exception. Interrupt inhibition starts one
+  // cycle after the xRET request.
+  // No xRET may take in the cycle after a trap: the full flush removes it,
+  // but the commit hold does not cover this cycle, so the ROB may still
+  // raise a start. Taking it would return before the handler runs.
   logic take_mret, take_sret, take_dret;
   assign take_mret = i_mret_start && !i_pipeline_stall && !take_trap && !trap_taken_prev &&
       i_sq_committed_empty;
@@ -716,22 +622,16 @@ module trap_unit #(
   assign take_dret = i_dret_start && !i_pipeline_stall && !take_trap && !trap_taken_prev &&
       i_sq_committed_empty;
 
-  // The resume-PC write enable needs the union, so compute it before the
-  // trap-vs-xRET arbitration. Going through take_xret would first exclude a
-  // trap and then OR that same trap back in, extending the trap-to-enable path.
+  // Compute the resume-PC write enable before take arbitration, for timing.
   assign o_trap_or_xret_taken = !i_pipeline_stall && i_sq_committed_empty &&
       (trap_requested ||
        (!trap_taken_prev && (i_mret_start || i_sret_start || i_dret_start)));
 
-  // Hold commit while a trap/xRET waits out the store drain, so the
-  // committed set shrinks monotonically and the wait is bounded. The
-  // interrupt arming windows also hold commit (see *_take_armed_q): by the
-  // take cycle the hold is registered-active, so no commit can race the full
-  // flush. The raw samples (*_int_pending_comb) are included because the ROB
-  // observes the interrupt one cycle before the registered eligibility
-  // (e.g. releasing a WFI's commit_stall); without them the instruction
-  // after a WFI could retire in the arming gap and advance the interrupt
-  // resume PC past the architectural boundary.
+  // Hold commit while a trap or xRET waits for stores to drain, so the
+  // committed set shrinks and the wait is bounded. Also hold during arming.
+  // Include raw interrupt samples: the ROB can release WFI a cycle before
+  // registered eligibility rises. Otherwise the following instruction could
+  // retire in that gap and advance the interrupt resume PC.
   assign o_trap_drain_wait =
       ((d_int_eligible || m_int_eligible || s_int_eligible || exception_pending ||
         i_mret_start || i_sret_start || i_dret_start) && !i_sq_committed_empty) ||
@@ -751,9 +651,8 @@ module trap_unit #(
   logic [XLEN-1:0] trap_target_selected;
   logic interrupt_wins;
   assign interrupt_wins = m_int_take_ready || s_int_take_ready;
-  // Decode trap-entry data independently of the xRET take strobes. The
-  // resume-PC register consumes this output only on a trap take, so a late
-  // ROB-head xRET start cannot traverse the xRET mux and then its trap arm.
+  // Decode the entry target separately from xRET selection, for timing.
+  // The resume-PC register consumes it only on a trap take.
   always_comb begin
     if (d_int_take_ready) begin
       // Debug Mode: a halt entry parks the hart; go redirects where the
@@ -774,12 +673,8 @@ module trap_unit #(
       end
     end else begin
       if (i_mtvec[1:0] == 2'b01 && interrupt_wins) begin
-        // Vectored mode for interrupts: BASE + 4*cause_code. The
-        // pre-computed 6-bit offset is faster here than extracting the code
-        // from the full cause.
         o_trap_entry_target = {i_mtvec[XLEN-1:2], 2'b00} + {{(XLEN - 6) {1'b0}}, m_vectored_offset};
       end else begin
-        // Direct mode: all traps go to BASE (aligned to 4 bytes)
         o_trap_entry_target = {i_mtvec[XLEN-1:2], 2'b00};
       end
     end
@@ -792,14 +687,12 @@ module trap_unit #(
     else if (take_trap) trap_target_selected = o_trap_entry_target;
     else trap_target_selected = '0;
 
-    // Both target outputs retain the full address, including faulting high
-    // bits; fetch raises the same precise access fault for a wild target.
+    // Retain high address bits so fetch faults on invalid targets.
     o_trap_target = trap_target_selected;
   end
 
-  // Trap entry information for the CSR file (written to the o_trap_to_s
-  // side), in take priority: Debug Mode, then M-target and S-target
-  // interrupts, then the synchronous exception.
+  // CSR entry data, in priority order: Debug Mode, M interrupt, S interrupt,
+  // then synchronous exception.
   always_comb begin
     if (d_int_take_ready) begin
       // Debug Mode entry: dpc = the precise resume PC (the interrupt
@@ -810,9 +703,8 @@ module trap_unit #(
     end else if (m_int_take_ready) begin
       o_trap_cause = m_int_cause;
       o_trap_value = '0;  // Interrupts have xtval = 0
-      // For interrupts, save the precise architectural resume PC.  The live
-      // ROB head PC can be transient or stale while an async interrupt drains
-      // through the registered commit path.
+      // Use the architectural resume PC: the live ROB head can be stale
+      // while the interrupt waits for the registered commit path.
       o_trap_pc = i_interrupt_pc;
     end else if (s_int_take_ready) begin
       o_trap_cause = s_int_cause;
@@ -851,15 +743,11 @@ module trap_unit #(
     // asserts go outside Debug Mode (masked here anyway).
     assume (!(i_dret_start && (i_mret_start || i_sret_start || i_exception_valid || i_wfi_start)));
     assume (!(i_dret_start && !i_debug_mode));
-    // The privilege register never holds the reserved encoding (proven in
-    // csr_file's own target).
+    // The privilege register never holds the reserved encoding.
     assume (i_priv != 2'b10);
-    // xRET + a pending interrupt is not assumed away. An interrupt that is
-    // already armed (eligible since the previous cycle) may preempt the xRET
-    // in its first start cycle (take_xret yields to take_trap and the xRET
-    // re-executes after the handler); from the second cycle on the
-    // registered inhibit defers the interrupt until after the return
-    // redirect has retired the xRET precisely.
+    // Allow pending interrupts with xRET: an armed interrupt may preempt
+    // the first start cycle, and xRET re-executes after the handler.
+    // The registered inhibit protects the remaining return window.
   end
 
   always @(posedge i_clk) begin
@@ -921,9 +809,8 @@ module trap_unit #(
       // Neither traps nor xRETs may fire while committed stores drain.
       p_trap_waits_drain : assert (!o_trap_taken || i_sq_committed_empty);
 
-      // Interrupt shields. A shielded head keeps the interrupt arm of the trap
-      // out of the take decision; an exception at the head still takes, which
-      // is what makes both shields bounded rather than blocking.
+      // Shields defer interrupts but allow exceptions, so a faulting head
+      // instruction cannot deadlock the trap.
       p_device_shield_blocks_interrupt :
       assert (!(o_trap_taken && i_device_read_at_head) || exception_pending);
       p_amo_shield_blocks_interrupt :
@@ -953,9 +840,7 @@ module trap_unit #(
         p_dret_defers_interrupt : assert (!o_trap_taken);
       end
 
-      // Cross-class ordering (the spec rule delegation introduces): when both
-      // classes are ready, the M-target take wins, so an S-target take never
-      // fires while an M-target take is ready.
+      // When both interrupt classes are ready, M takes priority over S.
       p_m_over_s : assert (!(o_trap_taken && o_trap_to_s && m_int_take_ready));
 
       // Target-side steering invariants: an S-target interrupt take always
@@ -964,8 +849,8 @@ module trap_unit #(
       assert (!(o_trap_taken && !d_int_take_ready && !m_int_take_ready && s_int_take_ready) ||
               o_trap_to_s);
       p_s_never_in_m : assert (!(o_trap_taken && o_trap_to_s && (i_priv == riscv_pkg::PrivM)));
-      // Delegated exceptions steer to S exactly per medeleg and priv, except
-      // in Debug Mode, where every exception re-parks the hart.
+      // Exceptions delegate according to medeleg and priv. Debug exceptions
+      // re-park; memory replays retain privilege.
       if (o_trap_taken && !d_int_take_ready && !m_int_take_ready && !s_int_take_ready) begin
         p_exception_delegation_exact :
         assert (o_trap_to_s == (exception_to_s && !exception_in_debug));
@@ -1082,8 +967,7 @@ module trap_unit #(
       cover (o_trap_taken && i_exception_valid && !m_int_take_ready && !s_int_take_ready);
       cover_delegated_exception : cover (o_trap_taken && o_trap_to_s && exception_to_s);
       cover_trap_after_drain : cover (f_past_valid && o_trap_taken && $past(o_trap_drain_wait));
-      // The device shield defers a ready interrupt, then it takes as soon as
-      // the shield drops: the liveness shape the bounded argument relies on.
+      // A ready interrupt can take once the device shield drops.
       cover_device_shield_defers_interrupt :
       cover (i_device_read_at_head && m_int_eligible && m_take_armed_q &&
              i_sq_committed_empty && !o_trap_taken);
@@ -1091,8 +975,7 @@ module trap_unit #(
       cover (f_past_valid && o_trap_taken && $past(
           i_device_read_at_head && m_int_eligible
       ) && !i_device_read_at_head);
-      // While the device shield defers, commit must not be held (that is the
-      // forward-progress half of the bounded argument).
+      // Commit must proceed while the shield defers a ready interrupt.
       cover_device_shield_defers_without_commit_hold :
       cover (i_device_read_at_head && m_int_eligible && !o_trap_drain_wait);
     end

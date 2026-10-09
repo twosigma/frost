@@ -15,19 +15,11 @@
  */
 
 /*
- * Commit-time actions.
+ * Commit-time register writes, CSR handshakes, and retirement accounting.
  *
- * Turns the registered ROB commit bus into the architectural side effects:
- *   - two-wide commit regfile writes on two ports (port 0 = slot 1 =
- *     rob_commit, port 1 = slot 2 = rob_commit_2), routed to the INT or FP
- *     file by dest_rf;
- *   - the delayed CSR writeback, which drives csr_read_data onto port 0 one
- *     cycle after the CSR appears on the commit bus and takes priority there;
- *   - the csr_commit_fire / csr_wb_pending serialization handshakes;
- *   - the retire valid (o_vld / o_pc_vld) and the instret increment: the
- *     registered commits, plus an instruction that retired without one (an
- *     xRET, a WFI that a trap took over at the ROB head, or a FENCE.I or
- *     SFENCE.VMA, whose own full flush masks its registered commit).
+ * Route two ROB commits to the integer and FP files. Delayed CSR writeback
+ * uses port 0 one cycle after commit. Count instructions whose own flush
+ * masks their registered commit through i_retired_without_commit.
  */
 
 module commit_actions #(
@@ -68,7 +60,7 @@ module commit_actions #(
 
   localparam int unsigned FpW = riscv_pkg::FpWidth;
 
-  // --- Port aliases: the body uses these unprefixed names.
+  // Port aliases.
   riscv_pkg::reorder_buffer_commit_t            rob_commit;
   riscv_pkg::reorder_buffer_commit_t            rob_commit_2;
   logic                                         rob_commit_valid;
@@ -82,17 +74,9 @@ module commit_actions #(
   logic            csr_wb_pending;
   logic [     4:0] csr_wb_dest_reg;
 
-  // --- Regfile writes from ROB commit ---
-  // Two-wide commit drives two independent write ports per regfile:
-  //   port 0 = rob_commit (slot 1)
-  //   port 1 = rob_commit_2 (slot 2)
-  // Both retire in the same cycle when the ROB commits two.  When both ports
-  // write the same address the mwp_dist_ram LVT steers reads to port 1, which
-  // matches program order because slot 2 holds the newer tag.
-  //
-  // CSR instructions use a delayed writeback from csr_read_data, the CSR
-  // file's registered read result.  That keeps the commit CSR address off
-  // the same-cycle regfile-forwarding/dispatch source-value path.
+  // Regfile writes from ROB commit.
+  // Port 1 (slot 2) wins same-address writes because it is younger than slot 1.
+  // CSR writeback waits one cycle for the CSR file's registered read result.
   logic            port0_int_we;
   logic [     4:0] port0_int_addr;
   logic [XLEN-1:0] port0_int_data;
@@ -120,11 +104,9 @@ module commit_actions #(
     end
   end
 
-  // Present CSR delayed-writeback or commit data unconditionally to keep
-  // full-flush-qualified commit valid off the regfile bypass data cone.
-  // The RAM ignores data without a write. Bypass qualifiers differ from write
-  // enables only during full flush, which also squashes the consuming dispatch
-  // (see ooo_register_files).
+  // Drive data regardless of write enable, for timing. RAM ignores it without
+  // a write. Bypass qualifiers can differ from write enables during full
+  // flush, which also squashes the consuming dispatch (ooo_register_files).
   always_comb begin
     port0_int_we   = 1'b0;
     port0_int_addr = '0;
@@ -175,8 +157,8 @@ module commit_actions #(
       assert (!rob_commit.valid && !rob_commit_2.valid)
       else $error("CSR delayed writeback overlapped a commit write port");
     end
-    // Each of those raises a full flush, which masks the bus in the cycle the
-    // bit arrives.
+    // Retirement without a registered commit raises a full flush, masking the
+    // commit bus when i_retired_without_commit arrives.
     if (!i_rst && i_retired_without_commit) begin
       assert (!rob_commit_valid)
       else $error("a retirement without commit overlapped a registered commit");
@@ -187,14 +169,10 @@ module commit_actions #(
   // --- Instruction retire signal ---
   assign o_vld = rob_commit_valid && !rob_commit.exception;
 
-  // Instret adds every registered commit, 1 or 2 per cycle. Slot 2 can
-  // never take an exception (the 2-wide gate excludes them), so its retire
-  // condition is "slot 2 valid". The registered bus holds exactly the
-  // instructions that retired, including one that shares a cycle with a trap
-  // take: the full flush masks it a cycle after a take, which removes the raw
-  // commit of the take cycle itself (that instruction runs again after the
-  // handler). An xRET, a taken-over WFI, or a FENCE.I or SFENCE.VMA (which
-  // its own flush masks here) arrives as i_retired_without_commit.
+  // Count both registered commits; slot 2 cannot retire an exception. A trap
+  // take masks that cycle's raw commit on the following full-flush cycle, but
+  // does not mask an older registered commit visible during the take. xRET,
+  // taken-over WFI, FENCE.I, and SFENCE.VMA use i_retired_without_commit.
   logic [1:0] instruction_retired_count;
   always_comb begin
     instruction_retired_count = {1'b0, i_retired_without_commit};

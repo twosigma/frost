@@ -22,34 +22,16 @@
  * lane 1 the next, in this order:
  *   MUL > MEM > ALU > ALU2 > DIV > FP_DIV > FP_MUL > FP_ADD
  *
- * One balanced top-two merge tree computes both winners at once:
- *
- *   [MUL, MEM] [ALU, ALU2] [DIV, FP_DIV] [FP_MUL, FP_ADD]
- *        \          /             \              /
- *          high four                low four
- *                    \             /
- *                         root
- *
- * Every node carries its two highest-priority packets and their one-hot FU
- * grants. A merge of a higher-priority list A with a lower-priority list B
- * chooses A.first/B.first for lane 0, then A.second, B.first, or B.second for
- * lane 1 according to whether A contains two, one, or zero requests.
- *
- * A live value from either integer ALU (a result passing straight through its
- * idle adapter) travels beside the tree and is restored once its winner is
- * known, which keeps the INT RS -> ALU -> CDB path to one final three-arm value
- * mux. Held adapter values and test-injected values stay ordinary tree
- * payloads. The wrapper must keep the live/fallback contract described at the
- * ports below; it proves the contract itself rather than assuming it here (see
- * FORMAL_ASSUME_VALUE_SOURCE_CONTRACT).
+ * A balanced merge tree carries the two highest-priority packets and their
+ * one-hot FU grants at each node. Live ALU values bypass the tree for timing
+ * and are restored at its outputs; held and test-injected values use the tree.
  *
  * i_clk/i_rst_n exist only for the formal harness. Arbitration has no state
  * and adds no result latency.
  */
 
-// Preserve this small boundary so synthesis cannot algebraically fold either
-// live ALU value back into the merge tree.  With two pre-qualified selects,
-// each output bit is a three-data/two-select function that fits one LUT6.
+// Preserve this boundary to keep live ALU values outside the merge tree.
+// Three data bits and two selects fit in one LUT6 per output bit.
 (* keep_hierarchy = "yes" *)
 module cdb_live_value_restore #(
     parameter int unsigned WIDTH = riscv_pkg::FLEN
@@ -73,9 +55,9 @@ module cdb_live_value_restore #(
 endmodule : cdb_live_value_restore
 
 module cdb_arbiter #(
-    // The standalone formal top assumes the ALU value-source contract (see the
-    // ports). The wrapper sets this to 0 and proves the contract itself,
-    // avoiding a submodule assumption that could make that proof vacuous.
+    // Assume the ALU value-source contract below in standalone formal runs.
+    // The wrapper sets this to 0 and asserts the contract independently to
+    // avoid a vacuous proof.
     parameter bit FORMAL_ASSUME_VALUE_SOURCE_CONTRACT = 1'b1
 ) (
     input logic i_clk,
@@ -90,14 +72,11 @@ module cdb_arbiter #(
     input riscv_pkg::fu_complete_t i_fu_complete_6,  // FP_DIV
     input riscv_pkg::fu_complete_t i_fu_complete_7,  // ALU2
 
-    // Value paths for the two combinational ALUs. The wrapper must keep this
-    // contract for each:
+    // Each combinational ALU must satisfy:
     //   value_is_live  -> the packet is valid and live_value == i_fu_complete_N.value
     //   !value_is_live -> tree_fallback_value == i_fu_complete_N.value
-    // The wrapper sets value_is_live only for a valid shim result passing
-    // through an idle adapter; held adapter and test-injection values use the
-    // fallback side. The held fallback comes from the adapter's payload
-    // register Q, not from its pending/live output mux.
+    // value_is_live marks a valid shim result passing through an idle adapter.
+    // Fallbacks use the held payload register directly or a test-injected value.
     input logic                       i_alu_value_is_live,
     input logic [riscv_pkg::FLEN-1:0] i_alu_live_value,
     input logic [riscv_pkg::FLEN-1:0] i_alu_tree_fallback_value,
@@ -105,18 +84,15 @@ module cdb_arbiter #(
     input logic [riscv_pkg::FLEN-1:0] i_alu2_live_value,
     input logic [riscv_pkg::FLEN-1:0] i_alu2_tree_fallback_value,
 
-    // Kill on the wrapper's speculative_flush_all (a full flush, or commit-time
-    // mispredict recovery): clears both lane valids and o_grant. Payload
-    // selection and o_grant_raw ignore it.
+    // speculative_flush_all: full flush or commit-time misprediction recovery.
+    // Clears both lane valids and o_grant; payloads and o_grant_raw ignore it.
     input logic i_kill,
 
     output riscv_pkg::cdb_broadcast_t o_cdb,
     output riscv_pkg::cdb_broadcast_t o_cdb_2,
 
-    // Pre-restore lane values and valid-qualified live-source selects. These
-    // are exact aliases of the merge-tree outputs and the selects used by
-    // o_cdb/o_cdb_2. The wrapper captures them in its CDB register and repeats
-    // the value restore after it for registered consumers.
+    // Tree values and valid-qualified live selects used by o_cdb/o_cdb_2.
+    // The wrapper registers these and restores live values after that edge.
     output logic [riscv_pkg::FLEN-1:0] o_lane0_tree_fallback_value,
     output logic [riscv_pkg::FLEN-1:0] o_lane1_tree_fallback_value,
     output logic                       o_lane0_select_alu_live,
@@ -140,9 +116,8 @@ module cdb_arbiter #(
     ranked_result_t second;
   } top_two_t;
 
-  // A leaf is already a sorted top-two list: its sole request followed by an
-  // invalid entry.  Carry the valid-qualified one-hot source with the packet
-  // so grant generation needs no final FU-index decoder.
+  // A leaf has one request and an invalid second entry. Its valid-qualified
+  // one-hot grant avoids an FU-index decoder at the output.
   function automatic top_two_t make_leaf(input riscv_pkg::fu_complete_t request,
                                          input riscv_pkg::fu_type_e fu_type);
     top_two_t leaf;
@@ -155,9 +130,9 @@ module cdb_arbiter #(
     end
   endfunction
 
-  // Merge two sorted lists where every entry in higher outranks every entry
-  // in lower.  The second-result mux has three data arms and two select bits,
-  // fitting one LUT6 per payload bit on the X3's UltraScale fabric.
+  // Merge sorted lists: every entry in higher must outrank every entry in lower.
+  // The second-result mux has three data arms and two selects, fitting one LUT6
+  // per bit on X3's UltraScale fabric.
   function automatic top_two_t merge_top_two(input top_two_t higher, input top_two_t lower);
     top_two_t merged;
     begin
@@ -198,9 +173,7 @@ module cdb_arbiter #(
   top_two_t low_four;
   top_two_t tree_root;
 
-  // The ALU leaves always carry the fallback value, which the wrapper builds
-  // with no dependency on the live ALU data. When the value is live, the lane
-  // restore replaces it. Held and test-injected values are ordinary payloads.
+  // ALU leaves carry fallback values; the output mux restores live values.
   riscv_pkg::fu_complete_t alu_tree_request;
   riscv_pkg::fu_complete_t alu2_tree_request;
   always_comb begin
@@ -210,8 +183,7 @@ module cdb_arbiter #(
     alu2_tree_request.value = i_alu2_tree_fallback_value;
   end
 
-  // Spell out the priority leaves rather than relying on fu_type_e's numeric
-  // order, which does not match arbitration priority.
+  // fu_type_e's numeric order differs from arbitration priority.
   assign leaf_mul        = make_leaf(i_fu_complete_1, riscv_pkg::FU_MUL);
   assign leaf_mem        = make_leaf(i_fu_complete_3, riscv_pkg::FU_MEM);
   assign leaf_alu        = make_leaf(alu_tree_request, riscv_pkg::FU_ALU);
@@ -237,10 +209,7 @@ module cdb_arbiter #(
   assign o_grant_raw     = lane0_grant_raw | lane1_grant_raw;
   assign o_grant         = i_kill ? '0 : o_grant_raw;
 
-  // Raw grants are already valid-qualified and stay active during kill, which
-  // keeps i_kill out of the payload path.  Pre-qualify the two live choices
-  // per lane so the protected restore boundary is one three-arm mux on each
-  // payload bit.
+  // Raw grants qualify live selects with request validity, independent of kill.
   logic lane0_select_alu_live;
   logic lane0_select_alu2_live;
   logic lane1_select_alu_live;
@@ -347,9 +316,8 @@ module cdb_arbiter #(
     valid_vec[riscv_pkg::FU_ALU2]   = i_fu_complete_7.valid;
   end
 
-  // Independent flat reference: a priority encoder for lane 0, then a second
-  // priority encoder over the requests lane 0 did not take. The assertions
-  // below prove the tree matches it.
+  // Independent reference: priority-encode lane 0, then the remaining requests
+  // for lane 1. The assertions compare the tree against this reference.
   logic                                            f_ref_found0;
   logic                                            f_ref_found1;
   riscv_pkg::fu_complete_t                         f_ref_data0;
@@ -557,9 +525,8 @@ module cdb_arbiter #(
 
     p_grants_only_valid : assert ((o_grant_raw & ~valid_vec) == '0);
 
-    // The output payload is selected from raw grants, so kill changes only
-    // visibility.  When neither live select fires, including on an invalid
-    // lane, the payload is the merge tree's fallback value.
+    // Kill changes only visibility. With neither live select set, even on an
+    // invalid lane, the payload is the tree's fallback value.
     p_lane0_restore_mux_contract :
     assert (
       o_cdb.value ==

@@ -15,31 +15,17 @@
  */
 
 /*
- * Branch resolution unit (purely combinational).
+ * Combinational branch resolution.
  *
- * Conditional branches and JALRs issue from INT_RS and resolve here, in a
- * wrapper around branch_jump_unit; JAL resolves when the ROB allocates it. The
- * output is the reorder_buffer_branch_update_t the ROB uses to decide
- * misprediction. Conditional branches have no other completion path: the INT
- * RS predecodes their CDB writeback hint clear, so int_alu_shim never
- * completes them.
+ * Conditional branches and JALR resolve from INT_RS; JAL resolves at ROB
+ * allocation. Conditional branches have no CDB completion: the RS clears
+ * their writeback hint, so this update is their only completion path.
  *
- * The update is suppressed for entries the pipeline is discarding: any valid
- * entry during a trap, xRET, or FENCE-class flush, the mispredicting branch
- * and anything younger during an early recovery, and any valid entry during
- * a commit-time recovery. The issuing branch's checkpoint owner is checked as
- * well, so a branch holding a stale or reused checkpoint id produces no
- * update.
- *
- * Condition and target resolve from the registered class bits in parallel
- * with that qualification, which gates only update validity and the
- * misprediction flag. A conditional branch's precomputed target arrives in
- * the issue immediate, and its target check is the one-bit compare ID made
- * against the prediction; only JALR compares its computed target against
- * predicted_target, which the INT station reads from its tag-indexed side
- * RAM behind the stage2 tag. The checkpoint-owner and age predicates read
- * i_branch_predicate_tag, a same-edge twin of the INT stage2 tag. The branch
- * update and the ROB path keep the architectural issue tag.
+ * Flush and checkpoint checks qualify the update. Registered class bits
+ * select the condition and target. Conditional branches carry a precomputed
+ * target and target-match bit; JALR compares its computed target with the
+ * INT station's tag-indexed prediction. i_branch_predicate_tag duplicates
+ * the issue tag for checkpoint and age compares, for fanout.
  */
 
 module branch_resolution #(
@@ -66,7 +52,7 @@ module branch_resolution #(
     output logic                                     [XLEN-1:0] o_branch_target_resolved
 );
 
-  // --- Port aliases: the body uses these unprefixed names.
+  // Port aliases.
   riscv_pkg::rs_issue_t rs_issue_int;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] branch_predicate_tag;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
@@ -97,17 +83,12 @@ module branch_resolution #(
   logic branch_issue_checkpoint_live;
   logic [riscv_pkg::ReorderBufferTagWidth:0] branch_issue_age;
   logic [riscv_pkg::ReorderBufferTagWidth:0] early_flush_age;
-  // TIMING: compare, then mux. Computing each checkpoint's live bit first
-  // lets all eight in_use and owner-tag compares run in parallel straight out
-  // of the checkpoint registers, leaving only a 1-bit 8:1 select behind
-  // checkpoint_id instead of a 5-bit 8:1 mux followed by a compare. For every
-  // checkpoint_id the selected bit equals the mux-then-compare expression.
+  // Compare each checkpoint tag before selecting the live bit, for timing.
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_live_per_id;
   always_comb begin
     for (int i = 0; i < riscv_pkg::NumCheckpoints; i++) begin
-      // Use the registered checkpoint state here to avoid a feedback loop
-      // through execute-time checkpoint free.  The owner-tag check still
-      // filters out stale/reused checkpoint IDs.
+      // Use registered checkpoint state to avoid feedback through execute-time
+      // checkpoint free. The tag check rejects stale or reused checkpoint IDs.
       checkpoint_live_per_id[i] =
           checkpoint_in_use[i] && (checkpoint_owner_tag[i] == branch_predicate_tag);
     end
@@ -119,12 +100,9 @@ module branch_resolution #(
     end
   end
 
-  // The INT RS leaves o_issue.valid ungated for one cycle around flushes so a
-  // just-flushed stage2 entry can still appear at the branch-resolution input.
-  // Suppress only the entries that are being flushed.  Suppressing all branch
-  // resolution during a partial recovery can drop an older surviving branch
-  // that issues in the recovery cycle, leaving its ROB entry permanently
-  // unresolved.
+  // The INT RS can present a flushed stage2 entry for one cycle. Suppress
+  // only flushed entries: an older branch can survive partial recovery and
+  // must resolve or its ROB entry will remain unfinished.
   assign branch_issue_age = {1'b0, branch_predicate_tag} - {1'b0, head_tag};
   assign early_flush_age  = {1'b0, early_mispredict_tag} - {1'b0, head_tag};
 
@@ -148,37 +126,22 @@ module branch_resolution #(
       // just-flushed younger branch re-resolve for one cycle.
       branch_issue_is_flushed = rs_issue_int.valid;
     end
-    // The ROB's head-commit misprediction candidate
-    // (o_head_commit_misprediction_candidate, an unconsumed observation
-    // output) does not suppress branch resolution: routing it through
-    // suppress_branch_resolution → is_branch_issue → branch comparison
-    // (CARRY8) → branch_update → commit_en would make a 16-level
-    // combinational chain. Leaving it out is safe because:
-    //   (a) a resolving branch can never be the committing head.  Branches have
-    //       no CDB done-bypass (reorder_buffer head_cdb_bypass excludes
-    //       head_is_branch), so a branch's done bit is registered and it can
-    //       only be head_ready the cycle after its branch_update.
-    //   (b) resolution writes to entries that will be flushed are harmless:
-    //       flush-after-head invalidates them next cycle, allocation re-inits
-    //       the branch bits, and the unresolved-branch bit such a write
-    //       clears in ooo_pipeline_control belongs to a flushed branch.
-    //   (c) an early_mispredict_fire coinciding with a head-mispredict commit
-    //       is dropped one cycle later.  early_mispredict_active gates on
-    //       !mispredict_recovery_pending (early_misprediction_recovery.sv),
-    //       which registers the commit-time recovery launch, so the early
-    //       pulse dies before any redirect, RAT restore, rob_early_recovered
-    //       write or backend flush.
+    // The ROB's head-commit misprediction candidate does not suppress resolution:
+    //   (a) A resolving branch cannot commit that cycle. Branches have no CDB
+    //       done bypass, so head_ready waits for the registered branch update.
+    //   (b) Updates to entries about to be flushed are harmless: flush-after-head
+    //       invalidates them next cycle, allocation resets their branch bits,
+    //       and their unresolved bits in ooo_pipeline_control can be cleared.
+    //   (c) If early recovery fires with a head-mispredict commit,
+    //       mispredict_recovery_pending suppresses early_mispredict_active in
+    //       the next cycle, before any redirect, RAT restore, early-recovered
+    //       write, or backend flush.
   end
 
   assign suppress_branch_resolution = branch_issue_is_flushed;
 
-  // TIMING: the branch class and the branch_taken_op_e select are pre-decoded
-  // at dispatch and registered through the RS payload and stage2 register
-  // (rs_issue_t.is_branch_class/is_jal/is_jalr/branch_op). Consuming the
-  // registered bits here keeps the instr_op_e equality trees out of the
-  // stage2_op -> branch_mispredicted -> early-mispredict-capture cycle.
-  // reservation_station's rs_is_branch_class_op and rs_branch_op_of compute
-  // them from the operation.
+  // The RS decodes branch class and branch_op at dispatch and registers them
+  // through stage2.
   logic is_branch_issue;
   assign is_branch_issue = rs_issue_int.valid && branch_issue_checkpoint_live &&
                            !suppress_branch_resolution && rs_issue_int.is_branch_class;
@@ -188,7 +151,7 @@ module branch_resolution #(
   logic is_branch_update_issue;
   assign is_branch_update_issue = is_branch_issue && !rs_issue_int.is_jal;
 
-  // Pre-decoded instr_op_e → branch_taken_op_e select for branch_jump_unit
+  // Predecoded branch operation for branch_jump_unit.
   riscv_pkg::branch_taken_op_e branch_op_resolved;
   assign branch_op_resolved = rs_issue_int.branch_op;
 
@@ -200,15 +163,8 @@ module branch_resolution #(
       .XLEN(XLEN)
   ) u_branch_resolve (
       .i_branch_operation         (branch_op_resolved),
-      // TIMING: is_jal/is_jalr are registered members of the INT stage2
-      // payload.  Resolve from those raw class bits in parallel with the
-      // checkpoint-owner and flush qualification above.  Qualification
-      // matters only where the result becomes an architectural branch_update;
-      // putting it on these selects would serialize every condition and
-      // target cone behind the checkpoint-owner compare.  For a valid update
-      // JAL is already excluded and the qualified JALR bit equals the raw
-      // bit, so the update is bit-identical to one resolved from the
-      // qualified bits.
+      // Resolve from raw registered class bits; qualify the update below. For a
+      // valid update, JAL is excluded and the raw JALR bit equals the qualified bit.
       .i_is_jump_and_link         (rs_issue_int.is_jal),
       .i_is_jump_and_link_register(rs_issue_int.is_jalr),
       .i_operand_a                (rs_issue_int.src1_value[XLEN-1:0]),
@@ -225,13 +181,10 @@ module branch_resolution #(
       .o_branch_target_address    (branch_target_resolved)
   );
 
-  // Misprediction detection.  The ROB trusts this flag.
-  // Preserve the raw mismatch boundary so synthesis cannot duplicate the
-  // checkpoint-qualified final AND back into the target comparator cone.
+  // Misprediction detection. Keep the raw comparison separate for timing.
   (* keep = "true" *) logic prediction_wrong;
   always_comb begin
     if (branch_taken_resolved != rs_issue_int.predicted_taken) begin
-      // Direction misprediction (taken vs not-taken)
       prediction_wrong = 1'b1;
     end else if (branch_taken_resolved && rs_issue_int.predicted_taken &&
                  (rs_issue_int.is_jalr ?
@@ -247,10 +200,8 @@ module branch_resolution #(
     end
   end
 
-  // Keep the raw prediction comparison independent of checkpoint state, then
-  // apply the issue qualification once at the observed flag. This equals the
-  // priority form with a leading `if (!is_branch_update_issue)`
-  // (Q ? prediction_wrong : 1'b0), which the simulation reference below keeps.
+  // Qualifying the raw mismatch here equals a priority check of issue validity
+  // before direction and target.
   logic branch_mispredicted;
   assign branch_mispredicted = is_branch_update_issue && prediction_wrong;
 
@@ -262,8 +213,7 @@ module branch_resolution #(
     // anyway so that a JAL packet cannot write back into a possibly
     // committed ROB entry.
     branch_update.valid        = is_branch_update_issue;
-    // Keep the architectural tag on the update/ROB path.  The physical twin
-    // above drives the qualification predicates only.
+    // Use the architectural tag for the update; the duplicate feeds predicates.
     branch_update.tag          = rs_issue_int.rob_tag;
     branch_update.taken        = branch_taken_resolved;
     branch_update.target       = branch_target_resolved;
@@ -303,10 +253,8 @@ module branch_resolution #(
     end
   end
 
-  // The one-bit direct-branch target check must agree with the full compare
-  // against the side-RAM prediction for every qualified direct-branch update
-  // that was predicted taken: this ties the station's tag-indexed read to the
-  // packet it serves.
+  // For a qualified direct branch predicted taken, the precomputed target
+  // check must match the full comparison against the tag-indexed prediction.
   always_comb begin
     if (!$isunknown(
             {
@@ -325,20 +273,11 @@ module branch_resolution #(
     end
   end
 
-  // The JALR side of the same check.  JALR's predicted_target is the only
-  // word of the side-RAM row this module uses, and the packet carries no
-  // independent copy of it, so it cannot be compared the way the direct
-  // branch's target is: a JALR whose prediction differs from its computed
-  // target is an ordinary misprediction, not a fault.  The packet does carry
-  // the link address twice (in imm, from the per-entry payload, and in
-  // link_addr, from the same row as predicted_target), and the row's own pc
-  // sits a fixed instruction length below it.  Check both, so a JALR that
-  // resolves against a row whose words disagree with the packet beside them
-  // is caught here at the consumer.  Neither check pins predicted_target's
-  // value; reservation_station's simulation check does, comparing every
-  // stage-2 read with a copy of the packet's own three words.  No
-  // predicted_taken qualifier: both link copies are valid for every JALR,
-  // predicted or not.
+  // JALR has no independent copy of predicted_target: a target mismatch is
+  // an ordinary misprediction. Check the side-RAM row using its link_addr
+  // against the packet imm and its pc plus instruction length. These checks
+  // apply regardless of predicted_taken. The reservation station separately
+  // checks all three side-RAM words against the dispatched packet.
   always_comb begin
     if (!$isunknown(
             {

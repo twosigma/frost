@@ -15,17 +15,8 @@
  */
 
 /*
- * Combinational decode of the timing-critical instruction classes. Every flag
- * comes straight from the instruction bits rather than from instr_decoder's
- * instruction_operation, so the two decodes run in parallel.
- *
- * Decoded instruction types:
- *   - Loads (any load, unsigned)
- *   - CSR instructions (address extraction)
- *   - A-extension atomics (LR, SC)
- *   - Privileged instructions (MRET, SRET, DRET, WFI)
- *   - JAL/JALR detection
- *   - RAS returns and calls, including the coroutine swap encoding
+ * Decode instruction classes directly from the fields, in parallel with
+ * instr_decoder's operation decode.
  */
 module instruction_type_decoder #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -64,27 +55,22 @@ module instruction_type_decoder #(
 
   assign o_is_load_instruction = i_instruction.opcode == riscv_pkg::OPC_LOAD;
 
-  // Load signedness comes straight from funct3, avoiding the serial chain
-  // instruction -> instruction_operation -> is_load_*.
   // Load funct3: 000=LB, 001=LH, 010=LW, 011=LD, 100=LBU, 101=LHU, 110=LWU
   assign o_is_load_unsigned = o_is_load_instruction && i_instruction.funct3[2];
 
-  // Zicsr: CSR instructions use OPC_CSR (SYSTEM) with funct3 != 000. The
-  // privileged instructions share that opcode with funct3=000, so the funct3
-  // term is what keeps them out of the CSR path.
+  // Zicsr: funct3 != 000 distinguishes CSR operations from privileged
+  // instructions sharing the SYSTEM opcode.
   assign o_is_csr_instruction = (i_instruction.opcode == riscv_pkg::OPC_CSR) &&
                                 (i_instruction.funct3 != 3'b000);
   assign o_csr_address = {
     i_instruction.funct7, i_instruction.source_reg_2
   };  // CSR address in bits [31:20]
-  assign o_csr_imm = i_instruction.source_reg_1;  // Zero-extended imm for CSRRWI/CSRRSI/CSRRCI
+  assign o_csr_imm = i_instruction.source_reg_1;  // Unsigned 5-bit CSR immediate
 
   assign o_is_amo_instruction = i_instruction.opcode == riscv_pkg::OPC_AMO;
-  // LR: funct7[6:2]=00010; SC: funct7[6:2]=00011. funct3 selects the width:
-  // 010 = .W (both XLENs), 011 = .D (rv64 only), so at rv64 the width term
-  // accepts both. If LR.D and SC.D missed is_lr/is_sc they would route as
-  // ordinary AMOs, and SC.D would write memory with no reservation check and
-  // return the loaded data as its success code.
+  // LR: funct7[6:2]=00010; SC: funct7[6:2]=00011. Accept both .W (funct3=010)
+  // and RV64 .D (011), so neither width routes as an ordinary AMO without
+  // reservation handling.
   logic amo_width_valid;
   assign amo_width_valid = (i_instruction.funct3 == 3'b010) || (i_instruction.funct3 == 3'b011);
   assign o_is_lr = o_is_amo_instruction && amo_width_valid &&
@@ -116,7 +102,6 @@ module instruction_type_decoder #(
                     (i_instruction.funct7 == 7'b0001000) &&
                     (i_instruction.source_reg_2 == 5'b00101);
 
-  // JAL/JALR from the opcode, again without waiting on instruction_operation
   assign o_is_jal = i_instruction.opcode == riscv_pkg::OPC_JAL;
   assign o_is_jalr = (i_instruction.opcode == riscv_pkg::OPC_JALR) &&
                      (i_instruction.funct3 == 3'b000);
@@ -124,25 +109,15 @@ module instruction_type_decoder #(
   // ===========================================================================
   // RAS call/return classification
   // ===========================================================================
-  // is_ras_return: JALR with rs1 = x1, rd = x0, imm = 0
-  // is_ras_call: JAL/JALR with rd in {x1, x5}
+  // These flags accompany the instruction through the ROB for RAS recovery
+  // and BTB training. Only x1 is a return source: treating x5/t0 as one would
+  // pop the stack for indirect jumps through that scratch register. Returns
+  // through x5 therefore do not pop it.
   //
-  // These flags drive every return address stack operation. Dispatch passes
-  // them to the ROB, commit-time recovery replays the same push or pop after
-  // restoring a checkpoint (ex_comb_synthesizer), and a mispredicted call or
-  // return trains its BTB entry with them, which is what makes the front end
-  // push or pop for that entry later. The return test is rs1 == x1 alone:
-  // x5/t0 is a common indirect-jump scratch register, so `jr t0` must not be
-  // a return. A genuine return through x5 is therefore not popped: the
-  // encoding cannot tell it from `jr t0`, and a false pop is worse.
-  //
-  // A coroutine (`jalr x5, x1, 0`, where rd and rs1 are both link registers
-  // but different) pops then pushes.  A plain return needs rd == x0 and a
-  // plain call needs rd in {x1, x5}, so no plain call or return sets both
-  // flags, and {is_ras_return, is_ras_call} = 2'b11 carries the coroutine
-  // downstream without widening the ROB entry, the commit bus, or the
-  // recovery registers.  ex_comb_synthesizer decodes it back into a swap;
-  // return_address_stack replays it.
+  // {is_ras_return, is_ras_call} = 2'b11 encodes the coroutine
+  // `jalr x5, x1, 0`: pop then push. Plain returns require rd == x0, while
+  // calls require rd in {x1, x5}, so they cannot otherwise set both flags.
+  // ex_comb_synthesizer decodes the pair for return_address_stack to replay.
 
   logic rs1_is_return_link;
   logic rd_is_link_reg;
@@ -151,8 +126,7 @@ module instruction_type_decoder #(
   assign rs1_is_return_link = (i_instruction.source_reg_1 == 5'd1);
   assign rd_is_link_reg = (i_instruction.dest_reg == 5'd1) || (i_instruction.dest_reg == 5'd5);
 
-  // Coroutine (swap): JALR with rd and rs1 both link registers but different,
-  // imm = 0.
+  // The supported coroutine form is JALR with rd = x5, rs1 = x1, imm = 0.
   assign is_ras_coroutine = o_is_jalr &&
                             rd_is_link_reg &&
                             rs1_is_return_link &&
@@ -160,15 +134,12 @@ module instruction_type_decoder #(
                             (i_immediate_i_type == '0);
 
   // Return: JALR with rs1 = x1, rd = x0, imm = 0, or the swap encoding.
-  // The immediate for JALR is in I-type format: funct7[6:0] ++ source_reg_2[4:0]
   assign o_is_ras_return = (o_is_jalr &&
                             rs1_is_return_link &&
                             (i_instruction.dest_reg == 5'd0) &&
                             (i_immediate_i_type == '0)) || is_ras_coroutine;
 
-  // Call: JAL or JALR with rd in {x1, x5}.  A coroutine's rd is a link
-  // register, so it already satisfies this and needs no extra term. Asserting
-  // o_is_ras_return alongside is what forms the 2'b11 swap encoding.
+  // A coroutine already meets the call condition through its link-register rd.
   assign o_is_ras_call = (o_is_jal || o_is_jalr) && rd_is_link_reg;
 
 endmodule : instruction_type_decoder

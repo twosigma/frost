@@ -29,25 +29,17 @@
  *   pop        a return: drop the top entry
  *   push+pop   a coroutine swap: replace the top entry
  *
- * A pop or swap on an empty stack changes nothing. IF registers each
- * operation, because it depends on same-cycle predictions, and presents it
- * the cycle after PD takes the packet. The outputs (o_tos, o_valid_count,
- * o_nonempty, o_top) apply that pending operation to the stored pointer,
- * count and entries (a pending push or swap supplies the top entry itself),
- * so they are the state after every operation IF has accepted: the recovery
- * point of the packet PD takes this cycle. The edge stores the pending
- * operation, its entry write even when the edge resets the stack.
+ * A pop or swap on an empty stack changes nothing. IF presents a registered
+ * operation one cycle after PD accepts the packet. Outputs include that
+ * pending operation, providing the recovery point for this cycle's packet.
+ * The edge stores it; its entry write occurs even if reset clears the stack.
  *
- * Misprediction recovery restores a packet's recovery point and then applies
- * the mispredicted instruction's own operation (i_pop_after_restore for a
- * return, i_push_after_restore for a call, both for a coroutine swap). It
- * replaces the pending operation; IF accepts no packet in the cycle before a
- * restore or in the restore cycle (the misprediction flush and the redirect
- * bubble), so no operation is pending then or in the cycle after. The
- * recovery point includes its top entry (i_restore_top), which the restore
- * writes back: a wrong-path pop followed by a push overwrites that entry. An
- * entry below the top that a deeper wrong path overwrites (two pops, then a
- * push) stays damaged.
+ * Recovery restores a packet's pointer, count, and top entry, then applies
+ * that instruction's operation. It replaces the pending operation. IF
+ * accepts no packet in the cycle before or during restore, so no operation
+ * is pending during restore or the following cycle. Restoring the saved top
+ * repairs a wrong-path pop followed by a push; overwritten entries below
+ * that top are not repaired.
  *
  * A restore that pushes writes two neighboring entries, the restored top and
  * the entry above it. The entries alternate between two banks by pointer
@@ -98,8 +90,6 @@ module return_address_stack #(
   logic [RAS_PTR_BITS:0] count_after_push;
 
   assign stack_not_empty = (valid_count != '0);
-  // A push onto a full stack overwrites the oldest entry, so the count
-  // saturates at RAS_DEPTH.
   assign count_after_push = (valid_count != RAS_DEPTH[RAS_PTR_BITS:0]) ?
       valid_count + (RAS_PTR_BITS + 1)'(1) : valid_count;
 
@@ -225,7 +215,7 @@ module return_address_stack #(
       // Restore the checkpoint, which excludes the mispredicted instruction's
       // own operation, then apply that operation.
       if (restore_swap_req) begin
-        // A swap replaces the top entry and keeps both pointers.
+        // A swap replaces the top entry and keeps the pointer and count.
         tos_next = i_restore_tos;
         valid_count_next = i_restore_valid_count;
       end else if (i_pop_after_restore && i_restore_valid_count != '0) begin
@@ -248,10 +238,8 @@ module return_address_stack #(
   end
 
 `ifdef RAS_CHECKPOINT_LOCAL_PROOF
-  // Reference equations for the ras_checkpoint formal target, written as one
-  // case over the operation instead of the priority chains above. The same
-  // step gives the outputs (the pending operation on the stored state) and
-  // the next state (the restore and its operation, or the pending one).
+  // Reference operation table for both output state after the pending
+  // operation and next state after any restore.
   function automatic logic [2*RAS_PTR_BITS:0] reference_step(
       input logic [RAS_PTR_BITS-1:0] from_tos, input logic [RAS_PTR_BITS:0] from_count,
       input logic pop, input logic push);
@@ -273,7 +261,7 @@ module return_address_stack #(
         step_count = (from_count == RAS_DEPTH[RAS_PTR_BITS:0]) ?
             from_count : from_count + (RAS_PTR_BITS + 1)'(1);
       end
-      default: ;  // no operation, or a swap, which keeps both pointers
+      default: ;  // no operation, or a swap, which keeps the pointer and count
     endcase
     reference_step = {step_tos, step_count};
   endfunction

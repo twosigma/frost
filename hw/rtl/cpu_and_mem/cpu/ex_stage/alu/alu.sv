@@ -15,40 +15,21 @@
  */
 
 /*
- * Arithmetic logic unit: single-cycle combinational execution unit for the
- * base integer ISA plus Zba, Zbb, Zbs, Zbkb, and Zicond. At XLEN=64 that
- * includes the 6-bit shift, rotate, and bit-index amounts, the W-form word
- * operations (32-bit operation, result sign-extended to XLEN), and the Zba
- * unsigned-word address forms. The unit also returns the precomputed link
- * address for JAL/JALR and the LUI/AUIPC values (ID precomputes AUIPC's
- * PC + imm_u and dispatch passes it in the U-immediate, so the unit has no PC
- * input). M-extension operations never execute here; they run in the
- * multiplier and divider behind int_muldiv_shim. Zicsr operations have no
- * result of their own here either: int_alu_shim supplies the CSR write operand
- * through i_side_result (below), and the CSR is read and written at commit.
+ * Combinational integer ALU for the base ISA, Zba, Zbb, Zbs, Zbkb, and Zicond.
+ * RV64 uses six-bit shift and bit indices; W forms sign-extend 32-bit results.
+ * ID precomputes AUIPC's PC + imm_u, and dispatch supplies the U-immediate.
+ * JAL/JALR return the supplied link address. M operations use int_muldiv_shim;
+ * CSRs are read and written at commit.
  *
- * At XLEN=64, the base shifts and the Zbb rotates of each width share one
- * left and one right funnel shifter. Their controls come from
- * riscv_pkg::projected_shift_controls, where each control reads at most four
- * operation-enum bits instead of decoding the full enum; the assertions at
- * the bottom check the controls this unit uses for each of those operations.
+ * At XLEN=64, shifts and rotates share left and right funnels per width.
+ * riscv_pkg::projected_shift_controls decodes the enum; assertions check the
+ * controls for all operations that consume them.
  *
- * Result selection. Each operation group (logic, Zbs, immediates and links,
- * byte and pack, ORC.B, base and W add/sub, Zba, shifts and rotates, min/max
- * and CZERO, counts, set-less-than and BEXT) forms its own result bus, masked
- * to zero unless the operation is one of the group's. The shallow groups and
- * i_side_result pre-merge into result_early and the deep ones join it at the
- * final OR, so each result bit ends in one OR of at most six buses instead of
- * a wide per-bit case mux. An operation no group lists, PAUSE among them,
- * returns i_side_result, which the caller drives to zero for every operation
- * that has a group.
- *
- * i_side_result is the caller's own value for operations without a group
- * (int_alu_shim: the CSR write operand and the fetch-fault value). Taking it
- * into result_early, instead of muxing it in after o_result, keeps the
- * caller's override off the result's last LUT level. keep_hierarchy keeps
- * that boundary and the group buses intact in the core, where synthesis would
- * otherwise re-factor them with the shim and the reservation station.
+ * Each result group is zero unless selected. OR the groups with i_side_result,
+ * which the caller must drive to zero for grouped operations. Ungrouped
+ * operations return i_side_result: int_alu_shim supplies CSR write operands
+ * and fetch-fault values here. Premerge shallow groups for timing, and keep
+ * the hierarchy to preserve this grouping.
  */
 
 (* keep_hierarchy = "yes" *)
@@ -141,12 +122,9 @@ module alu #(
   logic [XLEN-1:0] shared_rotate_left_result;
   logic [31:0] shared_word_rotate_result;
 
-  // Only the nine full-width and nine word shift/rotate operations in the
-  // result selection consume the barrel results. On those operations the
-  // projected controls equal the symbolic operation tests; for any other
-  // operation their values are unobserved. The checks below tie this to the
-  // current enum encoding. The RS computes the INT port-1 shift-amount hint
-  // with the same package function, so these checks cover it too.
+  // Only shift and rotate operations consume these projected controls; values
+  // for other operations are unused. Assertions tie them to the enum encoding.
+  // The RS uses the same function for the INT port-1 shift-amount hint.
   logic [6:0] shift_controls;
   assign shift_controls = riscv_pkg::projected_shift_controls(i_instruction_operation);
   assign shift_uses_immediate = shift_controls[0];
@@ -154,9 +132,7 @@ module alu #(
   assign shared_shift_amount = USE_SHIFT_AMOUNT_HINT ? i_shift_amount_hint :
       (shift_uses_immediate ? shamt_imm : i_operand_b[ShamtMsb:0]);
 
-  // The left and right funnels share the effective amount. Logical,
-  // arithmetic, and rotate forms differ only in the fill, so no data is
-  // selected or reversed by direction before or after the shift tree.
+  // Both funnels share the amount; fill selects logical, arithmetic, or rotate.
   logic full_rotate_mode, full_arithmetic_mode;
   logic word_rotate_mode, word_arithmetic_mode;
   logic [XLEN-1:0] full_barrel_fill;
@@ -164,10 +140,7 @@ module alu #(
   logic [31:0] word_barrel_fill;
   logic [31:0] word_barrel_result;
 
-  // Each mode reads four or fewer operation bits, so it fits a single LUT.
-  // The shared amount select also reads four operation bits, leaving two
-  // LUT6 inputs for the register and immediate amount bits; do not preserve
-  // an intermediate decoder.
+  // Decode modes directly for timing; do not preserve an intermediate decoder.
   assign full_rotate_mode = shift_controls[5];
   assign full_arithmetic_mode = shift_controls[4];
   assign word_rotate_mode = shift_controls[2];
@@ -325,7 +298,7 @@ module alu #(
       select_byte[6], brev8_x(i_operand_a)
   );
 
-  // Keep byte OR-reduction out of the byte/pack selection tree.
+  // Separate ORC.B from byte and pack results, for timing.
   logic [0:0] select_orc;
   (* keep = "true" *) logic [XLEN-1:0] result_orc;
   assign select_orc[0] = (i_instruction_operation == riscv_pkg::ORC_B);
@@ -500,10 +473,8 @@ module alu #(
       select_condition[3], XLEN'(i_operand_a[shamt_imm])
   );
 
-  // The count bus is zero above bit 6; the predicate bus is zero above bit 0.
-  // Arithmetic bit zero has no carry propagation: pre-merge just its two
-  // groups, allowing every other group to enter the final OR directly. The
-  // caller's side result is shallow too and fills result_early's sixth input.
+  // Count results are zero above bit 6; predicates are zero above bit 0.
+  // Premerge shallow results and bit-zero arithmetic for timing.
   (* keep = "true" *) logic [XLEN-1:0] result_early;
   (* keep = "true" *) logic result_low_arithmetic;
   assign result_early = result_logic | result_zbs | result_immediate | result_byte | result_orc |
@@ -516,9 +487,8 @@ module alu #(
       result_minmax[XLEN-1:1] | result_count[XLEN-1:1];
 
 `ifndef SYNTHESIS
-  // These checks name each consuming operation by its enum member, so an enum
-  // change that alters a projected control for any of them fails at time
-  // zero, whether or not a test ever executes that operation.
+  // Check projected controls for every consuming enum member, even if the
+  // operation is never executed. Enum changes must preserve these controls.
   localparam logic [6:0] ControlsSLL   = riscv_pkg::projected_shift_controls(riscv_pkg::SLL);
   localparam logic [6:0] ControlsSRL   = riscv_pkg::projected_shift_controls(riscv_pkg::SRL);
   localparam logic [6:0] ControlsSRA   = riscv_pkg::projected_shift_controls(riscv_pkg::SRA);

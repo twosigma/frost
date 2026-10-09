@@ -23,9 +23,8 @@
  * stack's pushes and pops, a cycle after PD takes a packet whose used
  * prediction came from a typed entry.
  *
- * The shared enable (prediction_common) takes the stall and holdoffs in
- * registered form, and the PC-mux select (o_prediction_used_for_pc) adds no
- * live stall, which keeps stall logic off the PC path.
+ * prediction_common uses registered stall and holdoffs. PC selects omit
+ * the live stall gate; consumed predictions include it.
  */
 module branch_prediction_controller #(
     // Set only when i_pc_2/alt are structurally i_pc_2_base + 2/+4.
@@ -35,21 +34,13 @@ module branch_prediction_controller #(
     input logic i_reset,
     input logic i_stall,
     input logic i_stall_registered,
-    // Fetch progress: a live window is valid, or a stall-replay bundle is
-    // presented. With no progress, i_disable_branch_prediction suppresses new
-    // predictions upstream. This input also holds the registered prediction
-    // pipeline (metadata, pc_reg handoff, holdoffs), so a prediction consumed
-    // on the last delivered cycle keeps its bookkeeping until the deferred
-    // window arrives.
+    // A live window or stall-replay packet is available. No progress holds
+    // prediction metadata, handoff, and holdoffs until delivery resumes;
+    // i_disable_branch_prediction blocks new predictions upstream.
     input logic i_fetch_progress,
     input logic i_flush,
-    // PD-stage redirect. It takes the PC stream from any slot-1 prediction
-    // made in the same (or previous) cycle, so the registered pc_reg handoff
-    // must not survive it; the registered metadata survives only a redirect to
-    // the same target (see Prediction Registration). pc_controller's
-    // redirect_kill_pending_q suppresses the handoff for one cycle only and
-    // ignores stalls; clearing at the source keeps a stall from replaying a
-    // dead prediction.
+    // A PD redirect kills the registered pc_reg handoff even during stalls.
+    // Metadata survives only when its target matches (see registration).
     input logic i_pd_redirect,
     input logic [riscv_pkg::XLEN-1:0] i_pd_redirect_target,
 
@@ -100,11 +91,8 @@ module branch_prediction_controller #(
     input logic i_is_32bit_spanning,
     input logic i_use_instr_buffer,
     input logic i_disable_branch_prediction,
-    // TIMING: i_window_cannot_serve_raw, the served-window check, is the latest
-    // prediction-disable input. IF supplies the disable early for each of its
-    // values (_wcs0 when the window serves pc_reg; _wcs when it cannot, which
-    // IF ties to disabled), prediction_common is built from both, and the raw
-    // check picks between the finished results in the last LUT.
+    // Prediction-disable values with window coverage forced true (_wcs0)
+    // and false (_wcs). IF ties _wcs high; the raw check selects last for timing.
     input logic i_disable_branch_prediction_wcs0,
     input logic i_disable_branch_prediction_wcs,
     input logic i_window_cannot_serve_raw,
@@ -174,26 +162,22 @@ module branch_prediction_controller #(
     // IF's case where the live lookup is the packet being emitted.  IF ANDs it
     // with pc == pc_reg, which rules that term out, so the result is exact.
     output logic o_prediction_used_live_cofactor,
-    output logic o_prediction_holdoff,  // One cycle after prediction (for c_ext_state)
+    output logic o_prediction_holdoff,  // Registered prediction holdoff (for c_ext_state)
     output logic o_sel_prediction_r,  // Registered pc_reg handoff (for pc_controller)
     // Predicted op must still execute in IF/PD/ID
     output logic o_prediction_requires_pc_reg_handoff,
     output logic o_control_flow_to_halfword_pred,  // Prediction targets halfword address
 
     // Slot-2 prediction outputs.  Combinational: they feed pc_controller's
-    // slot-2 redirect path and the slot-2 IF→PD metadata.  A taken slot-2
+    // slot-2 redirect path and the slot-2 IF-to-PD metadata.  A taken slot-2
     // prediction redirects fetch to o_slot2_predicted_target and costs one
     // bubble, because fetch has already requested the next sequential window.
     output logic                       o_slot2_prediction_used,
     output logic                       o_slot2_prediction_used_for_pc,
-    // A separate copy of o_slot2_prediction_used_for_pc for pc_controller's
-    // fetch-PC mux, which selects with it in each of its 64 bit LUTs.
+    // A copy of the slot-2 PC request for the fetch mux, for fanout.
     output logic                       o_slot2_prediction_used_for_fetch_mux,
-    // The slot-2 PC redirect, split for timing.  The staged-lookup part does
-    // not depend on the live-PC alias.  The live-target part is exported
-    // without the alias term; pc_controller ANDs in
-    // o_slot1_aliases_slot2_candidate, a slow full-address compare, at its
-    // final pc_reg mux.
+    // Separate staged and live redirect terms, for timing. The live term
+    // omits the alias check; pc_controller ANDs it back in at selection.
     output logic                       o_slot2_staged_prediction_used_for_pc,
     output logic                       o_slot1_aliases_slot2_candidate,
     output logic                       o_slot2_live_target_used_for_pc_cofactor,
@@ -268,17 +252,10 @@ module branch_prediction_controller #(
   logic            slot2_pc_use_alt;
   assign slot2_pc_use_alt = i_slot2_plus4_candidate_valid;
 
-  // TIMING: the BTB update bundle is registered here before it reaches the
-  // predictor ("BTB training order" in the CPU README).  Upstream it is
-  // ex_comb_synthesizer's priority mux over three registered commit records
-  // (mispredict / correct-branch slot 1 / slot 2) plus the early-recovery
-  // override, and the predictor turns it straight into a read-modify-write of
-  // its LUTRAM tables (tag read, compare, counter step, write); the register
-  // splits that path.  Training lands one cycle late, which only a prediction
-  // made in that cycle can observe.  Consecutive updates keep their order
-  // (both are delayed alike), so back-to-back updates to one entry see each
-  // other.  The direction predictor trains from its own input, without this
-  // delay.
+  // Register BTB training for timing ("BTB training order" in the CPU
+  // README). Every update is delayed one cycle, preserving order and
+  // back-to-back updates to an entry. Lookups during that cycle see the
+  // earlier state. Direction-predictor training has no such delay.
   logic                       btb_update_q;
   logic [riscv_pkg::XLEN-1:0] btb_update_pc_q;
   logic [riscv_pkg::XLEN-1:0] btb_update_target_q;
@@ -287,8 +264,6 @@ module branch_prediction_controller #(
   logic                       btb_update_call_q;
   logic                       btb_update_return_q;
   logic                       btb_early_update_active_q;
-  // TIMING: capped so synthesis replicates it beside the predictor's
-  // early-update compares and table addresses.
   (* max_fanout = 48 *)logic [riscv_pkg::XLEN-1:0] btb_early_update_pc_q;
   logic                       btb_early_update_taken_q;
   logic [riscv_pkg::XLEN-1:0] btb_late_update_pc_q;
@@ -313,8 +288,7 @@ module branch_prediction_controller #(
     btb_late_update_taken_q  <= i_btb_late_update_taken;
   end
 
-  // Keep lookup and update logic inside the predictor instead of merging it
-  // into the IF packet-selection cone, which lengthens the PC feedback paths.
+  // Preserve the predictor boundary for timing.
   (* keep_hierarchy = "yes" *)
   branch_predictor #(
       .XLEN(XLEN)
@@ -368,12 +342,8 @@ module branch_prediction_controller #(
   // ===========================================================================
   // Direction Predictor (decoupled bimodal)
   // ===========================================================================
-  // Supplies a taken/not-taken direction independent of the BTB, so a
-  // conditional branch without a taken BTB prediction, including a not-taken
-  // BTB hit, still has a trained direction for the PD-stage computed-target
-  // redirect.  A taken BTB prediction supplies its own target and direction.
-  // Trained at commit on conditional branches only, at the predict-time index
-  // carried with the branch.
+  // Supplies PD's direction when no taken BTB prediction exists. Training
+  // uses the index carried by a committed conditional branch.
   logic dir_taken;
   logic [riscv_pkg::BpDirIdxBits-1:0] dir_pred_idx;  // slot-1 predict-time index
 
@@ -396,11 +366,8 @@ module branch_prediction_controller #(
       .i_update_taken(i_dir_update_taken)
   );
 
-  // Registered decoupled bimodal direction, snapshot in the same ~i_stall
-  // stage as the registered prediction metadata (o_predicted_target_r,
-  // o_prediction_used_r) so the bit carried to PD aligns with that instruction.
-  // The source is dir_taken, not dir_predicted_taken: the latter is gated by
-  // btb_hit and would read 0 on a miss.
+  // Snapshot bimodal direction with prediction metadata. Use ungated
+  // dir_taken so BTB misses can still predict taken in PD.
   logic dir_taken_snapshot_r;
   assign o_dir_predicted_taken = dir_taken_snapshot_r;
 
@@ -497,11 +464,10 @@ module branch_prediction_controller #(
   logic [  RasPtrBits:0] ras_valid_count;
 
   // ===========================================================================
-  // RAS Recovery Signal Registration (Timing Optimization)
+  // RAS Recovery Registration
   // ===========================================================================
-  // Register the misprediction recovery inputs to break the recovery -> IF
-  // path.  Safe because any redirect triggers a holdoff, so predictions are
-  // blocked while the one-cycle-delayed restore takes effect.
+  // Delay RAS recovery by one cycle for timing. Redirect holdoff blocks
+  // predictions while the restore takes effect.
   logic                  ras_misprediction_r;
   logic [RasPtrBits-1:0] ras_restore_tos_r;
   logic [  RasPtrBits:0] ras_restore_valid_count_r;
@@ -537,20 +503,13 @@ module branch_prediction_controller #(
   // the next cycle carries stale instruction data, and a BTB prediction made
   // on that data would keep prediction_holdoff high forever.
   //
-  // TIMING: the shared enable (prediction_common) does not depend on the late
-  // i_branch_taken and i_is_32bit_spanning.  Branch resolution gates only the
-  // final use, and spanning suppresses use there.  Neither signal reaches back
-  // through prediction_common or the wide target path, so the spanning check
-  // (which depends on the fetched instruction's size) runs in parallel with
-  // prediction.
+  // Branch resolution and spanning checks gate final use separately from
+  // prediction_common, for timing.
   logic prediction_common;
   logic prediction_allowed_stable;
-  // TIMING: prediction_common uses i_stall_registered, keeping the late
-  // back-end stall off this cone.  In the first stall cycle (i_stall high,
-  // i_stall_registered low) a prediction may fire here; the live-stall term in
-  // prediction_used_effective keeps that cycle from consuming it.
+  // Registered stall may still allow a first-stall-cycle prediction here;
+  // prediction_used_effective's live stall gate prevents consumption.
   logic prediction_common_wcs0, prediction_common_wcs;
-  // Complete the common guards before the late pending/PMA disable inputs.
   (* keep = "true" *) logic prediction_common_core;
   assign prediction_common_core = !i_reset && !i_trap_taken && !i_mret_taken &&
       !i_stall_registered && !i_any_holdoff_safe && !o_prediction_holdoff && !i_use_instr_buffer;
@@ -638,11 +597,9 @@ module branch_prediction_controller #(
   assign slot1_typed_target = (btb_is_return && ras_nonempty) ? ras_top : btb_predicted_target;
   assign slot2_staged_typed_target = (btb_is_return_2 && ras_nonempty) ? ras_top :
                                                                           btb_predicted_target_2;
-  // TIMING: pc_controller's copy of the staged typed target takes its type
-  // from the selected row without the staged hit, so the slot-2 tag compare
-  // does not reach this 64-bit select. pc_controller reads it only while a
-  // staged slot-2 prediction redirects, which requires that hit, and there
-  // the two copies agree (p_slot2_staged_pc_target_exact).
+  // The PC target copy omits hit qualification from its return-type select.
+  // It is read only during a staged redirect, which requires a hit, so the
+  // target copies agree whenever used.
   logic [XLEN-1:0] slot2_staged_typed_target_for_pc;
   assign slot2_staged_typed_target_for_pc =
       (btb_entry_is_return_2 && ras_nonempty) ? ras_top : btb_predicted_target_2;
@@ -650,20 +607,7 @@ module branch_prediction_controller #(
   // ===========================================================================
   // Prediction Gating Logic
   // ===========================================================================
-  // A slot-1 BTB prediction redirects the PC through prediction_used_for_pc.
-  // Predictions are blocked:
-  //
-  //   - During reset, trap, mret, stall (higher priority control flow)
-  //   - During a branch redirect (i_branch_taken: resolution overrides prediction)
-  //   - During holdoff cycles (instruction data is stale)
-  //   - When the served window does not cover the instruction packet
-  //   - While the instruction buffer is in use
-  //   - While IF disables prediction (including the verification-mode disable)
-  //   - At halfword-aligned PCs unless the BTB entry is marked compressed, on
-  //     a lower-parcel lookup, and while the lookup belongs to the slot-2
-  //     position
-  //
-  // TIMING: Uses i_any_holdoff_safe (registered) to break path from branch_taken.
+  // Apply slot-1 prediction permission, direction, and final recovery gates.
 
   logic sel_btb_prediction;
   assign sel_btb_prediction = prediction_allowed && dir_predicted_taken;
@@ -672,18 +616,13 @@ module branch_prediction_controller #(
   logic sel_prediction;
   assign sel_prediction = sel_btb_prediction;
 
-  // Prediction use must still be blocked when branch resolution or spanning
-  // takes priority this cycle. Keep branch_taken and is_32bit_spanning as final
-  // gates to keep them out of the deep prediction_common → selection cone.
+  // Branch resolution and spanning suppress final prediction use.
   logic prediction_used_effective;
   logic prediction_used_for_pc;
-  // Complete slot-1 candidate selection before the late common permission.
-  // Otherwise pending-PC equality/disable traverses the BTB gates and the PC
-  // priority tree on the same cycle.
+  // Keep candidate selection separate from common permission for timing.
   (* keep = "true" *)logic prediction_candidate_for_pc;
-  // Taken absorbs the ownership term's (lead_collapsed || taken), leaving
-  // only the alias test on this path. Other ownership consumers retain the
-  // full condition below.
+  // Taken makes (lead_collapsed || taken) true, leaving only the alias check
+  // from slot1_prediction_owned_by_slot2.
   assign prediction_candidate_for_pc =
       !slot1_aliases_slot2_candidate && !i_fetch_lookup_is_lower_parcel &&
       (!i_pc[1] || btb_compressed) && dir_predicted_taken;
@@ -695,20 +634,14 @@ module branch_prediction_controller #(
       !i_is_32bit_spanning && prediction_candidate_for_pc;
   assign prediction_used_effective = prediction_used_for_pc && !i_stall;
 
-  // Combinational prediction for pc_controller: the typed target. The 64-bit
-  // target is selected by the entry's type and the stack's emptiness, not by
-  // prediction_common: the disables and holdoffs only clear the control result,
-  // and consumers ignore the target while prediction_used is low.
+  // Target and type are unqualified; consumers ignore them unless used.
   assign o_predicted_target = slot1_typed_target;
   assign o_predicted_is_call = btb_is_call;
   assign o_predicted_is_return = btb_is_return;
   assign o_prediction_used = prediction_used_effective;
   assign o_prediction_used_for_pc = prediction_used_for_pc;
-  // o_prediction_used_live_cofactor: the use term without
-  // slot1_prediction_owned_by_slot2.  IF ANDs it with pc == pc_reg; since an
-  // address cannot equal both P and P+2 or P+4, that rules the alias out and
-  // makes the result exact, while the wide candidate-address compares stay off
-  // the IF->PD metadata path.
+  // Omit slot1_prediction_owned_by_slot2 for IF's pc == pc_reg case.
+  // A PC cannot also equal pc_reg+2 or pc_reg+4, so that case excludes aliases.
   (* keep = "true" *) logic prediction_live_candidate;
   assign prediction_live_candidate =
       !i_fetch_lookup_is_lower_parcel && (!i_pc[1] || btb_compressed) && dir_predicted_taken;
@@ -747,11 +680,9 @@ module branch_prediction_controller #(
   // keeps the already-redirected branch's predicted-taken marker attached
   // through a stalled redirect, so PD does not redirect it a second time.
   //
-  // A slot-2 redirect needs no target compare: prediction_common includes
-  // !o_prediction_holdoff, and registered slot-1 metadata implies that holdoff
-  // (asserted below), so a used slot-2 prediction never has older slot-1
-  // metadata to keep.  It kills the metadata and handoff outright, but this
-  // late signal is kept out of the prediction-holdoff flops below.
+  // Slot-2 use requires clear prediction holdoff, while registered slot-1
+  // metadata implies holdoff. Thus slot 2 has no older metadata to preserve
+  // and kills metadata and handoff without a target comparison.
   logic pd_redirect_kills_prediction_metadata;
   assign pd_redirect_kills_prediction_metadata =
       i_pd_redirect &&
@@ -796,22 +727,14 @@ module branch_prediction_controller #(
   // ===========================================================================
   // Prediction Holdoff Generation
   // ===========================================================================
-  // A one-cycle delayed signal after a prediction, for c_ext_state.  It tells
-  // c_ext_state to clear stale spanning/buffer state after the branch
-  // instruction processes and before the predicted target arrives.
+  // Clear stale buffer state after the predicted instruction and before
+  // its target. Size detection stays active for the branch itself.
   //
-  // Unlike control_flow_holdoff, this does not block is_compressed detection,
-  // which the instruction at the branch PC still needs.
-  //
-  // A slot-2 prediction can only fire while this holdoff is already clear.  If
-  // a younger slot-1 BTB hit occurs on the same cycle, it may set the holdoff
-  // again here, but slot2_redirect_q and control_flow_holdoff_q confine that
-  // state to the stale-fetch bubble every slot-2 redirect costs.  Prediction
-  // is blocked in the bubble, and the holdoff clears on its first delivered
-  // cycle.  The slot-2 redirect and its kill of the registered slot-1
-  // metadata take effect on the same edge; leaving the slot-2 term
-  // out of these flops only keeps the instruction-memory sideband logic off
-  // their synchronous reset pins.
+  // Slot 2 can fire only with this holdoff clear. A simultaneous younger
+  // slot-1 hit may set it, but slot2_redirect_q and control_flow_holdoff_q
+  // confine it to the stale-fetch bubble. Predictions are blocked there;
+  // holdoff clears on the first delivered cycle. The slot-2 kill is omitted
+  // from these flops for timing.
 
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
@@ -852,9 +775,7 @@ module branch_prediction_controller #(
   logic slot2_candidate_valid;
   logic slot2_plus2_candidate_safe_taken;
   logic slot2_plus4_candidate_safe_taken;
-  // slot2_prediction_common reuses prediction_common but is computed
-  // independently so the slot-2 cone doesn't pull in slot-1's
-  // !i_pc[1] || btb_compressed term.
+  // Slot 2 shares common permission but applies its own size checks.
   assign slot2_prediction_common = prediction_common && i_slot2_valid;
 
   // Qualify the fixed +2 and +4 lookup results independently.  i_pc_2[1]
@@ -869,11 +790,8 @@ module branch_prediction_controller #(
                                   (!i_pc_2_alt[1] ||
                                    (i_slot2_is_compressed_plus4 == btb_compressed_2_plus4));
 
-  // AND each candidate valid into its finished one-bit result, then OR the
-  // mutually exclusive arms.  While slot 2 is valid this equals the reference
-  // select-then-qualify form (checked below), but keeps slot 1's raw size off
-  // the late prediction gate.  i_slot2_valid still applies IF's holdoff,
-  // flush, and replay suppression.
+  // Qualify each candidate and OR the exclusive results. i_slot2_valid
+  // adds IF's holdoff, flush, and replay suppression.
   assign slot2_candidate_valid = i_slot2_plus2_candidate_valid || i_slot2_plus4_candidate_valid;
   assign slot2_plus2_candidate_safe_taken = i_slot2_plus2_candidate_valid && slot2_plus2_safe_taken;
   assign slot2_plus4_candidate_safe_taken = i_slot2_plus4_candidate_valid && slot2_plus4_safe_taken;
@@ -920,11 +838,8 @@ module branch_prediction_controller #(
   logic slot2_live_fallback_used_for_pc_cofactor;
   logic slot2_live_target_used_for_pc;
   logic slot2_live_target_used_for_pc_cofactor;
-  // Prediction permission and full slot-2 validity can arrive through
-  // different late recovery, holdoff, and PMA paths. Complete the candidate
-  // and target choices independently. Also complete the shared permission
-  // without full slot-2 validity: that served-window-dependent input then
-  // selects each finished candidate at the final boundary.
+  // Compute permission, candidate selection, and target choice separately
+  // before applying full slot-2 validity, for timing.
   logic slot2_prediction_permission;
   (* keep = "true" *)logic slot2_prediction_permission_without_valid;
   (* keep = "true" *)logic slot2_prediction_candidate_for_pc;
@@ -942,19 +857,15 @@ module branch_prediction_controller #(
   assign slot2_prediction_permission_without_valid =
       prediction_common && !i_branch_taken && !i_is_32bit_spanning;
   assign slot2_prediction_permission = slot2_prediction_permission_without_valid && i_slot2_valid;
-  // After a collapsed lead, slot1_prediction_owned_by_slot2 equals the alias,
-  // so this term uses the alias directly and the live direction need not pass
-  // through the shared slot1_prediction_owned_by_slot2 LUT first.  It keeps
-  // both the hit and the direction checks.
+  // A collapsed lead makes slot1_prediction_owned_by_slot2 equal the alias.
+  // The live fallback still requires a hit and taken direction.
   assign slot2_prediction_candidate_for_pc =
       slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken ||
       (i_lookup_lead_collapsed && slot1_aliases_slot2_candidate && !btb_hit_2 &&
        btb_hit && slot2_live_fallback_size_safe && dir_predicted_taken);
   assign o_slot2_prediction_used_for_pc =
       slot2_prediction_permission && slot2_prediction_candidate_for_pc;
-  // TIMING: the fetch-PC mux's copy of the request has its own LUT, so the
-  // mux's 64 select loads stay off the copy that the control-flow tracker
-  // and the other slot-2 consumers read.
+  // Duplicate the slot-2 request for the fetch-PC mux, for fanout.
   (* keep = "true", dont_touch = "true" *) logic slot2_prediction_used_for_fetch_mux;
   assign slot2_prediction_used_for_fetch_mux =
       slot2_prediction_permission && slot2_prediction_candidate_for_pc;
@@ -994,9 +905,7 @@ module branch_prediction_controller #(
   // clear it on reset, flush, a different-target PD redirect, or slot-2 use.
   // Slot 2 can win over a simultaneous younger live slot-1 prediction, so its
   // kill must remain even though old registered metadata implies holdoff.
-  // TIMING: finish the hold/load choice and the slot-2 permission separately.
-  // The late BTB candidate then reaches the register through one final LUT,
-  // rather than traversing the shared slot-2 use and the metadata priority mux.
+  // Compute hold/load and slot-2 kill separately for timing.
   (* keep = "true" *)logic prediction_metadata_next_without_slot2;
   (* keep = "true" *)logic slot2_metadata_kill_enable;
   logic prediction_metadata_next;
@@ -1010,19 +919,14 @@ module branch_prediction_controller #(
     o_prediction_used_r <= prediction_metadata_next;
   end
 
-  // Finish the live/staged target choice before IF's late i_slot2_valid
-  // arrives.  An invalid slot 2 shows the staged target, as in the reference;
-  // keeping the finished choice stops synthesis from folding the valid back
-  // into the live-fallback select ahead of this wide mux.
+  // Select the live or staged target before validity, for timing. Invalid
+  // slot-2 packets carry the staged target.
   logic slot2_live_entry_selected;
   assign slot2_live_entry_selected =
       i_lookup_lead_collapsed && slot1_prediction_owned_by_slot2 && !btb_hit_2 && btb_hit;
   assign slot2_target_without_valid =
       slot2_live_entry_selected ? slot1_typed_target : slot2_staged_typed_target;
-  // TIMING: bit 1, the halfword flag the control-flow tracker reads, is taken
-  // from each entry's finished typed target, so the late live-entry select
-  // is the last step before it rather than coming ahead of the typed-target
-  // mux.
+  // Select the halfword flag from the finished targets for timing.
   (* keep = "true" *)logic slot1_typed_target_halfword;
   (* keep = "true" *)logic slot2_staged_typed_target_halfword;
   assign slot1_typed_target_halfword = slot1_typed_target[1];
@@ -1033,12 +937,8 @@ module branch_prediction_controller #(
                                                    slot2_staged_typed_target_halfword,
     i_slot2_valid ? slot2_target_without_valid[0] : slot2_staged_typed_target[0]
   };
-  // pc_controller's slot-2 target: the live or the staged typed target, the
-  // staged one without the hit in its type select (above). It leaves out
-  // i_slot2_valid: every pc_controller use of it is under a slot-2 request
-  // that already requires it. Equal to o_slot2_predicted_target whenever
-  // o_slot2_prediction_used_for_pc (p_slot2_pc_target_exact), since a used
-  // prediction without the live entry is a staged hit.
+  // Omit i_slot2_valid and staged-hit qualification from the PC target copy:
+  // every PC use requires validity and, without a live fallback, a staged hit.
   (* keep = "true" *) logic [XLEN-1:0] slot2_target_for_pc;
   assign slot2_target_for_pc =
       slot2_live_entry_selected ? slot1_typed_target : slot2_staged_typed_target_for_pc;
@@ -1213,8 +1113,8 @@ module branch_prediction_controller #(
 `endif
 
 `ifdef FORMAL
-  // The original nested metadata update, with unconstrained inputs and old
-  // state. In particular, do not assume slot-1 and slot-2 use are exclusive.
+  // Reference nested metadata update with arbitrary inputs and state.
+  // Slot-1 and slot-2 use need not be exclusive.
   logic prediction_metadata_next_ref;
   always_comb begin
     prediction_metadata_next_ref = o_prediction_used_r;
@@ -1234,11 +1134,9 @@ module branch_prediction_controller #(
     assert (prediction_metadata_next == prediction_metadata_next_ref);
   end
 
-  // Reference checks for the branch_prediction_disable formal target.  Both
-  // the staged candidate and the live fallback must obey the selected
-  // prediction disable.  Together with pc_controller's readiness implication,
-  // this keeps a pending handoff and a slot-2 prediction from coinciding in
-  // the integrated IF, with no constraints on predictor contents or state.
+  // Every staged or live source must obey prediction disable. Together with
+  // pc_controller's readiness condition, this prevents a pending handoff and
+  // slot-2 prediction from coinciding, regardless of predictor contents.
   always_comb begin
     p_prediction_common_wcs0_matches_original :
     assert (prediction_common_wcs0 ==

@@ -15,29 +15,23 @@
  */
 
 /*
-  Equivalence bench for fp_engine against Berkeley SoftFloat, the arithmetic
-  library Spike uses (fp_softfloat_ref.c, through DPI-C). One operation runs at
-  a time: the sequencer starts the engine, takes the reference result for the
-  same operation, waits for the engine, and compares the value and the flags
-  bit for bit.
+  Compare fp_engine results and flags bit for bit with Berkeley SoftFloat
+  through fp_softfloat_ref.c (DPI-C), using Spike's RISC-V arithmetic library.
+  One operation runs at a time.
 
-  Stimulus comes from two places. i_ext_valid injects a directed vector while
-  o_ext_ready is high. With i_gen_enable high the internal generator supplies
-  vectors instead: xorshift chains pick the operation from every F and D
-  compute instruction, the rounding mode, and a class for each operand
-  (random bits, ordinary exponents, subnormals, zeros, infinities, quiet and
-  signalling NaNs, extremes, exact powers of two, tie patterns, operands
-  correlated with the first one so sums and FMA results cancel, integer
-  shapes, and improperly NaN-boxed single-precision values).
+  Directed vectors use i_ext_valid/o_ext_ready and take priority over the
+  xorshift generator enabled by i_gen_enable. The generator chooses F/D compute
+  operations, rounding modes, and operand classes; correlated operands exercise
+  cancellation.
 
-  With i_kill_enable high each vector first runs on the engine and is killed
-  i_kill_delay cycles after the start (a random delay when that is 0). The
-  engine must not complete after the kill and must be idle on the next cycle;
-  the vector then runs whole, so residue the kill left behind shows up as a
-  mismatch.
+  With i_kill_enable, run each vector once for cancellation, then replay it for
+  comparison to detect leftover state. i_kill_delay selects the kill-wait count,
+  starting at zero after launch. Zero requests a random delay for generated
+  vectors; directed vectors use zero directly. After a kill the engine must
+  be idle with no completion on the next cycle.
 
-  Counters are the interface to the test; the first mismatch is latched in
-  the o_fail_* outputs. o_max_latency is the longest engine latency seen.
+  Counters report results; o_fail_* holds the first mismatch and o_max_latency
+  the longest observed engine latency.
 */
 module fp_engine_equiv_harness #(
     // Vectors the internal generator produces before it stops and raises
@@ -502,7 +496,7 @@ module fp_engine_equiv_harness #(
             seq_state    <= SEQ_LAUNCH;
           end else if (gen_ready) begin
             cur_op       <= gen_op;
-            // Mostly the five rounding modes, uniformly.
+            // Choose static rounding modes 0..4, favoring 0..3.
             cur_rm       <= (rnd_d[2:0] > 3'd4) ? {1'b0, rnd_d[4:3]} : rnd_d[2:0];
             cur_a        <= gen_a;
             cur_b        <= gen_b;

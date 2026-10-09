@@ -27,7 +27,6 @@ module instr_decoder (
 );
 
   always_comb begin
-    // default values
     o_instr_op = riscv_pkg::ADDI;
     o_illegal  = 1'b0;
 
@@ -268,18 +267,15 @@ module instr_decoder (
         endcase
       end
 
-      // Memory ordering: FENCE and FENCE.I (Zifencei). At commit, FENCE.I has
-      // the ROB request the cache-hierarchy sync (L1D writeback-all + L1I
-      // invalidate-all); its full flush then clears the front end, the Tomasulo
-      // state, and the fetch_provider buffer (i_invalidate), and redirects to the
-      // fall-through address.
+      // FENCE.I (Zifencei) commits after L1D writeback and L1I invalidation.
+      // Its full flush clears the front end, Tomasulo state, and fetch_provider
+      // buffer, then refetches the fall-through address.
       riscv_pkg::OPC_MISC_MEM:
       unique case (i_instr.funct3)
         3'b000:
         // PAUSE is FENCE with fm=0, pred=W, succ=0 and rd=rs1=x0, which is
-        // exactly 0x0100000F: pred=W is instruction bit 24, so funct7=0 and
-        // rs2=5'b10000. Every other encoding, fence r,0 (0x0200000F)
-        // included, is a FENCE.
+        // 0x0100000F. Other funct3=000 encodings, including fence r,0
+        // (0x0200000F), decode as FENCE.
         if (i_instr.funct7 == 7'b0000000 && i_instr.source_reg_2 == 5'b10000 &&
             i_instr.source_reg_1 == 5'b0 && i_instr.dest_reg == 5'b0)
           o_instr_op = riscv_pkg::PAUSE;  // Zihintpause: hint to pause

@@ -15,15 +15,11 @@
  */
 
 /*
-  Iterative floating-point engine for every F and D compute instruction:
-  add/subtract, multiply, fused multiply-add, divide, square root, conversions,
-  min/max, compares, classify, sign injection and the FMV moves, at single and
-  double precision. One operation runs at a time.
+  Iterative F/D floating-point engine, including FMV moves.
+  One operation runs at a time.
 
-  Two decode cycles classify the captured operands and resolve every special
-  operand (NaN, infinity, zero, invalid, divide by zero, out-of-range
-  conversion), FCLASS and sign injection. Everything else runs on one shared
-  datapath:
+  Two decode cycles classify operands and handle special results, FCLASS,
+  and sign injection. Other operations share this datapath:
     R  113-bit accumulator. Column 111 holds the leading bit of a normalized
        significand, column 112 a carry (after an add) or a sign (after a
        subtract), and column 0 is a sticky column: every right shift ORs the
@@ -454,8 +450,7 @@ module fp_engine (
 
   state_e state_q, state_d;
 
-  // A LUT ROM: a block RAM's clock-to-out would sit in front of every decoded
-  // control.
+  // Use a LUT ROM for decode timing.
   (* rom_style = "distributed" *) op_dec_t dec_q;
   logic [2:0] rm_q;
   logic [63:0] opa_q, opb_q, opc_q;
@@ -547,12 +542,11 @@ module fp_engine (
     endcase
   end
 
-  // X load value. FP operands load their significand {hidden, fraction} at
-  // [111:59]. The integer of an FCVT to FP, the register value of an FMV, and
-  // the magnitude a compare or min/max orders load at [111:48]: W forms
-  // extend from bit 31 (sign extension in column 112 for the signed forms),
-  // and a magnitude drops the sign (single precision: the low 31 bits; an
-  // improperly boxed operand is a NaN and its order is never used).
+  // Load FP significands at [111:59]. Integers, FMV values, and comparison
+  // magnitudes load at [111:48]. W-form integers sign-extend bit 31 when
+  // signed and zero-extend when unsigned; signed I2F extends the sign into
+  // column 112. Magnitudes omit the sign; improperly
+  // boxed single-precision operands are NaNs, so their order is unused.
   logic [ 10:0] ld_expf;
   logic [ 51:0] ld_frac;
   logic [112:0] ld_word;
@@ -1046,9 +1040,9 @@ module fp_engine (
     if (sp_kind == SP_QNAN) sp_sign = 1'b0;
   end
 
-  // F2I special operands: NaN and infinities saturate with NV, zero is 0, and
-  // so is an exponent beyond the integer range (at the top exponent only an
-  // unsigned positive or a signed negative value can still be in range).
+  // F2I: zero returns zero. NaNs, infinities, and out-of-range exponents
+  // saturate with NV. At the top exponent, only unsigned positive or signed
+  // negative operands can remain in range.
   logic f2i_special, f2i_sat;
   always_comb begin
     f2i_special = ca_q.nan || ca_q.infinite || ca_q.zero || f2i_over_q ||

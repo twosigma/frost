@@ -18,7 +18,7 @@
  * nic_dma_front: puts the RX and TX engines (index 0 and 1) on the cache
  * hierarchy's coherent DMA port.
  *
- * The engines present tagged line requests. The front-end owns NUM_ENTRIES
+ * The engines present tagged line requests. The front-end tracks NUM_ENTRIES
  * outstanding entries, and the port id is the entry index, so every request
  * the port accepts has a place for its response; each response goes back to
  * its engine with the kind and tag that engine gave the request. Each engine
@@ -119,7 +119,7 @@ module nic_dma_front #(
       end
     end
   end
-  logic [1:0][CountBits-1:0] held;  // entries owned per engine
+  logic [1:0][CountBits-1:0] held;  // entries held per engine
   always_comb begin
     held = '0;
     for (int k = 0; k < int'(NUM_ENTRIES); k++) begin
@@ -127,9 +127,9 @@ module nic_dma_front #(
     end
   end
 
-  // The drain level is registered here: the engines stop presenting on the
-  // raw level in the same cycle, so nothing new can be accepted in the gap,
-  // and the port-side gating stays off the reset controller's path.
+  // Register the drain for timing. Engines stop presenting new requests on the
+  // raw level, so none is accepted from an engine during the one-cycle delay;
+  // a request already buffered here may still hand off downstream then.
   logic stop_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) stop_q <= 1'b0;
@@ -158,12 +158,9 @@ module nic_dma_front #(
   end
 
   // ---- arbitration toward the port ----------------------------------------------
-  // present_q registers eligibility from the same next occupancy that the
-  // request and entry registers take, so it is exactly
-  // rq_valid_q & free_any_now & !stop_q without putting the drain gating or the
-  // free-entry reduction on the DMA valid and select path. It holds valid
-  // bits only, not request payloads, so arbitration can still switch sides
-  // every cycle when a locked line is refused.
+  // present_q matches rq_valid_q & free_any_now & !stop_q, computed from
+  // next state. Only eligibility is registered, so arbitration can switch
+  // sides after a refusal.
   logic [1:0] present_q;
   logic [WaitBits-1:0] tx_wait_q;
   logic tx_starved, prefer_tx_q, prefer_rx_q;
@@ -196,13 +193,10 @@ module nic_dma_front #(
     if (stop_q) rq_valid_n = '0;
   end
 
-  // The DMA ready/fire arrives through the shared sequencer. Compute both
-  // possible next eligibility values first, leaving only the final select
-  // on that path. After a fire, a free entry remains if at least two were
-  // free already, or a response frees an entry other than the one allocated.
-  // resp_frees_entry checks the id range to match ent_valid_n, which ignores
-  // the write for an out-of-range id (possible when NUM_ENTRIES is not a
-  // power of two).
+  // Precompute eligibility with and without a fire. After a fire, space
+  // remains if two entries were free or a response frees a different entry.
+  // Check response ID range because writes to out-of-range ent_valid_n
+  // indices are ignored and NUM_ENTRIES need not be a power of two.
   logic free_any_now, free_two_now, resp_frees_entry;
   logic free_if_fire0, free_if_fire1;
   logic [1:0] pending_if_fire0, pending_if_fire1;
@@ -266,11 +260,9 @@ module nic_dma_front #(
       ent_valid_q <= ent_valid_n;
       rq_valid_q  <= rq_valid_n;
       present_q   <= fire ? present_if_fire1 : present_if_fire0;
-      // Refusals answered.
       for (int e = 0; e < 2; e++) begin
         if (o_resp_valid[e] && o_resp_error[e]) err_pending_q[e] <= 1'b0;
       end
-      // Loads and refusals.
       for (int e = 0; e < 2; e++) begin
         if (load[e]) begin
           rq_write_q[e] <= i_req_write[e];
@@ -286,7 +278,6 @@ module nic_dma_front #(
           err_tag_q[e]     <= i_req_tag[e];
         end
       end
-      // The fire allocates the entry and drains the register.
       if (fire) begin
         ent_owner_q[free_idx] <= sel;
         ent_kind_q[free_idx]  <= rq_kind_q[sel];
@@ -316,17 +307,11 @@ module nic_dma_front #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // The port must answer only the ids it was given, and an accepted request
-  // keeps its entry until its response, so every response names a live entry.
-  // This module does not filter responses: a stray one is steered by
-  // ent_owner_q to whichever engine last held the index and completes a
-  // transfer that engine still has outstanding. Clearing ent_valid_q for a
-  // free entry changes nothing, so the occupancy and the per-side counts
-  // survive a stray response, but the engine's bookkeeping does not. Both
-  // halves of the contract are checked here. The range check comes first and
-  // stands alone because ent_valid_q[i_dma_resp_id] reads x for an
-  // out-of-range id, which the entry check would pass silently, and
-  // NUM_ENTRIES need not be a power of two.
+  // Responses must name a live, in-range entry. A stray response is still
+  // routed using ent_owner_q and can corrupt the engine's bookkeeping even
+  // when clearing ent_valid_q changes nothing.
+  // Check range separately: an out-of-range array read can yield X and let
+  // the live-entry check pass. NUM_ENTRIES need not be a power of two.
   always_ff @(posedge i_clk) begin
     if (!i_rst && i_dma_resp_valid && (32'(i_dma_resp_id) >= NUM_ENTRIES))
       $error(

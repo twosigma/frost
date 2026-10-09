@@ -1,9 +1,8 @@
 # ALU (Arithmetic Logic Unit) file list
 # Integer ALU with base integer, B, Zicond, and Zbkb operations, where
 # B = Zba + Zbb + Zbs (the full bit manipulation extension).
-# The multiplier and divider are listed here because fu_shims.f pulls this
-# list in for int_muldiv_shim. They are not part of alu.sv: M-extension
-# operations never reach the ALU.
+# int_muldiv_shim includes the multiplier and divider through fu_shims.f.
+# M-extension operations do not execute in alu.sv.
 
 # Fully pipelined multiplier (sign correction around the shared DSP-tiled
 # unsigned core, latency riscv_pkg::MulPipeDepth)

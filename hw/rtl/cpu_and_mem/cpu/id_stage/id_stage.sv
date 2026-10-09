@@ -17,8 +17,7 @@
 /*
  * Third in-order front-end stage. Decodes up to two instructions and registers
  * their dispatch packets, with flush and stall handling. Parallel helpers
- * decode operations, immediates, timing-critical instruction classes, and
- * branch targets.
+ * decode operations, immediates, instruction classes, and branch targets.
  */
 module id_stage #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -26,33 +25,25 @@ module id_stage #(
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id,
-    // Predicted-taken redirect override from pd_stage. The redirect and its
-    // target are formed from PD registers only (the same signals IF gets).
-    // Applying the override here, not in pd_stage's o_from_pd_to_id register,
-    // keeps target arithmetic off the PD-to-ID register D path.
+    // Slot-1 predicted-taken override from PD registers, shared with IF.
+    // Apply it here to keep target arithmetic out of PD's packet register.
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
-    // mstatus.FS == Off: every F/D instruction in either slot decodes as
-    // illegal. cpu_ooo drives a copy registered one cycle after the CSR. It is
-    // exact because FS enters or leaves Off only through a write-intending
-    // mstatus/sstatus access, which ends in the FENCE-class full flush in the
-    // cycle the new value appears: that flush discards what ID decodes then
-    // and refetches everything decoded before it (cpu_ooo asserts this).
+    // mstatus.FS == Off makes F/D instructions illegal. cpu_ooo registers
+    // this one cycle after the CSR. FS enters or leaves Off only through a
+    // write-intending mstatus/sstatus access; its FENCE-class flush discards
+    // the decode using the old value and refetches earlier instructions.
     input logic i_mstatus_fs_off,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex,
     // Next-edge value of o_from_id_to_ex (its register D), for a consumer
     // that keeps a registered copy of fields it selects against this output.
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next,
-    // The next-edge values if ID advances (go) and if it holds (hold), each
-    // with the reset load applied; o_from_id_to_ex_next is the one the stall
-    // selects. They let a consumer apply the stall at its own last LUT.
+    // Next-edge values for advance and hold, both including reset.
+    // o_from_id_to_ex_next selects between them using stall.
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next_go,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next_hold,
-    // Slot-2 instruction (2-wide dispatch).  Mirror of the slot-1 inputs above.
-    // Slot 2 does not receive the PD predicted-taken redirect override, which
-    // covers slot 1 only (see pd_stage.sv).  Slot 2 carries its own BTB
-    // metadata (staged slot-2 BTB lookup).  A slot-2 misprediction recovers in
-    // the back end like any other.
+    // Slot 2 carries its own staged BTB metadata, without the slot-1 PD
+    // override. Slot-2 mispredictions recover in the back end.
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id_2,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_2,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next_2,
@@ -60,11 +51,7 @@ module id_stage #(
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next_hold_2
 );
 
-  // Effective BTB metadata after applying the PD predicted-taken redirect override.
-  // i_pd_redirect combines a registered branch candidate with the same-edge
-  // PD-to-ID packet's registered veto metadata, so it is high in the cycle the
-  // detected branch itself reaches id_stage and the override lands on that
-  // instruction.
+  // PD's redirect and veto metadata align with this cycle's slot-1 packet.
   logic [XLEN-1:0] effective_btb_predicted_target;
   logic            effective_btb_predicted_taken;
   assign effective_btb_predicted_target = i_pd_redirect ? i_pd_redirect_target :
@@ -107,12 +94,9 @@ module id_stage #(
   logic btb_correct_non_jalr_precomputed;
   logic [XLEN-1:0] pc_relative_precomputed;
 
-  // TIMING: pd_stage passes the instruction through un-NOP'd and carries the
-  // bubble in inject_nop.  The NOP is applied here, from registered inputs in
-  // one LUT, so the front-end-stall-fed NOP select stays off the D path of the
-  // pd_stage 32-bit instruction register.  instr_decoder and the operand
-  // classifier take the un-NOP'd instruction and apply the bubble at their
-  // outputs (see below).
+  // PD carries bubbles in inject_nop. Immediate and type decoders use the
+  // substituted instruction; operation and operand decoders select the NOP
+  // class at their outputs.
   assign instruction = i_from_pd_to_id.inject_nop ? riscv_pkg::NOP : i_from_pd_to_id.instruction;
   assign link_address_precomputed =
       i_from_pd_to_id.program_counter +
@@ -125,11 +109,7 @@ module id_stage #(
 
   logic decoder_illegal;
 
-  // TIMING: instr_decoder decodes PD's instruction as registered, not the
-  // NOP-substituted one, and the bubble's decode (ADDI, legal: the NOP's own
-  // decode) is selected at its outputs. inject_nop then enters the
-  // operation and legality cones at their last LUT instead of masking every
-  // instruction bit ahead of the decoder.
+  // Decode the raw instruction and select the legal ADDI result for a NOP.
   riscv_pkg::instr_op_e decoded_operation;
   logic decoded_illegal;
   instr_decoder instr_decoder_inst (
@@ -140,10 +120,8 @@ module id_stage #(
   assign instruction_operation = i_from_pd_to_id.inject_nop ? riscv_pkg::ADDI : decoded_operation;
   assign decoder_illegal = !i_from_pd_to_id.inject_nop && decoded_illegal;
 
-  // A fetch fault (access or page fault) overrides decode entirely. The
-  // fetched bytes are garbage and may even decode as a NOP, so the
-  // dispatch-valid and operation paths both key on this flag, with priority
-  // over illegal.
+  // Fetch faults override decode, including illegal instructions and NOPs:
+  // the fetched bytes cannot determine the operation or dispatch validity.
   logic is_fetch_fault;
   assign is_fetch_fault = i_from_pd_to_id.fetch_fault;
   // Fetch-fault qualifiers (meaningful only with is_fetch_fault): page fault
@@ -169,26 +147,20 @@ module id_stage #(
   ) instruction_type_decoder_inst (
       .i_instruction(instruction),
       .i_immediate_i_type(immediate_i_type),
-      // Load type outputs
       .o_is_load_instruction(is_load_instruction),
       .o_is_load_unsigned(is_load_unsigned_direct),
-      // CSR outputs
       .o_is_csr_instruction(is_csr_instruction),
       .o_csr_address(csr_address),
       .o_csr_imm(csr_imm),
-      // A-extension outputs
       .o_is_amo_instruction(is_amo_instruction),
       .o_is_lr(is_lr),
       .o_is_sc(is_sc),
-      // Privileged instruction outputs
       .o_is_mret(is_mret),
       .o_is_sret(is_sret),
       .o_is_dret(is_dret),
       .o_is_wfi(is_wfi),
-      // JAL/JALR outputs
       .o_is_jal(is_jal_direct),
       .o_is_jalr(is_jalr_direct),
-      // RAS instruction type outputs
       .o_is_ras_return(is_ras_return_precomputed),
       .o_is_ras_call(is_ras_call_precomputed)
   );
@@ -204,16 +176,13 @@ module id_stage #(
       .i_is_jal(is_jal_direct),
       .i_is_fetch_fault(is_fetch_fault),
       .i_is_fetch_fault_hi(is_fetch_fault_hi),
-      // Pre-computed target outputs
       .o_branch_target_precomputed(branch_target_precomputed),
       .o_jal_target_precomputed(jal_target_precomputed),
       .o_pc_relative_precomputed(pc_relative_precomputed),
-      // Pre-computed BTB target check
       .o_btb_correct_non_jalr(btb_correct_non_jalr_precomputed)
   );
 
-  // F extension: floating-point instruction detection, decoded from the opcode
-  // directly for timing.
+  // F/D instruction classes, decoded directly from the fields.
   logic is_fp_load_direct;  // FLW/FLD
   logic is_fp_store_direct;  // FSW/FSD
   logic is_fp_compute_direct;  // All F arithmetic/compare/convert ops
@@ -234,11 +203,9 @@ module id_stage #(
   assign is_fp_instruction_direct = is_fp_load_direct | is_fp_store_direct |
                                    is_fp_compute_direct | is_fp_fma_direct;
 
-  // Illegal: an undecodable encoding, an illegal compressed parcel (PD), or
-  // any F/D instruction while mstatus.FS is Off. An FS=Off FP op then takes
-  // the ordinary illegal path (INT_RS, op ILLEGAL), so an FP load never
-  // reaches the load queue and performs no memory or device read, and no
-  // memory fault can replace its illegal-instruction cause.
+  // FS=Off makes F/D instructions illegal alongside decoder and PD errors.
+  // The illegal INT_RS operation cannot issue an FP memory access, so a
+  // memory fault cannot replace its illegal-instruction cause.
   logic is_illegal_instruction;
   assign is_illegal_instruction = decoder_illegal | i_from_pd_to_id.illegal_instruction |
                                   (i_mstatus_fs_off & is_fp_instruction_direct);
@@ -248,13 +215,10 @@ module id_stage #(
   assign fp_rm_direct = instruction.funct3;
 
   // ===========================================================================
-  // Pre-decoded Operand-Classification Flags (timing optimization)
+  // Operand Classification
   // ===========================================================================
-  // Dispatch reads these registered flags instead of decoding the operation.
-  // The classifier reads PD's instruction bits in parallel with instr_decoder;
-  // legality, fetch-fault and injected-NOP selection qualify the finished
-  // class. This also removes operation-to-class decode from ID's D path and
-  // the decoded queue's next-state shadow. Both slots use the same classifier.
+  // Dispatch uses the registered class. Both slots classify in parallel with
+  // operation decode, then apply legality, fetch-fault, and NOP overrides.
   logic has_int_dest_pre;
   logic has_fp_dest_pre;
   logic uses_int_rs1_pre;
@@ -303,12 +267,8 @@ module id_stage #(
   // Register the decoded packet, which reaches dispatch through the decoded
   // bundle queue (directly when DECODED_QUEUE_DEPTH is 0).
 
-  // TIMING: every o_from_id_to_ex/o_from_id_to_ex_2 payload register's clock
-  // enable is this one advance term.  Left unnamed, synthesis drives all of
-  // them from a single inverter of the stall.  Naming the advance and capping
-  // its fanout lets the inverter replicate per register region; logically it
-  // is just ~stall.  keep is required: without it synthesis folds the
-  // inverter into a wider clock-enable LUT and drops the fanout cap with it.
+  // Shared advance enable for both slots. keep preserves the fanout cap
+  // when synthesis optimizes the enable logic.
   (* keep = "true", max_fanout = 64 *) logic id_advance;
   assign id_advance = ~i_pipeline_ctrl.stall;
 
@@ -374,7 +334,6 @@ module id_stage #(
       o_from_id_to_ex.instruction_operation <= i_pipeline_ctrl.flush ? riscv_pkg::ADDI :
                                                                        instruction_operation;
       o_from_id_to_ex.is_load_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_load_instruction;
-      // Load sign extension, from direct decode for timing
       o_from_id_to_ex.is_load_unsigned <= i_pipeline_ctrl.flush ? 1'b0 : is_load_unsigned_direct;
       o_from_id_to_ex.rs_type <= i_pipeline_ctrl.flush ? riscv_pkg::RS_INT : rs_type_pre;
       o_from_id_to_ex.is_int_store <= i_pipeline_ctrl.flush ? 1'b0 : is_int_store_pre;
@@ -394,8 +353,7 @@ module id_stage #(
       o_from_id_to_ex.is_lr <= i_pipeline_ctrl.flush ? 1'b0 : is_lr;
       o_from_id_to_ex.is_sc <= i_pipeline_ctrl.flush ? 1'b0 : is_sc;
       // Privileged instructions (trap handling)
-      // is_mret carries any xRET (SRET and DRET ride the MRET machinery); is_sret
-      // qualifies which one for the trap-unit/CSR side and the priv gates.
+      // is_mret covers all xRET operations; is_sret and is_dret select the kind.
       o_from_id_to_ex.is_mret <= i_pipeline_ctrl.flush ? 1'b0 : (is_mret || is_sret || is_dret);
       o_from_id_to_ex.is_sret <= i_pipeline_ctrl.flush ? 1'b0 : is_sret;
       o_from_id_to_ex.is_dret <= i_pipeline_ctrl.flush ? 1'b0 : is_dret;
@@ -405,23 +363,17 @@ module id_stage #(
                                                 is_illegal_instruction;
       o_from_id_to_ex.is_fetch_fault <= i_pipeline_ctrl.flush ? 1'b0 : is_fetch_fault;
       o_from_id_to_ex.is_fetch_fault_page <= is_fetch_fault_page;
-      // Branch prediction metadata, cleared on flush (it belongs to a flushed instruction)
       o_from_id_to_ex.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
                                               effective_btb_predicted_taken;
-      // Pre-computed RAS call/return flags, cleared on flush for the same
-      // reason; dispatch passes them to the ROB for RAS recovery.
+      // Dispatch carries these flags to the ROB for RAS recovery.
       o_from_id_to_ex.is_ras_return <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed;
       o_from_id_to_ex.is_ras_call <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed;
-      // Pre-computed target checks.  A branch or JAL has a PC-relative target,
-      // so ID compares it with the predicted target; a JALR is checked at
-      // resolution.
+      // ID checks PC-relative targets; JALR is checked at resolution.
       o_from_id_to_ex.btb_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
                                               btb_correct_non_jalr_precomputed;
-      // F extension, cleared on flush
       o_from_id_to_ex.is_fp_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_instruction_direct;
       o_from_id_to_ex.is_fp_load <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct;
       o_from_id_to_ex.is_fp_store <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_store_direct;
-      // Pre-decoded operand-classification flags, cleared on flush
       o_from_id_to_ex.has_int_dest <= i_pipeline_ctrl.flush ? 1'b0 : has_int_dest_pre;
       o_from_id_to_ex.has_fp_dest <= i_pipeline_ctrl.flush ? 1'b0 : has_fp_dest_pre;
       o_from_id_to_ex.uses_int_rs1 <= i_pipeline_ctrl.flush ? 1'b0 : uses_int_rs1_pre;
@@ -439,8 +391,6 @@ module id_stage #(
       o_from_id_to_ex.program_counter <= i_from_pd_to_id.program_counter;
       o_from_id_to_ex.csr_address <= csr_address;
       o_from_id_to_ex.csr_imm <= csr_imm;
-      // Compute link address from registered PD inputs instead of the live IF
-      // sideband path.
       o_from_id_to_ex.link_address <= link_address_precomputed;
       // Pre-computed targets (see branch_target_precompute)
       o_from_id_to_ex.branch_target_precomputed <= branch_target_precomputed;
@@ -468,7 +418,6 @@ module id_stage #(
   function automatic riscv_pkg::from_id_to_ex_t id_next_for(input logic advance);
     riscv_pkg::from_id_to_ex_t n;
     n = o_from_id_to_ex;
-    // Reset loads a NOP into the pipeline register.
     if (i_pipeline_ctrl.reset) begin
       n.instruction = riscv_pkg::NOP;
       n.is_compressed = 1'b0;
@@ -487,11 +436,9 @@ module id_stage #(
       n.is_jump_and_link = 1'b0;
       n.is_jump_and_link_register = 1'b0;
       n.is_csr_instruction = 1'b0;
-      // A extension (atomics)
       n.is_amo_instruction = 1'b0;
       n.is_lr = 1'b0;
       n.is_sc = 1'b0;
-      // Privileged instructions (trap handling)
       n.is_mret = 1'b0;
       n.is_sret = 1'b0;
       n.is_dret = 1'b0;
@@ -500,18 +447,13 @@ module id_stage #(
       n.is_illegal_instruction = 1'b0;
       n.is_fetch_fault = 1'b0;
       n.is_fetch_fault_page = 1'b0;
-      // Branch prediction metadata
       n.btb_predicted_taken = 1'b0;
-      // Pre-computed RAS instruction type flags
       n.is_ras_return = 1'b0;
       n.is_ras_call = 1'b0;
-      // Pre-computed BTB verification
       n.btb_correct_non_jalr = 1'b0;
-      // F extension
       n.is_fp_instruction = 1'b0;
       n.is_fp_load = 1'b0;
       n.is_fp_store = 1'b0;
-      // Pre-decoded operand-classification flags
       n.has_int_dest = 1'b0;
       n.has_fp_dest = 1'b0;
       n.uses_int_rs1 = 1'b0;
@@ -521,13 +463,10 @@ module id_stage #(
       n.uses_fp_rs3 = 1'b0;
       n.is_real = 1'b0;
     end else if (advance) begin
-      // While the pipeline advances, pass the decoded instruction on, or a NOP
-      // when flushing.
       n.instruction = i_pipeline_ctrl.flush ? riscv_pkg::NOP : instruction;
       n.is_compressed = i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id.is_compressed;
       n.instruction_operation = i_pipeline_ctrl.flush ? riscv_pkg::ADDI : instruction_operation;
       n.is_load_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_load_instruction;
-      // Load sign extension, from direct decode for timing
       n.is_load_unsigned = i_pipeline_ctrl.flush ? 1'b0 : is_load_unsigned_direct;
       n.rs_type = i_pipeline_ctrl.flush ? riscv_pkg::RS_INT : rs_type_pre;
       n.is_int_store = i_pipeline_ctrl.flush ? 1'b0 : is_int_store_pre;
@@ -540,15 +479,10 @@ module id_stage #(
       n.has_fp_flags = i_pipeline_ctrl.flush ? 1'b0 : has_fp_flags_pre;
       n.is_jump_and_link = i_pipeline_ctrl.flush ? 1'b0 : is_jal_direct;
       n.is_jump_and_link_register = i_pipeline_ctrl.flush ? 1'b0 : is_jalr_direct;
-      // CSR instruction fields (Zicsr extension)
       n.is_csr_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_csr_instruction;
-      // A extension (atomics)
       n.is_amo_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_amo_instruction;
       n.is_lr = i_pipeline_ctrl.flush ? 1'b0 : is_lr;
       n.is_sc = i_pipeline_ctrl.flush ? 1'b0 : is_sc;
-      // Privileged instructions (trap handling)
-      // is_mret carries any xRET (SRET and DRET ride the MRET machinery); is_sret
-      // qualifies which one for the trap-unit/CSR side and the priv gates.
       n.is_mret = i_pipeline_ctrl.flush ? 1'b0 : (is_mret || is_sret || is_dret);
       n.is_sret = i_pipeline_ctrl.flush ? 1'b0 : is_sret;
       n.is_dret = i_pipeline_ctrl.flush ? 1'b0 : is_dret;
@@ -557,21 +491,13 @@ module id_stage #(
       n.is_illegal_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_illegal_instruction;
       n.is_fetch_fault = i_pipeline_ctrl.flush ? 1'b0 : is_fetch_fault;
       n.is_fetch_fault_page = is_fetch_fault_page;
-      // Branch prediction metadata, cleared on flush (it belongs to a flushed instruction)
       n.btb_predicted_taken = i_pipeline_ctrl.flush ? 1'b0 : effective_btb_predicted_taken;
-      // Pre-computed RAS call/return flags, cleared on flush for the same
-      // reason; dispatch passes them to the ROB for RAS recovery.
       n.is_ras_return = i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed;
       n.is_ras_call = i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed;
-      // Pre-computed target checks.  A branch or JAL has a PC-relative target,
-      // so ID compares it with the predicted target; a JALR is checked at
-      // resolution.
       n.btb_correct_non_jalr = i_pipeline_ctrl.flush ? 1'b0 : btb_correct_non_jalr_precomputed;
-      // F extension, cleared on flush
       n.is_fp_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_fp_instruction_direct;
       n.is_fp_load = i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct;
       n.is_fp_store = i_pipeline_ctrl.flush ? 1'b0 : is_fp_store_direct;
-      // Pre-decoded operand-classification flags, cleared on flush
       n.has_int_dest = i_pipeline_ctrl.flush ? 1'b0 : has_int_dest_pre;
       n.has_fp_dest = i_pipeline_ctrl.flush ? 1'b0 : has_fp_dest_pre;
       n.uses_int_rs1 = i_pipeline_ctrl.flush ? 1'b0 : uses_int_rs1_pre;
@@ -579,7 +505,6 @@ module id_stage #(
       n.uses_fp_rs1 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs1_pre;
       n.uses_fp_rs2 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs2_pre;
       n.uses_fp_rs3 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs3_pre;
-      // A real instruction rather than a bubble (see o_from_id_to_ex.is_real).
       n.is_real = i_pipeline_ctrl.flush ? 1'b0 : !i_from_pd_to_id.inject_nop;
     end
     // Datapath payload (immediates and targets): not reset, only stalled.
@@ -587,10 +512,7 @@ module id_stage #(
       n.program_counter = i_from_pd_to_id.program_counter;
       n.csr_address = csr_address;
       n.csr_imm = csr_imm;
-      // Compute link address from registered PD inputs instead of the live IF
-      // sideband path.
       n.link_address = link_address_precomputed;
-      // Pre-computed targets (see branch_target_precompute)
       n.branch_target_precomputed = branch_target_precomputed;
       n.jal_target_precomputed = jal_target_precomputed;
       n.pc_relative_precomputed = pc_relative_precomputed;
@@ -598,7 +520,6 @@ module id_stage #(
       n.ras_checkpoint_tos = i_from_pd_to_id.ras_checkpoint_tos;
       n.ras_checkpoint_valid_count = i_from_pd_to_id.ras_checkpoint_valid_count;
       n.ras_checkpoint_top = i_from_pd_to_id.ras_checkpoint_top;
-      // Carry the predict-time bimodal index through to commit.
       n.bp_dir_idx = i_from_pd_to_id.bp_dir_idx;
       n.fp_rm = fp_rm_direct;
       n.immediate_u_type = immediate_u_type;
@@ -625,12 +546,8 @@ module id_stage #(
   // ===========================================================================
   // Slot-2: Decoders + FP Detect + Pipeline Register
   // ===========================================================================
-  // Mirror of the slot-1 logic above, driven from i_from_pd_to_id_2. As for
-  // slot 1, PD carries the bubble in inject_nop, and the NOP is applied here
-  // before the slot-2 immediate and type decoders; instr_decoder and the
-  // operand classifier apply it at their outputs.
-  // Slot 2 does not get the PD predicted-taken redirect override; its BTB/RAS
-  // metadata is whatever PD passed through from IF.
+  // Slot 2 uses the same decode and NOP handling, with BTB/RAS metadata
+  // from IF and no PD redirect override.
 
   riscv_pkg::instr_t               instruction_2;
   riscv_pkg::instr_op_e            instruction_operation_2;
@@ -907,7 +824,6 @@ module id_stage #(
                                              is_fp_instruction_direct_2;
       o_from_id_to_ex_2.is_fp_load <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct_2;
       o_from_id_to_ex_2.is_fp_store <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_store_direct_2;
-      // Pre-decoded operand-classification flags, cleared on flush
       o_from_id_to_ex_2.has_int_dest <= i_pipeline_ctrl.flush ? 1'b0 : has_int_dest_pre_2;
       o_from_id_to_ex_2.has_fp_dest <= i_pipeline_ctrl.flush ? 1'b0 : has_fp_dest_pre_2;
       o_from_id_to_ex_2.uses_int_rs1 <= i_pipeline_ctrl.flush ? 1'b0 : uses_int_rs1_pre_2;
@@ -1028,7 +944,6 @@ module id_stage #(
       n.is_fp_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_fp_instruction_direct_2;
       n.is_fp_load = i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct_2;
       n.is_fp_store = i_pipeline_ctrl.flush ? 1'b0 : is_fp_store_direct_2;
-      // Pre-decoded operand-classification flags, cleared on flush
       n.has_int_dest = i_pipeline_ctrl.flush ? 1'b0 : has_int_dest_pre_2;
       n.has_fp_dest = i_pipeline_ctrl.flush ? 1'b0 : has_fp_dest_pre_2;
       n.uses_int_rs1 = i_pipeline_ctrl.flush ? 1'b0 : uses_int_rs1_pre_2;

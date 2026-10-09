@@ -1,5 +1,4 @@
-# FIFO primitives library file list
-# Generic FIFO implementations for use across the design
+# FIFO primitives
 
 # Synchronous distributed RAM FIFO (single clock domain)
 $(ROOT)/hw/rtl/lib/fifo/sync_dist_ram_fifo.sv

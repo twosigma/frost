@@ -19,16 +19,14 @@
 // lowest-index ready entry. Port 0 uses reservation_station's independent
 // priority encoder and does not depend on this tree.
 //
-// The exclusion of the global winner is unconditional: it holds even when
-// port 0 is back-pressured and does not fire, which is what the serial
-// reference in the FORMAL block below checks. Each subtree carries only:
+// Exclude the global winner even when port 0 is back-pressured. Each subtree
+// carries:
 //   * whether it contains any ready entry,
 //   * its first ready nonbranch entry, and
 //   * its first ready nonbranch entry after excluding its first ready entry.
 //
 // Pairwise merges of those three give the exact serial result in
-// ceil(log2(DEPTH)) levels, without feeding port 0's issue_idx into another
-// priority encoder.
+// ceil(log2(DEPTH)) levels.
 module rs_issue2_selector #(
     parameter int unsigned DEPTH = 16
 ) (
@@ -129,9 +127,7 @@ module rs_issue2_selector #(
 `endif
 
 `ifdef FORMAL
-  // Serial reference model, asserted equivalent below. The ready and branch
-  // vectors are unconstrained, so the depth-one proof at the standalone
-  // default DEPTH covers the selector's whole combinational input space.
+  // Compare against a serial selector with unconstrained ready and branch inputs.
   logic reference_issue_valid;
   logic [IdxWidth-1:0] reference_issue_idx;
   logic reference_issue_2_valid;

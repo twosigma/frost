@@ -72,13 +72,11 @@ module sync_dist_ram_fifo #(
         read_pointer <= read_pointer + 1'b1;
       end
 
-      // Update fill count based on simultaneous reads and writes
       if (i_write_enable & ~(i_read_enable & ~fifo_is_empty)) begin
-        fill_count <= fill_count + 1'b1;  // Write only: increment
+        fill_count <= fill_count + 1'b1;  // Write without a read.
       end else if (~i_write_enable & (i_read_enable & ~fifo_is_empty)) begin
-        fill_count <= fill_count - 1'b1;  // Read only: decrement
+        fill_count <= fill_count - 1'b1;  // Read without a write.
       end
-      // If both write and read, fill count stays the same
     end
   end
 

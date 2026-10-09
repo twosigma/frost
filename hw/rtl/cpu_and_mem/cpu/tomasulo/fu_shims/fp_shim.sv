@@ -31,13 +31,11 @@
  * A flush in the result cycle itself is left to the adapter, which sees the
  * same flush.
  *
- * With LAUNCH_SQUASH, an issue the same flush covers does start, so the
- * engine's launch enables do not wait for the flush compare. A registered
- * squash bit kills it in its first decode cycle, where it changes no result
- * state, and o_fu_busy stays low that cycle, as it would have without the
- * start. The engine cannot take an issue in that cycle, so LAUNCH_SQUASH
- * requires that no issue follows a flushed issue on the next cycle. FP_RS
- * guarantees this: a flush cycle clears its stage 2 and blocks its refill.
+ * With LAUNCH_SQUASH, a flushed issue starts and a registered squash bit
+ * kills it in its first decode cycle. It changes no result state, and
+ * o_fu_busy stays low that cycle. The engine cannot take an issue then, so
+ * LAUNCH_SQUASH requires a bubble after a flushed issue. FP_RS provides it:
+ * the flush clears the squashed stage2 packet and blocks refill.
  */
 module fp_shim #(
     parameter bit LAUNCH_SQUASH = 1'b0
@@ -109,11 +107,8 @@ module fp_shim #(
   end
 
 `ifdef FORMAL
-  // The default-mode shim proof covers tag and flush control.
-  // formal/fp_launch_squash.sby checks both modes with the real engine. The engine becomes a model
-  // that completes an arbitrary number of cycles after its start (its real
-  // latency depends on the operation and the operands) and returns to idle on
-  // a kill, which keeps completions reachable at small bounded depths.
+  // The standalone model uses LAUNCH_SQUASH=0. Arbitrary engine latency
+  // keeps completions reachable at small bounded depths; kill returns it idle.
   (* anyseq *) logic f_eng_finish;
   (* anyseq *) logic [riscv_pkg::FLEN-1:0] f_eng_result;
   (* anyseq *) logic [4:0] f_eng_flags;
@@ -169,11 +164,8 @@ module fp_shim #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // The RS retires its entry on the issue cycle, so an issue the engine cannot
-  // take would be lost. FP_RS's ready input includes !o_fu_busy, and the RS
-  // presents an issue only with ready high, so a hit here is a real hazard.
-  // With LAUNCH_SQUASH it also catches an issue in a squashed start's decode
-  // cycle.
+  // The RS removes an entry on issue, so issuing while the engine is busy
+  // loses it. This also forbids issue in a squashed start's decode cycle.
   always @(posedge i_clk) begin
     if (i_rst_n && i_rs_issue.valid && !eng_idle) begin
       $error("fp_shim: issue of tag %0d while the engine is busy", i_rs_issue.rob_tag);
@@ -197,8 +189,7 @@ module fp_shim #(
     if (f_past_valid) assume (i_rst_n);
   end
 
-  // The issue contract: FP_RS presents an issue only while the shim is not
-  // busy (its ready input includes !o_fu_busy).
+  // FP_RS's ready input includes !o_fu_busy.
   always_comb begin
     if (i_rst_n) assume (!i_rs_issue.valid || !o_fu_busy);
   end
@@ -220,12 +211,9 @@ module fp_shim #(
   end
 
   // ---------------------------------------------------------------------------
-  // Flushed-tag discipline: once a flush squashes the watched operation, its
-  // tag does not appear on o_fu_complete again until a new operation starts
-  // with the same tag value (a reallocated ROB entry). The ROB and RS cannot
-  // tell a late result for a squashed operation from one for a reallocated
-  // tag (tomasulo README, "CDB priority and tag reuse"). The proof tracks one
-  // arbitrary (anyconst) tag.
+  // A squashed tag must not complete until a new operation starts with it.
+  // The ROB and RS cannot distinguish a stale completion from a reused tag
+  // (tomasulo README, "CDB priority and tag reuse"). Track one arbitrary tag.
   // ---------------------------------------------------------------------------
   (* anyconst *) logic [TagW-1:0] f_watch_tag;
 
@@ -249,8 +237,6 @@ module fp_shim #(
     else if (start && (i_rs_issue.rob_tag == f_watch_tag)) f_watch_dead_q <= 1'b0;
   end
 
-  // After the squash, the squashed operation never completes (until the tag
-  // is reused by a new start).
   always_comb begin
     if (i_rst_n && f_watch_dead_q && o_fu_complete.valid) begin
       p_no_stale_complete : assert (o_fu_complete.tag != f_watch_tag);

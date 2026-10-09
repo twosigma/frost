@@ -17,23 +17,21 @@
 /*
  * nic_tx_engine: ring buffers into the TX FIFO.
  *
- * One frame per descriptor, in ring order. A descriptor is validated
- * (length 1..MaxFrameBytes, SOP and EOP, buffer inside the aperture);
- * an invalid one completes with DD|ERR and sends nothing. Otherwise the
- * buffer's lines are read in address order, up to four in flight or waiting
- * in a reorder buffer keyed by sequence, and nic_byte_unpack turns them into
- * 8-byte beats for the FIFO, the last beat carrying the remaining bytes and
- * the last flag. When the last beat has entered the FIFO (every read has
- * been consumed by then) the status word (DD) is written; on its response
- * the completion is reported: DD means the buffer has been read, not that
- * the frame reached the wire. One status write is in flight at a time.
+ * One frame per descriptor, in ring order. Require length 1..MaxFrameBytes,
+ * SOP and EOP, and a buffer inside the aperture; otherwise complete with
+ * DD|ERR and send nothing. Read lines in address order, with up to four in
+ * flight or held in the reorder buffer. nic_byte_unpack feeds 8-byte FIFO
+ * beats; the last carries the remaining bytes and the last flag.
+ * After the last beat enters the FIFO, all reads have been consumed and the
+ * status word can be written. Its response reports completion. DD means the
+ * buffer has been read, not that the frame reached the wire. Only one status
+ * write is in flight.
  *
- * i_abort (the MAC domain is resetting) abandons the frame: no more beats
- * are pushed, the reads in flight are awaited, the descriptor completes
- * with DD|ERR|ABORT. i_stop (the RESET drain) abandons it with no
- * completion. i_enable low stops admission and descriptor fetching only; a
- * frame already admitted finishes. BASE/SIZE change only while disabled and
- * idle.
+ * While beats remain, i_abort (the MAC domain is resetting) abandons the
+ * frame: stop pushing beats, wait for outstanding reads, then complete with
+ * DD|ERR|ABORT. i_stop (the RESET drain) abandons it without completion.
+ * i_enable low stops admission and descriptor fetching only; an admitted
+ * frame finishes. BASE/SIZE change only while disabled and idle.
  */
 module nic_tx_engine #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -185,12 +183,9 @@ module nic_tx_engine #(
       df_word1[nic_pkg::TxWord1BitSop] && df_word1[nic_pkg::TxWord1BitEop] && in_aperture(
       df_word0, df_word1[15:0]
   );
-  // Admission takes two cycles: S_IDLE registers the validation of the head
-  // descriptor, S_ADMIT acts on it, so the unpacker's start and the
-  // descriptor take come from registers. S_ADMIT requires i_enable as well:
-  // nic_desc_fetch ignores a take while the direction is disabled, so a
-  // disable in that cycle cancels the admission instead of sending a frame
-  // whose descriptor HEAD never passes.
+  // S_IDLE registers descriptor validation; S_ADMIT starts the unpacker and
+  // takes the descriptor. Recheck i_enable in S_ADMIT so a disable cancels
+  // admission before the descriptor is taken.
   logic consider, admit;
   assign consider = (state_q == S_IDLE) && i_enable && !i_stop && !i_abort && df_desc_valid;
   assign admit    = (state_q == S_ADMIT) && i_enable && !i_stop && !i_abort && df_desc_valid;

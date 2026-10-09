@@ -15,126 +15,63 @@
  */
 
 /*
-  CSR file: the Zicsr, Zicntr, Sstc, M/S/U-mode, Debug Mode, and F-extension
-  CSRs, plus FROST's custom profiling CSRs. All six Zicsr instructions (CSRRW,
-  CSRRS, CSRRC, and their immediate forms) are supported. In cpu_ooo, CSR
-  instructions reach this module one at a time from the registered commit bus
-  (see "CSR writes" in the CPU README).
+  CSR storage for Zicsr, Zicntr, Sstc, M/S/U privilege, Debug Mode, FP state,
+  and FROST profiling. cpu_ooo serializes CSR instructions on the registered
+  commit bus (see "CSR writes" in the CPU README). The ROB checks access
+  legality at allocation; this module exports the required state.
 
-  Machine mode:
-    - mstatus (0x300): MIE/MPIE, SIE/SPIE/SPP, SUM/MXR/TVM/TW/TSR, and MPRV
-      (while set, loads and stores use MPP's privilege). MPP is WARL over
-      {U, S, M}: the reserved 2'b10 folds to U, as in the pinned Spike.
-      FS [14:13] is writable, hardware sets it to Dirty on FP state writes,
-      SD mirrors FS==Dirty, and reset leaves FS=Initial.
-    - misa (0x301): read-only 0x8000_0000_0014_112F (IMAFDC + B + S + U,
-      MXL=2 for 64-bit).
-    - medeleg (0x302), mideleg (0x303): WARL to riscv_pkg::MedelegMask and
-      MidelegMask (ecall from M and the machine interrupt classes read 0, per
-      the spec).
-    - mie (0x304): MEIE/MTIE/MSIE and SEIE/STIE/SSIE.
-    - mtvec (0x305): BASE and MODE (Direct or Vectored).
-    - mcounteren (0x306): S/U counter enables; only CY/TM/IR exist (no
-      hpmcounters). Resets to 0x7.
-    - menvcfg (0x30A): only STCE (bit 63) is implemented.
-    - mscratch, mepc (bit 0 reads 0), mcause, mtval (0x340-0x343).
-    - mip (0x344): MEIP/MTIP/MSIP reflect the interrupt inputs and ignore
-      writes; SSIP/STIP/SEIP are software-writable injection bits (see the mip
-      logic below for the PLIC line and Sstc).
-    - mvendorid, marchid, mimpid, mhartid (0xF11-0xF14), and mconfigptr
-      (0xF15) read 0.
+  sstatus, sie, and sip are views of M-mode storage. sie/sip expose only
+  delegated supervisor bits at every privilege; sip permits writes only to
+  delegated SSIP. medeleg/mideleg use the package WARL masks: M-mode ECALL
+  and machine interrupts cannot delegate. senvcfg is present as required
+  for S/U support, but implements no fields and reads zero.
 
-  Supervisor mode:
-    - sstatus (0x100), sie (0x104), sip (0x144): views of the mstatus, mie,
-      and mip storage. sie and sip show SSI/STI/SEI only where mideleg
-      delegates them; other bits read 0 and ignore writes, whatever the
-      reader's privilege. sip.SSIP is the only S-writable pending bit.
-    - stvec (0x105), sscratch, sepc, scause, stval (0x140-0x143): registers
-      with the same WARL rules as their M counterparts.
-    - scounteren (0x106): gates U-mode counter access; like mcounteren, only
-      CY/TM/IR exist and it resets to 0x7.
-    - senvcfg (0x10A): exists because S and U make it mandatory, with no
-      implemented fields (reads 0, ignores writes).
-    - stimecmp (0x14D, Sstc): 64-bit compare against mtime.
-    - satp (0x180): MODE is Bare or Sv39, and a write with any other MODE
-      leaves the register unchanged (privileged-spec rule). ASID reads 0 (no
-      ASID tagging); PPN keeps all 44 written bits.
+  mstatus.MPRV makes data accesses use MPP. MPP and dcsr.prv fold reserved
+  2'b10 to U. FS resets to Initial and becomes Dirty on FP state writes;
+  SD mirrors Dirty. misa is read-only RV64 IMAFDC+B+S+U.
 
-  Debug Mode (RISC-V Debug Spec 0.13.2). These CSRs are legal only in Debug
-  Mode; the reorder buffer raises illegal-instruction for them elsewhere.
-    - dcsr (0x7B0): xdebugver=4. ebreakm/ebreaks/ebreaku, step, and prv are
-      writable (prv folds 2'b10 to U like MPP); cause is read-only (set on
-      entry: 1 ebreak, 3 haltreq, 4 step); mprven reads 1 (MPRV applies in
-      Debug Mode); stepie, stopcount, stoptime, and nmip read 0.
-    - dpc (0x7B1): the resume PC, 2-byte aligned like mepc.
-    - dscratch0/1 (0x7B2/0x7B3): 64-bit scratch registers.
-    - ddata (0x7B4, custom): the debug module's {data1, data0} pair as one
-      64-bit CSR (hartinfo dataaccess=0, dataaddr=0x7B4). The storage is the
-      debug module's, reached through i_dbg_data and o_dbg_data_we.
+  Debug CSRs follow RISC-V Debug Spec 0.13.2 and require Debug Mode.
+  dcsr implements ebreakm/ebreaks/ebreaku, step, and prv as writable fields;
+  cause records entry, xdebugver=4, and mprven=1. stepie, stopcount,
+  stoptime, and nmip read zero. dpc is 2-byte aligned. Custom ddata (0x7B4)
+  forwards the debug module's {data1, data0}, with hartinfo dataaccess=0.
 
-  F extension: fflags (0x001, sticky NV/DZ/OF/UF/NX), frm (0x002), and fcsr
-  (0x003, {frm, fflags}).
+  cycle/time/instret are read-only Zicntr counters. mcycle/minstret are
+  writable aliases; writes replace the coincident increment. The instret
+  input also counts xRET, WFI taken over by a trap, FENCE.I, and SFENCE.VMA,
+  whose retirements bypass the registered commit bus. See the counter
+  logic for the staging and CSR-serialization timing.
 
-  Counters (Zicntr, one 64-bit CSR each):
-    - cycle (0xC00) and instret (0xC02) are read-only; mcycle (0xB00) and
-      minstret (0xB02) are their M-mode aliases and accept writes.
-    - instret adds i_instruction_retired_count from commit_actions: the ROB
-      commits, plus the instructions whose retirement does not reach the
-      registered commit bus (an xRET, a WFI that a trap takes over at the ROB
-      head, and FENCE.I and SFENCE.VMA, whose own flush masks it).
-    - time (0xC01) reads i_mtime.
-    - mcountinhibit (0x320): CY (bit 0) and IR (bit 2) stop cycle and
-      instret while set; the other bits read 0. Resets to 0. OpenSBI requires
-      this CSR before it enables Sstc, and its SBI PMU uses it with the
-      mcycle/minstret writes to stop, start, and preload the counters for
-      Linux perf.
-    - mhpmcounter3..31 (0xB03-0xB1F) and mhpmevent3..31 (0x323-0x33F): FROST
-      counts no HPM events, so every pair is read-only 0, the privileged
-      spec's minimum implementation. They have no storage here: the read mux
-      returns 0 for them and no write arm matches them. Their user aliases
-      hpmcounter3..31 (Zihpm) do not exist.
-  An mcycle/minstret write replaces the whole counter and takes the place
-  of the increment it coincides with (Zicsr): mcycle does not tick on the
-  write edge, and the writing instruction does not count itself in
-  minstret, so the next instruction reads exactly the value written there.
-  Write intent comes from the encoding (see i_csr_op). The RV32 high halves
-  (0xC80-0xC82, 0xB80, 0xB82) raise illegal-instruction at any privilege;
-  the reorder buffer checks that at allocation. It also checks S/U-mode
-  counter access there, using o_counter_blocked, so this module only stores
-  mcounteren and scounteren and exports the gate.
+  mcountinhibit implements CY and IR and resets to zero. OpenSBI requires
+  it before enabling Sstc and uses it with writable counters for SBI PMU.
+  mhpmcounter3..31 and mhpmevent3..31 implement the privileged spec's
+  read-zero minimum, without storage. Their Zihpm user aliases are absent.
+  RV32 high-half counter addresses are illegal at every privilege.
+  mcounteren/scounteren implement CY/TM/IR and reset to 0x7.
 
-  Custom profiling CSRs (see "CSR interface" in cpu_ooo/perf/README.md):
-    - mperfsel (0x7C0): counter index.
-    - mperfctl (0x7C1): bit 0 takes a counter snapshot; bit 1 selects the
-      preceding cache snapshot for readback; reads 0.
-    - mperfdata/mperfdatah (0xFC0/0xFC1): the selected counter, low/high
-      32 bits.
-    - mperfcount (0xFC2): number of counters.
-  With PERF_COUNTERS = 0 (frost.sv's default) all five read 0 and
-  mperfsel/mperfctl ignore writes. Writes to the three read-only ones trap
-  either way.
+  Profiling CSR layout (see "CSR interface" in cpu_ooo/perf/README.md):
+    mperfsel (0x7C0): counter index.
+    mperfctl (0x7C1): bit 0 captures a snapshot; bit 1 selects the preceding
+      cache snapshot for readback. Reads zero.
+    mperfdata/mperfdatah (0xFC0/0xFC1): low/high 32-bit counter halves.
+    mperfcount (0xFC2): counter count.
+  PERF_COUNTERS=0 makes all profiling CSRs read zero and ignore writable
+  accesses. Writes to read-only profiling CSRs still trap.
 */
-// Kept as its own hierarchy: its write and read paths are decoded locally
-// (see the CSR write data calculation and the read multiplexer), and keeping
-// the boundary stops synthesis from merging that logic into the commit and
-// serializer cones it sits beside.
+// Keep local CSR decoding separate from commit and serializer logic, for timing.
 (* keep_hierarchy = "yes" *)
 module csr_file #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
-    // cpu_ooo never commits a CSR in the same cycle as a trap or xRET, and
-    // sets this so the CSR write paths can drop trap priority (a simulation
-    // assertion checks the premise). The default keeps trap-over-write
-    // priority.
+    // Requires CSR commits to exclude trap and xRET takes, as cpu_ooo does.
+    // This removes redundant trap priority from write paths. The default
+    // retains trap-over-write priority.
     parameter bit COMMIT_EXCLUDES_CONTROL_TAKE = 1'b0,
     // 1: i_perf_counter_csr_half already holds the counter half that the
     // current i_csr_address reads (cpu_ooo's aggregator selects it on the
     // edge that registers the address), and mperfdata/mperfdatah return it.
     parameter bit UsePerfCsrHalf = 1'b0,
-    // 0 removes the profiling-counter state: mperfsel/mperfctl/mperfdata/
-    // mperfdatah/mperfcount read zero, the two writable ones ignore writes,
-    // and the o_perf_* outputs stay constant. cpu_ooo passes its build
-    // option; the unit default keeps the full interface for the benches and
-    // the formal target (bmc_perf_off proves the absent case).
+    // 0 removes profiling state: mperf* reads return zero, writes have no
+    // effect, and o_perf_* stays constant. cpu_ooo passes its build option.
     parameter int unsigned PERF_COUNTERS = 1
 ) (
     input logic i_clk,
@@ -149,8 +86,7 @@ module csr_file #(
     output logic [XLEN-1:0] o_csr_read_data,      // CSR read value (registered, 1-cycle latency)
     output logic [XLEN-1:0] o_csr_read_data_comb, // CSR read value (combinational, same cycle)
 
-    // Instruction retire count per cycle: 0, 1, or 2. The OOO core can
-    // retire two entries in one cycle, so instret increments by the count.
+    // Number of instructions retired this cycle: 0, 1, or 2.
     input logic [1:0] i_instruction_retired_count,
 
     // Interrupt pending inputs (meip/mtip registered upstream in cpu_and_mem; msip direct)
@@ -165,17 +101,17 @@ module csr_file #(
 
     // Trap entry signals (from trap unit)
     input logic            i_trap_taken,  // Trap is being taken
-    input logic            i_trap_to_s,   // Trap targets S (delegated); else M
-    input logic [XLEN-1:0] i_trap_pc,     // PC to save to mepc/sepc
+    input logic            i_trap_to_s,   // Entry targets S-mode CSRs
+    input logic [XLEN-1:0] i_trap_pc,     // PC to save to mepc, sepc, or dpc
     input logic [XLEN-1:0] i_trap_cause,  // Cause to save to mcause/scause
     input logic [XLEN-1:0] i_trap_value,  // Value to save to mtval/stval
 
     // xRET signals (from trap unit); mutually exclusive pulses
     input  logic        i_mret_taken,      // MRET is being executed
     input  logic        i_sret_taken,      // SRET is being executed
-    // Debug Mode. i_trap_taken && i_trap_to_d is a Debug Mode
-    // entry (cpu_ooo withholds i_trap_taken for the trap unit's CSR-free
-    // Debug Mode redirects). i_trap_dbg_cause is the dcsr.cause to record.
+    // i_trap_taken && i_trap_to_d enters Debug Mode. cpu_ooo withholds
+    // i_trap_taken for CSR-free redirects, including memory replays.
+    // i_trap_dbg_cause supplies dcsr.cause.
     input  logic        i_trap_to_d,
     input  logic [ 2:0] i_trap_dbg_cause,
     input  logic        i_dret_taken,      // DRET is being executed
@@ -189,10 +125,8 @@ module csr_file #(
     output logic [XLEN-1:0] o_mstatus,
     output logic [XLEN-1:0] o_mie,
     output logic [XLEN-1:0] o_mtvec,
-    // |mtvec[XLEN-1:2]: a trap vector is installed, so misaligned loads and
-    // stores trap. Registered with mtvec from the same write data, so the
-    // load and store misalignment checks read a flop instead of a 62-bit
-    // reduction of mtvec.
+    // Registered |mtvec[XLEN-1:2]: a nonzero trap base enables load/store
+    // misalignment traps. Updated with mtvec from the same write data.
     output logic o_mtvec_traps_misaligned,
     output logic [XLEN-1:0] o_mepc,
     output logic [XLEN-1:0] o_stvec,
@@ -220,31 +154,24 @@ module csr_file #(
     // on trap entry and xRET.
     output logic [1:0] o_priv,
 
-    // mcounteren counter-enable bits ([0]=CY/cycle, [1]=TM/time,
-    // [2]=IR/instret): raw state export; o_counter_blocked below resolves the
-    // S/U-mode counter-CSR legality seen by ROB allocation. Changes only on a
-    // committed CSR write.
+    // mcounteren bits: [0]=CY, [1]=TM, [2]=IR. Updated on committed CSR
+    // writes; o_counter_blocked resolves access restrictions at allocation.
     output logic [2:0] o_mcounteren,
-    // scounteren counter-enable bits (same layout): gates U-mode below S.
+    // scounteren uses the same bit layout and gates U-mode access.
     output logic [2:0] o_scounteren,
 
-    // Pre-composed legality bits sampled by the reorder buffer at allocation.
-    // All inputs are registered, serialized state (priv, mstatus.TSR/TVM/TW,
-    // mcounteren/scounteren). CSR writes stop younger allocation, and any
-    // privilege change interposes a flushing trap/xRET, so each sampled bit
-    // stays exact until retirement.
-    //   o_counter_blocked[2:0]: a CY/TM/IR counter access is illegal at the
-    //     current privilege (U: needs both mcounteren and scounteren; S:
-    //     needs mcounteren; M: never blocked).
-    //   o_sret_illegal:   SRET illegal here (U always; S when TSR).
-    //   o_sfence_illegal: SFENCE.VMA/satp access illegal here (U always;
-    //     S when TVM).
-    //   o_wfi_illegal:    WFI illegal here (U always; S when TW).
-    //   o_priv_is_u:      priv == U (the needs-S CSR arm).
+    // Legality bits sampled by the ROB at allocation. CSR writes stop younger
+    // allocation, and privilege changes flush the pipeline, so each sample
+    // remains valid until retirement.
+    //   o_counter_blocked[2:0]: CY/TM/IR access is illegal (U needs both
+    //     mcounteren and scounteren; S needs mcounteren; M is never blocked).
+    //   o_sret_illegal: U, or S with TSR set.
+    //   o_sfence_illegal: SFENCE.VMA/satp in U, or S with TVM set.
+    //   o_wfi_illegal: U, or S with TW set.
+    //   o_priv_is_u: current privilege is U, for CSRs requiring S.
     output logic [2:0] o_counter_blocked,
-    // Sstc: an S-mode stimecmp access with menvcfg.STCE=0 is an illegal
-    // instruction (M is never blocked; U faults via the generic needs-S
-    // rule). Same pre-composed-gate contract as o_counter_blocked.
+    // Sstc: stimecmp access in S requires menvcfg.STCE. M is never blocked;
+    // U fails the generic needs-S check. Sampled at allocation as above.
     output logic o_stimecmp_blocked,
     output logic o_sret_illegal,
     output logic o_sfence_illegal,
@@ -257,21 +184,18 @@ module csr_file #(
     // drains committed stores and flushes the pipeline.
     output logic o_csr_translation_flush_req,
 
-    // The data-translation state bundle is registered here, one cycle behind
-    // its inputs. Every input change (satp write, status write, trap entry,
-    // xRET) is followed by a full flush whose refetch outlasts that delay, so
-    // no memory op sees a mix of old and new state.
+    // Data-translation state, delayed one cycle. Every input change (satp,
+    // status, privilege) is followed by a full flush whose refetch outlasts
+    // the delay, so memory operations cannot mix old and new state.
     output logic o_translation_active,  // satp Sv39 && effective data priv < M
     output logic o_mmu_sum,
     output logic o_mmu_mxr,
     output logic o_mmu_eff_priv_u,  // effective data privilege == U
-    // The fetch side translates on the current privilege (MPRV affects data
-    // only). Unlike the data bundle these signals have no extra pipeline
-    // stage: they decode from fetch_priv_q, a copy of priv_q with the same
-    // reset, D input, and clock edge. A privilege or mode change therefore
-    // immediately hides any old tagged fetch result, and the redirect that
-    // follows resolves its registered target under the new state. With
-    // translation off, the IMMU is a direct combinational path.
+    // Fetch uses current privilege; MPRV affects data only. These outputs
+    // decode from fetch_priv_q, which equals priv_q on every cycle. There
+    // is no extra delay: a privilege or mode change immediately hides old
+    // tagged fetch results. The redirect resolves under the new state.
+    // With translation off, the IMMU is combinational.
     output logic o_fetch_translation_active,  // satp Sv39 && priv != M
     output logic o_fetch_priv_u,  // current privilege == U
     // Root PPN for the walker (satp.PPN, registered storage). A satp write
@@ -285,12 +209,9 @@ module csr_file #(
     // (hardware only sets Dirty, never Off).
     output logic o_mstatus_fs_off,
 
-    // Debug Mode state exports: the live Debug-Mode bit (the
-    // reorder buffer's DRET / debug-CSR allocation check, the trap unit's
-    // interrupt mask and cause routing, the debug module's halted view),
-    // dcsr.step / dcsr.ebreak{m,s,u} for the trap unit and the step arming,
-    // and dpc as the DRET target. Change only through a flushing trap/DRET
-    // or a head-serialized CSR write.
+    // Debug Mode state for allocation legality, trap routing, halt reporting,
+    // and single stepping. Changes require a flushing trap/DRET or a
+    // head-serialized CSR write.
     output logic            o_debug_mode,
     output logic            o_dcsr_step,
     output logic [     2:0] o_dcsr_ebreak,  // {ebreakm, ebreaks, ebreaku}
@@ -305,9 +226,8 @@ module csr_file #(
     // fflags/frm/fcsr write decode this drives hardware FS=Dirty setting.
     input logic i_fp_dest_write,
 
-    // F extension: same-cycle read-forwarding qualifier. In cpu_ooo this is driven by the
-    // same ROB-commit signal as i_fp_flags_valid, so a CSR fflags/fcsr read sees the flags
-    // of an FP instruction committing in the same cycle.
+    // Forward flags into same-cycle fflags/fcsr reads. cpu_ooo drives this
+    // from the same ROB-commit signal as i_fp_flags_valid.
     input logic i_fp_flags_wb_valid,
 
     // F extension: FP flags from an in-order pipeline's MA stage, for read
@@ -349,8 +269,7 @@ module csr_file #(
   assign o_frm = frm;
 
   // Machine-mode CSRs
-  // mstatus: store MIE and MPIE as separate registers so hot-path bit updates
-  // do not require read/modify/write of the full CSR word.
+  // Separate mstatus fields allow local bit updates.
   logic       mstatus_mie;  // Machine Interrupt Enable (bit 3)
   logic       mstatus_mpie;  // Machine Previous Interrupt Enable (bit 7)
   logic [1:0] mstatus_mpp;  // Previous Privilege [12:11]; WARL {PrivM,PrivS,PrivU}
@@ -367,12 +286,9 @@ module csr_file #(
   logic       mstatus_tvm;  // Trap Virtual Memory (bit 20)
   logic       mstatus_tw;  // Timeout Wait (bit 21)
   logic       mstatus_tsr;  // Trap SRET (bit 22)
-  // FS [14:13]: FP context status. Writable 2-bit field; hardware
-  // sets Dirty on any FP architectural-state write (FP regfile dest,
-  // FP-flag accrual, fflags/frm/fcsr CSR write). While it is Off, id_stage
-  // decodes F/D instructions as illegal and the reorder buffer's allocation
-  // check traps FP CSR accesses (o_mstatus_fs_off). Resets to Initial so FP
-  // works without OS setup.
+  // FS [14:13] stores all four status values. Hardware sets Dirty on FP
+  // state writes; Off makes F/D instructions and FP CSR accesses illegal.
+  // Reset uses Initial so FP works without OS setup.
   logic [1:0] mstatus_fs;
   localparam logic [1:0] FsOff = 2'b00;
   localparam logic [1:0] FsInitial = 2'b01;
@@ -380,9 +296,8 @@ module csr_file #(
   logic fs_dirty;
   assign fs_dirty = (mstatus_fs == FsDirty);
   logic [1:0] priv_q;  // Current privilege mode (resets to PrivM)
-  // Fetch-side copy of priv_q. Its separate, preserved launch point keeps
-  // the IMMU/fetch cone out of the architectural privilege cone; it is not
-  // additional pipeline state and must equal priv_q on every cycle.
+  // Duplicate of priv_q for fanout, with the same reset and enable.
+  // It must equal priv_q every cycle.
   (* keep = "true", equivalent_register_removal = "no", max_fanout = 16 *)
   logic [1:0] fetch_priv_q;
   // Debug Mode state. dcsr's writable fields are stored
@@ -449,9 +364,7 @@ module csr_file #(
   assign o_priv = priv_q;
   assign o_mstatus_fs_off = (mstatus_fs == FsOff);
   assign o_sstatus_sie_direct = mstatus_sie;
-  // Pre-composed allocation-legality exports (see the port comment):
-  // single-LUT functions of registered state, quasi-static between
-  // serialized CSR writes / xRETs.
+  // Allocation legality, stable between serialized state changes.
   logic gate_priv_is_u, gate_priv_is_s;
   assign gate_priv_is_u = (priv_q == riscv_pkg::PrivU);
   assign gate_priv_is_s = (priv_q == riscv_pkg::PrivS);
@@ -528,10 +441,8 @@ module csr_file #(
   logic next_mie_seie;
 
   logic [XLEN-1:0] mtvec;  // Trap vector (MODE in bits [1:0], BASE in [XLEN-1:2])
-  // mcounteren: WARL. Only the Zicntr enables CY/TM/IR are implemented (no
-  // hpmcounters), so 3 bits of storage; the other 29 bits read as zero and
-  // discard writes. Resets to 3'b111, a platform choice keeping
-  // cycle/time/instret readable below M out of reset.
+  // mcounteren implements only CY/TM/IR; other bits read zero and ignore
+  // writes. Reset 3'b111 permits cycle/time/instret access below M.
   logic [2:0] mcounteren_q;
   assign o_mcounteren = mcounteren_q;
   logic [XLEN-1:0] mscratch;  // Scratch register for trap handlers
@@ -548,24 +459,16 @@ module csr_file #(
   logic [XLEN-1:0] stvec;  // Supervisor trap vector (MODE bit 1 forced 0, like mtvec)
   logic [2:0] scounteren_q;  // WARL CY/TM/IR like mcounteren; reset 0x7 (see header)
   assign o_scounteren = scounteren_q;
-  // Counter-access block bits at the current privilege (see the port
-  // comment), sampled when a ROB entry allocates. M is never blocked; S
-  // needs mcounteren; U needs both.
   assign o_counter_blocked = gate_priv_is_u ? ~(mcounteren_q & scounteren_q) :
       gate_priv_is_s ? ~mcounteren_q : 3'b000;
-  // Sstc: S-mode stimecmp access requires menvcfg.STCE (see the port
-  // comment; race-free by the same allocation-serialization argument).
   assign o_stimecmp_blocked = gate_priv_is_s && !menvcfg_stce;
   logic [XLEN-1:0] sscratch;
   logic [XLEN-1:0] sepc;  // bit 0 forced 0, like mepc
   logic [XLEN-1:0] scause;
   logic [XLEN-1:0] stval;
-  // satp: MODE is WARL over the supported set {Bare, Sv39}; ASID is
-  // WARL-0; the PPN field stores all 44 written bits. Keep-what-was-written
-  // is the most Spike-compatible choice: the page-table walker checks the
-  // whole PPN and raises an access fault for a root outside the cached-DDR
-  // window it can reach. A write carrying an unsupported MODE leaves the
-  // whole register unchanged (privileged-spec satp rule).
+  // satp supports Bare and Sv39; an unsupported MODE leaves the whole
+  // register unchanged (privileged spec). ASID is WARL-0. All 44 PPN bits
+  // are stored so the walker can fault on roots outside cached DDR.
   localparam bit SatpSv39Supported = 1'b1;
   localparam logic [3:0] SatpModeBare = 4'd0;
   localparam logic [3:0] SatpModeSv39 = 4'd8;
@@ -584,11 +487,9 @@ module csr_file #(
   // M-mode uses to inject supervisor interrupts; the PLIC S-context line ORs
   // into the SEIP readback.
   logic mip_ssip, mip_stip, mip_seip;
-  // Sstc: stimecmp + menvcfg.STCE. While STCE=1, STIP is the registered
-  // mtime >= stimecmp compare in every consumer (mip/sip readback and
-  // o_s_pending) and the software STIP bit is ignored; with STCE=0 STIP is
-  // the software bit. The compare is registered to keep the 64-bit
-  // magnitude compare off the interrupt-arming cones.
+  // With STCE=1, STIP uses registered mtime >= stimecmp in every consumer.
+  // With STCE=0, it uses the software bit. Registration adds one cycle to
+  // the compare, for timing.
   logic [63:0] stimecmp;
   logic stimecmp_pending_q;
   always_ff @(posedge i_clk) begin
@@ -641,7 +542,6 @@ module csr_file #(
   assign o_stvec = stvec;
   assign o_sepc = sepc;
 
-  // Direct output of mstatus_mie register bypasses full-word CSR concatenation.
   assign o_mstatus_mie_direct = mstatus_mie;
 
   // ==========================================================================
@@ -651,9 +551,8 @@ module csr_file #(
   logic [XLEN-1:0] csr_current_value;
   logic [XLEN-1:0] csr_new_value;
 
-  // Get current value of addressed CSR (for read-modify-write operations).
-  // The view CSRs (sstatus/sie/sip) present their view here so csrrs/csrrc
-  // read-modify-write over exactly the architecturally visible bits.
+  // Use the sstatus/sie/sip views as RMW bases so set/clear operations see
+  // exactly the architecturally visible bits.
   always_comb begin
     csr_current_value = '0;
     unique case (i_csr_address)
@@ -703,18 +602,13 @@ module csr_file #(
     endcase
   end
 
-  // New value for the addressed CSR under the CSR operation. A pure read
-  // (op[1:0] = 0; dispatch clears those bits for a set or clear whose
-  // rs1/uimm field is 0) still reaches the write paths below with
-  // csr_rmw_base, exactly as a set or clear of zero would. Only the counter
-  // writes and mperfctl, which reads 0, check write intent.
+  // Dispatch sets op[1:0]=0 for set/clear with rs1/uimm field zero. These
+  // pure reads still reach most write paths with the unchanged RMW base.
+  // Counter writes and mperfctl separately require write intent.
   //
-  // mip RMW base (priv spec, the mip.SEIP note): the read value of
-  // SEIP/STIP is composed with the PLIC S-context line / the Sstc compare,
-  // but the value used in a CSRRS/CSRRC read-modify-write is the software
-  // bit alone. Otherwise a set/clear or a pure read would capture the
-  // transient line into the software-injection bit, where it would stick
-  // after the line drops (plic_test's H seip-drops case checks this).
+  // For mip RMW (privileged spec, mip.SEIP note), use the software SEIP/STIP
+  // bits alone. Readback also includes the PLIC line or Sstc compare; using
+  // that readback would latch a transient pending signal into software state.
   logic [XLEN-1:0] csr_rmw_base;
   always_comb begin
     csr_rmw_base = csr_current_value;
@@ -733,11 +627,8 @@ module csr_file #(
     endcase
   end
 
-  // mtvec has a local copy of the same RMW operation.  For an mtvec access,
-  // csr_current_value and csr_rmw_base are both exactly mtvec (the only RMW
-  // base exception above is mip).  Computing the write value directly keeps
-  // the global CSR-address/current-value mux out of mtvec and its registered
-  // misalignment-trap bit.
+  // Local mtvec RMW, for timing. On an mtvec access, both generic bases
+  // equal mtvec; only mip substitutes software pending bits.
   logic [XLEN-1:0] mtvec_new_value;
   always_comb begin
     unique case (i_csr_op)
@@ -748,19 +639,10 @@ module csr_file #(
     endcase
   end
 
-  // Every other written CSR has a local copy too. For an access to CSR X,
-  // csr_rmw_base is X's own value: its register, the view for sstatus, sie
-  // and sip, and for mip the software SEIP/STIP bits. Each write path below
-  // takes the copy of its own CSR, so its write data is one LUT level from
-  // the CSR's register and the write operands, and only the write enables
-  // decode the address. The shared csr_new_value remains for the formal
-  // properties. p_csr_local_rmw_matches_generic checks every copy against it
-  // under its address. The operation is a per-bit mask pair shared by every
-  // copy, so the commit bus's write data fans out to the two masks rather
-  // than to each copy: new = (base & keep) | set. The decode is funct3[1:0]
-  // (riscv_pkg's CSR_* encodings): write (01) keeps nothing and sets the
-  // data, set (10) keeps all and sets the data, clear (11) keeps the bits the
-  // data leaves clear, and the pure read (00) keeps all.
+  // Local RMW copies use each CSR's register or masked view, for timing.
+  // They must equal csr_new_value when their address is selected.
+  // Shared masks implement new = (base & keep) | set from funct3[1:0]:
+  //   01 writes data; 10 sets data bits; 11 clears data bits; 00 retains all.
   (* keep = "true" *) logic [XLEN-1:0] csr_rmw_keep, csr_rmw_set;
   always_comb begin
     unique case (i_csr_op[1:0])
@@ -846,13 +728,9 @@ module csr_file #(
   assign ddata_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, XLEN'(i_dbg_data));
 
 `ifndef SYNTHESIS
-  // Check the local mtvec calculation against the generic one. Qualifying by
-  // address captures the premise that makes csr_rmw_base equal mtvec, while
-  // checking every operation (not only enabled commits) exercises all six
-  // Zicsr forms whenever a simulation presents them. Formal is two-state
-  // here, so it uses the address premise alone: the simulation-only
-  // $isunknown guard would enlarge the solver model without strengthening
-  // the equality proof.
+  // The local mtvec RMW must equal the generic result when mtvec is
+  // addressed, even without a commit. Simulation excludes unknown inputs;
+  // the two-state formal check needs only the address condition.
   always_comb begin
 `ifdef FORMAL
     if (i_csr_address == riscv_pkg::CsrMtvec) begin
@@ -924,18 +802,12 @@ module csr_file #(
   // ==========================================================================
   // Cycle Counter
   // ==========================================================================
-  // Committed writes of the machine counter aliases. Same qualification as
-  // the main CSR write block (a same-cycle M/S trap entry drops the generic
-  // write; cpu_ooo guarantees it cannot coincide), plus Zicsr write intent:
-  // the commit stage raises both enables for every CSR instruction, and a
-  // pure read that "wrote" the value it read would swallow that cycle's
-  // increment. Intent comes from the encoding, not the value: CSRRW/CSRRWI
-  // always write, and a set/clear writes when its rs1/uimm field is nonzero,
-  // even if the register holds 0. Dispatch clears op[1:0] for a set/clear
-  // whose field is 0, so op[1:0] != 0 is exactly the write intent. The cycle
-  // counter computes its increment from the register alone and selects a
-  // write or the inhibit afterward; the retired counter uses its staged
-  // count below.
+  // Counter writes require CSR commit enables and Zicsr write intent.
+  // A pure read must not overwrite the counter and swallow its increment.
+  // Intent comes from the rs1/uimm encoding, even when its value is zero:
+  // dispatch clears op[1:0] only for set/clear with a zero register/immediate
+  // field. Generic M/S trap entry takes priority unless the parameter
+  // guarantees exclusion.
   logic csr_write_intent;
   logic csr_counter_write;
   logic mcycle_write;
@@ -947,10 +819,8 @@ module csr_file #(
   assign mcycle_write = csr_counter_write && (i_csr_address == riscv_pkg::CsrMcycle);
   assign minstret_write = csr_counter_write && (i_csr_address == riscv_pkg::CsrMinstret);
 
-  // cycle advances every cycle unless mcountinhibit.CY is set; a write
-  // installs the new value with no increment on the write edge. Keep the
-  // increment boundary so late write qualification cannot enter the
-  // low carry input and traverse all 64 bits before reaching the register.
+  // mcountinhibit.CY stops cycle increments; writes replace the increment.
+  // Keep the increment separate from write selection, for timing.
   (* keep = "true" *) logic [63:0] cycle_counter_incremented;
   assign cycle_counter_incremented = cycle_counter + 64'd1;
   always_ff @(posedge i_clk) begin
@@ -966,56 +836,27 @@ module csr_file #(
   // ==========================================================================
   // Instructions Retired Counter
   // ==========================================================================
-  // Stage the retire count in instruction_retired_count_q so the late
-  // commit cone ends at two bits and the 64-bit counter add runs
-  // register-to-register.
+  // Stage the retire count for timing. At cycle T, instret_counter includes
+  // input counts through T-2. Serialized CSR reads cannot observe the delay:
+  //   C:   the last older instruction commits on the ROB's commit_en.
+  //   C+1: commit_actions computes its count from the registered commit bus;
+  //        the CSR reaches the head and starts its serialized handshake.
+  //   C+2: the count is staged; the earliest csr_done_ack permits CSR commit.
+  //   C+3: the count reaches instret_counter as the registered CSR commit
+  //        reads it.
+  // Stalls add margin. The reading instruction is not included. xRET, WFI
+  // taken over by a trap, FENCE.I, and SFENCE.VMA supply their counts one
+  // cycle after retirement; refetch keeps later readers beyond this delay.
   //
-  // instret_counter at cycle T therefore equals the total retire count
-  // through cycle T-2 (one staging cycle) instead of T-1. This is
-  // architecturally invisible because the only observation of instret is a
-  // CSR read of instret/minstret, and CSR reads are
-  // commit-serialized:
-  //   cycle C:   the youngest instruction older than the CSR read commits
-  //              (commit_en); its count is computed at C+1 from the
-  //              registered commit bus (commit_actions), staged into
-  //              instruction_retired_count_q at the C+1->C+2 edge, and
-  //              accumulated into instret_counter at the C+2->C+3 edge;
-  //   cycle C+1: the CSR reaches the ROB head; rob_serializer asserts
-  //              commit_stall and requests CSR execution (o_csr_start);
-  //   cycle C+2: earliest csr_done_ack (1-cycle handshake in cpu_ooo) ->
-  //              earliest CSR commit_en;
-  //   cycle C+3: csr_commit_fire (registered commit) performs the csr_file
-  //              read and observes a counter that already includes cycle
-  //              C's commits.
-  // Every stall (head not ready, commit_hold, later csr_done) only adds
-  // margin; the reading instruction itself is not included. An xRET, a
-  // taken-over WFI, or a FENCE.I or SFENCE.VMA arrives a cycle after it
-  // retires, and the redirect that follows keeps any reader more than two
-  // cycles behind it.
-  // The count is registered as is, so the same instructions are counted, one
-  // cycle later. Proven in the formal section (p_instret_stage_follows /
-  // p_instret_applies_staged_count).
-  //
-  // mcountinhibit.IR gates the count at the staging register, keeping
-  // the 64-bit chain untouched: with IR set, retirements stage as zero. The
-  // write that sets IR is itself counted: its own retirement stages at
-  // the write edge, when IR is not yet set, and lands one edge later.
-  //
-  // A minstret write installs the new value and stages zero in place of the
-  // retire count of its own cycle. That count is the writing instruction
-  // alone, because a CSR never commits two-wide (checked in simulation
-  // below), so the write takes the place of the writer's increment as Zicsr
-  // requires: after `csrw minstret, V` the next instruction reads exactly V.
-  // The staged count the write replaces in the accumulator is always zero:
-  // commit is stalled while the CSR sits at the head, and the last older
-  // retirement (cycle C above) accumulated at C+2->C+3, one edge before the
-  // earliest write edge.
+  // mcountinhibit.IR stages zero. The write setting IR still counts itself:
+  // its count stages before IR changes and accumulates one edge later.
+  // A minstret write replaces the accumulator and stages zero for its own
+  // retirement, as Zicsr requires. CSR commits are single-wide, and the
+  // handshake leaves the previous staged count zero at the write edge.
+  // Thus the next instruction after csrw minstret, V reads exactly V.
   logic [ 1:0] instruction_retired_count_q;
-  // Register-to-register accumulate with the write select applied after it,
-  // like the cycle counter's increment boundary above.  minstret_write
-  // carries the write qualification (and generic trap exclusion); selecting
-  // before the add would put that cone on the low carry input of the 64-bit
-  // chain. The value is the same: (w ? V : C) + (w ? 0 : Q) == w ? V : C + Q.
+  // Select writes after the addition, for timing. This preserves
+  // (w ? V : C) + (w ? 0 : Q) == w ? V : C + Q.
   (* keep = "true" *)logic [63:0] instret_counter_accumulated;
   assign instret_counter_accumulated = instret_counter + 64'(instruction_retired_count_q);
 
@@ -1033,13 +874,10 @@ module csr_file #(
   // ==========================================================================
   // F Extension CSR Updates (fflags, frm)
   // ==========================================================================
-  // fflags is sticky: new exception flags OR into the existing flags, and
-  // only a CSR write to fflags/fcsr can clear them.
-  //
-  // Pipeline hazard: when a CSR write to fflags/fcsr read forwarded FP flags,
-  // the FP instruction that produced them may still reach the WB path on the
-  // next cycle. Suppress only that forwarded replay; OOO commit may retire a
-  // distinct younger FP instruction in the following cycle.
+  // fflags accumulates flags; only fflags/fcsr CSR writes can clear them.
+  // After a CSR write forwards pending FP flags, suppress the following
+  // WB cycle so those flags are not replayed. A write without forwarding
+  // leaves later FP flag accumulation enabled.
 
   logic fflags_suppress_forwarded_wb;
 
@@ -1092,12 +930,10 @@ module csr_file #(
   // Machine-Mode CSR Updates - Next-State Logic
   // ==========================================================================
 
-  // Next-state values for the mstatus/mie bits and priv. The register block
-  // below stores them unconditionally, so all of the priority lives here:
-  // Debug entry, then trap entry, MRET, SRET, DRET, then a CSR write.
+  // State-update priority: debug entry, trap entry, MRET, SRET, DRET,
+  // then CSR write.
 
   always_comb begin
-    // Default: keep current values
     next_mstatus_mie = mstatus_mie;
     next_mstatus_mpie = mstatus_mpie;
     next_mstatus_mpp = mstatus_mpp;
@@ -1171,8 +1007,7 @@ module csr_file #(
         next_mstatus_spie = mstatus_new_value[riscv_pkg::MstatusSpieBit];
         next_mstatus_mpie = mstatus_new_value[7];
         next_mstatus_spp = mstatus_new_value[riscv_pkg::MstatusSppBit];
-        // MPP is WARL over {U, S, M}: the reserved encoding 2'b10 folds to
-        // U (matches the pinned Spike's legalization).
+        // MPP is WARL over {U, S, M}; reserved 2'b10 folds to U, as in Spike.
         next_mstatus_mpp = (mstatus_new_value[12:11] == 2'b10) ? riscv_pkg::PrivU
                                                                : mstatus_new_value[12:11];
         next_mstatus_mprv = mstatus_new_value[riscv_pkg::MstatusMprvBit];
@@ -1184,8 +1019,7 @@ module csr_file #(
         // FS is WARL with all four values storable (Off/Initial/Clean/Dirty).
         next_mstatus_fs = mstatus_new_value[14:13];
       end else if (i_csr_address == riscv_pkg::CsrSstatus) begin
-        // sstatus view write: only the S-visible fields move; the machine
-        // fields are untouched by construction.
+        // sstatus writes only the S-visible fields.
         next_mstatus_sie  = sstatus_new_value[riscv_pkg::MstatusSieBit];
         next_mstatus_spie = sstatus_new_value[riscv_pkg::MstatusSpieBit];
         next_mstatus_spp  = sstatus_new_value[riscv_pkg::MstatusSppBit];
@@ -1200,26 +1034,18 @@ module csr_file #(
         next_mie_seie = mie_new_value[riscv_pkg::MieSeiBit];
         next_mie_meie = mie_new_value[11];
       end else if (i_csr_address == riscv_pkg::CsrSie) begin
-        // sie view write: delegated bits write through to the mie storage;
-        // non-delegated bits are read-only-zero in the view and discard
-        // writes (the write value is computed over the masked view, so a
-        // set/clear op cannot leak a non-delegated enable through either).
+        // Only delegated bits write through to mie. The masked RMW base and
+        // write guards prevent set/clear operations from changing other bits.
         if (mideleg_ssi) next_mie_ssie = sie_new_value[riscv_pkg::MieSsiBit];
         if (mideleg_sti) next_mie_stie = sie_new_value[riscv_pkg::MieStiBit];
         if (mideleg_sei) next_mie_seie = sie_new_value[riscv_pkg::MieSeiBit];
       end
     end
 
-    // Hardware Dirty-setting: any FP architectural-state write. Fires on
-    // (a) a committing FP-regfile dest write (i_fp_dest_write, covers FP
-    // loads and f-dest computes), (b) a committing FP op that accrues flags
-    // (i_fp_flags_valid, covers x-dest computes like FCMP/FCVT), (c) a CSR
-    // write to fflags/frm/fcsr. Mutually exclusive with a CSR write to
-    // mstatus in the same cycle (CSR ops are head-serialized and are not FP
-    // ops), and impossible while FS==Off (F/D instructions decode as illegal
-    // and FP CSR accesses trap at ROB allocation, so none commits), so plain
-    // priority-after-write is safe. Pessimistic Dirty (e.g. on a flag op that
-    // raises no flags) is architecturally permitted.
+    // FP register writes, flag commits, and FP CSR writes set FS=Dirty.
+    // CSR serialization excludes concurrent mstatus writes. FS=Off prevents
+    // F/D instructions and FP CSR accesses from committing, so this priority
+    // cannot overwrite Off. Setting Dirty when no flags change is permitted.
     if ((i_csr_write_enable && i_csr_read_enable &&
          (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFrm ||
           i_csr_address == riscv_pkg::CsrFcsr)) ||
@@ -1235,8 +1061,7 @@ module csr_file #(
       mstatus_mpie <= 1'b0;
       mstatus_mpp <= riscv_pkg::PrivU;
       mstatus_mprv <= 1'b0;
-      // Reset to Initial (not Off) so FP executes without any OS/crt0 FS
-      // enable.
+      // Initial permits FP execution without OS/crt0 setup.
       mstatus_fs <= FsInitial;
       mstatus_sie <= 1'b0;
       mstatus_spie <= 1'b0;
@@ -1282,10 +1107,8 @@ module csr_file #(
   // ==========================================================================
   // Other Machine-Mode CSR Updates
   // ==========================================================================
-  // With COMMIT_EXCLUDES_CONTROL_TAKE no trap coincides with a CSR commit,
-  // and the redundant !CSR term on the trap arm lets the CSR write enables
-  // decode without waiting for the late trap decision. The default gives a
-  // trap priority over a coincident CSR write.
+  // COMMIT_EXCLUDES_CONTROL_TAKE makes !CSR redundant on the trap arm,
+  // allowing local CSR write enables. Otherwise traps take priority.
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -1446,25 +1269,18 @@ module csr_file #(
       (i_csr_address == riscv_pkg::CsrDdata);
   assign o_dbg_data_wdata = ddata_new_value[63:0];
 
-  // Post-commit invalidate request for translation-relevant CSRs.
-  // Every enabled satp commit-port access invalidates conservatively,
-  // including architecturally non-writing set/clear-zero and Bare-to-Bare
-  // no-ops. An mstatus/sstatus commit invalidates only when its computed
-  // result changes SUM/MXR/MPRV, or MPP while MPRV is set (MPRV=1 makes MPP
-  // part of the effective data privilege). The registered pulse aligns with
-  // the cycle after the commit-port access, where the TLB/PTW consumer
-  // samples it. With COMMIT_EXCLUDES_CONTROL_TAKE the comparison uses the
-  // CSR write result; otherwise it uses the next state, where a trap or xRET
-  // takes priority.
+  // Invalidate one cycle after every enabled satp access, including pure
+  // reads and Bare-to-Bare writes. For mstatus/sstatus, invalidate on changes
+  // to SUM/MXR/MPRV, or to MPP while MPRV is set.
+  // COMMIT_EXCLUDES_CONTROL_TAKE permits comparing the CSR result directly;
+  // otherwise compare next state, where traps and xRET take priority.
   logic csr_translation_flush_req_d;
   logic csr_status_write_changes_translation;
   logic [1:0] csr_written_mpp;
   assign csr_written_mpp = (mstatus_new_value[12:11] == 2'b10) ? riscv_pkg::PrivU :
       mstatus_new_value[12:11];
-  // With COMMIT_EXCLUDES_CONTROL_TAKE, no trap or xRET can replace these
-  // fields when a CSR commit fires. Compare its complete write result before
-  // applying the late commit enable, including MPP's WARL mapping and
-  // old-MPRV gate.
+  // With control takes excluded, compare the complete CSR result before
+  // commit qualification, including MPP's WARL mapping and old MPRV.
   assign csr_status_write_changes_translation =
       (mstatus_new_value[riscv_pkg::MstatusSumBit] != mstatus_sum) ||
       (mstatus_new_value[riscv_pkg::MstatusMxrBit] != mstatus_mxr) ||
@@ -1514,9 +1330,7 @@ module csr_file #(
   assign o_mmu_sum = mmu_sum_q;
   assign o_mmu_mxr = mmu_mxr_q;
   assign o_mmu_eff_priv_u = mmu_eff_priv_u_q;
-  // Fetch side: decoded directly from fetch_priv_q (see the port comment).
-  // Keep the high-fanout active decode replicable in bounded local groups
-  // rather than rebuilding one long IMMU control net.
+  // Fetch decodes from fetch_priv_q; the attributes limit fanout.
   (* keep = "true", max_fanout = 16 *) logic fetch_translation_active;
   assign fetch_translation_active = satp_mode_sv39 && (fetch_priv_q != riscv_pkg::PrivM);
   assign o_fetch_translation_active = fetch_translation_active;
@@ -1526,18 +1340,10 @@ module csr_file #(
   // ==========================================================================
   // CSR Read Multiplexer
   // ==========================================================================
-  // fflags and fcsr reads forward the flags of an FP instruction committing
-  // in the same cycle, so a read that coincides with flag accumulation
-  // returns the flags being accumulated as well as the registered value.
-  //
-  // The read data is registered, at the cost of one cycle of CSR read
-  // latency, so the CSR address decode and read mux end at a register. In
-  // cpu_ooo it feeds the delayed CSR writeback in commit_actions.
+  // fflags/fcsr reads include pending FP flags. Read data is registered
+  // with one-cycle latency for commit_actions' delayed CSR writeback.
 
-  // Forwarded fflags: the register ORed with the flags accumulating this
-  // cycle. In cpu_ooo both i_fp_flags_valid and i_fp_flags_wb_valid come
-  // from the same ROB-commit signal, and the MA-stage inputs are tied off
-  // there, so the MA term reduces to zero.
+  // cpu_ooo ties MA inputs low and drives both FP-valid inputs from commit.
   logic [4:0] fflags_forwarded;
   logic [4:0] ma_flags_packed;
   logic [4:0] wb_flags_packed;
@@ -1551,19 +1357,10 @@ module csr_file #(
       (i_fp_flags_ma_valid ? ma_flags_packed : 5'b0) |
       (i_fp_flags_wb_valid ? wb_flags_packed : 5'b0);
 
-  // Combinational CSR read data (before registering): 0 when no CSR access
-  // is committing, else the addressed CSR's value, and 0 for the read-zero
-  // addresses (mperfctl, mhartid, senvcfg, mvendorid, marchid, mimpid,
-  // mconfigptr) and any address without a CSR.
-  //
-  // TIMING: the select is decoded in two levels: one-hot decodes of the
-  // address's three nibbles, then one AND per readable address with the read
-  // enable, all kept as nets. The data is the OR of each select with its
-  // CSR's value. Readable addresses are distinct, so at most one select is
-  // set and the OR equals a case statement over the address; a plain case
-  // let synthesis share partial address compares into a deeper decode tree
-  // ahead of the data mux. Entry k of ReadCsrAddrs is the address of
-  // read_csr_value[k].
+  // Reads return zero when disabled or when no listed address matches.
+  // For timing, decode each address nibble one-hot, then combine the
+  // selects with read enable. Addresses must be distinct so the masked
+  // OR equals an address mux. ReadCsrAddrs[k] corresponds to read_csr_value[k].
   logic [XLEN-1:0] csr_read_data_comb;
   localparam int unsigned NumReadCsrs = 42;
   localparam logic [12*NumReadCsrs-1:0] ReadCsrAddrs = {
@@ -1626,9 +1423,8 @@ module csr_file #(
     read_csr_value[0] = XLEN'({27'b0, fflags_forwarded});  // CsrFflags
     read_csr_value[1] = XLEN'({29'b0, frm});  // CsrFrm
     read_csr_value[2] = XLEN'({24'b0, frm, fflags_forwarded});  // CsrFcsr
-    // Zicntr counters (the read-only user CSRs and their machine-mode
-    // aliases): single 64-bit CSRs. The RV32 high-half addresses (cycleh
-    // etc.) are captured as illegal-instruction at ROB allocation.
+    // Zicntr uses one 64-bit CSR per counter. ROB allocation rejects RV32
+    // high-half addresses.
     read_csr_value[3] = XLEN'(cycle_counter[XLEN-1:0]);  // CsrCycle
     read_csr_value[4] = XLEN'(cycle_counter[XLEN-1:0]);  // CsrMcycle
     read_csr_value[5] = XLEN'(i_mtime[XLEN-1:0]);  // CsrTime
@@ -1762,8 +1558,7 @@ module csr_file #(
       // installs M or S, xRET installs a folded MPP / 1-bit SPP, and the
       // MPP WARL fold never stores 2'b10).
       p_priv_valid : assert (priv_q != 2'b10);
-      // The timing-only fetch copy is architecturally invisible: it equals
-      // priv_q after every non-reset edge.
+      // The fetch duplicate must equal architectural privilege.
       p_fetch_priv_replica_exact : assert (fetch_priv_q == priv_q);
 
       // Debug Mode entry: dpc/dcsr record the resume state, priv
@@ -1848,12 +1643,8 @@ module csr_file #(
         p_sret_keeps_mpp : assert (mstatus_mpp == $past(mstatus_mpp));
       end
 
-      // Cycle counter: a committed mcycle write installs csr_new_value
-      // with no increment; otherwise it increments every cycle unless
-      // mcountinhibit.CY holds it. A committed access without write intent
-      // (op[1:0] = 0: a csrr, or a set/clear with rs1/uimm = 0) is not a
-      // write, and a set/clear with write intent is one even when the value
-      // is 0.
+      // A counter write replaces the increment; a pure read preserves it.
+      // Write intent depends on the encoding, even with zero write data.
       p_counter_pure_read_is_not_a_write :
       assert (!($past(
           i_csr_write_enable && i_csr_read_enable && (i_csr_op[1:0] == 2'b00)
@@ -1877,17 +1668,10 @@ module csr_file #(
         p_cycle_increments : assert (cycle_counter == $past(cycle_counter) + 64'd1);
       end
 
-      // Instret retime invariants (see the Instructions Retired Counter
-      // comment): the staging register follows the input by one cycle
-      // (zeroed while mcountinhibit.IR is set, and on a committed minstret
-      // write, which replaces the writer's own count), and the accumulator
-      // applies the staged count unless a committed minstret write replaces
-      // the counter. Composed without writes or inhibit:
+      // Staging preserves every count except those inhibited or replaced by
+      // a minstret write. Without writes or inhibit:
       //   instret_counter(T) == instret_counter(T-1) + retired_count(T-2)
-      // So instret is the running total of retired instructions delayed by
-      // one staging cycle. The delay is architecturally invisible because
-      // commit-serialized CSR reads sample the counter no earlier than
-      // <last counted commit> + 3 cycles.
+      // CSR serialization hides this delay; see Instructions Retired Counter.
       p_instret_stage_follows :
       assert (instruction_retired_count_q == (($past(
           mcountinhibit_ir
@@ -1932,8 +1716,7 @@ module csr_file #(
         ));
       end
 
-      // fflags sticky: when no CSR write to fflags/fcsr and no effective fp_flags_valid,
-      // fflags does not shrink.
+      // Without a CSR write or effective flag input, fflags stays unchanged.
       if ($past(
               !fp_flags_valid_eff && !(i_csr_write_enable && i_csr_read_enable &&
           (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFcsr))
@@ -1941,10 +1724,7 @@ module csr_file #(
         p_fflags_sticky : assert (fflags == $past(fflags));
       end
 
-      // mcounteren: a committed CSR write installs exactly csr_new_value[2:0]
-      // (WARL: the register is 3 bits, so upper write bits are discarded);
-      // nothing else ever changes it (trap entry and MRET are excluded by the
-      // structural assumptions above and touch other registers anyway).
+      // Only CSR writes change mcounteren; WARL discards bits above [2:0].
       if ($past(
               i_csr_write_enable && i_csr_read_enable && (i_csr_address == riscv_pkg::CsrMcounteren)
           )) begin
@@ -1953,12 +1733,8 @@ module csr_file #(
         p_mcounteren_stable : assert (mcounteren_q == $past(mcounteren_q));
       end
 
-      // FS: an FP-state write (regfile dest, flag accrual, or an
-      // fflags/frm/fcsr CSR write) sets Dirty; a CSR write to mstatus or
-      // sstatus installs its FS field (sstatus exposes FS for S-mode context
-      // switching; the FP pulses are excluded by the structural assumption
-      // above); otherwise FS holds. Trap entry and xRET leave it untouched
-      // so the trap-time image is what the OS reads.
+      // FP-state writes set Dirty. Status CSR writes install FS; trap entry
+      // and xRET preserve it for the OS's context-save decision.
       if ($past(
               i_fp_dest_write || i_fp_flags_valid ||
                 (i_csr_write_enable && i_csr_read_enable &&
@@ -1977,9 +1753,7 @@ module csr_file #(
       end
     end
 
-    // Reset establishes the architectural reset values, sampled on the first
-    // cycle after reset deasserts (a $past(!i_rst) guard would make these
-    // vacuous).
+    // Check reset values on deassertion; $past(!i_rst) would be vacuous here.
     if (f_past_valid && !i_rst && $past(i_rst)) begin
       p_reset_cycle : assert (cycle_counter == 64'd0);
       p_reset_instret : assert (instret_counter == 64'd0);
@@ -2078,9 +1852,8 @@ module csr_file #(
     end
   end
 
-  // Counters absent (PERF_COUNTERS = 0, task bmc_perf_off): the profiling
-  // outputs never move and every mperf* read returns zero, whatever the
-  // inputs do (the app-level test cannot see a stray snapshot pulse).
+  // With PERF_COUNTERS=0, profiling outputs remain zero, including snapshot
+  // pulses, and every mperf* read returns zero.
   generate
     if (PERF_COUNTERS == 0) begin : gen_formal_perf_off
       logic perf_csr_read;
@@ -2125,13 +1898,11 @@ module csr_file #(
 `endif
 
 `ifdef CSR_COMMIT_LOCAL_PROOF
-  // csr_commit_cofactor formal target. The f_old_* logic is a reference
-  // model with generic trap-over-write priority: the counters, the storage
-  // of the "Other Machine-Mode CSR Updates" block, and the next-state
-  // translation compare. Whenever f_csr_legal holds (always by default; with
-  // COMMIT_EXCLUDES_CONTROL_TAKE, only when no trap or xRET coincides with a
-  // CSR commit), the translation request must match the reference, and the
-  // registers must match theirs after the edge.
+  // Reference for csr_commit_cofactor: f_old_* uses generic trap-over-write
+  // priority for counters, CSR storage, and translation invalidation.
+  // f_csr_legal excludes coincident control takes and CSR commits when
+  // COMMIT_EXCLUDES_CONTROL_TAKE is set. Under that condition, invalidation
+  // must match combinationally and stored values must match after the edge.
   logic f_csr_legal;
   logic f_csr_ref_valid = 1'b0;
   logic f_old_counter_write, f_old_mcycle_write, f_old_minstret_write;

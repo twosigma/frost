@@ -14,11 +14,7 @@
  *    limitations under the License.
  */
 
-// X3 board top level: UltraScale+ clock generation (the CPU clock's GTY
-// transmitter, x3_cpu_clock_gty, or an MMCM in slow functional builds), the
-// DDR4 memory subsystem (the ddr_subsys block design, holding the DDR4
-// controller, a SmartConnect and the JTAG DDR loader), the NIC's GTY
-// transceiver (x3_nic_gty) and the common FROST subsystem.
+// X3 board wrapper: CPU clocks, DDR4, NIC transceiver, and FROST subsystem.
 module x3_frost #(
     // CPU clock divider for functional-testing builds (build.py
     // --cpu-clock-div exports it as FROST_CPU_CLK_DIV and synthesis passes
@@ -76,13 +72,10 @@ module x3_frost #(
     output logic o_cpu_clock_txn
 );
 
-  // Clock generation. Full- and half-rate builds (CPU_CLK_DIV 1 and 2) take
-  // the CPU clock from a GTY transmitter (x3_cpu_clock_gty): TXOUTCLK at
-  // 322.265625 MHz from the Ethernet reference clock, divided by BUFG_GTs.
-  // The slower functional builds keep the MMCM on the 300 MHz system clock,
-  // 300 MHz / 8 * 34.375 / (4 * CPU_CLK_DIV), because a BUFG_GT divides by at
-  // most 8 and their CPU/4 clocks need 12 and 16. The CPU clock channel runs
-  // in every build: its pins are board pins.
+  // CPU_CLK_DIV 1 and 2 use the GTY's 322.265625 MHz TXOUTCLK through BUFG_GT.
+  // Dividers 3 and 4 use the MMCM: 300 MHz / 8 * 34.375 / (4 * CPU_CLK_DIV).
+  // Their CPU/4 clocks need divisors 12 and 16, beyond BUFG_GT's maximum of 8.
+  // The CPU GTY channel runs in all builds because its pins are board ports.
   localparam bit CpuClockFromGty = CPU_CLK_DIV <= 2;
   localparam int unsigned CpuClkHz = 322_265_625 / CPU_CLK_DIV;
   logic main_clock, divided_clock_by_4;
@@ -91,18 +84,15 @@ module x3_frost #(
   logic cpu_clock_locked;
   logic differential_clock_300mhz_buffered;
 
-  // Convert differential clock input to single-ended
   IBUFDS differential_input_buffer_300mhz (
       .I (i_sysclk_p),
       .IB(i_sysclk_n),
       .O (differential_clock_300mhz_buffered)
   );
 
-  // The two transceivers' shared clocks: quad 231's reference clock buffer,
-  // for the NIC's QPLL0 and the CPU clock channel's CPLL, and the
-  // free-running clock of both reset controllers. The free-running clock
-  // halves the 300 MHz input (in the input's clock region), so it runs from
-  // configuration and depends on neither transceiver nor the MMCM.
+  // Share quad 231's reference buffer between NIC QPLL0 and CPU CPLL.
+  // Both reset controllers use the 300 MHz input divided by two; this clock
+  // runs from configuration independently of either transceiver or the MMCM.
   logic gty_refclk, freerun_clk;
   IBUFDS_GTE4 #(
       .REFCLK_EN_TX_PATH (1'b0),
@@ -209,9 +199,9 @@ module x3_frost #(
     );
   end
 
-  // The NIC's 10GBASE-R transceiver. Its reset controller runs on the
-  // free-running clock above, and it supplies both MAC clocks (TX and recovered RX USRCLK2, 161.13 MHz), their clock-OK levels,
-  // the raw words, the receive signal-OK and the PHY status.
+  // The GTY supplies independent 161.13 MHz TX and recovered RX MAC clocks,
+  // received raw words, clock and signal status, and PHY status; the NIC
+  // supplies PHY control.
   logic nic_tx_clk, nic_rx_clk, nic_tx_clk_ok, nic_rx_clk_ok, nic_rx_signal_ok, nic_rx_raw_valid;
   logic nic_tx_raw_valid, nic_rx_block_lock;
   logic [63:0] nic_tx_raw_data, nic_rx_raw_data;
@@ -251,13 +241,9 @@ module x3_frost #(
   logic [4:0] ddr_axi_awid, ddr_axi_arid, ddr_axi_bid, ddr_axi_rid;
 
   logic mem_ok;
-  // mem_ok originates in the DDR controller's ui_clk domain: synchronize it
-  // into the core clock domain before folding it into the reset tree (the
-  // raw reset fans combinationally into both board clock domains). The
-  // crossing is cut by the set_clock_groups -asynchronous in the xdc, which
-  // declares the i_sysclk_p and default_300mhz_clk0 (DDR4) clock families
-  // asynchronous. The xdc's false path to this synchronizer is redundant with
-  // it and stays in case that grouping is narrowed.
+  // Synchronize DDR calibration from ui_clk before using it in CPU reset.
+  // x3.xdc cuts this crossing with asynchronous clock groups and a dedicated
+  // false path, retained in case those groups are narrowed.
   (* ASYNC_REG = "TRUE" *) logic [1:0] mem_ok_synchronizer;
   always_ff @(posedge main_clock) begin
     mem_ok_synchronizer <= {mem_ok_synchronizer[0], mem_ok};
@@ -268,13 +254,8 @@ module x3_frost #(
   logic cpu_side_aresetn;
   assign cpu_side_aresetn = cpu_clock_locked;
 
-  // Power-up DDR4 initialization. The array is ECC-checked, so a read of a
-  // location nothing has written since power-up reports an error against a
-  // check code that was never computed. x3_ddr_init writes the region once
-  // after calibration, and until it reports done the FROST subsystem and the
-  // JTAG DDR loader are both held in reset, so nothing else can read or
-  // write the array first. The SmartConnect's own reset is not gated: the
-  // initializer writes through it.
+  // Initialize ECC before any read. Hold FROST and the JTAG DDR loader in
+  // reset until x3_ddr_init finishes; keep SmartConnect running for its writes.
   logic ddr_init_busy, ddr_init_done;
   logic init_awvalid, init_wvalid, init_wlast, init_bready;
   logic [  4:0] init_awid;
@@ -312,11 +293,8 @@ module x3_frost #(
       .i_bresp  (ddr_axi_bresp)
   );
 
-  // The write channels into the block design belong to the initializer until
-  // it is done, and to the cache hierarchy's bridge after. Only the request
-  // side is selected: the subsystem is in reset for the whole initializing
-  // window, so its own write requests are idle and the controller's ready and
-  // response lines can go to both masters unchanged.
+  // The initializer drives writes until done. FROST stays in reset during
+  // initialization, so ready and response signals can feed both masters.
   logic s00_awvalid, s00_wvalid, s00_wlast, s00_bready;
   logic [  4:0] s00_awid;
   logic [ 29:0] s00_awaddr;
@@ -337,10 +315,7 @@ module x3_frost #(
   assign s00_wlast = ddr_init_busy ? init_wlast : ddr_axi_wlast;
   assign s00_bready = ddr_init_busy ? init_bready : ddr_axi_bready;
 
-  // The JTAG DDR loader runs on the CPU/4 clock, and ddr_init_done is a main
-  // clock register, so the loader's reset goes through this synchronizer and
-  // the crossing ends at one register pair instead of fanning combinationally
-  // into the loader's resets.
+  // Synchronize main-clock ddr_init_done into the JTAG loader's CPU/4 domain.
   (* ASYNC_REG = "TRUE" *) logic [1:0] jtag_aresetn_synchronizer = '0;
   always_ff @(posedge divided_clock_by_4) begin
     jtag_aresetn_synchronizer <= {jtag_aresetn_synchronizer[0], cpu_side_aresetn & ddr_init_done};
@@ -405,11 +380,8 @@ module x3_frost #(
       .ddr4_sdram_c0_reset_n(ddr4_sdram_c0_reset_n)
   );
 
-  // Common Xilinx FROST subsystem (JTAG, BRAM controller, CPU).
-  // Clock: 322.265625 MHz / CPU_CLK_DIV.
-  // X3 has no push-button reset, so the subsystem stays in reset until the
-  // CPU clock runs, DDR4 calibrates, and ECC initialization completes. The
-  // cached tier is ready for the first instruction.
+  // FROST runs at 322.265625 MHz / CPU_CLK_DIV. With no board reset button,
+  // release reset after CPU clock lock, DDR calibration, and ECC initialization.
   xilinx_frost_subsystem #(
       .CLK_FREQ_HZ(CpuClkHz),
       // X3's L1 BRAM + L2 URAM hierarchy is backed by the DDR4 controller

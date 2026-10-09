@@ -31,11 +31,7 @@
 // upper half of P always needs P+1: a 32-bit slot 1 spans into it, and a
 // compressed slot 1 can pair with a slot 2 in its lower half.
 //
-// Each equality chunk and both reduction levels fit in a 6-input LUT, so a tag
-// path is three LUT levels plus dedicated muxes. The buffer qualification
-// (i_use_instr_buffer) enters no equality LUT and selects only at the final
-// MUXF8. One instance per provider keeps synthesis from merging the provider
-// select into a serial compare across providers.
+// Separate provider instances and explicit mux primitives are used for timing.
 (* keep_hierarchy = "yes" *)
 module served_window_coverage (
     input  logic [29:0] i_pc_word,
@@ -67,14 +63,10 @@ module served_window_coverage (
   assign same_hi = &same_chunk[9:5];
   assign last_lo = &last_chunk[4:0];
   assign last_hi = &last_chunk[9:5];
-  // Five equality chunks plus the registered validity fit exactly in one LUT6.
   assign prev_lo_valid = (&prev_chunk[4:0]) && i_served_prev_word_valid;
   assign prev_hi = &prev_chunk[9:5];
 
-  // One candidate per combination of buffer use and whether P+1 is needed,
-  // each one LUT of at most the six half-terms (LUT2/LUT4/LUT6).
-  // i_no_buffer_accepts_served_last, i_pc_high, and the late buffer
-  // qualification are mux selects and stay out of the equality logic.
+  // Candidates cover each combination of buffer use and need for word P+1.
   (* keep = "true" *) logic no_buffer_covers_same_only, no_buffer_covers_served_last;
   (* keep = "true" *) logic buffer_covers_base, buffer_covers_successor;
   assign no_buffer_covers_same_only = same_lo && same_hi;
@@ -83,11 +75,7 @@ module served_window_coverage (
       (prev_lo_valid && prev_hi);
   assign buffer_covers_successor = (same_lo && same_hi) || (prev_lo_valid && prev_hi);
 
-  // Two MUXF7s and one MUXF8 pack the four candidate LUTs into one Xilinx
-  // slice: i_no_buffer_accepts_served_last selects within the no-buffer arm,
-  // i_pc_high within the buffer arm, and the late buffer select drives only
-  // the MUXF8. Inferred logic would map the nested selects to LUTs, adding
-  // routed levels on the tag paths, hence the explicit primitives.
+  // MUXF7 selects within each buffer case; MUXF8 selects the buffer case.
 `ifdef FROST_XILINX_PRIMS
   (* keep = "true" *)logic covers_without_buffer;
   (* keep = "true" *)logic covers_with_buffer;

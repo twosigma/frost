@@ -15,38 +15,27 @@
  */
 
 /*
- * dtlb: fully associative Sv39 TLB with superpages. The data MMU uses it as
- * the 16-entry DTLB and the instruction MMU (mmu/immu) as the 8-entry ITLB.
+ * Fully associative Sv39 TLB with superpages: 16 entries for data, eight
+ * for instructions. Level-masked VPN compares cover 1 GiB, 2 MiB, and 4 KiB
+ * pages. The lowest matching index wins; replacement uses a rotating pointer.
  *
- * Each flop entry holds one leaf PTE at its own level, and the compare is
- * masked by level: a 1 GiB entry matches on VPN2 alone, a 2 MiB entry on VPN2
- * and VPN1, a 4 KiB entry on all 27 VPN bits. Replacement uses a rotating
- * pointer. Entries carry no ASID, so SFENCE.VMA and the CSR file's
- * translation invalidate (hw/rtl/cpu_and_mem/cpu/README.md, "CSR writes") both
- * clear every entry through i_invalidate_all. An invalidate in the same cycle
- * as an install wins, because the install belongs to the old address space.
+ * Entries have no ASID. SFENCE.VMA and CSR translation invalidation clear all
+ * entries; invalidate wins over a simultaneous install from the old address
+ * space. See cpu/README.md, "CSR writes".
  *
- * The physical map is 32-bit, so an entry keeps only PPN[19:0] and one bit
- * that is set when PPN[43:20] is nonzero. A lookup returns PA[31:12] and that
- * bit, and the MMU raises an access fault for a leaf outside the map. It also
- * returns whether PA[31:12] is in a device window
- * (riscv_pkg::pma_device_page_ok), computed for every entry beside the
- * compare so that the data MMU's MMIO class does not wait for the PPN mux.
- * The MMU also checks permissions; this module only reports the stored R, W,
- * X, U, and D bits.
+ * Store PPN[19:0] and a flag for nonzero PPN[43:20]. Return PA[31:12],
+ * permissions, and per-entry permission/PMA checks to the MMU. The MMU uses
+ * the high-PPN flag to reject leaves outside the 32-bit physical map.
  *
- * Lookups are combinational, one per port: the data side's issue port and
- * its two early-store ports, or the instruction side's current-PC and
- * next-page ports. The hardware never creates duplicate entries: the one
- * walker installs only for a lookup that missed, keyed by the walk's VPN
- * echo. Software that changes a mapping without SFENCE.VMA sees one of the
- * prior translations, which the privileged spec permits.
+ * Lookups are combinational. Walks install on misses using the echoed VPN;
+ * installs do not remove overlapping entries. Software that changes mappings
+ * without SFENCE.VMA can observe prior translations, as the privileged spec
+ * permits.
  */
 module dtlb #(
     parameter int unsigned NUM_ENTRIES    = 16,
     parameter int unsigned NUM_PORTS      = 3,
-    // Form the instruction MMU's per-entry fetch verdicts (o_fetch_*). The
-    // data MMU leaves this off, which keeps its lookup netlist free of them.
+    // Enable per-entry fetch checks (o_fetch_*); unused by the data MMU.
     parameter bit          FETCH_VERDICTS = 1'b0
 ) (
     input logic i_clk,
@@ -74,29 +63,23 @@ module dtlb #(
     output logic [NUM_PORTS-1:0][                       1:0] o_level,
     // o_ppn20 is a device-window page (riscv_pkg::pma_device_page_ok).
     output logic [NUM_PORTS-1:0]                             o_device_page,
-    // The data MMU's leaf checks of each port's hit, formed per entry before
-    // the select so that no permission or PMA logic follows it. o_perm_ok is
-    // the permission check: i_perm_store asks for W and D, otherwise R, or X
-    // with i_perm_mxr; a U page needs U mode (i_perm_priv_u) or i_perm_sum, and
-    // an S page needs S mode. o_atomic_page is riscv_pkg::pma_atomic_ok of the
-    // hit's zero-extended PA. The ITLB ties the inputs off and leaves these
-    // outputs open.
+    // Data permissions: stores require W and D; loads require R or X with
+    // MXR. U pages require U mode or SUM; S pages reject U mode.
+    // o_atomic_page checks pma_atomic_ok on the zero-extended PA. Both
+    // outputs are clear on a miss; the ITLB leaves them unused.
     input  logic [NUM_PORTS-1:0]                             i_perm_store,
     input  logic                                             i_perm_priv_u,
     input  logic                                             i_perm_sum,
     input  logic                                             i_perm_mxr,
     output logic [NUM_PORTS-1:0]                             o_perm_ok,
     output logic [NUM_PORTS-1:0]                             o_atomic_page,
-    // With FETCH_VERDICTS, the instruction MMU's leaf checks of each port's
-    // hit, likewise formed per entry before the select. o_fetch_perm_fault:
-    // the hit lacks X or its U bit differs from the fetch privilege
-    // (i_fetch_priv_u). o_fetch_pma_bad: the hit's PA has nonzero high PPN
-    // bits or fails riscv_pkg::pma_fetch_ok. o_fetch_next_pma_bad: the same
-    // PMA check of the aligned next page inside the hit's superpage (the
-    // entry's high PPN bits over the lookup VPN plus one; meaningful for
-    // levels 1 and 2). All three are 0 on a miss, and 0 without
-    // FETCH_VERDICTS. The data MMU ties the input off and leaves these
-    // outputs open.
+    // With FETCH_VERDICTS, check each hit before selection:
+    //   o_fetch_perm_fault: X is clear or U differs from i_fetch_priv_u.
+    //   o_fetch_pma_bad: high PPN bits are nonzero or pma_fetch_ok fails.
+    //   o_fetch_next_pma_bad: pma_fetch_ok fails for the zero-extended next
+    //     page inside the superpage (levels 1 and 2). High PPN bits are
+    //     checked separately by o_fetch_pma_bad.
+    // All three are zero on a miss or when FETCH_VERDICTS is disabled.
     input  logic                                             i_fetch_priv_u,
     output logic [NUM_PORTS-1:0]                             o_fetch_perm_fault,
     output logic [NUM_PORTS-1:0]                             o_fetch_pma_bad,
@@ -115,10 +98,8 @@ module dtlb #(
   // ---------------------------------------------------------------------------
   // Lookup: level-masked compare, lowest matching index wins.
   // ---------------------------------------------------------------------------
-  // TIMING: each entry's three VPN chunk compares are kept as nets, and the
-  // lowest match is found as a one-hot select before an AND-OR mux, so the
-  // lookup is a shallow tree instead of a compare chain feeding a priority
-  // chain.
+  // Keep VPN chunk compares separate, then select the lowest match one-hot
+  // for the AND-OR result mux.
   (* keep = "true" *)logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] vpn2_eq;
   (* keep = "true" *)logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] vpn1_eq;
   (* keep = "true" *)logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] vpn0_eq;
@@ -293,8 +274,7 @@ module dtlb #(
               (i_perm_store[gp] ? (e_w[e] && e_d[e]) : (e_r[e] || (i_perm_mxr && e_x[e])));
           ref_atomic_page = riscv_pkg::pma_atomic_ok({32'b0, ref_ppn20, 12'h000});
           ref_level = e_level[e];
-          // The fetch verdicts, from the selected fields as the ITLB computed
-          // them before they were formed per entry.
+          // Reference fetch checks use the selected entry's fields.
           ref_fetch_perm_fault = !(e_x[e] && (e_u[e] == i_fetch_priv_u));
           ref_fetch_pma_bad = e_ppn_hi_nonzero[e] ||
               !riscv_pkg::pma_fetch_ok({32'b0, ref_ppn20, 12'h000});
@@ -318,10 +298,9 @@ module dtlb #(
 `endif
 
 `ifdef FORMAL
-  // Formal target tlb: an arbitrary watched slot holds exactly what the last
-  // install wrote until the slot is overwritten or the TLB is invalidated, a
-  // lookup that matches it at its level always hits, and invalidate-all
-  // leaves no valid entry.
+  // A watched slot must retain its last install until overwritten or
+  // invalidated. A level-masked lookup must hit it while live; invalidate
+  // must clear every valid entry.
   logic f_past_valid;
   initial f_past_valid = 1'b0;
   always_ff @(posedge i_clk) f_past_valid <= 1'b1;

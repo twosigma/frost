@@ -15,21 +15,13 @@
  */
 
 /*
- * immu_test_harness: immu behind a model of pc_controller's fetch-PC register,
- * for cocotb.
+ * IMMU bench with a clocked fetch-PC register like pc_controller's.
+ * i_pc_update_en permits PC changes only at clock edges, preserving retag
+ * bubbles and simultaneous PC/walk transitions. IMMU detects changes by
+ * comparing the PC with its result tag.
  *
- * pc_q loads i_pc_d on edges where i_pc_update_en is high, and immu translates
- * the registered value, as in the core. A test can therefore move the PC only
- * at a clock edge, so it sees the core's retag bubbles and can land a PC load
- * on the same edge as a walk request or response. immu itself has no load
- * enable: under Sv39 it detects a PC change by comparing the registered PC
- * with its result's tag.
- *
- * The validity copies are exposed so cocotb checks every consumer's view
- * across translation, retag, and fault transitions.
- *
- * The walker response comes in as separate ports because cocotb cannot
- * portably drive fields of a SystemVerilog packed struct.
+ * Expose validity copies for comparison across translation and fault changes.
+ * Separate walker-response fields let cocotb drive them portably.
  */
 module immu_test_harness #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,

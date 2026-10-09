@@ -18,12 +18,8 @@
  * pc_reg + 2, + 4, + 6, and + 8, computed in parallel from the registered
  * i_pc_reg for pc_increment_calculator.
  *
- * The module is a synthesis boundary. pc_increment_calculator instantiates it
- * with (* dont_touch = "yes" *), so Vivado cannot merge these CARRY8 adders
- * with the bundle-advance mux that follows. Merged, the late predecode-derived
- * select would drive the CARRY8 S inputs and put the whole carry chain on the
- * select path. With only a registered input, the sums settle well before the
- * fetch window arrives.
+ * The dont_touch instance in pc_increment_calculator keeps Vivado from
+ * merging the adders with the bundle-advance mux, for timing.
  */
 (* keep_hierarchy = "yes" *)
 module pc_reg_precompute #(
@@ -57,8 +53,7 @@ module pc_reg_precompute #(
   logic [XLEN-1:0] pc_reg_plus_2, pc_reg_plus_4;
   logic [XLEN-1:0] pc_reg_plus_6;
   logic [XLEN-1:0] pc_reg_plus_8;
-  // Use word-index adders so pc_reg[1] only drives final muxes, not the full
-  // high-bit carry chain.
+  // Word-index adders share the +4 and +8 sums across halfword alignments.
   assign pc_reg_plus_2 = {
     pc_reg_halfword ? pc_reg_word_plus_1 : pc_reg_word, ~pc_reg_halfword, i_pc_reg[0]
   };

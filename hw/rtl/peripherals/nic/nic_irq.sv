@@ -23,20 +23,15 @@
  * IRQ_MASK_CLR views so two contexts never read-modify-write it. Masking
  * never loses an event: counting, timing and latching go on while masked.
  *
- * The RX and TX bits are moderated notifications, not "descriptors are
- * waiting". Per direction, an acknowledgement (W1C of the bit, effective even
- * when it reads 0) starts a new interval: it clears the notification, the
- * completion count and the timer. Within an interval every completion
- * (i_rx_done / i_tx_done, one pulse per DD write response) counts,
- * saturating; the first one snapshots the direction's ITR fields and TICK
- * and starts the deadline, which never restarts on later completions. The
- * bit raises when the count reaches max (max = 0 disables the comparator)
- * or the deadline passes; delay = 0 means immediate notification on a
- * completion whatever max says, so a count threshold always carries a
- * finite deadline. A raise stops the timer; completions while the bit is
- * set belong to the same, already-notified interval; a completion in the
- * cycle of the acknowledgement belongs to the new interval. TICK = 0 counts
- * as 1. Configuration changes apply from the next interval.
+ * RX and TX are moderated notifications. W1C starts a new interval even if
+ * the bit is zero. Completions (one pulse per DD write response) increment a
+ * saturating count. The first snapshots ITR and TICK and starts a deadline;
+ * later completions do not restart it. Notify at the count threshold or
+ * deadline. max=0 disables the threshold; delay=0 notifies on completion.
+ * TICK=0 counts as 1. Configuration changes apply to the next interval.
+ *
+ * Notification stops the timer. Further completions belong to that interval
+ * until W1C; a completion on the W1C cycle starts the new interval.
  *
  * The driver's rule that makes this lossless: acknowledge before scanning
  * the rings (flushing the acknowledgement with a register read), never

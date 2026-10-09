@@ -36,8 +36,8 @@
  * read. A consumer may take o_data in any cycle o_valid is high; one that
  * takes it right after a load sees o_valid low for a cycle.
  *
- * Each side resets in its own domain, at its own clock edges, and a write
- * during the write-side reset is dropped. Each side must apply its reset at
+ * Each side resets at its own clock edges. A write during write-side reset
+ * can reach RAM but does not advance the pointer. Each side must reset at
  * one of its clock edges while the other side is still held in reset, so the
  * resets must span several cycles of the slower clock. Otherwise one side
  * works from the other side's old pointer: the status is wrong, stale entries
@@ -93,9 +93,8 @@ module dc_fifo #(
       .o_read_data(memory_read_data)
   );
 
-  // Binary pointers, one per clock domain, each crossing into the other
-  // domain through two synchronizer stages. The clocks share a source, so the
-  // second stage buys timing closure rather than metastability protection.
+  // Binary pointers cross through two stages; the related clocks must meet
+  // timing at the first stage.
   logic [AddressWidth:0] write_pointer_in_input_domain;
   logic [AddressWidth:0] write_pointer_synchronized_stage1;
   logic [AddressWidth:0] write_pointer_synchronized_stage2;
@@ -103,7 +102,6 @@ module dc_fifo #(
   logic [AddressWidth:0] read_pointer_synchronized_stage1;
   logic [AddressWidth:0] read_pointer_synchronized_stage2;
 
-  // Write when input provides valid data and FIFO has space
   assign memory_write_enable  = i_valid && o_ready;
   assign memory_write_address = write_pointer_in_input_domain[AddressWidth-1:0];
   assign memory_read_address  = read_pointer_in_output_domain[AddressWidth-1:0];
@@ -159,12 +157,10 @@ module dc_fifo #(
     end else begin
       read_data_fresh <= !load;
       if (load) begin
-        // Load the next entry once the output register is free.
         o_data <= memory_read_data;
         read_pointer_in_output_domain <= read_pointer_next;
         read_data_valid_registered <= 1;
       end else if (take) begin
-        // The consumer took the entry and no next one is ready yet.
         read_data_valid_registered <= 0;
       end
     end

@@ -30,11 +30,9 @@
 // by little-endian Ethernet FCS. One or two complete idle words follow /T/,
 // providing 12..19 idle bytes (conservative IFG; no deficit-idle counting).
 //
-// Transmission is decided from registers for the 10GBASE-R word rate. Starting
-// a frame loads its payload and padded lengths as word counts and end lanes,
-// and each word registers the lane classes of the next, so no length is
-// compared per lane. A word's FCS bytes select among its prefix CRCs rather
-// than following a CRC carried from lane to lane.
+// Frame start records payload and padded lengths as word counts and end lanes.
+// Each word registers the next word's lane classes. FCS bytes select the CRC
+// prefix ending at the first FCS lane.
 module eth10g_mac_tx #(
     parameter int unsigned MAX_FRAME_BYTES = 9216
 ) (
@@ -69,12 +67,9 @@ module eth10g_mac_tx #(
     TX_GAP
   } tx_state_t;
 
-  // Packet memory is deliberately not reset; buffer_full controls visibility.
-  // The synchronous read is prefetched during preamble and each payload word.
-  // One array holds both frame buffers, the buffer select as the top address
-  // bit, with one write port and one read port behind a muxed address:
-  // synthesis infers block RAM for it, where a two-dimensional array of
-  // buffers falls back to registers and a second read port to distributed RAM.
+  // buffer_full hides uninitialized memory. Prefetch during preamble and
+  // payload. A single array with buffer select as the top address bit and
+  // one synchronous read port permits block RAM inference.
   (* ram_style = "block" *) logic [63:0] frame_memory[2 << WordIndexWidth];
   logic [1:0] buffer_full;
   int unsigned frame_length[2];
@@ -135,11 +130,10 @@ module eth10g_mac_tx #(
     start_last_payload_lanes = 8'hff >> (7 - ((start_length - 1) & 7));
   end
 
-  // prefix_crc[count] is the CRC through the current word's first count lanes,
-  // with padding lanes as zero. CRC is linear in seed and data, so each of its
-  // bits is the XOR of a fixed selection of {tx_crc, data_word} bits:
-  // PrefixMasks[count][bit], found by passing every input bit alone through
-  // crc32_byte. Each prefix bit is one flat XOR, not the end of a lane chain.
+  // prefix_crc[count] covers the first count lanes, with zero padding.
+  // CRC linearity lets each result bit XOR a fixed subset of {tx_crc,
+  // data_word}. PrefixMasks finds those subsets by applying crc32_byte to
+  // each input bit separately.
   function automatic logic [8:0][31:0][95:0] prefix_masks();
     logic [8:0][31:0][95:0] masks;
     logic [95:0][31:0] state;  // CRC so far with only one input bit set

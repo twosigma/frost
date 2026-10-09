@@ -20,14 +20,12 @@
 module sdp_block_ram #(
     parameter int unsigned ADDR_WIDTH = 5,  // Address width in bits
     parameter int unsigned DATA_WIDTH = 32,  // Data width in bits
-    // Nonzero enables simulation-only one-cycle bulk clear. The generate keeps
-    // array-wide reset logic out of synthesis and preserves block-RAM inference.
+    // Simulation-only bulk clear. Keep zero in hardware for BRAM inference.
     parameter int unsigned SUPPORT_BULK_CLEAR = 0
 ) (
     input logic i_clk,
     input logic i_write_enable,
-    // Sim-only one-cycle clear of every entry (see SUPPORT_BULK_CLEAR). Tied
-    // low / unused on FPGA builds (SUPPORT_BULK_CLEAR = 0).
+    // Clears every entry in one cycle when SUPPORT_BULK_CLEAR is nonzero.
     input logic i_bulk_clear,
     input logic [ADDR_WIDTH-1:0] i_write_address,
     input logic [ADDR_WIDTH-1:0] i_read_address,
@@ -40,10 +38,7 @@ module sdp_block_ram #(
 
   initial for (int i = 0; i < RamDepth; ++i) ram[i] = '0;
 
-  // Synchronous write. SUPPORT_BULK_CLEAR picks the write block at elaboration:
-  // 0 (every FPGA build) is a plain single-port write that infers block RAM,
-  // and nonzero (simulation only) adds a one-cycle clear-all that takes
-  // priority over a write.
+  // Bulk clear takes priority over a write.
   if (SUPPORT_BULK_CLEAR != 0) begin : gen_clearable_write
     always_ff @(posedge i_clk) begin
       if (i_bulk_clear) for (int i = 0; i < int'(RamDepth); ++i) ram[i] <= '0;
@@ -53,8 +48,7 @@ module sdp_block_ram #(
     always_ff @(posedge i_clk) if (i_write_enable) ram[i_write_address] <= i_write_data;
   end
 
-  // Synchronous read: the output register is there for block RAM inference
-  // and for timing.
+  // The read register permits block RAM inference.
   always_ff @(posedge i_clk) o_read_data <= ram[i_read_address];
 
 endmodule : sdp_block_ram

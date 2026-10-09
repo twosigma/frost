@@ -17,23 +17,13 @@
 /*
  * Commit-time misprediction and flush controller.
  *
- * Detects mispredictions at commit, ignoring branches that early recovery is
- * already handling. Captures the recovery payload into registers off the timing
- * cone: mispredict_commit_q, and the BTB-update payload for a correctly
- * predicted branch. Drives the prioritized flush hierarchy into the front end
- * and the OOO back end: flush_all for traps, xRETs, and FENCE-class recovery,
- * flush_en with flush_tag for partial mispredict recovery (early or
- * commit-time), plus checkpoint restore, free, and the bulk free mask.
- * Slot-2 correct-branch training is held separately and has its own
- * checkpoint-free channel.
+ * Capture commit recovery and correct-branch BTB training. Full flushes
+ * (trap, xRET, FENCE-class recovery) take priority over early or commit-time
+ * partial recovery. Drive checkpoint restore, free, and bulk free masks.
+ * Slot-2 training has a held capture and an independent checkpoint free.
  *
- * Every broadcast (flush_all, flush_pipeline, frontend_state_flush,
- * flush_en/flush_tag, checkpoint_restore/_id) decodes from registered state:
- * the registered full-flush pulse and the pending flags; flush_en is itself a
- * register, loaded on the same edge from their next states. None of them
- * reads the raw trap/xRET takes or the FENCE-class event combinationally.
- * Simulation assertions check each of them against a reference priority
- * chain.
+ * Flush and restore broadcasts use registered state; raw trap, xRET, and
+ * FENCE-class events feed only register inputs.
  */
 
 (* keep_hierarchy = "yes" *)
@@ -52,8 +42,7 @@ module misprediction_flush_controller #(
     input logic i_early_mispredict_active,
     input logic i_early_mispredict_pending,
     input logic i_early_backend_recovery_pending,
-    // Next state of i_early_backend_recovery_pending: the input equals this
-    // one cycle later (the early recovery unit's register input).
+    // Next-cycle value of i_early_backend_recovery_pending.
     input logic i_early_backend_recovery_pending_next,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_head_tag,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_early_mispredict_tag,
@@ -96,20 +85,16 @@ module misprediction_flush_controller #(
     output logic [riscv_pkg::NumCheckpoints-1:0] o_checkpoint_flush_free_mask,
     output logic o_checkpoint_free,
     output logic [riscv_pkg::CheckpointIdWidth-1:0] o_checkpoint_free_id,
-    // Slot-2 correct-branch side effects: a second checkpoint-free channel
-    // that never contends with the recovery arms of the primary mux, and a
-    // held BTB-training capture. The exported bit is the raw held one, without
-    // the early-recovery service gate, so the parallel late BTB RMW address has
-    // no combinational dependency on early-recovery activity.
-    // correct_branch_2_served stays internal and decides when the held capture
-    // clears.
+    // Slot-2 has an independent checkpoint-free channel and a held BTB
+    // training request. Export the raw pending bit for the late BTB candidate;
+    // correct_branch_2_served clears it when no higher-priority source wins.
     output logic o_correct_branch_commit_pending_2_raw,
     output riscv_pkg::correct_branch_commit_capture_t o_correct_branch_commit_q_2,
     output logic o_checkpoint_free_2,
     output logic [riscv_pkg::CheckpointIdWidth-1:0] o_checkpoint_free_id_2
 );
 
-  // --- Port aliases: the body uses these unprefixed names.
+  // Port aliases.
   logic rob_commit_misprediction_raw;
   logic rob_commit_correct_branch_raw;
   riscv_pkg::reorder_buffer_commit_t rob_commit_comb;
@@ -155,41 +140,19 @@ module misprediction_flush_controller #(
   assign checkpoint_younger_than_flush   = i_checkpoint_younger_than_flush;
   assign checkpoint_owner_tag            = i_checkpoint_owner_tag;
 
-  // Outputs produced below (also read internally); wired to o_* at the end.
-  // TIMING: the capture payloads feed every replica of the BTB training mux in
-  // ex_comb_synthesizer, which is itself fanout-capped and so replicated. Caps
-  // here let the hot flag and select bits replicate with the mux, while the wide
-  // PC fields stay single: their per-bit load is about the replica count.
+  // Recovery payloads and broadcasts. Cap fanout for replication.
   (* max_fanout = 64 *) riscv_pkg::mispredict_commit_capture_t mispredict_commit_q;
-  // TIMING: mispredict_recovery_pending is o_dispatch_flush itself and feeds
-  // every recovery-priority arm here, so it reaches the RS/LQ/SQ kill and
-  // capture gating across the whole back end. The fanout cap makes synthesis
-  // replicate the register per consumer region; its D input is one shallow
-  // LUT. The cap is 24 rather than 48 so that each consumer region gets its
-  // own replica. flush_pipeline and frontend_state_flush broadcast the same
-  // recovery state into the front end, and full_flush_side_effect_kill into
-  // RAT/ROB allocation and the commit bus; all three carry the same cap as
-  // flush_en and flush_all below.
   (* max_fanout = 24 *) logic mispredict_recovery_pending;
   logic [XLEN-1:0] fence_i_target_pc;
   (* max_fanout = 64 *) logic flush_pipeline;
   logic dispatch_flush;
   (* max_fanout = 64 *) logic full_flush_side_effect_kill;
   (* max_fanout = 64 *) logic frontend_state_flush;
-  // TIMING: flush_en, flush_tag and flush_all broadcast into the whole backend:
-  // the ROB commit gate, the RS/LQ/SQ kills and the RAT. flush_en is a
-  // register and flush_tag and flush_all are shallow functions of registered
-  // recovery state, so cap the fanout and let synthesis replicate the drivers
-  // per consumer region. This splits fanout only; it does not change the
-  // logic.
   (* max_fanout = 64 *) logic flush_en;
   (* max_fanout = 64 *) logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag;
   (* max_fanout = 64 *) logic flush_all;
   logic commit_recovery_flush_after_head;
   logic checkpoint_restore;
-  // TIMING: the restore id addresses every checkpoint LUTRAM read port (about
-  // 270 address pins spread over the RAT); the cap replicates its one-LUT
-  // driver per region (see the restore id below).
   (* max_fanout = 48 *) logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_restore_id;
   logic checkpoint_restore_reclaim_all;
   logic checkpoint_free;
@@ -212,9 +175,8 @@ module misprediction_flush_controller #(
     else mispredict_recovery_pending <= commit_is_misprediction;
   end
 
-  // The valid register above samples every edge. Refresh its payload on the
-  // same edge too; it is consumed only while mispredict_recovery_pending is
-  // high. This keeps late ROB commit/flush qualification off the wide enables.
+  // Refresh the payload every edge; it is consumed only while
+  // mispredict_recovery_pending is high.
   riscv_pkg::mispredict_commit_capture_t mispredict_commit_d;
   always_comb begin
     mispredict_commit_d.tag            = rob_commit_comb.tag;
@@ -234,8 +196,8 @@ module misprediction_flush_controller #(
   always_ff @(posedge i_clk) mispredict_commit_q <= mispredict_commit_d;
 
 `ifdef MISPREDICT_CAPTURE_LOCAL_PROOF
-  // mispredict_capture target: while recovery is pending, the payload equals
-  // a copy captured only on a mispredicted commit.
+  // While recovery is pending, the payload must equal a copy captured
+  // only on a mispredicted commit.
   riscv_pkg::mispredict_commit_capture_t f_gated_capture;
   logic f_capture_initialized = 1'b0;
   always @(posedge i_clk) begin
@@ -246,36 +208,25 @@ module misprediction_flush_controller #(
   end
 `endif
 
-  // FENCE.I commits before its flush pulse reaches IF. Capture the precise
-  // fallthrough PC so the front-end can restart from the architectural next
-  // instruction instead of from speculative fetch state that was already
-  // ahead. CSR commits latch the same way: a translation CSR's recovery uses
-  // the same target when its delayed fence_i_flush pulse follows, and
-  // latching every CSR commit is harmless when no recovery follows.
+  // Capture the architectural fallthrough PC at retirement for the FENCE-class
+  // refetch. FENCE.I and SFENCE.VMA flush one cycle after retiring; a
+  // translation CSR writes csr_file from the registered commit bus and flushes
+  // two cycles after. Every CSR commit captures it, which is harmless when no
+  // recovery follows.
   always_ff @(posedge i_clk) begin
     if (rob_commit_comb.valid && (rob_commit_comb.is_fence_i || rob_commit_comb.is_csr)) begin
       fence_i_target_pc <= fence_i_target_pc_pre;
     end
   end
 
-  // Register correctly-predicted branch commit for BTB update + checkpoint free.
-  // TIMING: this bit selects the correct-branch arm of the BTB training mux in
-  // ex_comb_synthesizer. The mux is replicated per RAM region, so the select
-  // feeds every replica. Cap it for the same per-region replication.
+  // Register correct-branch commit for BTB training and checkpoint free.
   (* max_fanout = 48 *) logic correct_branch_commit_pending;
-  // Payload cap: same reasoning as mispredict_commit_q above. extract_reset
-  // keeps the late capture strobe on the clock enable: the payload has no
-  // reset, and letting synthesis derive one from the load logic routes the
-  // strobe through extra levels to the reset pins.
+  // Keep the unreset payload on clock enables, for timing.
   (* max_fanout = 64, extract_reset = "no" *)
   riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q;
 
-  // The ROB raises this strobe for a checkpointed head that did not mispredict
-  // and was not early-recovered, so nothing more needs gating here.
-  // Kept as nets: the strobes come from the ROB's commit cone, and keeping
-  // them stops synthesis from rebuilding the capture enables out of that cone
-  // (it otherwise shared terms with the misprediction capture and added
-  // levels to these enables).
+  // The ROB qualifies this strobe with a checkpointed head that neither
+  // mispredicted nor recovered early. Keep the qualified capture enable.
   (* keep = "true" *) wire commit_is_correct_branch = rob_commit_correct_branch_raw;
 
   always_ff @(posedge i_clk) begin
@@ -298,18 +249,12 @@ module misprediction_flush_controller #(
     end
   end
 
-  // --- Slot-2 correct-branch capture ---
-  // pending_2 holds until the BTB-training channel is idle (every higher
-  // synthesizer arm quiet), a newer slot-2 capture supersedes it, or a full
-  // flush clears it. The checkpoint free does not wait: it may pulse only on
-  // the first held cycle of each capture, and only if the owner check
-  // (in_use && owner-tag match) passes. The owner check alone is not enough,
-  // because a record held by slot-1 training can outlive its checkpoint: the
-  // id can be reallocated at the same ROB tag, and a second free would release
-  // the new branch's live checkpoint and hang the ROB at that branch.
-  // TIMING: the held slot-2 select feeds the lowest-priority arm of every
-  // replica of the BTB training mux, so it carries the same caps as the
-  // slot-1 pending/payload pair.
+  // Slot-2 correct-branch capture.
+  // Hold training until served, superseded by a newer slot-2 capture, or
+  // cleared by a full flush. Checkpoint free may fire only in the first held
+  // cycle and requires in_use plus a matching tag. A held record can outlive
+  // its checkpoint and ROB tag; repeating the free could release a new
+  // branch's checkpoint.
   (* max_fanout = 48 *) logic correct_branch_commit_pending_2;
   (* max_fanout = 64, extract_reset = "no" *)
   riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q_2;
@@ -364,20 +309,10 @@ module misprediction_flush_controller #(
   assign o_checkpoint_free_id_2 = correct_branch_commit_q_2.checkpoint_id;
 
   // ---------------------------------------------------------------------
-  // Broadcast decode. Every flush and restore broadcast below is a register
-  // or one LUT of registered state: the registered full-flush pulse (trap, xRET, or
-  // FENCE-class recovery), the recovery-pending flags, and the early-recovery
-  // pending flag. The raw trap/xRET takes and the serializer's FENCE-class
-  // event feed only that register's D input, never a broadcast net. The
-  // simulation references at the end check each broadcast against a plain
-  // priority chain.
+  // Broadcast decode uses registered full-flush and recovery state. Raw
+  // trap, xRET, and FENCE-class events feed only register inputs.
+  // Register the OR of full-flush events so its driver can replicate.
   // ---------------------------------------------------------------------
-  // TIMING: full_flush_side_effect_kill broadcasts into RAT/ROB allocation and
-  // the commit bus. It is a register fed by the trap, xRET, and FENCE-class
-  // events rather than the OR of their three registered pulses, because
-  // synthesis cannot replicate that OR (only registers survive replication
-  // through opt); the register can replicate per consumer region. It equals
-  // the OR on every cycle, which p_flush_all_is_the_pulse_or checks.
   (* keep = "true", equivalent_register_removal = "no", max_fanout = 64 *)
   logic full_flush_side_effect_kill_q;
   always_ff @(posedge i_clk) begin
@@ -387,22 +322,15 @@ module misprediction_flush_controller #(
   assign full_flush_side_effect_kill = full_flush_side_effect_kill_q;
   assign flush_all                   = full_flush_side_effect_kill_q;
 
-  // TIMING: the checkpoint restore enable and id reach every checkpoint
-  // LUTRAM address pin and the RAT restore muxes, so they take the full-flush
-  // term from their own same-edge copy of the kill register, placed near
-  // them, rather than from its 400-load net. DONT_TOUCH keeps synthesis from
-  // merging the copy back. Both sample the same next state, so they agree
-  // from the first edge (p_restore_flush_copy_matches).
+  // Same-edge copy of the full-flush register for restore fanout. Both
+  // registers sample the same data and reset, so they agree after one edge.
   (* dont_touch = "true" *) logic restore_flush_all_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) restore_flush_all_q <= 1'b0;
     else restore_flush_all_q <= i_trap_taken || i_mret_taken || i_fence_class_flush_event;
   end
 
-  // TIMING: likewise, the front-end flushes (flush_pipeline and
-  // frontend_state_flush) reach the IF state and the fetch-PC mux, so they
-  // take the full-flush term from a same-edge copy placed near the front end
-  // (p_frontend_flush_copy_matches).
+  // Same-edge full-flush copy for frontend fanout.
   (* dont_touch = "true" *) logic frontend_flush_all_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) frontend_flush_all_q <= 1'b0;
@@ -427,45 +355,29 @@ module misprediction_flush_controller #(
 
   // Dispatch needs a same-cycle kill for commit-time partial recovery.
   assign dispatch_flush = mispredict_recovery_pending;
-  // Back-end flush priority. fence_i_flush, the shared FENCE-class pulse, is
-  // in the full-flush tier rather than below the partial arms. A younger
-  // branch's recovery pulse landing in the fence or CSR flush cycle must not
-  // demote the flush to a partial one: instructions between the fence and
-  // that branch may have been fetched before the L1I invalidate finished, so
-  // their code can be stale, and after a translation CSR a younger load may
-  // have issued under the old satp with its stale PA already in the LQ. The
-  // full flush is a strict superset of the partial kill, the PC mux already
-  // prefers the fence target over the branch redirect, and the
-  // partial-recovery pending flags tolerate being superseded by flush_all
-  // exactly as they do when a trap wins this arbitration.
-  // flush_en is !flush_all && (early_backend_recovery_pending ||
-  // mispredict_recovery_pending), registered on the edge that loads those
-  // three registers, from their next states (p_flush_en_exact checks it
-  // against the combinational form). TIMING: its fanout then starts at a
-  // register that can replicate, rather than at the full-flush kill's
-  // 400-load net through a LUT.
+  // Full flush takes priority over partial recovery. FENCE.I must discard
+  // all potentially stale instructions; translation-CSR recovery must also
+  // discard loads translated under the old satp. The PC mux gives the fence
+  // target priority, and full flush supersedes pending partial recovery.
+  // Register flush_en from the pending flags' next states so it equals
+  // !flush_all && (early_backend_recovery_pending || mispredict_recovery_pending).
   always_ff @(posedge i_clk) begin
     if (i_rst) flush_en <= 1'b0;
     else
       flush_en <= !(i_trap_taken || i_mret_taken || i_fence_class_flush_event) &&
           (i_early_backend_recovery_pending_next || (!flush_all && commit_is_misprediction));
   end
-  // Only an enabled partial flush reads the tag, and a full flush wins in
-  // every consumer, including the LQ's early-recovery input, which flush_all
-  // does not gate. So the tag ignores flush_all, which keeps the full-flush
-  // kill out of the age-compare data path.
+  // Consumers use the tag only for partial flushes, and full flush wins in
+  // every consumer, including the LQ early-recovery input. The tag therefore
+  // does not need a flush_all gate.
   always_comb begin
     flush_tag = '0;
     if (early_backend_recovery_pending) flush_tag = early_backend_flush_tag;
     else if (mispredict_recovery_pending) flush_tag = mispredict_commit_q.tag;
   end
-  // TIMING: the backend reads flush_tag_q, flush_tag registered on the edge
-  // that loads its inputs, from their next states, so the tag's broadcast
-  // starts at registers the fanout cap can replicate beside each consumer
-  // rather than at one select LUT (p_flush_tag_q_exact). Early backend
-  // recovery goes pending only while early_mispredict_active, the cycle that
-  // loads early_backend_flush_tag from early_mispredict_tag, and
-  // mispredict_commit_q loads mispredict_commit_d every cycle.
+  // Register the selected tag from next states for fanout. Early backend
+  // recovery captures early_mispredict_tag on its launch edge; commit recovery
+  // captures mispredict_commit_d on its launch edge.
   (* max_fanout = 32 *) logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag_q;
   always_ff @(posedge i_clk) begin
     if (i_early_backend_recovery_pending_next) flush_tag_q <= i_early_mispredict_tag;
@@ -483,18 +395,10 @@ module misprediction_flush_controller #(
   logic flush_after_head;
   assign flush_after_head = commit_recovery_flush_after_head;
 
-  // Checkpoint restore on misprediction, early or commit-time. The restore id
-  // is the checkpoint RAM read address: it feeds every checkpoint LUTRAM
-  // address pin and then the whole RAT restore mux tree. Its readout is
-  // observed only while checkpoint_restore is high or the RAS restore payload
-  // is taken, that is, commit-time recovery with a checkpoint or
-  // early_mispredict_active. So the id is one LUT of registered state: zero
-  // on the full-flush pulse, else the early id unless commit-time recovery is
-  // pending. Early recovery is active only with commit-time recovery not
-  // pending, so the select needs no early_mispredict_pending term: the id
-  // differs from the reference priority chain only where nothing reads it
-  // (p_checkpoint_restore_id_exact_where_observed). TIMING: that keeps the
-  // widely replicated early_mispredict_pending out of the address LUT.
+  // Restore early or at commit when a checkpoint exists. The ID is observed
+  // only during checkpoint restore or RAS restore. Early recovery excludes
+  // commit recovery, so select the early ID whenever commit recovery is idle;
+  // no early_mispredict_pending gate is needed on the address.
   assign checkpoint_restore = !restore_flush_all_q &&
       (early_redirect_fast ||
        (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint));

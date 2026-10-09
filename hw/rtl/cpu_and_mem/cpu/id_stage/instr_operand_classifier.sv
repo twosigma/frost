@@ -14,14 +14,11 @@
  *    limitations under the License.
  */
 
-// Classify dispatch operands directly from instruction fields, in parallel
-// with instr_decoder, so the serial instruction -> operation enum ->
-// operand-class decode stays off the ID D path. The decoder still decides
-// legality: at the output, i_inject_nop selects the NOP's class, and i_illegal
-// or i_fetch_fault then selects the neutral class. i_instr is PD's instruction
-// before the NOP is applied; i_illegal is instr_decoder's flag for the
-// instruction ID decodes (the NOP when i_inject_nop is set) ORed with PD's
-// illegal flag and ID's mstatus.FS=Off check.
+// Classify dispatch operands in parallel with instr_decoder. i_instr is PD's
+// instruction before NOP injection. i_inject_nop selects the NOP class;
+// i_illegal or i_fetch_fault overrides it with the neutral class. i_illegal
+// combines the decoder's flag for the selected instruction, PD's illegal
+// flag, and ID's mstatus.FS=Off check.
 module instr_operand_classifier (
     input riscv_pkg::instr_t i_instr,
     input logic i_inject_nop,
@@ -138,9 +135,8 @@ module instr_operand_classifier (
         raw_class.rs_type = riscv_pkg::RS_FP;
       end
       riscv_pkg::OPC_MISC_MEM: begin
-        // PAUSE (exactly 0x0100000F, matching instr_decoder's PAUSE arm) is a
-        // no-operand INT_RS op that completes like a NOP; it waits on nothing
-        // and, unlike FENCE, does not drain committed stores.
+        // PAUSE (0x0100000F) uses INT_RS with no operands and does not drain
+        // committed stores. Keep this encoding in sync with instr_decoder.
         if (i_instr.funct3 == 3'b000 && i_instr.funct7 == 7'b0000000 &&
             i_instr.source_reg_2 == 5'b10000 && i_instr.source_reg_1 == '0 &&
             i_instr.dest_reg == '0)
@@ -175,9 +171,8 @@ module instr_operand_classifier (
       selected_class.has_int_dest = 1'b1;
       selected_class.uses_int_rs1 = 1'b1;
     end
-    // An illegal instruction or a fetch fault reads no operands, so its INT_RS
-    // entry waits on no source register (a fetch fault's register fields are
-    // garbage), and it takes no load- or store-queue entry.
+    // Illegal instructions and fetch faults use INT_RS without operands or
+    // load- or store-queue entries. Fetch-fault fields are not valid operands.
     if (i_illegal || i_fetch_fault) begin
       selected_class = '0;
       selected_class.rs_type = riscv_pkg::RS_INT;

@@ -47,7 +47,6 @@ module tdp_bram_dc_byte_en #(
       $fatal(1, "DATA_WIDTH must be a multiple of 8 for byte-enable functionality");
   end
 
-  // Derived parameters
   localparam int unsigned NumBytes = DATA_WIDTH / 8;
   localparam int unsigned ByteAddrBits = $clog2(NumBytes);  // Bits for byte offset within word
   localparam int unsigned MemDepthInWords = 2 ** ADDR_WIDTH;
@@ -68,8 +67,7 @@ module tdp_bram_dc_byte_en #(
   assign port_a_word_address = i_port_a_byte_address[ADDR_WIDTH+ByteAddrBits-1:ByteAddrBits];
   assign port_b_word_address = i_port_b_byte_address[ADDR_WIDTH+ByteAddrBits-1:ByteAddrBits];
 
-  // Port A: each byte is written or read on its own, and a byte being written
-  // is forwarded to the read data in the same cycle (write-first).
+  // Port A: written bytes bypass the RAM to provide write-first reads.
   generate
     for (genvar byte_index = 0; byte_index < NumBytes; ++byte_index) begin : gen_port_a_byte_logic
       always @(posedge i_port_a_clk)
@@ -82,8 +80,7 @@ module tdp_bram_dc_byte_en #(
     end
   endgenerate
 
-  // Port B: each byte is written or read on its own, and a byte being written
-  // is forwarded to the read data in the same cycle (write-first).
+  // Port B: write-first reads.
   generate
     for (genvar byte_index = 0; byte_index < NumBytes; ++byte_index) begin : gen_port_b_byte_logic
       always @(posedge i_port_b_clk)

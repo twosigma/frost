@@ -61,9 +61,7 @@ module eth10g_mac_pcs #(
   logic tx_enable, rx_enable, mac_tx_ready;
   logic [65:0] tx_block, rx_block;
   logic tx_block_valid, tx_block_ready, rx_block_valid, rx_slip;
-  // Fault status into TX. The RX domain registers it (the fault monitor
-  // computes it combinationally), so the synchronizer's first stage sees one
-  // flop and nothing else. The synchronizer resets to a local fault.
+  // Register RX fault levels before synchronization. TX resets to local fault.
   logic rx_local_fault_q, rx_remote_fault_q, tx_local_fault, tx_remote_fault;
   always_ff @(posedge i_rx_clk) begin
     rx_local_fault_q  <= o_rx_local_fault;

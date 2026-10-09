@@ -25,9 +25,9 @@
  * PC (hw/rtl/cpu_and_mem/cpu/README.md, "4 GiB target limit").
  *
  * An entry is typed as a call, a return, or both (a coroutine swap), from the
- * commit that trained it. A hit on a typed entry tells the prediction
- * controller to take the target from the return address stack and to update
- * the stack when the predicted instruction is accepted.
+ * commit that trained it. Return-typed hits use the RAS target when the
+ * stack is nonempty. Call and return types determine the stack operation
+ * when the predicted instruction is accepted.
  *
  * Slot 1 reads combinationally at the fetch PC. Slot 2 reads three shifted
  * images (+2, +4, and a +2 copy rotated by one index for the next word) at the
@@ -93,10 +93,8 @@ module branch_predictor #(
     input logic            i_update_call,        // Branch is a call (types the entry)
     input logic            i_update_return,      // Branch is a return (types the entry)
 
-    // Early-recovery counter RMW candidate. When active, the selected update
-    // above carries this same PC and outcome. This separate input keeps the
-    // early candidate's LUTRAM read address independent of the upstream
-    // early/late update-priority mux.
+    // Early-recovery counter RMW candidate, with an independent read for
+    // timing. When active, the selected update must carry this PC and outcome.
     input logic            i_early_update_active,
     input logic [XLEN-1:0] i_early_update_pc,
     input logic            i_early_update_taken,
@@ -139,9 +137,7 @@ module branch_predictor #(
   // Keep valid bits in FFs so reset can clear them. Slot-1 payload stays in
   // LUTRAM; the staged slot-2 payloads use block RAM.
   logic btb_valid[BtbEntries];
-  // Each slot-2 image has its own valid bits, indexed like its RAM. The
-  // rotated image's copy lets the live fetch PC read all three at one index,
-  // with no A+1 read into a second FF array.
+  // Each slot-2 image has valid bits indexed like its RAM, including rotation.
   logic btb_valid_2[BtbEntries];
   logic btb_valid_2_alt[BtbEntries];
   logic btb_valid_2_rot[BtbEntries];
@@ -167,9 +163,7 @@ module branch_predictor #(
   logic [BTB_INDEX_BITS-1:0] slot2_lookup_index_next_q;
 
   logic [1:0] next_counter;
-  // Grouped tag-match nets preserve the independent early RAM read. Let
-  // its counter update combine with the final early/late select, while the
-  // earlier late candidate remains a separate data input.
+  // Independent early and late counter candidates, selected after the update.
   logic [1:0] early_next_counter;
   (* keep = "true" *) logic [1:0] late_next_counter;
 
@@ -194,9 +188,6 @@ module branch_predictor #(
   wire [BTB_INDEX_BITS-1:0] update_index = i_update_pc[BTB_INDEX_BITS+1:2];
   wire [TagBits-1:0] update_tag = {i_update_pc[XLEN-1:BTB_INDEX_BITS+2], i_update_pc[1]};
 
-  // The early candidate is addressed directly by i_early_update_pc. Deriving
-  // it from the selected update PC would put the early_active priority mux in
-  // front of the LUTRAM read address.
   wire [BTB_INDEX_BITS-1:0] early_update_index = i_early_update_pc[BTB_INDEX_BITS+1:2];
   wire [TagBits-1:0] early_update_tag = {
     i_early_update_pc[XLEN-1:BTB_INDEX_BITS+2], i_early_update_pc[1]
@@ -207,9 +198,7 @@ module branch_predictor #(
     i_late_update_pc[XLEN-1:BTB_INDEX_BITS+2], i_late_update_pc[1]
   };
 
-  // Every update is also written to the slot-2 images, keyed by the branch PC
-  // minus 2 (T2) and minus 4 (T4). These subtractors are on the update side
-  // only, off the fetch-PC recurrence.
+  // Slot-2 images store each update under branch PC minus 2 (T2) or 4 (T4).
   wire [XLEN-1:0] update_pc_2_key = i_update_pc - XLEN'(2);
   wire [BTB_INDEX_BITS-1:0] update_index_2 = update_pc_2_key[BTB_INDEX_BITS+1:2];
   wire [TagBits-1:0] update_tag_2 = {update_pc_2_key[XLEN-1:BTB_INDEX_BITS+2], update_pc_2_key[1]};
@@ -266,22 +255,17 @@ module branch_predictor #(
       .o_read_data(btb_tag_update_early)
   );
 
-  // Targets are stored as their low 32 bits, which keeps the three slot-2
-  // block RAMs narrow. So that high-canonical Sv39 targets do not become low,
-  // zero-extended addresses, a row is valid only when the target and the
-  // branch PC share a 4-GiB region, and a hit restores the upper bits from the
-  // matching lookup PC. A cross-region update still writes the RAMs but clears
-  // the row's valid bit, so the next lookup misses; the direction predictor
-  // trains separately and is unaffected. Conditional branches and JALs, the
-  // only instructions that train the BTB, cross a region only near a 4-GiB
-  // boundary.
+  // Store low 32-bit targets and restore upper bits from the lookup PC.
+  // Cross-region updates write the RAMs but clear validity, preventing a
+  // high-canonical Sv39 target from becoming a low address. The independent
+  // direction predictor still trains. Conditional branches, JAL, and
+  // return-typed JALR instructions (including coroutine swaps) train the BTB.
   wire update_target_region_predictable =
       i_update_target[XLEN-1:TargetBits] == i_update_pc[XLEN-1:TargetBits];
   wire [TargetBits-1:0] update_target_stored = i_update_target[TargetBits-1:0];
 
-  // A shifted slot-2 key must stay in the branch's region too, because the
-  // response restores target upper bits directly from i_pc_2_base. These are
-  // update-side-only boundary checks and do not touch the lookup recurrence.
+  // Shifted slot-2 keys must also stay in the branch's region, since the
+  // response restores upper target bits from i_pc_2_base.
   wire update_slot2_plus2_key_same_region = i_update_pc[TargetBits-1:0] >= TargetBits'(2);
   wire update_slot2_plus4_key_same_region = i_update_pc[TargetBits-1:0] >= TargetBits'(4);
   wire update_slot2_plus2_target_valid =
@@ -289,13 +273,9 @@ module branch_predictor #(
   wire update_slot2_plus4_target_valid =
       update_target_region_predictable && update_slot2_plus4_key_same_region;
 
-  // Each slot-2 image keeps its tag and payload in separate memories. The
-  // 55-bit tag is a distributed RAM read at one address plus a response
-  // register, keeping the wide comparisons off block-RAM clock-to-output
-  // paths. The 36-bit payload (target bits [31:1], counter, compressed flag,
-  // and the call and return types) fits one RAMB18. T2 and T4 cover a served
-  // base in the word that was read; RT2 covers the +2 candidate of a base in
-  // the next word.
+  // Slot-2 tags use distributed RAM plus a response register for timing.
+  // The 36-bit payload fits one RAMB18. T2 and T4 cover the word read;
+  // RT2 covers the +2 candidate in the next word.
   slot2_payload_t slot2_payload_write;
   assign slot2_payload_write = {
     update_target_stored[TargetBits-1:1],
@@ -466,10 +446,7 @@ module branch_predictor #(
   wire [XLEN-1:0] lookup_target = {i_pc[XLEN-1:TargetBits], btb_target_lookup};
   wire [1:0] lookup_counter = btb_counter_lookup;
 
-  // Compare the full tag in 14-bit groups and keep the partial matches, so the
-  // async lookup does not feed one long carry-chain equality. The default
-  // 55-bit tag gives four groups, leaving LUT6 inputs for the valid and taken
-  // bits.
+  // Compare tags in kept 14-bit groups for timing.
   localparam int unsigned TagCompareChunkBits = 14;
   localparam int unsigned TagCompareChunks =
       (TagBits + TagCompareChunkBits - 1) / TagCompareChunkBits;
@@ -484,9 +461,7 @@ module branch_predictor #(
   assign o_btb_hit = lookup_valid && (&lookup_tag_equal_chunks);
 
 `ifdef BTB_TAG_COMPARE_LOCAL_PROOF
-  // The btb_tag_compare formal target makes the RAM outputs arbitrary and
-  // proves the grouped comparison equals the full-width reference, with no
-  // assumption about reset, valid bits, reachable addresses, or table contents.
+  // Check grouped equality against the full tag without restricting inputs.
   always_comb begin
     p_lookup_tag_comparison_exact :
     assert ((&lookup_tag_equal_chunks) == (lookup_tag_stored == lookup_tag));
@@ -499,14 +474,9 @@ module branch_predictor #(
   assign o_btb_is_call      = o_btb_hit && btb_kind_lookup[1];
   assign o_btb_is_return    = o_btb_hit && btb_kind_lookup[0];
 
-  // Slot-2 response registers. The block RAMs are read-first and the tag
-  // registers sample the distributed RAMs before the write edge, so a write to
-  // the row being read would be missed. Register the write's tag, payload, and
-  // per-image collision flags beside the returned rows and forward the whole
-  // row, so the response shows the post-write contents even when the write
-  // evicts a different tag. All images write the same payload, so one
-  // forwarded payload serves all three; RT2 stores the T2 tag, so T2 and RT2
-  // share a forwarded tag.
+  // RAM and tag reads return pre-write data. Forward the entire written
+  // row on an index collision, including tag replacement. All images share
+  // the payload; T2 and RT2 also share the forwarded tag.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       slot2_tag_2_raw           <= '0;
@@ -568,8 +538,7 @@ module branch_predictor #(
   logic slot2_stage_base_index_covered;
   logic slot2_stage_next_index_covered;
   logic slot2_hit_2_base, slot2_hit_2_rot, slot2_hit_2_alt;
-  // Keep forwarding selection after the wide comparisons. A tag-wide mux in
-  // front of equality adds a LUT level to the slot-2 redirect recurrence.
+  // Compare before forwarding selection for timing.
   (* keep = "true" *)logic slot2_tag_2_raw_matches;
   (* keep = "true" *)logic slot2_tag_2_alt_raw_matches;
   (* keep = "true" *)logic slot2_tag_2_rot_raw_matches;
@@ -590,9 +559,7 @@ module branch_predictor #(
     end
   end
 
-  // As for slot 1, keep grouped partial matches so no wide comparison becomes a
-  // long carry chain on the served-PC -> prediction loop. Each raw and forwarded
-  // tag is compared separately, ahead of the forwarding muxes.
+  // Compare raw and forwarded tags separately in the same groups as slot 1.
   (* keep = "true" *) logic [4:0][TagCompareChunks-1:0] slot2_tag_equal_chunks;
   for (genvar chunk = 0; chunk < TagCompareChunks; chunk++) begin : gen_slot2_tag_compare
     localparam int unsigned FirstBit = chunk * TagCompareChunkBits;
@@ -664,9 +631,6 @@ module branch_predictor #(
   // Early candidate, from the early PC and outcome. Its RAM copies take every
   // selected write, not only early ones, so they always hold the same state as
   // the late copies.
-  // The update-side tag reads use the same grouped equality as lookups.
-  // Keeping the partial matches avoids a wide carry-chain equality after
-  // the asynchronous tag RAM without changing any counter or table state.
   (* keep = "true" *) logic [1:0][TagCompareChunks-1:0] update_tag_equal_chunks;
   for (genvar chunk = 0; chunk < TagCompareChunks; chunk++) begin : gen_update_tag_compare
     localparam int unsigned FirstBit = chunk * TagCompareChunkBits;
@@ -749,9 +713,8 @@ module branch_predictor #(
     end
   end
 
-  // Check that the selected slot-2 bundle equals, bit for bit, the +2 or +4
-  // candidate that i_pc_2_use_alt picks. branch_prediction_controller does the
-  // safety and candidate-valid qualification on the per-candidate outputs.
+  // Check selected outputs against the +2 or +4 candidate. The controller
+  // qualifies candidate validity and halfword safety.
   always_comb begin
     if (!$isunknown(
             {

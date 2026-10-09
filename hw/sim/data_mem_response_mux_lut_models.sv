@@ -14,11 +14,9 @@
  *    limitations under the License.
  */
 
-// Test-only truth-table models of the Xilinx LUT primitives, so the
-// FROST_XILINX_PRIMS build of the data_mem_response_mux cocotb test needs no
-// vendor library. The data_mem_response_mux formal target uses Yosys's Xilinx
-// cell models instead. The module names must match the primitives the RTL
-// instantiates.
+// Xilinx LUT truth-table models for FROST_XILINX_PRIMS tests without vendor
+// libraries. Module names must match the instantiated primitives. Formal
+// verification uses Yosys's Xilinx cell models.
 // verilog_lint: waive-start module-filename
 `ifdef FROST_XILINX_PRIMS
 module LUT5 #(

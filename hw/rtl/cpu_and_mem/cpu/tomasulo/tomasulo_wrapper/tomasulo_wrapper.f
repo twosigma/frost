@@ -1,6 +1,4 @@
 # Tomasulo integration wrapper file list
-# ROB, RAT, RS, CDB arbiter and adapter, FU shims, load and store queues,
-# the data MMU, the wrapper's glue submodules, and the wrapper itself
 
 # Package dependency
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

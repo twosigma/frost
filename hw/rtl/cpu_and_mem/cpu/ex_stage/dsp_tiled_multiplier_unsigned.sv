@@ -31,11 +31,8 @@
  * o_valid_output pulses when the product is ready, and o_completing_next_cycle
  * pulses one cycle before it.
  *
- * INPUT_REGISTER spends a padding stage, when the depth floor leaves one, on
- * registering the operands instead: the tile multiplies then start from
- * registers (the DSPs' input registers) rather than from the caller's
- * operand logic, and the product arrives on the same cycle as without it.
- * Without a padding stage the parameter has no effect.
+ * INPUT_REGISTER replaces a padding stage with DSP input registers, keeping
+ * the same latency. Without a padding stage, the parameter has no effect.
  */
 module dsp_tiled_multiplier_unsigned #(
     parameter int unsigned A_WIDTH = 33,
@@ -63,12 +60,9 @@ module dsp_tiled_multiplier_unsigned #(
   localparam int unsigned PaddedWidth = NumChunks * ADD_CHUNK_WIDTH;
   localparam int unsigned PartialWidth = A_TILE_WIDTH + B_TILE_WIDTH;
 
-  // Depth comes from riscv_pkg::dsp_tiled_stages, the single source for it:
-  // int_muldiv_shim sizes its MUL tracker from the same function through
-  // riscv_pkg::MulPipeDepth. A single-precision mantissa multiply is one tile
-  // but passes through padding stages to the double-precision depth, so a
-  // wrapper that alternates the two precisions gets its results in issue
-  // order.
+  // The shared depth function also sizes int_muldiv_shim's MUL tracker through
+  // MulPipeDepth. Padding matches single- and double-precision latency so
+  // alternating precisions preserves result order.
   localparam int unsigned PipelineStages = riscv_pkg::dsp_tiled_stages(
       A_WIDTH, B_WIDTH, A_TILE_WIDTH, B_TILE_WIDTH
   );
@@ -101,7 +95,7 @@ module dsp_tiled_multiplier_unsigned #(
   endfunction
 
   // ---------------------------------------------------------------------------
-  // Combinational: slice wide operands into {27,35}-bit tiles and align terms.
+  // Slice operands into tiles and align their partial products.
   // ---------------------------------------------------------------------------
   generate
     for (genvar a = 0; a < NumATiles; a++) begin : gen_a_tiles

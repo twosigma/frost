@@ -17,22 +17,16 @@
 /*
  * async_fifo: valid/ready FIFO between unrelated clocks.
  *
- * Gray-coded pointers cross through two-flop synchronizers (cdc_sync), so
- * the clocks may have any ratio and phase; storage is the dual-clock block
- * RAM sdp_block_ram_dc. The RAM's read is registered, so the read side runs
- * a two-entry output skid over it: a read is issued (the read pointer
- * advances) only when the skid can absorb the word that arrives one cycle
- * later, o_data/o_valid come from the skid's head and stay stable while
- * i_ready is low, and a word is never presented twice or skipped.
+ * Gray-coded pointers cross through two-flop synchronizers (cdc_sync).
+ * Storage is sdp_block_ram_dc, whose registered read feeds a two-entry skid
+ * buffer. Reads issue only when the skid has room for the response one cycle
+ * later. The head stays stable while i_ready is low. Words stay in order,
+ * with none duplicated or skipped.
  *
- * o_ready is computed from the write pointer and a registered decode of
- * the synchronized read pointer. The decode adds one write-clock cycle to
- * free-space credit return, separating Gray conversion from the occupancy
- * and RAM write-enable path. The writer sees at least the true occupancy,
- * never less, so the FIFO cannot overflow. o_ready falls with READY_MARGIN
- * entries still free and also gates the push, so the margin only reserves
- * entries and absorbs no write: the RAM never holds more than
- * DEPTH - READY_MARGIN words.
+ * A registered Gray decode adds one write-clock cycle to free-space credit
+ * return. The synchronized read pointer never understates occupancy, so
+ * o_ready cannot allow overflow. READY_MARGIN reserves unused entries:
+ * pushes stop when RAM holds DEPTH - READY_MARGIN words.
  *
  * Resets are per side and synchronous in their domain. The write reset clears
  * the write pointer, the read-pointer synchronizer, and its decode; the read

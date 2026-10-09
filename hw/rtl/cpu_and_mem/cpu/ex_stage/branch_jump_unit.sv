@@ -33,7 +33,7 @@ module branch_jump_unit #(
     input logic [XLEN-1:0] i_operand_a,  // rs1 value (also used for JALR base)
     input logic [XLEN-1:0] i_operand_b,  // rs2 value (for branch comparisons)
 
-    // Pre-computed targets from ID stage (reduces EX critical path)
+    // Precomputed targets from ID.
     input logic [XLEN-1:0] i_branch_target_precomputed,  // PC + imm_b
     input logic [XLEN-1:0] i_jal_target_precomputed,     // PC + imm_j
 
@@ -45,12 +45,11 @@ module branch_jump_unit #(
     output logic [XLEN-1:0] o_branch_target_address  // Target PC
 );
 
-  // JALR target computed here (needs the rs1 value)
   logic [XLEN-1:0] jalr_target;
   logic [XLEN-1:0] target_selected;
   assign jalr_target = (i_operand_a + XLEN'(signed'(i_immediate_i_type))) & ~XLEN'(1);
 
-  // Share comparators across branch types to reduce logic depth.
+  // Share comparisons across branch types.
   logic operands_equal;
   logic signed_less_than;
   logic unsigned_less_than;

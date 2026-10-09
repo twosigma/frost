@@ -113,21 +113,17 @@ module sc_pending_unit (
   assign speculative_flush_all = i_speculative_flush_all;
   assign speculative_flush_en = i_speculative_flush_en;
 
-  // SC tracking table: one entry per in-flight SC, keyed by ROB tag. A waiting
-  // SC also holds its SQ entry, which it keeps until it commits after firing,
-  // and every flush that clears SQ entries clears the matching table entries
-  // on the same edge. So at most SqDepth SCs wait at once, counting the one
-  // issuing, and a table of SqDepth entries always has a free entry for it
-  // (checked in simulation below). An SC that found no free entry would be
-  // dropped at allocation and never fire.
+  // Each waiting SC holds an SQ entry until commit, and flushes clear the
+  // matching SQ and SC-table entries together. At most SqDepth SCs can wait,
+  // including the issuing SC, so a SqDepth table always has a free slot for it.
+  // A smaller table could drop an SC at allocation and leave it unable to fire.
   localparam int unsigned ScTableDepth = riscv_pkg::SqDepth;
   logic [ScTableDepth-1:0] sct_valid;
   logic [ScTableDepth-1:0] sct_addr_valid;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sct_tag[ScTableDepth];
   logic [riscv_pkg::XLEN-1:0] sct_addr[ScTableDepth];
 
-  // Age comparison for the SC flush guard (identical to the load_queue and
-  // reservation_station copies).
+  // Compare ROB ages relative to the head for partial flushes.
   function automatic logic is_younger(input logic [riscv_pkg::ReorderBufferTagWidth-1:0] entry_tag,
                                       input logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag,
                                       input logic [riscv_pkg::ReorderBufferTagWidth-1:0] head);
@@ -140,13 +136,8 @@ module sc_pending_unit (
     end
   endfunction
 
-  // Per-entry reservation compare, from registers.  TIMING: compare, then
-  // select.  The SC result needs only whether the head entry's address hits
-  // the reservation granule, so each entry is compared before the head
-  // select, which then picks one bit instead of a wide address feeding the
-  // compare (the old path ran head_tag -> tag match -> address mux ->
-  // granule compare).  The no-hit default compares the zero address, exactly
-  // what the zero sct_hit_addr gave.
+  // Compare reservation granules before selecting the head entry, for timing.
+  // With no head match, the default compares the zero address.
   logic [ScTableDepth-1:0] sct_resv_match;
   always_comb begin
     for (int i = 0; i < ScTableDepth; i++) begin
@@ -175,11 +166,8 @@ module sc_pending_unit (
         sct_hit_addr = sct_addr[i];
         sct_hit_resv_match = sct_resv_match[i];
         sct_hit_oh[i] = 1'b1;
-        // Same highest-index priority as sct_hit_addr, including an
-        // address-invalid winning entry. Coherence compares whole lines, not
-        // the LR/SC doubleword granule, so the split is
-        // riscv_pkg::DmaCoherenceLineLsb, the same constant lq_coherence_port
-        // and the load queue compare on.
+        // Use sct_hit_addr's highest-index priority, even if its address is invalid.
+        // Coherence compares DMA lines, not the LR/SC doubleword granule.
         o_sc_head_query_match = sct_addr_valid[i] &&
             (sct_addr[i][riscv_pkg::XLEN-1:riscv_pkg::DmaCoherenceLineLsb] ==
              i_coh_query_addr[riscv_pkg::XLEN-1:riscv_pkg::DmaCoherenceLineLsb]);
@@ -208,21 +196,14 @@ module sc_pending_unit (
   assign sct_alloc = o_mem_rs_issue.valid && !speculative_flush_all &&
       ((o_mem_rs_issue.op == riscv_pkg::SC_W) ||
        (o_mem_rs_issue.op == riscv_pkg::SC_D)) &&
-      // An SC that faults in its own issue cycle is still captured; the
-      // registered fault strobe kills its entry one cycle later and blocks
-      // every fire in between, so the entry never fires (the SC completes
-      // through the fault path).
-      // Consulting the live fault decision here would put the store address,
-      // misalignment and PMA cone on the allocation path.
+      // Capture issue-cycle faults too. The registered fault blocks firing and
+      // clears the entry one cycle later; completion uses the fault path.
       !(speculative_flush_en && is_younger(
           o_mem_rs_issue.rob_tag, i_flush_tag, head_tag
       ));
 
-  // Payload capture ignores the flush vetoes in sct_alloc. Those vetoes
-  // govern sct_valid, the only visibility gate for the tag, address, and
-  // address-valid payloads, so a rejected SC can refresh a free entry's dead
-  // payload without becoming observable, and the flush age compare stays off
-  // the payload enables.
+  // Payload capture omits flush gates for timing. Only sct_valid exposes the
+  // payload, so a rejected allocation may safely write a free entry.
   logic sct_payload_alloc;
   assign sct_payload_alloc = o_mem_rs_issue.valid &&
       ((o_mem_rs_issue.op == riscv_pkg::SC_W) ||
@@ -241,14 +222,9 @@ module sc_pending_unit (
   // (FROST's reservation granule): sct_hit_resv_match is
   // lq_reservation_addr[XLEN-1:3] == sct_hit_addr[XLEN-1:3].
   assign sc_success = lq_reservation_valid && sct_hit_resv_match;
-  // Fire only when the coherence port is not holding SCs and the MEM adapter
-  // has no competing producer: no result pending, no live LQ result, no
-  // registered store fault presenting, and no earlier SC completion still
-  // waiting in the wrapper.  A store that faults in the fire cycle is not
-  // consulted here: its registered fault takes the MEM slot first next cycle
-  // and the wrapper holds the SC completion until the slot is free.
-  // Consulting the live decision would put the store address, misalignment
-  // and PMA cone on this unit's write path.
+  // Wait for coherence permission and an idle MEM adapter input. A live store
+  // fault is registered first; next cycle it takes priority over the SC result,
+  // which the wrapper holds until the adapter is free.
   assign sc_fire_now = sc_can_fire && !i_coh_sc_hold &&
                        !mem_adapter_result_pending &&
                        !lq_fu_complete.valid &&
@@ -283,10 +259,7 @@ module sc_pending_unit (
     if (!i_rst_n || speculative_flush_all) begin
       sct_valid <= '0;
     end else begin
-      // Clear only the entries younger than the flush boundary (i_flush_tag),
-      // the ones this flush is killing. Clearing every entry on a partial
-      // flush would drop an SC older than the mispredicted branch that is
-      // still waiting for the head.
+      // Preserve older SCs on a partial flush; they may still be waiting for the head.
       if (i_flush_en) begin
         for (int i = 0; i < ScTableDepth; i++) begin
           if (sct_valid[i] && is_younger(sct_tag[i], i_flush_tag, head_tag)) begin
@@ -294,11 +267,8 @@ module sc_pending_unit (
           end
         end
       end
-      // Kill the entry of an SC that faulted, at the registered store-fault
-      // strobe. It completes through the fault path, never by firing: the
-      // registered strobe blocks every fire in its own cycle (above) and the
-      // entry is gone on the next edge, so no address-valid faulting SC can
-      // fire in the one extra cycle it stays resident.
+      // The registered fault blocks firing this cycle and clears the faulting SC
+      // on the edge. It completes only through the fault path.
       if (store_misalign_fu_complete_reg.valid) begin
         for (int i = 0; i < ScTableDepth; i++) begin
           if (sct_valid[i] && (sct_tag[i] == store_misalign_fu_complete_reg.tag)) begin
@@ -306,14 +276,11 @@ module sc_pending_unit (
           end
         end
       end
-      // Free the firing entry.
       if (sc_fire_now) begin
         for (int i = 0; i < ScTableDepth; i++) if (sct_hit_oh[i]) sct_valid[i] <= 1'b0;
       end
-      // Allocate a newly-issued SC into the first free slot (ScTableDepth
-      // explains why one is always free). Alloc targets a free slot and the
-      // fire/fault/flush clears target valid slots, so the indices never
-      // collide.
+      // Allocation targets a free slot; fire, fault, and flush target valid slots,
+      // so their indices cannot collide. ScTableDepth guarantees a free slot.
       if (sct_alloc && sct_has_free) begin
         for (int i = 0; i < ScTableDepth; i++) if (sct_free_oh[i]) sct_valid[i] <= 1'b1;
       end
@@ -353,8 +320,7 @@ module sc_pending_unit (
       for (int i = 0; i < ScTableDepth; i++) begin
         if (sct_free_oh[i]) begin
           sct_tag[i]  <= o_mem_rs_issue.rob_tag;
-          // SC has no immediate operand: dispatch guarantees imm==0.  Use
-          // src1 directly so the AGU is absent from the wide address D cone.
+          // SC has no immediate: dispatch supplies imm==0, so src1 is its address.
           sct_addr[i] <= o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0];
         end
       end

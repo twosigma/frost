@@ -15,19 +15,11 @@
  */
 
 /*
- * Front-end pipeline control for the out-of-order core.
+ * Frontend stalls, serialization, and recovery control.
  *
- * The back end stalls the pipeline almost entirely at dispatch, so this block
- * combines the front-end stall and serialization sources and the registered
- * trap and xRET state into the pipeline_ctrl_t that IF, PD, and ID consume.
- * It holds:
- *   - the CSR in-flight state (csr_in_flight, serializing_alloc_fire) and
- *     the per-checkpoint unresolved-branch bits;
- *   - the CSR and control-flow serialization stalls and their registered
- *     stall and replay signals (stall_q, id_stall_q, replay_*);
- *   - the post-flush BRAM holdoff;
- *   - the registered trap and xRET pulses and trap target;
- *   - the prediction-disable gate and the pipeline_ctrl assembly.
+ * Combine dispatch backpressure, CSR serialization, unresolved control flow,
+ * and fetch translation holds. Track replay and post-flush BRAM holdoff,
+ * and register trap and xRET recovery for IF, PD, and ID.
  */
 
 module ooo_pipeline_control #(
@@ -60,12 +52,9 @@ module ooo_pipeline_control #(
     input logic i_front_end_indirect_control_flow_pending,
     input logic i_disable_branch_prediction,
     input logic i_flush_pipeline,
-    // High while the translation of the fetch PC is not yet visible: the Sv39
-    // bubble after the fetch PC moves, a second bubble on a page crossing, or
-    // an ITLB miss. It is an ordinary front-end stall: IF captures the
-    // presented bundle and replays it, and the fetch provider keeps its
-    // outstanding request. A flush overrides it like the other stalls, so
-    // trap, xRET, and misprediction redirects land.
+    // Fetch translation is pending: an Sv39 PC-change bubble, a second bubble
+    // on page crossing, or an ITLB miss. IF captures and replays the bundle;
+    // the fetch provider retains its request. Flush overrides this stall.
     input logic i_fetch_pa_hold,
 
     output riscv_pkg::pipeline_ctrl_t o_pipeline_ctrl,
@@ -143,27 +132,12 @@ module ooo_pipeline_control #(
     else if (csr_commit_fire) csr_in_flight <= 1'b0;
   end
 
-  // Unresolved branches, one bit per checkpoint. Every branch or jump saves a
-  // checkpoint when it dispatches, from either slot, and holds it until it
-  // commits, its own misprediction recovery frees it (an early recovery does
-  // so before the branch commits), or a flush frees it. The save marks the
-  // checkpoint unresolved for a conditional branch or JALR (a JAL resolves at
-  // allocation), and a correct resolution clears it. A mispredicted branch
-  // keeps its bit until its recovery frees the checkpoint (a JALR recovers
-  // only at commit), since everything younger is on the wrong path. Masking
-  // with checkpoint_in_use drops flushed branches, so an early recovery keeps
-  // the older unresolved branches it does not flush. The mask trails a
-  // partial flush by a few cycles, while the flushed front end refills.
-  // TIMING: the correct-resolution pulse arrives late (INT-RS issue -> branch
-  // compare -> resolved-correct), and so does the save, because
-  // rob_checkpoint_valid comes from dispatch_fire. The per-checkpoint id
-  // decodes come from earlier signals, the checkpoint allocator's id and the
-  // resolving branch's registered id, so they and the save's class are
-  // computed first and kept as nets. Each bit's next value is then one
-  // six-input function of the two late strobes, the two decodes, the class,
-  // and the bit itself. The dont_touch attributes stop synthesis from folding
-  // those nets back into it; a keep attribute alone does not survive
-  // opt_design Explore.
+  // Track unresolved conditional branches and JALR by checkpoint. JAL resolves
+  // at allocation. Correct resolution clears the bit; misprediction keeps it
+  // until recovery frees the checkpoint. Mask with checkpoint_in_use to drop
+  // flushed branches while retaining older survivors of partial recovery.
+  // The mask can trail a partial flush while the frontend refills.
+  // Keep ID decodes separate from save and resolve strobes, for timing.
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_unresolved_q;
   (* dont_touch = "true" *) logic checkpoint_save_unresolved;
   (* dont_touch = "true" *) logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_save_hit;
@@ -214,17 +188,12 @@ module ooo_pipeline_control #(
                                          csr_in_flight ||
                                          serializing_alloc_fire;
 
-  // Control-flow serialization. While a conditional branch or JALR is
-  // unresolved, hold IF, PD, and ID once an unpredicted indirect jump shows up
-  // in slot 1 of IF (under a stall), PD, or ID, or in either slot of a bundle
-  // in the decoded queue. Fetch runs on sequentially past such a jump: a JALR
-  // fetched without a prediction always resolves as mispredicted and recovers
-  // when it commits. The hold limits that wrong-path fetch. It is a
-  // performance measure: recovery squashes everything younger than a
-  // mispredicted branch or jump, so architectural state does not depend on it.
-  // The stall is registered and does not gate queued dispatch. ID keeps
-  // showing a held jump after dispatch takes it, so the jump's own unresolved
-  // bit can keep the hold until the jump recovers.
+  // Hold IF, PD, and ID when an unresolved branch or JALR coexists with an
+  // unpredicted indirect jump in slot 1 of IF (stalled), PD, or ID, or either
+  // slot of a queued bundle. This limits sequential wrong-path fetch until
+  // JALR commit recovery; correctness depends on recovery, not this stall.
+  // The registered stall does not gate queued dispatch. A dispatched jump
+  // still held in ID can sustain the stall with its own unresolved bit.
   logic front_end_cf_serialize_stall_comb;
   logic front_end_cf_serialize_stall  /* verilator isolate_assignments */;
   assign front_end_cf_serialize_stall_comb =
@@ -237,25 +206,17 @@ module ooo_pipeline_control #(
 
   // Registered stall for IF stage stall-capture registers.
   logic stall_q;
-  // TIMING: the registered ID stall drives the dispatch and allocation clock
-  // enables across the design plus the width-funnel observer replay bits.
-  // max_fanout bounds its replicas so the split is deterministic rather than
-  // left to Vivado's replication heuristic, as on other 1-bit control nets.
+  // Cap ID-stall fanout for replication.
   (* max_fanout = 64 *)logic id_stall_q;
   logic replay_after_dispatch_stall_q;
   logic replay_after_serialize_stall_q;
   logic replay_after_serialize_stall_next;
-  // Normally a CSR allocation advances ID before csr_in_flight raises, so the
-  // image held through serialization is the younger instruction that must be
-  // replayed on release. An independent front-end stall can already be high
-  // on the allocation cycle, most often the Sv39 translation bubble
-  // (i_fetch_pa_hold), and ID then still holds the CSR itself. Remember that
-  // case so release gives ID one advance-only cycle instead of allocating the
-  // same CSR twice.
+  // If ID advances on CSR allocation, it holds a younger instruction during
+  // serialization. If another stall holds ID on allocation, it still holds
+  // the CSR. Remember this case to give ID one advance-only release cycle
+  // and avoid dispatching the CSR twice.
   logic csr_alloc_held_id_q;
-  // TIMING: the fetch translation hold is the latest stall term (it ends in
-  // the IMMU's live PC compare), so the other terms are finished first and
-  // the hold meets them in the last LUT before the stall's wide fanout.
+  // Keep fetch translation hold separate from the other stall terms, for timing.
   (* keep = "true" *)logic frontend_stall_without_pa_hold;
   assign frontend_stall_without_pa_hold =
       (QUEUED_FRONTEND ? i_frontend_resource_stall : dispatch_stall) ||
@@ -266,17 +227,10 @@ module ooo_pipeline_control #(
     else stall_q <= frontend_stall;
   end
 
-  // Keep dispatch-valid replay gating off the high-fanout IF stall-capture flop.
-  // A successful CSR allocation is the one cycle in which the ordinary
-  // frontend_stall register chain has not caught up yet: csr_in_flight and
-  // serializing_alloc_fire rise only after the allocating edge. Capture that
-  // successful fire directly into this local register so the held ID image is
-  // suppressed immediately without carrying csr_in_flight through every
-  // dispatch/RS/LSQ allocation enable. Do not put the combinational fire into
-  // frontend_stall itself; that would create the dispatch->stall->IF->dispatch
-  // combinational loop that registering serializing_alloc_fire avoids. If
-  // allocation and release coincide, the allocation wins: a newly allocated
-  // CSR must not lose its first-cycle dispatch shield.
+  // Capture CSR allocation directly in id_stall_q: the ordinary stall chain
+  // lags allocation by one cycle. Do not feed this combinational fire into
+  // frontend_stall; that would loop through dispatch and IF. Allocation wins
+  // over release so a new CSR cannot lose its first-cycle dispatch block.
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) id_stall_q <= 1'b0;
     else if (serializing_alloc_fire_comb) id_stall_q <= 1'b1;
@@ -319,10 +273,8 @@ module ooo_pipeline_control #(
     else id_stall_legacy_q <= frontend_stall;
   end
 
-  // id_stall_q stands in for a live !csr_in_flight term on ID validity. Check
-  // the state relation, and that the ID-valid gate equals the reference gate
-  // ANDed with !csr_in_flight, through allocation, held-ID release, ordinary
-  // replay, and release collisions.
+  // Check that id_stall_q includes csr_in_flight and gates ID validity exactly
+  // as a live !csr_in_flight term would, including replay and release.
   always_ff @(posedge i_clk) begin
     if (!i_rst && !flush_pipeline && !$isunknown(
             {serializing_alloc_fire_comb, dispatch_stall, csr_in_flight,
@@ -340,11 +292,9 @@ module ooo_pipeline_control #(
   end
 
 `ifndef FORMAL
-  // A CSR allocated while ID was independently held must get one release
-  // cycle in which ID advances but dispatch remains invalid; otherwise a
-  // change to id_stall_q's priority could dispatch the CSR twice. Queued
-  // dispatch removes a CSR immediately, independently of ID advance, and its
-  // consumed-image guard covers this case instead.
+  // A CSR allocated while ID was held needs one advance-only release cycle
+  // to prevent duplicate dispatch. Queued dispatch removes the CSR at once;
+  // its consumed_q guard handles this case.
   if (!QUEUED_FRONTEND) begin : gen_direct_csr_release
     p_held_csr_release_is_advance_only :
     assert property (@(posedge i_clk) disable iff (i_rst || flush_pipeline)
@@ -364,11 +314,7 @@ module ooo_pipeline_control #(
       else if (post_flush_holdoff_q != 2'd0) post_flush_holdoff_q <= post_flush_holdoff_q - 2'd1;
   end
 
-  // Delay the trap and xRET (mret_taken) recovery pulses seen by IF and the
-  // back end by one cycle. trap_taken_reg and mret_taken_reg both fan out to
-  // the same redirect and flush selects across IF and the recovery and flush
-  // units, so both carry a fanout cap and synthesis replicates them instead of
-  // routing one copy everywhere.
+  // Delay trap and xRET recovery by one cycle. Cap pulse fanout for replication.
   (* max_fanout = 32 *) logic trap_taken_reg;
   (* max_fanout = 32 *) logic mret_taken_reg;
   logic [XLEN-1:0] trap_target_reg;

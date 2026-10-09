@@ -18,12 +18,10 @@
  * nic_desc_fetch: descriptor supply for one ring.
  *
  * Descriptors are 16 bytes, two per 32-byte line, in a ring of
- * 2^i_size_log2 entries at i_base. Software posts descriptors below i_tail;
- * this block runs a prefetch cursor ahead of the consumer index (o_head),
- * fetching the line of the cursor's descriptor through the DMA front-end
- * (one read in flight) into a two-line cache, and offers the head
- * descriptor's words to the engine (from registers, a cycle behind the
- * cache), which takes it with i_desc_take.
+ * 2^i_size_log2 entries at i_base. A cursor prefetches posted descriptors
+ * ahead of o_head, with one DMA read in flight and two cached lines.
+ * The head descriptor is registered one cycle after cache lookup and
+ * consumed on i_desc_take.
  *
  * Eligibility is fixed when the read is issued: from a fetched line the
  * cursor's descriptor is eligible, and the following one if it is in the
@@ -129,11 +127,8 @@ module nic_desc_fetch #(
       end
     end
   end
-  // The head descriptor is offered from registers, so the slot search and the
-  // word mux happen a cycle ahead of the engine's decision and stay off its
-  // path into the packer's start. A take, an invalidation or a restart clears
-  // o_desc_valid for the next cycle, while the registered words still show the
-  // old state, so a stale image is never offered.
+  // Register the head descriptor for timing. A take, invalidation, or restart
+  // clears valid while the words still reflect the old head, hiding stale data.
   logic desc_valid_q;
   logic [31:0] desc_word0_q, desc_word1_q;
   logic [ADDR_WIDTH-1:0] desc_status_addr_q;

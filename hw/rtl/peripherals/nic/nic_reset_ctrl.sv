@@ -17,27 +17,18 @@
 /*
  * nic_reset_ctrl: the core-side reset controller of the NIC.
  *
- * Two things are sequenced here. The NIC RESET (the CSR bit, and the core's
- * own reset): stop the engines (o_stop_dma) and wait for the DMA front-end
- * to report every owed response in (i_dma_idle), then pulse o_core_rst for
- * the core-domain NIC state and start a new reset generation in each MAC
- * domain. o_busy covers exactly that: the drain, the core-side reset and
- * the request having been raised toward both domains. It never waits for a
- * MAC clock, so a build without a transceiver, or a transceiver in reset,
- * still completes RESET.
+ * RESET (CSR or core reset) stops the engines, waits for i_dma_idle, pulses
+ * o_core_rst, and starts a reset generation in each MAC domain. o_busy covers
+ * this sequence without waiting for a MAC clock, so RESET can finish while
+ * the transceiver is absent or in reset.
  *
- * Per MAC domain, a generation handshake with nic_domain_reset: the
- * controller raises the request with a toggled generation bit, waits until
- * the domain reports that generation applied (or, while its clock is
- * reported absent, simply keeps the request up: the far side holds the
- * domain in reset asynchronously and answers when the clock returns), then
- * drops the request and waits for the domain to report itself out of reset.
- * o_ready[d] is that state: a generation applied since the core's reset and
- * equal to the current one, the domain out of reset, its clock present. Until
- * then the domain's core-side FIFO half and the engines' MAC-facing state are
- * held (o_core_rst_dom[d] is the inverse of o_ready[d]), and the CSR block
- * refuses an enable. A clock loss in operation starts a new generation by
- * itself, so nothing resumes on stale state when the clock returns.
+ * Per domain, raise the request with a toggled generation. Wait for that
+ * generation to be applied, lower the request, then wait for reset release.
+ * With no clock, hold the request until the domain can acknowledge it.
+ * o_ready[d] requires a valid matching generation, reset released, and a
+ * present clock. Until then, o_core_rst_dom holds the core FIFO half and
+ * MAC-facing engine state in reset, and the CSR block refuses enables.
+ * Clock loss starts a new generation so stale state cannot resume.
  *
  * The far side's levels are synchronized here; the request and generation
  * levels toward it are registers.
@@ -107,9 +98,7 @@ module nic_reset_ctrl (
   assign o_stop_dma = (state_q != S_IDLE);
   assign o_core_rst = (state_q == S_RESET);
   assign o_busy = (state_q != S_IDLE);
-  // The next-edge value of o_core_rst, from the same transitions as the state
-  // register: nic_top registers its core-domain reset from it so that reset
-  // stays cycle-exact with o_core_rst while fanning out from a register.
+  // Predict o_core_rst so nic_top can register its reset without a cycle delay.
   assign o_core_rst_next = !i_rst &&
       ((state_q == S_DRAIN && i_dma_idle) ||
        (state_q == S_RESET && rst_cnt_q != 3'(CoreRstCycles - 1)));
@@ -164,7 +153,7 @@ module nic_reset_ctrl (
           end
           D_REQUEST: begin
             // The far side applies the reset when its clock runs; with the
-            // clock absent the request simply stays up.
+            // clock absent the request stays up.
             if (i_clk_ok[d] && applied_valid_s && (applied_s == gen_q)) begin
               req_q    <= 1'b0;
               dstate_q <= D_RELEASE;

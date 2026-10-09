@@ -1,6 +1,4 @@
-# Cache library file list: the line cache, the line-port arbiter, the two
-# coherence sequencers, the hierarchy, the AXI bridge, the simulation-only DDR
-# model, and the cocotb unit-bench harnesses.
+# Cache hierarchy, coherence, AXI bridge, and simulation support.
 
 # Per-cache performance event types (must precede the cache modules).
 $(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv
@@ -8,11 +6,8 @@ $(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv
 # Write-back direct-mapped line cache (one module for every level)
 $(ROOT)/hw/rtl/lib/cache/frost_cache.sv
 
-# N:1 tagged line-port arbiter. Listed before the hierarchy, which
-# instantiates a tree of them, so Yosys never meets a parameterized
-# instantiation of a module it has not parsed yet; that saves hierarchy
-# deferral rounds. tests/test_run_yosys.py avoids the Yosys assertion that
-# reprocessing the parameterized hierarchy can trigger.
+# N:1 tagged line-port arbiter. Parse it before the hierarchy to avoid
+# Yosys parameterized-module deferral and reprocessing failures.
 $(ROOT)/hw/rtl/lib/cache/line_port_arbiter.sv
 
 # DMA coherence sequencer: probes the L1D, and for a write runs the load-queue

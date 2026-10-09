@@ -69,14 +69,10 @@ module control_flow_tracker #(
   // ===========================================================================
   // Control Flow Detection
   // ===========================================================================
-  // Detect any control flow change this cycle (branches, traps, predictions)
 
-  // Every FENCE-class event performs a full front-end flush and PC redirect in
-  // pc_controller, so its same-cycle bubble is handled by the pipeline/frontend
-  // flush inputs. Keep it out of this combinational change term: the registered
-  // FENCE-class pulse has high fanout, and feeding it through the IF holdoff
-  // cone puts it on the PC critical path. The separate registered holdoff below
-  // still suppresses the stale post-fence fetch response.
+  // Pipeline/frontend flush inputs bubble the FENCE-class redirect cycle.
+  // A separate registered holdoff suppresses its stale response, keeping
+  // FENCE-class events out of control_flow_change for timing.
   logic control_flow_change;
   logic control_flow_without_predictions;
   logic control_flow_holdoff_q;
@@ -90,7 +86,6 @@ module control_flow_tracker #(
   // ===========================================================================
   // Holdoff Registers
   // ===========================================================================
-  // Track stale instruction cycles after control flow changes
 
   // No-progress fetch cycles freeze the front end like a stall: the holdoff
   // must survive them so the first delivered window after a redirect is still
@@ -98,8 +93,7 @@ module control_flow_tracker #(
   logic fetch_stall;
   assign fetch_stall = i_stall || !i_fetch_progress;
 
-  // Finish the non-prediction outcomes before either late prediction flag.
-  // The flags then enter just one small gate with reset at each register.
+  // Compute non-prediction outcomes separately for timing.
   (* keep = "true" *)logic holdoff_without_predictions;
   (* keep = "true" *)logic reset_holdoff_without_predictions;
   logic control_flow_holdoff_next, reset_holdoff_next;
@@ -124,8 +118,7 @@ module control_flow_tracker #(
   end
 
 `ifdef CONTROL_FLOW_HOLDOFF_LOCAL_PROOF
-  // Reference transitions, checked by the control_flow_holdoff formal target
-  // for arbitrary current state and simultaneous inputs.
+  // Check equivalent transitions for arbitrary state and simultaneous inputs.
   always_comb begin
     assert (control_flow_holdoff_next ==
         (!i_reset && (control_flow_change || (control_flow_holdoff_q && fetch_stall))));
@@ -137,8 +130,6 @@ module control_flow_tracker #(
   // ===========================================================================
   // Combined Holdoff Signals
   // ===========================================================================
-  // any_holdoff: All sources (includes combinational control_flow_change)
-  // any_holdoff_safe: Only registered sources (breaks timing from branch_taken)
 
   assign o_control_flow_holdoff = control_flow_holdoff_q || fence_i_fetch_holdoff_q;
   assign o_any_holdoff = o_control_flow_change || o_control_flow_holdoff || o_reset_holdoff;
@@ -161,13 +152,10 @@ module control_flow_tracker #(
   // o_control_flow_to_halfword_r next state:
   //   !i_reset && (o_control_flow_to_halfword ||
   //                (o_control_flow_to_halfword_r && fetch_stall && !control_flow_change))
-  // The two prediction-used flags arrive last (slot 1 through the live BTB tag
-  // compare, slot 2 through the emitted-bundle validity cone), so all four
-  // cases of those flags are finished first and the flags only select among
-  // them. A prediction is itself a control-flow change, so only the
-  // no-prediction case can hold the old value. Simultaneous sources OR their
-  // target bits; no exclusivity is assumed. Reset is folded into every kept
-  // case so the final 4:1 mux needs only six inputs.
+  // Compute all four prediction cases before selecting. A prediction is a
+  // control-flow change, so only the no-prediction case can hold the old
+  // value. Simultaneous sources OR their target bits; no exclusivity is
+  // assumed. Reset clears every case.
   logic halfword_without_predictions;
   (* keep = "true" *) logic [3:0] halfword_next_by_prediction;
 

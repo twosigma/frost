@@ -22,17 +22,14 @@ module xilinx_frost_subsystem #(
     // on i_clk. The UART sits on i_clk_div4, so its baud divisor is derived
     // from CLK_FREQ_HZ / 4.
     parameter int unsigned CLK_FREQ_HZ = 322265625,
-    // Cached-tier configuration, set by the board top. Hardware boards with a
-    // real DDR controller pass ENABLE_CACHED_TIER=1 and USE_BEHAVIORAL_DDR=0.
-    // The defaults leave the tier off, for a BRAM-only board. The cached tier
-    // includes the UltraRAM L2.
+    // Enable the cached tier, including UltraRAM L2. Real DDR boards also
+    // set USE_BEHAVIORAL_DDR=0; the default is BRAM only.
     parameter int unsigned ENABLE_CACHED_TIER = 0,
     // 1 = the cached tier ends in the simulation-only behavioral DDR model;
     // 0 = it ends at the o_ddr_axi_*/i_ddr_axi_* ports below, wired to the
     // board's DDR controller subsystem (hardware board tops drive 0).
     parameter int unsigned USE_BEHAVIORAL_DDR = 1,
-    // L1 instruction-cache size in bytes. The default is the X3's; other boards
-    // and cache-size experiments can override it.
+    // L1 instruction-cache bytes; defaults to the X3 configuration.
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     // Optional boot-hang UART classifier. Leave off for interactive testing.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,
@@ -133,11 +130,8 @@ module xilinx_frost_subsystem #(
   logic [17:0] instruction_memory_address;
   logic [31:0] instruction_memory_write_data;
 
-  // The board-level reset comes from the main clock domain (on X3, the MMCM
-  // lock ANDed with registered DDR readiness). Everything below that runs on
-  // i_clk_div4 takes it through this synchronizer, so the crossing ends at one
-  // register pair instead of fanning out combinationally into the programming
-  // port's enables and the JTAG and BRAM-controller IP resets.
+  // Synchronize the board reset into the programming clock domain. On X3 it
+  // combines CPU clock lock (GTY or MMCM) with DDR readiness.
   (* ASYNC_REG = "TRUE" *)logic [ 1:0] rst_n_div4_sync = '0;
   always_ff @(posedge i_clk_div4) rst_n_div4_sync <= {rst_n_div4_sync[0], i_rst_n};
   logic rst_n_div4;
@@ -239,10 +233,9 @@ module xilinx_frost_subsystem #(
       .bram_rddata_a('0)                                 // Reads are not supported
   );
 
-  // Image-load reset: holds the CPU in reset while JTAG writes the software
-  // image, so it never executes a half-written image. Every write restarts the
-  // 27-bit counter at 1. Reset releases only after the counter runs all the way
-  // to its maximum with no further write arriving.
+  // Hold the CPU while JTAG writes the image. Each write restarts the 27-bit
+  // counter at 1; reset releases only after it reaches its maximum with no
+  // further writes, preventing execution of a partially loaded image.
   logic image_load_reset_n = 1'b1;
   logic [26:0] image_load_counter = '0;
   always_ff @(posedge i_clk_div4)

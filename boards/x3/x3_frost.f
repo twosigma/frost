@@ -1,5 +1,4 @@
-# X3 board file list: the FROST RTL, the common Xilinx subsystem, and the X3
-# board modules
+# X3 board sources
 
 # FROST RISC-V processor core and all submodules
 -f $(ROOT)/hw/rtl/frost.f

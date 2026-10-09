@@ -1,5 +1,4 @@
-# Xilinx Design Constraints (XDC) for X3 board
-# Pin assignments, I/O standards, and timing constraints
+# X3 pins, I/O standards, and timing constraints
 
 # ================================================================
 # BITSTREAM GENERATION CONFIGURATION
@@ -53,20 +52,13 @@ set_property PACKAGE_PIN H4 [get_ports o_cpu_clock_txn]
 set_property PACKAGE_PIN J2 [get_ports i_cpu_clock_rxp]
 set_property PACKAGE_PIN J1 [get_ports i_cpu_clock_rxn]
 
-# The CPU clock keeps the name clock_from_mmcm, which the build scripts, the
-# post-place gate and the timing tools look up, whichever source drives
-# main_clock: the transceiver's TXOUTCLK (CPU_CLK_DIV 1), its BUFG_GT divider
-# (CPU_CLK_DIV 2) or the MMCM (CPU_CLK_DIV 3 and 4). The transceiver cores
-# are black boxes while the top is synthesized, so in the transceiver builds
-# this finds no clock there and applies once their netlists are linked.
+# Build and timing tools require the CPU clock name clock_from_mmcm for both
+# GTY (CPU_CLK_DIV 1/2) and MMCM (3/4) sources. GTY clocks resolve only after
+# the transceiver netlists are linked.
 create_generated_clock -quiet -name clock_from_mmcm [get_pins -quiet [get_property -quiet SOURCE_PINS [get_clocks -quiet -of_objects [get_nets -quiet main_clock]]]]
 
-# Root both CPU clocks at X2Y7, where Vivado roots them when the MMCM drives
-# them, below the core's clock regions. Without this Vivado roots a
-# BUFG_GT-driven clock in the transceiver's region (X4Y7, the device's right
-# edge), which adds skew across the core.
-# Baseline for synthesis, optimization and explicit placer sweeps. The default
-# full-rate placement flow applies X1Y9 immediately before place_design.
+# Place CPU clock roots near the core for skew. X2Y7 is the synthesis and
+# optimization default; the full-rate flow selects X1Y9 before place_design.
 set_property USER_CLOCK_ROOT X2Y7 [get_nets {main_clock divided_clock_by_4}]
 
 # The transceiver's supervisor synchronizes TX reset done, a level that rises
@@ -342,45 +334,26 @@ set_property IOSTANDARD SSTL12_DCI         [get_ports "ddr4_sdram_c0_adr[14]"]  
 set_property PACKAGE_PIN AK31              [get_ports "ddr4_sdram_c0_reset_n"]       ;#  Bank  66 VCCO - 1V2_VCCO - IO_T3U_N12_66_AK31
 set_property IOSTANDARD LVCMOS12           [get_ports "ddr4_sdram_c0_reset_n"]       ;#  Bank  66 VCCO - 1V2_VCCO - IO_T3U_N12_66_AK31
 
-# The FROST system clock (i_sysclk_p, AK23), the Ethernet reference clock
-# (i_nic_refclk_p, P9; in full- and half-rate builds the CPU clock derives
-# from it) and the DDR4 system clock (default_300mhz_clk0, AN27) are separate
-# oscillators, so declare each of the first two families asynchronous to the
-# DDR4 family. Every crossing between them is a purpose-built
-# CDC structure: the SmartConnect clock converters, the JTAG-AXI engine's
-# Gray-coded FIFOs (the debug hub runs on a DDR4 MMCM output), and the mem_ok
-# two-flop synchronizer (see the false path below). Without this, Vivado
-# expands the two almost-equal input periods (3.333 ns here, 3.334 ns in the
-# DDR4 IP) into phantom sub-100 ps requirements.
+# System (AK23), Ethernet (P9), and DDR4 (AN27) clocks use separate oscillators.
+# The GTY CPU clock belongs to the Ethernet family. Crossings to DDR4 use
+# SmartConnect converters, JTAG-AXI Gray FIFOs (the debug hub uses a DDR4 MMCM
+# output), and the mem_ok synchronizer. Cut unrelated clock families.
 set_clock_groups -asynchronous     -group [get_clocks -include_generated_clocks -of_objects [get_ports i_sysclk_p]]     -group [get_clocks -include_generated_clocks -of_objects [get_ports default_300mhz_clk0_clk_p]]
 set_clock_groups -asynchronous     -group [get_clocks -include_generated_clocks -of_objects [get_ports i_nic_refclk_p]]     -group [get_clocks -include_generated_clocks -of_objects [get_ports default_300mhz_clk0_clk_p]]
 
-# mem_ok (DDR4 calibration complete) crosses from the controller's ui_clk
-# domain into the core-clock reset tree through a dedicated 2FF synchronizer.
-# The set_clock_groups above already cuts this crossing. Keep this false path
-# anyway, and keep it correct, so the CDC stays constrained if that grouping is
-# ever narrowed.
+# mem_ok crosses from DDR4 ui_clk through two synchronizer stages. Retain this
+# false path even if the broader asynchronous groups are later narrowed.
 # Do not backslash-escape the brackets: they are literal in a
 # `-filter {NAME =~ ...}` glob. "reg\[0\]" matches a literal backslash and
 # silently selects nothing.
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg[0]/D"}]
 
-# NIC (hw/rtl/peripherals/nic) and its transceiver (boards/x3/x3_nic_gty.sv).
-# Four clocks meet here: the core clock (clock_from_mmcm), the transceiver's TX
-# and RX USRCLK2 (the MAC domains, 161.13 MHz, generated from the reference
-# clock above; the RX one is recovered from the line) and the transceiver
-# supervisor's free-running clock (the board top's BUFGCE_DIV halving the
-# 300 MHz input, a generated clock of the sysclk family). Vivado times every
-# pair unless an exception below covers the crossing: there is no blanket
-# clock-group cut, so a crossing the exceptions miss fails timing. Every
-# exception names its launch registers or its launch clock explicitly. The
-# Gray buses name the cells that drive the synchronizer's first stage, so a
-# Gray pointer bit that synthesis merged with the equal binary pointer bit
-# stays covered. XDC has no loops, so the buses are written out one by one.
-# The transceiver clocks are found through the user clock pins of the NIC's
-# GTYE4_CHANNEL cell (the CPU clock's transceiver has another). The
-# transceiver IP is a black box while the top is synthesized, so these
-# queries are empty there and resolve once its netlist is linked.
+# NIC crossings: core, TX/RX USRCLK2 (161.13 MHz, RX recovered), and the
+# 150 MHz free-running supervisor clock. Use explicit exceptions so uncovered
+# crossings still fail timing. Gray buses select their actual source cells,
+# including pointer bits merged with binary-pointer registers.
+# GTY user-clock queries resolve after the IP netlist is linked. Select only
+# the NIC channel; the CPU clock has a separate GTYE4_CHANNEL.
 set nic_core_clk    [get_clocks -quiet clock_from_mmcm]
 set nic_gty_channel [get_cells -quiet -hierarchical -filter {REF_NAME == GTYE4_CHANNEL && NAME =~ nic_transceiver/*}]
 set nic_tx_clk      [get_clocks -quiet -of_objects [get_pins -quiet -of_objects $nic_gty_channel -filter {REF_PIN_NAME == TXUSRCLK2}]]
@@ -432,15 +405,9 @@ set nic_s9 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of
 set_max_delay -datapath_only 3.0 -from $nic_s9 -to [get_cells -of_objects $nic_d9]
 set_bus_skew 3.0 -from $nic_s9 -to [get_cells -of_objects $nic_d9]
 
-# Single-bit levels into cdc_sync's first stage in either direction: in the
-# NIC the status, clock-OK and PHY status levels, the reset handshake's
-# request and acknowledgement, and inside the MAC/PCS the fault status from RX
-# into TX; in the transceiver supervisor its inputs (PLL lock, power good and
-# reset done, the user clocking helpers' active flags, the PCS block lock and
-# the PHY_CTRL bits) and its receive signal permission into the RX domain.
-# Each gets a datapath-only bound from its launch clock and no skew bound. The
-# transceiver's raw RX reset done launches from RX USRCLK2; its PLL lock and
-# power good have no launch clock at all.
+# Bound single-bit status, reset-handshake, and PHY-control crossings to the
+# first cdc_sync stage, from each launch clock. RXRESETDONE uses RX USRCLK2;
+# PLL lock and power good have no launch clock. No bus-skew bound is needed.
 set nic_sync_d [get_pins -hierarchical -filter {NAME =~ "*/stage_q_reg[0]*/D"}]
 set_max_delay -datapath_only 3.0 -from $nic_core_clk    -to $nic_sync_d
 set_max_delay -datapath_only 3.0 -from $nic_tx_clk      -to $nic_sync_d
