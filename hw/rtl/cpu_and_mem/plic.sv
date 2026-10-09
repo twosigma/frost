@@ -39,14 +39,11 @@
  *   0x200004 + 0x1000*c     claim (read) / complete (write) for context c
  * Everything else in the window reads zero and ignores writes.
  *
- * The claim read is destructive, which is why the PLIC lives in the device
- * quadrant (addr[31:30] == 2'b01). data_mem_request_router holds a
- * device-quadrant read until committed stores have drained and cpu_ooo's
- * device-read interrupt shield is armed, as for the UART RX pop, so each
- * claim read is performed exactly once before its pulse fires.
- * i_claim_pulse[c] must be exactly that once-per-performed-read pulse; the
- * register read data itself is combinational and captured by the MMIO beat
- * in the same cycle the pulse is decoded from.
+ * Claims are destructive device reads (addr[31:30] == 2'b01).
+ * data_mem_request_router waits for committed stores to drain and cpu_ooo's
+ * interrupt shield to arm before performing the read. i_claim_pulse[c] must
+ * pulse exactly once per performed claim, on the edge that captures the
+ * combinational register data into the MMIO response.
  *
  * o_eip[c] is the registered per-context "external interrupt pending" line:
  * the maximum-priority enabled pending source strictly exceeds the
@@ -140,16 +137,13 @@ module plic #(
         threshold[c] <= '0;
       end
     end else begin
-      // Claim: close the winning source's gateway. The pulse is
-      // once-per-performed-read; a claim with no pending source (best_id
-      // 0) is a spurious claim and changes nothing (the read returned 0).
+      // Close the claimed source's gateway. ID 0 changes nothing.
       for (int c = 0; c < NUM_CONTEXTS; c++) begin
         if (i_claim_pulse[c] && best_id[c] != 32'd0) begin
           claimed[best_id[c]-1] <= 1'b1;
         end
       end
 
-      // Register writes.
       if (i_wr_en) begin
         automatic int unsigned ps;
         if (is_priority(i_wr_offset, ps)) begin

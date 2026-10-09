@@ -1,5 +1,5 @@
 # CDB Arbiter file list
-# Priority-based mux for FU completion → CDB broadcast
+# Fixed-priority arbitration for two CDB lanes
 
 # Package dependency
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

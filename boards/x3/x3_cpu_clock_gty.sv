@@ -28,15 +28,10 @@
  * receiver runs at the same rate only because the wizard has no
  * transmit-only mode.
  *
- * The NIC's supervisor resets QPLL0 and its channel on a PHY reset or a
- * failed recovery, which stops that channel's TXOUTCLK. This channel shares
- * nothing but the reference clock buffer with the NIC, and nothing the NIC
- * does resets it. Its reset helper runs its start-up sequence once the
- * transceiver reports power good. The supervisor below, on the free-running
- * clock, restarts the helper with reset-all when that sequence has not
- * finished START_TIMEOUT_MS after power good, or when TX reset done falls
- * later: the helper clears it on a CPLL lock loss and then waits for a
- * request.
+ * The NIC shares only the reference buffer and cannot reset this channel.
+ * Its helper starts after power good. The free-running supervisor requests
+ * reset-all if startup exceeds START_TIMEOUT_MS or TX reset done later falls
+ * (the helper clears done on CPLL lock loss and waits for a request).
  *
  * The clocks come from BUFG_GTs on TXOUTCLK, held clear until the CPLL
  * calibration block reports both TXPRGDIVRESETDONE and the calibrated CPLL
@@ -195,10 +190,9 @@ module x3_cpu_clock_gty #(
       .o_sync ({power_good_fr, tx_done_fr})
   );
 
-  // WAIT: the helper's sequence is running; done is accepted only after it
-  // has been seen low since the last request, so a level left over from
-  // before a reset cannot pass. RUN: the clocks are good. RESET: reset-all is
-  // held for PULSE_CYCLES; the helper starts its sequence when it falls.
+  // WAIT accepts done only after seeing it low since the last request,
+  // rejecting stale completion. RUN marks clocks ready. RESET holds
+  // reset-all for PULSE_CYCLES; release starts the helper's sequence.
   typedef enum logic [1:0] {
     S_WAIT,
     S_RUN,

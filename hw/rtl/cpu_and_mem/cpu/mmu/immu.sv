@@ -17,10 +17,7 @@
 /*
  * immu: instruction-side Sv39 translation of the fetch PC.
  *
- * The translation key is pc_controller's registered fetch PC (i_pc). No
- * combinational next-PC select enters this module, which keeps the
- * branch/redirect select out of the ITLB, permission, PMA, and physical-address
- * cones.
+ * Translate pc_controller's registered fetch PC (i_pc), for timing.
  *
  * With translation off (Bare mode or M-mode), the outputs are a combinational,
  * cycle-exact function of i_pc and never bubble:
@@ -65,8 +62,7 @@ module immu #(
     output logic [31:0] o_pa0,
     output logic [31:0] o_pa1,
     output logic o_pa_valid,
-    // Copies of o_pa_valid, each its own LUT, for consumers that should not
-    // share o_pa_valid's fanout (the decoded queue's shadow select).
+    // Copies of o_pa_valid for fanout to decoded-queue shadow selects.
     output logic [PA_VALID_COPIES-1:0] o_pa_valid_copy,
     output logic o_fault0,
     output logic o_fault0_page,
@@ -90,11 +86,8 @@ module immu #(
   // ---------------------------------------------------------------------------
   riscv_pkg::fetch_verdict_t bare_verdict;
   logic [31:0] bare_pa1;
-  // Convert i_pc to the package XLEN the way a call to
-  // riscv_pkg::fetch_verdict would (zero-extend or truncate), for a caller with
-  // a different local XLEN. The keep attributes hold the high-bits-zero
-  // reduction apart from the Sv39 canonicality and miss logic: sharing those
-  // partial reductions can put the Bare fault behind a long serial LUT chain.
+  // Convert i_pc to package XLEN as fetch_verdict does. Keep high-bit
+  // reductions separate from Sv39 checks, for timing.
   localparam int unsigned PmaHighBits   = riscv_pkg::XLEN - 32;
   localparam int unsigned PmaHighChunks = (PmaHighBits + 5) / 6;
   logic [riscv_pkg::XLEN-1:0] bare_pma_pc;
@@ -111,12 +104,7 @@ module immu #(
       (bare_pma_pc[31:30] == 2'b10);
   assign bare_verdict.straddle = &bare_pma_pc[11:2];
   assign bare_verdict.bare_fault0 = !(bare_pma_high_zero && bare_pma_low_ok);
-  // The next-page check (riscv_pkg::pma_fetch_next_page_ok) with its PC
-  // reductions as kept nets: the high-bits-zero chunks above, and the code
-  // region's, the cached region's, and the all-ones reductions below. TIMING:
-  // kept, synthesis builds each as its own tree beside the Bare fault; left
-  // to itself it has shared them as one LUT chain that put five levels
-  // between the PC and the fault.
+  // Keep the next-page PMA reductions separate for timing.
   (* keep = "true" *) logic [PmaHighChunks-1:0] bare_pma_high_ones_chunk;
   (* keep = "true" *) logic bare_pma_high_ones;
   (* keep = "true" *) logic bare_pma_low_ones;
@@ -189,9 +177,8 @@ module immu #(
   assign pc_np_va = i_pc[XLEN-1:12] + 1'b1;
   assign pc_plus4_lo = i_pc[11:2] + 1'b1;
 
-  // ITLB port 1 looks up a registered next-page VA (np_va_q), so the page
-  // increment and its canonicality check are not in series with the ITLB.
-  // np_sample_matches confirms the sample belongs to the live PC before use.
+  // Register the next-page VA for timing. np_sample_matches must confirm it
+  // belongs to the live PC before use.
   logic [NpBits-1:0] np_va_q;
   logic np_sample_matches;
   logic np_noncanon;
@@ -199,8 +186,7 @@ module immu #(
   assign np_noncanon = !riscv_pkg::sv39_va_canonical({np_va_q, 12'h000});
 
   // ---------------------------------------------------------------------------
-  // Outstanding walk. Declared before the ITLB because an install or a memo
-  // update requires a response to the outstanding walk (walk_resp_matches).
+  // Outstanding walk. Install and memo updates require walk_resp_matches.
   // ---------------------------------------------------------------------------
   logic walk_outstanding_q;
   logic [VpnBits-1:0] walk_vpn_q;
@@ -225,10 +211,7 @@ module immu #(
   logic [1:0] tlb_hi_nonzero;
   logic [1:0] tlb_r, tlb_w, tlb_x, tlb_u, tlb_d;
   logic [1:0][1:0] tlb_level;
-  // TIMING: the fetch permission and PMA verdicts of each port's hit, formed
-  // per entry inside the ITLB and selected beside the PPN, so the PA select
-  // below sees the fault at the same depth as the PPN instead of after a
-  // PMA check of the selected PPN (p_itlb_fetch_verdicts_exact).
+  // ITLB permission and PMA checks are computed per entry, for timing.
   logic [1:0] tlb_fetch_perm_fault, tlb_fetch_pma_bad, tlb_fetch_next_pma_bad;
   logic tlb_install;
 
@@ -318,9 +301,7 @@ module immu #(
     logic clean_hit;
   } port_res_t;
 
-  // A hit's permission and PMA verdicts come from the ITLB's per-entry
-  // checks (tlb_perm_fault, tlb_pma_bad); only the walk-response bypass
-  // checks the fields it selects.
+  // Hits use ITLB permission and PMA checks; walk responses are checked here.
   function automatic port_res_t resolve_port(
       input logic noncanon, input logic [VpnBits-1:0] vpn, input logic hit,
       input logic [19:0] ppn20, input logic hi_nonzero, input logic tlb_perm_fault,
@@ -419,7 +400,7 @@ module immu #(
   );
 
 `ifndef SYNTHESIS
-  // The per-entry verdicts equal the checks of the selected hit's fields.
+  // Per-entry checks must equal checks of the selected hit's fields.
   always_comb begin
     for (int p = 0; p < 2; p++) begin
       if (tlb_hit[p] && !$isunknown(
@@ -437,12 +418,9 @@ module immu #(
   end
 `endif
 
-  // The aligned successor word can be derived inside the same 2 MiB/1 GiB
-  // leaf. At the superpage end the carry enters the entry key, so port 1 must
-  // resolve the exact next VPN instead.
-  // The next page's PMA verdict comes from the ITLB's per-entry check when
-  // the result is an ITLB hit, and from the selected fields only for the
-  // walk-response bypass (p_super_next_pma_exact).
+  // Derive the next word within a 2 MiB or 1 GiB leaf. At the superpage end,
+  // port 1 must resolve the next VPN. ITLB hits use per-entry next-page PMA;
+  // walk responses use the selected fields.
   logic super_end;
   logic super_next_ok;
   logic [19:0] super_next_ppn20;
@@ -586,10 +564,9 @@ module immu #(
       walk_key_priv_u_q <= 1'b0;
       walk_recheck_q <= 1'b0;
     end else begin
-      // High for the one cycle after a response to the outstanding walk, and
-      // no new request issues in that cycle. A response for the live key
-      // normally resolves through the bypass; a stale one needs this quiet
-      // cycle for its ITLB or memo write to reach the resolver.
+      // Wait one cycle after a walk response before requesting again. A stale
+      // response needs its ITLB or fault-memo write visible to the resolver;
+      // a live-key response can bypass directly.
       walk_recheck_q <= walk_resp_arrived;
       if (walk_resp_arrived) begin
         walk_outstanding_q <= 1'b0;
@@ -607,16 +584,11 @@ module immu #(
   // and o_pa_valid and every fault bit are low, so no consumer can act on a
   // result for the wrong tag.
   // ---------------------------------------------------------------------------
-  // Translation preserves the page offset, and a visible result's tag equals
-  // the live PC, so the offset bits are formed from i_pc in both modes. That
-  // keeps the translation-mode select off the offset bits of the low-BRAM read
-  // address.
+  // Translation preserves the page offset and visible tags match i_pc, so
+  // both modes can use the live PC's offset.
   assign o_pa0 = {i_active ? pa0_q[31:12] : i_pc[31:12], i_pc[11:0]};
   assign o_pa1 = {i_active ? pa1_q[31:12] : bare_pa1[31:12], pc_plus4_lo, 2'b00};
-  // TIMING: o_pa_valid feeds the front-end stall, and the compare of the live
-  // PC with the key is its latest term, so the other terms of
-  // translated_visible are finished first and the compare meets them in the
-  // last LUT.
+  // Apply the live-PC compare last, for timing.
   (* keep = "true" *) logic visible_before_pc_compare;
   assign visible_before_pc_compare = !i_tlb_invalidate && key_valid_q &&
                                      (key_priv_u_q == i_priv_u) && resolved_q;
@@ -643,8 +615,7 @@ module immu #(
   end
 
 `ifndef SYNTHESIS
-  // Simulation assertions. Directed cocotb tests provide the independent
-  // translation model; these check the timing and tag rules above.
+  // Check result visibility, timing, and tag matching.
   always_comb begin
     if (!$isunknown(
             {

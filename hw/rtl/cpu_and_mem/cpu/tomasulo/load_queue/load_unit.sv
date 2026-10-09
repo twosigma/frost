@@ -17,9 +17,8 @@
 /*
  * Load Unit - Data extraction and sign/zero extension for RISC-V load instructions
  *
- * Consumes one aligned MemDataBits (64-bit) beat carrying the addressed dword
- * (hw/rtl/README.md, "Data-tier bus contract") and extracts the addressed byte / halfword /
- * word for the integer load types:
+ * Extracts a byte, halfword, or word from an aligned MemDataBits (64-bit) beat
+ * (hw/rtl/README.md, "Data-tier bus contract"):
  *
  *   LB  - byte at addr[2:0] (one of eight beat bytes), sign-extended
  *   LBU - byte at addr[2:0], zero-extended
@@ -31,9 +30,7 @@
  * Doubles do not pass through this unit: the load queue consumes the full
  * beat directly for FLD and LD.
  *
- * load_queue.sv instantiates the unit three times, on the memory-response,
- * L0-cache-hit, and store-queue-forward result paths. lq_l0_cache.sv supplies
- * the cached beats for the second of those.
+ * load_queue.sv uses this unit for memory responses, L0 hits, and SQ forwarding.
  */
 module load_unit #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -55,16 +52,14 @@ module load_unit #(
   // Byte/Halfword/Word Extraction and Sign/Zero Extension
   // ===========================================================================
   //
-  // Beat layout (little-endian): byte lane i is byte address {addr[31:3], i}.
+  // Beat layout (little-endian): byte lane i is at offset i in the aligned dword.
   //
-  // Every lane's extended result is computed in parallel, so the address
-  // controls only the final muxes and not the sign-extension logic.
+  // Extend lanes before address selection for timing.
 
   localparam int unsigned BeatBytes  = riscv_pkg::MemStrbBits;
   localparam int unsigned BeatHalves = riscv_pkg::MemDataBits / 16;
   localparam int unsigned BeatWords  = riscv_pkg::MemDataBits / 32;
 
-  // Byte lanes, sign- or zero-extended per i_is_load_unsigned
   logic [XLEN-1:0] byte_ext[BeatBytes];
   for (genvar b = 0; b < BeatBytes; b++) begin : gen_byte_ext
     assign byte_ext[b] = {
@@ -73,7 +68,6 @@ module load_unit #(
     };
   end
 
-  // Halfword lanes, extended the same way
   logic [XLEN-1:0] half_ext[BeatHalves];
   for (genvar h = 0; h < BeatHalves; h++) begin : gen_half_ext
     assign half_ext[h] = {
@@ -93,7 +87,6 @@ module load_unit #(
     };
   end
 
-  // Final muxes: the address selects pre-computed results.
   logic [XLEN-1:0] byte_result;
   logic [XLEN-1:0] halfword_result;
   logic [XLEN-1:0] word_result;
@@ -102,8 +95,6 @@ module load_unit #(
   assign halfword_result = half_ext[i_data_memory_address[2:1]];
   assign word_result = word_ext[i_data_memory_address[2]];
 
-  // Type selection: is_load_byte and is_load_halfword come from the load's
-  // stored size.
   assign o_data_loaded_from_memory =
       i_is_load_byte     ? byte_result :
       i_is_load_halfword ? halfword_result :

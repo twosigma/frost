@@ -17,13 +17,10 @@
 /*
  * hang_triage: UART diagnostics for a hardware hang (ENABLE_HANG_TRIAGE=1).
  *
- * A hang stops console output, so the trigger is a quiet console. Once no CPU
- * console write has happened for QUIET_CYCLES, this block takes over the UART
- * and prints a snapshot, and while the console stays quiet it prints another
- * REEMIT_CYCLES after each one finishes, so the trend is visible. The takeover
- * waits for an edge that brings no CPU byte, so none is lost to the handover;
- * while this block holds the console, cpu_and_mem drops CPU bytes. Each value
- * is eight hex digits:
+ * After QUIET_CYCLES without a CPU console write, take the UART and print a
+ * snapshot. Repeat REEMIT_CYCLES after each print while the console is quiet.
+ * Takeover waits for an edge with no CPU byte; cpu_and_mem drops CPU bytes
+ * while o_active is high. Each value is eight hex digits:
  *
  *   "\n!!HANG c=<commits> t=<timer> q=<cread_req> v=<cread_resp> w=<wreq:wdone>"
  *   " l=<pc_lo> h=<pc_hi> r=<commit0_pc> s=<commit1_pc> m=<mtime_lo>"
@@ -50,7 +47,7 @@
  *       bucket k covers 0x8000_0000 + k*0x10000 (aliased every 4 MiB). The
  *       hottest bucket locates a spin to a 64 KiB window.
  *
- * Nothing latches: a console write restarts the quiet timer and clears the
+ * A console write restarts the quiet timer and clears the
  * PC range and histogram. The event counters run from reset.
  */
 module hang_triage #(
@@ -107,16 +104,15 @@ module hang_triage #(
     end
   end
 
-  // ---- PC histogram: 64 x 64 KiB buckets, kernel PCs only -------------------
+  // ---- PC histogram: 64 x 64 KiB buckets, pc[31] set ------------------------
   logic [31:0] hist[64];
   logic [5:0] pc_bucket;
   assign pc_bucket = i_pc[21:16];
   always_ff @(posedge i_clk) begin
     if (i_rst || i_uart_busy) begin
-      // Clear while the console is active so the histogram covers the quiet
-      // (hang) window and not the pre-hang boot execution.
+      // Keep only the console's quiet window.
       for (int b = 0; b < 64; b++) hist[b] <= 32'd0;
-    end else if (i_pc[31]) begin  // count only kernel-range PCs
+    end else if (i_pc[31]) begin  // Count PCs with bit 31 set.
       hist[pc_bucket] <= hist[pc_bucket] + 32'd1;
     end
   end
@@ -303,11 +299,8 @@ module hang_triage #(
             em_state <= EM_PREFIX;
           end
         end
-        // Every emit state gates its push on (i_uart_ready && !o_wr_en). The
-        // push is registered and enters the transmit FIFO while o_wr_en is
-        // high, so i_uart_ready (the FIFO's almost-full level) reflects it
-        // from the next cycle. The one-cycle gap between pushes lets every
-        // decision see the previous push and costs nothing at UART rates.
+        // Leave one cycle between registered pushes so i_uart_ready reflects
+        // the previous FIFO write before another byte is accepted.
         EM_PREFIX:
         if (i_uart_ready && !o_wr_en) begin
           o_wr_en   <= 1'b1;

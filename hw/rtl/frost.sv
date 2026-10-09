@@ -31,17 +31,12 @@ module frost #(
     parameter int unsigned MEM_SIZE_BYTES = 2 ** 18,
     // Simulation mtime multiplier; use 1 for synthesis.
     parameter int unsigned SIM_TIMER_SPEEDUP = 1,
-    // Cached region [CACHED_BASE, CACHED_BASE + CACHED_SIZE_BYTES): served by
-    // the write-back cache hierarchy (L1D, L1I, L2) over DDR. Accesses
-    // complete by handshake with variable latency, with several tagged loads
-    // but only one store in flight. Software sees one flat region; the
-    // hierarchy shape is invisible to it.
+    // Cached region [CACHED_BASE, CACHED_BASE + CACHED_SIZE_BYTES), backed by
+    // write-back caches and DDR. Supports several tagged loads and one store
+    // in flight, with variable-latency handshakes.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB
-    // 0 builds no hierarchy: cached-region loads return zero and stores
-    // complete without effect. Board tops with a DDR controller pass 1
-    // through boards/xilinx_frost_subsystem.sv, and simulation sets it with
-    // -G (tests/Makefile).
+    // 0 omits the hierarchy: cached loads return zero and stores have no effect.
     parameter int unsigned ENABLE_CACHED_TIER = 0,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
@@ -58,9 +53,8 @@ module frost #(
     // Behavioral main-memory model knobs (simulation only).
     parameter int unsigned DDR_MODEL_BYTES = 64 * 1024 * 1024,
     parameter int unsigned DDR_MODEL_LATENCY = 30,
-    // Per-transaction jitter on the model's latency (0 = off, cycle-exact).
-    // Enable in directed/random sims (-G override) to expose completion-
-    // timing races that a fixed latency structurally hides.
+    // Per-transaction model latency jitter; 0 disables it (DDR_MODEL_REORDER
+    // can still vary the latency).
     parameter int unsigned DDR_MODEL_LATENCY_JITTER = 0,
     // Out-of-order completion across ids in the model (0 = in order).
     parameter int unsigned DDR_MODEL_REORDER = 0,
@@ -70,8 +64,7 @@ module frost #(
     parameter int unsigned USE_BEHAVIORAL_DDR = 1,
     // Simulation-only fetch-latency fuzz (see cpu_and_mem). Hardware keeps 0.
     parameter int unsigned FETCH_VALID_FUZZ = 0,
-    // LFSR reset value for the fuzz gap pattern: each seed explores a
-    // different fetch-timing interleaving (must be nonzero).
+    // Low 16 bits seed the fuzz LFSR; use a nonzero value.
     parameter int unsigned FETCH_VALID_FUZZ_SEED = 32'h0000_ACE1,
     // Optional on-silicon boot-hang classifier that can emit over UART.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,
@@ -79,19 +72,14 @@ module frost #(
     // override these to fit the cycle budget.
     parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd900_000_000,
     parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd322_265_625,
-    // Profiling counters (the mperf* CSRs): 0 leaves them out, as production
-    // builds do; 1 for analysis builds (build.py --perf-counters) and the
-    // cocotb entries that read them (-GPERF_COUNTERS=1).
+    // mperf* CSRs; disabled in production (build.py --perf-counters enables them).
     parameter int unsigned PERF_COUNTERS = 0,
     // RISC-V debug transport: 1 = generic JTAG TAP on the
     // i_jtag_* pins (simulation, portable synthesis); 0 = the DTM's BSCAN
     // bundle comes from the board's BSCANE2 primitives (i_dtm_bscan_*).
     parameter int unsigned DEBUG_JTAG_TAP = 1,
-    // The NIC's raw TX-to-RX loopback (PHY_CTRL MAC_LOOPBACK, inside
-    // nic_mac_wrap): 1 builds it, for one clock driven on both MAC clock
-    // ports (simulation, and a board without a transceiver that clocks the
-    // MAC from its MMCM); 0 leaves it out, for independent TX and RX clocks
-    // such as a transceiver's.
+    // Build PHY_CTRL MAC_LOOPBACK (nic_mac_wrap). Requires one shared MAC
+    // clock; use 0 with independent transceiver TX and RX clocks.
     parameter int unsigned RAW_LOOPBACK = 1
 ) (
     input logic i_clk,
@@ -165,14 +153,9 @@ module frost #(
     input  logic [  1:0] i_ddr_axi_rresp,
     input  logic         i_ddr_axi_rlast,
 
-    // NIC. The TX and RX MAC clocks each come with an asynchronous
-    // clock-present level, so a transceiver's independent clocks can drive
-    // them; a build with the raw loopback (RAW_LOOPBACK = 1) drives one clock
-    // on both. The defaults serve instantiations that omit the ports. The
-    // cocotb top (verif/cocotb_tests/test_real_program.py) drives every one,
-    // with one clock on both MAC clock ports, and boards wire their clocks and
-    // PHY lines. o_nic_rx_block_lock is the PCS block lock synchronized to
-    // i_clk, for a board's transceiver supervisor.
+    // MAC clocks have asynchronous clock-present levels. RAW_LOOPBACK requires
+    // the same clock on both ports. PCS block lock is synchronized to i_clk
+    // for the board's transceiver supervisor.
     input  logic        i_nic_tx_clk = 1'b0,
     input  logic        i_nic_rx_clk = 1'b0,
     input  logic        i_nic_tx_clk_ok = 1'b1,
@@ -188,13 +171,10 @@ module frost #(
 );
 
   /*
-    Reset synchronization for the main clock domain. A flip-flop chain turns
-    the active-low asynchronous reset input into an active-high reset
-    synchronous to i_clk, keeping the async edge out of the CPU domain.
+    Synchronize the active-low reset into an active-high i_clk reset.
     Hold i_rst_n low for at least 20 i_clk cycles (five i_clk_div4 cycles):
-    each dual-clock FIFO needs its i_clk_div4 side to apply reset while its
-    i_clk side is still held (dc_fifo).
-    Potential TODO: assert reset async but deassert it sync for faster entry.
+    each dc_fifo needs reset applied on its divided-clock side while its
+    main-clock side remains held.
   */
   localparam int unsigned NumResetSyncStages = 3;
   (* ASYNC_REG = "TRUE" *)
@@ -208,9 +188,8 @@ module frost #(
   always_ff @(posedge i_clk)
     reset_synchronized <= reset_synchronizer_shift_register[NumResetSyncStages-1];
 
-  // The DDR interconnect's reset, asserted asynchronously so the bridge's
-  // VALIDs drop as soon as the interconnect enters reset (even if i_clk stops
-  // with the MMCM that drives both) and released synchronously.
+  // Asynchronous assertion drops bridge VALIDs even if i_clk stops.
+  // Release is synchronized to i_clk.
   (* ASYNC_REG = "TRUE" *)
   logic [NumResetSyncStages-1:0] ddr_axi_reset_synchronizer_n;
   always_ff @(posedge i_clk or negedge i_ddr_axi_rst_n)
@@ -264,10 +243,7 @@ module frost #(
   logic        mmio_fifo1_is_full;
   logic        mmio_fifo1_read_enable;
 
-  // CPU and memory subsystem: the CPU, low BRAM, cache hierarchy, MMIO
-  // devices, debug module, NIC, and DMA test engine. The instruction-memory
-  // programming port runs in the div4 clock domain, so it crosses no clock
-  // boundary here.
+  // The programming port stays in the div4 domain through this connection.
   cpu_and_mem #(
       .MEM_SIZE_BYTES(MEM_SIZE_BYTES),
       .SIM_TIMER_SPEEDUP(SIM_TIMER_SPEEDUP),
@@ -395,8 +371,7 @@ module frost #(
   ) memory_mapped_io_fifo_0 (
       .i_clk,
       .i_rst(reset_synchronized),
-      // The full flag is left unread to keep the write path short; software
-      // is responsible for not overflowing the FIFO
+      // Software must avoid overflow; the full flag is not exposed.
       .i_write_enable(mmio_fifo0_write_enable),
       .i_read_enable(mmio_fifo0_read_enable),
       .i_write_data(mmio_fifo0_write_data),
@@ -412,8 +387,7 @@ module frost #(
   ) memory_mapped_io_fifo_1 (
       .i_clk,
       .i_rst(reset_synchronized),
-      // The full flag is left unread to keep the write path short; software
-      // is responsible for not overflowing the FIFO
+      // Software must avoid overflow; the full flag is not exposed.
       .i_write_enable(mmio_fifo1_write_enable),
       .i_read_enable(mmio_fifo1_read_enable),
       .i_write_data(mmio_fifo1_write_data),
@@ -452,12 +426,8 @@ module frost #(
   );
 
 `ifndef SYNTHESIS
-  // A write that finds the FIFO full is lost. A writer that checks the TX
-  // status before each burst of up to 16 bytes, as the 8250 driver does,
-  // never finds it full; this reports a write that does. The plusarg
-  // +uart_tx_drop_check=0 turns the check off for a run that writes more
-  // than fits without checking the status and reads its output from
-  // cpu_and_mem's UART write, ahead of this FIFO: the arch-test signature dump.
+  // Report lost TX bytes. +uart_tx_drop_check=0 disables this for unpaced
+  // output captured before the FIFO, such as arch-test signature dumps.
   int unsigned uart_tx_drop_check;
   initial if (!$value$plusargs("uart_tx_drop_check=%d", uart_tx_drop_check)) uart_tx_drop_check = 1;
   always_ff @(posedge i_clk)
@@ -502,7 +472,6 @@ module frost #(
     the CPU domain, where MMIO reads collect them.
   */
 
-  // Interface signals for UART receiver module
   logic [7:0] uart_rx_data_from_receiver;
   logic       uart_rx_valid_from_receiver;
   logic       uart_rx_ready_to_receiver;
@@ -521,9 +490,7 @@ module frost #(
   );
 
   /*
-    Dual-clock FIFO carrying received bytes from the clk_div4 UART domain into
-    the CPU domain, so the receiver keeps accepting characters while the CPU
-    works through the ones already buffered.
+    Buffer received bytes across the UART-to-CPU clock boundary.
   */
   dc_fifo #(
       .DATA_WIDTH(8)  // 8 bits per UART character

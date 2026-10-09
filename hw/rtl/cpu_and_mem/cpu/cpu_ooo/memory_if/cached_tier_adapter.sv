@@ -102,13 +102,9 @@ module cached_tier_adapter #(
   // ---- Read slots -------------------------------------------------------------
   logic [  READ_SLOTS-1:0] rd_valid_q;  // request accepted, response outstanding
   logic [  READ_SLOTS-1:0] rd_sent_q;  // line request fired
-  // Flops, not distributed RAM: every free slot is written in the same cycle,
-  // which a distributed RAM's single write port cannot do. A free slot samples
-  // i_req_addr on every clock (enable = the slot's own valid flop) and freezes
-  // once its valid bit sets. i_read_req, a deep cone through the load queue's
-  // L0 lookup and the router's accept gate, therefore enables only each
-  // slot's valid and sent flops, not its address register. Only a valid
-  // slot's address is ever used, so the idle contents do not matter.
+  // Use flops because all free slots sample i_req_addr on each edge. A valid
+  // slot holds its address until response. This captures each launched address
+  // without putting i_read_req on the address enables; idle data is unused.
   (* ram_style = "registers" *)
   logic [        XLEN-1:0] rd_addr_q                                             [READ_SLOTS];
 
@@ -168,22 +164,14 @@ module cached_tier_adapter #(
   assign resp_beat_sel = rd_addr_q[resp_slot][BeatOffBits+:BeatSelBits];
   assign resp_beat = i_line_resp_rdata[resp_beat_sel*BeatBits+:BeatBits];
 
-  // Read responses leave through a registered output beat, so the router sees
-  // flops. The router may hold that beat behind the fast tier's fixed-latency
-  // response, so beats that land while it is occupied wait in a queue. Every
-  // queued beat belongs to an outstanding read, so READ_SLOTS entries suffice.
-  // A beat arriving with the output free bypasses the queue, keeping the
-  // line-response-to-router latency at one cycle.
+  // Register read responses and queue beats blocked by the fast-tier response.
+  // Each queued beat belongs to an outstanding LQ read, so READ_SLOTS entries
+  // suffice. A beat bypasses an empty queue when the output is free, giving
+  // one-cycle line-response-to-router latency.
   //
-  // The line response's valid and id come out of the cache's response
-  // selection late in the cycle, so they reach only small state here. The
-  // queue entry at the write pointer is not in the queue unless the queue is
-  // full, so it takes the arriving beat and slot every cycle the queue is not
-  // full, and a push only advances the pointer. The output beat and id are
-  // read only while o_read_valid is set, so they load whenever the output
-  // takes (out_take): with no beat for it, o_read_valid clears and the loaded
-  // data is never read. p_rq_queue_exact and p_read_beat_exact check both
-  // against copies written only on a push and on a delivered beat.
+  // The unused tail row samples every cycle while not full; push advances the
+  // pointer. The output loads whenever out_take is set. Extra captures are
+  // unobserved because queue occupancy and o_read_valid qualify all reads.
   logic [BeatBits-1:0] rq_data_q[READ_SLOTS];
   logic [SlotBits-1:0] rq_id_q  [READ_SLOTS];
   logic [RespPtrBits-1:0] rq_wr_q, rq_rd_q;
@@ -210,10 +198,8 @@ module cached_tier_adapter #(
     end else begin
       o_write_done <= 1'b0;
 
-      // Enqueue router requests. The load queue launches only into a free
-      // slot (checked below), so the valid and sent updates do not test the
-      // slot state. The free-slot sampling captures the launched address on
-      // the accepting edge (see rd_addr_q).
+      // The LQ launches only into a free slot. Sampling free addresses captures
+      // the request on its accepting edge.
       for (int s = 0; s < int'(READ_SLOTS); s++) begin
         if (!rd_valid_q[s]) rd_addr_q[s] <= i_req_addr;
       end
@@ -288,8 +274,8 @@ module cached_tier_adapter #(
     end
   end
 
-  // Reference queue and output beat, written only on a push and on a
-  // delivered beat (the enables the payload captures above dropped).
+  // Reference captures use push and delivered-beat enables; compare all live
+  // payloads against the wider capture enables above.
   logic [BeatBits-1:0] ref_rq_data_q[READ_SLOTS];
   logic [SlotBits-1:0] ref_rq_id_q[READ_SLOTS];
   logic [BeatBits-1:0] ref_read_data_q;

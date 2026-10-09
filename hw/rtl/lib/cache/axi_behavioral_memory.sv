@@ -15,16 +15,9 @@
  */
 
 /*
- * axi_behavioral_memory: simulation-only main-memory model, standing in for
- * the board's DDR controller and SmartConnect. An AXI4 slave for single-beat
- * line transactions (a longer burst is an error), with up to NUM_SLOTS reads
- * and NUM_SLOTS writes in flight and a response latency of at least LATENCY
- * cycles.
- *
- * LATENCY_JITTER adds per-transaction LFSR jitter to that latency, as refresh
- * and arbitration vary a real controller's timing. A fixed latency hides
- * completion-timing races, so directed and random suites should prefer a
- * jittered run wherever they do not depend on exact timing.
+ * Simulation-only AXI4 memory for single-beat line transactions. Reads and
+ * writes each have NUM_SLOTS execution slots. LATENCY_JITTER adds deterministic
+ * LFSR latency variation to expose completion-order races.
  *
  * With REORDER=0 each channel completes in issue order: the oldest pending
  * transaction responds first, even if a younger one's latency elapsed
@@ -35,11 +28,9 @@
  * the master never has two transactions of one id in flight on a channel.
  * Each transaction performs its memory access at completion.
  *
- * The array is dense and MEM_BYTES long (default 64 MiB) while the cached
- * region is 1 GiB. An access past MEM_BYTES aliases back into the array and
- * warns, up to eight times (see the checks at the end of the file). Raise
- * MEM_BYTES (DDR_MODEL_BYTES at the frost top) with -G for larger working
- * sets.
+ * MEM_BYTES bounds the dense array; out-of-range addresses alias and warn
+ * up to eight times. Increase DDR_MODEL_BYTES at the frost top for larger
+ * working sets.
  *
  * Storage is word-granular, so $readmemh loads sw_ddr.mem directly: the same
  * objcopy -O verilog --verilog-data-width 4 format as sw.mem, emitted
@@ -54,10 +45,8 @@ module axi_behavioral_memory #(
     parameter int unsigned MEM_BYTES = 64 * 1024 * 1024,
     parameter int unsigned ID_BITS = 4,
     parameter int unsigned LATENCY = 30,  // cycles from AR (or AW+W) to R (or B)
-    // Per-transaction response-latency jitter: a transaction takes at least
-    // LATENCY + (lfsr % (LATENCY_JITTER+1)) cycles, plus the REORDER spread.
-    // 0 adds no jitter. The LFSR free-runs every cycle, so a jittered run is
-    // still deterministic while transaction latencies decorrelate.
+    // Add 0..LATENCY_JITTER cycles from the free-running LFSR, plus REORDER's
+    // spread. The total latency is 16 bits; 0 disables this jitter term.
     parameter int unsigned LATENCY_JITTER = 0,
     // 1 = complete transactions out of issue order across ids (see header).
     parameter int unsigned REORDER = 0,
@@ -108,9 +97,7 @@ module axi_behavioral_memory #(
   // module is never instantiated in a synthesized configuration.
   initial begin
     if (USE_INIT_FILE) begin
-      // Probe before $readmemh so flows that never generate a DDR image
-      // (e.g. external test-suite builds) run with zeroed memory instead of
-      // a missing-file error.
+      // Skip loading when the build supplies no DDR image.
       int init_fd;
       init_fd = $fopen(INIT_FILE, "r");
       if (init_fd != 0) begin
@@ -133,13 +120,8 @@ module axi_behavioral_memory #(
       };
     end
   end
-  // The non-power-of-two modulo costs nothing in a simulation-only model and
-  // keeps the extra latency near-uniform over [0, LATENCY_JITTER]. REORDER
-  // adds a further 0..7 cycles from the other end of the LFSR so
-  // equal-latency transactions can land in different cycles.
-  // new_latency is a slot's starting countdown, one below the total, so its
-  // response is presented no earlier than LATENCY (+ jitter) cycles after the
-  // clock edge that fills the slot.
+  // REORDER adds 0..7 cycles from the high LFSR bits. Start the countdown
+  // one below the total, since selection first runs after slot allocation.
   logic [15:0] total_latency, new_latency;
   assign total_latency = 16'(LATENCY) + 16'(32'(jitter_lfsr_q) % (LATENCY_JITTER + 1)) +
       ((REORDER != 0) ? 16'(jitter_lfsr_q[15:13]) : 16'd0);
@@ -318,11 +300,8 @@ module axi_behavioral_memory #(
           r_presenting_q       <= 1'b0;
         end
       end else if (rd_pick_valid) begin
-        // Mask into the modeled array: wrong-path speculative loads can
-        // target anywhere in the architectural 1 GiB region, and have to
-        // complete with don't-care data rather than kill the sim. The bounds
-        // warnings at the end of the file still report out-of-range accesses,
-        // so a too-small DDR_MODEL_BYTES is noticed.
+        // Speculative wrong-path loads may leave the modeled range. Alias
+        // their data and warn below so an undersized model is still visible.
         for (int unsigned w = 0; w < WordsPerLine; w++) begin
           rdata_q[w*32+:32] <= memory[(((rd_addr_q[rd_pick]&(MEM_BYTES-1))>>2)+w)];
         end
@@ -459,9 +438,7 @@ module axi_behavioral_memory #(
   end
 
 `ifndef SYNTHESIS
-  // Stall watchdog: an AR held un-accepted for 1024 cycles means the slot
-  // machinery wedged. The dump covers both channels so the log alone
-  // diagnoses the state.
+  // Dump both channels if AR remains blocked for 1024 cycles.
   int unsigned ar_stall_cnt;
   always_ff @(posedge i_clk) begin
     if (i_rst || !(i_axi_arvalid && !o_axi_arready)) begin
@@ -495,11 +472,8 @@ module axi_behavioral_memory #(
     end
   end
 
-  // Out-of-model accesses alias into the array, which is harmless for
-  // wrong-path speculation. Warn a few times so an undersized
-  // DDR_MODEL_BYTES against a real working set is still visible. Writes are
-  // always architectural, since stores drain post-commit, so a masked write
-  // is the strongest signal.
+  // Warn on aliased accesses. Wrong-path reads can exceed the model; writes
+  // are architectural and indicate that the modeled working set is too small.
   int unsigned oob_warnings = 0;
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin

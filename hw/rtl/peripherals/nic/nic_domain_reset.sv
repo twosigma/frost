@@ -18,20 +18,15 @@
  * nic_domain_reset: the far side of the NIC's reset handshake, one per MAC
  * clock domain (TX, RX).
  *
- * The core-side controller (nic_reset_ctrl) raises a request level with a
- * generation bit. This block asserts the domain's synchronous reset
- * (o_domain_rst, for the MAC and this domain's halves of the packet FIFOs)
- * without waiting for a clock edge (cdc_reset_sync), and keeps it while the
- * request is high and for HOLD_CYCLES clocks after it drops. It reports two
- * levels back: o_in_reset, and o_applied_gen with o_applied_valid, which
- * take the request's generation once this clock has held the reset for
- * HOLD_CYCLES with the request high. o_applied_valid stays 0 from the
- * core's reset until the first application, so a generation that merely
- * equals the reset value is never mistaken for an acknowledgement. A
- * generation is therefore acknowledged only after this domain's clock has
- * actually applied the reset, and a stale acknowledgement from an earlier
- * generation cannot satisfy a new request. With no clock the reset is held
- * and nothing is acknowledged, which is what the controller expects.
+ * nic_reset_ctrl sends a request and generation bit. cdc_reset_sync asserts
+ * o_domain_rst without a clock edge. Reset stays high through the request
+ * and for HOLD_CYCLES clocks after its synchronized release.
+ *
+ * After HOLD_CYCLES with the request high, report its generation through
+ * o_applied_gen and o_applied_valid. Valid stays low from core reset until
+ * the first application, so an initial matching generation cannot falsely
+ * acknowledge a request. Without a clock, reset stays high and no new
+ * generation is acknowledged.
  *
  * The core's own reset (i_core_rst_async) resets this block's bookkeeping
  * and the domain alike, so a CPU reset starts a fresh generation on both
@@ -70,12 +65,9 @@ module nic_domain_reset #(
       .o_sync (gen_s)
   );
 
-  // The release hold is preloaded while the request is up, so the cycle in
-  // which req_arst falls already finds it loaded: no gap in o_domain_rst
-  // between the request's release and the hold (a gap would let the core
-  // side see the domain out of reset for one cycle and report ready while
-  // the reset came back). These registers reset synchronously on the
-  // core's reset; they only matter while this clock runs.
+  // Preload the release hold while req_arst is high. A gap at release could
+  // falsely report ready to the core before reset reasserted.
+  // These counters reset synchronously and matter only while the clock runs.
   logic [CountBits-1:0] assert_cnt_q, release_cnt_q;
   logic applied_q, applied_valid_q;
   always_ff @(posedge i_clk) begin

@@ -61,10 +61,8 @@ module ptw #(
     input logic i_clk,
     input logic i_rst,
 
-    // Root of the current address space (satp.PPN), sampled when a walk
-    // starts. satp changes only through a committed, serialized CSR
-    // instruction, and that access also raises i_discard, so no walk in flight
-    // across the change answers.
+    // Root PPN, sampled at walk start. Committed satp access also raises
+    // i_discard, preventing an older walk from answering across the change.
     input logic [riscv_pkg::PtePpnBits-1:0] i_root_ppn,
 
     // Walk request. Ready is a level: the FSM is idle and no discard is
@@ -133,13 +131,8 @@ module ptw #(
   // Cached DDR is [0x8000_0000, 0xC000_0000), where pa[31:30] == 2'b10.
   assign pte_addr_ok = !pte_pa_hi_nonzero && (pte_pa32[31:30] == 2'b10);
 
-  // Registered copy of pte_addr_ok, computed from the value being written at
-  // the two places that write ptr_ppn_q (idle and descend). The check depends
-  // on ptr_ppn_q alone: vpn_field ORs into pa32[11:3] and cannot reach
-  // [31:30], which are ptr_ppn_q[19:18]. The precompute is therefore exact,
-  // and it keeps a 24-bit reduction of the high PPN bits out of
-  // o_line_req_valid, which fans through the hierarchy's walker-port
-  // arbitration into the L2 capture enables.
+  // Register the address check with ptr_ppn_q, for timing. VPN changes only
+  // PA[11:3], so the check depends solely on PPN high bits and PPN[19:18].
   logic ptr_addr_ok_q;
 
   function automatic logic ppn_addr_ok(input logic [riscv_pkg::PtePpnBits-1:0] ppn);
@@ -152,18 +145,13 @@ module ptw #(
   // ---------------------------------------------------------------------------
   // Line request (read-only, single id, one walk in flight)
   // ---------------------------------------------------------------------------
-  // A poisoned walk never fires a new read. Retracting an unfired request is
-  // safe in this fabric, because every slave on the walk path is stateless
-  // before the fire. A read already outstanding is consumed in PTW_WAIT.
+  // A poisoned walk issues no further reads. Unaccepted requests may be
+  // withdrawn because the walk path changes state only on acceptance.
+  // An outstanding read is still consumed in PTW_WAIT.
   //
-  // The request valid is computed with each FSM transition and registered. It
-  // always equals PTW_ISSUE && ptr_addr_ok_q && !discard_q, so the state decode
-  // and the poison and address gates stay off the hierarchy's shared
-  // capture-enable path. Do not gate it with the live i_discard: that would put
-  // the ROB and CSR invalidate decode on walker arbitration and L2 capture. A
-  // read that fires in the discard cycle belongs to a poisoned walk: discard_q
-  // is set at that edge, the response is consumed in PTW_WAIT like any other,
-  // and nothing is answered (p_discard_silent).
+  // Registered valid equals PTW_ISSUE && ptr_addr_ok_q && !discard_q. It is not
+  // gated by live i_discard, for timing. A read accepted in the discard cycle
+  // is poisoned at that edge; consume its response without answering.
   (* keep = "true" *) logic line_req_valid_q;
   assign o_line_req_valid = line_req_valid_q;
   assign o_line_req_addr = {pte_pa32[31:LineAddrLow], {LineAddrLow{1'b0}}};
@@ -171,10 +159,8 @@ module ptw #(
 
   // PTE extraction: dword index inside the 32-byte line.
   logic [1:0] pte_dword_sel_q;  // captured at issue (pa[4:3])
-  // This level's PTE: the selected dword of the line response, registered
-  // before it is classified. The response arrives through the L2's MSHR state
-  // and response mux, and classifying it in the same cycle would put that whole
-  // path in front of resp_q. The register adds one cycle per level to a walk.
+  // Register the selected PTE before classification, for timing. This adds
+  // one cycle per walk level.
   logic [63:0] pte_live, pte_q, pte;
   assign pte_live = i_line_resp_rdata[pte_dword_sel_q*64+:64];
   assign pte = pte_q;
@@ -234,11 +220,8 @@ module ptw #(
       unique case (state_q)
         PTW_IDLE: begin
           discard_q     <= 1'b0;
-          // These registers are unobservable while idle, so they load on every
-          // idle edge and only state_q and line_req_valid_q wait for a request
-          // to fire. The accepting edge loads the same request and root that a
-          // fire-gated load would, without putting the request valid on every
-          // payload register's enable.
+          // Sample payload on every idle edge. It is unused until a request fires,
+          // whose accepting edge captures the requested VPN and root.
           vpn_q         <= i_req_vpn;
           level_q       <= 2'd2;
           ptr_ppn_q     <= i_root_ppn;
@@ -360,9 +343,8 @@ module ptw #(
 `endif
 
 `ifdef FORMAL
-  // Walk FSM against a reference PTE classification, bounded (ptw.sby). The
-  // line port's responses are unconstrained except for one assumption that the
-  // fabric guarantees: a response arrives only while a read is outstanding.
+  // Compare PTE classification with a reference. The line port may respond
+  // only while a read is outstanding.
   logic f_past_valid;
   initial f_past_valid = 1'b0;
   always_ff @(posedge i_clk) f_past_valid <= 1'b1;

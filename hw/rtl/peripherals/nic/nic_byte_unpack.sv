@@ -25,14 +25,11 @@
  * beat carries 8 bytes except the last, which carries the remaining 1..8
  * bytes and the last flag. o_beat_data lane 0 is the lowest address.
  *
- * This is the mirror of nic_byte_pack. A two-line window holds the current
- * and the next line. A beat takes the 16 bytes of the chunk pair at pos/8
- * (pos is the next byte's position in the window) and rotates them down by
- * A mod 8, which is constant for the frame, so each beat needs only a
- * chunk-pair select and an eight-position rotate. The window advances a
- * line when pos crosses into the upper line, and the next input line fills
- * the freed half; a beat is offered only when every chunk it needs is
- * present. The last beat frees the window.
+ * A two-line window holds the current and next lines. Each beat selects
+ * 16 bytes at chunk pos/8 and rotates down by A mod 8, which stays constant
+ * for the frame. The window advances when pos reaches the upper line; input
+ * fills the freed half. Offer a beat only when all bytes it needs are present.
+ * The last beat frees the window.
  */
 module nic_byte_unpack #(
     parameter int unsigned LINE_BYTES = 32

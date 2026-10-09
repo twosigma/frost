@@ -17,12 +17,9 @@
 // =============================================================================
 // commit_bus_pipeline
 // =============================================================================
-// Registers both ROB commit slots and their decoded fields. RAT commit, SQ
-// commit, SC discard, the LR reservation clear, and the coherence port use
-// this registered view, which breaks the path from the ROB's
-// head_ready/commit_en through the SQ and RAT to the LQ. Only the valid bits
-// reset (on reset or a full flush), so the reset net stays off the payload
-// registers. Slot 2 is registered the same way and is never SC, AMO, or LR.
+// Register both ROB commit slots for RAT/SQ commit, SC discard, reservation
+// clear, and coherence. Only valid bits reset or clear on a full flush;
+// payloads are unreset. Slot 2 never carries SC, AMO, or LR.
 //
 // The wrapper keeps the combinational commit buses for same-cycle
 // misprediction detection; only their registers live here.
@@ -39,11 +36,8 @@ module commit_bus_pipeline (
     // Registered slot-1 commit bus + decomposed fields
     output riscv_pkg::reorder_buffer_commit_t o_commit_bus_q,
     output logic o_commit_bus_q_valid,
-    // The registered valid without the !i_flush_all output mask. It serves
-    // scan-only consumers whose result is discarded on a flush cycle,
-    // currently the SQ forwarding probe's capture data path. Keeping the
-    // full-flush term off that cone keeps trap timing out of the o_sq_forward
-    // capture registers. Never drive an architectural side effect from this.
+    // Valid without the full-flush output mask, for SQ scan timing. Consumers
+    // discard flush-cycle results. Never use this for architectural side effects.
     output logic o_commit_bus_q_valid_raw,
     output logic o_commit_q_dest_valid,
     output logic o_commit_q_dest_rf,
@@ -56,7 +50,7 @@ module commit_bus_pipeline (
     // Registered slot-2 commit bus + decomposed fields
     output riscv_pkg::reorder_buffer_commit_t o_commit_bus_2_q,
     output logic o_commit_bus_2_q_valid,
-    // Slot-2 twin of o_commit_bus_q_valid_raw (same contract).
+    // Slot-2 valid with the same restrictions as o_commit_bus_q_valid_raw.
     output logic o_commit_bus_2_q_valid_raw,
     output logic o_commit_q_2_dest_valid,
     output logic o_commit_q_2_dest_rf,
@@ -122,11 +116,8 @@ module commit_bus_pipeline (
     commit_q_2_is_store_like <= commit_bus_2.is_store || commit_bus_2.is_fp_store;
   end
 
-  // The flops above clear valid on the flush edge, but consumers would still
-  // see the previous valid during the flush cycle itself. The qualified valid
-  // outputs are therefore masked by i_flush_all, so a commit that overlaps a
-  // trap, xRET, or FENCE-class full flush cannot perform one more
-  // architectural side effect while the back end is being squashed.
+  // Mask valid during the flush cycle as well as clearing it on the edge,
+  // so a pending commit cannot cause architectural side effects during a flush.
   assign o_commit_bus_q             = commit_bus_q;
   assign o_commit_bus_q_valid       = commit_bus_q_valid && !i_flush_all;
   assign o_commit_bus_q_valid_raw   = commit_bus_q_valid;

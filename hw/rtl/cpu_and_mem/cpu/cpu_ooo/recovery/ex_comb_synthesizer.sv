@@ -48,10 +48,8 @@ module ex_comb_synthesizer #(
     // Correctly-predicted branch commit path (BTB update only).
     input logic                                      i_correct_branch_commit_pending,
     input riscv_pkg::correct_branch_commit_capture_t i_correct_branch_commit_q,
-    // Held slot-2 correct-branch training request, raw (not masked by early
-    // recovery). Every other source wins over it, in late_from_ex_comb or the
-    // final early mux, and the producer decides on its own when it has been
-    // served and can be cleared.
+    // Held slot-2 training request, unmasked by early recovery. All other
+    // sources have priority; the producer clears it when served.
     input logic                                      i_correct_branch_commit_pending_2_raw,
     input riscv_pkg::correct_branch_commit_capture_t i_correct_branch_commit_q_2,
 
@@ -96,16 +94,11 @@ module ex_comb_synthesizer #(
   assign correct_branch_commit_pending_2_raw = i_correct_branch_commit_pending_2_raw;
   assign correct_branch_commit_q_2           = i_correct_branch_commit_q_2;
 
-  // TIMING: the selected transaction drives the write and read-modify-write
-  // read pins of every BTB RAM replica. The fanout cap makes synthesis
-  // replicate the one-LUT-deep priority mux per consumer region; it takes
-  // effect only on the high-fanout index and write-enable bits.
+  // Cap fanout of the BTB transaction muxes.
   (* max_fanout = 64 *)riscv_pkg::from_ex_comb_t late_from_ex_comb;
   (* max_fanout = 64 *)riscv_pkg::from_ex_comb_t from_ex_comb_synth;
 
-  // Compute all lower-priority effects without early_mispredict_active, so
-  // the BTB's late read-modify-write address (o_btb_late_update_pc) cannot
-  // depend structurally on the early-recovery qualifier.
+  // Build the late BTB candidate independently of early_mispredict_active.
   always_comb begin
     late_from_ex_comb = '0;
 
@@ -116,12 +109,10 @@ module ex_comb_synthesizer #(
 
       if (mispredict_commit_q.is_branch &&
           (!mispredict_commit_q.is_jalr || mispredict_commit_q.is_return)) begin
-        // BTB update for conditional branches, JAL, and returns (a coroutine
-        // swap included). Training JAL lets a JAL that missed the BTB hit on
-        // its next execution. A return's entry is typed, so a later hit
-        // predicts from the return address stack; its stored target is the
-        // fallback while the stack is empty. Any other JALR never enters the
-        // BTB. The call and return bits type the entry for the stack.
+        // Train conditional branches, JAL, and returns, including coroutine
+        // swaps. JAL training allows a later BTB hit. A return hit uses the RAS
+        // or the stored target when the stack is empty. Other JALRs do not
+        // enter the BTB; call and return bits select the stack action.
         late_from_ex_comb.btb_update            = 1'b1;
         late_from_ex_comb.btb_update_pc         = mispredict_commit_q.pc;
         late_from_ex_comb.btb_update_target     = mispredict_commit_q.branch_target;
@@ -153,8 +144,7 @@ module ex_comb_synthesizer #(
         end
       end
     end else if (correct_branch_commit_pending) begin
-      // Correctly-predicted branch commit: update BTB (no PC redirect).
-      // Uses registered commit data to break rob_exception → BTB critical path.
+      // Train correctly predicted conditional branches without a PC redirect.
       if (correct_branch_commit_q.is_branch && !correct_branch_commit_q.is_jal &&
           !correct_branch_commit_q.is_jalr) begin
         late_from_ex_comb.btb_update = 1'b1;
@@ -165,9 +155,9 @@ module ex_comb_synthesizer #(
       end
 
     end else if (correct_branch_commit_pending_2_raw) begin
-      // Slot-2 correctly-predicted branch retire. Reading the raw held
-      // capture keeps this candidate visible during early recovery. The
-      // producer clears it only on a real service cycle.
+      // The slot-2 request stays visible during early recovery. The producer
+      // holds it until it is served, replaced by a newer capture, or dropped
+      // by a full flush or reset.
       if (correct_branch_commit_q_2.is_branch && !correct_branch_commit_q_2.is_jal &&
           !correct_branch_commit_q_2.is_jalr) begin
         late_from_ex_comb.btb_update = 1'b1;
@@ -185,7 +175,6 @@ module ex_comb_synthesizer #(
     from_ex_comb_synth = late_from_ex_comb;
 
     if (early_mispredict_active) begin
-      // Early misprediction recovery: redirect PC and update BTB
       from_ex_comb_synth                         = '0;
       from_ex_comb_synth.branch_taken            = 1'b1;
       from_ex_comb_synth.branch_target_address   = early_mispredict_redirect_pc;
@@ -204,10 +193,7 @@ module ex_comb_synthesizer #(
       from_ex_comb_synth.ras_restore_top         = restored_ras_top;
     end
 
-    // These two redirect fields have a much smaller exact priority function
-    // than the complete transaction. State it directly so commit recovery
-    // does not traverse both whole-struct mux layers on its way to the IF PC
-    // controller. Early recovery retains priority when both sources are set.
+    // Compute redirect fields directly for timing. Early recovery has priority.
     from_ex_comb_synth.branch_taken = early_mispredict_active || mispredict_recovery_pending;
     if (early_mispredict_active) begin
       from_ex_comb_synth.branch_target_address = early_mispredict_redirect_pc;
@@ -223,10 +209,8 @@ module ex_comb_synthesizer #(
   assign o_from_ex_comb = from_ex_comb_synth;
 
 `ifndef SYNTHESIS
-  // Check the selected bus at the producer: with no early recovery it must
-  // equal the late transaction, and during early recovery its BTB fields must
-  // follow the early sideband. These are asserts rather than assumptions, so a
-  // formal proof that integrates this block is not handed the contract.
+  // The selected bus must equal the late transaction without early recovery;
+  // during early recovery, its BTB fields must match the early payload.
   always_comb begin
     if (!early_mispredict_active && !$isunknown({from_ex_comb_synth, late_from_ex_comb})) begin
       p_non_early_transaction_is_late : assert (from_ex_comb_synth == late_from_ex_comb);

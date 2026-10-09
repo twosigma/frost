@@ -15,27 +15,22 @@
  */
 
 /*
- * RISC-V Debug Transport Module core (Debug Spec 0.13.2 §6.1):
- * the dtmcs and dmi JTAG data registers, and the clock-domain crossing that
- * turns a dmi Update-DR into one request on the core-side Debug Module
- * Interface. The JTAG side is a BSCAN-style pin bundle in the TCK domain
- * (TAP-state levels plus one select per register), driven either by the
- * generic jtag_tap (simulation, portable synthesis) or by two BSCANE2
- * primitives on the FPGA's own TAP (boards; USER3 = dtmcs, USER4 = dmi, with
- * OpenOCD's `riscv set_ir` pointing the three DTM registers at the FPGA's
- * IDCODE and USER instructions).
+ * RISC-V Debug Transport Module (Debug Spec 0.13.2 section 6.1).
+ * dtmcs and dmi JTAG registers with a clock crossing to the core-side Debug
+ * Module Interface. jtag_tap supplies the BSCAN-style signals in simulation
+ * and portable synthesis. FPGA boards use BSCANE2: USER3 for dtmcs, USER4
+ * for dmi. OpenOCD's `riscv set_ir` maps the DTM registers to the FPGA's
+ * IDCODE and USER instructions.
  *
- * dtmcs: version 1 (0.13), abits 7, idle 3 (the Run-Test/Idle hint), and
- * dmistat, the sticky status alone (0 none, 2 failed, 3 busy). dmireset (W1)
- * clears the sticky status. dmihardreset (W1) also abandons a request in
- * flight: it is not issued again (the debug module may still perform it
- * once), its response is discarded when it arrives, and the DTM stays busy
- * until then. The spec's dmihardreset forgets the request instead, for one
- * that will never complete. Waiting keeps one request in flight across the
- * crossing, so the payload never changes under the core side and no later
- * request receives the abandoned one's response. It relies on the debug
- * module answering every request, one that arrives during its reset once
- * the reset ends, so no request stays in flight for good.
+ * dtmcs reports version 1 (0.13), abits 7, idle 3 (Run-Test/Idle hint), and
+ * sticky dmistat (0 none, 2 failed, 3 busy). Writing one to dmireset clears
+ * sticky status. Writing one to dmihardreset also discards an outstanding
+ * response when it arrives; the debug module may still execute the request
+ * once. Unlike the spec's dmihardreset, this implementation stays busy until
+ * that response arrives.
+ * This keeps the payload stable and prevents a later request from receiving
+ * the abandoned response. The debug module must answer every request,
+ * including requests held through reset.
  *
  * dmi: {address[6:0], data[31:0], op[1:0]}. Update-DR with op = read or write
  * starts a request unless the status is sticky or a request is still in
@@ -86,8 +81,7 @@ module dtm_core (
   localparam logic [2:0] DtmIdleHint = 3'd3;
 
   // ---------------------------------------------------------------------------
-  // Declarations (both domains). The handshake flops carry power-up initial
-  // values and no reset, as the header explains.
+  // Declarations (both domains)
   // ---------------------------------------------------------------------------
   // TCK domain
   logic [        31:0] dtmcs_shift;
@@ -123,20 +117,17 @@ module dtm_core (
     ack_sync1 <= ack_toggle_q;
     ack_sync2 <= ack_sync1;
   end
-  // Busy clears on the edge that consumes the synchronized ack, which is the
-  // edge that latches a kept response's payload below, so a Capture-DR that
-  // sees busy=0 always captures the new data.
+  // Clear busy when the response is latched, so Capture-DR with busy=0
+  // sees the completed response.
   assign busy = (req_toggle_q != ack_seen_q);
   assign dmi_status = (sticky_q != 2'd0) ? sticky_q : (busy ? 2'd3 : 2'd0);
   // dmistat is the sticky status: a request merely in flight is not an error.
   // [17] dmihardreset / [16] dmireset read 0, [15] reserved.
   assign dtmcs_value = {14'b0, 3'b000, DtmIdleHint, sticky_q, 6'(Abits), DtmVersion};
 
-  // Latch the response payload when the synchronized ack toggles (the core
-  // wrote it before toggling; the synchronizer delay orders the read). The
-  // response owed to a request abandoned by dmihardreset, on this edge or
-  // earlier, completes the handshake and is otherwise dropped. Only one
-  // request is ever in flight, so the next response is that one.
+  // The synchronized ack arrives after the payload is stable. An abandoned
+  // request still completes the handshake, including on the hardreset edge,
+  // but its response is discarded.
   assign resp_arrived = (ack_sync2 != ack_seen_q);
   assign hardreset = !i_tlr && i_sel_dtmcs && !i_capture && !i_shift && i_update && dtmcs_shift[17];
   assign resp_keep = resp_arrived && !drop_q && !hardreset;

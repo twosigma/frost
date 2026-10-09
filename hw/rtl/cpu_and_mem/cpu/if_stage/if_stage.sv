@@ -35,10 +35,8 @@ module if_stage #(
 ) (
     input logic i_clk,
     input riscv_pkg::from_ex_comb_t i_from_ex_comb,
-    // Early-recovery branch PC and outcome, taken directly from early recovery
-    // rather than through the BTB-update priority mux, so the BTB can compute
-    // the early counter read-modify-write in parallel. i_from_ex_comb is still
-    // the only BTB write and carries the update-source priority.
+    // Early-recovery counter update candidate, computed in parallel with
+    // lower-priority updates. i_from_ex_comb alone selects the BTB write.
     input logic i_btb_early_update_active,
     input logic [XLEN-1:0] i_btb_early_update_pc,
     input logic i_btb_early_update_taken,
@@ -67,10 +65,8 @@ module if_stage #(
     input logic [3:0] i_slot2_start_valid_lo_by_provider_parity,
     input logic i_instr_pc_metadata_served_high,
     input logic i_instr_bank_sel_r,  // Fetch-word parity (PC[2] from fetch cycle)
-    // Each provider's word tag for its served window, S = the window's fetch
-    // PC bits [31:2]. S+1, S-1, and S != 0 are registered beside S, so the
-    // served-window check has no address arithmetic or provider mux ahead of
-    // its compares.
+    // Served-window word tags: S = fetch PC[31:2], S+1, S-1, and S != 0,
+    // registered with each provider's payload.
     input logic [29:0] i_served_word_low,
     input logic [29:0] i_served_last_word_low,
     input logic [29:0] i_served_prev_word_low,
@@ -79,13 +75,12 @@ module if_stage #(
     input logic [29:0] i_served_last_word_high,
     input logic [29:0] i_served_prev_word_high,
     input logic i_served_prev_word_valid_high,
-    // Fetch window valid: {i_instr, i_instr_sideband, i_instr_pc_metadata,
-    // i_instr_bank_sel_r} hold the window for the fetch address presented
-    // last cycle. While it is low (an L1I miss, a two-cycle
-    // low-BRAM fetch outside the predecode overlay, or FETCH_VALID_FUZZ gaps)
-    // and no stall-captured packet is being replayed, IF emits NOP bubbles,
-    // its PCs and per-packet state hold, and the provider keeps working on the
-    // owed fetch address. Backend redirects still land.
+    // Payload, sideband, parity, and fault flags are valid for the served
+    // word tags. The owed request can lag the live fetch PC. Without a valid
+    // window or saved packet to replay, IF emits bubbles and holds its PCs
+    // and packet state. The provider continues the owed fetch; redirects
+    // still apply. Gaps include cache misses, two-cycle low-BRAM fetches
+    // outside the predecode overlay, and FETCH_VALID_FUZZ.
     input logic i_instr_valid,
     // Fetch-fault status of the served window's two words, {fault, page} per
     // word (page: a page fault rather than an access fault), registered with
@@ -124,13 +119,9 @@ module if_stage #(
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
     output logic [XLEN-1:0] o_pc,
-    // Registered: last cycle released a stall by consuming the stall-captured
-    // packet, which needs no live window. The fetch provider uses this only
-    // to classify the PC movement it sees as served rather than redirected,
-    // and it does that a cycle later anyway, so registering the export keeps
-    // the late stall logic out of the provider's ask and address paths. The
-    // owed ask needs no correction: o_pc holds at it through any stall a
-    // replayed packet can survive (redirects kill the captured packet).
+    // The previous cycle consumed the stall-captured packet. The provider
+    // uses this to classify PC movement as served. o_pc holds the owed fetch
+    // through a stall; redirects kill the captured packet.
     output logic o_fetch_replay_consume,
     // Combinational claim for a live provider response that IF either consumes
     // now or captures on the first backend-stall cycle. A squashed live window
@@ -181,27 +172,23 @@ module if_stage #(
     input logic i_walk_resp_valid,
     input riscv_pkg::ptw_resp_t i_walk_resp,
     output riscv_pkg::from_if_to_pd_t o_from_if_to_pd,
-    // Slot-2 IF→PD packet. When slot 2 is invalid this cycle (slot 1 is a NOP
-    // or a branch, slot 2 does not fit, or another kill cause), sel_nop is
-    // asserted and PD/ID propagate it as a NOP so dispatch sees i_valid_2='0.
+    // Slot-2 packet. sel_nop marks an invalid slot; PD and ID propagate it
+    // as a NOP so dispatch sees i_valid_2='0.
     output riscv_pkg::from_if_to_pd_t o_from_if_to_pd_2,
-    // Replay-aligned slot-1 control-flow classification. This reuses the
-    // aligner's exact native/compressed predecode rather than decoding the raw
-    // instruction-memory parcel again in frontend_validity_tracker.
+    // Replay-aligned control-flow class from the aligner's predecode, used
+    // by frontend_validity_tracker.
     output logic o_slot1_has_control_flow,
     // Replay-aligned slot-1 indirect-jump class, from the predecode sideband:
     // riscv_pkg::imem_indirect_parcel of o_from_if_to_pd.raw_parcel.
     output logic o_slot1_is_indirect,
-    // Two-wide profiling events at the IF→PD boundary (perf counters only;
-    // see if_width_events_t). Each pulses at most once per accepted handoff,
-    // and the slot-2 kill causes follow stall replay. Registered one cycle
-    // after the handoff so the perf taps cannot share logic with the slot-2
-    // redirect and next-PC paths.
+    // Width profiling, registered one cycle after an unstalled IF
+    // presentation. Kill causes follow replay. PD may squash the packet
+    // on a redirect; these counters do not include that gate.
     output riscv_pkg::if_width_events_t o_width_events
 );
 
   // ===========================================================================
-  // Signal Declarations - Grouped by Submodule Interface
+  // Submodule Signals
   // ===========================================================================
 
   // ---------------------------------------------------------------------------
@@ -325,7 +312,7 @@ module if_stage #(
   // ---------------------------------------------------------------------------
   // Instruction Aligner Interface (instruction_aligner)
   // ---------------------------------------------------------------------------
-  logic [15:0] raw_parcel;  // Slot-1 parcel: size bits, RAS detection, PD's reference
+  logic [15:0] raw_parcel;  // Slot-1 parcel for predecode and PD's reference
   logic [31:0] effective_instr;  // Raw current word (for state machine/buffer)
   logic is_compressed;  // Current instruction is 16-bit compressed
   logic is_compressed_fast;  // Fast path for PC-critical path (registered selects only)
@@ -334,9 +321,8 @@ module if_stage #(
   // packet.
   logic no_buffer_accepts_served_last;
   logic sel_nop;  // Select NOP (during holdoff/flush)
-  // fetch_progress gates holdoffs, sel_nop, and stall-held clock enables
-  // across all of IF. Its inputs are registered, and the fanout cap makes
-  // synthesis replicate the driver LUT per consumer region.
+  // Shared progress gate for holdoffs, bubbles, and stall-held state.
+  // The fanout limit permits local copies.
   (* max_fanout = 32 *)
   logic fetch_progress;  // live window valid OR replay bundle presented
   logic fetch_invalid_unstalled_q;  // last unstalled cycle had no live window
@@ -385,26 +371,16 @@ module if_stage #(
   logic slot2_valid;  // matches the output slot-2 valid sent to PD/dispatch
   logic slot2_prediction_valid;  // live-only valid for the current staged slot-2 lookup
   logic slot2_redirect_q;  // One-cycle bubble after slot-2 BTB redirect.
-  // Slot 2 must NOP whenever slot 1 NOPs. IF's full sel_nop covers
-  // control_flow_holdoff, pending-prediction holdoffs, reset_holdoff, and
-  // flush, all conditions where the live BRAM data may not match pc_reg's
-  // word and the slot-2 alignment math is unreliable.
-  //
-  // A pending prediction's saved taken metadata belongs to one instruction,
-  // the branch at pending_prediction_pc. The instruction just before it may be
-  // released while the handoff is still pending, but only one-wide: if that
-  // live bundle puts the branch in slot 2, slot 2 is killed and the branch
-  // waits to be emitted as the next slot 1. Once the branch is in slot 1, its
-  // slot-2 partner is wrong-path and is killed too, even if stale bytes make
-  // the branch look like a non-control instruction. One gate
-  // (pending_prediction_kills_live_slot2) keeps dispatch, the staged slot-2
-  // prediction, and the PC advance on that same one-wide decision.
+  // Slot 2 bubbles with slot 1: holdoffs and flushes can leave live bytes
+  // unrelated to pc_reg. A pending prediction belongs to one instruction.
+  // If its predecessor is released, kill the branch in slot 2 so it is
+  // delivered later as slot 1 with its saved metadata. When the branch is
+  // slot 1, kill its wrong-path partner even if stale bytes look pairable.
+  // Dispatch, slot-2 prediction, and PC advance share this one-wide decision.
   assign pending_prediction_owns_live_slot1 =
       pending_prediction_active && (pc_reg == pending_prediction_pc);
-  // Both compares start from registered operands and run in parallel;
-  // is_compressed only picks between them at the end. Adding 2 or 4 to pc_reg
-  // by is_compressed instead would put a 64-bit carry chain between
-  // prediction_holdoff and the slot-2 kill and next-PC choice.
+  // Compare both registered predecessor PCs before selecting by size,
+  // for timing.
   assign pending_prediction_owns_live_slot2 =
       pending_prediction_active && !sel_nop_2_aligner &&
       (is_compressed ? (pc_reg == pending_prediction_prev_pc) :
@@ -414,15 +390,10 @@ module if_stage #(
   assign sel_nop_2 = sel_nop_2_aligner || sel_nop || pending_prediction_kills_live_slot2;
   assign slot2_valid_for_pc_live_effective =
       slot2_valid_for_pc_live && !pending_prediction_kills_live_slot2;
-  // pc_controller and c_ext_state must see the same slot-2 valid as PD and
-  // dispatch, so both take a replay-aware form (the PC advance selects and
-  // slot2_valid) rather than the live aligner gate. During stall replay the
-  // live gate reads a window that has moved on, while sel_nop_2_saved was
-  // captured at stall entry. Mixing the live slot-2 valid and size with the
-  // saved slot-1 size can pick the wrong bundle advance (e.g. +6 for
-  // 32b+RVC) and land pc_reg on a mid-instruction byte. Only the staged
-  // slot-2 BTB lookup, which qualifies the current live window, uses the live
-  // gate.
+  // PC advance and C-extension state must use the replayed slot-2 valid
+  // and size. Mixing live slot 2 with saved slot 1 can select the wrong
+  // advance (for example, +6 for native + RVC) and land inside an instruction.
+  // The staged BTB lookup uses live valid, blocked by the registered stall.
   assign slot2_prediction_valid = !sel_nop_2;
 
   (* keep = "true", max_fanout = 32 *) logic if_stage_stall_registered;
@@ -435,12 +406,9 @@ module if_stage #(
   logic [3:0] active_pc_pairability_by_parity_canonical;
   logic [1:0] active_slot2_start_valid_lo_by_parity;
   logic [1:0] active_slot2_start_valid_lo_by_parity_canonical;
-  // Simulation-only checks: each metadata replica matches the sideband bits
-  // it copies, and while slot 2 is valid the +2/+4 slot-2 candidate selects
-  // match the reference selector (slot 1's fast size). The fast size may
-  // differ on a cycle where prediction is blocked, so the comparison also
-  // requires that branch_prediction_controller's prediction_common would be
-  // set.
+  // Check metadata replicas and the +2/+4 candidate selects. Compare the
+  // latter only when prediction_common would be set; the fast size may
+  // differ while prediction is blocked.
   logic slot2_candidate_legacy_oracle_active;
   assign slot2_candidate_legacy_oracle_active =
       !i_pipeline_ctrl.reset && slot2_prediction_valid &&
@@ -549,35 +517,24 @@ module if_stage #(
 
   logic window_cannot_serve_pc_reg;
 
-  // The aligner receives the raw instruction, not a flush-gated copy, which
-  // keeps flush off the path is_compressed -> pc_increment -> PC. On a flush
-  // cycle pc_controller selects a redirect target anyway, so is_compressed
-  // does not affect the PC. PD substitutes the NOP from sel_nop, and
-  // c_ext_state's own flush checks protect its state.
+  // The aligner sees raw bytes during flush for timing. The PC selects a
+  // redirect, ID applies the NOP carried by PD, and c_ext_state gates its
+  // own updates on flush.
   //
-  // i_pd_redirect is not part of disable_branch_prediction_effective: that
-  // would be a timing-critical cross-module path. Wrong-path BTB hits during
-  // a PD redirect cycle are cleaned up by redirect_kill_pending_q
-  // (pc_controller) and pd_redirect_q.
+  // i_pd_redirect is omitted from prediction gating for timing. Its
+  // wrong-path hits are cleared by redirect_kill_pending_q and pd_redirect_q.
   //
-  // Suppress every prediction source while a live window is faulted or does
-  // not cover pc_reg: garbage bytes, or a false BTB tag hit on a wild PC, must
-  // never redirect the front end. A non-covering window is a squashed packet,
-  // so it also must not change prediction or RAS state or arm a pending
-  // prediction before the served-window resteer. The fault terms are the
-  // served window's flags and o_pc's word-0 fetch fault (fetch_fault0_live),
-  // plus, with translation off, the PMA check of pc_reg (a translated virtual
-  // address has no PMA meaning of its own). A translation that is not visible
-  // yet (a translation bubble or an ITLB miss) stalls the front end, which
-  // already blocks predictions.
+  // Faulted or non-covering windows must not predict, update the RAS, or
+  // arm a pending prediction. Check served faults and the fetch-PC fault.
+  // Check pc_reg's PMA only without translation: a virtual address has no
+  // physical PMA meaning. Unresolved translations stall IF, blocking
+  // predictions.
   logic pc_pma_bad;
   logic served_fault_any;
   assign served_fault_any = i_instr_valid && (i_instr_fault0 || i_instr_fault1);
-  // With translation off, fetch_fault0_live already equals
-  // !pma_fetch_ok(pc), so o_pc needs no PMA check of its own (the reference
-  // below includes one). The other disable causes are built without
-  // fetch_fault0_live so this late fault is not merged into the pc_reg range
-  // check.
+  // Without translation, fetch_fault0_live equals !pma_fetch_ok(pc), so
+  // o_pc needs no separate PMA check. Keep this late fault separate from
+  // the pc_reg check for timing.
   logic prediction_pma_bad_without_fetch_fault;
   assign prediction_pma_bad_without_fetch_fault = served_fault_any ||
       (!i_fetch_translation_active && !riscv_pkg::pma_fetch_ok(
@@ -592,9 +549,7 @@ module if_stage #(
       prediction_pma_bad_without_fetch_fault || window_cannot_serve_pc_reg;
   assign disable_branch_prediction_effective =
       prediction_disable_without_fetch_fault || fetch_fault0_live;
-  // WCS (window_cannot_serve_pc_reg) is the latest input. Build the WCS=0
-  // disable early and tie the WCS=1 disable to 1, so the predictor can pick
-  // between finished results in its final LUT.
+  // Compute prediction disables for both values of the late WCS input.
   assign prediction_disable_without_fetch_fault_wcs0 =
       i_disable_branch_prediction || pending_prediction_holdoff_wcs0 ||
       i_pipeline_ctrl.flush || i_frontend_state_flush || !fetch_progress ||
@@ -617,11 +572,8 @@ module if_stage #(
     end
   end
 `endif
-  // IF's internal state clears on flush_for_c_ext_safe, the front-end state
-  // flush. cpu_ooo drives i_frontend_state_flush and i_pipeline_ctrl.flush
-  // from the same signal (flush_pipeline in misprediction_flush_controller),
-  // so the two are equal on every cycle; its trap and xRET terms are the
-  // registered pulses.
+  // cpu_ooo supplies equal pipeline and front-end state flushes, including
+  // the registered trap and xRET pulses.
   logic flush_for_c_ext_safe;
   assign flush_for_c_ext_safe = i_frontend_state_flush;
   assign if_stage_stall = i_pipeline_ctrl.stall;
@@ -632,10 +584,8 @@ module if_stage #(
   (* max_fanout = 16 *)logic instr_bank_sel_for_spanning;
   logic fetch_word_swapped_for_c_ext;
   logic fetch_word_swapped_for_spanning;
-  // The bank-select bit is registered with the fetch window. Cached-tier (DDR)
-  // windows must use the provider's own served-window bit, not the live
-  // pc_reg[2], because around redirects and stalls a window fetched for one
-  // address can briefly sit beside a different PC.
+  // Use parity registered with the window. Redirects and stalls can pair
+  // a served window with a different pc_reg.
   assign instr_bank_sel_for_c_ext = i_instr_bank_sel_r;
   assign instr_bank_sel_for_aligner = i_instr_bank_sel_r;
   assign instr_bank_sel_for_spanning = i_instr_bank_sel_r;
@@ -654,25 +604,18 @@ module if_stage #(
   logic [XLEN-1:0] instruction_pc_sc;
   logic [XLEN-1:0] link_address_sc;
 
-  // Slot-2 PC candidates: slot 2 sits at pc_reg+2 behind an RVC slot 1 and at
-  // pc_reg+4 behind a native one. The live fetch PC reads the +2, +4, and
-  // rotated +2 BTB copies one cycle ahead; when this pc_reg is served,
-  // branch_prediction_controller takes the same-word entry or the rotated +2
-  // entry for the next word, checked against its full tag. The aligner's
-  // one-hot, valid-qualified candidate selects decide which candidate's
-  // target and index are used, so the raw slot-1 size never reaches a RAM
-  // address.
+  // Slot 2 is at pc_reg+2 after RVC or pc_reg+4 after a native instruction.
+  // The fetch PC reads the +2, +4, and rotated +2 BTB copies one cycle ahead.
+  // Full tags and the aligner's one-hot, valid-qualified selects choose the
+  // candidate; raw instruction size does not drive the RAM address.
   logic [XLEN-1:0] slot2_pc_plus2_for_btb;
   logic [XLEN-1:0] slot2_pc_plus4_for_btb;
   assign slot2_pc_plus2_for_btb = pc_reg + riscv_pkg::PcIncrementCompressed;
   assign slot2_pc_plus4_for_btb = pc_reg + riscv_pkg::PcIncrement32bit;
 
-  // With fixed-latency BRAM the fetch PC normally equals the emitted slot-2
-  // PC: that is the intended one-request lookahead. A taken live hit at that
-  // address still aliases slot 2 and is suppressed for slot 1; only a real
-  // variable-latency gap in responses (lookup_lead_collapsed) hands the live
-  // result to slot 2. Pipeline stalls do not count: their release uses the
-  // stall-captured packet and metadata, not a new live response.
+  // Fixed-latency fetch normally looks ahead to slot 2. Suppress a live hit
+  // there for slot 1; only a response gap (lookup_lead_collapsed) lets slot 2
+  // use it. Stall release replays a saved packet, so it is not such a gap.
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
       fetch_invalid_unstalled_q <= 1'b0;
@@ -725,10 +668,8 @@ module if_stage #(
       .i_branch_taken(i_from_ex_comb.branch_taken),
       .i_any_holdoff_safe(any_holdoff_safe),
       .i_is_32bit_spanning(1'b0),
-      // The buffer select without the aligner's FENCE-class term (see
-      // use_instr_buffer_for_coverage_timing). The two differ only on a
-      // FENCE-class flush cycle, which already blocks prediction; the packet
-      // itself uses use_instr_buffer.
+      // This select omits the FENCE-class term, which already blocks
+      // prediction. The packet uses use_instr_buffer.
       .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
       .i_disable_branch_prediction(disable_branch_prediction_effective),
       .i_disable_branch_prediction_wcs0(disable_branch_prediction_effective_wcs0),
@@ -859,9 +800,7 @@ module if_stage #(
       .i_trap_target(i_trap_ctrl.trap_target),
 
       .i_is_compressed(is_compressed_fast),
-      // Two-wide bundle advance. The selects fold in the slot-2 valid and size
-      // and switch to their stall-captured copies during replay, so the PC
-      // advance stays consistent with what dispatch sees.
+      // Replay the captured bundle advance with the packet.
       .i_pc_fetch_advance_sel(pc_fetch_advance_sel),
       .i_pc_reg_advance_sel(pc_reg_advance_sel),
       .i_pc_fetch_advance_sel_one(pc_fetch_advance_sel_one),
@@ -931,10 +870,7 @@ module if_stage #(
   // ===========================================================================
   // Instruction MMU
   // ===========================================================================
-  // With translation off, a combinational pass-through with no bubble. Under
-  // Sv39 it translates only the registered o_pc: after o_pc moves, an ITLB
-  // hit becomes visible one bubble later (possibly two at a page crossing);
-  // see mmu/immu.sv.
+  // Translation and visibility timing are described at o_fetch_pa0.
   immu #(
       .XLEN(XLEN),
       .PA_VALID_COPIES(riscv_pkg::FetchPaHoldCopies)
@@ -965,24 +901,14 @@ module if_stage #(
   assign o_fetch_pa_hold = !fetch_pa_valid;
   assign o_fetch_pa_hold_copy = ~fetch_pa_valid_copy;
 
-  // The low-BRAM presenter has no wide PC-movement detector of its own, so it
-  // needs a pulse for every nonsequential fetch-PC load, except a slot-1
-  // prediction whose branch was not emitted on the redirect cycle: that
-  // branch's window is still owed, so the presenter repeats the old request
-  // until it is served and only then requests the already-loaded target. For
-  // a slot-2 prediction, or a slot-1 prediction emitted with its branch, the
-  // branch was accepted in the redirecting window, so nothing is owed for the
-  // old request. Recovery and PD redirects, served-window resteers, and trap,
-  // xRET, and FENCE-class flushes likewise end the old request. pc_update_en
-  // limits the pulse to cycles on which the fetch PC actually loads.
-  // fetch_redirect resolves the arm priority for no prediction, a slot-1
-  // prediction, and a slot-2 prediction in parallel, so the late prediction
-  // requests only pick among finished values; the simulation check below
-  // compares it with the direct equation.
-  // The catch-up arm is sequential and excludes the pending-hold arm,
-  // the only lower-priority arm that could redirect. Omitting catch-up here
-  // leaves the redirect decision unchanged and keeps the late catch-up request
-  // off the registered redirect path.
+  // The presenter needs a pulse when a nonsequential PC load kills its
+  // owed request. A slot-1 prediction made before emitting its branch must
+  // preserve that request until the branch arrives, then request the target.
+  // pc_update_en restricts the pulse to actual PC loads.
+  //
+  // fetch_redirect computes prediction cases in parallel for timing.
+  // Omit sequential catch-up: it excludes pending-hold, the only
+  // lower-priority arm that could redirect, so the result is unchanged.
   logic [riscv_pkg::PcNextArms-1:1] npc_cond_for_redirect;
   always_comb begin
     npc_cond_for_redirect = npc_cond[riscv_pkg::PcNextArms-1:1];
@@ -1035,8 +961,7 @@ module if_stage #(
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
       .i_stall(if_stage_stall),
-      // Its registered trap and xRET terms keep exception detection off the
-      // path through c_ext_state to the PC calculation.
+      // Shared state flush, with registered trap and xRET terms.
       .i_flush(flush_for_c_ext_safe),
       .i_stall_registered(if_stage_stall_registered),
 
@@ -1117,8 +1042,7 @@ module if_stage #(
 
       .i_prev_was_compressed_at_lo(prev_was_compressed_at_lo),
 
-      // Only the registered stall, not the combinational one, so the path
-      // stall → is_compressed → PC is broken.
+      // Registered stall only, for timing.
       .i_stall_registered(if_stage_stall_registered),
       .i_prev_was_compressed_at_lo_saved(prev_was_compressed_at_lo_saved),
       .i_is_compressed_saved(is_compressed_saved),
@@ -1165,32 +1089,23 @@ module if_stage #(
       .o_slot2_kill_transient(slot2_kill_transient_live)
   );
 
-  // Registered PD redirect, ORed with !prediction_holdoff in sel_nop's
-  // control-flow term below. The term is redundant: pd_redirect_q = 1 implies
-  // prediction_holdoff = 0. The edge that sets pd_redirect_q also clears the
-  // holdoff, because a PD redirect either kills the registered prediction
-  // metadata (which clears the holdoff) or finds registered metadata, whose
-  // holdoff blocks any new prediction that cycle; and while pd_redirect_q
-  // holds, the holdoff can only be cleared. The register is off the critical
-  // path (FF output → one OR gate).
+  // pd_redirect_q implies !prediction_holdoff, so its sel_nop term is
+  // redundant. A PD redirect either clears the prediction metadata or finds
+  // its holdoff already blocking new predictions. The holdoff can only clear
+  // while pd_redirect_q holds.
   logic pd_redirect_q;
   always_ff @(posedge i_clk) begin
-    // Updates only on an unstalled cycle with fetch progress, the same gate
-    // as o_slot2_redirect_q in pc_controller (!i_stall && i_fetch_progress),
-    // so it holds through the stalls and no-progress cycles that
-    // control_flow_holdoff also holds through.
+    // Updates only on an unstalled cycle with fetch progress, the same gate as
+    // pc_controller's o_slot2_redirect_q, so it holds through stalls and
+    // no-progress cycles (control_flow_holdoff can still set during them).
     if (i_pipeline_ctrl.reset) pd_redirect_q <= 1'b0;
     else if (!i_pipeline_ctrl.stall && fetch_progress) pd_redirect_q <= i_pd_redirect;
   end
 
-  // A variable-latency provider can close the normal one-window fetch lead,
-  // so a predicted branch arrives while pc == pc_reg and is emitted on the
-  // redirect cycle itself. The first target response must then stay an
-  // ordinary bubble; otherwise prediction_holdoff mistakes it for the
-  // deferred branch, exempts it from the control-flow NOP, and pc_reg
-  // presents the target bundle a second time. prediction_already_emitted_q
-  // records the case and, like pd_redirect_q, holds through cycles with no
-  // fetch progress.
+  // With pc == pc_reg, a prediction can emit its branch on the redirect
+  // cycle. Its first target response must bubble: the usual prediction
+  // exemption would treat it as a deferred branch and dispatch it twice.
+  // Hold this flag through stalls and gaps in fetch progress.
   logic prediction_already_emitted_q;
   logic lookup_pc_matches_packet_pc;
   assign lookup_pc_matches_packet_pc = pc == pc_reg;
@@ -1230,41 +1145,19 @@ module if_stage #(
       prediction_already_emitted_q <= live_prediction_emits_with_output;
     end
   end
-  // Any redirect other than a prediction leaves one stale cycle in which
-  // fetch has moved to the new PC but the returned word still belongs to the
-  // old path. Word-aligned redirects are not exempt: they can pair a correct
-  // new PC with old-path bytes, which later corrupt the C-extension buffer
-  // state. Predictions are exempted through prediction_holdoff, so an ordinary
-  // BTB hit still delivers the predicted branch itself. The pending-prediction
-  // fetch holdoff gets no such exemption: it releases only when the pending
-  // branch's handoff is ready (or for the immediate predecessor). Exempting it
-  // whenever prediction_holdoff is set could dispatch the pending branch
-  // before its target handoff and metadata are ready, and then dispatch it
-  // again at the handoff.
+  // Redirects leave a stale response, even at word-aligned targets. A
+  // slot-1 prediction is exempt so it can deliver its branch. Pending
+  // predictions must wait for their handoff (or release their predecessor);
+  // exempting them could dispatch the branch before its metadata is ready
+  // and again at handoff. Slot-2 redirects always bubble: a simultaneous
+  // slot-1 hit can set prediction_holdoff while the next response is stale.
+  // pd_redirect_q is redundant in the exemption, as explained above.
   //
-  // pd_redirect_q in that exemption is redundant (see its declaration): a
-  // PD redirect's holdoff cycle never has prediction_holdoff set.
-  // slot2_redirect_q overrides the exemption for the slot-2 BTB redirect
-  // bubble: BRAM was fetching the sequential wrong-path bundle when the
-  // slot-2 prediction fired, and a same-cycle slot-1 BTB hit can set
-  // prediction_holdoff, so the cycle following the redirect must NOP even if
-  // prediction_holdoff is set.
-  //
-  // Served-window rule: pc_reg's word P (bits [31:2], as the providers tag
-  // their windows) must be S, S+1, or, while the instruction buffer holds P,
-  // S-1, for the provider that served the window. P = S+1 means the window
-  // ends at P, which is not enough when the packet needs P+1: a native
-  // instruction starting in P's high parcel spans into P+1, and a
-  // buffer-backed RVC in P's high parcel can pair with a slot 2 in P+1's low
-  // parcel. Otherwise the aligner's one-bit bank parity can select the wrong
-  // word or spanning half and advance into bad instruction data.
-  //
-  // For timing, each provider registers S, S+1, and S-1 beside its payload
-  // and has its own three-LUT-level equality tree (served_window_coverage).
-  // Both share one buffer-use bit, pc_reg[1], and the no-buffer served-last
-  // flag, which dedicated muxes apply outside the equality LUTs; the late
-  // buffer-use bit drives only the final MUXF8. No address arithmetic or
-  // 30-bit provider mux sits ahead of either comparator.
+  // For served word S, pc_reg's word P must be S or S+1, or S-1 if buffered.
+  // P = S+1 is insufficient when P+1 is needed: a high-parcel native
+  // instruction spans there, and a buffered high-parcel RVC can pair there.
+  // Bank parity alone cannot distinguish an unrelated word with equal parity.
+  // Each provider has its own coverage check for timing.
   logic [XLEN-1:0] pc_reg_serve_view;
   logic [29:0] pc_reg_word;
   logic served_window_covers_low;
@@ -1273,17 +1166,11 @@ module if_stage #(
   logic prev_was_compressed_at_lo_for_coverage_timing;
   assign pc_reg_serve_view = riscv_pkg::canonical_paddr(pc_reg);
   assign pc_reg_word = pc_reg_serve_view[31:2];
-  // use_instr_buffer_for_coverage_timing is the aligner's buffer select
-  // without its FENCE-class term (the aligner ignores the stall-saved copy on
-  // an i_fence_i_flush cycle) and with the register copy of pc_reg[1]. The
-  // real select, use_instr_buffer, drives the packet and the PC advance; this
-  // copy drives only branch_prediction_controller and the two served-window
-  // comparators, and a FENCE-class flush already squashes every result that
-  // could see a difference. The aligner separately supplies the no-buffer
-  // served-last flag: always true when pc_reg[1] is 0, otherwise true only
-  // for a compressed high parcel, so the comparators never depend on the low
-  // parcel's size. When the buffer select is 1 it wins the comparators' final
-  // MUXF8, so the no-buffer flag does not matter.
+  // This buffer select omits the FENCE-class term and uses a copy of
+  // pc_reg[1]. It drives prediction and coverage only; a FENCE-class flush
+  // squashes any difference from the packet's select. Without a buffer,
+  // the served-last flag allows a low parcel or a compressed high parcel.
+  // With a buffer, that flag is ignored.
   assign prev_was_compressed_at_lo_for_coverage_timing = use_saved_values ?
       prev_was_compressed_at_lo_saved : prev_was_compressed_at_lo;
   assign use_instr_buffer_for_coverage_timing =
@@ -1437,23 +1324,13 @@ module if_stage #(
   // Declared here for the low-BRAM arm below, which excludes saved-replay
   // cycles; defined with the stall-capture logic.
   logic replay_saved_if_outputs;
-  // The guard covers both providers: a low-BRAM window can be stale too
-  // (after early recovery, for example). The aligner's bank parity only tells
-  // even words from odd ones, so it cannot see a slip by an even number of
-  // words, and only this word compare catches it. A mismatch squashes the
-  // packet and resteers fetch to pc_reg's word.
+  // Both providers need coverage checks: parity cannot detect an even-word
+  // slip. A mismatch squashes the packet and resteers fetch to pc_reg.
   //
-  // The low-BRAM arm must exclude saved-replay cycles: IF then consumes its
-  // captured packet while the low presenter withdraws its live window, which
-  // may have moved past pc_reg, and guarding the replay would squash the
-  // captured instruction and wedge the handshake. The cached provider's arm
-  // needs no such exclusion, because that provider holds valid low on those
-  // cycles. The arm is chosen by the provider bit, not by pc_reg[31], because
-  // under translation the virtual address says nothing about which provider
-  // served the window. That bit is the same registered replica that selects
-  // the coverage result above, kept cycle-identical to i_served_high by the
-  // producer, so synthesis can fold the coverage result and the replay
-  // qualification into one LUT6.
+  // Exclude low-BRAM replay: the live window may have moved past pc_reg;
+  // squashing the saved instruction would wedge the handshake. The cached
+  // provider already holds valid low during replay. Select by the registered
+  // provider bit, not virtual pc_reg[31], which need not identify the provider.
   assign window_cannot_serve_pc_reg = i_instr_valid && !served_window_covers_pc_reg &&
       (i_instr_pc_metadata_served_high || !replay_saved_if_outputs);
 
@@ -1481,10 +1358,8 @@ module if_stage #(
                    (control_flow_holdoff &&
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
                      prediction_already_emitted_q));
-  // sel_nop_existing with WCS forced to 0. The squash is W | E(W), which
-  // equals W | E(0), so E(0) can be built in parallel with the served-window
-  // compare and W enters as one final OR, instead of passing through the
-  // pending-prediction holdoff logic on its way to the PC advance.
+  // For W = WCS, squash W | E(W) equals W | E(0). Compute E(0) in
+  // parallel with the coverage check.
   assign sel_nop_existing_wcs0 = i_pipeline_ctrl.flush ||
                    flush_for_c_ext_safe || !fetch_progress ||
                    reset_holdoff ||
@@ -1493,9 +1368,7 @@ module if_stage #(
                    (control_flow_holdoff &&
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
                      prediction_already_emitted_q));
-  // sel_nop_existing with WCS forced to 1, built while the served-window
-  // compare is still settling, so WCS enters the resteer only as the final
-  // AND and the compare stays out of the pending-hold and priority-mux logic.
+  // The resteer W & !E(W) uses E(1), also computed in parallel.
   assign sel_nop_existing_wcs = i_pipeline_ctrl.flush ||
                    flush_for_c_ext_safe || !fetch_progress ||
                    reset_holdoff ||
@@ -1505,24 +1378,16 @@ module if_stage #(
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
                      prediction_already_emitted_q));
 
-  // Resteer fetch to pc_reg's word, and hold pc_reg, only on a cycle that
-  // would otherwise consume the packet. During a holdoff pc_reg is already
-  // being managed, and a resteer there would thrash the front end. At a
-  // holdoff release with the window still stale (fetch ran ahead during the
-  // redirect bubble), this fires on the cycle the wrong-word decode would
-  // otherwise advance pc_reg onto a mid-instruction byte.
+  // Resteer only when the packet would otherwise be consumed. Resteering
+  // during a holdoff would fight the existing PC control. On release, it
+  // prevents stale bytes from advancing pc_reg into an instruction.
   assign window_resteer_pc_reg = window_cannot_serve_pc_reg && !sel_nop_existing_wcs;
 
   assign sel_nop = sel_nop_existing_wcs0 || window_cannot_serve_pc_reg;
 
-  // The PC-control consumers of the squash (the advance selects and, through
-  // pc_controller, the sequential-PC calculator and the halfword catch-up
-  // arm) only decide next-PC arms below the trap, xRET, and FENCE-class arms,
-  // and every register they reach (the pending prediction, the saved advance
-  // selects, the halfword history) clears on a full flush. Their value on a
-  // full-flush cycle is therefore a don't-care, so they take a copy of the
-  // squash without the full-flush term, which has the longest path into the
-  // sequential PC logic. The packet-side consumers keep the complete squash.
+  // PC-control squash affects only arms below trap, xRET, and FENCE-class
+  // redirects. Its state clears on full flush, so omit that flush term for
+  // timing. Packet consumers retain the full squash.
   logic flush_pc_control;
   logic sel_nop_existing_pc_control;
   assign flush_pc_control = (i_pipeline_ctrl.flush || flush_for_c_ext_safe) && !i_flush_all;
@@ -1585,11 +1450,9 @@ module if_stage #(
     end
   end
 
-  // A consumed low-BRAM packet must be covered by its window. The guard makes
-  // this true by construction (it forces sel_nop and resteers), so this check
-  // fires only if the guard is weakened. A clean simulation is no reason to
-  // drop the synthesized guard: hardware has produced uncovered low-BRAM
-  // windows that simulation did not.
+  // Consumed low-BRAM packets must be covered. Keep the hardware guard:
+  // uncovered windows have occurred in hardware without appearing in
+  // simulation. This assertion detects a weakened guard.
   always_ff @(posedge i_clk) begin
     if (served_contract_check_valid_q && !i_pipeline_ctrl.reset && !$isunknown(
             {pc_reg,
@@ -1660,41 +1523,21 @@ module if_stage #(
   // ===========================================================================
   // 64-bit Spanning Assembly
   // ===========================================================================
-  // With 64-bit fetch, both halves of a spanning instruction are available in
-  // a single cycle.  When PC[1]=1, the 32-bit candidate is assembled
-  // speculatively from the current word's upper half and the next word's
-  // lower half.  This is the architecturally selected value for a native
-  // instruction.  For an RVC instruction PD builds the instruction from the
-  // predecoded fields instead, so the speculative upper half is a don't-care.
-  //
-  // Do not qualify this mux with is_compressed.  That bit comes from the IMEM
-  // predecode sideband, and qualifying the 32-bit candidate with it would put
-  // sideband -> assembled_instr -> native branch immediate -> target adder on
-  // the D inputs of PD's redirect-target registers. PC[1] is registered and
-  // is the only select the native candidate needs.
-  //
-  // When the instruction buffer is active, the "next word" is the BRAM's
-  // current word (the lead word).  When the buffer is inactive, the "next
-  // word" is the BRAM's upper 32 bits from the 64-bit fetch.
+  // At PC[1]=1, assemble the native candidate from the current word's upper
+  // half and the next word's lower half. RVC uses predecoded fields, so this
+  // candidate is a don't-care. Select by PC[1] alone for timing.
   logic [31:0] assembled_instr;
   logic [15:0] spanning_second_half;
-  // The spanning half is selected by bank_sel_r parity from the 64-bit BRAM
-  // output.  The BRAM always holds two consecutive words; the parity check
-  // identifies which half holds word(pc_reg[31:2]+1).  This covers both the
-  // buffer and non-buffer cases:
+  // Served-window parity selects word W+1, where W = pc_reg[31:2].
+  // The coverage guard rejects windows that do not contain the needed word.
+  // Examples for fetch word F:
   //
-  //  - Non-buffer: BRAM is aligned to pc_reg (F=W), next word at i_instr[63:32].
-  //  - Buffer: BRAM is at the fetch lead (F≈W+1), next word at i_instr[31:0]
-  //    (the lead address was set during the compressed-at-lo cycle).
+  //  - F=W:   next word is i_instr[63:32], halfword [47:32].
+  //  - F=W+1: next word is i_instr[31:0],  halfword [15:0].
   //
-  // Parity: bank_sel_r == pc_reg[2] → next word at [63:32], bits at [47:32].
-  //         bank_sel_r != pc_reg[2] → next word at [31:0],  bits at [15:0].
-  // From the low BRAM the next word is the other bank's, word(W+1) =
-  // bank[!pc_reg[2]], whatever the fetch-lead parity: IMEM's {next, current}
-  // swap and this one cancel (IMEM's bank select equals
-  // i_instr_bank_sel_r for low-BRAM windows). Taking it from the physical
-  // banks puts one LUT between the block RAM and the assembled word; the
-  // cached window keeps the swap, settled well before.
+  // Equal bank_sel_r and pc_reg[2] select [47:32]; unequal selects [15:0].
+  // For low BRAM, IMEM's window swap and this swap cancel: word W+1 is
+  // always in physical bank !pc_reg[2]. Read that bank directly for timing.
   (* keep = "true" *)logic [15:0] spanning_second_half_high;
   logic [15:0] spanning_second_half_low;
   assign spanning_second_half_high = fetch_word_swapped_for_spanning ? i_instr_high[15:0] :
@@ -1713,8 +1556,7 @@ module if_stage #(
       p_spanning_second_half_exact :
       assert (spanning_second_half ==
               (fetch_word_swapped_for_spanning ? i_instr[15:0] : i_instr[47:32]));
-      // The aligner's current word, taken from the physical banks, equals
-      // the buffer or the swapped window it replaced.
+      // Physical-bank selection must match buffered or window data.
       p_current_word_exact :
       assert (effective_instr == (use_instr_buffer ? instr_buffer :
                                   ((i_instr_bank_sel_r ^ pc_reg[2]) ? i_instr[63:32] :
@@ -1725,16 +1567,9 @@ module if_stage #(
   assign assembled_instr = pc_reg[1] ?
       {spanning_second_half, effective_instr[31:16]} : effective_instr;
 
-  // PD redirect-target candidates (see pd_target_candidate): the low add of
-  // the packet's PC and branch offset, for a native B-type and a compressed
-  // C.BEQZ/C.BNEZ offset, carried to PD in the packet. Each candidate gets
-  // the live offset in both pc_reg[1] forms (the current word, and the
-  // spanning assembly or upper parcel) and the stall-captured offset, and
-  // applies pc_reg[1] and the replay select inside its adder's propagate
-  // LUTs, so the block RAM reaches its carry chain through the word select
-  // and one more LUT. The selected operands equal the packet's
-  // program_counter and effective_instr/raw_parcel, which PD checks against
-  // PC + offset every cycle (p_pd_target_split_exact).
+  // Low PC + offset candidates for native B-type and C.BEQZ/C.BNEZ.
+  // pd_target_candidate selects the low, high, or replayed operands inside
+  // the adder for timing. They must match the packet's PC and instruction.
   function automatic logic [riscv_pkg::PdTargetSplit-1:0] native_branch_imm_low(
       input logic [31:0] instr);
     native_branch_imm_low = {instr[31], instr[7], instr[30:25], instr[11:8], 1'b0};
@@ -1755,13 +1590,9 @@ module if_stage #(
   logic [riscv_pkg::PdTargetSplit-1:0] pd_target_compressed_low;
   logic [1:0] pd_target_native_high_select;
   logic [1:0] pd_target_compressed_high_select;
-  // The stall-captured operands, held in registers of their own: a
-  // stall_capture_reg output is its live input outside a registered stall,
-  // so taking the saved offsets from assembled_instr_sc or raw_parcel_sc
-  // would put the live instruction on the adder's saved input too. These
-  // capture and clear on the same conditions as u_assembled_instr_sc,
-  // u_raw_parcel_sc, and u_instruction_pc_sc, so under replay they equal the
-  // offsets and PC of the packet those replay.
+  // Dedicated saved operands avoid stall_capture_reg's live-input mux.
+  // Match the instruction and PC capture/clear conditions so replay selects
+  // the same operands as the packet.
   logic [riscv_pkg::PdTargetSplit-1:0] pd_target_native_imm_saved_q;
   logic [riscv_pkg::PdTargetSplit-1:0] pd_target_compressed_imm_saved_q;
   logic [riscv_pkg::PdTargetSplit-1:0] pd_target_pc_low_saved_q;
@@ -1839,12 +1670,8 @@ module if_stage #(
   end
 `endif
 
-  // Carry only three source bits, {rs2[1], rs1[2:1]}, on the timing-critical
-  // low-IMEM/RVC paths. Slot 1 joins the RVC sideband values with the
-  // assembled native word here. Slot 2 arrives resolved from
-  // instruction_aligner (each fixed candidate makes its compressed/native
-  // choice before the late position mux), which keeps a second join off the
-  // IMEM-to-PD capture path.
+  // Select {rs2[1], rs1[2:1]} from the RVC sideband or assembled native word.
+  // Slot 2's fixed candidates make this choice before their position mux.
   logic [2:0] source_hot_predecoded_live;
   logic [2:0] source_hot_predecoded_2_live;
   logic [2:0] source_hot_predecoded_saved;
@@ -1865,9 +1692,7 @@ module if_stage #(
   assign rs1_rest_predecoded_live = sel_compressed ? rvc_rs1_rest :
       {assembled_instr[19:18], assembled_instr[15]};
 
-  // Capture the narrow values once on stall entry. Apply the replay select
-  // only at the packet output so the live source path does not acquire the
-  // generic stall-capture mux followed by a second replay mux.
+  // Capture on stall entry and mux only at the packet output, for timing.
   always_ff @(posedge i_clk) begin
     if (flush_for_c_ext_safe) begin
       source_hot_predecoded_saved   <= '0;
@@ -1932,9 +1757,7 @@ module if_stage #(
       .o_data(sel_compressed_sc)
   );
 
-  // sel_nop_saved has non-standard flush behavior (flushes to 1'b1, not '0),
-  // and is passed to prediction_metadata_tracker, so it stays in a separate
-  // always_ff block.
+  // Flush to a bubble, unlike stall_capture_reg's zero-filled payload.
   always_ff @(posedge i_clk) begin
     if (flush_for_c_ext_safe) begin
       sel_nop_saved <= 1'b1;
@@ -1943,11 +1766,8 @@ module if_stage #(
     end
   end
 
-  // Registered to match the data: the prediction redirects PC this cycle and
-  // the new fetch data arrives next cycle, when c_ext_state resets.  Slot-2
-  // predictions are included so c_ext_state also resets its buffer state
-  // across slot-2 BTB redirects; the bubble cycle after a slot-2 prediction
-  // has stale BRAM data and the buffer state must not survive the redirect.
+  // Reset C-extension state one cycle after either slot predicts. The
+  // slot-2 redirect bubble contains stale data; buffered state cannot survive.
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) prediction_reset_c_ext <= 1'b0;
     else prediction_reset_c_ext <= prediction_used || slot2_prediction_used;
@@ -1972,14 +1792,8 @@ module if_stage #(
                                    saved_values_valid &&
                                    !sel_nop_saved;
 
-  // Fetch progress: a bundle is being presented for consumption this cycle,
-  // either because the provider's live window is valid or because the replay
-  // path is presenting the stall-captured bundle (whose data needs no live
-  // window).  This, not i_instr_valid alone, is what gates the PC hold arms
-  // and the per-delivery state freezes: on the stall-release cycle the
-  // replayed bundle is consumed, so freezing there would re-present (and
-  // re-dispatch) the same pc_reg on the next live cycle.  Its declaration
-  // carries the max_fanout cap and the reason for it.
+  // Replay supplies progress without a live window. PC and packet state
+  // must advance on release or the saved instruction would dispatch twice.
   assign fetch_progress = i_instr_valid || replay_saved_if_outputs;
   assign o_fetch_live_claim = i_instr_valid && !sel_nop && !if_stage_stall_registered;
   always_ff @(posedge i_clk) begin
@@ -1993,8 +1807,7 @@ module if_stage #(
 
   assign o_pc = pc;
 
-  // Raw parcel output: replay saved values only when the saved cycle was a real
-  // instruction, otherwise use the live post-stall values.
+  // Replay only real, still-valid saved packets.
   assign o_from_if_to_pd.raw_parcel = replay_saved_if_outputs ? raw_parcel_sc : raw_parcel;
   // Unused for slot 1: PD takes slot 1's illegal flag from the predecoded
   // sideband (rvc_extra_predecoded).
@@ -2017,24 +1830,15 @@ module if_stage #(
   assign o_from_if_to_pd.rs1_rest_predecoded =
       replay_saved_if_outputs ? rs1_rest_predecoded_saved : rs1_rest_predecoded_live;
 
-  // Link address (the slot-1 fall-through PC, instruction_pc + 2 for a
-  // compressed instruction or + 4 for a 32-bit one) feeding the RAS call
-  // push.  ID computes the pipeline link address for JAL/JALR itself from
-  // the registered PC and is_compressed, so this sum is not part of the
-  // IF→PD packet.
+  // Slot-1 fall-through PC for RAS pushes: instruction_pc + 2 for RVC,
+  // +4 for native. ID computes its own JAL/JALR link address.
   logic [XLEN-1:0] instruction_pc;
   logic [XLEN-1:0] link_address;
 
-  // link_address must use the real size of the slot-1 instruction held
-  // across a stall, so it cannot share sel_compressed_sc: that
-  // stall_capture_reg zeroes its capture on a flush, and after a flush inside
-  // a stall a held compressed instruction would read as 32-bit, putting its
-  // link one halfword too far. This copy is captured without the flush clear,
-  // so the held size matches the held instruction (pc_reg + 2 or + 4) and the
-  // RAS push address stays right after the flush.
-  // sel_compressed_sc's other consumers (o_from_if_to_pd.sel_compressed,
-  // slot2_pc_sc) are not replayed after a flush (sel_nop_saved is 1), so the
-  // zeroing is harmless there.
+  // Preserve the held instruction's size across flushes for the RAS link
+  // address. sel_compressed_sc clears on flush and would turn held RVC into
+  // a +4 link. Its packet consumers cannot replay after flush, because
+  // sel_nop_saved is set, so clearing their size is harmless.
   logic is_compressed_for_link;
   logic sel_compressed_for_link_sc;
   stall_capture_reg #(
@@ -2086,23 +1890,17 @@ module if_stage #(
   // ===========================================================================
   // Fetch-fault tags
   // ===========================================================================
-  // The served window's per-word fault flags ({fault, page} for window words
-  // 0 and 1) map onto the aligner's current and next word the same way the
-  // instruction bytes do. The current word is the buffer's (whose flags were
-  // captured with it), else window word 1 when the fetch lead is one word
-  // ahead (bank parity swapped), else word 0; the next word follows the
-  // spanning-half select (word 0 when swapped, word 1 otherwise).
+  // Map {fault, page} with the instruction bytes. The current word uses
+  // buffer flags when buffered, else window word 1 when bank parity is
+  // swapped and word 0 otherwise. The next word uses the opposite selection.
   //
-  // Slot 1 faults on its current word, or on the next word only when a 32-bit
-  // instruction in the upper halfword straddles into it; the fault is then on
-  // the second halfword (fetch_fault_hi: xtval = PC + 2). Slot 2 faults on its
-  // own parcel's word, plus the next word whenever its position reads it
-  // (every shape except a compressed slot 2 in the current word's upper
-  // half); a native slot 2 straddling out of the current word's upper half is
-  // its "hi" case. With translation off, this reduces to the PMA check of the
-  // packet PC plus a straddle into an unmapped word. The flags are captured at
-  // stall entry like every other IF output, so a replayed packet carries the
-  // flags it was tagged with.
+  // A current-word fault takes priority for both slots. Slot 1 also faults
+  // on the next word when a native instruction starts in the upper parcel.
+  // Slot 2 checks the next word except when compressed in the current word's
+  // upper parcel. A native instruction straddling the two words sets
+  // fetch_fault_hi (xtval = PC + 2) for a next-word fault.
+  // Without translation, faults reflect PMA checks. Capture flags with the
+  // packet so replay preserves them.
   assign cur_fault_pair = use_instr_buffer ? instr_buffer_fault :
       (fetch_word_swapped_for_spanning ? {i_instr_fault1, i_instr_fault1_page} :
                                          {i_instr_fault0, i_instr_fault0_page});
@@ -2163,25 +1961,18 @@ module if_stage #(
   // ===========================================================================
   // Return Address Stack Operation and Recovery Point
   // ===========================================================================
-  // PD takes IF's packets on an unstalled cycle and drops them on a flush or a
-  // PD redirect; only a packet PD takes moves the stack, so a squashed or
-  // replayed packet never pushes or pops twice. A packet whose used prediction
-  // came from a BTB entry typed as a call pushes its link address, one typed
-  // as a return pops, and a coroutine swap does both. At most one packet of a
-  // bundle can: an instruction predicted taken ends the bundle.
+  // Only packets accepted by PD update the RAS: stalls, flushes, and PD
+  // redirects block operations. Used predictions typed as calls push their
+  // link; returns pop; coroutine swaps do both. A taken instruction ends the
+  // bundle, so at most one slot operates on the stack.
   //
-  // The branch predictor reads the stack top for a typed lookup. A packet
-  // accepted in the same cycle as a younger typed lookup could leave that
-  // lookup a stale top, but no younger lookup's prediction survives such a
-  // cycle: registered slot-1 metadata implies the prediction holdoff, a
-  // pending-prediction handoff blocks prediction, a stall replay comes with
-  // the registered stall, a slot-2 prediction kills the same-cycle slot-1
-  // prediction, and a collapsed-lead packet carries its own lookup (checked
-  // below).
+  // No younger prediction may use the old stack top during an operation.
+  // Registered metadata, pending handoffs, and stall replay block prediction;
+  // slot-2 prediction kills the slot-1 prediction; a collapsed-lead packet
+  // carries its own lookup.
   //
-  // The stack's outputs, the state before their own operation, are both
-  // packets' recovery point. They do not change while IF stalls, so a
-  // stall-replayed packet carries the state it was first presented with.
+  // Both packets checkpoint the stack before their operation. The state is
+  // stable during a stall, so replay retains the original recovery point.
   logic ras_packet_accepted;
   logic ras_op_slot1;
   logic ras_op_slot2;
@@ -2199,12 +1990,8 @@ module if_stage #(
   assign ras_pop = (ras_op_slot1 && slot1_packet_is_return) ||
                    (ras_op_slot2 && slot2_packet_is_return);
 
-  // TIMING: the operation depends on the same-cycle slot-2 and collapsed-lead
-  // predictions and on the stall, so its parts are registered as they are and
-  // combined the next cycle, when the stack applies the operation (see
-  // return_address_stack). The late inputs reach only flip-flop D pins, and
-  // the late slot select stays off the slot-2 link adder. A reset drops the
-  // operation of its own cycle.
+  // Register the operation's parts for timing; the stack applies them next
+  // cycle. Reset drops the operation of its own cycle.
   logic ras_packet_accepted_q;
   logic ras_slot1_taken_q, ras_slot1_call_q, ras_slot1_return_q;
   logic ras_slot2_taken_q, ras_slot2_call_q, ras_slot2_return_q;
@@ -2250,25 +2037,17 @@ module if_stage #(
   logic sel_nop_effective;
   assign sel_nop_effective = replay_saved_if_outputs ? sel_nop_saved : sel_nop;
 
-  // Capture the direction bit and index across stall replay (like the RAS
-  // checkpoint above) so the carried direction stays with its instruction.
-  // While a taken prediction is pending, one other real instruction can be
-  // emitted: the compressed instruction just before the pending branch,
-  // released by pc_controller's immediate-predecessor exception. The edge
-  // that arms the pending prediction overwrites branch_prediction_controller's
-  // registered snapshot with the branch's own lookup, so the predecessor's bit
-  // and index are saved on every unstalled delivery edge while nothing is
-  // pending. A pending prediction can arm only on such an edge, so this
-  // capture needs no late arm qualifier. The saved index can differ from the
-  // one the emitted PC would give, so it stays paired with the saved bit
-  // rather than being recomputed.
+  // Keep direction and index with their instruction across replay. While
+  // a prediction is pending, only its compressed predecessor can also be
+  // emitted. Arming the prediction overwrites the predictor's snapshot with
+  // the branch's lookup. Save the preceding bit and index on every unstalled
+  // delivery edge with nothing pending; arming occurs only on such an edge.
+  // Keep the saved index with its bit, even if it differs from the PC's index.
   logic bp_dir_taken_aligned;
   logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_aligned;
-  // A high-half served-window recovery deliberately looks up the containing
-  // word's low parcel while the architectural packet remains at pc_reg=P+2.
-  // No P+2 direction row is available on that cycle, so conservatively attach
-  // not-taken to the real packet and carry its own index for later training.
-  // Using either the P or P+6 snapshot would train a neighboring predictor row.
+  // High-half recovery looks up the containing word's low parcel. There is
+  // no direction result for the real packet at P+2; use not-taken and its own
+  // index so later training does not update the P or P+6 row.
   assign bp_dir_taken_aligned = fetch_lookup_is_lower_parcel ? 1'b0 :
       (lookup_pc_matches_packet_pc ? bp_dir_taken_live_cofactor : bp_dir_taken);
   assign bp_dir_idx_aligned = fetch_lookup_is_lower_parcel ?
@@ -2296,14 +2075,9 @@ module if_stage #(
   logic pending_prediction_metadata_owner;
   logic pending_prediction_metadata_predecessor;
   logic pending_prediction_real_nonowner;
-  // Classify the packet by its PC, not by the metadata tracker's taken bit.
-  // That bit is output payload that depends on collapsed-lead handling, and
-  // feeding it back here would put that whole variable-latency path ahead of
-  // the direction bits and the PD redirect. A check below confirms that the
-  // pending branch, when emitted, always carries taken metadata. The saved
-  // direction is used only for the immediate predecessor; another check
-  // confirms that it is the only other real instruction emitted while a
-  // prediction is pending.
+  // Classify by PC for timing. The pending branch must carry taken metadata;
+  // the immediate predecessor is the only other real packet permitted while
+  // pending, and uses the saved direction.
   assign pending_prediction_metadata_owner =
       pending_prediction_active && !sel_nop_effective &&
       (o_from_if_to_pd.program_counter == pending_prediction_pc);
@@ -2357,16 +2131,9 @@ module if_stage #(
   end
 `endif
 
-  // Capture the slot-1 predict-time index across stall replay, like the
-  // direction bit above.
-  //
-  // A taken prediction can redirect fetch while pc_reg still has older
-  // compressed instructions to emit. prediction_metadata_tracker keeps the
-  // branch's BTB metadata off the immediate predecessor and attaches it only
-  // when the pending PC itself is emitted. The pending branch's index is
-  // recomputed from pending_prediction_pc and the predecessor's comes from the
-  // snapshot saved before the prediction armed; branch_prediction_controller's
-  // registered snapshot has been overwritten in both cases.
+  // Replay the direction index with the packet. While prediction is
+  // pending, recompute the branch's index from pending_prediction_pc and use
+  // the predecessor's saved index; the predictor snapshot is overwritten.
   logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_pending_aligned;
   assign bp_dir_idx_pending_aligned = pending_prediction_metadata_owner ?
       pending_prediction_pc[riscv_pkg::BpDirIdxBits:1] :
@@ -2447,9 +2214,8 @@ module if_stage #(
       .i_pending_prediction_pc(pending_prediction_pc),
       .i_output_pc(o_from_if_to_pd.program_counter),
       .i_live_prediction_for_output(live_prediction_emits_with_output),
-      // Read only by the tracker's assertions, which check that a live target
-      // comes from the lookup aligned with the packet; it does not gate the
-      // synthesized target path, and hit/taken still decide validity.
+      // Assertion input only: the lookup must align with the packet.
+      // Hit and taken still determine whether its target is valid.
       .i_live_target_aligned_with_output(lookup_pc_matches_packet_pc),
       .i_live_predicted_target(btb_predicted_target),
       .i_live_predicted_is_call(btb_predicted_is_call),
@@ -2591,21 +2357,13 @@ module if_stage #(
 `endif
 
   // ===========================================================================
-  // Slot-2 IF→PD packet.
+  // Slot-2 IF to PD Packet
   // ===========================================================================
-  // Slot 2 follows slot 1 sequentially in program order: its PC is slot 1's
-  // plus the slot-1 size. A slot-2 prediction from a BTB entry typed as a
-  // call or return moves the return address stack like a slot-1 one, and
-  // both slots share one recovery point (see below).
-  //
-  // Stall handling mirrors slot 1's stall_capture_reg pattern: during a stall
-  // the window moves on, so the values captured at stall entry are replayed
-  // until release (gated by replay_saved_if_outputs). sel_nop_2_saved flushes
-  // to 1 like sel_nop_saved. sel_nop_2 already includes slot 1's sel_nop, the
-  // pending-prediction one-wide kill, and the aligner's pairing decision:
-  // slot 1's AllowsSlot2After and slot 2's Slot2StartValid sideband bits,
-  // whether slot 2 fits the window, and the aligner's stale-next-word gate
-  // (slot2_bram_unsafe).
+  // Slot 2 follows slot 1 by its instruction size and shares its RAS
+  // recovery point. Replay captures both slots together; flush sets
+  // sel_nop_2_saved. Live slot-2 validity includes the slot-1 bubble, pending
+  // prediction kill, AllowsSlot2After and Slot2StartValid sideband bits,
+  // window coverage, and stale-next-word gate (slot2_bram_unsafe).
 
   logic [15:0] raw_parcel_2_saved;
   logic [31:0] effective_instr_2_sc;
@@ -2613,11 +2371,8 @@ module if_stage #(
   logic        sel_nop_2_saved;
   logic        slot2_decomp_illegal_sc;
 
-  // Slot-2's raw parcel is retained for stall replay; PD decodes the
-  // aligner's expanded effective_instr and expands the raw parcel only in
-  // simulation, as its reference. Keep only a saved register here and let the
-  // final replay mux below select it; the generic stall_capture_reg would add
-  // an unnecessary live-data mux before the replay mux.
+  // PD uses the expanded instruction; the raw parcel is its simulation
+  // reference. Capture directly to avoid a redundant live-data mux.
   always_ff @(posedge i_clk) begin
     if (flush_for_c_ext_safe) begin
       raw_parcel_2_saved <= '0;
@@ -2685,15 +2440,9 @@ module if_stage #(
     endcase
   end
 
-  // The squash (pc_control_sel_nop) and the slot-2 validity
-  // (slot2_valid_for_pc_live_effective, which carries the pending-prediction
-  // kill and the aligner's pairing decision) are the latest inputs of these
-  // selects, so the selects are also exported by bundle shape: one-wide
-  // (the slot-1 size alone, also the fetch PC's NOP select), two-wide (both
-  // sizes), and pc_reg's NOP select. pc_increment_calculator steers a
-  // candidate mux with each and applies the squash and the slot-2 validity
-  // as its final selection, keeping both out of the value path; the merged
-  // selects feed the stall captures and the simulation reference.
+  // Export advances by bundle shape for timing: one-wide, two-wide, and
+  // pc_reg's NOP advance. The fetch PC uses the one-wide advance for NOPs.
+  // Merged selects feed stall capture and the reference checks.
   assign pc_advance_sel_base_live = is_compressed_for_pc_advance ? riscv_pkg::PcAdvancePlus2 :
                                                                    riscv_pkg::PcAdvancePlus4;
   assign pc_advance_sel_run_live = slot2_valid_for_pc_live_effective ? bundle_advance_sel_live :
@@ -2703,10 +2452,7 @@ module if_stage #(
   assign pc_reg_advance_sel_live =
       pc_control_sel_nop ? riscv_pkg::PcAdvancePlus2 : pc_advance_sel_run_live;
 
-  // Save the PC-only bundle metadata directly at stall entry.  Reconstructing
-  // it from the replayed PD packet (`sel_compressed_2_sc`) would put the
-  // general slot-2 aligner mux back on the fetch-PC path even when the replay
-  // arm is inactive.
+  // Capture PC advances directly for timing.
   always_ff @(posedge i_clk) begin
     if (flush_for_c_ext_safe) begin
       pc_fetch_advance_sel_saved <= riscv_pkg::PcAdvancePlus2;
@@ -2721,9 +2467,8 @@ module if_stage #(
       replay_saved_if_outputs ? pc_fetch_advance_sel_saved : pc_fetch_advance_sel_live;
   assign pc_reg_advance_sel =
       replay_saved_if_outputs ? pc_reg_advance_sel_saved : pc_reg_advance_sel_live;
-  // The shape selects under the same replay select: on a replay cycle every
-  // shape equals the saved select, so the final squash and slot-2 choice do
-  // not matter there.
+  // During replay every shape uses the saved advance, making the final
+  // squash and slot-2 selects irrelevant.
   assign pc_fetch_advance_sel_one =
       replay_saved_if_outputs ? pc_fetch_advance_sel_saved : pc_advance_sel_base_live;
   assign pc_fetch_advance_sel_two =
@@ -2735,8 +2480,8 @@ module if_stage #(
   assign pc_reg_advance_sel_nop =
       replay_saved_if_outputs ? pc_reg_advance_sel_saved : riscv_pkg::PcAdvancePlus2;
 
-  // Slot-2 PC = slot-1 PC + slot-1 size.  Use the stall-replayed slot-1 PC so
-  // slot-2's PC stays aligned with slot-1's even across stall boundaries.
+  // Slot-2 PC is slot-1 PC plus its size, both from the same live or saved
+  // packet.
   logic [XLEN-1:0] slot2_pc_live;
   assign slot2_pc_live   = instruction_pc +
                            (is_compressed ? riscv_pkg::PcIncrementCompressed :
@@ -2747,7 +2492,7 @@ module if_stage #(
                          (sel_compressed_sc ? riscv_pkg::PcIncrementCompressed :
                                               riscv_pkg::PcIncrement32bit);
 
-  // Slot-2 IF→PD packet assembly.
+  // Slot-2 packet assembly.
   assign o_from_if_to_pd_2.raw_parcel = replay_saved_if_outputs ? raw_parcel_2_saved : raw_parcel_2;
   assign o_from_if_to_pd_2.decomp_illegal = replay_saved_if_outputs ? slot2_decomp_illegal_sc :
                                             slot2_decomp_illegal;
@@ -2806,18 +2551,10 @@ module if_stage #(
   assign o_from_if_to_pd_2.fetch_fault_page = fetch_fault_2_effective[1];
   assign o_from_if_to_pd_2.fetch_fault_hi = fetch_fault_2_effective[0];
 
-  // Slot 2 has its own staged BTB lookup. Its block-RAM outputs are registered
-  // from the same one-cycle-ahead request that launches the instruction RAM;
-  // tag qualification and metadata remain combinational in the cycle slot 2
-  // is in IF, so no extra fetch cycle is added (unlike slot 1's
-  // prediction_used_r, which aligns a current-request lookup with later data).
-  // Stall replay uses the values captured at stall start like the rest of the
-  // slot-2 packet.
-  //
-  // predicted_taken is stamped only when the slot-2 prediction redirected
-  // fetch (slot2_prediction_used).  A BTB hit whose counter says not-taken
-  // leaves it 0, which matches fetch staying on the sequential path.  Branch
-  // resolution then flags a direction or target mismatch.
+  // Slot-2 BTB outputs register with the instruction-RAM request; tags and
+  // metadata resolve when slot 2 reaches IF. Replay captures this result.
+  // Mark predicted_taken only if the prediction redirects fetch, so branch
+  // resolution compares against the path actually taken.
   logic            slot2_predicted_taken_sc;
   logic [XLEN-1:0] slot2_predicted_target_sc;
 
@@ -2878,22 +2615,18 @@ module if_stage #(
   assign o_from_if_to_pd_2.ras_checkpoint_tos = o_from_if_to_pd.ras_checkpoint_tos;
   assign o_from_if_to_pd_2.ras_checkpoint_valid_count = o_from_if_to_pd.ras_checkpoint_valid_count;
   assign o_from_if_to_pd_2.ras_checkpoint_top = o_from_if_to_pd.ras_checkpoint_top;
-  // The PD redirect heuristic does not use slot 2, so its direction bit is a
-  // benign 0.  Its predict-time index is carried, so a slot-2-fetched branch
-  // trains the entry it predicted.
+  // Slot 2 has no bimodal PD redirect, so its direction bit is zero.
+  // Carry its PC's index for conditional-branch training at commit.
   assign o_from_if_to_pd_2.bp_dir_taken = 1'b0;
   assign o_from_if_to_pd_2.bp_dir_idx = replay_saved_if_outputs ? bp_dir_idx_2_sc : bp_dir_idx_2;
 
   // ===========================================================================
-  // Slot-1 Control Classification and Width-Funnel Events (IF→PD boundary)
+  // Slot-1 Control Classification and Width Events
   // ===========================================================================
-  // deliver1/deliver2 pulse exactly once per accepted handoff: PD's input
-  // registers only advance on !stall cycles, so gating on !if_stage_stall
-  // counts each delivered bundle once (stall-held cycles do not recount; the
-  // stall-release replay cycle is the accepted delivery).  The kill causes
-  // ride the same stall-capture/replay muxing as the slot-2 packet, so they
-  // always classify the bundle PD received. The native/compressed control
-  // taps additionally provide the frontend tracker's exact slot-1 class.
+  // Count unstalled, non-bubble IF presentations, including stall-release
+  // replay. Kill causes follow the same replay selection as the packet.
+  // PD's redirect squash is not gated here. Control-class taps also supply
+  // the frontend tracker.
   logic [5:0] slot2_kill_causes_live;
   logic [5:0] slot2_kill_causes_sc;
   logic [5:0] slot2_kill_causes_effective;
@@ -2940,13 +2673,8 @@ module if_stage #(
   assign width_deliver2 = width_deliver1 && !o_from_if_to_pd_2.sel_nop;
   assign width_slot2_killed = width_deliver1 && o_from_if_to_pd_2.sel_nop;
 
-  // The width-funnel taps are registered here, before they leave for the perf
-  // aggregator, so the observer logic cannot share LUTs with the slot-2 kill
-  // and redirect logic it taps. These bits feed only free-running counters,
-  // so a uniform one-cycle delay changes no count and keeps the deliver/kill
-  // split consistent. The flops sit after the stall-replay alignment
-  // (slot2_kill_causes_effective, width_slot2_killed), so each event is still
-  // attributed to the right bundle.
+  // Register profiling taps for timing. The uniform one-cycle delay keeps
+  // delivery and kill events aligned and leaves free-running counts intact.
   riscv_pkg::if_width_events_t width_events_q;
   always_ff @(posedge i_clk) begin
     width_events_q.deliver1 <= width_deliver1;

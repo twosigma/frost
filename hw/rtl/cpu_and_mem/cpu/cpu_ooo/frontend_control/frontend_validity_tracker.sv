@@ -64,7 +64,7 @@ module frontend_validity_tracker (
     output logic o_prediction_fence_indirect
 );
 
-  // --- Port aliases: local names for the inputs.
+  // Port aliases.
   riscv_pkg::pipeline_ctrl_t       pipeline_ctrl;
   riscv_pkg::from_if_to_pd_t       from_if_to_pd;
   riscv_pkg::from_pd_to_id_t       from_pd_to_id;
@@ -78,9 +78,8 @@ module frontend_validity_tracker (
   assign pipeline_ctrl = i_pipeline_ctrl;
   assign from_if_to_pd = i_from_if_to_pd;
   assign from_pd_to_id = i_from_pd_to_id;
-  // TIMING: pd_stage does not rewrite a bubble's instruction into a NOP; it
-  // passes a registered inject_nop marker. Substitute the NOP opcode (OP_IMM)
-  // for bubbles so the control-flow detection below treats them as NOPs.
+  // PD marks bubbles with inject_nop without rewriting the instruction.
+  // Substitute OP_IMM so control-flow detection treats them as NOPs.
   wire [6:0] pd_effective_opcode =
       from_pd_to_id.inject_nop ? riscv_pkg::OPC_OP_IMM : from_pd_to_id.instruction[6:0];
   assign from_id_to_ex                 = i_from_id_to_ex;
@@ -91,13 +90,11 @@ module frontend_validity_tracker (
   assign replay_after_dispatch_stall_q = i_replay_after_dispatch_stall_q;
   assign flush_pipeline                = i_flush_pipeline;
 
-  logic if_valid_q;  // tracks valid at IF→PD boundary
-  logic pd_valid_q;  // tracks valid at PD→ID boundary
+  logic if_valid_q;  // Valid at the IF-to-PD boundary
+  logic pd_valid_q;  // Valid at the PD-to-ID boundary
 
-  // Track IF stage's sel_nop through the pipeline to know when from_id_to_ex
-  // contains a real instruction vs a NOP bubble (holdoff/flush/reset).
-  // 2-stage chain: if_valid_q captures at PD register edge, pd_valid_q
-  // captures at ID register edge, which is when from_id_to_ex is updated.
+  // Track real instructions through PD and ID; reset and flush clear both
+  // valid bits. if_valid_q loads with PD and pd_valid_q loads with ID.
   always_ff @(posedge i_clk) begin
     if (i_rst || pipeline_ctrl.flush) begin
       if_valid_q <= 1'b0;
@@ -108,50 +105,32 @@ module frontend_validity_tracker (
     end
   end
 
-  // The preflush candidates read the registered stall directly instead of
-  // pipeline_ctrl fields. This breaks a false Verilator UNOPTFLAT cycle
-  // (pipeline_ctrl.stall depends on dispatch_stall, which depends on these
-  // candidates). Dispatch applies the recovery kill itself (its i_flush);
-  // id_valid and id_valid_2 below are flush-qualified copies for debug and
-  // assertions. Reset clears pd_valid_q above and has priority in the
-  // stateful consumers, so i_rst stays out of the dispatch allocation logic.
+  // Use registered stall directly to avoid a false Verilator UNOPTFLAT loop
+  // through pipeline_ctrl.stall and dispatch_stall. Dispatch applies recovery
+  // kill; id_valid and id_valid_2 are flush-qualified debug copies. Reset
+  // clears pd_valid_q and takes priority in stateful consumers.
   logic id_valid_preflush;
   logic id_valid_2_preflush;
   logic id_valid;
   logic id_valid_2;
-  // 2-wide: a bundle is valid when either slot holds a real instruction
-  // (id_stage's registered is_real, clear for PD's inject_nop bubbles). The
-  // base below excludes the bubbles after a flush, reset, or sel_nop; is_real
-  // also excludes the PD-redirect bubbles, which kill both slots. A NOP in
-  // the program is a real instruction: it dispatches and retires like any
-  // other, so instret counts it.
+  // Either real slot makes the atomic bundle valid. is_real excludes PD
+  // redirect bubbles; the base excludes flush, reset, and sel_nop bubbles.
+  // A program NOP is real and must dispatch, retire, and increment instret.
   logic id_valid_base_preflush;
-  // id_stall_q covers the whole CSR serialization window for the dispatch
-  // valid: pipeline control sets it on the edge where a CSR allocates, and the
-  // registered front-end stall keeps it high until the release. This keeps
-  // the live csr_in_flight bit out of every allocation enable;
-  // ooo_pipeline_control asserts that the result equals gating on
-  // csr_in_flight directly.
+  // id_stall_q spans CSR serialization: it sets when a CSR allocates and
+  // stays high until release, so validity needs no live csr_in_flight gate.
   assign id_valid_base_preflush = pd_valid_q &&
-      // Re-dispatch the held ID image after real backpressure stalls,
-      // and after CSR serialization fences. The CSR itself has already
-      // allocated before the registered front-end stall rises; the held ID
-      // image during the fence is the younger blocked instruction that still
-      // needs exactly one valid replay cycle after the fence drops. CSR-release
-      // replay is normally encoded by clearing id_stall_q one cycle early. If an
-      // independent front-end stall prevented ID from advancing on the CSR's
-      // allocation cycle, pipeline control instead keeps id_stall_q high for
-      // one advance-only release cycle so the held CSR cannot re-dispatch.
-      // Dispatch-stall replay still needs an explicit pulse because the
-      // resource stall's release cannot be known until this cycle.
+      // Replay a held younger instruction after backpressure or a CSR fence.
+      // CSR release normally clears id_stall_q one cycle early. If another
+      // stall held ID on CSR allocation, keep id_stall_q high for one
+      // advance-only cycle to avoid redispatching that CSR. Resource-stall
+      // release needs an explicit replay pulse.
       (!id_stall_q || replay_after_dispatch_stall_q);
   assign id_valid_preflush = id_valid_base_preflush &&
       (from_id_to_ex.is_real || from_id_to_ex_2.is_real);
 
-  // Slot 2 is a candidate only when the bundle's base candidate is (the
-  // bundle stalls and dispatches as a unit) and slot 2 holds a real
-  // instruction. The recovery kill is applied separately, by dispatch and in
-  // id_valid_2 below.
+  // Slot 2 shares the bundle's base validity and must also be real. Dispatch
+  // applies recovery kill; id_valid_2 is the flush-qualified copy.
   assign id_valid_2_preflush = id_valid_base_preflush && from_id_to_ex_2.is_real;
 
   assign id_valid = id_valid_preflush && !dispatch_flush;
@@ -208,8 +187,6 @@ module frontend_validity_tracker (
 `endif
 
   assign if_has_control_flow = i_if_has_control_flow;
-  // IF predecodes the parcel's indirect class into its sideband, so the fetched
-  // parcel is not decoded here.
   assign if_has_indirect_control_flow = !from_if_to_pd.sel_nop && i_if_is_indirect;
 `ifndef SYNTHESIS
   // Sampled at the clock so the check sees settled values.
@@ -240,24 +217,15 @@ module frontend_validity_tracker (
   assign id_has_indirect_control_flow = pd_valid_q &&
                                         (from_id_to_ex.instruction_operation == riscv_pkg::JALR);
 
-  // Only unpredicted control flow is flagged: control flow for which fetch did
-  // not follow a taken prediction (btb_predicted_taken clear). A branch
-  // predicted not taken is therefore flagged. An unpredicted
-  // indirect jump in slot 1 of IF, PD, or ID feeds the control-flow
-  // serialization stall, and the prediction-fence classes below (unpredicted
-  // branch, JAL, or indirect jump in PD or ID) feed the perf counters.
-  // The IF term is registered for timing. Its indirect class and both
-  // prediction bits are sampled together from IF's output, so it describes
-  // the packet IF presented in the previous cycle. After an unstalled edge PD
-  // has taken that packet and the PD term covers it, so the IF term is masked
-  // unless stall_registered shows that a stall kept the packet in IF.
-  // TIMING: the late BTB-prediction bit is registered separately, off the
-  // indirect qualifier's D input. Both registers load every edge, so their
-  // conjunction equals a single register of the whole predicate, including
-  // reset/flush and stalled cycles (checked below). The qualifier clears on
-  // reset/flush; the BTB register needs no reset because it is masked while
-  // the qualifier is clear. Only synchronous pipeline control consumes the
-  // result.
+  // Flag control flow without a taken prediction, including branches
+  // predicted not taken. Unpredicted slot-1 indirect jumps stall serialization;
+  // PD and ID classes also feed the performance counters.
+  //
+  // Register the IF term for timing. After an unstalled edge, PD covers that
+  // packet, so use the IF term only when stall_registered is set. Register
+  // class and prediction separately on the same edge; their conjunction equals
+  // the registered predicate. Clearing the class on reset or flush masks the
+  // unreset prediction bit. Only synchronous pipeline control uses the result.
   (* keep = "true" *)logic if_indirect_q;
   (* keep = "true" *)logic if_btb_predicted_taken_q;
   logic if_unpredicted_indirect_q;

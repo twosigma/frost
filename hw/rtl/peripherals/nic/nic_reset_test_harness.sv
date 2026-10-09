@@ -18,12 +18,9 @@
  * nic_reset_test_harness: cocotb top for the NIC's reset handshake and the
  * clock-crossing library under it.
  *
- * Three clocks: the core clock and the two MAC clocks. The bench drives the
- * clock-ok levels, the RESET request and the DMA-idle answer, pushes words
- * through a core-to-TX and an RX-to-core async_fifo, pulses events into an
- * RX-to-core cdc_gray_count, and watches the controller's busy/ready
- * outputs and the domains' resets. Each domain's FIFO half is reset by that
- * domain's reset; the core-side halves by the controller's per-domain hold.
+ * Exercises packet FIFOs and event counting across the core, TX, and RX
+ * clocks. Each FIFO half resets in its own domain; core halves use the
+ * controller's per-domain hold.
  */
 module nic_reset_test_harness #(
     parameter int unsigned DATA_WIDTH = 16,

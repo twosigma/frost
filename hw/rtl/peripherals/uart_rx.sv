@@ -15,7 +15,7 @@
  */
 
 /*
-  Valid/ready 8N1 UART receiver. The FSM verifies the start bit, samples data
+  Valid/ready UART receiver (8N1 by default). Verifies the start bit and samples data
   LSB-first at each bit midpoint, then verifies the stop bit.
  */
 module uart_rx #(
@@ -39,9 +39,9 @@ module uart_rx #(
   // Half-bit delay for sampling in the middle of each bit
   localparam int unsigned HalfBitCycles = ClockCyclesPerBit / 2;
 
-  // UART receiver FSM states (8N1 format: 1 start, 8 data, 1 stop)
+  // One start bit, DATA_WIDTH data bits, no parity, one stop bit.
   typedef enum logic [1:0] {
-    STATE_IDLE      = 2'b00,  // Waiting for start bit (falling edge)
+    STATE_IDLE      = 2'b00,  // Waiting for a low start bit
     STATE_START_BIT = 2'b01,  // Verifying start bit at mid-bit
     STATE_DATA_BITS = 2'b10,  // Receiving data bits (LSB first)
     STATE_STOP_BIT  = 2'b11   // Verifying stop bit
@@ -62,10 +62,9 @@ module uart_rx #(
   logic [DATA_WIDTH-1:0] data_shift_register;  // Holds data being received
   logic [DATA_WIDTH-1:0] data_output_register;  // Holds completed received data
   logic [PrescalerCounterWidth-1:0] baud_rate_prescaler_counter;
-  logic [$clog2(DATA_WIDTH+1)-1:0] bits_remaining_counter;  // Counts down from 8 to 0
+  logic [$clog2(DATA_WIDTH+1)-1:0] bits_remaining_counter;  // Remaining DATA_WIDTH bits
   logic output_valid_registered;
 
-  // Output assignments.
   assign o_data  = data_output_register;
   assign o_valid = output_valid_registered;
 
@@ -96,22 +95,19 @@ module uart_rx #(
           if (!uart_input_synchronized) begin
             next_state = STATE_DATA_BITS;
           end else begin
-            // Still high at mid-bit: the start bit did not hold, so return
-            // to idle.
+            // A high line at mid-bit is a false start.
             next_state = STATE_IDLE;
           end
         end
       end
 
       STATE_DATA_BITS: begin
-        // Move to stop bit after all 8 data bits received
         if (baud_rate_prescaler_counter == 0 && bits_remaining_counter == 1) begin
           next_state = STATE_STOP_BIT;
         end
       end
 
       STATE_STOP_BIT: begin
-        // Return to idle after stop bit sampled
         if (baud_rate_prescaler_counter == 0) begin
           next_state = STATE_IDLE;
         end
@@ -126,7 +122,6 @@ module uart_rx #(
     if (i_rst) begin
       output_valid_registered <= 1'b0;
     end else begin
-      // Clear valid when downstream accepts data
       if (output_valid_registered && i_ready) begin
         output_valid_registered <= 1'b0;
       end
@@ -147,7 +142,7 @@ module uart_rx #(
           // The start bit begins here. Wait half a bit period so the next
           // check lands at its midpoint.
           baud_rate_prescaler_counter <= PrescalerCounterWidth'(HalfBitCycles - 1);
-          bits_remaining_counter <= ($clog2(DATA_WIDTH + 1))'(DATA_WIDTH);  // Will receive 8 bits
+          bits_remaining_counter <= ($clog2(DATA_WIDTH + 1))'(DATA_WIDTH);  // Frame width
           data_shift_register <= '0;
         end
       end

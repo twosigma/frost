@@ -33,9 +33,8 @@
  * READ_LATENCY includes the final registered lane-select mux. The XPM, or its
  * portable behavioral equivalent, supplies READ_LATENCY-1 cycles and the mux
  * supplies the last cycle. i_read_enable qualifies a logical request, and the
- * caller keeps the matching response-valid pipeline. In hardware the physical
- * URAM read port runs continuously, so a late request-valid cone does not
- * feed the enable cascade; only qualified results reach o_read_data.
+ * caller tracks response validity. The hardware URAM read port runs
+ * continuously; only qualified results reach o_read_data.
  *
  * SUPPORT_BULK_CLEAR selects a portable simulation implementation with a
  * one-cycle clear of every physical row. Hardware instances leave it zero so
@@ -108,9 +107,7 @@ module sdp_packed_tag_uram #(
     physical_write_data   = '0;
     physical_write_enable = '0;
     for (int unsigned lane = 0; lane < SlotsPerRow; lane++) begin
-      // Replicate the logical payload into every slot; only the 9-bit write
-      // enables select a destination. This keeps a 72-bit address-controlled
-      // barrel mux off the URAM data input.
+      // All slots receive the payload; write enables select one destination.
       physical_write_data[lane*SlotWidth+:DATA_WIDTH] = i_write_data;
       if (int'(write_lane) == lane) begin
         physical_write_enable[lane*GranulesPerSlot+:GranulesPerSlot] =
@@ -157,8 +154,7 @@ module sdp_packed_tag_uram #(
         .ADDR_WIDTH_B(PhysicalAddrWidth),
         .AUTO_SLEEP_TIME(0),
         .BYTE_WRITE_WIDTH_A(WriteGranuleWidth),
-        // Parallel banks avoid serial address hops through the depth cascade.
-        // XPM retains the requested read latency and write granularity.
+        // Use parallel banks for timing, preserving latency and write granularity.
         .CASCADE_HEIGHT(1),
         .CLOCKING_MODE("common_clock"),
         .ECC_MODE("no_ecc"),
@@ -190,10 +186,7 @@ module sdp_packed_tag_uram #(
         .wea           (physical_write_enable),
         .addra         (write_row_address),
         .dina          (physical_write_data),
-        // The caller qualifies responses independently. Keeping the physical
-        // read port enabled removes the logical request-valid cone from every
-        // URAM in a depth cascade without changing the sampled address or
-        // READ_LATENCY contract.
+        // Read continuously; the final register qualifies responses.
         .enb           (1'b1),
         .addrb         (read_row_address),
         .regceb        (1'b1),
@@ -228,12 +221,10 @@ module sdp_packed_tag_uram #(
   `undef FROST_PACKED_TAG_USE_XPM
 `endif
 
-  // Pipeline the lane beside the row read. The lane advances every cycle like
-  // the physical read port: a lane sampled on an unqualified cycle only ever
-  // reaches the final select on an unqualified cycle, where it is not taken,
-  // so i_read_enable (the caller's late accept decision) drives no clock
-  // enable here. The final registered select is the last cycle counted by
-  // READ_LATENCY and holds across gaps in i_read_enable.
+  // Delay the lane with the row. Unqualified lanes reach the final mux only
+  // when read_valid_pipe is low, so the lane pipeline needs no enable.
+  // The final register supplies the last READ_LATENCY cycle and holds its
+  // output between qualified responses.
   logic [LaneSelectWidth-1:0] read_lane_pipe[XpmReadLatency];
   logic read_valid_pipe[XpmReadLatency];
   always_ff @(posedge i_clk) begin

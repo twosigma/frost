@@ -30,9 +30,8 @@
 
 module ooo_register_files #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
-    // Set when i_bypass_src_addr carries same-edge copies of the read
-    // addresses (the packets' source fields): the commit-bypass hit compares
-    // then use those copies, and the packet fields address only the RAMs.
+    // Use same-edge copies of packet source fields for bypass compares, for
+    // fanout. i_bypass_src_addr must equal the read addresses.
     parameter bit SEPARATE_BYPASS_ADDR = 1'b0
 ) (
     input logic i_clk,
@@ -51,18 +50,12 @@ module ooo_register_files #(
     input logic [                   4:0] i_port1_fp_addr,
     input logic [riscv_pkg::FpWidth-1:0] i_port1_fp_data,
 
-    // Pre-registered bypass qualifiers for the write-back bypass network.
-    // Each is a single FF computed one cycle early from the ROB's
-    // combinational commit, plus the delayed-CSR writeback on port 0, so the
-    // wide hit-compare fanout starts at a register instead of riding the
-    // commit-valid/flush-mask LUT cone. Relative to the write ports above:
+    // Registered bypass qualifiers, including delayed CSR writeback on port 0:
     //   i_bypass_pN_int_we == i_portN_int_we && |i_portN_int_addr
     //   i_bypass_pN_fp_we  == i_portN_fp_we
     //   i_bypass_pN_addr   == the active portN write address
-    // Those hold in every cycle but a full flush, where a qualifier may stay
-    // asserted for a commit whose architectural write was masked off. That
-    // phantom hit only mis-selects operand data for a dispatch that the same
-    // full flush squashes, so it is never consumed.
+    // During full flush, a qualifier may remain set for a masked write. Any
+    // resulting bypass hit is harmless because that flush also kills dispatch.
     input logic       i_bypass_p0_int_we,
     input logic       i_bypass_p1_int_we,
     input logic       i_bypass_p0_fp_we,
@@ -91,7 +84,6 @@ module ooo_register_files #(
     output logic [riscv_pkg::FpWidth-1:0] o_fp_rf_dispatch_rs3_data_2
 );
 
-  // FP data width (declared first: the port aliases below size FP signals).
   localparam int unsigned FpW = riscv_pkg::FpWidth;
 
   // --- Port aliases.
@@ -136,10 +128,7 @@ module ooo_register_files #(
   assign from_id_to_ex   = i_from_id_to_ex;
   assign from_id_to_ex_2 = i_from_id_to_ex_2;
 
-  // Commit-bypass compare addresses. TIMING: with SEPARATE_BYPASS_ADDR the
-  // hit compares, the head of the bypassed-read select, start at a register
-  // copy that loads only them, not at the source fields that also address
-  // every read-port RAM.
+  // Separate source-address copies reduce bypass-compare fanout.
   logic [4:0] byp_rs1, byp_rs2, byp_rs3, byp_rs1_2, byp_rs2_2, byp_rs3_2;
   assign {byp_rs3_2, byp_rs2_2, byp_rs1_2, byp_rs3, byp_rs2, byp_rs1} =
       SEPARATE_BYPASS_ADDR ? i_bypass_src_addr :
@@ -151,11 +140,9 @@ module ooo_register_files #(
   // Register Files (read for dispatch, written at ROB commit)
   // ===========================================================================
 
-  // Integer register file; the header covers its two write ports.
+  // Integer register file.
   localparam int unsigned IntRfWrPorts = 2;
-  // 4 INT read ports: slot-1 dispatch rs1/rs2, slot-2 dispatch rs1/rs2.
-  // Slot-2 dispatch reads are wired through to the RAT's
-  // i_int_regfile_data*_2 inputs.
+  // Each dispatch slot reads rs1 and rs2 for the RAT.
   logic [           4*XLEN-1:0] int_rf_read_data;
   logic [     IntRfWrPorts-1:0] int_rf_write_enable;
   logic [   IntRfWrPorts*5-1:0] int_rf_write_addr;
@@ -169,7 +156,6 @@ module ooo_register_files #(
   logic [             XLEN-1:0] int_rf_dispatch_rs1_data_2;
   logic [             XLEN-1:0] int_rf_dispatch_rs2_data_2;
 
-  // Write-port assembly (port 0 = slot 1, port 1 = slot 2).
   assign int_rf_write_enable = {port1_int_we, port0_int_we};
   assign int_rf_write_addr   = {port1_int_addr, port0_int_addr};
   assign int_rf_write_data   = {port1_int_data, port0_int_data};
@@ -194,14 +180,10 @@ module ooo_register_files #(
       .o_read_data(int_rf_read_data)
   );
 
-  // Commit bypass for the slot-1 reads: port 1 wins a same-address hit, as
-  // in the register file. Both ports write the register file at the same
-  // edge, so this is a same-cycle compare with no cross-cycle tracking.
+  // Slot-1 commit bypass uses same-cycle writes; port 1 wins a same-address hit.
   logic int_hit_dp_rs1_p1, int_hit_dp_rs1_p0;
   logic int_hit_dp_rs2_p1, int_hit_dp_rs2_p0;
 
-  // Each hit is one 5-bit compare against the registered bypass qualifiers
-  // (see the port list), not against the commit-valid logic.
   assign int_hit_dp_rs1_p1 = bypass_p1_int_we && (bypass_p1_addr == byp_rs1);
   assign int_hit_dp_rs1_p0 = bypass_p0_int_we && (bypass_p0_addr == byp_rs1);
 
@@ -246,9 +228,7 @@ module ooo_register_files #(
 
   // FP register file, with the same two write ports as the integer file.
   localparam int unsigned FpRfWrPorts = 2;
-  // 6 FP read ports: slot-1 dispatch rs1/rs2/rs3, slot-2 dispatch
-  // rs1/rs2/rs3. Slot-2 dispatch reads are wired through to the RAT's
-  // i_fp_regfile_data*_2.
+  // Each dispatch slot reads FP rs1, rs2, and rs3 for the RAT.
   logic [          6*FpW-1:0] fp_rf_read_data;
   logic [    FpRfWrPorts-1:0] fp_rf_write_enable;
   logic [  FpRfWrPorts*5-1:0] fp_rf_write_addr;

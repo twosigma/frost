@@ -17,19 +17,12 @@
 /*
   Sequential next-PC values for pc_controller: the next fetch PC, that PC + 2
   (for the catch-up arm), and the next pc_reg. Every candidate increment is
-  added in parallel and the late size selects come after the adders:
-  Instead of:  next_pc = pc + mux(select, 0, 2, 4)  [select→mux→CARRY8]
-  We do:       next_pc = mux(select, pc+2, pc+4)  [CARRY8 in parallel, then mux]
+  added in parallel before selecting the bundle size, for timing.
 
-  The pc_reg sums come from pc_reg_precompute, a separate module that keeps
-  its adders apart from the bundle-size mux. The fetch candidates apply the
-  prediction-holdoff and halfword-target choices before the bundle-size mux.
-  The bundle advance arrives as three selects, for a one-wide bundle, a
-  two-wide bundle, and the squashed (NOP) packet; each result is computed for
-  all three, and the two late controls, the slot-2 validity (which chooses
-  the two-wide select) and i_sel_nop, pick last. For the fetch PC and fetch
-  PC + 2, the redirect/reset holdoff, also a late input, joins that final
-  pick.
+  pc_reg_precompute keeps its adders separate from the bundle-size mux.
+  Compute each result for one-wide, two-wide, and NOP packets, then select
+  with slot-2 validity and i_sel_nop. Fetch PC results also apply the
+  redirect/reset holdoff at the final selection.
 */
 module pc_increment_calculator #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -47,8 +40,7 @@ module pc_increment_calculator #(
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
     // The advance selects by bundle shape: for a one-wide bundle (the slot-1
     // size alone), for a two-wide bundle (both sizes), and for a NOP packet.
-    // The slot-2 validity (i_slot2_valid) and i_sel_nop, the latest controls
-    // in the front end, pick between the finished results last:
+    // Slot-2 validity and i_sel_nop select the result:
     //   merged = i_sel_nop ? nop : (i_slot2_valid ? two : one).
     // The fetch PC's NOP select equals its one-wide select, so it has no
     // separate port. During stall replay IF drives every select from the
@@ -97,9 +89,8 @@ module pc_increment_calculator #(
   // ===========================================================================
   // Parallel Adders for PC (Fetch Address)
   // ===========================================================================
-  // The one-wide +2/+4, the two-wide +6/+8, and +10 (the +2 value after +8).
-  // Build these from the word index so pc[1] selects between precomputed
-  // word increments instead of feeding the full carry chain.
+  // Compute byte increments +2, +4, +6, +8, and +10 (the +2 value after +8)
+  // from shared word-index sums.
   localparam int unsigned PcWordBits = XLEN - 2;
   localparam logic [PcWordBits-1:0] PcWordInc1 = {{(PcWordBits - 1) {1'b0}}, 1'b1};
   localparam logic [PcWordBits-1:0] PcWordInc2 = {{(PcWordBits - 2) {1'b0}}, 2'b10};
@@ -144,11 +135,8 @@ module pc_increment_calculator #(
   // ===========================================================================
   // Parallel Adders for PC_reg (Instruction Address)
   // ===========================================================================
-  // pc_reg + 2/4/6/8 come from the registered i_pc_reg alone and settle well
-  // before the fetch window arrives, so the late bundle-advance select drives
-  // only the 4:1 mux after them and never reaches the CARRY8 chains. The
-  // dont_touch instance keeps the adders in pc_reg_precompute, apart from
-  // that mux (see pc_reg_precompute).
+  // dont_touch keeps pc_reg_precompute's adders separate from the size mux
+  // for timing.
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_if_compressed;
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_if_32bit;
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_plus_6;
@@ -197,12 +185,9 @@ module pc_increment_calculator #(
   logic seq_sel_holdoff;
   assign seq_sel_holdoff = i_any_holdoff_safe;
 
-  // For each bundle size, apply the prediction-holdoff and halfword-target
-  // choices first, without the redirect/reset holdoff. The advance mux then
-  // picks a finished value, and the holdoff joins the late controls only at
-  // the final selection. The keep attributes stop synthesis from moving the
-  // holdoff muxes after the size selection. Both values of a pair reuse the
-  // existing fixed-increment adders, including their wraparound at XLEN bits.
+  // Apply prediction holdoff and halfword alignment before size selection,
+  // preserving this order with keep for timing. The redirect/reset holdoff
+  // is applied last. All sums wrap at XLEN bits.
   localparam int unsigned NAdvance = 4;
   logic [XLEN-1:0] fetch_advance_pc[NAdvance];
   logic [XLEN-1:0] fetch_advance_pc_plus_2[NAdvance];
@@ -257,12 +242,8 @@ module pc_increment_calculator #(
     end
   end
 
-  // The late controls pick last. The two-wide value is used only for a real
-  // two-wide packet; a NOP packet and a one-wide packet both take the one-wide
-  // value, so i_sel_nop and i_slot2_valid form one two-wide permission. The
-  // predecessor release makes i_any_holdoff_safe a late input too, so it is
-  // applied in the same selection. Each bit uses the holdoff, the permission,
-  // and three finished data bits (one LUT5).
+  // Fetch uses the two-wide result only for a real pair; NOPs use the
+  // one-wide result. Redirect/reset holdoff overrides both.
   (* keep = "true" *) logic fetch_two_wide;
   assign fetch_two_wide = !i_sel_nop && i_slot2_valid;
   assign o_seq_next_pc = i_any_holdoff_safe ? next_pc_plus_4 :
@@ -270,11 +251,8 @@ module pc_increment_calculator #(
   assign o_seq_next_pc_plus_2 = i_any_holdoff_safe ? next_pc_plus_6 :
       fetch_two_wide ? seq_next_pc_plus_2_shape[ShapeTwo] : seq_next_pc_plus_2_shape[ShapeOne];
 
-  // pc_reg: the holdoff holds it, a NOP packet takes the NOP shape, and the
-  // slot-2 validity picks between the two bundle shapes. The hold and the NOP
-  // shape are merged first, so the final selection is one LUT6 of the two
-  // late controls, that value, the slot-2 validity, and the two bundle
-  // values.
+  // pc_reg holds on holdoff, advances by the NOP shape for a bubble, and
+  // otherwise uses the selected bundle size.
   (* keep = "true" *) logic [XLEN-1:0] seq_next_pc_reg_hold_or_nop;
   (* keep = "true" *) logic seq_next_pc_reg_hold_or_nop_sel;
   assign seq_next_pc_reg_hold_or_nop = seq_sel_holdoff ? i_pc_reg : pc_reg_normal_shape[ShapeNop];
@@ -283,9 +261,8 @@ module pc_increment_calculator #(
       i_slot2_valid ? pc_reg_normal_shape[ShapeTwo] : pc_reg_normal_shape[ShapeOne];
 
 `ifdef PC_INCREMENT_HOLDOFF_PROOF
-  // Reference for the pc_increment_holdoff formal target: the holdoff applied
-  // inside each size candidate, then the same size selection by the merged
-  // shape, with every input free (including the shape selects and controls).
+  // Compare with holdoff applied inside each size candidate, allowing
+  // arbitrary shape selects and controls.
   logic [XLEN-1:0] f_seq_candidate[NAdvance], f_seq_plus_2_candidate[NAdvance];
   logic [XLEN-1:0] f_seq_result[NFetchShapes], f_seq_plus_2_result[NFetchShapes];
   always_comb begin
@@ -415,17 +392,9 @@ module pc_increment_calculator #(
   // ===========================================================================
   // Precomputed (o_seq_next_pc_reg != i_pc): compare-then-mux form
   // ===========================================================================
-  // pc_controller's pending-prediction decision needs the full-width
-  // compare of the next pc_reg with the fetch PC (see
-  // pc_reg_next_misses_fetch_pc_for_prediction there). Comparing the muxed
-  // value would put the wide compare after the late advance select, so each
-  // candidate is compared instead. The increment comparisons use local carry
-  // relations between i_pc and i_pc_reg, independently of the wide sums. The
-  // five comparisons run in parallel and the late selects pick among 1-bit
-  // results. The arms below mirror the
-  // o_seq_next_pc_reg selection arm for arm, including pc_reg_advance_mux's
-  // default to the +2 candidate, so the result equals
-  // (o_seq_next_pc_reg != i_pc) exactly.
+  // pc_controller needs (o_seq_next_pc_reg != i_pc) for pending predictions.
+  // Compare each candidate before selecting, for timing. These arms must
+  // mirror o_seq_next_pc_reg, including the default +2 increment.
   logic neq_hold, neq_plus2, neq_plus4, neq_plus6, neq_plus8;
   logic neq_advance_sel;
   assign neq_hold = (i_pc_reg != i_pc);

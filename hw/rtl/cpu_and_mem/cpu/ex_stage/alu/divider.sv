@@ -156,13 +156,10 @@ module divider #(
   // Formal Verification
   // ===========================================================================
 `ifdef FORMAL
-  // formal/divider.sby checks results against a reference at a small width.
-  // Every start reloads the whole datapath, so an operation behaves the same
-  // whatever came before it, and a bounded check that covers one complete
-  // operation from reset, with arbitrary operands, kills and accept delays,
-  // covers every operation. With DIVIDER_FORMAL_NO_REFERENCE (the 64-bit
-  // induction) the reference is left out and the invariants below carry the
-  // proof: the step count, and a remainder that stays below the divisor.
+  // Every start reloads the datapath, so prior operations cannot affect the
+  // result. The reference checks arbitrary operands, kills, and accept delays.
+  // DIVIDER_FORMAL_NO_REFERENCE omits it and checks step count and remainder
+  // bounds instead.
   initial assume (i_rst);
 
   logic f_past_valid = 1'b0;
@@ -239,11 +236,9 @@ module divider #(
       end
       if ($past(!i_rst)) begin
         if ($past(running_q) && done_q) assert (f_cycles == (f_word ? HalfWidth : WIDTH));
-        // Progress: a start runs, every step but the last keeps running, and
-        // the last one reaches done, unless a kill intervenes. Only a start
-        // leaves idle (MUL_RS's divide gate relies on it). A killed operation
-        // is gone on the next cycle, and a held result stays until it is
-        // taken.
+        // Only start may leave idle (required by the MUL_RS divide gate). Steps
+        // progress to done unless killed; kill returns idle next cycle. Done and
+        // result must remain stable until accept or kill.
         if ($past(o_idle && i_start && !i_kill)) assert (running_q);
         if ($past(running_q && steps_left_q != '0 && !i_kill)) assert (running_q);
         if ($past(running_q && steps_left_q == '0 && !i_kill)) assert (done_q);

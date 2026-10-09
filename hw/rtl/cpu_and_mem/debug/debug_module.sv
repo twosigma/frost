@@ -15,31 +15,24 @@
  */
 
 /*
- * RISC-V Debug Module (Debug Spec 0.13.2 chapter 3),
- * minimal profile: one hart (hartsel reads as 0), halt/resume/single-step
- * through the core's Debug Mode take class, abstract "access register"
- * commands for the GPRs, an 8-word program buffer with impebreak,
- * abstractauto over data0/data1, ndmreset, no system bus access (memory is
- * reached through the program buffer, as OpenOCD does), authentication absent
- * (always authenticated).
+ * RISC-V Debug Module (Debug Spec 0.13.2 chapter 3).
+ * One hart (hartsel reads zero), halt/resume/single-step through Debug Mode,
+ * abstract GPR access, eight program-buffer words with impebreak,
+ * abstractauto for data0/data1, and ndmreset. Always authenticated.
+ * Memory access uses the program buffer; there is no system bus access.
  *
- * How commands execute. The hart, once halted, sits in the debug slice's
- * park loop (riscv_pkg::DebugParkAddr). The module holds the slice's words
- * and lands them in the low BRAM through debug_slice_writer: the fixed words
- * (park, nop, the terminating ebreak, the resume dret) plus the abstract
- * words a0..a2 and the program buffer. An abstract command becomes
- *   a0 = the transfer instruction: csrw ddata,xN for a read, csrr xN,ddata
- *        for a write (ddata is the hart's 64-bit view of {data1,data0}),
- *   a1/a2 = ebreak (no postexec) or nop/nop flowing into the program
- *        buffer, whose implicit ebreak re-parks the hart;
- * the module waits until every dirty slice word is written and visible,
- * then requests the core's go redirect to a0. The re-park on the ebreak (or
- * on any other exception: cmderr 3) completes the command. resumereq is the
- * same go to the resume word; dret leaves Debug Mode and resumeack follows.
- * Slice words are tracked with a dirty vector so a DMI write never has to
- * wait for the writer FIFO: progbuf writes and command starts mark words
- * dirty and the sync engine pushes them in the background; every go waits
- * for a clean slice.
+ * A halted hart waits at riscv_pkg::DebugParkAddr. debug_slice_writer copies
+ * fixed, abstract, and program-buffer instructions into the low BRAM.
+ * An abstract command uses:
+ *   a0 = csrw ddata,xN to read a GPR, csrr xN,ddata to write one, or nop
+ *        without a transfer. ddata is the 64-bit view of {data1,data0}.
+ *   a1/a2 = ebreak without postexec, or nop/nop to enter the program buffer.
+ *        Its implicit ebreak returns the hart to the park loop.
+ * Dirty words are written in the background, so DMI need not wait for the
+ * writer FIFO. Every go waits until all words are visible. The command
+ * completes when the hart parks again; exceptions other than ebreak set cmderr 3.
+ * resumereq redirects to the resume word; dret leaves Debug Mode, then
+ * resumeack asserts.
  *
  * Register map (DMI addresses): data0/1 0x04-0x05, dmcontrol 0x10, dmstatus
  * 0x11, hartinfo 0x12 (nscratch 2, dataaccess 0, datasize 1, dataaddr
@@ -158,8 +151,7 @@ module debug_module #(
     CmdGo,         // request the redirect to a0
     CmdWaitStart,  // the hart leaves the park loop
     CmdWaitDone,   // ...and re-parks
-    CmdCheck       // one cycle later: judge the command once the park cycle's
-                   // (registered) overflow pulse has arrived
+    CmdCheck       // wait one cycle for the park cycle's overflow pulse
   } cmd_state_e;
   cmd_state_e cmd_state_q;
 
@@ -182,12 +174,8 @@ module debug_module #(
   // ---------------------------------------------------------------------------
   // DMI decode
   // ---------------------------------------------------------------------------
-  // A request that arrives while the module is in reset waits, and is
-  // handled and answered once the reset ends, like any access then (with
-  // dmactive 0); dtm_core reports busy meanwhile. dtm_core holds the
-  // request's payload until its answer, so the payload is still on the inputs
-  // then. Every request is answered exactly once: dtm_core waits for every
-  // answer.
+  // Retain a request across reset and answer it once reset ends, with
+  // dmactive=0. dtm_core stays busy and holds the payload until the answer.
   logic dmi_req_pending_q = 1'b0;
   logic dmi_req_valid;
   assign dmi_req_valid = (i_dmi_req_valid || dmi_req_pending_q) && !i_rst;
@@ -280,7 +268,6 @@ module debug_module #(
   assign cmd_autoexec_req = dmactive_q && (dmi_read || dmi_write) &&
       ((addr == AddrData0 && autoexecdata_q[0]) || (addr == AddrData1 && autoexecdata_q[1]));
   assign cmd_start_req = cmd_write_req || cmd_autoexec_req;
-  // The command to evaluate: the written value, or the retained one.
   logic [31:0] cmd_value;
   assign cmd_value = cmd_write_req ? wdata : command_q;
 
@@ -390,7 +377,6 @@ module debug_module #(
         dirty_q <= i_debug_mode ? {SliceWords{1'b1}} & ~16'h0003 : {SliceWords{1'b1}};
       end
 
-      // Slice sync engine.
       if (sync_fire) dirty_q[sync_idx] <= 1'b0;
 
       // ---- DMI writes ----
@@ -481,9 +467,8 @@ module debug_module #(
         CmdWaitStart: if (!i_parked) cmd_state_q <= CmdWaitDone;
         CmdWaitDone: if (i_parked) cmd_state_q <= CmdCheck;
         CmdCheck: begin
-          // i_cmd_err is sticky until the next go; i_slice_overflow arrives one
-          // cycle late, so together with the sticky flag this covers every
-          // mirror push refused up to and including the park cycle.
+          // The extra cycle catches a refused mirror push in the park cycle.
+          // i_cmd_err and overflow_seen_q retain earlier errors.
           if (i_cmd_err) cmderr_q <= CmderrException;
           else if (overflow_seen_q || i_slice_overflow) cmderr_q <= CmderrOther;
           cmd_state_q <= CmdIdle;

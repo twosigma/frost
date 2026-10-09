@@ -106,8 +106,7 @@ module lq_coherence_port #(
     line_of = addr[XLEN-1:LineLsb];
   endfunction
 
-  // True when tag is younger than flush_tag, measured from head (the ROB's
-  // should_flush_entry / the SC unit's is_younger).
+  // Compare tag ages relative to the ROB head for partial flushes.
   function automatic logic is_younger(input logic [TagWidth-1:0] tag,
                                       input logic [TagWidth-1:0] flush_tag,
                                       input logic [TagWidth-1:0] head);
@@ -130,9 +129,8 @@ module lq_coherence_port #(
   end
 
   // ---------------------------------------------------------------------------
-  // SC window: the head SC's line is captured every cycle (no deep enable);
-  // a registered successful fire opens the window on that captured line, and
-  // it closes once the committed SC's store has drained.
+  // SC window: capture the head line each cycle. A registered successful fire
+  // opens the window; draining the committed SC store closes it.
   // ---------------------------------------------------------------------------
   logic sc_head_valid_q, sc_fired_q;
   logic [LineBits-1:0] sc_head_line_q;
@@ -143,17 +141,11 @@ module lq_coherence_port #(
   logic [TagWidth-1:0] sc_hold_tag_q;
 
   // ---------------------------------------------------------------------------
-  // Admission pipeline. The admit answer is computed one cycle after the
-  // presented request is registered here and returned a cycle later,
-  // qualified by the presented slot, so nothing combinational crosses the
-  // hierarchy: the load queue's comparators start from this module's flops
-  // and end in one. The window between that check and the atomic launches it
-  // could miss is closed by blanket holds: the load queue holds every staged
-  // AMO/LR launch and the SC unit holds every SC fire in the cycle the answer
-  // is presented (the fire cycle) and the cycle after it, by which time the
-  // mirror-based holds have caught up. An atomic captured in the decision
-  // cycle is staged when the admission fires, and its first launch waits for
-  // its own compare against the mirror (the load queue's coh_hold_valid_q).
+  // Admission takes two register stages: capture the request, then return the
+  // decision qualified by slot. Blanket holds block AMO/LR launches and SC
+  // fires during the answer cycle and the next cycle, until mirror-based holds
+  // are ready. An atomic captured during the decision cycle must wait for its
+  // own mirror comparison (load_queue.coh_hold_valid_q).
   // ---------------------------------------------------------------------------
   logic adm_req_valid_q;
   logic [LockBits-1:0] adm_req_slot_q;
@@ -174,8 +166,7 @@ module lq_coherence_port #(
   // a latched entry, so a mismatch only means the entry has moved on.
   assign o_admit_ready = admit_ready_q && i_admit_valid && (i_admit_slot == admit_ready_slot_q);
   assign admit_fire = o_admit_ready;
-  // One flop for the load queue's launch gate: the same OR of the decision
-  // and fired cycles, registered from their next-state values.
+  // Register the hold for the admission answer cycle and the following cycle.
   assign admit_ready_d = adm_req_valid_q && !i_lq_query_busy && !sc_conflict && !admit_fire;
   assign o_lq_admit_pulse = lq_admit_pulse_q;
   // sc_hold_q was computed for the head named by sc_hold_tag_q; a different
@@ -186,12 +177,8 @@ module lq_coherence_port #(
   assign o_sc_hold = sc_hold_q || !sc_hold_current || admit_ready_q || admit_fired_q;
 
   // ---------------------------------------------------------------------------
-  // Invalidation, applied from flops in four cycles from the sequencer's
-  // request: register the line, apply it (L0 clear, slot marks, reservation)
-  // while capturing local line copies, compare the validation table and the
-  // observation still in the pipeline register, report done. The replay
-  // comparators use the local copies for groups of eight ROB rows; they need
-  // no additional handshake cycle.
+  // Invalidation takes four cycles: capture the line, invalidate the LQ,
+  // compare table and pending observations, then report done.
   // ---------------------------------------------------------------------------
   logic [1:0] inval_phase_q;
   logic lq_inval_valid_q;
@@ -201,17 +188,12 @@ module lq_coherence_port #(
   assign o_inval_done     = (inval_phase_q == 2'd3);
 
   // ---------------------------------------------------------------------------
-  // Validation table with its observation pipeline register. One entry per ROB
-  // tag, written from the pipeline register one cycle after the load queue
-  // reports a cached load's memory observation (an L0 hit, a store-queue
-  // forward or a launch to the L1D), and cleared when the tag retires (both
-  // commit slots) or is flushed. A load stays validated from its observation
-  // to its retirement, so its value is equivalent to one observed at
-  // retirement; with stores ordered at the L1D before a FENCE retires and
-  // device loads completing at the head, that is what makes every FENCE
-  // variant, acquire and same-address ordering hold under a second agent
-  // without serializing loads. The replay mask is registered, so the line
-  // comparators sit off the ROB's commit cone.
+  // Record each cached load's observation by ROB tag one cycle after the LQ
+  // reports an L0 hit, SQ forward, or L1D launch. Keep it until commit or flush.
+  // Replaying invalidated observations makes a retired value equivalent to
+  // one observed at retirement. Together with store ordering before FENCE and
+  // head-only device loads, this preserves FENCE, acquire, and same-address
+  // ordering under DMA writes. Register the replay mask for timing.
   // ---------------------------------------------------------------------------
   logic obs_pend_valid_q;
   logic [TagWidth-1:0] obs_pend_tag_q;
@@ -219,22 +201,18 @@ module lq_coherence_port #(
   logic [RobDepth-1:0] obs_valid_q;
   logic [LineBits-1:0] obs_line_q[RobDepth];
   logic [RobDepth-1:0] replay_mask_d, replay_mask_q;
-  // Phase 1 separates the line capture from the phase-2 replay comparison, so
-  // local copies captured in that cycle add no cycle to the comparison or the
-  // done pulse.
+  // Phase 1 captures local line copies for phase-2 replay comparisons.
   localparam int unsigned ReplayCompareGroupSize = 8;
   localparam int unsigned ReplayCompareGroups =
       (RobDepth + ReplayCompareGroupSize - 1) / ReplayCompareGroupSize;
-  // Preserve the row groups so the load-queue launch and the replay compares
-  // can place independently, with only a register-to-register hop between.
+  // Preserve per-group line copies for fanout.
   (* dont_touch = "true" *) logic [LineBits-1:0] inval_compare_line_q[ReplayCompareGroups];
   for (
       genvar group_index = 0; group_index < ReplayCompareGroups; group_index++
   ) begin : gen_compare_line
     always_ff @(posedge i_clk) inval_compare_line_q[group_index] <= inval_line_q;
   end
-  // Complete small equality groups before their final reduction, avoiding
-  // column-bound carry chains across the distributed validation rows.
+  // Compare line addresses in chunks for timing.
   localparam int unsigned LineCompareBits   = 15;
   localparam int unsigned LineCompareChunks = (LineBits + LineCompareBits - 1) / LineCompareBits;
   (* keep = "true" *) logic [RobDepth-1:0][LineCompareChunks-1:0] observed_equal_chunks;
@@ -324,9 +302,8 @@ module lq_coherence_port #(
   wire f_replay_expected = (inval_phase_q == 2'd2) &&
       ((f_accepted_q && f_latest_line_q == inval_line_q) ||
        (f_table_expected && f_table_line == inval_line_q));
-  // Reference the original payload write, including its reset/flush gates.
-  // The implementation may overwrite a killed row, but that row must remain
-  // invisible until a later accepted observation replaces its payload.
+  // Compare against a reset/flush-qualified payload write. A killed row stays
+  // hidden until a later accepted observation replaces its payload.
   logic [LineBits-1:0] f_payload_reference_q;
   always_ff @(posedge i_clk) begin
     if (i_rst_n && f_pending && !f_kill) f_payload_reference_q <= obs_pend_line_q;
@@ -339,10 +316,8 @@ module lq_coherence_port #(
     if (!f_observation_past_valid) assume (!i_rst_n);
 `ifndef COHERENCE_OBSERVATION_UNRESTRICTED
     if (i_rst_n && f_observation_past_valid) begin
-      // A load observes before completion, CDB acceptance and ROB retirement;
-      // this port receives registered commit lanes. Proving that integration
-      // timing is a separate obligation. Use input history, not DUT validity,
-      // to exclude retirement overlapping the current or previous observation.
+      // Require retirement after observation and the following cycle. This port
+      // receives registered commits; the producer must satisfy that timing.
       if (f_commit) assume (!f_observe && !f_observe_previous_q);
     end
 `endif
@@ -382,8 +357,7 @@ module lq_coherence_port #(
       if (o_replay_set_mask[f_observation_tag])
         assert ($past(i_rst_n && f_observed_q && inval_phase_q == 2'd2));
 `endif
-      // Strengthen induction across the actual invalidation pipeline. The
-      // observation proof uses the captured line, not the optimized compares.
+      // Relate local line copies to the captured line during replay and done.
       if (inval_phase_q == 2'd2 || inval_phase_q == 2'd3) begin
         for (int group_index = 0; group_index < ReplayCompareGroups; group_index++)
         assert (inval_compare_line_q[group_index] == inval_line_q);
@@ -578,11 +552,9 @@ module lq_coherence_port #(
     end
   end
 
-  // A killed pending observation may still write its hidden line. The same
-  // reset/flush clears that row's valid bit, and every later valid insertion
-  // overwrites the line on the same edge. Keeping the registered pending bit
-  // as the payload enable removes the current-cycle age/flush comparison
-  // from all of the wide table's clock enables without adding a cycle.
+  // A killed observation may write its hidden line: reset/flush clears valid,
+  // and any later insertion replaces the line on the edge that sets valid.
+  // Use the pending bit alone as the payload enable for timing.
   always_ff @(posedge i_clk) begin
     if (obs_pend_valid_q) obs_line_q[obs_pend_tag_q] <= obs_pend_line_q;
   end

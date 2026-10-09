@@ -1,5 +1,4 @@
-# RAM primitives library file list
-# Generic FPGA memory primitives for use across the design
+# FPGA RAM primitives
 
 # Simple dual-port distributed RAM (async read, sync write)
 $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv

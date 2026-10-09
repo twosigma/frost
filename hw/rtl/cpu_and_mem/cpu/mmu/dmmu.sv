@@ -15,21 +15,16 @@
  */
 
 /*
- * dmmu: data-side Sv39 translation, between the MEM_RS address adder and the
- * LQ/SQ address updates. It is used only while data translation is on
- * (satp.MODE is Sv39 and the effective data privilege is below M); otherwise
- * the wrapper bypasses it, with no added latency. i_active, i_sum, i_mxr, and
- * i_eff_priv_u are registered CSR state that changes only with a full flush.
+ * Data-side Sv39 translation between the MEM_RS address adder and LQ/SQ.
+ * The wrapper bypasses this module without delay when translation is off.
+ * i_active, i_sum, i_mxr, and i_eff_priv_u are registered CSR state; changes
+ * are accompanied by a full flush.
  *
- * Each op passes two registered stages, and DTLB hits flow at one op per
- * cycle. S1 holds the op while the DTLB lookup, the checks, and any walk
- * complete; S2 registers the result. Every consumer pulse fires from S2 (the
- * LQ packet, the SQ address and data packets, the ROB store completion, the
- * store fault strobe, and the SC-table address fill), which keeps the TLB
- * lookup off the issue-ready, ROB-done, and queue-CAM paths. A faulting op
- * carries its VA (for xtval) in place of the PA, and the wrapper routes the
- * fault to the LQ entry (loads, LR, AMOs) or the store fault strobe (stores,
- * SC).
+ * Operations pass through two registered stages. S1 holds the operation
+ * until its DTLB lookup, checks, and any walk complete. S2 registers the
+ * result and drives every consumer pulse. Hits sustain one operation per
+ * cycle. Faults carry the VA for xtval instead of a PA; the wrapper routes
+ * them to the LQ for loads/LR/AMOs or the store fault strobe for stores/SC.
  */
 module dmmu (
     input logic i_clk,
@@ -157,14 +152,10 @@ module dmmu (
   iss_payload_t s0_q, s1_q;
   logic s1_walk_asked_q;
 
-  // Kills. A full flush empties the pipe. A partial flush drops ops younger
-  // than the flush tag from S0, S1, and S2, and from the issue port itself:
-  // MEM_RS presents an issue without checking a same-cycle flush
-  // (hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/README.md,
-  // "Flushes"). Untranslated, such an op is harmless because the LQ or SQ
-  // entry it names dies on that edge, but this pipe would deliver it cycles
-  // later, after its ROB tag was reused on the correct path, and its fault or
-  // address would land on the wrong op. vm_test case W covers this.
+  // Full flush empties the pipe; partial flush kills younger operations in
+  // S0, S1, S2, and at issue. MEM_RS does not gate issue on same-cycle flush
+  // (reservation_station/README.md, "Flushes"). Without an issue kill, this
+  // pipe could deliver an address or fault after the flushed ROB tag is reused.
   logic iss_killed;
   assign iss_killed = i_flush_en && is_younger(iss_in.tag, i_flush_tag, i_head_tag);
 
@@ -199,9 +190,8 @@ module dmmu (
   logic [2:0] tlb_hi_nonzero;
   logic [2:0] tlb_r, tlb_w, tlb_x, tlb_u, tlb_d;
   logic [2:0] tlb_device_page;
-  // The DTLB's per-entry verdicts for each port's hit: the leaf permission
-  // check (port 0 with the S1 op's access type, the early slots as stores)
-  // and pma_atomic_ok of the PA.
+  // Per-entry permission and atomic PMA checks. Port 0 uses S1's access type;
+  // the early ports request store permissions.
   logic [2:0] tlb_perm_ok, tlb_atomic_page;
 
   assign tlb_vpn[0] = s1_q.va[38:12];
@@ -211,11 +201,8 @@ module dmmu (
   logic walk_resp_for_s1;
   assign walk_resp_for_s1 = i_walk_resp_valid && s1_valid_q && (i_walk_resp.vpn == s1_q.va[38:12]);
 
-  // Resolve the TLB leaf and the walk-response leaf in parallel, then select
-  // between the finished results. Selecting their raw PPN and permission
-  // fields first would put the late TLB hit ahead of the PMA check, fault
-  // classification, and the VA/PA mux. A TLB hit still wins over a
-  // simultaneous walk response.
+  // Resolve TLB and walk leaves in parallel, for timing. A TLB hit wins over
+  // a simultaneous walk response.
   logic [19:0] walk_ppn20;
   always_comb begin
     unique case (i_walk_resp.level)
@@ -240,11 +227,9 @@ module dmmu (
   logic walk_device_page;
   assign walk_device_page = riscv_pkg::pma_device_page_ok(walk_ppn20);
 
-  // The PMA of the op's access type on a zero-extended PA: the atomic map
-  // (BRAM and cached DDR), plus the device windows for a load or store (AMO,
-  // LR, and SC leave them out). A DTLB hit uses the DTLB's per-entry atomic
-  // and device-window bits instead, which keeps both decodes off the PPN mux;
-  // a walk response uses its own.
+  // PMA permits BRAM and cached DDR for all access types, plus device windows
+  // for non-atomic loads and stores. DTLB hits use per-entry checks; walk
+  // responses are checked here.
   function automatic logic leaf_pma_ok(input logic [riscv_pkg::XLEN-1:0] pa,
                                        input logic device_page);
     leaf_pma_ok = riscv_pkg::pma_atomic_ok(pa) || (device_page && !s1_q.atomic);
@@ -282,13 +267,8 @@ module dmmu (
   assign tlb_resolve_addr  = (tlb_fault == riscv_pkg::DFAULT_NONE) ? tlb_pa : s1_q.va;
   assign walk_resolve_addr = (walk_fault == riscv_pkg::DFAULT_NONE) ? walk_pa : s1_q.va;
 
-  // MMIO class of each candidate, computed before the TLB/walk selection: a
-  // clean leaf onto a device-window page, for an op that is not atomic
-  // (atomics fault there). The DTLB computes the hit's permission check and
-  // device-window bit per entry, so the class needs only those and the high
-  // PPN bits, not the PPN mux, the full fault, or the address mux.
-  // DMMU_MMIO_LOCAL_PROOF (formal target dmmu_mmio) checks it against the
-  // class of the complete resolution.
+  // MMIO requires a fault-free device-page leaf and a non-atomic operation.
+  // Compute each candidate before selecting TLB or walk response, for timing.
   (* keep = "true" *) logic tlb_is_mmio, walk_is_mmio;
   assign tlb_is_mmio = tlb_perm_ok[0] && !tlb_hi_nonzero[0] && !s1_q.atomic && tlb_device_page[0];
   assign walk_is_mmio = (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && leaf_perm_ok(
@@ -348,12 +328,8 @@ module dmmu (
     end
   end
 
-  // The resolution returns the PA (rather than the VA) exactly when the op
-  // resolves cleanly from the TLB or from a walk response: resolve_addr is
-  // resolve_pa ? {32'b0, resolve_ppn, va[11:0]} : va. S2 stores the VA, the
-  // PPN and this bit separately, so the late TLB verdict reaches one flop
-  // instead of selecting (or, for the zero upper half, resetting) the 64
-  // address bits; p_resolve_addr_exact checks the identity.
+  // Return PA only for a fault-free TLB or walk result; otherwise retain VA
+  // for xtval. Store VA, PPN, and the select separately in S2, for timing.
   logic resolve_pa;
   logic [19:0] resolve_ppn;
   assign resolve_pa = s1_valid_q && !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical &&
@@ -411,11 +387,8 @@ module dmmu (
     end
   end
 
-  // The skid's payload is read only while s0_valid_q is set, so it takes the
-  // issue port on every cycle the skid is empty, and it holds the op that
-  // slipped in once s0_valid_q sets. The load enable of every payload bit is
-  // then !s0_valid_q, a register, instead of S1's resolution through the
-  // DTLB compare.
+  // Sample issue while the skid is empty, then hold it while s0_valid_q is
+  // set. Only valid skid data is consumed.
   always_ff @(posedge i_clk) begin
     if (!s0_valid_q) s0_q <= iss_in;
   end
@@ -434,8 +407,7 @@ module dmmu (
   end
 `endif
 
-  // The skid's valid bit holds MEM_RS issue, so the MEM_RS ready logic sees
-  // one register and nothing of the TLB.
+  // The registered skid-valid bit stalls MEM_RS issue.
   assign o_stall = s0_valid_q;
 
   // ---------------------------------------------------------------------------
@@ -451,10 +423,8 @@ module dmmu (
   logic s2_needs_sq_q, s2_is_sc_q;
   logic [riscv_pkg::XLEN-1:0] s2_store_data_q, s2_amo_rs2_q;
 
-  // tlb_is_mmio arrives after the resolution qualifiers, so the next S2 MMIO
-  // bit is computed for both of its values (including the hold when nothing
-  // resolves) and tlb_is_mmio selects last. The other S2 fields load every
-  // cycle (see the S2 registers).
+  // Compute S2's next MMIO bit for both tlb_is_mmio values and select last,
+  // for timing. Hold the bit when no operation resolves.
   (* keep = "true" *) logic [1:0] s2_mmio_cases;
   logic s2_mmio_next;
   for (genvar mmio = 0; mmio < 2; mmio++) begin : gen_s2_mmio_cases
@@ -479,12 +449,8 @@ module dmmu (
     end else begin
       s2_valid_q <= s1_move;
     end
-    // The S2 payload is read only while s2_valid_q is set (every consumer is
-    // qualified by an S2 pulse or by o_iss_out_valid), and s2_valid_q is set
-    // only after a resolution. The payload therefore loads S1's resolution
-    // every cycle, with no enable: the resolution, its flush kill and the
-    // TLB lookup behind them reach no payload enable. p_s2_payload_exact
-    // checks it against a copy loaded only on a resolution.
+    // Load payload every cycle. s2_valid_q sets only after resolution and
+    // qualifies every consumer, so extra captures are unused.
     s2_tag_q <= s1_q.tag;
     s2_va_q <= s1_q.va;
     s2_ppn_q <= resolve_ppn;
@@ -544,15 +510,9 @@ module dmmu (
   assign o_pre_rob_tag = s1_q.tag;
   assign o_pre_needs_lq = s1_valid_q && !s1_q.needs_sq;
 
-  // Walk request: the op in S1 is live, is neither a trapping misaligned
-  // access nor non-canonical, is not resolved by a matching walk response,
-  // has not asked yet, and missed the DTLB. The request is built from these
-  // terms directly, not from the resolution mux, and the late TLB hit gates
-  // only the finished request, which keeps the path from the lookup to the
-  // walker's state enable short. Valid stays high until the walker accepts,
-  // and an op asks once (a second ask would be harmless, since responses are
-  // matched by VPN, but wasteful). No request is made during a TLB
-  // invalidate.
+  // Request a walk once for a live, canonical S1 miss with no trapping
+  // misalignment or matching response. Hold valid until accepted. Suppress
+  // requests during invalidate; responses are matched by VPN.
   (* keep = "true" *) logic s1_walk_eligible;
   assign s1_walk_eligible = s1_valid_q && !(i_trap_misaligned && s1_misaligned) &&
       !s1_noncanonical && !walk_resp_for_s1 && !s1_walk_asked_q &&
@@ -563,17 +523,13 @@ module dmmu (
   // ---------------------------------------------------------------------------
   // Early opportunistic ports: VA registered, lookup, result registered.
   // ---------------------------------------------------------------------------
-  // These translate the two store early-address pipelines' addresses so an SQ
-  // entry can get its PA before MEM_RS issues the store. They never stall and
-  // never fault: a hit with full store permission on a canonical VA and an
-  // in-map PA gives the PA two cycles after the request, and anything else
-  // drops the early update. The issue port translates every store again and
-  // reports every fault. Once an SQ entry's address is valid, later address
-  // writes to it are ignored, so a stale prefill would stick. None can: every
-  // translation change comes with a full flush, which kills every store that
-  // could have been prefilled under the old translation, and the wrapper
-  // drops the delayed early packets on any flush, so a killed store's prefill
-  // cannot reach a correct-path store that reuses its tag.
+  // Early store ports return a PA two cycles after the request when the VA is
+  // canonical and the TLB hit grants store permission with an in-map PA;
+  // otherwise they drop the update without stalling or faulting. Issue
+  // translates again and reports faults. SQ ignores later writes once an
+  // address is valid, so translation changes must flush prefilled stores.
+  // The wrapper drops delayed early packets on any flush to prevent updates
+  // to correct-path stores that reuse a killed tag.
   logic e1_valid_q, e2_valid_q;
   logic [riscv_pkg::XLEN-1:0] e1_va_q, e2_va_q;
   always_ff @(posedge i_clk) begin

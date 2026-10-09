@@ -15,9 +15,7 @@
  */
 
 /*
- * nic_top: the NIC. The core-domain side (registers, interrupt block, reset
- * controller, DMA front-end, RX and TX engines) around nic_mac_wrap (the
- * MAC/PCS in its own clock domains, the packet FIFOs and the crossings).
+ * NIC integration across the core and MAC clock domains.
  *
  * Toward the SoC: the register window (32-bit writes and a 64-bit read pair,
  * by byte offset), one DMA line port (ids of IdBits), and a level interrupt.
@@ -87,12 +85,8 @@ module nic_top #(
   // ---- reset controller and the MAC domains -------------------------------------------
   logic reset_req, stop_dma, soft_rst, reset_busy, front_idle;
   logic [1:0] clk_ok, in_reset, applied_gen, applied_valid, req, gen, core_rst_dom, ready;
-  // rst_q reproduces the caller's registered reset exactly (i_rst is its next
-  // value). nic_rst_q equals rst_q || soft_rst in every cycle, computed one
-  // cycle ahead from i_rst and the reset controller's next core-reset value.
-  // Both are local registers that synthesis can replicate (max_fanout), so the
-  // engines' many enables and write enables are not all driven from wherever
-  // the CPU's reset replica sits.
+  // i_rst is the caller's next reset value, so rst_q matches its registered
+  // reset. Compute nic_rst_q ahead of the edge to equal rst_q || soft_rst.
   logic core_rst_next;
   (* keep = "true", equivalent_register_removal = "no", max_fanout = 64 *)logic rst_q;
   (* keep = "true", equivalent_register_removal = "no", max_fanout = 128 *)logic nic_rst_q;

@@ -17,11 +17,8 @@
 // =============================================================================
 // sq_forwarding_unit
 // =============================================================================
-// Store-to-load forwarding CAM, in three blocks:
-//   * Block 1: per-entry qualification (older store, address overlap,
-//     can-forward) from the FF-based SQ fields.
-//   * Block 2: newest-conflicting-store priority select.
-//   * Block 3: register the result, breaking the MEM_RS -> SQ scan -> LQ path.
+// Store-to-load forwarding CAM. Qualify entries, select the newest conflicting
+// store, and register the result for the next cycle.
 //
 // Overlap is per aligned dword, as on the data bus (hw/rtl/README.md,
 // "Data-tier bus contract"): every access is one dword beat with an 8-lane byte
@@ -29,16 +26,14 @@
 // intersect, and a store can forward when its mask covers the load's. The
 // forwarded payload is the store data shifted to its byte lanes in the aligned
 // dword. The LQ extracts from it by the load's own addr[2:0], or takes it whole
-// for FLD/LD. The masks and the payload shift assume naturally aligned
-// accesses. With a nonzero mtvec base (i_trap_misaligned_accesses), a
-// misaligned access traps before reaching this CAM. With a zero base, the
-// hardware does not check alignment, and a misaligned store forwards its data
-// in the wrong byte lanes.
+// for FLD/LD. The masks and payload shift require natural alignment.
+// With a nonzero mtvec base (i_trap_misaligned_accesses), misaligned loads
+// trap before probing. A faulting store may have an early address here, but
+// its data stays invalid and cannot forward. With a zero mtvec base,
+// alignment is unchecked and a misaligned store forwards incorrect byte lanes.
 //
-// The scan registers only the winning entry index and its byte offset, not the
-// 64-bit payload, so the address compare and winner tree drive no payload
-// register. The payload is selected from store_queue's per-entry FF data mirror
-// during the LQ consume cycle, which adds no pipeline stage.
+// Register the winning index and byte offset, then select the payload from
+// store_queue's FF data mirror during the LQ consume cycle.
 // =============================================================================
 module sq_forwarding_unit #(
     parameter int unsigned DEPTH = riscv_pkg::SqDepth
@@ -48,10 +43,8 @@ module sq_forwarding_unit #(
     input logic i_flush_all,
 
     // Load probe (from MEM_RS via LQ) + ROB head + commit snoop
-    // i_sq_check_capture_valid enables the Block 3 output register. It is the
-    // LQ's probe valid without the flush and commit-block terms, which would
-    // put the registered trap pulse on every capture bit's D input. The LQ
-    // guards its uses of the result instead
+    // Capture omits flush and commit-block gates for timing. The LQ qualifies
+    // consumption instead
     // (hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/README.md, "Forwarding
     // results captured on a flush cycle").
     input logic i_sq_check_capture_valid,
@@ -63,11 +56,8 @@ module sq_forwarding_unit #(
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_sq_check_rob_tag,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag,
     // Commit pulses for the same-cycle committed-store guard in Block 1.
-    // store_queue drives them from its scan-only variants
-    // (i_commit_valid_scan*), which omit the full-flush mask so the registered
-    // trap pulse stays off every capture D-pin. They differ from the
-    // architectural pulses only on a full-flush cycle, whose capture is never
-    // consumed (see Block 3).
+    // store_queue supplies i_commit_valid_scan* without the full-flush mask.
+    // A full-flush-cycle capture is never consumed (see Block 3).
     input logic i_commit_valid,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag,
     input logic i_commit_valid_2,
@@ -93,7 +83,6 @@ module sq_forwarding_unit #(
     output riscv_pkg::sq_forward_result_t o_sq_forward
 );
 
-  // Local aliases of package parameters, named as in store_queue.
   localparam int unsigned ReorderBufferTagWidth = riscv_pkg::ReorderBufferTagWidth;
   localparam int unsigned XLEN = riscv_pkg::XLEN;
   localparam int unsigned FLEN = riscv_pkg::FLEN;
@@ -136,9 +125,7 @@ module sq_forwarding_unit #(
     end
   end
 
-  // Dword-address comparator with an explicit two-level reduction: the XOR is
-  // OR-reduced in 5-bit groups (the top group takes the remaining high bits)
-  // ahead of a final NOR, to keep this timing-critical compare shallow.
+  // Group the address comparison for timing; the last group holds the high bits.
   function automatic logic dword_addr_eq(input logic [DwordAddrWidth-1:0] lhs,
                                          input logic [DwordAddrWidth-1:0] rhs);
     logic [DwordAddrWidth-1:0] diff;
@@ -164,9 +151,7 @@ module sq_forwarding_unit #(
     end
   endfunction
 
-  // Forwarding scan results.  These sit at module scope so the per-entry
-  // qualification mask and the winner select stay in separate blocks, which
-  // avoids UNOPTFLAT circular combinational logic.
+  // Separate qualification and selection blocks to avoid UNOPTFLAT warnings.
   logic fwd_all_older_known;
   logic fwd_found_match;
   logic fwd_can_fwd;
@@ -186,13 +171,10 @@ module sq_forwarding_unit #(
   logic [FLEN-1:0] fwd_entry_data_reference[DEPTH];
 `endif
 `ifndef FORMAL
-  // Balanced pairwise reduction tree over the DEPTH leaves, stored heap-ordered
-  // in one flat array (a 2-D unpacked array is not yosys-parseable): node[1] is
-  // the winner, node[2*k] and node[2*k+1] are the children of node[k], and the
-  // leaves occupy node[FwdTreeWidth .. FwdTreeWidth+DEPTH-1]. Leaves past DEPTH
-  // stay valid=0, which choose_newer_winner discards, though the SQ requires a
-  // power-of-two DEPTH anyway: its ring pointers index the entry arrays
-  // directly.
+  // Heap-ordered reduction tree in a flat array for Yosys compatibility:
+  // node[1] is the winner; node[2*k] and node[2*k+1] are node[k]'s children.
+  // Leaves occupy node[FwdTreeWidth .. FwdTreeWidth+DEPTH-1]; padding is
+  // invalid. SQ ring pointers require a power-of-two DEPTH.
   localparam int unsigned FwdTreeLevels = $clog2(DEPTH);
   localparam int unsigned FwdTreeWidth  = 1 << FwdTreeLevels;
   fwd_winner_t fwd_node[2*FwdTreeWidth];
@@ -202,10 +184,8 @@ module sq_forwarding_unit #(
   assign fwd_load_byte_mask = gen_byte_en(i_sq_check_addr[2:0], i_sq_check_size);
   assign fwd_load_age       = {1'b0, i_sq_check_rob_tag} - {1'b0, rob_head_tag_q};
 
-  // Block 1: qualify each entry independently, from FF-based fields only (no
-  // LUTRAM read). Older stores are selected by ROB-tag age (a committed store
-  // always counts as older), so this path needs no head-relative rotation of
-  // sq_valid/sq_addr_valid.
+  // Block 1: qualify entries by ROB-tag age. Committed stores always count
+  // as older than the probing load.
   always_comb begin
     logic same_dword;
     logic older_store;
@@ -218,11 +198,7 @@ module sq_forwarding_unit #(
 `ifdef FORMAL
     logic [FLEN-1:0] entry_data_reference;
 `endif
-    // Each quarter of the entries compares against its own copy of the check
-    // address (i_sq_check_addr, _b, _c, _d: identical values from separate LQ
-    // registers), which keeps each register's fanout low on the critical path
-    // to the winner index. The constant selects below collapse to wires after
-    // loop unrolling.
+    // Each quarter uses an identical registered address copy for fanout.
     logic [XLEN-1:0] sq_check_addr_for_entry;
     logic [DwordAddrWidth-1:0] sq_check_dword_for_entry;
 
@@ -259,13 +235,8 @@ module sq_forwarding_unit #(
       fwd_entry_data_reference[i] = '0;
 `endif
 
-      // sq_committed is set on the edge after a store's commit pulse. Count
-      // the pulse as committed too, so a younger load cannot slip past the
-      // store during that one-cycle lag. Both commit ports get the guard. In
-      // the current core the age check already ranks such a store older:
-      // rob_head_tag_q trails the ROB head by a cycle, so in the pulse cycle
-      // it still names the store or the slot-1 store just before it. The
-      // pulse terms are a safety net for a change to that timing.
+      // Count both commit pulses before sq_committed updates, so a younger
+      // load cannot pass a committing store regardless of ROB-head timing.
       store_committed = sq_committed[i] ||
                         (i_commit_valid && (entry_rob_tag == i_commit_rob_tag)) ||
                         (i_commit_valid_2 && (entry_rob_tag == i_commit_rob_tag_2));
@@ -309,13 +280,10 @@ module sq_forwarding_unit #(
   // i_sq_head_idx. Ring order is allocation order, which is program order.
   // ROB-tag age cannot rank here: a committed store can wait to drain after
   // its ROB tag has been reused, and tag age would then rank it newest and
-  // forward stale data. The qualification above is already parallel, so this
-  // block only prioritizes 1-bit match results and their precomputed metadata.
+  // forward stale data.
 `ifdef FORMAL
-  // Yosys's formal frontend mishandles the balanced tree's unpacked array of
-  // packed structs, treating fields such as fwd_node[i].can_forward as
-  // implicit wires. Formal builds use this equivalent linear selector;
-  // synthesis and simulation use the tree below.
+  // Yosys treats fields of the tree's unpacked struct array as implicit wires.
+  // Use an equivalent linear selector for formal builds.
   logic fwd_formal_winner_valid;
   logic [IdxWidth-1:0] fwd_formal_winner_age;
   logic [2:0] fwd_formal_winner_store_off;
@@ -343,13 +311,9 @@ module sq_forwarding_unit #(
   end
   assign fwd_winner_store_off = fwd_formal_winner_store_off;
 `else
-  // A balanced tree keeps the select log2(DEPTH) levels deep. A serial
-  // priority loop would put a DEPTH-entry winner chain between each entry's
-  // conflict logic and o_sq_forward.can_forward.
+  // Use a balanced tree for timing.
   always_comb begin
-    // Default every node first: the power-of-two padding above DEPTH must read
-    // as invalid, and defaulting the whole array keeps the unused node[0] and
-    // any padding leaves from inferring latches.
+    // Default unused nodes and padding to invalid to avoid latches.
     for (int unsigned n = 0; n < 2 * FwdTreeWidth; n++) begin
       fwd_node[n] = '0;
     end
@@ -375,26 +339,16 @@ module sq_forwarding_unit #(
   assign fwd_winner_store_off = fwd_winner.store_off;
 `endif
 
-  // Block 3: registered forwarding outputs. The SQ compare and forwarding
-  // result sit behind a register so the LQ sees them one cycle later, which
-  // breaks the MEM_RS -> SQ scan -> LQ -> BRAM path.
+  // Block 3: register forwarding results for the following LQ cycle.
   //
-  // The register has no flush clear. A synchronous i_flush_all clear would put
-  // the registered trap pulse on every capture bit's D input and make flush
-  // distribution the late arrival of this cone. Capture-then-kill instead: the
-  // register captures the probe result unconditionally and the flush kills the
-  // consumer. Every reader (sq_can_issue, sq_do_forward in load_queue.sv) is
-  // gated by the probing load's staged state (sq_check_phase2,
-  // sq_check_entry_issueable), which i_flush_all clears on the same edge. A
-  // flush-cycle result is visible for one cycle only: with the LQ flushed no
-  // probe is captured, so the i_sq_check_capture_valid arm clears these bits
-  // on the next edge.
+  // No flush clear, for timing. Both readers in load_queue.sv (sq_can_issue
+  // and sq_do_forward) require sq_check_phase2 and sq_check_entry_issueable,
+  // which a full flush clears on the capture edge. The unused result clears
+  // on the next edge because the flushed LQ presents no probe.
   //
-  // The same argument covers what is captured. The capture enable omits the
-  // flush and commit-block terms, and the scan's commit pulses are the
-  // scan-only variants without the flush mask, so a capture on a flush cycle
-  // may treat a squashed store's commit as visible. Like any other flush-cycle
-  // capture, it is never consumed.
+  // Capture and scan-only commit pulses omit flush qualification. A captured
+  // result may therefore include a squashed store's commit, but the same
+  // consumer gates prevent its use.
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       o_sq_all_older_addrs_known <= 1'b0;
@@ -430,11 +384,8 @@ module sq_forwarding_unit #(
   always_comb begin
     fwd_selected_raw_q = sq_data_fwd_flat[fwd_match_idx_q*FLEN+:FLEN];
 
-    // Consumers qualify data with can_forward, so keep that control off the
-    // 64 payload bits.  The image places the store data at its byte lanes in
-    // the aligned dword.  Covered-subset forwarding guarantees the load only
-    // reads lanes the store wrote.  An aligned dword store shifts by zero and
-    // passes through whole.
+    // Consumers require can_forward. Shift into the store's byte lanes;
+    // coverage qualification lets the load read only lanes the store wrote.
     o_sq_forward.data  = fwd_selected_raw_q << {fwd_winner_store_off_q, 3'b000};
   end
 

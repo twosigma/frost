@@ -37,9 +37,8 @@ module rob_serializer (
     input logic i_early_recovery_en,
     input logic i_interrupt_pending,
     input logic i_sq_committed_empty,
-    // FENCE.I cache sync handshake: the request is a level (decoded from the
-    // sync state) held until the cache side reports done; done is a level
-    // that stays high while the request is high, so no pulses can be missed.
+    // FENCE.I sync request stays high until done. The cache holds done high
+    // until the request falls, so retirement cannot miss completion.
     input logic i_fence_i_sync_done,
     input logic i_csr_done,
     input logic i_mret_done,
@@ -78,13 +77,10 @@ module rob_serializer (
   logic translation_csr_commit_event;
   logic translation_csr_commit_event_q;
 
-  // The head-independent terms of reorder_buffer's commit_en. Entering
-  // FENCE_I_SYNC or CSR_TRANSLATION_DRAIN already required a valid, done,
-  // non-exceptional head of the matching class, and that head stays pinned,
-  // so the two retirement events use these terms and no head terms, which
-  // keeps the live one-hot ROB-head read out of their logic.
-  // i_flush_after_head_commit always arrives with i_flush_en or i_flush_all,
-  // so it needs no term here.
+  // FENCE_I_SYNC and CSR_TRANSLATION_DRAIN require a valid, done,
+  // non-exceptional head of the matching class on entry and keep it pinned.
+  // Their retirement events need only commit_en's head-independent terms.
+  // i_flush_after_head_commit implies i_flush_en or i_flush_all.
   assign retire_permit = !i_commit_hold && !i_early_recovery_en && !i_flush_en && !i_flush_all;
 
   assign o_native_fence_commit_event =
@@ -110,11 +106,8 @@ module rob_serializer (
 
   assign o_fence_i_sync_req = (serial_state == riscv_pkg::SERIAL_FENCE_I_SYNC);
 
-  // Registered from the next state, so this level rises on the edge that
-  // enters SERIAL_FENCE_I_SYNC and falls on the edge that leaves it. The head
-  // is pinned for the whole sync, so the level equals o_fence_i_sync_req &&
-  // head_is_sfence cycle for cycle, without the live one-hot ROB-head read in
-  // the TLB/PTW invalidate logic.
+  // The head stays pinned during sync, so registering the next state's
+  // SFENCE window equals o_fence_i_sync_req && head_is_sfence each cycle.
   logic sfence_window_q;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
@@ -141,51 +134,37 @@ module rob_serializer (
 
     case (serial_state)
       riscv_pkg::SERIAL_IDLE: begin
-        // TIMING: the IDLE stall omits the head_ready, !i_commit_hold,
-        // !i_early_recovery_en, !i_flush_en, and !i_flush_all terms. Every
-        // retirement consumer in reorder_buffer ANDs the stall with
-        // commit_ready_early or another superset of those terms, so
-        // <early> && !commit_stall is the same with or without them.
-        // head_ready carries the same-cycle CDB head-done bypass, so leaving
-        // it out keeps the stall logic off the CDB -> commit -> SQ/trap path.
-        // The ROB's performance counters re-apply the omitted terms. The FSM
-        // transitions below keep all of them.
+        // Retirement consumers and performance counters apply head_ready
+        // and retire_permit separately, so IDLE's stall omits them. The FSM
+        // transitions still require both, including the CDB head-done bypass.
         if (head_exception) begin
-          // Exception: wait for trap unit
           commit_stall = 1'b1;
         end else if (head_is_wfi) begin
-          // WFI: stall until an interrupt is pending
           commit_stall = !i_interrupt_pending;
         end else if (head_is_csr) begin
-          // CSR: need to execute at commit
+          // CSR execution occurs at commit.
           commit_stall = 1'b1;
         end else if (head_is_fence || head_is_fence_i) begin
-          // FENCE/FENCE.I: wait for committed SQ entries to drain. FENCE.I
-          // also stalls through the cache sync.
+          // FENCE.I also waits for cache sync after committed stores drain.
           commit_stall = !(i_sq_committed_empty && !head_is_fence_i);
         end else if (head_is_mret) begin
-          // xRET: signal the trap unit
           commit_stall = 1'b1;
         end
-        // AMO/LR and non-serializing instructions: no stall
 
         if (head_ready && !i_commit_hold && !i_early_recovery_en &&
                           !i_flush_en    && !i_flush_all) begin
           if (head_exception) begin
             serial_state_next = riscv_pkg::SERIAL_TRAP_WAIT;
           end else if (head_is_wfi) begin
-            // WFI: wait for an interrupt. When one is already pending the WFI
-            // commits this cycle, so the state does not change.
+            // With an interrupt pending, WFI commits without leaving IDLE.
             if (!i_interrupt_pending) begin
               serial_state_next = riscv_pkg::SERIAL_WFI_WAIT;
             end
           end else if (head_is_csr) begin
             serial_state_next = riscv_pkg::SERIAL_CSR_EXEC;
           end else if (head_is_fence || head_is_fence_i) begin
-            // FENCE/FENCE.I: wait for committed SQ entries to drain. FENCE.I
-            // then syncs the caches before committing, because the drained
-            // stores sit dirty in the write-back L1D and the L1I and the
-            // fetch buffer have to refill from post-writeback data.
+            // Drained stores may still be dirty in L1D. FENCE.I syncs the
+            // caches so L1I and the fetch buffer refill after writeback.
             if (i_sq_committed_empty) begin
               if (head_is_fence_i) begin
                 serial_state_next = riscv_pkg::SERIAL_FENCE_I_SYNC;
@@ -197,11 +176,10 @@ module rob_serializer (
           end else if (head_is_mret) begin
             serial_state_next = riscv_pkg::SERIAL_MRET_EXEC;
           end else if (head_is_amo || head_is_lr) begin
-            // AMO/LR: ordering is enforced at LQ issue, which issues an LR
-            // only at the ROB head and an AMO only at the head with committed
-            // stores drained. Once the CDB marks the entry done it commits
-            // through the ordinary path. Waiting here for an empty SQ would
-            // deadlock on younger stores, which cannot commit before it.
+            // The LQ issues LR only at the ROB head and AMO only at the head
+            // with committed stores drained. Both commit normally after CDB
+            // completion. Waiting here for an empty SQ would deadlock on
+            // younger stores, which cannot commit first.
           end
         end
       end
@@ -210,10 +188,8 @@ module rob_serializer (
         commit_stall = 1'b1;
         if (i_sq_committed_empty) begin
           if (head_is_fence_i) begin
-            // FENCE.I continues into the cache sync once the SQ drains.
             serial_state_next = riscv_pkg::SERIAL_FENCE_I_SYNC;
           end else begin
-            // Committed SQ entries drained, can commit
             serial_state_next = riscv_pkg::SERIAL_IDLE;
             commit_stall = 1'b0;
           end
@@ -232,13 +208,10 @@ module rob_serializer (
         commit_stall = 1'b1;
         if (i_csr_done) begin
           if (translation_csr_owner_q) begin
-            // A CSR that may change translation waits for committed stores to
-            // drain before it retires. Move unconditionally so the one-cycle
-            // done pulse cannot be lost while stores drain or retirement is
-            // not permitted.
+            // Latch the one-cycle done pulse by entering the drain state,
+            // even while stores or retirement holds prevent committing.
             serial_state_next = riscv_pkg::SERIAL_CSR_TRANSLATION_DRAIN;
           end else begin
-            // Ordinary CSR complete, can commit this cycle.
             serial_state_next = riscv_pkg::SERIAL_IDLE;
             commit_stall = 1'b0;
           end
@@ -256,7 +229,6 @@ module rob_serializer (
       riscv_pkg::SERIAL_MRET_EXEC: begin
         commit_stall = 1'b1;
         if (i_mret_done) begin
-          // xRET complete, can commit
           serial_state_next = riscv_pkg::SERIAL_IDLE;
           commit_stall = 1'b0;
         end
@@ -265,7 +237,6 @@ module rob_serializer (
       riscv_pkg::SERIAL_WFI_WAIT: begin
         commit_stall = 1'b1;
         if (i_interrupt_pending) begin
-          // Interrupt arrived, WFI can commit
           serial_state_next = riscv_pkg::SERIAL_IDLE;
           commit_stall = 1'b0;
         end
@@ -276,7 +247,6 @@ module rob_serializer (
         if (i_trap_taken) begin
           // The trap unit has taken the exception. A flush follows.
           serial_state_next = riscv_pkg::SERIAL_IDLE;
-          // i_flush_all resets the state machine in any case.
         end
       end
 
@@ -289,11 +259,8 @@ module rob_serializer (
   assign o_serial_state = serial_state;
   assign o_commit_stall = commit_stall;
 
-  // Retirement stall: keep the retire_permit terms off the stall path in
-  // FENCE_I_SYNC and CSR_TRANSLATION_DRAIN. The FSM transitions and the two
-  // retirement events keep them, and so does o_commit_stall, because the
-  // performance counters count blocked cycles even while retirement is not
-  // permitted.
+  // Retirement applies retire_permit separately. The FSM, retirement
+  // events and full stall retain it so counters include blocked cycles.
   always_comb begin
     o_commit_stall_for_retire = commit_stall;
     case (serial_state)
@@ -303,9 +270,8 @@ module rob_serializer (
     endcase
   end
 
-  // For the rob_retire_stall formal target: the two stalls differ only in
-  // FENCE_I_SYNC and CSR_TRANSLATION_DRAIN while retirement is not permitted,
-  // and the retirement stall is never set without o_commit_stall.
+  // The stalls differ only in FENCE_I_SYNC and CSR_TRANSLATION_DRAIN when
+  // retirement is blocked. The retirement stall implies the full stall.
 `ifdef ROB_RETIRE_STALL_LOCAL_PROOF
   always_comb begin
     assert (!retire_permit || (o_commit_stall_for_retire == commit_stall));

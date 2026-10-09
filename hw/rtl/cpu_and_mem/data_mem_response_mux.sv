@@ -30,9 +30,7 @@ module data_mem_response_mux #(
     output logic [DATA_WIDTH-1:0] o_read_data
 );
 `ifdef FROST_XILINX_PRIMS
-  // One LUT5 per bit, so each late data selection is a single LUT level. The
-  // INIT covers every selector combination, including a stale MMIO valid
-  // while the cached data is selected.
+  // One LUT5 per bit for timing. Cached data wins even with stale MMIO valid.
   for (genvar bit_index = 0; bit_index < DATA_WIDTH; bit_index++) begin : g_response_lut
     LUT5 #(
         .INIT(32'hF0F0CCAA)

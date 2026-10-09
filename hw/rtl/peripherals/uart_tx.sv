@@ -15,7 +15,7 @@
  */
 
 /*
-  Valid/ready 8N1 UART transmitter. The FSM emits a start bit, data LSB-first,
+  Valid/ready UART transmitter (8N1 by default). Emits a start bit, data LSB-first,
   and a stop bit.
  */
 module uart_tx #(
@@ -36,7 +36,7 @@ module uart_tx #(
   localparam int unsigned ClockCyclesPerBit = CLK_FREQ_HZ / BAUD_RATE;
   localparam int unsigned PrescalerCounterWidth = 19;
 
-  // UART transmitter FSM states (8N1 format: 1 start, 8 data, 1 stop)
+  // One start bit, DATA_WIDTH data bits, no parity, one stop bit.
   typedef enum logic [1:0] {
     STATE_IDLE      = 2'b00,  // Waiting for data
     STATE_START_BIT = 2'b01,  // Transmitting start bit (low)
@@ -50,9 +50,8 @@ module uart_tx #(
   logic uart_output_bit_registered;
   logic [DATA_WIDTH-1:0] data_shift_register;  // Holds data being transmitted
   logic [PrescalerCounterWidth-1:0] baud_rate_prescaler_counter;
-  logic [$clog2(DATA_WIDTH+1)-1:0] bits_remaining_counter;  // Counts down from 8 to 0
+  logic [$clog2(DATA_WIDTH+1)-1:0] bits_remaining_counter;  // Remaining DATA_WIDTH bits
 
-  // Output assignments.
   assign o_ready = ready_registered;
   assign o_uart  = uart_output_bit_registered;
 
@@ -71,28 +70,24 @@ module uart_tx #(
 
     unique case (current_state)
       STATE_IDLE: begin
-        // Start transmission when valid data arrives
         if (i_valid && ready_registered) begin
           next_state = STATE_START_BIT;
         end
       end
 
       STATE_START_BIT: begin
-        // Move to data bits after start bit completes (prescaler reaches 0)
         if (baud_rate_prescaler_counter == 0) begin
           next_state = STATE_DATA_BITS;
         end
       end
 
       STATE_DATA_BITS: begin
-        // Move to stop bit after all 8 data bits transmitted
         if (baud_rate_prescaler_counter == 0 && bits_remaining_counter == 0) begin
           next_state = STATE_STOP_BIT;
         end
       end
 
       STATE_STOP_BIT: begin
-        // Return to idle after stop bit completes
         if (baud_rate_prescaler_counter == 0) begin
           next_state = STATE_IDLE;
         end
@@ -110,11 +105,11 @@ module uart_tx #(
     end else begin
       unique case (current_state)
         STATE_IDLE: begin
-          uart_output_bit_registered <= 1'b1;  // UART line idle (high)
-          ready_registered <= 1'b1;  // Ready to accept new data
+          uart_output_bit_registered <= 1'b1;  // Idle high.
+          ready_registered <= 1'b1;  // Accept data while idle.
 
           if (i_valid && ready_registered) begin
-            ready_registered <= 1'b0;  // Not ready during transmission
+            ready_registered <= 1'b0;  // Busy until the stop bit ends.
           end
         end
 
@@ -131,7 +126,6 @@ module uart_tx #(
           uart_output_bit_registered <= 1'b1;  // UART stop bit is always high
 
           if (baud_rate_prescaler_counter == 0) begin
-            // Frame complete, return to idle and accept new data
             ready_registered <= 1'b1;
           end
         end
@@ -150,10 +144,9 @@ module uart_tx #(
     unique case (current_state)
       STATE_IDLE: begin
         if (i_valid && ready_registered) begin
-          // Capture incoming data and begin transmission.
           data_shift_register <= i_data;
           baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
-          bits_remaining_counter <= ($clog2(DATA_WIDTH + 1))'(DATA_WIDTH);  // Will send 8 bits
+          bits_remaining_counter <= ($clog2(DATA_WIDTH + 1))'(DATA_WIDTH);  // Frame width
         end
       end
 
@@ -161,7 +154,6 @@ module uart_tx #(
         if (baud_rate_prescaler_counter > 0) begin
           baud_rate_prescaler_counter <= baud_rate_prescaler_counter - 1;
         end else begin
-          // Start bit complete, move to data bits.
           baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
           bits_remaining_counter <= bits_remaining_counter - 1;
         end
@@ -172,12 +164,10 @@ module uart_tx #(
           baud_rate_prescaler_counter <= baud_rate_prescaler_counter - 1;
         end else begin
           if (bits_remaining_counter > 0) begin
-            // Shift right for next bit (LSB first transmission).
             data_shift_register <= data_shift_register >> 1;
             bits_remaining_counter <= bits_remaining_counter - 1;
             baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
           end else begin
-            // All data bits sent, prepare for stop bit.
             baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit);
           end
         end

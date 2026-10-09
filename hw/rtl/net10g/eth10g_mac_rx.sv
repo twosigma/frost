@@ -28,22 +28,15 @@
 // when i_enable is low; causes within one word share one pulse. Error drops
 // roll back speculative buffer allocation.
 //
-// The logic is staged for the 10GBASE-R word rate. A decode stage registers
-// each enabled word with its symbol classes and CRC contributions. The word
-// stage then decides the whole word from registers: every lane's candidate
-// event is computed in parallel and the first one selects the outcome, so no
-// count, CRC or free-space value is carried from lane to lane. A reader copies
-// published beats into a two-entry output register, and only that register
-// sees m_axis_tready. Observable consequences:
-// - Events for an XGMII word, and publication of a packet it completes, are
-//   registered on the clock after the word is sampled. The packet's first
-//   beat reaches m_axis_* at least one clock after publication.
-// - Storage and descriptors freed by an output handshake serve words sampled
-//   on later clocks; a word sampled on the handshake's own clock still finds
-//   them occupied. Capacity is otherwise unchanged.
-// - An /S/ in the same word as a /T/ that ends a frame is ignored. No Clause 49
-//   block carries both. An /S/ on lane 4 after other control in lanes 0-3 has
-//   dropped a frame still starts one.
+// Decode registers each word's symbol classes and CRC contributions. The next
+// stage computes per-lane events in parallel and selects the first event.
+// - Events and packet publication occur on the clock after word sampling.
+//   The first AXI Stream beat follows at least one clock after publication.
+// - Output handshakes return storage and descriptor credit for words sampled
+//   on later clocks, not words sampled on the handshake edge.
+// - An /S/ after a frame-ending /T/ in the same word is ignored; Clause 49 has
+//   no such block. A lane-4 /S/ after another control dropped a frame can start
+//   a new frame.
 module eth10g_mac_rx #(
     parameter int unsigned MAX_FRAME_BYTES = 9216
 ) (
@@ -67,16 +60,13 @@ module eth10g_mac_rx #(
   localparam int unsigned CountWidth = $clog2(MAX_FRAME_BYTES + 5);
   localparam int unsigned MemoryAddrWidth = $clog2(2 * ((MAX_FRAME_BYTES + 11) / 8));
   localparam int unsigned MemoryWords = 1 << MemoryAddrWidth;
-  // Every accepted frame occupies at least eight words (64 bytes with FCS),
-  // so this queue cannot run out before the data memory does.
+  // Size for one descriptor per minimum frame: eight words including FCS.
   localparam int unsigned DescriptorAddrWidth = MemoryAddrWidth - 3;
   localparam int unsigned DescriptorSlots = 1 << DescriptorAddrWidth;
   localparam logic [31:0] CrcResidue = 32'hdebb20e3;
 
-  // CRC state after `count` zero bytes, for count <= 8. A CRC over a run of
-  // bytes is linear in its seed: crc32(seed, run) = crc32_advance(seed, n) ^
-  // crc32(0, run) for an n-byte run. Every call below has a constant count, so
-  // each result bit is an XOR of at most 19 seed bits.
+  // CRC after count zero bytes (count <= 8). Linearity in the seed gives:
+  // crc32(seed, run) = crc32_advance(seed, n) ^ crc32(0, run).
   function automatic logic [31:0] crc32_advance(input logic [31:0] seed, input int unsigned count);
     logic [31:0] value;
     value = seed;
@@ -161,11 +151,9 @@ module eth10g_mac_rx #(
   logic [MemoryAddrWidth-1:0] write_word, next_write_word;
   logic [MemoryAddrWidth-1:0] next_word, next_next_word;
   logic [MemoryAddrWidth-1:0] previous_word, next_previous_word;
-  // rollback_free_words is free_words plus the words reserved by the frame in
-  // progress: the free count a drop restores, and the count a legal /S/ is
-  // admitted against. Keeping both counts avoids adding them per word. The
-  // empty flags are maintained with their counters so admission and
-  // reservation decisions start from flops.
+  // rollback_free_words includes the current frame's reservations. It is the
+  // free count restored on drop and used to admit a new /S/. Empty flags
+  // track both counters for timing.
   logic [MemoryAddrWidth:0] free_words, next_free_words;
   logic [MemoryAddrWidth:0] rollback_free_words, next_rollback_free_words;
   logic free_empty, next_free_empty;
@@ -292,8 +280,8 @@ module eth10g_mac_rx #(
         next_frame_overlength[lane] = int'(byte_count) >= int'(MAX_FRAME_BYTES) - 4 - lane;
       end
     end else if (in_preamble && upper_continue) begin
-      // The first frame word after /S/ on lane 4 begins at byte 4. With the
-      // MAC's minimum MAX_FRAME_BYTES of 60, no lane of it is overlength.
+      // After a lane-4 /S/, the first frame word starts at byte 4, below the
+      // 60-byte minimum accepted frame length.
       next_byte_count = CountWidth'(4);
       next_crc = decode_crc_upper;
       next_frame_overlength = '0;
@@ -303,9 +291,7 @@ module eth10g_mac_rx #(
       next_frame_overlength = '0;
     end
 
-    // Every count's candidates are registers plus small constants, computed
-    // in parallel; the word's outcome only selects among them. A take happens
-    // only when free_words is nonzero.
+    // A take requires free_words != 0.
     credit_none = credit_words == 2'd0;
     free_credited = free_words + (MemoryAddrWidth + 1)'(credit_words);
     rollback_credited = rollback_free_words + (MemoryAddrWidth + 1)'(credit_words);
@@ -428,7 +414,6 @@ module eth10g_mac_rx #(
     for (int lane = 0; lane < 8; lane++) begin
       reader_data[lane*8+:8] = reader_keep[lane] ? read_data[lane] : 8'h00;
     end
-    // Both advances are computed from the register; the beat only selects.
     next_read_word = read_word;
     if (reader_capture && reader_last && reader_extra) begin
       next_read_word = read_word + MemoryAddrWidth'(2);
@@ -553,15 +538,9 @@ module eth10g_mac_rx #(
   end
 
 `ifndef SYNTHESIS
-  // Read-during-write check for the lane memories. The lanes are simple
-  // dual-port RAMs with no read-during-write guarantee, which is legal only
-  // because the reader never copies a word fetched on the edge that wrote it
-  // (see the argument above the lane declarations). A fetch on the same edge
-  // as a write to its address is recorded, and copying the beat that fetch
-  // produced is an error. A beat already copied into the output register is
-  // unaffected by later fetches, so a stalled output beat does not count; a
-  // collision while nothing is published is harmless, since that fetch
-  // repeats every clock before a packet becomes visible.
+  // RAM collisions are allowed only for unused fetches. A copied beat must
+  // come from a read after the word's final write (see the lane-memory notes).
+  // Already-copied skid data is unaffected by later fetches or output stalls.
   logic fetch_write_collision;
   always_comb begin
     fetch_write_collision = 1'b0;

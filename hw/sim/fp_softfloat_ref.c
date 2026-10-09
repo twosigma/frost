@@ -15,13 +15,11 @@
  */
 
 /*
- * Reference results for the F and D compute instructions, for the fp_engine
- * equivalence bench (DPI-C). Arithmetic comes from Berkeley SoftFloat as Spike
- * builds it for RISC-V (canonical NaN, tininess after rounding); the rest
- * follows Spike's instruction definitions: NaN unboxing of single-precision
- * operands, FMIN/FMAX, FCLASS, sign-extended W-form integer results, and raw
- * FMV moves. Operands and results are 64-bit register values; single-precision
- * results are NaN-boxed.
+ * DPI-C reference for F/D compute instructions using Spike's Berkeley
+ * SoftFloat build (canonical NaN, tininess after rounding). Register values
+ * are 64 bits: single-precision operands are unboxed, results are NaN-boxed,
+ * and W-form integer results are sign-extended. Non-arithmetic operations
+ * follow Spike, including raw FMV bit transfers.
  */
 
 #include <stdbool.h>

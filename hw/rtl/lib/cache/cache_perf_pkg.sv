@@ -15,12 +15,8 @@
  */
 
 /*
- * Cache performance event types.
- *
- * A cache-local package, so the cache file list and unit benches do not
- * depend on the CPU's riscv_pkg. frost_cache registers every field of
- * cache_instance_perf_events_t at the source, and the hierarchy carries the
- * bundle toward the CPU.
+ * Cache performance events, independent of riscv_pkg. frost_cache registers
+ * each instance's events; the hierarchy carries them to the CPU.
  */
 package cache_perf_pkg;
 
@@ -54,9 +50,7 @@ package cache_perf_pkg;
     cache_instance_perf_events_t l2;
   } cache_hierarchy_perf_events_t;
 
-  // The bundle cpu_and_mem passes into cpu_ooo: the hierarchy's three
-  // per-instance groups, plus the fetch provider's L1I-miss stall, which
-  // cpu_and_mem adds.
+  // cpu_and_mem adds the fetch-provider stall event for the CPU.
   typedef struct packed {
     cache_hierarchy_perf_events_t hierarchy;
     logic                         l1i_fetch_miss_stall;

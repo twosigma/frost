@@ -15,30 +15,17 @@
  */
 
 /*
- * One format-specific PC-relative branch-target candidate for the PD
- * redirect, computed in IF and carried to PD in the IF-to-PD packet. The late
- * branch immediate drives only a narrow low add. PD captures the candidate's
- * low result and raw {immediate sign, low-add carry} select in its redirect
- * register, and the next cycle picks the format and decodes that select into
- * a choice among the three precomputed PC-high values. Selecting and decoding
- * after the register keeps logic levels out of the late carry path, and the
- * full-width PC-high values stay outside it.
+ * Compute one format's PC-relative PD redirect candidate in IF. PD captures
+ * the low sum and {immediate sign, carry}, then selects the format and one
+ * of three precomputed PC-high values in the next cycle.
  *
- * The immediate is selected here, from the two live forms and the
- * stall-captured instruction, instead of arriving already selected:
- *   i_imm_low_lo    the immediate of the live instruction when pc_reg[1] = 0
- *                   (the current word);
- *   i_imm_low_hi    the immediate when pc_reg[1] = 1 (the spanning assembly
- *                   or the upper parcel);
- *   i_imm_low_saved the immediate of the stall-captured instruction, with
- *                   i_pc_low_saved its PC, replayed when i_replay is set.
- * The adder then gets the pc_reg[1] and replay selects inside its propagate
- * function: with the Xilinx primitives below each bit's S input is one LUT6 of
- * {replay, saved PC ^ saved immediate, live PC, pc_reg[1], hi, lo}, so from
- * the instruction memory the carry chain sits two LUTs away (the word
- * select, then this LUT) instead of three. The portable form below computes
- * the same sum from the selected operands (p_target_candidate_exact in
- * pd_stage checks the carried candidates against PC + offset every cycle).
+ * The immediate inputs are:
+ *   i_imm_low_lo: the live instruction at pc_reg[1] = 0;
+ *   i_imm_low_hi: the spanning instruction or upper parcel at pc_reg[1] = 1;
+ *   i_imm_low_saved: the stall-captured instruction, paired with
+ *                    i_pc_low_saved when i_replay is set.
+ * Xilinx primitives combine operand selection with carry propagation for
+ * timing. The portable form adds the selected operands directly.
  */
 (* keep_hierarchy = "yes" *)
 module pd_target_candidate #(

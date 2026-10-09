@@ -147,11 +147,8 @@ module data_mem_response_mux_tb #(
       .o_read_data(o_standalone64)
   );
 
-  // AMO write tier flag. In the core the load queue registers it beside the
-  // AMO write address from the same source, so on every cycle it equals the
-  // decode of that address; the bench derives it from the driven address
-  // with the router's default cached window instead of asking the test to
-  // keep a second input consistent.
+  // Derive the AMO tier from its address using the router's default range.
+  // The core registers the address and tier together from the same source.
   logic amo_mem_write_is_cached;
   assign amo_mem_write_is_cached = (i_amo_mem_write_addr >= XLEN'(32'h8000_0000)) &&
       (i_amo_mem_write_addr < (XLEN'(32'h8000_0000) + XLEN'(32'h4000_0000)));

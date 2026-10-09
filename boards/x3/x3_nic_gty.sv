@@ -18,13 +18,9 @@
  * x3_nic_gty_supervisor: the transceiver supervisor of x3_nic_gty, without
  * vendor primitives.
  *
- * Everything but the receive signal-OK path (its synchronizer and register)
- * runs on the free-running clock. Every input is a level from another domain
- * or from the transceiver and is synchronized here: the QPLL0 lock, power
- * good and raw RX reset done (transceiver outputs), the reset helper's TX and
- * RX reset done and the user clocking helpers' active flags (their USRCLK2
- * domains), the PCS block lock and the PHY_RESET and PMA_LOOPBACK bits (the
- * NIC's core domain).
+ * All logic except the synchronized receive signal-OK path runs on the
+ * free-running clock. Synchronize transceiver, user-clock, and NIC-core
+ * status and control levels here.
  *
  * The states:
  * - POWERUP: nothing is asserted, so the reset helper runs its own start-up
@@ -40,12 +36,10 @@
  *   remote end powers up, which a PCS reset does not do, so a link partner
  *   that arrives after start-up may otherwise never lock. Block lock, or any
  *   reset other than the PCS reset, restarts the count.
- * - DRAIN: the receive signal permission and the clock-OK of every direction
- *   the coming reset stops are withdrawn, and held for one millisecond while
- *   the clocks still run. In that time the NIC's MAC receive domain registers
- *   signal-OK low (its status register has no reset and would otherwise keep
- *   a stale carrier through a stopped clock), and its core side starts a new
- *   reset generation for each affected domain.
+ * - DRAIN: withdraw signal permission and affected clock-OK levels for one
+ *   millisecond before stopping clocks. This lets RX register signal-OK low
+ *   and the core start new reset generations; otherwise stopped clocks could
+ *   preserve stale link status.
  * - SETTLE (RX datapath reset only): LOOPBACK takes the requested value
  *   (3'b010 near-end PMA or 3'b000; a lock retry keeps the current one unless
  *   PMA_LOOPBACK changed during its drain), then a short settle before the
@@ -66,14 +60,11 @@
  *   PHY_RESET pre-empts the wait; a loopback change waits for it and then
  *   runs without signal being allowed in between.
  *
- * Clock-OK: a direction's user clocking helper is active and no reset of that
- * direction is draining, asserted or awaited. Every low interval is stretched
- * by one millisecond so the NIC's core-domain synchronizers see it. Signal-OK
- * (receive clock domain): the permission from RUN, synchronized, and the
- * reset helper's RX reset done. The PCS reset leaves the receive clock-OK up,
- * so it does not cost the NIC its RX READY; the RX datapath reset does, so
- * while block lock stays absent (no link partner, say) the NIC loses RX READY
- * once every LOCK_RETRIES_PER_RX_RESET lock retries, about once a second.
+ * Clock-OK requires an active user-clock helper with no reset pending for
+ * that direction. Stretch each low interval by one millisecond for the core
+ * synchronizers. Signal-OK requires synchronized RUN permission and RX reset
+ * done. PCS resets preserve RX READY; datapath resets drop it every
+ * LOCK_RETRIES_PER_RX_RESET retries (about once a second at default settings).
  */
 module x3_nic_gty_supervisor #(
     // Free-running clock cycles per millisecond (150 MHz).
@@ -477,16 +468,11 @@ module x3_nic_gty (
     input  logic        i_rx_block_lock  // core-clock register
 );
   // ---- the wizard core -----------------------------------------------------------------------
-  // Each user clocking helper's BUFG_GT pair is held clear until its source's
-  // reset is done: TXPRGDIVRESETDONE for TXOUTCLK from the TX programmable
-  // divider (whose reset the helper already asserts on a PLL lock loss) and
-  // RXPMARESETDONE for the recovered RXOUTCLKPMA. The PLL lock is deliberately
-  // not a term. An unplanned lock loss then leaves the recovered clock
-  // toggling, so the NIC's receive domain still registers signal-OK low when
-  // the reset helper drops RX reset done, instead of keeping a stale carrier
-  // behind a stopped clock; and a short lock glitch cannot stop the user
-  // clocks unseen by the synchronizers. Every reset that interrupts these
-  // clocks on purpose is drained first.
+  // Hold TX user clocks clear until TXPRGDIVRESETDONE and RX clocks until
+  // RXPMARESETDONE. Do not gate either with PLL lock: after a lock loss RX
+  // must keep clocking to register signal-OK low when the helper drops reset
+  // done, and a short lock glitch must not stop a clock unseen by the
+  // synchronizers. Intentional clock-stopping resets drain first.
   logic tx_usrclk2, rx_usrclk2, tx_active, rx_active, tx_done, rx_done;
   logic power_good, pll_lock, rx_pcs_done, tx_prgdiv_done, rx_pma_done;
   logic reset_all, reset_rx_datapath, rx_pcs_reset, pma_loopback;

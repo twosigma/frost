@@ -15,16 +15,9 @@
  */
 
 /*
- * ID-stage precomputation of PC-relative values and target-prediction checks,
- * which keeps these adders and comparators out of execute.
- *
- * Pre-computed values:
- *   - Branch target (PC + B-type immediate)
- *   - JAL target (PC + J-type immediate)
- *   - PC-relative result for AUIPC (PC + U-type immediate) and the xtval of a
- *     fetch-fault pseudo-op (PC + faulting-halfword offset); dispatch carries
- *     it in the RS immediate so those ops need no PC at execute
- *   - BTB correct flag for non-JALR instructions
+ * ID-stage PC-relative targets, results, and prediction checks. Dispatch
+ * carries the AUIPC result or fetch-fault xtval in the RS immediate, so
+ * those operations need no PC at execute.
  *
  * A JALR target needs rs1, so branch resolution computes it and compares it
  * with the predicted target directly.
@@ -54,24 +47,17 @@ module branch_target_precompute #(
     output logic            o_btb_correct_non_jalr
 );
 
-  // PC-relative targets. Only the JALR target is left to branch resolution,
-  // which has rs1.
   assign o_branch_target_precomputed = i_program_counter + XLEN'(signed'(i_immediate_b_type));
   assign o_jal_target_precomputed = i_program_counter + XLEN'(signed'(i_immediate_j_type));
 
-  // PC-relative result for AUIPC and the fetch-fault pseudo-ops.  Its own
-  // adder: the two target adders above keep their inputs untouched.
+  // AUIPC and fetch faults share a result adder, separate from the targets.
   logic [XLEN-1:0] pc_relative_offset;
   assign pc_relative_offset = i_is_fetch_fault ?
       {{(XLEN - 2) {1'b0}}, i_is_fetch_fault_hi, 1'b0} : XLEN'(signed'(i_immediate_u_type));
   assign o_pc_relative_precomputed = i_program_counter + pc_relative_offset;
 
-  // JAL and branches have PC-relative targets, so the whole prediction
-  // comparison fits in ID, and branch resolution sees only its one-bit result
-  // (the ROB checks a JAL's full target itself at allocation). TIMING: both
-  // targets are compared and the decoded JAL class selects the result, so
-  // the opcode decode enters after the wide compares rather than ahead of
-  // them.
+  // Branch resolution uses this comparison bit. The ROB checks a JAL's full
+  // target at allocation. Compare both targets before selecting, for timing.
   logic jal_target_matches, branch_target_matches;
   assign jal_target_matches = o_jal_target_precomputed == i_btb_predicted_target;
   assign branch_target_matches = o_branch_target_precomputed == i_btb_predicted_target;

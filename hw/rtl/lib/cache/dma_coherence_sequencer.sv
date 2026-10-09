@@ -69,14 +69,8 @@
  * presented address (a free entry and no active entry on the same line),
  * which the line protocol permits.
  *
- * Timing. The admit and inval handshakes present a latched entry until it
- * fires, so the core may take several cycles to answer; the hierarchy
- * captures the probe in a register stage; the downstream request is a
- * register loaded from the issuing entry; the downstream response is
- * registered before it is decoded; the release pulses are registered. The
- * two inputs decoded live, the L1D's probe acknowledgement and the
- * presented request's same-line check, enter each entry's state enable at
- * its last level.
+ * Admit and inval hold a latched entry until the core answers. Probe capture,
+ * downstream requests, downstream responses, and release pulses are registered.
  */
 module dma_coherence_sequencer #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -264,9 +258,7 @@ module dma_coherence_sequencer #(
   logic probe_fire;
   assign probe_fire = probe_any && i_probe_req_ready;
 
-  // Probe acknowledgement decode: the id names the entry. Only entry k
-  // probes with id probe_id_of(k), so at most one entry matches, and each
-  // match is its entry's enable term directly (see "Entry state").
+  // Probe IDs uniquely name entries, so at most one acknowledgement matches.
   (* keep = "true" *) logic [NUM_LOCK-1:0] ack_match;
   logic ack_hit;
   always_comb begin
@@ -277,17 +269,11 @@ module dma_coherence_sequencer #(
   end
   assign ack_hit = |ack_match;
 
-  // Registered downstream request. The lowest entry in E_ISSUE is copied
-  // here when the register is empty and moves to E_RESP at the copy. The
-  // register presents the request until the arbiter accepts it; that
-  // acceptance is the L2's ordering point, and the registered release pulses
-  // follow it. Releasing at acceptance is enough because the L2 applies
-  // same-line requests in acceptance order, so a fill the probe withheld
-  // reaches the L2 behind the write and returns the new line. A level that
-  // could let a read overtake an accepted write, as the AXI bridge below the
-  // L2 does, would need the release to wait for the write's response. The
-  // register keeps the entry state decode and the payload mux off the
-  // arbiter's select and the L2's accept path.
+  // Copy the lowest E_ISSUE entry into the held request register and move it
+  // to E_RESP. Release follows downstream acceptance: L2 preserves same-line
+  // acceptance order, so withheld fills reach it after the write.
+  // Connecting to a level that lets reads overtake writes (such as the AXI
+  // bridge) would require release to wait for the write response.
   logic out_valid_q, out_write_q;
   logic [LockBits-1:0] out_slot_q;
   logic [LineAddrBits-1:0] out_line_q;
@@ -304,12 +290,8 @@ module dma_coherence_sequencer #(
   assign o_down_req_wstrb = out_wstrb_q;
   assign o_down_req_id    = out_id_q;
 
-  // Downstream response, registered before it is decoded. The L2 drives its
-  // response port combinationally from its MSHR selection, a deep cone that
-  // decoding the response live would put on every entry's state enable. The
-  // response is a one-cycle pulse with no backpressure, so a plain register
-  // loses nothing and adds one cycle to the DMA port's response latency; the
-  // entry stays in E_RESP for that cycle.
+  // Register the one-cycle response pulse for timing. No backpressure is
+  // needed; the entry remains in E_RESP for this extra response cycle.
   logic                    down_resp_valid_q;
   logic [     ID_BITS-1:0] down_resp_id_q;
   logic [LINE_BYTES*8-1:0] down_resp_rdata_q;
@@ -335,15 +317,8 @@ module dma_coherence_sequencer #(
   end
 
   // ---------------------------------------------------------------------------
-  // Entry state. Each event names one entry: the admit and inval fires their
-  // latched slots, the probe fire probe_sel, an acknowledgement its match,
-  // the request register's load issue_sel, a response resp_sel, and an
-  // accepted request free_idx. An entry named by several takes the last in
-  // that order (an entry is in one state, so at most one applies). The
-  // events that depend only on registered state and the handshakes merge
-  // into one kept net per entry, as does the request's valid and free-entry
-  // half, so the acknowledgement match and the same-line check, the latest
-  // inputs, reach each entry's enable through a single level.
+  // Entry state: each event identifies one entry. An entry's state permits
+  // at most one event per cycle.
   // ---------------------------------------------------------------------------
   logic [NUM_LOCK-1:0] take_admit, take_inval, take_probe, take_issue, take_resp, take_req;
   (* keep = "true" *) logic [NUM_LOCK-1:0] state_early_en, req_free;

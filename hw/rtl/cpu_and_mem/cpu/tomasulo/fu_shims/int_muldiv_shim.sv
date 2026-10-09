@@ -61,7 +61,7 @@ module int_muldiv_shim #(
     output riscv_pkg::fu_complete_t o_mul_fu_complete,  // -> adapter -> arbiter slot 1
     output riscv_pkg::fu_complete_t o_div_fu_complete,  // -> adapter -> arbiter slot 2
 
-    // Back-pressure: MUL path credits exhausted, MUL_RS must not issue
+    // Back-pressure: no MUL credit or a MULW tracker slot collision
     output logic o_fu_busy,
 
     // The divider holds an operation or an untaken result, so MUL_RS must not
@@ -141,11 +141,9 @@ module int_muldiv_shim #(
   // ---------------------------------------------------------------------------
   // MUL path: MulPipeDepth-stage pipeline plus a 4-entry result FIFO
   // ---------------------------------------------------------------------------
-  // Forward declarations for valid signals from the multipliers
   logic multiplier_valid_input;
   logic multiplier_valid_output;
 
-  // Credit-based busy (defined later, used here)
   logic mul_busy;
 
   assign multiplier_valid_input = is_mul & i_rs_issue.valid & ~mul_busy;
@@ -198,9 +196,7 @@ module int_muldiv_shim #(
   logic [63:0] word_mul_product;
   logic word_mul_valid;
   if (SHORT_WORD_OPS) begin : gen_word_multiplier
-    // The word multiply needs two of its three stages, so it registers its
-    // operands in the spare one: the DSPs start from their input registers
-    // rather than from the station's issue operand select, at unchanged latency.
+    // Use the spare stage of the three-cycle word multiply to register inputs.
     dsp_tiled_multiplier_unsigned #(
         .A_WIDTH(32),
         .B_WIDTH(32),
@@ -238,7 +234,6 @@ module int_muldiv_shim #(
         mul_trk_valid[i] <= 1'b0;
       end
     end else begin
-      // Shift control stages
       for (int i = MulPipeDepth - 1; i >= 1; i--) begin
         mul_trk_valid[i] <= mul_trk_valid[i-1];
         if (mul_trk_valid[i-1] && i_flush_en && is_younger(
@@ -247,7 +242,6 @@ module int_muldiv_shim #(
           mul_trk_flushed[i] <= 1'b1;
         else mul_trk_flushed[i] <= mul_trk_flushed[i-1];
       end
-      // Stage 0 control
       if (multiplier_valid_input && !mul_is_short_word) begin
         mul_trk_valid[0] <= 1'b1;
         if (i_flush_en && is_younger(i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag))
@@ -285,7 +279,6 @@ module int_muldiv_shim #(
     end
   end
 
-  // Count valid && !flushed entries in shift register
   logic [$clog2(MulPipeDepth+1)-1:0] mul_inflight_count;
   always_comb begin
     mul_inflight_count = '0;
@@ -322,14 +315,9 @@ module int_muldiv_shim #(
       .o_read_data    (mul_fifo_value_rd)
   );
 
-  // Multiplier completion: build result from tracker tail + multiplier output.
-  //
-  // mul_completing has no same-cycle partial-flush term, which keeps
-  // is_younger out of the mul_fifo_count enable. A younger result pushed in a
-  // flush cycle is marked flushed as it is written (push branch below), so it
-  // is never presented. The FIFO head presented during the flush cycle itself
-  // is filtered by the adapter's partial_flush_input, which sees the same
-  // live i_flush_en.
+  // A result younger than a partial flush that is pushed in the flush cycle
+  // is marked flushed on write. The adapter filters a younger FIFO head in
+  // the flush cycle itself.
   logic mul_completing;
   assign mul_completing = mul_trk_valid[MulPipeDepth-1] && !mul_trk_flushed[MulPipeDepth-1];
 
@@ -348,29 +336,21 @@ module int_muldiv_shim #(
   end
   assign mul_fifo_value_wr_data = riscv_pkg::FLEN'(mul_result_xlen);
 
-  // Same-cycle flush of a young entry being pushed, factored out for the push
-  // branch of mul_fifo_flushed[wr_ptr].D.
+  // Apply a same-cycle partial flush to the result being pushed.
   logic mul_push_entry_flush_young;
   assign mul_push_entry_flush_young = i_flush_en && is_younger(
       mul_trk_tag[MulPipeDepth-1], i_flush_tag, i_rob_head_tag
   );
 
-  // FIFO pop: adapter consumed, or head is already marked flushed (auto-drain).
-  // Uses only the registered mul_fifo_flushed bit, so the pop → count.CE cone
-  // holds no combinational is_younger / flush_tag dependency.
+  // Pop an accepted result or a head already marked flushed.
   logic mul_fifo_pop;
   logic mul_fifo_head_flushed;
   assign mul_fifo_head_flushed = mul_fifo_valid[mul_fifo_rd_ptr] &&
                                  mul_fifo_flushed[mul_fifo_rd_ptr];
   assign mul_fifo_pop = (mul_fifo_count != '0) && (i_mul_accepted || mul_fifo_head_flushed);
 
-  // FIFO push: multiplier completes with a non-flushed entry.
-  //
-  // The push does not depend on i_mul_accepted, so the accept handshake
-  // reaches only the FIFO's read pointer and count, not the entry writes.
-  // There is deliberately no same-cycle bypass around the FIFO, which would
-  // feed the wrapper's accept logic back into mul_fifo_push; every result
-  // spends at least one cycle in the FIFO.
+  // Every result spends at least one cycle in the FIFO. A same-cycle bypass
+  // would feed the wrapper's accept logic back into mul_fifo_push.
   assign mul_fifo_push = mul_completing;
 
   always_ff @(posedge i_clk) begin
@@ -391,7 +371,6 @@ module int_muldiv_shim #(
       mul_fifo_rd_ptr <= '0;
       mul_fifo_count  <= '0;
     end else begin
-      // Partial flush: mark younger FIFO entries as flushed
       if (i_flush_en) begin
         for (int i = 0; i < MulFifoDepth; i++) begin
           if (mul_fifo_valid[i] && !mul_fifo_flushed[i] && is_younger(
@@ -402,9 +381,6 @@ module int_muldiv_shim #(
         end
       end
 
-      // Push. The new entry inherits the tracker tail's flushed bit and picks
-      // up a same-cycle partial flush against its own tag, so the push and
-      // completion path needs no separate combinational suppression.
       if (mul_fifo_push) begin
         mul_fifo_tag[mul_fifo_wr_ptr] <= mul_trk_tag[MulPipeDepth-1];
         mul_fifo_valid[mul_fifo_wr_ptr] <= 1'b1;
@@ -413,11 +389,8 @@ module int_muldiv_shim #(
         mul_fifo_wr_ptr <= mul_fifo_wr_ptr + 1;
       end
 
-      // Pop advances rd_ptr only. mul_fifo_valid and mul_fifo_flushed stay
-      // set: every read of them is gated by mul_fifo_count, which is the
-      // occupancy of record, and the next push to this slot overwrites them.
-      // Clearing them here would only drag i_mul_accepted into the FIFO
-      // registers' next-state.
+      // Popping leaves the slot's flags set. mul_fifo_count gates their use
+      // for popping and output, and the next push overwrites them.
       if (mul_fifo_pop) begin
         mul_fifo_rd_ptr <= mul_fifo_rd_ptr + 1;
       end
@@ -432,14 +405,9 @@ module int_muldiv_shim #(
     end
   end
 
-  // FIFO head output drives o_mul_fu_complete. It reads only the registered
-  // mul_fifo_flushed bit, so no combinational is_younger enters the output
-  // cone. During the flush cycle the adapter's own partial_flush_input filter
-  // (direct i_flush_en) catches younger results. By the next cycle the
-  // always_ff marking pass has set the flushed bit on any young entry.
-  // The tag is not qualified with valid: the adapter uses it only with valid,
-  // and its partial-flush compare must not wait for the head-valid logic. The
-  // tag is unspecified while valid is low.
+  // The registered flushed bit suppresses younger results after the flush
+  // edge; the adapter filters them during the flush cycle. The tag is
+  // unspecified while valid is low and the adapter uses it only with valid.
   always_comb begin
     o_mul_fu_complete.tag = mul_fifo_tag[mul_fifo_rd_ptr];
     if (mul_fifo_count != '0 && !mul_fifo_flushed[mul_fifo_rd_ptr]) begin
@@ -460,9 +428,8 @@ module int_muldiv_shim #(
   // MUL busy (credit-based to prevent FIFO overflow)
   logic [5:0] mul_total_occupancy;
   assign mul_total_occupancy = 6'(mul_fifo_count) + 6'(mul_inflight_count);
-  // op comes from the RS's registered stage2 packet independently of ready
-  // and valid. Qualifying only this W operation creates no ready/valid loop
-  // and never stalls an unrelated full-width multiply for a slot collision.
+  // The RS's registered op is independent of ready and valid, so this MULW
+  // collision check creates no ready/valid loop or full-width multiply stall.
   assign mul_busy = (mul_total_occupancy >= 6'(MulFifoDepth)) ||
       (mul_is_short_word && mul_trk_valid[WordMulInsert-1] &&
        !mul_trk_flushed[WordMulInsert-1]);
@@ -497,8 +464,7 @@ module int_muldiv_shim #(
       div_tag_q, i_flush_tag, i_rob_head_tag
   )));
 
-  // Loads while the divider is idle, as the divider's operand registers do,
-  // so the start condition stays off its enable.
+  // Load the tag while idle, alongside the divider's operand registers.
   always_ff @(posedge i_clk) begin
     if (div_idle) div_tag_q <= i_rs_issue.rob_tag;
   end
@@ -619,9 +585,7 @@ module int_muldiv_shim #(
       else assume (i_rst_n);
     if (f_past_valid && i_rst_n) begin
 `ifndef F_MULDIV_ALIGNMENT
-      // The MUL credit bound is inductive at shallow depth. Keep its SMT task
-      // separate from physical FU alignment: unrolling the multiplier adds no
-      // information to a completion-credit proof.
+      // Check FIFO credits separately from multiplier pipeline alignment.
       assert (mul_total_occupancy <= 6'(MulFifoDepth));
       if (multiplier_valid_input && mul_is_short_word)
         assert (!mul_trk_valid[WordMulInsert-1] || mul_trk_flushed[WordMulInsert-1]);
@@ -634,10 +598,7 @@ module int_muldiv_shim #(
       if (f_watch_dead_q && !div_idle) assert (div_tag_q != f_watch_tag);
       if (f_watch_dead_q && o_div_fu_complete.valid) assert (o_div_fu_complete.tag != f_watch_tag);
 `else
-      // This task keeps the real multiplier valid pipelines. With the
-      // per-stage assertions above and the physical histories, it proves that
-      // each surviving completion selects its result from the right width's
-      // unit.
+      // Each surviving completion must select the matching multiplier's result.
       assert (f_full_mul[MulPipeDepth-1] == multiplier_valid_output);
       assert (f_word_mul[WordMulDepth-1] == word_mul_valid);
       if (mul_completing)

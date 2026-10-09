@@ -17,20 +17,15 @@
 // =============================================================================
 // lq_issue_selector
 // =============================================================================
-// Load-queue issue selection, all of it parallel: the first CDB-ready entry
-// in ring order from head_idx, memory-issue eligibility with MMIO/LR/AMO head
-// gates and older-AMO blocking, and a separate ROB-head priority path. Ring
-// order is not age order, because allocation refills holes. issue_cdb_idx
-// drives the LQ data LUTRAM read in load_queue.
+// Select CDB-ready and memory-issue entries in ring order from head_idx,
+// with a separate ROB-head priority path. Ring order is not age order because
+// allocation refills holes. issue_cdb_idx selects the LQ data LUTRAM read.
 //
-// Combinational, with no state of its own. load_queue owns the registered
-// older-AMO block vector, in physical entry order, built from each entry's
-// older-AMO dependency row. This module rotates that vector into scan order.
-// A freed or flushed entry can keep a stale block bit during its first invalid
-// cycle; lq_valid masks it here, and load_queue clears it before the entry is
-// reused. Keeping the dependency state in load_queue takes the
-// ROB-age compare logic out of the issue-selector capture-enable cone. A head
-// AMO enters the head-priority path once i_sq_committed_empty is set.
+// load_queue registers the older-AMO block vector in physical entry order.
+// This combinational selector rotates it into scan order. A freed or flushed
+// entry can retain a stale block bit for its first invalid cycle; lq_valid
+// masks it here, and load_queue clears it before reuse. A head AMO requires
+// i_sq_committed_empty.
 // =============================================================================
 module lq_issue_selector #(
     parameter int unsigned DEPTH = riscv_pkg::LqDepth
@@ -76,9 +71,6 @@ module lq_issue_selector #(
   localparam int unsigned ReorderBufferTagWidth = riscv_pkg::ReorderBufferTagWidth;
   localparam int unsigned IdxWidth = $clog2(DEPTH);
 
-  // issue_cdb_* keep the names load_queue uses for the same signals. The body
-  // assigns these local copies; the output assignments at the bottom of the
-  // file export them.
   logic issue_cdb_found;
   logic [IdxWidth-1:0] issue_cdb_idx;
 
@@ -101,14 +93,8 @@ module lq_issue_selector #(
     end
   end
 
-  // Phase A: the first CDB-ready entry in ring order from head_idx. Ring
-  // order visits head_idx..DEPTH-1 and then 0..head_idx-1, so that entry is
-  // the lowest ready index at or above head_idx if there is one, else the
-  // lowest ready index; whether one exists does not depend on head_idx at
-  // all. TIMING: found and both priority encoders read the physical ready
-  // bits, and the registered head_idx only forms the at-or-above mask, so no
-  // head-rotation mux precedes the found bit or the index. found reaches the
-  // cdb_stage capture enable, its value select and the SQ-check clear.
+  // Phase A: choose the lowest ready index at or above head_idx, or wrap to
+  // the lowest ready index. The found bit is independent of head_idx.
   logic [DEPTH-1:0] cdb_ready_phys;
   logic [DEPTH-1:0] at_or_above_head;
   logic [DEPTH-1:0] cdb_ready_upper;
@@ -136,9 +122,8 @@ module lq_issue_selector #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // The scan indices wrap at 2**IdxWidth, so ring order visits every entry
-  // once only when DEPTH is a power of two. load_queue checks the selection
-  // against the ring-order scan every cycle (p_issue_cdb_physical_select_exact).
+  // Scan indices wrap at 2**IdxWidth, so DEPTH must be a power of two to
+  // visit every entry exactly once.
   initial begin
     assert ((1 << IdxWidth) == DEPTH)
     else $error("lq_issue_selector: DEPTH must be a power of two");
@@ -146,28 +131,20 @@ module lq_issue_selector #(
 `endif
 `endif
 
-  // Mask of the entry already claimed by the sq_check staging register.  It is
-  // registered one-hot state in load_queue rather than a live compare against
-  // sq_check_idx, which keeps sq_check_idx off the timing-critical
-  // issue-selection -> sq_check_payload_en control path.
+  // Registered one-hot mask of the entry in the sq_check staging register.
   logic [DEPTH-1:0] in_flight_mask;
   assign in_flight_mask = sq_check_in_flight_mask;
 
-  // Phase B: per-entry memory issue eligibility (parallel).
-  // Split stored-address entries from the single entry whose address arrives
-  // this cycle.  The late i_addr_update.valid then only selects between two
-  // pre-encoded candidates instead of driving the full scan and address RAM
-  // read cone.
+  // Phase B: select stored-address and arriving-address candidates separately.
+  // load_queue chooses between them using the current address-update valid.
   logic [DEPTH-1:0] mem_eligible_stored_phys;
   logic [DEPTH-1:0] mem_eligible_update_phys;
   logic [DEPTH-1:0] mem_eligible_stored_mask;
   logic [DEPTH-1:0] mem_eligible_update_mask;
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      // An MMIO entry is eligible here only at the ROB head.  The dedicated
-      // head path below admits that same entry and takes priority, so
-      // admitting it in this scan never changes the selection.  The data-memory
-      // router enforces the committed-store drain before it accepts a device read.
+      // MMIO is eligible only at the ROB head, where the head path takes
+      // priority. The memory router drains committed stores before device reads.
       mem_eligible_stored_phys[i] =
           lq_valid[i] &&
           lq_addr_valid[i] &&
@@ -191,21 +168,16 @@ module lq_issue_selector #(
   assign mem_eligible_stored_mask = rotate_mask_from_head(mem_eligible_stored_phys, head_idx);
   assign mem_eligible_update_mask = rotate_mask_from_head(mem_eligible_update_phys, head_idx);
 
-  // Rotate the parent's registered older-AMO block vector, which arrives in
-  // physical entry order, into scan order alongside the eligibility masks.
-  // The module header covers how it is built and the stale-bit case.
+  // Rotate older-AMO blocking into the same order as the eligibility masks.
   logic [DEPTH-1:0] blocked_by_amo;
   assign blocked_by_amo = rotate_mask_from_head(blocked_by_amo_phys_q, head_idx);
 
-  // Final Phase B masks: eligible AND not blocked by older AMO.
   logic [DEPTH-1:0] mem_issue_stored_mask;
   logic [DEPTH-1:0] mem_issue_update_mask;
   assign mem_issue_stored_mask = mem_eligible_stored_mask & ~blocked_by_amo;
   assign mem_issue_update_mask = mem_eligible_update_mask & ~blocked_by_amo;
 
-  // Encode the first normal stored-address and current-update candidates here
-  // while scan_idx is already local. Exporting encoded candidates avoids
-  // re-scanning the masks in load_queue on the SQ-check payload enable path.
+  // Encode the first stored-address and arriving-address candidates.
   logic stored_scan_found;
   logic [IdxWidth-1:0] stored_scan_idx;
   logic [IdxWidth-1:0] stored_scan_pos;
@@ -251,11 +223,9 @@ module lq_issue_selector #(
     end
   end
 
-  // The replacement-enable cone needs the first candidate in the union
-  // of stored and arriving-address entries. Select it before the late
-  // address-valid bit, using physical indices as in Phase A. This avoids
-  // head rotation and a comparison of the two encoded ring positions.
-  // ROB-head priority remains separate in the parent; ring order is not age.
+  // Select the first candidate across both address sources for replacement.
+  // This selection omits address-update valid; load_queue qualifies it and
+  // applies ROB-head priority separately.
   logic [DEPTH-1:0] merged_eligible_phys, merged_upper;
   logic merged_upper_found;
   (* keep = "true" *) logic [DEPTH-1:0] merged_first_upper, merged_first_any;
@@ -274,10 +244,7 @@ module lq_issue_selector #(
   end
   assign o_merged_scan_onehot = merged_upper_found ? merged_first_upper : merged_first_any;
 
-  // Allocation refills the holes that completed and flushed entries leave, so
-  // ring order is not always ROB age.  To keep the oldest load from starving
-  // behind a younger blocked entry, an eligible ROB-head load takes priority
-  // over the normal ring-order scan.
+  // ROB-head priority prevents a younger blocked entry from starving the head.
   logic head_mem_stored_found;
   logic [IdxWidth-1:0] head_mem_stored_idx;
   logic [DEPTH-1:0] head_mem_stored_onehot;
@@ -289,39 +256,19 @@ module lq_issue_selector #(
   logic [IdxWidth-1:0] head_match_idx;
   logic [ReorderBufferTagWidth-1:0] head_match_rob_tag;
 
-  // rob_head_match_q is one-hot by construction: live LQ entries carry
-  // distinct ROB tags, so the registered compare matches at most one physical
-  // entry.  The head-eligibility gates keep that one-hot form instead of
-  // scanning entries in priority order, so lq_addr_valid reaches
-  // head_mem_stored_found through a per-entry eligibility LUT plus an OR
-  // reduction, and reaches issue_mem_onehot directly.  A priority scan would
-  // make each entry depend on every earlier one and put a long ripple on every
-  // sq_check capture and feedback bit.  Index and tag are parallel OR encoders
-  // of rob_head_match_q itself, so the eligibility signals, lq_addr_valid in
-  // particular, affect found and onehot but not the selected payload identity,
-  // which is consumed only when the corresponding found bit is true.
+  // Live entries have distinct ROB tags, so rob_head_match_q is at most
+  // one-hot. Index and tag are OR-encoded from it and are consumed only when
+  // the corresponding found bit is true.
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      // The ROB-head load takes head-priority for the single sq_check staging
-      // slot in every load class, MMIO and LR included.  The sparse LQ scans in
-      // ring order from head_idx (= head_ptr, not the ROB-head entry's physical
-      // slot), so a younger load earlier in ring order can win that scan every
-      // cycle without being able to evict a staged load older than itself.  If
-      // that staged load waits on a store younger than the head, it never
-      // leaves, because the store cannot commit until the head retires, and
-      // without this priority the head would starve (load queue README,
-      // "ROB-head priority").
-      //
-      // Admitting the head is safe: it is the oldest load, so only committed,
-      // and therefore draining, stores can hold it back, and sq_check_replace
-      // then evicts the younger staged entry.  Store->load ordering stays
-      // correct through the downstream sq_check_entry_issueable / sq_can_issue
-      // gates, which let MMIO and LR leave the LQ only at the ROB head
-      // (p_mmio_only_at_head asserts that an MMIO load probes the SQ only
-      // there), and the router holds a device read until every committed store
-      // is written.  A head AMO stays gated on i_sq_committed_empty: its RMW
-      // write lives in the LQ, invisible to SQ disambiguation, so it has to see
-      // an empty committed queue.
+      // A staged load may wait on a store younger than the ROB head. That
+      // store cannot commit until the head retires. The head must therefore
+      // bypass ring order and replace the staged load, including for MMIO
+      // and LR (load queue README, "ROB-head priority"). Only committed,
+      // draining stores can block the head. Downstream issue gates preserve
+      // MMIO/LR head ordering, and the router drains stores before device
+      // reads. AMOs require an empty committed SQ because their LQ write
+      // path is invisible to SQ disambiguation.
       head_mem_stored_onehot[i] =
           lq_valid[i] &&
           rob_head_match_q[i] &&

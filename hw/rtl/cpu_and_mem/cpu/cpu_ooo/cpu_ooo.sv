@@ -80,9 +80,8 @@ module cpu_ooo #(
     input logic [15:0] i_instr_pc_metadata_by_provider_parity,
     input logic [7:0] i_pc_pairability_by_provider_parity,
     input logic [3:0] i_slot2_start_valid_lo_by_provider_parity,
-    // Separate register holding the same provider select as i_served_high. It
-    // steers only the PC-metadata and served-window selects, off the fanout of
-    // the register that drives the window valid.
+    // Same-cycle provider-select copy for PC metadata and served-window
+    // selects, for fanout.
     input logic i_instr_pc_metadata_served_high,
     input logic i_instr_bank_sel_r,  // Fetch-word parity (for spanning select)
     // Word tags (address bits [31:2]) that each provider registers beside its
@@ -139,22 +138,16 @@ module cpu_ooo #(
     output logic [XLEN-1:0] o_data_mem_addr,
     output logic [riscv_pkg::MemDataBits-1:0] o_data_mem_wr_data,
     output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_per_byte_wr_en,
-    // BRAM-only byte write enables: o_data_mem_per_byte_wr_en with MMIO and
-    // cached-tier writes masked by their registered tier flags, so no
-    // address-range compare sits on the BRAM write-enable path. Peripherals
-    // use the unmasked o_data_mem_per_byte_wr_en, so MMIO writes stay visible
-    // to the UART/FIFO/timer logic.
+    // BRAM write strobes exclude MMIO and cached writes using registered tier
+    // flags. Peripherals use the unmasked o_data_mem_per_byte_wr_en.
     output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_bram_byte_wr_en,
     output logic o_data_mem_read_enable,
     // Cached tier (high-address region). Tier-routed write/read requests
     // (already qualified by is_cached in the router) plus the handshake
     // completion inputs from the cached_tier_adapter.
     output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_cached_byte_wr_en,
-    // Cached-tier write data: SQ drain data, or an AMO's new value in the one
-    // cycle a cached AMO write launches to the adapter. The router muxes the
-    // two on this cached-only path, away from the wide BRAM write-data mux,
-    // and the AMO ALU reaches it only through a cached AMO, which runs at the
-    // ROB head.
+    // Cached write data is the SQ drain value or the AMO result on its single
+    // launch cycle. Cached AMOs run at the ROB head.
     output logic [riscv_pkg::MemDataBits-1:0] o_data_mem_cached_wr_data,
     output logic o_data_mem_cached_read_enable,
     // Slot id of a cached read (several may be in flight); the adapter tags
@@ -244,10 +237,7 @@ module cpu_ooo #(
   logic flush_for_mret;
   riscv_pkg::dispatch_status_t dispatch_status;
 
-  // Top-level perf-counter interface. The counters and aggregation logic live
-  // in perf_counter_aggregator; these signals cross its boundary: selector and
-  // snapshot pulse from the CSR file, wrapper counter data from the
-  // tomasulo_wrapper, and the muxed result/count back to the CSR read port.
+  // Performance-counter interface between CSR, wrapper, and aggregator.
   logic [7:0] perf_counter_select;
   logic perf_snapshot_capture;
   logic perf_cache_previous_select;
@@ -324,12 +314,8 @@ module cpu_ooo #(
   logic rob_checkpoint_valid;
   logic [riscv_pkg::CheckpointIdWidth-1:0] rob_checkpoint_id;
 
-  // Track checkpoint → ROB tag mapping for flush-time reclaim.
-  // When a partial flush fires, checkpoints belonging to younger-than-flush-tag
-  // branches must be freed to prevent checkpoint slot exhaustion.
-  // Packed 2D (not unpacked) so it can cross module ports to branch_resolution /
-  // misprediction_flush_controller (yosys read_verilog -sv rejects unpacked-array
-  // ports).
+  // Track checkpoint tags to reclaim younger checkpoints on partial flush.
+  // Use packed arrays for module ports; Yosys rejects unpacked-array ports.
   logic [riscv_pkg::NumCheckpoints-1:0][riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_owner_tag;
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_in_use;
 
@@ -390,11 +376,9 @@ module cpu_ooo #(
   logic pd_redirect;
   logic [XLEN-1:0] pd_redirect_target;
   riscv_pkg::from_id_to_ex_t from_id_to_ex;
-  // Dispatch-bundle source-register fields for the register files' commit
-  // bypass compares and for the RAT lookups. With the decoded queue they are
-  // same-edge register copies of the queue shadow's fields, one per consumer
-  // group (see gen_decoded_queue); without it, the bundle's own fields.
-  // rf_bypass_src_addr is {slot-2 rs3, rs2, rs1, slot-1 rs3, rs2, rs1}.
+  // Dispatch source fields for RAT lookups and commit-bypass compares. Queued
+  // builds use same-edge shadow copies per consumer; direct builds use the
+  // bundle fields. rf_bypass_src_addr packs slot-2 rs3, rs2, rs1, then slot 1.
   logic [29:0] rf_bypass_src_addr;
   logic [riscv_pkg::RegAddrWidth-1:0] rat_int_src1_addr, rat_int_src2_addr;
   logic [riscv_pkg::RegAddrWidth-1:0] rat_int_src1_addr_2, rat_int_src2_addr_2;
@@ -410,12 +394,9 @@ module cpu_ooo #(
   riscv_pkg::from_id_to_ex_t decoded_packet_next_hold, decoded_packet_next_hold_2;
   /* verilator lint_on UNUSEDSIGNAL */
 
-  // Slot-2 inter-stage signals (2-wide dispatch). from_if_to_pd_2 carries
-  // IF's second instruction whenever the pairing rules allow one (see "Two-wide
-  // fetch and dispatch" in the CPU README), with sel_nop=1 when there is none
-  // this cycle. PD and ID pass it to dispatch, which fires slot 2 only
-  // together with slot 1; slot-2 renamed sources use done-repair channels
-  // 4/5/6 for a missed CDB broadcast.
+  // Slot 2 carries a paired instruction or sel_nop=1 (CPU README, "Two-wide
+  // fetch and dispatch"). It dispatches only with slot 1; done-repair channels
+  // 4, 5, and 6 recover missed CDB broadcasts for its renamed sources.
   riscv_pkg::from_if_to_pd_t from_if_to_pd_2;
   riscv_pkg::from_pd_to_id_t from_pd_to_id_2;
   riscv_pkg::from_id_to_ex_t from_id_to_ex_2;
@@ -532,9 +513,8 @@ module cpu_ooo #(
   // RS issue. Exposed but not externally driven: the FU shims are inside the wrapper.
   riscv_pkg::rs_issue_t rs_issue_int, rs_issue_mul, rs_issue_mem;
   riscv_pkg::rs_issue_t rs_issue_fp;
-  // Duplicate register of rs_issue_int.rob_tag, loaded on the same edge and
-  // used only by the branch-resolution predicates; branch_update.tag and
-  // every ROB, recovery, and FU consumer use rs_issue_int.rob_tag itself.
+  // Same-edge copy of rs_issue_int.rob_tag for branch predicates, for fanout.
+  // ROB, recovery, and FU consumers use the architectural issue tag.
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] rs_issue_int_branch_predicate_tag;
 
   assign dbg_if_ras_checkpoint_tos = from_if_to_pd.ras_checkpoint_tos;
@@ -627,7 +607,7 @@ module cpu_ooo #(
   // Stage 1: Instruction Fetch (IF)
   // ===========================================================================
 
-  // 2-wide width-funnel profiling events (IF→PD boundary → perf counters).
+  // IF-to-PD delivery-width events for profiling.
   riscv_pkg::if_width_events_t if_width_events;
 
   logic dir_update_valid;
@@ -800,11 +780,8 @@ module cpu_ooo #(
   // Register Files (read at dispatch, write from ROB commit)
   // ===========================================================================
 
-  // Both architectural register files (integer + FP) and the widen-commit
-  // write-back bypass live in ooo_register_files. Write ports come from ROB
-  // commit (port 0 = slot 1, port 1 = slot 2); read addresses come from the
-  // dispatch source fields of both bundle slots. The resolved (post-bypass)
-  // read results feed dispatch and the RAT.
+  // ooo_register_files reads both dispatch slots and bypasses same-cycle
+  // commits. Port 0 writes slot 1; port 1 writes slot 2.
 
   // FP data width, also used below by the commit-side write-port packing.
   localparam int unsigned FpW = riscv_pkg::FpWidth;
@@ -826,7 +803,7 @@ module cpu_ooo #(
   logic            bypass_p1_int_we_q;
   logic            bypass_p0_fp_we_q;
   logic            bypass_p1_fp_we_q;
-  // TIMING: capped so synthesis replicates them beside their compare loads.
+  // Cap bypass-address fanout for replication.
   (* max_fanout = 48 *)logic [     4:0] bypass_p0_addr_q;
   (* max_fanout = 48 *)logic [     4:0] bypass_p1_addr_q;
 
@@ -845,8 +822,8 @@ module cpu_ooo #(
   logic [     4:0] port1_fp_addr;
   logic [ FpW-1:0] port1_fp_data;
   logic [     1:0] instruction_retired_count;
-  // An instruction retired without a ROB commit in the previous cycle: an
-  // xRET, or a WFI that a trap took over (set with the resume PC below).
+  // An instruction retired without a registered ROB commit in the previous
+  // cycle: xRET, a taken-over WFI, FENCE.I, or SFENCE.VMA.
   logic            retired_without_commit_q;
 
   ooo_register_files #(
@@ -894,11 +871,8 @@ module cpu_ooo #(
   // mstatus.FS == Off from csr_file. ID decodes every F/D instruction as
   // illegal while it is set; the ROB's allocation check reads it too.
   logic csr_mstatus_fs_off;
-  // TIMING: ID reads a registered copy, so the route from csr_file stays off
-  // the ID class-register and decoded-queue shadow D paths. The copy differs
-  // from the CSR only in the cycle FS enters or leaves Off, and that cycle
-  // carries the full flush, which discards everything ID decodes then
-  // (p_fs_off_change_flushes_decode below).
+  // Register FS-Off for decode timing. It differs from CSR state only when
+  // FS enters or leaves Off, whose full flush discards that cycle's decode.
   logic id_mstatus_fs_off_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) id_mstatus_fs_off_q <= 1'b0;
@@ -931,12 +905,9 @@ module cpu_ooo #(
   // ===========================================================================
   // Instruction Validity (pipeline valid tracking)
   // ===========================================================================
-  // frontend_validity_tracker marks which IF/PD/ID packets are real
-  // instructions. Its if_valid_q/pd_valid_q chain follows IF's sel_nop and the
-  // one-cycle post-flush holdoff, so the NOP bubbles after a flush or reset
-  // are never dispatched. Dispatch takes the preflush candidates and applies
-  // the recovery kill itself (its i_flush); id_valid and id_valid_2 are
-  // flush-qualified copies for debug and assertions.
+  // Track real frontend packets through flush and reset bubbles. Dispatch
+  // applies recovery kill to preflush candidates; id_valid and id_valid_2 are
+  // flush-qualified debug copies.
   logic if_valid_q;
   logic pd_valid_q;
   logic id_valid_preflush;
@@ -949,9 +920,7 @@ module cpu_ooo #(
   logic step_armed_q;
   logic step_done_q;
   logic step_done_set;
-  // A duplicate register of step_armed_q for its wide consumer, the ROB's
-  // commit-width gate. It loads the same next state and is kept from merging
-  // so placement can put it next to its consumer.
+  // Same-edge step_armed_q copy for the ROB commit-width gate, for fanout.
   (* keep = "true", equivalent_register_removal = "no" *)logic step_armed_rob_q;
 
   frontend_validity_tracker frontend_validity_tracker_inst (
@@ -1300,14 +1269,9 @@ module cpu_ooo #(
         end
       end
 `endif
-      // TIMING: the shadow's source-register fields address the RAT lookups,
-      // every register-file read-port RAM and the commit-bypass compares,
-      // several hundred loads per bit. Each consumer group below gets a
-      // private copy register loaded from the shadow register's own D, so
-      // each address net starts beside its consumers: one copy for the INT
-      // RAT lookups, one for the FP RAT lookups, and one for the bypass
-      // compares. The shadow fields keep the RAMs and dispatch. The copies
-      // equal the shadow fields on every cycle (p_shadow_src_copies_exact).
+      // Same-edge shadow source-address copies for INT RAT, FP RAT, and bypass
+      // fanout. Each loads the shadow's next value; the original fields still
+      // address register-file RAMs and dispatch.
       (* dont_touch = "true" *)logic [19:0] rat_int_src_addr_q;
       (* dont_touch = "true" *)logic [29:0] rat_fp_src_addr_q;
       (* dont_touch = "true" *)logic [29:0] rf_bypass_src_addr_q;
@@ -1350,11 +1314,8 @@ module cpu_ooo #(
         end
       end
 `endif
-      // TIMING: every narrow control field (the RS route, the operation and
-      // classification flags that gate dispatch_fire, and the instruction
-      // word whose register fields address the RAT and register files) comes
-      // from the queue's registered shadow, which equals the same queue_packet
-      // fields. Only the wide payload keeps the bypass select.
+      // Use the registered shadow for narrow control fields, for timing. It must
+      // equal those fields in queue_packet; wide payload uses the bypass mux.
       always_comb begin
         from_id_to_ex = queue_packet;
         from_id_to_ex_2 = queue_packet_2;
@@ -1510,28 +1471,22 @@ module cpu_ooo #(
   logic rob_commit_valid;
   logic rob_commit_valid_raw;
 
-  // Commit slot 2, valid when the ROB retires a second instruction
-  // (commit_2_fire). Slots 1 and 2 write the register files in the same cycle
-  // through separate ports, so slot 2 needs no back-pressure and
-  // widen_commit_ok is tied high; single step still uses the ROB's gate to
-  // force one-wide commit (see i_widen_commit_ok below).
+  // Slot 2 has independent write ports and needs no commit backpressure.
+  // Single step still forces one-wide commit through i_widen_commit_ok.
   riscv_pkg::reorder_buffer_commit_t rob_commit_comb_2;
   riscv_pkg::reorder_buffer_commit_t rob_commit_2;
   logic rob_commit_2_valid_raw;
   logic rob_commit_2_valid;
   assign rob_commit_2_valid = rob_commit_2.valid;
   logic sq_committed_empty_for_trap;
-  // The store queue's placement copy of sq_committed_empty for the trap unit
-  // (equal on every cycle).
+  // Same-cycle sq_committed_empty copy for trap-unit fanout.
   logic sq_committed_empty_trap;
   logic widen_commit_ok;
   assign widen_commit_ok = 1'b1;
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_epoch;
 
-  // Per-ROB-entry predict-time bimodal index for the direction predictor.  Written
-  // at ROB allocation (mirroring rob_entry_epoch) and read at commit to train the
-  // exact bimodal entry the branch's prediction read.  No reset: only entries
-  // allocated for a committing conditional branch are ever used.
+  // Save each branch's prediction index by ROB tag and train that entry at
+  // commit. No reset is needed: only allocated, committing entries are read.
   logic [riscv_pkg::BpDirIdxBits-1:0] branch_dir_idx_table[riscv_pkg::ReorderBufferDepth];
 
   // RAT lookup - slot 1. Dispatch's lookup-address outputs drive the RAT
@@ -1544,11 +1499,8 @@ module cpu_ooo #(
   riscv_pkg::rat_lookup_t int_src1_lookup, int_src2_lookup;
   riscv_pkg::rat_lookup_t fp_src1_lookup, fp_src2_lookup, fp_src3_lookup;
 
-  // RAT lookup - slot 2 (2-wide dispatch). The integer lookups feed slot-2
-  // rename in dispatch; the FP lookups feed dispatch's slot-2 source muxes,
-  // where rs2 supplies FP-store data while src1/src3 only matter for
-  // FP-compute ops, which the bundle rules keep out of slot 2. The lint
-  // waiver below covers the struct fields dispatch doesn't read.
+  // Slot-2 RAT lookups feed dispatch. FP rs2 supplies store data; FP rs1 and
+  // rs3 are unused because bundle rules exclude FP computation from slot 2.
   /* verilator lint_off UNUSEDSIGNAL */
   logic [riscv_pkg::RegAddrWidth-1:0] int_src1_addr_2, int_src2_addr_2;
   logic [riscv_pkg::RegAddrWidth-1:0] fp_src1_addr_2, fp_src2_addr_2, fp_src3_addr_2;
@@ -1601,9 +1553,7 @@ module cpu_ooo #(
     end
   end
 
-  // Record each allocated entry's predict-time bimodal index, keyed by ROB tag,
-  // using the same alloc signals as rob_entry_epoch. Each slot stores its own
-  // predict index, since slot-1 and slot-2 looked up different PCs.
+  // Save each slot's prediction index; the slots predicted different PCs.
   always_ff @(posedge i_clk) begin
     if (rob_alloc_req.alloc_valid && rob_alloc_resp.alloc_ready) begin
       branch_dir_idx_table[rob_alloc_resp.alloc_tag] <= from_id_to_ex.bp_dir_idx;
@@ -1620,32 +1570,18 @@ module cpu_ooo #(
   // ===========================================================================
   // Direction Predictor Commit-Time Training (bimodal)
   // ===========================================================================
-  // Train the bimodal predictor at commit, conditional branches only (the
-  // ROB's is_branch also covers JAL and JALR; rob_head_dir_train_early
-  // excludes them). A correctly predicted branch can also retire in slot 2;
-  // its training shares the single update port through a one-deep hold that
-  // drains on a cycle when slot 1 does not train (lossy under sustained
-  // contention, like the BTB correct-branch channel). The training index is
-  // the branch's predict-time bimodal index, read from branch_dir_idx_table
-  // at the committing tag, so training updates the exact entry the
-  // prediction read.
+  // Train conditional branches at their saved prediction index. Slot-1
+  // training has priority over a one-entry slot-2 hold; newer slot-2 training
+  // may replace a held update under contention.
   logic                                        dir_update_valid_comb;
   logic [         riscv_pkg::BpDirIdxBits-1:0] dir_update_idx_comb;
   logic                                        dir_update_taken_comb;
-  // TIMING: the conditional-branch class and taken direction come from the
-  // ROB's early field pre-decodes ANDed with the 1-bit raw fire, not from the
-  // combinational commit structs, which would put the whole field mux behind
-  // the late commit gate. They equal the struct fields whenever the raw fire
-  // is high and are don't-cares otherwise, because the predictor writes only
-  // under i_update_valid.
+  // ROB predecodes equal the commit fields when raw fire is high. Other
+  // values are unused because predictor writes require i_update_valid.
   assign dir_update_valid_comb = rob_commit_valid_raw && rob_head_dir_train_early;
-  // TIMING: address branch_dir_idx_table with the ungated registered head tag
-  // rather than rob_commit_comb.tag (= commit_en ? head_idx : '0). When the
-  // read value matters (dir_update_valid_comb=1), commit_en=1, so
-  // tag==head_idx==head_tag; when commit_en=0, dir_update_idx is a don't-care
-  // because direction_predictor writes both BIM RAMs only under
-  // i_update_valid. This keeps commit_en off the LUTRAM read address. Slot 2
-  // reads head_tag+1 == commit_2's head_next_idx by the same argument.
+  // Use ungated head_tag for the index read, for timing. It equals the commit
+  // tag whenever training fires; otherwise the index is unused. Slot 2 uses
+  // head_tag+1 by the same argument.
   wire [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag_p1 = head_tag + 1'b1;
   assign dir_update_idx_comb   = branch_dir_idx_table[head_tag];
   assign dir_update_taken_comb = rob_head_branch_taken_early;
@@ -1678,13 +1614,9 @@ module cpu_ooo #(
       dir_update_held_valid <= 1'b0;
     end
   end
-  // The held payload is read only while dir_update_held_valid is set, so it
-  // loads on every slot-2 training commit: a commit that passes straight
-  // through (dir_slot2_pass) leaves the hold empty, and a pass needs an empty
-  // hold, so no load replaces a held entry the original enable would have
-  // kept. This keeps the slot-1 strobe and the hold state off the payload
-  // enable. p_dir_update_held_payload_exact checks it against a copy loaded
-  // only when the hold is set.
+  // Capture every slot-2 training payload. A pass-through update requires an
+  // empty hold and leaves it empty; all other captures set held valid, so
+  // extra captures cannot overwrite an entry that must be retained.
   always_ff @(posedge i_clk) begin
     if (dir_update_valid_2_comb) begin
       dir_update_held_idx   <= dir_update_idx_2_comb;
@@ -1709,19 +1641,14 @@ module cpu_ooo #(
   end
 `endif
 
-  // TIMING: precompute the non-slot-1 fallback so the update-index register
-  // mux is a single 2:1 selected by dir_update_valid_comb, without the
-  // dir_slot2_pass priority level. Equivalent to the priority form:
-  // dir_slot2_pass implies !held_valid, where the fallback is idx2; with
-  // held_valid the fallback is held_idx; and !held_valid without
-  // dir_slot2_pass means no slot-2 training, so dir_update_valid is 0 and the
-  // index is a don't-care.
+  // Select the fallback index before slot-1 arbitration, for timing. A slot-2
+  // pass requires an empty hold; a valid hold selects held_idx. With neither,
+  // no update fires and the index is unused.
   wire [riscv_pkg::BpDirIdxBits-1:0] dir_update_idx_fallback =
       dir_update_held_valid ? dir_update_held_idx : dir_update_idx_2_comb;
 
-  // Register the predictor update before it enters IF. This removes the
-  // ROB-head/serializer path from the distributed-RAM read-modify-write timing
-  // arc; training is still in commit order, one cycle later.
+  // Register the selected update before IF, adding one cycle. Slot-1 priority
+  // can delay an older held slot-2 update past newer slot-1 training.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       dir_update_valid <= 1'b0;
@@ -1843,31 +1770,23 @@ module cpu_ooo #(
   logic rob_head_bypass_fp_we_early;
   logic rob_head_next_bypass_int_we_early;
   logic rob_head_next_bypass_fp_we_early;
-  // AMO interrupt shield (see trap_unit.i_amo_at_head): registered image of
-  // "a valid AMO occupies the ROB head", off the take_trap timing cone. The
-  // 1-cycle lag is covered by the AMO's >=3-cycle head-to-write-launch delay.
+  // Registered valid AMO-at-head indication (trap_unit.i_amo_at_head).
+  // The AMO's at least three-cycle head-to-write delay covers the one-cycle lag.
   logic amo_at_head_shield_q;
-  // Device-read interrupt shield (see trap_unit.i_device_read_at_head): a
-  // registered image of "the data-memory router holds a device-quadrant
-  // request", extended to the load's commit. Its only functional consumer is
-  // the trap unit; the router derives the same "held for a full cycle" fact
-  // from its own device_request_pending_q rather than taking this bit back as
-  // an input, so no feedback net runs back into the router.
+  // Hold interrupts from a pending device request through its commit. The
+  // router uses device_request_pending_q to check staging; only trap_unit
+  // consumes this shield.
   logic device_read_shield_q;
-  // Retired-next-PC precompute from the ROB, for timing: equals
-  // retired_next_pc(rob_commit_comb) / (rob_commit_comb_2) whenever the
-  // corresponding commit valid is high, but computed from ungated head fields
-  // so the RAM read + adder are off the late commit_en cone.
+  // Precomputed next PCs from ungated ROB fields, for timing. Each equals
+  // retired_next_pc of its commit packet whenever that commit is valid.
   logic [XLEN-1:0] rob_head_retired_next_pc;
   logic [XLEN-1:0] rob_head_next_retired_next_pc;
   riscv_pkg::exc_cause_t rob_trap_cause;
   riscv_pkg::exc_cause_t rob_trap_cause_remapped;
   logic [1:0] csr_priv;  // current privilege from csr_file (PrivM/PrivS/PrivU)
   logic [2:0] csr_mcounteren;  // mcounteren CY/TM/IR from csr_file (S/U-mode counter gate)
-  // Arbitrated trap cause from trap_unit (an interrupt cause with bit XLEN-1
-  // set, or the remapped synchronous-exception cause) -> csr_file's xcause.
-  // Declared here so it is visible above the trap_unit instantiation that
-  // drives it.
+  // Arbitrated trap cause for csr_file: interrupt code with bit XLEN-1 set,
+  // or the remapped synchronous exception cause.
   logic [XLEN-1:0] trap_cause_internal;
   logic [XLEN-1:0] rob_trap_value;
   logic rob_trap_taken_ack;
@@ -1881,10 +1800,7 @@ module cpu_ooo #(
   logic [riscv_pkg::MemDataBits-1:0] sq_mem_write_data;
   logic [riscv_pkg::MemStrbBits-1:0] sq_mem_write_byte_en;
   logic sq_mem_write_is_mmio;
-  // Registered cached-tier flag for the SQ write (parallels is_mmio). Used by
-  // the router to steer the store's byte-write enables to the cached tier and
-  // mask them off the BRAM, keeping the late address-range test off the BRAM
-  // WEA cone.
+  // Registered SQ tier flag routes cached stores away from BRAM.
   logic sq_mem_write_is_cached;
   logic sq_mem_write_done;
 
@@ -1954,17 +1870,13 @@ module cpu_ooo #(
     else checkpoint_in_use <= checkpoint_in_use_next;
   end
 
-  // Owner tags update only on a save. Record checkpoint_branch_tag, not
-  // rob_alloc_resp.alloc_tag, so a slot-2 branch stores its own ROB tag rather
-  // than slot 1's. Otherwise the owner checks in branch_resolution and in the
-  // flush controller's correct-branch checkpoint free fail for slot-2
-  // branches, suppressing branch resolution and deadlocking the ROB head.
+  // Save checkpoint_branch_tag so slot-2 branches record their own ROB tag.
+  // Using slot 1's tag would fail checkpoint checks and block branch resolution.
   always_ff @(posedge i_clk) begin
     if (rob_checkpoint_valid) checkpoint_owner_tag[rob_checkpoint_id] <= checkpoint_branch_tag;
   end
 
-  // Flush-time checkpoint reclaim: free checkpoints owned by flushed entries.
-  // Compute which checkpoints are younger than flush_tag (combinational).
+  // Reclaim checkpoints for entries younger than flush_tag.
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_younger_than_flush;
   logic [riscv_pkg::ReorderBufferTagWidth:0] ckpt_owner_age[riscv_pkg::NumCheckpoints];
   logic [riscv_pkg::ReorderBufferTagWidth:0] ckpt_flush_age;
@@ -2452,11 +2364,8 @@ module cpu_ooo #(
   assign o_dbg_parked = csr_debug_mode && !dbg_cmd_active_q;
   assign o_dbg_cmd_err = dbg_cmd_err_q;
   assign o_dbg_go_taken = dbg_go_taken;
-  // Low-BRAM store snoop for the debug module's instruction-copy mirror.
-  // TIMING: the any-byte flag feeds the mirror's slice-writer FIFO write
-  // enable, so it comes from the router, built from its arbitration terms;
-  // OR-reducing the eight strobes here would lengthen the amo_state -> FIFO
-  // path.
+  // Low-BRAM store snoop for the debug instruction mirror. Use the router's
+  // any-byte flag for timing.
   assign o_dbg_bram_store = data_mem_bram_write_any;
   assign o_dbg_bram_store_addr = o_data_mem_addr[31:0];
   assign o_dbg_bram_store_strb = o_data_mem_bram_byte_wr_en;
@@ -2479,9 +2388,8 @@ module cpu_ooo #(
       // through i_flush below.
       .i_valid(id_valid_preflush),
 
-      // Slot 2 (2-wide dispatch). Its preflush candidate is high when the
-      // bundle is a candidate and slot 2 holds a non-NOP instruction; i_flush
-      // suppresses both slots together during recovery.
+      // Slot 2 is valid when the bundle is a candidate and slot 2 is real,
+      // including a program NOP. i_flush suppresses both slots on recovery.
       .i_from_id_to_ex_2(from_id_to_ex_2),
       .i_valid_2(id_valid_2_preflush),
 
@@ -2626,12 +2534,9 @@ module cpu_ooo #(
   // ===========================================================================
   // Branch Resolution Unit
   // ===========================================================================
-  // Conditional branches and JALRs issue from INT_RS and resolve in
-  // branch_resolution, which drives the ROB's branch_update. A conditional
-  // branch never writes the CDB (the INT RS predecodes its writeback hint
-  // clear); a JALR writes its link through the ALU shim. A same-edge tag twin
-  // drives only the checkpoint-owner and recovery-age predicates inside that
-  // block.
+  // INT_RS conditional branches complete through branch_resolution only;
+  // JALR also writes its link through the ALU shim. A same-edge tag copy
+  // feeds the branch checkpoint and age predicates.
   logic            is_jalr_issue;
   logic            branch_taken_resolved;
   logic [XLEN-1:0] branch_target_resolved;
@@ -2662,17 +2567,13 @@ module cpu_ooo #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // Router/LQ one-entry hold contract. The router's write_port_busy terms are
-  // a subset of the LQ's i_mem_bus_busy input, so a read handoff never meets a
-  // busy write port and the router's write-conflict hold goes unused in this
-  // core. Every device read uses the hold for at least one cycle, and the
-  // router's registered pending bit feeds back into the LQ's bus-busy input,
-  // so no second handoff can arrive before the router accepts. A full flush
-  // in that window cancels the held request before it has any read effect.
-  // An accepted MMIO read returns a fixed one cycle later.
+  // LQ bus-busy includes router write-port terms and pending valid, so a
+  // handoff cannot meet a busy write port or an occupied hold. Device reads
+  // use the hold for staging; full flush cancels them before acceptance.
+  // Accepted MMIO reads return one cycle later.
   //
-  // One-cycle histories for the device-read shield checks below (Verilator
-  // does not accept $past outside an assertion context).
+  // Use explicit one-cycle histories below; Verilator rejects $past outside
+  // assertions.
   logic device_request_pending_q;
   logic router_flush_all_q;
   always @(posedge i_clk) begin
@@ -2722,11 +2623,8 @@ module cpu_ooo #(
     end
   end
 
-  // Device-read shield forward-progress watchdog. While the shield defers an
-  // interrupt, commit is not held (neither o_trap_drain_wait term is set), so
-  // the load commits and the shield drops. A shield stuck high means that
-  // argument is broken; report it here as a hang rather than letting the test
-  // time out.
+  // While the device shield defers interrupts, trap_drain_wait must not block
+  // commit. The load must commit and release the shield; detect a stuck shield.
   localparam int unsigned DeviceShieldWatchdogCycles = 4096;
   int unsigned device_shield_stuck_cnt;
   always @(posedge i_clk) begin
@@ -2755,10 +2653,7 @@ module cpu_ooo #(
   //              hold dispatch and issue (early_backend_recovery_hold)
   //   Cycle N+2: early_backend_recovery_pending: back-end partial flush
 
-  // Local copies of the registered trap and xRET pulses, equal cycle for
-  // cycle to trap_taken_reg and mret_taken_reg in ooo_pipeline_control. Those
-  // also drive IF and the global flush; these low-fanout copies feed only
-  // early_misprediction_recovery's kill terms.
+  // Same-cycle trap and xRET copies for early-recovery kill fanout.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       early_recovery_trap_taken_reg <= 1'b0;
@@ -2780,12 +2675,9 @@ module cpu_ooo #(
       .i_branch_taken_resolved(branch_taken_resolved),
       .i_branch_target_resolved(branch_target_resolved),
       .i_fence_i_flush(fence_i_flush),
-      // rob_commit.is_fence_i serves as a low-fanout copy of fence_i_flush's
-      // native part for the active pulse's late kill gate: for a FENCE.I or
-      // SFENCE.VMA, commit_bus_pipeline registers it from the same retiring
-      // predicate. A translation-CSR recovery raises fence_i_flush without
-      // it; tomasulo_wrapper formally checks that is_fence_i implies
-      // fence_i_flush.
+      // rob_commit.is_fence_i copies the native FENCE.I/SFENCE.VMA flush for
+      // fanout. It implies fence_i_flush; translation-CSR recovery raises
+      // fence_i_flush without this bit.
       .i_active_fence_i_flush(rob_commit.is_fence_i),
       .i_mispredict_recovery_pending(mispredict_recovery_pending),
       .i_flush_all(flush_all),
@@ -2846,15 +2738,9 @@ module cpu_ooo #(
   // ===========================================================================
   // Register-File Bypass Qualifiers (declared with the register files above)
   // ===========================================================================
-  // Registered one cycle early from the ROB's combinational commit buses (the
-  // values commit_bus_pipeline registers into rob_commit / rob_commit_2) plus
-  // the delayed CSR writeback, and cleared by the full flush exactly like
-  // commit_bus_q_valid, so the wide hit compares in ooo_register_files start
-  // at registers instead of the trap/xRET/FENCE-class flush-mask logic. Each
-  // equals its commit_actions write enable (with |dest_reg folded in for the
-  // INT file's x0 exclusion) in every cycle except a full-flush cycle, where
-  // the bypass may still claim a commit whose architectural write was masked
-  // off; the dispatch that could use that hit is squashed by the same flush.
+  // Capture bypass qualifiers with the ROB commit bus and delayed CSR result.
+  // They equal architectural write enables, excluding x0, except during full
+  // flush. A stale bypass hit during full flush is harmless: dispatch is killed.
   logic csr_wb_arm;
   assign csr_wb_arm = csr_commit_fire && rob_commit.dest_valid;
 
@@ -2865,12 +2751,8 @@ module cpu_ooo #(
       bypass_p0_fp_we_q  <= 1'b0;
       bypass_p1_fp_we_q  <= 1'b0;
     end else begin
-      // TIMING: the field conjunctions come from the ROB's early pre-decodes
-      // (rob_head*_bypass_*_we_early, equal to the commit-struct fields
-      // whenever the raw fire is high; see reorder_buffer), so each D is the
-      // 1-bit raw fire ANDed with one early bit. Decoding the combinational
-      // commit structs instead would put the whole head/head+1 field mux
-      // behind the late commit gate.
+      // Use ROB predecodes for timing. They equal commit fields whenever raw
+      // fire is high.
       bypass_p0_int_we_q <= (csr_wb_arm && |rob_commit.dest_reg) ||
           (rob_commit_valid_raw && rob_head_bypass_int_we_early);
       bypass_p0_fp_we_q <= rob_commit_valid_raw && rob_head_bypass_fp_we_early;
@@ -2923,12 +2805,8 @@ module cpu_ooo #(
   // ===========================================================================
   // Commit-Bus Pipeline Register
   // ===========================================================================
-  // The ROB commit bus is registered (commit_bus_pipeline, inside the
-  // wrapper), cutting the path from commit_en through the commit bus to the
-  // CSR read and the register-file write. Misprediction and branch detection
-  // use the narrow raw ROB status bits instead, so flush initiation pays no
-  // extra latency and the full commit payload stays off the branch-recovery
-  // logic.
+  // Register ROB commit before CSR and regfile writes. Recovery uses narrow
+  // raw ROB status so flush initiation does not wait for this register.
   assign rob_commit_valid = rob_commit.valid;
 
   logic [XLEN-1:0] trap_target_internal, trap_pc_internal;
@@ -3229,22 +3107,16 @@ module cpu_ooo #(
   assign rob_commit_2_fp_flags_nonzero = rob_commit_2.fp_flags.nv | rob_commit_2.fp_flags.dz |
                                          rob_commit_2.fp_flags.of | rob_commit_2.fp_flags.uf |
                                          rob_commit_2.fp_flags.nx;
-  // Only entries with has_fp_flags (the OP-FP and FMA opcodes) accumulate
-  // flags. Every other entry retires zero flags: allocation writes zero and
-  // only the FP units send nonzero flags on the CDB, so the has_fp_flags term
-  // matters only if a stray CDB write reached a store, branch, or integer
-  // entry.
+  // Only OP-FP and FMA entries accumulate flags. Allocation clears all flags;
+  // only FP CDB completions supply nonzero flags.
   assign rob_commit_fp_flags_valid = rob_commit_valid && rob_commit_fp_flags_nonzero &&
                                      !rob_commit.exception && rob_commit.has_fp_flags;
   assign rob_commit_2_fp_flags_valid = rob_commit_2_valid && rob_commit_2_fp_flags_nonzero &&
                                        !rob_commit_2.exception && rob_commit_2.has_fp_flags;
   assign rob_commit_any_fp_flags_valid = rob_commit_fp_flags_valid || rob_commit_2_fp_flags_valid;
 
-  // FP regfile write at commit (either slot) -> csr_file sets
-  // mstatus.FS = Dirty. Covers FP loads and f-dest computes; x-dest FP ops
-  // that modify FP state do so only via nonzero flags, which the
-  // i_fp_flags_valid term already carries (zero-flag FP reads leave state
-  // unmodified, so precise no-Dirty is architecturally correct there).
+  // Either FP register write marks FS Dirty. Integer-destination FP operations
+  // modify FP state only through nonzero flags; zero-flag reads leave it clean.
   logic rob_commit_any_fp_dest_write;
   assign rob_commit_any_fp_dest_write =
       (rob_commit_valid && rob_commit.dest_valid && rob_commit.dest_rf &&
@@ -3311,19 +3183,12 @@ module cpu_ooo #(
     endcase
   end
 
-  // ECALL cause is privilege-dependent (U-mode = 8, S-mode = 9, M-mode = 11).
-  // The FU shim tags every ECALL as ExcEcallMmode (it has no architectural
-  // privilege), so remap at commit using the current privilege. The remapped
-  // cause enters trap_unit.i_exception_cause, and trap_unit's arbitrated
-  // o_trap_cause (trap_cause_internal) is what csr_file writes to xcause. The
-  // csr_trap_value mux above keys on the unremapped cause (ECALL tval is 0
-  // either way).
+  // Remap the shim's ExcEcallMmode at commit: U=8, S=9, M=11. trap_unit
+  // arbitrates this cause with interrupts before csr_file writes xcause.
+  // The tval mux uses the original cause; every ECALL has tval=0.
   //
-  // Safe against the cause==11 / IntMachineExternal (interrupt bit plus code
-  // 11) low-bit collision: rob_trap_cause holds only synchronous causes (the
-  // head's exception cause, or the ExcMemReplay pseudo-cause; the ROB's
-  // i_interrupt_pending only wakes WFI and is never a cause source), so a
-  // value of 11 here is always an M-mode ECALL.
+  // Code 11 cannot be an external interrupt here: rob_trap_cause contains only
+  // synchronous exceptions or ExcMemReplay. ROB interrupt_pending only wakes WFI.
   assign rob_trap_cause_remapped =
       ((rob_trap_cause == riscv_pkg::ExcEcallMmode[riscv_pkg::ExcCauseWidth-1:0]) &&
        (csr_priv == riscv_pkg::PrivU)) ?
@@ -3421,13 +3286,9 @@ module cpu_ooo #(
   );
 
 `ifndef SYNTHESIS
-  // id_stage decodes F/D instructions against id_mstatus_fs_off_q, one cycle
-  // behind mstatus.FS, so an instruction decoded under the old value, before
-  // or in the cycle FS enters or leaves Off, must not survive the change. FS
-  // enters or leaves Off only through a write-intending mstatus/sstatus access
-  // (hardware Dirty-setting starts from a value other than Off), which the ROB
-  // classes as a translation CSR: its FENCE-class full flush lands in the
-  // cycle the new value first shows here.
+  // ID sees FS-Off one cycle late. Writes to mstatus/sstatus that enter or
+  // leave Off are translation CSRs, whose full flush discards decode under
+  // the old value. Hardware Dirty-setting never changes FS from Off.
   logic fs_off_checks_armed = 1'b0;
   always_ff @(posedge i_clk) begin
     fs_off_checks_armed <= !i_rst;
@@ -3440,13 +3301,10 @@ module cpu_ooo #(
   // ===========================================================================
   // Page-Table Walker
   // ===========================================================================
-  // One ptw serves the wrapper's data MMU and if_stage's instruction MMU, and
-  // the data side wins when both ask. walk_owner_i_q records which side
-  // started the walk in flight so the response goes only to that side (the
-  // vpn echo alone would let the other TLB install a leaf it never asked
-  // for). The line port goes out to the cache hierarchy's walker port.
-  // tlb_invalidate, which flash-clears both TLBs, also makes the ptw discard
-  // the walk in flight, which then never responds, and clears walk_owner_i_q.
+  // Data MMU requests take priority over instruction MMU requests. Record the
+  // requesting side in walk_owner_i_q so only it receives the response; VPN
+  // alone cannot distinguish requesters. TLB invalidate also discards the
+  // walk and clears this routing bit. The line port goes to cache wup.
   logic ptw_req_valid, ptw_req_ready, ptw_resp_valid;
   logic [riscv_pkg::Sv39VpnBits-1:0] ptw_req_vpn;
   logic walk_owner_i_q;  // the walk in flight belongs to the instruction side
@@ -3521,14 +3379,9 @@ module cpu_ooo #(
     end
   endfunction
 
-  // TIMING: the resume PC is formed after registers. Its arm selects (the
-  // trap and xRET takes, the raw commit valids, and the WFI seed) are late,
-  // so instead of steering four 64-bit values into one register under them,
-  // each arm's value is registered on every cycle, each select is registered
-  // on its own, and the priority mux runs after the registers.
-  // interrupt_resume_prev_q holds the mux output for the cycles no arm
-  // fires, so interrupt_resume_pc equals, on every cycle, the register this
-  // replaces (checked below against a reference copy of that register).
+  // Register resume-PC candidates and selects separately, then mux for timing.
+  // interrupt_resume_prev_q retains the result when no arm fires. Priority is
+  // take, slot-2 commit, slot-1 commit, then WFI seed.
   logic resume_take_q, resume_commit_2_q, resume_commit_q, resume_wfi_q;
   logic [XLEN-1:0] resume_take_pc_q, resume_commit_2_pc_q, resume_commit_pc_q, resume_wfi_pc_q;
   logic [XLEN-1:0] interrupt_resume_prev_q;
@@ -3546,70 +3399,35 @@ module cpu_ooo #(
       resume_wfi_q            <= wfi_resume_seed;
       interrupt_resume_prev_q <= interrupt_resume_pc;
     end
-    // Take arm (highest priority).
-    // The ROB head's return flavor selects the data before the late take
-    // strobe. On an xRET it equals the taken flavor (checked below), so
-    // the register keeps the same update cycle and priority.
-    // An xRET never appears on rob_commit_valid_raw, so the arms below never
-    // see it: it retires through the full flush that follows it (flush_all,
-    // from mret_taken_reg, clears the ROB head and gates commit_en). Without
-    // this seed the resume PC would stay at the xRET's own PC until the
-    // first instruction at the target commits. An M-level interrupt taken
-    // in that window (possible once privilege has dropped and the trap
-    // unit's inhibit lifts, a few cycles after the xRET) would then save the
-    // xRET's PC as mepc, and the handler's MRET would re-execute the xRET at
-    // the lower privilege. The seed is the xRET target (mepc, sepc, or dpc),
-    // which is the redirect target. csr_mepc is stable here: MRET does not
-    // write mepc and cannot coincide with a trap entry that would.
+    // Trap/xRET has highest priority. Select the xRET target using the ROB
+    // head's return flavor, which must match the taken flavor.
     //
-    // Every trap take also seeds the resume PC with its redirect target, for
-    // two cases that arise before the handler's first instruction retires:
-    //  - an M-level interrupt taken just after a trap delegated to S
-    //    (privilege is now S, so M interrupts are enabled regardless of
-    //    MIE, and the take can arm a few cycles after the entry) would
-    //    otherwise save the trapping instruction's PC as mepc and, after
-    //    the MRET, re-execute it in S;
-    //  - a single step whose instruction traps must halt with dpc at the
-    //    handler's first instruction, as the debug spec requires.
-    // Debug Mode entries and redirects also land here; nothing uses the
-    // value then, because interrupts are masked in Debug Mode.
-    // trap_entry_target is trap_target before its xRET mux; the unit proves that
-    // the two targets match on a trap take.
-    // The trap unit also supplies the combined write enable before its
-    // trap-vs-xRET arbitration. The two takes are mutually exclusive.
+    // xRET retires through full flush, not the raw commit bus. Seed its target
+    // (mepc, sepc, or dpc) so an interrupt before the target's first commit
+    // cannot save and later re-execute the xRET at lower privilege. MRET leaves
+    // mepc unchanged and cannot coincide with a trap that writes it.
+    //
+    // A trap also seeds its redirect target: an M interrupt after S delegation
+    // must resume in the handler, and a single step that traps must halt at the
+    // handler's first instruction (debug spec). Debug redirects use this arm;
+    // interrupts are masked in Debug Mode. trap_entry_target equals trap_target
+    // on a trap take. Trap and xRET takes are mutually exclusive.
     resume_take_pc_q <= trap_taken ? trap_entry_target :
                         mret_start_is_dret ? csr_dpc :
                         mret_start_is_sret ? csr_sepc : csr_mepc;
-    // Slot-2 commit arm.
-    // Timing: identical value to retired_next_pc(rob_commit_comb_2) in every
-    // cycle this arm is taken (checked below in simulation), but the ROB
-    // precomputes it from ungated head+1 fields (the stored fall-through PC
-    // and branch target) so its RAM reads do not sit behind the late commit
-    // gating.
+    // Slot-2 commit uses the precomputed next PC, equal to
+    // retired_next_pc(rob_commit_comb_2) whenever this arm is selected.
     resume_commit_2_pc_q <= rob_head_next_retired_next_pc;
-    // Slot-1 commit arm.
-    // Timing: identical value to retired_next_pc(rob_commit_comb); see above.
+    // Slot-1 commit uses the corresponding precomputed next PC.
     resume_commit_pc_q <= rob_head_retired_next_pc;
-    // WFI seed arm (lowest priority).
-    // While a WFI waits at the ROB head, the architectural resume PC is
-    // wfi_pc+4 (WFI never redirects). Seed it so that an interrupt taken at
-    // the WFI saves the spec-required wfi_pc+4 rather than the pre-WFI
-    // instruction's next-PC (== wfi_pc). That includes the narrow window
-    // where a committed store finishes draining and take_trap fires the
-    // same cycle, before the WFI's own commit can advance
-    // interrupt_resume_pc. Lowest priority: a real commit always wins, and
-    // WFI is never compressed, so +4 is exact.
+    // Seed a waiting legal WFI's PC+4 so an interrupt resumes after it, even
+    // when store drain finishes before WFI commits. WFI is never compressed;
+    // real commits take priority.
     //
-    // Only a legal WFI that stays in the ROB seeds. A WFI's cause is zero
-    // unless allocation marked it illegal; an illegal WFI has not executed,
-    // so an interrupt taken there must not resume past it (it traps once
-    // the handler returns). A full flush (after a trap taken at the WFI, or
-    // a FENCE-class retirement) and commit-time recovery (a wrong-path
-    // head) remove the head at the end of the cycle; seeding then would
-    // overwrite the resume PC installed by the take or by the last
-    // retirement. A WFI never waits in Debug Mode or while a single step is
-    // armed (it runs as a nop there), so it gets no seed: a step that
-    // retires the instruction before it must halt with dpc at the WFI.
+    // An illegal WFI gets no seed: it must trap after the handler returns.
+    // Full flush and commit recovery remove the head, so seeding then would
+    // overwrite the take or retirement PC. WFI acts as a NOP in Debug Mode and
+    // during single step; seeding would skip a WFI after the stepped instruction.
     resume_wfi_pc_q <= rob_trap_pc + 64'd4;
   end
   assign interrupt_resume_pc = resume_take_q ? resume_take_pc_q :
@@ -3618,7 +3436,7 @@ module cpu_ooo #(
       resume_wfi_q ? resume_wfi_pc_q : interrupt_resume_prev_q;
 
 `ifndef SYNTHESIS
-  // Reference: the single register the arms used to write directly.
+  // Reference resume-PC register with the same update priority.
   logic [XLEN-1:0] resume_pc_reference_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) resume_pc_reference_q <= '0;
@@ -3722,14 +3540,10 @@ module cpu_ooo #(
     end
   end
 
-  // An M/S interrupt taken while a WFI waits at the ROB head resumes after a
-  // legal WFI: the saved PC must be wfi_pc+4. An illegal WFI has not
-  // executed and gets no seed, so the interrupt saves the resume PC held
-  // while it waited (the WFI's own PC), never wfi_pc+4, and the WFI traps
-  // once the handler returns. Waiting means the same WFI was the valid head
-  // in the previous cycle with nothing retiring, trapping or being flushed,
-  // so the resume-PC seed has had its cycle. A WFI's cause field is zero
-  // unless allocation marked it illegal (a WFI never completes on the CDB).
+  // An interrupt at a waiting legal WFI must save PC+4. An illegal WFI must
+  // remain at its own PC so it traps after return. Require the same head to
+  // have waited a cycle without retirement, trap, or flush, allowing the seed
+  // to settle. WFI has a nonzero cause only when allocation marks it illegal.
   logic wfi_waiting_q;
   logic wfi_waiting_legal_q;
   logic [XLEN-1:0] wfi_waiting_pc_q;
@@ -3768,16 +3582,10 @@ module cpu_ooo #(
   end
 `endif
 
-  // The trap unit takes sq_committed_empty without a same-cycle store-commit
-  // guard: the SQ's registered committed-empty already folds the raw commit
-  // pulses into its D (one cycle pessimistic). trap_unit's interrupt arming
-  // and exception commit block keep a commit off the take cycle, except when
-  // an interrupt shield deferred the take; a raw commit in that cycle is
-  // masked on the registered commit bus by the full flush that follows, so it
-  // never reaches the SQ. Leaving the guard out keeps the ROB head-commit
-  // logic out of the take_trap -> trap_target/CSR-write timing. It uses the
-  // store queue's trap copy of the register, which can place beside the trap
-  // unit.
+  // Use SQ's registered committed-empty copy for trap fanout. It already
+  // accounts pessimistically for raw commits. Interrupt arming and exception
+  // holds block take-cycle commits except after a deferred shielded interrupt;
+  // then the following full flush masks raw commit before it can reach SQ.
   assign sq_committed_empty_for_trap = sq_committed_empty_trap;
 
   // AMO interrupt shield register (see trap_unit.i_amo_at_head port comment
@@ -3787,21 +3595,12 @@ module cpu_ooo #(
     else amo_at_head_shield_q <= rob_head_is_amo && head_valid;
   end
 
-  // Device-read interrupt shield register (see trap_unit.i_device_read_at_head).
-  //
-  // The window must span from before the irrevocable device read to the
-  // load's commit. It opens from the router's registered device-pending bit,
-  // which is high for at least one staging cycle before the request can be
-  // armed, and closes at the first ROB commit afterwards.
-  //
-  // "First commit" is exact: a device request leaves the LQ only at the ROB
-  // head, and a head entry still waiting on its memory response is not done
-  // (commit_ready_early is low, and slot 2 is gated by it), so no commit of
-  // any kind can fire between the launch and this load's own. Set beats
-  // clear, so the accept cycle itself cannot open a hole. A full flush before
-  // arming cancels the request with no response owed, and the shield rules
-  // out an interrupt flush after arming, so clearing the shield on a flush
-  // never exposes a device read.
+  // Hold interrupts from before device-read acceptance through load commit
+  // (see trap_unit.i_device_read_at_head). The router stages the request before
+  // arming. It launches only at the ROB head, whose pending response blocks
+  // both commit slots, so the first later commit is this load's. Set wins over
+  // clear. Flush before arming cancels the request; the shield prevents an
+  // interrupt flush after arming.
   always_ff @(posedge i_clk) begin
     if (i_rst || lq_router_flush_all) device_read_shield_q <= 1'b0;
     else if (lq_device_request_pending) device_read_shield_q <= 1'b1;
@@ -3903,15 +3702,8 @@ module cpu_ooo #(
   end
 `endif
 
-  // The front-end flush uses the registered trap and xRET pulses, keeping
-  // flush_pipeline off the combinational
-  //   rob_valid[head_idx] -> commit_en -> trap_unit -> trap_taken
-  // path. The back end's flush_all is the same registered pulses ORed with
-  // fence_i_flush (see misprediction_flush_controller), so the front-end
-  // flush lines up with it instead of leading it. A trap pays one extra cycle
-  // of front-end squash, negligible for workloads that rarely trap; the
-  // redirect already waits for the registered trap_target_reg and
-  // rob_trap_taken_ack.
+  // Frontend and backend flushes use the same registered trap and xRET
+  // pulses, aligned with trap_target_reg and ROB acknowledgment.
   assign flush_for_trap = trap_taken_reg;
   assign flush_for_mret = mret_taken_reg;
 
@@ -3972,11 +3764,8 @@ module cpu_ooo #(
           .o_perf_counter_count(perf_counter_count)
       );
     end else begin : gen_no_perf_counters
-      // No counters: the CSR file reads zero for every mperf* address and
-      // never raises the snapshot pulse. The event registers stay in their
-      // source modules; nothing reads them, so synthesis drops them along
-      // with the counters, except the few marked keep (the cache and
-      // fetch-provider event registers).
+      // With counters disabled, mperf CSRs read zero and never trigger a snapshot.
+      // Unused event registers are removed except those marked keep.
       assign wrapper_perf_counter_select = '0;
       assign perf_counter_data_q = '0;
       assign perf_counter_csr_half_q = '0;

@@ -18,25 +18,14 @@
  * Integer ALU Shim
  *
  * Translates rs_issue_t from the INT reservation station into the ALU's native
- * port interface, instantiates the ALU, and packs the result into
- * fu_complete_t for the CDB adapter and arbiter.
- *
- * Signal flow:  INT_RS -> int_alu_shim (translate + ALU) -> fu_complete_t
+ * port interface and packs the result into fu_complete_t for the CDB.
  *
  * The ALU is combinational, so the shim presents each result in its issue
  * cycle. It has no multiplier or divider: M-extension operations issue
- * through MUL_RS to int_muldiv_shim, and a simulation assertion below checks
- * that none arrive here.
+ * through MUL_RS to int_muldiv_shim.
  *
- * Fields the ALU needs, rebuilt here from rs_issue_t:
- *   - i_instruction.opcode: OPC_OP_IMM when use_imm, else OPC_OP. It selects
- *     the ALU's internal operand_b mux.
- *   - i_instruction.source_reg_2 and funct7[0]: imm[4:0] and imm[5], the shift
- *     amount for SLLI, SRLI, SRAI, BSETI, BCLRI, BINVI, BEXTI and RORI.
- *   - i_link_address: the pre-computed PC + 2 or PC + 4 for JALR, which
- *     dispatch places in the immediate word (JALR's own I-immediate rides
- *     jalr_imm for branch resolution).  AUIPC needs no PC here either:
- *     dispatch precomputes PC + imm_u into the immediate.
+ * Dispatch puts JALR's link address (PC + 2 or PC + 4) in imm and its
+ * I-immediate in jalr_imm for branch resolution. For AUIPC, imm is PC + imm_u.
  *
  * Conditional branches do not write the CDB: o_fu_complete.valid follows the
  * RS's predecoded i_issue_writes_cdb_hint, which is clear for them, and branch
@@ -87,9 +76,6 @@ module int_alu_shim #(
   // ---------------------------------------------------------------------------
   // Operation classes the ALU has no result group for
   // ---------------------------------------------------------------------------
-  // Conditional branches complete only through branch_update. JALR completes
-  // here, so its link address wakes dependents. CSR ops pass through the rs1
-  // or immediate value, and the CSR read and write happen at commit.
   logic is_csr_imm_op;
   assign is_csr_imm_op = (i_rs_issue.op == riscv_pkg::CSRRWI) ||
                           (i_rs_issue.op == riscv_pkg::CSRRSI) ||
@@ -100,9 +86,6 @@ module int_alu_shim #(
                           (i_rs_issue.op == riscv_pkg::CSRRS) ||
                           (i_rs_issue.op == riscv_pkg::CSRRC);
 
-  // ECALL, EBREAK, ILLEGAL and the fetch-fault pseudo-ops flow through INT_RS
-  // like any other op, but the ALU produces no result for them. This shim
-  // builds their exception and delivers it on the CDB.
   logic is_ecall_op;
   logic is_ebreak_op;
   logic is_illegal_op;
@@ -119,14 +102,9 @@ module int_alu_shim #(
   assign is_fetch_fault_op = (i_rs_issue.op == riscv_pkg::FETCH_FAULT);
   assign is_fetch_page_fault_op = (i_rs_issue.op == riscv_pkg::FETCH_PAGE_FAULT);
 
-  // The value these operations complete with: a CSR instruction's write
-  // operand (rs1 or the zero-extended immediate) and a fetch fault's xtval
-  // (imm); ECALL, EBREAK and ILLEGAL leave it zero. The ALU ORs it into its
-  // result (alu.sv header). Every other operation contributes zero here, and
-  // no ALU result group selects these operations, so the completed value is
-  // the ALU result for an ALU operation and exactly this value otherwise.
-  // TIMING: entering in the ALU's early bus keeps these cases off the last
-  // LUT level of the result.
+  // The ALU ORs in a CSR write operand or a fetch fault's xtval. These ops
+  // select no ALU result group; all other ops contribute zero here.
+  // ECALL, EBREAK and ILLEGAL complete with a zero value.
   logic [riscv_pkg::XLEN-1:0] side_result;
   assign side_result =
       ({riscv_pkg::XLEN{is_fetch_fault_op || is_fetch_page_fault_op}} & i_rs_issue.imm) |
@@ -160,10 +138,8 @@ module int_alu_shim #(
   // ---------------------------------------------------------------------------
   always_comb begin
     o_fu_complete.tag       = i_rs_issue.rob_tag;
-    // Branch/no-branch is predecoded in the INT RS so ROB done does not need
-    // the ALU's live op decode or CSR/exception compares on this path.
+    // The RS clears this hint for conditional branches.
     o_fu_complete.valid     = i_rs_issue.valid & i_issue_writes_cdb_hint;
-    // CSR operands and fetch-fault values are already in alu_result (above).
     o_fu_complete.value     = riscv_pkg::FLEN'(alu_result);
     o_fu_complete.exception = 1'b0;
     o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
@@ -212,7 +188,6 @@ module int_alu_shim #(
   end
 `endif
 
-  // ALU is single-cycle for INT_RS ops; never busy
   assign o_fu_busy = 1'b0;
 
 endmodule : int_alu_shim

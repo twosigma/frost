@@ -24,17 +24,13 @@
  * (1..8, only the last beat may be short) and a last flag. The engine keeps
  * at most one frame in the packer at a time.
  *
- * Bytes are staged in a two-line window whose base is the line of A. Each
- * beat is rotated by A mod 8 (the same for every beat of the frame, since
- * positions advance by 8) into a 16-byte pattern and placed with per-byte
- * enables at chunks pos/8 and pos/8 + 1 of the window, where pos is the
- * next byte's position relative to the window base. When the next byte
- * belongs to the upper line, the lower line is complete and the window
- * shifts down a line; the completed line, if it holds any byte, is issued
- * as a line write with the strobes it collected (full for interior lines,
- * partial at both ends). At the last beat the lower line is flushed, and
- * the upper line too if it holds any byte. Bytes at or beyond LIMIT are
- * dropped; the engine reports the truncation.
+ * A two-line window starts at the line containing A. Each beat is rotated
+ * by A mod 8 into a 16-byte pattern, then placed in chunks pos/8 and
+ * pos/8 + 1, where pos is the next byte's position in the window. The rotation
+ * stays constant because nonfinal beats advance by eight bytes.
+ * When pos reaches the upper line, issue the completed lower line and shift
+ * the window down. The last beat flushes both lines. Empty lines are skipped;
+ * strobes cover only bytes below LIMIT. The engine reports truncation.
  *
  * A register holds each line write until the front-end accepts it. A
  * two-beat input queue keeps ready independent of rotation, byte limits and
@@ -85,10 +81,9 @@ module nic_byte_pack #(
   logic [WindowBytes-1:0] win_strb_q;
 
   // ---- input queue ----------------------------------------------------------------
-  // No combinational path from the offered beat or the line write port to
-  // ready. Two slots sustain one beat per cycle while the packer consumes
-  // the previous beat. After the last beat is queued, ready stays low until
-  // the next i_start; active_q stays high until that beat is placed.
+  // Two slots decouple ready from beat processing and write backpressure.
+  // After the last beat is queued, ready stays low until i_start; active_q
+  // stays high until that beat is placed.
   logic accepting_q;
   logic [1:0] beat_count_q;
   logic beat_rd_q, beat_wr_q;
@@ -176,10 +171,7 @@ module nic_byte_pack #(
   assign o_wr_addr  = out_addr_q;
   assign o_wr_wdata = out_wdata_q;
   assign o_wr_wstrb = out_wstrb_q;
-  // A line is issued only into an empty output register: consuming a queued
-  // beat depends on this block's own state, not on the front-end's acceptance
-  // in the same cycle (the register empties the cycle after a write is taken,
-  // which a four-beat line never waits for).
+  // Issue only into an empty output register, without a same-cycle bypass.
   logic out_free;
   assign out_free = !out_valid_q;
 
@@ -189,13 +181,10 @@ module nic_byte_pack #(
   logic [OffsetBits:0] pos_after;
   assign pos_after = pos_q + (OffsetBits + 1)'(beat_bytes);
   assign lower_complete_after = (pos_after >= (OffsetBits + 1)'(LINE_BYTES)) || beat_last;
-  // A completed lower line is issued only when it holds a byte (after the
-  // limit, lines complete empty and are skipped). The beat adds a byte to
-  // the lower line exactly when it keeps at least one byte (room left, a
-  // non-empty beat) and its first kept byte lands below LINE_BYTES: that
-  // byte goes to chunk_base + rot_q, which is below LINE_BYTES precisely when
-  // pos_q's top bit is clear. This keeps the wide placed-strobe merge off the
-  // issue decision, which enables every output and window register.
+  // Skip completed lines with no strobes. A beat adds a lower-line byte
+  // exactly when it is nonempty, below LIMIT, and its first byte lands below
+  // LINE_BYTES. That position is chunk_base + rot_q, so pos_q's top bit
+  // suffices to choose the half.
   logic beat_adds_lower;
   assign beat_adds_lower = !pos_q[OffsetBits] && (beat_bytes != '0) && (placed_q < limit_q);
   logic lower_issue;

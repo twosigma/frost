@@ -1,5 +1,4 @@
-# CPU and memory subsystem file list
-# The RISC-V CPU core, memories, cache hierarchy, and peripherals
+# CPU and memory subsystem
 
 # Library dependencies (RAM primitives used by regfile, cache, main memory)
 -f $(ROOT)/hw/rtl/lib/ram/ram.f
@@ -10,7 +9,7 @@
 # Pipeline utilities (stall capture registers)
 $(ROOT)/hw/rtl/lib/stall_capture_reg.sv
 
-# RISC-V OOO CPU core (Tomasulo out-of-order with all submodules)
+# RISC-V out-of-order CPU core
 -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.f
 
 # Word<->line adapter between the request router and the cache hierarchy.
@@ -34,7 +33,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/low_bram_fetch_presenter.sv
 # Platform-level interrupt controller and the coherent DMA test engine
 $(ROOT)/hw/rtl/cpu_and_mem/plic.sv
 $(ROOT)/hw/rtl/cpu_and_mem/dma_test_engine.sv
-# RISC-V debug module + JTAG DTM; after the core (riscv_pkg)
+# RISC-V debug module and JTAG DTM; requires riscv_pkg from the core.
 -f $(ROOT)/hw/rtl/cpu_and_mem/debug/debug.f
 
 # On-silicon hang triage (synthesizable boot-hang classifier over UART)

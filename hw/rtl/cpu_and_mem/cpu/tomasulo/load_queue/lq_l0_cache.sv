@@ -60,19 +60,14 @@ module lq_l0_cache #(
     input logic            i_invalidate_valid,
     input logic [XLEN-1:0] i_invalidate_addr,
 
-    // Second invalidate port (AMO write completion).  It is structurally
-    // independent from port 1 so the LQ never muxes the two sources'
-    // addresses in front of the tag read + compare, which would put the late
-    // AMO write-done acknowledge in series with the whole invalidate cone
-    // (amo_state -> L0 valid).  AMO serialization keeps the two sources
-    // mutually exclusive (asserted in load_queue), but nothing here relies
-    // on that.
+    // AMO write completion uses a separate port for timing. LQ serialization
+    // makes the two invalidate sources exclusive, but this cache does not
+    // require that.
     input logic            i_invalidate2_valid,
     input logic [XLEN-1:0] i_invalidate2_addr,
 
-    // Same-cycle lookup-hit suppression for stores.  AMO write completion is
-    // serialized by the LQ, so it can use the sequential invalidation above
-    // and keep the AMO write address out of the lookup-hit cone.
+    // Suppress same-cycle store hits. LQ serialization lets AMO completion
+    // use only the sequential invalidation above.
     input logic            i_lookup_invalidate_valid,
     input logic [XLEN-1:0] i_lookup_invalidate_addr,
     // Line invalidate (DMA coherence): clear the four dword entries of a
@@ -80,7 +75,7 @@ module lq_l0_cache #(
     input logic            i_invalidate_line_valid,
     input logic [XLEN-1:0] i_invalidate_line_addr,
 
-    // Flush all (pipeline flush)
+    // Clear all valid bits.
     input logic i_flush_all
 );
 
@@ -88,12 +83,8 @@ module lq_l0_cache #(
   // Local Parameters
   // ===========================================================================
   localparam int unsigned IndexWidth = $clog2(DEPTH);
-  // Tags cover the physical address above the dword index: bits
-  // [31 : 3+IndexWidth], at any XLEN.  The physical map is 32-bit
-  // (riscv_pkg::PhysAddrBits), and the LQ never uses a hit for an address
-  // outside it (such a load takes an access fault), so higher bits would only
-  // lengthen the lookup-hit compare, which feeds the LQ's memory-launch
-  // decision.
+  // Tags cover physical bits [31 : 3+IndexWidth] at any XLEN. The LQ faults
+  // addresses outside the 32-bit physical map (riscv_pkg::PhysAddrBits).
   localparam int unsigned TagWidth   = 32 - 3 - IndexWidth;
 
   // Four adjacent dwords form one DMA line. The index needs at least one
@@ -120,11 +111,9 @@ module lq_l0_cache #(
 
   wire [IndexWidth-1:0] lookup_index = i_lookup_addr[3+:IndexWidth];
   wire [TagWidth-1:0] lookup_tag = i_lookup_addr[(3+IndexWidth)+:TagWidth];
-  // MMIO is the 01 address quadrant.  The DDR region (10 quadrant) is
-  // cacheable here just like the low BRAM range (stores invalidate; reset clears).
-  // The decode uses fixed physical bits [31:30], never [XLEN-1:XLEN-2]: at
-  // XLEN=64 the relative form tests always-zero bits 63:62, so MMIO would
-  // become cacheable and device registers would return stale L0 hits.
+  // Decode MMIO from physical bits [31:30], not the top XLEN bits. At RV64,
+  // bits [63:62] are zero for valid physical addresses and would cache MMIO.
+  // BRAM and DDR are cacheable; stores invalidate their lines.
   wire lookup_mmio = (i_lookup_addr[31:30] == 2'b01);
 
   wire [IndexWidth-1:0] fill_index = i_fill_addr[3+:IndexWidth];
@@ -146,10 +135,7 @@ module lq_l0_cache #(
   logic lookup_fill_bypass;
   logic lookup_invalidated;
 
-  // Tags are written only on fill and read at independent addresses (lookup,
-  // port-1 invalidate, and port-2 invalidate below), so the tag array is a
-  // simple dual-port RAM duplicated once per read port instead of a bank of
-  // flip-flops.
+  // Duplicate the tag LUTRAM for independent lookup and invalidate reads.
   sdp_dist_ram #(
       .ADDR_WIDTH(IndexWidth),
       .DATA_WIDTH(TagWidth)
@@ -174,9 +160,6 @@ module lq_l0_cache #(
       .o_read_data    (tag_inv_rd)
   );
 
-  // Port-2 invalidate gets its own tag replica for the same reason the
-  // lookup and port-1 invalidate each have one: independent read addresses
-  // on LUTRAM copies instead of a shared read port behind an address mux.
   logic [TagWidth-1:0] tag_inv2_rd;
   sdp_dist_ram #(
       .ADDR_WIDTH(IndexWidth),
@@ -190,8 +173,7 @@ module lq_l0_cache #(
       .o_read_data    (tag_inv2_rd)
   );
 
-  // Data has one write port and one lookup read port, so it maps to a small
-  // LUTRAM rather than a bank of flip-flops.
+  // Data uses one write port and one combinational lookup port.
   sdp_dist_ram #(
       .ADDR_WIDTH(IndexWidth),
       .DATA_WIDTH(riscv_pkg::MemDataBits)
@@ -224,12 +206,8 @@ module lq_l0_cache #(
       (tag_inv2_rd == inv2_tag) &&
       !(i_fill_valid && (fill_index == inv2_index) && (fill_tag != inv2_tag));
   assign lookup_hit_array = valid[lookup_index] && (tag_lookup_rd == lookup_tag);
-  // lookup_fill_bypass (same-cycle fill-to-lookup forwarding) is tied to 0.
-  // Forwarding the fill would put the response-accept and flush logic
-  // (cache_fill_valid in load_queue) in front of o_lookup_hit, and from there
-  // on the path to the data-memory read address. Without it o_lookup_hit does
-  // not depend on the fill inputs. It would only help a load looked up in the
-  // exact cycle another load's response fills its line, which misses instead.
+  // No same-cycle fill forwarding, for timing. A filled line is visible
+  // on the next cycle.
   assign lookup_fill_bypass = 1'b0;
   assign lookup_invalidated =
       i_lookup_invalidate_valid &&
@@ -255,13 +233,9 @@ module lq_l0_cache #(
         valid[fill_index] <= 1'b1;
       end
 
-      // Invalidate, one address per port.
-      //
-      // A concurrent fill to the same index wins only when it replaces a
-      // different tag in that direct-mapped slot. If the fill and the
-      // invalidate target the same tag, the invalidate wins; otherwise a load
-      // response can reinsert stale data in the same cycle that a committed
-      // store is invalidating that dword.
+      // A fill at the invalidated index wins only if it has a different tag.
+      // For matching tags, invalidation wins to prevent stale response data
+      // from refilling a dword written by a concurrent store.
       if (invalidate_fill_entry || invalidate_existing_entry) begin
         valid[inv_index] <= 1'b0;
       end
@@ -319,8 +293,7 @@ module lq_l0_cache #(
     end
   end
 
-  // A fill followed by a lookup at the same dword-aligned address hits.
-  // The fill address is tracked across one cycle so the assertion can name it.
+  // A cacheable fill hits on the next cycle unless invalidated or replaced.
   reg [                  XLEN-1:0] f_fill_addr_q;
   reg [riscv_pkg::MemDataBits-1:0] f_fill_data_q;
   reg                              f_fill_valid_q;

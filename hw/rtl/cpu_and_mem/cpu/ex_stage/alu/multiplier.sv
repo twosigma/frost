@@ -15,44 +15,30 @@
  */
 
 /*
- * Integer multiplier for the RISC-V M-extension. The shared
- * dsp_tiled_multiplier_unsigned core multiplies the operands' low XLEN bits,
- * and one subtraction in the upper half turns that product into the product
- * of the (XLEN+1)-bit signed operands. One operation may enter every cycle,
- * and latency is the same for every op sent here: MUL, MULH, MULHSU and
- * MULHU. With int_muldiv_shim's SHORT_WORD_OPS=0 it also runs MULW; by
- * default MULW uses a separate 32-bit tiled core. There are no early-outs in
- * this full-width path.
+ * Pipelined integer multiplier for the RISC-V M extension.
+ * The shared unsigned tiled core multiplies low XLEN bits; subtract a sign
+ * correction from the upper half. Accept one operation per cycle with fixed
+ * latency for MUL, MULH, MULHSU, and MULHU. MULW also uses this path when
+ * int_muldiv_shim's SHORT_WORD_OPS=0; otherwise it uses a 32-bit tiled core.
  *
- * Each operand is a = lo_a - sa*2^XLEN, where lo_a is its low XLEN bits and
- * sa its sign bit, so
+ * For a = lo_a - sa*2^XLEN and b = lo_b - sb*2^XLEN:
  *   a*b = lo_a*lo_b - 2^XLEN*(sa*lo_b + sb*lo_a) + sa*sb*2^(2*XLEN).
- * The last term vanishes modulo 2^(2*XLEN): the 2*XLEN-bit result is the
- * unsigned product of the low parts with (sa*lo_b + sb*lo_a) subtracted from
- * its upper half.
+ * The last term vanishes modulo 2^(2*XLEN), leaving the upper-half correction.
  *
  * Pipeline:
- *   S0:         register the low parts, which the core's DSP input registers
- *               absorb, and the correction terms sb*lo_a and sa*lo_b in
- *               fabric. Only the terms depend on the sign bits, so no logic
- *               sits between the operands and the DSPs.
- *   tiled core: dsp_tiled_multiplier_unsigned, DSP48E2-shaped 27x35 tiles
- *               with a pipelined pairwise reduction tree. Its depth comes
- *               from riscv_pkg::dsp_tiled_stages, the single source of the
- *               staging formula. Beside it, the correction terms are summed
- *               in the first cycle and the sum rides a shift register.
- *   S_final:    subtract the correction from the product's upper half
- *               (registered).
+ *   S0:         register low operands and correction terms sb*lo_a, sa*lo_b.
+ *   tiled core: multiply 27x35 tiles and reduce through registered pairwise
+ *               sums. Sum correction terms on entry and delay alongside it.
+ *   S_final:    register the product with the upper-half correction applied.
  *
- * Total latency = 1 + dsp_tiled_stages(XLEN, XLEN, 27, 35) + 1 cycles,
- * exported to the shim as riscv_pkg::MulPipeDepth. The time-zero check at
- * the bottom of this file stops simulation if the two differ.
+ * Latency is 1 + dsp_tiled_stages(XLEN, XLEN, 27, 35) + 1 cycles and must match
+ * riscv_pkg::MulPipeDepth, which sizes the shim's tracker.
  *
- * Operand sign handling, done by the caller in the shim:
- *   MUL/MULW: both operands zero-extended to XLEN+1
- *   MULH:     both operands sign-extended
- *   MULHSU:   rs1 sign-extended, rs2 zero-extended
- *   MULHU:    both operands zero-extended
+ * Caller operand extensions to XLEN+1:
+ *   MUL/MULW: zero-extend both operands.
+ *   MULH:     sign-extend both operands.
+ *   MULHSU:   sign-extend rs1, zero-extend rs2.
+ *   MULHU:    zero-extend both operands.
  */
 module multiplier #(
     parameter int unsigned XLEN = riscv_pkg::XLEN

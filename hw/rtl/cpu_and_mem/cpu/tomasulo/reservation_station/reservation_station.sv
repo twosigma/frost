@@ -44,109 +44,69 @@ module reservation_station #(
     // MEM_RS: precompute the winner for each combination of the two raw CDB
     // lane valids and the early-load token (eight candidates).
     parameter bit PREISSUE_RAW_WAKEUP = 1'b0,
-    // With PREISSUE_VALID_COFACTOR, also export each candidate's ready vector
-    // and every entry's ROB tag, so the LQ can compare its tags against all
-    // entry tags in parallel with readiness and pick the match with the
-    // ready vector, instead of comparing against an encoded winner's tag.
+    // With PREISSUE_VALID_COFACTOR, export candidate ready vectors and entry
+    // ROB tags so the LQ can match tags before selecting the ready winner.
     parameter bit PREISSUE_READY_EXPORT = 1'b0,
     parameter bit DISPATCH_REPAIR_BYPASS = 1'b1,
     parameter bit ISSUE_REPAIR_BYPASS = 1'b1,
-    // The registered done-repair responses normally carry tags and CAM-snoop
-    // every resident entry.  A station fed directly by dispatch can instead
-    // remember the exact entries allocated by the two dispatch slots and, one
-    // cycle later, write channels 1/2/3 directly to slot 1's src1/src2/src3
-    // and channels 4/5/6 to slot 2's.  The source wakes in the same cycle as
-    // with the snoop, without comparing six tags against every entry.  It
-    // cannot be combined with the two same-cycle repair bypass parameters
-    // above.
+    // Route repair channels 1-3 to slot 1's saved allocation index and
+    // channels 4-6 to slot 2's, one cycle after dispatch. This replaces the
+    // resident tag scan without changing wakeup timing. Requires both
+    // DISPATCH_REPAIR_BYPASS and ISSUE_REPAIR_BYPASS to be disabled.
     parameter bit ALLOC_INDEXED_REPAIR = 1'b0,
     parameter bit TRACK_INT_WRITEBACK_HINT = 1'b0,
     parameter bit SPECULATIVE_DATA_WRITES = 1'b0,
-    // With speculative writes, prefill every currently-free entry with the
-    // slot-1 source values and override the slot-2 allocation target with the
-    // slot-2 values.  Only rs_valid commits an entry, so the extra writes are
-    // architecturally invisible.  The wide source-value flops then use the
-    // entry-local !rs_valid bit as their dispatch write enable instead of a
-    // priority-decoded free index; their D-input data select is a per-entry
-    // one-hot (alloc_sel_2) computed from rs_valid at fixed depth, equal to
-    // the alloc_idx_2 decode without the free-index priority sweep.
+    // With speculative writes, prefill free entries with slot-1 source values
+    // and put slot-2 values at its allocation target. Only rs_valid makes
+    // these values observable. alloc_sel_2 selects slot 2 directly from
+    // rs_valid and must equal the alloc_idx_2 decode for every free entry.
     parameter bit BROADCAST_FREE_SOURCE_VALUES = 1'b0,
-    // Optional src1/src2 tag shadows used only by the same-cycle CDB issue
-    // bypass compares.  With speculative writes enabled, the shadows retain
-    // the architectural bank's indexed writes but complement a slot's tag
-    // when that slot does not target this RS.  They are then non-equivalent
-    // while invalid, so synthesis cannot merge them, but every committed slot
-    // writes the normal tag and the banks must match for every valid entry.
-    // This isolates issue-time matches from the identical high-fanout
-    // comparisons that control sequential source-value capture.
+    // Duplicate src1/src2 tags for issue-time CDB compares. Speculative writes
+    // complement a slot's tags when it does not target this RS, preventing
+    // register merging. Committed writes use normal tags, so both banks must
+    // match for every valid entry.
     parameter bit ISSUE_CDB_TAG_SHADOW = 1'b0,
-    // Optional separate registered copies of each lane's valid and tag
-    // (i_issue_cdb_*), used only by the combinational same-cycle issue bypass.
-    // Sequential resident wakeup/value capture and dispatch-defer logic always
-    // use the complete i_cdb packets.  Off, the bypass also uses i_cdb/i_cdb_2.
+    // Use separate registered CDB valid/tag copies for issue bypass. Resident
+    // wakeup and deferred capture still use i_cdb and i_cdb_2, as does issue
+    // bypass when disabled.
     parameter bit ISSUE_CDB_META_ANCHORS = 1'b0,
-    // Port 0 registers its final src1/src2 values (live CDB, resident, or
-    // repair value) in stage2, as DUAL_ISSUE port 1 does, so no operand mux
-    // follows stage2.  Requires HAS_SRC3=0.  Off, stage2 holds the resident
-    // or repair value plus per-bit CDB bypass masks, and the CDB value is
-    // muxed in after stage2.
+    // Capture port 0's final src1/src2 operands in stage2, including CDB and
+    // repair bypasses, as port 1 does. Requires HAS_SRC3=0. When disabled,
+    // stage2 stores resident or repair values and masks for a later CDB mux.
     parameter bit CAPTURE_PRIMARY_EFFECTIVE_OPERANDS = 1'b0,
-    // Optional INT-only physical twin of stage2_rob_tag.  It captures the same
-    // selected tag under the same issue_fire enable, but is exported only to
-    // branch-resolution checkpoint/age predicates.  Keeping ROB addressing,
-    // recovery capture, and FU tags on stage2_rob_tag splits the long branch
-    // predicate cone from the architectural tag's broad fanout without adding
-    // a pipeline stage.
+    // INT only: duplicate stage2_rob_tag, with the same value and enable,
+    // for branch checkpoint and age compares, to reduce fanout.
     parameter bit BRANCH_PREDICATE_TAG_ANCHOR = 1'b0,
     parameter bit TRUST_DISPATCH_VALID = 1'b0,
-    // Optional reserve for exported dispatch back-pressure.  A non-zero value
-    // lets timing-sensitive RS instances publish conservative registered full
-    // flags from the previous occupancy instead of exact flags from count_next,
-    // keeping current-cycle dispatch valid off the exported-status flop D path.
+    // Reserve entries when reporting dispatch capacity from the previous
+    // occupancy. Zero uses exact count_next; nonzero values permit
+    // conservative registered status without current dispatch inputs.
     parameter int unsigned DISPATCH_STATUS_RESERVE = 0,
-    // Second issue port (INT_RS only): a separate balanced select for the
-    // lowest ready nonbranch other than port 0's lowest-ready pick (branches
-    // stay on port 0, which has the only branch_resolution path), a second
-    // payload-RAM copy, and a second stage2 register bank feeding
-    // o_issue_2 / i_fu_ready_2.
+    // INT only: add an independent selector, payload RAM and stage2 bank for
+    // the lowest ready nonbranch entry other than port 0's pick. Branches
+    // stay on port 0, which has the branch-resolution path.
     parameter bit DUAL_ISSUE = 1'b0,
-    // DUAL_ISSUE port 1 selects only among entries [0, ISSUE2_WINDOW); 0 (or
-    // a value above DEPTH) means the whole station. Port 0 sees every entry.
-    // Allocation takes the lowest free index, so the window fills first. The
-    // window shortens the port-1 selector and operand/payload muxes.
+    // Limit port 1 to entries [0, ISSUE2_WINDOW); 0 or a value above DEPTH
+    // selects the whole station. Port 0 sees every entry. Lowest-free
+    // allocation fills the window first.
     parameter int unsigned ISSUE2_WINDOW = 0,
-    // Include i_cdb_2 in the combinational same-cycle issue bypass (readiness
-    // and issue-time value substitution), so lane-1 results wake dependents
-    // in the same cycle, like lane 0.  It defaults on because with two ALUs
-    // dual completions are common.  Off, a lane-1 result wakes dependents a
-    // cycle later, which takes lane 1 out of the issue-bypass timing cone.
+    // Enable same-cycle issue bypass from CDB lane 1, like lane 0. When
+    // disabled, lane 1 wakes dependents through registered capture a cycle later.
     parameter bit LANE1_ISSUE_BYPASS = 1'b1,
-    // INT only: keep pc, link_addr and predicted_target in a ROB-tag-indexed
-    // side RAM written at dispatch and read behind port 0's stage2 tag, so the
-    // per-entry payload RAM, the issue-index fanout and both stage2 banks
-    // carry none of those XLEN words.  Their consumers (branch resolution's
-    // JALR target compare, early recovery's redirect/BTB capture) see them in
-    // the same cycle as the rest of o_issue.  Off, port 0 drives zeros for
-    // the three fields.  Contract: a dispatched ROB tag is never live in the
-    // station (resident or in stage2), as ROB allocation guarantees.
+    // INT only: store pc, link_addr and predicted_target by ROB tag. Port 0
+    // reads them with its stage2 tag in the o_issue cycle. When disabled,
+    // those outputs are zero. A dispatched tag must not already be live in
+    // the station, including stage2.
     parameter bit TAG_INDEXED_BRANCH_PAYLOAD = 1'b0,
-    // MUL_RS only: its divides go to a divider that takes one at a time. A
-    // divide entry is not ready while i_divider_busy is high or stage2 holds a
-    // divide, so a divide reaches o_issue only while the divider is idle, and
-    // the multiplies behind a waiting divide still issue. Requires
-    // DUAL_ISSUE=0.
+    // MUL_RS only: block divide readiness while the divider or stage2 holds
+    // a divide. Every issued divide then finds the divider idle; multiplies
+    // can pass waiting divides. Requires DUAL_ISSUE=0.
     parameter bit DIVIDE_ISSUE_GATE = 1'b0,
-    // The standalone formal top (formal/reservation_station.sby) drives this
-    // station's inputs freely, so its `ifdef FORMAL` block assumes the
-    // dispatch contract the core guarantees and carries the station's own
-    // cover set.  formal/tomasulo_wrapper.sby also reads this file with
-    // `-formal` and sets this to 0 on every instance: there the routing,
-    // occupancy and flush logic that produces these inputs is present, so a
-    // submodule assumption would weaken that proof instead of constraining a
-    // free environment, and the station's covers belong to its own run.  With
-    // it off, the ROB-tag contract the branch-payload side RAM needs becomes
-    // an assertion checked against the real allocator (see
-    // cdb_arbiter's FORMAL_ASSUME_VALUE_SOURCE_CONTRACT for the same split).
+    // formal/reservation_station.sby uses free inputs and assumes dispatch
+    // requirements. formal/tomasulo_wrapper.sby sets this to 0: its real
+    // routing, capacity and flush logic must satisfy those requirements.
+    // The branch-payload tag constraint becomes an assertion in that mode;
+    // station-specific covers run only in the standalone environment.
     parameter bit FORMAL_STANDALONE_ENV = 1'b1
 ) (
     input logic i_clk,
@@ -156,36 +116,21 @@ module reservation_station #(
     // Dispatch Interface (from Dispatch Unit)
     // =========================================================================
     input riscv_pkg::rs_dispatch_t i_dispatch,
-    // Slot-2 dispatch port for 2-wide dispatch.  The dispatch unit routes
-    // slot-2 to the correct RS based on its rs_type, so each RS only sees a
-    // slot-2 packet with .valid=1 when slot-2 targets it.
+    // Slot-2 dispatch packet, valid only when routed to this RS.
     input riscv_pkg::rs_dispatch_t i_dispatch_2,
-    // Fast "slot-1 wants this RS" intent, driven from the registered rs_type
-    // field of the per-RS dispatch packet.  It does not include bundle_fire_ok
-    // or any other RS's full check.  Uses:
-    //   1. alloc_idx_2 selection always uses i_intent_1, regardless of
-    //      SPECULATIVE_DATA_WRITES, so the rs_valid commit and LUTRAM-address
-    //      cone (used whenever slot-2 commits) sees a registered rs_type input
-    //      rather than the slow dispatch_fire chain, which gathers every
-    //      i_*_rs_full bit through the bundle_fire_ok mux.  This is safe:
-    //      whenever the strict slot-2 commit dispatch_fire_2 fires, the bundle
-    //      is atomic and i_intent_1 == dispatch_fire by construction, so the
-    //      chosen entry index is the one a dispatch_fire-based mux would have
-    //      picked.
-    //   2. With SPECULATIVE_DATA_WRITES, the slot-2 data CE on rs_*_value/
-    //      rs_*_tag/rs_rob_tag uses i_intent_1 to pick !full_for_2 or !full
-    //      instead of the slow dispatch_fire_2, so the per-entry CE does not
-    //      inherit the same long cone.  The architectural commit (rs_valid
-    //      set) still uses the slow dispatch fires, so a wrong intent only
-    //      causes a harmless speculative write into a free entry whose
-    //      rs_valid bit stays 0.
-    //   3. With ISSUE_CDB_TAG_SHADOW, it decides whether slot 1's shadow tag
-    //      write is the real tag or its complement.
+    // Registered intent that slot 1 targets this RS, before bundle admission.
+    //   1. alloc_idx_2 always uses i_intent_1. When dispatch_fire_2 is true,
+    //      bundle atomicity requires i_intent_1 == dispatch_fire, so this
+    //      chooses the same index as a dispatch_fire-based select.
+    //   2. Speculative slot-2 writes use intent to choose capacity. A blocked
+    //      dispatch can only write a free entry; rs_valid stays clear.
+    //   3. ISSUE_CDB_TAG_SHADOW uses intent to choose slot 1's normal or
+    //      complemented tag.
     input logic i_intent_1,
     output logic o_full,
-    // Asserted when there is room for at most 1 more entry (a 2-wide dispatch
-    // bundle would not fit).  Distinct from o_full so dispatch can
-    // independently gate slot-2 while still allowing slot-1 to fire.
+    // Registered: at most one free entry, so a two-slot bundle cannot fit.
+    // With DISPATCH_STATUS_RESERVE nonzero it is computed from the previous
+    // occupancy with that many entries held back.
     output logic o_full_for_2,
 
     // =========================================================================
@@ -193,15 +138,10 @@ module reservation_station #(
     // =========================================================================
     input riscv_pkg::cdb_broadcast_t i_cdb,
 
-    // Second CDB lane (2-wide CDB). With LANE1_ISSUE_BYPASS (default on, used
-    // by all instances), lane-1 results also feed the combinational
-    // entry_ready/stage2 issue-bypass cone, so a lane-1 result wakes its
-    // consumers in the same cycle, like lane 0.  The registered snoop +
-    // dispatch-capture paths below remain the only wakeup paths when
-    // LANE1_ISSUE_BYPASS is disabled per instance as a timing fallback.
+    // Second CDB lane; LANE1_ISSUE_BYPASS controls same-cycle issue bypass.
     input riscv_pkg::cdb_broadcast_t i_cdb_2,
 
-    // Optional narrow issue-only CDB views.  When ISSUE_CDB_META_ANCHORS=1,
+    // Optional narrow issue-only CDB views. When ISSUE_CDB_META_ANCHORS=1,
     // only these valid/tag fields feed the live issue/readiness compares;
     // operand values still come from i_cdb/i_cdb_2 on the capture edge.
     input logic                                        i_issue_cdb_valid,
@@ -260,10 +200,10 @@ module reservation_station #(
     output logic o_next_issue_needs_lq,
 
     // =========================================================================
-    // Pre-issue look-ahead (1 cycle before o_issue fires). For MEM_RS, these
-    // expose the rob_tag and mem_needs_lq of the entry being captured into
-    // stage2 this cycle, so the LQ can pre-compute the addr_update CAM match
-    // and register it before the issue fires.
+    // Pre-issue look-ahead during stage2 capture, one cycle before the earliest
+    // o_issue fire. Stage2 may hold while the FU is busy. MEM_RS exposes the
+    // selected tag and mem_needs_lq so the LQ can register its address-update
+    // match before downstream issue.
     // =========================================================================
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_pre_issue_rob_tag,
     // Four merged-valid or eight raw-wakeup outcomes and their selector. The
@@ -298,20 +238,15 @@ module reservation_station #(
     // =========================================================================
     // Head-wait diagnostic observation (combinational, for perf counters)
     // =========================================================================
-    // Given a query rob_tag (typically the ROB head tag), expose whether this
-    // RS currently holds that tag and what state it is in. Used to decompose
-    // head_wait_int into sub-buckets at the wrapper level. Drives no
-    // functional logic; synthesis optimizes these away if unconnected.
+    // Report whether the queried ROB tag is resident, ready or in stage2.
+    // Used only for head-wait performance counters.
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_head_query_tag,
     output logic                                        o_head_query_in_rs,
     output logic                                        o_head_query_rs_ready,
     output logic                                        o_head_query_in_stage2,
 
-    // Width-funnel perf observer (registered, profiling only): the stage-1
-    // issue port fired while at least one more entry was also ready, so the
-    // single issue port was the limiter that cycle.  Meaningful for
-    // single-issue-port instances (port-1 issue is not subtracted); drives
-    // no functional logic.
+    // Registered performance event: port 0 fires with another ready entry.
+    // It measures single-port limits only; port-1 issue is not subtracted.
     output logic o_perf_two_ready_one_issued
 );
 
@@ -410,7 +345,6 @@ module reservation_station #(
   // ===========================================================================
   // Dispatch Field Extraction
   // ===========================================================================
-  // Wire aliases allow the module body to use short names for struct fields.
 
   wire                                              dispatch_valid = i_dispatch.valid;
   wire                  [ReorderBufferTagWidth-1:0] dispatch_rob_tag = i_dispatch.rob_tag;
@@ -478,18 +412,11 @@ module reservation_station #(
   wire dispatch_src3_cdb1_match =
       !dispatch_src3_ready && i_cdb_2.valid && dispatch_src3_tag == i_cdb_2.tag;
 
-  // Deferred dispatch-cycle CDB capture: a source whose CDB broadcast lands
-  // in the dispatch cycle is not resolved into the value write here, because
-  // that would put the tag-match cone and the raw CDB value nets in front of
-  // every entry's wide value mux on the dispatch path.  Dispatch instead
-  // registers a per-source {pend, lane} pair, and the value is delivered on
-  // the next cycle from the central registered lane copies
-  // (cdb0_value_q / cdb1_value_q), together with the deferred ready set.
-  // The entry cannot issue in the delivery cycle (the source still reads
-  // not-ready), so the deferred wake costs one cycle in this rare window.
-  // The done-repair dispatch bypass is excluded: it already resolved the
-  // value into the stored-value mux above and set ready at dispatch.
-  // Finish tag/repair eligibility before the late RAT ready bit.
+  // Register a dispatch-cycle CDB match as {pend, lane}, then write its
+  // saved lane value and set ready at the next edge. Without a repair issue
+  // bypass, the source cannot issue during that delivery cycle because its
+  // stored ready bit is still clear. A dispatch repair bypass already supplies
+  // the value and ready bit, so it needs no deferred capture.
   (* keep = "true" *)
   wire dispatch_src1_cdb_defer_if_unready =
       ((i_cdb.valid && dispatch_src1_tag == i_cdb.tag) ||
@@ -498,7 +425,6 @@ module reservation_station #(
       dispatch_src1_tag
   ));
   wire dispatch_src1_cdb_defer = !dispatch_src1_ready && dispatch_src1_cdb_defer_if_unready;
-  // Finish tag/repair eligibility before the late RAT ready bit.
   (* keep = "true" *)
   wire dispatch_src2_cdb_defer_if_unready =
       ((i_cdb.valid && dispatch_src2_tag == i_cdb.tag) ||
@@ -507,7 +433,6 @@ module reservation_station #(
       dispatch_src2_tag
   ));
   wire dispatch_src2_cdb_defer = !dispatch_src2_ready && dispatch_src2_cdb_defer_if_unready;
-  // Finish tag/repair eligibility before the late RAT ready bit.
   (* keep = "true" *)
   wire dispatch_src3_cdb_defer_if_unready =
       ((i_cdb.valid && dispatch_src3_tag == i_cdb.tag) ||
@@ -516,15 +441,13 @@ module reservation_station #(
       dispatch_src3_tag
   ));
   wire dispatch_src3_cdb_defer = !dispatch_src3_ready && dispatch_src3_cdb_defer_if_unready;
-  // Delivery lane select (0 = i_cdb, 1 = i_cdb_2).  The two lanes never
-  // broadcast the same tag, so at most one match term is set; the !cdb0
-  // guard keeps lane-0 priority if that contract is ever violated.
+  // Delivery lane: 0 selects i_cdb, 1 selects i_cdb_2. Distinct lane tags
+  // permit at most one match; the guard preserves lane-0 priority otherwise.
   wire dispatch_src1_cdb_defer_lane = dispatch_src1_cdb1_match && !dispatch_src1_cdb0_match;
   wire dispatch_src2_cdb_defer_lane = dispatch_src2_cdb1_match && !dispatch_src2_cdb0_match;
   wire dispatch_src3_cdb_defer_lane = dispatch_src3_cdb1_match && !dispatch_src3_cdb0_match;
 
-  // Slot-2 dispatch field aliases (mirror of slot-1).  Slot-2 only fires when
-  // the dispatch unit has steered slot-2 to this RS instance.
+  // Slot-2 field aliases; valid packets are already routed to this RS.
   wire dispatch_valid_2 = i_dispatch_2.valid;
   wire [ReorderBufferTagWidth-1:0] dispatch_rob_tag_2 = i_dispatch_2.rob_tag;
   riscv_pkg::instr_op_e dispatch_op_2;
@@ -591,8 +514,7 @@ module reservation_station #(
   wire dispatch_src3_cdb1_match_2 =
       !dispatch_src3_ready_2 && i_cdb_2.valid && dispatch_src3_tag_2 == i_cdb_2.tag;
 
-  // Slot-2 twins of the deferred dispatch-CDB capture controls above.
-  // Finish tag/repair eligibility before the late RAT ready bit.
+  // Slot-2 deferred CDB capture.
   (* keep = "true" *)
   wire dispatch_src1_cdb_defer_if_unready_2 =
       ((i_cdb.valid && dispatch_src1_tag_2 == i_cdb.tag) ||
@@ -601,7 +523,6 @@ module reservation_station #(
       dispatch_src1_tag_2
   ));
   wire dispatch_src1_cdb_defer_2 = !dispatch_src1_ready_2 && dispatch_src1_cdb_defer_if_unready_2;
-  // Finish tag/repair eligibility before the late RAT ready bit.
   (* keep = "true" *)
   wire dispatch_src2_cdb_defer_if_unready_2 =
       ((i_cdb.valid && dispatch_src2_tag_2 == i_cdb.tag) ||
@@ -610,7 +531,6 @@ module reservation_station #(
       dispatch_src2_tag_2
   ));
   wire dispatch_src2_cdb_defer_2 = !dispatch_src2_ready_2 && dispatch_src2_cdb_defer_if_unready_2;
-  // Finish tag/repair eligibility before the late RAT ready bit.
   (* keep = "true" *)
   wire dispatch_src3_cdb_defer_if_unready_2 =
       ((i_cdb.valid && dispatch_src3_tag_2 == i_cdb.tag) ||
@@ -626,16 +546,13 @@ module reservation_station #(
   // ===========================================================================
   // Stage 2 Pipeline Register
   // ===========================================================================
-  // Issue output is registered to break the combinational path from RS
-  // entry arrays (priority encoder + LUTRAM read + operand mux) to
-  // downstream consumers (FU shims, LQ/SQ address computation, CDB).
-  // The stage2 register holds a full copy of the issued instruction's data,
-  // presented to downstream with one-shot valid when i_fu_ready is asserted.
+  // Stage2 holds the selected payload and operands for downstream issue.
+  // It presents a one-shot valid when i_fu_ready is high; branch words may
+  // come from the tag-indexed side RAM.
 
   logic stage2_valid;
   logic [ReorderBufferTagWidth-1:0] stage2_rob_tag;
-  // The issued op fans out widely into the FU shim's operation decode.  The
-  // cap makes synthesis replicate the narrow op bits per region.
+  // Limit opcode fanout to the FU decode.
   (* max_fanout = 48 *) riscv_pkg::instr_op_e stage2_op;
   logic stage2_is_divide;  // DIVIDE_ISSUE_GATE: the entry's divide bit, loaded with stage2
   logic stage2_is_sc;
@@ -666,14 +583,8 @@ module reservation_station #(
   logic stage2_is_jalr;
   riscv_pkg::branch_taken_op_e stage2_branch_op;
 
-  // CDB bypass flags: set when an issued instruction's source was woken by
-  // the same-cycle CDB bypass.  The output mux substitutes stage2_cdb_value
-  // for these sources, which keeps the CDB value off the data path through
-  // the issue-select priority encoder into the stage2 register input.
-  // The select is replicated per bit.  Synthesis merges the FLEN identical
-  // flops back into one, which would drive the whole stage2 operand mux ->
-  // ALU -> CDB cone; max_fanout makes it replicate them again so the
-  // operand-mux selects stay local.  All six masks carry the cap.
+  // Masks select captured CDB values after stage2 when operands are not
+  // captured fully resolved. Replicate mask bits for fanout.
   (* max_fanout = 8 *) logic [FLEN-1:0] stage2_src1_bypass_mask;
   (* max_fanout = 8 *) logic [FLEN-1:0] stage2_src1_bypass_mask_l1;
   (* max_fanout = 8 *) logic [FLEN-1:0] stage2_src2_bypass_mask;
@@ -685,7 +596,7 @@ module reservation_station #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // Simulation-only reference for CAPTURE_PRIMARY_EFFECTIVE_OPERANDS.  It
+  // Simulation-only reference for CAPTURE_PRIMARY_EFFECTIVE_OPERANDS. It
   // tracks stage2 lifetime and independently records the three-arm CDB bypass
   // result on every issue edge.
   logic primary_operand_oracle_valid_q;
@@ -695,7 +606,7 @@ module reservation_station #(
 `endif
 
   // Stage 2 control signals
-  logic stage2_should_flush;  // Stage2 holds instruction younger than flush boundary
+  logic stage2_should_flush;  // Stage2 holds a packet covered by the flush
   logic stage2_accept;  // Stage2 content consumed by FU this cycle
   logic can_issue_to_stage2;  // Stage2 is empty or being consumed, so the RS may load it
 
@@ -704,9 +615,9 @@ module reservation_station #(
   // ===========================================================================
   //
   // Control fields (FFs): rs_valid, rs_src*_ready/tag/value, rs_use_imm,
-  //   rs_rob_tag.  These need parallel CDB tag compare/write and flush scan.
+  //   rs_rob_tag. These need parallel CDB tag compare/write and flush scan.
   // Payload fields (LUTRAM): op, imm, rm, and the branch/prediction/mem/csr
-  //   fields.  Written once at dispatch, read once at issue (one copy per
+  //   fields. Written once at dispatch, read once at issue (one copy per
   //   issue port).
 
   // 1-bit packed vectors (for bulk operations)
@@ -716,9 +627,7 @@ module reservation_station #(
   logic [DEPTH-1:0] rs_src3_ready_q;
   logic [DEPTH-1:0] rs_src3_ready;
   logic [DEPTH-1:0] rs_use_imm;
-  // DUAL_ISSUE port 1 only: the stage2b shift amount's payload inputs, kept
-  // per entry so that endpoint reads flops through the one-hot select rather
-  // than the payload LUTRAM behind the late selector.
+  // Port-1 shift controls in FFs, read with the operand one-hot select.
   logic [DEPTH-1:0] rs_shift_uses_imm;
   logic [5:0] rs_shift_imm[DEPTH];
   /* verilator lint_off UNUSEDSIGNAL */
@@ -727,9 +636,8 @@ module reservation_station #(
   assign dispatch_shift_controls   = riscv_pkg::projected_shift_controls(i_dispatch.op);
   assign dispatch_shift_controls_2 = riscv_pkg::projected_shift_controls(i_dispatch_2.op);
   logic [DEPTH-1:0] rs_writes_cdb_hint;
-  // Branch-class pre-decode in FFs (also stored in the payload RAM): the
-  // DUAL_ISSUE port-1 select must skip branch-class entries before the
-  // payload read, so the class bit needs a parallel-scan copy.
+  // A parallel branch-class bit lets port 1 exclude branches before reading
+  // payload RAM.
   logic [DEPTH-1:0] rs_is_branch_class;
   // Integer divide pre-decode in FFs, for the DIVIDE_ISSUE_GATE ready scan.
   logic [DEPTH-1:0] rs_is_divide;
@@ -748,16 +656,11 @@ module reservation_station #(
   logic [ReorderBufferTagWidth-1:0] rs_src3_tag[DEPTH];
   logic [FLEN-1:0] rs_src3_value[DEPTH];
 
-  // Non-FMA reservation stations do not have a third operand.  Drive src3
-  // ready as a constant so synthesis can remove src3 tag/value/wakeup logic
-  // from those instances.
+  // Without src3, tie it ready so synthesis can remove its storage and wakeup.
   assign rs_src3_ready = HAS_SRC3 ? rs_src3_ready_q : {DEPTH{1'b1}};
 
-  // Deferred dispatch-cycle CDB capture state: per-source {pend, lane} flags
-  // (control side, pend reset) plus the central registered CDB lane values
-  // that feed the next-cycle delivery (data side, no reset).  The pend flags
-  // drive the delivery writes; on the issue side they only block their
-  // source's same-cycle CDB bypass (see the tag-reuse note there).
+  // Pending flags reset; saved lane values do not. A pending source blocks
+  // live CDB issue bypass until its deferred delivery completes.
   logic [DEPTH-1:0] src1_cdb_pend;
   logic [DEPTH-1:0] src1_cdb_pend_lane;
   logic [DEPTH-1:0] src2_cdb_pend;
@@ -776,17 +679,12 @@ module reservation_station #(
   logic empty;
   logic [CountWidth-1:0] count;
   logic [CountWidth-1:0] count_next;
-  // The registered full/for-2 backpressure bits fan from here through the
-  // dispatch stall tree into RAT/ROB/LVT/front-end write gating.  The cap
-  // makes synthesis replicate the flops per consumer region.
+  // Limit dispatch-status fanout.
   (* max_fanout = 32 *) logic dispatch_full_q;
   (* max_fanout = 32 *) logic dispatch_full_for_2_q;
 
-  // Free entry selection: first and second free entries, in priority order.
-  // free_idx_2 only resolves when at least 2 entries are free.  The dispatch
-  // gate lets slot-2 fire only when two entries are free (!full_for_2), or
-  // when slot-1 is not firing and one is free (!full), in which case slot-2
-  // takes free_idx.
+  // Select the first two free entries. Slot 2 uses the second when slot 1
+  // also targets this RS, otherwise the first; capacity checks must agree.
   logic [$clog2(DEPTH)-1:0] free_idx;
   logic free_found;
   logic [$clog2(DEPTH)-1:0] free_idx_2;
@@ -797,21 +695,17 @@ module reservation_station #(
   logic data_write_1_en;
   logic data_write_2_en;
 
-  // One-cycle allocation tokens for ALLOC_INDEXED_REPAIR: the entry each
-  // dispatch slot allocated, which that slot's registered ROB repair response
-  // then writes directly, with no source-tag CAM on the return cycle.
+  // Save each slot's allocation target for its next-cycle repair response.
   logic [DEPTH-1:0] repair_slot1_target_q;
   logic [DEPTH-1:0] repair_slot2_target_q;
   logic [DEPTH-1:0] indexed_src1_repair;
   logic [DEPTH-1:0] indexed_src2_repair;
   logic [DEPTH-1:0] indexed_src3_repair;
 
-  // In allocation-indexed mode, each pending dispatch-CDB write belongs to
-  // one of the allocation tokens.
-  // Select its registered lane value once per slot/source, before the data
-  // fans out to the entries. The same bus carries that slot's ordinary repair
-  // value when its target has no pending delivery. Entry write priority and
-  // ready/issue timing stay unchanged; repair data need not equal CDB data.
+  // Each pending delivery belongs to an allocation token. Select its saved
+  // CDB value once per slot and source, or use that slot's repair value when
+  // no delivery is pending. Preserve write priority even if repair and CDB
+  // data differ.
   function automatic logic [FLEN-1:0] deferred_or_repair(
       input logic [DEPTH-1:0] target, input logic [DEPTH-1:0] pending,
       input logic [DEPTH-1:0] pending_lane, input logic [FLEN-1:0] lane0_value,
@@ -891,9 +785,7 @@ module reservation_station #(
   logic [$clog2(DEPTH)-1:0] issue_idx;
   logic any_ready;
   logic issue_fire;
-  // Second issue port (DUAL_ISSUE). Declared unconditionally so the shared
-  // count/valid bookkeeping can reference them; driven inside the generate
-  // block below and tied off when DUAL_ISSUE is disabled.
+  // Declare port-1 state for shared count and valid logic; tie off when disabled.
   logic [$clog2(DEPTH)-1:0] issue_idx_2;
   logic [DEPTH-1:0] issue_sel_2;
   logic any_ready_2;
@@ -904,32 +796,24 @@ module reservation_station #(
 
   // Dispatch condition
   (* max_fanout = 32 *) logic dispatch_fire;
-  // Slot-2 dispatch fire condition.  Slot-2 needs room for itself, considering
+  // Slot-2 dispatch fire condition. Slot-2 needs room for itself, considering
   // whether slot-1 is also consuming a slot this cycle.
   (* max_fanout = 32 *) logic dispatch_fire_2;
 
   // ===========================================================================
   // Payload LUTRAM: dispatch-only fields, read at issue
   // ===========================================================================
-  // Written once per entry at dispatch (free_idx / alloc_idx_2) and read once
-  // per issue port (issue_idx here; DUAL_ISSUE reads a second replicated copy
-  // at issue_idx_2), so they live in distributed RAM rather than flip-flops.
-  // Valid bits in FFs gate all reads, so stale payload data behind an invalid
-  // entry is harmless.
+  // Each issue port reads a RAM copy with common dispatch writes. rs_valid
+  // qualifies all uses, making stale payloads harmless.
 
   localparam int unsigned PayloadWidth =
       riscv_pkg::InstrOpWidth + XLEN + 12 + 3 + 1 + 1 + 1 + 1 + 1 + 1 + 2 + 1 + 12 +
       5 + 1 + CheckpointIdWidth + 1 + 1 + 1 + 1 + 1 + 3;
 
-  // Dispatch-time branch-class pre-decode. Stored in the payload RAM so the
-  // instr_op_e decode happens once at dispatch instead of in the
-  // issue/branch-resolution cycle (see rs_issue_t.is_branch_class).
-  // The riscv_pkg classification helpers are `ifndef SYNTHESIS because Yosys
-  // cannot resolve enum values inside package functions, so the equivalent
-  // logic is inlined here with fully-qualified enum references, as the
-  // package convention requires. The sets mirror
-  // riscv_pkg::is_branch_or_jump_op / is_jal_op / is_jalr_op, and
-  // rs_branch_op_of supplies branch resolution's branch_taken_op_e select.
+  // Decode branch class at dispatch. Inline fully qualified enums because
+  // Yosys cannot resolve them in package functions. These sets match
+  // riscv_pkg::is_branch_or_jump_op, is_jal_op and is_jalr_op;
+  // rs_branch_op_of supplies the branch direction operation.
   function automatic logic rs_is_branch_class_op(riscv_pkg::instr_op_e op);
     case (op)
       riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT, riscv_pkg::BGE,
@@ -1032,14 +916,10 @@ module reservation_station #(
     3'(dispatch_branch_op_2)
   };
 
-  // 2-write port: slot-1 dispatch (port 0) + slot-2 dispatch (port 1).
-  // Port 1 writes whenever slot-2 dispatches into this RS, with or without
-  // slot-1 firing in the same cycle.
-  // INT reads each four-entry payload group with its early local winner,
-  // then selects the winning group. This matches the operand selection below
-  // and avoids putting a combined binary issue index ahead of every RAM read.
-  // The direct one-hot winner clears validity; its idle select is entry zero,
-  // exactly like issue_idx, although issue_fire is then false.
+  // Both dispatch slots can write, including slot 2 alone in this RS.
+  // INT selects a winner within each four-entry payload group, then selects
+  // the winning group. The direct one-hot selection also clears validity.
+  // With no ready entry, it selects entry zero and issue_fire stays low.
   localparam int unsigned PayloadDepth = 1 << $clog2(DEPTH);
   localparam int unsigned PayloadGroups = (DEPTH + 3) / 4;
   localparam int unsigned PayloadGroupIdxWidth = (PayloadGroups > 1) ? $clog2(PayloadGroups) : 1;
@@ -1130,16 +1010,9 @@ module reservation_station #(
   // ===========================================================================
 
   // --- Count, full, empty ---
-  // Keep occupancy registered so dispatch back-pressure does not depend on a
-  // live popcount of all rs_valid bits. Flushes still recompute the exact
-  // post-flush count because they may invalidate multiple arbitrary entries.
-  //
-  // Late-side factoring: dispatch_fire/dispatch_fire_2 arrive through the
-  // whole id_valid → dispatch → RS-router cone, long after issue_fire (ready
-  // regs) and count (a FF). Precompute the three possible next counts off
-  // the early side and let the late dispatch pulses only steer a final
-  // select. This is bit-identical to the flat add chain; only the small
-  // modular adds are re-associated.
+  // Register occupancy, recomputing it from surviving entries on a flush.
+  // Otherwise subtract issues, then select among zero, one or two additions
+  // for dispatch.
   logic [CountWidth-1:0] count_after_issue;
   logic [CountWidth-1:0] count_after_issue_p1;
   logic [CountWidth-1:0] count_after_issue_p2;
@@ -1159,8 +1032,6 @@ module reservation_station #(
              (rs_valid[i] && !should_flush_entry(rs_rob_tag[i], i_flush_tag, i_rob_head_tag))};
       end
     end else begin
-      // Net occupancy delta: +1 per dispatch (0/1/2 of slot-1/slot-2 firing)
-      // and -1 per issue port that fires (0/1/2 of port-0/port-1).
       unique case ({
         dispatch_fire, dispatch_fire_2
       })
@@ -1172,11 +1043,8 @@ module reservation_station #(
     end
   end
 
-  // Same trick for the registered full flags (DISPATCH_STATUS_RESERVE == 0
-  // form): the ==DEPTH / >=DEPTH-1 compares are precomputed per possible
-  // dispatch outcome off the early count_after_issue, then selected by the
-  // late dispatch pulses. Flush cycles fall back to the popcount-based
-  // count_next (early inputs; the flush selects come from controller FFs).
+  // Without a status reserve, precompute full flags for each dispatch width.
+  // Flush uses the count of surviving entries.
   logic dispatch_full_next;
   logic dispatch_full_for_2_next;
   always_comb begin
@@ -1212,43 +1080,24 @@ module reservation_station #(
   // Free indices are encoded from the parallel first/second-free masks below.
   // Both retain the serial search's index-zero not-found result.
 
-  // Effective slot-2 alloc target: skip slot-1's pick when slot-1 also
-  // targets this RS.  The select uses the fast i_intent_1 rather than
-  // the slow dispatch_fire, which keeps the rs_valid commit cone and the
-  // LUTRAM write-address cone off the bundle_fire_ok / cross-RS-full chain;
-  // the i_intent_1 port comment explains why this picks the same entry a
-  // dispatch_fire-based select would.  Free indices are computed
-  // combinationally from rs_valid (registered) and so are also fast.
+  // Intent selects the first or second free entry; see the i_intent_1
+  // requirements above.
   assign alloc_idx_2 = i_intent_1 ? free_idx_2 : free_idx;
 
   // --- Dispatch fire conditions ---
-  // Flush priority is handled in the sequential control block below.  Leave
-  // full/partial flush pulses out of the data/payload write-enable cone; any
-  // writes that coincide with a flush land in entries whose valid bits/count
-  // are being cleared or selectively recomputed on that same edge.
+  // Flush controls validity and count, so payload writes need no flush gate.
+  // A coincident write goes to an invalid entry and cannot become visible.
   assign dispatch_fire = TRUST_DISPATCH_VALID ? dispatch_valid : (dispatch_valid && !full);
-  // Slot-2 fires when there is room for it given whether slot-1 also fires.
-  // Reduces to: (slot-1 firing → !full_for_2) OR (slot-1 not firing → !full).
+  // Slot 2 needs two free entries if slot 1 fires here, otherwise one.
   assign dispatch_fire_2 = TRUST_DISPATCH_VALID ?
                            dispatch_valid_2 :
                            (dispatch_valid_2 && (dispatch_fire ? !full_for_2 : !full));
 
 `ifndef SYNTHESIS
-  // TRUST_DISPATCH_VALID removes the local !full/!full_for_2 re-checks from
-  // the fire terms, so the dispatcher's per-RS valid bits must already embed
-  // the exact room checks (dispatch.sv gates slot-1 valid on !i_*_rs_full and
-  // slot-2 valid on bundle_fire_ok, whose rs_full_for_slot2 mux picks
-  // full_for_2 when both slots target this RS and plain full otherwise).
-  // Pin bit-exact equivalence with the untrusted computation so any contract
-  // break fails loudly in simulation instead of corrupting a live entry.
-  // Edge-sampled: every dispatch_fire consumer (count/full updates, rs_valid
-  // commits, payload CEs) is clocked, so the contract binds at the capture
-  // edge only.  Benches may deassert a refused valid between edges, which a
-  // combinational check would flag as a harmless mid-cycle transient.
-  // A full flush is exempt: the station documents that a stale dispatch packet
-  // may ride one (the flush branch wins in the valid array and the count), so
-  // on that edge the trusted and untrusted fire terms are allowed to disagree
-  // on a result nothing keeps.
+  // Trusted valids must already include the appropriate capacity checks.
+  // Check at the capture edge, since consumers are clocked and refused
+  // valids may change between edges. Full flush is exempt: it clears valid
+  // state and count regardless of a stale dispatch packet.
   always_ff @(posedge i_clk) begin
     if (TRUST_DISPATCH_VALID && i_rst_n && !i_flush_all && !$isunknown(
             {dispatch_valid, dispatch_valid_2, full, full_for_2}
@@ -1258,10 +1107,8 @@ module reservation_station #(
       assert (dispatch_fire_2 ==
               (dispatch_valid_2 && ((dispatch_valid && !full) ? !full_for_2 : !full)));
     end
-    // The exported status flags the dispatcher consults must be conservative
-    // w.r.t. live occupancy, or a trusted valid could arrive while full.
-    // DISPATCH_STATUS_RESERVE==1 would break this, and this assertion fires if
-    // trust is ever paired with such a config.
+    // Exported status must conservatively cover live occupancy for trusted
+    // valids. A reserve of one entry is insufficient for two-slot dispatch.
     if (TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
             {full, full_for_2, dispatch_full_q, dispatch_full_for_2_q}
         )) begin
@@ -1271,35 +1118,23 @@ module reservation_station #(
   end
 `endif
 
-  // Without SPECULATIVE_DATA_WRITES the tag and source-value flops take the
-  // full dispatch backpressure cone as a clock-enable.  With it, they write
-  // the target free entry even if dispatch is blocked; rs_valid remains the
-  // architectural commit point.  The slot-2 enable also avoids dispatch_fire
-  // (slow) and uses i_intent_1 (fast) to pick between !full / !full_for_2.
+  // Speculative writes may fill a free entry while dispatch is blocked; only
+  // dispatch_fire or dispatch_fire_2 sets rs_valid. Slot 2 uses intent to
+  // select capacity.
   assign data_write_1_en = SPECULATIVE_DATA_WRITES ? !full : dispatch_fire;
   assign data_write_2_en = SPECULATIVE_DATA_WRITES ?
                            (i_intent_1 ? !full_for_2 : !full) : dispatch_fire_2;
 
-  // --- One-hot slot-2 allocation select for the broadcast value writes ---
-  // TIMING: with BROADCAST_FREE_SOURCE_VALUES every free entry's
-  // rs_src*_value D mux picks slot 2's values iff
-  // data_write_2_en && alloc_idx_2 == i.  Decoding the binary index there
-  // would put the whole free_idx/free_idx_2 sweep (a ripple through
-  // rs_valid) plus a decoder in front of the 64-bit value muxes.
-  // alloc_sel_2 is that predicate computed directly from rs_valid
-  // at fixed depth: entry i is slot 2's target iff it is free and, counting
-  // free entries below it, there is exactly one (i_intent_1: slot 1 consumes
-  // the lowest) or none (slot 2 alone takes the lowest).  rs_valid is split
-  // into nibbles, so the cone is one LUT of nibble free-counts, one LUT of
-  // prefix-over-nibbles and one LUT per entry, for any DEPTH up to 32.
-  // Bit-exact with the indexed form including its not-found fallbacks:
-  // free_idx_2 is 0 when fewer than two entries are free, so under
-  // i_intent_1 entry 0 is slot 2's target iff it is the only free entry,
-  // and free_idx is 0 when nothing is free, which the !rs_valid[0] term
-  // already excludes. The binary indices for payload/tag/control writes are
-  // encoded from these same masks, avoiding a separate serial search. Keep
-  // the nibble boundaries so sharing with downstream index decoders cannot
-  // reconstruct that search on the wide value selects.
+  // --- One-hot slot-2 allocation select ---
+  // Select a free entry with exactly one lower free entry when slot 1 also
+  // targets this RS, or none when slot 2 is alone. Nibble free counts and
+  // prefix reductions compute these masks directly from rs_valid.
+  //
+  // Match the binary selectors' fallbacks: free_idx_2 is zero with fewer than
+  // two free entries, so under i_intent_1 only a sole free entry at zero can
+  // match. If nothing is free, !rs_valid excludes the index-zero fallback.
+  // Encode payload, tag and control indices from the same masks. Preserve
+  // nibble boundaries for timing.
   localparam int unsigned AllocNibbles = (DEPTH + 3) / 4;
   logic [4*AllocNibbles-1:0] alloc_valid_padded;
   (* keep = "true" *) logic [AllocNibbles-1:0] nib_all_valid;  // no free entry in this nibble
@@ -1314,8 +1149,7 @@ module reservation_station #(
   (* keep = "true" *) logic [DEPTH-1:0] one_free_below;  // free_idx_2 == i (given entry i is free)
   logic [DEPTH-1:0] alloc_sel_2;
 
-  // Constant-folded loop masks: every index below is a literal after
-  // unrolling, so each masked reduction is one flat AND, not a chain.
+  // Loop masks become constants on unrolling, permitting flat reductions.
   function automatic logic [3:0] nib_below_mask(input int unsigned r);
     nib_below_mask = 4'((32'd1 << r) - 32'd1);
   endfunction
@@ -1401,16 +1235,11 @@ module reservation_station #(
 `endif
 
   // --- CDB bypass wakeup per entry ---
-  // Same-cycle CDB tag match: if the CDB is broadcasting a result this cycle
-  // and an entry's pending source tag matches, treat that source as ready
-  // combinationally instead of waiting for the registered wakeup on the next
-  // edge.  This saves one cycle on dependent chains.
+  // A matching broadcast makes an unready source eligible this cycle.
   logic [DEPTH-1:0] src1_cdb_bypass;
   logic [DEPTH-1:0] src2_cdb_bypass;
   logic [DEPTH-1:0] src3_cdb_bypass;
-  // Lane-1 (i_cdb_2) same-cycle bypass masks (LANE1_ISSUE_BYPASS).  A tag
-  // broadcasts on exactly one lane per cycle, so the lane-0 and lane-1
-  // masks are mutually exclusive per source.
+  // Distinct CDB tags make the lane bypass masks mutually exclusive per source.
   logic [DEPTH-1:0] src1_cdb_bypass_l1;
   logic [DEPTH-1:0] src2_cdb_bypass_l1;
   logic [DEPTH-1:0] src3_cdb_bypass_l1;
@@ -1427,13 +1256,10 @@ module reservation_station #(
   logic [2:0] src2_repair_sel[DEPTH];
   logic [2:0] src3_repair_sel[DEPTH];
 
-  // The !src*_cdb_pend terms close a one-cycle tag-reuse (ABA) hole: during
-  // a deferred dispatch-CDB delivery cycle the source still reads not-ready,
-  // and a hypothetical rebroadcast of the same tag by a recycled producer
-  // must not issue-bypass a foreign value into the entry.  Unreachable with
-  // the current pipeline depths (tag reuse needs a retire + full ROB wrap + a
-  // dispatch-to-broadcast latency, all inside the 1-cycle pend window), but
-  // the registered pend flag rules it out by construction.
+  // A pending dispatch delivery keeps its source unready. Block live CDB
+  // bypass so reuse of that tag cannot substitute a different producer's
+  // value. Current pipeline latency prevents reuse within this one-cycle
+  // window, but the pending bit enforces the rule directly.
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
       src1_cdb_bypass[i] = issue_cdb_valid && !rs_src1_ready[i] && !src1_cdb_pend[i] &&
@@ -1508,12 +1334,10 @@ module reservation_station #(
   end
 
   // --- Divide gate (DIVIDE_ISSUE_GATE) ---
-  // A divide may enter stage2 only while the divider is idle and stage2 holds
-  // no divide. The divider leaves idle only by starting the divide that
-  // stage2 presents, so a divide loaded here still finds it idle when
-  // presented, however long it waits in stage2 for i_fu_ready. stage2's
-  // divide bit is a flop loaded from the entry's pre-decode; it equals the
-  // decode of stage2_op (checked in simulation and formal).
+  // Only load a divide into stage2 while both stage2 and the divider are
+  // free of divides. Since stage2 is the divider's only source, it remains
+  // idle until that divide issues, even across a ready-low hold.
+  // stage2_is_divide must match the stage2_op decode.
   logic divide_blocked;
   assign divide_blocked = DIVIDE_ISSUE_GATE &&
       (i_divider_busy || (stage2_valid && stage2_is_divide));
@@ -1524,11 +1348,8 @@ module reservation_station #(
       entry_ready[i] = rs_valid[i] && !(rs_is_divide[i] && divide_blocked) &&
           (rs_src1_ready[i] || src1_cdb_bypass[i] || src1_cdb_bypass_l1[i] ||
            (src1_repair_sel[i] != 3'd0))
-      // Even when an instruction uses an immediate, issue still
-      // requires src2 to be ready if the opcode has a second
-      // source (for example stores: base+imm address and rs2
-      // store data). Dispatch marks unused src2 operands ready,
-      // so a plain src2_ready check suffices.
+      // Stores need src2 data even when the address uses an immediate.
+      // Dispatch marks unused operands ready, so always require src2 readiness.
       && (rs_src2_ready[i] || src2_cdb_bypass[i] || src2_cdb_bypass_l1[i] ||
           (src2_repair_sel[i] != 3'd0)) &&
           (rs_src3_ready[i] || src3_cdb_bypass[i] || src3_cdb_bypass_l1[i] ||
@@ -1551,17 +1372,10 @@ module reservation_station #(
     end
   end
 
-  // The issued entry's CDB bypass flags and its resident (or repair) source
-  // values. With CAPTURE_PRIMARY_EFFECTIVE_OPERANDS they form the stage-2
-  // operand D inputs, and they come after the CDB tag match, readiness, and
-  // issue selection. TIMING: that form selects the lowest ready entry in two
-  // steps. Each group of four entries takes its own lowest ready entry from
-  // its four ready bits, and the lowest group with a ready entry then picks
-  // among the groups. The first step's select needs only its group's ready
-  // bits, not a priority encoder over every ready bit, and the two 4:1 steps
-  // each fit one LUT per bit. issue_idx comes from the same two steps. The
-  // results equal the serial scan's selection (checked below; the flags and
-  // values whenever an entry is ready, the index always).
+  // With effective operand capture, select the lowest ready entry within
+  // each group of four, then the lowest ready group. Use the same selection
+  // for index, metadata, operands and bypass flags. It must match the serial
+  // scan; with no ready entry the index is zero.
   logic issue_src1_bypass, issue_src1_bypass_l1, issue_src2_bypass, issue_src2_bypass_l1;
   logic [ReorderBufferTagWidth-1:0] primary_issue_tag;
   logic primary_issue_use_imm, primary_issue_hint, primary_issue_divide;
@@ -1581,14 +1395,11 @@ module reservation_station #(
     localparam int unsigned GroupIdxWidth = (NumGroups > 1) ? $clog2(NumGroups) : 1;
     localparam int unsigned NumGroupSlots = 1 << GroupIdxWidth;
     logic [3:0] group_ready[NumGroupSlots];
-    // The group picks and the group index are kept so they stay functions of
-    // their own ready bits: group_idx equals issue_idx's upper bits, and
-    // without the keep synthesis derives it from issue_idx's deeper encoder.
+    // Keep group selection independent of the combined index for timing.
     (* keep = "true" *) logic [NumGroupSlots-1:0] group_any;
     (* keep = "true" *) logic [1:0] group_pick[NumGroupSlots];
     (* keep = "true" *) logic [GroupIdxWidth-1:0] group_idx;
-    // Per-group selections: the step-one outputs, kept as their own nets so
-    // the step-two LUT reads them rather than re-deriving a global index.
+    // Preserve per-group results for the second selection step.
     (* keep = "true" *) logic [FLEN-1:0] group_src1_resident[NumGroupSlots];
     (* keep = "true" *) logic [FLEN-1:0] group_src2_resident[NumGroupSlots];
     (* keep = "true" *) logic [3:0] group_bypass[NumGroupSlots];
@@ -1633,9 +1444,8 @@ module reservation_station #(
         if (group_any[g]) group_idx = GroupIdxWidth'(g);
       end
     end
-    // Reconstruct the same issue index for the remaining indexed consumers
-    // and reference checks. Payload, metadata and validity clear use the
-    // direct selections above rather than decoding this index again.
+    // Encode the index for indexed consumers. Payload, metadata and validity
+    // use the direct group selections.
     assign issue_idx = $clog2(DEPTH)'({group_idx, group_pick[group_idx]});
     assign {primary_issue_tag, primary_issue_use_imm, primary_issue_hint, primary_issue_divide} =
         group_metadata[group_idx];
@@ -1681,11 +1491,8 @@ module reservation_station #(
               issue_src1_bypass_l1 == src1_cdb_bypass_l1[issue_idx] &&
               issue_src2_bypass == src2_cdb_bypass[issue_idx] &&
               issue_src2_bypass_l1 == src2_cdb_bypass_l1[issue_idx]);
-      // Case equality: a source the CDB bypass supplies may not have a
-      // resident value yet, and both selections then return the same unknown.
-      // Without the grouped select both sides are the same indexed read, and
-      // the check would only keep the per-entry resident values alive in the
-      // formal model.
+      // Case equality permits an unknown resident value when CDB supplies the
+      // operand. Check only grouped selection; the indexed mode is identical.
       if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin
         p_issue_resident_values_match_index :
         assert (issue_src1_resident === src1_resident[issue_idx] &&
@@ -1713,7 +1520,7 @@ module reservation_station #(
       stage2b_head_query_match;
 
   // --- Stage 2 control ---
-  // Flush squash: stage2 holds an instruction younger than the flush boundary.
+  // Full flushes squash every valid packet; partial flushes squash younger ones.
   assign stage2_should_flush = stage2_valid && (i_flush_all || (i_flush_en && should_flush_entry(
       stage2_rob_tag, i_flush_tag, i_rob_head_tag
   )));
@@ -1724,20 +1531,12 @@ module reservation_station #(
   // RS may load stage2 when it is empty or being consumed this cycle.
   assign can_issue_to_stage2 = !stage2_valid || stage2_accept;
 
-  // Issue from RS entry arrays into stage2. Issue requires i_fu_ready, so
-  // entries only move to stage2 when the FU can accept; stage2 registers the
-  // data path for timing and does not decouple issue from i_fu_ready.
-  // A partial/full flush invalidates entries on the clock edge, but the
-  // ready scan above still sees pre-flush state combinationally in the same
-  // cycle. Suppress issue so wrong-path ops cannot leak into stage2 during the
-  // misprediction/trap flush cycle.
+  // Loading stage2 requires i_fu_ready; this register does not decouple
+  // issue from downstream readiness. Block refills during any flush because
+  // the ready scan still sees the pre-flush valid bits.
   assign issue_fire = any_ready && i_fu_ready && can_issue_to_stage2 && !i_flush_all && !i_flush_en;
 
-  // The branch-resolution tag predicates and the architectural issue/ROB tag
-  // have very different placement neighborhoods.  The INT instance therefore
-  // gives the predicate cone its own five same-edge FFs.  The protected twin
-  // has no max_fanout constraint because its only consumers are the
-  // checkpoint-owner comparisons and head-relative age calculation.
+  // Duplicate the stage2 tag for branch checkpoint and age compares.
   generate
     if (BRANCH_PREDICATE_TAG_ANCHOR) begin : gen_branch_predicate_tag_anchor
       (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
@@ -1753,8 +1552,8 @@ module reservation_station #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-      // Both banks have identical D/enable/hold behavior.  stage2_valid gates
-      // the comparison because neither payload tag needs reset initialization.
+      // The tags have identical input and enable behavior but no reset;
+      // compare only while stage2_valid is set.
       always_ff @(posedge i_clk) begin
         if (i_rst_n && stage2_valid) begin
           assert (stage2_branch_predicate_tag == stage2_rob_tag)
@@ -1771,18 +1570,12 @@ module reservation_station #(
   // ===========================================================================
   // Tag-indexed branch payload (INT only): pc, link_addr, predicted_target
   // ===========================================================================
-  // Port-0 consumers of these three XLEN words are early recovery's
-  // redirect/BTB image capture registers and branch resolution's JALR target
-  // compare behind its adder (JALR's link result rides imm, so no CDB
-  // completion path starts here), so they need not ride the per-entry
-  // payload RAM behind the issue-index select.  Both dispatch
-  // slots write them at their ROB tag; port 0 reads the row of its stage2 tag
-  // through a protected same-edge twin (the predicate-anchor pattern), so the
-  // read adds no load to the architectural tag.  A row is read only
-  // through a valid stage2 packet whose own dispatch wrote it, and its tag
-  // cannot be reallocated while that packet is live (commit needs completion;
-  // a flush clears stage2_valid on the same edge), so stale rows are never
-  // observed.  The other stations, and port 1, never consume these fields.
+  // Store branch PC, link and predicted target by ROB tag for port 0's
+  // recovery and JALR target checks. JALR's CDB link result travels in imm.
+  // Both dispatch slots write; a duplicate stage2 tag supplies the read
+  // address for fanout. A valid stage2 packet reads only its own dispatch's
+  // row: completion is required before tag reuse, and flush clears stage2
+  // on the same edge. Other stations and port 1 do not use these fields.
   generate
     if (TAG_INDEXED_BRANCH_PAYLOAD) begin : gen_tag_indexed_branch_payload
       localparam int unsigned BranchPayloadWidth = 3 * XLEN;
@@ -1791,7 +1584,7 @@ module reservation_station #(
       logic [ReorderBufferTagWidth-1:0] stage2_branch_payload_tag;
 
       always_ff @(posedge i_clk) begin
-        // Same effective enable as stage2_rob_tag (see the predicate anchor).
+        // Use stage2_rob_tag's effective enable, including reset qualification.
         if (i_rst_n && issue_fire) stage2_branch_payload_tag <= primary_issue_tag;
       end
 
@@ -1821,15 +1614,11 @@ module reservation_station #(
       assign o_issue.predicted_target = branch_payload_rd_data[XLEN-1:0];
 
 `ifndef SYNTHESIS
-      // Row ownership.  Rows are keyed by ROB tag, so the core relies on ROB
-      // allocation never handing out a tag that is still live here (a valid
-      // resident entry or the stage2 packet).  Formal runs assume exactly that.
-      // Simulation checks the property the RAM needs, which also tolerates
-      // benches that hold a dispatch packet valid for more than one cycle: a
-      // live row is never rewritten with different contents, and two slots
-      // naming one tag carry the same contents.  Flush cycles are exempt (the
-      // core never dispatches into a flush; the killed entries leave on that
-      // edge).
+      // A dispatched ROB tag must not be live in a resident entry or stage2.
+      // Simulation permits repeated identical payloads: a live row cannot be
+      // rewritten with different data, and two slots naming one tag must agree.
+      // Flush cycles are exempt; the core does not dispatch then and killed
+      // entries leave on that edge.
       function automatic logic branch_payload_tag_live(input logic [ReorderBufferTagWidth-1:0] tag);
         branch_payload_tag_live = stage2_valid && (stage2_rob_tag == tag);
         for (int i = 0; i < DEPTH; i++) begin
@@ -1843,10 +1632,8 @@ module reservation_station #(
         i_dispatch_2.pc, i_dispatch_2.link_addr, i_dispatch_2.predicted_target
       };
 `ifdef FORMAL
-      // Row ownership as a formal property.  The standalone top has no
-      // allocator to derive it from, so it assumes it; the wrapper proof
-      // (FORMAL_STANDALONE_ENV=0) contains the real ROB and asserts exactly
-      // the same three conjuncts instead.
+      // The standalone model assumes tag uniqueness; the wrapper contains the
+      // allocator and asserts the same requirements.
       if (FORMAL_STANDALONE_ENV) begin : gen_assume_branch_payload_ownership
         always_comb begin
           if (dispatch_fire && !i_flush_all && !i_flush_en) begin
@@ -1858,9 +1645,7 @@ module reservation_station #(
           if (dispatch_fire && dispatch_fire_2) assume (dispatch_rob_tag != dispatch_rob_tag_2);
         end
       end else begin : gen_assert_branch_payload_ownership
-        // i_rst_n qualifies the live scan the same way the station's other
-        // state properties do: rs_valid and stage2_valid are reset-cleared, so
-        // only their post-reset contents mean anything.
+        // Check live entries only after reset clears rs_valid and stage2_valid.
         always_comb begin
           if (i_rst_n && dispatch_fire && !i_flush_all && !i_flush_en) begin
             p_branch_payload_slot1_tag_not_live :
@@ -1916,11 +1701,8 @@ module reservation_station #(
         end
       end
 
-      // Row-identity oracle: every packet also carries its own three words
-      // beside it in simulation (per entry at dispatch, then through stage2),
-      // and the RAM read behind the stage2 tag must reproduce exactly them.
-      // This is the direct check that a stage2 packet never sees another
-      // instruction's row, in every bench and every system simulation.
+      // Carry each packet's branch words through a separate simulation copy.
+      // The tag-indexed RAM must return those same words in stage2.
       logic [BranchPayloadWidth-1:0] branch_payload_entry_shadow  [DEPTH];
       logic [BranchPayloadWidth-1:0] branch_payload_stage2_shadow;
       always_ff @(posedge i_clk) begin
@@ -1949,12 +1731,10 @@ module reservation_station #(
     end
   endgenerate
 
-  // --- Width-funnel perf observer (profiling only) ---
-  // The stage-1 issue port fired while >=2 entries were ready: the single
-  // issue port, not operand readiness, limited throughput this cycle.
-  // x & (x-1) clears the lowest set bit, so it is nonzero iff popcount >= 2.
-  // Registered so the counter logic behind the tap stays off the issue-select
-  // path.
+  // --- Issue-width performance event ---
+  // Port 0 fires with at least two ready entries. x & (x-1) clears the lowest
+  // set bit, so a nonzero result means at least two were set. Register for
+  // counter timing; port-1 issue is not subtracted.
   logic perf_two_ready_one_issued_q;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
@@ -1985,14 +1765,11 @@ module reservation_station #(
   assign o_next_issue_is_sc = stage2_valid && stage2_is_sc;
   assign o_next_issue_needs_lq = stage2_valid && stage2_mem_needs_lq;
 
-  // Pre-issue look-ahead: expose the selected entry's rob_tag and
-  // mem_needs_lq during the cycle it fires into stage2 (T-1), so the LQ
-  // can register its address-update CAM match instead of computing it
-  // combinationally at issue time (T).
+  // Expose the selected tag and mem_needs_lq while loading stage2 so the
+  // LQ can register its address-update match before downstream issue.
   if (PREISSUE_VALID_COFACTOR) begin : gen_preissue_cofactor
-    // Generic callers select four merged-valid outcomes. MEM_RS selects eight
-    // outcomes of the raw lane occupancy and early-load eligibility, keeping
-    // lane-occupancy-controlled tag muxes out of every candidate CAM path.
+    // Use four merged-lane-valid combinations, or eight combinations of raw
+    // lane occupancy and early-load eligibility for MEM_RS.
     localparam int NumCandidates = PREISSUE_RAW_WAKEUP ? 8 : 4;
     logic [ReorderBufferTagWidth-1:0] candidate_tag[NumCandidates];
     logic [DEPTH-1:0] candidate_ready[NumCandidates];
@@ -2064,14 +1841,11 @@ module reservation_station #(
           candidate_tag[valids];
     end
     if (PREISSUE_READY_EXPORT) begin : gen_ready_export
-      // Each ready vector is kept as its own net, so the LQ's per-entry
-      // picks read it directly instead of an encoded winner index.
+      // Keep each exported ready vector separate for the LQ's per-entry selection.
       (* keep = "true" *) logic [DEPTH-1:0] export_ready[NumCandidates];
       for (genvar c = 0; c < NumCandidates; c++) begin : gen_export
-        // With both raw lanes valid, the early-load token does not change
-        // either merged lane (it only fills an empty one), so candidate 7's
-        // lane valids and tags, and hence its ready vector, equal
-        // candidate 3's. Export candidate 3's vector for both.
+        // The early-load token fills only an empty lane. With both lanes valid,
+        // candidates 7 and 3 therefore have identical tags and ready vectors.
         localparam int Source = (PREISSUE_RAW_WAKEUP && (c == 7)) ? 3 : c;
         assign export_ready[c] = candidate_ready[Source];
         assign o_pre_issue_ready[c*DEPTH+:DEPTH] = export_ready[c];
@@ -2081,10 +1855,8 @@ module reservation_station #(
             rs_rob_tag[e];
       end
 `ifdef RS_PRETAG_LOCAL_PROOF
-      // Each exported vector's winner (lowest set bit, entry 0 when none, as
-      // the encoders above) carries that candidate's look-ahead tag, and the
-      // selected candidate's winner is the issue select's entry, with the
-      // same any-ready.
+      // Each candidate's lowest ready entry supplies its tag; no ready entry
+      // selects zero. The chosen candidate must match issue_idx and any_ready.
       logic [$clog2(DEPTH)-1:0] f_first[NumCandidates];
       always_comb begin
         for (int c = 0; c < NumCandidates; c++) begin
@@ -2145,44 +1917,29 @@ module reservation_station #(
 `endif
   assign o_pre_issue_needs_lq = issue_fire && pl_mem_needs_lq;
 
-  // --- Issue port assignment (driven from stage2 pipeline register) ---
-  // Data fields are driven unconditionally from stage2 FFs.
-  // Valid depends only on registered stage2_valid and the FU ready signal
-  // (itself derived from registered adapter/shim state).  The same-cycle
-  // flush is not checked here: checking stage2_should_flush on the output
-  // would create the long timing path
-  //   trap_taken → flush → stage2_should_flush → o_issue.valid → downstream.
-  // A "phantom issue" can escape during a flush cycle, but it is harmless:
-  //   - Full flush (flush_all): LQ/SQ reset all state, ignoring the update.
-  //   - Partial flush (flush_en): LQ/SQ CAM-match on rob_tag; the flushed
-  //     entry's valid bit is cleared on the same edge, so the address update
-  //     writes into a dead entry that is never observed.
-  //   - The FU shims and CDB adapters (and the arbiter, on a full flush)
-  //     discard results for flushed tags.
-  //   - The translation stage (dmmu) registers memory ops instead of
-  //     delivering them on the issue edge, so it drops a phantom by the
-  //     flush-age rule itself (its iss_killed); without that, the op's late
-  //     fault or address would land on the correct-path op that reused the
-  //     tag.
-  // The internal stage2_accept signal still checks stage2_should_flush so
-  // that the stage2 pipeline register is cleared on the next edge.
+  // --- Issue port assignment ---
+  // Payload is driven continuously; valid requires stage2_valid and FU ready.
+  // Output valid omits flush for timing. A squashed packet can still issue,
+  // so its consumers must discard it:
+  //   - LQ/SQ full flush ignores the update. Partial flush clears the matching
+  //     entry on the same edge, making any address write unobservable.
+  //   - FU shims and CDB adapters discard flushed results; the arbiter also
+  //     drops them on full flush.
+  //   - dmmu registers memory issues and must apply its iss_killed age check
+  //     so a delayed fault or address cannot reach a reused ROB tag.
+  // A flushed stage2 packet is not accepted internally and is cleared at the edge.
   assign o_issue.valid = stage2_valid && i_fu_ready;
   assign o_issue.rob_tag = stage2_rob_tag;
   assign o_issue.op = stage2_op;
-  // With CAPTURE_PRIMARY_EFFECTIVE_OPERANDS (INT port 0), stage2 already
-  // holds the final src1/src2 values, so the ALU/CDB launch is direct from
-  // stage2 Q.  Otherwise a three-arm CDB bypass mux follows stage2.
+  // Effective operand capture stores final src1/src2 values. Otherwise,
+  // a three-way CDB mux follows stage2.
   generate
     if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin : gen_primary_effective_operand_outputs
       assign o_issue.src1_value = stage2_src1_value;
       assign o_issue.src2_value = stage2_src2_value;
     end else begin : gen_primary_legacy_operand_outputs
-      // For CDB-bypassed sources, substitute the CDB value captured at issue
-      // time. Replicate the bypass control per bit so one scalar flag does not
-      // drive the full FLEN-wide operand mux into the FU/CDB path. Keep the final
-      // expressions direct on the issue ports: routing them through named
-      // keep/max_fanout vectors fails timing at the replicated CDB value
-      // endpoints.
+      // Select the CDB value captured at issue. Keep the expressions on the
+      // ports and replicate mask bits for fanout.
       assign o_issue.src1_value =
           (stage2_src1_value & ~stage2_src1_bypass_mask & ~stage2_src1_bypass_mask_l1) |
           (stage2_cdb_value & stage2_src1_bypass_mask) |
@@ -2229,14 +1986,9 @@ module reservation_station #(
   // ===========================================================================
   generate
     if (DUAL_ISSUE) begin : gen_issue2
-      // The helper computes only port 1. Port 0 uses the serial issue_idx /
-      // any_ready encoder above, and none of its consumers depend on this
-      // tree. The helper tracks the global first ready entry inside its own
-      // tree, so its result is exactly "lowest ready nonbranch excluding
-      // port 0's winner", even under backpressure.
-      // With a window, the selector's own first-ready exclusion still equals
-      // port 0's winner whenever the window holds a ready entry (port 0 picks
-      // the lowest ready index overall), and port 1 is idle otherwise.
+      // Port 1 excludes port 0's lowest-ready pick even when port 0 is blocked.
+      // If the window contains any ready entry, its lowest is also the global
+      // lowest; otherwise port 1 stays idle. Port 0's selector is independent.
       localparam int unsigned Issue2Window =
           (ISSUE2_WINDOW == 0 || ISSUE2_WINDOW > DEPTH) ? DEPTH : ISSUE2_WINDOW;
       logic [$clog2(Issue2Window)-1:0] issue_idx_2_window;
@@ -2261,10 +2013,8 @@ module reservation_station #(
         issue_sel_2_ohread[DEPTH-1:0] = issue_sel_2;
       end
 
-      // Second payload-RAM copy: identical writes, read at issue_idx_2.
-      // Port 1 already computes a one-hot select. Feed that to the LVT read
-      // side so the bank-select lookup does not add another binary-address mux
-      // behind the issue2 priority encoder.
+      // The second RAM copy shares dispatch writes and uses port 1's one-hot
+      // winner for its LVT read.
       logic [PayloadWidth-1:0] payload_rd_data_b;
       mwp_dist_ram_ohread #(
           .ADDR_WIDTH     ($clog2(DEPTH)),
@@ -2315,7 +2065,7 @@ module reservation_station #(
       // issue-time values (live CDB, resident, or repair); there is no
       // operand mux after these registers.
       logic [ReorderBufferTagWidth-1:0] stage2b_rob_tag;
-      // Port-1 twin of stage2_op's cap (see that declaration).
+      // Limit port-1 opcode fanout.
       (* max_fanout = 48 *) riscv_pkg::instr_op_e stage2b_op;
       logic [FLEN-1:0] stage2b_src1_value;
       logic [FLEN-1:0] stage2b_src2_value;
@@ -2380,11 +2130,9 @@ module reservation_station #(
 `endif
 `endif
 
-      // TIMING: each entry's operand is resolved (live CDB lane over the
-      // resident or done-repair value) before the one-hot issue select, so
-      // the late selector drives only the final AND-OR. The *_selected
-      // bypass bits below feed only the simulation reference. Lane 0 has
-      // priority when both lanes match, including generic duplicate tags.
+      // Resolve each entry's CDB bypass before the one-hot operand read. Lane 0
+      // wins duplicate matches. The selected bypass flags serve only the
+      // simulation reference.
       always_comb begin
         issue2_src1_value_effective = '0;
         issue2_src2_value_effective = '0;
@@ -2473,10 +2221,8 @@ module reservation_station #(
           stage2b_valid <= 1'b1;
           stage2b_rob_tag <= issue2_rob_tag_selected;
           stage2b_op <= riscv_pkg::instr_op_e'(pl2_op_bits);
-          // The operand FFs capture the final value, with the live CDB
-          // selection folded into their D inputs. The CDB lanes carry distinct
-          // tags, so at most one live term is selected; either live lane
-          // overrides the resident / done-repair-selected value.
+          // Live CDB data overrides resident or repair data. Distinct lane tags
+          // allow at most one live match.
           stage2b_src1_value <= issue2_src1_value_effective;
           stage2b_src2_value <= issue2_src2_value_effective;
           stage2b_shift_amount <= issue2_shift_uses_imm_selected ? issue2_shift_imm_selected :
@@ -2558,14 +2304,12 @@ module reservation_station #(
 `endif
 `endif
 
-      // o_issue_2 assembly (mirror of o_issue, with the same phantom-issue-
-      // on-flush reasoning: ALU2's CDB adapter, and the arbiter on a full
-      // flush, discard a flushed tag's result).
+      // Port-1 issue follows the same flush rule: its CDB adapter drops flushed
+      // results, and the arbiter also drops them on full flush.
       assign o_issue_2.valid = stage2b_valid && i_fu_ready_2;
       assign o_issue_2.rob_tag = stage2b_rob_tag;
       assign o_issue_2.op = stage2b_op;
-      // The effective operands were selected on the issue edge. Keep the
-      // timing-critical ALU2/CDB launch path as direct stage2b register Q.
+      // Drive the captured operands directly from stage2b for timing.
       assign o_issue_2.src1_value = stage2b_src1_value;
       assign o_issue_2.src2_value = stage2b_src2_value;
       assign o_issue_2.src3_value = HAS_SRC3 ? stage2b_src3_value : '0;
@@ -2659,10 +2403,8 @@ module reservation_station #(
   // Sequential Logic
   // ===========================================================================
 
-  // Dispatch and the ROB done/value query launch together.  Remember the
-  // exact local allocation for one cycle so the returning response can write
-  // that entry directly.  A flush wins over dispatch in the architectural
-  // valid array, so it must also discard these otherwise-stale targets.
+  // Save allocation targets for next-cycle done repair. Flush discards the
+  // targets because it also prevents dispatch from setting rs_valid.
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all || i_flush_en) begin
       repair_slot1_target_q <= '0;
@@ -2677,10 +2419,8 @@ module reservation_station #(
     end
   end
 
-  // Port 1 already resolves the selected physical entry as a one-hot mask.
-  // Reuse the direct winners for clearing validity, avoiding binary
-  // encode/decode after the ready/tag bypass decision. Each issue_fire gates
-  // its mask so a port that does not fire clears nothing.
+  // Clear validity with the direct issue masks. A nonfiring port clears
+  // nothing; each mask must match its selected entry.
   logic [DEPTH-1:0] issue1_clear_mask;
   assign issue1_clear_mask = {DEPTH{issue_fire}} & primary_issue_onehot[DEPTH-1:0];
   logic [DEPTH-1:0] issue2_clear_mask;
@@ -2696,13 +2436,10 @@ module reservation_station #(
 `endif
 
 `ifdef RS_DIVIDE_GATE_LOCAL_PROOF
-  // formal/rs_divide_gate.sby: the divide gate against a model of the
-  // divider, busy from the cycle after a presented divide that no same-cycle
-  // flush squashes (the shim's start condition, with the same age compare)
-  // until an arbitrary later cycle. The payload RAMs and all other inputs are
-  // free. stage2_is_divide stands for the decode of stage2_op; the wrapper
-  // proof and a simulation check compare the two. The first assertion is
-  // inductive; the second, the shim's requirement, follows from it.
+  // Model a divider that becomes busy after a nonflushed divide issue and
+  // finishes on an arbitrary later cycle. Payload and other inputs are free.
+  // stage2_is_divide represents the opcode decode; its consistency is checked
+  // separately. A staged divide must imply an idle divider until it issues.
   initial assume (!i_rst_n);
   logic f_gate_past_valid = 1'b0;
   (* anyseq *)logic f_divider_finish;
@@ -2767,9 +2504,7 @@ module reservation_station #(
           end
         end
       end else begin
-        // Both issue clears commute. INT uses its direct primary winner;
-        // other stations keep the indexed primary clear. Later allocation
-        // writes retain priority over both issue ports.
+        // Both issue clears commute; later allocation writes take priority.
         if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin
           rs_valid <= rs_valid & ~issue2_clear_mask & ~issue1_clear_mask;
         end else begin
@@ -2782,12 +2517,8 @@ module reservation_station #(
           if (TRACK_INT_WRITEBACK_HINT)
             rs_writes_cdb_hint[free_idx] <= int_rs_writes_cdb(dispatch_op);
 
-          // Source ready bits: dispatch-time ready, plus the insertion-time
-          // done-repair bypass where enabled.  Stations with
-          // ALLOC_INDEXED_REPAIR apply the indexed repair response one cycle
-          // later instead (indexed_src*_repair below).
-          // A same-cycle CDB match does not fold in here: it registers a
-          // pend flag and the deferred delivery sets ready one cycle later.
+          // Capture dispatch readiness, including repair bypass when enabled.
+          // Indexed repair and deferred CDB matches set ready one cycle later.
           rs_src1_ready[free_idx] <= dispatch_src1_ready || dispatch_src1_repair_match;
           rs_src2_ready[free_idx] <= dispatch_src2_ready || dispatch_src2_repair_match;
           if (HAS_SRC3) begin
@@ -2796,9 +2527,8 @@ module reservation_station #(
           rs_use_imm[free_idx] <= dispatch_use_imm;
           rs_shift_uses_imm[free_idx] <= dispatch_shift_controls[0];
           rs_shift_imm[free_idx] <= dispatch_imm[5:0];
-          // Deferred dispatch-CDB capture flags.  Written on every committed
-          // dispatch (0 when no match) so a re-allocation of this index can
-          // never inherit a stale pend.
+          // Write pending flags on every dispatch, including zero when unmatched,
+          // so reallocation cannot inherit a stale delivery.
           src1_cdb_pend[free_idx] <= dispatch_src1_cdb_defer;
           src1_cdb_pend_lane[free_idx] <= dispatch_src1_cdb_defer_lane;
           src2_cdb_pend[free_idx] <= dispatch_src2_cdb_defer;
@@ -2809,9 +2539,7 @@ module reservation_station #(
           end
         end
 
-        // Slot-2 dispatch write (independent index from slot-1, so the
-        // non-blocking writes never collide on a bit).  Fires when slot-2
-        // dispatches into this RS.
+        // Slot 2 writes a distinct entry, so the allocation writes cannot collide.
         if (dispatch_fire_2) begin
           rs_valid[alloc_idx_2] <= 1'b1;
           if (TRACK_INT_WRITEBACK_HINT)
@@ -2836,8 +2564,7 @@ module reservation_station #(
         end
       end
 
-      // CDB and done-repair wakeup (control: ready bits only).
-      // i_cdb_2 is the 2-wide CDB lane-1 (registered wakeup; distinct tag).
+      // CDB and repair wakeup: ready bits.
       if (i_cdb.valid || i_cdb_2.valid || i_repair_valid_1 || i_repair_valid_2 ||
         i_repair_valid_3 || i_repair_valid_4 || i_repair_valid_5 || i_repair_valid_6) begin
         for (int i = 0; i < DEPTH; i++) begin
@@ -2873,14 +2600,10 @@ module reservation_station #(
         end
       end
 
-      // Deferred dispatch-CDB delivery (control side): one cycle after a
-      // dispatch-cycle CDB match, set the source ready and retire the pend
-      // flag.  Runs unconditionally: a flush arriving in the delivery cycle
-      // clears rs_valid on this same edge, making these writes dead state,
-      // and the pend clear keeps stale flags out of future re-allocations.
-      // The pended entry is necessarily still resident here (its source
-      // reads not-ready this cycle, so it cannot have issued), so these
-      // indices can never collide with this cycle's dispatch writes above.
+      // Set ready and clear pending one cycle after a dispatch CDB match.
+      // Flush can make these writes unobservable by clearing rs_valid on the
+      // same edge. The newly allocated entry is still resident before this
+      // edge, so delivery cannot collide with allocation into a free entry.
       for (int i = 0; i < DEPTH; i++) begin
         if (src1_cdb_pend[i]) begin
           rs_src1_ready[i] <= 1'b1;
@@ -2899,9 +2622,8 @@ module reservation_station #(
     end
   end
 
-  // Resolve scalar write priority once per entry/source. Deferred delivery
-  // and ordinary repair share the same two data buses, so combine their
-  // selects before the wide AND/OR mux instead of muxing those buses twice.
+  // Resolve write priority per source before the wide mux. Deferred CDB
+  // delivery and ordinary repair share each slot's data bus.
   function automatic logic [5:0] indexed_write_select(
       input logic dispatch1, input logic dispatch2, input logic resident, input logic ready,
       input logic live0, input logic live1, input logic target1, input logic target2,
@@ -3034,14 +2756,10 @@ module reservation_station #(
 
   // --- Data signals (no reset) ---
   always_ff @(posedge i_clk) begin
-    // Keep a physically distinct issue-only tag bank without adding loads to
-    // the free-entry/rs_valid clock-enable cone.  These use the same indexed
-    // speculative writes as the architectural tags below.  On a speculative
-    // write for a slot that does not target this RS, complement the shadow D
-    // value so the two banks are not equivalent while invalid.  A committed
-    // slot always selects the normal tag.  Slot 2 comes last: for slot-2-only
-    // dispatch alloc_idx_2 == free_idx, so its normal tag replaces slot 1's
-    // complemented speculative value before the entry becomes valid.
+    // Speculative issue-tag writes complement tags for slots not targeting
+    // this RS, preventing merging with the normal bank. Committed writes
+    // always use normal tags. Slot 2 wins when it shares free_idx with a
+    // speculative slot-1 write.
     if (ISSUE_CDB_TAG_SHADOW) begin
       if (data_write_1_en) begin
         rs_src1_issue_tag[free_idx] <= i_intent_1 ? dispatch_src1_tag : ~dispatch_src1_tag;
@@ -3055,18 +2773,11 @@ module reservation_station #(
       end
     end
 
-    // Generic stations use the original broadcast writes below; indexed
-    // stations express the same writes in indexed_dispatch*_write above.
-    // In broadcast mode, the wide source-value arrays use only the entry's
-    // local valid bit as their dispatch write enable.  Every free entry gets
-    // slot 1's values; the exact slot-2 target gets slot 2's values instead.
-    // The selected allocation indices below still receive their tags and
-    // narrow dispatch-bypass flags normally.  Since rs_valid is the sole
-    // architectural commit, values written to the other free entries are
-    // don't-care prefill and cannot be observed by issue.  alloc_sel_2[i] is
-    // data_write_2_en && alloc_idx_2 == i for every free entry, computed at
-    // fixed depth from rs_valid (see its TIMING note); the value D select
-    // must not see the binary index decode.
+    // Generic and indexed modes apply the same source writes. In broadcast
+    // mode, free entries get slot 1's values except at the slot-2 target.
+    // Only allocated entries become valid; other prefills remain unobservable.
+    // alloc_sel_2 must equal data_write_2_en && alloc_idx_2 == i for every
+    // free entry. Use its direct mask for timing.
     if (BROADCAST_FREE_SOURCE_VALUES && !ALLOC_INDEXED_REPAIR) begin
       for (int i = 0; i < DEPTH; i++) begin
         if (!rs_valid[i]) begin
@@ -3083,18 +2794,15 @@ module reservation_station #(
       end
     end
 
-    // Dispatch: capture tags and values at free index
     if (data_write_1_en) begin
       rs_rob_tag[free_idx] <= dispatch_rob_tag;
       rs_is_branch_class[free_idx] <= dispatch_is_branch_class;
       rs_is_divide[free_idx] <= dispatch_is_divide;
 
-      // Source 1
       rs_src1_tag[free_idx] <= dispatch_src1_tag;
       if (!BROADCAST_FREE_SOURCE_VALUES && !ALLOC_INDEXED_REPAIR)
         rs_src1_value[free_idx] <= dispatch_src1_stored_value;
 
-      // Source 2
       rs_src2_tag[free_idx] <= dispatch_src2_tag;
       if (!BROADCAST_FREE_SOURCE_VALUES && !ALLOC_INDEXED_REPAIR)
         rs_src2_value[free_idx] <= dispatch_src2_stored_value;
@@ -3107,9 +2815,8 @@ module reservation_station #(
       end
     end
 
-    // Slot-2 dispatch: capture tags and values at alloc_idx_2.  Intra-bundle
-    // RAW (slot-2 src reads slot-1 dest) is resolved upstream in dispatch.sv
-    // before reaching the RS.
+    // Dispatch resolves intra-bundle RAW dependencies before either slot
+    // reaches the station.
     if (data_write_2_en) begin
       rs_rob_tag[alloc_idx_2] <= dispatch_rob_tag_2;
       rs_is_branch_class[alloc_idx_2] <= dispatch_is_branch_class_2;
@@ -3130,8 +2837,7 @@ module reservation_station #(
       end
     end
 
-    // CDB and done-repair wakeup (data: capture values).
-    // i_cdb_2 = 2-wide CDB lane-1 (registered; distinct tag from lane 0).
+    // CDB and repair wakeup: source values.
     if (!ALLOC_INDEXED_REPAIR && (i_cdb.valid || i_cdb_2.valid ||
         i_repair_valid_1 || i_repair_valid_2 || i_repair_valid_3 ||
         i_repair_valid_4 || i_repair_valid_5 || i_repair_valid_6)) begin
@@ -3165,14 +2871,13 @@ module reservation_station #(
       end
     end
 
-    // Central CDB lane value copies for the deferred dispatch-CDB delivery.
-    // Captured every cycle; qualified only by the pend flags below, so the
-    // dispatch side of the value arrays never sees the live CDB value nets.
+    // Capture CDB lane values every cycle; pending flags qualify their use
+    // for deferred delivery.
     cdb0_value_q <= i_cdb.value;
     cdb1_value_q <= i_cdb_2.value;
 
-    // Indexed stations use the factored scalar selects above. Generic
-    // stations retain the original deferred write as their final assignment.
+    // Indexed stations use the shared selects; generic stations apply
+    // deferred delivery last.
     for (int i = 0; i < DEPTH; i++) begin
       if (ALLOC_INDEXED_REPAIR) begin
         if (|indexed_src1_write_sel[i]) rs_src1_value[i] <= indexed_src1_write_data[i];
@@ -3204,17 +2909,14 @@ module reservation_station #(
       // issue_fire is suppressed during flush (!i_flush_all && !i_flush_en).
       stage2_valid <= 1'b0;
     end else if (issue_fire) begin
-      // Load stage2 from the RS entry selected by the priority encoder.
-      // This covers both the empty-fill and back-to-back (accept + refill) cases.
+      // Load on empty fill or simultaneous acceptance and refill.
       stage2_valid <= 1'b1;
       stage2_rob_tag <= primary_issue_tag;
       stage2_op <= riscv_pkg::instr_op_e'(pl_op_bits);
       stage2_is_divide <= primary_issue_divide;
       if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin
-        // Fold the three-arm CDB bypass mux into the operand FF D inputs.
-        // Values come from the complete CDB packets; the optional issue-only
-        // inputs contribute valid/tag comparisons only. The resident (or
-        // repair) value and the flags come from the grouped select above.
+        // Capture the final operands from resident, repair or CDB values.
+        // Issue-only inputs supply valid and tag; full CDB packets supply data.
         stage2_src1_value <= (issue_src1_resident &
             {FLEN{!issue_src1_bypass && !issue_src1_bypass_l1}}) |
             (i_cdb.value & {FLEN{issue_src1_bypass}}) |
@@ -3224,10 +2926,8 @@ module reservation_station #(
             (i_cdb.value & {FLEN{issue_src2_bypass}}) |
             (i_cdb_2.value & {FLEN{issue_src2_bypass_l1}});
       end else begin
-        // For CDB-bypassed sources, store the stale rs_src_value here and set the
-        // bypass flag; the output mux substitutes stage2_cdb_value /
-        // stage2_cdb_value_l1.  This breaks the timing-critical path
-        // CDB → tag match → issue select → FLEN mux → stage2.
+        // Store resident or repair data and bypass masks. The output mux uses
+        // the captured CDB lane value for bypassed sources.
         stage2_src1_value <= (src1_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
             src1_repair_sel[issue_idx]
         ) : rs_src1_value[issue_idx];
@@ -3349,7 +3049,7 @@ module reservation_station #(
 
   always @(posedge i_clk) begin
     if (i_rst_n) begin
-      // Warn on unusual dispatch conditions (non-fatal: tests exercise these)
+      // Warn on refused dispatch requests.
       if (dispatch_valid && full && !i_flush_all && !i_flush_en)
         $warning("RS: dispatch attempted when full");
 
@@ -3361,16 +3061,14 @@ module reservation_station #(
           (free_idx == alloc_idx_2))
         $error("RS: slot-1 and slot-2 alloc collide on entry %0d", free_idx);
 
-      // The fixed-depth one-hot slot-2 select must equal the alloc_idx_2
-      // decode on every free entry (fatal: the two would diverge only
-      // through a bug in the nibble tree, and the value D mux trusts it).
+      // The slot-2 value select must equal the binary allocation decode on
+      // every free entry.
       if (!$isunknown({rs_valid, i_intent_1, data_write_2_en})) begin
         assert (alloc_sel_2 == (data_write_2_en ? (index_to_onehot(alloc_idx_2) & ~rs_valid) : '0))
         else $error("RS: alloc_sel_2 %b disagrees with alloc_idx_2 %0d", alloc_sel_2, alloc_idx_2);
       end
 
-      // Issue fires only for ready entries (fatal: indicates RTL bug)
-      // Checks stage1 issue_fire (RS→stage2), not stage2 output.
+      // Loading stage2 requires a ready entry.
       if (issue_fire && !entry_ready[issue_idx])
         $error("RS: issue fired for non-ready entry %0d", issue_idx);
 
@@ -3424,11 +3122,8 @@ module reservation_station #(
         end
       end
 
-      // Deferred dispatch-CDB delivery invariants.  A pend flag lives for
-      // exactly one cycle on a committed (hence resident) entry whose source
-      // nothing else has satisfied; if a done-repair response for the same
-      // source lands in the delivery cycle, it must carry the same
-      // producer's value as the registered lane copy (coalesce contract).
+      // A pending flag lasts one cycle on a resident, unready source. Any
+      // simultaneous repair for that source must equal the saved CDB value.
       for (int i = 0; i < DEPTH; i++) begin
         if (src1_cdb_pend[i]) begin
           assert (rs_valid[i])
@@ -3508,13 +3203,12 @@ module reservation_station #(
   // -------------------------------------------------------------------------
   // Assumptions
   // -------------------------------------------------------------------------
-  // Standalone only: these constrain a free environment.  In the wrapper proof
-  // the dispatch unit drives these inputs, so assuming them there would hide
-  // the very dispatch bugs that proof exists to find.
+  // Constrain free inputs only in the standalone model; the wrapper's real
+  // dispatch logic must satisfy these requirements.
 
   generate
     if (FORMAL_STANDALONE_ENV) begin : gen_formal_dispatch_contract
-      // Dispatch must not coincide with a partial flush.  Full flushes may
+      // Dispatch must not coincide with a partial flush. Full flushes may
       // coincide with stale dispatch packets; the flush branch below wins and
       // clears valid state, so those packets are ignored.
       always_comb begin
@@ -3535,7 +3229,7 @@ module reservation_station #(
       end
 
       // The wrapper drives i_intent_1 from the same per-RS slot-1 decode that
-      // produces i_dispatch.valid.  The slot-2 alloc index relies on that
+      // produces i_dispatch.valid. The slot-2 alloc index relies on that
       // contract to choose the second free entry when both slots target this RS.
       always_comb begin
         assume (i_intent_1 == dispatch_valid);
@@ -3543,11 +3237,8 @@ module reservation_station #(
     end
   endgenerate
 
-  // DIVIDE_ISSUE_GATE: stage2's divide bit equals the decode of its opcode.
-  // In the wrapper proof, where the real divider drives i_divider_busy, a
-  // presented divide must also find the divider idle, since the shim cannot
-  // hold one back. formal/rs_divide_gate.sby proves the gate itself against a
-  // model of the divider (RS_DIVIDE_GATE_LOCAL_PROOF).
+  // The stage2 divide bit must match its opcode. With the real divider
+  // connected, a presented divide must find it idle; the shim cannot queue it.
   generate
     if (DIVIDE_ISSUE_GATE) begin : gen_formal_divide_gate
       always_comb begin
@@ -3571,9 +3262,7 @@ module reservation_station #(
   always_comb begin
     if (ALLOC_INDEXED_REPAIR) begin
       p_indexed_repair_mode_exclusive : assert (!DISPATCH_REPAIR_BYPASS && !ISSUE_REPAIR_BYPASS);
-      // The targets are reset- and flush-cleared, so like every other state
-      // property here they are claimed only from the first post-reset cycle;
-      // the pre-reset register contents are arbitrary.
+      // Repair targets are meaningful only after reset clears their registers.
       if (i_rst_n) begin
         p_indexed_repair_slot1_onehot : assert ($onehot0(repair_slot1_target_q));
         p_indexed_repair_slot2_onehot : assert ($onehot0(repair_slot2_target_q));
@@ -3594,21 +3283,18 @@ module reservation_station #(
     end
   end
 
-  // full iff all valid
   always_comb begin
     if (i_rst_n) begin
       p_full_iff_all_valid : assert (full == (&rs_valid));
     end
   end
 
-  // empty iff none valid
   always_comb begin
     if (i_rst_n) begin
       p_empty_iff_none_valid : assert (empty == (rs_valid == '0));
     end
   end
 
-  // count matches popcount of valid bits
   // Yosys does not support 'automatic' inside always_comb, so the
   // intermediate variable is declared outside the block.
   logic [CountWidth-1:0] f_expected_count;
@@ -3633,7 +3319,6 @@ module reservation_station #(
     end
   end
 
-  // Stage1 issue_fire implies the selected entry was valid and ready
   always_comb begin
     if (i_rst_n && issue_fire) begin
       p_issue_entry_was_valid : assert (rs_valid[issue_idx]);
@@ -3641,7 +3326,6 @@ module reservation_station #(
     end
   end
 
-  // Stage2 output valid implies stage2 is occupied
   always_comb begin
     if (i_rst_n && o_issue.valid) begin
       p_stage2_output_coherent : assert (stage2_valid);
@@ -3671,13 +3355,9 @@ module reservation_station #(
         end
       end
 
-      // Free-entry broadcast changes only how values are written:
-      // a committed dispatch must still observe the exact source values from
-      // its own packet at the selected entry on the following cycle.  The
-      // timing-targeted mode has dispatch repair bypass disabled; a CDB
-      // match in the dispatch cycle leaves the packet value in place here
-      // (this samples one cycle after dispatch, before the deferred
-      // delivery overwrites the source with the broadcast value).
+      // Committed dispatch must retain its packet's source values at the next
+      // edge. This mode disables dispatch repair bypass; a dispatch-cycle CDB
+      // match still leaves the packet value until the deferred delivery edge.
       if (BROADCAST_FREE_SOURCE_VALUES && !DISPATCH_REPAIR_BYPASS && !$past(
               i_flush_all
           ) && !$past(
@@ -3705,22 +3385,18 @@ module reservation_station #(
         end
       end
 
-      // Dispatch sets valid
       if ($past(dispatch_fire) && !$past(i_flush_all) && !$past(i_flush_en)) begin
         p_dispatch_sets_valid : assert (rs_valid[$past(free_idx)]);
       end
 
-      // Slot-2 dispatch sets valid at alloc_idx_2.
       if ($past(dispatch_fire_2) && !$past(i_flush_all) && !$past(i_flush_en)) begin
         p_dispatch_2_sets_valid : assert (rs_valid[$past(alloc_idx_2)]);
       end
 
-      // Issue clears valid
       if ($past(issue_fire) && !$past(i_flush_all) && !$past(i_flush_en)) begin
         p_issue_clears_valid : assert (!rs_valid[$past(issue_idx)]);
       end
 
-      // flush_all empties RS and stage2
       if ($past(i_flush_all)) begin
         p_flush_all_empties : assert (rs_valid == '0);
         p_flush_all_empties_stage2 : assert (!stage2_valid);
@@ -3762,26 +3438,17 @@ module reservation_station #(
 
     end
 
-    // Reset clears all entries
     if (f_past_valid && i_rst_n && !$past(i_rst_n)) begin
       p_reset_clears_all : assert (rs_valid == '0);
     end
   end
 
-  // Deferred dispatch-CDB delivery, decomposed into single-edge steps.
-  // Together they give the end-to-end guarantee that a dispatch-cycle CDB
-  // match delivers the matched lane's broadcast value and the ready bit two
-  // cycles after dispatch: the match registers the pend pair at the
-  // allocated entry, the central lane copies register the broadcast, and
-  // delivery sets ready and retires the pend.  The final copy-into-array
-  // value handoff is not asserted here.  With the module defaults no property
-  // observes rs_src*_value (the broadcast-exact checks above are guarded
-  // off).  Adding one drags the value arrays' done-repair CAM mux cones into
-  // the live SMT model, where boolector stalls within a few steps.  That
-  // handoff is a single uniform delivery statement checked bit-exactly by the
-  // directed cocotb unit tests and the sim-side coalesce assertions.
-  // Labels omitted inside the loop: Yosys rejects duplicate names from
-  // loop unrolling.
+  // Check deferred delivery in steps: dispatch captures pending and lane
+  // bits plus the broadcast value; the following edge sets ready and clears
+  // pending. The final value-array write is not asserted here: observing it
+  // adds the done-repair CAM muxes to the standalone solver model. Simulation
+  // checks repair and saved CDB values agree. Labels are omitted because
+  // Yosys rejects duplicate names from loop unrolling.
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
       // The central lane copies track the broadcast values one cycle behind.
@@ -3847,24 +3514,18 @@ module reservation_station #(
   // -------------------------------------------------------------------------
   // Cover properties
   // -------------------------------------------------------------------------
-  // Standalone only.  These describe traffic the station's own top can drive
-  // directly; inside the wrapper proof the same traces would have to come
-  // through the whole front end, and its shallower cover depth cannot reach
-  // most of them.
+  // Covers use the standalone input environment.
   generate
     if (FORMAL_STANDALONE_ENV) begin : gen_formal_covers
       always @(posedge i_clk) begin
         if (i_rst_n) begin
-          // Dispatch and issue in the same cycle
           cover_dispatch_and_issue : cover (dispatch_fire && issue_fire);
 
-          // CDB wakeup makes entry ready
+          // A broadcast overlaps a live entry; operand tags need not match.
           cover_cdb_wakeup : cover (i_cdb.valid && |rs_valid);
 
-          // RS is full
           cover_full : cover (full);
 
-          // Partial flush
           cover_partial_flush : cover (i_flush_en && |rs_valid);
 
           // Entry dispatched in the cycle the CDB broadcasts its src1 tag
@@ -3872,22 +3533,17 @@ module reservation_station #(
           cover (dispatch_fire && i_cdb.valid && !dispatch_src1_ready
                  && dispatch_src1_tag == i_cdb.tag);
 
-          // Deferred dispatch-CDB delivery cycle in flight
           cover_deferred_cdb_delivery : cover (|src1_cdb_pend);
 
-          // 2-wide dispatch fires both slots in the same cycle.
           cover_dispatch_2_wide : cover (dispatch_fire && dispatch_fire_2);
 
-          // Slot-2 fires alone (slot-1 not valid this cycle).
           cover_dispatch_2_only : cover (dispatch_fire_2 && !dispatch_fire);
 
           // Stage2 back-to-back: consumed and refilled in the same cycle
           cover_stage2_back_to_back : cover (stage2_accept && issue_fire);
 
-          // Stage2 flush squash
           cover_stage2_flush : cover (stage2_should_flush);
 
-          // Stage2 blocked (FU not ready)
           cover_stage2_blocked : cover (stage2_valid && !i_fu_ready && !stage2_should_flush);
         end
       end
@@ -4038,9 +3694,8 @@ module reservation_station #(
     end
   end
 
-  // Unbounded control and data-substitution proof for the shared delivery
-  // buses. The ordinary standalone dispatch contract is the only environment
-  // restriction beyond reset; repair and CDB values remain arbitrary.
+  // Check shared delivery control and values under the standalone dispatch
+  // requirements and reset. Repair and CDB values remain arbitrary.
   reg f_fold_past_valid;
   initial f_fold_past_valid = 1'b0;
   always @(posedge i_clk) f_fold_past_valid <= 1'b1;
@@ -4049,7 +3704,7 @@ module reservation_station #(
     if (f_fold_past_valid) assume (i_rst_n);
   end
   always_comb begin
-    // Same standalone dispatch contract as the repository's RS proof.
+    // Apply the same dispatch requirements as the standalone station.
     if (i_flush_en) begin
       assume (!dispatch_valid);
       assume (!dispatch_valid_2);

@@ -15,18 +15,11 @@
  */
 
 /*
- * frost_cache_test_harness: cocotb unit-bench top for the cache hierarchy.
- *
- * Exposes the four upstream line ports (data, instruction, page-table walker,
- * DMA), the DMA sequencer's load-queue handshake (the bench plays the load
- * queue), and the fence.i sync, over the backside the CPU integration uses:
+ * Cache-hierarchy bench with the CPU integration's downstream path:
  * frost_cache_hierarchy -> line_port_axi_bridge -> axi_behavioral_memory.
- * -G parameters shrink the caches so eviction paths are cheap to reach, and
- * can make the memory model complete out of order (MEM_REORDER). While
- * i_down_hold is high the bridge sees no request and the hierarchy sees no
- * ready, so the bench chooses the cycles on which the L2's downstream request
- * can fire: tests use it to keep fills in flight and to space acceptances so
- * that fills complete and re-allocate between them.
+ * The bench drives upstream ports, answers load-queue coherence handshakes,
+ * and controls fence.i. i_down_hold blocks L2 request acceptance to keep fills
+ * pending or space their completions. Parameters control cache size and latency.
  */
 module frost_cache_test_harness #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -48,8 +41,7 @@ module frost_cache_test_harness #(
     parameter int unsigned MEM_LATENCY_JITTER = 0,
     // Out-of-order completion across ids in the memory model (0 = in order).
     parameter int unsigned MEM_REORDER = 0,
-    // Simulation-only fast cache maintenance for fence.i (see frost_cache). The
-    // cocotb cache registry runs this bench with it both off (default) and on.
+    // Simulation-only fast fence.i maintenance (see frost_cache).
     parameter int unsigned SIM_FAST_MAINT = 0,
     parameter int unsigned NUM_DMA_LOCK = 3,
     parameter int unsigned DMA_STARVATION_LIMIT = 16,
@@ -126,9 +118,7 @@ module frost_cache_test_harness #(
   logic [UP_ID_BITS+1:0] stack_down_resp_id;
   logic [LINE_BYTES*8-1:0] stack_down_resp_rdata;
 
-  // The hold masks both valid and ready, so neither side sees a fire the
-  // other did not. A request held back has simply not fired yet, which the
-  // line protocol allows.
+  // Mask both valid and ready so both sides agree whether a request fires.
   logic bridge_req_valid, bridge_req_ready;
   assign bridge_req_valid = stack_down_req_valid && !i_down_hold;
   assign stack_down_req_ready = bridge_req_ready && !i_down_hold;

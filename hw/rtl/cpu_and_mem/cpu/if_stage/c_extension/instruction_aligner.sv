@@ -23,9 +23,7 @@
   Slot 1 is not assembled here: PD builds a compressed slot 1 from the
   predecoded expansion fields selected below, and IF assembles a native
   slot 1 that spans two words. Slot 2 is built here for each of its three
-  fixed start positions, so the late position select chooses among finished
-  values instead of running a parcel mux, expander, and mux in series. The
-  module is combinational.
+  fixed start positions before selecting the result. This module is combinational.
 */
 module instruction_aligner #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -44,9 +42,7 @@ module instruction_aligner #(
     // {cached odd[3:0], cached even[3:0], BRAM odd[3:0], BRAM even[3:0]}.
     // Each nibble is {pairable_native_hi, pairable_compressed_hi,
     // compressed_hi, compressed_lo}. Both providers deliver registered lanes
-    // already in parity order (the cached provider reorders them on the edge
-    // that captures its payload), so provider and pc_reg[2] are the only
-    // selects here.
+    // already in parity order; provider and pc_reg[2] select the lane.
     input logic [15:0] i_instr_pc_metadata_by_provider_parity,
     // Same order: {pairable_native_lo, even_local_pair_valid} per word, and
     // one slot2_start_valid_lo bit per word.
@@ -58,16 +54,13 @@ module instruction_aligner #(
     input logic [31:0] i_instr_buffer,  // Buffered instruction word
     input logic [riscv_pkg::ImemSidebandWidth-1:0] i_instr_buffer_sideband,
     input logic [XLEN-1:0] i_pc_reg,  // Registered PC
-    // Copy of i_pc_reg[1] for the fast size selects and
-    // o_no_buffer_accepts_served_last only; if_stage asserts that it equals
-    // i_pc_reg[1].
+    // Copy of i_pc_reg[1] for size and coverage selects; must equal i_pc_reg[1].
     input logic i_pc_reg_high_for_coverage,
 
     // C-extension state
     input logic i_prev_was_compressed_at_lo,  // Previous was compressed at lo
 
-    // Stall handling.  Only the registered stall is taken, so the mux selects
-    // stay off the combinational stall path.
+    // Registered stall state for replay selection.
     input logic i_stall_registered,
     input logic i_prev_was_compressed_at_lo_saved,
     input logic i_is_compressed_saved,  // Saved is_compressed from stall start
@@ -113,10 +106,9 @@ module instruction_aligner #(
     output logic o_slot2_decomp_illegal,
     // Slot-2 is compressed (RVC).
     output logic o_is_compressed_2,
-    // No slot 2 this cycle: slot 1 is a NOP, control flow, or serializing; or
-    // slot 2 extends past the next word, cannot start a pair, or would read a
-    // stale next word. IF adds its own slot-1 NOP and pending-prediction
-    // conditions before the packet reaches PD.
+    // No live pair: slot 1 is control flow or serializing, or slot 2 is
+    // disallowed, extends past the next word, or needs stale data. IF adds
+    // slot-1 bubble and pending-prediction gates before passing the packet to PD.
     output logic o_sel_nop_2,
     // Slot-2 compressed flag for the IF-to-PD packet (equals o_is_compressed_2).
     output logic o_sel_compressed_2,
@@ -128,9 +120,7 @@ module instruction_aligner #(
     // o_source_hot_2.
     output logic [4:0] o_bits24_20_2,
     output logic [2:0] o_rs1_rest_2,
-    // Early slot-2 metadata for the PC increment path.  This is equivalent to
-    // the live, non-replay slot-2 decision below, but avoids routing the PC
-    // path through the final IF->PD packet mux.
+    // Live slot-2 decision for PC advance, before IF applies replay.
     output logic o_slot2_valid_for_pc,
     output logic o_slot2_is_compressed_for_pc,
     // Sizes of the slot-2 candidates at pc_reg + 2 and pc_reg + 4, for the
@@ -164,8 +154,6 @@ module instruction_aligner #(
   // compressed at lo and the PC is now at hi. Coming out of a stall, the saved
   // copy of prev_was_compressed_at_lo stands in for the live one.
 
-  // The mux select uses registered signals only, to break the critical path
-  // from stall_for_trap_check -> is_compressed -> PC.
   logic use_saved_prev;
   assign use_saved_prev = i_stall_registered && i_saved_values_valid;
 
@@ -187,9 +175,7 @@ module instruction_aligner #(
   //   different parity: the halves swap. Without the buffer this is taken as
   //     F = W-1, so word(W) is i_instr[63:32]; behind the buffer as F = W+1,
   //     so word(W+1) is i_instr[31:0].
-  // In the other off-by-one case the served-window check NOPs the packet,
-  // unless slot 1 is buffered at a low-half PC and needs nothing from the
-  // window.
+  // The served-window check NOPs packets that need an unavailable word.
   //
   // When the instruction buffer is active, the buffer provides word(W)
   // directly and the window alignment doesn't matter for the current word.
@@ -207,12 +193,9 @@ module instruction_aligner #(
   logic [31:0] bram_current_word;  // Window word aligned to pc_reg
   assign bram_current_word = fetch_word_swapped_word ? i_instr[63:32] : i_instr[31:0];
 
-  // current_word is the buffer or bram_current_word. From the low BRAM,
-  // bram_current_word is bank[pc_reg[2]] whatever the fetch-lead parity:
-  // IMEM's {next, current} swap and the one above cancel (IMEM's bank select
-  // equals i_instr_bank_sel_r for low-BRAM windows). Taking that word from
-  // the physical banks, with the buffer and the cached window chosen first,
-  // puts one LUT between the block RAM and current_word.
+  // The low-BRAM swaps cancel: its current word is bank[pc_reg[2]], since
+  // IMEM's bank select equals i_instr_bank_sel_r. Select the physical bank
+  // directly, alongside the buffer and cached-window alternatives.
   (* keep = "true" *) logic [31:0] current_word_early;
   logic current_word_from_low;
   assign current_word_early = o_use_instr_buffer ? i_instr_buffer :
@@ -260,9 +243,7 @@ module instruction_aligner #(
   assign aligned_current_sb_fast = fetch_word_swapped_fast ?
                                    i_instr_sideband[(2*SbWidth)-1:SbWidth] :
                                    i_instr_sideband[SbWidth-1:0];
-  // With the lanes already in parity order, provider and pc_reg[2] are the
-  // only selects, so each metadata bit maps to one LUT6 (four data lanes plus
-  // two selects).
+  // Select parity-ordered metadata by provider and pc_reg[2].
   always_comb begin
     unique case ({
       i_instr_pc_metadata_served_high, i_pc_reg[2]
@@ -430,13 +411,9 @@ module instruction_aligner #(
   assign prev_was_compressed_at_lo_fast = i_stall_registered ?
       i_prev_was_compressed_at_lo_saved : i_prev_was_compressed_at_lo;
 
-  // The size mux is Shannon-expanded on H = pc_reg[1]: the low- and
-  // high-parcel results are built in parallel from early registered selects,
-  // and the pc_reg[1] copy picks one with a final 2:1 select. Only the
-  // high-parcel result can come from the buffer. This equals
-  // need_buffer = prev & H followed by one saved/buffer/window mux (the
-  // reference below), with need_buffer and a select level removed from the
-  // pc_reg[1] -> served-window -> next-PC path.
+  // Compute low- and high-parcel sizes separately, then select with the
+  // pc_reg[1] copy for timing. Only a high parcel can use the buffer; this
+  // equals a mux qualified by need_buffer = prev & pc_reg[1].
   logic is_compressed_fast_low;
   logic is_compressed_fast_high;
   logic is_compressed_for_pc_advance_low;
@@ -457,7 +434,6 @@ module instruction_aligner #(
       is_compressed_for_pc_advance_high : is_compressed_for_pc_advance_low;
   // At a low-half PC slot 1 fits in a window whose last word is the PC word,
   // native or compressed; at a high-half PC only a compressed slot 1 does.
-  // Writing that directly keeps low-parcel metadata out of the coverage path.
   assign o_no_buffer_accepts_served_last =
       !i_pc_reg_high_for_coverage || is_compressed_for_pc_advance_high;
 
@@ -511,10 +487,8 @@ module instruction_aligner #(
   // ===========================================================================
   // Instruction Selection Signals
   // ===========================================================================
-  // A spanning instruction is assembled in the same cycle, so nothing here NOPs
-  // slot 1; IF applies its bubble conditions. The size bit is not qualified
-  // with them: PD selects the final instruction with the priority NOP >
-  // compressed > 32-bit.
+  // IF assembles spanning instructions and applies slot-1 bubble conditions.
+  // The size bit remains unqualified; ID applies PD's inject_nop marker.
   assign o_sel_compressed = o_is_compressed;
 
   // ===========================================================================
@@ -605,9 +579,7 @@ module instruction_aligner #(
       aligned_next_sb[riscv_pkg::ImemSbIsCompressedHi] :
       aligned_next_sb[riscv_pkg::ImemSbIsCompressedLo];
 
-  // Slot-2 effective 32-bit instruction, finished for each fixed candidate
-  // position (RVC-expanded or native, chosen by the candidate's own sideband
-  // compressed bit) so the late slot2_pos select is a single level.
+  // Build each slot-2 candidate before selecting its position, for timing.
   //
   // Per-candidate is-compressed uses the sideband bits, which are
   // bit-identical to the parcel encoding test: imem_make_sideband stores
@@ -654,9 +626,7 @@ module instruction_aligner #(
     aligned_next_sb[riscv_pkg::ImemSbRvcExtraHiLsb+:15]
   } : riscv_pkg::NOP;
 
-  // Resolve the three source-hot bits beside each fixed final-instruction
-  // candidate, so the late slot2_pos mux is the only operation after
-  // candidate selection.
+  // Select source-hot bits alongside each instruction candidate.
   //
   // CURRENT_HI native is {next[15:0], current[31:16]}, so final bits
   // {21,17:16} are next-word bits {5,1:0}. NEXT_LO native is next_word.
@@ -803,10 +773,6 @@ module instruction_aligner #(
     endcase
   end
 
-  // Slot 2 is invalid when slot 1 is a bubble, control flow, or serializing;
-  // when slot 2 extends past the next word or cannot start a pair; or when it
-  // needs a next word that the window does not hold.
-  //
   // Only a compressed CURRENT_HI slot 2 lies wholly in pc_reg's word W. Every
   // other shape reads bram_next_word, which is word(W+1) when the parities
   // match (F = W) or, behind the buffer, when they differ (F = W+1). Without
@@ -827,9 +793,8 @@ module instruction_aligner #(
   // Slot 2 starts a pair only when its Slot2StartValid bit is set. That
   // excludes native serializing instructions, which retire alone at the ROB
   // head, and FP compute (OP-FP and the fused multiply-adds; see
-  // riscv_pkg::imem_native_fp_compute), which stays out of slot 2 to keep FP
-  // reservation-station back-pressure off the slot-1 dispatch path. The PC
-  // then advances past slot 1 only, and the FP instruction comes back as the
+  // riscv_pkg::imem_native_fp_compute), which stays out of slot 2 for timing.
+  // The PC advances past slot 1 only, and the FP instruction returns as the
   // next slot 1. Stores and branches may be slot 2: the store early-address
   // pipeline serves both dispatch slots, and the slot-2 BTB lookup predicts
   // slot-2 branches.
@@ -981,10 +946,8 @@ module instruction_aligner #(
   end
 `endif
 
-  // Consumers only inspect the compression bit when slot-2 is valid.  Keep the
-  // valid predicate out of this high-fanout select so the sideband "allows
-  // slot-2" bit does not also drive the slot-2-size mux cone.  The candidates
-  // are mutually exclusive by construction (pc_reg[1], slot-1 size).
+  // Consumers use size only when slot 2 is valid, so no validity gate is
+  // needed here. PC alignment and slot-1 size make the candidates exclusive.
   assign o_slot2_is_compressed_for_pc =
       slot2_current_hi_candidate_for_pc ? slot2_current_hi_compressed_for_pc_advance :
       slot2_next_hi_candidate_for_pc    ? slot2_next_hi_compressed_for_pc_advance    :
@@ -1028,10 +991,7 @@ module instruction_aligner #(
 
   // Slot-1's NativeSerialize sideband bit, muxed like slot1_allows_slot2_for_pc.
   //
-  // The keep here and on slot2_next_hi_native32 below holds these two taps
-  // out of the sideband and slot-2 select logic. Without it, synthesis merges
-  // them into that logic and restructures the instruction-memory-to-fetch-PC
-  // path, making it slower. Each keep costs one LUT.
+  // keep separates these profiling taps from the functional selects for timing.
   (* keep = "true" *) logic slot1_native_serialize_for_pc;
   always_comb begin
     unique case ({

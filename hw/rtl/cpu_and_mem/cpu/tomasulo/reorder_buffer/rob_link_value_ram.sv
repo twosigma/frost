@@ -17,14 +17,9 @@
 /*
  * ROB value RAM with one shared allocation link bank.
  *
- * Replaces the reorder buffer's value instances of mwp_dist_ram /
- * mwp_dist_ram_ohread (NUM_WRITE_PORTS = 4, NUM_STAGED_LVT_PORTS = 2,
- * NUM_NARROW_WRITE_PORTS = 2; port 0 = slot-1 alloc, 1 = slot-2 alloc,
- * 2 = CDB lane 0, 3 = CDB lane 1) when reorder_buffer's SharedLinkBank is
- * set.  Those modules give each allocation port its own bank holding
- * `is_branch ? zext(link) : 0`.  Here the two allocation ports share one
- * LINK_WIDTH bank, and a non-branch allocation stores nothing: its LVT code
- * reads a constant zero.  Three banks instead of four.
+ * With reorder_buffer's SharedLinkBank set, both allocation ports share one
+ * LINK_WIDTH bank. Non-branch allocations select a constant zero. The CDB
+ * lanes each have a DATA_WIDTH bank.
  *
  * LVT codes (2 bits, the same width as the 4-port LVT):
  *   CodeZero = 0  allocation without a link (reads 0)
@@ -34,23 +29,20 @@
  *
  * Allocation slot s writes code (i_alloc_branch[s] ? CodeLink : CodeZero) at
  * i_alloc_address[s] through the same one-cycle LVT staging, drain order and
- * staged override as mwp_dist_ram.  The link bank writes in the allocation
+ * staged override as mwp_dist_ram. The link bank writes in the allocation
  * cycle when either slot is an enabled branch; slot 2's enabled branch takes
  * the bank's single port.
  *
- * Traffic contract (the only one): two enabled branch allocations in one
- * cycle must target the same address.  The ROB meets the stronger "at most
- * one enabled branch allocation per cycle" when its requester is cpu_ooo's
- * dispatch, which never fires slot 2 behind a slot-1 branch.  Under this
- * contract every read equals the 4-port RAM's read, cycle for cycle, for
- * arbitrary CDB traffic including stale, duplicate-tag and drain-cycle CDB
- * writes.  Without it slot 1's link is never written, and a later read of
- * that entry differs from the 4-port RAM's.
+ * Two enabled branch allocations must target the same address; otherwise
+ * slot 1's link is lost. cpu_ooo's dispatch allows at most one: slot 2 never
+ * fires behind a slot-1 branch. With this restriction, reads match the
+ * 4-port RAM cycle for cycle, including stale, duplicate-tag and drain-cycle
+ * CDB writes.
  *
  * ONEHOT_READ = 1 is the head-port variant (mwp_dist_ram_ohread's AND-OR LVT
  * read); i_read_onehot must equal 1 << i_read_address when the read is used.
  * Unlike mwp_dist_ram_ohread, an all-zero i_read_onehot reads 0 rather than
- * slot 1's bank.  ONEHOT_READ = 0 is the binary-read variant (mwp_dist_ram's
+ * slot 1's bank. ONEHOT_READ = 0 is the binary-read variant (mwp_dist_ram's
  * staged read path); it ignores i_read_onehot.
  */
 module rob_link_value_ram #(
@@ -72,7 +64,7 @@ module rob_link_value_ram #(
     input logic [1:0][ADDR_WIDTH-1:0] i_cdb_address,
     input logic [1:0][DATA_WIDTH-1:0] i_cdb_data,
 
-    // Asynchronous read.  i_read_onehot is used only when ONEHOT_READ = 1.
+    // Asynchronous read; i_read_onehot is used only with ONEHOT_READ = 1.
     input  logic [   ADDR_WIDTH-1:0] i_read_address,
     input  logic [2**ADDR_WIDTH-1:0] i_read_onehot,
     output logic [   DATA_WIDTH-1:0] o_read_data
@@ -127,9 +119,7 @@ module rob_link_value_ram #(
   end : g_cdb_banks
 
   // ---------------------------------------------------------------------------
-  // Live Value Table.  Same staging, drain order and override as the
-  // reference; the staged code is the slot's registered branch flag instead
-  // of the slot index.
+  // Live Value Table: stage each allocation's branch flag as its bank code.
   // ---------------------------------------------------------------------------
   logic [1:0] lvt[RamDepth];
 
@@ -137,7 +127,7 @@ module rob_link_value_ram #(
 
   logic [1:0] staged_lvt_we_q = '0;
   logic [1:0] staged_lvt_link_q;
-  // TIMING: capped so synthesis replicates it beside its read-port compares.
+  // Limit address fanout to the read-port compares.
   (* max_fanout = 48 *) logic [1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
 
   always_ff @(posedge i_clk) begin
@@ -161,8 +151,7 @@ module rob_link_value_ram #(
   logic [1:0] lvt_read_code;
 
   if (ONEHOT_READ) begin : g_read_onehot
-    // Per-entry effective LVT from registers only (early side), then the
-    // one-hot AND-OR, as in mwp_dist_ram_ohread.
+    // Apply staged overrides per entry before the one-hot LVT read.
     logic [1:0] lvt_eff[RamDepth];
 
     always_comb begin
@@ -183,8 +172,7 @@ module rob_link_value_ram #(
       end
     end
   end else begin : g_read_binary
-    // mwp_dist_ram's g_read_staged structure: LVT mux split at the address
-    // MSB, staged compares beside it, override in the select's last stage.
+    // Split the LVT read at the address MSB, then apply staged overrides.
     (* keep = "true" *)logic [1:0] lvt_read_lo;
     (* keep = "true" *)logic [1:0] lvt_read_hi;
     (* keep = "true" *)logic [1:0] staged_read_hit;
@@ -234,7 +222,7 @@ module rob_link_value_ram #(
     end
   end
 
-  // The shared link bank has one write port (see the traffic contract).
+  // The shared link bank cannot write two distinct addresses in one cycle.
   always @(posedge i_clk) begin
     if (!$isunknown(
             {i_alloc_enable, i_alloc_branch}

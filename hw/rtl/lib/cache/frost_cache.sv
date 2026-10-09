@@ -21,7 +21,7 @@
  * cache").
  *
  * Pipeline. A fired request goes straight to the tag stage T, or waits in a
- * one-entry skid until T can take it, so upstream ready is registered state.
+ * one-entry skid until T can take it. Ready uses skid state and maintenance.
  * T decides when the tag read returns (TAG_READ_LATENCY cycles), and the side
  * effects land in the write stage W the cycle after the decision:
  *   - read hit:  T reads the data array; the response carries its output
@@ -81,10 +81,8 @@
  * through the pipeline like other requests but never merge or take a waiter
  * seat. See the probe slots below for the release and fill withholding.
  *
- * Performance events are registered here, one cycle after the decisions they
- * report, which keeps the tag and stage decisions off the path toward
- * cpu_ooo. Probes and maintenance-provenance requests are left out of every
- * event.
+ * Performance events register one cycle after their decisions. Probes and
+ * maintenance traffic are excluded.
  */
 module frost_cache #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -116,15 +114,9 @@ module frost_cache #(
     // verilog_lint: waive explicit-parameter-storage-type
     parameter TAG_MEMORY_PRIMITIVE = "block",
     parameter int unsigned TAG_READ_LATENCY = 1,
-    // Simulation-only fast cache maintenance (fence.i). 0 selects the
-    // cycle-accurate FPGA maintenance path. Non-zero makes invalidate-all
-    // complete in a single cycle (a tag bulk clear) and makes writeback-all
-    // visit only the dirty lines, O(dirty) rather than O(NumLines), guided by
-    // a sim-only shadow of the dirty bits. The functional effect is identical
-    // to the slow path: every line is left invalid after invalidate-all, and
-    // every valid+dirty line is still written downstream and marked clean by
-    // writeback-all. Only the cocotb sim build sets it; board and synthesis
-    // builds never do.
+    // Simulation only: bulk-clear tags in one cycle and walk only dirty lines
+    // for writeback-all. The resulting invalidation/writeback behavior matches
+    // the hardware sweep. Keep 0 for synthesis.
     parameter int unsigned SIM_FAST_MAINT = 0
 ) (
     input logic i_clk,
@@ -308,13 +300,9 @@ module frost_cache #(
   logic [LINE_BYTES-1:0] data_wbyte_en;
   logic [  LineBits-1:0] data_wdata;
 
-  // A block RAM array with single-cycle writes (the L1s) takes T's read
-  // address directly and counts the RAM's output register in its read
-  // latency, so the read data leaves a register rather than the RAM's slower
-  // unregistered output. The read then samples the array in T's decision
-  // cycle and does not see a write in that cycle, and raw_hazard stalls every
-  // read of a row written in the decision cycle (the flush walk reads while
-  // no data write can happen). The latency is unchanged.
+  // L1 reads address BRAM directly and include its output register in the
+  // read latency. The read samples at T's decision and does not see a same-edge
+  // write; raw_hazard stalls colliding reads. Maintenance reads have no writes.
   localparam bit DataReadDirect = (DATA_MEMORY_PRIMITIVE == "block") && (DATA_WRITE_LATENCY == 1);
   sdp_ram_byte_en #(
       .DATA_WIDTH(LineBits),
@@ -382,18 +370,14 @@ module frost_cache #(
     for (int j = 0; j < int'(NUM_WB); j++) wb_valid[j] = (wb_state_q[j] != WB_FREE);
   end
 
-  // ---- Probe slots (NUM_PROBE > 0). A probe holds a slot from its decision
-  // until the requester releases it (i_probe_release_*), after the level below
-  // has ordered the requester's own access. While a PROBE_INVAL slot is held,
-  // no fill of its line is issued (mshr_fill_held): a miss that follows the
-  // invalidation waits in its MSHR and fetches the line after the release,
-  // instead of fetching the old data again. A whole-line write allocates
-  // without a fill, so nothing holds it back: a probed cache must not receive
-  // one (the L1D's writes cover one 8-byte beat). A probe cannot decide while
-  // an MSHR guards its index, so it waits for a fill already pending and
-  // invalidates what that fill installs; a slot withholds only fills
-  // allocated after its decision. ProbeSlots keeps the arrays legal when the
-  // machinery is absent; every use is then constant.
+  // ---- Probe slots (NUM_PROBE > 0).
+  // Hold a slot from the probe decision until release, after the requester's
+  // access is ordered below. PROBE_INVAL withholds later fills of its line so
+  // they cannot reload old data. Earlier fills must finish before the probe
+  // decides, avoiding a deadlock.
+  // Whole-line writes bypass fills and cannot be withheld: a probed cache
+  // must not receive them. L1D writes cover only an 8-byte beat.
+  // ProbeSlots keeps arrays legal when probes are disabled.
   logic [ProbeSlots-1:0] probe_valid_q;  // slot held (decision to the requester's release)
   logic [ProbeSlots-1:0] probe_ack_q;  // acknowledgement waiting for the response port
   logic [ProbeSlots-1:0] probe_inval_q;
@@ -445,9 +429,8 @@ module frost_cache #(
   logic                  sk_probe_q;
   logic                  sk_probe_inval_q;
 
-  // Upstream ready is registered state only: the skid is empty, the request
-  // pipeline is enabled, and no maintenance request is waiting (masking ready
-  // lets the pipeline drain so maintenance can start).
+  // Ready requires an empty skid and idle maintenance state. A maintenance
+  // request masks ready immediately so the pipeline can drain.
   assign o_up_req_ready = (mstate_q == M_IDLE) && !sk_valid_q && !i_invalidate_all &&
       !i_writeback_all;
 
@@ -542,16 +525,8 @@ module frost_cache #(
   assign w_allocs_wb = w_valid_q && w_has_victim_q &&
       ((w_op_q == W_ALLOC) || (w_op_q == W_PROBE_CLEAN) || (w_op_q == W_PROBE_INVAL));
 
-  // Hold a request in A while its index matches the entry in T or W: their
-  // tag writes (dirty, invalidate) must be visible to this request's tag read.
-  // The hold is decided once per source and the skid state picks between
-  // them: the skid's index is registered, so its hold settles early, while the
-  // live upstream index is an arbiter's mux of several requesters and arrives
-  // late. Selecting after the compares keeps the skid mux out of the late
-  // cone, and the upstream compares are balanced by hand into 3-bit equality
-  // groups (one LUT6 each) whose nets synthesis must keep, then reduced flat,
-  // as for the tag compare below: synthesis can re-pack a plain == on the
-  // late index into a serial chain that reaches the tag read enable.
+  // Hold A while its index matches T or W so their tag writes become visible
+  // before its read. Compare skid and live indices separately, for timing.
   logic [IndexBits-1:0] sk_index, up_index;
   assign sk_index = sk_addr_q[OffsetBits+:IndexBits];
   assign up_index = i_up_req_addr[OffsetBits+:IndexBits];
@@ -588,11 +563,8 @@ module frost_cache #(
     if (w_allocs_wb) in_wb_match[w_wb_q] = 1'b0;
   end
 
-  // ---- Tag compare, balanced by hand: 3-bit equality groups (one LUT6
-  // each) whose nets synthesis must keep, then a flat reduce. Synthesis can
-  // re-pack a plain == into a deeper LUT tree under context pressure. The
-  // cone terminates at the T decision; every RAM write control it influences
-  // is taken from W's registers a cycle later.
+  // ---- Three-bit tag equality groups, preserved for timing.
+  // The decision acts in T; RAM writes use W's registers one cycle later.
   localparam int unsigned TagCmpGroups = (TagBits + 2) / 3;
   (* dont_touch = "true" *) logic [TagCmpGroups-1:0] tag_match_group;
   for (genvar gg = 0; gg < int'(TagCmpGroups); gg++) begin : gen_tag_compare
@@ -600,7 +572,7 @@ module frost_cache #(
     localparam int unsigned Hi = (Lo + 3 <= TagBits) ? Lo + 3 : TagBits;
     assign tag_match_group[gg] = (tag_rdata_tag[Hi-1:Lo] == t_tag[Hi-1:Lo]);
   end
-  // Kept as a net so the decision below can select on it last.
+  // Preserve the final hit selection for timing.
   (* dont_touch = "true" *) logic hit;
   assign hit = tag_rdata_valid && (&tag_match_group);
 
@@ -633,20 +605,11 @@ module frost_cache #(
     end
   end
 
-  // ---- Live slot re-compare for the T-resident entry. The match bits
-  // captured in A go stale while a request is parked in T: an MSHR or
-  // writeback slot can retire and be reallocated for a different line, and a
-  // captured bit re-validated by the live valid mask alone would attach a
-  // read waiter or merge a write across lines, or let a fill skip the
-  // writeback of its own line. The captured bits are therefore refreshed
-  // every held cycle from the live slot lines. A slot being allocated this
-  // cycle (a W allocation or its victim's writeback slot) still reads its old
-  // line, so its incoming identity is forwarded instead. Excluding it would
-  // leave the next decision blind to a real conflict with, or writeback of,
-  // the line being installed. Fresh captures get the same treatment from
-  // a_hold and the A-stage exclusion above. The flush walk's writeback slots
-  // need neither: no request is in A or T while a walk runs, and the walk
-  // returns to M_IDLE only once its writebacks are acknowledged.
+  // ---- Refresh slot matches while T is held: slots can retire and be
+  // reallocated. A stale match could merge across lines or skip a writeback.
+  // Forward W's incoming slot identity because the slot still holds its old
+  // line. New A captures use a_hold and exclude W allocations instead.
+  // Maintenance needs neither rule: A and T stay empty until its writebacks drain.
   logic [NUM_MSHR-1:0] t_idx_live_match, t_line_live_match;
   logic [NUM_WB-1:0] t_wb_live_match;
   always_comb begin
@@ -675,13 +638,10 @@ module frost_cache #(
   logic t_plain, t_wb_pending, t_is_probe_hit, t_is_probe_miss, t_probe_dirty;
   logic stall_conflict, stall_conflict_any, stall_full, stall_wb_snapshot;
 
-  // A delayed tag response is usable only if no write to this exact logical
-  // index crossed the request, including a fill's tag install in the response
-  // cycle; discarding it prevents old-tag/new-data alias hits. The one-cycle
-  // BRAM path already resolves write hazards through a_hold, conflict and
-  // raw_hazard, so TrackDelayedTagWrites disables the comparator there at
-  // elaboration, keeping it off the L1 timing paths; delayed L2 reads need
-  // the sticky t_tag_stale_q protocol.
+  // Discard a delayed tag response if a same-index write crossed its read,
+  // including an install on the response cycle. This prevents old-tag/new-data
+  // hits. One-cycle BRAM hazards are covered by a_hold, conflict, and raw_hazard;
+  // only delayed reads need the sticky stale bit.
   assign t_tag_write_collision =
       TrackDelayedTagWrites && t_valid_q && tag_we && (tag_waddr == t_index);
   assign t_tag_response = (mstate_q == M_IDLE) && t_valid_q && tag_response_valid;
@@ -709,16 +669,10 @@ module frost_cache #(
     t_is_merge = decide && t_plain && conflict && same_line && t_write_q;
     t_is_waiter = decide && t_plain && conflict && same_line && !t_write_q;
 
-    // A copy still sitting in a writeback slot (left valid and clean by
-    // writeback-all or a PROBE_CLEAN) must reach the level below before a
-    // probe of the line is acknowledged, so the probe waits for that slot.
-    // A store to such a line waits for the slot as well: it would re-dirty
-    // the copy, a later eviction would snapshot that into a second slot, and
-    // the slot pick below takes no account of age, so the two writebacks
-    // could reach the level below older-last and leave it holding the stale
-    // copy. Stores are the only way to re-dirty a valid line, so no line ever
-    // has two writebacks in flight (checked in simulation at the end of the
-    // file).
+    // Probes wait for a pending writeback of the line. Stores also wait:
+    // re-dirtying could create a second writeback whose newer snapshot arrives
+    // first, leaving stale data below. Preventing re-dirtying keeps at most one
+    // writeback per line in flight.
     t_wb_pending = |(t_wb_match_q & wb_valid);
     t_is_probe_hit = decide && t_probe_q && !conflict && !t_wb_pending && hit;
     t_is_probe_miss = decide && t_probe_q && !conflict && !t_wb_pending && !hit;
@@ -740,21 +694,9 @@ module frost_cache #(
         (t_is_read_hit && probe_ack_any);
   end
 
-  // t_done = decide && !t_stall. With one-cycle block RAM tags (the L1s) the
-  // tag read is the last term of the decision to settle: the RAM's output is
-  // not registered, and hit (the compare groups and their reduce) follows
-  // it. There t_done is factored by the read. Every stall term is qualified
-  // by decide, so for each value of hit, t_ok_hit and t_ok_miss hold
-  // !t_stall without decide, each also selected by the victim's dirty state.
-  // The raw hazard term, an index compare of the write port's registers,
-  // enters them last. hit selects between them and decide gates the result,
-  // so the tag read reaches t_done in three LUT levels and t_done's
-  // consumers (the T and W enables, the slot and queue captures and the
-  // accept) one level later. On a hit the tag is valid, so the hit case
-  // selects on the dirty bit alone. A delayed-tag cache (the L2) keeps the
-  // plain form: its tag response leaves a register, and its decide carries
-  // the tag-write collision compare. p_t_done_factored checks the form
-  // against decide && !t_stall every cycle.
+  // Factor decide && !t_stall by {hit, victim_dirty} for one-cycle tag timing.
+  // Every stall term implies decide; on a hit the tag is valid, so dirty alone
+  // selects the hit case. Delayed tags use the direct expression.
   if (TrackDelayedTagWrites) begin : gen_t_done_direct
     assign t_done = decide && !t_stall;
   end else begin : gen_t_done_factored
@@ -788,26 +730,18 @@ module frost_cache #(
     assign t_done = decide && (hit ? t_ok_hit : t_ok_miss);
   end
 
-  // T accepts the presented request when it is empty or completing, i.e.
-  // in_valid && !a_hold && !reread_q && (!t_valid_q || t_done). Written per
-  // source: the skid's offer (sk_go) is registered state, the upstream's
-  // (up_go) carries the late request valid and index hold, and up_req_fire
-  // already excludes the skid-held case through o_up_req_ready, so the two
-  // offers are disjoint and their OR is in_valid && !a_hold. The late terms
-  // then meet T's availability in a single level, and p_accept_is_hold_gated
-  // checks this form against the reference expression every cycle.
+  // T accepts when empty or completing, without an index hold or reread.
+  // Skid and upstream offers are disjoint because ready excludes a full skid;
+  // their OR is in_valid && !a_hold.
   logic sk_go, up_go, t_open, t_accept;
   assign sk_go    = sk_valid_q && !sk_hold;
   assign up_go    = up_req_fire && !up_hold;
   assign t_open   = !reread_q && (!t_valid_q || t_done);
   assign t_accept = (sk_go || up_go) && t_open;
 
-  // ---- Tag request: issue once for a new T entry, once per retry, or once
-  // when maintenance enters SCAN. CHECK waits for the matching response and
-  // T holds one entry, so one read is in flight at a time and no queue has
-  // to record whose response returns. The accept's offers enter the enable
-  // beside the maintenance and retry terms rather than through t_accept, so
-  // the upstream request adds no level here.
+  // ---- Read tags for a new T entry, a retry, or maintenance SCAN.
+  // T holds one entry and CHECK waits for its response, so no response queue
+  // is needed.
   logic tag_re_maint_or_retry, tag_re_open;
   assign tag_re_maint_or_retry = (mstate_q == M_FLUSH_SCAN) || ((mstate_q == M_IDLE) && reread_q);
   assign tag_re_open = (mstate_q == M_IDLE) && t_open;
@@ -882,16 +816,10 @@ module frost_cache #(
   // ===========================================================================
   // Acknowledgement queue (write hits, write misses, merges)
   // ===========================================================================
-  // At most one push per cycle; never deeper than the upstream's id space,
-  // which bounds its outstanding requests.
-  // The small ID queue uses flops. The entry at the write pointer is not in
-  // the queue unless the queue is full, so it takes T's id every cycle the
-  // queue is not full, and a push only advances the pointer: the entry
-  // enables are the pointer decode, and the tag decision reaches only the
-  // pointer. ack_nonempty is a flop kept equal to (ack_wr_q != ack_rd_q)
-  // (p_ack_nonempty_exact), so the response port's valid and id do not wait
-  // for the pointer compare; p_ack_head_exact checks the head entry against a
-  // queue written only on a push.
+  // At most one push per cycle; outstanding IDs bound queue depth.
+  // When not full, the write-pointer entry is outside the queue and may
+  // capture T's ID every cycle. A push makes that captured ID visible.
+  // ack_nonempty must equal (ack_wr_q != ack_rd_q).
   (* ram_style = "registers" *) logic [UP_ID_BITS-1:0] ack_id_q[AckDepth];
   logic [AckPtrBits-1:0] ack_wr_q, ack_rd_q;
   logic ack_nonempty, ack_push, ack_pop, ack_full, ack_last;
@@ -920,14 +848,8 @@ module frost_cache #(
   // Response port: hit data (cannot wait) > probe acknowledgements >
   // acknowledgements > fill responses
   // ===========================================================================
-  // The response port's MSHR source is the lowest slot in MS_RESP. Which
-  // slots are in MS_RESP next cycle is known this cycle (a slot enters it when
-  // its install fires and leaves it when its last response fires), so the
-  // lowest one is registered as a one-hot, mshr_resp_onehot_q, and the MSHR
-  // id and data reach the response port without a state decode or priority
-  // encode. mshr_in_resp_next mirrors the slot state machine below;
-  // p_mshr_resp_onehot_exact checks the register against the lowest MS_RESP
-  // slot every cycle.
+  // Register the lowest next-cycle MS_RESP slot as a one-hot, for timing.
+  // mshr_in_resp_next must track the slot state transitions exactly.
   logic                mshr_resp_any;
   logic [MshrBits-1:0] mshr_resp_sel;
   logic                mshr_resp_fire;
@@ -976,13 +898,9 @@ module frost_cache #(
         fill_req_sel = MshrBits'(i);
       end
     end
-    // Between writeback slots the pick rotates: the scan starts at the slot
-    // after the last one loaded (wb_next_q), then wraps, so a pending slot is
-    // loaded within NUM_WB writeback loads. With lowest-index-first, a slot
-    // could lose every writeback load to a lower neighbour that is
-    // acknowledged, and taken again by a parked dirty-victim miss, between
-    // loads. The lower-priority slots (below wb_next_q) are scanned first so
-    // the later assignment, from wb_next_q upward, wins.
+    // Rotate after the last loaded slot so each pending slot wins within
+    // NUM_WB writeback loads. Scan lower-priority indices first so later
+    // assignments from wb_next_q upward win.
     wb_req_any = 1'b0;
     wb_req_sel = '0;
     for (int j = int'(NUM_WB) - 1; j >= 0; j--) begin
@@ -999,31 +917,18 @@ module frost_cache #(
     end
   end
 
-  // Fills first is not starvation-free on its own. A slot leaves WB_PEND only
-  // by being loaded, and a load goes to a fill whenever one is pending, so
-  // under a level below that accepts slowly, fills that complete and
-  // re-allocate between its acceptances keep a fill pending at every load
-  // and a pending writeback never leaves its slot; a store to its line, an
-  // install of its line, a probe of it and a fill of it (the waits in the
-  // header) then wait with it. wb_lost_q counts the loads a pending
-  // writeback has lost to fills; at WbStarveLimit the registered wb_turn_q
-  // hands the next load to a writeback, and both clear when a writeback
-  // loads. Bound: a writeback loses at most WbStarveLimit loads and takes the
-  // next, so it is loaded within WbStarveLimit + 1 loads of becoming pending
-  // and fires on the acceptance after that. Only wb_turn_q, a flop, reaches
-  // the pick, as one more input to dq_load_is_wb; the count stays off it.
-  // With the rotation above, any one slot is loaded within
-  // NUM_WB * (WbStarveLimit + 1) loads. Among fills the pick stays
-  // lowest-index-first.
+  // Repeated fills could starve writebacks and every request waiting on them.
+  // Count request-register loads lost to fills, then give a writeback the next
+  // turn. A pending writeback wins within WbStarveLimit + 1 loads; rotation
+  // bounds any slot's wait by NUM_WB * (WbStarveLimit + 1) loads.
+  // Among fills, the lowest index wins.
   localparam int unsigned WbStarveLimit = 3;
   localparam int unsigned WbStarveBits  = $clog2(WbStarveLimit + 1);
   logic [WbStarveBits-1:0] wb_lost_q;
   logic                    wb_turn_q;
 
-  // The winner is loaded into a request register and presented from there,
-  // so the downstream port (and everything it fans into: the arbiter, the
-  // next level's skid) sees flop-sourced valid/payload. A slot leaves PEND
-  // when it is loaded; the register holds the request until it fires.
+  // A slot leaves PEND when loaded into this request register, which holds
+  // the payload until the downstream handshake.
   logic                    dq_valid_q;
   logic                    dq_is_wb_q;
   logic [LineAddrBits-1:0] dq_line_q;
@@ -1119,8 +1024,7 @@ module frost_cache #(
       end
     end
   end
-  // The picked slot moves into a write-stage register one cycle ahead of
-  // the write itself, so the RAM write enables see only flop-sourced terms.
+  // Register the selected slot one cycle before its RAM write, for timing.
   logic                fw_valid_q;
   logic [MshrBits-1:0] fw_sel_q;
   assign mshr_write_fire = fw_valid_q && !w_writes_data && !w_writes_tag;
@@ -1161,24 +1065,10 @@ module frost_cache #(
     end
   end
 
-  // Each MSHR merges response bytes with its own stored data. The response id
-  // only selects which slot updates, so no slot's whole line passes through
-  // an id-indexed mux on its way back to the same slot. Bytes from W (an
-  // allocation's line, or a merge's strobed bytes) win over a fill landing in
-  // the same cycle.
-  //
-  // A slot waiting for its fill (MS_SENT) takes the response data into every
-  // byte its own store has not written, on every cycle, not only when its
-  // fill lands. Nothing reads those bytes before the fill: a slot's line is
-  // read only by its install (MS_WRITING) and its response (MS_RESP), and a
-  // slot leaves MS_SENT on the edge that captures its fill, so the bytes end
-  // up holding exactly the fill's data. The byte enables are then registered
-  // slot and W state, and the downstream response, whose valid and id come
-  // out of the level below's response selection, reaches only the byte data
-  // inputs and the slot's state. The strobes, read only while the fill is
-  // outstanding, no longer record the captured fill. p_mshr_payload_exact
-  // checks every byte that can be read against a copy that captures the fill
-  // on its response, as this logic did before.
+  // Store bytes from W win over a same-cycle fill. While MS_SENT, unstored
+  // bytes capture response data every cycle, for timing. No consumer reads
+  // them until install or response; leaving MS_SENT captures the actual fill.
+  // Strobed bytes remain protected, and strobes are used only before the fill.
   logic [  LineBits-1:0] mshr_data_d [NUM_MSHR];
   logic [LINE_BYTES-1:0] mshr_wstrb_d[NUM_MSHR];
   for (genvar gm = 0; gm < int'(NUM_MSHR); gm++) begin : gen_mshr_payload
@@ -1204,13 +1094,9 @@ module frost_cache #(
   end
 
 `ifdef CACHE_MSHR_PAYLOAD_PROOF
-  // Reference next state in the id-indexed form, with the fill captured on
-  // its response. The formal target cache_mshr_payload checks the per-slot
-  // logic above against it from an arbitrary state, on every byte that can be
-  // read: the per-slot logic differs only on the unwritten bytes of a slot
-  // still waiting for its fill (they take the response data every cycle), on
-  // the strobes once the fill lands, and for a response to a slot that is not
-  // waiting for one.
+  // Reference captures only on the matching fill response. Compare every
+  // readable byte; exclude unstored bytes still awaiting a fill, post-fill
+  // strobes, and responses to slots not awaiting a fill.
   logic [LineBits-1:0] fill_merged;
   for (genvar gb = 0; gb < int'(LINE_BYTES); gb++) begin : gen_fill_merge
     assign fill_merged[gb*8+:8] =
@@ -1346,10 +1232,8 @@ module frost_cache #(
         sk_valid_q <= 1'b0;
       end
 
-      // Capture every fired payload, including a direct T accept.  In the
-      // direct case sk_valid_q remains clear, so these shadow bits are dead;
-      // separating their enable from t_accept removes the tag/decision cone
-      // from the wide skid payload without changing request visibility.
+      // Capture every fired payload for timing. Direct T acceptance leaves
+      // sk_valid_q clear, so that unused skid copy cannot become visible.
       if (up_req_fire) begin
         sk_write_q <= i_up_req_write;
         sk_addr_q  <= i_up_req_addr;
@@ -1379,14 +1263,9 @@ module frost_cache #(
       // decide && !t_done is decide && t_stall.
       reread_q <= t_tag_retry || (decide && !t_done);
 
-      // T's request fields are read only while T holds a valid entry: every
-      // decision is qualified by t_valid_q (decide, a_hold, the retry and
-      // collision terms), W and the probe/ack/response captures take them on
-      // t_done, and an idle-cycle data-array address has no read enable. Load
-      // them whenever T is not holding a live entry: every accept is such a
-      // cycle, and any other load is dead because T is empty afterwards. This
-      // keeps the accept decision (the upstream request valid, the index hold
-      // and the tag decision) off these clock enables, as for the skid payload.
+      // Capture whenever T is empty or completing. Every accept meets this
+      // condition; other captures remain invisible because T stays invalid.
+      // Decisions, write effects, and data reads require a valid T entry.
       if (!t_valid_q || t_done) begin
         t_write_q       <= in_write;
         t_addr_q        <= in_addr;
@@ -1425,14 +1304,8 @@ module frost_cache #(
     end
   end
 
-  // W's payload is read only while w_valid_q is set: every W effect, the
-  // RAM write controls (which also need a W op or an MSHR install), and the
-  // index holds and slot forwarding are qualified by w_valid_q or a W op
-  // (w_op_q is W_NONE whenever W is empty). It therefore loads T's fields
-  // every cycle, with no enable, and is dead after any cycle in which T did
-  // not complete. That keeps the tag decision (t_done) off every payload
-  // clock enable; p_w_payload_exact checks the payload against a copy loaded
-  // only on t_done whenever W is valid.
+  // Capture W unconditionally for timing. All effects require w_valid_q or
+  // a W operation; w_op_q is W_NONE when empty, so unused captures are invisible.
   always_ff @(posedge i_clk) begin
     w_index_q <= t_index;
     w_tag_q <= t_tag;
@@ -1572,14 +1445,9 @@ module frost_cache #(
     end
   end
 
-  // A probe slot's line, id and kind are read only while the slot is held:
-  // the fill withholding and the release compare test probe_valid_q, and the
-  // acknowledgement (probe_ack_q) implies a held slot. A free slot therefore
-  // captures T's fields every cycle, so the slot a probe decision takes holds
-  // that probe's fields from the decision edge on, as when they were written
-  // on the decision, and its enable is the slot's own valid flop instead of
-  // the tag decision. p_probe_slot_exact checks the held slots against a copy
-  // written only on the decision.
+  // Free slots capture T every cycle, including the edge allocating them.
+  // Only held slots are read: fill and release checks require probe_valid_q,
+  // and a pending acknowledgement implies a held slot.
   always_ff @(posedge i_clk) begin
     for (int k = 0; k < int'(ProbeSlots); k++) begin
       if (!probe_valid_q[k]) begin
@@ -1757,9 +1625,7 @@ module frost_cache #(
   assign o_perf_events = perf_events_q;
 
 `ifndef SYNTHESIS
-  // ---- Exactness of the enable-free captures (simulation only). Each
-  // reference below is loaded with the enable the capture replaced, and every
-  // field a reader can see must match it.
+  // ---- Compare visible captures with references written only when enabled.
   localparam int unsigned WPayloadBits = IndexBits + TagBits + LineAddrBits + 1 + LineBits +
       LINE_BYTES + UP_ID_BITS + 1 + MshrBits + WbBits + 1 + ProbeBits + TagBits + 1 + NUM_WB;
   logic [WPayloadBits-1:0] ref_w_payload_q;
@@ -1933,12 +1799,8 @@ module frost_cache #(
       assert (tag_re == ((mstate_q == M_FLUSH_SCAN) ||
                          ((mstate_q == M_IDLE) && (t_accept || reread_q))));
       p_cache_perf_hit_miss_onehot : assert (!(perf_events_q.hit && perf_events_q.miss));
-      // No line has two writebacks in flight (see the T decision): the slot
-      // pick takes no account of age, and an AXI level below may apply
-      // same-line writes in either order, so two snapshots could land
-      // older-last. The two rules that keep it so are checked at their
-      // effect: a write hit never commits to, and an install never fires for,
-      // a line a writeback slot still holds.
+      // Two writebacks of one line could reach AXI in reverse age order.
+      // Check uniqueness and forbid writes or installs while a snapshot is held.
       for (int j = 0; j < int'(NUM_WB); j++) begin
         for (int k = j + 1; k < int'(NUM_WB); k++) begin
           if (wb_valid[j] && wb_valid[k] && (wb_line_q[j] == wb_line_q[k]))
@@ -1972,11 +1834,8 @@ module frost_cache #(
     end
   end
 
-  // Writeback progress check: a slot pending through more loads of the
-  // downstream request register than this is starved. The pick bounds a
-  // slot's wait at NUM_WB * (WbStarveLimit + 1) loads (8 with two slots), so
-  // the threshold is four times anything it allows. Backpressure alone never
-  // trips it: it counts loads, not cycles; the cycles are for the log.
+  // Count request-register loads, not backpressure cycles. With NUM_WB=2,
+  // the threshold is four times the arbitration bound of eight loads.
   localparam int unsigned WbStarveTripLoads = 8 * (WbStarveLimit + 1);
   int unsigned wb_pend_loads [NUM_WB];
   int unsigned wb_pend_cycles[NUM_WB];
@@ -1998,9 +1857,7 @@ module frost_cache #(
     end
   end
 
-  // Wedge watchdog (simulation only): a live request that makes no progress
-  // for this long means some slot state machine is stuck. Dump every state
-  // register so the wedge is diagnosable from the log alone.
+  // Dump state if a held request makes no progress for this many cycles.
   localparam int unsigned WedgeWatchdogCycles = 2048;
   // A waiter or merge must land on an MSHR fetching its own line; a
   // cross-line attach silently serves one line's data for another's address.

@@ -15,12 +15,9 @@
  */
 
 /*
- * The two nonzero high-part corrections for a PC-relative branch target,
- * pc_high+1 and pc_high-1. The PD-stage instruction bits arrive from BRAM late
- * in the cycle, while i_pc_high is registered and available early. Keeping
- * these carry chains behind a hard synthesis boundary stops Vivado from folding
- * the late branch-immediate select into a full-XLEN adder. PD's redirect
- * register captures both results beside the unmodified PC high bits.
+ * Precompute pc_high+1 and pc_high-1 for a PC-relative branch target. The
+ * synthesis boundary keeps Vivado from merging these with the immediate
+ * select, for timing. PD captures both results and the unmodified high bits.
  */
 (* keep_hierarchy = "yes" *)
 module pd_target_high_precompute #(

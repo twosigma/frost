@@ -22,14 +22,11 @@
  * computes PC + offset and redirects fetch. A taken BTB prediction supplies
  * its own target and direction.
  *
- * Training writes the entry at i_update_idx. IF normally carries the
- * predict-time index (o_pred_idx) with the branch to commit, so training
- * updates the entry the prediction read; the branch's own PC would name the
- * wrong entry when the fetch PC that read the predictor differs from it, after
- * a stall replay or at a halfword boundary. For a slot-2 branch, the owner of
- * a pending prediction, and a high-half served-window retry, IF carries the
- * index of the branch's own PC instead. PC[1] is part of the index, so
- * halfword addresses get their own entries.
+ * Train i_update_idx at commit. IF carries the lookup index with the branch,
+ * since the fetch PC can differ from the emitted instruction's PC across
+ * replay and halfword boundaries. Slot-2 branches, pending predictions, and
+ * high-half served-window retries carry their own PC's index. PC[1] gives
+ * each halfword address a separate entry.
  *
  * Lookups are combinational and updates synchronous. The predict and
  * update-read ports are separate RAM copies sharing one write, since
@@ -67,7 +64,6 @@ module direction_predictor #(
   wire [BIM_BITS-1:0] bim_i1 = bim_idx(i_pc);
   assign o_pred_idx = bim_i1;
 
-  // Update (read-modify-write) at the carried predict-time index.
   wire [BIM_BITS-1:0] bim_iu = i_update_idx;
 
   logic [1:0] bim_rd1;  // predict-side read
@@ -87,7 +83,7 @@ module direction_predictor #(
       .i_read_address(bim_i1),
       .o_read_data(bim_rd1)
   );
-  // Update-read copy (same contents, separate read port for the RMW)
+  // Same contents, separate read port for read-modify-write.
   sdp_dist_ram #(
       .ADDR_WIDTH(BIM_BITS),
       .DATA_WIDTH(2)

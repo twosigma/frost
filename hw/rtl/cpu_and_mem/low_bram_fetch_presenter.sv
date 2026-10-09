@@ -30,7 +30,7 @@
  * the high provider out of the retarget for PA bits [15:0] only. The VA,
  * PA[31:16], PA validity, fault flags, and response controls keep the full
  * retarget, and the caller must mask low responses while the high provider
- * owns the request.
+ * handles the request.
  */
 module low_bram_fetch_presenter #(
     parameter bit SEPARATE_ADDRESS_RETARGET = 1'b0
@@ -45,9 +45,7 @@ module low_bram_fetch_presenter #(
     input logic i_response_claim,
     input logic i_publish_hold,
     input logic i_owner_low,
-    // Registered indication that live movement invalidated the owed request.
-    // The presenter is kept small and has no PC detector of its own, so IF
-    // supplies this.
+    // IF's registered pulse invalidates the pending request when the PC moves.
     input logic i_retarget,
     // Retarget for PA bits [15:0] only, used when SEPARATE_ADDRESS_RETARGET is
     // set. The caller masks low responses while crossing into the high
@@ -121,23 +119,14 @@ module low_bram_fetch_presenter #(
   assign o_fetch_fault1 = repeat_presented ? presented_fault1_q : i_fault1;
   assign o_fetch_fault1_page = repeat_presented ? presented_fault1_page_q : i_fault1_page;
 
-  // These registers and imem_predecode's response-ready register capture the
-  // same presented request on the same edge. IF's control-flow holdoff
-  // consumes any stale redirect response as its ordinary NOP bubble, so
-  // retarget only has to launch the live target instead of repeating it.
-  // When a repeated slow request is still on the synchronous BRAM pins at its
-  // publication edge, it remains response-ready for one residual cycle.
-  // Suppress that duplicate while the pins chase the newly advanced live PC.
+  // Capture the request on the same edge as imem_predecode's ready register.
+  // IF discards stale redirect responses as NOP bubbles, so retarget need only
+  // launch the live target. A slow request repeated through publication stays
+  // ready for a residual cycle; suppress that duplicate.
   //
-  // Overlay hits are exempt. Their response is ready every cycle, with no
-  // bubble, and stays valid through backend stalls: IF's saved-response logic
-  // handles those stalls, and the live pins stay free so code in the overlay
-  // (such as the default CoreMark build) keeps its fetch schedule. A
-  // registered overlay hit already proves the preceding memory request was in
-  // the overlay range, so its valid skips the presenter's owner and PA-valid
-  // flops, which would otherwise sit at the head of the fetch-valid -> PC
-  // path. Publication hold and duplicate suppression apply only to the slow
-  // responses this presenter buffers.
+  // Overlay hits prove the request was in range and stay valid every cycle.
+  // IF captures them across stalls, so publication hold and duplicate
+  // suppression apply only to slow responses.
   assign o_response_valid = i_response_overlay_hit ||
       (presented_owner_low_q && presented_pa_valid_q && i_response_ready &&
        !i_publish_hold && !slow_response_published_q);
@@ -172,15 +161,10 @@ module low_bram_fetch_presenter #(
       if (i_retarget) begin
         slow_response_published_q <= 1'b0;
       end else if (!i_publish_hold) begin
-        // A claimed slow identity stays suppressed until the live request
-        // changes. A single-cycle pulse is insufficient: IF can take more than
-        // one cycle to move its live PC, in which case releasing the gate
-        // would publish the same instruction twice. At first publication,
-        // response-valid implies ready and unheld, so repeat_presented is false
-        // and the address pins carry this exact live identity. Reuse the direct
-        // live comparison instead of rebuilding it through the output muxes.
-        // A valid response that IF squashes is not a publication and remains
-        // eligible if the same request identity is presented again.
+        // Suppress a claimed slow response until the live request changes;
+        // IF may take several cycles to move the PC. First publication implies
+        // ready and unheld, so the pins carry the live request and this direct
+        // comparison is valid. A response squashed by IF remains eligible.
         if (slow_response_published_q) begin
           slow_response_published_q <= live_matches_presented;
         end else begin

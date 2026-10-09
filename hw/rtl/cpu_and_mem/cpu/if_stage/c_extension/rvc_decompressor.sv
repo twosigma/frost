@@ -32,13 +32,9 @@
   C.SUBW/C.ADDW, and the base shifts take 6-bit shamts with bit 12 as
   shamt[5]. C.FLD/C.FSD/C.FLDSP/C.FSDSP keep their RV32C meanings.
 
-  The core never synthesizes this module: IF and PD take a compressed
-  instruction's expansion from the instruction-memory predecode sideband,
-  which riscv_pkg::imem_rvc_expand and the related imem_rvc_* functions
-  compute when a word is written. PD instantiates it in simulation only, once
-  per slot, as the independent reference its checks compare the sideband
-  with, and the rvc_predecode formal target checks that imem_rvc_expand
-  agrees with it for every parcel.
+  IF and PD use expansions computed on instruction-memory writes by
+  riscv_pkg::imem_rvc_expand and the related imem_rvc_* functions. PD
+  instantiates this module only in simulation as an independent reference.
 */
 module rvc_decompressor (
     input  logic [15:0] i_instr_compressed,
@@ -47,14 +43,12 @@ module rvc_decompressor (
     output logic        o_illegal
 );
 
-  // Extract common fields from compressed instruction
   logic [1:0] quadrant;
   logic [2:0] funct3;
 
   assign quadrant = i_instr_compressed[1:0];
   assign funct3 = i_instr_compressed[15:13];
 
-  // Instruction is compressed if bits [1:0] != 2'b11
   assign o_is_compressed = (quadrant != 2'b11);
 
   // Standard RISC-V opcodes for expansion
@@ -179,10 +173,10 @@ module rvc_decompressor (
   assign shamt6 = {i_instr_compressed[12], i_instr_compressed[6:2]};
 
   // ===========================================================================
-  // Instruction Expansion (compute only selected instruction)
+  // Instruction Expansion
   // ===========================================================================
   always_comb begin
-    // Default outputs: zero instruction for reserved encodings.
+    // Illegal encodings can still produce a nonzero expansion.
     o_instr_expanded = 32'b0;
     o_illegal = 1'b0;
 
@@ -317,7 +311,7 @@ module rvc_decompressor (
       // -----------------------------------------------------------------------
       2'b10: begin
         unique case (funct3)
-          3'b000:  // C.SLLI (rd=0 is a HINT -> nop; bit12 = shamt[5])
+          3'b000:  // C.SLLI (rd=0 is a legal HINT; bit12 = shamt[5])
           o_instr_expanded = {6'b000000, shamt6, rd_full, 3'b001, rd_full, OpcOpImm};
           3'b010: begin  // C.LWSP
             o_instr_expanded = {imm_lwsp, 5'd2, 3'b010, rd_full, OpcLoad};
@@ -335,7 +329,7 @@ module rvc_decompressor (
               if (rs2_full == 5'd0) begin  // C.JR
                 o_instr_expanded = {12'b0, rs1_full, 3'b000, 5'd0, OpcJalr};
                 if (rd_full == 5'd0) o_illegal = 1'b1;
-              end else begin  // C.MV (rd=0 is a HINT -> nop, not illegal)
+              end else begin  // C.MV (rd=0 is a legal HINT)
                 o_instr_expanded = {7'b0, rs2_full, 5'd0, 3'b000, rd_full, OpcOp};
               end
             end else begin
@@ -346,7 +340,7 @@ module rvc_decompressor (
                   o_instr_expanded = {12'b0, rs1_full, 3'b000, 5'd1, OpcJalr};  // C.JALR
                 end
               end else begin
-                // C.ADD (rd=0 is a HINT -> nop, not illegal)
+                // C.ADD (rd=0 is a legal HINT)
                 o_instr_expanded = {7'b0, rs2_full, rd_full, 3'b000, rd_full, OpcOp};
               end
             end
@@ -366,7 +360,7 @@ module rvc_decompressor (
       end
 
       // -----------------------------------------------------------------------
-      // Quadrant 3 (11): not compressed, passthrough
+      // Quadrant 3 (11): not compressed; zero-extend the input parcel
       // -----------------------------------------------------------------------
       default: o_instr_expanded = {16'b0, i_instr_compressed};
     endcase

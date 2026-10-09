@@ -17,9 +17,7 @@
 // =============================================================================
 // dispatch_rs_router
 // =============================================================================
-// Combinational decode of dispatch packets into per-RS dispatch-valid signals
-// (slot 1 and slot 2) and the fast slot-1 "intent" signals each RS uses to
-// pre-select alloc_idx_2 off the dispatch critical path.
+// Decode dispatch packets into per-RS valid and slot-1 intent signals.
 //
 // SPLIT_RS_DISPATCH selects between the dispatch unit pre-routing per-RS packets
 // (i_*_rs_dispatch.valid) and the single-bus rs_type decode.
@@ -61,9 +59,7 @@ module dispatch_rs_router #(
   (* max_fanout = 32 *) logic mem_rs_dispatch_valid;
   (* max_fanout = 32 *) logic fp_rs_dispatch_valid;
 
-  // Slot-2 per-RS dispatch valid signals (2-wide dispatch plumbing).
-  // The dispatch unit drives only one of the slot-2 inputs (the one for slot-2's
-  // rs_type); the rest are inactive.
+  // Only the station matching slot 2's rs_type receives a valid packet.
   (* max_fanout = 32 *) logic int_rs_dispatch_valid_2;
   (* max_fanout = 32 *) logic mul_rs_dispatch_valid_2;
   (* max_fanout = 32 *) logic mem_rs_dispatch_valid_2;
@@ -87,10 +83,7 @@ module dispatch_rs_router #(
     end
   end
 
-  // Slot-2 dispatch routing.  The dispatch unit decodes slot-2's rs_type and
-  // asserts the matching i_*_rs_dispatch_2.valid; this module gates each by
-  // !backend_recovery_hold.  Single-bus non-split mode has no slot 2, so all
-  // slot-2 valids are zero there.
+  // Slot 2 requires split dispatch and is held during recovery.
   always_comb begin
     if (SPLIT_RS_DISPATCH) begin
       int_rs_dispatch_valid_2 = i_int_rs_dispatch_2.valid && !i_backend_recovery_hold;
@@ -108,14 +101,10 @@ module dispatch_rs_router #(
   // ---------------------------------------------------------------------------
   // Fast slot-1 "intent" signals for every RS instance.
   // ---------------------------------------------------------------------------
-  // Each *_rs_intent_1 says that slot-1's instruction is heading for this RS.
-  // It comes from the registered rs_type field on the slot-1 dispatch packet,
-  // gated only by !i_backend_recovery_hold.  These signals carry no RS-full,
-  // bundle_fire_ok, rob_full, lq_full or sq_full term, so they never pull nets
-  // rs_valid commit cone.  Inside each RS, alloc_idx_2 selects off i_intent_1
-  // instead of the slow dispatch_fire.  That is safe because a bundle is
-  // atomic: whenever dispatch_fire_2 commits a slot-2 entry, i_intent_1 ==
-  // dispatch_fire.
+  // Intent decodes the registered slot-1 rs_type, gated only by recovery. It
+  // omits resource availability checks so each RS can preselect alloc_idx_2.
+  // This is safe because bundles are atomic: whenever dispatch_fire_2 commits,
+  // i_intent_1 equals dispatch_fire.
   wire [2:0] dispatch_slot1_rs_type_w =
       SPLIT_RS_DISPATCH ? i_int_rs_dispatch.rs_type : i_rs_dispatch.rs_type;
   logic int_rs_intent_1;
@@ -128,10 +117,8 @@ module dispatch_rs_router #(
       (dispatch_slot1_rs_type_w == riscv_pkg::RS_MUL) && !i_backend_recovery_hold;
   assign mem_rs_intent_1 =
       (dispatch_slot1_rs_type_w == riscv_pkg::RS_MEM) && !i_backend_recovery_hold;
-  // Slot-2 FP dispatch is held off by dispatch.sv
-  // (slot2_fp_compute_serialized), so dispatch_fire_2 is always 0 in FP_RS and
-  // alloc_idx_2 never affects a real commit.  The intent is computed anyway to
-  // keep all four RS ports uniform.
+  // dispatch.sv serializes FP compute (slot2_fp_compute_serialized), so FP_RS
+  // never commits slot 2. Compute its intent to keep the RS interfaces uniform.
   assign fp_rs_intent_1 =
       (dispatch_slot1_rs_type_w == riscv_pkg::RS_FP) && !i_backend_recovery_hold;
 

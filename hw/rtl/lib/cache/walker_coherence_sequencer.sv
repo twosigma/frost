@@ -38,11 +38,7 @@
  * (stores still in the store queue need not be covered) and why progress
  * holds.
  *
- * Timing: ready, the probe request, and the downstream request are flops that
- * track the state register, so the walker, the hierarchy's probe capture, and
- * the arbiter tree each see one flop. The release is a registered pulse. The
- * response is not registered, so the sequencer adds nothing to the walker's
- * PTE capture path.
+ * Request controls and release are registered; the response passes through.
  */
 module walker_coherence_sequencer #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -105,9 +101,7 @@ module walker_coherence_sequencer #(
   state_e state_q;
   logic [LineAddrBits-1:0] line_q;
   logic [ID_BITS-1:0] id_q;
-  // The three request-side outputs as flops (see the header on timing).
-  // Ready is kept as its inverse so every flop here, like the state, is zero
-  // out of reset.
+  // Invert ready so all request controls reset to zero with the state.
   logic busy_q, probe_valid_q, down_valid_q;
 
   assign o_walk_req_ready = !busy_q;
@@ -189,7 +183,7 @@ module walker_coherence_sequencer #(
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
-      // The output flops are exact twins of the state register.
+      // Registered outputs must agree with the state.
       if (busy_q != (state_q != S_IDLE))
         $error("walker_coherence_sequencer: busy flop disagrees with the state");
       if (probe_valid_q != (state_q == S_PROBE))

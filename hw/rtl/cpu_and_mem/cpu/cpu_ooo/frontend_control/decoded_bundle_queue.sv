@@ -14,32 +14,24 @@
  *    limitations under the License.
  */
 
-// Fall-through queue between the held ID register and atomic bundle dispatch.
-// ID's output register is the producer; i_advance means it loads a new bundle
-// at this edge. The queue accepts each producer image once (consumed_q), even
-// while an unrelated front-end stall holds it for several cycles. Packets
-// carry no register values: the consumer reads the register files and rename
-// state when it dispatches, so renaming sees every older instruction.
+// Fall-through queue from the held ID register to atomic bundle dispatch.
+// i_advance loads a new producer bundle at this edge. consumed_q prevents
+// accepting a held bundle twice. Packets carry no register values: dispatch
+// reads the register files and rename state once older bundles have
+// dispatched, so it sees their renames.
 //
-// o_shadow is a register holding exactly the narrow slice of o_packet the
-// consumer sees, bypass included (in cpu_ooo, the bundle's narrow control
-// fields, including the register fields that address the RAT and register
-// files). It needs the producer register's current value (i_shadow) and its
-// next-edge value (i_shadow_next). o_shadow_next is o_shadow's register D,
-// for a consumer that keeps its own same-edge copy of some shadow fields.
+// o_shadow registers the consumer's narrow slice of o_packet, including the
+// empty bypass. i_shadow is the producer's current slice; i_shadow_next is
+// its next-edge value. o_shadow_next lets consumers keep same-edge copies.
 module decoded_bundle_queue #(
     parameter int unsigned DEPTH = 4,
     parameter int unsigned WIDTH = 32,
     parameter int unsigned SHADOW_WIDTH = 1,
-    // SPLIT_SHADOW_STALL: o_shadow_next applies the producer's stall at its
-    // last LUT. The producer supplies its next shadow value for both
-    // outcomes (i_shadow_next_go if it advances, i_shadow_next_hold if it
-    // holds) and the stall's terms: it holds when
-    // (i_stall_early || i_stall_late) && !i_stall_flush, the latest term
-    // being i_stall_late (STALL_LATE_COPIES equal copies, each driving its
-    // share of the bits). i_shadow_next must still be the selected value; it
-    // is used only by the simulation check. Without SPLIT_SHADOW_STALL the
-    // split inputs are unused.
+    // Apply the producer stall after selecting the next shadow, for timing.
+    // The producer supplies both next values and holds when
+    // (i_stall_early || i_stall_late) && !i_stall_flush. All STALL_LATE_COPIES
+    // bits must agree. i_shadow_next must remain the selected value for the
+    // simulation check. Split inputs are unused when this parameter is clear.
     parameter bit SPLIT_SHADOW_STALL = 1'b0,
     parameter int unsigned STALL_LATE_COPIES = 1
 ) (
@@ -67,33 +59,23 @@ module decoded_bundle_queue #(
 );
   localparam int unsigned PtrBits = $clog2(DEPTH);
   logic [WIDTH-1:0] packet_q[DEPTH];
-  // Mirror of packet_q[head_q] whenever the queue is nonempty. TIMING:
-  // dispatch sees this flop (or the producer's register on the empty bypass)
-  // behind one 2:1 mux with a registered select, not a LUTRAM read addressed
-  // by head_q. The mirror loads on a pop and whenever the queue is empty,
-  // and its load data does not depend on the pop (see gen_head_mirror), so
-  // the late pop reaches only the load enables.
+  // Mirror packet_q[head_q] while nonempty, for timing. Load on pop or empty;
+  // the load data is independent of pop.
   localparam int unsigned MirrorGroupBits = 128;
   localparam int unsigned MirrorGroups = (WIDTH + MirrorGroupBits - 1) / MirrorGroupBits;
   logic [WIDTH-1:0] head_packet_q;
   logic [WIDTH-1:0] head_packet_load_data;
   (* max_fanout = 64 *) logic nonempty_q;
   logic nonempty_next;
-  // TIMING: out_shadow_q (o_shadow) goes further than the packet mirror: the
-  // consumer's highest-fanout bits start at a flop with no select LUT.
   logic [SHADOW_WIDTH-1:0] shadow_q[DEPTH];
   logic [SHADOW_WIDTH-1:0] head_shadow_q, head_shadow_next;
-  // TIMING: o_shadow drives dispatch and the register-file and RAT reads
-  // (several hundred loads per bit); the cap lets synthesis replicate it.
+  // Cap shadow fanout for replication.
   (* max_fanout = 48 *) logic [SHADOW_WIDTH-1:0] out_shadow_q;
   logic [DEPTH-1:0] indirect_q, live_q;
   logic [PtrBits-1:0] head_q, tail_q;
   logic [PtrBits:0] count_q;
   logic consumed_q;
-  // TIMING: input_valid is formed from registered producer state alone; keep
-  // holds it as its own net so the consumer's valid cone (dispatch fire)
-  // takes nonempty_q || input_valid in one LUT instead of rebuilding the
-  // producer terms in series behind nonempty_q.
+  // Keep the producer-valid term separate for timing.
   (* keep = "true" *) logic input_valid;
   logic accept, push, pop;
 
@@ -112,12 +94,9 @@ module decoded_bundle_queue #(
   assign push = accept && ((count_q != '0) || !i_pop);
   assign pop = i_pop && (count_q != '0);
 
-  // After a pop the next entry is live in the RAM, or it is this cycle's
-  // push (count 1), or the queue empties (count 0: the pop consumed the
-  // bypassed input, which is not stored, so the mirror is unused). Without
-  // a pop, an empty queue can only receive this cycle's push at the head,
-  // and a nonempty queue holds its mirror. Both loads take the same data:
-  // with count 0 or 1 it is the producer's image.
+  // After a pop, read the next stored row when count > 1; otherwise use the
+  // producer packet. An empty queue also loads that packet. The mirror is
+  // unused when the queue empties or dispatch consumes the empty bypass.
   assign head_packet_load_data = (count_q > (PtrBits + 1)'(1)) ?
       packet_q[PtrBits'(head_q + 1'b1)] : i_packet;
   // The same selection for the shadow slice, then the output-side bypass
@@ -129,10 +108,7 @@ module decoded_bundle_queue #(
       ((count_q + (PtrBits + 1)'(push) - (PtrBits + 1)'(pop)) != '0);
   assign o_shadow = out_shadow_q;
   if (SPLIT_SHADOW_STALL) begin : gen_split_shadow_stall
-    // TIMING: the producer's stall ends in the fetch translation compare.
-    // Both outcomes of the bypass select are finished first, and one LUT
-    // per bit applies the stall's terms, so that compare reaches out_shadow_q
-    // (and the producer-side copies of o_shadow_next) through a single LUT.
+    // Select both next-shadow candidates before applying the stall, for timing.
     (* keep = "true" *)logic [SHADOW_WIDTH-1:0] shadow_next_go;
     (* keep = "true" *)logic [SHADOW_WIDTH-1:0] shadow_next_hold;
     assign shadow_next_go   = nonempty_next ? head_shadow_next : i_shadow_next_go;
@@ -196,10 +172,8 @@ module decoded_bundle_queue #(
         live_q[tail_q] <= 1'b1;
       end
     end
-    // Rows are written on the registered not-full condition rather than on
-    // push, which depends on this cycle's pop (the dispatch decision). The
-    // tail row is dead whenever the queue is not full, so a row written
-    // without a push stays dead until the next push overwrites it.
+    // Write whenever not full. The tail row is then dead, so a write without
+    // push remains unused until a later push overwrites it.
     if (!o_full) begin
       packet_q[tail_q]   <= i_packet;
       shadow_q[tail_q]   <= i_shadow;
@@ -211,12 +185,9 @@ module decoded_bundle_queue #(
     out_shadow_q  <= o_shadow_next;
   end
 
-  // Head mirror load, one group of MirrorGroupBits per same-edge copy of
-  // nonempty_q (equal to it on every cycle: both take nonempty_next), so each
-  // group's enable LUT sits beside its registers instead of one enable
-  // driving the whole mirror. DONT_TOUCH keeps synthesis from merging the
-  // copies. Payload only: nonempty_q qualifies every use, so reset/flush
-  // need not.
+  // Use one same-edge nonempty_q copy per mirror group, for fanout. Each copy
+  // loads nonempty_next. Payload needs no reset or flush because nonempty_q
+  // qualifies every use.
   for (genvar g = 0; g < MirrorGroups; g++) begin : gen_head_mirror
     localparam int unsigned Lo = g * MirrorGroupBits;
     localparam int unsigned Bits = ((WIDTH - Lo) < MirrorGroupBits) ? (WIDTH - Lo) :
@@ -320,8 +291,8 @@ module decoded_bundle_queue #(
       assert (consumed_q == f_consumed);
       assert (o_valid == ((f_count != 0) || (i_valid && !f_consumed)));
       if (o_valid) assert (o_packet == ((f_count != 0) ? f_packets[0] : i_packet));
-      // The harness ties the shadow to the packet's low bits, so the proven
-      // FIFO order carries over to the registered shadow output.
+      // The harness ties the shadow to the packet's low bits, so FIFO order
+      // must also hold for the registered shadow output.
       if (o_valid && shadow_armed_q) assert (o_shadow == o_packet[SHADOW_WIDTH-1:0]);
       assert (o_indirect_pending == |f_indirect);
       for (int k = 0; k < DEPTH; k++) begin

@@ -15,26 +15,19 @@
  */
 
 /*
- * Generic IEEE 1149.1 test access port for the RISC-V debug transport module
- * (dtm_core). The five-bit instruction register uses the standard DTM
- * encodings (IDCODE 0x01, DTMCS 0x10, DMI 0x11, BYPASS 0x1F; every other code
- * selects BYPASS), so any RISC-V-aware JTAG debugger drives it without
- * configuration. Simulation and the portable synthesis targets use this TAP
- * (frost's i_jtag_* pins). On the Xilinx boards the same bundle comes from two
- * BSCANE2 primitives on the FPGA's own TAP instead
- * (boards/xilinx_frost_subsystem.sv), which is why the interface to dtm_core
- * is expressed in BSCAN terms: TAP-state levels (capture / shift / update /
- * test-logic-reset) plus one select per DTM register.
+ * IEEE 1149.1 TAP for dtm_core. The five-bit instruction register uses the
+ * RISC-V DTM encodings: IDCODE 0x01, DTMCS 0x10, DMI 0x11; all others,
+ * including 0x1F, select BYPASS.
  *
- * Timing follows the standard: the state machine and shift registers advance
- * on the rising edge of TCK, TDO changes on the falling edge. The instruction
- * register updates on the falling edge of TCK in Update-IR so the next
- * Capture-DR already sees the new selection; it resets to IDCODE in
- * Test-Logic-Reset. The data-register levels are exported as the current
- * state, so a consumer clocking on the rising edge of TCK sees "capture" on
- * the edge that leaves Capture-DR, one "shift" per bit clocked through
- * Shift-DR, and "update" on the edge that leaves Update-DR. That is exactly
- * the BSCANE2 contract dtm_core is written against.
+ * Simulation and portable synthesis use frost's i_jtag_* pins. Xilinx boards
+ * supply the same TAP-state levels and DTM selects through BSCANE2 instances
+ * in boards/xilinx_frost_subsystem.sv.
+ *
+ * State and shift registers advance on rising TCK edges. TDO changes on
+ * falling edges, and the instruction register latches on the falling edge in
+ * Update-IR. Test-Logic-Reset selects IDCODE. Exported state
+ * levels let dtm_core capture, shift, and update on the rising edge that
+ * leaves each state, matching the BSCANE2 interface.
  */
 module jtag_tap #(
     parameter logic [31:0] IDCODE = 32'h1F05_7001

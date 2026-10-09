@@ -28,21 +28,14 @@
  *     internally to meet READ_LATENCY_B.
  *   - else (Yosys, Verilator): behavioral memory with a matching read pipeline.
  *
- * The read path has one of two forms with the same total i_re->o_rdata
- * latency, READ_LATENCY:
- *   - REGISTER_READ_INPUT=1: i_re/i_raddr are registered once at the module
- *     boundary and then spend READ_LATENCY-1 cycles in the memory read
- *     pipeline. A read samples the array one cycle after i_re, so it sees a
- *     write presented in the i_re cycle.
- *   - REGISTER_READ_INPUT=0: i_raddr goes straight to the array, which reads
- *     every cycle, and READ_LATENCY counts the array's own output register
- *     (block RAM: DOB_REG), so o_rdata comes from a register instead of the
- *     RAM's slower unregistered output. A read samples the array in the i_re
- *     cycle and does not see a write presented in that cycle (read-first), so
- *     the user must not read a row in the cycle it is written; frost_cache's
- *     raw_hazard stall guarantees this. i_re qualifies nothing here and is
- *     used only by the collision check. o_rdata changes every cycle, so it is
- *     valid only READ_LATENCY cycles after a read.
+ * Both read forms have READ_LATENCY cycles from i_re to o_rdata:
+ *   - REGISTER_READ_INPUT=1 registers the request, then samples the array one
+ *     cycle later. With WRITE_LATENCY=1, it sees a write presented with i_re.
+ *   - REGISTER_READ_INPUT=0 reads continuously and includes the array output
+ *     register (BRAM DOB_REG) in the latency. Same-edge writes return old data.
+ *     The caller must avoid qualified reads of a row being written;
+ *     frost_cache uses raw_hazard. i_re only qualifies the collision check,
+ *     so changing o_rdata is valid only READ_LATENCY cycles after a request.
  * Writes are byte writes with WRITE_LATENCY-1 input-register stages (1 =
  * single-cycle write). There is no power-up init: contents are don't-care
  * until written, and the cache's tag sweep makes them unreachable.
@@ -120,10 +113,7 @@ module sdp_ram_byte_en #(
   assign row_write_en = |wbyte_en_q;
 
   // ---- Read-port input register --------------------------------------------
-  // Ends the request cone at a register before the memory and lets the tool
-  // replicate it across the wide array.
-  // The array's read enable and address: the boundary registers, or the
-  // inputs themselves with the enable held high.
+  // Optional input registration for timing; direct reads run continuously.
   logic                  array_re;
   logic [ADDR_WIDTH-1:0] array_raddr;
   if (REGISTER_READ_INPUT) begin : gen_read_input_reg
@@ -176,11 +166,8 @@ module sdp_ram_byte_en #(
       .USE_MEM_INIT(0),
       .WAKEUP_TIME("disable_sleep"),
       .WRITE_DATA_WIDTH_A(DATA_WIDTH),
-      // read_first: a read of a row written at the same edge returns the old
-      // data, as in the portable model below. frost_cache never has the
-      // memory read and write one row at the same edge (after the read-input
-      // register and the write stages), at either write latency; the
-      // simulation check at the end of the module flags it.
+      // Same-edge reads return old data. frost_cache must avoid qualified
+      // reads of a row being written, including all input pipeline stages.
       .WRITE_MODE_B("read_first"),
       .WRITE_PROTECT(1)
   ) u_xpm_ram (
@@ -189,10 +176,7 @@ module sdp_ram_byte_en #(
       .sbiterrb      (),
       .clka          (i_clk),
       .clkb          (i_clk),
-      // The byte enables alone gate the write: the XPM writes byte k when
-      // ena && wea[k], and ena would be |wea. Tied high, the enable carries
-      // no OR-reduction of the byte enables to the head of every cascade in
-      // a wide array.
+      // With ena high, the byte enables alone gate writes.
       .ena           (1'b1),
       .wea           (wbyte_en_q),
       .addra         (waddr_q),
@@ -206,11 +190,8 @@ module sdp_ram_byte_en #(
       .injectdbiterra(1'b0)
   );
 `else
-  // Portable equivalent: a single-cycle byte write and an XpmReadLatency-stage
-  // read pipeline, with the same external latency as the XPM. The storage sits
-  // in per-primitive generate branches so the ram_style hint matches
-  // MEMORY_PRIMITIVE. Without that hint, Yosys spends unbounded time
-  // decomposing a multi-MiB array toward block RAM on UltraScale+.
+  // Match the XPM latency. Separate branches give each array its ram_style;
+  // without the ultra hint, Yosys attempts to decompose large arrays into BRAM.
   if (MEMORY_PRIMITIVE == "ultra") begin : gen_ultra_storage
     (* ram_style = "ultra" *) logic [DATA_WIDTH-1:0] memory[Depth];
     for (genvar byte_index = 0; byte_index < int'(NumBytes); byte_index++) begin : gen_write_byte
@@ -247,10 +228,8 @@ module sdp_ram_byte_en #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // The write mode never decides a read's data: the memory is never asked to
-  // read and write one row at the same edge (see WRITE_MODE_B).
-  // A read and a write of one row at the same array edge: the read returns
-  // the old row.
+  // Reject qualified reads that collide with a write at the array edge.
+  // Such a read would return the old row.
   logic                  check_re;
   logic [ADDR_WIDTH-1:0] check_raddr;
   if (REGISTER_READ_INPUT) begin : gen_check_registered

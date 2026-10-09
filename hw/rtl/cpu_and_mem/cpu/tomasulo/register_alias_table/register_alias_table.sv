@@ -21,10 +21,9 @@
  * reads zero. Commit clears a mapping only if its tag still matches; a full
  * flush clears all rename state.
  *
- * Slot 2 can rename without slot 1 (slot 1 may have no destination, as with
- * a store) and wins when both rename the same register. A slot-2 source that
- * reads slot 1's destination is resolved in dispatch; the RAT never sees that
- * case.
+ * Slot 2 can rename without slot 1, which may have no destination. A slot-2
+ * ROB allocation still requires slot 1. Dispatch resolves same-bundle RAW
+ * dependencies; RAT lookups read the current state.
  *
  * Eight checkpoints each save both RATs and the RAS state; a misprediction
  * restores one in a single cycle. The active RATs are flip-flops, for
@@ -90,17 +89,15 @@ module register_alias_table (
     input logic [         riscv_pkg::RegAddrWidth-1:0] i_alloc_dest_reg,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_alloc_rob_tag,
 
-    // Slot 2 alloc (2-wide dispatch).  Asserts when slot 2 fires with a
-    // register destination, whether or not slot 1 has one.  When both slots
-    // write the same architectural register, slot 2 wins as the newer
-    // producer in program order.
+    // Slot 2 allocates when it has a destination, even if slot 1 has none.
+    // Same-register writes take slot 2's tag, the newer producer.
     input logic                                        i_alloc_valid_2,
     input logic                                        i_alloc_dest_rf_2,
     input logic [         riscv_pkg::RegAddrWidth-1:0] i_alloc_dest_reg_2,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_alloc_rob_tag_2,
 
     // =========================================================================
-    // Commit Interface (from ROB commit output, synchronous)
+    // Commit Interface (ROB commits delayed one cycle by the wrapper)
     // =========================================================================
     input logic                                        i_commit_valid,
     input logic                                        i_commit_dest_valid,
@@ -108,12 +105,9 @@ module register_alias_table (
     input logic [         riscv_pkg::RegAddrWidth-1:0] i_commit_dest_reg,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_tag,
 
-    // Widen-commit slot 2: the second retire of the same cycle, valid only
-    // when the ROB's 2-wide gate fires.  Slot 2 cannot coincide with
-    // mispredict or serial-op recovery, so the only RAT operation it drives
-    // is "clear the tag if it still matches."  When both slots write the
-    // same architectural register, the RAT cannot still hold slot 1's tag
-    // (slot 2 renamed the register later), so only slot 2's clear can apply.
+    // Second retirement of the pair. The ROB excludes mispredicted branches
+    // and serial ops from 2-wide commit. If both commits target one register,
+    // only slot 2 can still match: it renamed later.
     input logic                                        i_commit_valid_2,
     input logic                                        i_commit_dest_valid_2,
     input logic                                        i_commit_dest_rf_2,
@@ -129,19 +123,14 @@ module register_alias_table (
     input logic [           riscv_pkg::RasPtrBits-1:0] i_ras_tos,
     input logic [             riscv_pkg::RasPtrBits:0] i_ras_valid_count,
     input logic [                 riscv_pkg::XLEN-1:0] i_ras_top,
-    // 2-wide dispatch: asserted with checkpoint_save when slot 2 is the
-    // branch.  If slot 1 is a non-branch with a destination, the snapshot
-    // must include slot 1's same-cycle rename so recovery from a slot-2
-    // misprediction restores slot 1's mapping.
+    // The saving branch is in slot 2; include slot 1's same-cycle rename.
     input logic                                        i_checkpoint_save_for_slot2,
 
-    // Dispatch's early allocation candidates and the bundle fire (see
-    // dispatch.sv o_alloc_*): i_alloc_valid is i_alloc_fire && i_alloc_has_dest,
-    // i_alloc_valid_2 is i_alloc_fire && i_alloc_has_dest_2, a save implies the
-    // fire, and a save's i_checkpoint_save_for_slot2 equals
-    // i_checkpoint_slot2_candidate. The rename writes and the snapshot overlay
-    // are built from the candidates, so the late fire enters each register's
-    // write enable last and never reaches the snapshot data.
+    // Dispatch candidates and bundle fire (dispatch.sv o_alloc_*):
+    // i_alloc_valid == i_alloc_fire && i_alloc_has_dest, likewise for slot 2.
+    // A save requires fire and i_checkpoint_save_for_slot2 ==
+    // i_checkpoint_slot2_candidate. Candidates select rename and snapshot
+    // data; fire gates the writes.
     input logic i_alloc_fire,
     input logic i_alloc_has_dest,
     input logic i_alloc_has_dest_2,
@@ -162,12 +151,13 @@ module register_alias_table (
     // =========================================================================
     input logic                                    i_checkpoint_free,
     input logic [riscv_pkg::CheckpointIdWidth-1:0] i_checkpoint_free_id,
-    // Second free port: slot-2 correctly-predicted-branch retire releases its
-    // checkpoint in the same cycle slot-1 may be releasing another.
+    // Free a correctly predicted slot-2 branch's checkpoint at retirement,
+    // independently of a slot-1 free in the same cycle.
     input logic                                    i_checkpoint_free_2,
     input logic [riscv_pkg::CheckpointIdWidth-1:0] i_checkpoint_free_id_2,
 
-    // Bulk free mask for flushed younger branches (always applies, not gated)
+    // Bulk free mask for flushed younger branches, registered by the flush
+    // controller. It applies on its own, not gated by restore or free.
     input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_flush_free_mask,
 
     // =========================================================================
@@ -223,11 +213,8 @@ module register_alias_table (
   // Active RAT Storage (FF-based, plain arrays for Yosys compatibility)
   // ===========================================================================
 
-  // INT RAT: separate valid and tag arrays.  No max_fanout attribute here:
-  // the tag bits feed the same-cycle dispatch path (RAT lookup → ROB-valid
-  // check → dispatch bypass mux → RS dispatch packet), and forced replication
-  // would insert LUT1 buffers between the FFs and their consumers, adding a
-  // logic level to that path.
+  // INT RAT: separate valid and tag arrays. Avoid max_fanout here because
+  // forced replication adds buffers to the lookup path.
   logic [           NumIntRegs-1:0] int_rat_valid;
   logic [ReorderBufferTagWidth-1:0] int_rat_tag               [NumIntRegs];
 
@@ -235,8 +222,7 @@ module register_alias_table (
   logic [            NumFpRegs-1:0] fp_rat_valid;
   logic [ReorderBufferTagWidth-1:0] fp_rat_tag                [ NumFpRegs];
 
-  // 2-wide alloc collision: both slots target the same architectural
-  // register.  Slot 2 wins (newer producer); slot 1's write is suppressed.
+  // Same-register collision used to qualify the slot-1 formal checks.
   logic                             slot1_collides_with_slot2;
   assign slot1_collides_with_slot2 = i_alloc_valid_2 &&
                                      (i_alloc_dest_rf == i_alloc_dest_rf_2) &&
@@ -289,9 +275,7 @@ module register_alias_table (
       .o_read_data    (ckpt_rat_rd_data)
   );
 
-  // Checkpoint metadata in distributed RAM:
-  // branch_tag(5) + branch_epoch(1) + ras_tos(3) + ras_valid_count(4)
-  // + ras_top(64) = 77 bits
+  // Branch tag, allocation epoch, and RAS metadata in distributed RAM.
   logic                           ckpt_meta_wr_en;
   logic [  CheckpointIdWidth-1:0] ckpt_meta_wr_addr;
   logic [CheckpointMetaWidth-1:0] ckpt_meta_wr_data;
@@ -314,29 +298,19 @@ module register_alias_table (
   // Checkpoint RAM Interface Wiring
   // ===========================================================================
 
-  // Write side: checkpoint save
+  // A full flush suppresses snapshot writes.
   assign ckpt_rat_wr_en = i_checkpoint_save && !i_flush_all;
   assign ckpt_rat_wr_addr = i_checkpoint_id;
   assign ckpt_meta_wr_en = ckpt_rat_wr_en;
   assign ckpt_meta_wr_addr = i_checkpoint_id;
 
-  // Pack current RAT state for checkpoint save.
-  // Each entry = {valid, alloc_epoch, tag} packed into RatEntryWidth bits.
-  // INT entries at [IntRatSnapshotWidth-1:0],
-  // FP entries at [RatSnapshotWidth-1:IntRatSnapshotWidth]
+  // Snapshot entries are {valid, alloc_epoch, tag}, INT below FP.
   //
-  // Slot-2-branch overlay: when i_checkpoint_save_for_slot2 asserts, the
-  // snapshot must include slot 1's same-cycle rename, because a slot-2
-  // misprediction restores to the state after slot 1.  ckpt_rat_wr_data is
-  // built from FF values that do not yet reflect this cycle's slot-1 write,
-  // so the entry slot 1 is renaming is overlaid with slot 1's tag and the
-  // post-toggle epoch.  Slot 2's own rename stays out of the snapshot, since
-  // a restore must roll it back.  The overlay is gated on slot 1 having a
-  // destination because slot 1 may have none (a store) when slot 2 is the
-  // branch. The snapshot is written only with a save, which implies the
-  // bundle fire, so the overlay uses the early candidates: then
-  // i_checkpoint_slot2_candidate is i_checkpoint_save_for_slot2 and
-  // i_alloc_has_dest is i_alloc_valid.
+  // A slot-2 branch needs the state after slot 1 but before its own rename.
+  // Overlay slot 1's same-cycle tag and post-allocation epoch if it has a
+  // destination. The active RAT still holds the state before these writes.
+  // Early candidates are safe here: a save implies fire, so they equal
+  // i_checkpoint_save_for_slot2 and i_alloc_valid whenever RAM is written.
   logic                             slot2_overlay_int;
   logic                             slot2_overlay_fp;
   logic [ReorderBufferTagWidth-1:0] slot2_overlay_tag;
@@ -345,9 +319,7 @@ module register_alias_table (
                              !i_alloc_dest_rf && (i_alloc_dest_reg != '0);
   assign slot2_overlay_fp = i_checkpoint_slot2_candidate && i_alloc_has_dest && i_alloc_dest_rf;
   assign slot2_overlay_tag = i_alloc_rob_tag;
-  // cpu_ooo flips rob_entry_epoch[slot1_tag] at this cycle's posedge, when
-  // slot 1's ROB entry allocates.  The snapshot is the next-cycle restore
-  // image, so encode the post-toggle value here.
+  // cpu_ooo toggles the epoch when slot 1 allocates at this edge.
   assign slot2_overlay_epoch_next = ~i_rob_entry_epoch[i_alloc_rob_tag];
 
   always_comb begin
@@ -375,8 +347,7 @@ module register_alias_table (
     end
   end
 
-  // Pack metadata for checkpoint save.  The branch ROB entry is allocated in
-  // the same cycle as the checkpoint, so save the post-allocation epoch.
+  // The branch allocates with the checkpoint; save its post-allocation epoch.
   logic checkpoint_branch_epoch_next;
   assign checkpoint_branch_epoch_next = ~i_rob_entry_epoch[i_checkpoint_branch_tag];
   assign ckpt_meta_wr_data = {
@@ -437,10 +408,9 @@ module register_alias_table (
       branch_still_live =
           i_rob_entry_valid[restored_branch_tag] &&
           (i_rob_entry_epoch[restored_branch_tag] == restored_branch_epoch);
-      // A snapshot entry is revived only if its producer is still live, still
-      // matches the saved allocation generation, and is strictly older than a
-      // still-live restoring branch.  Otherwise a recycled ROB tag could come
-      // back after the checkpoint owner retired or the ROB wrapped.
+      // Restore only live producers with matching epochs, strictly older than
+      // a live branch with its saved epoch. Otherwise ROB tag reuse could
+      // revive a stale mapping after the branch retires or the ROB wraps.
       restored_tag_still_live =
           branch_still_live &&
           i_rob_entry_valid[restored_tag] &&
@@ -458,12 +428,8 @@ module register_alias_table (
   // Source Lookup (Combinational)
   // ===========================================================================
 
-  // INT lookup views: entry 0 reads as a constant {not valid, tag 0}, the
-  // lookup result x0 must give, so the source muxes need no separate x0 test
-  // on the renamed bit or the tag.  The active x0 entry itself is never
-  // renamed (p_x0_never_valid); the views make the constant structural.
-  // TIMING: the source address then reaches the renamed bit and the tag
-  // through the 32:1 selects alone, without an x0 qualifier LUT after them.
+  // x0 is never renamed. A constant {valid=0, tag=0} at entry 0 avoids
+  // separate x0 qualification after lookup.
   logic [NumIntRegs-1:0] int_lookup_valid;
   logic [ReorderBufferTagWidth-1:0] int_lookup_tag[NumIntRegs];
   always_comb begin
@@ -474,17 +440,15 @@ module register_alias_table (
   end
 
   // INT source 1
-  // rat_lookup_t = {renamed, tag[4:0], value[63:0]}. The tag is meaningful
-  // only when renamed is set. Expose it directly so CDB comparators can run
-  // beside the ROB-valid lookup; readiness/repair-valid qualify their use.
-  // Unrenamed tags may be stale or uninitialized. INT x0 remains all zero.
-  // Renamed means mapped to an in-flight ROB entry. If that entry is already
-  // done, done repair after dispatch supplies the value, for INT and FP alike.
+  // rat_lookup_t = {renamed, tag[4:0], value[63:0]}. Tags are meaningful only
+  // when renamed is set; otherwise they may be stale or uninitialized.
+  // Readiness/repair-valid must qualify tag comparisons. x0 returns all zero.
+  // Renamed means the producer is live in the ROB. For INT and FP, a done
+  // producer's value is supplied by done repair after dispatch.
   always_comb begin
     o_int_src1.renamed = int_lookup_valid[i_int_src1_addr] &&
                          i_rob_entry_valid[int_lookup_tag[i_int_src1_addr]];
     o_int_src1.tag = int_lookup_tag[i_int_src1_addr];
-    // x0 hardwired to zero
     o_int_src1.value = (i_int_src1_addr == '0) ? '0 : {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1};
   end
 
@@ -524,10 +488,7 @@ module register_alias_table (
   end
 
   // ---------------------------------------------------------------------------
-  // Slot-2 source lookups (2-wide dispatch), mirroring the slot-1 logic above.
-  // Reads observe the current RAT state.  Intra-bundle RAW (slot 2 reading
-  // slot 1's just-allocated dest) is resolved by the dispatch unit before the
-  // lookup result is consumed downstream.
+  // Slot-2 source lookups, before dispatch's same-bundle RAW bypass.
   // ---------------------------------------------------------------------------
 
   // INT source 1 (slot 2)
@@ -579,16 +540,12 @@ module register_alias_table (
   // Sequential Logic: Active RAT Updates
   // ===========================================================================
 
-  // Rename write selects per register, decoded from each slot's destination
-  // and the early candidates. A register renamed by both slots takes slot 2's
-  // tag (slot 2 is younger). The late bundle fire enters each register's
-  // write enable last. Given the candidate contract on the ports, the writes
-  // equal renaming on i_alloc_valid / i_alloc_valid_2.
+  // Decode candidate destinations per register. With the input contract above,
+  // gating these selects by i_alloc_fire equals using i_alloc_valid{,_2}.
   logic [NumIntRegs-1:0] int_rename_sel_1, int_rename_sel_2;
   logic [NumFpRegs-1:0] fp_rename_sel_1, fp_rename_sel_2;
   always_comb begin
     for (int i = 0; i < NumIntRegs; i++) begin
-      // x0 is never renamed.
       int_rename_sel_1[i] = (i != 0) && i_alloc_has_dest && !i_alloc_dest_rf &&
           (i_alloc_dest_reg == RegAddrWidth'(i));
       int_rename_sel_2[i] = (i != 0) && i_alloc_has_dest_2 && !i_alloc_dest_rf_2 &&
@@ -604,8 +561,7 @@ module register_alias_table (
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // Dispatch's candidate contract on the rename and save inputs (the formal
-  // block assumes it).
+  // Check dispatch's rename/save candidate contract; formal assumes it.
   always_ff @(posedge i_clk) begin
     if (i_rst_n) begin
       p_alloc_candidates_contract :
@@ -620,18 +576,12 @@ module register_alias_table (
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      // Reset: all entries not renamed
       int_rat_valid <= '0;
       fp_rat_valid  <= '0;
     end else if (i_checkpoint_restore) begin
-      // Checkpoint restore takes priority over flush_all.  The flush
-      // controller gates checkpoint_restore on !flush_all, so the two never
-      // coincide in the integrated core.  The formal p_flush_clears_int/fp
-      // properties skip the paired case to match this ordering.
-      // Restore the saved snapshot, but suppress any mapping whose ROB tag is
-      // no longer live or is not strictly older than the restoring branch.
-      // That keeps checkpoint semantics without reviving recycled tags after
-      // ROB wraparound.
+      // Restore takes priority over flush_all. The flush controller prevents
+      // them from coinciding in the core. Filter stale snapshot mappings with
+      // restored_tag_still_live before making them visible.
       for (int i = 0; i < NumIntRegs; i++) begin
         int_rat_valid[i] <= restored_int_valid[i] && restored_tag_still_live(
             restored_int_tag[i], restored_int_epoch[i]
@@ -645,24 +595,20 @@ module register_alias_table (
         fp_rat_tag[i] <= restored_fp_tag[i];
       end
     end else if (i_flush_all) begin
-      // Full flush (trap, xRET, FENCE-class recovery): clear all valid bits
       int_rat_valid <= '0;
       fp_rat_valid  <= '0;
     end else begin
       // ---------------------------------------------------------------
-      // Commit clear: if committing tag matches current RAT entry,
-      // clear it (arch regfile now holds the committed value)
+      // Commit clears a matching mapping; the architectural regfile has its value.
       // ---------------------------------------------------------------
       if (i_commit_valid && i_commit_dest_valid) begin
         if (!i_commit_dest_rf) begin
-          // INT commit
           if (i_commit_dest_reg != '0 &&
               int_rat_valid[i_commit_dest_reg] &&
               int_rat_tag[i_commit_dest_reg] == i_commit_tag) begin
             int_rat_valid[i_commit_dest_reg] <= 1'b0;
           end
         end else begin
-          // FP commit
           if (fp_rat_valid[i_commit_dest_reg] &&
               fp_rat_tag[i_commit_dest_reg] == i_commit_tag) begin
             fp_rat_valid[i_commit_dest_reg] <= 1'b0;
@@ -671,8 +617,7 @@ module register_alias_table (
       end
 
       // ---------------------------------------------------------------
-      // Widen-commit slot 2: the same clear for the head+1 retire. When
-      // both slots target one register, only slot 2 can still match.
+      // Slot-2 commit clear (head+1).
       // ---------------------------------------------------------------
       if (i_commit_valid_2 && i_commit_dest_valid_2) begin
         if (!i_commit_dest_rf_2) begin
@@ -690,10 +635,7 @@ module register_alias_table (
       end
 
       // ---------------------------------------------------------------
-      // Rename write: new instruction's destination mapping.
-      // Rename takes priority over commit to the same register.
-      // When both slots write the same register, slot 2's newer mapping
-      // wins (see int_rename_sel_1/2).
+      // Rename wins over commit; slot 2 wins over slot 1.
       // ---------------------------------------------------------------
       for (int i = 0; i < NumIntRegs; i++) begin
         if (i_alloc_fire && (int_rename_sel_1[i] || int_rename_sel_2[i])) begin
@@ -714,8 +656,8 @@ module register_alias_table (
   // Sequential Logic: Checkpoint Valid Bits
   // ===========================================================================
 
-  // Combinational pre-merge: single next-state avoids NBA priority conflicts
-  // between save, free, and bulk flush mask.
+  // Combine checkpoint updates before the nonblocking assignment to preserve
+  // same-cycle updates to different slots.
   logic [   NumCheckpoints-1:0] checkpoint_valid_next;
   logic                         checkpoint_available_next;
   logic [CheckpointIdWidth-1:0] checkpoint_alloc_id_next;
@@ -732,7 +674,7 @@ module register_alias_table (
       // Individual frees (branch commit or early recovery)
       if (i_checkpoint_free) checkpoint_valid_next[i_checkpoint_free_id] = 1'b0;
       if (i_checkpoint_free_2) checkpoint_valid_next[i_checkpoint_free_id_2] = 1'b0;
-      // Save wins over all clears (new branch allocation)
+      // Save wins over individual and masked frees, but not reset/flush/reclaim.
       if (i_checkpoint_save) checkpoint_valid_next[i_checkpoint_id] = 1'b1;
     end
   end
@@ -773,11 +715,6 @@ module register_alias_table (
       $error("RAT: Rename attempted during checkpoint restore!");
     end
   end
-
-  // There is no slot-2-implies-slot-1 assertion: slot-2 RAT alloc fires
-  // without slot-1 RAT alloc when slot 1 has no destination (a store) and
-  // slot 2 does.  The ROB checks the ROB-side contract (slot-2 ROB alloc
-  // implies slot-1 ROB alloc).
 
   // No slot-2 rename during flush_all
   always @(posedge i_clk) begin
@@ -900,10 +837,7 @@ module register_alias_table (
     assume (!(i_alloc_valid_2 && i_checkpoint_restore));
   end
 
-  // Slot-2 RAT alloc can fire without slot-1 RAT alloc when slot-1 has no
-  // destination (no formal assumption needed).
-
-  // Dispatch's candidate contract (dispatch.sv p_alloc_candidates_match_fire).
+  // Dispatch's rename/save candidate contract.
   always_comb begin
     assume (i_alloc_valid == (i_alloc_fire && i_alloc_has_dest));
     assume (i_alloc_valid_2 == (i_alloc_fire && i_alloc_has_dest_2));
@@ -971,9 +905,8 @@ module register_alias_table (
 
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
-      // After flush_all (without concurrent restore), all valid bits are 0.
-      // checkpoint_restore takes priority over flush_all for the active RAT,
-      // so skip the int/fp assertion when both fire simultaneously.
+      // Restore outranks full flush for the active RAT, but checkpoints clear
+      // on every full flush.
       if ($past(i_flush_all) && !$past(i_checkpoint_restore)) begin
         p_flush_clears_int : assert (int_rat_valid == '0);
         p_flush_clears_fp : assert (fp_rat_valid == '0);
@@ -986,9 +919,7 @@ module register_alias_table (
         p_restore_reclaims_ckpts : assert (checkpoint_valid == '0);
       end
 
-      // After INT rename (non-x0), entry is valid with correct tag.
-      // When slot 2 writes the same dest, slot 2 wins, so the slot-1 tag
-      // check is skipped there (p_rename_sets_int_slot2 covers it).
+      // INT rename sets valid and tag, unless slot 2 writes the same register.
       if ($past(
               i_alloc_valid
           ) && !$past(
@@ -1012,7 +943,7 @@ module register_alias_table (
         ));
       end
 
-      // After FP rename, entry is valid with correct tag.
+      // FP rename sets valid and tag, unless slot 2 writes the same register.
       if ($past(
               i_alloc_valid
           ) && $past(
@@ -1034,9 +965,7 @@ module register_alias_table (
         ));
       end
 
-      // Slot-2 INT rename: entry is valid with slot-2's tag.  Slot-2's
-      // write is unconditional given i_alloc_valid_2 (no collision check
-      // because slot-1 was suppressed when slots collide).
+      // Slot-2 INT rename wins even if slot 1 writes the same register.
       if ($past(
               i_alloc_valid_2
           ) && !$past(
@@ -1078,8 +1007,8 @@ module register_alias_table (
         ));
       end
 
-      // Commit clears entry when tag matches (INT).  The sampled helpers avoid
-      // nested $past(dynamic_index), which older Yosys handles poorly.
+      // INT commit clears only a matching tag. Sampled helpers avoid nested
+      // $past(dynamic_index) for Yosys compatibility.
       if (f_commit_int_active && f_commit_int_was_valid) begin
         if (f_commit_int_tag_match) begin
           p_commit_clears_int : assert (!int_rat_valid[f_commit_int_dest_reg]);
@@ -1114,10 +1043,8 @@ module register_alias_table (
       // All checkpoints in use (exhaustion)
       cover_ckpt_exhaustion : cover (checkpoint_valid == {NumCheckpoints{1'b1}});
 
-      // Checkpoint save
       cover_ckpt_save : cover (i_checkpoint_save);
 
-      // Checkpoint restore
       cover_ckpt_restore : cover (i_checkpoint_restore);
 
       // Full flush from non-empty state

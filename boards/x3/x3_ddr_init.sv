@@ -15,42 +15,30 @@
  */
 
 /*
- * x3_ddr_init: write the whole mapped DDR4 region once, after calibration and
- * before anything can read it.
+ * Initialize mapped DDR4 after calibration and before any other access.
  *
- * The X3's DDR4 is 72 bits wide, so the controller checks ECC on every read.
- * A location not written since power-up has a check code unrelated to its
- * data, so a read of it reports a correctable or uncorrectable error unless
- * the two happen to agree. The controller neither initializes nor scrubs the
- * array (its Microblaze MCS ECC option protects only the calibration
- * processor's block RAM), so this module writes zeros over the region and
- * then raises o_done. It drives the write channels only while o_busy is high.
- * The board top gives it the controller's write channels and holds the
- * subsystem and the JTAG DDR loader in reset until o_done.
+ * The X3's 72-bit DDR4 interface checks ECC on reads. Unwritten memory has
+ * unrelated data and check bits, so reads may report ECC errors. The
+ * controller does not initialize or scrub the array; its Microblaze MCS ECC
+ * protects only calibration-processor BRAM. Write zeros, then raise o_done.
+ * While o_busy is high, the board gives this block the write channels and
+ * holds FROST and the JTAG DDR loader in reset.
  *
- * The controller's word is 512 bits and this port is 256. A single-beat write
- * would cover half a word, and the controller would read the other,
- * uninitialized half to recompute the check code. Each burst is therefore
- * BEATS_PER_BURST beats from an aligned address, which gives the width
- * converter a full word to pass on, so the initializing writes read nothing.
- * BEATS_PER_BURST tracks the controller's word width, and the block design's
- * S00_AXI declares a matching maximum burst length. Several bursts are in
- * flight at once under a single AXI id, so the data channel can move a beat
- * every cycle: 1 GiB takes about 0.1 seconds at 322.265625 MHz.
+ * The controller's word is 512 bits; this port is 256 bits. Partial-word
+ * writes would read uninitialized data to recompute ECC. Use aligned bursts
+ * with DATA_BITS * BEATS_PER_BURST matching the controller word, so the width
+ * converter can issue a full write without a read. S00_AXI in the block
+ * design must allow that burst length. Multiple bursts share one AXI ID.
  *
- * The module is fail-stop, with no timeout and no retry. Any response other
- * than OKAY latches an error that withholds o_done for good: the controller
- * always answers OKAY, but the interconnect answers a request it cannot route
- * with DECERR, and that write did not happen. o_done also never asserts if
- * the level below stops accepting or loses a response it already took (the
- * controller has its own PLL and resets its AXI interface on losing lock,
- * independently of this module's reset). The board then stays in reset
- * instead of running on memory in an unknown state.
+ * No timeout or retry: any non-OKAY response permanently withholds o_done.
+ * The controller returns OKAY; the interconnect returns DECERR for unroutable
+ * requests. Missing ready or responses also prevent completion, leaving the
+ * board in reset. The controller has an independent PLL and resets its AXI
+ * interface on lock loss.
  *
- * An acknowledged write can still leave a bad check code. On the board, the
- * controller's ECC error state (read by fpga/ddr_ecc/ddr_ecc_status.py, which
- * the hardware regression runs last) catches a region left unwritten and then
- * read, but says nothing about addresses nobody read.
+ * Acknowledgement does not prove ECC correctness. The controller's ECC state,
+ * read by fpga/ddr_ecc/ddr_ecc_status.py, detects errors only at addresses
+ * subsequently read.
  *
  * REGION_BYTES exists so a bench can cover the whole region in a short run.
  */
@@ -94,10 +82,8 @@ module x3_ddr_init #(
   localparam int unsigned TotalBursts = REGION_BYTES / BytesPerBurst;
   localparam int unsigned BurstBits = $clog2(TotalBursts + 1);
   localparam int unsigned BeatBits = (BEATS_PER_BURST > 1) ? $clog2(BEATS_PER_BURST) : 1;
-  // The cap is clamped to the number of bursts, which it can never usefully
-  // exceed, so that it fits the counter width (BurstBits sizes TotalBursts).
-  // An unclamped larger cap would truncate, for a small enough region to
-  // zero, which would hold both valids low and start nothing at all.
+  // Clamp to TotalBursts so the cap fits BurstBits. Truncation to zero would
+  // prevent either channel from starting on a small region.
   localparam int unsigned OutstandingCap =
       (MAX_OUTSTANDING < TotalBursts) ? MAX_OUTSTANDING : TotalBursts;
 
@@ -170,11 +156,8 @@ module x3_ddr_init #(
         b_q <= b_q + 1'b1;
         if (i_bresp != 2'b00) resp_error_q <= 1'b1;
       end
-      // Done is read off the counters rather than off the last response, so
-      // it needs no assumption about which cycle the level below returns
-      // that response in: the region is written when every burst's data has
-      // been sent and every burst has been acknowledged. It follows the
-      // counters by a cycle, which the board top spends in reset anyway.
+      // Complete one cycle after all data and responses are counted, regardless
+      // of response latency.
       if ((w_q == BurstBits'(TotalBursts)) && (b_q == BurstBits'(TotalBursts)) && !resp_error_q)
         done_q <= 1'b1;
     end
@@ -201,9 +184,8 @@ module x3_ddr_init #(
         $error(
             "x3_ddr_init: %0d writes outstanding, above the %0d cap", aw_q - b_q, OutstandingCap
         );
-      // Neither channel passes the region's end. Either may lead the other:
-      // the n-th data burst belongs to the n-th address whichever arrives
-      // first, so their order between themselves is not a rule.
+      // Neither channel may pass the region's end. The n-th data burst belongs
+      // to the n-th address, regardless of which channel arrives first.
       if (aw_q > BurstBits'(TotalBursts))
         $error("x3_ddr_init: address ran past the region at burst %0d", aw_q);
       if (w_q > BurstBits'(TotalBursts))

@@ -21,10 +21,8 @@
 // emitted in the same cycle (i_live_prediction_emits_with_output low): the
 // presenter still owes that packet and must deliver it before the target.
 //
-// The priority select is completed in parallel for each prediction outcome
-// (neither, slot 1, slot 2), so the late prediction flags only pick one of
-// three finished bits. Arm 0 (reset) is not an input; reset forces the pulse
-// low instead.
+// Compute the priority result for neither prediction, slot 1, and slot 2,
+// then select the result. Arm 0 is reset, which forces the pulse low.
 module fetch_redirect (
     input logic i_clk,
     input logic i_reset,

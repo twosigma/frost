@@ -15,12 +15,10 @@
  */
 
 /*
- * Debug slice writer. The low BRAM's instruction copy is written
- * only through the div4-clock programming port (the JTAG loader's), so this
- * block is how the debug module lands words in its execution slice and how
- * a debugger's stores into BRAM code become fetchable: core-domain requests
- * cross into the div4 domain through the repo's phase-locked dc_fifo and a
- * small engine drives the programming port when the loader is idle.
+ * Writes the debug execution slice and mirrors debugger stores into the low
+ * BRAM instruction copy. Requests cross from the core to the div4 programming
+ * port through dc_fifo, which requires phase-locked clocks. The loader has
+ * priority at that port.
  *
  * Two request kinds:
  *   WRITE  {word address, data}: the word goes to both copies exactly like a
@@ -33,14 +31,11 @@
  *          the whole word also makes partial stores (a halfword c.ebreak
  *          breakpoint) exact.
  *
- * Completion: every request eventually increments a div4-domain done
- * counter, Gray-coded across to the core domain; the request counter and
- * the synchronized done counter agree exactly when no write is outstanding
- * (o_all_done). The increment is delayed past imem_predecode's registered
- * port-A stage so "done" means "visible to the fetch port". Requests are
- * accepted only while o_req_ready. cpu_and_mem arbitrates the debug module,
- * which can wait, against the store snoop, which cannot: a refused snoop
- * push becomes a sticky command error there.
+ * Accepted requests increment the core request counter; completed writes
+ * increment a div4 counter synchronized back in Gray code. o_all_done compares
+ * them. Completion waits past imem_predecode's port-A stage so the word is
+ * visible to fetch. cpu_and_mem arbitrates requests: the debug module can
+ * wait, but a refused store snoop becomes a sticky command error.
  */
 module debug_slice_writer #(
     parameter int unsigned MEM_BYTE_ADDR_WIDTH = 18,
@@ -124,10 +119,10 @@ module debug_slice_writer #(
   logic [31:0] req_byte_addr;
   assign req_byte_addr = 32'(req_word_addr) << 2;
 
-  // The programming port is driven for exactly one cycle per WRITE, and
-  // one read cycle plus one write cycle per MIRROR. The request FIFO's o_data
-  // is valid whenever o_valid is high, so the engine takes a request as soon
-  // as one is presented.
+  // WRITE takes one programming cycle. MIRROR presents the address in Idle,
+  // waits through MirrorRead, then writes in MirrorWrite. The FIFO holds the
+  // request until its programming write is issued; completion is tracked
+  // separately, until the word is visible to fetch.
   logic write_fire;
   logic imem_write;
   always_comb begin
@@ -140,8 +135,7 @@ module debug_slice_writer #(
       Idle: begin
         if (fifo_out_valid && !i_port_busy) begin
           if (req_mirror) begin
-            // Present the read address; the data copy's registered port-A
-            // read returns the row in MirrorWrite.
+            // Present the address before the MirrorRead wait cycle.
           end else begin
             imem_write = 1'b1;
             o_dmem_we  = 1'b1;
@@ -150,8 +144,7 @@ module debug_slice_writer #(
         end
       end
       MirrorRead: begin
-        // The row is read at this address; it lands in the data copy's port-A
-        // register on the next edge. Nothing to drive.
+        // Wait for the data copy's registered read.
       end
       MirrorWrite: begin
         if (!i_port_busy) begin
@@ -181,9 +174,8 @@ module debug_slice_writer #(
     end
   end
 
-  // Done counter: a write presented in cycle n is registered by
-  // imem_predecode's port-A stage at n+1 and lands in its arrays at n+2, so
-  // count it two cycles later. Gray-coded across to the core domain.
+  // Delay completion two div4 edges after write_fire is sampled, past the
+  // imem_predecode port-A stage. Synchronize the count back in Gray code.
   logic [1:0] write_delay_q;
   logic [CountBits-1:0] done_count_q;
   always_ff @(posedge i_clk_div4) begin

@@ -15,22 +15,12 @@
  */
 
 /*
- * Top-level performance counters and the counter read mux.
+ * Top-level and cache performance counters, snapshots, and CSR read mux.
  *
- * Holds the cpu_ooo top-level counters (dispatch, stall causes, front-end
- * bubbles, flush and serialization cycles, ROB-empty and no-retire cycles,
- * prediction fences, and the 2-wide width funnel) and the cache-hierarchy
- * counters, which follow the tomasulo_wrapper block in the global index space.
- * It counts and snapshots its two blocks and muxes all three onto the CSR read
- * port. The cache block also keeps its preceding snapshot, so software can
- * read both ends of a timed region afterward.
- *
- * Four registered copies of the capture trigger drive the snapshot registers,
- * so a snapshot lands one cycle after the trigger. The selector, the bank
- * choice, and the read result are registered to break the high-fanout path
- * from the selector through the counters to the CSR read. README.md in this
- * directory has the CSR protocol ("CSR interface") and the index layout
- * ("Numbering contract").
+ * Mux these blocks with tomasulo_wrapper's counters. The cache block keeps
+ * its previous snapshot so software can read both ends of a timed region.
+ * Capture occurs one cycle after the trigger; selector and read data are
+ * registered. See README.md, "CSR interface" and "Numbering contract".
  */
 
 module perf_counter_aggregator #(
@@ -47,7 +37,7 @@ module perf_counter_aggregator #(
     input riscv_pkg::reorder_buffer_alloc_req_t       i_rob_alloc_req,
     // Slot-2 dispatch fire (flush-gated rob_alloc_req_2.alloc_valid).
     input logic                                       i_dispatch_fire_2,
-    // IF→PD 2-wide delivery events (see if_width_events_t).
+    // IF-to-PD delivery events (see if_width_events_t).
     input riscv_pkg::if_width_events_t                i_if_width_events,
     // MEM_RS issued while >=2 entries were ready (single issue port is the
     // limiter).  Registered inside the reservation station.
@@ -88,9 +78,8 @@ module perf_counter_aggregator #(
   localparam int unsigned PerfWrapperCounterCount = 64;
   localparam int unsigned PerfCacheCounterCount = 24;
   localparam int unsigned PerfWrapperBase = PerfTopCounterCount;
-  // The cache counters form a third block after the wrapper block, so the
-  // wrapper base stays fixed. Global indices are a software interface
-  // (README.md, "Numbering contract"): add counters without renumbering.
+  // Global indices are a software interface; append counters without
+  // renumbering (README.md, "Numbering contract").
   localparam int unsigned PerfCacheBase = PerfTopCounterCount + PerfWrapperCounterCount;
   localparam int unsigned PerfCounterCount = PerfCacheBase + PerfCacheCounterCount;
   localparam logic [7:0] PerfTopCounterCountSel = 8'(PerfTopCounterCount);
@@ -119,7 +108,7 @@ module perf_counter_aggregator #(
   localparam int unsigned PerfPredictionFenceBranch = 20;
   localparam int unsigned PerfPredictionFenceJal = 21;
   localparam int unsigned PerfPredictionFenceIndirect = 22;
-  // 2-wide width-funnel counters: IF→PD delivery width + slot-2 kill causes
+  // IF-to-PD delivery width and slot-2 exclusion counters
   // + slot-2 BTB predicted-taken events.
   localparam int unsigned PerfIfDeliver1 = 23;
   localparam int unsigned PerfIfDeliver2 = 24;
@@ -238,9 +227,7 @@ module perf_counter_aggregator #(
   logic [7:0] wrapper_perf_counter_select;
   logic [7:0] cache_perf_counter_select;
 
-  // The selector is registered because the raw mperfsel value from csr_file
-  // fans out to the block compares and index decode here and in
-  // tomasulo_perf_counters. Software cannot see the extra cycle of read
+  // Register the selector for fanout. CSR serialization hides this read
   // latency (README.md, "CSR interface").
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -261,11 +248,8 @@ module perf_counter_aggregator #(
        (perf_counter_select_q < PerfCounterCountSel)) ?
       (perf_counter_select_q - PerfCacheBaseSel) : 8'd0;
   assign perf_counter_count = PerfCounterCount;
-  // The capture trigger comes from the commit path and drives hundreds of
-  // snapshot clock enables, so it is registered as four bank copies, as in
-  // tomasulo_perf_counters. A snapshot therefore lands one cycle after the
-  // triggering commit, which software cannot observe: CSR instructions
-  // serialize and reads are deltas.
+  // Four registered trigger copies capture snapshots one cycle after the
+  // triggering commit. CSR serialization hides the delay; reads use deltas.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       perf_top_snapshot_capture_bank0 <= 1'b0;
@@ -440,10 +424,8 @@ module perf_counter_aggregator #(
     end
   end
 
-  // The cache block uses the top block's four capture strobes, so its
-  // counters are captured with the top-level ones without another high-fanout
-  // copy of the trigger. The preceding snapshot lets software defer the
-  // cache-counter reads until after a timed region and still read both ends.
+  // Capture cache and top-level counters together. Retain the previous cache
+  // snapshot so software can read both ends after a timed region.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       for (int i = 0; i < PerfCacheCounterCount; i++) begin
@@ -493,9 +475,7 @@ module perf_counter_aggregator #(
     end
   end
 
-  // A second register stage, acceptable for debug-facing CSRs. It breaks the
-  // remaining path from the selector through the counter data and the CSR
-  // read into rename and dispatch.
+  // Register the selected counter for timing; CSR serialization hides latency.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       perf_counter_data_q <= '0;
@@ -504,11 +484,9 @@ module perf_counter_aggregator #(
     end
   end
 
-  // cpu_ooo's commit bus registers this raw CSR address on the same edge as
-  // perf_counter_data_q, so the half can be selected here, before that
-  // register. csr_file still applies its current-cycle read and flush
-  // qualification and its own output register, so neither the snapshot
-  // sampled nor the CSR read latency changes.
+  // The commit bus registers this CSR address with perf_counter_data_q, so
+  // preselect the half on that edge. csr_file still qualifies and registers
+  // the read, preserving the sampled snapshot and read latency.
   if (PreselectCsrHalf) begin : gen_csr_half
     always_ff @(posedge i_clk) begin
       if (i_rst) o_perf_counter_csr_half_q <= '0;
