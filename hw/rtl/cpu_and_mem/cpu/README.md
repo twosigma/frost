@@ -52,11 +52,6 @@ walker (`mmu/ptw`), and these glue submodules from [`cpu_ooo/`](cpu_ooo/):
 | `cached_tier_adapter` | `memory_if/` | Converts 64-bit data beats to 32-byte cache lines; instantiated in `cpu_and_mem.sv` next to the cache hierarchy |
 | `perf_counter_aggregator` | `perf/` | Top-level and cache profiling counters and the counter read mux, present only with `PERF_COUNTERS=1` ([counter reference](cpu_ooo/perf/README.md)) |
 
-The capture structs that the recovery submodules share
-(`mispredict_commit_capture_t`, `correct_branch_commit_capture_t`) live in
-`riscv_pkg`, because Yosys cannot resolve a cross-package type reference
-inside another package's typedef.
-
 `cpu_ooo.sv` itself keeps the logic that ties these blocks together:
 
 - the decoded-queue hookup, including the register copy of the head bundle's
@@ -88,8 +83,7 @@ in the same cycle. Compressed instructions are expanded when their words are
 written to instruction memory or filled into the L1I (see
 [Instruction fetch providers](#instruction-fetch-providers)): IF builds slot 2
 from that predecoded RV64C expansion, PD does the same for slot 1 and extracts
-source registers early, and ID decodes both slots.
-Decoded bundles wait in the
+source registers early, and ID decodes both slots. Decoded bundles wait in the
 [decoded bundle queue](cpu_ooo/frontend_control/README.md) until dispatch
 renames them. While `mstatus.FS` is Off, ID decodes every F/D instruction as
 illegal, so it reaches dispatch as an illegal-instruction marker and never
@@ -110,13 +104,6 @@ redirect, served-window resteer, hold while no window arrives, slot-2
 prediction, slot-1 prediction, the pending-prediction and halfword catch-up
 cases, then the sequential PC.
 
-The registered provider-redirect pulse uses the same priority decision. Its
-request vector omits the sequential catch-up arm: catch-up excludes the only
-lower-priority arm that can redirect, the pending hold, and the default is
-sequential. The PC controller proves these conditions; a separate proof
-compares the registered redirect outputs, and simulation checks the pulse
-against the original selected-arm equation.
-
 ### Branch prediction
 
 | Structure | Size | Predicts | Trained by |
@@ -133,10 +120,6 @@ resolves as mispredicted, because a JALR is always taken, and recovers when it
 commits. While an unpredicted JALR is in the front end (slot 1 of IF, PD, or
 ID, or the decoded queue) and a conditional branch or JALR is unresolved,
 `ooo_pipeline_control` stalls the front end to limit wrong-path fetch.
-
-Synthesis preserves the `branch_predictor` hierarchy so that its lookup and
-update logic stays separate from IF's packet-selection logic. This limits
-logic depth on the frontend control and target paths.
 
 The BTB is indexed by PC[9:2]. Its tags include PC[1], so a lookup at one
 halfword of a word never hits an entry trained for the other. A hit predicts
@@ -205,11 +188,6 @@ window's physical address:
 | Low BRAM (`imem_predecode.sv` through `low_bram_fetch_presenter.sv`) | The low BRAM's 128 KiB code region at address 0 | Without stalls, one cycle for a window entirely inside `[0, 64 KiB)` and two cycles for any other window |
 | `fetch_provider.sv` | Cached DDR from `0x8000_0000` | Variable. Two line buffers over the L1I, filled in parallel with next-line prefetch, plus a six-line victim store that returns an evicted line in one cycle instead of an L1I round trip, so short loops re-enter without L1I accesses |
 
-The DDR fetch buffer's eviction shadows track their slots while free and hold
-while pending. This removes the late fill/victim-copy decision from their wide
-payload enables while preserving the original one-cycle shadow capture and
-victim-store write timing.
-
 Only the first 64 KiB of low BRAM keeps a LUTRAM copy of the predecode bits
 that feed the next-PC logic; elsewhere those bits are recomputed from the
 fetched words, which takes the second cycle.
@@ -276,18 +254,16 @@ CSR instructions execute one at a time at commit, sequenced by the ROB
 serializer (see the [ROB README](tomasulo/reorder_buffer/README.md)). A CSR
 commit never coincides with a trap or xRET, and `cpu_ooo` sets `csr_file`'s
 `COMMIT_EXCLUDES_CONTROL_TAKE` so the CSR file can rely on that and drop trap
-priority from its write path; other `csr_file` instances keep the default.
-Simulation assertions in both modules check the rule, and the
-`csr_commit_cofactor` formal target checks the CSR state under it.
+priority from its write path; simulation assertions in both modules check the
+rule.
 
 A CSR instruction that accesses `satp`, or writes `mstatus` or `sstatus`, can
 change address translation or `mstatus.FS`, which ID's decode reads, so
 everything after it must be refetched under the new state. The ROB serializer
 waits for committed stores to drain and then retires the CSR. The write lands
 in `csr_file` the next cycle, from the registered commit bus, and a full
-pipeline flush follows one cycle after that.
-It is the same FENCE-class flush that FENCE.I uses, so it also drops the fetch
-provider's buffered lines. Across those two cycles `cpu_ooo` blocks trap,
+pipeline flush follows one cycle after that. It is the same FENCE-class flush
+that FENCE.I uses, so it also drops the fetch provider's buffered lines. Across those two cycles `cpu_ooo` blocks trap,
 Debug Mode, and xRET takes and ignores exceptions, so no younger instruction
 can overwrite the CSR write or act on the old translation. Separately,
 `csr_file` raises a one-cycle TLB and walker invalidate for every `satp`
@@ -310,9 +286,7 @@ pending {branch PC, target} pair and `prediction_metadata_tracker` holds the
 metadata. Only the packet at the saved PC consumes them; it is emitted
 one-wide, and its bimodal index is recomputed from that PC. A prediction made
 while the branch's own packet is already being emitted, which happens when
-variable latency closes the gap between the two PCs, never pends. Checked by
-`prediction_release`, `prediction_handoff`, `pc_pending_capture`,
-`pc_holdoff_tag`, `prediction_metadata_tracker`, and `if_direction_payload`.
+variable latency closes the gap between the two PCs, never pends.
 
 ### Served-window check and retries
 
@@ -323,14 +297,10 @@ becomes a NOP bubble, makes no prediction, and resteers fetch to `pc_reg`'s
 word. When `pc_reg` is in the upper half of that word, the retry's BTB lookup
 names the parcel before it, which is off the program path, so `pc_controller`
 flags the lookup, `branch_prediction_controller` ignores that BTB entry, and
-IF gives the packet a not-taken direction with its own bimodal index.
-`fetch_pc_mux` checks the resteer's priority and `prediction_release` the
-retry's lookup address; simulation assertions check the rest. With
-fixed-latency fetch no program reaches the resteer. The
-`served_window_resteer_fetch_fuzz` system test does, under the fetch-latency
-fuzz: its loop branch's target window arrives in the lead-restoring bubble
-and is dropped, and when a fuzz gap holds the retry, fetch has moved on to
-the next word.
+IF gives the packet a not-taken direction with its own bimodal index. With
+fixed-latency fetch no program reaches the resteer; the
+`served_window_resteer_fetch_fuzz` test reaches it under the fetch-latency
+fuzz.
 
 ### Aliased BTB lookups
 
@@ -339,17 +309,7 @@ example on the first window after a fetch gap, the slot-1 and slot-2 lookups
 name the same instruction, and one branch could get two predictions.
 `branch_prediction_controller` gives the alias to slot 2 only, so a typed
 entry's push or pop also happens once, with the packet that carries the
-prediction. Checked by `branch_prediction_alias`, `branch_prediction_disable`,
-and `prediction_metadata_output`.
-
-The taken slot-1 candidate tests the alias directly: once the direction is
-known taken, the ownership condition's taken-or-collapsed term is already
-true. Other consumers retain the full ownership condition.
-
-The pending-prediction next-PC comparison checks local carry relations for
-+2/+4/+6/+8 in parallel, then selects the one-bit result. It does not wait
-for the wide increment sums. `pc_increment_relation` proves equivalence to
-the full-width arithmetic and comparison, including address wraparound.
+prediction.
 
 ### Return address stack recovery
 
@@ -385,10 +345,6 @@ same-cycle slot-1 prediction, and a collapsed-lead packet carries its own
 lookup. if_stage asserts this, and branch_prediction_controller asserts that
 no operation is pending in a restore cycle, which would replace it, or in the
 cycle after: IF accepts no packet in the flush or the redirect bubble.
-`ras_checkpoint` checks the next-state equations, the outputs and the entry
-writes; the `return_address_stack`, `branch_prediction_controller` and
-`if_stage` benches and the `ras_slot_bench`, `ras_repair_bench`, `ras_test`
-and `ras_stress_test` programs check the behavior.
 
 ### BTB training order
 
@@ -398,27 +354,20 @@ commits, and each is a read-modify-write of a 2-bit counter.
 `branch_prediction_controller` registers it, so training lands one cycle late
 but in order, and back-to-back updates to one entry see each other. A slot-1
 correct-branch update that loses its cycle is dropped, and a waiting slot-2
-update is replaced by a newer one; both cost accuracy only. Checked by the
-`branch_predictor` cocotb bench and reference-model assertions in
-`branch_predictor.sv`.
-
-The early and late update tag comparisons use the same grouped equality as
-BTB lookups, keeping a wide carry-chain compare out of the RAM-read path.
-The early counter update can combine with the final early/late selection;
-the late candidate keeps its separate boundary. `btb_tag_compare` checks
-both update matches as well as all lookup matches against full-width tag
-equality with arbitrary RAM contents.
+update is replaced by a newer one; both cost accuracy only.
 
 ### 4 GiB target limit
 
-The BTB stores the low 32 bits of each target and takes the upper bits from the
-branch's own PC, so an entry is valid only if the branch and its target share a
-4 GiB region. Control flow that crosses a region boundary always misses the
-BTB, so the BTB never supplies a wrong target; a taken crossing conditional
-branch can still be predicted by the PD redirect, and a taken crossing JAL
-mispredicts. The BTB learns only conditional branches (offsets up to ±4 KiB)
-and JALs (up to ±1 MiB), so only code near such a boundary is affected. The
-`branch_predictor` cocotb bench covers this; there is no formal target.
+The BTB stores the low 32 bits of each target and takes the upper bits from
+the branch's own PC, so a stored target is usable only if the branch and its
+target share a 4 GiB region. Training with a target in another region
+invalidates the entry, so the BTB never supplies a wrong target: a taken
+crossing conditional branch can still be predicted by the PD redirect, and a
+crossing JAL mispredicts. A return that hits a valid entry predicts from the
+return address stack while the stack holds an entry, and the stack holds
+full-width addresses, so a crossing return can still be predicted.
+Conditional branches (offsets up to ±4 KiB) and JALs (up to ±1 MiB) cross a
+boundary only near one.
 
 ## Verification
 

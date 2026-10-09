@@ -47,14 +47,12 @@ instruction rather than a bubble) instead of `i_valid_2`. The queue drives
 `i_valid_2 == i_valid && is_real`, and an assertion checks it.
 
 Because a bundle fires as a unit, slot 2 fires exactly when the bundle does
-and slot 2 is present. Dispatch exports each slot's destination and slot 2's
-checkpoint need as early candidates (`o_alloc_has_dest`,
-`o_alloc_has_dest_2`, `o_checkpoint_slot2_candidate`), not qualified by the
-fire decision. The RAT decodes its per-register write selects from them and
-applies the late fire last; each qualified output equals its candidate ANDed
-with the fire, which an assertion checks. The saved checkpoint's branch tag
-and RAS state select on the candidate too, since they matter only in a cycle
-that saves.
+and slot 2 is present. Dispatch also exports each slot's destination and slot
+2's checkpoint need before the fire decision (`o_alloc_has_dest`,
+`o_alloc_has_dest_2`, `o_checkpoint_slot2_candidate`). The RAT gates its
+rename writes with the bundle fire, and its checkpoint snapshot uses the
+slot-2 candidate directly, which is safe because a checkpoint save implies
+the fire.
 
 ## Source operands
 
@@ -108,16 +106,16 @@ replay the blocked ID packet, and there it must stay qualified by validity. A
 stall on resource status alone can make an instruction dispatch twice: X
 dispatches while another stall holds ID, and the next cycle ID still holds
 X's image, now invalid. If X's resource has filled by then, the unqualified
-stall replays X as valid, and X dispatches again once room returns. For
-timing, a resource-only term may drive the front-end hold, but the replay
-must keep the qualified term; registering the stall needs capture capacity,
-such as a one-entry ID-to-dispatch skid buffer.
+stall replays X as valid, and X dispatches again once room returns. A
+resource-only term may drive the front-end hold, but the replay must use the
+qualified one, and registering the stall needs somewhere to keep the blocked
+packet, such as a one-entry ID-to-dispatch skid buffer.
 
 ## RS routing
 
-ID pre-decodes each instruction's station (`rs_type`); the table is in the
-[back-end overview](../README.md) under "Instruction → reservation station
-routing". Dispatch emits one packet per station for each slot and sets
+ID pre-decodes each instruction's station (`rs_type`); the
+[back-end overview](../README.md#reservation-station-routing) has the table.
+Dispatch emits one packet per station for each slot and sets
 `valid` only on the selected one.
 
 JAL, WFI, MRET, SRET, and DRET have no station (`rs_type == RS_NONE`) and

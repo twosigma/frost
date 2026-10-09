@@ -48,8 +48,8 @@ FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb hello_world           # th
 
 `TEST_REGISTRY` in `tests/test_run_cocotb.py` defines the targets. Always use
 the wrapper, which cleans `tests/` and runs the pinned image. Running `make`
-in `tests/` with no arguments runs the `directed_traps` suite. `--testcase` selects
-test functions by regex through `COCOTB_TEST_FILTER`. The
+in `tests/` with no arguments runs the `directed_traps` suite. `--testcase`
+selects test functions by regex through `COCOTB_TEST_FILTER`. The
 [environment table](../tests/README.md#environment-and-output) lists the
 cycle budgets and run counts for applications.
 

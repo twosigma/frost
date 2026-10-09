@@ -12,9 +12,9 @@ the RISC-V reference simulator, and runs these tools on the result:
   committed and is a build input.
 
 The tools run only on demand and need the pinned toolchain and Spike, so run
-them inside the image. Spike counts retired instructions; it does not model FROST's
-cycles, caches, branch prediction, or issue width. Measure CoreMark scores in
-simulation or on hardware.
+them inside the image. Spike counts retired instructions; it does not model
+FROST's cycles, caches, branch prediction, or issue width. Measure cycle
+counts in RTL simulation and CoreMark scores on hardware.
 
 ## Counting instructions
 
@@ -74,7 +74,8 @@ dynamic loading, or Linux syscalls.
 
 Regenerate the committed profiles whenever the compiler or the training flags
 change. Arguments after `--` replace the script's default tuning flags, the
-Makefile's `COREMARK_BASE_TUNE` and `COREMARK_CPU_TUNE` (`-mtune=sifive-7-series`).
+Makefile's `COREMARK_BASE_TUNE` and `COREMARK_CPU_TUNE`
+(`-mtune=sifive-7-series`).
 The PGO build, which is the published configuration
 ([single-core performance](../../../../docs/single_core_performance.md)),
 uses `COREMARK_PGO_CPU_TUNE` (`-mtune=generic-ooo`), but with the pinned GCC

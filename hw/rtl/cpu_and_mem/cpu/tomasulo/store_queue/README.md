@@ -6,8 +6,8 @@ memory only after they commit, in program order, so no store reaches the bus
 speculatively. The SQ also answers the load queue's store-to-load forwarding
 checks.
 
-An entry's life: allocate at dispatch → receive address and data → commit →
-write memory → free.
+An entry's life: allocate at dispatch, receive address and data, commit,
+write memory, and free.
 
 ## Store-to-load forwarding
 
@@ -20,8 +20,8 @@ masks intersect.
 
 | Outcome | When | The load then |
 |---------|------|---------------|
-| Forward | The newest conflicting older store covers every byte the load reads | Takes the store's aligned-dword image and extracts its bytes, as for a memory response |
-| Wait | That store covers only some of the bytes, or an older store's address is unknown | Checks again later |
+| Forward | The newest conflicting older store covers every byte the load reads and has its data | Takes the store's aligned-dword image and extracts its bytes, as for a memory response |
+| Wait | That store covers only some of the bytes or has no data yet, or an older store's address is unknown | Checks again later |
 | No conflict | No older store overlaps | Reads the L0 cache or memory |
 
 The result is registered: the LQ sees it one cycle after presenting the
@@ -94,8 +94,8 @@ visible to forwarding until then.
 
 Stores commit through two ports, one per ROB commit slot. Slot 2 retires only
 plain stores; the ROB keeps SCs and AMOs on slot 1. The committed-empty
-status is a register, with same-edge copies for its distant consumers (the
-ROB, the trap unit, and the LQ). Each commit port has a combinational twin
+status is a register, with copies for its distant consumers (the ROB, the
+trap unit, and the LQ). Each commit port has a combinational copy
 (`i_commit_valid_comb*`) that feeds it directly, so the status turns
 non-empty at the edge that ends the commit cycle, when the registered commit
 arrives, and a fence, SC, trap, or device read never sees an empty committed
@@ -128,9 +128,8 @@ the entry without writing memory. The LR reservation lives in the LQ.
 Control fields are flip-flops, because the address CAM, the forwarding scan,
 and flushes read every entry at once. Store data lives in a LUTRAM read by the
 drain, plus a per-entry flip-flop copy read by the forwarding path. The LQ
-sends four identical copies of the check address (`i_sq_check_addr` and its
-`_b`, `_c`, `_d` twins), each compared against two entries, to keep the compare
-logic local. Each copy is loaded by its own copy of the capture enable.
+sends four identical copies of the check address (`i_sq_check_addr` and
+`_b`, `_c`, `_d`), each compared against two entries.
 
 ## Verification
 

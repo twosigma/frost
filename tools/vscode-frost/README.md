@@ -113,10 +113,9 @@ Detaching the debugger leaves it open.
 
 Close and reopen the console after changing these settings. Close other
 programs that read the port first: the console refuses the port when it
-detects another reader.
-It stays open during JTAG operations, and a failed automatic connection does
-not stop the FPGA operation. Pasted input is limited to 64 KiB waiting to be
-sent. No pyserial install is needed.
+detects another reader. It stays open during JTAG operations, and a failed
+automatic connection does not stop the FPGA operation. Pasted input is
+limited to 64 KiB waiting to be sent. No pyserial install is needed.
 
 ## Focus layout
 

@@ -22,8 +22,7 @@ checkpoint's setting. Simulation targets that need the counters, such as
 Without the counters, every `mperf*` CSR reads 0, `mperfsel` and `mperfctl`
 ignore writes, and writes to the read-only ones still trap. The C library then
 sees no counters, every delta is 0, and reports print
-`Profiling counters: absent`. The `perf_off_test` program and the `csr_file`
-formal task `bmc_perf_off` check this configuration.
+`Profiling counters: absent`.
 
 Taking a snapshot runs code before the timed region, which can change
 predictor state, so compare scores only between runs built with the same
@@ -41,8 +40,8 @@ setting.
 
 Every counter is 64 bits wide and free-running, and only reset clears it.
 Each cycle a counter adds 0 or 1, except a `sum` counter, which adds a value
-such as an occupancy. Each increment passes through a register in the owning
-block, so a live total lags its events by a cycle; snapshot deltas are exact.
+such as an occupancy. Each increment passes through a register in its block,
+so a live total lags its events by a cycle; snapshot deltas are exact.
 
 Reads return a snapshot, never a live value, so take a snapshot first:
 
@@ -68,11 +67,11 @@ A counter therefore reaches `mperfdata` three cycles after `mperfsel` changes.
 Software cannot observe this, because CSR instructions execute one at a time
 at commit, so a `csrw mperfsel` / `csrr mperfdata` pair cannot outrun it.
 
-In `cpu_ooo`, the aggregator also picks the 32-bit half before its output
-register (`PreselectCsrHalf`), and `csr_file` returns that half for both
-`mperfdata` and `mperfdatah` (`UsePerfCsrHalf`). The pick uses the raw commit
-address that the commit bus registers on the same edge; selecting with any
-other copy of the address would return the wrong half.
+In `cpu_ooo`, the aggregator picks the 32-bit half before its output register
+(`PreselectCsrHalf`), and `csr_file` returns that half for both `mperfdata`
+and `mperfdatah` (`UsePerfCsrHalf`). The pick must use the raw commit address
+that the commit bus registers on the same edge; any other copy of the address
+returns the wrong half.
 
 The counters decode only the low 8 bits of `mperfsel`: indices 130–255 read 0,
 and larger values wrap.
@@ -137,8 +136,8 @@ Sources: `dispatch.sv` (`o_status`), `ooo_pipeline_control.sv`,
 | 9 | `DISPATCH_STALL_MUL_RS_FULL` | cycle | Same, MUL RS |
 | 10 | `DISPATCH_STALL_MEM_RS_FULL` | cycle | Same, MEM RS |
 | 11 | `DISPATCH_STALL_FP_RS_FULL` | cycle | Same, FP RS |
-| 12 | (reserved) | n/a | Reads 0. Older reports show it as `DISPATCH_STALL_FMUL_RS_FULL`, from a separate FP multiply station; FP multiplies and FMAs now go to the FP RS (11) |
-| 13 | (reserved) | n/a | Reads 0. Older reports show it as `DISPATCH_STALL_FDIV_RS_FULL`, from a separate FP divide station; FP divides and square roots now go to the FP RS (11) |
+| 12 | (reserved) | n/a | Reads 0 |
+| 13 | (reserved) | n/a | Reads 0 |
 | 14 | `DISPATCH_STALL_LQ_FULL` | cycle | A valid slot-1 instruction needs an LQ entry and the LQ is full |
 | 15 | `DISPATCH_STALL_SQ_FULL` | cycle | A valid slot-1 instruction needs an SQ entry and the SQ is full |
 | 16 | `DISPATCH_STALL_CHECKPOINT_FULL` | cycle | A valid slot-1 instruction needs a branch checkpoint and none is free |
@@ -151,8 +150,8 @@ Sources: `dispatch.sv` (`o_status`), `ooo_pipeline_control.sv`,
 
 Counters 7–11 and 14–16 each require a valid slot-1 instruction that needs the
 resource in question. Several can fire in the same cycle, so they overlap
-rather than partition counter 1. A cycle in which only slot 2 blocks the bundle counts in
-1 but in none of 7–16; it lands in 35–39 instead.
+rather than partition counter 1. A cycle in which only slot 2 blocks the
+bundle counts in 1 but in none of 7–16; it lands in 35–39 instead.
 
 Counters 20–22 are one-hot: each cycle counts at most one instruction,
 choosing ID over PD and, within a stage, indirect over JAL over branch. They
@@ -219,8 +218,8 @@ store, then RS type.
 | 47 | 5 | `HEAD_WAIT_MEM_STORE` | cycle | …and the head is a store (including FP stores and SC) |
 | 48 | 6 | `HEAD_WAIT_MEM_AMO` | cycle | …and the head is an AMO or LR |
 | 49 | 7 | `HEAD_WAIT_FP` | cycle | …and the head is an FP compute operation (FP RS) |
-| 50 | 8 | (reserved) | n/a | Reads 0. Older reports show it as `HEAD_WAIT_FMUL`, for a separate FP multiply station; 49 now counts those operations |
-| 51 | 9 | (reserved) | n/a | Reads 0. Older reports show it as `HEAD_WAIT_FDIV`, for a separate FP divide station; 49 now counts those operations |
+| 50 | 8 | (reserved) | n/a | Reads 0 |
+| 51 | 9 | (reserved) | n/a | Reads 0 |
 
 ### Wrapper 52–56: commit blocked in the serializing FSM
 
@@ -241,12 +240,12 @@ Sources: RS `fu_ready` and `empty` status and the MEM `fu_cdb_adapter`.
 
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
-| 57 | 15 | `INT_BACKPRESSURE` | cycle | The INT RS is not empty while its FU is not ready (issue blocked downstream) |
+| 57 | 15 | `INT_BACKPRESSURE` | cycle | The INT RS is not empty while its port-0 FU is not ready (ALU2 may still issue) |
 | 58 | 16 | `MUL_BACKPRESSURE` | cycle | Same, MUL RS. A divide waiting for the busy divider does not count: the station holds it back itself, without lowering its FU ready |
-| 59 | 17 | `MEM_RESULT_BACKPRESSURE` | cycle | The MEM FU has a valid result while the MEM CDB adapter still holds an earlier one awaiting a CDB grant |
-| 60 | 18 | `FP_BACKPRESSURE` | cycle | Same as 57, FP RS. Older reports name it `FP_ADD_BACKPRESSURE` |
-| 61 | 19 | (reserved) | n/a | Reads 0. Older reports show it as `FMUL_BACKPRESSURE`, for a separate FP multiply station |
-| 62 | 20 | (reserved) | n/a | Reads 0. Older reports show it as `FDIV_BACKPRESSURE`, for a separate FP divide station |
+| 59 | 17 | `MEM_RESULT_BACKPRESSURE` | cycle | The MEM FU has a valid result while the MEM CDB adapter still holds an earlier one awaiting a CDB grant. Always 0 in the current core: the MEM adapter is always granted and never holds a result |
+| 60 | 18 | `FP_BACKPRESSURE` | cycle | Same as 57, FP RS (not empty counts the wrapper's FP dispatch buffer) |
+| 61 | 19 | (reserved) | n/a | Reads 0 |
+| 62 | 20 | (reserved) | n/a | Reads 0 |
 
 ### Wrapper 63–66: memory / queue activity
 
@@ -272,9 +271,9 @@ is the delta divided by the elapsed cycles.
 | 70 | 28 | `INT_RS_OCCUPANCY_SUM` | sum | INT RS entry count |
 | 71 | 29 | `MUL_RS_OCCUPANCY_SUM` | sum | MUL RS entry count |
 | 72 | 30 | `MEM_RS_OCCUPANCY_SUM` | sum | MEM RS entry count |
-| 73 | 31 | `FP_RS_OCCUPANCY_SUM` | sum | FP RS entry count |
-| 74 | 32 | (reserved) | n/a | Reads 0. Older reports show it as `FMUL_RS_OCCUPANCY_SUM`, for a separate FP multiply station |
-| 75 | 33 | (reserved) | n/a | Reads 0. Older reports show it as `FDIV_RS_OCCUPANCY_SUM`, for a separate FP divide station |
+| 73 | 31 | `FP_RS_OCCUPANCY_SUM` | sum | FP RS entry count, plus the wrapper's one-entry FP dispatch buffer |
+| 74 | 32 | (reserved) | n/a | Reads 0 |
+| 75 | 33 | (reserved) | n/a | Reads 0 |
 
 ### Wrapper 76–83: L0 cache, widen-commit, head-load split
 
@@ -283,13 +282,14 @@ is the delta divided by the elapsed cycles.
 | 76 | 34 | `LQ_L0_HIT` | event | A load completed through the L0 cache |
 | 77 | 35 | `LQ_L0_FILL` | event | An L0 line was filled from a memory response |
 | 78 | 36 | `HEAD_AND_NEXT_DONE` | cycle | Commit fired while the entry behind the head was also valid and done; an upper bound on 2-wide retirement |
-| 79 | 37 | `HEAD_WAIT_LOAD_OUTSTANDING` | cycle | `HEAD_WAIT_MEM_LOAD` with an LQ memory response in flight (real memory latency) |
+| 79 | 37 | `HEAD_WAIT_LOAD_OUTSTANDING` | cycle | `HEAD_WAIT_MEM_LOAD` while the LQ owes any memory response (not necessarily the head load's) |
 | 80 | 38 | `HEAD_WAIT_LOAD_NO_OUTSTANDING` | cycle | `HEAD_WAIT_MEM_LOAD` with no memory response in flight (split by 84–88) |
 | 81 | 39 | `HEAD_PLUS_ONE_DONE` | cycle | The entry behind the head is valid and done, whether or not commit fires (no full flush active). 81 − 78 measures finished work waiting behind a stalled head |
 | 82 | 40 | `COMMIT_2_OPPORTUNITY` | event | The full 2-wide commit gate passed: commit firing, head+1 done, hazard exclusions clear |
 | 83 | 41 | `COMMIT_2_FIRE_ACTUAL` | event | A 2-wide commit fired: 82 gated by the slot-2 accept input, which `cpu_ooo` holds high except while a debug single step is armed, so outside single-step 83 = 82 |
 
-The L0 hit rate is 76 / (76 + 66), and 79 + 80 = 46.
+The L0 hit rate is roughly 76 / (76 + 66); counter 66 also counts device, LR,
+and AMO reads, which never use the L0. 79 + 80 = 46.
 
 ### Wrapper 84–93: head-load decomposition
 
@@ -304,9 +304,9 @@ sub-buckets of 80, and 90, 92 and 93 partition 86.
 | 86 | 44 | `HEAD_LOAD_BUS_BLOCKED` | cycle | Ready to issue, but blocked by the bus, arbitration, or the pipeline (split by 90, 92 and 93) |
 | 87 | 45 | `HEAD_LOAD_CDB_WAIT` | cycle | The data is in the LQ, waiting to enter the CDB stage |
 | 88 | 46 | `HEAD_LOAD_POST_LQ` | cycle | The LQ entry is already freed; the result is in the CDB pipeline on its way to the ROB |
-| 89 | 47 | (reserved) | n/a | Reads 0. Older reports show it as `HEAD_LOAD_BB_ISSUED`, which never counted: a launched head load owes a response until its data arrives, and 79 counts those cycles |
+| 89 | 47 | (reserved) | n/a | Reads 0 |
 | 90 | 48 | `HEAD_LOAD_BB_BUS_BUSY` | cycle | Bus-blocked: the memory bus is busy |
-| 91 | 49 | (reserved) | n/a | Reads 0. Older reports show it as `HEAD_LOAD_BB_AMO`, which counted while any AMO was pending in the LQ. Every such AMO is younger than the head load, so those cycles belong to 92 and 93 |
+| 91 | 49 | (reserved) | n/a | Reads 0 |
 | 92 | 50 | `HEAD_LOAD_BB_SQ_WAIT` | cycle | Bus-blocked: in the `sq_check` stage, before phase 2 |
 | 93 | 51 | `HEAD_LOAD_BB_STAGING` | cycle | Bus-blocked: everything else (before `sq_check` capture, a pending response drop, and similar; split by 102, 103 and 105) |
 
@@ -337,7 +337,7 @@ and done, and they partition the hazard-blocked gap:
 | 101 | 59 | `COMMIT_2_BLOCKED_NEXT_BRANCH_CORRECT` | cycle | Head+1 is a branch with no misprediction that the gate still refused. Correctly predicted branches can retire in slot 2, so this should stay near 0; a steady nonzero count points to a problem in slot-2 branch retirement |
 | 102 | 60 | `HEAD_LOAD_BBS_OTHER_IN_STAGING` | cycle | `HEAD_LOAD_BB_STAGING`, and the single `sq_check` staging register holds a different load (the cost of one staging pipe) |
 | 103 | 61 | `HEAD_LOAD_BBS_LAUNCH_GATED` | cycle | `HEAD_LOAD_BB_STAGING`, and the head load is staged with phase 2 armed: the cycle in which it launches, hits the L0 or forwards, and any cycle its launch is still gated (response-drop window, launch qualifiers) |
-| 104 | 62 | (reserved) | n/a | Reads 0. Older reports show it as `HEAD_LOAD_BBS_SLOW_OUTSTANDING` (staging free, cached-launch hold set), which never counted: the hold implies a cached load in flight, and 79 counts those cycles |
+| 104 | 62 | (reserved) | n/a | Reads 0 |
 | 105 | 63 | `HEAD_LOAD_BBS_CAPTURE_GAP` | cycle | `HEAD_LOAD_BB_STAGING`, and staging is free: the head load has not been captured yet (a selector or capture-recycle bubble) |
 
 ### Cache hierarchy 106–129: cache traffic, fetch stalls, miss latency, concurrency
@@ -450,12 +450,9 @@ garbage value that later gets used as the cache-counter array address.
 
 `tomasulo_profile_read_cache_pair()` reads the current (end) and preceding
 (start) cache snapshots into the two bound 24-entry arrays. It reads only the
-counters `mperfcount` reports and zeroes the rest, so a build without the full
-cache bank cannot leave stale values there, and the report prints "n/a"
-instead of differences of counters that do not exist. Call it after the end
-snapshot and before the next one, which advances both cache banks. Reading the
-cache counters only after the timed region keeps extra CSR reads out of the
-code before it.
+counters `mperfcount` reports and zeroes the rest, and the report prints "n/a"
+for counters that do not exist. Call it after the end snapshot and before the
+next one, which advances both cache banks.
 
 `tomasulo_profile_delta(&start, &stop, idx)` returns one counter's delta,
 indexed by the `TOMASULO_PERF_*` enum.

@@ -103,9 +103,9 @@ Simulation and the board use the same address map. The default
 
 ROM, DEBUG, and RAM make up the 256 KiB low BRAM, which is uncached.
 Instruction fetch reaches only its first 128 KiB, which holds ROM and DEBUG;
-a fetch above that raises an instruction access fault. The
-linker reserves 112 KiB of RAM for the stack and fails the link if data and
-BSS reach into it. DDR holds `.ddr_text`, `.ddr_rodata`, `.ddr_data`, and
+a fetch above that raises an instruction access fault. The linker reserves
+112 KiB of RAM for the stack and fails the link if data and BSS reach into
+it. DDR holds `.ddr_text`, `.ddr_rodata`, `.ddr_data`, and
 `.ddr_bss`, followed by the heap, which runs to the end of the region. The
 lowest loaded DDR section must start at `0x80000000`, because the JTAG image
 is dense from the region base. Move a large object to DDR with a `.ddr_*`
@@ -144,8 +144,7 @@ copy.
 native registers, `UART_TX` through `UART_TX_STATUS`. Use naturally aligned
 accesses. Misaligned loads and stores trap once a trap vector is installed (a
 nonzero `mtvec` base); before that, the hardware does not check alignment. See
-the
-[RTL bus contract](../hw/rtl/README.md#data-tier-bus-contract) for access
+the [RTL bus contract](../hw/rtl/README.md#data-tier-bus-contract) for access
 widths, ordering, and device-read side effects.
 
 ## Startup sequence
@@ -216,13 +215,11 @@ default. Hello World passes on its greeting, and `uart_echo` passes when it
 echoes input the harness injects.
 
 In the BRAM tier the harness normally runs each program twice, with a reset
-but no reload in between, so a program must reinitialize its own state. `crt0.S`
-restores `.data` and clears the BSS sections, but `.ddr_data` is not
-reinitialized and may still hold writes from the first run. DDR-tier
-programs run once. The long CoreMark-PRO `loops` and `nnet` simulations also
-run once in BRAM to fit CI's six-hour job limit. They retain full workload
-verification and the final success-marker check; they do not exercise the
-second run after reset.
+but no reload in between, so a program must reinitialize its own state.
+`crt0.S` restores `.data` and clears the BSS sections, but `.ddr_data` is not
+reinitialized and may still hold writes from the first run. DDR-tier programs
+run once, and so do the long CoreMark-PRO `loops` and `nnet` simulations, to
+fit CI's six-hour job limit.
 
 ```bash
 ./scripts/frost.py cocotb hello_world                               # simulate from low BRAM
@@ -259,7 +256,7 @@ can be debugged and where each one first stops.
 | `ddr_atomic_test/` | Word LR/SC and AMOs on cached DDR, printing a progress letter before each step |
 | `ddr_exec_test/` | Code in DDR: calls into BRAM, recursion, a body larger than the fetch buffer, cold and warm runs |
 | `ddr_heap_test/` | Multi-MiB `malloc` from the DDR heap, checked for address aliasing |
-| `ddr_mlp_test/` | Independent cold DDR loads must overlap their L1D misses (measured with the profiling counters); a pointer chase is the control |
+| `ddr_mlp_test/` | Independent cold DDR loads must overlap their L1D misses, measured with the profiling counters in a build with 4 KiB L1D and L2; a pointer chase is the control |
 | `ddr_smc_test/` | Self-modifying code in DDR: store, `fence.i`, then execute cold and warm |
 | `ddr_test/` | Cached-DDR loads and stores, byte strobes, evictions, the preloaded `.ddr_rodata` image, and AMOs |
 | `debug_target/` | Debuggee with known symbols for the JTAG debug tests; waits for a debugger to write its flags |

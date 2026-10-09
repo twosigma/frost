@@ -8,9 +8,9 @@ scrambling, the gearboxes, and block lock all in soft logic. The
 DMA, and Linux; it also builds and tests on its own.
 
 The top is `eth10g_mac_pcs`, and `net10g.f` lists its modules with paths
-relative to the repository root. Their one outside dependency is
-the two-flop synchronizer `cdc_sync` from `hw/rtl/lib/cdc`, which the
-including file list supplies (`cdc.f`). All datapaths are native 64-bit,
+relative to the repository root. Their one outside dependency is the
+two-flop synchronizer `cdc_sync` from `hw/rtl/lib/cdc`, which the including
+file list supplies (`cdc.f`). All datapaths are native 64-bit,
 with separate transmit and receive clock domains and a raw parallel interface
 for a board's GTY wrapper (the X3's is `boards/x3/x3_nic_gty.sv`). There are
 no vendor primitive instances.
@@ -55,11 +55,11 @@ correct FCS alone cannot publish a frame with an invalid termination sequence.
 
 ## Raw interface and clocks
 
-`i_tx_clk` and `i_rx_clk` are independent, nominally 161.1328125 MHz.
-Each raw word carries 64 consecutive bits of the 10.3125 Gb/s encoded line.
-The receive clock comes from the transceiver's receive clocking path (on the
-X3, the recovered clock).
-There is no clock crossing of packet data inside this top.
+`i_tx_clk` and `i_rx_clk` are independent, nominally 161.1328125 MHz. Each
+raw word carries 64 consecutive bits of the 10.3125 Gb/s encoded line. The
+receive clock comes from the transceiver's receive clocking path (on the X3,
+the recovered clock). There is no clock crossing of packet data inside this
+top.
 
 | Interface | Clock | Behavior |
 | --- | --- | --- |
@@ -93,7 +93,7 @@ transmission order, so in these packed vectors:
 
 Headers bypass scrambling. A board wrapper must honor this bit order; the
 interface is not an implicit mapping to GTY `TXHEADER`/`RXHEADER` ports.
-With a raw bypass configuration, the soft gearboxes own block packing and
+With a raw bypass configuration, the soft gearboxes do block packing and
 alignment. Using a GTY hard gearbox instead would require a separate adapter.
 
 ## Packets
@@ -101,8 +101,8 @@ alignment. Using a GTY hard gearbox instead would require a separate adapter.
 Packets begin with the destination MAC address. TX excludes preamble and FCS;
 RX strips them. VLAN tags and other Ethernet payload bytes are transported
 without interpretation. `MAX_FRAME_BYTES` defaults to 9216 and counts
-destination address through payload/padding, excluding FCS. Supported shared
-MAC configurations require a limit of at least 60 bytes.
+destination address through payload/padding, excluding FCS; it must be at
+least 60.
 
 - `tkeep` is contiguous from lane zero and nonempty; every nonfinal TX beat
   has `tkeep=8'hff`. `tlast` terminates the packet.
@@ -112,7 +112,7 @@ MAC configurations require a limit of at least 60 bytes.
   60 bytes; CRC starts at all ones and the complemented result is sent
   least-significant byte first. TX starts on lane zero and terminates on
   any lane.
-- TX emits 12–19 actual idle characters between termination and the next
+- TX emits 12 to 19 idle characters between termination and the next
   start when another packet is queued. It does not implement deficit-idle
   counting. The encoded stream runs continuously, but this conservative
   spacing reduces maximum small-packet throughput relative to an optimized
@@ -126,14 +126,14 @@ MAC configurations require a limit of at least 60 bytes.
   therefore always zero. Data/keep/last remain stable while stalled.
 - RX storage exhaustion discards a whole frame; speculative writes are
   rolled back. Subsequent valid frames recover without external reset.
-  Storage and descriptors freed by an AXIS handshake serve XGMII words sampled
-  on later clocks, not a word sampled on the handshake's own clock.
+  Space that an AXIS handshake frees is available to XGMII words sampled on
+  later clocks, not to a word sampled on the handshake's own clock.
 
 By default TX holds two complete frames of up to 9216 bytes each, in the two
 16 KiB halves of one RAM; RX has a 32 KiB circular data buffer and 512
-descriptors. Both data stores use synchronous reads suitable
-for block RAM. RX frame starts are word-aligned, and FCS bytes consume
-storage until the frame drains. A two-entry output register decouples the
+descriptors. Both data stores use synchronous reads suitable for block RAM.
+RX frame starts are word-aligned, and FCS bytes consume storage until the
+frame drains. A two-entry output register decouples the
 RX storage from AXIS backpressure.
 
 RX publishes a completed packet on the clock after its final XGMII word is
@@ -193,8 +193,8 @@ Verilator/cocotb and checks the resulting XML for actual passing tests. See
 [the verification README](../../../tests/net10g/README.md) for targets,
 coverage, artifact paths, and the extra pinned synthesis frontend.
 
-On X3, the MAC/PCS runs at the transceiver word rate alongside the 322.265625 MHz
-CPU and carries Debian's NFS root over fiber. Board transceiver control,
+On X3, the MAC/PCS runs at the transceiver word rate alongside the
+322.265625 MHz CPU and carries Debian's NFS root over fiber. Board transceiver control,
 packet CDC, DMA, registers, interrupts, and the Linux driver are provided by
 the surrounding NIC and board integration.
 

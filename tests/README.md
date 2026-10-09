@@ -33,10 +33,8 @@ The cocotb benches, models, and monitors themselves live in
 
 `check` reports both jobs; `--fail-fast` stops after the first failure. The
 lint hooks can modify files, so review the working tree afterward. The
-whitespace fixers skip the board captures in `tests/fixtures/*.log`, which
-must keep their exact bytes, including terminal escapes, carriage returns,
-and trailing whitespace; a test fails if the escapes are cleaned out. To run
-only the fast Python tests:
+whitespace fixers skip the board UART captures in `tests/fixtures/*.log`,
+which must keep their exact bytes. To run only the fast Python tests:
 
 ```bash
 ./scripts/frost.py run pytest tests -m "not cocotb and not synthesis and not formal and not slow" -v
@@ -65,11 +63,9 @@ a regex for the cocotb test function; with pytest, `-k` and `-m` select
 registry targets. A seed sweep gives each run its own build directory and
 prints a command that reproduces each failing seed.
 
-Within a pytest run, compilation reuses generated files only when all build
-markers match the target and tool configuration. Partial files left by a failed
-Verilator invocation are cleaned before the next target, even if no simulator
-binary was produced, so one compile failure cannot select the wrong RTL model
-for a later bench.
+Within a pytest run, a target reuses generated files only when its build
+settings match, and the files of a failed Verilator build are removed before
+the next target.
 
 Whole-CPU simulations, synthesis, and FPGA builds all use the CPU
 configuration in `riscv_pkg`. The `tomasulo_wrapper_no_early_load` and
@@ -176,13 +172,13 @@ subtracts) therefore run only locally, for example with
 locally. The F and D shards set `FROST_ARCH_SIM_TIMEOUT_SEC=3600`, an hour
 per test; the runner's default limit is sized for the largest tests in DDR.
 
-In 99 of the pinned F and D sources, most `NAN_BOXED` data constants run the
-intended hex value together with its own decimal digits, less the first:
+In many of the pinned F and D sources, most `NAN_BOXED` data constants run
+the intended hex value together with its own decimal digits, less the first:
 `0x7f7fffff` appears as `0x7f7fffff139095039`. The assembler would truncate
 each one with a warning, so those cases would load other operands than their
 comments name. `sw/apps/arch_test/repair_constants.py` restores the intended
-values. The FROST build and `generate_references.py` both compile the repaired
-copy, so the committed references come from it too.
+values. The FROST build and `generate_references.py` both compile the
+repaired copy, so the committed references come from it too.
 
 ### `test_riscv_tests.py`
 
@@ -279,6 +275,7 @@ Each target and task is a separate pytest case with a 40-minute timeout;
 | `COCOTB_MAX_CYCLES` | Cycle budget per application run (default 500,000); some targets set their own |
 | `COCOTB_COREMARK_MAX_CYCLES` | CoreMark and CoreMark-PRO cycle budget (default 15,000,000; coremark_pro_loops sets 20,000,000 in the test registry) |
 | `COCOTB_NUM_RUNS` | Runs per application, with a reset between them (default 2; always 1 in the DDR tier) |
+| `SIM_FAST_MAINT` | Fast `fence.i` cache maintenance in whole-SoC simulation (default 1; hardware uses the full sweeps, as `0` does) |
 
 Build products go to `tests/sim_build/`, and cocotb writes JUnit results to
 `tests/results.xml`. A `test_run_cocotb.py` run passes only if the simulator

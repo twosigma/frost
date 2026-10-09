@@ -53,14 +53,15 @@ adapter wiring.
 | `ROB_SHARED_LINK_BANK` | 0 | Shares the ROB value memories' allocation link bank when dispatch guarantees at most one branch allocation per cycle; enabled by `cpu_ooo` |
 | `INT_RS_DEPTH` | 16 (`riscv_pkg::IntRsDepth`) | INT_RS entries: a power of two from 2 to 32, the ROB depth. It changes only INT_RS and the width of its occupancy count; port 1's window stays at eight entries, or the whole station if smaller |
 | `EARLY_LOAD_WAKEUP` | 1 (`riscv_pkg::EarlyLoadWakeup`) | [Early dependent memory wakeup](#early-dependent-memory-wakeup) |
-| `PREPARE_LOAD_WHILE_BUSY` | 1 (`riscv_pkg::PrepareLoadWhileBusy`) | LQ: start a load's store-queue check while the memory port is busy |
+| `PREPARE_LOAD_WHILE_BUSY` | 1 (`riscv_pkg::PrepareLoadWhileBusy`) | LQ: stage a load while the memory port is busy; its SQ check, L0 hit, and launch still wait for the port |
 | `L0_CACHE_DEPTH` | 128 (`riscv_pkg::LqL0Depth`) | LQ L0 cache entries |
 | `CACHED_BASE`, `CACHED_SIZE_BYTES` | `0x8000_0000`, `0x4000_0000` | Cached (DDR) region, for LQ and SQ tier tagging |
 | `PERF_COUNTERS` | 1 | 0 leaves out `tomasulo_perf_counters`; `o_perf_counter_data` then reads zero |
 
 `cpu_ooo` sets `SPLIT_RS_DISPATCH=1`, `ENABLE_DISPATCH_DONE_REPAIR=1`, and
-`ROB_SHARED_LINK_BANK=1`, and passes its own values for the rest. Its `PERF_COUNTERS` defaults to 0; FPGA
-builds choose it with `build.py --perf-counters`.
+`ROB_SHARED_LINK_BANK=1`, and passes its own values for the rest. Its
+`PERF_COUNTERS` defaults to 0; FPGA builds choose it with
+`build.py --perf-counters`.
 
 ## Dispatch routing
 
@@ -68,8 +69,8 @@ builds choose it with `build.py --perf-counters`.
 and slot, and a slot-1 intent bit per station that each station uses to pick
 slot 2's entry early. All of them are gated by `i_backend_recovery_hold`. Each
 station reports full and full-for-2 status to dispatch; for FP_RS the
-wrapper adds its one-entry dispatch buffer to that count. The LQ
-and SQ allocate from the MEM_RS packets of both slots, slot 1 first.
+wrapper adds its one-entry dispatch buffer to that count. The LQ and SQ
+allocate from the MEM_RS packets of both slots, slot 1 first.
 
 ## Flush coordination
 
@@ -100,13 +101,11 @@ wrapper asserts that `i_early_recovery_flush` equals `speculative_flush_en`
 whenever `speculative_flush_all` is low. When they differ, the LQ's full-flush
 input is also high and clears everything visible.
 
-The FP shim enables `LAUNCH_SQUASH`: a launch covered by a flush is killed
-in its first decode cycle instead of gating the engine's launch enables with
-the late flush comparison. Busy stays low for that discarded cycle. This
-relies on FP_RS issuing nothing in the cycle after a flushed issue; the
-station and shim share the same speculative flush signals and ROB head tag.
-The `fp_launch_squash_rs` proof checks the bubble with these wrapper tie-offs,
-and `fp_launch_squash` proves unchanged externally visible completion timing.
+The FP shim enables `LAUNCH_SQUASH`: a launch that a flush covers is killed
+in its first decode cycle, and busy stays low for that discarded cycle. This
+relies on FP_RS issuing nothing in the cycle after a flushed issue, which
+holds because the station and the shim use the same speculative flush
+signals and ROB head tag.
 
 `i_backend_recovery_hold` is not a flush. While it is high, the wrapper blocks
 dispatch into every station, blocks issue, and holds the FP dispatch buffer.
@@ -118,8 +117,8 @@ when a same-cycle flush vetoes the entry. The coherence observation table
 also writes a pending line even if reset or flush discards the observation.
 A separate valid bit, which does see reset, flush, or fault, is the only
 thing that makes each payload observable; a later insertion overwrites the
-payload on the same edge that sets its valid bit. The
-data MMU's pre-kill result pulses follow the same pattern: the SQ uses
+payload on the same edge that sets its valid bit. The data MMU's pre-kill
+result pulses follow the same pattern: the SQ uses
 `dmmu_out_sq_capture_valid` for payload only, and the LQ uses
 `dmmu_out_lq_capture_valid` as its address-update valid because a flush clears
 the targeted LQ entry on the same edge.
@@ -156,14 +155,14 @@ not the reverse. `cpu_ooo`'s early recovery relies on the forward direction,
 which the wrapper formal target checks. `o_tlb_invalidate` is the ROB's
 SFENCE.VMA window OR the CSR file's `i_csr_translation_flush_req`.
 
-Both CDB lanes are registered once after the arbiter; the ROB and every station
-wake from the registered lanes. The grants stay combinational, so an adapter
-can clear its holding register in the cycle it is granted. The wrapper also
-keeps same-edge copies of each lane next to particular consumers (per-station
-tag copies, an INT_RS copy with its own issue-compare valid and tag, the ROB's
-head-match tags, and a 64-bit copy for the store early-address path).
-Simulation assertions check that the station and SQ copies always match the
-main register.
+Both CDB lanes are registered once after the arbiter; the ROB and every
+station wake from the registered lanes. The grants stay combinational, so an
+adapter can clear its holding register in the cycle it is granted. The
+wrapper also keeps copies of each lane's register for particular consumers
+(per-station tag copies, an INT_RS copy with its own issue-compare valid and
+tag, the ROB's head-match tags, and a 64-bit copy for the store early-address
+path). Simulation assertions check that the station and SQ copies always
+match the main register.
 
 A registered ALU result does not store a second copy of the ALU output. For
 other sources the registered value comes from the arbiter's value tree. For a
@@ -186,10 +185,10 @@ every valid ALU result, which follows from the rule in the next section. The
 Slots 5 and 6 (`FU_FP_MUL`, `FU_FP_DIV`) have no unit behind them; only their
 test inputs drive them.
 
-With refill off, a granted adapter always returns to idle, which keeps the
-grant out of the FU result FIFO and issue logic. `REGISTER_OUTPUT=1` removes
-the same-cycle pass-through, adding a cycle to every DIV and FP result. The
-[adapter README](../fu_cdb_adapter/README.md) describes each parameter.
+With refill off, a granted adapter always returns to idle.
+`REGISTER_OUTPUT=1` removes the same-cycle pass-through, adding a cycle to
+every DIV and FP result. The [adapter README](../fu_cdb_adapter/README.md)
+describes each parameter.
 
 A pending ALU adapter deasserts its INT_RS port's `fu_ready`, so no ALU result
 arrives while it is pending; simulation asserts this for both ALUs. As a
@@ -239,22 +238,17 @@ registers, adders, and SQ update port.
 
 A store whose base is not ready becomes the slot's repair candidate. It waits
 for its base tag on the done-repair channels or either CDB lane, then writes
-its address. The immediate is added to every candidate base in parallel with
-the tag match, which then selects a finished address. The output address and
-MMIO flag select the two live CDB sums in the final stage; fresh, held, and
-captured-repair sources are selected in parallel. The priority remains
-fresh, held, then repair channels 1 through 6, CDB lane 0, and CDB lane 1.
-`sq_live_result_select` checks both packets against the original selection
-for arbitrary state and inputs, including simultaneous matches and invalid
-packets. If a fresh store holds
-the slot's SQ port that cycle, the candidate keeps that address and writes it
-on the next free cycle. A candidate is
-replaced by a newer unready store on the same slot (the old store then gets its
-address at MEM_RS issue), cancelled when MEM_RS issues the store (the issue
-delivers the address anyway), and cleared by any flush. Cancelling at issue
-also keeps a stale candidate from writing into a later store that reuses the
-ROB tag: a store cannot complete, and so its tag cannot be reused, before
-MEM_RS issues it.
+its address. The immediate is added to every possible base in parallel with
+the tag match, which then selects a finished address, in this priority: a
+fresh store, a held address, repair channels 1 through 6, CDB lane 0, and CDB
+lane 1. If a fresh store holds the slot's SQ port that cycle, the candidate
+keeps its address and writes it on the next free cycle. A candidate is
+replaced by a newer unready store on the same slot (the old store then gets
+its address at MEM_RS issue), cancelled when MEM_RS issues the store (the
+issue delivers the address anyway), and cleared by any flush. Cancelling at
+issue also keeps a stale candidate from writing into a later store that
+reuses the ROB tag: a store cannot complete, and so its tag cannot be reused,
+before MEM_RS issues it.
 
 While a candidate waits, it writes its provisional address into the SQ entry's
 payload without setting the address-valid bit; only the final update makes the
@@ -298,12 +292,11 @@ since an older SC may still be waiting for the head; a full flush clears the
 table.
 
 The MEM adapter's input gives priority to the registered store fault, then the
-registered SC result, then the LQ result. The SC result's valid bit has
-same-edge copies for the adapter mux, LQ result acceptance, MEM_RS issue
-readiness, and the early-wakeup enable, so each can sit beside its consumers;
-an assertion checks that they always match the original. The fault register cannot wait,
-because another store fault can arrive the next cycle, so a colliding SC
-result waits behind it. An SC that faults completes through the fault path: the
+registered SC result, then the LQ result. (The SC result's valid bit has
+separate copies for the adapter mux, LQ result acceptance, MEM_RS issue
+readiness, and the early-wakeup enable, which an assertion keeps equal.) The
+fault register cannot wait, because another store fault can arrive the next
+cycle, so a colliding SC result waits behind it. An SC that faults completes through the fault path: the
 registered fault strobe kills its table entry before it can fire. Each SC
 result must reach the CDB exactly once, since a second broadcast could land on
 a reused ROB tag; simulation assertions check this, and they are also part of
@@ -320,25 +313,20 @@ registered CDB as usual.
 `mem_wakeup_merge` places the LQ's staged, non-faulting result into an idle
 registered CDB lane on MEM_RS's CDB inputs only. It never displaces a
 registered broadcast; if both lanes are busy, the load wakes MEM_RS through
-the registered copy a cycle later. The merge is enabled only when the LQ result
-is the MEM adapter's input this cycle, with no store fault or SC result ahead
-of it and the adapter idle. MEM_RS exports eight candidate ready vectors
-and its entry tags. The LQ compares tags before selecting each candidate's
-match, then registers the matches and selects using the actual lane valids
-(see the [reservation station](../reservation_station/README.md#pre-issue-look-ahead)).
-Under translation, the LQ receives the data MMU's look-ahead tag and the
-translation-active flag separately, so the translation mux follows the
-compares. The issue cycle and the late candidate-selection registers stay
-unchanged.
+the registered copy a cycle later. The merge is enabled only when the LQ
+result is the MEM adapter's input this cycle, with no store fault or SC result
+ahead of it and the adapter idle. Because the merged lanes decide MEM_RS's
+next issue, MEM_RS exports one look-ahead candidate per combination of lane
+valids, and the LQ selects among them after registering (see the
+[reservation station](../reservation_station/README.md#pre-issue-look-ahead)).
 
-Why it is safe:
+This is safe because:
 
 - Outside recovery, the early token is a real broadcast, not a prediction: a
   presented MEM result always wins a CDB lane, since only MUL outranks MEM and
   the CDB is two lanes wide. The wrapper asserts that every injected packet is
   also broadcast in the same cycle.
-- The token is built from registered LQ state and ignores recovery, which keeps
-  the flush logic out of the MEM_RS wakeup path. That is still safe. During
+- The token is built from registered LQ state and ignores recovery. During
   recovery MEM_RS accepts no dispatch and moves no new entry into stage 2, and
   a packet already in stage 2 captured its operands earlier, so a token in a
   recovery cycle can only mark sources ready in surviving resident entries. A
@@ -365,22 +353,19 @@ top-level and cache counter blocks. See the
 ## Verification
 
 - `tomasulo_wrapper` (cocotb) runs the integration tests with done repair
-  enabled: FP buffer repair timing, CDB contention, SC flows and
-  store-fault collisions, flushes, and stale-tag probes.
-  `tomasulo_wrapper_no_early_load` runs the same suite with early load wakeup
-  off. `tomasulo_wrapper_split_rs` tests per-station dispatch as the CPU uses
-  it, including INT_RS's second-issue window and the local CDB copies.
-  `tomasulo_load_wakeup` covers early wakeup across dispatch, CDB contention,
-  and recovery, and `tomasulo_coherence` and `tomasulo_coherence_l0_256` cover
-  DMA coherence races.
+  enabled: FP buffer repair timing, CDB contention, SC flows and store-fault
+  collisions, flushes, and stale-tag probes. `tomasulo_wrapper_no_early_load`
+  runs the same suite with early load wakeup off, and
+  `tomasulo_wrapper_split_rs` tests per-station dispatch as the CPU uses it.
+  `tomasulo_load_wakeup` covers early wakeup, and `tomasulo_coherence` and
+  `tomasulo_coherence_l0_256` cover DMA coherence races.
 - The `tomasulo_wrapper` formal target checks commit propagation, flush
   composition, INT_RS's side-RAM tag rule against the real ROB, and the SC and
-  CDB-copy assertions above, with translation off. Its `fp_repair_bmc` task
-  enables done repair and checks FP buffer repair timing and values for all
-  three sources.
+  CDB-copy assertions above, with translation off; its `fp_repair_bmc` task
+  checks the FP buffer's repair timing and values.
 - In Verilator simulation, the wrapper logs CDB broadcasts that target a free
-  ROB entry, naming the FU that produced each, to help track down results that
-  escaped a flush.
+  ROB entry, naming the FU that produced each, to help track down results
+  that escaped a flush.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

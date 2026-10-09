@@ -16,15 +16,14 @@ describes the reference and the comparison method.
 Priorities, guided by the performance counters and timing reports:
 
 1. Fewer front-end bubbles. Beyond the four-bundle decoded queue and the
-   64 KiB predecoded region of BRAM, compare a larger predecoded region with a
-   tagged predecode cache or a stream buffer. Fetch must keep working with
+   single-cycle fetch region (the first 64 KiB of BRAM), compare a larger
+   single-cycle region with a tagged predecode cache or a stream buffer. Fetch must keep working with
    variable-latency memory.
 2. Pairing across fetch windows. The front end pairs two instructions only
    when both fit in one 64-bit fetch window. Removing that limit lets any two
    consecutive instructions pair. Then measure compressed code across
-   different code layouts: CoreMark runs without compressed instructions for
-   now, and should use them again once throughput is stable across link
-   orders.
+   different code layouts: CoreMark runs without compressed instructions, and
+   should use them once throughput is stable across link orders.
 3. Cheaper 32-bit operations on RV64. `MULW` takes three cycles and word
    division or remainder thirty-three. Use instruction traces to evaluate fusion
    or elimination at rename. Any such transformation must keep precise
@@ -75,9 +74,8 @@ its interrupt is unconnected and `ECC_EN_IRQ` is clear. The cache hierarchy's
 AXI bridge checks error responses only in simulation. The plan is to connect
 ECC reporting, propagate AXI errors to software, and add scrubbing and
 periodic reporting (`CE_CNT` saturates at 255, so it must be read and
-cleared). The hardware
-regression checks ECC once at the end of a run, which catches errors but is
-not continuous monitoring.
+cleared). The hardware regression checks ECC once at the end of a run, which
+catches errors but is not continuous monitoring.
 
 ## Deferred
 

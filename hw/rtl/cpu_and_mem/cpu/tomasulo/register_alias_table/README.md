@@ -1,6 +1,6 @@
 # Register Alias Table
 
-The RAT maps architectural registers (x0–x31, f0–f31) to the ROB tags of
+The RAT maps architectural registers (x0-x31, f0-f31) to the ROB tags of
 their in-flight producers. Dispatch reads sources and writes renames; commit
 clears a mapping once the architectural register file holds the value. The
 RAT also keeps eight checkpoints of the whole mapping, so a mispredicted
@@ -25,8 +25,8 @@ sees that case.
 
 Every branch, JAL, or JALR reserves a checkpoint at dispatch. The checkpoint
 snapshots the full INT and FP RATs, the RAS state (top-of-stack pointer,
-valid count, and top entry), and the owning branch's ROB tag and generation
-bit (see below). On misprediction, the snapshot replaces the active RAT in a single
+valid count, and top entry), and the branch's own ROB tag and generation bit
+(see below). On a misprediction, the snapshot replaces the active RAT in one
 cycle.
 
 There are eight checkpoint slots. While all are occupied, a bundle that
@@ -37,15 +37,11 @@ valid bit, a generation bit, and the 5-bit tag. The active RATs stay in
 flip-flops because they need parallel lookup, per-entry commit clear, and a
 bulk overwrite on restore.
 
-If slot 2 is the control-flow instruction that owns the checkpoint, the
-snapshot includes slot 1's same-cycle rename, so recovery returns to the
-state just before slot 2.
-
-Rename writes and the snapshot overlay are built from dispatch's early
-candidates (see the [dispatch guide](../dispatch/README.md)): each
-register's write select decodes the destinations, and the bundle fire
-(`i_alloc_fire`) enters its write enable last. The overlay needs no fire,
-because the snapshot is written only in a cycle that saves.
+If slot 2 is the branch or jump that takes the checkpoint, the snapshot
+includes slot 1's same-cycle rename, so recovery returns to the state just
+before slot 2. Rename writes decode dispatch's pre-fire destination signals
+and apply the bundle fire (`i_alloc_fire`) last (see the
+[dispatch guide](../dispatch/README.md)).
 
 ## Stale rename detection
 
@@ -61,7 +57,7 @@ repair-valid flags qualify every consumer. INT x0 always returns all zeros.
 Restoring a checkpoint needs a stronger test, since tags a snapshot names may
 have been reallocated by then. cpu_ooo flips a per-entry generation bit
 (`rob_entry_epoch`) on every ROB allocation, and a snapshot records it for
-each entry and for the owning branch. A restored mapping stays renamed only
+each entry and for the branch. A restored mapping stays renamed only
 if the branch is still in the ROB with its saved generation, the mapped
 entry is still valid with its saved generation, and that entry is strictly
 older than the branch.

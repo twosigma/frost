@@ -9,7 +9,7 @@ These tools run natively on the Linux host, not in Docker. They need Vivado
 ## Quick Start
 
 ```bash
-./fpga/build/build.py x3                            # build the bitstream (30-90 min)
+./fpga/build/build.py x3                            # build the bitstream (takes hours)
 ./fpga/program_bitstream/program_bitstream.py x3    # program the FPGA
 ./fpga/load_software/load_software.py x3 coremark   # build and load an application
 ```
@@ -167,176 +167,85 @@ Buildroot test image repeatedly.
 runs Vivado: `synth`, `opt`, `place`, `post_place_physopt`, `route`,
 `post_route_physopt`, `second_route`, and `post_second_route_physopt`, then
 the bitstream. Each step saves a checkpoint, so `--start-at` and
-`--stop-after` can resume or stop at any step. Resuming keeps the synthesized
-design; RTL changes need a new synthesis.
-
-X3's board constraints leave the NIC core and MAC unfenced. Even soft pblocks
-can change the CPU's placement and local congestion as the design evolves;
-evaluate any new floorplan against an unfenced placement of the current netlist.
-
-Full-rate X3 placement compares the conventional directive/uncertainty sweep
-with a local-guidance candidate generated from the current build's closed
-post-opt checkpoint. The guided candidate starts with a fresh reference
-using `ExtraNetDelay_high`, 0.325 ns
-placement uncertainty, CPU clock root `X1Y9`, and `MEDIUM` cell bloat on the
-integer reservation station and the memory station's source-2 operand cells
-(`*u_tomasulo/u_mem_rs/rs_src2_value*`). The hierarchy must match exactly once;
-the operand group must be nonempty. These operand cells receive the wide
-CDB and repair buses. On the fresh reference it measures balanced sites for
-critical L2 output registers, then alternates faster physical LUT inputs with
-register placement in up to eight rounds. Separated registers can move toward
-their low-fanout LUT drivers; co-located LUT/register pairs can move together
-toward the preceding critical cell. A change is retained only if the affected path improves
-and global and CPU setup and hold minima do not worsen. Register moves score
-all non-clock inputs and the output. Hold minima through the output and at
-each timed register input must stay nonnegative or, if already negative,
-must not worsen. Register and pair moves must not increase the count of CPU
-endpoints below −0.200 ns. Logical functions and net
-connectivity are checked, and rejected choices restore the original state.
-
-The final pass preserves the surrounding placement, unplaces the guided
-cells, and constrains their sites with hard local pblocks, BEL assignments,
-and LUT pin mappings. `place_design -directive Quick` then places those
-cells. No cell, net or pin edits follow that final placement. Both passes
-use the normal work directory: `work/post_place_reference.dcp` and
-`work/post_place.dcp`. `work/post_place_guidance.tcldict` records the measured
-choices. A separate Vivado process checks the saved locations, pin mappings,
-clock roots, restoration metadata and timing without altering them.
-Before downstream optimization, the flow removes temporary placement locks
-and restores the original cell, net, and port constraints. Port package pins,
-physical sites, I/O standards, and fixed-location flags are checked explicitly
-so unlocking the design cannot silently lose the board pin assignments.
-When resuming an older downstream checkpoint whose port flags were all lost,
-the flow restores them from its qualified `post_place.dcp` ancestor. Every
-physical pin and I/O standard must still match; a mismatch stops the build.
-This also applies when resuming directly at bitstream generation, so the old
-implementation does not need to be repeated just to recover its pin flags.
-Use `./fpga/build/build.py x3 --start-at bitstream` to generate the bitstream
-from an existing qualified `final.dcp` without rerunning implementation.
-
-In X3's final post-route phys-opt stage, a stalled ordinary directive sweep
-also tries separate optimization groups for up to 600 CPU endpoints below
-5 ps of setup slack. These passes use 30 ps of additional setup uncertainty
-while optimizing, then restore the original groups and sweep uncertainty
-before measuring whole-design WNS and TNS. Candidates must remain fully
-routed with no routing errors or hold/pulse-width violations. A clock
-optimization pass targets failing clock-enable endpoints separately and
-preserves every clock's period and waveform. With at most 24 failing CPU
-endpoints, the flow tries clock optimization for each remaining endpoint
-individually, accepting only whole-design improvements. An automatic LUT
-pin search then tries faster physical inputs along the reported critical
-paths, including A5-to-A6 changes for the last few picoseconds. It preserves the LUT functions,
-connectivity, placement, clock routes, board pins, and existing constraints;
-each trial must improve whole-design WNS, or TNS at tied WNS, to be retained.
-The search uses the current timing report, with no fixed cell list, and restores
-the best checkpoint after each unsuccessful trial. The flow then tries a routing
-fallback for any remaining eligible paths. That fallback rebuilds shared data nets on
-failing paths, routing the critical sink first and temporarily fixing that
-branch while completing the other sinks. Unlike rerouting one sink alone,
-this can replace a slow shared trunk. It preserves cell placement, clock
-routes, board pins, timing constraints, and existing route constraints, and
-uses the same whole-design timing, hold, pulse-width, and routing checks.
-Every endpoint fallback candidate must also pass all bus-skew constraints;
-these require a separate report from the setup/hold timing summary. Bitstream
-generation saves `final_bus_skew.rpt` and refuses a bus-skew violation or an
-incomplete report, including a violation whose displayed slack rounds to zero.
-Candidates come from the current timing report, with 2–128 sinks and at least
-100 ps of connection delay; prescribed physical routes are excluded. Each
-shared net is tried once per fallback pass. After the endpoint passes, a retained
-WNS improvement or TNS improvement at tied WNS restarts the normal sweep. The
-sweep stops at convergence when all passes produce no improvement. A failed endpoint optimization or
-constraint cleanup also discards that candidate by reopening the saved best
-checkpoint.
-Declaring setup timing met requires nonnegative WNS and TNS and zero failing
-setup endpoints. This applies to sweep termination, final-checkpoint promotion,
-and skipping subsequent routing stages. A negative slack rounded to zero cannot
-end the flow early. Pin and routing searches also retain paths marked
-`VIOLATED` when their displayed slack rounds to zero. Removing the final setup
-violation is retained even when the displayed WNS and TNS tie the previous
-failing result.
-A custom `FROST_PHYSOPT_SWEEP_ORDER` replaces this
-default schedule.
-
-Every full-rate candidate must have immediate post-place WNS better than
-−0.200 ns at zero user setup uncertainty and a valid congestion report below
-level 5. Missing reports and congested candidates are rejected, even if that
-leaves no candidate. The best three survivors are quick-routed by default;
-a sole survivor is also probed. Each probe must produce finite timing, a
-readable Vivado log, and a route-status
-report with every routable net fully routed and no routing errors. Failed or
-incomplete probes are rejected. Completed probes without a router congestion
-warning rank first, followed by routed WNS and TNS. A congestion warning alone
-does not disqualify a candidate: the `RuntimeOptimized` probe does not establish
-whether the full flow's phys-opt and stronger routing directives can close timing.
-The promoted checkpoint remains the candidate's immediate post-place result.
-If no candidate qualifies, the build stops and leaves the reports for review.
-`work/post_place_selection.json` records every candidate's timing verdict, congestion,
-and probe result, along with checkpoint hashes and the effective probe count.
-
-The guided candidate additionally requires post-opt WNS >= 0 and uses no
-archived checkpoints. A failed reference or guided pass stops the default flow
-before the grid. All candidates must consume the same unchanged post-opt
-checkpoint. If guidance wins, `work/post_place_recipe.json` records checkpoint and
-guidance hashes; `work/post_place_verification_timing.rpt` records the
-clean-reopen timing. Temporary pblocks and preservation locks are removed
-when opening the result for downstream optimization. The original cell
-LOC/BEL/DONT_TOUCH and net DONT_TOUCH/route-fix flags are restored from metadata
-inside the checkpoint. The measured LUT pin assignments remain constrained;
-physical placement and setup/hold slack must remain unchanged during handoff.
-
-Phys-opt and routing remove inherited incremental history when opening their
-input checkpoint. Otherwise `RuntimeOptimized` can make Vivado stop optimizing
-at the reference run's negative WNS. The conversion writes and reopens
-`timing_input.dcp` in the stage's work directory with incremental history
-disabled, and requires identical primitive placement and setup/hold slack.
-It preserves the original input checkpoint and also applies to resumed builds
-and quick-route probes. Phys-opt still repeats until WNS stops improving and
-TNS stops improving at equal WNS, or a pass meets its timing target.
-
-`--directives` or `--num-uncertainties` selects only the conventional placement
-grid and changes its directives or uncertainty count. Setting either cell-bloat
-variable below also selects that grid. These candidates use the same timing,
-congestion, and probe requirements. Divided-clock functional builds retain
-their single placement and route defaults without the full-rate congestion
-screen or automatic probes. The X3 CPU datapath has no false-path or multicycle exceptions.
-
-Both route steps try several directives. `--route-directives` narrows their
-sweeps. `--jobs N` (default 12) limits simultaneous Vivado processes in sweeps;
-the guided candidate's two placement passes and separate verification run
-sequentially before the grid. `build.py --help`
-describes every step and default. To build through placement in the normal
-output directory:
+`--stop-after` can resume or stop at any step; `--start-at bitstream` writes
+a bitstream from an existing `final.dcp`. Resuming keeps the synthesized
+design, so RTL changes need a new synthesis, and a new synthesis or `opt`
+result invalidates the placement. Resumed steps check the metadata files
+saved beside each checkpoint, so copy a build directory as a whole.
+`build.py --help` describes every step, option, and default.
 
 ```bash
-./fpga/build/build.py x3 --stop-after place
+./fpga/build/build.py x3 --stop-after place    # build through placement
+./fpga/build/build.py x3 --start-at route      # resume from post_place_physopt.dcp
 ```
+
+Setup timing counts as met only with nonnegative WNS and TNS and no failing
+setup endpoints. When `route`, `post_route_physopt`, or `second_route` meets
+it, the build skips to the bitstream. The X3 CPU datapath has no false-path or
+multicycle exceptions.
+
+### X3 placement
+
+A full-rate X3 build places several candidates from the same post-opt
+checkpoint and keeps one:
+
+- A guided candidate. A reference placement (`ExtraNetDelay_high`, 0.325 ns
+  setup uncertainty, CPU clock root `X1Y9`, and `MEDIUM` cell bloat on the
+  integer reservation station and the memory station's source-2 operand
+  cells) is measured, critical registers are moved and LUT inputs swapped in
+  up to eight rounds, keeping a change only if setup and hold slack do not
+  get worse, and a final `Quick` placement locks those choices in. It needs
+  post-opt WNS >= 0.
+- A grid of four placer directives at six setup uncertainties, plus a few
+  fixed variants (`--directives` and `--num-uncertainties` change the grid
+  and drop the guided candidate).
+
+A candidate qualifies with immediate post-place WNS better than -0.200 ns at
+zero added uncertainty and a congestion level below 5. Up to three
+qualifiers are quick-routed with `RuntimeOptimized`; a probe must finish
+fully routed with no errors. Probes without a router congestion warning rank
+first, then routed WNS and TNS. If no candidate qualifies, the build stops.
+`work/post_place_selection.json` records every candidate's result, and later
+steps refuse to start unless the selection evidence beside `post_place.dcp`
+is complete and unchanged.
+
+The board constraints leave the NIC core and MAC unfenced. Even soft pblocks
+can change the CPU's placement and congestion, so evaluate any new floorplan
+against an unfenced placement of the current netlist.
+
+### Phys-opt and routing
+
+Every phys-opt step runs a directive sweep that ends with a retime-only pass
+and repeats while WNS (or TNS at equal WNS) improves. Both route steps try
+four router directives and keep the best result (`--route-directives`
+narrows the list); `--jobs N` (default 12) limits simultaneous Vivado
+processes. Phys-opt and routing first drop the incremental history inherited
+from `RuntimeOptimized` placement, which would otherwise make Vivado stop at
+that placement's WNS.
+
+When the final X3 phys-opt sweep stalls, the build also optimizes the failing
+CPU endpoints in groups, with a temporary 30 ps setup margin. Once at most 24
+CPU endpoints fail, it also tries clock optimization of single endpoints,
+faster LUT input pins along the critical paths, and rerouting shared nets
+with the critical sink first. It keeps only changes that improve
+whole-design timing and keep routing, hold, pulse-width, and bus-skew timing
+legal. Bitstream generation saves `final_bus_skew.rpt` and refuses a bus-skew
+violation.
+`FROST_PHYSOPT_SWEEP_ORDER` replaces the default sweep schedule.
 
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `FROST_PLACE_CONGESTION_VETO_LEVEL` | `5` | Reject full-rate candidates whose congestion estimate reaches this level; no fallback if all fail |
-| `FROST_PLACE_QUICK_ROUTE_COUNT` | `3` | Quick-route up to this many passing candidates; prefer probes without congestion warnings, then rank by routed WNS/TNS. An explicit `0` disables probes (divided-clock default: `0`) |
-| `FROST_PLACE_CELL_BLOAT` | unset | Select a placement sweep with `LOW`, `MEDIUM`, or `HIGH` cell bloat for every candidate, or empty for none. Setting this or the next variable turns off the automatic `LOW` variants |
-| `FROST_PLACE_CELL_BLOAT_CELLS` | `*u_tomasulo/u_int_rs` | Cell name patterns to bloat (hierarchies or primitive groups) |
+| `FROST_PLACE_QUICK_ROUTE_COUNT` | `3` | Quick-route up to this many qualifying candidates. `0` disables probes (divided-clock default: `0`) and must be given again on resume |
+| `FROST_PLACE_CELL_BLOAT` | unset | Use `LOW`, `MEDIUM`, or `HIGH` cell bloat for every grid candidate, or empty for none. Setting this or the next variable selects the grid only and drops the automatic `LOW` variants |
+| `FROST_PLACE_CELL_BLOAT_CELLS` | `*u_tomasulo/u_int_rs` | Cell name patterns to bloat |
 | `FROST_PHYSOPT_SETUP_UNCERTAINTY` | 0.5 ns after placement, 0 after routing | Added setup uncertainty for every phys_opt step |
 | `FROST_GTY_RX_EQ` | `LPM` | NIC transceiver receive equalizer (`LPM` or `DFE`) |
 
-Promoted reports and checkpoints always use zero added uncertainty.
-
-Full-rate checkpoint bindings include the congestion report, selection record,
-and winning probe's timing, route status, and Vivado log, as well as the timing
-gate and placed checkpoint. Resuming rejects missing or changed evidence and
-old or preliminary bindings that do not certify the completed selection.
-If probes were explicitly disabled, resuming also requires
-`FROST_PLACE_QUICK_ROUTE_COUNT=0`; the override cannot carry forward silently.
-
-Resumed steps check the metadata files saved beside each checkpoint, so copy
-a build directory as a whole. A new synthesis or `opt` result invalidates the
-placement: rerun placement before resuming later steps. Only full-rate builds
-update the utilization table in the root README;
-`./fpga/build/extract_timing_and_util_summary.py` refreshes it from the most
-advanced stage with a utilization report in the build directory, trying
-`final`, `post_route`, `post_place_physopt`, `post_place`, `post_opt`, then
-`post_synth`.
+Promoted reports and checkpoints always use zero added uncertainty. Only
+full-rate builds in the default directory update the utilization table in
+the root README; `./fpga/build/extract_timing_and_util_summary.py` refreshes
+it from the most advanced stage with a utilization report.
 
 To route a finished phys_opt sweep while the original build keeps going, fork
 it into a new build directory:
@@ -348,9 +257,10 @@ it into a new build directory:
 ```
 
 The destination must not exist yet. The fork keeps its reports and bitstream
-in its own directory and leaves the README alone; resume it with `--build-dir`
-alone. If routing closes timing, the fork writes `final.dcp` and a bitstream
-even with `--stop-after route`.
+in its own directory and leaves the README alone. Continue it with its
+`--build-dir` and a `--start-at` step, without `--snapshot-physopt-from`. If
+routing closes timing, the fork writes `final.dcp` and a bitstream even with
+`--stop-after route`.
 
 ## ILA captures
 
@@ -379,7 +289,7 @@ samples before the fetch fault.
 |---------|---------------|
 | No target found | Power, the cable, `hw_server`, and `--list-targets` |
 | Wrong or ambiguous target | Select one with `--target` or `--target-exact` |
-| Timing failure | `build/<board>/work/final_timing.rpt`; try other directives. Changing the CPU clock also means updating the board's MMCM settings and the build and loader clock settings |
+| Timing failure | `build/<board>/work/final_timing.rpt`; try other directives. Changing the CPU clock means changing the board's clock generation (`x3_cpu_clock_gty.sv`, or the MMCM that `--cpu-clock-div` 3 and 4 use) and the build and loader clock settings |
 | `Synth 8-605` error | The build treats this Vivado warning as an error. Declare each signal before any generated primitive instance that uses it; a later declaration can leave the primitive on an undriven implicit net |
 | `Synth 8-324` error | An array or vector index is out of range. The build rejects this because synthesis can replace the read with a don't-care while simulation silently truncates the index. Check index widths; for a two-entry vector indexed by an `int p` loop variable, use `p ^ 1` for the other entry, since `~p` is negative |
 | Application does not run | The CPU clock setting (`FROST_CPU_CLK_HZ`), that the program fits in low BRAM, and that any DDR image was loaded |

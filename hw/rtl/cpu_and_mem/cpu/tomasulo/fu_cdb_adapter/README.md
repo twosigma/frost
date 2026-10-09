@@ -49,27 +49,24 @@ The wrapper's settings:
 `REGISTER_OUTPUT` suits the long-latency units, where one more cycle costs
 little and the pass-through valid path hurts timing.
 
-Disabling refill keeps the arbiter's grant out of the producers' FIFO and
-issue logic. The producers follow a matching rule: a result counts as taken
-only when the adapter is idle. The MUL and DIV paths and the LQ hand over a
-result only while their adapter is idle (a squashed result is dropped without
-waiting), and FP_RS stops issuing while the FP adapter is pending. A granted
-adapter therefore drains first and takes the next result the following cycle. The two sides must change together: an adapter that
+With refill disabled, the producers follow a matching rule: a result counts
+as taken only when the adapter is idle. The MUL and DIV paths and the LQ hand
+over a result only while their adapter is idle (a squashed result is dropped
+without waiting), and FP_RS stops issuing while the FP adapter is pending. A
+granted adapter therefore drains first and takes the next result the
+following cycle. The two sides must change together: an adapter that
 refilled while its producer waited for idle would take the same result twice.
 The MEM slot's store-fault and SC registers do not wait; they rely on the MEM
 adapter never being pending (see the
 [CDB arbiter](../cdb_arbiter/README.md#priority)).
 
 MUL and MEM are the two highest priorities on the two-lane CDB. Every valid
-result from either gets a grant, except on a full flush that discards it.
-Their stateful adapters therefore never leave idle after reset. Setting
-`ALWAYS_GRANTED` makes that pending bit a constant, removing the holding-state
-feedback and held/input payload muxes without changing latency. Both still
-apply the same partial-flush age check to incoming results and connect to the
-actual grant for the simulation assertion. The `mul_adapter_grant` formal
-target proves both instances against the actual arbiter with arbitrary
-competing and test-injected results, flushes, and tags. It also retains the
-earlier MUL local-grant equivalence check.
+result from either gets a grant, except on a full flush that discards it, so
+their adapters would never leave idle. `ALWAYS_GRANTED` makes the pending bit
+a constant zero. Both adapters still apply the partial-flush age check to
+incoming results, and both still take the real grant for the simulation
+assertion. The `mul_adapter_grant` formal target checks both against the
+real arbiter.
 
 The ALU adapters keep refill enabled, but a pending ALU adapter deasserts its
 INT RS ready, so the combinational ALU shim never presents a result while the
@@ -85,7 +82,7 @@ younger result passing through and keeps a refill from taking one, so a
 result issued in the flush cycle cannot resurface later. The kill clears only
 `valid`. The value, tag, and other fields pass through unchanged, so every
 consumer must qualify them with `valid`; the arbiter never grants or selects
-an invalid input. This keeps the age compare off the wide value path.
+an invalid input.
 
 A full flush (`i_flush`) clears `result_pending` on the next edge but leaves
 the output alone in the flush cycle. The arbiter's `i_kill` suppresses the

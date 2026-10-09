@@ -53,11 +53,10 @@ hint must equal the amount the ALU would have selected.
 One MUL_RS issue port drives the multipliers and the divider. The multiplier
 is pipelined and accepts one operation per cycle; it takes
 `riscv_pkg::MulPipeDepth` cycles (6 at XLEN=64), and a dedicated 32-bit unit
-cuts MULW to 3. The 32-bit unit's two-tile product needs two of its three
-stages, so it registers its operands in the third (`INPUT_REGISTER`): its DSPs
-start from registers rather than from the RS operand select. The multiply path has one tag tracker, a shift register as
-deep as the full-width unit, and one 4-entry result FIFO, both shared by the
-two widths. A MULW enters the tracker partway down, at the stage that lines up
+cuts MULW to 3; that unit spends its spare third stage registering its
+operands (`INPUT_REGISTER`). The multiply path has one tag tracker, a shift
+register as deep as the full-width unit, and one 4-entry result FIFO, both
+shared by the two widths. A MULW enters the tracker partway down, at the stage that lines up
 with the word multiplier, so both widths leave through the same tail. If a
 live full-width operation is about to pass that stage, the MULW waits;
 full-width operations are never held up by it. This busy term depends on the
@@ -94,9 +93,8 @@ compute instruction (arithmetic, conversions, compares, min/max, classify,
 sign injection, and the FMV moves) one at a time on a single shared adder.
 One tag register tracks the operation in the engine. `o_fu_busy` is high
 while a nonsquashed operation occupies the engine, its result cycle included,
-and the wrapper
-also stops FP_RS while the adapter holds a result, so the engine's one-cycle
-result always finds the adapter free.
+and the wrapper also stops FP_RS while the adapter holds a result, so the
+engine's one-cycle result always finds the adapter free.
 
 The engine's latency, from the issue to the result cycle, depends on the
 operation and its operands. Operations whose result the decode cycles settle
@@ -116,8 +114,9 @@ operands:
 | Compares, FMIN, FMAX | 7 | 7 |
 | FMV.X.*, FMV.*.X | 5 | 5 |
 
-Subnormal operands and results take longer, because the engine normalizes
-them a few bits per cycle. The slowest case found, a double-precision FMA on
+An exact cancellation (a zero sum from normal operands) finishes a few cycles
+sooner than these ranges. Subnormal operands and results take longer, because
+the engine normalizes them a few bits per cycle. The slowest case found, a double-precision FMA on
 subnormal operands, takes 139 cycles.
 
 ## Flushes
@@ -138,13 +137,12 @@ result is left to the DIV adapter, which sees the same flush.
 `fp_shim` kills a squashed operation inside the engine (`i_kill`), which is
 idle again on the next cycle, so FP_RS can issue without waiting out the rest
 of the operation. With the default `LAUNCH_SQUASH=0`, an issue the same flush
-covers never starts. The wrapper enables `LAUNCH_SQUASH=1`: the issue starts
-without waiting for the flush comparison, and a registered squash kills it
-in the first decode cycle. Busy stays low during that discarded decode cycle,
-and no result appears. This mode requires no issue in the cycle after a
-flushed issue. FP_RS guarantees that bubble because a flush prevents its
-stage-2 register from refilling. A flush on the result cycle itself is left
-to the FP adapter, which sees the same flush and does not keep a squashed result.
+covers never starts. The wrapper sets `LAUNCH_SQUASH=1`: the issue starts, and
+a registered squash kills it in the first decode cycle, with busy low and no
+result. This mode requires no issue in the cycle after a flushed issue, which
+FP_RS guarantees because a flush keeps its stage-2 register from refilling. A
+flush on the result cycle itself is left to the FP adapter, which sees the
+same flush and does not keep a squashed result.
 
 ## NaN boxing
 
@@ -166,21 +164,16 @@ reads those bits must also check the count.
 
 Each shim has a cocotb target of the same name. `int_alu_shim_shift_hint` and
 `int_muldiv_shim_full_width` rerun the ALU and MUL/DIV tests with
-`USE_SHIFT_AMOUNT_HINT=1` and `SHORT_WORD_OPS=0`, and the `alu_shift_hint`
-formal target proves that the ALU gives the same result with a correct hint as
-without one. `fp_shim` and `int_muldiv_shim` also have formal targets. The
-`int_muldiv_shim` proofs are unbounded: under arbitrary flushes and
-back-pressure, and for both `SHORT_WORD_OPS` settings, each completing tracker
-entry matches the multiplier that produced its data, the credit bounds hold,
-and a squashed divide never completes. The `divider` cocotb and formal
-targets check the divider's results against integer division. The `fp_shim`
-default-mode proof replaces the engine with a model of arbitrary latency and
-result. `fp_launch_squash` compares both launch modes against the old shim
-with the real engine, proving equal busy, result-valid, result data and tags
-on the same cycles. `fp_launch_squash_rs` separately proves the required
-producer bubble on the actual FP station without environment assumptions. The
-`fp_engine_equiv` bench checks the engine itself against Berkeley SoftFloat,
-results and flags bit for bit.
+`USE_SHIFT_AMOUNT_HINT=1` and `SHORT_WORD_OPS=0`. The `int_muldiv_shim` formal
+target proves, under arbitrary flushes and back-pressure, that each completing
+tracker entry matches the multiplier that produced its data, that the credit
+bounds hold, and that a squashed divide never completes. The `fp_shim` target
+replaces the engine with a model of arbitrary latency and result.
+`fp_launch_squash` checks both launch modes against a reference with the real
+engine, assuming the bubble after a flushed issue, and `fp_launch_squash_rs`
+checks that FP_RS leaves that bubble. The `divider` targets check the divider against
+integer division, and the `fp_engine_equiv` bench checks the FP engine against
+Berkeley SoftFloat, results and flags bit for bit.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.
