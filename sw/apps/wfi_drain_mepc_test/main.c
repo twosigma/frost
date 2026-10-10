@@ -25,7 +25,8 @@
  * to a fresh cold line before WFI, forcing a full-latency drain. mscratch is
  * armed before MIE is enabled, and the register-preserving handler returns
  * through mscratch, so a bad mepc survives to be reported. The test passes
- * when no margin produces mepc==wfi_pc. Each margin step is one mtime tick,
+ * when no margin produces mepc==wfi_pc and at least one produces wfi_pc+4,
+ * which shows the sweep reached the WFI. Each margin step is one mtime tick,
  * so the sweep assumes mtime advances once per cycle (SIM_TIMER_SPEEDUP=1).
  */
 
@@ -133,6 +134,9 @@ int main(void)
                     bug_margin,
                     bug_mepc,
                     bug_wfi);
+        uart_printf("<<FAIL>>\n");
+    } else if (!correct) {
+        uart_printf("no margin saved mepc==wfi_pc+4; the sweep never reached the WFI\n");
         uart_printf("<<FAIL>>\n");
     } else {
         uart_printf("<<PASS>>\n");
