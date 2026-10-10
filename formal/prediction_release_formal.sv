@@ -58,6 +58,9 @@ module prediction_release_formal #(
   (* anyseq *) logic i_sel_nop_for_pc;
   (* anyseq *) logic i_slot2_prediction_request;
   (* anyseq *) logic [XLEN-1:0] i_slot2_predicted_target;
+  (* anyseq *) logic i_slot1_aliases_slot2_candidate;
+  (* anyseq *) logic i_slot2_live_target_request;
+  (* anyseq *) logic [XLEN-1:0] i_slot2_live_predicted_target;
 
   logic f_past_valid;
   logic stall_registered;
@@ -70,6 +73,7 @@ module prediction_release_formal #(
   logic [XLEN-1:0] predicted_target_r;
   logic slot2_prediction_used;
   logic slot2_prediction_used_for_pc;
+  logic slot2_live_target_used_for_pc_cofactor;
   logic pd_redirect_kills_prediction_metadata;
   logic i_flush;
   logic i_window_cannot_serve;
@@ -129,6 +133,11 @@ module prediction_release_formal #(
        !(i_window_cannot_serve_raw ? pending_prediction_holdoff_wcs :
                                     pending_prediction_holdoff_wcs0));
   assign slot2_prediction_used = slot2_prediction_used_for_pc && !i_branch_taken && !i_stall;
+  // The live-lookup target (slot 1 aliasing the slot-2 candidate) redirects
+  // only with a slot-2 request, as branch_prediction_controller's cofactor
+  // requires slot-2 permission and implies that request.
+  assign slot2_live_target_used_for_pc_cofactor =
+      slot2_prediction_used_for_pc && i_slot2_live_target_request;
   // Match the production predictor's matching-target exception. A PD redirect
   // always kills the registered handoff, but may preserve prediction metadata
   // and its holdoff while a matching-target packet is stalled.
@@ -214,13 +223,13 @@ module prediction_release_formal #(
       .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .i_slot2_prediction_used_for_fetch_mux(slot2_prediction_used_for_pc),
       .i_slot2_predicted_target,
-      // Slot-2 requests use the staged path; live-alias selects are tied low.
-      // The request and target remain arbitrary.
+      // Every slot-2 request takes the staged select. The alias check and both
+      // targets are arbitrary; the live select needs a request (above).
       .i_slot2_staged_prediction_used_for_pc(slot2_prediction_used_for_pc),
-      .i_slot1_aliases_slot2_candidate(1'b0),
-      .i_slot2_live_target_used_for_pc_cofactor(1'b0),
+      .i_slot1_aliases_slot2_candidate,
+      .i_slot2_live_target_used_for_pc_cofactor(slot2_live_target_used_for_pc_cofactor),
       .i_slot2_staged_predicted_target(i_slot2_predicted_target),
-      .i_slot2_live_predicted_target(i_slot2_predicted_target),
+      .i_slot2_live_predicted_target,
       .o_slot2_redirect_q(),
       .o_pc(pc),
       .o_pc_reg(pc_reg),
