@@ -33,6 +33,9 @@
  * Debug Mode (RISC-V Debug Spec 0.13.2) uses a third take class, D:
  *   - haltreq and step completion enter Debug Mode, save dpc/dcsr, and
  *     redirect to the park word. They take priority over M/S interrupts.
+ *     Like an interrupt, a ready request is taken before the head
+ *     instruction, so an ebreak at the head enters Debug Mode only after
+ *     resume.
  *   - ebreak enters Debug Mode when the current privilege's dcsr.ebreak bit
  *     is set; dpc points at the ebreak.
  *   - Debug Mode exceptions re-park without CSR writes. Memory-order replays
