@@ -923,13 +923,13 @@ module trap_unit #(
                                   m_int_cause == riscv_pkg::IntSupervisorSoftware ||
                                   m_int_cause == riscv_pkg::IntSupervisorTimer)));
       end
+    end
 
-      // Reset clears the take markers, WFI state, and pending latches.
-      if ($past(i_rst)) begin
-        p_reset_trap_prev : assert (!trap_taken_prev && !sret_taken_prev);
-        p_reset_wfi : assert (!wfi_active);
-        p_reset_int_pending : assert (!m_int_pending && !s_int_pending && !d_int_pending);
-      end
+    // Reset clears the take markers, WFI state, and pending latches.
+    if (f_past_valid && $past(i_rst)) begin
+      p_reset_trap_prev : assert (!trap_taken_prev && !sret_taken_prev);
+      p_reset_wfi : assert (!wfi_active);
+      p_reset_int_pending : assert (!m_int_pending && !s_int_pending && !d_int_pending);
     end
   end
 
