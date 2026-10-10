@@ -23,8 +23,8 @@
  * coherent with the L1D: the hierarchy probes the L1D before each read reaches
  * the shared level, so a walk sees page-table stores still dirty there without
  * an sfence.vma (see hw/rtl/lib/cache/README.md "The page-table walker port").
- * The PTE is extracted from the 256-bit line response by the address's dword
- * offset, the way cached_tier_adapter extracts a beat.
+ * The PTE is extracted from the line response by the address's dword offset,
+ * the way cached_tier_adapter extracts a beat.
  *
  * The walker only reads (Svade). A leaf with A=0 is a page fault instead of a
  * PTE update, and so is a store to a leaf with D=0, which the data MMU checks
@@ -157,8 +157,9 @@ module ptw #(
   assign o_line_req_addr = {pte_pa32[31:LineAddrLow], {LineAddrLow{1'b0}}};
   assign o_line_req_id = '0;
 
-  // PTE extraction: dword index inside the 32-byte line.
-  logic [1:0] pte_dword_sel_q;  // captured at issue (pa[4:3])
+  // PTE extraction: dword index inside the line, captured at issue.
+  localparam int unsigned PteSelBits = LineAddrLow - 3;
+  logic [PteSelBits-1:0] pte_dword_sel_q;
   // Register the selected PTE before classification, for timing. This adds
   // one cycle per walk level.
   logic [63:0] pte_live, pte_q, pte;
@@ -248,7 +249,7 @@ module ptw #(
             resp_q.vpn        <= vpn_q;
             state_q           <= PTW_RESP;
           end else if (i_line_req_ready) begin
-            pte_dword_sel_q <= pte_pa32[4:3];
+            pte_dword_sel_q <= pte_pa32[LineAddrLow-1:3];
             state_q         <= PTW_WAIT;
           end
         end

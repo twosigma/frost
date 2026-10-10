@@ -268,7 +268,7 @@ The hardware page-table walker (`ptw.sv`) is the hierarchy's `wup` port,
 between the L1D and the L1I in priority. With no grant lock, a ready walk
 never waits for an L1I fill to complete. A walk is a chain of dependent
 8-byte PTE reads, one per level, each a full-line read on this port; the
-walker extracts its PTE from the 256-bit response the way
+walker extracts its PTE from the line response the way
 `cached_tier_adapter` extracts a beat. One walker serves both TLBs through a
 requester mux in `cpu_ooo`, where the data side wins, and one walk is in
 flight at a time. Walks only read: an access that needs a PTE's A or D bit
