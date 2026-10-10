@@ -663,7 +663,10 @@ module trap_unit #(
       // wins arbitration over a pending replay enters its vector (the
       // load re-executes after the handler, its PC is the epc).
       o_trap_entry_target = exception_pc_q;
-    end else if (exception_ebreak_to_d || exception_in_debug) begin
+    end else if ((exception_ebreak_to_d || exception_in_debug) && !interrupt_wins) begin
+      // Likewise only when the exception is taken: an interrupt that wins
+      // over a debug-routed ebreak enters its vector, and the ebreak
+      // re-executes after the handler.
       o_trap_entry_target = XLEN'(riscv_pkg::DebugParkAddr);
     end else if (trap_to_s) begin
       if (i_stvec[1:0] == 2'b01 && interrupt_wins) begin
@@ -759,6 +762,18 @@ module trap_unit #(
               (o_trap_taken || o_mret_taken || o_sret_taken || o_dret_taken));
       p_entry_target_matches_redirect :
       assert (!o_trap_taken || o_trap_entry_target == o_trap_target);
+      // An M or S interrupt take enters its own vector, even over a pending
+      // exception that would have entered Debug Mode.
+      if (o_trap_taken && !d_int_take_ready && m_int_take_ready) begin
+        p_m_int_enters_mtvec :
+        assert (o_trap_entry_target == {i_mtvec[XLEN-1:2], 2'b00} +
+                (i_mtvec[1:0] == 2'b01 ? {{(XLEN - 6) {1'b0}}, m_vectored_offset} : '0));
+      end
+      if (o_trap_taken && !d_int_take_ready && !m_int_take_ready && s_int_take_ready) begin
+        p_s_int_enters_stvec :
+        assert (o_trap_entry_target == {i_stvec[XLEN-1:2], 2'b00} +
+                (i_stvec[1:0] == 2'b01 ? {{(XLEN - 6) {1'b0}}, s_vectored_offset} : '0));
+      end
       p_trap_dret_mutex : assert (!(o_trap_taken && o_dret_taken));
       p_dret_mret_mutex : assert (!(o_dret_taken && (o_mret_taken || o_sret_taken)));
       p_trap_sret_mutex : assert (!(o_trap_taken && o_sret_taken));
