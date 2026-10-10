@@ -161,6 +161,32 @@ def test_lq_model_gives_rob_head_lr_priority_over_physical_order() -> None:
     assert request == {"addr": 0x1000, "size": lq_model.MEM_SIZE_WORD}
 
 
+def test_lq_model_keeps_the_whole_doubleword_for_lr_d() -> None:
+    """LR.D completes with the whole beat, like LD, and sets the reservation."""
+    model = lq_model.LQModel()
+    assert model.alloc(
+        rob_tag=1,
+        is_fp=False,
+        size=lq_model.MEM_SIZE_DOUBLE,
+        sign_ext=False,
+        is_lr=True,
+    )
+    model.addr_update(rob_tag=1, address=0x8000_7800)
+    request = model.issue_to_memory(
+        all_older_known=True,
+        sq_forward=lq_model.SQForwardResult(),
+        rob_head_tag=1,
+    )
+    assert request == {"addr": 0x8000_7800, "size": lq_model.MEM_SIZE_DOUBLE}
+
+    model.mem_response(0xABCD_EF01_2345_6789)
+
+    result = model.get_fu_complete()
+    assert result.valid and result.tag == 1
+    assert result.value == 0xABCD_EF01_2345_6789
+    assert model.reservation_valid and model.reservation_addr == 0x8000_7800
+
+
 class _Signal:
     """Minimal writable cocotb-signal stand-in."""
 
