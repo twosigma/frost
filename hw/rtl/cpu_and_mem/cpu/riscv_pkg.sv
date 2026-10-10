@@ -1136,7 +1136,7 @@ package riscv_pkg;
   localparam int unsigned DcsrCauseLo = 6;  // [8:6]
   localparam int unsigned DcsrStepBit = 2;
   localparam int unsigned DcsrPrvLo = 0;  // [1:0]
-  // dcsr.cause values (spec priority: ebreak > haltreq > step).
+  // dcsr.cause values (spec priority for coinciding causes: ebreak > haltreq > step).
   localparam bit [2:0] DcsrCauseEbreak = 3'd1;
   localparam bit [2:0] DcsrCauseHaltreq = 3'd3;
   localparam bit [2:0] DcsrCauseStep = 3'd4;
