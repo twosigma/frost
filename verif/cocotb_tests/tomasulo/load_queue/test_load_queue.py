@@ -2904,7 +2904,7 @@ async def test_head_amo_ignores_physically_earlier_younger_amo(dut: Any) -> None
 # AMO write fence orders younger loads behind the head AMO
 # ============================================================================
 @cocotb.test()
-async def test_blocked_head_amo_does_not_preempt_normal_candidate(dut: Any) -> None:
+async def test_amo_write_fence_orders_younger_load_behind_head_amo(dut: Any) -> None:
     """Younger loads are fenced until every older AMO has written memory.
 
     The AMO write fence (older_amo_write_pending) holds any load younger than
@@ -2964,7 +2964,7 @@ async def test_blocked_head_amo_does_not_preempt_normal_candidate(dut: Any) -> N
 # AMO write fence evicts a fenced younger load from SQ-check
 # ============================================================================
 @cocotb.test()
-async def test_blocked_head_amo_does_not_replace_busy_sq_check(dut: Any) -> None:
+async def test_amo_write_fence_evicts_staged_load_for_head_amo(dut: Any) -> None:
     """A staged load fenced by older AMOs releases SQ-check for the head AMO.
 
     Once older un-written AMOs exist, the staged younger load must not issue
