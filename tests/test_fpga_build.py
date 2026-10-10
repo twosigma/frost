@@ -87,10 +87,20 @@ def _write_test_selection(work_dir: Path, wns: float) -> None:
 
 
 def _write_place_gate(
-    work_dir: Path, wns: float = -0.1, *, bind: bool = False, probe_input: bool = False
+    work_dir: Path,
+    wns: float = -0.1,
+    *,
+    bind: bool = False,
+    probe_input: bool = False,
+    passed: bool | None = None,
 ) -> None:
-    """Write post_place_gate.txt as x3_post_place_gate.tcl does; bind it if asked."""
-    passed = wns >= -0.2
+    """Write post_place_gate.txt as x3_post_place_gate.tcl does; bind it if asked.
+
+    ``passed`` overrides the native verdict, as for a WNS printed as -0.200
+    whose unrounded slack is below the gate.
+    """
+    if passed is None:
+        passed = wns >= -0.2
     (work_dir / "post_place_gate.txt").write_text(
         f"STATUS={'PASS' if passed else 'FAIL'}\n"
         "THRESHOLD_NS=-0.200\nCPU_PERIOD_NS=3.103\n"
@@ -4126,7 +4136,8 @@ def test_completed_placement_still_reports_a_timing_rejection(
     candidates = _quick_route_candidates(tmp_path, 2)
     passing, rejected = candidates
     rejected.wns = wns
-    _write_place_gate(rejected.work_dir, wns)
+    # At -0.2 the unrounded slack is below the gate.
+    _write_place_gate(rejected.work_dir, wns, passed=False if wns == -0.2 else None)
     if wns == -0.1:
         (rejected.work_dir / "post_place_gate.txt").unlink()
     selected = fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused")
@@ -4138,6 +4149,23 @@ def test_completed_placement_still_reports_a_timing_rejection(
         line for line in capsys.readouterr().out.splitlines() if rejected.label in line
     )
     assert "TIMEVETO" in row
+
+
+def test_placement_at_the_printed_gate_qualifies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A WNS printed as -0.200 qualifies when no path's slack is below -0.200."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "0")
+    candidates = _quick_route_candidates(tmp_path, 2)
+    boundary, failing = candidates
+    for run, wns in ((boundary, -0.2), (failing, -0.201)):
+        run.wns = wns
+        _write_place_gate(run.work_dir, wns)
+    selected = fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused")
+    assert selected is boundary
+    assert boundary.timing_gate_passed is True
+    assert failing.timing_gate_passed is False
 
 
 def test_congestion_veto_decides_on_real_report_levels(
@@ -4729,16 +4757,18 @@ def test_no_placement_falls_back_past_congestion_requirement(
     assert not fpga_build.require_x3_post_place_gate(candidates[0].work_dir)
 
 
-@pytest.mark.parametrize("wns", (-0.201, -0.200, -0.199))
-def test_full_rate_qualification_requires_strict_timing_margin(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wns: float
+@pytest.mark.parametrize(
+    "wns,passed", ((-0.201, False), (-0.200, False), (-0.200, True), (-0.199, True))
+)
+def test_full_rate_qualification_follows_the_native_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wns: float, passed: bool
 ) -> None:
-    """A rounded boundary or failing slack cannot receive a full-rate binding."""
+    """A WNS printed as -0.200 is bound only if no unrounded slack is below it."""
     monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
     (tmp_path / "post_place.dcp").write_bytes(b"placement")
-    _write_place_gate(tmp_path, wns)
-    assert fpga_build.bind_x3_place_gate(tmp_path) is (wns > -0.2)
-    assert fpga_build.require_x3_post_place_gate(tmp_path) is (wns > -0.2)
+    _write_place_gate(tmp_path, wns, passed=passed)
+    assert fpga_build.bind_x3_place_gate(tmp_path) is passed
+    assert fpga_build.require_x3_post_place_gate(tmp_path) is passed
 
 
 @pytest.mark.parametrize("change", ("bytes", "missing", "legacy_binding"))

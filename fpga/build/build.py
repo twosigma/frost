@@ -1103,9 +1103,9 @@ def x3_place_binding(
         "gate_sha256": file_sha256(gate_path),
     }
     if x3_full_rate():
-        if not gate.passed or gate.worst_slack_ns <= X3_POST_PLACE_GATE_NS:
+        if not gate.passed:
             raise ValueError(
-                f"post-place WNS must be better than {X3_POST_PLACE_GATE_NS} ns "
+                f"post-place WNS must be {X3_POST_PLACE_GATE_NS} ns or better "
                 f"(measured {gate.worst_slack_ns} ns)"
             )
         congestion_path = work_dir / "post_place_congestion.rpt"
@@ -1949,9 +1949,11 @@ def select_x3_place_best_run(
         run.congestion_level = extract_max_congestion_level(
             run.work_dir / "post_place_congestion.rpt"
         )
+        # The native gate passes when no path is below -0.200 ns, so a WNS
+        # printed as -0.200 qualifies unless its unrounded slack is lower.
         run.timing_gate_passed = x3_place_gate_passes(
             run.work_dir / "post_place_gate.txt", run.wns
-        ) and (not full_rate or Decimal(str(run.wns)) > X3_POST_PLACE_GATE_NS)
+        )
     passing = [run for run in eligible if run.timing_gate_passed]
     if not passing:
         print(
@@ -3178,7 +3180,7 @@ Steps (in order):
   synth                       - Synthesize the design
   opt                         - Optimize the netlist
   place                       - Select a placement; full-rate X3 requires WNS
-                                better than {gate} ns and passing congestion checks
+                                of {gate} ns or better and passing congestion checks
   post_place_physopt          - Physical optimization after placement (always
                                 continues to route)
   route                       - Route with -tns_cleanup
@@ -3194,7 +3196,7 @@ Behavior:
     --directives or --num-uncertainties selects the grid only and requires place.
     Full-rate grids also add the ExtraPostPlacementOpt/0.425 ns seed and
     LOW cell-bloat variants where their matching grid candidates are present.
-  * Full-rate X3 requires WNS better than {gate} ns and congestion below
+  * Full-rate X3 requires WNS of {gate} ns or better and congestion below
     FROST_PLACE_CONGESTION_VETO_LEVEL (default {veto}). Missing evidence fails.
     FROST_PLACE_QUICK_ROUTE_COUNT (default {probes}) quick-routes up to that many
     passing candidates. Completed routes without congestion warnings rank first,

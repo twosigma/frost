@@ -200,11 +200,12 @@ checkpoint and keeps one:
   fixed variants (`--directives` and `--num-uncertainties` change the grid
   and drop the guided candidate).
 
-A candidate qualifies with immediate post-place WNS better than -0.200 ns at
-zero added uncertainty and a congestion level below 5. Up to three
-qualifiers are quick-routed with `RuntimeOptimized`; a probe must finish
-fully routed with no errors. Probes without a router congestion warning rank
-first, then routed WNS and TNS. If no candidate qualifies, the build stops.
+A candidate qualifies when Vivado finds no path with slack below -0.200 ns
+immediately after placement, at zero added uncertainty, and its congestion
+level is below 5. Up to three qualifiers are quick-routed with
+`RuntimeOptimized`; a probe must finish fully routed with no errors.
+Probes without a router congestion warning rank first, then routed WNS and
+TNS. If no candidate qualifies, the build stops.
 `work/post_place_selection.json` records every candidate's result, and later
 steps refuse to start unless the selection evidence beside `post_place.dcp`
 is complete and unchanged.
