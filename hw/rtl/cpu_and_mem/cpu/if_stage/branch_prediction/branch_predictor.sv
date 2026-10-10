@@ -83,6 +83,12 @@ module branch_predictor #(
     // The selected candidate's row return flag without the hit: equal to
     // o_btb_is_return_2 whenever the selected candidate hits.
     output logic            o_btb_entry_is_return_2,
+    // Each candidate's target and row return flag, before i_pc_2_use_alt
+    // selects o_predicted_target_2 and o_btb_entry_is_return_2 from them.
+    output logic [XLEN-1:0] o_predicted_target_2_plus2,
+    output logic [XLEN-1:0] o_predicted_target_2_plus4,
+    output logic            o_btb_entry_is_return_2_plus2,
+    output logic            o_btb_entry_is_return_2_plus4,
 
     // Update interface: at most one selected training write per cycle
     input logic            i_update,             // Update BTB entry
@@ -627,6 +633,14 @@ module branch_predictor #(
       (btb_hit_2_alt && lookup_payload_2_alt.is_return) : (btb_hit_2 && lookup_payload_2.is_return);
   assign o_btb_entry_is_return_2 =
       i_pc_2_use_alt ? lookup_payload_2_alt.is_return : lookup_payload_2.is_return;
+  assign o_predicted_target_2_plus2 = {
+    i_pc_2_base[XLEN-1:TargetBits], lookup_payload_2.target_hi, 1'b0
+  };
+  assign o_predicted_target_2_plus4 = {
+    i_pc_2_base[XLEN-1:TargetBits], lookup_payload_2_alt.target_hi, 1'b0
+  };
+  assign o_btb_entry_is_return_2_plus2 = lookup_payload_2.is_return;
+  assign o_btb_entry_is_return_2_plus4 = lookup_payload_2_alt.is_return;
 
   // Early candidate, from the early PC and outcome. Its RAM copies take every
   // selected write, not only early ones, so they always hold the same state as
@@ -726,7 +740,8 @@ module branch_predictor #(
               o_btb_hit_2,
               o_predicted_taken_2,
               o_predicted_target_2,
-              o_btb_compressed_2
+              o_btb_compressed_2,
+              o_btb_entry_is_return_2
             }
         )) begin
       p_slot2_hit_selector_identity :
@@ -744,6 +759,12 @@ module branch_predictor #(
       assert (o_btb_compressed_2 ==
               (i_pc_2_use_alt ? (btb_hit_2_alt && lookup_payload_2_alt.compressed) :
                                   (btb_hit_2 && lookup_payload_2.compressed)));
+      p_slot2_candidate_target_selector_identity :
+      assert (o_predicted_target_2 ==
+              (i_pc_2_use_alt ? o_predicted_target_2_plus4 : o_predicted_target_2_plus2));
+      p_slot2_candidate_return_selector_identity :
+      assert (o_btb_entry_is_return_2 ==
+              (i_pc_2_use_alt ? o_btb_entry_is_return_2_plus4 : o_btb_entry_is_return_2_plus2));
     end
   end
 

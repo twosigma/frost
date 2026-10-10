@@ -16,9 +16,11 @@
 
 /*
  * Formal-only stand-in for pc_increment_calculator in the prediction_release
- * and prediction_handoff targets. Every output is unconstrained, which admits
- * every real PC movement and more, so a pass does not depend on the increment
- * arithmetic.
+ * and prediction_handoff targets. Every PC output is unconstrained, which
+ * admits every real PC movement and more, so a pass does not depend on the
+ * increment arithmetic. The pending-PC relations are full-width compares of
+ * those outputs, which pc_increment_relation proves the real calculator
+ * matches.
  */
 // verilog_lint: waive module-filename
 module pc_increment_calculator #(
@@ -26,6 +28,7 @@ module pc_increment_calculator #(
 ) (
     input logic [XLEN-1:0] i_pc,
     input logic [XLEN-1:0] i_pc_reg,
+    input logic [XLEN-1:0] i_pending_prediction_pc,
     input logic i_sel_nop,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
@@ -43,7 +46,11 @@ module pc_increment_calculator #(
     output logic [XLEN-1:0] o_seq_next_pc,
     output logic [XLEN-1:0] o_seq_next_pc_plus_2,
     output logic [XLEN-1:0] o_seq_next_pc_reg,
-    output logic o_seq_next_pc_reg_neq_pc
+    output logic o_seq_next_pc_reg_neq_pc,
+    output riscv_pkg::pc_pending_rel_t o_seq_next_pc_reg_rel_pending,
+    output riscv_pkg::pc_pending_rel_t o_seq_next_pc_reg_rel_fetch,
+    output riscv_pkg::pc_pending_rel_t o_pc_reg_rel_pending,
+    output riscv_pkg::pc_pending_rel_t o_pc_reg_rel_fetch
 );
 
   (* anyseq *) logic [XLEN-1:0] f_seq_next_pc;
@@ -55,5 +62,19 @@ module pc_increment_calculator #(
   assign o_seq_next_pc_plus_2 = f_seq_next_pc_plus_2;
   assign o_seq_next_pc_reg = f_seq_next_pc_reg;
   assign o_seq_next_pc_reg_neq_pc = f_seq_next_pc_reg_neq_pc;
+
+  function automatic logic [4:0] pending_rel(input logic [XLEN-1:0] v, input logic [XLEN-1:0] side);
+    pending_rel = {
+      v == side,
+      v[XLEN-1:1] < side[XLEN-1:1],
+      v[XLEN-1:1] > side[XLEN-1:1],
+      v == XLEN'(side - XLEN'(2)),
+      v == XLEN'(side - XLEN'(4))
+    };
+  endfunction
+  assign o_seq_next_pc_reg_rel_pending = pending_rel(f_seq_next_pc_reg, i_pending_prediction_pc);
+  assign o_seq_next_pc_reg_rel_fetch = pending_rel(f_seq_next_pc_reg, i_pc);
+  assign o_pc_reg_rel_pending = pending_rel(i_pc_reg, i_pending_prediction_pc);
+  assign o_pc_reg_rel_fetch = pending_rel(i_pc_reg, i_pc);
 
 endmodule : pc_increment_calculator

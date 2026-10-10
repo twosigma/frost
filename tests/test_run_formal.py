@@ -560,7 +560,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "branch_prediction_disable.sby",
-        "Branch-prediction guards and metadata obey staged and live disable rules",
+        "Branch-prediction guards and metadata obey staged and live disable rules, "
+        "and slot-2 target relations match direct compares",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -570,7 +571,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "prediction_release.sby",
-        "Pending-prediction release preserves state masking and fetch holdoffs",
+        "Pending-prediction release preserves state masking, fetch holdoffs, and the "
+        "registered PC relations",
         tasks=("bmc", "cover", "prove"),
     ),
     FormalTarget(

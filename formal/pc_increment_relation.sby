@@ -19,7 +19,7 @@ proc
 prep -top pc_increment_calculator -flatten
 select -assert-none t:$assume a:init
 select -assert-none t:$check r:FLAVOR=assume %i
-select -assert-count 5 t:$check r:FLAVOR=assert %i
+select -assert-count 9 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

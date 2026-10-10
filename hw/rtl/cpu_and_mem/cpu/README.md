@@ -288,6 +288,11 @@ one-wide, and its bimodal index is recomputed from that PC. A prediction made
 while the branch's own packet is already being emitted, which happens when
 variable latency closes the gap between the two PCs, never pends.
 
+`pc_controller` registers how `pc_reg` relates to the saved PC one edge early,
+which keeps the wide compares out of the PC loop. For a slot-2 redirect,
+`branch_prediction_controller` relates the stack top and each BTB candidate
+target to the saved PC before its late selects pick the target.
+
 ### Served-window check and retries
 
 A provider can present a stale window, or one a word behind `pc_reg`.
