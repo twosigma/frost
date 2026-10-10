@@ -33,6 +33,9 @@
  * Debug Mode (RISC-V Debug Spec 0.13.2) uses a third take class, D:
  *   - haltreq and step completion enter Debug Mode, save dpc/dcsr, and
  *     redirect to the park word. They take priority over M/S interrupts.
+ *     Like an interrupt, a ready request is taken before the head
+ *     instruction, so an ebreak at the head enters Debug Mode only after
+ *     resume.
  *   - ebreak enters Debug Mode when the current privilege's dcsr.ebreak bit
  *     is set; dpc points at the ebreak.
  *   - Debug Mode exceptions re-park without CSR writes. Memory-order replays
@@ -151,6 +154,14 @@ module trap_unit #(
     output logic [XLEN-1:0] o_trap_pc,     // PC to save to mepc, sepc, or dpc
     output logic [XLEN-1:0] o_trap_cause,  // Cause to save to mcause/scause
     output logic [XLEN-1:0] o_trap_value,  // Value to save to mtval/stval
+
+    // csr_file's entry enables, at most one set, built beside o_trap_taken for
+    // timing. They equal o_trap_taken && !o_trap_no_csr together with
+    // !o_trap_to_d && !o_trap_to_s (M-side save), !o_trap_to_d && o_trap_to_s
+    // (S-side save), and o_trap_to_d (Debug Mode entry).
+    output logic o_trap_save_m,
+    output logic o_trap_save_s,
+    output logic o_trap_enter_d,
 
     // Redirect qualifiers, valid with o_trap_taken:
     //   o_trap_to_d: Debug Mode entry; csr_file saves dpc/dcsr and sets priv=M.
@@ -600,6 +611,26 @@ module trap_unit #(
   assign o_trap_to_d = (take_trap_d && !i_debug_mode) || (exception_take && exception_ebreak_to_d);
   assign o_trap_no_csr = (take_trap_d && i_debug_mode) ||
       (exception_take && (exception_in_debug || exception_replay));
+  // csr_file's entry enables, built from the take's terms rather than from
+  // take_trap and the steering above, so the late take-ready terms feed them
+  // directly. Each side saves on its own interrupt take unless a higher class
+  // wins (D over M over S), or on an exception that saves there when no
+  // interrupt is taken. Debug Mode entry is a halt outside Debug Mode, or an
+  // ebreak routed there when no interrupt is taken.
+  logic take_gate;
+  logic exception_saves_m, exception_saves_s, exception_enters_d;
+  assign take_gate = !i_pipeline_stall && i_sq_committed_empty;
+  assign exception_saves_m = exception_pending && !exception_to_s && !exception_ebreak_to_d &&
+      !exception_in_debug && !exception_replay;
+  assign exception_saves_s = exception_pending && exception_to_s && !exception_in_debug;
+  assign exception_enters_d = exception_ebreak_to_d && !exception_replay;
+  assign o_trap_save_m = take_gate && !d_int_take_ready &&
+      (m_int_take_ready || (!s_int_take_ready && exception_saves_m));
+  assign o_trap_save_s = take_gate && !d_int_take_ready && !m_int_take_ready &&
+      (s_int_take_ready || exception_saves_s);
+  assign o_trap_enter_d = take_gate &&
+      ((d_int_take_ready && !i_debug_mode) ||
+       (!d_int_take_ready && !m_int_take_ready && !s_int_take_ready && exception_enters_d));
   assign o_dbg_go_taken = take_trap_d && i_debug_mode;
   assign o_dbg_park_entry = exception_take && exception_in_debug;
   assign o_dbg_park_exception = o_dbg_park_entry && (exception_cause_q != riscv_pkg::ExcBreakpoint);
@@ -663,7 +694,10 @@ module trap_unit #(
       // wins arbitration over a pending replay enters its vector (the
       // load re-executes after the handler, its PC is the epc).
       o_trap_entry_target = exception_pc_q;
-    end else if (exception_ebreak_to_d || exception_in_debug) begin
+    end else if ((exception_ebreak_to_d || exception_in_debug) && !interrupt_wins) begin
+      // Likewise only when the exception is taken: an interrupt that wins
+      // over a debug-routed ebreak enters its vector, and the ebreak
+      // re-executes after the handler.
       o_trap_entry_target = XLEN'(riscv_pkg::DebugParkAddr);
     end else if (trap_to_s) begin
       if (i_stvec[1:0] == 2'b01 && interrupt_wins) begin
@@ -721,7 +755,18 @@ module trap_unit #(
   // Formal Verification Properties
   // ===========================================================================
 `ifdef FORMAL
+  // csr_file's entry enables equal the take and steering outputs in every
+  // state, so the prove task checks them from arbitrary register values.
+  always_comb begin
+    p_trap_save_m_matches_steering :
+    assert (o_trap_save_m == (o_trap_taken && !o_trap_no_csr && !o_trap_to_d && !o_trap_to_s));
+    p_trap_save_s_matches_steering :
+    assert (o_trap_save_s == (o_trap_taken && !o_trap_no_csr && !o_trap_to_d && o_trap_to_s));
+    p_trap_enter_d_matches_steering :
+    assert (o_trap_enter_d == (o_trap_taken && !o_trap_no_csr && o_trap_to_d));
+  end
 
+`ifndef TRAP_ENTRY_ENABLE_LOCAL_PROOF
   initial assume (i_rst);
 
   reg f_past_valid;
@@ -759,6 +804,18 @@ module trap_unit #(
               (o_trap_taken || o_mret_taken || o_sret_taken || o_dret_taken));
       p_entry_target_matches_redirect :
       assert (!o_trap_taken || o_trap_entry_target == o_trap_target);
+      // An M or S interrupt take enters its own vector, even over a pending
+      // exception that would have entered Debug Mode.
+      if (o_trap_taken && !d_int_take_ready && m_int_take_ready) begin
+        p_m_int_enters_mtvec :
+        assert (o_trap_entry_target == {i_mtvec[XLEN-1:2], 2'b00} +
+                (i_mtvec[1:0] == 2'b01 ? {{(XLEN - 6) {1'b0}}, m_vectored_offset} : '0));
+      end
+      if (o_trap_taken && !d_int_take_ready && !m_int_take_ready && s_int_take_ready) begin
+        p_s_int_enters_stvec :
+        assert (o_trap_entry_target == {i_stvec[XLEN-1:2], 2'b00} +
+                (i_stvec[1:0] == 2'b01 ? {{(XLEN - 6) {1'b0}}, s_vectored_offset} : '0));
+      end
       p_trap_dret_mutex : assert (!(o_trap_taken && o_dret_taken));
       p_dret_mret_mutex : assert (!(o_dret_taken && (o_mret_taken || o_sret_taken)));
       p_trap_sret_mutex : assert (!(o_trap_taken && o_sret_taken));
@@ -923,13 +980,13 @@ module trap_unit #(
                                   m_int_cause == riscv_pkg::IntSupervisorSoftware ||
                                   m_int_cause == riscv_pkg::IntSupervisorTimer)));
       end
+    end
 
-      // Reset clears the take markers, WFI state, and pending latches.
-      if ($past(i_rst)) begin
-        p_reset_trap_prev : assert (!trap_taken_prev && !sret_taken_prev);
-        p_reset_wfi : assert (!wfi_active);
-        p_reset_int_pending : assert (!m_int_pending && !s_int_pending && !d_int_pending);
-      end
+    // Reset clears the take markers, WFI state, and pending latches.
+    if (f_past_valid && $past(i_rst)) begin
+      p_reset_trap_prev : assert (!trap_taken_prev && !sret_taken_prev);
+      p_reset_wfi : assert (!wfi_active);
+      p_reset_int_pending : assert (!m_int_pending && !s_int_pending && !d_int_pending);
     end
   end
 
@@ -980,6 +1037,7 @@ module trap_unit #(
       cover (i_device_read_at_head && m_int_eligible && !o_trap_drain_wait);
     end
   end
+`endif  // TRAP_ENTRY_ENABLE_LOCAL_PROOF
 
 `endif  // FORMAL
 

@@ -1136,7 +1136,7 @@ package riscv_pkg;
   localparam int unsigned DcsrCauseLo = 6;  // [8:6]
   localparam int unsigned DcsrStepBit = 2;
   localparam int unsigned DcsrPrvLo = 0;  // [1:0]
-  // dcsr.cause values (spec priority: ebreak > haltreq > step).
+  // dcsr.cause values (spec priority for coinciding causes: ebreak > haltreq > step).
   localparam bit [2:0] DcsrCauseEbreak = 3'd1;
   localparam bit [2:0] DcsrCauseHaltreq = 3'd3;
   localparam bit [2:0] DcsrCauseStep = 3'd4;
@@ -1573,6 +1573,17 @@ package riscv_pkg;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus4 = 2'd1;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus6 = 2'd2;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus8 = 2'd3;
+
+  // How a PC candidate v relates to a pending branch PC P, as pc_controller
+  // registers it: v == P, v[XLEN-1:1] below or above P[XLEN-1:1], and the
+  // compressed and 32-bit predecessor tags v == P - 2 and v == P - 4.
+  typedef struct packed {
+    logic at;
+    logic below;
+    logic above;
+    logic pred;
+    logic pred_native;
+  } pc_pending_rel_t;
 
   // XLEN-wide DIV/REM special-case values (overflow and divide-by-zero).
   // The RV64M W forms need no 32-bit variants: int_muldiv_shim shares the

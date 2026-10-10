@@ -78,6 +78,8 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_slot2_live_target_used_for_pc_cofactor.value = 0
     dut.i_slot2_staged_predicted_target.value = 0
     dut.i_slot2_live_predicted_target.value = 0
+    dut.i_slot2_staged_target_rel_pending.value = 0
+    dut.i_slot2_live_target_rel_pending.value = 0
 
 
 async def _settle() -> None:
@@ -85,8 +87,40 @@ async def _settle() -> None:
     await Timer(1, unit="ns")
 
 
+def _pending_target_relation(dut: Any, target: int) -> int:
+    """Pack how a slot-2 target relates to the pending PC, as pc_pending_rel_t."""
+    registers = (
+        dut.pending_prediction_pc.value,
+        dut.pending_prediction_prev_pc.value,
+        dut.pending_prediction_prev_native_pc.value,
+    )
+    # The registers are unknown only before the first capture, when nothing pends.
+    if not all(register.is_resolvable for register in registers):
+        return 0
+    pending_pc, prev_pc, prev_native_pc = (int(register) for register in registers)
+    fields = (
+        target == pending_pc,
+        (target >> 1) < (pending_pc >> 1),
+        (target >> 1) > (pending_pc >> 1),
+        target == prev_pc,
+        target == prev_native_pc,
+    )
+    return sum(int(field) << (len(fields) - 1 - i) for i, field in enumerate(fields))
+
+
 async def _advance_cycle(dut: Any) -> None:
-    """Advance one clock edge and let registered outputs settle."""
+    """Advance one clock edge and let registered outputs settle.
+
+    Before the edge, relate the slot-2 targets to the pending PC, as
+    branch_prediction_controller does for pc_controller's relation registers.
+    """
+    await _settle()
+    dut.i_slot2_staged_target_rel_pending.value = _pending_target_relation(
+        dut, int(dut.i_slot2_staged_predicted_target.value)
+    )
+    dut.i_slot2_live_target_rel_pending.value = _pending_target_relation(
+        dut, int(dut.i_slot2_live_predicted_target.value)
+    )
     await RisingEdge(dut.i_clk)
     await _settle()
 

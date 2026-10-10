@@ -296,7 +296,7 @@ module cpu_ooo #(
   riscv_pkg::trap_ctrl_t trap_ctrl;
   logic trap_taken, mret_taken;
   logic sret_taken;  // SRET pulse from the trap unit (rides the MRET machinery)
-  logic trap_to_s;  // Trap targets S (delegated): steers csr_file's entry side
+  logic trap_to_s;  // Trap targets S (delegated)
   // Any xRET (MRET, SRET, or DRET). Pipeline control, recovery, and the ROB
   // acknowledge treat the three alike; csr_file, the resume-PC seed, and the
   // debug logic use the separate pulses.
@@ -672,6 +672,7 @@ module cpu_ooo #(
   logic [XLEN-1:0] csr_dpc;
   logic dret_taken;
   logic trap_to_d, trap_no_csr, dbg_go_taken, dbg_park_entry, dbg_park_exception;
+  logic trap_save_m, trap_save_s, trap_enter_d;  // csr_file's entry enables
   logic [2:0] trap_dbg_cause;
   logic csr_mstatus_mie_direct;
 
@@ -3221,6 +3222,9 @@ module cpu_ooo #(
       .i_trap_taken(trap_taken && !trap_no_csr),
       .i_trap_to_s(trap_to_s),
       .i_trap_to_d(trap_to_d),
+      .i_trap_save_m(trap_save_m),
+      .i_trap_save_s(trap_save_s),
+      .i_trap_enter_d(trap_enter_d),
       .i_trap_dbg_cause(trap_dbg_cause),
       .i_dret_taken(dret_taken),
       .i_dbg_data(i_dbg_data),
@@ -3616,9 +3620,9 @@ module cpu_ooo #(
       .i_rst,
       // A translation CSR retires at T, csr_file writes it from the registered
       // commit bus at T+1, and its full flush follows at T+2. Block every
-      // trap, Debug Mode, and xRET take on both cycles, so csr_file's
-      // higher-priority trap and xRET updates cannot overwrite the CSR write
-      // and no stale younger xRET can execute on the flush edge.
+      // trap, Debug Mode, and xRET take on both cycles, so no take coincides
+      // with the CSR write (csr_file relies on that) and no stale younger
+      // xRET can execute on the flush edge.
       .i_pipeline_stall(fence_class_quiesce),
       .i_sq_committed_empty(sq_committed_empty_for_trap),
       .o_trap_drain_wait(trap_drain_wait),
@@ -3671,6 +3675,9 @@ module cpu_ooo #(
       .o_trap_pc(trap_pc_internal),
       .o_trap_cause(trap_cause_internal),
       .o_trap_value(trap_value_internal),
+      .o_trap_save_m(trap_save_m),
+      .o_trap_save_s(trap_save_s),
+      .o_trap_enter_d(trap_enter_d),
       .o_trap_to_d(trap_to_d),
       .o_trap_no_csr(trap_no_csr),
       .o_dbg_cause(trap_dbg_cause),

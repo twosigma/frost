@@ -227,6 +227,8 @@ module if_stage #(
   logic slot2_live_target_used_for_pc_cofactor;
   logic [XLEN-1:0] slot2_staged_predicted_target;
   logic [XLEN-1:0] slot2_live_predicted_target;
+  riscv_pkg::pc_pending_rel_t slot2_staged_target_rel_pending;
+  riscv_pkg::pc_pending_rel_t slot2_live_target_rel_pending;
   logic slot2_predicted_is_call;
   logic slot2_predicted_is_return;
 
@@ -357,6 +359,9 @@ module if_stage #(
   logic pending_prediction_kills_live_slot2;
   logic [XLEN-1:0] pending_prediction_prev_pc;
   logic [XLEN-1:0] pending_prediction_prev_native_pc;
+  logic pc_reg_at_pending;
+  logic pc_reg_at_pending_predecessor;
+  logic pc_reg_at_pending_native_predecessor;
   logic fetch_lookup_is_lower_parcel;
   logic pc_reg_high_for_coverage;
   logic slot2_valid_for_pc_live_effective;
@@ -377,14 +382,12 @@ module if_stage #(
   // delivered later as slot 1 with its saved metadata. When the branch is
   // slot 1, kill its wrong-path partner even if stale bytes look pairable.
   // Dispatch, slot-2 prediction, and PC advance share this one-wide decision.
-  assign pending_prediction_owns_live_slot1 =
-      pending_prediction_active && (pc_reg == pending_prediction_pc);
-  // Compare both registered predecessor PCs before selecting by size,
-  // for timing.
+  // pc_controller registers pc_reg's equality with the branch PC and both
+  // predecessor PCs, for timing; select the predecessor by size.
+  assign pending_prediction_owns_live_slot1 = pending_prediction_active && pc_reg_at_pending;
   assign pending_prediction_owns_live_slot2 =
       pending_prediction_active && !sel_nop_2_aligner &&
-      (is_compressed ? (pc_reg == pending_prediction_prev_pc) :
-                       (pc_reg == pending_prediction_prev_native_pc));
+      (is_compressed ? pc_reg_at_pending_predecessor : pc_reg_at_pending_native_predecessor);
   assign pending_prediction_kills_live_slot2 =
       pending_prediction_owns_live_slot1 || pending_prediction_owns_live_slot2;
   assign sel_nop_2 = sel_nop_2_aligner || sel_nop || pending_prediction_kills_live_slot2;
@@ -661,6 +664,9 @@ module if_stage #(
       // +2 and +4 in parallel; the selected live size feeds only its
       // simulation checks.
       .i_slot2_is_compressed(is_compressed_2),
+      .i_pending_prediction_pc(pending_prediction_pc),
+      .i_pending_prediction_prev_pc(pending_prediction_prev_pc),
+      .i_pending_prediction_prev_native_pc(pending_prediction_prev_native_pc),
 
       // Control signals for prediction gating
       .i_trap_taken(i_trap_ctrl.trap_taken),
@@ -742,6 +748,8 @@ module if_stage #(
       .o_slot2_predicted_target_for_pc(slot2_predicted_target_for_pc),
       .o_slot2_staged_predicted_target(slot2_staged_predicted_target),
       .o_slot2_live_predicted_target(slot2_live_predicted_target),
+      .o_slot2_staged_target_rel_pending(slot2_staged_target_rel_pending),
+      .o_slot2_live_target_rel_pending(slot2_live_target_rel_pending),
       .o_slot2_predicted_is_call(slot2_predicted_is_call),
       .o_slot2_predicted_is_return(slot2_predicted_is_return),
 
@@ -831,6 +839,8 @@ module if_stage #(
       .i_slot2_live_target_used_for_pc_cofactor(slot2_live_target_used_for_pc_cofactor),
       .i_slot2_staged_predicted_target(slot2_staged_predicted_target),
       .i_slot2_live_predicted_target(slot2_live_predicted_target),
+      .i_slot2_staged_target_rel_pending(slot2_staged_target_rel_pending),
+      .i_slot2_live_target_rel_pending(slot2_live_target_rel_pending),
       .o_slot2_redirect_q(slot2_redirect_q),
 
       .o_pc(pc),
@@ -848,6 +858,9 @@ module if_stage #(
       .o_pending_prediction_pc(pending_prediction_pc),
       .o_pending_prediction_prev_pc(pending_prediction_prev_pc),
       .o_pending_prediction_prev_native_pc(pending_prediction_prev_native_pc),
+      .o_pc_reg_at_pending(pc_reg_at_pending),
+      .o_pc_reg_at_pending_predecessor(pc_reg_at_pending_predecessor),
+      .o_pc_reg_at_pending_native_predecessor(pc_reg_at_pending_native_predecessor),
       .o_pending_prediction_target_handoff(pending_prediction_target_handoff),
       .o_pending_prediction_holdoff(pending_prediction_holdoff),
       .o_pending_prediction_holdoff_wcs0(pending_prediction_holdoff_wcs0),

@@ -374,9 +374,13 @@ class LQModel:
             self.amo_state = 1 if e.amo_op in _MINMAX_OPS else 2
             self.mem_outstanding = False
         elif e.is_lr:
-            # LR: normal data capture + set reservation
-            processed = load_unit_model(e.size, e.sign_ext, e.address, data)
-            e.data = processed & MASK64
+            # LR: normal data capture + set reservation. LR.D keeps the whole
+            # beat, like LD.
+            if e.size == MEM_SIZE_DOUBLE:
+                e.data = data
+            else:
+                processed = load_unit_model(e.size, e.sign_ext, e.address, data)
+                e.data = processed & MASK64
             e.data_valid = True
             self.mem_outstanding = False
             self.reservation_valid = True

@@ -28,7 +28,7 @@ proc
 setundef -undriven -anyseq
 opt
 prep -top pc_controller -flatten
-select -assert-count 4 t:$check
+select -assert-count 5 t:$check
 select -assert-none t:$assume
 select -assert-none t:$check r:FLAVOR=assume %i
 

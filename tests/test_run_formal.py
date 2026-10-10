@@ -305,7 +305,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "trap_unit.sby",
-        "Trap-unit exception and interrupt handling",
+        "Trap-unit exception and interrupt handling, and the CSR entry enables in "
+        "every state",
+        tasks=("bmc", "cover", "prove"),
     ),
     FormalTarget(
         "csr_file.sby",
@@ -560,7 +562,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "branch_prediction_disable.sby",
-        "Branch-prediction guards and metadata obey staged and live disable rules",
+        "Branch-prediction guards and metadata obey staged and live disable rules, "
+        "and slot-2 target relations match direct compares",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -570,7 +573,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "prediction_release.sby",
-        "Pending-prediction release preserves state masking and fetch holdoffs",
+        "Pending-prediction release preserves state masking, fetch holdoffs, and the "
+        "registered PC relations",
         tasks=("bmc", "cover", "prove"),
     ),
     FormalTarget(

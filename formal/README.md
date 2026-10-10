@@ -67,7 +67,7 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | Target | Checks |
 | --- | --- |
 | `branch_prediction_alias` | The slot-1/slot-2 alias output computed from the base PC equals the generic computation under the fetch stage's base+2/base+4 wiring. Only this output is compared |
-| `branch_prediction_disable` | The prediction-use gates for both slots, slot 2's target select, and the metadata next state equal the reference equations, and disabling prediction blocks both the live and the staged path |
+| `branch_prediction_disable` | The prediction-use gates for both slots, slot 2's target select, and the metadata next state equal the reference equations, disabling prediction blocks both the live and the staged path, and the slot-2 targets' relations to the pending PC equal direct compares |
 | `btb_tag_compare` | Grouped BTB lookup and update tag compares equal full-width tag equality, for the 256-entry BTB and a 16-entry one, with arbitrary RAM outputs |
 | `c_ext_buffer_next` | The compressed-instruction buffer's next state equals the reference clear/capture/hold priority |
 | `c_ext_state_cofactor` | The same next state with the pending-prediction handoff split out equals the reference, and a handoff never keeps old-path buffer state |
@@ -80,23 +80,27 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | `if_direction_payload` | Dropping the NOP term from the branch-direction payload select changes no non-NOP packet, including stall replay through the real `stall_capture_reg`. Assumes a flush on the first cycle |
 | `pc_holdoff_cofactor` | The three fetch-holdoff outputs equal their reference equations |
 | `pc_holdoff_tag` | A pending prediction's predecessor-PC tag equals its PC minus 2, and outside reset the prediction holdoffs equal their reference equations; unbounded at XLEN 32, 64, and 72, including wraparound. Assumes the pending bit starts clear |
-| `pc_increment_relation` | The local carry relations behind the PC +2/+4/+6/+8 compares equal full-width arithmetic at XLEN 32 and 64, including wraparound |
+| `pc_increment_relation` | The local carry relations behind the PC +2/+4/+6/+8 compares, and each sequential `pc_reg` candidate's relation to the pending and fetch PCs, equal full-width arithmetic at XLEN 32 and 64, including wraparound |
 | `pc_increment_holdoff` | Both sequential next PCs equal the reference per-size candidates with holdoff and NOP selection, for portable and Xilinx-primitive builds |
 | `pc_pending_capture` | The pending-prediction valid bit's next state equals the reference clear/set/hold priority, for both `PENDING_HANDOFF_EXCLUDES_SLOT2` settings |
 | `pc_register_mux` | The architectural-PC mux equals the reference priority, in the same configurations as `fetch_pc_mux` |
 | `prediction_handoff` | `prediction_release` with `PENDING_HANDOFF_EXCLUDES_SLOT2=1`, the fetch stage's setting |
 | `prediction_metadata_output` | Each packet's BTB-taken bit equals the reference priority, and a packet that a saved or pending prediction does not belong to never reports taken |
 | `prediction_metadata_tracker` | A pending prediction's saved PC and target hold until their packet consumes them or a reset or redirect kills them, and call and return types always leave with their target. See below |
-| `prediction_release` | Pending-prediction outputs are masked while nothing is pending, a ready handoff raises both prediction holdoffs, and the holdoffs, predecessor-PC tags, and lower-parcel lookup match their reference relations. See below |
+| `prediction_release` | Pending-prediction outputs are masked while nothing is pending, a ready handoff raises both prediction holdoffs, and the holdoffs, predecessor-PC tags, and lower-parcel lookup match their reference relations. Whenever a prediction will be pending, the registered `pc_reg` relations load next cycle's wide-compare values. See below |
 | `ras_checkpoint` | The return-address stack's outputs, next pointer, and count equal the reference equations, and so does every entry write: a push or swap writes its link address, a restore writes the saved top entry back, and nothing else changes |
 | `rvc_predecode` | The fill-time RV64C expansion and illegal flag equal the reference decompressor (`rvc_decompressor`) for all 65,536 16-bit parcels |
 
 `prediction_release` runs the real `pc_controller` and `c_ext_state`
-together. The harness replaces the PC-increment calculator with one whose
+together. The harness replaces the PC-increment calculator with one whose PC
 outputs are unconstrained, which admits every real PC movement and more, and
-makes predictor requests arbitrary. It assumes only a reset on the first
-cycle. `prediction_handoff` runs the same harness with the fetch stage's
-parameter setting. Both have `bmc`, `cover`, and ABC PDR `prove` tasks.
+makes predictor requests arbitrary. The stand-in's pending-PC relations are
+full-width compares of its outputs, which `pc_increment_relation` proves the
+real calculator matches. The harness likewise relates both slot-2 targets to
+the pending PC by direct compares, as `branch_prediction_disable` proves the
+predictor does. It assumes only a reset on the first cycle.
+`prediction_handoff` runs the same harness with the fetch stage's parameter
+setting. Both have `bmc`, `cover`, and ABC PDR `prove` tasks.
 
 `prediction_metadata_tracker` models the registered predictor target, which
 may change while fetch runs and holds during a stall, and leaves the pending
@@ -206,8 +210,8 @@ count.
 
 | Target | Checks |
 | --- | --- |
-| `csr_commit_cofactor` | Most CSR state (not `mstatus`, `mie`, `fflags`, `frm`, or the debug CSRs), both counters, and the translation-invalidate request equal a reference model of reset, trap entry, and CSR writes, from arbitrary state; unbounded. `prove_integrated` and `prove_perf_off` use the CPU's setting, in which a CSR commit never coincides with a trap or xRET |
-| `csr_file` | CSR and privilege updates on traps, xRETs, and debug entry and exit, plus counters, `fflags`, and FS state, with the profiling counters present and absent (`bmc_perf_off`). Assumes traps, xRETs, and CSR writes never coincide, FP-state updates never coincide with a CSR write, privilege and debug transitions are legal, and trap PCs are 2-byte aligned |
+| `csr_commit_cofactor` | Stored CSR state other than `mstatus`, `mie`, `fflags`, and `frm`, both counters, and the translation-invalidate request equal a reference model of reset, trap and Debug Mode entry, DRET, and CSR writes after each edge, from arbitrary state; the `mstatus`, `mie`, and privilege next state equals the reference's for the same current state. The trap unit's entry enables must match its trap inputs. Unbounded. `prove_integrated` and `prove_perf_off` use the CPU's setting, in which a CSR commit never coincides with a trap or xRET |
+| `csr_file` | CSR and privilege updates on traps, xRETs, and debug entry and exit, plus counters, `fflags`, and FS state, with the profiling counters present and absent (`bmc_perf_off`). Assumes traps, xRETs, and CSR writes never coincide, FP-state updates never coincide with a CSR write, privilege and debug transitions are legal, the entry enables match the trap inputs, and trap PCs are 2-byte aligned |
 | `mispredict_capture` | While misprediction recovery is pending, the captured recovery payload equals a register loaded only on a mispredicted commit; bounded and unbounded |
 | `reorder_buffer` | Occupancy and pointers, allocation into free entries, commit only of a done head, serializer control of traps, fences, CSR writes, and translation drains, and flush and reset. Assumes legal dispatch and completion traffic, including no CDB completion for an entry allocated the previous cycle or for a head the serializer holds. Depth 12 does not reach a full buffer with pointer wraparound |
 | `rob_alloc_lvt` | The packed allocation-payload memory equals separate per-field memories; unbounded |
@@ -216,7 +220,7 @@ count.
 | `rob_retire_ready` | Per-entry retirement eligibility (completion, two-wide, misprediction) equals the selected-field expressions, and both head masks stay one-hot; unbounded, assuming an initial reset |
 | `rob_retire_stall` | Retirement strobes and every performance event equal a reference built from the serializer's full commit stall |
 | `rob_start_cofactor` | CSR and xRET start signals equal the reference equations, the head mask stays one-hot, and CSR and xRET entries never take the CDB bypass; unbounded. Assumes an initial reset |
-| `trap_unit` | Traps, interrupts, xRETs, and debug entry: mutual exclusion, priority (debug over M over S), targets, nothing taken while the pipeline is stalled, and waiting for committed stores to drain; the split trap-entry target and take outputs equal the reference ones. Assumes the start events are mutually exclusive |
+| `trap_unit` | Traps, interrupts, xRETs, and debug entry: mutual exclusion, priority (debug over M over S), targets, nothing taken while the pipeline is stalled, and waiting for committed stores to drain; the split trap-entry target and take outputs equal the reference ones. Assumes the start events are mutually exclusive. `prove` shows that `csr_file`'s entry enables equal the take and steering outputs from arbitrary state |
 
 ### Execution units and CDB
 
