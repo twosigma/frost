@@ -16,7 +16,7 @@ read_verilog -formal -D SYNTHESIS -D CSR_COMMIT_LOCAL_PROOF -sv csr_file.sv
 prove_integrated: chparam -set COMMIT_EXCLUDES_CONTROL_TAKE 1 csr_file
 prove_perf_off: chparam -set COMMIT_EXCLUDES_CONTROL_TAKE 1 -set PERF_COUNTERS 0 csr_file
 prep -top csr_file
-select -assert-count 32 t:$check
+select -assert-count 42 t:$check
 select -assert-none t:$assume
 select -assert-none t:$check r:FLAVOR=assume %i
 

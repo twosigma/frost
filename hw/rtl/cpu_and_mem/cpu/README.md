@@ -253,9 +253,11 @@ with `dpc` at the handler's first instruction, as the specification requires.
 CSR instructions execute one at a time at commit, sequenced by the ROB
 serializer (see the [ROB README](tomasulo/reorder_buffer/README.md)). A CSR
 commit never coincides with a trap or xRET, and `cpu_ooo` sets `csr_file`'s
-`COMMIT_EXCLUDES_CONTROL_TAKE` so the CSR file can rely on that and drop trap
-priority from its write path; simulation assertions in both modules check the
-rule.
+`COMMIT_EXCLUDES_CONTROL_TAKE` so the CSR file can rely on that and drop take
+priority from its write paths; simulation assertions in both modules check the
+rule. Trap entry updates the CSRs through one-hot enables from `trap_unit` (an
+M-side save, an S-side save, or Debug Mode entry), which it builds beside the
+take decision rather than from it.
 
 A CSR instruction that accesses `satp`, or writes `mstatus` or `sstatus`, can
 change address translation or `mstatus.FS`, which ID's decode reads, so

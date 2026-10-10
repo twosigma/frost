@@ -155,6 +155,14 @@ module trap_unit #(
     output logic [XLEN-1:0] o_trap_cause,  // Cause to save to mcause/scause
     output logic [XLEN-1:0] o_trap_value,  // Value to save to mtval/stval
 
+    // csr_file's entry enables, at most one set, built beside o_trap_taken for
+    // timing. They equal o_trap_taken && !o_trap_no_csr together with
+    // !o_trap_to_d && !o_trap_to_s (M-side save), !o_trap_to_d && o_trap_to_s
+    // (S-side save), and o_trap_to_d (Debug Mode entry).
+    output logic o_trap_save_m,
+    output logic o_trap_save_s,
+    output logic o_trap_enter_d,
+
     // Redirect qualifiers, valid with o_trap_taken:
     //   o_trap_to_d: Debug Mode entry; csr_file saves dpc/dcsr and sets priv=M.
     //   o_trap_no_csr: go, debug exception, or memory replay; cpu_ooo withholds
@@ -603,6 +611,26 @@ module trap_unit #(
   assign o_trap_to_d = (take_trap_d && !i_debug_mode) || (exception_take && exception_ebreak_to_d);
   assign o_trap_no_csr = (take_trap_d && i_debug_mode) ||
       (exception_take && (exception_in_debug || exception_replay));
+  // csr_file's entry enables, built from the take's terms rather than from
+  // take_trap and the steering above, so the late take-ready terms feed them
+  // directly. Each side saves on its own interrupt take unless a higher class
+  // wins (D over M over S), or on an exception that saves there when no
+  // interrupt is taken. Debug Mode entry is a halt outside Debug Mode, or an
+  // ebreak routed there when no interrupt is taken.
+  logic take_gate;
+  logic exception_saves_m, exception_saves_s, exception_enters_d;
+  assign take_gate = !i_pipeline_stall && i_sq_committed_empty;
+  assign exception_saves_m = exception_pending && !exception_to_s && !exception_ebreak_to_d &&
+      !exception_in_debug && !exception_replay;
+  assign exception_saves_s = exception_pending && exception_to_s && !exception_in_debug;
+  assign exception_enters_d = exception_ebreak_to_d && !exception_replay;
+  assign o_trap_save_m = take_gate && !d_int_take_ready &&
+      (m_int_take_ready || (!s_int_take_ready && exception_saves_m));
+  assign o_trap_save_s = take_gate && !d_int_take_ready && !m_int_take_ready &&
+      (s_int_take_ready || exception_saves_s);
+  assign o_trap_enter_d = take_gate &&
+      ((d_int_take_ready && !i_debug_mode) ||
+       (!d_int_take_ready && !m_int_take_ready && !s_int_take_ready && exception_enters_d));
   assign o_dbg_go_taken = take_trap_d && i_debug_mode;
   assign o_dbg_park_entry = exception_take && exception_in_debug;
   assign o_dbg_park_exception = o_dbg_park_entry && (exception_cause_q != riscv_pkg::ExcBreakpoint);
@@ -727,7 +755,18 @@ module trap_unit #(
   // Formal Verification Properties
   // ===========================================================================
 `ifdef FORMAL
+  // csr_file's entry enables equal the take and steering outputs in every
+  // state, so the prove task checks them from arbitrary register values.
+  always_comb begin
+    p_trap_save_m_matches_steering :
+    assert (o_trap_save_m == (o_trap_taken && !o_trap_no_csr && !o_trap_to_d && !o_trap_to_s));
+    p_trap_save_s_matches_steering :
+    assert (o_trap_save_s == (o_trap_taken && !o_trap_no_csr && !o_trap_to_d && o_trap_to_s));
+    p_trap_enter_d_matches_steering :
+    assert (o_trap_enter_d == (o_trap_taken && !o_trap_no_csr && o_trap_to_d));
+  end
 
+`ifndef TRAP_ENTRY_ENABLE_LOCAL_PROOF
   initial assume (i_rst);
 
   reg f_past_valid;
@@ -998,6 +1037,7 @@ module trap_unit #(
       cover (i_device_read_at_head && m_int_eligible && !o_trap_drain_wait);
     end
   end
+`endif  // TRAP_ENTRY_ENABLE_LOCAL_PROOF
 
 `endif  // FORMAL
 

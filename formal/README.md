@@ -210,8 +210,8 @@ count.
 
 | Target | Checks |
 | --- | --- |
-| `csr_commit_cofactor` | Most CSR state (not `mstatus`, `mie`, `fflags`, `frm`, or the debug CSRs), both counters, and the translation-invalidate request equal a reference model of reset, trap entry, and CSR writes, from arbitrary state; unbounded. `prove_integrated` and `prove_perf_off` use the CPU's setting, in which a CSR commit never coincides with a trap or xRET |
-| `csr_file` | CSR and privilege updates on traps, xRETs, and debug entry and exit, plus counters, `fflags`, and FS state, with the profiling counters present and absent (`bmc_perf_off`). Assumes traps, xRETs, and CSR writes never coincide, FP-state updates never coincide with a CSR write, privilege and debug transitions are legal, and trap PCs are 2-byte aligned |
+| `csr_commit_cofactor` | Stored CSR state other than `mstatus`, `mie`, `fflags`, and `frm`, both counters, and the translation-invalidate request equal a reference model of reset, trap and Debug Mode entry, DRET, and CSR writes after each edge, from arbitrary state; the `mstatus`, `mie`, and privilege next state equals the reference's for the same current state. The trap unit's entry enables must match its trap inputs. Unbounded. `prove_integrated` and `prove_perf_off` use the CPU's setting, in which a CSR commit never coincides with a trap or xRET |
+| `csr_file` | CSR and privilege updates on traps, xRETs, and debug entry and exit, plus counters, `fflags`, and FS state, with the profiling counters present and absent (`bmc_perf_off`). Assumes traps, xRETs, and CSR writes never coincide, FP-state updates never coincide with a CSR write, privilege and debug transitions are legal, the entry enables match the trap inputs, and trap PCs are 2-byte aligned |
 | `mispredict_capture` | While misprediction recovery is pending, the captured recovery payload equals a register loaded only on a mispredicted commit; bounded and unbounded |
 | `reorder_buffer` | Occupancy and pointers, allocation into free entries, commit only of a done head, serializer control of traps, fences, CSR writes, and translation drains, and flush and reset. Assumes legal dispatch and completion traffic, including no CDB completion for an entry allocated the previous cycle or for a head the serializer holds. Depth 12 does not reach a full buffer with pointer wraparound |
 | `rob_alloc_lvt` | The packed allocation-payload memory equals separate per-field memories; unbounded |
@@ -220,7 +220,7 @@ count.
 | `rob_retire_ready` | Per-entry retirement eligibility (completion, two-wide, misprediction) equals the selected-field expressions, and both head masks stay one-hot; unbounded, assuming an initial reset |
 | `rob_retire_stall` | Retirement strobes and every performance event equal a reference built from the serializer's full commit stall |
 | `rob_start_cofactor` | CSR and xRET start signals equal the reference equations, the head mask stays one-hot, and CSR and xRET entries never take the CDB bypass; unbounded. Assumes an initial reset |
-| `trap_unit` | Traps, interrupts, xRETs, and debug entry: mutual exclusion, priority (debug over M over S), targets, nothing taken while the pipeline is stalled, and waiting for committed stores to drain; the split trap-entry target and take outputs equal the reference ones. Assumes the start events are mutually exclusive |
+| `trap_unit` | Traps, interrupts, xRETs, and debug entry: mutual exclusion, priority (debug over M over S), targets, nothing taken while the pipeline is stalled, and waiting for committed stores to drain; the split trap-entry target and take outputs equal the reference ones. Assumes the start events are mutually exclusive. `prove` shows that `csr_file`'s entry enables equal the take and steering outputs from arbitrary state |
 
 ### Execution units and CDB
 
