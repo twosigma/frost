@@ -138,6 +138,25 @@ module prediction_release_formal #(
   // requires slot-2 permission and implies that request.
   assign slot2_live_target_used_for_pc_cofactor =
       slot2_prediction_used_for_pc && i_slot2_live_target_request;
+  // branch_prediction_controller relates both slot-2 targets to the pending
+  // prediction's PC registers; here, as direct compares. Fields in
+  // pc_pending_rel_t order: at, below, above, pred, pred_native.
+  riscv_pkg::pc_pending_rel_t slot2_staged_target_rel_pending;
+  riscv_pkg::pc_pending_rel_t slot2_live_target_rel_pending;
+  assign slot2_staged_target_rel_pending = {
+    i_slot2_predicted_target == pending_prediction_pc,
+    i_slot2_predicted_target[XLEN-1:1] < pending_prediction_pc[XLEN-1:1],
+    i_slot2_predicted_target[XLEN-1:1] > pending_prediction_pc[XLEN-1:1],
+    i_slot2_predicted_target == pending_prediction_prev_pc,
+    i_slot2_predicted_target == pending_prediction_prev_native_pc
+  };
+  assign slot2_live_target_rel_pending = {
+    i_slot2_live_predicted_target == pending_prediction_pc,
+    i_slot2_live_predicted_target[XLEN-1:1] < pending_prediction_pc[XLEN-1:1],
+    i_slot2_live_predicted_target[XLEN-1:1] > pending_prediction_pc[XLEN-1:1],
+    i_slot2_live_predicted_target == pending_prediction_prev_pc,
+    i_slot2_live_predicted_target == pending_prediction_prev_native_pc
+  };
   // Match the production predictor's matching-target exception. A PD redirect
   // always kills the registered handoff, but may preserve prediction metadata
   // and its holdoff while a matching-target packet is stalled.
@@ -230,6 +249,8 @@ module prediction_release_formal #(
       .i_slot2_live_target_used_for_pc_cofactor(slot2_live_target_used_for_pc_cofactor),
       .i_slot2_staged_predicted_target(i_slot2_predicted_target),
       .i_slot2_live_predicted_target,
+      .i_slot2_staged_target_rel_pending(slot2_staged_target_rel_pending),
+      .i_slot2_live_target_rel_pending(slot2_live_target_rel_pending),
       .o_slot2_redirect_q(),
       .o_pc(pc),
       .o_pc_reg(pc_reg),

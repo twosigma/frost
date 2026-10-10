@@ -16,8 +16,10 @@
 
 /*
   Sequential next-PC values for pc_controller: the next fetch PC, that PC + 2
-  (for the catch-up arm), and the next pc_reg. Every candidate increment is
-  added in parallel before selecting the bundle size, for timing.
+  (for the catch-up arm), and the next pc_reg, with how pc_reg and the next
+  pc_reg relate to the pending branch PC and to the fetch PC. Every candidate
+  increment is added (or related) in parallel before selecting the bundle
+  size, for timing.
 
   pc_reg_precompute keeps its adders separate from the bundle-size mux.
   Compute each result for one-wide, two-wide, and NOP packets, then select
@@ -30,6 +32,8 @@ module pc_increment_calculator #(
     // Current PC values (registered outputs from pc_controller)
     input logic [XLEN-1:0] i_pc,
     input logic [XLEN-1:0] i_pc_reg,
+    // Branch PC of the pending prediction (pc_controller's register)
+    input logic [XLEN-1:0] i_pending_prediction_pc,
 
     input logic i_sel_nop,  // IF emits a NOP: the window may be stale, so its sizes are unreliable
 
@@ -63,7 +67,15 @@ module pc_increment_calculator #(
     output logic [XLEN-1:0] o_seq_next_pc_reg,  // Sequential PC for instruction address
     // Precomputed (o_seq_next_pc_reg != i_pc) for pc_controller's
     // pending-prediction decision (see the compare block near the end).
-    output logic o_seq_next_pc_reg_neq_pc
+    output logic o_seq_next_pc_reg_neq_pc,
+    // How o_seq_next_pc_reg and i_pc_reg relate to the pending branch PC and
+    // to i_pc, which pc_controller captures as the branch PC. pc_controller
+    // registers pc_reg's relation from these (see the relation block near
+    // the end).
+    output riscv_pkg::pc_pending_rel_t o_seq_next_pc_reg_rel_pending,
+    output riscv_pkg::pc_pending_rel_t o_seq_next_pc_reg_rel_fetch,
+    output riscv_pkg::pc_pending_rel_t o_pc_reg_rel_pending,
+    output riscv_pkg::pc_pending_rel_t o_pc_reg_rel_fetch
 );
 
   // ===========================================================================
@@ -453,11 +465,140 @@ module pc_increment_calculator #(
     else o_seq_next_pc_reg_neq_pc = neq_advance_sel;
   end
 
+  // ===========================================================================
+  // Precomputed relations to the pending branch PC and to i_pc
+  // ===========================================================================
+  // pc_controller registers pc_reg's relation to the pending branch PC from
+  // these, which keeps its wide compares out of the PC loop. Relate each
+  // pc_reg candidate i_pc_reg + 2a (a = 0 for the hold, 1..4 for the +2..+8
+  // advances) to both PCs, then select with the same controls as
+  // o_seq_next_pc_reg.
+  localparam int unsigned NRelAdvances = 5;
+  logic [NRelAdvances-1:0] pc_reg_hw_wraps;
+  assign pc_reg_hw_wraps[0] = 1'b0;
+  for (genvar a = 1; a < NRelAdvances; a++) begin : gen_pc_reg_hw_wrap
+    localparam logic [XLEN-2:0] HwLimit = {(XLEN - 1) {1'b1}} - a;
+    assign pc_reg_hw_wraps[a] = i_pc_reg[XLEN-1:1] > HwLimit;
+  end
+  logic [NRelAdvances-1:0] rel_pending_at, rel_pending_below, rel_pending_above;
+  logic [NRelAdvances-1:0] rel_pending_pred, rel_pending_pred_native;
+  logic [NRelAdvances-1:0] rel_fetch_at, rel_fetch_below, rel_fetch_above;
+  logic [NRelAdvances-1:0] rel_fetch_pred, rel_fetch_pred_native;
+  pc_pending_relation #(
+      .XLEN(XLEN)
+  ) u_rel_pending (
+      .i_pc_reg,
+      .i_side_pc(i_pending_prediction_pc),
+      .i_pc_reg_hw_wraps(pc_reg_hw_wraps),
+      .o_at(rel_pending_at),
+      .o_below(rel_pending_below),
+      .o_above(rel_pending_above),
+      .o_pred(rel_pending_pred),
+      .o_pred_native(rel_pending_pred_native)
+  );
+  pc_pending_relation #(
+      .XLEN(XLEN)
+  ) u_rel_fetch (
+      .i_pc_reg,
+      .i_side_pc(i_pc),
+      .i_pc_reg_hw_wraps(pc_reg_hw_wraps),
+      .o_at(rel_fetch_at),
+      .o_below(rel_fetch_below),
+      .o_above(rel_fetch_above),
+      .o_pred(rel_fetch_pred),
+      .o_pred_native(rel_fetch_pred_native)
+  );
+  logic [4:0] rel_pending_by_advance[NRelAdvances];
+  logic [4:0] rel_fetch_by_advance  [NRelAdvances];
+  for (genvar a = 0; a < NRelAdvances; a++) begin : gen_rel_by_advance
+    // Field order of riscv_pkg::pc_pending_rel_t.
+    assign rel_pending_by_advance[a] = {
+      rel_pending_at[a],
+      rel_pending_below[a],
+      rel_pending_above[a],
+      rel_pending_pred[a],
+      rel_pending_pred_native[a]
+    };
+    assign rel_fetch_by_advance[a] = {
+      rel_fetch_at[a],
+      rel_fetch_below[a],
+      rel_fetch_above[a],
+      rel_fetch_pred[a],
+      rel_fetch_pred_native[a]
+    };
+  end
+  logic [4:0] rel_pending_shape[NRegShapes];
+  logic [4:0] rel_fetch_shape  [NRegShapes];
+  always_comb begin
+    for (int unsigned c = 0; c < NRegShapes; c++) begin
+      unique case (reg_advance_sel_shape[c])
+        riscv_pkg::PcAdvancePlus4: begin
+          rel_pending_shape[c] = rel_pending_by_advance[2];
+          rel_fetch_shape[c]   = rel_fetch_by_advance[2];
+        end
+        riscv_pkg::PcAdvancePlus6: begin
+          rel_pending_shape[c] = rel_pending_by_advance[3];
+          rel_fetch_shape[c]   = rel_fetch_by_advance[3];
+        end
+        riscv_pkg::PcAdvancePlus8: begin
+          rel_pending_shape[c] = rel_pending_by_advance[4];
+          rel_fetch_shape[c]   = rel_fetch_by_advance[4];
+        end
+        default: begin
+          rel_pending_shape[c] = rel_pending_by_advance[1];
+          rel_fetch_shape[c]   = rel_fetch_by_advance[1];
+        end
+      endcase
+    end
+  end
+  always_comb begin
+    if (seq_sel_holdoff) begin
+      o_seq_next_pc_reg_rel_pending = rel_pending_by_advance[0];
+      o_seq_next_pc_reg_rel_fetch   = rel_fetch_by_advance[0];
+    end else if (i_sel_nop) begin
+      o_seq_next_pc_reg_rel_pending = rel_pending_shape[ShapeNop];
+      o_seq_next_pc_reg_rel_fetch   = rel_fetch_shape[ShapeNop];
+    end else if (i_slot2_valid) begin
+      o_seq_next_pc_reg_rel_pending = rel_pending_shape[ShapeTwo];
+      o_seq_next_pc_reg_rel_fetch   = rel_fetch_shape[ShapeTwo];
+    end else begin
+      o_seq_next_pc_reg_rel_pending = rel_pending_shape[ShapeOne];
+      o_seq_next_pc_reg_rel_fetch   = rel_fetch_shape[ShapeOne];
+    end
+  end
+  assign o_pc_reg_rel_pending = rel_pending_by_advance[0];
+  assign o_pc_reg_rel_fetch   = rel_fetch_by_advance[0];
+
+  // Reference relation of v to the branch PC side (see pc_pending_rel_t).
+  function automatic logic [4:0] pending_rel_reference(input logic [XLEN-1:0] v,
+                                                       input logic [XLEN-1:0] side);
+    pending_rel_reference = {
+      v == side,
+      v[XLEN-1:1] < side[XLEN-1:1],
+      v[XLEN-1:1] > side[XLEN-1:1],
+      v == XLEN'(side - XLEN'(2)),
+      v == XLEN'(side - XLEN'(4))
+    };
+  endfunction
+
 `ifndef SYNTHESIS
   // The 1-bit precompute must track the wide compare exactly.
   always_comb begin
     if (o_seq_next_pc_reg_neq_pc !== (o_seq_next_pc_reg != i_pc)) begin
       $error("pc_increment_calculator: o_seq_next_pc_reg_neq_pc mismatch");
+    end
+    if (!$isunknown(
+            {o_seq_next_pc_reg, i_pc_reg, i_pc, i_pending_prediction_pc}
+        ) && ((o_seq_next_pc_reg_rel_pending !== pending_rel_reference(
+            o_seq_next_pc_reg, i_pending_prediction_pc
+        )) || (o_seq_next_pc_reg_rel_fetch !== pending_rel_reference(
+            o_seq_next_pc_reg, i_pc
+        )) || (o_pc_reg_rel_pending !== pending_rel_reference(
+            i_pc_reg, i_pending_prediction_pc
+        )) || (o_pc_reg_rel_fetch !== pending_rel_reference(
+            i_pc_reg, i_pc
+        )))) begin
+      $error("pc_increment_calculator: pending-PC relation mismatch");
     end
   end
 `endif
@@ -469,9 +610,83 @@ module pc_increment_calculator #(
     assert (neq_plus6 == (pc_reg_plus_6 != i_pc));
     assert (neq_plus8 == (pc_reg_plus_8 != i_pc));
     assert (o_seq_next_pc_reg_neq_pc == (o_seq_next_pc_reg != i_pc));
+    assert (o_seq_next_pc_reg_rel_pending == pending_rel_reference(
+        o_seq_next_pc_reg, i_pending_prediction_pc
+    ));
+    assert (o_seq_next_pc_reg_rel_fetch == pending_rel_reference(o_seq_next_pc_reg, i_pc));
+    assert (o_pc_reg_rel_pending == pending_rel_reference(i_pc_reg, i_pending_prediction_pc));
+    assert (o_pc_reg_rel_fetch == pending_rel_reference(i_pc_reg, i_pc));
   end
 `endif
 endmodule : pc_increment_calculator
+
+// How i_pc_reg + 2a relates to i_side_pc for a = 0..4 (see
+// riscv_pkg::pc_pending_rel_t), without adders. With
+// aligned = {i_side_pc[XLEN-1:1], i_pc_reg[0]}, aligned == i_pc_reg + 2k
+// exactly when the halfword parts differ by k, and the carry relation of
+// pc_increment_calculator's compare checks that. Then i_pc_reg + 2a equals
+// i_side_pc, i_side_pc - 2, and i_side_pc - 4 at k = a, a + 1, and a + 2
+// (with equal bit 0). For the halfword order, let D = side - pc_reg on the
+// halfword parts, modulo 2^(XLEN-1), and D > a the absence of D == 0..a.
+// The advance is below the side PC when the subtraction does not borrow and
+// D > a; if the advance wraps, when either holds.
+module pc_pending_relation #(
+    parameter int unsigned XLEN = riscv_pkg::XLEN
+) (
+    input logic [XLEN-1:0] i_pc_reg,
+    input logic [XLEN-1:0] i_side_pc,
+    // i_pc_reg[XLEN-1:1] + a overflows, by advance a.
+    input logic [4:0] i_pc_reg_hw_wraps,
+    // One bit per advance a, as the pc_pending_rel_t fields.
+    output logic [4:0] o_at,
+    output logic [4:0] o_below,
+    output logic [4:0] o_above,
+    output logic [4:0] o_pred,
+    output logic [4:0] o_pred_native
+);
+
+  localparam int unsigned NEq = 7;  // k = a + 2 for a = 4
+  logic [NEq-1:0] hw_eq;  // aligned == i_pc_reg + 2k
+  logic bit0_eq, borrow;
+  assign bit0_eq = i_side_pc[0] == i_pc_reg[0];
+  assign borrow  = i_side_pc[XLEN-1:1] < i_pc_reg[XLEN-1:1];
+
+  if (XLEN > 5) begin : gen_carry_relation
+    localparam int HighBits = XLEN - 5;
+    localparam int ChunkBits = 12;
+    localparam int Chunks = (HighBits + ChunkBits - 1) / ChunkBits;
+    wire  [  XLEN-1:0] aligned = {i_side_pc[XLEN-1:1], i_pc_reg[0]};
+    wire  [  XLEN-1:0] difference = aligned ^ i_pc_reg;
+    wire  [  XLEN-1:0] zero_bit_carry = i_pc_reg & ~aligned;
+    logic [Chunks-1:0] high_matches;
+    for (genvar g = 0; g < Chunks; g++) begin : gen_match
+      localparam int First = 5 + g * ChunkBits;
+      localparam int Width = (XLEN - First < ChunkBits) ? XLEN - First : ChunkBits;
+      assign high_matches[g] = difference[First+:Width] == zero_bit_carry[First-1+:Width];
+    end
+    for (genvar k = 0; k < NEq; k++) begin : gen_eq
+      localparam logic [4:0] Increment = 5'(2 * k);
+      logic [3:0] carry;
+      assign carry = zero_bit_carry[3:0] | (Increment[3:0] & (i_pc_reg[3:0] | ~aligned[3:0]));
+      assign hw_eq[k] = (&high_matches) && ((difference[4:0] ^ Increment) == {carry, 1'b0});
+    end
+  end else begin : gen_small_reference
+    for (genvar k = 0; k < NEq; k++) begin : gen_eq
+      assign hw_eq[k] = {i_side_pc[XLEN-1:1], i_pc_reg[0]} == XLEN'(i_pc_reg + XLEN'(2 * k));
+    end
+  end
+
+  for (genvar a = 0; a < 5; a++) begin : gen_advance
+    logic exceeds;  // D > a
+    assign exceeds = !(|hw_eq[a:0]);
+    assign o_at[a] = hw_eq[a] && bit0_eq;
+    assign o_pred[a] = hw_eq[a+1] && bit0_eq;
+    assign o_pred_native[a] = hw_eq[a+2] && bit0_eq;
+    assign o_below[a] = i_pc_reg_hw_wraps[a] ? (!borrow || exceeds) : (!borrow && exceeds);
+    assign o_above[a] = !o_below[a] && !hw_eq[a];
+  end
+
+endmodule : pc_pending_relation
 
 // The next fetch PC and that PC + 2 for an advance select.
 module pc_fetch_advance_mux #(

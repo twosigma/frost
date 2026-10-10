@@ -2698,6 +2698,12 @@ async def test_pending_native_slot2_owner_uses_precomputed_plus4_tag(
     pc_ctrl.pending_prediction_pc_ready_q.value = 0
     pc_ctrl.redirect_kill_pending_q.value = 0
     pc_ctrl.carve_out_engaged_q.value = 0
+    # pc_controller registers pc_reg's relations to the pending branch PC, so
+    # deposit the ones these PCs give: pc_reg is P - 4, below the branch.
+    at, below, above, pred, pred_native = 0, 1, 0, 0, 1
+    pc_ctrl.pending_rel_q.value = (
+        (at << 4) | (below << 3) | (above << 2) | (pred << 1) | pred_native
+    )
     await _settle()
 
     assert pc_ctrl.o_pending_prediction_active.value

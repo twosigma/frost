@@ -82,6 +82,12 @@ module branch_prediction_controller #(
     // Only the simulation checks against the reference select read it;
     // synthesis uses the two per-candidate inputs above.
     input logic                       i_slot2_is_compressed,
+    // pc_controller's pending prediction: the branch PC and the PCs one
+    // compressed and one 32-bit instruction before it. Only the slot-2 target
+    // relations read them.
+    input logic [riscv_pkg::XLEN-1:0] i_pending_prediction_pc,
+    input logic [riscv_pkg::XLEN-1:0] i_pending_prediction_prev_pc,
+    input logic [riscv_pkg::XLEN-1:0] i_pending_prediction_prev_native_pc,
 
     // Control signals for prediction gating (all should be registered for timing)
     input logic i_trap_taken,
@@ -194,6 +200,12 @@ module branch_prediction_controller #(
     output logic                       o_slot2_predicted_is_call,
     output logic                       o_slot2_predicted_is_return,
 
+    // How o_slot2_staged_predicted_target and o_slot2_live_predicted_target
+    // relate to i_pending_prediction_pc, for pc_controller's registered
+    // relations.
+    output riscv_pkg::pc_pending_rel_t o_slot2_staged_target_rel_pending,
+    output riscv_pkg::pc_pending_rel_t o_slot2_live_target_rel_pending,
+
     // The stack state before this cycle's push or pop: the recovery point of a
     // packet IF hands PD this cycle.
     output logic [riscv_pkg::RasPtrBits-1:0] o_ras_checkpoint_tos,
@@ -244,6 +256,10 @@ module branch_prediction_controller #(
   logic            btb_entry_is_return_2;
   logic            btb_compressed_2_plus2;
   logic            btb_compressed_2_plus4;
+  logic [XLEN-1:0] btb_predicted_target_2_plus2;
+  logic [XLEN-1:0] btb_predicted_target_2_plus4;
+  logic            btb_entry_is_return_2_plus2;
+  logic            btb_entry_is_return_2_plus4;
 
   // Target, hit, bimodal index, and the other selected metadata all follow
   // the same candidate.  The +4 candidate valid is already qualified, and
@@ -323,6 +339,10 @@ module branch_prediction_controller #(
       .o_btb_is_call_2(btb_is_call_2),
       .o_btb_is_return_2(btb_is_return_2),
       .o_btb_entry_is_return_2(btb_entry_is_return_2),
+      .o_predicted_target_2_plus2(btb_predicted_target_2_plus2),
+      .o_predicted_target_2_plus4(btb_predicted_target_2_plus4),
+      .o_btb_entry_is_return_2_plus2(btb_entry_is_return_2_plus2),
+      .o_btb_entry_is_return_2_plus4(btb_entry_is_return_2_plus4),
 
       // Update, through the staging registers above
       .i_update(btb_update_q),
@@ -603,6 +623,61 @@ module branch_prediction_controller #(
   logic [XLEN-1:0] slot2_staged_typed_target_for_pc;
   assign slot2_staged_typed_target_for_pc =
       (btb_entry_is_return_2 && ras_nonempty) ? ras_top : btb_predicted_target_2;
+
+  // How pc_controller's two slot-2 targets relate to the pending prediction's
+  // PC. The stack top and each BTB candidate target are related first, and
+  // the late +4 and return-type selects then pick a relation as they pick a
+  // target, so they skip the wide compares.
+  function automatic logic [4:0] pending_target_rel(
+      input logic [XLEN-1:0] target, input logic [XLEN-1:0] pending_pc,
+      input logic [XLEN-1:0] prev_pc, input logic [XLEN-1:0] prev_native_pc);
+    logic hw_equal, hw_below;
+    hw_equal = target[XLEN-1:1] == pending_pc[XLEN-1:1];
+    hw_below = target[XLEN-1:1] < pending_pc[XLEN-1:1];
+    // Fields in pc_pending_rel_t order: at, below, above, pred, pred_native.
+    pending_target_rel = {
+      hw_equal && (target[0] == pending_pc[0]),
+      hw_below,
+      !hw_below && !hw_equal,
+      target == prev_pc,
+      target == prev_native_pc
+    };
+  endfunction
+  riscv_pkg::pc_pending_rel_t ras_top_rel_pending, slot1_target_rel_pending;
+  riscv_pkg::pc_pending_rel_t slot2_plus2_target_rel_pending, slot2_plus4_target_rel_pending;
+  riscv_pkg::pc_pending_rel_t slot2_plus2_typed_rel_pending, slot2_plus4_typed_rel_pending;
+  assign ras_top_rel_pending = pending_target_rel(
+      ras_top,
+      i_pending_prediction_pc,
+      i_pending_prediction_prev_pc,
+      i_pending_prediction_prev_native_pc
+  );
+  assign slot1_target_rel_pending = pending_target_rel(
+      btb_predicted_target,
+      i_pending_prediction_pc,
+      i_pending_prediction_prev_pc,
+      i_pending_prediction_prev_native_pc
+  );
+  assign slot2_plus2_target_rel_pending = pending_target_rel(
+      btb_predicted_target_2_plus2,
+      i_pending_prediction_pc,
+      i_pending_prediction_prev_pc,
+      i_pending_prediction_prev_native_pc
+  );
+  assign slot2_plus4_target_rel_pending = pending_target_rel(
+      btb_predicted_target_2_plus4,
+      i_pending_prediction_pc,
+      i_pending_prediction_prev_pc,
+      i_pending_prediction_prev_native_pc
+  );
+  assign slot2_plus2_typed_rel_pending = (btb_entry_is_return_2_plus2 && ras_nonempty) ?
+      ras_top_rel_pending : slot2_plus2_target_rel_pending;
+  assign slot2_plus4_typed_rel_pending = (btb_entry_is_return_2_plus4 && ras_nonempty) ?
+      ras_top_rel_pending : slot2_plus4_target_rel_pending;
+  assign o_slot2_staged_target_rel_pending =
+      slot2_pc_use_alt ? slot2_plus4_typed_rel_pending : slot2_plus2_typed_rel_pending;
+  assign o_slot2_live_target_rel_pending =
+      (btb_is_return && ras_nonempty) ? ras_top_rel_pending : slot1_target_rel_pending;
 
   // ===========================================================================
   // Prediction Gating Logic
@@ -1187,6 +1262,32 @@ module branch_prediction_controller #(
     assert (!(i_window_cannot_serve_raw ? i_disable_branch_prediction_wcs :
                                          i_disable_branch_prediction_wcs0) ||
             !o_slot2_prediction_used_for_pc);
+  end
+
+  // The slot-2 target relations equal direct compares of the targets
+  // pc_controller receives. The predictor's selected target and row return
+  // flag are its +4 or +2 candidate's (branch_predictor's selector checks).
+  always_comb begin
+    assume (btb_predicted_target_2 ==
+            (slot2_pc_use_alt ? btb_predicted_target_2_plus4 : btb_predicted_target_2_plus2));
+    assume (btb_entry_is_return_2 ==
+            (slot2_pc_use_alt ? btb_entry_is_return_2_plus4 : btb_entry_is_return_2_plus2));
+    p_slot2_staged_target_rel_matches_compares :
+    assert (o_slot2_staged_target_rel_pending == {
+      o_slot2_staged_predicted_target == i_pending_prediction_pc,
+      o_slot2_staged_predicted_target[XLEN-1:1] < i_pending_prediction_pc[XLEN-1:1],
+      o_slot2_staged_predicted_target[XLEN-1:1] > i_pending_prediction_pc[XLEN-1:1],
+      o_slot2_staged_predicted_target == i_pending_prediction_prev_pc,
+      o_slot2_staged_predicted_target == i_pending_prediction_prev_native_pc
+    });
+    p_slot2_live_target_rel_matches_compares :
+    assert (o_slot2_live_target_rel_pending == {
+      o_slot2_live_predicted_target == i_pending_prediction_pc,
+      o_slot2_live_predicted_target[XLEN-1:1] < i_pending_prediction_pc[XLEN-1:1],
+      o_slot2_live_predicted_target[XLEN-1:1] > i_pending_prediction_pc[XLEN-1:1],
+      o_slot2_live_predicted_target == i_pending_prediction_prev_pc,
+      o_slot2_live_predicted_target == i_pending_prediction_prev_native_pc
+    });
   end
 `endif
 
