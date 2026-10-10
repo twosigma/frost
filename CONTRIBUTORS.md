@@ -37,7 +37,7 @@
 ### Dr. Nicholas Beser ([@ndbeser](https://github.com/ndbeser))
 
 - Johns Hopkins University Applied Physics Laboratory
-- Advisor for architecting and developing the Tomasulo out-of-order back-end
+- Advisor for architecting and developing the Tomasulo out-of-order back-end, the cache hierarchy, and the superscalar pipeline
 
 ### Prof. John Goodacre ([@goodacre-manchester](https://github.com/goodacre-manchester))
 
