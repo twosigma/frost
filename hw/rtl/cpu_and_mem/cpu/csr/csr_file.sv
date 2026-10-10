@@ -106,6 +106,14 @@ module csr_file #(
     input logic [XLEN-1:0] i_trap_cause,  // Cause to save to mcause/scause
     input logic [XLEN-1:0] i_trap_value,  // Value to save to mtval/stval
 
+    // Entry enables from the trap unit, at most one set, built for timing.
+    // They equal i_trap_taken && !i_trap_to_d with !i_trap_to_s (M-side save)
+    // or i_trap_to_s (S-side save), and i_trap_taken && i_trap_to_d (Debug
+    // Mode entry). State updates use them; the checks use the other inputs.
+    input logic i_trap_save_m,
+    input logic i_trap_save_s,
+    input logic i_trap_enter_d,
+
     // xRET signals (from trap unit); mutually exclusive pulses
     input  logic        i_mret_taken,      // MRET is being executed
     input  logic        i_sret_taken,      // SRET is being executed
@@ -815,7 +823,7 @@ module csr_file #(
   assign csr_write_intent = (i_csr_op[1:0] != 2'b00);
   assign csr_counter_write = i_csr_write_enable && i_csr_read_enable &&
       csr_write_intent &&
-      (COMMIT_EXCLUDES_CONTROL_TAKE || !(i_trap_taken && !i_trap_to_d));
+      (COMMIT_EXCLUDES_CONTROL_TAKE || !(i_trap_save_m || i_trap_save_s));
   assign mcycle_write = csr_counter_write && (i_csr_address == riscv_pkg::CsrMcycle);
   assign minstret_write = csr_counter_write && (i_csr_address == riscv_pkg::CsrMinstret);
 
@@ -930,8 +938,15 @@ module csr_file #(
   // Machine-Mode CSR Updates - Next-State Logic
   // ==========================================================================
 
-  // State-update priority: debug entry, trap entry, MRET, SRET, DRET,
-  // then CSR write.
+  // The CSR write arm comes first. With COMMIT_EXCLUDES_CONTROL_TAKE it wins
+  // over a coincident take, so the write path carries no take; otherwise a
+  // take suppresses the write. Among the takes, debug entry wins, then trap
+  // entry, MRET, SRET, and DRET.
+  logic status_csr_write;
+  assign status_csr_write = i_csr_write_enable && i_csr_read_enable &&
+      (COMMIT_EXCLUDES_CONTROL_TAKE ||
+       !(i_trap_save_m || i_trap_save_s || i_trap_enter_d || i_mret_taken || i_sret_taken ||
+         i_dret_taken));
 
   always_comb begin
     next_mstatus_mie = mstatus_mie;
@@ -955,52 +970,7 @@ module csr_file #(
     next_mie_stie = mie_stie;
     next_mie_seie = mie_seie;
 
-    if (i_trap_taken && i_trap_to_d) begin
-      // Debug Mode entry: the hart runs with M privilege; the
-      // M/S trap stacks are untouched (dpc/dcsr record the resume state).
-      next_priv = riscv_pkg::PrivM;
-    end else if (i_trap_taken) begin
-      // FS is untouched by either target: the trap-time image is exactly
-      // what the OS reads to decide whether FP state needs saving.
-      if (i_trap_to_s) begin
-        // Delegated trap entry: save SIE->SPIE, clear SIE, save priv->SPP,
-        // enter S-mode. The trap unit only asserts i_trap_to_s from
-        // priv <= S (delegation never applies to M-mode traps), so SPP's
-        // 1-bit encoding (0=U, 1=S) covers every reachable priv.
-        next_mstatus_spie = mstatus_sie;
-        next_mstatus_sie  = 1'b0;
-        next_mstatus_spp  = (priv_q == riscv_pkg::PrivS);
-        next_priv         = riscv_pkg::PrivS;
-      end else begin
-        // Machine trap entry: save MIE->MPIE, clear MIE, save priv->MPP
-        // (U, S, or M), enter M-mode.
-        next_mstatus_mpie = mstatus_mie;
-        next_mstatus_mie  = 1'b0;
-        next_mstatus_mpp  = priv_q;
-        next_priv         = riscv_pkg::PrivM;
-      end
-    end else if (i_mret_taken) begin
-      // MRET: restore MIE<-MPIE, MPIE=1, return to MPP's privilege, set MPP=U,
-      // and clear MPRV if returning below M (per the privileged spec).
-      next_mstatus_mie  = mstatus_mpie;
-      next_mstatus_mpie = 1'b1;
-      next_priv         = mstatus_mpp;
-      if (mstatus_mpp != riscv_pkg::PrivM) next_mstatus_mprv = 1'b0;
-      next_mstatus_mpp = riscv_pkg::PrivU;
-    end else if (i_sret_taken) begin
-      // SRET: restore SIE<-SPIE, SPIE=1, return to SPP's privilege, set
-      // SPP=U. SRET always lands at or below S, so MPRV clears
-      // unconditionally (per the privileged spec's xRET rule).
-      next_mstatus_sie  = mstatus_spie;
-      next_mstatus_spie = 1'b1;
-      next_priv         = mstatus_spp ? riscv_pkg::PrivS : riscv_pkg::PrivU;
-      next_mstatus_spp  = 1'b0;
-      next_mstatus_mprv = 1'b0;
-    end else if (i_dret_taken) begin
-      // DRET: return to dcsr.prv; MPRV clears when leaving M (Spike's dret).
-      next_priv = dcsr_prv;
-      if (dcsr_prv != riscv_pkg::PrivM) next_mstatus_mprv = 1'b0;
-    end else if (i_csr_write_enable && i_csr_read_enable) begin
+    if (status_csr_write) begin
       if (i_csr_address == riscv_pkg::CsrMstatus) begin
         next_mstatus_sie = mstatus_new_value[riscv_pkg::MstatusSieBit];
         next_mstatus_mie = mstatus_new_value[3];
@@ -1040,6 +1010,49 @@ module csr_file #(
         if (mideleg_sti) next_mie_stie = sie_new_value[riscv_pkg::MieStiBit];
         if (mideleg_sei) next_mie_seie = sie_new_value[riscv_pkg::MieSeiBit];
       end
+    end else if (i_trap_enter_d) begin
+      // Debug Mode entry: the hart runs with M privilege; the
+      // M/S trap stacks are untouched (dpc/dcsr record the resume state).
+      next_priv = riscv_pkg::PrivM;
+    end else if (i_trap_save_s) begin
+      // Trap entry leaves FS alone on either side: the trap-time image is
+      // exactly what the OS reads to decide whether FP state needs saving.
+      // Delegated trap entry: save SIE->SPIE, clear SIE, save priv->SPP,
+      // enter S-mode. The trap unit only steers to S from priv <= S
+      // (delegation never applies to M-mode traps), so SPP's 1-bit encoding
+      // (0=U, 1=S) covers every reachable priv.
+      next_mstatus_spie = mstatus_sie;
+      next_mstatus_sie  = 1'b0;
+      next_mstatus_spp  = (priv_q == riscv_pkg::PrivS);
+      next_priv         = riscv_pkg::PrivS;
+    end else if (i_trap_save_m) begin
+      // Machine trap entry: save MIE->MPIE, clear MIE, save priv->MPP
+      // (U, S, or M), enter M-mode.
+      next_mstatus_mpie = mstatus_mie;
+      next_mstatus_mie  = 1'b0;
+      next_mstatus_mpp  = priv_q;
+      next_priv         = riscv_pkg::PrivM;
+    end else if (i_mret_taken) begin
+      // MRET: restore MIE<-MPIE, MPIE=1, return to MPP's privilege, set MPP=U,
+      // and clear MPRV if returning below M (per the privileged spec).
+      next_mstatus_mie  = mstatus_mpie;
+      next_mstatus_mpie = 1'b1;
+      next_priv         = mstatus_mpp;
+      if (mstatus_mpp != riscv_pkg::PrivM) next_mstatus_mprv = 1'b0;
+      next_mstatus_mpp = riscv_pkg::PrivU;
+    end else if (i_sret_taken) begin
+      // SRET: restore SIE<-SPIE, SPIE=1, return to SPP's privilege, set
+      // SPP=U. SRET always lands at or below S, so MPRV clears
+      // unconditionally (per the privileged spec's xRET rule).
+      next_mstatus_sie  = mstatus_spie;
+      next_mstatus_spie = 1'b1;
+      next_priv         = mstatus_spp ? riscv_pkg::PrivS : riscv_pkg::PrivU;
+      next_mstatus_spp  = 1'b0;
+      next_mstatus_mprv = 1'b0;
+    end else if (i_dret_taken) begin
+      // DRET: return to dcsr.prv; MPRV clears when leaving M (Spike's dret).
+      next_priv = dcsr_prv;
+      if (dcsr_prv != riscv_pkg::PrivM) next_mstatus_mprv = 1'b0;
     end
 
     // FP register writes, flag commits, and FP CSR writes set FS=Dirty.
@@ -1107,8 +1120,12 @@ module csr_file #(
   // ==========================================================================
   // Other Machine-Mode CSR Updates
   // ==========================================================================
-  // COMMIT_EXCLUDES_CONTROL_TAKE makes !CSR redundant on the trap arm,
-  // allowing local CSR write enables. Otherwise traps take priority.
+  // The CSR write arm comes first. With COMMIT_EXCLUDES_CONTROL_TAKE it wins
+  // over a coincident trap entry, so the write path carries no take;
+  // otherwise an entry suppresses the write.
+  logic storage_csr_write;
+  assign storage_csr_write = i_csr_write_enable && i_csr_read_enable &&
+      (COMMIT_EXCLUDES_CONTROL_TAKE || !(i_trap_save_m || i_trap_save_s));
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -1140,21 +1157,7 @@ module csr_file #(
       stimecmp                   <= 64'hFFFF_FFFF_FFFF_FFFF;
       perf_counter_select        <= '0;
       perf_cache_previous_select <= 1'b0;
-    end else if (i_trap_taken && !i_trap_to_d &&
-                 (!COMMIT_EXCLUDES_CONTROL_TAKE ||
-                  !(i_csr_write_enable && i_csr_read_enable))) begin
-      // Trap entry: save state on the target-mode side only. A Debug Mode
-      // entry saves dpc/dcsr instead (see the debug block below).
-      if (i_trap_to_s) begin
-        sepc   <= i_trap_pc;
-        scause <= i_trap_cause;
-        stval  <= i_trap_value;
-      end else begin
-        mepc   <= i_trap_pc;
-        mcause <= i_trap_cause;
-        mtval  <= i_trap_value;
-      end
-    end else if (i_csr_write_enable && i_csr_read_enable) begin
+    end else if (storage_csr_write) begin
       unique case (i_csr_address)
         riscv_pkg::CsrMtvec: begin
           mtvec                    <= {mtvec_new_value[XLEN-1:2], 1'b0, mtvec_new_value[0]};
@@ -1219,6 +1222,16 @@ module csr_file #(
           perf_cache_previous_select <= mperfctl_new_value[1];
         default: ;
       endcase
+    end else if (i_trap_save_s) begin
+      // Trap entry: save state on the target-mode side only. A Debug Mode
+      // entry saves dpc/dcsr instead (see the debug block below).
+      sepc   <= i_trap_pc;
+      scause <= i_trap_cause;
+      stval  <= i_trap_value;
+    end else if (i_trap_save_m) begin
+      mepc   <= i_trap_pc;
+      mcause <= i_trap_cause;
+      mtval  <= i_trap_value;
     end
   end
 
@@ -1228,7 +1241,13 @@ module csr_file #(
   // Entry records the resume state; DRET clears the mode; committed CSR
   // writes install the writable dcsr fields, dpc and the scratch registers.
   // Those writes are only reachable in Debug Mode (ROB allocation legality).
-  // dcsr.prv is WARL over {U, S, M}; 2'b10 folds to U, like MPP.
+  // dcsr.prv is WARL over {U, S, M}; 2'b10 folds to U, like MPP. The CSR
+  // write arm comes first. With COMMIT_EXCLUDES_CONTROL_TAKE it wins over a
+  // coincident entry or DRET, so the write path carries no take; otherwise
+  // those suppress the write.
+  logic debug_csr_write;
+  assign debug_csr_write = i_csr_write_enable && i_csr_read_enable &&
+      (COMMIT_EXCLUDES_CONTROL_TAKE || !(i_trap_enter_d || i_dret_taken));
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       debug_mode_q <= 1'b0;
@@ -1241,14 +1260,7 @@ module csr_file #(
       dpc          <= '0;
       dscratch0    <= '0;
       dscratch1    <= '0;
-    end else if (i_trap_taken && i_trap_to_d) begin
-      debug_mode_q <= 1'b1;
-      dpc          <= {i_trap_pc[XLEN-1:1], 1'b0};
-      dcsr_cause   <= i_trap_dbg_cause;
-      dcsr_prv     <= priv_q;
-    end else if (i_dret_taken) begin
-      debug_mode_q <= 1'b0;
-    end else if (i_csr_write_enable && i_csr_read_enable) begin
+    end else if (debug_csr_write) begin
       unique case (i_csr_address)
         riscv_pkg::CsrDcsr: begin
           dcsr_ebreakm <= dcsr_new_value[riscv_pkg::DcsrEbreakMBit];
@@ -1262,6 +1274,13 @@ module csr_file #(
         riscv_pkg::CsrDscratch1: dscratch1 <= dscratch1_new_value;
         default: ;
       endcase
+    end else if (i_trap_enter_d) begin
+      debug_mode_q <= 1'b1;
+      dpc          <= {i_trap_pc[XLEN-1:1], 1'b0};
+      dcsr_cause   <= i_trap_dbg_cause;
+      dcsr_prv     <= priv_q;
+    end else if (i_dret_taken) begin
+      debug_mode_q <= 1'b0;
     end
   end
   // ddata: the write lands in the debug module's data0/data1 storage.
@@ -1532,6 +1551,11 @@ module csr_file #(
     assume (!(i_dret_taken && !debug_mode_q));
     assume (!(i_trap_taken && i_trap_to_d && i_trap_to_s));
     assume (!(i_trap_taken && i_trap_to_d && debug_mode_q));
+    // The trap unit builds the entry enables from the same take as the trap
+    // inputs.
+    assume (i_trap_save_m == (i_trap_taken && !i_trap_to_d && !i_trap_to_s));
+    assume (i_trap_save_s == (i_trap_taken && !i_trap_to_d && i_trap_to_s));
+    assume (i_trap_enter_d == (i_trap_taken && i_trap_to_d));
     assume (!(i_mret_taken && i_sret_taken));
     assume (!(i_trap_taken && i_csr_write_enable));
     assume (!(i_mret_taken && i_csr_write_enable));
@@ -1885,6 +1909,12 @@ module csr_file #(
 
 `ifndef SYNTHESIS
   always @(posedge i_clk) begin
+    if (!i_rst) begin
+      p_integrated_trap_enables_match_inputs :
+      assert (i_trap_save_m == (i_trap_taken && !i_trap_to_d && !i_trap_to_s) &&
+              i_trap_save_s == (i_trap_taken && !i_trap_to_d && i_trap_to_s) &&
+              i_trap_enter_d == (i_trap_taken && i_trap_to_d));
+    end
     if (!i_rst && COMMIT_EXCLUDES_CONTROL_TAKE) begin
       p_integrated_csr_excludes_control_take :
       assert (!(i_csr_write_enable && i_csr_read_enable &&
@@ -1898,18 +1928,25 @@ module csr_file #(
 `endif
 
 `ifdef CSR_COMMIT_LOCAL_PROOF
-  // Reference for csr_commit_cofactor: f_old_* uses generic trap-over-write
-  // priority for counters, CSR storage, and translation invalidation.
-  // f_csr_legal excludes coincident control takes and CSR commits when
-  // COMMIT_EXCLUDES_CONTROL_TAKE is set. Under that condition, invalidation
-  // must match combinationally and stored values must match after the edge.
+  // Reference for csr_commit_cofactor: f_old_* uses generic take-over-write
+  // priority, from the trap inputs, for counters, CSR storage, mstatus, mie,
+  // privilege, Debug Mode state, and translation invalidation. f_csr_legal
+  // requires the entry enables to match the trap inputs, as trap_unit and
+  // cpu_ooo guarantee, and excludes coincident control takes and CSR commits
+  // when COMMIT_EXCLUDES_CONTROL_TAKE is set. Under that condition, next state
+  // and invalidation must match combinationally and stored values must match
+  // after the edge.
   logic f_csr_legal;
   logic f_csr_ref_valid = 1'b0;
   logic f_old_counter_write, f_old_mcycle_write, f_old_minstret_write;
   logic f_old_translation_req;
-  assign f_csr_legal = !COMMIT_EXCLUDES_CONTROL_TAKE ||
-      !(i_csr_write_enable && i_csr_read_enable &&
-        (i_trap_taken || i_mret_taken || i_sret_taken || i_dret_taken));
+  assign f_csr_legal =
+      (i_trap_save_m == (i_trap_taken && !i_trap_to_d && !i_trap_to_s)) &&
+      (i_trap_save_s == (i_trap_taken && !i_trap_to_d && i_trap_to_s)) &&
+      (i_trap_enter_d == (i_trap_taken && i_trap_to_d)) &&
+      (!COMMIT_EXCLUDES_CONTROL_TAKE ||
+       !(i_csr_write_enable && i_csr_read_enable &&
+         (i_trap_taken || i_mret_taken || i_sret_taken || i_dret_taken)));
   assign f_old_counter_write = i_csr_write_enable && i_csr_read_enable &&
       csr_write_intent && !(i_trap_taken && !i_trap_to_d);
   assign f_old_mcycle_write = f_old_counter_write && (i_csr_address == riscv_pkg::CsrMcycle);
@@ -1918,10 +1955,165 @@ module csr_file #(
       ((i_csr_address == riscv_pkg::CsrSatp) ||
        (((i_csr_address == riscv_pkg::CsrMstatus) ||
          (i_csr_address == riscv_pkg::CsrSstatus)) &&
-        ((next_mstatus_sum != mstatus_sum) ||
-         (next_mstatus_mxr != mstatus_mxr) ||
-         (next_mstatus_mprv != mstatus_mprv) ||
-         (mstatus_mprv && (next_mstatus_mpp != mstatus_mpp)))));
+        ((f_old_next_mstatus_sum != mstatus_sum) ||
+         (f_old_next_mstatus_mxr != mstatus_mxr) ||
+         (f_old_next_mstatus_mprv != mstatus_mprv) ||
+         (mstatus_mprv && (f_old_next_mstatus_mpp != mstatus_mpp)))));
+
+  // mstatus, mie, and privilege next state: takes, then a CSR write.
+  logic f_old_next_mstatus_mie, f_old_next_mstatus_mpie, f_old_next_mstatus_mprv;
+  logic f_old_next_mstatus_sie, f_old_next_mstatus_spie, f_old_next_mstatus_spp;
+  logic f_old_next_mstatus_sum, f_old_next_mstatus_mxr;
+  logic f_old_next_mstatus_tvm, f_old_next_mstatus_tw, f_old_next_mstatus_tsr;
+  logic [1:0] f_old_next_mstatus_mpp, f_old_next_mstatus_fs, f_old_next_priv;
+  logic f_old_next_mie_msie, f_old_next_mie_mtie, f_old_next_mie_meie;
+  logic f_old_next_mie_ssie, f_old_next_mie_stie, f_old_next_mie_seie;
+  always_comb begin
+    f_old_next_mstatus_mie = mstatus_mie;
+    f_old_next_mstatus_mpie = mstatus_mpie;
+    f_old_next_mstatus_mpp = mstatus_mpp;
+    f_old_next_mstatus_mprv = mstatus_mprv;
+    f_old_next_mstatus_fs = mstatus_fs;
+    f_old_next_mstatus_sie = mstatus_sie;
+    f_old_next_mstatus_spie = mstatus_spie;
+    f_old_next_mstatus_spp = mstatus_spp;
+    f_old_next_mstatus_sum = mstatus_sum;
+    f_old_next_mstatus_mxr = mstatus_mxr;
+    f_old_next_mstatus_tvm = mstatus_tvm;
+    f_old_next_mstatus_tw = mstatus_tw;
+    f_old_next_mstatus_tsr = mstatus_tsr;
+    f_old_next_priv = priv_q;
+    f_old_next_mie_msie = mie_msie;
+    f_old_next_mie_mtie = mie_mtie;
+    f_old_next_mie_meie = mie_meie;
+    f_old_next_mie_ssie = mie_ssie;
+    f_old_next_mie_stie = mie_stie;
+    f_old_next_mie_seie = mie_seie;
+    if (i_trap_taken && i_trap_to_d) begin
+      f_old_next_priv = riscv_pkg::PrivM;
+    end else if (i_trap_taken) begin
+      if (i_trap_to_s) begin
+        f_old_next_mstatus_spie = mstatus_sie;
+        f_old_next_mstatus_sie  = 1'b0;
+        f_old_next_mstatus_spp  = (priv_q == riscv_pkg::PrivS);
+        f_old_next_priv         = riscv_pkg::PrivS;
+      end else begin
+        f_old_next_mstatus_mpie = mstatus_mie;
+        f_old_next_mstatus_mie  = 1'b0;
+        f_old_next_mstatus_mpp  = priv_q;
+        f_old_next_priv         = riscv_pkg::PrivM;
+      end
+    end else if (i_mret_taken) begin
+      f_old_next_mstatus_mie  = mstatus_mpie;
+      f_old_next_mstatus_mpie = 1'b1;
+      f_old_next_priv         = mstatus_mpp;
+      if (mstatus_mpp != riscv_pkg::PrivM) f_old_next_mstatus_mprv = 1'b0;
+      f_old_next_mstatus_mpp = riscv_pkg::PrivU;
+    end else if (i_sret_taken) begin
+      f_old_next_mstatus_sie  = mstatus_spie;
+      f_old_next_mstatus_spie = 1'b1;
+      f_old_next_priv         = mstatus_spp ? riscv_pkg::PrivS : riscv_pkg::PrivU;
+      f_old_next_mstatus_spp  = 1'b0;
+      f_old_next_mstatus_mprv = 1'b0;
+    end else if (i_dret_taken) begin
+      f_old_next_priv = dcsr_prv;
+      if (dcsr_prv != riscv_pkg::PrivM) f_old_next_mstatus_mprv = 1'b0;
+    end else if (i_csr_write_enable && i_csr_read_enable) begin
+      if (i_csr_address == riscv_pkg::CsrMstatus) begin
+        f_old_next_mstatus_sie = csr_new_value[riscv_pkg::MstatusSieBit];
+        f_old_next_mstatus_mie = csr_new_value[3];
+        f_old_next_mstatus_spie = csr_new_value[riscv_pkg::MstatusSpieBit];
+        f_old_next_mstatus_mpie = csr_new_value[7];
+        f_old_next_mstatus_spp = csr_new_value[riscv_pkg::MstatusSppBit];
+        f_old_next_mstatus_mpp = (csr_new_value[12:11] == 2'b10) ? riscv_pkg::PrivU :
+            csr_new_value[12:11];
+        f_old_next_mstatus_mprv = csr_new_value[riscv_pkg::MstatusMprvBit];
+        f_old_next_mstatus_sum = csr_new_value[riscv_pkg::MstatusSumBit];
+        f_old_next_mstatus_mxr = csr_new_value[riscv_pkg::MstatusMxrBit];
+        f_old_next_mstatus_tvm = csr_new_value[riscv_pkg::MstatusTvmBit];
+        f_old_next_mstatus_tw = csr_new_value[riscv_pkg::MstatusTwBit];
+        f_old_next_mstatus_tsr = csr_new_value[riscv_pkg::MstatusTsrBit];
+        f_old_next_mstatus_fs = csr_new_value[14:13];
+      end else if (i_csr_address == riscv_pkg::CsrSstatus) begin
+        f_old_next_mstatus_sie  = csr_new_value[riscv_pkg::MstatusSieBit];
+        f_old_next_mstatus_spie = csr_new_value[riscv_pkg::MstatusSpieBit];
+        f_old_next_mstatus_spp  = csr_new_value[riscv_pkg::MstatusSppBit];
+        f_old_next_mstatus_sum  = csr_new_value[riscv_pkg::MstatusSumBit];
+        f_old_next_mstatus_mxr  = csr_new_value[riscv_pkg::MstatusMxrBit];
+        f_old_next_mstatus_fs   = csr_new_value[14:13];
+      end else if (i_csr_address == riscv_pkg::CsrMie) begin
+        f_old_next_mie_ssie = csr_new_value[riscv_pkg::MieSsiBit];
+        f_old_next_mie_msie = csr_new_value[3];
+        f_old_next_mie_stie = csr_new_value[riscv_pkg::MieStiBit];
+        f_old_next_mie_mtie = csr_new_value[7];
+        f_old_next_mie_seie = csr_new_value[riscv_pkg::MieSeiBit];
+        f_old_next_mie_meie = csr_new_value[11];
+      end else if (i_csr_address == riscv_pkg::CsrSie) begin
+        if (mideleg_ssi) f_old_next_mie_ssie = csr_new_value[riscv_pkg::MieSsiBit];
+        if (mideleg_sti) f_old_next_mie_stie = csr_new_value[riscv_pkg::MieStiBit];
+        if (mideleg_sei) f_old_next_mie_seie = csr_new_value[riscv_pkg::MieSeiBit];
+      end
+    end
+    if ((i_csr_write_enable && i_csr_read_enable &&
+         (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFrm ||
+          i_csr_address == riscv_pkg::CsrFcsr)) ||
+        i_fp_dest_write || i_fp_flags_valid) begin
+      f_old_next_mstatus_fs = FsDirty;
+    end
+  end
+
+  // Debug Mode state: entry, DRET, then a CSR write.
+  logic f_old_debug_mode_q, f_old_dcsr_ebreakm, f_old_dcsr_ebreaks, f_old_dcsr_ebreaku;
+  logic f_old_dcsr_step;
+  logic [$bits(dcsr_cause)-1:0] f_old_dcsr_cause;
+  logic [$bits(dcsr_prv)-1:0] f_old_dcsr_prv;
+  logic [$bits(dpc)-1:0] f_old_dpc, f_old_dscratch0, f_old_dscratch1;
+  always_ff @(posedge i_clk) begin
+    f_old_debug_mode_q <= debug_mode_q;
+    f_old_dcsr_ebreakm <= dcsr_ebreakm;
+    f_old_dcsr_ebreaks <= dcsr_ebreaks;
+    f_old_dcsr_ebreaku <= dcsr_ebreaku;
+    f_old_dcsr_step <= dcsr_step;
+    f_old_dcsr_cause <= dcsr_cause;
+    f_old_dcsr_prv <= dcsr_prv;
+    f_old_dpc <= dpc;
+    f_old_dscratch0 <= dscratch0;
+    f_old_dscratch1 <= dscratch1;
+    if (i_rst) begin
+      f_old_debug_mode_q <= 1'b0;
+      f_old_dcsr_ebreakm <= 1'b0;
+      f_old_dcsr_ebreaks <= 1'b0;
+      f_old_dcsr_ebreaku <= 1'b0;
+      f_old_dcsr_step    <= 1'b0;
+      f_old_dcsr_cause   <= 3'd0;
+      f_old_dcsr_prv     <= riscv_pkg::PrivM;
+      f_old_dpc          <= '0;
+      f_old_dscratch0    <= '0;
+      f_old_dscratch1    <= '0;
+    end else if (i_trap_taken && i_trap_to_d) begin
+      f_old_debug_mode_q <= 1'b1;
+      f_old_dpc          <= {i_trap_pc[XLEN-1:1], 1'b0};
+      f_old_dcsr_cause   <= i_trap_dbg_cause;
+      f_old_dcsr_prv     <= priv_q;
+    end else if (i_dret_taken) begin
+      f_old_debug_mode_q <= 1'b0;
+    end else if (i_csr_write_enable && i_csr_read_enable) begin
+      unique case (i_csr_address)
+        riscv_pkg::CsrDcsr: begin
+          f_old_dcsr_ebreakm <= csr_new_value[riscv_pkg::DcsrEbreakMBit];
+          f_old_dcsr_ebreaks <= csr_new_value[riscv_pkg::DcsrEbreakSBit];
+          f_old_dcsr_ebreaku <= csr_new_value[riscv_pkg::DcsrEbreakUBit];
+          f_old_dcsr_step <= csr_new_value[riscv_pkg::DcsrStepBit];
+          f_old_dcsr_prv <= (csr_new_value[1:0] == 2'b10) ? riscv_pkg::PrivU : csr_new_value[1:0];
+        end
+        riscv_pkg::CsrDpc: f_old_dpc <= {csr_new_value[XLEN-1:1], 1'b0};
+        riscv_pkg::CsrDscratch0: f_old_dscratch0 <= csr_new_value;
+        riscv_pkg::CsrDscratch1: f_old_dscratch1 <= csr_new_value;
+        default: ;
+      endcase
+    end
+  end
+
   logic [$bits(cycle_counter)-1:0] f_old_cycle_counter;
   logic [$bits(instret_counter)-1:0] f_old_instret_counter;
   logic [$bits(instruction_retired_count_q)-1:0] f_old_instruction_retired_count_q;
@@ -2121,8 +2313,32 @@ module csr_file #(
 
   always_ff @(posedge i_clk) f_csr_ref_valid <= f_csr_legal;
   always_comb begin
-    if (f_csr_legal) assert (csr_translation_flush_req_d == f_old_translation_req);
+    if (f_csr_legal) begin
+      assert (csr_translation_flush_req_d == f_old_translation_req);
+      assert ({next_mstatus_mie, next_mstatus_mpie, next_mstatus_mpp, next_mstatus_mprv,
+               next_mstatus_fs, next_mstatus_sie, next_mstatus_spie, next_mstatus_spp,
+               next_mstatus_sum, next_mstatus_mxr, next_mstatus_tvm, next_mstatus_tw,
+               next_mstatus_tsr} ==
+              {f_old_next_mstatus_mie, f_old_next_mstatus_mpie, f_old_next_mstatus_mpp,
+               f_old_next_mstatus_mprv, f_old_next_mstatus_fs, f_old_next_mstatus_sie,
+               f_old_next_mstatus_spie, f_old_next_mstatus_spp, f_old_next_mstatus_sum,
+               f_old_next_mstatus_mxr, f_old_next_mstatus_tvm, f_old_next_mstatus_tw,
+               f_old_next_mstatus_tsr});
+      assert (next_priv == f_old_next_priv);
+      assert ({next_mie_msie, next_mie_mtie, next_mie_meie, next_mie_ssie, next_mie_stie,
+               next_mie_seie} ==
+              {f_old_next_mie_msie, f_old_next_mie_mtie, f_old_next_mie_meie,
+               f_old_next_mie_ssie, f_old_next_mie_stie, f_old_next_mie_seie});
+    end
     if (f_csr_ref_valid) begin
+      assert (debug_mode_q == f_old_debug_mode_q);
+      assert ({dcsr_ebreakm, dcsr_ebreaks, dcsr_ebreaku, dcsr_step} ==
+              {f_old_dcsr_ebreakm, f_old_dcsr_ebreaks, f_old_dcsr_ebreaku, f_old_dcsr_step});
+      assert (dcsr_cause == f_old_dcsr_cause);
+      assert (dcsr_prv == f_old_dcsr_prv);
+      assert (dpc == f_old_dpc);
+      assert (dscratch0 == f_old_dscratch0);
+      assert (dscratch1 == f_old_dscratch1);
       assert (cycle_counter == f_old_cycle_counter);
       assert (instret_counter == f_old_instret_counter);
       assert (instruction_retired_count_q == f_old_instruction_retired_count_q);

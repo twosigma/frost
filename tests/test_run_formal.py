@@ -305,7 +305,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "trap_unit.sby",
-        "Trap-unit exception and interrupt handling",
+        "Trap-unit exception and interrupt handling, and the CSR entry enables in "
+        "every state",
+        tasks=("bmc", "cover", "prove"),
     ),
     FormalTarget(
         "csr_file.sby",
