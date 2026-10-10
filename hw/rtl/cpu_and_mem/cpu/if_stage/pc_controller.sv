@@ -785,13 +785,16 @@ module pc_controller #(
   // Compute next validity for both miss and prediction-use values, then
   // select running or stalled state for timing. Stalls block capture and
   // handoff, but reset, redirects, and stale-state clearing still apply.
+  // The slot-2 prediction, the latest input, selects in the final mux beside
+  // the stall: it blocks capture.
   (* keep = "true" *) logic [1:0][1:0] pending_valid_by_miss;  // [miss][used]
   (* keep = "true" *) logic pending_valid_when_stalled;
+  (* keep = "true" *) logic pending_valid_with_slot2, pending_valid_without_slot2;
   logic pending_clear_without_handoff;
-  logic pending_capture_eligible;
-  logic pending_valid_when_running, pending_valid_next;
-  assign pending_capture_eligible =
-      i_prediction_used && !i_prediction_already_emitted && !i_slot2_prediction_used;
+  logic pending_capture_eligible_without_slot2;
+  logic pending_valid_next;
+  assign pending_capture_eligible_without_slot2 =
+      i_prediction_used && !i_prediction_already_emitted;
   assign pending_clear_without_handoff =
       i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
       i_pd_redirect || i_fence_i_flush || redirect_kill_pending_q || stale_pending_prediction;
@@ -806,9 +809,13 @@ module pc_controller #(
           (pending_prediction_valid || capture);
     end
   end
-  assign pending_valid_when_running =
-      pending_valid_by_miss[pc_reg_next_misses_fetch_pc_for_prediction][pending_capture_eligible];
-  assign pending_valid_next = fetch_stall ? pending_valid_when_stalled : pending_valid_when_running;
+  assign pending_valid_with_slot2 =
+      pending_valid_by_miss[pc_reg_next_misses_fetch_pc_for_prediction][0];
+  assign pending_valid_without_slot2 =
+      pending_valid_by_miss[pc_reg_next_misses_fetch_pc_for_prediction][
+          pending_capture_eligible_without_slot2];
+  assign pending_valid_next = fetch_stall ? pending_valid_when_stalled :
+      i_slot2_prediction_used ? pending_valid_with_slot2 : pending_valid_without_slot2;
   always_ff @(posedge i_clk) begin
     pending_prediction_valid <= pending_valid_next;
   end
