@@ -401,7 +401,16 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_fence_i_target.value = 0
     dut.i_disable_branch_prediction.value = 1
     dut.i_pd_redirect.value = 0
+    dut.i_pd_redirect_taken.value = 1
     dut.i_pd_redirect_target.value = 0
+    # The tagged predictor's tables stay empty: nothing trains them.
+    dut.i_tage_hist.value = 0
+    dut.i_tage_train_valid.value = 0
+    dut.i_tage_train_lookup.value = 0
+    dut.i_tage_train_bank.value = 0
+    dut.i_tage_train_alt_taken.value = 0
+    dut.i_tage_train_taken.value = 0
+    dut.i_tage_train_mispredicted.value = 0
 
 
 def _start_served_addr_tracker(dut: Any, *, word_offset: int = 0) -> None:

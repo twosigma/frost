@@ -310,6 +310,7 @@ module cpu_ooo #(
   riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req_2_raw;
   riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req_2;
   riscv_pkg::reorder_buffer_alloc_resp_t rob_alloc_resp_2;
+  logic [1:0] rob_alloc_q;  // ROB allocations on the last edge (bit 1: slot 2)
 
   logic rob_checkpoint_valid;
   logic [riscv_pkg::CheckpointIdWidth-1:0] rob_checkpoint_id;
@@ -374,7 +375,26 @@ module cpu_ooo #(
   riscv_pkg::from_if_to_pd_t from_if_to_pd;
   riscv_pkg::from_pd_to_id_t from_pd_to_id;
   logic pd_redirect;
+  logic pd_redirect_taken;
   logic [XLEN-1:0] pd_redirect_target;
+
+  // Tagged direction predictor: lookup history, events, per-slot lookups,
+  // saved-lookup index, and training (see tage_history).
+  logic [riscv_pkg::TageHistBits-1:0] tage_lookup_hist;
+  logic [riscv_pkg::TageHistBits-1:0] tage_packet_hist;
+  logic tage_hist_push;
+  logic [4:0] tage_hist_restore_arm;
+  logic [riscv_pkg::TagePathBits-1:0] tage_fetch_path_bits;
+  logic [1:0] tage_slot_valid;
+  riscv_pkg::tage_lookup_t tage_slot_lookup;
+  riscv_pkg::tage_lookup_t tage_slot_lookup_2;
+  logic [1:0] pd_cond_branch;
+  logic tage_train_valid;
+  riscv_pkg::tage_lookup_t tage_train_lookup;
+  logic tage_train_bank;
+  logic tage_train_alt_taken;
+  logic tage_train_taken;
+  logic tage_train_mispredicted;
   riscv_pkg::from_id_to_ex_t from_id_to_ex;
   // Dispatch source fields for RAT lookups and commit-bypass compares. Queued
   // builds use same-edge shadow copies per consumer; direct builds use the
@@ -751,13 +771,28 @@ module cpu_ooo #(
       .i_dir_update_idx(dir_update_idx),
       .i_dir_update_taken(dir_update_taken),
       .i_pd_redirect(pd_redirect),
+      .i_pd_redirect_taken(pd_redirect_taken),
       .i_pd_redirect_target(pd_redirect_target),
       .o_pc,
       .o_from_if_to_pd(from_if_to_pd),
       .o_from_if_to_pd_2(from_if_to_pd_2),
       .o_slot1_has_control_flow(if_slot1_has_control_flow),
       .o_slot1_is_indirect(if_slot1_is_indirect),
-      .o_width_events(if_width_events)
+      .o_width_events(if_width_events),
+      .i_tage_hist(tage_lookup_hist),
+      .i_tage_train_valid(tage_train_valid),
+      .i_tage_train_lookup(tage_train_lookup),
+      .i_tage_train_bank(tage_train_bank),
+      .i_tage_train_alt_taken(tage_train_alt_taken),
+      .i_tage_train_taken(tage_train_taken),
+      .i_tage_train_mispredicted(tage_train_mispredicted),
+      .o_tage_hist_push(tage_hist_push),
+      .o_tage_hist_restore_arm(tage_hist_restore_arm),
+      .o_tage_fetch_path_bits(tage_fetch_path_bits),
+      .o_tage_slot_valid(tage_slot_valid),
+      .o_tage_slot_lookup(tage_slot_lookup),
+      .o_tage_slot_lookup_2(tage_slot_lookup_2),
+      .o_tage_lookup_hist(tage_packet_hist)
   );
 
   // ===========================================================================
@@ -774,7 +809,9 @@ module cpu_ooo #(
       .i_from_if_to_pd_2(from_if_to_pd_2),
       .o_from_pd_to_id_2(from_pd_to_id_2),
       .o_pd_redirect(pd_redirect),
-      .o_pd_redirect_target(pd_redirect_target)
+      .o_pd_redirect_taken(pd_redirect_taken),
+      .o_pd_redirect_target(pd_redirect_target),
+      .o_cond_branch(pd_cond_branch)
   );
 
   // ===========================================================================
@@ -887,6 +924,7 @@ module cpu_ooo #(
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_from_pd_to_id(from_pd_to_id),
       .i_pd_redirect(pd_redirect),
+      .i_pd_redirect_taken(pd_redirect_taken),
       .i_pd_redirect_target(pd_redirect_target),
       .i_mstatus_fs_off(id_mstatus_fs_off_q),
       .o_from_id_to_ex(decoded_packet),
@@ -2927,6 +2965,135 @@ module cpu_ooo #(
       .o_checkpoint_free(checkpoint_free),
       .o_checkpoint_free_id(checkpoint_free_id)
   );
+
+  // ===========================================================================
+  // Tagged Direction Predictor History and Training
+  // ===========================================================================
+  // PD hands ID a real packet when the PD-to-ID register loads without a
+  // flush, PD redirect, or reset (the redirect's younger packet becomes a
+  // bubble). A slot carries a conditional branch when it is not a bubble or a
+  // fetch fault.
+  logic tage_pd_accept;
+  logic [1:0] tage_pd_cond_branch;
+  logic [1:0] tage_slot_bank;
+  logic [1:0] tage_base_taken;
+  assign tage_pd_accept = !pipeline_ctrl.reset && !pipeline_ctrl.stall && !pipeline_ctrl.flush &&
+                          !pd_redirect;
+  assign tage_pd_cond_branch[0] = pd_cond_branch[0] && !from_if_to_pd.sel_nop &&
+                                  !from_if_to_pd.fetch_fault;
+  assign tage_pd_cond_branch[1] = pd_cond_branch[1] && !from_if_to_pd_2.sel_nop &&
+                                  !from_if_to_pd_2.fetch_fault;
+  assign tage_slot_bank[0] = from_if_to_pd.program_counter[2];
+  assign tage_slot_bank[1] = from_if_to_pd_2.program_counter[2];
+  assign tage_base_taken[0] = from_if_to_pd.btb_predicted_taken || from_if_to_pd.bp_dir_taken;
+  assign tage_base_taken[1] = from_if_to_pd_2.btb_predicted_taken;
+
+  // Dispatch's tags and branch types, and its allocations registered.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) rob_alloc_q <= '0;
+    else
+      rob_alloc_q <= {
+        rob_alloc_req_2.alloc_valid && rob_alloc_resp_2.alloc_ready,
+        rob_alloc_req.alloc_valid && rob_alloc_resp.alloc_ready
+      };
+  end
+  logic [1:0][riscv_pkg::ReorderBufferTagWidth-1:0] tage_alloc_tag;
+  logic [1:0] tage_alloc_cond_branch;
+  assign tage_alloc_tag[0] = rob_alloc_resp.alloc_tag;
+  assign tage_alloc_tag[1] = rob_alloc_resp_2.alloc_tag;
+  assign tage_alloc_cond_branch[0] = rob_alloc_req.is_branch && !rob_alloc_req.is_jal &&
+                                     !rob_alloc_req.is_jalr;
+  assign tage_alloc_cond_branch[1] = rob_alloc_req_2.is_branch && !rob_alloc_req_2.is_jal &&
+                                     !rob_alloc_req_2.is_jalr;
+
+  // The registered commit bus: retired conditional branches train, and every
+  // retired taken control-flow instruction extends the retirement history.
+  logic [1:0] tage_commit_valid;
+  logic [1:0][riscv_pkg::ReorderBufferTagWidth-1:0] tage_commit_tag;
+  logic [1:0] tage_commit_cond_branch;
+  logic [1:0] tage_commit_taken_cf;
+  logic [1:0] tage_commit_taken;
+  logic [1:0] tage_commit_mispredicted;
+  logic [1:0][riscv_pkg::TagePathBits-1:0] tage_commit_target_bits;
+  assign tage_commit_valid[0] = rob_commit.valid && !rob_commit.exception;
+  assign tage_commit_valid[1] = rob_commit_2.valid && !rob_commit_2.exception;
+  assign tage_commit_tag[0] = rob_commit.tag;
+  assign tage_commit_tag[1] = rob_commit_2.tag;
+  assign tage_commit_cond_branch[0] = rob_commit.is_branch && !rob_commit.is_jal &&
+                                      !rob_commit.is_jalr;
+  assign tage_commit_cond_branch[1] = rob_commit_2.is_branch && !rob_commit_2.is_jal &&
+                                      !rob_commit_2.is_jalr;
+  assign tage_commit_taken_cf[0] = rob_commit.is_branch && rob_commit.branch_taken;
+  assign tage_commit_taken_cf[1] = rob_commit_2.is_branch && rob_commit_2.branch_taken;
+  assign tage_commit_taken[0] = rob_commit.branch_taken;
+  assign tage_commit_taken[1] = rob_commit_2.branch_taken;
+  assign tage_commit_mispredicted[0] = rob_commit.misprediction;
+  assign tage_commit_mispredicted[1] = rob_commit_2.misprediction;
+  assign tage_commit_target_bits[0] = rob_commit.branch_target[3:2];
+  assign tage_commit_target_bits[1] = rob_commit_2.branch_target[3:2];
+
+  tage_history u_tage_history (
+      .i_clk,
+      .i_rst,
+      .i_hist_push(tage_hist_push),
+      .i_hist_restore_arm(tage_hist_restore_arm),
+      .i_fetch_pc_path_bits(tage_fetch_path_bits),
+      .o_lookup_hist(tage_lookup_hist),
+      .i_pd_accept(tage_pd_accept),
+      .i_pd_cond_branch(tage_pd_cond_branch),
+      .i_tage_slot_valid(tage_slot_valid),
+      .i_tage_slot_lookup(tage_slot_lookup),
+      .i_tage_slot_lookup_2(tage_slot_lookup_2),
+      .i_tage_slot_bank(tage_slot_bank),
+      .i_base_taken(tage_base_taken),
+      .i_tage_lookup_hist(tage_packet_hist),
+      .i_pd_redirect_taken(pd_redirect_taken),
+      .i_early_active(early_mispredict_active),
+      .i_early_tag(early_mispredict_tag),
+      .i_early_taken(early_mispredict_branch_taken),
+      .i_flush_full(flush_all || mispredict_recovery_pending),
+      .i_alloc_q(rob_alloc_q),
+      .i_alloc_tag(tage_alloc_tag),
+      .i_alloc_cond_branch(tage_alloc_cond_branch),
+      .i_commit_valid(tage_commit_valid),
+      .i_commit_tag(tage_commit_tag),
+      .i_commit_cond_branch(tage_commit_cond_branch),
+      .i_commit_taken_cf(tage_commit_taken_cf),
+      .i_commit_taken(tage_commit_taken),
+      .i_commit_mispredicted(tage_commit_mispredicted),
+      .i_commit_target_bits(tage_commit_target_bits),
+      .o_train_valid(tage_train_valid),
+      .o_train_lookup(tage_train_lookup),
+      .o_train_bank(tage_train_bank),
+      .o_train_alt_taken(tage_train_alt_taken),
+      .o_train_taken(tage_train_taken),
+      .o_train_mispredicted(tage_train_mispredicted)
+  );
+
+`ifndef SYNTHESIS
+  // Each retiring conditional branch trains from the saved lookup PD made for
+  // it: record the PD branch's PC with its entry and compare at commit.
+  logic [XLEN-1:0] tage_entry_pc[2**riscv_pkg::TageFtqIdxBits];
+  logic [XLEN-1:0] tage_pd_branch_pc_q;
+  always_ff @(posedge i_clk) begin
+    if (tage_pd_accept)
+      tage_pd_branch_pc_q <= tage_pd_cond_branch[0] ? from_if_to_pd.program_counter :
+                                                      from_if_to_pd_2.program_counter;
+    if (u_tage_history.pd_entry_pending)
+      tage_entry_pc[u_tage_history.ftq_write_ptr] <= tage_pd_branch_pc_q;
+  end
+  always @(posedge i_clk) begin
+    if (!i_rst) begin
+      if (tage_commit_valid[0] && tage_commit_cond_branch[0])
+        p_tage_entry_matches_branch_0 :
+        assert (tage_entry_pc[u_tage_history.commit_ftq_idx[0]] == rob_commit.pc);
+      if (tage_commit_valid[1] && tage_commit_cond_branch[1])
+        p_tage_entry_matches_branch_1 :
+        assert (tage_entry_pc[u_tage_history.commit_ftq_idx[1]] == rob_commit_2.pc);
+    end
+  end
+`endif
+
 
 `ifndef SYNTHESIS
   // Commit-time recovery kills dispatch in one place, dispatch's i_flush: the

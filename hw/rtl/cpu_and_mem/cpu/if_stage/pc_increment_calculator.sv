@@ -25,7 +25,11 @@
   Compute each result for one-wide, two-wide, and NOP packets, then select
   with slot-2 validity and i_sel_nop. Fetch PC results also apply the
   redirect/reset holdoff at the final selection.
+
+  The hierarchy is kept so these late selects stay in this module's own LUTs
+  instead of merging with pc_controller's logic.
 */
+(* keep_hierarchy = "yes" *)
 module pc_increment_calculator #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
@@ -196,6 +200,17 @@ module pc_increment_calculator #(
   // i_any_holdoff_safe already includes pc_controller's predecessor release.
   logic seq_sel_holdoff;
   assign seq_sel_holdoff = i_any_holdoff_safe;
+`ifdef FROST_XILINX_PRIMS
+  // The outputs' final selects are one LUT6 per bit with the late sel_nop
+  // (I1) and slot-2 valid (I2) and the earlier holdoff (I0) as direct
+  // inputs, so the late controls cross one LUT and synthesis cannot add a
+  // select-decode level. pc_controller does the same for its muxes.
+  //   LateSelRegInit:   (I0 | I1) ? I3 : (I2 ? I4 : I5), with I3 the
+  //                     hold-or-NOP value;
+  //   LateSelFetchInit: I0 ? I3 : ((!I1 && I2) ? I4 : I5).
+  localparam logic [63:0] LateSelRegInit   = 64'hff11ef01fe10ee00;
+  localparam logic [63:0] LateSelFetchInit = 64'hff55ef45ba10aa00;
+`endif
 
   // Apply prediction holdoff and halfword alignment before size selection,
   // preserving this order with keep for timing. The redirect/reset holdoff
@@ -256,21 +271,62 @@ module pc_increment_calculator #(
 
   // Fetch uses the two-wide result only for a real pair; NOPs use the
   // one-wide result. Redirect/reset holdoff overrides both.
-  (* keep = "true" *) logic fetch_two_wide;
+  logic fetch_two_wide;
   assign fetch_two_wide = !i_sel_nop && i_slot2_valid;
+`ifdef FROST_XILINX_PRIMS
+  for (genvar k = 0; k < XLEN; k++) begin : gen_seq_next_pc_bit
+    LUT6 #(
+        .INIT(LateSelFetchInit)
+    ) u_mux (
+        .I0(i_any_holdoff_safe),
+        .I1(i_sel_nop),
+        .I2(i_slot2_valid),
+        .I3(next_pc_plus_4[k]),
+        .I4(seq_next_pc_shape[ShapeTwo][k]),
+        .I5(seq_next_pc_shape[ShapeOne][k]),
+        .O (o_seq_next_pc[k])
+    );
+    LUT6 #(
+        .INIT(LateSelFetchInit)
+    ) u_mux_plus_2 (
+        .I0(i_any_holdoff_safe),
+        .I1(i_sel_nop),
+        .I2(i_slot2_valid),
+        .I3(next_pc_plus_6[k]),
+        .I4(seq_next_pc_plus_2_shape[ShapeTwo][k]),
+        .I5(seq_next_pc_plus_2_shape[ShapeOne][k]),
+        .O (o_seq_next_pc_plus_2[k])
+    );
+  end
+`else
   assign o_seq_next_pc = i_any_holdoff_safe ? next_pc_plus_4 :
       fetch_two_wide ? seq_next_pc_shape[ShapeTwo] : seq_next_pc_shape[ShapeOne];
   assign o_seq_next_pc_plus_2 = i_any_holdoff_safe ? next_pc_plus_6 :
       fetch_two_wide ? seq_next_pc_plus_2_shape[ShapeTwo] : seq_next_pc_plus_2_shape[ShapeOne];
+`endif
 
   // pc_reg holds on holdoff, advances by the NOP shape for a bubble, and
   // otherwise uses the selected bundle size.
   (* keep = "true" *) logic [XLEN-1:0] seq_next_pc_reg_hold_or_nop;
-  (* keep = "true" *) logic seq_next_pc_reg_hold_or_nop_sel;
   assign seq_next_pc_reg_hold_or_nop = seq_sel_holdoff ? i_pc_reg : pc_reg_normal_shape[ShapeNop];
-  assign seq_next_pc_reg_hold_or_nop_sel = seq_sel_holdoff || i_sel_nop;
-  assign o_seq_next_pc_reg = seq_next_pc_reg_hold_or_nop_sel ? seq_next_pc_reg_hold_or_nop :
+`ifdef FROST_XILINX_PRIMS
+  for (genvar k = 0; k < XLEN; k++) begin : gen_seq_next_pc_reg_bit
+    LUT6 #(
+        .INIT(LateSelRegInit)
+    ) u_mux (
+        .I0(seq_sel_holdoff),
+        .I1(i_sel_nop),
+        .I2(i_slot2_valid),
+        .I3(seq_next_pc_reg_hold_or_nop[k]),
+        .I4(pc_reg_normal_shape[ShapeTwo][k]),
+        .I5(pc_reg_normal_shape[ShapeOne][k]),
+        .O (o_seq_next_pc_reg[k])
+    );
+  end
+`else
+  assign o_seq_next_pc_reg = (seq_sel_holdoff || i_sel_nop) ? seq_next_pc_reg_hold_or_nop :
       i_slot2_valid ? pc_reg_normal_shape[ShapeTwo] : pc_reg_normal_shape[ShapeOne];
+`endif
 
 `ifdef PC_INCREMENT_HOLDOFF_PROOF
   // Compare with holdoff applied inside each size candidate, allowing
@@ -319,6 +375,9 @@ module pc_increment_calculator #(
     assert (o_seq_next_pc == (fetch_two_wide ? f_seq_result[ShapeTwo] : f_seq_result[ShapeOne]));
     assert (o_seq_next_pc_plus_2 ==
             (fetch_two_wide ? f_seq_plus_2_result[ShapeTwo] : f_seq_plus_2_result[ShapeOne]));
+    // The pinned pc_reg select (FROST_XILINX_PRIMS) equals its portable form.
+    assert (o_seq_next_pc_reg == ((seq_sel_holdoff || i_sel_nop) ? seq_next_pc_reg_hold_or_nop :
+        i_slot2_valid ? pc_reg_normal_shape[ShapeTwo] : pc_reg_normal_shape[ShapeOne]));
   end
 `endif
 
@@ -408,7 +467,6 @@ module pc_increment_calculator #(
   // Compare each candidate before selecting, for timing. These arms must
   // mirror o_seq_next_pc_reg, including the default +2 increment.
   logic neq_hold, neq_plus2, neq_plus4, neq_plus6, neq_plus8;
-  logic neq_advance_sel;
   assign neq_hold = (i_pc_reg != i_pc);
   // For candidate A == base B + constant K, carry into bit i is
   // A[i] ^ B[i] ^ K[i]. The preceding carry out can be reconstructed
@@ -457,13 +515,29 @@ module pc_increment_calculator #(
         default:                   neq_advance_sel_shape[c] = neq_plus2;
       endcase
     end
-    neq_advance_sel = i_sel_nop ? neq_advance_sel_shape[ShapeNop] :
-        i_slot2_valid ? neq_advance_sel_shape[ShapeTwo] : neq_advance_sel_shape[ShapeOne];
   end
+`ifdef FROST_XILINX_PRIMS
+  logic neq_hold_or_nop;
+  assign neq_hold_or_nop = seq_sel_holdoff ? neq_hold : neq_advance_sel_shape[ShapeNop];
+  LUT6 #(
+      .INIT(LateSelRegInit)
+  ) u_neq (
+      .I0(seq_sel_holdoff),
+      .I1(i_sel_nop),
+      .I2(i_slot2_valid),
+      .I3(neq_hold_or_nop),
+      .I4(neq_advance_sel_shape[ShapeTwo]),
+      .I5(neq_advance_sel_shape[ShapeOne]),
+      .O (o_seq_next_pc_reg_neq_pc)
+  );
+`else
   always_comb begin
     if (seq_sel_holdoff) o_seq_next_pc_reg_neq_pc = neq_hold;
-    else o_seq_next_pc_reg_neq_pc = neq_advance_sel;
+    else if (i_sel_nop) o_seq_next_pc_reg_neq_pc = neq_advance_sel_shape[ShapeNop];
+    else if (i_slot2_valid) o_seq_next_pc_reg_neq_pc = neq_advance_sel_shape[ShapeTwo];
+    else o_seq_next_pc_reg_neq_pc = neq_advance_sel_shape[ShapeOne];
   end
+`endif
 
   // ===========================================================================
   // Precomputed relations to the pending branch PC and to i_pc
@@ -551,6 +625,38 @@ module pc_increment_calculator #(
       endcase
     end
   end
+`ifdef FROST_XILINX_PRIMS
+  for (genvar b = 0; b < 5; b++) begin : gen_rel_bit
+    logic pending_hold_or_nop;
+    logic fetch_hold_or_nop;
+    assign pending_hold_or_nop = seq_sel_holdoff ? rel_pending_by_advance[0][b] :
+                                                   rel_pending_shape[ShapeNop][b];
+    assign fetch_hold_or_nop = seq_sel_holdoff ? rel_fetch_by_advance[0][b] :
+                                                 rel_fetch_shape[ShapeNop][b];
+    LUT6 #(
+        .INIT(LateSelRegInit)
+    ) u_pending (
+        .I0(seq_sel_holdoff),
+        .I1(i_sel_nop),
+        .I2(i_slot2_valid),
+        .I3(pending_hold_or_nop),
+        .I4(rel_pending_shape[ShapeTwo][b]),
+        .I5(rel_pending_shape[ShapeOne][b]),
+        .O (o_seq_next_pc_reg_rel_pending[b])
+    );
+    LUT6 #(
+        .INIT(LateSelRegInit)
+    ) u_fetch (
+        .I0(seq_sel_holdoff),
+        .I1(i_sel_nop),
+        .I2(i_slot2_valid),
+        .I3(fetch_hold_or_nop),
+        .I4(rel_fetch_shape[ShapeTwo][b]),
+        .I5(rel_fetch_shape[ShapeOne][b]),
+        .O (o_seq_next_pc_reg_rel_fetch[b])
+    );
+  end
+`else
   always_comb begin
     if (seq_sel_holdoff) begin
       o_seq_next_pc_reg_rel_pending = rel_pending_by_advance[0];
@@ -566,6 +672,21 @@ module pc_increment_calculator #(
       o_seq_next_pc_reg_rel_fetch   = rel_fetch_shape[ShapeOne];
     end
   end
+`endif
+`ifdef PC_INCREMENT_HOLDOFF_PROOF
+  // The pinned relation selects (FROST_XILINX_PRIMS) equal their portable
+  // form.
+  always_comb begin
+    assert (o_seq_next_pc_reg_neq_pc == (seq_sel_holdoff ? neq_hold : i_sel_nop ?
+        neq_advance_sel_shape[ShapeNop] : i_slot2_valid ? neq_advance_sel_shape[ShapeTwo] :
+        neq_advance_sel_shape[ShapeOne]));
+    assert ({o_seq_next_pc_reg_rel_pending, o_seq_next_pc_reg_rel_fetch} == (seq_sel_holdoff ?
+        {rel_pending_by_advance[0], rel_fetch_by_advance[0]} : i_sel_nop ?
+        {rel_pending_shape[ShapeNop], rel_fetch_shape[ShapeNop]} : i_slot2_valid ?
+        {rel_pending_shape[ShapeTwo], rel_fetch_shape[ShapeTwo]} :
+        {rel_pending_shape[ShapeOne], rel_fetch_shape[ShapeOne]}));
+  end
+`endif
   assign o_pc_reg_rel_pending = rel_pending_by_advance[0];
   assign o_pc_reg_rel_fetch   = rel_fetch_by_advance[0];
 

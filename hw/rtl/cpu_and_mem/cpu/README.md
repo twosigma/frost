@@ -47,6 +47,7 @@ walker (`mmu/ptw`), and these glue submodules from [`cpu_ooo/`](cpu_ooo/):
 | `branch_resolution` | `branch_recovery/` | Resolves conditional branches and JALRs from INT_RS with `branch_jump_unit` and reports them to the ROB, ignoring a branch whose checkpoint was reused. A JAL resolves when the ROB allocates it |
 | `early_misprediction_recovery` | `branch_recovery/` | For a mispredicted conditional branch that holds a checkpoint, redirects fetch and restores the RAT the cycle after it resolves, instead of at commit |
 | `misprediction_flush_controller` | `branch_recovery/` | Commit-time mispredictions, full and partial flush priority, checkpoint restore and free |
+| `tage_history` | `branch_recovery/` | The tagged direction predictor's path history and its restores, the saved lookup of each conditional branch, and training at commit |
 | `ex_comb_synthesizer` | `recovery/` | Builds IF's redirect, BTB-update, and RAS-restore bus from early recovery, commit-time recovery, and correct-branch commits, in that priority |
 | `data_mem_request_router` | `memory_if/` | Data-port arbitration (SQ writes, then AMO writes, then LQ reads), staged device reads, tagged completion for the cached tier; see the [data-tier bus rules](../../README.md#data-tier-bus-contract) |
 | `cached_tier_adapter` | `memory_if/` | Converts 64-bit data beats to 32-byte cache lines; instantiated in `cpu_and_mem.sv` next to the cache hierarchy |
@@ -110,7 +111,8 @@ cases, then the sequential PC.
 |-----------|------|----------|------------|
 | BTB | 256 entries, direct-mapped, 2-bit counters | Target and direction of conditional branches, JALs and JALRs; an entry is typed as a call, a return, or both | Mispredicted conditional branches, JALs and JALRs; correctly predicted conditional branches at commit |
 | Return address stack | 8 entries | The target of a BTB hit typed as a return (`jalr x0, 0(ra)`, `c.jr ra`) or a coroutine swap (`jalr t0, 0(ra)`) | IF, when it hands PD a packet predicted from a typed entry: a call (JAL or JALR writing `ra` or `t0`) pushes, a return pops, a swap replaces the top; recovery restores it |
-| Bimodal direction predictor | 1024 2-bit counters | Direction of conditional branches without a taken BTB prediction | Each conditional branch at commit |
+| Bimodal direction predictor | 1024 2-bit counters | Direction of slot-1 conditional branches without a taken BTB prediction or a tagged match | Each conditional branch at commit |
+| Tagged direction predictor | Two tables of 1024 entries, hashed with 16 and 64 bits of path history; 9-bit tags, 3-bit counters | Direction of slot-1 conditional branches whose lookup matches a tag, either way | Each conditional branch at commit, at the entries its lookup read |
 
 A return is predicted like any BTB hit, from the lookup at its fetch PC, but
 its entry is typed, so its target is the top of the return address stack
@@ -134,16 +136,42 @@ only if the entry was trained for an instruction of the same size. A JAL that
 misses the BTB mispredicts once; training at commit makes its next execution
 hit.
 
-A conditional branch without a taken BTB prediction (a miss, or a hit
-predicted not-taken) can still be predicted taken. IF reads the bimodal
-predictor at the fetch PC and passes the direction, and the index it read,
-along with the branch. If PD finds a slot-1 conditional branch
-that nothing has redirected yet and the direction is taken, it computes PC +
-offset and redirects fetch, at a cost of two bubbles. Commit trains the entry
-at the carried index, not at the branch's own PC, because the fetch PC that
-read the predictor can differ from the branch PC after a stall replay or at a
-halfword boundary. A slot-2 branch's training waits, one deep, for a cycle in
-which slot 1 does not train; a newer one replaces it.
+PD can change the direction fetch followed for a slot-1 conditional branch.
+IF reads two direction predictors at the fetch PC and passes their
+directions along with the branch. A tagged direction, when the branch's lookup
+matches a tag, is used either way; otherwise the bimodal direction can only
+turn a branch without a taken BTB prediction (a miss, or a hit predicted
+not-taken) to taken. When that direction differs from fetch's, PD redirects
+fetch to PC + offset, or for not-taken to the next instruction, at a cost of
+two bubbles, and ID gives the branch the new prediction so the branch unit
+checks the path fetch now follows. Commit trains the bimodal entry at the
+carried index, not at the branch's own PC, because the fetch PC that read the
+predictor can differ from the branch PC after a stall replay or at a halfword
+boundary. A slot-2 branch's training waits, one deep, for a cycle in which
+slot 1 does not train; a newer one replaces it.
+
+The tagged predictor (`tage_predictor`) follows TAGE. T1 hashes the branch's
+word address with the newest 16 bits of the global path history, T2 with all
+64. Each table is two 512-entry banks split by PC[2], so one lookup reads both
+words of the fetch window; the lookup registers and is compared with the tags
+the next cycle. The longer-history table whose tag matches provides the
+direction. Every taken control-flow instruction shifts bits [3:2] of its
+target into the history. The lookup history follows fetch:
+`tage_history` pushes the target the cycle after `pc_controller` loads a
+predicted one, and each redirect restores the history to its point in the
+program. A trap, xRET, FENCE-class flush, or commit-time recovery takes the
+history of the retired instructions. Early recovery or a PD redirect takes the
+branch's own lookup history, plus its target if it is now taken.
+
+When PD passes a conditional branch to ID, its lookup (indices, tags, which
+tables matched, the alternate direction, and the history) goes to a 64-entry
+circular buffer. Dispatch sees the branches in the same order, so it gives the
+branch the same index from a pointer of its own and records it by ROB tag;
+every flush that drops branches in between rewinds both pointers to the same
+entry. Commit trains from that entry, one branch per cycle with the same slot-2
+hold: the provider's counter moves toward the outcome, and a mispredicted
+branch allocates a weak entry in a longer-history table whose entry is not
+marked useful. Slot-2 branches are trained, though PD overrides only slot 1.
 
 ### Two-wide fetch and dispatch
 

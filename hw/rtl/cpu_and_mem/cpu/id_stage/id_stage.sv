@@ -25,9 +25,11 @@ module id_stage #(
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id,
-    // Slot-1 predicted-taken override from PD registers, shared with IF.
-    // Apply it here to keep target arithmetic out of PD's packet register.
+    // Slot-1 direction override from PD registers, shared with IF: the new
+    // direction and, when taken, the target. Apply it here to keep target
+    // arithmetic out of PD's packet register.
     input logic i_pd_redirect,
+    input logic i_pd_redirect_taken,
     input logic [XLEN-1:0] i_pd_redirect_target,
     // mstatus.FS == Off makes F/D instructions illegal. cpu_ooo registers
     // this one cycle after the CSR. FS enters or leaves Off only through a
@@ -51,12 +53,16 @@ module id_stage #(
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next_hold_2
 );
 
-  // PD's redirect and veto metadata align with this cycle's slot-1 packet.
+  // PD's redirect and veto metadata align with this cycle's slot-1 packet. A
+  // not-taken override keeps the BTB target, which only a taken prediction
+  // uses.
   logic [XLEN-1:0] effective_btb_predicted_target;
   logic            effective_btb_predicted_taken;
-  assign effective_btb_predicted_target = i_pd_redirect ? i_pd_redirect_target :
+  assign effective_btb_predicted_target = (i_pd_redirect && i_pd_redirect_taken) ?
+                                          i_pd_redirect_target :
                                           i_from_pd_to_id.btb_predicted_target;
-  assign effective_btb_predicted_taken = i_pd_redirect | i_from_pd_to_id.btb_predicted_taken;
+  assign effective_btb_predicted_taken = i_pd_redirect ? i_pd_redirect_taken :
+                                                         i_from_pd_to_id.btb_predicted_taken;
 
   // Slot-1 instruction and decoder outputs
   riscv_pkg::instr_t instruction;

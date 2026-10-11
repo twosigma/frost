@@ -243,6 +243,7 @@ def _clear_inputs(dut: Any) -> None:
     _drive_pd_packet(dut, {})
     _drive_pd_packet(dut, {}, slot2=True)
     dut.i_pd_redirect.value = 0
+    dut.i_pd_redirect_taken.value = 1
     dut.i_pd_redirect_target.value = 0
     dut.i_mstatus_fs_off.value = 0
 
@@ -465,6 +466,37 @@ async def test_pd_redirect_overrides_slot1_btb_metadata_only(dut: Any) -> None:
     assert slot2_packet["branch_target_precomputed"] == BASE_PC + 16
     assert slot2_packet["btb_predicted_taken"] is False
     assert slot2_packet["btb_predicted_target"] == 0x12345678
+
+
+@cocotb.test()
+async def test_pd_not_taken_redirect_clears_slot1_btb_taken(dut: Any) -> None:
+    """A not-taken PD redirect clears slot 1's taken flag and keeps its target.
+
+    The redirect target is the fall-through, which only fetch uses; a branch
+    predicted not taken never compares its target.
+    """
+    await _setup_test(dut)
+    branch = _pack_b(imm=-8, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
+    btb_target = (BASE_PC - 8) & 0xFFFFFFFF
+
+    _drive_pd_packet(
+        dut,
+        {
+            "program_counter": BASE_PC,
+            "instruction": branch,
+            "btb_predicted_taken": True,
+            "btb_predicted_target": btb_target,
+        },
+    )
+    dut.i_pd_redirect.value = 1
+    dut.i_pd_redirect_taken.value = 0
+    dut.i_pd_redirect_target.value = BASE_PC + 4
+    await _advance_cycle(dut)
+
+    packet = _read_id_packet(dut)
+    assert packet["instruction_operation"] == BEQ
+    assert packet["btb_predicted_taken"] is False
+    assert packet["btb_predicted_target"] == btb_target
 
 
 @cocotb.test()

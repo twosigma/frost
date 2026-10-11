@@ -39,6 +39,7 @@ module prediction_release_formal #(
   (* anyseq *) logic i_branch_taken;
   (* anyseq *) logic [XLEN-1:0] i_branch_target;
   (* anyseq *) logic i_pd_redirect;
+  (* anyseq *) logic i_pd_redirect_taken;
   (* anyseq *) logic [XLEN-1:0] i_pd_redirect_target;
   (* anyseq *) logic i_window_resteer_qualifier;
   (* anyseq *) logic i_window_cannot_serve_raw;
@@ -158,11 +159,13 @@ module prediction_release_formal #(
     i_slot2_live_predicted_target == pending_prediction_prev_native_pc
   };
   // Match the production predictor's matching-target exception. A PD redirect
-  // always kills the registered handoff, but may preserve prediction metadata
-  // and its holdoff while a matching-target packet is stalled.
+  // always kills the registered handoff, but a taken one may preserve
+  // prediction metadata and its holdoff while a matching-target packet is
+  // stalled.
   assign pd_redirect_kills_prediction_metadata =
       i_pd_redirect &&
-      (!prediction_used_r || (predicted_target_r != i_pd_redirect_target));
+      (!i_pd_redirect_taken || !prediction_used_r ||
+       (predicted_target_r != i_pd_redirect_target));
 
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;

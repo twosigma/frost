@@ -1623,12 +1623,45 @@ package riscv_pkg;
   // Branches carry the prediction-time index through commit for training.
   localparam int unsigned BpDirIdxBits = 10;
 
+  // Tagged direction predictor (tage_predictor): global path-history length,
+  // the history its short table hashes, per-bank index and tag widths, and
+  // the history bits each taken control-flow instruction shifts in.
+  localparam int unsigned TageHistBits = 64;
+  localparam int unsigned TageT1HistBits = 16;
+  localparam int unsigned TageIndexBits = 9;
+  localparam int unsigned TageTagBits = 9;
+  localparam int unsigned TagePathBits = 2;
+  // The predictor hashes word-address bits [TageLookupHiBit:2] of the lookup
+  // PC: the index's two slices end there and the tag's begins at bit 2.
+  localparam int unsigned TageLookupHiBit = 2 + 2 * TageIndexBits;
+  // Index width of the saved-lookup buffer (cpu_ooo/branch_recovery/
+  // tage_history.sv). Its entries outnumber the conditional branches the
+  // front end and ROB can hold.
+  localparam int unsigned TageFtqIdxBits = 6;
+
+  // One bank's registered tagged lookup: both tables' indices and tags, which
+  // matched, the provider's direction (meaningful when hit1 or hit2), and T1
+  // as the alternate behind a T2 provider. Saved with a conditional branch to
+  // train the same entries at commit.
+  typedef struct packed {
+    logic [TageIndexBits-1:0] index1;
+    logic [TageIndexBits-1:0] index2;
+    logic [TageTagBits-1:0] tag1;
+    logic [TageTagBits-1:0] tag2;
+    logic hit1;
+    logic hit2;
+    logic taken;
+    logic alt_tagged;
+    logic alt_tagged_taken;
+  } tage_lookup_t;
+  localparam int unsigned TageLookupBits = 2 * TageIndexBits + 2 * TageTagBits + 5;
+
   // IF-to-PD payload. IF assembles spanning instructions in one cycle.
   // PD expands compressed slot 1 from its selected sideband fields;
   // IF's aligner expands slot 2 (see decomp_illegal).
   // PdTargetSplit divides the redirect addition: add low PC/offset bits,
   // then select PC-high, PC-high+1, or PC-high-1. Both branch offsets fit.
-  localparam int unsigned PdTargetSplit = 13;
+  localparam int unsigned PdTargetSplit  = 13;
 
   typedef struct packed {
     logic [XLEN-1:0] program_counter;
@@ -1669,6 +1702,12 @@ package riscv_pkg;
     logic bp_dir_taken;
     // Prediction-time index carried to commit to train the same entry.
     logic [BpDirIdxBits-1:0] bp_dir_idx;
+    // Tagged-predictor direction for this instruction, valid only when a
+    // tagged entry matched. For a slot-1 conditional branch it replaces the
+    // BTB and bimodal directions in PD, which then redirects IF to the
+    // branch target or the fall-through as needed. Consumed in PD.
+    logic tage_valid;
+    logic tage_taken;
     // The instruction bytes could not be fetched; the payload is invalid.
     // Decode substitutes FETCH_FAULT (cause 1) or FETCH_PAGE_FAULT (cause 12).
     // IF/PD suppress prediction and redirect use so invalid bytes cannot

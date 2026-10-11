@@ -93,7 +93,7 @@ python3 scripts/coremark_sweep.py --output /absolute/new/layout-results --orders
 ```
 
 BRAM runs honor `--runs`; DDR runs once per invocation. The direction
-predictor and the memories keep their state across reset (the BTB and return
+predictors and the memories keep their state across reset (the BTB and return
 stack do not), so compare runs with the same reset index. These are one-iteration simulations with a synthetic timer, useful for
 comparing cycle counts; only the ten-second hardware runs above produce a
 score.

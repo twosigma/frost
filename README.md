@@ -133,9 +133,9 @@ every supported extension and privilege mode.
   32-entry reorder buffer, and precise exceptions.
 - Four reservation stations, two integer ALUs, and an iterative single- and
   double-precision floating-point unit.
-- Branch prediction with a 256-entry BTB, a 1024-entry direction predictor,
-  and an 8-entry return stack. A mispredicted conditional branch recovers in
-  about two cycles.
+- Branch prediction with a 256-entry BTB, a bimodal and a tagged
+  path-history direction predictor, and an 8-entry return stack. A
+  mispredicted conditional branch recovers in about two cycles.
 - Sv39 virtual memory with hardware page-table walks and separate instruction
   and data TLBs.
 - Separate instruction and data paths into a cache hierarchy. On X3: 16 KiB

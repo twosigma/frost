@@ -114,9 +114,10 @@ module if_stage #(
     input logic i_dir_update_valid,
     input logic [riscv_pkg::BpDirIdxBits-1:0] i_dir_update_idx,
     input logic i_dir_update_taken,
-    // PD redirect: a bimodal-taken branch without a taken BTB or RAS
-    // prediction (from pd_stage)
+    // PD redirect: a slot-1 conditional branch whose final direction differs
+    // from the BTB direction IF followed, with that direction (from pd_stage)
     input logic i_pd_redirect,
+    input logic i_pd_redirect_taken,
     input logic [XLEN-1:0] i_pd_redirect_target,
     output logic [XLEN-1:0] o_pc,
     // The previous cycle consumed the stall-captured packet. The provider
@@ -184,7 +185,27 @@ module if_stage #(
     // Width profiling, registered one cycle after an unstalled IF
     // presentation. Kill causes follow replay. PD may squash the packet
     // on a redirect; these counters do not include that gate.
-    output riscv_pkg::if_width_events_t o_width_events
+    output riscv_pkg::if_width_events_t o_width_events,
+
+    // Tagged direction predictor. cpu_ooo keeps the path history and passes
+    // the lookup history in. Each slot's lookup is valid when the registered
+    // lookup covered that slot's word; cpu_ooo saves the branch's lookup and
+    // the history it used, to train the same entries at commit.
+    input logic [riscv_pkg::TageHistBits-1:0] i_tage_hist,
+    input logic i_tage_train_valid,
+    input riscv_pkg::tage_lookup_t i_tage_train_lookup,
+    input logic i_tage_train_bank,
+    input logic i_tage_train_alt_taken,
+    input logic i_tage_train_taken,
+    input logic i_tage_train_mispredicted,
+    output logic o_tage_hist_push,
+    output logic [4:0] o_tage_hist_restore_arm,
+    // The fetch PC's [3:2], which a history push shifts in.
+    output logic [riscv_pkg::TagePathBits-1:0] o_tage_fetch_path_bits,
+    output logic [1:0] o_tage_slot_valid,  // bit s: slot s + 1
+    output riscv_pkg::tage_lookup_t o_tage_slot_lookup,
+    output riscv_pkg::tage_lookup_t o_tage_slot_lookup_2,
+    output logic [riscv_pkg::TageHistBits-1:0] o_tage_lookup_hist
 );
 
   // ===========================================================================
@@ -288,6 +309,7 @@ module if_stage #(
   logic pc_update_en;  // Fetch-PC load enable; qualifies the low-presenter retarget
   // Used only to classify fetch retargets as sequential or not.
   logic [riscv_pkg::PcNextArms-1:0] npc_sel;
+  logic [riscv_pkg::TageLookupHiBit:2] pc_tage_lookup;
   logic [riscv_pkg::PcNextArms-1:0] npc_cond;
   logic [riscv_pkg::PcNextArms-1:0] npc_seq;
   // pc_controller's one-hot next-PC arm ordering; arm 8 is slot-1 prediction.
@@ -645,6 +667,7 @@ module if_stage #(
       .i_flush(flush_for_c_ext_safe),
       // PD redirect kills in-flight slot-1 prediction metadata (see module).
       .i_pd_redirect(i_pd_redirect),
+      .i_pd_redirect_taken(i_pd_redirect_taken),
       .i_pd_redirect_target(i_pd_redirect_target),
 
       // Current PC for BTB lookup
@@ -873,6 +896,9 @@ module if_stage #(
       .o_next_pc(),
       .o_next_pc_holds(),
       .o_pc_update_en(pc_update_en),
+      .o_pc_tage_lookup(pc_tage_lookup),
+      .o_tage_hist_push,
+      .o_tage_hist_restore_arm,
       .o_npc_sel(npc_sel),
       .o_npc_cond(npc_cond),
       .o_npc_seq(npc_seq),
@@ -1650,6 +1676,7 @@ module if_stage #(
   assign o_from_if_to_pd.pd_target_native_high_select = pd_target_native_high_select;
   assign o_from_if_to_pd.pd_target_compressed_low = pd_target_compressed_low;
   assign o_from_if_to_pd.pd_target_compressed_high_select = pd_target_compressed_high_select;
+
 `ifndef SYNTHESIS
   // The candidate operands are the packet's PC and instruction.
   always_comb begin
@@ -2191,6 +2218,60 @@ module if_stage #(
   // Predict-time index carried with the slot-1 instruction (replay-aware).
   assign o_from_if_to_pd.bp_dir_idx = replay_saved_if_outputs ? bp_dir_idx_sc :
                                       bp_dir_idx_pending_aligned;
+  // ===========================================================================
+  // Tagged Direction Predictor
+  // ===========================================================================
+  // The lookup reads both words of the fetch window at the fetch PC copy, and
+  // the predictor presents the newest lookup made under the bimodal
+  // snapshot's capture condition, so a stall replay finds the lookup made for
+  // its window. The next cycle each slot
+  // takes its word's bank and checks that the registered lookup covered that
+  // word; a packet whose word was looked up elsewhere (a replay after newer
+  // fetches, a pending handoff, a resteer) gets no tagged direction.
+  logic [riscv_pkg::TageLookupHiBit:2] tage_lookup_word;
+  logic [riscv_pkg::TageLookupHiBit:2] tage_lookup_word_next;
+  assign o_tage_fetch_path_bits = pc_tage_lookup[3:2];
+  riscv_pkg::tage_lookup_t tage_bank0;
+  riscv_pkg::tage_lookup_t tage_bank1;
+  tage_predictor u_tage_predictor (
+      .i_clk,
+      .i_lookup_word(pc_tage_lookup),
+      .i_lookup_hist(i_tage_hist),
+      .i_lookup_capture(!if_stage_stall && fetch_progress),
+      .o_lookup_word(tage_lookup_word),
+      .o_lookup_word_next(tage_lookup_word_next),
+      .o_lookup_hist(o_tage_lookup_hist),
+      .o_bank0(tage_bank0),
+      .o_bank1(tage_bank1),
+      .i_train_valid(i_tage_train_valid),
+      .i_train_lookup(i_tage_train_lookup),
+      .i_train_bank(i_tage_train_bank),
+      .i_train_alt_taken(i_tage_train_alt_taken),
+      .i_train_taken(i_tage_train_taken),
+      .i_train_mispredicted(i_tage_train_mispredicted)
+  );
+
+  // A slot's bank is its word's parity. The registered lookup covered the
+  // slot when that bank's looked-up word is the slot's word.
+  logic [riscv_pkg::TageLookupHiBit:2] tage_slot_word;
+  logic [riscv_pkg::TageLookupHiBit:2] tage_slot_word_2;
+  logic [riscv_pkg::TageLookupHiBit:2] tage_slot_bank_word;
+  logic [riscv_pkg::TageLookupHiBit:2] tage_slot_bank_word_2;
+  assign tage_slot_word = o_from_if_to_pd.program_counter[riscv_pkg::TageLookupHiBit:2];
+  assign tage_slot_word_2 = o_from_if_to_pd_2.program_counter[riscv_pkg::TageLookupHiBit:2];
+  assign tage_slot_bank_word = (tage_lookup_word[2] == tage_slot_word[2]) ?
+                               tage_lookup_word : tage_lookup_word_next;
+  assign tage_slot_bank_word_2 = (tage_lookup_word[2] == tage_slot_word_2[2]) ?
+                                 tage_lookup_word : tage_lookup_word_next;
+  assign o_tage_slot_valid[0] = tage_slot_bank_word == tage_slot_word;
+  assign o_tage_slot_valid[1] = tage_slot_bank_word_2 == tage_slot_word_2;
+  assign o_tage_slot_lookup = tage_slot_word[2] ? tage_bank1 : tage_bank0;
+  assign o_tage_slot_lookup_2 = tage_slot_word_2[2] ? tage_bank1 : tage_bank0;
+
+  // PD overrides slot 1 only. A fetch fault's bytes carry no branch.
+  assign o_from_if_to_pd.tage_valid = o_tage_slot_valid[0] &&
+      (o_tage_slot_lookup.hit1 || o_tage_slot_lookup.hit2) && !o_from_if_to_pd.fetch_fault;
+  assign o_from_if_to_pd.tage_taken = o_tage_slot_lookup.taken;
 
   // ===========================================================================
   // Prediction Metadata Tracker
@@ -2632,6 +2713,9 @@ module if_stage #(
   // Carry its PC's index for conditional-branch training at commit.
   assign o_from_if_to_pd_2.bp_dir_taken = 1'b0;
   assign o_from_if_to_pd_2.bp_dir_idx = replay_saved_if_outputs ? bp_dir_idx_2_sc : bp_dir_idx_2;
+  // PD redirects only slot 1, so slot 2 carries no tagged-predictor direction.
+  assign o_from_if_to_pd_2.tage_valid = 1'b0;
+  assign o_from_if_to_pd_2.tage_taken = 1'b0;
 
   // ===========================================================================
   // Slot-1 Control Classification and Width Events

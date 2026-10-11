@@ -81,7 +81,7 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | `pc_holdoff_cofactor` | The three fetch-holdoff outputs equal their reference equations |
 | `pc_holdoff_tag` | A pending prediction's predecessor-PC tag equals its PC minus 2, and outside reset the prediction holdoffs equal their reference equations; unbounded at XLEN 32, 64, and 72, including wraparound. Assumes the pending bit starts clear |
 | `pc_increment_relation` | The local carry relations behind the PC +2/+4/+6/+8 compares, and each sequential `pc_reg` candidate's relation to the pending and fetch PCs, equal full-width arithmetic at XLEN 32 and 64, including wraparound |
-| `pc_increment_holdoff` | Both sequential next PCs equal the reference per-size candidates with holdoff and NOP selection, for portable and Xilinx-primitive builds |
+| `pc_increment_holdoff` | Both sequential next PCs equal the reference per-size candidates with holdoff and NOP selection, and the sequential next `pc_reg`, its miss and pending relations, and their pinned selects equal their portable form, for portable and Xilinx-primitive builds |
 | `pc_pending_capture` | The pending-prediction valid bit's next state equals the reference clear/set/hold priority, for both `PENDING_HANDOFF_EXCLUDES_SLOT2` settings |
 | `pc_register_mux` | The architectural-PC mux equals the reference priority, in the same configurations as `fetch_pc_mux` |
 | `prediction_handoff` | `prediction_release` with `PENDING_HANDOFF_EXCLUDES_SLOT2=1`, the fetch stage's setting |
