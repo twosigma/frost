@@ -136,6 +136,16 @@ module pc_controller #(
 
     // Outputs
     output logic [XLEN-1:0] o_pc,
+    // A copy of o_pc's word-address bits that the tagged predictor hashes,
+    // so the predictor's address logic does not load o_pc.
+    output logic [riscv_pkg::TageLookupHiBit:2] o_pc_tage_lookup,
+    // Path-history events for the tagged predictor, from the arm that loaded
+    // o_pc on the last edge: a predicted-taken arm (slot 2 or slot 1), whose
+    // target o_pc now holds, or one of the redirect arms (reset, trap or
+    // xRET, FENCE-class flush, misprediction recovery, PD redirect), which
+    // restore the history. Bit a of the restore vector is arm a.
+    output logic o_tage_hist_push,
+    output logic [4:0] o_tage_hist_restore_arm,
     output logic [XLEN-1:0] o_pc_reg,
     // A register copy of o_pc_reg[1] for size and coverage checks, for fanout.
     output logic o_pc_reg_high_for_coverage,
@@ -1438,6 +1448,37 @@ module pc_controller #(
       pc_reg_high_for_coverage_q <= next_pc_reg[1];
     end
   end
+
+  // Tagged-predictor copy of o_pc and its history events. pc_update_en is
+  // late, so these registers sample every cycle without it, and one register
+  // keeps whether the edge loaded o_pc: the copy is the fresh next_pc after a
+  // load and otherwise the copy held from the cycle before, which tracks o_pc
+  // exactly; the events count only after a load.
+  logic tage_update_q;
+  logic [riscv_pkg::TageLookupHiBit:2] tage_word_fresh_q;
+  logic [riscv_pkg::TageLookupHiBit:2] tage_word_held_q;
+  logic [1:0] tage_push_sel_q;
+  logic [4:0] tage_restore_sel_q;
+  always_ff @(posedge i_clk) begin
+    tage_update_q      <= pc_update_en;
+    tage_word_fresh_q  <= next_pc[riscv_pkg::TageLookupHiBit:2];
+    tage_word_held_q   <= o_pc_tage_lookup;
+    tage_push_sel_q    <= npc_sel[8:7];
+    tage_restore_sel_q <= npc_sel[4:0];
+  end
+  assign o_pc_tage_lookup = tage_update_q ? tage_word_fresh_q : tage_word_held_q;
+  assign o_tage_hist_push = tage_update_q && (tage_push_sel_q != 2'b00);
+  assign o_tage_hist_restore_arm = tage_update_q ? tage_restore_sel_q : 5'd0;
+
+`ifndef SYNTHESIS
+  // Arm after the first reset, which loads both.
+  logic tage_word_check_armed_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_reset) tage_word_check_armed_q <= 1'b1;
+    if (tage_word_check_armed_q && !i_reset)
+      p_tage_word_tracks_o_pc : assert (o_pc_tage_lookup == o_pc[riscv_pkg::TageLookupHiBit:2]);
+  end
+`endif
 
   // ---------------------------------------------------------------------------
   // Registered pending relations

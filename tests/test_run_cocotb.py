@@ -1105,6 +1105,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="misprediction_flush_controller",
         description="Misprediction flush control and checkpoint release",
     ),
+    "tage_history": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.recovery.test_tage_history",
+        hdl_toplevel_module="tage_history",
+        description="Tagged predictor path history, saved lookups, and training",
+    ),
     "branch_resolution": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.recovery.test_branch_resolution",
         hdl_toplevel_module="branch_resolution",
@@ -1568,6 +1573,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.if_stage.branch_prediction.test_direction_predictor",
         hdl_toplevel_module="direction_predictor",
         description="Branch-direction prediction and training",
+    ),
+    "tage_predictor": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.branch_prediction.test_tage_predictor",
+        hdl_toplevel_module="tage_predictor",
+        description="Tagged branch-direction prediction, allocation, and training",
     ),
     "branch_prediction_controller": CocotbRunConfig(
         python_test_module=(

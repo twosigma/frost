@@ -53,6 +53,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_fetch_progress.value = 1
     dut.i_flush.value = 0
     dut.i_pd_redirect.value = 0
+    dut.i_pd_redirect_taken.value = 1
     dut.i_pc.value = 0
     dut.i_pc_2.value = 0
     dut.i_pc_2_alt.value = 0
@@ -422,6 +423,39 @@ async def test_pd_redirect_target_match_preserves_stalled_metadata(
     assert dut.o_prediction_holdoff.value
 
     dut.i_pd_redirect_target.value = TARGET_SLOT2
+    await _advance_cycle(dut)
+
+    assert not dut.o_prediction_used_r.value
+    assert not dut.o_sel_prediction_r.value
+    assert not dut.o_prediction_holdoff.value
+
+
+@cocotb.test()
+async def test_pd_not_taken_redirect_kills_matching_target_metadata(
+    dut: Any,
+) -> None:
+    """A stalled not-taken PD redirect kills metadata even at a matching target.
+
+    Its target is the overridden branch's fall-through. When that equals the
+    registered prediction's target, it still names a different instruction, so
+    no predicted-taken marker may survive.
+    """
+    await _setup_test(dut)
+    await _btb_update(dut, pc=PC_A, target=TARGET_A)
+
+    _clear_inputs(dut)
+    dut.i_pc.value = PC_A
+    await _advance_cycle(dut)
+
+    assert dut.o_prediction_used_r.value
+    assert dut.o_prediction_holdoff.value
+
+    _clear_inputs(dut)
+    dut.i_stall.value = 1
+    dut.i_stall_registered.value = 1
+    dut.i_pd_redirect.value = 1
+    dut.i_pd_redirect_taken.value = 0
+    dut.i_pd_redirect_target.value = TARGET_A
     await _advance_cycle(dut)
 
     assert not dut.o_prediction_used_r.value

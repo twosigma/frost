@@ -23,8 +23,9 @@
   the instruction aligner (see instruction_aligner.sv). In simulation only,
   local rvc_decompressors expand both slots' raw parcels as the reference for
   the checks below. PD also registers early source-register fields, from
-  which it reassembles slot 2's instruction, and raises the PD redirect for a
-  predicted-taken slot-1 branch (see that section).
+  which it reassembles slot 2's instruction, and raises the PD redirect when a
+  slot-1 conditional branch's final direction differs from the BTB direction
+  IF followed (see that section).
 
   Both slots register the instruction without rewriting it to a NOP. A bubble
   (flush, PD redirect, or sel_nop) rides in inject_nop, which ID applies before
@@ -43,11 +44,16 @@ module pd_stage #(
     // inject_nop. The PD redirect applies only to slot 1.
     input riscv_pkg::from_if_to_pd_t i_from_if_to_pd_2,
     output riscv_pkg::from_pd_to_id_t o_from_pd_to_id_2,
-    // Redirect to IF for a slot-1 conditional branch that nothing has
-    // redirected yet and the bimodal predictor calls taken, for either offset
-    // sign. See the PD redirect section below.
+    // Redirect to IF for a slot-1 conditional branch whose final direction
+    // differs from the BTB direction IF followed, and the new direction:
+    // taken redirects to the branch target, not taken to the fall-through.
+    // See the PD redirect section below.
     output logic o_pd_redirect,
-    output logic [XLEN-1:0] o_pd_redirect_target
+    output logic o_pd_redirect_taken,
+    output logic [XLEN-1:0] o_pd_redirect_target,
+    // Each slot's conditional-branch decode, before validity qualification,
+    // for the tagged predictor's saved lookups.
+    output logic [1:0] o_cond_branch
 );
 
   // ===========================================================================
@@ -244,12 +250,14 @@ module pd_stage #(
 `endif
 
   // ===========================================================================
-  // PD Redirect: Predicted-Taken Branch With No BTB Prediction
+  // PD Redirect: Final Direction Differs From the BTB
   // ===========================================================================
-  // A slot-1 conditional branch that nothing has redirected yet (no taken BTB
-  // prediction) and that the bimodal direction predictor calls taken
-  // (bp_dir_taken) redirects IF to PC + offset, for either offset sign, instead
-  // of waiting to resolve as a misprediction.
+  // A slot-1 conditional branch whose final direction differs from the BTB
+  // direction IF followed redirects IF instead of waiting to resolve as a
+  // misprediction: to PC + offset, for either offset sign, when it is taken
+  // without a taken BTB prediction, and to the fall-through when the tagged
+  // predictor says not taken after a taken BTB prediction. The direction
+  // candidates are described where they are formed below.
   //
   // Native B-type and compressed C.BEQZ/C.BNEZ targets are computed as two
   // format-specific 13-bit carry-select candidates. Both immediates fit after
@@ -398,35 +406,59 @@ module pd_stage #(
   end
 `endif
 
-  // Register branch && direction separately from the packet's redirect
-  // vetoes, then qualify the candidate after the register for timing.
-  logic pd_backward_branch;
-  logic pd_redirect_candidate_r;
+  // Direction candidates. A slot-1 conditional branch's final direction comes
+  // from the tagged predictor when one of its entries matched, and otherwise
+  // from the BTB, which the bimodal predictor can turn from a miss or a
+  // not-taken hit into taken. PD redirects only when the final direction
+  // differs from the BTB direction that IF followed:
+  //   taken: the final direction is taken. It fires when the BTB did not
+  //          predict taken and redirects to the branch target.
+  //   not-taken: the tagged predictor says not taken. It fires when the BTB
+  //          predicted taken and redirects to the fall-through.
+  // The two candidates are exclusive. They are registered apart from the
+  // packet's redirect vetoes, which qualify them after the register for
+  // timing.
+  logic pd_cond_branch;
+  logic pd_taken_candidate;
+  logic pd_not_taken_candidate;
+  logic pd_taken_candidate_r;
+  logic pd_not_taken_candidate_r;
   logic pd_redirect_r;
-  assign pd_backward_branch =
-      (pd_native_branch || pd_compressed_branch) &&  // conditional branch (any offset)
-      i_from_if_to_pd.bp_dir_taken;  // decoupled bimodal predicts TAKEN
+  assign pd_cond_branch = pd_native_branch || pd_compressed_branch;
+  // Slot 2's effective instruction is already expanded, so its opcode alone
+  // marks a conditional branch.
+  assign o_cond_branch[0] = pd_cond_branch;
+  assign o_cond_branch[1] = i_from_if_to_pd_2.effective_instr[6:0] == riscv_pkg::OPC_BRANCH;
+  assign pd_taken_candidate = pd_cond_branch &&
+      (i_from_if_to_pd.tage_valid ? i_from_if_to_pd.tage_taken : i_from_if_to_pd.bp_dir_taken);
+  assign pd_not_taken_candidate = pd_cond_branch && i_from_if_to_pd.tage_valid &&
+                                  !i_from_if_to_pd.tage_taken;
 
   // The packet carries same-edge vetoes: predicted taken, inject_nop, and
   // fetch fault. A redirect sets inject_nop on the following wrong-path
-  // packet, masking its candidate. Candidate and packet share the stall
-  // enable; reset and flush clear the candidate. Gating fetch_fault with
+  // packet, masking its candidates. Candidates and packet share the stall
+  // enable; reset and flush clear the candidates. Gating fetch_fault with
   // !sel_nop is safe because inject_nop already vetoes sel_nop.
-  assign pd_redirect_r = pd_redirect_candidate_r &&
-      !o_from_pd_to_id.btb_predicted_taken &&
+  assign pd_redirect_r =
+      ((pd_taken_candidate_r && !o_from_pd_to_id.btb_predicted_taken) ||
+       (pd_not_taken_candidate_r && o_from_pd_to_id.btb_predicted_taken)) &&
       !o_from_pd_to_id.inject_nop &&
       !o_from_pd_to_id.fetch_fault;
 
   // IF's redirect depends only on PD registers. It costs two bubbles; both
   // slots of the wrong-path packet entering PD behind the branch are
   // squashed through inject_nop.
-  // Both format candidates and the format bit load on the same enabled edge,
-  // so the mux after them equals one register of the selected candidate.
+  // The format candidates, the fall-through, and their selects load on the
+  // same enabled edge, so the mux after them equals one register of the
+  // selected target.
   (* keep = "true" *) logic [PdTargetSplit-1:0] pd_redirect_target_native_low_r;
   (* keep = "true" *) logic [PdTargetSplit-1:0] pd_redirect_target_compressed_low_r;
   (* keep = "true" *) logic [1:0] pd_redirect_target_native_high_select_r;
   (* keep = "true" *) logic [1:0] pd_redirect_target_compressed_high_select_r;
   (* keep = "true" *) logic pd_redirect_target_compressed_r;
+  (* keep = "true" *) logic [PdTargetSplit-1:0] pd_redirect_pc_low_r;
+  (* keep = "true" *) logic pd_redirect_fall_through_select_r;
+  logic [PdTargetSplit:0] pd_redirect_fall_through;
   logic [PdTargetSplit-1:0] pd_redirect_target_low;
   logic [1:0] pd_redirect_target_high_select;
   (* keep = "true", equivalent_register_removal = "no" *)
@@ -438,8 +470,13 @@ module pd_stage #(
   logic [PdTargetHighWidth-1:0] pd_redirect_target_high;
 
   always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset || i_pipeline_ctrl.flush) pd_redirect_candidate_r <= 1'b0;
-    else if (!i_pipeline_ctrl.stall) pd_redirect_candidate_r <= pd_backward_branch;
+    if (i_pipeline_ctrl.reset || i_pipeline_ctrl.flush) begin
+      pd_taken_candidate_r     <= 1'b0;
+      pd_not_taken_candidate_r <= 1'b0;
+    end else if (!i_pipeline_ctrl.stall) begin
+      pd_taken_candidate_r     <= pd_taken_candidate;
+      pd_not_taken_candidate_r <= pd_not_taken_candidate;
+    end
   end
 
   always_ff @(posedge i_clk) begin
@@ -449,16 +486,37 @@ module pd_stage #(
       pd_redirect_target_native_high_select_r <= pd_target_native_high_select;
       pd_redirect_target_compressed_high_select_r <= pd_target_compressed_high_select;
       pd_redirect_target_compressed_r <= pd_compressed_branch;
+      pd_redirect_pc_low_r <= i_from_if_to_pd.program_counter[PdTargetSplit-1:0];
+      pd_redirect_fall_through_select_r <= pd_not_taken_candidate;
       pd_redirect_pc_high_r <= i_from_if_to_pd.program_counter[XLEN-1:PdTargetSplit];
       pd_redirect_pc_high_plus_one_r <= pd_pc_high_plus_one;
       pd_redirect_pc_high_minus_one_r <= pd_pc_high_minus_one;
     end
   end
 
-  assign pd_redirect_target_low = pd_redirect_target_compressed_r ?
-      pd_redirect_target_compressed_low_r : pd_redirect_target_native_low_r;
-  assign pd_redirect_target_high_select = pd_redirect_target_compressed_r ?
-      pd_redirect_target_compressed_high_select_r : pd_redirect_target_native_high_select_r;
+  // A copy of the not-taken candidate with the target registers' enable
+  // selects the fall-through and the redirect direction. While either
+  // candidate register is set it equals the not-taken one: both loaded on the
+  // same unstalled edge, and only a flush, which clears the candidates,
+  // separates them.
+  //
+  // The fall-through of a not-taken redirect is the branch's PC plus its
+  // size, in the same split form as the targets, added after the registers:
+  // the target paths have slack for it, and the late size decode stays out.
+  // A conditional branch is compressed exactly when pd_compressed_branch is
+  // set, so its register picks the size. The high select is {0, carry}, which
+  // picks PC-high or PC-high + 1.
+  assign pd_redirect_fall_through = {1'b0, pd_redirect_pc_low_r} +
+      (pd_redirect_target_compressed_r ? (PdTargetSplit + 1)'(riscv_pkg::PcIncrementCompressed) :
+                                         (PdTargetSplit + 1)'(riscv_pkg::PcIncrement32bit));
+  assign pd_redirect_target_low = pd_redirect_fall_through_select_r ?
+      pd_redirect_fall_through[PdTargetSplit-1:0] :
+      pd_redirect_target_compressed_r ? pd_redirect_target_compressed_low_r :
+                                        pd_redirect_target_native_low_r;
+  assign pd_redirect_target_high_select = pd_redirect_fall_through_select_r ?
+      {1'b0, pd_redirect_fall_through[PdTargetSplit]} :
+      pd_redirect_target_compressed_r ? pd_redirect_target_compressed_high_select_r :
+                                        pd_redirect_target_native_high_select_r;
   assign pd_redirect_target_high = select_pd_target_high(
       pd_redirect_target_high_select,
       pd_redirect_pc_high_r,
@@ -467,16 +525,24 @@ module pd_stage #(
   );
 
   assign o_pd_redirect = pd_redirect_r;
+  assign o_pd_redirect_taken = !pd_redirect_fall_through_select_r;
   assign o_pd_redirect_target = {pd_redirect_target_high, pd_redirect_target_low};
 
 `ifndef SYNTHESIS
-  // Compare against registering the selected candidate on the same edge.
+  // Compare against registering the selected target on the same edge, with
+  // the fall-through from the packet's PC.
+  logic [PdTargetSplit:0] pd_fall_through_sum;
+  assign pd_fall_through_sum = {1'b0, i_from_if_to_pd.program_counter[PdTargetSplit-1:0]} +
+      (pd_sel_compressed ? (PdTargetSplit + 1)'(riscv_pkg::PcIncrementCompressed) :
+                           (PdTargetSplit + 1)'(riscv_pkg::PcIncrement32bit));
   logic [PdTargetSplit-1:0] pd_redirect_target_low_reference_r;
   logic [1:0] pd_redirect_target_high_select_reference_r;
   always_ff @(posedge i_clk) begin
     if (!i_pipeline_ctrl.stall) begin
-      pd_redirect_target_low_reference_r <= pd_target_selected_low;
-      pd_redirect_target_high_select_reference_r <= pd_target_selected_high_select;
+      pd_redirect_target_low_reference_r <= pd_not_taken_candidate ?
+          pd_fall_through_sum[PdTargetSplit-1:0] : pd_target_selected_low;
+      pd_redirect_target_high_select_reference_r <= pd_not_taken_candidate ?
+          {1'b0, pd_fall_through_sum[PdTargetSplit]} : pd_target_selected_high_select;
     end
   end
   always_ff @(posedge i_clk) begin
@@ -497,45 +563,72 @@ module pd_stage #(
 `endif
 
 `ifndef SYNTHESIS
-  // Reference model of the candidate FF: reset and flush clear it even during a
-  // stall, a stall holds it, and every enabled edge captures branch &&
-  // direction with no feedback from the qualified redirect.
-  logic pd_redirect_candidate_payload_reference_q;
+  // Reference model of the candidate FFs: reset and flush clear them even
+  // during a stall, a stall holds them, and every enabled edge captures the
+  // branch and its directions with no feedback from the qualified redirect.
+  // The two candidates are never set together.
+  logic pd_taken_candidate_payload_reference_q;
+  logic pd_not_taken_candidate_payload_reference_q;
   logic pd_redirect_candidate_payload_reference_armed = 1'b0;
   always @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
-      pd_redirect_candidate_payload_reference_q <= 1'b0;
+      pd_taken_candidate_payload_reference_q <= 1'b0;
+      pd_not_taken_candidate_payload_reference_q <= 1'b0;
       pd_redirect_candidate_payload_reference_armed <= 1'b1;
     end else begin
       if (pd_redirect_candidate_payload_reference_armed && !$isunknown(
-              {pd_redirect_candidate_r, pd_redirect_candidate_payload_reference_q}
+              {
+                pd_taken_candidate_r,
+                pd_not_taken_candidate_r,
+                pd_redirect_fall_through_select_r,
+                pd_taken_candidate_payload_reference_q,
+                pd_not_taken_candidate_payload_reference_q
+              }
           )) begin
-        p_pd_redirect_candidate_payload_exact :
-        assert (pd_redirect_candidate_r == pd_redirect_candidate_payload_reference_q);
+        p_pd_taken_candidate_payload_exact :
+        assert (pd_taken_candidate_r == pd_taken_candidate_payload_reference_q);
+        p_pd_not_taken_candidate_payload_exact :
+        assert (pd_not_taken_candidate_r == pd_not_taken_candidate_payload_reference_q);
+        p_pd_redirect_candidates_exclusive :
+        assert (!(pd_taken_candidate_r && pd_not_taken_candidate_r));
+        p_pd_redirect_fall_through_select_matches_candidate :
+        assert (!(pd_taken_candidate_r || pd_not_taken_candidate_r) ||
+                (pd_redirect_fall_through_select_r == pd_not_taken_candidate_r));
       end
 
       if (i_pipeline_ctrl.flush) begin
-        pd_redirect_candidate_payload_reference_q <= 1'b0;
+        pd_taken_candidate_payload_reference_q <= 1'b0;
+        pd_not_taken_candidate_payload_reference_q <= 1'b0;
       end else if (!i_pipeline_ctrl.stall) begin
-        pd_redirect_candidate_payload_reference_q <=
-            (pd_native_branch || pd_compressed_branch) && i_from_if_to_pd.bp_dir_taken;
+        pd_taken_candidate_payload_reference_q <=
+            (pd_native_branch || pd_compressed_branch) &&
+            (i_from_if_to_pd.tage_valid ? i_from_if_to_pd.tage_taken :
+                                          i_from_if_to_pd.bp_dir_taken);
+        pd_not_taken_candidate_payload_reference_q <=
+            (pd_native_branch || pd_compressed_branch) &&
+            i_from_if_to_pd.tage_valid && !i_from_if_to_pd.tage_taken;
         pd_redirect_candidate_payload_reference_armed <= 1'b1;
       end
     end
   end
 
-  // Compare with a register of the fully qualified redirect. The packet's
-  // inject_nop accounts for sel_nop and the previous redirect; the other
-  // vetoes are predicted taken and fetch fault. Shared enables preserve this
-  // alignment across stalls, and reset or flush clears the candidate.
-  // Compare before nonblocking updates to avoid delta-cycle races.
+  // Compare with a register of the fully qualified redirect and its
+  // direction. The packet's inject_nop accounts for sel_nop and the previous
+  // redirect; the other vetoes are the BTB direction and fetch fault. Shared
+  // enables preserve this alignment across stalls, and reset or flush clears
+  // the candidates. Compare before nonblocking updates to avoid delta-cycle
+  // races.
   logic pd_redirect_reference_q;
+  logic pd_redirect_taken_reference_q;
   logic pd_redirect_reference_armed = 1'b0;
-  logic pd_backward_branch_reference;
-  assign pd_backward_branch_reference =
+  logic pd_final_taken_reference;
+  logic pd_redirect_reference_next;
+  assign pd_final_taken_reference =
+      i_from_if_to_pd.tage_valid ? i_from_if_to_pd.tage_taken :
+      (i_from_if_to_pd.btb_predicted_taken || i_from_if_to_pd.bp_dir_taken);
+  assign pd_redirect_reference_next =
       (pd_native_branch || pd_compressed_branch) &&
-      i_from_if_to_pd.bp_dir_taken &&
-      !i_from_if_to_pd.btb_predicted_taken &&
+      (pd_final_taken_reference != i_from_if_to_pd.btb_predicted_taken) &&
       !i_from_if_to_pd.sel_nop &&
       !i_from_if_to_pd.fetch_fault &&
       !pd_redirect_reference_q;
@@ -546,22 +639,27 @@ module pd_stage #(
       pd_redirect_reference_armed <= 1'b1;
     end else begin
       if (pd_redirect_reference_armed && !$isunknown(
-              {pd_redirect_r, pd_redirect_reference_q}
+              {pd_redirect_r, pd_redirect_reference_q, o_pd_redirect_taken,
+               pd_redirect_taken_reference_q}
           )) begin
         p_pd_redirect_registered_veto_exact : assert (pd_redirect_r == pd_redirect_reference_q);
+        p_pd_redirect_direction_exact :
+        assert (!pd_redirect_r || (o_pd_redirect_taken == pd_redirect_taken_reference_q));
       end
 
       if (i_pipeline_ctrl.flush) begin
         pd_redirect_reference_q <= 1'b0;
       end else if (!i_pipeline_ctrl.stall) begin
-        pd_redirect_reference_q <= pd_backward_branch_reference;
+        pd_redirect_reference_q <= pd_redirect_reference_next;
+        pd_redirect_taken_reference_q <= pd_final_taken_reference;
         pd_redirect_reference_armed <= 1'b1;
       end
     end
   end
 
   // A full-width reference sampled on the same enabled edges checks target
-  // alignment, stall hold, and format selection.
+  // alignment, stall hold, and the target, fall-through, and format
+  // selection.
   logic [XLEN-1:0] pd_redirect_target_reference_q;
   logic pd_redirect_target_reference_armed = 1'b0;
   always @(posedge i_clk) begin
@@ -575,7 +673,11 @@ module pd_stage #(
         assert (o_pd_redirect_target == pd_redirect_target_reference_q);
       end
       if (!i_pipeline_ctrl.stall) begin
-        pd_redirect_target_reference_q <= pd_backward_target_reference;
+        pd_redirect_target_reference_q <= pd_not_taken_candidate ?
+            i_from_if_to_pd.program_counter +
+            (pd_sel_compressed ? XLEN'(riscv_pkg::PcIncrementCompressed) :
+                                 XLEN'(riscv_pkg::PcIncrement32bit)) :
+            pd_backward_target_reference;
         pd_redirect_target_reference_armed <= 1'b1;
       end
     end

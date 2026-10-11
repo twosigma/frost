@@ -27,6 +27,9 @@ REG_ADDR_WIDTH = 5
 CHECKPOINT_ID_WIDTH = 3
 RAS_PTR_BITS = 3
 BP_DIR_IDX_BITS = 10
+TAGE_INDEX_BITS = 9
+TAGE_TAG_BITS = 9
+TAGE_FTQ_IDX_BITS = 6
 MEM_SIZE_WIDTH = 2
 PD_TARGET_SPLIT = 13
 
@@ -39,6 +42,19 @@ PIPELINE_CTRL_FIELDS = [
     ("flush", 1),
     ("trap_taken_registered", 1),
     ("mret_taken_registered", 1),
+]
+
+# tage_lookup_t
+TAGE_LOOKUP_FIELDS = [
+    ("index1", TAGE_INDEX_BITS),
+    ("index2", TAGE_INDEX_BITS),
+    ("tag1", TAGE_TAG_BITS),
+    ("tag2", TAGE_TAG_BITS),
+    ("hit1", 1),
+    ("hit2", 1),
+    ("taken", 1),
+    ("alt_tagged", 1),
+    ("alt_tagged_taken", 1),
 ]
 
 # from_if_to_pd_t
@@ -59,6 +75,8 @@ IF_TO_PD_FIELDS = [
     ("ras_checkpoint_top", XLEN),
     ("bp_dir_taken", 1),
     ("bp_dir_idx", BP_DIR_IDX_BITS),
+    ("tage_valid", 1),
+    ("tage_taken", 1),
     ("fetch_fault", 1),
     ("fetch_fault_page", 1),
     ("fetch_fault_hi", 1),

@@ -981,6 +981,66 @@ async def test_direction_predicted_branch_masks_wrong_path_candidate_across_stal
 
 
 @cocotb.test()
+async def test_tagged_direction_overrides_btb_both_ways(dut: Any) -> None:
+    """The tagged direction replaces the BTB and bimodal directions.
+
+    Not taken after a taken BTB prediction redirects to the fall-through,
+    native and compressed; taken without a taken BTB prediction redirects to
+    the branch target even when the bimodal says not taken. Agreement with the
+    BTB never redirects.
+    """
+    await _setup_test(dut)
+    native = _pack_b(imm=-16, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
+    compressed = _pack_compressed_branch(imm=-6)
+
+    cases = [
+        # (instr, raw parcel, compressed, btb taken, tage taken, bimodal, redirect,
+        #  taken, target)
+        (native, native & 0xFFFF, False, True, False, True, True, False, BASE_PC + 4),
+        (compressed, compressed, True, True, False, True, True, False, BASE_PC + 2),
+        (native, native & 0xFFFF, False, False, True, False, True, True, BASE_PC - 16),
+        (native, native & 0xFFFF, False, True, True, False, False, None, None),
+        (native, native & 0xFFFF, False, False, False, True, False, None, None),
+    ]
+    for (
+        instr,
+        parcel,
+        is_compressed,
+        btb_taken,
+        tage_taken,
+        bimodal,
+        redirect,
+        taken,
+        target,
+    ) in cases:
+        _drive_pipeline_ctrl(dut, {"flush": True})
+        await _advance_cycle(dut)
+        _drive_pipeline_ctrl(dut, {})
+        _drive_if_packet(
+            dut,
+            {
+                "program_counter": BASE_PC,
+                "raw_parcel": parcel,
+                "sel_nop": False,
+                "sel_compressed": is_compressed,
+                "effective_instr": instr,
+                "btb_predicted_taken": btb_taken,
+                "btb_predicted_target": BASE_PC - 16 if btb_taken else 0,
+                "bp_dir_taken": bimodal,
+                "tage_valid": True,
+                "tage_taken": tage_taken,
+            },
+        )
+        await _advance_cycle(dut)
+
+        assert bool(dut.o_pd_redirect.value) is redirect
+        if redirect:
+            assert target is not None
+            assert bool(dut.o_pd_redirect_taken.value) is taken
+            assert int(dut.o_pd_redirect_target.value) == target & MASK_XLEN
+
+
+@cocotb.test()
 async def test_unqualified_redirect_candidate_keeps_all_visible_vetoes(
     dut: Any,
 ) -> None:

@@ -16,7 +16,7 @@ read -sv pc_reg_precompute.sv
 bmc: read_verilog -formal -D SYNTHESIS -D PC_INCREMENT_HOLDOFF_PROOF -sv pc_increment_calculator.sv
 bmc_xilinx: read_verilog -formal -D SYNTHESIS -D PC_INCREMENT_HOLDOFF_PROOF -D FROST_XILINX_PRIMS -sv pc_increment_calculator.sv
 prep -top pc_increment_calculator -flatten
-select -assert-count 2 t:$check
+select -assert-count 5 t:$check
 select -assert-none t:$assume a:init
 select -assert-none t:$check r:FLAVOR=assume %i
 

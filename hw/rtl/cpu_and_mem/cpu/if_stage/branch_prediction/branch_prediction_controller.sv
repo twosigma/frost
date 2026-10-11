@@ -40,8 +40,10 @@ module branch_prediction_controller #(
     input logic i_fetch_progress,
     input logic i_flush,
     // A PD redirect kills the registered pc_reg handoff even during stalls.
-    // Metadata survives only when its target matches (see registration).
+    // Metadata survives only a taken redirect to the same target (see
+    // registration).
     input logic i_pd_redirect,
+    input logic i_pd_redirect_taken,
     input logic [riscv_pkg::XLEN-1:0] i_pd_redirect_target,
 
     // Current PC for slot-1 BTB lookup (live fetch address)
@@ -750,10 +752,13 @@ module branch_prediction_controller #(
   // redirect.
 
   // A PD or slot-2 redirect can take the fetch stream from a younger slot-1
-  // prediction.  A PD redirect kills registered metadata when none is live or
-  // when its target differs; keeping live metadata for a matching target
-  // keeps the already-redirected branch's predicted-taken marker attached
-  // through a stalled redirect, so PD does not redirect it a second time.
+  // prediction.  A PD redirect kills registered metadata when none is live,
+  // when its target differs, or when it redirects to a fall-through; keeping
+  // live metadata for a taken redirect's matching target keeps the
+  // already-redirected branch's predicted-taken marker attached through a
+  // stalled redirect, so PD does not redirect it a second time.  A
+  // fall-through that happens to equal a younger prediction's target names a
+  // different instruction, so no marker survives it.
   //
   // Slot-2 use requires clear prediction holdoff, while registered slot-1
   // metadata implies holdoff. Thus slot 2 has no older metadata to preserve
@@ -761,7 +766,8 @@ module branch_prediction_controller #(
   logic pd_redirect_kills_prediction_metadata;
   assign pd_redirect_kills_prediction_metadata =
       i_pd_redirect &&
-      (!o_prediction_used_r || (o_predicted_target_r != i_pd_redirect_target));
+      (!i_pd_redirect_taken || !o_prediction_used_r ||
+       (o_predicted_target_r != i_pd_redirect_target));
 
   // Every PD or slot-2 redirect kills the slot-1 pc_reg handoff, including
   // across a stall: the redirect outranks it in the next-PC mux. Registered
