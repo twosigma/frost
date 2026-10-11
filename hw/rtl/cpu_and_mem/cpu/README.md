@@ -108,16 +108,17 @@ cases, then the sequential PC.
 
 | Structure | Size | Predicts | Trained by |
 |-----------|------|----------|------------|
-| BTB | 256 entries, direct-mapped, 2-bit counters | Target and direction of conditional branches, JALs and returns; an entry is typed as a call, a return, or both | Mispredicted conditional branches, JALs and returns; correctly predicted conditional branches at commit |
-| Return address stack | 8 entries | The target of a BTB hit typed as a return (`jalr x0, 0(ra)`, `c.jr ra`) or a coroutine swap (`jalr t0, 0(ra)`) | IF, when it hands PD a packet predicted from a typed entry: a call (JAL writing `ra` or `t0`) pushes, a return pops, a swap replaces the top; recovery restores it |
+| BTB | 256 entries, direct-mapped, 2-bit counters | Target and direction of conditional branches, JALs and JALRs; an entry is typed as a call, a return, or both | Mispredicted conditional branches, JALs and JALRs; correctly predicted conditional branches at commit |
+| Return address stack | 8 entries | The target of a BTB hit typed as a return (`jalr x0, 0(ra)`, `c.jr ra`) or a coroutine swap (`jalr t0, 0(ra)`) | IF, when it hands PD a packet predicted from a typed entry: a call (JAL or JALR writing `ra` or `t0`) pushes, a return pops, a swap replaces the top; recovery restores it |
 | Bimodal direction predictor | 1024 2-bit counters | Direction of conditional branches without a taken BTB prediction | Each conditional branch at commit |
 
 A return is predicted like any BTB hit, from the lookup at its fetch PC, but
 its entry is typed, so its target is the top of the return address stack
 while the stack holds an entry (the BTB target, the return's last target,
-otherwise). No other JALR enters the BTB. A JALR that is not predicted
-resolves as mispredicted, because a JALR is always taken, and recovers when it
-commits. While an unpredicted JALR is in the front end (slot 1 of IF, PD, or
+otherwise). Any other JALR, such as an indirect call through a function
+pointer, predicts the target it had when it last trained the BTB. A JALR that
+is not predicted resolves as mispredicted, because a JALR is always taken, and
+recovers when it commits, as does a JALR predicted with the wrong target. While an unpredicted JALR is in the front end (slot 1 of IF, PD, or
 ID, or the decoded queue) and a conditional branch or JALR is unresolved,
 `ooo_pipeline_control` stalls the front end to limit wrong-path fetch.
 

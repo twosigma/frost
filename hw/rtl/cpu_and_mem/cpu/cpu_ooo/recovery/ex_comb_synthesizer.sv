@@ -107,12 +107,12 @@ module ex_comb_synthesizer #(
       late_from_ex_comb.branch_taken          = 1'b1;
       late_from_ex_comb.branch_target_address = mispredict_commit_q.redirect_pc;
 
-      if (mispredict_commit_q.is_branch &&
-          (!mispredict_commit_q.is_jalr || mispredict_commit_q.is_return)) begin
-        // Train conditional branches, JAL, and returns, including coroutine
-        // swaps. JAL training allows a later BTB hit. A return hit uses the RAS
-        // or the stored target when the stack is empty. Other JALRs do not
-        // enter the BTB; call and return bits select the stack action.
+      if (mispredict_commit_q.is_branch) begin
+        // Train conditional branches, JALs, and JALRs. A later hit on a JAL or
+        // a JALR that is not a return predicts the stored target, the JALR's
+        // last one. A return hit, including a coroutine swap, uses the RAS or
+        // the stored target when the stack is empty. The call and return bits
+        // select the stack action.
         late_from_ex_comb.btb_update            = 1'b1;
         late_from_ex_comb.btb_update_pc         = mispredict_commit_q.pc;
         late_from_ex_comb.btb_update_target     = mispredict_commit_q.branch_target;

@@ -264,8 +264,8 @@ module branch_predictor #(
   // Store low 32-bit targets and restore upper bits from the lookup PC.
   // Cross-region updates write the RAMs but clear validity, preventing a
   // high-canonical Sv39 target from becoming a low address. The independent
-  // direction predictor still trains. Conditional branches, JAL, and
-  // return-typed JALR instructions (including coroutine swaps) train the BTB.
+  // direction predictor still trains. Conditional branches, JALs, and JALRs
+  // train the BTB.
   wire update_target_region_predictable =
       i_update_target[XLEN-1:TargetBits] == i_update_pc[XLEN-1:TargetBits];
   wire [TargetBits-1:0] update_target_stored = i_update_target[TargetBits-1:0];
