@@ -289,11 +289,11 @@ async def test_commit_mispredict_jal_updates_btb(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_commit_mispredict_jalr_redirects_without_btb_update(dut: Any) -> None:
-    """A JALR that is not a return redirects but does not train the BTB.
+async def test_commit_mispredict_jalr_updates_btb(dut: Any) -> None:
+    """A JALR that is not a return trains the BTB with its target.
 
-    That covers an indirect jump and an indirect call alike: only a return's
-    target comes from the return address stack.
+    That covers an indirect jump and an indirect call alike; the call is typed
+    so that a later hit pushes the return address stack.
     """
     await _setup_test(dut)
 
@@ -316,7 +316,10 @@ async def test_commit_mispredict_jalr_redirects_without_btb_update(dut: Any) -> 
 
         assert output["branch_taken"]
         assert output["branch_target_address"] == 0x700
-        assert not output["btb_update"]
+        _assert_btb_update(
+            output, pc=0x600, target=0x710, taken=True, compressed=False, call=call
+        )
+        _assert_late_btb_candidate(dut, pc=0x600, taken=True)
 
 
 @cocotb.test()
