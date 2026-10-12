@@ -143,11 +143,12 @@ never needs the PC:
 | Fetch-fault pseudo-op | The xtval: the PC, or PC + 2 when only the second halfword of a page-straddling instruction faulted |
 
 A conditional branch also gets `predicted_target_ok`: ID's comparison of its
-target with the prediction, from the same source as `predicted_target` (the
-RAS if it predicted, else the BTB). Branch resolution checks this one bit
-instead of comparing addresses, and a simulation check compares it with the
-full comparison for every dispatched conditional branch predicted taken.
-JALR compares its computed target with `predicted_target` at execute.
+target with the prediction, from the same source as `predicted_target` (PD's
+target after a taken PD redirect, otherwise the RAS if it predicted, else the
+BTB). Branch resolution checks this one bit instead of comparing addresses,
+and a simulation check compares it with the full comparison for every
+dispatched conditional branch predicted taken. JALR compares its computed
+target with `predicted_target` at execute.
 
 The INT station keeps `pc`, `link_addr`, and `predicted_target` in a
 ROB-tag-indexed side RAM for branch resolution and early recovery (see the

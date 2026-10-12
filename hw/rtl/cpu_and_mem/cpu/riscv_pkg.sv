@@ -1696,9 +1696,9 @@ package riscv_pkg;
     logic [RasPtrBits-1:0] ras_checkpoint_tos;
     logic [RasPtrBits:0] ras_checkpoint_valid_count;
     logic [XLEN-1:0] ras_checkpoint_top;
-    // Bimodal prediction, independent of BTB hit. PD can redirect slot 1
-    // when this predicts taken without a taken BTB prediction, regardless
-    // of offset sign. Consumed in PD.
+    // Bimodal prediction, independent of BTB hit, consumed in PD. If no
+    // tagged entry matched (tage_valid low), PD can redirect slot 1 when this
+    // predicts taken without a taken BTB prediction, for either offset sign.
     logic bp_dir_taken;
     // Prediction-time index carried to commit to train the same entry.
     logic [BpDirIdxBits-1:0] bp_dir_idx;

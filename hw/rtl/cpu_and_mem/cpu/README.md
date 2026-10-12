@@ -59,6 +59,9 @@ walker (`mmu/ptw`), and these glue submodules from [`cpu_ooo/`](cpu_ooo/):
   control fields that dispatch reads;
 - a per-ROB-entry table of each branch's predict-time bimodal index, and
   bimodal training at commit;
+- the `tage_history` hookup: the branches PD hands to ID, the registered
+  dispatch allocations, the commit taps, and a simulation check that each
+  committing branch trains from the entry PD saved for it;
 - branch checkpoint bookkeeping: which branch holds each checkpoint, and
   freeing the checkpoints of flushed branches;
 - the registered write enables and addresses for the register-file bypass;
@@ -161,17 +164,24 @@ target into the history. The lookup history follows fetch:
 predicted one, and each redirect restores the history to its point in the
 program. A trap, xRET, FENCE-class flush, or commit-time recovery takes the
 history of the retired instructions. Early recovery or a PD redirect takes the
-branch's own lookup history, plus its target if it is now taken.
+branch's own lookup history, plus its target if it is now taken. A
+served-window resteer, which only variable-latency fetch produces, leaves the
+history unchanged, so when one returns fetch to a branch already predicted
+taken, the branch is looked up again with its own target in the history.
+That costs accuracy, not correctness.
 
 When PD passes a conditional branch to ID, its lookup (indices, tags, which
 tables matched, the alternate direction, and the history) goes to a 64-entry
 circular buffer. Dispatch sees the branches in the same order, so it gives the
 branch the same index from a pointer of its own and records it by ROB tag;
 every flush that drops branches in between rewinds both pointers to the same
-entry. Commit trains from that entry, one branch per cycle with the same slot-2
-hold: the provider's counter moves toward the outcome, and a mispredicted
-branch allocates a weak entry in a longer-history table whose entry is not
-marked useful. Slot-2 branches are trained, though PD overrides only slot 1.
+entry. Commit trains from that entry, one branch per cycle with the same
+slot-2 hold. The provider's counter moves toward the outcome, and when the
+provider and the alternate direction disagree, its usefulness bit records
+whether the provider was right. A mispredicted branch allocates a weak entry
+in the first table above its provider (T1, then T2) whose entry is not useful,
+or clears those usefulness bits when every candidate is useful. Slot-2
+branches are trained, though PD overrides only slot 1.
 
 ### Two-wide fetch and dispatch
 
