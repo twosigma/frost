@@ -257,16 +257,23 @@ namespace eval ::frost_x3_local_placement {
         return [expr {min([slack -to $inputs], [output_slack $c])}]
     }
 
+    # A path without a slack is unconstrained. A register output with no loads
+    # still returns one, ending at the output pin itself.
+    proc timed_hold {args} {
+        set path [get_timing_paths -quiet -delay_type min -max_paths 1 {*}$args]
+        return [expr {[llength $path] == 1 && [string is double -strict [get_property SLACK $path]]}]
+    }
+
     proc hold_slacks {c} {
         set result {}
         if {[get_property REF_NAME $c] eq "FDRE"} {
             foreach pin [lsort [get_pins -of_objects $c -filter {DIRECTION == IN && IS_CLOCK == 0}]] {
-                if {![llength [get_timing_paths -quiet -delay_type min -to $pin -max_paths 1]]} {continue}
+                if {![timed_hold -to $pin]} {continue}
                 dict set result $pin [slack -delay_type min -to $pin]
             }
         }
         set output [get_pins -of_objects $c -filter {DIRECTION == OUT}]
-        if {![llength [get_timing_paths -quiet -delay_type min -through $output -max_paths 1]]} {return {}}
+        if {![timed_hold -through $output]} {return {}}
         dict set result output [slack -delay_type min -through $output]
         return $result
     }
