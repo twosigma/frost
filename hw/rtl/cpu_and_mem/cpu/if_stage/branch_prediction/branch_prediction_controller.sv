@@ -215,10 +215,11 @@ module branch_prediction_controller #(
     output logic [      riscv_pkg::XLEN-1:0] o_ras_checkpoint_top,
 
     // Decoupled bimodal direction, not gated by btb_hit, registered to align
-    // with the prediction metadata carried to PD.  PD redirects a conditional
-    // branch without a taken BTB prediction when this predicts taken (any
-    // offset sign).  The live companions cover a variable-latency response that
-    // collapses the normal lookup lead.
+    // with the prediction metadata carried to PD.  If no tagged-predictor
+    // entry matched, PD redirects a conditional branch without a taken BTB
+    // prediction when this predicts taken (any offset sign).  The live
+    // companions cover a variable-latency response that collapses the normal
+    // lookup lead.
     output logic o_dir_predicted_taken,
     output logic o_dir_predicted_taken_live,
     // o_dir_predicted_taken_live without its slot1_prediction_owned_by_slot2

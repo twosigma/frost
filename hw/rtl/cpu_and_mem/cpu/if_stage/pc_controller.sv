@@ -56,7 +56,8 @@ module pc_controller #(
     input logic            i_branch_taken,
     input logic [XLEN-1:0] i_branch_target,
 
-    // PD redirect: a bimodal-taken branch without a taken BTB prediction
+    // PD redirect: a slot-1 conditional branch whose final direction differs
+    // from the BTB direction fetch followed, to its target or fall-through
     // (from pd_stage)
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,

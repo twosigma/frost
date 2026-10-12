@@ -121,7 +121,7 @@
   <text x="1136" y="158" class="body" text-anchor="end">2-wide decode, dispatch and commit</text>
 
   <rect x="80" y="184" width="672" height="30" rx="8" fill="#1b2a40"/>
-  <text x="416" y="205" class="small center">Prediction: BTB 256 entries · bimodal 1024 × 2b · RAS 8 entries</text>
+  <text x="416" y="205" class="small center">Prediction: BTB 256 entries · bimodal 1024 × 2b · tagged 2 × 1024 · RAS 8 entries</text>
 
   <g id="front-end">
     <rect x="80" y="230" width="208" height="100" rx="12" class="front"/>

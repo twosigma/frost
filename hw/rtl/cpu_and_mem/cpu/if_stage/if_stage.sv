@@ -18,9 +18,10 @@
  * Instruction fetch (IF), the first front-end stage. It cuts up to two
  * instructions per cycle from a 64-bit fetch window. pc_controller keeps the
  * fetch PC (o_pc) and the PC of the emitted packet (pc_reg); branch_prediction
- * holds the BTB, direction predictor, RAS, and prediction metadata;
- * c_extension aligns parcels and keeps the instruction buffer; mmu/immu
- * translates o_pc into the physical addresses of the window's two words.
+ * holds the BTB, the bimodal and tagged direction predictors, the RAS, and
+ * prediction metadata; c_extension aligns parcels and keeps the instruction
+ * buffer; mmu/immu translates o_pc into the physical addresses of the
+ * window's two words.
  *
  * IF needs no RVC decompressor: the predecode sideband carries each parcel's
  * RV64C expansion. PD forms slot 1's instruction from the fields IF passes
