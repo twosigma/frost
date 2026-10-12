@@ -613,13 +613,16 @@ module load_queue #(
   // The primary address feeds local LQ logic and one SQ CAM quarter.
   // Allow replication for fanout; all address copies load on the same edge.
   (* max_fanout = 16 *) logic [XLEN-1:0] sq_check_addr_q;
-  // Identical address copies with the same data and enable, for SQ fanout.
+  // Address copies that load with the primary, for SQ fanout. They hold only
+  // bits [31:3]: the outputs zero bits [63:32], and the SQ reads the byte
+  // offset from the primary.
+  localparam int unsigned SqCheckCopyMsb = riscv_pkg::PhysAddrBits - 1;
   (* dont_touch = "true", keep = "true", max_fanout = 8 *)
-  logic [XLEN-1:0] sq_check_addr_q_b;
+  logic [SqCheckCopyMsb:3] sq_check_addr_q_b;
   (* dont_touch = "true", keep = "true", max_fanout = 8 *)
-  logic [XLEN-1:0] sq_check_addr_q_c;
+  logic [SqCheckCopyMsb:3] sq_check_addr_q_c;
   (* dont_touch = "true", keep = "true", max_fanout = 8 *)
-  logic [XLEN-1:0] sq_check_addr_q_d;
+  logic [SqCheckCopyMsb:3] sq_check_addr_q_d;
   riscv_pkg::mem_size_e sq_check_size_q;
   logic sq_check_is_fp_q;
   logic sq_check_sign_ext_q;
@@ -1625,12 +1628,14 @@ module load_queue #(
 `endif
 
   // Drive registered check payloads even when invalid; the SQ's capture enable
-  // qualifies use. All address copies are identical and canonical_paddr keeps
-  // only physical bits [31:0]. This is safe because faulting loads never probe.
-  // SQ addresses remain full width, so out-of-map stores cannot match.
-  assign o_sq_check_addr_b = riscv_pkg::canonical_paddr(sq_check_addr_q_b);
-  assign o_sq_check_addr_c = riscv_pkg::canonical_paddr(sq_check_addr_q_c);
-  assign o_sq_check_addr_d = riscv_pkg::canonical_paddr(sq_check_addr_q_d);
+  // qualifies use. The four address outputs keep only physical bits [31:0]
+  // and are identical while a probe is staged. This is safe because faulting
+  // loads never probe. SQ addresses remain full width, so out-of-map stores
+  // cannot match. The _b/_c/_d copies supply bits [31:3] and the primary
+  // supplies the byte offset, which the SQ reads only from o_sq_check_addr.
+  assign o_sq_check_addr_b = XLEN'({sq_check_addr_q_b, sq_check_addr_q[2:0]});
+  assign o_sq_check_addr_c = XLEN'({sq_check_addr_q_c, sq_check_addr_q[2:0]});
+  assign o_sq_check_addr_d = XLEN'({sq_check_addr_q_d, sq_check_addr_q[2:0]});
 
   always_comb begin
     o_sq_check_valid   = 1'b0;
@@ -3185,15 +3190,15 @@ module load_queue #(
 
   // Address copies share data and equivalent enables. Preserve them for fanout.
   always_ff @(posedge i_clk) begin
-    if (sq_check_payload_en_b) sq_check_addr_q_b <= sq_check_addr_next;
+    if (sq_check_payload_en_b) sq_check_addr_q_b <= sq_check_addr_next[SqCheckCopyMsb:3];
   end
 
   always_ff @(posedge i_clk) begin
-    if (sq_check_payload_en_c) sq_check_addr_q_c <= sq_check_addr_next;
+    if (sq_check_payload_en_c) sq_check_addr_q_c <= sq_check_addr_next[SqCheckCopyMsb:3];
   end
 
   always_ff @(posedge i_clk) begin
-    if (sq_check_payload_en_d) sq_check_addr_q_d <= sq_check_addr_next;
+    if (sq_check_payload_en_d) sq_check_addr_q_d <= sq_check_addr_next[SqCheckCopyMsb:3];
   end
 
   for (genvar g_sq_size = 0; g_sq_size < MemSizeWidth; g_sq_size++) begin : gen_sq_check_size_ff
@@ -3272,9 +3277,9 @@ module load_queue #(
 `else
   always_ff @(posedge i_clk) begin
     if (sq_check_payload_en) sq_check_addr_q <= sq_check_addr_next;
-    if (sq_check_payload_en_b) sq_check_addr_q_b <= sq_check_addr_next;
-    if (sq_check_payload_en_c) sq_check_addr_q_c <= sq_check_addr_next;
-    if (sq_check_payload_en_d) sq_check_addr_q_d <= sq_check_addr_next;
+    if (sq_check_payload_en_b) sq_check_addr_q_b <= sq_check_addr_next[SqCheckCopyMsb:3];
+    if (sq_check_payload_en_c) sq_check_addr_q_c <= sq_check_addr_next[SqCheckCopyMsb:3];
+    if (sq_check_payload_en_d) sq_check_addr_q_d <= sq_check_addr_next[SqCheckCopyMsb:3];
     if (sq_check_payload_en) begin
       sq_check_idx          <= sq_check_idx_next;
       sq_check_rob_tag_q    <= sq_check_rob_tag_next;
@@ -3584,9 +3589,9 @@ module load_queue #(
     if (i_rst_n) begin
       if (i_alloc.valid && full) $warning("LQ: allocation attempted when full");
       if (sq_check_pending &&
-          ((sq_check_addr_q !== sq_check_addr_q_b) ||
-           (sq_check_addr_q !== sq_check_addr_q_c) ||
-           (sq_check_addr_q !== sq_check_addr_q_d)))
+          ((sq_check_addr_q[SqCheckCopyMsb:3] !== sq_check_addr_q_b) ||
+           (sq_check_addr_q[SqCheckCopyMsb:3] !== sq_check_addr_q_c) ||
+           (sq_check_addr_q[SqCheckCopyMsb:3] !== sq_check_addr_q_d)))
         $error("LQ: phase-identical SQ address anchors diverged");
       // Flush-cycle requests are legal; allocation gates reject them like the ROB.
       if (i_alloc_2.valid && i_alloc.valid && full_for_2)
@@ -3933,9 +3938,9 @@ module load_queue #(
   // Every SQ quarter must see the same address for a live staged probe.
   always_comb begin
     if (i_rst_n && sq_check_pending) begin
-      p_sq_check_addr_b_phase_identity : assert (sq_check_addr_q_b == sq_check_addr_q);
-      p_sq_check_addr_c_phase_identity : assert (sq_check_addr_q_c == sq_check_addr_q);
-      p_sq_check_addr_d_phase_identity : assert (sq_check_addr_q_d == sq_check_addr_q);
+      p_sq_check_addr_b_phase_identity : assert (o_sq_check_addr_b == o_sq_check_addr);
+      p_sq_check_addr_c_phase_identity : assert (o_sq_check_addr_c == o_sq_check_addr);
+      p_sq_check_addr_d_phase_identity : assert (o_sq_check_addr_d == o_sq_check_addr);
     end
   end
 
