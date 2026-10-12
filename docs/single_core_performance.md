@@ -129,5 +129,5 @@ and compressed instructions and PGO off.
 - After RTL changes, check routed timing and run the full hardware regression,
   including Debian.
 
-The next goal is 4 CoreMark/MHz at the same clock, or 250,000 cycles per
+The next goal is 5 CoreMark/MHz at the same clock, or 200,000 cycles per
 CoreMark iteration; see the [roadmap](../ROADMAP.md).
