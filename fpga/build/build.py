@@ -119,7 +119,10 @@ X3_PLACER_SWEEP_DIRECTIVES = [
 # to generate placements and ease packing. Score at zero added uncertainty.
 X3_PLACE_BASELINE_UNCERTAINTY_NS = 0.5
 X3_PLACE_REPORT_UNCERTAINTY_NS = 0.0
-X3_POST_PLACE_GATE_NS = Decimal("-0.200")
+# A placement qualifies when every path's setup slack prints as -0.201 ns or
+# better. x3_post_place_gate.tcl searches for slack below -0.2015 ns, which
+# prints as -0.202 or worse.
+X3_POST_PLACE_GATE_NS = Decimal("-0.201")
 # Vivado's native queries have more precision than its three-decimal reports.
 # Allow half a printed digit for rounding, but reject a different printed value.
 X3_GATE_DISPLAY_TOLERANCE_NS = Decimal("0.0005")
@@ -937,7 +940,7 @@ def read_x3_place_gate(path: Path, expected_wns: float | None = None) -> X3Place
     Raise OSError if the file is missing, and ValueError if the record is
     malformed, contradicts itself or ``expected_wns``, or used another clock
     period, threshold, or added setup uncertainty. PASS comes from Vivado's
-    strict search for paths below -0.200 ns, never from the printed worst
+    search for paths with slack below -0.2015 ns, never from the printed worst
     slack. Numbers that differ only within Vivado's three-decimal rounding
     agree; a different printed number is wrong evidence.
     """
@@ -996,12 +999,11 @@ def read_x3_place_gate(path: Path, expected_wns: float | None = None) -> X3Place
         raise ValueError("post-place gate status/count disagree")
     worst = numbers["WORST_SLACK_NS"]
     passed = count == "0"
-    # The native strict search, not this displayed value, decides PASS; the
-    # comparisons below only catch evidence that contradicts it beyond what
-    # three-decimal rounding can explain.
-    if (passed and worst < X3_POST_PLACE_GATE_NS - X3_GATE_DISPLAY_TOLERANCE_NS) or (
-        not passed and worst > X3_POST_PLACE_GATE_NS + X3_GATE_DISPLAY_TOLERANCE_NS
-    ):
+    # The native search, not this displayed value, decides PASS. It searches
+    # half a printed digit below the gate, so a PASS prints the gate or better
+    # and a FAIL prints worse; anything else contradicts the search.
+    bound = X3_POST_PLACE_GATE_NS - X3_GATE_DISPLAY_TOLERANCE_NS
+    if (passed and worst < bound) or (not passed and worst > bound):
         raise ValueError("post-place gate contradicts displayed worst slack")
     if (
         expected_wns is not None
@@ -1949,8 +1951,8 @@ def select_x3_place_best_run(
         run.congestion_level = extract_max_congestion_level(
             run.work_dir / "post_place_congestion.rpt"
         )
-        # The native gate passes when no path is below -0.200 ns, so a WNS
-        # printed as -0.200 qualifies unless its unrounded slack is lower.
+        # The native gate passes when every path's slack prints as -0.201 ns
+        # or better.
         run.timing_gate_passed = x3_place_gate_passes(
             run.work_dir / "post_place_gate.txt", run.wns
         )

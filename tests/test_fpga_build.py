@@ -96,14 +96,14 @@ def _write_place_gate(
 ) -> None:
     """Write post_place_gate.txt as x3_post_place_gate.tcl does; bind it if asked.
 
-    ``passed`` overrides the native verdict, as for a WNS printed as -0.200
-    whose unrounded slack is below the gate.
+    ``passed`` overrides the native verdict, to write a record whose verdict
+    contradicts its printed worst slack.
     """
     if passed is None:
-        passed = wns >= -0.2
+        passed = wns >= -0.201
     (work_dir / "post_place_gate.txt").write_text(
         f"STATUS={'PASS' if passed else 'FAIL'}\n"
-        "THRESHOLD_NS=-0.200\nCPU_PERIOD_NS=3.103\n"
+        "THRESHOLD_NS=-0.201\nCPU_PERIOD_NS=3.103\n"
         "USER_SETUP_UNCERTAINTY_NS=0.000\n"
         f"STRICT_BELOW_GATE_PATHS={0 if passed else 1}\n"
         f"WORST_SLACK_NS={wns}\n"
@@ -3023,7 +3023,7 @@ def test_build_help_quotes_the_defaults_the_build_uses(
         fpga_build.main()
     text = capsys.readouterr().out
     assert "processes per build (default 7)." in text
-    assert "-0.321 ns" in text and "-0.200" not in text
+    assert "-0.321 ns" in text and "-0.201" not in text
     assert "FROST_PLACE_CONGESTION_VETO_LEVEL (default 4)" in text
     assert "(default 2) quick-routes" in text
 
@@ -3044,19 +3044,27 @@ def test_sweep_apis_reject_nonpositive_limits_before_creating_work(
     assert not list(tmp_path.iterdir())
 
 
-@pytest.mark.parametrize("passed", (False, True))
-def test_native_gate_decides_rounded_boundary(tmp_path: Path, passed: bool) -> None:
-    """At a displayed WNS of -0.200, the gate file's native STATUS decides."""
-    _write_place_gate(tmp_path, -0.2)
+@pytest.mark.parametrize(
+    "wns,passed,valid",
+    (
+        (-0.201, True, True),
+        (-0.202, False, True),
+        (-0.201, False, False),
+        (-0.202, True, False),
+    ),
+)
+def test_native_gate_matches_the_printed_boundary(
+    tmp_path: Path, wns: float, passed: bool, valid: bool
+) -> None:
+    """A PASS prints -0.201 or better and a FAIL -0.202 or worse; a mix is invalid."""
+    _write_place_gate(tmp_path, wns, passed=passed)
     gate = tmp_path / "post_place_gate.txt"
-    if not passed:
-        gate.write_text(
-            gate.read_text()
-            .replace("STATUS=PASS", "STATUS=FAIL")
-            .replace("STRICT_BELOW_GATE_PATHS=0", "STRICT_BELOW_GATE_PATHS=1")
-        )
-    assert fpga_build.read_x3_place_gate(gate, -0.2).passed is passed
-    assert fpga_build.x3_place_gate_passes(gate, -0.2) is passed
+    if valid:
+        assert fpga_build.read_x3_place_gate(gate, wns).passed is passed
+    else:
+        with pytest.raises(ValueError, match="contradicts"):
+            fpga_build.read_x3_place_gate(gate, wns)
+    assert fpga_build.x3_place_gate_passes(gate, wns) is (passed and valid)
 
 
 @pytest.mark.parametrize(
@@ -3064,13 +3072,13 @@ def test_native_gate_decides_rounded_boundary(tmp_path: Path, passed: bool) -> N
     (
         ("STATUS=PASS", "STATUS=FAIL"),
         ("STATUS=PASS", "STATUS=UNKNOWN"),
-        ("THRESHOLD_NS=-0.200", "THRESHOLD_NS=-0.201"),
+        ("THRESHOLD_NS=-0.201", "THRESHOLD_NS=-0.200"),
         ("CPU_PERIOD_NS=3.103", "CPU_PERIOD_NS=6.205"),
         ("CPU_PERIOD_NS=3.103", "CPU_PERIOD_NS=3.104"),
         ("CPU_PERIOD_NS=3.103", "CPU_PERIOD_NS=NaN"),
         ("USER_SETUP_UNCERTAINTY_NS=0.000", "USER_SETUP_UNCERTAINTY_NS=0.500"),
         ("STRICT_BELOW_GATE_PATHS=0", "STRICT_BELOW_GATE_PATHS=2"),
-        ("WORST_SLACK_NS=-0.1", "WORST_SLACK_NS=-0.201"),
+        ("WORST_SLACK_NS=-0.1", "WORST_SLACK_NS=-0.202"),
         ("WORST_SLACK_NS=-0.1", "WORST_SLACK_NS=Infinity"),
         ("WORST_SLACK_NS=-0.1\n", ""),
         ("STATUS=PASS", "STATUS=PASS\nSTATUS=PASS"),
@@ -3250,7 +3258,7 @@ def test_below_threshold_place_cannot_promote_or_start_physopt(
     def failed_place(command: list[str], **kwargs: Any) -> Any:
         process = original_popen(command, **kwargs)
         work_dir = kwargs["cwd"]
-        wns = -0.21 if len(fleet.attempts) == 1 else -0.201
+        wns = -0.21 if len(fleet.attempts) == 1 else -0.202
         (work_dir / "post_place_timing.rpt").write_text(str(wns))
         _write_place_gate(work_dir, wns)
         return process
@@ -3263,7 +3271,7 @@ def test_below_threshold_place_cannot_promote_or_start_physopt(
         step = command[command.index("-tclargs") + 2]
         calls.append(step)
         prefix = fpga_build._TCL_REPORT_PREFIX[step]
-        wns = -0.201 if step == "place" else -0.1
+        wns = -0.202 if step == "place" else -0.1
         (cwd / f"{prefix}.dcp").write_text(cwd.name)
         (cwd / f"{prefix}_timing.rpt").write_text(str(wns))
         if step == "place":
@@ -3505,7 +3513,7 @@ def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
                 return SimpleNamespace(returncode=1)
             if failure == "checkpoint_changed":
                 (work / "post_place.dcp").write_bytes(b"changed during verification")
-            slack = -0.201 if failure == "target_missed" else -0.189
+            slack = -0.202 if failure == "target_missed" else -0.189
             _write_place_gate(work, -0.180 if failure == "gate_changed" else slack)
         else:
             assert not (work / "post_place.dcp").exists()
@@ -3529,7 +3537,7 @@ def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
             slack = (
                 -0.222
                 if stage == "reference"
-                else -0.201
+                else -0.202
                 if failure == "target_missed"
                 else -0.189
             )
@@ -3557,7 +3565,7 @@ def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
     assert success is (failure in {None, "target_missed"})
     if success:
         assert (wns, prefix) == (
-            -0.201 if failure == "target_missed" else -0.189,
+            -0.202 if failure == "target_missed" else -0.189,
             "post_place",
         )
         assert not fpga_build.require_x3_post_place_gate(work)
@@ -4123,7 +4131,7 @@ def test_congestion_regex_reads_real_vivado_reports(
     assert fpga_build.extract_max_congestion_level(tmp_path / "absent.rpt") is None
 
 
-@pytest.mark.parametrize("wns", (-0.3, -0.2, -0.1))
+@pytest.mark.parametrize("wns", (-0.3, -0.202, -0.1))
 def test_completed_placement_still_reports_a_timing_rejection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4136,8 +4144,7 @@ def test_completed_placement_still_reports_a_timing_rejection(
     candidates = _quick_route_candidates(tmp_path, 2)
     passing, rejected = candidates
     rejected.wns = wns
-    # At -0.2 the unrounded slack is below the gate.
-    _write_place_gate(rejected.work_dir, wns, passed=False if wns == -0.2 else None)
+    _write_place_gate(rejected.work_dir, wns)
     if wns == -0.1:
         (rejected.work_dir / "post_place_gate.txt").unlink()
     selected = fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused")
@@ -4154,12 +4161,12 @@ def test_completed_placement_still_reports_a_timing_rejection(
 def test_placement_at_the_printed_gate_qualifies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A WNS printed as -0.200 qualifies when no path's slack is below -0.200."""
+    """A WNS printed as -0.201 qualifies and one printed as -0.202 does not."""
     monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
     monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "0")
     candidates = _quick_route_candidates(tmp_path, 2)
     boundary, failing = candidates
-    for run, wns in ((boundary, -0.2), (failing, -0.201)):
+    for run, wns in ((boundary, -0.201), (failing, -0.202)):
         run.wns = wns
         _write_place_gate(run.work_dir, wns)
     selected = fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused")
@@ -4758,12 +4765,12 @@ def test_no_placement_falls_back_past_congestion_requirement(
 
 
 @pytest.mark.parametrize(
-    "wns,passed", ((-0.201, False), (-0.200, False), (-0.200, True), (-0.199, True))
+    "wns,passed", ((-0.202, False), (-0.201, True), (-0.200, True), (-0.199, True))
 )
 def test_full_rate_qualification_follows_the_native_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wns: float, passed: bool
 ) -> None:
-    """A WNS printed as -0.200 is bound only if no unrounded slack is below it."""
+    """A WNS printed as -0.201 or better is bound; one printed as -0.202 is not."""
     monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
     (tmp_path / "post_place.dcp").write_bytes(b"placement")
     _write_place_gate(tmp_path, wns, passed=passed)

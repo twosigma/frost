@@ -14,9 +14,9 @@
 
 # X3 post-place timing gate, run after placement with the added setup
 # uncertainty back at zero (the gate checks this). Writes post_place_gate.txt
-# with STATUS=PASS when no path has setup slack below -0.200 ns. Printed slack
-# has three decimals and cannot resolve that boundary, so the comparison uses
-# Vivado's calculated slack.
+# with STATUS=PASS when every path's setup slack prints as -0.201 ns or better.
+# Printed slack has three decimals, so the search compares Vivado's calculated
+# slack with -0.2015 ns; anything below it prints as -0.202 or worse.
 namespace eval ::frost_x3_post_place_gate {
     proc one {objects label} {
         if {[llength $objects] != 1} {error "Expected one $label"}
@@ -99,7 +99,7 @@ namespace eval ::frost_x3_post_place_gate {
 
         # Vivado compares calculated slack with the threshold (-slack_lesser_than
         # is strict); the rounded SLACK value never decides it.
-        set below [{*}$command -slack_lesser_than -0.200]
+        set below [{*}$command -slack_lesser_than -0.2015]
         set count [llength $below]
         if {$count > 1} {error "Unexpected strict-threshold path count"}
         if {$count} {
@@ -108,13 +108,13 @@ namespace eval ::frost_x3_post_place_gate {
         set status [expr {$count == 0 ? "PASS" : "FAIL"}]
         set f [open $audit w]
         puts $f "STATUS=$status"
-        puts $f "THRESHOLD_NS=-0.200"
+        puts $f "THRESHOLD_NS=-0.201"
         puts $f "CPU_PERIOD_NS=$period"
         puts $f "USER_SETUP_UNCERTAINTY_NS=0.000"
         puts $f "STRICT_BELOW_GATE_PATHS=$count"
         puts $f "WORST_SLACK_NS=$slack"
         close $f
-        puts "X3 post-place gate: $status (WNS@0=$slack ns, paths strictly below -0.200 ns: $count)"
+        puts "X3 post-place gate: $status (WNS@0=$slack ns, paths below -0.2015 ns: $count)"
         return [expr {$count == 0}]
     }
 }

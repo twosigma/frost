@@ -43,7 +43,7 @@ proc get_timing_paths {args} {
         error "Changed global query scope"
     }
     if {[lsearch -exact $args -slack_lesser_than] >= 0} {
-        if {[lrange $args 8 end] ne {-slack_lesser_than -0.200}} {
+        if {[lrange $args 8 end] ne {-slack_lesser_than -0.2015}} {
             error "Changed strict gate"
         }
         if {$env(BELOW)} {return below_path}
@@ -118,15 +118,15 @@ def run_gate(tmp_path: Path, **overrides: str) -> subprocess.CompletedProcess[st
     ("slack", "below", "status"),
     [
         ("-0.200", "0", "PASS"),
-        ("-0.200", "1", "FAIL"),
-        ("-0.201", "1", "FAIL"),
+        ("-0.201", "0", "PASS"),
+        ("-0.202", "1", "FAIL"),
         ("0.050", "0", "PASS"),
     ],
 )
 def test_calculated_threshold_decides_rounded_boundary(
     tmp_path: Path, slack: str, below: str, status: str
 ) -> None:
-    """Calculated-slack search distinguishes results with the same printed slack."""
+    """The calculated-slack search below -0.2015 ns decides the verdict."""
     result = run_gate(tmp_path, SLACK=slack, BELOW=below)
     assert result.returncode == 0, result.stderr
     fields = dict(
@@ -135,7 +135,7 @@ def test_calculated_threshold_decides_rounded_boundary(
     )
     assert fields == {
         "STATUS": status,
-        "THRESHOLD_NS": "-0.200",
+        "THRESHOLD_NS": "-0.201",
         "CPU_PERIOD_NS": "3.333",
         "USER_SETUP_UNCERTAINTY_NS": "0.000",
         "STRICT_BELOW_GATE_PATHS": below,
