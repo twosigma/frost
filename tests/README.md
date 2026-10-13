@@ -17,6 +17,7 @@ regression run [natively](../fpga/README.md#hardware-regression) instead.
 | [`test_arch_compliance.py`](#test_arch_compliancepy) | riscv-arch-test signatures against Spike references |
 | [`test_riscv_tests.py`](#test_riscv_testspy) | riscv-tests ISA suites and benchmarks |
 | [`test_riscv_torture.py`](#test_riscv_torturepy) | Random RV64IMAFDC programs against Spike references |
+| [`test_testrig.py`](#test_testrigpy) | Random instruction sequences against the Sail RISC-V model, one instruction at a time (TestRIG) |
 | [`test_run_yosys.py`](#test_run_yosyspy) | Portable and Xilinx synthesis |
 | [`test_run_formal.py`](#test_run_formalpy) | Formal proofs |
 | [`net10g/`](net10g/README.md) | Standalone Ethernet MAC/PCS simulation and synthesis |
@@ -231,6 +232,27 @@ To regenerate the corpus and references with the pinned compiler and Spike
 ./scripts/frost.py run python3 sw/apps/riscv_torture/generate_tests.py --generate --count 20 --seed 20260803
 ```
 
+### `test_testrig.py`
+
+Runs [TestRIG](../verif/testrig/README.md): QuickCheckVEngine sends random
+instruction sequences to the Sail RISC-V model and to the simulated SoC over
+RVFI-DII and compares each retired instruction's destination register, store,
+next PC, trap, and privilege mode. The `rvfi_dii` entry of the test registry
+builds the SoC with the simulation-only injection harness, and the image
+provides Sail and the engine.
+
+```bash
+./scripts/frost.py run python3 tests/test_testrig.py
+./scripts/frost.py run python3 tests/test_testrig.py --include '^(mem|pte)$' --tests 500
+./scripts/frost.py run python3 tests/test_testrig.py --trace tests/testrig_failures/failure-<time>.S
+./scripts/frost.py run python3 tests/test_testrig.py --trace-dir verif/testrig/traces
+```
+
+Each run draws new sequences. A mismatch is shrunk to a short counterexample
+in `tests/testrig_failures/`, which `--trace` replays; the logs and the
+engine's coverage table go to `tests/testrig_logs/`. The pytest entry point
+replays the saved counterexamples in `verif/testrig/traces/`.
+
 ### `test_run_yosys.py`
 
 Synthesizes `cpu_and_mem` (the CPU, memory system, and NIC, from
@@ -298,6 +320,7 @@ pinned Docker image:
 | Architecture compliance | BRAM and DDR; excludes Zifencei on BRAM and F/D on DDR; F and D run in BRAM shards |
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both |
 | Torture | BRAM, DDR, and paged DDR |
+| TestRIG | The saved counterexamples, then new random sequences against Sail |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests, synthesis, and formal verification |
 | Linux | Firmware and root filesystem build, and QEMU boot checks |

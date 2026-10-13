@@ -719,15 +719,27 @@ module cpu_and_mem #(
       .o_vld   (commit_vld),
       .o_pc_vld(/*not connected*/),
       // Interrupt and timer interface
+`ifdef FROST_RVFI_DII
+      // TestRIG (hw/sim/frost_rvfi_dii.sv) takes no interrupts.
+      .i_interrupts('0),
+      .i_plic_seip(1'b0),
+`else
       .i_interrupts(interrupts),
       .i_plic_seip(plic_eip[1]),
+`endif
       .i_mtime(mtime),
       .o_debug_irq_status(cpu_debug_irq_status),
       .o_debug_commit_pc(cpu_debug_commit_pc_xlen),
       .o_debug_commit_2_pc(cpu_debug_commit_2_pc_xlen),
       .o_debug_commit_valid(cpu_debug_commit_valid),
-      // Branch prediction enabled by default in production
+      // Branch prediction enabled by default in production. TestRIG
+      // instruction injection requires fetch to stay on the sequential path
+      // between redirects (hw/sim/frost_rvfi_dii.sv).
+`ifdef FROST_RVFI_DII
+      .i_disable_branch_prediction(1'b1),
+`else
       .i_disable_branch_prediction(1'b0),
+`endif
       // Debug module interface
       .i_dbg_haltreq(dbg_haltreq),
       .i_dbg_go(dbg_go),
@@ -758,7 +770,10 @@ module cpu_and_mem #(
   // A leading slot-1 prediction still owes its branch response; slot 2 and
   // non-leading slot 1 have emitted theirs and can retarget. The cached
   // provider also detects unaccepted PC movement and handles recovery,
-  // emitted predictions, resteer, and epoch changes.
+  // emitted predictions, resteer, and epoch changes. TestRIG builds
+  // (FROST_RVFI_DII, simulation only) leave out the cached provider: every
+  // window comes from the injected instruction stream through the low-BRAM
+  // presenter, and the cached tier still serves data.
   if (FETCH_VALID_FUZZ != 0) begin : gen_fetch_fuzz
     logic [15:0] lfsr_q;
     logic [ 2:0] gap_cnt_q;  // forced multi-cycle gaps
@@ -850,7 +865,11 @@ module cpu_and_mem #(
         else if (lfsr_q[7:3] == 5'b00000) gap_cnt_q <= {1'b1, lfsr_q[9:8]};
       end
     end
+`ifdef FROST_RVFI_DII
+  end else if (1'b0) begin : gen_fetch_provider
+`else
   end else if (ENABLE_CACHED_TIER != 0) begin : gen_fetch_provider
+`endif
     // Register the provider select to match the memory read latency.
     // Low overlay hits respond in one cycle; other low windows repeat once.
     // High windows wait for L1I.
@@ -1437,6 +1456,82 @@ module cpu_and_mem #(
       (i_instr_mem_en ? (|i_instr_mem_we) : slice_imem_we);
   assign prog_port_dmem_we = i_instr_mem_en ? i_instr_mem_we : {4{slice_dmem_we}};
 
+`ifdef FROST_RVFI_DII
+  // TestRIG RVFI-DII harness (simulation only, hw/sim/frost_rvfi_dii.sv): it
+  // serves instruction fetch from the injected stream in place of the
+  // instruction memory, records each retired or trapped instruction, and
+  // stands in for the devices. It reads the core's retirement, redirect, and
+  // memory-write signals hierarchically.
+  logic [riscv_pkg::MemDataBits-1:0] rvfi_dii_device_read_data;
+  frost_rvfi_dii u_rvfi_dii (
+      .i_clk,
+      .i_rst(rst_core),
+      .i_fetch_address(fetch_address),
+      .i_fetch_parity(fetch_pa_word0[2]),
+      .o_fetch_data(bram_fetch_instr),
+      .o_fetch_data_by_parity(bram_fetch_instr_by_parity),
+      .o_fetch_sideband(bram_fetch_sideband),
+      .o_fetch_pc_metadata(bram_fetch_pc_metadata),
+      .o_fetch_pc_metadata_by_parity(bram_fetch_pc_metadata_by_parity),
+      .o_fetch_pc_pairability_by_parity(bram_fetch_pc_pairability_by_parity),
+      .o_fetch_slot2_start_valid_lo_by_parity(bram_fetch_slot2_start_valid_lo_by_parity),
+      .o_fetch_bank_sel_r(bram_fetch_bank_sel_r),
+      .i_npc_sel(cpu_inst.if_stage_inst.pc_controller_inst.npc_sel),
+      .i_pc_update_en(cpu_inst.if_stage_inst.pc_controller_inst.pc_update_en),
+      .i_trap_redirect_pc(cpu_inst.if_stage_inst.pc_controller_inst.npc_val[1]),
+      .i_fence_redirect_pc(cpu_inst.if_stage_inst.pc_controller_inst.npc_val[2]),
+      .i_branch_redirect_pc(cpu_inst.if_stage_inst.pc_controller_inst.npc_val[3]),
+      .i_pd_redirect_pc(cpu_inst.if_stage_inst.pc_controller_inst.npc_val[4]),
+      .i_pd_branch_pc(cpu_inst.from_pd_to_id.program_counter),
+      .i_early_mispredict_active(cpu_inst.early_mispredict_active),
+      .i_early_mispredict_tag(cpu_inst.early_mispredict_tag),
+      .i_rob_head_ptr(cpu_inst.u_tomasulo.u_rob.head_ptr),
+      .i_commit(cpu_inst.rob_commit_comb),
+      .i_commit_valid(cpu_inst.rob_commit_valid_raw),
+      .i_commit_2(cpu_inst.rob_commit_comb_2),
+      .i_commit_2_valid(cpu_inst.rob_commit_2_valid_raw),
+      .i_xret_taken(cpu_inst.xret_taken),
+      .i_xret_pc(cpu_inst.rob_trap_pc),
+      .i_xret_target(cpu_inst.mret_start_is_dret ? cpu_inst.csr_dpc :
+                     cpu_inst.mret_start_is_sret ? cpu_inst.csr_sepc : cpu_inst.csr_mepc),
+      .i_trap_taken(cpu_inst.trap_taken),
+      .i_trap_no_csr(cpu_inst.trap_no_csr),
+      .i_trap_to_d(cpu_inst.trap_to_d),
+      .i_trap_cause(cpu_inst.trap_cause_internal),
+      .i_trap_pc(cpu_inst.trap_pc_internal),
+      .i_trap_target(cpu_inst.trap_entry_target),
+      .i_priv(cpu_inst.csr_priv),
+      .i_csr_wb_pending(cpu_inst.commit_actions_inst.csr_wb_pending),
+      .i_csr_wb_data(cpu_inst.commit_actions_inst.csr_read_data),
+      .i_sq_commit_valid(cpu_inst.u_tomasulo.sq_commit_valid),
+      .i_sq_commit_valid_2(cpu_inst.u_tomasulo.sq_commit_valid_2),
+      .i_sq_write_en(cpu_inst.sq_mem_write_en),
+      .i_sq_write_addr(cpu_inst.sq_mem_write_addr),
+      .i_sq_write_data(cpu_inst.sq_mem_write_data),
+      .i_sq_write_strb(cpu_inst.sq_mem_write_byte_en),
+      .i_amo_write_en(cpu_inst.amo_mem_write_en),
+      .i_amo_write_addr(cpu_inst.amo_mem_write_addr),
+      .i_amo_write_data(cpu_inst.amo_mem_write_data),
+      .i_amo_write_is_dword(cpu_inst.amo_mem_write_is_dword),
+      .i_dev_read_addr(mmio_load_addr),
+      .i_dev_read_capture(mmio_read_capture),
+      .o_dev_read_data(rvfi_dii_device_read_data),
+      .i_dev_write_en(|data_memory_byte_write_enable && (data_memory_address[31:30] == 2'b01)),
+      .i_dev_write_addr(data_memory_address),
+      .i_dev_write_data(data_memory_write_data),
+      .i_dev_write_strb(data_memory_byte_write_enable)
+  );
+  // Every injected window is ready in one cycle.
+  assign bram_fetch_window_overlay_hit = 1'b1;
+  assign bram_fetch_response_ready = 1'b1;
+  // Each TestRIG test starts from zeroed memory: clear the low BRAM data copy
+  // in reset (the DDR model and the harness RAM clear themselves).
+  always @(posedge i_clk) begin
+    if (rst_core) begin
+      for (int i = 0; i < 2 ** MemDwordAddrWidth; i++) data_memory.memory[i] = '0;
+    end
+  end
+`else
   // Instruction memory: code-region words with write-time predecode bits.
   // Fetches above this region carry an access fault, so aliased data cannot
   // execute. Port A programs on div4; port B fetches on the main clock.
@@ -1470,6 +1565,7 @@ module cpu_and_mem #(
       .o_port_b_response_ready(bram_fetch_response_ready),
       .o_port_b_bank_sel_r(bram_fetch_bank_sel_r)
   );
+`endif
 
   // Local copy of imem_predecode.bank_sel_r, for fanout. Virtual served tags
   // and fault flags register beside it; validity remains with the presenter.
@@ -1481,10 +1577,22 @@ module cpu_and_mem #(
     bram_fetch_served_last_word_q <= fetch_address[31:2] + 1'b1;
     bram_fetch_served_prev_word_q <= fetch_address[31:2] - 1'b1;
     bram_fetch_served_prev_word_valid_q <= |fetch_address[31:2];
+`ifdef FROST_RVFI_DII
+    // TestRIG: injected instructions need no memory, and the reference model
+    // checks only translation for them, so drop instruction access faults
+    // and keep page faults. This also drops the access fault of an
+    // instruction page-table walk that reads outside DDR, which the default
+    // TestRIG templates never produce.
+    bram_fetch_fault0_q <= fetch_word0_fault && fetch_word0_fault_page;
+    bram_fetch_fault0_page_q <= fetch_word0_fault_page;
+    bram_fetch_fault1_q <= fetch_word1_fault && fetch_word1_fault_page;
+    bram_fetch_fault1_page_q <= fetch_word1_fault_page;
+`else
     bram_fetch_fault0_q <= fetch_word0_fault;
     bram_fetch_fault0_page_q <= fetch_word0_fault_page;
     bram_fetch_fault1_q <= fetch_word1_fault;
     bram_fetch_fault1_page_q <= fetch_word1_fault_page;
+`endif
   end
 
 `ifndef SYNTHESIS
@@ -2035,7 +2143,13 @@ module cpu_and_mem #(
   always_ff @(posedge i_clk) begin
     data_memory_address_registered <= data_memory_address;
     data_memory_read_enable_registered <= rst_core ? 1'b0 : data_memory_read_enable;
+`ifdef FROST_RVFI_DII
+    // TestRIG: device-quadrant stores go to frost_rvfi_dii's RAM, not to the
+    // devices.
+    data_memory_byte_write_enable_registered <= '0;
+`else
     data_memory_byte_write_enable_registered <= rst_core ? '0 : data_memory_byte_write_enable;
+`endif
     data_memory_write_data_registered <= data_memory_write_data;
   end
 
@@ -2135,6 +2249,13 @@ module cpu_and_mem #(
         .Q (mmio_read_data_reg[g_mmio_read_data]),
         .R (1'b0)
     );
+  end
+`elsif FROST_RVFI_DII
+  // TestRIG: device-quadrant loads read frost_rvfi_dii's RAM.
+  always_ff @(posedge i_clk) begin
+    if (mmio_read_capture) begin
+      mmio_read_data_reg <= rvfi_dii_device_read_data;
+    end
   end
 `else
   always_ff @(posedge i_clk) begin

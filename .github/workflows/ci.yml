@@ -439,6 +439,54 @@ jobs:
             python3 tests/test_riscv_torture.py --all \
               --mem-config ${{ matrix.mem_config }} ${{ matrix.paged && '--paged' || '' }}
 
+  # TestRIG: QuickCheckVEngine runs instruction sequences on the Sail RISC-V
+  # model and on the simulated SoC and compares every retired instruction
+  # (tests/test_testrig.py). The saved counterexamples replay first; then each
+  # run draws new random sequences. A mismatch is shrunk to a short
+  # counterexample in the uploaded artifact, which --trace replays.
+  test-testrig:
+    name: TestRIG (FROST vs Sail)
+    runs-on: ubuntu-26.04
+    needs: build-docker
+    timeout-minutes: 120
+    env:
+      FROST_SKIP_SUBMODULE_INIT: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
+
+      - name: Replay the saved TestRIG counterexamples
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --trace-dir verif/testrig/traces --continue-on-fail
+
+      - name: Compare FROST with Sail on random instruction sequences
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --continue-on-fail
+
+      - name: Upload TestRIG counterexamples and logs
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: testrig-results
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            tests/testrig_failures/
+            tests/testrig_logs/
+
   # Yosys synthesis.
   test-synthesis:
     name: Yosys Synthesis Check

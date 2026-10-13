@@ -39,6 +39,11 @@
  * hardware, the array keeps its contents across CPU resets; the caches
  * invalidate on reset, so after a reset the CPU sees the array's contents
  * rather than stale lines.
+ *
+ * TestRIG builds (FROST_RVFI_DII, see hw/sim/frost_rvfi_dii.sv) instead keep
+ * a sparse array that reads zero where nothing was written and clears on
+ * reset, since every test starts from zeroed memory. That lets
+ * DDR_MODEL_BYTES cover the whole cached region without aliasing.
  */
 module axi_behavioral_memory #(
     parameter int unsigned LINE_BYTES = 32,
@@ -90,9 +95,21 @@ module axi_behavioral_memory #(
   localparam int unsigned SlotBits = (NUM_SLOTS > 1) ? $clog2(NUM_SLOTS) : 1;
   localparam int unsigned OrderBits = SlotBits + 1;  // issue sequence numbers
 
+`ifdef FROST_RVFI_DII
+  bit [31:0] memory[int unsigned];
+  // A completing write is staged on the rising edge and applied on the
+  // falling edge, so a read completing on the same rising edge still sees the
+  // old data, as with the dense array's nonblocking write.
+  logic dii_write_valid_q;
+  logic [31:0] dii_write_addr_q;
+  logic [LINE_BYTES*8-1:0] dii_write_data_q;
+  logic [LINE_BYTES-1:0] dii_write_strb_q;
+`else
   logic [31:0] memory[NumWords];
+`endif
 
 `ifndef YOSYS
+`ifndef FROST_RVFI_DII
   // Image load, simulation only: Yosys cannot elaborate $fopen, and this
   // module is never instantiated in a synthesized configuration.
   initial begin
@@ -106,6 +123,7 @@ module axi_behavioral_memory #(
       end
     end
   end
+`endif
 `endif
 
   // ---- Latency jitter LFSR (free-running; see LATENCY_JITTER / REORDER) ------
@@ -263,6 +281,25 @@ module axi_behavioral_memory #(
     end
   end
 
+`ifdef FROST_RVFI_DII
+  always @(negedge i_clk) begin
+    if (i_rst) begin
+      memory.delete();
+    end else if (dii_write_valid_q) begin
+      for (int unsigned w = 0; w < WordsPerLine; w++) begin
+        int unsigned word_index;
+        bit [31:0] word;
+        word_index = ((dii_write_addr_q & (MEM_BYTES - 1)) >> 2) + w;
+        word = memory.exists(word_index) ? memory[word_index] : '0;
+        for (int unsigned b = 0; b < 4; b++) begin
+          if (dii_write_strb_q[w*4+b]) word[b*8+:8] = dii_write_data_q[(w*32)+(b*8)+:8];
+        end
+        memory[word_index] = word;
+      end
+    end
+  end
+`endif
+
   // ---- Read channel -------------------------------------------------------------
   // Data is read at completion time (the cycle R is first presented) and held
   // while the master withholds rready.
@@ -373,7 +410,13 @@ module axi_behavioral_memory #(
       w_q_valid      <= '0;
       wr_seq_q       <= '0;
       b_presenting_q <= 1'b0;
+`ifdef FROST_RVFI_DII
+      dii_write_valid_q <= 1'b0;
+`endif
     end else begin
+`ifdef FROST_RVFI_DII
+      dii_write_valid_q <= 1'b0;
+`endif
       for (int s = 0; s < int'(NUM_SLOTS); s++) begin
         if (wr_valid_q[s] && wr_lat_q[s] != 16'd0) wr_lat_q[s] <= wr_lat_q[s] - 1'b1;
       end
@@ -423,6 +466,12 @@ module axi_behavioral_memory #(
           b_presenting_q       <= 1'b0;
         end
       end else if (wr_pick_valid) begin
+`ifdef FROST_RVFI_DII
+        dii_write_valid_q <= 1'b1;
+        dii_write_addr_q  <= wr_addr_q[wr_pick];
+        dii_write_data_q  <= wr_data_q[wr_pick];
+        dii_write_strb_q  <= wr_strb_q[wr_pick];
+`else
         for (int unsigned w = 0; w < WordsPerLine; w++) begin
           for (int unsigned b = 0; b < 4; b++) begin
             if (wr_strb_q[wr_pick][w*4+b]) begin
@@ -431,6 +480,7 @@ module axi_behavioral_memory #(
             end
           end
         end
+`endif
         b_slot_q       <= wr_pick;
         b_presenting_q <= 1'b1;
       end

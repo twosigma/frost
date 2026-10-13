@@ -1978,10 +1978,13 @@ module if_stage #(
   assign o_from_if_to_pd.fetch_fault_hi = fetch_fault_effective[0];
 
 `ifndef SYNTHESIS
+`ifndef FROST_RVFI_DII
   // With translation off, the fault flag must equal the PMA check of the
   // packet PC whenever the packet is real, not replayed, and its current word
   // came from the live window rather than the buffer. A straddle into an
-  // unmapped word is the one extra fault case, so it is excluded.
+  // unmapped word is the one extra fault case, so it is excluded. TestRIG
+  // builds (hw/sim/frost_rvfi_dii.sv) drop instruction access faults on
+  // purpose, so the check does not apply there.
   always_ff @(posedge i_clk) begin
     if (!i_pipeline_ctrl.reset && !i_fetch_translation_active && i_instr_valid && !sel_nop &&
         !replay_saved_if_outputs && !use_instr_buffer && !slot1_straddles && !$isunknown(
@@ -1997,6 +2000,7 @@ module if_stage #(
         );
     end
   end
+`endif
 `endif
 
   // ===========================================================================

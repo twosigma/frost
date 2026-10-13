@@ -2076,8 +2076,16 @@ module cpu_ooo #(
       // WFI wake: any raw pending interrupt, or Debug Mode or an armed single
       // step, where WFI executes as a nop (interrupts are masked there, so a
       // real wait would deadlock the debugger).
+`ifdef FROST_RVFI_DII
+      // TestRIG (hw/sim/frost_rvfi_dii.sv): interrupts are off, so WFI always
+      // completes, as the reference model's does, and misaligned accesses
+      // trap whatever mtvec holds.
+      .i_interrupt_pending(1'b1),
+      .i_trap_misaligned_accesses(1'b1),
+`else
       .i_interrupt_pending(interrupt_pending || csr_debug_mode || step_armed_q),
       .i_trap_misaligned_accesses(csr_mtvec_traps_misaligned),
+`endif
 
       // Flush
       .i_flush_en(flush_en),
@@ -3806,8 +3814,15 @@ module cpu_ooo #(
       .i_mideleg_s(csr_mideleg_s),
       .i_medeleg(csr_medeleg),
       .i_priv(csr_priv),
+`ifdef FROST_RVFI_DII
+      // TestRIG: no interrupt is ever taken, including the supervisor ones
+      // that mip writes can raise.
+      .i_interrupts('0),
+      .i_s_pending('0),
+`else
       .i_interrupts(i_interrupts),
       .i_s_pending(csr_s_pending),
+`endif
       // Exception from the ROB head. i_pipeline_stall does not gate the trap
       // unit's exception latch, so mask the exception over the same T+1/T+2
       // window; otherwise a stale younger exception could survive the full
