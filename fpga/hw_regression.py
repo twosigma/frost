@@ -84,7 +84,7 @@ from sweep_coremark_pro import (  # noqa: E402
 # memory-sensitive CoreMark-PRO throughput does not scale linearly with CPU
 # frequency.
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
-    "x3": {"coremark": 1270.11, "coremark_pro": 90.58},
+    "x3": {"coremark": 1374.88, "coremark_pro": 91.15},
 }
 
 # FROST is cycle-deterministic; only DDR refresh adds sub-percent score jitter.

@@ -7,7 +7,7 @@ SystemVerilog. It implements RV64GCB with machine, supervisor, and user modes
 and Sv39 virtual memory. On an AMD Alveo X3522PV it runs at 322 MHz and boots
 Debian 13 with Debian's unmodified riscv64 kernel, mounting its root
 filesystem over NFS through its own 10 Gigabit Ethernet NIC. It runs CoreMark
-at 3.94 CoreMark/MHz, which gives 1,270 CoreMark at 322 MHz.
+at 4.27 CoreMark/MHz, which gives 1,375 CoreMark at 322 MHz.
 
 [![FROST architecture: two-wide out-of-order CPU, Sv39 translation, X3 cache hierarchy, and system peripherals](docs/diagrams/frost-architecture.svg)](docs/diagrams/frost-architecture.svg)
 
@@ -162,19 +162,19 @@ See the [board guide](boards/README.md) for pinouts, clocking, and adding a boar
 
 ### FPGA Resource Utilization
 
-**Alveo X3522PV** (Virtex UltraScale+ @ 322 MHz; `Quick`/0.325 + MEDIUM CELL_BLOAT_FACTOR on `*u_tomasulo/u_int_rs` + MEDIUM CELL_BLOAT_FACTOR on `*u_tomasulo/u_mem_rs/rs_src2_value*` post-place report)
+**Alveo X3522PV** (Virtex UltraScale+ @ 322 MHz; post-route report)
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 159,362 | 1,029,600 | 15.5% |
-|   LUT as Logic | 141,067 | 1,029,600 | 13.7% |
-|   LUT as Distributed RAM | 17,560 | — | — |
+| CLB LUTs | 164,531 | 1,029,600 | 16.0% |
+|   LUT as Logic | 145,078 | 1,029,600 | 14.1% |
+|   LUT as Distributed RAM | 18,718 | — | — |
 |   LUT as Shift Register | 735 | — | — |
-| CLB Registers | 101,050 | 2,059,200 | 4.9% |
+| CLB Registers | 103,332 | 2,059,200 | 5.0% |
 | Block RAM Tile | 263 | 2,112 | 12.4% |
 | URAM | 68 | 352 | 19.3% |
 | DSPs | 27 | 1,320 | 2.0% |
-| CARRY8 | 1,951 | 128,700 | 1.5% |
+| CARRY8 | 1,997 | 128,700 | 1.6% |
 | F7 Muxes | 1,970 | 514,800 | 0.4% |
 | F8 Muxes | 930 | 257,400 | 0.4% |
 | Bonded IOB | 132 | 364 | 36.3% |
