@@ -2,12 +2,12 @@
 
 ## Single-core performance
 
-FROST runs CoreMark at 4.27 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
-The next goal is 5 CoreMark/MHz at 322.265625 MHz, or 1,611 CoreMark on one
-hart. A score counts only from a run of at least ten seconds that passes the
-CRC checks for both official seed sets, with the compiler flags, the `sw.bin`
-hash, and memory and cache settings recorded. RTL changes must also keep
-routed timing at the target clock.
+FROST runs CoreMark at 4.27 CoreMark/MHz, 1,375 CoreMark at 322.265625 MHz,
+past the goal of 4 CoreMark/MHz. The next goal is 5 CoreMark/MHz at the same
+clock, or 1,611 CoreMark on one hart. A score counts only from a run of at
+least ten seconds that passes the CRC checks for both official seed sets, with
+the compiler flags, the `sw.bin` hash, and memory and cache settings recorded.
+RTL changes must also keep routed timing at the target clock.
 
 The RV64 core must also match or beat FROST's earlier RV32 configuration,
 tuned the same way, in cycle-exact simulation. The
