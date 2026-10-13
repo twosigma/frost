@@ -8,8 +8,11 @@ Around it sit 256 KiB of on-chip BRAM, a three-cache hierarchy over 1 GiB of
 DDR, a PLIC, a RISC-V debug module, and a 10GBASE-R NIC.
 
 The RTL is portable. Defining `FROST_XILINX_PRIMS` selects explicit Xilinx
-primitives in a few modules. Board integration lives in `boards/` and
-`fpga/`, and `frost.f` lists every source in compilation order.
+primitives in a few modules. `FROST_RVFI_DII`, for simulation only, builds
+the [TestRIG](../../verif/testrig/README.md) variant, which runs an injected
+instruction stream and reports every retired instruction. Board integration
+lives in `boards/` and `fpga/`, and `frost.f` lists every source in
+compilation order.
 
 ## Top-Level Shape
 

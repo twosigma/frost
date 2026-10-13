@@ -12,6 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# TestRIG's random instruction generator, QuickCheckVEngine
+# (tests/test_testrig.py), builds in its own stage so the Haskell toolchain
+# stays out of the image. Ubuntu supplies GHC and cabal; the Hackage index
+# state fixes the versions of the engine's library dependencies.
+FROM ubuntu:26.04 AS qcvengine
+ARG GHC_VERSION=9.10.3
+ARG QCVENGINE_COMMIT=5e15965a819ca1be9f14d2e8e319e98fd89a557f
+ARG QCVENGINE_HACKAGE_INDEX_STATE=2026-10-01T00:00:00Z
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates git ghc cabal-install libgmp-dev libffi-dev libnuma-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && ghc --numeric-version | grep -Fx "${GHC_VERSION}"
+RUN git clone https://github.com/CTSRD-CHERI/QuickCheckVEngine.git /tmp/qcvengine \
+    && cd /tmp/qcvengine \
+    && git checkout ${QCVENGINE_COMMIT} \
+    && cabal update --index-state=${QCVENGINE_HACKAGE_INDEX_STATE} \
+    && cabal build --index-state=${QCVENGINE_HACKAGE_INDEX_STATE} QCVEngine \
+    && install -D -m 0755 "$(cabal list-bin QCVEngine)" /opt/qcvengine/QCVEngine \
+    && install -D -m 0644 LICENSE /opt/qcvengine/LICENSE
+
 # Development and CI image. The core tools use pinned upstream releases.
 FROM ubuntu:26.04
 
@@ -357,6 +377,29 @@ RUN curl -fL -o /tmp/node.tar.xz https://nodejs.org/dist/v${NODE_VERSION}/node-v
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
     && rm /tmp/node.tar.xz \
     && npm install --global --ignore-scripts "npm@${NPM_VERSION}"
+
+# TestRIG (tests/test_testrig.py): the Sail RISC-V model's release build,
+# whose sail_riscv_sim serves RVFI-DII with --rvfi-dii, and QuickCheckVEngine
+# from the stage above. verif/testrig/sail_frost.json configures Sail for
+# FROST. The engine links against libgmp, libffi, and libnuma from the apt
+# layers; the ldd check fails the build if one goes missing.
+ARG SAIL_RISCV_VERSION=0.15
+ARG SAIL_RISCV_SHA256=8bb3626a6ce5d45c1d1fa7b907f9d9602cc23270883e470db5d6401f26a2e143
+RUN curl -fL -o /tmp/sail-riscv.tar.gz \
+        https://github.com/riscv/sail-riscv/releases/download/${SAIL_RISCV_VERSION}/sail-riscv-Linux-x86_64.tar.gz \
+    && echo "${SAIL_RISCV_SHA256}  /tmp/sail-riscv.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/sail-riscv.tar.gz -C /tmp \
+    && install -m 0755 /tmp/sail-riscv-Linux-x86_64/bin/sail_riscv_sim /usr/local/bin/ \
+    && mkdir -p /usr/local/share/doc/sail-riscv \
+    && cp /tmp/sail-riscv-Linux-x86_64/share/doc/sail-riscv/*LICENSE* \
+        /tmp/sail-riscv-Linux-x86_64/share/doc/sail-riscv/*COPYRIGHT* \
+        /tmp/sail-riscv-Linux-x86_64/share/doc/sail-riscv/copyright \
+        /usr/local/share/doc/sail-riscv/ \
+    && sail_riscv_sim --version | grep -Fx "${SAIL_RISCV_VERSION}" \
+    && rm -rf /tmp/sail-riscv*
+COPY --from=qcvengine /opt/qcvengine/QCVEngine /usr/local/bin/QCVEngine
+COPY --from=qcvengine /opt/qcvengine/LICENSE /usr/local/share/doc/qcvengine/LICENSE
+RUN ! ldd /usr/local/bin/QCVEngine | grep -F "not found"
 
 # Buildroot rejects Ubuntu 26.04's uutils install (upstream issue #12166).
 # GNU install is supplied by coreutils alongside it; select that implementation

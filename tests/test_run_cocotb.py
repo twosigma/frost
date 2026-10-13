@@ -44,6 +44,10 @@ import pytest
 import cocotb
 
 SW_APPS_DIR = Path(__file__).resolve().parent.parent / "sw" / "apps"
+# Simulation-only TestRIG harness, compiled into the rvfi_dii build only.
+RVFI_DII_HARNESS = (
+    Path(__file__).resolve().parent.parent / "hw" / "sim" / "frost_rvfi_dii.sv"
+)
 sys.path.insert(0, str(SW_APPS_DIR))
 try:
     from software_registry import (
@@ -912,6 +916,24 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         include_in_pytest=False,
         extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
         verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
+    ),
+    # The SoC as a TestRIG RVFI-DII implementation (hw/sim/frost_rvfi_dii.sv).
+    # It waits for a verification engine to connect, so only
+    # tests/test_testrig.py runs it, beside the Sail model and the engine.
+    "rvfi_dii": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_rvfi_dii",
+        hdl_toplevel_module="frost",
+        description=(
+            "TestRIG RVFI-DII server, run against the Sail model by "
+            "tests/test_testrig.py"
+        ),
+        include_in_pytest=False,
+        verilator_extra_args=(
+            "+define+FROST_RVFI_DII",
+            str(RVFI_DII_HARNESS),
+            # The harness's sparse DDR model covers the whole cached region.
+            "-GDDR_MODEL_BYTES=1073741824",
+        ),
     ),
     # Unit benches (no application), starting with the Tomasulo back end
     "reorder_buffer": CocotbRunConfig(

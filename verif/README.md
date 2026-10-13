@@ -4,9 +4,12 @@ This directory holds the Python side of FROST's simulation tests: the cocotb
 benches in `cocotb_tests/` and the models and encoders they share.
 Block benches drive one RTL module and check it against independent models
 and assertions. Application tests compile a program from `sw/apps/`, run it
-on the whole SoC, and read its result from the UART. The runners in
-[`tests/`](../tests/README.md) build the RTL with Verilator and launch these
-benches; that README covers commands, memory tiers, the ISA suites, and CI.
+on the whole SoC, and read its result from the UART.
+[TestRIG](testrig/README.md) runs random instruction sequences on the SoC and
+on the Sail RISC-V model and compares them one retired instruction at a time.
+The runners in [`tests/`](../tests/README.md) build the RTL with Verilator and
+launch these benches; that README covers commands, memory tiers, the ISA
+suites, and CI.
 
 ## Architecture
 
@@ -20,6 +23,10 @@ flowchart LR
     UART --> Pass[Application pass/fail]
     UART --> Signatures[Signature comparison]
     Spike[Committed Spike references] --> Signatures
+    Engine[TestRIG instruction sequences] --> RTL
+    Engine --> Sail[Sail RISC-V model]
+    RTL --> Compare[Per-instruction comparison]
+    Sail --> Compare
 ```
 
 Signature suites compare architectural results with Spike references
@@ -29,10 +36,11 @@ committed to the repository, so Spike is needed only to regenerate them.
 
 | Path | Purpose |
 |------|---------|
-| `cocotb_tests/` | Block benches, directed CPU tests, application harness |
+| `cocotb_tests/` | Block benches, directed CPU tests, application harness, TestRIG's RVFI-DII server |
 | `models/` | Integer, floating-point, and memory models |
 | `encoders/` | Instruction encoders and operation tables |
 | `utils/` | Memory-access helpers, data types, struct packing, assertions |
+| [`testrig/`](testrig/README.md) | TestRIG support: RVFI-DII packets, the reset preamble, the Sail configuration, and saved counterexamples |
 | `config.py` | Constants (`XLEN=64`) and configurable DUT signal paths |
 | `verification_types.py` | Shared `NewType` wrappers |
 

@@ -26,7 +26,9 @@ The diagram shows the X3 configuration; click it for the full-size version.
   programming and loading the board.
 - Continuous testing against the RISC-V architecture tests and random
   riscv-torture programs, with Spike as the reference, plus the riscv-tests
-  suites and unit benches for the hardware blocks.
+  suites and unit benches for the hardware blocks. TestRIG compares FROST
+  with the Sail RISC-V model one instruction at a time, on random instruction
+  sequences drawn anew on every run.
 - Hand-written SystemVerilog rather than RTL generated from Chisel or
   SpinalHDL, with optional Xilinx primitives and board integration kept
   separate.
@@ -201,11 +203,12 @@ to stop at the first failing phase.
 
 CI runs on pushes and pull requests to `main`. It runs the RISC-V
 architecture tests and riscv-torture programs against Spike reference
-results, the riscv-tests suites, unit benches for the CPU and SoC blocks,
-full programs from on-chip BRAM and from cached DDR, formal proofs, synthesis
-checks, the Ethernet MAC/PCS benches, and QEMU boots of the Linux images. The
-[test guide](tests/README.md#ci-integration) has the details and the commands
-for each suite.
+results, the riscv-tests suites, TestRIG's instruction-by-instruction
+comparison with the Sail RISC-V model, unit benches for the CPU and SoC
+blocks, full programs from on-chip BRAM and from cached DDR, formal proofs,
+synthesis checks, the Ethernet MAC/PCS benches, and QEMU boots of the Linux
+images. The [test guide](tests/README.md#ci-integration) has the details and
+the commands for each suite.
 
 ### Building Software
 
@@ -267,6 +270,7 @@ updating the image.
 | **Testbench** | Cocotb / pytest / pytest-cov | 2.1.0 / 9.1.1 / 7.1.0 |
 | **Simulator** | Verilator / QEMU | 5.052 / 11.1.1 |
 | | Spike | `02b1dc182164bb73b19b050676dd89f0834f8b2e` |
+| | Sail RISC-V model / QuickCheckVEngine | 0.15 / `5e15965a819ca1be9f14d2e8e319e98fd89a557f` |
 | **Synthesis** | Yosys / sv2v | 0.69 / 0.0.13 |
 | **Formal** | SymbiYosys / Z3 / Boolector | 0.69 / 5.1.0 / 3.2.4 |
 | **Debug** | OpenOCD | 0.12.0 (Ubuntu package) |

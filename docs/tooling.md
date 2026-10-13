@@ -96,6 +96,12 @@ the language lockfiles consistent. Some constraints that are easy to break:
   it must report. The image build fails when a base-image change or an
   archive update brings another release; update the ARG and the README row,
   then run `debug_openocd_test`.
+- QuickCheckVEngine builds in its own stage with Ubuntu's GHC, which must
+  report `GHC_VERSION`; `QCVENGINE_HACKAGE_INDEX_STATE` fixes its Haskell
+  dependencies. A Sail release can change the configuration schema or its
+  defaults: the fast tests validate
+  [`sail_frost.json`](../verif/testrig/sail_frost.json), and a
+  [TestRIG](../verif/testrig/README.md) run checks the rest.
 
 To validate an update, run `doctor` and `check`, unit and program simulations
 in both memory tiers, formal and synthesis checks, regenerate the Spike
