@@ -14,6 +14,7 @@
 
 """Unit tests for the IF-stage PC increment calculator."""
 
+import itertools
 from typing import Any
 
 import cocotb
@@ -45,6 +46,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pc.value = PC
     dut.i_pc_reg.value = PC_REG
     dut.i_sel_nop.value = 0
+    dut.i_sel_nop_wcs0.value = 0
     dut.i_slot2_valid.value = 0
     _drive_advance_selects(dut, fetch=PC_ADV_PLUS4, reg=PC_ADV_PLUS4)
     dut.i_any_holdoff_safe.value = 0
@@ -69,6 +71,36 @@ def _assert_next(dut: Any, *, pc: int, pc_reg: int) -> None:
     assert int(dut.o_seq_next_pc_plus_2.value) == (pc + 2) & ((1 << 64) - 1)
     assert int(dut.o_seq_next_pc_reg.value) == pc_reg
     assert int(dut.o_seq_next_pc_reg_neq_pc.value) == int(pc_reg != int(dut.i_pc.value))
+
+
+def _relation(value: int, side: int) -> int:
+    """Pack riscv_pkg::pc_pending_rel_t: at, below, above, pred, pred_native."""
+    mask = (1 << 64) - 1
+    fields = (
+        value == side,
+        value >> 1 < side >> 1,
+        value >> 1 > side >> 1,
+        value == (side - 2) & mask,
+        value == (side - 4) & mask,
+    )
+    return sum(int(field) << (4 - index) for index, field in enumerate(fields))
+
+
+def _assert_relations(dut: Any, *, pc_reg_wcs0: int, pc_reg_nop: int) -> None:
+    """Assert the next-pc_reg relations for both NOP versions, and pc_reg's."""
+    pending = int(dut.i_pending_prediction_pc.value)
+    fetch = int(dut.i_pc.value)
+    pc_reg = int(dut.i_pc_reg.value)
+    expected = {
+        "o_seq_next_pc_reg_rel_pending_wcs0": _relation(pc_reg_wcs0, pending),
+        "o_seq_next_pc_reg_rel_fetch_wcs0": _relation(pc_reg_wcs0, fetch),
+        "o_seq_next_pc_reg_rel_pending_nop": _relation(pc_reg_nop, pending),
+        "o_seq_next_pc_reg_rel_fetch_nop": _relation(pc_reg_nop, fetch),
+        "o_pc_reg_rel_pending": _relation(pc_reg, pending),
+        "o_pc_reg_rel_fetch": _relation(pc_reg, fetch),
+    }
+    for name, value in expected.items():
+        assert int(getattr(dut, name).value) == value, name
 
 
 @cocotb.test()
@@ -100,36 +132,54 @@ async def test_fetch_candidate_priority_and_wraparound(dut: Any) -> None:
                     dut.i_pc_reg_advance_sel_one.value = reg_one_sel
                     dut.i_pc_reg_advance_sel_two.value = reg_two_sel
                     dut.i_pc_reg_advance_sel_nop.value = reg_nop_sel
-                    for slot2 in range(2):
-                        for nop in range(2):
-                            # The merged selects IF would form from these shapes.
-                            fetch_sel = (
-                                one_sel if nop else (two_sel if slot2 else one_sel)
-                            )
-                            reg_sel = (
-                                reg_nop_sel
-                                if nop
-                                else (reg_two_sel if slot2 else reg_one_sel)
-                            )
-                            dut.i_sel_nop.value = nop
-                            dut.i_slot2_valid.value = slot2
-                            dut.i_pc_fetch_advance_sel.value = fetch_sel
-                            dut.i_pc_reg_advance_sel.value = reg_sel
-                            # Independent scalar reference for both priority
-                            # chains: choose an increment, then apply the holds.
-                            increment = 2 + 2 * fetch_sel
-                            if holdoff:
-                                increment = 4
-                            elif prediction:
-                                increment = 2 if pc & 2 else 4
-                            elif halfword:
-                                increment = 2
-                            expected_pc = (pc + increment) & mask
-                            expected_reg = (pc_reg + 2 + 2 * reg_sel) & mask
-                            if holdoff:
-                                expected_reg = pc_reg
-                            await _settle()
-                            _assert_next(dut, pc=expected_pc, pc_reg=expected_reg)
+                    for slot2, nop, nop_wcs0 in itertools.product(range(2), repeat=3):
+                        # IF's NOP select is its select without the
+                        # served-window check, or the check's failure.
+                        if nop_wcs0 and not nop:
+                            continue
+                        # The merged selects IF would form from these shapes.
+                        fetch_sel = one_sel if nop else (two_sel if slot2 else one_sel)
+                        reg_sel = (
+                            reg_nop_sel
+                            if nop
+                            else (reg_two_sel if slot2 else reg_one_sel)
+                        )
+                        dut.i_sel_nop.value = nop
+                        dut.i_sel_nop_wcs0.value = nop_wcs0
+                        dut.i_slot2_valid.value = slot2
+                        dut.i_pending_prediction_pc.value = (
+                            pc_reg + 2 + 2 * (slot2 + nop + nop_wcs0)
+                        ) & mask
+                        dut.i_pc_fetch_advance_sel.value = fetch_sel
+                        dut.i_pc_reg_advance_sel.value = reg_sel
+                        # Independent scalar reference for both priority
+                        # chains: choose an increment, then apply the holds.
+                        increment = 2 + 2 * fetch_sel
+                        if holdoff:
+                            increment = 4
+                        elif prediction:
+                            increment = 2 if pc & 2 else 4
+                        elif halfword:
+                            increment = 2
+                        expected_pc = (pc + increment) & mask
+                        expected_reg = (pc_reg + 2 + 2 * reg_sel) & mask
+                        if holdoff:
+                            expected_reg = pc_reg
+                        # The relation outputs' two versions: pc_reg's
+                        # advance as selected with the NOP select without the
+                        # served-window check, and as a NOP.
+                        reg_wcs0_sel = (
+                            reg_nop_sel
+                            if nop_wcs0
+                            else (reg_two_sel if slot2 else reg_one_sel)
+                        )
+                        reg_wcs0 = (pc_reg + 2 + 2 * reg_wcs0_sel) & mask
+                        reg_nop = (pc_reg + 2 + 2 * reg_nop_sel) & mask
+                        if holdoff:
+                            reg_wcs0 = reg_nop = pc_reg
+                        await _settle()
+                        _assert_next(dut, pc=expected_pc, pc_reg=expected_reg)
+                        _assert_relations(dut, pc_reg_wcs0=reg_wcs0, pc_reg_nop=reg_nop)
 
 
 @cocotb.test()

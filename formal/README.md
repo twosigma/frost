@@ -80,10 +80,10 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | `if_direction_payload` | Dropping the NOP term from the branch-direction payload select changes no non-NOP packet, including stall replay through the real `stall_capture_reg`. Assumes a flush on the first cycle |
 | `pc_holdoff_cofactor` | The three fetch-holdoff outputs equal their reference equations |
 | `pc_holdoff_tag` | A pending prediction's predecessor-PC tag equals its PC minus 2, and outside reset the prediction holdoffs equal their reference equations; unbounded at XLEN 32, 64, and 72, including wraparound. Assumes the pending bit starts clear |
-| `pc_increment_relation` | The local carry relations behind the PC +2/+4/+6/+8 compares, and each sequential `pc_reg` candidate's relation to the pending and fetch PCs, equal full-width arithmetic at XLEN 32 and 64, including wraparound |
+| `pc_increment_relation` | The local carry relations behind the PC +2/+4/+6/+8 compares, and the relations of `pc_reg` and of the sequential next `pc_reg` to the pending and fetch PCs, equal full-width arithmetic at XLEN 32 and 64, including wraparound. The next `pc_reg`'s relations come in two versions: as selected without the served-window check, and as a NOP |
 | `pc_increment_holdoff` | Both sequential next PCs equal the reference per-size candidates with holdoff and NOP selection, and the sequential next `pc_reg`, its miss and pending relations, and their pinned selects equal their portable form, for portable and Xilinx-primitive builds |
 | `pc_pending_capture` | The pending-prediction valid bit's next state equals the reference clear/set/hold priority, for both `PENDING_HANDOFF_EXCLUDES_SLOT2` settings |
-| `pc_register_mux` | The architectural-PC mux equals the reference priority, in the same configurations as `fetch_pc_mux` |
+| `pc_register_mux` | The architectural-PC mux equals the reference priority, and the pinned selects of the registered `pc_reg` relations equal their portable form, in the same configurations as `fetch_pc_mux` |
 | `prediction_handoff` | `prediction_release` with `PENDING_HANDOFF_EXCLUDES_SLOT2=1`, the fetch stage's setting |
 | `prediction_metadata_output` | Each packet's BTB-taken bit equals the reference priority, and a packet that a saved or pending prediction does not belong to never reports taken |
 | `prediction_metadata_tracker` | A pending prediction's saved PC and target hold until their packet consumes them or a reset or redirect kills them, and call and return types always leave with their target. See below |
@@ -94,9 +94,10 @@ Grouped by area; `--list-targets` shows each target's tasks.
 `prediction_release` runs the real `pc_controller` and `c_ext_state`
 together. The harness replaces the PC-increment calculator with one whose PC
 outputs are unconstrained, which admits every real PC movement and more, and
-makes predictor requests arbitrary. The stand-in's pending-PC relations are
-full-width compares of its outputs, which `pc_increment_relation` proves the
-real calculator matches. The harness likewise relates both slot-2 targets to
+makes predictor requests arbitrary. The stand-in's next `pc_reg` is one of two
+unconstrained values, the NOP one when the NOP select is set, and its
+pending-PC relations are full-width compares of those values, which
+`pc_increment_relation` proves the real calculator matches. The harness likewise relates both slot-2 targets to
 the pending PC by direct compares, as `branch_prediction_disable` proves the
 predictor does. It assumes only a reset on the first cycle.
 `prediction_handoff` runs the same harness with the fetch stage's parameter

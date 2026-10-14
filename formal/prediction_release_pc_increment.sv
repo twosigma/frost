@@ -18,9 +18,11 @@
  * Formal-only stand-in for pc_increment_calculator in the prediction_release
  * and prediction_handoff targets. Every PC output is unconstrained, which
  * admits every real PC movement and more, so a pass does not depend on the
- * increment arithmetic. The pending-PC relations are full-width compares of
- * those outputs, which pc_increment_relation proves the real calculator
- * matches.
+ * increment arithmetic. The next pc_reg is one of two unconstrained values,
+ * the NOP one when i_sel_nop is set, as in the real calculator, whose
+ * relation outputs describe the value for i_sel_nop_wcs0 and the NOP
+ * value. The pending-PC relations are full-width compares of those values,
+ * which pc_increment_relation proves the real calculator matches.
  */
 // verilog_lint: waive module-filename
 module pc_increment_calculator #(
@@ -30,6 +32,7 @@ module pc_increment_calculator #(
     input logic [XLEN-1:0] i_pc_reg,
     input logic [XLEN-1:0] i_pending_prediction_pc,
     input logic i_sel_nop,
+    input logic i_sel_nop_wcs0,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
     // Selects for each bundle shape; i_sel_nop and i_slot2_valid choose the
@@ -47,20 +50,26 @@ module pc_increment_calculator #(
     output logic [XLEN-1:0] o_seq_next_pc_plus_2,
     output logic [XLEN-1:0] o_seq_next_pc_reg,
     output logic o_seq_next_pc_reg_neq_pc,
-    output riscv_pkg::pc_pending_rel_t o_seq_next_pc_reg_rel_pending,
-    output riscv_pkg::pc_pending_rel_t o_seq_next_pc_reg_rel_fetch,
+    output riscv_pkg::pc_pending_rel_t o_seq_next_pc_reg_rel_pending_wcs0,
+    output riscv_pkg::pc_pending_rel_t o_seq_next_pc_reg_rel_fetch_wcs0,
+    output riscv_pkg::pc_pending_rel_t o_seq_next_pc_reg_rel_pending_nop,
+    output riscv_pkg::pc_pending_rel_t o_seq_next_pc_reg_rel_fetch_nop,
     output riscv_pkg::pc_pending_rel_t o_pc_reg_rel_pending,
     output riscv_pkg::pc_pending_rel_t o_pc_reg_rel_fetch
 );
 
   (* anyseq *) logic [XLEN-1:0] f_seq_next_pc;
   (* anyseq *) logic [XLEN-1:0] f_seq_next_pc_plus_2;
-  (* anyseq *) logic [XLEN-1:0] f_seq_next_pc_reg;
+  (* anyseq *) logic [XLEN-1:0] f_seq_next_pc_reg_advance;
+  (* anyseq *) logic [XLEN-1:0] f_seq_next_pc_reg_nop;
   (* anyseq *) logic f_seq_next_pc_reg_neq_pc;
+  logic [XLEN-1:0] f_seq_next_pc_reg_wcs0;
 
   assign o_seq_next_pc = f_seq_next_pc;
   assign o_seq_next_pc_plus_2 = f_seq_next_pc_plus_2;
-  assign o_seq_next_pc_reg = f_seq_next_pc_reg;
+  assign o_seq_next_pc_reg = i_sel_nop ? f_seq_next_pc_reg_nop : f_seq_next_pc_reg_advance;
+  assign f_seq_next_pc_reg_wcs0 = i_sel_nop_wcs0 ? f_seq_next_pc_reg_nop :
+                                                   f_seq_next_pc_reg_advance;
   assign o_seq_next_pc_reg_neq_pc = f_seq_next_pc_reg_neq_pc;
 
   function automatic logic [4:0] pending_rel(input logic [XLEN-1:0] v, input logic [XLEN-1:0] side);
@@ -72,8 +81,14 @@ module pc_increment_calculator #(
       v == XLEN'(side - XLEN'(4))
     };
   endfunction
-  assign o_seq_next_pc_reg_rel_pending = pending_rel(f_seq_next_pc_reg, i_pending_prediction_pc);
-  assign o_seq_next_pc_reg_rel_fetch = pending_rel(f_seq_next_pc_reg, i_pc);
+  assign o_seq_next_pc_reg_rel_pending_wcs0 = pending_rel(
+      f_seq_next_pc_reg_wcs0, i_pending_prediction_pc
+  );
+  assign o_seq_next_pc_reg_rel_fetch_wcs0 = pending_rel(f_seq_next_pc_reg_wcs0, i_pc);
+  assign o_seq_next_pc_reg_rel_pending_nop = pending_rel(
+      f_seq_next_pc_reg_nop, i_pending_prediction_pc
+  );
+  assign o_seq_next_pc_reg_rel_fetch_nop = pending_rel(f_seq_next_pc_reg_nop, i_pc);
   assign o_pc_reg_rel_pending = pending_rel(i_pc_reg, i_pending_prediction_pc);
   assign o_pc_reg_rel_fetch = pending_rel(i_pc_reg, i_pc);
 
