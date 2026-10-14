@@ -130,6 +130,7 @@ different implementation choice:
 | Misaligned accesses | Address-misaligned trap, after the PMA check |
 | `mtval` | 0 for illegal instructions |
 | `mstatus.FS` | Dirty when an FP instruction raises a flag, even one already set |
+| `mstatus.VS` | Read-only zero: FROST has no V extension |
 | HPM counters | `mhpmcounter3..31` and `mhpmevent3..31` read zero; no `hpmcounter3..31` |
 | Counter enables | `mcounteren`, `scounteren`: CY, TM, and IR; `mcountinhibit`: CY and IR |
 | Delegation | `medeleg` mask 0xB3FF, `mideleg` mask 0x222 |

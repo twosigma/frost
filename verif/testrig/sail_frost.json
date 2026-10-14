@@ -17,6 +17,9 @@
     // riscv_pkg::MedelegMask and FROST's three delegable interrupts.
     "medeleg": {"delegatable_bits": {"len": 64, "value": "0x0000_0000_0000_B3FF"}},
     "mideleg": {"delegatable_bits": {"len": "xlen", "value": "0x0000_0000_0000_0222"}},
+    // FROST has no V extension, so mstatus.VS is read-only zero; FS takes all
+    // four states.
+    "mstatus": {"fs_legal_states": "ExtContext_FourState", "vs_legal_states": "ExtContext_Off"},
     // FROST writes 0 to mtval/stval for illegal instructions.
     "xtval_nonzero": {
       "illegal_instruction": false
