@@ -43,4 +43,5 @@
 
 - Professor at the University of Manchester, contributing in a personal capacity
 - Found four RISC-V conformance bugs by differential testing against the Sail model ([#58](https://github.com/twosigma/frost/issues/58))
+- Suggested the RVFI-DII port and the TestRIG comparison against Sail that now runs in CI
 - Co-authored the fixes that make the machine HPM counters read-only zero and that page-fault on a non-leaf PTE with D, A, or U set
