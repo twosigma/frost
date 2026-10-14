@@ -114,20 +114,16 @@ timing reports.
 
 ## Comparing changes
 
-RTL changes are also compared with FROST's earlier RV32 configuration at
-revision `501f777b920f056471a6c65245ea007576c294ca`. Both architectures use
-xPack GCC 15.2.0-1 with matched tuning: hard-float D ABI, BRAM, counters on,
-and compressed instructions and PGO off.
+For an RTL change:
 
-- Compare identical binaries and matching reset indices when changing RTL.
+- Use identical binaries and matching reset indices.
 - Run both CoreMark seed sets, compressed-code and link-order variations, and
   all nine CoreMark-PRO workloads in BRAM and DDR.
 - In a link-order sweep, count distinct `sw.bin` images: different source
   orders can produce identical code.
 - Use the performance counters to explain cycle changes, then measure the
   benchmark with counters disabled.
-- After RTL changes, check routed timing and run the full hardware regression,
-  including Debian.
+- Check routed timing and run the full hardware regression, including Debian.
 
 The next goal is 5 CoreMark/MHz at the same clock, or 200,000 cycles per
 CoreMark iteration; see the [roadmap](../ROADMAP.md).

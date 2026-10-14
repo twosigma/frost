@@ -13,23 +13,19 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Count CoreMark's timed-region instructions under Spike, at either XLEN.
+"""Count CoreMark's timed-region instructions under Spike.
 
 The count separates "the compiler emits more instructions" from "the core
 retires them more slowly"; the second still needs a cocotb or board run. This
 is a measurement tool, not part of any build or test flow.
 
-FROST and the pinned Bootlin toolchain are RV64-only, so the matrix defaults to
-RV64. An RV32 count needs an external RV32/ILP32D compiler selected with
-RISCV_PREFIX.
-
 The matrix uses fixed flag sets, not the Makefile's APP_TUNE_FLAGS, and every
 row keeps the C extension. The port layer shifts the timed-region boundary
-slightly, so absolute counts and RV32/RV64 ratios are estimates. See
-"Measurement limits" in README.md.
+slightly, so absolute counts are estimates. See "Measurement limits" in
+README.md.
 
-    ./count_instructions.py --xlen 64
-    ./count_instructions.py --xlen 64 -- --param max-inline-insns-auto=200
+    ./count_instructions.py
+    ./count_instructions.py -- --param max-inline-insns-auto=200
     ./count_instructions.py --matrix
 
 Run it inside the pinned image:
@@ -51,10 +47,9 @@ APP_DIR = HERE.parent
 COREMARK_DIR = APP_DIR / "coremark"
 RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv64-linux-")
 
-# common.mk's default extension set. Every row keeps C at both XLENs: the
-# shipped CoreMark build leaves C out for FROST's fetch throughput, not for
-# instruction count.
-EXTENSIONS = "imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause"
+# common.mk's default extension set. Every row keeps C: the shipped CoreMark
+# build leaves C out for FROST's fetch throughput, not for instruction count.
+ISA = "rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause"
 BASE_FLAGS = [
     "-mcmodel=medany",
     "-Wall",
@@ -95,14 +90,12 @@ MATRIX = [
 FETCH_LINE = re.compile(r"^core\s+\d+: 0x")
 
 
-def build(xlen: int, extra_flags: list[str], elf_path: Path) -> None:
+def build(extra_flags: list[str], elf_path: Path) -> None:
     """Compile CoreMark plus the Spike port layer into elf_path."""
-    march = f"rv{xlen}{EXTENSIONS}"
-    mabi = "ilp32d" if xlen == 32 else "lp64d"
     command = [
         f"{RISCV_PREFIX}gcc",
-        f"-march={march}",
-        f"-mabi={mabi}",
+        f"-march={ISA}",
+        "-mabi=lp64d",
         *BASE_FLAGS,
         f"-I{HERE}",
         f"-I{APP_DIR}",
@@ -138,11 +131,10 @@ def build(xlen: int, extra_flags: list[str], elf_path: Path) -> None:
     subprocess.run(command, check=True)
 
 
-def count(xlen: int, elf_path: Path) -> tuple[int, int]:
+def count(elf_path: Path) -> tuple[int, int]:
     """Return (timed-region instructions, whole-program instructions)."""
-    isa = f"rv{xlen}{EXTENSIONS}"
     process = subprocess.Popen(
-        ["spike", f"--isa={isa}", "--log-commits", "-l", str(elf_path)],
+        ["spike", f"--isa={ISA}", "--log-commits", "-l", str(elf_path)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
@@ -168,11 +160,11 @@ def count(xlen: int, elf_path: Path) -> tuple[int, int]:
     return markers[1] - markers[0] - 1, total
 
 
-def measure(xlen: int, extra_flags: list[str], work_dir: Path) -> tuple[int, int]:
+def measure(extra_flags: list[str], work_dir: Path) -> tuple[int, int]:
     """Build and run one configuration."""
-    elf_path = work_dir / f"coremark_rv{xlen}.elf"
-    build(xlen, extra_flags, elf_path)
-    return count(xlen, elf_path)
+    elf_path = work_dir / "coremark.elf"
+    build(extra_flags, elf_path)
+    return count(elf_path)
 
 
 def main() -> int:
@@ -181,17 +173,14 @@ def main() -> int:
         description="Count CoreMark timed-region instructions under Spike",
     )
     parser.add_argument(
-        "--xlen", type=int, choices=(32, 64), help="measure one XLEN and exit"
+        "--matrix", action="store_true", help="measure the fixed flag-set matrix"
     )
     parser.add_argument(
-        "--matrix",
-        action="store_true",
-        help="measure the fixed flag-set matrix at --xlen (default: 64)",
-    )
-    parser.add_argument(
-        "flags", nargs="*", help="extra compiler flags (after --) for --xlen mode"
+        "flags", nargs="*", help="extra compiler flags (after --), without --matrix"
     )
     arguments = parser.parse_args()
+    if arguments.matrix and arguments.flags:
+        parser.error("--matrix uses fixed flag sets; drop the extra flags")
 
     for tool in (f"{RISCV_PREFIX}gcc", "spike"):
         if shutil.which(tool) is None:
@@ -202,37 +191,17 @@ def main() -> int:
             )
             return 1
 
-    if arguments.xlen == 32:
-        multilibs = subprocess.check_output(
-            [f"{RISCV_PREFIX}gcc", "-print-multi-lib"], text=True
-        )
-        target = subprocess.check_output(
-            [f"{RISCV_PREFIX}gcc", "-dumpmachine"], text=True
-        )
-        if "mabi=ilp32d" not in multilibs and not target.startswith("riscv32"):
-            parser.error(
-                "the selected toolchain has no RV32/ILP32D libraries; "
-                "Bootlin is RV64-only. Use --xlen 64 or set RISCV_PREFIX "
-                "to an external compiler that supports RV32/ILP32D"
-            )
-
     with tempfile.TemporaryDirectory(prefix="coremark_iss_") as temporary:
         work_dir = Path(temporary)
         if arguments.matrix:
-            xlen = arguments.xlen or 64
-            print(f"{'flags':<38}{f'rv{xlen} instructions':>20}")
+            print(f"{'flags':<38}{'instructions':>20}")
             for name, flags in MATRIX:
-                timed, _ = measure(xlen, flags, work_dir)
+                timed, _ = measure(flags, work_dir)
                 print(f"{name:<38}{timed:>20,}")
             return 0
 
-        if arguments.xlen is None:
-            parser.error("pass --xlen or --matrix")
-        timed, total = measure(arguments.xlen, arguments.flags, work_dir)
-        print(
-            f"rv{arguments.xlen}: timed-region instructions {timed:,} "
-            f"(whole program {total:,})"
-        )
+        timed, total = measure(arguments.flags, work_dir)
+        print(f"timed-region instructions {timed:,} (whole program {total:,})")
     return 0
 
 

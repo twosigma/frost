@@ -23,11 +23,12 @@ Next:
 1. Coverage. Merge Verilator line and toggle coverage across the CI runs and
    add cover points for microarchitectural corner cases, such as a DMA write
    to a line that an unretired load has read, to show what no test reaches.
-2. Longer random runs. Run TestRIG nightly with thousands of tests per
-   template, and run the cached-DDR program tests with random DDR latency.
-   Add the A extension to the TestRIG comparison, which needs a way to
-   reconcile the reservation rules of FROST and Sail: both are legal, but an
-   SC can succeed under one and fail under the other.
+2. More random testing in every CI run, on pull requests and merges alike.
+   Run more TestRIG tests per template, split across parallel jobs so CI
+   takes no longer, and run the cached-DDR program tests with random DDR
+   latency, logging the seed. Add the A extension to the TestRIG comparison,
+   which needs a way to reconcile the reservation rules of FROST and Sail:
+   both are legal, but an SC can succeed under one and fail under the other.
 
 ## Memory system
 
@@ -101,11 +102,6 @@ clock, or 1,611 CoreMark on one hart. A score counts only from a run of at
 least ten seconds that passes the CRC checks for both official seed sets, with
 the compiler flags, the `sw.bin` hash, and memory and cache settings recorded.
 RTL changes must also keep routed timing at the target clock.
-
-The RV64 core must also match or beat FROST's earlier RV32 configuration,
-tuned the same way, in cycle-exact simulation. The
-[performance guide](docs/single_core_performance.md#comparing-changes)
-describes the reference and the comparison method.
 
 A CoreMark iteration is about 234,000 instructions, so 5 CoreMark/MHz, or
 200,000 cycles per iteration, needs 1.17 instructions per cycle, up from 1.00.
@@ -202,10 +198,12 @@ places several candidates and keeps one that qualifies (see
 [X3 placement](fpga/README.md#x3-placement)). The goal is enough slack that a
 single default placement meets timing.
 
-## Deferred
+## Possible future work
 
-These wait for demand: a general three-wide redesign, an ASIC
-implementation, the V and H extensions, the full crypto extensions, and Sv32.
-Storage beyond the NFS root, such as iSCSI with ext4 or host-backed
-PCIe/virtio block devices, is possible; NFS remains the supported root
-filesystem.
+- A general three-wide redesign
+- The V and H extensions
+- The full crypto extensions
+- An open-source ASIC flow in the repository, using OpenROAD with an open PDK
+  such as SKY130 or ASAP7
+- Storage beyond the NFS root, such as iSCSI with ext4 or host-backed
+  PCIe/virtio block devices; NFS is the supported root filesystem

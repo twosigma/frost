@@ -20,14 +20,13 @@ counts in RTL simulation and CoreMark scores on hardware.
 
 ```bash
 ./scripts/frost.py run sw/apps/coremark/iss/count_instructions.py --matrix    # the fixed flag-set matrix
-./scripts/frost.py run sw/apps/coremark/iss/count_instructions.py --xlen 64   # base flags only
-./scripts/frost.py run sw/apps/coremark/iss/count_instructions.py --xlen 64 \
+./scripts/frost.py run sw/apps/coremark/iss/count_instructions.py             # base flags only
+./scripts/frost.py run sw/apps/coremark/iss/count_instructions.py \
     -- --param max-inline-insns-auto=200                                    # base flags plus your own
 ```
 
-Counts are for RV64 with the pinned Bootlin compiler. `--xlen 32` needs an
-external RV32/ILP32D toolchain selected with `RISCV_PREFIX`; the image
-supplies only RV64.
+The script builds with the pinned Bootlin GCC, so counts change with the
+compiler.
 
 ### Measurement limits
 
@@ -43,7 +42,7 @@ counts the instructions between them in Spike's commit log.
   `APP_TUNE_FLAGS`, and every row keeps the C extension, which the shipped
   build leaves out by default.
 - The port layer shifts the timed-region boundary slightly, so absolute counts
-  and RV32/RV64 ratios are estimates.
+  are estimates.
 
 ## Profile-guided optimization training
 
