@@ -5,8 +5,7 @@
 // reports only behavior the two disagree on. See verif/testrig/README.md.
 {
   "base": {
-    // FIOM must be writable whenever satp.MODE can leave Bare; FROST's reads
-    // zero (see the README). The CSR filter keeps tests off menvcfg and senvcfg.
+    // FIOM must be writable whenever satp.MODE can leave Bare, as FROST's is.
     "writable_fiom": true,
     // mhpmcounter3..31 and mhpmevent3..31 read zero; mcounteren, scounteren,
     // and mcountinhibit implement CY, TM, and IR (mcountinhibit CY and IR).

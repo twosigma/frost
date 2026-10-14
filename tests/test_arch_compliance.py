@@ -89,7 +89,7 @@ SUPPORTED_EXTENSIONS = [
 # (SM3/SM4).
 # privilege: FROST implements M, S, and U modes but no hypervisor. The envcfg
 # tests are left out: they declare Zicbom, Zicboz, and Ssdtso, and FROST's
-# menvcfg implements only STCE.
+# menvcfg implements only FIOM and STCE.
 EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "K": {"pack", "packh", "packw", "brev8"},
     "privilege": {"ebreak", "ecall", "misalign"},
