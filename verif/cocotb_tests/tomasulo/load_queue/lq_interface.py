@@ -237,6 +237,7 @@ class LQInterface:
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_flush_all.value = 0
+        self.dut.i_full_flush.value = 0
         self.dut.i_early_recovery_flush.value = 0
         self.dut.i_cache_invalidate_valid.value = 0
         self.dut.i_cache_invalidate_addr.value = 0
@@ -482,13 +483,19 @@ class LQInterface:
     # Flush
     # =========================================================================
 
-    def drive_flush_all(self) -> None:
-        """Assert full flush."""
+    def drive_flush_all(self, full: bool = True) -> None:
+        """Assert full flush.
+
+        A trap, xRET, or FENCE-class flush, or with full=False commit-time
+        misprediction recovery.
+        """
         self.dut.i_flush_all.value = 1
+        self.dut.i_full_flush.value = 1 if full else 0
 
     def clear_flush_all(self) -> None:
         """Deassert full flush."""
         self.dut.i_flush_all.value = 0
+        self.dut.i_full_flush.value = 0
 
     def drive_partial_flush(self, flush_tag: int, early_recovery: bool = False) -> None:
         """Drive a partial flush, optionally marked as early branch recovery."""

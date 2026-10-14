@@ -275,9 +275,10 @@ The DMA coherence port can also hold SC fires around a DMA write.
 The SC succeeds when the LR reservation, held in the LQ, is valid and covers
 the SC's aligned doubleword, FROST's reservation granule. The reservation is
 cleared when any SC commits, when the SQ launches a write to the same
-doubleword, and when a DMA write invalidates the line. The SC's result (0 on
-success, 1 on failure) is registered and presented to the MEM adapter in the
-following cycle. When a failed SC commits, the wrapper sends `sc_discard` to
+doubleword or an AMO writes it, when a DMA write invalidates the line, and on
+a trap, xRET, or FENCE-class flush (the LQ's `i_full_flush`); a branch
+recovered at commit keeps it. The SC's result (0 on success, 1 on failure) is
+registered and presented to the MEM adapter in the following cycle. When a failed SC commits, the wrapper sends `sc_discard` to
 the SQ, which drops the entry without writing memory.
 
 The pending table is keyed by ROB tag because MEM_RS issues SCs out of order:

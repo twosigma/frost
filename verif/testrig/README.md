@@ -135,7 +135,7 @@ different implementation choice:
 | Counter enables | `mcounteren`, `scounteren`: CY, TM, and IR; `mcountinhibit`: CY and IR |
 | Delegation | `medeleg` mask 0xB3FF, `mideleg` mask 0x222 |
 | PMP | None |
-| LR/SC | Doubleword reservation set, cancelled by any write from the hart (FROST differs; see below) |
+| LR/SC | Doubleword reservation set, cancelled by a store or AMO from the hart to it (FROST also cancels it on a trap; see below) |
 | WFI | Completes at once |
 | Sail's CLINT | At 0x7_FFFF_0000, outside FROST's map; Sail requires one for Zicntr |
 
@@ -166,12 +166,21 @@ result depends on timing, out of the default run:
   now writable. FIOM changes nothing else in FROST: its FENCE ignores the
   predecessor and successor bits, so it already treats I/O like memory.
 - FROST and Sail keep LR reservations under different rules, both allowed
-  by the specification. FROST cancels the reservation on a store to the
-  reserved doubleword and on a full pipeline flush, such as a trap or
-  `fence.i`, but not on an AMO write. Sail cancels it on every write from the
-  hart, AMOs included, and keeps it across traps. An SC after one of these
-  events succeeds on one and fails on the other, so the default run leaves
-  out the A extension; `--arch rv64imafdcs_zicsr_zifencei` puts it back.
+  by the specification. Both cancel the reservation on an SC and on a store
+  or AMO from the hart to the reserved doubleword. FROST also cancels it on a
+  trap, xRET, or FENCE-class flush, such as `fence.i`, and Sail keeps it. An
+  SC after one of these events succeeds on Sail and fails on FROST, so the
+  default run leaves out the A extension; `--arch rv64imafdcs_zicsr_zifencei`
+  puts it back.
+- FROST kept an LR reservation across its own AMO writes to the reserved
+  doubleword, which Sail's setting cancels, and cancelled it when a branch
+  recovered at commit, such as a JAL or JALR between LR and SC. TestRIG's
+  build disables branch prediction, so each such jump recovered at commit
+  and its SC failed. There, an LR/SC retry loop with a forward JAL between LR
+  and SC, a loop the specification's eventual-success rule covers, could
+  never succeed. An AMO write to the reserved doubleword now cancels the
+  reservation, and commit-time recovery keeps it
+  ([`lrsc_amo.S`](traces/lrsc_amo.S), [`lrsc_jump.S`](traces/lrsc_jump.S)).
 
 ## Saved counterexamples
 
@@ -184,4 +193,6 @@ all of them before its random run.
 | [`fence_r0.S`](traces/fence_r0.S) | `fence r,0` retires (it was decoded as PAUSE and hung the core) |
 | [`hpm_counters.S`](traces/hpm_counters.S) | `mhpmcounter3..31` and `mhpmevent3..31` read zero |
 | [`instret_nops.S`](traces/instret_nops.S) | NOP and C.NOP count in `minstret` |
+| [`lrsc_amo.S`](traces/lrsc_amo.S) | An AMO to the reserved doubleword cancels the reservation; one to the next doubleword does not |
+| [`lrsc_jump.S`](traces/lrsc_jump.S) | A JAL, JALR, or taken branch between LR and SC keeps the reservation |
 | [`pte_nonleaf_dau.S`](traces/pte_nonleaf_dau.S) | A non-leaf PTE with D, A, or U set raises a page fault |
