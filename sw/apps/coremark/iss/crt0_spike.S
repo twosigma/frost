@@ -19,12 +19,10 @@ _start:
     addi    t0, t0, 4
     j       1b
 2:  call    main
-    // HTIF: a nonzero tohost with bit 0 set exits Spike. Two sw stores cover
-    // the 8-byte field at either XLEN.
+    // HTIF: a nonzero tohost with bit 0 set exits Spike.
     la      t0, tohost
     li      t1, 1
-    sw      t1, 0(t0)
-    sw      zero, 4(t0)
+    sd      t1, 0(t0)
 3:  j       3b
 
     .section .tohost, "aw", @progbits
