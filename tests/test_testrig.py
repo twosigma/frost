@@ -28,13 +28,16 @@ repository root:
     ./scripts/frost.py run python3 tests/test_testrig.py
     ./scripts/frost.py run python3 tests/test_testrig.py --tests 200 --include 'arith|mem'
     ./scripts/frost.py run python3 tests/test_testrig.py --trace counterexample.S
+    ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
 
 The image provides sail_riscv_sim and QCVEngine. Counterexamples go to
 --save-dir (tests/testrig_failures by default); replay one with --trace.
 """
 
 import argparse
+import importlib
 import os
+import random
 import shutil
 import signal
 import socket
@@ -50,6 +53,10 @@ from test_run_cocotb import TEST_REGISTRY, CocotbRunner
 
 TESTS_DIR = Path(__file__).parent.resolve()
 REPO_ROOT = TESTS_DIR.parent
+VERIF_DIR = REPO_ROOT / "verif"
+if str(VERIF_DIR) not in sys.path:
+    sys.path.insert(0, str(VERIF_DIR))
+atomics = importlib.import_module("testrig.atomics")
 SAIL_CONFIG = REPO_ROOT / "verif" / "testrig" / "sail_frost.json"
 SAVED_TRACES_DIR = REPO_ROOT / "verif" / "testrig" / "traces"
 DEFAULT_SAVE_DIR = TESTS_DIR / "testrig_failures"
@@ -58,11 +65,13 @@ DEFAULT_LOG_DIR = TESTS_DIR / "testrig_logs"
 # QuickCheckVEngine's architecture string, which selects the templates and
 # the instructions they generate: RV64 IMFDC with S and U modes (the "s" also
 # enables the page-table templates), Zicsr, and Zifencei. FROST implements A,
-# but the engine cannot generate AMOs without LR and SC, and the two
-# implementations keep LR reservations under different rules that the
-# specification allows (see verif/testrig/README.md), so random LR/SC
-# sequences diverge. Pass --arch rv64imafdcs_zicsr_zifencei to include A.
+# but the two implementations keep LR reservations under different rules that
+# the specification allows (see verif/testrig/README.md), and the engine's
+# atomic templates put traps between LR and SC, so random LR/SC sequences
+# from them diverge. --atomics replays tests from verif/testrig/atomics.py
+# instead, which keep traps out of those windows.
 DEFAULT_ARCHITECTURE = "rv64imfdcs_zicsr_zifencei"
+ATOMICS_ARCHITECTURE = "rv64imafdcs_zicsr_zifencei"
 
 # Templates whose behavior the two implementations should agree on. The
 # CHERI, unstructured (random 32-bit words, which reach FROST's custom CSRs
@@ -182,6 +191,9 @@ def run(arguments: argparse.Namespace) -> int:
     frost_log = work_dir / "frost.log"
     sail_log = work_dir / "sail.log"
     images = write_empty_images()
+    architecture = arguments.arch or (
+        ATOMICS_ARCHITECTURE if arguments.atomics else DEFAULT_ARCHITECTURE
+    )
     sail = frost = engine = None
     status = 1
     try:
@@ -223,7 +235,7 @@ def run(arguments: argparse.Namespace) -> int:
             "-b",
             str(frost_port),
             "-r",
-            arguments.arch,
+            architecture,
             "-v",
             str(arguments.verbosity),
             "-T",
@@ -239,6 +251,22 @@ def run(arguments: argparse.Namespace) -> int:
             command += ["-t", str(Path(arguments.trace).resolve())]
         elif arguments.trace_dir:
             command += ["-d", str(Path(arguments.trace_dir).resolve())]
+        elif arguments.atomics:
+            seed = arguments.seed
+            if seed is None:
+                seed = random.randrange(1 << 32)
+            trace_dir = work_dir / "atomics"
+            shutil.rmtree(trace_dir, ignore_errors=True)
+            trace_dir.mkdir()
+            atomics.write_tests(
+                trace_dir, arguments.atomics, seed, arguments.test_length
+            )
+            print(
+                f"Wrote {arguments.atomics} A-extension tests from seed {seed} "
+                f"to {trace_dir} (--seed {seed} regenerates them)",
+                flush=True,
+            )
+            command += ["-d", str(trace_dir)]
         else:
             command += [
                 "-n",
@@ -310,8 +338,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--arch",
-        default=DEFAULT_ARCHITECTURE,
-        help=f"architecture the templates target (default {DEFAULT_ARCHITECTURE})",
+        help="architecture the templates target (default "
+        f"{DEFAULT_ARCHITECTURE}, or {ATOMICS_ARCHITECTURE} with --atomics)",
     )
     parser.add_argument(
         "--include", default=DEFAULT_TEST_INCLUDE, help="template name regex"
@@ -324,6 +352,18 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--trace", help="replay one saved trace instead")
     parser.add_argument("--trace-dir", help="replay every .S trace in a directory")
+    parser.add_argument(
+        "--atomics",
+        type=int,
+        default=0,
+        help="instead of the templates, replay this many random A-extension "
+        "tests from verif/testrig/atomics.py",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        help="seed for --atomics (default: random, printed)",
+    )
     parser.add_argument(
         "--save-dir",
         default=str(DEFAULT_SAVE_DIR),

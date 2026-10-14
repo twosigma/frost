@@ -40,7 +40,7 @@ committed to the repository, so Spike is needed only to regenerate them.
 | `models/` | Integer, floating-point, and memory models |
 | `encoders/` | Instruction encoders and operation tables |
 | `utils/` | Memory-access helpers, data types, struct packing, assertions |
-| [`testrig/`](testrig/README.md) | TestRIG support: RVFI-DII packets, the reset preamble, the Sail configuration, and saved counterexamples |
+| [`testrig/`](testrig/README.md) | TestRIG support: RVFI-DII packets, the reset preamble, the Sail configuration, the A-extension test generator, and saved counterexamples |
 | `config.py` | Constants (`XLEN=64`) and configurable DUT signal paths |
 | `verification_types.py` | Shared `NewType` wrappers |
 

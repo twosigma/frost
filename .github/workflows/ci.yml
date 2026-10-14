@@ -442,8 +442,10 @@ jobs:
   # TestRIG: QuickCheckVEngine runs instruction sequences on the Sail RISC-V
   # model and on the simulated SoC and compares every retired instruction
   # (tests/test_testrig.py). The saved counterexamples replay first; then each
-  # run draws new random sequences. A mismatch is shrunk to a short
-  # counterexample in the uploaded artifact, which --trace replays.
+  # run draws new random sequences from the engine's templates, and new
+  # A-extension tests from verif/testrig/atomics.py, whose seed the log
+  # prints. A mismatch is shrunk to a short counterexample in the uploaded
+  # artifact, which --trace replays.
   test-testrig:
     name: TestRIG (FROST vs Sail)
     runs-on: ubuntu-26.04
@@ -475,6 +477,11 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --continue-on-fail
+
+      - name: Compare FROST with Sail on random A-extension sequences
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --atomics 200 --continue-on-fail
 
       - name: Upload TestRIG counterexamples and logs
         if: always()
