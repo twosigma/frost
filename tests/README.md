@@ -246,9 +246,12 @@ provides Sail and the engine.
 ./scripts/frost.py run python3 tests/test_testrig.py --include '^(mem|pte)$' --tests 500
 ./scripts/frost.py run python3 tests/test_testrig.py --trace tests/testrig_failures/failure-<time>.S
 ./scripts/frost.py run python3 tests/test_testrig.py --trace-dir verif/testrig/traces
+./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
 ```
 
-Each run draws new sequences. A mismatch is shrunk to a short counterexample
+Each run draws new sequences. `--atomics` replays random A-extension tests
+from `verif/testrig/atomics.py` in place of the engine's templates, from a
+seed the runner prints. A mismatch is shrunk to a short counterexample
 in `tests/testrig_failures/`, which `--trace` replays; the logs and the
 engine's coverage table go to `tests/testrig_logs/`. The pytest entry point
 replays the saved counterexamples in `verif/testrig/traces/`.
@@ -320,7 +323,7 @@ pinned Docker image:
 | Architecture compliance | BRAM and DDR; excludes Zifencei on BRAM and F/D on DDR; F and D run in BRAM shards |
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both |
 | Torture | BRAM, DDR, and paged DDR |
-| TestRIG | The saved counterexamples, then new random sequences against Sail |
+| TestRIG | The saved counterexamples, then new random sequences against Sail, from the engine's templates and from the A-extension generator |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests, synthesis, and formal verification |
 | Linux | Firmware and root filesystem build, and QEMU boot checks |

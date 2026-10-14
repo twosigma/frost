@@ -26,9 +26,7 @@ Next:
 2. More random testing in every CI run, on pull requests and merges alike.
    Run more TestRIG tests per template, split across parallel jobs so CI
    takes no longer, and run the cached-DDR program tests with random DDR
-   latency, logging the seed. Add the A extension to the TestRIG comparison,
-   which needs a way to reconcile the reservation rules of FROST and Sail:
-   both are legal, but an SC can succeed under one and fail under the other.
+   latency, logging the seed.
 
 ## Memory system
 
