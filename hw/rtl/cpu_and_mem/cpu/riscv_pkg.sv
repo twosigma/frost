@@ -1094,9 +1094,13 @@ package riscv_pkg;
   // OpenSBI probes this v1.11 CSR before using v1.12 menvcfg to enable Sstc.
   localparam bit [11:0] CsrMcountinhibit = 12'h320;
   localparam bit [11:0] CsrMenvcfg = 12'h30A;  // Machine environment configuration
-  // menvcfg.STCE (bit 63, Sstc): S-mode stimecmp enable. WARL {0,1}; the
-  // only implemented menvcfg field.
+  // menvcfg.STCE (bit 63, Sstc): S-mode stimecmp enable. WARL {0,1}.
   localparam int unsigned MenvcfgStceBit = 63;
+  // FIOM (bit 0 of menvcfg and senvcfg): WARL {0,1}, required writable
+  // because satp can leave Bare. Stored only: FENCE ignores its predecessor
+  // and successor bits, so it already treats I/O like memory, and atomics to
+  // devices fault.
+  localparam int unsigned EnvcfgFiomBit = 0;
   localparam bit [11:0] CsrMscratch = 12'h340;  // Machine scratch register
   localparam bit [11:0] CsrMepc = 12'h341;  // Machine exception PC
   localparam bit [11:0] CsrMcause = 12'h342;  // Machine trap cause

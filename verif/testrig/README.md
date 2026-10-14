@@ -151,7 +151,6 @@ result depends on timing, out of the default run:
 | `cycle`, `time`, `mcycle` | FROST counts clock cycles; Sail counts instructions |
 | `mie`, `mip`, `sie`, `sip` | Sail takes an interrupt in place of an instruction, which the trace cannot express |
 | `stimecmp` | The Sstc timer compare depends on time |
-| `menvcfg`, `senvcfg` | FIOM, below; `menvcfg` also enables the Sstc timer |
 | `mtvec`, `stvec` | Reserved MODE values: FROST keeps the low bit, Sail keeps the old MODE |
 | `mcause`, `scause` | The cause code is WLRL: FROST keeps any value written, Sail keeps the old value when the code is one it does not support |
 | Unnamed CSR addresses | Include FROST's custom profiling CSRs |
@@ -161,10 +160,11 @@ result depends on timing, out of the default run:
 
 ## Differences found
 
-- `menvcfg.FIOM` and `senvcfg.FIOM` are read-only zero. The privileged
+- `menvcfg.FIOM` and `senvcfg.FIOM` were read-only zero. The privileged
   specification allows that only without S-mode or with `satp.MODE` fixed at
-  Bare, and Sail rejects a configuration that combines it with Sv39, so
-  `sail_frost.json` makes FIOM writable and the runner leaves both CSRs out.
+  Bare, and Sail rejects a configuration that combines it with Sv39. Both are
+  now writable. FIOM changes nothing else in FROST: its FENCE ignores the
+  predecessor and successor bits, so it already treats I/O like memory.
 - FROST and Sail keep LR reservations under different rules, both allowed
   by the specification. FROST cancels the reservation on a store to the
   reserved doubleword and on a full pipeline flush, such as a trap or
@@ -180,6 +180,7 @@ all of them before its random run.
 
 | Trace | Checks |
 |-------|--------|
+| [`envcfg_fiom.S`](traces/envcfg_fiom.S) | `menvcfg.FIOM` and `senvcfg.FIOM` are writable |
 | [`fence_r0.S`](traces/fence_r0.S) | `fence r,0` retires (it was decoded as PAUSE and hung the core) |
 | [`hpm_counters.S`](traces/hpm_counters.S) | `mhpmcounter3..31` and `mhpmevent3..31` read zero |
 | [`instret_nops.S`](traces/instret_nops.S) | NOP and C.NOP count in `minstret` |

@@ -23,8 +23,9 @@
   sstatus, sie, and sip are views of M-mode storage. sie/sip expose only
   delegated supervisor bits at every privilege; sip permits writes only to
   delegated SSIP. medeleg/mideleg use the package WARL masks: M-mode ECALL
-  and machine interrupts cannot delegate. senvcfg is present as required
-  for S/U support, but implements no fields and reads zero.
+  and machine interrupts cannot delegate. menvcfg implements FIOM and STCE;
+  senvcfg, required for S/U support, implements FIOM. FIOM is stored only
+  (see riscv_pkg::EnvcfgFiomBit).
 
   mstatus.MPRV makes data accesses use MPP. MPP and dcsr.prv fold reserved
   2'b10 to U. FS resets to Initial and becomes Dirty on FP state writes;
@@ -461,7 +462,11 @@ module csr_file #(
   logic perf_cache_previous_select;
   localparam bit PerfCountersPresent = (PERF_COUNTERS != 0);
 
-  logic menvcfg_stce;
+  logic menvcfg_stce, menvcfg_fiom, senvcfg_fiom;
+  logic [XLEN-1:0] menvcfg, senvcfg;  // Readback views of the stored fields
+  assign menvcfg = (XLEN'(menvcfg_stce) << riscv_pkg::MenvcfgStceBit) |
+      (XLEN'(menvcfg_fiom) << riscv_pkg::EnvcfgFiomBit);
+  assign senvcfg = XLEN'(senvcfg_fiom) << riscv_pkg::EnvcfgFiomBit;
 
   // Supervisor trap CSRs.
   logic [XLEN-1:0] stvec;  // Supervisor trap vector (MODE bit 1 forced 0, like mtvec)
@@ -592,12 +597,13 @@ module csr_file #(
       riscv_pkg::CsrSip: csr_current_value = sip_view;
       riscv_pkg::CsrStvec: csr_current_value = stvec;
       riscv_pkg::CsrScounteren: csr_current_value = XLEN'({29'b0, scounteren_q});
+      riscv_pkg::CsrSenvcfg: csr_current_value = senvcfg;
       riscv_pkg::CsrSscratch: csr_current_value = sscratch;
       riscv_pkg::CsrSepc: csr_current_value = sepc;
       riscv_pkg::CsrScause: csr_current_value = scause;
       riscv_pkg::CsrStval: csr_current_value = stval;
       riscv_pkg::CsrSatp: csr_current_value = satp;
-      riscv_pkg::CsrMenvcfg: csr_current_value = XLEN'(menvcfg_stce) << riscv_pkg::MenvcfgStceBit;
+      riscv_pkg::CsrMenvcfg: csr_current_value = menvcfg;
       riscv_pkg::CsrStimecmp: csr_current_value = stimecmp;
       riscv_pkg::CsrMperfSel: csr_current_value = perf_counter_select;
       // Debug Mode CSRs
@@ -690,7 +696,7 @@ module csr_file #(
   logic [XLEN-1:0] medeleg_new_value, mideleg_new_value, mip_new_value, sip_new_value;
   logic [XLEN-1:0] stvec_new_value, scounteren_new_value, sscratch_new_value;
   logic [XLEN-1:0] sepc_new_value, scause_new_value, stval_new_value, satp_new_value;
-  logic [XLEN-1:0] menvcfg_new_value, stimecmp_new_value;
+  logic [XLEN-1:0] menvcfg_new_value, senvcfg_new_value, stimecmp_new_value;
   logic [XLEN-1:0] mperfsel_new_value, mperfctl_new_value;
   logic [XLEN-1:0] dcsr_new_value, dpc_new_value, dscratch0_new_value, dscratch1_new_value;
   logic [XLEN-1:0] ddata_new_value;
@@ -722,9 +728,8 @@ module csr_file #(
   assign scause_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, scause);
   assign stval_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, stval);
   assign satp_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, satp);
-  assign menvcfg_new_value = zicsr_rmw(
-      csr_rmw_keep, csr_rmw_set, XLEN'(menvcfg_stce) << riscv_pkg::MenvcfgStceBit
-  );
+  assign menvcfg_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, menvcfg);
+  assign senvcfg_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, senvcfg);
   assign stimecmp_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, stimecmp);
   assign mperfsel_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, perf_counter_select);
   // mperfctl reads 0, so its base is 0.
@@ -779,6 +784,7 @@ module csr_file #(
       riscv_pkg::CsrSip: csr_local_new_value = sip_new_value;
       riscv_pkg::CsrStvec: csr_local_new_value = stvec_new_value;
       riscv_pkg::CsrScounteren: csr_local_new_value = scounteren_new_value;
+      riscv_pkg::CsrSenvcfg: csr_local_new_value = senvcfg_new_value;
       riscv_pkg::CsrSscratch: csr_local_new_value = sscratch_new_value;
       riscv_pkg::CsrSepc: csr_local_new_value = sepc_new_value;
       riscv_pkg::CsrScause: csr_local_new_value = scause_new_value;
@@ -1154,6 +1160,8 @@ module csr_file #(
       satp_mode_sv39             <= 1'b0;
       satp_ppn                   <= '0;
       menvcfg_stce               <= 1'b0;
+      menvcfg_fiom               <= 1'b0;
+      senvcfg_fiom               <= 1'b0;
       stimecmp                   <= 64'hFFFF_FFFF_FFFF_FFFF;
       perf_counter_select        <= '0;
       perf_cache_previous_select <= 1'b0;
@@ -1209,9 +1217,13 @@ module csr_file #(
             satp_ppn <= satp_new_value[SatpPpnBits-1:0];
           end
         end
-        // Sstc: menvcfg implements STCE only (the rest stays WARL-0);
-        // stimecmp is the full 64-bit compare value.
-        riscv_pkg::CsrMenvcfg: menvcfg_stce <= menvcfg_new_value[riscv_pkg::MenvcfgStceBit];
+        // menvcfg implements FIOM and STCE, senvcfg FIOM (the rest stays
+        // WARL-0); stimecmp is the full 64-bit compare value.
+        riscv_pkg::CsrMenvcfg: begin
+          menvcfg_stce <= menvcfg_new_value[riscv_pkg::MenvcfgStceBit];
+          menvcfg_fiom <= menvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
+        end
+        riscv_pkg::CsrSenvcfg: senvcfg_fiom <= senvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
         riscv_pkg::CsrStimecmp: stimecmp <= stimecmp_new_value;
         // Without counters the profiling state keeps its reset value.
         // mperfctl reads 0, so a pure read's write-back would clear the bank
@@ -1381,8 +1393,9 @@ module csr_file #(
   // selects with read enable. Addresses must be distinct so the masked
   // OR equals an address mux. ReadCsrAddrs[k] corresponds to read_csr_value[k].
   logic [XLEN-1:0] csr_read_data_comb;
-  localparam int unsigned NumReadCsrs = 42;
+  localparam int unsigned NumReadCsrs = 43;
   localparam logic [12*NumReadCsrs-1:0] ReadCsrAddrs = {
+    riscv_pkg::CsrSenvcfg,  // 42
     riscv_pkg::CsrDdata,  // 41
     riscv_pkg::CsrDscratch1,  // 40
     riscv_pkg::CsrDscratch0,  // 39
@@ -1475,7 +1488,7 @@ module csr_file #(
     read_csr_value[28] = scause;  // CsrScause
     read_csr_value[29] = stval;  // CsrStval
     read_csr_value[30] = satp;  // CsrSatp
-    read_csr_value[31] = XLEN'(menvcfg_stce) << riscv_pkg::MenvcfgStceBit;  // CsrMenvcfg
+    read_csr_value[31] = menvcfg;  // CsrMenvcfg
     read_csr_value[32] = stimecmp;  // CsrStimecmp
     // The profiling data CSRs are 32-bit halves even at RV64 (software
     // reads them in pairs), zero-extended to the bus. With UsePerfCsrHalf
@@ -1495,6 +1508,7 @@ module csr_file #(
     read_csr_value[39] = dscratch0;  // CsrDscratch0
     read_csr_value[40] = dscratch1;  // CsrDscratch1
     read_csr_value[41] = XLEN'(i_dbg_data);  // CsrDdata
+    read_csr_value[42] = senvcfg;  // CsrSenvcfg
   end
   always_comb begin
     csr_read_data_comb = '0;
@@ -2122,6 +2136,7 @@ module csr_file #(
   logic [$bits(mcountinhibit_cy)-1:0] f_old_mcountinhibit_cy;
   logic [$bits(mcountinhibit_ir)-1:0] f_old_mcountinhibit_ir;
   logic [$bits(medeleg_q)-1:0] f_old_medeleg_q;
+  logic [$bits(menvcfg_fiom)-1:0] f_old_menvcfg_fiom;
   logic [$bits(menvcfg_stce)-1:0] f_old_menvcfg_stce;
   logic [$bits(mepc)-1:0] f_old_mepc;
   logic [$bits(mideleg_sei)-1:0] f_old_mideleg_sei;
@@ -2140,6 +2155,7 @@ module csr_file #(
   logic [$bits(satp_ppn)-1:0] f_old_satp_ppn;
   logic [$bits(scause)-1:0] f_old_scause;
   logic [$bits(scounteren_q)-1:0] f_old_scounteren_q;
+  logic [$bits(senvcfg_fiom)-1:0] f_old_senvcfg_fiom;
   logic [$bits(sepc)-1:0] f_old_sepc;
   logic [$bits(sscratch)-1:0] f_old_sscratch;
   logic [$bits(stimecmp)-1:0] f_old_stimecmp;
@@ -2178,6 +2194,7 @@ module csr_file #(
     f_old_mcountinhibit_cy <= mcountinhibit_cy;
     f_old_mcountinhibit_ir <= mcountinhibit_ir;
     f_old_medeleg_q <= medeleg_q;
+    f_old_menvcfg_fiom <= menvcfg_fiom;
     f_old_menvcfg_stce <= menvcfg_stce;
     f_old_mepc <= mepc;
     f_old_mideleg_sei <= mideleg_sei;
@@ -2196,6 +2213,7 @@ module csr_file #(
     f_old_satp_ppn <= satp_ppn;
     f_old_scause <= scause;
     f_old_scounteren_q <= scounteren_q;
+    f_old_senvcfg_fiom <= senvcfg_fiom;
     f_old_sepc <= sepc;
     f_old_sscratch <= sscratch;
     f_old_stimecmp <= stimecmp;
@@ -2228,6 +2246,8 @@ module csr_file #(
       f_old_satp_mode_sv39             <= 1'b0;
       f_old_satp_ppn                   <= '0;
       f_old_menvcfg_stce               <= 1'b0;
+      f_old_menvcfg_fiom               <= 1'b0;
+      f_old_senvcfg_fiom               <= 1'b0;
       f_old_stimecmp                   <= 64'hFFFF_FFFF_FFFF_FFFF;
       f_old_perf_counter_select        <= '0;
       f_old_perf_cache_previous_select <= 1'b0;
@@ -2297,9 +2317,13 @@ module csr_file #(
             f_old_satp_ppn <= csr_new_value[SatpPpnBits-1:0];
           end
         end
-        // Sstc: menvcfg implements STCE only (the rest stays WARL-0);
-        // stimecmp is the full 64-bit compare value.
-        riscv_pkg::CsrMenvcfg: f_old_menvcfg_stce <= csr_new_value[riscv_pkg::MenvcfgStceBit];
+        // menvcfg implements FIOM and STCE, senvcfg FIOM (the rest stays
+        // WARL-0); stimecmp is the full 64-bit compare value.
+        riscv_pkg::CsrMenvcfg: begin
+          f_old_menvcfg_stce <= csr_new_value[riscv_pkg::MenvcfgStceBit];
+          f_old_menvcfg_fiom <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
+        end
+        riscv_pkg::CsrSenvcfg: f_old_senvcfg_fiom <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
         riscv_pkg::CsrStimecmp: f_old_stimecmp <= csr_new_value;
         // Without counters the profiling state keeps its reset value.
         riscv_pkg::CsrMperfSel: if (PerfCountersPresent) f_old_perf_counter_select <= csr_new_value;
@@ -2347,6 +2371,7 @@ module csr_file #(
       assert (mcountinhibit_cy == f_old_mcountinhibit_cy);
       assert (mcountinhibit_ir == f_old_mcountinhibit_ir);
       assert (medeleg_q == f_old_medeleg_q);
+      assert (menvcfg_fiom == f_old_menvcfg_fiom);
       assert (menvcfg_stce == f_old_menvcfg_stce);
       assert (mepc == f_old_mepc);
       assert (mideleg_sei == f_old_mideleg_sei);
@@ -2365,6 +2390,7 @@ module csr_file #(
       assert (satp_ppn == f_old_satp_ppn);
       assert (scause == f_old_scause);
       assert (scounteren_q == f_old_scounteren_q);
+      assert (senvcfg_fiom == f_old_senvcfg_fiom);
       assert (sepc == f_old_sepc);
       assert (sscratch == f_old_sscratch);
       assert (stimecmp == f_old_stimecmp);

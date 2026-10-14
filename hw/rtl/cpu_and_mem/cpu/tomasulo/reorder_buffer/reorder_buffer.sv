@@ -395,7 +395,7 @@ module reorder_buffer #(
   // illegal-instruction at every privilege, as the privileged spec requires.
   // OpenSBI probes optional CSRs by catching that trap, so reading
   // unimplemented CSRs as zero would advertise missing features.
-  // senvcfg exists with no fields (RAZ/WI; S/U make it mandatory), and the
+  // senvcfg exists (S/U make it mandatory) with FIOM as its only field, and the
   // read-only id registers mvendorid/marchid/mimpid/mconfigptr exist and
   // read 0. The machine HPM counters and event selectors (csr_is_mhpm) exist
   // and read 0 with writes ignored.

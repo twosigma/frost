@@ -173,8 +173,9 @@ SUPPORTED_EXTENSIONS = [
 # Allowed filename prefixes for extensions where only a subset of tests
 # applies. privilege: FROST implements M, S, and U modes but no hypervisor.
 # The envcfg tests are left out: they declare Zicbom, Zicboz, and Ssdtso, and
-# FROST's menvcfg implements only STCE. K: FROST implements Zbkb only, which
-# at rv64 is pack/packh/packw/brev8 (zip/unzip are RV32-only encodings).
+# FROST's menvcfg implements only FIOM and STCE. K: FROST implements Zbkb
+# only, which at rv64 is pack/packh/packw/brev8 (zip/unzip are RV32-only
+# encodings).
 EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "privilege": {"ebreak", "ecall", "misalign"},
     "K": {"pack", "packh", "packw", "brev8"},

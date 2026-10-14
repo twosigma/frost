@@ -316,7 +316,7 @@ can be debugged and where each one first stops.
 | `smode_test/` | S-mode: delegation, `sret`, TSR/TVM/TW, supervisor CSRs, counter permissions, CSR existence (illegal CSRs and the read-only-zero machine HPM CSRs), and interrupts |
 | `spanning_test/` | 32-bit instructions that straddle a fetch-word boundary |
 | `sprintf_test/` | `sprintf`/`snprintf` checked against constant expected strings |
-| `sstc_test/` | Sstc: `menvcfg.STCE`, `stimecmp` access rules, and an S-mode timer interrupt through `stimecmp` |
+| `sstc_test/` | Sstc: `menvcfg.STCE`, `stimecmp` access rules, and an S-mode timer interrupt through `stimecmp`; also the writable `menvcfg` and `senvcfg` bits |
 | `strings_test/` | `string.h`, `ctype.h`, and `stdlib.h` functions |
 | `tick_torture/` | CLINT timer re-arming, lost-tick detection, and `wfi` wakeup under DDR traffic |
 | `tomasulo_perf/` | IPC of dependent and independent integer and FP instruction chains, and of a load/AMO loop; `-DTOMASULO_PERF_ENABLE_PROFILE=1` adds profiling-counter reports and fails the run unless the head-load counter split adds up and the reserved counters read 0 |

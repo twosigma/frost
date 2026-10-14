@@ -17,10 +17,11 @@
 /*
  * Test stimecmp and menvcfg.STCE. With STCE=1, the registered comparison
  * mtime >= stimecmp drives STIP and the software STIP bit is dormant.
- * With STCE=0, S-mode stimecmp access is illegal.
+ * With STCE=0, S-mode stimecmp access is illegal. Also check which menvcfg
+ * and senvcfg bits are writable.
  *
- * Use numeric CSR addresses (stimecmp=0x14D, menvcfg=0x30A) so the test does
- * not need Sstc-aware binutils. Handlers return through an mscratch
+ * Use numeric CSR addresses (stimecmp=0x14D, menvcfg=0x30A, senvcfg=0x10A)
+ * so the test does not need Sstc-aware binutils. Handlers return through an mscratch
  * continuation, as in smode_test's run_at_priv.
  */
 
@@ -50,6 +51,7 @@ static void uart_hex(unsigned long v)
 
 #define MIP_STIP (1ul << 5)
 #define MENVCFG_STCE (1ul << 63)
+#define ENVCFG_FIOM (1ul << 0)
 
 #define csr_read_num(num)                                                                          \
     ({                                                                                             \
@@ -172,11 +174,18 @@ int main(void)
     uart_puts("\r\n=== Sstc test ===\r\n");
     set_trap_handler(&m_trap_handler);
 
-    /* A: menvcfg resets to 0; STCE is the only writable bit. */
+    /* A: menvcfg and senvcfg reset to 0. menvcfg implements FIOM and STCE,
+     * senvcfg only FIOM. */
     ok &= report("A menvcfg-reset", csr_read_num(0x30A), 0);
+    ok &= report("A senvcfg-reset", csr_read_num(0x10A), 0);
     csr_write_num(0x30A, ~0ul);
-    ok &= report("A menvcfg-warl", csr_read_num(0x30A), MENVCFG_STCE);
+    ok &= report("A menvcfg-warl", csr_read_num(0x30A), MENVCFG_STCE | ENVCFG_FIOM);
     csr_write_num(0x30A, 0);
+    ok &= report("A menvcfg-clear", csr_read_num(0x30A), 0);
+    csr_write_num(0x10A, ~0ul);
+    ok &= report("A senvcfg-warl", csr_read_num(0x10A), ENVCFG_FIOM);
+    csr_write_num(0x10A, 0);
+    ok &= report("A senvcfg-clear", csr_read_num(0x10A), 0);
 
     /* B: stimecmp is M-accessible regardless of STCE. */
     csr_write_num(0x14D, 0x1122334455667788ul);
