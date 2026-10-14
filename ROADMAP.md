@@ -1,5 +1,98 @@
 # FROST Roadmap
 
+[Prof. John Goodacre](https://github.com/goodacre-manchester) is helping to
+set the direction of this roadmap. The sections are in priority order.
+
+## VCU118 board support
+
+Add the AMD VCU118 (Virtex UltraScale+ VU9P, -2L speed grade) as a second
+board. The port needs board files and build support but no core RTL
+changes: constraints, clocking, the DDR4 controller, and the UART and
+Ethernet connections. The VCU118 gets its own clock target; the X3 stays at
+322.265625 MHz and remains the reference for performance and timing.
+Contributors with the board run its hardware tests. Done means the full
+hardware regression, including Debian, passes on a VCU118.
+
+## Verification
+
+FROST is tested with formal proofs of individual modules, unit benches, full
+programs, the RISC-V architecture tests and riscv-tests, riscv-torture
+programs against Spike, TestRIG against the Sail model, and Debian on the X3.
+Next:
+
+1. Coverage. Merge Verilator line and toggle coverage across the CI runs and
+   add cover points for microarchitectural corner cases, such as a DMA write
+   to a line that an unretired load has read, to show what no test reaches.
+2. Longer random runs. Run TestRIG nightly with thousands of tests per
+   template, and run the cached-DDR program tests with random DDR latency.
+   Add the A extension to the TestRIG comparison, which needs a way to
+   reconcile the reservation rules of FROST and Sail: both are legal, but an
+   SC can succeed under one and fail under the other.
+
+## Memory system
+
+The L2 uses 32-byte lines, but the X3's DDR4 controller transfers 64 bytes
+at a time: one burst on the 64-bit bus, 512 bits at its AXI port. With ECC
+on and no data mask, every 32-byte writeback makes the controller read the
+64 bytes, merge, and write them back, and every 32-byte fill reads 64 bytes
+and keeps half. The plan is 64-byte L2 lines in two 32-byte sectors, so the
+L1 caches, the DMA port, and coherence probes keep 32-byte lines, and a
+32-byte write still allocates without a fill. A line can move as two
+256-bit beats. Measure the change with programs running from DDR, such as
+CoreMark-PRO and Linux.
+
+The DDR controller counts ECC errors, but nothing reports them to software:
+its interrupt is unconnected and `ECC_EN_IRQ` is clear. The cache hierarchy's
+AXI bridge checks error responses only in simulation. The plan is to connect
+ECC reporting, propagate AXI errors to software, and add scrubbing and
+periodic reporting (`CE_CNT` saturates at 255, so it must be read and
+cleared). The hardware regression checks ECC once at the end of a run, which
+catches errors but is not continuous monitoring.
+
+## ASIC-ready RTL
+
+The RTL is portable: Xilinx primitives sit behind `FROST_XILINX_PRIMS`,
+builds without it use portable versions, and CI synthesizes the design with
+Yosys. An ASIC flow also needs:
+
+1. Reset. An FPGA loads declared initial values into registers at
+   configuration; ASIC synthesis ignores them. Every register that relies on
+   one needs a reset or a documented reason its starting value does not
+   matter, checked by simulations that start registers and memories at
+   random values, across several seeds.
+2. Memory wrappers. The CPU's memories use the wrappers in `hw/rtl/lib/ram`,
+   except the instruction memory, which infers its block RAMs in
+   `imem_predecode.sv`. Move those behind the wrappers and list the
+   instances that an ASIC flow replaces with SRAM macros.
+
+## SMP
+
+Two X3 harts with inter-processor interrupts, per-hart PLIC contexts, and
+RVWMO litmus tests. The single-hart queue sizes and lane choices will need
+revisiting against the timing and memory-traffic cost of the second hart.
+
+There are two candidate coherence points. One is the L2, which already
+orders DMA against the L1D, probing the L1D on every coherent request. The
+other is a snoop control unit between the L1D caches and the L2, as in the
+ARM11 MPCore and Cortex-A9. It keeps a copy of each L1D's tags, so a request
+probes only the caches that hold the line; it runs MESI with cache-to-cache
+transfer, and the DMA port connects to it like the Cortex-A9's accelerator
+coherency port.
+
+Either way, the coherence design has to cover everything a hart can hold: L0
+data, outstanding fills, executed but unretired loads, AMOs, LR/SC
+reservations, and DMA. Snooping live load-queue entries is not enough,
+because an entry is freed as soon as its result is staged for the common data
+bus, before the load retires. The DMA observation table, which tracks loads
+until they retire, is the starting point. A tag copy that filters probes must
+also cover data the load queue still holds after the L1D evicts a line. Probe
+data and acknowledgements must keep making progress when every queue is
+full.
+
+Done means Debian running on both harts, multi-hart scaling reported
+separately from single-hart performance, routed timing met, and hours of
+sustained-load testing that repeatedly exercise the recovery paths.
+
 ## Single-core performance
 
 FROST runs CoreMark at 4.27 CoreMark/MHz, 1,375 CoreMark at 322.265625 MHz,
@@ -90,34 +183,24 @@ load queue, its L0 cache, or queue capacities must also update the DMA
 coherence argument: the parameter bounds, and why DMA admission and service
 still make progress, including for loads that have not yet retired.
 
-## SMP
+## Core area
 
-Two X3 harts sharing the L2 as their coherence point, with inter-processor
-interrupts, per-hart PLIC contexts, and RVWMO litmus tests. The single-hart
-queue sizes and lane choices will need revisiting against the timing and
-memory-traffic cost of the second hart.
+A second hart duplicates the core and its L1 caches and shares the L2, the
+DDR controller, the NIC, and the DMA engine. In the X3 build, the core, its
+L1 caches, and its fetch logic use about 107,000 of the design's 164,500
+LUTs, so two harts would use about 26% of the device's LUTs. The limit is
+placement, not capacity: some single-hart placements already show routing
+congestion, and the build meets timing only with its better placements.
+Each LUT cut from the core is saved once per hart. The largest blocks are the
+fetch stage and its predictors, the integer reservation station, the ROB, and
+the two ALUs.
 
-Before implementation, the coherence design has to cover everything a hart
-can hold: L0 data, outstanding fills, executed but unretired loads, AMOs,
-LR/SC reservations, and DMA. Snooping live load-queue entries is not enough,
-because an entry is freed as soon as its result is staged for the common data
-bus, before the load retires. The DMA observation table, which tracks loads
-until they retire, is the starting point. Probe data and acknowledgements must
-keep making progress when every queue is full.
+## Timing margin
 
-Done means Debian running on both harts, multi-hart scaling reported
-separately from single-hart performance, routed timing met, and hours of
-sustained-load testing that repeatedly exercise the recovery paths.
-
-## Memory error handling
-
-The DDR controller counts ECC errors, but nothing reports them to software:
-its interrupt is unconnected and `ECC_EN_IRQ` is clear. The cache hierarchy's
-AXI bridge checks error responses only in simulation. The plan is to connect
-ECC reporting, propagate AXI errors to software, and add scrubbing and
-periodic reporting (`CE_CNT` saturates at 255, so it must be read and
-cleared). The hardware regression checks ECC once at the end of a run, which
-catches errors but is not continuous monitoring.
+The X3 build meets 322.265625 MHz only with its better placements: the flow
+places several candidates and keeps one that qualifies (see
+[X3 placement](fpga/README.md#x3-placement)). The goal is enough slack that a
+single default placement meets timing.
 
 ## Deferred
 
