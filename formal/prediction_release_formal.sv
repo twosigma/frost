@@ -56,7 +56,7 @@ module prediction_release_formal #(
   (* anyseq *) logic i_prediction_requires_pc_reg_handoff;
   (* anyseq *) logic i_prediction_already_emitted;
   (* anyseq *) logic i_sel_nop;
-  (* anyseq *) logic i_sel_nop_for_pc;
+  (* anyseq *) logic i_sel_nop_wcs0_for_pc;
   (* anyseq *) logic i_slot2_prediction_request;
   (* anyseq *) logic [XLEN-1:0] i_slot2_predicted_target;
   (* anyseq *) logic i_slot1_aliases_slot2_candidate;
@@ -240,7 +240,9 @@ module prediction_release_formal #(
       .i_prediction_requires_pc_reg_handoff,
       .i_prediction_holdoff(prediction_holdoff),
       .i_prediction_already_emitted,
-      .i_sel_nop(i_sel_nop_for_pc),
+      // pc_controller adds raw WCS to this squash itself, as IF's sel_nop
+      // does.
+      .i_sel_nop_wcs0(i_sel_nop_wcs0_for_pc),
       .i_slot2_prediction_used(slot2_prediction_used),
       .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .i_slot2_prediction_used_for_fetch_mux(slot2_prediction_used_for_pc),

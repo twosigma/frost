@@ -67,7 +67,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_prediction_requires_pc_reg_handoff.value = 0
     dut.i_prediction_holdoff.value = 0
     dut.i_prediction_already_emitted.value = 0
-    dut.i_sel_nop.value = 0
+    dut.i_sel_nop_wcs0.value = 0
     dut.i_slot2_valid.value = 0
     dut.i_slot2_prediction_used.value = 0
     dut.i_slot2_prediction_used_for_pc.value = 0

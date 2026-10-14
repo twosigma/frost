@@ -795,6 +795,7 @@ module if_stage #(
   logic live_prediction_emits_with_output;
   logic window_resteer_pc_reg;
   logic pc_control_sel_nop;
+  logic sel_nop_existing_pc_control;
   logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_fetch_advance_sel_one, pc_fetch_advance_sel_two;
   logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel_one, pc_reg_advance_sel_two;
   logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel_nop;
@@ -851,7 +852,9 @@ module if_stage #(
       .i_prediction_requires_pc_reg_handoff(prediction_requires_pc_reg_handoff),
       .i_prediction_holdoff(prediction_holdoff),
       .i_prediction_already_emitted(live_prediction_emits_with_output),
-      .i_sel_nop(pc_control_sel_nop),
+      // pc_control_sel_nop without the served-window check, which
+      // pc_controller adds back itself.
+      .i_sel_nop_wcs0(sel_nop_existing_pc_control),
 
       // Slot-2 redirect, plus its staged and live parts (split for timing).
       .i_slot2_prediction_used(slot2_prediction_used),
@@ -1429,7 +1432,6 @@ module if_stage #(
   // redirects. Its state clears on full flush, so omit that flush term for
   // timing. Packet consumers retain the full squash.
   logic flush_pc_control;
-  logic sel_nop_existing_pc_control;
   assign flush_pc_control = (i_pipeline_ctrl.flush || flush_for_c_ext_safe) && !i_flush_all;
   assign sel_nop_existing_pc_control = flush_pc_control || !fetch_progress ||
                    reset_holdoff ||

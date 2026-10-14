@@ -24,7 +24,9 @@
   pc_reg_precompute keeps its adders separate from the bundle-size mux.
   Compute each result for one-wide, two-wide, and NOP packets, then select
   with slot-2 validity and i_sel_nop. Fetch PC results also apply the
-  redirect/reset holdoff at the final selection.
+  redirect/reset holdoff at the final selection. The relations of the next
+  pc_reg select with i_sel_nop_wcs0 instead, and come with a NOP version
+  (see the relation block near the end).
 
   The hierarchy is kept so these late selects stay in this module's own LUTs
   instead of merging with pc_controller's logic.
@@ -40,6 +42,10 @@ module pc_increment_calculator #(
     input logic [XLEN-1:0] i_pending_prediction_pc,
 
     input logic i_sel_nop,  // IF emits a NOP: the window may be stale, so its sizes are unreliable
+    // i_sel_nop with IF's served-window check passing. i_sel_nop is this or
+    // the check's failure, which arrives late, so only the relation outputs
+    // use it.
+    input logic i_sel_nop_wcs0,
 
     // Encoded instruction-bundle advance: +2/+4 one-wide, +4/+6/+8 for
     // two-wide bundles (RVC+RVC, RVC+32b / 32b+RVC, 32b+32b). These merged
@@ -72,12 +78,16 @@ module pc_increment_calculator #(
     // Precomputed (o_seq_next_pc_reg != i_pc) for pc_controller's
     // pending-prediction decision (see the compare block near the end).
     output logic o_seq_next_pc_reg_neq_pc,
-    // How o_seq_next_pc_reg and i_pc_reg relate to the pending branch PC and
-    // to i_pc, which pc_controller captures as the branch PC. pc_controller
-    // registers pc_reg's relation from these (see the relation block near
-    // the end).
-    output riscv_pkg::pc_pending_rel_t o_seq_next_pc_reg_rel_pending,
-    output riscv_pkg::pc_pending_rel_t o_seq_next_pc_reg_rel_fetch,
+    // How the next sequential pc_reg and i_pc_reg relate to the pending
+    // branch PC and to i_pc, which pc_controller captures as the branch PC.
+    // pc_controller registers pc_reg's relation from these (see the relation
+    // block near the end). The next pc_reg's relations come in two versions:
+    // _wcs0 is o_seq_next_pc_reg's relation when i_sel_nop equals
+    // i_sel_nop_wcs0, and _nop its relation when i_sel_nop is set.
+    output riscv_pkg::pc_pending_rel_t o_seq_next_pc_reg_rel_pending_wcs0,
+    output riscv_pkg::pc_pending_rel_t o_seq_next_pc_reg_rel_fetch_wcs0,
+    output riscv_pkg::pc_pending_rel_t o_seq_next_pc_reg_rel_pending_nop,
+    output riscv_pkg::pc_pending_rel_t o_seq_next_pc_reg_rel_fetch_nop,
     output riscv_pkg::pc_pending_rel_t o_pc_reg_rel_pending,
     output riscv_pkg::pc_pending_rel_t o_pc_reg_rel_fetch
 );
@@ -546,7 +556,10 @@ module pc_increment_calculator #(
   // these, which keeps its wide compares out of the PC loop. Relate each
   // pc_reg candidate i_pc_reg + 2a (a = 0 for the hold, 1..4 for the +2..+8
   // advances) to both PCs, then select with the same controls as
-  // o_seq_next_pc_reg.
+  // o_seq_next_pc_reg, except that i_sel_nop_wcs0 takes the place of the
+  // late i_sel_nop. The NOP version is the hold-or-NOP select alone. When
+  // the served-window check fails, i_sel_nop is set, so pc_controller picks
+  // between the two versions with the failure itself, as its last select.
   localparam int unsigned NRelAdvances = 5;
   logic [NRelAdvances-1:0] pc_reg_hw_wraps;
   assign pc_reg_hw_wraps[0] = 1'b0;
@@ -625,51 +638,50 @@ module pc_increment_calculator #(
       endcase
     end
   end
+  // pc_reg holds on holdoff and otherwise advances by the NOP shape.
+  logic [4:0] rel_pending_hold_or_nop, rel_fetch_hold_or_nop;
+  assign rel_pending_hold_or_nop = seq_sel_holdoff ? rel_pending_by_advance[0] :
+                                                     rel_pending_shape[ShapeNop];
+  assign rel_fetch_hold_or_nop = seq_sel_holdoff ? rel_fetch_by_advance[0] :
+                                                   rel_fetch_shape[ShapeNop];
+  assign o_seq_next_pc_reg_rel_pending_nop = rel_pending_hold_or_nop;
+  assign o_seq_next_pc_reg_rel_fetch_nop = rel_fetch_hold_or_nop;
 `ifdef FROST_XILINX_PRIMS
   for (genvar b = 0; b < 5; b++) begin : gen_rel_bit
-    logic pending_hold_or_nop;
-    logic fetch_hold_or_nop;
-    assign pending_hold_or_nop = seq_sel_holdoff ? rel_pending_by_advance[0][b] :
-                                                   rel_pending_shape[ShapeNop][b];
-    assign fetch_hold_or_nop = seq_sel_holdoff ? rel_fetch_by_advance[0][b] :
-                                                 rel_fetch_shape[ShapeNop][b];
     LUT6 #(
         .INIT(LateSelRegInit)
     ) u_pending (
         .I0(seq_sel_holdoff),
-        .I1(i_sel_nop),
+        .I1(i_sel_nop_wcs0),
         .I2(i_slot2_valid),
-        .I3(pending_hold_or_nop),
+        .I3(rel_pending_hold_or_nop[b]),
         .I4(rel_pending_shape[ShapeTwo][b]),
         .I5(rel_pending_shape[ShapeOne][b]),
-        .O (o_seq_next_pc_reg_rel_pending[b])
+        .O (o_seq_next_pc_reg_rel_pending_wcs0[b])
     );
     LUT6 #(
         .INIT(LateSelRegInit)
     ) u_fetch (
         .I0(seq_sel_holdoff),
-        .I1(i_sel_nop),
+        .I1(i_sel_nop_wcs0),
         .I2(i_slot2_valid),
-        .I3(fetch_hold_or_nop),
+        .I3(rel_fetch_hold_or_nop[b]),
         .I4(rel_fetch_shape[ShapeTwo][b]),
         .I5(rel_fetch_shape[ShapeOne][b]),
-        .O (o_seq_next_pc_reg_rel_fetch[b])
+        .O (o_seq_next_pc_reg_rel_fetch_wcs0[b])
     );
   end
 `else
   always_comb begin
-    if (seq_sel_holdoff) begin
-      o_seq_next_pc_reg_rel_pending = rel_pending_by_advance[0];
-      o_seq_next_pc_reg_rel_fetch   = rel_fetch_by_advance[0];
-    end else if (i_sel_nop) begin
-      o_seq_next_pc_reg_rel_pending = rel_pending_shape[ShapeNop];
-      o_seq_next_pc_reg_rel_fetch   = rel_fetch_shape[ShapeNop];
+    if (seq_sel_holdoff || i_sel_nop_wcs0) begin
+      o_seq_next_pc_reg_rel_pending_wcs0 = rel_pending_hold_or_nop;
+      o_seq_next_pc_reg_rel_fetch_wcs0   = rel_fetch_hold_or_nop;
     end else if (i_slot2_valid) begin
-      o_seq_next_pc_reg_rel_pending = rel_pending_shape[ShapeTwo];
-      o_seq_next_pc_reg_rel_fetch   = rel_fetch_shape[ShapeTwo];
+      o_seq_next_pc_reg_rel_pending_wcs0 = rel_pending_shape[ShapeTwo];
+      o_seq_next_pc_reg_rel_fetch_wcs0   = rel_fetch_shape[ShapeTwo];
     end else begin
-      o_seq_next_pc_reg_rel_pending = rel_pending_shape[ShapeOne];
-      o_seq_next_pc_reg_rel_fetch   = rel_fetch_shape[ShapeOne];
+      o_seq_next_pc_reg_rel_pending_wcs0 = rel_pending_shape[ShapeOne];
+      o_seq_next_pc_reg_rel_fetch_wcs0   = rel_fetch_shape[ShapeOne];
     end
   end
 `endif
@@ -680,10 +692,10 @@ module pc_increment_calculator #(
     assert (o_seq_next_pc_reg_neq_pc == (seq_sel_holdoff ? neq_hold : i_sel_nop ?
         neq_advance_sel_shape[ShapeNop] : i_slot2_valid ? neq_advance_sel_shape[ShapeTwo] :
         neq_advance_sel_shape[ShapeOne]));
-    assert ({o_seq_next_pc_reg_rel_pending, o_seq_next_pc_reg_rel_fetch} == (seq_sel_holdoff ?
-        {rel_pending_by_advance[0], rel_fetch_by_advance[0]} : i_sel_nop ?
-        {rel_pending_shape[ShapeNop], rel_fetch_shape[ShapeNop]} : i_slot2_valid ?
-        {rel_pending_shape[ShapeTwo], rel_fetch_shape[ShapeTwo]} :
+    assert ({o_seq_next_pc_reg_rel_pending_wcs0, o_seq_next_pc_reg_rel_fetch_wcs0} ==
+        (seq_sel_holdoff ? {rel_pending_by_advance[0], rel_fetch_by_advance[0]} :
+        i_sel_nop_wcs0 ? {rel_pending_shape[ShapeNop], rel_fetch_shape[ShapeNop]} :
+        i_slot2_valid ? {rel_pending_shape[ShapeTwo], rel_fetch_shape[ShapeTwo]} :
         {rel_pending_shape[ShapeOne], rel_fetch_shape[ShapeOne]}));
   end
 `endif
@@ -703,17 +715,34 @@ module pc_increment_calculator #(
   endfunction
 
 `ifndef SYNTHESIS
+  // The next pc_reg each relation version describes: o_seq_next_pc_reg's
+  // select with i_sel_nop_wcs0 for _wcs0, and the hold-or-NOP value for
+  // _nop.
+  logic [XLEN-1:0] seq_next_pc_reg_wcs0_ref;
+  assign seq_next_pc_reg_wcs0_ref = (seq_sel_holdoff || i_sel_nop_wcs0) ?
+      seq_next_pc_reg_hold_or_nop :
+      i_slot2_valid ? pc_reg_normal_shape[ShapeTwo] : pc_reg_normal_shape[ShapeOne];
   // The 1-bit precompute must track the wide compare exactly.
   always_comb begin
     if (o_seq_next_pc_reg_neq_pc !== (o_seq_next_pc_reg != i_pc)) begin
       $error("pc_increment_calculator: o_seq_next_pc_reg_neq_pc mismatch");
     end
     if (!$isunknown(
-            {o_seq_next_pc_reg, i_pc_reg, i_pc, i_pending_prediction_pc}
-        ) && ((o_seq_next_pc_reg_rel_pending !== pending_rel_reference(
-            o_seq_next_pc_reg, i_pending_prediction_pc
-        )) || (o_seq_next_pc_reg_rel_fetch !== pending_rel_reference(
-            o_seq_next_pc_reg, i_pc
+            {
+              seq_next_pc_reg_wcs0_ref,
+              seq_next_pc_reg_hold_or_nop,
+              i_pc_reg,
+              i_pc,
+              i_pending_prediction_pc
+            }
+        ) && ((o_seq_next_pc_reg_rel_pending_wcs0 !== pending_rel_reference(
+            seq_next_pc_reg_wcs0_ref, i_pending_prediction_pc
+        )) || (o_seq_next_pc_reg_rel_fetch_wcs0 !== pending_rel_reference(
+            seq_next_pc_reg_wcs0_ref, i_pc
+        )) || (o_seq_next_pc_reg_rel_pending_nop !== pending_rel_reference(
+            seq_next_pc_reg_hold_or_nop, i_pending_prediction_pc
+        )) || (o_seq_next_pc_reg_rel_fetch_nop !== pending_rel_reference(
+            seq_next_pc_reg_hold_or_nop, i_pc
         )) || (o_pc_reg_rel_pending !== pending_rel_reference(
             i_pc_reg, i_pending_prediction_pc
         )) || (o_pc_reg_rel_fetch !== pending_rel_reference(
@@ -721,20 +750,41 @@ module pc_increment_calculator #(
         )))) begin
       $error("pc_increment_calculator: pending-PC relation mismatch");
     end
+    // i_sel_nop is i_sel_nop_wcs0 or the served-window failure, so it is
+    // set whenever i_sel_nop_wcs0 is.
+    if (i_sel_nop_wcs0 === 1'b1 && i_sel_nop !== 1'b1) begin
+      $error("pc_increment_calculator: i_sel_nop_wcs0 set without i_sel_nop");
+    end
   end
 `endif
 
 `ifdef PC_INCREMENT_RELATION_PROOF
+  logic [XLEN-1:0] f_seq_next_pc_reg_wcs0;
+  assign f_seq_next_pc_reg_wcs0 = (seq_sel_holdoff || i_sel_nop_wcs0) ?
+      seq_next_pc_reg_hold_or_nop :
+      i_slot2_valid ? pc_reg_normal_shape[ShapeTwo] : pc_reg_normal_shape[ShapeOne];
   always_comb begin
     assert (neq_plus2 == (pc_reg_if_compressed != i_pc));
     assert (neq_plus4 == (pc_reg_if_32bit != i_pc));
     assert (neq_plus6 == (pc_reg_plus_6 != i_pc));
     assert (neq_plus8 == (pc_reg_plus_8 != i_pc));
     assert (o_seq_next_pc_reg_neq_pc == (o_seq_next_pc_reg != i_pc));
-    assert (o_seq_next_pc_reg_rel_pending == pending_rel_reference(
-        o_seq_next_pc_reg, i_pending_prediction_pc
-    ));
-    assert (o_seq_next_pc_reg_rel_fetch == pending_rel_reference(o_seq_next_pc_reg, i_pc));
+    assert ({o_seq_next_pc_reg_rel_pending_wcs0, o_seq_next_pc_reg_rel_fetch_wcs0} == {
+      pending_rel_reference(
+        f_seq_next_pc_reg_wcs0, i_pending_prediction_pc
+    ), pending_rel_reference(
+        f_seq_next_pc_reg_wcs0, i_pc
+    )});
+    assert ({o_seq_next_pc_reg_rel_pending_nop, o_seq_next_pc_reg_rel_fetch_nop} == {
+      pending_rel_reference(
+        seq_next_pc_reg_hold_or_nop, i_pending_prediction_pc
+    ), pending_rel_reference(
+        seq_next_pc_reg_hold_or_nop, i_pc
+    )});
+    // With i_sel_nop at either version's select, o_seq_next_pc_reg is that
+    // version's value.
+    if (i_sel_nop == i_sel_nop_wcs0) assert (o_seq_next_pc_reg == f_seq_next_pc_reg_wcs0);
+    if (i_sel_nop) assert (o_seq_next_pc_reg == seq_next_pc_reg_hold_or_nop);
     assert (o_pc_reg_rel_pending == pending_rel_reference(i_pc_reg, i_pending_prediction_pc));
     assert (o_pc_reg_rel_fetch == pending_rel_reference(i_pc_reg, i_pc));
   end
