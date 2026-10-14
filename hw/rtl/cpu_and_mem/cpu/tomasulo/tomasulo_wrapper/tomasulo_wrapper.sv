@@ -3480,6 +3480,7 @@ module tomasulo_wrapper #(
       .i_flush_en(lq_partial_flush_en),
       .i_flush_tag(i_flush_tag),
       .i_flush_all(speculative_flush_all),
+      .i_full_flush(full_flush_all),
       .i_early_recovery_flush(i_early_recovery_flush),
 
       // Status

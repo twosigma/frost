@@ -192,6 +192,9 @@ module load_queue #(
     input logic                                        i_flush_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,
     input logic                                        i_flush_all,
+    // A trap, xRET, or FENCE-class flush. i_flush_all is this or commit-time
+    // misprediction recovery, and only this cancels the LR reservation.
+    input logic                                        i_full_flush,
     input logic                                        i_early_recovery_flush,
 
     // =========================================================================
@@ -878,6 +881,14 @@ module load_queue #(
   end
   assign coh_reservation_inval = i_coh_inval_valid && reservation_valid &&
       (i_coh_inval_addr[XLEN-1:CohLineLsb] == reservation_addr[XLEN-1:CohLineLsb]);
+  // The hart's own AMO write to the reserved doubleword cancels the
+  // reservation, as a store there does (i_reservation_snoop_invalidate).
+  logic amo_reservation_inval;
+  assign amo_reservation_inval = amo_cache_inv && reservation_valid &&
+      (amo_write_addr_q[XLEN-1:3] == reservation_addr[XLEN-1:3]);
+  logic reservation_clear;
+  assign reservation_clear = i_sc_clear_reservation || i_reservation_snoop_invalidate ||
+      coh_reservation_inval || amo_reservation_inval;
   // The hold is a registered compare of the staged atomic's line against the
   // mirror. A newly captured or replaced atomic has no compare of its own
   // yet, so it waits one cycle before its first launch (coh_hold_valid_q);
@@ -2832,7 +2843,11 @@ module load_queue #(
       cs_drop <= cs_valid_next;
       cached_launch_hold_q <= cached_launch_hold_next;
       cs_any_q <= |cs_valid_next;
-      reservation_valid <= 1'b0;
+      // Commit-time misprediction recovery keeps the reservation. An LR
+      // launches only at the ROB head, so the LR that set it retired before
+      // the mispredicted branch, and the flush removes only instructions
+      // after that branch.
+      if (i_full_flush || reservation_clear) reservation_valid <= 1'b0;
       amo_state <= AMO_IDLE;
     end else begin
       // -----------------------------------------------------------------
@@ -2985,9 +3000,7 @@ module load_queue #(
       // -----------------------------------------------------------------
       // Reservation clear (priority: clear wins over set)
       // -----------------------------------------------------------------
-      if (i_sc_clear_reservation || i_reservation_snoop_invalidate || coh_reservation_inval) begin
-        reservation_valid <= 1'b0;
-      end
+      if (reservation_clear) reservation_valid <= 1'b0;
 
       // -----------------------------------------------------------------
       // Entry Freeing + Head Advancement

@@ -277,11 +277,17 @@ The LR reservation (`o_reservation_valid`, `o_reservation_addr`) lives here.
 An LR reads memory and sets the reservation when its response is accepted.
 Devices hold no reservations, so an LR to the device quadrant faults instead
 (see [Completion](#completion)), with no read and no reservation. The
-reservation clears on any SC commit (`i_sc_clear_reservation`), a store write
-to the reserved dword (the SQ's write-launch snoop), a DMA write to its
-32-byte line, or a full flush. An LR in flight when a DMA write hits its line,
-or whose response lands on the invalidation edge, sets no reservation. The SC
-goes through the SQ;
+reservation clears on any SC commit (`i_sc_clear_reservation`), a store or AMO
+write to the reserved dword (the SQ's write-launch snoop, or the AMO's write
+completing), a DMA write to its 32-byte line, or a trap, xRET, or FENCE-class
+flush (`i_full_flush`). A branch recovered at commit, the other source of a
+full flush, keeps it: an LR launches only at the ROB head, so the LR that set
+the reservation retired before the branch, and the flush removes only
+instructions after the branch. For DMA writes the reservation set is the
+32-byte line, and an SC to another dword of it fails, which the specification
+allows. An LR in flight when a DMA write hits its line, or whose response
+lands on the invalidation edge, sets no reservation. The SC goes through the
+SQ;
 [`sc_pending_unit`](../tomasulo_wrapper/atomics/sc_pending_unit.sv) decides
 success when the SC fires at the ROB head, from the reservation and the SC's
 dword.
@@ -368,7 +374,7 @@ sequence. The LQ's part, all on 32-byte lines:
 | Entries, staged load, `cdb_stage` | Those younger than the flush tag are dropped | All dropped |
 | Fast-tier load in flight | If killed, its response is drained, now or later (`drop_mem_response_pending`) | Still parked in the router: canceled, nothing owed. Accepted: response drained, now or later |
 | Cached slots | Killed ones drop-marked | All drop-marked, except one still parked in the router, which is freed |
-| Reservation | Kept | Cleared |
+| Reservation | Kept | Cleared, except for a branch recovered at commit (`i_full_flush` low) |
 | L0 | Kept | Kept; a response on this cycle does not fill |
 
 In the core, `i_flush_en` is the registered early-recovery pulse. It matches

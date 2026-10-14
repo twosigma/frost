@@ -2727,6 +2727,100 @@ async def test_lr_reservation_cleared_by_flush(dut: Any) -> None:
 
 
 # ============================================================================
+# LR reservation kept by commit-time misprediction recovery
+# ============================================================================
+async def set_reservation(dut_if: LQInterface, model: LQModel, address: int) -> None:
+    """Run an LR.W with ROB tag 0 at the head and accept its result."""
+    dut_if.drive_alloc(rob_tag=0, size=MEM_SIZE_WORD, is_lr=True)
+    model.alloc(0, False, MEM_SIZE_WORD, False, is_lr=True)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_addr_update(rob_tag=0, address=address)
+    model.addr_update(0, address)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(True)
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"], "LR should issue"
+    await dut_if.step()
+
+    dut_if.drive_mem_response(0x1234)
+    model.mem_response(0x1234)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid and result.tag == 0, "LR result should reach the CDB"
+    await accept_fu_complete(dut_if)
+    assert dut_if.read_reservation_valid(), "Reservation should be set"
+    assert dut_if.read_reservation_addr() == address
+
+
+@cocotb.test()
+async def test_lr_reservation_kept_by_commit_recovery_flush(dut: Any) -> None:
+    """Commit-time misprediction recovery's flush keeps the reservation."""
+    dut_if, model = await setup(dut)
+    await set_reservation(dut_if, model, 0x3000)
+
+    dut_if.drive_flush_all(full=False)
+    model.flush_all(full=False)
+    await dut_if.step()
+    dut_if.clear_flush_all()
+
+    assert dut_if.read_reservation_valid(), "Commit recovery kept the reservation"
+    assert dut_if.read_reservation_addr() == 0x3000
+
+    # A clear that lands with the recovery flush still applies.
+    dut_if.drive_flush_all(full=False)
+    dut_if.drive_sc_clear_reservation(True)
+    model.flush_all(full=False)
+    model.sc_clear_reservation()
+    await dut_if.step()
+    dut_if.clear_flush_all()
+    dut_if.drive_sc_clear_reservation(False)
+
+    assert not dut_if.read_reservation_valid(), "SC clear during recovery flush"
+
+
+# ============================================================================
+# AMO write to the reserved doubleword
+# ============================================================================
+@cocotb.test()
+async def test_amo_write_cancels_reservation_on_its_doubleword(dut: Any) -> None:
+    """An AMO write cancels the reservation only within the reserved doubleword."""
+    dut_if, model = await setup(dut)
+
+    from .lq_interface import AMOADD_W
+
+    await set_reservation(dut_if, model, 0x5000)
+    for rob_tag, address, kept in ((1, 0x5008, True), (2, 0x5004, False)):
+        dut_if.drive_alloc(
+            rob_tag=rob_tag, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOADD_W
+        )
+        await dut_if.step()
+        dut_if.clear_alloc()
+        dut_if.drive_addr_update(rob_tag=rob_tag, address=address, amo_rs2=1)
+        await dut_if.step()
+        dut_if.clear_addr_update()
+        await complete_prepared_amo(
+            dut_if,
+            rob_tag=rob_tag,
+            address=address,
+            old_value=0x40,
+            expected_write=0x41,
+            description=f"AMOADD.W at 0x{address:x}",
+        )
+        assert dut_if.read_reservation_valid() == kept, (
+            f"AMO at 0x{address:x}: reservation valid should be {kept}"
+        )
+
+
+# ============================================================================
 # LR reservation cleared by SC
 # ============================================================================
 @cocotb.test()

@@ -411,6 +411,9 @@ class LQModel:
         e.data = self.amo_old_value & MASK64
         e.data_valid = True
         self.amo_state = 0
+        # The write cancels a reservation on its doubleword, as a store does.
+        if self.reservation_valid and (e.address >> 3) == (self.reservation_addr >> 3):
+            self.reservation_valid = False
 
     def sc_clear_reservation(self) -> None:
         """Clear reservation on SC commit."""
@@ -462,9 +465,16 @@ class LQModel:
         while self.count and not self.entries[self.head_idx].valid:
             self.head_ptr = (self.head_ptr + 1) % self._ptr_wrap
 
-    def flush_all(self) -> None:
-        """Full flush: clear all state (including reservation)."""
+    def flush_all(self, full: bool = True) -> None:
+        """Full flush: clear all state.
+
+        A trap, xRET, or FENCE-class flush also clears the reservation;
+        commit-time misprediction recovery (full=False) keeps it.
+        """
+        reservation = (self.reservation_valid, self.reservation_addr)
         self.reset()
+        if not full:
+            self.reservation_valid, self.reservation_addr = reservation
 
     def mem_response_drain(self, data: int) -> None:
         """Handle memory response with drain logic.
