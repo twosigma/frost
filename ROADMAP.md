@@ -3,6 +3,29 @@
 [Prof. John Goodacre](https://github.com/goodacre-manchester) is helping to
 set the direction of this roadmap. The sections are in priority order.
 
+## Memory system
+
+The L2 uses 32-byte lines, but the X3's DDR4 controller transfers 64 bytes
+at a time: one burst on the 64-bit bus, 512 bits at its AXI port. With ECC
+on and no data mask, every 32-byte writeback makes the controller read the
+64 bytes, merge, and write them back, and every 32-byte fill reads 64 bytes
+and keeps half. The plan follows John Goodacre's design: 64-byte L2 lines
+behind an adapter that maps each 32-byte request onto its half of a line, so
+the L1 caches, the DMA port, and coherence probes keep 32-byte lines. The L2
+writes back only whole lines, each as a single 512-bit AXI transfer, and a
+32-byte write that misses fetches its line and merges into it. Measure the
+change with programs running from DDR, such as CoreMark-PRO and Linux, and
+with NIC receive traffic, since a write to a line the L2 does not hold reads
+the line first.
+
+The DDR controller counts ECC errors, but nothing reports them to software:
+its interrupt is unconnected and `ECC_EN_IRQ` is clear. The cache hierarchy's
+AXI bridge checks error responses only in simulation. The plan is to connect
+ECC reporting, propagate AXI errors to software, and add scrubbing and
+periodic reporting (`CE_CNT` saturates at 255, so it must be read and
+cleared). The hardware regression checks ECC once at the end of a run, which
+catches errors but is not continuous monitoring.
+
 ## VCU118 board support
 
 Add the AMD VCU118 (Virtex UltraScale+ VU9P, -2L speed grade) as a second
@@ -28,31 +51,12 @@ Next:
    takes no longer, and run the cached-DDR program tests with random DDR
    latency, logging the seed.
 
-## Memory system
-
-The L2 uses 32-byte lines, but the X3's DDR4 controller transfers 64 bytes
-at a time: one burst on the 64-bit bus, 512 bits at its AXI port. With ECC
-on and no data mask, every 32-byte writeback makes the controller read the
-64 bytes, merge, and write them back, and every 32-byte fill reads 64 bytes
-and keeps half. The plan is 64-byte L2 lines in two 32-byte sectors, so the
-L1 caches, the DMA port, and coherence probes keep 32-byte lines, and a
-32-byte write still allocates without a fill. A line can move as two
-256-bit beats. Measure the change with programs running from DDR, such as
-CoreMark-PRO and Linux.
-
-The DDR controller counts ECC errors, but nothing reports them to software:
-its interrupt is unconnected and `ECC_EN_IRQ` is clear. The cache hierarchy's
-AXI bridge checks error responses only in simulation. The plan is to connect
-ECC reporting, propagate AXI errors to software, and add scrubbing and
-periodic reporting (`CE_CNT` saturates at 255, so it must be read and
-cleared). The hardware regression checks ECC once at the end of a run, which
-catches errors but is not continuous monitoring.
-
 ## ASIC-ready RTL
 
-The RTL is portable: Xilinx primitives sit behind `FROST_XILINX_PRIMS`,
-builds without it use portable versions, and CI synthesizes the design with
-Yosys. An ASIC flow also needs:
+The RTL is portable: Xilinx primitives sit behind `FROST_XILINX_PRIMS`, and
+builds without it use portable versions. CI runs the portable build through
+the coarse stage of Yosys's generic synthesis, which stops before memories
+and logic are mapped to gates. To be ready for an ASIC, the RTL also needs:
 
 1. Reset. An FPGA loads declared initial values into registers at
    configuration; ASIC synthesis ignores them. Every register that relies on
@@ -63,6 +67,17 @@ Yosys. An ASIC flow also needs:
    except the instruction memory, which infers its block RAMs in
    `imem_predecode.sv`. Move those behind the wrappers and list the
    instances that an ASIC flow replaces with SRAM macros.
+3. An open ASIC flow. Synthesize, place, and route the design with
+   OpenROAD's flow scripts on FreePDK45 (their Nangate45 platform), and
+   report area and timing. The platform has ten metal layers, and the flow
+   scripts include example configurations for large RISC-V cores on it,
+   such as CVA6 and BlackParrot. OpenRAM generates the SRAM macros, because
+   FROST's block RAMs have two ports each and bsg_fakeram models only
+   single-port memories. CI runs the flow start to finish on every pull
+   request and merge, and OpenSTA reports timing after each stage.
+   FreePDK45 is not a manufacturable process, so the flow shows that the
+   RTL maps onto standard cells and SRAM macros and estimates its area and
+   timing; it does not replace a foundry flow.
 
 ## SMP
 
@@ -70,13 +85,13 @@ Two X3 harts with inter-processor interrupts, per-hart PLIC contexts, and
 RVWMO litmus tests. The single-hart queue sizes and lane choices will need
 revisiting against the timing and memory-traffic cost of the second hart.
 
-There are two candidate coherence points. One is the L2, which already
-orders DMA against the L1D, probing the L1D on every coherent request. The
-other is a snoop control unit between the L1D caches and the L2, as in the
-ARM11 MPCore and Cortex-A9. It keeps a copy of each L1D's tags, so a request
-probes only the caches that hold the line; it runs MESI with cache-to-cache
-transfer, and the DMA port connects to it like the Cortex-A9's accelerator
-coherency port.
+There are two candidate coherence points. One is the L2, the ordering point
+for all traffic below the L1s; a sequencer in front of it already probes the
+L1D for every DMA request. The other is a coherence unit at the L1 level,
+between the L1D caches and the L2. It keeps a copy of each L1D's tags, so a
+request probes only the caches that hold the line; it runs MESI with
+cache-to-cache transfer, and the DMA port connects to it as another
+requester.
 
 Either way, the coherence design has to cover everything a hart can hold: L0
 data, outstanding fills, executed but unretired loads, AMOs, LR/SC
@@ -201,7 +216,5 @@ single default placement meets timing.
 - A general three-wide redesign
 - The V and H extensions
 - The full crypto extensions
-- An open-source ASIC flow in the repository, using OpenROAD with an open PDK
-  such as SKY130 or ASAP7
 - Storage beyond the NFS root, such as iSCSI with ext4 or host-backed
   PCIe/virtio block devices; NFS is the supported root filesystem
