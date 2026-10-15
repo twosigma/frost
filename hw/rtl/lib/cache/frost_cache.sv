@@ -502,6 +502,8 @@ module frost_cache #(
 
   logic                     w_valid_q;
   w_op_e                    w_op_q;
+  logic                     w_tag_write_q;  // w_writes_tag, registered for T's row checks
+  logic                     w_data_write_q;  // w_writes_data, likewise
   logic  [   IndexBits-1:0] w_index_q;
   logic  [     TagBits-1:0] w_tag_q;
   logic  [LineAddrBits-1:0] w_line_q;
@@ -631,7 +633,8 @@ module frost_cache #(
   logic [MshrBits-1:0] match_mshr;
   logic match_mergeable, match_waitable;
   logic victim_dirty;
-  logic raw_hazard;  // the row is being written this cycle
+  logic raw_hazard;  // the data port writes T's row this cycle
+  logic tag_write_t_row, tag_write_in_row;  // the tag port writes T's / the incoming row
   logic t_stall, t_done;
   logic t_tag_write_collision, t_tag_response, t_tag_retry;
   logic t_is_read_hit, t_is_write_hit, t_is_alloc, t_is_merge, t_is_waiter;
@@ -642,8 +645,7 @@ module frost_cache #(
   // including an install on the response cycle. This prevents old-tag/new-data
   // hits. One-cycle BRAM hazards are covered by a_hold, conflict, and raw_hazard;
   // only delayed reads need the sticky stale bit.
-  assign t_tag_write_collision =
-      TrackDelayedTagWrites && t_valid_q && tag_we && (tag_waddr == t_index);
+  assign t_tag_write_collision = TrackDelayedTagWrites && t_valid_q && tag_write_t_row;
   assign t_tag_response = (mstate_q == M_IDLE) && t_valid_q && tag_response_valid;
   assign t_tag_retry =
       t_tag_response && ((TrackDelayedTagWrites && t_tag_stale_q) || t_tag_write_collision);
@@ -1042,8 +1044,12 @@ module frost_cache #(
     end
   end
   // Register the selected slot one cycle before its RAM write, for timing.
-  logic                fw_valid_q;
-  logic [MshrBits-1:0] fw_sel_q;
+  // Its row comes along: a slot keeps its line until it is free again, so
+  // fw_index_q is the row of mshr_line_q[fw_sel_q] whenever fw_valid_q, and
+  // neither the write ports nor the row checks below need a slot mux for it.
+  logic                 fw_valid_q;
+  logic [ MshrBits-1:0] fw_sel_q;
+  logic [IndexBits-1:0] fw_index_q;
   assign mshr_write_fire = fw_valid_q && !w_writes_data && !w_writes_tag;
 
   always_ff @(posedge i_clk) begin
@@ -1054,11 +1060,25 @@ module frost_cache #(
       // slot moves to MS_WRITING so it is not picked twice.
       fw_valid_q <= (mstate_q == M_IDLE) && mshr_write_any;
       fw_sel_q   <= mshr_write_sel;
+      fw_index_q <= mshr_line_q[mshr_write_sel][IndexBits-1:0];
     end
   end
 
-  // The row written this cycle (the write-port arbitration below) is T's row.
-  assign raw_hazard = data_row_we && (data_waddr == t_index);
+  // Whether the write ports below write T's row, or the incoming request's,
+  // this cycle. These matter only while the pipeline holds a request, which
+  // is in M_IDLE, where a port writes W's row or a fill's row. Each source's
+  // row is compared and the result selected by registered copies of W's
+  // write decode, so T's decision does not wait on the write-port muxes:
+  // synthesis can share their selects with the data array's write-data mux,
+  // which is a line wide.
+  logic w_row_is_t, fw_row_is_t, w_row_is_in, fw_row_is_in;
+  assign w_row_is_t = (w_index_q == t_index);
+  assign fw_row_is_t = (fw_index_q == t_index);
+  assign w_row_is_in = (w_index_q == in_index);
+  assign fw_row_is_in = (fw_index_q == in_index);
+  assign tag_write_t_row = w_tag_write_q ? w_row_is_t : (fw_valid_q && fw_row_is_t);
+  assign tag_write_in_row = w_tag_write_q ? w_row_is_in : (fw_valid_q && fw_row_is_in);
+  assign raw_hazard = w_data_write_q ? w_row_is_t : (!w_tag_write_q && fw_valid_q && fw_row_is_t);
 
   // Next cycle's MS_RESP slots and the registered responder (see the
   // response port).
@@ -1220,26 +1240,35 @@ module frost_cache #(
       tag_wdata = {1'b1, 1'b0, w_tag_q};  // written back through a slot: valid, clean
     end else if (mshr_write_fire) begin
       data_row_we = 1'b1;
-      data_waddr = mshr_line_q[fw_sel_q][IndexBits-1:0];
+      data_waddr = fw_index_q;
       data_wbyte_en = '1;
       data_wdata = mshr_data_q[fw_sel_q];
       tag_we = 1'b1;
-      tag_waddr = mshr_line_q[fw_sel_q][IndexBits-1:0];
+      tag_waddr = fw_index_q;
       tag_wdata = {1'b1, mshr_write_q[fw_sel_q], mshr_line_q[fw_sel_q][LineAddrBits-1-:TagBits]};
     end
   end
+
+  // W's operation if T completes this cycle.
+  w_op_e w_op_next;
+  assign w_op_next = t_is_write_hit ? W_WRITE_HIT : t_is_alloc ? W_ALLOC :
+      t_is_merge ? W_MERGE : t_is_waiter ? W_WAITER :
+      (t_is_probe_hit && t_probe_inval_q) ? W_PROBE_INVAL :
+      t_probe_dirty ? W_PROBE_CLEAN : W_NONE;
 
   // ===========================================================================
   // Stage A/T/W registers
   // ===========================================================================
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      sk_valid_q    <= 1'b0;
-      t_valid_q     <= 1'b0;
-      reread_q      <= 1'b0;
-      t_tag_stale_q <= 1'b0;
-      w_valid_q     <= 1'b0;
-      w_op_q        <= W_NONE;
+      sk_valid_q     <= 1'b0;
+      t_valid_q      <= 1'b0;
+      reread_q       <= 1'b0;
+      t_tag_stale_q  <= 1'b0;
+      w_valid_q      <= 1'b0;
+      w_op_q         <= W_NONE;
+      w_tag_write_q  <= 1'b0;
+      w_data_write_q <= 1'b0;
     end else begin
       // Skid validity records only a fired request T cannot take this cycle;
       // release it when T takes it.
@@ -1299,9 +1328,9 @@ module frost_cache #(
       // response if crossed. A retry starts a fresh observation window; a
       // same-edge collision wins over that clear.
       if (t_accept) begin
-        t_tag_stale_q <= TrackDelayedTagWrites && tag_we && (tag_waddr == in_index);
+        t_tag_stale_q <= TrackDelayedTagWrites && tag_write_in_row;
       end else if (reread_q) begin
-        t_tag_stale_q <= TrackDelayedTagWrites && tag_we && (tag_waddr == t_index);
+        t_tag_stale_q <= TrackDelayedTagWrites && tag_write_t_row;
       end else if (t_tag_write_collision) begin
         t_tag_stale_q <= 1'b1;
       end else if (t_done) begin
@@ -1310,14 +1339,10 @@ module frost_cache #(
 
       // W: the committed decision.
       w_valid_q <= t_done;
-      if (t_done) begin
-        w_op_q <= t_is_write_hit ? W_WRITE_HIT :
-            t_is_alloc ? W_ALLOC : t_is_merge ? W_MERGE : t_is_waiter ? W_WAITER :
-            (t_is_probe_hit && t_probe_inval_q) ? W_PROBE_INVAL :
-            t_probe_dirty ? W_PROBE_CLEAN : W_NONE;
-      end else begin
-        w_op_q <= W_NONE;
-      end
+      w_op_q <= t_done ? w_op_next : W_NONE;
+      w_tag_write_q <= t_done && ((w_op_next == W_WRITE_HIT) || (w_op_next == W_ALLOC) ||
+                                  (w_op_next == W_PROBE_CLEAN) || (w_op_next == W_PROBE_INVAL));
+      w_data_write_q <= t_done && (w_op_next == W_WRITE_HIT);
     end
   end
 
@@ -1809,6 +1834,21 @@ module frost_cache #(
       // slot comparators never see the walk's writeback slots.
       p_pipeline_empty_during_maintenance :
       assert ((mstate_q == M_IDLE) || (!sk_valid_q && !t_valid_q && !w_valid_q));
+      // A picked fill owns its slot in MS_WRITING, which keeps maintenance
+      // from starting. The fill's registered row and W's registered write
+      // decode match what they copy, and in M_IDLE the per-source row checks
+      // equal their write-port forms.
+      p_fill_owns_writing_slot :
+      assert (!fw_valid_q || ((mstate_q == M_IDLE) && (mshr_state_q[fw_sel_q] == MS_WRITING)));
+      p_fill_row_is_slot_row :
+      assert (!fw_valid_q || (fw_index_q == mshr_line_q[fw_sel_q][IndexBits-1:0]));
+      p_w_write_copies :
+      assert ((w_tag_write_q == w_writes_tag) && (w_data_write_q == w_writes_data));
+      p_row_checks_are_port_forms :
+      assert ((mstate_q != M_IDLE) ||
+              ((tag_write_t_row == (tag_we && (tag_waddr == t_index))) &&
+               (tag_write_in_row == (tag_we && (tag_waddr == in_index))) &&
+               (raw_hazard == (data_row_we && (data_waddr == t_index)))));
       // The per-source accept and tag read enable equal their reference forms.
       p_accept_is_hold_gated :
       assert (t_accept == (in_valid && !a_hold && !reread_q && (!t_valid_q || t_done)));
