@@ -275,8 +275,9 @@ For OpenOCD, GDB, and VS Code use, see the
 ## Build and Simulation
 
 Use the [test guide](../../tests/README.md) for simulation, formal, and Yosys
-runs in the pinned container, and the [FPGA guide](../../fpga/README.md) for
-native Vivado builds. `frost.f` is the system source list and
+runs in the pinned container, the [FPGA guide](../../fpga/README.md) for
+native Vivado builds, and the [ASIC guide](../../asic/README.md) for the
+OpenROAD flow. `frost.f` is the system source list and
 `cpu_and_mem/cpu/cpu_ooo/cpu_ooo.f` the CPU's.
 
 Simulation sets parameters with Verilator `-G` overrides. For the `frost`

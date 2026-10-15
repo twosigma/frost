@@ -211,7 +211,7 @@ class YosysRunner:
                         seen.add(resolved)
                         files.append(file_path)
 
-    def _convert_nic_sources(
+    def convert_nic_sources(
         self, verilog_files: list[str], directory: Path, defines: str, timeout: int
     ) -> list[str]:
         """Lower NIC/MAC SystemVerilog with the image's pinned sv2v frontend.
@@ -223,6 +223,7 @@ class YosysRunner:
         always @* ourselves: sv2v's explicit sensitivity list can contain a
         whole unpacked array, which read_verilog rejects. Keeping always_comb
         instead makes Yosys reject sv2v's otherwise unused loop-index latches.
+        The ASIC flow (asic/orfs.py) prepares its sources the same way.
         """
         nic_directories = {
             self.root_dir / "hw/rtl/net10g",
@@ -290,7 +291,7 @@ class YosysRunner:
         print(f"Using timeout: {timeout_sec}s")
 
         with TemporaryDirectory(prefix="frost-yosys-") as temp_dir:
-            verilog_files = self._convert_nic_sources(
+            verilog_files = self.convert_nic_sources(
                 verilog_files, Path(temp_dir), defines, timeout_sec
             )
             yosys_script = []

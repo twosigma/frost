@@ -100,6 +100,9 @@ fpga/build/*/SUMMARY_*.md
 # Generated X3 checkpoints, IP, placement sweeps and their reports.
 /fpga/build/x3/
 
+# OpenROAD flow sources, databases, logs, and reports (asic/orfs.py).
+/asic/build/
+
 # Local VS Code extension build/package output
 tools/vscode-frost/node_modules/
 tools/vscode-frost/out/

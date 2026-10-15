@@ -314,7 +314,7 @@ long program runs out of cycles, raise its budget.
 ## CI Integration
 
 The [CI workflow](../.github/workflows/ci.yml) runs these checks in the
-pinned Docker image:
+pinned Docker image, except the ASIC flow, which runs in its own image:
 
 | Suite | Configurations |
 | --- | --- |
@@ -326,6 +326,7 @@ pinned Docker image:
 | TestRIG | The saved counterexamples, then new random sequences against Sail, from the engine's templates and from the A-extension generator |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests, synthesis, and formal verification |
+| ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with the large memories mocked, in two chained jobs |
 | Linux | Firmware and root filesystem build, and QEMU boot checks |
 
 The workflow has the exact job filters. The named real-program shards select
