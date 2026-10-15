@@ -21,9 +21,10 @@ The diagram shows the X3 configuration; click it for the full-size version.
   coherent with the caches) with a Linux driver.
 - FreeRTOS and all nine EEMBC CoreMark-PRO workloads.
 - An open-source flow: simulation (Verilator and cocotb), synthesis checks
-  (Yosys), and formal proofs (SymbiYosys) run in a pinned Docker image. AMD
-  Vivado is needed only for the FPGA itself: building bitstreams and
-  programming and loading the board.
+  (Yosys), and formal proofs (SymbiYosys) run in a pinned Docker image, and
+  OpenROAD takes the design from synthesis to GDS on the FreePDK45 process,
+  with the large memories mocked. AMD Vivado is needed only for the FPGA
+  itself: building bitstreams and programming and loading the board.
 - Continuous testing against the RISC-V architecture tests and random
   riscv-torture programs, with Spike as the reference, plus the riscv-tests
   suites and unit benches for the hardware blocks. TestRIG compares FROST
@@ -195,6 +196,7 @@ See the [board guide](boards/README.md) for pinouts, clocking, and adding a boar
 ./scripts/frost.py cocotb directed_traps     # a single target
 ./scripts/frost.py formal                    # formal proofs
 ./scripts/frost.py synthesis                 # open-source synthesis checks (Yosys)
+./asic/orfs.py run                           # OpenROAD flow from synthesis to GDS
 ```
 
 The lint hooks in `check` can modify files, so review the diff afterwards.
@@ -206,9 +208,9 @@ architecture tests and riscv-torture programs against Spike reference
 results, the riscv-tests suites, TestRIG's instruction-by-instruction
 comparison with the Sail RISC-V model, unit benches for the CPU and SoC
 blocks, full programs from on-chip BRAM and from cached DDR, formal proofs,
-synthesis checks, the Ethernet MAC/PCS benches, and QEMU boots of the Linux
-images. The [test guide](tests/README.md#ci-integration) has the details and
-the commands for each suite.
+synthesis checks, the OpenROAD flow, the Ethernet MAC/PCS benches, and QEMU
+boots of the Linux images. The [test guide](tests/README.md#ci-integration)
+has the details and the commands for each suite.
 
 ### Building Software
 
@@ -235,6 +237,7 @@ For native builds outside the container, initialize the submodules first with
 | [tests/](tests/README.md) | Test runners |
 | [verif/](verif/README.md) | Cocotb tests, reference models, and monitors |
 | [formal/](formal/README.md) | Formal verification |
+| [asic/](asic/README.md) | OpenROAD flow on FreePDK45 |
 | [tools/vscode-frost/](tools/vscode-frost/README.md) | VS Code extension |
 | [docs/](docs/) | Debian setup, performance, and toolchain guides; diagrams |
 | [scripts/](scripts/) | Docker wrapper and development tools |
@@ -253,8 +256,10 @@ For native builds outside the container, initialize the submodules first with
 ## Toolchain
 
 The Docker image pins the tools CI uses. Vivado is installed separately on the
-host. [docs/tooling.md](docs/tooling.md) covers native toolchain setup and
-updating the image.
+host, and the ASIC flow runs in OpenROAD-flow-scripts' own image, which
+[asic/orfs.py](asic/README.md#the-orfs-image) pins.
+[docs/tooling.md](docs/tooling.md) covers native toolchain setup and updating
+the image.
 
 | Category | Tool | Version |
 |----------|------|---------|
@@ -275,6 +280,7 @@ updating the image.
 | **Formal** | SymbiYosys / Z3 / Boolector | 0.69 / 5.1.0 / 3.2.4 |
 | **Debug** | OpenOCD | 0.12.0 (Ubuntu package) |
 | **FPGA** | Vivado (native, separately installed and validated) | 2025.2 |
+| **ASIC** | OpenROAD-flow-scripts (its own image) | 26Q4 |
 | **Linting** | pre-commit / Ruff / mypy | 4.6.2 / 0.16.8 / 2.3.1 |
 | | Verible | 0.0-4294-gc1d8f5e8 |
 | **CLI** | Click | 8.5.0 |

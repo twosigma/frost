@@ -1,7 +1,8 @@
 # Development tooling
 
-Everything except Vivado runs in the `frost` Docker image, which pins the
-exact tools CI uses. Build it and check your setup from the repository root:
+Everything except Vivado and OpenROAD runs in the `frost` Docker image, which
+pins the exact tools CI uses. Build it and check your setup from the
+repository root:
 
 ```bash
 docker build -t frost .
@@ -10,7 +11,9 @@ docker build -t frost .
 ```
 
 Rebuild the image whenever its inputs change. Vivado and the board tools run
-natively on the host.
+natively on the host. The [ASIC flow](../asic/README.md) prepares its sources
+in this image and runs OpenROAD-flow-scripts in that project's own image,
+which `asic/orfs.py` pins by digest.
 
 ## Tool versions
 
