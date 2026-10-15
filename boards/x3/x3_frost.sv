@@ -236,8 +236,8 @@ module x3_frost #(
   logic [7:0] ddr_axi_awlen, ddr_axi_arlen;
   logic [2:0] ddr_axi_awsize, ddr_axi_arsize;
   logic [1:0] ddr_axi_awburst, ddr_axi_arburst, ddr_axi_bresp, ddr_axi_rresp;
-  logic [255:0] ddr_axi_wdata, ddr_axi_rdata;
-  logic [31:0] ddr_axi_wstrb;
+  logic [511:0] ddr_axi_wdata, ddr_axi_rdata;
+  logic [63:0] ddr_axi_wstrb;
   logic [4:0] ddr_axi_awid, ddr_axi_arid, ddr_axi_bid, ddr_axi_rid;
 
   logic mem_ok;
@@ -263,13 +263,16 @@ module x3_frost #(
   logic [  7:0] init_awlen;
   logic [  2:0] init_awsize;
   logic [  1:0] init_awburst;
-  logic [255:0] init_wdata;
-  logic [ 31:0] init_wstrb;
+  logic [511:0] init_wdata;
+  logic [ 63:0] init_wstrb;
 
+  // S00 is as wide as the controller's 512-bit word, so every write is one
+  // whole word in a single beat.
   x3_ddr_init #(
       .ADDR_BITS(30),
-      .DATA_BITS(256),
-      .ID_BITS  (5)
+      .DATA_BITS(512),
+      .ID_BITS(5),
+      .BEATS_PER_BURST(1)
   ) ddr_initializer (
       .i_clk    (main_clock),
       .i_rst_n  (cpu_clock_locked),
@@ -301,8 +304,8 @@ module x3_frost #(
   logic [  7:0] s00_awlen;
   logic [  2:0] s00_awsize;
   logic [  1:0] s00_awburst;
-  logic [255:0] s00_wdata;
-  logic [ 31:0] s00_wstrb;
+  logic [511:0] s00_wdata;
+  logic [ 63:0] s00_wstrb;
   assign s00_awvalid = ddr_init_busy ? init_awvalid : ddr_axi_awvalid;
   assign s00_awid = ddr_init_busy ? init_awid : ddr_axi_awid;
   assign s00_awaddr = ddr_init_busy ? init_awaddr : ddr_axi_awaddr[29:0];

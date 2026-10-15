@@ -1284,6 +1284,26 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="DMA coherence with out-of-order DDR responses",
         verilator_extra_args=("-GMEM_REORDER=1",),
     ),
+    # The control configuration: the same suites with 32-byte L2 lines, equal
+    # to the L1s', so the line-size adapter is absent.
+    "frost_cache_equal_lines": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="L1/L2/DDR data integrity with 32-byte L2 lines",
+        verilator_extra_args=("-GL2_LINE_BYTES=32",),
+    ),
+    "frost_cache_concurrency_equal_lines": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_concurrency",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="Overlapping cache requests with 32-byte L2 lines",
+        verilator_extra_args=("-GL2_LINE_BYTES=32",),
+    ),
+    "frost_cache_dma_equal_lines": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_dma",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="DMA coherence with 32-byte L2 lines",
+        verilator_extra_args=("-GL2_LINE_BYTES=32",),
+    ),
     # 64-byte L2 lines under 32-byte L1 lines: shared fills, write-miss fills
     # and merges, whole-line writebacks, DMA writes within their half,
     # ordering at the L2, fence.i, and reset. Also with out-of-order DDR
@@ -1529,6 +1549,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "AXI transfers remain valid across CPU reset and clear on AXI reset; "
             "requests wait for responses owed from before a CPU reset"
         ),
+        verilator_extra_args=("-GLINE_BYTES=64",),
     ),
     "x3_ddr_init": CocotbRunConfig(
         python_test_module="cocotb_tests.test_x3_ddr_init",
@@ -1541,6 +1562,26 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(
             ("DDR_INIT_REGION_BYTES", "4096"),
             ("DDR_INIT_MAX_OUTSTANDING", "4"),
+        ),
+    ),
+    "x3_ddr_init_two_beats": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_x3_ddr_init",
+        hdl_toplevel_module="x3_ddr_init",
+        description=(
+            "X3 DDR initialization through a 256-bit port, two beats per "
+            "controller word"
+        ),
+        verilator_extra_args=(
+            "-GREGION_BYTES=4096",
+            "-GMAX_OUTSTANDING=4",
+            "-GDATA_BITS=256",
+            "-GBEATS_PER_BURST=2",
+        ),
+        extra_env=(
+            ("DDR_INIT_REGION_BYTES", "4096"),
+            ("DDR_INIT_MAX_OUTSTANDING", "4"),
+            ("DDR_INIT_DATA_BITS", "256"),
+            ("DDR_INIT_BEATS_PER_BURST", "2"),
         ),
     ),
     "x3_ddr_init_shallow": CocotbRunConfig(

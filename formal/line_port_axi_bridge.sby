@@ -13,6 +13,8 @@ smtbmc boolector
 
 [script]
 read -formal -sv line_port_axi_bridge.sv
+# The width below the L2: one 64-byte line per beat.
+chparam -set LINE_BYTES 64 line_port_axi_bridge
 prep -top line_port_axi_bridge
 
 [files]

@@ -119,8 +119,8 @@ module frost #(
     output logic o_dtm_bscan_tdo_dtmcs,
     output logic o_dtm_bscan_tdo_dmi,
 
-    // DDR AXI master for the cache hierarchy: single-beat 256-bit bursts with
-    // region-relative addresses. Quiescent when USE_BEHAVIORAL_DDR=1 or the
+    // DDR AXI master for the cache hierarchy: single-beat 512-bit bursts, one
+    // 64-byte L2 line each, with region-relative addresses. Quiescent when USE_BEHAVIORAL_DDR=1 or the
     // cached tier is disabled; hardware boards wire it to the DDR controller.
     // i_ddr_axi_rst_n (active low, asynchronous) is the reset of the
     // interconnect behind these ports: while it is low the bridge drives every
@@ -135,8 +135,8 @@ module frost #(
     output logic [  1:0] o_ddr_axi_awburst,
     output logic         o_ddr_axi_wvalid,
     input  logic         i_ddr_axi_wready,
-    output logic [255:0] o_ddr_axi_wdata,
-    output logic [ 31:0] o_ddr_axi_wstrb,
+    output logic [511:0] o_ddr_axi_wdata,
+    output logic [ 63:0] o_ddr_axi_wstrb,
     output logic         o_ddr_axi_wlast,
     input  logic         i_ddr_axi_bvalid,
     output logic         o_ddr_axi_bready,
@@ -152,7 +152,7 @@ module frost #(
     input  logic         i_ddr_axi_rvalid,
     output logic         o_ddr_axi_rready,
     input  logic [  4:0] i_ddr_axi_rid,
-    input  logic [255:0] i_ddr_axi_rdata,
+    input  logic [511:0] i_ddr_axi_rdata,
     input  logic [  1:0] i_ddr_axi_rresp,
     input  logic         i_ddr_axi_rlast,
 

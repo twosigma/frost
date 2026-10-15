@@ -24,11 +24,13 @@
  * While o_busy is high, the board gives this block the write channels and
  * holds FROST and the JTAG DDR loader in reset.
  *
- * The controller's word is 512 bits; this port is 256 bits. Partial-word
- * writes would read uninitialized data to recompute ECC. Use aligned bursts
- * with DATA_BITS * BEATS_PER_BURST matching the controller word, so the width
- * converter can issue a full write without a read. S00_AXI in the block
- * design must allow that burst length. Multiple bursts share one AXI ID.
+ * The controller's word is 512 bits. A write covering part of a word would
+ * make it read uninitialized data to recompute ECC, so every burst covers
+ * one aligned word: DATA_BITS * BEATS_PER_BURST is the controller's word. On
+ * the X3 the port is as wide as the word and each burst is a single beat. A
+ * narrower port uses multi-beat bursts, which S00_AXI in the block design
+ * must allow and the width converter merges into one write. Multiple bursts
+ * share one AXI ID.
  *
  * No timeout or retry: any non-OKAY response permanently withholds o_done.
  * The controller returns OKAY; the interconnect returns DECERR for unroutable
@@ -44,10 +46,10 @@
  */
 module x3_ddr_init #(
     parameter int unsigned ADDR_BITS = 30,
-    parameter int unsigned DATA_BITS = 256,
+    parameter int unsigned DATA_BITS = 512,
     parameter int unsigned ID_BITS = 5,
     // Beats per burst: DATA_BITS * BEATS_PER_BURST is the controller's word.
-    parameter int unsigned BEATS_PER_BURST = 2,
+    parameter int unsigned BEATS_PER_BURST = 1,
     parameter int unsigned MAX_OUTSTANDING = 16,
     parameter int unsigned REGION_BYTES = 1 << 30,
     parameter logic [ID_BITS-1:0] WRITE_ID = '0

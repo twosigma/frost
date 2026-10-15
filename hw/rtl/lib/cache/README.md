@@ -3,7 +3,8 @@
 This is FROST's cached memory tier: one direct-mapped, write-back,
 non-blocking line cache used three times (L1D, L1I, and L2), the arbiters
 that merge line ports, two sequencers that make DMA and page-table walks
-coherent with the L1D, the bridge to the DDR controller's AXI port, and a
+coherent with the L1D, an adapter between the L1s' 32-byte lines and the
+L2's 64-byte lines, the bridge to the DDR controller's AXI port, and a
 simulation-only DDR model. Every block speaks one tagged line protocol, so
 levels stack freely and each level can have several transactions in flight.
 Coherence is handled in hardware: DMA and page-table walks see data that is
@@ -24,12 +25,14 @@ still dirty in the L1D, and software never flushes a cache for them.
 
 ## Line protocol
 
-Every port between the CPU-side adapters and the AXI bridge carries one
-32-byte line per transaction, with a transaction id:
+Every port between the CPU-side adapters and the AXI bridge carries one line
+per transaction, with a transaction id. Lines are 32 bytes from the
+CPU-side adapters down to the line-size adapter and 64 bytes from there to
+the bridge (`LINE_BYTES` below):
 
 ```
-request:  valid  ready  write  addr[ADDR_WIDTH]  wdata[256]  wstrb[32]  id[ID_BITS]  maintenance
-response: valid  id[ID_BITS]  rdata[256]
+request:  valid  ready  write  addr[ADDR_WIDTH]  wdata[8*LINE_BYTES]  wstrb[LINE_BYTES]  id[ID_BITS]  maintenance
+response: valid  id[ID_BITS]  rdata[8*LINE_BYTES]
 ```
 
 - A request fires on a cycle with `req_valid && req_ready`, and the slave
@@ -51,12 +54,14 @@ response: valid  id[ID_BITS]  rdata[256]
   its level and never relies on the level below to order a read against a
   write. The AXI bridge gives no such order (it can issue a read while an
   earlier write still waits), so same-line ordering is the hierarchy's job.
-- Writes carry byte strobes. A write with all 32 strobes set allocates
-  without fetching the line, the usual case for an eviction from the level
-  above. Such a write installs even while a probe withholds the line's fills
-  (see Probes), so a cache with `NUM_PROBE > 0` must not receive one on its
-  upstream port. In the hierarchy that is the L1D, whose writes come from
-  `cached_tier_adapter` and cover at most one 8-byte beat.
+- Writes carry byte strobes. A write that sets every strobe of the cache's
+  line allocates without fetching it. In the hierarchy no write does: an
+  L1D eviction covers half an L2 line, so an L2 that lacks the line fetches
+  it and merges the written half (see The L2 line size). Such a write would
+  install even while a probe withholds the line's fills (see Probes), so a
+  cache with `NUM_PROBE > 0` must not receive one on its upstream port. In
+  the hierarchy that is the L1D, whose writes come from `cached_tier_adapter`
+  and cover at most one 8-byte beat.
 - `maintenance` exists on cache and arbiter ports, not on the hierarchy's
   upstream ports or the bridge. It marks `fence.i` writeback traffic, which
   lower levels leave out of every performance event. It never changes how a
@@ -69,13 +74,13 @@ must take no action on a request until it fires.
 ## The line cache
 
 `frost_cache` is one module for every level. The instances differ in size,
-storage, and slot counts:
+line size, storage, and slot counts:
 
-| Instance | Size | Tags | Data | Miss slots | Writeback slots | Probe slots |
-|----------|------|------|------|------------|-----------------|-------------|
-| L1D | 128 KiB | Block RAM, 1-cycle read | Block RAM | 4 | 2 | 4 |
-| L1I | 16 KiB | Block RAM, 1-cycle read | Block RAM | 2 | 2 (unused) | 0 |
-| L2 | 2 MiB | UltraRAM, four entries per 72-bit row, 3-cycle read | UltraRAM | 4 | 2 | 0 |
+| Instance | Size | Line | Tags | Data | Miss slots | Writeback slots | Probe slots |
+|----------|------|------|------|------|------------|-----------------|-------------|
+| L1D | 128 KiB | 32 B | Block RAM, 1-cycle read | Block RAM | 4 | 2 | 4 |
+| L1I | 16 KiB | 32 B | Block RAM, 1-cycle read | Block RAM | 2 | 2 (unused) | 0 |
+| L2 | 2 MiB | 64 B | UltraRAM, four entries per 72-bit row, 3-cycle read | UltraRAM | 4 | 2 | 0 |
 
 The L2's slot counts are the hierarchy's `L2_NUM_MSHR` and `L2_NUM_WB`
 parameters. Its downstream ids, `L2_DOWN_ID_BITS` wide (5 on the X3), hold up
@@ -204,10 +209,10 @@ dirty lines, with the same functional effect.
 ## The hierarchy
 
 `frost_cache_hierarchy` puts the L1D, walker, L1I, and DMA ports over one
-arbiter tree into the L2, which is the ordering point for all traffic below
-the L1s and drives the AXI bridge.
+arbiter tree into the L2, through the line-size adapter. The L2 is the
+ordering point for all traffic below the L1s and drives the AXI bridge.
 
-[![FROST cache hierarchy: L1D, walker, L1I and DMA arbitration into L2 and DDR, each of the walker and DMA ports entering through its own coherence sequencer](../../../../docs/diagrams/cache-hierarchy.svg)](../../../../docs/diagrams/cache-hierarchy.svg)
+[![FROST cache hierarchy: L1D, walker, L1I and DMA arbitration through the line-size adapter into the L2 and DDR, each of the walker and DMA ports entering through its own coherence sequencer](../../../../docs/diagrams/cache-hierarchy.svg)](../../../../docs/diagrams/cache-hierarchy.svg)
 
 The diagram shows the X3 configuration. Arrows follow requests; responses
 return by id prefix.
@@ -243,7 +248,8 @@ prefix-free code in `UP_ID_BITS + 2` bits:
 
 The L2 sees those 5 bits. Its own downstream requests carry `{type, slot}`
 ids, `L2_DOWN_ID_BITS` wide: 5 on the X3, the AXI id width its DDR block
-design provides (`fpga/build/x3_ddr_bd.tcl`). The L1I spends one of its 2 bits on the
+design provides (`fpga/build/x3_ddr_bd.tcl`). The L1I spends one of its 2
+bits on the
 fill/writeback type, leaving 2 miss slots, which is all its master, the
 two-line fetch buffer, ever uses. The walker keeps one walk in flight and
 uses id 0.
@@ -274,10 +280,17 @@ the CPU, so there the CPU reset serves as both.
 
 ## The L2 line size
 
-The L2's lines can be wider than the L1s'. `L2_LINE_BYTES` is then a
-power-of-2 multiple of `L1_LINE_BYTES`, each L2 line holds that many L1 lines
-as sectors, and everything above the L2 keeps L1 lines: the L1s, the walker,
-the DMA port, the arbiters, both coherence sequencers, and the L1D's probes.
+The L1s, the walker, and the DMA port use 32-byte lines, and so does
+everything above the L2: the arbiters, both coherence sequencers, and the
+L1D's probes. The L2 uses 64-byte lines, each holding two 32-byte lines as
+its lower and upper halves, so every DDR transfer is one 512-bit beat, the
+width of the X3 DDR4 controller's word. The controller runs ECC without a
+data mask, so a write of less than a whole word makes it read the word,
+merge, and write it back; the L2 writes back only whole lines.
+
+In general `L2_LINE_BYTES` is a power-of-2 multiple of `L1_LINE_BYTES`, and
+each L2 line holds that many L1 lines as sectors. With equal line sizes the
+adapter below is left out.
 
 `line_size_adapter` sits between the top arbiter and the L2. Valid and ready
 pass straight through, so a request is accepted by the adapter exactly when
@@ -305,6 +318,8 @@ With several L1 lines in one, the L2 works as follows:
   the decision stage until the fill installs. The decision stage takes one
   request at a time, so all L2 traffic waits behind it for that fill.
 - An eviction writes the whole line, with every strobe set, in one transfer.
+
+Reset clears the L2's 32,768 tags, one per cycle on hardware.
 
 ## The page-table walker port
 
@@ -432,6 +447,7 @@ may take several cycles to answer.
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, writeback and fill progress, and `fence.i` |
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |
 | `frost_cache_l2_lines*` | 64-byte L2 lines: both halves of a line sharing one fill and a third reader waiting, write misses that fill and merge in either half, a writeback waiting behind its line's read fill, halves combining in one line, whole-line writebacks, DMA writes changing only their half, L2 ordering across halves, a refill waiting for its line's writeback, `fence.i` into lines the L2 lacks, reset with misses in flight, and every port's misses at once; every AXI transfer checked as one whole-line beat |
+| `*_equal_lines` | The data-integrity, concurrency, and DMA suites with 32-byte L2 lines, equal to the L1s', as a control |
 | `line_port_arbiter*` | Arbitration and tagged responses |
 | `line_port_axi_bridge` | The bridge across a CPU reset against a slave that keeps running: held beats, AW/W pairing, dropped stale responses, and a reused id held back until the stale response for it has arrived; and across the slave's own reset, which withdraws the held beats |
 | `fence_speed_slow`, `fence_speed_fast` | Maintenance latency; CLI-only |

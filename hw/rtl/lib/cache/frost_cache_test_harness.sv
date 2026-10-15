@@ -26,7 +26,7 @@
 module frost_cache_test_harness #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned L1_LINE_BYTES = 32,
-    parameter int unsigned L2_LINE_BYTES = 32,
+    parameter int unsigned L2_LINE_BYTES = 64,
     parameter int unsigned UP_ID_BITS = 3,
     parameter int unsigned L1_CACHE_BYTES = 1024,
     parameter int unsigned L1I_CACHE_BYTES = 1024,

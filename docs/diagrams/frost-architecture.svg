@@ -24,8 +24,8 @@
     fourth port through a coherence sequencer of its own, so its rings need no
     cache maintenance. A tagged 2:1 arbiter merges the walker and L1I, and a
     3:1 arbiter admits L1D first, then that merged port, then the NIC's DMA,
-    whose wait is bounded, into a 2 MiB UltraRAM L2, then a 256-bit AXI bridge
-    and the board DDR4 controller. Software sees a 1 GiB cached region at
+    whose wait is bounded, into a 2 MiB UltraRAM L2 with 64-byte lines, then a
+    512-bit AXI bridge and the board DDR4 controller. Software sees a 1 GiB cached region at
     0x80000000. Uncached instruction/data accesses use 256 KiB low BRAM; the
     data port also reaches UART, FIFO0/1, CLINT, PLIC and the NIC's register
     window MMIO, and the NIC raises one PLIC source. JTAG connects through the
@@ -292,17 +292,17 @@
   <g id="l2-and-ddr" class="center">
     <rect x="64" y="1222" width="324" height="88" rx="12" class="memory"/>
     <text x="226" y="1258" class="heading">Shared L2 · 2 MiB</text>
-    <text x="226" y="1288" class="body">UltraRAM · write-back</text>
+    <text x="226" y="1288" class="body">64 B lines · UltraRAM</text>
     <path d="M 388 1266 H 438" class="memlink" marker-end="url(#memory-arrow)"/>
     <rect x="438" y="1222" width="324" height="88" rx="12" class="memory"/>
-    <text x="600" y="1258" class="heading">256-bit AXI bridge</text>
+    <text x="600" y="1258" class="heading">512-bit AXI bridge</text>
     <text x="600" y="1288" class="body">Multiple outstanding requests</text>
     <path d="M 762 1266 H 812" class="memlink" marker-end="url(#memory-arrow)"/>
     <rect x="812" y="1222" width="324" height="88" rx="12" class="memory"/>
     <text x="974" y="1258" class="heading">DDR4 controller + DRAM</text>
     <text x="974" y="1288" class="body">1 GiB region @ 0x8000_0000</text>
   </g>
-  <text x="600" y="1338" class="small center">L1I / L1D / L2: direct-mapped, 32 B lines. Memory arrows show requests; responses return to their source.</text>
+  <text x="600" y="1338" class="small center">Direct-mapped, write-back caches: L1I / L1D 32 B lines, L2 64 B lines. Memory arrows show requests; responses return to their source.</text>
 
   <path d="M 64 1359 H 1136" stroke="#2b3c55"/>
   <text x="64" y="1388" class="section">UNCACHED PATHS &amp; DEBUG</text>

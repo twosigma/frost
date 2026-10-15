@@ -22,17 +22,18 @@ commands.
 DDR, and transceiver IP from `fpga/build/build_step.tcl`, `x3_ddr_bd.tcl`, and
 `x3_gty_ip.tcl`.
 
-The cache hierarchy's bridge issues 256-bit AXI transactions with
-region-relative addresses. A SmartConnect merges them with the DDR JTAG
-master, crosses the CPU, CPU/4, and DDR clocks, and converts to the
-controller's 512-bit interface. CPU address `0x80000000` maps the first 1 GiB.
+The cache hierarchy's bridge issues 512-bit AXI transactions, one 64-byte L2
+line each, with region-relative addresses. A SmartConnect merges them with
+the DDR JTAG master and crosses the CPU, CPU/4, and DDR clocks. The CPU port
+is as wide as the controller's 512-bit interface; only the JTAG master's
+transfers are widened. CPU address `0x80000000` maps the first 1 GiB.
 ECC management sits at region offset `0x40000000` and is reachable only from
 the DDR JTAG master.
 
 After calibration, `x3_ddr_init` zeroes the region so every word has valid ECC
-(about 0.1 seconds). It writes whole 512-bit controller words, as aligned
-two-beat bursts: a half-word write would make the controller read the
-uninitialized other half to recompute ECC. The CPU and the DDR loader leave
+(about 0.1 seconds). It writes whole 512-bit controller words, one per beat:
+a partial-word write would make the controller read the uninitialized rest of
+the word to recompute ECC. The CPU and the DDR loader leave
 reset once the CPU clock runs and calibration and initialization are complete;
 the loader, which runs on the CPU/4 clock, takes that reset through a
 synchronizer on it. Check for ECC errors with `fpga/ddr_ecc/ddr_ecc_status.py`.

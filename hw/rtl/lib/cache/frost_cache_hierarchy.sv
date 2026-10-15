@@ -63,7 +63,7 @@ module frost_cache_hierarchy #(
     // Lines above the L2 (the L1s and every upstream port), and in the L2 and
     // its downstream port.
     parameter int unsigned L1_LINE_BYTES = 32,
-    parameter int unsigned L2_LINE_BYTES = 32,
+    parameter int unsigned L2_LINE_BYTES = 64,
     parameter int unsigned UP_ID_BITS = 3,
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1_DATA_READ_LATENCY = 2,
