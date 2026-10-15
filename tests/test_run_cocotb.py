@@ -1284,6 +1284,28 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="DMA coherence with out-of-order DDR responses",
         verilator_extra_args=("-GMEM_REORDER=1",),
     ),
+    # 64-byte L2 lines under 32-byte L1 lines: shared fills, write-miss fills
+    # and merges, whole-line writebacks, DMA writes within their half,
+    # ordering at the L2, fence.i, and reset. Also with out-of-order DDR
+    # responses and with fast maintenance.
+    "frost_cache_l2_lines": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_l2_lines",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="64-byte L2 lines under 32-byte L1 lines",
+        verilator_extra_args=("-GL2_LINE_BYTES=64",),
+    ),
+    "frost_cache_l2_lines_reorder": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_l2_lines",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="64-byte L2 lines with out-of-order DDR responses",
+        verilator_extra_args=("-GL2_LINE_BYTES=64", "-GMEM_REORDER=1"),
+    ),
+    "frost_cache_l2_lines_fast": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_l2_lines",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="64-byte L2 lines with fast fence.i maintenance",
+        verilator_extra_args=("-GL2_LINE_BYTES=64", "-GSIM_FAST_MAINT=1"),
+    ),
     # fence.i maintenance cycle-count measurement at the production cache
     # geometry (128 KiB L1D, 16 KiB L1I, 2 MiB L2). Two builds, slow
     # (FPGA-path FSM) and fast, so the speedup is readable from the logs. Not

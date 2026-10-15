@@ -490,6 +490,10 @@ FORMAL_TARGETS = [
         "AXI handshake legality and response tracking across CPU and AXI resets",
     ),
     FormalTarget(
+        "line_size_adapter.sby",
+        "L1-line requests map onto their sector of a wider L2 line and back",
+    ),
+    FormalTarget(
         "store_queue.sby",
         "Store-queue capacity, forwarding, and committed-write preservation",
     ),

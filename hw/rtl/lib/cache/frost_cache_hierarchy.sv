@@ -33,7 +33,10 @@
  *
  * Everything above the L2 uses L1_LINE_BYTES lines. The L2 and the
  * downstream port use L2_LINE_BYTES lines, L2_NUM_MSHR miss-status slots,
- * L2_NUM_WB writeback slots, and L2_DOWN_ID_BITS-wide downstream ids.
+ * L2_NUM_WB writeback slots, and L2_DOWN_ID_BITS-wide downstream ids. When
+ * L2 lines are wider, each holds several L1 lines as sectors, and
+ * line_size_adapter, between the top arbiter and the L2, places each request
+ * in its sector and returns that sector of the response.
  *
  * Each arbiter prefixes its port index to the ids it forwards, which gives a
  * prefix-free code in DownIdBits = UP_ID_BITS + 2 bits below the top arbiter:
@@ -192,8 +195,8 @@ module frost_cache_hierarchy #(
   initial begin
     // The id tree needs one prefix bit above the walker/L1I local ids.
     if (UP_ID_BITS < 2) $fatal(1, "frost_cache_hierarchy: UP_ID_BITS must be >= 2");
-    if (L2_LINE_BYTES != L1_LINE_BYTES)
-      $fatal(1, "frost_cache_hierarchy: L2_LINE_BYTES must equal L1_LINE_BYTES");
+    if ((L2_LINE_BYTES < L1_LINE_BYTES) || (L2_LINE_BYTES % L1_LINE_BYTES != 0))
+      $fatal(1, "frost_cache_hierarchy: L2_LINE_BYTES must be a multiple of L1_LINE_BYTES");
   end
 
   // Per-L1 downstream wires into the arbiter tree, and the top arbiter's
@@ -655,6 +658,69 @@ module frost_cache_hierarchy #(
     end
   end
 
+  // ---------------------------------------------------------------------------
+  // The L2. With lines wider than the L1s', it sits behind the line-size
+  // adapter, whose ready is the L2's, so the top arbiter's traffic is
+  // accepted, and ordered, exactly when the L2 takes it.
+  // ---------------------------------------------------------------------------
+  logic                       l2_up_req_valid;
+  logic                       l2_up_req_ready;
+  logic                       l2_up_req_write;
+  logic                       l2_up_req_maintenance;
+  logic [     ADDR_WIDTH-1:0] l2_up_req_addr;
+  logic [L2_LINE_BYTES*8-1:0] l2_up_req_wdata;
+  logic [  L2_LINE_BYTES-1:0] l2_up_req_wstrb;
+  logic [     DownIdBits-1:0] l2_up_req_id;
+  logic                       l2_up_resp_valid;
+  logic [     DownIdBits-1:0] l2_up_resp_id;
+  logic [L2_LINE_BYTES*8-1:0] l2_up_resp_rdata;
+
+  if (L2_LINE_BYTES == L1_LINE_BYTES) begin : gen_l2_same_lines
+    assign l2_up_req_valid = arb_down_req_valid;
+    assign arb_down_req_ready = l2_up_req_ready;
+    assign l2_up_req_write = arb_down_req_write;
+    assign l2_up_req_maintenance = arb_down_req_maintenance;
+    assign l2_up_req_addr = arb_down_req_addr;
+    assign l2_up_req_wdata = arb_down_req_wdata;
+    assign l2_up_req_wstrb = arb_down_req_wstrb;
+    assign l2_up_req_id = arb_down_req_id;
+    assign arb_down_resp_valid = l2_up_resp_valid;
+    assign arb_down_resp_id = l2_up_resp_id;
+    assign arb_down_resp_rdata = l2_up_resp_rdata;
+  end else begin : gen_l2_wide_lines
+    line_size_adapter #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .UP_LINE_BYTES(L1_LINE_BYTES),
+        .DOWN_LINE_BYTES(L2_LINE_BYTES),
+        .ID_BITS(DownIdBits)
+    ) l2_adapter (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_up_req_valid(arb_down_req_valid),
+        .o_up_req_ready(arb_down_req_ready),
+        .i_up_req_write(arb_down_req_write),
+        .i_up_req_addr(arb_down_req_addr),
+        .i_up_req_wdata(arb_down_req_wdata),
+        .i_up_req_wstrb(arb_down_req_wstrb),
+        .i_up_req_id(arb_down_req_id),
+        .i_up_req_maintenance(arb_down_req_maintenance),
+        .o_up_resp_valid(arb_down_resp_valid),
+        .o_up_resp_id(arb_down_resp_id),
+        .o_up_resp_rdata(arb_down_resp_rdata),
+        .o_down_req_valid(l2_up_req_valid),
+        .i_down_req_ready(l2_up_req_ready),
+        .o_down_req_write(l2_up_req_write),
+        .o_down_req_addr(l2_up_req_addr),
+        .o_down_req_wdata(l2_up_req_wdata),
+        .o_down_req_wstrb(l2_up_req_wstrb),
+        .o_down_req_id(l2_up_req_id),
+        .o_down_req_maintenance(l2_up_req_maintenance),
+        .i_down_resp_valid(l2_up_resp_valid),
+        .i_down_resp_id(l2_up_resp_id),
+        .i_down_resp_rdata(l2_up_resp_rdata)
+    );
+  end
+
   frost_cache #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_SIZE_BYTES(L2_CACHE_BYTES),
@@ -676,22 +742,22 @@ module frost_cache_hierarchy #(
       .i_writeback_all(1'b0),
       .i_invalidate_all(1'b0),
       .o_maint_busy(),
-      .i_up_req_valid(arb_down_req_valid),
-      .o_up_req_ready(arb_down_req_ready),
-      .i_up_req_write(arb_down_req_write),
-      .i_up_req_addr(arb_down_req_addr),
-      .i_up_req_wdata(arb_down_req_wdata),
-      .i_up_req_wstrb(arb_down_req_wstrb),
-      .i_up_req_id(arb_down_req_id),
+      .i_up_req_valid(l2_up_req_valid),
+      .o_up_req_ready(l2_up_req_ready),
+      .i_up_req_write(l2_up_req_write),
+      .i_up_req_addr(l2_up_req_addr),
+      .i_up_req_wdata(l2_up_req_wdata),
+      .i_up_req_wstrb(l2_up_req_wstrb),
+      .i_up_req_id(l2_up_req_id),
       // Provenance muxed per fire by the arbiter.
-      .i_up_req_maintenance(arb_down_req_maintenance),
+      .i_up_req_maintenance(l2_up_req_maintenance),
       .i_up_req_probe(1'b0),
       .i_up_req_probe_inval(1'b0),
       .i_probe_release_valid(1'b0),
       .i_probe_release_id('0),
-      .o_up_resp_valid(arb_down_resp_valid),
-      .o_up_resp_id(arb_down_resp_id),
-      .o_up_resp_rdata(arb_down_resp_rdata),
+      .o_up_resp_valid(l2_up_resp_valid),
+      .o_up_resp_id(l2_up_resp_id),
+      .o_up_resp_rdata(l2_up_resp_rdata),
       .o_down_req_valid(o_down_req_valid),
       .i_down_req_ready(i_down_req_ready),
       .o_down_req_write(o_down_req_write),

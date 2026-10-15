@@ -136,6 +136,11 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_down_hold.value = 0
 
 
+def l2_line_bytes(dut: Any) -> int:
+    """Return the harness's L2 line size, a multiple of LINE_BYTES."""
+    return int(dut.L2_LINE_BYTES.value)
+
+
 def _l2_sweeping(dut: Any) -> bool:
     """Report whether the L2's reset tag sweep still refuses requests.
 
