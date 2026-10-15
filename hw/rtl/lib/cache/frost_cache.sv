@@ -888,19 +888,27 @@ module frost_cache #(
   logic fill_req_any, wb_req_any;
   logic [MshrBits-1:0] fill_req_sel;
   logic [  WbBits-1:0] wb_req_sel;
+  logic [MshrBits-1:0] fill_next_q;  // the miss slot the fill pick starts from
   logic [  WbBits-1:0] wb_next_q;  // the writeback slot the pick starts from
+  logic [NUM_MSHR-1:0] fill_req_mask;  // miss slots whose fill can issue
   always_comb begin
-    fill_req_any = 1'b0;
+    for (int i = 0; i < int'(NUM_MSHR); i++) begin
+      fill_req_mask[i] = (mshr_state_q[i] == MS_PEND) && (mshr_wb_wait_q[i] == '0) &&
+          !mshr_fill_held[i];
+    end
+    // Both picks rotate after the last slot they loaded, so each pending fill
+    // wins within NUM_MSHR fill loads and each pending writeback within NUM_WB
+    // writeback loads; a fixed order would let low slots that keep
+    // reallocating starve a high one. Scan lower-priority indices first so
+    // later assignments from the start slot upward win.
+    fill_req_any = |fill_req_mask;
     fill_req_sel = '0;
     for (int i = int'(NUM_MSHR) - 1; i >= 0; i--) begin
-      if ((mshr_state_q[i] == MS_PEND) && (mshr_wb_wait_q[i] == '0) && !mshr_fill_held[i]) begin
-        fill_req_any = 1'b1;
-        fill_req_sel = MshrBits'(i);
-      end
+      if ((i < int'(fill_next_q)) && fill_req_mask[i]) fill_req_sel = MshrBits'(i);
     end
-    // Rotate after the last loaded slot so each pending slot wins within
-    // NUM_WB writeback loads. Scan lower-priority indices first so later
-    // assignments from wb_next_q upward win.
+    for (int i = int'(NUM_MSHR) - 1; i >= 0; i--) begin
+      if ((i >= int'(fill_next_q)) && fill_req_mask[i]) fill_req_sel = MshrBits'(i);
+    end
     wb_req_any = 1'b0;
     wb_req_sel = '0;
     for (int j = int'(NUM_WB) - 1; j >= 0; j--) begin
@@ -920,8 +928,9 @@ module frost_cache #(
   // Repeated fills could starve writebacks and every request waiting on them.
   // Count request-register loads lost to fills, then give a writeback the next
   // turn. A pending writeback wins within WbStarveLimit + 1 loads; rotation
-  // bounds any slot's wait by NUM_WB * (WbStarveLimit + 1) loads.
-  // Among fills, the lowest index wins.
+  // bounds any slot's wait by NUM_WB * (WbStarveLimit + 1) loads. A fill
+  // that can issue loses at most one load in every WbStarveLimit + 1 to a
+  // writeback, and rotation loads it within NUM_MSHR fill loads.
   localparam int unsigned WbStarveLimit = 3;
   localparam int unsigned WbStarveBits  = $clog2(WbStarveLimit + 1);
   logic [WbStarveBits-1:0] wb_lost_q;
@@ -955,6 +964,14 @@ module frost_cache #(
       // the limit and cannot wrap.
       wb_lost_q <= wb_lost_q + 1'b1;
       if (wb_lost_q == WbStarveBits'(WbStarveLimit - 1)) wb_turn_q <= 1'b1;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      fill_next_q <= '0;
+    end else if (dq_load && !dq_load_is_wb) begin
+      fill_next_q <= (fill_req_sel == MshrBits'(NUM_MSHR - 1)) ? '0 : fill_req_sel + 1'b1;
     end
   end
 
@@ -1852,6 +1869,23 @@ module frost_cache #(
             $error("frost_cache: writeback slot %0d (line 0x%0h) starved: %0d loads, %0d cycles",
                    j, wb_line_q[j], wb_pend_loads[j] + 1, wb_pend_cycles[j] + 1);
           end
+        end
+      end
+    end
+  end
+
+  // The fill pick's exact bound: while a fill can issue, the pick passes it
+  // over at most NUM_MSHR - 1 times before loading it.
+  int unsigned fill_passed[NUM_MSHR];
+  always_ff @(posedge i_clk) begin
+    for (int i = 0; i < int'(NUM_MSHR); i++) begin
+      if (i_rst || !fill_req_mask[i]) begin
+        fill_passed[i] <= 0;
+      end else if (dq_load && !dq_load_is_wb && (fill_req_sel != MshrBits'(i))) begin
+        fill_passed[i] <= fill_passed[i] + 1;
+        if (fill_passed[i] + 1 == NUM_MSHR) begin
+          $error("frost_cache: fill of MSHR %0d (line 0x%0h) passed over by %0d fill loads", i,
+                 mshr_line_q[i], fill_passed[i] + 1);
         end
       end
     end
