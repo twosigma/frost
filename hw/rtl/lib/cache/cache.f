@@ -18,6 +18,9 @@ $(ROOT)/hw/rtl/lib/cache/dma_coherence_sequencer.sv
 # reaches the L2.
 $(ROOT)/hw/rtl/lib/cache/walker_coherence_sequencer.sv
 
+# Line-size adapter: L1-line requests as sectors of wider L2 lines.
+$(ROOT)/hw/rtl/lib/cache/line_size_adapter.sv
+
 # Cache hierarchy wrapper (L1s + walker + DMA ports + URAM L2)
 $(ROOT)/hw/rtl/lib/cache/frost_cache_hierarchy.sv
 

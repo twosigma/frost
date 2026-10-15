@@ -1,0 +1,19 @@
+[tasks]
+bmc
+cover
+
+[options]
+bmc: mode bmc
+bmc: depth 8
+cover: mode cover
+cover: depth 8
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv line_size_adapter.sv
+prep -top line_size_adapter
+
+[files]
+../hw/rtl/lib/cache/line_size_adapter.sv

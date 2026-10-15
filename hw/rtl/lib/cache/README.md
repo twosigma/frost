@@ -13,6 +13,7 @@ still dirty in the L1D, and software never flushes a cache for them.
 |------|------|
 | `frost_cache.sv` | The line cache, used at every level; the L1D instance also takes per-line coherence probes |
 | `frost_cache_hierarchy.sv` | L1D, walker, L1I, and DMA ports over the arbiter tree, the two coherence sequencers sharing one probe path into the L1D, the L2, and `fence.i` sequencing |
+| `line_size_adapter.sv` | Places each L1-line request in its sector of a wider L2 line and returns that sector of the response; an outstanding-transaction table holds each request's sector by id |
 | `line_port_arbiter.sv` | N:1 tagged arbiter: fixed priority by port index, optional starvation bound, port index prefixed to ids |
 | `dma_coherence_sequencer.sv` | Takes each DMA request through the L1D, and each DMA write through the load queue as well, before it reaches the L2 |
 | `walker_coherence_sequencer.sv` | Probes the L1D before each page-table walk read reaches the L2; one read in flight |
@@ -271,6 +272,40 @@ cycle the reset arrives and drops those beats, so none is presented after the
 interconnect restarts. The behavioral DDR model in simulation resets with
 the CPU, so there the CPU reset serves as both.
 
+## The L2 line size
+
+The L2's lines can be wider than the L1s'. `L2_LINE_BYTES` is then a
+power-of-2 multiple of `L1_LINE_BYTES`, each L2 line holds that many L1 lines
+as sectors, and everything above the L2 keeps L1 lines: the L1s, the walker,
+the DMA port, the arbiters, both coherence sequencers, and the L1D's probes.
+
+`line_size_adapter` sits between the top arbiter and the L2. Valid and ready
+pass straight through, so a request is accepted by the adapter exactly when
+the L2 takes it, and the coherence sequencers' arguments, which order DMA
+writes and walks by that acceptance, hold as they do with equal lines. Ids
+pass through too. The adapter aligns the address to the L2 line and maps
+each request onto its sector in three separate parts: the data goes into
+every sector, the strobes into the request's sector only, and the response
+returns the request's sector of the line. An outstanding-transaction table
+with one entry per id records each request's sector when it fires, and the
+response, which carries the same id, reads it back.
+
+With several L1 lines in one, the L2 works as follows:
+
+- Requests to any sector of an L2 line are applied in acceptance order, a
+  stronger order than the L1s need.
+- Reads of two sectors of a missing line share one fill: the first takes the
+  miss slot and the second its single waiter seat. A third read of the line
+  waits in the decision stage until the fill installs.
+- A write never covers a whole L2 line. One that misses, an L1D eviction of
+  a line the L2 has lost or a DMA write to a line it lacks, fetches the line
+  and merges its bytes into the fill. A write to another sector of the line
+  merges into the same miss slot while that slot has no waiter.
+- A write to a line whose miss slot is a read's, or holds a waiter, waits in
+  the decision stage until the fill installs. The decision stage takes one
+  request at a time, so all L2 traffic waits behind it for that fill.
+- An eviction writes the whole line, with every strobe set, in one transfer.
+
 ## The page-table walker port
 
 The hardware page-table walker (`ptw.sv`) is the hierarchy's `wup` port,
@@ -396,6 +431,7 @@ may take several cycles to answer.
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, and dirty-L1D walker coherence |
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, writeback and fill progress, and `fence.i` |
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |
+| `frost_cache_l2_lines*` | 64-byte L2 lines: both halves of a line sharing one fill and a third reader waiting, write misses that fill and merge in either half, a writeback waiting behind its line's read fill, halves combining in one line, whole-line writebacks, DMA writes changing only their half, L2 ordering across halves, a refill waiting for its line's writeback, `fence.i` into lines the L2 lacks, reset with misses in flight, and every port's misses at once; every AXI transfer checked as one whole-line beat |
 | `line_port_arbiter*` | Arbitration and tagged responses |
 | `line_port_axi_bridge` | The bridge across a CPU reset against a slave that keeps running: held beats, AW/W pairing, dropped stale responses, and a reused id held back until the stale response for it has arrived; and across the slave's own reset, which withdraws the held beats |
 | `fence_speed_slow`, `fence_speed_fast` | Maintenance latency; CLI-only |
@@ -409,5 +445,7 @@ walker coherence against the running CPU. Formal targets cover the bridge
 (`line_port_axi_bridge`: AXI handshakes, also across a CPU reset, VALIDs low
 through the AXI side's reset, id conservation, stale-response drops, and no
 request accepted while a response from before a reset is owed), the
+line-size adapter (`line_size_adapter`: strobes and data in the request's
+sector, and each response returning the sector its request recorded), the
 arbiter grant (`line_arbiter_grant`), and the miss-slot byte merge
 (`cache_mshr_payload`); see the [formal guide](../../../../formal/README.md).

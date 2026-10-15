@@ -34,6 +34,7 @@ from cocotb_tests.cache.test_frost_cache import (
     _monitor_perf_events,
     _new_perf_counts,
     _setup,
+    l2_line_bytes,
 )
 
 FULL = (1 << LINE_BYTES) - 1
@@ -473,22 +474,28 @@ class _WritebackPendingMonitor:
 class _FreshLines:
     """Lines never touched before, on L1 indices no reader holds in flight.
 
-    Each line is a new tag on its index, so every read misses at every level
-    with a clean victim; in-flight lines take distinct L1 indices, and with
-    them distinct L2 indices, so none waits on another's miss slot. `skip`
-    holds the indices the test uses for its own lines.
+    Each line is a new tag on an index that starts an L2 line (`sectors` L1
+    lines per L2 line), so every read misses at every level with a clean
+    victim and no other fresh line shares its L2 line; in-flight lines take
+    distinct L1 indices, and with them distinct L2 indices, so none waits on
+    another's miss slot. `skip` holds the indices the test uses for its own
+    lines; a fresh line avoids their L2 lines too.
     """
 
-    def __init__(self, base: int, skip: frozenset[int]) -> None:
+    def __init__(self, base: int, skip: frozenset[int], sectors: int) -> None:
         self._base = base
-        self._skip = skip
+        self._sectors = sectors
+        self._skip_groups = {index // sectors for index in skip}
         self._tag = [0] * L1_LINES
         self.in_flight: set[int] = set()
 
     def take(self) -> tuple[int, int | None]:
         """Return (addr, index) of a fresh line and mark its index in flight."""
-        for index in range(L1_LINES):
-            if index not in self._skip and index not in self.in_flight:
+        for index in range(0, L1_LINES, self._sectors):
+            if (
+                index // self._sectors not in self._skip_groups
+                and index not in self.in_flight
+            ):
                 break
         else:
             raise AssertionError("every L1 index is in flight")
@@ -646,7 +653,10 @@ async def test_writeback_wins_within_bound_under_fill_stream(dut: Any) -> None:
     await FallingEdge(dut.i_clk)
     dut.i_down_hold.value = 1
     mon = _WritebackPendingMonitor(dut, cache)
-    fresh = _FreshLines(STARVE_BASE + 0x10000, skip=frozenset({7}))
+    l2_line = l2_line_bytes(dut)
+    fresh = _FreshLines(
+        STARVE_BASE + 0x10000, skip=frozenset({7}), sectors=l2_line // LINE_BYTES
+    )
     port_lock = Lock()
     stop = [False]
     readers = [
@@ -680,7 +690,9 @@ async def test_writeback_wins_within_bound_under_fill_stream(dut: Any) -> None:
         fired, write, addr = await _release_downstream_once(dut)
         assert fired, "a released acceptance found no request presented"
         if write:
-            assert addr == a, f"unexpected write fired downstream @0x{addr:08x}"
+            assert addr == a & ~(l2_line - 1), (
+                f"unexpected write fired downstream @0x{addr:08x}"
+            )
             wb_fired = True
             break
         fills_before_wb += 1
@@ -726,8 +738,11 @@ async def test_writeback_slots_take_turns_under_dirty_victim_stream(dut: Any) ->
     cache = dut.cache_hierarchy.l2_cache
 
     base = TURNS_BASE
-    n_dirty = 16
-    dirty = [base + i * LINE_BYTES for i in range(n_dirty)]  # L1 indices 0..15
+    n_dirty = 12
+    # One dirty line per L2 line.
+    l2_line = l2_line_bytes(dut)
+    sectors = l2_line // LINE_BYTES
+    dirty = [base + i * l2_line for i in range(n_dirty)]
     for i, d in enumerate(dirty):
         v = _line_int(bytes([(0x30 + 9 * i + b) & 0xFF for b in range(32)]))
         model.write_line(d, v, FULL)
@@ -755,7 +770,9 @@ async def test_writeback_slots_take_turns_under_dirty_victim_stream(dut: Any) ->
         raise AssertionError("the two evictions never left both slots pending")
     # Both slots hold a writeback and the register holds the first fill;
     # the fresh reads now keep a fill pending at every load.
-    fresh = _FreshLines(base + 0x10000, skip=frozenset(range(n_dirty)))
+    fresh = _FreshLines(
+        base + 0x10000, skip=frozenset(range(n_dirty * sectors)), sectors=sectors
+    )
     clean_readers = [
         cocotb.start_soon(
             _stream_reader(dut, col, model, fresh, port_lock, (r, r + 4), stop)
@@ -830,7 +847,11 @@ async def test_fill_slots_take_turns_under_recycled_misses(dut: Any) -> None:
     dut.i_down_hold.value = 1
     target_index = 9
     target = FILL_TURNS_BASE + target_index * LINE_BYTES
-    fresh = _FreshLines(FILL_TURNS_BASE + 0x10000, skip=frozenset({target_index}))
+    fresh = _FreshLines(
+        FILL_TURNS_BASE + 0x10000,
+        skip=frozenset({target_index}),
+        sectors=l2_line // LINE_BYTES,
+    )
     port_lock = Lock()
     stop = [False]
     readers = [
