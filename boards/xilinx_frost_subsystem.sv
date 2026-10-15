@@ -31,6 +31,8 @@ module xilinx_frost_subsystem #(
     parameter int unsigned USE_BEHAVIORAL_DDR = 1,
     // L1 instruction-cache bytes; defaults to the X3 configuration.
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
+    // L2 line size (see frost.sv); the DDR AXI data width follows it.
+    parameter int unsigned L2_LINE_BYTES = 64,
     // Optional boot-hang UART classifier. Leave off for interactive testing.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,
     // Profiling counters (see frost.sv); the board top passes its generic.
@@ -50,40 +52,41 @@ module xilinx_frost_subsystem #(
     output logic o_uart_tx,  // UART transmit for debug console
     input  logic i_uart_rx,  // UART receive for debug console input
 
-    // DDR AXI master driven by the cache-hierarchy bridge: single-beat 512-bit
-    // bursts, one 64-byte L2 line each, 5-bit transaction ids, addresses
-    // relative to the cached region base. Quiescent when USE_BEHAVIORAL_DDR=1 or the cached tier is off.
+    // DDR AXI master driven by the cache-hierarchy bridge: single-beat bursts
+    // of one L2 line each, 512 bits wide with 64-byte lines, 5-bit
+    // transaction ids, addresses relative to the cached region base.
+    // Quiescent when USE_BEHAVIORAL_DDR=1 or the cached tier is off.
     // i_ddr_axi_rst_n is the reset of the interconnect behind these ports.
-    input  logic         i_ddr_axi_rst_n,
-    output logic         o_ddr_axi_awvalid,
-    input  logic         i_ddr_axi_awready,
-    output logic [  4:0] o_ddr_axi_awid,
-    output logic [ 31:0] o_ddr_axi_awaddr,
-    output logic [  7:0] o_ddr_axi_awlen,
-    output logic [  2:0] o_ddr_axi_awsize,
-    output logic [  1:0] o_ddr_axi_awburst,
-    output logic         o_ddr_axi_wvalid,
-    input  logic         i_ddr_axi_wready,
-    output logic [511:0] o_ddr_axi_wdata,
-    output logic [ 63:0] o_ddr_axi_wstrb,
-    output logic         o_ddr_axi_wlast,
-    input  logic         i_ddr_axi_bvalid,
-    output logic         o_ddr_axi_bready,
-    input  logic [  4:0] i_ddr_axi_bid,
-    input  logic [  1:0] i_ddr_axi_bresp,
-    output logic         o_ddr_axi_arvalid,
-    input  logic         i_ddr_axi_arready,
-    output logic [  4:0] o_ddr_axi_arid,
-    output logic [ 31:0] o_ddr_axi_araddr,
-    output logic [  7:0] o_ddr_axi_arlen,
-    output logic [  2:0] o_ddr_axi_arsize,
-    output logic [  1:0] o_ddr_axi_arburst,
-    input  logic         i_ddr_axi_rvalid,
-    output logic         o_ddr_axi_rready,
-    input  logic [  4:0] i_ddr_axi_rid,
-    input  logic [511:0] i_ddr_axi_rdata,
-    input  logic [  1:0] i_ddr_axi_rresp,
-    input  logic         i_ddr_axi_rlast,
+    input  logic                       i_ddr_axi_rst_n,
+    output logic                       o_ddr_axi_awvalid,
+    input  logic                       i_ddr_axi_awready,
+    output logic [                4:0] o_ddr_axi_awid,
+    output logic [               31:0] o_ddr_axi_awaddr,
+    output logic [                7:0] o_ddr_axi_awlen,
+    output logic [                2:0] o_ddr_axi_awsize,
+    output logic [                1:0] o_ddr_axi_awburst,
+    output logic                       o_ddr_axi_wvalid,
+    input  logic                       i_ddr_axi_wready,
+    output logic [L2_LINE_BYTES*8-1:0] o_ddr_axi_wdata,
+    output logic [  L2_LINE_BYTES-1:0] o_ddr_axi_wstrb,
+    output logic                       o_ddr_axi_wlast,
+    input  logic                       i_ddr_axi_bvalid,
+    output logic                       o_ddr_axi_bready,
+    input  logic [                4:0] i_ddr_axi_bid,
+    input  logic [                1:0] i_ddr_axi_bresp,
+    output logic                       o_ddr_axi_arvalid,
+    input  logic                       i_ddr_axi_arready,
+    output logic [                4:0] o_ddr_axi_arid,
+    output logic [               31:0] o_ddr_axi_araddr,
+    output logic [                7:0] o_ddr_axi_arlen,
+    output logic [                2:0] o_ddr_axi_arsize,
+    output logic [                1:0] o_ddr_axi_arburst,
+    input  logic                       i_ddr_axi_rvalid,
+    output logic                       o_ddr_axi_rready,
+    input  logic [                4:0] i_ddr_axi_rid,
+    input  logic [L2_LINE_BYTES*8-1:0] i_ddr_axi_rdata,
+    input  logic [                1:0] i_ddr_axi_rresp,
+    input  logic                       i_ddr_axi_rlast,
 
     // NIC: the TX and RX MAC clocks and their presence levels, the
     // raw PMA interface, the PHY lines and the PCS block lock (frost.sv).
@@ -295,6 +298,7 @@ module xilinx_frost_subsystem #(
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
+      .L2_LINE_BYTES(L2_LINE_BYTES),
       .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE),
       .PERF_COUNTERS(PERF_COUNTERS),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),

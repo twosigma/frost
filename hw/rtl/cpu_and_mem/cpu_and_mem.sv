@@ -38,6 +38,10 @@ module cpu_and_mem #(
     // L2 miss-status and writeback slots (see frost_cache_hierarchy).
     parameter int unsigned L2_NUM_MSHR = 4,
     parameter int unsigned L2_NUM_WB = 2,
+    // L2 line size: 64 bytes, as on the X3, or 32, the L1s' line size, which
+    // leaves out the line-size adapter. Every DDR AXI transfer carries one L2
+    // line in a single beat.
+    parameter int unsigned L2_LINE_BYTES = 64,
     // Simulation-only fast cache maintenance for fence.i (see frost_cache).
     // 0 = FPGA (cycle-accurate maintenance FSM); non-zero = sim fast path.
     parameter int unsigned SIM_FAST_MAINT = 0,
@@ -137,42 +141,42 @@ module cpu_and_mem #(
     output logic o_dtm_bscan_tdo_dtmcs,
     output logic o_dtm_bscan_tdo_dmi,
 
-    // DDR AXI master (cache-hierarchy bridge): single-beat 512-bit transfers,
-    // one 64-byte L2 line each. Quiescent when USE_BEHAVIORAL_DDR=1 or the
-    // cached tier is disabled. Transaction ids are the L2's downstream ids
-    // (DdrAxiIdBits wide, board-fixed).
+    // DDR AXI master (cache-hierarchy bridge): single-beat transfers of one
+    // L2 line each, 512 bits wide with 64-byte lines. Quiescent when
+    // USE_BEHAVIORAL_DDR=1 or the cached tier is disabled. Transaction ids
+    // are the L2's downstream ids (DdrAxiIdBits wide, board-fixed).
     // i_ddr_axi_rst (i_clk domain) is the reset of the interconnect behind
     // these ports; the behavioral memory uses the CPU reset instead.
-    input  logic         i_ddr_axi_rst,
-    output logic         o_ddr_axi_awvalid,
-    input  logic         i_ddr_axi_awready,
-    output logic [  4:0] o_ddr_axi_awid,
-    output logic [ 31:0] o_ddr_axi_awaddr,
-    output logic [  7:0] o_ddr_axi_awlen,
-    output logic [  2:0] o_ddr_axi_awsize,
-    output logic [  1:0] o_ddr_axi_awburst,
-    output logic         o_ddr_axi_wvalid,
-    input  logic         i_ddr_axi_wready,
-    output logic [511:0] o_ddr_axi_wdata,
-    output logic [ 63:0] o_ddr_axi_wstrb,
-    output logic         o_ddr_axi_wlast,
-    input  logic         i_ddr_axi_bvalid,
-    output logic         o_ddr_axi_bready,
-    input  logic [  4:0] i_ddr_axi_bid,
-    input  logic [  1:0] i_ddr_axi_bresp,
-    output logic         o_ddr_axi_arvalid,
-    input  logic         i_ddr_axi_arready,
-    output logic [  4:0] o_ddr_axi_arid,
-    output logic [ 31:0] o_ddr_axi_araddr,
-    output logic [  7:0] o_ddr_axi_arlen,
-    output logic [  2:0] o_ddr_axi_arsize,
-    output logic [  1:0] o_ddr_axi_arburst,
-    input  logic         i_ddr_axi_rvalid,
-    output logic         o_ddr_axi_rready,
-    input  logic [  4:0] i_ddr_axi_rid,
-    input  logic [511:0] i_ddr_axi_rdata,
-    input  logic [  1:0] i_ddr_axi_rresp,
-    input  logic         i_ddr_axi_rlast,
+    input  logic                       i_ddr_axi_rst,
+    output logic                       o_ddr_axi_awvalid,
+    input  logic                       i_ddr_axi_awready,
+    output logic [                4:0] o_ddr_axi_awid,
+    output logic [               31:0] o_ddr_axi_awaddr,
+    output logic [                7:0] o_ddr_axi_awlen,
+    output logic [                2:0] o_ddr_axi_awsize,
+    output logic [                1:0] o_ddr_axi_awburst,
+    output logic                       o_ddr_axi_wvalid,
+    input  logic                       i_ddr_axi_wready,
+    output logic [L2_LINE_BYTES*8-1:0] o_ddr_axi_wdata,
+    output logic [  L2_LINE_BYTES-1:0] o_ddr_axi_wstrb,
+    output logic                       o_ddr_axi_wlast,
+    input  logic                       i_ddr_axi_bvalid,
+    output logic                       o_ddr_axi_bready,
+    input  logic [                4:0] i_ddr_axi_bid,
+    input  logic [                1:0] i_ddr_axi_bresp,
+    output logic                       o_ddr_axi_arvalid,
+    input  logic                       i_ddr_axi_arready,
+    output logic [                4:0] o_ddr_axi_arid,
+    output logic [               31:0] o_ddr_axi_araddr,
+    output logic [                7:0] o_ddr_axi_arlen,
+    output logic [                2:0] o_ddr_axi_arsize,
+    output logic [                1:0] o_ddr_axi_arburst,
+    input  logic                       i_ddr_axi_rvalid,
+    output logic                       o_ddr_axi_rready,
+    input  logic [                4:0] i_ddr_axi_rid,
+    input  logic [L2_LINE_BYTES*8-1:0] i_ddr_axi_rdata,
+    input  logic [                1:0] i_ddr_axi_rresp,
+    input  logic                       i_ddr_axi_rlast,
 
     // NIC (hw/rtl/peripherals/nic): the MAC clocks and their
     // presence levels, the raw PMA interface, the board's PHY lines and the
@@ -410,10 +414,10 @@ module cpu_and_mem #(
   // off otherwise.
   // Line-protocol id widths: the L1 upstream ports carry LineIdBits, and the
   // L2's downstream ids, {type, slot}, are the board's AXI ids, DdrAxiIdBits
-  // wide. L2LineBytes is the L2's line, one beat on the DDR AXI port.
+  // wide. The L1s, the walker, fetch, and the DMA port use L1LineBytes lines.
   localparam int unsigned LineIdBits = 3;
   localparam int unsigned DdrAxiIdBits = 5;
-  localparam int unsigned L2LineBytes = 64;
+  localparam int unsigned L1LineBytes = 32;
   // The behavioral DDR model keeps at least its default eight transactions
   // per channel in flight, and every fill or writeback the L2 can issue.
   localparam int unsigned L2MaxSlots = (L2_NUM_MSHR > L2_NUM_WB) ? L2_NUM_MSHR : L2_NUM_WB;
@@ -426,12 +430,12 @@ module cpu_and_mem #(
 
   logic iup_req_valid, iup_req_ready, iup_req_write;
   logic [31:0] iup_req_addr;
-  logic [255:0] iup_req_wdata;
-  logic [31:0] iup_req_wstrb;
+  logic [L1LineBytes*8-1:0] iup_req_wdata;
+  logic [L1LineBytes-1:0] iup_req_wstrb;
   logic [LineIdBits-1:0] iup_req_id;
   logic iup_resp_valid;
   logic [LineIdBits-1:0] iup_resp_id;
-  logic [255:0] iup_resp_rdata;
+  logic [L1LineBytes*8-1:0] iup_resp_rdata;
 
   // Page-table walker line port: core-side ptw master to the
   // hierarchy's wup port. LineIdBits-1 = 2-bit local ids per the id tree.
@@ -440,7 +444,7 @@ module cpu_and_mem #(
   logic [LineIdBits-2:0] walk_line_req_id;
   logic walk_line_resp_valid;
   logic [LineIdBits-2:0] walk_line_resp_id;
-  logic [255:0] walk_line_resp_rdata;
+  logic [L1LineBytes*8-1:0] walk_line_resp_rdata;
   logic [31:0] data_memory_address;
   logic [riscv_pkg::MemDataBits-1:0] data_memory_write_data, data_memory_write_data_registered;
   logic [riscv_pkg::MemDataBits-1:0] data_memory_response_data;  // Complete router payload
@@ -1023,7 +1027,7 @@ module cpu_and_mem #(
     // Cached-code fetch buffer: two window slots and a victim store before
     // L1I. The low-BRAM path is independent.
     fetch_provider #(
-        .LINE_BYTES  (32),
+        .LINE_BYTES  (L1LineBytes),
         .LINE_ID_BITS(LineIdBits)
     ) u_fetch_provider (
         .i_clk(i_clk),
@@ -1664,34 +1668,34 @@ module cpu_and_mem #(
     // 2-bit ids, the arbiter prefixes the port bit (LineIdBits = 3).
     logic dma_req_valid, dma_req_ready, dma_req_write;
     logic [31:0] dma_req_addr;
-    logic [255:0] dma_req_wdata;
-    logic [31:0] dma_req_wstrb;
+    logic [L1LineBytes*8-1:0] dma_req_wdata;
+    logic [L1LineBytes-1:0] dma_req_wstrb;
     logic [LineIdBits-1:0] dma_req_id;
     logic dma_resp_valid;
     logic [LineIdBits-1:0] dma_resp_id;
-    logic [255:0] dma_resp_rdata;
+    logic [L1LineBytes*8-1:0] dma_resp_rdata;
     logic [1:0] agent_req_valid, agent_req_ready, agent_req_write, agent_resp_valid;
     logic [1:0][ 31:0] agent_req_addr;
-    logic [1:0][255:0] agent_req_wdata;
-    logic [1:0][ 31:0] agent_req_wstrb;
+    logic [1:0][L1LineBytes*8-1:0] agent_req_wdata;
+    logic [1:0][L1LineBytes-1:0] agent_req_wstrb;
     logic [1:0][LineIdBits-2:0] agent_req_id, agent_resp_id;
-    logic [1:0][255:0] agent_resp_rdata;
+    logic [1:0][L1LineBytes*8-1:0] agent_resp_rdata;
     /* verilator lint_off UNUSEDSIGNAL */  // the DMA port carries no maintenance requests
     logic dma_req_maintenance_unused;
     /* verilator lint_on UNUSEDSIGNAL */
 
     logic line_req_valid, line_req_ready, line_req_write;
     logic [31:0] line_req_addr;
-    logic [255:0] line_req_wdata;
-    logic [31:0] line_req_wstrb;
+    logic [L1LineBytes*8-1:0] line_req_wdata;
+    logic [L1LineBytes-1:0] line_req_wstrb;
     logic [LineIdBits-1:0] line_req_id;
     logic line_resp_valid;
     logic [LineIdBits-1:0] line_resp_id;
-    logic [255:0] line_resp_rdata;
+    logic [L1LineBytes*8-1:0] line_resp_rdata;
 
     cached_tier_adapter #(
         .XLEN(32),
-        .LINE_BYTES(32),
+        .LINE_BYTES(L1LineBytes),
         .LINE_ID_BITS(LineIdBits)
     ) cached_adapter (
         .i_clk(i_clk),
@@ -1721,17 +1725,17 @@ module cpu_and_mem #(
 
     logic down_req_valid, down_req_ready, down_req_write;
     logic [31:0] down_req_addr;
-    logic [L2LineBytes*8-1:0] down_req_wdata;
-    logic [L2LineBytes-1:0] down_req_wstrb;
+    logic [L2_LINE_BYTES*8-1:0] down_req_wdata;
+    logic [L2_LINE_BYTES-1:0] down_req_wstrb;
     logic [DdrAxiIdBits-1:0] down_req_id;
     logic down_resp_valid;
     logic [DdrAxiIdBits-1:0] down_resp_id;
-    logic [L2LineBytes*8-1:0] down_resp_rdata;
+    logic [L2_LINE_BYTES*8-1:0] down_resp_rdata;
 
     frost_cache_hierarchy #(
         .ADDR_WIDTH(32),
-        .L1_LINE_BYTES(32),
-        .L2_LINE_BYTES(L2LineBytes),
+        .L1_LINE_BYTES(L1LineBytes),
+        .L2_LINE_BYTES(L2_LINE_BYTES),
         .UP_ID_BITS(LineIdBits),
         .L1_CACHE_BYTES(L1_CACHE_BYTES),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
@@ -1814,7 +1818,7 @@ module cpu_and_mem #(
     line_port_arbiter #(
         .NUM_PORTS(2),
         .ADDR_WIDTH(32),
-        .LINE_BYTES(32),
+        .LINE_BYTES(L1LineBytes),
         .UP_ID_BITS(LineIdBits - 1),
         .STARVATION_LIMIT(8)
     ) dma_arbiter (
@@ -1846,7 +1850,7 @@ module cpu_and_mem #(
 
     nic_top #(
         .ADDR_WIDTH(32),
-        .LINE_BYTES(32),
+        .LINE_BYTES(L1LineBytes),
         .APERTURE_BASE(CACHED_BASE),
         .APERTURE_BYTES(CACHED_SIZE_BYTES),
         .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000),
@@ -1887,7 +1891,7 @@ module cpu_and_mem #(
 
     dma_test_engine #(
         .ADDR_WIDTH(32),
-        .LINE_BYTES(32),
+        .LINE_BYTES(L1LineBytes),
         .ID_BITS(LineIdBits - 1),
         .APERTURE_BASE(CACHED_BASE),
         .APERTURE_BYTES(CACHED_SIZE_BYTES)
@@ -1919,8 +1923,8 @@ module cpu_and_mem #(
     logic [7:0] axi_awlen, axi_arlen;
     logic [2:0] axi_awsize, axi_arsize;
     logic [1:0] axi_awburst, axi_arburst, axi_bresp, axi_rresp;
-    logic [L2LineBytes*8-1:0] axi_wdata, axi_rdata;
-    logic [L2LineBytes-1:0] axi_wstrb;
+    logic [L2_LINE_BYTES*8-1:0] axi_wdata, axi_rdata;
+    logic [L2_LINE_BYTES-1:0] axi_wstrb;
     logic [DdrAxiIdBits-1:0] axi_awid, axi_arid, axi_bid, axi_rid;
 
     // The AXI slave's reset: the behavioral memory resets with the CPU, the
@@ -1930,7 +1934,7 @@ module cpu_and_mem #(
 
     line_port_axi_bridge #(
         .ADDR_WIDTH(32),
-        .LINE_BYTES(L2LineBytes),
+        .LINE_BYTES(L2_LINE_BYTES),
         .ID_BITS(DdrAxiIdBits),
         .AXI_ID_BITS(DdrAxiIdBits),
         .BASE_ADDR(CACHED_BASE)
@@ -1983,7 +1987,7 @@ module cpu_and_mem #(
       // Simulation-only main memory; hardware sets USE_BEHAVIORAL_DDR=0 and
       // takes the bridge's AXI out through the o_ddr_axi_* ports instead.
       axi_behavioral_memory #(
-          .LINE_BYTES(L2LineBytes),
+          .LINE_BYTES(L2_LINE_BYTES),
           .MEM_BYTES(DDR_MODEL_BYTES),
           .NUM_SLOTS(DdrModelSlots),
           .ID_BITS(DdrAxiIdBits),

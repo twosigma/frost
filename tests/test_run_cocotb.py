@@ -259,6 +259,51 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GPERF_COUNTERS=1",
         ),
     ),
+    # The system with 32-byte L2 lines, equal to the L1s': no line-size
+    # adapter and a 256-bit DDR port. Adjacent, so consecutive runs reuse one
+    # build.
+    "ddr_test_equal_lines": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ddr_test",
+        description="Cached DDR loads and stores with 32-byte L2 lines",
+        verilator_extra_args=("-GL2_LINE_BYTES=32",),
+    ),
+    "ddr_exec_test_equal_lines": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ddr_exec_test",
+        description="Instruction fetch and execution from cached DDR with 32-byte L2 lines",
+        verilator_extra_args=("-GL2_LINE_BYTES=32",),
+    ),
+    "ddr_atomic_test_equal_lines": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ddr_atomic_test",
+        description="Word-form LR/SC and AMO operations in cached DDR with 32-byte L2 lines",
+        verilator_extra_args=("-GL2_LINE_BYTES=32",),
+    ),
+    "dma_torture_equal_lines": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="dma_torture",
+        description="DMA coherence with CPU caches and atomics, with 32-byte L2 lines",
+        verilator_extra_args=("-GL2_LINE_BYTES=32",),
+    ),
+    "ptw_coherence_test_equal_lines": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ptw_coherence_test",
+        description="Sv39 walks see dirty L1D page tables, with 32-byte L2 lines",
+        verilator_extra_args=("-GL2_LINE_BYTES=32",),
+    ),
+    "smc_fencei_test_equal_lines": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="smc_fencei_test",
+        description="Self-modifying DDR code across fence.i, with 32-byte L2 lines",
+        verilator_extra_args=("-GL2_LINE_BYTES=32",),
+    ),
     "csr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
