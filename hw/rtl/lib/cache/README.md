@@ -128,6 +128,11 @@ takes the next one, and the writeback slots take turns. A pending writeback
 is loaded within 4 loads of the register, and any given slot within 8,
 however slowly the level below accepts.
 
+The miss slots take turns too. The fill pick starts from the slot after the
+last one it loaded, so a fill that can issue is loaded within `NUM_MSHR`
+fill loads. A fixed order would let low slots that keep reallocating between
+the level below's acceptances starve a fill in a high slot.
+
 ### Probes
 
 The L1D (`NUM_PROBE > 0`) takes per-line coherence probes on its upstream
@@ -385,7 +390,7 @@ may take several cycles to answer.
 | Target family | Coverage |
 | --- | --- |
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, and dirty-L1D walker coherence |
-| `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, writeback progress, and `fence.i` |
+| `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, writeback and fill progress, and `fence.i` |
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |
 | `line_port_arbiter*` | Arbitration and tagged responses |
 | `line_port_axi_bridge` | The bridge across a CPU reset against a slave that keeps running: held beats, AW/W pairing, dropped stale responses, and a reused id held back until the stale response for it has arrived; and across the slave's own reset, which withdraws the held beats |

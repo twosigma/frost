@@ -60,6 +60,7 @@ TAG_INSTALL_BASE = BASE_ADDR + 0x640000
 STALE_BASE = BASE_ADDR + 0x680000
 STARVE_BASE = BASE_ADDR + 0x6C0000
 TURNS_BASE = BASE_ADDR + 0x700000
+FILL_TURNS_BASE = BASE_ADDR + 0x740000
 # Offset of a test's eviction reads inside its region.
 EVICT_OFFSET = 0x30000
 RESP_TIMEOUT_CYCLES = 5_000
@@ -75,6 +76,7 @@ WB_STARVE_LIMIT = 3
 WB_SLOT_TURN_BOUND = 2 * (WB_STARVE_LIMIT + 1)
 WB_FREE = 0  # wb_state_e ordinals: FREE, FILLING, PEND, SENT
 WB_PEND = 2
+MS_FREE = 0  # mshr_state_e ordinal of a free miss slot
 # Acceptances are spaced so that the fill accepted at one completes, responds,
 # and its reader re-issues into a re-allocated miss slot before the next, and
 # so that a writeback's acknowledgement (one memory latency) frees its slot
@@ -799,6 +801,93 @@ async def test_writeback_slots_take_turns_under_dirty_victim_stream(dut: Any) ->
         assert await _transaction(
             dut, "up", col, write=False, addr=d
         ) == model.read_line(d)
+    col.stop()
+
+
+@cocotb.test()
+async def test_fill_slots_take_turns_under_recycled_misses(dut: Any) -> None:
+    """A pending fill gets its turn while lower miss slots keep reallocating.
+
+    The fill pick rotates after each fill load, so a fill that can issue is
+    loaded within NUM_MSHR fill loads and fires within NUM_MSHR + 1
+    acceptances. A fixed lowest-index pick would let low slots that
+    reallocate between acceptances starve a high one.
+
+    At the L2, hold the bridge and start one reader per miss slot but the
+    last; each keeps one miss in flight and reallocates a low slot as its
+    fill returns. Then one more read takes the last slot. Release one
+    acceptance every STARVE_GRANT_SPACING cycles: that read's fill must lose
+    at least one acceptance, then fire within the bound.
+    """
+    await _setup(dut)
+    col = _Collector(dut, "up")
+    model = ReferenceModel()
+    cache = dut.cache_hierarchy.l2_cache
+    num_mshr = int(cache.NUM_MSHR.value)
+    l2_line = int(cache.LINE_BYTES.value)
+
+    await FallingEdge(dut.i_clk)
+    dut.i_down_hold.value = 1
+    target_index = 9
+    target = FILL_TURNS_BASE + target_index * LINE_BYTES
+    fresh = _FreshLines(FILL_TURNS_BASE + 0x10000, skip=frozenset({target_index}))
+    port_lock = Lock()
+    stop = [False]
+    readers = [
+        cocotb.start_soon(
+            _stream_reader(dut, col, model, fresh, port_lock, (r, r + 4), stop)
+        )
+        for r in range(num_mshr - 1)
+    ]
+
+    def slots_in_use() -> list[int]:
+        return [
+            i for i in range(num_mshr) if int(cache.mshr_state_q[i].value) != MS_FREE
+        ]
+
+    for _ in range(RESP_TIMEOUT_CYCLES):
+        await FallingEdge(dut.i_clk)
+        if slots_in_use() == list(range(num_mshr - 1)):
+            break
+    else:
+        raise AssertionError("the readers never held every miss slot but the last")
+    target_id = 3
+    async with port_lock:
+        await _fire(dut, "up", write=False, addr=target, req_id=target_id)
+    for _ in range(RESP_TIMEOUT_CYCLES):
+        await FallingEdge(dut.i_clk)
+        if slots_in_use() == list(range(num_mshr)):
+            break
+    else:
+        raise AssertionError("the last read never took the last miss slot")
+    await _settle(dut, STARVE_GRANT_SPACING)
+
+    target_line = target & ~(l2_line - 1)
+    fires = 0
+    target_fired = False
+    while fires < STARVE_GIVE_UP_FILLS:
+        fired, write, addr = await _release_downstream_once(dut)
+        assert fired, "a released acceptance found no request presented"
+        assert not write, f"unexpected write fired downstream @0x{addr:08x}"
+        fires += 1
+        if addr == target_line:
+            target_fired = True
+            break
+        await _settle(dut, STARVE_GRANT_SPACING)
+    stop[0] = True
+    await FallingEdge(dut.i_clk)
+    dut.i_down_hold.value = 0
+    dut._log.info(f"the last slot's fill fired as acceptance {fires}")
+    assert target_fired, f"the last slot's fill still pending after {fires} acceptances"
+    assert fires >= 2, "the last slot's fill never lost an acceptance"
+    assert fires <= num_mshr + 1, (
+        f"the last slot's fill fired only as acceptance {fires}; "
+        f"the bound is {num_mshr + 1}"
+    )
+    _, got = await col.wait_for(target_id)
+    assert got == model.read_line(target), f"read mismatch @0x{target:08x}"
+    for reader in readers:
+        await reader
     col.stop()
 
 
