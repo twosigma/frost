@@ -246,13 +246,13 @@ presenting when the reset came stays presented until the controller accepts
 it, as AXI requires of a master whose slave is not reset, so a write whose
 address was accepted before its data never leaves an orphaned beat behind;
 its response is then dropped the same way. A late response would pass for
-the response to a new request with the same id, so the bridge relies on every
-transaction it accepted before the reset completing (held beats taken,
-response received) before the L2's reset sweep ends, one cycle per line or
-65,536 cycles for the 2 MiB L2; the L2 sends nothing earlier. An image load
-relies on the same promptness: nothing orders the JTAG loader's DDR writes
-after the bridge's, so each write the bridge accepted before the reset must
-land before the loader's first DDR write.
+the response to a new request with the same id, so the reset moves the
+in-flight map into a second map of transactions still owed from before it,
+which only their responses clear, and the bridge accepts no request until
+that map is empty. An image load relies on those transactions completing
+promptly in another way: nothing orders the JTAG loader's DDR writes after
+the bridge's, so each write the bridge accepted before the reset must land
+before the loader's first DDR write.
 
 The interconnect's own reset is different. While it is in reset, AXI
 requires every VALID low, so the bridge takes that reset as a second input
@@ -388,7 +388,7 @@ may take several cycles to answer.
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, writeback progress, and `fence.i` |
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |
 | `line_port_arbiter*` | Arbitration and tagged responses |
-| `line_port_axi_bridge` | The bridge across a CPU reset against a slave that keeps running: held beats, AW/W pairing, and dropped stale responses; and across the slave's own reset, which withdraws the held beats |
+| `line_port_axi_bridge` | The bridge across a CPU reset against a slave that keeps running: held beats, AW/W pairing, dropped stale responses, and a reused id held back until the stale response for it has arrived; and across the slave's own reset, which withdraws the held beats |
 | `fence_speed_slow`, `fence_speed_fast` | Maintenance latency; CLI-only |
 | `dma_envelope_lock3` through `dma_envelope_lock8`, `dma_envelope_lock3_mem30`, `dma_envelope_lock3_big_l2` | DMA throughput and latency by lock count and scenario; CLI-only |
 
@@ -398,6 +398,7 @@ the exact names. The benches live in
 full-system programs `dma_torture` and `ptw_coherence_test` check DMA and
 walker coherence against the running CPU. Formal targets cover the bridge
 (`line_port_axi_bridge`: AXI handshakes, also across a CPU reset, VALIDs low
-through the AXI side's reset, id conservation, and stale-response drops), the
+through the AXI side's reset, id conservation, stale-response drops, and no
+request accepted while a response from before a reset is owed), the
 arbiter grant (`line_arbiter_grant`), and the miss-slot byte merge
 (`cache_mshr_payload`); see the [formal guide](../../../../formal/README.md).

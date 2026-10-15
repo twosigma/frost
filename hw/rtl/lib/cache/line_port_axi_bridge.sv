@@ -47,14 +47,13 @@
  * the transactions the bridge accepted before an image-load reset or an
  * ndmreset: the controller keeps running and completes them after the reset
  * has cleared the in-flight bitmap. A late response would pass for the
- * response to a new request with the same id, so the bridge relies on each
- * such transaction completing (held beats taken, response received) before
- * the L2's reset tag sweep ends, one cycle per L2 line; the L2 sends nothing
- * earlier. An image load relies on the same promptness: nothing orders the
- * JTAG loader's DDR writes after the bridge's, so each write the bridge
- * accepted before the reset must land before the loader's first DDR write,
- * at least one JTAG-AXI transaction after the low-BRAM write that raised
- * the reset.
+ * response to a new request with the same id, so the bridge accepts no
+ * request until every transaction it accepted before the reset has completed
+ * (held beats taken, response received); i_axi_rst discards them instead. An
+ * image load relies on their promptness as well: nothing orders the JTAG
+ * loader's DDR writes after the bridge's, so each write the bridge accepted
+ * before the reset must land before the loader's first DDR write, at least
+ * one JTAG-AXI transaction after the low-BRAM write that raised the reset.
  *
  * BASE_ADDR is subtracted from the line address so the AXI side sees a
  * zero-based region offset: in simulation the behavioral DDR indexes from 0,
@@ -137,11 +136,17 @@ module line_port_axi_bridge #(
   logic [LINE_BYTES*8-1:0] w_data_q;
   logic [  LINE_BYTES-1:0] w_strb_q;
 
+  // Set while a transaction accepted before the last i_rst still owes its
+  // response (the stale bitmap below). Registered, so ready gains no logic
+  // depth.
+  logic                    stale_any_q = 1'b0;
+
   // A write is issuable when both its channels are free; a read when AR is.
   logic write_slot_free, read_slot_free;
   assign write_slot_free = !aw_valid_q && !w_valid_q;
-  assign read_slot_free  = !ar_valid_q;
-  assign o_req_ready     = !i_rst && !i_axi_rst && (i_req_write ? write_slot_free : read_slot_free);
+  assign read_slot_free = !ar_valid_q;
+  assign o_req_ready = !i_rst && !i_axi_rst && !stale_any_q &&
+      (i_req_write ? write_slot_free : read_slot_free);
 
   logic req_fire;
   assign req_fire = i_req_valid && o_req_ready;
@@ -195,7 +200,9 @@ module line_port_axi_bridge #(
   // ---- In-flight bitmap ------------------------------------------------------
   // One bit per id: set at the fire, cleared when the response is accepted
   // toward the line port. A response for a clear id is stale (see header).
-  logic [NumIds-1:0] inflight_q;
+  // The initializer matters: the first reset moves these bits into the stale
+  // bitmap below, which only responses clear.
+  logic [NumIds-1:0] inflight_q = '0;
 
   logic r_accept, b_accept;
   logic r_known, b_known;
@@ -251,6 +258,26 @@ module line_port_axi_bridge #(
     end
   end
 
+  // ---- Transactions accepted before a reset ----------------------------------
+  // One bit per id. i_rst moves the in-flight bitmap here, since the slave
+  // keeps running and still owes those responses. A response for the id
+  // clears its bit, and i_axi_rst, which discards the slave's work, clears
+  // them all. No request is accepted while any bit is set, so no id is ever
+  // owed both from before a reset and from after it.
+  logic [NumIds-1:0] stale_q = '0;
+  logic [NumIds-1:0] stale_d;
+  always_comb begin
+    stale_d = stale_q;
+    if (i_rst) stale_d = stale_d | inflight_q;
+    if (r_accept) stale_d[i_axi_rid[ID_BITS-1:0]] = 1'b0;
+    if (b_accept) stale_d[i_axi_bid[ID_BITS-1:0]] = 1'b0;
+    if (i_axi_rst) stale_d = '0;
+  end
+  always_ff @(posedge i_clk) begin
+    stale_q     <= stale_d;
+    stale_any_q <= |stale_d;
+  end
+
 `ifndef SYNTHESIS
 `ifndef FORMAL
   // Simulation-only protocol checks (Yosys cannot elaborate $error).
@@ -289,8 +316,9 @@ module line_port_axi_bridge #(
       if (req_stall_cnt == 1024) begin
         $display("line_port_axi_bridge REQ STALL: req{w=%0d id=%0d} ar{v=%0d rdy=%0d}",
                  i_req_write, i_req_id, ar_valid_q, i_axi_arready);
-        $display("  aw{v=%0d rdy=%0d} w{v=%0d rdy=%0d} inflight=%b r{v=%0d} b{v=%0d}", aw_valid_q,
-                 i_axi_awready, w_valid_q, i_axi_wready, inflight_q, i_axi_rvalid, i_axi_bvalid);
+        $display("  aw{v=%0d rdy=%0d} w{v=%0d rdy=%0d} inflight=%b stale=%b r{v=%0d} b{v=%0d}",
+                 aw_valid_q, i_axi_awready, w_valid_q, i_axi_wready, inflight_q, stale_q,
+                 i_axi_rvalid, i_axi_bvalid);
         $error("line_port_axi_bridge: request stalled for 1024 cycles");
       end
     end
@@ -363,8 +391,64 @@ module line_port_axi_bridge #(
     end
   end
 
+  // Reference for the drain across a reset: the transactions the slave still
+  // owes, split by whether the bridge accepted them before the last i_rst
+  // (f_pre_q) or after it (f_post_q). A response retires its id's older
+  // transaction; a reset makes every current transaction a pre-reset one.
+  // i_axi_rst discards the pre-reset ones, as the slave's reset does.
+  logic [NumIds-1:0] f_pre_q, f_post_q, f_pre_d, f_post_d;
+  initial begin
+    f_pre_q  = '0;
+    f_post_q = '0;
+  end
+  always_comb begin
+    f_pre_d  = f_pre_q;
+    f_post_d = f_post_q;
+    if (r_accept) begin
+      if (f_pre_d[i_axi_rid[ID_BITS-1:0]]) f_pre_d[i_axi_rid[ID_BITS-1:0]] = 1'b0;
+      else f_post_d[i_axi_rid[ID_BITS-1:0]] = 1'b0;
+    end
+    if (b_accept) begin
+      if (f_pre_d[i_axi_bid[ID_BITS-1:0]]) f_pre_d[i_axi_bid[ID_BITS-1:0]] = 1'b0;
+      else f_post_d[i_axi_bid[ID_BITS-1:0]] = 1'b0;
+    end
+    if (i_rst) begin
+      f_pre_d  = f_pre_d | f_post_d;
+      f_post_d = '0;
+    end
+    if (req_fire) f_post_d[i_req_id] = 1'b1;
+    if (i_axi_rst) f_pre_d = '0;
+  end
+  always @(posedge i_clk) begin
+    f_pre_q  <= f_pre_d;
+    f_post_q <= f_post_d;
+  end
+
+  always @(posedge i_clk) begin
+    if (f_past_valid) begin
+      // The stale bitmap is exactly the set of pre-reset transactions still
+      // owed, and the in-flight bitmap the set of post-reset ones.
+      p_stale_is_pre_reset : assert (stale_q == f_pre_q);
+      p_inflight_is_post_reset : assert (inflight_q == f_post_q);
+      p_stale_flag : assert (stale_any_q == (stale_q != '0));
+      // No id is owed in both epochs, so a response is never ambiguous.
+      p_epochs_disjoint : assert ((f_pre_q & f_post_q) == '0);
+      // A response forwarded to the line port answers a post-reset request.
+      if (r_accept && r_known) begin
+        p_r_forward_is_current :
+        assert (f_post_q[i_axi_rid[ID_BITS-1:0]] && !f_pre_q[i_axi_rid[ID_BITS-1:0]]);
+      end
+      if (b_accept && b_known) begin
+        p_b_forward_is_current :
+        assert (f_post_q[i_axi_bid[ID_BITS-1:0]] && !f_pre_q[i_axi_bid[ID_BITS-1:0]]);
+      end
+    end
+  end
+
   always @(posedge i_clk) begin
     if (!i_rst) begin
+      // A request fires as soon as the last pre-reset transaction drains.
+      cover_drain_then_issue : cover ($past(stale_any_q) && !stale_any_q && req_fire);
       cover_read_and_write_in_flight : cover (ar_valid_q && aw_valid_q);
       // A reset lands between a write's AW and W handshakes.
       cover_reset_between_aw_and_w : cover ($past(i_rst) && w_valid_q && !aw_valid_q);
