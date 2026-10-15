@@ -5,18 +5,16 @@ set the direction of this roadmap. The sections are in priority order.
 
 ## Memory system
 
-The L2 uses 32-byte lines, but the X3's DDR4 controller transfers 64 bytes
-at a time: one burst on the 64-bit bus, 512 bits at its AXI port. With ECC
-on and no data mask, every 32-byte writeback makes the controller read the
-64 bytes, merge, and write them back, and every 32-byte fill reads 64 bytes
-and keeps half. The plan follows John Goodacre's design: 64-byte L2 lines
-behind an adapter that maps each 32-byte request onto its half of a line, so
-the L1 caches, the DMA port, and coherence probes keep 32-byte lines. The L2
-writes back only whole lines, each as a single 512-bit AXI transfer, and a
-32-byte write that misses fetches its line and merges into it. Measure the
-change with programs running from DDR, such as CoreMark-PRO and Linux, and
-with NIC receive traffic, since a write to a line the L2 does not hold reads
-the line first.
+The L2 uses 64-byte lines, following John Goodacre's design. An adapter maps
+each 32-byte request from the L1 caches, the page-table walker, and the DMA
+port onto its half of a line. The L2 writes back only whole lines, each as a
+single 512-bit AXI transfer that the X3's ECC DDR4 controller takes without
+a read-modify-write, and a 32-byte write that misses fetches its line and
+merges into it. Two costs of the design remain to measure on hardware, with
+programs running from DDR, such as CoreMark-PRO and Linux, and with NIC
+receive traffic: a 32-byte write to a line the L2 lacks reads the line from
+DDR first, and a write to the other half of a line with a read in flight
+waits for that read and holds up the L2.
 
 The DDR controller counts ECC errors, but nothing reports them to software:
 its interrupt is unconnected and `ECC_EN_IRQ` is clear. The cache hierarchy's

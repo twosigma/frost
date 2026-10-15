@@ -1520,8 +1520,8 @@ module frost_cache #(
   logic [IndexBits-1:0] first_dirty_full, first_dirty_excl;
   if (SIM_FAST_MAINT != 0) begin : gen_fast_maint
     logic [NumLines-1:0] dirty_shadow_q;
-    // The L2's shadow is 65,536 bits; clearing it replicates past Verilator's
-    // advisory limit. Simulation-only state, so the width is fine.
+    // The 2 MiB L2's shadow is 32,768 bits; clearing it replicates past the
+    // advisory limit of Verilator. Simulation-only state, so the width is fine.
     /* verilator lint_off WIDTHCONCAT */
     always_ff @(posedge i_clk) begin
       if (i_rst) dirty_shadow_q <= '0;

@@ -50,9 +50,9 @@ module xilinx_frost_subsystem #(
     output logic o_uart_tx,  // UART transmit for debug console
     input  logic i_uart_rx,  // UART receive for debug console input
 
-    // DDR AXI master driven by the cache-hierarchy bridge: single-beat 256-bit
-    // bursts, 5-bit transaction ids, addresses relative to the cached region
-    // base. Quiescent when USE_BEHAVIORAL_DDR=1 or the cached tier is off.
+    // DDR AXI master driven by the cache-hierarchy bridge: single-beat 512-bit
+    // bursts, one 64-byte L2 line each, 5-bit transaction ids, addresses
+    // relative to the cached region base. Quiescent when USE_BEHAVIORAL_DDR=1 or the cached tier is off.
     // i_ddr_axi_rst_n is the reset of the interconnect behind these ports.
     input  logic         i_ddr_axi_rst_n,
     output logic         o_ddr_axi_awvalid,
@@ -64,8 +64,8 @@ module xilinx_frost_subsystem #(
     output logic [  1:0] o_ddr_axi_awburst,
     output logic         o_ddr_axi_wvalid,
     input  logic         i_ddr_axi_wready,
-    output logic [255:0] o_ddr_axi_wdata,
-    output logic [ 31:0] o_ddr_axi_wstrb,
+    output logic [511:0] o_ddr_axi_wdata,
+    output logic [ 63:0] o_ddr_axi_wstrb,
     output logic         o_ddr_axi_wlast,
     input  logic         i_ddr_axi_bvalid,
     output logic         o_ddr_axi_bready,
@@ -81,7 +81,7 @@ module xilinx_frost_subsystem #(
     input  logic         i_ddr_axi_rvalid,
     output logic         o_ddr_axi_rready,
     input  logic [  4:0] i_ddr_axi_rid,
-    input  logic [255:0] i_ddr_axi_rdata,
+    input  logic [511:0] i_ddr_axi_rdata,
     input  logic [  1:0] i_ddr_axi_rresp,
     input  logic         i_ddr_axi_rlast,
 

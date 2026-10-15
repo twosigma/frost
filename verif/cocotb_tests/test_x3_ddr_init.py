@@ -33,12 +33,13 @@ from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
 
 CLOCK_PERIOD_NS = 10
 
-# Registry environment values must match REGION_BYTES and MAX_OUTSTANDING.
-# Fallbacks match x3_ddr_init; DATA_BITS and BEATS_PER_BURST use RTL defaults.
+# Registry environment values must match REGION_BYTES, MAX_OUTSTANDING,
+# DATA_BITS, and BEATS_PER_BURST. The geometry fallbacks are x3_ddr_init's
+# defaults, the X3's single 512-bit beat per controller word.
 REGION_BYTES = int(os.environ.get("DDR_INIT_REGION_BYTES", "4096"))
 MAX_OUTSTANDING = int(os.environ.get("DDR_INIT_MAX_OUTSTANDING", "4"))
-DATA_BITS = 256
-BEATS_PER_BURST = 2
+DATA_BITS = int(os.environ.get("DDR_INIT_DATA_BITS", "512"))
+BEATS_PER_BURST = int(os.environ.get("DDR_INIT_BEATS_PER_BURST", "1"))
 
 BYTES_PER_BEAT = DATA_BITS // 8
 BYTES_PER_BURST = BYTES_PER_BEAT * BEATS_PER_BURST

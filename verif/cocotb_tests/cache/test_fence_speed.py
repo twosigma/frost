@@ -39,7 +39,7 @@ CLOCK_PERIOD_NS = 10
 LINE_BYTES = 32
 BASE_ADDR = 0x8000_0000
 
-# The slow reset sweep visits all 65,536 L2 lines before accepting requests.
+# The slow reset sweep visits all 32,768 L2 lines before accepting requests.
 READY_TIMEOUT_CYCLES = 100_000
 RESP_TIMEOUT_CYCLES = 20_000
 FENCE_TIMEOUT_CYCLES = 200_000

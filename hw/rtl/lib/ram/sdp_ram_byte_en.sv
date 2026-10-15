@@ -19,7 +19,8 @@
  * selectable memory primitive ("block" BRAM or "ultra" UltraRAM). Access is
  * row-granular, with no word packing: one access is one full row. This backs
  * the frost_cache data arrays. L1 uses MEMORY_PRIMITIVE="block" and L2 uses
- * "ultra"; a 32-byte cache line is exactly one 256-bit row.
+ * "ultra"; a cache line is exactly one row, 256 bits in the L1s and 512 in
+ * the L2.
  *
  * Storage has two implementations behind synthesis-tool defines, with the same
  * external behaviour and latency so that simulation matches hardware:

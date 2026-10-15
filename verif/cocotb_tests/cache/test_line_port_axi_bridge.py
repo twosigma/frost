@@ -31,7 +31,9 @@ from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge, Timer
 
 CLOCK_PERIOD_NS = 10
-LINE_BYTES = 32
+# The bridge's width below the L2: one 64-byte line per beat (the registry
+# builds the bridge with LINE_BYTES=64).
+LINE_BYTES = 64
 BASE_ADDR = 0x8000_0000
 FULL_STRB = (1 << LINE_BYTES) - 1
 RESP_TIMEOUT_CYCLES = 200
@@ -195,7 +197,7 @@ class _ResponseLog:
 
 def _pattern(seed: int) -> int:
     return int.from_bytes(
-        bytes([(seed * 29 + b * 7) & 0xFF for b in range(32)]), "little"
+        bytes([(seed * 29 + b * 7) & 0xFF for b in range(LINE_BYTES)]), "little"
     )
 
 
@@ -209,6 +211,9 @@ async def _start(dut: Any) -> tuple[_AxiSlave, _ResponseLog]:
     dut.i_req_wdata.value = 0
     dut.i_req_wstrb.value = 0
     dut.i_req_id.value = 0
+    assert int(dut.LINE_BYTES.value) == LINE_BYTES, (
+        "build the bridge with LINE_BYTES=64"
+    )
     slave = _AxiSlave(dut)
     log = _ResponseLog(dut)
     await _reset(dut)

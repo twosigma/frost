@@ -112,7 +112,9 @@ for predecode metadata.
 
 Instruction fetch and data accesses both reach the cached region. The
 hierarchy has a 128 KiB L1D, a 16 KiB L1I, and a shared 2 MiB L2. All three
-are direct-mapped, write-back, and write-allocate with 32-byte lines. Cached
+are direct-mapped, write-back, and write-allocate. The L1s use 32-byte lines;
+the L2 uses 64-byte lines, each holding two of them, and moves whole lines to
+and from DDR as single 512-bit AXI transfers. Cached
 accesses have variable latency, and L1 hits proceed while misses are
 pending. The L1D, the page-table walker, the L1I, and DMA share the hierarchy
 in that priority order, with a bound on DMA starvation. DMA and page-table

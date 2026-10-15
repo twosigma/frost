@@ -137,10 +137,10 @@ module cpu_and_mem #(
     output logic o_dtm_bscan_tdo_dtmcs,
     output logic o_dtm_bscan_tdo_dmi,
 
-    // DDR AXI master (cache-hierarchy bridge): single-beat transfers, one L2
-    // line each. Quiescent when USE_BEHAVIORAL_DDR=1 or the cached tier is
-    // disabled. Transaction ids are the L2's downstream ids (DdrAxiIdBits
-    // wide, board-fixed).
+    // DDR AXI master (cache-hierarchy bridge): single-beat 512-bit transfers,
+    // one 64-byte L2 line each. Quiescent when USE_BEHAVIORAL_DDR=1 or the
+    // cached tier is disabled. Transaction ids are the L2's downstream ids
+    // (DdrAxiIdBits wide, board-fixed).
     // i_ddr_axi_rst (i_clk domain) is the reset of the interconnect behind
     // these ports; the behavioral memory uses the CPU reset instead.
     input  logic         i_ddr_axi_rst,
@@ -153,8 +153,8 @@ module cpu_and_mem #(
     output logic [  1:0] o_ddr_axi_awburst,
     output logic         o_ddr_axi_wvalid,
     input  logic         i_ddr_axi_wready,
-    output logic [255:0] o_ddr_axi_wdata,
-    output logic [ 31:0] o_ddr_axi_wstrb,
+    output logic [511:0] o_ddr_axi_wdata,
+    output logic [ 63:0] o_ddr_axi_wstrb,
     output logic         o_ddr_axi_wlast,
     input  logic         i_ddr_axi_bvalid,
     output logic         o_ddr_axi_bready,
@@ -170,7 +170,7 @@ module cpu_and_mem #(
     input  logic         i_ddr_axi_rvalid,
     output logic         o_ddr_axi_rready,
     input  logic [  4:0] i_ddr_axi_rid,
-    input  logic [255:0] i_ddr_axi_rdata,
+    input  logic [511:0] i_ddr_axi_rdata,
     input  logic [  1:0] i_ddr_axi_rresp,
     input  logic         i_ddr_axi_rlast,
 
@@ -413,7 +413,7 @@ module cpu_and_mem #(
   // wide. L2LineBytes is the L2's line, one beat on the DDR AXI port.
   localparam int unsigned LineIdBits = 3;
   localparam int unsigned DdrAxiIdBits = 5;
-  localparam int unsigned L2LineBytes = 32;
+  localparam int unsigned L2LineBytes = 64;
   // The behavioral DDR model keeps at least its default eight transactions
   // per channel in flight, and every fill or writeback the L2 can issue.
   localparam int unsigned L2MaxSlots = (L2_NUM_MSHR > L2_NUM_WB) ? L2_NUM_MSHR : L2_NUM_WB;

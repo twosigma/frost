@@ -20,7 +20,7 @@
       boards/xilinx_frost_subsystem.sv: low-BRAM JTAG-AXI and AXI-BRAM IP,
         16-bit startup timer, 27-bit image-load timer, BSCAN USER3/4, frost.
       fpga/build/x3_ddr_bd.tcl: dedicated DDR reference, DDR4/SmartConnect IP,
-        three clocks, separate DDR JTAG-AXI, 256/512-bit AXI, reset/address map.
+        three clocks, separate DDR JTAG-AXI, 512-bit AXI, reset/address map.
       boards/x3/x3_ddr_init.sv: the power-up region writer and what it gates.
       boards/x3/x3_nic_gty.sv: transceiver wrapper and supervisor.
       boards/x3/constr/x3.xdc: MGTREFCLK0, GTY channel and DSFP28 lane pins.
@@ -173,7 +173,7 @@
   <rect x="414" y="1002" width="240" height="132" rx="12" class="memory"/>
   <text x="534" y="1036" class="label center">L1I + L1D → L2</text>
   <text x="534" y="1065" class="body center">CPU clock domain</text>
-  <text x="534" y="1093" class="body center">256-bit AXI bridge</text>
+  <text x="534" y="1093" class="body center">512-bit AXI bridge</text>
   <text x="534" y="1118" class="small center">5-bit transaction IDs</text>
   <rect x="100" y="1160" width="262" height="42" rx="9" fill="#19273b"/>
   <text x="231" y="1187" class="body center">UART TX / RX · /4 · 115200 baud</text>

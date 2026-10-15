@@ -19,7 +19,8 @@
 # port. With ECC the controller requires its S_AXI_CTRL management port, which
 # only the JTAG master reaches, at region offset 0x4000_0000. The inverted
 # ui_clk_sync_rst drives c0_ddr4_aresetn; calibration drives mem_ok. The CPU
-# bridge port is 256 bits wide on the CPU clock with 5-bit ids, and the JTAG
+# bridge port is 512 bits wide on the CPU clock with 5-bit ids, as wide as the
+# controller's port, so the SmartConnect only crosses clocks for it; the JTAG
 # master loads DDR images. With ECC, every location must be written before it
 # is read; boards/x3/x3_ddr_init.sv writes the region through S00_AXI after
 # calibration. boards/x3/constr/x3.xdc constrains the external interface names.
@@ -53,18 +54,17 @@ proc create_x3_ddr_bd {} {
   set_property CONFIG.POLARITY ACTIVE_LOW $jtag_aresetn
   create_bd_port -dir O mem_ok
 
-  # The 256-bit CPU bridge port. Its 5-bit ids carry the cache hierarchy's
-  # transaction ids (L1D, walker and L1I, DMA, below the top arbiter), so
-  # several transactions can be in flight and complete out of order across
-  # ids. The cache bridge issues single beats. The burst limit of two is for
-  # the power-up writer (boards/x3/x3_ddr_init.sv): its two beats form one
-  # 512-bit controller word, so the controller never reads the uninitialized
-  # array to recompute ECC for a partial write.
+  # The 512-bit CPU bridge port. Its 5-bit ids carry the L2's transaction ids
+  # ({fill or writeback, slot}), so several transactions can be in flight and
+  # complete out of order across ids. Every transfer is a single beat of one
+  # whole controller word: an L2 line from the cache bridge, or a zero word
+  # from the power-up writer (boards/x3/x3_ddr_init.sv), so the controller
+  # never reads a word to recompute ECC for a partial write.
   set s00 [create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:aximm_rtl:1.0 S00_AXI]
   set_property -dict [list \
     CONFIG.PROTOCOL {AXI4} \
     CONFIG.ADDR_WIDTH {30} \
-    CONFIG.DATA_WIDTH {256} \
+    CONFIG.DATA_WIDTH {512} \
     CONFIG.ID_WIDTH {5} \
     CONFIG.HAS_BURST {1} \
     CONFIG.HAS_CACHE {0} \
@@ -75,7 +75,7 @@ proc create_x3_ddr_bd {} {
     CONFIG.HAS_WSTRB {1} \
     CONFIG.HAS_BRESP {1} \
     CONFIG.HAS_RRESP {1} \
-    CONFIG.MAX_BURST_LENGTH {2} \
+    CONFIG.MAX_BURST_LENGTH {1} \
   ] $s00
   set_property CONFIG.ASSOCIATED_BUSIF {S00_AXI} [get_bd_ports cpu_clk]
 
