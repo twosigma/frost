@@ -228,7 +228,10 @@ module x3_frost #(
       .i_rx_block_lock(nic_rx_block_lock)
   );
 
-  // DDR AXI between the FROST cache-hierarchy bridge and the DDR4 subsystem
+  // DDR AXI between the FROST cache-hierarchy bridge and the DDR4 subsystem.
+  // Each transfer is one L2 line in a single beat; the block design's CPU port
+  // (x3_ddr_bd.tcl) is one 64-byte line wide, the DDR4 controller's word.
+  localparam int unsigned L2LineBytes = 64;
   logic ddr_axi_awvalid, ddr_axi_awready, ddr_axi_wvalid, ddr_axi_wready;
   logic ddr_axi_bvalid, ddr_axi_bready, ddr_axi_arvalid, ddr_axi_arready;
   logic ddr_axi_rvalid, ddr_axi_rready, ddr_axi_wlast, ddr_axi_rlast;
@@ -236,8 +239,8 @@ module x3_frost #(
   logic [7:0] ddr_axi_awlen, ddr_axi_arlen;
   logic [2:0] ddr_axi_awsize, ddr_axi_arsize;
   logic [1:0] ddr_axi_awburst, ddr_axi_arburst, ddr_axi_bresp, ddr_axi_rresp;
-  logic [511:0] ddr_axi_wdata, ddr_axi_rdata;
-  logic [63:0] ddr_axi_wstrb;
+  logic [L2LineBytes*8-1:0] ddr_axi_wdata, ddr_axi_rdata;
+  logic [L2LineBytes-1:0] ddr_axi_wstrb;
   logic [4:0] ddr_axi_awid, ddr_axi_arid, ddr_axi_bid, ddr_axi_rid;
 
   logic mem_ok;
@@ -258,19 +261,19 @@ module x3_frost #(
   // reset until x3_ddr_init finishes; keep SmartConnect running for its writes.
   logic ddr_init_busy, ddr_init_done;
   logic init_awvalid, init_wvalid, init_wlast, init_bready;
-  logic [  4:0] init_awid;
-  logic [ 29:0] init_awaddr;
-  logic [  7:0] init_awlen;
-  logic [  2:0] init_awsize;
-  logic [  1:0] init_awburst;
-  logic [511:0] init_wdata;
-  logic [ 63:0] init_wstrb;
+  logic [4:0] init_awid;
+  logic [29:0] init_awaddr;
+  logic [7:0] init_awlen;
+  logic [2:0] init_awsize;
+  logic [1:0] init_awburst;
+  logic [L2LineBytes*8-1:0] init_wdata;
+  logic [L2LineBytes-1:0] init_wstrb;
 
   // S00 is as wide as the controller's 512-bit word, so every write is one
   // whole word in a single beat.
   x3_ddr_init #(
       .ADDR_BITS(30),
-      .DATA_BITS(512),
+      .DATA_BITS(L2LineBytes * 8),
       .ID_BITS(5),
       .BEATS_PER_BURST(1)
   ) ddr_initializer (
@@ -299,13 +302,13 @@ module x3_frost #(
   // The initializer drives writes until done. FROST stays in reset during
   // initialization, so ready and response signals can feed both masters.
   logic s00_awvalid, s00_wvalid, s00_wlast, s00_bready;
-  logic [  4:0] s00_awid;
-  logic [ 29:0] s00_awaddr;
-  logic [  7:0] s00_awlen;
-  logic [  2:0] s00_awsize;
-  logic [  1:0] s00_awburst;
-  logic [511:0] s00_wdata;
-  logic [ 63:0] s00_wstrb;
+  logic [4:0] s00_awid;
+  logic [29:0] s00_awaddr;
+  logic [7:0] s00_awlen;
+  logic [2:0] s00_awsize;
+  logic [1:0] s00_awburst;
+  logic [L2LineBytes*8-1:0] s00_wdata;
+  logic [L2LineBytes-1:0] s00_wstrb;
   assign s00_awvalid = ddr_init_busy ? init_awvalid : ddr_axi_awvalid;
   assign s00_awid = ddr_init_busy ? init_awid : ddr_axi_awid;
   assign s00_awaddr = ddr_init_busy ? init_awaddr : ddr_axi_awaddr[29:0];
@@ -391,6 +394,7 @@ module x3_frost #(
       // through the AXI port below.
       .ENABLE_CACHED_TIER(1),
       .USE_BEHAVIORAL_DDR(0),
+      .L2_LINE_BYTES(L2LineBytes),
       .PERF_COUNTERS(PERF_COUNTERS),
       // The transceiver's TX and RX clocks are independent, so the NIC has no
       // raw loopback; its self-test loopback is the transceiver's PMA

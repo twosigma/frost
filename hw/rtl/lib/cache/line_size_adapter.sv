@@ -35,7 +35,13 @@
  * id, reads it back. A master keeps its ids unique among its requests in
  * flight, so an entry is not rewritten while its request is outstanding;
  * simulation checks that, and that every response answers an outstanding
- * request.
+ * request. Responses may return in any order. The table needs no reset: an
+ * entry is written when its request fires, and only that request's response
+ * reads it.
+ *
+ * The adapter merges no requests. Reads of one wide line meet in the level
+ * below's miss slot, which keeps them in acceptance order with the writes
+ * between them.
  */
 module line_size_adapter #(
     parameter int unsigned ADDR_WIDTH = 32,

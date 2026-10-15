@@ -114,13 +114,14 @@ Instruction fetch and data accesses both reach the cached region. The
 hierarchy has a 128 KiB L1D, a 16 KiB L1I, and a shared 2 MiB L2. All three
 are direct-mapped, write-back, and write-allocate. The L1s use 32-byte lines;
 the L2 uses 64-byte lines, each holding two of them, and moves whole lines to
-and from DDR as single 512-bit AXI transfers. Cached
-accesses have variable latency, and L1 hits proceed while misses are
-pending. The L1D, the page-table walker, the L1I, and DMA share the hierarchy
-in that priority order, with a bound on DMA starvation. DMA and page-table
-walks see dirty L1D data without software cache maintenance. Code fetched
-from DDR passes through a buffer of two active lines and six victim lines in
-front of the L1I. See the [cache guide](lib/cache/README.md).
+and from DDR as single 512-bit AXI transfers. With `L2_LINE_BYTES=32` the L2
+uses the L1s' line size and the DDR port is 256 bits wide. Cached accesses
+have variable latency, and L1 hits proceed while misses are pending. The L1D,
+the page-table walker, the L1I, and DMA share the hierarchy in that priority
+order, with a bound on DMA starvation. DMA and page-table walks see dirty L1D
+data without software cache maintenance. Code fetched from DDR passes through
+a buffer of two active lines and six victim lines in front of the L1I. See
+the [cache guide](lib/cache/README.md).
 
 `fence.i` drains stores, writes back dirty L1D lines, invalidates the L1I,
 and flushes the fetch buffer before refetch. Reset invalidates the caches.

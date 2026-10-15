@@ -45,7 +45,9 @@ module cpu_ooo #(
     // tomasulo_perf_counters and the CSR file's mperf* state. 0 = absent (the
     // mperf* CSRs read zero and the event sources are unread); the production
     // build leaves them out, analysis builds set the board top's generic.
-    parameter int unsigned PERF_COUNTERS = 0
+    parameter int unsigned PERF_COUNTERS = 0,
+    // The walker's line port carries the L1s' 32-byte lines.
+    localparam int unsigned WalkLineBytes = 32
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -132,7 +134,7 @@ module cpu_ooo #(
     output logic [1:0] o_walk_line_req_id,
     input logic i_walk_line_resp_valid,
     input logic [1:0] i_walk_line_resp_id,
-    input logic [255:0] i_walk_line_resp_rdata,
+    input logic [WalkLineBytes*8-1:0] i_walk_line_resp_rdata,
     // Data memory interface
     input logic [riscv_pkg::MemDataBits-1:0] i_data_mem_rd_data,
     output logic [XLEN-1:0] o_data_mem_addr,
@@ -3498,7 +3500,9 @@ module cpu_ooo #(
   assign walk_resp_valid  = ptw_resp_valid && !walk_owner_i_q;
   assign iwalk_resp_valid = ptw_resp_valid && walk_owner_i_q;
 
-  ptw u_ptw (
+  ptw #(
+      .LINE_BYTES(WalkLineBytes)
+  ) u_ptw (
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_root_ppn(csr_satp_root_ppn),

@@ -290,7 +290,9 @@ merge, and write it back; the L2 writes back only whole lines.
 
 In general `L2_LINE_BYTES` is a power-of-2 multiple of `L1_LINE_BYTES`, and
 each L2 line holds that many L1 lines as sectors. With equal line sizes the
-adapter below is left out.
+adapter below is left out. `frost` and `cpu_and_mem` take `L2_LINE_BYTES`,
+64 by default; at 32 the DDR AXI port is 256 bits wide. The X3 top sets 64,
+one line per beat of its block design's 512-bit CPU port.
 
 `line_size_adapter` sits between the top arbiter and the L2. Valid and ready
 pass straight through, so a request is accepted by the adapter exactly when
@@ -301,15 +303,25 @@ each request onto its sector in three separate parts: the data goes into
 every sector, the strobes into the request's sector only, and the response
 returns the request's sector of the line. An outstanding-transaction table
 with one entry per id records each request's sector when it fires, and the
-response, which carries the same id, reads it back.
+response, which carries the same id, reads it back. Responses return in any
+order. The table needs no reset: an entry is written when its request fires,
+and only that request's response reads it.
+
+The adapter holds no request of its own, so it merges none: reads of one L2
+line meet in the L2's miss slot, as below. A merge in the adapter would break
+the acceptance order. For example, while an L1I read of one half of a line
+misses, a DMA write to the other half is accepted and releases the L1D's
+withheld read of that half; merged into the L1I read's fill, the L1D read
+would return the line from before the write.
 
 With several L1 lines in one, the L2 works as follows:
 
 - Requests to any sector of an L2 line are applied in acceptance order, a
   stronger order than the L1s need.
-- Reads of two sectors of a missing line share one fill: the first takes the
-  miss slot and the second its single waiter seat. A third read of the line
-  waits in the decision stage until the fill installs.
+- Two reads of a missing line share one fill, whether they read one sector
+  or two: the first takes the miss slot and the second its single waiter
+  seat. A third read of the line waits in the decision stage until the fill
+  installs.
 - A write never covers a whole L2 line. One that misses, an L1D eviction of
   a line the L2 has lost or a DMA write to a line it lacks, fetches the line
   and merges its bytes into the fill. A write to another sector of the line
@@ -319,7 +331,15 @@ With several L1 lines in one, the L2 works as follows:
   request at a time, so all L2 traffic waits behind it for that fill.
 - An eviction writes the whole line, with every strobe set, in one transfer.
 
-Reset clears the L2's 32,768 tags, one per cycle on hardware.
+Reset clears the L2's tags, 32,768 with 64-byte lines, one per cycle on
+hardware.
+
+DMA coherence and atomics work the same with either line size. DMA is
+coherent through the DMA port (see The DMA port and coherence); a master
+that reaches DDR below the L2 sees neither cache level. AMOs, LR, and SC
+execute in the load queue, on low BRAM and cached DDR, and reach the
+hierarchy as ordinary reads and writes. An atomic to any other address
+faults.
 
 ## The page-table walker port
 
@@ -447,7 +467,7 @@ may take several cycles to answer.
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, writeback and fill progress, and `fence.i` |
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |
 | `frost_cache_l2_lines*` | 64-byte L2 lines: both halves of a line sharing one fill and a third reader waiting, write misses that fill and merge in either half, a writeback waiting behind its line's read fill, halves combining in one line, whole-line writebacks, DMA writes changing only their half, L2 ordering across halves, a refill waiting for its line's writeback, `fence.i` into lines the L2 lacks, reset with misses in flight, and every port's misses at once; every AXI transfer checked as one whole-line beat |
-| `*_equal_lines` | The data-integrity, concurrency, and DMA suites with 32-byte L2 lines, equal to the L1s', as a control |
+| `*_equal_lines` | The data-integrity, concurrency, and DMA suites with 32-byte L2 lines, equal to the L1s', as a control; also DDR load and store, fetch, atomic, DMA, page-table-walk, and `fence.i` programs on the whole system with 32-byte L2 lines and a 256-bit DDR port |
 | `*_16x4` | The L2-line, concurrency, and DMA suites with 16 L2 miss slots and 4 writeback slots |
 | `line_port_arbiter*` | Arbitration and tagged responses |
 | `line_port_axi_bridge` | The bridge across a CPU reset against a slave that keeps running: held beats, AW/W pairing, dropped stale responses, and a reused id held back until the stale response for it has arrived; and across the slave's own reset, which withdraws the held beats |

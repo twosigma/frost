@@ -49,6 +49,9 @@ module frost #(
     // L2 miss-status and writeback slots, up to 16 of each.
     parameter int unsigned L2_NUM_MSHR = 4,
     parameter int unsigned L2_NUM_WB = 2,
+    // L2 line size: 64 bytes, or 32 with no line-size adapter (see
+    // cpu_and_mem). One L2 line is one beat of the DDR AXI port.
+    parameter int unsigned L2_LINE_BYTES = 64,
     // Simulation-only fast cache maintenance for fence.i: 0 selects the FPGA
     // cycle-accurate path; non-zero selects the sim fast path (see frost_cache).
     // Set to 1 only by the cocotb sim build, never for boards.
@@ -119,42 +122,43 @@ module frost #(
     output logic o_dtm_bscan_tdo_dtmcs,
     output logic o_dtm_bscan_tdo_dmi,
 
-    // DDR AXI master for the cache hierarchy: single-beat 512-bit bursts, one
-    // 64-byte L2 line each, with region-relative addresses. Quiescent when USE_BEHAVIORAL_DDR=1 or the
-    // cached tier is disabled; hardware boards wire it to the DDR controller.
+    // DDR AXI master for the cache hierarchy: single-beat bursts of one L2
+    // line each, 512 bits wide with 64-byte lines, with region-relative
+    // addresses. Quiescent when USE_BEHAVIORAL_DDR=1 or the cached tier is
+    // disabled; hardware boards wire it to the DDR controller.
     // i_ddr_axi_rst_n (active low, asynchronous) is the reset of the
     // interconnect behind these ports: while it is low the bridge drives every
     // VALID low. Unused with the behavioral memory.
-    input  logic         i_ddr_axi_rst_n = 1'b1,
-    output logic         o_ddr_axi_awvalid,
-    input  logic         i_ddr_axi_awready,
-    output logic [  4:0] o_ddr_axi_awid,
-    output logic [ 31:0] o_ddr_axi_awaddr,
-    output logic [  7:0] o_ddr_axi_awlen,
-    output logic [  2:0] o_ddr_axi_awsize,
-    output logic [  1:0] o_ddr_axi_awburst,
-    output logic         o_ddr_axi_wvalid,
-    input  logic         i_ddr_axi_wready,
-    output logic [511:0] o_ddr_axi_wdata,
-    output logic [ 63:0] o_ddr_axi_wstrb,
-    output logic         o_ddr_axi_wlast,
-    input  logic         i_ddr_axi_bvalid,
-    output logic         o_ddr_axi_bready,
-    input  logic [  4:0] i_ddr_axi_bid,
-    input  logic [  1:0] i_ddr_axi_bresp,
-    output logic         o_ddr_axi_arvalid,
-    input  logic         i_ddr_axi_arready,
-    output logic [  4:0] o_ddr_axi_arid,
-    output logic [ 31:0] o_ddr_axi_araddr,
-    output logic [  7:0] o_ddr_axi_arlen,
-    output logic [  2:0] o_ddr_axi_arsize,
-    output logic [  1:0] o_ddr_axi_arburst,
-    input  logic         i_ddr_axi_rvalid,
-    output logic         o_ddr_axi_rready,
-    input  logic [  4:0] i_ddr_axi_rid,
-    input  logic [511:0] i_ddr_axi_rdata,
-    input  logic [  1:0] i_ddr_axi_rresp,
-    input  logic         i_ddr_axi_rlast,
+    input  logic                       i_ddr_axi_rst_n = 1'b1,
+    output logic                       o_ddr_axi_awvalid,
+    input  logic                       i_ddr_axi_awready,
+    output logic [                4:0] o_ddr_axi_awid,
+    output logic [               31:0] o_ddr_axi_awaddr,
+    output logic [                7:0] o_ddr_axi_awlen,
+    output logic [                2:0] o_ddr_axi_awsize,
+    output logic [                1:0] o_ddr_axi_awburst,
+    output logic                       o_ddr_axi_wvalid,
+    input  logic                       i_ddr_axi_wready,
+    output logic [L2_LINE_BYTES*8-1:0] o_ddr_axi_wdata,
+    output logic [  L2_LINE_BYTES-1:0] o_ddr_axi_wstrb,
+    output logic                       o_ddr_axi_wlast,
+    input  logic                       i_ddr_axi_bvalid,
+    output logic                       o_ddr_axi_bready,
+    input  logic [                4:0] i_ddr_axi_bid,
+    input  logic [                1:0] i_ddr_axi_bresp,
+    output logic                       o_ddr_axi_arvalid,
+    input  logic                       i_ddr_axi_arready,
+    output logic [                4:0] o_ddr_axi_arid,
+    output logic [               31:0] o_ddr_axi_araddr,
+    output logic [                7:0] o_ddr_axi_arlen,
+    output logic [                2:0] o_ddr_axi_arsize,
+    output logic [                1:0] o_ddr_axi_arburst,
+    input  logic                       i_ddr_axi_rvalid,
+    output logic                       o_ddr_axi_rready,
+    input  logic [                4:0] i_ddr_axi_rid,
+    input  logic [L2_LINE_BYTES*8-1:0] i_ddr_axi_rdata,
+    input  logic [                1:0] i_ddr_axi_rresp,
+    input  logic                       i_ddr_axi_rlast,
 
     // MAC clocks have asynchronous clock-present levels. RAW_LOOPBACK requires
     // the same clock on both ports. PCS block lock is synchronized to i_clk
@@ -258,6 +262,7 @@ module frost #(
       .L2_CACHE_BYTES(L2_CACHE_BYTES),
       .L2_NUM_MSHR(L2_NUM_MSHR),
       .L2_NUM_WB(L2_NUM_WB),
+      .L2_LINE_BYTES(L2_LINE_BYTES),
       .SIM_FAST_MAINT(SIM_FAST_MAINT),
       .DDR_MODEL_BYTES(DDR_MODEL_BYTES),
       .DDR_MODEL_LATENCY(DDR_MODEL_LATENCY),
