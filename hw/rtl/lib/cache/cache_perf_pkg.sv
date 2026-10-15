@@ -20,9 +20,9 @@
  */
 package cache_perf_pkg;
 
-  // Width of the per-instance outstanding-miss count: enough for up to 15
-  // miss-status slots.
-  localparam int unsigned MissOutstandingBits = 4;
+  // Width of the per-instance outstanding-miss count: enough for up to 31
+  // miss-status slots, so an L2 with 16 counts all of them.
+  localparam int unsigned MissOutstandingBits = 5;
 
   typedef struct packed {
     logic access;

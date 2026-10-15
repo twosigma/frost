@@ -20,10 +20,13 @@
  * The bench drives upstream ports, answers load-queue coherence handshakes,
  * and controls fence.i. i_down_hold blocks L2 request acceptance to keep fills
  * pending or space their completions. Parameters control cache size and latency.
+ * Upstream ports carry L1_LINE_BYTES lines; the L2, the bridge, and the memory
+ * carry L2_LINE_BYTES lines.
  */
 module frost_cache_test_harness #(
     parameter int unsigned ADDR_WIDTH = 32,
-    parameter int unsigned LINE_BYTES = 32,
+    parameter int unsigned L1_LINE_BYTES = 32,
+    parameter int unsigned L2_LINE_BYTES = 32,
     parameter int unsigned UP_ID_BITS = 3,
     parameter int unsigned L1_CACHE_BYTES = 1024,
     parameter int unsigned L1I_CACHE_BYTES = 1024,
@@ -33,6 +36,9 @@ module frost_cache_test_harness #(
     parameter int unsigned L2_TAG_READ_LATENCY = 3,
     parameter int unsigned L2_DATA_READ_LATENCY = 6,
     parameter int unsigned L2_DATA_WRITE_LATENCY = 2,
+    parameter int unsigned L2_NUM_MSHR = 4,
+    parameter int unsigned L2_NUM_WB = 2,
+    parameter int unsigned L2_DOWN_ID_BITS = 5,
     parameter logic [31:0] BASE_ADDR = 32'h8000_0000,
     // Room for every cache bench's per-test regions, which stay disjoint.
     parameter int unsigned MEM_BYTES = 16 * 1024 * 1024,
@@ -47,76 +53,81 @@ module frost_cache_test_harness #(
     parameter int unsigned DMA_STARVATION_LIMIT = 16,
     localparam int unsigned DmaLockBits = (NUM_DMA_LOCK > 1) ? $clog2(NUM_DMA_LOCK) : 1
 ) (
-    input  logic                                                            i_clk,
-    input  logic                                                            i_rst,
-    input  logic                                                            i_up_req_valid,
-    output logic                                                            o_up_req_ready,
-    input  logic                                                            i_up_req_write,
-    input  logic                                         [  ADDR_WIDTH-1:0] i_up_req_addr,
-    input  logic                                         [LINE_BYTES*8-1:0] i_up_req_wdata,
-    input  logic                                         [  LINE_BYTES-1:0] i_up_req_wstrb,
-    input  logic                                         [  UP_ID_BITS-1:0] i_up_req_id,
-    output logic                                                            o_up_resp_valid,
-    output logic                                         [  UP_ID_BITS-1:0] o_up_resp_id,
-    output logic                                         [LINE_BYTES*8-1:0] o_up_resp_rdata,
-    input  logic                                                            i_iup_req_valid,
-    output logic                                                            o_iup_req_ready,
-    input  logic                                                            i_iup_req_write,
-    input  logic                                         [  ADDR_WIDTH-1:0] i_iup_req_addr,
-    input  logic                                         [LINE_BYTES*8-1:0] i_iup_req_wdata,
-    input  logic                                         [  LINE_BYTES-1:0] i_iup_req_wstrb,
-    input  logic                                         [  UP_ID_BITS-1:0] i_iup_req_id,
-    output logic                                                            o_iup_resp_valid,
-    output logic                                         [  UP_ID_BITS-1:0] o_iup_resp_id,
-    output logic                                         [LINE_BYTES*8-1:0] o_iup_resp_rdata,
+    input  logic                                                               i_clk,
+    input  logic                                                               i_rst,
+    input  logic                                                               i_up_req_valid,
+    output logic                                                               o_up_req_ready,
+    input  logic                                                               i_up_req_write,
+    input  logic                                         [     ADDR_WIDTH-1:0] i_up_req_addr,
+    input  logic                                         [L1_LINE_BYTES*8-1:0] i_up_req_wdata,
+    input  logic                                         [  L1_LINE_BYTES-1:0] i_up_req_wstrb,
+    input  logic                                         [     UP_ID_BITS-1:0] i_up_req_id,
+    output logic                                                               o_up_resp_valid,
+    output logic                                         [     UP_ID_BITS-1:0] o_up_resp_id,
+    output logic                                         [L1_LINE_BYTES*8-1:0] o_up_resp_rdata,
+    input  logic                                                               i_iup_req_valid,
+    output logic                                                               o_iup_req_ready,
+    input  logic                                                               i_iup_req_write,
+    input  logic                                         [     ADDR_WIDTH-1:0] i_iup_req_addr,
+    input  logic                                         [L1_LINE_BYTES*8-1:0] i_iup_req_wdata,
+    input  logic                                         [  L1_LINE_BYTES-1:0] i_iup_req_wstrb,
+    input  logic                                         [     UP_ID_BITS-1:0] i_iup_req_id,
+    output logic                                                               o_iup_resp_valid,
+    output logic                                         [     UP_ID_BITS-1:0] o_iup_resp_id,
+    output logic                                         [L1_LINE_BYTES*8-1:0] o_iup_resp_rdata,
     // Walker port: (UP_ID_BITS-1)-bit ids per the hierarchy's id tree.
-    input  logic                                                            i_wup_req_valid,
-    output logic                                                            o_wup_req_ready,
-    input  logic                                                            i_wup_req_write,
-    input  logic                                         [  ADDR_WIDTH-1:0] i_wup_req_addr,
-    input  logic                                         [LINE_BYTES*8-1:0] i_wup_req_wdata,
-    input  logic                                         [  LINE_BYTES-1:0] i_wup_req_wstrb,
-    input  logic                                         [  UP_ID_BITS-2:0] i_wup_req_id,
-    output logic                                                            o_wup_resp_valid,
-    output logic                                         [  UP_ID_BITS-2:0] o_wup_resp_id,
-    output logic                                         [LINE_BYTES*8-1:0] o_wup_resp_rdata,
+    input  logic                                                               i_wup_req_valid,
+    output logic                                                               o_wup_req_ready,
+    input  logic                                                               i_wup_req_write,
+    input  logic                                         [     ADDR_WIDTH-1:0] i_wup_req_addr,
+    input  logic                                         [L1_LINE_BYTES*8-1:0] i_wup_req_wdata,
+    input  logic                                         [  L1_LINE_BYTES-1:0] i_wup_req_wstrb,
+    input  logic                                         [     UP_ID_BITS-2:0] i_wup_req_id,
+    output logic                                                               o_wup_resp_valid,
+    output logic                                         [     UP_ID_BITS-2:0] o_wup_resp_id,
+    output logic                                         [L1_LINE_BYTES*8-1:0] o_wup_resp_rdata,
     // DMA port: UP_ID_BITS ids, coherent through the sequencer.
-    input  logic                                                            i_dma_req_valid,
-    output logic                                                            o_dma_req_ready,
-    input  logic                                                            i_dma_req_write,
-    input  logic                                         [  ADDR_WIDTH-1:0] i_dma_req_addr,
-    input  logic                                         [LINE_BYTES*8-1:0] i_dma_req_wdata,
-    input  logic                                         [  LINE_BYTES-1:0] i_dma_req_wstrb,
-    input  logic                                         [  UP_ID_BITS-1:0] i_dma_req_id,
-    output logic                                                            o_dma_resp_valid,
-    output logic                                         [  UP_ID_BITS-1:0] o_dma_resp_id,
-    output logic                                         [LINE_BYTES*8-1:0] o_dma_resp_rdata,
+    input  logic                                                               i_dma_req_valid,
+    output logic                                                               o_dma_req_ready,
+    input  logic                                                               i_dma_req_write,
+    input  logic                                         [     ADDR_WIDTH-1:0] i_dma_req_addr,
+    input  logic                                         [L1_LINE_BYTES*8-1:0] i_dma_req_wdata,
+    input  logic                                         [  L1_LINE_BYTES-1:0] i_dma_req_wstrb,
+    input  logic                                         [     UP_ID_BITS-1:0] i_dma_req_id,
+    output logic                                                               o_dma_resp_valid,
+    output logic                                         [     UP_ID_BITS-1:0] o_dma_resp_id,
+    output logic                                         [L1_LINE_BYTES*8-1:0] o_dma_resp_rdata,
     // The sequencer's load-queue handshake, answered by the bench.
-    output logic                                                            o_coh_admit_valid,
-    output logic                                         [ DmaLockBits-1:0] o_coh_admit_slot,
-    output logic                                         [  ADDR_WIDTH-1:0] o_coh_admit_addr,
-    input  logic                                                            i_coh_admit_ready,
-    output logic                                                            o_coh_inval_valid,
-    output logic                                         [ DmaLockBits-1:0] o_coh_inval_slot,
-    input  logic                                                            i_coh_inval_done,
-    output logic                                                            o_coh_release_valid,
-    output logic                                         [ DmaLockBits-1:0] o_coh_release_slot,
-    input  logic                                                            i_fence_sync,
-    output logic                                                            o_fence_done,
+    output logic                                                               o_coh_admit_valid,
+    output logic                                         [    DmaLockBits-1:0] o_coh_admit_slot,
+    output logic                                         [     ADDR_WIDTH-1:0] o_coh_admit_addr,
+    input  logic                                                               i_coh_admit_ready,
+    output logic                                                               o_coh_inval_valid,
+    output logic                                         [    DmaLockBits-1:0] o_coh_inval_slot,
+    input  logic                                                               i_coh_inval_done,
+    output logic                                                               o_coh_release_valid,
+    output logic                                         [    DmaLockBits-1:0] o_coh_release_slot,
+    input  logic                                                               i_fence_sync,
+    output logic                                                               o_fence_done,
     // Bench-paced downstream: masks the bridge's acceptance (see the header).
-    input  logic                                                            i_down_hold,
+    input  logic                                                               i_down_hold,
     // Source-registered cache observers exposed directly to cocotb.
-    output cache_perf_pkg::cache_hierarchy_perf_events_t                    o_perf_events
+    output cache_perf_pkg::cache_hierarchy_perf_events_t                       o_perf_events
 );
 
   logic stack_down_req_valid, stack_down_req_ready, stack_down_req_write;
   logic [ADDR_WIDTH-1:0] stack_down_req_addr;
-  logic [LINE_BYTES*8-1:0] stack_down_req_wdata;
-  logic [LINE_BYTES-1:0] stack_down_req_wstrb;
-  logic [UP_ID_BITS+1:0] stack_down_req_id;
+  logic [L2_LINE_BYTES*8-1:0] stack_down_req_wdata;
+  logic [L2_LINE_BYTES-1:0] stack_down_req_wstrb;
+  logic [L2_DOWN_ID_BITS-1:0] stack_down_req_id;
   logic stack_down_resp_valid;
-  logic [UP_ID_BITS+1:0] stack_down_resp_id;
-  logic [LINE_BYTES*8-1:0] stack_down_resp_rdata;
+  logic [L2_DOWN_ID_BITS-1:0] stack_down_resp_id;
+  logic [L2_LINE_BYTES*8-1:0] stack_down_resp_rdata;
+
+  // The memory model keeps at least its default eight transactions per
+  // channel in flight, and every fill or writeback the L2 can issue.
+  localparam int unsigned L2MaxSlots = (L2_NUM_MSHR > L2_NUM_WB) ? L2_NUM_MSHR : L2_NUM_WB;
+  localparam int unsigned MemSlots   = (L2MaxSlots > 8) ? L2MaxSlots : 8;
 
   // Mask both valid and ready so both sides agree whether a request fires.
   logic bridge_req_valid, bridge_req_ready;
@@ -125,7 +136,8 @@ module frost_cache_test_harness #(
 
   frost_cache_hierarchy #(
       .ADDR_WIDTH(ADDR_WIDTH),
-      .LINE_BYTES(LINE_BYTES),
+      .L1_LINE_BYTES(L1_LINE_BYTES),
+      .L2_LINE_BYTES(L2_LINE_BYTES),
       .UP_ID_BITS(UP_ID_BITS),
       .L1_CACHE_BYTES(L1_CACHE_BYTES),
       .L1_DATA_READ_LATENCY(L1_DATA_READ_LATENCY),
@@ -134,6 +146,9 @@ module frost_cache_test_harness #(
       .L2_TAG_READ_LATENCY(L2_TAG_READ_LATENCY),
       .L2_DATA_READ_LATENCY(L2_DATA_READ_LATENCY),
       .L2_DATA_WRITE_LATENCY(L2_DATA_WRITE_LATENCY),
+      .L2_NUM_MSHR(L2_NUM_MSHR),
+      .L2_NUM_WB(L2_NUM_WB),
+      .L2_DOWN_ID_BITS(L2_DOWN_ID_BITS),
       .SIM_FAST_MAINT(SIM_FAST_MAINT),
       .NUM_DMA_LOCK(NUM_DMA_LOCK),
       .DMA_STARVATION_LIMIT(DMA_STARVATION_LIMIT)
@@ -210,16 +225,16 @@ module frost_cache_test_harness #(
   logic [7:0] axi_awlen, axi_arlen;
   logic [2:0] axi_awsize, axi_arsize;
   logic [1:0] axi_awburst, axi_arburst, axi_bresp, axi_rresp;
-  logic [LINE_BYTES*8-1:0] axi_wdata, axi_rdata;
-  logic [LINE_BYTES-1:0] axi_wstrb;
+  logic [L2_LINE_BYTES*8-1:0] axi_wdata, axi_rdata;
+  logic [L2_LINE_BYTES-1:0] axi_wstrb;
   logic axi_wlast;
-  logic [UP_ID_BITS+1:0] axi_awid, axi_arid, axi_bid, axi_rid;
+  logic [L2_DOWN_ID_BITS-1:0] axi_awid, axi_arid, axi_bid, axi_rid;
 
   line_port_axi_bridge #(
       .ADDR_WIDTH(ADDR_WIDTH),
-      .LINE_BYTES(LINE_BYTES),
-      .ID_BITS(UP_ID_BITS + 2),
-      .AXI_ID_BITS(UP_ID_BITS + 2),
+      .LINE_BYTES(L2_LINE_BYTES),
+      .ID_BITS(L2_DOWN_ID_BITS),
+      .AXI_ID_BITS(L2_DOWN_ID_BITS),
       .BASE_ADDR(BASE_ADDR)
   ) bridge (
       .i_clk(i_clk),
@@ -268,9 +283,10 @@ module frost_cache_test_harness #(
   );
 
   axi_behavioral_memory #(
-      .LINE_BYTES(LINE_BYTES),
+      .LINE_BYTES(L2_LINE_BYTES),
       .MEM_BYTES(MEM_BYTES),
-      .ID_BITS(UP_ID_BITS + 2),
+      .NUM_SLOTS(MemSlots),
+      .ID_BITS(L2_DOWN_ID_BITS),
       .LATENCY(MEM_LATENCY),
       .LATENCY_JITTER(MEM_LATENCY_JITTER),
       .REORDER(MEM_REORDER),

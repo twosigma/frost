@@ -1851,9 +1851,9 @@ module frost_cache #(
     end
   end
 
-  // Count request-register loads, not backpressure cycles. With NUM_WB=2,
-  // the threshold is four times the arbitration bound of eight loads.
-  localparam int unsigned WbStarveTripLoads = 8 * (WbStarveLimit + 1);
+  // Count request-register loads, not backpressure cycles. The threshold is
+  // four times the arbitration bound of NUM_WB * (WbStarveLimit + 1) loads.
+  localparam int unsigned WbStarveTripLoads = 4 * NUM_WB * (WbStarveLimit + 1);
   int unsigned wb_pend_loads [NUM_WB];
   int unsigned wb_pend_cycles[NUM_WB];
   always_ff @(posedge i_clk) begin
