@@ -733,9 +733,12 @@ async def test_writeback_slots_take_turns_under_dirty_victim_stream(dut: Any) ->
     Read every line back after the hierarchy drains.
     """
     await _setup(dut)
+    cache = dut.cache_hierarchy.l2_cache
+    if int(cache.NUM_WB.value) != 2:
+        dut._log.info("skipped: the bench drives exactly two writeback slots")
+        return
     col = _Collector(dut, "up")
     model = ReferenceModel()
-    cache = dut.cache_hierarchy.l2_cache
 
     base = TURNS_BASE
     n_dirty = 12
@@ -756,7 +759,6 @@ async def test_writeback_slots_take_turns_under_dirty_victim_stream(dut: Any) ->
     await FallingEdge(dut.i_clk)
     dut.i_down_hold.value = 1
     mon = _WritebackPendingMonitor(dut, cache)
-    assert mon.num_wb == 2, "WB_SLOT_TURN_BOUND assumes two writeback slots"
     port_lock = Lock()
     stop = [False]
     dirty_reader = cocotb.start_soon(
@@ -837,11 +839,18 @@ async def test_fill_slots_take_turns_under_recycled_misses(dut: Any) -> None:
     at least one acceptance, then fire within the bound.
     """
     await _setup(dut)
-    col = _Collector(dut, "up")
-    model = ReferenceModel()
     cache = dut.cache_hierarchy.l2_cache
     num_mshr = int(cache.NUM_MSHR.value)
     l2_line = int(cache.LINE_BYTES.value)
+    l1d_mshr = int(dut.cache_hierarchy.l1_cache.NUM_MSHR.value)
+    if num_mshr > l1d_mshr:
+        dut._log.info(
+            f"skipped: the L1D's {l1d_mshr} miss slots cannot hold {num_mshr - 1} "
+            "L2 miss slots busy"
+        )
+        return
+    col = _Collector(dut, "up")
+    model = ReferenceModel()
 
     await FallingEdge(dut.i_clk)
     dut.i_down_hold.value = 1
