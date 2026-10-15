@@ -1326,6 +1326,31 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="64-byte L2 lines with fast fence.i maintenance",
         verilator_extra_args=("-GL2_LINE_BYTES=64", "-GSIM_FAST_MAINT=1"),
     ),
+    # The L2-line, concurrency, and DMA suites with 16 L2 miss slots and 4
+    # writeback slots, the largest counts the L2's downstream ids hold.
+    "frost_cache_l2_lines_16x4": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_l2_lines",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="64-byte L2 lines with 16 L2 miss slots and 4 writeback slots",
+        verilator_extra_args=(
+            "-GL2_LINE_BYTES=64",
+            "-GL2_NUM_MSHR=16",
+            "-GL2_NUM_WB=4",
+            "-GMEM_REORDER=1",
+        ),
+    ),
+    "frost_cache_concurrency_16x4": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_concurrency",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="Overlapping cache requests with 16 L2 miss and 4 writeback slots",
+        verilator_extra_args=("-GL2_NUM_MSHR=16", "-GL2_NUM_WB=4"),
+    ),
+    "frost_cache_dma_16x4": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_dma",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="DMA coherence with 16 L2 miss and 4 writeback slots",
+        verilator_extra_args=("-GL2_NUM_MSHR=16", "-GL2_NUM_WB=4"),
+    ),
     # fence.i maintenance cycle-count measurement at the production cache
     # geometry (128 KiB L1D, 16 KiB L1I, 2 MiB L2). Two builds, slow
     # (FPGA-path FSM) and fast, so the speedup is readable from the logs. Not
@@ -1426,6 +1451,30 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GL2_CACHE_BYTES=2097152",
             "-GNUM_DMA_LOCK=3",
         ),
+        include_in_pytest=False,
+    ),
+    # L2 miss-slot parallelism with every port missing at once, by slot count
+    # at the full-system DDR model latency. Measurement only, not part of the
+    # pytest sweep.
+    "l2_slots_4x2": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_l2_slots",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="L2 miss-slot use with 4 miss and 2 writeback slots",
+        verilator_extra_args=("-GMEM_LATENCY=30",),
+        include_in_pytest=False,
+    ),
+    "l2_slots_8x2": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_l2_slots",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="L2 miss-slot use with 8 miss and 2 writeback slots",
+        verilator_extra_args=("-GMEM_LATENCY=30", "-GL2_NUM_MSHR=8"),
+        include_in_pytest=False,
+    ),
+    "l2_slots_16x4": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_l2_slots",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="L2 miss-slot use with 16 miss and 4 writeback slots",
+        verilator_extra_args=("-GMEM_LATENCY=30", "-GL2_NUM_MSHR=16", "-GL2_NUM_WB=4"),
         include_in_pytest=False,
     ),
     # Debug transport and debug module.
