@@ -35,6 +35,9 @@ module cpu_and_mem #(
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
+    // L2 miss-status and writeback slots (see frost_cache_hierarchy).
+    parameter int unsigned L2_NUM_MSHR = 4,
+    parameter int unsigned L2_NUM_WB = 2,
     // Simulation-only fast cache maintenance for fence.i (see frost_cache).
     // 0 = FPGA (cycle-accurate maintenance FSM); non-zero = sim fast path.
     parameter int unsigned SIM_FAST_MAINT = 0,
@@ -134,9 +137,10 @@ module cpu_and_mem #(
     output logic o_dtm_bscan_tdo_dtmcs,
     output logic o_dtm_bscan_tdo_dmi,
 
-    // DDR AXI master (cache-hierarchy bridge). Quiescent when
-    // USE_BEHAVIORAL_DDR=1 or the cached tier is disabled. Transaction ids
-    // are the line-protocol ids (DdrAxiIdBits wide, board-fixed).
+    // DDR AXI master (cache-hierarchy bridge): single-beat transfers, one L2
+    // line each. Quiescent when USE_BEHAVIORAL_DDR=1 or the cached tier is
+    // disabled. Transaction ids are the L2's downstream ids (DdrAxiIdBits
+    // wide, board-fixed).
     // i_ddr_axi_rst (i_clk domain) is the reset of the interconnect behind
     // these ports; the behavioral memory uses the CPU reset instead.
     input  logic         i_ddr_axi_rst,
@@ -404,13 +408,16 @@ module cpu_and_mem #(
   // Instruction-side line port into the cache hierarchy: driven by the fetch
   // provider when the cached tier is enabled (and the fetch fuzz is off), tied
   // off otherwise.
-  // Line-protocol id widths: the L1 upstream ports carry LineIdBits, the
-  // hierarchy's downstream port two more (the top arbiter's port bits over
-  // L1D / walker+L1I / DMA), and the board AXI id is fixed at DdrAxiIdBits
-  // (zero-extended).
-  localparam int unsigned LineIdBits   = 3;
-  localparam int unsigned DownIdBits   = LineIdBits + 2;
+  // Line-protocol id widths: the L1 upstream ports carry LineIdBits, and the
+  // L2's downstream ids, {type, slot}, are the board's AXI ids, DdrAxiIdBits
+  // wide. L2LineBytes is the L2's line, one beat on the DDR AXI port.
+  localparam int unsigned LineIdBits = 3;
   localparam int unsigned DdrAxiIdBits = 5;
+  localparam int unsigned L2LineBytes = 32;
+  // The behavioral DDR model keeps at least its default eight transactions
+  // per channel in flight, and every fill or writeback the L2 can issue.
+  localparam int unsigned L2MaxSlots = (L2_NUM_MSHR > L2_NUM_WB) ? L2_NUM_MSHR : L2_NUM_WB;
+  localparam int unsigned DdrModelSlots = (L2MaxSlots > 8) ? L2MaxSlots : 8;
 
   // DMA coherence handshake between the hierarchy's sequencer and the core.
   logic coh_admit_valid, coh_admit_ready, coh_inval_valid, coh_inval_done, coh_release_valid;
@@ -1714,20 +1721,24 @@ module cpu_and_mem #(
 
     logic down_req_valid, down_req_ready, down_req_write;
     logic [31:0] down_req_addr;
-    logic [255:0] down_req_wdata;
-    logic [31:0] down_req_wstrb;
-    logic [DownIdBits-1:0] down_req_id;
+    logic [L2LineBytes*8-1:0] down_req_wdata;
+    logic [L2LineBytes-1:0] down_req_wstrb;
+    logic [DdrAxiIdBits-1:0] down_req_id;
     logic down_resp_valid;
-    logic [DownIdBits-1:0] down_resp_id;
-    logic [255:0] down_resp_rdata;
+    logic [DdrAxiIdBits-1:0] down_resp_id;
+    logic [L2LineBytes*8-1:0] down_resp_rdata;
 
     frost_cache_hierarchy #(
         .ADDR_WIDTH(32),
-        .LINE_BYTES(32),
+        .L1_LINE_BYTES(32),
+        .L2_LINE_BYTES(L2LineBytes),
         .UP_ID_BITS(LineIdBits),
         .L1_CACHE_BYTES(L1_CACHE_BYTES),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
         .L2_CACHE_BYTES(L2_CACHE_BYTES),
+        .L2_NUM_MSHR(L2_NUM_MSHR),
+        .L2_NUM_WB(L2_NUM_WB),
+        .L2_DOWN_ID_BITS(DdrAxiIdBits),
         .SIM_FAST_MAINT(SIM_FAST_MAINT),
         .NUM_DMA_LOCK(riscv_pkg::DmaCoherenceLocks)
     ) cache_hierarchy (
@@ -1908,8 +1919,8 @@ module cpu_and_mem #(
     logic [7:0] axi_awlen, axi_arlen;
     logic [2:0] axi_awsize, axi_arsize;
     logic [1:0] axi_awburst, axi_arburst, axi_bresp, axi_rresp;
-    logic [255:0] axi_wdata, axi_rdata;
-    logic [31:0] axi_wstrb;
+    logic [L2LineBytes*8-1:0] axi_wdata, axi_rdata;
+    logic [L2LineBytes-1:0] axi_wstrb;
     logic [DdrAxiIdBits-1:0] axi_awid, axi_arid, axi_bid, axi_rid;
 
     // The AXI slave's reset: the behavioral memory resets with the CPU, the
@@ -1919,8 +1930,8 @@ module cpu_and_mem #(
 
     line_port_axi_bridge #(
         .ADDR_WIDTH(32),
-        .LINE_BYTES(32),
-        .ID_BITS(DownIdBits),
+        .LINE_BYTES(L2LineBytes),
+        .ID_BITS(DdrAxiIdBits),
         .AXI_ID_BITS(DdrAxiIdBits),
         .BASE_ADDR(CACHED_BASE)
     ) ddr_bridge (
@@ -1972,8 +1983,9 @@ module cpu_and_mem #(
       // Simulation-only main memory; hardware sets USE_BEHAVIORAL_DDR=0 and
       // takes the bridge's AXI out through the o_ddr_axi_* ports instead.
       axi_behavioral_memory #(
-          .LINE_BYTES(32),
+          .LINE_BYTES(L2LineBytes),
           .MEM_BYTES(DDR_MODEL_BYTES),
+          .NUM_SLOTS(DdrModelSlots),
           .ID_BITS(DdrAxiIdBits),
           .LATENCY(DDR_MODEL_LATENCY),
           .LATENCY_JITTER(DDR_MODEL_LATENCY_JITTER),

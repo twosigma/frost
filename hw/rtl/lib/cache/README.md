@@ -76,6 +76,10 @@ storage, and slot counts:
 | L1I | 16 KiB | Block RAM, 1-cycle read | Block RAM | 2 | 2 (unused) | 0 |
 | L2 | 2 MiB | UltraRAM, four entries per 72-bit row, 3-cycle read | UltraRAM | 4 | 2 | 0 |
 
+The L2's slot counts are the hierarchy's `L2_NUM_MSHR` and `L2_NUM_WB`
+parameters. Its downstream ids, `L2_DOWN_ID_BITS` wide (5 on the X3), hold up
+to 16 slots of each type.
+
 ### Requests and misses
 
 A request enters a one-entry skid and reads its tag. It is decided when the
@@ -125,8 +129,8 @@ writeback: if the level below accepts slowly, fills that complete and
 reallocate between its acceptances keep a fill pending at every load of the
 register. So a writeback that has lost `WbStarveLimit` (3) loads to fills
 takes the next one, and the writeback slots take turns. A pending writeback
-is loaded within 4 loads of the register, and any given slot within 8,
-however slowly the level below accepts.
+is loaded within 4 loads of the register, and any given slot within
+`NUM_WB` times 4 (8 with two slots), however slowly the level below accepts.
 
 The miss slots take turns too. The fill pick starts from the slot after the
 last one it loaded, so a fill that can issue is loaded within `NUM_MSHR`
@@ -236,9 +240,9 @@ prefix-free code in `UP_ID_BITS + 2` bits:
 | L1I | `{2'b01, 1'b1, id}` | 2 |
 | DMA port | `{2'b10, id}` | 3 |
 
-The L2 sees those 5 bits and gives its own downstream requests 5-bit ids as
-well, the AXI id width the X3 DDR block design provides
-(`fpga/build/x3_ddr_bd.tcl`). The L1I spends one of its 2 bits on the
+The L2 sees those 5 bits. Its own downstream requests carry `{type, slot}`
+ids, `L2_DOWN_ID_BITS` wide: 5 on the X3, the AXI id width its DDR block
+design provides (`fpga/build/x3_ddr_bd.tcl`). The L1I spends one of its 2 bits on the
 fill/writeback type, leaving 2 miss slots, which is all its master, the
 two-line fetch buffer, ever uses. The walker keeps one walk in flight and
 uses id 0.

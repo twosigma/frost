@@ -387,10 +387,13 @@ module perf_counter_aggregator #(
       {63{1'b0}}, i_cache_perf_events.hierarchy.l2.conflict_stall
     };
     perf_cache_inc[PerfCacheL1dMissOverlapCycles] = {
-      {63{1'b0}}, (i_cache_perf_events.hierarchy.l1d.miss_outstanding >= 4'd2)
+      {63{1'b0}},
+      (i_cache_perf_events.hierarchy.l1d.miss_outstanding >=
+                     cache_perf_pkg::MissOutstandingBits'(2))
     };
     perf_cache_inc[PerfCacheL2MissOverlapCycles] = {
-      {63{1'b0}}, (i_cache_perf_events.hierarchy.l2.miss_outstanding >= 4'd2)
+      {63{1'b0}},
+      (i_cache_perf_events.hierarchy.l2.miss_outstanding >= cache_perf_pkg::MissOutstandingBits'(2))
     };
   end
 

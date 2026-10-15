@@ -46,6 +46,9 @@ module frost #(
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
+    // L2 miss-status and writeback slots, up to 16 of each.
+    parameter int unsigned L2_NUM_MSHR = 4,
+    parameter int unsigned L2_NUM_WB = 2,
     // Simulation-only fast cache maintenance for fence.i: 0 selects the FPGA
     // cycle-accurate path; non-zero selects the sim fast path (see frost_cache).
     // Set to 1 only by the cocotb sim build, never for boards.
@@ -253,6 +256,8 @@ module frost #(
       .L1_CACHE_BYTES(L1_CACHE_BYTES),
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
       .L2_CACHE_BYTES(L2_CACHE_BYTES),
+      .L2_NUM_MSHR(L2_NUM_MSHR),
+      .L2_NUM_WB(L2_NUM_WB),
       .SIM_FAST_MAINT(SIM_FAST_MAINT),
       .DDR_MODEL_BYTES(DDR_MODEL_BYTES),
       .DDR_MODEL_LATENCY(DDR_MODEL_LATENCY),

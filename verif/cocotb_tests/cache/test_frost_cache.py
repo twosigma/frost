@@ -92,7 +92,7 @@ PERF_FIELD_WIDTHS = {
     "hit": 1,
     "miss": 1,
     "writeback": 1,
-    "miss_outstanding": 4,
+    "miss_outstanding": 5,
     "hit_under_miss": 1,
     "slot_full_stall": 1,
     "conflict_stall": 1,
