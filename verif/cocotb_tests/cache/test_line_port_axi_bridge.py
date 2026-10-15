@@ -17,8 +17,10 @@
 The DDR controller and interconnect remain active during CPU image-load and
 ndmreset resets. The Python slave pairs independent AW and W beats in
 arrival order and resets only with i_axi_rst. Across CPU reset, presented
-beats must obey AXI's VALID-until-READY rule and stale responses must not
-reach the line port. AXI reset withdraws beats and clears pending work.
+beats must obey AXI's VALID-until-READY rule, stale responses must not
+reach the line port, and no request issues until the slave has answered
+every transaction from before the reset. AXI reset withdraws beats and
+clears pending work.
 """
 
 from collections import deque
@@ -59,6 +61,9 @@ class _AxiSlave:
         self.mem: dict[int, int] = {}  # byte address (AXI side) -> byte
         self.performed: list[tuple[int, int, int]] = []  # (addr, data, strb)
         self.reads: list[tuple[int, int]] = []  # accepted AR beats (id, addr)
+        self.read_cycles: list[int] = []  # the cycle each AR beat was accepted
+        self.r_done: list[tuple[int, int]] = []  # (cycle, id) of each R handshake
+        self.r_delay = 4  # cycles from an AR handshake to its R
         self._b: deque[int] = deque()  # write ids waiting for B
         self._r: deque[tuple[int, int, int]] = deque()  # (due cycle, id, data)
         self.violations: list[str] = []
@@ -134,11 +139,13 @@ class _AxiSlave:
             if arvalid and arready:
                 rid, addr = ar
                 self.reads.append(ar)
-                self._r.append((self.cycle + 4, rid, self.read_line(addr)))
+                self.read_cycles.append(self.cycle)
+                self._r.append((self.cycle + self.r_delay, rid, self.read_line(addr)))
             if b_id is not None and int(dut.o_axi_bready.value):
                 self._b.popleft()
             if r is not None and int(dut.o_axi_rready.value):
                 self._r.popleft()
+                self.r_done.append((self.cycle, r[1]))
             while self.aw and self.w:
                 wid, addr = self.aw.popleft()
                 data, strb = self.w.popleft()
@@ -358,6 +365,52 @@ async def test_unaccepted_write_and_read_complete_across_reset(dut: Any) -> None
     await _fire(dut, write=False, addr=wr[0], req_id=9)
     assert await log.wait_for(9, after=reset_end) == wr[1]
     assert not slave.violations, "; ".join(slave.violations)
+    slave.stop()
+    log.stop()
+
+
+@cocotb.test()
+async def test_reused_id_waits_for_the_stale_response(dut: Any) -> None:
+    """A request after a reset waits until the slave has answered the older one.
+
+    The slave accepts a read and answers it late. After a reset, a new read
+    reuses the id at another address. Issued at once, it would have the id
+    in flight again when the late response arrives, and that response would
+    pass for the new read's. The bridge must hold the new read until the late
+    response has been dropped, then return the new read's own data.
+    """
+    slave, log = await _start(dut)
+    old = (BASE_ADDR + 0x800, _pattern(9))
+    new = (BASE_ADDR + 0x840, _pattern(10))
+    await _fire(dut, write=True, addr=old[0], req_id=1, wdata=old[1])
+    await log.wait_for(1, after=0)
+    await _fire(dut, write=True, addr=new[0], req_id=2, wdata=new[1])
+    await log.wait_for(2, after=0)
+
+    slave.r_delay = 40
+    await _fire(dut, write=False, addr=old[0], req_id=3)
+    await _cycles(dut, 2)
+    assert slave.reads == [(3, old[0] - BASE_ADDR)], "the first read was not accepted"
+    await _reset(dut)
+    reset_end = log.cycle
+    slave.r_delay = 4
+    await _fire(dut, write=False, addr=new[0], req_id=3)
+    assert await log.wait_for(3, after=reset_end) == new[1], (
+        "the late response of the read from before the reset passed for the new one"
+    )
+    await _cycles(dut, 8)
+
+    assert not slave.violations, "; ".join(slave.violations)
+    assert len(slave.reads) == 2 and len(slave.r_done) == 2
+    stale_done = slave.r_done[0][0]
+    assert slave.read_cycles[1] > stale_done, (
+        f"the new read issued in cycle {slave.read_cycles[1]}, before the stale "
+        f"response completed in cycle {stale_done}"
+    )
+    after_reset = [(c, rid, d) for c, rid, d in log.responses if c > reset_end]
+    assert [(rid, d) for _, rid, d in after_reset] == [(3, new[1])], (
+        f"unexpected line-port responses after the reset: {after_reset}"
+    )
     slave.stop()
     log.stop()
 

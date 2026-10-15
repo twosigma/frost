@@ -1504,7 +1504,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cache.test_line_port_axi_bridge",
         hdl_toplevel_module="line_port_axi_bridge",
         description=(
-            "AXI transfers remain valid across CPU reset and clear on AXI reset"
+            "AXI transfers remain valid across CPU reset and clear on AXI reset; "
+            "requests wait for responses owed from before a CPU reset"
         ),
     ),
     "x3_ddr_init": CocotbRunConfig(
