@@ -344,6 +344,77 @@ def test_cocotb_fresh_and_matching_builds_keep_incremental_compilation(
     assert runner._verilator_needs_rebuild(build)
 
 
+def _soc_runner(
+    verilator_extra_args: tuple[str, ...] = (),
+) -> test_run_cocotb.CocotbRunner:
+    """Return a whole-SoC runner like the program tests use."""
+    return test_run_cocotb.CocotbRunner(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="hello_world",
+        verilator_extra_args=verilator_extra_args,
+    )
+
+
+def test_ddr_model_seed_draws_repeatable_timing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A seed selects the same timing every time, within range, and prints it."""
+    seed = "123456-1-test-verilator-7"
+    monkeypatch.setenv("FROST_DDR_MODEL_SEED", seed)
+    monkeypatch.delenv("FROST_VERILATOR_EXTRA_ARGS", raising=False)
+    monkeypatch.delenv("DDR_MODEL_LATENCY", raising=False)
+    runner = _soc_runner()
+    timing = test_run_cocotb.ddr_model_timing(seed)
+    drawn = tuple(f"-G{name}={value}" for name, value in timing.items())
+    assert runner.verilator_extra_args == drawn
+    assert _soc_runner().verilator_extra_args == drawn
+    # A new seed rebuilds the model rather than reusing another draw's build.
+    assert all(argument in runner._verilator_build_signature() for argument in drawn)
+    low, high = test_run_cocotb.DDR_MODEL_LATENCY_RANGE
+    assert low <= timing["DDR_MODEL_LATENCY"] <= high
+    jitter = timing["DDR_MODEL_LATENCY_JITTER"]
+    assert jitter in test_run_cocotb.DDR_MODEL_JITTER_CHOICES
+    assert timing["DDR_MODEL_REORDER"] in (0, 1)
+    assert f"FROST_DDR_MODEL_SEED={seed}: " in capsys.readouterr().out
+
+
+def test_ddr_model_seed_keeps_pinned_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Registry pins, FROST_VERILATOR_EXTRA_ARGS, and DDR_MODEL_LATENCY win."""
+    monkeypatch.setenv("FROST_DDR_MODEL_SEED", "7")
+    monkeypatch.delenv("DDR_MODEL_LATENCY", raising=False)
+    monkeypatch.setenv("FROST_VERILATOR_EXTRA_ARGS", "-GDDR_MODEL_REORDER=0")
+    pinned = ("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70")
+    arguments = _soc_runner(pinned).verilator_extra_args
+    # The draw comes first, so the pins after it win even in Verilator.
+    assert arguments[-len(pinned) :] == pinned
+    drawn = [argument.split("=")[0] for argument in arguments[: -len(pinned)]]
+    assert drawn == ["-GDDR_MODEL_LATENCY_JITTER"]
+
+    monkeypatch.delenv("FROST_VERILATOR_EXTRA_ARGS")
+    monkeypatch.setenv("DDR_MODEL_LATENCY", "80")
+    drawn = [argument.split("=")[0] for argument in _soc_runner().verilator_extra_args]
+    assert drawn == ["-GDDR_MODEL_LATENCY_JITTER", "-GDDR_MODEL_REORDER"]
+
+
+def test_ddr_model_timing_needs_a_seed_and_the_soc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a seed, or for a unit bench, the build arguments do not change."""
+    monkeypatch.delenv("FROST_DDR_MODEL_SEED", raising=False)
+    assert _soc_runner(("-GPERF_COUNTERS=1",)).verilator_extra_args == (
+        "-GPERF_COUNTERS=1",
+    )
+    monkeypatch.setenv("FROST_DDR_MODEL_SEED", "7")
+    unit_bench = test_run_cocotb.CocotbRunner(
+        python_test_module="cocotb_tests.if_stage.test_instruction_aligner",
+        hdl_toplevel_module="instruction_aligner",
+    )
+    assert unit_bench.verilator_extra_args == ()
+
+
 def test_arch_simulation_turns_off_the_uart_tx_drop_check(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

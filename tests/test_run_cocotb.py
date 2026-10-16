@@ -37,7 +37,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from xml.etree import ElementTree
 
 import pytest
@@ -87,6 +87,36 @@ MAKEFILE_BUILD_VARIABLES = (
     "DDR_MODEL_LATENCY",
     "SIM_FAST_MAINT",
 )
+
+# FROST_DDR_MODEL_SEED draws the DDR model's timing for frost-toplevel builds:
+# its latency, its latency jitter, and whether it completes transactions out
+# of order across ids. CI gives every job its own seed. The run prints the seed
+# and the draw, and setting the same seed repeats it. A parameter a test pins,
+# in its registry entry, in FROST_VERILATOR_EXTRA_ARGS, or with the
+# DDR_MODEL_LATENCY variable, keeps the pinned value.
+DDR_MODEL_SEED_VARIABLE = "FROST_DDR_MODEL_SEED"
+DDR_MODEL_LATENCY_RANGE = (1, 80)  # cycles, inclusive; the model's default is 30
+DDR_MODEL_JITTER_CHOICES = (0, 3, 7, 15, 31)
+
+
+def ddr_model_timing(seed: str) -> dict[str, int]:
+    """Return the DDR model parameters that ``seed`` selects."""
+    generator = random.Random(seed)
+    return {
+        "DDR_MODEL_LATENCY": generator.randint(*DDR_MODEL_LATENCY_RANGE),
+        "DDR_MODEL_LATENCY_JITTER": generator.choice(DDR_MODEL_JITTER_CHOICES),
+        "DDR_MODEL_REORDER": generator.randint(0, 1),
+    }
+
+
+def parameter_overrides(verilator_args: Iterable[str]) -> set[str]:
+    """Return the names of the parameters that ``-G`` arguments set."""
+    return {
+        match.group(1)
+        for argument in verilator_args
+        if (match := re.match(r"-G(\w+)=", argument))
+    }
+
 
 # test_real_program sees all workloads as coremark_pro, so per-workload
 # budgets belong here. Run loops and nnet once in either tier for runtime;
@@ -1873,6 +1903,12 @@ class CocotbRunner:
         }
         for key, value in extra_env:
             os.environ[key] = value
+        # Drawn settings go first, so a pin later in the arguments still wins.
+        if hdl_toplevel_module == "frost":
+            self.verilator_extra_args = (
+                *self._drawn_ddr_model_args(),
+                *verilator_extra_args,
+            )
         # Seed workers share app outputs and memory symlinks. The parent
         # compiles once and removes links after all workers finish.
         self.skip_app_compile = False
@@ -1891,6 +1927,29 @@ class CocotbRunner:
             verilator_extra_args=config.verilator_extra_args,
             extra_env=config.extra_env,
         )
+
+    def _drawn_ddr_model_args(self) -> tuple[str, ...]:
+        """Return -G arguments for the DDR model timing that the seed draws."""
+        seed = os.environ.get(DDR_MODEL_SEED_VARIABLE, "").strip()
+        if not seed:
+            return ()
+        pinned = parameter_overrides(self.verilator_extra_args)
+        pinned |= parameter_overrides(
+            os.environ.get("FROST_VERILATOR_EXTRA_ARGS", "").split()
+        )
+        pinned |= {name for name in MAKEFILE_BUILD_VARIABLES if name in os.environ}
+        drawn = {
+            name: value
+            for name, value in ddr_model_timing(seed).items()
+            if name not in pinned
+        }
+        settings = ", ".join(f"{name}={value}" for name, value in drawn.items())
+        print(
+            f"DDR model timing from {DDR_MODEL_SEED_VARIABLE}={seed}: "
+            f"{settings or 'none drawn; the test pins every setting'}",
+            flush=True,
+        )
+        return tuple(f"-G{name}={value}" for name, value in drawn.items())
 
     def _verilator_extra_args_string(self) -> str:
         """Return the build args string consumed by tests/Makefile."""
