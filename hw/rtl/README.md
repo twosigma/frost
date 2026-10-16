@@ -305,7 +305,7 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `L1_CACHE_BYTES` / `L1I_CACHE_BYTES` / `L2_CACHE_BYTES` | `128 KiB` / `16 KiB` / `2 MiB` | L1D, L1I, and L2 sizes |
 | `frost.sv` | `USE_BEHAVIORAL_DDR` | `1` | 1 ends the tier in the simulation DDR model; 0 exports the bridge's AXI master on `o_ddr_axi_*` |
 | `frost.sv` | `DDR_MODEL_BYTES` / `DDR_MODEL_LATENCY` | `64 MiB` / `30` | DDR model size and access latency in cycles (simulation) |
-| `frost.sv` | `DDR_MODEL_LATENCY_JITTER` / `DDR_MODEL_REORDER` | `0` / `0` | DDR model per-transaction latency jitter, and out-of-order completion across ids (simulation) |
+| `frost.sv` | `DDR_MODEL_LATENCY_JITTER` / `DDR_MODEL_REORDER` | `0` / `0` | DDR model per-transaction latency jitter, and out-of-order completion across ids (simulation); `FROST_DDR_MODEL_SEED` draws these and the latency for a test run ([tests/README.md](../../tests/README.md#environment-and-output)) |
 | `frost.sv` | `SIM_FAST_MAINT` | `0` | Simulation only: 1 selects fast `fence.i` cache maintenance with the same functional effect |
 | `frost.sv` | `FETCH_VALID_FUZZ` | `0` | Simulation only: 1 inserts pseudo-random gaps into low-BRAM fetch responses to exercise the front end's handling of variable fetch latency |
 | `frost.sv` | `PERF_COUNTERS` | `0` | 1 builds the `mperf*` profiling counters |
