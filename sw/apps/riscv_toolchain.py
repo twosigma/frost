@@ -24,7 +24,8 @@ DEFAULT_PREFIX = "riscv64-linux-"
 def default_riscv_prefix(repository_root: Path) -> str:
     """Prefer PATH, then the checkout's existing Buildroot toolchain cache.
 
-    Callers preserve an explicit RISCV_PREFIX before consulting this default.
+    Callers preserve an explicit setting before consulting this default:
+    RISCV_PREFIX for bare-metal builds, FROST_LINUX_CROSS_COMPILE for OpenSBI.
     Returning the command prefix when neither installation exists lets Make
     report the missing compiler normally, without downloading a toolchain.
     """

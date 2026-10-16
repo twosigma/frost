@@ -221,13 +221,29 @@ def test_sbi_layout_ends_inside_memory() -> None:
 def test_sbi_layout_matches_opensbi_helper() -> None:
     """The packer's firmware and payload slots are what fw_jump is built for."""
     packer = _load_module(SBI_PACKER)
-    helper = _load_module(OPENSBI_HELPER)
+    helper = _load_script("opensbi_build", OPENSBI_HELPER)
     assert helper.FW_TEXT_START == packer.DDR_BASE + packer.FW_OFFSET
     assert helper.FW_JUMP_OFFSET == packer.PAYLOAD_OFFSET - packer.FW_OFFSET
     # a1 passes through fw_jump untouched: the helper must leave the FDT
     # offset empty rather than let the generic default relocate the DTB.
     helper_text = OPENSBI_HELPER.read_text()
     assert '"FW_JUMP_FDT_OFFSET=",' in helper_text
+
+
+def test_opensbi_helper_finds_buildroot_compiler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no compiler configured or on PATH, OpenSBI uses Buildroot's."""
+    helper = _load_script("opensbi_build", OPENSBI_HELPER)
+    monkeypatch.setenv("PATH", "")
+    compiler = tmp_path / "linux/build-mmu/host/bin/riscv64-linux-gcc"
+    compiler.parent.mkdir(parents=True)
+    compiler.touch(mode=0o755)
+    assert helper.default_cross(tmp_path, {}) == str(compiler)[: -len("gcc")]
+    # A setting wins, and an empty one selects unprefixed (native) tools.
+    for configured in ("/opt/linux/bin/riscv64-linux-", ""):
+        environment = {"FROST_LINUX_CROSS_COMPILE": configured}
+        assert helper.default_cross(tmp_path, environment) == configured
 
 
 def test_sbi_device_tree_matches_rtl_windows() -> None:
