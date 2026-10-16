@@ -46,6 +46,10 @@
 #define IRQ_COUNT (NORMAL_IRQ_COUNT + POISON_IRQ_COUNT)
 #define FRAME_WORDS 36u
 #define DDR_STACK_SIZE 4096u
+/* Timer delay before an idle WFI, in mtime ticks: long enough for the cache
+ * misses between arming and the WFI at the slowest DDR timing, so the
+ * interrupt arrives while the WFI waits. */
+#define IDLE_TIMER_TICKS 5000u
 
 struct linux_pt_regs {
     unsigned long epc;
@@ -273,7 +277,7 @@ __attribute__((noinline)) static uint32_t idle_once(uint32_t iter)
 
     write_tp((uintptr_t) &g_fake_current);
     csr_write(mscratch, 0u);
-    clint_set_timer_cmp(clint_rdmtime() + 300u + (iter & 31u));
+    clint_set_timer_cmp(clint_rdmtime() + IDLE_TIMER_TICKS + (iter & 31u));
     enable_interrupts();
 
     __asm__ volatile("mv   t2, ra\n"
@@ -315,7 +319,7 @@ __attribute__((noinline)) static uint32_t idle_then_poison_ra_once(uint32_t iter
 
     write_tp((uintptr_t) &g_fake_current);
     csr_write(mscratch, 0u);
-    clint_set_timer_cmp(clint_rdmtime() + 300u + (iter & 31u));
+    clint_set_timer_cmp(clint_rdmtime() + IDLE_TIMER_TICKS + (iter & 31u));
     enable_interrupts();
 
     __asm__ volatile("mv   t2, ra\n"

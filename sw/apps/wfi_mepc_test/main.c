@@ -63,7 +63,9 @@ int main(void)
     g_taken = 0;
 
     enable_timer_interrupt();
-    set_timer_cmp(rdmtime() + 300); /* fire ~300 cycles out: lands during WFI */
+    /* 5000 ticks covers the cache misses before the WFI at the slowest DDR
+     * timing, so the timer fires while the WFI waits. */
+    set_timer_cmp(rdmtime() + 5000);
     enable_interrupts();
 
     /* Set mscratch and capture the expected post-WFI PC before waiting. */
