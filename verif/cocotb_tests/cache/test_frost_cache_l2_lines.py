@@ -204,15 +204,14 @@ def _l2(dut: Any) -> Any:
     return dut.cache_hierarchy.l2_cache
 
 
-def _l2_slots_for(dut: Any, addr: int) -> list[tuple[int, bool]]:
-    """Return (slot, waiter attached) for every busy L2 miss slot on addr's line."""
+def _l2_slots_for(dut: Any, addr: int) -> list[tuple[int, int]]:
+    """Return (slot, waiter seats taken) for every busy L2 miss slot on addr's line."""
     l2 = _l2(dut)
     line = addr >> 6
-    waiters = int(l2.mshr_waiter_valid_q.value)
     out = []
     for i in range(int(l2.NUM_MSHR.value)):
         if int(l2.mshr_state_q[i].value) != 0 and int(l2.mshr_line_q[i].value) == line:
-            out.append((i, bool((waiters >> i) & 1)))
+            out.append((i, bin(int(l2.mshr_waiter_valid_q[i].value)).count("1")))
     return out
 
 
@@ -252,16 +251,20 @@ async def _check(dut: Any, model: ReferenceModel, port: str, addr: int) -> None:
 
 
 @cocotb.test()
-async def test_both_halves_share_one_fill_and_a_third_reader_waits(dut: Any) -> None:
-    """Reads of both halves of a missing line share one fill; a third waits.
+async def test_halves_share_one_fill_and_a_reader_past_the_seats_waits(
+    dut: Any,
+) -> None:
+    """Reads of both halves of a missing line share one fill; extra readers wait.
 
     The L1D reads the lower half and the L1I the upper half while the bridge
-    is held: the first read takes the L2 miss slot and the second its single
-    waiter seat. A walker read of the upper half, a third requester, finds
-    the seat taken and waits in the L2's decision stage (an L2 conflict
-    stall) until the fill installs, then hits. One AXI read serves all
-    three. (The walker reads the upper half because its probe of the lower
-    half would wait for the L1D's own fill before reaching the L2.)
+    is held: the first read takes the L2 miss slot and the second a waiter
+    seat. With two seats (L2_NUM_WAITERS=2) a walker read of the upper half
+    takes the other. The next requester, the walker with one seat or a DMA
+    read of the upper half with two, finds the seats taken and waits in the
+    L2's decision stage (an L2 conflict stall) until the fill installs, then
+    hits. One AXI read serves them all. (The walker and the DMA read the
+    upper half because a probe of the lower half would wait for the L1D's own
+    fill before reaching the L2.)
     """
     await _setup(dut)
     mon = AxiMonitor(dut)
@@ -272,29 +275,35 @@ async def test_both_halves_share_one_fill_and_a_third_reader_waits(dut: Any) -> 
     lo, hi, whole = _two_halves(1)
     a, b = _half(SHARE_BASE + 5 * L2_LINE_BYTES)
     _ddr_put_line(dut, model, a, whole)
+    seats = int(_l2(dut).NUM_WAITERS.value)
+    assert seats in (1, 2), f"the test covers one or two waiter seats, not {seats}"
 
-    up, iup, wup = _Collector(dut, "up"), _Collector(dut, "iup"), _Collector(dut, "wup")
+    # (port, address, id): the primary, one reader per seat, then the waiter.
+    readers = [("up", a, 1), ("iup", b, 2), ("wup", b, 1), ("dma", b, 1)][: seats + 2]
+    cols = {port: _Collector(dut, port) for port, _, _ in readers}
     await _hold(dut, 1)
-    await _fire(dut, "up", write=False, addr=a, req_id=1)
-    await _fire(dut, "iup", write=False, addr=b, req_id=2)
+    for port, addr, req_id in readers[:-1]:
+        await _fire(dut, port, write=False, addr=addr, req_id=req_id)
     await _settle(dut, 40)
-    assert _l2_slots_for(dut, a) == [(0, True)], (
-        f"expected one L2 miss slot with its waiter seat taken: {_l2_slots_for(dut, a)}"
+    assert _l2_slots_for(dut, a) == [(0, seats)], (
+        f"expected one L2 miss slot with all {seats} waiter seats taken: "
+        f"{_l2_slots_for(dut, a)}"
     )
     stalls_before = counts["l2"]["conflict_stall"]
-    await _fire(dut, "wup", write=False, addr=b, req_id=1)
+    last_port, last_addr, last_id = readers[-1]
+    await _fire(dut, last_port, write=False, addr=last_addr, req_id=last_id)
     await _settle(dut, 40)
-    assert counts["l2"]["conflict_stall"] > stalls_before, "the third read never waited"
-    assert not wup.pending, "the third read returned before the fill"
+    assert counts["l2"]["conflict_stall"] > stalls_before, "the last read never waited"
+    assert not cols[last_port].pending, "the last read returned before the fill"
     await _hold(dut, 0)
 
-    assert (await up.wait_for(1))[1] == lo
-    assert (await iup.wait_for(2))[1] == hi
-    assert (await wup.wait_for(1))[1] == hi
+    for port, addr, req_id in readers:
+        got = (await cols[port].wait_for(req_id))[1]
+        assert got == (lo if addr == a else hi), f"{port} read the wrong data"
     assert len(mon.reads_of(a)) == 1, f"line read {len(mon.reads_of(a))} times"
     stop[0] = True
     mon.assert_clean()
-    for col in (up, iup, wup):
+    for col in cols.values():
         col.stop()
     mon.stop()
 

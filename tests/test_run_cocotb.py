@@ -1240,6 +1240,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         "memory router",
         verilator_extra_args=("+define+FROST_XILINX_PRIMS",),
     ),
+    "l2_stream_prefetcher": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_l2_stream_prefetcher",
+        hdl_toplevel_module="l2_stream_prefetcher",
+        description="Stream confirmation, read distance, page bounds, and the in-flight cap",
+    ),
     "cached_tier_adapter": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.memory.test_cached_tier_adapter",
         hdl_toplevel_module="cached_tier_adapter",
@@ -1394,6 +1399,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="64-byte L2 lines with fast fence.i maintenance",
         verilator_extra_args=("-GL2_LINE_BYTES=64", "-GSIM_FAST_MAINT=1"),
     ),
+    "frost_cache_l2_lines_waiters2": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_l2_lines",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="64-byte L2 lines with two waiter seats per L2 miss slot",
+        verilator_extra_args=("-GL2_LINE_BYTES=64", "-GL2_NUM_WAITERS=2"),
+    ),
     # The L2-line, concurrency, and DMA suites with 16 L2 miss slots and 4
     # writeback slots, the largest counts the L2's downstream ids hold.
     "frost_cache_l2_lines_16x4": CocotbRunConfig(
@@ -1418,6 +1429,31 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost_cache_test_harness",
         description="DMA coherence with 16 L2 miss and 4 writeback slots",
         verilator_extra_args=("-GL2_NUM_MSHR=16", "-GL2_NUM_WB=4"),
+    ),
+    # The concurrency and DMA suites with the CPU's ids, L1D miss slots, L2
+    # waiter seats, and stream prefetcher, whose reads add L2 traffic.
+    "frost_cache_concurrency_prefetch": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_concurrency",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="Overlapping cache requests with the CPU's slots and the L2 prefetcher",
+        verilator_extra_args=(
+            "-GUP_ID_BITS=4",
+            "-GL1D_NUM_MSHR=8",
+            "-GL2_NUM_WAITERS=2",
+            "-GL2_PREFETCH=1",
+            "-GMEM_REORDER=1",
+        ),
+    ),
+    "frost_cache_dma_prefetch": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_dma",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="DMA coherence with the CPU's slots and the L2 prefetcher",
+        verilator_extra_args=(
+            "-GUP_ID_BITS=4",
+            "-GL1D_NUM_MSHR=8",
+            "-GL2_NUM_WAITERS=2",
+            "-GL2_PREFETCH=1",
+        ),
     ),
     # fence.i maintenance cycle-count measurement at the production cache
     # geometry (128 KiB L1D, 16 KiB L1I, 2 MiB L2). Two builds, slow

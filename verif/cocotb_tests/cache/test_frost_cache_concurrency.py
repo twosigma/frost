@@ -849,6 +849,9 @@ async def test_fill_slots_take_turns_under_recycled_misses(dut: Any) -> None:
             "L2 miss slots busy"
         )
         return
+    if int(dut.L2_PREFETCH.value):
+        dut._log.info("skipped: prefetches take L2 miss slots the readers must hold")
+        return
     col = _Collector(dut, "up")
     model = ReferenceModel()
 
@@ -926,11 +929,15 @@ async def test_l2_fill_tag_install_races_resident_lookup(dut: Any) -> None:
     """A tag lookup spanning a same-index fill install retries and hits.
 
     Launch a walker read two cycles before I-side and D-side reads of the
-    same cold line. The walker allocates, one cached request takes the MSHR
-    waiter, and the other waits for installation. A tag response spanning
-    that install must be discarded and retried to avoid a duplicate miss.
-    Require two misses (allocation and waiter) and one hit (retry).
+    same cold line. The walker allocates, one cached request takes the MSHR's
+    one waiter seat, and the other waits for installation. A tag response
+    spanning that install must be discarded and retried to avoid a duplicate
+    miss. Require two misses (allocation and waiter) and one hit (retry).
     """
+    seats = int(dut.cache_hierarchy.l2_cache.NUM_WAITERS.value)
+    if seats > 1:
+        dut._log.info(f"skipped: with {seats} L2 waiter seats all three reads attach")
+        return
     await _setup(dut)
     cols = {port: _Collector(dut, port) for port in ("up", "iup", "wup")}
 

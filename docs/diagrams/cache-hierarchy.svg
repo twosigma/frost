@@ -1,9 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="826" viewBox="0 0 1200 826" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="942" viewBox="0 0 1200 942" role="img" aria-labelledby="title desc">
   <title id="title">FROST cache hierarchy and tagged arbitration</title>
   <desc id="desc">
     The X3 uses separate L1I and L1D caches, a shared Sv39 walker, and coherent
     DMA from the NIC/test engine. Tagged arbiters prioritize L1D, walker, L1I,
-    then DMA with bounded starvation. A line-size adapter places each 32-byte
+    then DMA with bounded starvation, and a stream prefetcher that watches L1D
+    misses shares the DMA port after DMA. A line-size adapter places each 32-byte
     request in its half of a 64-byte line of the shared 2 MiB L2, which feeds
     the 512-bit AXI bridge and DDR4. All caches are direct-mapped; the L1s use
     32-byte lines and the L2 64-byte lines. Request paths are shown; responses
@@ -17,6 +18,8 @@
         selection.
       hw/rtl/lib/cache/line_size_adapter.sv: 32-byte requests as halves of
         64-byte L2 lines.
+      hw/rtl/lib/cache/l2_stream_prefetcher.sv: reads ahead of L1D miss
+        streams into the L2.
       hw/rtl/lib/cache/line_port_arbiter.sv: fixed priority, starvation bound
         and response routing.
       hw/rtl/lib/cache/dma_coherence_sequencer.sv: the DMA port's entry (probes,
@@ -52,12 +55,12 @@
       .port { font-size: 17px; fill: #edc37d; }
     </style>
   </defs>
-  <rect width="1200" height="826" rx="24" fill="url(#background)"/>
+  <rect width="1200" height="942" rx="24" fill="url(#background)"/>
   <rect x="44" y="36" width="5" height="57" rx="2.5" fill="#7ed8bc"/>
   <text x="66" y="67" font-size="36" font-weight="750">Cache hierarchy</text>
   <text x="67" y="94" class="body">FROST · tagged line ports, 32-byte L1 lines, 64-byte L2 lines · X3 production configuration</text>
 
-  <rect x="28" y="122" width="1144" height="676" rx="20" class="panel"/>
+  <rect x="28" y="122" width="1144" height="792" rx="20" class="panel"/>
   <text x="64" y="160" class="section">DATA ADAPTER</text>
   <text x="448" y="160" class="section">ITLB + DTLB MISSES</text>
   <text x="832" y="160" class="section">FETCH PROVIDER</text>
@@ -76,54 +79,66 @@
     <text x="984" y="277" class="small">2 active + 6 victim fetch lines</text>
   </g>
 
-  <path d="M 600 295 V 352" class="link"/>
+  <path d="M 720 295 V 352" class="link"/>
   <path d="M 984 295 V 352" class="link"/>
-  <text x="616" y="337" class="port">Port 0</text>
+  <text x="736" y="337" class="port">Port 0</text>
   <text x="1000" y="337" class="port">Port 1</text>
-  <rect x="544" y="352" width="592" height="96" rx="12" class="arbiter"/>
-  <text x="840" y="388" class="heading center">Walker / instruction arbiter</text>
-  <text x="840" y="419" class="body center">2:1 fixed priority · walker before L1I</text>
+  <rect x="704" y="352" width="432" height="96" rx="12" class="arbiter"/>
+  <text x="920" y="388" class="heading center">Walker / instruction arbiter</text>
+  <text x="920" y="419" class="body center">2:1 fixed priority · walker before L1I</text>
 
   <g class="center">
-    <rect x="296" y="352" width="224" height="96" rx="12" class="memory"/>
-    <text x="408" y="384" class="heading">DMA port</text>
-    <text x="408" y="412" class="body">Coherence sequencer</text>
-    <text x="408" y="437" class="small">NIC + test engine</text>
+    <rect x="248" y="352" width="192" height="96" rx="12" class="memory"/>
+    <text x="344" y="384" class="heading">DMA port</text>
+    <text x="344" y="412" class="body">Coherence sequencer</text>
+    <text x="344" y="437" class="small">NIC + test engine</text>
+    <rect x="456" y="352" width="232" height="96" rx="12" class="memory"/>
+    <text x="572" y="384" class="label">Stream prefetcher</text>
+    <text x="572" y="412" class="body">Watches L1D misses</text>
+    <text x="572" y="437" class="small">Up to 8 lines ahead</text>
   </g>
 
-  <path d="M 216 295 V 494" class="link"/>
-  <path d="M 408 448 V 494" class="link"/>
-  <path d="M 840 448 V 494" class="link"/>
-  <text x="232" y="479" class="port">Port 0</text>
-  <text x="424" y="479" class="port">Port 2</text>
-  <text x="856" y="479" class="port">Port 1</text>
-  <rect x="64" y="494" width="1072" height="84" rx="12" class="arbiter"/>
-  <text x="600" y="529" class="heading center">Data / shared-port arbiter</text>
-  <text x="600" y="558" class="body center">3:1 priority · L1D &gt; walker &gt; L1I &gt; DMA (starvation-bounded) · walker and DMA enter via coherence sequencers</text>
+  <path d="M 344 448 V 494" class="link"/>
+  <path d="M 572 448 V 494" class="link"/>
+  <text x="360" y="479" class="port">Port 0</text>
+  <text x="588" y="479" class="port">Port 1</text>
+  <rect x="248" y="494" width="440" height="70" rx="12" class="arbiter"/>
+  <text x="468" y="522" class="label center">DMA / prefetch arbiter</text>
+  <text x="468" y="550" class="small center">2:1 fixed priority · DMA first</text>
 
-  <path d="M 180 578 V 624" class="link"/>
-  <text x="202" y="608" class="small">Tagged transactions · several may be in flight</text>
+  <path d="M 216 295 V 610" class="link"/>
+  <path d="M 468 564 V 610" class="link"/>
+  <path d="M 920 448 V 610" class="link"/>
+  <text x="232" y="595" class="port">Port 0</text>
+  <text x="484" y="595" class="port">Port 2</text>
+  <text x="936" y="595" class="port">Port 1</text>
+  <rect x="64" y="610" width="1072" height="84" rx="12" class="arbiter"/>
+  <text x="600" y="645" class="heading center">Data / shared-port arbiter</text>
+  <text x="600" y="674" class="body center">3:1 priority · L1D &gt; walker &gt; L1I &gt; DMA &gt; prefetch (starvation-bounded)</text>
+
+  <path d="M 180 694 V 740" class="link"/>
+  <text x="202" y="724" class="small">Tagged transactions · several may be in flight</text>
   <g class="center">
-    <rect x="64" y="624" width="232" height="104" rx="12" class="arbiter"/>
-    <text x="180" y="657" class="heading">Line-size adapter</text>
-    <text x="180" y="686" class="body">32 B line → half of 64 B</text>
-    <text x="180" y="713" class="small">Half recorded per id</text>
-    <path d="M 296 676 H 344" class="link"/>
-    <rect x="344" y="624" width="232" height="104" rx="12" class="memory"/>
-    <text x="460" y="657" class="heading">Shared L2 · 2 MiB</text>
-    <text x="460" y="686" class="body">64 B lines · UltraRAM</text>
-    <text x="460" y="713" class="small">Write-back, write-allocate</text>
-    <path d="M 576 676 H 624" class="link"/>
-    <rect x="624" y="624" width="232" height="104" rx="12" class="memory"/>
-    <text x="740" y="657" class="heading">Line → AXI4</text>
-    <text x="740" y="686" class="body">512-bit single beats</text>
-    <text x="740" y="713" class="small">Many in flight</text>
-    <path d="M 856 676 H 904" class="link"/>
-    <rect x="904" y="624" width="232" height="104" rx="12" class="memory"/>
-    <text x="1020" y="657" class="heading">X3 DDR4</text>
-    <text x="1020" y="686" class="body">1 GiB cached region</text>
-    <text x="1020" y="713" class="small">Base: 0x8000_0000</text>
+    <rect x="64" y="740" width="232" height="104" rx="12" class="arbiter"/>
+    <text x="180" y="773" class="heading">Line-size adapter</text>
+    <text x="180" y="802" class="body">32 B line → half of 64 B</text>
+    <text x="180" y="829" class="small">Half recorded per id</text>
+    <path d="M 296 792 H 344" class="link"/>
+    <rect x="344" y="740" width="232" height="104" rx="12" class="memory"/>
+    <text x="460" y="773" class="heading">Shared L2 · 2 MiB</text>
+    <text x="460" y="802" class="body">64 B lines · UltraRAM</text>
+    <text x="460" y="829" class="small">Write-back, write-allocate</text>
+    <path d="M 576 792 H 624" class="link"/>
+    <rect x="624" y="740" width="232" height="104" rx="12" class="memory"/>
+    <text x="740" y="773" class="heading">Line → AXI4</text>
+    <text x="740" y="802" class="body">512-bit single beats</text>
+    <text x="740" y="829" class="small">Many in flight</text>
+    <path d="M 856 792 H 904" class="link"/>
+    <rect x="904" y="740" width="232" height="104" rx="12" class="memory"/>
+    <text x="1020" y="773" class="heading">X3 DDR4</text>
+    <text x="1020" y="802" class="body">1 GiB cached region</text>
+    <text x="1020" y="829" class="small">Base: 0x8000_0000</text>
   </g>
-  <text x="600" y="763" class="small center">L1I / L1D: direct-mapped, 32 B lines. L2: direct-mapped, 64 B lines. Responses route back by transaction ID.</text>
-  <text x="600" y="787" class="small center">Arrows follow requests; response and maintenance-control paths are omitted.</text>
+  <text x="600" y="879" class="small center">L1I / L1D: direct-mapped, 32 B lines. L2: direct-mapped, 64 B lines. Responses route back by transaction ID.</text>
+  <text x="600" y="903" class="small center">Arrows follow requests; response and maintenance-control paths are omitted.</text>
 </svg>

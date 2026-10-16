@@ -44,6 +44,10 @@
  *   walker {2'b01, 1'b0, (UP_ID_BITS-1)-bit local id}
  *   L1I    {2'b01, 1'b1, (UP_ID_BITS-1)-bit local id}
  *   DMA    {2'b10, UP_ID_BITS-bit DMA-port id}
+ * With the stream prefetcher (L2_PREFETCH), a 2:1 arbiter splits the DMA
+ * port's ids between DMA and the prefetcher:
+ *   DMA        {2'b10, 1'b0, (UP_ID_BITS-1)-bit DMA-port id}
+ *   prefetcher {2'b10, 1'b1, (UP_ID_BITS-1)-bit local id}
  * The up, iup, and dma ports carry UP_ID_BITS; the wup port and the L1I's
  * downstream carry UP_ID_BITS-1. With the default UP_ID_BITS=3, that leaves
  * the L1I 2 miss slots, all its master (the two-line fetch provider) ever
@@ -85,6 +89,16 @@ module frost_cache_hierarchy #(
     parameter int unsigned L2_NUM_MSHR = 4,
     parameter int unsigned L2_NUM_WB = 2,
     parameter int unsigned L2_DOWN_ID_BITS = 5,
+    // Read waiter seats per L2 miss slot (frost_cache NUM_WAITERS). A
+    // prefetch that allocates a slot holds its primary seat, so the L1D's
+    // reads of both halves of that line need two waiter seats.
+    parameter int unsigned L2_NUM_WAITERS = 1,
+    // The stream prefetcher (l2_stream_prefetcher), sharing the DMA port of
+    // the top arbiter: 0 removes it. Its distance ahead of a stream in L2
+    // lines, and its outstanding reads.
+    parameter int unsigned L2_PREFETCH = 0,
+    parameter int unsigned L2_PREFETCH_DISTANCE = 8,
+    parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
     // Simulation-only fast cache maintenance for fence.i (see frost_cache).
     // 0 = FPGA cycle-accurate FSM; non-zero = sim fast path. Passed to every
     // cache so reset can bulk-clear its tag array; fence.i maintenance requests
@@ -140,7 +154,8 @@ module frost_cache_hierarchy #(
     output logic [     UP_ID_BITS-2:0] o_wup_resp_id,
     output logic [L1_LINE_BYTES*8-1:0] o_wup_resp_rdata,
     // DMA port: a fourth upstream line-port slave with UP_ID_BITS
-    // ids, coherent with the L1D and the load queue (see the header).
+    // ids, coherent with the L1D and the load queue (see the header). With
+    // L2_PREFETCH, the ids' top bit must be clear.
     input  logic                       i_dma_req_valid,
     output logic                       o_dma_req_ready,
     input  logic                       i_dma_req_write,
@@ -583,8 +598,110 @@ module frost_cache_hierarchy #(
       .i_down_resp_rdata(wi_down_resp_rdata)
   );
 
-  // Prioritize data misses, then walker/L1I, then DMA. The starvation bound
-  // permits DMA progress under sustained CPU traffic; maintenance follows L1D.
+  // ---------------------------------------------------------------------------
+  // Stream prefetcher: reads the lines ahead of L1D miss streams into the L2.
+  // It shares the top arbiter's DMA port through a 2:1 arbiter, DMA first,
+  // which splits the DMA port's ids: {1'b0, DMA id} and {1'b1, prefetch id},
+  // each UP_ID_BITS-1 bits, so DMA ids keep their top bit clear. The top
+  // arbiter keeps three ports (and its explicit-LUT grant on the X3), and
+  // the ids below it keep their width. The prefetcher's responses only free
+  // its ids.
+  // ---------------------------------------------------------------------------
+  logic dp_down_req_valid, dp_down_req_ready, dp_down_req_write;
+  logic [ADDR_WIDTH-1:0] dp_down_req_addr;
+  logic [L1_LINE_BYTES*8-1:0] dp_down_req_wdata;
+  logic [L1_LINE_BYTES-1:0] dp_down_req_wstrb;
+  logic [UP_ID_BITS-1:0] dp_down_req_id;
+  logic dp_down_resp_valid;
+  logic [UP_ID_BITS-1:0] dp_down_resp_id;
+  logic [L1_LINE_BYTES*8-1:0] dp_down_resp_rdata;
+  if (L2_PREFETCH != 0) begin : gen_prefetch
+    localparam int unsigned SharedIdBits = UP_ID_BITS - 1;
+    logic pf_down_req_valid, pf_down_req_ready;
+    logic [ADDR_WIDTH-1:0] pf_down_req_addr;
+    logic [SharedIdBits-1:0] pf_down_req_id;
+    logic pf_down_resp_valid;
+    logic [SharedIdBits-1:0] pf_down_resp_id, dma_shared_resp_id;
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic [L1_LINE_BYTES*8-1:0] pf_down_resp_rdata;
+    logic dp_maintenance_unused;
+    /* verilator lint_on UNUSEDSIGNAL */
+    l2_stream_prefetcher #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .L2_LINE_BYTES(L2_LINE_BYTES),
+        .DISTANCE(L2_PREFETCH_DISTANCE),
+        .MAX_INFLIGHT(L2_PREFETCH_INFLIGHT),
+        .ID_BITS(SharedIdBits)
+    ) prefetcher (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_miss_valid(l1_down_req_valid && l1_down_req_ready && !l1_down_req_write),
+        .i_miss_addr(l1_down_req_addr),
+        .o_req_valid(pf_down_req_valid),
+        .i_req_ready(pf_down_req_ready),
+        .o_req_addr(pf_down_req_addr),
+        .o_req_id(pf_down_req_id),
+        .i_resp_valid(pf_down_resp_valid),
+        .i_resp_id(pf_down_resp_id)
+    );
+    line_port_arbiter #(
+        .NUM_PORTS(2),
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .LINE_BYTES(L1_LINE_BYTES),
+        .UP_ID_BITS(SharedIdBits),
+        .STARVATION_LIMIT(0)
+    ) dma_prefetch_arbiter (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_up_req_valid({pf_down_req_valid, dma_down_req_valid}),
+        .o_up_req_ready({pf_down_req_ready, dma_down_req_ready}),
+        .i_up_req_write({1'b0, dma_down_req_write}),
+        .i_up_req_addr({pf_down_req_addr, dma_down_req_addr}),
+        .i_up_req_wdata({(L1_LINE_BYTES * 8)'(0), dma_down_req_wdata}),
+        .i_up_req_wstrb({L1_LINE_BYTES'(0), dma_down_req_wstrb}),
+        .i_up_req_id({pf_down_req_id, dma_down_req_id[SharedIdBits-1:0]}),
+        .i_up_req_maintenance(2'b00),
+        .o_up_resp_valid({pf_down_resp_valid, dma_down_resp_valid}),
+        .o_up_resp_id({pf_down_resp_id, dma_shared_resp_id}),
+        .o_up_resp_rdata({pf_down_resp_rdata, dma_down_resp_rdata}),
+        .o_down_req_valid(dp_down_req_valid),
+        .i_down_req_ready(dp_down_req_ready),
+        .o_down_req_write(dp_down_req_write),
+        .o_down_req_addr(dp_down_req_addr),
+        .o_down_req_wdata(dp_down_req_wdata),
+        .o_down_req_wstrb(dp_down_req_wstrb),
+        .o_down_req_id(dp_down_req_id),
+        .o_down_req_maintenance(dp_maintenance_unused),
+        .i_down_resp_valid(dp_down_resp_valid),
+        .i_down_resp_id(dp_down_resp_id),
+        .i_down_resp_rdata(dp_down_resp_rdata)
+    );
+    assign dma_down_resp_id = UP_ID_BITS'(dma_shared_resp_id);
+`ifndef SYNTHESIS
+    always_ff @(posedge i_clk) begin
+      if (!i_rst && dma_down_req_valid && dma_down_req_id[UP_ID_BITS-1])
+        $error(
+            "frost_cache_hierarchy: DMA id %0d has its top bit set beside the prefetcher",
+            dma_down_req_id
+        );
+    end
+`endif
+  end else begin : gen_no_prefetch
+    assign dp_down_req_valid   = dma_down_req_valid;
+    assign dma_down_req_ready  = dp_down_req_ready;
+    assign dp_down_req_write   = dma_down_req_write;
+    assign dp_down_req_addr    = dma_down_req_addr;
+    assign dp_down_req_wdata   = dma_down_req_wdata;
+    assign dp_down_req_wstrb   = dma_down_req_wstrb;
+    assign dp_down_req_id      = dma_down_req_id;
+    assign dma_down_resp_valid = dp_down_resp_valid;
+    assign dma_down_resp_id    = dp_down_resp_id;
+    assign dma_down_resp_rdata = dp_down_resp_rdata;
+  end
+
+  // Prioritize data misses, then walker/L1I, then DMA and prefetches. The
+  // starvation bound permits DMA progress under sustained CPU traffic;
+  // maintenance follows L1D.
   line_port_arbiter #(
       .NUM_PORTS(3),
       .ADDR_WIDTH(ADDR_WIDTH),
@@ -594,17 +711,17 @@ module frost_cache_hierarchy #(
   ) l1_arbiter (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_up_req_valid({dma_down_req_valid, wi_down_req_valid, l1_down_req_valid}),
-      .o_up_req_ready({dma_down_req_ready, wi_down_req_ready, l1_down_req_ready}),
-      .i_up_req_write({dma_down_req_write, wi_down_req_write, l1_down_req_write}),
-      .i_up_req_addr({dma_down_req_addr, wi_down_req_addr, l1_down_req_addr}),
-      .i_up_req_wdata({dma_down_req_wdata, wi_down_req_wdata, l1_down_req_wdata}),
-      .i_up_req_wstrb({dma_down_req_wstrb, wi_down_req_wstrb, l1_down_req_wstrb}),
-      .i_up_req_id({dma_down_req_id, wi_down_req_id, l1_down_req_id}),
+      .i_up_req_valid({dp_down_req_valid, wi_down_req_valid, l1_down_req_valid}),
+      .o_up_req_ready({dp_down_req_ready, wi_down_req_ready, l1_down_req_ready}),
+      .i_up_req_write({dp_down_req_write, wi_down_req_write, l1_down_req_write}),
+      .i_up_req_addr({dp_down_req_addr, wi_down_req_addr, l1_down_req_addr}),
+      .i_up_req_wdata({dp_down_req_wdata, wi_down_req_wdata, l1_down_req_wdata}),
+      .i_up_req_wstrb({dp_down_req_wstrb, wi_down_req_wstrb, l1_down_req_wstrb}),
+      .i_up_req_id({dp_down_req_id, wi_down_req_id, l1_down_req_id}),
       .i_up_req_maintenance({1'b0, wi_down_req_maintenance, l1_down_req_maintenance}),
-      .o_up_resp_valid({dma_down_resp_valid, wi_down_resp_valid, l1_down_resp_valid}),
-      .o_up_resp_id({dma_down_resp_id, wi_down_resp_id, l1_down_resp_id}),
-      .o_up_resp_rdata({dma_down_resp_rdata, wi_down_resp_rdata, l1_down_resp_rdata}),
+      .o_up_resp_valid({dp_down_resp_valid, wi_down_resp_valid, l1_down_resp_valid}),
+      .o_up_resp_id({dp_down_resp_id, wi_down_resp_id, l1_down_resp_id}),
+      .o_up_resp_rdata({dp_down_resp_rdata, wi_down_resp_rdata, l1_down_resp_rdata}),
       .o_down_req_valid(arb_down_req_valid),
       .i_down_req_ready(arb_down_req_ready),
       .o_down_req_write(arb_down_req_write),
@@ -735,6 +852,7 @@ module frost_cache_hierarchy #(
       .DOWN_ID_BITS(L2_DOWN_ID_BITS),
       .NUM_MSHR(L2_NUM_MSHR),
       .NUM_WB(L2_NUM_WB),
+      .NUM_WAITERS(L2_NUM_WAITERS),
       .TAG_MEMORY_PRIMITIVE("ultra"),
       .TAG_READ_LATENCY(L2_TAG_READ_LATENCY),
       .DATA_MEMORY_PRIMITIVE("ultra"),
