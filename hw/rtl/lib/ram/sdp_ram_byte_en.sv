@@ -37,6 +37,10 @@
  *     The caller must avoid qualified reads of a row being written;
  *     frost_cache uses raw_hazard. i_re only qualifies the collision check,
  *     so changing o_rdata is valid only READ_LATENCY cycles after a request.
+ * REGISTER_READ_OUTPUT=1 spends one of the READ_LATENCY cycles on a fabric
+ * register after the memory. Synthesis keeps it out of the memory (KEEP), so
+ * placement can hold the memory's last stage beside a wide array and put this
+ * register near the readers.
  * Writes are byte writes with WRITE_LATENCY-1 input-register stages (1 =
  * single-cycle write). There is no power-up init: contents are don't-care
  * until written, and the cache's tag sweep makes them unreachable.
@@ -53,7 +57,10 @@ module sdp_ram_byte_en #(
     // verilog_lint: waive-end explicit-parameter-storage-type
     // 1 = register i_re/i_raddr at the boundary; 0 = present i_raddr to the
     // array directly and count its output register (see the header).
-    parameter bit REGISTER_READ_INPUT = 1'b1
+    parameter bit REGISTER_READ_INPUT = 1'b1,
+    // 1 = register o_rdata in the fabric after the memory, as one of the
+    // READ_LATENCY cycles (see the header).
+    parameter bit REGISTER_READ_OUTPUT = 1'b0
 ) (
     input logic i_clk,
 
@@ -70,15 +77,17 @@ module sdp_ram_byte_en #(
 
   initial begin
     if (DATA_WIDTH % 8 != 0) $fatal(1, "sdp_ram_byte_en: DATA_WIDTH must be a multiple of 8");
-    if (READ_LATENCY < 2) $fatal(1, "sdp_ram_byte_en: READ_LATENCY must be >= 2");
+    if (READ_LATENCY < 2 + (REGISTER_READ_OUTPUT ? 1 : 0))
+      $fatal(1, "sdp_ram_byte_en: READ_LATENCY must be >= 2, or 3 with REGISTER_READ_OUTPUT");
     if (WRITE_LATENCY < 1) $fatal(1, "sdp_ram_byte_en: WRITE_LATENCY must be >= 1");
   end
 
   localparam int unsigned NumBytes = DATA_WIDTH / 8;
   localparam int unsigned Depth = 2 ** ADDR_WIDTH;
-  // The cycles spent in the memory read pipeline: one fewer than the total
-  // when the read inputs are registered at the boundary.
-  localparam int unsigned XpmReadLatency = REGISTER_READ_INPUT ? READ_LATENCY - 1 : READ_LATENCY;
+  // The cycles spent in the memory read pipeline: the total less the
+  // registers at the boundary.
+  localparam int unsigned XpmReadLatency =
+      READ_LATENCY - (REGISTER_READ_INPUT ? 1 : 0) - (REGISTER_READ_OUTPUT ? 1 : 0);
 
   // ---- Write-port input register pipeline (WRITE_LATENCY-1 stages) ---------
   localparam int unsigned WriteRegStages = WRITE_LATENCY - 1;
@@ -225,7 +234,15 @@ module sdp_ram_byte_en #(
   `undef FROST_SDP_RAM_USE_XPM
 `endif
 
-  assign o_rdata = row_dout;
+  // ---- Read-port output register -------------------------------------------
+  // Optional fabric stage after the memory (see the header).
+  if (REGISTER_READ_OUTPUT) begin : gen_read_output_reg
+    (* keep = "true" *) logic [DATA_WIDTH-1:0] rdata_q;
+    always_ff @(posedge i_clk) rdata_q <= row_dout;
+    assign o_rdata = rdata_q;
+  end else begin : gen_read_output_direct
+    assign o_rdata = row_dout;
+  end
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
