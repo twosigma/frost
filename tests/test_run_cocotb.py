@@ -259,6 +259,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GPERF_COUNTERS=1",
         ),
     ),
+    "ddr_bench": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ddr_bench",
+        description=(
+            "Memory-bound kernels on cold DDR regions, at a sixteenth of their "
+            "hardware sizes, timed with profiling counters"
+        ),
+        verilator_extra_args=("-GPERF_COUNTERS=1",),
+        # Room for runs with a slow DDR model.
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DDDR_BENCH_SHIFT=4"),
+            ("COCOTB_MAX_CYCLES", "1500000"),
+        ),
+    ),
     # The system with 32-byte L2 lines, equal to the L1s': no line-size
     # adapter and a 256-bit DDR port. Adjacent, so consecutive runs reuse one
     # build.

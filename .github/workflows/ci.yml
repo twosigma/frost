@@ -133,7 +133,8 @@ jobs:
               [spanning_test] or [ras_test] or [ras_stress_test] or [tomasulo_test] or
               [tomasulo_perf] or [jal_target_seam] or [fetch_lead_repro] or [fetch_stall_repro] or
               [window_skip_repro] or [ddr_test] or [ddr_exec_test] or [ddr_smc_test] or
-              [ddr_heap_test] or [ddr_mlp_test] or [ddr_atomic_test] or [hello_world_fetch_fuzz] or
+              [ddr_heap_test] or [ddr_mlp_test] or [ddr_atomic_test] or [ddr_bench] or
+              [hello_world_fetch_fuzz] or
               [branch_pred_test_fetch_fuzz] or [c_ext_test_fetch_fuzz] or [call_stress_fetch_fuzz]
               or [itlb_test_fetch_fuzz] or [opensbi_smoke])
           - name: Real Programs (CoreMark-PRO / core)
@@ -170,7 +171,8 @@ jobs:
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
               pytest_filter: >-
                 [ddr_test] or [ddr_exec_test] or [ddr_smc_test] or [ddr_heap_test] or [ddr_mlp_test]
-                or [ddr_atomic_test] or [hello_world_fetch_fuzz] or [branch_pred_test_fetch_fuzz] or
+                or [ddr_atomic_test] or [ddr_bench] or [hello_world_fetch_fuzz] or
+                [branch_pred_test_fetch_fuzz] or
                 [c_ext_test_fetch_fuzz] or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz]
           # OpenSBI smoke uses a fixed image layout and a separate long-running job.
           - mem_config: bram
