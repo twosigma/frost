@@ -35,8 +35,9 @@
  *                whole line. A write miss is acknowledged from T, where the
  *                store is ordered, and its bytes merge into the fill;
  *   - secondary: a write to a line whose write-allocate MSHR is pending
- *                merges into it; a read takes the MSHR's single waiter seat;
- *                anything else aimed at an index in transition waits.
+ *                merges into it; a read takes one of the MSHR's NUM_WAITERS
+ *                waiter seats; anything else aimed at an index in transition
+ *                waits.
  * Hits proceed past pending misses, several MSHRs fetch at once, and
  * writebacks drain independently.
  *
@@ -95,6 +96,9 @@ module frost_cache #(
     // Miss-status slots (outstanding fills) and writeback slots.
     parameter int unsigned NUM_MSHR = 4,
     parameter int unsigned NUM_WB = 2,
+    // Read waiter seats per MSHR, for reads of its line after the request
+    // that allocated it. A read that finds every seat taken waits in T.
+    parameter int unsigned NUM_WAITERS = 1,
     // Probe slots: in-flight per-line coherence probes (see the header). 0
     // removes the probe machinery; only the L1D takes probes.
     parameter int unsigned NUM_PROBE = 0,
@@ -181,6 +185,7 @@ module frost_cache #(
   localparam bit TrackDelayedTagWrites = TAG_READ_LATENCY > 1;
   localparam int unsigned MshrBits = (NUM_MSHR > 1) ? $clog2(NUM_MSHR) : 1;
   localparam int unsigned WbBits = (NUM_WB > 1) ? $clog2(NUM_WB) : 1;
+  localparam int unsigned SeatBits = (NUM_WAITERS > 1) ? $clog2(NUM_WAITERS) : 1;
   localparam int unsigned ProbeSlots = (NUM_PROBE > 0) ? NUM_PROBE : 1;
   localparam int unsigned ProbeBits = (NUM_PROBE > 1) ? $clog2(NUM_PROBE) : 1;
   localparam int unsigned DownSlotBits = DOWN_ID_BITS - 1;
@@ -201,6 +206,7 @@ module frost_cache #(
     if ((TAG_MEMORY_PRIMITIVE == "ultra") && (TAG_READ_LATENCY < 3))
       $fatal(1, "frost_cache: packed ultra tags require TAG_READ_LATENCY>=3");
     if (DOWN_ID_BITS < 2) $fatal(1, "frost_cache: DOWN_ID_BITS must be >= 2");
+    if (NUM_WAITERS < 1) $fatal(1, "frost_cache: NUM_WAITERS must be >= 1");
     if ((1 << DownSlotBits) < NUM_MSHR || (1 << DownSlotBits) < NUM_WB)
       $fatal(1, "frost_cache: DOWN_ID_BITS cannot address every MSHR / writeback slot");
   end
@@ -348,8 +354,26 @@ module frost_cache #(
   logic [NUM_MSHR-1:0] mshr_maint_q;
   logic [NUM_MSHR-1:0] mshr_has_victim_q;
   logic [WbBits-1:0] mshr_victim_wb_q[NUM_MSHR];
-  logic [NUM_MSHR-1:0] mshr_waiter_valid_q;
-  logic [UP_ID_BITS-1:0] mshr_waiter_id_q[NUM_MSHR];
+  // Waiter seats fill from seat 0 up, and answered waiters leave from seat 0,
+  // the others moving down, so the response always reads seat 0.
+  logic [NUM_WAITERS-1:0] mshr_waiter_valid_q[NUM_MSHR];
+  logic [NUM_WAITERS-1:0][UP_ID_BITS-1:0] mshr_waiter_id_q[NUM_MSHR];
+  logic [NUM_MSHR-1:0] mshr_has_waiter;  // seat 0 taken
+  logic [NUM_MSHR-1:0] mshr_seats_full;  // the last seat taken
+  logic [NUM_MSHR-1:0] mshr_more_waiters;  // a waiter behind seat 0
+  always_comb begin
+    for (int i = 0; i < int'(NUM_MSHR); i++) begin
+      mshr_has_waiter[i] = mshr_waiter_valid_q[i][0];
+      mshr_seats_full[i] = mshr_waiter_valid_q[i][NUM_WAITERS-1];
+    end
+  end
+  if (NUM_WAITERS > 1) begin : gen_more_waiters
+    always_comb begin
+      for (int i = 0; i < int'(NUM_MSHR); i++) mshr_more_waiters[i] = mshr_waiter_valid_q[i][1];
+    end
+  end else begin : gen_one_waiter
+    assign mshr_more_waiters = '0;
+  end
   logic [LINE_BYTES-1:0] mshr_wstrb_q[NUM_MSHR];
   logic [LineBits-1:0] mshr_data_q[NUM_MSHR];
   logic [NUM_WB-1:0] mshr_wb_wait_q[NUM_MSHR];  // writebacks of the same line
@@ -663,9 +687,9 @@ module frost_cache #(
     for (int i = int'(NUM_MSHR) - 1; i >= 0; i--) begin
       if (t_line_match_q[i] && mshr_valid[i]) match_mshr = MshrBits'(i);
     end
-    match_mergeable = mshr_write_q[match_mshr] && !mshr_waiter_valid_q[match_mshr] &&
+    match_mergeable = mshr_write_q[match_mshr] && !mshr_has_waiter[match_mshr] &&
         ((mshr_state_q[match_mshr] == MS_PEND) || (mshr_state_q[match_mshr] == MS_SENT));
-    match_waitable = !mshr_waiter_valid_q[match_mshr] &&
+    match_waitable = !mshr_seats_full[match_mshr] &&
         ((mshr_state_q[match_mshr] == MS_PEND) || (mshr_state_q[match_mshr] == MS_SENT));
     victim_dirty = tag_rdata_valid && tag_rdata_dirty;
 
@@ -875,8 +899,8 @@ module frost_cache #(
   assign ack_pop        = !resp_data_now && !probe_ack_any && ack_nonempty;
   assign mshr_resp_fire = !resp_data_now && !probe_ack_any && !ack_nonempty && mshr_resp_any;
 
-  // A read MSHR answers its primary first, then its waiter; a write MSHR only
-  // has a waiter to answer.
+  // A read MSHR answers its primary first, then its waiters in seat order; a
+  // write MSHR only has waiters to answer.
   logic mshr_resp_is_waiter;
   assign mshr_resp_is_waiter =
       mshr_write_q[mshr_resp_sel] || mshr_resp_primary_done_q[mshr_resp_sel];
@@ -885,7 +909,7 @@ module frost_cache #(
   assign o_up_resp_id = resp_data_now ? rp_out_id :
       probe_ack_any ? probe_id_q[probe_ack_sel] :
       ack_nonempty ? ack_id_q[ack_rd_q[UP_ID_BITS-1:0]] :
-      (mshr_resp_is_waiter ? mshr_waiter_id_q[mshr_resp_sel] : mshr_id_q[mshr_resp_sel]);
+      (mshr_resp_is_waiter ? mshr_waiter_id_q[mshr_resp_sel][0] : mshr_id_q[mshr_resp_sel]);
   assign o_up_resp_rdata = resp_data_now ? data_rdata : mshr_data_q[mshr_resp_sel];
 
   // ===========================================================================
@@ -1092,10 +1116,10 @@ module frost_cache #(
       mshr_in_resp_next[i] =
           !(w_valid_q && (w_op_q == W_ALLOC) && (w_mshr_q == MshrBits'(i))) &&
           (((mshr_state_q[i] == MS_WRITING) && mshr_write_fire && (fw_sel_q == MshrBits'(i)) &&
-            (!mshr_write_q[i] || mshr_waiter_valid_q[i])) ||
+            (!mshr_write_q[i] || mshr_has_waiter[i])) ||
            ((mshr_state_q[i] == MS_RESP) &&
             !(mshr_resp_fire && (mshr_resp_sel == MshrBits'(i)) &&
-              (mshr_resp_is_waiter || !mshr_waiter_valid_q[i]))));
+              (mshr_resp_is_waiter ? !mshr_more_waiters[i] : !mshr_has_waiter[i]))));
     end
   end
   always_ff @(posedge i_clk) begin
@@ -1371,6 +1395,15 @@ module frost_cache #(
     w_wb_wait_q <= t_wb_match_q & wb_valid;
   end
 
+  // The seat a W-stage waiter takes: the lowest free one.
+  logic [SeatBits-1:0] w_seat;
+  always_comb begin
+    w_seat = '0;
+    for (int s = int'(NUM_WAITERS) - 1; s >= 0; s--) begin
+      if (!mshr_waiter_valid_q[w_mshr_q][s]) w_seat = SeatBits'(s);
+    end
+  end
+
   // ===========================================================================
   // MSHR and writeback slot state
   // ===========================================================================
@@ -1378,7 +1411,7 @@ module frost_cache #(
     if (i_rst) begin
       for (int i = 0; i < int'(NUM_MSHR); i++) begin
         mshr_state_q[i]        <= MS_FREE;
-        mshr_waiter_valid_q[i] <= 1'b0;
+        mshr_waiter_valid_q[i] <= '0;
         mshr_wb_wait_q[i]      <= '0;
       end
       for (int j = 0; j < int'(NUM_WB); j++) wb_state_q[j] <= WB_FREE;
@@ -1451,21 +1484,27 @@ module frost_cache #(
             mshr_state_q[i] <= MS_WRITING;
           MS_WRITING:
           if (mshr_write_fire && (fw_sel_q == MshrBits'(i))) begin
-            mshr_state_q[i] <=
-                (!mshr_write_q[i] || mshr_waiter_valid_q[i]) ? MS_RESP : MS_FREE_WAIT;
+            mshr_state_q[i] <= (!mshr_write_q[i] || mshr_has_waiter[i]) ? MS_RESP : MS_FREE_WAIT;
             mshr_resp_primary_done_q[i] <= 1'b0;
           end
           MS_RESP:
           if (mshr_resp_fire && (mshr_resp_sel == MshrBits'(i))) begin
-            if (mshr_resp_is_waiter || !mshr_waiter_valid_q[i]) begin
+            if (mshr_resp_is_waiter ? !mshr_more_waiters[i] : !mshr_has_waiter[i]) begin
               mshr_state_q[i] <= MS_FREE_WAIT;
-            end else begin
+            end else if (!mshr_resp_is_waiter) begin
               mshr_resp_primary_done_q[i] <= 1'b1;
+            end else begin
+              // Seat 0 is answered; the waiters behind it move down.
+              for (int s = 0; s < int'(NUM_WAITERS) - 1; s++) begin
+                mshr_waiter_valid_q[i][s] <= mshr_waiter_valid_q[i][s+1];
+                mshr_waiter_id_q[i][s]    <= mshr_waiter_id_q[i][s+1];
+              end
+              mshr_waiter_valid_q[i][NUM_WAITERS-1] <= 1'b0;
             end
           end
           MS_FREE_WAIT: begin
             mshr_state_q[i]        <= MS_FREE;
-            mshr_waiter_valid_q[i] <= 1'b0;
+            mshr_waiter_valid_q[i] <= '0;
           end
           default: ;
         endcase
@@ -1481,13 +1520,13 @@ module frost_cache #(
         mshr_maint_q[w_mshr_q]             <= w_maint_q;
         mshr_has_victim_q[w_mshr_q]        <= w_has_victim_q;
         mshr_victim_wb_q[w_mshr_q]         <= w_wb_q;
-        mshr_waiter_valid_q[w_mshr_q]      <= 1'b0;
+        mshr_waiter_valid_q[w_mshr_q]      <= '0;
         mshr_wb_wait_q[w_mshr_q]           <= w_wb_wait_q & wb_still_pending;
         mshr_resp_primary_done_q[w_mshr_q] <= 1'b0;
       end
       if (w_valid_q && (w_op_q == W_WAITER)) begin
-        mshr_waiter_valid_q[w_mshr_q] <= 1'b1;
-        mshr_waiter_id_q[w_mshr_q]    <= w_id_q;
+        mshr_waiter_valid_q[w_mshr_q][w_seat] <= 1'b1;
+        mshr_waiter_id_q[w_mshr_q][w_seat]    <= w_id_q;
       end
     end
   end
@@ -1968,7 +2007,7 @@ module frost_cache #(
                    dq_valid_q, dq_is_wb_q, dq_id_q);
         for (int i = 0; i < int'(NUM_MSHR); i++)
         $display(
-            "  mshr[%0d]: state=%0d line=%h id=%0d write=%0d wb_wait=%b waiter=%0d",
+            "  mshr[%0d]: state=%0d line=%h id=%0d write=%0d wb_wait=%b waiters=%b",
             i,
             mshr_state_q[i],
             mshr_line_q[i],

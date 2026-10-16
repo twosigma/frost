@@ -4,8 +4,9 @@ This is FROST's cached memory tier: one direct-mapped, write-back,
 non-blocking line cache used three times (L1D, L1I, and L2), the arbiters
 that merge line ports, two sequencers that make DMA and page-table walks
 coherent with the L1D, an adapter between the L1s' 32-byte lines and the
-L2's 64-byte lines, the bridge to the DDR controller's AXI port, and a
-simulation-only DDR model. Every block speaks one tagged line protocol, so
+L2's 64-byte lines, a prefetcher that reads ahead of L1D miss streams into
+the L2, the bridge to the DDR controller's AXI port, and a simulation-only
+DDR model. Every block speaks one tagged line protocol, so
 levels stack freely and each level can have several transactions in flight.
 Coherence is handled in hardware: DMA and page-table walks see data that is
 still dirty in the L1D, and software never flushes a cache for them.
@@ -13,11 +14,12 @@ still dirty in the L1D, and software never flushes a cache for them.
 | File | Role |
 |------|------|
 | `frost_cache.sv` | The line cache, used at every level; the L1D instance also takes per-line coherence probes |
-| `frost_cache_hierarchy.sv` | L1D, walker, L1I, and DMA ports over the arbiter tree, the two coherence sequencers sharing one probe path into the L1D, the L2, and `fence.i` sequencing |
+| `frost_cache_hierarchy.sv` | L1D, walker, L1I, and DMA ports and the stream prefetcher over the arbiter tree, the two coherence sequencers sharing one probe path into the L1D, the L2, and `fence.i` sequencing |
 | `line_size_adapter.sv` | Places each L1-line request in its sector of a wider L2 line and returns that sector of the response; an outstanding-transaction table holds each request's sector by id |
 | `line_port_arbiter.sv` | N:1 tagged arbiter: fixed priority by port index, optional starvation bound, port index prefixed to ids |
 | `dma_coherence_sequencer.sv` | Takes each DMA request through the L1D, and each DMA write through the load queue as well, before it reaches the L2 |
 | `walker_coherence_sequencer.sv` | Probes the L1D before each page-table walk read reaches the L2; one read in flight |
+| `l2_stream_prefetcher.sv` | Watches the L1D's misses and reads the lines ahead of ascending streams into the L2, never past the page of the last miss |
 | `line_port_axi_bridge.sv` | Line port to single-beat AXI4 master; line ids become AXI ids |
 | `axi_behavioral_memory.sv` | Simulation-only DDR model: concurrent transactions, latency and jitter settings, optional out-of-order completion |
 | `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, and writeback pulses, hit-under-miss, the outstanding-miss count, and two stall classes |
@@ -76,15 +78,15 @@ must take no action on a request until it fires.
 `frost_cache` is one module for every level. The instances differ in size,
 line size, storage, and slot counts:
 
-| Instance | Size | Line | Tags | Data | Miss slots | Writeback slots | Probe slots |
-|----------|------|------|------|------|------------|-----------------|-------------|
-| L1D | 128 KiB | 32 B | Block RAM, 1-cycle read | Block RAM | 8 | 2 | 4 |
-| L1I | 16 KiB | 32 B | Block RAM, 1-cycle read | Block RAM | 2 | 2 (unused) | 0 |
-| L2 | 2 MiB | 64 B | UltraRAM, four entries per 72-bit row, 3-cycle read | UltraRAM | 4 | 2 | 0 |
+| Instance | Size | Line | Tags | Data | Miss slots | Waiter seats per miss slot | Writeback slots | Probe slots |
+|----------|------|------|------|------|------------|----------------------------|-----------------|-------------|
+| L1D | 128 KiB | 32 B | Block RAM, 1-cycle read | Block RAM | 8 | 1 | 2 | 4 |
+| L1I | 16 KiB | 32 B | Block RAM, 1-cycle read | Block RAM | 2 | 1 | 2 (unused) | 0 |
+| L2 | 2 MiB | 64 B | UltraRAM, four entries per 72-bit row, 3-cycle read | UltraRAM | 4 | 2 | 2 | 0 |
 
 The L1D's miss slots are the hierarchy's `L1D_NUM_MSHR` parameter and the
-L2's slot counts its `L2_NUM_MSHR` and `L2_NUM_WB` parameters, which
-`cpu_and_mem` sets as in the table. Its downstream ids, `L2_DOWN_ID_BITS` wide (5 on the X3), hold up
+L2's counts its `L2_NUM_MSHR`, `L2_NUM_WAITERS`, and `L2_NUM_WB` parameters,
+which `cpu_and_mem` sets as in the table. Its downstream ids, `L2_DOWN_ID_BITS` wide (5 on the X3), hold up
 to 16 slots of each type.
 
 ### Requests and misses
@@ -104,9 +106,10 @@ stage the next cycle.
   bytes no store has written, including a store that merges in the same
   cycle the fill arrives.
 - A write to a line whose write-allocate slot is pending merges into that
-  slot, and a read of a line with a pending miss takes the slot's single
-  waiter seat. Anything else aimed at an index in transition waits and reads
-  its tag again before deciding.
+  slot, and a read of a line with a pending miss takes one of the slot's
+  `NUM_WAITERS` waiter seats: one in the L1s, two in the L2 beside the
+  stream prefetcher. Anything else aimed at an index in transition waits and
+  reads its tag again before deciding.
 
 Writes, hits and misses alike, are acknowledged once the cache has ordered
 them, so a store miss does not wait for its fill. Hits proceed past pending
@@ -209,9 +212,10 @@ dirty lines, with the same functional effect.
 
 ## The hierarchy
 
-`frost_cache_hierarchy` puts the L1D, walker, L1I, and DMA ports over one
-arbiter tree into the L2, through the line-size adapter. The L2 is the
-ordering point for all traffic below the L1s and drives the AXI bridge.
+`frost_cache_hierarchy` puts the L1D, walker, L1I, and DMA ports and the
+stream prefetcher over one arbiter tree into the L2, through the line-size
+adapter. The L2 is the ordering point for all traffic below the L1s and
+drives the AXI bridge.
 
 [![FROST cache hierarchy: L1D, walker, L1I and DMA arbitration through the line-size adapter into the L2 and DDR, each of the walker and DMA ports entering through its own coherence sequencer](../../../../docs/diagrams/cache-hierarchy.svg)](../../../../docs/diagrams/cache-hierarchy.svg)
 
@@ -219,11 +223,13 @@ The diagram shows the X3 configuration. Arrows follow requests; responses
 return by id prefix.
 
 The arbiter tree is a 2:1 `line_port_arbiter` (walker over L1I) under a 3:1
-one (L1D over that pair over DMA). Both are combinational pass-throughs, so
-the tree acts as one 4:1 fixed-priority arbiter ordered L1D, walker, L1I,
-DMA. The order follows urgency: L1D misses stall committed work, a walk
-unblocks a load that is stalling commit, fetch runs ahead through its
-buffer, and DMA drains a device's buffers.
+one (L1D over that pair over DMA). With the stream prefetcher
+(`L2_PREFETCH`), a second 2:1 arbiter (DMA over the prefetcher) takes the
+DMA port's place under the top one. All are combinational pass-throughs, so
+the tree acts as one fixed-priority arbiter ordered L1D, walker, L1I, DMA,
+prefetcher. The order follows urgency: L1D misses stall committed work, a
+walk unblocks a load that is stalling commit, fetch runs ahead through its
+buffer, DMA drains a device's buffers, and a prefetch only reads ahead.
 
 There is no grant lock. A request flows whenever the level below is ready,
 so an L1I fill, a walk, an L1D transaction, and a DMA transaction can all be
@@ -245,14 +251,16 @@ prefix-free code in `UP_ID_BITS + 2` bits:
 | L1D | `{2'b00, id}` | 4 |
 | Walker | `{2'b01, 1'b0, id}` | 3 |
 | L1I | `{2'b01, 1'b1, id}` | 3 |
-| DMA port | `{2'b10, id}` | 4 |
+| DMA port | `{2'b10, id}`; with the prefetcher `{2'b10, 1'b0, id}` | 4; with the prefetcher 3 |
+| Prefetcher | `{2'b10, 1'b1, id}` | 3 |
 
 The L2 sees those 6 bits. Its own downstream requests carry `{type, slot}`
 ids, `L2_DOWN_ID_BITS` wide: 5 on the X3, the AXI id width its DDR block
 design provides (`fpga/build/x3_ddr_bd.tcl`). The L1D spends one of its 4
 bits on the fill/writeback type and 3 on its 8 miss slots. The L1I has 2 miss
 slots, all its master, the two-line fetch buffer, ever uses. The walker keeps
-one walk in flight and uses id 0.
+one walk in flight and uses id 0. The NIC uses 2 bits of the DMA port's ids,
+and the prefetcher's 4 reads in flight use 2 of its 3.
 
 The bridge drops any response whose id is not in flight. That is how a
 transaction interrupted by an image-load CPU reset drains harmlessly on
@@ -318,10 +326,9 @@ With several L1 lines in one, the L2 works as follows:
 
 - Requests to any sector of an L2 line are applied in acceptance order, a
   stronger order than the L1s need.
-- Two reads of a missing line share one fill, whether they read one sector
-  or two: the first takes the miss slot and the second its single waiter
-  seat. A third read of the line waits in the decision stage until the fill
-  installs.
+- Reads of a missing line share one fill, whether they read one sector or
+  two: the first takes the miss slot and each later one a waiter seat. A
+  read past the seats waits in the decision stage until the fill installs.
 - A write never covers a whole L2 line. One that misses, an L1D eviction of
   a line the L2 has lost or a DMA write to a line it lacks, fetches the line
   and merges its bytes into the fill. A write to another sector of the line
@@ -340,6 +347,32 @@ that reaches DDR below the L2 sees neither cache level. AMOs, LR, and SC
 execute in the load queue, on low BRAM and cached DDR, and reach the
 hierarchy as ordinary reads and writes. An atomic to any other address
 faults.
+
+## The stream prefetcher
+
+`l2_stream_prefetcher` reads ahead of ascending L1D miss streams into the L2.
+`cpu_and_mem` turns it on (`L2_PREFETCH`); 0 removes it. It watches the
+L1D's read requests as the top arbiter takes them, which are its misses,
+store misses included. A table of 4 streams holds the last L2 line each
+stream missed on. A miss on the line after a stream's confirms the stream
+and advances it, a miss on its own line leaves it, and any other miss
+replaces a stream in rotation. For each confirmed stream the prefetcher
+reads the lines after its last miss, up to `L2_PREFETCH_DISTANCE` (8) lines
+ahead and never past the 4 KiB page of that miss, so it reads only memory
+that a demand access in the same page showed to exist.
+
+The reads are ordinary line reads on the prefetcher's side of the DMA port,
+at most `L2_PREFETCH_INFLIGHT` (4) outstanding, and their responses only
+free the prefetcher's ids: the point is the L2 fill. A demand read that
+arrives while its line's prefetch is pending meets it in the L2's miss slot,
+where the prefetch is the primary request. The L1D reads both halves of the
+line, so the L2's slots have two waiter seats (`L2_NUM_WAITERS`); with one,
+the second half would wait in the decision stage, and all L2 traffic behind
+it, until the fill.
+
+[`ddr_bench`](../../../../sw/apps/ddr_bench/) times memory-bound kernels on
+cold DDR regions, with the L2's slot-full and conflict stall counts per
+kernel.
 
 ## The page-table walker port
 
@@ -466,9 +499,12 @@ may take several cycles to answer.
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, and dirty-L1D walker coherence |
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, writeback and fill progress, and `fence.i` |
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |
-| `frost_cache_l2_lines*` | 64-byte L2 lines: both halves of a line sharing one fill and a third reader waiting, write misses that fill and merge in either half, a writeback waiting behind its line's read fill, halves combining in one line, whole-line writebacks, DMA writes changing only their half, L2 ordering across halves, a refill waiting for its line's writeback, `fence.i` into lines the L2 lacks, reset with misses in flight, and every port's misses at once; every AXI transfer checked as one whole-line beat |
+| `frost_cache_l2_lines*` | 64-byte L2 lines: both halves of a line sharing one fill and a reader past the waiter seats waiting, write misses that fill and merge in either half, a writeback waiting behind its line's read fill, halves combining in one line, whole-line writebacks, DMA writes changing only their half, L2 ordering across halves, a refill waiting for its line's writeback, `fence.i` into lines the L2 lacks, reset with misses in flight, and every port's misses at once; every AXI transfer checked as one whole-line beat |
 | `*_equal_lines` | The data-integrity, concurrency, and DMA suites with 32-byte L2 lines, equal to the L1s', as a control; also DDR load and store, fetch, atomic, DMA, page-table-walk, and `fence.i` programs on the whole system with 32-byte L2 lines and a 256-bit DDR port |
 | `*_16x4` | The L2-line, concurrency, and DMA suites with 16 L2 miss slots and 4 writeback slots |
+| `frost_cache_l2_lines_waiters2` | The L2-line suite with two waiter seats per L2 miss slot |
+| `*_prefetch` | The concurrency and DMA suites with the CPU's ids, L1D miss slots, and L2 waiter seats, and the stream prefetcher reading ahead |
+| `l2_stream_prefetcher` | Stream confirmation, read distance, page bounds, and the in-flight cap |
 | `line_port_arbiter*` | Arbitration and tagged responses |
 | `line_port_axi_bridge` | The bridge across a CPU reset against a slave that keeps running: held beats, AW/W pairing, dropped stale responses, and a reused id held back until the stale response for it has arrived; and across the slave's own reset, which withdraws the held beats |
 | `fence_speed_slow`, `fence_speed_fast` | Maintenance latency; CLI-only |

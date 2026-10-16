@@ -358,7 +358,7 @@ deltas are unaffected.
 | 111 | 5 | `L1D_HIT` | event | An L1D access hits at the tag stage |
 | 112 | 6 | `L1D_MISS` | event | An L1D access misses at the tag stage |
 | 113 | 7 | `L1D_WRITEBACK` | event | A counted miss evicts a dirty L1D victim (counted at the tag decision, not when the writeback leaves) |
-| 114 | 8 | `L2_ACCESS` | event | A request fires at the L2 upstream port from the L1s, the page-table walker, or the DMA sequencer: L1I fills and prefetches, L1D fills, walker reads, DMA traffic, and dirty-victim writebacks |
+| 114 | 8 | `L2_ACCESS` | event | A request fires at the L2 upstream port from the L1s, the page-table walker, the DMA sequencer, or the stream prefetcher: L1I fills and prefetches, L1D fills, walker reads, DMA traffic, dirty-victim writebacks, and the stream prefetcher's reads |
 | 115 | 9 | `L2_HIT` | event | An L2 access hits at the tag stage |
 | 116 | 10 | `L2_MISS` | event | An L2 access misses at the tag stage |
 | 117 | 11 | `L2_WRITEBACK` | event | A counted miss evicts a dirty L2 victim (counted at the tag decision, not when the writeback leaves) |

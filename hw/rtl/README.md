@@ -118,8 +118,9 @@ and from DDR as single 512-bit AXI transfers. With `L2_LINE_BYTES=32` the L2
 uses the L1s' line size and the DDR port is 256 bits wide. Cached accesses
 have variable latency, and L1 hits proceed while misses are pending. The L1D,
 the page-table walker, the L1I, and DMA share the hierarchy in that priority
-order, with a bound on DMA starvation. DMA and page-table walks see dirty L1D
-data without software cache maintenance. Code fetched from DDR passes through
+order, with a bound on DMA starvation, and below them a stream prefetcher
+reads ahead of ascending L1D miss streams into the L2. DMA and page-table
+walks see dirty L1D data without software cache maintenance. Code fetched from DDR passes through
 a buffer of two active lines and six victim lines in front of the L1I. See
 the [cache guide](lib/cache/README.md).
 
@@ -308,6 +309,7 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `CACHED_SIZE_BYTES` | `32'h4000_0000` | Cached-region size (1 GiB) |
 | `frost.sv` | `ENABLE_CACHED_TIER` | `0` | 1 builds the cache hierarchy; simulation sets it with `-G`, and boards with a DDR controller pass 1 |
 | `frost.sv` | `L1_CACHE_BYTES` / `L1I_CACHE_BYTES` / `L2_CACHE_BYTES` | `128 KiB` / `16 KiB` / `2 MiB` | L1D, L1I, and L2 sizes |
+| `frost.sv` | `L2_PREFETCH` | `1` | 1 builds the L2 stream prefetcher |
 | `frost.sv` | `USE_BEHAVIORAL_DDR` | `1` | 1 ends the tier in the simulation DDR model; 0 exports the bridge's AXI master on `o_ddr_axi_*` |
 | `frost.sv` | `DDR_MODEL_BYTES` / `DDR_MODEL_LATENCY` | `64 MiB` / `30` | DDR model size and access latency in cycles (simulation) |
 | `frost.sv` | `DDR_MODEL_LATENCY_JITTER` / `DDR_MODEL_REORDER` | `0` / `0` | DDR model per-transaction latency jitter, and out-of-order completion across ids (simulation); `FROST_DDR_MODEL_SEED` draws these and the latency for a test run ([tests/README.md](../../tests/README.md#environment-and-output)) |

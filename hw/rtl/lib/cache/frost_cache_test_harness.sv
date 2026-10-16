@@ -40,6 +40,10 @@ module frost_cache_test_harness #(
     parameter int unsigned L2_NUM_MSHR = 4,
     parameter int unsigned L2_NUM_WB = 2,
     parameter int unsigned L2_DOWN_ID_BITS = 5,
+    parameter int unsigned L2_NUM_WAITERS = 1,
+    parameter int unsigned L2_PREFETCH = 0,
+    parameter int unsigned L2_PREFETCH_DISTANCE = 8,
+    parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
     parameter logic [31:0] BASE_ADDR = 32'h8000_0000,
     // Room for every cache bench's per-test regions, which stay disjoint.
     parameter int unsigned MEM_BYTES = 16 * 1024 * 1024,
@@ -151,6 +155,10 @@ module frost_cache_test_harness #(
       .L2_NUM_MSHR(L2_NUM_MSHR),
       .L2_NUM_WB(L2_NUM_WB),
       .L2_DOWN_ID_BITS(L2_DOWN_ID_BITS),
+      .L2_NUM_WAITERS(L2_NUM_WAITERS),
+      .L2_PREFETCH(L2_PREFETCH),
+      .L2_PREFETCH_DISTANCE(L2_PREFETCH_DISTANCE),
+      .L2_PREFETCH_INFLIGHT(L2_PREFETCH_INFLIGHT),
       .SIM_FAST_MAINT(SIM_FAST_MAINT),
       .NUM_DMA_LOCK(NUM_DMA_LOCK),
       .DMA_STARVATION_LIMIT(DMA_STARVATION_LIMIT)

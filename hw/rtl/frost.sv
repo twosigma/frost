@@ -51,6 +51,12 @@ module frost #(
     parameter int unsigned L1D_NUM_MSHR = 8,
     parameter int unsigned L2_NUM_MSHR = 4,
     parameter int unsigned L2_NUM_WB = 2,
+    // Read waiter seats per L2 miss slot, and the L2 stream prefetcher (see
+    // frost_cache_hierarchy): 0 turns the prefetcher off.
+    parameter int unsigned L2_NUM_WAITERS = 2,
+    parameter int unsigned L2_PREFETCH = 1,
+    parameter int unsigned L2_PREFETCH_DISTANCE = 8,
+    parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
     // L2 line size: 64 bytes, or 32 with no line-size adapter (see
     // cpu_and_mem). One L2 line is one beat of the DDR AXI port.
     parameter int unsigned L2_LINE_BYTES = 64,
@@ -264,6 +270,10 @@ module frost #(
       .L2_CACHE_BYTES(L2_CACHE_BYTES),
       .L1D_NUM_MSHR(L1D_NUM_MSHR),
       .L2_NUM_MSHR(L2_NUM_MSHR),
+      .L2_NUM_WAITERS(L2_NUM_WAITERS),
+      .L2_PREFETCH(L2_PREFETCH),
+      .L2_PREFETCH_DISTANCE(L2_PREFETCH_DISTANCE),
+      .L2_PREFETCH_INFLIGHT(L2_PREFETCH_INFLIGHT),
       .L2_NUM_WB(L2_NUM_WB),
       .L2_LINE_BYTES(L2_LINE_BYTES),
       .SIM_FAST_MAINT(SIM_FAST_MAINT),

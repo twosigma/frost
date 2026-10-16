@@ -40,6 +40,14 @@ module cpu_and_mem #(
     parameter int unsigned L1D_NUM_MSHR = 8,
     parameter int unsigned L2_NUM_MSHR = 4,
     parameter int unsigned L2_NUM_WB = 2,
+    // Read waiter seats per L2 miss slot (see frost_cache_hierarchy). A
+    // stream prefetch holds its slot's primary seat, so the L1D's reads of
+    // both halves of the line need two.
+    parameter int unsigned L2_NUM_WAITERS = 2,
+    // The L2 stream prefetcher (see frost_cache_hierarchy): 0 turns it off.
+    parameter int unsigned L2_PREFETCH = 1,
+    parameter int unsigned L2_PREFETCH_DISTANCE = 8,
+    parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
     // L2 line size: 64 bytes, as on the X3, or 32, the L1s' line size, which
     // leaves out the line-size adapter. Every DDR AXI transfer carries one L2
     // line in a single beat.
@@ -1675,7 +1683,7 @@ module cpu_and_mem #(
     // (port 0, priority) and the DMA test engine (port 1): each presents
     // 2-bit ids, and the arbiter prefixes the port bit. Those 3 bits fill the
     // low bits of the port's LineIdBits-bit ids, and responses come back with
-    // the high bit clear.
+    // the high bit clear, which the hierarchy's stream prefetcher needs.
     localparam int unsigned DmaAgentIdBits = 2;
     logic dma_req_valid, dma_req_ready, dma_req_write;
     logic [31:0] dma_req_addr;
@@ -1761,6 +1769,10 @@ module cpu_and_mem #(
         .L2_CACHE_BYTES(L2_CACHE_BYTES),
         .L1D_NUM_MSHR(L1D_NUM_MSHR),
         .L2_NUM_MSHR(L2_NUM_MSHR),
+        .L2_NUM_WAITERS(L2_NUM_WAITERS),
+        .L2_PREFETCH(L2_PREFETCH),
+        .L2_PREFETCH_DISTANCE(L2_PREFETCH_DISTANCE),
+        .L2_PREFETCH_INFLIGHT(L2_PREFETCH_INFLIGHT),
         .L2_NUM_WB(L2_NUM_WB),
         .L2_DOWN_ID_BITS(DdrAxiIdBits),
         .SIM_FAST_MAINT(SIM_FAST_MAINT),
