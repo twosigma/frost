@@ -1354,9 +1354,10 @@ package riscv_pkg;
   localparam int unsigned MemStrbBits = MemDataBits / 8;
 
   // Maximum cached loads in flight, tagged by slot ID through the router
-  // and adapter. Matches the L1D miss-status slot count.
-  localparam int unsigned CachedLoadSlots = 4;
-  localparam int unsigned CachedLoadSlotBits = 2;
+  // and adapter. Matches the L1D miss-status slot count, so every load in
+  // flight can miss on its own line.
+  localparam int unsigned CachedLoadSlots = 8;
+  localparam int unsigned CachedLoadSlotBits = 3;
 
   // Entries in the load queue's direct-mapped L0 cache, eight bytes each.
   // frost's L0_CACHE_DEPTH defaults to this and changes the L0's capacity

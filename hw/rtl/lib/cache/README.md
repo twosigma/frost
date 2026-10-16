@@ -78,12 +78,13 @@ line size, storage, and slot counts:
 
 | Instance | Size | Line | Tags | Data | Miss slots | Writeback slots | Probe slots |
 |----------|------|------|------|------|------------|-----------------|-------------|
-| L1D | 128 KiB | 32 B | Block RAM, 1-cycle read | Block RAM | 4 | 2 | 4 |
+| L1D | 128 KiB | 32 B | Block RAM, 1-cycle read | Block RAM | 8 | 2 | 4 |
 | L1I | 16 KiB | 32 B | Block RAM, 1-cycle read | Block RAM | 2 | 2 (unused) | 0 |
 | L2 | 2 MiB | 64 B | UltraRAM, four entries per 72-bit row, 3-cycle read | UltraRAM | 4 | 2 | 0 |
 
-The L2's slot counts are the hierarchy's `L2_NUM_MSHR` and `L2_NUM_WB`
-parameters. Its downstream ids, `L2_DOWN_ID_BITS` wide (5 on the X3), hold up
+The L1D's miss slots are the hierarchy's `L1D_NUM_MSHR` parameter and the
+L2's slot counts its `L2_NUM_MSHR` and `L2_NUM_WB` parameters, which
+`cpu_and_mem` sets as in the table. Its downstream ids, `L2_DOWN_ID_BITS` wide (5 on the X3), hold up
 to 16 slots of each type.
 
 ### Requests and misses
@@ -239,20 +240,19 @@ Each arbiter prefixes its port index to the ids it forwards, so ids stay
 unique across all upstream masters without a global plan. The tree yields a
 prefix-free code in `UP_ID_BITS + 2` bits:
 
-| Master | Id below the top arbiter | Local id bits (`UP_ID_BITS=3`) |
+| Master | Id below the top arbiter | Local id bits (`UP_ID_BITS=4`, as `cpu_and_mem` sets) |
 |--------|--------------------------|--------------------------------|
-| L1D | `{2'b00, id}` | 3 |
-| Walker | `{2'b01, 1'b0, id}` | 2 |
-| L1I | `{2'b01, 1'b1, id}` | 2 |
-| DMA port | `{2'b10, id}` | 3 |
+| L1D | `{2'b00, id}` | 4 |
+| Walker | `{2'b01, 1'b0, id}` | 3 |
+| L1I | `{2'b01, 1'b1, id}` | 3 |
+| DMA port | `{2'b10, id}` | 4 |
 
-The L2 sees those 5 bits. Its own downstream requests carry `{type, slot}`
+The L2 sees those 6 bits. Its own downstream requests carry `{type, slot}`
 ids, `L2_DOWN_ID_BITS` wide: 5 on the X3, the AXI id width its DDR block
-design provides (`fpga/build/x3_ddr_bd.tcl`). The L1I spends one of its 2
-bits on the
-fill/writeback type, leaving 2 miss slots, which is all its master, the
-two-line fetch buffer, ever uses. The walker keeps one walk in flight and
-uses id 0.
+design provides (`fpga/build/x3_ddr_bd.tcl`). The L1D spends one of its 4
+bits on the fill/writeback type and 3 on its 8 miss slots. The L1I has 2 miss
+slots, all its master, the two-line fetch buffer, ever uses. The walker keeps
+one walk in flight and uses id 0.
 
 The bridge drops any response whose id is not in flight. That is how a
 transaction interrupted by an image-load CPU reset drains harmlessly on

@@ -103,6 +103,7 @@ module cpu_tb
   logic [riscv_pkg::MemDataBits-1:0] o_data_mem_cached_wr_data;
   logic o_data_mem_cached_read_enable;
   logic [riscv_pkg::CachedLoadSlotBits-1:0] o_data_mem_cached_read_id;
+  logic o_data_mem_cached_read_no_merge;
   logic [riscv_pkg::MemDataBits-1:0] i_cached_read_data;
   logic [riscv_pkg::CachedLoadSlotBits-1:0] i_cached_read_id;
   logic i_cached_read_valid;

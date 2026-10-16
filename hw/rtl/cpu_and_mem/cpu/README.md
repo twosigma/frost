@@ -50,7 +50,7 @@ walker (`mmu/ptw`), and these glue submodules from [`cpu_ooo/`](cpu_ooo/):
 | `tage_history` | `branch_recovery/` | The tagged direction predictor's path history and its restores, the saved lookup of each conditional branch, and training at commit |
 | `ex_comb_synthesizer` | `recovery/` | Builds IF's redirect, BTB-update, and RAS-restore bus from early recovery, commit-time recovery, and correct-branch commits, in that priority |
 | `data_mem_request_router` | `memory_if/` | Data-port arbitration (SQ writes, then AMO writes, then LQ reads), staged device reads, tagged completion for the cached tier; see the [data-tier bus rules](../../README.md#data-tier-bus-contract) |
-| `cached_tier_adapter` | `memory_if/` | Converts 64-bit data beats to 32-byte cache lines; instantiated in `cpu_and_mem.sv` next to the cache hierarchy |
+| `cached_tier_adapter` | `memory_if/` | Converts 64-bit data beats to 32-byte cache lines, with one line request for the loads of a line; instantiated in `cpu_and_mem.sv` next to the cache hierarchy |
 | `perf_counter_aggregator` | `perf/` | Top-level and cache profiling counters and the counter read mux, present only with `PERF_COUNTERS=1` ([counter reference](cpu_ooo/perf/README.md)) |
 
 `cpu_ooo.sv` itself keeps the logic that ties these blocks together:

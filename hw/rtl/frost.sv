@@ -46,7 +46,9 @@ module frost #(
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
-    // L2 miss-status and writeback slots, up to 16 of each.
+    // L1D miss-status slots, up to 8, and L2 miss-status and writeback slots,
+    // up to 16 of each.
+    parameter int unsigned L1D_NUM_MSHR = 8,
     parameter int unsigned L2_NUM_MSHR = 4,
     parameter int unsigned L2_NUM_WB = 2,
     // L2 line size: 64 bytes, or 32 with no line-size adapter (see
@@ -260,6 +262,7 @@ module frost #(
       .L1_CACHE_BYTES(L1_CACHE_BYTES),
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
       .L2_CACHE_BYTES(L2_CACHE_BYTES),
+      .L1D_NUM_MSHR(L1D_NUM_MSHR),
       .L2_NUM_MSHR(L2_NUM_MSHR),
       .L2_NUM_WB(L2_NUM_WB),
       .L2_LINE_BYTES(L2_LINE_BYTES),

@@ -52,6 +52,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_lq_mem_read_en.value = 0
     dut.i_lq_mem_read_addr.value = 0
     dut.i_lq_mem_read_id.value = 0
+    dut.i_lq_mem_read_no_merge.value = 0
     dut.i_lq_mem_addr_valid.value = 0
     dut.i_data_mem_rd_data.value = 0
     dut.i_cached_read_data.value = 0
@@ -223,12 +224,16 @@ async def test_cached_read_handshake(dut: Any) -> None:
     dut.i_lq_mem_read_en.value = 1
     dut.i_lq_mem_read_addr.value = CACHED_ADDR
     dut.i_lq_mem_read_id.value = 2
+    dut.i_lq_mem_read_no_merge.value = 1
     dut.i_lq_mem_addr_valid.value = 1
     await _settle()
     assert int(dut.o_data_mem_read_enable.value) == 1
     assert int(dut.o_data_mem_cached_read_enable.value) == 1
     assert int(dut.o_data_mem_cached_read_id.value) == 2, (
         "slot id not forwarded to the cached tier"
+    )
+    assert int(dut.o_data_mem_cached_read_no_merge.value) == 1, (
+        "no-merge bit not forwarded to the cached tier"
     )
     assert int(dut.o_cached_read_ready.value) == 1
     await _advance_cycle(dut)
@@ -258,16 +263,17 @@ async def test_cached_read_handshake(dut: Any) -> None:
 
 @cocotb.test()
 async def test_parked_cached_read_keeps_its_slot_id(dut: Any) -> None:
-    """A cached load parked behind a cached store keeps its own id at the adapter.
+    """A cached load parked behind a cached store keeps its id and no-merge bit.
 
     While the request is held, the load queue may already present a different
-    slot id live; the held id must win on the accept cycle.
+    slot id and no-merge bit live; the held ones must win on the accept cycle.
     """
     await _setup_test(dut)
     dut.i_cached_write_inflight.value = 1
     dut.i_lq_mem_read_en.value = 1
     dut.i_lq_mem_read_addr.value = CACHED_ADDR
     dut.i_lq_mem_read_id.value = 3
+    dut.i_lq_mem_read_no_merge.value = 1
     dut.i_lq_mem_addr_valid.value = 1
     await _settle()
     assert int(dut.o_data_mem_cached_read_enable.value) == 0, (
@@ -277,6 +283,7 @@ async def test_parked_cached_read_keeps_its_slot_id(dut: Any) -> None:
     dut.i_lq_mem_read_en.value = 0
     dut.i_lq_mem_addr_valid.value = 0
     dut.i_lq_mem_read_id.value = 0  # the LQ's live (idle) slot presentation
+    dut.i_lq_mem_read_no_merge.value = 0
     await _settle()
     assert int(dut.o_lq_mem_request_valid.value) == 1, "request not parked"
     assert int(dut.o_data_mem_cached_read_enable.value) == 0
@@ -285,6 +292,9 @@ async def test_parked_cached_read_keeps_its_slot_id(dut: Any) -> None:
     await _settle()
     assert int(dut.o_data_mem_cached_read_enable.value) == 1
     assert int(dut.o_data_mem_cached_read_id.value) == 3, "parked read lost its slot id"
+    assert int(dut.o_data_mem_cached_read_no_merge.value) == 1, (
+        "parked read lost its no-merge bit"
+    )
     await _advance_cycle(dut)
     await _settle()
     assert int(dut.o_lq_mem_request_valid.value) == 0

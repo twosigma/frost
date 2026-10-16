@@ -139,7 +139,7 @@ point, and so younger than the load.
 |------|-----------|----------|-----------|
 | Low BRAM | `0x0000_0000`, 256 KiB | The cycle after launch | One; the next launch can overlap its response |
 | Device | `addr[31:30] == 2'b01` | The cycle after the router accepts it, at least four cycles after handoff | One, and it blocks every other handoff |
-| Cached (DDR) | `CACHED_BASE`, `CACHED_SIZE_BYTES` | Variable: an L1D hit after a few cycles, a miss after a fill round trip | Up to four (`riscv_pkg::CachedLoadSlots`), answered in any order |
+| Cached (DDR) | `CACHED_BASE`, `CACHED_SIZE_BYTES` | Variable: an L1D hit after a few cycles, a miss after a fill round trip | Up to eight (`riscv_pkg::CachedLoadSlots`), answered in any order |
 
 Every response is one aligned 64-bit beat (see the
 [memory map](../../../../README.md#memory-map) and the
@@ -147,8 +147,10 @@ Every response is one aligned 64-bit beat (see the
 Low-BRAM and device loads share one in-flight tracker (`mem_outstanding` and
 the `fast_*` registers); each cached load holds a `cs_*` slot whose id travels
 with the request (`o_mem_read_id`) and the response (`i_mem_read_is_cached`,
-`i_mem_read_id`). A launch copies the load's attributes into its tracker or
-slot, so the response path does not read the entry's fields. While all four slots are busy, or for a
+`i_mem_read_id`). An LR or AMO also sets `o_mem_read_no_merge`, so the
+cached-tier adapter never serves it from another load's line request. A
+launch copies the load's attributes into its tracker or slot, so the response
+path does not read the entry's fields. While every slot is busy, or for a
 cycle after the router held a cached response behind a fast one
 (`i_cached_resp_held`), a registered hold stops every launch, low-BRAM and
 device ones included; L0 hits and forwards continue. The one-cycle hold keeps
