@@ -324,11 +324,16 @@ pinned Docker image, except the ASIC flow, which runs in its own image:
 | Architecture compliance | BRAM and DDR; excludes Zifencei on BRAM and F/D on DDR; F and D run in BRAM shards |
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both |
 | Torture | BRAM, DDR, and paged DDR |
-| TestRIG | The saved counterexamples, then new random sequences against Sail, from the engine's templates and from the A-extension generator |
+| TestRIG | Four jobs of new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests, synthesis, and formal verification |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with the large memories mocked, in two chained jobs |
 | Linux | Firmware and root filesystem build, and QEMU boot checks |
+
+Every job that simulates the whole SoC draws its own DDR model timing:
+the workflow sets `FROST_DDR_MODEL_SEED` from the run ID, the job, and its
+matrix index. A failing test's output names the draw, and rerunning the job
+repeats it.
 
 The workflow has the exact job filters. The named real-program shards select
 applications by name, and the "Runtime and other" shard runs every

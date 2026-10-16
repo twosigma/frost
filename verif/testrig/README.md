@@ -52,6 +52,11 @@ comments; `--trace` replays it, and editing the words is the quickest way to
 narrow a bug down. `FROST_RVFI_DII_DEBUG=1` logs every record the harness
 collects, preamble included.
 
+CI runs four TestRIG jobs in parallel. Each draws its own 100 sequences per
+template and its own 200 A-extension tests, and each simulates the SoC with
+its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
+[tests/README.md](../../tests/README.md#environment-and-output)).
+
 | Option | Default | Meaning |
 |--------|---------|---------|
 | `--arch` | `rv64imfdcs_zicsr_zifencei` | Architecture the templates target |
@@ -210,8 +215,8 @@ picks one and prints it. They are written to `tests/testrig_logs/atomics/`.
 
 ## Saved counterexamples
 
-`traces/` holds sequences that once exposed a bug, one per file. CI replays
-all of them before its random run.
+`traces/` holds sequences that once exposed a bug, one per file. The first of
+CI's TestRIG jobs replays all of them before its random run.
 
 | Trace | Checks |
 |-------|--------|

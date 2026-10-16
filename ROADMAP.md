@@ -40,16 +40,15 @@ hardware regression, including Debian, passes on a VCU118.
 
 FROST is tested with formal proofs of individual modules, unit benches, full
 programs, the RISC-V architecture tests and riscv-tests, riscv-torture
-programs against Spike, TestRIG against the Sail model, and Debian on the X3.
-Next:
+programs against Spike, TestRIG against the Sail model in four parallel CI
+jobs, and Debian on the X3. Every CI job that simulates the whole SoC draws
+its own DDR model latency, jitter, and completion order from a seed that a
+failing test's output names.
 
-1. Coverage. Merge Verilator line and toggle coverage across the CI runs and
-   add cover points for microarchitectural corner cases, such as a DMA write
-   to a line that an unretired load has read, to show what no test reaches.
-2. More random testing in every CI run, on pull requests and merges alike.
-   Run more TestRIG tests per template, split across parallel jobs so CI
-   takes no longer, and run the cached-DDR program tests with random DDR
-   latency, logging the seed.
+Next is coverage: merge Verilator line and toggle coverage across the CI
+runs and add cover points for microarchitectural corner cases, such as a DMA
+write to a line that an unretired load has read, to show what no test
+reaches.
 
 ## ASIC-ready RTL
 

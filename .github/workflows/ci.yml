@@ -204,6 +204,10 @@ jobs:
         env:
           FROST_COCOTB_MEM_CONFIG: ${{ matrix.mem_config }}
           FROST_REQUIRE_OPENOCD: "1"
+          # Each job draws its own DDR model timing from this seed
+          # (tests/README.md); a failing test's output names the draw, and a
+          # rerun of the job repeats it.
+          FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           PYTEST_MARK: ${{ matrix.shard.pytest_mark }}
           PYTEST_FILTER: ${{ matrix.shard.pytest_filter }}
         run: |
@@ -316,9 +320,12 @@ jobs:
           rm -f /tmp/frost-dev.tar
 
       - name: Run arch compliance tests (${{ matrix.extension }} / ${{ matrix.mem_config }}${{ matrix.shard && format(' / {0}', matrix.shard) || '' }})
+        env:
+          FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
         # Bound each F/D test to one hour; the runner default allows longer DDR runs.
         run: |
-          docker run --rm ${{ matrix.shard && '-e FROST_ARCH_SIM_TIMEOUT_SEC=3600' || '' }} \
+          docker run --rm -e FROST_DDR_MODEL_SEED \
+            ${{ matrix.shard && '-e FROST_ARCH_SIM_TIMEOUT_SEC=3600' || '' }} \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_arch_compliance.py --extensions ${{ matrix.extension }} \
               --mem-config ${{ matrix.mem_config }} \
@@ -365,8 +372,11 @@ jobs:
           rm -f /tmp/frost-dev.tar
 
       - name: Run riscv-tests ISA suite (${{ matrix.suite }} / ${{ matrix.mem_config }} / ${{ matrix.env }})
+        env:
+          FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
         run: |
-          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
+          docker run --rm -e FROST_DDR_MODEL_SEED \
+            -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_tests.py --suites ${{ matrix.suite }} \
               --mem-config ${{ matrix.mem_config }} --env ${{ matrix.env }}
 
@@ -398,8 +408,11 @@ jobs:
           rm -f /tmp/frost-dev.tar
 
       - name: Run riscv-tests benchmark (${{ matrix.benchmark }} / ${{ matrix.mem_config }})
+        env:
+          FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
         run: |
-          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
+          docker run --rm -e FROST_DDR_MODEL_SEED \
+            -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_tests.py --benchmarks ${{ matrix.benchmark }} \
               --mem-config ${{ matrix.mem_config }}
 
@@ -434,25 +447,33 @@ jobs:
           rm -f /tmp/frost-dev.tar
 
       - name: Run riscv-torture tests (${{ matrix.mem_config }}${{ matrix.paged && ' / paged' || '' }})
+        env:
+          FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
         run: |
-          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
+          docker run --rm -e FROST_DDR_MODEL_SEED \
+            -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_torture.py --all \
               --mem-config ${{ matrix.mem_config }} ${{ matrix.paged && '--paged' || '' }}
 
   # TestRIG: QuickCheckVEngine runs instruction sequences on the Sail RISC-V
   # model and on the simulated SoC and compares every retired instruction
-  # (tests/test_testrig.py). The saved counterexamples replay first; then each
-  # run draws new random sequences from the engine's templates, and new
-  # A-extension tests from verif/testrig/atomics.py, whose seed the log
-  # prints. A mismatch is shrunk to a short counterexample in the uploaded
-  # artifact, which --trace replays.
+  # (tests/test_testrig.py). The first shard replays the saved counterexamples.
+  # Every shard then draws its own random sequences, 100 per template, from the
+  # engine's templates, and its own 200 A-extension tests from
+  # verif/testrig/atomics.py, whose seed the log prints. A mismatch is shrunk
+  # to a short counterexample in the uploaded artifact, which --trace replays.
   test-testrig:
-    name: TestRIG (FROST vs Sail)
+    name: TestRIG (FROST vs Sail / ${{ matrix.shard }}/4)
     runs-on: ubuntu-26.04
     needs: build-docker
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     env:
       FROST_SKIP_SUBMODULE_INIT: "1"
+      FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -469,6 +490,7 @@ jobs:
           rm -f /tmp/frost-dev.tar
 
       - name: Replay the saved TestRIG counterexamples
+        if: matrix.shard == 1
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --trace-dir verif/testrig/traces --continue-on-fail
@@ -476,7 +498,7 @@ jobs:
       - name: Compare FROST with Sail on random instruction sequences
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
-            python3 tests/test_testrig.py --continue-on-fail
+            python3 tests/test_testrig.py --tests 100 --continue-on-fail
 
       - name: Compare FROST with Sail on random A-extension sequences
         run: |
@@ -487,7 +509,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: testrig-results
+          name: testrig-results-${{ matrix.shard }}
           retention-days: 7
           if-no-files-found: ignore
           path: |
