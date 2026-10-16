@@ -50,6 +50,10 @@
 #define IRQ_COUNT (NORMAL_IRQ_COUNT + POISON_IRQ_COUNT + ACTIVE_IRQ_COUNT + SENTINEL_IRQ_COUNT)
 #define FRAME_WORDS 36u
 #define DDR_STACK_SIZE 4096u
+/* Timer delay before an idle WFI, in mtime ticks: long enough for the cache
+ * misses between arming and the WFI at the slowest DDR timing, so the
+ * interrupt arrives while the WFI waits. */
+#define IDLE_TIMER_TICKS 5000u
 
 #define FRAME_EPC 0u
 #define FRAME_RA 1u
@@ -703,7 +707,7 @@ __attribute__((noinline)) static uint32_t idle_once(uint32_t iter)
     csr_write(mscratch, 0u);
     g_exact_frame_check = 1u;
     clear_frame_checks();
-    clint_set_timer_cmp(clint_rdmtime() + 300u + (iter & 31u));
+    clint_set_timer_cmp(clint_rdmtime() + IDLE_TIMER_TICKS + (iter & 31u));
     enable_interrupts();
 
     __asm__ volatile("mv   t2, ra\n"
@@ -747,7 +751,7 @@ __attribute__((noinline)) static uint32_t idle_then_poison_ra_once(uint32_t iter
     csr_write(mscratch, 0u);
     g_exact_frame_check = 1u;
     clear_frame_checks();
-    clint_set_timer_cmp(clint_rdmtime() + 300u + (iter & 31u));
+    clint_set_timer_cmp(clint_rdmtime() + IDLE_TIMER_TICKS + (iter & 31u));
     enable_interrupts();
 
     __asm__ volatile("mv   t2, ra\n"
