@@ -15,14 +15,29 @@
 # Timing constraints for cpu_and_mem in the OpenROAD flow (asic/config.mk).
 #
 # The core clock is the X3 target, 322.265625 MHz (CLK_FREQ_HZ in
-# cpu_and_mem.sv). The program-loading port runs on the core clock divided by
-# four. The NIC's MAC clocks are the X3 GTY's TX and RX user clocks, the
-# 161.1328125 MHz Ethernet reference rate (boards/x3/constr/x3.xdc). The JTAG
-# clock serves the TAP that cpu_and_mem instantiates with its default
-# DEBUG_JTAG_TAP=1; 10 MHz is ten times the OpenOCD adapter speed in
-# fpga/debug.
-create_clock -name core_clk -period 3.103 [get_ports i_clk]
-create_clock -name core_clk_div4 -period 12.412 [get_ports i_clk_div4]
+# cpu_and_mem.sv), unless the environment variable FROST_CORE_CLOCK_PERIOD
+# gives another period in ns; asic/README.md describes finding the fmax with
+# it. ORFS reads the default for ABC from the first clk_period assignment, so
+# that assignment keeps a plain number. The program-loading port runs on the
+# core clock divided by four. The NIC's MAC clocks are the X3 GTY's TX and RX
+# user clocks, the 161.1328125 MHz Ethernet reference rate
+# (boards/x3/constr/x3.xdc). The JTAG clock serves the TAP that cpu_and_mem
+# instantiates with its default DEBUG_JTAG_TAP=1; 10 MHz is ten times the
+# OpenOCD adapter speed in fpga/debug.
+set clk_period 3.103
+# OpenSTA keeps times in single precision and writes the constraints for later
+# stages with four decimals. Below 100 ns with at most four decimals, both
+# core clock periods survive that exactly, and the div4 period stays four
+# core periods.
+if { [info exists ::env(FROST_CORE_CLOCK_PERIOD)] && $::env(FROST_CORE_CLOCK_PERIOD) ne "" } {
+  set clk_period $::env(FROST_CORE_CLOCK_PERIOD)
+  if { ![regexp {^(0|[1-9][0-9]?)(\.[0-9]{1,4})?$} $clk_period] || $clk_period == 0 } {
+    error "FROST_CORE_CLOCK_PERIOD must be a positive number of ns below 100 with\
+      at most four decimals, not '$clk_period'"
+  }
+}
+create_clock -name core_clk -period $clk_period [get_ports i_clk]
+create_clock -name core_clk_div4 -period [expr { 4 * $clk_period }] [get_ports i_clk_div4]
 create_clock -name nic_tx_clk -period 6.206 [get_ports i_nic_tx_clk]
 create_clock -name nic_rx_clk -period 6.206 [get_ports i_nic_rx_clk]
 create_clock -name jtag_tck -period 100.0 [get_ports i_jtag_tck]

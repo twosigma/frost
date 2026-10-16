@@ -27,17 +27,25 @@ build.
 """
 
 import argparse
+import csv
 import json
+import math
 import os
 import re
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections import defaultdict
+from collections.abc import Iterable, Sequence, Set
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 BUILD_DIRECTORY = REPOSITORY_ROOT / "asic" / "build"
+SDC_PATH = REPOSITORY_ROOT / "asic" / "constraint.sdc"
+# constraint.sdc reads the core clock period from this environment variable,
+# which run --clock-period passes to the flow's make.
+CLOCK_PERIOD_VARIABLE = "FROST_CORE_CLOCK_PERIOD"
 
 # The ORFS 26Q4 release (commit ecb3cfdeb). Docker Hub publishes the image
 # built from that commit under its git-describe tag; the digest pins it.
@@ -75,6 +83,21 @@ STAGE_TIMING = (
     ("Global routing", "5_1_grt", "globalroute"),
     ("Final, extracted parasitics", "6_report", "finish"),
 )
+
+# The databases that `paths` reads, by stage, and the stage's name in its
+# report.
+PATH_DATABASES = {
+    "place": ("3_place", "detailed placement"),
+    "cts": ("4_cts", "clock tree synthesis"),
+    "grt": ("5_1_grt", "global routing"),
+    "final": ("6_final", "the final report"),
+}
+# Where `paths` logs OpenROAD, under the build directory.
+PATHS_LOG_SUBDIRECTORY = "logs/paths"
+# The core clock and its quarter-rate programming clock.
+CORE_CLOCKS = ("core_clk", "core_clk_div4")
+# Endpoints within this many ns of the worst core clock slack are near it.
+CRITICAL_WINDOW_NS = 0.1
 
 # Yosys reads the data memory's $readmemh image from its working directory,
 # the build directory. sw.mem is the default name in tdp_bram_dc_byte_en.
@@ -191,6 +214,43 @@ def run_logged(
             return process.wait()
 
 
+def default_clock_period() -> float:
+    """Return the core clock period in ns that asic/constraint.sdc sets by default."""
+    match = re.search(r"^set clk_period (\S+)$", SDC_PATH.read_text(), re.M)
+    if match is None:
+        raise RuntimeError(f"{SDC_PATH} sets no default clk_period")
+    return float(match[1])
+
+
+def built_clock_period(build_directory: Path) -> float | None:
+    """Return the core clock period of a build, or None if no stage wrote one.
+
+    Synthesis evaluates constraint.sdc, and OpenSTA writes the result next to
+    each stage's database, so any of those SDC files holds the period.
+    """
+    results = build_directory / FLOW_SUBDIRECTORY.format(kind="results")
+    for sdc in sorted(results.glob("*.sdc")):
+        match = re.search(
+            r"^create_clock -name core_clk -period ([\d.]+) ", sdc.read_text(), re.M
+        )
+        if match:
+            return float(match[1])
+    return None
+
+
+def format_period(period: float) -> str:
+    """Format a period in ns with the four decimals of the flow's SDC files."""
+    return f"{period:.4f}".rstrip("0").rstrip(".")
+
+
+def make_variables(num_cores: int, clock_period: float | None) -> list[str]:
+    """Return the variables that the flow's make takes from the command line."""
+    variables = [f"NUM_CORES={num_cores}"]
+    if clock_period is not None:
+        variables.append(f"{CLOCK_PERIOD_VARIABLE}={format_period(clock_period)}")
+    return variables
+
+
 def make_goals(first: str | None, last: str) -> list[str]:
     """Return the make goals that run the flow through stage last.
 
@@ -219,6 +279,25 @@ def run(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.first is not None and args.clock_period is not None:
+        print(
+            "Error: the clock period takes effect at synthesis; "
+            "--clock-period cannot be combined with --from",
+            file=sys.stderr,
+        )
+        return 2
+    if args.first is None:
+        # Make does not see a changed period, so it would keep stale stages.
+        requested = args.clock_period or default_clock_period()
+        built = built_clock_period(BUILD_DIRECTORY)
+        if built is not None and format_period(built) != format_period(requested):
+            print(
+                f"Error: {BUILD_DIRECTORY} holds a build with a "
+                f"{format_period(built)} ns core clock; delete it to run the flow "
+                f"at {format_period(requested)} ns",
+                file=sys.stderr,
+            )
+            return 2
     BUILD_DIRECTORY.mkdir(parents=True, exist_ok=True)
     log_path = BUILD_DIRECTORY / "orfs.log"
     if args.first is None:
@@ -229,7 +308,11 @@ def run(args: argparse.Namespace) -> int:
 
     uid, gid = os.getuid(), os.getgid()
     status = run_logged(
-        orfs_command([f"NUM_CORES={args.num_cores}", *goals], uid=uid, gid=gid),
+        orfs_command(
+            [*make_variables(args.num_cores, args.clock_period), *goals],
+            uid=uid,
+            gid=gid,
+        ),
         log_path,
     )
     summary_status = summarize(uid=uid, gid=gid)
@@ -281,9 +364,11 @@ def summary_markdown(build_directory: Path, elapsed: str) -> str:
     synth = _metrics(build_directory, "1_synth")
     final = _metrics(build_directory, "6_report")
     route = _metrics(build_directory, "5_2_route")
-    lines = [
-        "# FROST on Nangate45",
-        "",
+    lines = ["# FROST on Nangate45", ""]
+    period = built_clock_period(build_directory)
+    if period is not None:
+        lines += [f"Core clock period: {format_period(period)} ns.", ""]
+    lines += [
         "| Metric | After synthesis | Final |",
         "| --- | ---: | ---: |",
         "| Standard cells | "
@@ -385,12 +470,333 @@ def summarize(*, uid: int, gid: int) -> int:
     return elapsed.returncode
 
 
+@dataclass(frozen=True)
+class TimingPath:
+    """The worst setup path to one endpoint, as asic/critical_paths.tcl writes it.
+
+    Times are in ns. launched is the arrival time at the startpoint, the
+    register's output or the input port; cells counts the cells after it,
+    and buffers those of them that are buffers or inverters.
+    """
+
+    capture: str
+    launch: str
+    slack: float
+    launched: float
+    arrival: float
+    required: float
+    skew: float
+    cells: int
+    buffers: int
+    startpoint: str
+    endpoint: str
+
+
+def read_paths(table: Path) -> list[TimingPath]:
+    """Read the table of paths that asic/critical_paths.tcl writes."""
+    with table.open(newline="") as handle:
+        return [
+            TimingPath(
+                capture=row["capture"],
+                launch=row["launch"],
+                slack=float(row["slack"]),
+                launched=float(row["launched"]),
+                arrival=float(row["arrival"]),
+                required=float(row["required"]),
+                skew=float(row["skew"]),
+                cells=int(row["cells"]),
+                buffers=int(row["buffers"]),
+                startpoint=row["startpoint"],
+                endpoint=row["endpoint"],
+            )
+            for row in csv.DictReader(handle, delimiter="\t", quoting=csv.QUOTE_NONE)
+        ]
+
+
+def clock_periods(sdc: str) -> dict[str, float]:
+    """Return each clock's period in ns from an SDC file that OpenSTA wrote."""
+    return {
+        name: float(period)
+        for name, period in re.findall(
+            r"^create_clock -name (\S+) -period (\S+)", sdc, re.M
+        )
+    }
+
+
+def port_names(sdc: str) -> set[str]:
+    """Return the ports that an SDC file that OpenSTA wrote constrains."""
+    return set(re.findall(r"get_ports \{([^}]+)\}", sdc))
+
+
+# Hierarchy separators: Yosys joins flattened names with dots, and OpenROAD
+# joins the modules that synthesis kept with slashes. Dots inside brackets
+# belong to the name.
+_SCOPE_SEPARATOR = re.compile(r"[./](?![^\[]*\])")
+
+
+def block(point: str, ports: Set[str] = frozenset(), levels: int = 3) -> str:
+    """Return the block of a path's startpoint or endpoint.
+
+    A register's block is the first levels of its hierarchy, or "top" for a
+    register at the top level; the ports form the block "ports".
+    """
+    if point in ports:
+        return "ports"
+    scopes = _SCOPE_SEPARATOR.split(point)[:-1]
+    return ".".join(scopes[:levels]) if scopes else "top"
+
+
+# A register of a memory's row: the memory, the row, and the bit index unless
+# the memory is one bit wide.
+_ROW = re.compile(r"^(?P<memory>.+?)\[(?P<row>\d+)\](?:\[\d+\])?\$_")
+
+
+def mocked_rows(points: Iterable[str], memories: Iterable[str]) -> set[str]:
+    """Return the points that are registers of a mocked memory's single row.
+
+    memories are Yosys's module/memory names. In the netlist, the row's
+    registers carry the memory's instance path, row 0, and the bit; an array
+    of the same name with a second row is not mocked.
+    """
+    names = [memory.split("/", 1)[-1] for memory in memories]
+    flat = {point: point.replace("/", ".") for point in points}
+    rows = {
+        match["memory"]
+        for match in map(_ROW.match, flat.values())
+        if match and match["row"] != "0"
+    }
+    mocked = set()
+    for point, name in flat.items():
+        match = _ROW.match(name)
+        if match is None or match["row"] != "0" or match["memory"] in rows:
+            continue
+        memory = match["memory"]
+        if any(memory == mock or memory.endswith("." + mock) for mock in names):
+            mocked.add(point)
+    return mocked
+
+
+def _path_note(
+    path: TimingPath, mocked: set[str], ports: set[str], clocks: bool = True
+) -> str:
+    """Describe what makes a path differ from one between core registers."""
+    notes = []
+    if clocks and path.launch != path.capture:
+        notes.append(f"from {path.launch}")
+    if path.startpoint in mocked:
+        notes.append("reads a mocked memory")
+    if path.endpoint in mocked:
+        notes.append("writes a mocked memory")
+    if path.startpoint in ports:
+        notes.append("from an input")
+    if path.endpoint in ports:
+        notes.append("to an output")
+    return "; ".join(notes)
+
+
+def core_cycles(path: TimingPath) -> int:
+    """Return the core periods a path between core clock registers has.
+
+    Both core clocks rise at time 0, so a path between them has one core
+    period, and a path between quarter-rate registers has four.
+    """
+    return 4 if path.launch == path.capture == "core_clk_div4" else 1
+
+
+def path_fmax(path: TimingPath, period: float) -> float:
+    """Return the core clock frequency in MHz at which a register path just fits.
+
+    Its delay is its requirement, a whole number of core periods, less its
+    slack. Clock skew can leave no delay to fit, and then no frequency limit.
+    """
+    cycles = core_cycles(path)
+    delay = cycles * period - path.slack
+    return cycles * 1e3 / delay if delay > 0 else math.inf
+
+
+def _megahertz(frequency: float) -> str:
+    """Format a frequency limit in MHz; a path that sets none shows a dash."""
+    return "-" if math.isinf(frequency) else f"{frequency:.1f}"
+
+
+def paths_markdown(
+    stage: str,
+    paths: Sequence[TimingPath],
+    register_paths: Sequence[TimingPath],
+    periods: dict[str, float],
+    mocked: set[str],
+    ports: set[str],
+    rows: int = 30,
+) -> str:
+    """Return a Markdown report of one stage's setup paths.
+
+    paths has the worst path to each endpoint, and register_paths the worst
+    path between registers for each pair of core clocks, which set the fmax.
+    """
+    period = periods["core_clk"]
+    fmax = min(path_fmax(path, period) for path in register_paths)
+    lines = [
+        f"# Setup paths after {PATH_DATABASES[stage][1]}",
+        "",
+        f"Core clock period: {format_period(period)} ns. Core clock fmax "
+        f"estimate: {_megahertz(fmax)} MHz, from the paths between registers.",
+        "",
+        "## Worst slack by capture clock",
+        "",
+        "| Clock | Period (ns) | Endpoints | Failing | WNS (ns) | TNS (ns) |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for clock, clock_period in periods.items():
+        slacks = [path.slack for path in paths if path.capture == clock]
+        if slacks:
+            lines.append(
+                f"| {clock} | {format_period(clock_period)} | {len(slacks):,} | "
+                f"{sum(slack < 0 for slack in slacks):,} | {min(slacks):.3f} | "
+                f"{sum(min(slack, 0) for slack in slacks):,.1f} |"
+            )
+
+    lines += [
+        "",
+        "## Paths between core clock registers",
+        "",
+        "The worst path for each pair of launching and capturing clocks. The "
+        "fmax is the frequency at which its delay, its core periods less its "
+        "slack, fits.",
+        "",
+        "| Launch | Capture | Core periods | Slack (ns) | fmax (MHz) | Startpoint "
+        "| Endpoint | Note |",
+        "| --- | --- | ---: | ---: | ---: | --- | --- | --- |",
+    ]
+    for path in register_paths:
+        lines.append(
+            f"| {path.launch} | {path.capture} | {core_cycles(path)} | "
+            f"{path.slack:.3f} | {_megahertz(path_fmax(path, period))} | "
+            f"`{path.startpoint}` | `{path.endpoint}` | "
+            f"{_path_note(path, mocked, ports, clocks=False)} |"
+        )
+
+    core = sorted(
+        (path for path in paths if path.capture == "core_clk"),
+        key=lambda path: path.slack,
+    )
+    worst = core[0].slack
+    window = worst + CRITICAL_WINDOW_NS
+    blocks: dict[str, list[TimingPath]] = defaultdict(list)
+    for path in core:
+        blocks[block(path.endpoint, ports)].append(path)
+    lines += [
+        "",
+        "## Core clock endpoints by block",
+        "",
+        f"The blocks whose registers have the worst core clock slack. Near: within "
+        f"{CRITICAL_WINDOW_NS:g} ns of the worst.",
+        "",
+        "| End block | Endpoints | Failing | Near | Worst slack (ns) |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    for name, members in list(blocks.items())[:rows]:
+        lines.append(
+            f"| `{name}` | {len(members):,} | "
+            f"{sum(path.slack < 0 for path in members):,} | "
+            f"{sum(path.slack <= window for path in members):,} | "
+            f"{members[0].slack:.3f} |"
+        )
+
+    families: dict[tuple[str, str], list[TimingPath]] = defaultdict(list)
+    for path in core:
+        families[block(path.startpoint, ports), block(path.endpoint, ports)].append(
+            path
+        )
+    lines += [
+        "",
+        "## Core clock paths by start and end block",
+        "",
+        "Each endpoint's worst path, grouped by the blocks of its startpoint "
+        "and endpoint; a row shows the group's worst path and its cells after "
+        "the startpoint (buffers and inverters in parentheses), and counts the "
+        "endpoints in the group.",
+        "",
+        "| Start block | End block | Endpoints | Worst slack (ns) | Cells | Note |",
+        "| --- | --- | ---: | ---: | ---: | --- |",
+    ]
+    for (start, end), members in list(families.items())[:rows]:
+        path = members[0]
+        lines.append(
+            f"| `{start}` | `{end}` | {len(members):,} | {path.slack:.3f} | "
+            f"{path.cells} ({path.buffers}) | {_path_note(path, mocked, ports)} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def report_paths(stage: str, num_cores: int, *, uid: int, gid: int) -> int:
+    """Run asic/critical_paths.tcl on a stage's database and report its paths."""
+    database = PATH_DATABASES[stage][0]
+    results = BUILD_DIRECTORY / FLOW_SUBDIRECTORY.format(kind="results")
+    if not (results / f"{database}.odb").exists():
+        print(f"Error: {results} has no {database}.odb", file=sys.stderr)
+        return 1
+    status = subprocess.run(
+        orfs_command(
+            [
+                f"NUM_CORES={num_cores}",
+                "run",
+                f"RUN_SCRIPT={CONTAINER_ROOT}/asic/critical_paths.tcl",
+                # Outside the flow's logs, which make elapsed totals.
+                f"LOG_DIR={CONTAINER_BUILD}/{PATHS_LOG_SUBDIRECTORY}",
+                f"RUN_LOG_NAME_STEM={database}",
+                f"FROST_PATHS_STAGE={database}",
+            ],
+            uid=uid,
+            gid=gid,
+        ),
+        check=False,
+    ).returncode
+    if status != 0:
+        print(f"Error: the path report failed with status {status}", file=sys.stderr)
+        return status
+    reports = BUILD_DIRECTORY / FLOW_SUBDIRECTORY.format(kind="reports")
+    logs = BUILD_DIRECTORY / FLOW_SUBDIRECTORY.format(kind="logs")
+    paths = read_paths(reports / f"{database}_paths.tsv")
+    register_paths = read_paths(reports / f"{database}_register_paths.tsv")
+    memories = [name for name, _, _ in mocked_memories(logs / "1_2_yosys.log")]
+    mocked = mocked_rows(
+        {
+            point
+            for path in (*paths, *register_paths)
+            for point in (path.startpoint, path.endpoint)
+        },
+        memories,
+    )
+    sdc = (results / f"{database}.sdc").read_text()
+    report = paths_markdown(
+        stage, paths, register_paths, clock_periods(sdc), mocked, port_names(sdc)
+    )
+    (BUILD_DIRECTORY / f"paths_{stage}.md").write_text(report)
+    print(report)
+    return 0
+
+
 def _positive_integer(text: str) -> int:
     """Parse a thread count for argparse."""
     value = int(text)
     if value < 1:
         raise argparse.ArgumentTypeError(f"expected a positive integer, got {text}")
     return value
+
+
+# A period in ns as constraint.sdc accepts it: below 100 ns, with at most
+# four decimals.
+_PERIOD = re.compile(r"(?:0|[1-9][0-9]?)(?:\.[0-9]{1,4})?")
+
+
+def _clock_period(text: str) -> float:
+    """Parse a clock period in ns for argparse."""
+    if not _PERIOD.fullmatch(text) or float(text) == 0:
+        raise argparse.ArgumentTypeError(
+            "expected a positive period in ns below 100 with at most four "
+            f"decimals, got {text}"
+        )
+    return float(text)
 
 
 def _argument_parser() -> argparse.ArgumentParser:
@@ -403,7 +809,9 @@ def _argument_parser() -> argparse.ArgumentParser:
   %(prog)s run --num-cores 16       # limit OpenROAD and Yosys threads
   %(prog)s run --target grt         # stop after global routing
   %(prog)s run --from route         # rerun detailed routing and finishing
+  %(prog)s run --clock-period 1.6   # ask for 625 MHz to find the fmax
   %(prog)s summary                  # summarize asic/build again
+  %(prog)s paths --stage grt        # report the critical paths
 """,
     )
     commands = parser.add_subparsers(dest="command", required=True)
@@ -426,6 +834,15 @@ def _argument_parser() -> argparse.ArgumentParser:
         help="last ORFS stage to run (default: %(default)s)",
     )
     run_parser.add_argument(
+        "--clock-period",
+        type=_clock_period,
+        metavar="NS",
+        help=(
+            "core clock period in ns, which the quarter-rate clock and the I/O "
+            "delays follow (default: the X3's, from asic/constraint.sdc)"
+        ),
+    )
+    run_parser.add_argument(
         "--from",
         dest="first",
         choices=STAGES[1:],
@@ -436,6 +853,21 @@ def _argument_parser() -> argparse.ArgumentParser:
     )
     commands.add_parser("prepare", help="write the flow's sources (frost image)")
     commands.add_parser("summary", help="summarize an existing build")
+    paths_parser = commands.add_parser(
+        "paths", help="report a stage's setup paths by block"
+    )
+    paths_parser.add_argument(
+        "--stage",
+        choices=tuple(PATH_DATABASES),
+        default="grt",
+        help="stage whose database to read (default: %(default)s)",
+    )
+    paths_parser.add_argument(
+        "--num-cores",
+        type=_positive_integer,
+        default=4,
+        help="threads for OpenROAD (default: %(default)s)",
+    )
     return parser
 
 
@@ -447,6 +879,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "summary":
         return summarize(uid=os.getuid(), gid=os.getgid())
+    if args.command == "paths":
+        return report_paths(
+            args.stage, args.num_cores, uid=os.getuid(), gid=os.getgid()
+        )
     return run(args)
 
 
