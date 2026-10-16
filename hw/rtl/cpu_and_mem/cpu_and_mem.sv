@@ -35,7 +35,9 @@ module cpu_and_mem #(
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
-    // L2 miss-status and writeback slots (see frost_cache_hierarchy).
+    // L1D miss-status slots, and L2 miss-status and writeback slots (see
+    // frost_cache_hierarchy).
+    parameter int unsigned L1D_NUM_MSHR = 8,
     parameter int unsigned L2_NUM_MSHR = 4,
     parameter int unsigned L2_NUM_WB = 2,
     // L2 line size: 64 bytes, as on the X3, or 32, the L1s' line size, which
@@ -415,7 +417,7 @@ module cpu_and_mem #(
   // Line-protocol id widths: the L1 upstream ports carry LineIdBits, and the
   // L2's downstream ids, {type, slot}, are the board's AXI ids, DdrAxiIdBits
   // wide. The L1s, the walker, fetch, and the DMA port use L1LineBytes lines.
-  localparam int unsigned LineIdBits = 3;
+  localparam int unsigned LineIdBits = 4;
   localparam int unsigned DdrAxiIdBits = 5;
   localparam int unsigned L1LineBytes = 32;
   // The behavioral DDR model keeps at least its default eight transactions
@@ -438,12 +440,16 @@ module cpu_and_mem #(
   logic [L1LineBytes*8-1:0] iup_resp_rdata;
 
   // Page-table walker line port: core-side ptw master to the
-  // hierarchy's wup port. LineIdBits-1 = 2-bit local ids per the id tree.
+  // hierarchy's wup port, whose local ids are LineIdBits-1 bits per the id
+  // tree. The walker's own ids are 2 bits, zero-extended, so responses come
+  // back with the upper bits clear.
   logic walk_line_req_valid, walk_line_req_ready;
   logic [31:0] walk_line_req_addr;
   logic [LineIdBits-2:0] walk_line_req_id;
   logic walk_line_resp_valid;
   logic [LineIdBits-2:0] walk_line_resp_id;
+  logic [1:0] ptw_line_req_id;
+  assign walk_line_req_id = (LineIdBits - 1)'(ptw_line_req_id);
   logic [L1LineBytes*8-1:0] walk_line_resp_rdata;
   logic [31:0] data_memory_address;
   logic [riscv_pkg::MemDataBits-1:0] data_memory_write_data, data_memory_write_data_registered;
@@ -467,6 +473,7 @@ module cpu_and_mem #(
   logic [riscv_pkg::MemStrbBits-1:0] data_memory_cached_byte_write_enable;
   logic data_memory_cached_read_enable;
   logic [riscv_pkg::CachedLoadSlotBits-1:0] data_memory_cached_read_id;
+  logic data_memory_cached_read_no_merge;
   logic [riscv_pkg::MemDataBits-1:0] data_memory_cached_read_data;
   logic [riscv_pkg::CachedLoadSlotBits-1:0] data_memory_cached_resp_id;
   logic data_memory_cached_read_valid;
@@ -687,9 +694,9 @@ module cpu_and_mem #(
       .o_walk_line_req_valid(walk_line_req_valid),
       .i_walk_line_req_ready(walk_line_req_ready),
       .o_walk_line_req_addr(walk_line_req_addr),
-      .o_walk_line_req_id(walk_line_req_id),
+      .o_walk_line_req_id(ptw_line_req_id),
       .i_walk_line_resp_valid(walk_line_resp_valid),
-      .i_walk_line_resp_id(walk_line_resp_id),
+      .i_walk_line_resp_id(walk_line_resp_id[1:0]),
       .i_walk_line_resp_rdata(walk_line_resp_rdata),
       .o_fence_i_flush(fence_i_flush),
       .o_data_mem_addr(cpu_data_mem_addr_xlen),
@@ -702,6 +709,7 @@ module cpu_and_mem #(
       .o_data_mem_cached_wr_data(data_memory_cached_write_data),
       .o_data_mem_cached_read_enable(data_memory_cached_read_enable),
       .o_data_mem_cached_read_id(data_memory_cached_read_id),
+      .o_data_mem_cached_read_no_merge(data_memory_cached_read_no_merge),
       .i_cached_read_data(data_memory_response_data),
       .i_cached_read_id(data_memory_cached_resp_id),
       .i_cached_read_valid(data_memory_cached_read_valid),
@@ -1665,20 +1673,30 @@ module cpu_and_mem #(
   if (ENABLE_CACHED_TIER != 0) begin : gen_cached_tier
     // The hierarchy's DMA port, fed by a line-port arbiter over the NIC
     // (port 0, priority) and the DMA test engine (port 1): each presents
-    // 2-bit ids, the arbiter prefixes the port bit (LineIdBits = 3).
+    // 2-bit ids, and the arbiter prefixes the port bit. Those 3 bits fill the
+    // low bits of the port's LineIdBits-bit ids, and responses come back with
+    // the high bit clear.
+    localparam int unsigned DmaAgentIdBits = 2;
     logic dma_req_valid, dma_req_ready, dma_req_write;
     logic [31:0] dma_req_addr;
     logic [L1LineBytes*8-1:0] dma_req_wdata;
     logic [L1LineBytes-1:0] dma_req_wstrb;
     logic [LineIdBits-1:0] dma_req_id;
+    logic [DmaAgentIdBits:0] dma_agents_req_id, dma_agents_resp_id;
     logic dma_resp_valid;
     logic [LineIdBits-1:0] dma_resp_id;
     logic [L1LineBytes*8-1:0] dma_resp_rdata;
+    /* verilator lint_off UNUSEDSIGNAL */  // the agents' ids fill the low bits
+    logic dma_resp_id_high_unused;
+    /* verilator lint_on UNUSEDSIGNAL */
+    assign dma_req_id = LineIdBits'(dma_agents_req_id);
+    assign dma_agents_resp_id = dma_resp_id[DmaAgentIdBits:0];
+    assign dma_resp_id_high_unused = |dma_resp_id[LineIdBits-1:DmaAgentIdBits+1];
     logic [1:0] agent_req_valid, agent_req_ready, agent_req_write, agent_resp_valid;
     logic [1:0][ 31:0] agent_req_addr;
     logic [1:0][L1LineBytes*8-1:0] agent_req_wdata;
     logic [1:0][L1LineBytes-1:0] agent_req_wstrb;
-    logic [1:0][LineIdBits-2:0] agent_req_id, agent_resp_id;
+    logic [1:0][DmaAgentIdBits-1:0] agent_req_id, agent_resp_id;
     logic [1:0][L1LineBytes*8-1:0] agent_resp_rdata;
     /* verilator lint_off UNUSEDSIGNAL */  // the DMA port carries no maintenance requests
     logic dma_req_maintenance_unused;
@@ -1702,6 +1720,7 @@ module cpu_and_mem #(
         .i_rst(rst_core),
         .i_read_req(data_memory_cached_read_enable),
         .i_read_id(data_memory_cached_read_id),
+        .i_read_no_merge(data_memory_cached_read_no_merge),
         .i_req_addr(data_memory_address),
         .i_write_byte_en(data_memory_cached_byte_write_enable),
         .i_write_data(data_memory_cached_write_data),
@@ -1740,6 +1759,7 @@ module cpu_and_mem #(
         .L1_CACHE_BYTES(L1_CACHE_BYTES),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
         .L2_CACHE_BYTES(L2_CACHE_BYTES),
+        .L1D_NUM_MSHR(L1D_NUM_MSHR),
         .L2_NUM_MSHR(L2_NUM_MSHR),
         .L2_NUM_WB(L2_NUM_WB),
         .L2_DOWN_ID_BITS(DdrAxiIdBits),
@@ -1819,7 +1839,7 @@ module cpu_and_mem #(
         .NUM_PORTS(2),
         .ADDR_WIDTH(32),
         .LINE_BYTES(L1LineBytes),
-        .UP_ID_BITS(LineIdBits - 1),
+        .UP_ID_BITS(DmaAgentIdBits),
         .STARVATION_LIMIT(8)
     ) dma_arbiter (
         .i_clk(i_clk),
@@ -1841,10 +1861,10 @@ module cpu_and_mem #(
         .o_down_req_addr(dma_req_addr),
         .o_down_req_wdata(dma_req_wdata),
         .o_down_req_wstrb(dma_req_wstrb),
-        .o_down_req_id(dma_req_id),
+        .o_down_req_id(dma_agents_req_id),
         .o_down_req_maintenance(dma_req_maintenance_unused),
         .i_down_resp_valid(dma_resp_valid),
-        .i_down_resp_id(dma_resp_id),
+        .i_down_resp_id(dma_agents_resp_id),
         .i_down_resp_rdata(dma_resp_rdata)
     );
 
@@ -1892,7 +1912,7 @@ module cpu_and_mem #(
     dma_test_engine #(
         .ADDR_WIDTH(32),
         .LINE_BYTES(L1LineBytes),
-        .ID_BITS(LineIdBits - 1),
+        .ID_BITS(DmaAgentIdBits),
         .APERTURE_BASE(CACHED_BASE),
         .APERTURE_BYTES(CACHED_SIZE_BYTES)
     ) dma_engine (
@@ -2114,6 +2134,10 @@ module cpu_and_mem #(
     // responses on consecutive launches. Return the lowest slot first when
     // the router is ready.
     logic [riscv_pkg::CachedLoadSlots-1:0] stub_read_pending_q;
+    /* verilator lint_off UNUSEDSIGNAL */  // the stub shares no line requests
+    logic stub_read_no_merge_unused;
+    /* verilator lint_on UNUSEDSIGNAL */
+    assign stub_read_no_merge_unused = data_memory_cached_read_no_merge;
     always_comb begin
       data_memory_cached_resp_id = '0;
       for (int s = int'(riscv_pkg::CachedLoadSlots) - 1; s >= 0; s--) begin

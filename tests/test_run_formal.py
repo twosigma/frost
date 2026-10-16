@@ -149,7 +149,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "cache_mshr_payload.sby",
         "Readable MSHR bytes match reference fill/store merging",
-        tasks=("bmc",),
+        tasks=("bmc", "bmc_mshr8"),
     ),
     FormalTarget(
         "lq_alloc_mask.sby",
@@ -623,6 +623,7 @@ SBY_TASKS = [
     ("prove_oh", "Unbounded shared-link memory equivalence with one-hot reads"),
     ("prove_narrow_bin", "Unbounded narrow-link memory equivalence with binary reads"),
     ("prove_narrow_oh", "Unbounded narrow-link memory equivalence with one-hot reads"),
+    ("bmc_mshr8", "Bounded check with eight miss-status slots"),
     ("bmc_free_bin", "Bounded shared-link memory equivalence with free binary reads"),
     ("bmc_free_oh", "Bounded shared-link memory equivalence with free one-hot reads"),
     (

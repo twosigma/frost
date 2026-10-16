@@ -4629,22 +4629,36 @@ async def test_store_invalidation_guards_only_the_hit_slot(dut: Any) -> None:
 
 @cocotb.test()
 async def test_cached_slots_full_blocks_launch_until_a_response(dut: Any) -> None:
-    """With every cached slot busy, the next load waits for a slot to free."""
+    """With every cached slot busy, the next load waits for a slot to free.
+
+    When the queue has no more entries than cached slots, filling the slots
+    fills the queue. A partial flush then frees the youngest load's entry while
+    its slot still waits for the flushed load's response, and the load
+    allocated next must wait for a slot.
+    """
     dut_if, model = await setup(dut)
     dut_if.drive_rob_head_tag(1)
     dut_if.drive_sq_empty(True)
     dut_if.drive_mem_request_pending(False)
 
+    slots = 1 << len(dut.o_mem_read_id)
     launches = []
-    for k in range(4):
+    for k in range(slots):
         launches.append(
             await _launch_cached(
                 dut_if, model, rob_tag=k + 1, address=0x8000_4000 + k * 0x100
             )
         )
-    assert len({int(m["id"]) for m in launches}) == 4, "slot ids not distinct"
+    assert len({int(m["id"]) for m in launches}) == slots, "slot ids not distinct"
 
-    await alloc_and_addr(dut_if, model, rob_tag=5, address=0x8000_5000)
+    if LQ_DEPTH <= slots:
+        # Keep tags 1..slots-1 and flush the youngest load.
+        dut_if.drive_partial_flush(flush_tag=slots - 1)
+        model.partial_flush(flush_tag=slots - 1, rob_head_tag=1)
+        await dut_if.step()
+        dut_if.clear_partial_flush()
+
+    await alloc_and_addr(dut_if, model, rob_tag=slots + 1, address=0x8000_5000)
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     for cycle in range(4):
@@ -4654,7 +4668,7 @@ async def test_cached_slots_full_blocks_launch_until_a_response(dut: Any) -> Non
         )
         await dut_if.step()
 
-    # Free one slot: the fifth load launches into it (before its completion
+    # Free one slot: the waiting load launches into it (before its completion
     # is even drained from the CDB stage).
     dut_if.drive_mem_response(0xAAAA_0000, cached=True, slot=int(launches[2]["id"]))
     await dut_if.step()

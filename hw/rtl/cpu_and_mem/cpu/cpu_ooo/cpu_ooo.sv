@@ -126,8 +126,9 @@ module cpu_ooo #(
     input logic i_fence_i_sync_done,
     output logic o_fence_i_flush,
     // Page-table walker line port: read-only master to the
-    // hierarchy's wup port (cpu_and_mem wires it through). 2-bit local ids
-    // per the fabric's id tree; the walker issues one walk at a time.
+    // hierarchy's wup port (cpu_and_mem wires it through and zero-extends
+    // the 2-bit ids to the port's width); the walker issues one walk at a
+    // time.
     output logic o_walk_line_req_valid,
     input logic i_walk_line_req_ready,
     output logic [31:0] o_walk_line_req_addr,
@@ -156,6 +157,9 @@ module cpu_ooo #(
     // its responses with it and holds a response while a fast-tier response
     // is using the LQ response port.
     output logic [riscv_pkg::CachedLoadSlotBits-1:0] o_data_mem_cached_read_id,
+    // The cached read is an LR or an AMO: the adapter gives it a line request
+    // of its own.
+    output logic o_data_mem_cached_read_no_merge,
     input logic [riscv_pkg::MemDataBits-1:0] i_cached_read_data,
     input logic [riscv_pkg::CachedLoadSlotBits-1:0] i_cached_read_id,
     input logic i_cached_read_valid,
@@ -1854,6 +1858,7 @@ module cpu_ooo #(
   logic lq_mem_read_is_cached;
   logic [riscv_pkg::CachedLoadSlotBits-1:0] lq_mem_read_id;
   logic [riscv_pkg::CachedLoadSlotBits-1:0] lq_mem_read_launch_id;
+  logic lq_mem_read_no_merge;
   logic lq_mem_request_valid;
   logic cached_read_held;
   logic lq_device_request_pending;
@@ -2310,6 +2315,7 @@ module cpu_ooo #(
       .o_lq_mem_read_addr(lq_mem_read_addr),
       .o_lq_mem_read_size(lq_mem_read_size),
       .o_lq_mem_read_id(lq_mem_read_launch_id),
+      .o_lq_mem_read_no_merge(lq_mem_read_no_merge),
       .i_lq_mem_read_data(lq_mem_read_data),
       .i_lq_mem_read_valid(lq_mem_read_valid),
       .i_lq_mem_read_is_cached(lq_mem_read_is_cached),
@@ -3224,6 +3230,7 @@ module cpu_ooo #(
       .i_lq_mem_read_addr(lq_mem_read_addr),
       .i_lq_mem_addr_valid(lq_mem_addr_valid),
       .i_lq_mem_read_id(lq_mem_read_launch_id),
+      .i_lq_mem_read_no_merge(lq_mem_read_no_merge),
       .i_sq_committed_empty(sq_committed_empty),
       .i_data_mem_rd_data(i_data_mem_rd_data),
       .i_cached_read_data(i_cached_read_data),
@@ -3243,6 +3250,7 @@ module cpu_ooo #(
       .o_data_mem_cached_wr_data(o_data_mem_cached_wr_data),
       .o_data_mem_cached_read_enable(o_data_mem_cached_read_enable),
       .o_data_mem_cached_read_id(o_data_mem_cached_read_id),
+      .o_data_mem_cached_read_no_merge(o_data_mem_cached_read_no_merge),
       .o_mmio_read_pulse(o_mmio_read_pulse),
       .o_mmio_load_addr(o_mmio_load_addr),
       .o_mmio_load_valid(o_mmio_load_valid),

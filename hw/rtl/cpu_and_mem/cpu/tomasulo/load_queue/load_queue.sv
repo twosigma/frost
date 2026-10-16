@@ -122,6 +122,9 @@ module load_queue #(
     // up to riscv_pkg::CachedLoadSlots cached loads are in flight at once and
     // their responses come back tagged with it.
     output logic                 [riscv_pkg::CachedLoadSlotBits-1:0] o_mem_read_id,
+    // The launching load is an LR or an AMO: the cached tier gives it a line
+    // request of its own, never one shared with other loads of the line.
+    output logic                                                     o_mem_read_no_merge,
     // Aligned MemDataBits beat carrying the dword at addr[31:3]
     // (hw/rtl/README.md, "Data-tier bus contract"); consumers extract by addr[2:0].
     input  logic                 [       riscv_pkg::MemDataBits-1:0] i_mem_read_data,
@@ -1983,10 +1986,11 @@ module load_queue #(
   // Memory issue port: driven straight from the launch terms (no second-deep
   // staging register, see above).
   always_comb begin
-    o_mem_read_en   = launch_mem_issue;
+    o_mem_read_en = launch_mem_issue;
     o_mem_read_addr = launch_mem_issue_addr;
     o_mem_read_size = launch_mem_issue_size;
-    o_mem_read_id   = cs_alloc_idx;
+    o_mem_read_id = cs_alloc_idx;
+    o_mem_read_no_merge = sq_check_is_lr_q || sq_check_is_amo_q;
   end
 
   // Load unit for cache hit path: feed cache data through load unit

@@ -84,6 +84,8 @@ module data_mem_request_router #(
     input logic [                         XLEN-1:0] i_lq_mem_read_addr,
     input logic                                     i_lq_mem_addr_valid,
     input logic [riscv_pkg::CachedLoadSlotBits-1:0] i_lq_mem_read_id,
+    // The load is an LR or an AMO (the adapter never shares its line request).
+    input logic                                     i_lq_mem_read_no_merge,
     // Registered SQ status, high only when no committed-but-unwritten store
     // remains. Same-cycle raw commits already clear it pessimistically. Do not
     // pipeline it again, or a stale-high cycle can release a device read.
@@ -122,6 +124,7 @@ module data_mem_request_router #(
     output logic [       riscv_pkg::MemDataBits-1:0] o_data_mem_cached_wr_data,
     output logic                                     o_data_mem_cached_read_enable,
     output logic [riscv_pkg::CachedLoadSlotBits-1:0] o_data_mem_cached_read_id,
+    output logic                                     o_data_mem_cached_read_no_merge,
     output logic                                     o_mmio_read_pulse,
     output logic [                         XLEN-1:0] o_mmio_load_addr,
     output logic                                     o_mmio_load_valid,
@@ -194,6 +197,8 @@ module data_mem_request_router #(
   logic [                         XLEN-1:0] lq_mem_request_addr;
   logic [riscv_pkg::CachedLoadSlotBits-1:0] lq_mem_request_id;
   logic [riscv_pkg::CachedLoadSlotBits-1:0] lq_mem_request_id_eff;
+  logic                                     lq_mem_request_no_merge;
+  logic                                     lq_mem_request_no_merge_eff;
   logic [                         XLEN-1:0] lq_mem_request_addr_eff;
   logic [       riscv_pkg::MemDataBits-1:0] lq_mem_read_data;
   logic                                     lq_mem_read_valid;
@@ -215,6 +220,8 @@ module data_mem_request_router #(
   // load must reach the adapter under its own id, not the one presented
   // live on the accept cycle.
   assign lq_mem_request_id_eff = lq_mem_request_valid ? lq_mem_request_id : i_lq_mem_read_id;
+  assign lq_mem_request_no_merge_eff =
+      lq_mem_request_valid ? lq_mem_request_no_merge : i_lq_mem_read_no_merge;
   // The live device-quadrant decode forces capture. Acceptance and MMIO
   // effects use only the held address.
   assign lq_live_request_requires_park = (lq_mem_read_addr[31:30] == 2'b01);
@@ -339,6 +346,7 @@ module data_mem_request_router #(
     // and eviction.
     o_data_mem_cached_read_enable = o_data_mem_read_enable && lq_mem_request_is_cached;
     o_data_mem_cached_read_id = lq_mem_request_id_eff;
+    o_data_mem_cached_read_no_merge = lq_mem_request_no_merge_eff;
 
     // BRAM writes complete in the accept cycle; cached writes wait for the
     // adapter's done pulse. The LQ holds the request until done to preserve
@@ -426,13 +434,14 @@ module data_mem_request_router #(
     end
   end
 
-  // Sample address and slot ID while empty. A blocked or staged request is
-  // captured on its handoff edge, then held while valid. Data after a live
-  // accept or cancellation is unused.
+  // Sample address, slot ID and no-merge bit while empty. A blocked or staged
+  // request is captured on its handoff edge, then held while valid. Data after
+  // a live accept or cancellation is unused.
   always_ff @(posedge i_clk) begin
     if (!lq_mem_request_valid) begin
       lq_mem_request_addr <= lq_mem_read_addr;
-      lq_mem_request_id   <= i_lq_mem_read_id;
+      lq_mem_request_id <= i_lq_mem_read_id;
+      lq_mem_request_no_merge <= i_lq_mem_read_no_merge;
     end
   end
 

@@ -212,9 +212,11 @@ lane *i* is byte address `{addr[31:3], i}`. Producers position data by
   (`sw/common/make_dword_mem.py`); `sw.mem`, `sw.txt`, and both DDR images
   stay in 32-bit words.
 - Cached loads are tagged. The load queue names one of its
-  `riscv_pkg::CachedLoadSlots` slots on each cached launch, the adapter
-  carries that id on the line port, and the response returns it beside the
-  beat, so several cached loads can be in flight and complete in any order.
+  `riscv_pkg::CachedLoadSlots` slots on each cached launch, and the response
+  returns it beside the beat, so several cached loads can be in flight and
+  complete in any order. Loads of one line share a line request in the
+  cached-tier adapter, except LRs and AMOs, and a store closes that sharing
+  for every line.
   Low-BRAM and MMIO loads keep the untagged fixed-latency response, which has
   the response port to itself in its cycle; a cached response that arrives
   then waits in the adapter.

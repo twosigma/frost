@@ -18,7 +18,7 @@ read -sv lq_issue_selector.sv
 read -formal -D SYNTHESIS -D F_LQ_PREMATCH_ONLY -D F_LQ_CACHED_FLAGS_PROOF -sv load_queue.sv
 prep -top load_queue
 select -assert-none t:$assume
-select -assert-count 9 t:$check
+select -assert-count 17 t:$check
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

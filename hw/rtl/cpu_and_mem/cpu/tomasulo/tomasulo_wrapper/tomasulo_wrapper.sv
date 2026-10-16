@@ -496,6 +496,9 @@ module tomasulo_wrapper #(
     // Cached-tier slot id of the launching load; responses come back tagged
     // (is_cached + id) so the LQ knows which outstanding load they answer.
     output logic                 [riscv_pkg::CachedLoadSlotBits-1:0] o_lq_mem_read_id,
+    // The launching load is an LR or an AMO (no line request shared with
+    // other loads).
+    output logic                                                     o_lq_mem_read_no_merge,
     input  logic                 [       riscv_pkg::MemDataBits-1:0] i_lq_mem_read_data,
     input  logic                                                     i_lq_mem_read_valid,
     input  logic                                                     i_lq_mem_read_is_cached,
@@ -3410,6 +3413,7 @@ module tomasulo_wrapper #(
       .o_mem_read_addr(o_lq_mem_read_addr),
       .o_mem_read_size(o_lq_mem_read_size),
       .o_mem_read_id(o_lq_mem_read_id),
+      .o_mem_read_no_merge(o_lq_mem_read_no_merge),
       .i_mem_read_data(i_lq_mem_read_data),
       .i_mem_read_valid(i_lq_mem_read_valid),
       .i_mem_read_is_cached(i_lq_mem_read_is_cached),

@@ -1240,6 +1240,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         "memory router",
         verilator_extra_args=("+define+FROST_XILINX_PRIMS",),
     ),
+    "cached_tier_adapter": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.memory.test_cached_tier_adapter",
+        hdl_toplevel_module="cached_tier_adapter",
+        description=(
+            "Shared line requests for reads of one line, store and LR/AMO ordering, "
+            "and out-of-order responses against a line-port model"
+        ),
+    ),
     "data_mem_request_router": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_request_router",
         hdl_toplevel_module="data_mem_request_router",

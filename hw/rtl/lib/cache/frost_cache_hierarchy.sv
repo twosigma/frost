@@ -47,7 +47,9 @@
  * The up, iup, and dma ports carry UP_ID_BITS; the wup port and the L1I's
  * downstream carry UP_ID_BITS-1. With the default UP_ID_BITS=3, that leaves
  * the L1I 2 miss slots, all its master (the two-line fetch provider) ever
- * uses, and DownIdBits is 5. The walker keeps one walk in flight with id 0.
+ * uses, and DownIdBits is 5. cpu_and_mem uses UP_ID_BITS=4, which the L1D's
+ * {type, slot} ids need for 8 miss slots (L1D_NUM_MSHR), so DownIdBits is 6
+ * there. The walker keeps one walk in flight with id 0.
  * The L2 takes DownIdBits ids and gives its own downstream requests
  * {type, slot} ids, L2_DOWN_ID_BITS wide: 5 on the X3, the AXI id width of
  * its DDR block design (fpga/build/x3_ddr_bd.tcl), enough for 16 slots of
@@ -68,6 +70,9 @@ module frost_cache_hierarchy #(
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1_DATA_READ_LATENCY = 2,
     parameter int unsigned L1_DATA_WRITE_LATENCY = 1,
+    // L1D miss-status slots. The L1D's downstream ids are UP_ID_BITS wide and
+    // must hold {type, slot}.
+    parameter int unsigned L1D_NUM_MSHR = 4,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L1I_DATA_READ_LATENCY = 2,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
@@ -451,6 +456,7 @@ module frost_cache_hierarchy #(
       // The high ID bit distinguishes probes from CPU requests.
       .UP_ID_BITS(L1dIdBits),
       .DOWN_ID_BITS(UP_ID_BITS),
+      .NUM_MSHR(L1D_NUM_MSHR),
       .NUM_PROBE(NumL1dProbe),
       .TAG_MEMORY_PRIMITIVE("block"),
       .TAG_READ_LATENCY(1),
