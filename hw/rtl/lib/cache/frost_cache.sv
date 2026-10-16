@@ -304,13 +304,18 @@ module frost_cache #(
   // read latency. The read samples at T's decision and does not see a same-edge
   // write; raw_hazard stalls colliding reads. Maintenance reads have no writes.
   localparam bit DataReadDirect = (DATA_MEMORY_PRIMITIVE == "block") && (DATA_WRITE_LATENCY == 1);
+  // An UltraRAM row spreads over several UltraRAM columns, far from the
+  // response and writeback logic. The last read cycle is a fabric register,
+  // so the memory's own last stage can stay beside the columns.
+  localparam bit DataReadOutputReg = (DATA_MEMORY_PRIMITIVE == "ultra");
   sdp_ram_byte_en #(
       .DATA_WIDTH(LineBits),
       .ADDR_WIDTH(IndexBits),
       .READ_LATENCY(DATA_READ_LATENCY),
       .WRITE_LATENCY(DATA_WRITE_LATENCY),
       .MEMORY_PRIMITIVE(DATA_MEMORY_PRIMITIVE),
-      .REGISTER_READ_INPUT(!DataReadDirect)
+      .REGISTER_READ_INPUT(!DataReadDirect),
+      .REGISTER_READ_OUTPUT(DataReadOutputReg)
   ) data_array (
       .i_clk(i_clk),
       .i_waddr(data_waddr),
