@@ -51,9 +51,10 @@ submodule, built by [`opensbi_build.py`](opensbi_build.py) with:
   ns16550 UART, the PLIC, and the CLINT) and `FDT_ASSUME_MASK=7`, which lets
   libfdt trust the packer's DTB.
 
-It builds with the Bootlin `riscv64-linux-` toolchain by default. Another
-toolchain, selected with `FROST_LINUX_CROSS_COMPILE` or `--cross`, must be
-Linux-targeted with a PIE-capable linker: OpenSBI links position-independent.
+It builds with the Bootlin `riscv64-linux-` toolchain by default, found on PATH
+or else in Buildroot's output, `linux/build-mmu/host/bin`. Another toolchain,
+selected with `FROST_LINUX_CROSS_COMPILE` or `--cross`, must be Linux-targeted
+with a PIE-capable linker: OpenSBI links position-independent.
 
 OpenSBI enters the payload in S-mode with `satp` Bare and `sstatus.SIE=0`. It
 delegates the SSI, STI, and SEI interrupts and the misaligned-fetch,

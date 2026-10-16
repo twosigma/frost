@@ -22,15 +22,21 @@ packer's DTB address in a1; FDT_ASSUME_MASK=7 lets libfdt trust it. Configure
 linux/opensbi through Make variables without modifying the submodule.
 
 Writes <out>/platform/generic/firmware/fw_jump.{bin,elf}. The default cross
-prefix is riscv64-linux- (the Bootlin toolchain). FROST_LINUX_CROSS_COMPILE or
---cross selects another, whose linker must support PIE.
+prefix is riscv64-linux- (the Bootlin toolchain), found on PATH or else in the
+checkout's Buildroot output, linux/build-mmu/host/bin.
+FROST_LINUX_CROSS_COMPILE or --cross selects another, whose linker must support
+PIE.
 """
 
 import argparse
 import os
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sw" / "apps"))
+from riscv_toolchain import default_riscv_prefix  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OPENSBI_DIR = REPO_ROOT / "linux" / "opensbi"
@@ -52,6 +58,19 @@ def firmware_paths(out_dir: Path) -> tuple[Path, Path]:
     """Return the (bin, elf) paths of the fw_jump build under ``out_dir``."""
     fw_dir = out_dir / "platform" / "generic" / "firmware"
     return fw_dir / "fw_jump.bin", fw_dir / "fw_jump.elf"
+
+
+def default_cross(
+    repo: Path = REPO_ROOT, environment: Mapping[str, str] = os.environ
+) -> str:
+    """Return FROST_LINUX_CROSS_COMPILE if set, else the Bootlin riscv64-linux- prefix.
+
+    An empty setting selects unprefixed tools, as for a native build. The
+    fallback looks on PATH, then in the checkout's Buildroot output, as the
+    bare-metal build helpers do.
+    """
+    configured = environment.get("FROST_LINUX_CROSS_COMPILE")
+    return default_riscv_prefix(repo) if configured is None else configured
 
 
 def build(out_dir: Path, cross: str, jobs: int, verbose: bool = False) -> Path:
@@ -109,9 +128,10 @@ def main() -> int:
     )
     parser.add_argument(
         "--cross",
-        default=os.environ.get("FROST_LINUX_CROSS_COMPILE", "riscv64-linux-"),
-        help="cross-toolchain prefix with a PIE-capable linker "
-        "(default: riscv64-linux-, or FROST_LINUX_CROSS_COMPILE)",
+        default=default_cross(),
+        help="cross-toolchain prefix with a PIE-capable linker (default: "
+        "FROST_LINUX_CROSS_COMPILE if set, else riscv64-linux- from PATH or "
+        "linux/build-mmu/host/bin)",
     )
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     parser.add_argument("--verbose", action="store_true", help="stream the make output")
