@@ -24,8 +24,8 @@ setattr -set fsm_encoding {"none"} *eth10g_mac_rx*/w:state
 # have one clock each, so Yosys cannot map that memory to standard cells, even
 # mocked as one row; it needs a two-port SRAM macro. Until it has one, its
 # programming port runs on i_clk in this flow. That port's paths to and from
-# the i_clk_div4 logic then get one core clock cycle, 3.103 ns, where the
-# design gives them a quarter-rate cycle, 12.412 ns.
+# the i_clk_div4 logic then get one core clock cycle (3.103 ns at the default
+# period) where the design gives them a quarter-rate cycle, four core cycles.
 # connect edits only modules without processes; synthesis would run proc next.
 yosys proc cpu_and_mem
 yosys cd cpu_and_mem

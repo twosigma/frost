@@ -36,6 +36,13 @@ export SYNTH_CANONICALIZE_TCL = $(DESIGN_DIR)/canonicalize.tcl
 export SYNTH_MOCK_LARGE_MEMORIES = 1
 
 export SDC_FILE = $(DESIGN_DIR)/constraint.sdc
+# FROST_CORE_CLOCK_PERIOD, from asic/orfs.py run --clock-period, replaces the
+# SDC's core clock period. ORFS hands the period to ABC as a delay target, and
+# without this line it would hand over the SDC's default. The ABC script that
+# ORFS runs does not use the target, so the netlist is the same either way.
+ifneq ($(FROST_CORE_CLOCK_PERIOD),)
+export ABC_CLOCK_PERIOD_IN_PS = $(FROST_CORE_CLOCK_PERIOD)
+endif
 # Writes reports/.../6_clock_slack.rpt for asic/orfs.py's summary.
 export POST_FINAL_REPORT_TCL = $(DESIGN_DIR)/clock_slack.tcl
 
