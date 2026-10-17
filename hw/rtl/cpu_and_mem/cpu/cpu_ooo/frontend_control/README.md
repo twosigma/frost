@@ -65,7 +65,9 @@ reports any queued unpredicted JALR (`o_indirect_pending`) to the
 control-flow serialization stall. Dispatch reads a register copy of the head
 bundle rather than the queue RAM, and takes its narrow control fields from a
 register (`o_shadow`) loaded a cycle early from ID's next-cycle value
-(`o_from_id_to_ex_next`). `cpu_ooo` keeps further copies of the shadow's
+(`o_from_id_to_ex_next`). `btb_correct_non_jalr` comes from the head bundle
+instead: ID's target compare sets it late in the cycle, and dispatch only
+stores it in the branch's RS entry. `cpu_ooo` keeps further copies of the shadow's
 source-register fields (from `o_shadow_next`) for the INT and FP RAT lookups
 and the register files' commit-bypass compares.
 

@@ -29,7 +29,11 @@
  *     i_read_no_merge set for an LR or AMO read. It completes any number of
  *     cycles later with o_read_valid, o_read_id, and o_read_data (the
  *     addressed beat), held until i_read_ready. Up to READ_SLOTS reads may be
- *     outstanding, one per slot id, and they complete in any order.
+ *     outstanding, one per slot id, and they complete in any order. With
+ *     SPLIT_READ_REQ the request also arrives as a select between two early
+ *     terms, i_read_req_sel ? i_read_req_if_sel : i_read_req_if_clear, which
+ *     must equal i_read_req; the accept state takes the select at its last
+ *     LUT.
  *   - i_write_byte_en != 0: a cached-region store fired this cycle, with its
  *     address on i_req_addr and its data on i_write_data, completed by an
  *     o_write_done pulse. One store is in flight at a time. o_write_inflight
@@ -72,6 +76,9 @@ module cached_tier_adapter #(
     // uses id READ_SLOTS.
     parameter int unsigned LINE_ID_BITS = 4,
     parameter int unsigned READ_SLOTS = riscv_pkg::CachedLoadSlots,
+    // Take the request's late term as the last select before each accept-state
+    // flop, for timing. The split inputs are unused when this is clear.
+    parameter bit SPLIT_READ_REQ = 1'b0,
     localparam int unsigned SlotBits = (READ_SLOTS > 1) ? $clog2(READ_SLOTS) : 1
 ) (
     input logic i_clk,
@@ -79,6 +86,9 @@ module cached_tier_adapter #(
 
     // Router-facing request side (one aligned beat per transaction).
     input logic                              i_read_req,
+    input logic                              i_read_req_sel,
+    input logic                              i_read_req_if_sel,
+    input logic                              i_read_req_if_clear,
     input logic [              SlotBits-1:0] i_read_id,
     input logic                              i_read_no_merge,
     input logic [                  XLEN-1:0] i_req_addr,
@@ -260,11 +270,7 @@ module cached_tier_adapter #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      rd_valid_q          <= '0;
       rd_ready_q          <= '0;
-      grp_live_q          <= '0;
-      grp_sent_q          <= '0;
-      grp_open_q          <= '0;
       rr_q                <= '0;
       pending_write_valid <= 1'b0;
       pending_write_sent  <= 1'b0;
@@ -275,14 +281,8 @@ module cached_tier_adapter #(
       o_write_done <= 1'b0;
       resp_read_q  <= resp_is_read;
 
-      // A store closes every group (no read is accepted while it is pending).
-      if (write_fire) grp_open_q <= '0;
-
       // Launch.
-      if (line_req_fire) begin
-        if (issue_write) pending_write_sent <= 1'b1;
-        else grp_sent_q[issue_read_sel] <= 1'b1;
-      end
+      if (line_req_fire && issue_write) pending_write_sent <= 1'b1;
 
       // Line responses: a read response completes its group, and on the next
       // edge its members are ready, but for one bypassed to the output
@@ -290,10 +290,6 @@ module cached_tier_adapter #(
       if (resp_is_write) begin
         pending_write_valid <= 1'b0;
         o_write_done        <= 1'b1;
-      end
-      if (resp_is_read) begin
-        grp_live_q[resp_group] <= 1'b0;
-        grp_open_q[resp_group] <= 1'b0;
       end
       for (int s = 0; s < int'(READ_SLOTS); s++) begin
         if (answered[s]) rd_ready_q[s] <= 1'b1;
@@ -304,24 +300,7 @@ module cached_tier_adapter #(
         o_read_valid <= ready_any || resp_is_read;
         if (ready_any) begin
           rd_ready_q[ready_pick] <= 1'b0;
-          rd_valid_q[ready_pick] <= 1'b0;
           rr_q                   <= ready_pick + 1'b1;
-        end else if (bypass) begin
-          rd_valid_q[bypass_slot] <= 1'b0;
-        end
-      end
-
-      // Accept (after the output clears above; a slot accepted here was free,
-      // so it is not ready).
-      if (i_read_req) begin
-        rd_valid_q[i_read_id] <= 1'b1;
-        if (attach_any) begin
-          rd_group_oh_q[i_read_id] <= attach_match;
-        end else begin
-          rd_group_oh_q[i_read_id] <= READ_SLOTS'(1) << i_read_id;
-          grp_live_q[i_read_id] <= 1'b1;
-          grp_sent_q[i_read_id] <= 1'b0;
-          grp_open_q[i_read_id] <= !i_read_no_merge;
         end
       end
       if (write_fire && !pending_write_valid) begin
@@ -335,16 +314,194 @@ module cached_tier_adapter #(
   end
 
   // Address capture and beat payloads (no reset).
+  // ---- Accept state: slot valid and the slot's group bits ------------------------
+  // The request's select and each slot's line-port term (the response that
+  // answers or bypasses it, or the line request that sends its group) are the
+  // late inputs, so they meet only at the last LUT before each flop. With
+  // SPLIT_READ_REQ the select is the router's live-launch bit; without it, the
+  // request itself. The other inputs come from registers or early terms. An
+  // accepted slot was free, so neither the output nor a response concerns it in
+  // its accept cycle. A read that joins a group leaves its slot's group bits
+  // alone. A store closes every group; no read is accepted while it fires.
+  logic                  read_sel;
+  logic                  read_if_sel;
+  logic                  read_if_clear;
+  logic                  open_new;
+  logic [READ_SLOTS-1:0] slot_hit;
+  // The slot is accepted if the select is set, or clear, and opens a group.
+  logic [READ_SLOTS-1:0] acc_if_sel, acc_if_clear, open_if_sel, open_if_clear;
+  // Late per-slot line-port terms.
+  logic [READ_SLOTS-1:0] resp_hit, bypass_hit, sent_hit;
+  logic [READ_SLOTS-1:0] valid_keep, open_keep;
+  logic [READ_SLOTS-1:0] valid_next, live_next, sent_next, open_next;
+  assign read_sel      = SPLIT_READ_REQ ? i_read_req_sel : i_read_req;
+  assign read_if_sel   = SPLIT_READ_REQ ? i_read_req_if_sel : 1'b1;
+  assign read_if_clear = SPLIT_READ_REQ ? i_read_req_if_clear : 1'b0;
+  assign open_new      = !i_read_no_merge;
+  always_comb begin
+    for (int s = 0; s < int'(READ_SLOTS); s++) begin
+      slot_hit[s] = i_read_id == SlotBits'(s);
+      acc_if_sel[s] = read_if_sel && slot_hit[s];
+      acc_if_clear[s] = read_if_clear && slot_hit[s];
+      open_if_sel[s] = acc_if_sel[s] && !attach_any;
+      open_if_clear[s] = acc_if_clear[s] && !attach_any;
+      resp_hit[s] = resp_is_read && (resp_group == SlotBits'(s));
+      bypass_hit[s] = bypass && (bypass_slot == SlotBits'(s));
+      sent_hit[s] = line_req_fire && !issue_write && (issue_read_sel == SlotBits'(s));
+      valid_keep[s] = rd_valid_q[s] && !(out_take && ready_any && (ready_pick == SlotBits'(s)));
+      open_keep[s] = grp_open_q[s] && !write_fire;
+    end
+  end
+
+  // Final LUT functions, inputs listed I4 (or I5) down to I0:
+  //   valid: sel, acc_if_sel, acc_if_clear, valid_keep, bypass_hit
+  //          (sel ? acc_if_sel : acc_if_clear) | (valid_keep & !bypass_hit)
+  //   live:  sel, open_if_sel, open_if_clear, grp_live_q, resp_hit
+  //          (sel ? open_if_sel : open_if_clear) | (grp_live_q & !resp_hit)
+  //   sent:  sel, open_if_sel, open_if_clear, grp_sent_q, sent_hit
+  //          (sel ? open_if_sel : open_if_clear) ? 0 : (grp_sent_q | sent_hit)
+  //   open:  sel, open_if_sel, open_if_clear, open_new, open_keep, resp_hit
+  //          (sel ? open_if_sel : open_if_clear) ? open_new : (open_keep & !resp_hit)
+  localparam logic [31:0] ValidInit = 32'hff44f4f4;
+  localparam logic [31:0] LiveInit  = 32'hff44f4f4;
+  localparam logic [31:0] SentInit  = 32'h00ee0e0e;
+  localparam logic [63:0] OpenInit  = 64'hf0f04444f044f044;
+  for (genvar s = 0; s < int'(READ_SLOTS); s++) begin : gen_accept_slot
+`ifdef FROST_XILINX_PRIMS
+    (* dont_touch = "true" *)
+    LUT5 #(
+        .INIT(ValidInit)
+    ) u_valid (
+        .I0(bypass_hit[s]),
+        .I1(valid_keep[s]),
+        .I2(acc_if_clear[s]),
+        .I3(acc_if_sel[s]),
+        .I4(read_sel),
+        .O (valid_next[s])
+    );
+    (* dont_touch = "true" *)
+    LUT5 #(
+        .INIT(LiveInit)
+    ) u_live (
+        .I0(resp_hit[s]),
+        .I1(grp_live_q[s]),
+        .I2(open_if_clear[s]),
+        .I3(open_if_sel[s]),
+        .I4(read_sel),
+        .O (live_next[s])
+    );
+    (* dont_touch = "true" *)
+    LUT5 #(
+        .INIT(SentInit)
+    ) u_sent (
+        .I0(sent_hit[s]),
+        .I1(grp_sent_q[s]),
+        .I2(open_if_clear[s]),
+        .I3(open_if_sel[s]),
+        .I4(read_sel),
+        .O (sent_next[s])
+    );
+    (* dont_touch = "true" *)
+    LUT6 #(
+        .INIT(OpenInit)
+    ) u_open (
+        .I0(resp_hit[s]),
+        .I1(open_keep[s]),
+        .I2(open_new),
+        .I3(open_if_clear[s]),
+        .I4(open_if_sel[s]),
+        .I5(read_sel),
+        .O (open_next[s])
+    );
+`else
+    logic opens;
+    assign opens = read_sel ? open_if_sel[s] : open_if_clear[s];
+    assign valid_next[s] = (read_sel ? acc_if_sel[s] : acc_if_clear[s]) ||
+        (valid_keep[s] && !bypass_hit[s]);
+    assign live_next[s] = opens || (grp_live_q[s] && !resp_hit[s]);
+    assign sent_next[s] = !opens && (grp_sent_q[s] || sent_hit[s]);
+    assign open_next[s] = opens ? open_new : (open_keep[s] && !resp_hit[s]);
+`endif
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      rd_valid_q <= '0;
+      grp_live_q <= '0;
+      grp_sent_q <= '0;
+      grp_open_q <= '0;
+    end else begin
+      rd_valid_q <= valid_next;
+      grp_live_q <= live_next;
+      grp_sent_q <= sent_next;
+      grp_open_q <= open_next;
+    end
+  end
+
+`ifndef SYNTHESIS
+  // The accept state follows its unsplit definition, and each final LUT's INIT
+  // gives the same bit as the portable form above.
+  always_comb begin
+    for (int s = 0; s < int'(READ_SLOTS); s++) begin
+      logic acc, opens, valid_ref, live_ref, sent_ref, open_ref, known;
+      logic [4:0] valid_idx, live_idx, sent_idx;
+      logic [5:0] open_idx;
+      acc = i_read_req && slot_hit[s];
+      opens = acc && !attach_any;
+      valid_ref = acc || (rd_valid_q[s] && !bypass_hit[s] &&
+                          !(out_take && ready_any && (ready_pick == SlotBits'(s))));
+      live_ref = opens || (grp_live_q[s] && !resp_hit[s]);
+      sent_ref = !opens && (grp_sent_q[s] || sent_hit[s]);
+      open_ref = opens ? open_new : (grp_open_q[s] && !write_fire && !resp_hit[s]);
+      // LUT inputs, I4 (or I5) down to I0.
+      valid_idx = {read_sel, acc_if_sel[s], acc_if_clear[s], valid_keep[s], bypass_hit[s]};
+      live_idx = {read_sel, open_if_sel[s], open_if_clear[s], grp_live_q[s], resp_hit[s]};
+      sent_idx = {read_sel, open_if_sel[s], open_if_clear[s], grp_sent_q[s], sent_hit[s]};
+      open_idx = {read_sel, open_if_sel[s], open_if_clear[s], open_new, open_keep[s], resp_hit[s]};
+      known = !$isunknown(
+          {
+            i_read_req,
+            read_if_sel,
+            read_if_clear,
+            attach_any,
+            rd_valid_q[s],
+            grp_live_q[s],
+            grp_sent_q[s],
+            grp_open_q[s],
+            write_fire,
+            valid_idx,
+            live_idx,
+            sent_idx,
+            open_idx
+          }
+      );
+      if (!i_rst && known && ((read_sel ? read_if_sel : read_if_clear) == i_read_req)) begin
+        p_accept_state_exact :
+        assert ({valid_next[s], live_next[s], sent_next[s], open_next[s]} ==
+                {valid_ref, live_ref, sent_ref, open_ref});
+        p_accept_lut_inits :
+        assert ({ValidInit[valid_idx], LiveInit[live_idx], SentInit[sent_idx],
+                 OpenInit[open_idx]} == {valid_ref, live_ref, sent_ref, open_ref});
+      end
+    end
+  end
+`endif
+
   always_ff @(posedge i_clk) begin
     resp_group_q <= resp_group;
-    // The LQ launches only into a free slot. Sampling free addresses captures
-    // the request on its accepting edge. A slot that is neither ready nor just
+    // The LQ launches only into a free slot. Sampling free addresses and join
+    // groups captures the request on its accepting edge; a free slot's group
+    // is never read, since every use qualifies it with rd_valid_q. A slot that
+    // is neither ready nor just
     // answered takes the response port's beat every cycle, so a waiting read
     // has its group's beat on the response edge, and a read that joins the
-    // group answered on its accepting edge has it too. Neither enable waits
-    // for i_read_req or the response id.
+    // group answered on its accepting edge has it too. No enable waits for
+    // i_read_req or the response id.
     for (int s = 0; s < int'(READ_SLOTS); s++) begin
-      if (!rd_valid_q[s]) rd_addr_q[s] <= i_req_addr;
+      if (!rd_valid_q[s]) begin
+        rd_addr_q[s] <= i_req_addr;
+        rd_group_oh_q[s] <= attach_any ? attach_match : READ_SLOTS'(1) << s;
+      end
       if (!rd_ready_q[s] && !answered[s])
         rd_data_q[s] <= rd_valid_q[s] ? resp_beat[s] : accept_beat;
     end
@@ -357,24 +514,32 @@ module cached_tier_adapter #(
   assign o_write_inflight = pending_write_valid;
 
 `ifndef SYNTHESIS
-  logic                launch_check_q;
-  logic [SlotBits-1:0] launch_id_q;
-  logic [    XLEN-1:0] launch_addr_q;
+  logic                  launch_check_q;
+  logic [  SlotBits-1:0] launch_id_q;
+  logic [      XLEN-1:0] launch_addr_q;
+  logic [READ_SLOTS-1:0] launch_group_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) launch_check_q <= 1'b0;
     if (!i_rst) begin
       if (i_read_req && rd_valid_q[i_read_id])
         $error("cached_tier_adapter: read request on slot %0d while it is pending", i_read_id);
+      if (SPLIT_READ_REQ &&
+          i_read_req !== (i_read_req_sel ? i_read_req_if_sel : i_read_req_if_clear))
+        $error("cached_tier_adapter: split read request disagrees with i_read_req");
       if (i_read_req && write_fire)
         $error("cached_tier_adapter: read request in the cycle a store fires");
       if (i_read_req && !$onehot0(attach_match))
         $error("cached_tier_adapter: two open groups of one line: %b", attach_match);
-      // The free-slot sampling above captures the launched address exactly.
+      // The free-slot sampling above captures the launched address and join
+      // group exactly.
       launch_check_q <= i_read_req;
       launch_id_q    <= i_read_id;
       launch_addr_q  <= i_req_addr;
+      launch_group_q <= attach_any ? attach_match : READ_SLOTS'(1) << i_read_id;
       if (launch_check_q && rd_addr_q[launch_id_q] !== launch_addr_q)
         $error("cached_tier_adapter: slot %0d did not capture its launch address", launch_id_q);
+      if (launch_check_q && rd_group_oh_q[launch_id_q] !== launch_group_q)
+        $error("cached_tier_adapter: slot %0d did not capture its join group", launch_id_q);
       if (write_fire && pending_write_valid)
         $error("cached_tier_adapter: write request while a write is already pending");
       if (resp_is_write && !pending_write_sent)

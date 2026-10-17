@@ -35,6 +35,8 @@
  * slot, and the fast tier's fixed-latency response takes the LQ response port
  * first while the adapter holds a cached one (o_cached_read_ready). While a
  * cached store is pending, i_cached_write_inflight keeps the write port busy.
+ * The cached read enable also leaves split on its one late term, the live LQ
+ * launch (o_data_mem_cached_read_sel), so the adapter can apply it last.
  *
  * Addresses have passed the PMA: bits 63:32 are zero, and a load in the
  * device quadrant (addr[31:30] = 01) is inside a served device window, since
@@ -123,6 +125,11 @@ module data_mem_request_router #(
     // single cycle a cached AMO write is launched to the adapter.
     output logic [       riscv_pkg::MemDataBits-1:0] o_data_mem_cached_wr_data,
     output logic                                     o_data_mem_cached_read_enable,
+    // o_data_mem_cached_read_enable as (sel ? if_sel : if_clear), with early
+    // cofactors: sel is the live LQ launch.
+    output logic                                     o_data_mem_cached_read_sel,
+    output logic                                     o_data_mem_cached_read_if_sel,
+    output logic                                     o_data_mem_cached_read_if_clear,
     output logic [riscv_pkg::CachedLoadSlotBits-1:0] o_data_mem_cached_read_id,
     output logic                                     o_data_mem_cached_read_no_merge,
     output logic                                     o_mmio_read_pulse,
@@ -238,6 +245,14 @@ module data_mem_request_router #(
   assign lq_mem_request_is_cached =
       (lq_mem_request_addr_eff >= XLEN'(CACHED_BASE)) &&
       (lq_mem_request_addr_eff <  (XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)));
+  // The same decode of the live and the held address, for the split enable.
+  logic lq_live_is_cached, lq_held_is_cached;
+  assign lq_live_is_cached =
+      (lq_mem_read_addr >= XLEN'(CACHED_BASE)) &&
+      (lq_mem_read_addr <  (XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)));
+  assign lq_held_is_cached =
+      (lq_mem_request_addr >= XLEN'(CACHED_BASE)) &&
+      (lq_mem_request_addr <  (XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)));
 
   // The LQ holds AMO write enable until done. The cached adapter requires a
   // single launch pulse, so amo_cached_inflight blocks repeats until done.
@@ -345,6 +360,13 @@ module data_mem_request_router #(
     // Only cached loads may trigger cache lookup side effects: miss, fill,
     // and eviction.
     o_data_mem_cached_read_enable = o_data_mem_read_enable && lq_mem_request_is_cached;
+    // A live launch never overlaps a held request, so with one the live read
+    // is the only candidate, and without one only the held request can be
+    // accepted.
+    o_data_mem_cached_read_sel = lq_mem_read_en;
+    o_data_mem_cached_read_if_sel = !i_rst && !i_flush_all && !write_port_busy &&
+        !lq_live_request_requires_park && lq_live_is_cached;
+    o_data_mem_cached_read_if_clear = lq_pending_read_accepted && lq_held_is_cached;
     o_data_mem_cached_read_id = lq_mem_request_id_eff;
     o_data_mem_cached_read_no_merge = lq_mem_request_no_merge_eff;
 
@@ -445,6 +467,19 @@ module data_mem_request_router #(
     end
   end
 
+`ifndef SYNTHESIS
+  always_comb begin
+    if (!$isunknown(
+            {lq_mem_request_valid, lq_mem_read_en, o_data_mem_cached_read_enable,
+                     o_data_mem_cached_read_if_sel, o_data_mem_cached_read_if_clear}
+        ) && !(lq_mem_request_valid && lq_mem_read_en)) begin
+      p_cached_read_split_exact :
+      assert (o_data_mem_cached_read_enable ==
+              (o_data_mem_cached_read_sel ? o_data_mem_cached_read_if_sel :
+                                            o_data_mem_cached_read_if_clear));
+    end
+  end
+`endif
 `ifndef SYNTHESIS
 `ifndef FORMAL
   // The LQ's bus-busy gate includes the valid bit, so the one-entry register
