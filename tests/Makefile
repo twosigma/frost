@@ -472,9 +472,10 @@ export PYTHONPATH := $(ROOT)/verif:$(ROOT)/tests:$(PYTHONPATH)
 NUMBER_OF_CPU_CORES ?= $(shell nproc)
 
 # Use one simulation thread to avoid multithreaded VPI overhead. Parallelize
-# C++ compilation with VERILATOR_MAKE_FLAGS and HDL conversion with EXTRA_ARGS -j.
+# C++ compilation with BUILD_ARGS, which cocotb passes to the make that
+# compiles the Verilated model, and HDL conversion with EXTRA_ARGS -j.
 export VERILATOR_THREADS := 1
-export VERILATOR_MAKE_FLAGS := -j$(NUMBER_OF_CPU_CORES)
+BUILD_ARGS += -j$(NUMBER_OF_CPU_CORES)
 
 # Extra Verilator arguments: parallel verilation and optional waveforms.
 # -Wno-UNOPTFLAT: Verilator calls a signal circular when some of its bits or

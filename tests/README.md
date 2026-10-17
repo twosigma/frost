@@ -297,7 +297,7 @@ Each target and task is a separate pytest case with a 40-minute timeout;
 | `FROST_COCOTB_MEM_CONFIG` | Application memory tier (`bram` default, or `ddr`) |
 | `FROST_DDR_MODEL_SEED` | Draws the DDR model's latency (1 to 80 cycles), latency jitter, and out-of-order completion for whole-SoC builds from this string, and prints the draw. A setting the target pins, in its registry entry, in `FROST_VERILATOR_EXTRA_ARGS`, or with `DDR_MODEL_LATENCY`, keeps its value |
 | `WAVES=1` | Write `dump.fst` waveforms |
-| `NUMBER_OF_CPU_CORES` | Parallel Verilator build jobs (default: every core) |
+| `NUMBER_OF_CPU_CORES` | Parallel Verilator build jobs (default: every core; a seed sweep divides them among its workers) |
 | `COCOTB_MAX_CYCLES` | Cycle budget per application run (default 500,000); some targets set their own |
 | `COCOTB_COREMARK_MAX_CYCLES` | CoreMark and CoreMark-PRO cycle budget (default 15,000,000; coremark_pro_loops sets 20,000,000 in the test registry) |
 | `COCOTB_NUM_RUNS` | Runs per application, with a reset between them (default 2; always 1 in the DDR tier) |

@@ -59,3 +59,35 @@ def test_parallel_make_runs_simulator_with_existing_results(tmp_path: Path) -> N
         assert (tmp_path / "invocations").read_text().splitlines() == [
             "simulate"
         ] * expected_runs
+
+
+def _make_command(root: Path, build: Path) -> list[str]:
+    """Return a make command for the cdb_arbiter bench, built in ``build``."""
+    return [
+        "make",
+        "--no-print-directory",
+        "-f",
+        str(root / "tests/Makefile"),
+        f"ROOT={root}",
+        "TOPLEVEL=cdb_arbiter",
+        f"SIM_BUILD={build}",
+        "NUMBER_OF_CPU_CORES=3",
+    ]
+
+
+def _dry_run(command: list[str], cwd: Path) -> str:
+    """Return the commands make would run."""
+    result = subprocess.run(
+        [*command, "-n"], cwd=cwd, capture_output=True, text=True, timeout=30
+    )
+    return result.stdout
+
+
+def test_model_compiles_with_parallel_jobs(tmp_path: Path) -> None:
+    """The Verilated model's C++ compiles with NUMBER_OF_CPU_CORES jobs."""
+    root = Path(__file__).resolve().parents[1]
+    build = tmp_path / "sim_build"
+    build.mkdir()
+    (build / "Vtop.mk").write_text("all:\n\t@true\n")
+    output = _dry_run([*_make_command(root, build), f"{build}/Vtop"], tmp_path)
+    assert f"-C {build} -j3 -f Vtop.mk" in output

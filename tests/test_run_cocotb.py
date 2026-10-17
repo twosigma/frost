@@ -2779,6 +2779,14 @@ def run_seed_sweep(
 
     # Prepare shared app images and links before any worker can read them.
     parent_runner = CocotbRunner.from_config(TEST_REGISTRY[test_name])
+    workers = max_workers if max_workers else min(num_seeds, os.cpu_count() or 4)
+    # Every worker compiles its own model, so the workers share the cores
+    # unless NUMBER_OF_CPU_CORES says otherwise.
+    cores_set = "NUMBER_OF_CPU_CORES" in os.environ
+    if not cores_set:
+        os.environ["NUMBER_OF_CPU_CORES"] = str(
+            max(1, (os.cpu_count() or 4) // workers)
+        )
     # from_config applies the entry's extra_env to os.environ; the workers
     # inherit it, and the finally below restores it once the pool is done.
     try:
@@ -2796,7 +2804,6 @@ def run_seed_sweep(
                     )
 
         results: dict[int, tuple[bool, str]] = {}
-        workers = max_workers if max_workers else min(num_seeds, os.cpu_count() or 4)
 
         with tempfile.TemporaryDirectory(prefix="frost_seed_sweep_") as temp_dir:
             with ProcessPoolExecutor(max_workers=workers) as executor:
@@ -2826,6 +2833,8 @@ def run_seed_sweep(
                     mem_path.unlink()
     finally:
         parent_runner.restore_environment()
+        if not cores_set:
+            del os.environ["NUMBER_OF_CPU_CORES"]
 
     passed_seeds = [s for s, (p, _) in results.items() if p]
     failed_seeds = [s for s, (p, _) in results.items() if not p]

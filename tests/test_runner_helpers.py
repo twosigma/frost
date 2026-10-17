@@ -495,9 +495,12 @@ def test_seed_sweep_restores_the_environment(monkeypatch: pytest.MonkeyPatch) ->
             self, function: Callable[..., object], *args: object
         ) -> Future[object]:
             del function
+            worker_cores.append(os.environ.get("NUMBER_OF_CPU_CORES"))
             future: Future[object] = Future()
             future.set_result((args[1], True, ""))
             return future
+
+    worker_cores: list[str | None] = []
 
     config = test_run_cocotb.CocotbRunConfig(
         python_test_module="cocotb_tests.sweep_probe",
@@ -507,8 +510,14 @@ def test_seed_sweep_restores_the_environment(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setitem(test_run_cocotb.TEST_REGISTRY, "sweep_probe", config)
     monkeypatch.setattr(test_run_cocotb, "ProcessPoolExecutor", _InlineExecutor)
     monkeypatch.delenv("FROST_SWEEP_ENV_PROBE", raising=False)
+    monkeypatch.delenv("NUMBER_OF_CPU_CORES", raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 8)
 
-    report = test_run_cocotb.run_seed_sweep("sweep_probe", num_seeds=1)
+    report = test_run_cocotb.run_seed_sweep("sweep_probe", num_seeds=2)
 
-    assert report["passed"] == 1
+    assert report["passed"] == 2
     assert "FROST_SWEEP_ENV_PROBE" not in os.environ
+    # The two workers split the eight cores for their builds, and the
+    # setting ends with the sweep.
+    assert worker_cores == ["4", "4"]
+    assert "NUMBER_OF_CPU_CORES" not in os.environ
