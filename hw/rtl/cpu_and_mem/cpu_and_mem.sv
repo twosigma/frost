@@ -480,6 +480,9 @@ module cpu_and_mem #(
   // completes them with handshake pulses.
   logic [riscv_pkg::MemStrbBits-1:0] data_memory_cached_byte_write_enable;
   logic data_memory_cached_read_enable;
+  logic data_memory_cached_read_sel;
+  logic data_memory_cached_read_if_sel;
+  logic data_memory_cached_read_if_clear;
   logic [riscv_pkg::CachedLoadSlotBits-1:0] data_memory_cached_read_id;
   logic data_memory_cached_read_no_merge;
   logic [riscv_pkg::MemDataBits-1:0] data_memory_cached_read_data;
@@ -716,6 +719,9 @@ module cpu_and_mem #(
       .o_data_mem_cached_byte_wr_en(data_memory_cached_byte_write_enable),
       .o_data_mem_cached_wr_data(data_memory_cached_write_data),
       .o_data_mem_cached_read_enable(data_memory_cached_read_enable),
+      .o_data_mem_cached_read_sel(data_memory_cached_read_sel),
+      .o_data_mem_cached_read_if_sel(data_memory_cached_read_if_sel),
+      .o_data_mem_cached_read_if_clear(data_memory_cached_read_if_clear),
       .o_data_mem_cached_read_id(data_memory_cached_read_id),
       .o_data_mem_cached_read_no_merge(data_memory_cached_read_no_merge),
       .i_cached_read_data(data_memory_response_data),
@@ -1722,11 +1728,15 @@ module cpu_and_mem #(
     cached_tier_adapter #(
         .XLEN(32),
         .LINE_BYTES(L1LineBytes),
-        .LINE_ID_BITS(LineIdBits)
+        .LINE_ID_BITS(LineIdBits),
+        .SPLIT_READ_REQ(1'b1)
     ) cached_adapter (
         .i_clk(i_clk),
         .i_rst(rst_core),
         .i_read_req(data_memory_cached_read_enable),
+        .i_read_req_sel(data_memory_cached_read_sel),
+        .i_read_req_if_sel(data_memory_cached_read_if_sel),
+        .i_read_req_if_clear(data_memory_cached_read_if_clear),
         .i_read_id(data_memory_cached_read_id),
         .i_read_no_merge(data_memory_cached_read_no_merge),
         .i_req_addr(data_memory_address),
@@ -2148,8 +2158,12 @@ module cpu_and_mem #(
     logic [riscv_pkg::CachedLoadSlots-1:0] stub_read_pending_q;
     /* verilator lint_off UNUSEDSIGNAL */  // the stub shares no line requests
     logic stub_read_no_merge_unused;
+    logic [2:0] stub_read_split_unused;  // and takes the request unsplit
     /* verilator lint_on UNUSEDSIGNAL */
     assign stub_read_no_merge_unused = data_memory_cached_read_no_merge;
+    assign stub_read_split_unused = {
+      data_memory_cached_read_sel, data_memory_cached_read_if_sel, data_memory_cached_read_if_clear
+    };
     always_comb begin
       data_memory_cached_resp_id = '0;
       for (int s = int'(riscv_pkg::CachedLoadSlots) - 1; s >= 0; s--) begin

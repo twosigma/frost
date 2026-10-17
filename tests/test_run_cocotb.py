@@ -1253,6 +1253,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "and out-of-order responses against a line-port model"
         ),
     ),
+    "cached_tier_adapter_split": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.memory.test_cached_tier_adapter",
+        hdl_toplevel_module="cached_tier_adapter",
+        description=(
+            "The cached_tier_adapter bench with the read request split on its late "
+            "term (SPLIT_READ_REQ), as the core builds the adapter"
+        ),
+        verilator_extra_args=("-GSPLIT_READ_REQ=1",),
+        extra_env=(("ADAPTER_SPLIT_READ_REQ", "1"),),
+    ),
     "data_mem_request_router": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_request_router",
         hdl_toplevel_module="data_mem_request_router",

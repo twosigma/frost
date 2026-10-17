@@ -153,6 +153,11 @@ module cpu_ooo #(
     // launch cycle. Cached AMOs run at the ROB head.
     output logic [riscv_pkg::MemDataBits-1:0] o_data_mem_cached_wr_data,
     output logic o_data_mem_cached_read_enable,
+    // The cached read enable split on its late term, the live LQ launch:
+    // enable == (sel ? if_sel : if_clear), with early cofactors.
+    output logic o_data_mem_cached_read_sel,
+    output logic o_data_mem_cached_read_if_sel,
+    output logic o_data_mem_cached_read_if_clear,
     // Slot id of a cached read (several may be in flight); the adapter tags
     // its responses with it and holds a response while a fast-tier response
     // is using the LQ response port.
@@ -3243,6 +3248,9 @@ module cpu_ooo #(
       .o_data_mem_cached_byte_wr_en(o_data_mem_cached_byte_wr_en),
       .o_data_mem_cached_wr_data(o_data_mem_cached_wr_data),
       .o_data_mem_cached_read_enable(o_data_mem_cached_read_enable),
+      .o_data_mem_cached_read_sel(o_data_mem_cached_read_sel),
+      .o_data_mem_cached_read_if_sel(o_data_mem_cached_read_if_sel),
+      .o_data_mem_cached_read_if_clear(o_data_mem_cached_read_if_clear),
       .o_data_mem_cached_read_id(o_data_mem_cached_read_id),
       .o_data_mem_cached_read_no_merge(o_data_mem_cached_read_no_merge),
       .o_mmio_read_pulse(o_mmio_read_pulse),
