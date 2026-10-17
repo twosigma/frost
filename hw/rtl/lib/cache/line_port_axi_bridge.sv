@@ -62,15 +62,18 @@
  * BASE_ADDR is subtracted from the line address so the AXI side sees a
  * zero-based region offset: in simulation the behavioral DDR indexes from 0,
  * and on hardware the memory controller's address space also starts at 0.
- * For the 1 GiB region at 0x8000_0000 the subtraction reduces to dropping the
- * top address bit.
+ * The AXI address width is independently configurable because a physical
+ * aperture can start above zero while its zero-based controller offset needs
+ * fewer bits. For the default 1 GiB region at 0x8000_0000 the subtraction
+ * reduces to dropping the top address bit.
  */
 module line_port_axi_bridge #(
     parameter int unsigned ADDR_WIDTH = 32,
+    parameter int unsigned AXI_ADDR_WIDTH = ADDR_WIDTH,
     parameter int unsigned LINE_BYTES = 32,
     parameter int unsigned ID_BITS = 4,
     parameter int unsigned AXI_ID_BITS = 4,
-    parameter logic [31:0] BASE_ADDR = 32'h8000_0000
+    parameter logic [ADDR_WIDTH-1:0] BASE_ADDR = ADDR_WIDTH'(32'h8000_0000)
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -93,7 +96,7 @@ module line_port_axi_bridge #(
     output logic                    o_axi_awvalid,
     input  logic                    i_axi_awready,
     output logic [ AXI_ID_BITS-1:0] o_axi_awid,
-    output logic [            31:0] o_axi_awaddr,
+    output logic [AXI_ADDR_WIDTH-1:0] o_axi_awaddr,
     output logic [             7:0] o_axi_awlen,
     output logic [             2:0] o_axi_awsize,
     output logic [             1:0] o_axi_awburst,
@@ -109,7 +112,7 @@ module line_port_axi_bridge #(
     output logic                    o_axi_arvalid,
     input  logic                    i_axi_arready,
     output logic [ AXI_ID_BITS-1:0] o_axi_arid,
-    output logic [            31:0] o_axi_araddr,
+    output logic [AXI_ADDR_WIDTH-1:0] o_axi_araddr,
     output logic [             7:0] o_axi_arlen,
     output logic [             2:0] o_axi_arsize,
     output logic [             1:0] o_axi_arburst,
@@ -134,17 +137,19 @@ module line_port_axi_bridge #(
 
   initial begin
     if (AXI_ID_BITS < ID_BITS) $fatal(1, "line_port_axi_bridge: AXI_ID_BITS must cover ID_BITS");
+    if (AXI_ADDR_WIDTH > ADDR_WIDTH || AXI_ADDR_WIDTH < 1)
+      $fatal(1, "line_port_axi_bridge: AXI_ADDR_WIDTH must be in 1..ADDR_WIDTH");
   end
 
   // ---- Issue registers ------------------------------------------------------
   // The valids clear on their handshakes and on i_axi_rst, never on i_rst
   // (see the header); the initializers are the power-up state.
   logic                    ar_valid_q = 1'b0;
-  logic [            31:0] ar_addr_q;
+  logic [AXI_ADDR_WIDTH-1:0] ar_addr_q;
   logic [     ID_BITS-1:0] ar_id_q;
   logic                    aw_valid_q = 1'b0;
   logic                    w_valid_q = 1'b0;
-  logic [            31:0] aw_addr_q;
+  logic [AXI_ADDR_WIDTH-1:0] aw_addr_q;
   logic [     ID_BITS-1:0] aw_id_q;
   logic [LINE_BYTES*8-1:0] w_data_q;
   logic [  LINE_BYTES-1:0] w_strb_q;
@@ -198,13 +203,13 @@ module line_port_axi_bridge #(
       if (i_req_write) begin
         aw_valid_q <= 1'b1;
         w_valid_q  <= 1'b1;
-        aw_addr_q  <= i_req_addr - BASE_ADDR;
+        aw_addr_q  <= AXI_ADDR_WIDTH'(i_req_addr - BASE_ADDR);
         aw_id_q    <= i_req_id;
         w_data_q   <= i_req_wdata;
         w_strb_q   <= i_req_wstrb;
       end else begin
         ar_valid_q <= 1'b1;
-        ar_addr_q  <= i_req_addr - BASE_ADDR;
+        ar_addr_q  <= AXI_ADDR_WIDTH'(i_req_addr - BASE_ADDR);
         ar_id_q    <= i_req_id;
       end
     end

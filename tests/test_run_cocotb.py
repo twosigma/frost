@@ -1843,6 +1843,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         verilator_extra_args=("-GLINE_BYTES=64",),
     ),
+    "line_port_axi_bridge_wide": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_line_port_axi_bridge",
+        hdl_toplevel_module="line_port_axi_bridge",
+        description="37-bit physical lines and 36-bit DDR offsets without 4 GiB aliases",
+        verilator_extra_args=(
+            "-GLINE_BYTES=64",
+            "-GADDR_WIDTH=37",
+            "-GAXI_ADDR_WIDTH=36",
+        ),
+    ),
     "x3_ddr_init": CocotbRunConfig(
         python_test_module="cocotb_tests.test_x3_ddr_init",
         hdl_toplevel_module="x3_ddr_init",
