@@ -113,13 +113,14 @@ FROST_LINUX_PREBUILT=1 ./fpga/load_software/load_software.py x3 linux_boot
 The loader's clean step then keeps the staged files, and the build skips
 Buildroot. The images must already match the board's clock and DDR size.
 
-## The kernel and the NIC driver
+## The kernel and the driver modules
 
 [`debian_kernel.py`](../debian_kernel.py) fetches and verifies the pinned
-Debian kernel, builds the [NIC module](../frost-net10g/README.md) against its
-headers, and adds the module to the test initramfs. The
-[kernel](../README.md#kernel) and [module](../README.md#nic-module) sections
-of the Linux reference describe its commands.
+Debian kernel, builds the [NIC](../frost-net10g/README.md) and
+[memory error](../frost-memerr/README.md) modules against its headers, and
+adds the modules to the test initramfs. The [kernel](../README.md#kernel) and
+[module](../README.md#driver-modules) sections of the Linux reference describe
+its commands.
 
 CI builds these images and boots them under QEMU. On the X3,
 `fpga/linux_boot_soak.py` boots the test image repeatedly, and the hardware

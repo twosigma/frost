@@ -27,7 +27,8 @@ memories; `i_clk_div4` runs the UART and the BRAM programming port that the
 JTAG loader uses.
 
 `cpu_and_mem` connects the CPU, low BRAM, the cache hierarchy and its DDR
-bridge, the MMIO devices, the debug module, the NIC, and the DMA test engine.
+bridge, the MMIO devices, the debug module, the NIC, the DMA test engine, and
+the memory error unit.
 The bridge ends in a behavioral DDR model in simulation and in the board's
 DDR controller on hardware.
 
@@ -151,6 +152,7 @@ MMIO registers:
 | `0x4001_4000`/`4004` | CLINT MTIMECMP_LO/HI | SiFive CLINT alias of MTIMECMP |
 | `0x4001_BFF8`/`BFFC` | CLINT MTIME_LO/HI | SiFive CLINT alias of MTIME |
 | `0x4002_0000`–`0024` | DMA test engine | CTRL/ACK/SRC/DST/LEN/MODE/PATTERN/STATUS_ADDR/STATUS_VALUE/LINES (`dma_test_engine.sv`, `sw/lib/include/dma_engine.h`) |
+| `0x4002_1000`–`1038` | Memory error unit | CAPS/STATUS/IRQ_EN/CE_COUNT/UE_COUNT/AXI_RD_ERRS/AXI_WR_ERRS/CE_ADDR/UE_ADDR/AXI_ERR/ECC_POLLS (`memory_error_unit.sv`, `sw/lib/include/memory_error.h`) |
 | `0x4003_0000`–`0FFF` | NIC | 4 KiB window: control and status, station address, rings, link and PHY, 64-bit counters (`peripherals/nic/nic_pkg.sv`, `sw/lib/include/nic.h`) |
 
 The UART console runs at 115200 baud, 8N1. For Linux, the same UART also
@@ -165,13 +167,23 @@ every byte written has been sent.
 
 The PLIC uses the standard register layout: per-source priorities, the
 pending word, per-context enables at `0x2000 + 0x80*ctx`, and threshold and
-claim/complete at `0x20_0000 + 0x1000*ctx`. Its four level-triggered sources
+claim/complete at `0x20_0000 + 0x1000*ctx`. Its five level-triggered sources
 are 1, the ns16550 UART; 2, the board's external-interrupt pin; 3, the DMA
-test engine; and 4, the NIC. The UART interrupt reaches the core only through
+test engine; 4, the NIC; and 5, the memory error unit. The UART interrupt reaches the core only through
 the PLIC. Context 0 (M mode, hart 0) drives `mip.MEIP`. Context 1 (S mode) is
 ORed into `mip.SEIP` with the SEIP bit that M-mode software can set. A claim
 read is destructive, so the router handles it as a device read like the UART
 RX pop (see the [data-tier bus contract](#data-tier-bus-contract)).
+
+The memory error unit counts the DDR controller's corrected and uncorrectable
+ECC errors and the error responses DDR returns to the cache hierarchy's AXI
+bridge. It keeps the physical address of the latest ECC report of each kind
+and the response code and AXI id of the latest error response, and interrupts
+for the kinds `IRQ_EN` enables. An error response still completes the
+transfer, so a read delivers its data and the report arrives after the
+access. On the X3, `boards/x3/x3_ecc_reader.sv` polls the DDR4 controller's
+ECC registers about once a millisecond and reports to the unit; on a board
+without a reader, `CAPS` bit 0 reads 0 and only the error responses count.
 
 If these addresses change, update `cpu_and_mem.sv`, the device-window pages
 in `riscv_pkg.sv` (`MmioFirstPage` through `PlicLastPage`), the MMIO `PROVIDE`
@@ -227,8 +239,8 @@ and CLINT alias, support 64-bit access: an 8-byte load of `mtime`
 (`0x4001_BFF8`) returns the whole counter atomically, and an 8-byte
 `mtimecmp` store lands atomically. The 32-bit lo/hi aliases keep their word
 behavior. UART and FIFO registers are 32-bit-access-max: a wider store writes
-only the addressed word. The PLIC, DMA test engine, and NIC windows take
-32-bit accesses: a 64-bit load returns an aligned register pair, and a 64-bit
+only the addressed word. The PLIC, DMA test engine, memory error unit, and
+NIC windows take 32-bit accesses: a 64-bit load returns an aligned register pair, and a 64-bit
 store writes only the upper register. Devices take loads and stores only, and
 only inside the MMIO and PLIC windows. A load or store elsewhere in the device
 quadrant raises an access fault (cause 5 or 7), and so does an AMO, LR, or SC

@@ -6,7 +6,9 @@
     transmitter on the Ethernet reference clock, and UART/loaders at
     80.56640625/N MHz; the DDR and Ethernet MAC clocks are separate domains.
     SmartConnect merges CPU
-    and JTAG memory traffic across clock and width boundaries. DDR calibration
+    and JTAG memory traffic across clock and width boundaries, and gives the
+    DDR JTAG master and the ECC reader (x3_ecc_reader) the controller's ECC
+    registers. DDR calibration
     and an ECC-initialization write pass complete before CPU and DDR-loader
     release. BSCAN shares the FPGA TAP with Vivado. Module boxes can span clock
     domains; only selected connections are shown.
@@ -201,7 +203,7 @@
   <text x="939" y="858" class="label center">SmartConnect · ddr_smc</text>
   <text x="939" y="887" class="body center">Arbitration + width / clock conversion</text>
   <text x="939" y="916" class="body center">CPU clock · /4 clock · DDR UI clock</text>
-  <text x="939" y="947" class="small center">Memory AXI + JTAG-only ECC control</text>
+  <text x="939" y="947" class="small center">Memory AXI + ECC registers: JTAG, reader</text>
   <path d="M 654 1082 H 716 V 904 H 754" class="memlink" marker-end="url(#memory-arrow)"/>
   <path d="M 939 976 V 1108" class="memlink" marker-end="url(#memory-arrow)"/>
   <text x="957" y="1021" class="body">512-bit memory AXI</text>

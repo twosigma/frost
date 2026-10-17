@@ -1399,6 +1399,82 @@ class NicEchoPeer:
         )
 
 
+class EccReportDriver:
+    """Play the X3's ECC reader for memerr_test and memerr_readback.
+
+    Hold i_ecc_present high. For memerr_test, each time the program enables
+    both ECC kinds in the memory error unit's IRQ_EN, report what
+    sw/apps/memerr_test/main.c expects as the reader's one-cycle pulses: 3
+    corrected errors with an address, an uncorrectable error, four polls,
+    then 2 more corrected errors. For memerr_readback, only poll, every
+    POLL_GAP cycles, as a reader of a controller without errors does.
+    """
+
+    POLL_GAP = 2000
+
+    CE_ADDR = 0x8000_1240
+    UE_ADDR = 0x8765_4300
+    PULSES = (
+        "i_ecc_poll",
+        "i_ecc_ce_valid",
+        "i_ecc_ce_addr_valid",
+        "i_ecc_ue_valid",
+        "i_ecc_ue_addr_valid",
+    )
+
+    def __init__(self, dut: Any) -> None:  # noqa: D107 - the class docstring covers it
+        self._dut = dut
+        self._irq_en = dut.cpu_and_memory_subsystem.memory_errors.irq_en_q
+        dut.i_ecc_present.value = 1
+        for name in self.PULSES:
+            getattr(dut, name).value = 0
+        dut.i_ecc_ce_count.value = 0
+        dut.i_ecc_ce_addr.value = 0
+        dut.i_ecc_ue_addr.value = 0
+
+    async def _pulse(self, gap: int, **values: int) -> None:
+        dut = self._dut
+        for _ in range(gap):
+            await FallingEdge(dut.i_clk)
+        for name, value in values.items():
+            getattr(dut, name).value = value
+        await FallingEdge(dut.i_clk)
+        for name in values:
+            if name in self.PULSES:
+                getattr(dut, name).value = 0
+
+    def _ecc_enabled(self) -> bool:
+        return (int(self._irq_en.value) & 0x3) == 0x3
+
+    async def poll(self) -> None:
+        """Pulse i_ecc_poll forever."""
+        while True:
+            await self._pulse(self.POLL_GAP, i_ecc_poll=1)
+
+    async def run(self) -> None:
+        """Report once per enabling of IRQ_EN's ECC bits, across runs."""
+        dut = self._dut
+        while True:
+            while not self._ecc_enabled():
+                await RisingEdge(dut.i_clk)
+            await self._pulse(
+                200,
+                i_ecc_ce_valid=1,
+                i_ecc_ce_count=3,
+                i_ecc_ce_addr_valid=1,
+                i_ecc_ce_addr=self.CE_ADDR,
+            )
+            await self._pulse(
+                50, i_ecc_ue_valid=1, i_ecc_ue_addr_valid=1, i_ecc_ue_addr=self.UE_ADDR
+            )
+            for _ in range(4):
+                await self._pulse(10, i_ecc_poll=1)
+            await self._pulse(50, i_ecc_ce_valid=1, i_ecc_ce_count=2)
+            # The program, or the reset before the next run, disables them.
+            while self._ecc_enabled():
+                await RisingEdge(dut.i_clk)
+
+
 def get_expected_behavior() -> tuple[str | None, str | None, bool, str | None]:
     """Return (success_marker, initial_text, has_defined_endpoint, app_name).
 
@@ -4230,6 +4306,10 @@ async def test_real_program(dut: Any) -> None:
         # UART RX byte unread; the bench sends it (0x5A) once per run.
         uart_driver = UartRxDriver(dut)
     nic_peer = NicEchoPeer(dut, uart_monitor) if app_name == "nic_echo" else None
+    if app_name == "memerr_test":
+        cocotb.start_soon(EccReportDriver(dut).run())
+    elif app_name == "memerr_readback":
+        cocotb.start_soon(EccReportDriver(dut).poll())
     wfi_watch = WfiRecoveryWatch(dut) if app_name == "wfi_seed_recovery" else None
     if wfi_watch is not None:
         cocotb.start_soon(wfi_watch.run())

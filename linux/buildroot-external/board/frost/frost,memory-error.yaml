@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/memory-controllers/frost,memory-error.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: FROST memory error unit
+
+maintainers:
+  - Adam Bagley <adam.bagley@tssecurities.com>
+
+description: |
+  The FROST SoC's memory error reporting: counts of the DDR controller's
+  corrected and uncorrectable ECC errors, which a board-specific reader polls
+  from the controller, and of the error responses DDR returns to the cache
+  hierarchy, with the physical address of the latest ECC report of each kind
+  and one level interrupt. The register map is documented with the RTL
+  (hw/rtl/cpu_and_mem/memory_error_unit.sv); its version is in the CAPS
+  register.
+
+properties:
+  compatible:
+    const: frost,memory-error
+
+  reg:
+    maxItems: 1
+    description: The 256-byte register window.
+
+  interrupts:
+    maxItems: 1
+    description: The unit's level interrupt (PLIC source).
+
+required:
+  - compatible
+  - reg
+  - interrupts
+
+additionalProperties: false
+
+examples:
+  - |
+    memory-controller@40021000 {
+        compatible = "frost,memory-error";
+        reg = <0x40021000 0x100>;
+        interrupt-parent = <&plic>;
+        interrupts = <5>;
+    };

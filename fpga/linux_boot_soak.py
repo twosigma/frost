@@ -17,9 +17,9 @@
 """Repeatedly load and score Linux boots from the board UART.
 
 Boot Debian's pinned kernel with the Buildroot test initramfs
-(``linux/debian_kernel.py``). Require the module's
-``FROST_NET10G_MODULE_PASS <release>`` line and ``FROST_USERSPACE_STRESS_PASS``
-by login. Reject crashes, timeouts, and unavailable counters: the DTB maps cycle
+(``linux/debian_kernel.py``). Require the modules'
+``FROST_NET10G_MODULE_PASS <release>`` and ``FROST_MEMERR_MODULE_PASS
+<release>`` lines and ``FROST_USERSPACE_STRESS_PASS`` by login. Reject crashes, timeouts, and unavailable counters: the DTB maps cycle
 and instruction events to the SBI PMU's fixed counters. ``--login-only`` skips
 token and counter checks.
 
@@ -46,6 +46,9 @@ sys.path.insert(0, str(REPO_ROOT / "fpga" / "common"))
 sys.path.insert(0, str(REPO_ROOT / "linux"))
 
 from debian_kernel import (  # noqa: E402
+    MEMERR,
+    MEMERR_PASS_LINE,
+    MEMERR_PASS_RE,
     MODULE_FAIL_TOKEN,
     MODULE_PASS_LINE,
     MODULE_PASS_RE,
@@ -54,11 +57,12 @@ from hw_defaults import DEFAULT_SERIALS  # noqa: E402
 
 PASS_TOKEN = "FROST_USERSPACE_STRESS_PASS"
 FAIL_TOKEN = "FROST_USERSPACE_STRESS_FAIL"
-# sysinit prints both before login. Match the uname -r release at a boundary
+# sysinit prints all three before login. Match the uname -r release at a boundary
 # to reject longer releases. CONFIG_MODVERSIONS can ignore vermagic's release,
 # so successful insmod alone does not identify the kernel.
 BOOT_TOKENS = (
     (MODULE_PASS_LINE, MODULE_PASS_RE),
+    (MEMERR_PASS_LINE, MEMERR_PASS_RE),
     (PASS_TOKEN, re.compile(re.escape(PASS_TOKEN))),
 )
 LOGIN_MARKER = "login:"
@@ -71,6 +75,7 @@ CRASH_MARKERS = (
     "SIGILL",
     FAIL_TOKEN,
     MODULE_FAIL_TOKEN,
+    MEMERR.fail_token,
 )
 
 

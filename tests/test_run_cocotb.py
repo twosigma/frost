@@ -412,6 +412,32 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="plic_test",
         description=("PLIC register behavior and interrupt claim/complete handling"),
     ),
+    "memerr_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="memerr_test",
+        description=(
+            "Memory error unit counts DDR error responses and ECC reports and "
+            "interrupts through the PLIC"
+        ),
+        extra_env=(
+            (
+                "COCOTB_PLUSARGS",
+                "+axi_error_check=0 +axi_rd_error_addr=1000000 "
+                "+axi_wr_error_addr=2000000",
+            ),
+        ),
+    ),
+    "memerr_readback": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="memerr_readback",
+        description=(
+            "The X3's memory error readback program, against a bench reader "
+            "that only polls"
+        ),
+        extra_env=(("EXTRA_CFLAGS", "-DDDR_BYTES=16384ul"),),
+    ),
     "sstc_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1759,6 +1785,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("DDR_INIT_REGION_BYTES", "512"),
             ("DDR_INIT_MAX_OUTSTANDING", "16"),
         ),
+    ),
+    "x3_ecc_reader": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_x3_ecc_reader",
+        hdl_toplevel_module="x3_ecc_reader",
+        description=(
+            "X3 ECC poller reports the controller's error counts and addresses "
+            "and keeps the JTAG check's evidence"
+        ),
+        verilator_extra_args=("-GPOLL_CYCLES=64",),
+        extra_env=(("ECC_READER_POLL_CYCLES", "64"),),
+    ),
+    "memory_error_unit": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_memory_error_unit",
+        hdl_toplevel_module="memory_error_unit",
+        description="Memory error unit registers, counters and interrupt",
+        verilator_extra_args=("-GID_BITS=5",),
     ),
     "imem_predecode_line": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_imem_predecode_line",

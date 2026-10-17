@@ -27,6 +27,7 @@ stub cross compiler. No board or NFS export is required.
 import dataclasses
 import importlib.util
 import os
+import re
 import socket
 import struct
 import sys
@@ -146,6 +147,11 @@ COUNTER_LINE = (
     "FROST_COUNTERS: scope=exec-child cycles=4433680 instret=3275440 time=42321 "
     f"ipc_x1000=1012 verdict=PASS\r\r\n{PROMPT}"
 )
+MEMERR_ECHO = hw.LINUX_MEMERR_COMMAND + "\r\r\n"
+MEMERR_LINE = (
+    f"{hw.LINUX_MEMERR_TOKEN} active=1 polls=4113,5342 ce=0 ue=0 rd=0 wr=0\r\r\n"
+    f"{PROMPT}"
+)
 # What the program prints when perf_event_open on the child fails.
 COUNTER_FAIL_LINE = (
     f"FROST_COUNTERS: scope=exec-child counters=unavailable verdict=FAIL\r\r\n{PROMPT}"
@@ -174,7 +180,8 @@ TO_MOUNT = TO_SHELL + MOUNT_ECHO + MOUNT_LINE
 TO_SYSTEMD = TO_MOUNT + SYSTEMD_ECHO + SYSTEMD_RUNNING
 TO_STRESS = TO_SYSTEMD + STRESS_ECHO + STRESS_OUT
 COUNTER_TRANSCRIPT = TO_STRESS + COUNTER_ECHO + COUNTER_LINE
-FULL_TRANSCRIPT = COUNTER_TRANSCRIPT + NET_ECHO + NET_START + NET_PASS + NET_ALIVE
+MEMERR_TRANSCRIPT = COUNTER_TRANSCRIPT + MEMERR_ECHO + MEMERR_LINE
+FULL_TRANSCRIPT = MEMERR_TRANSCRIPT + NET_ECHO + NET_START + NET_PASS + NET_ALIVE
 
 
 def stage() -> Any:
@@ -196,6 +203,7 @@ def test_stage_passes_on_the_whole_debian_transcript() -> None:
     assert NFSROOT in note and "vers=3" in note
     assert "systemd running" in note
     assert "cycles=4433680" in note and "instret=3275440" in note
+    assert "no memory errors (1229 ECC polls across a 1 s sleep)" in note
     assert hw.LINUX_NET_COMMAND in note
 
 
@@ -206,9 +214,10 @@ def test_stage_passes_on_the_whole_debian_transcript() -> None:
         (TO_MOUNT, "no 'running' line"),
         (TO_SYSTEMD, "no 'FROST_USERSPACE_STRESS_PASS' after the login"),
         (TO_STRESS, "no FROST_COUNTERS: count"),
-        (COUNTER_TRANSCRIPT, "FROST_NET_LOOPBACK_PASS"),
+        (COUNTER_TRANSCRIPT, f"no {hw.LINUX_MEMERR_TOKEN} line"),
+        (MEMERR_TRANSCRIPT, "FROST_NET_LOOPBACK_PASS"),
         (
-            COUNTER_TRANSCRIPT + NET_ECHO + NET_START + NET_PASS,
+            MEMERR_TRANSCRIPT + NET_ECHO + NET_START + NET_PASS,
             f"no {hw.LINUX_ROOT_ALIVE_TOKEN}= status",
         ),
     ],
@@ -218,6 +227,7 @@ def test_stage_passes_on_the_whole_debian_transcript() -> None:
         "after-systemctl",
         "after-stress",
         "after-counters",
+        "after-memerr",
         "after-nettest",
     ],
 )
@@ -441,7 +451,7 @@ def test_counters_are_not_matched_in_the_echo_or_the_stress_summary() -> None:
 def test_nettest_fail_token_fails_the_stage_and_wins_over_pass() -> None:
     """frost_nettest's fail token ends capture and fails the stage, pass or not."""
     linux = stage()
-    failed = COUNTER_TRANSCRIPT + NET_ECHO + NET_START + NET_FAIL
+    failed = MEMERR_TRANSCRIPT + NET_ECHO + NET_START + NET_FAIL
     assert linux.failure_done(failed)
     assert not linux.success_done(failed)
     ok, note = linux.judge(failed)
@@ -489,6 +499,62 @@ def test_kernel_oops_or_bug_fails_an_otherwise_passing_stage(
     assert not ok and note == f"failure marker: {marker}"
 
 
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        (
+            "active=0 polls=4113,5342 ce=0 ue=0 rd=0 wr=0",
+            "the ECC reader is not active",
+        ),
+        ("active=1 polls=4113,4113 ce=0 ue=0 rd=0 wr=0", "ECC polls did not advance"),
+        ("active=1 polls=4113,5342 ce=3 ue=0 rd=0 wr=0", "3 corrected errors"),
+        ("active=1 polls=4113,5342 ce=0 ue=1 rd=2 wr=0", "1 uncorrectable errors"),
+        ("active=1 polls=4113,5342 ce=0 ue=0 rd=0 wr=4", "4 DDR write error responses"),
+    ],
+    ids=["inactive", "not-polling", "corrected", "uncorrectable", "write-errors"],
+)
+def test_the_memory_error_readback_must_be_clean(line: str, expected: str) -> None:
+    """An inactive or idle ECC reader, or any reported error, fails the stage."""
+    transcript = (
+        COUNTER_TRANSCRIPT
+        + MEMERR_ECHO
+        + f"{hw.LINUX_MEMERR_TOKEN} {line}\r\r\n{PROMPT}"
+        + NET_ECHO
+        + NET_START
+        + NET_PASS
+        + NET_ALIVE
+    )
+    ok, note = stage().judge(transcript)
+    assert not ok and expected in note
+
+
+def test_an_unbound_memory_error_driver_prints_no_counts() -> None:
+    """Without the driver's sysfs files the echoed line carries no digits."""
+    unbound = (
+        f"cat: {hw.LINUX_MEMERR_DEVICE}/ecc_polls: No such file or directory\r\r\n"
+        f"{hw.LINUX_MEMERR_TOKEN} active= polls=, ce= ue= rd= wr=\r\r\n{PROMPT}"
+    )
+    transcript = (
+        COUNTER_TRANSCRIPT + MEMERR_ECHO + unbound + NET_ECHO + NET_START + NET_PASS
+    )
+    ok, note = stage().judge(transcript + NET_ALIVE)
+    assert not ok and f"no {hw.LINUX_MEMERR_TOKEN} line" in note
+    # The echoed command is never mistaken for the output.
+    assert hw.memerr_values(COUNTER_TRANSCRIPT + MEMERR_ECHO) is None
+
+
+def test_the_memory_error_device_is_the_packers_node() -> None:
+    """The sysfs path names the device the boot image's device tree describes."""
+    packer_text = (
+        REPO_ROOT / "linux/buildroot-external/board/frost/frost_boot_image.py"
+    ).read_text()
+    base = re.search(r"^MEMORY_ERROR_BASE = 0x([0-9A-Fa-f_]+)$", packer_text, re.M)
+    assert base is not None
+    address = int(base.group(1).replace("_", ""), 16)
+    assert hw.LINUX_MEMERR_DEVICE.endswith(f"/{address:08x}.memory-controller")
+    assert hw.LINUX_MEMERR_MODULE == f"{hw.LINUX_ROOT_BIN}/{hw.MEMERR.name}.ko"
+
+
 # --- The typed commands ------------------------------------------------------
 
 
@@ -501,9 +567,10 @@ def test_stimuli_fire_in_order_after_their_triggers() -> None:
         hw.LINUX_SYSTEMD_COMMAND + "\r",
         hw.LINUX_STRESS_COMMAND + "\r",
         hw.LINUX_COUNTER_COMMAND + "\r",
+        hw.LINUX_MEMERR_COMMAND + "\r",
         hw.nettest_command("eth0") + "\r",
     ]
-    assert [trigger for trigger, _ in linux.stimuli[1:]] == [hw.LINUX_SHELL_PROMPT] * 5
+    assert [trigger for trigger, _ in linux.stimuli[1:]] == [hw.LINUX_SHELL_PROMPT] * 6
     # Nothing to type before the prompt, even though "# " could occur in a log.
     assert hw.next_stimulus(linux, "[    0.1] # not a prompt\r\n", 0, 0) is None
     text, after = hw.next_stimulus(linux, BOOT_TO_LOGIN, 0, 0)
@@ -517,7 +584,8 @@ def test_stimuli_fire_in_order_after_their_triggers() -> None:
         (TO_MOUNT, hw.LINUX_SYSTEMD_COMMAND),
         (TO_SYSTEMD, hw.LINUX_STRESS_COMMAND),
         (TO_STRESS, hw.LINUX_COUNTER_COMMAND),
-        (COUNTER_TRANSCRIPT, hw.nettest_command("eth0")),
+        (COUNTER_TRANSCRIPT, hw.LINUX_MEMERR_COMMAND),
+        (MEMERR_TRANSCRIPT, hw.nettest_command("eth0")),
     ):
         # The prompt that took the previous command cannot fire this one.
         assert hw.next_stimulus(linux, transcript[: -len(PROMPT)], sent, after) is None
@@ -552,6 +620,15 @@ def test_the_autologin_stray_command_does_not_break_the_chain() -> None:
         + SYSTEMD_RUNNING
         + STRESS_ECHO
         + STRESS_OUT,
+        boot
+        + MOUNT_ECHO
+        + MOUNT_LINE
+        + SYSTEMD_ECHO
+        + SYSTEMD_RUNNING
+        + STRESS_ECHO
+        + STRESS_OUT
+        + COUNTER_ECHO
+        + COUNTER_LINE,
     ):
         pending = hw.next_stimulus(linux, transcript, sent, after)
         assert pending is not None, sent
@@ -610,7 +687,7 @@ def test_a_root_that_does_not_come_back_is_a_failure_not_a_pass() -> None:
     or server recovery.
     """
     linux = stage()
-    stranded = COUNTER_TRANSCRIPT + NET_ECHO + NET_START + NET_PASS + NET_STRANDED
+    stranded = MEMERR_TRANSCRIPT + NET_ECHO + NET_START + NET_PASS + NET_STRANDED
     assert not linux.success_done(stranded)
     assert linux.failure_done(stranded), "the stage would run to the timeout"
     ok, note = linux.judge(stranded)
@@ -957,6 +1034,10 @@ def test_the_preflight_accepts_a_prepared_export_and_installs_the_programs(
     assert any(hw.KERNEL_RELEASE in note for note in notes)
     assert any("autologin" in note for note in notes)
     assert any("installed frost_stress, frost_nettest" in note for note in notes)
+    assert any(f"installed {hw.MEMERR.name}.ko" in note for note in notes)
+    assert (
+        export / f"usr/local/bin/{hw.MEMERR.name}.ko"
+    ).read_bytes() == b"stub module"
     for name in ("frost_stress", "frost_nettest"):
         installed = export / "usr/local/bin" / name
         assert installed.read_bytes() == b"stub"
@@ -971,6 +1052,9 @@ def prepared(
     """Return a prepared export and stub toolchain with a successful RPC probe."""
     export = _fake_export(tmp_path)
     _, environment = _fake_cross(tmp_path)
+    module = tmp_path / f"{hw.MEMERR.name}.ko"
+    module.write_bytes(b"stub module")
+    environment[hw.MEMERR.env] = str(module)
     monkeypatch.setattr(hw, "probe_nfs3_tcp", lambda *args, **kwargs: None)
     return _fake_root(export), environment
 
@@ -1259,7 +1343,8 @@ def test_the_regression_does_not_touch_the_board_when_the_root_is_unset(
 
 # --- The console a board really sends ----------------------------------------
 
-# X3 UART capture with loader stdout removed; CRs and escapes are unchanged.
+# X3 UART capture with the regression's typed-input notes removed; CRs and
+# escapes are unchanged.
 # Bash disables bracketed paste before each command's first output:
 # ESC[?2004l CR <output>. Anchored patterns must handle that prefix.
 BOARD_CONSOLE = REPO_ROOT / "tests/fixtures/x3_linux_boot_console.log"
@@ -1292,14 +1377,15 @@ def test_the_real_board_capture_ends_and_passes_the_stage() -> None:
     assert hw.KERNEL_RELEASE in note
     assert BOARD_NFSROOT in note and "vers=3" in note
     assert "systemd running" in note
-    assert "cycles=733467" in note and "instret=130278" in note
+    assert "cycles=659285" in note and "instret=127196" in note
+    assert "no memory errors (923 ECC polls across a 1 s sleep)" in note
     assert "root alive" in note
 
 
 def test_the_fixture_still_carries_the_escapes_it_is_here_for() -> None:
     """Preserve the fixture's bracketed-paste escapes, colored greeting, and CRs."""
     console = board_console()
-    assert console.count("\x1b[?2004l") == 5
+    assert console.count("\x1b[?2004l") == 6
     assert "\x1b[?2004l\rnfs " in console
     assert f"\x1b[?2004l\rstate={hw.LINUX_SYSTEMD_RUNNING}" in console
     assert "Welcome to \x1b[0m\x1b[1mDebian GNU/Linux" in console

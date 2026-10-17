@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+#
+# FROST memory error unit configuration
+#
+
+config FROST_MEMERR
+	tristate "FROST memory error unit"
+	depends on OF && HAS_IOMEM && 64BIT
+	help
+	  Driver for the memory error unit of the FROST SoC, which counts
+	  the DDR controller's corrected and uncorrectable ECC errors and
+	  the error responses DDR returns to the cache hierarchy. The
+	  driver logs each report and shows the counters in sysfs.
+
+	  To compile this driver as a module, choose M here. The module
+	  will be called frost_memerr.

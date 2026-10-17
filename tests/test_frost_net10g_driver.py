@@ -175,5 +175,5 @@ def test_debian_module_build_matches_the_dkms_package() -> None:
     assert 'f"M={build}"' in source and '"modules"' in source
     # Only the kbuild Makefile and the source are needed: the Kconfig is for an
     # in-tree build, which an external module build bypasses.
-    assert 'for name in ("Makefile", f"{MODULE_NAME}.c")' in source
+    assert 'for name in ("Makefile", f"{driver.name}.c")' in source
     assert helper.MODULE_INIT_SCRIPT.startswith("etc/init.d/S")

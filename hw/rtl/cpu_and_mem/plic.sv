@@ -22,7 +22,8 @@
  *   1 = ns16550 UART interrupt,
  *   2 = the board's i_external_interrupt pin,
  *   3 = the DMA test engine's completion,
- *   4 = the NIC.
+ *   4 = the NIC,
+ *   5 = the memory error unit.
  *
  * Gateways carry level semantics: a source is requestable while its level
  * is high and it has no claim in flight; the claim clears its pending bit,

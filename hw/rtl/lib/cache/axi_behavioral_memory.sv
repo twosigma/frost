@@ -310,7 +310,6 @@ module axi_behavioral_memory #(
   assign o_axi_rvalid = r_presenting_q;
   assign o_axi_rid    = rd_id_q[r_slot_q];
   assign o_axi_rdata  = rdata_q;
-  assign o_axi_rresp  = 2'b00;
   assign o_axi_rlast  = 1'b1;
 
   always_ff @(posedge i_clk) begin
@@ -354,7 +353,35 @@ module axi_behavioral_memory #(
 
   assign o_axi_bvalid = b_presenting_q;
   assign o_axi_bid    = wr_id_q[b_slot_q];
-  assign o_axi_bresp  = 2'b00;
+
+  // ---- Error injection ----------------------------------------------------------
+  // For tests of the error path, +axi_rd_error_addr=<hex> and
+  // +axi_wr_error_addr=<hex> make every read or write of the line holding
+  // that region-relative address answer SLVERR. The access itself still
+  // happens. Simulation only; elsewhere every response is OKAY.
+  logic rd_error_line, wr_error_line;
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  bit rd_error_armed, wr_error_armed;
+  logic [31:0] rd_error_addr, wr_error_addr;
+  initial begin
+    rd_error_armed = $value$plusargs("axi_rd_error_addr=%h", rd_error_addr) != 0;
+    wr_error_armed = $value$plusargs("axi_wr_error_addr=%h", wr_error_addr) != 0;
+  end
+  assign rd_error_line = rd_error_armed &&
+      (rd_addr_q[r_slot_q] / LINE_BYTES == rd_error_addr / LINE_BYTES);
+  assign wr_error_line = wr_error_armed &&
+      (wr_addr_q[b_slot_q] / LINE_BYTES == wr_error_addr / LINE_BYTES);
+`else
+  assign rd_error_line = 1'b0;
+  assign wr_error_line = 1'b0;
+`endif
+`else
+  assign rd_error_line = 1'b0;
+  assign wr_error_line = 1'b0;
+`endif
+  assign o_axi_rresp = rd_error_line ? 2'b10 : 2'b00;
+  assign o_axi_bresp = wr_error_line ? 2'b10 : 2'b00;
 
   // Pairing: the oldest AW with the oldest W. Each side's head is the queue
   // head when the queue is non-empty, otherwise the beat arriving this cycle.

@@ -913,6 +913,7 @@ jobs:
                 echo "===== QEMU boot log ($1, tail) ====="
                 tail -n 20 "$2"
                 grep -q "FROST_NET10G_MODULE_PASS" "$2"
+                grep -q "FROST_MEMERR_MODULE_PASS" "$2"
                 grep -q "FROST_USERSPACE_STRESS_PASS" "$2"
                 grep -q "buildroot login:" "$2"
               }

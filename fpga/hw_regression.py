@@ -57,6 +57,8 @@ from debian_kernel import (  # noqa: E402
     INITRAMFS_COUNTER_TOKEN,
     KERNEL_BANNER,
     KERNEL_RELEASE,
+    MEMERR,
+    build_module,
     kernel_image,
 )
 from hw_defaults import (  # noqa: E402
@@ -249,6 +251,32 @@ LINUX_COUNTER_RE = re.compile(
 # End capture on counter failure instead of waiting for a pass until timeout.
 LINUX_COUNTER_FAIL_RE = re.compile(
     LINUX_COUNTER_LINE + r"(?: \w+=[\w.+-]+)* verdict=FAIL", re.MULTILINE
+)
+
+# The memory error unit's driver (linux/frost-memerr). The Debian root does not
+# carry it, so the preflight installs the module built for the pinned kernel
+# beside the programs, and the stage loads it and reads its counters before and
+# after a one-second sleep: the X3's ECC reader must be active and polling, and
+# nothing may have reported a memory error. Digits after ``active=`` tell the
+# output from the echoed command. The device is the packer's
+# memory-controller@40021000 node.
+LINUX_MEMERR_TOKEN = "FROST_MEMERR"
+LINUX_MEMERR_MODULE = f"{LINUX_ROOT_BIN}/{MEMERR.name}.ko"
+LINUX_MEMERR_DEVICE = (
+    f"/sys/bus/platform/drivers/{MEMERR.name}/40021000.memory-controller"
+)
+LINUX_MEMERR_COMMAND = (
+    f"insmod {LINUX_MEMERR_MODULE}; d={LINUX_MEMERR_DEVICE}; "
+    "p=$(cat $d/ecc_polls); sleep 1; "
+    f"echo {LINUX_MEMERR_TOKEN} active=$(cat $d/ecc_active) "
+    "polls=$p,$(cat $d/ecc_polls) ce=$(cat $d/ce_count) ue=$(cat $d/ue_count) "
+    "rd=$(cat $d/axi_read_errors) wr=$(cat $d/axi_write_errors)"
+)
+LINUX_MEMERR_FIELDS = ("active", "polls_before", "polls_after", "ce", "ue", "rd", "wr")
+LINUX_MEMERR_RE = re.compile(
+    r"^\r*" + LINUX_MEMERR_TOKEN + r" active=(\d+) polls=(\d+),(\d+) ce=(\d+) "
+    r"ue=(\d+) rd=(\d+) wr=(\d+)[ \t\r]*\n",
+    re.MULTILINE,
 )
 
 # frost_nettest checks NIC or PMA loopback. nettest_command restores the link
@@ -764,6 +792,72 @@ def install_root_programs(repo: Path, export: Path, cross: str) -> str:
     return f"installed {', '.join(names)} in {target} ({cross}gcc, static)"
 
 
+def install_root_module(
+    export: Path, cross: str, environment: Mapping[str, str] = os.environ
+) -> str:
+    """Install the memory error module beside the programs and return a note.
+
+    Build it for the pinned kernel with linux/debian_kernel.py unless the
+    environment names a prebuilt one (``FROST_MEMERR_MODULE``). Stage it beside
+    its target and rename it, as install_root_programs() does.
+    """
+    target = export / LINUX_ROOT_BIN.lstrip("/")
+    named = environment.get(MEMERR.env)
+    try:
+        module = Path(named) if named else build_module(None, cross, MEMERR)
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as failure:
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: building {MEMERR.name}.ko for {KERNEL_RELEASE} "
+            f"failed: {failure}"
+        ) from failure
+    if not module.is_file():
+        raise LinuxEnvironmentError(
+            f"{ENV_NOT_READY}: {MEMERR.env}={module} is not a file"
+        )
+    handle, staged_name = tempfile.mkstemp(dir=target, prefix=f".{MEMERR.name}.")
+    os.close(handle)
+    staged = Path(staged_name)
+    try:
+        shutil.copyfile(module, staged)
+        staged.chmod(0o644)
+        staged.replace(target / module.name)
+    except OSError:
+        staged.unlink(missing_ok=True)
+        raise
+    origin = f"{MEMERR.env}" if named else f"built for {KERNEL_RELEASE}"
+    return f"installed {module.name} in {target} ({origin})"
+
+
+def memerr_values(serial_buf: str) -> dict[str, int] | None:
+    """Return the last memory error readback's fields, or None without one."""
+    matches = list(LINUX_MEMERR_RE.finditer(serial_buf))
+    if not matches:
+        return None
+    values = (int(value) for value in matches[-1].groups())
+    return dict(zip(LINUX_MEMERR_FIELDS, values, strict=True))
+
+
+def memerr_problems(values: Mapping[str, int]) -> list[str]:
+    """Return what the memory error readback shows wrong."""
+    problems = []
+    if values["active"] != 1:
+        problems.append("the ECC reader is not active")
+    if values["polls_after"] <= values["polls_before"]:
+        problems.append(
+            f"ECC polls did not advance ({values['polls_before']} then "
+            f"{values['polls_after']})"
+        )
+    for name, label in (
+        ("ce", "corrected errors"),
+        ("ue", "uncorrectable errors"),
+        ("rd", "DDR read error responses"),
+        ("wr", "DDR write error responses"),
+    ):
+        if values[name]:
+            problems.append(f"{values[name]} {label}")
+    return problems
+
+
 # Match the console's kernel release before loading the flat Image. The trailing
 # space prevents a read ending at a chunk boundary from matching half a release.
 KERNEL_BANNER_RE = re.compile(rb"Linux version (\d[\w.+~-]*) ")
@@ -928,11 +1022,9 @@ def linux_root_preflight(
             'docs/debian_nfsroot.md, "2. Configure the tree".'
         )
     notes.append(f"console autologin from {consoles[0]}")
-    notes.append(
-        install_root_programs(
-            repo, root.export, resolve_cross_compile(repo, environment)
-        )
-    )
+    cross = resolve_cross_compile(repo, environment)
+    notes.append(install_root_programs(repo, root.export, cross))
+    notes.append(install_root_module(root.export, cross, environment))
     return notes
 
 
@@ -1021,8 +1113,9 @@ def linux_stage(root: LinuxRoot) -> UartStage:
     """Build UART checks for Debian booting from the NFS root.
 
     Require the pinned kernel and driver before login. After login, check the
-    NFSv3 mount, systemd startup, stress result, nonzero counters, and loopback
-    with root access restored. Explicit failures end capture immediately.
+    NFSv3 mount, systemd startup, stress result, nonzero counters, the memory
+    error readback, and loopback with root access restored. Explicit failures
+    end capture immediately.
     """
     failure_markers = LINUX_FAILURE_MARKERS + (LINUX_TOKEN_FAIL, LINUX_NET_TOKEN_FAIL)
     # Debian's initramfs does not run this tree's init scripts. Require the
@@ -1104,6 +1197,15 @@ def linux_stage(root: LinuxRoot) -> UartStage:
                 bad.append(f"{event}: {count}")
         if bad:
             return False, f"{LINUX_COUNTER_COMMAND}: " + "; ".join(bad)
+        memerr = memerr_values(serial_buf)
+        if memerr is None:
+            return False, (
+                f"no {LINUX_MEMERR_TOKEN} line with counts: {MEMERR.name} did not "
+                "load or bind"
+            )
+        memerr_bad = memerr_problems(memerr)
+        if memerr_bad:
+            return False, f"{LINUX_MEMERR_TOKEN}: " + "; ".join(memerr_bad)
         if LINUX_NET_TOKEN not in serial_buf:
             return False, f"{LINUX_NET_COMMAND}: no {LINUX_NET_TOKEN!r}"
         if root_alive_status(serial_buf) is None:
@@ -1112,10 +1214,12 @@ def linux_stage(root: LinuxRoot) -> UartStage:
                 "nothing says the root came back with its link"
             )
         summary = " ".join(f"{event}={counts[event]}" for event in LINUX_COUNTER_EVENTS)
+        polls = memerr["polls_after"] - memerr["polls_before"]
         return True, (
             f"{KERNEL_RELEASE}, NIC driver, {mount_note}, systemd "
             f"{LINUX_SYSTEMD_RUNNING}, login, stress token, counters "
-            f"{summary}, {LINUX_NET_COMMAND}, root alive"
+            f"{summary}, no memory errors ({polls} ECC polls across a 1 s sleep), "
+            f"{LINUX_NET_COMMAND}, root alive"
         )
 
     return UartStage(
@@ -1129,6 +1233,7 @@ def linux_stage(root: LinuxRoot) -> UartStage:
             (LINUX_SHELL_PROMPT, LINUX_SYSTEMD_COMMAND + "\r"),
             (LINUX_SHELL_PROMPT, LINUX_STRESS_COMMAND + "\r"),
             (LINUX_SHELL_PROMPT, LINUX_COUNTER_COMMAND + "\r"),
+            (LINUX_SHELL_PROMPT, LINUX_MEMERR_COMMAND + "\r"),
             (LINUX_SHELL_PROMPT, nettest_command(root.interface) + "\r"),
         ),
     )

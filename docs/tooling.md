@@ -94,7 +94,7 @@ the language lockfiles consistent. Some constraints that are easy to break:
 - After updating OpenSBI or the compiler, run
   `./scripts/frost.py run make -C sw/apps/opensbi_smoke distclean`. A plain
   `clean` keeps that application's cached firmware.
-- The Debian kernel and its headers must match the NIC module's ABI.
+- The Debian kernel and its headers must match the driver modules' ABI.
 - OpenOCD is Ubuntu's package, and `OPENOCD_VERSION` is the upstream release
   it must report. The image build fails when a base-image change or an
   archive update brings another release; update the ARG and the README row,
@@ -110,8 +110,9 @@ To validate an update, run `doctor` and `check`, unit and program simulations
 in both memory tiers, formal and synthesis checks, regenerate the Spike
 reference results, run the extension's tests, and rebuild the Linux images
 from scratch. CI boots the Linux image under QEMU twice, with QEMU's own
-OpenSBI and with FROST's, and both boots must print `FROST_NET10G_MODULE_PASS`
-and `FROST_USERSPACE_STRESS_PASS` and reach a login prompt. To check how a
+OpenSBI and with FROST's, and both boots must print `FROST_NET10G_MODULE_PASS`,
+`FROST_MEMERR_MODULE_PASS`, and `FROST_USERSPACE_STRESS_PASS` and reach a login
+prompt. To check how a
 compiler update affects benchmarks, use the
 [Spike instruction-count harness](../sw/apps/coremark/iss/README.md) and
 matched benchmark runs. QEMU and simulation do not replace the

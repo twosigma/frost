@@ -112,12 +112,19 @@ CLINT_BASE = 0x4001_0000
 CLINT_SIZE = 0xC000
 PLIC_BASE = 0x4400_0000
 PLIC_SIZE = 0x40_0000
-PLIC_NDEV = 4  # 1 = ns16550, 2 = board pin, 3 = DMA test engine, 4 = NIC
+# 1 = ns16550, 2 = board pin, 3 = DMA test engine, 4 = NIC, 5 = memory errors
+PLIC_NDEV = 5
 # The DMA test engine's register window; no Linux driver binds to it, the
 # node only records the device and its PLIC source.
 DMA_ENGINE_BASE = 0x4002_0000
 DMA_ENGINE_SIZE = 0x1000
 DMA_ENGINE_PLIC_SOURCE = 3
+# The memory error unit's register window: DDR ECC and AXI error reports
+# (hw/rtl/cpu_and_mem/memory_error_unit.sv). See frost,memory-error.yaml for
+# the binding and linux/frost-memerr for the driver.
+MEMORY_ERROR_BASE = 0x4002_1000
+MEMORY_ERROR_SIZE = 0x100
+MEMORY_ERROR_PLIC_SOURCE = 5
 # NIC register window at the end of strongly ordered MMIO (cpu_and_mem.sv,
 # MmioSizeBytes). See frost,net10g.yaml for the binding, linux/frost-net10g for
 # the driver, and hw/rtl/peripherals/nic for the RTL.
@@ -349,6 +356,12 @@ def gen_dts(
 \t\t\treg = <0x{DMA_ENGINE_BASE:08x} 0x{DMA_ENGINE_SIZE:x}>;
 \t\t\tinterrupt-parent = <&plic>;
 \t\t\tinterrupts = <{DMA_ENGINE_PLIC_SOURCE}>;
+\t\t}};
+\t\tmemory-controller@{MEMORY_ERROR_BASE:x} {{
+\t\t\tcompatible = "frost,memory-error";
+\t\t\treg = <0x{MEMORY_ERROR_BASE:08x} 0x{MEMORY_ERROR_SIZE:x}>;
+\t\t\tinterrupt-parent = <&plic>;
+\t\t\tinterrupts = <{MEMORY_ERROR_PLIC_SOURCE}>;
 \t\t}};
 \t\tethernet@{NIC_BASE:x} {{
 \t\t\tcompatible = "frost,net10g";

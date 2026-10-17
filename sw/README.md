@@ -137,6 +137,7 @@ copy.
 | NS16550 | `0x40001000` | 16550-compatible UART registers, `0x40001000` to `0x4000101C` |
 | CLINT | `0x40010000` | SiFive CLINT-compatible alias of MSIP, `mtimecmp`, and `mtime`, for Linux |
 | DMA test engine | `0x40020000` | Coherent DMA copy and fill engine |
+| Memory error unit | `0x40021000` | Counts and addresses of DDR ECC errors and DDR error responses |
 | NIC | `0x40030000` | 10G Ethernet control, descriptor rings, and counters |
 | PLIC | `0x44000000` | Platform-level interrupt controller: 4 MiB window, M and S contexts for hart 0 |
 
@@ -178,7 +179,7 @@ calls into `ctype.c`, `memory.c` and `sprintf.c` call into `string.c`, and
 | [sync.h](lib/include/sync.h) | `fence` and `fence.i` |
 | [mmio.h](lib/include/mmio.h) | Peripheral register names |
 | [fifo.h](lib/include/fifo.h) | The two MMIO FIFOs |
-| [nic.h](lib/include/nic.h), [dma_engine.h](lib/include/dma_engine.h) | NIC and DMA test engine registers |
+| [nic.h](lib/include/nic.h), [dma_engine.h](lib/include/dma_engine.h), [memory_error.h](lib/include/memory_error.h) | NIC, DMA test engine, and memory error unit registers |
 | [fix.h](lib/include/fix.h) | FIX timestamp and price parsing |
 | [tomasulo_profile.h](lib/include/tomasulo_profile.h) | [Performance-counter API](../hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/README.md); prints through `uart.c`, and the report and cache-counter functions need `tomasulo_profile_cache.c` |
 
@@ -284,6 +285,8 @@ can be debugged and where each one first stops.
 | `linux_irq_stack_slot_test/` | A timer interrupt inside a callee whose saved-`ra` stack slot was poisoned beforehand |
 | `lq_stale_slot_probe/` | Cached-load results must reach the right load across two partial flushes and ROB-tag reuse, with slow, reordered DDR responses |
 | `mem_divergence_probe/` | Cold versus warm reads of cached DDR (both dword halves, 64-bit reads, store forwarding) |
+| `memerr_readback/` | The memory error unit on the X3: the ECC reader is active and polling, and a DDR write and readback twice the L2's size reports no error |
+| `memerr_test/` | The memory error unit in simulation: DDR error responses injected by the model and ECC reports from the bench reach its counters, addresses, and PLIC interrupt |
 | `memory_test/` | Arena allocator and `malloc`/`free`/`calloc`/`realloc`, including coalescing and overflow rejection |
 | `mret_drain_deadlock/` | `mret` right after cached-DDR stores must wait for them to drain, then continue |
 | `mret_timer_resume_test/` | A timer pending as `mret` drops to U-mode must save the U-mode entry point in `mepc` |

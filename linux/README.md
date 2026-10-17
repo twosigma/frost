@@ -71,11 +71,12 @@ The board and simulation share one physical map.
 | Range | Contents |
 |---|---|
 | `[0x0000_0000, 256 KiB)` | Uncached boot BRAM, outside Linux's memory node. Code runs only from its first 128 KiB. `[0x17C00, 0x18000)` is reserved for the debug module. |
-| `[0x4000_0000, 0x4003_1000)` | Native MMIO: UART, FIFOs, timer, DMA test engine, and NIC. See `sw/lib/include/mmio.h`. |
+| `[0x4000_0000, 0x4003_1000)` | Native MMIO: UART, FIFOs, timer, DMA test engine, memory error unit, and NIC. See `sw/lib/include/mmio.h`. |
 | `[0x4000_1000, +0x100)` | ns16550a UART alias, PLIC source 1, with `reg-shift=2` and `reg-io-width=4` |
 | `[0x4001_0000, +0xC000)` | SiFive CLINT alias: `msip` at `+0`, `mtimecmp` at `+0x4000`, `mtime` at `+0xBFF8` |
+| `[0x4002_1000, +0x100)` | Memory error unit, PLIC source 5, bound by the `frost_memerr` driver ([device-tree binding](buildroot-external/board/frost/frost,memory-error.yaml)) |
 | `[0x4003_0000, +4 KiB)` | DMA-coherent NIC, bound by the `frost_net10g` driver ([device-tree binding](buildroot-external/board/frost/frost,net10g.yaml)) |
-| `[0x4400_0000, +4 MiB)` | PLIC with M and S contexts for hart 0. Sources 1 to 4 are the UART, external pin, DMA test engine, and NIC. OpenSBI hides the M context from Linux. |
+| `[0x4400_0000, +4 MiB)` | PLIC with M and S contexts for hart 0. Sources 1 to 5 are the UART, external pin, DMA test engine, NIC, and memory error unit. OpenSBI hides the M context from Linux. |
 | `[0x8000_0000, +1 GiB)` | Cached DDR. The DTB advertises the board's DDR size: 1 GiB on X3. |
 
 The PMA map has four regions: the BRAM, the MMIO register window
@@ -175,11 +176,11 @@ payload reports cycle, instruction, time, and IPC deltas for its own workload.
 headers from snapshot.debian.org and checks their sizes and SHA-256 sums. The
 pinned release is `6.12.107+deb13-riscv64`; the snapshot, versions, and
 checksums are in the script. FROST runs this kernel unmodified, with its NIC
-driver built as a separate module.
+and memory error drivers built as separate modules.
 
 Its subcommands, `fetch`, `release`, `image`, `module`, and `initramfs`,
 print their result on stdout and progress on stderr. `module` and `initramfs`
-are described under [NIC module](#nic-module). `FROST_DEBIAN_KERNEL_CACHE`
+are described under [Driver modules](#driver-modules). `FROST_DEBIAN_KERNEL_CACHE`
 overrides the default `linux/debian-kernel` cache. Native and container
 builds can use the cache concurrently, and an incomplete entry is rebuilt.
 
@@ -202,7 +203,7 @@ A replacement kernel selected with `FROST_LINUX_KERNEL` must provide:
 | `CONFIG_SERIAL_8250`, `CONFIG_SERIAL_8250_CONSOLE`, `CONFIG_SERIAL_OF_PLATFORM` | Console on the ns16550a alias, found through the DT. Build these in: the test initramfs has no serial modules. |
 | `CONFIG_OF`, `CONFIG_OF_EARLY_FLATTREE` | Device-tree probing and the early console (`earlycon=uart8250,mmio32,0x40001000`) |
 | `CONFIG_NET`, `CONFIG_INET`, `CONFIG_PACKET` | Packet sockets for `frost_nettest`, and IPv4 for an NFS root |
-| `CONFIG_MODULES`, or the driver built in (`CONFIG_NETDEVICES`, `CONFIG_ETHERNET`, `CONFIG_NET_VENDOR_FROST`, `CONFIG_FROST_NET10G`) | The `frost_net10g` driver for the `frost,net10g` node. The pin loads it as a module ([NIC module](#nic-module)). |
+| `CONFIG_MODULES`, or the drivers built in (`CONFIG_NETDEVICES`, `CONFIG_ETHERNET`, `CONFIG_NET_VENDOR_FROST`, `CONFIG_FROST_NET10G`, `CONFIG_FROST_MEMERR`) | The `frost_net10g` driver for the `frost,net10g` node and `frost_memerr` for `frost,memory-error`. The pin loads both as modules ([Driver modules](#driver-modules)). |
 | `CONFIG_NFS_FS`, `CONFIG_NFS_V3` | The kernel's NFS client, needed for either kind of [NFS root](#nfs-root): the kernel performs the mount even when an initramfs requests it. The pin builds both as modules, which its initramfs carries. |
 | `CONFIG_ROOT_NFS`, `CONFIG_IP_PNP` (`CONFIG_IP_PNP_DHCP` for `ip=dhcp`) | Only for a kernel that mounts the NFS root itself from `ip=` and `nfsroot=`. That kernel also needs the NFS client and the NIC driver built in. The pin has neither option. |
 | `CONFIG_CGROUPS`, `CONFIG_UNIX` | Required by systemd on the NFS root, which needs the cgroup v2 hierarchy but no particular controller (the pin enables the usual ones). `CONFIG_AUTOFS_FS`, `CONFIG_TMPFS_POSIX_ACL`, and `CONFIG_TMPFS_XATTR` are recommended. systemd's other requirements, and the seccomp support it recommends, are kernel defaults. |
@@ -211,28 +212,33 @@ The test image boots with `ipv6.disable=1`: Debian's kernel builds IPv6 in,
 and its autoconfiguration frames would loop back through the NIC and fail
 `frost_nettest`'s idle checks.
 
-## NIC module
+## Driver modules
 
-`debian_kernel.py module` builds the [NIC driver](frost-net10g/README.md)
-against the pinned kernel's headers and checks the module's `vermagic`
-release and symbol CRCs against that kernel. Linux would not catch a
+`debian_kernel.py module` builds the [NIC driver](frost-net10g/README.md) and
+the [memory error driver](frost-memerr/README.md) against the pinned kernel's
+headers and checks each module's name, `vermagic` release and symbol CRCs
+against that kernel. Linux would not catch a
 mismatch: the pin sets `CONFIG_MODVERSIONS`, under which the kernel ignores
 the release in `vermagic` and loads the module into any ABI-compatible
-kernel. The image build compiles the module with Buildroot's cross toolchain;
+kernel. The image build compiles the modules with Buildroot's cross toolchain;
 a standalone build uses `FROST_LINUX_CROSS_COMPILE` or `--cross`.
 
-`debian_kernel.py initramfs` appends the module and a startup script to
-Buildroot's `rootfs.cpio` as a second cpio archive, which the kernel unpacks
-after the first, so Buildroot does not rebuild. For the same `vermagic`
-reason, the script checks `uname -r` itself before it loads the module, then
-prints `FROST_NET10G_MODULE_PASS <release>` or
-`FROST_NET10G_MODULE_FAIL <reason>` before login. `FROST_NET10G_MODULE` names
-a prebuilt module to use instead of building one.
+`debian_kernel.py initramfs` appends the modules and a startup script for
+each to Buildroot's `rootfs.cpio` as a second cpio archive, which the kernel
+unpacks after the first, so Buildroot does not rebuild. For the same
+`vermagic` reason, each script checks `uname -r` itself before it loads its
+module, then prints `FROST_NET10G_MODULE_PASS <release>` or
+`FROST_NET10G_MODULE_FAIL <reason>`, and `FROST_MEMERR_MODULE_PASS <release>`
+or `FROST_MEMERR_MODULE_FAIL <reason>`, before login. `FROST_NET10G_MODULE`
+and `FROST_MEMERR_MODULE` name prebuilt modules to use instead of building
+them.
 
-For Debian NFS boots, install the driver through DKMS and include it in
+For Debian NFS boots, install the NIC driver through DKMS and include it in
 Debian's initramfs, as the
 [driver guide](frost-net10g/README.md#an-nfs-root-needs-the-module-in-the-initramfs)
-describes.
+describes. The memory error driver is not needed to mount the root: the
+hardware regression installs and loads its own build, and a DKMS install
+([its guide](frost-memerr/README.md)) loads it at every boot.
 
 ## NFS root
 

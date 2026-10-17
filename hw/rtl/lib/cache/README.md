@@ -21,7 +21,7 @@ still dirty in the L1D, and software never flushes a cache for them.
 | `walker_coherence_sequencer.sv` | Probes the L1D before each page-table walk read reaches the L2; one read in flight |
 | `l2_stream_prefetcher.sv` | Watches the L1D's misses and reads the lines ahead of ascending streams into the L2, never past the page of the last miss |
 | `line_port_axi_bridge.sv` | Line port to single-beat AXI4 master; line ids become AXI ids |
-| `axi_behavioral_memory.sv` | Simulation-only DDR model: concurrent transactions, latency and jitter settings, optional out-of-order completion |
+| `axi_behavioral_memory.sv` | Simulation-only DDR model: concurrent transactions, latency and jitter settings, optional out-of-order completion, and injected error responses |
 | `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, and writeback pulses, hit-under-miss, the outstanding-miss count, and two stall classes |
 | `*_test_harness.sv` | cocotb tops: hierarchy + bridge + memory (with a bench-paced hold on the bridge), and arbiter + bridge + memory |
 
@@ -277,6 +277,16 @@ that map is empty. An image load relies on those transactions completing
 promptly in another way: nothing orders the JTAG loader's DDR writes after
 the bridge's, so each write the bridge accepted before the reset must land
 before the loader's first DDR write.
+
+An error response (anything but OKAY) completes its transaction like any
+other, so a read's data still fills the line. The bridge reports each one,
+with its response code and AXI id, on `o_rd_err_*` or `o_wr_err_*` to the
+memory error unit (`cpu_and_mem/memory_error_unit.sv`), where software reads
+it. Simulation also flags an error response as a failure unless the test
+passes `+axi_error_check=0`. The behavioral DDR model injects them for such a
+test: `+axi_rd_error_addr=<hex>` and `+axi_wr_error_addr=<hex>` make every
+read or write of the line holding that region-relative address answer SLVERR
+(`sw/apps/memerr_test`).
 
 The interconnect's own reset is different. While it is in reset, AXI
 requires every VALID low, so the bridge takes that reset as a second input
