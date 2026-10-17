@@ -260,7 +260,7 @@ class LQModel:
         """Return (cdb_idx, mem_idx), giving the ROB-head load issue priority.
 
         Other entries are scanned in physical ring order. LR, AMO, and MMIO
-        loads require rob_tag == rob_head_tag. AMOs also require
+        loads require rob_tag == rob_head_tag. LRs and AMOs also require
         sq_committed_empty. The router holds MMIO reads until committed stores
         drain; the LQ may hand them off before then.
         """
@@ -281,7 +281,7 @@ class LQModel:
                 and e.addr_valid
                 and not e.issued
                 and not e.data_valid
-                and (not e.is_amo or sq_committed_empty)
+                and (not (e.is_lr or e.is_amo) or sq_committed_empty)
             ):
                 mem_idx = idx
                 break
@@ -294,9 +294,7 @@ class LQModel:
                     # Keep MMIO head-qualified, as in the RTL's normal scan.
                     if e.is_mmio and e.rob_tag != (rob_head_tag & MASK_TAG):
                         continue
-                    if e.is_lr and e.rob_tag != (rob_head_tag & MASK_TAG):
-                        continue
-                    if e.is_amo and (
+                    if (e.is_lr or e.is_amo) and (
                         e.rob_tag != (rob_head_tag & MASK_TAG) or not sq_committed_empty
                     ):
                         continue

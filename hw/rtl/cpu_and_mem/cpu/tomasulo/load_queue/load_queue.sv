@@ -1537,9 +1537,13 @@ module load_queue #(
   // older committed store is still draining. The probe and LQ-to-router
   // handoff are side-effect-free; the router parks the request until
   // i_sq_committed_empty permits the irreversible device read.
+  //
+  // An AMO or LR leaves only at the ROB head once no committed store is left
+  // to write. A store older than an LR, to the other word of its dword, does
+  // not overlap the LR, so without the wait it could write after the LR's
+  // response, and its write-launch snoop would cancel the reservation.
   assign sq_check_entry_issueable = sq_check_entry_valid &&
-      (!sq_check_is_lr_q || (sq_check_rob_tag_q == i_rob_head_tag)) &&
-      (!sq_check_is_amo_q
+      (!(sq_check_is_lr_q || sq_check_is_amo_q)
        || (sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty)) &&
       (!sq_check_is_mmio_q || (sq_check_rob_tag_q == i_rob_head_tag)) &&
       !coh_launch_hold_q && !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q));

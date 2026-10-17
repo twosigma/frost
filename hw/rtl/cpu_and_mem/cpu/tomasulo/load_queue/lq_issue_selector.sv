@@ -24,8 +24,8 @@
 // load_queue registers the older-AMO block vector in physical entry order.
 // This combinational selector rotates it into scan order. A freed or flushed
 // entry can retain a stale block bit for its first invalid cycle; lq_valid
-// masks it here, and load_queue clears it before reuse. A head AMO requires
-// i_sq_committed_empty.
+// masks it here, and load_queue clears it before reuse. A head AMO or LR
+// requires i_sq_committed_empty.
 // =============================================================================
 module lq_issue_selector #(
     parameter int unsigned DEPTH = riscv_pkg::LqDepth
@@ -152,8 +152,7 @@ module lq_issue_selector #(
           !lq_data_valid[i] &&
           !in_flight_mask[i] &&
           (!lq_is_mmio[i] || rob_head_match_q[i]) &&
-          (!lq_is_lr[i]   || rob_head_match_q[i]) &&
-          (!lq_is_amo[i]  || (rob_head_match_q[i] && i_sq_committed_empty));
+          (!(lq_is_lr[i] || lq_is_amo[i]) || (rob_head_match_q[i] && i_sq_committed_empty));
 
       mem_eligible_update_phys[i] =
           lq_valid[i] &&
@@ -161,8 +160,7 @@ module lq_issue_selector #(
           !lq_issued[i] &&
           !lq_data_valid[i] &&
           !in_flight_mask[i] &&
-          (!lq_is_lr[i]   || rob_head_match_q[i]) &&
-          (!lq_is_amo[i]  || (rob_head_match_q[i] && i_sq_committed_empty));
+          (!(lq_is_lr[i] || lq_is_amo[i]) || (rob_head_match_q[i] && i_sq_committed_empty));
     end
   end
   assign mem_eligible_stored_mask = rotate_mask_from_head(mem_eligible_stored_phys, head_idx);
@@ -268,7 +266,9 @@ module lq_issue_selector #(
       // draining stores can block the head. Downstream issue gates preserve
       // MMIO/LR head ordering, and the router drains stores before device
       // reads. AMOs require an empty committed SQ because their LQ write
-      // path is invisible to SQ disambiguation.
+      // path is invisible to SQ disambiguation. LRs require it so that no
+      // store older than the LR writes after the LR sets its reservation
+      // (load queue README, "LR and SC").
       head_mem_stored_onehot[i] =
           lq_valid[i] &&
           rob_head_match_q[i] &&
@@ -276,7 +276,7 @@ module lq_issue_selector #(
           !lq_issued[i] &&
           !lq_data_valid[i] &&
           !in_flight_mask[i] &&
-          (!lq_is_amo[i] || i_sq_committed_empty);
+          (!(lq_is_lr[i] || lq_is_amo[i]) || i_sq_committed_empty);
 
       head_mem_update_onehot[i] =
           lq_valid[i] &&
@@ -285,7 +285,7 @@ module lq_issue_selector #(
           !lq_issued[i] &&
           !lq_data_valid[i] &&
           !in_flight_mask[i] &&
-          (!lq_is_amo[i] || i_sq_committed_empty);
+          (!(lq_is_lr[i] || lq_is_amo[i]) || i_sq_committed_empty);
     end
   end
 

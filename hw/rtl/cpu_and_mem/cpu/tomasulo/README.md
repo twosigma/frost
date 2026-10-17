@@ -99,7 +99,7 @@ side effects are safe. The LQ and SQ order atomics instead (last row).
 | CSR | Runs its read/update handshake at the head. The value read reaches the register file through a delayed writeback at commit, and the front end holds younger instructions until then, because the CDB carries the CSR's write operand, not the value it reads. Translation CSRs also wait for committed stores to drain. |
 | FENCE / FENCE.I / SFENCE.VMA | Wait for committed stores to drain. FENCE.I and SFENCE.VMA then wait for L1D writeback and L1I invalidation, and flush fetch; SFENCE.VMA also invalidates the TLBs and the page-table walker. |
 | xRET | Handshakes with the trap unit and returns to `mepc`, `sepc`, or `dpc`. |
-| AMO / LR / SC | AMO and LR leave the LQ only at the ROB head, and an AMO also waits until no committed stores remain in the SQ. An SC issues from MEM_RS like a store but resolves only at the ROB head, after the committed stores drain (see the [wrapper](tomasulo_wrapper/README.md)). Atomics have no serializer state. |
+| AMO / LR / SC | AMO and LR leave the LQ only at the ROB head, once no committed stores remain in the SQ. An SC issues from MEM_RS like a store but resolves only at the ROB head, after the committed stores drain (see the [wrapper](tomasulo_wrapper/README.md)). Atomics have no serializer state. |
 
 The ROB marks a CSR instruction as a translation CSR at allocation: any
 `satp` access, or an `mstatus` or `sstatus` access that writes. Like FENCE.I

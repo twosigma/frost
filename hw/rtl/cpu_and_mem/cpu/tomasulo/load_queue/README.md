@@ -83,8 +83,8 @@ younger than Y but ahead of H in ring order, wins the normal scan every cycle.
 Z cannot evict the older Y, so H is never selected. If S has not committed, it
 is younger than H, so it cannot commit or drain until H retires, and Y never
 leaves. Priority for H is always safe: every store older than H has committed
-and drains on its own. A head AMO takes priority only once the committed-store
-queue is empty.
+and drains on its own. A head AMO or LR takes priority only once the
+committed-store queue is empty.
 
 ### Staging and the SQ check
 
@@ -277,6 +277,11 @@ FROST_VERILATOR_EXTRA_ARGS=-GL0_CACHE_DEPTH=256 ./scripts/frost.py cocotb corema
 
 The LR reservation (`o_reservation_valid`, `o_reservation_addr`) lives here.
 An LR reads memory and sets the reservation when its response is accepted.
+Like an AMO, it launches at the ROB head once the SQ has no committed store
+left to write (`i_sq_committed_empty`), so every store whose write clears the
+reservation comes after the LR in program order. An older store to the other
+word of the LR's dword does not overlap the LR, so nothing else would hold the
+LR until that store writes.
 Devices hold no reservations, so an LR to the device quadrant faults instead
 (see [Completion](#completion)), with no read and no reservation. The
 reservation clears on any SC commit (`i_sc_clear_reservation`), a store or AMO

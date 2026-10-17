@@ -277,7 +277,9 @@ the SC's aligned doubleword, FROST's reservation granule. The reservation is
 cleared when any SC commits, when the SQ launches a write to the same
 doubleword or an AMO writes it, when a DMA write invalidates the line, and on
 a trap, xRET, or FENCE-class flush (the LQ's `i_full_flush`); a branch
-recovered at commit keeps it. The SC's result (0 on success, 1 on failure) is
+recovered at commit keeps it. An LR launches only once no committed store is
+left to write, so every SQ write that clears the reservation is from a store
+after the LR. The SC's result (0 on success, 1 on failure) is
 registered and presented to the MEM adapter in the following cycle. When a failed SC commits, the wrapper sends `sc_discard` to
 the SQ, which drops the entry without writing memory.
 
