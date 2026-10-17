@@ -31,8 +31,8 @@
  *     unit redirects to mepc/sepc/dpc.
  *   - WFI: waits for i_interrupt_pending.
  *   - Exception: o_trap_pending until the trap unit takes it.
- * LR executes only at the head, AMO and SC only at the head with committed
- * stores drained. FP exception flags reach fcsr at retirement.
+ * LR, AMO, and SC execute only at the head with committed stores drained.
+ * FP exception flags reach fcsr at retirement.
  *
  * Multi-bit fields and the packed head metadata live in distributed RAM; a
  * RAM with several write ports keeps one bank per port and a live value

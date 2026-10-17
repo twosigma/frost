@@ -332,9 +332,9 @@ retirement, flush, or an exceptional completion.
 
 ### Atomics
 
-AMO, LR, and SC have no serializer state. The LQ issues an LR only at the
-head, and an AMO only at the head with committed stores drained;
-`sc_pending_unit` in the wrapper fires an SC under the same two conditions.
+AMO, LR, and SC have no serializer state. The LQ issues an LR or an AMO
+only at the head with committed stores drained; `sc_pending_unit` in the
+wrapper fires an SC under the same two conditions.
 Once done, they retire normally.
 
 ## Performance counters

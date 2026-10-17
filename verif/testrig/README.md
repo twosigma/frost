@@ -183,6 +183,13 @@ result depends on timing, out of the default run:
   never succeed. An AMO write to the reserved doubleword now cancels the
   reservation, and commit-time recovery keeps it
   ([`lrsc_amo.S`](traces/lrsc_amo.S), [`lrsc_jump.S`](traces/lrsc_jump.S)).
+- A store older than an LR, to the other word of the reserved doubleword,
+  cancelled FROST's reservation when it wrote after the LR read. It does not
+  overlap the LR, so the LR could read while the store still waited in the
+  store queue behind others. Sail keeps the reservation, and the SC failed
+  only on FROST. An LR now waits at the ROB head until no committed store is
+  left to write, as an AMO does
+  ([`lrsc_older_store.S`](traces/lrsc_older_store.S)).
 
 ## The A extension
 
@@ -226,4 +233,5 @@ CI's TestRIG jobs replays all of them before its random run.
 | [`instret_nops.S`](traces/instret_nops.S) | NOP and C.NOP count in `minstret` |
 | [`lrsc_amo.S`](traces/lrsc_amo.S) | An AMO to the reserved doubleword cancels the reservation; one to the next doubleword does not |
 | [`lrsc_jump.S`](traces/lrsc_jump.S) | A JAL, JALR, or taken branch between LR and SC keeps the reservation |
+| [`lrsc_older_store.S`](traces/lrsc_older_store.S) | A store older than the LR, to the other word of the reserved doubleword, keeps the reservation when it writes after the LR reads |
 | [`pte_nonleaf_dau.S`](traces/pte_nonleaf_dau.S) | A non-leaf PTE with D, A, or U set raises a page fault |

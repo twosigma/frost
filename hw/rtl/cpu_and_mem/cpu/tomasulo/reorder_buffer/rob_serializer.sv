@@ -176,9 +176,8 @@ module rob_serializer (
           end else if (head_is_mret) begin
             serial_state_next = riscv_pkg::SERIAL_MRET_EXEC;
           end else if (head_is_amo || head_is_lr) begin
-            // The LQ issues LR only at the ROB head and AMO only at the head
-            // with committed stores drained. Both commit normally after CDB
-            // completion. Waiting here for an empty SQ would deadlock on
+            // The LQ issues LR and AMO only at the ROB head with committed
+            // stores drained. Both commit normally after CDB completion. Waiting here for an empty SQ would deadlock on
             // younger stores, which cannot commit first.
           end
         end

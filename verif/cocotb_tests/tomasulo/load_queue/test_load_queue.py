@@ -2643,6 +2643,46 @@ async def test_lr_waits_for_rob_head(dut: Any) -> None:
 
 
 # ============================================================================
+# LR waits for committed stores to drain
+# ============================================================================
+@cocotb.test()
+async def test_lr_waits_for_sq_committed_empty(dut: Any) -> None:
+    """A head LR doesn't issue until no committed store is left to write.
+
+    A store older than the LR, to the other word of its dword, does not
+    overlap the LR, and its write would cancel a reservation set before it.
+    """
+    dut_if, model = await setup(dut)
+
+    dut_if.drive_alloc(rob_tag=5, size=MEM_SIZE_WORD, is_lr=True)
+    model.alloc(5, False, MEM_SIZE_WORD, False, is_lr=True)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_addr_update(rob_tag=5, address=0x1000)
+    model.addr_update(5, 0x1000)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    dut_if.drive_rob_head_tag(5)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(False)
+
+    await Timer(1, unit="ns")
+    for _ in range(6):
+        assert not dut_if.read_mem_request()["en"], (
+            "LR should not issue while committed stores remain"
+        )
+        await dut_if.step()
+
+    dut_if.drive_sq_committed_empty(True)
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"], "LR should issue once committed stores drain"
+    assert mem_req["addr"] == 0x1000
+
+
+# ============================================================================
 # LR sets reservation
 # ============================================================================
 @cocotb.test()
