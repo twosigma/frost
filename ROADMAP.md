@@ -16,13 +16,13 @@ receive traffic: a 32-byte write to a line the L2 lacks reads the line from
 DDR first, and a write to the other half of a line with a read in flight
 waits for that read and holds up the L2.
 
-The DDR controller counts ECC errors, but nothing reports them to software:
-its interrupt is unconnected and `ECC_EN_IRQ` is clear. The cache hierarchy's
-AXI bridge checks error responses only in simulation. The plan is to connect
-ECC reporting, propagate AXI errors to software, and add scrubbing and
-periodic reporting (`CE_CNT` saturates at 255, so it must be read and
-cleared). The hardware regression checks ECC once at the end of a run, which
-catches errors but is not continuous monitoring.
+Software sees memory errors through the memory error unit. On the X3 a
+reader polls the DDR controller's ECC registers about once a millisecond and
+passes on corrected and uncorrectable errors with their physical addresses,
+the cache hierarchy's AXI bridge passes on every error response, and Linux
+logs both and shows the counts in sysfs (`linux/frost-memerr`). What remains
+is scrubbing, which rewrites corrected data so that single-bit errors do not
+build up into uncorrectable ones.
 
 ## VCU118 board support
 

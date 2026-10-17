@@ -26,6 +26,11 @@ With checking disabled, zero counters cannot establish a clean read. ECC_STATUS
 bit 0 is uncorrectable and bit 1 correctable. CE_CNT saturates at 255; there is
 no uncorrectable-error counter, only status and UE capture registers.
 
+FROST's ECC reader (boards/x3/x3_ecc_reader.sv) polls the same registers. It
+clears ECC_STATUS's correctable bit after reading the captured address, so
+after a corrected error only CE_CNT may show it, and it writes CE_CNT back to
+1, never 0, once it reaches 128. It never clears the uncorrectable bit.
+
 Exit 2 for a non-clean report, or 1 if the read fails.
 """
 

@@ -415,6 +415,16 @@ else ifeq ($(TOPLEVEL),x3_ddr_init)
 COMPILE_ARGS := \
 	$(ROOT)/boards/x3/x3_ddr_init.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),x3_ecc_reader)
+# X3 DDR4 ECC register poller unit bench (AXI4-Lite master only)
+COMPILE_ARGS := \
+	$(ROOT)/boards/x3/x3_ecc_reader.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),memory_error_unit)
+# Memory error unit bench (registers, counters, interrupt)
+COMPILE_ARGS := \
+	$(ROOT)/hw/rtl/cpu_and_mem/memory_error_unit.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),imem_predecode_line)
 # Per-line predecode sideband unit bench (cross-check vs the python generator)
 COMPILE_ARGS := \

@@ -22,7 +22,11 @@
  * id carried as the AXI id. Any number of transactions may be in flight, up
  * to one per id value, and the memory controller may complete different ids
  * in any order. Writes drive AW and W and complete on B; reads complete on R.
- * Responses are assumed OKAY (checked in simulation). The bridge never orders
+ * An error response (not OKAY) still completes its transaction, so a read
+ * returns the response's data, and is reported on o_rd_err_* or o_wr_err_*
+ * for the memory error unit; simulation also flags it unless the
+ * +axi_error_check=0 plusarg turns that off for a test that injects errors.
+ * The bridge never orders
  * a read against a write: the caches above keep same-line ordering ("Line
  * protocol" in hw/rtl/lib/cache/README.md).
  *
@@ -114,7 +118,16 @@ module line_port_axi_bridge #(
     input  logic [ AXI_ID_BITS-1:0] i_axi_rid,
     input  logic [LINE_BYTES*8-1:0] i_axi_rdata,
     input  logic [             1:0] i_axi_rresp,
-    input  logic                    i_axi_rlast
+    input  logic                    i_axi_rlast,
+
+    // Error responses, registered: one pulse per R or B taken that is not
+    // OKAY, with its response code and AXI id.
+    output logic                   o_rd_err_valid,
+    output logic [            1:0] o_rd_err_resp,
+    output logic [AXI_ID_BITS-1:0] o_rd_err_id,
+    output logic                   o_wr_err_valid,
+    output logic [            1:0] o_wr_err_resp,
+    output logic [AXI_ID_BITS-1:0] o_wr_err_id
 );
 
   localparam int unsigned NumIds = 1 << ID_BITS;
@@ -278,9 +291,25 @@ module line_port_axi_bridge #(
     stale_any_q <= |stale_d;
   end
 
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      o_rd_err_valid <= 1'b0;
+      o_wr_err_valid <= 1'b0;
+    end else begin
+      o_rd_err_valid <= r_accept && (i_axi_rresp != 2'b00);
+      o_wr_err_valid <= b_accept && (i_axi_bresp != 2'b00);
+    end
+    o_rd_err_resp <= i_axi_rresp;
+    o_rd_err_id   <= i_axi_rid;
+    o_wr_err_resp <= i_axi_bresp;
+    o_wr_err_id   <= i_axi_bid;
+  end
+
 `ifndef SYNTHESIS
 `ifndef FORMAL
   // Simulation-only protocol checks (Yosys cannot elaborate $error).
+  int axi_error_check;
+  initial if (!$value$plusargs("axi_error_check=%d", axi_error_check)) axi_error_check = 1;
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
       if (req_fire && inflight_q[i_req_id])
@@ -288,9 +317,9 @@ module line_port_axi_bridge #(
       if (r_accept && r_known && b_accept && b_known &&
           (i_axi_rid[ID_BITS-1:0] == i_axi_bid[ID_BITS-1:0]))
         $error("line_port_axi_bridge: R and B for the same id %0d", i_axi_rid);
-      if (i_axi_bvalid && o_axi_bready && i_axi_bresp != 2'b00)
+      if (axi_error_check != 0 && i_axi_bvalid && o_axi_bready && i_axi_bresp != 2'b00)
         $error("line_port_axi_bridge: write response error (bresp=%0d)", i_axi_bresp);
-      if (i_axi_rvalid && o_axi_rready && i_axi_rresp != 2'b00)
+      if (axi_error_check != 0 && i_axi_rvalid && o_axi_rready && i_axi_rresp != 2'b00)
         $error("line_port_axi_bridge: read response error (rresp=%0d)", i_axi_rresp);
       if (i_axi_rvalid && o_axi_rready && !i_axi_rlast)
         $error("line_port_axi_bridge: multi-beat read response (expected single beat)");

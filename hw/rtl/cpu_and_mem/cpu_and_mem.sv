@@ -133,6 +133,17 @@ module cpu_and_mem #(
     // External interrupt input: PLIC source 2 (the ns16550 IRQ is source 1).
     // The PLIC's M-context line is registered one cycle before driving MEIP.
     input logic i_external_interrupt,
+    // DDR ECC reports from the board's reader (boards/x3/x3_ecc_reader.sv on
+    // the X3) for the memory error unit; a board without one ties them low.
+    input logic        i_ecc_present,
+    input logic        i_ecc_poll,
+    input logic        i_ecc_ce_valid,
+    input logic [ 7:0] i_ecc_ce_count,
+    input logic        i_ecc_ce_addr_valid,
+    input logic [63:0] i_ecc_ce_addr,
+    input logic        i_ecc_ue_valid,
+    input logic        i_ecc_ue_addr_valid,
+    input logic [63:0] i_ecc_ue_addr,
 
     // RISC-V debug transport pins (see DEBUG_JTAG_TAP).
     input  logic i_jtag_tck,
@@ -283,6 +294,10 @@ module cpu_and_mem #(
   // the test engine through a line-port arbiter; its interrupt is PLIC
   // source 4.
   localparam int unsigned NicBase = 32'h4003_0000;
+  // Memory error unit @ 0x4002_1000, a 256-byte window of 32-bit registers
+  // (memory_error_unit.sv): counts of DDR ECC errors and of the DDR bridge's
+  // AXI error responses; its interrupt is PLIC source 5.
+  localparam int unsigned MemErrBase = 32'h4002_1000;
 
   // mtimecmp resets to all-ones so no timer interrupt fires until software
   // programs it.
@@ -291,7 +306,7 @@ module cpu_and_mem #(
   // PLIC @ 0x4400_0000, a 4 MiB device-quadrant window
   // (addr[31:22] == 10'h110) of 32-bit registers. Sources: 1 = ns16550 irq,
   // 2 = i_external_interrupt, 3 = the DMA test engine's completion, 4 = the
-  // NIC. Contexts: 0 = hart0 M, 1 = hart0 S. The claim read
+  // NIC, 5 = the memory error unit. Contexts: 0 = hart0 M, 1 = hart0 S. The claim read
   // (0x20_0004 + 0x1000*ctx) is destructive, so its consume pulse is decoded
   // from mmio_read_capture, which the router fires once per performed read.
   localparam logic [9:0] PlicWindowSel = 10'h110;
@@ -551,11 +566,12 @@ module cpu_and_mem #(
   // ---------------------------------------------------------------------------
   logic [1:0] plic_claim_pulse;
   // Capture window selects on the same edge as the MMIO write address.
-  logic plic_sel_q, dma_engine_sel_q, nic_sel_q;
+  logic plic_sel_q, dma_engine_sel_q, nic_sel_q, memerr_sel_q;
   always_ff @(posedge i_clk) begin
     plic_sel_q       <= (data_memory_address[31:22] == PlicWindowSel);
     dma_engine_sel_q <= (data_memory_address[31:8] == DmaEngineBase[31:8]);
     nic_sel_q        <= (data_memory_address[31:12] == NicBase[31:12]);
+    memerr_sel_q     <= (data_memory_address[31:8] == MemErrBase[31:8]);
   end
   logic plic_wr_en, plic_wr_hi;
   assign plic_wr_hi = |data_memory_byte_write_enable_registered[7:4];
@@ -573,17 +589,56 @@ module cpu_and_mem #(
   logic [63:0] nic_rd_pair;
   assign nic_wr_hi = |data_memory_byte_write_enable_registered[7:4];
   assign nic_wr_en = |data_memory_byte_write_enable_registered && nic_sel_q;
+  // Memory error unit register bus (same shape) and interrupt. The DDR
+  // bridge's error pulses come from the cached tier below, or stay low
+  // without it.
+  logic memerr_wr_en, memerr_wr_hi, memerr_irq;
+  logic [63:0] memerr_rd_pair;
+  logic ddr_rd_err_valid, ddr_wr_err_valid;
+  logic [1:0] ddr_rd_err_resp, ddr_wr_err_resp;
+  logic [DdrAxiIdBits-1:0] ddr_rd_err_id, ddr_wr_err_id;
+  assign memerr_wr_hi = |data_memory_byte_write_enable_registered[7:4];
+  assign memerr_wr_en = |data_memory_byte_write_enable_registered && memerr_sel_q;
+  memory_error_unit #(
+      .ID_BITS(DdrAxiIdBits)
+  ) memory_errors (
+      .i_clk(i_clk),
+      .i_rst(rst_core),
+      .i_wr_en(memerr_wr_en),
+      .i_wr_offset({data_memory_address_registered[7:3], memerr_wr_hi ? 3'b100 : 3'b000}),
+      .i_wr_data(memerr_wr_hi ? data_memory_write_data_registered[63:32] :
+                                data_memory_write_data_registered[31:0]),
+      .i_rd_offset({mmio_load_addr[7:3], 3'b000}),
+      .o_rd_pair(memerr_rd_pair),
+      .o_irq(memerr_irq),
+      .i_ecc_present(i_ecc_present),
+      .i_ecc_poll(i_ecc_poll),
+      .i_ce_valid(i_ecc_ce_valid),
+      .i_ce_count(i_ecc_ce_count),
+      .i_ce_addr_valid(i_ecc_ce_addr_valid),
+      .i_ce_addr(i_ecc_ce_addr),
+      .i_ue_valid(i_ecc_ue_valid),
+      .i_ue_addr_valid(i_ecc_ue_addr_valid),
+      .i_ue_addr(i_ecc_ue_addr),
+      .i_rd_err_valid(ddr_rd_err_valid),
+      .i_rd_err_resp(ddr_rd_err_resp),
+      .i_rd_err_id(ddr_rd_err_id),
+      .i_wr_err_valid(ddr_wr_err_valid),
+      .i_wr_err_resp(ddr_wr_err_resp),
+      .i_wr_err_id(ddr_wr_err_id)
+  );
   plic #(
-      .NUM_SOURCES (4),
+      .NUM_SOURCES (5),
       .NUM_CONTEXTS(2)
   ) plic_inst (
       .i_clk(i_clk),
       .i_rst(rst_core),
       // Source ID 1 = ns16550, ID 2 = the board pin, ID 3 = the DMA test
-      // engine, ID 4 = the NIC. The === clamp keeps an un-driven
-      // i_external_interrupt in simulation from propagating X into the PLIC
-      // and mip.
-      .i_src_level({nic_irq, dma_engine_irq, (i_external_interrupt === 1'b1), ns_irq_pending}),
+      // engine, ID 4 = the NIC, ID 5 = the memory error unit. The === clamp
+      // keeps an un-driven i_external_interrupt in simulation from
+      // propagating X into the PLIC and mip.
+      .i_src_level({memerr_irq, nic_irq, dma_engine_irq, (i_external_interrupt === 1'b1),
+                    ns_irq_pending}),
       .i_wr_en(plic_wr_en),
       .i_wr_offset({data_memory_address_registered[21:3], plic_wr_hi ? 3'b100 : 3'b000}),
       .i_wr_data(plic_wr_hi ? data_memory_write_data_registered[63:32] :
@@ -2022,7 +2077,13 @@ module cpu_and_mem #(
         .i_axi_rid(axi_rid),
         .i_axi_rdata(axi_rdata),
         .i_axi_rresp(axi_rresp),
-        .i_axi_rlast(axi_rlast)
+        .i_axi_rlast(axi_rlast),
+        .o_rd_err_valid(ddr_rd_err_valid),
+        .o_rd_err_resp(ddr_rd_err_resp),
+        .o_rd_err_id(ddr_rd_err_id),
+        .o_wr_err_valid(ddr_wr_err_valid),
+        .o_wr_err_resp(ddr_wr_err_resp),
+        .o_wr_err_id(ddr_wr_err_id)
     );
 
     if (USE_BEHAVIORAL_DDR != 0) begin : gen_behavioral_ddr
@@ -2132,6 +2193,13 @@ module cpu_and_mem #(
     assign dma_engine_irq = 1'b0;
     assign nic_rd_pair = '0;
     assign nic_irq = 1'b0;
+    // No DDR bridge, so no AXI error responses.
+    assign ddr_rd_err_valid = 1'b0;
+    assign ddr_rd_err_resp = '0;
+    assign ddr_rd_err_id = '0;
+    assign ddr_wr_err_valid = 1'b0;
+    assign ddr_wr_err_resp = '0;
+    assign ddr_wr_err_id = '0;
     assign o_nic_tx_raw_data = '0;
     assign o_nic_tx_raw_valid = 1'b0;
     assign o_nic_phy_ctrl = '0;
@@ -2285,6 +2353,8 @@ module cpu_and_mem #(
     if (mmio_load_addr[31:8] == DmaEngineBase[31:8]) mmio_read_data_comb = dma_engine_rd_pair;
     // NIC window: likewise.
     if (mmio_load_addr[31:12] == NicBase[31:12]) mmio_read_data_comb = nic_rd_pair;
+    // Memory error unit window: likewise.
+    if (mmio_load_addr[31:8] == MemErrBase[31:8]) mmio_read_data_comb = memerr_rd_pair;
   end
 
   // Register MMIO read data so the CPU sees a stable response after the

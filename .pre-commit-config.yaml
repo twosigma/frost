@@ -39,15 +39,17 @@ repos:
       - id: clang-format
         types_or: [c, c++]
         # env_v/ and riscv_test.h retain upstream style and licensing.
-        # linux/frost-net10g/ follows scripts/checkpatch.pl and uses
-        # GPL-2.0-only OR BSD-2-Clause; the license hooks also skip it.
+        # linux/frost-net10g/ and linux/frost-memerr/ follow
+        # scripts/checkpatch.pl and use GPL-2.0-only OR BSD-2-Clause; the
+        # license hooks also skip them.
         exclude: |
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
             sw/apps/coremark/coremark/.*|
             sw/apps/riscv_tests/riscv_test\.h|
             sw/apps/riscv_tests/env_v/.*|
-            linux/frost-net10g/.*
+            linux/frost-net10g/.*|
+            linux/frost-memerr/.*
           )$
 
   # C/C++ - clang-tidy with RISC-V flags. Compiler diagnostics are errors;
@@ -60,8 +62,8 @@ repos:
         language: system
         verbose: true
         types_or: [c, c++]
-        # Buildroot programs need their Linux build flags; frost-net10g needs
-        # kernel headers. pgo_dump.c needs GCC's gcov.h and __gcov_info_*
+        # Buildroot programs need their Linux build flags; frost-net10g and
+        # frost-memerr need kernel headers. pgo_dump.c needs GCC's gcov.h and __gcov_info_*
         # symbols. hw/sim/ uses host libraries for DPI-C. The wrapper's FROST
         # software flags do not support these contexts.
         exclude: |
@@ -73,7 +75,8 @@ repos:
             sw/apps/riscv_tests/riscv_test\.h|
             sw/apps/riscv_tests/env_v/.*|
             linux/buildroot-external/package/.*/src/.*|
-            linux/frost-net10g/.*
+            linux/frost-net10g/.*|
+            linux/frost-memerr/.*
           )$
 
   # SystemVerilog/Verilog - Verible formatter and linter
@@ -126,7 +129,8 @@ repos:
             sw/apps/coremark/coremark/.*|
             sw/apps/riscv_tests/riscv_test\.h|
             sw/apps/riscv_tests/env_v/.*|
-            linux/frost-net10g/.*
+            linux/frost-net10g/.*|
+            linux/frost-memerr/.*
           )$
         args:
           - --license-filepath=.license-header.txt
@@ -146,7 +150,7 @@ repos:
       - id: insert-license
         name: insert-license (Tcl/Makefile/Shell)
         files: (\.tcl$|Makefile$|\.mk$|\.sh$)
-        exclude: ^linux/frost-net10g/
+        exclude: ^linux/frost-(net10g|memerr)/
         args:
           - --license-filepath=.license-header.txt
           - --comment-style=#

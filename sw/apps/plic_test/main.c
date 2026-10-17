@@ -49,8 +49,9 @@ static void uart_hex(unsigned long v)
 #define REG32(a) (*(volatile uint32_t *) (a))
 #define PLIC_BASE 0x44000000UL
 /* Sources: 1 = ns16550, 2 = the board's external-interrupt pin, 3 = the DMA
- * test engine, 4 = the NIC (cpu_and_mem.sv NUM_SOURCES). */
-#define PLIC_NUM_SOURCES 4u
+ * test engine, 4 = the NIC, 5 = the memory error unit (cpu_and_mem.sv
+ * NUM_SOURCES). */
+#define PLIC_NUM_SOURCES 5u
 #define PLIC_PRIO(s) REG32(PLIC_BASE + 4ul * (s))
 #define PLIC_PENDING REG32(PLIC_BASE + 0x1000ul)
 #define PLIC_EN_M REG32(PLIC_BASE + 0x2000ul)

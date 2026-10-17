@@ -34,7 +34,7 @@ registers, descriptors, interrupts, and reset behavior.
 
 `../debian_kernel.py module` builds the driver against the pinned Debian
 kernel's headers, and `../debian_kernel.py initramfs` adds the module and a
-boot script that loads it. See [NIC module](../README.md#nic-module).
+boot script that loads it. See [Driver modules](../README.md#driver-modules).
 
 ## As a DKMS module on Debian
 

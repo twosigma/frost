@@ -327,9 +327,54 @@ module x3_frost #(
     jtag_aresetn_synchronizer <= {jtag_aresetn_synchronizer[0], cpu_side_aresetn & ddr_init_done};
   end
 
+  // The ECC reader polls the controller's ECC registers through the block
+  // design's ECC_AXI port and reports to FROST's memory error unit. It starts
+  // once the initializer is done, as reads before then could find ECC errors
+  // in unwritten DDR.
+  logic ecc_awvalid, ecc_awready, ecc_wvalid, ecc_wready, ecc_bvalid, ecc_bready;
+  logic ecc_arvalid, ecc_arready, ecc_rvalid, ecc_rready;
+  logic [31:0] ecc_awaddr, ecc_wdata, ecc_araddr, ecc_rdata;
+  logic [3:0] ecc_wstrb;
+  logic [1:0] ecc_bresp, ecc_rresp;
+  logic ecc_active, ecc_poll, ecc_ce_valid, ecc_ce_addr_valid, ecc_ue_valid, ecc_ue_addr_valid;
+  logic [7:0] ecc_ce_count;
+  logic [63:0] ecc_ce_addr, ecc_ue_addr;
+  x3_ecc_reader ecc_reader (
+      .i_clk(main_clock),
+      .i_rst(!cpu_clock_locked),
+      .i_enable(ddr_init_done),
+      .o_awvalid(ecc_awvalid),
+      .i_awready(ecc_awready),
+      .o_awaddr(ecc_awaddr),
+      .o_wvalid(ecc_wvalid),
+      .i_wready(ecc_wready),
+      .o_wdata(ecc_wdata),
+      .o_wstrb(ecc_wstrb),
+      .i_bvalid(ecc_bvalid),
+      .o_bready(ecc_bready),
+      .i_bresp(ecc_bresp),
+      .o_arvalid(ecc_arvalid),
+      .i_arready(ecc_arready),
+      .o_araddr(ecc_araddr),
+      .i_rvalid(ecc_rvalid),
+      .o_rready(ecc_rready),
+      .i_rdata(ecc_rdata),
+      .i_rresp(ecc_rresp),
+      .o_active(ecc_active),
+      .o_poll(ecc_poll),
+      .o_ce_valid(ecc_ce_valid),
+      .o_ce_count(ecc_ce_count),
+      .o_ce_addr_valid(ecc_ce_addr_valid),
+      .o_ce_addr(ecc_ce_addr),
+      .o_ue_valid(ecc_ue_valid),
+      .o_ue_addr_valid(ecc_ue_addr_valid),
+      .o_ue_addr(ecc_ue_addr)
+  );
+
   // DDR4 subsystem block design (fpga/build/x3_ddr_bd.tcl): the controller and
   // a SmartConnect whose S00 is the FROST bridge below (its write channels
-  // through the mux above) and whose S01 is the JTAG DDR-image loader.
+  // through the mux above), whose S01 is the JTAG DDR-image loader and whose
+  // S02 (ECC_AXI) is the ECC reader.
   // Addresses are region-relative. The X3 has no push-button reset, so the
   // controller is held in reset until the CPU clock is running.
   ddr_subsys_wrapper ddr_subsystem (
@@ -370,6 +415,25 @@ module x3_frost #(
       .S00_AXI_rdata(ddr_axi_rdata),
       .S00_AXI_rresp(ddr_axi_rresp),
       .S00_AXI_rlast(ddr_axi_rlast),
+      .ECC_AXI_awvalid(ecc_awvalid),
+      .ECC_AXI_awready(ecc_awready),
+      .ECC_AXI_awaddr(ecc_awaddr),
+      .ECC_AXI_awprot(3'b000),
+      .ECC_AXI_wvalid(ecc_wvalid),
+      .ECC_AXI_wready(ecc_wready),
+      .ECC_AXI_wdata(ecc_wdata),
+      .ECC_AXI_wstrb(ecc_wstrb),
+      .ECC_AXI_bvalid(ecc_bvalid),
+      .ECC_AXI_bready(ecc_bready),
+      .ECC_AXI_bresp(ecc_bresp),
+      .ECC_AXI_arvalid(ecc_arvalid),
+      .ECC_AXI_arready(ecc_arready),
+      .ECC_AXI_araddr(ecc_araddr),
+      .ECC_AXI_arprot(3'b000),
+      .ECC_AXI_rvalid(ecc_rvalid),
+      .ECC_AXI_rready(ecc_rready),
+      .ECC_AXI_rdata(ecc_rdata),
+      .ECC_AXI_rresp(ecc_rresp),
       .ddr4_sdram_c0_adr(ddr4_sdram_c0_adr),
       .ddr4_sdram_c0_act_n(ddr4_sdram_c0_act_n),
       .ddr4_sdram_c0_ba(ddr4_sdram_c0_ba),
@@ -437,6 +501,15 @@ module x3_frost #(
       .i_ddr_axi_rdata(ddr_axi_rdata),
       .i_ddr_axi_rresp(ddr_axi_rresp),
       .i_ddr_axi_rlast(ddr_axi_rlast),
+      .i_ecc_present(ecc_active),
+      .i_ecc_poll(ecc_poll),
+      .i_ecc_ce_valid(ecc_ce_valid),
+      .i_ecc_ce_count(ecc_ce_count),
+      .i_ecc_ce_addr_valid(ecc_ce_addr_valid),
+      .i_ecc_ce_addr(ecc_ce_addr),
+      .i_ecc_ue_valid(ecc_ue_valid),
+      .i_ecc_ue_addr_valid(ecc_ue_addr_valid),
+      .i_ecc_ue_addr(ecc_ue_addr),
       // NIC: the MAC clocks, raw words and PHY lines of the transceiver above;
       // the PCS block lock goes back to its supervisor.
       .i_nic_tx_clk(nic_tx_clk),

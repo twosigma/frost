@@ -110,7 +110,18 @@ module frost #(
 
     // External interrupt input: PLIC source 2, level-triggered.
     // Optional: tie to 0 if not used
-    input logic i_external_interrupt = 1'b0,
+    input logic        i_external_interrupt = 1'b0,
+    // DDR ECC reports from the board's reader (boards/x3/x3_ecc_reader.sv);
+    // without one they stay low and the memory error unit reports no reader.
+    input logic        i_ecc_present = 1'b0,
+    input logic        i_ecc_poll = 1'b0,
+    input logic        i_ecc_ce_valid = 1'b0,
+    input logic [ 7:0] i_ecc_ce_count = '0,
+    input logic        i_ecc_ce_addr_valid = 1'b0,
+    input logic [63:0] i_ecc_ce_addr = '0,
+    input logic        i_ecc_ue_valid = 1'b0,
+    input logic        i_ecc_ue_addr_valid = 1'b0,
+    input logic [63:0] i_ecc_ue_addr = '0,
 
     // RISC-V debug transport pins (see DEBUG_JTAG_TAP). Boards
     // leave the i_jtag_* pins idle and feed the BSCAN bundle instead.
@@ -356,6 +367,15 @@ module frost #(
       .o_fifo1_rd_en(mmio_fifo1_read_enable),
       // External interrupt (PLIC source 2)
       .i_external_interrupt(i_external_interrupt),
+      .i_ecc_present(i_ecc_present),
+      .i_ecc_poll(i_ecc_poll),
+      .i_ecc_ce_valid(i_ecc_ce_valid),
+      .i_ecc_ce_count(i_ecc_ce_count),
+      .i_ecc_ce_addr_valid(i_ecc_ce_addr_valid),
+      .i_ecc_ce_addr(i_ecc_ce_addr),
+      .i_ecc_ue_valid(i_ecc_ue_valid),
+      .i_ecc_ue_addr_valid(i_ecc_ue_addr_valid),
+      .i_ecc_ue_addr(i_ecc_ue_addr),
       // Debug transport
       .i_jtag_tck,
       .i_jtag_tms,

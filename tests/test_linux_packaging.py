@@ -42,6 +42,7 @@ SBI_PACKER = (
 OPENSBI_HELPER = REPO_ROOT / "linux" / "opensbi_build.py"
 DEBIAN_KERNEL = REPO_ROOT / "linux" / "debian_kernel.py"
 DRIVER_DIR = REPO_ROOT / "linux" / "frost-net10g"
+MEMERR_DIR = REPO_ROOT / "linux" / "frost-memerr"
 LOADER = REPO_ROOT / "fpga" / "load_software" / "load_software.py"
 X3_DDR_BD = REPO_ROOT / "fpga" / "build" / "x3_ddr_bd.tcl"
 APPS = REPO_ROOT / "sw" / "apps"
@@ -254,12 +255,14 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
     mmio_size = re.search(r"MmioSizeBytes = 32'h([0-9A-Fa-f_]+);", rtl_text)
     assert mmio_size is not None
     rtl_mmio_end = 0x40000000 + int(mmio_size.group(1).replace("_", ""), 16)
-    # The DMA test engine's window follows the CLINT; the NIC's window follows
-    # it and closes the MMIO region.
+    # The DMA test engine's window follows the CLINT, the memory error unit's
+    # follows it, and the NIC's closes the MMIO region.
     assert packer.DMA_ENGINE_BASE == _rtl_localparam(rtl_text, "DmaEngineBase")
     assert packer.CLINT_BASE + packer.CLINT_SIZE <= packer.DMA_ENGINE_BASE
+    assert packer.MEMORY_ERROR_BASE == _rtl_localparam(rtl_text, "MemErrBase")
+    assert packer.DMA_ENGINE_BASE + packer.DMA_ENGINE_SIZE <= packer.MEMORY_ERROR_BASE
     assert packer.NIC_BASE == _rtl_localparam(rtl_text, "NicBase")
-    assert packer.DMA_ENGINE_BASE + packer.DMA_ENGINE_SIZE <= packer.NIC_BASE
+    assert packer.MEMORY_ERROR_BASE + packer.MEMORY_ERROR_SIZE <= packer.NIC_BASE
     assert packer.NIC_BASE + packer.NIC_SIZE == rtl_mmio_end
     assert packer.UART_BASE == _rtl_localparam(rtl_text, "Ns16550ThrRbr")
     # PLIC window: bits [31:22] select it (PlicWindowSel), 4 MiB wide.
@@ -268,10 +271,12 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
     assert packer.PLIC_BASE == int(window_sel.group(1), 16) << 22
     assert packer.PLIC_SIZE == 1 << 22
     # The SoC's PLIC instance sets the source count (the module default is
-    # generic): 1 = ns16550, 2 = board pin, 3 = DMA test engine, 4 = NIC.
+    # generic): 1 = ns16550, 2 = board pin, 3 = DMA test engine, 4 = NIC,
+    # 5 = the memory error unit.
     sources = re.search(r"\.NUM_SOURCES\s*\((\d+)\)", rtl_text)
     assert sources is not None and packer.PLIC_NDEV == int(sources.group(1))
-    assert packer.NIC_PLIC_SOURCE == packer.PLIC_NDEV
+    assert packer.NIC_PLIC_SOURCE == 4
+    assert packer.MEMORY_ERROR_PLIC_SOURCE == packer.PLIC_NDEV
     dts = packer.gen_dts(clk_hz=300_000_000, initrd_range=None, bootargs="", model="t")
     assert "interrupts-extended = <&cpu0_intc 11 &cpu0_intc 9>;" in dts
     assert f"interrupts = <{packer.UART_PLIC_SOURCE}>;" in dts
@@ -279,6 +284,13 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
     assert 'compatible = "frost,net10g";' in dts
     assert f"reg = <0x{packer.NIC_BASE:08x} 0x{packer.NIC_SIZE:x}>;" in dts
     assert f"interrupts = <{packer.NIC_PLIC_SOURCE}>;" in dts
+    # The memory error unit's node: frost,memory-error.yaml next to the packer.
+    assert 'compatible = "frost,memory-error";' in dts
+    assert (
+        f"reg = <0x{packer.MEMORY_ERROR_BASE:08x} 0x{packer.MEMORY_ERROR_SIZE:x}>;"
+        in dts
+    )
+    assert f"interrupts = <{packer.MEMORY_ERROR_PLIC_SOURCE}>;" in dts
     assert "dma-coherent;" in dts
     assert f"local-mac-address = [{packer.NIC_MAC_ADDRESS}];" in dts
     assert "clock-frequency = <300000000>;" in dts
@@ -860,8 +872,8 @@ def _linux_boot_tree(tmp_path: Path) -> Path:
     """Build a temporary linux_boot tree and return its app directory.
 
     The symlinked Makefile resolves inputs relative to make's working directory.
-    Synthetic Buildroot images, a cached Debian Image, and a NIC module avoid
-    downloads and kernel or module builds. The boot shim still needs the
+    Synthetic Buildroot images, a cached Debian Image, and the driver modules
+    avoid downloads and kernel or module builds. The boot shim still needs the
     cross toolchain. All output stays under tmp_path.
     """
     packer = _load_module(SBI_PACKER)
@@ -871,7 +883,8 @@ def _linux_boot_tree(tmp_path: Path) -> Path:
     common = tmp_path / "sw" / "common"
     images = tmp_path / "linux" / "build-mmu" / "images"
     driver = tmp_path / "linux" / "frost-net10g"
-    for directory in (app, board, common, images, driver):
+    memerr = tmp_path / "linux" / "frost-memerr"
+    for directory in (app, board, common, images, driver, memerr):
         directory.mkdir(parents=True)
     (app / "Makefile").symlink_to(LINUX_BOOT_MAKEFILE)
     (board / SBI_PACKER.name).symlink_to(SBI_PACKER)
@@ -879,6 +892,8 @@ def _linux_boot_tree(tmp_path: Path) -> Path:
     (tmp_path / "linux" / DEBIAN_KERNEL.name).symlink_to(DEBIAN_KERNEL)
     for name in ("Makefile", "frost_net10g.c"):
         (driver / name).symlink_to(DRIVER_DIR / name)
+    for name in ("Makefile", "frost_memerr.c"):
+        (memerr / name).symlink_to(MEMERR_DIR / name)
     (images / "fw_jump.bin").write_bytes(bytes(range(256)))
     # A real newc archive, whose frost_stress carries the counter token that
     # debian_kernel.py's check_base_initramfs() requires.
@@ -896,7 +911,18 @@ def _linux_boot_tree(tmp_path: Path) -> Path:
         )
     helper.write_manifest(root)
     (tmp_path / "frost_net10g.ko").write_bytes(bytes(range(97)) * 5)
+    (tmp_path / "frost_memerr.ko").write_bytes(bytes(range(89)) * 3)
     return app
+
+
+def _prebuilt_modules(tmp_path: Path) -> dict[str, Path]:
+    """Write a stand-in module for each driver, as compose_initramfs takes them."""
+    modules = {}
+    for name in ("frost_net10g", "frost_memerr"):
+        module = tmp_path / f"{name}.ko"
+        module.write_bytes(b"ko")
+        modules[name] = module
+    return modules
 
 
 def _make_linux_boot(app: Path, **variables: str) -> subprocess.CompletedProcess[str]:
@@ -914,6 +940,7 @@ def _make_linux_boot(app: Path, **variables: str) -> subprocess.CompletedProcess
     }
     env["FROST_DEBIAN_KERNEL_CACHE"] = str(tree / "debian-kernel")
     env["FROST_NET10G_MODULE"] = str(tree / "frost_net10g.ko")
+    env["FROST_MEMERR_MODULE"] = str(tree / "frost_memerr.ko")
     env.update(variables)
     subprocess.run(
         ["make", "-C", str(app), "clean"],
@@ -1640,7 +1667,13 @@ def test_debian_kernel_initramfs_appends_a_second_real_archive(
     base.write_bytes(base_bytes)
     module = tmp_path / "frost_net10g.ko"
     module.write_bytes(bytes(range(211)) * 3)
-    out = helper.compose_initramfs(base, tmp_path / "composed.cpio", module=module)
+    memerr = tmp_path / "frost_memerr.ko"
+    memerr.write_bytes(bytes(range(131)) * 2)
+    out = helper.compose_initramfs(
+        base,
+        tmp_path / "composed.cpio",
+        modules={"frost_net10g": module, "frost_memerr": memerr},
+    )
     composed = out.read_bytes()
     assert composed.startswith(base_bytes)
     assert len(composed) % helper.CPIO_ALIGN == 0
@@ -1656,9 +1689,19 @@ def test_debian_kernel_initramfs_appends_a_second_real_archive(
         0o100644,
         module.read_bytes(),
     )
-    assert members[f"lib/modules/{release}/modules.dep"][1] == b"frost_net10g.ko:\n"
-    mode, script = members[helper.MODULE_INIT_SCRIPT]
-    assert mode == 0o100755, "rcS runs /etc/init.d/S??* as programs"
+    assert members[f"lib/modules/{release}/frost_memerr.ko"] == (
+        0o100644,
+        memerr.read_bytes(),
+    )
+    assert (
+        members[f"lib/modules/{release}/modules.dep"][1]
+        == b"frost_net10g.ko:\nfrost_memerr.ko:\n"
+    )
+    for driver in helper.DRIVERS:
+        mode, script = members[driver.init_script]
+        assert mode == 0o100755, "rcS runs /etc/init.d/S??* as programs"
+        assert f"MODULE=/lib/modules/{release}/{driver.name}.ko" in script.decode()
+        assert driver.pass_token in script.decode()
     for directory in ("lib", "lib/modules", f"lib/modules/{release}"):
         assert members[directory][0] == 0o040755, directory
 
@@ -1673,7 +1716,10 @@ def test_debian_kernel_loader_script_checks_the_running_release(
     """
     helper = _load_module(DEBIAN_KERNEL)
     members = dict(
-        (name, data) for name, _, data in helper.cpio_members(helper.module_cpio(b"ko"))
+        (name, data)
+        for name, _, data in helper.cpio_members(
+            helper.module_cpio({driver: b"ko" for driver in helper.DRIVERS})
+        )
     )
     script = members[helper.MODULE_INIT_SCRIPT].decode()
     assert script.startswith("#!/bin/sh\n")
@@ -1721,8 +1767,7 @@ def test_debian_kernel_initramfs_rejects_an_unaligned_base(tmp_path: Path) -> No
     """
     helper = _load_module(DEBIAN_KERNEL)
     assert helper.CPIO_ALIGN == 4
-    module = tmp_path / "frost_net10g.ko"
-    module.write_bytes(b"ko")
+    modules = _prebuilt_modules(tmp_path)
     base = tmp_path / "rootfs.cpio"
 
     # newc members require four-byte alignment; 512-byte archive padding is
@@ -1732,13 +1777,13 @@ def test_debian_kernel_initramfs_rejects_an_unaligned_base(tmp_path: Path) -> No
     assert len(unpadded) % helper.CPIO_ALIGN == 0
     assert len(unpadded) % helper.CPIO_BLOCK != 0
     base.write_bytes(unpadded)
-    composed = helper.compose_initramfs(base, tmp_path / "ok.cpio", module=module)
+    composed = helper.compose_initramfs(base, tmp_path / "ok.cpio", modules=modules)
     assert composed.read_bytes().startswith(unpadded)
 
     # One byte more is not aligned, and the kernel's unpacker would reject it.
     base.write_bytes(unpadded + b"\0")
     with pytest.raises(RuntimeError, match="multiple of 4"):
-        helper.compose_initramfs(base, tmp_path / "no.cpio", module=module)
+        helper.compose_initramfs(base, tmp_path / "no.cpio", modules=modules)
 
 
 def test_default_bootargs_disable_ipv6() -> None:
@@ -1778,6 +1823,7 @@ def test_qemu_ci_job_boots_the_packed_debian_pair() -> None:
     assert "-initrd /img/rootfs-frost.cpio" in text
     assert f'-append "{packer.DEFAULT_BOOTARGS}"' in text
     assert f'grep -q "{helper.MODULE_PASS_TOKEN}"' in text
+    assert f'grep -q "{helper.MEMERR.pass_token}"' in text
     assert "images/Image-debian" in text and "images/rootfs-frost.cpio" in text
     # The Debian packages are cached like Buildroot's downloads.
     assert "linux/debian-kernel/dl" in text
@@ -1792,8 +1838,7 @@ def test_debian_kernel_refuses_a_base_that_cannot_drive_the_gates(
     stale. Report how to rebuild them.
     """
     helper = _load_module(DEBIAN_KERNEL)
-    module = tmp_path / "frost_net10g.ko"
-    module.write_bytes(b"ko")
+    modules = _prebuilt_modules(tmp_path)
     base = tmp_path / "rootfs.cpio"
 
     stale = [
@@ -1806,20 +1851,22 @@ def test_debian_kernel_refuses_a_base_that_cannot_drive_the_gates(
     ]
     base.write_bytes(_newc_archive(stale))
     with pytest.raises(RuntimeError, match="predates FROST_COUNTERS"):
-        helper.compose_initramfs(base, tmp_path / "out.cpio", module=module)
+        helper.compose_initramfs(base, tmp_path / "out.cpio", modules=modules)
     try:
-        helper.compose_initramfs(base, tmp_path / "out.cpio", module=module)
+        helper.compose_initramfs(base, tmp_path / "out.cpio", modules=modules)
     except RuntimeError as refused:
         assert "frost-stress-rebuild" in str(refused)
 
     without = [entry for entry in BASE_ENTRIES if "frost_stress" not in entry[0]]
     base.write_bytes(_newc_archive(without))
     with pytest.raises(RuntimeError, match="holds no /usr/bin/frost_stress"):
-        helper.compose_initramfs(base, tmp_path / "out.cpio", module=module)
+        helper.compose_initramfs(base, tmp_path / "out.cpio", modules=modules)
 
     # The current archive passes, and nothing was written for the refusals.
     base.write_bytes(_newc_archive(BASE_ENTRIES))
-    assert helper.compose_initramfs(base, tmp_path / "out.cpio", module=module).exists()
+    assert helper.compose_initramfs(
+        base, tmp_path / "out.cpio", modules=modules
+    ).exists()
 
 
 def test_counter_token_matches_the_program_that_prints_it() -> None:

@@ -289,7 +289,13 @@ module frost_cache_test_harness #(
       .i_axi_rid(axi_rid),
       .i_axi_rdata(axi_rdata),
       .i_axi_rresp(axi_rresp),
-      .i_axi_rlast(axi_rlast)
+      .i_axi_rlast(axi_rlast),
+      .o_rd_err_valid(),
+      .o_rd_err_resp(),
+      .o_rd_err_id(),
+      .o_wr_err_valid(),
+      .o_wr_err_resp(),
+      .o_wr_err_id()
   );
 
   axi_behavioral_memory #(

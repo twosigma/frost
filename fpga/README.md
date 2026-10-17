@@ -150,7 +150,11 @@ The runner needs local access to the export, write access to its
 overrides discovery). It boots the pinned Debian kernel with the matching
 initramfs from the export; `FROST_LINUX_KERNEL` and `FROST_LINUX_INITRD`
 override them, and environment variables override `site.env`. Setup problems
-are reported as `ENV_FAIL` before the board is touched.
+are reported as `ENV_FAIL` before the board is touched. The runner also builds
+the memory error driver (`linux/frost-memerr`) for the pinned kernel and
+installs it in that `usr/local/bin`; after login the stage loads it and
+requires the X3's ECC reader to be active and polling, with no memory error
+reported. `FROST_MEMERR_MODULE` names a prebuilt module instead.
 
 The interactive `debug_target` and `nic_echo` applications are not run.
 `perf_off_test` checks that the profiling counters are absent, so it fails
@@ -158,7 +162,8 @@ against a bitstream built with `--perf-counters`. `--timeout` covers build and
 load time; some workloads need more (X3 ZIP needs 600 seconds).
 
 `ddr_ecc/ddr_ecc_status.py` reads the DDR controller's accumulated error
-counts; `--clear` starts a new interval. `linux_boot_soak.py` boots the
+counts; `--clear` starts a new interval. FROST's own view of the same errors
+is the memory error unit, which `memerr_readback` checks on the board. `linux_boot_soak.py` boots the
 Buildroot test image repeatedly.
 
 ## Building

@@ -9,6 +9,9 @@ $(ROOT)/boards/xilinx_frost_subsystem.sv
 # X3 power-up DDR4 region writer (ECC needs the array written before a read)
 $(ROOT)/boards/x3/x3_ddr_init.sv
 
+# X3 DDR4 ECC register poller for the memory error unit
+$(ROOT)/boards/x3/x3_ecc_reader.sv
+
 # X3 NIC transceiver (GTY wizard core from fpga/build/x3_gty_ip.tcl)
 $(ROOT)/boards/x3/x3_nic_gty.sv
 

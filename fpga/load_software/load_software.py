@@ -75,6 +75,7 @@ VALID_APPS = [
     "linux_irq_ddr_test",
     "linux_irq_stack_slot_test",
     "lq_stale_slot_probe",
+    "memerr_readback",
     "memory_test",
     "nic_echo",
     "nic_loopback",

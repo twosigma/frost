@@ -14,6 +14,7 @@ commands.
 | `xilinx_frost_subsystem.sv` | CPU and BRAM, JTAG software loader, BSCAN debug, reset timers |
 | `x3/x3_frost.sv` | Board clocks, DDR and NIC integration, reset sequencing |
 | `x3/x3_ddr_init.sv` | Initializes the exposed DDR region with valid ECC |
+| `x3/x3_ecc_reader.sv` | Polls the DDR4 controller's ECC registers for FROST's memory error unit |
 | `x3/x3_nic_gty.sv` | Ethernet transceiver, MAC clocks, transceiver reset supervisor |
 | `x3/x3_cpu_clock_gty.sv` | CPU clock from a dedicated GTY transmitter |
 | `x3/constr/x3.xdc` | Pin and timing constraints |
@@ -24,11 +25,12 @@ DDR, and transceiver IP from `fpga/build/build_step.tcl`, `x3_ddr_bd.tcl`, and
 
 The cache hierarchy's bridge issues 512-bit AXI transactions, one 64-byte L2
 line each, with region-relative addresses. A SmartConnect merges them with
-the DDR JTAG master and crosses the CPU, CPU/4, and DDR clocks. The CPU port
+the DDR JTAG master and the ECC reader and crosses the CPU, CPU/4, and DDR
+clocks. The CPU port
 is as wide as the controller's 512-bit interface; only the JTAG master's
 transfers are widened. CPU address `0x80000000` maps the first 1 GiB.
-ECC management sits at region offset `0x40000000` and is reachable only from
-the DDR JTAG master.
+ECC management sits at region offset `0x40000000`, reachable from the DDR
+JTAG master and the ECC reader.
 
 After calibration, `x3_ddr_init` zeroes the region so every word has valid ECC
 (about 0.1 seconds). It writes whole 512-bit controller words, one per beat:
@@ -37,6 +39,22 @@ the word to recompute ECC. The CPU and the DDR loader leave
 reset once the CPU clock runs and calibration and initialization are complete;
 the loader, which runs on the CPU/4 clock, takes that reset through a
 synchronizer on it. Check for ECC errors with `fpga/ddr_ecc/ddr_ecc_status.py`.
+
+Once initialization is done, `x3_ecc_reader` polls the ECC registers about
+once a millisecond and reports corrected and uncorrectable errors to FROST's
+memory error unit (`hw/rtl/cpu_and_mem/memory_error_unit.sv`), with the CPU
+physical address of the 64-byte line the controller captured. It translates
+the controller's row, column and bank back to an address with the
+controller's mapping for this board; the controller's ECC words interleave
+across the line's 8-byte words, so the line is as precise as a capture gets.
+It clears only the controller's CE status bit, so the controller captures
+the next address, and writes CE_CNT back to 1 once it reaches 128, before the
+count saturates at 255. It never writes CE_CNT to 0 and never clears the UE
+bit, so `ddr_ecc_status.py` still fails a run that had an error. The
+controller gives a register write priority over its own update in that
+cycle, so an uncorrectable error in the cycle of the reader's CE clear is
+lost to the controller's status, though the run's CE_CNT still fails the
+check and a CPU read of the word still reports an error response.
 
 ## Clock Generation
 

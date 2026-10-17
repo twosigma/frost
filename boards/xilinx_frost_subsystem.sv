@@ -88,6 +88,18 @@ module xilinx_frost_subsystem #(
     input  logic [                1:0] i_ddr_axi_rresp,
     input  logic                       i_ddr_axi_rlast,
 
+    // DDR ECC reports for the memory error unit (frost.sv), from the board's
+    // reader (x3/x3_ecc_reader.sv), in the i_clk domain.
+    input logic        i_ecc_present,
+    input logic        i_ecc_poll,
+    input logic        i_ecc_ce_valid,
+    input logic [ 7:0] i_ecc_ce_count,
+    input logic        i_ecc_ce_addr_valid,
+    input logic [63:0] i_ecc_ce_addr,
+    input logic        i_ecc_ue_valid,
+    input logic        i_ecc_ue_addr_valid,
+    input logic [63:0] i_ecc_ue_addr,
+
     // NIC: the TX and RX MAC clocks and their presence levels, the
     // raw PMA interface, the PHY lines and the PCS block lock (frost.sv).
     input  logic        i_nic_tx_clk,
@@ -363,6 +375,15 @@ module xilinx_frost_subsystem #(
       .i_ddr_axi_rdata(i_ddr_axi_rdata),
       .i_ddr_axi_rresp(i_ddr_axi_rresp),
       .i_ddr_axi_rlast(i_ddr_axi_rlast),
+      .i_ecc_present(i_ecc_present),
+      .i_ecc_poll(i_ecc_poll),
+      .i_ecc_ce_valid(i_ecc_ce_valid),
+      .i_ecc_ce_count(i_ecc_ce_count),
+      .i_ecc_ce_addr_valid(i_ecc_ce_addr_valid),
+      .i_ecc_ce_addr(i_ecc_ce_addr),
+      .i_ecc_ue_valid(i_ecc_ue_valid),
+      .i_ecc_ue_addr_valid(i_ecc_ue_addr_valid),
+      .i_ecc_ue_addr(i_ecc_ue_addr),
       .i_nic_tx_clk(i_nic_tx_clk),
       .i_nic_rx_clk(i_nic_rx_clk),
       .i_nic_tx_clk_ok(i_nic_tx_clk_ok),

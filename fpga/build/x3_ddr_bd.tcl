@@ -17,7 +17,8 @@
 # The controller drives the card's MT40A1G16RC-062E memory over a 72-bit ECC
 # interface, from a dedicated 300 MHz clock on AN27/AN28, and has a 512-bit AXI
 # port. With ECC the controller requires its S_AXI_CTRL management port, which
-# only the JTAG master reaches, at region offset 0x4000_0000. The inverted
+# the JTAG master and the ECC reader (ECC_AXI, boards/x3/x3_ecc_reader.sv)
+# reach at region offset 0x4000_0000. The inverted
 # ui_clk_sync_rst drives c0_ddr4_aresetn; calibration drives mem_ok. The CPU
 # bridge port is 512 bits wide on the CPU clock with 5-bit ids, as wide as the
 # controller's port, so the SmartConnect only crosses clocks for it; the JTAG
@@ -77,7 +78,18 @@ proc create_x3_ddr_bd {} {
     CONFIG.HAS_RRESP {1} \
     CONFIG.MAX_BURST_LENGTH {1} \
   ] $s00
-  set_property CONFIG.ASSOCIATED_BUSIF {S00_AXI} [get_bd_ports cpu_clk]
+  # The ECC reader's AXI4-Lite port, also on the CPU clock.
+  set ecc_axi [create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:aximm_rtl:1.0 ECC_AXI]
+  set_property -dict [list \
+    CONFIG.PROTOCOL {AXI4LITE} \
+    CONFIG.ADDR_WIDTH {32} \
+    CONFIG.DATA_WIDTH {32} \
+    CONFIG.HAS_PROT {0} \
+    CONFIG.HAS_WSTRB {1} \
+    CONFIG.HAS_BRESP {1} \
+    CONFIG.HAS_RRESP {1} \
+  ] $ecc_axi
+  set_property CONFIG.ASSOCIATED_BUSIF {S00_AXI:ECC_AXI} [get_bd_ports cpu_clk]
 
   # Dedicated 300 MHz differential DDR clock on constrained AN27/AN28.
   set sys_clk [create_bd_intf_port -mode Slave \
@@ -116,7 +128,7 @@ proc create_x3_ddr_bd {} {
   # AXI aggregation with clock and width conversion.
   set smc [create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 ddr_smc]
   set_property -dict [list \
-    CONFIG.NUM_SI {2} \
+    CONFIG.NUM_SI {3} \
     CONFIG.NUM_MI {2} \
     CONFIG.NUM_CLKS {3} \
   ] $smc
@@ -124,8 +136,9 @@ proc create_x3_ddr_bd {} {
   # Interface connections.
   connect_bd_intf_net [get_bd_intf_ports S00_AXI] [get_bd_intf_pins ddr_smc/S00_AXI]
   connect_bd_intf_net [get_bd_intf_pins jtag_axi_ddr/M_AXI] [get_bd_intf_pins ddr_smc/S01_AXI]
+  connect_bd_intf_net [get_bd_intf_ports ECC_AXI] [get_bd_intf_pins ddr_smc/S02_AXI]
   connect_bd_intf_net [get_bd_intf_pins ddr_smc/M00_AXI] [get_bd_intf_pins ddr4_0/C0_DDR4_S_AXI]
-  # Mandatory ECC management is JTAG-only at region offset 0x4000_0000.
+  # Mandatory ECC management, for the JTAG master and the ECC reader.
   connect_bd_intf_net [get_bd_intf_pins ddr_smc/M01_AXI] \
       [get_bd_intf_pins ddr4_0/C0_DDR4_S_AXI_CTRL]
   connect_bd_intf_net [get_bd_intf_ports default_300mhz_clk0] [get_bd_intf_pins ddr4_0/C0_SYS_CLK]
@@ -149,7 +162,10 @@ proc create_x3_ddr_bd {} {
   connect_bd_net [get_bd_ports cpu_aresetn] [get_bd_pins ddr_smc/aresetn]
   connect_bd_net [get_bd_ports jtag_aresetn] [get_bd_pins jtag_axi_ddr/aresetn]
 
-  # Address map: the first 1 GiB of DDR at region offset 0 for both masters.
+  # Address map: the first 1 GiB of DDR at region offset 0 for the CPU and JTAG
+  # masters, and the ECC registers at 0x4000_0000 for JTAG and the ECC reader.
+  # The SmartConnect decodes a slave at one address for every master, and each
+  # master excludes the segment it does not use.
   assign_bd_address -offset 0x00000000 -range 0x40000000 \
       -target_address_space [get_bd_addr_spaces S00_AXI] \
       [get_bd_addr_segs ddr4_0/C0_DDR4_MEMORY_MAP/C0_DDR4_ADDRESS_BLOCK] -force
@@ -159,6 +175,13 @@ proc create_x3_ddr_bd {} {
   assign_bd_address -offset 0x40000000 -range 0x00008000 \
       -target_address_space [get_bd_addr_spaces jtag_axi_ddr/Data] \
       [get_bd_addr_segs ddr4_0/C0_DDR4_MEMORY_MAP_CTRL/C0_REG] -force
+  assign_bd_address -offset 0x40000000 -range 0x00008000 \
+      -target_address_space [get_bd_addr_spaces ECC_AXI] \
+      [get_bd_addr_segs ddr4_0/C0_DDR4_MEMORY_MAP_CTRL/C0_REG] -force
+  exclude_bd_addr_seg -target_address_space [get_bd_addr_spaces S00_AXI] \
+      [get_bd_addr_segs ddr4_0/C0_DDR4_MEMORY_MAP_CTRL/C0_REG]
+  exclude_bd_addr_seg -target_address_space [get_bd_addr_spaces ECC_AXI] \
+      [get_bd_addr_segs ddr4_0/C0_DDR4_MEMORY_MAP/C0_DDR4_ADDRESS_BLOCK]
 
   validate_bd_design
   save_bd_design

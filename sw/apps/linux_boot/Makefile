@@ -39,13 +39,15 @@ IMAGES       := $(BR2_OUT)/images
 BR2_INITRD   := $(IMAGES)/rootfs.cpio
 FW_JUMP      := $(IMAGES)/fw_jump.bin
 
-# Debian's kernel and the NIC module built for it (linux/debian_kernel.py holds
-# the snapshot URL, version and checksums). The Image path is a pure query, so
-# it costs no download; the rule below fetches when the file is absent.
-# INITRD_IMG is Buildroot's userspace with that module and its loader appended.
+# Debian's kernel and the driver modules built for it (linux/debian_kernel.py
+# holds the snapshot URL, version and checksums). The Image path is a pure
+# query, so it costs no download; the rule below fetches when the file is
+# absent. INITRD_IMG is Buildroot's userspace with the modules and their
+# loaders appended.
 DEBIAN_KERNEL := $(FROST_ROOT)/linux/debian_kernel.py
 DEBIAN_IMAGE  := $(shell python3 "$(DEBIAN_KERNEL)" image --no-fetch)
 DRIVER_DIR    := $(FROST_ROOT)/linux/frost-net10g
+MEMERR_DIR    := $(FROST_ROOT)/linux/frost-memerr
 INITRD_IMG    := $(CURDIR)/rootfs.cpio
 # Prefer Buildroot's Linux-target toolchain, available when the recipe runs.
 # The helper falls back to FROST_LINUX_CROSS_COMPILE, set by the Docker image.
@@ -206,11 +208,12 @@ $(BR2_INITRD) $(FW_JUMP) &: $(FROST_STRESS_SRC) $(BR2_OVERLAY)
 $(DEBIAN_IMAGE):
 	python3 "$(DEBIAN_KERNEL)" fetch
 
-# Stage 1b: the test initramfs with the NIC module for Debian's kernel, and the
-# init script that insmods it, appended. The driver's sources are prerequisites
-# so an edited driver is rebuilt into the module.
+# Stage 1b: the test initramfs with the driver modules for Debian's kernel, and
+# the init scripts that insmod them, appended. The drivers' sources are
+# prerequisites so an edited driver is rebuilt into its module.
 $(INITRD_IMG): $(BR2_INITRD) $(DEBIAN_KERNEL) $(DRIVER_DIR)/frost_net10g.c \
-    $(DRIVER_DIR)/Makefile | $(DEBIAN_IMAGE)
+    $(DRIVER_DIR)/Makefile $(MEMERR_DIR)/frost_memerr.c $(MEMERR_DIR)/Makefile \
+    | $(DEBIAN_IMAGE)
 	python3 "$(DEBIAN_KERNEL)" $(MODULE_CROSS) initramfs \
 	  --base "$(BR2_INITRD)" --out "$@"
 

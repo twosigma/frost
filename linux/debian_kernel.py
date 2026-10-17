@@ -14,20 +14,20 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Fetch the pinned Debian RISC-V kernel and build its FROST NIC module.
+"""Fetch the pinned Debian RISC-V kernel and build its FROST driver modules.
 
 Use Debian's flat Image and headers, amd64 kbuild tools, and a riscv64 Linux
-cross compiler. The initramfs command appends the module and its loader to a
-copy of the test initramfs.
+cross compiler. The initramfs command appends the modules and their loaders to
+a copy of the test initramfs.
 
 Cache directories are named by input digests. Builders lock the cache and
 publish staged extractions and wrappers by rename; failed manifest checks
 trigger re-extraction. Other input versions remain available to readers.
 ``FROST_DEBIAN_KERNEL_CACHE`` overrides ``linux/debian-kernel``;
-``FROST_NET10G_MODULE`` selects a prebuilt module.
+``FROST_NET10G_MODULE`` and ``FROST_MEMERR_MODULE`` select prebuilt modules.
 
 Commands print results on stdout and progress on stderr. See "Kernel" and
-"NIC module" in ``linux/README.md``.
+"Driver modules" in ``linux/README.md``.
 """
 
 import argparse
@@ -45,7 +45,7 @@ import tarfile
 import urllib.parse
 import urllib.request
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -182,9 +182,52 @@ EXTRACT_VERSION = 2
 # Digest characters used in directory names.
 KEY_LENGTH = 16
 
+
 # --- The module build -------------------------------------------------------
-DRIVER_DIR = REPO_ROOT / "linux" / "frost-net10g"
-MODULE_NAME = "frost_net10g"
+@dataclass(frozen=True)
+class Driver:
+    """An out-of-tree FROST driver, built for the pinned kernel and loaded at boot.
+
+    ``name`` is the module's name and its one source file's stem, in
+    ``directory``. ``env`` names a prebuilt module to use instead. The test
+    initramfs's ``init_script`` loads it and prints ``pass_token`` or
+    ``fail_token``.
+    """
+
+    name: str
+    directory: Path
+    env: str
+    pass_token: str
+    fail_token: str
+    init_script: str
+    description: str
+
+
+# Runs from Buildroot's /etc/init.d/rcS, which the overlay inittab invokes as a
+# sysinit entry, so the modules load before the getty and before any network
+# test. S03 and S04 put them after the stock S01/S02 scripts.
+NET10G = Driver(
+    name="frost_net10g",
+    directory=REPO_ROOT / "linux" / "frost-net10g",
+    env="FROST_NET10G_MODULE",
+    pass_token="FROST_NET10G_MODULE_PASS",
+    fail_token="FROST_NET10G_MODULE_FAIL",
+    init_script="etc/init.d/S03frost-net10g",
+    description="the FROST NIC driver",
+)
+MEMERR = Driver(
+    name="frost_memerr",
+    directory=REPO_ROOT / "linux" / "frost-memerr",
+    env="FROST_MEMERR_MODULE",
+    pass_token="FROST_MEMERR_MODULE_PASS",
+    fail_token="FROST_MEMERR_MODULE_FAIL",
+    init_script="etc/init.d/S04frost-memerr",
+    description="the FROST memory error unit driver",
+)
+DRIVERS = (NET10G, MEMERR)
+# The NIC driver's names, which the boot gates use.
+DRIVER_DIR = NET10G.directory
+MODULE_NAME = NET10G.name
 # Debian's .kernelvariables overrides CROSS_COMPILE to this prefix, so the
 # module build answers to it with wrapper scripts around whatever riscv64
 # Linux-target toolchain is installed (FROST_LINUX_CROSS_COMPILE).
@@ -193,23 +236,24 @@ CROSS_ENV = "FROST_LINUX_CROSS_COMPILE"
 DEFAULT_CROSS = "riscv64-linux-"
 # Bumped when the wrapper set or the build command changes.
 BUILD_VERSION = 1
-# Optional prebuilt module. It must match KERNEL_RELEASE; no headers-based
-# validation is performed on it.
-MODULE_ENV = "FROST_NET10G_MODULE"
+# An optional prebuilt module, named by its driver's env. It must match
+# KERNEL_RELEASE; no headers-based validation is performed on it.
+MODULE_ENV = NET10G.env
 
-# The tokens the module's init script prints (see module_cpio()), which
-# fpga/linux_boot_soak.py and CI's QEMU boot job check.
-MODULE_PASS_TOKEN = "FROST_NET10G_MODULE_PASS"
-MODULE_FAIL_TOKEN = "FROST_NET10G_MODULE_FAIL"
+# The tokens the NIC module's init script prints (see module_cpio()), which
+# fpga/linux_boot_soak.py and CI's QEMU boot job check. CI's job also checks
+# MEMERR.pass_token.
+MODULE_PASS_TOKEN = NET10G.pass_token
+MODULE_FAIL_TOKEN = NET10G.fail_token
 # The line a healthy boot prints, and the pattern fpga/linux_boot_soak.py
 # matches it with. The lookahead keeps a longer release, which has this line as
 # a prefix, from matching.
 MODULE_PASS_LINE = f"{MODULE_PASS_TOKEN} {KERNEL_RELEASE}"
 MODULE_PASS_RE = re.compile(re.escape(MODULE_PASS_LINE) + r"(?![\w.+-])")
-# Runs from Buildroot's /etc/init.d/rcS, which the overlay inittab invokes as a
-# sysinit entry, so the module is loaded before the getty and before any
-# network test. S03 puts it after the stock S01/S02 scripts.
-MODULE_INIT_SCRIPT = "etc/init.d/S03frost-net10g"
+# The memory error module's line, which the soak requires too.
+MEMERR_PASS_LINE = f"{MEMERR.pass_token} {KERNEL_RELEASE}"
+MEMERR_PASS_RE = re.compile(re.escape(MEMERR_PASS_LINE) + r"(?![\w.+-])")
+MODULE_INIT_SCRIPT = NET10G.init_script
 
 # Require this token in the base archive's frost_stress to check counter support.
 # fpga/hw_regression.py also reads it from the Debian root's program.
@@ -581,20 +625,28 @@ def toolchain_bin(cache: Path | str | None = None, cross: str | None = None) -> 
     return out
 
 
-def module_dir(cache: Path | str | None = None, cross: str | None = None) -> Path:
-    """Return the build directory for this pin and toolchain.
+def module_dir(
+    cache: Path | str | None = None,
+    cross: str | None = None,
+    driver: Driver = NET10G,
+) -> Path:
+    """Return a driver's build directory for this pin and toolchain.
 
     kbuild records Debian's compiler name and the headers path. Separate input
     versions so changes behind those names cannot leave stale objects.
     """
     _, identity = toolchain_identity(cross)
     key = hashlib.sha256(f"{pin_digest()}\n{identity}".encode()).hexdigest()
-    return cache_dir(cache) / f"module-{key[:KEY_LENGTH]}"
+    return cache_dir(cache) / f"module-{key[:KEY_LENGTH]}" / driver.name
 
 
-def module_path(cache: Path | str | None = None, cross: str | None = None) -> Path:
-    """Return the path of the built NIC module inside the cache."""
-    return module_dir(cache, cross) / f"{MODULE_NAME}.ko"
+def module_path(
+    cache: Path | str | None = None,
+    cross: str | None = None,
+    driver: Driver = NET10G,
+) -> Path:
+    """Return the path of a driver's built module inside the cache."""
+    return module_dir(cache, cross, driver) / f"{driver.name}.ko"
 
 
 def elf_section(module: Path, section: str, objcopy: str) -> bytes:
@@ -654,14 +706,16 @@ def kernel_symbol_crcs(path: Path) -> dict[str, int]:
     return crcs
 
 
-def verify_module(module: Path, cache: Path | str | None, objcopy: str) -> None:
-    """Require the pinned release in module metadata and matching symbol CRCs.
+def verify_module(
+    module: Path, cache: Path | str | None, objcopy: str, name: str = MODULE_NAME
+) -> None:
+    """Require the module's name, the pinned release and matching symbol CRCs.
 
     Linux ignores vermagic's release field when symbol CRCs are present, so
     check the release explicitly. CRCs check compatibility with exported symbols.
     """
     fields = module_info(module, objcopy)
-    if fields.get("name") != [MODULE_NAME]:
+    if fields.get("name") != [name]:
         raise RuntimeError(f"{module}: modinfo name is {fields.get('name')}")
     magic = (fields.get("vermagic") or [""])[0]
     tokens = magic.split()
@@ -691,25 +745,25 @@ def verify_module(module: Path, cache: Path | str | None, objcopy: str) -> None:
 def build_module(
     cache: Path | str | None = None,
     cross: str | None = None,
-    driver_dir: Path = DRIVER_DIR,
+    driver: Driver = NET10G,
 ) -> Path:
-    """Build frost_net10g for the pinned kernel and return the .ko path.
+    """Build a driver for the pinned kernel and return the .ko path.
 
     Hold the cache lock and update only changed driver sources for kbuild.
     Pass CC explicitly to avoid requiring Debian's versioned compiler name.
     Delete the module and fail if its metadata or symbol CRCs do not match.
     """
     fetch(cache)
-    build = module_dir(cache, cross)
-    module = build / f"{MODULE_NAME}.ko"
+    build = module_dir(cache, cross, driver)
+    module = build / f"{driver.name}.ko"
     bin_dir = toolchain_bin(cache, cross)
     environment = dict(os.environ)
     environment["PATH"] = f"{bin_dir}{os.pathsep}{environment.get('PATH', '')}"
     objcopy = str(bin_dir / f"{DEBIAN_CROSS_COMPILE}objcopy")
     with cache_lock(cache):
         build.mkdir(parents=True, exist_ok=True)
-        for name in ("Makefile", f"{MODULE_NAME}.c"):
-            source = (driver_dir / name).read_bytes()
+        for name in ("Makefile", f"{driver.name}.c"):
+            source = (driver.directory / name).read_bytes()
             staged = build / name
             if not staged.exists() or staged.read_bytes() != source:
                 staged.write_bytes(source)
@@ -731,7 +785,7 @@ def build_module(
             env=environment,
         )
         try:
-            verify_module(module, cache, objcopy)
+            verify_module(module, cache, objcopy, driver.name)
         except Exception:
             # Leave nothing behind at the path a consumer reads: a rejected
             # module must not look like a built one to the next run.
@@ -741,8 +795,8 @@ def build_module(
 
 
 # --- The initramfs ----------------------------------------------------------
-# The kernel unpacks concatenated newc archives in order. Append the module
-# and loader without changing or rebuilding Buildroot's rootfs.cpio.
+# The kernel unpacks concatenated newc archives in order. Append the modules
+# and loaders without changing or rebuilding Buildroot's rootfs.cpio.
 CPIO_MAGIC = b"070701"
 CPIO_TRAILER = "TRAILER!!!"
 # Every newc member is padded to 4 bytes. Between two archives the kernel's
@@ -813,40 +867,48 @@ def cpio_members(archive: bytes) -> Iterator[tuple[str, int, bytes]]:
             yield name, mode, data
 
 
-def module_cpio(module: bytes, release: str = KERNEL_RELEASE) -> bytes:
-    """Return a cpio archive containing the NIC module and its loader.
+def init_script(driver: Driver, release: str = KERNEL_RELEASE) -> str:
+    """Return the startup script that loads one driver's module.
 
-    ``/etc/init.d/rcS`` runs the loader. insmod uses a path without depmod
-    metadata; include modules.dep for interactive modprobe use.
     Check ``uname -r`` before loading: CONFIG_MODVERSIONS permits compatible
     symbol CRCs even when vermagic's release differs.
     """
-    script = f"""#!/bin/sh
-# Generated by linux/debian_kernel.py: load the FROST NIC driver, which is a
+    return f"""#!/bin/sh
+# Generated by linux/debian_kernel.py: load {driver.description}, which is a
 # module because Debian's kernel has none built in. The release test is not
 # redundant with the insmod: with CONFIG_MODVERSIONS the kernel ignores
 # vermagic's release field, so this module would load into any ABI-compatible
 # kernel. The gates require the token below, so they require the release too.
-MODULE=/lib/modules/{release}/{MODULE_NAME}.ko
+MODULE=/lib/modules/{release}/{driver.name}.ko
 EXPECT={release}
 case "$1" in
 start)
 \tRUNNING=$(uname -r)
 \tif [ "$RUNNING" != "$EXPECT" ]; then
-\t\techo "{MODULE_FAIL_TOKEN} kernel $RUNNING is not $EXPECT"
+\t\techo "{driver.fail_token} kernel $RUNNING is not $EXPECT"
 \telif insmod "$MODULE"; then
-\t\techo "{MODULE_PASS_TOKEN} $RUNNING"
+\t\techo "{driver.pass_token} $RUNNING"
 \telse
-\t\techo "{MODULE_FAIL_TOKEN} insmod $MODULE"
+\t\techo "{driver.fail_token} insmod $MODULE"
 \tfi
 \t;;
 stop)
-\trmmod {MODULE_NAME} 2>/dev/null
+\trmmod {driver.name} 2>/dev/null
 \t;;
 esac
 # Never stop rcS: the token above is what the boot gates judge.
 exit 0
 """
+
+
+def module_cpio(
+    modules: Mapping[Driver, bytes], release: str = KERNEL_RELEASE
+) -> bytes:
+    """Return a cpio archive containing driver modules and their loaders.
+
+    ``/etc/init.d/rcS`` runs each driver's init_script(). insmod uses a path
+    without depmod metadata; include modules.dep for interactive modprobe use.
+    """
     directories = (
         "etc",
         "etc/init.d",
@@ -859,24 +921,30 @@ exit 0
     for name in directories:
         out += cpio_entry(name, 0o040755, ino=ino)
         ino += 1
-    for name, mode, data in (
-        (f"lib/modules/{release}/{MODULE_NAME}.ko", 0o100644, module),
-        (
-            f"lib/modules/{release}/modules.dep",
-            0o100644,
-            f"{MODULE_NAME}.ko:\n".encode(),
-        ),
-        (MODULE_INIT_SCRIPT, 0o100755, script.encode()),
-    ):
+    members = [
+        (f"lib/modules/{release}/{driver.name}.ko", 0o100644, module)
+        for driver, module in modules.items()
+    ]
+    dependencies = "".join(f"{driver.name}.ko:\n" for driver in modules)
+    members.append(
+        (f"lib/modules/{release}/modules.dep", 0o100644, dependencies.encode())
+    )
+    members += [
+        (driver.init_script, 0o100755, init_script(driver, release).encode())
+        for driver in modules
+    ]
+    for name, mode, data in members:
         out += cpio_entry(name, mode, data, ino=ino)
         ino += 1
     out += cpio_entry(CPIO_TRAILER, 0)
     return out + b"\0" * (-len(out) % CPIO_BLOCK)
 
 
-def prebuilt_module(module: Path | str | None = None) -> Path | None:
-    """Return a module built elsewhere, from the argument or the environment."""
-    named = module if module is not None else os.environ.get(MODULE_ENV) or None
+def prebuilt_module(
+    driver: Driver = NET10G, module: Path | str | None = None
+) -> Path | None:
+    """Return a driver's module built elsewhere, from the argument or its env."""
+    named = module if module is not None else os.environ.get(driver.env) or None
     return Path(named) if named is not None else None
 
 
@@ -915,14 +983,28 @@ def compose_initramfs(
     out: Path,
     cache: Path | str | None = None,
     cross: str | None = None,
-    module: Path | str | None = None,
+    modules: Mapping[str, Path | str] | None = None,
 ) -> Path:
-    """Validate the base, then append a cpio archive with the NIC module and loader."""
+    """Validate the base, then append a cpio archive with every driver's module.
+
+    ``modules`` maps a driver's name to a module built elsewhere; the others
+    come from their drivers' environment variables or are built.
+    """
+    given = dict(modules or {})
+    unknown = sorted(set(given) - {driver.name for driver in DRIVERS})
+    if unknown:
+        raise ValueError(f"no driver named {', '.join(unknown)}")
     payload = base.read_bytes()
     check_base_initramfs(base, payload)
-    ko = prebuilt_module(module) or build_module(cache, cross)
+    built = {
+        driver: (
+            prebuilt_module(driver, given.get(driver.name))
+            or build_module(cache, cross, driver)
+        ).read_bytes()
+        for driver in DRIVERS
+    }
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(payload + module_cpio(ko.read_bytes()))
+    out.write_bytes(payload + module_cpio(built))
     return out
 
 
@@ -949,16 +1031,26 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print the path without downloading anything (for Makefiles)",
     )
-    commands.add_parser("module", help="build the NIC module and print its path")
+    commands.add_parser(
+        "module", help="build the driver modules and print their paths, one a line"
+    )
     initramfs = commands.add_parser(
-        "initramfs", help="write an initramfs holding the NIC module"
+        "initramfs", help="write an initramfs holding the driver modules"
     )
     initramfs.add_argument("--base", required=True, help="Buildroot's rootfs.cpio")
     initramfs.add_argument("--out", required=True, help="the composed initramfs")
     initramfs.add_argument(
         "--module",
         default=None,
-        help=f"a module built elsewhere, instead of building one (${MODULE_ENV})",
+        help=f"a NIC module built elsewhere, instead of building one (${NET10G.env})",
+    )
+    initramfs.add_argument(
+        "--memerr-module",
+        default=None,
+        help=(
+            "a memory error module built elsewhere, instead of building one "
+            f"(${MEMERR.env})"
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -971,11 +1063,17 @@ def main(argv: list[str] | None = None) -> int:
             fetch(args.cache)
         print(kernel_image(args.cache))
     elif args.command == "module":
-        print(build_module(args.cache, args.cross))
+        for driver in DRIVERS:
+            print(build_module(args.cache, args.cross, driver))
     elif args.command == "initramfs":
+        given = {NET10G.name: args.module, MEMERR.name: args.memerr_module}
         print(
             compose_initramfs(
-                Path(args.base), Path(args.out), args.cache, args.cross, args.module
+                Path(args.base),
+                Path(args.out),
+                args.cache,
+                args.cross,
+                {name: path for name, path in given.items() if path is not None},
             )
         )
     return 0

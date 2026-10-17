@@ -89,6 +89,13 @@ extern volatile unsigned long DMA_ENGINE_ADDR;
 #define DMA_ENGINE_BASE ((uintptr_t) &DMA_ENGINE_ADDR)
 
 /* ========================================================================== */
+/* Memory error unit (0x40021000; register map in memory_error.h)             */
+/* ========================================================================== */
+
+extern volatile unsigned long MEMORY_ERROR_ADDR;
+#define MEMORY_ERROR_BASE ((uintptr_t) &MEMORY_ERROR_ADDR)
+
+/* ========================================================================== */
 /* NIC (0x40030000; register map in nic.h)                                    */
 /* ========================================================================== */
 

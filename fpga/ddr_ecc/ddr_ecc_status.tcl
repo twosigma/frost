@@ -12,11 +12,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Read the DDR4 controller's ECC registers over the JTAG DDR-load master, the
-# only master that reaches the ECC management window (region offset
-# 0x4000_0000, assigned in fpga/build/x3_ddr_bd.tcl). ddr_ecc_status.py passes
-# the register names and offsets. Reads have no side effects; the registers
-# are written only when the caller asks to clear them.
+# Read the DDR4 controller's ECC registers over the JTAG DDR-load master, at
+# the ECC management window (region offset 0x4000_0000, assigned in
+# fpga/build/x3_ddr_bd.tcl). FROST's ECC reader (boards/x3/x3_ecc_reader.sv)
+# polls the same window. ddr_ecc_status.py passes the register names and
+# offsets. These reads have no side effects; this script writes the registers
+# only when the caller asks to clear them.
 
 if {$argc < 3} {
     puts stderr "Usage: vivado -source ddr_ecc_status.tcl -tclargs <target> <clear> <register-list> \[remote_host\] \[hw_server_url\]"
