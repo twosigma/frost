@@ -20,6 +20,7 @@ of order. A read's beat must be the value of its address when the read was
 accepted, or a value a store wrote there while the read was outstanding.
 """
 
+import os
 import random
 from dataclasses import dataclass, field
 from typing import Any
@@ -112,6 +113,11 @@ class ReadRecord:
     accept_edge: int
 
 
+# The cached_tier_adapter_split registry entry builds the adapter with
+# SPLIT_READ_REQ, as the core instantiates it, and sets this variable.
+SPLIT_READ_REQ = os.environ.get("ADAPTER_SPLIT_READ_REQ", "0") == "1"
+
+
 class AdapterBench:
     """Drives the router side, models the line port, and checks every beat."""
 
@@ -119,6 +125,9 @@ class AdapterBench:
         """Bind the bench to the DUT, with its own random stream."""
         self.dut = dut
         self.rng = random.Random(seed)
+        # The split request's form has its own stream, so the line-port timing
+        # the tests rely on is the same with and without SPLIT_READ_REQ.
+        self.split_rng = random.Random(seed + 0x5A17)
         self.port = LinePortModel(self.rng)
         self.slots = 1 << len(dut.i_read_id)
         self.edge = 0
@@ -146,10 +155,31 @@ class AdapterBench:
         await FallingEdge(dut.i_clk)
         dut.i_rst.value = 0
 
+    def drive_request(self, req: bool) -> None:
+        """Drive the read request, and with SPLIT_READ_REQ its split form."""
+        dut = self.dut
+        dut.i_read_req.value = int(req)
+        if not SPLIT_READ_REQ:
+            dut.i_read_req_sel.value = 0
+            dut.i_read_req_if_sel.value = 0
+            dut.i_read_req_if_clear.value = 0
+            return
+        # The router's two forms: a live launch (select set; the held-request
+        # term is then clear) or a held request (select clear; the live term
+        # is a don't-care).
+        sel = self.split_rng.randrange(2)
+        dut.i_read_req_sel.value = sel
+        if sel:
+            dut.i_read_req_if_sel.value = int(req)
+            dut.i_read_req_if_clear.value = 0
+        else:
+            dut.i_read_req_if_sel.value = self.split_rng.randrange(2)
+            dut.i_read_req_if_clear.value = int(req)
+
     def idle_router(self) -> None:
         """Drive no request on the router side."""
         dut = self.dut
-        dut.i_read_req.value = 0
+        self.drive_request(False)
         dut.i_read_id.value = 0
         dut.i_read_no_merge.value = 0
         dut.i_req_addr.value = 0
@@ -176,7 +206,7 @@ class AdapterBench:
         if read is not None:
             slot = self.free_slots()[0]
             addr, no_merge = read
-            dut.i_read_req.value = 1
+            self.drive_request(True)
             dut.i_read_id.value = slot
             dut.i_read_no_merge.value = int(no_merge)
             dut.i_req_addr.value = addr
