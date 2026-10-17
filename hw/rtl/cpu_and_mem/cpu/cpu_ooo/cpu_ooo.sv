@@ -1049,7 +1049,6 @@ module cpu_ooo #(
         c.btb_predicted_taken = d.btb_predicted_taken;
         c.is_ras_return = d.is_ras_return;
         c.is_ras_call = d.is_ras_call;
-        c.btb_correct_non_jalr = d.btb_correct_non_jalr;
         c.has_int_dest = d.has_int_dest;
         c.has_fp_dest = d.has_fp_dest;
         c.uses_int_rs1 = d.uses_int_rs1;
@@ -1102,7 +1101,6 @@ module cpu_ooo #(
         producer_ctrl.btb_predicted_taken = decoded_packet.btb_predicted_taken;
         producer_ctrl.is_ras_return = decoded_packet.is_ras_return;
         producer_ctrl.is_ras_call = decoded_packet.is_ras_call;
-        producer_ctrl.btb_correct_non_jalr = decoded_packet.btb_correct_non_jalr;
         producer_ctrl.has_int_dest = decoded_packet.has_int_dest;
         producer_ctrl.has_fp_dest = decoded_packet.has_fp_dest;
         producer_ctrl.uses_int_rs1 = decoded_packet.uses_int_rs1;
@@ -1145,7 +1143,6 @@ module cpu_ooo #(
         producer_ctrl_2.btb_predicted_taken = decoded_packet_2.btb_predicted_taken;
         producer_ctrl_2.is_ras_return = decoded_packet_2.is_ras_return;
         producer_ctrl_2.is_ras_call = decoded_packet_2.is_ras_call;
-        producer_ctrl_2.btb_correct_non_jalr = decoded_packet_2.btb_correct_non_jalr;
         producer_ctrl_2.has_int_dest = decoded_packet_2.has_int_dest;
         producer_ctrl_2.has_fp_dest = decoded_packet_2.has_fp_dest;
         producer_ctrl_2.uses_int_rs1 = decoded_packet_2.uses_int_rs1;
@@ -1189,7 +1186,6 @@ module cpu_ooo #(
         producer_ctrl_next.btb_predicted_taken = decoded_packet_next.btb_predicted_taken;
         producer_ctrl_next.is_ras_return = decoded_packet_next.is_ras_return;
         producer_ctrl_next.is_ras_call = decoded_packet_next.is_ras_call;
-        producer_ctrl_next.btb_correct_non_jalr = decoded_packet_next.btb_correct_non_jalr;
         producer_ctrl_next.has_int_dest = decoded_packet_next.has_int_dest;
         producer_ctrl_next.has_fp_dest = decoded_packet_next.has_fp_dest;
         producer_ctrl_next.uses_int_rs1 = decoded_packet_next.uses_int_rs1;
@@ -1233,7 +1229,6 @@ module cpu_ooo #(
         producer_ctrl_next_2.btb_predicted_taken = decoded_packet_next_2.btb_predicted_taken;
         producer_ctrl_next_2.is_ras_return = decoded_packet_next_2.is_ras_return;
         producer_ctrl_next_2.is_ras_call = decoded_packet_next_2.is_ras_call;
-        producer_ctrl_next_2.btb_correct_non_jalr = decoded_packet_next_2.btb_correct_non_jalr;
         producer_ctrl_next_2.has_int_dest = decoded_packet_next_2.has_int_dest;
         producer_ctrl_next_2.has_fp_dest = decoded_packet_next_2.has_fp_dest;
         producer_ctrl_next_2.uses_int_rs1 = decoded_packet_next_2.uses_int_rs1;
@@ -1360,7 +1355,8 @@ module cpu_ooo #(
       end
 `endif
       // Use the registered shadow for narrow control fields, for timing. It must
-      // equal those fields in queue_packet; wide payload uses the bypass mux.
+      // equal those fields in queue_packet; wide payload and
+      // btb_correct_non_jalr use the bypass mux.
       always_comb begin
         from_id_to_ex = queue_packet;
         from_id_to_ex_2 = queue_packet_2;
@@ -1398,7 +1394,6 @@ module cpu_ooo #(
         from_id_to_ex.btb_predicted_taken = queue_ctrl.btb_predicted_taken;
         from_id_to_ex.is_ras_return = queue_ctrl.is_ras_return;
         from_id_to_ex.is_ras_call = queue_ctrl.is_ras_call;
-        from_id_to_ex.btb_correct_non_jalr = queue_ctrl.btb_correct_non_jalr;
         from_id_to_ex.has_int_dest = queue_ctrl.has_int_dest;
         from_id_to_ex.has_fp_dest = queue_ctrl.has_fp_dest;
         from_id_to_ex.uses_int_rs1 = queue_ctrl.uses_int_rs1;
@@ -1441,7 +1436,6 @@ module cpu_ooo #(
         from_id_to_ex_2.btb_predicted_taken = queue_ctrl_2.btb_predicted_taken;
         from_id_to_ex_2.is_ras_return = queue_ctrl_2.is_ras_return;
         from_id_to_ex_2.is_ras_call = queue_ctrl_2.is_ras_call;
-        from_id_to_ex_2.btb_correct_non_jalr = queue_ctrl_2.btb_correct_non_jalr;
         from_id_to_ex_2.has_int_dest = queue_ctrl_2.has_int_dest;
         from_id_to_ex_2.has_fp_dest = queue_ctrl_2.has_fp_dest;
         from_id_to_ex_2.uses_int_rs1 = queue_ctrl_2.uses_int_rs1;

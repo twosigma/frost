@@ -1863,7 +1863,9 @@ package riscv_pkg;
 
   // Control fields of from_id_to_ex_t, with matching names and types.
   // The decoded-bundle queue registers the next dispatch view from ID's
-  // next-edge values, for timing.
+  // next-edge values, for timing. btb_correct_non_jalr is left out: ID's
+  // target compare sets it late in the cycle, and dispatch only stores it,
+  // so it comes from the queue's packet.
   typedef struct packed {
     logic is_load_instruction;
     logic is_load_unsigned;
@@ -1901,7 +1903,6 @@ package riscv_pkg;
     logic btb_predicted_taken;
     logic is_ras_return;
     logic is_ras_call;
-    logic btb_correct_non_jalr;
     logic has_int_dest;
     logic has_fp_dest;
     logic uses_int_rs1;
