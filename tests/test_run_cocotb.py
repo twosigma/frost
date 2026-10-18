@@ -412,6 +412,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=37"),),
         verilator_extra_args=("-DFROST_WIDE_DDR_TEST", "-DFROST_DDR_CAPACITY_LOG2_BYTES=37"),
     ),
+    **{
+        f"pma_fault_test_{1 << (bits - 30)}g": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="pma_fault_test",
+            description=f"Out-of-range traps beyond the {1 << (bits - 30)} GiB DDR aperture",
+            include_in_pytest=False,
+            extra_env=(("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),),
+            verilator_extra_args=(
+                "-DFROST_WIDE_DDR_TEST",
+                f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}",
+            ),
+        )
+        for bits in range(31, 37)
+    },
     "fs_off_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -427,6 +442,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Sv39 data translation, permissions, and precise faults through MPRV"
         ),
+        extra_env=(("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=30"),),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
+    ),
+    "vm_test_128g": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vm_test",
+        description="Sv39 translation through the final word of 128 GiB DDR",
+        include_in_pytest=False,
+        extra_env=(("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=37"),),
+        verilator_extra_args=("-DFROST_WIDE_DDR_TEST", "-DFROST_DDR_CAPACITY_LOG2_BYTES=37"),
     ),
     "slot2_fault_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
