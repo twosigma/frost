@@ -109,8 +109,9 @@ _Static_assert(FROST_MALLOC_EVICT_L0_DEPTH >= 8 &&
                    (FROST_MALLOC_EVICT_L0_DEPTH & (FROST_MALLOC_EVICT_L0_DEPTH - 1)) == 0,
                "the L0 depth is a power of two of at least 8");
 #define L0_BYTES ((uintptr_t) 8 * FROST_MALLOC_EVICT_L0_DEPTH)
-/* The heap lies in the 1 GiB DDR region, which is aligned to its size, so an
- * address with one bit below 30 flipped stays inside it. */
+/* The default heap lies in a 1 GiB DDR block, and larger configured usable
+ * regions are contiguous 1 GiB blocks; flipping a bit below 30 stays in the
+ * same block. */
 #define L0_ALIAS_LIMIT ((uintptr_t) 1 << 29)
 
 /*

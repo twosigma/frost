@@ -21,6 +21,7 @@ throughput, miss skid, and recovery behavior without inspecting internal RTL.
 """
 
 from dataclasses import dataclass, replace
+import os
 from typing import Any
 
 import cocotb
@@ -31,6 +32,8 @@ from cocotb.triggers import RisingEdge, Timer
 NONE, MISALIGN, PAGE, ACCESS = range(4)
 VPN_MASK = (1 << 27) - 1
 XLEN_MASK = (1 << 64) - 1
+DDR_CAPACITY_LOG2_BYTES = int(os.environ.get("FROST_DDR_CAPACITY_LOG2_BYTES", "30"))
+DDR_LIMIT = 0x8000_0000 + (1 << DDR_CAPACITY_LOG2_BYTES)
 
 
 @dataclass(frozen=True)
@@ -112,7 +115,7 @@ def _expected(op: Op, leaf: Leaf) -> tuple[int, int, int]:
     )
     mapped = (
         pa < 0x40000
-        or 0x8000_0000 <= pa < 0xC000_0000
+        or 0x8000_0000 <= pa < DDR_LIMIT
         or (not op.atomic and _device_ok(pa))
     )
     if not mapped:
@@ -257,6 +260,8 @@ async def test_hit_and_walk_resolution_matrix(dut: Any) -> None:
         (base_op, replace(base_leaf, ppn=0x40)),
         (base_op, replace(base_leaf, ppn=0xC0000)),
         (base_op, replace(base_leaf, ppn=(1 << 20) | 0x80000)),
+        (base_op, replace(base_leaf, ppn=(DDR_LIMIT - 0x1000) >> 12)),
+        (base_op, replace(base_leaf, ppn=DDR_LIMIT >> 12)),
         (base_op, replace(base_leaf, ppn=0xC0000, r=0)),
         (replace(base_op, store=1), replace(base_leaf, d=0)),
         (replace(base_op, store=1), replace(base_leaf, w=0)),
@@ -483,7 +488,7 @@ async def test_early_port_needs_store_permission_and_a_data_page(dut: Any) -> No
         (0x443FF, 1, 1, True),
         (0x40031, 1, 1, False),
         (0x7FFFF, 1, 1, False),
-        (0xC0000, 1, 1, False),
+        (0xC0000, 1, 1, DDR_LIMIT > 0xC000_0000),
         (0x80000, 1, 0, False),
         (0x80000, 0, 1, False),
     ]

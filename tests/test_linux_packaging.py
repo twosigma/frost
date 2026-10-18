@@ -722,8 +722,8 @@ def test_load_software_takes_each_board_ddr_from_its_block_design(
 ) -> None:
     """Use the CPU port's DDR range from fpga/build/<board>_ddr_bd.tcl.
 
-    Every DDR board's range must fit the packer; the X3 uses the full 1 GiB
-    cached region. Ignore the JTAG master's range.
+    Every DDR board's range must fit the packer; the X3 has 1 GiB installed
+    within the potentially larger cached aperture. Ignore the JTAG master's range.
     """
     loader = _load_script("linux_packaging_loader", LOADER)
     packer = _load_module(SBI_PACKER)
