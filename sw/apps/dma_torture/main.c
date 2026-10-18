@@ -21,6 +21,8 @@
  * The unfenced message-passing case relies on replay: a data load that
  * executes before an older status load must not retire stale data after that
  * status reports completion. Fenced message passing checks explicit ordering.
+ * The atomics case races LR/SC loops, AMOs and evictions of dirty lines
+ * against engine writes to the same lines.
  *
  * Buffers use fixed cached-DDR addresses in both memory tiers. Each case
  * checks data or completion behavior and contributes to <<PASS>> or <<FAIL>>.
@@ -57,6 +59,7 @@
 #define MP_ROUNDS (24u * DMA_TORTURE_SCALE)
 #define AMO_ROUNDS (16u * DMA_TORTURE_SCALE)
 #define STRESS_ROUNDS (20u * DMA_TORTURE_SCALE)
+#define ATOMIC_ROUNDS (64u * DMA_TORTURE_SCALE)
 
 /* Buffers in cached DDR at fixed absolute addresses (16 MiB into the
  * region, above every image), line aligned. Absolute pointers, like
@@ -71,6 +74,32 @@ static volatile uint32_t *const g_line = (volatile uint32_t *) (DDR_SCRATCH + 0x
 static volatile uint32_t *const g_mp = (volatile uint32_t *) (DDR_SCRATCH + 0x2100u);
 static volatile uint32_t *const g_amo = (volatile uint32_t *) (DDR_SCRATCH + 0x2200u);
 static volatile uint32_t *const g_stress = (volatile uint32_t *) (DDR_SCRATCH + 0x3000u);
+
+/* The atomics case uses ATOMIC_BLOCKS 4 KiB blocks. In each, the engine fills
+ * 8 to 15 lines that end in words 0..5 of the block's target line (line 32),
+ * then writes a status word in line 64; the CPU owns the target's words 6 and
+ * 7. Lines a multiple of the L1D size from the target share its L1D set, and
+ * the three lines a quarter of that apart share it in the 4-way L1D. */
+#define ATOMIC_BLOCKS 4u
+#define ATOMIC_BASE (DDR_SCRATCH + 0x8000u)
+#define EVICT_LINES 8u
+#define L1D_BYTES (128u * 1024u)
+static volatile uint32_t *atomic_target(uint32_t b)
+{
+    return (volatile uint32_t *) (uintptr_t) (ATOMIC_BASE + b * 0x1000u + 32u * LINE_BYTES);
+}
+static volatile uint32_t *atomic_status(uint32_t b)
+{
+    return (volatile uint32_t *) (uintptr_t) (ATOMIC_BASE + b * 0x1000u + 64u * LINE_BYTES);
+}
+static volatile uint32_t *evict_line(volatile uint32_t *line, uint32_t k)
+{
+    return (volatile uint32_t *) ((uintptr_t) line + k * L1D_BYTES);
+}
+static volatile uint32_t *way_line(volatile uint32_t *line, uint32_t j)
+{
+    return (volatile uint32_t *) ((uintptr_t) line + j * (L1D_BYTES / 4u));
+}
 
 static uint32_t g_failures;
 volatile uint32_t g_irq_count;
@@ -574,6 +603,145 @@ static void test_stress(void)
     check("stress", ok);
 }
 
+/* ---- atomics: LR/SC, AMOs and evictions racing engine writes ---- */
+/* Increment *p with LR/SC until the SC succeeds. In the padded form, dependent
+ * adds keep the SC from the ROB head for a few cycles after the LR completes,
+ * a window in which a DMA write to the line can be admitted. */
+static void lrsc_increment(volatile uint32_t *p, int padded)
+{
+    uint32_t v, fail;
+    if (padded) {
+        __asm__ volatile("1: lr.w %0, (%2)\n"
+                         "addiw %0, %0, 1\n"
+                         "addiw %0, %0, 0\n"
+                         "addiw %0, %0, 0\n"
+                         "addiw %0, %0, 0\n"
+                         "addiw %0, %0, 0\n"
+                         "addiw %0, %0, 0\n"
+                         "addiw %0, %0, 0\n"
+                         "addiw %0, %0, 0\n"
+                         "sc.w %1, %0, (%2)\n"
+                         "bnez %1, 1b\n"
+                         : "=&r"(v), "=&r"(fail)
+                         : "r"(p)
+                         : "memory");
+    } else {
+        __asm__ volatile("1: lr.w %0, (%2)\n"
+                         "addiw %0, %0, 1\n"
+                         "sc.w %1, %0, (%2)\n"
+                         "bnez %1, 1b\n"
+                         : "=&r"(v), "=&r"(fail)
+                         : "r"(p)
+                         : "memory");
+    }
+}
+
+static uint32_t amoadd_word(volatile uint32_t *p)
+{
+    uint32_t old;
+    __asm__ volatile("amoadd.w %0, %2, (%1)" : "=&r"(old) : "r"(p), "r"(1u) : "memory");
+    return old;
+}
+
+static void test_atomics(void)
+{
+    uint32_t lrsc[ATOMIC_BLOCKS] = {0}, amo[ATOMIC_BLOCKS] = {0};
+    uint32_t fill_lines[ATOMIC_BLOCKS] = {0}, fill_round[ATOMIC_BLOCKS] = {0};
+    for (uint32_t b = 0; b < ATOMIC_BLOCKS; b++) {
+        volatile uint32_t *t = atomic_target(b);
+        for (uint32_t k = 1; k <= EVICT_LINES; k++)
+            evict_line(t, k)[0] = 0xE1000000u + b * 64u + k;
+        for (uint32_t w = 0; w < LINE_WORDS; w++)
+            t[w] = 0;
+        *atomic_status(b) = 0;
+        for (uint32_t j = 1; j < 4u; j++)
+            way_line(t, j)[0] = 0xD0000000u + b * 16u + j;
+    }
+    int ok = 1;
+    uint32_t evictions = 0;
+    for (uint32_t r = 1; r <= ATOMIC_ROUNDS; r++) {
+        /* Until the CPU sees the status word, it races the fill with LR/SC
+         * increments of the target's word 7 (tight or padded) or AMOs on word
+         * 6. Or it dirties the target, waits until the engine has written a
+         * line a few lines before the target, and evicts the target, so that
+         * the engine's write can probe the target while its writeback is
+         * pending. Data words carry the round in their upper half. */
+        uint32_t b = r % ATOMIC_BLOCKS;
+        uint32_t kind = (r / ATOMIC_BLOCKS) % 4u;
+        uint32_t lines = 8u + r % 8u;
+        volatile uint32_t *t = atomic_target(b);
+        volatile uint32_t *status = atomic_status(b);
+        if (kind == 3u) {
+            if (amoadd_word(&t[6]) != amo[b]++)
+                ok = 0;
+            /* In a 4-way L1D, this leaves the target the set's next victim. */
+            for (uint32_t j = 1; j < 4u; j++) {
+                if (way_line(t, j)[0] != 0xD0000000u + b * 16u + j)
+                    ok = 0;
+            }
+        }
+        start_engine(0,
+                     pa(t) - lines * LINE_BYTES,
+                     lines * LINE_BYTES + 24u,
+                     DMA_ENGINE_MODE_FILL | DMA_ENGINE_MODE_STATUS,
+                     r << 16,
+                     pa(status),
+                     r);
+        if (kind == 3u) {
+            uint32_t ahead = 1u + evictions % 6u;
+            volatile uint32_t *watch = t - ahead * LINE_WORDS;
+            while (*watch != (r << 16) + (lines - ahead) * LINE_WORDS) {
+            }
+            uint32_t k = 1u + evictions % EVICT_LINES;
+            if (evict_line(t, k)[0] != 0xE1000000u + b * 64u + k)
+                ok = 0;
+            evictions++;
+        }
+        while (*status != r) {
+            if (kind < 2u) {
+                lrsc_increment(&t[7], kind == 1u);
+                lrsc[b]++;
+            } else if (kind == 2u) {
+                if (amoadd_word(&t[6]) != amo[b]++)
+                    ok = 0;
+            }
+        }
+        dma_engine_wait();
+        dma_engine_ack();
+        fill_lines[b] = lines;
+        fill_round[b] = r;
+    }
+    for (uint32_t b = 0; b < ATOMIC_BLOCKS; b++) {
+        /* The last fill wrote (fill_round << 16) + i to its word i. */
+        volatile uint32_t *t = atomic_target(b);
+        volatile uint32_t *dst = t - fill_lines[b] * LINE_WORDS;
+        for (uint32_t i = 0; i < fill_lines[b] * LINE_WORDS + 6u; i++) {
+            if (dst[i] != (fill_round[b] << 16) + i) {
+                if (ok)
+                    uart_printf("atomics block=%u word=%u got=%x want=%x\n",
+                                b,
+                                i,
+                                dst[i],
+                                (fill_round[b] << 16) + i);
+                ok = 0;
+            }
+        }
+        if (t[6] != amo[b] || t[7] != lrsc[b] || *atomic_status(b) != fill_round[b]) {
+            if (ok)
+                uart_printf("atomics block=%u amo=%u/%u lrsc=%u/%u status=%u/%u\n",
+                            b,
+                            t[6],
+                            amo[b],
+                            t[7],
+                            lrsc[b],
+                            *atomic_status(b),
+                            fill_round[b]);
+            ok = 0;
+        }
+    }
+    check("atomics", ok);
+}
+
 int main(void)
 {
     uart_printf("\n=== dma_torture: DMA test engine vs the CPU caches ===\n");
@@ -599,6 +767,7 @@ int main(void)
     test_reprogram();
     test_aperture();
     test_stress();
+    test_atomics();
     if (g_failures == 0) {
         uart_printf("<<PASS>>\n");
     } else {

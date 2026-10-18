@@ -402,6 +402,14 @@ all of them.
 | `frost_cache_hierarchy` | `cover_demand_read_meets_prefetch` | An L1D read reaches the L2 while the prefetcher's read of the same L2 line is outstanding |
 | `line_port_arbiter` | `cover_starved_port_granted` | A port that waited through the starvation limit wins over a request of higher priority |
 
+Only the load queue's unit bench reaches two of them, because the whole SoC
+never builds the state they check. For `cover_dma_write_hits_lr_in_flight`,
+the coherence port admits a DMA write only when no LR on its line is in
+flight, and the load queue holds LR launches on the line until the write is
+released. For `cover_staged_load_yields_to_amo`, dispatch allocates
+load-queue entries in program order, so a load's older AMOs are already
+pending when it is allocated, and a load blocked by one is never staged.
+
 To add one, write the `cover property` in its module's cover-point block,
 or start one at the end of the module, and add a row here.
 

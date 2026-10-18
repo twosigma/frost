@@ -262,7 +262,7 @@ can be debugged and where each one first stops.
 | `ddr_smc_test/` | Self-modifying code in DDR: store, `fence.i`, then execute cold and warm |
 | `ddr_test/` | Cached-DDR loads and stores, byte strobes, evictions, the preloaded `.ddr_rodata` image, and AMOs |
 | `debug_target/` | Debuggee with known symbols for the JTAG debug tests; waits for a debugger to write its flags |
-| `dma_torture/` | DMA test engine against the CPU caches: visibility, ordering, atomics, the completion interrupt, abort and reuse |
+| `dma_torture/` | DMA test engine against the CPU caches: visibility, ordering, atomics and evictions racing engine writes, the completion interrupt, abort and reuse |
 | `drain_trapframe_test/` | Trap-frame stores to DDR must survive the L1D evicting their line during a timer interrupt |
 | `fetch_lead_repro/` | A call into a cold cached line whose first bundle advances 6 bytes, followed by a 32-bit instruction split across fetch words |
 | `fetch_stall_repro/` | 32-bit instructions near cache-line boundaries, fetched cold from DDR; a PC+2 mis-step traps |
