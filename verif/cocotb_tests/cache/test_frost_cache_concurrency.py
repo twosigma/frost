@@ -205,11 +205,23 @@ async def _evict_with_reads(
 ) -> None:
     """Read aliasing lines so every level forgets the test's lines.
 
-    The harness caches are tiny, so `lines` reads push everything out with
-    clean victims.
+    The harness caches are tiny, so `lines` lines push everything out with
+    clean victims. A fill alone becomes its set's most recently used only
+    one time in 32 (bimodal insertion), so each line is read twice through
+    the L1D, the second read a hit there, and then each L2 line twice
+    through the walker port, which reaches the L2 directly.
     """
     for line in range(lines):
-        await _transaction(dut, "up", col, write=False, addr=base + line * LINE_BYTES)
+        addr = base + line * LINE_BYTES
+        await _transaction(dut, "up", col, write=False, addr=addr)
+        await _transaction(dut, "up", col, write=False, addr=addr)
+    await _settle(dut)
+    walker = _Collector(dut, "wup")
+    l2_line = l2_line_bytes(dut)
+    for off in range(0, lines * LINE_BYTES, l2_line):
+        await _transaction(dut, "wup", walker, write=False, addr=base + off)
+        await _transaction(dut, "wup", walker, write=False, addr=base + off)
+    walker.stop()
     await _settle(dut)
 
 

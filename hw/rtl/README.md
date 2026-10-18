@@ -113,11 +113,12 @@ for predecode metadata.
 
 Instruction fetch and data accesses both reach the cached region. The
 hierarchy has a 128 KiB L1D, a 16 KiB L1I, and a shared 2 MiB L2. All three
-are 4-way set-associative with tree pseudo-LRU replacement, write-back, and
-write-allocate, on every target. The L1s use 32-byte lines;
-the L2 uses 64-byte lines, each holding two of them, and moves whole lines to
-and from DDR as single 512-bit AXI transfers. With `L2_LINE_BYTES=32` the L2
-uses the L1s' line size and the DDR port is 256 bits wide. Cached accesses
+are 4-way set-associative with tree pseudo-LRU replacement (the L1D with
+bimodal insertion), write-back, and write-allocate, on every target. The L1s
+use 32-byte lines; the L2 uses 64-byte lines, each holding two of them, and
+moves whole lines to and from DDR as single 512-bit AXI transfers. With
+`L2_LINE_BYTES=32` the L2 uses the L1s' line size and the DDR port is 256
+bits wide. Cached accesses
 have variable latency, and L1 hits proceed while misses are pending. The L1D,
 the page-table walker, the L1I, and DMA share the hierarchy in that priority
 order, with a bound on DMA starvation, and below them a stream prefetcher

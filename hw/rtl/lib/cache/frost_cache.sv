@@ -58,7 +58,8 @@
  * Hits and misses on other lines proceed past pending misses, including
  * lines of the same set, several MSHRs fetch at once, and writebacks drain
  * independently. Hits and allocations touch their set's pseudo-LRU state in
- * W; probes, merges, and waiters leave it alone.
+ * W, allocations only one time in 32 with BIMODAL_INSERT (an untouched fill
+ * stays the set's next victim); probes, merges, and waiters leave it alone.
  *
  * Ordering (the slave side of the protocol): requests to the same line take
  * effect in acceptance order, though responses may leave in another order.
@@ -116,6 +117,10 @@ module frost_cache #(
     // Ways per set, a power of 2; 1 is direct-mapped. The cache must have at
     // least two sets.
     parameter int unsigned WAYS = 4,
+    // 1: bimodal insertion, where a fill becomes its set's most recently
+    // used only one time in 32 (see the replacement state below); 0: every
+    // fill does.
+    parameter bit BIMODAL_INSERT = 1'b0,
     // Transaction id widths of the upstream (slave) and downstream (master)
     // line ports. DOWN_ID_BITS must hold {type, max(NUM_MSHR, NUM_WB) slots}.
     parameter int unsigned UP_ID_BITS = 3,
@@ -440,8 +445,29 @@ module frost_cache #(
   logic                plru_we;
   logic [ SetBits-1:0] plru_waddr;
   logic [PlruBits-1:0] plru_wdata;
+  // With BIMODAL_INSERT, a fill makes its line the set's most recently used
+  // one time in 32, chosen by a free-running LFSR, and otherwise leaves the
+  // state alone, so the line stays the set's next victim until a hit touches
+  // it (bimodal insertion). A working set somewhat larger than the cache then
+  // keeps part of itself resident, where touching on every fill would evict
+  // each line before its next use.
+  logic                fill_touch;
   if (WAYS > 1) begin : gen_plru
     logic [PlruBits-1:0] plru_ram_rdata;
+    if (BIMODAL_INSERT) begin : gen_bimodal
+      logic [15:0] insert_lfsr_q;
+      always_ff @(posedge i_clk) begin
+        if (i_rst) insert_lfsr_q <= 16'hACE1;
+        else
+          insert_lfsr_q <= {
+            insert_lfsr_q[14:0],
+            insert_lfsr_q[15] ^ insert_lfsr_q[13] ^ insert_lfsr_q[12] ^ insert_lfsr_q[10]
+          };
+      end
+      assign fill_touch = (insert_lfsr_q[4:0] == 5'd0);
+    end else begin : gen_mru_insert
+      assign fill_touch = 1'b1;
+    end
     sdp_block_ram #(
         .ADDR_WIDTH(SetBits),
         .DATA_WIDTH(PlruBits),
@@ -467,6 +493,7 @@ module frost_cache #(
     end
   end else begin : gen_no_plru
     assign plru_rdata = '0;
+    assign fill_touch = 1'b1;
     /* verilator lint_off UNUSEDSIGNAL */
     logic plru_unused;
     assign plru_unused = plru_we ^ (^plru_waddr) ^ (^plru_wdata);
@@ -1620,8 +1647,10 @@ module frost_cache #(
       tag_waddr = flush_idx_q;
       tag_wdata = {1'b1, 1'b0, flush_tag_q};
     end else begin
-      // Hits and allocations touch the set's replacement state.
-      plru_we = w_valid_q && ((w_op_q == W_READ_HIT) || (w_op_q == W_WRITE_HIT) || w_is_alloc);
+      // Hits and allocations touch the set's replacement state, allocations
+      // only one time in 32 with BIMODAL_INSERT.
+      plru_we = w_valid_q && ((w_op_q == W_READ_HIT) || (w_op_q == W_WRITE_HIT) ||
+                              (w_is_alloc && fill_touch));
       if (w_valid_q && (w_op_q == W_WRITE_HIT)) begin
         data_row_we   = 1'b1;
         data_wbyte_en = w_wstrb_q;

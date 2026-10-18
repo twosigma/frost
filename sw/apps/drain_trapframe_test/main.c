@@ -46,10 +46,12 @@
 #include "trap.h"
 #include "uart.h"
 
-/* 128 KiB 4-way L1D with 32-byte lines. The handler loads s2's line and then
- * five other lines of its set, enough to evict an installed line from the
- * 4-way L1D; whether the eviction lands before or after the s2 store drains
- * is part of the window the margins sweep. The naked asm below
+/* 128 KiB 4-way L1D with 32-byte lines. The handler touches s2's line and
+ * then five other lines of its set, enough to evict an installed line from
+ * the 4-way L1D: each is loaded and then hit by a load of its next
+ * doubleword that depends on the first, because a fill alone stays its set's
+ * next victim (cache_evict.h). Whether the eviction lands before or after the
+ * s2 store drains is part of the window the margins sweep. The naked asm below
  * hard-codes L1D_STRIDE, N_EVICT, FRAME_BASE, FRAME_TOP, S2_LINE_BASE, and
  * POISON_S2, so change it along with them. */
 #define L1D_STRIDE 0x00020000u /* 128 KiB: A and A+stride share one set */
@@ -182,14 +184,18 @@ __attribute__((naked, used, aligned(4))) static void trapframe_irq_entry(void)
                      "sd   t0, 0(t2)\n"
                      "4:\n"
                      /* ---- evict the saved s2 line: stride by the L1D size so every access
-                      * maps to the same set with a different tag, evicting and writing
-                      * back the just-stored dirty frame line. ---- */
+                      * maps to the same set with a different tag, and touch each line (a load,
+                      * then a dependent load of its next doubleword, a hit), evicting and
+                      * writing back the just-stored dirty frame line. ---- */
                      "li   t1, 0x8200008\n"
                      "slli t1, t1, 4\n"   /* S2_LINE_BASE = 0x82000080 */
                      "li   t2, 0x20000\n" /* L1D_STRIDE  */
                      "li   t3, 6\n"       /* N_EVICT     */
                      "5:\n"
                      "ld   t5, 0(t1)\n"
+                     "and  t6, t5, zero\n"
+                     "add  t6, t6, t1\n"
+                     "ld   t6, 8(t6)\n"
                      "add  t1, t1, t2\n"
                      "addi t3, t3, -1\n"
                      "bnez t3, 5b\n"

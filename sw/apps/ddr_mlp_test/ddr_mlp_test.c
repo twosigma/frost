@@ -30,6 +30,7 @@
 
 #include <stdint.h>
 
+#include "cache_evict.h"
 #include "tomasulo_profile.h"
 #include "uart.h"
 
@@ -122,11 +123,12 @@ int main(void)
         expected_sum += next;
     }
 
-    /* Touching a second window of the same size evicts the seeded lines from
-     * the L1D and the L2, so the first pass starts cold. The same sweep runs
-     * before each measured region. */
+    /* Touching a second window of the same size (cache_touch_line: a read,
+     * then a hit, since an L1D fill alone stays its set's next victim) evicts
+     * the seeded lines from the L1D and the L2, so the first pass starts
+     * cold. The same sweep runs before each measured region. */
     for (i = 0; i < NUM_LINES; i++) {
-        (void) probe[(NUM_LINES + i) * (LINE_BYTES / 4u)];
+        (void) cache_touch_line((uintptr_t) &probe[(NUM_LINES + i) * (LINE_BYTES / 4u)]);
     }
 
     begin_region();
@@ -152,7 +154,7 @@ int main(void)
     }
 
     for (i = 0; i < NUM_LINES; i++) {
-        (void) probe[(NUM_LINES + i) * (LINE_BYTES / 4u)];
+        (void) cache_touch_line((uintptr_t) &probe[(NUM_LINES + i) * (LINE_BYTES / 4u)]);
     }
 
     begin_region();
@@ -175,7 +177,7 @@ int main(void)
     }
 
     for (i = 0; i < NUM_LINES; i++) {
-        (void) probe[(NUM_LINES + i) * (LINE_BYTES / 4u)];
+        (void) cache_touch_line((uintptr_t) &probe[(NUM_LINES + i) * (LINE_BYTES / 4u)]);
     }
 
     begin_region();
