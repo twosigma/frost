@@ -136,7 +136,8 @@ jobs:
               [ddr_heap_test] or [ddr_mlp_test] or [ddr_atomic_test] or [ddr_bench] or
               [hello_world_fetch_fuzz] or
               [branch_pred_test_fetch_fuzz] or [c_ext_test_fetch_fuzz] or [call_stress_fetch_fuzz]
-              or [itlb_test_fetch_fuzz] or [opensbi_smoke])
+              or [itlb_test_fetch_fuzz] or [opensbi_smoke] or [isa_test_sram_macros] or
+              [ddr_test_sram_macros] or [ddr_exec_test_sram_macros] or [nic_loopback_sram_macros])
           - name: Real Programs (CoreMark-PRO / core)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
             pytest_filter: "[coremark_pro_core]"
@@ -174,6 +175,14 @@ jobs:
                 or [ddr_atomic_test] or [ddr_bench] or [hello_world_fetch_fuzz] or
                 [branch_pred_test_fetch_fuzz] or
                 [c_ext_test_fetch_fuzz] or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz]
+          # The SoC built from the ASIC flow's SRAM macros (asic/README.md).
+          - mem_config: bram
+            shard:
+              name: Real Programs (SRAM macros)
+              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+              pytest_filter: >-
+                [isa_test_sram_macros] or [ddr_test_sram_macros] or [ddr_exec_test_sram_macros] or
+                [nic_loopback_sram_macros]
           # OpenSBI smoke uses a fixed image layout and a separate long-running job.
           - mem_config: bram
             shard:
@@ -711,15 +720,19 @@ jobs:
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             pytest tests/ -m synthesis -v
 
-  # OpenROAD-flow-scripts from synthesis to GDS on Nangate45, with memories
-  # over 4,096 bits mocked as one row (asic/README.md). The frost image
-  # prepares the sources; the flow runs in the ORFS image that asic/orfs.py
-  # pins. In one job on a standard runner the flow would come close to the
-  # six-hour limit, so this job stops after global routing and the next one
-  # resumes from its database. The databases of all the stages take about
-  # 15 GB of disk.
+  # OpenROAD-flow-scripts from synthesis to GDS on Nangate45, with the RAM
+  # wrappers' memories as the OpenRAM SRAM macros in asic/sram and the other
+  # memories over 4,096 bits mocked as one row (asic/README.md). The frost
+  # image prepares the sources; the flow runs in the ORFS image that
+  # asic/orfs.py pins. On the die that the SRAM macros need, the flow's
+  # steps peak at 18 to 39 GB of memory, so on standard runners they lean on
+  # swap space, and since one job would far exceed the six-hour limit, the
+  # flow runs in four chained jobs: synthesis through clock tree synthesis,
+  # global routing, detailed routing, and the GDS with the final report, each
+  # resuming from the database of the one before. The databases of all the
+  # stages take about 29 GB of disk.
   asic-flow-place:
-    name: ASIC Flow (synthesis to global routing)
+    name: ASIC Flow (synthesis to clock tree synthesis)
     runs-on: ubuntu-26.04
     needs: build-docker
     timeout-minutes: 360
@@ -735,6 +748,21 @@ jobs:
           free -h
           df -h / /mnt
 
+      # On the die that the SRAM macros need, global placement, detailed
+      # placement, and clock tree synthesis peak at 18 to 21 GB of memory
+      # with 16 threads, above the runner's 16 GB.
+      - name: Add swap space
+        run: |
+          swapfile=/mnt/asic-flow.swap
+          if ! sudo fallocate -l 16G "$swapfile"; then
+            swapfile=/asic-flow.swap
+            sudo fallocate -l 16G "$swapfile"
+          fi
+          sudo chmod 600 "$swapfile"
+          sudo mkswap "$swapfile"
+          sudo swapon "$swapfile"
+          free -h
+
       - name: Download Docker image
         uses: actions/download-artifact@v8.0.1
         with:
@@ -746,8 +774,79 @@ jobs:
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
 
-      - name: Run synthesis through global routing
-        run: ./asic/orfs.py run --frost-image frost-dev:latest --target grt
+      - name: Run synthesis through clock tree synthesis
+        run: ./asic/orfs.py run --frost-image frost-dev:latest --target cts
+
+      - name: Pack the clock tree database
+        run: |
+          tar -C asic -cf asic-flow-cts.tar \
+            build/orfs.log build/sources.mk build/src build/objects build/logs build/reports \
+            build/results/nangate45/frost/base/4_cts.odb \
+            build/results/nangate45/frost/base/4_cts.sdc
+
+      - name: Upload the clock tree database
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: asic-flow-cts
+          path: asic-flow-cts.tar
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload logs and reports of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: asic-flow-place-results
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            asic/build/orfs.log
+            asic/build/elapsed.txt
+            asic/build/summary.md
+            asic/build/logs/
+            asic/build/reports/
+
+  asic-flow-grt:
+    name: ASIC Flow (global routing)
+    runs-on: ubuntu-26.04
+    needs: asic-flow-place
+    timeout-minutes: 360
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          nproc
+          df -h / /mnt
+
+      # Global routing peaks at about 39 GB of memory with 16 threads.
+      - name: Add swap space
+        run: |
+          swapfile=/mnt/asic-flow.swap
+          if ! sudo fallocate -l 32G "$swapfile"; then
+            swapfile=/asic-flow.swap
+            sudo fallocate -l 32G "$swapfile"
+          fi
+          sudo chmod 600 "$swapfile"
+          sudo mkswap "$swapfile"
+          sudo swapon "$swapfile"
+          free -h
+
+      - name: Download the clock tree database
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: asic-flow-cts
+
+      - name: Unpack the clock tree database
+        run: |
+          tar -C asic -xf asic-flow-cts.tar
+          rm asic-flow-cts.tar
+
+      - name: Run global routing
+        run: ./asic/orfs.py run --from grt --target grt
 
       - name: Pack the global routing database
         run: |
@@ -768,7 +867,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: asic-flow-place-results
+          name: asic-flow-grt-results
           retention-days: 7
           if-no-files-found: ignore
           path: |
@@ -779,9 +878,9 @@ jobs:
             asic/build/reports/
 
   asic-flow-route:
-    name: ASIC Flow (detailed routing to GDS)
+    name: ASIC Flow (detailed routing)
     runs-on: ubuntu-26.04
-    needs: asic-flow-place
+    needs: asic-flow-grt
     timeout-minutes: 360
     steps:
       - name: Checkout repository
@@ -794,14 +893,13 @@ jobs:
           nproc
           df -h / /mnt
 
-      # Detailed routing and the final report each peak above the runner's
-      # 16 GB of memory, at about 18 GB and 16.5 GB.
+      # Detailed routing peaks at about 31 GB of memory with 16 threads.
       - name: Add swap space
         run: |
           swapfile=/mnt/asic-flow.swap
-          if ! sudo fallocate -l 12G "$swapfile"; then
+          if ! sudo fallocate -l 24G "$swapfile"; then
             swapfile=/asic-flow.swap
-            sudo fallocate -l 12G "$swapfile"
+            sudo fallocate -l 24G "$swapfile"
           fi
           sudo chmod 600 "$swapfile"
           sudo mkswap "$swapfile"
@@ -818,8 +916,79 @@ jobs:
           tar -C asic -xf asic-flow-grt.tar
           rm asic-flow-grt.tar
 
-      - name: Run detailed routing through GDS
-        run: ./asic/orfs.py run --from route
+      - name: Run detailed routing
+        run: ./asic/orfs.py run --from route --target route
+
+      - name: Pack the detailed routing database
+        run: |
+          tar -C asic -cf asic-flow-route.tar \
+            build/orfs.log build/sources.mk build/src build/objects build/logs build/reports \
+            build/results/nangate45/frost/base/5_route.odb \
+            build/results/nangate45/frost/base/5_route.sdc
+
+      - name: Upload the detailed routing database
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: asic-flow-route
+          path: asic-flow-route.tar
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload logs and reports of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: asic-flow-route-results
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            asic/build/orfs.log
+            asic/build/elapsed.txt
+            asic/build/summary.md
+            asic/build/logs/
+            asic/build/reports/
+
+  asic-flow-finish:
+    name: ASIC Flow (GDS and final report)
+    runs-on: ubuntu-26.04
+    needs: asic-flow-route
+    timeout-minutes: 360
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          nproc
+          df -h / /mnt
+
+      # The final report peaks at about 33 GB of memory with 16 threads.
+      - name: Add swap space
+        run: |
+          swapfile=/mnt/asic-flow.swap
+          if ! sudo fallocate -l 24G "$swapfile"; then
+            swapfile=/asic-flow.swap
+            sudo fallocate -l 24G "$swapfile"
+          fi
+          sudo chmod 600 "$swapfile"
+          sudo mkswap "$swapfile"
+          sudo swapon "$swapfile"
+          free -h
+
+      - name: Download the detailed routing database
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: asic-flow-route
+
+      - name: Unpack the detailed routing database
+        run: |
+          tar -C asic -xf asic-flow-route.tar
+          rm asic-flow-route.tar
+
+      - name: Run the GDS and the final report
+        run: ./asic/orfs.py run --from finish
 
       - name: Publish the summary
         if: always()

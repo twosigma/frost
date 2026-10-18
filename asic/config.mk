@@ -26,13 +26,28 @@ export FROST_ROOT = $(abspath $(dir $(DESIGN_CONFIG))..)
 include $(WORK_HOME)/sources.mk
 
 # Portable RTL (no FROST_XILINX_PRIMS) with the cached tier ending at the DDR
-# AXI port instead of the behavioral DDR model.
-export VERILOG_DEFINES = -DSYNTHESIS
+# AXI port instead of the behavioral DDR model. FROST_SRAM_MACROS builds the
+# RAM wrappers' memories (hw/rtl/lib/ram) in asic/sram.
+export VERILOG_DEFINES = -DSYNTHESIS -DFROST_SRAM_MACROS
 export VERILOG_TOP_PARAMS = ENABLE_CACHED_TIER 1 USE_BEHAVIORAL_DDR 0
 export SYNTH_CANONICALIZE_TCL = $(DESIGN_DIR)/canonicalize.tcl
 
-# Memories larger than SYNTH_MEMORY_MAX_BITS keep one row each, in flip-flops,
-# until SRAM macros replace them; smaller ones become flip-flops.
+# The SRAM macros that asic/openram.py generates with OpenRAM, one directory
+# each, and the modules that build the wrappers' memories from them. The
+# flow has the macros' abstract LEF and Liberty views but not their layouts,
+# so the final GDS leaves their cells empty.
+SRAM_MACRO_DIRECTORIES = $(sort $(wildcard $(FROST_ROOT)/asic/sram/macros/*))
+export VERILOG_FILES += \
+  $(FROST_ROOT)/asic/sram/frost_sram_1w1r.sv \
+  $(FROST_ROOT)/asic/sram/frost_sram_2rw.sv
+export ADDITIONAL_LEFS = $(foreach macro,$(SRAM_MACRO_DIRECTORIES),$(macro)/$(notdir $(macro)).lef)
+export ADDITIONAL_LIBS = $(foreach macro,$(SRAM_MACRO_DIRECTORIES),$(macro)/$(notdir $(macro)).lib)
+export GDS_ALLOW_EMPTY = sram_.*
+export PRE_PDN_TCL = $(DESIGN_DIR)/sram_power.tcl
+export POST_PDN_TCL = $(DESIGN_DIR)/check_power_grid.tcl
+
+# Memories without a macro that are larger than SYNTH_MEMORY_MAX_BITS keep
+# one row each, in flip-flops; smaller ones become flip-flops.
 export SYNTH_MOCK_LARGE_MEMORIES = 1
 
 export SDC_FILE = $(DESIGN_DIR)/constraint.sdc
@@ -51,8 +66,19 @@ export POST_FINAL_REPORT_TCL = $(DESIGN_DIR)/clock_slack.tcl
 # 13 minutes just loading the netlists.
 export LEC_CHECK = 0
 
-export CORE_UTILIZATION = 40
-# Nangate45's default PLACE_DENSITY (0.30) is below that utilization. Place at
-# the lower bound plus a fifth of the remaining room, as the platform's gcd
-# design does.
+# The core holds the SRAM macros where asic/macro_placement.tcl puts them,
+# with a 120 um ring around them: 9.57 mm by 7.28 mm with the macros' current
+# sizes. The die adds 15 um on each side for the pins.
+export DIE_AREA = 0 0 9600 7315
+export CORE_AREA = 15 15 9585 7300
+export MACRO_PLACEMENT_TCL = $(DESIGN_DIR)/macro_placement.tcl
+# Place the standard cells at the lower bound of the density plus a fifth of
+# the remaining room, as the platform's gcd design does.
 export PLACE_DENSITY_LB_ADDON = 0.20
+# Skip the repairs after global routing. On the die that the SRAM macros
+# need, they take hours: with 16 threads, repairing slew and capacitance over
+# the routed wires took 86 minutes, each legalization after a repair 25, and
+# the timing and hold repairs over an hour more, chasing the port paths that
+# the clock tree's latency fails (asic/README.md). In CI that would pass the
+# six-hour limit of a job. The repairs after clock tree synthesis still run.
+export SKIP_INCREMENTAL_REPAIR = 1

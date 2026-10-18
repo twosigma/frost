@@ -23,8 +23,9 @@ The diagram shows the X3 configuration; click it for the full-size version.
 - An open-source flow: simulation (Verilator and cocotb), synthesis checks
   (Yosys), and formal proofs (SymbiYosys) run in a pinned Docker image, and
   OpenROAD takes the design from synthesis to GDS on the FreePDK45 process,
-  with the large memories mocked. AMD Vivado is needed only for the FPGA
-  itself: building bitstreams and programming and loading the board.
+  with SRAM macros that OpenRAM generates for the caches and the data memory.
+  AMD Vivado is needed only for the FPGA itself: building bitstreams and
+  programming and loading the board.
 - Continuous testing against the RISC-V architecture tests and random
   riscv-torture programs, with Spike as the reference, plus the riscv-tests
   suites and unit benches for the hardware blocks. TestRIG compares FROST
@@ -238,7 +239,7 @@ For native builds outside the container, initialize the submodules first with
 | [tests/](tests/README.md) | Test runners |
 | [verif/](verif/README.md) | Cocotb tests, reference models, and monitors |
 | [formal/](formal/README.md) | Formal verification |
-| [asic/](asic/README.md) | OpenROAD flow on FreePDK45 |
+| [asic/](asic/README.md) | OpenROAD flow on FreePDK45 and its OpenRAM SRAM macros |
 | [tools/vscode-frost/](tools/vscode-frost/README.md) | VS Code extension |
 | [docs/](docs/) | Debian setup, performance, and toolchain guides; diagrams |
 | [scripts/](scripts/) | Docker wrapper and development tools |

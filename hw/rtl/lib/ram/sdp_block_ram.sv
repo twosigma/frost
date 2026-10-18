@@ -16,6 +16,12 @@
 
 /*
  * Simple dual-port block RAM with synchronous write and one-cycle read.
+ *
+ * The ASIC flow defines FROST_SRAM_MACROS and keeps the array in
+ * frost_sram_1w1r (asic/sram), in SRAM macros or flip-flops, with no
+ * initial contents. A read of the word written in the same cycle returns
+ * the old word there too: frost_sram_1w1r holds the macros' writes for a
+ * cycle.
  */
 module sdp_block_ram #(
     parameter int unsigned ADDR_WIDTH = 5,  // Address width in bits
@@ -34,6 +40,23 @@ module sdp_block_ram #(
 );
 
   localparam int unsigned RamDepth = 2 ** ADDR_WIDTH;
+`ifdef FROST_SRAM_MACROS
+  frost_sram_1w1r #(
+      .ADDR_WIDTH    (ADDR_WIDTH),
+      .DATA_WIDTH    (DATA_WIDTH),
+      .SIM_BULK_CLEAR(SUPPORT_BULK_CLEAR != 0)
+  ) u_sram (
+      .i_write_clock(i_clk),
+      .i_bulk_clear,
+      .i_write_mask (i_write_enable),
+      .i_write_address,
+      .i_write_data,
+      .i_read_clock (i_clk),
+      .i_read_enable(1'b1),
+      .i_read_address,
+      .o_read_data
+  );
+`else
   (* ram_style = "block" *) logic [DATA_WIDTH-1:0] ram[RamDepth];
 
   initial for (int i = 0; i < RamDepth; ++i) ram[i] = '0;
@@ -50,5 +73,6 @@ module sdp_block_ram #(
 
   // The read register permits block RAM inference.
   always_ff @(posedge i_clk) o_read_data <= ram[i_read_address];
+`endif
 
 endmodule : sdp_block_ram

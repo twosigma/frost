@@ -50,6 +50,12 @@
  * SUPPORT_BULK_CLEAR selects a portable simulation implementation with a
  * one-cycle clear of every physical row. Hardware instances leave it zero so
  * the array remains an UltraRAM without array-wide reset logic.
+ *
+ * The ASIC flow defines FROST_SRAM_MACROS and keeps each group in one word of
+ * frost_sram_1w1r (asic/sram), in SRAM macros or flip-flops, without the
+ * UltraRAM packing: the group's entries are the word's write-mask lanes. Its
+ * registered read is the first of the READ_LATENCY-1 cycles. A macro's read
+ * of a group written in the same cycle is undefined.
  */
 module sdp_packed_tag_uram #(
     parameter int unsigned ADDR_WIDTH         = 16,
@@ -109,6 +115,57 @@ module sdp_packed_tag_uram #(
       $fatal(1, "sdp_packed_tag_uram: READ_WORDS must be a power of 2 within the entries");
   end
 
+`ifdef FROST_SRAM_MACROS
+  // A write repeats its data in every lane and enables the lanes that
+  // i_write_word_mask selects.
+  localparam int unsigned GroupAddrWidth   = ADDR_WIDTH - WordBits;
+  localparam int unsigned GroupReadLatency = READ_LATENCY - 1;
+  initial
+    if (GroupAddrWidth < 1)
+      $fatal(1, "sdp_packed_tag_uram: FROST_SRAM_MACROS needs more than one group");
+
+  logic [READ_WORDS*DATA_WIDTH-1:0] group_read_data;
+  frost_sram_1w1r #(
+      .ADDR_WIDTH    (GroupAddrWidth),
+      .DATA_WIDTH    (READ_WORDS * DATA_WIDTH),
+      .MASK_GRANULE  (DATA_WIDTH),
+      .SIM_BULK_CLEAR(SUPPORT_BULK_CLEAR != 0)
+  ) u_sram (
+      .i_write_clock  (i_clk),
+      .i_bulk_clear,
+      .i_write_mask   (i_write_word_mask & {READ_WORDS{i_write_enable}}),
+      .i_write_address(i_write_address[ADDR_WIDTH-1:WordBits]),
+      .i_write_data   ({READ_WORDS{i_write_data}}),
+      .i_read_clock   (i_clk),
+      .i_read_enable,
+      .i_read_address (i_read_address[ADDR_WIDTH-1:WordBits]),
+      .o_read_data    (group_read_data)
+  );
+
+  // The group and its request's valid bit, GroupReadLatency cycles after the
+  // request; the final register holds between qualified responses.
+  logic [READ_WORDS*DATA_WIDTH-1:0] group_data;
+  if (GroupReadLatency == 1) begin : gen_group_read
+    assign group_data = group_read_data;
+  end else begin : gen_group_pipe
+    logic [READ_WORDS*DATA_WIDTH-1:0] group_pipe[GroupReadLatency-1];
+    always_ff @(posedge i_clk) begin
+      group_pipe[0] <= group_read_data;
+      for (int unsigned stage = 1; stage < GroupReadLatency - 1; stage++)
+      group_pipe[stage] <= group_pipe[stage-1];
+    end
+    assign group_data = group_pipe[GroupReadLatency-2];
+  end
+
+  logic group_valid_pipe[GroupReadLatency];
+  always_ff @(posedge i_clk) begin
+    group_valid_pipe[0] <= i_read_enable;
+    for (int unsigned stage = 1; stage < GroupReadLatency; stage++)
+    group_valid_pipe[stage] <= group_valid_pipe[stage-1];
+  end
+
+  always_ff @(posedge i_clk) if (group_valid_pipe[GroupReadLatency-1]) o_read_data <= group_data;
+`else
   logic [GroupSelectWidth-1:0] write_group;
   logic [GroupSelectWidth-1:0] read_group;
   if (GroupBits == 0) begin : gen_single_group_row
@@ -274,5 +331,7 @@ module sdp_packed_tag_uram #(
           o_read_data[(bank*RowWords+word)*DATA_WIDTH+:DATA_WIDTH] <=
           row_dout[bank][(int'(read_group_pipe[XpmReadLatency-1])*RowWords+word)*SlotWidth+:
                          DATA_WIDTH];
+
+`endif
 
 endmodule : sdp_packed_tag_uram
