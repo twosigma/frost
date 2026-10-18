@@ -1663,9 +1663,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "l2_slots_4x2": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_l2_slots",
         hdl_toplevel_module="frost_cache_test_harness",
-        description="L2 miss-slot use with 4 miss and 2 writeback slots",
+        description=(
+            "L2 miss-slot use with 4 miss and 2 writeback slots; no read waits "
+            "more than 1,000 cycles"
+        ),
         verilator_extra_args=("-GMEM_LATENCY=30",),
-        include_in_pytest=False,
     ),
     "l2_slots_8x2": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_l2_slots",
