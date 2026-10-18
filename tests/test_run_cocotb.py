@@ -1222,8 +1222,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         include_in_pytest=False,
         verilator_extra_args=(
             "+define+FROST_RVFI_DII",
+            "-DFROST_WIDE_DDR_TEST",
             str(RVFI_DII_HARNESS),
-            # The harness's sparse DDR model covers the whole cached region.
+            # Sparse wide-DDR mode keeps full-width keys; this parameter is
+            # unused for the sparse address range but keeps the old budget.
             "-GDDR_MODEL_BYTES=1073741824",
         ),
     ),

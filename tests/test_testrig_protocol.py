@@ -15,6 +15,7 @@
 """Fast checks of the TestRIG support code: RVFI-DII packets and the preamble."""
 
 import importlib
+import json
 import re
 import shutil
 import socket
@@ -32,8 +33,23 @@ if str(VERIF_DIR) not in sys.path:
 
 rvfi_dii = importlib.import_module("testrig.rvfi_dii")
 preamble = importlib.import_module("testrig.preamble")
+test_testrig = importlib.import_module("test_testrig")
 
 SAIL_CONFIG = VERIF_DIR / "testrig" / "sail_frost.json"
+
+
+@pytest.mark.parametrize("capacity_log2_bytes", (30, 36, 37))
+def test_sail_ddr_capacity_matches_frost(
+    tmp_path: Path, capacity_log2_bytes: int
+) -> None:
+    """The generated Sail region follows the FROST capacity selection."""
+    path = test_testrig.write_sail_config(capacity_log2_bytes, tmp_path)
+    config = json.loads(path.read_text(encoding="utf-8"))
+    regions = config["memory"]["regions"]
+    ddr = [region for region in regions if region["base"]["value"] == "0x80000000"]
+    assert len(ddr) == 1
+    assert int(ddr[0]["size"]["value"], 16) == 1 << capacity_log2_bytes
+    assert len(regions) == len(test_testrig.atomics.load_regions())
 
 
 def test_dii_packet_wire_layout() -> None:

@@ -36,6 +36,7 @@ The image provides sail_riscv_sim and QCVEngine. Counterexamples go to
 
 import argparse
 import importlib
+import json
 import os
 import random
 import shutil
@@ -45,6 +46,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -61,6 +63,7 @@ SAIL_CONFIG = REPO_ROOT / "verif" / "testrig" / "sail_frost.json"
 SAVED_TRACES_DIR = REPO_ROOT / "verif" / "testrig" / "traces"
 DEFAULT_SAVE_DIR = TESTS_DIR / "testrig_failures"
 DEFAULT_LOG_DIR = TESTS_DIR / "testrig_logs"
+DEFAULT_DDR_CAPACITY_LOG2_BYTES = 36
 
 # QuickCheckVEngine's architecture string, which selects the templates and
 # the instructions they generate: RV64 IMFDC with S and U modes (the "s" also
@@ -112,6 +115,28 @@ def tool_path(name: str, environment_variable: str) -> str:
     return os.environ.get(environment_variable, name)
 
 
+def write_sail_config(capacity_log2_bytes: int, work_dir: Path) -> Path:
+    """Give Sail the same DDR aperture as the FROST RVFI-DII build."""
+    if capacity_log2_bytes not in range(30, 38):
+        raise ValueError("DDR capacity must be 1, 2, 4, 8, 16, 32, 64 or 128 GiB")
+    lines = SAIL_CONFIG.read_text(encoding="utf-8").splitlines()
+    config = json.loads(
+        "\n".join(line for line in lines if not line.lstrip().startswith("//"))
+    )
+    ddr_regions = [
+        region
+        for region in config["memory"]["regions"]
+        if int(region["base"]["value"], 16) == 0x8000_0000
+        and region["attributes"]["mem_type"] == "MainMemory"
+    ]
+    if len(ddr_regions) != 1:
+        raise ValueError("Sail configuration must contain exactly one FROST DDR region")
+    ddr_regions[0]["size"]["value"] = f"0x{1 << capacity_log2_bytes:x}"
+    path = work_dir / f"sail_frost_ddr{capacity_log2_bytes}.json"
+    path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 def write_empty_images() -> list[Path]:
     """Write the memory images the frost toplevel loads at time zero.
 
@@ -129,14 +154,22 @@ def write_empty_images() -> list[Path]:
 
 
 def start_frost(
-    port: int, ready_file: Path, log_path: Path
+    port: int, ready_file: Path, log_path: Path, capacity_log2_bytes: int
 ) -> tuple[subprocess.Popen, Callable[[], None]]:
     """Build (if needed) and start the frost RVFI-DII simulation.
 
     Returns the process and a function that records a successful build, so
     the next run reuses it.
     """
-    runner = CocotbRunner.from_config(TEST_REGISTRY["rvfi_dii"])
+    base_config = TEST_REGISTRY["rvfi_dii"]
+    config = replace(
+        base_config,
+        verilator_extra_args=(
+            *base_config.verilator_extra_args,
+            f"-DFROST_DDR_CAPACITY_LOG2_BYTES={capacity_log2_bytes}",
+        ),
+    )
+    runner = CocotbRunner.from_config(config)
     runner.coverage_label = "testrig"
     environment = runner.setup_environment()
     sim_build_dir = runner._get_sim_build_dir(environment)
@@ -185,6 +218,7 @@ def run(arguments: argparse.Namespace) -> int:
     save_dir.mkdir(parents=True, exist_ok=True)
     work_dir = Path(arguments.log_dir).resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
+    sail_config = write_sail_config(arguments.ddr_capacity_log2_bytes, work_dir)
     sail_port = free_port()
     frost_port = free_port()
     ready_file = work_dir / "frost_ready"
@@ -202,7 +236,7 @@ def run(arguments: argparse.Namespace) -> int:
             [
                 tool_path("sail_riscv_sim", "FROST_SAIL_RISCV_SIM"),
                 "--config-override",
-                str(SAIL_CONFIG),
+                str(sail_config),
                 # Injected streams trap to the same handler over and over.
                 "--disable-trap-loop-detection",
                 "--rvfi-dii",
@@ -212,7 +246,9 @@ def run(arguments: argparse.Namespace) -> int:
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-        frost, record_frost_build = start_frost(frost_port, ready_file, frost_log)
+        frost, record_frost_build = start_frost(
+            frost_port, ready_file, frost_log, arguments.ddr_capacity_log2_bytes
+        )
         print(f"Building and starting the frost RVFI-DII simulation (log: {frost_log})")
         deadline = time.monotonic() + arguments.startup_timeout
         while not ready_file.exists():
@@ -260,7 +296,11 @@ def run(arguments: argparse.Namespace) -> int:
             shutil.rmtree(trace_dir, ignore_errors=True)
             trace_dir.mkdir()
             atomics.write_tests(
-                trace_dir, arguments.atomics, seed, arguments.test_length
+                trace_dir,
+                arguments.atomics,
+                seed,
+                arguments.test_length,
+                config_path=sail_config,
             )
             print(
                 f"Wrote {arguments.atomics} A-extension tests from seed {seed} "
@@ -330,6 +370,13 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
         "--tests", type=int, default=50, help="tests per template (default 50)"
+    )
+    parser.add_argument(
+        "--ddr-capacity-log2-bytes",
+        type=int,
+        choices=range(30, 38),
+        default=DEFAULT_DDR_CAPACITY_LOG2_BYTES,
+        help="DDR capacity exponent shared by FROST and Sail (default 36 = 64 GiB)",
     )
     parser.add_argument(
         "--test-length",
