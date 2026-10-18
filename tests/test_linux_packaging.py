@@ -624,7 +624,9 @@ def test_sbi_packer_memory_node_size(
     packer = _load_module(SBI_PACKER)
     assert packer.MEM_SIZE == 0x0400_0000
     out = _pack_minimal(packer, tmp_path, *mem_args)
-    assert f"reg = <0x80000000 0x{size:08x}>;" in (out / "frost.dts").read_text()
+    assert (f"reg = <0x00000000 0x80000000\n"
+            f"\t\t       0x{size >> 32:08x} 0x{size & 0xffffffff:08x}>;") in (
+                out / "frost.dts").read_text()
 
 
 def test_sbi_layout_checks_use_the_memory_size(
