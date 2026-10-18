@@ -576,4 +576,31 @@ module lq_coherence_port #(
   end
 `endif
 
+`ifndef SYNTHESIS
+`ifdef FROST_COVERAGE
+  // ---------------------------------------------------------------------------
+  // Cover points for simulation coverage (tests/README.md)
+  // ---------------------------------------------------------------------------
+  // A DMA write invalidates a line that an executed, unretired load read, and
+  // the port flags the load for replay (trap_unit counts the restarts).
+  cover_dma_write_replays_load :
+  cover property (@(posedge i_clk) disable iff (!i_rst_n) |replay_mask_d);
+  // The same, for a load whose observation is still in the pipeline register.
+  cover_dma_write_replays_pending_observation :
+  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+      inval_phase_q == 2'd2 && obs_pend_valid_q && (&pending_equal_chunks));
+  // A DMA write's admission waits for an AMO or LR between its read and write.
+  cover_dma_admission_waits_for_atomic :
+  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+      adm_req_valid_q && !admit_fire && i_lq_query_busy);
+  // A DMA write's admission waits for an SC at the ROB head or still draining.
+  cover_dma_admission_waits_for_sc :
+  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+      adm_req_valid_q && !admit_fire && sc_conflict);
+  // An SC at the ROB head is held because a DMA write holds its line.
+  cover_sc_held_by_dma_write :
+  cover property (@(posedge i_clk) disable iff (!i_rst_n) sc_hold_q && sc_hold_current);
+`endif
+`endif
+
 endmodule : lq_coherence_port

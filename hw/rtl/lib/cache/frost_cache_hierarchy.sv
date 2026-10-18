@@ -941,4 +941,45 @@ module frost_cache_hierarchy #(
   end
 `endif
 
+`ifndef SYNTHESIS
+`ifdef FROST_COVERAGE
+  // Cover point for simulation coverage (tests/README.md): an L1D read
+  // reaches the L2 while the prefetcher's read of the same L2 line is still
+  // outstanding, so the demand read has caught up with the prefetch. The
+  // prefetches in flight are tracked by id on the DMA port, where the top id
+  // bit marks the prefetcher's requests and responses.
+  if (L2_PREFETCH != 0) begin : gen_prefetch_cover
+    localparam int unsigned CoverLineLsb = $clog2(L2_LINE_BYTES);
+    localparam int unsigned CoverPfIds   = 1 << (UP_ID_BITS - 1);
+    logic [CoverPfIds-1:0] cover_pf_busy_q;
+    logic [ADDR_WIDTH-1:CoverLineLsb] cover_pf_line_q[CoverPfIds];
+    logic cover_pf_line_match;
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        cover_pf_busy_q <= '0;
+      end else begin
+        if (dp_down_resp_valid && dp_down_resp_id[UP_ID_BITS-1])
+          cover_pf_busy_q[dp_down_resp_id[UP_ID_BITS-2:0]] <= 1'b0;
+        if (dp_down_req_valid && dp_down_req_ready && dp_down_req_id[UP_ID_BITS-1]) begin
+          cover_pf_busy_q[dp_down_req_id[UP_ID_BITS-2:0]] <= 1'b1;
+          cover_pf_line_q[dp_down_req_id[UP_ID_BITS-2:0]] <=
+              dp_down_req_addr[ADDR_WIDTH-1:CoverLineLsb];
+        end
+      end
+    end
+    always_comb begin
+      cover_pf_line_match = 1'b0;
+      for (int k = 0; k < int'(CoverPfIds); k++) begin
+        if (cover_pf_busy_q[k] &&
+            (cover_pf_line_q[k] == l1_down_req_addr[ADDR_WIDTH-1:CoverLineLsb]))
+          cover_pf_line_match = 1'b1;
+      end
+    end
+    cover_demand_read_meets_prefetch :
+    cover property (@(posedge i_clk) disable iff (i_rst)
+        l1_down_req_valid && l1_down_req_ready && !l1_down_req_write && cover_pf_line_match);
+  end
+`endif
+`endif
+
 endmodule : frost_cache_hierarchy

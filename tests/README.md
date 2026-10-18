@@ -319,7 +319,7 @@ long program runs out of cycles, raise its budget.
 
 `FROST_COVERAGE=1` builds each simulation with Verilator line coverage, which
 counts statement blocks and the arms of every `if` and `case`, and with the
-cover points in the RTL. `FROST_COVERAGE_TOGGLE=1` adds
+[cover points](#cover-points) in the RTL. `FROST_COVERAGE_TOGGLE=1` adds
 toggle coverage, which counts each bit's rises and falls. The runners above
 and TestRIG all take the switches. Each run writes a file named after its test
 to `tests/coverage/`, or to `FROST_COVERAGE_DIR`, and the files collect there
@@ -356,6 +356,54 @@ SoC, compiled with four jobs:
 | Without coverage | 55 s | 6.9 s | |
 | `FROST_COVERAGE=1` | 100 s | 9.1 s | 3.8 MB |
 | `FROST_COVERAGE=1 FROST_COVERAGE_TOGGLE=1` | 115 s | 39.7 s | 160 MB |
+
+### Cover points
+
+Cover points mark microarchitectural corner cases that a test can pass
+without reaching. Each is a `cover property` named `cover_<event>`, with a
+comment that describes it, inside `` `ifndef SYNTHESIS `` and
+`` `ifdef FROST_COVERAGE ``. Only a `FROST_COVERAGE=1` build defines
+`FROST_COVERAGE`, so synthesis, the formal targets, and simulations without
+coverage never see the cover points. The count of a module with several
+instances, such as the L1D, L1I, and L2 instances of `frost_cache`, adds up
+all of them.
+
+| Module | Cover point | Event |
+| --- | --- | --- |
+| `lq_coherence_port` | `cover_dma_write_replays_load` | A DMA write invalidates a line that an executed, unretired load read, and the load is flagged for replay |
+| `lq_coherence_port` | `cover_dma_write_replays_pending_observation` | The same, for a load whose observation is still in the port's pipeline register |
+| `lq_coherence_port` | `cover_dma_admission_waits_for_atomic` | A DMA write's admission waits for an AMO or LR between its read and its write |
+| `lq_coherence_port` | `cover_dma_admission_waits_for_sc` | A DMA write's admission waits for an SC at the ROB head or still draining |
+| `lq_coherence_port` | `cover_sc_held_by_dma_write` | An SC at the ROB head waits because a DMA write holds its line |
+| `load_queue` | `cover_dma_write_clears_reservation` | A DMA write to the reserved line cancels the LR reservation |
+| `load_queue` | `cover_dma_write_hits_lr_in_flight` | A DMA write to the line of an LR in flight, which then sets no reservation |
+| `load_queue` | `cover_dma_write_hits_load_in_flight` | A DMA write to the line of a cached load in flight, whose data then does not fill the L0 |
+| `load_queue` | `cover_head_load_evicts_staged_load` | The ROB-head load takes the staging register from a younger staged load |
+| `load_queue` | `cover_staged_load_yields_to_amo` | A staged load gives up the staging register to an older AMO that has not written |
+| `load_queue` | `cover_load_waits_for_unforwardable_store` | A load overlaps an older store that cannot forward to it, so it waits |
+| `load_queue` | `cover_cached_load_slots_full` | Every cached-load slot is busy, so no load launches |
+| `load_queue` | `cover_flushed_cached_load_drained` | The response of a flushed cached load arrives and is drained |
+| `load_queue` | `cover_cached_response_held` | The router holds a cached response behind a low-BRAM or device response |
+| `dispatch` | `cover_store_waits_for_full_sq` | A store waits at dispatch, in either slot, because the store queue is full |
+| `dispatch` | `cover_load_waits_for_full_lq` | A load waits at dispatch, in either slot, because the load queue is full |
+| `data_mem_request_router` | `cover_flush_cancels_parked_device_read` | A full flush cancels a device read parked before accept |
+| `trap_unit` | `cover_memory_order_replay_taken` | A memory-order replay restarts the load at the ROB head |
+| `trap_unit` | `cover_interrupt_waits_for_device_read` | An armed interrupt waits while a device read is at the ROB head |
+| `trap_unit` | `cover_interrupt_waits_for_amo` | An armed interrupt waits while an AMO is at the ROB head |
+| `frost_cache` | `cover_read_takes_waiter_seat` | A read of a line with a pending miss takes a waiter seat |
+| `frost_cache` | `cover_read_takes_later_waiter_seat` | A second read joins a miss slot that already has a waiter (the L2) |
+| `frost_cache` | `cover_read_waits_for_waiter_seat` | A read waits because every seat of its line's miss slot is taken |
+| `frost_cache` | `cover_miss_waits_for_way` | A miss waits because a miss slot owns every way of its set |
+| `frost_cache` | `cover_write_merges_into_miss` | A write merges into the pending write-allocate miss of its line |
+| `frost_cache` | `cover_fill_waits_for_writeback` | A miss waits to fetch until a writeback of its own line is acknowledged |
+| `frost_cache` | `cover_writeback_takes_starvation_turn` | A writeback takes the request register from a pending fill on its starvation turn |
+| `frost_cache` | `cover_fill_withheld_by_probe` | A held PROBE_INVAL withholds the fill of a miss on its line (the L1D) |
+| `frost_cache` | `cover_probe_waits_for_writeback` | A probe waits for a writeback of its line (the L1D) |
+| `frost_cache_hierarchy` | `cover_demand_read_meets_prefetch` | An L1D read reaches the L2 while the prefetcher's read of the same L2 line is outstanding |
+| `line_port_arbiter` | `cover_starved_port_granted` | A port that waited through the starvation limit wins over a request of higher priority |
+
+To add one, write the `cover property` in its module's cover-point block,
+or start one at the end of the module, and add a row here.
 
 ## CI Integration
 

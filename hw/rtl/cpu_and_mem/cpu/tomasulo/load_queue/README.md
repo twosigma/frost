@@ -445,7 +445,10 @@ router suites (`tomasulo_coherence`, `data_mem_request_router` and others)
 check the connected handshakes, and simulation assertions check cached-slot
 identity, AMO write stability, the device-read shield, and that every launched
 load other than an AMO stays tracked (by the fast tracker or a cached slot)
-until its data is valid or a flush removes it.
+until its data is valid or a flush removes it. In coverage builds,
+[cover points](../../../../../../tests/README.md#cover-points) count corner
+cases such as a DMA write that cancels the LR reservation or hits a load in
+flight, and the ROB-head load evicting a younger staged load.
 
 Formally, `load_queue` checks queue invariants from reset,
 `load_queue_amo_compute` the AMO datapath with no reset or admission

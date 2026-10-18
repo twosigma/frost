@@ -758,4 +758,14 @@ module data_mem_request_router #(
   end
 `endif  // FORMAL
 
+`ifndef SYNTHESIS
+`ifdef FROST_COVERAGE
+  // Cover points for simulation coverage (tests/README.md).
+  // A full flush, from an interrupt or a debug halt, cancels a device read
+  // parked before accept.
+  cover_flush_cancels_parked_device_read :
+  cover property (@(posedge i_clk) disable iff (i_rst) o_device_request_pending && i_flush_all);
+`endif
+`endif
+
 endmodule : data_mem_request_router

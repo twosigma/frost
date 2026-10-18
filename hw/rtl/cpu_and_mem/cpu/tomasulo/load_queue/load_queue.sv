@@ -4692,4 +4692,47 @@ module load_queue #(
 `endif  // F_LQ_PREMATCH_ONLY
 `endif  // FORMAL
 
+`ifndef SYNTHESIS
+`ifdef FROST_COVERAGE
+  // ===========================================================================
+  // Cover points for simulation coverage (tests/README.md)
+  // ===========================================================================
+  // A DMA write to the reserved line cancels the LR reservation.
+  cover_dma_write_clears_reservation :
+  cover property (@(posedge i_clk) disable iff (!i_rst_n) coh_reservation_inval);
+  // A DMA write to the line of an LR in flight: the LR sets no reservation.
+  cover_dma_write_hits_lr_in_flight :
+  cover property (@(posedge i_clk) disable iff (!i_rst_n) |(cs_coh_inval_now & cs_is_lr));
+  // A DMA write to the line of a cached load in flight: its data must not fill the L0.
+  cover_dma_write_hits_load_in_flight :
+  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+      |(cs_coh_inval_now & ~cs_is_lr & ~cs_is_amo));
+  // The ROB-head load takes the staging register from a younger staged load.
+  cover_head_load_evicts_staged_load :
+  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+      sq_check_replace &&
+      (head_mem_stored_found || (i_addr_update.valid && head_mem_update_found)));
+  // A staged load gives up the staging register to an older AMO that has not written.
+  cover_staged_load_yields_to_amo :
+  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+      sq_check_pending && sq_check_entry_valid && older_amo_write_pending);
+  // A load overlaps an older store that cannot forward to it, so it waits.
+  cover_load_waits_for_unforwardable_store :
+  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+      sq_check_phase2 && sq_check_entry_issueable && !sq_check_misaligned &&
+      !sq_no_older_store && i_sq_all_older_addrs_known && i_sq_forward.match &&
+      !(ENABLE_SQ_FORWARD_FAST_PATH && i_sq_forward.can_forward) &&
+      !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q);
+  // Every cached-load slot is busy, so no load launches.
+  cover_cached_load_slots_full :
+  cover property (@(posedge i_clk) disable iff (!i_rst_n) &cs_valid);
+  // The response of a flushed cached load arrives and is drained.
+  cover_flushed_cached_load_drained :
+  cover property (@(posedge i_clk) disable iff (!i_rst_n) resp_from_slot && cs_drop[resp_slot]);
+  // The router holds a cached response behind a low-BRAM or device response.
+  cover_cached_response_held :
+  cover property (@(posedge i_clk) disable iff (!i_rst_n) i_cached_resp_held);
+`endif
+`endif
+
 endmodule : load_queue

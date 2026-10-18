@@ -2465,4 +2465,57 @@ module frost_cache #(
   end
 `endif
 
+`ifndef SYNTHESIS
+`ifdef FROST_COVERAGE
+  // ===========================================================================
+  // Cover points for simulation coverage (tests/README.md)
+  // ===========================================================================
+  // The L1D, L1I, and L2 instances add to the same points. Only the L2 has
+  // two waiter seats, and only the L1D takes probes.
+  // A read of a line with a pending miss takes a waiter seat.
+  cover_read_takes_waiter_seat :
+  cover property (@(posedge i_clk) disable iff (i_rst) w_valid_q && (w_op_q == W_WAITER));
+  // A read waits because every seat of its line's miss slot is taken.
+  cover_read_waits_for_waiter_seat :
+  cover property (@(posedge i_clk) disable iff (i_rst)
+      decide && t_plain && same_line && !t_write_q && mshr_seats_full[match_mshr] &&
+      ((mshr_state_q[match_mshr] == MS_PEND) || (mshr_state_q[match_mshr] == MS_SENT)));
+  // A miss waits because a miss slot owns every way of its set.
+  cover_miss_waits_for_way :
+  cover property (@(posedge i_clk) disable iff (i_rst) stall_ways);
+  // A write merges into the pending write-allocate miss of its line.
+  cover_write_merges_into_miss :
+  cover property (@(posedge i_clk) disable iff (i_rst) w_valid_q && (w_op_q == W_MERGE));
+  // A writeback takes the request register from a pending fill on its
+  // starvation turn.
+  cover_writeback_takes_starvation_turn :
+  cover property (@(posedge i_clk) disable iff (i_rst)
+      dq_load && dq_load_is_wb && wb_turn_q && fill_req_any);
+  for (genvar i = 0; i < int'(NUM_MSHR); i++) begin : gen_mshr_cover
+    // A miss waits to fetch until a writeback of its own line is acknowledged.
+    cover_fill_waits_for_writeback :
+    cover property (@(posedge i_clk) disable iff (i_rst)
+        (mshr_state_q[i] == MS_PEND) && (mshr_wb_wait_q[i] != '0));
+  end
+  if (NUM_WAITERS > 1) begin : gen_seat_cover
+    // A second read joins a miss slot that already has a waiter.
+    cover_read_takes_later_waiter_seat :
+    cover property (@(posedge i_clk) disable iff (i_rst)
+        w_valid_q && (w_op_q == W_WAITER) && (w_seat != '0));
+  end
+  if (NUM_PROBE > 0) begin : gen_probe_cover
+    for (genvar i = 0; i < int'(NUM_MSHR); i++) begin : gen_mshr
+      // A held PROBE_INVAL withholds the fill of a miss on its line.
+      cover_fill_withheld_by_probe :
+      cover property (@(posedge i_clk) disable iff (i_rst)
+          (mshr_state_q[i] == MS_PEND) && mshr_fill_held[i]);
+    end
+    // A probe waits for a writeback of its line.
+    cover_probe_waits_for_writeback :
+    cover property (@(posedge i_clk) disable iff (i_rst)
+        decide && t_probe_q && !same_line && t_wb_pending);
+  end
+`endif
+`endif
+
 endmodule : frost_cache
