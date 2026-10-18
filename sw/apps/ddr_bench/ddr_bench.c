@@ -130,10 +130,14 @@ static inline uint32_t xorshift32(uint32_t x)
     return x;
 }
 
-/* The read kernels return a sum so the compiler keeps their loads. */
+/* The read kernels return a sum so the compiler keeps their loads. noipa
+ * compiles each kernel once, without constants from its callers, so its code
+ * does not change when a call is added or removed: a constant-specialized
+ * clone of streams_read grew by 26 bytes, and its loop by 10% in retired
+ * instructions, when the aliased streams kernel became its second caller. */
 static volatile uint64_t sink;
 
-__attribute__((noinline)) static uint64_t seq_read(volatile uint64_t *p, uint32_t words)
+__attribute__((noipa)) static uint64_t seq_read(volatile uint64_t *p, uint32_t words)
 {
     uint64_t a = 0, b = 0, c = 0, d = 0;
     for (uint32_t i = 0; i < words; i += 4) {
@@ -145,7 +149,7 @@ __attribute__((noinline)) static uint64_t seq_read(volatile uint64_t *p, uint32_
     return a + b + c + d;
 }
 
-__attribute__((noinline)) static uint64_t stride_read(volatile uint64_t *p, uint32_t lines)
+__attribute__((noipa)) static uint64_t stride_read(volatile uint64_t *p, uint32_t lines)
 {
     uint64_t a = 0, b = 0, c = 0, d = 0;
     for (uint32_t i = 0; i < lines; i += 4) {
@@ -157,11 +161,11 @@ __attribute__((noinline)) static uint64_t stride_read(volatile uint64_t *p, uint
     return a + b + c + d;
 }
 
-__attribute__((noinline)) static uint64_t streams_read(volatile uint64_t *p0,
-                                                       volatile uint64_t *p1,
-                                                       volatile uint64_t *p2,
-                                                       volatile uint64_t *p3,
-                                                       uint32_t words)
+__attribute__((noipa)) static uint64_t streams_read(volatile uint64_t *p0,
+                                                    volatile uint64_t *p1,
+                                                    volatile uint64_t *p2,
+                                                    volatile uint64_t *p3,
+                                                    uint32_t words)
 {
     uint64_t a = 0, b = 0, c = 0, d = 0;
     for (uint32_t i = 0; i < words; i++) {
@@ -173,7 +177,7 @@ __attribute__((noinline)) static uint64_t streams_read(volatile uint64_t *p0,
     return a + b + c + d;
 }
 
-__attribute__((noinline)) static uint64_t random_read(volatile uint64_t *p, uint32_t reads)
+__attribute__((noipa)) static uint64_t random_read(volatile uint64_t *p, uint32_t reads)
 {
     uint64_t a = 0, b = 0;
     uint32_t x = 0x1234567u, y = 0x89abcdefu;
@@ -188,7 +192,7 @@ __attribute__((noinline)) static uint64_t random_read(volatile uint64_t *p, uint
 
 /* Words 0 and 4 of a 64-byte record are in different 32-byte L1 lines of
  * one 64-byte L2 line. */
-__attribute__((noinline)) static uint64_t record_read(volatile uint64_t *p, uint32_t reads)
+__attribute__((noipa)) static uint64_t record_read(volatile uint64_t *p, uint32_t reads)
 {
     uint64_t a = 0, b = 0;
     uint32_t x = 0x2468aceu;
@@ -203,7 +207,7 @@ __attribute__((noinline)) static uint64_t record_read(volatile uint64_t *p, uint
 
 /* Each address depends on the value the previous load returned, so the
  * misses cannot overlap. */
-__attribute__((noinline)) static uint64_t chase(volatile uint64_t *p, uint32_t hops)
+__attribute__((noipa)) static uint64_t chase(volatile uint64_t *p, uint32_t hops)
 {
     uint32_t x = 0x13579bdu;
     for (uint32_t i = 0; i < hops; i++) {
@@ -212,7 +216,7 @@ __attribute__((noinline)) static uint64_t chase(volatile uint64_t *p, uint32_t h
     return x;
 }
 
-__attribute__((noinline)) static void
+__attribute__((noipa)) static void
 copy(volatile uint64_t *dst, volatile uint64_t *src, uint32_t words)
 {
     for (uint32_t i = 0; i < words; i += 4) {
@@ -225,7 +229,7 @@ copy(volatile uint64_t *dst, volatile uint64_t *src, uint32_t words)
 }
 
 /* Each group of four words holds the index of its first word. */
-__attribute__((noinline)) static void write(volatile uint64_t *p, uint32_t words)
+__attribute__((noipa)) static void write(volatile uint64_t *p, uint32_t words)
 {
     for (uint32_t i = 0; i < words; i += 4) {
         p[i] = i;
