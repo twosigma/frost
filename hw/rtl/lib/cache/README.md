@@ -1,6 +1,6 @@
 # Cache library
 
-This is FROST's cached memory tier: one direct-mapped, write-back,
+This is FROST's cached memory tier: one set-associative, write-back,
 non-blocking line cache used three times (L1D, L1I, and L2), the arbiters
 that merge line ports, two sequencers that make DMA and page-table walks
 coherent with the L1D, an adapter between the L1s' 32-byte lines and the
@@ -75,41 +75,84 @@ must take no action on a request until it fires.
 
 ## The line cache
 
-`frost_cache` is one module for every level. The instances differ in size,
-line size, storage, and slot counts:
+`frost_cache` is one module for every level and every target. The
+instances differ in size, line size, storage, and slot counts:
 
-| Instance | Size | Line | Tags | Data | Miss slots | Waiter seats per miss slot | Writeback slots | Probe slots |
-|----------|------|------|------|------|------------|----------------------------|-----------------|-------------|
-| L1D | 128 KiB | 32 B | Block RAM, 1-cycle read | Block RAM | 8 | 1 | 2 | 4 |
-| L1I | 16 KiB | 32 B | Block RAM, 1-cycle read | Block RAM | 2 | 1 | 2 (unused) | 0 |
-| L2 | 2 MiB | 64 B | UltraRAM, four entries per 72-bit row, 3-cycle read | UltraRAM | 4 | 2 | 2 | 0 |
+| Instance | Size | Line | Ways x sets | Tags | Data | Miss slots | Waiter seats per miss slot | Writeback slots | Probe slots |
+|----------|------|------|-------------|------|------|------------|----------------------------|-----------------|-------------|
+| L1D | 128 KiB | 32 B | 4 x 1024 | Block RAM per way, 1-cycle read | Block RAM | 8 | 1 | 2 | 4 |
+| L1I | 16 KiB | 32 B | 4 x 128 | Block RAM per way, 1-cycle read | Block RAM | 2 | 1 | 2 (unused) | 0 |
+| L2 | 2 MiB | 64 B | 4 x 8192 | UltraRAM, a set's four ways in one 72-bit row, 3-cycle read | UltraRAM | 4 | 2 | 2 | 0 |
 
-The L1D's miss slots are the hierarchy's `L1D_NUM_MSHR` parameter and the
-L2's counts its `L2_NUM_MSHR`, `L2_NUM_WAITERS`, and `L2_NUM_WB` parameters,
-which `cpu_and_mem` sets as in the table. Its downstream ids, `L2_DOWN_ID_BITS` wide (5 on the X3), hold up
-to 16 slots of each type.
+The ways are the hierarchy's `L1D_WAYS`, `L1I_WAYS`, and `L2_WAYS`
+parameters, which `frost` and `cpu_and_mem` take too. The L1D's miss slots
+are the hierarchy's `L1D_NUM_MSHR` parameter and the L2's counts its
+`L2_NUM_MSHR`, `L2_NUM_WAITERS`, and `L2_NUM_WB` parameters, which
+`cpu_and_mem` sets as in the table. Its downstream ids, `L2_DOWN_ID_BITS` wide
+(5 on the X3), hold up to 16 slots of each type.
+
+### Sets and ways
+
+The address bits above the line offset select a set, and a line may sit in
+any of the set's `WAYS` ways (a power of 2; 1 is direct-mapped, which the
+benches also run). Each way has a tag entry `{valid, dirty, tag}`, and a
+request reads every way of its set at once: one block RAM per way in the
+L1s, and in the L2 one UltraRAM row per set holding its four entries. The
+data array holds one line per row, addressed `{way, set}`, and is read one
+stage after the tag compare, so its read address comes from a register. A
+read hit therefore answers one cycle later than a read at the tag decision
+would: in the L1s, four cycles after its request fires when nothing holds
+it.
+
+Each set keeps a tree pseudo-LRU state, one bit per node of a binary tree
+over the ways (3 bits for four ways), in a small array read with the tags.
+Hits and allocations point the bits on their way's path away from it;
+probes, merges, and waiters leave the state alone. A miss slot owns its way
+from its allocation until it frees: the way's tag stays invalid while the
+slot fetches, and the fill installs there. A miss replaces the lowest
+invalid way that no pending miss owns, else the pseudo-LRU way among the
+ways no pending miss owns: the walk down the tree turns away from a subtree
+whose ways are all owned. When every way of a set is owned, a miss in that
+set waits. In a 4-way set, the next five accesses to the set after an
+installed line's last access evict it, whatever the set holds and has in
+flight, if they reach the cache, are to five different other lines that no
+miss is already fetching, and nothing invalidates a line of the set
+meanwhile. A line whose own fill is still pending cannot be evicted until
+the fill completes. The test programs that force evictions rely on this.
 
 ### Requests and misses
 
-A request enters a one-entry skid and reads its tag. It is decided when the
-tag returns (`TAG_READ_LATENCY` cycles), and its side effects land in a write
-stage the next cycle.
+A request goes straight to the tag stage, or waits in a one-entry skid
+until the tag stage can take it, and reads its set's tags. It is decided
+when the tags return (`TAG_READ_LATENCY` cycles), and its side effects land
+in a write stage the next cycle, which also reads the data array.
 
 - A read hit returns data with the data array's output. The L1s' one-cycle
   tags stream one hit per cycle; the L2's delayed tags decide one request at
   a time.
 - A write hit writes the strobed bytes and marks the line dirty.
-- A miss takes one of `NUM_MSHR` miss-status slots, and the slots fetch from
-  the level below concurrently. A dirty victim moves into one of `NUM_WB`
-  writeback slots and drains independently.
+- A miss takes one of `NUM_MSHR` miss-status slots and a victim way, and the
+  slots fetch from the level below concurrently. A dirty victim moves into
+  one of `NUM_WB` writeback slots and drains independently. With one-cycle
+  tags (the L1s) every miss waits for a free writeback slot, whatever its
+  victim, so the decision does not wait on the compare and the victim
+  choice; with delayed tags (the L2) only a dirty victim does.
 - A write miss merges its bytes into the fill: the fill supplies only the
   bytes no store has written, including a store that merges in the same
   cycle the fill arrives.
 - A write to a line whose write-allocate slot is pending merges into that
   slot, and a read of a line with a pending miss takes one of the slot's
   `NUM_WAITERS` waiter seats: one in the L1s, two in the L2 beside the
-  stream prefetcher. Anything else aimed at an index in transition waits and
-  reads its tag again before deciding.
+  stream prefetcher. Anything else aimed at a line in transition waits and
+  reads its tags again before deciding, and so does a miss whose set has
+  every way owned by pending misses.
+
+Requests to other lines of a set do not wait for a pending miss in it:
+they hit the other ways, or miss into a way no pending miss owns. A line is
+in at most one way, since only a miss allocates it, and a miss finds no way
+holding the line and no slot fetching it. A request waits in the skid while
+the tag or write stage holds its set, so it reads the tags and replacement
+state after their writes.
 
 Writes, hits and misses alike, are acknowledged once the cache has ordered
 them, so a store miss does not wait for its fill. Hits proceed past pending
@@ -158,9 +201,12 @@ port: read-shaped requests flagged `probe`, of two kinds.
 A probe returns no data. Its response pulse is the acknowledgement, sent only
 after the level below has acknowledged any writeback the probe caused, so the
 requester can order its own access behind that writeback. Probes go through
-the pipeline like any other request: a probe aimed at a line in transition
-waits, one aimed at a line in a writeback slot waits for that writeback, and
-a probe never merges or takes a waiter seat.
+the pipeline like any other request and compare every way of the line's
+set, so they find the line wherever it sits: a probe aimed at a line in
+transition waits, one aimed at a line in a writeback slot waits for that
+writeback, and a probe never merges or takes a waiter seat. A probe that
+hits waits for a free writeback slot, as an L1 miss does, and is
+acknowledged from the write stage when its line is clean.
 
 Each probe holds a probe slot from its decision until the requester releases
 it, after the level below has ordered the requester's own access. While a
@@ -182,12 +228,14 @@ starve them.
 `fence.i` uses two operations, each of which starts only once every slot and
 pipeline stage is empty:
 
-- Writeback-all reads each tag, writes dirty lines back through the writeback
-  slots, and marks them clean; the lines stay valid. `o_maint_busy` falls
-  once those writebacks are acknowledged. The walk covers only the index span
-  dirtied since the previous writeback-all.
-- Invalidate-all reruns the reset sweep, which clears every tag. It discards
-  dirty data, so only the read-only L1I uses it.
+- Writeback-all reads each set's tags, writes its dirty ways back through
+  the writeback slots one at a time, rereading the set after each, and
+  marks them clean; the lines stay valid. `o_maint_busy` falls once those
+  writebacks are acknowledged. The walk covers only the set span dirtied
+  since the previous writeback-all.
+- Invalidate-all reruns the reset sweep, which clears one set's tags and
+  replacement state per cycle (128 cycles in the L1I). It discards dirty
+  data, so only the read-only L1I uses it.
 
 The hierarchy runs them in order: the L1D writes back first, then the L1I
 invalidates, so an instruction fill racing the sequence cannot leave
@@ -208,7 +256,7 @@ like any other request, parked in the hierarchy's probe injection register.
 Reset runs the sweep too, so every reset, including an image load, discards
 stale lines instead of writing them back. `SIM_FAST_MAINT=1` (simulation
 only) makes the sweep a one-cycle clear and makes writeback-all visit only
-dirty lines, with the same functional effect.
+sets with dirty lines, with the same functional effect.
 
 ## The hierarchy
 
@@ -348,8 +396,7 @@ With several L1 lines in one, the L2 works as follows:
   request at a time, so all L2 traffic waits behind it for that fill.
 - An eviction writes the whole line, with every strobe set, in one transfer.
 
-Reset clears the L2's tags, 32,768 with 64-byte lines, one per cycle on
-hardware.
+Reset clears the L2's 8,192 sets, one set per cycle on hardware.
 
 DMA coherence and atomics work the same with either line size. DMA is
 coherent through the DMA port (see The DMA port and coherence); a master
@@ -373,7 +420,8 @@ that a demand access in the same page showed to exist.
 
 The reads are ordinary line reads on the prefetcher's side of the DMA port,
 at most `L2_PREFETCH_INFLIGHT` (4) outstanding, and their responses only
-free the prefetcher's ids: the point is the L2 fill. A demand read that
+free the prefetcher's ids: the point is the L2 fill, which takes a way and
+touches the set's replacement state like a demand fill. A demand read that
 arrives while its line's prefetch is pending meets it in the L2's miss slot,
 where the prefetch is the primary request. The L1D reads both halves of the
 line, so the L2's slots have two waiter seats (`L2_NUM_WAITERS`); with one,
@@ -430,8 +478,9 @@ free for the walker.
 Progress: once accepted, a walk read completes on its own.
 
 - The probe waits only on L1D transients that resolve through the L2 (a
-  fill or writeback of the line already in flight) and on its reserved probe
-  slot.
+  fill or writeback of the line already in flight, a writeback slot to free,
+  or a request ahead of it in the tag stage waiting on one of those) and on
+  its reserved probe slot.
 - The acknowledgement waits only for the level below to acknowledge the
   dirty writeback.
 - The issue waits only for the arbiter tree, where the higher-priority L1D
@@ -464,10 +513,11 @@ A DMA write goes through five steps:
 
 1. The load queue admits the line: no AMO or SC on it is between its read
    and its write, and the queue starts no AMO, LR, or SC on it until step 4.
-2. A PROBE_INVAL writes a dirty L1D copy back and invalidates every copy.
-   From the probe's decision until step 4, the L1D issues no fill of the
-   line: a miss that fetched before the write is ordered would bring the
-   old line back.
+2. A PROBE_INVAL writes a dirty L1D copy back and invalidates the line,
+   whichever way of its set holds it (a line is in at most one way). From
+   the probe's decision until step 4, the L1D issues no fill of the line: a
+   miss that fetched before the write is ordered would bring the old line
+   back.
 3. The load queue drops its dword copies of the line, flags loads of it that
    have executed but not retired for replay, marks in-flight loads of it as
    not-to-fill and in-flight LRs as reservation-suppressed, and clears a
@@ -495,25 +545,30 @@ to the same line serialize in acceptance order, because the second waits for
 the first's entry to retire.
 
 Progress: a probe waits only on L1D transients that resolve through the L2
-and DDR, because a fill of the probed line allocated before the probe's
-decision is never withheld. A withheld fill waits only for the release, which
-depends on the load queue and the L2 alone. Nothing below the sequencer waits
-on the DMA port. The admit and invalidate
-handshakes hold a latched request until the load queue answers, so the core
-may take several cycles to answer.
+and DDR: a pending fill or writeback of its own line, a free writeback slot,
+and requests ahead of it in the tag stage, which wait on the same kinds of
+transients. A pending miss of another line of its set does not hold the
+probe itself. The probe never withholds a fill of its line allocated before
+its decision; such a fill may be withheld by an earlier probe of the line,
+and then waits for that probe's release. A withheld fill waits only for the
+release, which depends on the load queue and the L2 alone. Nothing below the sequencer
+waits on the DMA port. The admit and invalidate handshakes hold a latched
+request until the load queue answers, so the core may take several cycles
+to answer.
 
 ## Verification
 
 | Target family | Coverage |
 | --- | --- |
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, and dirty-L1D walker coherence |
-| `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, writeback and fill progress, and `fence.i` |
+| `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, a miss waiting for a way of its set, writeback and fill progress, and `fence.i` |
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |
 | `frost_cache_l2_lines*` | 64-byte L2 lines: both halves of a line sharing one fill and a reader past the waiter seats waiting, write misses that fill and merge in either half, a writeback waiting behind its line's read fill, halves combining in one line, whole-line writebacks, DMA writes changing only their half, L2 ordering across halves, a refill waiting for its line's writeback, `fence.i` into lines the L2 lacks, reset with misses in flight, and every port's misses at once; every AXI transfer checked as one whole-line beat |
 | `*_equal_lines` | The data-integrity, concurrency, and DMA suites with 32-byte L2 lines, equal to the L1s', as a control; also DDR load and store, fetch, atomic, DMA, page-table-walk, and `fence.i` programs on the whole system with 32-byte L2 lines and a 256-bit DDR port |
 | `*_16x4` | The L2-line, concurrency, and DMA suites with 16 L2 miss slots and 4 writeback slots |
 | `frost_cache_l2_lines_waiters2` | The L2-line suite with two waiter seats per L2 miss slot |
 | `*_prefetch` | The concurrency and DMA suites with the CPU's ids, L1D miss slots, and L2 waiter seats, and the stream prefetcher reading ahead |
+| `*_ways1` | The data-integrity, concurrency, DMA, and L2-line suites with direct-mapped caches |
 | `l2_stream_prefetcher` | Stream confirmation, read distance, page bounds, and the in-flight cap |
 | `line_port_arbiter*` | Arbitration and tagged responses |
 | `line_port_axi_bridge` | The bridge across a CPU reset against a slave that keeps running: held beats, AW/W pairing, dropped stale responses, and a reused id held back until the stale response for it has arrived; and across the slave's own reset, which withdraws the held beats |
@@ -531,5 +586,11 @@ through the AXI side's reset, id conservation, stale-response drops, and no
 request accepted while a response from before a reset is owed), the
 line-size adapter (`line_size_adapter`: strobes and data in the request's
 sector, and each response returning the sector its request recorded), the
-arbiter grant (`line_arbiter_grant`), and the miss-slot byte merge
-(`cache_mshr_payload`); see the [formal guide](../../../../formal/README.md).
+arbiter grant (`line_arbiter_grant`), the miss-slot byte merge
+(`cache_mshr_payload`), and the way choice (`cache_way_choice`: an
+allocation takes a way outside the tag stage's ownership mask, the
+timing-factored decision equals its reference, a touched way is never the
+next pseudo-LRU victim, and the restricted walk picks the pseudo-LRU way
+whenever it is unowned); see the [formal guide](../../../../formal/README.md).
+In simulation, assertions check that no two miss slots own one way and that
+an allocation never takes a way a miss slot owns.

@@ -36,7 +36,13 @@ from cocotb_tests.cache.test_frost_cache import (
     _monitor_perf_events,
     _new_perf_counts,
     _port_transaction,
+    cache_geometry,
+    evict_l1d,
+    evict_l2,
+    fresh_aliases,
     l2_line_bytes,
+    make_l1d_next_victim,
+    make_l2_next_victim,
 )
 from cocotb_tests.cache.test_frost_cache import _setup as _setup_any
 from cocotb_tests.cache.test_frost_cache_concurrency import (
@@ -49,8 +55,6 @@ from cocotb_tests.cache.test_frost_cache_dma import LoadQueueStub, _pattern
 
 FULL = (1 << LINE_BYTES) - 1
 L2_LINE_BYTES = 64
-L1_ALIAS = 1024  # harness L1D = 1 KiB: the same L1 index, another tag
-L2_ALIAS = 4096  # harness L2 = 4 KiB: the same L2 index, another tag
 WORDS_PER_L2_LINE = L2_LINE_BYTES // 4
 AXI_SIZE_L2_LINE = 6  # log2(64)
 
@@ -83,8 +87,8 @@ def _half(addr: int) -> tuple[int, int]:
 
 
 def _ddr_get_line(dut: Any, addr: int) -> int:
-    """Read the L2 line at addr from the behavioral DDR's word array."""
-    word = (addr - BASE_ADDR) // 4
+    """Read addr's L2 line from the behavioral DDR's word array."""
+    word = ((addr & ~(L2_LINE_BYTES - 1)) - BASE_ADDR) // 4
     value = 0
     for w in range(WORDS_PER_L2_LINE):
         value |= int(dut.main_memory.memory[word + w].value) << (32 * w)
@@ -92,11 +96,11 @@ def _ddr_get_line(dut: Any, addr: int) -> int:
 
 
 def _ddr_put_line(dut: Any, model: ReferenceModel, addr: int, value: int) -> None:
-    """Set the L2 line at addr in the behavioral DDR and in the model.
+    """Set addr's L2 line in the behavioral DDR and in the model.
 
     Only for lines no cache holds: the caches do not see the change.
     """
-    word = (addr - BASE_ADDR) // 4
+    word = ((addr & ~(L2_LINE_BYTES - 1)) - BASE_ADDR) // 4
     for w in range(WORDS_PER_L2_LINE):
         dut.main_memory.memory[word + w].value = (value >> (32 * w)) & 0xFFFFFFFF
     lo, hi = _half(addr)
@@ -221,21 +225,36 @@ async def _hold(dut: Any, value: int) -> None:
 
 
 async def _evict_from_l1d(dut: Any, addrs: Iterable[int]) -> None:
-    """Read each address's L1D alias, writing a dirty copy back to the L2."""
+    """Push each line out of the L1D, writing a dirty copy back to the L2.
+
+    The reads (evict_l1d) stay out of the line's L2 set.
+    """
     for addr in addrs:
-        await _port_transaction(dut, "up", write=False, addr=addr + L1_ALIAS)
+        await evict_l1d(dut, addr)
 
 
 async def _evict_from_l2(dut: Any, addrs: Iterable[int]) -> None:
-    """Read each line's L2 alias through the walker port, which skips the L1s.
+    """Push each line out of the L2 with walker reads, which skip the L1s.
 
-    The walker's probe finds nothing in the L1D at the alias, so the read
-    reaches the L2 at once and evicts the line there.
+    The walker's probes find nothing in the L1D at the new lines (evict_l2),
+    so each read reaches the L2 at once.
     """
     for addr in addrs:
-        await _port_transaction(
-            dut, "wup", write=False, addr=(addr & ~(L2_LINE_BYTES - 1)) + L2_ALIAS
-        )
+        await evict_l2(dut, addr & ~(L2_LINE_BYTES - 1))
+
+
+async def _next_miss_evicts_from_l1d(dut: Any, addr: int) -> int:
+    """Return a new line whose read misses in addr's L1D set and evicts addr.
+
+    Reads new lines of the set until addr is its next victim; the returned
+    line is in the same L1D set and in another L2 set than addr.
+    """
+    geom = cache_geometry(dut)
+    await make_l1d_next_victim(dut, addr)
+    keep = geom.l2_set(addr)
+    return fresh_aliases(
+        addr, geom.l1d_way_bytes, 1, avoid=lambda a: geom.l2_set(a) == keep
+    )[0]
 
 
 async def _read(dut: Any, port: str, addr: int) -> int:
@@ -328,8 +347,8 @@ async def test_dirty_writeback_missing_in_l2_fills_then_merges(dut: Any) -> None
         _ddr_put_line(dut, model, a, whole)
         new = _pattern(7 + k)
 
-        # A whole-line store allocates in the L1D without a fill; the alias
-        # read makes sure the L2 lacks the line.
+        # A whole-line store allocates in the L1D without a fill; the walker
+        # reads of new lines of its L2 set make sure the L2 lacks the line.
         model.write_line(dirty, new, FULL)
         await _port_transaction(
             dut, "up", write=True, addr=dirty, wdata=new, wstrb=FULL
@@ -384,6 +403,7 @@ async def test_writeback_waits_behind_the_lines_read_fill(dut: Any) -> None:
             dut, "up", write=True, addr=dirty, wdata=new, wstrb=FULL
         )
         await _evict_from_l2(dut, [a])  # the L2 lacks the line
+        evictor = await _next_miss_evicts_from_l1d(dut, dirty)
         mark = mon.cycle
 
         iup, up = _Collector(dut, "iup"), _Collector(dut, "up")
@@ -391,7 +411,7 @@ async def test_writeback_waits_behind_the_lines_read_fill(dut: Any) -> None:
         await _fire(dut, "iup", write=False, addr=read_half, req_id=1)
         await _settle(dut, 30)
         stalls_before = counts["l2"]["conflict_stall"]
-        await _fire(dut, "up", write=False, addr=dirty + L1_ALIAS, req_id=1)
+        await _fire(dut, "up", write=False, addr=evictor, req_id=1)
         await _settle(dut, 40)
         assert counts["l2"]["conflict_stall"] > stalls_before, (
             "the writeback never waited"
@@ -441,12 +461,14 @@ async def test_both_halves_written_back_separately_combine(dut: Any) -> None:
         await _settle(dut)  # the stores are acknowledged before their fills
         if held:
             await _evict_from_l2(dut, [a])  # the L2 lacks the line
+            evict_a = await _next_miss_evicts_from_l1d(dut, a)
+            evict_b = await _next_miss_evicts_from_l1d(dut, b)
         mark = mon.cycle
         if held:
             await _hold(dut, 1)
             col = _Collector(dut, "up")
-            await _fire(dut, "up", write=False, addr=a + L1_ALIAS, req_id=1)
-            await _fire(dut, "up", write=False, addr=b + L1_ALIAS, req_id=2)
+            await _fire(dut, "up", write=False, addr=evict_a, req_id=1)
+            await _fire(dut, "up", write=False, addr=evict_b, req_id=2)
             await _settle(dut, 60)
             slots = _l2_slots_for(dut, a)
             assert len(slots) == 1, f"the two writebacks took {slots} miss slots"
@@ -494,8 +516,9 @@ async def test_dma_writes_change_only_their_half(dut: Any) -> None:
         for s, strobe in enumerate(strobes):
             seed = 40 + 3 * case + s
             _, _, whole = _two_halves(seed)
-            # Cases 8 KiB apart and lines in each case's first KiB: no L1 or
-            # L2 alias read of one line lands on another.
+            # Cases 8 KiB apart and lines in each case's first KiB: no case
+            # touches another's lines, and eviction reads use lines of their
+            # own (evict_l1d, evict_l2).
             line = SECTOR_BASE + case * 0x2000 + 2 * s * L2_LINE_BYTES
             a, b = _half(line)
             # The DMA writes the upper half in odd rounds, the lower in even.
@@ -563,9 +586,10 @@ async def test_dma_writes_change_only_their_half(dut: Any) -> None:
                     dut, "up", write=True, addr=other, wdata=mine, wstrb=FULL
                 )
                 await _evict_from_l2(dut, [line])
+                evictor = await _next_miss_evicts_from_l1d(dut, other)
                 up, dma = _Collector(dut, "up"), _Collector(dut, "dma")
                 await _hold(dut, 1)
-                await _fire(dut, "up", write=False, addr=other + L1_ALIAS, req_id=1)
+                await _fire(dut, "up", write=False, addr=evictor, req_id=1)
                 await _settle(dut, 30)
                 model.write_line(dma_addr, data, strobe)
                 await _fire(
@@ -785,8 +809,9 @@ async def test_fence_writes_back_into_lines_the_l2_lacks(dut: Any) -> None:
 async def test_refill_waits_for_the_lines_writeback(dut: Any) -> None:
     """A line evicted dirty is fetched again only after its writeback lands.
 
-    With the bridge held, an alias read evicts a dirty L2 line into a
-    writeback slot, and a read of the line's other half then misses. That
+    With the bridge held, a read of a new line of its L2 set evicts a dirty
+    L2 line into a writeback slot, and a read of the line's other half then
+    misses. That
     miss must not read DDR until the writeback has been acknowledged, and
     the line must not be written back twice.
     """
@@ -800,16 +825,19 @@ async def test_refill_waits_for_the_lines_writeback(dut: Any) -> None:
     model.write_line(a, new, FULL)
     await _port_transaction(dut, "up", write=True, addr=a, wdata=new, wstrb=FULL)
     await _evict_from_l1d(dut, [a])  # the L2 now holds the line dirty
+    # Read new lines of its L2 set until the set's next miss would evict it.
+    await make_l2_next_victim(dut, a)
+    evictor = fresh_aliases(a, cache_geometry(dut).l2_way_bytes, 1)[0]
     mark = mon.cycle
     wup, iup = _Collector(dut, "wup"), _Collector(dut, "iup")
     await _hold(dut, 1)
-    # The alias read evicts the dirty line into a writeback slot. Its own fill
-    # leaves first; once it has installed, the read of the other half misses
-    # with the writeback still pending downstream.
-    await _fire(dut, "wup", write=False, addr=a + L2_ALIAS, req_id=1)
+    # The new line's read evicts the dirty line into a writeback slot. Its
+    # own fill leaves first; once it has installed, the read of the other half
+    # misses with the writeback still pending downstream.
+    await _fire(dut, "wup", write=False, addr=evictor, req_id=1)
     await _settle(dut, 40)
     fired, write, _ = await _release_downstream_once(dut)
-    assert fired and not write, "the alias read's fill did not leave first"
+    assert fired and not write, "the evicting read's fill did not leave first"
     await _settle(dut, 60)
     await _fire(dut, "iup", write=False, addr=b, req_id=1)
     await _settle(dut, 40)
@@ -893,9 +921,12 @@ async def test_many_misses_reach_the_high_miss_slots(dut: Any) -> None:
     model = ReferenceModel()
     l2 = _l2(dut)
     num_mshr = int(l2.NUM_MSHR.value)
-    # Dirty L1D lines on odd L2 indices (their L1 aliases stay odd) and the
-    # other ports' lines on even ones, so no two misses share an L2 index.
-    dirty = [SLOTS_BASE + (1 + 2 * i) * L2_LINE_BYTES for i in range(4)]
+    # Dirty L1D lines in odd L2 sets and distinct L1D sets, and the other
+    # ports' lines in even L2 sets, so no two of them share an L2 line.
+    dirty = [
+        SLOTS_BASE + (1 + 2 * i) * L2_LINE_BYTES + (i // 2) * LINE_BYTES
+        for i in range(4)
+    ]
     others = [SLOTS_BASE + (8 + 2 * i) * L2_LINE_BYTES for i in range(6)]
     lines = dirty + others
     for i, line in enumerate(lines):
@@ -907,6 +938,8 @@ async def test_many_misses_reach_the_high_miss_slots(dut: Any) -> None:
             dut, "up", write=True, addr=line, wdata=data, wstrb=FULL
         )
     await _evict_from_l2(dut, dirty)  # the L2 lacks the dirty halves' lines
+    # A read of a new line of each dirty line's L1D set will evict it.
+    evictors = [await _next_miss_evicts_from_l1d(dut, line) for line in dirty]
 
     cols = {port: _Collector(dut, port) for port in ("up", "iup", "wup", "dma")}
     peak = [0]
@@ -919,8 +952,8 @@ async def test_many_misses_reach_the_high_miss_slots(dut: Any) -> None:
 
     watcher = cocotb.start_soon(watch())
     await _hold(dut, 1)
-    for i, line in enumerate(dirty):
-        await _fire(dut, "up", write=False, addr=line + L1_ALIAS, req_id=i)
+    for i, evictor in enumerate(evictors):
+        await _fire(dut, "up", write=False, addr=evictor, req_id=i)
     await _fire(dut, "iup", write=False, addr=others[0], req_id=0)
     await _fire(dut, "iup", write=False, addr=others[1] + LINE_BYTES, req_id=1)
     await _fire(dut, "wup", write=False, addr=others[2], req_id=0)

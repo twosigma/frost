@@ -6,9 +6,9 @@
     then DMA with bounded starvation, and a stream prefetcher that watches L1D
     misses shares the DMA port after DMA. A line-size adapter places each 32-byte
     request in its half of a 64-byte line of the shared 2 MiB L2, which feeds
-    the 512-bit AXI bridge and DDR4. All caches are direct-mapped; the L1s use
-    32-byte lines and the L2 64-byte lines. Request paths are shown; responses
-    route by transaction ID.
+    the 512-bit AXI bridge and DDR4. All caches are 4-way set-associative; the
+    L1s use 32-byte lines and the L2 64-byte lines. Request paths are shown;
+    responses route by transaction ID.
   </desc>
   <!--
     Self-contained SVG; edit the text, boxes and paths directly.
@@ -139,6 +139,6 @@
     <text x="1020" y="802" class="body">1 GiB cached region</text>
     <text x="1020" y="829" class="small">Base: 0x8000_0000</text>
   </g>
-  <text x="600" y="879" class="small center">L1I / L1D: direct-mapped, 32 B lines. L2: direct-mapped, 64 B lines. Responses route back by transaction ID.</text>
+  <text x="600" y="879" class="small center">L1I / L1D: 4-way, 32 B lines. L2: 4-way, 64 B lines. Responses route back by transaction ID.</text>
   <text x="600" y="903" class="small center">Arrows follow requests; response and maintenance-control paths are omitted.</text>
 </svg>

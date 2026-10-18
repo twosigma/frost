@@ -35,8 +35,9 @@
  *   - REGISTER_READ_INPUT=0 reads continuously and includes the array output
  *     register (BRAM DOB_REG) in the latency. Same-edge writes return old data.
  *     The caller must avoid qualified reads of a row being written;
- *     frost_cache uses raw_hazard. i_re only qualifies the collision check,
- *     so changing o_rdata is valid only READ_LATENCY cycles after a request.
+ *     frost_cache never issues one (see its data array). i_re only qualifies
+ *     the collision check, so changing o_rdata is valid only READ_LATENCY
+ *     cycles after a request.
  * REGISTER_READ_OUTPUT=1 spends one of the READ_LATENCY cycles on a fabric
  * register after the memory. Synthesis keeps it out of the memory (KEEP), so
  * placement can hold the memory's last stage beside a wide array and put this

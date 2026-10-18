@@ -46,6 +46,11 @@ module frost #(
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
+    // Ways per set of the L1D, L1I, and L2 (see frost_cache): 4-way
+    // set-associative on every target; 1 is direct-mapped.
+    parameter int unsigned L1D_WAYS = 4,
+    parameter int unsigned L1I_WAYS = 4,
+    parameter int unsigned L2_WAYS = 4,
     // L1D miss-status slots, up to 8, and L2 miss-status and writeback slots,
     // up to 16 of each.
     parameter int unsigned L1D_NUM_MSHR = 8,
@@ -279,6 +284,9 @@ module frost #(
       .L1_CACHE_BYTES(L1_CACHE_BYTES),
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
       .L2_CACHE_BYTES(L2_CACHE_BYTES),
+      .L1D_WAYS(L1D_WAYS),
+      .L1I_WAYS(L1I_WAYS),
+      .L2_WAYS(L2_WAYS),
       .L1D_NUM_MSHR(L1D_NUM_MSHR),
       .L2_NUM_MSHR(L2_NUM_MSHR),
       .L2_NUM_WAITERS(L2_NUM_WAITERS),

@@ -33,13 +33,16 @@ package cache_perf_pkg;
     // pulse): the aggregator integrates it into the *_MISS_CYCLES_SUM
     // counters.
     logic [MissOutstandingBits-1:0] miss_outstanding;
-    // A hit resolved while at least one miss was outstanding.
+    // A hit resolved while at least one miss was outstanding (the count as
+    // the hit leaves the write stage).
     logic hit_under_miss;
     // Tag-stage decisions that stall. slot_full_stall: an allocation with no
-    // free miss-status slot (or no writeback slot for its dirty victim).
-    // conflict_stall: a request aimed at an index in transition that it can
-    // neither merge into nor wait on, or a write hit on a line still in a
-    // writeback slot.
+    // free miss-status slot, or no free writeback slot (every allocation in
+    // a cache with one-cycle tags needs one; with delayed tags only a dirty
+    // victim does). conflict_stall: a request for a line in transition that
+    // it can neither merge into nor wait on, a miss whose set has every way
+    // owned by pending misses, or a write hit on a line still in a writeback
+    // slot.
     logic slot_full_stall;
     logic conflict_stall;
   } cache_instance_perf_events_t;

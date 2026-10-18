@@ -5,6 +5,13 @@ set the direction of this roadmap. The sections are in priority order.
 
 ## Memory system
 
+The L1D, L1I, and L2 are 4-way set-associative with tree pseudo-LRU
+replacement, one design for every target. A read hit takes a cycle longer
+than in the direct-mapped caches they replaced, because the data array is
+read after the tag compare picks the way. Reading every way's data alongside
+the tags would take the cycle back at four data reads per lookup, if
+programs running from DDR show that the cycle matters.
+
 The L2 uses 64-byte lines, following John Goodacre's design. An adapter maps
 each 32-byte request from the L1 caches, the page-table walker, and the DMA
 port onto its half of a line. The L2 writes back only whole lines, each as a

@@ -35,6 +35,10 @@ module cpu_and_mem #(
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
+    // Ways per set of the L1D, L1I, and L2 (see frost_cache_hierarchy).
+    parameter int unsigned L1D_WAYS = 4,
+    parameter int unsigned L1I_WAYS = 4,
+    parameter int unsigned L2_WAYS = 4,
     // L1D miss-status slots, and L2 miss-status and writeback slots (see
     // frost_cache_hierarchy).
     parameter int unsigned L1D_NUM_MSHR = 8,
@@ -1832,6 +1836,9 @@ module cpu_and_mem #(
         .L1_CACHE_BYTES(L1_CACHE_BYTES),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
         .L2_CACHE_BYTES(L2_CACHE_BYTES),
+        .L1D_WAYS(L1D_WAYS),
+        .L1I_WAYS(L1I_WAYS),
+        .L2_WAYS(L2_WAYS),
         .L1D_NUM_MSHR(L1D_NUM_MSHR),
         .L2_NUM_MSHR(L2_NUM_MSHR),
         .L2_NUM_WAITERS(L2_NUM_WAITERS),

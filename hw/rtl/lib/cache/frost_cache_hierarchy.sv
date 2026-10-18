@@ -80,6 +80,11 @@ module frost_cache_hierarchy #(
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L1I_DATA_READ_LATENCY = 2,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
+    // Ways per set of each cache (frost_cache WAYS): a power of 2, 1 for
+    // direct-mapped.
+    parameter int unsigned L1D_WAYS = 4,
+    parameter int unsigned L1I_WAYS = 4,
+    parameter int unsigned L2_WAYS = 4,
     // Total logical latency of the X3 L2's packed URAM tag lookup.
     parameter int unsigned L2_TAG_READ_LATENCY = 3,
     parameter int unsigned L2_DATA_READ_LATENCY = 6,
@@ -468,6 +473,7 @@ module frost_cache_hierarchy #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_SIZE_BYTES(L1_CACHE_BYTES),
       .LINE_BYTES(L1_LINE_BYTES),
+      .WAYS(L1D_WAYS),
       // The high ID bit distinguishes probes from CPU requests.
       .UP_ID_BITS(L1dIdBits),
       .DOWN_ID_BITS(UP_ID_BITS),
@@ -518,6 +524,7 @@ module frost_cache_hierarchy #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_SIZE_BYTES(L1I_CACHE_BYTES),
       .LINE_BYTES(L1_LINE_BYTES),
+      .WAYS(L1I_WAYS),
       .UP_ID_BITS(UP_ID_BITS),
       // One fewer ID bit than L1D. At the default width, two miss slots cover
       // both fetch-provider fills. Read-only L1I never uses its writeback slots.
@@ -848,6 +855,7 @@ module frost_cache_hierarchy #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_SIZE_BYTES(L2_CACHE_BYTES),
       .LINE_BYTES(L2_LINE_BYTES),
+      .WAYS(L2_WAYS),
       .UP_ID_BITS(DownIdBits),
       .DOWN_ID_BITS(L2_DOWN_ID_BITS),
       .NUM_MSHR(L2_NUM_MSHR),

@@ -19,8 +19,9 @@ phase; no performance limit is asserted. The load-queue stub delays admit
 and invalidation by one cycle. Results include geometry and memory latency
 in ``results/dma_envelope_lock<N>_mem<latency>_l2_<KiB>k.json``.
 
-``write_l2_only`` requires an L2 larger than twice the L1D so aliasing reads
-evict from L1D without evicting from L2; every DMA write must then hit L2.
+``write_l2_only`` requires an L2 larger than twice the L1D, so the reads that
+evict its lines from the L1D leave them in the L2; every DMA write must then
+hit L2.
 ``write_beyond_l2`` requires a stream at least four times the L2 size.
 """
 
@@ -32,12 +33,14 @@ import cocotb
 from cocotb.triggers import FallingEdge
 
 from cocotb_tests.cache.test_frost_cache import (
+    ALIAS_BASE,
     BASE_ADDR,
     LINE_BYTES,
     RESP_TIMEOUT_CYCLES,
     _line_transaction,
     _perf_field,
     _setup,
+    cache_geometry,
 )
 from cocotb_tests.cache.test_frost_cache_concurrency import _fire
 from cocotb_tests.cache.test_frost_cache_dma import FULL, LoadQueueStub, _pattern
@@ -47,15 +50,13 @@ BIG_LINES = 512
 DEPTHS = (1, 2, 3, 4, 6, 8)
 PHASES = ("FREE", "ADMIT", "PROBE", "PROBE_WAIT", "INVAL", "ISSUE", "RESP")
 # Everything stays inside the harness's memory model. At the registry's
-# 128 KiB L1D, the flood's aliasing lines occupy the bottom 2 MiB (16 tags of
-# one L1D index), the 64-line streams take 4 KiB regions above that,
-# write_l2_only's aliasing reads land EVICT_ALIAS_L1S L1D sizes (256 KiB)
-# above its stream, past every stream region, and the 512-line streams take
-# 16 KiB regions above those.
+# 128 KiB L1D, the flood's lines occupy the bottom 2 MiB (16 tags of one L1D
+# set), the 64-line streams take 4 KiB regions above that, and the 512-line
+# streams take 16 KiB regions above those. write_l2_only's eviction reads
+# come from the cache benches' alias region.
 FLOOD_REGION = BASE_ADDR
 SMALL_BASE = BASE_ADDR + 0x200000
 SMALL_STRIDE = 0x1000
-EVICT_ALIAS_L1S = 2
 BIG_BASE = BASE_ADDR + 0x300000
 BIG_STRIDE = 0x4000
 
@@ -151,17 +152,17 @@ class _DmaStream:
 
 
 def _l1_alias(dut: Any) -> int:
-    """Return the L1D size: +size is the same index with another tag."""
+    """Return the L1D size: +size is the same set with another tag."""
     return int(dut.L1_CACHE_BYTES.value)
 
 
 def _l2_holds_l1_evictions(dut: Any) -> bool:
-    """Report whether write_l2_only's aliasing reads leave its lines in the L2.
+    """Report whether write_l2_only's eviction reads leave its lines in the L2.
 
-    The reads sit EVICT_ALIAS_L1S L1D sizes above the lines: the same L1D
-    index, and another L2 index only while that offset is below the L2 size.
+    The reads take other L2 sets than the lines, and an L2 more than twice the
+    L1D holds the stream beside them.
     """
-    return int(dut.L2_CACHE_BYTES.value) > EVICT_ALIAS_L1S * _l1_alias(dut)
+    return int(dut.L2_CACHE_BYTES.value) > 2 * _l1_alias(dut)
 
 
 def _stream_beyond_l2(dut: Any) -> bool:
@@ -181,10 +182,25 @@ async def _cpu_touch(dut: Any, addrs: list[int], *, write: bool) -> None:
 
 
 async def _evict_l1d(dut: Any, addrs: list[int]) -> None:
-    """Push the given lines out of the direct-mapped L1D with aliasing reads."""
-    alias = EVICT_ALIAS_L1S * _l1_alias(dut)
+    """Push the given lines out of the L1D, keeping them in the L2.
+
+    After a line's last access, 2 * ways - 1 reads of other lines of its L1D
+    set evict it. The reads come from the alias region, one L1D way apart,
+    in other L2 sets than the line; reusing them for every line and depth
+    is fine, since cached ones count too.
+    """
+    geom = cache_geometry(dut)
     for addr in addrs:
-        await _line_transaction(dut, write=False, addr=addr + alias)
+        offset = addr % geom.l1d_way_bytes
+        reads = 0
+        k = 0
+        while reads < geom.evicting_misses(geom.l1d_ways):
+            alias = ALIAS_BASE + k * geom.l1d_way_bytes + offset
+            k += 1
+            if geom.l2_set(alias) == geom.l2_set(addr):
+                continue
+            await _line_transaction(dut, write=False, addr=alias)
+            reads += 1
 
 
 def _region(index: int) -> int:
@@ -246,7 +262,7 @@ async def _measure(
 
 
 async def _flood(dut: Any, stop: list[bool]) -> None:
-    """Data-side miss stream: thrash one index with many tags, dirty victims."""
+    """Data-side miss stream: thrash one set with many tags, dirty victims."""
     n = 0
     alias = _l1_alias(dut)
     while not stop[0]:
@@ -321,7 +337,7 @@ async def test_dma_envelope(dut: Any) -> None:
         )
 
         # 4. Lines the L2 holds but the L1D does not: read, then evicted from
-        # the L1D by aliasing reads that keep them in a large enough L2.
+        # the L1D by reads that keep them in a large enough L2.
         base = _region(region)
         region += 1
         if l2_only:

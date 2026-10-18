@@ -46,10 +46,11 @@
 #endif
 
 /* The read-only kernels run first, so the writers find no dirty lines left
- * behind. Copy and write share one 2 MiB-aligned window, so their regions use
- * different indices of the direct-mapped L2; the copy's destination starts
- * half an L1D past a multiple of the L1D's 128 KiB, so source and destination
- * use different L1D indices. */
+ * behind. Copy and write share one 2 MiB-aligned window. The copy's
+ * destination starts 576 KiB past its source, so each step's source and
+ * destination lines share a set of the 4-way L1D (32 KiB ways) and use
+ * different L2 sets, and in each set of the L2 (512 KiB ways) the three
+ * regions take at most one way each. */
 #define CACHED_BASE 0x80000000u
 #define MIB (1u << 20)
 #define SEQ_READ_BASE (CACHED_BASE + 8u * MIB)
@@ -253,8 +254,9 @@ int main(void)
     end_region("stride_read");
 
     begin_region();
-    /* The streams sit in the four quarters of one 128 KiB-aligned window, so
-     * they use different indices of the direct-mapped L1D and L2. */
+    /* The streams sit in the four quarters of one 128 KiB-aligned window: one
+     * set of the 4-way L1D (32 KiB ways) holds a line of each, and they use
+     * different L2 sets. */
     sink = streams_read((volatile uint64_t *) STREAMS_BASE,
                         (volatile uint64_t *) (STREAMS_BASE + 0x8000u),
                         (volatile uint64_t *) (STREAMS_BASE + 0x10000u),

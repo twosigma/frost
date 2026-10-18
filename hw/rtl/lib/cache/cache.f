@@ -3,7 +3,7 @@
 # Per-cache performance event types (must precede the cache modules).
 $(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv
 
-# Write-back direct-mapped line cache (one module for every level)
+# Write-back set-associative line cache (one module for every level)
 $(ROOT)/hw/rtl/lib/cache/frost_cache.sv
 
 # N:1 tagged line-port arbiter. Parse it before the hierarchy to avoid

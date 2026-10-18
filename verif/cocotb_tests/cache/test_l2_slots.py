@@ -16,8 +16,9 @@
 
 Every upstream port keeps as many reads in flight as it can, each to a line
 no cache holds: four L1D readers, two L1I readers, the walker, and three DMA
-readers. Each reader's lines take one L2 index of their own, so a miss waits
-only for a free miss slot, not for another reader's line. The bench reports
+readers. Each reader's lines take one L2 set of their own, and the L1
+readers' lines one L1 set each, so a miss waits only for a free miss slot,
+not for another reader's line. The bench reports
 cycles per line, the mean number of busy L2 miss slots (the integral of the
 L2's miss_outstanding event), and the L2's slot-full and conflict stalls, in
 ``results/l2_slots_mshr<N>_wb<M>_mem<latency>.json``. No limit is asserted
@@ -33,16 +34,17 @@ from cocotb.triggers import FallingEdge, Lock
 
 from cocotb_tests.cache.test_frost_cache import (
     BASE_ADDR,
+    CacheGeometry,
     ReferenceModel,
     _monitor_perf_events,
     _new_perf_counts,
     _setup,
+    cache_geometry,
 )
 from cocotb_tests.cache.test_frost_cache_concurrency import _Collector, _fire
 from cocotb_tests.cache.test_frost_cache_dma import LoadQueueStub
 
 SLOTS_BASE = BASE_ADDR + 0xE00000
-L2_BYTES = 4096  # harness L2: a reader's next line keeps its L2 index
 LINES_PER_READER = 48
 # (port, local ids it alternates between) for each reader.
 READERS = (
@@ -59,9 +61,13 @@ READERS = (
 )
 
 
-def _line(reader: int, n: int) -> int:
-    """Return reader's n-th line: L2 index 2 * reader, a new tag each time."""
-    return SLOTS_BASE + n * L2_BYTES + reader * 128
+def _line(geom: CacheGeometry, reader: int, n: int) -> int:
+    """Return reader's n-th line: L2 set `reader`, a new tag each time.
+
+    An L2 way is a multiple of an L1 way, so the reader's lines also share an
+    L1 set, a different one for each L1 reader.
+    """
+    return SLOTS_BASE + n * geom.l2_way_bytes + reader * geom.l2_line
 
 
 async def _reader(
@@ -74,9 +80,10 @@ async def _reader(
     done: list[int],
 ) -> None:
     model = ReferenceModel()
+    geom = cache_geometry(dut)
     for n in range(LINES_PER_READER):
         req_id = ids[n % 2]
-        addr = _line(k, n)
+        addr = _line(geom, k, n)
         async with lock:
             await _fire(dut, port, write=False, addr=addr, req_id=req_id)
         _, got = await col.wait_for(req_id)
@@ -88,6 +95,8 @@ async def _reader(
 async def test_l2_slot_parallelism(dut: Any) -> None:
     """Measure cycles per line and miss-slot use with every port missing."""
     await _setup(dut)
+    geom = cache_geometry(dut)
+    assert geom.l2_way_bytes // geom.l2_line >= len(READERS), "a reader without a set"
     lq = LoadQueueStub(dut)
     l2 = dut.cache_hierarchy.l2_cache
     num_mshr = int(l2.NUM_MSHR.value)

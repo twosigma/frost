@@ -18,7 +18,7 @@
  * Cached-DDR read divergence probe. Each half of a dword must return the
  * same value on L1D hits and refills.
  *
- * Each round fills a buffer, evicts it through direct-mapped aliases, then
+ * Each round fills a buffer, evicts it through lines of its L1D sets, then
  * compares cold and warm reads with the expected values.
  */
 
@@ -31,14 +31,17 @@
 #define N_ROUNDS 64u
 #endif
 
-/* +0x20000 aliases in the 128 KiB L1D. */
+/* Lines a multiple of 0x20000 (the 128 KiB L1D's size) from a buffer line
+ * share its L1D set. After the buffer is filled, dirtying ALIASES of them per
+ * line evicts it from the 4-way L1D whatever the set holds (one did for a
+ * direct-mapped L1D). */
 #define BUF_BASE 0x82900000u
 #define ALIAS_XOR 0x20000u
+#define ALIASES 5u
 #define WORDS 512u /* 2 KiB, DTB-sized */
 #define LINE_BYTES 32u
 
 static volatile uint32_t *const buf = (volatile uint32_t *) BUF_BASE;
-static volatile uint32_t *const alias = (volatile uint32_t *) (BUF_BASE ^ ALIAS_XOR);
 
 /* In the default BRAM tier the captures live in low BRAM, away from the DDR
  * lines under test. */
@@ -63,9 +66,12 @@ static void fill_pattern(uint32_t round)
 
 static void evict_buffer(uint32_t round)
 {
-    /* Dirty aliases evict every buffer line from the direct-mapped L1D. */
-    for (uint32_t i = 0; i < WORDS; i += LINE_BYTES / 4u)
-        alias[i] = i ^ round;
+    /* Dirty aliases evict every buffer line from the L1D. */
+    for (uint32_t k = 1; k <= ALIASES; k++) {
+        volatile uint32_t *line = (volatile uint32_t *) (BUF_BASE ^ (k * ALIAS_XOR));
+        for (uint32_t i = 0; i < WORDS; i += LINE_BYTES / 4u)
+            line[i] = i ^ round;
+    }
     __asm__ volatile("fence" ::: "memory");
 }
 

@@ -59,9 +59,9 @@
 
 /* CHURN_SLICES slices hold 8 KiB past the DDR program image. HANDLER_LINES
  * occupies another slice one stride later; neither region overlaps other data.
- * The 1 MiB stride aliases in the direct-mapped 128 KiB L1D and simulation's
- * 4 KiB L2. Cycling through slices evicts earlier lines at each offset, so
- * subsequent accesses fetch them from DDR. */
+ * Lines 1 MiB apart share a set of the 128 KiB L1D and of a 4 KiB L2. Cycling
+ * through more slices than those sets have ways evicts earlier lines at each
+ * offset, so subsequent accesses fetch them from DDR. */
 #define CHURN_BASE 0x80800000u
 #define CHURN_STRIDE 0x00100000u /* 1 MiB */
 #define CHURN_SLICES 8u

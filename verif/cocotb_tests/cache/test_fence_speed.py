@@ -23,10 +23,10 @@ registry builds:
     ./scripts/frost.py cocotb fence_speed_slow   # SIM_FAST_MAINT=0 (FPGA-path FSM)
     ./scripts/frost.py cocotb fence_speed_fast   # SIM_FAST_MAINT=1 (fast sim path)
 
-In the slow build, writeback-all walks the L1D's dirty index span and
-invalidate-all sweeps the 512 L1I tags one per cycle; the fast build visits
-only the dirty lines and clears the tags in one cycle. The count is logged as
-`FENCE_I_MAINT_CYCLES=<n>`.
+In the slow build, writeback-all walks the L1D's dirty set span and
+invalidate-all sweeps the L1I's 128 sets one per cycle; the fast build visits
+only the sets with dirty lines and clears the tags in one cycle. The count is
+logged as `FENCE_I_MAINT_CYCLES=<n>`.
 """
 
 from typing import Any
@@ -39,7 +39,7 @@ CLOCK_PERIOD_NS = 10
 LINE_BYTES = 32
 BASE_ADDR = 0x8000_0000
 
-# The slow reset sweep visits all 32,768 L2 lines before accepting requests.
+# The slow reset sweep visits all 8,192 L2 sets before accepting requests.
 READY_TIMEOUT_CYCLES = 100_000
 RESP_TIMEOUT_CYCLES = 20_000
 FENCE_TIMEOUT_CYCLES = 200_000

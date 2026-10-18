@@ -152,6 +152,13 @@ FORMAL_TARGETS = [
         tasks=("bmc", "bmc_mshr8"),
     ),
     FormalTarget(
+        "cache_way_choice.sby",
+        "A completing allocation avoids the owned-way mask, the factored completion "
+        "matches its reference, a touched way is not the next victim, and the "
+        "restricted victim walk keeps the pseudo-LRU way when it is unowned",
+        tasks=("bmc", "bmc_ways1", "bmc_delayed"),
+    ),
+    FormalTarget(
         "lq_alloc_mask.sby",
         "Load-queue allocation masks and capacity checks match the reference search",
         tasks=("bmc4", "bmc8", "bmc16"),
@@ -624,6 +631,8 @@ SBY_TASKS = [
     ("prove_narrow_bin", "Unbounded narrow-link memory equivalence with binary reads"),
     ("prove_narrow_oh", "Unbounded narrow-link memory equivalence with one-hot reads"),
     ("bmc_mshr8", "Bounded check with eight miss-status slots"),
+    ("bmc_ways1", "Bounded check of a direct-mapped cache"),
+    ("bmc_delayed", "Bounded check with delayed (UltraRAM) tags"),
     ("bmc_free_bin", "Bounded shared-link memory equivalence with free binary reads"),
     ("bmc_free_oh", "Bounded shared-link memory equivalence with free one-hot reads"),
     (

@@ -46,11 +46,14 @@
 #endif
 
 /* Cached DDR, inside the 64 MiB simulation model: 2 MiB of 4 KiB pool
- * blocks, their two L2 aliases (2 MiB direct-mapped), the marker lines with
- * their two aliases, and the result records; the regions never overlap. */
+ * blocks, their two L2 aliases (the L2 is 2 MiB, 4-way, so its ways are
+ * 512 KiB), the marker lines with their aliases, and the result records; the
+ * regions never overlap. */
 #define POOL_BASE 0x83000000ul /* aliases at 0x83200000 and 0x83400000 */
 #define L2_ALIAS 0x200000ul
-#define MARK_BASE 0x83600000ul /* aliases at 0x83800000 and 0x83A00000 */
+#define L2_WAYS 4u
+#define L2_WAY_BYTES (L2_ALIAS / L2_WAYS)
+#define MARK_BASE 0x83600000ul /* aliases one L2 way apart, to 0x83A00000 */
 #define OUT_BASE 0x83C00000ul
 #define NPROBE 11u /* N and P1..P10 */
 #define SEED 0x9E3779B97F4A7C15ul
@@ -94,9 +97,16 @@ static inline unsigned long ld64(unsigned long addr)
 }
 
 /* Write every probed line's signature and the -1 markers, then push them
- * out of both cache levels: fence.i writes the L1D back, and two passes
- * over the lines' L2 aliases evict them from the L2 (the first pass can
- * re-allocate a line written back from the L1D; the second cannot). */
+ * out of both cache levels. fence.i writes the L1D back, and two passes over
+ * the lines' L2 aliases evict them from the L2 (the first pass can
+ * re-allocate a line written back from the L1D; the second cannot). Each
+ * probed line's L2 set holds four probed lines, and the two passes miss
+ * there eight times, more than the five misses on other lines that evict an
+ * installed line from a 4-way set. A marker's set may hold no probed line,
+ * so each marker also reads the lines 1 to 2 * L2_WAYS - 1 L2 ways above it
+ * (one of them pass 1's alias): with the passes, at least 2 * L2_WAYS - 1
+ * misses in its set. The passes also sweep the L1D, which is much smaller
+ * than they are. */
 static void prepare_pool(void)
 {
     for (unsigned long i = 0; i < STALE_ITERS; i++) {
@@ -117,6 +127,10 @@ static void prepare_pool(void)
                 (void) ld64(blk + probed_off[k] + alias);
             (void) ld64(MARK_BASE + i * 64ul + alias);
         }
+    }
+    for (unsigned way = 1; way < 2 * L2_WAYS; way++) {
+        for (unsigned long i = 0; i < STALE_ITERS; i++)
+            (void) ld64(MARK_BASE + i * 64ul + way * L2_WAY_BYTES);
     }
     __asm__ volatile("fence" ::: "memory");
 }
