@@ -2180,6 +2180,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
 }
 
+# The full power-of-two raw-DDR capacity matrix. Keep the historical 64 GiB
+# entry above for existing callers; all entries use the same byte-level
+# bridge test, including the last representable line and +4 GiB separation.
+for _capacity_log2 in (30, 31, 32, 33, 34, 35, 37):
+    _physical_bits = max(32, _capacity_log2 + 1)
+    TEST_REGISTRY[f"line_port_axi_bridge_{1 << (_capacity_log2 - 30)}g"] = CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_line_port_axi_bridge",
+        hdl_toplevel_module="line_port_axi_bridge",
+        description=f"{1 << (_capacity_log2 - 30)} GiB DDR AXI offset/address identity",
+        verilator_extra_args=(
+            "-GLINE_BYTES=64",
+            f"-GADDR_WIDTH={_physical_bits}",
+            f"-GAXI_ADDR_WIDTH={_capacity_log2}",
+        ),
+    )
+
 # Registry entries that build an app and are collected by pytest. The unit
 # benches have no app_name and are excluded.
 REAL_PROGRAM_TESTS = [

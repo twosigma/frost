@@ -474,15 +474,17 @@ async def test_axi_reset_withdraws_held_beats(dut: Any) -> None:
 
 @cocotb.test()
 async def test_wide_axi_addresses_do_not_alias(dut: Any) -> None:
-    """Distinct physical lines 4 GiB apart retain distinct DDR offsets."""
-    if len(dut.i_req_addr) < 37:
-        return  # The legacy 32-bit configuration has no high physical address.
+    """The first, last, and (where present) +4 GiB lines retain their offsets."""
 
     slave, log = await _start(dut)
     low = BASE_ADDR + 0x100
-    high = low + (1 << 32)
-    top = BASE_ADDR + (1 << 36) - LINE_BYTES
-    lines = ((low, _pattern(11)), (high, _pattern(12)), (top, _pattern(13)))
+    capacity_bits = len(dut.o_axi_awaddr)
+    lines = [(low, _pattern(11))]
+    if capacity_bits > 32:
+        lines.append((low + (1 << 32), _pattern(12)))
+    top = BASE_ADDR + (1 << capacity_bits) - LINE_BYTES
+    if top < (1 << len(dut.i_req_addr)):
+        lines.append((top, _pattern(13)))
 
     for req_id, (addr, data) in enumerate(lines):
         after = log.cycle
