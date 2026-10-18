@@ -16,13 +16,14 @@
 
 /*
  * PMA access-fault tests. Invalid physical addresses, including any with
- * bits [63:32] set, must fault with exact mepc and mtval rather than alias.
+ * bits above the configured physical width set, must fault with exact mepc
+ * and mtval rather than alias.
  * Aligned, untranslated stores to unserved addresses in the device quadrant
  * [0x4000_0000, 0x8000_0000) are ignored without trapping (misalignment
  * checks still apply).
  *
  * Physical map:
- *   [0, 128 KiB) BRAM and [0x8000_0000, 0xC000_0000) DDR support fetch,
+ *   [0, 128 KiB) BRAM and the configured DDR aperture support fetch,
  *   loads, stores and atomics. BRAM [128 KiB, 256 KiB) supports loads, stores
  *   and atomics, but no fetch.
  *   MMIO [0x4000_0000, 0x4003_1000) and PLIC [0x4400_0000, 0x4440_0000)
@@ -36,6 +37,13 @@
 #include <stdint.h>
 
 #include "trap.h"
+
+#ifndef FROST_DDR_CAPACITY_LOG2_BYTES
+#define FROST_DDR_CAPACITY_LOG2_BYTES 30
+#endif
+#define DDR_LIMIT (0x80000000ul + (1ul << FROST_DDR_CAPACITY_LOG2_BYTES))
+#define PHYS_BITS ((FROST_DDR_CAPACITY_LOG2_BYTES + 1) < 32 ? 32 : \
+                   (FROST_DDR_CAPACITY_LOG2_BYTES + 1))
 
 static void uart_putc(char c)
 {
@@ -157,7 +165,7 @@ int main(void)
     set_trap_handler(&pma_trap_handler);
 
     /* A: load from a wild 64-bit address. */
-    unsigned long wild = 0x100003008ul; /* [63:32] != 0 */
+    unsigned long wild = DDR_LIMIT + 0x3008ul;
     RUN_CASE("mv   t1, %0\n"
              "ld   t2, 0(t1)",
              "r"(wild));
@@ -171,22 +179,22 @@ int main(void)
     all_ok &= report3("B hole-load", 5u, 0, hole, 0);
 
     /* C: load from above cached DDR. */
-    unsigned long above = 0xC0000000ul;
+    unsigned long above = DDR_LIMIT;
     RUN_CASE("mv   t1, %0\n"
              "lw   t2, 0(t1)",
              "r"(above));
     all_ok &= report3("C above-ddr-load", 5u, 0, above, 0);
 
-    /* D: BRAM+0x1000 with bit 32 set must fault with the exact 64-bit
+    /* D: BRAM+0x1000 with a bit above the PA width set must fault with the exact
      * address in mtval, not read the alias. */
-    unsigned long alias = 0x100001000ul;
+    unsigned long alias = (1ul << PHYS_BITS) | 0x1000ul;
     RUN_CASE("mv   t1, %0\n"
              "ld   t2, 0(t1)",
              "r"(alias));
     all_ok &= report3("D aliased-bram-load", 5u, 0, alias, 0);
 
     /* E: store to a wild address. */
-    unsigned long wild_st = 0x700000010ul; /* [63:32]!=0 */
+    unsigned long wild_st = DDR_LIMIT + 0x10ul;
     RUN_CASE("mv   t1, %0\n"
              "sd   t1, 0(t1)",
              "r"(wild_st));
@@ -221,7 +229,7 @@ int main(void)
 
     /* I: JALR to a wild target: the fetch faults, and mepc and mtval are the
      * exact wild target. */
-    unsigned long wild_jump = 0x140000200ul;
+    unsigned long wild_jump = DDR_LIMIT + 0x200ul;
     RUN_CASE("mv   t1, %0\n"
              "jalr x0, t1, 0",
              "r"(wild_jump));

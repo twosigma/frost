@@ -231,8 +231,8 @@ module data_mem_request_router #(
       lq_mem_request_valid ? lq_mem_request_no_merge : i_lq_mem_read_no_merge;
   // The live device-quadrant decode forces capture. Acceptance and MMIO
   // effects use only the held address.
-  assign lq_live_request_requires_park = (lq_mem_read_addr[31:30] == 2'b01);
-  assign lq_pending_request_requires_drain = (lq_mem_request_addr[31:30] == 2'b01);
+  assign lq_live_request_requires_park = riscv_pkg::pma_device_quadrant(lq_mem_read_addr);
+  assign lq_pending_request_requires_drain = riscv_pkg::pma_device_quadrant(lq_mem_request_addr);
 
   // -------------------------------------------------------------------------
   // Tier decode.

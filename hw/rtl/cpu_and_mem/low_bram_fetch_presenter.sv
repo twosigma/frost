@@ -33,7 +33,8 @@
  * handles the request.
  */
 module low_bram_fetch_presenter #(
-    parameter bit SEPARATE_ADDRESS_RETARGET = 1'b0
+    parameter bit SEPARATE_ADDRESS_RETARGET = 1'b0,
+    parameter int unsigned PC_BITS = 64
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -52,7 +53,7 @@ module low_bram_fetch_presenter #(
     // provider. The upper PA bits keep i_retarget, so the overlay check and
     // the address history see a crossing request as high, never as low.
     input logic i_address_retarget,
-    input logic [31:0] i_pc,
+    input logic [PC_BITS-1:0] i_pc,
     input logic [31:0] i_pa0,
     input logic [31:0] i_pa1,
     input logic i_pa_valid,
@@ -61,6 +62,9 @@ module low_bram_fetch_presenter #(
     input logic i_fault1,
     input logic i_fault1_page,
     output logic [31:0] o_fetch_address,
+    // The BRAM address pins remain 32-bit, but response identity must retain
+    // the full virtual PC so an out-of-range fetch cannot match a low alias.
+    output logic [PC_BITS-1:0] o_fetch_pc,
     output logic [31:0] o_fetch_pa0,
     output logic [31:0] o_fetch_pa1,
     output logic o_fetch_pa_valid,
@@ -72,7 +76,7 @@ module low_bram_fetch_presenter #(
 );
 
   logic presented_owner_low_q;
-  logic [31:0] presented_pc_q;
+  logic [PC_BITS-1:0] presented_pc_q;
   logic [31:0] presented_pa0_q, presented_pa1_q;
   logic presented_pa_valid_q;
   logic presented_fault0_q, presented_fault0_page_q;
@@ -104,7 +108,8 @@ module low_bram_fetch_presenter #(
       (presented_owner_low_q && presented_pa_valid_q && !i_address_retarget &&
        (!i_response_ready || (i_publish_hold && !i_response_overlay_hit))) : repeat_presented;
 
-  assign o_fetch_address = repeat_presented ? presented_pc_q : i_pc;
+  assign o_fetch_pc = repeat_presented ? presented_pc_q : i_pc;
+  assign o_fetch_address = o_fetch_pc[31:0];
   assign o_fetch_pa0 = {
     repeat_presented ? presented_pa0_q[31:16] : i_pa0[31:16],
     repeat_address ? presented_pa0_q[15:0] : i_pa0[15:0]
@@ -145,7 +150,7 @@ module low_bram_fetch_presenter #(
       slow_response_published_q <= 1'b0;
     end else begin
       presented_owner_low_q   <= repeat_presented ? presented_owner_low_q : i_owner_low;
-      presented_pc_q          <= o_fetch_address;
+      presented_pc_q          <= o_fetch_pc;
       presented_pa0_q         <= o_fetch_pa0;
       presented_pa1_q         <= o_fetch_pa1;
       presented_pa_valid_q    <= o_fetch_pa_valid;

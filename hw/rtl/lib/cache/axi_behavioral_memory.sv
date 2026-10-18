@@ -94,6 +94,7 @@ module axi_behavioral_memory #(
 );
 
   localparam int unsigned NumWords = MEM_BYTES / 4;
+  localparam int unsigned WordIndexBits = (NumWords > 1) ? $clog2(NumWords) : 1;
   localparam int unsigned WordsPerLine = LINE_BYTES / 4;
   localparam int unsigned SlotBits = (NUM_SLOTS > 1) ? $clog2(NUM_SLOTS) : 1;
   localparam int unsigned OrderBits = SlotBits + 1;  // issue sequence numbers
@@ -355,8 +356,8 @@ module axi_behavioral_memory #(
 `ifdef FROST_WIDE_DDR_TEST
           rdata_q[w*32+:32] <= memory[(64'(rd_addr_q[rd_pick]) >> 2) + 64'(w)];
 `else
-          rdata_q[w*32+:32] <= memory[(((rd_addr_q[rd_pick] &
-              AXI_ADDR_WIDTH'(MEM_BYTES - 1)) >> 2) + w)];
+          rdata_q[w*32+:32] <= memory[WordIndexBits'(((rd_addr_q[rd_pick] &
+              AXI_ADDR_WIDTH'(MEM_BYTES - 1)) >> 2) + AXI_ADDR_WIDTH'(w))];
 `endif
         end
         r_slot_q       <= rd_pick;
@@ -522,7 +523,8 @@ module axi_behavioral_memory #(
         for (int unsigned w = 0; w < WordsPerLine; w++) begin
           for (int unsigned b = 0; b < 4; b++) begin
             if (wr_strb_q[wr_pick][w*4+b]) begin
-              memory[(((wr_addr_q[wr_pick]&(MEM_BYTES-1))>>2)+w)][b*8+:8] <=
+              memory[WordIndexBits'(((wr_addr_q[wr_pick] &
+                  AXI_ADDR_WIDTH'(MEM_BYTES-1)) >> 2) + AXI_ADDR_WIDTH'(w))][b*8+:8] <=
                   wr_data_q[wr_pick][(w*32)+(b*8)+:8];
             end
           end
@@ -594,13 +596,16 @@ module axi_behavioral_memory #(
       end
 `ifndef FROST_WIDE_DDR_TEST
       if (oob_warnings < 8) begin
-        if (i_axi_awvalid && o_axi_awready && (i_axi_awaddr + LINE_BYTES > MEM_BYTES)) begin
+        if (i_axi_awvalid && o_axi_awready &&
+            ({1'b0, i_axi_awaddr} + (AXI_ADDR_WIDTH+1)'(LINE_BYTES) >
+             (AXI_ADDR_WIDTH+1)'(MEM_BYTES))) begin
           // A masked write means DDR_MODEL_BYTES is too small for the program.
           $display("WARNING: axi_behavioral_memory: WRITE 0x%08x beyond modeled %0d bytes",
                    i_axi_awaddr, MEM_BYTES);
           oob_warnings <= oob_warnings + 1;
         end else if (i_axi_arvalid && o_axi_arready &&
-                     (i_axi_araddr + LINE_BYTES > MEM_BYTES)) begin
+                     ({1'b0, i_axi_araddr} + (AXI_ADDR_WIDTH+1)'(LINE_BYTES) >
+                      (AXI_ADDR_WIDTH+1)'(MEM_BYTES))) begin
           // Aliased; wrong-path speculative reads are expected to land here.
           $display("WARNING: axi_behavioral_memory: read 0x%08x beyond modeled %0d bytes",
                    i_axi_araddr, MEM_BYTES);

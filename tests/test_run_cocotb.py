@@ -237,6 +237,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="ddr_test",
         description="Cached DDR loads and stores through the cache hierarchy",
     ),
+    **{
+        f"pa_width_test_{1 << (bits - 30)}g": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="pa_width_test",
+            description=f"Bare CPU access through the last line of a {1 << (bits - 30)} GiB DDR aperture",
+            include_in_pytest=False,
+            extra_env=(("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),),
+            verilator_extra_args=(
+                "-DFROST_WIDE_DDR_TEST",
+                f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}",
+            ),
+        )
+        for bits in range(30, 38)
+    },
     "dma_torture": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -385,6 +400,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Physical-memory access faults with precise trap state and fault priority"
         ),
+        extra_env=(("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=30"),),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
+    ),
+    "pma_fault_test_128g": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="pma_fault_test",
+        description="Out-of-range traps beyond the 128 GiB DDR aperture",
+        include_in_pytest=False,
+        extra_env=(("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=37"),),
+        verilator_extra_args=("-DFROST_WIDE_DDR_TEST", "-DFROST_DDR_CAPACITY_LOG2_BYTES=37"),
     ),
     "fs_off_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

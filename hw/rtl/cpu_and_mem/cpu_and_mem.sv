@@ -347,7 +347,8 @@ module cpu_and_mem #(
   // CPU-side UART write, muxed against the hang-triage byte stream further down.
   logic cpu_uart_wr_en;
   logic [7:0] cpu_uart_wr_data;
-  logic [31:0] fetch_address;  // VA of the presented fetch request (low-BRAM served tags)
+  logic [31:0] fetch_address;  // Low BRAM's physical address pins.
+  logic [riscv_pkg::XLEN-1:0] fetch_request_pc;  // Full response identity.
   logic [63:0] instruction;  // 64-bit fetch: {next_word, current_word}
   // instruction's sources kept apart for IF's current-word and spanning-half
   // selects: the low BRAM's words in physical bank order ({odd, even}), the
@@ -574,10 +575,14 @@ module cpu_and_mem #(
   // Capture window selects on the same edge as the MMIO write address.
   logic plic_sel_q, dma_engine_sel_q, nic_sel_q, memerr_sel_q;
   always_ff @(posedge i_clk) begin
-    plic_sel_q       <= (data_memory_address[31:22] == PlicWindowSel);
-    dma_engine_sel_q <= (data_memory_address[31:8] == DmaEngineBase[31:8]);
-    nic_sel_q        <= (data_memory_address[31:12] == NicBase[31:12]);
-    memerr_sel_q     <= (data_memory_address[31:8] == MemErrBase[31:8]);
+    plic_sel_q       <= riscv_pkg::pma_device_quadrant(riscv_pkg::XLEN'(data_memory_address)) &&
+                        (data_memory_address[31:22] == PlicWindowSel);
+    dma_engine_sel_q <= riscv_pkg::pma_device_quadrant(riscv_pkg::XLEN'(data_memory_address)) &&
+                        (data_memory_address[31:8] == DmaEngineBase[31:8]);
+    nic_sel_q        <= riscv_pkg::pma_device_quadrant(riscv_pkg::XLEN'(data_memory_address)) &&
+                        (data_memory_address[31:12] == NicBase[31:12]);
+    memerr_sel_q     <= riscv_pkg::pma_device_quadrant(riscv_pkg::XLEN'(data_memory_address)) &&
+                        (data_memory_address[31:8] == MemErrBase[31:8]);
   end
   logic plic_wr_en, plic_wr_hi;
   assign plic_wr_hi = |data_memory_byte_write_enable_registered[7:4];
@@ -922,7 +927,7 @@ module cpu_and_mem #(
         .i_owner_low(1'b1),
         .i_retarget(fetch_redirect),
         .i_address_retarget(fetch_redirect),
-        .i_pc(program_counter[31:0]),
+        .i_pc(program_counter),
         .i_pa0(fetch_pa0[31:0]),
         .i_pa1(fetch_pa1[31:0]),
         .i_pa_valid(fetch_pa_valid),
@@ -931,6 +936,7 @@ module cpu_and_mem #(
         .i_fault1(fetch_fault1),
         .i_fault1_page(fetch_fault1_page),
         .o_fetch_address(fetch_address),
+        .o_fetch_pc(fetch_request_pc),
         .o_fetch_pa0(fetch_pa_word0),
         .o_fetch_pa1(fetch_pa_word1),
         .o_fetch_pa_valid(fetch_pa_ok),
@@ -1029,7 +1035,7 @@ module cpu_and_mem #(
         .i_owner_low(!fetch_pa0_is_cached),
         .i_retarget(fetch_redirect || fetch_high_transition),
         .i_address_retarget(fetch_redirect),
-        .i_pc(program_counter[31:0]),
+        .i_pc(program_counter),
         .i_pa0(fetch_pa0[31:0]),
         .i_pa1(fetch_pa1[31:0]),
         .i_pa_valid(fetch_pa_valid),
@@ -1038,6 +1044,7 @@ module cpu_and_mem #(
         .i_fault1(fetch_fault1),
         .i_fault1_page(fetch_fault1_page),
         .o_fetch_address(fetch_address),
+        .o_fetch_pc(fetch_request_pc),
         .o_fetch_pa0(fetch_pa_word0),
         .o_fetch_pa1(fetch_pa_word1),
         .o_fetch_pa_valid(fetch_pa_ok),
@@ -1205,7 +1212,7 @@ module cpu_and_mem #(
         .i_owner_low(1'b1),
         .i_retarget(fetch_redirect),
         .i_address_retarget(fetch_redirect),
-        .i_pc(program_counter[31:0]),
+        .i_pc(program_counter),
         .i_pa0(fetch_pa0[31:0]),
         .i_pa1(fetch_pa1[31:0]),
         .i_pa_valid(fetch_pa_valid),
@@ -1214,6 +1221,7 @@ module cpu_and_mem #(
         .i_fault1(fetch_fault1),
         .i_fault1_page(fetch_fault1_page),
         .o_fetch_address(fetch_address),
+        .o_fetch_pc(fetch_request_pc),
         .o_fetch_pa0(fetch_pa_word0),
         .o_fetch_pa1(fetch_pa_word1),
         .o_fetch_pa_valid(fetch_pa_ok),
@@ -1622,7 +1630,8 @@ module cpu_and_mem #(
       .i_dev_read_addr(mmio_load_addr),
       .i_dev_read_capture(mmio_read_capture),
       .o_dev_read_data(rvfi_dii_device_read_data),
-      .i_dev_write_en(|data_memory_byte_write_enable && (data_memory_address[31:30] == 2'b01)),
+      .i_dev_write_en(|data_memory_byte_write_enable &&
+                      riscv_pkg::pma_device_quadrant(data_memory_address)),
       .i_dev_write_addr(data_memory_address),
       .i_dev_write_data(data_memory_write_data),
       .i_dev_write_strb(data_memory_byte_write_enable)
@@ -1679,10 +1688,10 @@ module cpu_and_mem #(
     // Parity must match the physical word read. Visible Sv39 results share
     // VA and PA bit 2 (page offset); fetch_pa_ok blocks unresolved results.
     bram_fetch_bank_sel_cpu_r <= fetch_pa_word0[2];
-    bram_fetch_served_word_q <= (riscv_pkg::XLEN-2)'(fetch_address[31:2]);
-    bram_fetch_served_last_word_q <= (riscv_pkg::XLEN-2)'(fetch_address[31:2]) + 1'b1;
-    bram_fetch_served_prev_word_q <= (riscv_pkg::XLEN-2)'(fetch_address[31:2]) - 1'b1;
-    bram_fetch_served_prev_word_valid_q <= |fetch_address[31:2];
+    bram_fetch_served_word_q <= fetch_request_pc[riscv_pkg::XLEN-1:2];
+    bram_fetch_served_last_word_q <= fetch_request_pc[riscv_pkg::XLEN-1:2] + 1'b1;
+    bram_fetch_served_prev_word_q <= fetch_request_pc[riscv_pkg::XLEN-1:2] - 1'b1;
+    bram_fetch_served_prev_word_valid_q <= |fetch_request_pc[riscv_pkg::XLEN-1:2];
 `ifdef FROST_RVFI_DII
     // TestRIG: injected instructions need no memory, and the reference model
     // checks only translation for them, so drop instruction access faults

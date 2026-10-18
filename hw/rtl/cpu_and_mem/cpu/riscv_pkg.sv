@@ -1455,6 +1455,12 @@ package riscv_pkg;
     pma_device_ok = (addr[XLEN-1:32] == '0) && pma_device_page_ok(addr[31:12]);
   endfunction
 
+  // Legacy untranslated stores may reach any device-quadrant address. The
+  // upper-bit check is essential once DDR extends above the first 4 GiB.
+  function automatic logic pma_device_quadrant(input logic [XLEN-1:0] addr);
+    pma_device_quadrant = (addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b01);
+  endfunction
+
   // Loads and stores.
   function automatic logic pma_data_ok(input logic [XLEN-1:0] addr);
     pma_data_ok = pma_memory_ok(addr) || pma_device_ok(addr);
@@ -1464,7 +1470,7 @@ package riscv_pkg;
   // for timing; the bus ignores unserved device addresses. Translated
   // stores use the data MMU's exact window check.
   function automatic logic pma_store_ok(input logic [XLEN-1:0] addr);
-    pma_store_ok = pma_memory_ok(addr) || ((addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b01));
+    pma_store_ok = pma_memory_ok(addr) || pma_device_quadrant(addr);
   endfunction
 
   // AMO, LR and SC: BRAM and cached DDR only.

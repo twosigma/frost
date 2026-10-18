@@ -306,7 +306,7 @@ module dmmu (
     resolve_now = 1'b0;
     resolve_fault = riscv_pkg::DFAULT_NONE;
     resolve_addr = s1_q.va;
-    resolve_is_mmio = (s1_q.va[31:30] == 2'b01);
+    resolve_is_mmio = riscv_pkg::pma_device_quadrant(s1_q.va);
     if (s1_valid_q) begin
       if (i_trap_misaligned && s1_misaligned) begin
         resolve_now = 1'b1;
@@ -432,7 +432,7 @@ module dmmu (
   for (genvar mmio = 0; mmio < 2; mmio++) begin : gen_s2_mmio_cases
     logic resolved_mmio;
     always_comb begin
-      resolved_mmio = (s1_q.va[31:30] == 2'b01);
+      resolved_mmio = riscv_pkg::pma_device_quadrant(s1_q.va);
       if (s1_valid_q) begin
         if (i_trap_misaligned && s1_misaligned) resolved_mmio = 1'b0;
         else if (s1_noncanonical) resolved_mmio = 1'b0;
@@ -579,10 +579,10 @@ module dmmu (
 
   assign o_early_ok = early_ok_q[0];
   assign o_early_pa = early_pa_q[0];
-  assign o_early_is_mmio = (early_pa_q[0][31:30] == 2'b01);
+  assign o_early_is_mmio = riscv_pkg::pma_device_quadrant(early_pa_q[0]);
   assign o_early2_ok = early_ok_q[1];
   assign o_early2_pa = early_pa_q[1];
-  assign o_early2_is_mmio = (early_pa_q[1][31:30] == 2'b01);
+  assign o_early2_is_mmio = riscv_pkg::pma_device_quadrant(early_pa_q[1]);
 
   // ---------------------------------------------------------------------------
   // DTLB
@@ -648,7 +648,8 @@ module dmmu (
     p_mmio_capture_exact : assert (s2_mmio_next == (s1_resolved ? resolve_is_mmio : s2_is_mmio_q));
     p_resolve_mmio_exact :
     assert (resolve_is_mmio ==
-        ((resolve_fault == riscv_pkg::DFAULT_NONE) && (resolve_addr[31:30] == 2'b01)));
+        ((resolve_fault == riscv_pkg::DFAULT_NONE) &&
+         riscv_pkg::pma_device_quadrant(resolve_addr)));
     // S2's split address rebuilds the resolution's address.
     p_resolve_addr_exact :
     assert ((resolve_pa ? riscv_pkg::XLEN'({resolve_ppn, s1_q.va[11:0]} : s1_q.va) == resolve_addr);
