@@ -36,8 +36,8 @@
  */
 module nic_csr #(
     parameter int unsigned ADDR_WIDTH = 32,
-    parameter logic [31:0] APERTURE_BASE = 32'h8000_0000,
-    parameter logic [31:0] APERTURE_BYTES = 32'h4000_0000
+    parameter logic [63:0] APERTURE_BASE = 64'h8000_0000,
+    parameter logic [63:0] APERTURE_BYTES = 64'h4000_0000
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -47,6 +47,8 @@ module nic_csr #(
     input  logic        i_wr_en,
     input  logic [11:0] i_wr_offset,
     input  logic [31:0] i_wr_data,
+    input  logic        i_wr64_en,
+    input  logic [63:0] i_wr64_data,
     /* verilator lint_off UNUSEDSIGNAL */  // reads are 64-bit aligned: bits 2:0 are ignored
     input  logic [11:0] i_rd_offset,
     /* verilator lint_on UNUSEDSIGNAL */
@@ -62,6 +64,7 @@ module nic_csr #(
     // Control.
     output logic                  o_rx_en,
     output logic                  o_tx_en,
+    output logic                  o_wide_mode,
     output logic                  o_promisc,
     output logic [          47:0] o_mac,
     output logic                  o_reset_req,
@@ -108,6 +111,7 @@ module nic_csr #(
 );
   // ---- state -----------------------------------------------------------------------
   logic rx_en_q, tx_en_q, promisc_q, rx_cfg_err_q, tx_cfg_err_q;
+  logic wide_mode_q;
   logic [47:0] mac_q;
   logic [ 3:0] phy_ctrl_q;
   logic [ADDR_WIDTH-1:0] rx_base_q, tx_base_q;
@@ -119,6 +123,7 @@ module nic_csr #(
 
   assign o_rx_en = rx_en_q;
   assign o_tx_en = tx_en_q;
+  assign o_wide_mode = wide_mode_q;
   assign o_promisc = promisc_q;
   assign o_mac = mac_q;
   assign o_rx_base = rx_base_q;
@@ -130,11 +135,11 @@ module nic_csr #(
   assign o_phy_ctrl = phy_ctrl_q;
 
   function automatic logic ring_ok(input logic [ADDR_WIDTH-1:0] base, input logic [4:0] size);
-    logic [32:0] end_addr;
-    end_addr = 33'(base) + (33'd16 << size);
+    logic [64:0] end_addr;
+    end_addr = 65'(base) + (65'd16 << size);
     ring_ok  = (base[4:0] == 5'b0) && (size >= 5'(nic_pkg::RingSizeLog2Min)) &&
-        (size <= 5'(nic_pkg::RingSizeLog2Max)) && (base >= APERTURE_BASE) &&
-        (end_addr <= (33'(APERTURE_BASE) + 33'(APERTURE_BYTES)));
+        (size <= 5'(nic_pkg::RingSizeLog2Max)) && (64'(base) >= APERTURE_BASE) &&
+        (end_addr <= (65'(APERTURE_BASE) + 65'(APERTURE_BYTES)));
   endfunction
 
   // ---- writes ------------------------------------------------------------------------
@@ -154,8 +159,8 @@ module nic_csr #(
   assign rx_enable_ok  = ring_ok(rx_base_q, rx_size_q) && i_rx_ready;
   assign tx_enable_ok  = ring_ok(tx_base_q, tx_size_q) && i_tx_ready;
   logic rx_ring_writable, tx_ring_writable;
-  assign rx_ring_writable = wr && !rx_en_q && i_rx_idle;
-  assign tx_ring_writable = wr && !tx_en_q && i_tx_idle;
+  assign rx_ring_writable = !reset_busy && (i_wr_en || i_wr64_en) && !rx_en_q && i_rx_idle;
+  assign tx_ring_writable = !reset_busy && (i_wr_en || i_wr64_en) && !tx_en_q && i_tx_idle;
 
   // ---- link ------------------------------------------------------------------------------
   logic carrier;
@@ -199,6 +204,7 @@ module nic_csr #(
       tx_cfg_err_q       <= 1'b0;
       rx_base_q          <= '0;
       tx_base_q          <= '0;
+      wide_mode_q        <= 1'b0;
       rx_size_q          <= '0;
       tx_size_q          <= '0;
       rx_tail_q          <= '0;
@@ -244,23 +250,53 @@ module nic_csr #(
       if (!i_tx_ready) tx_en_q <= 1'b0;
 
       // Rings.
-      if (rx_ring_writable && (i_wr_offset == nic_pkg::RxBaseOffset)) begin
-        rx_base_q    <= {i_wr_data[ADDR_WIDTH-1:5], 5'b0};
+      if (wr && (i_wr_offset == nic_pkg::AbiCtrlOffset) && !rx_en_q && !tx_en_q &&
+          i_rx_idle && i_tx_idle && (i_wr_data[0] != wide_mode_q)) begin
+        wide_mode_q  <= i_wr_data[0];
+        rx_base_q    <= '0;
+        tx_base_q    <= '0;
+        rx_size_q    <= '0;
+        tx_size_q    <= '0;
+        rx_tail_q    <= '0;
+        tx_tail_q    <= '0;
+        o_rx_restart <= 1'b1;
+        o_tx_restart <= 1'b1;
+      end
+      if (rx_ring_writable && i_wr_en && !wide_mode_q &&
+          (i_wr_offset == nic_pkg::RxBaseOffset)) begin
+        rx_base_q    <= ADDR_WIDTH'({i_wr_data[31:5], 5'b0});
         rx_tail_q    <= '0;
         o_rx_restart <= 1'b1;
       end
-      if (rx_ring_writable && (i_wr_offset == nic_pkg::RxSizeOffset)) begin
+      if (rx_ring_writable && wide_mode_q && i_wr64_en &&
+          (i_wr_offset == nic_pkg::RxBase64Offset) &&
+          (i_wr64_data[4:0] == 5'b0) &&
+          ((ADDR_WIDTH == 64) || ((i_wr64_data >> ADDR_WIDTH) == 0))) begin
+        rx_base_q    <= ADDR_WIDTH'({i_wr64_data[63:5], 5'b0});
+        rx_tail_q    <= '0;
+        o_rx_restart <= 1'b1;
+      end
+      if (rx_ring_writable && i_wr_en && (i_wr_offset == nic_pkg::RxSizeOffset)) begin
         rx_size_q    <= i_wr_data[4:0];
         rx_tail_q    <= '0;
         o_rx_restart <= 1'b1;
       end
       if (wr && (i_wr_offset == nic_pkg::RxTailOffset)) rx_tail_q <= i_wr_data[15:0];
-      if (tx_ring_writable && (i_wr_offset == nic_pkg::TxBaseOffset)) begin
-        tx_base_q    <= {i_wr_data[ADDR_WIDTH-1:5], 5'b0};
+      if (tx_ring_writable && i_wr_en && !wide_mode_q &&
+          (i_wr_offset == nic_pkg::TxBaseOffset)) begin
+        tx_base_q    <= ADDR_WIDTH'({i_wr_data[31:5], 5'b0});
         tx_tail_q    <= '0;
         o_tx_restart <= 1'b1;
       end
-      if (tx_ring_writable && (i_wr_offset == nic_pkg::TxSizeOffset)) begin
+      if (tx_ring_writable && wide_mode_q && i_wr64_en &&
+          (i_wr_offset == nic_pkg::TxBase64Offset) &&
+          (i_wr64_data[4:0] == 5'b0) &&
+          ((ADDR_WIDTH == 64) || ((i_wr64_data >> ADDR_WIDTH) == 0))) begin
+        tx_base_q    <= ADDR_WIDTH'({i_wr64_data[63:5], 5'b0});
+        tx_tail_q    <= '0;
+        o_tx_restart <= 1'b1;
+      end
+      if (tx_ring_writable && i_wr_en && (i_wr_offset == nic_pkg::TxSizeOffset)) begin
         tx_size_q    <= i_wr_data[4:0];
         tx_tail_q    <= '0;
         o_tx_restart <= 1'b1;
@@ -307,11 +343,16 @@ module nic_csr #(
       nic_pkg::StatusOffset:    reg_word = status_word;
       nic_pkg::MacLoOffset:     reg_word = mac_q[31:0];
       nic_pkg::MacHiOffset:     reg_word = {16'b0, mac_q[47:32]};
-      nic_pkg::RxBaseOffset:    reg_word = rx_base_q;
+      nic_pkg::RxBaseOffset:    reg_word = rx_base_q[31:0];
       nic_pkg::RxSizeOffset:    reg_word = {27'b0, rx_size_q};
       nic_pkg::RxTailOffset:    reg_word = {16'b0, rx_tail_q};
       nic_pkg::RxHeadOffset:    reg_word = {16'b0, i_rx_head};
-      nic_pkg::TxBaseOffset:    reg_word = tx_base_q;
+      nic_pkg::TxBaseOffset:    reg_word = tx_base_q[31:0];
+      nic_pkg::AbiCtrlOffset:   reg_word = {30'b0, 1'b1, wide_mode_q};
+      nic_pkg::RxBase64Offset:  reg_word = 32'(rx_base_q);
+      nic_pkg::RxBase64HiOffset: reg_word = 32'(rx_base_q >> 32);
+      nic_pkg::TxBase64Offset:  reg_word = 32'(tx_base_q);
+      nic_pkg::TxBase64HiOffset: reg_word = 32'(tx_base_q >> 32);
       nic_pkg::TxSizeOffset:    reg_word = {27'b0, tx_size_q};
       nic_pkg::TxTailOffset:    reg_word = {16'b0, tx_tail_q};
       nic_pkg::TxHeadOffset:    reg_word = {16'b0, i_tx_head};

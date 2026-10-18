@@ -25,7 +25,7 @@ module cpu_and_mem #(
     parameter int unsigned SIM_TIMER_SPEEDUP = 1,
     // Cached address range; requests complete with variable latency.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
-    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB
+    parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes,
     parameter int unsigned ENABLE_CACHED_TIER = 1,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
@@ -176,7 +176,7 @@ module cpu_and_mem #(
     output logic                       o_ddr_axi_awvalid,
     input  logic                       i_ddr_axi_awready,
     output logic [                4:0] o_ddr_axi_awid,
-    output logic [               31:0] o_ddr_axi_awaddr,
+    output logic [riscv_pkg::DdrAxiAddrBits-1:0] o_ddr_axi_awaddr,
     output logic [                7:0] o_ddr_axi_awlen,
     output logic [                2:0] o_ddr_axi_awsize,
     output logic [                1:0] o_ddr_axi_awburst,
@@ -192,7 +192,7 @@ module cpu_and_mem #(
     output logic                       o_ddr_axi_arvalid,
     input  logic                       i_ddr_axi_arready,
     output logic [                4:0] o_ddr_axi_arid,
-    output logic [               31:0] o_ddr_axi_araddr,
+    output logic [riscv_pkg::DdrAxiAddrBits-1:0] o_ddr_axi_araddr,
     output logic [                7:0] o_ddr_axi_arlen,
     output logic [                2:0] o_ddr_axi_arsize,
     output logic [                1:0] o_ddr_axi_arburst,
@@ -342,7 +342,7 @@ module cpu_and_mem #(
   end
 
   // CPU interface signals
-  logic [31:0] program_counter;
+  logic [riscv_pkg::XLEN-1:0] program_counter;
   logic commit_vld;  // instruction-retire pulse (hang-triage tap)
   // CPU-side UART write, muxed against the hang-triage byte stream further down.
   logic cpu_uart_wr_en;
@@ -364,18 +364,20 @@ module cpu_and_mem #(
   logic instruction_valid;  // Fetch window valid
   // Provider-local served-window word tags. IF compares both providers in
   // parallel and selects only the one-bit coverage results.
-  logic [29:0] instruction_served_word_low, instruction_served_last_word_low;
-  logic [29:0] instruction_served_prev_word_low;
+  logic [riscv_pkg::XLEN-3:0] instruction_served_word_low, instruction_served_last_word_low;
+  logic [riscv_pkg::XLEN-3:0] instruction_served_prev_word_low;
   logic instruction_served_prev_word_valid_low;
-  logic [29:0] instruction_served_word_high, instruction_served_last_word_high;
-  logic [29:0] instruction_served_prev_word_high;
+  logic [riscv_pkg::XLEN-3:0] instruction_served_word_high, instruction_served_last_word_high;
+  logic [riscv_pkg::XLEN-3:0] instruction_served_prev_word_high;
   logic instruction_served_prev_word_valid_high;
   // Physical fetch results include both word addresses, validity, faults,
   // prefetch permission, and provider retarget pulses. Bare mode uses the VA
   // directly; Sv39 requires a matching resolved VA tag. Served faults and the
   // provider bit return to the core. Window tags use the virtual PC; only
   // memories use physical addresses.
-  logic [31:0] fetch_pa0, fetch_pa1;
+  logic [riscv_pkg::PhysAddrBits-1:0] fetch_pa0, fetch_pa1;
+  logic fetch_pa0_is_cached;
+  assign fetch_pa0_is_cached = riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(fetch_pa0));
   logic fetch_pa_valid;
   logic fetch_fault0, fetch_fault0_page, fetch_fault1, fetch_fault1_page;
   logic fetch_line_after_ok, fetch_redirect, fetch_cached_retarget;
@@ -390,9 +392,9 @@ module cpu_and_mem #(
   // Low-BRAM tags (fetch_address delayed one cycle to match the 1-cycle imem
   // read latency). S+1/S-1 and predecessor validity register on the same edge,
   // as do the request's fault flags.
-  logic [29:0] bram_fetch_served_word_q;
-  logic [29:0] bram_fetch_served_last_word_q;
-  logic [29:0] bram_fetch_served_prev_word_q;
+  logic [riscv_pkg::XLEN-3:0] bram_fetch_served_word_q;
+  logic [riscv_pkg::XLEN-3:0] bram_fetch_served_last_word_q;
+  logic [riscv_pkg::XLEN-3:0] bram_fetch_served_prev_word_q;
   logic bram_fetch_served_prev_word_valid_q;
   logic
       bram_fetch_fault0_q, bram_fetch_fault0_page_q, bram_fetch_fault1_q, bram_fetch_fault1_page_q;
@@ -455,10 +457,10 @@ module cpu_and_mem #(
   // DMA coherence handshake between the hierarchy's sequencer and the core.
   logic coh_admit_valid, coh_admit_ready, coh_inval_valid, coh_inval_done, coh_release_valid;
   logic [riscv_pkg::DmaCoherenceLockBits-1:0] coh_admit_slot, coh_inval_slot, coh_release_slot;
-  logic [31:0] coh_admit_addr;
+  logic [riscv_pkg::PhysAddrBits-1:0] coh_admit_addr;
 
   logic iup_req_valid, iup_req_ready, iup_req_write;
-  logic [31:0] iup_req_addr;
+  logic [riscv_pkg::PhysAddrBits-1:0] iup_req_addr;
   logic [L1LineBytes*8-1:0] iup_req_wdata;
   logic [L1LineBytes-1:0] iup_req_wstrb;
   logic [LineIdBits-1:0] iup_req_id;
@@ -471,14 +473,14 @@ module cpu_and_mem #(
   // tree. The walker's own ids are 2 bits, zero-extended, so responses come
   // back with the upper bits clear.
   logic walk_line_req_valid, walk_line_req_ready;
-  logic [31:0] walk_line_req_addr;
+  logic [riscv_pkg::PhysAddrBits-1:0] walk_line_req_addr;
   logic [LineIdBits-2:0] walk_line_req_id;
   logic walk_line_resp_valid;
   logic [LineIdBits-2:0] walk_line_resp_id;
   logic [1:0] ptw_line_req_id;
   assign walk_line_req_id = (LineIdBits - 1)'(ptw_line_req_id);
   logic [L1LineBytes*8-1:0] walk_line_resp_rdata;
-  logic [31:0] data_memory_address;
+  logic [riscv_pkg::PhysAddrBits-1:0] data_memory_address;
   logic [riscv_pkg::MemDataBits-1:0] data_memory_write_data, data_memory_write_data_registered;
   logic [riscv_pkg::MemDataBits-1:0] data_memory_response_data;  // Complete router payload
   logic [riscv_pkg::MemDataBits-1:0] mmio_read_data_comb;
@@ -488,7 +490,7 @@ module cpu_and_mem #(
   logic mmio_load_valid;
   logic mmio_read_capture;
   logic [riscv_pkg::MemDataBits-1:0] data_memory_read_data;  // From RAM only
-  logic [31:0] data_memory_address_registered;  // Delayed for read data alignment
+  logic [riscv_pkg::PhysAddrBits-1:0] data_memory_address_registered;  // Delayed for read data alignment
   logic [riscv_pkg::MemStrbBits-1:0] data_memory_byte_write_enable;
   // BRAM strobes exclude MMIO and cached writes using registered SQ and
   // AMO tier flags. They drive the BRAM WEA pins directly.
@@ -584,15 +586,31 @@ module cpu_and_mem #(
   assign plic_claim_pulse[1] = mmio_read_capture && (mmio_load_addr == PlicClaimS);
   logic [63:0] plic_rd_pair;
   // DMA test engine register bus (same shape as the PLIC's) and interrupt.
-  logic dma_engine_wr_en, dma_engine_wr_hi, dma_engine_irq;
+  logic dma_engine_wr_en, dma_engine_wr_hi, dma_engine_wr64_en, dma_engine_irq;
   logic [63:0] dma_engine_rd_pair;
   assign dma_engine_wr_hi = |data_memory_byte_write_enable_registered[7:4];
-  assign dma_engine_wr_en = |data_memory_byte_write_enable_registered && dma_engine_sel_q;
+  // The extended address bank is reached only by one complete 64-bit store.
+  // Never fold it into the PLIC-style 32-bit lane mux, which discards a half.
+  assign dma_engine_wr64_en = dma_engine_sel_q &&
+      (data_memory_byte_write_enable_registered == 8'hff) &&
+      ((data_memory_address_registered[7:0] == 8'h40) ||
+       (data_memory_address_registered[7:0] == 8'h48) ||
+       (data_memory_address_registered[7:0] == 8'h50));
+  assign dma_engine_wr_en = |data_memory_byte_write_enable_registered && dma_engine_sel_q &&
+      !((data_memory_address_registered[7:3] == 5'h08) ||
+        (data_memory_address_registered[7:3] == 5'h09) ||
+        (data_memory_address_registered[7:3] == 5'h0a));
   // NIC register bus (same shape) and interrupt.
-  logic nic_wr_en, nic_wr_hi, nic_irq;
+  logic nic_wr_en, nic_wr_hi, nic_wr64_en, nic_irq;
   logic [63:0] nic_rd_pair;
   assign nic_wr_hi = |data_memory_byte_write_enable_registered[7:4];
-  assign nic_wr_en = |data_memory_byte_write_enable_registered && nic_sel_q;
+  assign nic_wr64_en = nic_sel_q &&
+      (data_memory_byte_write_enable_registered == 8'hff) &&
+      ((data_memory_address_registered[11:0] == nic_pkg::RxBase64Offset) ||
+       (data_memory_address_registered[11:0] == nic_pkg::TxBase64Offset));
+  assign nic_wr_en = |data_memory_byte_write_enable_registered && nic_sel_q &&
+      !((data_memory_address_registered[11:3] == nic_pkg::RxBase64Offset[11:3]) ||
+        (data_memory_address_registered[11:3] == nic_pkg::TxBase64Offset[11:3]));
   // Memory error unit register bus (same shape) and interrupt. The DDR
   // bridge's error pulses come from the cached tier below, or stay low
   // without it.
@@ -668,30 +686,26 @@ module cpu_and_mem #(
   // triage as a "timer tick serviced" event tap.
   logic mtimecmp_write_pulse;
   assign mtimecmp_write_pulse = |data_memory_byte_write_enable_registered &&
-      ((data_memory_address_registered == MtimecmpLowMmioAddr) ||
-       (data_memory_address_registered == MtimecmpHighMmioAddr) ||
-       (data_memory_address_registered == ClintMtimecmpLo) ||
-       (data_memory_address_registered == ClintMtimecmpHi));
+      ((data_memory_address_registered == riscv_pkg::PhysAddrBits'(MtimecmpLowMmioAddr)) ||
+       (data_memory_address_registered == riscv_pkg::PhysAddrBits'(MtimecmpHighMmioAddr)) ||
+       (data_memory_address_registered == riscv_pkg::PhysAddrBits'(ClintMtimecmpLo)) ||
+       (data_memory_address_registered == riscv_pkg::PhysAddrBits'(ClintMtimecmpHi)));
   logic [5:0] cpu_debug_irq_status;
   logic [31:0] cpu_debug_commit_pc;
   logic [31:0] cpu_debug_commit_2_pc;
   logic [1:0] cpu_debug_commit_valid;
 
   // RISC-V OOO CPU core: Tomasulo out-of-order, RV64GCB, M/S/U privilege.
-  // The physical map is 32-bit (riscv_pkg::PhysAddrBits), so this level keeps
-  // 32-bit address/PC signals. The core's XLEN-wide physical address ports
-  // carry upper bits that are zero by construction; they are dropped or
-  // zero-filled at these pins. The PCs are virtual addresses and keep only
-  // their low 32 bits here: for the fetch PC those are the window identity,
-  // and the core's physical fetch results (o_fetch_pa0/pa1) carry the
-  // addresses the memories are read at.
+  // Keep the complete virtual PC as the fetch-window identity. Physical
+  // addresses use the configured width; the core's PMA checks reject values
+  // above that width before any request reaches this boundary.
   logic [riscv_pkg::XLEN-1:0] cpu_pc_xlen;
   logic [riscv_pkg::XLEN-1:0] cpu_data_mem_addr_xlen;
   logic [riscv_pkg::XLEN-1:0] cpu_mmio_load_addr_xlen;
   logic [riscv_pkg::XLEN-1:0] cpu_debug_commit_pc_xlen;
   logic [riscv_pkg::XLEN-1:0] cpu_debug_commit_2_pc_xlen;
-  assign program_counter = cpu_pc_xlen[31:0];
-  assign data_memory_address = cpu_data_mem_addr_xlen[31:0];
+  assign program_counter = cpu_pc_xlen;
+  assign data_memory_address = cpu_data_mem_addr_xlen[riscv_pkg::PhysAddrBits-1:0];
   assign mmio_load_addr = cpu_mmio_load_addr_xlen[31:0];
   assign cpu_debug_commit_pc = cpu_debug_commit_pc_xlen[31:0];
   assign cpu_debug_commit_2_pc = cpu_debug_commit_2_pc_xlen[31:0];
@@ -792,7 +806,7 @@ module cpu_and_mem #(
       // DMA coherence handshake
       .i_coh_admit_valid(coh_admit_valid),
       .i_coh_admit_slot(coh_admit_slot),
-      .i_coh_admit_addr({{(riscv_pkg::XLEN - 32) {1'b0}}, coh_admit_addr}),
+      .i_coh_admit_addr(riscv_pkg::XLEN'(coh_admit_addr)),
       .o_coh_admit_ready(coh_admit_ready),
       .i_coh_inval_valid(coh_inval_valid),
       .i_coh_inval_slot(coh_inval_slot),
@@ -887,8 +901,8 @@ module cpu_and_mem #(
     assign instruction_served_last_word_low = bram_fetch_served_last_word_q;
     assign instruction_served_prev_word_low = bram_fetch_served_prev_word_q;
     assign instruction_served_prev_word_valid_low = bram_fetch_served_prev_word_valid_q;
-    assign instruction_served_word_high = 30'd0;
-    assign instruction_served_last_word_high = 30'd1;
+    assign instruction_served_word_high = '0;
+    assign instruction_served_last_word_high = (riscv_pkg::XLEN-2)'(1);
     assign instruction_served_prev_word_high = '1;
     assign instruction_served_prev_word_valid_high = 1'b0;
     assign instruction_fault0 = bram_fetch_fault0_q;
@@ -908,9 +922,9 @@ module cpu_and_mem #(
         .i_owner_low(1'b1),
         .i_retarget(fetch_redirect),
         .i_address_retarget(fetch_redirect),
-        .i_pc(program_counter),
-        .i_pa0(fetch_pa0),
-        .i_pa1(fetch_pa1),
+        .i_pc(program_counter[31:0]),
+        .i_pa0(fetch_pa0[31:0]),
+        .i_pa1(fetch_pa1[31:0]),
         .i_pa_valid(fetch_pa_valid),
         .i_fault0(fetch_fault0),
         .i_fault0_page(fetch_fault0_page),
@@ -974,9 +988,9 @@ module cpu_and_mem #(
     logic [riscv_pkg::ImemFetchSidebandWidth-1:0] cached_fetch_sideband;
     logic [7:0] cached_fetch_pc_metadata;
     logic cached_fetch_bank_sel_r;
-    logic [29:0] cached_fetch_served_word;
-    logic [29:0] cached_fetch_served_last_word;
-    logic [29:0] cached_fetch_served_prev_word;
+    logic [riscv_pkg::XLEN-3:0] cached_fetch_served_word;
+    logic [riscv_pkg::XLEN-3:0] cached_fetch_served_last_word;
+    logic [riscv_pkg::XLEN-3:0] cached_fetch_served_prev_word;
     logic cached_fetch_served_prev_word_valid;
     logic cached_fetch_fault0, cached_fetch_fault0_page;
     logic cached_fetch_fault1, cached_fetch_fault1_page;
@@ -1012,12 +1026,12 @@ module cpu_and_mem #(
         .i_response_overlay_hit(bram_fetch_window_overlay_hit),
         .i_response_claim(fetch_live_claim),
         .i_publish_hold(low_bram_pipeline_stall_q),
-        .i_owner_low(!fetch_pa0[31]),
+        .i_owner_low(!fetch_pa0_is_cached),
         .i_retarget(fetch_redirect || fetch_high_transition),
         .i_address_retarget(fetch_redirect),
-        .i_pc(program_counter),
-        .i_pa0(fetch_pa0),
-        .i_pa1(fetch_pa1),
+        .i_pc(program_counter[31:0]),
+        .i_pa0(fetch_pa0[31:0]),
+        .i_pa1(fetch_pa1[31:0]),
         .i_pa_valid(fetch_pa_valid),
         .i_fault0(fetch_fault0),
         .i_fault0_page(fetch_fault0_page),
@@ -1051,18 +1065,18 @@ module cpu_and_mem #(
         fetch_high_pc_metadata_q <= 1'b0;
       end else begin
         // The tier is a property of the physical address.
-        fetch_high_valid_q       <= fetch_pa0[31];
-        fetch_high_instr_q       <= fetch_pa0[31];
-        fetch_high_sideband_q    <= fetch_pa0[31];
-        fetch_high_pc_metadata_q <= fetch_pa0[31];
+        fetch_high_valid_q       <= fetch_pa0_is_cached;
+        fetch_high_instr_q       <= fetch_pa0_is_cached;
+        fetch_high_sideband_q    <= fetch_pa0_is_cached;
+        fetch_high_pc_metadata_q <= fetch_pa0_is_cached;
       end
     end
 
     // Suppress one delivery cycle on a tier crossing until the registered
-    // select matches fetch_pa0[31]. Otherwise a stale low-BRAM response could
+    // select matches the full-width cached-region decode. Otherwise a stale low-BRAM response could
     // advance IF while the high provider still owes the target. Metadata and
     // payload selects switch together; served tags remain provider-local.
-    assign fetch_high_transition = fetch_high_valid_q ^ fetch_pa0[31];
+    assign fetch_high_transition = fetch_high_valid_q ^ fetch_pa0_is_cached;
     assign instruction_valid = fetch_high_transition ? 1'b0 :
                                (fetch_high_valid_q ? cached_fetch_valid_local_q :
                                 low_bram_response_valid);
@@ -1171,8 +1185,8 @@ module cpu_and_mem #(
     assign instruction_served_last_word_low = bram_fetch_served_last_word_q;
     assign instruction_served_prev_word_low = bram_fetch_served_prev_word_q;
     assign instruction_served_prev_word_valid_low = bram_fetch_served_prev_word_valid_q;
-    assign instruction_served_word_high = 30'd0;
-    assign instruction_served_last_word_high = 30'd1;
+    assign instruction_served_word_high = '0;
+    assign instruction_served_last_word_high = (riscv_pkg::XLEN-2)'(1);
     assign instruction_served_prev_word_high = '1;
     assign instruction_served_prev_word_valid_high = 1'b0;
     assign instruction_fault0 = bram_fetch_fault0_q;
@@ -1191,9 +1205,9 @@ module cpu_and_mem #(
         .i_owner_low(1'b1),
         .i_retarget(fetch_redirect),
         .i_address_retarget(fetch_redirect),
-        .i_pc(program_counter),
-        .i_pa0(fetch_pa0),
-        .i_pa1(fetch_pa1),
+        .i_pc(program_counter[31:0]),
+        .i_pa0(fetch_pa0[31:0]),
+        .i_pa1(fetch_pa1[31:0]),
         .i_pa_valid(fetch_pa_valid),
         .i_fault0(fetch_fault0),
         .i_fault0_page(fetch_fault0_page),
@@ -1665,9 +1679,9 @@ module cpu_and_mem #(
     // Parity must match the physical word read. Visible Sv39 results share
     // VA and PA bit 2 (page offset); fetch_pa_ok blocks unresolved results.
     bram_fetch_bank_sel_cpu_r <= fetch_pa_word0[2];
-    bram_fetch_served_word_q <= fetch_address[31:2];
-    bram_fetch_served_last_word_q <= fetch_address[31:2] + 1'b1;
-    bram_fetch_served_prev_word_q <= fetch_address[31:2] - 1'b1;
+    bram_fetch_served_word_q <= (riscv_pkg::XLEN-2)'(fetch_address[31:2]);
+    bram_fetch_served_last_word_q <= (riscv_pkg::XLEN-2)'(fetch_address[31:2]) + 1'b1;
+    bram_fetch_served_prev_word_q <= (riscv_pkg::XLEN-2)'(fetch_address[31:2]) - 1'b1;
     bram_fetch_served_prev_word_valid_q <= |fetch_address[31:2];
 `ifdef FROST_RVFI_DII
     // TestRIG: injected instructions need no memory, and the reference model
@@ -1751,7 +1765,7 @@ module cpu_and_mem #(
     // the high bit clear, which the hierarchy's stream prefetcher needs.
     localparam int unsigned DmaAgentIdBits = 2;
     logic dma_req_valid, dma_req_ready, dma_req_write;
-    logic [31:0] dma_req_addr;
+    logic [riscv_pkg::PhysAddrBits-1:0] dma_req_addr;
     logic [L1LineBytes*8-1:0] dma_req_wdata;
     logic [L1LineBytes-1:0] dma_req_wstrb;
     logic [LineIdBits-1:0] dma_req_id;
@@ -1766,7 +1780,7 @@ module cpu_and_mem #(
     assign dma_agents_resp_id = dma_resp_id[DmaAgentIdBits:0];
     assign dma_resp_id_high_unused = |dma_resp_id[LineIdBits-1:DmaAgentIdBits+1];
     logic [1:0] agent_req_valid, agent_req_ready, agent_req_write, agent_resp_valid;
-    logic [1:0][ 31:0] agent_req_addr;
+    logic [1:0][riscv_pkg::PhysAddrBits-1:0] agent_req_addr;
     logic [1:0][L1LineBytes*8-1:0] agent_req_wdata;
     logic [1:0][L1LineBytes-1:0] agent_req_wstrb;
     logic [1:0][DmaAgentIdBits-1:0] agent_req_id, agent_resp_id;
@@ -1776,7 +1790,7 @@ module cpu_and_mem #(
     /* verilator lint_on UNUSEDSIGNAL */
 
     logic line_req_valid, line_req_ready, line_req_write;
-    logic [31:0] line_req_addr;
+    logic [riscv_pkg::PhysAddrBits-1:0] line_req_addr;
     logic [L1LineBytes*8-1:0] line_req_wdata;
     logic [L1LineBytes-1:0] line_req_wstrb;
     logic [LineIdBits-1:0] line_req_id;
@@ -1785,7 +1799,7 @@ module cpu_and_mem #(
     logic [L1LineBytes*8-1:0] line_resp_rdata;
 
     cached_tier_adapter #(
-        .XLEN(32),
+        .XLEN(riscv_pkg::PhysAddrBits),
         .LINE_BYTES(L1LineBytes),
         .LINE_ID_BITS(LineIdBits),
         .SPLIT_READ_REQ(1'b1)
@@ -1820,7 +1834,7 @@ module cpu_and_mem #(
     );
 
     logic down_req_valid, down_req_ready, down_req_write;
-    logic [31:0] down_req_addr;
+    logic [riscv_pkg::PhysAddrBits-1:0] down_req_addr;
     logic [L2_LINE_BYTES*8-1:0] down_req_wdata;
     logic [L2_LINE_BYTES-1:0] down_req_wstrb;
     logic [DdrAxiIdBits-1:0] down_req_id;
@@ -1829,7 +1843,7 @@ module cpu_and_mem #(
     logic [L2_LINE_BYTES*8-1:0] down_resp_rdata;
 
     frost_cache_hierarchy #(
-        .ADDR_WIDTH(32),
+        .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
         .L1_LINE_BYTES(L1LineBytes),
         .L2_LINE_BYTES(L2_LINE_BYTES),
         .UP_ID_BITS(LineIdBits),
@@ -1921,7 +1935,7 @@ module cpu_and_mem #(
 
     line_port_arbiter #(
         .NUM_PORTS(2),
-        .ADDR_WIDTH(32),
+        .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
         .LINE_BYTES(L1LineBytes),
         .UP_ID_BITS(DmaAgentIdBits),
         .STARVATION_LIMIT(8)
@@ -1953,9 +1967,9 @@ module cpu_and_mem #(
     );
 
     nic_top #(
-        .ADDR_WIDTH(32),
+        .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
         .LINE_BYTES(L1LineBytes),
-        .APERTURE_BASE(CACHED_BASE),
+        .APERTURE_BASE(64'(CACHED_BASE)),
         .APERTURE_BYTES(CACHED_SIZE_BYTES),
         .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000),
         .RAW_LOOPBACK(RAW_LOOPBACK)
@@ -1966,6 +1980,8 @@ module cpu_and_mem #(
         .i_wr_offset({data_memory_address_registered[11:3], nic_wr_hi ? 3'b100 : 3'b000}),
         .i_wr_data(nic_wr_hi ? data_memory_write_data_registered[63:32] :
                                data_memory_write_data_registered[31:0]),
+        .i_wr64_en(nic_wr64_en),
+        .i_wr64_data(data_memory_write_data_registered),
         .i_rd_offset({mmio_load_addr[11:3], 3'b000}),
         .o_rd_pair(nic_rd_pair),
         .o_irq(nic_irq),
@@ -1994,19 +2010,21 @@ module cpu_and_mem #(
     );
 
     dma_test_engine #(
-        .ADDR_WIDTH(32),
+        .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
         .LINE_BYTES(L1LineBytes),
         .ID_BITS(DmaAgentIdBits),
-        .APERTURE_BASE(CACHED_BASE),
+        .APERTURE_BASE(64'(CACHED_BASE)),
         .APERTURE_BYTES(CACHED_SIZE_BYTES)
     ) dma_engine (
         .i_clk(i_clk),
         .i_rst(rst_core),
         .i_wr_en(dma_engine_wr_en),
-        .i_wr_offset({data_memory_address_registered[5:3], dma_engine_wr_hi ? 3'b100 : 3'b000}),
+        .i_wr_offset({data_memory_address_registered[7:3], dma_engine_wr_hi ? 3'b100 : 3'b000}),
         .i_wr_data(dma_engine_wr_hi ? data_memory_write_data_registered[63:32] :
                                       data_memory_write_data_registered[31:0]),
-        .i_rd_offset({mmio_load_addr[5:3], 3'b000}),
+        .i_wr64_en(dma_engine_wr64_en),
+        .i_wr64_data(data_memory_write_data_registered),
+        .i_rd_offset({mmio_load_addr[7:3], 3'b000}),
         .o_rd_pair(dma_engine_rd_pair),
         .o_irq(dma_engine_irq),
         .o_dma_req_valid(agent_req_valid[1]),
@@ -2023,7 +2041,7 @@ module cpu_and_mem #(
 
     logic axi_awvalid, axi_awready, axi_wvalid, axi_wready, axi_bvalid, axi_bready;
     logic axi_arvalid, axi_arready, axi_rvalid, axi_rready, axi_rlast, axi_wlast;
-    logic [31:0] axi_awaddr, axi_araddr;
+    logic [riscv_pkg::DdrAxiAddrBits-1:0] axi_awaddr, axi_araddr;
     logic [7:0] axi_awlen, axi_arlen;
     logic [2:0] axi_awsize, axi_arsize;
     logic [1:0] axi_awburst, axi_arburst, axi_bresp, axi_rresp;
@@ -2037,11 +2055,12 @@ module cpu_and_mem #(
     assign ddr_axi_rst = (USE_BEHAVIORAL_DDR != 0) ? rst_core : i_ddr_axi_rst;
 
     line_port_axi_bridge #(
-        .ADDR_WIDTH(32),
+        .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
+        .AXI_ADDR_WIDTH(riscv_pkg::DdrAxiAddrBits),
         .LINE_BYTES(L2_LINE_BYTES),
         .ID_BITS(DdrAxiIdBits),
         .AXI_ID_BITS(DdrAxiIdBits),
-        .BASE_ADDR(CACHED_BASE)
+        .BASE_ADDR(riscv_pkg::PhysAddrBits'(CACHED_BASE))
     ) ddr_bridge (
         .i_clk(i_clk),
         .i_rst(rst_core),
@@ -2098,6 +2117,7 @@ module cpu_and_mem #(
       // takes the bridge's AXI out through the o_ddr_axi_* ports instead.
       axi_behavioral_memory #(
           .LINE_BYTES(L2_LINE_BYTES),
+          .AXI_ADDR_WIDTH(riscv_pkg::DdrAxiAddrBits),
           .MEM_BYTES(DDR_MODEL_BYTES),
           .NUM_SLOTS(DdrModelSlots),
           .ID_BITS(DdrAxiIdBits),
@@ -2426,8 +2446,8 @@ module cpu_and_mem #(
   // 0x4000_1000 when DLAB is clear. Both funnel into the same TX byte stream.
   logic cpu_uart_wr_en_next;
   assign cpu_uart_wr_en_next = |data_memory_byte_write_enable_registered &&
-      ((data_memory_address_registered == UartMmioAddr) ||
-       (data_memory_address_registered == Ns16550ThrRbr && !ns_lcr[7]));
+      ((data_memory_address_registered == riscv_pkg::PhysAddrBits'(UartMmioAddr)) ||
+       (data_memory_address_registered == riscv_pkg::PhysAddrBits'(Ns16550ThrRbr) && !ns_lcr[7]));
   always_ff @(posedge i_clk) begin
     cpu_uart_wr_data <= data_memory_write_data_registered[7:0];  // UART uses only lower byte
     cpu_uart_wr_en   <= cpu_uart_wr_en_next;
@@ -2486,7 +2506,7 @@ module cpu_and_mem #(
           .i_cread_resp       (data_memory_cached_read_valid),
           .i_cwrite_req       (|data_memory_cached_byte_write_enable),
           .i_cwrite_done      (data_memory_cached_write_done),
-          .i_pc               (program_counter),
+          .i_pc               (program_counter[31:0]),
           .i_commit0_valid    (cpu_debug_commit_valid[0]),
           .i_commit0_pc       (cpu_debug_commit_pc),
           .i_commit1_valid    (cpu_debug_commit_valid[1]),
@@ -2526,14 +2546,15 @@ module cpu_and_mem #(
       ns_scr <= 8'h00;
     end else if (|data_memory_byte_write_enable_registered) begin
       unique case (data_memory_address_registered)
-        Ns16550ThrRbr: if (ns_lcr[7]) ns_dll <= data_memory_write_data_registered[7:0];
-        Ns16550IerDlm:
+        riscv_pkg::PhysAddrBits'(Ns16550ThrRbr):
+        if (ns_lcr[7]) ns_dll <= data_memory_write_data_registered[7:0];
+        riscv_pkg::PhysAddrBits'(Ns16550IerDlm):
         if (ns_lcr[7]) ns_dlm <= data_memory_write_data_registered[7:0];
         else ns_ier <= data_memory_write_data_registered[7:0];
-        Ns16550IirFcr: ns_fcr <= data_memory_write_data_registered[7:0];
-        Ns16550Lcr: ns_lcr <= data_memory_write_data_registered[7:0];
-        Ns16550Mcr: ns_mcr <= data_memory_write_data_registered[7:0];
-        Ns16550Scr: ns_scr <= data_memory_write_data_registered[7:0];
+        riscv_pkg::PhysAddrBits'(Ns16550IirFcr): ns_fcr <= data_memory_write_data_registered[7:0];
+        riscv_pkg::PhysAddrBits'(Ns16550Lcr): ns_lcr <= data_memory_write_data_registered[7:0];
+        riscv_pkg::PhysAddrBits'(Ns16550Mcr): ns_mcr <= data_memory_write_data_registered[7:0];
+        riscv_pkg::PhysAddrBits'(Ns16550Scr): ns_scr <= data_memory_write_data_registered[7:0];
         default: ;
       endcase
     end
@@ -2544,10 +2565,10 @@ module cpu_and_mem #(
   // for sub-dword stores (replication).
   assign o_fifo0_wr_data = data_memory_write_data_registered[31:0];
   assign o_fifo0_wr_en   = |data_memory_byte_write_enable_registered &&
-                            data_memory_address_registered == Fifo0MmioAddr;
+                            data_memory_address_registered == riscv_pkg::PhysAddrBits'(Fifo0MmioAddr);
   assign o_fifo1_wr_data = data_memory_write_data_registered[31:0];
   assign o_fifo1_wr_en   = |data_memory_byte_write_enable_registered &&
-                            data_memory_address_registered == Fifo1MmioAddr;
+                            data_memory_address_registered == riscv_pkg::PhysAddrBits'(Fifo1MmioAddr);
 
   // Linux reads received bytes through the ns16550 RBR alias. That read must
   // consume the shared UART RX FIFO as the native FROST RX-data address does,
@@ -2572,8 +2593,10 @@ module cpu_and_mem #(
   // Dword decoding lets a 64-bit store update both halves atomically.
   logic write_hits_mtime;
   assign write_hits_mtime =
-      ({data_memory_address_registered[31:3], 3'b000} == {MtimeLowMmioAddr[31:3], 3'b000}) ||
-      ({data_memory_address_registered[31:3], 3'b000} == {ClintMtimeLo[31:3], 3'b000});
+      ({data_memory_address_registered[riscv_pkg::PhysAddrBits-1:3], 3'b000} ==
+       riscv_pkg::PhysAddrBits'(MtimeLowMmioAddr & 32'hffff_fff8)) ||
+      ({data_memory_address_registered[riscv_pkg::PhysAddrBits-1:3], 3'b000} ==
+       riscv_pkg::PhysAddrBits'(ClintMtimeLo & 32'hffff_fff8));
   logic writing_mtime_low, writing_mtime_high;
   assign writing_mtime_low  = write_hits_mtime && |data_memory_byte_write_enable_registered[3:0];
   assign writing_mtime_high = write_hits_mtime && |data_memory_byte_write_enable_registered[7:4];
@@ -2583,8 +2606,10 @@ module cpu_and_mem #(
   // hw/rtl/README.md, "Data-tier bus contract".
   logic write_hits_mtimecmp;
   assign write_hits_mtimecmp =
-      ({data_memory_address_registered[31:3], 3'b000} == {MtimecmpLowMmioAddr[31:3], 3'b000}) ||
-      ({data_memory_address_registered[31:3], 3'b000} == {ClintMtimecmpLo[31:3], 3'b000});
+      ({data_memory_address_registered[riscv_pkg::PhysAddrBits-1:3], 3'b000} ==
+       riscv_pkg::PhysAddrBits'(MtimecmpLowMmioAddr & 32'hffff_fff8)) ||
+      ({data_memory_address_registered[riscv_pkg::PhysAddrBits-1:3], 3'b000} ==
+       riscv_pkg::PhysAddrBits'(ClintMtimecmpLo & 32'hffff_fff8));
 
   always_ff @(posedge i_clk) begin
     if (rst_core) begin
@@ -2610,8 +2635,8 @@ module cpu_and_mem #(
       // word-decoded: the CLINT alias is 32-bit-access for msip, and Linux
       // writes it with sw.
       if (|data_memory_byte_write_enable_registered &&
-          ((data_memory_address_registered == MsipMmioAddr) ||
-           (data_memory_address_registered == ClintMsip))) begin
+          ((data_memory_address_registered == riscv_pkg::PhysAddrBits'(MsipMmioAddr)) ||
+           (data_memory_address_registered == riscv_pkg::PhysAddrBits'(ClintMsip)))) begin
         msip <= data_memory_write_data_registered[0];
       end
     end

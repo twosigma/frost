@@ -57,7 +57,7 @@ MEMORY
     ROM  (rx)  : ORIGIN = 0x00000000, LENGTH = 95K    /* code + read-only data */
     DEBUG (rx) : ORIGIN = 0x00017C00, LENGTH = 1K    /* debug-module slice: reserved, never allocated (hw/rtl/README.md) */
     RAM  (rwx) : ORIGIN = 0x00018000, LENGTH = 160K   /* data + bss + stack */
-    DDR  (rwx) : ORIGIN = 0x80000000, LENGTH = 1024M  /* cached region: big data + heap */
+    DDR  (rwx) : ORIGIN = 0x80000000, LENGTH = DEFINED(__frost_ddr_usable_bytes) ? __frost_ddr_usable_bytes : 1024M
     MMIO (rw)  : ORIGIN = 0x40000000, LENGTH = 44     /* peripherals: UART, FIFOs, timer, MSIP */
 }
 

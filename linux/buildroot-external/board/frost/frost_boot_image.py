@@ -63,9 +63,9 @@ DTB_SLOT_BYTES = 0x1_0000
 # The /memory node's size unless --mem-size gives a board's: 64 MiB, the
 # simulation DDR model's default size (tests/Makefile DDR_MODEL_BYTES).
 MEM_SIZE = 0x400_0000
-# The cached DDR region at DDR_BASE (hw/rtl/cpu_and_mem/cpu_and_mem.sv
-# CACHED_SIZE_BYTES): the most memory the CPU, and so Linux, can reach.
-CACHED_REGION_BYTES = 0x4000_0000
+# Maximum configurable DDR aperture. The board supplies its populated size
+# with --mem-size; the selected RTL capacity must be at least that large.
+CACHED_REGION_BYTES = 1 << 37
 
 # Leave room after fw_jump.bin for OpenSBI's runtime data, heap, and scratch
 # below the payload (the banner's "Firmware Size").
@@ -259,19 +259,19 @@ def gen_dts(
         ", ".join(f'"{e}"' for e in ISA_EXTENSIONS[i : i + 6])
         for i in range(0, len(ISA_EXTENSIONS), 6)
     )
-    chosen = [f'\t\tstdout-path = "/soc/serial@{UART_BASE:x}";']
+    chosen = [f'\t\tstdout-path = "/soc@0/serial@{UART_BASE:x}";']
     if bootargs:
         chosen.append(f'\t\tbootargs = "{bootargs}";')
     if initrd_range is not None:
         start, end = initrd_range
-        chosen.append(f"\t\tlinux,initrd-start = <0x{start:08x}>;")
-        chosen.append(f"\t\tlinux,initrd-end = <0x{end:08x}>;")
+        chosen.append(f"\t\tlinux,initrd-start = <0x{start >> 32:08x} 0x{start & 0xffffffff:08x}>;")
+        chosen.append(f"\t\tlinux,initrd-end = <0x{end >> 32:08x} 0x{end & 0xffffffff:08x}>;")
     chosen_body = "\n".join(chosen)
     return f"""/dts-v1/;
 
 / {{
-\t#address-cells = <0x01>;
-\t#size-cells = <0x01>;
+\t#address-cells = <0x02>;
+\t#size-cells = <0x02>;
 \tcompatible = "frost,rv64", "frost";
 \tmodel = "{model}";
 
@@ -305,7 +305,8 @@ def gen_dts(
 
 \tmemory@{DDR_BASE:x} {{
 \t\tdevice_type = "memory";
-\t\treg = <0x{DDR_BASE:08x} 0x{mem_size:08x}>;
+\t\treg = <0x{DDR_BASE >> 32:08x} 0x{DDR_BASE & 0xffffffff:08x}
+\t\t       0x{mem_size >> 32:08x} 0x{mem_size & 0xffffffff:08x}>;
 \t}};
 
 \tpmu {{
@@ -320,11 +321,11 @@ def gen_dts(
 \t\t\t\t      <0x00000002 0x00000002 0x00000004>;
 \t}};
 
-\tsoc {{
+\tsoc@0 {{
 \t\t#address-cells = <0x01>;
 \t\t#size-cells = <0x01>;
 \t\tcompatible = "simple-bus";
-\t\tranges;
+\t\tranges = <0x00000000 0x00000000 0x00000000 0x80000000>;
 
 \t\tserial@{UART_BASE:x} {{
 \t\t\tcompatible = "ns16550a";

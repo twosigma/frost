@@ -45,6 +45,12 @@
 #define DMA_ENGINE_STATUS_ADDR 0x1Cu
 #define DMA_ENGINE_STATUS_VALUE 0x20u
 #define DMA_ENGINE_LINES 0x24u
+#define DMA_ENGINE_ABI_CTRL 0x28u
+#define DMA_ENGINE_SRC64 0x40u
+#define DMA_ENGINE_DST64 0x48u
+#define DMA_ENGINE_STATUS_ADDR64 0x50u
+#define DMA_ENGINE_ABI_WIDE (1u << 0)
+#define DMA_ENGINE_ABI_WIDE_SUPPORTED (1u << 1)
 
 #define DMA_ENGINE_CTRL_START (1u << 0)
 #define DMA_ENGINE_CTRL_ABORT (1u << 2)
@@ -73,6 +79,35 @@ static inline void dma_engine_write(uint32_t offset, uint32_t value)
 static inline uint32_t dma_engine_read(uint32_t offset)
 {
     return *dma_engine_reg(offset);
+}
+
+/** The extended bank requires one aligned RV64 store, never two word stores. */
+static inline void dma_engine_write64(uint32_t offset, uint64_t value)
+{
+    *(volatile uint64_t *) (DMA_ENGINE_BASE + offset) = value;
+}
+
+/** Select only while idle; the hardware clears all address registers. */
+static inline void dma_engine_select_wide(void)
+{
+    dma_engine_write(DMA_ENGINE_ABI_CTRL, DMA_ENGINE_ABI_WIDE);
+}
+
+static inline void dma_engine_setup64(uint64_t src,
+                                      uint64_t dst,
+                                      uint32_t len,
+                                      uint32_t mode,
+                                      uint32_t pattern,
+                                      uint64_t status_addr,
+                                      uint32_t status_value)
+{
+    dma_engine_write64(DMA_ENGINE_SRC64, src);
+    dma_engine_write64(DMA_ENGINE_DST64, dst);
+    dma_engine_write(DMA_ENGINE_LEN, len);
+    dma_engine_write(DMA_ENGINE_MODE, mode);
+    dma_engine_write(DMA_ENGINE_PATTERN, pattern);
+    dma_engine_write64(DMA_ENGINE_STATUS_ADDR64, status_addr);
+    dma_engine_write(DMA_ENGINE_STATUS_VALUE, status_value);
 }
 
 /** Program a transfer without starting it. */

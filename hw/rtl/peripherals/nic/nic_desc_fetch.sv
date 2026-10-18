@@ -46,6 +46,7 @@ module nic_desc_fetch #(
     input logic i_rst,
 
     input  logic                  i_enable,
+    input  logic                  i_wide_mode,
     input  logic [ADDR_WIDTH-1:0] i_base,        // 32-byte aligned
     input  logic [           4:0] i_size_log2,   // 2..16
     input  logic [          15:0] i_tail,
@@ -66,9 +67,9 @@ module nic_desc_fetch #(
 
     // The head descriptor.
     output logic                  o_desc_valid,
-    output logic [          31:0] o_desc_word0,
+    output logic [          63:0] o_desc_word0,
     output logic [          31:0] o_desc_word1,
-    output logic [ADDR_WIDTH-1:0] o_desc_status_addr,  // byte address of its word 2
+    output logic [ADDR_WIDTH-1:0] o_desc_status_addr,
     input  logic                  i_desc_take
 );
   logic [15:0] mask;
@@ -130,16 +131,21 @@ module nic_desc_fetch #(
   // Register the head descriptor for timing. A take, invalidation, or restart
   // clears valid while the words still reflect the old head, hiding stale data.
   logic desc_valid_q;
-  logic [31:0] desc_word0_q, desc_word1_q;
+  logic [63:0] desc_word0_q;
+  logic [31:0] desc_word1_q;
   logic [ADDR_WIDTH-1:0] desc_status_addr_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       desc_valid_q <= 1'b0;
     end else begin
       desc_valid_q       <= i_enable && head_hit && !i_desc_take && !i_invalidate && !i_restart;
-      desc_word0_q       <= slot_words_q[head_slot][{head_q[0], 2'd0}];
-      desc_word1_q       <= slot_words_q[head_slot][{head_q[0], 2'd1}];
-      desc_status_addr_q <= i_base + (ADDR_WIDTH'(head_q) << 4) + ADDR_WIDTH'(8);
+      desc_word0_q <= i_wide_mode ?
+          {slot_words_q[head_slot][{head_q[0], 2'd1}],
+           slot_words_q[head_slot][{head_q[0], 2'd0}]} :
+          64'(slot_words_q[head_slot][{head_q[0], 2'd0}]);
+      desc_word1_q <= slot_words_q[head_slot][{head_q[0], i_wide_mode ? 2'd2 : 2'd1}];
+      desc_status_addr_q <= i_base + (ADDR_WIDTH'(head_q) << 4) +
+          ADDR_WIDTH'(i_wide_mode ? nic_pkg::DescStatus64Byte : nic_pkg::DescStatusByte);
     end
   end
   assign o_desc_valid = desc_valid_q;

@@ -59,10 +59,10 @@ module fetch_provider #(
     // Virtual request address. Registered i_fetch_replay_consume identifies
     // last cycle's replay consumption, so its PC advance is not a redirect.
     // The core holds o_pc at the owed request throughout the replay stall.
-    input logic [31:0] i_pc,
+    input logic [riscv_pkg::XLEN-1:0] i_pc,
     // Physical request corresponding to i_pc.
-    input logic [31:0] i_pa0,
-    input logic [31:0] i_pa1,
+    input logic [riscv_pkg::PhysAddrBits-1:0] i_pa0,
+    input logic [riscv_pkg::PhysAddrBits-1:0] i_pa1,
     input logic i_pa_valid,
     input logic i_fault0,
     input logic i_fault0_page,
@@ -84,9 +84,9 @@ module fetch_provider #(
     output logic [1:0] o_slot2_start_valid_lo_by_parity,
     output logic o_instr_bank_sel_r,
     // Payload-aligned S, S+1, and S-1 word tags for IF coverage checks.
-    output logic [29:0] o_served_word,
-    output logic [29:0] o_served_last_word,
-    output logic [29:0] o_served_prev_word,
+    output logic [riscv_pkg::XLEN-3:0] o_served_word,
+    output logic [riscv_pkg::XLEN-3:0] o_served_last_word,
+    output logic [riscv_pkg::XLEN-3:0] o_served_prev_word,
     output logic o_served_prev_word_valid,
     // Per-word fault flags of the served window ({fault, page kind}).
     output logic o_served_fault0,
@@ -107,7 +107,7 @@ module fetch_provider #(
     output logic o_line_req_valid,
     input logic i_line_req_ready,
     output logic o_line_req_write,
-    output logic [31:0] o_line_req_addr,
+    output logic [riscv_pkg::PhysAddrBits-1:0] o_line_req_addr,
     output logic [LINE_BYTES*8-1:0] o_line_req_wdata,
     output logic [LINE_BYTES-1:0] o_line_req_wstrb,
     output logic [LINE_ID_BITS-1:0] o_line_req_id,
@@ -122,7 +122,7 @@ module fetch_provider #(
 
   localparam int unsigned LineBits = LINE_BYTES * 8;
   localparam int unsigned OffsetBits = $clog2(LINE_BYTES);  // 5 for 32 B
-  localparam int unsigned LineAddrBits = 32 - OffsetBits;
+  localparam int unsigned LineAddrBits = riscv_pkg::PhysAddrBits - OffsetBits;
   localparam int unsigned WordsPerLine = LINE_BYTES / 4;
   localparam int unsigned WordSelBits = $clog2(WordsPerLine);
   localparam int unsigned SbWidth = riscv_pkg::ImemSidebandWidth;
@@ -131,8 +131,8 @@ module fetch_provider #(
   // ===========================================================================
   // Owed-ask tracking
   // ===========================================================================
-  logic [31:0] ask_q;  // the address whose window is owed/presented
-  logic [31:0] pc_prev_q;
+  logic [riscv_pkg::XLEN-1:0] ask_q;  // the VA whose window is owed/presented
+  logic [riscv_pkg::XLEN-1:0] pc_prev_q;
   logic accepted_prev_q;
 
   // A stalled presentation is not consumed. Track acceptance so a redirect
@@ -155,12 +155,12 @@ module fetch_provider #(
       i_retarget || (!o_instr_valid && ask_fault0_q && (i_pc != ask_q));
 
   // Use the same next request for state update and publication matching.
-  logic [31:0] ask_d;
+  logic [riscv_pkg::XLEN-1:0] ask_d;
   assign ask_d = (o_instr_valid || retarget_now) ? i_pc : ask_q;
 
   // The ask presented this cycle. Its window is due next cycle, along with the
   // decision on that window's validity.
-  logic [31:0] fetch_addr;
+  logic [riscv_pkg::XLEN-1:0] fetch_addr;
   // Form the live PC's window on a valid cycle to sustain one window per
   // cycle. Otherwise hold the owed request, including through stalls.
   // Retarget takes one cycle to reach this mux; the core's control-flow
@@ -168,7 +168,7 @@ module fetch_provider #(
   assign fetch_addr = o_instr_valid ? i_pc : ask_q;
 
   // The physical pair of the window being formed (same select as fetch_addr).
-  logic [31:0] fetch_pa0, fetch_pa1;
+  logic [riscv_pkg::PhysAddrBits-1:0] fetch_pa0, fetch_pa1;
   logic fetch_pa_valid, fetch_fault0, fetch_fault0_page, fetch_fault1, fetch_fault1_page;
   assign fetch_pa0 = o_instr_valid ? i_pa0 : ask_pa0_q;
   assign fetch_pa1 = o_instr_valid ? i_pa1 : ask_pa1_q;
@@ -193,7 +193,7 @@ module fetch_provider #(
   // The ask's physical side, latched with the ask and re-sampled every cycle
   // until the selected-VA result is visible. The core holds o_pc at the ask
   // until then, so the live pair is the ask's.
-  logic [31:0] ask_pa0_q, ask_pa1_q;
+  logic [riscv_pkg::PhysAddrBits-1:0] ask_pa0_q, ask_pa1_q;
   // Straddle and next-line values captured with the physical request.
   logic [LineAddrBits-1:0] ask_line_next_q;
   (* max_fanout = 64 *) logic ask_straddle_q;
@@ -206,9 +206,10 @@ module fetch_provider #(
   // Candidate line per parity, captured with the same physical request.
   logic [1:0][LineAddrBits-1:0] cand_line_q;
   logic [LineAddrBits-1:0] load_line0, load_line_next, load_line_after;
-  assign load_line0 = i_pa0[31:OffsetBits];
+  assign load_line0 = i_pa0[riscv_pkg::PhysAddrBits-1:OffsetBits];
   assign load_line_next = load_line0 + 1'b1;
-  assign load_line_after = (&i_pa0[OffsetBits-1:2]) ? i_pa1[31:OffsetBits] : load_line_next;
+  assign load_line_after = (&i_pa0[OffsetBits-1:2]) ?
+      i_pa1[riscv_pkg::PhysAddrBits-1:OffsetBits] : load_line_next;
 
   // Positions are {line parity, word index}. Capture word 1 and the even
   // word's positions with the request for the window muxes.
@@ -222,7 +223,7 @@ module fetch_provider #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       ask_pa0_q         <= '0;
-      ask_pa1_q         <= 32'd4;
+      ask_pa1_q         <= riscv_pkg::PhysAddrBits'(4);
       ask_line_next_q   <= LineAddrBits'(1);
       ask_straddle_q    <= 1'b0;
       ask_pa_valid_q    <= 1'b0;
@@ -266,13 +267,13 @@ module fetch_provider #(
   // Inside one physical page, aligned word 1 is aligned word 0 + 4; across a
   // translated page boundary it is the mapped next page's base and may be far
   // away.
-  logic [31:0] win_addr0, win_addr1;
-  assign win_addr0 = {fetch_pa0[31:2], 2'b00};
-  assign win_addr1 = {fetch_pa1[31:2], 2'b00};
+  logic [riscv_pkg::PhysAddrBits-1:0] win_addr0, win_addr1;
+  assign win_addr0 = {fetch_pa0[riscv_pkg::PhysAddrBits-1:2], 2'b00};
+  assign win_addr1 = {fetch_pa1[riscv_pkg::PhysAddrBits-1:2], 2'b00};
 
   logic [LineAddrBits-1:0] win_line0, win_line1;
-  assign win_line0 = win_addr0[31:OffsetBits];
-  assign win_line1 = win_addr1[31:OffsetBits];
+  assign win_line0 = win_addr0[riscv_pkg::PhysAddrBits-1:OffsetBits];
+  assign win_line1 = win_addr1[riscv_pkg::PhysAddrBits-1:OffsetBits];
 
   logic present0, present1;
   assign present0 = slot_valid_q[win_line0[0]] && (slot_line_q[win_line0[0]] == win_line0);
@@ -369,7 +370,7 @@ module fetch_provider #(
   // Window readiness (computed for the presented ask, registered with its tag)
   // ===========================================================================
   logic fetch_high;
-  assign fetch_high = fetch_pa0[31];
+  assign fetch_high = riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(fetch_pa0));
 
   // A faulted word needs no line (its bytes are never used); an unresolved
   // pair forms no window at all.
@@ -389,9 +390,9 @@ module fetch_provider #(
   (* keep = "true", max_fanout = 16 *) logic [3:0] pc_pairability_by_parity_q;
   (* keep = "true", max_fanout = 16 *) logic [1:0] slot2_start_valid_lo_by_parity_q;
   logic bank_sel_q;
-  logic [31:0] served_addr_q;
-  logic [29:0] served_last_word_q;
-  logic [29:0] served_prev_word_q;
+  logic [riscv_pkg::XLEN-1:0] served_addr_q;
+  logic [riscv_pkg::XLEN-3:0] served_last_word_q;
+  logic [riscv_pkg::XLEN-3:0] served_prev_word_q;
   logic served_prev_word_valid_q;
   logic served_fault0_q, served_fault0_page_q, served_fault1_q, served_fault1_page_q;
   logic window_ready_q;
@@ -413,9 +414,9 @@ module fetch_provider #(
     end
     served_addr_q <= fetch_addr;
     // Window identity stays virtual: word 1 is always VA word 0 + 1.
-    served_last_word_q <= fetch_addr[31:2] + 1'b1;
-    served_prev_word_q <= fetch_addr[31:2] - 1'b1;
-    served_prev_word_valid_q <= |fetch_addr[31:2];
+    served_last_word_q <= fetch_addr[riscv_pkg::XLEN-1:2] + 1'b1;
+    served_prev_word_q <= fetch_addr[riscv_pkg::XLEN-1:2] - 1'b1;
+    served_prev_word_valid_q <= |fetch_addr[riscv_pkg::XLEN-1:2];
     served_fault0_q <= fetch_fault0;
     served_fault0_page_q <= fetch_fault0_page;
     served_fault1_q <= fetch_fault1;
@@ -436,7 +437,7 @@ module fetch_provider #(
   assign o_pc_pairability_by_parity = pc_pairability_by_parity_q;
   assign o_slot2_start_valid_lo_by_parity = slot2_start_valid_lo_by_parity_q;
   assign o_instr_bank_sel_r = bank_sel_q;
-  assign o_served_word = served_addr_q[31:2];
+  assign o_served_word = served_addr_q[riscv_pkg::XLEN-1:2];
   assign o_served_last_word = served_last_word_q;
   assign o_served_prev_word = served_prev_word_q;
   assign o_served_prev_word_valid = served_prev_word_valid_q;
@@ -455,9 +456,10 @@ module fetch_provider #(
   // of lines. Candidate selection trails a new request by one cycle.
   logic [LineAddrBits-1:0] fill_line0, fill_line_after;
   logic fill_straddle;
-  assign fill_line0 = ask_pa0_q[31:OffsetBits];
+  assign fill_line0 = ask_pa0_q[riscv_pkg::PhysAddrBits-1:OffsetBits];
   assign fill_straddle = ask_straddle_q;
-  assign fill_line_after = fill_straddle ? ask_pa1_q[31:OffsetBits] : ask_line_next_q;
+  assign fill_line_after = fill_straddle ?
+      ask_pa1_q[riscv_pkg::PhysAddrBits-1:OffsetBits] : ask_line_next_q;
 
 `ifndef SYNTHESIS
   logic ask_line_next_armed_q = 1'b0;
@@ -493,7 +495,7 @@ module fetch_provider #(
 `ifndef SYNTHESIS
   logic [LineAddrBits-1:0] line_pa1;
   logic [1:0][LineAddrBits-1:0] cand_line_ref;
-  assign line_pa1 = ask_pa1_q[31:OffsetBits];
+  assign line_pa1 = ask_pa1_q[riscv_pkg::PhysAddrBits-1:OffsetBits];
   function automatic logic cand_pick(input logic is_line0, input logic straddle,
                                      input logic eq_line0, input logic eq_pa1, input logic eq_next);
     cand_pick = is_line0 ? eq_line0 : (straddle ? eq_pa1 : eq_next);
@@ -589,11 +591,15 @@ module fetch_provider #(
   logic [1:0] copy_base;
   always_comb begin
     for (int p = 0; p < 2; p++) begin
-      want_cand[p] = ask_pa_valid_q && ask_pa0_q[31] && cand_fetchable[p] && !cand_present[p] &&
+      want_cand[p] = ask_pa_valid_q &&
+          riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(ask_pa0_q)) &&
+          cand_fetchable[p] && !cand_present[p] &&
           !fill_busy_q[p];
       want_fill[p] = want_cand[p] && !vs_hit[p] &&
           !((VICTIM_LINES > 0) && ev_pending_q[p] && (ev_line_q[p] == cand_line_q[p]));
-      copy_reg_ok[p] = ask_pa_valid_q && ask_pa0_q[31] && cand_fetchable[p] && !fill_busy_q[p] &&
+      copy_reg_ok[p] = ask_pa_valid_q &&
+          riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(ask_pa0_q)) &&
+          cand_fetchable[p] && !fill_busy_q[p] &&
           !ev_pending_q[p];
       copy_base[p] = copy_reg_ok[p] && vs_hit[p] && !cand_present[p];
     end
@@ -839,7 +845,8 @@ module fetch_provider #(
       perf_miss_stall_q <= 1'b0;
     end else begin
       perf_miss_stall_q <=
-          i_pa_valid && i_pa0[31] && i_l1i_miss_outstanding && !window_ready_q &&
+          i_pa_valid && riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(i_pa0)) &&
+          i_l1i_miss_outstanding && !window_ready_q &&
           !i_pipeline_stall && !pipeline_stall_q && !(|fill_discard_q);
     end
   end

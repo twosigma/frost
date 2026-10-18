@@ -45,7 +45,7 @@ module load_queue #(
     // Device requests first wait in the router's pending register, which
     // blocks later handoffs through i_mem_bus_busy.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
-    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
+    parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes
 ) (
     input logic i_clk,
     input logic i_rst_n,

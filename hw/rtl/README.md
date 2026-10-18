@@ -153,7 +153,7 @@ MMIO registers:
 | `0x4001_0000` | CLINT MSIP | SiFive CLINT alias of MSIP |
 | `0x4001_4000`/`4004` | CLINT MTIMECMP_LO/HI | SiFive CLINT alias of MTIMECMP |
 | `0x4001_BFF8`/`BFFC` | CLINT MTIME_LO/HI | SiFive CLINT alias of MTIME |
-| `0x4002_0000`–`0024` | DMA test engine | CTRL/ACK/SRC/DST/LEN/MODE/PATTERN/STATUS_ADDR/STATUS_VALUE/LINES (`dma_test_engine.sv`, `sw/lib/include/dma_engine.h`) |
+| `0x4002_0000`–`0057` | DMA test engine | Legacy CTRL/ACK/SRC/DST/LEN/MODE/PATTERN/STATUS_ADDR/STATUS_VALUE/LINES plus versioned ABI_CTRL and SRC64/DST64/STATUS_ADDR64 (`dma_test_engine.sv`, `sw/lib/include/dma_engine.h`) |
 | `0x4002_1000`–`1038` | Memory error unit | CAPS/STATUS/IRQ_EN/CE_COUNT/UE_COUNT/AXI_RD_ERRS/AXI_WR_ERRS/CE_ADDR/UE_ADDR/AXI_ERR/ECC_POLLS (`memory_error_unit.sv`, `sw/lib/include/memory_error.h`) |
 | `0x4003_0000`–`0FFF` | NIC | 4 KiB window: control and status, station address, rings, link and PHY, 64-bit counters (`peripherals/nic/nic_pkg.sv`, `sw/lib/include/nic.h`) |
 

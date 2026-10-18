@@ -122,7 +122,13 @@ endif
 
 # Linker flags: $(RISCV_FLAGS) plus the linker script and --gc-sections.
 EXTRA_LDFLAGS ?=
-LDFLAGS  += $(RISCV_FLAGS) -T $(LINKER_SCRIPT) -Wl,--gc-sections $(EXTRA_LDFLAGS)
+FROST_DDR_USABLE_LOG2_BYTES ?= 30
+ifneq ($(filter $(FROST_DDR_USABLE_LOG2_BYTES),30 31 32 33 34 35 36 37),$(FROST_DDR_USABLE_LOG2_BYTES))
+$(error FROST_DDR_USABLE_LOG2_BYTES must be 30..37)
+endif
+FROST_DDR_USABLE_BYTES := $(shell printf '0x%x' $$((1 << $(FROST_DDR_USABLE_LOG2_BYTES))))
+LDFLAGS  += $(RISCV_FLAGS) -T $(LINKER_SCRIPT) -Wl,--gc-sections \
+            -Wl,--defsym=__frost_ddr_usable_bytes=$(FROST_DDR_USABLE_BYTES) $(EXTRA_LDFLAGS)
 
 # C flags and include paths.
 CFLAGS = $(RISCV_FLAGS)

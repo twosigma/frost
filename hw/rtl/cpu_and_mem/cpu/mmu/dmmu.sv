@@ -106,6 +106,8 @@ module dmmu (
     input riscv_pkg::ptw_resp_t i_walk_resp
 );
 
+  localparam int unsigned PpnBits = riscv_pkg::PhysAddrBits - 12;
+
   // Partial-flush age test used throughout the back end: entry_tag is younger
   // than flush_tag, both measured from the ROB head.
   function automatic logic is_younger(input logic [riscv_pkg::ReorderBufferTagWidth-1:0] entry_tag,
@@ -186,7 +188,7 @@ module dmmu (
   // DTLB port 0 = issue, ports 1/2 = early slots.
   logic [2:0][riscv_pkg::Sv39VpnBits-1:0] tlb_vpn;
   logic [2:0] tlb_hit;
-  logic [2:0][19:0] tlb_ppn20;
+  logic [2:0][PpnBits-1:0] tlb_ppn;
   logic [2:0] tlb_hi_nonzero;
   logic [2:0] tlb_r, tlb_w, tlb_x, tlb_u, tlb_d;
   logic [2:0] tlb_device_page;
@@ -203,12 +205,12 @@ module dmmu (
 
   // Resolve TLB and walk leaves in parallel, for timing. A TLB hit wins over
   // a simultaneous walk response.
-  logic [19:0] walk_ppn20;
+  logic [PpnBits-1:0] walk_ppn;
   always_comb begin
     unique case (i_walk_resp.level)
-      2'd2: walk_ppn20 = {i_walk_resp.ppn[19:18], s1_q.va[29:12]};
-      2'd1: walk_ppn20 = {i_walk_resp.ppn[19:9], s1_q.va[20:12]};
-      default: walk_ppn20 = i_walk_resp.ppn[19:0];
+      2'd2: walk_ppn = {i_walk_resp.ppn[PpnBits-1:18], s1_q.va[29:12]};
+      2'd1: walk_ppn = {i_walk_resp.ppn[PpnBits-1:9], s1_q.va[20:12]};
+      default: walk_ppn = i_walk_resp.ppn[PpnBits-1:0];
     endcase
   end
 
@@ -222,10 +224,10 @@ module dmmu (
   endfunction
 
   logic [riscv_pkg::XLEN-1:0] tlb_pa, walk_pa;
-  assign tlb_pa  = {32'b0, tlb_ppn20[0], s1_q.va[11:0]};
-  assign walk_pa = {32'b0, walk_ppn20, s1_q.va[11:0]};
+  assign tlb_pa  = riscv_pkg::XLEN'({tlb_ppn[0], s1_q.va[11:0]});
+  assign walk_pa = riscv_pkg::XLEN'({walk_ppn, s1_q.va[11:0]});
   logic walk_device_page;
-  assign walk_device_page = riscv_pkg::pma_device_page_ok(walk_ppn20);
+  assign walk_device_page = riscv_pkg::pma_device_ok(walk_pa);
 
   // PMA permits BRAM and cached DDR for all access types, plus device windows
   // for non-atomic loads and stores. DTLB hits use per-entry checks; walk
@@ -255,7 +257,7 @@ module dmmu (
               i_walk_resp.perm_d
           )) begin
         walk_fault = riscv_pkg::DFAULT_PAGE;
-      end else if ((|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:20]) || !leaf_pma_ok(
+      end else if ((|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:PpnBits]) || !leaf_pma_ok(
               walk_pa, walk_device_page
           )) begin
         walk_fault = riscv_pkg::DFAULT_ACCESS;
@@ -277,7 +279,7 @@ module dmmu (
       i_walk_resp.perm_x,
       i_walk_resp.perm_u,
       i_walk_resp.perm_d
-  ) && !(|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:20]) && !s1_q.atomic && walk_device_page;
+  ) && !(|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:PpnBits]) && !s1_q.atomic && walk_device_page;
   logic resolve_is_mmio;
 
   // Resolution select, in architectural priority order:
@@ -331,11 +333,11 @@ module dmmu (
   // Return PA only for a fault-free TLB or walk result; otherwise retain VA
   // for xtval. Store VA, PPN, and the select separately in S2, for timing.
   logic resolve_pa;
-  logic [19:0] resolve_ppn;
+  logic [PpnBits-1:0] resolve_ppn;
   assign resolve_pa = s1_valid_q && !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical &&
       (tlb_hit[0] ? (tlb_fault == riscv_pkg::DFAULT_NONE) :
                     (walk_resp_for_s1 && (walk_fault == riscv_pkg::DFAULT_NONE)));
-  assign resolve_ppn = tlb_hit[0] ? tlb_ppn20[0] : walk_ppn20;
+  assign resolve_ppn = tlb_hit[0] ? tlb_ppn[0] : walk_ppn;
 
   // ---------------------------------------------------------------------------
   // Pipe advance
@@ -416,7 +418,7 @@ module dmmu (
   logic s2_valid_q;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] s2_tag_q;
   logic [riscv_pkg::XLEN-1:0] s2_va_q;
-  logic [19:0] s2_ppn_q;
+  logic [PpnBits-1:0] s2_ppn_q;
   logic s2_pa_q;
   logic s2_is_mmio_q;
   riscv_pkg::data_fault_kind_e s2_fault_q;
@@ -497,7 +499,7 @@ module dmmu (
   assign o_iss_out_lq_capture_valid = s2_valid_q && !s2_needs_sq_q;
   assign o_iss_out_sq_capture_valid = s2_valid_q && s2_needs_sq_q;
   assign o_iss_out_rob_tag = s2_tag_q;
-  assign o_iss_out_addr = s2_pa_q ? {32'b0, s2_ppn_q, s2_va_q[11:0]} : s2_va_q;
+  assign o_iss_out_addr = s2_pa_q ? riscv_pkg::XLEN'({s2_ppn_q, s2_va_q[11:0]}) : s2_va_q;
   assign o_iss_out_is_mmio = s2_is_mmio_q;
   assign o_iss_out_fault = s2_fault_q;
   assign o_iss_out_needs_sq = s2_needs_sq_q;
@@ -555,7 +557,7 @@ module dmmu (
       logic [riscv_pkg::XLEN-1:0] va;
       v = (s == 0) ? e1_valid_q : e2_valid_q;
       va = (s == 0) ? e1_va_q : e2_va_q;
-      early_pa_c[s] = {32'b0, tlb_ppn20[s+1], va[11:0]};
+      early_pa_c[s] = riscv_pkg::XLEN'({tlb_ppn[s+1], va[11:0]});
       // The store permission check and pma_data_ok(early_pa_c[s]), both from
       // the DTLB's per-entry bits.
       early_ok_c[s] = v && riscv_pkg::sv39_va_canonical(va) && tlb_hit[s+1] && tlb_perm_ok[s+1] &&
@@ -600,7 +602,7 @@ module dmmu (
       .i_install(i_walk_resp),
       .i_lookup_vpn(tlb_vpn),
       .o_hit(tlb_hit),
-      .o_ppn20(tlb_ppn20),
+      .o_ppn(tlb_ppn),
       .o_ppn_hi_nonzero(tlb_hi_nonzero),
       .o_perm_r(tlb_r),
       .o_perm_w(tlb_w),
@@ -628,7 +630,7 @@ module dmmu (
   logic [2:0] f_tlb_device_page_ref, f_tlb_perm_ok_ref, f_tlb_atomic_page_ref;
   always_comb begin
     for (int p = 0; p < 3; p++) begin
-      f_tlb_device_page_ref[p] = riscv_pkg::pma_device_page_ok(tlb_ppn20[p]);
+      f_tlb_device_page_ref[p] = riscv_pkg::pma_device_ok(riscv_pkg::XLEN'({tlb_ppn[p], 12'h000}));
       // The hit's permission check (port 0 with the S1 op's access type, the
       // early slots as stores) and atomic PMA; both are clear on a miss.
       f_tlb_perm_ok_ref[p] = tlb_hit[p] &&
@@ -636,7 +638,7 @@ module dmmu (
           (((p != 0) || s1_q.store_perms) ? (tlb_w[p] && tlb_d[p]) :
                                             (tlb_r[p] || (i_mxr && tlb_x[p])));
       f_tlb_atomic_page_ref[p] = tlb_hit[p] &&
-          riscv_pkg::pma_atomic_ok({32'b0, tlb_ppn20[p], 12'h000});
+          riscv_pkg::pma_atomic_ok(riscv_pkg::XLEN'({tlb_ppn[p], 12'h000}));
     end
   end
   always_comb begin
@@ -649,7 +651,7 @@ module dmmu (
         ((resolve_fault == riscv_pkg::DFAULT_NONE) && (resolve_addr[31:30] == 2'b01)));
     // S2's split address rebuilds the resolution's address.
     p_resolve_addr_exact :
-    assert ((resolve_pa ? {32'b0, resolve_ppn, s1_q.va[11:0]} : s1_q.va) == resolve_addr);
+    assert ((resolve_pa ? riscv_pkg::XLEN'({resolve_ppn, s1_q.va[11:0]} : s1_q.va) == resolve_addr);
   end
 `endif
 

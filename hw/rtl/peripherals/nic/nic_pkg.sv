@@ -71,6 +71,13 @@ package nic_pkg;
   localparam int unsigned PhyCtrlBitPmaLoopback = 2;
   localparam int unsigned PhyCtrlBitTxDisable = 3;
   localparam logic [11:0] PhyStatusOffset = 12'h068;
+  // Additive wide-address ABI. ABI_CTRL bit 0 selects the extended 16-byte
+  // descriptor layout; bit 1 reads one to advertise support.
+  localparam logic [11:0] AbiCtrlOffset = 12'h06C;
+  localparam logic [11:0] RxBase64Offset = 12'h070;
+  localparam logic [11:0] RxBase64HiOffset = 12'h074;
+  localparam logic [11:0] TxBase64Offset = 12'h078;
+  localparam logic [11:0] TxBase64HiOffset = 12'h07C;
   localparam int unsigned PhyStatusBitClkShared = 0;
   localparam int unsigned PhyStatusBitGtResetDone = 1;
   localparam int unsigned PhyStatusBitCdrLock = 2;
@@ -131,9 +138,12 @@ package nic_pkg;
   localparam logic [1:0] ReqKindDesc = 2'd1;  // descriptor line read
   localparam logic [1:0] ReqKindStatus = 2'd2;  // descriptor word 2 write (DD)
 
-  // Descriptors: 16 bytes, two per line; word 2 is the status word HW writes.
+  // Descriptors: 16 bytes, two per line. Legacy: addr32/len32/status32/
+  // reserved32. Extended: addr64/len32/status32. No implicit interpretation
+  // of the legacy reserved word is permitted.
   localparam int unsigned DescBytes = 16;
   localparam int unsigned DescStatusByte = 8;  // word 2
+  localparam int unsigned DescStatus64Byte = 12;  // extended word 3
   localparam int unsigned MaxFrameBytes = 9216;
   localparam int unsigned TxWord1BitSop = 16;
   localparam int unsigned TxWord1BitEop = 17;

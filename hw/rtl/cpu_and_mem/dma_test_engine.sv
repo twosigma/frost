@@ -19,8 +19,8 @@
  * Data writes complete before an optional status write; the interrupt follows
  * the final write's completion.
  *
- * Registers (32-bit, word stride; the CPU sees them as a strongly ordered
- * device window, see hw/rtl/README.md "Memory Map"):
+ * Legacy registers (32-bit, word stride; the CPU sees them as a strongly
+ * ordered device window, see hw/rtl/README.md "Memory Map"):
  *
  *   0x00 CTRL    W: bit 0 START (ignored while busy), bit 2 ABORT (ignored
  *                while idle)
@@ -38,6 +38,14 @@
  *   0x1C STATUS_ADDR  32-bit-aligned address of the status word
  *   0x20 STATUS_VALUE the status word
  *   0x24 LINES   R: DST line writes completed in the current or last transfer
+ *   0x28 ABI_CTRL R: bit 0 wide mode, bit 1 wide support; W: bit 0 selects
+ *                wide mode only while idle, clearing all three addresses
+ *
+ * In wide mode, the legacy address registers are read-only low-word views.
+ * Address programming uses aligned, complete 64-bit MMIO stores:
+ *   0x40 SRC64, 0x48 DST64, 0x50 STATUS_ADDR64.
+ * A partial write to that bank is rejected by the CPU MMIO router. START
+ * remains the activation boundary for the group of configuration registers.
  *
  * A transfer walks DST line by line. Copy mode reads the matching SRC line
  * first (SRC and DST must share their offset within a line), fill mode
@@ -68,8 +76,8 @@ module dma_test_engine #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 32,
     parameter int unsigned ID_BITS = 3,
-    parameter logic [31:0] APERTURE_BASE = 32'h8000_0000,
-    parameter logic [31:0] APERTURE_BYTES = 32'h4000_0000
+    parameter logic [63:0] APERTURE_BASE = 64'h8000_0000,
+    parameter logic [63:0] APERTURE_BYTES = 64'h4000_0000
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -78,9 +86,13 @@ module dma_test_engine #(
     // same shape the PLIC uses. i_wr_offset / i_rd_offset are byte offsets
     // within the window (bit 2 selects the word of a dword).
     input  logic        i_wr_en,
-    input  logic [ 5:0] i_wr_offset,
+    input  logic [ 7:0] i_wr_offset,
     input  logic [31:0] i_wr_data,
-    input  logic [ 5:0] i_rd_offset,
+    // Separate full-width transaction. It must be asserted only for an
+    // aligned store with all eight byte strobes; a half-store is not a write.
+    input  logic        i_wr64_en,
+    input  logic [63:0] i_wr64_data,
+    input  logic [ 7:0] i_rd_offset,
     output logic [63:0] o_rd_pair,
     output logic        o_irq,
 
@@ -102,13 +114,15 @@ module dma_test_engine #(
   // ---------------------------------------------------------------------------
   // Registers
   // ---------------------------------------------------------------------------
-  logic [31:0] src_q, dst_q, len_q, mode_q, pattern_q, status_addr_q, status_value_q;
+  logic [63:0] src_q, dst_q, status_addr_q;
+  logic [31:0] len_q, mode_q, pattern_q, status_value_q;
   logic [31:0] lines_q;
   logic busy_q, done_q, error_q, irq_q;
+  logic wide_mode_q;
 
   logic wr_ctrl, wr_ack;
-  assign wr_ctrl = i_wr_en && (i_wr_offset[5:2] == 4'h0);
-  assign wr_ack  = i_wr_en && (i_wr_offset[5:2] == 4'h1);
+  assign wr_ctrl = i_wr_en && (i_wr_offset == 8'h00);
+  assign wr_ack  = i_wr_en && (i_wr_offset == 8'h04);
   logic start_req, abort_req;
   assign start_req = wr_ctrl && i_wr_data[0] && !busy_q;
   assign abort_req = wr_ctrl && i_wr_data[2];
@@ -116,12 +130,16 @@ module dma_test_engine #(
   logic [31:0] ctrl_rd;
   assign ctrl_rd = {28'b0, irq_q, error_q, done_q, busy_q};
   always_comb begin
-    unique case (i_rd_offset[5:3])
-      3'd0: o_rd_pair = {32'b0, ctrl_rd};
-      3'd1: o_rd_pair = {dst_q, src_q};
-      3'd2: o_rd_pair = {mode_q, len_q};
-      3'd3: o_rd_pair = {status_addr_q, pattern_q};
-      3'd4: o_rd_pair = {lines_q, status_value_q};
+    unique case (i_rd_offset[7:3])
+      5'd0: o_rd_pair = {32'b0, ctrl_rd};
+      5'd1: o_rd_pair = {dst_q[31:0], src_q[31:0]};
+      5'd2: o_rd_pair = {mode_q, len_q};
+      5'd3: o_rd_pair = {status_addr_q[31:0], pattern_q};
+      5'd4: o_rd_pair = {lines_q, status_value_q};
+      5'd5: o_rd_pair = {32'b0, 30'b0, 1'b1, wide_mode_q};
+      5'd8: o_rd_pair = src_q;
+      5'd9: o_rd_pair = dst_q;
+      5'd10: o_rd_pair = status_addr_q;
       default: o_rd_pair = '0;
     endcase
   end
@@ -142,14 +160,15 @@ module dma_test_engine #(
   } state_e;
   state_e state_q;
 
-  logic [31:0] cur_line_q;  // DST byte address of the line being worked (line-aligned)
-  logic [31:0] end_addr_q;  // DST + LEN (exclusive)
-  logic [31:0] src_line_q;  // SRC line address matching cur_line_q
+  logic [63:0] cur_line_q;  // DST byte address of the line being worked (line-aligned)
+  logic [64:0] end_addr_q;  // DST + LEN (exclusive)
+  logic [63:0] src_line_q;  // SRC line address matching cur_line_q
   logic [31:0] word_idx_q;  // 32-bit word offset of this line from the first DST line
   logic [LineBits-1:0] line_data_q;
   logic abort_pending_q;
   // The active transfer's copy of the programming registers, taken at START.
-  logic [31:0] a_dst_q, a_pattern_q, a_status_addr_q, a_status_value_q;
+  logic [63:0] a_dst_q, a_status_addr_q;
+  logic [31:0] a_pattern_q, a_status_value_q;
   logic a_fill_q, a_status_q, a_irq_q;
   logic mode_fill, mode_status;
   assign mode_fill   = mode_q[0];
@@ -157,26 +176,32 @@ module dma_test_engine #(
 
   // Aperture and alignment checks evaluated at START.
   logic src_ok, dst_ok, status_ok, layout_ok;
-  logic [32:0] dst_end;
-  assign dst_end = {1'b0, dst_q} + {1'b0, len_q};
-  function automatic logic in_aperture(input logic [31:0] a);
-    in_aperture = (a >= APERTURE_BASE) && (a < (APERTURE_BASE + APERTURE_BYTES));
+  logic [64:0] dst_end;
+  logic [64:0] aperture_end;
+  assign dst_end = {1'b0, dst_q} + 65'(len_q);
+  assign aperture_end = 65'(APERTURE_BASE) + 65'(APERTURE_BYTES);
+  function automatic logic in_aperture(input logic [63:0] a);
+    in_aperture = (65'(a) >= 65'(APERTURE_BASE)) && (65'(a) < aperture_end);
   endfunction
-  assign dst_ok = in_aperture(dst_q) && (dst_end <= (33'(APERTURE_BASE) + 33'(APERTURE_BYTES)));
+  assign dst_ok = in_aperture(dst_q) && (dst_end <= aperture_end);
   assign src_ok = mode_fill || (in_aperture(
       src_q
-  ) && (({1'b0, src_q} + {1'b0, len_q}) <= (33'(APERTURE_BASE) + 33'(APERTURE_BYTES))) &&
+  ) && ((65'(src_q) + 65'(len_q)) <= aperture_end) &&
       (src_q[OffsetBits-1:0] == dst_q[OffsetBits-1:0]));
   assign status_ok = !mode_status || (in_aperture(status_addr_q) && (status_addr_q[1:0] == 2'b00));
-  assign layout_ok = dst_ok && src_ok && status_ok;
+  // Never let an address above the port's physical width alias a low line.
+  assign layout_ok = dst_ok && src_ok && status_ok &&
+      (ADDR_WIDTH == 64 || (dst_q >> ADDR_WIDTH) == 0) &&
+      (mode_fill || ADDR_WIDTH == 64 || (src_q >> ADDR_WIDTH) == 0) &&
+      (!mode_status || ADDR_WIDTH == 64 || (status_addr_q >> ADDR_WIDTH) == 0);
 
   // Strobes for the current line: bytes b with cur_line + b in [DST, END).
   logic [LINE_BYTES-1:0] line_strb;
   always_comb begin
     for (int b = 0; b < int'(LINE_BYTES); b++) begin
-      logic [31:0] byte_addr;
-      byte_addr = cur_line_q + 32'(b);
-      line_strb[b] = (byte_addr >= a_dst_q) && (byte_addr < end_addr_q);
+      logic [64:0] byte_addr;
+      byte_addr = 65'(cur_line_q) + 65'(b);
+      line_strb[b] = (byte_addr >= 65'(a_dst_q)) && (byte_addr < end_addr_q);
     end
   end
 
@@ -211,14 +236,14 @@ module dma_test_engine #(
   always_comb begin
     o_dma_req_valid = 1'b0;
     o_dma_req_write = 1'b0;
-    o_dma_req_addr  = cur_line_q;
+    o_dma_req_addr  = ADDR_WIDTH'(cur_line_q);
     o_dma_req_wdata = a_fill_q ? fill_data : line_data_q;
     o_dma_req_wstrb = line_strb;
     o_dma_req_id    = '0;
     unique case (state_q)
       S_READ: begin
         o_dma_req_valid = !abort_pending_q;
-        o_dma_req_addr  = src_line_q;
+        o_dma_req_addr  = ADDR_WIDTH'(src_line_q);
         o_dma_req_id    = ID_BITS'(1);
       end
       S_WRITE: begin
@@ -229,7 +254,7 @@ module dma_test_engine #(
       S_STATUS: begin
         o_dma_req_valid = !abort_pending_q;
         o_dma_req_write = 1'b1;
-        o_dma_req_addr  = {a_status_addr_q[31:OffsetBits], {OffsetBits{1'b0}}};
+        o_dma_req_addr  = ADDR_WIDTH'({a_status_addr_q[63:OffsetBits], {OffsetBits{1'b0}}});
         o_dma_req_wdata = status_data;
         o_dma_req_wstrb = status_strb;
         o_dma_req_id    = ID_BITS'(3);
@@ -241,7 +266,7 @@ module dma_test_engine #(
   assign req_fire = o_dma_req_valid && i_dma_req_ready;
 
   logic more_lines;
-  assign more_lines = (cur_line_q + LINE_BYTES) < end_addr_q;
+  assign more_lines = (65'(cur_line_q) + 65'(LINE_BYTES)) < end_addr_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -259,18 +284,36 @@ module dma_test_engine #(
       pattern_q       <= '0;
       status_addr_q   <= '0;
       status_value_q  <= '0;
+      wide_mode_q     <= 1'b0;
     end else begin
+      // Mode changes are accepted only at the idle activation boundary.
+      // Clearing all address registers prevents a stale cross-mode address.
+      if (i_wr_en && (i_wr_offset == 8'h28) && !busy_q &&
+          (i_wr_data[0] != wide_mode_q)) begin
+        wide_mode_q   <= i_wr_data[0];
+        src_q         <= '0;
+        dst_q         <= '0;
+        status_addr_q <= '0;
+      end
       // Register writes: START copies them into the active transfer, so a
       // write during a transfer affects only the next one.
       if (i_wr_en) begin
-        unique case (i_wr_offset[5:2])
-          4'h2: src_q <= i_wr_data;
-          4'h3: dst_q <= i_wr_data;
-          4'h4: len_q <= i_wr_data;
-          4'h5: mode_q <= i_wr_data;
-          4'h6: pattern_q <= i_wr_data;
-          4'h7: status_addr_q <= i_wr_data;
-          4'h8: status_value_q <= i_wr_data;
+        unique case (i_wr_offset)
+          8'h08: if (!wide_mode_q) src_q <= {32'b0, i_wr_data};
+          8'h0c: if (!wide_mode_q) dst_q <= {32'b0, i_wr_data};
+          8'h10: len_q <= i_wr_data;
+          8'h14: mode_q <= i_wr_data;
+          8'h18: pattern_q <= i_wr_data;
+          8'h1c: if (!wide_mode_q) status_addr_q <= {32'b0, i_wr_data};
+          8'h20: status_value_q <= i_wr_data;
+          default: ;
+        endcase
+      end
+      if (i_wr64_en && wide_mode_q) begin
+        unique case (i_wr_offset)
+          8'h40: src_q <= i_wr64_data;
+          8'h48: dst_q <= i_wr64_data;
+          8'h50: status_addr_q <= i_wr64_data;
           default: ;
         endcase
       end
@@ -289,9 +332,9 @@ module dma_test_engine #(
             error_q          <= 1'b0;
             abort_pending_q  <= 1'b0;
             lines_q          <= '0;
-            cur_line_q       <= {dst_q[31:OffsetBits], {OffsetBits{1'b0}}};
-            src_line_q       <= {src_q[31:OffsetBits], {OffsetBits{1'b0}}};
-            end_addr_q       <= dst_end[31:0];
+            cur_line_q       <= {dst_q[63:OffsetBits], {OffsetBits{1'b0}}};
+            src_line_q       <= {src_q[63:OffsetBits], {OffsetBits{1'b0}}};
+            end_addr_q       <= dst_end;
             word_idx_q       <= '0;
             a_dst_q          <= dst_q;
             a_pattern_q      <= pattern_q;
@@ -332,8 +375,8 @@ module dma_test_engine #(
             if (abort_pending_q) begin
               state_q <= S_FINISH;
             end else if (more_lines) begin
-              cur_line_q <= cur_line_q + LINE_BYTES;
-              src_line_q <= src_line_q + LINE_BYTES;
+              cur_line_q <= cur_line_q + 64'(LINE_BYTES);
+              src_line_q <= src_line_q + 64'(LINE_BYTES);
               word_idx_q <= word_idx_q + 32'(LINE_BYTES / 4);
               state_q    <= a_fill_q ? S_WRITE : S_READ;
             end else begin

@@ -53,7 +53,7 @@ module data_mem_request_router #(
     // CACHED_SIZE_BYTES) are served by the cache hierarchy with variable
     // latency.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
-    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
+    parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes
 ) (
     input logic i_clk,
     input logic i_rst,

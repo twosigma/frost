@@ -355,6 +355,10 @@ else ifeq ($(TOPLEVEL),nic_dma_front)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/peripherals/nic/nic_dma_front.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),dma_test_engine)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/dma_test_engine.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),nic_byte_pack)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/peripherals/nic/nic_byte_pack.sv

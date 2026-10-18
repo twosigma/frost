@@ -35,7 +35,7 @@ module frost #(
     // write-back caches and DDR. Supports several tagged loads and one store
     // in flight, with variable-latency handshakes.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
-    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB
+    parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes,
     // 0 omits the hierarchy: cached loads return zero and stores have no effect.
     parameter int unsigned ENABLE_CACHED_TIER = 0,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
@@ -157,7 +157,7 @@ module frost #(
     output logic                       o_ddr_axi_awvalid,
     input  logic                       i_ddr_axi_awready,
     output logic [                4:0] o_ddr_axi_awid,
-    output logic [               31:0] o_ddr_axi_awaddr,
+    output logic [riscv_pkg::DdrAxiAddrBits-1:0] o_ddr_axi_awaddr,
     output logic [                7:0] o_ddr_axi_awlen,
     output logic [                2:0] o_ddr_axi_awsize,
     output logic [                1:0] o_ddr_axi_awburst,
@@ -173,7 +173,7 @@ module frost #(
     output logic                       o_ddr_axi_arvalid,
     input  logic                       i_ddr_axi_arready,
     output logic [                4:0] o_ddr_axi_arid,
-    output logic [               31:0] o_ddr_axi_araddr,
+    output logic [riscv_pkg::DdrAxiAddrBits-1:0] o_ddr_axi_araddr,
     output logic [                7:0] o_ddr_axi_arlen,
     output logic [                2:0] o_ddr_axi_arsize,
     output logic [                1:0] o_ddr_axi_arburst,

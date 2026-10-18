@@ -36,7 +36,7 @@ module tomasulo_wrapper #(
     parameter bit ENABLE_DISPATCH_DONE_REPAIR = 1'b0,
     // Address range for tagged cached-load slots and cached-store routing.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
-    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,
+    parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
