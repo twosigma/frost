@@ -393,6 +393,18 @@ module line_port_axi_bridge #(
         p_w_held : assert (o_axi_wvalid && $stable(o_axi_wdata) && $stable(o_axi_wstrb));
       end
     end
+    if (f_past_valid && $past(req_fire)) begin
+      // Compare the registered AXI offset with the complete physical-line
+      // subtraction, before any narrowing. A 32-bit intermediate would alias
+      // a request above 4 GiB and fail the wide formal configurations.
+      if ($past(i_req_write)) begin
+        p_aw_full_offset : assert (o_axi_awaddr ==
+            AXI_ADDR_WIDTH'($past(i_req_addr) - BASE_ADDR));
+      end else begin
+        p_ar_full_offset : assert (o_axi_araddr ==
+            AXI_ADDR_WIDTH'($past(i_req_addr) - BASE_ADDR));
+      end
+    end
     if (f_past_valid && $past(i_axi_rst)) begin
       p_axi_reset_drops_beats : assert (!ar_valid_q && !aw_valid_q && !w_valid_q);
     end
@@ -406,6 +418,13 @@ module line_port_axi_bridge #(
       if ($past(r_accept && !r_known) && !$past(b_q_valid) && !$past(b_accept && b_known)) begin
         p_stale_r_dropped : assert (!o_resp_valid);
       end
+    end
+  end
+
+  if (ADDR_WIDTH > 32) begin : gen_high_offset_cover
+    always @(posedge i_clk) begin
+      c_high_physical_request : cover (req_fire &&
+          (i_req_addr >= ADDR_WIDTH'(64'h1_0000_0000)));
     end
   end
 
