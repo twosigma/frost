@@ -1,4 +1,5 @@
 // Copyright (c) 2026 John Goodacre.
+// SPDX-License-Identifier: Apache-2.0
 // Directed PTW root-pointer/PTE-address boundary check.
 module test_ptw_high_addr;
   logic clk = 1'b0;

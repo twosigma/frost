@@ -1,3 +1,6 @@
+# Copyright (c) 2026 John Goodacre
+# SPDX-License-Identifier: Apache-2.0
+
 """Exercise distinct cache/DDR lines across a 64 GiB offset aperture.
 
 The sparse AXI test memory is keyed by the complete DDR offset. This is a

@@ -1,4 +1,5 @@
 // Copyright (c) 2026 John Goodacre.
+// SPDX-License-Identifier: Apache-2.0
 // Directed elaboration check for the single raw-DDR-capacity build setting.
 module test_ddr_width_config;
   task automatic check_rejected(input logic [63:0] addr);
