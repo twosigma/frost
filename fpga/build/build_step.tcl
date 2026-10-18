@@ -305,29 +305,15 @@ proc split_env_list {value} {
     return $result
 }
 
-proc get_cpu_timing_clock {} {
-    set cpu_clock [get_clocks -quiet clock_from_mmcm]
-    if {[llength $cpu_clock] > 0} {
-        return $cpu_clock
-    }
-
-    set cpu_clock [get_clocks -quiet sysclk]
-    if {[llength $cpu_clock] > 0} {
-        return $cpu_clock
-    }
-
-    puts "WARNING: Could not find CPU timing clock clock_from_mmcm or sysclk"
-    return {}
-}
-
 proc set_x3_setup_uncertainty {board_name uncertainty reason} {
     if {$board_name ne "x3"} {
         return
     }
 
-    set cpu_clock [get_cpu_timing_clock]
-    if {[llength $cpu_clock] == 0} {
-        return
+    # x3.xdc names the CPU clock clock_from_mmcm for every X3 clock source.
+    set cpu_clock [get_clocks -quiet clock_from_mmcm]
+    if {[llength $cpu_clock] != 1} {
+        error "X3 CPU clock clock_from_mmcm not found ($reason)"
     }
 
     set_clock_uncertainty -from $cpu_clock -to $cpu_clock $uncertainty -setup
@@ -961,8 +947,9 @@ if {$step eq "synth"} {
         frost_insert_fetch_ila main_clock [getenv_default FROST_DEBUG_ILA_DEPTH 4096]
     }
 
-    write_checkpoint -force $work_directory/post_synth.dcp
+    # Save after the timing report, as the opt step explains.
     report_timing_summary -file $work_directory/post_synth_timing.rpt
+    write_checkpoint -force $work_directory/post_synth.dcp
     report_utilization -file $work_directory/post_synth_util.rpt
     report_high_fanout_nets -timing -load_types -max_nets 50 -file $work_directory/post_synth_high_fanout.rpt
     write_failing_paths_csv $work_directory/post_synth_failing_paths.csv $work_directory/post_synth_timing.rpt
@@ -986,8 +973,12 @@ if {$step eq "synth"} {
 
     opt_design -directive $directive
 
-    write_checkpoint -force $work_directory/post_opt.dcp
+    # Save after the timing report, which brings the derived clocks up to
+    # date. Reopening a checkpoint saved without them, Vivado applies
+    # x3.xdc's rename of the CPU clock before it derives the transceiver
+    # clocks, so clock_from_mmcm and the constraints that name it are lost.
     report_timing_summary -file $work_directory/post_opt_timing.rpt
+    write_checkpoint -force $work_directory/post_opt.dcp
     report_utilization -file $work_directory/post_opt_util.rpt
     report_high_fanout_nets -timing -load_types -max_nets 50 -file $work_directory/post_opt_high_fanout.rpt
     write_failing_paths_csv $work_directory/post_opt_failing_paths.csv $work_directory/post_opt_timing.rpt
