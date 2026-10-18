@@ -86,9 +86,13 @@ module immu #(
   // Bare bypass (translation off).
   // ---------------------------------------------------------------------------
   riscv_pkg::fetch_verdict_t bare_verdict;
+  logic [riscv_pkg::PhysAddrBits-1:0] bare_pc;
+  logic [riscv_pkg::PhysAddrBits-1:0] bare_pc_aligned;
   logic [riscv_pkg::PhysAddrBits-1:0] bare_pa1;
   assign bare_verdict = riscv_pkg::fetch_verdict(i_pc);
-  assign bare_pa1 = riscv_pkg::PhysAddrBits'((i_pc & ~XLEN'(3)) + XLEN'(4));
+  assign bare_pc = riscv_pkg::PhysAddrBits'(i_pc);
+  assign bare_pc_aligned = {bare_pc[riscv_pkg::PhysAddrBits-1:2], 2'b00};
+  assign bare_pa1 = bare_pc_aligned + riscv_pkg::PhysAddrBits'(4);
 
 `ifndef SYNTHESIS
   // Sample the settled bypass at its consuming edge; continuous struct-field
@@ -416,7 +420,7 @@ module immu #(
   logic resolved1;
 
   always_comb begin
-    pa0_d = res0.fault ? i_pc[riscv_pkg::PhysAddrBits-1:0] : {res0.ppn, i_pc[11:0]};
+    pa0_d = res0.fault ? bare_pc : {res0.ppn, i_pc[11:0]};
     pa1_d = {pa0_d[riscv_pkg::PhysAddrBits-1:12], pc_plus4_lo, 2'b00};
     f0_d = res0.fault;
     f0p_d = res0.page;
@@ -538,7 +542,8 @@ module immu #(
   // Translation preserves the page offset and visible tags match i_pc, so
   // both modes can use the live PC's offset.
   assign o_pa0 = {
-    i_active ? pa0_q[riscv_pkg::PhysAddrBits-1:12] : i_pc[riscv_pkg::PhysAddrBits-1:12], i_pc[11:0]
+    i_active ? pa0_q[riscv_pkg::PhysAddrBits-1:12] : bare_pc[riscv_pkg::PhysAddrBits-1:12],
+    i_pc[11:0]
   };
   assign o_pa1 = {
     i_active ? pa1_q[riscv_pkg::PhysAddrBits-1:12] : bare_pa1[riscv_pkg::PhysAddrBits-1:12],
@@ -587,7 +592,7 @@ module immu #(
             }
         )) begin
       if (!i_active) begin
-        p_bare_pa0_exact : assert (o_pa0 == i_pc[riscv_pkg::PhysAddrBits-1:0]);
+        p_bare_pa0_exact : assert (o_pa0 == bare_pc);
         p_bare_pa1_exact : assert (o_pa1 == bare_pa1);
         p_bare_valid : assert (o_pa_valid);
         p_bare_faults_exact :
