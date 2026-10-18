@@ -281,11 +281,13 @@
         },
         "include_in_device_tree": false
       },
-      // Sail's CLINT, which Zicntr requires, placed where FROST's map has nothing and tests do not reach.
+      // Sail's CLINT, which Zicntr requires, outside FROST's map at an address
+      // random sequences do not form. At 0x7_FFFF_0000, just below 2^35, a
+      // shifted negative number reached it (traces/clint_window_load.S).
       {
         "base": {
           "len": 64,
-          "value": "0x7FFFF0000"
+          "value": "0x2B6D93F10000"
         },
         "size": {
           "len": 64,
@@ -325,7 +327,7 @@
   "platform": {
     // A doubleword reservation that any store to it from this hart cancels.
     "reservation": {"reservation_set_size_exp": 3, "require_exact_reservation_addr": false, "invalidate_on_same_hart_store": true},
-    "clint": {"supported": true, "base": 34359672832, "size": 49152},
+    "clint": {"supported": true, "base": 47749633474560, "size": 49152},
     "simple_interrupt_generator": {"supported": false, "base": 0},
     // The TestRIG build never waits in WFI (it takes no interrupts).
     "wfi_is_nop": true
