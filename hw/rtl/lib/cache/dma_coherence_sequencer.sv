@@ -65,9 +65,12 @@
  * and DDR, because a fill of the probed line allocated before the probe's
  * decision is never withheld. A write's fill withholding ends at its entry's
  * release, which depends on the load queue and the L2 alone, and nothing
- * below waits on the DMA port. Ready for a new request depends on the
- * presented address (a free entry and no active entry on the same line),
- * which the line protocol permits.
+ * below waits on the DMA port. Each phase serves its waiting entries oldest
+ * first: a new choice takes the oldest, and only a choice already made (a
+ * latched admit or inval, or the issue register) goes ahead of an older
+ * entry, so requests that arrive later cannot keep an entry waiting. Ready
+ * for a new request depends on the presented address (a free entry and no
+ * active entry on the same line), which the line protocol permits.
  *
  * Admit and inval hold a latched entry until the core answers. Probe capture,
  * downstream requests, downstream responses, and release pulses are registered.
@@ -172,6 +175,12 @@ module dma_coherence_sequencer #(
     for (int k = 0; k < int'(NUM_LOCK); k++) entry_valid[k] = (state_q[k] != E_FREE);
   end
 
+  // Acceptance order: while entries k and j are both active, older_q[k][j] is
+  // set if j was accepted before k (bits naming an inactive entry are stale).
+  // An accepted entry is younger than every active one, so the bits order the
+  // active entries.
+  logic [NUM_LOCK-1:0][NUM_LOCK-1:0] older_q;
+
   function automatic logic [PROBE_ID_BITS-1:0] probe_id_of(input logic [LockBits-1:0] k);
     probe_id_of = PROBE_ID_BITS'(PROBE_ID_BASE) + PROBE_ID_BITS'(k);
   endfunction
@@ -201,40 +210,36 @@ module dma_coherence_sequencer #(
   assign dma_req_fire = i_dma_req_valid && o_dma_req_ready;
 
   // ---------------------------------------------------------------------------
-  // Per-phase selection. Probe presents the lowest entry in E_PROBE each
-  // cycle, and the choice may change before it fires, as the line protocol
-  // allows; issue copies the lowest entry in E_ISSUE into the request
-  // register below. Admit and inval latch their entry until it fires, so the
-  // core's pipelined answer names the entry it was computed for.
+  // Per-phase selection: each phase takes its oldest waiting entry, the one
+  // with no older entry in the same phase. Probe presents it each cycle, and
+  // the choice may change before it fires (an older entry reaching E_PROBE),
+  // as the line protocol allows; issue copies it into the request register
+  // below. Admit and inval latch their entry until it fires, so the core's
+  // pipelined answer names the entry it was computed for.
   // ---------------------------------------------------------------------------
+  logic [NUM_LOCK-1:0] in_admit, in_probe, in_inval, in_issue;
   logic admit_any, probe_any, inval_any, issue_any;
   logic [LockBits-1:0] admit_sel, probe_sel, inval_sel, issue_sel;
   always_comb begin
-    admit_any = 1'b0;
+    for (int k = 0; k < int'(NUM_LOCK); k++) begin
+      in_admit[k] = (state_q[k] == E_ADMIT);
+      in_probe[k] = (state_q[k] == E_PROBE);
+      in_inval[k] = (state_q[k] == E_INVAL);
+      in_issue[k] = (state_q[k] == E_ISSUE);
+    end
+    admit_any = |in_admit;
+    probe_any = |in_probe;
+    inval_any = |in_inval;
+    issue_any = |in_issue;
     admit_sel = '0;
-    probe_any = 1'b0;
     probe_sel = '0;
-    inval_any = 1'b0;
     inval_sel = '0;
-    issue_any = 1'b0;
     issue_sel = '0;
-    for (int k = int'(NUM_LOCK) - 1; k >= 0; k--) begin
-      if (state_q[k] == E_ADMIT) begin
-        admit_any = 1'b1;
-        admit_sel = LockBits'(k);
-      end
-      if (state_q[k] == E_PROBE) begin
-        probe_any = 1'b1;
-        probe_sel = LockBits'(k);
-      end
-      if (state_q[k] == E_INVAL) begin
-        inval_any = 1'b1;
-        inval_sel = LockBits'(k);
-      end
-      if (state_q[k] == E_ISSUE) begin
-        issue_any = 1'b1;
-        issue_sel = LockBits'(k);
-      end
+    for (int k = 0; k < int'(NUM_LOCK); k++) begin
+      if (in_admit[k] && !(|(older_q[k] & in_admit))) admit_sel = LockBits'(k);
+      if (in_probe[k] && !(|(older_q[k] & in_probe))) probe_sel = LockBits'(k);
+      if (in_inval[k] && !(|(older_q[k] & in_inval))) inval_sel = LockBits'(k);
+      if (in_issue[k] && !(|(older_q[k] & in_issue))) issue_sel = LockBits'(k);
     end
   end
 
@@ -269,7 +274,7 @@ module dma_coherence_sequencer #(
   end
   assign ack_hit = |ack_match;
 
-  // Copy the lowest E_ISSUE entry into the held request register and move it
+  // Copy the oldest E_ISSUE entry into the held request register and move it
   // to E_RESP. Release follows downstream acceptance: L2 preserves same-line
   // acceptance order, so withheld fills reach it after the write.
   // Connecting to a level that lets reads overtake writes (such as the AXI
@@ -346,6 +351,7 @@ module dma_coherence_sequencer #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       for (int k = 0; k < int'(NUM_LOCK); k++) state_q[k] <= E_FREE;
+      older_q               <= '0;
       admit_active_q        <= 1'b0;
       inval_active_q        <= 1'b0;
       o_dma_resp_valid      <= 1'b0;
@@ -399,6 +405,9 @@ module dma_coherence_sequencer #(
         o_dma_resp_rdata <= down_resp_rdata_q;
       end
       if (dma_req_fire) begin
+        // The new entry is younger than every active entry.
+        for (int k = 0; k < int'(NUM_LOCK); k++) older_q[k][free_idx] <= 1'b0;
+        older_q[free_idx] <= entry_valid;
         line_q[free_idx]  <= in_line;
         write_q[free_idx] <= i_dma_req_write;
         wdata_q[free_idx] <= i_dma_req_wdata;
@@ -430,6 +439,10 @@ module dma_coherence_sequencer #(
       for (int k = 0; k < int'(NUM_LOCK); k++) begin
         if (dma_req_fire && entry_valid[k] && (id_q[k] == i_dma_req_id))
           $error("dma_coherence_sequencer: DMA id %0d reused while in flight", i_dma_req_id);
+        for (int j = 0; j < int'(NUM_LOCK); j++) begin
+          if ((j != k) && entry_valid[k] && entry_valid[j] && (older_q[k][j] == older_q[j][k]))
+            $error("dma_coherence_sequencer: entries %0d and %0d have no acceptance order", k, j);
+        end
       end
     end
   end
