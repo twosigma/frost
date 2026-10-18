@@ -1986,7 +1986,11 @@ module cpu_and_mem #(
         .i_clk(i_clk),
         .i_rst(rst_core_next),  // registered inside nic_top; see its header
         .i_wr_en(nic_wr_en),
-        .i_wr_offset({data_memory_address_registered[11:3], nic_wr_hi ? 3'b100 : 3'b000}),
+        // A full-width store selects its aligned register, not the upper
+        // 32-bit lane chosen for legacy word writes.
+        .i_wr_offset(nic_wr64_en ? data_memory_address_registered[11:0] :
+                                 {data_memory_address_registered[11:3],
+                                  nic_wr_hi ? 3'b100 : 3'b000}),
         .i_wr_data(nic_wr_hi ? data_memory_write_data_registered[63:32] :
                                data_memory_write_data_registered[31:0]),
         .i_wr64_en(nic_wr64_en),
@@ -2028,7 +2032,9 @@ module cpu_and_mem #(
         .i_clk(i_clk),
         .i_rst(rst_core),
         .i_wr_en(dma_engine_wr_en),
-        .i_wr_offset({data_memory_address_registered[7:3], dma_engine_wr_hi ? 3'b100 : 3'b000}),
+        .i_wr_offset(dma_engine_wr64_en ? data_memory_address_registered[7:0] :
+                                        {data_memory_address_registered[7:3],
+                                         dma_engine_wr_hi ? 3'b100 : 3'b000}),
         .i_wr_data(dma_engine_wr_hi ? data_memory_write_data_registered[63:32] :
                                       data_memory_write_data_registered[31:0]),
         .i_wr64_en(dma_engine_wr64_en),

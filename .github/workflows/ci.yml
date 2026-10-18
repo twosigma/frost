@@ -274,9 +274,9 @@ jobs:
           PA_CAPACITY_GIB: ${{ matrix.capacity_gib }}
         run: |
           if [ "$PA_CAPACITY_GIB" = 1 ]; then
-            tests='pa_width_test_1g pa_vm_fetch_test_1g pma_fault_test vm_test line_port_axi_bridge_1g frost_cache frost_cache_dma dma_test_engine_wide_1g'
+            tests='pa_width_test_1g pa_vm_fetch_test_1g pa_dma_test_1g pa_nic_mmio_test_1g pma_fault_test vm_test dma_torture_1g line_port_axi_bridge_1g frost_cache frost_cache_dma dma_test_engine_wide_1g'
           else
-            tests='pa_width_test_64g pa_vm_fetch_test_64g pma_fault_test_64g vm_test_64g line_port_axi_bridge_wide frost_cache_wide_addr dma_test_engine_wide_64g'
+            tests='pa_width_test_64g pa_vm_fetch_test_64g pa_dma_test_64g pa_nic_mmio_test_64g pma_fault_test_64g vm_test_64g dma_torture nic_loopback line_port_axi_bridge_wide frost_cache_wide_addr dma_test_engine_wide_64g'
           fi
           docker run --rm -e PA_CAPACITY_GIB \
             -v "${{ github.workspace }}:/workspace" -w /workspace frost-dev:latest \

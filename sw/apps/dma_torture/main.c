@@ -51,6 +51,10 @@
 #define LINE_BYTES 32u
 #define LINE_WORDS (LINE_BYTES / 4u)
 
+#ifndef FROST_DDR_CAPACITY_LOG2_BYTES
+#define FROST_DDR_CAPACITY_LOG2_BYTES 36
+#endif
+
 /* Scale iterations with EXTRA_CFLAGS=-DDMA_TORTURE_SCALE=<n>. */
 #ifndef DMA_TORTURE_SCALE
 #define DMA_TORTURE_SCALE 1u
@@ -527,10 +531,16 @@ static void test_aperture(void)
     int ok = (status & DMA_ENGINE_STATUS_ERROR) && !(status & DMA_ENGINE_STATUS_DONE) &&
              stack_canary == 0xC0FFEE11u;
     dma_engine_ack();
-    /* A transfer that runs past the end of the aperture is refused too. */
-    status = run_engine(0, 0xBFFFFFE0u, 64u, DMA_ENGINE_MODE_FILL, 1, 0, 0);
+    /* In legacy mode the 32-bit address ABI can express a transfer across
+     * DDR_END only for 1/2 GiB capacities. The 64-bit ABI's full-range
+     * rejection is covered by pa_dma_test at every capacity. */
+#if FROST_DDR_CAPACITY_LOG2_BYTES <= 31
+    const uint32_t end_minus_half_line =
+        (uint32_t) ((0x80000000ull + (1ull << FROST_DDR_CAPACITY_LOG2_BYTES)) - 32ull);
+    status = run_engine(0, end_minus_half_line, 64u, DMA_ENGINE_MODE_FILL, 1, 0, 0);
     ok = ok && (status & DMA_ENGINE_STATUS_ERROR);
     dma_engine_ack();
+#endif
     check("aperture", ok);
 }
 
