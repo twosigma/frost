@@ -297,6 +297,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         )
         for bits in range(30, 38)
     },
+    **{
+        f"pa_nic_packet_test_{1 << (bits - 30)}g": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="pa_nic_packet_test",
+            description=f"Full-top high-DDR coherent NIC packet loopback at {1 << (bits - 30)} GiB",
+            include_in_pytest=False,
+            extra_env=(("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),),
+            verilator_extra_args=(
+                "-DFROST_WIDE_DDR_TEST",
+                f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}",
+            ),
+        )
+        for bits in range(30, 38)
+    },
     "dma_torture": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
