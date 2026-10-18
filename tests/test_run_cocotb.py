@@ -1901,6 +1901,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             '"-GAPERTURE_BYTES=64\'h1000000000"',
         ),
     ),
+    **{
+        f"dma_test_engine_wide_{1 << (bits - 30)}g": CocotbRunConfig(
+            python_test_module="cocotb_tests.cache.test_dma_test_engine_wide",
+            hdl_toplevel_module="dma_test_engine",
+            description=f"Wide DMA last-line and range checks at {1 << (bits - 30)} GiB",
+            include_in_pytest=False,
+            verilator_extra_args=(
+                f"-GADDR_WIDTH={(0x80000000 + (1 << bits) - 1).bit_length()}",
+                f'"-GAPERTURE_BYTES=64\'h{1 << bits:x}"',
+            ),
+        )
+        for bits in range(30, 38)
+    },
     "nic_top_unrelated_clocks": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_top",
         hdl_toplevel_module="nic_top",

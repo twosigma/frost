@@ -3,7 +3,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 
-"""Extended DMA MMIO bank: one address write, high lines, and fail-closed range."""
+"""Extended DMA MMIO bank: last lines and fail-closed range at each capacity."""
 
 from typing import Any
 
@@ -13,15 +13,12 @@ from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 
 BASE = 0x8000_0000
-END = BASE + (1 << 36)
-SRC = 0x1_8000_0040
-DST = 0x2_8000_0040
-STATUS = 0x3_8000_0080
 
 
 class MemoryPort:
-    def __init__(self, dut: Any) -> None:
+    def __init__(self, dut: Any, end: int) -> None:
         self.dut = dut
+        self.end = end
         self.lines: dict[int, bytearray] = {}
         self.issued: list[int] = []
         self.task = cocotb.start_soon(self.run())
@@ -44,7 +41,7 @@ class MemoryPort:
                 response = None
             if int(dut.o_dma_req_valid.value):
                 addr = int(dut.o_dma_req_addr.value)
-                assert BASE <= addr < END
+                assert BASE <= addr < self.end
                 self.issued.append(addr)
                 line = self.line(addr)
                 rid = int(dut.o_dma_req_id.value)
@@ -106,42 +103,57 @@ async def test_wide_copy_status_and_range(dut: Any) -> None:
         await RisingEdge(dut.i_clk)
     await FallingEdge(dut.i_clk)
     dut.i_rst.value = 0
-    assert int(dut.APERTURE_BYTES.value) == 1 << 36, hex(int(dut.APERTURE_BYTES.value))
-    mem = MemoryPort(dut)
-    mem.line(SRC)[:] = bytes(range(32))
+    capacity = int(dut.APERTURE_BYTES.value)
+    assert capacity in (1 << bits for bits in range(30, 38)), hex(capacity)
+    end = BASE + capacity
+    src, dst, status = end - 96, end - 64, end - 32
+    low_addr = BASE + 0x40
+    mem = MemoryPort(dut, end)
+    mem.line(src)[:] = bytes(range(32))
     low_sentinel = bytes([0xA5] * 32)
-    mem.line(SRC & 0xFFFF_FFFF)[:] = low_sentinel
+    mem.line(low_addr)[:] = low_sentinel
     assert await rd64(dut, 0x28) == 2
     await wr32(dut, 0x28, 1)
     assert await rd64(dut, 0x28) == 3
-    await wr64(dut, 0x40, SRC)
-    await wr64(dut, 0x48, DST)
-    await wr64(dut, 0x50, STATUS)
+    await wr64(dut, 0x40, src)
+    await wr64(dut, 0x48, dst)
+    await wr64(dut, 0x50, status)
     await wr32(dut, 0x40, 0)  # a legacy lane write cannot tear SRC64
     await wr64(dut, 0x44, 0)  # an unaligned wide-register offset is ignored
     await wr32(dut, 0x10, 32)
     await wr32(dut, 0x14, 0x2)
     await wr32(dut, 0x20, 0x12345678)
-    assert await rd64(dut, 0x40) == SRC
-    assert await rd64(dut, 0x48) == DST
+    assert await rd64(dut, 0x40) == src
+    assert await rd64(dut, 0x48) == dst
     await wr32(dut, 0x00, 1)
     assert (await wait_done(dut)) & 0x2
-    assert mem.line(DST) == bytes(range(32))
-    assert mem.line(STATUS)[:4] == bytes.fromhex("78563412")
-    assert mem.line(SRC & 0xFFFF_FFFF) == low_sentinel
-    assert SRC in mem.issued and DST in mem.issued and STATUS in mem.issued
+    assert mem.line(dst) == bytes(range(32))
+    assert mem.line(status)[:4] == bytes.fromhex("78563412")
+    assert mem.line(low_addr) == low_sentinel
+    assert src in mem.issued and dst in mem.issued and status in mem.issued
 
-    await wr32(dut, 0x04, 1)
-    mem.issued.clear()
-    await wr64(dut, 0x48, END)
-    await wr32(dut, 0x00, 1)
-    assert (await wait_done(dut)) & 0x4
-    assert mem.issued == []
-    await wr32(dut, 0x04, 1)
-    await wr64(dut, 0x48, (1 << len(dut.o_dma_req_addr)) | (DST & 0xFFFF_FFFF))
-    await wr32(dut, 0x00, 1)
-    assert (await wait_done(dut)) & 0x4
-    assert mem.issued == []
+    async def reject(test_src: int, test_dst: int, test_status: int, length: int) -> None:
+        await wr32(dut, 0x04, 1)
+        mem.issued.clear()
+        await wr64(dut, 0x40, test_src)
+        await wr64(dut, 0x48, test_dst)
+        await wr64(dut, 0x50, test_status)
+        await wr32(dut, 0x10, length)
+        await wr32(dut, 0x00, 1)
+        assert (await wait_done(dut)) & 0x4
+        assert mem.issued == []
+        assert mem.line(low_addr) == low_sentinel
+
+    # First raw out-of-range line, and transfers that cross the end by half
+    # a line, must complete with ERROR before any coherence request.
+    await reject(src, end, status, 32)
+    await reject(src + 16, end - 16, status, 32)
+    await reject(end, dst, status, 32)
+    await reject(end - 16, dst + 16, status, 32)
+    await reject(src, dst, end, 32)
+    await reject(src, dst, end - 2, 32)
+    # The high address shares the low sentinel's bits below the port width.
+    await reject(src, (1 << len(dut.o_dma_req_addr)) | low_addr, status, 32)
     # Switching back clears addresses and restores the reset-default ABI.
     await wr32(dut, 0x28, 0)
     assert await rd64(dut, 0x40) == 0
