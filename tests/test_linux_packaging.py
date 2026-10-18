@@ -624,9 +624,10 @@ def test_sbi_packer_memory_node_size(
     packer = _load_module(SBI_PACKER)
     assert packer.MEM_SIZE == 0x0400_0000
     out = _pack_minimal(packer, tmp_path, *mem_args)
-    assert (f"reg = <0x00000000 0x80000000\n"
-            f"\t\t       0x{size >> 32:08x} 0x{size & 0xffffffff:08x}>;") in (
-                out / "frost.dts").read_text()
+    assert (
+        f"reg = <0x00000000 0x80000000\n"
+        f"\t\t       0x{size >> 32:08x} 0x{size & 0xFFFFFFFF:08x}>;"
+    ) in (out / "frost.dts").read_text()
 
 
 def test_sbi_layout_checks_use_the_memory_size(
@@ -690,14 +691,17 @@ def test_sbi_packer_rejects_bad_memory_sizes() -> None:
 
 
 @pytest.mark.parametrize("log2_bytes", range(30, 38))
-def test_sbi_dtb_describes_configured_ddr_capacity(log2_bytes: int, tmp_path: Path) -> None:
+def test_sbi_dtb_describes_configured_ddr_capacity(
+    log2_bytes: int, tmp_path: Path
+) -> None:
     """The 1..128 GiB matrix must not truncate a /memory size above 4 GiB."""
     packer = _load_module(SBI_PACKER)
     size = 1 << log2_bytes
     assert packer.memory_size(str(size)) == size
-    dts = packer.gen_dts(clk_hz=10_000_000, initrd_range=None,
-                         bootargs="", model="FROST", mem_size=size)
-    assert (f"0x{size >> 32:08x} 0x{size & 0xffffffff:08x}>") in dts
+    dts = packer.gen_dts(
+        clk_hz=10_000_000, initrd_range=None, bootargs="", model="FROST", mem_size=size
+    )
+    assert (f"0x{size >> 32:08x} 0x{size & 0xFFFFFFFF:08x}>") in dts
     packer.compile_dtb(dts, tmp_path, "dtc")
 
 

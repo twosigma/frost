@@ -16,7 +16,10 @@ BASE = 0x8000_0000
 
 
 class MemoryPort:
+    """Model full-width coherent line requests without low-address aliases."""
+
     def __init__(self, dut: Any, end: int) -> None:
+        """Start servicing line traffic within the selected DDR aperture."""
         self.dut = dut
         self.end = end
         self.lines: dict[int, bytearray] = {}
@@ -24,9 +27,11 @@ class MemoryPort:
         self.task = cocotb.start_soon(self.run())
 
     def line(self, addr: int) -> bytearray:
+        """Return a mutable 32-byte line keyed by its complete address."""
         return self.lines.setdefault(addr, bytearray(32))
 
     async def run(self) -> None:
+        """Answer one modeled DMA request per clock without narrowing."""
         dut = self.dut
         response = None
         while True:
@@ -57,6 +62,7 @@ class MemoryPort:
 
 
 async def wr32(dut: Any, off: int, value: int) -> None:
+    """Write one legacy 32-bit MMIO register."""
     await FallingEdge(dut.i_clk)
     dut.i_wr_offset.value = off
     dut.i_wr_data.value = value
@@ -67,6 +73,7 @@ async def wr32(dut: Any, off: int, value: int) -> None:
 
 
 async def wr64(dut: Any, off: int, value: int) -> None:
+    """Write one atomic extended-address MMIO register."""
     await FallingEdge(dut.i_clk)
     dut.i_wr_offset.value = off
     dut.i_wr64_data.value = value
@@ -77,6 +84,7 @@ async def wr64(dut: Any, off: int, value: int) -> None:
 
 
 async def rd64(dut: Any, off: int) -> int:
+    """Read an aligned 64-bit register pair."""
     await FallingEdge(dut.i_clk)
     dut.i_rd_offset.value = off
     await Timer(1, unit="ps")
@@ -84,6 +92,7 @@ async def rd64(dut: Any, off: int) -> int:
 
 
 async def wait_done(dut: Any) -> int:
+    """Wait for DMA completion and return the control status."""
     for _ in range(500):
         ctrl = await rd64(dut, 0)
         if ctrl & 0x6:
@@ -93,10 +102,20 @@ async def wait_done(dut: Any) -> int:
 
 @cocotb.test()
 async def test_wide_copy_status_and_range(dut: Any) -> None:
+    """Check last-line copies, status writes and fail-closed range checks."""
     Clock(dut.i_clk, 10, unit="ns").start()
-    for name in ("i_wr_en", "i_wr_offset", "i_wr_data", "i_wr64_en", "i_wr64_data",
-                 "i_rd_offset", "i_dma_req_ready", "i_dma_resp_valid", "i_dma_resp_id",
-                 "i_dma_resp_rdata"):
+    for name in (
+        "i_wr_en",
+        "i_wr_offset",
+        "i_wr_data",
+        "i_wr64_en",
+        "i_wr64_data",
+        "i_rd_offset",
+        "i_dma_req_ready",
+        "i_dma_resp_valid",
+        "i_dma_resp_id",
+        "i_dma_resp_rdata",
+    ):
         getattr(dut, name).value = 0
     dut.i_rst.value = 1
     for _ in range(3):
@@ -132,7 +151,9 @@ async def test_wide_copy_status_and_range(dut: Any) -> None:
     assert mem.line(low_addr) == low_sentinel
     assert src in mem.issued and dst in mem.issued and status in mem.issued
 
-    async def reject(test_src: int, test_dst: int, test_status: int, length: int) -> None:
+    async def reject(
+        test_src: int, test_dst: int, test_status: int, length: int
+    ) -> None:
         await wr32(dut, 0x04, 1)
         mem.issued.clear()
         await wr64(dut, 0x40, test_src)

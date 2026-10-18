@@ -31,7 +31,15 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
-from cocotb_tests.nic.dma_model import DD, EOP, SOP, Memory, desc_status, post_desc, post_desc64
+from cocotb_tests.nic.dma_model import (
+    DD,
+    EOP,
+    SOP,
+    Memory,
+    desc_status,
+    post_desc,
+    post_desc64,
+)
 from net10g.test_codec import encode_reference
 from net10g.test_integration import WireReceiver, frame_words
 from net10g.test_mac_rx import frame_symbols, pack_symbols
@@ -122,11 +130,11 @@ class _LinePort:
             ):
                 dut.i_dma_req_ready.value = 1
                 addr = int(dut.o_dma_req_addr.value)
-                assert int(dut.APERTURE_BASE.value) <= addr < (
-                    int(dut.APERTURE_BASE.value) + int(dut.APERTURE_BYTES.value)
-                ), (
-                    f"request outside the aperture: {addr:#x}"
-                )
+                assert (
+                    int(dut.APERTURE_BASE.value)
+                    <= addr
+                    < (int(dut.APERTURE_BASE.value) + int(dut.APERTURE_BYTES.value))
+                ), f"request outside the aperture: {addr:#x}"
                 rid = int(dut.o_dma_req_id.value)
                 rdata = 0
                 if int(dut.o_dma_req_write.value):
@@ -458,7 +466,9 @@ async def test_extended_address_descriptor(dut: Any) -> None:
         else:
             raise AssertionError("invalid wide descriptor never completed")
         assert bad_status & (1 << 18)
-        assert not any(a == (buf & 0xFFFF_FFE0) for a in nic.port.seen_addrs[len(before):])
+        assert not any(
+            a == (buf & 0xFFFF_FFE0) for a in nic.port.seen_addrs[len(before) :]
+        )
     finally:
         nic.stop()
 

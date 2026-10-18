@@ -63,7 +63,8 @@ int main(void)
     nic_write64(NIC_TX_BASE64, tx);
     if (base_readback(NIC_RX_BASE64) != rx || base_readback(NIC_TX_BASE64) != tx) {
         uart_printf("PA NIC wide base readback failed: rx=%lx tx=%lx\n",
-                    base_readback(NIC_RX_BASE64), base_readback(NIC_TX_BASE64));
+                    base_readback(NIC_RX_BASE64),
+                    base_readback(NIC_TX_BASE64));
         failures++;
     }
     /* A legacy word write must not tear a live wide address. Neither

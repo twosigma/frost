@@ -475,7 +475,6 @@ async def test_axi_reset_withdraws_held_beats(dut: Any) -> None:
 @cocotb.test()
 async def test_wide_axi_addresses_do_not_alias(dut: Any) -> None:
     """The first, last, and (where present) +4 GiB lines retain their offsets."""
-
     slave, log = await _start(dut)
     low = BASE_ADDR + 0x100
     capacity_bits = len(dut.o_axi_awaddr)
@@ -499,9 +498,7 @@ async def test_wide_axi_addresses_do_not_alias(dut: Any) -> None:
         await _fire(dut, write=False, addr=addr, req_id=req_id)
         assert await log.wait_for(req_id, after=after) == data
 
-    assert [addr for _, addr in slave.reads] == [
-        addr - BASE_ADDR for addr, _ in lines
-    ]
+    assert [addr for _, addr in slave.reads] == [addr - BASE_ADDR for addr, _ in lines]
     assert not slave.violations, "; ".join(slave.violations)
     slave.stop()
     log.stop()

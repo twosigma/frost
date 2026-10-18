@@ -80,13 +80,13 @@ module ptw #(
     output riscv_pkg::ptw_resp_t o_resp,
 
     // Line port (master, read-only): to the hierarchy's wup port.
-    output logic                    o_line_req_valid,
-    input  logic                    i_line_req_ready,
+    output logic                               o_line_req_valid,
+    input  logic                               i_line_req_ready,
     output logic [riscv_pkg::PhysAddrBits-1:0] o_line_req_addr,
-    output logic [WALK_ID_BITS-1:0] o_line_req_id,
-    input  logic                    i_line_resp_valid,
-    input  logic [WALK_ID_BITS-1:0] i_line_resp_id,
-    input  logic [LINE_BYTES*8-1:0] i_line_resp_rdata
+    output logic [           WALK_ID_BITS-1:0] o_line_req_id,
+    input  logic                               i_line_resp_valid,
+    input  logic [           WALK_ID_BITS-1:0] i_line_resp_id,
+    input  logic [           LINE_BYTES*8-1:0] i_line_resp_rdata
 );
 
   // ---------------------------------------------------------------------------
@@ -150,8 +150,7 @@ module ptw #(
   // is poisoned at that edge; consume its response without answering.
   (* keep = "true" *) logic line_req_valid_q;
   assign o_line_req_valid = line_req_valid_q;
-  assign o_line_req_addr = {pte_pa[riscv_pkg::PhysAddrBits-1:LineAddrLow],
-                            {LineAddrLow{1'b0}}};
+  assign o_line_req_addr = {pte_pa[riscv_pkg::PhysAddrBits-1:LineAddrLow], {LineAddrLow{1'b0}}};
   assign o_line_req_id = '0;
 
   // PTE extraction: dword index inside the line, captured at issue.
@@ -397,8 +396,8 @@ module ptw #(
       // outstanding, and every presented read targets cached DDR.
       p_ready_idle : assert (!o_req_ready || (state_q == PTW_IDLE));
       p_single_read : assert (!(o_line_req_valid && f_outstanding));
-      if (o_line_req_valid) p_read_in_ddr :
-        assert (riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(o_line_req_addr)));
+      if (o_line_req_valid)
+        p_read_in_ddr : assert (riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(o_line_req_addr)));
       // A poisoned walk never answers.
       if (discard_q || i_discard) p_discard_silent : assert (!o_resp_valid);
       // A walk descends only through a pointer the reference classification

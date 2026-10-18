@@ -17,8 +17,8 @@
 /* Run only with FROST_WIDE_DDR_TEST's sparse simulation DDR, or a controller
  * with the selected amount of installed memory. This is a CPU-path test, not
  * a substitute for physical-controller or board validation. */
-#include <stdint.h>
 #include "uart.h"
+#include <stdint.h>
 
 #ifndef FROST_DDR_CAPACITY_LOG2_BYTES
 #error FROST_DDR_CAPACITY_LOG2_BYTES must match the RTL build
@@ -34,13 +34,9 @@
 int main(void)
 {
     static const uint64_t patterns[3] = {
-        0x0123456789abcdefull, 0xfedcba9876543210ull, 0x5a5aa5a5c3c33c3cull
-    };
+        0x0123456789abcdefull, 0xfedcba9876543210ull, 0x5a5aa5a5c3c33c3cull};
     const uintptr_t address[3] = {
-        DDR_BASE + 0x2000ul,
-        DDR_BASE + (DDR_BYTES >> 1) + 0x2000ul,
-        DDR_END - 64ul
-    };
+        DDR_BASE + 0x2000ul, DDR_BASE + (DDR_BYTES >> 1) + 0x2000ul, DDR_END - 64ul};
     int failures = 0;
 
     for (unsigned i = 0; i < 3; ++i)
@@ -49,8 +45,7 @@ int main(void)
     for (unsigned i = 0; i < 3; ++i) {
         uint64_t got = *(volatile uint64_t *) address[i];
         if (got != patterns[i]) {
-            uart_printf("PA width load/store %u at 0x%lx failed\n",
-                        i, (unsigned long) address[i]);
+            uart_printf("PA width load/store %u at 0x%lx failed\n", i, (unsigned long) address[i]);
             failures++;
         }
     }
@@ -70,8 +65,10 @@ int main(void)
 
     /* AMO transport and writeback must retain all address bits. */
     uint64_t old;
-    __asm__ volatile("amoadd.d %0, %2, (%1)" : "=r"(old)
-                     : "r"(address[2]), "r"((uint64_t) 1) : "memory");
+    __asm__ volatile("amoadd.d %0, %2, (%1)"
+                     : "=r"(old)
+                     : "r"(address[2]), "r"((uint64_t) 1)
+                     : "memory");
     if (old != want || *(volatile uint64_t *) address[2] != want + 1) {
         uart_printf("PA width AMO at 0x%lx failed\n", (unsigned long) address[2]);
         failures++;
@@ -93,7 +90,9 @@ int main(void)
         uint64_t result = entry(40);
         if (result != 41 + i) {
             uart_printf("PA width fetch %u at 0x%lx failed: 0x%lx\n",
-                        i, (unsigned long) code_addr[i], (unsigned long) result);
+                        i,
+                        (unsigned long) code_addr[i],
+                        (unsigned long) result);
             failures++;
         }
     }

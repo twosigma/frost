@@ -48,31 +48,31 @@ module dtlb #(
     input riscv_pkg::ptw_resp_t i_install,
 
     // Combinational lookup ports.
-    input  logic [NUM_PORTS-1:0][riscv_pkg::Sv39VpnBits-1:0] i_lookup_vpn,
-    output logic [NUM_PORTS-1:0]                             o_hit,
-    output logic [NUM_PORTS-1:0][riscv_pkg::PhysAddrBits-13:0] o_ppn,              // PA[PhysAddrBits-1:12]
-    output logic [NUM_PORTS-1:0]                             o_ppn_hi_nonzero,
-    output logic [NUM_PORTS-1:0]                             o_perm_r,
-    output logic [NUM_PORTS-1:0]                             o_perm_w,
-    output logic [NUM_PORTS-1:0]                             o_perm_x,
-    output logic [NUM_PORTS-1:0]                             o_perm_u,
-    output logic [NUM_PORTS-1:0]                             o_perm_d,
+    input logic [NUM_PORTS-1:0][riscv_pkg::Sv39VpnBits-1:0] i_lookup_vpn,
+    output logic [NUM_PORTS-1:0] o_hit,
+    output logic [NUM_PORTS-1:0][riscv_pkg::PhysAddrBits-13:0] o_ppn,  // PA[PhysAddrBits-1:12]
+    output logic [NUM_PORTS-1:0] o_ppn_hi_nonzero,
+    output logic [NUM_PORTS-1:0] o_perm_r,
+    output logic [NUM_PORTS-1:0] o_perm_w,
+    output logic [NUM_PORTS-1:0] o_perm_x,
+    output logic [NUM_PORTS-1:0] o_perm_u,
+    output logic [NUM_PORTS-1:0] o_perm_d,
     // Level of the hit entry (0 = 4 KiB, 1 = 2 MiB, 2 = 1 GiB): lets the
     // ITLB derive the next page's PA inside a superpage without a second
     // lookup.
-    output logic [NUM_PORTS-1:0][                       1:0] o_level,
+    output logic [NUM_PORTS-1:0][1:0] o_level,
     // o_ppn is a device-window page (riscv_pkg::pma_device_page_ok).
-    output logic [NUM_PORTS-1:0]                             o_device_page,
+    output logic [NUM_PORTS-1:0] o_device_page,
     // Data permissions: stores require W and D; loads require R or X with
     // MXR. U pages require U mode or SUM; S pages reject U mode.
     // o_atomic_page checks pma_atomic_ok on the zero-extended PA. Both
     // outputs are clear on a miss; the ITLB leaves them unused.
-    input  logic [NUM_PORTS-1:0]                             i_perm_store,
-    input  logic                                             i_perm_priv_u,
-    input  logic                                             i_perm_sum,
-    input  logic                                             i_perm_mxr,
-    output logic [NUM_PORTS-1:0]                             o_perm_ok,
-    output logic [NUM_PORTS-1:0]                             o_atomic_page,
+    input logic [NUM_PORTS-1:0] i_perm_store,
+    input logic i_perm_priv_u,
+    input logic i_perm_sum,
+    input logic i_perm_mxr,
+    output logic [NUM_PORTS-1:0] o_perm_ok,
+    output logic [NUM_PORTS-1:0] o_atomic_page,
     // With FETCH_VERDICTS, check each hit before selection:
     //   o_fetch_perm_fault: X is clear or U differs from i_fetch_priv_u.
     //   o_fetch_pma_bad: high PPN bits are nonzero or pma_fetch_ok fails.
@@ -80,10 +80,10 @@ module dtlb #(
     //     page inside the superpage (levels 1 and 2). High PPN bits are
     //     checked separately by o_fetch_pma_bad.
     // All three are zero on a miss or when FETCH_VERDICTS is disabled.
-    input  logic                                             i_fetch_priv_u,
-    output logic [NUM_PORTS-1:0]                             o_fetch_perm_fault,
-    output logic [NUM_PORTS-1:0]                             o_fetch_pma_bad,
-    output logic [NUM_PORTS-1:0]                             o_fetch_next_pma_bad
+    input logic i_fetch_priv_u,
+    output logic [NUM_PORTS-1:0] o_fetch_perm_fault,
+    output logic [NUM_PORTS-1:0] o_fetch_pma_bad,
+    output logic [NUM_PORTS-1:0] o_fetch_next_pma_bad
 );
 
   localparam int unsigned EntryIdxBits = (NUM_ENTRIES > 1) ? $clog2(NUM_ENTRIES) : 1;
@@ -179,11 +179,15 @@ module dtlb #(
           end
         endcase
         o_ppn[p] |= {PpnBits{lowest_match[p][e]}} & ppn;
-        o_device_page[p] |= lowest_match[p][e] && riscv_pkg::pma_device_ok(riscv_pkg::XLEN'({ppn, 12'h000}));
+        o_device_page[p] |= lowest_match[p][e] && riscv_pkg::pma_device_ok(
+            riscv_pkg::XLEN'({ppn, 12'h000})
+        );
         o_perm_ok[p] |= lowest_match[p][e] && leaf_perm_ok(
             i_perm_store[p], e_r[e], e_w[e], e_x[e], e_u[e], e_d[e]
         );
-        o_atomic_page[p] |= lowest_match[p][e] && riscv_pkg::pma_atomic_ok(riscv_pkg::XLEN'({ppn, 12'h000}));
+        o_atomic_page[p] |= lowest_match[p][e] && riscv_pkg::pma_atomic_ok(
+            riscv_pkg::XLEN'({ppn, 12'h000})
+        );
         o_ppn_hi_nonzero[p] |= lowest_match[p][e] && e_ppn_hi_nonzero[e];
         o_perm_r[p] |= lowest_match[p][e] && e_r[e];
         o_perm_w[p] |= lowest_match[p][e] && e_w[e];
@@ -279,7 +283,8 @@ module dtlb #(
           ref_fetch_perm_fault = !(e_x[e] && (e_u[e] == i_fetch_priv_u));
           ref_fetch_pma_bad = e_ppn_hi_nonzero[e] ||
               !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({ref_ppn, 12'h000}));
-          ref_fetch_next_pma_bad = !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({ref_next_ppn, 12'h000}));
+          ref_fetch_next_pma_bad =
+              !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({ref_next_ppn, 12'h000}));
         end
       end
     end

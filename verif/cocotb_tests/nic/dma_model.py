@@ -228,7 +228,7 @@ def post_desc(mem: Memory, base: int, index: int, buf_addr: int, word1: int) -> 
 
 
 def post_desc64(mem: Memory, base: int, index: int, buf_addr: int, word1: int) -> None:
-    """Extended descriptor: one address dword, length/flags, then status."""
+    """Post an extended descriptor with a full-width address and clear status."""
     a = desc_addr(base, index)
     mem.write_word32(a, buf_addr & 0xFFFF_FFFF)
     mem.write_word32(a + 4, buf_addr >> 32)

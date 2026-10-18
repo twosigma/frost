@@ -14,4 +14,7 @@
 
 # Full-top CPU-to-NIC 64-bit address-register transport test.
 SRC_C := ../../lib/src/uart.c main.c
+ifeq ($(filter -DFROST_DDR_CAPACITY_LOG2_BYTES=%,$(EXTRA_CFLAGS)),)
+EXTRA_CFLAGS += -DFROST_DDR_CAPACITY_LOG2_BYTES=36
+endif
 include ../../common/common.mk

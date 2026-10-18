@@ -791,8 +791,10 @@ async def test_served_tags_preserve_full_virtual_pc(dut: Any) -> None:
     _drive_pc(dut, high_pc)
     for _ in range(TIMEOUT):
         await FallingEdge(dut.i_clk)
-        if (int(dut.o_instr_valid.value) and
-                int(dut.o_served_word.value) == high_pc >> 2):
+        if (
+            int(dut.o_instr_valid.value)
+            and int(dut.o_served_word.value) == high_pc >> 2
+        ):
             break
     else:
         raise AssertionError("upper-VA served tag was truncated")

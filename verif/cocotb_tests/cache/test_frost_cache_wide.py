@@ -7,6 +7,8 @@ The sparse AXI test memory is keyed by the complete DDR offset. This is a
 test-only address-identity check; it does not model production DDR hardware.
 """
 
+from typing import Any
+
 import cocotb
 
 from cocotb_tests.cache.test_frost_cache import (
@@ -21,7 +23,8 @@ from cocotb_tests.cache.test_frost_cache_dma import LoadQueueStub
 
 
 @cocotb.test()
-async def wide_ddr_offsets_survive_cache_eviction(dut):
+async def wide_ddr_offsets_survive_cache_eviction(dut: Any) -> None:
+    """Keep lines at 0, +4 GiB, +32 GiB and the DDR end independent."""
     await _setup(dut)
     model = ReferenceModel()
     offsets = (
@@ -73,7 +76,7 @@ async def wide_ddr_offsets_survive_cache_eviction(dut):
 
 
 @cocotb.test()
-async def wide_dma_coherence_preserves_high_address(dut):
+async def wide_dma_coherence_preserves_high_address(dut: Any) -> None:
     """CPU/DMA partial writes and dirty evictions retain the full DDR address."""
     await _setup(dut)
     lq = LoadQueueStub(dut)

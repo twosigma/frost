@@ -138,7 +138,7 @@ module nic_desc_fetch #(
     if (i_rst) begin
       desc_valid_q <= 1'b0;
     end else begin
-      desc_valid_q       <= i_enable && head_hit && !i_desc_take && !i_invalidate && !i_restart;
+      desc_valid_q <= i_enable && head_hit && !i_desc_take && !i_invalidate && !i_restart;
       desc_word0_q <= i_wide_mode ?
           {slot_words_q[head_slot][{head_q[0], 2'd1}],
            slot_words_q[head_slot][{head_q[0], 2'd0}]} :

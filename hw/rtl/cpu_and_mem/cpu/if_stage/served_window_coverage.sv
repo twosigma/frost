@@ -40,11 +40,11 @@ module served_window_coverage #(
     input  logic [WORD_BITS-1:0] i_served_word,
     input  logic [WORD_BITS-1:0] i_served_last_word,
     input  logic [WORD_BITS-1:0] i_served_prev_word,
-    input  logic        i_served_prev_word_valid,
-    input  logic        i_use_instr_buffer,
-    input  logic        i_no_buffer_accepts_served_last,
-    input  logic        i_pc_high,
-    output logic        o_covers
+    input  logic                 i_served_prev_word_valid,
+    input  logic                 i_use_instr_buffer,
+    input  logic                 i_no_buffer_accepts_served_last,
+    input  logic                 i_pc_high,
+    output logic                 o_covers
 );
 
   (* keep = "true" *)logic [9:0] same_chunk;

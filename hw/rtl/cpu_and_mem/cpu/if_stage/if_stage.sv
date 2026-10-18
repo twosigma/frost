@@ -1235,7 +1235,9 @@ module if_stage #(
   end
 `endif
 
-  served_window_coverage #(.WORD_BITS(XLEN - 2)) u_served_window_coverage_low (
+  served_window_coverage #(
+      .WORD_BITS(XLEN - 2)
+  ) u_served_window_coverage_low (
       .i_pc_word(pc_reg_word),
       .i_served_word(i_served_word_low),
       .i_served_last_word(i_served_last_word_low),
@@ -1247,7 +1249,9 @@ module if_stage #(
       .o_covers(served_window_covers_low)
   );
 
-  served_window_coverage #(.WORD_BITS(XLEN - 2)) u_served_window_coverage_high (
+  served_window_coverage #(
+      .WORD_BITS(XLEN - 2)
+  ) u_served_window_coverage_high (
       .i_pc_word(pc_reg_word),
       .i_served_word(i_served_word_high),
       .i_served_last_word(i_served_last_word_high),

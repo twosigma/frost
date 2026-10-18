@@ -14,12 +14,22 @@ module test_ptw_high_addr;
   logic [riscv_pkg::PhysAddrBits-1:0] line_addr;
 
   ptw u_ptw (
-      .i_clk(clk), .i_rst(rst), .i_root_ppn(root_ppn),
-      .i_req_valid(req_valid), .o_req_ready(req_ready), .i_req_vpn(req_vpn),
-      .i_discard(1'b0), .o_resp_valid(resp_valid), .o_resp(resp),
-      .o_line_req_valid(line_valid), .i_line_req_ready(1'b0),
-      .o_line_req_addr(line_addr), .o_line_req_id(),
-      .i_line_resp_valid(1'b0), .i_line_resp_id('0), .i_line_resp_rdata('0)
+      .i_clk(clk),
+      .i_rst(rst),
+      .i_root_ppn(root_ppn),
+      .i_req_valid(req_valid),
+      .o_req_ready(req_ready),
+      .i_req_vpn(req_vpn),
+      .i_discard(1'b0),
+      .o_resp_valid(resp_valid),
+      .o_resp(resp),
+      .o_line_req_valid(line_valid),
+      .i_line_req_ready(1'b0),
+      .o_line_req_addr(line_addr),
+      .o_line_req_id(),
+      .i_line_resp_valid(1'b0),
+      .i_line_resp_id('0),
+      .i_line_resp_rdata('0)
   );
 
   initial begin
@@ -34,7 +44,8 @@ module test_ptw_high_addr;
     req_valid = 1'b1;
     @(negedge clk);
     assert (line_valid && line_addr == riscv_pkg::PhysAddrBits'(table_base + 64'h80))
-      else $fatal(1, "high PTE address truncated or refused: valid=%b addr=%h", line_valid, line_addr);
+    else
+      $fatal(1, "high PTE address truncated or refused: valid=%b addr=%h", line_valid, line_addr);
 
     // Reset the held read, then request a table starting exactly at the
     // excluded end of the configured DDR aperture. No read may be issued.
@@ -46,10 +57,11 @@ module test_ptw_high_addr;
     req_valid = 1'b1;
     @(negedge clk);
     req_valid = 1'b0;
-    assert (!line_valid) else $fatal(1, "out-of-range PTE line issued");
+    assert (!line_valid)
+    else $fatal(1, "out-of-range PTE line issued");
     @(negedge clk);
     assert (resp_valid && resp.fault_kind == riscv_pkg::DFAULT_ACCESS && !line_valid)
-      else $fatal(1, "out-of-range root did not access-fault");
+    else $fatal(1, "out-of-range root did not access-fault");
     $finish;
   end
 endmodule

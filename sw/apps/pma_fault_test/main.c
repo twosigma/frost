@@ -42,8 +42,8 @@
 #define FROST_DDR_CAPACITY_LOG2_BYTES 30
 #endif
 #define DDR_LIMIT (0x80000000ul + (1ul << FROST_DDR_CAPACITY_LOG2_BYTES))
-#define PHYS_BITS ((FROST_DDR_CAPACITY_LOG2_BYTES + 1) < 32 ? 32 : \
-                   (FROST_DDR_CAPACITY_LOG2_BYTES + 1))
+#define PHYS_BITS                                                                                  \
+    ((FROST_DDR_CAPACITY_LOG2_BYTES + 1) < 32 ? 32 : (FROST_DDR_CAPACITY_LOG2_BYTES + 1))
 
 static void uart_putc(char c)
 {

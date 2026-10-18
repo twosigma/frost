@@ -1657,7 +1657,9 @@ module tomasulo_wrapper #(
   assign store_base_z19 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:19]);
   assign store_base_z30 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:30]);
   assign store_base_z32 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:32]);
-  assign store_base_ddr_ok = riscv_pkg::pma_cached_ok(o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0]);
+  assign store_base_ddr_ok = riscv_pkg::pma_cached_ok(
+      o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0]
+  );
   assign store_base_page_lo6_zero = !(|o_mem_rs_issue.src1_value[17:12]);
   assign store_base_page_lo6_ones = &o_mem_rs_issue.src1_value[17:12];
   assign store_base_page_tail_zero = !(|o_mem_rs_issue.src1_value[29:12]);

@@ -288,8 +288,7 @@ module dma_test_engine #(
     end else begin
       // Mode changes are accepted only at the idle activation boundary.
       // Clearing all address registers prevents a stale cross-mode address.
-      if (i_wr_en && (i_wr_offset == 8'h28) && !busy_q &&
-          (i_wr_data[0] != wide_mode_q)) begin
+      if (i_wr_en && (i_wr_offset == 8'h28) && !busy_q && (i_wr_data[0] != wide_mode_q)) begin
         wide_mode_q   <= i_wr_data[0];
         src_q         <= '0;
         dst_q         <= '0;
@@ -299,21 +298,21 @@ module dma_test_engine #(
       // write during a transfer affects only the next one.
       if (i_wr_en) begin
         unique case (i_wr_offset)
-          8'h08: if (!wide_mode_q) src_q <= {32'b0, i_wr_data};
-          8'h0c: if (!wide_mode_q) dst_q <= {32'b0, i_wr_data};
-          8'h10: len_q <= i_wr_data;
-          8'h14: mode_q <= i_wr_data;
-          8'h18: pattern_q <= i_wr_data;
-          8'h1c: if (!wide_mode_q) status_addr_q <= {32'b0, i_wr_data};
-          8'h20: status_value_q <= i_wr_data;
+          8'h08:   if (!wide_mode_q) src_q <= {32'b0, i_wr_data};
+          8'h0c:   if (!wide_mode_q) dst_q <= {32'b0, i_wr_data};
+          8'h10:   len_q <= i_wr_data;
+          8'h14:   mode_q <= i_wr_data;
+          8'h18:   pattern_q <= i_wr_data;
+          8'h1c:   if (!wide_mode_q) status_addr_q <= {32'b0, i_wr_data};
+          8'h20:   status_value_q <= i_wr_data;
           default: ;
         endcase
       end
       if (i_wr64_en && wide_mode_q) begin
         unique case (i_wr_offset)
-          8'h40: src_q <= i_wr64_data;
-          8'h48: dst_q <= i_wr64_data;
-          8'h50: status_addr_q <= i_wr64_data;
+          8'h40:   src_q <= i_wr64_data;
+          8'h48:   dst_q <= i_wr64_data;
+          8'h50:   status_addr_q <= i_wr64_data;
           default: ;
         endcase
       end

@@ -271,7 +271,7 @@ static void build_tables(void)
     l0_a[6] = 0;                                                                 /* V=0 */
     l0_a[7] = PTE_PPN(FRAME(7)) | PTE_V | PTE_W | PTE_A | PTE_D;                 /* W&!R */
     l0_a[8] = PTE_PPN(FRAME(8)) | (1ul << 60) | PTE_V | PTE_R | PTE_A;           /* rsvd */
-    l0_a[9] = PTE_PPN(DDR_LIMIT) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;       /* beyond DDR */
+    l0_a[9] = PTE_PPN(DDR_LIMIT) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;        /* beyond DDR */
     l0_a[10] = PTE_PPN(PT_L0_A) | PTE_V;                                         /* nonleaf */
     l0_a[11] = PTE_PPN(0x40000000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;    /* device */
     l0_a[12] = PTE_PPN(FRAME(12)) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;       /* K rewrite */
@@ -357,8 +357,8 @@ int main(void)
 
 #if FROST_DDR_CAPACITY_LOG2_BYTES >= 32
     /* Map the final legal physical word through a distinct Sv39 VA. */
-    RUN_CASE(WIN_S "li t1, 0x0040FFF8\n" LREG " t2, 0(t1)\n" WIN_END
-                   "la t1, g_val\n" SREG " t2, 0(t1)");
+    RUN_CASE(WIN_S "li t1, 0x0040FFF8\n" LREG " t2, 0(t1)\n" WIN_END "la t1, g_val\n" SREG
+                   " t2, 0(t1)");
     all_ok &= report_val("C2 high-pa-translated-load", g_val, 0xA1A2A3A4A5A6A7A8ul);
     RUN_CASE(WIN_S "li t1, 0x0040FFF8\n"
                    "li t2, 0xB1B2B3B4B5B6B7B8\n" SREG " t2, 0(t1)\n" WIN_END);

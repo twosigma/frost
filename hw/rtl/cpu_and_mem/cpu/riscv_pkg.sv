@@ -1319,7 +1319,7 @@ package riscv_pkg;
   // must include the nonzero DDR base. The SoC can expose a smaller public
   // aperture when it reserves top-of-DDR metadata.
 `ifndef FROST_DDR_CAPACITY_LOG2_BYTES
-`define FROST_DDR_CAPACITY_LOG2_BYTES 36
+  `define FROST_DDR_CAPACITY_LOG2_BYTES 36
 `endif
   localparam int unsigned DdrCapacityLog2Bytes = `FROST_DDR_CAPACITY_LOG2_BYTES;
   localparam longint unsigned DdrBase = 64'h0000_0000_8000_0000;

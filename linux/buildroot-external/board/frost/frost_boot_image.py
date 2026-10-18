@@ -264,8 +264,12 @@ def gen_dts(
         chosen.append(f'\t\tbootargs = "{bootargs}";')
     if initrd_range is not None:
         start, end = initrd_range
-        chosen.append(f"\t\tlinux,initrd-start = <0x{start >> 32:08x} 0x{start & 0xffffffff:08x}>;")
-        chosen.append(f"\t\tlinux,initrd-end = <0x{end >> 32:08x} 0x{end & 0xffffffff:08x}>;")
+        chosen.append(
+            f"\t\tlinux,initrd-start = <0x{start >> 32:08x} 0x{start & 0xFFFFFFFF:08x}>;"
+        )
+        chosen.append(
+            f"\t\tlinux,initrd-end = <0x{end >> 32:08x} 0x{end & 0xFFFFFFFF:08x}>;"
+        )
     chosen_body = "\n".join(chosen)
     return f"""/dts-v1/;
 
@@ -305,8 +309,8 @@ def gen_dts(
 
 \tmemory@{DDR_BASE:x} {{
 \t\tdevice_type = "memory";
-\t\treg = <0x{DDR_BASE >> 32:08x} 0x{DDR_BASE & 0xffffffff:08x}
-\t\t       0x{mem_size >> 32:08x} 0x{mem_size & 0xffffffff:08x}>;
+\t\treg = <0x{DDR_BASE >> 32:08x} 0x{DDR_BASE & 0xFFFFFFFF:08x}
+\t\t       0x{mem_size >> 32:08x} 0x{mem_size & 0xFFFFFFFF:08x}>;
 \t}};
 
 \tpmu {{

@@ -446,8 +446,9 @@ module sq_early_addr_pipeline (
   for (genvar slot = 0; slot < 2; slot++) begin : gen_repair
     for (genvar source = 0; source < 8; source++) begin : gen_source
       assign repair_sums[slot][source] = repair_bases[source] + repair_immediates[slot];
-      assign repair_mmio_candidates[slot][source] =
-          riscv_pkg::pma_device_quadrant(repair_sums[slot][source]);
+      assign repair_mmio_candidates[slot][source] = riscv_pkg::pma_device_quadrant(
+          repair_sums[slot][source]
+      );
     end
     for (genvar pair = 0; pair < 3; pair++) begin : gen_pair
       assign repair_pair_sums[slot][pair] = repair_conditions[slot][2*pair] ?
@@ -459,7 +460,9 @@ module sq_early_addr_pipeline (
         repair_conditions[slot][7] ? repair_sums[slot][7] : repair_immediates[slot];
     assign repair_mmio_pairs[slot][3] = repair_conditions[slot][6] ?
         repair_mmio_candidates[slot][6] : repair_conditions[slot][7] ?
-        repair_mmio_candidates[slot][7] : riscv_pkg::pma_device_quadrant(repair_immediates[slot]);
+        repair_mmio_candidates[slot][7] : riscv_pkg::pma_device_quadrant(
+        repair_immediates[slot]
+    );
     assign repair_half_sums[slot][0] = repair_pair_matches[slot][0] ?
         repair_pair_sums[slot][0] : repair_pair_sums[slot][1];
     assign repair_half_sums[slot][1] = repair_pair_matches[slot][2] ?
@@ -523,10 +526,11 @@ module sq_early_addr_pipeline (
       sq_early_addr_update_2.address = sq_early_effective_addr_2;
       sq_early_addr_update_2.is_mmio = riscv_pkg::pma_device_quadrant(sq_early_effective_addr_2);
     end else if (sq_early_addr_repair_ready_2_q) begin
-      sq_early_addr_update_2.valid   = 1'b1;
+      sq_early_addr_update_2.valid = 1'b1;
       sq_early_addr_update_2.rob_tag = sq_early_addr_repair_rob_tag_2_q;
       sq_early_addr_update_2.address = sq_early_hold_effective_addr_2;
-      sq_early_addr_update_2.is_mmio = riscv_pkg::pma_device_quadrant(sq_early_hold_effective_addr_2);
+      sq_early_addr_update_2.is_mmio =
+          riscv_pkg::pma_device_quadrant(sq_early_hold_effective_addr_2);
     end else if (sq_early_addr_repair_valid_2_q) begin
       sq_early_addr_update_2.valid   = sq_early_addr_repair_fire_2;
       sq_early_addr_update_2.rob_tag = sq_early_addr_repair_rob_tag_2_q;
@@ -568,11 +572,14 @@ module sq_early_addr_pipeline (
     assign address_source_take[slot][2] = !(|address_source_take[slot][1:0]);
     assign mmio_captured_repair[slot] = repair_half_matches[slot][0] ?
         repair_mmio_halves[slot][0] : repair_pair_matches[slot][2] ?
-        repair_mmio_pairs[slot][2] : riscv_pkg::pma_device_quadrant(repair_immediates[slot]);
-    assign mmio_nonlive[slot] = address_fresh[slot] ?
-        riscv_pkg::pma_device_quadrant(address_fresh_data[slot]) : address_held[slot] ?
-        riscv_pkg::pma_device_quadrant(address_held_data[slot]) :
-        address_waiting[slot] && mmio_captured_repair[slot];
+        repair_mmio_pairs[slot][2] : riscv_pkg::pma_device_quadrant(
+        repair_immediates[slot]
+    );
+    assign mmio_nonlive[slot] = address_fresh[slot] ? riscv_pkg::pma_device_quadrant(
+        address_fresh_data[slot]
+    ) : address_held[slot] ? riscv_pkg::pma_device_quadrant(
+        address_held_data[slot]
+    ) : address_waiting[slot] && mmio_captured_repair[slot];
     assign mmio_final[slot] =
         (repair_mmio_candidates[slot][6] && address_source_take[slot][0]) ||
         (repair_mmio_candidates[slot][7] && address_source_take[slot][1]) ||

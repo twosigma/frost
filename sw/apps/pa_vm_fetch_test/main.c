@@ -87,8 +87,7 @@ static int check_run(unsigned long marker, const char *name)
 {
     int ok = (g_cause == 9ul) && (g_epc == TEST_VA + 4ul) && (g_a0 == marker);
     if (!ok)
-        uart_printf("Sv39 %s fetch failed: cause=%lx epc=%lx a0=%lx\n",
-                    name, g_cause, g_epc, g_a0);
+        uart_printf("Sv39 %s fetch failed: cause=%lx epc=%lx a0=%lx\n", name, g_cause, g_epc, g_a0);
     return ok;
 }
 
@@ -113,7 +112,7 @@ int main(void)
     for (unsigned i = 0; i < 2; ++i) {
         volatile uint32_t *code = (volatile uint32_t *) code_pa[i];
         code[0] = (uint32_t) ((marker[i] << 20) | 0x00000513ul); /* addi a0,x0,marker */
-        code[1] = 0x00000073u; /* ecall */
+        code[1] = 0x00000073u;                                   /* ecall */
         l0[0] = PTE_PPN(code_pa[i]) | PTE_V | PTE_X | PTE_A;
         __asm__ volatile("fence rw,rw\nfence.i\nsfence.vma" ::: "memory");
         __asm__ volatile("csrw satp, %0" : : "r"(SATP_SV39 | (PT_ROOT >> 12)) : "memory");

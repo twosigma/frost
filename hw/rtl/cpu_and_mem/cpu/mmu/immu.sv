@@ -232,7 +232,7 @@ module immu #(
   // up, but it cannot make another key's payload visible.
   // ---------------------------------------------------------------------------
   function automatic logic [PpnBits-1:0] ppn_from_resp(input riscv_pkg::ptw_resp_t resp,
-                                                  input logic [VpnBits-1:0] vpn);
+                                                       input logic [VpnBits-1:0] vpn);
     unique case (resp.level)
       2'd2: ppn_from_resp = {resp.ppn[PpnBits-1:18], vpn[17:0]};
       2'd1: ppn_from_resp = {resp.ppn[PpnBits-1:9], vpn[8:0]};
@@ -394,7 +394,9 @@ module immu #(
     endcase
   end
   assign super_next_ok = res0.clean_hit && (res0.level != 2'd0) && !super_end;
-  assign super_next_pma_bad_selected = !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({super_next_ppn, 12'h000}));
+  assign super_next_pma_bad_selected = !riscv_pkg::pma_fetch_ok(
+      riscv_pkg::XLEN'({super_next_ppn, 12'h000})
+  );
   assign super_next_pma_bad = res0_from_tlb ? tlb_fetch_next_pma_bad[0] :
                                               super_next_pma_bad_selected;
 `ifndef SYNTHESIS
@@ -535,8 +537,14 @@ module immu #(
   // ---------------------------------------------------------------------------
   // Translation preserves the page offset and visible tags match i_pc, so
   // both modes can use the live PC's offset.
-  assign o_pa0 = {i_active ? pa0_q[riscv_pkg::PhysAddrBits-1:12] : i_pc[riscv_pkg::PhysAddrBits-1:12], i_pc[11:0]};
-  assign o_pa1 = {i_active ? pa1_q[riscv_pkg::PhysAddrBits-1:12] : bare_pa1[riscv_pkg::PhysAddrBits-1:12], pc_plus4_lo, 2'b00};
+  assign o_pa0 = {
+    i_active ? pa0_q[riscv_pkg::PhysAddrBits-1:12] : i_pc[riscv_pkg::PhysAddrBits-1:12], i_pc[11:0]
+  };
+  assign o_pa1 = {
+    i_active ? pa1_q[riscv_pkg::PhysAddrBits-1:12] : bare_pa1[riscv_pkg::PhysAddrBits-1:12],
+    pc_plus4_lo,
+    2'b00
+  };
   // Apply the live-PC compare last, for timing.
   (* keep = "true" *) logic visible_before_pc_compare;
   assign visible_before_pc_compare = !i_tlb_invalidate && key_valid_q &&

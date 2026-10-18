@@ -113,7 +113,7 @@ module nic_csr #(
   logic rx_en_q, tx_en_q, promisc_q, rx_cfg_err_q, tx_cfg_err_q;
   logic wide_mode_q;
   logic [47:0] mac_q;
-  logic [ 3:0] phy_ctrl_q;
+  logic [3:0] phy_ctrl_q;
   logic [ADDR_WIDTH-1:0] rx_base_q, tx_base_q;
   logic [4:0] rx_size_q, tx_size_q;
   logic [15:0] rx_tail_q, tx_tail_q;
@@ -338,33 +338,33 @@ module nic_csr #(
 
   function automatic logic [31:0] reg_word(input logic [11:0] off);
     case (off)
-      nic_pkg::IdOffset:        reg_word = nic_pkg::IdValue;
-      nic_pkg::CtrlOffset:      reg_word = {23'b0, reset_busy, 5'b0, promisc_q, tx_en_q, rx_en_q};
-      nic_pkg::StatusOffset:    reg_word = status_word;
-      nic_pkg::MacLoOffset:     reg_word = mac_q[31:0];
-      nic_pkg::MacHiOffset:     reg_word = {16'b0, mac_q[47:32]};
-      nic_pkg::RxBaseOffset:    reg_word = rx_base_q[31:0];
-      nic_pkg::RxSizeOffset:    reg_word = {27'b0, rx_size_q};
-      nic_pkg::RxTailOffset:    reg_word = {16'b0, rx_tail_q};
-      nic_pkg::RxHeadOffset:    reg_word = {16'b0, i_rx_head};
-      nic_pkg::TxBaseOffset:    reg_word = tx_base_q[31:0];
-      nic_pkg::AbiCtrlOffset:   reg_word = {30'b0, 1'b1, wide_mode_q};
-      nic_pkg::RxBase64Offset:  reg_word = 32'(rx_base_q);
+      nic_pkg::IdOffset:         reg_word = nic_pkg::IdValue;
+      nic_pkg::CtrlOffset:       reg_word = {23'b0, reset_busy, 5'b0, promisc_q, tx_en_q, rx_en_q};
+      nic_pkg::StatusOffset:     reg_word = status_word;
+      nic_pkg::MacLoOffset:      reg_word = mac_q[31:0];
+      nic_pkg::MacHiOffset:      reg_word = {16'b0, mac_q[47:32]};
+      nic_pkg::RxBaseOffset:     reg_word = rx_base_q[31:0];
+      nic_pkg::RxSizeOffset:     reg_word = {27'b0, rx_size_q};
+      nic_pkg::RxTailOffset:     reg_word = {16'b0, rx_tail_q};
+      nic_pkg::RxHeadOffset:     reg_word = {16'b0, i_rx_head};
+      nic_pkg::TxBaseOffset:     reg_word = tx_base_q[31:0];
+      nic_pkg::AbiCtrlOffset:    reg_word = {30'b0, 1'b1, wide_mode_q};
+      nic_pkg::RxBase64Offset:   reg_word = 32'(rx_base_q);
       nic_pkg::RxBase64HiOffset: reg_word = 32'(rx_base_q >> 32);
-      nic_pkg::TxBase64Offset:  reg_word = 32'(tx_base_q);
+      nic_pkg::TxBase64Offset:   reg_word = 32'(tx_base_q);
       nic_pkg::TxBase64HiOffset: reg_word = 32'(tx_base_q >> 32);
-      nic_pkg::TxSizeOffset:    reg_word = {27'b0, tx_size_q};
-      nic_pkg::TxTailOffset:    reg_word = {16'b0, tx_tail_q};
-      nic_pkg::TxHeadOffset:    reg_word = {16'b0, i_tx_head};
-      nic_pkg::IrqStatusOffset: reg_word = i_irq_status;
-      nic_pkg::IrqMaskOffset:   reg_word = i_irq_mask;
-      nic_pkg::RxItrOffset:     reg_word = i_rx_itr;
-      nic_pkg::TxItrOffset:     reg_word = i_tx_itr;
-      nic_pkg::TickOffset:      reg_word = i_tick;
-      nic_pkg::LinkOffset:      reg_word = link_word;
-      nic_pkg::PhyCtrlOffset:   reg_word = {28'b0, phy_ctrl_q};
-      nic_pkg::PhyStatusOffset: reg_word = {27'b0, i_phy_status};
-      default:                  reg_word = '0;
+      nic_pkg::TxSizeOffset:     reg_word = {27'b0, tx_size_q};
+      nic_pkg::TxTailOffset:     reg_word = {16'b0, tx_tail_q};
+      nic_pkg::TxHeadOffset:     reg_word = {16'b0, i_tx_head};
+      nic_pkg::IrqStatusOffset:  reg_word = i_irq_status;
+      nic_pkg::IrqMaskOffset:    reg_word = i_irq_mask;
+      nic_pkg::RxItrOffset:      reg_word = i_rx_itr;
+      nic_pkg::TxItrOffset:      reg_word = i_tx_itr;
+      nic_pkg::TickOffset:       reg_word = i_tick;
+      nic_pkg::LinkOffset:       reg_word = link_word;
+      nic_pkg::PhyCtrlOffset:    reg_word = {28'b0, phy_ctrl_q};
+      nic_pkg::PhyStatusOffset:  reg_word = {27'b0, i_phy_status};
+      default:                   reg_word = '0;
     endcase
   endfunction
 

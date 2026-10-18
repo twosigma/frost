@@ -79,7 +79,8 @@ int main(void)
         failures++;
     }
     if (!wait_status(NIC_STATUS_RX_READY | NIC_STATUS_TX_READY,
-                     NIC_STATUS_RX_READY | NIC_STATUS_TX_READY, WAIT_READY)) {
+                     NIC_STATUS_RX_READY | NIC_STATUS_TX_READY,
+                     WAIT_READY)) {
         uart_printf("PA NIC not ready\n");
         failures++;
     }
@@ -87,7 +88,8 @@ int main(void)
     nic_write(NIC_CTRL, NIC_CTRL_RESET);
     if (!wait_status(NIC_STATUS_RESET_BUSY, 0, WAIT_READY) ||
         !wait_status(NIC_STATUS_RX_READY | NIC_STATUS_TX_READY,
-                     NIC_STATUS_RX_READY | NIC_STATUS_TX_READY, WAIT_READY)) {
+                     NIC_STATUS_RX_READY | NIC_STATUS_TX_READY,
+                     WAIT_READY)) {
         uart_printf("PA NIC reset/ready failed\n");
         failures++;
     }
@@ -139,12 +141,16 @@ int main(void)
 
     if (!wait_done(tx) || tx[0].status != NIC_DESC_DD) {
         uart_printf("PA NIC TX failed: status=%x head=%u irq=%x\n",
-                    tx[0].status, nic_read(NIC_TX_HEAD), nic_read(NIC_IRQ_STATUS));
+                    tx[0].status,
+                    nic_read(NIC_TX_HEAD),
+                    nic_read(NIC_IRQ_STATUS));
         failures++;
     }
     if (!wait_done(rx) || rx[0].status != (NIC_DESC_DD | FRAME_BYTES)) {
         uart_printf("PA NIC RX failed: status=%x head=%u irq=%x\n",
-                    rx[0].status, nic_read(NIC_RX_HEAD), nic_read(NIC_IRQ_STATUS));
+                    rx[0].status,
+                    nic_read(NIC_RX_HEAD),
+                    nic_read(NIC_IRQ_STATUS));
         failures++;
     }
     __asm__ volatile("fence r, r" ::: "memory");
@@ -155,8 +161,7 @@ int main(void)
             break;
         }
     }
-    if (*sentinel != 0x554433221100ffeeull ||
-        nic_read_counter(NIC_CNT_TX_FRAMES) != 1u ||
+    if (*sentinel != 0x554433221100ffeeull || nic_read_counter(NIC_CNT_TX_FRAMES) != 1u ||
         nic_read_counter(NIC_CNT_RX_FRAMES) != 1u) {
         uart_printf("PA NIC sentinel/counters failed: tx=%u rx=%u\n",
                     (unsigned) nic_read_counter(NIC_CNT_TX_FRAMES),

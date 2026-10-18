@@ -642,6 +642,9 @@ module dmmu (
     end
   end
   always_comb begin
+    logic [riscv_pkg::XLEN-1:0] f_resolve_addr_ref;
+    f_resolve_addr_ref = s1_q.va;
+    if (resolve_pa) f_resolve_addr_ref = riscv_pkg::XLEN'({resolve_ppn, s1_q.va[11:0]});
     p_tlb_device_page_exact : assert (tlb_device_page == f_tlb_device_page_ref);
     p_tlb_leaf_checks_exact :
     assert (tlb_perm_ok == f_tlb_perm_ok_ref && tlb_atomic_page == f_tlb_atomic_page_ref);
@@ -649,10 +652,11 @@ module dmmu (
     p_resolve_mmio_exact :
     assert (resolve_is_mmio ==
         ((resolve_fault == riscv_pkg::DFAULT_NONE) &&
-         riscv_pkg::pma_device_quadrant(resolve_addr)));
+         riscv_pkg::pma_device_quadrant(
+        resolve_addr
+    )));
     // S2's split address rebuilds the resolution's address.
-    p_resolve_addr_exact :
-    assert ((resolve_pa ? riscv_pkg::XLEN'({resolve_ppn, s1_q.va[11:0]} : s1_q.va) == resolve_addr);
+    p_resolve_addr_exact : assert (f_resolve_addr_ref == resolve_addr);
   end
 `endif
 

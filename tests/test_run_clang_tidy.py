@@ -24,6 +24,7 @@ import pytest
 
 
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "run-clang-tidy.py"
+REPO_ROOT = SCRIPT_PATH.parent.parent
 
 
 def _load_wrapper() -> ModuleType:
@@ -37,6 +38,27 @@ def _load_wrapper() -> ModuleType:
 
 
 wrapper = _load_wrapper()
+
+
+@pytest.mark.parametrize(
+    "app",
+    ("pa_width", "pa_vm_fetch", "pa_dma", "pa_nic_mmio", "pa_nic_packet"),
+)
+def test_pa_app_tidy_capacity_defaults_and_overrides(
+    app: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PA program builds expose one capacity define to both CI lint and tests."""
+    source = (
+        f"sw/apps/{app}_test/{'pa_width_test.c' if app == 'pa_width' else 'main.c'}"
+    )
+    monkeypatch.delenv("EXTRA_CFLAGS", raising=False)
+    flags, _ = wrapper.extract_flags_for_file(source, REPO_ROOT, "", "")
+    assert flags.count("-DFROST_DDR_CAPACITY_LOG2_BYTES=36") == 1
+
+    monkeypatch.setenv("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=30")
+    flags, _ = wrapper.extract_flags_for_file(source, REPO_ROOT, "", "")
+    assert flags.count("-DFROST_DDR_CAPACITY_LOG2_BYTES=30") == 1
+    assert "-DFROST_DDR_CAPACITY_LOG2_BYTES=36" not in flags
 
 
 def _write_common_mk(root_dir: Path) -> None:

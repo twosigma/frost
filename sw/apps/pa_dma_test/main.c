@@ -40,8 +40,8 @@
 static uint32_t run(uint64_t src, uint64_t dst, uint32_t len, uint64_t status_addr)
 {
     dma_engine_ack();
-    dma_engine_setup64(src, dst, len, DMA_ENGINE_MODE_COPY | DMA_ENGINE_MODE_STATUS,
-                       0, status_addr, 0x12345678u);
+    dma_engine_setup64(
+        src, dst, len, DMA_ENGINE_MODE_COPY | DMA_ENGINE_MODE_STATUS, 0, status_addr, 0x12345678u);
     __asm__ volatile("fence rw,rw" ::: "memory");
     dma_engine_start();
     return dma_engine_wait();
@@ -78,12 +78,16 @@ int main(void)
     if (!(ctrl & DMA_ENGINE_STATUS_DONE) || (ctrl & DMA_ENGINE_STATUS_ERROR)) {
         uint64_t got_src = *(volatile uint64_t *) (DMA_ENGINE_BASE + DMA_ENGINE_SRC64);
         uint64_t got_dst = *(volatile uint64_t *) (DMA_ENGINE_BASE + DMA_ENGINE_DST64);
-        uint64_t got_status =
-            *(volatile uint64_t *) (DMA_ENGINE_BASE + DMA_ENGINE_STATUS_ADDR64);
-        uart_printf("PA DMA high copy status=%x abi=%x len=%x mode=%x src=%lx dst=%lx status_addr=%lx\n",
-                    ctrl, dma_engine_read(DMA_ENGINE_ABI_CTRL),
-                    dma_engine_read(DMA_ENGINE_LEN), dma_engine_read(DMA_ENGINE_MODE),
-                    got_src, got_dst, got_status);
+        uint64_t got_status = *(volatile uint64_t *) (DMA_ENGINE_BASE + DMA_ENGINE_STATUS_ADDR64);
+        uart_printf(
+            "PA DMA high copy status=%x abi=%x len=%x mode=%x src=%lx dst=%lx status_addr=%lx\n",
+            ctrl,
+            dma_engine_read(DMA_ENGINE_ABI_CTRL),
+            dma_engine_read(DMA_ENGINE_LEN),
+            dma_engine_read(DMA_ENGINE_MODE),
+            got_src,
+            got_dst,
+            got_status);
         failures++;
     }
     __asm__ volatile("fence rw,rw" ::: "memory");

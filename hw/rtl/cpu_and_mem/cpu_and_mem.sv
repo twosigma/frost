@@ -136,7 +136,7 @@ module cpu_and_mem #(
 
     // External interrupt input: PLIC source 2 (the ns16550 IRQ is source 1).
     // The PLIC's M-context line is registered one cycle before driving MEIP.
-    input logic i_external_interrupt,
+    input logic        i_external_interrupt,
     // DDR ECC reports from the board's reader (boards/x3/x3_ecc_reader.sv on
     // the X3) for the memory error unit; a board without one ties them low.
     input logic        i_ecc_present,
@@ -172,36 +172,36 @@ module cpu_and_mem #(
     // are the L2's downstream ids (DdrAxiIdBits wide, board-fixed).
     // i_ddr_axi_rst (i_clk domain) is the reset of the interconnect behind
     // these ports; the behavioral memory uses the CPU reset instead.
-    input  logic                       i_ddr_axi_rst,
-    output logic                       o_ddr_axi_awvalid,
-    input  logic                       i_ddr_axi_awready,
-    output logic [                4:0] o_ddr_axi_awid,
+    input  logic                                 i_ddr_axi_rst,
+    output logic                                 o_ddr_axi_awvalid,
+    input  logic                                 i_ddr_axi_awready,
+    output logic [                          4:0] o_ddr_axi_awid,
     output logic [riscv_pkg::DdrAxiAddrBits-1:0] o_ddr_axi_awaddr,
-    output logic [                7:0] o_ddr_axi_awlen,
-    output logic [                2:0] o_ddr_axi_awsize,
-    output logic [                1:0] o_ddr_axi_awburst,
-    output logic                       o_ddr_axi_wvalid,
-    input  logic                       i_ddr_axi_wready,
-    output logic [L2_LINE_BYTES*8-1:0] o_ddr_axi_wdata,
-    output logic [  L2_LINE_BYTES-1:0] o_ddr_axi_wstrb,
-    output logic                       o_ddr_axi_wlast,
-    input  logic                       i_ddr_axi_bvalid,
-    output logic                       o_ddr_axi_bready,
-    input  logic [                4:0] i_ddr_axi_bid,
-    input  logic [                1:0] i_ddr_axi_bresp,
-    output logic                       o_ddr_axi_arvalid,
-    input  logic                       i_ddr_axi_arready,
-    output logic [                4:0] o_ddr_axi_arid,
+    output logic [                          7:0] o_ddr_axi_awlen,
+    output logic [                          2:0] o_ddr_axi_awsize,
+    output logic [                          1:0] o_ddr_axi_awburst,
+    output logic                                 o_ddr_axi_wvalid,
+    input  logic                                 i_ddr_axi_wready,
+    output logic [          L2_LINE_BYTES*8-1:0] o_ddr_axi_wdata,
+    output logic [            L2_LINE_BYTES-1:0] o_ddr_axi_wstrb,
+    output logic                                 o_ddr_axi_wlast,
+    input  logic                                 i_ddr_axi_bvalid,
+    output logic                                 o_ddr_axi_bready,
+    input  logic [                          4:0] i_ddr_axi_bid,
+    input  logic [                          1:0] i_ddr_axi_bresp,
+    output logic                                 o_ddr_axi_arvalid,
+    input  logic                                 i_ddr_axi_arready,
+    output logic [                          4:0] o_ddr_axi_arid,
     output logic [riscv_pkg::DdrAxiAddrBits-1:0] o_ddr_axi_araddr,
-    output logic [                7:0] o_ddr_axi_arlen,
-    output logic [                2:0] o_ddr_axi_arsize,
-    output logic [                1:0] o_ddr_axi_arburst,
-    input  logic                       i_ddr_axi_rvalid,
-    output logic                       o_ddr_axi_rready,
-    input  logic [                4:0] i_ddr_axi_rid,
-    input  logic [L2_LINE_BYTES*8-1:0] i_ddr_axi_rdata,
-    input  logic [                1:0] i_ddr_axi_rresp,
-    input  logic                       i_ddr_axi_rlast,
+    output logic [                          7:0] o_ddr_axi_arlen,
+    output logic [                          2:0] o_ddr_axi_arsize,
+    output logic [                          1:0] o_ddr_axi_arburst,
+    input  logic                                 i_ddr_axi_rvalid,
+    output logic                                 o_ddr_axi_rready,
+    input  logic [                          4:0] i_ddr_axi_rid,
+    input  logic [          L2_LINE_BYTES*8-1:0] i_ddr_axi_rdata,
+    input  logic [                          1:0] i_ddr_axi_rresp,
+    input  logic                                 i_ddr_axi_rlast,
 
     // NIC (hw/rtl/peripherals/nic): the MAC clocks and their
     // presence levels, the raw PMA interface, the board's PHY lines and the
@@ -260,6 +260,10 @@ module cpu_and_mem #(
   localparam int unsigned UartTxStatusMmioAddr = 32'h4000_0028;  // TX status (bit0: TX ready)
   localparam int unsigned Fifo0MmioAddr = 32'h4000_0008;
   localparam int unsigned Fifo1MmioAddr = 32'h4000_000C;
+  localparam logic [riscv_pkg::PhysAddrBits-1:0] Fifo0PhysAddr =
+      riscv_pkg::PhysAddrBits'(Fifo0MmioAddr);
+  localparam logic [riscv_pkg::PhysAddrBits-1:0] Fifo1PhysAddr =
+      riscv_pkg::PhysAddrBits'(Fifo1MmioAddr);
   // Timer registers (CLINT-compatible layout)
   localparam int unsigned MtimeLowMmioAddr = 32'h4000_0010;  // mtime[31:0]
   localparam int unsigned MtimeHighMmioAddr = 32'h4000_0014;  // mtime[63:32]
@@ -491,7 +495,8 @@ module cpu_and_mem #(
   logic mmio_load_valid;
   logic mmio_read_capture;
   logic [riscv_pkg::MemDataBits-1:0] data_memory_read_data;  // From RAM only
-  logic [riscv_pkg::PhysAddrBits-1:0] data_memory_address_registered;  // Delayed for read data alignment
+  // Delayed for read-data alignment.
+  logic [riscv_pkg::PhysAddrBits-1:0] data_memory_address_registered;
   logic [riscv_pkg::MemStrbBits-1:0] data_memory_byte_write_enable;
   // BRAM strobes exclude MMIO and cached writes using registered SQ and
   // AMO tier flags. They drive the BRAM WEA pins directly.
@@ -575,14 +580,18 @@ module cpu_and_mem #(
   // Capture window selects on the same edge as the MMIO write address.
   logic plic_sel_q, dma_engine_sel_q, nic_sel_q, memerr_sel_q;
   always_ff @(posedge i_clk) begin
-    plic_sel_q       <= riscv_pkg::pma_device_quadrant(riscv_pkg::XLEN'(data_memory_address)) &&
-                        (data_memory_address[31:22] == PlicWindowSel);
-    dma_engine_sel_q <= riscv_pkg::pma_device_quadrant(riscv_pkg::XLEN'(data_memory_address)) &&
-                        (data_memory_address[31:8] == DmaEngineBase[31:8]);
-    nic_sel_q        <= riscv_pkg::pma_device_quadrant(riscv_pkg::XLEN'(data_memory_address)) &&
-                        (data_memory_address[31:12] == NicBase[31:12]);
-    memerr_sel_q     <= riscv_pkg::pma_device_quadrant(riscv_pkg::XLEN'(data_memory_address)) &&
-                        (data_memory_address[31:8] == MemErrBase[31:8]);
+    plic_sel_q <= riscv_pkg::pma_device_quadrant(
+        riscv_pkg::XLEN'(data_memory_address)
+    ) && (data_memory_address[31:22] == PlicWindowSel);
+    dma_engine_sel_q <= riscv_pkg::pma_device_quadrant(
+        riscv_pkg::XLEN'(data_memory_address)
+    ) && (data_memory_address[31:8] == DmaEngineBase[31:8]);
+    nic_sel_q <= riscv_pkg::pma_device_quadrant(
+        riscv_pkg::XLEN'(data_memory_address)
+    ) && (data_memory_address[31:12] == NicBase[31:12]);
+    memerr_sel_q <= riscv_pkg::pma_device_quadrant(
+        riscv_pkg::XLEN'(data_memory_address)
+    ) && (data_memory_address[31:8] == MemErrBase[31:8]);
   end
   logic plic_wr_en, plic_wr_hi;
   assign plic_wr_hi = |data_memory_byte_write_enable_registered[7:4];
@@ -664,8 +673,9 @@ module cpu_and_mem #(
       // engine, ID 4 = the NIC, ID 5 = the memory error unit. The === clamp
       // keeps an un-driven i_external_interrupt in simulation from
       // propagating X into the PLIC and mip.
-      .i_src_level({memerr_irq, nic_irq, dma_engine_irq, (i_external_interrupt === 1'b1),
-                    ns_irq_pending}),
+      .i_src_level({
+        memerr_irq, nic_irq, dma_engine_irq, (i_external_interrupt === 1'b1), ns_irq_pending
+      }),
       .i_wr_en(plic_wr_en),
       .i_wr_offset({data_memory_address_registered[21:3], plic_wr_hi ? 3'b100 : 3'b000}),
       .i_wr_data(plic_wr_hi ? data_memory_write_data_registered[63:32] :
@@ -885,6 +895,11 @@ module cpu_and_mem #(
   // (FROST_RVFI_DII, simulation only) leave out the cached provider: every
   // window comes from the injected instruction stream through the low-BRAM
   // presenter, and the cached tier still serves data.
+`ifdef FROST_RVFI_DII
+  localparam bit EnableCachedFetchProvider = 1'b0;
+`else
+  localparam bit EnableCachedFetchProvider = ENABLE_CACHED_TIER != 0;
+`endif
   if (FETCH_VALID_FUZZ != 0) begin : gen_fetch_fuzz
     logic [15:0] lfsr_q;
     logic [ 2:0] gap_cnt_q;  // forced multi-cycle gaps
@@ -907,7 +922,7 @@ module cpu_and_mem #(
     assign instruction_served_prev_word_low = bram_fetch_served_prev_word_q;
     assign instruction_served_prev_word_valid_low = bram_fetch_served_prev_word_valid_q;
     assign instruction_served_word_high = '0;
-    assign instruction_served_last_word_high = (riscv_pkg::XLEN-2)'(1);
+    assign instruction_served_last_word_high = (riscv_pkg::XLEN - 2)'(1);
     assign instruction_served_prev_word_high = '1;
     assign instruction_served_prev_word_valid_high = 1'b0;
     assign instruction_fault0 = bram_fetch_fault0_q;
@@ -977,11 +992,7 @@ module cpu_and_mem #(
         else if (lfsr_q[7:3] == 5'b00000) gap_cnt_q <= {1'b1, lfsr_q[9:8]};
       end
     end
-`ifdef FROST_RVFI_DII
-  end else if (1'b0) begin : gen_fetch_provider
-`else
-  end else if (ENABLE_CACHED_TIER != 0) begin : gen_fetch_provider
-`endif
+  end else if (EnableCachedFetchProvider) begin : gen_fetch_provider
     // Register the provider select to match the memory read latency.
     // Low overlay hits respond in one cycle; other low windows repeat once.
     // High windows wait for L1I.
@@ -1193,7 +1204,7 @@ module cpu_and_mem #(
     assign instruction_served_prev_word_low = bram_fetch_served_prev_word_q;
     assign instruction_served_prev_word_valid_low = bram_fetch_served_prev_word_valid_q;
     assign instruction_served_word_high = '0;
-    assign instruction_served_last_word_high = (riscv_pkg::XLEN-2)'(1);
+    assign instruction_served_last_word_high = (riscv_pkg::XLEN - 2)'(1);
     assign instruction_served_prev_word_high = '1;
     assign instruction_served_prev_word_valid_high = 1'b0;
     assign instruction_fault0 = bram_fetch_fault0_q;
@@ -1630,8 +1641,9 @@ module cpu_and_mem #(
       .i_dev_read_addr(mmio_load_addr),
       .i_dev_read_capture(mmio_read_capture),
       .o_dev_read_data(rvfi_dii_device_read_data),
-      .i_dev_write_en(|data_memory_byte_write_enable &&
-                      riscv_pkg::pma_device_quadrant(riscv_pkg::XLEN'(data_memory_address))),
+      .i_dev_write_en(|data_memory_byte_write_enable && riscv_pkg::pma_device_quadrant(
+          riscv_pkg::XLEN'(data_memory_address)
+      )),
       .i_dev_write_addr(32'(data_memory_address)),
       .i_dev_write_data(data_memory_write_data),
       .i_dev_write_strb(data_memory_byte_write_enable)
@@ -2580,10 +2592,10 @@ module cpu_and_mem #(
   // for sub-dword stores (replication).
   assign o_fifo0_wr_data = data_memory_write_data_registered[31:0];
   assign o_fifo0_wr_en   = |data_memory_byte_write_enable_registered &&
-                            data_memory_address_registered == riscv_pkg::PhysAddrBits'(Fifo0MmioAddr);
+                            data_memory_address_registered == Fifo0PhysAddr;
   assign o_fifo1_wr_data = data_memory_write_data_registered[31:0];
   assign o_fifo1_wr_en   = |data_memory_byte_write_enable_registered &&
-                            data_memory_address_registered == riscv_pkg::PhysAddrBits'(Fifo1MmioAddr);
+                            data_memory_address_registered == Fifo1PhysAddr;
 
   // Linux reads received bytes through the ns16550 RBR alias. That read must
   // consume the shared UART RX FIFO as the native FROST RX-data address does,

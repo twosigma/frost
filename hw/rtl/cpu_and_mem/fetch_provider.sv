@@ -591,16 +591,12 @@ module fetch_provider #(
   logic [1:0] copy_base;
   always_comb begin
     for (int p = 0; p < 2; p++) begin
-      want_cand[p] = ask_pa_valid_q &&
-          riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(ask_pa0_q)) &&
-          cand_fetchable[p] && !cand_present[p] &&
-          !fill_busy_q[p];
+      want_cand[p] = ask_pa_valid_q && riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(ask_pa0_q)) &&
+          cand_fetchable[p] && !cand_present[p] && !fill_busy_q[p];
       want_fill[p] = want_cand[p] && !vs_hit[p] &&
           !((VICTIM_LINES > 0) && ev_pending_q[p] && (ev_line_q[p] == cand_line_q[p]));
-      copy_reg_ok[p] = ask_pa_valid_q &&
-          riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(ask_pa0_q)) &&
-          cand_fetchable[p] && !fill_busy_q[p] &&
-          !ev_pending_q[p];
+      copy_reg_ok[p] = ask_pa_valid_q && riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(ask_pa0_q)) &&
+          cand_fetchable[p] && !fill_busy_q[p] && !ev_pending_q[p];
       copy_base[p] = copy_reg_ok[p] && vs_hit[p] && !cand_present[p];
     end
     for (int p = 0; p < 2; p++) begin
@@ -844,10 +840,9 @@ module fetch_provider #(
     if (i_rst || i_invalidate) begin
       perf_miss_stall_q <= 1'b0;
     end else begin
-      perf_miss_stall_q <=
-          i_pa_valid && riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(i_pa0)) &&
-          i_l1i_miss_outstanding && !window_ready_q &&
-          !i_pipeline_stall && !pipeline_stall_q && !(|fill_discard_q);
+      perf_miss_stall_q <= i_pa_valid && riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(i_pa0)) &&
+          i_l1i_miss_outstanding && !window_ready_q && !i_pipeline_stall && !pipeline_stall_q &&
+          !(|fill_discard_q);
     end
   end
 

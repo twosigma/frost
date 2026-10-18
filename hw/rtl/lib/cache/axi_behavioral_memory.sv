@@ -67,30 +67,30 @@ module axi_behavioral_memory #(
     input logic i_rst,
 
     // AXI4 slave (single-beat bursts only).
-    input  logic                    i_axi_awvalid,
-    output logic                    o_axi_awready,
-    input  logic [     ID_BITS-1:0] i_axi_awid,
+    input  logic                      i_axi_awvalid,
+    output logic                      o_axi_awready,
+    input  logic [       ID_BITS-1:0] i_axi_awid,
     input  logic [AXI_ADDR_WIDTH-1:0] i_axi_awaddr,
-    input  logic [             7:0] i_axi_awlen,
-    input  logic                    i_axi_wvalid,
-    output logic                    o_axi_wready,
-    input  logic [LINE_BYTES*8-1:0] i_axi_wdata,
-    input  logic [  LINE_BYTES-1:0] i_axi_wstrb,
-    output logic                    o_axi_bvalid,
-    input  logic                    i_axi_bready,
-    output logic [     ID_BITS-1:0] o_axi_bid,
-    output logic [             1:0] o_axi_bresp,
-    input  logic                    i_axi_arvalid,
-    output logic                    o_axi_arready,
-    input  logic [     ID_BITS-1:0] i_axi_arid,
+    input  logic [               7:0] i_axi_awlen,
+    input  logic                      i_axi_wvalid,
+    output logic                      o_axi_wready,
+    input  logic [  LINE_BYTES*8-1:0] i_axi_wdata,
+    input  logic [    LINE_BYTES-1:0] i_axi_wstrb,
+    output logic                      o_axi_bvalid,
+    input  logic                      i_axi_bready,
+    output logic [       ID_BITS-1:0] o_axi_bid,
+    output logic [               1:0] o_axi_bresp,
+    input  logic                      i_axi_arvalid,
+    output logic                      o_axi_arready,
+    input  logic [       ID_BITS-1:0] i_axi_arid,
     input  logic [AXI_ADDR_WIDTH-1:0] i_axi_araddr,
-    input  logic [             7:0] i_axi_arlen,
-    output logic                    o_axi_rvalid,
-    input  logic                    i_axi_rready,
-    output logic [     ID_BITS-1:0] o_axi_rid,
-    output logic [LINE_BYTES*8-1:0] o_axi_rdata,
-    output logic [             1:0] o_axi_rresp,
-    output logic                    o_axi_rlast
+    input  logic [               7:0] i_axi_arlen,
+    output logic                      o_axi_rvalid,
+    input  logic                      i_axi_rready,
+    output logic [       ID_BITS-1:0] o_axi_rid,
+    output logic [  LINE_BYTES*8-1:0] o_axi_rdata,
+    output logic [               1:0] o_axi_rresp,
+    output logic                      o_axi_rlast
 );
 
   localparam int unsigned NumWords = MEM_BYTES / 4;
@@ -100,10 +100,10 @@ module axi_behavioral_memory #(
   localparam int unsigned OrderBits = SlotBits + 1;  // issue sequence numbers
 
 `ifdef FROST_RVFI_DII
-`define FROST_SPARSE_DDR_MEMORY
+  `define FROST_SPARSE_DDR_MEMORY
 `endif
 `ifdef FROST_WIDE_DDR_TEST
-`define FROST_SPARSE_DDR_MEMORY
+  `define FROST_SPARSE_DDR_MEMORY
 `endif
 `ifdef FROST_SPARSE_DDR_MEMORY
   bit [31:0] memory[longint unsigned];
@@ -302,8 +302,7 @@ module axi_behavioral_memory #(
 `ifdef FROST_WIDE_DDR_TEST
         word_index = (64'(dii_write_addr_q) >> 2) + 64'(w);
 `else
-        word_index = ((64'(dii_write_addr_q) & 64'(AXI_ADDR_WIDTH'(MEM_BYTES - 1))) >> 2) +
-            64'(w);
+        word_index = ((64'(dii_write_addr_q) & 64'(AXI_ADDR_WIDTH'(MEM_BYTES - 1))) >> 2) + 64'(w);
 `endif
         word = memory.exists(word_index) ? memory[word_index] : '0;
         for (int unsigned b = 0; b < 4; b++) begin
@@ -355,7 +354,7 @@ module axi_behavioral_memory #(
         // their data and warn below so an undersized model is still visible.
         for (int unsigned w = 0; w < WordsPerLine; w++) begin
 `ifdef FROST_WIDE_DDR_TEST
-          rdata_q[w*32+:32] <= memory[(64'(rd_addr_q[rd_pick]) >> 2) + 64'(w)];
+          rdata_q[w*32+:32] <= memory[(64'(rd_addr_q[rd_pick])>>2)+64'(w)];
 `elsif FROST_SPARSE_DDR_MEMORY
           rdata_q[w*32+:32] <= memory[((64'(rd_addr_q[rd_pick]) &
               64'(AXI_ADDR_WIDTH'(MEM_BYTES - 1))) >> 2) + 64'(w)];

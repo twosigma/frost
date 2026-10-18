@@ -1355,9 +1355,17 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
 
     # Check each generate arm separately: a duplicate presenter in one arm
     # must not hide a missing instance in another.
+    assert (
+        "`ifdef FROST_RVFI_DII\n  localparam bit EnableCachedFetchProvider = 1'b0;"
+        in cpu_and_mem
+    )
+    assert (
+        "`else\n  localparam bit EnableCachedFetchProvider = ENABLE_CACHED_TIER != 0;"
+        in cpu_and_mem
+    )
     fuzz_start = cpu_and_mem.index("if (FETCH_VALID_FUZZ != 0) begin : gen_fetch_fuzz")
     provider_start = cpu_and_mem.index(
-        "end else if (ENABLE_CACHED_TIER != 0) begin : gen_fetch_provider",
+        "end else if (EnableCachedFetchProvider) begin : gen_fetch_provider",
         fuzz_start,
     )
     direct_start = cpu_and_mem.index(
