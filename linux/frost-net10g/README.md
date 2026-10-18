@@ -23,6 +23,16 @@ headers, and `debian_kernel.py` builds it for the FROST test initramfs. The
 [NIC hardware reference](../../hw/rtl/peripherals/nic/README.md) covers the
 registers, descriptors, interrupts, and reset behavior.
 
+On hardware advertising `ABI_CTRL.EXTENDED_SUPPORTED`, the driver requests a
+64-bit coherent/streaming DMA mask and selects extended mode after each NIC
+reset. It posts full 64-bit buffer addresses in the extended 16-byte
+descriptor layout and programs each ring base with one aligned 64-bit MMIO
+store. The completion word is then word 3 rather than legacy word 2. If the
+hardware or the kernel DMA API does not support that mode, the driver keeps
+the reset-default legacy descriptor layout and a 32-bit DMA mask. The
+hardware still rejects descriptors outside its configured DDR aperture;
+the kernel's memory map must describe only installed usable RAM.
+
 | File | Contents |
 |---|---|
 | `frost_net10g.c` | The driver (GPL-2.0-only OR BSD-2-Clause; `MODULE_LICENSE("Dual BSD/GPL")`) |
