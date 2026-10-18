@@ -422,11 +422,23 @@ pinned Docker image, except the ASIC flow, which runs in its own image:
 | Tooling | Lint, fast Python tests, synthesis, and formal verification |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with the large memories mocked, in two chained jobs |
 | Linux | Firmware and root filesystem build, and QEMU boot checks |
+| Coverage | One job merges the coverage of the simulating jobs into a report |
 
 Every job that simulates the whole SoC draws its own DDR model timing:
 the workflow sets `FROST_DDR_MODEL_SEED` from the run ID, the job, and its
 matrix index. A failing test's output names the draw, and rerunning the job
 repeats it.
+
+The simulating jobs build with `FROST_COVERAGE=1`, except the CoreMark-PRO
+workloads, the F and D architecture-test shards, and the riscv-tests
+benchmarks: long runs of compute code, which line coverage would slow by about
+a third while adding little that the other jobs miss. The unit-bench job also
+sets `FROST_COVERAGE_TOGGLE=1`. Toggle coverage stays out of the whole-SoC
+jobs, which it would slow about sixfold. Each job merges its files into a
+`coverage-job-*` artifact, and the Coverage Report job merges those into the
+`coverage-report` artifact (the [report](#coverage) with annotated sources)
+and shows its summary on the job's page, after the other jobs finish, failed
+ones included.
 
 The workflow has the exact job filters. The named real-program shards select
 applications by name, and the "Runtime and other" shard runs every

@@ -209,8 +209,9 @@ results, the riscv-tests suites, TestRIG's instruction-by-instruction
 comparison with the Sail RISC-V model, unit benches for the CPU and SoC
 blocks, full programs from on-chip BRAM and from cached DDR, formal proofs,
 synthesis checks, the OpenROAD flow, the Ethernet MAC/PCS benches, and QEMU
-boots of the Linux images. The [test guide](tests/README.md#ci-integration)
-has the details and the commands for each suite.
+boots of the Linux images, and it merges the coverage of its simulations into
+one report. The [test guide](tests/README.md#ci-integration) has the details
+and the commands for each suite.
 
 ### Building Software
 
