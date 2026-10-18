@@ -77,6 +77,27 @@ int main(void)
         failures++;
     }
 
+    /* A data-only test cannot find truncation in the instruction-fetch path.
+     * Install two different tiny functions at low and high DDR addresses
+     * and execute both after the architectural fence.i. */
+    const uintptr_t code_addr[2] = {DDR_BASE + 0x3000ul, DDR_END - 128ul};
+    const uint32_t addi[2] = {0x00150513u, 0x00250513u}; /* addi a0,a0,1/2 */
+    for (unsigned i = 0; i < 2; ++i) {
+        volatile uint32_t *code = (volatile uint32_t *) code_addr[i];
+        code[0] = addi[i];
+        code[1] = 0x00008067u; /* ret */
+    }
+    __asm__ volatile("fence rw,rw\nfence.i" ::: "memory");
+    for (unsigned i = 0; i < 2; ++i) {
+        uint64_t (*entry)(uint64_t) = (uint64_t (*)(uint64_t)) code_addr[i];
+        uint64_t result = entry(40);
+        if (result != 41 + i) {
+            uart_printf("PA width fetch %u at 0x%lx failed: 0x%lx\n",
+                        i, (unsigned long) code_addr[i], (unsigned long) result);
+            failures++;
+        }
+    }
+
     uart_printf(failures ? "<<FAIL>>\n" : "<<PASS>>\n");
     for (;;) {
     }
