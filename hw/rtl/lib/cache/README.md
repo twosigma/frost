@@ -381,8 +381,8 @@ the second half would wait in the decision stage, and all L2 traffic behind
 it, until the fill.
 
 [`ddr_bench`](../../../../sw/apps/ddr_bench/) times memory-bound kernels on
-cold DDR regions, with the L2's slot-full and conflict stall counts per
-kernel.
+cold DDR regions, among them four streams whose lines share one set of
+each cache, with the L2's slot-full and conflict stall counts per kernel.
 
 ## The page-table walker port
 

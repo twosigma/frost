@@ -24,6 +24,9 @@
  *   - seq_read: every word of 1 MiB, in order;
  *   - stride_read: one word in each 32-byte L1 line of 1 MiB;
  *   - streams_read: four interleaved sequential streams of 32 KiB;
+ *   - streams_aliased_read: the same four streams 2 MiB apart, the L2's
+ *     size, so at every step their lines share one set of the L1D and one
+ *     of the L2, which a direct-mapped cache cannot hold;
  *   - random_read: independent single-word loads, spread over 4 MiB;
  *   - record_read: two words, 32 bytes apart, of random 64-byte records;
  *   - chase: loads whose addresses depend on the previous load's value;
@@ -55,6 +58,8 @@
 #define RANDOM_BASE (CACHED_BASE + 20u * MIB)
 #define RECORD_BASE (CACHED_BASE + 24u * MIB)
 #define CHASE_BASE (CACHED_BASE + 28u * MIB)
+#define ALIASED_BASE (CACHED_BASE + 40u * MIB)
+#define ALIASED_STRIDE (2u * MIB)
 #define COPY_SRC_BASE (CACHED_BASE + 32u * MIB)
 #define COPY_DST_BASE (CACHED_BASE + 32u * MIB + 576u * 1024u)
 #define WRITE_BASE (CACHED_BASE + 33u * MIB)
@@ -256,6 +261,14 @@ int main(void)
                         (volatile uint64_t *) (STREAMS_BASE + 0x18000u),
                         STREAM_BYTES / 8u);
     end_region("streams_read");
+
+    begin_region();
+    sink = streams_read((volatile uint64_t *) ALIASED_BASE,
+                        (volatile uint64_t *) (ALIASED_BASE + ALIASED_STRIDE),
+                        (volatile uint64_t *) (ALIASED_BASE + 2u * ALIASED_STRIDE),
+                        (volatile uint64_t *) (ALIASED_BASE + 3u * ALIASED_STRIDE),
+                        STREAM_BYTES / 8u);
+    end_region("streams_aliased_read");
 
     begin_region();
     sink = random_read((volatile uint64_t *) RANDOM_BASE, RANDOM_READS);
