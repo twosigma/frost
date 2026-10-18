@@ -133,6 +133,7 @@ repos:
             sw/apps/riscv_tests/riscv_test\.h|
             sw/apps/riscv_tests/env_v/.*|
             sw/apps/pa_width_test/pa_width_test\.c|
+            sw/apps/pa_vm_fetch_test/main\.c|
             linux/frost-net10g/.*|
             linux/frost-memerr/.*
           )$
@@ -155,7 +156,7 @@ repos:
       - id: insert-license
         name: insert-license (Tcl/Makefile/Shell)
         files: (\.tcl$|Makefile$|\.mk$|\.sh$)
-        exclude: ^(linux/frost-(net10g|memerr)/|sw/apps/pa_width_test/Makefile$)
+        exclude: ^(linux/frost-(net10g|memerr)/|sw/apps/pa_(width|vm_fetch)_test/Makefile$)
         args:
           - --license-filepath=.license-header.txt
           - --comment-style=#
