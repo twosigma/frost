@@ -146,7 +146,7 @@ different implementation choice:
 | PMP | None |
 | LR/SC | Doubleword reservation set, cancelled by a store or AMO from the hart to it (FROST also cancels it on a trap; see [The A extension](#the-a-extension)) |
 | WFI | Completes at once |
-| Sail's CLINT | At 0x7_FFFF_0000, outside FROST's map; Sail requires one for Zicntr |
+| Sail's CLINT | At 0x2B6D_93F1_0000, outside FROST's map at an address random sequences do not form; Sail requires one for Zicntr |
 
 ## What the comparison leaves out
 
@@ -220,6 +220,7 @@ CI's TestRIG jobs replays all of them before its random run.
 
 | Trace | Checks |
 |-------|--------|
+| [`clint_window_load.S`](traces/clint_window_load.S) | A load just below 2^35, outside FROST's map, is an access fault (Sail's CLINT once sat there and answered it) |
 | [`envcfg_fiom.S`](traces/envcfg_fiom.S) | `menvcfg.FIOM` and `senvcfg.FIOM` are writable |
 | [`fence_r0.S`](traces/fence_r0.S) | `fence r,0` retires (it was decoded as PAUSE and hung the core) |
 | [`hpm_counters.S`](traces/hpm_counters.S) | `mhpmcounter3..31` and `mhpmevent3..31` read zero |
