@@ -117,7 +117,8 @@ repos:
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
             sw/apps/coremark/coremark/.*|
-            verif/cocotb_tests/cache/test_(dma_test_engine|frost_cache)_wide\.py
+            verif/cocotb_tests/cache/test_(dma_test_engine|frost_cache)_wide\.py|
+            tests/test_pa_bridge_mutation\.py
           )$
         args:
           - --license-filepath=.license-header.txt
