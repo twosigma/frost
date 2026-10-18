@@ -1041,4 +1041,22 @@ module trap_unit #(
 
 `endif  // FORMAL
 
+`ifndef SYNTHESIS
+`ifdef FROST_COVERAGE
+  // Cover points for simulation coverage (tests/README.md).
+  // A memory-order replay restarts the load at the ROB head.
+  cover_memory_order_replay_taken :
+  cover property (@(posedge i_clk) disable iff (i_rst) exception_take && exception_replay);
+  // An armed interrupt waits while a device read is at the ROB head.
+  cover_interrupt_waits_for_device_read :
+  cover property (@(posedge i_clk) disable iff (i_rst)
+      i_device_read_at_head &&
+      ((m_int_eligible && m_take_armed_q) || (s_int_eligible && s_take_armed_q)));
+  // An armed interrupt waits while an AMO is at the ROB head.
+  cover_interrupt_waits_for_amo :
+  cover property (@(posedge i_clk) disable iff (i_rst)
+      i_amo_at_head && ((m_int_eligible && m_take_armed_q) || (s_int_eligible && s_take_armed_q)));
+`endif
+`endif
+
 endmodule : trap_unit

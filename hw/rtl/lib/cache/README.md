@@ -597,4 +597,7 @@ timing-factored decision equals its reference, a touched way is never the
 next pseudo-LRU victim, and the restricted walk picks the pseudo-LRU way
 whenever it is unowned); see the [formal guide](../../../../formal/README.md).
 In simulation, assertions check that no two miss slots own one way and that
-an allocation never takes a way a miss slot owns.
+an allocation never takes a way a miss slot owns. In coverage builds,
+[cover points](../../../../tests/README.md#cover-points) count corner cases
+such as a read taking a miss slot's second waiter seat, a demand read
+meeting a prefetch of its line, and a writeback taking its starvation turn.
