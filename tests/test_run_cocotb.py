@@ -454,6 +454,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=37"),),
         verilator_extra_args=("-DFROST_WIDE_DDR_TEST", "-DFROST_DDR_CAPACITY_LOG2_BYTES=37"),
     ),
+    "vm_test_64g": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vm_test",
+        description="Sv39 translation through the final word of 64 GiB DDR",
+        include_in_pytest=False,
+        extra_env=(("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=36"),),
+        verilator_extra_args=("-DFROST_WIDE_DDR_TEST", "-DFROST_DDR_CAPACITY_LOG2_BYTES=36"),
+    ),
     "slot2_fault_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1865,6 +1874,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="nic_top",
         description=(
             "NIC registers and frame traffic through raw loopback and a simulated wire"
+        ),
+    ),
+    "dma_test_engine_wide": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_dma_test_engine_wide",
+        hdl_toplevel_module="dma_test_engine",
+        description="64 GiB coherent-DMA address ABI and out-of-range rejection",
+        include_in_pytest=False,
+        verilator_extra_args=(
+            "-GADDR_WIDTH=37",
+            '"-GAPERTURE_BYTES=64\'h1000000000"',
         ),
     ),
     "nic_top_unrelated_clocks": CocotbRunConfig(

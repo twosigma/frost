@@ -16,7 +16,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, PA-Width-Extension]
   pull_request:
     branches: [main]
 
@@ -239,6 +239,49 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
           overwrite: true
+
+  # While the PA branch is under review, exercise both the original 1 GiB
+  # aperture and the new 64 GiB default at their software-visible edges.
+  # The ordinary CI jobs above continue to run against the branch as well.
+  test-pa-width:
+    name: Physical address aperture (${{ matrix.capacity_gib }} GiB)
+    if: github.ref == 'refs/heads/PA-Width-Extension' || github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    needs: build-docker
+    strategy:
+      fail-fast: false
+      matrix:
+        capacity_gib: [1, 64]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
+
+      - name: Run CPU, Sv39, cache and coherence aperture checks
+        env:
+          PA_CAPACITY_GIB: ${{ matrix.capacity_gib }}
+        run: |
+          if [ "$PA_CAPACITY_GIB" = 1 ]; then
+            tests='pa_width_test_1g pma_fault_test vm_test line_port_axi_bridge_1g frost_cache frost_cache_dma'
+          else
+            tests='pa_width_test_64g pma_fault_test_64g vm_test_64g line_port_axi_bridge_wide frost_cache_wide_addr dma_test_engine_wide'
+          fi
+          docker run --rm -e PA_CAPACITY_GIB \
+            -v "${{ github.workspace }}:/workspace" -w /workspace frost-dev:latest \
+            bash -euc 'for test_name in $1; do python3 tests/test_run_cocotb.py "$test_name"; done' \
+            bash "$tests"
 
   # Standalone Ethernet uses the shared image but has no CPU/software dependencies.
   test-net10g:
