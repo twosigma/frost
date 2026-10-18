@@ -210,11 +210,35 @@ jobs:
           # (tests/README.md); a failing test's output names the draw, and a
           # rerun of the job repeats it.
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
+          # Every shard but the CoreMark-PRO workloads collects line coverage
+          # and the cover points, and the unit benches also toggle coverage
+          # (tests/README.md#coverage).
+          FROST_COVERAGE: ${{ !contains(matrix.shard.name, 'CoreMark-PRO') && '1' || '0' }}
+          FROST_COVERAGE_TOGGLE: ${{ matrix.shard.name == 'Unit Tests' && '1' || '0' }}
           PYTEST_MARK: ${{ matrix.shard.pytest_mark }}
           PYTEST_FILTER: ${{ matrix.shard.pytest_filter }}
         run: |
           ./scripts/frost.py --image frost-dev:latest pytest \
             -m "$PYTEST_MARK" -k "$PYTEST_FILTER" -v --durations=0
+
+      - name: Merge the job's coverage
+        if: ${{ !cancelled() && !contains(matrix.shard.name, 'CoreMark-PRO') }}
+        env:
+          COVERAGE_NAME: cocotb ${{ matrix.shard.name }} ${{ matrix.mem_config }}
+        run: |
+          name=$(printf '%s' "$COVERAGE_NAME" | tr -cs 'A-Za-z0-9' '_')
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/coverage_report.py merge tests/coverage --output "coverage-job/$name.dat"
+
+      - name: Upload the job's coverage
+        if: ${{ !cancelled() && !contains(matrix.shard.name, 'CoreMark-PRO') }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: coverage-job-${{ github.job }}-${{ strategy.job-index }}
+          path: coverage-job/
+          retention-days: 3
+          if-no-files-found: ignore
+          overwrite: true
 
   # Standalone Ethernet uses the shared image but has no CPU/software dependencies.
   test-net10g:
@@ -324,14 +348,34 @@ jobs:
       - name: Run arch compliance tests (${{ matrix.extension }} / ${{ matrix.mem_config }}${{ matrix.shard && format(' / {0}', matrix.shard) || '' }})
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
+          # Every extension but the F and D shards collects line coverage and
+          # the cover points (tests/README.md#coverage).
+          FROST_COVERAGE: ${{ !matrix.shard && '1' || '0' }}
         # Bound each F/D test to one hour; the runner default allows longer DDR runs.
         run: |
-          docker run --rm -e FROST_DDR_MODEL_SEED \
+          docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_COVERAGE \
             ${{ matrix.shard && '-e FROST_ARCH_SIM_TIMEOUT_SEC=3600' || '' }} \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_arch_compliance.py --extensions ${{ matrix.extension }} \
               --mem-config ${{ matrix.mem_config }} \
               ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
+
+      - name: Merge the job's coverage
+        if: ${{ !cancelled() && !matrix.shard }}
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
+            python3 tests/coverage_report.py merge tests/coverage \
+              --output coverage-job/arch_${{ matrix.extension }}_${{ matrix.mem_config }}.dat
+
+      - name: Upload the job's coverage
+        if: ${{ !cancelled() && !matrix.shard }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: coverage-job-${{ github.job }}-${{ strategy.job-index }}
+          path: coverage-job/
+          retention-days: 3
+          if-no-files-found: ignore
+          overwrite: true
 
   # riscv-tests: p runs physically without a kernel; v runs user suites on DDR
   # under env_v's Sv39 supervisor, with delegated page faults and Svade A/D handling.
@@ -376,11 +420,30 @@ jobs:
       - name: Run riscv-tests ISA suite (${{ matrix.suite }} / ${{ matrix.mem_config }} / ${{ matrix.env }})
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
+          # Line coverage and the cover points (tests/README.md#coverage).
+          FROST_COVERAGE: "1"
         run: |
-          docker run --rm -e FROST_DDR_MODEL_SEED \
+          docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_COVERAGE \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_tests.py --suites ${{ matrix.suite }} \
               --mem-config ${{ matrix.mem_config }} --env ${{ matrix.env }}
+
+      - name: Merge the job's coverage
+        if: ${{ !cancelled() }}
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
+            python3 tests/coverage_report.py merge tests/coverage \
+              --output coverage-job/riscv_tests_${{ matrix.suite }}_${{ matrix.mem_config }}_${{ matrix.env }}.dat
+
+      - name: Upload the job's coverage
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: coverage-job-${{ github.job }}-${{ strategy.job-index }}
+          path: coverage-job/
+          retention-days: 3
+          if-no-files-found: ignore
+          overwrite: true
 
   # riscv-tests benchmarks by memory tier.
   test-riscv-benchmarks:
@@ -451,11 +514,30 @@ jobs:
       - name: Run riscv-torture tests (${{ matrix.mem_config }}${{ matrix.paged && ' / paged' || '' }})
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
+          # Line coverage and the cover points (tests/README.md#coverage).
+          FROST_COVERAGE: "1"
         run: |
-          docker run --rm -e FROST_DDR_MODEL_SEED \
+          docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_COVERAGE \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_torture.py --all \
               --mem-config ${{ matrix.mem_config }} ${{ matrix.paged && '--paged' || '' }}
+
+      - name: Merge the job's coverage
+        if: ${{ !cancelled() }}
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
+            python3 tests/coverage_report.py merge tests/coverage \
+              --output coverage-job/riscv_torture_${{ matrix.mem_config }}${{ matrix.paged && '_paged' || '' }}.dat
+
+      - name: Upload the job's coverage
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: coverage-job-${{ github.job }}-${{ strategy.job-index }}
+          path: coverage-job/
+          retention-days: 3
+          if-no-files-found: ignore
+          overwrite: true
 
   # TestRIG: QuickCheckVEngine runs instruction sequences on the Sail RISC-V
   # model and on the simulated SoC and compares every retired instruction
@@ -476,6 +558,8 @@ jobs:
     env:
       FROST_SKIP_SUBMODULE_INIT: "1"
       FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
+      # Line coverage and the cover points (tests/README.md#coverage).
+      FROST_COVERAGE: "1"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -517,6 +601,88 @@ jobs:
           path: |
             tests/testrig_failures/
             tests/testrig_logs/
+
+      - name: Merge the job's coverage
+        if: ${{ !cancelled() }}
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/coverage_report.py merge tests/coverage \
+              --output coverage-job/testrig_${{ matrix.shard }}.dat
+
+      - name: Upload the job's coverage
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: coverage-job-${{ github.job }}-${{ strategy.job-index }}
+          path: coverage-job/
+          retention-days: 3
+          if-no-files-found: ignore
+          overwrite: true
+
+  # Merge the coverage that the simulating jobs uploaded into one report
+  # (tests/README.md#coverage): the merged data, lcov line and branch coverage,
+  # annotated sources, and a summary of the totals, the cover points with
+  # their hit counts, and each module's coverage, also shown on the job page.
+  coverage-report:
+    name: Coverage Report
+    runs-on: ubuntu-26.04
+    needs:
+      - build-docker
+      - test-verilator
+      - test-arch-compliance
+      - test-riscv-tests
+      - test-riscv-torture
+      - test-testrig
+    # Report what the finished jobs reached even when some of them failed.
+    if: ${{ !cancelled() && needs.build-docker.result == 'success' }}
+    timeout-minutes: 30
+    env:
+      FROST_SKIP_SUBMODULE_INIT: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
+
+      # The pattern leaves out coverage-report, which a rerun of this job
+      # would otherwise merge into its own inputs.
+      - name: Download the jobs' coverage
+        uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: coverage-job-*
+          path: coverage-jobs
+
+      - name: Merge and report
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/coverage_report.py report coverage-jobs \
+              --output-dir coverage-report --annotate
+
+      - name: Publish the summary
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -f coverage-report/summary.md ]; then
+            cat coverage-report/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: coverage-report
+          path: coverage-report/
+          retention-days: 14
+          if-no-files-found: ignore
+          overwrite: true
 
   # Yosys synthesis.
   test-synthesis:

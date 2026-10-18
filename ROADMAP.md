@@ -47,12 +47,17 @@ programs, the RISC-V architecture tests and riscv-tests, riscv-torture
 programs against Spike, TestRIG against the Sail model in four parallel CI
 jobs, and Debian on the X3. Every CI job that simulates the whole SoC draws
 its own DDR model latency, jitter, and completion order from a seed that a
-failing test's output names.
+failing test's output names. CI merges the line coverage of those
+simulations, the toggle coverage of the unit benches, and the counts of
+cover points for microarchitectural corner cases, such as a DMA write to a
+line that an executed, unretired load has read, into one
+[report](tests/README.md#coverage) of what the tests reach.
 
-Next is coverage: merge Verilator line and toggle coverage across the CI
-runs and add cover points for microarchitectural corner cases, such as a DMA
-write to a line that an unretired load has read, to show what no test
-reaches.
+Next is to reach what that report shows no test reaching, with directed
+tests for the corner cases whose cover points no whole-SoC run hits, and to
+add cover points where the design documents call a case hard to reach. Toggle coverage
+of the whole-SoC runs also remains: Verilator's slows them about sixfold, so
+they need a cheaper form first.
 
 ## ASIC-ready RTL
 
