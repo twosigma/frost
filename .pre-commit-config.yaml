@@ -105,6 +105,8 @@ repos:
           )$
 
   # Copyright header check/insert
+  # New contributor-owned PA tests carry their own Apache-2.0 notices; do not
+  # prepend the project's Two Sigma template to those files.
   - repo: https://github.com/Lucas-C/pre-commit-hooks
     rev: v1.5.6
     hooks:
@@ -114,7 +116,8 @@ repos:
         exclude: |
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
-            sw/apps/coremark/coremark/.*
+            sw/apps/coremark/coremark/.*|
+            verif/cocotb_tests/cache/test_(dma_test_engine|frost_cache)_wide\.py
           )$
         args:
           - --license-filepath=.license-header.txt
@@ -129,6 +132,7 @@ repos:
             sw/apps/coremark/coremark/.*|
             sw/apps/riscv_tests/riscv_test\.h|
             sw/apps/riscv_tests/env_v/.*|
+            sw/apps/pa_width_test/pa_width_test\.c|
             linux/frost-net10g/.*|
             linux/frost-memerr/.*
           )$
@@ -141,7 +145,8 @@ repos:
         files: \.(sv|svh|v|vh)$
         exclude: |
           (?x)^(
-            hw/third_party/.*
+            hw/third_party/.*|
+            tests/test_(ddr_width_config|ptw_high_addr)\.sv
           )$
         args:
           - --license-filepath=.license-header.txt
@@ -150,7 +155,7 @@ repos:
       - id: insert-license
         name: insert-license (Tcl/Makefile/Shell)
         files: (\.tcl$|Makefile$|\.mk$|\.sh$)
-        exclude: ^linux/frost-(net10g|memerr)/
+        exclude: ^(linux/frost-(net10g|memerr)/|sw/apps/pa_width_test/Makefile$)
         args:
           - --license-filepath=.license-header.txt
           - --comment-style=#
