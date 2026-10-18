@@ -103,7 +103,7 @@ def test_torture_timeout_is_a_failure(
     reference.write_text("00000000\n")
     monkeypatch.setattr(test_riscv_torture, "get_reference_path", lambda *_: reference)
     monkeypatch.setattr(test_riscv_torture, "compile_test", lambda *_: True)
-    monkeypatch.setattr(test_riscv_torture, "run_simulation", lambda *_: None)
+    monkeypatch.setattr(test_riscv_torture, "run_simulation", lambda *_, **__: None)
 
     result = test_riscv_torture.run_single_test(source, "verilator")
 
@@ -521,3 +521,34 @@ def test_seed_sweep_restores_the_environment(monkeypatch: pytest.MonkeyPatch) ->
     # setting ends with the sweep.
     assert worker_cores == ["4", "4"]
     assert "NUMBER_OF_CPU_CORES" not in os.environ
+
+
+def test_coverage_runs_rebuild_and_write_a_file_each(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """FROST_COVERAGE changes the build and names one coverage file per run."""
+    monkeypatch.delenv("FROST_DDR_MODEL_SEED", raising=False)
+    monkeypatch.delenv("FROST_COCOTB_MEM_CONFIG", raising=False)
+    monkeypatch.delenv("FROST_COVERAGE_FILE", raising=False)
+    monkeypatch.delenv("FROST_COVERAGE", raising=False)
+    monkeypatch.setenv("FROST_COVERAGE_DIR", str(tmp_path / "coverage"))
+    runner = test_run_cocotb.CocotbRunner.for_test("dma_torture")
+    plain_signature = runner._verilator_build_signature()
+    assert "FROST_COVERAGE_FILE" not in runner.setup_environment()
+
+    monkeypatch.setenv("FROST_COVERAGE", "1")
+    assert "FROST_COVERAGE=1" in runner._verilator_build_signature()
+    assert runner._verilator_build_signature() != plain_signature
+    first = Path(runner.setup_environment()["FROST_COVERAGE_FILE"])
+    assert first == tmp_path / "coverage" / "dma_torture_bram.dat"
+    first.write_text("written by the first run")
+    second = Path(runner.setup_environment()["FROST_COVERAGE_FILE"])
+    assert second == tmp_path / "coverage" / "dma_torture_bram-2.dat"
+
+    unit_bench = test_run_cocotb.CocotbRunner.for_test("load_queue")
+    assert unit_bench.coverage_label == "load_queue"
+    monkeypatch.setattr(test_run_cocotb, "REPOSITORY_ROOT", tmp_path)
+    monkeypatch.setenv("FROST_COVERAGE_DIR", "relative/runs")
+    assert test_run_cocotb.coverage_file("a b/c") == (
+        tmp_path / "relative" / "runs" / "a_b_c.dat"
+    )

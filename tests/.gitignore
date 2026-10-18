@@ -8,3 +8,6 @@ results/
 testrig_failures/
 testrig_logs/
 .rvfi_dii_build_ok
+# Coverage files and reports (FROST_COVERAGE=1, coverage_report.py).
+coverage/
+coverage_report/

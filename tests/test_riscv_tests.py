@@ -252,14 +252,20 @@ def compile_benchmark(bench_name: str, mem_config: str = DEFAULT_MEM_CONFIG) -> 
 
 
 def run_simulation(
-    simulator: str, max_cycles: str = "10000000"
+    simulator: str,
+    max_cycles: str = "10000000",
+    coverage_label: str = "riscv_tests",
 ) -> subprocess.CompletedProcess[str] | None:
-    """Run cocotb simulation and return the result."""
+    """Run cocotb simulation and return the result.
+
+    coverage_label names the run's coverage file under FROST_COVERAGE=1.
+    """
     runner = CocotbRunner(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name=None,
     )
+    runner.coverage_label = coverage_label
 
     os.environ["SIM"] = simulator
     env = runner.setup_environment()
@@ -364,7 +370,9 @@ def run_single_isa_test(
     # The virtual environment demand-pages every user page through the
     # supervisor kernel (fault, copy, retry), so it needs more cycles.
     result = run_simulation(
-        simulator, max_cycles="20000000" if env == "v" else "10000000"
+        simulator,
+        max_cycles="20000000" if env == "v" else "10000000",
+        coverage_label=f"riscv_tests_{suite}_{env}_{test_name}",
     )
     if result is None:
         return TestResult(test_name, suite, "FAIL", "Simulation timed out")
@@ -386,7 +394,11 @@ def run_single_benchmark(
         return TestResult(bench_name, "benchmarks", "FAIL", "Compilation failed")
 
     # Benchmarks may need more cycles than ISA tests
-    result = run_simulation(simulator, max_cycles="50000000")
+    result = run_simulation(
+        simulator,
+        max_cycles="50000000",
+        coverage_label=f"riscv_tests_benchmark_{bench_name}",
+    )
     if result is None:
         return TestResult(bench_name, "benchmarks", "FAIL", "Simulation timed out")
 

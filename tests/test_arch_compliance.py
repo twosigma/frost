@@ -261,13 +261,19 @@ def compile_test(
     return result.returncode == 0, result.stdout + result.stderr
 
 
-def run_simulation() -> subprocess.CompletedProcess[str] | None:
-    """Simulate the compiled test; return the result, or None on timeout."""
+def run_simulation(
+    coverage_label: str = "arch_test",
+) -> subprocess.CompletedProcess[str] | None:
+    """Simulate the compiled test; return the result, or None on timeout.
+
+    coverage_label names the run's coverage file under FROST_COVERAGE=1.
+    """
     runner = CocotbRunner(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name=None,  # compile_test builds the image before this runs
     )
+    runner.coverage_label = coverage_label
 
     os.environ["SIM"] = "verilator"
     env = runner.setup_environment()
@@ -408,7 +414,7 @@ def run_single_test(
             )
         return TestResult(test_name, extension, "FAIL", "Compilation failed")
 
-    result = run_simulation()
+    result = run_simulation(coverage_label=f"arch_{extension}_{test_name}")
     if result is None:
         return TestResult(
             test_name,
