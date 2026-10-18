@@ -32,12 +32,14 @@
  * Both read forms have READ_LATENCY cycles from i_re to o_rdata:
  *   - REGISTER_READ_INPUT=1 registers the request, then samples the array one
  *     cycle later. With WRITE_LATENCY=1, it sees a write presented with i_re.
- *   - REGISTER_READ_INPUT=0 reads continuously and includes the array output
- *     register (BRAM DOB_REG) in the latency. Same-edge writes return old data.
- *     The caller must avoid qualified reads of a row being written;
- *     frost_cache never issues one (see its data array). i_re only qualifies
- *     the collision check, so changing o_rdata is valid only READ_LATENCY
- *     cycles after a request.
+ *   - REGISTER_READ_INPUT=0 reads continuously. When the memory's share of
+ *     the latency (READ_LATENCY less a REGISTER_READ_OUTPUT register) is 2 or
+ *     more, it includes the array output register (BRAM DOB_REG); at 1 the
+ *     array's own read latch drives the output, for a caller that registers
+ *     the data itself. Same-edge writes return old data. The caller must avoid
+ *     qualified reads of a row being written; frost_cache never issues one
+ *     (see its data array). i_re only qualifies the collision check, so
+ *     changing o_rdata is valid only READ_LATENCY cycles after a request.
  * REGISTER_READ_OUTPUT=1 spends one of the READ_LATENCY cycles on a fabric
  * register after the memory. Synthesis keeps it out of the memory (KEEP), so
  * placement can hold the memory's last stage beside a wide array and put this
@@ -49,7 +51,7 @@
 module sdp_ram_byte_en #(
     parameter int unsigned DATA_WIDTH = 256,  // bits per row (multiple of 8)
     parameter int unsigned ADDR_WIDTH = 12,  // row-address bits
-    parameter int unsigned READ_LATENCY = 2,  // total cycles i_re->o_rdata (>= 2)
+    parameter int unsigned READ_LATENCY = 2,  // total cycles i_re->o_rdata (see the check)
     parameter int unsigned WRITE_LATENCY = 1,  // total cycles i_w*->array updated (>= 1)
     // Untyped because Vivado fails to resolve a string-typed parameter
     // propagated into xpm_memory_sdpram's MEMORY_PRIMITIVE.
@@ -57,7 +59,7 @@ module sdp_ram_byte_en #(
     parameter MEMORY_PRIMITIVE = "block",  // "block" | "ultra" | "auto"
     // verilog_lint: waive-end explicit-parameter-storage-type
     // 1 = register i_re/i_raddr at the boundary; 0 = present i_raddr to the
-    // array directly and count its output register (see the header).
+    // array directly (see the header).
     parameter bit REGISTER_READ_INPUT = 1'b1,
     // 1 = register o_rdata in the fabric after the memory, as one of the
     // READ_LATENCY cycles (see the header).
@@ -78,8 +80,8 @@ module sdp_ram_byte_en #(
 
   initial begin
     if (DATA_WIDTH % 8 != 0) $fatal(1, "sdp_ram_byte_en: DATA_WIDTH must be a multiple of 8");
-    if (READ_LATENCY < 2 + (REGISTER_READ_OUTPUT ? 1 : 0))
-      $fatal(1, "sdp_ram_byte_en: READ_LATENCY must be >= 2, or 3 with REGISTER_READ_OUTPUT");
+    if (READ_LATENCY < 1 + (REGISTER_READ_INPUT ? 1 : 0) + (REGISTER_READ_OUTPUT ? 1 : 0))
+      $fatal(1, "sdp_ram_byte_en: READ_LATENCY must leave the memory at least one cycle");
     if (WRITE_LATENCY < 1) $fatal(1, "sdp_ram_byte_en: WRITE_LATENCY must be >= 1");
   end
 

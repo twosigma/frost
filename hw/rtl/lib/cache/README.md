@@ -80,8 +80,8 @@ instances differ in size, line size, storage, and slot counts:
 
 | Instance | Size | Line | Ways x sets | Tags | Data | Miss slots | Waiter seats per miss slot | Writeback slots | Probe slots |
 |----------|------|------|-------------|------|------|------------|----------------------------|-----------------|-------------|
-| L1D | 128 KiB | 32 B | 4 x 1024 | Block RAM per way, 1-cycle read | Block RAM | 8 | 1 | 2 | 4 |
-| L1I | 16 KiB | 32 B | 4 x 128 | Block RAM per way, 1-cycle read | Block RAM | 2 | 1 | 2 (unused) | 0 |
+| L1D | 128 KiB | 32 B | 4 x 1024 | Block RAM per way, 1-cycle read | Block RAM, a bank per way | 8 | 1 | 2 | 4 |
+| L1I | 16 KiB | 32 B | 4 x 128 | Block RAM per way, 1-cycle read | Block RAM, a bank per way | 2 | 1 | 2 (unused) | 0 |
 | L2 | 2 MiB | 64 B | 4 x 8192 | UltraRAM, a set's four ways in one 72-bit row, 3-cycle read | UltraRAM | 4 | 2 | 2 | 0 |
 
 The ways are the hierarchy's `L1D_WAYS`, `L1I_WAYS`, and `L2_WAYS`
@@ -98,11 +98,14 @@ any of the set's `WAYS` ways (a power of 2; 1 is direct-mapped, which the
 benches also run). Each way has a tag entry `{valid, dirty, tag}`, and a
 request reads every way of its set at once: one block RAM per way in the
 L1s, and in the L2 one UltraRAM row per set holding its four entries. The
-data array holds one line per row, addressed `{way, set}`, and is read one
-stage after the tag compare, so its read address comes from a register. A
-read hit therefore answers one cycle later than a read at the tag decision
-would: in the L1s, four cycles after its request fires when nothing holds
-it.
+L1s' data arrays have a bank per way, and the tag decision reads its set's
+row in every bank, as a direct-mapped cache reads its one row. The block
+RAMs feed a way multiplexer, and a fabric register after it holds the hit
+way's line, or the victim's, as the read latency's last cycle. A read hit
+answers three cycles after its request fires when nothing holds it, as the
+direct-mapped L1s did. The L2's data array holds one line per row,
+addressed `{way, set}`, and is read one stage after the tag compare, from
+the way it picked, which adds one cycle to its longer lookup.
 
 Each set keeps a tree pseudo-LRU state, one bit per node of a binary tree
 over the ways (3 bits for four ways), in a small array read with the tags.
@@ -125,7 +128,8 @@ the fill completes. The test programs that force evictions rely on this.
 A request goes straight to the tag stage, or waits in a one-entry skid
 until the tag stage can take it, and reads its set's tags. It is decided
 when the tags return (`TAG_READ_LATENCY` cycles), and its side effects land
-in a write stage the next cycle, which also reads the data array.
+in a write stage the next cycle. The L1s read the data array at the
+decision, the L2 in the write stage.
 
 - A read hit returns data with the data array's output. The L1s' one-cycle
   tags stream one hit per cycle; the L2's delayed tags decide one request at

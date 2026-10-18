@@ -65,6 +65,7 @@ OVERLAP_BASE = BASE_ADDR + 0x300000
 WALK_BASE = BASE_ADDR + 0x340000
 WALK2_BASE = BASE_ADDR + 0x380000
 WALK3_BASE = BASE_ADDR + 0x3C0000
+LATENCY_BASE = BASE_ADDR + 0xD80000
 
 # Eviction aliases (see evict_l1d and evict_l2): lines that are only ever
 # read, each at most once per run, in the top MiB of the harness's memory,
@@ -73,6 +74,10 @@ ALIAS_BASE = BASE_ADDR + 0xF00000
 ALIAS_BYTES = 0x100000
 
 RESP_TIMEOUT_CYCLES = 20_000
+# An L1 read hit's response is sampled on the third rising edge after the
+# request's: the tag read, the decision with every way's data read, and the
+# data register after the block RAMs.
+L1_READ_HIT_CYCLES = 3
 SWEEP_TIMEOUT_CYCLES = 200_000
 
 # The harness's up/iup/dma ports carry UP_ID_BITS=3 ids and the walker port
@@ -647,6 +652,63 @@ async def test_smoke_write_read(dut: Any) -> None:
         dut, write=True, addr=addr, wdata=wdata, wstrb=(1 << LINE_BYTES) - 1
     )
     await _check_read(dut, model, addr)
+
+
+async def _read_cycles(dut: Any, port: str, addr: int) -> int:
+    """Return the cycles from a read's acceptance to its response on a port.
+
+    Counts the falling edges after the accepting rising edge, up to the
+    first where the response is valid: n means the requester samples the
+    response on the n-th rising edge after the request's.
+    """
+    req_valid = getattr(dut, f"i_{port}_req_valid")
+    req_ready = getattr(dut, f"o_{port}_req_ready")
+    resp_valid = getattr(dut, f"o_{port}_resp_valid")
+    resp_id = getattr(dut, f"o_{port}_resp_id")
+    req_id = next(_port_ids[port])
+
+    await FallingEdge(dut.i_clk)
+    req_valid.value = 1
+    getattr(dut, f"i_{port}_req_write").value = 0
+    getattr(dut, f"i_{port}_req_addr").value = addr
+    getattr(dut, f"i_{port}_req_id").value = req_id
+    await Timer(1, unit="ns")
+    for _ in range(RESP_TIMEOUT_CYCLES):
+        if int(req_ready.value) == 1:
+            break
+        await FallingEdge(dut.i_clk)
+    else:
+        raise AssertionError(f"{port} request never accepted (addr=0x{addr:08x})")
+
+    for cycles in range(1, RESP_TIMEOUT_CYCLES):
+        await FallingEdge(dut.i_clk)
+        req_valid.value = 0
+        if int(resp_valid.value) == 1:
+            assert int(resp_id.value) == req_id, f"{port} response for another id"
+            return cycles
+    raise AssertionError(f"no {port} response (addr=0x{addr:08x})")
+
+
+@cocotb.test()
+async def test_l1_read_hits_answer_in_three_cycles(dut: Any) -> None:
+    """An L1D or L1I read hit answers as a direct-mapped cache's would."""
+    await _setup(dut)
+    model = ReferenceModel()
+    addr = LATENCY_BASE + 0x40
+    wdata = _line_int(bytes(range(64, 96)))
+    model.write_line(addr, wdata, (1 << LINE_BYTES) - 1)
+    await _line_transaction(
+        dut, write=True, addr=addr, wdata=wdata, wstrb=(1 << LINE_BYTES) - 1
+    )
+    await _check_read(dut, model, addr)
+    for _ in range(8):
+        await FallingEdge(dut.i_clk)
+    assert await _read_cycles(dut, "up", addr) == L1_READ_HIT_CYCLES
+    # The L1I's first read misses and fills; the second hits.
+    await _port_transaction(dut, "iup", write=False, addr=addr)
+    for _ in range(8):
+        await FallingEdge(dut.i_clk)
+    assert await _read_cycles(dut, "iup", addr) == L1_READ_HIT_CYCLES
 
 
 @cocotb.test()

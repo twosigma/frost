@@ -23,25 +23,30 @@
  * Geometry. The address bits above the line offset pick a set, and a line
  * may sit in any of its set's WAYS ways (WAYS=1 is direct-mapped). Each way
  * has a tag entry {valid, dirty, tag}; T reads every way of a set at once.
- * The data array holds one line per row, addressed {way, set}, and is read
- * one stage after the tag compare, so its address comes from a register.
- * Each set keeps a tree pseudo-LRU state of WAYS-1 bits in its own small
- * array, read with the tags.
+ * With one-cycle tags (the L1s) the data array has a bank per way, rows by
+ * set, and T's decision reads every way's row: the hit way's, or the
+ * victim's, lands in a fabric register after the block RAMs, the last cycle
+ * of the read latency. With delayed tags (the L2) it holds one line per row,
+ * addressed {way, set}, and W reads the way T picked, from registers. Each
+ * set keeps a tree pseudo-LRU state of WAYS-1 bits in its own small array,
+ * read with the tags.
  *
  * Pipeline. A fired request goes straight to the tag stage T, or waits in a
  * one-entry skid until T can take it. Ready uses skid state and maintenance.
  * T decides when the tag read returns (TAG_READ_LATENCY cycles), and the side
  * effects land in the write stage W the cycle after the decision:
- *   - read hit:  W reads the hit way's row; the response carries the data
- *                array's output DATA_READ_LATENCY cycles after W. One-cycle
- *                tags decide one request per cycle; delayed tags serialize T;
+ *   - read hit:  the response carries the hit way's row DATA_READ_LATENCY
+ *                cycles after the read, which T issues in the L1s and W in
+ *                the L2. One-cycle tags decide one request per cycle;
+ *                delayed tags serialize T;
  *   - write hit: W writes the strobed bytes and sets dirty; the
  *                acknowledgement is queued from T;
  *   - miss:      T picks a victim way: the lowest way that is invalid and no
  *                miss is filling, else the pseudo-LRU way among the ways no
- *                miss is filling. W invalidates the victim's tag, reads a
- *                dirty victim into a writeback slot, and allocates a
- *                miss-status slot (MSHR) that owns the way until it frees.
+ *                miss is filling. W invalidates the victim's tag, moves a
+ *                dirty victim's row, read as a hit's is, into a writeback
+ *                slot, and allocates a miss-status slot (MSHR) that owns the
+ *                way until it frees.
  *                The MSHR fetches the line downstream unless a write covers
  *                the whole line. A write miss is acknowledged from T, where
  *                the store is ordered, and its bytes merge into the fill;
@@ -73,9 +78,10 @@
  * downstream request arbitration below. Downstream ids are {type, slot}:
  * type 0 is an MSHR's fill, type 1 a writeback slot's write.
  *
- * Each line is one data-array row (sdp_ram_byte_en). Tags use one block RAM
- * per way with a one-cycle read, or for the X3 L2 packed UltraRAM, one set
- * per row, with a TAG_READ_LATENCY-cycle lookup.
+ * Each line is one data-array row (sdp_ram_byte_en), in its way's bank in
+ * the L1s. Tags use one block RAM per way with a one-cycle read, or for the
+ * X3 L2 packed UltraRAM, one set per row, with a TAG_READ_LATENCY-cycle
+ * lookup.
  *
  * Reset runs a sweep that clears every set's tags and replacement state
  * (NumSets cycles) before ready rises, so every reset, including an image
@@ -127,7 +133,8 @@ module frost_cache #(
     // "ultra" for the X3 L2. Simulation behaviour is primitive-agnostic.
     // Untyped because Vivado fails to resolve string-typed parameters
     // propagated into the XPM macro (see sdp_ram_byte_en). The read latency
-    // counts from W, where the read is issued.
+    // counts from the read: T's decision in the L1s, W in the L2 (see the
+    // data array).
     // verilog_lint: waive explicit-parameter-storage-type
     parameter DATA_MEMORY_PRIMITIVE = "block",
     parameter int unsigned DATA_READ_LATENCY = 2,
@@ -220,6 +227,11 @@ module frost_cache #(
   // does not wait on the victim's dirty bit, which needs the tag compare and
   // the victim choice. Delayed tags keep the exact rule.
   localparam bit ExactVictimWb = TrackDelayedTagWrites;
+  // The L1s (one-cycle block RAM tags and data) read every way's data row at
+  // T's decision; other configurations read the picked way from W (see the
+  // data array).
+  localparam bit ParallelWayRead =
+      (DATA_MEMORY_PRIMITIVE == "block") && (DATA_WRITE_LATENCY == 1) && !TrackDelayedTagWrites;
   localparam int unsigned MshrBits = (NUM_MSHR > 1) ? $clog2(NUM_MSHR) : 1;
   localparam int unsigned WbBits = (NUM_WB > 1) ? $clog2(NUM_WB) : 1;
   localparam int unsigned SeatBits = (NUM_WAITERS > 1) ? $clog2(NUM_WAITERS) : 1;
@@ -239,6 +251,8 @@ module frost_cache #(
       $fatal(1, "frost_cache: the cache must hold a power-of-2 number of sets, at least 2");
     if (DATA_WRITE_LATENCY < 1 || DATA_WRITE_LATENCY > 2)
       $fatal(1, "frost_cache: DATA_WRITE_LATENCY must be 1 or 2");
+    if (ParallelWayRead && (DATA_READ_LATENCY < 2))
+      $fatal(1, "frost_cache: reading every way at T needs DATA_READ_LATENCY >= 2");
     if ((TAG_MEMORY_PRIMITIVE != "block") && (TAG_MEMORY_PRIMITIVE != "ultra"))
       $fatal(1, "frost_cache: TAG_MEMORY_PRIMITIVE must be block or ultra");
     if ((TAG_MEMORY_PRIMITIVE == "block") && (TAG_READ_LATENCY != 1))
@@ -460,43 +474,105 @@ module frost_cache #(
   end
 
   // ===========================================================================
-  // Data array (one row per line, {way, set})
+  // Data array: a bank per way, rows by set (the L1s), or one row per line,
+  // {way, set} (the L2)
   // ===========================================================================
   logic                  data_re;
-  logic [   RowBits-1:0] data_raddr;
+  logic [   RowBits-1:0] data_raddr;  // the row W reads (the L2)
+  logic [   SetBits-1:0] data_rset;  // the set T reads in every bank (the L1s)
   logic [  LineBits-1:0] data_rdata;
   logic                  data_row_we;
   logic [   RowBits-1:0] data_waddr;
   logic [LINE_BYTES-1:0] data_wbyte_en;
   logic [  LineBits-1:0] data_wdata;
+  // The way whose row a read returns, and whether its line is used, from the
+  // read pipeline below.
+  logic [   WayBits-1:0] rp_push_way;
+  logic                  rp_push_used;
 
-  // L1 reads address BRAM directly and include its output register in the
-  // read latency. W issues reads from registers. A read never meets a
-  // same-edge write of its row: W reads a valid way or the victim it is
-  // taking, and no fill can be installing into either. Maintenance reads
-  // have no writes.
-  localparam bit DataReadDirect = (DATA_MEMORY_PRIMITIVE == "block") && (DATA_WRITE_LATENCY == 1);
   // An UltraRAM row spreads over several UltraRAM columns, far from the
   // response and writeback logic. The last read cycle is a fabric register,
   // so the memory's own last stage can stay beside the columns.
   localparam bit DataReadOutputReg = (DATA_MEMORY_PRIMITIVE == "ultra");
-  sdp_ram_byte_en #(
-      .DATA_WIDTH(LineBits),
-      .ADDR_WIDTH(RowBits),
-      .READ_LATENCY(DATA_READ_LATENCY),
-      .WRITE_LATENCY(DATA_WRITE_LATENCY),
-      .MEMORY_PRIMITIVE(DATA_MEMORY_PRIMITIVE),
-      .REGISTER_READ_INPUT(!DataReadDirect),
-      .REGISTER_READ_OUTPUT(DataReadOutputReg)
-  ) data_array (
-      .i_clk(i_clk),
-      .i_waddr(data_waddr),
-      .i_wdata(data_wdata),
-      .i_wbyte_en(data_wbyte_en & {LINE_BYTES{data_row_we}}),
-      .i_re(data_re),
-      .i_raddr(data_raddr),
-      .o_rdata(data_rdata)
-  );
+  if (ParallelWayRead) begin : gen_data_banks
+    // T's decision reads its set in every bank, straight from T's address
+    // register. The banks' read latches feed a way multiplexer and the fabric
+    // register that ends the read latency, so a hit answers as soon as a
+    // direct-mapped one would. A read never meets a same-edge write of the row
+    // it returns: W writes another set (a_hold kept this request out of T
+    // while T or W held its set), and a fill installs only into the way its
+    // miss slot owns, which allocations do not take and which a request for
+    // that line does not hit (it meets the slot as same_line). Another bank
+    // may be written in the same cycle; its row goes unused. Each bank's read
+    // enable qualifies only its collision check.
+    logic [LineBits-1:0] bank_rdata[WAYS];
+    logic [ SetBits-1:0] data_wset;
+    logic [ WayBits-1:0] data_wway;
+    assign data_wset = data_waddr[SetBits-1:0];
+    if (WAYS > 1) begin : gen_wway
+      assign data_wway = data_waddr[RowBits-1:SetBits];
+    end else begin : gen_wway_single
+      assign data_wway = '0;
+    end
+    for (genvar gw = 0; gw < int'(WAYS); gw++) begin : gen_bank
+      sdp_ram_byte_en #(
+          .DATA_WIDTH(LineBits),
+          .ADDR_WIDTH(SetBits),
+          .READ_LATENCY(DATA_READ_LATENCY - 1),
+          .WRITE_LATENCY(DATA_WRITE_LATENCY),
+          .MEMORY_PRIMITIVE(DATA_MEMORY_PRIMITIVE),
+          .REGISTER_READ_INPUT(1'b0),
+          .REGISTER_READ_OUTPUT(1'b0)
+      ) data_bank (
+          .i_clk(i_clk),
+          .i_waddr(data_wset),
+          .i_wdata(data_wdata),
+          .i_wbyte_en(data_wbyte_en & {LINE_BYTES{data_row_we && (data_wway == WayBits'(gw))}}),
+          .i_re(rp_push_used && (rp_push_way == WayBits'(gw))),
+          .i_raddr(data_rset),
+          .o_rdata(bank_rdata[gw])
+      );
+    end
+    // The way each read returns, aligned with the banks' latency.
+    logic [WayBits-1:0] rd_way_q[DATA_READ_LATENCY-1];
+    always_ff @(posedge i_clk) begin
+      rd_way_q[0] <= rp_push_way;
+      for (int k = 1; k < int'(DATA_READ_LATENCY) - 1; k++) rd_way_q[k] <= rd_way_q[k-1];
+    end
+    logic [LineBits-1:0] data_rdata_q;
+    always_ff @(posedge i_clk) data_rdata_q <= bank_rdata[rd_way_q[DATA_READ_LATENCY-2]];
+    assign data_rdata = data_rdata_q;
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic data_raddr_unused;
+    assign data_raddr_unused = data_re ^ (^data_raddr);
+    /* verilator lint_on UNUSEDSIGNAL */
+  end else begin : gen_data_array
+    // W issues reads from registers. A read never meets a same-edge write of
+    // its row: W reads a valid way or the victim it is taking, and no fill
+    // can be installing into either. Maintenance reads have no writes.
+    localparam bit DataReadDirect = (DATA_MEMORY_PRIMITIVE == "block") && (DATA_WRITE_LATENCY == 1);
+    sdp_ram_byte_en #(
+        .DATA_WIDTH(LineBits),
+        .ADDR_WIDTH(RowBits),
+        .READ_LATENCY(DATA_READ_LATENCY),
+        .WRITE_LATENCY(DATA_WRITE_LATENCY),
+        .MEMORY_PRIMITIVE(DATA_MEMORY_PRIMITIVE),
+        .REGISTER_READ_INPUT(!DataReadDirect),
+        .REGISTER_READ_OUTPUT(DataReadOutputReg)
+    ) data_array (
+        .i_clk(i_clk),
+        .i_waddr(data_waddr),
+        .i_wdata(data_wdata),
+        .i_wbyte_en(data_wbyte_en & {LINE_BYTES{data_row_we}}),
+        .i_re(data_re),
+        .i_raddr(data_raddr),
+        .o_rdata(data_rdata)
+    );
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic data_rset_unused;
+    assign data_rset_unused = (^data_rset) ^ rp_push_used ^ (^rp_push_way);
+    /* verilator lint_on UNUSEDSIGNAL */
+  end
 
   // ===========================================================================
   // Miss-status and writeback slots
@@ -690,7 +766,7 @@ module frost_cache #(
   // ===========================================================================
   typedef enum logic [2:0] {
     W_NONE,         // nothing, or a probe that missed
-    W_READ_HIT,     // read the hit way for the response; touch replacement
+    W_READ_HIT,     // touch replacement (the L2 also reads the hit way here)
     W_WRITE_HIT,    // strobed array write + dirty tag; touch replacement
     W_ALLOC,        // invalidate the victim way, allocate an MSHR (+ writeback slot)
     W_MERGE,        // merge a write into a pending write MSHR
@@ -1029,7 +1105,8 @@ module frost_cache #(
   // Data-array read purpose pipeline (aligned with the array's read latency)
   // ===========================================================================
   // Each array read is either a hit response (kind 0) or a victim read bound
-  // for a writeback slot (kind 1), from W or the flush walk.
+  // for a writeback slot (kind 1), from T (the L1s) or W (the L2), or the
+  // flush walk.
   logic [DATA_READ_LATENCY-1:0] rp_valid_q;
   logic [DATA_READ_LATENCY-1:0] rp_victim_q;
   logic [UP_ID_BITS-1:0] rp_id_q[DATA_READ_LATENCY];
@@ -1037,6 +1114,10 @@ module frost_cache #(
 
   logic rp_push, rp_push_victim;
   logic [WbBits-1:0] rp_push_wb;
+  logic [UP_ID_BITS-1:0] rp_push_id;
+  // The stage that keeps or drops an L1 read (1; ParallelWayRead needs
+  // DATA_READ_LATENCY >= 2).
+  localparam int unsigned RpKeepStage = (DATA_READ_LATENCY > 1) ? 1 : 0;
   logic rp_out_valid, rp_out_victim;
   logic [UP_ID_BITS-1:0] rp_out_id;
   logic [WbBits-1:0] rp_out_wb;
@@ -1060,17 +1141,34 @@ module frost_cache #(
   assign flush_pick = flush_tag_ready && !flush_set_clean && wb_free_any;
   assign flush_read = (mstate_q == M_FLUSH_WRITE);
 
-  // W reads the hit way's row for a read hit, or a dirty victim's row.
+  // W's operation needs a line: a read hit's, or a dirty victim's.
   logic w_reads_data;
   assign w_reads_data = w_valid_q && ((w_op_q == W_READ_HIT) || w_has_victim);
 
+  // The L1s read at T's decision, before its outcome is known: every
+  // completed decision pushes a read, and the next stage, where W holds the
+  // operation, keeps only those whose line W needs. The L2 reads from W, for
+  // exactly those operations. The flush walk reads from WRITE in both.
+  // Whether a read's line is used: it qualifies the L1 banks' collision
+  // checks.
+  assign rp_push_used = flush_read ||
+      (t_done && (t_is_read_hit || (t_is_alloc && victim_dirty) || (t_is_probe_hit && hit_dirty)));
   always_comb begin
     rp_push        = 1'b0;
     rp_push_victim = 1'b0;
     rp_push_wb     = w_wb_q;
+    rp_push_id     = w_id_q;
+    rp_push_way    = flush_read ? flush_way_q : (hit ? hit_way : victim_way);
     data_re        = 1'b0;
     data_raddr     = flush_active ? row_of(flush_way_q, flush_idx_q) : row_of(w_way_q, w_set_q);
-    if (flush_read) begin
+    data_rset      = flush_active ? flush_idx_q : t_set;
+    if (ParallelWayRead) begin
+      rp_push        = flush_read || t_done;
+      rp_push_victim = flush_read;
+      rp_push_wb     = flush_read ? flush_wb_q : wb_free_idx;
+      rp_push_id     = t_id_q;
+      data_re        = flush_read || decide;
+    end else if (flush_read) begin
       rp_push        = 1'b1;
       rp_push_victim = 1'b1;
       rp_push_wb     = flush_wb_q;
@@ -1089,13 +1187,19 @@ module frost_cache #(
     end else begin
       rp_valid_q[0]  <= rp_push;
       rp_victim_q[0] <= rp_push_victim;
-      rp_id_q[0]     <= w_id_q;
+      rp_id_q[0]     <= rp_push_id;
       rp_wb_q[0]     <= rp_push_wb;
       for (int k = 1; k < int'(DATA_READ_LATENCY); k++) begin
         rp_valid_q[k]  <= rp_valid_q[k-1];
         rp_victim_q[k] <= rp_victim_q[k-1];
         rp_id_q[k]     <= rp_id_q[k-1];
         rp_wb_q[k]     <= rp_wb_q[k-1];
+      end
+      // The L1s' stage after a T read, where W holds its operation: keep a
+      // read hit's line and a dirty victim's, and mark the victims.
+      if (ParallelWayRead) begin
+        rp_valid_q[RpKeepStage]  <= rp_valid_q[0] && (rp_victim_q[0] || w_reads_data);
+        rp_victim_q[RpKeepStage] <= rp_victim_q[0] || (w_op_q != W_READ_HIT);
       end
     end
   end
@@ -2183,10 +2287,11 @@ module frost_cache #(
           !((mshr_state_q[w_mshr_q] == MS_PEND) || (mshr_state_q[w_mshr_q] == MS_SENT) ||
             (mshr_state_q[w_mshr_q] == MS_MERGE)))
         $error("frost_cache: merge into MSHR %0d in state %0d", w_mshr_q, mshr_state_q[w_mshr_q]);
-      // A data-array read never meets a same-edge write of its row (see the
-      // data array): one W operation per cycle, and fills install only into
-      // ways that neither hit nor are being taken.
-      if (data_re && data_row_we && (data_raddr == data_waddr))
+      // A W read of the data array never meets a same-edge write of its row
+      // (see the data array): one W operation per cycle, and fills install
+      // only into ways that neither hit nor are being taken. The L1s' banks
+      // check their own reads.
+      if (!ParallelWayRead && data_re && data_row_we && (data_raddr == data_waddr))
         $error("frost_cache: data row 0x%0h read and written in the same cycle", data_raddr);
       p_tag_response_has_owner :
       assert (!tag_response_valid ||
