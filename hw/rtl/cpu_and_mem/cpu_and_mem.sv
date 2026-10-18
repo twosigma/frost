@@ -1631,8 +1631,8 @@ module cpu_and_mem #(
       .i_dev_read_capture(mmio_read_capture),
       .o_dev_read_data(rvfi_dii_device_read_data),
       .i_dev_write_en(|data_memory_byte_write_enable &&
-                      riscv_pkg::pma_device_quadrant(data_memory_address)),
-      .i_dev_write_addr(data_memory_address),
+                      riscv_pkg::pma_device_quadrant(riscv_pkg::XLEN'(data_memory_address))),
+      .i_dev_write_addr(32'(data_memory_address)),
       .i_dev_write_data(data_memory_write_data),
       .i_dev_write_strb(data_memory_byte_write_enable)
   );

@@ -302,7 +302,8 @@ module axi_behavioral_memory #(
 `ifdef FROST_WIDE_DDR_TEST
         word_index = (64'(dii_write_addr_q) >> 2) + 64'(w);
 `else
-        word_index = ((dii_write_addr_q & AXI_ADDR_WIDTH'(MEM_BYTES - 1)) >> 2) + w;
+        word_index = ((64'(dii_write_addr_q) & 64'(AXI_ADDR_WIDTH'(MEM_BYTES - 1))) >> 2) +
+            64'(w);
 `endif
         word = memory.exists(word_index) ? memory[word_index] : '0;
         for (int unsigned b = 0; b < 4; b++) begin
@@ -355,6 +356,9 @@ module axi_behavioral_memory #(
         for (int unsigned w = 0; w < WordsPerLine; w++) begin
 `ifdef FROST_WIDE_DDR_TEST
           rdata_q[w*32+:32] <= memory[(64'(rd_addr_q[rd_pick]) >> 2) + 64'(w)];
+`elsif FROST_SPARSE_DDR_MEMORY
+          rdata_q[w*32+:32] <= memory[((64'(rd_addr_q[rd_pick]) &
+              64'(AXI_ADDR_WIDTH'(MEM_BYTES - 1))) >> 2) + 64'(w)];
 `else
           rdata_q[w*32+:32] <= memory[WordIndexBits'(((rd_addr_q[rd_pick] &
               AXI_ADDR_WIDTH'(MEM_BYTES - 1)) >> 2) + AXI_ADDR_WIDTH'(w))];

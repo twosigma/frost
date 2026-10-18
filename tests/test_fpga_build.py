@@ -1441,7 +1441,8 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     assert ".i_publish_hold(low_bram_pipeline_stall_q)" in provider_block
     assert ".i_response_overlay_hit(bram_fetch_window_overlay_hit)" in provider_block
     assert "low_bram_pipeline_stall_q <= pipeline_stall;" in provider_block
-    assert ".i_owner_low(!fetch_pa0[31])" in provider_block
+    assert "assign fetch_pa0_is_cached = riscv_pkg::pma_cached_ok(" in cpu_and_mem
+    assert ".i_owner_low(!fetch_pa0_is_cached)" in provider_block
     assert ".i_retarget(fetch_redirect || fetch_high_transition)" in provider_block
     assert ".i_retarget(fetch_cached_retarget)" in provider_block
 
@@ -1498,8 +1499,9 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     assert "pins_match_presented" not in presenter
     assert "(i_pa0 == presented_pa0_q) && (i_pa1 == presented_pa1_q)" in presenter
     assert re.search(r"\bresponse_published_q\b", presenter) is None
+    assert "assign o_fetch_pc = repeat_presented ? presented_pc_q : i_pc;" in presenter
+    assert "assign o_fetch_address = o_fetch_pc[31:0];" in presenter
     for output_name, live_name, held_name in (
-        ("o_fetch_address", "i_pc", "presented_pc_q"),
         ("o_fetch_pa_valid", "i_pa_valid", "presented_pa_valid_q"),
     ):
         assert (
@@ -1516,7 +1518,7 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
             f"repeat_presented ? presented_{pa}_q[31:16] : i_{pa}[31:16]" in presenter
         )
         assert f"repeat_address ? presented_{pa}_q[15:0] : i_{pa}[15:0]" in presenter
-    assert "presented_pc_q          <= o_fetch_address;" in presenter
+    assert "presented_pc_q          <= o_fetch_pc;" in presenter
     assert "i_response_ready && !i_retarget" not in presenter
 
     if_stage = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.sv").read_text()
