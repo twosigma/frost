@@ -255,7 +255,7 @@ can be debugged and where each one first stops.
 | `csr_rmw_test/` | Old and new values for `csrrw`/`csrrs`/`csrrc`, including the same-register `mscratch` swap that OpenSBI's trap entry uses |
 | `csr_test/` | `mstatus.MIE` writes and the M-mode counter controls: `mcountinhibit`, 64-bit `mcycle`/`minstret` writes, and the Zicsr rule that a `minstret` write replaces the writing instruction's own increment |
 | `ddr_atomic_test/` | Word LR/SC and AMOs on cached DDR, printing a progress letter before each step |
-| `ddr_bench/` | Memory-bound kernels on cold cached-DDR regions (sequential, strided, interleaved, random, dependent, copy, write), with cycles and cache-counter deltas per kernel; `DDR_BENCH_SHIFT` shrinks them for simulation |
+| `ddr_bench/` | Memory-bound kernels on cold cached-DDR regions (sequential, strided, interleaved, interleaved within one cache set, random, dependent, copy, write), with cycles and cache-counter deltas per kernel; `DDR_BENCH_SHIFT` shrinks them for simulation |
 | `ddr_exec_test/` | Code in DDR: calls into BRAM, recursion, a body larger than the fetch buffer, cold and warm runs |
 | `ddr_heap_test/` | Multi-MiB `malloc` from the DDR heap, checked for address aliasing |
 | `ddr_mlp_test/` | Independent cold DDR loads must overlap their L1D misses, measured with the profiling counters in a build with 4 KiB L1D and L2; a pointer chase is the control |
