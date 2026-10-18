@@ -117,6 +117,20 @@ def _get_timeout_seconds(synth_command: str) -> int:
         return fallback
 
 
+def _synthesis_defines() -> str:
+    """Use the RTL's one DDR capacity setting for synthesis too."""
+    raw_capacity = os.environ.get("FROST_DDR_CAPACITY_LOG2_BYTES")
+    if raw_capacity is None:
+        return "-DSYNTHESIS"
+    try:
+        capacity = int(raw_capacity)
+    except ValueError as exc:
+        raise ValueError("DDR capacity must be an integer log2 byte count") from exc
+    if not 30 <= capacity <= 37:
+        raise ValueError("DDR capacity must select 1-128 GiB (log2 bytes 30-37)")
+    return f"-DSYNTHESIS -DFROST_DDR_CAPACITY_LOG2_BYTES={capacity}"
+
+
 # Pytest synthesis targets. Run others with:
 # ./scripts/frost.py synthesis --target <name>
 #
@@ -280,7 +294,7 @@ class YosysRunner:
 
         # Exclude simulation-only code. Enable Xilinx primitives only for
         # synth_xilinx targets.
-        defines = "-DSYNTHESIS"
+        defines = _synthesis_defines()
         if synth_command.startswith("synth_xilinx"):
             defines += " -DFROST_XILINX_PRIMS"
 
@@ -386,6 +400,23 @@ def test_synthesis_filelist_includes_cached_tier_dependencies(
     } <= names
     assert len(sources) == len(set(sources)), "Yosys rejects duplicate modules"
     assert all(Path(source).is_file() for source in sources)
+
+
+def test_synthesis_capacity_uses_single_rtl_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Do not silently synthesize the default when CI selects an endpoint."""
+    monkeypatch.delenv("FROST_DDR_CAPACITY_LOG2_BYTES", raising=False)
+    assert _synthesis_defines() == "-DSYNTHESIS"
+    for capacity in (30, 36, 37):
+        monkeypatch.setenv("FROST_DDR_CAPACITY_LOG2_BYTES", str(capacity))
+        assert _synthesis_defines().endswith(
+            f"-DFROST_DDR_CAPACITY_LOG2_BYTES={capacity}"
+        )
+    for invalid_capacity in ("29", "38", "invalid"):
+        monkeypatch.setenv("FROST_DDR_CAPACITY_LOG2_BYTES", invalid_capacity)
+        with pytest.raises(ValueError):
+            _synthesis_defines()
 
 
 @pytest.mark.synthesis
