@@ -201,7 +201,7 @@ def main() -> None:
         "yosys": subprocess.check_output(["yosys", "-V"], text=True).strip(),
     }
     assert versions["sv2v"].startswith(f"sv2v {SV2V_VERSION}")
-    assert versions["yosys"].startswith("Yosys 0.69")
+    assert versions["yosys"].startswith("Yosys 0.70")
     print(json.dumps(versions, indent=2), flush=True)
 
     rtl = root / "hw/rtl/net10g"

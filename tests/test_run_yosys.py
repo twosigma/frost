@@ -64,7 +64,7 @@ def _hierarchy_command(synth_command: str) -> str:
     AXI export; the DDR model is simulation-only. Other targets use module
     defaults.
 
-    Use chparam -set: hierarchy -chparam in Yosys 0.69 fails a duplicate-module
+    Use chparam -set: in Yosys 0.69, hierarchy -chparam failed a duplicate-module
     assertion (modules_.count(module->name) == 0) when reprocessing the cache and
     walker hierarchy. Later checks must follow the top attribute because Yosys
     may specialize and rename the top.
