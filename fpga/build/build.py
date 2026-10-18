@@ -56,6 +56,10 @@ from riscv_toolchain import default_riscv_prefix  # noqa: E402
 
 # Configuration
 
+# Board geometry comes from the checked-in build scripts, independent of
+# where a build's work directory or resumed checkpoint is stored.
+BOARD_DESIGN_DIR = Path(__file__).resolve().parent
+
 # Limit concurrent Vivado processes to bound memory use (about 8 GB per worker).
 # This is separate from each process's thread count.
 DEFAULT_MAX_JOBS = 12
@@ -68,6 +72,26 @@ BOARD_CONFIG = {
         "synth_directive": "AlternateRoutability",
     },
 }
+
+
+def board_ddr_capacity_log2_bytes(design: Path) -> int:
+    """Derive the CPU's raw DDR aperture from the board's AXI address map."""
+    match = re.search(
+        r"-range\s+(0x[0-9A-Fa-f]+)[\s\\]+"
+        r"-target_address_space\s+\[get_bd_addr_spaces\s+S00_AXI\]",
+        design.read_text(),
+    )
+    if match is None:
+        raise ValueError(f"{design} assigns the CPU port no DDR range")
+    capacity_bytes = int(match.group(1), 16)
+    if (
+        capacity_bytes < 1 << 30
+        or capacity_bytes > 1 << 37
+        or (capacity_bytes & (capacity_bytes - 1))
+    ):
+        raise ValueError(f"{design} must map a power-of-two 1-128 GiB DDR range")
+    return capacity_bytes.bit_length() - 1
+
 
 # Legal directives for each implementation step.
 SYNTH_DIRECTIVES = [
@@ -1555,25 +1579,32 @@ def is_reference_x3_netlist(main_work: Path) -> bool:
         return False
     return (
         isinstance(config, dict)
-        and config.get("schema") == "x3_netlist_config_v3"
+        and config.get("schema") == "x3_netlist_config_v4"
         and config.get("cpu_base_clock_hz") == BOARD_CONFIG["x3"]["clock_freq"]
         and config.get("cpu_clock_div") == 1
+        and config.get("ddr_capacity_log2_bytes") == 30
     )
 
 
-def require_x3_netlist_clock(main_work: Path, cpu_clock_div: int) -> bool:
-    """Resume only a checkpoint built for the requested X3 clock divider."""
+def require_x3_netlist_configuration(
+    main_work: Path, cpu_clock_div: int, ddr_capacity_log2_bytes: int
+) -> bool:
+    """Resume only a checkpoint built for the requested clock and DDR map."""
     try:
         config = json.loads((main_work / X3_NETLIST_CONFIG_NAME).read_text())
         if not isinstance(config, dict) or (
-            config.get("cpu_base_clock_hz") != BOARD_CONFIG["x3"]["clock_freq"]
+            config.get("schema") != "x3_netlist_config_v4"
+            or config.get("cpu_base_clock_hz") != BOARD_CONFIG["x3"]["clock_freq"]
             or config.get("cpu_clock_div") != cpu_clock_div
+            or config.get("ddr_capacity_log2_bytes") != ddr_capacity_log2_bytes
         ):
-            raise ValueError("checkpoint clock differs from the requested X3 clock")
+            raise ValueError(
+                "checkpoint clock or DDR capacity differs from the X3 build"
+            )
     except (OSError, ValueError) as error:
         print(
-            f"Error: cannot resume X3 clock configuration: {error}. "
-            "Use the checkpoint's --cpu-clock-div or restart synthesis."
+            f"Error: cannot resume X3 netlist configuration: {error}. "
+            "Use the checkpoint's clock and DDR capacity or restart synthesis."
         )
         return False
     return True
@@ -1623,10 +1654,13 @@ def copy_results_to_main_work(
         (main_work / X3_NETLIST_CONFIG_NAME).write_text(
             json.dumps(
                 {
-                    "schema": "x3_netlist_config_v3",
+                    "schema": "x3_netlist_config_v4",
                     "perf_counters": perf_counters,
                     "cpu_base_clock_hz": BOARD_CONFIG["x3"]["clock_freq"],
                     "cpu_clock_div": int(os.environ.get("FROST_CPU_CLK_DIV", "1")),
+                    "ddr_capacity_log2_bytes": int(
+                        os.environ["FROST_DDR_CAPACITY_LOG2_BYTES"]
+                    ),
                 },
                 indent=2,
             )
@@ -3462,6 +3496,23 @@ Examples:
     script_dir = Path(__file__).parent.resolve()
     project_root = script_dir.parent.parent
 
+    # The board's AXI memory map is authoritative for physical DDR capacity.
+    # Never build the 1 GiB X3 controller against the RTL's 64 GiB default:
+    # its 30-bit AXI port would otherwise alias a high request into low DDR.
+    board_ddr_design = BOARD_DESIGN_DIR / f"{board_name}_ddr_bd.tcl"
+    board_ddr_log2 = 0
+    if board_name == "x3":
+        try:
+            board_ddr_log2 = board_ddr_capacity_log2_bytes(board_ddr_design)
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
+        inherited_ddr_log2 = os.environ.get("FROST_DDR_CAPACITY_LOG2_BYTES")
+        if inherited_ddr_log2 is not None and inherited_ddr_log2 != str(board_ddr_log2):
+            parser.error(
+                "FROST_DDR_CAPACITY_LOG2_BYTES conflicts with the board DDR map"
+            )
+        os.environ["FROST_DDR_CAPACITY_LOG2_BYTES"] = str(board_ddr_log2)
+
     board_config = BOARD_CONFIG[board_name]
     clock_freq = board_config["clock_freq"]
     is_ultrascale = board_config["is_ultrascale"]
@@ -3650,8 +3701,8 @@ Examples:
             print(f"Required checkpoint not found: {checkpoint_path}")
             sys.exit(1)
         print(f"Starting from checkpoint: {checkpoint_path}")
-        if board_name == "x3" and not require_x3_netlist_clock(
-            main_work, functional_policy.cpu_clock_div
+        if board_name == "x3" and not require_x3_netlist_configuration(
+            main_work, functional_policy.cpu_clock_div, board_ddr_log2
         ):
             sys.exit(1)
 

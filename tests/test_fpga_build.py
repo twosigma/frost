@@ -292,9 +292,10 @@ def test_build_main_refreshes_actual_completed_report_stage(
     (work_dir / fpga_build.X3_NETLIST_CONFIG_NAME).write_text(
         json.dumps(
             {
-                "schema": "x3_netlist_config_v3",
+                "schema": "x3_netlist_config_v4",
                 "cpu_base_clock_hz": 322265625,
                 "cpu_clock_div": 1,
+                "ddr_capacity_log2_bytes": 30,
             }
         )
     )
@@ -1872,6 +1873,55 @@ def test_cpu_clock_divider_reaches_synthesis_and_the_block_design() -> None:
     assert ".CLK_FREQ_HZ(CpuClkHz)," in top
 
 
+def test_x3_ddr_capacity_reaches_synthesis_without_board_truncation(
+    tmp_path: Path,
+) -> None:
+    """The 1 GiB X3 map must select RTL width 30 before AXI reaches DDR."""
+    design = REPO_ROOT / "fpga/build/x3_ddr_bd.tcl"
+    assert fpga_build.board_ddr_capacity_log2_bytes(design) == 30
+    for capacity_bytes, expected_log2 in ((1 << 36, 36), (1 << 37, 37)):
+        variant = tmp_path / f"ddr_{expected_log2}.tcl"
+        variant.write_text(
+            design.read_text().replace(
+                "-range 0x40000000 \\",
+                f"-range 0x{capacity_bytes:x} \\",
+                1,
+            )
+        )
+        assert fpga_build.board_ddr_capacity_log2_bytes(variant) == expected_log2
+    invalid = tmp_path / "invalid_ddr.tcl"
+    invalid.write_text(
+        design.read_text().replace("-range 0x40000000 \\", "-range 0x60000000 \\", 1)
+    )
+    with pytest.raises(ValueError, match="power-of-two"):
+        fpga_build.board_ddr_capacity_log2_bytes(invalid)
+
+    step = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
+    assert "FROST_DDR_CAPACITY_LOG2_BYTES=$ddr_capacity_log2" in step
+    top = (REPO_ROOT / "boards/x3/x3_frost.sv").read_text()
+    subsystem = (REPO_ROOT / "boards/xilinx_frost_subsystem.sv").read_text()
+    assert "riscv_pkg::DdrAxiAddrBits != X3DdrAxiAddrBits" in top
+    assert "ddr_axi_awaddr[29:0]" not in top
+    assert "ddr_axi_araddr[29:0]" not in top
+    for signal in ("awaddr", "araddr"):
+        assert re.search(
+            rf"output logic\s+\[riscv_pkg::DdrAxiAddrBits-1:0\]\s+o_ddr_axi_{signal}",
+            subsystem,
+        )
+
+
+def test_x3_build_rejects_conflicting_inherited_ddr_capacity(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A stale shell setting cannot widen the RTL beyond the X3 DDR map."""
+    monkeypatch.setenv("FROST_DDR_CAPACITY_LOG2_BYTES", "36")
+    monkeypatch.setattr(sys, "argv", ["build.py", "x3", "--stop-after", "synth"])
+    with pytest.raises(SystemExit) as stopped:
+        fpga_build.main()
+    assert stopped.value.code == 2
+    assert "conflicts with the board DDR map" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("divider", (1, 2, 3, 4))
 def test_x3_place_gate_requires_the_mmcm_cpu_period(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, divider: int
@@ -2715,9 +2765,10 @@ def _sweep_input(script_dir: Path, step: str) -> Path:
     (work_dir / fpga_build.X3_NETLIST_CONFIG_NAME).write_text(
         json.dumps(
             {
-                "schema": "x3_netlist_config_v3",
+                "schema": "x3_netlist_config_v4",
                 "cpu_base_clock_hz": 322265625,
                 "cpu_clock_div": 1,
+                "ddr_capacity_log2_bytes": 30,
             }
         )
     )
@@ -4300,6 +4351,7 @@ def test_post_synth_promotion_stamps_the_netlist_perf_counters(
     """Synthesis options are recorded once with their checkpoint."""
     monkeypatch.setenv("FROST_PERF_COUNTERS", perf_counters)
     monkeypatch.setenv("FROST_CPU_CLK_DIV", divider)
+    monkeypatch.setenv("FROST_DDR_CAPACITY_LOG2_BYTES", "30")
     source, dest = tmp_path / "source", tmp_path / "dest"
     source.mkdir()
     dest.mkdir()
@@ -4307,20 +4359,23 @@ def test_post_synth_promotion_stamps_the_netlist_perf_counters(
     fpga_build.copy_results_to_main_work(source, dest, "post_synth.dcp", "post_synth")
     stamp = dest / fpga_build.X3_NETLIST_CONFIG_NAME
     assert json.loads(stamp.read_text()) == {
-        "schema": "x3_netlist_config_v3",
+        "schema": "x3_netlist_config_v4",
         "perf_counters": int(perf_counters),
         "cpu_base_clock_hz": 322265625,
         "cpu_clock_div": int(divider),
+        "ddr_capacity_log2_bytes": 30,
     }
     # Later stages inherit the netlist, so they must not restamp it: a resumed
     # run's environment says nothing about the checkpoint it was handed.
     monkeypatch.setenv("FROST_PERF_COUNTERS", "1" if perf_counters == "0" else "0")
     monkeypatch.setenv("FROST_CPU_CLK_DIV", "123")
+    monkeypatch.setenv("FROST_DDR_CAPACITY_LOG2_BYTES", "36")
     (source / "post_opt.dcp").write_bytes(b"optimized netlist")
     fpga_build.copy_results_to_main_work(source, dest, "post_opt.dcp", "post_opt")
     assert json.loads(stamp.read_text())["perf_counters"] == int(perf_counters)
     assert json.loads(stamp.read_text())["cpu_base_clock_hz"] == 322265625
     assert json.loads(stamp.read_text())["cpu_clock_div"] == int(divider)
+    assert json.loads(stamp.read_text())["ddr_capacity_log2_bytes"] == 30
 
 
 def test_failed_synthesis_leaves_the_previous_netlist_stamp(tmp_path: Path) -> None:
@@ -4679,6 +4734,7 @@ def test_single_core_performance_flag_is_not_an_option(
         ({"schema": "x3_netlist_config_v2", "single_core_performance": 1}, False),
         ({"cpu_base_clock_hz": 300000000}, False),
         ({"cpu_clock_div": 2}, False),
+        ({"ddr_capacity_log2_bytes": 36}, False),
         ({"schema": "x3_netlist_config_v1"}, False),
         (None, False),
     ],
@@ -4691,15 +4747,16 @@ def test_resumed_build_uses_recorded_configuration_for_readme(
 ) -> None:
     """The README refresh uses the netlist config recorded at synthesis.
 
-    An older schema skips the refresh; a missing config or another clock stops
-    the build.
+    An older schema, missing config, or mismatched clock/DDR capacity stops
+    the build before place or route.
     """
     work = _sweep_input(tmp_path, "place")
     if overrides is not None:
         config = {
-            "schema": "x3_netlist_config_v3",
+            "schema": "x3_netlist_config_v4",
             "cpu_base_clock_hz": 322265625,
             "cpu_clock_div": 1,
+            "ddr_capacity_log2_bytes": 30,
             **overrides,
         }
         (work / fpga_build.X3_NETLIST_CONFIG_NAME).write_text(json.dumps(config))
@@ -4735,10 +4792,16 @@ def test_resumed_build_uses_recorded_configuration_for_readme(
         "update_readme_utilization",
         lambda *_args: calls.append("publish"),
     )
-    incompatible_clock = overrides is None or any(
-        key in overrides for key in ("cpu_base_clock_hz", "cpu_clock_div")
+    incompatible_configuration = overrides is None or any(
+        key in overrides
+        for key in (
+            "schema",
+            "cpu_base_clock_hz",
+            "cpu_clock_div",
+            "ddr_capacity_log2_bytes",
+        )
     )
-    if incompatible_clock:
+    if incompatible_configuration:
         with pytest.raises(SystemExit) as stopped:
             fpga_build.main()
         assert stopped.value.code == 1

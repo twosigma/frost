@@ -232,10 +232,15 @@ module x3_frost #(
   // Each transfer is one L2 line in a single beat; the block design's CPU port
   // (x3_ddr_bd.tcl) is one 64-byte line wide, the DDR4 controller's word.
   localparam int unsigned L2LineBytes = 64;
+  localparam int unsigned X3DdrAxiAddrBits = 30;
+  initial begin
+    if (riscv_pkg::DdrAxiAddrBits != X3DdrAxiAddrBits)
+      $fatal(1, "x3_frost: CPU DDR aperture must match the 1 GiB X3 AXI map");
+  end
   logic ddr_axi_awvalid, ddr_axi_awready, ddr_axi_wvalid, ddr_axi_wready;
   logic ddr_axi_bvalid, ddr_axi_bready, ddr_axi_arvalid, ddr_axi_arready;
   logic ddr_axi_rvalid, ddr_axi_rready, ddr_axi_wlast, ddr_axi_rlast;
-  logic [31:0] ddr_axi_awaddr, ddr_axi_araddr;
+  logic [riscv_pkg::DdrAxiAddrBits-1:0] ddr_axi_awaddr, ddr_axi_araddr;
   logic [7:0] ddr_axi_awlen, ddr_axi_arlen;
   logic [2:0] ddr_axi_awsize, ddr_axi_arsize;
   logic [1:0] ddr_axi_awburst, ddr_axi_arburst, ddr_axi_bresp, ddr_axi_rresp;
@@ -311,7 +316,7 @@ module x3_frost #(
   logic [L2LineBytes-1:0] s00_wstrb;
   assign s00_awvalid = ddr_init_busy ? init_awvalid : ddr_axi_awvalid;
   assign s00_awid = ddr_init_busy ? init_awid : ddr_axi_awid;
-  assign s00_awaddr = ddr_init_busy ? init_awaddr : ddr_axi_awaddr[29:0];
+  assign s00_awaddr = ddr_init_busy ? init_awaddr : ddr_axi_awaddr;
   assign s00_awlen = ddr_init_busy ? init_awlen : ddr_axi_awlen;
   assign s00_awsize = ddr_init_busy ? init_awsize : ddr_axi_awsize;
   assign s00_awburst = ddr_init_busy ? init_awburst : ddr_axi_awburst;
@@ -405,7 +410,7 @@ module x3_frost #(
       .S00_AXI_arvalid(ddr_axi_arvalid),
       .S00_AXI_arready(ddr_axi_arready),
       .S00_AXI_arid(ddr_axi_arid),
-      .S00_AXI_araddr(ddr_axi_araddr[29:0]),
+      .S00_AXI_araddr(ddr_axi_araddr),
       .S00_AXI_arlen(ddr_axi_arlen),
       .S00_AXI_arsize(ddr_axi_arsize),
       .S00_AXI_arburst(ddr_axi_arburst),

@@ -18,6 +18,14 @@ The bitstream boots Hello World. Loading an application rebuilds it and
 replaces the BRAM and DDR contents without touching the bitstream. The UART
 console runs at **115200 baud, 8N1**.
 
+The X3 block design maps 1 GiB of DDR to the CPU. The build derives
+`FROST_DDR_CAPACITY_LOG2_BYTES=30` from that map and passes it to the RTL;
+it rejects a conflicting inherited value. The board wrapper checks that
+FROST's DDR AXI address width matches its 30-bit port, with no address
+slice that could alias a high request into low DDR. Resume from an older
+netlist checkpoint is rejected unless its capacity is recorded and matches
+the board; restart at synthesis after changing the DDR map.
+
 ## Programming the FPGA
 
 ```bash
