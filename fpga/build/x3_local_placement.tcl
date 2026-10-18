@@ -504,7 +504,7 @@ namespace eval ::frost_x3_local_placement {
         set paths [get_timing_paths -quiet -group clock_from_mmcm \
             -slack_lesser_than -0.175 -max_paths 1000 -nworst 1]
         set registers [get_cells -quiet -of_objects $paths -filter \
-            {NAME =~ *l2_cache/data_array/u_xpm_ram/*doutb_pipe_reg* && REF_NAME == FDRE}]
+            {NAME =~ *l2_cache/*data_array/u_xpm_ram/*doutb_pipe_reg* && REF_NAME == FDRE}]
         # Balance URAM-to-register and register-to-cache delay in the middle columns.
         foreach c [lsort $registers] {
             set original [snapshot $c]
