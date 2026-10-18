@@ -120,13 +120,19 @@ def compile_test(
     return result.returncode == 0
 
 
-def run_simulation(simulator: str) -> subprocess.CompletedProcess[str] | None:
-    """Run cocotb simulation and return the result."""
+def run_simulation(
+    simulator: str, coverage_label: str = "riscv_torture"
+) -> subprocess.CompletedProcess[str] | None:
+    """Run cocotb simulation and return the result.
+
+    coverage_label names the run's coverage file under FROST_COVERAGE=1.
+    """
     runner = CocotbRunner(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name=None,
     )
+    runner.coverage_label = coverage_label
 
     os.environ["SIM"] = simulator
     env = runner.setup_environment()
@@ -272,7 +278,7 @@ def run_single_test(
         # These tests fit both tiers; compilation failure must fail the run.
         return TestResult(test_name, "FAIL", "Compilation failed")
 
-    result = run_simulation(simulator)
+    result = run_simulation(simulator, coverage_label=f"riscv_torture_{test_name}")
     if result is None:
         return TestResult(test_name, "FAIL", "Simulation timed out")
 

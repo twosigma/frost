@@ -489,6 +489,24 @@ else
 	export EXTRA_ARGS := -j $(NUMBER_OF_CPU_CORES) -Wno-UNOPTFLAT -Wno-MODDUP
 endif
 
+# Coverage (tests/README.md). FROST_COVERAGE=1 builds with line coverage
+# (statement blocks and branches) and the cover points of the RTL, which only
+# a build that defines FROST_COVERAGE compiles; FROST_COVERAGE_TOGGLE=1 adds
+# toggle coverage, which makes whole-SoC simulations about six times slower.
+# The simulation writes its coverage to FROST_COVERAGE_FILE, which
+# test_run_cocotb.py sets for each run, or to coverage.dat in this directory.
+FROST_COVERAGE ?= 0
+FROST_COVERAGE_TOGGLE ?= 0
+ifeq ($(FROST_COVERAGE),1)
+	EXTRA_ARGS += --coverage-line --coverage-user +define+FROST_COVERAGE
+ifeq ($(FROST_COVERAGE_TOGGLE),1)
+	EXTRA_ARGS += --coverage-toggle
+endif
+ifneq ($(strip $(FROST_COVERAGE_FILE)),)
+	SIM_ARGS += +verilator+coverage+file+$(FROST_COVERAGE_FILE)
+endif
+endif
+
 # Parameters of the frost toplevel only (the -G overrides below).
 # Low BRAM keeps its 256 KiB hardware size (the frost.sv MEM_SIZE_BYTES default).
 SIM_MEM_SIZE_BYTES ?= 262144

@@ -78,15 +78,52 @@ class CocotbRunConfig:
 
 
 # tests/Makefile turns these environment variables into Verilator arguments:
-# WAVES for every toplevel, the rest as -G overrides of the frost toplevel.
+# WAVES and the coverage switches for every toplevel, the rest as -G overrides
+# of the frost toplevel.
 MAKEFILE_BUILD_VARIABLES = (
     "WAVES",
+    "FROST_COVERAGE",
+    "FROST_COVERAGE_TOGGLE",
     "SIM_MEM_SIZE_BYTES",
     "ENABLE_CACHED_TIER",
     "DDR_MODEL_BYTES",
     "DDR_MODEL_LATENCY",
     "SIM_FAST_MAINT",
 )
+
+# FROST_COVERAGE=1 builds simulations with line coverage and the cover points,
+# and FROST_COVERAGE_TOGGLE=1 adds toggle coverage (tests/Makefile). Each run
+# writes its own file, named after the test, to FROST_COVERAGE_DIR
+# (tests/coverage by default; a relative path is taken from the repository
+# root). tests/coverage_report.py merges and summarizes the files.
+COVERAGE_VARIABLE = "FROST_COVERAGE"
+COVERAGE_DIR_VARIABLE = "FROST_COVERAGE_DIR"
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+
+
+def coverage_enabled() -> bool:
+    """Return True when FROST_COVERAGE=1 asks for coverage builds."""
+    return os.environ.get(COVERAGE_VARIABLE, "") == "1"
+
+
+def coverage_file(label: str) -> Path:
+    """Return the path for the coverage of one simulation run named ``label``.
+
+    The file name is the label with unsafe characters replaced, followed by
+    -2, -3, and so on when an earlier run of that name already wrote a file.
+    """
+    directory = Path(os.environ.get(COVERAGE_DIR_VARIABLE) or "tests/coverage")
+    if not directory.is_absolute():
+        directory = REPOSITORY_ROOT / directory
+    directory.mkdir(parents=True, exist_ok=True)
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("._") or "run"
+    path = directory / f"{stem}.dat"
+    suffix = 2
+    while path.exists():
+        path = directory / f"{stem}-{suffix}.dat"
+        suffix += 1
+    return path
+
 
 # FROST_DDR_MODEL_SEED draws the DDR model's timing for frost-toplevel builds:
 # its latency, its latency jitter, and whether it completes transactions out
@@ -2251,6 +2288,8 @@ class CocotbRunner:
         self.repository_root_directory = self.test_directory.parent
         # Memory tier for app builds; the ddr CI job selects cached DDR.
         self.mem_config = os.environ.get("FROST_COCOTB_MEM_CONFIG", "bram")
+        # Names the run's coverage file; callers that know the test name set it.
+        self.coverage_label = app_name or hdl_toplevel_module
 
     @classmethod
     def from_config(cls, config: CocotbRunConfig) -> "CocotbRunner":
@@ -2262,6 +2301,19 @@ class CocotbRunner:
             verilator_extra_args=config.verilator_extra_args,
             extra_env=config.extra_env,
         )
+
+    @classmethod
+    def for_test(cls, test_name: str) -> "CocotbRunner":
+        """Create the runner of a registry test.
+
+        Its coverage file takes the test's name, and an application's also its
+        memory tier.
+        """
+        runner = cls.from_config(TEST_REGISTRY[test_name])
+        runner.coverage_label = (
+            f"{test_name}_{runner.mem_config}" if runner.app_name else test_name
+        )
+        return runner
 
     def _drawn_ddr_model_args(self) -> tuple[str, ...]:
         """Return -G arguments for the DDR model timing that the seed draws."""
@@ -2382,6 +2434,12 @@ class CocotbRunner:
         # mutated memory. Force a single run; the bram tier keeps its default.
         if self.mem_config == "ddr":
             environment_variables["COCOTB_NUM_RUNS"] = "1"
+
+        # Each coverage run writes a file of its own (tests/Makefile).
+        if coverage_enabled():
+            environment_variables["FROST_COVERAGE_FILE"] = str(
+                coverage_file(self.coverage_label)
+            )
 
         return environment_variables
 
@@ -2647,8 +2705,7 @@ def run_test(test_name: str, capsys: Any | None = None) -> None:
         KeyError: If test_name is not in TEST_REGISTRY
     """
     os.environ["SIM"] = "verilator"
-    config = TEST_REGISTRY[test_name]
-    runner = CocotbRunner.from_config(config)
+    runner = CocotbRunner.for_test(test_name)
 
     if capsys is not None:
         with capsys.disabled():
@@ -2731,8 +2788,8 @@ def _run_single_seed(
     if testcase:
         os.environ["COCOTB_TEST_FILTER"] = f"{testcase}$"
 
-    config = TEST_REGISTRY[test_name]
-    runner = CocotbRunner.from_config(config)
+    runner = CocotbRunner.for_test(test_name)
+    runner.coverage_label += f"_seed{seed}"
     # The sweep parent compiled the app (if any) once before the pool;
     # workers must not clean+recompile the shared sw/apps/<app> build or
     # unlink the shared tests/sw*.mem symlinks mid-sweep.
@@ -2982,8 +3039,7 @@ Available tests:
     if args.random_seed:
         os.environ["COCOTB_RANDOM_SEED"] = args.random_seed
 
-    config = TEST_REGISTRY[args.test]
-    runner = CocotbRunner.from_config(config)
+    runner = CocotbRunner.for_test(args.test)
 
     result = runner.run_simulation(check=False, capture_output=False)
 

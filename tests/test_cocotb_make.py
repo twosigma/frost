@@ -91,3 +91,55 @@ def test_model_compiles_with_parallel_jobs(tmp_path: Path) -> None:
     (build / "Vtop.mk").write_text("all:\n\t@true\n")
     output = _dry_run([*_make_command(root, build), f"{build}/Vtop"], tmp_path)
     assert f"-C {build} -j3 -f Vtop.mk" in output
+
+
+def test_coverage_switches_reach_verilator_and_the_simulator(tmp_path: Path) -> None:
+    """FROST_COVERAGE flags the Verilator build and names the simulator's file."""
+    root = Path(__file__).resolve().parents[1]
+    build = tmp_path / "sim_build"
+    build.mkdir()
+    make = _make_command(root, build)
+
+    def verilator_command(*arguments: str) -> str:
+        output = _dry_run([*make, *arguments, f"{build}/Vtop.mk"], tmp_path)
+        return next(line for line in output.splitlines() if " -cc --exe " in line)
+
+    assert "--coverage" not in verilator_command()
+    assert "FROST_COVERAGE" not in verilator_command()
+    with_coverage = verilator_command("FROST_COVERAGE=1")
+    assert "--coverage-line --coverage-user +define+FROST_COVERAGE" in with_coverage
+    assert "--coverage-toggle" not in with_coverage
+    assert "--coverage-toggle" in verilator_command(
+        "FROST_COVERAGE=1", "FROST_COVERAGE_TOGGLE=1"
+    )
+
+    # The prebuilt stand-in records the arguments the simulator receives.
+    (build / "Vtop.mk").touch()
+    simulator = build / "Vtop"
+    simulator.write_text(
+        f"#!{sys.executable}\n"
+        "from pathlib import Path\n"
+        "import os, sys\n"
+        "Path('arguments').write_text('\\n'.join(sys.argv[1:]))\n"
+        "Path(os.environ['COCOTB_RESULTS_FILE']).write_text(\n"
+        "    '<testsuites><testsuite><testcase name=\"stand_in\" '"
+        "'classname=\"make_test\"/></testsuite></testsuites>')\n"
+    )
+    simulator.chmod(0o755)
+    coverage_file = tmp_path / "runs" / "cdb_arbiter.dat"
+    result = subprocess.run(
+        [
+            *make,
+            f"COCOTB_RESULTS_FILE={tmp_path / 'results.xml'}",
+            "FROST_COVERAGE=1",
+            f"FROST_COVERAGE_FILE={coverage_file}",
+            "sim",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    arguments = (tmp_path / "arguments").read_text().splitlines()
+    assert f"+verilator+coverage+file+{coverage_file}" in arguments

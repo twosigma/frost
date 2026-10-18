@@ -137,6 +137,7 @@ def start_frost(
     the next run reuses it.
     """
     runner = CocotbRunner.from_config(TEST_REGISTRY["rvfi_dii"])
+    runner.coverage_label = "testrig"
     environment = runner.setup_environment()
     sim_build_dir = runner._get_sim_build_dir(environment)
     environment["SIM_BUILD"] = str(sim_build_dir)

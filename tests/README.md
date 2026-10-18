@@ -297,6 +297,9 @@ Each target and task is a separate pytest case with a 40-minute timeout;
 | `FROST_COCOTB_MEM_CONFIG` | Application memory tier (`bram` default, or `ddr`) |
 | `FROST_DDR_MODEL_SEED` | Draws the DDR model's latency (1 to 80 cycles), latency jitter, and out-of-order completion for whole-SoC builds from this string, and prints the draw. A setting the target pins, in its registry entry, in `FROST_VERILATOR_EXTRA_ARGS`, or with `DDR_MODEL_LATENCY`, keeps its value |
 | `WAVES=1` | Write `dump.fst` waveforms |
+| `FROST_COVERAGE=1` | Build with line coverage and the cover points (see [Coverage](#coverage)) |
+| `FROST_COVERAGE_TOGGLE=1` | With `FROST_COVERAGE=1`, add toggle coverage |
+| `FROST_COVERAGE_DIR` | Where each run writes its coverage file (default `tests/coverage`; a relative path starts at the repository root) |
 | `NUMBER_OF_CPU_CORES` | Parallel Verilator build jobs (default: every core; a seed sweep divides them among its workers) |
 | `COCOTB_MAX_CYCLES` | Cycle budget per application run (default 500,000); some targets set their own |
 | `COCOTB_COREMARK_MAX_CYCLES` | CoreMark and CoreMark-PRO cycle budget (default 15,000,000; coremark_pro_loops sets 20,000,000 in the test registry) |
@@ -311,6 +314,48 @@ failures. Before running a runner any way other than the `cocotb` and
 (`./scripts/frost.py run make -C tests clean`). If `doctor` reports a missing
 tool or a version that differs from the Dockerfile, rebuild the image. If a
 long program runs out of cycles, raise its budget.
+
+## Coverage
+
+`FROST_COVERAGE=1` builds each simulation with Verilator line coverage, which
+counts statement blocks and the arms of every `if` and `case`, and with the
+cover points in the RTL. `FROST_COVERAGE_TOGGLE=1` adds
+toggle coverage, which counts each bit's rises and falls. The runners above
+and TestRIG all take the switches. Each run writes a file named after its test
+to `tests/coverage/`, or to `FROST_COVERAGE_DIR`, and the files collect there
+until you delete them: the clean step of the `cocotb` and `pytest` shortcuts
+leaves them. `coverage_report.py` merges them into a report:
+
+```bash
+FROST_COVERAGE=1 ./scripts/frost.py cocotb load_queue
+FROST_COVERAGE=1 ./scripts/frost.py pytest -k '[dma_torture] or [nic_loopback]'
+FROST_COVERAGE=1 ./scripts/frost.py run python3 tests/test_testrig.py --tests 20
+./scripts/frost.py run python3 tests/coverage_report.py report tests/coverage
+```
+
+The report goes to `tests/coverage_report/`. `coverage.dat` is the merged
+data, which `verilator_coverage` reads, and `coverage.info` holds its line and
+branch coverage in lcov format, with paths relative to the repository root,
+for `genhtml` or an editor. `summary.md` gives the totals, each module's
+line, branch, and toggle coverage, and every cover point with its hits, in
+all runs and in whole-SoC runs (the programs, the ISA suites, and TestRIG),
+naming the cover points that no run hits and those that only unit benches
+hit. A module's figures combine every parameter set it was built with.
+`--annotate` also writes copies of the sources with each line's count.
+`merge` combines files without the report:
+
+```bash
+./scripts/frost.py run python3 tests/coverage_report.py merge tests/coverage --output all.dat
+```
+
+Coverage slows the build and the simulation. For `hello_world` on the whole
+SoC, compiled with four jobs:
+
+| Build | Build time | Simulation time | Coverage file |
+| --- | --- | --- | --- |
+| Without coverage | 55 s | 6.9 s | |
+| `FROST_COVERAGE=1` | 100 s | 9.1 s | 3.8 MB |
+| `FROST_COVERAGE=1 FROST_COVERAGE_TOGGLE=1` | 115 s | 39.7 s | 160 MB |
 
 ## CI Integration
 
