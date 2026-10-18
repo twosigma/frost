@@ -42,11 +42,14 @@
  *
  * TestRIG builds (FROST_RVFI_DII, see hw/sim/frost_rvfi_dii.sv) instead keep
  * a sparse array that reads zero where nothing was written and clears on
- * reset, since every test starts from zeroed memory. That lets
- * DDR_MODEL_BYTES cover the whole cached region without aliasing.
+ * reset, since every test starts from zeroed memory. FROST_WIDE_DDR_TEST
+ * enables that sparse array with full-width address keys to check the 64 GiB
+ * offset aperture without allocating an enormous simulation array. Neither
+ * sparse mode represents production DDR hardware.
  */
 module axi_behavioral_memory #(
     parameter int unsigned LINE_BYTES = 32,
+    parameter int unsigned AXI_ADDR_WIDTH = 32,
     parameter int unsigned MEM_BYTES = 64 * 1024 * 1024,
     parameter int unsigned ID_BITS = 4,
     parameter int unsigned LATENCY = 30,  // cycles from AR (or AW+W) to R (or B)
@@ -67,7 +70,7 @@ module axi_behavioral_memory #(
     input  logic                    i_axi_awvalid,
     output logic                    o_axi_awready,
     input  logic [     ID_BITS-1:0] i_axi_awid,
-    input  logic [            31:0] i_axi_awaddr,
+    input  logic [AXI_ADDR_WIDTH-1:0] i_axi_awaddr,
     input  logic [             7:0] i_axi_awlen,
     input  logic                    i_axi_wvalid,
     output logic                    o_axi_wready,
@@ -80,7 +83,7 @@ module axi_behavioral_memory #(
     input  logic                    i_axi_arvalid,
     output logic                    o_axi_arready,
     input  logic [     ID_BITS-1:0] i_axi_arid,
-    input  logic [            31:0] i_axi_araddr,
+    input  logic [AXI_ADDR_WIDTH-1:0] i_axi_araddr,
     input  logic [             7:0] i_axi_arlen,
     output logic                    o_axi_rvalid,
     input  logic                    i_axi_rready,
@@ -96,12 +99,18 @@ module axi_behavioral_memory #(
   localparam int unsigned OrderBits = SlotBits + 1;  // issue sequence numbers
 
 `ifdef FROST_RVFI_DII
-  bit [31:0] memory[int unsigned];
+`define FROST_SPARSE_DDR_MEMORY
+`endif
+`ifdef FROST_WIDE_DDR_TEST
+`define FROST_SPARSE_DDR_MEMORY
+`endif
+`ifdef FROST_SPARSE_DDR_MEMORY
+  bit [31:0] memory[longint unsigned];
   // A completing write is staged on the rising edge and applied on the
   // falling edge, so a read completing on the same rising edge still sees the
   // old data, as with the dense array's nonblocking write.
   logic dii_write_valid_q;
-  logic [31:0] dii_write_addr_q;
+  logic [AXI_ADDR_WIDTH-1:0] dii_write_addr_q;
   logic [LINE_BYTES*8-1:0] dii_write_data_q;
   logic [LINE_BYTES-1:0] dii_write_strb_q;
 `else
@@ -109,7 +118,7 @@ module axi_behavioral_memory #(
 `endif
 
 `ifndef YOSYS
-`ifndef FROST_RVFI_DII
+`ifndef FROST_SPARSE_DDR_MEMORY
   // Image load, simulation only: Yosys cannot elaborate $fopen, and this
   // module is never instantiated in a synthesized configuration.
   initial begin
@@ -153,7 +162,7 @@ module axi_behavioral_memory #(
   // struct array with a variable.
   logic [NUM_SLOTS-1:0] rd_valid_q, wr_valid_q;
   logic [ID_BITS-1:0] rd_id_q[NUM_SLOTS], wr_id_q[NUM_SLOTS];
-  logic [31:0] rd_addr_q[NUM_SLOTS], wr_addr_q[NUM_SLOTS];
+  logic [AXI_ADDR_WIDTH-1:0] rd_addr_q[NUM_SLOTS], wr_addr_q[NUM_SLOTS];
   logic [15:0] rd_lat_q[NUM_SLOTS], wr_lat_q[NUM_SLOTS];
   logic [OrderBits-1:0] rd_order_q[NUM_SLOTS], wr_order_q[NUM_SLOTS];
   logic [LINE_BYTES*8-1:0] wr_data_q[NUM_SLOTS];
@@ -162,7 +171,7 @@ module axi_behavioral_memory #(
   // AW / W arrival queues (at most NUM_SLOTS each) paired into write slots.
   logic [NUM_SLOTS-1:0] aw_q_valid, w_q_valid;
   logic [ID_BITS-1:0] aw_q_id[NUM_SLOTS];
-  logic [31:0] aw_q_addr[NUM_SLOTS];
+  logic [AXI_ADDR_WIDTH-1:0] aw_q_addr[NUM_SLOTS];
   logic [LINE_BYTES*8-1:0] w_q_data[NUM_SLOTS];
   logic [LINE_BYTES-1:0] w_q_strb[NUM_SLOTS];
 
@@ -281,15 +290,19 @@ module axi_behavioral_memory #(
     end
   end
 
-`ifdef FROST_RVFI_DII
+`ifdef FROST_SPARSE_DDR_MEMORY
   always @(negedge i_clk) begin
     if (i_rst) begin
       memory.delete();
     end else if (dii_write_valid_q) begin
       for (int unsigned w = 0; w < WordsPerLine; w++) begin
-        int unsigned word_index;
+        longint unsigned word_index;
         bit [31:0] word;
-        word_index = ((dii_write_addr_q & (MEM_BYTES - 1)) >> 2) + w;
+`ifdef FROST_WIDE_DDR_TEST
+        word_index = (64'(dii_write_addr_q) >> 2) + 64'(w);
+`else
+        word_index = ((dii_write_addr_q & AXI_ADDR_WIDTH'(MEM_BYTES - 1)) >> 2) + w;
+`endif
         word = memory.exists(word_index) ? memory[word_index] : '0;
         for (int unsigned b = 0; b < 4; b++) begin
           if (dii_write_strb_q[w*4+b]) word[b*8+:8] = dii_write_data_q[(w*32)+(b*8)+:8];
@@ -339,7 +352,12 @@ module axi_behavioral_memory #(
         // Speculative wrong-path loads may leave the modeled range. Alias
         // their data and warn below so an undersized model is still visible.
         for (int unsigned w = 0; w < WordsPerLine; w++) begin
-          rdata_q[w*32+:32] <= memory[(((rd_addr_q[rd_pick]&(MEM_BYTES-1))>>2)+w)];
+`ifdef FROST_WIDE_DDR_TEST
+          rdata_q[w*32+:32] <= memory[(64'(rd_addr_q[rd_pick]) >> 2) + 64'(w)];
+`else
+          rdata_q[w*32+:32] <= memory[(((rd_addr_q[rd_pick] &
+              AXI_ADDR_WIDTH'(MEM_BYTES - 1)) >> 2) + w)];
+`endif
         end
         r_slot_q       <= rd_pick;
         r_presenting_q <= 1'b1;
@@ -363,15 +381,17 @@ module axi_behavioral_memory #(
 `ifndef SYNTHESIS
 `ifndef FORMAL
   bit rd_error_armed, wr_error_armed;
-  logic [31:0] rd_error_addr, wr_error_addr;
+  logic [AXI_ADDR_WIDTH-1:0] rd_error_addr, wr_error_addr;
   initial begin
     rd_error_armed = $value$plusargs("axi_rd_error_addr=%h", rd_error_addr) != 0;
     wr_error_armed = $value$plusargs("axi_wr_error_addr=%h", wr_error_addr) != 0;
   end
   assign rd_error_line = rd_error_armed &&
-      (rd_addr_q[r_slot_q] / LINE_BYTES == rd_error_addr / LINE_BYTES);
+      (rd_addr_q[r_slot_q] / AXI_ADDR_WIDTH'(LINE_BYTES) ==
+       rd_error_addr / AXI_ADDR_WIDTH'(LINE_BYTES));
   assign wr_error_line = wr_error_armed &&
-      (wr_addr_q[b_slot_q] / LINE_BYTES == wr_error_addr / LINE_BYTES);
+      (wr_addr_q[b_slot_q] / AXI_ADDR_WIDTH'(LINE_BYTES) ==
+       wr_error_addr / AXI_ADDR_WIDTH'(LINE_BYTES));
 `else
   assign rd_error_line = 1'b0;
   assign wr_error_line = 1'b0;
@@ -390,7 +410,7 @@ module axi_behavioral_memory #(
   // queued.
   logic aw_head_valid, w_head_valid, aw_head_live, w_head_live;
   logic [ID_BITS-1:0] aw_head_id;
-  logic [31:0] aw_head_addr;
+  logic [AXI_ADDR_WIDTH-1:0] aw_head_addr;
   logic [LINE_BYTES*8-1:0] w_head_data;
   logic [LINE_BYTES-1:0] w_head_strb;
   assign aw_head_live  = !aw_q_valid[0] && i_axi_awvalid && o_axi_awready;
@@ -437,11 +457,11 @@ module axi_behavioral_memory #(
       w_q_valid      <= '0;
       wr_seq_q       <= '0;
       b_presenting_q <= 1'b0;
-`ifdef FROST_RVFI_DII
+`ifdef FROST_SPARSE_DDR_MEMORY
       dii_write_valid_q <= 1'b0;
 `endif
     end else begin
-`ifdef FROST_RVFI_DII
+`ifdef FROST_SPARSE_DDR_MEMORY
       dii_write_valid_q <= 1'b0;
 `endif
       for (int s = 0; s < int'(NUM_SLOTS); s++) begin
@@ -493,7 +513,7 @@ module axi_behavioral_memory #(
           b_presenting_q       <= 1'b0;
         end
       end else if (wr_pick_valid) begin
-`ifdef FROST_RVFI_DII
+`ifdef FROST_SPARSE_DDR_MEMORY
         dii_write_valid_q <= 1'b1;
         dii_write_addr_q  <= wr_addr_q[wr_pick];
         dii_write_data_q  <= wr_data_q[wr_pick];
@@ -572,6 +592,7 @@ module axi_behavioral_memory #(
             $error("axi_behavioral_memory: duplicate write id %0d in flight", aw_head_id);
         end
       end
+`ifndef FROST_WIDE_DDR_TEST
       if (oob_warnings < 8) begin
         if (i_axi_awvalid && o_axi_awready && (i_axi_awaddr + LINE_BYTES > MEM_BYTES)) begin
           // A masked write means DDR_MODEL_BYTES is too small for the program.
@@ -586,8 +607,12 @@ module axi_behavioral_memory #(
           oob_warnings <= oob_warnings + 1;
         end
       end
+`endif
     end
   end
 `endif
 
 endmodule : axi_behavioral_memory
+`ifdef FROST_SPARSE_DDR_MEMORY
+`undef FROST_SPARSE_DDR_MEMORY
+`endif

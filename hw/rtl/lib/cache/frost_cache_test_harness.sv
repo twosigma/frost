@@ -25,6 +25,7 @@
  */
 module frost_cache_test_harness #(
     parameter int unsigned ADDR_WIDTH = 32,
+    parameter int unsigned AXI_ADDR_WIDTH = 32,
     parameter int unsigned L1_LINE_BYTES = 32,
     parameter int unsigned L2_LINE_BYTES = 64,
     parameter int unsigned UP_ID_BITS = 3,
@@ -48,7 +49,7 @@ module frost_cache_test_harness #(
     parameter int unsigned L2_PREFETCH = 0,
     parameter int unsigned L2_PREFETCH_DISTANCE = 8,
     parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
-    parameter logic [31:0] BASE_ADDR = 32'h8000_0000,
+    parameter logic [ADDR_WIDTH-1:0] BASE_ADDR = ADDR_WIDTH'('h8000_0000),
     // Room for every cache bench's per-test regions, which stay disjoint.
     parameter int unsigned MEM_BYTES = 16 * 1024 * 1024,
     parameter int unsigned MEM_LATENCY = 12,
@@ -238,7 +239,7 @@ module frost_cache_test_harness #(
 
   logic axi_awvalid, axi_awready, axi_wvalid, axi_wready, axi_bvalid, axi_bready;
   logic axi_arvalid, axi_arready, axi_rvalid, axi_rready, axi_rlast;
-  logic [31:0] axi_awaddr, axi_araddr;
+  logic [AXI_ADDR_WIDTH-1:0] axi_awaddr, axi_araddr;
   logic [7:0] axi_awlen, axi_arlen;
   logic [2:0] axi_awsize, axi_arsize;
   logic [1:0] axi_awburst, axi_arburst, axi_bresp, axi_rresp;
@@ -249,6 +250,7 @@ module frost_cache_test_harness #(
 
   line_port_axi_bridge #(
       .ADDR_WIDTH(ADDR_WIDTH),
+      .AXI_ADDR_WIDTH(AXI_ADDR_WIDTH),
       .LINE_BYTES(L2_LINE_BYTES),
       .ID_BITS(L2_DOWN_ID_BITS),
       .AXI_ID_BITS(L2_DOWN_ID_BITS),
@@ -307,6 +309,7 @@ module frost_cache_test_harness #(
 
   axi_behavioral_memory #(
       .LINE_BYTES(L2_LINE_BYTES),
+      .AXI_ADDR_WIDTH(AXI_ADDR_WIDTH),
       .MEM_BYTES(MEM_BYTES),
       .NUM_SLOTS(MemSlots),
       .ID_BITS(L2_DOWN_ID_BITS),

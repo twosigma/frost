@@ -1414,6 +1414,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         extra_env=(("PACKED_TAG_TEST_BULK_CLEAR", "1"),),
     ),
+    "frost_cache_wide_addr": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_wide",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="64 GiB DDR-offset identity across cache fill and eviction",
+        verilator_extra_args=(
+            "-GADDR_WIDTH=37",
+            "-GAXI_ADDR_WIDTH=36",
+            "-DFROST_WIDE_DDR_TEST",
+        ),
+    ),
     "frost_cache": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache",
         hdl_toplevel_module="frost_cache_test_harness",
