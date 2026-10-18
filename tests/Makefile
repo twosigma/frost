@@ -304,6 +304,11 @@ else ifeq ($(TOPLEVEL),sdp_packed_tag_uram)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/ram/sdp_packed_tag_uram.sv
 VERILOG_SOURCES :=
+else ifneq ($(filter $(TOPLEVEL),sdp_ram_byte_en sdp_block_ram sdp_block_ram_dc tdp_bram_dc_byte_en),)
+# RAM wrapper unit benches (the ASIC flow's SRAM macros)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/lib/ram/$(TOPLEVEL).sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),frost_cache_test_harness)
 # Cache hierarchy unit bench (L1/L2 + AXI bridge + behavioral memory)
 COMPILE_ARGS := \
@@ -460,6 +465,20 @@ else
 # frost.sv is already listed in frost.f, so it is not repeated here
 VERILOG_SOURCES :=
 endif
+endif
+
+# A test that defines FROST_SRAM_MACROS builds the RAM wrappers from the ASIC
+# flow's SRAM macros (asic/sram). Their OpenRAM models use delays, so
+# Verilator schedules timing. An X that the design assigns, such as a macro's
+# read data where the macros leave it undefined, becomes a pseudo-random value
+# from a fixed seed; variables still start at zero, as in the other tests.
+ifneq ($(findstring +define+FROST_SRAM_MACROS,$(FROST_VERILATOR_EXTRA_ARGS)),)
+COMPILE_ARGS += \
+        $(ROOT)/asic/sram/frost_sram_1w1r.sv \
+        $(ROOT)/asic/sram/frost_sram_2rw.sv \
+        $(sort $(wildcard $(ROOT)/asic/sram/macros/*/*.v))
+COMPILE_ARGS += --timing --x-assign unique --x-initial 0
+COCOTB_PLUSARGS += +verilator+rand+reset+2 +verilator+seed+1
 endif
 
 export VERILOG_SOURCES

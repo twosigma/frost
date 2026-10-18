@@ -243,6 +243,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="dma_torture",
         description=("DMA coherence with CPU caches and atomics"),
     ),
+    # Programs on the memories that the ASIC flow builds from SRAM macros
+    # (FROST_SRAM_MACROS), at the design's sizes. One build serves all.
+    **{
+        f"{app}_sram_macros": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name=app,
+            description=f"{description}, on the ASIC flow's SRAM macros",
+            verilator_extra_args=("+define+FROST_SRAM_MACROS",),
+        )
+        for app, description in (
+            ("isa_test", "Instruction checks for RV64GCB and supported extensions"),
+            ("ddr_test", "Cached DDR loads and stores"),
+            ("ddr_exec_test", "Instruction fetch and execution from cached DDR"),
+            ("nic_loopback", "NIC frame loopback through DDR rings"),
+        )
+    },
     "nic_loopback": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1414,6 +1431,135 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         extra_env=(("PACKED_TAG_TEST_BULK_CLEAR", "1"),),
     ),
+    # The RAM wrappers built from the ASIC flow's SRAM macros, each with the
+    # parameters of one of the design's memories.
+    **{
+        name: CocotbRunConfig(
+            python_test_module="cocotb_tests.test_sram_macros",
+            hdl_toplevel_module=toplevel,
+            description=f"{memory} from the ASIC flow's SRAM macros",
+            verilator_extra_args=("+define+FROST_SRAM_MACROS", *parameters),
+            extra_env=(("SRAM_MACRO_GRID", grid),),
+        )
+        for name, toplevel, memory, grid, parameters in (
+            (
+                "sram_macros_l2_data",
+                "sdp_ram_byte_en",
+                "L2 data array",
+                "8x8",
+                (
+                    "-GDATA_WIDTH=512",
+                    "-GADDR_WIDTH=15",
+                    "-GREAD_LATENCY=6",
+                    "-GWRITE_LATENCY=2",
+                    "-GREGISTER_READ_INPUT=1",
+                    "-GREGISTER_READ_OUTPUT=1",
+                ),
+            ),
+            (
+                "sram_macros_l1d_data",
+                "sdp_ram_byte_en",
+                "L1D data bank of one way",
+                "1x4",
+                (
+                    "-GDATA_WIDTH=256",
+                    "-GADDR_WIDTH=10",
+                    "-GREAD_LATENCY=1",
+                    "-GWRITE_LATENCY=1",
+                    "-GREGISTER_READ_INPUT=0",
+                    "-GREGISTER_READ_OUTPUT=0",
+                ),
+            ),
+            (
+                "sram_macros_l1i_data",
+                "sdp_ram_byte_en",
+                "L1I data bank of one way",
+                "1x4",
+                (
+                    "-GDATA_WIDTH=256",
+                    "-GADDR_WIDTH=7",
+                    "-GREAD_LATENCY=1",
+                    "-GWRITE_LATENCY=1",
+                    "-GREGISTER_READ_INPUT=0",
+                    "-GREGISTER_READ_OUTPUT=0",
+                ),
+            ),
+            (
+                "sram_macros_l2_tags",
+                "sdp_packed_tag_uram",
+                "L2 tag array, a set's four ways read together",
+                "2x4",
+                (
+                    "-GADDR_WIDTH=15",
+                    "-GDATA_WIDTH=15",
+                    "-GREAD_LATENCY=3",
+                    "-GREAD_WORDS=4",
+                ),
+            ),
+            (
+                "sram_macros_l2_tags_clear",
+                "sdp_packed_tag_uram",
+                "L2 tag array with simulation's bulk clear",
+                "2x4",
+                (
+                    "-GADDR_WIDTH=15",
+                    "-GDATA_WIDTH=15",
+                    "-GREAD_LATENCY=3",
+                    "-GREAD_WORDS=4",
+                    "-GSUPPORT_BULK_CLEAR=1",
+                ),
+            ),
+            (
+                "sram_macros_l2_plru",
+                "sdp_block_ram",
+                "L2 replacement state",
+                "2x1",
+                ("-GADDR_WIDTH=13", "-GDATA_WIDTH=3"),
+            ),
+            (
+                "sram_macros_l2_plru_clear",
+                "sdp_block_ram",
+                "L2 replacement state with simulation's bulk clear",
+                "2x1",
+                ("-GADDR_WIDTH=13", "-GDATA_WIDTH=3", "-GSUPPORT_BULK_CLEAR=1"),
+            ),
+            (
+                "sram_macros_l1d_tags",
+                "sdp_block_ram",
+                "L1D tag array of one way",
+                "1x1",
+                ("-GADDR_WIDTH=10", "-GDATA_WIDTH=19"),
+            ),
+            (
+                "sram_macros_l1d_tags_clear",
+                "sdp_block_ram",
+                "L1D tag array of one way with simulation's bulk clear",
+                "1x1",
+                ("-GADDR_WIDTH=10", "-GDATA_WIDTH=19", "-GSUPPORT_BULK_CLEAR=1"),
+            ),
+            (
+                "sram_macros_btb_payload",
+                "sdp_block_ram",
+                "BTB slot-2 payload table",
+                "1x1",
+                ("-GADDR_WIDTH=8", "-GDATA_WIDTH=36"),
+            ),
+            (
+                "sram_macros_nic_fifo",
+                "sdp_block_ram_dc",
+                "NIC FIFO storage",
+                "1x1",
+                ("-GADDR_WIDTH=9", "-GDATA_WIDTH=68"),
+            ),
+            (
+                "sram_macros_data_memory",
+                "tdp_bram_dc_byte_en",
+                "Data memory",
+                "4x1",
+                ("-GDATA_WIDTH=64", "-GADDR_WIDTH=14", "-GUSE_INIT_FILE=0"),
+            ),
+        )
+    },
     "frost_cache": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache",
         hdl_toplevel_module="frost_cache_test_harness",

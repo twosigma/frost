@@ -22,11 +22,15 @@
  * "ultra"; a cache line is exactly one row, 256 bits in the L1s and 512 in
  * the L2.
  *
- * Storage has two implementations behind synthesis-tool defines, with the same
- * external behaviour and latency so that simulation matches hardware:
+ * Storage has three implementations behind synthesis-tool defines, with the
+ * same external behaviour and latency so that simulation matches hardware:
  *   - FROST_XILINX_PRIMS + FROST_VIVADO_SYNTH: xpm_memory_sdpram with
  *     MEMORY_PRIMITIVE passed through; the XPM pipelines deep cascades
  *     internally to meet READ_LATENCY_B.
+ *   - FROST_SRAM_MACROS (the ASIC flow): frost_sram_1w1r (asic/sram), SRAM
+ *     macros or flip-flops, whose registered read is the first read stage.
+ *     It reads undefined data in the cycle after array_re is low, which
+ *     frost_cache never uses.
  *   - else (Yosys, Verilator): behavioral memory with a matching read pipeline.
  *
  * Both read forms have READ_LATENCY cycles from i_re to o_rdata:
@@ -202,6 +206,34 @@ module sdp_ram_byte_en #(
       .injectsbiterra(1'b0),
       .injectdbiterra(1'b0)
   );
+`elsif FROST_SRAM_MACROS
+  // The memory's registered read is the first of the XPM latency's stages.
+  logic [DATA_WIDTH-1:0] memory_read_data;
+  frost_sram_1w1r #(
+      .ADDR_WIDTH  (ADDR_WIDTH),
+      .DATA_WIDTH  (DATA_WIDTH),
+      .MASK_GRANULE(8)
+  ) u_sram (
+      .i_write_clock(i_clk),
+      .i_bulk_clear(1'b0),
+      .i_write_mask(wbyte_en_q),
+      .i_write_address(waddr_q),
+      .i_write_data(wdata_q),
+      .i_read_clock(i_clk),
+      .i_read_enable(array_re),
+      .i_read_address(array_raddr),
+      .o_read_data(memory_read_data)
+  );
+  if (XpmReadLatency == 1) begin : gen_sram_read
+    assign row_dout = memory_read_data;
+  end else begin : gen_sram_read_pipe
+    logic [DATA_WIDTH-1:0] rd_pipe[XpmReadLatency-1];
+    always_ff @(posedge i_clk) begin
+      rd_pipe[0] <= memory_read_data;
+      for (int unsigned k = 1; k < XpmReadLatency - 1; k++) rd_pipe[k] <= rd_pipe[k-1];
+    end
+    assign row_dout = rd_pipe[XpmReadLatency-2];
+  end
 `else
   // Match the XPM latency. Separate branches give each array its ram_style;
   // without the ultra hint, Yosys attempts to decompose large arrays into BRAM.

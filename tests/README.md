@@ -421,14 +421,14 @@ pinned Docker image, except the ASIC flow, which runs in its own image:
 | Suite | Configurations |
 | --- | --- |
 | Cocotb applications | BRAM and DDR where supported; each CoreMark-PRO workload runs separately |
-| Cocotb unit benches, DDR probes, fetch fuzzers, OpenSBI smoke | BRAM only: tier-independent or fixed-layout runs |
+| Cocotb unit benches, DDR probes, fetch fuzzers, programs on the SRAM macros, OpenSBI smoke | BRAM only: tier-independent or fixed-layout runs |
 | Architecture compliance | BRAM and DDR; excludes Zifencei on BRAM and F/D on DDR; F and D run in BRAM shards |
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both |
 | Torture | BRAM, DDR, and paged DDR |
 | TestRIG | Four jobs of new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests, synthesis, and formal verification |
-| ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with the large memories mocked, in two chained jobs |
+| ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in four chained jobs |
 | Linux | Firmware and root filesystem build, and QEMU boot checks |
 | Coverage | One job merges the coverage of the simulating jobs into a report |
 

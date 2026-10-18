@@ -79,11 +79,15 @@ proc port_clock { port_name } {
   return core_clk
 }
 
+set core_clock_inputs {}
 foreach port [all_inputs -no_clocks] {
   set name [get_full_name $port]
   set clock [port_clock $name]
   set period [get_property [get_clocks $clock] period]
   set_input_delay [expr { $period * $io_fraction }] -clock $clock $port
+  if { $clock in {core_clk core_clk_div4} } {
+    lappend core_clock_inputs $port
+  }
 }
 foreach port [all_outputs] {
   set name [get_full_name $port]
@@ -92,3 +96,12 @@ foreach port [all_outputs] {
   set_output_delay [expr { $period * $io_fraction }] -clock $clock $port
 }
 set_false_path -from [get_ports $async_ports]
+
+# Against the ideal clock at a port, every input on the core clocks would
+# need the clock tree's insertion delay, about 3 ns on the die that the SRAM
+# macros need, in hold buffers: the hold repair added over 80,000 buffers,
+# most of them in front of the pins, where global routing then overflowed. A
+# chip would deskew the clock or put the logic beyond the ports on the same
+# tree. The flow therefore does not check those inputs' hold timing, which a
+# chip would still have to close against the clock tree's remaining skew.
+set_false_path -hold -from $core_clock_inputs

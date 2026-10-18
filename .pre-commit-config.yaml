@@ -90,7 +90,8 @@ repos:
         args: [--inplace]
         exclude: |
           (?x)^(
-            hw/third_party/.*
+            hw/third_party/.*|
+            asic/sram/macros/.*
           )$
 
       - id: verible-lint
@@ -101,7 +102,8 @@ repos:
         args: [--rules_config_search]
         exclude: |
           (?x)^(
-            hw/third_party/.*
+            hw/third_party/.*|
+            asic/sram/macros/.*
           )$
 
   # Copyright header check/insert
@@ -141,7 +143,8 @@ repos:
         files: \.(sv|svh|v|vh)$
         exclude: |
           (?x)^(
-            hw/third_party/.*
+            hw/third_party/.*|
+            asic/sram/macros/.*
           )$
         args:
           - --license-filepath=.license-header.txt
@@ -157,7 +160,8 @@ repos:
 
   # General file checks. Preserve tests/fixtures/*.log byte for byte so parser
   # tests see the board's carriage returns, terminal escapes, and trailing
-  # spaces. Other fixtures still pass through both fixers.
+  # spaces. Other fixtures still pass through both fixers. The SRAM macros'
+  # views in asic/sram/macros stay as asic/openram.py writes them.
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
@@ -166,14 +170,16 @@ repos:
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
             sw/apps/coremark/coremark/.*|
-            tests/fixtures/.*\.log
+            tests/fixtures/.*\.log|
+            asic/sram/macros/.*
           )$
       - id: end-of-file-fixer
         exclude: |
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
             sw/apps/coremark/coremark/.*|
-            tests/fixtures/.*\.log
+            tests/fixtures/.*\.log|
+            asic/sram/macros/.*
           )$
       - id: check-yaml
       - id: check-added-large-files

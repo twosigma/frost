@@ -18,6 +18,14 @@
  * Dual-clock true dual-port block RAM with byte write enables and optional
  * hex initialization. Ports accept byte addresses and have one-cycle,
  * write-first reads.
+ *
+ * The ASIC flow defines FROST_SRAM_MACROS and keeps the array in SRAM
+ * macros, frost_sram_2rw (asic/sram), which build only 64-bit words with
+ * byte enables. There a port's read data after a cycle that writes it is
+ * undefined, not write-first: the macros do not read and write a port in the
+ * same cycle. The data memory's users read a port only in cycles that do not
+ * write it. As with the block RAM, a read of a word that the other port
+ * writes at the same time is undefined.
  */
 module tdp_bram_dc_byte_en #(
     parameter int unsigned DATA_WIDTH = 32,  // Data width in bits (must be multiple of 8)
@@ -51,6 +59,7 @@ module tdp_bram_dc_byte_en #(
   localparam int unsigned ByteAddrBits = $clog2(NumBytes);  // Bits for byte offset within word
   localparam int unsigned MemDepthInWords = 2 ** ADDR_WIDTH;
 
+`ifndef FROST_SRAM_MACROS
   // Both ports drive this array, which some simulators flag as multiply driven.
   /* verilator lint_off MULTIDRIVEN */
   (* ram_style = "block" *) logic [DATA_WIDTH-1:0] memory[MemDepthInWords];
@@ -61,12 +70,33 @@ module tdp_bram_dc_byte_en #(
     // The non-zero fill catches code that assumes zero-initialized memory.
     else
       for (int i = 0; i < MemDepthInWords; ++i) memory[i] = DATA_WIDTH'(i);
+`endif
 
   // Byte address to word address: drop the low ByteAddrBits byte-offset bits.
   logic [ADDR_WIDTH-1:0] port_a_word_address, port_b_word_address;
   assign port_a_word_address = i_port_a_byte_address[ADDR_WIDTH+ByteAddrBits-1:ByteAddrBits];
   assign port_b_word_address = i_port_b_byte_address[ADDR_WIDTH+ByteAddrBits-1:ByteAddrBits];
 
+`ifdef FROST_SRAM_MACROS
+  frost_sram_2rw #(
+      .ADDR_WIDTH(ADDR_WIDTH),
+      .DATA_WIDTH(DATA_WIDTH),
+      .MASK_GRANULE(8),
+      .USE_INIT_FILE(USE_INIT_FILE),
+      .INIT_FILE(INIT_FILE)
+  ) u_sram (
+      .i_port_a_clock(i_port_a_clk),
+      .i_port_a_write_mask(i_port_a_byte_write_enable),
+      .i_port_a_address(port_a_word_address),
+      .i_port_a_write_data,
+      .o_port_a_read_data,
+      .i_port_b_clock(i_port_b_clk),
+      .i_port_b_write_mask(i_port_b_byte_write_enable),
+      .i_port_b_address(port_b_word_address),
+      .i_port_b_write_data,
+      .o_port_b_read_data
+  );
+`else
   // Port A: written bytes bypass the RAM to provide write-first reads.
   generate
     for (genvar byte_index = 0; byte_index < NumBytes; ++byte_index) begin : gen_port_a_byte_logic
@@ -92,5 +122,6 @@ module tdp_bram_dc_byte_en #(
         end
     end
   endgenerate
+`endif
 
 endmodule : tdp_bram_dc_byte_en

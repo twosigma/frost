@@ -159,7 +159,7 @@ def test_sources_makefile_is_independent_of_the_mount_point(tmp_path: Path) -> N
 
 # Stand-ins for the OpenSTA commands that asic/constraint.sdc calls. Each
 # command prints what it constrains: "clock <name> <period>", "<input|output>
-# <port> <clock> <delay>", or "false_path <ports>".
+# <port> <clock> <delay>", or "false_path <hold|all> <ports>".
 SDC_HARNESS = r"""
 set clocks [dict create]
 proc option {arguments name} {
@@ -182,7 +182,10 @@ proc set_input_delay {delay args} {
 proc set_output_delay {delay args} {
     puts "output [lindex $args end] [option $args -clock] $delay"
 }
-proc set_false_path {args} {puts "false_path [option $args -from]"}
+proc set_false_path {args} {
+    set checks [expr {"-hold" in $args ? "hold" : "all"}]
+    puts "false_path $checks [join [option $args -from] { }]"
+}
 set inputs {
     i_rst i_instr_mem_en i_instr_mem_wrdata[3] i_ddr_axi_rdata[7]
     i_nic_rx_raw_data[5] i_nic_rx_signal_ok i_jtag_tms i_jtag_tdi i_jtag_trst_n
@@ -287,6 +290,32 @@ def test_core_clock_period_sets_the_core_clocks_and_their_ports(
         assert delay == pytest.approx(periods[clock] / 5), port
 
 
+def test_only_the_core_clocks_inputs_skip_hold_checks(tmp_path: Path) -> None:
+    """The asynchronous levels are untimed; other core clock inputs skip hold.
+
+    Inputs on the NIC's and the JTAG clocks keep their hold checks.
+    """
+    result = _evaluate_sdc(tmp_path)
+    assert result.returncode == 0, result.stderr
+    false_paths: dict[str, set[str]] = {"hold": set(), "all": set()}
+    for line in result.stdout.splitlines():
+        kind, *fields = line.split()
+        if kind == "false_path":
+            false_paths[fields[0]].update(fields[1:])
+
+    assert false_paths["all"] == {
+        "i_jtag_trst_n",
+        "i_nic_tx_clk_ok",
+        "i_nic_rx_clk_ok",
+        "i_nic_phy_status*",
+    }
+    assert false_paths["hold"] == {
+        port
+        for port, clock in PORT_CLOCKS.items()
+        if port.startswith("i_") and clock in ("core_clk", "core_clk_div4")
+    }
+
+
 def test_core_clock_period_must_be_a_positive_number(tmp_path: Path) -> None:
     """A malformed period stops the flow instead of creating a broken clock."""
     for period in ("fast", "0", "0.0000", "-1.6", "1e-3", "08", "1.60004", "100"):
@@ -351,6 +380,31 @@ def test_mocked_memories_come_from_the_synthesis_log(tmp_path: Path) -> None:
         ("top/tags", 4096, 17),
     ]
     assert orfs.mocked_memories(tmp_path / "missing.log") == []
+
+
+def test_sram_macros_come_from_the_synthesis_statistics(tmp_path: Path) -> None:
+    """The summary counts each macro over the whole design."""
+    statistics = tmp_path / "synth_stat.txt"
+    statistics.write_text(
+        "=== cpu_and_mem ===\n"
+        "        2   1.27E+06        2   1.27E+06   sram_1w1r_4096x64_m8\n"
+        "=== design hierarchy ===\n"
+        "       68   4.32E+07       64   4.07E+07   sram_1w1r_4096x64_m8\n"
+        "        2 1.31E+05        2 1.31E+05   sram_1w1r_4096x3\n"
+        "   271588 5.06E+05   187232 3.49E+05   MUX2_X1\n"
+    )
+
+    assert orfs.sram_macros(statistics) == [
+        ("sram_1w1r_4096x64_m8", 68),
+        ("sram_1w1r_4096x3", 2),
+    ]
+    assert orfs.sram_macros(tmp_path / "missing.txt") == []
+
+
+def test_macro_size_reads_the_lef() -> None:
+    """The summary takes each macro's size from its committed LEF."""
+    assert orfs.macro_size("sram_1w1r_4096x64_m8") == (751.9, 845.13)
+    assert orfs.macro_size("sram_missing") is None
 
 
 def test_summary_reports_a_partial_build(tmp_path: Path) -> None:
@@ -531,4 +585,19 @@ def test_path_report_ranks_blocks_and_families(tmp_path: Path) -> None:
     # Blocks and families come worst first.
     assert report.index("| `data_memory` | 1 |") < report.index(
         "`cpu_inst.u_int_rs` | 2"
+    )
+
+
+def test_path_notes_name_the_sram_macros() -> None:
+    """A path from or to an SRAM macro (asic/sram's u_macro) says so."""
+    macro = "l2.data_array.u_sram.gen_macros.gen_row[3].gen_column[5].gen_macro.u_macro"
+    note = orfs._path_note(_path(0.1, macro, "l2.rd_pipe[0][7]$_DFF_P_"), set(), set())
+    assert note == "from an SRAM macro"
+    note = orfs._path_note(
+        _path(0.1, "l2.raddr$_DFF_P_", macro.replace(".", "/")), set(), set()
+    )
+    assert note == "to an SRAM macro"
+    assert (
+        orfs._path_note(_path(0.1, "u_macro_q$_DFF_P_", "a$_DFF_P_"), set(), set())
+        == ""
     )
