@@ -276,8 +276,8 @@ the image.
 | **Simulator** | Verilator / QEMU | 5.052 / 11.1.1 |
 | | Spike | `02b1dc182164bb73b19b050676dd89f0834f8b2e` |
 | | Sail RISC-V model / QuickCheckVEngine | 0.15 / `5e15965a819ca1be9f14d2e8e319e98fd89a557f` |
-| **Synthesis** | Yosys / sv2v | 0.69 / 0.0.13 |
-| **Formal** | SymbiYosys / Z3 / Boolector | 0.69 / 5.1.0 / 3.2.4 |
+| **Synthesis** | Yosys / sv2v | 0.70 / 0.0.13 |
+| **Formal** | SymbiYosys / Z3 / Boolector | 0.70 / 5.1.0 / 3.2.4 |
 | **Debug** | OpenOCD | 0.12.0 (Ubuntu package) |
 | **FPGA** | Vivado (native, separately installed and validated) | 2025.2 |
 | **ASIC** | OpenROAD-flow-scripts (its own image) | 26Q4 |

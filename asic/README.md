@@ -330,5 +330,5 @@ databases.
 `openroad/orfs:26Q3-705-gecb3cfdeb@sha256:6da005d1c3447799f7401215174196c75ba9ec7e28417624d0c20225f85d594c`.
 It is the ORFS 26Q4 quarterly release, commit `ecb3cfdeb`, which Docker Hub
 publishes under its `git describe` tag. It contains Yosys 0.68, OpenROAD
-`c487fc70`, and KLayout 0.30.12; the frost image's Yosys 0.69 reads the same
+`c487fc70`, and KLayout 0.30.12; the frost image's Yosys 0.70 reads the same
 sources. To update the image, change `ORFS_IMAGE` and run the whole flow.

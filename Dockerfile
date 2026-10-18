@@ -41,12 +41,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 # cocotb 2.1 requires Verilator 5.036 or newer.
 ARG VERILATOR_VERSION=5.052
 
-# Yosys and SymbiYosys are released together.
-ARG YOSYS_VERSION=0.69
-
-# Keep SymbiYosys aligned with Yosys; older SBY used the removed ABC -fast option.
-ARG SBY_VERSION=0.69
-
 ARG Z3_VERSION=5.1.0
 
 ARG BOOLECTOR_VERSION=3.2.4
@@ -181,7 +175,10 @@ RUN git clone https://github.com/verilator/verilator.git /tmp/verilator \
     && make install \
     && rm -rf /tmp/verilator
 
-# Build Yosys from source (0.67+ uses CMake).
+# Build Yosys from source (0.67+ uses CMake). Yosys and SymbiYosys are
+# released together. Each version is declared beside its build, so changing
+# it rebuilds only from that layer on.
+ARG YOSYS_VERSION=0.70
 RUN git clone https://github.com/YosysHQ/yosys.git /tmp/yosys \
     && cd /tmp/yosys \
     && git checkout v${YOSYS_VERSION} \
@@ -193,7 +190,9 @@ RUN git clone https://github.com/YosysHQ/yosys.git /tmp/yosys \
     && cmake --install build --strip \
     && rm -rf /tmp/yosys
 
-# Build SymbiYosys from source.
+# Build SymbiYosys from source. Keep it aligned with Yosys; older SBY used the
+# removed ABC -fast option.
+ARG SBY_VERSION=0.70
 RUN git clone https://github.com/YosysHQ/sby.git /tmp/sby \
     && cd /tmp/sby \
     && git checkout v${SBY_VERSION} \
