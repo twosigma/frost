@@ -31,6 +31,10 @@ module frost_cache_test_harness #(
     parameter int unsigned L1_CACHE_BYTES = 1024,
     parameter int unsigned L1I_CACHE_BYTES = 1024,
     parameter int unsigned L2_CACHE_BYTES = 4096,
+    // Ways per set of each cache; 1 makes it direct-mapped.
+    parameter int unsigned L1D_WAYS = 4,
+    parameter int unsigned L1I_WAYS = 4,
+    parameter int unsigned L2_WAYS = 4,
     parameter int unsigned L1_DATA_READ_LATENCY = 2,
     parameter int unsigned L1D_NUM_MSHR = 4,
     // Keep the shrunken test L2 on the same tag latency as production.
@@ -149,6 +153,9 @@ module frost_cache_test_harness #(
       .L1D_NUM_MSHR(L1D_NUM_MSHR),
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
       .L2_CACHE_BYTES(L2_CACHE_BYTES),
+      .L1D_WAYS(L1D_WAYS),
+      .L1I_WAYS(L1I_WAYS),
+      .L2_WAYS(L2_WAYS),
       .L2_TAG_READ_LATENCY(L2_TAG_READ_LATENCY),
       .L2_DATA_READ_LATENCY(L2_DATA_READ_LATENCY),
       .L2_DATA_WRITE_LATENCY(L2_DATA_WRITE_LATENCY),

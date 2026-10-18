@@ -34,14 +34,19 @@ from cocotb_tests.cache.test_frost_cache import (
     _monitor_perf_events,
     _new_perf_counts,
     _setup,
+    cache_geometry,
+    evict_l1d,
+    evict_l2,
+    fresh_aliases,
     l2_line_bytes,
+    make_l1d_next_victim,
+    make_l2_next_victim,
 )
 
 FULL = (1 << LINE_BYTES) - 1
 NUM_IDS = 1 << UP_ID_BITS
 MEM_LATENCY = 12  # harness default
 L1_LINES = 1024 // LINE_BYTES  # harness L1 = 1 KiB
-L2_BYTES = 4096  # harness L2
 
 # Per-test 256 KiB regions, disjoint from each other and from the other cache
 # benches' ranges. The behavioral DDR persists across the in-run resets, so a
@@ -208,6 +213,22 @@ async def _evict_with_reads(
     await _settle(dut)
 
 
+def _reads_on(dut: Any, port: str, col: _Collector) -> Any:
+    """Return a read of one line on port whose response col collects."""
+
+    async def _read(addr: int) -> int:
+        return await _transaction(dut, port, col, write=False, addr=addr)
+
+    return _read
+
+
+async def _evict_through(
+    dut: Any, col: _Collector, addr: int, avoid_l2_sets: frozenset[int] = frozenset()
+) -> None:
+    """Push addr's line out of the L1D (evict_l1d) with reads col collects."""
+    await evict_l1d(dut, addr, avoid_l2_sets, read=_reads_on(dut, "up", col))
+
+
 @cocotb.test()
 async def test_pipelined_hits(dut: Any) -> None:
     """Back-to-back read hits complete one per cycle, not one per hit latency."""
@@ -289,7 +310,7 @@ async def test_miss_under_miss(dut: Any) -> None:
     await _setup(dut)
     col = _Collector(dut, "up")
     model = ReferenceModel()
-    # Distinct indices at every level (same-index misses serialize by design).
+    # Distinct sets at every level.
     addrs = [MUM_BASE + 0x10000 * k + (5 + 3 * k) * LINE_BYTES for k in range(3)]
     for k, addr in enumerate(addrs):
         data = _line_int(bytes([(0x30 * (k + 1) + b) & 0xFF for b in range(32)]))
@@ -376,15 +397,23 @@ async def test_read_waiter(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_index_conflict(dut: Any) -> None:
-    """Requests to an index in transition wait and then complete correctly."""
+async def test_set_conflict(dut: Any) -> None:
+    """Misses on more lines of one set than it has ways wait for a way.
+
+    With the bridge held, reads of L1D_WAYS + 1 cold lines of one L1 set go
+    out back to back: the first L1D_WAYS each own a way of the set until
+    their fills install, so the last one waits in the decision stage until
+    a way frees. Every read returns its own data. Then a read, a partial
+    write and a read of two of the lines run back to back.
+    """
     await _setup(dut)
     col = _Collector(dut, "up")
     model = ReferenceModel()
-    x = CONFLICT_BASE + 6 * LINE_BYTES
-    y = x + 1024  # same L1D index, different tag
-    z = x + 2048
-    for k, addr in enumerate((x, y, z)):
+    l1 = dut.cache_hierarchy.l1_cache
+    ways = cache_geometry(dut).l1d_ways
+    # 1 KiB apart: one L1 set at any number of ways.
+    lines = [CONFLICT_BASE + 6 * LINE_BYTES + n * 1024 for n in range(ways + 1)]
+    for k, addr in enumerate(lines):
         data = _line_int(bytes([(0x60 + 0x20 * k + b) & 0xFF for b in range(32)]))
         model.write_line(addr, data, FULL)
         await _transaction(
@@ -392,13 +421,29 @@ async def test_index_conflict(dut: Any) -> None:
         )
     await _evict_with_reads(dut, col, CONFLICT_BASE + EVICT_OFFSET)
 
-    ids = [_ids.take("up") for _ in range(3)]
-    for req_id, addr in zip(ids, (x, y, z)):
+    waits = [0]
+
+    async def _count_way_waits() -> None:
+        while True:
+            await FallingEdge(dut.i_clk)
+            waits[0] += int(l1.stall_ways.value)
+
+    counter = cocotb.start_soon(_count_way_waits())
+    await FallingEdge(dut.i_clk)
+    dut.i_down_hold.value = 1
+    ids = [_ids.take("up") for _ in lines]
+    for req_id, addr in zip(ids, lines):
         await _fire(dut, "up", write=False, addr=addr, req_id=req_id)
-    for req_id, addr in zip(ids, (x, y, z)):
+    await _settle(dut, 40)
+    assert waits[0] > 0, "no miss waited for a way of its set"
+    await FallingEdge(dut.i_clk)
+    dut.i_down_hold.value = 0
+    for req_id, addr in zip(ids, lines):
         _, got = await col.wait_for(req_id)
         assert got == model.read_line(addr), f"mismatch @0x{addr:08x}"
-    # And a write into the conflict, followed by a read of the evicted line.
+    counter.cancel()
+    # And a write into the set, followed by a read of the written line.
+    x, y = lines[0], lines[-1]
     w = _line_int(bytes([0x5A] * 32))
     model.write_line(y, w, 0xF0F0_F0F0)
     ida, idb, idc = (_ids.take("up") for _ in range(3))
@@ -419,13 +464,16 @@ async def test_fill_waits_for_pending_writeback(dut: Any) -> None:
     col = _Collector(dut, "up")
     model = ReferenceModel()
     x = WBFILL_BASE + 4 * LINE_BYTES
-    alias = x + 1024
     seed = _line_int(bytes([(0x9A + b) & 0xFF for b in range(32)]))
     model.write_line(x, seed, FULL)
     await _transaction(dut, "up", col, write=True, addr=x, wdata=seed, wstrb=FULL)
     await _settle(dut)
-    # Evict dirty x through its alias, then re-read x. Its fill must not
-    # overtake the writeback.
+    # Read new lines of x's set until its next miss would evict dirty x, then
+    # write a new line of the set and re-read x at once. The read's fill must
+    # not overtake the writeback.
+    await make_l1d_next_victim(dut, x, read=_reads_on(dut, "up", col))
+    geom = cache_geometry(dut)
+    alias = fresh_aliases(x, geom.l1d_way_bytes, 1)[0]
     w = _line_int(bytes([0x33] * 32))
     model.write_line(alias, w, FULL)
     ida, idb = _ids.take("up"), _ids.take("up")
@@ -472,14 +520,16 @@ class _WritebackPendingMonitor:
 
 
 class _FreshLines:
-    """Lines never touched before, on L1 indices no reader holds in flight.
+    """Lines never touched before, at L1 offsets no reader holds in flight.
 
-    Each line is a new tag on an index that starts an L2 line (`sectors` L1
-    lines per L2 line), so every read misses at every level with a clean
-    victim and no other fresh line shares its L2 line; in-flight lines take
-    distinct L1 indices, and with them distinct L2 indices, so none waits on
-    another's miss slot. `skip` holds the indices the test uses for its own
-    lines; a fresh line avoids their L2 lines too.
+    An offset is a line's position within the L1's size, so lines at one
+    offset share an L1 set at any number of ways. Each line is a new tag at
+    an offset that starts an L2 line (`sectors` L1 lines per L2 line), so
+    every read misses at every level with a clean victim and no other fresh
+    line shares its L2 line. In-flight lines take distinct offsets, and with
+    them distinct L2 sets, so none waits on another's miss slot or on a set
+    whose ways all wait for fills. `skip` holds the offsets the test uses
+    for its own lines; a fresh line avoids their L2 lines too.
     """
 
     def __init__(self, base: int, skip: frozenset[int], sectors: int) -> None:
@@ -498,7 +548,7 @@ class _FreshLines:
             ):
                 break
         else:
-            raise AssertionError("every L1 index is in flight")
+            raise AssertionError("every L1 offset is in flight")
         addr = self._base + self._tag[index] * 1024 + index * LINE_BYTES
         self._tag[index] += 1
         self.in_flight.add(index)
@@ -644,10 +694,13 @@ async def test_writeback_wins_within_bound_under_fill_stream(dut: Any) -> None:
     v0 = _line_int(bytes([(0xA5 + b) & 0xFF for b in range(32)]))
     model.write_line(a, v0, FULL)
     await _transaction(dut, "up", col, write=True, addr=a, wdata=v0, wstrb=FULL)
-    # Push the dirty line into the L2 with a read of its L1 alias, and let the
-    # L1D's writeback and its acknowledgement drain.
-    await _transaction(dut, "up", col, write=False, addr=a + 1024)
-    evictor = a + 4096  # same L2 index, new tag
+    # Push the dirty line into the L2 by evicting it from the L1D, and let the
+    # L1D's writeback and its acknowledgement drain. Then read new lines of its
+    # L2 set until the set's next miss would evict it.
+    await _evict_through(dut, col, a)
+    await _settle(dut)
+    await make_l2_next_victim(dut, a)
+    evictor = fresh_aliases(a, cache_geometry(dut).l2_way_bytes, 1)[0]
     await _settle(dut)
 
     await FallingEdge(dut.i_clk)
@@ -746,15 +799,23 @@ async def test_writeback_slots_take_turns_under_dirty_victim_stream(dut: Any) ->
     l2_line = l2_line_bytes(dut)
     sectors = l2_line // LINE_BYTES
     dirty = [base + i * l2_line for i in range(n_dirty)]
+    geom = cache_geometry(dut)
+    dirty_sets = frozenset(geom.l2_set(d) for d in dirty)
     for i, d in enumerate(dirty):
         v = _line_int(bytes([(0x30 + 9 * i + b) & 0xFF for b in range(32)]))
         model.write_line(d, v, FULL)
         await _transaction(dut, "up", col, write=True, addr=d, wdata=v, wstrb=FULL)
-        # Push the dirty line into the L2 with a read of its L1 alias.
-        await _transaction(dut, "up", col, write=False, addr=d + 1024)
+        # Push the dirty line into the L2 by evicting it from the L1D, with
+        # reads that stay out of every dirty line's L2 set.
+        await _evict_through(dut, col, d, avoid_l2_sets=dirty_sets)
     await _settle(dut)
-    # Same index as its line at the L2 (and at the L1D), new tag.
-    aliases = [d + 4096 for d in dirty]
+    # Read new lines of each dirty line's L2 set until the set's next miss
+    # would evict the line; a read of one more new line then evicts it.
+    aliases = []
+    for d in dirty:
+        await make_l2_next_victim(dut, d)
+        aliases.append(fresh_aliases(d, geom.l2_way_bytes, 1)[0])
+    await _settle(dut)
 
     await FallingEdge(dut.i_clk)
     dut.i_down_hold.value = 1
@@ -926,7 +987,7 @@ async def test_fill_slots_take_turns_under_recycled_misses(dut: Any) -> None:
 
 @cocotb.test()
 async def test_l2_fill_tag_install_races_resident_lookup(dut: Any) -> None:
-    """A tag lookup spanning a same-index fill install retries and hits.
+    """A tag lookup spanning a same-set fill install retries and hits.
 
     Launch a walker read two cycles before I-side and D-side reads of the
     same cold line. The walker allocates, one cached request takes the MSHR's
@@ -947,14 +1008,11 @@ async def test_l2_fill_tag_install_races_resident_lookup(dut: Any) -> None:
         dut, "up", cols["up"], write=True, addr=addr, wdata=data, wstrb=FULL
     )
 
-    # Publish the dirty L1D line, then read its exact L2 alias. The alias is
-    # also an L1D alias, so this one transaction evicts addr from both cached
-    # levels and writes its distinctive data all the way to backing memory.
+    # Publish the dirty L1D line, then evict it from both cached levels, which
+    # writes its distinctive data all the way to backing memory.
     await _fence_sync(dut)
-    assert (
-        await _transaction(dut, "up", cols["up"], write=False, addr=addr + L2_BYTES)
-        == 0
-    )
+    await _evict_through(dut, cols["up"], addr)
+    await evict_l2(dut, addr, read=_reads_on(dut, "wup", cols["wup"]))
     await _settle(dut)
 
     counts = _new_perf_counts()
@@ -1011,16 +1069,16 @@ async def test_stale_match_recycled_slot(dut: Any) -> None:
     await _setup(dut)
     col = _Collector(dut, "up")
     model = ReferenceModel()
-    alias = L1_LINES * LINE_BYTES  # same L1 index, next tag
 
     for k in range(14):
         base = STALE_BASE + k * 0x4000
-        x = base  # index 0 of this region
+        x = base  # set 0 of this region
         data = _line_int(bytes([(0xA0 + k + b * 3) & 0xFF for b in range(32)]))
         model.write_line(x, data, FULL)
         await _transaction(dut, "up", col, write=True, addr=x, wdata=data, wstrb=FULL)
-        # Evict X from the L1 so the slot-3 sequence below misses on it.
-        await _transaction(dut, "up", col, write=False, addr=x + alias)
+        # Evict X from the L1 so the slot-3 sequence below misses on it. Each
+        # eviction read misses alone and takes slot 0.
+        await _evict_through(dut, col, x)
         # Slots 0-2 busy on cold lines, then X misses into slot 3: its line
         # register now names X.
         hold = [_ids.take("up") for _ in range(3)]
@@ -1032,7 +1090,7 @@ async def test_stale_match_recycled_slot(dut: Any) -> None:
         for req_id in hold:
             await col.wait_for(req_id)
         # Evict X again (slot 0 is reallocated, slot 3 still names X) and settle.
-        await _transaction(dut, "up", col, write=False, addr=x + 2 * alias)
+        await _evict_through(dut, col, x)
         await _settle(dut, 20)
 
         # The race: slots 0-2 busy again, Y reallocates slot 3, and the read of

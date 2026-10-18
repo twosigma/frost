@@ -26,8 +26,7 @@
  * saved last. The s2 slot and the five after it are pre-poisoned, so a save
  * that never lands reads back a wrong value, and a cold drain store precedes
  * each interrupt. The handler then evicts s2's line through same-set addresses
- * (128 KiB direct-mapped L1D, 32-byte lines, alias stride 0x20000) and reads
- * it back.
+ * (128 KiB 4-way L1D, 32-byte lines, alias stride 0x20000) and reads it back.
  *
  * Failure codes distinguish:
  *   29: the incoming architectural s2 was already wrong.
@@ -47,7 +46,10 @@
 #include "trap.h"
 #include "uart.h"
 
-/* 128 KiB direct-mapped L1D with 32-byte lines. The naked asm below
+/* 128 KiB 4-way L1D with 32-byte lines. The handler loads s2's line and then
+ * five other lines of its set, enough to evict an installed line from the
+ * 4-way L1D; whether the eviction lands before or after the s2 store drains
+ * is part of the window the margins sweep. The naked asm below
  * hard-codes L1D_STRIDE, N_EVICT, FRAME_BASE, FRAME_TOP, S2_LINE_BASE, and
  * POISON_S2, so change it along with them. */
 #define L1D_STRIDE 0x00020000u /* 128 KiB: A and A+stride share one set */
@@ -58,8 +60,8 @@
 #define FRAME_TOP (FRAME_BASE + 288u)    /* rv64 pt_regs is 288 bytes; sp on entry */
 #define S2_LINE_BASE (FRAME_BASE + 128u) /* 32 B line holding s2@144 (128..159) */
 
-/* Cold drain region in L1D sets 2048+, clear of the frame's sets 0..8. */
-#define DRAIN_BASE 0x83010000u
+/* Cold drain region in L1D sets 512+, clear of the frame's sets 0..8. */
+#define DRAIN_BASE 0x83014000u
 #define DRAIN_LINE 64u
 
 #define MARGIN_MIN 0u
@@ -90,7 +92,7 @@ volatile uint64_t g_last_actual;
  * Naked M-mode timer trap entry. Saves and restores an rv64 Linux-style
  * pt_regs frame (sd/ld, 8-byte slots) on a cached-DDR "kernel stack"
  * (sp == FRAME_TOP, set by irq_window). s2 is saved last; after the gap and
- * the code-30 check, the handler evicts its line from the direct-mapped L1D.
+ * the code-30 check, the handler evicts its line from the L1D.
  * Records the failure codes and resumes through the fixed continuation in
  * g_cont, so a wrong mepc cannot wedge the sweep.
  */
@@ -180,8 +182,8 @@ __attribute__((naked, used, aligned(4))) static void trapframe_irq_entry(void)
                      "sd   t0, 0(t2)\n"
                      "4:\n"
                      /* ---- evict the saved s2 line: stride by the L1D size so every access
-                      * maps to the same set with a different tag (direct-mapped), evicting
-                      * and writing back the just-stored dirty frame line. ---- */
+                      * maps to the same set with a different tag, evicting and writing
+                      * back the just-stored dirty frame line. ---- */
                      "li   t1, 0x8200008\n"
                      "slli t1, t1, 4\n"   /* S2_LINE_BASE = 0x82000080 */
                      "li   t2, 0x20000\n" /* L1D_STRIDE  */
@@ -423,7 +425,7 @@ int main(void)
     uint64_t first_exp = 0, first_act = 0;
 
     uart_printf("\n=== drain trap-frame eviction test (Bug B @ pt_regs s2) ===\n");
-    uart_printf("L1D=128KiB direct-mapped 32B lines; evict stride=0x%08x; frame@0x%08x s2@144\n",
+    uart_printf("L1D=128KiB 4-way 32B lines; evict stride=0x%08x; frame@0x%08x s2@144\n",
                 L1D_STRIDE,
                 FRAME_BASE);
 

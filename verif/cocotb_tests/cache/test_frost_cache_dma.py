@@ -37,6 +37,8 @@ from cocotb_tests.cache.test_frost_cache import (
     _port_transaction,
     _settle,
     _setup,
+    evict_l1d,
+    l1d_tag_state,
 )
 from cocotb_tests.cache.test_frost_cache_concurrency import _Collector, _fire
 
@@ -57,7 +59,7 @@ DISJOINT_BASE = BASE_ADDR + 0xA40000
 ORDER_BASE = BASE_ADDR + 0xA80000
 RANDOM_BASE = BASE_ADDR + 0xAC0000
 
-L1_ALIAS = 1024  # harness L1 = 1 KiB: +1024 is the same index, another tag
+L1_ALIAS = 1024  # harness L1 = 1 KiB: +1024 is the same set, another tag
 
 
 class LoadQueueStub:
@@ -173,20 +175,8 @@ async def _check_dma_read(dut: Any, model: ReferenceModel, addr: int) -> None:
 
 
 def _l1d_tag_state(dut: Any, addr: int) -> tuple[bool, bool]:
-    """Return (valid, dirty) of the L1D tag entry at addr's index.
-
-    valid is also false when the entry holds another line's tag.
-    """
-    l1 = dut.cache_hierarchy.l1_cache
-    index_bits = int(l1.IndexBits.value)
-    tag_bits = int(l1.TagBits.value)
-    index = (addr >> 5) & ((1 << index_bits) - 1)
-    entry = int(l1.gen_tag_block.tag_array.ram[index].value)
-    tag = entry & ((1 << tag_bits) - 1)
-    dirty = (entry >> tag_bits) & 1
-    valid = (entry >> (tag_bits + 1)) & 1
-    expected_tag = addr >> (5 + index_bits)
-    return (bool(valid) and tag == expected_tag, bool(valid) and bool(dirty))
+    """Return (held, dirty) of addr's line in the L1D, from every way's tags."""
+    return l1d_tag_state(dut, addr)
 
 
 @cocotb.test()
@@ -291,8 +281,8 @@ async def test_probe_waits_for_fill_in_flight(dut: Any) -> None:
     old = _pattern(11)
     await _dma_write(dut, model, addr, old, FULL)
     await _fence_sync(dut)
-    # Evict the line from the L1D through an alias so the next read misses.
-    await _cpu_write(dut, model, addr + L1_ALIAS, _pattern(12), FULL)
+    # Evict the line from the L1D so the next read misses.
+    await evict_l1d(dut, addr)
     await _settle(dut)
     read_task = cocotb.start_soon(_line_transaction(dut, write=False, addr=addr))
     for _ in range(2):
@@ -415,8 +405,8 @@ async def test_dma_completes_under_cpu_miss_flood(dut: Any) -> None:
     stop = [False]
 
     async def flood() -> None:
-        # Thrash one index with many tags: every access is a miss with a
-        # dirty victim, the busiest the L1D's downstream port gets.
+        # Thrash one set with more tags than it has ways: every access is a
+        # miss with a dirty victim, the busiest the L1D's downstream port gets.
         n = 0
         while not stop[0]:
             addr = FLOOD_BASE + (n % 16) * L1_ALIAS

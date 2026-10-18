@@ -169,8 +169,9 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_L1D_MISS_CYCLES_SUM = 119,
     TOMASULO_PERF_L2_MISS_CYCLES_SUM = 120,
     /* Non-blocking cache observers: hits served while a miss was outstanding,
-     * tag-stage stall cycles (every miss/writeback slot busy; an index in
-     * transition), and cycles with two or more misses in flight. */
+     * tag-stage stall cycles (every miss/writeback slot busy; a line in
+     * transition or every way of a set owned), and cycles with two or more
+     * misses in flight. */
     TOMASULO_PERF_L1I_HIT_UNDER_MISS = 121,
     TOMASULO_PERF_L1D_HIT_UNDER_MISS = 122,
     TOMASULO_PERF_L2_HIT_UNDER_MISS = 123,

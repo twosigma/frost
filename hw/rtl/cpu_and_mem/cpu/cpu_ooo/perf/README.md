@@ -353,24 +353,24 @@ deltas are unaffected.
 | 106 | 0 | `L1I_ACCESS` | event | A request fires at the L1I upstream port (`i_up_req_valid && o_up_req_ready`), for the currently needed line or the fetch provider's next-line prefetch |
 | 107 | 1 | `L1I_HIT` | event | An L1I access hits at the tag stage |
 | 108 | 2 | `L1I_MISS` | event | An L1I access misses at the tag stage |
-| 109 | 3 | `L1I_WRITEBACK` | event | A counted miss evicts a dirty L1I victim (counted at the tag decision, not when the writeback leaves). The L1I is read-only, so this is normally 0 |
+| 109 | 3 | `L1I_WRITEBACK` | event | A counted miss evicts a dirty L1I victim (counted with the miss, not when the writeback leaves). The L1I is read-only, so this is normally 0 |
 | 110 | 4 | `L1D_ACCESS` | event | A demand request fires at the L1D upstream port |
 | 111 | 5 | `L1D_HIT` | event | An L1D access hits at the tag stage |
 | 112 | 6 | `L1D_MISS` | event | An L1D access misses at the tag stage |
-| 113 | 7 | `L1D_WRITEBACK` | event | A counted miss evicts a dirty L1D victim (counted at the tag decision, not when the writeback leaves) |
+| 113 | 7 | `L1D_WRITEBACK` | event | A counted miss evicts a dirty L1D victim (counted with the miss, not when the writeback leaves) |
 | 114 | 8 | `L2_ACCESS` | event | A request fires at the L2 upstream port from the L1s, the page-table walker, the DMA sequencer, or the stream prefetcher: L1I fills and prefetches, L1D fills, walker reads, DMA traffic, dirty-victim writebacks, and the stream prefetcher's reads |
 | 115 | 9 | `L2_HIT` | event | An L2 access hits at the tag stage |
 | 116 | 10 | `L2_MISS` | event | An L2 access misses at the tag stage |
-| 117 | 11 | `L2_WRITEBACK` | event | A counted miss evicts a dirty L2 victim (counted at the tag decision, not when the writeback leaves) |
+| 117 | 11 | `L2_WRITEBACK` | event | A counted miss evicts a dirty L2 victim (counted with the miss, not when the writeback leaves) |
 | 118 | 12 | `L1I_FETCH_MISS_STALL` | cycle | Fetch is in the cached tier, its window is not ready, and an L1I miss is outstanding (any miss, including a next-line prefetch). Pipeline stalls, low-BRAM fetch, fills discarded by `fence.i`, and prefetch misses behind a ready window do not count |
 | 119 | 13 | `L1D_MISS_CYCLES_SUM` | sum | The number of L1D miss-status slots in use this cycle (`miss_outstanding`, `cache_perf_pkg::MissOutstandingBits` wide, at most `NUM_MSHR`) |
 | 120 | 14 | `L2_MISS_CYCLES_SUM` | sum | The number of L2 miss-status slots in use this cycle |
 | 121 | 15 | `L1I_HIT_UNDER_MISS` | event | An L1I hit resolved while at least one L1I miss was outstanding |
 | 122 | 16 | `L1D_HIT_UNDER_MISS` | event | Same, L1D |
 | 123 | 17 | `L2_HIT_UNDER_MISS` | event | Same, L2 |
-| 124 | 18 | `L1D_SLOT_FULL_STALL` | cycle | The L1D tag stage held a miss because every miss-status slot, or every writeback slot a dirty victim needed, was busy |
-| 125 | 19 | `L2_SLOT_FULL_STALL` | cycle | Same, L2 |
-| 126 | 20 | `L1D_CONFLICT_STALL` | cycle | The L1D tag stage held a request because of a line in transition: a pending miss at its index that it could neither merge into nor wait on, or, for a store hit, a copy of its line still in a writeback slot |
+| 124 | 18 | `L1D_SLOT_FULL_STALL` | cycle | An L1D tag-stage decision held a miss because every miss-status slot or every writeback slot was busy (an L1D miss needs a free writeback slot whatever its victim). A held request rereads its tags before deciding again, so this counts decisions, not every cycle of the wait |
+| 125 | 19 | `L2_SLOT_FULL_STALL` | cycle | Same, L2, where only a miss with a dirty victim needs a writeback slot |
+| 126 | 20 | `L1D_CONFLICT_STALL` | cycle | An L1D tag-stage decision held a request because of a line in transition or a full set: a pending miss of its line that it could neither merge into nor wait on, a miss whose set has every way owned by pending misses, or, for a store hit, a copy of its line still in a writeback slot. Counted like `L1D_SLOT_FULL_STALL` |
 | 127 | 21 | `L2_CONFLICT_STALL` | cycle | Same, L2 |
 | 128 | 22 | `L1D_MISS_OVERLAP_CYCLES` | cycle | Two or more L1D miss-status slots were in use |
 | 129 | 23 | `L2_MISS_OVERLAP_CYCLES` | cycle | Two or more L2 miss-status slots were in use |

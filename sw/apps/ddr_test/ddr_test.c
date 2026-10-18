@@ -29,9 +29,8 @@
 
 /* Word offsets (in 32-bit words) covering low, two mid points, and far. The
  * low case starts at the second 32-byte line, since ddr_preload fills the
- * first. The mid cases share the low line's direct-mapped L1D index
- * (OFF_MID_B also its L2 index), so they evict it and later reads of the low
- * words miss. */
+ * first. The mid cases share the low line's L1D set (OFF_MID_B also its L2
+ * set); the eviction sweep below overflows that set. */
 #define OFF_LOW (32u / 4u)
 #define OFF_LOW2 (OFF_LOW + 1u)
 #define OFF_MID_A (OFF_LOW + 0x00040000u / 4u) /* 256 KiB past OFF_LOW (beyond L1) */
@@ -185,10 +184,11 @@ int main(void)
         }
     }
 
-    /* --- Phase 6: L1-index-aliasing eviction sweep. ------------------------ */
-    /* Stride by the L1 size so every address lands on the same L1 index with a
-     * different tag: each access past the first evicts a dirty line (writeback
-     * through L2/DDR) and later re-reads must fill it back. */
+    /* --- Phase 6: L1-set eviction sweep. ------------------------------------ */
+    /* Stride by the L1 size so every address lands in the same L1 set with a
+     * different tag: once the set's ways are full, each new line's miss
+     * evicts a dirty line (writeback through L2/DDR) and later re-reads must
+     * fill it back. */
     {
         const uint32_t l1_stride_words = (128u * 1024u) / 4u; /* L1_CACHE_BYTES */
         const uint32_t lines = 24u;

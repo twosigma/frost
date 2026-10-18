@@ -19,12 +19,18 @@ frost_cache_hierarchy -> line_port_axi_bridge -> axi_behavioral_memory.
 Ports up, iup, and wup serve data, instructions, and page-table walks.
 Reads are checked against a byte-granular model and responses must echo
 request ids. Small caches (L1 1 KiB, L2 4 KiB) force evictions. The registry
-also runs with SIM_FAST_MAINT=1 and out-of-order responses (MEM_REORDER=1).
+also runs with SIM_FAST_MAINT=1 and out-of-order responses (MEM_REORDER=1),
+and with direct-mapped caches (L1D_WAYS=L1I_WAYS=L2_WAYS=1).
+
+Tests read the cache geometry from the harness parameters (CacheGeometry)
+and push lines out with reads of never-touched lines of the same set
+(evict_l1d, evict_l2), so they hold for any number of ways.
 """
 
 import itertools
 
 import random
+from dataclasses import dataclass
 from typing import Any
 
 import cocotb
@@ -59,6 +65,12 @@ OVERLAP_BASE = BASE_ADDR + 0x300000
 WALK_BASE = BASE_ADDR + 0x340000
 WALK2_BASE = BASE_ADDR + 0x380000
 WALK3_BASE = BASE_ADDR + 0x3C0000
+
+# Eviction aliases (see evict_l1d and evict_l2): lines that are only ever
+# read, each at most once per run, in the top MiB of the harness's memory,
+# above every bench's regions.
+ALIAS_BASE = BASE_ADDR + 0xF00000
+ALIAS_BYTES = 0x100000
 
 RESP_TIMEOUT_CYCLES = 20_000
 SWEEP_TIMEOUT_CYCLES = 200_000
@@ -150,10 +162,313 @@ def _l2_sweeping(dut: Any) -> bool:
     return int(dut.cache_hierarchy.l2_cache.o_maint_busy.value) == 1
 
 
+@dataclass(frozen=True)
+class CacheGeometry:
+    """The harness's cache sizes and ways, read from its parameters."""
+
+    l1d_bytes: int
+    l1d_ways: int
+    l1i_bytes: int
+    l1i_ways: int
+    l2_bytes: int
+    l2_ways: int
+    l2_line: int
+
+    @property
+    def l1d_way_bytes(self) -> int:
+        """Return the bytes per L1D way: lines this far apart share a set."""
+        return self.l1d_bytes // self.l1d_ways
+
+    @property
+    def l2_way_bytes(self) -> int:
+        """Return the bytes per L2 way: lines this far apart share a set."""
+        return self.l2_bytes // self.l2_ways
+
+    def l1d_set(self, addr: int) -> int:
+        """Return addr's L1D set."""
+        return (addr % self.l1d_way_bytes) // LINE_BYTES
+
+    def l2_set(self, addr: int) -> int:
+        """Return addr's L2 set."""
+        return (addr % self.l2_way_bytes) // self.l2_line
+
+    @staticmethod
+    def evicting_misses(ways: int) -> int:
+        """Return how many misses on new lines of a set evict any line of it.
+
+        The first ways - 1 misses may take invalid ways; after that, the tree
+        pseudo-LRU replaces every way within `ways` misses.
+        """
+        return 2 * ways - 1
+
+
+def cache_geometry(dut: Any) -> CacheGeometry:
+    """Return the harness's cache geometry."""
+    return CacheGeometry(
+        l1d_bytes=int(dut.L1_CACHE_BYTES.value),
+        l1d_ways=int(dut.L1D_WAYS.value),
+        l1i_bytes=int(dut.L1I_CACHE_BYTES.value),
+        l1i_ways=int(dut.L1I_WAYS.value),
+        l2_bytes=int(dut.L2_CACHE_BYTES.value),
+        l2_ways=int(dut.L2_WAYS.value),
+        l2_line=int(dut.L2_LINE_BYTES.value),
+    )
+
+
+# Alias lines handed out since the last reset; a reset empties every cache,
+# so they are new again afterwards.
+_aliases_used: set[int] = set()
+
+
+def fresh_aliases(addr: int, stride: int, count: int, avoid: Any = None) -> list[int]:
+    """Return count unused alias lines congruent to addr's line modulo stride.
+
+    The lines lie in the alias region and have never been read since the
+    last reset, so every cache misses on them. avoid(alias), if given,
+    excludes candidates.
+    """
+    offset = (addr % stride) & ~(LINE_BYTES - 1)
+    out: list[int] = []
+    n = 0
+    while len(out) < count:
+        cand = ALIAS_BASE + n * stride + offset
+        n += 1
+        assert cand < ALIAS_BASE + ALIAS_BYTES, "the eviction alias region is used up"
+        if cand in _aliases_used or (avoid is not None and avoid(cand)):
+            continue
+        _aliases_used.add(cand)
+        out.append(cand)
+    return out
+
+
+def _reader(dut: Any, port: str, read: Any) -> Any:
+    """Return read, or a coroutine function reading a line on port."""
+    if read is not None:
+        return read
+
+    async def _read(addr: int) -> int:
+        return await _port_transaction(dut, port, write=False, addr=addr)
+
+    return _read
+
+
+async def evict_l1d(
+    dut: Any,
+    addr: int,
+    avoid_l2_sets: frozenset[int] = frozenset(),
+    read: Any = None,
+) -> list[int]:
+    """Push addr's line out of the L1D with reads of new lines of its set.
+
+    A dirty copy is written back to the L2. The reads lie in other L2 sets
+    than addr's and avoid_l2_sets, so the L2 keeps what it holds there.
+    read(addr), if given, performs each data-side read (a bench that collects
+    the port's responses itself passes its own). Returns the lines read.
+    """
+    read = _reader(dut, "up", read)
+    geom = cache_geometry(dut)
+    keep = {geom.l2_set(addr)} | set(avoid_l2_sets)
+    aliases = fresh_aliases(
+        addr,
+        geom.l1d_way_bytes,
+        geom.evicting_misses(geom.l1d_ways),
+        avoid=lambda a: geom.l2_set(a) in keep,
+    )
+    for alias in aliases:
+        await read(alias)
+    return aliases
+
+
+async def evict_l2(dut: Any, addr: int, read: Any = None) -> list[int]:
+    """Push addr's L2 line out of the L2 with walker reads of its set.
+
+    The walker port skips the L1s, and its probes find nothing at the new
+    lines, so each read reaches the L2 at once. read(addr), if given,
+    performs each walker read. Returns the lines read.
+    """
+    read = _reader(dut, "wup", read)
+    geom = cache_geometry(dut)
+    aliases = fresh_aliases(addr, geom.l2_way_bytes, geom.evicting_misses(geom.l2_ways))
+    for alias in aliases:
+        await read(alias)
+    return aliases
+
+
+def _l1d_ways_state(dut: Any, addr: int) -> list[tuple[bool, bool, int]]:
+    """Return (valid, dirty, tag) of every way of addr's L1D set."""
+    l1 = dut.cache_hierarchy.l1_cache
+    set_bits = int(l1.SetBits.value)
+    tag_bits = int(l1.TagBits.value)
+    index = (addr >> 5) & ((1 << set_bits) - 1)
+    out = []
+    for way in range(int(l1.WAYS.value)):
+        entry = int(l1.gen_tag_block.gen_way[way].tag_array.ram[index].value)
+        out.append(
+            (
+                bool((entry >> (tag_bits + 1)) & 1),
+                bool((entry >> tag_bits) & 1),
+                entry & ((1 << tag_bits) - 1),
+            )
+        )
+    return out
+
+
+def l1d_tag_state(dut: Any, addr: int) -> tuple[bool, bool]:
+    """Return (held, dirty) for addr's line in the L1D, read from its tags."""
+    set_bits = int(dut.cache_hierarchy.l1_cache.SetBits.value)
+    expected_tag = addr >> (5 + set_bits)
+    for valid, dirty, tag in _l1d_ways_state(dut, addr):
+        if valid and tag == expected_tag:
+            return (True, dirty)
+    return (False, False)
+
+
+def plru_victim(state: int, ways: int) -> int:
+    """Return the tree pseudo-LRU victim way of a set (frost_cache plru_victim)."""
+    node = 1
+    for _ in range(ways.bit_length() - 1):
+        node = 2 * node + ((state >> (node - 1)) & 1)
+    return node - ways
+
+
+def _next_victim_is(
+    ways_state: list[tuple[bool, bool, int]], plru: int, expected_tag: int
+) -> bool:
+    """Report whether a set's next miss would evict the line with expected_tag.
+
+    Mirrors frost_cache's victim choice with no miss pending in the set: the
+    lowest invalid way, else the pseudo-LRU way.
+    """
+    invalid = [way for way, (valid, _, _) in enumerate(ways_state) if not valid]
+    victim = invalid[0] if invalid else plru_victim(plru, len(ways_state))
+    valid, _, tag = ways_state[victim]
+    return valid and tag == expected_tag
+
+
+def l1d_next_victim_is(dut: Any, addr: int) -> bool:
+    """Report whether a miss in addr's L1D set would now evict addr's line."""
+    l1 = dut.cache_hierarchy.l1_cache
+    ways = int(l1.WAYS.value)
+    set_bits = int(l1.SetBits.value)
+    index = (addr >> 5) & ((1 << set_bits) - 1)
+    plru = int(l1.gen_plru.plru_array.ram[index].value) if ways > 1 else 0
+    return _next_victim_is(_l1d_ways_state(dut, addr), plru, addr >> (5 + set_bits))
+
+
+def _l2_ways_state(dut: Any, addr: int) -> list[tuple[bool, bool, int]]:
+    """Return (valid, dirty, tag) of every way of addr's L2 set.
+
+    Reads the packed tag rows of the L2's simulation model, unpacking them
+    as sdp_packed_tag_uram packs a set's ways (READ_WORDS = WAYS).
+    """
+    l2 = dut.cache_hierarchy.l2_cache
+    ways = int(l2.WAYS.value)
+    set_bits = int(l2.SetBits.value)
+    tag_bits = int(l2.TagBits.value)
+    offset_bits = int(l2.OffsetBits.value)
+    entry_bits = tag_bits + 2
+    granules = (entry_bits + 8) // 9
+    slots = 8 if granules <= 1 else 4 if granules <= 2 else 2 if granules <= 4 else 1
+    addr_bits = set_bits + (ways.bit_length() - 1)
+    slots = min(slots, 1 << addr_bits)
+    slot_bits = 9 * granules
+    row_words = min(ways, slots)
+    groups_per_row = slots // row_words
+    index = (addr >> offset_bits) & ((1 << set_bits) - 1)
+    row, group = divmod(index, groups_per_row)
+    tags = l2.gen_tag_ultra.tag_array
+    storage = (
+        "gen_clearable_storage"
+        if int(tags.SUPPORT_BULK_CLEAR.value)
+        else "gen_hardware_storage"
+    )
+    out = []
+    for way in range(ways):
+        bank, word = divmod(way, row_words)
+        memory = getattr(tags.gen_bank[bank], storage).memory
+        bits = int(memory[row].value)
+        entry = (bits >> ((group * row_words + word) * slot_bits)) & (
+            (1 << entry_bits) - 1
+        )
+        out.append(
+            (
+                bool((entry >> (tag_bits + 1)) & 1),
+                bool((entry >> tag_bits) & 1),
+                entry & ((1 << tag_bits) - 1),
+            )
+        )
+    return out
+
+
+def l2_next_victim_is(dut: Any, addr: int) -> bool:
+    """Report whether a miss in addr's L2 set would now evict addr's L2 line."""
+    l2 = dut.cache_hierarchy.l2_cache
+    ways = int(l2.WAYS.value)
+    set_bits = int(l2.SetBits.value)
+    offset_bits = int(l2.OffsetBits.value)
+    index = (addr >> offset_bits) & ((1 << set_bits) - 1)
+    plru = int(l2.gen_plru.plru_array.ram[index].value) if ways > 1 else 0
+    return _next_victim_is(
+        _l2_ways_state(dut, addr), plru, addr >> (offset_bits + set_bits)
+    )
+
+
+async def make_l1d_next_victim(
+    dut: Any,
+    addr: int,
+    avoid_l2_sets: frozenset[int] = frozenset(),
+    read: Any = None,
+) -> list[int]:
+    """Read new lines of addr's L1D set until its next miss would evict addr.
+
+    addr's line must be in the L1D. Checks the RTL's tags and pseudo-LRU
+    state before each read; it takes at most 2 * ways - 2 reads. The reads
+    lie in other L2 sets than addr's and avoid_l2_sets; read is as for
+    evict_l1d. Returns the lines read.
+    """
+    read = _reader(dut, "up", read)
+    geom = cache_geometry(dut)
+    keep = {geom.l2_set(addr)} | set(avoid_l2_sets)
+    assert l1d_tag_state(dut, addr)[0], f"0x{addr:08x} is not in the L1D"
+    lines: list[int] = []
+    while not l1d_next_victim_is(dut, addr):
+        assert len(lines) < geom.evicting_misses(geom.l1d_ways), (
+            f"0x{addr:08x} never became its set's next victim"
+        )
+        alias = fresh_aliases(
+            addr, geom.l1d_way_bytes, 1, avoid=lambda a: geom.l2_set(a) in keep
+        )[0]
+        await read(alias)
+        await FallingEdge(dut.i_clk)
+        lines.append(alias)
+    return lines
+
+
+async def make_l2_next_victim(dut: Any, addr: int, read: Any = None) -> list[int]:
+    """Walker-read new lines of addr's L2 set until its next miss evicts addr.
+
+    addr's L2 line must be in the L2. Checks the RTL's tags and pseudo-LRU
+    state before each read; read is as for evict_l2. Returns the lines read.
+    """
+    read = _reader(dut, "wup", read)
+    geom = cache_geometry(dut)
+    lines: list[int] = []
+    while not l2_next_victim_is(dut, addr):
+        assert len(lines) < geom.evicting_misses(geom.l2_ways), (
+            f"0x{addr:08x} never became its L2 set's next victim"
+        )
+        alias = fresh_aliases(addr, geom.l2_way_bytes, 1)[0]
+        await read(alias)
+        await FallingEdge(dut.i_clk)
+        lines.append(alias)
+    return lines
+
+
 async def _setup(dut: Any) -> None:
     """Start the clock, reset, and wait out every level's tag-invalidate sweep."""
     Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     _clear_inputs(dut)
+    _aliases_used.clear()
     dut.i_rst.value = 1
     for _ in range(4):
         await RisingEdge(dut.i_clk)
@@ -349,11 +664,12 @@ async def test_partial_write_merges_on_miss(dut: Any) -> None:
 
 @cocotb.test()
 async def test_dirty_eviction_roundtrip(dut: Any) -> None:
-    """Lines aliasing one L1 index: every dirty victim must survive eviction."""
+    """Lines sharing one L1 set: every dirty victim must survive eviction."""
     await _setup(dut)
     model = ReferenceModel()
     full = (1 << LINE_BYTES) - 1
-    # 1 KiB L1 = 32 lines; stride by L1 size to alias index 3 with many tags.
+    # Lines 1 KiB (the L1 size) apart share a set at any number of ways; 12
+    # tags overflow it.
     addrs = [EVICT_BASE + 3 * LINE_BYTES + tag * 1024 for tag in range(12)]
     for i, addr in enumerate(addrs):
         wdata = _line_int(bytes([(i * 7 + b) & 0xFF for b in range(32)]))
@@ -414,7 +730,7 @@ async def test_random_traffic_vs_model(dut: Any) -> None:
 
 @cocotb.test()
 async def test_thrash_same_index(dut: Any) -> None:
-    """Alternating tags on one index: continuous evict/fill at both levels."""
+    """Six tags on one L1 set, more than it holds: continuous evict/fill."""
     await _setup(dut)
     model = ReferenceModel()
     full = (1 << LINE_BYTES) - 1
@@ -435,18 +751,14 @@ async def _settle(dut: Any, cycles: int = 80) -> None:
         await FallingEdge(dut.i_clk)
 
 
-async def _force_l1d_writeback(dut: Any, model: ReferenceModel, addr: int) -> None:
+async def _force_l1d_writeback(dut: Any, addr: int) -> None:
     """Evict addr's L1 line so its dirty data reaches the shared level.
 
-    A write to an aliasing tag (same index) forces the writeback that makes
-    the data visible to L1I fills. The write is acknowledged before the
-    writeback slot drains, so wait for it to reach the shared level.
+    Reads of new lines of its set (evict_l1d) force the writeback that makes
+    the data visible to L1I fills. A read can complete before the writeback
+    slot drains, so wait for it to reach the shared level.
     """
-    alias = addr + 1024  # L1 is 1 KiB in the harness: same index, new tag
-    full = (1 << LINE_BYTES) - 1
-    wdata = _line_int(bytes([0xE5] * 32))
-    model.write_line(alias, wdata, full)
-    await _line_transaction(dut, write=True, addr=alias, wdata=wdata, wstrb=full)
+    await evict_l1d(dut, addr)
     await _settle(dut)
 
 
@@ -460,7 +772,7 @@ async def test_iport_reads_written_back_data(dut: Any) -> None:
     wdata = _line_int(bytes([(0x42 + b) & 0xFF for b in range(32)]))
     model.write_line(addr, wdata, full)
     await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
-    await _force_l1d_writeback(dut, model, addr)
+    await _force_l1d_writeback(dut, addr)
 
     got = await _port_transaction(dut, "iup", write=False, addr=addr)
     assert got == model.read_line(addr), f"iup read mismatch @0x{addr:08x}"
@@ -616,7 +928,7 @@ async def test_walker_port_reads_shared_level(dut: Any) -> None:
     wdata = _line_int(bytes([(0x9A + b) & 0xFF for b in range(32)]))
     model.write_line(addr, wdata, full)
     await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
-    await _force_l1d_writeback(dut, model, addr)
+    await _force_l1d_writeback(dut, addr)
 
     got = await _port_transaction(dut, "wup", write=False, addr=addr)
     assert got == model.read_line(addr), f"wup read mismatch @0x{addr:08x}"
@@ -914,12 +1226,14 @@ async def _hold_shared_level(
 ) -> None:
     """Submit five fills to the L2's four miss slots to delay the next miss.
 
-    Interleave three early-acknowledged partial writes with two I-side reads.
-    A following writeback miss waits for a memory response. Distinct L1
-    indices avoid evictions and writebacks from this setup.
+    Interleave three early-acknowledged partial writes with two I-side reads,
+    each on an L2 line of its own. A following writeback miss waits for a
+    memory response. Distinct L1 sets avoid evictions and writebacks from
+    this setup.
     """
-    lines = [base + (8 + 3 * k + n) * LINE_BYTES for n in range(3)]
-    instr = [base + 0x800 + (2 * k + n) * LINE_BYTES for n in range(2)]
+    l2_line = l2_line_bytes(dut)
+    lines = [base + (8 + 3 * k + n) * l2_line for n in range(3)]
+    instr = [base + 0x800 + (2 * k + n) * l2_line for n in range(2)]
     await _line_transaction(dut, write=True, addr=lines[0], wdata=0, wstrb=1)
     model.write_line(lines[0], 0, 1)
     for addr in instr:
@@ -927,6 +1241,33 @@ async def _hold_shared_level(
     for addr in lines[1:]:
         await _line_transaction(dut, write=True, addr=addr, wdata=0, wstrb=1)
         model.write_line(addr, 0, 1)
+
+
+async def _write_until_evicted(
+    dut: Any, model: ReferenceModel, addr: int, seed: int
+) -> list[int]:
+    """Write whole new lines of addr's L1D set until addr's line leaves it.
+
+    Whole-line writes install without a fetch, so each is acknowledged at
+    once and the eviction follows the previous step closely. Returns the
+    lines written.
+    """
+    geom = cache_geometry(dut)
+    full = (1 << LINE_BYTES) - 1
+    written = []
+    for n, alias in enumerate(
+        fresh_aliases(addr, geom.l1d_way_bytes, geom.evicting_misses(geom.l1d_ways))
+    ):
+        data = _line_int(bytes([(seed + 7 * n + b) & 0xFF for b in range(32)]))
+        model.write_line(alias, data, full)
+        await _line_transaction(dut, write=True, addr=alias, wdata=data, wstrb=full)
+        written.append(alias)
+        # The acknowledgement can leave before the W stage's tag write lands.
+        for _ in range(2):
+            await FallingEdge(dut.i_clk)
+        if not l1d_tag_state(dut, addr)[0]:
+            return written
+    raise AssertionError(f"0x{addr:08x} stayed in the L1D past {len(written)} misses")
 
 
 @cocotb.test()
@@ -951,7 +1292,6 @@ async def test_store_after_walker_probe_then_evict(dut: Any) -> None:
 
     for k in range(4):
         addr = base + k * 0x1000 + 7 * LINE_BYTES
-        alias = addr + 1024  # same L1 index, another tag: evicts addr
         wdata = _line_int(bytes([(0xC0 + 3 * k + b) & 0xFF for b in range(32)]))
         model.write_line(addr, wdata, full)
         await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
@@ -966,9 +1306,8 @@ async def test_store_after_walker_probe_then_evict(dut: Any) -> None:
         await _line_transaction(
             dut, write=True, addr=addr, wdata=store, wstrb=0x0000_FF00
         )
-        evict = _line_int(bytes([0x3C ^ k] * 32))
-        model.write_line(alias, evict, full)
-        await _line_transaction(dut, write=True, addr=alias, wdata=evict, wstrb=full)
+        # Whole-line writes of new lines of its set evict it next.
+        aliases = await _write_until_evicted(dut, model, addr, 0x3C + 16 * k)
         got = await walk
         assert got in (wdata, model.read_line(addr)), f"walk read torn @0x{addr:08x}"
 
@@ -976,7 +1315,8 @@ async def test_store_after_walker_probe_then_evict(dut: Any) -> None:
         await _check_read(dut, model, addr)
         got = await _port_transaction(dut, "wup", write=False, addr=addr)
         assert got == model.read_line(addr), f"store lost below the L1D @0x{addr:08x}"
-        await _check_read(dut, model, alias)
+        for alias in aliases:
+            await _check_read(dut, model, alias)
 
     mon.stop()
     assert mon.hit_stalls > 0, (
@@ -992,9 +1332,12 @@ async def test_no_fetch_refill_waits_for_own_writeback(dut: Any) -> None:
     copy whose eviction overtakes the old writeback. Protocol checks reject
     installs while a writeback of the same line remains pending.
 
-    Use fresh lines that miss in L2, hold the L2 miss slots full to delay the
-    snapshot, and rotate three tags through one L1 index. The monitor must see an install wait, and every
-    reader must see the last write.
+    Use fresh lines that miss in L2, hold the L2 miss slots full, and hold
+    the bridge so those fills, and with them the L1D's writebacks, wait.
+    Whole-line writes of new lines of A's L1 set evict A; the whole-line
+    write of A then evicts another line and must wait to install. The bridge
+    is released, and more new lines evict A again. The monitor must see an
+    install wait, and every reader must see the last write.
     """
     await _setup(dut)
     mon = _WritebackHazardMonitor(dut)
@@ -1005,32 +1348,36 @@ async def test_no_fetch_refill_waits_for_own_writeback(dut: Any) -> None:
 
     for k in range(4):
         a = base + k * 0x1000 + 5 * LINE_BYTES
-        x = a + 1024  # same L1 index, other tags
-        c = a + 2048
         v0 = _line_int(bytes([(0x90 + 5 * k + b_) & 0xFF for b_ in range(32)]))
         model.write_line(a, v0, full)
         await _line_transaction(dut, write=True, addr=a, wdata=v0, wstrb=full)
+        await FallingEdge(dut.i_clk)
+        dut.i_down_hold.value = 1
         await _hold_shared_level(dut, model, hold_base, k)
 
-        # X evicts A (its snapshot goes to a slot) and installs without a
-        # fetch; the whole-line write of A evicts X and must wait for A's
-        # snapshot to be acknowledged before it installs; C evicts A again.
-        vx = _line_int(bytes([(0x40 + k) ^ b_ for b_ in range(32)]))
-        model.write_line(x, vx, full)
-        await _line_transaction(dut, write=True, addr=x, wdata=vx, wstrb=full)
+        # New lines X evict A (its snapshot goes to a slot) and install
+        # without a fetch; the whole-line write of A evicts one of them and
+        # must wait for A's snapshot to be acknowledged before it installs;
+        # new lines C evict A again.
+        xs = await _write_until_evicted(dut, model, a, 0x40 + 16 * k)
         v1 = _line_int(bytes([(0x21 * (k + 1) + b_) & 0xFF for b_ in range(32)]))
         model.write_line(a, v1, full)
         await _line_transaction(dut, write=True, addr=a, wdata=v1, wstrb=full)
-        vc = _line_int(bytes([(0x70 + k) ^ b_ for b_ in range(32)]))
-        model.write_line(c, vc, full)
-        await _line_transaction(dut, write=True, addr=c, wdata=vc, wstrb=full)
+        waits_before = mon.install_waits
+        await _settle(dut, 20)
+        assert mon.install_waits > waits_before, (
+            f"round {k}: A's install did not wait for its writeback"
+        )
+        await FallingEdge(dut.i_clk)
+        dut.i_down_hold.value = 0
+        cs = await _write_until_evicted(dut, model, a, 0x70 + 16 * k)
 
         await _settle(dut)
         await _check_read(dut, model, a)
         got = await _port_transaction(dut, "wup", write=False, addr=a)
         assert got == model.read_line(a), f"older writeback landed last @0x{a:08x}"
-        await _check_read(dut, model, x)
-        await _check_read(dut, model, c)
+        for line in xs + cs:
+            await _check_read(dut, model, line)
 
     mon.stop()
     assert mon.install_waits > 0, (
@@ -1125,7 +1472,7 @@ async def test_perf_events_partition_known_traffic_and_exclude_maintenance(
     monitor = cocotb.start_soon(_monitor_perf_events(dut, counts, stop))
 
     # One cold + one warm read on each L1 gives a deterministic 2 = 1 hit +
-    # 1 miss partition. Keep the addresses on distinct L1 indices.
+    # 1 miss partition. Keep the addresses on distinct L1 sets.
     d_addr = PERF_BASE + 1 * LINE_BYTES
     i_addr = PERF_BASE + 2 * LINE_BYTES
     assert await _line_transaction(dut, write=False, addr=d_addr) == 0
@@ -1133,43 +1480,25 @@ async def test_perf_events_partition_known_traffic_and_exclude_maintenance(
     assert await _port_transaction(dut, "iup", write=False, addr=i_addr) == 0
     assert await _port_transaction(dut, "iup", write=False, addr=i_addr) == 0
 
-    # Four whole-line writes alias in L1D. The first two evicted lines land in
-    # distinct L2 indices; the third aliases the first in L2, so evicting it
-    # from L1D produces a positive, ordinary-traffic L2 writeback. The fourth
-    # remains dirty in L1D for the maintenance-exclusion check below.
+    # Whole-line writes of new lines that share both an L1D set and an L2 set
+    # (one L2 way apart, a multiple of the L1D way). The first L1D_WAYS fill
+    # the L1D set and each later one evicts a dirty line. Those writebacks
+    # miss in the L2 and fill its set, and the one past L2_WAYS evicts a dirty
+    # L2 line: one positive, ordinary-traffic L2 writeback. L1D_WAYS lines
+    # stay dirty in the L1D for the maintenance-exclusion check below.
     full = (1 << LINE_BYTES) - 1
-    dirty_addr = PERF_BASE + 7 * LINE_BYTES
-    dirty_l1_alias = dirty_addr + 1024  # harness L1D is 1 KiB
-    dirty_l2_alias = dirty_addr + 4096  # harness L2 is 4 KiB
-    dirty_l2_alias_2 = dirty_addr + 8192
-    await _line_transaction(
-        dut,
-        write=True,
-        addr=dirty_addr,
-        wdata=_line_int(bytes([0x4A] * LINE_BYTES)),
-        wstrb=full,
-    )
-    await _line_transaction(
-        dut,
-        write=True,
-        addr=dirty_l1_alias,
-        wdata=_line_int(bytes([0xB7] * LINE_BYTES)),
-        wstrb=full,
-    )
-    await _line_transaction(
-        dut,
-        write=True,
-        addr=dirty_l2_alias,
-        wdata=_line_int(bytes([0x6D] * LINE_BYTES)),
-        wstrb=full,
-    )
-    await _line_transaction(
-        dut,
-        write=True,
-        addr=dirty_l2_alias_2,
-        wdata=_line_int(bytes([0x93] * LINE_BYTES)),
-        wstrb=full,
-    )
+    geom = cache_geometry(dut)
+    assert geom.l2_way_bytes % geom.l1d_way_bytes == 0
+    writes = geom.l1d_ways + geom.l2_ways + 1
+    l1d_writebacks = writes - geom.l1d_ways
+    for n in range(writes):
+        await _line_transaction(
+            dut,
+            write=True,
+            addr=PERF_BASE + 7 * LINE_BYTES + n * geom.l2_way_bytes,
+            wdata=_line_int(bytes([(0x4A + 0x3B * n) & 0xFF] * LINE_BYTES)),
+            wstrb=full,
+        )
 
     await _settle(dut)
     await Timer(1, unit="ns")
@@ -1179,19 +1508,19 @@ async def test_perf_events_partition_known_traffic_and_exclude_maintenance(
     assert counts["l1i"]["miss"] == 1
     assert counts["l1i"]["writeback"] == 0
 
-    assert counts["l1d"]["access"] == 6
+    assert counts["l1d"]["access"] == 2 + writes
     assert counts["l1d"]["hit"] == 1
-    assert counts["l1d"]["miss"] == 5
-    assert counts["l1d"]["writeback"] == 3
+    assert counts["l1d"]["miss"] == 1 + writes
+    assert counts["l1d"]["writeback"] == l1d_writebacks
     assert counts["l1d"]["miss_outstanding"] > 0
 
     assert counts["l1i"]["hit"] + counts["l1i"]["miss"] == counts["l1i"]["access"]
     assert counts["l1d"]["hit"] + counts["l1d"]["miss"] == counts["l1d"]["access"]
 
-    # Cold D/I reads + three ordinary dirty L1D victims written to L2.
-    assert counts["l2"]["access"] == 5
+    # Cold D/I reads + the ordinary dirty L1D victims written to L2.
+    assert counts["l2"]["access"] == 2 + l1d_writebacks
     assert counts["l2"]["hit"] == 0
-    assert counts["l2"]["miss"] == 5
+    assert counts["l2"]["miss"] == 2 + l1d_writebacks
     assert counts["l2"]["writeback"] == 1
     assert counts["l2"]["miss_outstanding"] > 0
     assert counts["l2"]["hit"] + counts["l2"]["miss"] == counts["l2"]["access"]
@@ -1201,10 +1530,10 @@ async def test_perf_events_partition_known_traffic_and_exclude_maintenance(
     await _settle(dut)
     await Timer(1, unit="ns")
 
-    # The fence writes dirty_l2_alias_2 back from the L1D; in the L2 it
-    # collides with dirty_l2_alias, still dirty there, and forces another L2
-    # victim writeback. Neither the walk nor that lower-level work is ordinary
-    # traffic, so no event or miss-occupancy total may move.
+    # The fence writes the L1D's dirty lines back; in the L2 they miss in a
+    # set of dirty lines and force more L2 victim writebacks. Neither the walk
+    # nor that lower-level work is ordinary traffic, so no event or
+    # miss-occupancy total may move.
     assert counts == before_fence
 
     stop[0] = True
@@ -1217,11 +1546,12 @@ async def test_l2_stall_events_exclude_fence_writebacks(dut: Any) -> None:
     """The L2's stall events leave out the stalls of fence.i writeback traffic.
 
     Fills held at the L2 (i_down_hold) make a fence's L1D writeback, which
-    carries the maintenance bit, stall there: first on an index conflict
-    with a pending fill, then with every L2 miss slot taken by pending
-    fills. A monitor of the L2's decision stage must see both stalls while
-    the L2's conflict and slot-full events stay at zero. The bench's
-    ordinary traffic never stalls at the L2, which the monitor checks too.
+    carries the maintenance bit, stall there: first on a conflict with a
+    pending read fill of its own L2 line, then with every L2 miss slot taken
+    by pending fills. A monitor of the L2's decision stage must see both
+    stalls while the L2's conflict and slot-full events stay at zero. The
+    bench's ordinary traffic never stalls at the L2, which the monitor
+    checks too.
     """
     await _setup(dut)
     l2 = dut.cache_hierarchy.l2_cache
@@ -1235,7 +1565,11 @@ async def test_l2_stall_events_exclude_fence_writebacks(dut: Any) -> None:
             await FallingEdge(dut.i_clk)
             if not int(l2.decide.value):
                 continue
-            conflict = int(l2.stall_conflict.value) | int(l2.stall_wb_snapshot.value)
+            conflict = (
+                int(l2.stall_conflict.value)
+                | int(l2.stall_ways.value)
+                | int(l2.stall_wb_snapshot.value)
+            )
             full = int(l2.stall_full.value)
             if int(l2.t_maint_q.value):
                 stalls["maint_conflict"] += conflict
@@ -1264,10 +1598,12 @@ async def test_l2_stall_events_exclude_fence_writebacks(dut: Any) -> None:
         await fence
         await _settle(dut)
 
-    # An L1I miss on the dirty line's L2 index (another tag) is pending when
-    # the writeback arrives.
+    # An L1I read miss on the dirty line's L2 line (its other half, or with
+    # 32-byte L2 lines the line itself) is pending when the writeback
+    # arrives: a write never merges into a read's miss slot.
     dirty = base + 5 * LINE_BYTES
-    await _fence_behind_held_fills(dirty, [("iup", dirty + 4096)])
+    same_l2_line = dirty ^ LINE_BYTES if l2_line_bytes(dut) > LINE_BYTES else dirty
+    await _fence_behind_held_fills(dirty, [("iup", same_l2_line)])
     # Two L1I misses, a walk and a DMA read take the L2's four miss slots.
     reads = base + 0x4000
     await _fence_behind_held_fills(
@@ -1286,7 +1622,7 @@ async def test_l2_stall_events_exclude_fence_writebacks(dut: Any) -> None:
     watcher.cancel()
     assert stalls["plain"] == 0, f"ordinary traffic stalled at the L2: {stalls}"
     assert stalls["maint_conflict"] > 0, (
-        "the fence's writeback never met an index conflict at the L2"
+        "the fence's writeback never met a conflict at the L2"
     )
     assert stalls["maint_full"] > 0, (
         "the fence's writeback never found the L2's miss slots full"

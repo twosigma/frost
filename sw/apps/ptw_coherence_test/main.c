@@ -58,18 +58,21 @@
 
 /* ------------------------------------------------------------------ *
  * Physical layout (cached DDR, inside the 64 MiB simulation model,
- * clear of any program image). L1D is direct-mapped 128 KiB with 32 B
- * lines: index = PA[16:5], so the L1D "index block" of a 4 KiB page is
- * PA[16:12] (= (PA>>12)&0x1F). Distinct blocks below never collide.
+ * clear of any program image). The L1D is 128 KiB and 4-way with 32 B
+ * lines: set = PA[14:5], so the L1D "set block" of a 4 KiB page is
+ * PA[14:12] (= (PA>>12)&0x7). Lines in the same block share sets, but in the
+ * test window no set holds as many of the lines below as it has ways, so
+ * only the alias stores evict anything.
  *
  *   block 0  PT_ROOT      0x8300_0000  Sv39 root (level 2)
  *   block 1  PT_PMD       0x8300_1000  level-1 table (R + filler entries)
  *   block 2  T page 0     0x8300_2000  child level-0 table
  *   block 3  DECOY_FRAME  0x8300_3000  wrong-data frame for the DECOY flavor
- *   block 4  OUT_SCRATCH  0x8300_4000  test-window outputs (safe index)
+ *   block 4  OUT_SCRATCH  0x8300_4000  test-window outputs (safe set)
  *   block 6  T page 1     0x8300_6000
- *   block 10 T page 2     0x8300_A000
- *   block 1  ALIAS        0x8302_1xxx  PMD_line + 0x20000 (evict scratch)
+ *   block 2  T page 2     0x8300_A000
+ *   block 1  ALIAS        0x8302_1xxx  PMD_line + k * 0x20000, k = 1..5
+ *                                      (evict scratch, to 0x830A_1xxx)
  *   P1       0x8340_0000  R's physical 2 MiB region (2 MiB aligned)
  *   P_FILLER 0x8380_0000  filler superpage target (2 MiB aligned)
  * ------------------------------------------------------------------ */
@@ -79,7 +82,7 @@
 #define OUT_SCRATCH 0x83004000ul
 #define P1_BASE 0x83400000ul
 #define P_FILLER 0x83800000ul
-#define L1D_ALIAS_STRIDE 0x20000ul /* 128 KiB: same L1D index, different tag */
+#define L1D_ALIAS_STRIDE 0x20000ul /* 128 KiB: same L1D set, different tag */
 
 static const unsigned long T_PAGES[3] = {
     0x83002000ul,
@@ -121,8 +124,9 @@ struct iter_cfg {
     unsigned flavor;
 };
 
-/* Each tp is chosen so R's target P1 page (L1D block tp&0x1F) does not collide
- * with any reserved block {0,1,2,3,4,6,10}. */
+/* Each tp keeps R's target P1 page (L1D block tp&0x7) off T's blocks {2,6}.
+ * It may share a set block with the other reserved pages, adding one line to
+ * sets that have four ways. */
 static const struct iter_cfg CFGS[] = {
     {0x20, 12, 0, FLAVOR_INVALID},
     {0x21, 5, 1, FLAVOR_DECOY},
@@ -309,8 +313,8 @@ static int do_iter(unsigned iter, const struct iter_cfg *c)
         }
     }
 
-    /* Output stores use L1D block 4, distinct from T, so they cannot evict
-     * dirty child lines. Initialize them before the test window. */
+    /* Output stores use L1D block 4, away from T's sets, so they cannot
+     * evict dirty child lines. Initialize them before the test window. */
     sd_phys(OUT_SCRATCH + 0, 0xBADul); /* pmd readback  */
     sd_phys(OUT_SCRATCH + 8, 0xBADul); /* S7 load value */
     g_cause = ~0ul;
@@ -340,10 +344,22 @@ static int do_iter(unsigned iter, const struct iter_cfg *c)
         /* S5b: publish the PMD pointer -> T (dirty in the L1D). */
         "  sd   %[pmdptr], 0(%[pmdent])\n"
         "  fence\n" /* PMD store settled into the L1D before eviction */
-        /* S6a: evict only the PMD line with a store to the +128 KiB alias. A
-         * load could be answered by the load path without displacing the
+        /* S6a: evict only the PMD line with stores to the five lines 128 KiB
+         * apart above it, in its L1D set: the PMD line is installed, and
+         * after its store, five other lines of its set evict it from the
+         * 4-way L1D whatever the set holds.
+         * A load could be answered by the load path without displacing the
          * line. */
         "  sd   x0, 0(%[alias])\n"
+        "  li   t5, 0x20000\n" /* L1D_ALIAS_STRIDE */
+        "  add  t6, %[alias], t5\n"
+        "  sd   x0, 0(t6)\n"
+        "  add  t6, t6, t5\n"
+        "  sd   x0, 0(t6)\n"
+        "  add  t6, t6, t5\n"
+        "  sd   x0, 0(t6)\n"
+        "  add  t6, t6, t5\n"
+        "  sd   x0, 0(t6)\n"
         "  fence\n" /* drain: the eviction writeback is now in flight */
         /* S6b: reload the PMD line. It misses the L1D, and its fill waits for
          * the line's writeback (frost_cache's same-line writeback interlock),

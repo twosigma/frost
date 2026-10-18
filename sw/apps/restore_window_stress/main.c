@@ -29,9 +29,9 @@
  *   rw_mret:    mret                    -> U-pad (ecall back) or M-pad
  *   rw_winend:
  *
- * An L1D-alias store evicts the cached-DDR frame each iteration, forcing misses
- * and a slow committed-SC drain. Every fourth iteration also runs an AMO with
- * interrupts enabled just before rw_irqoff.
+ * Stores to lines of the frame's L1D sets evict the cached-DDR frame each
+ * iteration, forcing misses and a slow committed-SC drain. Every fourth
+ * iteration also runs an AMO with interrupts enabled just before rw_irqoff.
  *
  * On every tick, mstatus.MIE must be clear at entry and mepc must not lie inside
  * (rw_irqoff,rw_winend). After csrci, M-mode delivery is ineligible through
@@ -53,11 +53,16 @@
 #define N_ITER 800u
 #endif
 
-/* Rotate through 64 DDR frames spaced 64 bytes apart. Dirtying the +0x20000
- * alias in the 128 KiB direct-mapped L1D forces a cold next access. The region
- * stays within the simulation model's 64 MiB backing. */
+/* Rotate through 64 DDR frames spaced 64 bytes apart. Lines a multiple of
+ * 0x20000 (the 128 KiB L1D's size) away share a frame line's set. After a
+ * frame line's own stores, dirtying FRAME_ALIASES such lines usually evicts
+ * it from the 4-way L1D, so the next access is cold: they do unless the
+ * frame line's own fill is still pending when they arrive. One did for a
+ * direct-mapped L1D, where a miss waited for any other miss in its set. The
+ * region stays within the simulation model's 64 MiB backing. */
 #define FRAME_BASE 0x82800000u
 #define FRAME_ALIAS_XOR 0x20000u
+#define FRAME_ALIASES 5u
 
 /* Mirror rv64 ret_from_exception with 8-byte pt_regs slots, ld/sc.d, full-width
  * handler saves, and mcause bit 63. The counters and CLINT MMIO accesses are
@@ -301,12 +306,11 @@ int main(void)
         g_iter = i;
         uint32_t pad_before = g_pad;
 
-        /* Rotate across 64 frames and dirty each frame's L1D alias. The
-         * frame's refill then evicts the dirty alias, creating writeback
+        /* Rotate across 64 frames and dirty each frame's L1D aliases. The
+         * frame's refill then evicts a dirty alias, creating writeback
          * traffic during the restore window. */
         volatile rw_word_t *frame =
             (volatile rw_word_t *) (uintptr_t) (FRAME_BASE + ((i & 63u) << 6));
-        volatile rw_word_t *alias = (volatile rw_word_t *) ((uintptr_t) frame ^ FRAME_ALIAS_XOR);
 
         uint32_t to_umode = i & 1u;
         frame[0] =
@@ -315,8 +319,12 @@ int main(void)
         frame[2] = i ^ 0x55555555u;
         frame[3] = ~i;
         frame[4] = i * 3u;
-        alias[0] = i;
-        alias[4] = i ^ 0xA5A5A5A5u;
+        for (uint32_t k = 1; k <= FRAME_ALIASES; k++) {
+            volatile rw_word_t *alias =
+                (volatile rw_word_t *) ((uintptr_t) frame ^ (k * FRAME_ALIAS_XOR));
+            alias[0] = i;
+            alias[4] = i ^ 0xA5A5A5A5u;
+        }
 
         /* Place the next tick at a finely swept offset around window entry
          * (the handler's own re-arm then keeps the phase drifting). */

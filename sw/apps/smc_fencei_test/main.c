@@ -43,7 +43,7 @@ __attribute__((section(".ddr_data"), aligned(32))) static volatile uint32_t ddr_
  * data relocation; volatile prevents -O3 from folding it back. */
 static volatile uint32_t *volatile ddr_code_p = &ddr_code[0];
 
-/* Direct-mapped L1D = 128 KiB. */
+/* 128 KiB L1D: lines this far apart share a set. */
 #define L1D_BYTES (128u * 1024u)
 
 typedef int (*fn_t)(void);
@@ -70,9 +70,12 @@ static patch_fn_t const patchers[] = {patch_g0, patch_g1, patch_g2, patch_g3, pa
 static const int gaps[] = {0, 1, 2, 3, 4, 8};
 #define NGAPS ((int) (sizeof(gaps) / sizeof(gaps[0])))
 
-/* Conflict-evict the ddr_code line by reading aliases at +N*128 KiB. One read
- * is enough for the direct-mapped L1D; the extra reads also cover a
- * set-associative L1D. */
+/* Conflict-evict the ddr_code line by reading aliases at +N*128 KiB, in its
+ * L1D set. The previous fence.i left the line installed, and five reads of
+ * other lines of its set evict it from the 4-way L1D whatever the set holds
+ * (one did for a direct-mapped L1D). The aliases share one entry of the load
+ * queue's L0, which can answer the read of the alias it filled last, so
+ * there are six. */
 static inline void evict_code_line(void)
 {
     uintptr_t base = (uintptr_t) ddr_code_p;
@@ -80,7 +83,9 @@ static inline void evict_code_line(void)
     volatile uint32_t *a2 = (volatile uint32_t *) (base + 2u * L1D_BYTES);
     volatile uint32_t *a3 = (volatile uint32_t *) (base + 3u * L1D_BYTES);
     volatile uint32_t *a4 = (volatile uint32_t *) (base + 4u * L1D_BYTES);
-    volatile uint32_t s = *a1 + *a2 + *a3 + *a4;
+    volatile uint32_t *a5 = (volatile uint32_t *) (base + 5u * L1D_BYTES);
+    volatile uint32_t *a6 = (volatile uint32_t *) (base + 6u * L1D_BYTES);
+    volatile uint32_t s = *a1 + *a2 + *a3 + *a4 + *a5 + *a6;
     (void) s;
 }
 

@@ -1345,6 +1345,38 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         extra_env=(("PACKED_TAG_TEST_BULK_CLEAR", "0"),),
     ),
+    "packed_tag_uram_15_groups4": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_sdp_packed_tag_uram",
+        hdl_toplevel_module="sdp_packed_tag_uram",
+        description=(
+            "Packed tag RAM reads of four-entry groups and masked writes with "
+            "15-bit entries, one group per hardware row, as the L2 reads a set"
+        ),
+        verilator_extra_args=(
+            "-GADDR_WIDTH=15",
+            "-GDATA_WIDTH=15",
+            "-GREAD_LATENCY=3",
+            "-GREAD_WORDS=4",
+            "-GSUPPORT_BULK_CLEAR=0",
+        ),
+        extra_env=(("PACKED_TAG_TEST_BULK_CLEAR", "0"),),
+    ),
+    "packed_tag_uram_24_groups4_clear": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_sdp_packed_tag_uram",
+        hdl_toplevel_module="sdp_packed_tag_uram",
+        description=(
+            "Packed tag RAM four-entry groups spread over two banks with 24-bit "
+            "entries, and simulation bulk clear"
+        ),
+        verilator_extra_args=(
+            "-GADDR_WIDTH=6",
+            "-GDATA_WIDTH=24",
+            "-GREAD_LATENCY=3",
+            "-GREAD_WORDS=4",
+            "-GSUPPORT_BULK_CLEAR=1",
+        ),
+        extra_env=(("PACKED_TAG_TEST_BULK_CLEAR", "1"),),
+    ),
     "frost_cache": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache",
         hdl_toplevel_module="frost_cache_test_harness",
@@ -1489,6 +1521,38 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GL1D_NUM_MSHR=8",
             "-GL2_NUM_WAITERS=2",
             "-GL2_PREFETCH=1",
+        ),
+    ),
+    # The data-integrity, concurrency, DMA, and L2-line suites with
+    # direct-mapped caches (one way per set), which the benches derive their
+    # evictions from.
+    "frost_cache_ways1": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="L1/L2/DDR data integrity with direct-mapped caches",
+        verilator_extra_args=("-GL1D_WAYS=1", "-GL1I_WAYS=1", "-GL2_WAYS=1"),
+    ),
+    "frost_cache_concurrency_ways1": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_concurrency",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="Overlapping cache requests with direct-mapped caches",
+        verilator_extra_args=("-GL1D_WAYS=1", "-GL1I_WAYS=1", "-GL2_WAYS=1"),
+    ),
+    "frost_cache_dma_ways1": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_dma",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="DMA coherence with direct-mapped caches",
+        verilator_extra_args=("-GL1D_WAYS=1", "-GL1I_WAYS=1", "-GL2_WAYS=1"),
+    ),
+    "frost_cache_l2_lines_ways1": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_l2_lines",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="64-byte L2 lines with direct-mapped caches",
+        verilator_extra_args=(
+            "-GL2_LINE_BYTES=64",
+            "-GL1D_WAYS=1",
+            "-GL1I_WAYS=1",
+            "-GL2_WAYS=1",
         ),
     ),
     # fence.i maintenance cycle-count measurement at the production cache

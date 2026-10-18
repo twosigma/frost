@@ -12,7 +12,13 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Check sdp_packed_tag_uram packing, latency, and optional bulk clear."""
+"""Check sdp_packed_tag_uram packing, groups, latency, and optional bulk clear.
+
+The geometry comes from the port widths: DATA_WIDTH from i_write_data and
+READ_WORDS from i_write_word_mask. A read returns the aligned group of
+READ_WORDS entries holding its address; a write updates the masked words of
+the group holding its address.
+"""
 
 import os
 from typing import Any
@@ -31,24 +37,47 @@ async def _tick(dut: Any) -> None:
     await Timer(1, unit="ns")
 
 
+def _read_words(dut: Any) -> int:
+    return len(dut.i_write_word_mask)
+
+
 def _drive_idle(dut: Any) -> None:
     dut.i_write_enable.value = 0
     dut.i_bulk_clear.value = 0
     dut.i_write_address.value = 0
+    dut.i_write_word_mask.value = 0
     dut.i_write_data.value = 0
     dut.i_read_enable.value = 0
     dut.i_read_address.value = 0
 
 
-async def _write(dut: Any, address: int, data: int) -> None:
+def _drive_write(dut: Any, address: int, data: int, mask: int | None) -> None:
+    """Present one write; mask defaults to address's own word of its group."""
     dut.i_write_enable.value = 1
     dut.i_write_address.value = address
+    dut.i_write_word_mask.value = (
+        1 << (address % _read_words(dut)) if mask is None else mask
+    )
     dut.i_write_data.value = data
+
+
+async def _write(dut: Any, address: int, data: int, mask: int | None = None) -> None:
+    _drive_write(dut, address, data, mask)
     await _tick(dut)
     dut.i_write_enable.value = 0
 
 
-async def _read(dut: Any, address: int) -> int:
+def _word(dut: Any, group: int, address: int) -> int:
+    """Return address's word of a read group's output."""
+    width = len(dut.i_write_data)
+    return (group >> (width * (address % _read_words(dut)))) & ((1 << width) - 1)
+
+
+def _output(dut: Any, address: int) -> int:
+    return _word(dut, int(dut.o_read_data.value), address)
+
+
+async def _read_group(dut: Any, address: int) -> int:
     dut.i_read_enable.value = 1
     dut.i_read_address.value = address
     await _tick(dut)
@@ -56,6 +85,10 @@ async def _read(dut: Any, address: int) -> int:
     for _ in range(READ_LATENCY - 1):
         await _tick(dut)
     return int(dut.o_read_data.value)
+
+
+async def _read(dut: Any, address: int) -> int:
+    return _word(dut, await _read_group(dut, address), address)
 
 
 def _slots_per_row(data_width: int) -> int:
@@ -78,9 +111,10 @@ async def test_packed_tag_uram(dut: Any) -> None:
 
     data_width = len(dut.i_write_data)
     address_width = len(dut.i_write_address)
+    words = _read_words(dut)
     data_mask = (1 << data_width) - 1
     logical_depth = 1 << address_width
-    slots_per_row = _slots_per_row(data_width)
+    slots_per_row = max(_slots_per_row(data_width), words)
     test_bulk_clear = os.environ["PACKED_TAG_TEST_BULK_CLEAR"] == "1"
 
     if test_bulk_clear:
@@ -122,15 +156,15 @@ async def test_packed_tag_uram(dut: Any) -> None:
     dut.i_read_address.value = target_address
     await _tick(dut)
     dut.i_read_enable.value = 0
-    assert int(dut.o_read_data.value) == marker
+    assert _output(dut, marker_address) == marker
     await _tick(dut)
-    assert int(dut.o_read_data.value) == marker
+    assert _output(dut, marker_address) == marker
     await _tick(dut)
-    assert int(dut.o_read_data.value) == target
+    assert _output(dut, target_address) == target
 
     # Back-to-back requests may select different lanes and rows. A gap has no
     # response and therefore holds the preceding output rather than replaying
-    # stale row data through the final lane-select register.
+    # stale row data through the final group-select register.
     addresses = (0, slots_per_row - 1, 2 * slots_per_row)
     dut.i_read_enable.value = 1
     dut.i_read_address.value = addresses[0]
@@ -139,16 +173,16 @@ async def test_packed_tag_uram(dut: Any) -> None:
     await _tick(dut)
     dut.i_read_enable.value = 0
     await _tick(dut)
-    assert int(dut.o_read_data.value) == values[addresses[0]]
+    assert _output(dut, addresses[0]) == values[addresses[0]]
     dut.i_read_enable.value = 1
     dut.i_read_address.value = addresses[2]
     await _tick(dut)
     dut.i_read_enable.value = 0
-    assert int(dut.o_read_data.value) == values[addresses[1]]
+    assert _output(dut, addresses[1]) == values[addresses[1]]
     await _tick(dut)
-    assert int(dut.o_read_data.value) == values[addresses[1]]
+    assert _output(dut, addresses[1]) == values[addresses[1]]
     await _tick(dut)
-    assert int(dut.o_read_data.value) == values[addresses[2]]
+    assert _output(dut, addresses[2]) == values[addresses[2]]
 
     # A same-address read/write collision is read-first: the outstanding read
     # returns the old tag while a later request sees the new tag.
@@ -157,23 +191,46 @@ async def test_packed_tag_uram(dut: Any) -> None:
     new_value = (old_value ^ data_mask) & data_mask
     dut.i_read_enable.value = 1
     dut.i_read_address.value = collision_address
-    dut.i_write_enable.value = 1
-    dut.i_write_address.value = collision_address
-    dut.i_write_data.value = new_value
+    _drive_write(dut, collision_address, new_value, None)
     await _tick(dut)
     dut.i_read_enable.value = 0
     dut.i_write_enable.value = 0
     for _ in range(READ_LATENCY - 1):
         await _tick(dut)
-    assert int(dut.o_read_data.value) == old_value
+    assert _output(dut, collision_address) == old_value
     assert await _read(dut, collision_address) == new_value
+    values[collision_address] = new_value
+
+    if words > 1:
+        # A read returns every word of its group, whichever word it names.
+        group_base = 2 * words
+        group = await _read_group(dut, group_base + words - 1)
+        for word in range(words):
+            assert _word(dut, group, group_base + word) == values[group_base + word]
+        # A masked write updates exactly the masked words, with one value.
+        fill = 0x1D2B3 & data_mask
+        mask = 0b101 & ((1 << words) - 1)
+        await _write(dut, group_base + 1, fill, mask)
+        for word in range(words):
+            if (mask >> word) & 1:
+                values[group_base + word] = fill
+        for word in range(words):
+            address = group_base + word
+            assert await _read(dut, address) == values[address]
+        # Every word at once, as the cache's reset sweep clears a set.
+        await _write(dut, group_base, 0, (1 << words) - 1)
+        for word in range(words):
+            values[group_base + word] = 0
+            assert await _read(dut, group_base + word) == 0
+        # The neighbouring groups are untouched.
+        for address in (group_base - 1, group_base + words):
+            if address in values:
+                assert await _read(dut, address) == values[address]
 
     if test_bulk_clear:
         # Clear wins over a simultaneous write and clears every physical row.
         dut.i_bulk_clear.value = 1
-        dut.i_write_enable.value = 1
-        dut.i_write_address.value = collision_address
-        dut.i_write_data.value = data_mask
+        _drive_write(dut, collision_address, data_mask, (1 << words) - 1)
         await _tick(dut)
         dut.i_bulk_clear.value = 0
         dut.i_write_enable.value = 0

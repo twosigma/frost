@@ -15,39 +15,55 @@
  */
 
 /*
- * frost_cache: direct-mapped, non-blocking, write-back, write-allocate line
+ * frost_cache: set-associative, non-blocking, write-back, write-allocate line
  * cache, one module for the L1D, L1I, and L2. Both ports speak the tagged
  * line protocol, so levels stack (hw/rtl/lib/cache/README.md, "The line
  * cache").
+ *
+ * Geometry. The address bits above the line offset pick a set, and a line
+ * may sit in any of its set's WAYS ways (WAYS=1 is direct-mapped). Each way
+ * has a tag entry {valid, dirty, tag}; T reads every way of a set at once.
+ * The data array holds one line per row, addressed {way, set}, and is read
+ * one stage after the tag compare, so its address comes from a register.
+ * Each set keeps a tree pseudo-LRU state of WAYS-1 bits in its own small
+ * array, read with the tags.
  *
  * Pipeline. A fired request goes straight to the tag stage T, or waits in a
  * one-entry skid until T can take it. Ready uses skid state and maintenance.
  * T decides when the tag read returns (TAG_READ_LATENCY cycles), and the side
  * effects land in the write stage W the cycle after the decision:
- *   - read hit:  T reads the data array; the response carries its output
- *                DATA_READ_LATENCY cycles later. One-cycle tags decide one
- *                request per cycle; delayed tags serialize T;
+ *   - read hit:  W reads the hit way's row; the response carries the data
+ *                array's output DATA_READ_LATENCY cycles after W. One-cycle
+ *                tags decide one request per cycle; delayed tags serialize T;
  *   - write hit: W writes the strobed bytes and sets dirty; the
  *                acknowledgement is queued from T;
- *   - miss:      T reads a dirty victim into a writeback slot; W invalidates
- *                the victim's tag and allocates a miss-status slot (MSHR),
- *                which fetches the line downstream unless a write covers the
- *                whole line. A write miss is acknowledged from T, where the
- *                store is ordered, and its bytes merge into the fill;
+ *   - miss:      T picks a victim way: the lowest way that is invalid and no
+ *                miss is filling, else the pseudo-LRU way among the ways no
+ *                miss is filling. W invalidates the victim's tag, reads a
+ *                dirty victim into a writeback slot, and allocates a
+ *                miss-status slot (MSHR) that owns the way until it frees.
+ *                The MSHR fetches the line downstream unless a write covers
+ *                the whole line. A write miss is acknowledged from T, where
+ *                the store is ordered, and its bytes merge into the fill;
  *   - secondary: a write to a line whose write-allocate MSHR is pending
  *                merges into it; a read takes one of the MSHR's NUM_WAITERS
- *                waiter seats; anything else aimed at an index in transition
- *                waits.
- * Hits proceed past pending misses, several MSHRs fetch at once, and
- * writebacks drain independently.
+ *                waiter seats; anything else aimed at a line in transition
+ *                waits, and so does a miss whose set has every way owned by
+ *                an MSHR.
+ * Hits and misses on other lines proceed past pending misses, including
+ * lines of the same set, several MSHRs fetch at once, and writebacks drain
+ * independently. Hits and allocations touch their set's pseudo-LRU state in
+ * W; probes, merges, and waiters leave it alone.
  *
  * Ordering (the slave side of the protocol): requests to the same line take
  * effect in acceptance order, though responses may leave in another order.
- * The tag of a line in transition is invalid and its MSHR guards the index
- * until the fill's tag write is visible; a request whose index matches the
- * entry in T or W waits for those stages to drain before reading its tag;
+ * The tag of a line in transition is invalid and its MSHR guards the line
+ * until the fill's tag write is visible; a request whose set matches the
+ * entry in T or W waits for those stages to drain before reading its tags;
  * merges are refused once a read waiter is attached and never go to a read
- * MSHR; a stalled request reads its tag again before deciding again.
+ * MSHR; a stalled request reads its tags again before deciding again. A line
+ * is in at most one way: it is allocated only by a miss, which finds no way
+ * holding it and no MSHR fetching it.
  *
  * Writebacks. A line still in a writeback slot is neither fetched nor
  * installed again until that writeback is acknowledged, and a write hit on a
@@ -57,38 +73,43 @@
  * downstream request arbitration below. Downstream ids are {type, slot}:
  * type 0 is an MSHR's fill, type 1 a writeback slot's write.
  *
- * Each line is one data-array row (sdp_ram_byte_en). Tags use one-cycle
- * block RAM, or for the X3 L2 packed UltraRAM with a TAG_READ_LATENCY-cycle
- * lookup.
+ * Each line is one data-array row (sdp_ram_byte_en). Tags use one block RAM
+ * per way with a one-cycle read, or for the X3 L2 packed UltraRAM, one set
+ * per row, with a TAG_READ_LATENCY-cycle lookup.
  *
- * Reset runs a sweep that clears every tag (NumLines cycles) before ready
- * rises, so every reset, including an image load, discards stale lines
- * instead of writing them back. Maintenance (fence.i) starts only once every
- * slot and stage is empty; ready stays low while it is requested.
- * Invalidate-all reruns the sweep and discards dirty data, so only a
- * read-only cache (the L1I) may use it. Writeback-all walks the index span
- * dirtied since the previous writeback-all, writes each dirty line back
- * through the writeback slots, and leaves it valid and clean. o_maint_busy
- * covers the walk and the drain of its writebacks. SIM_FAST_MAINT
- * (simulation only) makes the sweep one cycle and has writeback-all visit
- * only the dirty lines.
+ * Reset runs a sweep that clears every set's tags and replacement state
+ * (NumSets cycles) before ready rises, so every reset, including an image
+ * load, discards stale lines instead of writing them back. Maintenance
+ * (fence.i) starts only once every slot and stage is empty; ready stays low
+ * while it is requested. Invalidate-all reruns the sweep and discards dirty
+ * data, so only a read-only cache (the L1I) may use it. Writeback-all walks
+ * the set span dirtied since the previous writeback-all, writes each dirty
+ * line back through the writeback slots, and leaves it valid and clean.
+ * o_maint_busy covers the walk and the drain of its writebacks.
+ * SIM_FAST_MAINT (simulation only) makes the sweep one cycle and has
+ * writeback-all visit only the sets with dirty lines.
  *
  * Probes (NUM_PROBE > 0, the L1D) are per-line coherence requests on the
  * upstream port. PROBE_CLEAN writes a dirty copy back and leaves it valid and
  * clean; PROBE_INVAL writes a dirty copy back and invalidates the line. A
- * probe returns no data: its response is the acknowledgement, sent once the
- * level below has acknowledged any writeback the probe caused, so the
- * requester can order its own access behind that writeback. Probes go
- * through the pipeline like other requests but never merge or take a waiter
- * seat. See the probe slots below for the release and fill withholding.
+ * probe compares every way of the line's set, like any request. It returns no
+ * data: its response is the acknowledgement, sent once the level below has
+ * acknowledged any writeback the probe caused, so the requester can order its
+ * own access behind that writeback. Probes go through the pipeline like other
+ * requests but never merge or take a waiter seat. See the probe slots below
+ * for the release and fill withholding.
  *
- * Performance events register one cycle after their decisions. Probes and
- * maintenance traffic are excluded.
+ * Performance events register one cycle after the stage that produces them:
+ * hits, misses, and writebacks from W, stalls from T. Probes and maintenance
+ * traffic are excluded.
  */
 module frost_cache #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned CACHE_SIZE_BYTES = 128 * 1024,
     parameter int unsigned LINE_BYTES = 32,
+    // Ways per set, a power of 2; 1 is direct-mapped. The cache must have at
+    // least two sets.
+    parameter int unsigned WAYS = 4,
     // Transaction id widths of the upstream (slave) and downstream (master)
     // line ports. DOWN_ID_BITS must hold {type, max(NUM_MSHR, NUM_WB) slots}.
     parameter int unsigned UP_ID_BITS = 3,
@@ -105,20 +126,21 @@ module frost_cache #(
     // Data-array primitive + latencies (see sdp_ram_byte_en). "block" for L1,
     // "ultra" for the X3 L2. Simulation behaviour is primitive-agnostic.
     // Untyped because Vivado fails to resolve string-typed parameters
-    // propagated into the XPM macro (see sdp_ram_byte_en).
+    // propagated into the XPM macro (see sdp_ram_byte_en). The read latency
+    // counts from W, where the read is issued.
     // verilog_lint: waive explicit-parameter-storage-type
     parameter DATA_MEMORY_PRIMITIVE = "block",
     parameter int unsigned DATA_READ_LATENCY = 2,
     // Latencies 1 and 2 are supported (the instantiated L1/L2 values).
     parameter int unsigned DATA_WRITE_LATENCY = 1,
     // Tag-array primitive and total logical read latency: "block" (one-cycle
-    // block RAM) for the L1s, "ultra" (the packed UltraRAM wrapper) for the
-    // X3 L2. Untyped for the same Vivado/XPM parameter-propagation reason as
-    // the data primitive above.
+    // block RAM per way) for the L1s, "ultra" (the packed UltraRAM wrapper)
+    // for the X3 L2. Untyped for the same Vivado/XPM parameter-propagation
+    // reason as the data primitive above.
     // verilog_lint: waive explicit-parameter-storage-type
     parameter TAG_MEMORY_PRIMITIVE = "block",
     parameter int unsigned TAG_READ_LATENCY = 1,
-    // Simulation only: bulk-clear tags in one cycle and walk only dirty lines
+    // Simulation only: bulk-clear tags in one cycle and walk only dirty sets
     // for writeback-all. The resulting invalidation/writeback behavior matches
     // the hardware sweep. Keep 0 for synthesis.
     parameter int unsigned SIM_FAST_MAINT = 0
@@ -176,13 +198,28 @@ module frost_cache #(
 
   localparam int unsigned LineBits = LINE_BYTES * 8;
   localparam int unsigned NumLines = CACHE_SIZE_BYTES / LINE_BYTES;
+  localparam int unsigned NumSets = NumLines / WAYS;
   localparam int unsigned OffsetBits = $clog2(LINE_BYTES);
-  localparam int unsigned IndexBits = $clog2(NumLines);
-  localparam int unsigned TagBits = ADDR_WIDTH - IndexBits - OffsetBits;
+  localparam int unsigned SetBits = $clog2(NumSets);
+  // WaySelBits address a way (0 when direct-mapped); WayBits sizes way
+  // signals, which keep one constant-zero bit then.
+  localparam int unsigned WaySelBits = $clog2(WAYS);
+  localparam int unsigned WayBits = (WAYS > 1) ? WaySelBits : 1;
+  // Data-array rows are {way, set}.
+  localparam int unsigned RowBits = SetBits + WaySelBits;
+  localparam int unsigned TagBits = ADDR_WIDTH - SetBits - OffsetBits;
   localparam int unsigned LineAddrBits = ADDR_WIDTH - OffsetBits;
   // Tag entry layout: {valid, dirty, tag}
   localparam int unsigned TagEntryBits = TagBits + 2;
+  // Tree pseudo-LRU state per set: one bit per internal node of a binary
+  // tree over the ways (bit n-1 for node n, root 1, children 2n and 2n+1).
+  localparam int unsigned PlruBits = (WAYS > 1) ? WAYS - 1 : 1;
   localparam bit TrackDelayedTagWrites = TAG_READ_LATENCY > 1;
+  // A miss or probe hit needs a free writeback slot if its victim is dirty.
+  // With one-cycle tags it needs one whatever its victim, so T's decision
+  // does not wait on the victim's dirty bit, which needs the tag compare and
+  // the victim choice. Delayed tags keep the exact rule.
+  localparam bit ExactVictimWb = TrackDelayedTagWrites;
   localparam int unsigned MshrBits = (NUM_MSHR > 1) ? $clog2(NUM_MSHR) : 1;
   localparam int unsigned WbBits = (NUM_WB > 1) ? $clog2(NUM_WB) : 1;
   localparam int unsigned SeatBits = (NUM_WAITERS > 1) ? $clog2(NUM_WAITERS) : 1;
@@ -195,8 +232,11 @@ module frost_cache #(
   initial begin
     if (NumLines * LINE_BYTES != CACHE_SIZE_BYTES)
       $fatal(1, "frost_cache: CACHE_SIZE_BYTES must be a multiple of LINE_BYTES");
-    if (2 ** IndexBits != NumLines) $fatal(1, "frost_cache: line count must be a power of 2");
     if (2 ** OffsetBits != LINE_BYTES) $fatal(1, "frost_cache: LINE_BYTES must be a power of 2");
+    if ((WAYS < 1) || (2 ** WaySelBits != WAYS))
+      $fatal(1, "frost_cache: WAYS must be a power of 2");
+    if ((NumSets < 2) || (NumSets * WAYS != NumLines) || (2 ** SetBits != NumSets))
+      $fatal(1, "frost_cache: the cache must hold a power-of-2 number of sets, at least 2");
     if (DATA_WRITE_LATENCY < 1 || DATA_WRITE_LATENCY > 2)
       $fatal(1, "frost_cache: DATA_WRITE_LATENCY must be 1 or 2");
     if ((TAG_MEMORY_PRIMITIVE != "block") && (TAG_MEMORY_PRIMITIVE != "ultra"))
@@ -212,24 +252,93 @@ module frost_cache #(
   end
 
   // ===========================================================================
+  // Way helpers
+  // ===========================================================================
+  // Data-array row of a line in a way: {way, set}.
+  function automatic logic [RowBits-1:0] row_of(input logic [WayBits-1:0] way,
+                                                input logic [SetBits-1:0] set);
+    row_of = RowBits'(set);
+    if (WAYS > 1) row_of = RowBits'({way, set});
+  endfunction
+
+  function automatic logic [WAYS-1:0] way_onehot(input logic [WayBits-1:0] way);
+    way_onehot = '0;
+    for (int w = 0; w < int'(WAYS); w++) if (int'(way) == w) way_onehot[w] = 1'b1;
+  endfunction
+
+  // The lowest way set in a mask (0 if none).
+  function automatic logic [WayBits-1:0] lowest_way(input logic [WAYS-1:0] mask);
+    lowest_way = '0;
+    for (int w = int'(WAYS) - 1; w >= 0; w--) if (mask[w]) lowest_way = WayBits'(w);
+  endfunction
+
+  // Tree pseudo-LRU. Bit n-1 holds node n; 1 sends the victim to the right
+  // child 2n+1, 0 to the left child 2n. The leaves WAYS..2*WAYS-1 are the
+  // ways. An access sets every bit on its path to point away from it.
+  function automatic logic [WayBits-1:0] plru_victim(input logic [PlruBits-1:0] state);
+    int node;
+    node = 1;
+    for (int level = 0; level < int'(WaySelBits); level++) node = 2 * node + int'(state[node-1]);
+    plru_victim = WayBits'(node - int'(WAYS));
+  endfunction
+
+  // The pseudo-LRU way among the ways in avail: the walk follows the state
+  // but turns away from a subtree with no way in avail. When the pseudo-LRU
+  // way is in avail this is that way. (Unspecified when avail is empty.)
+  function automatic logic [WayBits-1:0] plru_victim_among(input logic [PlruBits-1:0] state,
+                                                           input logic [WAYS-1:0] avail);
+    int node, lo, half;
+    logic left_ok, right_ok, go_right;
+    node = 1;
+    lo   = 0;
+    half = int'(WAYS) / 2;
+    for (int level = 0; level < int'(WaySelBits); level++) begin
+      left_ok  = 1'b0;
+      right_ok = 1'b0;
+      for (int w = 0; w < int'(WAYS); w++) begin
+        if ((w >= lo) && (w < lo + half)) left_ok = left_ok | avail[w];
+        if ((w >= lo + half) && (w < lo + 2 * half)) right_ok = right_ok | avail[w];
+      end
+      go_right = (left_ok && right_ok) ? state[node-1] : right_ok;
+      node = 2 * node + int'(go_right);
+      if (go_right) lo = lo + half;
+      half = half / 2;
+    end
+    plru_victim_among = WayBits'(node - int'(WAYS));
+  endfunction
+
+  function automatic logic [PlruBits-1:0] plru_touch(input logic [PlruBits-1:0] state,
+                                                     input logic [WayBits-1:0] way);
+    int node;
+    plru_touch = state;
+    node = int'(way) + int'(WAYS);
+    for (int level = 0; level < int'(WaySelBits); level++) begin
+      // Reached from the left child: point the parent right, and vice versa.
+      plru_touch[node/2-1] = (node % 2) == 0;
+      node = node / 2;
+    end
+  endfunction
+
+  // ===========================================================================
   // Maintenance / sweep control (drives the tag and data ports while active)
   // ===========================================================================
   typedef enum logic [2:0] {
-    M_SWEEP,        // reset/invalidate-all: clear every tag entry
+    M_SWEEP,        // reset/invalidate-all: clear every set's tags
     M_IDLE,         // the request pipeline runs
-    M_FLUSH_SCAN,   // writeback-all: present the walk index to the tags
-    M_FLUSH_CHECK,  // examine the entry; skip clean, read out dirty
+    M_FLUSH_SCAN,   // writeback-all: present the walk's set to the tags
+    M_FLUSH_CHECK,  // examine the set; pick its lowest dirty way, if any
+    M_FLUSH_WRITE,  // read the picked dirty line out, mark it clean
     M_FLUSH_DRAIN   // wait for the walk's writebacks to be acknowledged
   } mstate_e;
 
   mstate_e mstate_q;
-  logic [IndexBits-1:0] sweep_idx_q;
-  logic [IndexBits-1:0] flush_idx_q;
+  logic [SetBits-1:0] sweep_idx_q;
+  logic [SetBits-1:0] flush_idx_q;
 
   logic pipeline_idle;  // nothing in flight anywhere (maintenance may start)
   logic flush_active;
   assign flush_active = (mstate_q == M_FLUSH_SCAN) || (mstate_q == M_FLUSH_CHECK) ||
-      (mstate_q == M_FLUSH_DRAIN);
+      (mstate_q == M_FLUSH_WRITE) || (mstate_q == M_FLUSH_DRAIN);
   assign o_maint_busy = flush_active || (mstate_q == M_SWEEP);
 
   // Fast maintenance: the tag bulk clear replaces the sweep, which then lasts
@@ -238,19 +347,22 @@ module frost_cache #(
   assign tag_bulk_clear = (SIM_FAST_MAINT != 0) && (mstate_q == M_SWEEP);
 
   // ===========================================================================
-  // Tag array (one-cycle block RAM or packed/pipelined UltraRAM)
+  // Tag array: every way of a set read at once (one-cycle block RAM per way,
+  // or packed/pipelined UltraRAM with a set per row)
   // ===========================================================================
-  logic                        tag_we;
-  logic [       IndexBits-1:0] tag_waddr;
+  logic [            WAYS-1:0] tag_we;  // the ways written at tag_waddr
+  logic [         SetBits-1:0] tag_waddr;
   logic [    TagEntryBits-1:0] tag_wdata;
-  logic [       IndexBits-1:0] tag_raddr;
-  logic [    TagEntryBits-1:0] tag_rdata;
+  logic [         SetBits-1:0] tag_raddr;
+  logic [    TagEntryBits-1:0] tag_rdata                                [WAYS];
   logic                        tag_re;
   logic [TAG_READ_LATENCY-1:0] tag_response_valid_q;
   logic                        tag_response_valid;
-  logic tag_rdata_valid, tag_rdata_dirty;
-  logic [TagBits-1:0] tag_rdata_tag;
-  assign {tag_rdata_valid, tag_rdata_dirty, tag_rdata_tag} = tag_rdata;
+  logic [WAYS-1:0] tag_rdata_valid, tag_rdata_dirty;
+  logic [TagBits-1:0] tag_rdata_tag[WAYS];
+  for (genvar gw = 0; gw < int'(WAYS); gw++) begin : gen_tag_unpack
+    assign {tag_rdata_valid[gw], tag_rdata_dirty[gw], tag_rdata_tag[gw]} = tag_rdata[gw];
+  end
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -264,51 +376,105 @@ module frost_cache #(
   assign tag_response_valid = tag_response_valid_q[TAG_READ_LATENCY-1];
 
   if (TAG_MEMORY_PRIMITIVE == "ultra") begin : gen_tag_ultra
+    // A row holds one set: its ways are the packed slots, and a read returns
+    // all of them. Addresses are entries {set, way}.
+    localparam int unsigned TagAddrBits = SetBits + WaySelBits;
+    logic [WAYS*TagEntryBits-1:0] tag_row;
     sdp_packed_tag_uram #(
-        .ADDR_WIDTH(IndexBits),
+        .ADDR_WIDTH(TagAddrBits),
         .DATA_WIDTH(TagEntryBits),
         .READ_LATENCY(TAG_READ_LATENCY),
+        .READ_WORDS(WAYS),
         .SUPPORT_BULK_CLEAR(SIM_FAST_MAINT)
     ) tag_array (
         .i_clk(i_clk),
-        .i_write_enable(tag_we),
+        .i_write_enable(|tag_we),
         .i_bulk_clear(tag_bulk_clear),
-        .i_write_address(tag_waddr),
+        .i_write_address(TagAddrBits'(tag_waddr) << WaySelBits),
+        .i_write_word_mask(tag_we),
         .i_write_data(tag_wdata),
         .i_read_enable(tag_re),
-        .i_read_address(tag_raddr),
-        .o_read_data(tag_rdata)
+        .i_read_address(TagAddrBits'(tag_raddr) << WaySelBits),
+        .o_read_data(tag_row)
     );
+    for (genvar gw = 0; gw < int'(WAYS); gw++) begin : gen_way
+      assign tag_rdata[gw] = tag_row[gw*TagEntryBits+:TagEntryBits];
+    end
   end else begin : gen_tag_block
-    sdp_block_ram #(
-        .ADDR_WIDTH(IndexBits),
-        .DATA_WIDTH(TagEntryBits),
-        .SUPPORT_BULK_CLEAR(SIM_FAST_MAINT)
-    ) tag_array (
-        .i_clk(i_clk),
-        .i_write_enable(tag_we),
-        .i_bulk_clear(tag_bulk_clear),
-        .i_write_address(tag_waddr),
-        .i_read_address(tag_raddr),
-        .i_write_data(tag_wdata),
-        .o_read_data(tag_rdata)
-    );
+    for (genvar gw = 0; gw < int'(WAYS); gw++) begin : gen_way
+      sdp_block_ram #(
+          .ADDR_WIDTH(SetBits),
+          .DATA_WIDTH(TagEntryBits),
+          .SUPPORT_BULK_CLEAR(SIM_FAST_MAINT)
+      ) tag_array (
+          .i_clk(i_clk),
+          .i_write_enable(tag_we[gw]),
+          .i_bulk_clear(tag_bulk_clear),
+          .i_write_address(tag_waddr),
+          .i_read_address(tag_raddr),
+          .i_write_data(tag_wdata),
+          .o_read_data(tag_rdata[gw])
+      );
+    end
   end
 
   // ===========================================================================
-  // Data array (one row per line)
+  // Replacement state: one tree pseudo-LRU word per set, read with the tags
+  // and aligned with their response; W writes the touched state back
+  // ===========================================================================
+  logic [PlruBits-1:0] plru_rdata;
+  logic                plru_we;
+  logic [ SetBits-1:0] plru_waddr;
+  logic [PlruBits-1:0] plru_wdata;
+  if (WAYS > 1) begin : gen_plru
+    logic [PlruBits-1:0] plru_ram_rdata;
+    sdp_block_ram #(
+        .ADDR_WIDTH(SetBits),
+        .DATA_WIDTH(PlruBits),
+        .SUPPORT_BULK_CLEAR(SIM_FAST_MAINT)
+    ) plru_array (
+        .i_clk(i_clk),
+        .i_write_enable(plru_we),
+        .i_bulk_clear(tag_bulk_clear),
+        .i_write_address(plru_waddr),
+        .i_read_address(tag_raddr),
+        .i_write_data(plru_wdata),
+        .o_read_data(plru_ram_rdata)
+    );
+    if (TAG_READ_LATENCY > 1) begin : gen_delay
+      logic [PlruBits-1:0] plru_pipe_q[TAG_READ_LATENCY-1];
+      always_ff @(posedge i_clk) begin
+        plru_pipe_q[0] <= plru_ram_rdata;
+        for (int unsigned k = 1; k < TAG_READ_LATENCY - 1; k++) plru_pipe_q[k] <= plru_pipe_q[k-1];
+      end
+      assign plru_rdata = plru_pipe_q[TAG_READ_LATENCY-2];
+    end else begin : gen_direct
+      assign plru_rdata = plru_ram_rdata;
+    end
+  end else begin : gen_no_plru
+    assign plru_rdata = '0;
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic plru_unused;
+    assign plru_unused = plru_we ^ (^plru_waddr) ^ (^plru_wdata);
+    /* verilator lint_on UNUSEDSIGNAL */
+  end
+
+  // ===========================================================================
+  // Data array (one row per line, {way, set})
   // ===========================================================================
   logic                  data_re;
-  logic [ IndexBits-1:0] data_raddr;
+  logic [   RowBits-1:0] data_raddr;
   logic [  LineBits-1:0] data_rdata;
   logic                  data_row_we;
-  logic [ IndexBits-1:0] data_waddr;
+  logic [   RowBits-1:0] data_waddr;
   logic [LINE_BYTES-1:0] data_wbyte_en;
   logic [  LineBits-1:0] data_wdata;
 
   // L1 reads address BRAM directly and include its output register in the
-  // read latency. The read samples at T's decision and does not see a same-edge
-  // write; raw_hazard stalls colliding reads. Maintenance reads have no writes.
+  // read latency. W issues reads from registers. A read never meets a
+  // same-edge write of its row: W reads a valid way or the victim it is
+  // taking, and no fill can be installing into either. Maintenance reads
+  // have no writes.
   localparam bit DataReadDirect = (DATA_MEMORY_PRIMITIVE == "block") && (DATA_WRITE_LATENCY == 1);
   // An UltraRAM row spreads over several UltraRAM columns, far from the
   // response and writeback logic. The last read cycle is a fabric register,
@@ -316,7 +482,7 @@ module frost_cache #(
   localparam bit DataReadOutputReg = (DATA_MEMORY_PRIMITIVE == "ultra");
   sdp_ram_byte_en #(
       .DATA_WIDTH(LineBits),
-      .ADDR_WIDTH(IndexBits),
+      .ADDR_WIDTH(RowBits),
       .READ_LATENCY(DATA_READ_LATENCY),
       .WRITE_LATENCY(DATA_WRITE_LATENCY),
       .MEMORY_PRIMITIVE(DATA_MEMORY_PRIMITIVE),
@@ -349,6 +515,9 @@ module frost_cache #(
   mshr_state_e mshr_state_q[NUM_MSHR];
   logic [NUM_MSHR-1:0] mshr_valid;
   logic [LineAddrBits-1:0] mshr_line_q[NUM_MSHR];
+  // The way a valid MSHR owns in its line's set, from its allocation until it
+  // frees: the fill installs there, and no other miss takes it meanwhile.
+  logic [WayBits-1:0] mshr_way_q[NUM_MSHR];
   logic [UP_ID_BITS-1:0] mshr_id_q[NUM_MSHR];
   logic [NUM_MSHR-1:0] mshr_write_q;
   logic [NUM_MSHR-1:0] mshr_maint_q;
@@ -486,10 +655,10 @@ module frost_cache #(
   assign in_probe       = (NUM_PROBE > 0) && (sk_valid_q ? sk_probe_q : i_up_req_probe);
   assign in_probe_inval = sk_valid_q ? sk_probe_inval_q : i_up_req_probe_inval;
 
-  logic [   IndexBits-1:0] in_index;
+  logic [     SetBits-1:0] in_set;
   logic [LineAddrBits-1:0] in_line;
-  assign in_index = in_addr[OffsetBits+:IndexBits];
-  assign in_line  = in_addr[ADDR_WIDTH-1:OffsetBits];
+  assign in_set  = in_addr[OffsetBits+:SetBits];
+  assign in_line = in_addr[ADDR_WIDTH-1:OffsetBits];
 
   // ===========================================================================
   // Stage T: tag compare and decision
@@ -505,35 +674,36 @@ module frost_cache #(
   logic                    t_maint_q;
   logic                    t_probe_q;
   logic                    t_probe_inval_q;
-  logic [    NUM_MSHR-1:0] t_idx_match_q;  // MSHR with this index
+  logic [    NUM_MSHR-1:0] t_set_match_q;  // MSHR with this set
   logic [    NUM_MSHR-1:0] t_line_match_q;  // MSHR with this line
   logic [      NUM_WB-1:0] t_wb_match_q;  // writeback slot with this line
 
-  logic [   IndexBits-1:0] t_index;
+  logic [     SetBits-1:0] t_set;
   logic [     TagBits-1:0] t_tag;
   logic [LineAddrBits-1:0] t_line;
-  assign t_index = t_addr_q[OffsetBits+:IndexBits];
-  assign t_tag   = t_addr_q[ADDR_WIDTH-1-:TagBits];
-  assign t_line  = t_addr_q[ADDR_WIDTH-1:OffsetBits];
+  assign t_set  = t_addr_q[OffsetBits+:SetBits];
+  assign t_tag  = t_addr_q[ADDR_WIDTH-1-:TagBits];
+  assign t_line = t_addr_q[ADDR_WIDTH-1:OffsetBits];
 
   // ===========================================================================
   // Stage W: registered side effects of T's decision
   // ===========================================================================
   typedef enum logic [2:0] {
-    W_NONE,
-    W_WRITE_HIT,    // strobed array write + dirty tag
-    W_ALLOC,        // invalidate victim tag, allocate MSHR (+ writeback slot)
+    W_NONE,         // nothing, or a probe that missed
+    W_READ_HIT,     // read the hit way for the response; touch replacement
+    W_WRITE_HIT,    // strobed array write + dirty tag; touch replacement
+    W_ALLOC,        // invalidate the victim way, allocate an MSHR (+ writeback slot)
     W_MERGE,        // merge a write into a pending write MSHR
     W_WAITER,       // attach a read waiter to a pending MSHR
-    W_PROBE_CLEAN,  // probe hit a dirty line: victim to a writeback slot, tag valid+clean
-    W_PROBE_INVAL   // probe invalidates the line (a dirty victim goes to a writeback slot)
+    W_PROBE_CLEAN,  // probe hit: tag valid+clean, a dirty copy to a writeback slot
+    W_PROBE_INVAL   // probe hit: invalidate, a dirty copy to a writeback slot
   } w_op_e;
 
   logic                     w_valid_q;
   w_op_e                    w_op_q;
-  logic                     w_tag_write_q;  // w_writes_tag, registered for T's row checks
+  logic                     w_tag_write_q;  // w_writes_tag, registered for T's set checks
   logic                     w_data_write_q;  // w_writes_data, likewise
-  logic  [   IndexBits-1:0] w_index_q;
+  logic  [     SetBits-1:0] w_set_q;
   logic  [     TagBits-1:0] w_tag_q;
   logic  [LineAddrBits-1:0] w_line_q;
   logic                     w_write_q;
@@ -541,71 +711,104 @@ module frost_cache #(
   logic  [  LINE_BYTES-1:0] w_wstrb_q;
   logic  [  UP_ID_BITS-1:0] w_id_q;
   logic                     w_maint_q;
+  logic                     w_probe_q;
   logic  [    MshrBits-1:0] w_mshr_q;
   logic  [      WbBits-1:0] w_wb_q;
-  logic                     w_has_victim_q;
+  // The way W acts on: the hit way, or an allocation's victim way.
+  logic  [     WayBits-1:0] w_way_q;
+  // Dirty bits of the hit way and of the victim way, and the victim's tag.
+  logic                     w_hit_dirty_q;
+  logic                     w_victim_dirty_q;
   logic  [     TagBits-1:0] w_victim_tag_q;
+  logic  [    PlruBits-1:0] w_plru_q;  // the set's replacement state at T's decision
   logic                     w_needs_fill_q;
   logic  [      NUM_WB-1:0] w_wb_wait_q;
   logic  [   ProbeBits-1:0] w_probe_slot_q;
 
+  // A dirty victim leaves through a writeback slot: an allocation's victim
+  // way, or a probed line's own copy.
+  logic w_is_alloc, w_is_probe_hit, w_has_victim;
+  logic [LineAddrBits-1:0] w_victim_line;
+  assign w_is_alloc = (w_op_q == W_ALLOC);
+  assign w_is_probe_hit = (w_op_q == W_PROBE_CLEAN) || (w_op_q == W_PROBE_INVAL);
+  assign w_has_victim = (w_is_alloc && w_victim_dirty_q) || (w_is_probe_hit && w_hit_dirty_q);
+  assign w_victim_line = {w_is_alloc ? w_victim_tag_q : w_tag_q, w_set_q};
+
   // W-stage allocations not yet in the slot valid bits: an MSHR (W_ALLOC),
   // and a writeback slot for an allocation's dirty victim or a probe's.
   logic w_allocs_mshr, w_allocs_wb;
-  assign w_allocs_mshr = w_valid_q && (w_op_q == W_ALLOC);
-  assign w_allocs_wb = w_valid_q && w_has_victim_q &&
-      ((w_op_q == W_ALLOC) || (w_op_q == W_PROBE_CLEAN) || (w_op_q == W_PROBE_INVAL));
+  assign w_allocs_mshr = w_valid_q && w_is_alloc;
+  assign w_allocs_wb   = w_valid_q && w_has_victim;
 
-  // Hold A while its index matches T or W so their tag writes become visible
-  // before its read. Compare skid and live indices separately, for timing.
-  logic [IndexBits-1:0] sk_index, up_index;
-  assign sk_index = sk_addr_q[OffsetBits+:IndexBits];
-  assign up_index = i_up_req_addr[OffsetBits+:IndexBits];
-  localparam int unsigned IdxCmpGroups = (IndexBits + 2) / 3;
-  (* dont_touch = "true" *) logic [IdxCmpGroups-1:0] up_t_match_group, up_w_match_group;
-  for (genvar gg = 0; gg < int'(IdxCmpGroups); gg++) begin : gen_index_hold_compare
+  // Hold A while its set matches T or W so their tag and replacement writes
+  // become visible before its read. Compare skid and live sets separately,
+  // for timing.
+  logic [SetBits-1:0] sk_set, up_set;
+  assign sk_set = sk_addr_q[OffsetBits+:SetBits];
+  assign up_set = i_up_req_addr[OffsetBits+:SetBits];
+  localparam int unsigned SetCmpGroups = (SetBits + 2) / 3;
+  (* dont_touch = "true" *) logic [SetCmpGroups-1:0] up_t_match_group, up_w_match_group;
+  for (genvar gg = 0; gg < int'(SetCmpGroups); gg++) begin : gen_set_hold_compare
     localparam int unsigned Lo = gg * 3;
-    localparam int unsigned Hi = (Lo + 3 <= IndexBits) ? Lo + 3 : IndexBits;
-    assign up_t_match_group[gg] = (up_index[Hi-1:Lo] == t_index[Hi-1:Lo]);
-    assign up_w_match_group[gg] = (up_index[Hi-1:Lo] == w_index_q[Hi-1:Lo]);
+    localparam int unsigned Hi = (Lo + 3 <= SetBits) ? Lo + 3 : SetBits;
+    assign up_t_match_group[gg] = (up_set[Hi-1:Lo] == t_set[Hi-1:Lo]);
+    assign up_w_match_group[gg] = (up_set[Hi-1:Lo] == w_set_q[Hi-1:Lo]);
   end
   logic sk_hold, up_hold, a_hold;
-  assign sk_hold = (t_valid_q && (sk_index == t_index)) || (w_valid_q && (sk_index == w_index_q));
+  assign sk_hold = (t_valid_q && (sk_set == t_set)) || (w_valid_q && (sk_set == w_set_q));
   assign up_hold = (t_valid_q && (&up_t_match_group)) || (w_valid_q && (&up_w_match_group));
   assign a_hold  = sk_valid_q ? sk_hold : up_hold;
 
   // A-stage comparators against the slots, registered into T with the entry
   // and masked there by the live valid bits. A slot being allocated by W this
   // cycle still holds its previous line, so its match is meaningless and is
-  // cleared: if the new line is a true index match, a_hold keeps the request
+  // cleared: if the new line is a true set match, a_hold keeps the request
   // in A and it compares again next cycle.
-  logic [NUM_MSHR-1:0] in_idx_match, in_line_match;
+  logic [NUM_MSHR-1:0] in_set_match, in_line_match;
   logic [NUM_WB-1:0] in_wb_match;
   always_comb begin
     for (int i = 0; i < int'(NUM_MSHR); i++) begin
-      in_idx_match[i]  = (mshr_line_q[i][IndexBits-1:0] == in_index);
+      in_set_match[i]  = (mshr_line_q[i][SetBits-1:0] == in_set);
       in_line_match[i] = (mshr_line_q[i] == in_line);
     end
     for (int j = 0; j < int'(NUM_WB); j++) in_wb_match[j] = (wb_line_q[j] == in_line);
     if (w_allocs_mshr) begin
-      in_idx_match[w_mshr_q]  = 1'b0;
+      in_set_match[w_mshr_q]  = 1'b0;
       in_line_match[w_mshr_q] = 1'b0;
     end
     if (w_allocs_wb) in_wb_match[w_wb_q] = 1'b0;
   end
 
-  // ---- Three-bit tag equality groups, preserved for timing.
-  // The decision acts in T; RAM writes use W's registers one cycle later.
+  // ---- Per-way tag compare in three-bit equality groups, preserved for
+  // timing. The valid bit joins the last group when it is shorter than three
+  // bits. The decision acts in T; RAM writes use W's registers one cycle
+  // later.
   localparam int unsigned TagCmpGroups = (TagBits + 2) / 3;
-  (* dont_touch = "true" *) logic [TagCmpGroups-1:0] tag_match_group;
-  for (genvar gg = 0; gg < int'(TagCmpGroups); gg++) begin : gen_tag_compare
-    localparam int unsigned Lo = gg * 3;
-    localparam int unsigned Hi = (Lo + 3 <= TagBits) ? Lo + 3 : TagBits;
-    assign tag_match_group[gg] = (tag_rdata_tag[Hi-1:Lo] == t_tag[Hi-1:Lo]);
+  localparam bit ValidInLastGroup = (TagBits % 3) != 0;
+  logic [WAYS-1:0] way_hit;
+  for (genvar gw = 0; gw < int'(WAYS); gw++) begin : gen_way_compare
+    (* dont_touch = "true" *) logic [TagCmpGroups-1:0] tag_match_group;
+    for (genvar gg = 0; gg < int'(TagCmpGroups); gg++) begin : gen_tag_compare
+      localparam int unsigned Lo = gg * 3;
+      localparam int unsigned Hi = (Lo + 3 <= TagBits) ? Lo + 3 : TagBits;
+      if (ValidInLastGroup && (gg == int'(TagCmpGroups) - 1)) begin : gen_with_valid
+        assign tag_match_group[gg] = tag_rdata_valid[gw] &&
+            (tag_rdata_tag[gw][Hi-1:Lo] == t_tag[Hi-1:Lo]);
+      end else begin : gen_tag_only
+        assign tag_match_group[gg] = (tag_rdata_tag[gw][Hi-1:Lo] == t_tag[Hi-1:Lo]);
+      end
+    end
+    // Preserve each way's hit for timing.
+    (* dont_touch = "true" *) logic way_hit_d;
+    if (ValidInLastGroup) begin : gen_hit_groups
+      assign way_hit_d = &tag_match_group;
+    end else begin : gen_hit_groups_valid
+      assign way_hit_d = tag_rdata_valid[gw] && (&tag_match_group);
+    end
+    assign way_hit[gw] = way_hit_d;
   end
-  // Preserve the final hit selection for timing.
-  (* dont_touch = "true" *) logic hit;
-  assign hit = tag_rdata_valid && (&tag_match_group);
+  logic hit;
+  assign hit = |way_hit;
 
   // ---- Slot availability (a W-stage allocation is not yet in the valid bits).
   logic [NUM_MSHR-1:0] mshr_free_mask;
@@ -641,47 +844,79 @@ module frost_cache #(
   // Forward W's incoming slot identity because the slot still holds its old
   // line. New A captures use a_hold and exclude W allocations instead.
   // Maintenance needs neither rule: A and T stay empty until its writebacks drain.
-  logic [NUM_MSHR-1:0] t_idx_live_match, t_line_live_match;
+  logic [NUM_MSHR-1:0] t_set_live_match, t_line_live_match;
   logic [NUM_WB-1:0] t_wb_live_match;
   always_comb begin
     for (int i = 0; i < int'(NUM_MSHR); i++) begin
-      t_idx_live_match[i]  = (mshr_line_q[i][IndexBits-1:0] == t_index);
+      t_set_live_match[i]  = (mshr_line_q[i][SetBits-1:0] == t_set);
       t_line_live_match[i] = (mshr_line_q[i] == t_line);
     end
     for (int j = 0; j < int'(NUM_WB); j++) t_wb_live_match[j] = (wb_line_q[j] == t_line);
     if (w_allocs_mshr) begin
-      t_idx_live_match[w_mshr_q]  = (w_line_q[IndexBits-1:0] == t_index);
+      t_set_live_match[w_mshr_q]  = (w_line_q[SetBits-1:0] == t_set);
       t_line_live_match[w_mshr_q] = (w_line_q == t_line);
     end
-    if (w_allocs_wb) t_wb_live_match[w_wb_q] = ({w_victim_tag_q, w_index_q} == t_line);
+    if (w_allocs_wb) t_wb_live_match[w_wb_q] = (w_victim_line == t_line);
   end
+
+  // ---- Ways of T's set owned by valid MSHRs. A miss never takes one: its
+  // tag is invalid while the MSHR fetches, and its fill installs there.
+  logic [WAYS-1:0] way_reserved;
+  logic unreserved_any;
+  always_comb begin
+    way_reserved = '0;
+    for (int i = 0; i < int'(NUM_MSHR); i++) begin
+      if (t_set_match_q[i] && mshr_valid[i])
+        way_reserved = way_reserved | way_onehot(mshr_way_q[i]);
+    end
+    unreserved_any = !(&way_reserved);
+  end
+
+  // ---- Victim choice: the lowest way that is invalid and unowned, else the
+  // pseudo-LRU way among the unowned ways. Taking the lowest unowned way
+  // instead could keep one way from ever being replaced while misses own the
+  // others' subtree. With one-cycle tags the choice and the dirty bits feed
+  // only W's registers; delayed tags also use the dirty bits in T's
+  // writeback-slot check (ExactVictimWb).
+  logic [WAYS-1:0] free_ways;
+  logic [WayBits-1:0] victim_way, hit_way;
+  logic victim_dirty, hit_dirty;
+  always_comb begin
+    free_ways  = ~tag_rdata_valid & ~way_reserved;
+    victim_way = plru_victim_among(plru_rdata, ~way_reserved);
+    if (|free_ways) victim_way = lowest_way(free_ways);
+    victim_dirty = tag_rdata_valid[victim_way] && tag_rdata_dirty[victim_way];
+    // At most one way hits, so the hit way is an OR of the hit bits.
+    hit_way = '0;
+    for (int w = 0; w < int'(WAYS); w++) if (way_hit[w]) hit_way = hit_way | WayBits'(w);
+    hit_dirty = |(way_hit & tag_rdata_dirty);
+  end
+
   // ---- The T decision.
   logic                decide;
-  logic                conflict;  // an MSHR guards this index
-  logic                same_line;  // ... and it is this very line
+  logic                same_line;  // an MSHR fetches this very line
   logic [MshrBits-1:0] match_mshr;
-  logic match_mergeable, match_waitable;
-  logic victim_dirty;
-  logic raw_hazard;  // the data port writes T's row this cycle
-  logic tag_write_t_row, tag_write_in_row;  // the tag port writes T's / the incoming row
+  logic match_mergeable, match_waitable, same_line_ok;
+  logic alloc_needs_wb, probe_needs_wb, alloc_ok, probe_hit_ok;
+  logic clear_hit, clear_miss;  // T completes if it hits / misses
+  logic tag_write_t_set, tag_write_in_set;  // the tag port writes T's / the incoming set
   logic t_stall, t_done;
   logic t_tag_write_collision, t_tag_response, t_tag_retry;
   logic t_is_read_hit, t_is_write_hit, t_is_alloc, t_is_merge, t_is_waiter;
-  logic t_plain, t_wb_pending, t_is_probe_hit, t_is_probe_miss, t_probe_dirty;
-  logic stall_conflict, stall_conflict_any, stall_full, stall_wb_snapshot;
+  logic t_plain, t_wb_pending, t_is_probe_hit, t_is_probe_miss;
+  logic stall_conflict, stall_conflict_any, stall_ways, stall_full, stall_wb_snapshot;
 
-  // Discard a delayed tag response if a same-index write crossed its read,
-  // including an install on the response cycle. This prevents old-tag/new-data
-  // hits. One-cycle BRAM hazards are covered by a_hold, conflict, and raw_hazard;
-  // only delayed reads need the sticky stale bit.
-  assign t_tag_write_collision = TrackDelayedTagWrites && t_valid_q && tag_write_t_row;
+  // Discard a delayed tag response if a write to the same set crossed its
+  // read, including an install on the response cycle. This prevents
+  // old-tag/new-data hits. One-cycle BRAM tags are covered by a_hold and the
+  // MSHR guards; only delayed reads need the sticky stale bit.
+  assign t_tag_write_collision = TrackDelayedTagWrites && t_valid_q && tag_write_t_set;
   assign t_tag_response = (mstate_q == M_IDLE) && t_valid_q && tag_response_valid;
   assign t_tag_retry =
       t_tag_response && ((TrackDelayedTagWrites && t_tag_stale_q) || t_tag_write_collision);
   assign decide =
       t_tag_response && !((TrackDelayedTagWrites && t_tag_stale_q) || t_tag_write_collision);
   always_comb begin
-    conflict   = |(t_idx_match_q & mshr_valid);
     same_line  = |(t_line_match_q & mshr_valid);
     match_mshr = '0;
     for (int i = int'(NUM_MSHR) - 1; i >= 0; i--) begin
@@ -691,77 +926,88 @@ module frost_cache #(
         ((mshr_state_q[match_mshr] == MS_PEND) || (mshr_state_q[match_mshr] == MS_SENT));
     match_waitable = !mshr_seats_full[match_mshr] &&
         ((mshr_state_q[match_mshr] == MS_PEND) || (mshr_state_q[match_mshr] == MS_SENT));
-    victim_dirty = tag_rdata_valid && tag_rdata_dirty;
+    same_line_ok = t_write_q ? match_mergeable : match_waitable;
 
+    // Probes and stores wait for a pending writeback of their line: a store
+    // that re-dirtied the copy could create a second writeback whose newer
+    // snapshot arrives first, leaving stale data below. Preventing it keeps
+    // at most one writeback per line in flight.
     t_plain = !t_probe_q;
-    t_is_read_hit = decide && t_plain && !conflict && hit && !t_write_q;
-    t_is_write_hit = decide && t_plain && !conflict && hit && t_write_q;
-    t_is_alloc = decide && t_plain && !conflict && !hit;
-    t_is_merge = decide && t_plain && conflict && same_line && t_write_q;
-    t_is_waiter = decide && t_plain && conflict && same_line && !t_write_q;
-
-    // Probes wait for a pending writeback of the line. Stores also wait:
-    // re-dirtying could create a second writeback whose newer snapshot arrives
-    // first, leaving stale data below. Preventing re-dirtying keeps at most one
-    // writeback per line in flight.
     t_wb_pending = |(t_wb_match_q & wb_valid);
-    t_is_probe_hit = decide && t_probe_q && !conflict && !t_wb_pending && hit;
-    t_is_probe_miss = decide && t_probe_q && !conflict && !t_wb_pending && !hit;
-    t_probe_dirty = t_is_probe_hit && victim_dirty;
+    alloc_needs_wb = ExactVictimWb ? victim_dirty : 1'b1;
+    probe_needs_wb = ExactVictimWb ? hit_dirty : 1'b1;
+    alloc_ok = unreserved_any && mshr_free_any && (!alloc_needs_wb || wb_free_any);
+    probe_hit_ok = probe_free_any && (!probe_needs_wb || wb_free_any);
 
-    stall_conflict_any = t_plain ?
-        (conflict && (!same_line || (t_write_q ? !match_mergeable : !match_waitable))) :
-        (conflict || t_wb_pending);
-    stall_conflict = decide && stall_conflict_any;
-    stall_full = (t_is_alloc && (!mshr_free_any || (victim_dirty && !wb_free_any))) ||
-        ((t_is_probe_hit || t_is_probe_miss) && !probe_free_any) ||
-        (t_probe_dirty && !wb_free_any);
-    stall_wb_snapshot = t_is_write_hit && t_wb_pending;
+    // Whether T completes, by the compare's outcome. A request for a line in
+    // transition merges, waits on a seat, or stalls whatever the tags say.
     // A pending probe acknowledgement holds off new read hits: hit data takes
     // the response port whenever it appears, so the port has to go quiet for
     // the acknowledgement to leave.
-    t_stall = stall_conflict || stall_full || stall_wb_snapshot ||
-        ((t_is_read_hit || (t_is_alloc && victim_dirty) || t_probe_dirty) && raw_hazard) ||
+    clear_hit = t_plain ?
+        (same_line ? same_line_ok : (t_write_q ? !t_wb_pending : !probe_ack_any)) :
+        (!same_line && !t_wb_pending && probe_hit_ok);
+    clear_miss = t_plain ? (same_line ? same_line_ok : alloc_ok) :
+        (!same_line && !t_wb_pending && probe_free_any);
+
+    t_is_read_hit = decide && t_plain && !same_line && hit && !t_write_q;
+    t_is_write_hit = decide && t_plain && !same_line && hit && t_write_q;
+    t_is_alloc = decide && t_plain && !same_line && !hit;
+    t_is_merge = decide && t_plain && same_line && t_write_q;
+    t_is_waiter = decide && t_plain && same_line && !t_write_q;
+    t_is_probe_hit = decide && t_probe_q && !same_line && !t_wb_pending && hit;
+    t_is_probe_miss = decide && t_probe_q && !same_line && !t_wb_pending && !hit;
+
+    // The stall classes (reference and performance events).
+    stall_conflict_any = t_plain ? (same_line && !same_line_ok) : (same_line || t_wb_pending);
+    stall_conflict = decide && stall_conflict_any;
+    stall_ways = t_is_alloc && !unreserved_any;
+    stall_full = (t_is_alloc && unreserved_any &&
+                  (!mshr_free_any || (alloc_needs_wb && !wb_free_any))) ||
+        (t_is_probe_hit && !probe_hit_ok) || (t_is_probe_miss && !probe_free_any);
+    stall_wb_snapshot = t_is_write_hit && t_wb_pending;
+    t_stall = stall_conflict || stall_ways || stall_full || stall_wb_snapshot ||
         (t_is_read_hit && probe_ack_any);
   end
 
-  // Factor decide && !t_stall by {hit, victim_dirty} for one-cycle tag timing.
-  // Every stall term implies decide; on a hit the tag is valid, so dirty alone
-  // selects the hit case. Delayed tags use the direct expression.
+  // With one-cycle tags, factor decide && !t_stall by the compare: both
+  // outcomes' clears are known before the tags return, so the final selects
+  // between them by the way hits. Delayed tags use the direct expression.
   if (TrackDelayedTagWrites) begin : gen_t_done_direct
     assign t_done = decide && !t_stall;
   end else begin : gen_t_done_factored
-    // Per {hit, victim_dirty} case: the stall terms other than the raw
-    // hazard (case_clear) and the decisions the raw hazard stalls (case_raw).
-    logic [3:0] case_clear, case_raw;
-    for (genvar gc = 0; gc < 4; gc++) begin : gen_case
-      localparam bit CaseHit   = (gc / 2) != 0;
-      localparam bit CaseDirty = (gc % 2) != 0;
-      logic c_read_hit, c_write_hit, c_alloc, c_probe_hit, c_probe_miss, c_probe_dirty;
-      always_comb begin
-        c_read_hit = t_plain && !conflict && CaseHit && !t_write_q;
-        c_write_hit = t_plain && !conflict && CaseHit && t_write_q;
-        c_alloc = t_plain && !conflict && !CaseHit;
-        c_probe_hit = t_probe_q && !conflict && !t_wb_pending && CaseHit;
-        c_probe_miss = t_probe_q && !conflict && !t_wb_pending && !CaseHit;
-        c_probe_dirty = c_probe_hit && CaseDirty;
-        case_clear[gc] = !(stall_conflict_any ||
-                           (c_alloc && (!mshr_free_any || (CaseDirty && !wb_free_any))) ||
-                           ((c_probe_hit || c_probe_miss) && !probe_free_any) ||
-                           (c_probe_dirty && !wb_free_any) || (c_write_hit && t_wb_pending) ||
-                           (c_read_hit && probe_ack_any));
-        case_raw[gc] = c_read_hit || (c_alloc && CaseDirty) || c_probe_dirty;
-      end
-    end
     (* dont_touch = "true" *) logic t_ok_hit, t_ok_miss;
-    assign t_ok_hit = tag_rdata_dirty ? (case_clear[3] && !(case_raw[3] && raw_hazard)) :
-        (case_clear[2] && !(case_raw[2] && raw_hazard));
-    assign t_ok_miss = victim_dirty ? (case_clear[1] && !(case_raw[1] && raw_hazard)) :
-        (case_clear[0] && !(case_raw[0] && raw_hazard));
-    assign t_done = decide && (hit ? t_ok_hit : t_ok_miss);
+    assign t_ok_hit  = decide && clear_hit;
+    assign t_ok_miss = decide && clear_miss;
+    assign t_done    = (|way_hit) ? t_ok_hit : t_ok_miss;
   end
 
-  // T accepts when empty or completing, without an index hold or reread.
+`ifdef CACHE_WAY_PROOF
+  // The way choice, the factored completion, and the pseudo-LRU, for every
+  // state (formal/cache_way_choice.sby).
+  (* anyseq *)logic [PlruBits-1:0] proof_plru_state;
+  (* anyseq *)logic [ WayBits-1:0] proof_touched_way;
+  (* anyseq *)logic [    WAYS-1:0] proof_avail;
+  always_comb begin
+    // A completing allocation takes a way no valid MSHR owns.
+    if (t_done && t_is_alloc) assert (!way_reserved[victim_way]);
+    // The completion equals its reference form.
+    assert (t_done == (decide && !t_stall));
+    // A lone hit names its way.
+    if ($onehot(way_hit)) assert (way_hit[hit_way]);
+    if (WAYS > 1) begin
+      // The way an access touches is never the set's next victim.
+      assert (plru_victim(plru_touch(proof_plru_state, proof_touched_way)) != proof_touched_way);
+      // The restricted walk picks a way in its set, and the pseudo-LRU way
+      // whenever that one is in the set.
+      if (|proof_avail) assert (proof_avail[plru_victim_among(proof_plru_state, proof_avail)]);
+      if (proof_avail[plru_victim(proof_plru_state)])
+        assert (plru_victim_among(proof_plru_state, proof_avail) == plru_victim(proof_plru_state));
+    end
+  end
+`endif
+
+  // T accepts when empty or completing, without a set hold or reread.
   // Skid and upstream offers are disjoint because ready excludes a full skid;
   // their OR is in_valid && !a_hold.
   logic sk_go, up_go, t_open, t_accept;
@@ -777,13 +1023,13 @@ module frost_cache #(
   assign tag_re_maint_or_retry = (mstate_q == M_FLUSH_SCAN) || ((mstate_q == M_IDLE) && reread_q);
   assign tag_re_open = (mstate_q == M_IDLE) && t_open;
   assign tag_re = tag_re_maint_or_retry || (tag_re_open && (sk_go || up_go));
-  assign tag_raddr = (mstate_q == M_FLUSH_SCAN) ? flush_idx_q : (reread_q ? t_index : in_index);
+  assign tag_raddr = (mstate_q == M_FLUSH_SCAN) ? flush_idx_q : (reread_q ? t_set : in_set);
 
   // ===========================================================================
   // Data-array read purpose pipeline (aligned with the array's read latency)
   // ===========================================================================
   // Each array read is either a hit response (kind 0) or a victim read bound
-  // for a writeback slot (kind 1), from T or the flush walk.
+  // for a writeback slot (kind 1), from W or the flush walk.
   logic [DATA_READ_LATENCY-1:0] rp_valid_q;
   logic [DATA_READ_LATENCY-1:0] rp_victim_q;
   logic [UP_ID_BITS-1:0] rp_id_q[DATA_READ_LATENCY];
@@ -799,29 +1045,39 @@ module frost_cache #(
   assign rp_out_id = rp_id_q[DATA_READ_LATENCY-1];
   assign rp_out_wb = rp_wb_q[DATA_READ_LATENCY-1];
 
-  // Flush walk: wait for this index's tag response, then read a dirty victim
-  // into a writeback slot. A multi-cycle tag array keeps CHECK self-held until
-  // flush_tag_ready.
-  logic flush_tag_ready, flush_read;
+  // Flush walk: CHECK waits for the set's tag response and picks its lowest
+  // dirty way; WRITE reads that line into a writeback slot and marks it
+  // clean, from registers. A multi-cycle tag array keeps CHECK self-held
+  // until flush_tag_ready.
+  logic [WAYS-1:0] flush_dirty;
+  logic flush_tag_ready, flush_set_clean, flush_pick, flush_read;
+  logic [WayBits-1:0] flush_way_q;
+  logic [TagBits-1:0] flush_tag_q;
+  logic [ WbBits-1:0] flush_wb_q;
+  assign flush_dirty = tag_rdata_valid & tag_rdata_dirty;
   assign flush_tag_ready = (mstate_q == M_FLUSH_CHECK) && tag_response_valid;
-  assign flush_read = flush_tag_ready && tag_rdata_valid && tag_rdata_dirty && wb_free_any;
+  assign flush_set_clean = (flush_dirty == '0);
+  assign flush_pick = flush_tag_ready && !flush_set_clean && wb_free_any;
+  assign flush_read = (mstate_q == M_FLUSH_WRITE);
+
+  // W reads the hit way's row for a read hit, or a dirty victim's row.
+  logic w_reads_data;
+  assign w_reads_data = w_valid_q && ((w_op_q == W_READ_HIT) || w_has_victim);
 
   always_comb begin
     rp_push        = 1'b0;
     rp_push_victim = 1'b0;
-    rp_push_wb     = wb_free_idx;
+    rp_push_wb     = w_wb_q;
     data_re        = 1'b0;
-    data_raddr     = flush_active ? flush_idx_q : t_index;
+    data_raddr     = flush_active ? row_of(flush_way_q, flush_idx_q) : row_of(w_way_q, w_set_q);
     if (flush_read) begin
       rp_push        = 1'b1;
       rp_push_victim = 1'b1;
+      rp_push_wb     = flush_wb_q;
       data_re        = 1'b1;
-    end else if (t_done && t_is_read_hit) begin
-      rp_push = 1'b1;
-      data_re = 1'b1;
-    end else if (t_done && ((t_is_alloc && victim_dirty) || t_probe_dirty)) begin
+    end else if (w_reads_data) begin
       rp_push        = 1'b1;
-      rp_push_victim = 1'b1;
+      rp_push_victim = (w_op_q != W_READ_HIT);
       data_re        = 1'b1;
     end
   end
@@ -833,7 +1089,7 @@ module frost_cache #(
     end else begin
       rp_valid_q[0]  <= rp_push;
       rp_victim_q[0] <= rp_push_victim;
-      rp_id_q[0]     <= t_id_q;
+      rp_id_q[0]     <= w_id_q;
       rp_wb_q[0]     <= rp_push_wb;
       for (int k = 1; k < int'(DATA_READ_LATENCY); k++) begin
         rp_valid_q[k]  <= rp_valid_q[k-1];
@@ -850,11 +1106,12 @@ module frost_cache #(
   // At most one push per cycle; outstanding IDs bound queue depth.
   // When not full, the write-pointer entry is outside the queue and may
   // capture T's ID every cycle. A push makes that captured ID visible.
-  // ack_nonempty must equal (ack_wr_q != ack_rd_q).
+  // ack_nonempty must equal (ack_wr_q != ack_rd_q). Every ordinary write
+  // that completes T is a write hit, an allocation, or a merge.
   (* ram_style = "registers" *) logic [UP_ID_BITS-1:0] ack_id_q[AckDepth];
   logic [AckPtrBits-1:0] ack_wr_q, ack_rd_q;
   logic ack_nonempty, ack_push, ack_pop, ack_full, ack_last;
-  assign ack_push = t_done && (t_is_write_hit || (t_is_alloc && t_write_q) || t_is_merge);
+  assign ack_push = t_done && t_plain && t_write_q;
   assign ack_full = (ack_wr_q[AckPtrBits-1] != ack_rd_q[AckPtrBits-1]) &&
       (ack_wr_q[UP_ID_BITS-1:0] == ack_rd_q[UP_ID_BITS-1:0]);
   // One entry queued: a pop without a push empties the queue.
@@ -1048,8 +1305,7 @@ module frost_cache #(
   // ===========================================================================
   logic w_writes_data, w_writes_tag;
   assign w_writes_data = w_valid_q && (w_op_q == W_WRITE_HIT);
-  assign w_writes_tag  = w_valid_q && ((w_op_q == W_WRITE_HIT) || (w_op_q == W_ALLOC) ||
-                                       (w_op_q == W_PROBE_CLEAN) || (w_op_q == W_PROBE_INVAL));
+  assign w_writes_tag  = w_valid_q && ((w_op_q == W_WRITE_HIT) || w_is_alloc || w_is_probe_hit);
 
   // MSHR fill/allocate write: the lowest slot ready to write whose victim (if
   // any) has been captured, when both ports are free this cycle. A slot
@@ -1073,12 +1329,14 @@ module frost_cache #(
     end
   end
   // Register the selected slot one cycle before its RAM write, for timing.
-  // Its row comes along: a slot keeps its line until it is free again, so
-  // fw_index_q is the row of mshr_line_q[fw_sel_q] whenever fw_valid_q, and
-  // neither the write ports nor the row checks below need a slot mux for it.
-  logic                 fw_valid_q;
-  logic [ MshrBits-1:0] fw_sel_q;
-  logic [IndexBits-1:0] fw_index_q;
+  // Its set and way come along: a slot keeps its line and way until it is
+  // free again, so fw_set_q and fw_way_q name the slot's row whenever
+  // fw_valid_q, and neither the write ports nor the set checks below need a
+  // slot mux for it.
+  logic                fw_valid_q;
+  logic [MshrBits-1:0] fw_sel_q;
+  logic [ SetBits-1:0] fw_set_q;
+  logic [ WayBits-1:0] fw_way_q;
   assign mshr_write_fire = fw_valid_q && !w_writes_data && !w_writes_tag;
 
   always_ff @(posedge i_clk) begin
@@ -1089,32 +1347,31 @@ module frost_cache #(
       // slot moves to MS_WRITING so it is not picked twice.
       fw_valid_q <= (mstate_q == M_IDLE) && mshr_write_any;
       fw_sel_q   <= mshr_write_sel;
-      fw_index_q <= mshr_line_q[mshr_write_sel][IndexBits-1:0];
+      fw_set_q   <= mshr_line_q[mshr_write_sel][SetBits-1:0];
+      fw_way_q   <= mshr_way_q[mshr_write_sel];
     end
   end
 
-  // Whether the write ports below write T's row, or the incoming request's,
-  // this cycle. These matter only while the pipeline holds a request, which
-  // is in M_IDLE, where a port writes W's row or a fill's row. Each source's
-  // row is compared and the result selected by registered copies of W's
-  // write decode, so T's decision does not wait on the write-port muxes:
-  // synthesis can share their selects with the data array's write-data mux,
-  // which is a line wide.
-  logic w_row_is_t, fw_row_is_t, w_row_is_in, fw_row_is_in;
-  assign w_row_is_t = (w_index_q == t_index);
-  assign fw_row_is_t = (fw_index_q == t_index);
-  assign w_row_is_in = (w_index_q == in_index);
-  assign fw_row_is_in = (fw_index_q == in_index);
-  assign tag_write_t_row = w_tag_write_q ? w_row_is_t : (fw_valid_q && fw_row_is_t);
-  assign tag_write_in_row = w_tag_write_q ? w_row_is_in : (fw_valid_q && fw_row_is_in);
-  assign raw_hazard = w_data_write_q ? w_row_is_t : (!w_tag_write_q && fw_valid_q && fw_row_is_t);
+  // Whether the tag port writes T's set, or the incoming request's, this
+  // cycle (the delayed-tag stale tracking). These matter only while the
+  // pipeline holds a request, which is in M_IDLE, where the port writes W's
+  // set or a fill's set. Each source's set is compared and the result
+  // selected by a registered copy of W's tag-write decode, so T's decision
+  // does not wait on the write-port muxes.
+  logic w_set_is_t, fw_set_is_t, w_set_is_in, fw_set_is_in;
+  assign w_set_is_t = (w_set_q == t_set);
+  assign fw_set_is_t = (fw_set_q == t_set);
+  assign w_set_is_in = (w_set_q == in_set);
+  assign fw_set_is_in = (fw_set_q == in_set);
+  assign tag_write_t_set = w_tag_write_q ? w_set_is_t : (fw_valid_q && fw_set_is_t);
+  assign tag_write_in_set = w_tag_write_q ? w_set_is_in : (fw_valid_q && fw_set_is_in);
 
   // Next cycle's MS_RESP slots and the registered responder (see the
   // response port).
   always_comb begin
     for (int i = 0; i < int'(NUM_MSHR); i++) begin
       mshr_in_resp_next[i] =
-          !(w_valid_q && (w_op_q == W_ALLOC) && (w_mshr_q == MshrBits'(i))) &&
+          !(w_valid_q && w_is_alloc && (w_mshr_q == MshrBits'(i))) &&
           (((mshr_state_q[i] == MS_WRITING) && mshr_write_fire && (fw_sel_q == MshrBits'(i)) &&
             (!mshr_write_q[i] || mshr_has_waiter[i])) ||
            ((mshr_state_q[i] == MS_RESP) &&
@@ -1230,60 +1487,67 @@ module frost_cache #(
   end
 
   always_comb begin
-    tag_we        = 1'b0;
-    tag_waddr     = w_index_q;
+    tag_we        = '0;
+    tag_waddr     = w_set_q;
     tag_wdata     = '0;
     data_row_we   = 1'b0;
-    data_waddr    = w_index_q;
+    data_waddr    = row_of(w_way_q, w_set_q);
     data_wbyte_en = '0;
     data_wdata    = w_wdata_q;
+    plru_we       = 1'b0;
+    plru_waddr    = w_set_q;
+    plru_wdata    = plru_touch(w_plru_q, w_way_q);
 
     if (mstate_q == M_SWEEP) begin
-      // FPGA: clear one tag entry per cycle. Fast (sim): the tag bulk clear
-      // zeroes every entry this single cycle, so no per-index write is issued.
+      // FPGA: clear every way of one set, and its replacement state, per
+      // cycle. Fast (sim): the bulk clear zeroes every entry this single
+      // cycle, so no per-set write is issued.
       if (SIM_FAST_MAINT == 0) begin
-        tag_we    = 1'b1;
-        tag_waddr = sweep_idx_q;
-        tag_wdata = '0;
+        tag_we     = '1;
+        tag_waddr  = sweep_idx_q;
+        tag_wdata  = '0;
+        plru_we    = 1'b1;
+        plru_waddr = sweep_idx_q;
+        plru_wdata = '0;
       end
-    end else if (mstate_q == M_FLUSH_CHECK) begin
+    end else if (flush_read) begin
       // Written back (via a writeback slot): keep the line valid, clear dirty.
-      if (flush_read) begin
-        tag_we    = 1'b1;
-        tag_waddr = flush_idx_q;
-        tag_wdata = {1'b1, 1'b0, tag_rdata_tag};
+      tag_we    = way_onehot(flush_way_q);
+      tag_waddr = flush_idx_q;
+      tag_wdata = {1'b1, 1'b0, flush_tag_q};
+    end else begin
+      // Hits and allocations touch the set's replacement state.
+      plru_we = w_valid_q && ((w_op_q == W_READ_HIT) || (w_op_q == W_WRITE_HIT) || w_is_alloc);
+      if (w_valid_q && (w_op_q == W_WRITE_HIT)) begin
+        data_row_we   = 1'b1;
+        data_wbyte_en = w_wstrb_q;
+        tag_we        = way_onehot(w_way_q);
+        tag_wdata     = {1'b1, 1'b1, w_tag_q};
+      end else if (w_valid_q && (w_is_alloc || (w_op_q == W_PROBE_INVAL))) begin
+        // The victim's or the probed line's tag: valid=0, dirty=0.
+        tag_we    = way_onehot(w_way_q);
+        tag_wdata = '0;
+      end else if (w_valid_q && (w_op_q == W_PROBE_CLEAN)) begin
+        // Written back through a slot if it was dirty: valid, clean.
+        tag_we    = way_onehot(w_way_q);
+        tag_wdata = {1'b1, 1'b0, w_tag_q};
+      end else if (mshr_write_fire) begin
+        data_row_we = 1'b1;
+        data_waddr = row_of(fw_way_q, fw_set_q);
+        data_wbyte_en = '1;
+        data_wdata = mshr_data_q[fw_sel_q];
+        tag_we = way_onehot(fw_way_q);
+        tag_waddr = fw_set_q;
+        tag_wdata = {1'b1, mshr_write_q[fw_sel_q], mshr_line_q[fw_sel_q][LineAddrBits-1-:TagBits]};
       end
-    end else if (w_valid_q && (w_op_q == W_WRITE_HIT)) begin
-      data_row_we   = 1'b1;
-      data_wbyte_en = w_wstrb_q;
-      tag_we        = 1'b1;
-      tag_wdata     = {1'b1, 1'b1, w_tag_q};
-    end else if (w_valid_q && (w_op_q == W_ALLOC)) begin
-      tag_we    = 1'b1;
-      tag_wdata = '0;  // the victim's tag: valid=0, dirty=0
-    end else if (w_valid_q && (w_op_q == W_PROBE_INVAL)) begin
-      tag_we    = 1'b1;
-      tag_wdata = '0;  // the probed line: valid=0, dirty=0
-    end else if (w_valid_q && (w_op_q == W_PROBE_CLEAN)) begin
-      tag_we    = 1'b1;
-      tag_wdata = {1'b1, 1'b0, w_tag_q};  // written back through a slot: valid, clean
-    end else if (mshr_write_fire) begin
-      data_row_we = 1'b1;
-      data_waddr = fw_index_q;
-      data_wbyte_en = '1;
-      data_wdata = mshr_data_q[fw_sel_q];
-      tag_we = 1'b1;
-      tag_waddr = fw_index_q;
-      tag_wdata = {1'b1, mshr_write_q[fw_sel_q], mshr_line_q[fw_sel_q][LineAddrBits-1-:TagBits]};
     end
   end
 
   // W's operation if T completes this cycle.
   w_op_e w_op_next;
-  assign w_op_next = t_is_write_hit ? W_WRITE_HIT : t_is_alloc ? W_ALLOC :
-      t_is_merge ? W_MERGE : t_is_waiter ? W_WAITER :
-      (t_is_probe_hit && t_probe_inval_q) ? W_PROBE_INVAL :
-      t_probe_dirty ? W_PROBE_CLEAN : W_NONE;
+  assign w_op_next = t_is_read_hit ? W_READ_HIT : t_is_write_hit ? W_WRITE_HIT :
+      t_is_alloc ? W_ALLOC : t_is_merge ? W_MERGE : t_is_waiter ? W_WAITER :
+      t_is_probe_hit ? (t_probe_inval_q ? W_PROBE_INVAL : W_PROBE_CLEAN) : W_NONE;
 
   // ===========================================================================
   // Stage A/T/W registers
@@ -1325,13 +1589,13 @@ module frost_cache #(
       // can retire and be reallocated during a multi-cycle tag lookup.
       if (t_accept) begin
         t_valid_q      <= 1'b1;
-        t_idx_match_q  <= in_idx_match;
+        t_set_match_q  <= in_set_match;
         t_line_match_q <= in_line_match;
         t_wb_match_q   <= in_wb_match;
       end else if (t_done) begin
         t_valid_q <= 1'b0;
       end else if (t_valid_q) begin
-        t_idx_match_q  <= t_idx_live_match;
+        t_set_match_q  <= t_set_live_match;
         t_line_match_q <= t_line_live_match;
         t_wb_match_q   <= t_wb_live_match;
       end
@@ -1353,13 +1617,13 @@ module frost_cache #(
       end
 
       // Read-first memory returns the old lane on a same-address write. Track
-      // every exact-index write from issue through response and discard the
+      // every same-set write from issue through response and discard the
       // response if crossed. A retry starts a fresh observation window; a
       // same-edge collision wins over that clear.
       if (t_accept) begin
-        t_tag_stale_q <= TrackDelayedTagWrites && tag_write_in_row;
+        t_tag_stale_q <= TrackDelayedTagWrites && tag_write_in_set;
       end else if (reread_q) begin
-        t_tag_stale_q <= TrackDelayedTagWrites && tag_write_t_row;
+        t_tag_stale_q <= TrackDelayedTagWrites && tag_write_t_set;
       end else if (t_tag_write_collision) begin
         t_tag_stale_q <= 1'b1;
       end else if (t_done) begin
@@ -1378,7 +1642,7 @@ module frost_cache #(
   // Capture W unconditionally for timing. All effects require w_valid_q or
   // a W operation; w_op_q is W_NONE when empty, so unused captures are invisible.
   always_ff @(posedge i_clk) begin
-    w_index_q <= t_index;
+    w_set_q <= t_set;
     w_tag_q <= t_tag;
     w_line_q <= t_line;
     w_write_q <= t_write_q;
@@ -1386,11 +1650,15 @@ module frost_cache #(
     w_wstrb_q <= t_wstrb_q;
     w_id_q <= t_id_q;
     w_maint_q <= t_maint_q;
+    w_probe_q <= t_probe_q;
     w_mshr_q <= t_is_alloc ? mshr_free_idx : match_mshr;
     w_wb_q <= wb_free_idx;
-    w_has_victim_q <= (t_is_alloc || t_is_probe_hit) && victim_dirty;
+    w_way_q <= hit ? hit_way : victim_way;
+    w_hit_dirty_q <= hit_dirty;
+    w_victim_dirty_q <= victim_dirty;
+    w_victim_tag_q <= tag_rdata_tag[victim_way];
+    w_plru_q <= plru_rdata;
     w_probe_slot_q <= probe_free_idx;
-    w_victim_tag_q <= tag_rdata_tag;
     w_needs_fill_q <= !(t_write_q && (&t_wstrb_q));
     w_wb_wait_q <= t_wb_match_q & wb_valid;
   end
@@ -1435,22 +1703,22 @@ module frost_cache #(
       // Allocation: W's victim, or the flush walk's dirty line.
       if (w_allocs_wb) begin
         wb_state_q[w_wb_q]      <= WB_FILLING;
-        wb_line_q[w_wb_q]       <= {w_victim_tag_q, w_index_q};
+        wb_line_q[w_wb_q]       <= w_victim_line;
         wb_maint_q[w_wb_q]      <= w_maint_q;
-        wb_probe_q[w_wb_q]      <= (w_op_q != W_ALLOC);
+        wb_probe_q[w_wb_q]      <= !w_is_alloc;
         wb_probe_slot_q[w_wb_q] <= w_probe_slot_q;
       end
       if (flush_read) begin
-        wb_state_q[wb_free_idx] <= WB_FILLING;
-        wb_line_q[wb_free_idx]  <= {tag_rdata_tag, flush_idx_q};
-        wb_maint_q[wb_free_idx] <= 1'b1;
-        wb_probe_q[wb_free_idx] <= 1'b0;
+        wb_state_q[flush_wb_q] <= WB_FILLING;
+        wb_line_q[flush_wb_q]  <= {flush_tag_q, flush_idx_q};
+        wb_maint_q[flush_wb_q] <= 1'b1;
+        wb_probe_q[flush_wb_q] <= 1'b0;
       end
 
       // ---- Probe slots ------------------------------------------------------
-      // Taken at the probe's decision; acknowledged at once unless a dirty
-      // victim is being written back, then when that writeback is
-      // acknowledged; freed by the requester's release.
+      // Taken at the probe's decision; acknowledged from W unless a dirty
+      // copy is being written back, then when that writeback is acknowledged;
+      // freed by the requester's release.
       if (probe_ack_fire) probe_ack_q[probe_ack_sel] <= 1'b0;
       for (int k = 0; k < int'(ProbeSlots); k++) begin
         if ((NUM_PROBE > 0) && i_probe_release_valid && probe_valid_q[k] &&
@@ -1462,10 +1730,8 @@ module frost_cache #(
         probe_ack_q[wb_probe_slot_q[resp_wb_slot]] <= 1'b1;
       end
       // The slot's line, id and kind are captured below while it is free.
-      if (t_done && t_probe_q) begin
-        probe_valid_q[probe_free_idx] <= 1'b1;
-        probe_ack_q[probe_free_idx]   <= !t_probe_dirty;
-      end
+      if (t_done && t_probe_q) probe_valid_q[probe_free_idx] <= 1'b1;
+      if (w_valid_q && w_probe_q && !w_has_victim) probe_ack_q[w_probe_slot_q] <= 1'b1;
 
       // ---- MSHRs ------------------------------------------------------------
       for (int i = 0; i < int'(NUM_MSHR); i++) begin
@@ -1512,13 +1778,14 @@ module frost_cache #(
 
       // W-stage effects on the MSHRs (an allocation targets a free slot; a
       // merge/waiter targets a pending one).
-      if (w_valid_q && (w_op_q == W_ALLOC)) begin
+      if (w_valid_q && w_is_alloc) begin
         mshr_state_q[w_mshr_q]             <= w_needs_fill_q ? MS_PEND : MS_WRITE;
         mshr_line_q[w_mshr_q]              <= w_line_q;
+        mshr_way_q[w_mshr_q]               <= w_way_q;
         mshr_id_q[w_mshr_q]                <= w_id_q;
         mshr_write_q[w_mshr_q]             <= w_write_q;
         mshr_maint_q[w_mshr_q]             <= w_maint_q;
-        mshr_has_victim_q[w_mshr_q]        <= w_has_victim_q;
+        mshr_has_victim_q[w_mshr_q]        <= w_has_victim;
         mshr_victim_wb_q[w_mshr_q]         <= w_wb_q;
         mshr_waiter_valid_q[w_mshr_q]      <= '0;
         mshr_wb_wait_q[w_mshr_q]           <= w_wb_wait_q & wb_still_pending;
@@ -1547,21 +1814,21 @@ module frost_cache #(
   // ===========================================================================
   // Maintenance: sweep and writeback-all walk
   // ===========================================================================
-  // Real-FSM (FPGA) writeback-all acceleration: bound the index walk to the
-  // [wb_lo_q, wb_hi_q] span of lines made dirty since the last writeback-all.
+  // Real-FSM (FPGA) writeback-all acceleration: bound the set walk to the
+  // [wb_lo_q, wb_hi_q] span of sets dirtied since the last writeback-all.
   // wb_any_q == 0 means no dirty lines. Dirty lines are created only by W's
   // write hits and by write-allocate fills, both of which pass through tag_we
   // with the dirty bit set.
-  logic [IndexBits-1:0] wb_lo_q, wb_hi_q;
+  logic [SetBits-1:0] wb_lo_q, wb_hi_q;
   logic wb_any_q;
   logic dirty_set;
-  assign dirty_set = tag_we && tag_wdata[TagBits];
+  assign dirty_set = (|tag_we) && tag_wdata[TagBits];
 
   // Fast maintenance (SIM_FAST_MAINT, simulation only): a shadow of the tag
-  // array's dirty bits, updated by the same writes that update the tag RAM,
-  // so writeback-all can jump straight to dirty lines.
-  logic any_dirty_full, any_dirty_excl;
-  logic [IndexBits-1:0] first_dirty_full, first_dirty_excl;
+  // array's dirty bits, entry {set, way}, updated by the same writes that
+  // update the tag RAM, so writeback-all can jump straight to dirty sets.
+  logic any_dirty_full;
+  logic [SetBits-1:0] first_dirty_full;
   if (SIM_FAST_MAINT != 0) begin : gen_fast_maint
     logic [NumLines-1:0] dirty_shadow_q;
     // The 2 MiB L2's shadow is 32,768 bits; clearing it replicates past the
@@ -1570,23 +1837,19 @@ module frost_cache #(
     always_ff @(posedge i_clk) begin
       if (i_rst) dirty_shadow_q <= '0;
       else if (tag_bulk_clear) dirty_shadow_q <= '0;
-      else if (tag_we) dirty_shadow_q[tag_waddr] <= tag_wdata[TagBits];
+      else
+        for (int w = 0; w < int'(WAYS); w++)
+        if (tag_we[w]) dirty_shadow_q[int'(tag_waddr)*int'(WAYS)+w] <= tag_wdata[TagBits];
     end
     /* verilator lint_on WIDTHCONCAT */
     always_comb begin
       any_dirty_full   = 1'b0;
       first_dirty_full = '0;
-      any_dirty_excl   = 1'b0;
-      first_dirty_excl = '0;
       if ((mstate_q == M_IDLE && i_writeback_all) || flush_active) begin
-        for (int idx = int'(NumLines) - 1; idx >= 0; idx--) begin
-          if (dirty_shadow_q[idx]) begin
+        for (int set = int'(NumSets) - 1; set >= 0; set--) begin
+          if (dirty_shadow_q[set*int'(WAYS)+:WAYS] != '0) begin
             any_dirty_full   = 1'b1;
-            first_dirty_full = IndexBits'(idx);
-            if (IndexBits'(idx) != flush_idx_q) begin
-              any_dirty_excl   = 1'b1;
-              first_dirty_excl = IndexBits'(idx);
-            end
+            first_dirty_full = SetBits'(set);
           end
         end
       end
@@ -1594,18 +1857,15 @@ module frost_cache #(
   end else begin : gen_no_fast_maint
     assign any_dirty_full   = 1'b0;
     assign first_dirty_full = '0;
-    assign any_dirty_excl   = 1'b0;
-    assign first_dirty_excl = '0;
   end
 
-  // The walk is complete once it has scanned its span (or hopped every dirty
-  // line); the maintenance state then drains the writeback slots.
+  // The walk is complete once CHECK finds the last set of its span (or, fast,
+  // the last dirty set) clean; the maintenance state then drains the
+  // writeback slots. A set with a dirty way is scanned again after each
+  // writeback until it is clean.
   logic walk_done;
-  assign walk_done = flush_tag_ready &&
-      ((SIM_FAST_MAINT != 0) ?
-       (flush_read ? !any_dirty_excl : !(tag_rdata_valid && tag_rdata_dirty)) :
-                               ((!(tag_rdata_valid && tag_rdata_dirty) || flush_read) &&
-                                (!wb_any_q || (flush_idx_q == wb_hi_q))));
+  assign walk_done = flush_tag_ready && flush_set_clean &&
+      ((SIM_FAST_MAINT != 0) ? !any_dirty_full : (!wb_any_q || (flush_idx_q == wb_hi_q)));
 
   assign pipeline_idle = !sk_valid_q && !t_valid_q && !w_valid_q && !reread_q &&
       (tag_response_valid_q == '0) && (mshr_valid == '0) && (wb_valid == '0) &&
@@ -1615,7 +1875,7 @@ module frost_cache #(
     if (i_rst) begin
       mstate_q    <= M_SWEEP;
       sweep_idx_q <= '0;
-      wb_lo_q     <= {IndexBits{1'b1}};
+      wb_lo_q     <= {SetBits{1'b1}};
       wb_hi_q     <= '0;
       wb_any_q    <= 1'b0;
     end else begin
@@ -1632,7 +1892,7 @@ module frost_cache #(
             mstate_q <= M_IDLE;
           end else begin
             sweep_idx_q <= sweep_idx_q + 1'b1;
-            if (sweep_idx_q == {IndexBits{1'b1}}) mstate_q <= M_IDLE;
+            if (sweep_idx_q == {SetBits{1'b1}}) mstate_q <= M_IDLE;
           end
         end
 
@@ -1654,22 +1914,32 @@ module frost_cache #(
           if (flush_tag_ready) begin
             if (walk_done) begin
               mstate_q <= M_FLUSH_DRAIN;
-            end else if (tag_rdata_valid && tag_rdata_dirty && !flush_read) begin
-              // Dirty but no writeback slot free: re-scan this index.
-              mstate_q <= M_FLUSH_SCAN;
+            end else if (flush_pick) begin
+              // Write the lowest dirty way back next cycle, then scan the set
+              // again for the others.
+              flush_way_q <= lowest_way(flush_dirty);
+              flush_tag_q <= tag_rdata_tag[lowest_way(flush_dirty)];
+              flush_wb_q  <= wb_free_idx;
+              mstate_q    <= M_FLUSH_WRITE;
             end else begin
-              flush_idx_q <= (SIM_FAST_MAINT != 0) ? first_dirty_excl : flush_idx_q + 1'b1;
-              mstate_q    <= M_FLUSH_SCAN;
+              // A clean set moves the walk on; a dirty one with no writeback
+              // slot free is scanned again.
+              if (flush_set_clean) begin
+                flush_idx_q <= (SIM_FAST_MAINT != 0) ? first_dirty_full : flush_idx_q + 1'b1;
+              end
+              mstate_q <= M_FLUSH_SCAN;
             end
           end
         end
+
+        M_FLUSH_WRITE: mstate_q <= M_FLUSH_SCAN;
 
         M_FLUSH_DRAIN: begin
           if (wb_valid == '0) begin
             // Every dirty line in the span has been written back and lines
             // outside it were never dirty, so clearing wb_any_q keeps it
             // meaning "no dirty line".
-            wb_lo_q  <= {IndexBits{1'b1}};
+            wb_lo_q  <= {SetBits{1'b1}};
             wb_hi_q  <= '0;
             wb_any_q <= 1'b0;
             mstate_q <= M_IDLE;
@@ -1692,28 +1962,33 @@ module frost_cache #(
       if (mshr_valid[i] && !mshr_maint_q[i]) miss_count = miss_count + 1'b1;
     end
   end
+  logic w_counts_hit, w_counts_miss;
+  assign w_counts_hit = w_valid_q && !w_maint_q &&
+      ((w_op_q == W_READ_HIT) || (w_op_q == W_WRITE_HIT));
+  assign w_counts_miss = w_valid_q && !w_maint_q &&
+      (w_is_alloc || (w_op_q == W_MERGE) || (w_op_q == W_WAITER));
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       perf_events_q <= '0;
     end else begin
       perf_events_q.access <= up_req_fire && !i_up_req_maintenance && !i_up_req_probe;
-      perf_events_q.hit <= t_done && !t_maint_q && (t_is_read_hit || t_is_write_hit);
-      perf_events_q.miss <= t_done && !t_maint_q && (t_is_alloc || t_is_merge || t_is_waiter);
-      perf_events_q.writeback <= t_done && !t_maint_q && t_is_alloc && victim_dirty;
+      perf_events_q.hit <= w_counts_hit;
+      perf_events_q.miss <= w_counts_miss;
+      perf_events_q.writeback <= w_counts_miss && w_is_alloc && w_victim_dirty_q;
       perf_events_q.miss_outstanding <= miss_count;
-      perf_events_q.hit_under_miss <= t_done && !t_maint_q && (t_is_read_hit || t_is_write_hit) &&
-          (miss_count != '0);
+      perf_events_q.hit_under_miss <= w_counts_hit && (miss_count != '0);
       perf_events_q.slot_full_stall <= stall_full && t_plain && !t_maint_q;
-      perf_events_q.conflict_stall <= (stall_conflict || stall_wb_snapshot) && t_plain &&
-          !t_maint_q;
+      perf_events_q.conflict_stall <= (stall_conflict || stall_ways || stall_wb_snapshot) &&
+          t_plain && !t_maint_q;
     end
   end
   assign o_perf_events = perf_events_q;
 
 `ifndef SYNTHESIS
   // ---- Compare visible captures with references written only when enabled.
-  localparam int unsigned WPayloadBits = IndexBits + TagBits + LineAddrBits + 1 + LineBits +
-      LINE_BYTES + UP_ID_BITS + 1 + MshrBits + WbBits + 1 + ProbeBits + TagBits + 1 + NUM_WB;
+  localparam int unsigned WPayloadBits = SetBits + TagBits + LineAddrBits + 1 + LineBits +
+      LINE_BYTES + UP_ID_BITS + 1 + 1 + MshrBits + WbBits + WayBits + 1 + 1 + TagBits +
+      PlruBits + ProbeBits + 1 + NUM_WB;
   logic [WPayloadBits-1:0] ref_w_payload_q;
   logic [ProbeSlots-1:0] ref_probe_inval_q;
   logic [LineAddrBits-1:0] ref_probe_line_q[ProbeSlots];
@@ -1722,7 +1997,7 @@ module frost_cache #(
   always_ff @(posedge i_clk) begin
     if (!i_rst && t_done) begin
       ref_w_payload_q <= {
-        t_index,
+        t_set,
         t_tag,
         t_line,
         t_write_q,
@@ -1730,11 +2005,15 @@ module frost_cache #(
         t_wstrb_q,
         t_id_q,
         t_maint_q,
+        t_probe_q,
         (t_is_alloc ? mshr_free_idx : match_mshr),
         wb_free_idx,
-        ((t_is_alloc || t_is_probe_hit) && victim_dirty),
+        (hit ? hit_way : victim_way),
+        hit_dirty,
+        victim_dirty,
+        tag_rdata_tag[victim_way],
+        plru_rdata,
         probe_free_idx,
-        tag_rdata_tag,
         !(t_write_q && (&t_wstrb_q)),
         (t_wb_match_q & wb_valid)
       };
@@ -1818,21 +2097,57 @@ module frost_cache #(
     end
   end
 
+  // Way invariants: a valid MSHR owns a way no other valid MSHR owns, its
+  // line is in no way of its set while it fetches, at most one way of a set
+  // holds a line, and an allocation takes a way no MSHR owns.
+  logic way_owner_conflict;
+  always_comb begin
+    way_owner_conflict = 1'b0;
+    for (int i = 0; i < int'(NUM_MSHR); i++) begin
+      for (int j = i + 1; j < int'(NUM_MSHR); j++) begin
+        if (mshr_valid[i] && mshr_valid[j] &&
+            (mshr_line_q[i][SetBits-1:0] == mshr_line_q[j][SetBits-1:0]) &&
+            (mshr_way_q[i] == mshr_way_q[j])) begin
+          way_owner_conflict = 1'b1;
+        end
+      end
+    end
+  end
+
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
       p_t_done_factored : assert (t_done == (decide && !t_stall));
+      p_ack_push_is_write_decode :
+      assert (ack_push == (t_done && (t_is_write_hit || (t_is_alloc && t_write_q) || t_is_merge)));
       p_mshr_resp_onehot_exact :
       assert (mshr_resp_onehot_q == (mshr_in_resp_ref & ~(mshr_in_resp_ref - 1'b1)));
       if (w_valid_q) begin
         p_w_payload_exact :
-        assert ({w_index_q, w_tag_q, w_line_q, w_write_q, w_wdata_q, w_wstrb_q, w_id_q,
-                 w_maint_q, w_mshr_q, w_wb_q, w_has_victim_q, w_probe_slot_q, w_victim_tag_q,
-                 w_needs_fill_q, w_wb_wait_q} == ref_w_payload_q);
+        assert ({w_set_q, w_tag_q, w_line_q, w_write_q, w_wdata_q, w_wstrb_q, w_id_q, w_maint_q,
+                 w_probe_q, w_mshr_q, w_wb_q, w_way_q, w_hit_dirty_q, w_victim_dirty_q,
+                 w_victim_tag_q, w_plru_q, w_probe_slot_q, w_needs_fill_q, w_wb_wait_q} ==
+                ref_w_payload_q);
       end
       p_probe_slot_exact : assert (!probe_slot_mismatch);
       p_ack_nonempty_exact : assert (ack_nonempty == (ack_wr_q != ack_rd_q));
       p_ack_queue_exact : assert (!ack_queue_mismatch);
       p_mshr_payload_exact : assert (mshr_payload_mismatch == '0);
+      p_way_owned_once : assert (!way_owner_conflict);
+      if (decide) begin
+        p_one_way_hits : assert ($onehot0(way_hit));
+        // A line whose MSHR has not installed it yet is in no way.
+        if (same_line && (mshr_state_q[match_mshr] != MS_RESP) &&
+            (mshr_state_q[match_mshr] != MS_FREE_WAIT)) begin
+          p_line_in_transition_misses : assert (!hit);
+        end
+      end
+      if (w_valid_q && w_is_alloc) begin
+        for (int i = 0; i < int'(NUM_MSHR); i++) begin
+          p_alloc_takes_unowned_way :
+          assert (!(mshr_valid[i] && (mshr_line_q[i][SetBits-1:0] == w_set_q) &&
+                    (mshr_way_q[i] == w_way_q)));
+        end
+      end
     end
   end
 
@@ -1858,14 +2173,21 @@ module frost_cache #(
         $error("frost_cache: writeback ack for slot %0d not in flight", resp_wb_slot);
       if (ack_push && ((ack_wr_q - ack_rd_q) == AckPtrBits'(AckDepth)))
         $error("frost_cache: acknowledgement queue overflow");
-      if (w_valid_q && (w_op_q == W_ALLOC) && (mshr_state_q[w_mshr_q] != MS_FREE))
+      if (w_valid_q && w_is_alloc && (mshr_state_q[w_mshr_q] != MS_FREE))
         $error("frost_cache: allocation into busy MSHR %0d", w_mshr_q);
-      if (w_valid_q && (w_op_q == W_ALLOC) && w_has_victim_q && (wb_state_q[w_wb_q] != WB_FREE))
+      if (w_allocs_wb && (wb_state_q[w_wb_q] != WB_FREE))
         $error("frost_cache: victim into busy writeback slot %0d", w_wb_q);
+      if (flush_read && (wb_state_q[flush_wb_q] != WB_FREE))
+        $error("frost_cache: flush writeback into busy slot %0d", flush_wb_q);
       if (w_valid_q && (w_op_q == W_MERGE) &&
           !((mshr_state_q[w_mshr_q] == MS_PEND) || (mshr_state_q[w_mshr_q] == MS_SENT) ||
             (mshr_state_q[w_mshr_q] == MS_MERGE)))
         $error("frost_cache: merge into MSHR %0d in state %0d", w_mshr_q, mshr_state_q[w_mshr_q]);
+      // A data-array read never meets a same-edge write of its row (see the
+      // data array): one W operation per cycle, and fills install only into
+      // ways that neither hit nor are being taken.
+      if (data_re && data_row_we && (data_raddr == data_waddr))
+        $error("frost_cache: data row 0x%0h read and written in the same cycle", data_raddr);
       p_tag_response_has_owner :
       assert (!tag_response_valid ||
                                         ((mstate_q == M_IDLE) && t_valid_q) ||
@@ -1873,26 +2195,26 @@ module frost_cache #(
       p_tag_retry_keeps_t : assert (!t_tag_retry || (t_valid_q && !t_done));
       p_poisoned_tag_never_decides :
       assert (!(t_tag_response && (t_tag_stale_q || t_tag_write_collision) && t_done));
-      p_reread_owns_t_index : assert (!reread_q || ((mstate_q == M_IDLE) && t_valid_q));
+      p_reread_owns_t_set : assert (!reread_q || ((mstate_q == M_IDLE) && t_valid_q));
       // No request is in A, T, or W while the sweep or a walk runs, so the
       // slot comparators never see the walk's writeback slots.
       p_pipeline_empty_during_maintenance :
       assert ((mstate_q == M_IDLE) || (!sk_valid_q && !t_valid_q && !w_valid_q));
       // A picked fill owns its slot in MS_WRITING, which keeps maintenance
-      // from starting. The fill's registered row and W's registered write
-      // decode match what they copy, and in M_IDLE the per-source row checks
-      // equal their write-port forms.
+      // from starting. The fill's registered set and way and W's registered
+      // write decode match what they copy, and in M_IDLE the per-source set
+      // checks equal their write-port forms.
       p_fill_owns_writing_slot :
       assert (!fw_valid_q || ((mstate_q == M_IDLE) && (mshr_state_q[fw_sel_q] == MS_WRITING)));
       p_fill_row_is_slot_row :
-      assert (!fw_valid_q || (fw_index_q == mshr_line_q[fw_sel_q][IndexBits-1:0]));
+      assert (!fw_valid_q || ((fw_set_q == mshr_line_q[fw_sel_q][SetBits-1:0]) &&
+                              (fw_way_q == mshr_way_q[fw_sel_q])));
       p_w_write_copies :
       assert ((w_tag_write_q == w_writes_tag) && (w_data_write_q == w_writes_data));
-      p_row_checks_are_port_forms :
+      p_set_checks_are_port_forms :
       assert ((mstate_q != M_IDLE) ||
-              ((tag_write_t_row == (tag_we && (tag_waddr == t_index))) &&
-               (tag_write_in_row == (tag_we && (tag_waddr == in_index))) &&
-               (raw_hazard == (data_row_we && (data_waddr == t_index)))));
+              ((tag_write_t_set == ((|tag_we) && (tag_waddr == t_set))) &&
+               (tag_write_in_set == ((|tag_we) && (tag_waddr == in_set)))));
       // The per-source accept and tag read enable equal their reference forms.
       p_accept_is_hold_gated :
       assert (t_accept == (in_valid && !a_hold && !reread_q && (!t_valid_q || t_done)));
@@ -2001,16 +2323,17 @@ module frost_cache #(
         $display("  down: valid=%0d ready=%0d write=%0d id=%0d resp_v=%0d up_resp{v=%0d id=%0d}",
                  o_down_req_valid, i_down_req_ready, o_down_req_write, o_down_req_id,
                  i_down_resp_valid, o_up_resp_valid, o_up_resp_id);
-        $display({"  mstate=%0d t{v=%0d resp=%0d stale=%0d idx=%h} ",
-                  "w{v=%0d op=%0d idx=%h} dq{v=%0d wb=%0d id=%0d}"}, mstate_q, t_valid_q,
-                   tag_response_valid, t_tag_stale_q, t_index, w_valid_q, w_op_q, w_index_q,
-                   dq_valid_q, dq_is_wb_q, dq_id_q);
+        $display({"  mstate=%0d t{v=%0d resp=%0d stale=%0d set=%h reserved=%b} ",
+                  "w{v=%0d op=%0d set=%h} dq{v=%0d wb=%0d id=%0d}"}, mstate_q, t_valid_q,
+                   tag_response_valid, t_tag_stale_q, t_set, way_reserved, w_valid_q, w_op_q,
+                   w_set_q, dq_valid_q, dq_is_wb_q, dq_id_q);
         for (int i = 0; i < int'(NUM_MSHR); i++)
         $display(
-            "  mshr[%0d]: state=%0d line=%h id=%0d write=%0d wb_wait=%b waiters=%b",
+            "  mshr[%0d]: state=%0d line=%h way=%0d id=%0d write=%0d wb_wait=%b waiters=%b",
             i,
             mshr_state_q[i],
             mshr_line_q[i],
+            mshr_way_q[i],
             mshr_id_q[i],
             mshr_write_q[i],
             mshr_wb_wait_q[i],
