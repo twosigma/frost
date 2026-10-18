@@ -199,10 +199,12 @@ class CacheGeometry:
 
     @staticmethod
     def evicting_misses(ways: int) -> int:
-        """Return how many misses on new lines of a set evict any line of it.
+        """Return how many new lines of a set, each read twice, evict any line of it.
 
-        The first ways - 1 misses may take invalid ways; after that, the tree
-        pseudo-LRU replaces every way within `ways` misses.
+        The first ways - 1 lines may take invalid ways. A fill touches the
+        pseudo-LRU state only one time in 32 (bimodal insertion), but each
+        line's second read hits and makes it the set's most recently used, so
+        after that the tree pseudo-LRU replaces every way within `ways` lines.
         """
         return 2 * ways - 1
 
@@ -265,10 +267,12 @@ async def evict_l1d(
 ) -> list[int]:
     """Push addr's line out of the L1D with reads of new lines of its set.
 
-    A dirty copy is written back to the L2. The reads lie in other L2 sets
-    than addr's and avoid_l2_sets, so the L2 keeps what it holds there.
-    read(addr), if given, performs each data-side read (a bench that collects
-    the port's responses itself passes its own). Returns the lines read.
+    Each line is read twice, so that it becomes the set's most recently used
+    (see evicting_misses). A dirty copy is written back to the L2. The reads
+    lie in other L2 sets than addr's and avoid_l2_sets, so the L2 keeps what
+    it holds there. read(addr), if given, performs each data-side read (a
+    bench that collects the port's responses itself passes its own). Returns
+    the lines read.
     """
     read = _reader(dut, "up", read)
     geom = cache_geometry(dut)
@@ -281,6 +285,7 @@ async def evict_l1d(
     )
     for alias in aliases:
         await read(alias)
+        await read(alias)
     return aliases
 
 
@@ -288,13 +293,15 @@ async def evict_l2(dut: Any, addr: int, read: Any = None) -> list[int]:
     """Push addr's L2 line out of the L2 with walker reads of its set.
 
     The walker port skips the L1s, and its probes find nothing at the new
-    lines, so each read reaches the L2 at once. read(addr), if given,
-    performs each walker read. Returns the lines read.
+    lines, so each read reaches the L2 at once. Each line is read twice, as
+    in evict_l1d. read(addr), if given, performs each walker read. Returns
+    the lines read.
     """
     read = _reader(dut, "wup", read)
     geom = cache_geometry(dut)
     aliases = fresh_aliases(addr, geom.l2_way_bytes, geom.evicting_misses(geom.l2_ways))
     for alias in aliases:
+        await read(alias)
         await read(alias)
     return aliases
 
@@ -427,9 +434,9 @@ async def make_l1d_next_victim(
     """Read new lines of addr's L1D set until its next miss would evict addr.
 
     addr's line must be in the L1D. Checks the RTL's tags and pseudo-LRU
-    state before each read; it takes at most 2 * ways - 2 reads. The reads
-    lie in other L2 sets than addr's and avoid_l2_sets; read is as for
-    evict_l1d. Returns the lines read.
+    state before each line; it takes at most 2 * ways - 2 lines, each read
+    twice as in evict_l1d. The reads lie in other L2 sets than addr's and
+    avoid_l2_sets; read is as for evict_l1d. Returns the lines read.
     """
     read = _reader(dut, "up", read)
     geom = cache_geometry(dut)
@@ -444,6 +451,7 @@ async def make_l1d_next_victim(
             addr, geom.l1d_way_bytes, 1, avoid=lambda a: geom.l2_set(a) in keep
         )[0]
         await read(alias)
+        await read(alias)
         await FallingEdge(dut.i_clk)
         lines.append(alias)
     return lines
@@ -453,7 +461,8 @@ async def make_l2_next_victim(dut: Any, addr: int, read: Any = None) -> list[int
     """Walker-read new lines of addr's L2 set until its next miss evicts addr.
 
     addr's L2 line must be in the L2. Checks the RTL's tags and pseudo-LRU
-    state before each read; read is as for evict_l2. Returns the lines read.
+    state before each line, each read twice; read is as for evict_l2.
+    Returns the lines read.
     """
     read = _reader(dut, "wup", read)
     geom = cache_geometry(dut)
@@ -463,6 +472,7 @@ async def make_l2_next_victim(dut: Any, addr: int, read: Any = None) -> list[int
             f"0x{addr:08x} never became its L2 set's next victim"
         )
         alias = fresh_aliases(addr, geom.l2_way_bytes, 1)[0]
+        await read(alias)
         await read(alias)
         await FallingEdge(dut.i_clk)
         lines.append(alias)
@@ -871,9 +881,11 @@ async def test_mixed_id_traffic(dut: Any) -> None:
     full = (1 << LINE_BYTES) - 1
     rng = random.Random(random.getrandbits(32))
 
-    # Phase 1: D-side writes the I-region with known patterns, then thrashes
-    # an aliasing region twice the L1 size so every I-region line is written
-    # back to the shared level.
+    # Phase 1: D-side writes the I-region with known patterns and an aliasing
+    # region twice the L1 size, then pushes every I-region line out of the
+    # L1D so it is written back to the shared level (writes alone would only
+    # replace each other: bimodal insertion keeps an untouched fill the next
+    # victim).
     icode_lines = 16
     for line in range(icode_lines):
         addr = MIXED_BASE + line * LINE_BYTES
@@ -885,6 +897,8 @@ async def test_mixed_id_traffic(dut: Any) -> None:
         wdata = _line_int(bytes([(0x77 + line + b) & 0xFF for b in range(32)]))
         model.write_line(addr, wdata, full)
         await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
+    for line in range(icode_lines):
+        await _force_l1d_writeback(dut, MIXED_BASE + line * LINE_BYTES)
 
     # Phase 2: hammer both ports concurrently.
     async def _d_master() -> None:
@@ -930,12 +944,13 @@ async def test_ports_overlap_below_arbiter(dut: Any) -> None:
     for addr, data in ((d_addr, d_data), (i_addr, i_data)):
         model.write_line(addr, data, full)
         await _line_transaction(dut, write=True, addr=addr, wdata=data, wstrb=full)
-    # Evict both lines with 256 aliasing reads so the demand misses find
-    # clean victims and send only fills downstream.
-    for line in range(256):
-        addr = OVERLAP_BASE + 0x10000 + line * LINE_BYTES
-        got = await _line_transaction(dut, write=False, addr=addr)
-        assert got == model.read_line(addr)
+    # Push both lines out of the L1D and the L2 with reads of new lines of
+    # their sets, so the demand misses find clean victims and send only fills
+    # downstream.
+    for addr in (d_addr, i_addr):
+        await _force_l1d_writeback(dut, addr)
+    for addr in (d_addr, i_addr):
+        await evict_l2(dut, addr)
 
     done_cycle: dict[str, int] = {}
     cycle = [0]
@@ -1015,12 +1030,12 @@ async def test_three_ports_overlap_below_arbiters(dut: Any) -> None:
         data = _line_int(bytes([(seed + b) & 0xFF for b in range(32)]))
         model.write_line(addr, data, full)
         await _line_transaction(dut, write=True, addr=addr, wdata=data, wstrb=full)
-    # Push the lines out of every cache level with reads of aliasing lines
-    # (see test_ports_overlap_below_arbiter for the clean-victim rationale).
-    for line in range(256):
-        addr = WALK2_BASE + 0x10000 + line * LINE_BYTES
-        got = await _line_transaction(dut, write=False, addr=addr)
-        assert got == model.read_line(addr)
+    # Push the lines out of every cache level (see
+    # test_ports_overlap_below_arbiter for the clean-victim rationale).
+    for addr in (d_addr, i_addr, w_addr):
+        await _force_l1d_writeback(dut, addr)
+    for addr in (d_addr, i_addr, w_addr):
+        await evict_l2(dut, addr)
 
     done_cycle: dict[str, int] = {}
     cycle = [0]
@@ -1068,8 +1083,8 @@ async def test_walker_mixed_id_traffic(dut: Any) -> None:
     full = (1 << LINE_BYTES) - 1
     rng = random.Random(random.getrandbits(32))
 
-    # Stable region for the read-only masters, written back to the shared
-    # level by thrashing aliases (as in test_mixed_id_traffic).
+    # Stable region for the read-only masters, pushed out of the L1D to the
+    # shared level (as in test_mixed_id_traffic).
     walk_lines = 16
     for line in range(walk_lines):
         addr = WALK3_BASE + line * LINE_BYTES
@@ -1081,6 +1096,8 @@ async def test_walker_mixed_id_traffic(dut: Any) -> None:
         wdata = _line_int(bytes([(0x55 + line + b) & 0xFF for b in range(32)]))
         model.write_line(addr, wdata, full)
         await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
+    for line in range(walk_lines):
+        await _force_l1d_writeback(dut, WALK3_BASE + line * LINE_BYTES)
 
     async def _d_master() -> None:
         for _ in range(100):
@@ -1306,13 +1323,16 @@ async def _hold_shared_level(
 
 
 async def _write_until_evicted(
-    dut: Any, model: ReferenceModel, addr: int, seed: int
+    dut: Any, model: ReferenceModel, addr: int, seed: int, promote: bool = True
 ) -> list[int]:
     """Write whole new lines of addr's L1D set until addr's line leaves it.
 
     Whole-line writes install without a fetch, so each is acknowledged at
-    once and the eviction follows the previous step closely. Returns the
-    lines written.
+    once and the eviction follows the previous step closely. With promote,
+    each line is read back after its install, a hit that makes it the set's
+    most recently used (see evicting_misses); without it, only a line that
+    is already its set's next victim leaves (a read back could wait on a
+    held fill). Returns the lines written.
     """
     geom = cache_geometry(dut)
     full = (1 << LINE_BYTES) - 1
@@ -1329,6 +1349,9 @@ async def _write_until_evicted(
             await FallingEdge(dut.i_clk)
         if not l1d_tag_state(dut, addr)[0]:
             return written
+        if promote:
+            got = await _line_transaction(dut, write=False, addr=alias)
+            assert got == data, f"0x{alias:08x} lost its whole-line write"
     raise AssertionError(f"0x{addr:08x} stayed in the L1D past {len(written)} misses")
 
 
@@ -1413,6 +1436,14 @@ async def test_no_fetch_refill_waits_for_own_writeback(dut: Any) -> None:
         v0 = _line_int(bytes([(0x90 + 5 * k + b_) & 0xFF for b_ in range(32)]))
         model.write_line(a, v0, full)
         await _line_transaction(dut, write=True, addr=a, wdata=v0, wstrb=full)
+        # A new line becomes the next victim (bimodal insertion), so make A
+        # that before the bridge is held, while reads can still complete. The
+        # acknowledgement leaves before the install lands.
+        for _ in range(64):
+            await FallingEdge(dut.i_clk)
+            if l1d_tag_state(dut, a)[0]:
+                break
+        await make_l1d_next_victim(dut, a)
         await FallingEdge(dut.i_clk)
         dut.i_down_hold.value = 1
         await _hold_shared_level(dut, model, hold_base, k)
@@ -1421,7 +1452,7 @@ async def test_no_fetch_refill_waits_for_own_writeback(dut: Any) -> None:
         # without a fetch; the whole-line write of A evicts one of them and
         # must wait for A's snapshot to be acknowledged before it installs;
         # new lines C evict A again.
-        xs = await _write_until_evicted(dut, model, a, 0x40 + 16 * k)
+        xs = await _write_until_evicted(dut, model, a, 0x40 + 16 * k, promote=False)
         v1 = _line_int(bytes([(0x21 * (k + 1) + b_) & 0xFF for b_ in range(32)]))
         model.write_line(a, v1, full)
         await _line_transaction(dut, write=True, addr=a, wdata=v1, wstrb=full)

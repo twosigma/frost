@@ -85,6 +85,12 @@ module frost_cache_hierarchy #(
     parameter int unsigned L1D_WAYS = 4,
     parameter int unsigned L1I_WAYS = 4,
     parameter int unsigned L2_WAYS = 4,
+    // Bimodal insertion per cache (frost_cache BIMODAL_INSERT). The L1D uses
+    // it, so that a working set somewhat larger than the L1D keeps part of
+    // itself resident.
+    parameter bit L1D_BIMODAL_INSERT = 1'b1,
+    parameter bit L1I_BIMODAL_INSERT = 1'b0,
+    parameter bit L2_BIMODAL_INSERT = 1'b0,
     // Total logical latency of the X3 L2's packed URAM tag lookup.
     parameter int unsigned L2_TAG_READ_LATENCY = 3,
     parameter int unsigned L2_DATA_READ_LATENCY = 6,
@@ -474,6 +480,7 @@ module frost_cache_hierarchy #(
       .CACHE_SIZE_BYTES(L1_CACHE_BYTES),
       .LINE_BYTES(L1_LINE_BYTES),
       .WAYS(L1D_WAYS),
+      .BIMODAL_INSERT(L1D_BIMODAL_INSERT),
       // The high ID bit distinguishes probes from CPU requests.
       .UP_ID_BITS(L1dIdBits),
       .DOWN_ID_BITS(UP_ID_BITS),
@@ -525,6 +532,7 @@ module frost_cache_hierarchy #(
       .CACHE_SIZE_BYTES(L1I_CACHE_BYTES),
       .LINE_BYTES(L1_LINE_BYTES),
       .WAYS(L1I_WAYS),
+      .BIMODAL_INSERT(L1I_BIMODAL_INSERT),
       .UP_ID_BITS(UP_ID_BITS),
       // One fewer ID bit than L1D. At the default width, two miss slots cover
       // both fetch-provider fills. Read-only L1I never uses its writeback slots.
@@ -856,6 +864,7 @@ module frost_cache_hierarchy #(
       .CACHE_SIZE_BYTES(L2_CACHE_BYTES),
       .LINE_BYTES(L2_LINE_BYTES),
       .WAYS(L2_WAYS),
+      .BIMODAL_INSERT(L2_BIMODAL_INSERT),
       .UP_ID_BITS(DownIdBits),
       .DOWN_ID_BITS(L2_DOWN_ID_BITS),
       .NUM_MSHR(L2_NUM_MSHR),

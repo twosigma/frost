@@ -6,7 +6,10 @@ set the direction of this roadmap. The sections are in priority order.
 ## Memory system
 
 The L1D, L1I, and L2 are 4-way set-associative with tree pseudo-LRU
-replacement, one design for every target. The L1s read every way's data at
+replacement, one design for every target. The L1D inserts lines bimodally: a
+fill becomes its set's most recently used only one time in 32, so a working
+set somewhat larger than the L1D keeps part of itself resident instead of
+evicting each line just before its next use. The L1s read every way's data at
 the tag decision, so their hits take as long as the direct-mapped caches'
 did. The L2 reads its data after the tag compare picks the way, one cycle
 more than a parallel read.

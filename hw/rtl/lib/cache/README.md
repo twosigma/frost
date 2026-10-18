@@ -110,7 +110,12 @@ the way it picked, which adds one cycle to its longer lookup.
 Each set keeps a tree pseudo-LRU state, one bit per node of a binary tree
 over the ways (3 bits for four ways), in a small array read with the tags.
 Hits and allocations point the bits on their way's path away from it;
-probes, merges, and waiters leave the state alone. A miss slot owns its way
+probes, merges, and waiters leave the state alone. The L1D uses bimodal
+insertion (`BIMODAL_INSERT`): an allocation updates the state only one time
+in 32, chosen by a free-running LFSR, so a line that is filled and not hit
+again stays its set's next victim. A cyclic working set somewhat larger than
+the L1D then keeps part of itself resident, where updating on every fill
+would evict each line just before its next use. A miss slot owns its way
 from its allocation until it frees: the way's tag stays invalid while the
 slot fetches, and the fill installs there. A miss replaces the lowest
 invalid way that no pending miss owns, else the pseudo-LRU way among the
@@ -120,8 +125,11 @@ set waits. In a 4-way set, the next five accesses to the set after an
 installed line's last access evict it, whatever the set holds and has in
 flight, if they reach the cache, are to five different other lines that no
 miss is already fetching, and nothing invalidates a line of the set
-meanwhile. A line whose own fill is still pending cannot be evicted until
-the fill completes. The test programs that force evictions rely on this.
+meanwhile. In the L1D each of those lines must also be hit once it is
+installed, since its fill alone usually leaves the state alone
+(`sw/lib/include/cache_evict.h` reads a line and then hits it). A line whose
+own fill is still pending cannot be evicted until the fill completes. The
+test programs that force evictions rely on this.
 
 ### Requests and misses
 

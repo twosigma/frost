@@ -31,6 +31,7 @@
 
 #include <stdint.h>
 
+#include "../../lib/include/cache_evict.h"
 #include "../../lib/include/uart.h"
 
 #define ADDI_A0(imm) (0x00000513u | (((uint32_t) (imm) & 0xfffu) << 20)) /* addi a0,x0,imm */
@@ -70,22 +71,18 @@ static patch_fn_t const patchers[] = {patch_g0, patch_g1, patch_g2, patch_g3, pa
 static const int gaps[] = {0, 1, 2, 3, 4, 8};
 #define NGAPS ((int) (sizeof(gaps) / sizeof(gaps[0])))
 
-/* Conflict-evict the ddr_code line by reading aliases at +N*128 KiB, in its
- * L1D set. The previous fence.i left the line installed, and five reads of
- * other lines of its set evict it from the 4-way L1D whatever the set holds
- * (one did for a direct-mapped L1D). The aliases share one entry of the load
- * queue's L0, which can answer the read of the alias it filled last, so
- * there are six. */
+/* Conflict-evict the ddr_code line by touching aliases at +N*128 KiB, in its
+ * L1D set (cache_evict.h). The previous fence.i left the line installed, and
+ * five lines of its set touched afterwards evict it from the 4-way L1D
+ * whatever the set holds (one did for a direct-mapped L1D). The aliases
+ * share entries of the load queue's L0, which can answer the read of the
+ * alias it filled last, so there are six. */
 static inline void evict_code_line(void)
 {
     uintptr_t base = (uintptr_t) ddr_code_p;
-    volatile uint32_t *a1 = (volatile uint32_t *) (base + 1u * L1D_BYTES);
-    volatile uint32_t *a2 = (volatile uint32_t *) (base + 2u * L1D_BYTES);
-    volatile uint32_t *a3 = (volatile uint32_t *) (base + 3u * L1D_BYTES);
-    volatile uint32_t *a4 = (volatile uint32_t *) (base + 4u * L1D_BYTES);
-    volatile uint32_t *a5 = (volatile uint32_t *) (base + 5u * L1D_BYTES);
-    volatile uint32_t *a6 = (volatile uint32_t *) (base + 6u * L1D_BYTES);
-    volatile uint32_t s = *a1 + *a2 + *a3 + *a4 + *a5 + *a6;
+    volatile uint64_t s = 0;
+    for (uint32_t n = 1; n <= 6; n++)
+        s += cache_touch_line(base + n * L1D_BYTES);
     (void) s;
 }
 

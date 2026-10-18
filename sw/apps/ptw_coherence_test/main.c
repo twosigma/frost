@@ -347,19 +347,24 @@ static int do_iter(unsigned iter, const struct iter_cfg *c)
         /* S6a: evict only the PMD line with stores to the five lines 128 KiB
          * apart above it, in its L1D set: the PMD line is installed, and
          * after its store, five other lines of its set evict it from the
-         * 4-way L1D whatever the set holds.
-         * A load could be answered by the load path without displacing the
+         * 4-way L1D whatever the set holds. A fill alone stays its set's next
+         * victim, so each store is followed by a touch of its line
+         * (cache_evict.h): a load of a doubleword the store did not write,
+         * then a load of the next one that depends on it, a hit. A load
+         * alone could be answered by the load path without displacing the
          * line. */
-        "  sd   x0, 0(%[alias])\n"
+        "  mv   t6, %[alias]\n"
         "  li   t5, 0x20000\n" /* L1D_ALIAS_STRIDE */
-        "  add  t6, %[alias], t5\n"
+        "  li   t2, 5\n"
+        "6:\n"
         "  sd   x0, 0(t6)\n"
+        "  ld   t3, 8(t6)\n"
+        "  and  t4, t3, zero\n"
+        "  add  t4, t4, t6\n"
+        "  ld   t4, 16(t4)\n"
         "  add  t6, t6, t5\n"
-        "  sd   x0, 0(t6)\n"
-        "  add  t6, t6, t5\n"
-        "  sd   x0, 0(t6)\n"
-        "  add  t6, t6, t5\n"
-        "  sd   x0, 0(t6)\n"
+        "  addi t2, t2, -1\n"
+        "  bnez t2, 6b\n"
         "  fence\n" /* drain: the eviction writeback is now in flight */
         /* S6b: reload the PMD line. It misses the L1D, and its fill waits for
          * the line's writeback (frost_cache's same-line writeback interlock),

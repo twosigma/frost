@@ -47,6 +47,7 @@
 
 #include <stdint.h>
 
+#include "cache_evict.h"
 #include "trap.h"
 
 #ifndef N_ITER
@@ -55,9 +56,10 @@
 
 /* Rotate through 64 DDR frames spaced 64 bytes apart. Lines a multiple of
  * 0x20000 (the 128 KiB L1D's size) away share a frame line's set. After a
- * frame line's own stores, dirtying FRAME_ALIASES such lines usually evicts
- * it from the 4-way L1D, so the next access is cold: they do unless the
- * frame line's own fill is still pending when they arrive. One did for a
+ * frame line's own stores, dirtying FRAME_ALIASES such lines and touching
+ * each (cache_evict.h: a fill alone stays its set's next victim) usually
+ * evicts it from the 4-way L1D, so the next access is cold: they do unless
+ * the frame line's own fill is still pending when they arrive. One did for a
  * direct-mapped L1D, where a miss waited for any other miss in its set. The
  * region stays within the simulation model's 64 MiB backing. */
 #define FRAME_BASE 0x82800000u
@@ -324,6 +326,9 @@ int main(void)
                 (volatile rw_word_t *) ((uintptr_t) frame ^ (k * FRAME_ALIAS_XOR));
             alias[0] = i;
             alias[4] = i ^ 0xA5A5A5A5u;
+            /* Hit both lines through doublewords the stores did not write. */
+            (void) cache_touch_line((uintptr_t) &alias[1]);
+            (void) cache_touch_line((uintptr_t) &alias[5]);
         }
 
         /* Place the next tick at a finely swept offset around window entry
