@@ -1,5 +1,7 @@
 [tasks]
 bmc
+bmc_1g
+bmc_128g
 bmc_xlen32
 bmc_xlen72
 
@@ -11,6 +13,8 @@ depth 1
 smtbmc boolector
 
 [script]
+bmc_1g: verilog_defines -DFROST_DDR_CAPACITY_LOG2_BYTES=30
+bmc_128g: verilog_defines -DFROST_DDR_CAPACITY_LOG2_BYTES=37
 read -sv riscv_pkg.sv dtlb.sv immu.sv
 read -formal -sv immu_bare_formal.sv
 bmc_xlen32: chparam -set XLEN 32 immu_bare_formal

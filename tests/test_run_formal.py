@@ -528,7 +528,7 @@ FORMAL_TARGETS = [
         "immu_bare.sby",
         "Bare instruction-fetch addresses and PMA faults match the reference across "
         "datapath widths",
-        tasks=("bmc", "bmc_xlen32", "bmc_xlen72"),
+        tasks=("bmc", "bmc_1g", "bmc_128g", "bmc_xlen32", "bmc_xlen72"),
     ),
     FormalTarget(
         "fetch_pc_mux.sby",
@@ -710,6 +710,8 @@ SBY_TASKS = [
     ("bmc8", "Bounded local equivalence at depth 8"),
     ("bmc16", "Bounded local equivalence at depth 16"),
     ("bmc32", "Bounded local equivalence at depth 32"),
+    ("bmc_1g", "Bounded physical-address check at a 1 GiB DDR capacity"),
+    ("bmc_128g", "Bounded physical-address check at a 128 GiB DDR capacity"),
     ("bmc_xilinx", "Bounded equivalence with the Xilinx primitive implementation"),
     ("bmc_queued", "Bounded check with decoded-queue admission contract"),
     ("bmc", "Check assertions up to the configured depth"),
