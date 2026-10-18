@@ -1314,11 +1314,19 @@ package riscv_pkg;
 
   localparam bit [31:0] NOP = 32'h0000_0013;  // addi x0, x0, 0
 
-  // The physical map is below 4 GiB: low BRAM, MMIO in quadrant 01, and
-  // cached DDR in quadrant 10. Region decodes use fixed bits [31:30].
-  // PCs, targets, and AGU results remain full-width until PMA checks reject
-  // unmapped addresses. Every launched access therefore has [XLEN-1:32]=0.
-  localparam int unsigned PhysAddrBits = 32;
+  // One build setting selects the raw DDR capacity. Derive the controller's
+  // zero-based offset width and the CPU's physical width from it; the latter
+  // must include the nonzero DDR base. The SoC can expose a smaller public
+  // aperture when it reserves top-of-DDR metadata.
+`ifndef FROST_DDR_CAPACITY_LOG2_BYTES
+`define FROST_DDR_CAPACITY_LOG2_BYTES 36
+`endif
+  localparam int unsigned DdrCapacityLog2Bytes = `FROST_DDR_CAPACITY_LOG2_BYTES;
+  localparam longint unsigned DdrBase = 64'h0000_0000_8000_0000;
+  localparam longint unsigned DdrCapacityBytes = 64'(1) << DdrCapacityLog2Bytes;
+  localparam int unsigned DdrAxiAddrBits = DdrCapacityLog2Bytes;
+  localparam int unsigned PhysAddrBits = $clog2(DdrBase + DdrCapacityBytes);
+  localparam longint unsigned DdrLimit = DdrBase + DdrCapacityBytes;
   localparam int unsigned CachedRegionBit = 31;
   // Low BRAM: loads, stores and atomics reach all 2**LowBramAddrBits bytes;
   // instruction fetch reaches only the first 2**LowBramCodeAddrBits, the
@@ -1398,7 +1406,7 @@ package riscv_pkg;
   //   [0x0002_0000, 0x0004_0000)  128 KiB BRAM      loads, stores, atomics
   //   [0x4000_0000, 0x4003_1000)  MMIO registers    loads and stores
   //   [0x4400_0000, 0x4440_0000)  PLIC              loads and stores
-  //   [0x8000_0000, 0xC000_0000)  1 GiB cached DDR  fetch, loads, stores, atomics
+  //   [DdrBase, DdrLimit)          configured cached DDR
   // Other addresses fault, except untranslated stores anywhere in the device
   // quadrant [0x4000_0000, 0x8000_0000); the bus ignores unserved addresses.
   // See pma_store_ok. Devices support neither AMOs nor reservations
@@ -1406,8 +1414,8 @@ package riscv_pkg;
   //
   // Failed PMA checks never launch: fetch supplies a fault-tagged bundle;
   // LQ/SQ issue checks fault beside misalignment checks. Under Sv39, the
-  // data MMU checks the translated PA exactly. Launched accesses therefore
-  // have [XLEN-1:32]=0, as region decodes and LQ store-forwarding masks require.
+  // data MMU checks the translated PA exactly. Physical consumers must retain
+  // all PhysAddrBits, including the high DDR address bits.
   //
   // Device windows use whole 4 KiB pages. Keep them aligned with the register
   // decode in cpu_and_mem.sv (hw/rtl/README.md, "Memory Map"). Its startup
@@ -1419,7 +1427,7 @@ package riscv_pkg;
 
   // Cached DDR, the same for fetch and data.
   function automatic logic pma_cached_ok(input logic [XLEN-1:0] addr);
-    pma_cached_ok = (addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b10);
+    pma_cached_ok = (addr >= XLEN'(DdrBase)) && (addr < XLEN'(DdrLimit));
   endfunction
 
   // Instruction fetch: the low BRAM's code region and cached DDR.
@@ -1468,19 +1476,17 @@ package riscv_pkg;
   // data_mem_request_router.
   localparam int unsigned MmioWindowAddr = {MmioFirstPage, 12'h000};
 
-  // pma_fetch_ok of the page after va's, {va[63:12] + 1, 12'h0} (a 52-bit
-  // wrapping increment), without the incrementer: the fetchable regions are
-  // [0, 2^LowBramCodeAddrBits) and [2^31, 3*2^30), so the next page's result
-  // can differ from va's own only where the increment carries out of the
-  // region index bits; the wrap term keeps the all-ones VA's next page at 0.
-  // fetch_verdict uses this for Bare word 1.
+  // PMA of the page after va's, without a wide next-page incrementer on the
+  // fetch path. Compare the *current* page with each fetchable range shifted
+  // down by one page. The all-ones VA page wraps to low BRAM page zero.
   function automatic logic pma_fetch_next_page_ok(input logic [XLEN-1:0] va);
-    logic z_code, z32;
-    z_code = (va[XLEN-1:LowBramCodeAddrBits] == '0);
-    z32 = (va[XLEN-1:32] == '0);
-    pma_fetch_next_page_ok = (z_code && !(&va[LowBramCodeAddrBits-1:12])) || (&va[XLEN-1:12]) ||
-        (z32 && (((va[31:30] == 2'b10) && !(&va[29:12])) ||
-                 ((va[31:30] == 2'b01) && (&va[29:12]))));
+    logic [XLEN-1:0] page_base;
+    page_base = {va[XLEN-1:12], 12'b0};
+    pma_fetch_next_page_ok =
+        (page_base < XLEN'((64'(1) << LowBramCodeAddrBits) - 4096)) ||
+        (&va[XLEN-1:12]) ||
+        ((page_base >= XLEN'(DdrBase - 4096)) &&
+         (page_base < XLEN'(DdrLimit - 4096)));
   endfunction
 
   // VA-only facts for a fetch window {va, aligned-word-after-va}: whether it

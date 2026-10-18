@@ -82,7 +82,7 @@ module ptw #(
     // Line port (master, read-only): to the hierarchy's wup port.
     output logic                    o_line_req_valid,
     input  logic                    i_line_req_ready,
-    output logic [            31:0] o_line_req_addr,
+    output logic [riscv_pkg::PhysAddrBits-1:0] o_line_req_addr,
     output logic [WALK_ID_BITS-1:0] o_line_req_id,
     input  logic                    i_line_resp_valid,
     input  logic [WALK_ID_BITS-1:0] i_line_resp_id,
@@ -110,9 +110,8 @@ module ptw #(
   // ---------------------------------------------------------------------------
   // Current PTE address and its PMA check
   // ---------------------------------------------------------------------------
-  // pte_pa = {ptr_ppn, 12'h000} + (vpn[level] << 3), a 56-bit quantity. Only
-  // the 32-bit cached-DDR window is reachable, so the check is: upper PPN
-  // bits zero and the composed 32-bit address decodes to DDR.
+  // pte_pa = {ptr_ppn, 12'h000} + (vpn[level] << 3), a 56-bit quantity.
+  // Retain the full PPN until the configured cached-DDR range accepts it.
   logic [8:0] vpn_field;
   always_comb begin
     unique case (level_q)
@@ -122,23 +121,20 @@ module ptw #(
     endcase
   end
 
-  logic [31:0] pte_pa32;
-  logic pte_pa_hi_nonzero;
-  assign pte_pa32 = {ptr_ppn_q[19:0], 12'h000} | {20'b0, vpn_field, 3'b000};
-  assign pte_pa_hi_nonzero = |ptr_ppn_q[riscv_pkg::PtePpnBits-1:20];
+  logic [riscv_pkg::PtePpnBits+11:0] pte_pa;
+  assign pte_pa = {ptr_ppn_q, 12'h000} | {{riscv_pkg::PtePpnBits{1'b0}}, vpn_field, 3'b000};
 
   logic pte_addr_ok;
-  // Cached DDR is [0x8000_0000, 0xC000_0000), where pa[31:30] == 2'b10.
-  assign pte_addr_ok = !pte_pa_hi_nonzero && (pte_pa32[31:30] == 2'b10);
+  assign pte_addr_ok = riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(pte_pa));
 
   // Register the address check with ptr_ppn_q, for timing. VPN changes only
-  // PA[11:3], so the check depends solely on PPN high bits and PPN[19:18].
+  // PA[11:3], so the range check depends solely on the table PPN.
   logic ptr_addr_ok_q;
 
   function automatic logic ppn_addr_ok(input logic [riscv_pkg::PtePpnBits-1:0] ppn);
     // Assign-to-name form: Yosys (read -formal) rejects return expressions.
     begin
-      ppn_addr_ok = !(|ppn[riscv_pkg::PtePpnBits-1:20]) && (ppn[19:18] == 2'b10);
+      ppn_addr_ok = riscv_pkg::pma_cached_ok({8'b0, ppn, 12'h000});
     end
   endfunction
 
@@ -154,7 +150,8 @@ module ptw #(
   // is poisoned at that edge; consume its response without answering.
   (* keep = "true" *) logic line_req_valid_q;
   assign o_line_req_valid = line_req_valid_q;
-  assign o_line_req_addr = {pte_pa32[31:LineAddrLow], {LineAddrLow{1'b0}}};
+  assign o_line_req_addr = {pte_pa[riscv_pkg::PhysAddrBits-1:LineAddrLow],
+                            {LineAddrLow{1'b0}}};
   assign o_line_req_id = '0;
 
   // PTE extraction: dword index inside the line, captured at issue.
@@ -249,7 +246,7 @@ module ptw #(
             resp_q.vpn        <= vpn_q;
             state_q           <= PTW_RESP;
           end else if (i_line_req_ready) begin
-            pte_dword_sel_q <= pte_pa32[LineAddrLow-1:3];
+            pte_dword_sel_q <= pte_pa[LineAddrLow-1:3];
             state_q         <= PTW_WAIT;
           end
         end
@@ -400,7 +397,8 @@ module ptw #(
       // outstanding, and every presented read targets cached DDR.
       p_ready_idle : assert (!o_req_ready || (state_q == PTW_IDLE));
       p_single_read : assert (!(o_line_req_valid && f_outstanding));
-      if (o_line_req_valid) p_read_in_ddr : assert (o_line_req_addr[31:30] == 2'b10);
+      if (o_line_req_valid) p_read_in_ddr :
+        assert (riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(o_line_req_addr)));
       // A poisoned walk never answers.
       if (discard_q || i_discard) p_discard_silent : assert (!o_resp_valid);
       // A walk descends only through a pointer the reference classification
