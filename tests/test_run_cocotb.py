@@ -34,7 +34,7 @@ import subprocess
 import sys
 import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from collections.abc import Iterable, Mapping
@@ -469,8 +469,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Physical-memory access faults with precise trap state and fault priority"
         ),
-        extra_env=(("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=30"),),
-        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
     ),
     "pma_fault_test_128g": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -514,8 +512,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Sv39 data translation, permissions, and precise faults through MPRV"
         ),
-        extra_env=(("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=30"),),
-        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
     ),
     **{
         f"vm_test_{1 << (bits - 30)}g": CocotbRunConfig(
@@ -2401,6 +2397,25 @@ for _capacity_log2 in (30, 31, 32, 33, 34, 35, 37):
             ),
         )
     )
+
+# Select wide apertures explicitly for programs otherwise using the default.
+for _program in ("dma_torture", "nic_loopback", "itlb_test"):
+    for _capacity_log2 in (36, 37):
+        _base_config = TEST_REGISTRY[_program]
+        TEST_REGISTRY[f"{_program}_{1 << (_capacity_log2 - 30)}g"] = replace(
+            _base_config,
+            description=f"{_base_config.description} at {1 << (_capacity_log2 - 30)} GiB DDR",
+            include_in_pytest=False,
+            extra_env=(
+                *_base_config.extra_env,
+                ("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={_capacity_log2}"),
+            ),
+            verilator_extra_args=(
+                *_base_config.verilator_extra_args,
+                "-DFROST_WIDE_DDR_TEST",
+                f"-DFROST_DDR_CAPACITY_LOG2_BYTES={_capacity_log2}",
+            ),
+        )
 
 # Registry entries that build an app and are collected by pytest. The unit
 # benches have no app_name and are excluded.

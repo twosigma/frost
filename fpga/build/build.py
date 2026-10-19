@@ -3497,8 +3497,8 @@ Examples:
     project_root = script_dir.parent.parent
 
     # The board's AXI memory map is authoritative for physical DDR capacity.
-    # Never build the 1 GiB X3 controller against the RTL's 64 GiB default:
-    # its 30-bit AXI port would otherwise alias a high request into low DDR.
+    # Keep the RTL aperture matched to the controller when defaults change.
+    # A wider aperture would alias a high request into the 30-bit AXI port.
     board_ddr_design = BOARD_DESIGN_DIR / f"{board_name}_ddr_bd.tcl"
     board_ddr_log2 = 0
     if board_name == "x3":

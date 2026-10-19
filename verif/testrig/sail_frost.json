@@ -242,7 +242,7 @@
         },
         "include_in_device_tree": false
       },
-      // Cached DDR: 64 GiB default at 0x8000_0000, the only region page-table walks read.
+      // Cached DDR: 1 GiB default at 0x8000_0000, the only region page-table walks read.
       // The TestRIG runner replaces this size for other supported capacities.
       {
         "base": {
@@ -251,7 +251,7 @@
         },
         "size": {
           "len": 64,
-          "value": "0x1000000000"
+          "value": "0x40000000"
         },
         "attributes": {
           "mem_type": "MainMemory",

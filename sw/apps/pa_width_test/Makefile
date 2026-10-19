@@ -15,6 +15,6 @@
 # Sparse-DDR, full-aperture bare-metal CPU load/store/AMO regression.
 SRC_C := ../../lib/src/uart.c pa_width_test.c
 ifeq ($(filter -DFROST_DDR_CAPACITY_LOG2_BYTES=%,$(EXTRA_CFLAGS)),)
-EXTRA_CFLAGS += -DFROST_DDR_CAPACITY_LOG2_BYTES=36
+EXTRA_CFLAGS += -DFROST_DDR_CAPACITY_LOG2_BYTES=30
 endif
 include ../../common/common.mk

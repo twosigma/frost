@@ -32,7 +32,7 @@ from cocotb.triggers import RisingEdge, Timer
 NONE, MISALIGN, PAGE, ACCESS = range(4)
 VPN_MASK = (1 << 27) - 1
 XLEN_MASK = (1 << 64) - 1
-DDR_CAPACITY_LOG2_BYTES = int(os.environ.get("FROST_DDR_CAPACITY_LOG2_BYTES", "36"))
+DDR_CAPACITY_LOG2_BYTES = int(os.environ.get("FROST_DDR_CAPACITY_LOG2_BYTES", "30"))
 DDR_LIMIT = 0x8000_0000 + (1 << DDR_CAPACITY_LOG2_BYTES)
 
 

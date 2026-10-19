@@ -63,7 +63,7 @@ SAIL_CONFIG = REPO_ROOT / "verif" / "testrig" / "sail_frost.json"
 SAVED_TRACES_DIR = REPO_ROOT / "verif" / "testrig" / "traces"
 DEFAULT_SAVE_DIR = TESTS_DIR / "testrig_failures"
 DEFAULT_LOG_DIR = TESTS_DIR / "testrig_logs"
-DEFAULT_DDR_CAPACITY_LOG2_BYTES = 36
+DEFAULT_DDR_CAPACITY_LOG2_BYTES = 30
 
 # QuickCheckVEngine's architecture string, which selects the templates and
 # the instructions they generate: RV64 IMFDC with S and U modes (the "s" also
@@ -376,7 +376,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         choices=range(30, 38),
         default=DEFAULT_DDR_CAPACITY_LOG2_BYTES,
-        help="DDR capacity exponent shared by FROST and Sail (default 36 = 64 GiB)",
+        help="DDR capacity exponent shared by FROST and Sail (default 30 = 1 GiB)",
     )
     parser.add_argument(
         "--test-length",

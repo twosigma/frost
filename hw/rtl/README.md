@@ -87,7 +87,7 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 | RAM | `0x0001_8000` | 160 KiB | Data, BSS, and stack (low BRAM) |
 | MMIO | `0x4000_0000` | 196 KiB | Device registers (table below) |
 | PLIC | `0x4400_0000` | 4 MiB | Platform-level interrupt controller |
-| DDR | `0x8000_0000` | Configured 1–128 GiB (64 GiB default aperture) | Cached region: `.ddr_text` code, large data, and the heap; software must use the populated size |
+| DDR | `0x8000_0000` | Configured 1–128 GiB (1 GiB default aperture) | Cached region: `.ddr_text` code, large data, and the heap; software must use the populated size |
 
 Every other address, including the rest of the device quadrant
 `[0x4000_0000, 0x8000_0000)` and any address with bits 63:32 set, is
@@ -320,7 +320,7 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `MEM_SIZE_BYTES` | `2 ** 18` | Low BRAM size (256 KiB); instruction fetch reaches its first 128 KiB (`riscv_pkg::LowBramCodeAddrBits`) |
 | `frost.sv` | `SIM_TIMER_SPEEDUP` | `1` | `mtime` increment per cycle (simulation) |
 | `frost.sv` | `CACHED_BASE` | `32'h8000_0000` | Cached-region base address |
-| `riscv_pkg.sv` | `FROST_DDR_CAPACITY_LOG2_BYTES` | `36` | Compile-time DDR aperture size as log2 bytes; 30–37 selects 1–128 GiB and derives the physical and AXI-offset widths |
+| `riscv_pkg.sv` | `FROST_DDR_CAPACITY_LOG2_BYTES` | `30` | Compile-time DDR aperture size as log2 bytes; 30–37 selects 1–128 GiB and derives the physical and AXI-offset widths |
 | `frost.sv` | `CACHED_SIZE_BYTES` | `riscv_pkg::DdrCapacityBytes` | Cached-region aperture; keep equal to the package setting so PMA, caches, DMA and AXI agree |
 | `frost.sv` | `ENABLE_CACHED_TIER` | `0` | 1 builds the cache hierarchy; simulation sets it with `-G`, and boards with a DDR controller pass 1 |
 | `frost.sv` | `L1_CACHE_BYTES` / `L1I_CACHE_BYTES` / `L2_CACHE_BYTES` | `128 KiB` / `16 KiB` / `2 MiB` | L1D, L1I, and L2 sizes |
@@ -339,7 +339,7 @@ usable-DRAM default and accept `FROST_DDR_USABLE_LOG2_BYTES=30..37` in
 aperture. Linux obtains its usable range from the generated device tree's
 `/memory` node (`frost_boot_image.py --mem-size`), whose 64-bit cells support
 the same 1–128 GiB matrix. The boot loader must supply the installed size;
-neither the CPU PA width nor the 64 GiB default identifies a DIMM's capacity.
+neither the CPU PA width nor the 1 GiB default identifies a DIMM's capacity.
 | `frost.sv` | `DEBUG_JTAG_TAP` | `1` | 1 uses the generic TAP on `i_jtag_*`; 0 takes the BSCAN bundle from the board |
 | `frost.sv` | `RAW_LOOPBACK` | `1` | 1 builds the NIC's raw TX-to-RX loopback, which needs one clock on both MAC clock ports; 0 for a transceiver's independent clocks |
 | `cpu_ooo.sv` | `MMIO_ADDR` | `32'h4000_0000` (`riscv_pkg::MmioWindowAddr`) | MMIO window base; the UART RX data and FIFO pop registers are fixed offsets from it |
