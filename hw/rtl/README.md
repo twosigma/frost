@@ -208,8 +208,9 @@ reserves it as the `DEBUG` region.
 Every data-side bus below the load and store queues (the BRAM tier, the
 cached tier, MMIO, the request router, and adapter responses) moves one
 aligned 64-bit beat per transaction (`riscv_pkg::MemDataBits`) with an 8-lane
-byte strobe (`MemStrbBits`). The beat is the dword at `addr[31:3]`, and byte
-lane *i* is byte address `{addr[31:3], i}`. Producers position data by
+byte strobe (`MemStrbBits`). The beat is selected by the configured physical
+address bits above bit 2, and byte lane *i* has that same beat address with
+byte offset *i*. Producers position data by
 `addr[2:0]` and consumers extract by `addr[2:0]`:
 
 - Stores replicate their data across the beat (`{8{byte}}`, `{4{half}}`,
