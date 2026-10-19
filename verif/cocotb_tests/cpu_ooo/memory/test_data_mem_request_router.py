@@ -14,6 +14,7 @@
 
 """Test data_mem_request_router arbitration and device-read ordering."""
 
+import os
 from typing import Any
 
 import cocotb
@@ -26,6 +27,10 @@ UART_RX_DATA_MMIO_ADDR = MMIO_ADDR + 0x4
 FIFO0_MMIO_ADDR = MMIO_ADDR + 0x8
 FIFO1_MMIO_ADDR = MMIO_ADDR + 0xC
 CACHED_BASE = 0x80000000
+DDR_CAPACITY_LOG2_BYTES = int(os.environ.get("FROST_DDR_CAPACITY_LOG2_BYTES", "36"))
+if not 30 <= DDR_CAPACITY_LOG2_BYTES <= 37:
+    raise ValueError("FROST_DDR_CAPACITY_LOG2_BYTES must select 1–128 GiB")
+DDR_LIMIT = CACHED_BASE + (1 << DDR_CAPACITY_LOG2_BYTES)
 FAST_ADDR = 0x100
 CACHED_ADDR = CACHED_BASE + 0x1234
 
@@ -542,8 +547,10 @@ async def test_device_quadrant_boundary_table_and_drain_scope(dut: Any) -> None:
         (0x7FFF_FFFF, True, False),
         (0x8000_0000, False, True),
         (0xBFFF_FFFF, False, True),
-        (0xC000_0000, False, False),
-        (0xFFFF_FFFF, False, False),
+        (0xC000_0000, False, 0xC000_0000 < DDR_LIMIT),
+        (0xFFFF_FFFF, False, 0xFFFF_FFFF < DDR_LIMIT),
+        (DDR_LIMIT - 1, False, True),
+        (DDR_LIMIT, False, False),
     )
 
     async def reset_between_cases() -> None:

@@ -61,13 +61,13 @@ module cpu_tb
   logic i_instr_pc_metadata_served_high;
   logic i_instr_bank_sel_r;  // Fetch-word parity (pc_reg[2]) for the window
   logic i_instr_valid;  // Fetch window valid (tie 1: fixed 1-cycle provider)
-  logic [29:0] i_served_word_low;
-  logic [29:0] i_served_last_word_low;
-  logic [29:0] i_served_prev_word_low;
+  logic [riscv_pkg::XLEN-3:0] i_served_word_low;
+  logic [riscv_pkg::XLEN-3:0] i_served_last_word_low;
+  logic [riscv_pkg::XLEN-3:0] i_served_prev_word_low;
   logic i_served_prev_word_valid_low;
-  logic [29:0] i_served_word_high;
-  logic [29:0] i_served_last_word_high;
-  logic [29:0] i_served_prev_word_high;
+  logic [riscv_pkg::XLEN-3:0] i_served_word_high;
+  logic [riscv_pkg::XLEN-3:0] i_served_last_word_high;
+  logic [riscv_pkg::XLEN-3:0] i_served_prev_word_high;
   logic i_served_prev_word_valid_high;
   logic [riscv_pkg::MemDataBits-1:0] i_data_mem_rd_data;  // Data memory read data to CPU
   logic pipeline_stall_from_cpu;  // Stall signal monitoring (registered, 1-cycle delay)
@@ -78,9 +78,9 @@ module cpu_tb
   logic [31:0] tb_cur_word;  // current fetch word presented to the CPU
   logic tb_bank_sel_q;  // parity (PC[2]) of the fetched address
   // Provider-local word tags for the window presented one cycle later.
-  logic [29:0] tb_served_word_q;
-  logic [29:0] tb_served_last_word_q;
-  logic [29:0] tb_served_prev_word_q;
+  logic [riscv_pkg::XLEN-3:0] tb_served_word_q;
+  logic [riscv_pkg::XLEN-3:0] tb_served_last_word_q;
+  logic [riscv_pkg::XLEN-3:0] tb_served_prev_word_q;
   logic tb_served_prev_word_valid_q;
 
   // Ports below are unused by this instruction-feed testbench but must exist as
@@ -116,8 +116,8 @@ module cpu_tb
   cache_perf_pkg::cache_perf_events_t i_cache_perf_events;
   // Low-BRAM fetch: register the core's faults with the window. Directed
   // programs use in-range Bare-mode addresses, so those faults stay clear.
-  logic [31:0] o_fetch_pa0;
-  logic [31:0] o_fetch_pa1;
+  logic [riscv_pkg::PhysAddrBits-1:0] o_fetch_pa0;
+  logic [riscv_pkg::PhysAddrBits-1:0] o_fetch_pa1;
   logic o_fetch_pa_valid;
   logic o_fetch_fault0;
   logic o_fetch_fault0_page;
@@ -135,7 +135,7 @@ module cpu_tb
   // No page-table memory: a walk would stall. Programs must stay in Bare mode.
   logic o_walk_line_req_valid;
   logic i_walk_line_req_ready;
-  logic [31:0] o_walk_line_req_addr;
+  logic [riscv_pkg::PhysAddrBits-1:0] o_walk_line_req_addr;
   logic [1:0] o_walk_line_req_id;
   logic i_walk_line_resp_valid;
   logic [1:0] i_walk_line_resp_id;
@@ -209,10 +209,10 @@ module cpu_tb
     // the next cycle.
     tb_cur_word <= instruction_from_testbench;
     tb_bank_sel_q <= o_pc[2];  // parity of the fetched address
-    tb_served_word_q <= o_pc[31:2];
-    tb_served_last_word_q <= o_pc[31:2] + 1'b1;
-    tb_served_prev_word_q <= o_pc[31:2] - 1'b1;
-    tb_served_prev_word_valid_q <= |o_pc[31:2];
+    tb_served_word_q <= o_pc[riscv_pkg::XLEN-1:2];
+    tb_served_last_word_q <= o_pc[riscv_pkg::XLEN-1:2] + 1'b1;
+    tb_served_prev_word_q <= o_pc[riscv_pkg::XLEN-1:2] - 1'b1;
+    tb_served_prev_word_valid_q <= |o_pc[riscv_pkg::XLEN-1:2];
     tb_fault0_q <= o_fetch_fault0;
     tb_fault0_page_q <= o_fetch_fault0_page;
     tb_fault1_q <= o_fetch_fault1;
@@ -299,8 +299,8 @@ module cpu_tb
   assign i_served_last_word_low = tb_served_last_word_q;
   assign i_served_prev_word_low = tb_served_prev_word_q;
   assign i_served_prev_word_valid_low = tb_served_prev_word_valid_q;
-  assign i_served_word_high = 30'd0;
-  assign i_served_last_word_high = 30'd1;
+  assign i_served_word_high = '0;
+  assign i_served_last_word_high = 'd1;
   assign i_served_prev_word_high = '1;
   assign i_served_prev_word_valid_high = 1'b0;
   assign i_instr_fault0 = tb_fault0_q;

@@ -33,6 +33,14 @@
 
 #include "trap.h"
 
+#ifndef FROST_DDR_CAPACITY_LOG2_BYTES
+#define FROST_DDR_CAPACITY_LOG2_BYTES 36
+#endif
+#if FROST_DDR_CAPACITY_LOG2_BYTES < 30 || FROST_DDR_CAPACITY_LOG2_BYTES > 37
+#error FROST_DDR_CAPACITY_LOG2_BYTES must select a supported DDR aperture
+#endif
+#define DDR_LIMIT (0x80000000ul + (1ul << FROST_DDR_CAPACITY_LOG2_BYTES))
+
 static void uart_putc(char c)
 {
     UART_TX = (uint8_t) c;
@@ -343,7 +351,7 @@ enum {
     VP_NX = 9,         /* I: page_a without X */
     VP_A0 = 10,        /* J: page_a with A=0 */
     VP_DEVICE = 11,    /* K: leaf into the device quadrant */
-    VP_ABOVE_MAP = 12, /* L: leaf above 4 GiB */
+    VP_ABOVE_MAP = 12, /* L: leaf at the configured DDR limit */
     VP_V0 = 13,        /* N */
     VP_WNR = 14,       /* O */
     VP_RSVD = 15,      /* P */
@@ -436,7 +444,7 @@ static void build_tables(void)
     l0_a[VP_NX] = PTE_PPN(pa_a) | PTE_V | PTE_R | PTE_A;
     l0_a[VP_A0] = PTE_PPN(pa_a) | PTE_V | PTE_X;
     l0_a[VP_DEVICE] = PTE_PPN(0x40000000ul) | PTE_CODE;
-    l0_a[VP_ABOVE_MAP] = PTE_PPN(0x100000000ul) | PTE_CODE;
+    l0_a[VP_ABOVE_MAP] = PTE_PPN(DDR_LIMIT) | PTE_CODE;
     l0_a[VP_V0] = 0;
     l0_a[VP_WNR] = PTE_PPN(pa_a) | PTE_V | PTE_W | PTE_X | PTE_A;
     l0_a[VP_RSVD] = PTE_PPN(pa_a) | (1ul << 60) | PTE_CODE;
@@ -552,7 +560,7 @@ int main(void)
     RUN_AT(VA_4K(VP_DEVICE), MPP_S);
     all_ok &= report_fault("K device-leaf", 1, VA_4K(VP_DEVICE), VA_4K(VP_DEVICE));
 
-    /* L: leaf above the map -> 1. */
+    /* L: translated leaf at the first address beyond DDR -> access fault 1. */
     sfence_vma();
     RUN_AT(VA_4K(VP_ABOVE_MAP), MPP_S);
     all_ok &= report_fault("L leaf-above-map", 1, VA_4K(VP_ABOVE_MAP), VA_4K(VP_ABOVE_MAP));
@@ -960,10 +968,12 @@ int main(void)
     }
 #endif
 
-    /* W: translation off again. A wild PC takes access fault 1. */
+    /* W: translation off again. The first address beyond the configured DDR
+     * aperture must fault rather than fetch from a truncated/aliased address.
+     * A fixed 4 GiB address is valid in wider configurations. */
     write_satp(0);
-    RUN_AT(0x0000000100000000ul, MPP_S);
-    all_ok &= report_fault("W bare-wild-pc", 1, 0x0000000100000000ul, 0x0000000100000000ul);
+    RUN_AT(DDR_LIMIT, MPP_S);
+    all_ok &= report_fault("W bare-wild-pc", 1, DDR_LIMIT, DDR_LIMIT);
 
     uart_puts(all_ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
     for (;;) {

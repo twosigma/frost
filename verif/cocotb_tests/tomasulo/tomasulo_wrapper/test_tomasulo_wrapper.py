@@ -60,6 +60,10 @@ from cocotb_tests.tomasulo.register_alias_table.rat_model import (
 )
 
 NUM_CHECKPOINTS = 8
+DDR_CAPACITY_LOG2_BYTES = int(os.environ.get("FROST_DDR_CAPACITY_LOG2_BYTES", "36"))
+if not 30 <= DDR_CAPACITY_LOG2_BYTES <= 37:
+    raise ValueError("FROST_DDR_CAPACITY_LOG2_BYTES must select 1–128 GiB")
+DDR_LIMIT = 0x8000_0000 + (1 << DDR_CAPACITY_LOG2_BYTES)
 
 # The iterative divider produces one quotient bit per cycle, XLEN steps for a
 # full-width divide. The timeout adds a margin for issue, the DIV adapter and
@@ -805,7 +809,7 @@ async def test_store_page_carry_pma_and_alignment_exact(dut: Any) -> None:
     def pma_store_ok(addr: int) -> bool:
         """Mirror riscv_pkg::pma_store_ok: BRAM, the device quadrant and DDR."""
         addr &= MASK_XLEN
-        return addr < 0x0004_0000 or 0x4000_0000 <= addr < 0xC000_0000
+        return addr < 0x0004_0000 or 0x4000_0000 <= addr < DDR_LIMIT
 
     page_max = (1 << (XLEN - 12)) - 1
     page_cases = [
@@ -813,12 +817,12 @@ async def test_store_page_carry_pma_and_alignment_exact(dut: Any) -> None:
         ("inc-wrap-enters-bram", page_max, 0xFFF, 1, True),
         ("inc-exits-bram", 0x3F, 0xFFF, 1, False),
         ("inc-enters-device", 0x3FFFF, 0xFFF, 1, True),
-        ("inc-exits-ddr", 0xBFFFF, 0xFFF, 1, False),
+        ("inc-exits-ddr", (DDR_LIMIT >> 12) - 1, 0xFFF, 1, False),
         # Negative low-offset borrow: each PMA edge viewed in reverse.
         ("dec-wrap-exits-bram", 0, 0, -1, False),
         ("dec-enters-bram", 0x40, 0, -1, True),
         ("dec-exits-device", 0x40000, 0, -1, False),
-        ("dec-enters-ddr", 0xC0000, 0, -1, True),
+        ("dec-enters-ddr", DDR_LIMIT >> 12, 0, -1, True),
         # The whole device quadrant is legal for a store, so stepping past a
         # device window does not change the result.
         ("inc-past-mmio-window", 0x40030, 0xFFF, 1, True),

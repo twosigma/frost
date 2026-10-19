@@ -558,6 +558,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         # 500k-cycle budget from DDR.
         extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
     ),
+    "itlb_test_1g": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="itlb_test",
+        description="Sv39 instruction fetch and bare out-of-range fault at 1 GiB DDR",
+        include_in_pytest=False,
+        extra_env=(
+            ("COCOTB_MAX_CYCLES", "2000000"),
+            ("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=30"),
+        ),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
+    ),
     "debug_test": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_debug",
         hdl_toplevel_module="frost",
@@ -1475,6 +1487,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "handling"
         ),
     ),
+    "data_mem_request_router_1g": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_request_router",
+        hdl_toplevel_module="data_mem_request_router",
+        description="Memory-request router device and cached boundaries at 1 GiB DDR",
+        include_in_pytest=False,
+        extra_env=(("FROST_DDR_CAPACITY_LOG2_BYTES", "30"),),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
+    ),
     "trap_unit": CocotbRunConfig(
         python_test_module="cocotb_tests.control.test_trap_unit",
         hdl_toplevel_module="trap_unit",
@@ -2224,6 +2244,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Sv39 data translation, fault priority, and recovery at the MMU ports"
         ),
     ),
+    "dmmu_1g": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_dmmu",
+        hdl_toplevel_module="dmmu",
+        description="Sv39 data translation and PMA faults at 1 GiB DDR",
+        include_in_pytest=False,
+        extra_env=(("FROST_DDR_CAPACITY_LOG2_BYTES", "30"),),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
+    ),
     "immu": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_immu",
         hdl_toplevel_module="immu_test_harness",
@@ -2231,6 +2259,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Sv39 fetch translation and fault visibility across retargets and page "
             "crossings"
         ),
+    ),
+    "immu_1g": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.test_immu",
+        hdl_toplevel_module="immu_test_harness",
+        description="Sv39 instruction translation and PMA faults at 1 GiB DDR",
+        include_in_pytest=False,
+        extra_env=(("FROST_DDR_CAPACITY_LOG2_BYTES", "30"),),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
     ),
     "instruction_aligner": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_instruction_aligner",
@@ -2273,6 +2309,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Tomasulo integration with single-bus dispatch and dispatch done "
         "repair enabled",
         verilator_extra_args=("-GENABLE_DISPATCH_DONE_REPAIR=1",),
+    ),
+    "tomasulo_wrapper_1g": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
+        hdl_toplevel_module="tomasulo_wrapper",
+        description="Tomasulo integration and store PMA boundaries at 1 GiB DDR",
+        include_in_pytest=False,
+        extra_env=(("FROST_DDR_CAPACITY_LOG2_BYTES", "30"),),
+        verilator_extra_args=(
+            "-GENABLE_DISPATCH_DONE_REPAIR=1",
+            "-DFROST_DDR_CAPACITY_LOG2_BYTES=30",
+        ),
     ),
     "tomasulo_wrapper_no_early_load": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
