@@ -517,30 +517,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=30"),),
         verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
     ),
-    "vm_test_128g": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_real_program",
-        hdl_toplevel_module="frost",
-        app_name="vm_test",
-        description="Sv39 translation through the final word of 128 GiB DDR",
-        include_in_pytest=False,
-        extra_env=(("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=37"),),
-        verilator_extra_args=(
-            "-DFROST_WIDE_DDR_TEST",
-            "-DFROST_DDR_CAPACITY_LOG2_BYTES=37",
-        ),
-    ),
-    "vm_test_64g": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_real_program",
-        hdl_toplevel_module="frost",
-        app_name="vm_test",
-        description="Sv39 translation through the final word of 64 GiB DDR",
-        include_in_pytest=False,
-        extra_env=(("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=36"),),
-        verilator_extra_args=(
-            "-DFROST_WIDE_DDR_TEST",
-            "-DFROST_DDR_CAPACITY_LOG2_BYTES=36",
-        ),
-    ),
+    **{
+        f"vm_test_{1 << (bits - 30)}g": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="vm_test",
+            description=(
+                f"Sv39 final-word access and DDR-end walker fault at {1 << (bits - 30)} GiB"
+            ),
+            include_in_pytest=False,
+            extra_env=(("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),),
+            verilator_extra_args=(
+                "-DFROST_WIDE_DDR_TEST",
+                f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}",
+            ),
+        )
+        for bits in range(31, 38)
+    },
     "slot2_fault_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

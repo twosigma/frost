@@ -196,6 +196,7 @@ static int report_val(const char *name, unsigned long got, unsigned long want)
 #define VA_2M_MISALIGNED 0x02200000ul
 #define VA_1G_TOUCH 0x83000000ul
 #define VA_BADPTR 0x40000000ul
+#define VA_BAD_DDR_PTR 0x100000000ul
 #define VA_2M_DEVICE 0x02400000ul
 #define VA_1G_DEVICE 0xC0000000ul
 
@@ -241,11 +242,13 @@ static void build_tables(void)
 
     /* Root A: [0] -> L1 A; [1] -> pointer aimed at BRAM (walker PMA
      * refusal: page tables must live in cached DDR); [2] -> 1 GiB DDR
-     * identity leaf; [3] -> 1 GiB leaf over the device quadrant. */
+     * identity leaf; [3] -> 1 GiB leaf over the device quadrant;
+     * [4] -> first page outside configured DDR (must not wrap/alias). */
     root_a[0] = PTE_PPN(PT_L1_A) | PTE_V;
     root_a[1] = PTE_PPN(0x0ul) | PTE_V;
     root_a[2] = PTE_PPN(0x80000000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
     root_a[3] = PTE_PPN(0x40000000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+    root_a[4] = PTE_PPN(DDR_LIMIT) | PTE_V;
 
     /* L1 A: [2] -> L0 A (the VA_4K window); [16] -> 2 MiB leaf; [17] ->
      * misaligned 2 MiB leaf (its PPN low bits are nonzero); [18] -> 2 MiB
@@ -472,6 +475,13 @@ int main(void)
     /* I2: bad interior pointer, store -> 7. */
     RUN_CASE(WIN_S "li t1, 0x40000000\n" SREG " t2, 0(t1)");
     all_ok &= report3("I2 walker-pma-store", 7, VA_BADPTR, 0, 0);
+
+    /* I3/I4: page-table walk at the raw DDR end must access-fault before
+     * any PA-width cast can alias a lower page-table page. */
+    RUN_CASE("sfence.vma\n" WIN_S "li t1, 0x100000000\n" LREG " t2, 0(t1)");
+    all_ok &= report3("I3 walker-ddr-end-load", 5, VA_BAD_DDR_PTR, 0, 0);
+    RUN_CASE("sfence.vma\n" WIN_S "li t1, 0x100000000\n" SREG " t2, 0(t1)");
+    all_ok &= report3("I4 walker-ddr-end-store", 7, VA_BAD_DDR_PTR, 0, 0);
 
     /* J: non-canonical VA -> 13, mtval = the full VA (no walk). */
     RUN_CASE(WIN_S "li t1, 0x0100000000000000\n" LREG " t2, 0(t1)");
