@@ -1354,7 +1354,8 @@ package riscv_pkg;
 
   // Data-tier beat width (hw/rtl/README.md, "Data-tier bus contract"), a
   // separate constant from XLEN. Every data-side bus carries the aligned
-  // dword at addr[31:3]; byte lane i is byte address {addr[31:3], i}.
+  // dword selected by the configured physical address bits above bit 2;
+  // byte lane i has the same beat address and byte offset i.
   // Sub-beat writes replicate their data across the beat and select lanes
   // with the strobe; reads return the full beat and consumers extract by
   // addr[2:0].

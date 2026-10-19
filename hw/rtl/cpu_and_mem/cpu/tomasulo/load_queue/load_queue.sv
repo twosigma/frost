@@ -125,8 +125,9 @@ module load_queue #(
     // The launching load is an LR or an AMO: the cached tier gives it a line
     // request of its own, never one shared with other loads of the line.
     output logic                                                     o_mem_read_no_merge,
-    // Aligned MemDataBits beat carrying the dword at addr[31:3]
-    // (hw/rtl/README.md, "Data-tier bus contract"); consumers extract by addr[2:0].
+    // Aligned MemDataBits beat identified by the configured physical address
+    // bits above bit 2 (hw/rtl/README.md, "Data-tier bus contract");
+    // consumers extract by addr[2:0].
     input  logic                 [       riscv_pkg::MemDataBits-1:0] i_mem_read_data,
     input  logic                                                     i_mem_read_valid,
     // Response tracker: a tagged cached slot or the single fast-tier request.
@@ -619,9 +620,9 @@ module load_queue #(
   // The primary address feeds local LQ logic and one SQ CAM quarter.
   // Allow replication for fanout; all address copies load on the same edge.
   (* max_fanout = 16 *) logic [XLEN-1:0] sq_check_addr_q;
-  // Address copies that load with the primary, for SQ fanout. They hold only
-  // bits [31:3]: the outputs zero bits [63:32], and the SQ reads the byte
-  // offset from the primary.
+  // Address copies that load with the primary, for SQ fanout. They hold the
+  // configured physical address bits above bit 2; the outputs zero bits
+  // above PhysAddrBits, and the SQ reads the byte offset from the primary.
   localparam int unsigned SqCheckCopyMsb = riscv_pkg::PhysAddrBits - 1;
   (* dont_touch = "true", keep = "true", max_fanout = 8 *)
   logic [SqCheckCopyMsb:3] sq_check_addr_q_b;
@@ -1646,11 +1647,12 @@ module load_queue #(
 `endif
 
   // Drive registered check payloads even when invalid; the SQ's capture enable
-  // qualifies use. The four address outputs keep only physical bits [31:0]
-  // and are identical while a probe is staged. This is safe because faulting
-  // loads never probe. SQ addresses remain full width, so out-of-map stores
-  // cannot match. The _b/_c/_d copies supply bits [31:3] and the primary
-  // supplies the byte offset, which the SQ reads only from o_sq_check_addr.
+  // qualifies use. The four address outputs keep the configured physical
+  // address bits and are identical while a probe is staged. This is safe
+  // because faulting loads never probe. SQ addresses remain full width, so
+  // out-of-map stores cannot match. The _b/_c/_d copies supply bits
+  // [SqCheckCopyMsb:3] and the primary supplies the byte offset, which the
+  // SQ reads only from o_sq_check_addr.
   assign o_sq_check_addr_b = XLEN'({sq_check_addr_q_b, sq_check_addr_q[2:0]});
   assign o_sq_check_addr_c = XLEN'({sq_check_addr_q_c, sq_check_addr_q[2:0]});
   assign o_sq_check_addr_d = XLEN'({sq_check_addr_q_d, sq_check_addr_q[2:0]});
