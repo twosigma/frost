@@ -1008,7 +1008,7 @@ jobs:
         env:
           PYTEST_FILTER: ${{ matrix.pytest_filter }}
         run: |
-          ./scripts/frost.py --image frost-dev:latest pytest \
+          ./scripts/frost.py --image frost-dev:latest run pytest tests/test_run_formal.py \
             -m formal -k "$PYTEST_FILTER" -v --durations=0
 
   # Run the pinned pre-commit environment in Docker.

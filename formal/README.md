@@ -34,6 +34,11 @@ CI gives each of these three tasks a separate job with a 120-minute job
 limit, including image setup. The remaining tasks share a job with a
 240-minute limit. Each job stays below GitHub's six-hour limit.
 
+The CI jobs use `./scripts/frost.py run pytest tests/test_run_formal.py`
+with `-m formal` and a task filter. To inspect a job's selection without
+running the solver, add `--collect-only -q` and its `-k` filter. The
+`./scripts/frost.py pytest` shortcut collects only cocotb tests.
+
 The CSR tasks retain depth 20 and the ROB task retains depth 12. Assertions,
 assumptions, engines, and cover depths are unchanged by the timeout settings.
 The larger backstop gives the 32–41 minute BMC runs more than twice their

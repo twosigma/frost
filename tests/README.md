@@ -285,8 +285,9 @@ proves, and its assumptions.
 ./scripts/frost.py formal --task bmc               # one task on every target that declares it
 ```
 
-Each target and task is a separate pytest case with a 40-minute timeout;
-`--verbose` prints solver output.
+Each target and task is a separate pytest case. The timeout is 40 minutes,
+except for `csr_file:bmc`, `csr_file:bmc_perf_off`, and `reorder_buffer:bmc`,
+which have 90 minutes each. `--verbose` prints solver output.
 
 ## Environment and output
 
