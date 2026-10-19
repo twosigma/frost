@@ -34,16 +34,17 @@ CI gives each of these three tasks a separate job with a 120-minute job
 limit, including image setup. The remaining tasks share a job with a
 240-minute limit. Each job stays below GitHub's six-hour limit.
 
-The CI jobs use `./scripts/frost.py run pytest tests/test_run_formal.py`
-with `-m formal` and a task filter. To inspect a job's selection without
+The CI jobs collect `tests/test_run_formal.py` and
+`tests/test_pa_bridge_mutation.py` through `./scripts/frost.py run pytest`
+with `-m formal` and a task filter. The two AXI address-truncation mutation
+checks run in the remaining-tasks job. To inspect a job's selection without
 running the solver, add `--collect-only -q` and its `-k` filter. The
 `./scripts/frost.py pytest` shortcut collects only cocotb tests.
 
 The CSR tasks retain depth 20 and the ROB task retains depth 12. Assertions,
 assumptions, engines, and cover depths are unchanged by the timeout settings.
-The larger backstop gives the 32–41 minute BMC runs more than twice their
-observed runtime. The other tasks took about 92 minutes together in the
-reviewed CI run, leaving setup and runner-speed margin within their job.
+Each slow task's 90-minute backstop leaves 30 minutes for image setup and
+teardown within its 120-minute job limit.
 `--verbose` prints solver output, and timeouts retain the last 40 captured
 log lines. SymbiYosys writes logs and any counterexample trace to
 `formal/<target>_<task>/`, which

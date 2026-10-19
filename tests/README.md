@@ -423,15 +423,22 @@ pinned Docker image, except the ASIC flow, which runs in its own image:
 | --- | --- |
 | Cocotb applications | BRAM and DDR where supported; each CoreMark-PRO workload runs separately |
 | Cocotb unit benches, DDR probes, fetch fuzzers, OpenSBI smoke | BRAM only: tier-independent or fixed-layout runs |
+| Physical address apertures | Software boundary, fetch, translation, DMA, and NIC checks at 1, 64, and 128 GiB; generic synthesis at 1 and 128 GiB |
 | Architecture compliance | BRAM and DDR; excludes Zifencei on BRAM and F/D on DDR; F and D run in BRAM shards |
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both |
 | Torture | BRAM, DDR, and paged DDR |
-| TestRIG | Four jobs of new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples |
+| TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests, synthesis, and formal verification |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with the large memories mocked, in two chained jobs |
-| Linux | Firmware and root filesystem build, and QEMU boot checks |
+| Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
 | Coverage | One job merges the coverage of the simulating jobs into a report |
+
+The software aperture tests also have registry entries for 2, 4, 8, 16,
+and 32 GiB, available through `./scripts/frost.py cocotb <test_name>`.
+The AXI bridge unit tests cover all eight power-of-two capacities in CI.
+The standalone `test_ddr_width_config.sv` and `test_ptw_high_addr.sv`
+harnesses are not registered with the test runners or invoked by CI.
 
 Every job that simulates the whole SoC draws its own DDR model timing:
 the workflow sets `FROST_DDR_MODEL_SEED` from the run ID, the job, and its

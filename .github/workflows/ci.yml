@@ -799,8 +799,8 @@ jobs:
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             pytest tests/ -m synthesis -v
 
-  # The ordinary synthesis job checks the 64 GiB default. Check the smaller
-  # and larger supported PA-width endpoints with the same RTL build setting.
+  # The ordinary synthesis job checks the 1 GiB default. Check both supported
+  # PA-width endpoints explicitly with the same RTL build setting.
   test-pa-synthesis-width:
     name: PA synthesis aperture (${{ matrix.capacity_log2_bytes }} log2 bytes)
     runs-on: ubuntu-26.04
@@ -1009,6 +1009,7 @@ jobs:
           PYTEST_FILTER: ${{ matrix.pytest_filter }}
         run: |
           ./scripts/frost.py --image frost-dev:latest run pytest tests/test_run_formal.py \
+            tests/test_pa_bridge_mutation.py \
             -m formal -k "$PYTEST_FILTER" -v --durations=0
 
   # Run the pinned pre-commit environment in Docker.

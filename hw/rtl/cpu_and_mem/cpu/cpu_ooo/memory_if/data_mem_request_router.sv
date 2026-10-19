@@ -38,10 +38,11 @@
  * The cached read enable also leaves split on its one late term, the live LQ
  * launch (o_data_mem_cached_read_sel), so the adapter can apply it last.
  *
- * Addresses have passed the PMA: bits 63:32 are zero, and a load in the
- * device quadrant (addr[31:30] = 01) is inside a served device window, since
- * the load queue and the data MMU fault the others. The quadrant decode is
- * therefore the whole device classification here.
+ * Addresses have passed the PMA. DDR uses the configured physical width;
+ * device addresses have bits 63:32 clear and addr[31:30] = 01. Device loads
+ * are inside a served window, since the load queue and the data MMU fault
+ * the others. Device classification checks both the quadrant and the upper
+ * address bits.
  */
 
 module data_mem_request_router #(

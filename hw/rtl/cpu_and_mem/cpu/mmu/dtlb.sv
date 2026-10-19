@@ -23,9 +23,10 @@
  * entries; invalidate wins over a simultaneous install from the old address
  * space. See cpu/README.md, "CSR writes".
  *
- * Store configured physical PPN and a flag for nonzero PPN[43:20]. Return PA[PhysAddrBits-1:12],
- * permissions, and per-entry permission/PMA checks to the MMU. The MMU uses
- * the high-PPN flag to reject leaves outside the 32-bit physical map.
+ * Store the configured physical PPN and a flag for nonzero PPN bits above
+ * it. Return PA[PhysAddrBits-1:12], permissions, and per-entry permission/PMA
+ * checks to the MMU. The MMU uses the high-PPN flag to reject leaves outside
+ * the configured physical width.
  *
  * Lookups are combinational. Walks install on misses using the echoed VPN;
  * installs do not remove overlapping entries. Software that changes mappings
