@@ -1228,7 +1228,7 @@ jobs:
               }
               boot default /tmp/qemu-bundled.log 256M
               boot /img/fw_jump.bin /tmp/qemu-frost-fw.log 256M
-              # With 3 GiB from 0x80000000, Linux's Normal zone crosses 4 GiB.
+              # With 3 GiB from 0x80000000, the Linux Normal zone crosses 4 GiB.
               # NODE_DATA above that boundary proves the kernel used high PA.
               boot /img/fw_jump.bin /tmp/qemu-frost-fw-highmem.log 3G
               grep -Eq "NODE_DATA\\(0\\) allocated \\[mem 0x1[[:xdigit:]]{8,}-0x1[[:xdigit:]]{8,}\\]" \
