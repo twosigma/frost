@@ -89,15 +89,15 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 | PLIC | `0x4400_0000` | 4 MiB | Platform-level interrupt controller |
 | DDR | `0x8000_0000` | Configured 1–128 GiB (1 GiB default aperture) | Cached region: `.ddr_text` code, large data, and the heap; software must use the populated size |
 
-DDR extends from `0x8000_0000` to that base plus the configured capacity,
-exclusive. Addresses above 4 GiB are valid when they fall in that range.
-At the default 1 GiB capacity, `0xc000_0000` and higher addresses fault.
-Every address outside the map, including the rest of the device quadrant
-`[0x4000_0000, 0x8000_0000)`, is unmapped: a fetch, load, store, or AMO
-there raises a precise access fault
-(cause 1, 5, or 7) and never aliases onto the map. Fetch also faults in the
-low BRAM above its 128 KiB code region `[0, 0x2_0000)`. The one exception is a
-store to the rest of the device quadrant with translation off: the
+Addresses outside the defined regions, including the rest of the device
+quadrant `[0x4000_0000, 0x8000_0000)` and addresses at or beyond the
+configured DDR end (`0x8000_0000 + 2^FROST_DDR_CAPACITY_LOG2_BYTES`), are
+unmapped: a fetch, load, store, or AMO there raises a precise access fault
+(cause 1, 5, or 7) and never aliases onto the map. DDR addresses above 4 GiB
+remain valid when they are inside the configured aperture. At the default
+1 GiB capacity, `0xc000_0000` and higher addresses fault. Fetch also faults
+in the low BRAM above its 128 KiB code region `[0, 0x2_0000)`. The one
+exception is a store to the rest of the device quadrant with translation off: the
 store-issue check covers the whole quadrant, so the store issues and the
 device bus ignores it. Under Sv39, a misaligned-address or page fault takes priority over the
 access fault; for an untranslated access, the access fault takes priority
