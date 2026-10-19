@@ -17,6 +17,7 @@
 import importlib.util
 import json
 import os
+from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
 import re
@@ -44,6 +45,18 @@ def _load_fpga_build() -> Any:
 
 
 fpga_build: Any = _load_fpga_build()
+
+
+@pytest.fixture(autouse=True)
+def restore_ddr_capacity() -> Iterator[None]:
+    """Keep build.py's board selection from leaking into later application tests."""
+    name = "FROST_DDR_CAPACITY_LOG2_BYTES"
+    original = os.environ.get(name)
+    yield
+    if original is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = original
 
 
 def _write_probe_outputs(work_dir: Path, prefix: str, wns: float = -0.1) -> None:
@@ -3223,8 +3236,10 @@ def test_promoted_gate_is_bound_to_exact_checkpoint_and_gate(
 def test_new_checkpoint_promotion_cannot_retain_old_gate(
     tmp_path: Path,
     stage: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Promoting a new synth, opt, or place checkpoint deletes the old place gate."""
+    monkeypatch.setenv("FROST_DDR_CAPACITY_LOG2_BYTES", "30")
     source, dest = tmp_path / "source", tmp_path / "dest"
     source.mkdir()
     dest.mkdir()
@@ -3668,9 +3683,10 @@ def test_default_place_stops_on_failing_post_opt(
 
 @pytest.mark.parametrize("stage", ("post_synth", "post_opt", "post_place"))
 def test_replaced_placement_removes_default_recipe_records(
-    tmp_path: Path, stage: str
+    tmp_path: Path, stage: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """New checkpoints cannot inherit a prior default placement's verification files."""
+    monkeypatch.setenv("FROST_DDR_CAPACITY_LOG2_BYTES", "30")
     source = tmp_path / "source"
     source.mkdir()
     main = tmp_path / "work"

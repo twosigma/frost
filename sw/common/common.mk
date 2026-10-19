@@ -140,6 +140,21 @@ CFLAGS += '-DCOMPILER_VERSION="$(COMPILER_VERSION)"' \
           '-DFPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ)' \
           $(EXTRA_CFLAGS)
 
+# Board builds set the physical aperture independently of app-specific flags.
+ifneq ($(strip $(FROST_DDR_CAPACITY_LOG2_BYTES)),)
+ifeq ($(filter $(FROST_DDR_CAPACITY_LOG2_BYTES),30 31 32 33 34 35 36 37),)
+$(error FROST_DDR_CAPACITY_LOG2_BYTES must be 30..37)
+endif
+DDR_CAPACITY_CFLAG := -DFROST_DDR_CAPACITY_LOG2_BYTES=$(FROST_DDR_CAPACITY_LOG2_BYTES)
+DDR_CAPACITY_EXTRA_CFLAGS := $(filter -DFROST_DDR_CAPACITY_LOG2_BYTES=%,$(EXTRA_CFLAGS))
+ifneq ($(filter-out $(DDR_CAPACITY_CFLAG),$(DDR_CAPACITY_EXTRA_CFLAGS)),)
+$(error EXTRA_CFLAGS conflicts with FROST_DDR_CAPACITY_LOG2_BYTES)
+endif
+ifeq ($(DDR_CAPACITY_EXTRA_CFLAGS),)
+CFLAGS += $(DDR_CAPACITY_CFLAG)
+endif
+endif
+
 # Assembly startup code (initializes stack, zeroes BSS, calls main)
 ASSEMBLY_STARTUP_FILE := ../../common/crt0.S
 
