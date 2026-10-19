@@ -242,13 +242,37 @@ jobs:
 
   # Exercise configured DDR apertures at their software-visible edges.
   test-pa-width:
-    name: Physical address aperture (${{ matrix.capacity_gib }} GiB)
+    name: Physical address aperture (${{ matrix.capacity_gib }} GiB / ${{ matrix.shard.name }})
     runs-on: ubuntu-26.04
     needs: build-docker
     strategy:
       fail-fast: false
       matrix:
-        capacity_gib: [1, 64]
+        capacity_gib: [1, 64, 128]
+        shard:
+          - name: Bare access
+            programs: pa_width_test pma_fault_test
+          - name: Translation and fetch
+            programs: pa_vm_fetch_test vm_test itlb_test
+          - name: DMA
+            programs: pa_dma_test dma_torture
+          - name: NIC
+            programs: pa_nic_mmio_test pa_nic_packet_test nic_loopback
+        include:
+          - capacity_gib: 1
+            shard:
+              name: Unit boundaries
+              tests: >-
+                line_port_axi_bridge_1g data_mem_request_router_1g dmmu_1g immu_1g
+                tomasulo_wrapper_1g frost_cache frost_cache_dma dma_test_engine_wide_1g
+          - capacity_gib: 64
+            shard:
+              name: Unit boundaries
+              tests: line_port_axi_bridge_wide frost_cache_wide_addr dma_test_engine_wide_64g
+          - capacity_gib: 128
+            shard:
+              name: Unit boundaries
+              tests: line_port_axi_bridge_128g dma_test_engine_wide_128g
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -266,19 +290,42 @@ jobs:
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
 
-      - name: Run CPU, Sv39, cache and coherence aperture checks
+      - name: Run aperture checks
         env:
           PA_CAPACITY_GIB: ${{ matrix.capacity_gib }}
+          PA_PROGRAMS: ${{ matrix.shard.programs }}
+          PA_TESTS: ${{ matrix.shard.tests }}
+          FROST_COVERAGE: "1"
+          FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
         run: |
-          if [ "$PA_CAPACITY_GIB" = 1 ]; then
-            tests='pa_width_test_1g pa_vm_fetch_test_1g pa_dma_test_1g pa_nic_mmio_test_1g pa_nic_packet_test_1g pma_fault_test vm_test itlb_test_1g dma_torture_1g line_port_axi_bridge_1g data_mem_request_router_1g dmmu_1g immu_1g tomasulo_wrapper_1g frost_cache frost_cache_dma dma_test_engine_wide_1g'
-          else
-            tests='pa_width_test_64g pa_vm_fetch_test_64g pa_dma_test_64g pa_nic_mmio_test_64g pa_nic_packet_test_64g pma_fault_test_64g vm_test_64g itlb_test_64g dma_torture_64g nic_loopback_64g line_port_axi_bridge_wide frost_cache_wide_addr dma_test_engine_wide_64g'
-          fi
-          docker run --rm -e PA_CAPACITY_GIB \
-            -v "${{ github.workspace }}:/workspace" -w /workspace frost-dev:latest \
-            bash -euc 'for test_name in $1; do python3 tests/test_run_cocotb.py "$test_name"; done' \
-            bash "$tests"
+          tests="$PA_TESTS"
+          for program in $PA_PROGRAMS; do
+            test_name="${program}_${PA_CAPACITY_GIB}g"
+            case "$test_name" in
+              pma_fault_test_1g|vm_test_1g|nic_loopback_1g) test_name="$program" ;;
+            esac
+            tests="$tests $test_name"
+          done
+          for test_name in $tests; do
+            ./scripts/frost.py --image frost-dev:latest cocotb "$test_name"
+          done
+
+      - name: Merge the job's coverage
+        if: ${{ !cancelled() }}
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/coverage_report.py merge tests/coverage \
+            --output coverage-job/pa-${{ strategy.job-index }}.dat
+
+      - name: Upload the job's coverage
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: coverage-job-${{ github.job }}-${{ strategy.job-index }}
+          path: coverage-job/
+          retention-days: 3
+          if-no-files-found: ignore
+          overwrite: true
 
   # Standalone Ethernet uses the shared image but has no CPU/software dependencies.
   test-net10g:
@@ -669,6 +716,7 @@ jobs:
     needs:
       - build-docker
       - test-verilator
+      - test-pa-width
       - test-arch-compliance
       - test-riscv-tests
       - test-riscv-torture
