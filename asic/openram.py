@@ -118,18 +118,16 @@ class Macro:
 # the RAM wrappers' memories from, with the memories each one builds, in
 # rows by columns of macros.
 MACROS = (
-    # L2 data: 8 rows of 8, a row for each eighth of the {way, set} lines
+    # L2 data: 1 row of 8, each a 64-bit slice of every {way, set} line
     Macro("1w1r", 4096, 64, 8),
-    # L2 tags: 2 rows of 4, a column for each way of a set
-    Macro("1w1r", 4096, 15, None),
-    # L2 replacement state: 2 rows of 1
-    Macro("1w1r", 4096, 3, None),
     # L1D data: 1 row of 4 in each way's bank. The L1 macros are 64 bits
     # wide because OpenRAM could not route the pins of a 512 by 128 macro to
     # its edges.
     Macro("1w1r", 1024, 64, 8),
     # L1D tags: one in each way
     Macro("1w1r", 1024, 19, None),
+    # L2 tags: 1 row of 4, a column for each way of a set
+    Macro("1w1r", 1024, 18, None),
     # The NIC's receive and transmit FIFOs
     Macro("1w1r", 512, 68, None),
     # The BTB's three slot-2 payload tables

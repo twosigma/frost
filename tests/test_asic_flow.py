@@ -458,14 +458,14 @@ def test_sram_macros_come_from_the_synthesis_statistics(tmp_path: Path) -> None:
         "=== cpu_and_mem ===\n"
         "        2   1.27E+06        2   1.27E+06   sram_1w1r_4096x64_m8\n"
         "=== design hierarchy ===\n"
-        "       68   4.32E+07       64   4.07E+07   sram_1w1r_4096x64_m8\n"
-        "        2 1.31E+05        2 1.31E+05   sram_1w1r_4096x3\n"
+        "       10   6.35E+06        8   5.08E+06   sram_1w1r_4096x64_m8\n"
+        "        4 2.64E+05        4 2.64E+05   sram_1w1r_1024x18\n"
         "   271588 5.06E+05   187232 3.49E+05   MUX2_X1\n"
     )
 
     assert orfs.sram_macros(statistics) == [
-        ("sram_1w1r_4096x64_m8", 68),
-        ("sram_1w1r_4096x3", 2),
+        ("sram_1w1r_4096x64_m8", 10),
+        ("sram_1w1r_1024x18", 4),
     ]
     assert orfs.sram_macros(tmp_path / "missing.txt") == []
 
