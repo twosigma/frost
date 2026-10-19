@@ -98,7 +98,22 @@ export SKIP_INCREMENTAL_REPAIR = 1
 # Skip the antenna repair after global routing. It has nothing to repair
 # here: the platform has no antenna diode cell, and it finds no violation.
 # The placement check that follows it builds a grid of the core's placement
-# sites, which raised global routing's peak memory by 4.5 GB. Detailed routing
-# still checks and repairs the antennas of the final routes
-# (reports/.../drt_antennas.log).
+# sites, which raised global routing's peak memory by 4.5 GB.
 export SKIP_ANTENNA_REPAIR = 1
+# Skip antenna repair after detailed routing too: inserting diodes would
+# invalidate the saved pin access before the repair's detailed_route call.
+# detail_route.tcl still checks the antennas of the final routes and writes
+# reports/.../drt_antennas.log outside the repair block.
+export SKIP_ANTENNA_REPAIR_POST_DRT = 1
+# DETAILED_ROUTE_ARGS replaces detail_route.tcl's default arguments:
+# -droute_end_iter 64 -verbose 1 -drc_report_iter_step 5. The script still
+# adds -output_drc and -output_maze. The -no_pin_access option reuses the
+# access points saved in global routing's database. From pin_access to each
+# detailed_route call, cells and placement must stay unchanged: keep
+# SKIP_INCREMENTAL_REPAIR, SKIP_ANTENNA_REPAIR, and
+# SKIP_ANTENNA_REPAIR_POST_DRT at 1, and RECOVER_POWER at its default 0.
+# With the 256 KiB L2 and 4 threads, this cut detailed routing's CPU time
+# from 24,280 to 18,282 seconds (25%), with byte-identical routed DEF and
+# no DRC or antenna violations.
+export DETAILED_ROUTE_ARGS = -droute_end_iter 64 -verbose 1 \
+  -drc_report_iter_step 5 -no_pin_access

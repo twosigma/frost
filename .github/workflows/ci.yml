@@ -878,7 +878,9 @@ jobs:
           nproc
           df -h / /mnt
 
-      # Detailed routing peaks at about 20 GB of memory.
+      # Detailed routing peaks at about 20 GB of memory. It reuses global
+      # routing's pin access (asic/config.mk), which puts this job at an
+      # estimated 3.5 to 3.9 hours on four CPUs.
       - name: Add swap space
         run: |
           swapfile=/mnt/asic-flow.swap
