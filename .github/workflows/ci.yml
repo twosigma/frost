@@ -1212,19 +1212,25 @@ jobs:
               fi
               # Keep -append equal to DEFAULT_BOOTARGS in frost_boot_image.py.
               boot() {
-                timeout -k5 180 qemu-system-riscv64 -M virt -m 256M -nographic \
+                local bios="$1" log="$2" memory="$3"
+                timeout -k5 180 qemu-system-riscv64 -M virt -m "$memory" -nographic \
                   -cpu rv64,sv57=off,sv48=off,zicbom=false,zicboz=false,v=false,h=false \
-                  -bios "$1" -kernel /img/Image-debian \
+                  -bios "$bios" -kernel /img/Image-debian \
                   -initrd /img/rootfs-frost.cpio \
                   -append "earlycon console=ttyS0 rdinit=/sbin/init ipv6.disable=1" \
-                  </dev/null >"$2" 2>&1 || true
-                echo "===== QEMU boot log ($1, tail) ====="
-                tail -n 20 "$2"
-                grep -q "FROST_NET10G_MODULE_PASS" "$2"
-                grep -q "FROST_MEMERR_MODULE_PASS" "$2"
-                grep -q "FROST_USERSPACE_STRESS_PASS" "$2"
-                grep -q "buildroot login:" "$2"
+                  </dev/null >"$log" 2>&1 || true
+                echo "===== QEMU boot log ($bios, $memory, tail) ====="
+                tail -n 20 "$log"
+                grep -q "FROST_NET10G_MODULE_PASS" "$log"
+                grep -q "FROST_MEMERR_MODULE_PASS" "$log"
+                grep -q "FROST_USERSPACE_STRESS_PASS" "$log"
+                grep -q "buildroot login:" "$log"
               }
-              boot default /tmp/qemu-bundled.log
-              boot /img/fw_jump.bin /tmp/qemu-frost-fw.log
+              boot default /tmp/qemu-bundled.log 256M
+              boot /img/fw_jump.bin /tmp/qemu-frost-fw.log 256M
+              # With 3 GiB from 0x80000000, Linux's Normal zone crosses 4 GiB.
+              # NODE_DATA above that boundary proves the kernel used high PA.
+              boot /img/fw_jump.bin /tmp/qemu-frost-fw-highmem.log 3G
+              grep -Eq "NODE_DATA\\(0\\) allocated \\[mem 0x1[[:xdigit:]]{8,}-0x1[[:xdigit:]]{8,}\\]" \
+                /tmp/qemu-frost-fw-highmem.log
             '
