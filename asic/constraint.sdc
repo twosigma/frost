@@ -42,21 +42,51 @@ create_clock -name nic_tx_clk -period 6.206 [get_ports i_nic_tx_clk]
 create_clock -name nic_rx_clk -period 6.206 [get_ports i_nic_rx_clk]
 create_clock -name jtag_tck -period 100.0 [get_ports i_jtag_tck]
 
+# Board-level I/O takes a fifth of the period on each side of a port, timed
+# against the clock as it arrives inside the chip, as if a PLL aligned the
+# board's clock with a point inside it, or the logic beyond the ports shared
+# the clock tree. Each clock has an I/O copy, generated at the clock pin of
+# one register at its interface, and the port delays count from the copy:
+# after clock tree synthesis its edges arrive with the tree's delay to that
+# pin, and before it, while the clocks are ideal, with the master's edges.
+# The registers are the DDR bridge's AXI read request register, the data
+# memory's program-loading port, the NIC's transmit and receive gearboxes,
+# and the JTAG TAP. A pattern leaves out the suffix that synthesis adds to a
+# register's name, and must match one pin. set_input_delay -reference_pin
+# would say the same, but OpenROAD in the ORFS image crashes on any input
+# delay that uses it. Clock tree synthesis would take a copy for a second
+# clock on its master's net, so it takes the clock ports' nets as its roots
+# from CTS_ARGS in config.mk, which lists each clock's port.
+set io_references {
+  core_clk i_clk {gen_cached_tier.ddr_bridge.ar_valid_q$*/CK}
+  core_clk_div4 i_clk_div4 {data_memory.u_sram.gen_row[0].u_macro/clk0}
+  nic_tx_clk i_nic_tx_clk {gen_cached_tier.nic.u_mac.u_mac.tx_gearbox.reservoir[0]$*/CK}
+  nic_rx_clk i_nic_rx_clk {gen_cached_tier.nic.u_mac.u_mac.rx_gearbox.reservoir[0]$*/CK}
+  jtag_tck i_jtag_tck {gen_jtag_tap.u_jtag_tap.bypass_shift$*/CK}
+}
+foreach {clock source pattern} $io_references {
+  set pins [get_pins -quiet $pattern]
+  if { [llength $pins] != 1 } {
+    error "constraint.sdc: the I/O reference for $clock, $pattern, matches\
+      [llength $pins] pins"
+  }
+  create_generated_clock -name ${clock}_io -source [get_ports $source] -divide_by 1 $pins
+}
+
 # The quarter-rate clock is derived from the core clock, as on the X3, so the
 # two are related: both rise at time 0, and paths between them are timed. The
 # crossings between them rely on that, such as dc_fifo's binary pointers in
 # the debug slice writer. The NIC's TX and RX clocks and the JTAG clock are
 # asynchronous to the core clocks and to each other; the RTL synchronizes
 # those crossings with Gray-coded FIFOs, two-flop synchronizers, and
-# handshakes.
+# handshakes. Each I/O copy goes with its master.
 set_clock_groups -asynchronous \
-  -group [get_clocks {core_clk core_clk_div4}] \
-  -group [get_clocks nic_tx_clk] \
-  -group [get_clocks nic_rx_clk] \
-  -group [get_clocks jtag_tck]
+  -group [get_clocks {core_clk core_clk_div4 core_clk_io core_clk_div4_io}] \
+  -group [get_clocks {nic_tx_clk nic_tx_clk_io}] \
+  -group [get_clocks {nic_rx_clk nic_rx_clk_io}] \
+  -group [get_clocks {jtag_tck jtag_tck_io}]
 
-# Board-level I/O takes a fifth of the period on each side of a port. Ports
-# take the core clock unless listed here.
+# Ports take the core clock unless listed here.
 set io_fraction 0.2
 set port_clocks {
   i_instr_mem_* core_clk_div4
@@ -79,29 +109,14 @@ proc port_clock { port_name } {
   return core_clk
 }
 
-set core_clock_inputs {}
 foreach port [all_inputs -no_clocks] {
-  set name [get_full_name $port]
-  set clock [port_clock $name]
+  set clock [port_clock [get_full_name $port]]
   set period [get_property [get_clocks $clock] period]
-  set_input_delay [expr { $period * $io_fraction }] -clock $clock $port
-  if { $clock in {core_clk core_clk_div4} } {
-    lappend core_clock_inputs $port
-  }
+  set_input_delay [expr { $period * $io_fraction }] -clock ${clock}_io $port
 }
 foreach port [all_outputs] {
-  set name [get_full_name $port]
-  set clock [port_clock $name]
+  set clock [port_clock [get_full_name $port]]
   set period [get_property [get_clocks $clock] period]
-  set_output_delay [expr { $period * $io_fraction }] -clock $clock $port
+  set_output_delay [expr { $period * $io_fraction }] -clock ${clock}_io $port
 }
 set_false_path -from [get_ports $async_ports]
-
-# Against the ideal clock at a port, every input on the core clocks would
-# need the clock tree's insertion delay, about 3 ns on the die that the SRAM
-# macros need, in hold buffers: the hold repair added over 80,000 buffers,
-# most of them in front of the pins, where global routing then overflowed. A
-# chip would deskew the clock or put the logic beyond the ports on the same
-# tree. The flow therefore does not check those inputs' hold timing, which a
-# chip would still have to close against the clock tree's remaining skew.
-set_false_path -hold -from $core_clock_inputs

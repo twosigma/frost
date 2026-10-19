@@ -158,16 +158,30 @@ def test_sources_makefile_is_independent_of_the_mount_point(tmp_path: Path) -> N
 
 
 # Stand-ins for the OpenSTA commands that asic/constraint.sdc calls. Each
-# command prints what it constrains: "clock <name> <period>", "<input|output>
-# <port> <clock> <delay>", or "false_path <hold|all> <ports>".
+# command prints what it constrains: "clock <name> <period>", "generated
+# <name> <master> <divisor> <pin>", "<input|output> <port> <clock> <delay>",
+# or "false_path <hold|all> <ports>". With FROST_HARNESS_NO_PINS set,
+# get_pins finds nothing.
 SDC_HARNESS = r"""
 set clocks [dict create]
+set clock_ports [dict create]
 proc option {arguments name} {
     return [lindex $arguments [expr {[lsearch -exact $arguments $name] + 1}]]
 }
 proc create_clock {args} {
     dict set ::clocks [option $args -name] [option $args -period]
+    dict set ::clock_ports [lindex $args end] [option $args -name]
     puts "clock [option $args -name] [option $args -period] [lindex $args end]"
+}
+proc create_generated_clock {args} {
+    set master [dict get $::clock_ports [option $args -source]]
+    dict set ::clocks [option $args -name] [dict get $::clocks $master]
+    puts "generated [option $args -name] $master [option $args -divide_by]\
+        [join [lindex $args end] { }]"
+}
+proc get_pins {args} {
+    if {[info exists ::env(FROST_HARNESS_NO_PINS)]} {return {}}
+    return [list [lindex $args end]]
 }
 proc get_ports {patterns} {return $patterns}
 proc get_clocks {names} {return $names}
@@ -216,7 +230,7 @@ PORT_CLOCKS = {
 
 
 def _evaluate_sdc(
-    tmp_path: Path, core_period: str | None = None
+    tmp_path: Path, core_period: str | None = None, *, find_pins: bool = True
 ) -> subprocess.CompletedProcess[str]:
     """Run asic/constraint.sdc in tclsh with FROST_CORE_CLOCK_PERIOD set or not."""
     harness = tmp_path / "harness.tcl"
@@ -224,10 +238,12 @@ def _evaluate_sdc(
     environment = {
         name: value
         for name, value in os.environ.items()
-        if name != orfs.CLOCK_PERIOD_VARIABLE
+        if name not in (orfs.CLOCK_PERIOD_VARIABLE, "FROST_HARNESS_NO_PINS")
     }
     if core_period is not None:
         environment[orfs.CLOCK_PERIOD_VARIABLE] = core_period
+    if not find_pins:
+        environment["FROST_HARNESS_NO_PINS"] = "1"
     return subprocess.run(
         ["tclsh", str(harness), str(ASIC_DIRECTORY / "constraint.sdc")],
         capture_output=True,
@@ -250,6 +266,8 @@ def _sdc_constraints(
         kind, *fields = line.split()
         if kind == "clock":
             periods[fields[0]] = float(fields[1])
+        elif kind == "generated":
+            periods[fields[0]] = periods[fields[1]] / int(fields[2])
         elif kind in ("input", "output"):
             delays[fields[0]] = (fields[1], float(fields[2]))
     return periods, delays
@@ -276,7 +294,8 @@ def test_core_clock_period_sets_the_core_clocks_and_their_ports(
 ) -> None:
     """The quarter-rate clock and every port's delay follow the core period.
 
-    Ports take a fifth of their clock's period; the NIC and JTAG clocks stay.
+    Ports take a fifth of their clock's period, counted from the clock's I/O
+    copy; the NIC and JTAG clocks stay.
     """
     periods, delays = _sdc_constraints(tmp_path, core_period)
     core = orfs.default_clock_period() if core_period is None else float(core_period)
@@ -285,16 +304,68 @@ def test_core_clock_period_sets_the_core_clocks_and_their_ports(
     assert periods["core_clk_div4"] == pytest.approx(4 * core)
     assert periods["nic_tx_clk"] == periods["nic_rx_clk"] == pytest.approx(6.206)
     assert periods["jtag_tck"] == pytest.approx(100.0)
-    assert {port: clock for port, (clock, _) in delays.items()} == PORT_CLOCKS
+    assert {port: clock for port, (clock, _) in delays.items()} == {
+        port: f"{clock}_io" for port, clock in PORT_CLOCKS.items()
+    }
     for port, (clock, delay) in delays.items():
         assert delay == pytest.approx(periods[clock] / 5), port
 
 
-def test_only_the_core_clocks_inputs_skip_hold_checks(tmp_path: Path) -> None:
-    """The asynchronous levels are untimed; other core clock inputs skip hold.
+def test_each_clock_has_an_io_copy_at_one_pin(tmp_path: Path) -> None:
+    """Every clock's ports count from a copy generated inside the chip.
 
-    Inputs on the NIC's and the JTAG clocks keep their hold checks.
+    The copy divides by one, so it keeps its master's period, and a reference
+    pattern that matches no pin stops the constraints.
     """
+    result = _evaluate_sdc(tmp_path)
+    assert result.returncode == 0, result.stderr
+    generated = {
+        fields[0]: (fields[1], fields[2], fields[3:])
+        for kind, *fields in (line.split() for line in result.stdout.splitlines())
+        if kind == "generated"
+    }
+    masters = ("core_clk", "core_clk_div4", "nic_tx_clk", "nic_rx_clk", "jtag_tck")
+    assert {name: master for name, (master, _, _) in generated.items()} == {
+        f"{master}_io": master for master in masters
+    }
+    for name, (_, divisor, pins) in generated.items():
+        assert divisor == "1", name
+        assert len(pins) == 1 and pins[0].endswith(("/CK", "/clk0")), name
+
+    missing = _evaluate_sdc(tmp_path, find_pins=False)
+    assert missing.returncode != 0
+    assert "the I/O reference for core_clk" in missing.stderr
+
+
+def test_clock_tree_synthesis_takes_each_clock_port_as_a_root(tmp_path: Path) -> None:
+    """CTS_ARGS in config.mk lists the net of every clock's port.
+
+    From the SDC's clocks, clock tree synthesis would take each I/O copy for a
+    second clock on its master's net and stop, so it takes its roots from the
+    list, with ORFS's other default arguments.
+    """
+    result = _evaluate_sdc(tmp_path)
+    assert result.returncode == 0, result.stderr
+    ports = {
+        fields[2]
+        for kind, *fields in (line.split() for line in result.stdout.splitlines())
+        if kind == "clock"
+    }
+    config = (ASIC_DIRECTORY / "config.mk").read_text().replace("\\\n", " ")
+    match = re.search(r"^export CTS_ARGS = (.*)$", config, re.MULTILINE)
+    assert match is not None
+    arguments = match[1].split(maxsplit=3)
+    assert arguments[:3] == [
+        "-sink_clustering_enable",
+        "-repair_clock_nets",
+        "-clk_nets",
+    ]
+    assert arguments[3].startswith("{") and arguments[3].endswith("}")
+    assert sorted(arguments[3][1:-1].split()) == sorted(ports)
+
+
+def test_only_the_asynchronous_levels_are_false_paths(tmp_path: Path) -> None:
+    """Every other input keeps its setup and hold checks."""
     result = _evaluate_sdc(tmp_path)
     assert result.returncode == 0, result.stderr
     false_paths: dict[str, set[str]] = {"hold": set(), "all": set()}
@@ -303,16 +374,14 @@ def test_only_the_core_clocks_inputs_skip_hold_checks(tmp_path: Path) -> None:
         if kind == "false_path":
             false_paths[fields[0]].update(fields[1:])
 
-    assert false_paths["all"] == {
-        "i_jtag_trst_n",
-        "i_nic_tx_clk_ok",
-        "i_nic_rx_clk_ok",
-        "i_nic_phy_status*",
-    }
-    assert false_paths["hold"] == {
-        port
-        for port, clock in PORT_CLOCKS.items()
-        if port.startswith("i_") and clock in ("core_clk", "core_clk_div4")
+    assert false_paths == {
+        "hold": set(),
+        "all": {
+            "i_jtag_trst_n",
+            "i_nic_tx_clk_ok",
+            "i_nic_rx_clk_ok",
+            "i_nic_phy_status*",
+        },
     }
 
 
@@ -356,10 +425,10 @@ def test_quarter_rate_clock_is_related_to_the_core_clock(tmp_path: Path) -> None
     ]
 
     assert sorted(map(sorted, groups)) == [
-        ["core_clk", "core_clk_div4"],
-        ["jtag_tck"],
-        ["nic_rx_clk"],
-        ["nic_tx_clk"],
+        ["core_clk", "core_clk_div4", "core_clk_div4_io", "core_clk_io"],
+        ["jtag_tck", "jtag_tck_io"],
+        ["nic_rx_clk", "nic_rx_clk_io"],
+        ["nic_tx_clk", "nic_tx_clk_io"],
     ]
     assert set().union(*groups) == set(_sdc_constraints(tmp_path)[0])
 
@@ -586,6 +655,49 @@ def test_path_report_ranks_blocks_and_families(tmp_path: Path) -> None:
     assert report.index("| `data_memory` | 1 |") < report.index(
         "`cpu_inst.u_int_rs` | 2"
     )
+
+
+def test_io_clock_copies_count_as_their_masters() -> None:
+    """Paths on a clock's I/O copy (asic/constraint.sdc) count as on the clock."""
+    sdc = (
+        "create_clock -name core_clk -period 3.1030 [get_ports {i_clk}]\n"
+        "create_clock -name core_clk_div4 -period 12.4120 [get_ports {i_clk_div4}]\n"
+        "create_generated_clock -name core_clk_io -source [get_ports {i_clk}] "
+        "-divide_by 1 [get_pins {ddr.ar_valid_q$_DFF_P_/CK}]\n"
+        "create_generated_clock -name core_clk_div4_io -source "
+        "[get_ports {i_clk_div4}] -divide_by 1 "
+        "[get_pins {data_memory.u_sram.gen_row[0].u_macro/clk0}]\n"
+    )
+    assert orfs.clock_periods(sdc) == pytest.approx(
+        {
+            "core_clk": 3.103,
+            "core_clk_div4": 12.412,
+            "core_clk_io": 3.103,
+            "core_clk_div4_io": 12.412,
+        }
+    )
+    # An input on the core clock's copy needs no note about its clock.
+    path = _path(0.3, "i_ddr_axi_rvalid", "ddr.r_q$_DFF_P_", launch="core_clk_io")
+    assert orfs._path_note(path, set(), {"i_ddr_axi_rvalid"}) == "from an input"
+    # A path to the macro on the quarter-rate copy has four core periods.
+    macro = "data_memory.u_sram.gen_row[0].u_macro"
+    into_macro = _path(
+        1.0, "imem.q$_DFF_P_", macro, launch="core_clk_div4", capture="core_clk_div4_io"
+    )
+    assert orfs.core_cycles(into_macro) == 4
+    # Outputs on the copy join the core clock's endpoint tables.
+    output = _path(-0.2, "ddr.w_q$_DFF_P_", "o_ddr_axi_wvalid", capture="core_clk_io")
+    register = _path(0.1, "a$_DFF_P_", "b$_DFF_P_")
+    report = orfs.paths_markdown(
+        "grt",
+        [output, register],
+        [register],
+        {"core_clk": 3.103, "core_clk_io": 3.103},
+        set(),
+        {"o_ddr_axi_wvalid"},
+    )
+    assert "| core_clk_io | 3.103 | 1 | 1 | -0.200 | -0.2 |" in report
+    assert "| `ports` | 1 | 1 | 1 | -0.200 |" in report
 
 
 def test_path_notes_name_the_sram_macros() -> None:

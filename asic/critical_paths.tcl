@@ -134,16 +134,31 @@ close $frost_out
 # The requirements of these paths scale with the core period, unlike those
 # of paths from and to ports, which also carry the I/O delays. An endpoint
 # can have both, and paths from both core clocks, so each pair of clocks is
-# searched on its own.
+# searched on its own, and its row is the worst path that the pair's clocks
+# launch and capture between registers. A clock's I/O copy (constraint.sdc)
+# counts as the clock, and its register as one of the clock's. The search
+# names the launching clocks, since the data memory's macros have a clock
+# pin on each core clock; it skips the paths from ports, which the copies
+# also launch, and the endpoints that the other clock captures.
+proc frost_master_clock { clock } {
+  return [regsub {_io$} $clock {}]
+}
 set frost_out [open $::env(REPORTS_DIR)/${frost_stage}_register_paths.tsv w]
 puts $frost_out [frost_columns]
 foreach launch {core_clk core_clk_div4} {
   foreach capture {core_clk core_clk_div4} {
     foreach path_end [find_timing_paths -path_delay max \
-      -from [all_registers -clock [get_clocks $launch]] \
-      -to [all_registers -clock [get_clocks $capture] -data_pins] \
-      -group_path_count 1 -endpoint_path_count 1 -sort_by_slack] {
-      puts $frost_out [frost_row $path_end]
+      -from [get_clocks -quiet [list $launch ${launch}_io]] \
+      -to [all_registers -clock [get_clocks -quiet [list $capture ${capture}_io]] \
+        -data_pins] \
+      -group_path_count 100 -endpoint_path_count 1 -sort_by_slack] {
+      set target [$path_end target_clk]
+      if { $target ne "NULL" && \
+           ![[[[$path_end path] start_path] pin] is_top_level_port] && \
+           [frost_master_clock [get_name $target]] eq $capture } {
+        puts $frost_out [frost_row $path_end]
+        break
+      }
     }
   }
 }

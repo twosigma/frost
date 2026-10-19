@@ -97,6 +97,9 @@ PATH_DATABASES = {
 PATHS_LOG_SUBDIRECTORY = "logs/paths"
 # The core clock and its quarter-rate programming clock.
 CORE_CLOCKS = ("core_clk", "core_clk_div4")
+# asic/constraint.sdc times each clock's ports against an I/O copy of it,
+# generated inside the chip and named after it with this suffix.
+IO_CLOCK_SUFFIX = "_io"
 # Endpoints within this many ns of the worst core clock slack are near it.
 CRITICAL_WINDOW_NS = 0.1
 
@@ -567,13 +570,33 @@ def read_paths(table: Path) -> list[TimingPath]:
 
 
 def clock_periods(sdc: str) -> dict[str, float]:
-    """Return each clock's period in ns from an SDC file that OpenSTA wrote."""
-    return {
-        name: float(period)
-        for name, period in re.findall(
-            r"^create_clock -name (\S+) -period (\S+)", sdc, re.M
-        )
-    }
+    """Return each clock's period in ns from an SDC file that OpenSTA wrote.
+
+    A generated clock has its master's period over its divisor; its master
+    is the clock created on its source port.
+    """
+    periods: dict[str, float] = {}
+    sources: dict[str, str] = {}
+    for name, period, port in re.findall(
+        r"^create_clock -name (\S+) -period (\S+) .*\[get_ports \{([^}]+)\}\]",
+        sdc,
+        re.M,
+    ):
+        periods[name] = float(period)
+        sources[port] = name
+    for name, port, divisor in re.findall(
+        r"^create_generated_clock -name (\S+) -source \[get_ports \{([^}]+)\}\] "
+        r"-divide_by (\d+) ",
+        sdc,
+        re.M,
+    ):
+        periods[name] = periods[sources[port]] / int(divisor)
+    return periods
+
+
+def master_clock(clock: str) -> str:
+    """Return the clock that an I/O copy is generated from, or the clock itself."""
+    return clock.removesuffix(IO_CLOCK_SUFFIX)
 
 
 def port_names(sdc: str) -> set[str]:
@@ -638,8 +661,8 @@ def _path_note(
 ) -> str:
     """Describe what makes a path differ from one between core registers."""
     notes = []
-    if clocks and path.launch != path.capture:
-        notes.append(f"from {path.launch}")
+    if clocks and master_clock(path.launch) != master_clock(path.capture):
+        notes.append(f"from {master_clock(path.launch)}")
     if path.startpoint in mocked:
         notes.append("reads a mocked memory")
     if path.endpoint in mocked:
@@ -659,9 +682,11 @@ def core_cycles(path: TimingPath) -> int:
     """Return the core periods a path between core clock registers has.
 
     Both core clocks rise at time 0, so a path between them has one core
-    period, and a path between quarter-rate registers has four.
+    period, and a path between quarter-rate registers has four. A register
+    on an I/O copy of a clock counts as on the clock.
     """
-    return 4 if path.launch == path.capture == "core_clk_div4" else 1
+    launch, capture = master_clock(path.launch), master_clock(path.capture)
+    return 4 if launch == capture == "core_clk_div4" else 1
 
 
 def path_fmax(path: TimingPath, period: float) -> float:
@@ -737,7 +762,7 @@ def paths_markdown(
         )
 
     core = sorted(
-        (path for path in paths if path.capture == "core_clk"),
+        (path for path in paths if master_clock(path.capture) == "core_clk"),
         key=lambda path: path.slack,
     )
     worst = core[0].slack
