@@ -494,7 +494,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "line_port_axi_bridge.sby",
-        "AXI handshake legality and response tracking across CPU and AXI resets",
+        "AXI handshake legality, full-width offsets, and response tracking across "
+        "CPU and AXI resets at default, 64 GiB, and 128 GiB widths",
+        tasks=("bmc", "cover", "bmc_64g", "cover_64g", "bmc_128g", "cover_128g"),
     ),
     FormalTarget(
         "line_size_adapter.sby",
@@ -528,7 +530,7 @@ FORMAL_TARGETS = [
         "immu_bare.sby",
         "Bare instruction-fetch addresses and PMA faults match the reference across "
         "datapath widths",
-        tasks=("bmc", "bmc_1g", "bmc_128g", "bmc_xlen32", "bmc_xlen72"),
+        tasks=("bmc", "bmc_1g", "bmc_64g", "bmc_128g", "bmc_xlen32", "bmc_xlen72"),
     ),
     FormalTarget(
         "fetch_pc_mux.sby",
@@ -711,7 +713,10 @@ SBY_TASKS = [
     ("bmc16", "Bounded local equivalence at depth 16"),
     ("bmc32", "Bounded local equivalence at depth 32"),
     ("bmc_1g", "Bounded physical-address check at a 1 GiB DDR capacity"),
+    ("bmc_64g", "Bounded physical-address check at a 64 GiB DDR capacity"),
     ("bmc_128g", "Bounded physical-address check at a 128 GiB DDR capacity"),
+    ("cover_64g", "Physical-address reachability at a 64 GiB DDR capacity"),
+    ("cover_128g", "Physical-address reachability at a 128 GiB DDR capacity"),
     ("bmc_xilinx", "Bounded equivalence with the Xilinx primitive implementation"),
     ("bmc_queued", "Bounded check with decoded-queue admission contract"),
     ("bmc", "Check assertions up to the configured depth"),
