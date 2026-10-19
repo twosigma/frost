@@ -16,7 +16,7 @@ name: CI
 
 on:
   push:
-    branches: [main, PA-Width-Extension]
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -240,12 +240,9 @@ jobs:
           if-no-files-found: ignore
           overwrite: true
 
-  # While the PA branch is under review, exercise both the original 1 GiB
-  # aperture and the new 64 GiB default at their software-visible edges.
-  # The ordinary CI jobs above continue to run against the branch as well.
+  # Exercise configured DDR apertures at their software-visible edges.
   test-pa-width:
     name: Physical address aperture (${{ matrix.capacity_gib }} GiB)
-    if: github.ref == 'refs/heads/PA-Width-Extension' || github.event_name == 'pull_request'
     runs-on: ubuntu-26.04
     needs: build-docker
     strategy:
@@ -758,7 +755,6 @@ jobs:
   # and larger supported PA-width endpoints with the same RTL build setting.
   test-pa-synthesis-width:
     name: PA synthesis aperture (${{ matrix.capacity_log2_bytes }} log2 bytes)
-    if: github.ref == 'refs/heads/PA-Width-Extension' || github.event_name == 'pull_request'
     runs-on: ubuntu-26.04
     needs: build-docker
     strategy:
