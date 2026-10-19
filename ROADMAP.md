@@ -95,7 +95,9 @@ for an ASIC, the RTL also needs:
    macros.
    The final GDS leaves the macros' cells empty, since their layouts are not
    in the repository. At the X3's clock, the macros' read paths fail by up
-   to 0.41 ns, the worst from the data memory to the load queue
+   to 0.41 ns, the worst from the data memory to the load queue. That path
+   has half a clock cycle from launch to capture, giving an estimated core
+   fmax of 254.8 MHz
    ([results](asic/README.md#results-with-the-sram-macros)).
    FreePDK45 is not a manufacturable process, so the flow shows that the RTL
    maps onto standard cells and SRAM macros and estimates its area and

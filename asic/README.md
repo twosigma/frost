@@ -347,6 +347,7 @@ counted the I/O delays from the clock at its port:
 | Clock skew, final | 0.15 ns | 0.55 ns | 0.61 ns |
 | Core clock setup WNS, final | 0.375 ns | -0.955 ns | -0.411 ns |
 | Worst core path between registers, final | met | -0.955 ns | -0.411 ns |
+| Core clock fmax estimate, final | | 199.5 MHz | 254.8 MHz |
 | `core_clk_div4` setup WNS, final | 1.774 ns | 0.057 ns | 0.952 ns |
 | Core clock hold WNS, final | 0.025 ns | -0.119 ns | -0.046 ns |
 | Detailed-route DRC errors | 0 | 0 | 0 |
@@ -382,9 +383,14 @@ tags to its request registers, by up to 0.212 ns; and the BTB's payload
 tables to the PC controller, by up to 0.112 ns. A macro drives its read data
 0.3 to 0.6 ns after the clock's falling edge, which leaves the paths from a
 macro about 1 ns of the 3.103 ns cycle, less the skew between the macro's
-clock and the capturing register's. Each of the L2's eight data macros feeds
-its read register directly, and those paths meet timing with 0.33 ns to
-spare, where the 2 MiB L2's 64 macros, in rows millimeters from the cache's
+clock and the capturing register's. The 256 KiB build's worst path launches
+at 1.5515 ns and captures at 3.103 ns, so its -0.411165 ns slack gives a
+minimum period of 3.925330 ns and an estimated fmax of 254.8 MHz. The 2 MiB
+build's worst path has the same half-cycle budget and -0.954699 ns slack,
+giving 5.012398 ns and 199.5 MHz. These estimates use the saved final path
+reports and their unrounded TSV slacks. Each of the L2's eight data macros
+feeds its read register directly, and those paths meet timing with 0.33 ns
+to spare, where the 2 MiB L2's 64 macros, in rows millimeters from the cache's
 logic, failed by up to 0.955 ns. The multiplexer that returns a held write
 adds 0.07 to 0.11 ns to the BTB's and the L1D's paths. Since the flow skips
 the repairs after global routing, the final design keeps 98 maximum-slew and
@@ -399,12 +405,17 @@ A target the design cannot meet shows how fast it can run and which paths
 stop it. `--clock-period` sets the core clock period in ns, below 100 ns with
 at most four decimals; the quarter-rate clock and the I/O delays follow it.
 With a period shorter than the design reaches, ORFS's repair steps resize,
-buffer, clone, and swap pins on the failing paths until no move helps, and
-the worst slack that remains gives the fmax, 1 / (period - WNS). Since the
-flow skips the repairs after global routing, those after clock tree
-synthesis are the last, and below 2.15 ns the 4,096 by 64 macros miss
-their minimum period. `paths` reports the setup paths of one stage's
-database:
+buffer, clone, and swap pins on the failing paths until no move helps. For a
+register path whose launch and capture edges span f core periods, its slack
+gives a minimum period of P - slack / f. The fmax estimate is the smallest
+1 / (P - slack / f) across the reported register paths. The expression
+1 / (period - WNS) applies only when those paths have a full core cycle.
+OpenRAM reads launch on the falling edge and reach rising-edge registers
+with half a cycle, so f is 0.5 for those core paths. The flow skips the
+repairs after global routing, so clock tree synthesis is the last stage
+that repairs timing in this configuration. Below 2.15 ns the 4,096 by 64
+macros also miss their minimum period. `paths` reports the setup paths of
+one stage's database:
 
 ```bash
 ./asic/orfs.py run --target grt --num-cores 16 --clock-period 2.2
@@ -418,7 +429,7 @@ with the parasitics and clocks of the stage's own report, logs OpenROAD to
 | Table | Contents |
 | --- | --- |
 | Worst slack by capture clock | Endpoints, failing endpoints, WNS, and TNS of each clock |
-| Paths between core clock registers | The worst path between registers for each pair of launching and capturing core clocks, and the fmax it allows |
+| Paths between core clock registers | The worst path between registers for each pair of core clocks and launching edge, and the fmax it allows |
 | Core clock endpoints by block | The blocks whose registers have the worst core clock slack |
 | Core clock paths by start and end block | Each endpoint's worst path, grouped by the blocks of its startpoint and endpoint, with its cells and notes on ports, the quarter-rate clock, and mocked memories |
 
@@ -427,17 +438,17 @@ counts only paths between registers: the I/O delays are a fifth of the period
 on each side of a port, so a port's slack shrinks faster than the period. The
 tables behind the report are in `reports/nangate45/frost/base/`:
 `<database>_paths.tsv` has the worst path to every endpoint,
-`<database>_register_paths.tsv` the worst path for each pair of core clocks,
-`<database>_worst_paths.json` the worst 100 core clock paths pin by pin, and
-`<database>_worst_paths.rpt` the worst five paths of each clock.
+`<database>_register_paths.tsv` the worst path for each pair of core clocks
+and launching edge, including its launch and capture edge times without
+clock latency, `<database>_worst_paths.json` the worst 100 core clock paths
+pin by pin, and `<database>_worst_paths.rpt` the worst five paths of each clock.
 
 Synthesis does not depend on the period. ORFS hands the period to ABC as a
 delay target, but the ABC script it runs maps for delay without reading the
 target, so every period gives the same netlist: the 1.6 ns build's
 `1_synth.odb` matches the default build's byte for byte. The period steers
 the steps after synthesis, which resize gates in the floorplan, weight the
-global placement, and repair the paths after clock tree synthesis and global
-routing.
+global placement, and finish timing repair at clock tree synthesis.
 
 ### Results
 
@@ -492,9 +503,10 @@ between the registers. Both integer ALUs have it. Synthesized alone, the
 maps the same logic, which costs 15% more area.
 
 The table gives the time each family needs, the core period less the slack of
-its worst path, after global routing. The 3.103 ns run repairs a path only
-until it meets 3.103 ns, so its column shows how each family comes out of
-synthesis and placement, and the 1.6 ns column what the repairs reach.
+its worst path, after global routing. These mocked-memory paths have a full
+core cycle. The 3.103 ns run repairs a path only until it meets 3.103 ns, so
+its column shows how each family comes out of synthesis and placement, and
+the 1.6 ns column what the repairs reach.
 
 | Family | Worst path | Cells at 1.6 ns | 3.103 ns run (ns) | 1.6 ns run (ns) |
 | --- | --- | ---: | ---: | ---: |

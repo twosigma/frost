@@ -679,6 +679,8 @@ def _path(slack: float, start: str, end: str, **fields: object) -> orfs.TimingPa
         "buffers": 4,
         "startpoint": start,
         "endpoint": end,
+        "launch_edge": 0.0,
+        "capture_edge": 1.6,
     }
     values.update(fields)
     return orfs.TimingPath(**values)  # type: ignore[arg-type]
@@ -689,11 +691,11 @@ def test_path_report_ranks_blocks_and_families(tmp_path: Path) -> None:
     table = tmp_path / "5_1_grt_paths.tsv"
     table.write_text(
         "capture\tlaunch\tslack\tlaunched\tarrival\trequired\tskew\tcells\t"
-        "buffers\tstartpoint\tendpoint\n"
+        "buffers\tstartpoint\tendpoint\tlaunch_edge\tcapture_edge\n"
         "core_clk\tcore_clk\t-0.8\t0.5\t2.9\t2.1\t0.01\t31\t9\t"
-        "cpu_inst.u_rob.head_q$_DFF_P_\tcpu_inst.u_int_rs.src_q[3]$_DFF_P_\n"
+        "cpu_inst.u_rob.head_q$_DFF_P_\tcpu_inst.u_int_rs.src_q[3]$_DFF_P_\t0\t1.6\n"
         "core_clk\tcore_clk\t-3.2e-05\t0.5\t2.1\t2.1\t0.01\t12\t2\t"
-        "cpu_inst.u_lq.c_q$_DFF_P_\tcpu_inst.u_lq.d_q$_DFF_P_\n"
+        "cpu_inst.u_lq.c_q$_DFF_P_\tcpu_inst.u_lq.d_q$_DFF_P_\t0\t1.6\n"
     )
     paths = orfs.read_paths(table) + [
         _path(
@@ -713,6 +715,7 @@ def test_path_report_ranks_blocks_and_families(tmp_path: Path) -> None:
             "gen.l1.q$_DFF_P_",
             capture="core_clk_div4",
             launch="core_clk_div4",
+            capture_edge=6.4,
         ),
         _path(
             1.0,
@@ -770,6 +773,104 @@ def test_path_report_ranks_blocks_and_families(tmp_path: Path) -> None:
     )
 
 
+def test_path_report_accounts_for_half_cycle_sram_reads(tmp_path: Path) -> None:
+    """Falling-edge SRAM reads can limit fmax despite a full-cycle path's worse slack."""
+    table = tmp_path / "6_final_register_paths.tsv"
+    table.write_text(
+        "capture\tlaunch\tslack\tlaunched\tarrival\trequired\tskew\tcells\t"
+        "buffers\tstartpoint\tendpoint\tlaunch_edge\tcapture_edge\n"
+        "core_clk\tcore_clk\t-0.4111648799\t4.222745709\t5.428816952\t"
+        "5.017652072\t0.1988385012\t19\t7\tdata_memory.u_macro\t"
+        "cpu_inst.u_lq.data$_DFF_P_\t1.5515\t3.103\n"
+    )
+    macro = orfs.read_paths(table)[0]
+    register = _path(-0.6, "a$_DFF_P_", "b$_DFF_P_", capture_edge=3.103)
+    assert orfs.core_cycles(macro, 3.103) == pytest.approx(0.5)
+    assert orfs.path_fmax(macro, 3.103) == pytest.approx(
+        1e3 / (3.103 + 2 * 0.4111648799)
+    )
+    report = orfs.paths_markdown(
+        "final", [macro, register], [register, macro], {"core_clk": 3.103}, set(), set()
+    )
+    assert "Core clock fmax estimate: 254.8 MHz" in report
+    assert "| core_clk | core_clk | 0.5 | -0.411 | 254.8 |" in report
+
+
+@pytest.mark.parametrize(
+    ("report", "edges"),
+    [
+        (
+            "  1.5515000000  1.5515000000  clock core_clk (fall edge)\n"
+            "  2.0000000000  3.5515000000  clock network delay (propagated)\n"
+            "  3.1030000000  3.1030000000  clock core_clk (rise edge)\n",
+            (1.5515, 3.103),
+        ),
+        (
+            "  0.0000000000  0.0000000000  0.0000000000  clock core_clk (rise edge)\n"
+            "  0.0000000000  1.6000000000  1.6000000000  clock core_clk (rise edge)\n",
+            (0.0, 1.6),
+        ),
+        (
+            "  9.3090000000  9.3090000000  clock core_clk (rise edge)\n"
+            "  12.4120000000  12.4120000000  clock core_clk_div4 (rise edge)\n",
+            (9.309, 12.412),
+        ),
+    ],
+)
+def test_clock_edge_export_reads_times_without_clock_latency(
+    tmp_path: Path, report: str, edges: tuple[float, float]
+) -> None:
+    """The Tcl export reads edge times from ideal and propagated clock reports."""
+    source = (ASIC_DIRECTORY / "critical_paths.tcl").read_text()
+    procedure = source[
+        source.index("proc frost_clock_edges") : source.index("proc frost_row")
+    ]
+    script = tmp_path / "edges.tcl"
+    script.write_text(
+        "namespace eval sta {\n"
+        "  proc parse_report_path_options {cmd options format strict} {}\n"
+        "  proc report_path_end {path_end} { return $path_end }\n"
+        "}\n"
+        "proc tee {quiet option name body} {\n"
+        "  upvar 1 $name output\n"
+        "  set output [uplevel 1 $body]\n"
+        "}\n"
+        + procedure
+        + f"set report {{{report}}}\nputs [frost_clock_edges $report]\n"
+    )
+    result = subprocess.run(
+        ["tclsh", str(script)], capture_output=True, text=True, check=True
+    )
+    assert tuple(map(float, result.stdout.split())) == pytest.approx(edges)
+
+
+@pytest.mark.parametrize(
+    ("launch_edge", "capture_edge", "cycles"),
+    [(0.0, 12.412, 4), (6.206, 12.412, 2), (9.309, 12.412, 1)],
+)
+def test_path_fmax_accounts_for_quarter_rate_clock_edges(
+    launch_edge: float, capture_edge: float, cycles: float
+) -> None:
+    """Clock edges retain the quarter-rate budget and the offset between clocks."""
+    path = _path(
+        -0.8,
+        "a$_DFF_P_",
+        "b$_DFF_P_",
+        launch_edge=launch_edge,
+        capture_edge=capture_edge,
+    )
+    assert orfs.core_cycles(path, 3.103) == pytest.approx(cycles)
+    assert orfs.path_fmax(path, 3.103) == pytest.approx(1e3 / (3.103 + 0.8 / cycles))
+
+
+def test_path_fmax_requires_clock_edges() -> None:
+    """A missing or invalid edge span must not silently assume a full cycle."""
+    with pytest.raises(ValueError, match="no clock edges"):
+        orfs.path_fmax(_path(-0.4, "a", "b", launch_edge=None), 1.6)
+    with pytest.raises(ValueError, match="positive clock edge span"):
+        orfs.path_fmax(_path(-0.4, "a", "b", capture_edge=0.0), 1.6)
+
+
 def test_io_clock_copies_count_as_their_masters() -> None:
     """Paths on a clock's I/O copy (asic/constraint.sdc) count as on the clock."""
     sdc = (
@@ -795,12 +896,17 @@ def test_io_clock_copies_count_as_their_masters() -> None:
     # A path to the macro on the quarter-rate copy has four core periods.
     macro = "data_memory.u_sram.gen_row[0].u_macro"
     into_macro = _path(
-        1.0, "imem.q$_DFF_P_", macro, launch="core_clk_div4", capture="core_clk_div4_io"
+        1.0,
+        "imem.q$_DFF_P_",
+        macro,
+        launch="core_clk_div4",
+        capture="core_clk_div4_io",
+        capture_edge=12.412,
     )
-    assert orfs.core_cycles(into_macro) == 4
+    assert orfs.core_cycles(into_macro, 3.103) == pytest.approx(4)
     # Outputs on the copy join the core clock's endpoint tables.
     output = _path(-0.2, "ddr.w_q$_DFF_P_", "o_ddr_axi_wvalid", capture="core_clk_io")
-    register = _path(0.1, "a$_DFF_P_", "b$_DFF_P_")
+    register = _path(0.1, "a$_DFF_P_", "b$_DFF_P_", capture_edge=3.103)
     report = orfs.paths_markdown(
         "grt",
         [output, register],

@@ -532,7 +532,8 @@ class TimingPath:
 
     Times are in ns. launched is the arrival time at the startpoint, the
     register's output or the input port; cells counts the cells after it,
-    and buffers those of them that are buffers or inverters.
+    and buffers those of them that are buffers or inverters. The register
+    table also records the launch and capture clock edges, without latency.
     """
 
     capture: str
@@ -546,6 +547,8 @@ class TimingPath:
     buffers: int
     startpoint: str
     endpoint: str
+    launch_edge: float | None
+    capture_edge: float | None
 
 
 def read_paths(table: Path) -> list[TimingPath]:
@@ -564,6 +567,16 @@ def read_paths(table: Path) -> list[TimingPath]:
                 buffers=int(row["buffers"]),
                 startpoint=row["startpoint"],
                 endpoint=row["endpoint"],
+                launch_edge=(
+                    float(row["launch_edge"])
+                    if row.get("launch_edge", "-") != "-"
+                    else None
+                ),
+                capture_edge=(
+                    float(row["capture_edge"])
+                    if row.get("capture_edge", "-") != "-"
+                    else None
+                ),
             )
             for row in csv.DictReader(handle, delimiter="\t", quoting=csv.QUOTE_NONE)
         ]
@@ -678,26 +691,24 @@ def _path_note(
     return "; ".join(notes)
 
 
-def core_cycles(path: TimingPath) -> int:
-    """Return the core periods a path between core clock registers has.
-
-    Both core clocks rise at time 0, so a path between them has one core
-    period, and a path between quarter-rate registers has four. A register
-    on an I/O copy of a clock counts as on the clock.
-    """
-    launch, capture = master_clock(path.launch), master_clock(path.capture)
-    return 4 if launch == capture == "core_clk_div4" else 1
+def core_cycles(path: TimingPath, period: float) -> float:
+    """Return the core periods between a path's launch and capture clock edges."""
+    if path.launch_edge is None or path.capture_edge is None:
+        raise ValueError("register path has no clock edges; rerun the paths report")
+    cycles = (path.capture_edge - path.launch_edge) / period
+    if cycles <= 0:
+        raise ValueError("register path must have a positive clock edge span")
+    return cycles
 
 
 def path_fmax(path: TimingPath, period: float) -> float:
     """Return the core clock frequency in MHz at which a register path just fits.
 
-    Its delay is its requirement, a whole number of core periods, less its
-    slack. Clock skew can leave no delay to fit, and then no frequency limit.
+    If its clock edges span f core periods, its minimum period is P - slack/f.
+    Clock skew can leave no delay to fit, and then no frequency limit.
     """
-    cycles = core_cycles(path)
-    delay = cycles * period - path.slack
-    return cycles * 1e3 / delay if delay > 0 else math.inf
+    minimum_period = period - path.slack / core_cycles(path, period)
+    return 1e3 / minimum_period if minimum_period > 0 else math.inf
 
 
 def _megahertz(frequency: float) -> str:
@@ -717,7 +728,7 @@ def paths_markdown(
     """Return a Markdown report of one stage's setup paths.
 
     paths has the worst path to each endpoint, and register_paths the worst
-    path between registers for each pair of core clocks, which set the fmax.
+    path between registers for each pair of core clock edges, which set the fmax.
     """
     period = periods["core_clk"]
     fmax = min(path_fmax(path, period) for path in register_paths)
@@ -745,9 +756,8 @@ def paths_markdown(
         "",
         "## Paths between core clock registers",
         "",
-        "The worst path for each pair of launching and capturing clocks. The "
-        "fmax is the frequency at which its delay, its core periods less its "
-        "slack, fits.",
+        "The worst path for each pair of launching and capturing clock edges. "
+        "For an edge span of f core periods, the minimum period is P - slack/f.",
         "",
         "| Launch | Capture | Core periods | Slack (ns) | fmax (MHz) | Startpoint "
         "| Endpoint | Note |",
@@ -755,7 +765,7 @@ def paths_markdown(
     ]
     for path in register_paths:
         lines.append(
-            f"| {path.launch} | {path.capture} | {core_cycles(path)} | "
+            f"| {path.launch} | {path.capture} | {core_cycles(path, period):g} | "
             f"{path.slack:.3f} | {_megahertz(path_fmax(path, period))} | "
             f"`{path.startpoint}` | `{path.endpoint}` | "
             f"{_path_note(path, mocked, ports, clocks=False)} |"
