@@ -90,6 +90,7 @@ the stage before it.
 | Macro placement | [`macro_placement.tcl`](macro_placement.tcl) (`MACRO_PLACEMENT_TCL`) |
 | Power grid | The platform's, with [`sram_power.tcl`](sram_power.tcl) (`PRE_PDN_TCL`) connecting the macros' supply pins and [`check_power_grid.tcl`](check_power_grid.tcl) (`POST_PDN_TCL`) checking that everything placed reaches the grid |
 | Placement density | `PLACE_DENSITY_LB_ADDON=0.20`: the lower bound plus a fifth of the remaining room |
+| Clock tree synthesis | `CTS_ARGS`: ORFS's default arguments, with the clock ports' nets as the roots ([Timing constraints](#timing-constraints)) |
 | Repairs after global routing | `SKIP_INCREMENTAL_REPAIR=1`: on this die they take hours, more than a CI job allows; the repairs after placement and clock tree synthesis still run |
 | Equivalence check | `LEC_CHECK=0`: ORFS's formal check of the final netlist against synthesis needs over 40 GB of memory on this design |
 
@@ -283,19 +284,42 @@ two-flop synchronizers, and handshakes.
 Inputs and outputs take a fifth of their clock's period outside the design:
 the program-loading port on `core_clk_div4`, the raw transceiver data on the
 NIC clocks, the JTAG pins on `jtag_tck`, and the other ports on `core_clk`.
-The asynchronous levels (`i_jtag_trst_n`, the NIC's clock-presence and PHY
-status inputs) are not timed. The other inputs on the core clocks have no
-hold checks: against the ideal clock at the port, each would need the clock
-tree's insertion delay, about 3 ns on the die that the SRAM macros need, in
-hold buffers. The hold repair added over 80,000 buffers in all, most of
-them in front of the pins, where global routing then overflowed; without
-those checks it adds 22,426. A chip would deskew the clock or
-put the logic beyond the ports on the same tree, and would still have to
-close those inputs' hold timing against the remaining skew, which the flow
-leaves unchecked. The inputs on the NIC's and the JTAG clocks keep their
-hold checks. A missed target does not stop the flow: ORFS's
-repair steps after synthesis work toward it, and synthesis maps the same
-netlist for any target ([Finding the fmax](#finding-the-fmax)).
+The delays count from the clock as it arrives inside the design, as if a PLL
+aligned the board's clock with a point inside the chip, or the logic beyond
+the ports shared the clock tree. Each clock has an I/O copy, a generated
+clock named after it with `_io` appended, defined at the clock pin of one
+register at its interface, and each port's delay is set against its clock's
+copy:
+
+| Clock | Pin of its I/O copy |
+| --- | --- |
+| `core_clk` | The DDR bridge's AXI read request register |
+| `core_clk_div4` | The program-loading port of the data memory's first macro |
+| `nic_tx_clk` | The NIC's transmit gearbox |
+| `nic_rx_clk` | The NIC's receive gearbox |
+| `jtag_tck` | The JTAG TAP's bypass register |
+
+After clock tree synthesis, a copy's edges arrive with the tree's delay to
+its pin, and the paths through the ports are timed against the skew between
+that pin and the registers they reach. Against the clock at the port, every
+path to an output would lose the tree's whole delay, and the hold repair
+would add as much in buffers in front of every input. Before clock tree
+synthesis, while the clocks are ideal, a copy's edges are its clock's.
+OpenSTA's `-reference_pin` option to `set_input_delay` would say the same,
+but the OpenROAD build in the ORFS image crashes on any input delay that
+uses it. Clock tree synthesis takes the nets of the clock ports as its
+roots from `CTS_ARGS` in [`config.mk`](config.mk): from the SDC's clocks, it
+would take each copy for a second clock on its master's net and stop.
+
+The register at a copy's pin is clocked by the copy. In the tables of worst
+slack by capture clock, in `summary.md` and the `paths` report, each copy
+has its own row for the paths that it captures: those to the output ports
+and to that register. The `paths` report's other tables count a copy's
+paths as its clock's. The asynchronous levels (`i_jtag_trst_n`, the NIC's
+clock-presence and PHY status inputs) are not timed. A missed target does
+not stop the flow: ORFS's repair steps after synthesis work toward it, and
+synthesis maps the same netlist for any target
+([Finding the fmax](#finding-the-fmax)).
 
 The data memory's macros clock their program-loading port with `i_clk_div4`
 and their core port with `i_clk`, as the X3's block RAMs do. The instruction
@@ -308,58 +332,57 @@ memory would not have: it is written on `i_clk_div4` and read by registers on
 The default run at the X3's 3.103 ns core clock, with 16 threads, against the
 last run with every memory over 4,096 bits mocked whose results are recorded
 here, which CI made before the caches became 4-way set-associative (commit
-`e54df6da`):
+`e54df6da`) and which counted the I/O delays from the clock at its port:
 
 | | Memories mocked | SRAM macros |
 | --- | ---: | ---: |
 | Die | 1.89 by 1.89 mm, 3.58 mm^2 | 9.6 by 7.315 mm, 70.2 mm^2 |
 | SRAM macros | | 119, 49.0 mm^2 |
-| Standard cells, final | 752,118, 1.46 mm^2 | 1,045,053, 1.78 mm^2 |
-| Hold buffers from clock tree synthesis | 11,347 | 22,426 |
+| Standard cells, final | 752,118, 1.46 mm^2 | 1,045,105, 1.78 mm^2 |
+| Hold buffers from clock tree synthesis | 11,347 | 22,495 |
 | Routed wire | 20.1 m | 68.6 m |
-| Core clock latency, final | about 1 ns | 2.94 to 3.66 ns |
+| Core clock latency, final | about 1 ns | 2.94 to 3.65 ns |
 | Clock skew, final | 0.15 ns | 0.55 ns |
-| Core clock setup WNS, final | 0.375 ns | -2.021 ns |
-| Worst core path between registers, final | met | -0.987 ns |
-| `core_clk_div4` setup WNS, final | 1.774 ns | 0.195 ns |
-| Core clock hold WNS, final | 0.025 ns | -0.126 ns |
+| Core clock setup WNS, final | 0.375 ns | -0.955 ns |
+| Worst core path between registers, final | met | -0.955 ns |
+| `core_clk_div4` setup WNS, final | 1.774 ns | 0.057 ns |
+| Core clock hold WNS, final | 0.025 ns | -0.119 ns |
 | Detailed-route DRC errors | 0 | 0 |
-| Worst IR drop on VDD | 49 mV | 194 mV |
+| Worst IR drop on VDD | 49 mV | 193 mV |
 
 The macros take 70% of the die, and the logic fills the space between them,
 so the wires grow long: the routed wire more than triples, and the L2 data's
 outer columns sit millimeters from the cache's logic. The clock tree spans the
 die: a register's clock passes 16 buffers on the wire from the clock pin and
 then about 40 of the platform's `CLKBUF_X3` cells, and its latency rises from
-about 1 ns to 2.9 to 3.7 ns. The mocked run checked the inputs' hold timing,
-which this one leaves out for the core clocks' inputs
-([Timing constraints](#timing-constraints)); its hold repair adds 22,426
-buffers.
+about 1 ns to 2.9 to 3.7 ns.
 
-The worst paths go to the output ports. The I/O delays in
-[`constraint.sdc`](constraint.sdc) place a fifth of the period outside the
-design against an ideal clock at the port, while a register's clock arrives
-about 3 ns after it, so every path to an output loses that latency, and no
-repair can recover it; the worst, from the data memory's byte-enable register
-to `o_fifo0_wr_en`, misses by 2.021 ns. A chip would deskew the clock with a
-PLL, or the logic beyond the ports would share the clock tree, and the
-constraints model neither.
+The ports meet timing, since their I/O delays count from the clocks' I/O
+copies ([Timing constraints](#timing-constraints)): the worst output has
+0.74 ns of setup slack and 0.65 ns of hold slack, and the worst input 0.60 ns
+of hold slack. The worst input's setup slack, 0.06 ns, is that of `i_rst` to
+the quarter-rate clock's reset synchronizer, which also sets the
+`core_clk_div4` WNS: the quarter-rate clock's tree, with about 400 registers
+and the data memory's four macros, reaches them about 1 ns after its clock
+pin, and the core clock's tree reaches the I/O copy's register about 2.5 ns
+later than that. The hold repair adds 22,495 buffers, about as many as with
+no hold checks at the core clocks' inputs.
 
 Between registers, the paths from the macros fail worst: the L2 data macros
-to the L2's read register, by up to 0.987 ns; the data memory to the load
-queue, by up to 0.869 ns; the BTB's payload tables to the PC controller and
-the rest of the fetch logic, by up to 0.381 ns; and the L1D's tags to its
-request registers, by up to 0.226 ns. A macro drives its read data 0.3 to
+to the L2's read register, by up to 0.955 ns; the data memory to the load
+queue, by up to 0.716 ns; the BTB's payload tables to the PC controller and
+the rest of the fetch logic, by up to 0.349 ns; and the L1D's tags to its
+request registers, by up to 0.230 ns. A macro drives its read data 0.3 to
 0.6 ns after the clock's falling edge, which leaves those paths about 1 ns of
 the 3.103 ns cycle, less the skew between the macro's clock and the
 capturing register's, and the L2's outer columns put millimeters of buffered
 wire in its paths. The multiplexer that returns a held write adds 0.07 to
 0.11 ns to the BTB's and the L1D's paths. Of the paths that start at no
-macro, only the multiply and divide unit's fail, by 0.100 ns. Since the flow
-skips the repairs after global routing, the final design keeps 776
-maximum-slew and 6,621 maximum-capacitance violations (none and 632 in the
-mocked run, which ran those repairs) and 55 hold violations. The worst IR
-drop is 194 mV on VDD and 117 mV on VSS; ORFS's map of the VSS drop puts its
+macro, only the multiply and divide unit's fail, by 0.070 ns. Since the flow
+skips the repairs after global routing, the final design keeps 770
+maximum-slew and 6,602 maximum-capacitance violations (none and 632 in the
+mocked run, which ran those repairs) and 70 hold violations. The worst IR
+drop is 193 mV on VDD and 116 mV on VSS; ORFS's map of the VSS drop puts its
 worst where the channels between the data memory's four macros meet.
 
 ## Finding the fmax
@@ -411,7 +434,8 @@ routing.
 ### Results
 
 These runs predate the SRAM macros: they used the RTL of commit `e6eb7a47`
-with every memory over 4,096 bits mocked, eight threads each, and ORFS's
+with every memory over 4,096 bits mocked, I/O delays counted from the clock
+at its port rather than from an I/O copy, eight threads each, and ORFS's
 default repair settings, including the repairs after global routing, which
 took 12 minutes at 1.6 ns; the 1.6 ns run took 2.7 hours through global
 routing. The core

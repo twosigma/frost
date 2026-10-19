@@ -60,6 +60,14 @@ export ABC_CLOCK_PERIOD_IN_PS = $(FROST_CORE_CLOCK_PERIOD)
 endif
 # Writes reports/.../6_clock_slack.rpt for asic/orfs.py's summary.
 export POST_FINAL_REPORT_TCL = $(DESIGN_DIR)/clock_slack.tcl
+# Clock tree synthesis takes its root nets, those of the clock ports, from
+# -clk_nets rather than from the SDC's clocks: constraint.sdc generates each
+# clock's I/O copy at a register's clock pin, on its master's net, and clock
+# tree synthesis would take the copy for a second clock on that net and stop
+# (CTS-0114). The other arguments are ORFS's defaults. A clock added to
+# constraint.sdc needs its port here.
+export CTS_ARGS = -sink_clustering_enable -repair_clock_nets \
+  -clk_nets {i_clk i_clk_div4 i_nic_tx_clk i_nic_rx_clk i_jtag_tck}
 
 # Skip the formal equivalence check between the synthesized and final
 # netlists. On this design it needs over 40 GB of memory and spends more than
@@ -78,7 +86,6 @@ export PLACE_DENSITY_LB_ADDON = 0.20
 # Skip the repairs after global routing. On the die that the SRAM macros
 # need, they take hours: with 16 threads, repairing slew and capacitance over
 # the routed wires took 86 minutes, each legalization after a repair 25, and
-# the timing and hold repairs over an hour more, chasing the port paths that
-# the clock tree's latency fails (asic/README.md). In CI that would pass the
+# the timing and hold repairs over an hour more. In CI that would pass the
 # six-hour limit of a job. The repairs after clock tree synthesis still run.
 export SKIP_INCREMENTAL_REPAIR = 1
