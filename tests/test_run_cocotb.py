@@ -244,14 +244,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=("DMA coherence with CPU caches and atomics"),
     ),
     # Programs on the memories that the ASIC flow builds from SRAM macros
-    # (FROST_SRAM_MACROS), at the design's sizes. One build serves all.
+    # (FROST_SRAM_MACROS), at the ASIC flow's sizes: its L2 holds 256 KiB
+    # (asic/config.mk). One build serves all.
     **{
         f"{app}_sram_macros": CocotbRunConfig(
             python_test_module="cocotb_tests.test_real_program",
             hdl_toplevel_module="frost",
             app_name=app,
             description=f"{description}, on the ASIC flow's SRAM macros",
-            verilator_extra_args=("+define+FROST_SRAM_MACROS",),
+            verilator_extra_args=(
+                "+define+FROST_SRAM_MACROS",
+                "-GL2_CACHE_BYTES=262144",
+            ),
         )
         for app, description in (
             ("isa_test", "Instruction checks for RV64GCB and supported extensions"),
@@ -1446,10 +1450,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
                 "sram_macros_l2_data",
                 "sdp_ram_byte_en",
                 "L2 data array",
-                "8x8",
+                "1x8",
                 (
                     "-GDATA_WIDTH=512",
-                    "-GADDR_WIDTH=15",
+                    "-GADDR_WIDTH=12",
                     "-GREAD_LATENCY=6",
                     "-GWRITE_LATENCY=2",
                     "-GREGISTER_READ_INPUT=1",
@@ -1488,10 +1492,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
                 "sram_macros_l2_tags",
                 "sdp_packed_tag_uram",
                 "L2 tag array, a set's four ways read together",
-                "2x4",
+                "1x4",
                 (
-                    "-GADDR_WIDTH=15",
-                    "-GDATA_WIDTH=15",
+                    "-GADDR_WIDTH=12",
+                    "-GDATA_WIDTH=18",
                     "-GREAD_LATENCY=3",
                     "-GREAD_WORDS=4",
                 ),
@@ -1500,28 +1504,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
                 "sram_macros_l2_tags_clear",
                 "sdp_packed_tag_uram",
                 "L2 tag array with simulation's bulk clear",
-                "2x4",
+                "1x4",
                 (
-                    "-GADDR_WIDTH=15",
-                    "-GDATA_WIDTH=15",
+                    "-GADDR_WIDTH=12",
+                    "-GDATA_WIDTH=18",
                     "-GREAD_LATENCY=3",
                     "-GREAD_WORDS=4",
                     "-GSUPPORT_BULK_CLEAR=1",
                 ),
-            ),
-            (
-                "sram_macros_l2_plru",
-                "sdp_block_ram",
-                "L2 replacement state",
-                "2x1",
-                ("-GADDR_WIDTH=13", "-GDATA_WIDTH=3"),
-            ),
-            (
-                "sram_macros_l2_plru_clear",
-                "sdp_block_ram",
-                "L2 replacement state with simulation's bulk clear",
-                "2x1",
-                ("-GADDR_WIDTH=13", "-GDATA_WIDTH=3", "-GSUPPORT_BULK_CLEAR=1"),
             ),
             (
                 "sram_macros_l1d_tags",

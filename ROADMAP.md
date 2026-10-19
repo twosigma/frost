@@ -86,14 +86,16 @@ for an ASIC, the RTL also needs:
    every pull request and merge, and reports its area and timing. The RAM
    wrappers' memories are dual-port SRAM macros that OpenRAM generates, since
    FROST's block RAMs have two ports and bsg_fakeram models only single-port
-   memories. The flow still mocks the other memories larger than 4,096 bits
-   as a single row of flip-flops: the instruction memory, which gets macros
-   once item 2 moves it behind the wrappers; the NIC's frame and packet
-   buffers; and the arrays read without a clock, such as the BTB tags and the
-   TAGE tables, which need flip-flop or latch arrays rather than SRAM macros.
+   memories. Its L2 holds 256 KiB, an eighth of the X3's, so that the flow
+   fits CI's runners. The flow still mocks the other memories larger than
+   4,096 bits as a single row of flip-flops: the instruction memory, which
+   gets macros once item 2 moves it behind the wrappers; the NIC's frame and
+   packet buffers; and the arrays read without a clock, such as the BTB tags
+   and the TAGE tables, which need flip-flop or latch arrays rather than SRAM
+   macros.
    The final GDS leaves the macros' cells empty, since their layouts are not
    in the repository. At the X3's clock, the macros' read paths fail by up
-   to 0.96 ns, the worst from the L2's data to its read register
+   to 0.41 ns, the worst from the data memory to the load queue
    ([results](asic/README.md#results-with-the-sram-macros)).
    FreePDK45 is not a manufacturable process, so the flow shows that the RTL
    maps onto standard cells and SRAM macros and estimates its area and

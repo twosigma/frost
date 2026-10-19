@@ -12,20 +12,18 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Places the SRAM macros (MACRO_PLACEMENT_TCL) in three columns of the core.
-# The outer columns hold the L2 data, slices 0-3 on the left and 4-7 on the
-# right, 8 macros deep each. The center column holds the L1D data at the top,
-# a row of four macros for each way; the data memory at the bottom; the L1D
-# tags, the L1I data, and the smaller macros above the data memory; and at
-# its sides, around the logic, two stacks of L2 tags with the replacement
-# state.
+# Places the SRAM macros (MACRO_PLACEMENT_TCL) in two bands across the core,
+# with the logic in a band between them:
 #
-# Each L2 slice holds 64 bits of every line in a column of eight macros, one
-# for each eighth of the {way, set} lines, so a bit's eight-way read
-# multiplexer spans one column. A ring of free core around the columns
-# carries the wires from the pins on the die's edges to the logic. The core
-# is sized for this arrangement (DIE_AREA and CORE_AREA in config.mk), and
-# the script fails if a macro is left out or does not fit. Positions are in
+#   top:    L1I data, NIC FIFOs, BTB | L1D data, a row per way | L1D, L2 tags
+#   middle: the logic, with the pins on the core's left and right edges
+#   bottom: L2 data, slices 0-3 | data memory | L2 data, slices 4-7
+#
+# Each L2 slice holds 64 bits of every {way, set} line in one macro. The I/O
+# placer keeps the pins off the top and bottom edges (PLACE_PINS_ARGS in
+# config.mk), so they face the logic band rather than a macro. The core is
+# sized for this arrangement (DIE_AREA and CORE_AREA in config.mk), and the
+# script fails if a macro is left out or does not fit. Positions are in
 # microns from the core's lower-left corner, on the placement site grid.
 
 set frost_block [ord::get_db_block]
@@ -43,22 +41,13 @@ set frost_gap 40.0
 # plus both margins and a strap's width, the space holds a strap of each
 # supply wherever the macros fall.
 set frost_side_gap 62.0
-# Space between a column of macros and the next column.
+# Space between a group of macros and the next one.
 set frost_channel 80.0
-# Space between the macros and the core's edges. Without it the pins that
-# the I/O placer puts in front of a macro, over a thousand along the bottom
-# or the top edge for the DDR port, have to squeeze past its corners, which
-# congests global routing there.
+# Space between the macros and the core's edges, which carries the wires
+# from the pins past the macros' corners.
 set frost_edge 120.0
-# Space between the center column's macros and the core's bottom and top
-# edges. The I/O placer puts most of the pins, over a thousand, on one of
-# those edges in front of the center column, where the logic is, and their
-# wires and the logic they reach need the room.
-set frost_center_edge 360.0
-# Space between the data memory and the smaller macros above it, where the
-# wires from the logic below the data memory turn up between those macros;
-# with 80 um, global routing overflowed there.
-set frost_memory_channel 160.0
+# The least height that the logic band keeps between the two bands.
+set frost_min_logic 600.0
 
 proc frost_um { dbu_value } {
   return [expr { double($dbu_value) / $::frost_dbu }]
@@ -85,6 +74,11 @@ proc frost_index { inst block } {
     error "macro [$inst getName] has no $block index"
   }
   return $index
+}
+
+# Order L2 data macros by their slice (gen_column).
+proc frost_compare_slices { a b } {
+  return [expr { [frost_index $a gen_column] - [frost_index $b gen_column] }]
 }
 
 proc frost_width { inst } {
@@ -116,118 +110,94 @@ proc frost_place { inst x y } {
   lappend ::frost_placed $inst
 }
 
-# Place macros left to right in rows from (x, y) upward, starting a new row
-# when the next macro would pass x + width; return the top of the last row.
-proc frost_place_rows { macros x y width } {
-  set row_x $x
-  set row_height 0.0
+# Place macros in a grid of columns from (x, y): the i-th macro in column
+# i modulo columns and row i divided by columns, counted from the bottom.
+proc frost_place_grid { macros x y columns } {
+  set i 0
   foreach inst $macros {
-    if { $row_x > $x && $row_x + [frost_width $inst] > $x + $width } {
-      set row_x $x
-      set y [expr { $y + $row_height + $::frost_gap }]
-      set row_height 0.0
-    }
-    frost_place $inst $row_x $y
-    set row_x [expr { $row_x + [frost_width $inst] + $::frost_side_gap }]
-    set row_height [expr { max($row_height, [frost_height $inst]) }]
+    set column [expr { $i % $columns }]
+    set row [expr { $i / $columns }]
+    frost_place $inst [expr { $x + $column * ([frost_width $inst] + $::frost_side_gap) }] \
+      [expr { $y + $row * ([frost_height $inst] + $::frost_gap) }]
+    incr i
   }
-  return [expr { $y + $row_height }]
 }
 
-set frost_l2_data [frost_macros {l2_cache\.gen_data_array\.}]
+# The width and height of such a grid of equal macros.
+proc frost_grid_width { macros columns } {
+  return [expr { $columns * [frost_width [lindex $macros 0]] + \
+    ($columns - 1) * $::frost_side_gap }]
+}
+
+proc frost_grid_height { macros columns } {
+  set rows [expr { ([llength $macros] + $columns - 1) / $columns }]
+  return [expr { $rows * [frost_height [lindex $macros 0]] + ($rows - 1) * $::frost_gap }]
+}
+
+set frost_l2_data [lsort -command frost_compare_slices \
+  [frost_macros {l2_cache\.gen_data_array\.}]]
 set frost_l2_tags [frost_macros {l2_cache\.gen_tag_ultra\.}]
-set frost_l2_plru [frost_macros {l2_cache\.gen_plru\.}]
-set frost_l1d_data [frost_macros {l1_cache\.gen_data_banks\.}]
 set frost_data_memory [frost_macros {data_memory\.}]
-set frost_small_macros [concat \
-  [frost_macros {l1_cache\.gen_tag_block\.}] \
-  [frost_macros {l1i_cache\.gen_data_banks\.}] \
-  [frost_macros {u_[rt]x_fifo\.storage\.}] \
-  [frost_macros {btb_payload_ram}]]
+set frost_l1d_data [frost_macros {l1_cache\.gen_data_banks\.}]
+set frost_l1d_tags [frost_macros {l1_cache\.gen_tag_block\.}]
+set frost_l1i_data [frost_macros {l1i_cache\.gen_data_banks\.}]
+set frost_nic [frost_macros {u_[rt]x_fifo\.storage\.}]
+set frost_btb [frost_macros {btb_payload_ram}]
 
-set frost_tile_width [frost_width [lindex $frost_l2_data 0]]
-set frost_tile_height [frost_height [lindex $frost_l2_data 0]]
-set frost_slice_pitch [expr { $frost_tile_width + $frost_side_gap }]
-set frost_depth_pitch [expr { $frost_tile_height + $frost_gap }]
+set frost_core_width [frost_um [$frost_core dx]]
+set frost_core_height [frost_um [$frost_core dy]]
 
-# The center column: the two stacks of L2 tags at its sides, and between
-# them room for the L1D data's rows of four macros and for two data memory
-# macros side by side.
-set frost_tag_width [frost_width [lindex $frost_l2_tags 0]]
-set frost_tag_height [frost_height [lindex $frost_l2_tags 0]]
-set frost_l1d_width [frost_width [lindex $frost_l1d_data 0]]
-set frost_l1d_height [frost_height [lindex $frost_l1d_data 0]]
-set frost_inner_width [expr { max(4 * $frost_l1d_width + 3 * $frost_side_gap, \
-  2 * [frost_width [lindex $frost_data_memory 0]] + $frost_side_gap) }]
-set frost_center_x [expr { $frost_edge + 4 * $frost_slice_pitch - $frost_side_gap + \
+# The bottom band: the L2 data's slices (gen_column) 0-3 and 4-7 in two
+# blocks of two by two, and the data memory's rows between them.
+set frost_l2_width [frost_grid_width [lrange $frost_l2_data 0 3] 2]
+set frost_memory_x [expr { $frost_edge + $frost_l2_width + $frost_channel }]
+set frost_right_x [expr { $frost_memory_x + [frost_grid_width $frost_data_memory 2] + \
   $frost_channel }]
-set frost_center_width [expr { $frost_inner_width + 2 * $frost_tag_width + \
-  2 * $frost_channel }]
-set frost_inner_x [expr { $frost_center_x + $frost_tag_width + $frost_channel }]
-
-# L2 data: slice (gen_column) s, eighth of the lines (gen_row) r. Slices 4-7
-# end at the ring, and the space that the core has beyond the arrangement's
-# width widens the channel to their left.
-set frost_right_x [expr { [frost_um [$frost_core dx]] - $frost_edge - \
-  4 * $frost_slice_pitch + $frost_side_gap }]
-if { $frost_right_x < $frost_center_x + $frost_center_width + $frost_channel } {
+if { $frost_right_x + $frost_l2_width + $frost_edge > $frost_core_width } {
   error "the core is too narrow for the SRAM macros; widen CORE_AREA in config.mk"
 }
-foreach inst $frost_l2_data {
-  set slice [frost_index $inst gen_column]
-  set row [frost_index $inst gen_row]
-  if { $slice < 4 } {
-    set x [expr { $frost_edge + $slice * $frost_slice_pitch }]
-  } else {
-    set x [expr { $frost_right_x + ($slice - 4) * $frost_slice_pitch }]
-  }
-  frost_place $inst $x [expr { $frost_edge + $row * $frost_depth_pitch }]
+frost_place_grid [lrange $frost_l2_data 0 3] $frost_edge $frost_edge 2
+frost_place_grid $frost_data_memory $frost_memory_x $frost_edge 2
+frost_place_grid [lrange $frost_l2_data 4 7] $frost_right_x $frost_edge 2
+set frost_bottom_top [expr { $frost_edge + max([frost_grid_height $frost_data_memory 2], \
+  [frost_grid_height [lrange $frost_l2_data 0 3] 2]) }]
+
+# The top band: the L1D data in the middle, way (gen_bank) w's bank in row
+# w with its 64-bit slices side by side; at the left the L1I data, arranged
+# the same way, then the NIC's FIFOs and the BTB's payload tables; at the
+# right the L1D tags and then the L2 tags, a macro for each way.
+set frost_l1d_width [frost_grid_width $frost_l1d_data 4]
+set frost_l1d_x [expr { ($frost_core_width - $frost_l1d_width) / 2 }]
+set frost_l1d_y [expr { $frost_core_height - $frost_edge - \
+  [frost_grid_height $frost_l1d_data 4] }]
+frost_place_grid $frost_l1d_data $frost_l1d_x $frost_l1d_y 4
+
+set frost_left_y [expr { $frost_core_height - $frost_edge - \
+  [frost_grid_height $frost_l1i_data 4] }]
+frost_place_grid $frost_l1i_data $frost_edge $frost_left_y 4
+set frost_left_y [expr { $frost_left_y - $frost_gap - [frost_grid_height $frost_nic 2] }]
+frost_place_grid $frost_nic $frost_edge $frost_left_y 2
+set frost_left_y [expr { $frost_left_y - $frost_gap - [frost_grid_height $frost_btb 3] }]
+frost_place_grid $frost_btb $frost_edge $frost_left_y 3
+set frost_left_width [expr { max([frost_grid_width $frost_l1i_data 4], \
+  [frost_grid_width $frost_nic 2], [frost_grid_width $frost_btb 3]) }]
+
+set frost_right_width [expr { max([frost_grid_width $frost_l1d_tags 2], \
+  [frost_grid_width $frost_l2_tags 2]) }]
+set frost_tags_x [expr { $frost_core_width - $frost_edge - $frost_right_width }]
+set frost_right_y [expr { $frost_core_height - $frost_edge - \
+  [frost_grid_height $frost_l1d_tags 2] }]
+frost_place_grid $frost_l1d_tags $frost_tags_x $frost_right_y 2
+set frost_right_y [expr { $frost_right_y - $frost_gap - [frost_grid_height $frost_l2_tags 2] }]
+frost_place_grid $frost_l2_tags $frost_tags_x $frost_right_y 2
+
+if { $frost_edge + $frost_left_width + $frost_channel > $frost_l1d_x || \
+     $frost_l1d_x + $frost_l1d_width + $frost_channel > $frost_tags_x } {
+  error "the top band's macros overlap; widen CORE_AREA in config.mk"
 }
-
-set frost_l2_top [expr { $frost_edge + 8 * $frost_depth_pitch - $frost_gap }]
-if { $frost_l2_top + $frost_edge > [frost_um [$frost_core dy]] } {
-  error "the core is too short for the SRAM macros; heighten CORE_AREA in config.mk"
-}
-
-# The data memory at the bottom of the center column, two macros wide.
-set frost_memory_top [frost_place_rows $frost_data_memory $frost_inner_x $frost_center_edge \
-  $frost_inner_width]
-
-# The L1D data at the top of the center column: way (gen_bank) w's bank in
-# row w, its 64-bit slices (gen_column) side by side.
-set frost_core_height [expr { [frost_um [$frost_core dy]] }]
-set frost_l1d_y [expr { $frost_core_height - $frost_center_edge - \
-  4 * ($frost_l1d_height + $frost_gap) + $frost_gap }]
-foreach inst $frost_l1d_data {
-  set way [frost_index $inst gen_bank]
-  set slice [frost_index $inst gen_column]
-  frost_place $inst [expr { $frost_inner_x + $slice * ($frost_l1d_width + $frost_side_gap) }] \
-    [expr { $frost_l1d_y + $way * ($frost_l1d_height + $frost_gap) }]
-}
-
-# The L1D tags, the L1I data, the NIC's FIFOs, and the BTB's payload tables in
-# rows above the data memory.
-set frost_small_y [expr { $frost_memory_top + $frost_memory_channel }]
-set frost_small_top [frost_place_rows $frost_small_macros $frost_inner_x $frost_small_y \
-  $frost_inner_width]
-if { $frost_small_top + $frost_channel > $frost_l1d_y } {
-  error "the small macros reach the L1D data; heighten CORE_AREA in config.mk"
-}
-
-# The L2 tags in two stacks at the sides of the center column, each a row of
-# the tag array (gen_row), its ways (gen_column) one above another, with the
-# row's replacement state macro on top.
-set frost_tag_y [expr { $frost_core_height / 2 - 2 * ($frost_tag_height + $frost_gap) }]
-foreach inst [concat $frost_l2_tags $frost_l2_plru] {
-  set side [frost_index $inst gen_row]
-  set x [expr { $side == 0 ? $frost_center_x : \
-    $frost_center_x + $frost_center_width - $frost_tag_width }]
-  if { [lsearch -exact $frost_l2_plru $inst] >= 0 } {
-    set level 4
-  } else {
-    set level [frost_index $inst gen_column]
-  }
-  frost_place $inst $x [expr { $frost_tag_y + $level * ($frost_tag_height + $frost_gap) }]
+if { min($frost_l1d_y, $frost_left_y, $frost_right_y) - $frost_bottom_top < \
+     $frost_min_logic } {
+  error "the logic band is too low; heighten CORE_AREA in config.mk"
 }
 
 # Every macro in the design has a place.

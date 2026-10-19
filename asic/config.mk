@@ -27,9 +27,11 @@ include $(WORK_HOME)/sources.mk
 
 # Portable RTL (no FROST_XILINX_PRIMS) with the cached tier ending at the DDR
 # AXI port instead of the behavioral DDR model. FROST_SRAM_MACROS builds the
-# RAM wrappers' memories (hw/rtl/lib/ram) in asic/sram.
+# RAM wrappers' memories (hw/rtl/lib/ram) in asic/sram. The L2 holds 256 KiB,
+# where the X3's holds 2 MiB, so that the die, and the memory that the flow's
+# steps need with it, fits the standard CI runners (asic/README.md).
 export VERILOG_DEFINES = -DSYNTHESIS -DFROST_SRAM_MACROS
-export VERILOG_TOP_PARAMS = ENABLE_CACHED_TIER 1 USE_BEHAVIORAL_DDR 0
+export VERILOG_TOP_PARAMS = ENABLE_CACHED_TIER 1 USE_BEHAVIORAL_DDR 0 L2_CACHE_BYTES 262144
 export SYNTH_CANONICALIZE_TCL = $(DESIGN_DIR)/canonicalize.tcl
 
 # The SRAM macros that asic/openram.py generates with OpenRAM, one directory
@@ -75,17 +77,28 @@ export CTS_ARGS = -sink_clustering_enable -repair_clock_nets \
 export LEC_CHECK = 0
 
 # The core holds the SRAM macros where asic/macro_placement.tcl puts them,
-# with a 120 um ring around them: 9.57 mm by 7.28 mm with the macros' current
-# sizes. The die adds 15 um on each side for the pins.
-export DIE_AREA = 0 0 9600 7315
-export CORE_AREA = 15 15 9585 7300
+# with a 120 um ring around them and an 800 um band for the logic between
+# their two bands: 5.1 mm by 4.665 mm with the macros' current sizes. The die
+# adds 15 um on each side for the pins.
+export DIE_AREA = 0 0 5130 4695
+export CORE_AREA = 15 15 5115 4680
 export MACRO_PLACEMENT_TCL = $(DESIGN_DIR)/macro_placement.tcl
+# The pins go on the left and right edges, in front of the logic band, not
+# on the top and bottom edges, in front of the macros.
+export PLACE_PINS_ARGS = -exclude top:* -exclude bottom:*
 # Place the standard cells at the lower bound of the density plus a fifth of
 # the remaining room, as the platform's gcd design does.
 export PLACE_DENSITY_LB_ADDON = 0.20
-# Skip the repairs after global routing. On the die that the SRAM macros
-# need, they take hours: with 16 threads, repairing slew and capacitance over
-# the routed wires took 86 minutes, each legalization after a repair 25, and
-# the timing and hold repairs over an hour more. In CI that would pass the
-# six-hour limit of a job. The repairs after clock tree synthesis still run.
+# Skip the repairs after global routing, which take hours: with 4 threads,
+# repairing slew and capacitance over the routed wires took 82 minutes, the
+# timing repair 49 more, and they raised global routing's peak memory from
+# 15.6 to 21.1 GB. In CI that would pass the six-hour limit of a job. The
+# repairs after clock tree synthesis still run.
 export SKIP_INCREMENTAL_REPAIR = 1
+# Skip the antenna repair after global routing. It has nothing to repair
+# here: the platform has no antenna diode cell, and it finds no violation.
+# The placement check that follows it builds a grid of the core's placement
+# sites, which raised global routing's peak memory by 4.5 GB. Detailed routing
+# still checks and repairs the antennas of the final routes
+# (reports/.../drt_antennas.log).
+export SKIP_ANTENNA_REPAIR = 1
