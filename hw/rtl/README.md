@@ -89,9 +89,12 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 | PLIC | `0x4400_0000` | 4 MiB | Platform-level interrupt controller |
 | DDR | `0x8000_0000` | Configured 1–128 GiB (1 GiB default aperture) | Cached region: `.ddr_text` code, large data, and the heap; software must use the populated size |
 
-Every other address, including the rest of the device quadrant
-`[0x4000_0000, 0x8000_0000)` and any address with bits 63:32 set, is
-unmapped: a fetch, load, store, or AMO there raises a precise access fault
+DDR extends from `0x8000_0000` to that base plus the configured capacity,
+exclusive. Addresses above 4 GiB are valid when they fall in that range.
+At the default 1 GiB capacity, `0xc000_0000` and higher addresses fault.
+Every address outside the map, including the rest of the device quadrant
+`[0x4000_0000, 0x8000_0000)`, is unmapped: a fetch, load, store, or AMO
+there raises a precise access fault
 (cause 1, 5, or 7) and never aliases onto the map. Fetch also faults in the
 low BRAM above its 128 KiB code region `[0, 0x2_0000)`. The one exception is a
 store to the rest of the device quadrant with translation off: the
@@ -331,6 +334,9 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `SIM_FAST_MAINT` | `0` | Simulation only: 1 selects fast `fence.i` cache maintenance with the same functional effect |
 | `frost.sv` | `FETCH_VALID_FUZZ` | `0` | Simulation only: 1 inserts pseudo-random gaps into low-BRAM fetch responses to exercise the front end's handling of variable fetch latency |
 | `frost.sv` | `PERF_COUNTERS` | `0` | 1 builds the `mperf*` profiling counters |
+| `frost.sv` | `DEBUG_JTAG_TAP` | `1` | 1 uses the generic TAP on `i_jtag_*`; 0 takes the BSCAN bundle from the board |
+| `frost.sv` | `RAW_LOOPBACK` | `1` | 1 builds the NIC's raw TX-to-RX loopback, which needs one clock on both MAC clock ports; 0 for a transceiver's independent clocks |
+| `cpu_ooo.sv` | `MMIO_ADDR` | `32'h4000_0000` (`riscv_pkg::MmioWindowAddr`) | MMIO window base; the UART RX data and FIFO pop registers are fixed offsets from it |
 
 The compile-time aperture is an address-transport limit, not a claim that a
 board has that much installed DRAM. Bare-metal links retain a safe 1 GiB
@@ -340,9 +346,6 @@ aperture. Linux obtains its usable range from the generated device tree's
 `/memory` node (`frost_boot_image.py --mem-size`), whose 64-bit cells support
 the same 1–128 GiB matrix. The boot loader must supply the installed size;
 neither the CPU PA width nor the 1 GiB default identifies a DIMM's capacity.
-| `frost.sv` | `DEBUG_JTAG_TAP` | `1` | 1 uses the generic TAP on `i_jtag_*`; 0 takes the BSCAN bundle from the board |
-| `frost.sv` | `RAW_LOOPBACK` | `1` | 1 builds the NIC's raw TX-to-RX loopback, which needs one clock on both MAC clock ports; 0 for a transceiver's independent clocks |
-| `cpu_ooo.sv` | `MMIO_ADDR` | `32'h4000_0000` (`riscv_pkg::MmioWindowAddr`) | MMIO window base; the UART RX data and FIFO pop registers are fixed offsets from it |
 
 ## License
 

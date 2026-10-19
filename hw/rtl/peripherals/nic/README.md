@@ -181,8 +181,11 @@ must fully reprogram the rings before enabling. A RESET returns to legacy
 mode. The old reserved word is **not** an implicit address high half.
 
 A ring has 2^SIZE entries at a 32-byte-aligned BASE in cached DDR. Software
-posts descriptors below TAIL, zeroing word 2; hardware consumes them in order
-from HEAD, one frame per descriptor, and writes word 2 when it is done.
+posts descriptors below TAIL, zeroing the status word: word 2 in the legacy
+layout or word 3 in the extended layout. Hardware consumes them in order
+from HEAD, one frame per descriptor, and writes that status word when it is
+done. Software polls DD in the same word; extended word 2 retains the
+length and flags.
 
 `nic_desc_fetch` runs a prefetch cursor ahead of HEAD. When the cursor is
 below TAIL, it reads the line holding the cursor's descriptor into a two-line
