@@ -94,7 +94,9 @@ the stage before it.
 | Placement density | `PLACE_DENSITY_LB_ADDON=0.20`: the lower bound plus a fifth of the remaining room |
 | Clock tree synthesis | `CTS_ARGS`: ORFS's default arguments, with the clock ports' nets as the roots ([Timing constraints](#timing-constraints)) |
 | Repairs after global routing | `SKIP_INCREMENTAL_REPAIR=1`: with 4 threads they add over two hours to global routing, 82 minutes of it repairing slew and capacitance over the routed wires and 49 the timing repair, and raise its peak memory from 15.6 to 21.1 GB, more than a CI job allows; the repairs after placement and clock tree synthesis still run |
-| Antenna repair after global routing | `SKIP_ANTENNA_REPAIR=1`: it finds nothing to repair, and the placement check after it needs 4.5 GB of memory; detailed routing still checks and repairs the final routes' antennas |
+| Antenna repair after global routing | `SKIP_ANTENNA_REPAIR=1`: it finds nothing to repair, and the placement check after it needs 4.5 GB of memory |
+| Antenna repair after detailed routing | `SKIP_ANTENNA_REPAIR_POST_DRT=1`: prevents diode insertion before another detailed routing call reuses pin access; the platform has no antenna diode cell, and the final antenna check still writes `reports/.../drt_antennas.log` |
+| Detailed routing | `DETAILED_ROUTE_ARGS` replaces the script's defaults with `-droute_end_iter 64 -verbose 1 -drc_report_iter_step 5 -no_pin_access`, reusing global routing's saved access points; this requires all three repair skips above to stay 1 and `RECOVER_POWER` to stay at its default 0 so cells and placement stay unchanged |
 | Equivalence check | `LEC_CHECK=0`: ORFS's formal check of the final netlist against synthesis needs over 40 GB of memory on this design |
 
 [`canonicalize.tcl`](canonicalize.tcl) edits the elaborated design before
@@ -603,15 +605,20 @@ the final report at 15.6, 19.9, and 24.8 GB, so their jobs add swap space;
 each job also deletes preinstalled toolchains to make room for the
 databases.
 
+Detailed routing reuses the pin access saved in the global routing database.
+On the same 256 KiB input with four threads, `-no_pin_access` cut its CPU
+time from 24,280 to 18,282 seconds, about 25%, and produced byte-identical
+routed DEF with no DRC or antenna violations. That puts the detailed
+routing job at an estimated 3.5 to 3.9 hours, below the six-hour job limit.
+
 Those three steps' memory follows the design's 920,000 cells more than its
 die. Global routing holds 3.7 GB after its pin access and about 11 GB more in
 its router. Detailed routing builds its own model of the cells, their 3
-million pins, and the power grid's shapes, 9.2 GB with its pin access, then
-adds 3 GB for the routing guides, and its track assignment peaks 6 GB above
-that. In the final report, the IR drop analysis takes about 9 GB and the
-layout images that ORFS saves about 8 GB. With 16 threads, the same three
-steps peaked at 40, 31, and 34 GB on the 2 MiB L2's die, three times as
-large, and at 21, 20, and 25 GB on this one.
+million pins, and the power grid's shapes, about 9 GB, then adds 3 GB for the
+routing guides, and its track assignment peaks 6 GB above that. In the final report, the IR drop analysis
+takes about 9 GB and the layout images that ORFS saves about 8 GB. With 16
+threads, the same three steps peaked at 40, 31, and 34 GB on the 2 MiB L2's
+die, three times as large, and at 21, 20, and 25 GB on this one.
 
 ## The ORFS image
 
@@ -620,4 +627,6 @@ large, and at 21, 20, and 25 GB on this one.
 It is the ORFS 26Q4 quarterly release, commit `ecb3cfdeb`, which Docker Hub
 publishes under its `git describe` tag. It contains Yosys 0.68, OpenROAD
 `c487fc70`, and KLayout 0.30.12; the frost image's Yosys 0.70 reads the same
-sources. To update the image, change `ORFS_IMAGE` and run the whole flow.
+sources. To update the image, recheck `detail_route.tcl`'s default arguments
+and the pin access assumptions, update `ORFS_IMAGE`, `DETAILED_ROUTE_ARGS`,
+and the guard in `tests/test_asic_flow.py` as needed, and run the whole flow.

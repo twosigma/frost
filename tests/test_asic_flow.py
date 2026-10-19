@@ -33,6 +33,119 @@ def test_orfs_image_is_pinned_by_digest() -> None:
     assert re.fullmatch(r"openroad/orfs:[\w.-]+@sha256:[0-9a-f]{64}", orfs.ORFS_IMAGE)
 
 
+def _check_pin_access_reuse(config: str) -> None:
+    """Check literal Make settings before allowing saved pin access to be reused."""
+    guarded = {
+        "DETAILED_ROUTE_ARGS",
+        "SKIP_INCREMENTAL_REPAIR",
+        "SKIP_ANTENNA_REPAIR",
+        "SKIP_ANTENNA_REPAIR_POST_DRT",
+        "RECOVER_POWER",
+    }
+    settings: dict[str, str] = {}
+    depth = 0
+    definitions = 0
+    for raw in re.sub(r"\\\r?\n", " ", config).splitlines():
+        line = raw.partition("#")[0].strip()
+        if re.match(r"^(ifeq|ifneq|ifdef|ifndef)\b", line):
+            depth += 1
+        if re.match(r"^(?:(?:export|override)\s+)*define\b", line):
+            definitions += 1
+        if guarded.intersection(re.findall(r"\b\w+\b", line)):
+            assert not re.search(r"\boverride\b", line), (
+                f"guarded setting in an override directive: {line}"
+            )
+            assert depth == 0, f"guarded setting in a conditional: {line}"
+            assert definitions == 0 and not raw.startswith("\t"), (
+                f"cannot evaluate guarded setting: {line}"
+            )
+            assignment = re.fullmatch(
+                r"(?:export\s+)?(\w+)\s*(::=|:=|\?=|=)\s*([-\w. \t]*)", line
+            )
+            assert assignment and assignment[1] in guarded, (
+                f"cannot evaluate guarded setting: {line}"
+            )
+            name, _, value = assignment.groups()
+            assert name not in settings, f"duplicate assignment to {name}"
+            settings[name] = value.strip()
+        if re.match(r"^endif\b", line):
+            depth -= 1
+            assert depth >= 0, "unmatched endif"
+        if re.match(r"^endef\b", line):
+            definitions -= 1
+            assert definitions >= 0, "unmatched endef"
+    assert depth == 0, "unterminated conditional"
+    assert definitions == 0, "unterminated define"
+    if "-no_pin_access" not in settings.get("DETAILED_ROUTE_ARGS", "").split():
+        return
+
+    for setting in (
+        "SKIP_INCREMENTAL_REPAIR",
+        "SKIP_ANTENNA_REPAIR",
+        "SKIP_ANTENNA_REPAIR_POST_DRT",
+    ):
+        assert settings.get(setting) == "1", (
+            f"-no_pin_access requires {setting}=1 so repairs cannot invalidate "
+            "the saved pin access"
+        )
+    assert settings.get("RECOVER_POWER", "0") == "0", (
+        "-no_pin_access requires RECOVER_POWER=0 so power recovery cannot resize cells"
+    )
+    assert orfs.ORFS_IMAGE == (
+        "openroad/orfs:26Q3-705-gecb3cfdeb"
+        "@sha256:6da005d1c3447799f7401215174196c75ba9ec7e28417624d0c20225f85d594c"
+    ), (
+        "ORFS_IMAGE changed: recheck detail_route.tcl's default arguments and "
+        "pin access assumptions before updating DETAILED_ROUTE_ARGS and this guard"
+    )
+
+
+def test_pin_access_reuse_requires_disabled_repairs_and_pinned_defaults() -> None:
+    """Pin access is reusable only while cells and their placement stay unchanged."""
+    _check_pin_access_reuse((ASIC_DIRECTORY / "config.mk").read_text())
+
+
+@pytest.mark.parametrize(
+    ("change", "error"),
+    [
+        ("", None),
+        ("export RECOVER_POWER := 20", "requires RECOVER_POWER=0"),
+        ("SKIP_INCREMENTAL_REPAIR = 0", "requires SKIP_INCREMENTAL_REPAIR=1"),
+        ("SKIP_ANTENNA_REPAIR = 1", "duplicate assignment"),
+        ("DETAILED_ROUTE_ARGS += -no_pin_access", "cannot evaluate"),
+        ("override RECOVER_POWER = 0", "override directive"),
+        ("export override RECOVER_POWER = 0", "override directive"),
+        ("ifdef OPTIONAL\nRECOVER_POWER = 0\nendif", "conditional"),
+        ("ifdef RECOVER_POWER\nendif", "conditional"),
+        ("RECOVER_POWER = $(POWER)", "cannot evaluate"),
+        ("RECOVER_POWER != echo 0", "cannot evaluate"),
+        ("route: RECOVER_POWER = 0", "cannot evaluate"),
+        ("define RECOVER_POWER\n0\nendef", "cannot evaluate"),
+        ("define OPTIONS\nRECOVER_POWER = 0\nendef", "cannot evaluate"),
+        ("route:\n\tRECOVER_POWER = 0", "cannot evaluate"),
+    ],
+)
+def test_pin_access_guard_checks_make_assignments(
+    change: str, error: str | None
+) -> None:
+    """Assignment syntax cannot hide settings that invalidate saved pin access."""
+    config = (
+        "export DETAILED_ROUTE_ARGS := -verbose 1 \\\n  -no_pin_access # reuse\n"
+        "SKIP_INCREMENTAL_REPAIR = 1\n"
+        "export SKIP_ANTENNA_REPAIR ::= 1\n"
+        "SKIP_ANTENNA_REPAIR_POST_DRT ?= 1\n"
+    )
+    if change == "SKIP_INCREMENTAL_REPAIR = 0":
+        config = config.replace("SKIP_INCREMENTAL_REPAIR = 1", change)
+    else:
+        config += change
+    if error is None:
+        _check_pin_access_reuse(config)
+    else:
+        with pytest.raises(AssertionError, match=error):
+            _check_pin_access_reuse(config)
+
+
 def test_orfs_runs_as_host_user_with_checkout_mounted() -> None:
     """ORFS writes only into asic/build, as the invoking user."""
     command = orfs.orfs_command(["NUM_CORES=4", "finish"], uid=1234, gid=5678)
