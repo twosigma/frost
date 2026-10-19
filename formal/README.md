@@ -28,8 +28,20 @@ Run through the pinned Docker image:
 
 Other task names are parameter or width variants of these, such as
 `bmc_xlen32` or `bmc_xilinx`. Each target and task is a separate SymbiYosys
-run with a 40-minute timeout, and `--verbose` prints solver output. SymbiYosys
-writes logs and any counterexample trace to `formal/<target>_<task>/`, which
+run. The timeout is 40 minutes except for `csr_file:bmc`,
+`csr_file:bmc_perf_off`, and `reorder_buffer:bmc`, which have 90 minutes each.
+CI gives each of these three tasks a separate job with a 120-minute job
+limit, including image setup. The remaining tasks share a job with a
+240-minute limit. Each job stays below GitHub's six-hour limit.
+
+The CSR tasks retain depth 20 and the ROB task retains depth 12. Assertions,
+assumptions, engines, and cover depths are unchanged by the timeout settings.
+The larger backstop gives the 32–41 minute BMC runs more than twice their
+observed runtime. The other tasks took about 92 minutes together in the
+reviewed CI run, leaving setup and runner-speed margin within their job.
+`--verbose` prints solver output, and timeouts retain the last 40 captured
+log lines. SymbiYosys writes logs and any counterexample trace to
+`formal/<target>_<task>/`, which
 git ignores. Formal values are two-state, so these checks do not cover X or Z
 behavior in simulation.
 

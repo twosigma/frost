@@ -35,6 +35,13 @@ FORMAL_DIR = "formal"
 
 # Per-task hang backstop in seconds; proof depth is set by each .sby file.
 SBY_TASK_TIMEOUT_S = 2400
+# These tasks run in separate CI jobs. Their proof depth and input contracts
+# stay unchanged; only the solver's wall-clock allowance differs.
+SBY_TASK_TIMEOUT_OVERRIDES_S = {
+    ("csr_file", "bmc"): 5400,
+    ("csr_file", "bmc_perf_off"): 5400,
+    ("reorder_buffer", "bmc"): 5400,
+}
 
 
 @dataclass(frozen=True)
@@ -802,6 +809,20 @@ def test_formal_target_tasks_are_registered() -> None:
     assert not missing, f"Formal tasks would be silently skipped: {missing}"
 
 
+def formal_task_timeout_s(target: str, task: str) -> int:
+    """Return the wall-clock backstop for a target's task."""
+    return SBY_TASK_TIMEOUT_OVERRIDES_S.get((target, task), SBY_TASK_TIMEOUT_S)
+
+
+def timeout_log_tail(error: subprocess.TimeoutExpired) -> str:
+    """Keep recent solver progress when a captured run exceeds its backstop."""
+    output = "".join(
+        part.decode(errors="replace") if isinstance(part, bytes) else part or ""
+        for part in (error.stdout, error.stderr)
+    )
+    return "\n".join(output.splitlines()[-40:])
+
+
 class FormalRunner:
     """Run SymbiYosys tasks from the repository's formal/ directory."""
 
@@ -842,13 +863,13 @@ class FormalRunner:
                 capture_output=True,
                 text=True,
                 cwd=self.formal_dir,
-                timeout=SBY_TASK_TIMEOUT_S,
+                timeout=formal_task_timeout_s(target.name, task),
             )
         else:
             return subprocess.run(
                 cmd,
                 cwd=self.formal_dir,
-                timeout=SBY_TASK_TIMEOUT_S,
+                timeout=formal_task_timeout_s(target.name, task),
                 text=True,
             )
 
@@ -910,6 +931,56 @@ class FormalRunner:
                 info["elapsed"] = line
 
         return info
+
+
+@pytest.mark.parametrize("capture_output", (False, True))
+@pytest.mark.parametrize(
+    "target_name,task,expected_timeout",
+    (
+        ("csr_file", "bmc", 5400),
+        ("csr_file", "bmc_perf_off", 5400),
+        ("reorder_buffer", "bmc", 5400),
+        ("csr_file", "cover", 2400),
+        ("reorder_buffer", "cover", 2400),
+        ("line_port_axi_bridge", "bmc_128g", 2400),
+    ),
+)
+def test_formal_runner_task_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    target_name: str,
+    task: str,
+    expected_timeout: int,
+    capture_output: bool,
+) -> None:
+    """CLI and captured runs give only the slow BMC tasks extra wall time."""
+    target = next(target for target in FORMAL_TARGETS if target.name == target_name)
+    assert task in target.tasks
+    calls: list[dict[str, Any]] = []
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(kwargs)
+        assert command[-1] == task
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    FormalRunner().run_formal(target, task, capture_output=capture_output)
+    assert calls[0]["timeout"] == expected_timeout
+
+
+@pytest.mark.parametrize("as_bytes", (False, True))
+def test_timeout_retains_solver_progress(as_bytes: bool) -> None:
+    """Timed-out subprocesses may expose bytes even when text mode is enabled."""
+    output = "".join(f"step {step}\n" for step in range(50))
+    error = subprocess.TimeoutExpired(
+        ["sby"],
+        5400,
+        output=output.encode() if as_bytes else output,
+        stderr=b"solver pending\n" if as_bytes else "solver pending\n",
+    )
+    lines = timeout_log_tail(error).splitlines()
+    assert len(lines) == 40
+    assert lines[0] == "step 11"
+    assert lines[-1] == "solver pending"
 
 
 # ===========================================================================
@@ -993,10 +1064,10 @@ class TestFormalVerification:
                 )
                 pytest.fail(error_msg)
 
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as error:
             pytest.fail(
                 f"Formal {task_name} for {target.name} timed out after "
-                f"{SBY_TASK_TIMEOUT_S // 60} minutes"
+                f"{error.timeout // 60} minutes\n{timeout_log_tail(error)}"
             )
         except Exception as e:
             pytest.fail(
@@ -1139,8 +1210,10 @@ With pytest:
                     print(f"\n{test_id} PASSED")
                     passed += 1
 
-            except subprocess.TimeoutExpired:
-                print(f"\n{test_id} TIMEOUT ({SBY_TASK_TIMEOUT_S // 60} minutes)")
+            except subprocess.TimeoutExpired as error:
+                print(f"\n{test_id} TIMEOUT ({error.timeout // 60} minutes)")
+                if output := timeout_log_tail(error):
+                    print(output)
                 failed.append(test_id)
             except Exception as e:
                 print(f"\n{test_id} ERROR: {e}")

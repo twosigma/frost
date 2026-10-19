@@ -967,9 +967,26 @@ jobs:
 
   # SymbiYosys formal verification.
   test-formal:
-    name: Formal Verification
+    name: Formal Verification (${{ matrix.shard }})
     runs-on: ubuntu-26.04
     needs: build-docker
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: CSR profiling on
+            pytest_filter: "csr_file_bmc and not csr_file_bmc_perf_off"
+            timeout_minutes: 120
+          - shard: CSR profiling off
+            pytest_filter: "csr_file_bmc_perf_off"
+            timeout_minutes: 120
+          - shard: Reorder buffer
+            pytest_filter: "reorder_buffer_bmc"
+            timeout_minutes: 120
+          - shard: Other tasks
+            pytest_filter: "not (csr_file_bmc or reorder_buffer_bmc)"
+            timeout_minutes: 240
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -988,9 +1005,11 @@ jobs:
           rm -f /tmp/frost-dev.tar
 
       - name: Run formal verification
+        env:
+          PYTEST_FILTER: ${{ matrix.pytest_filter }}
         run: |
-          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            pytest tests/ -m formal -v
+          ./scripts/frost.py --image frost-dev:latest pytest \
+            -m formal -k "$PYTEST_FILTER" -v --durations=0
 
   # Run the pinned pre-commit environment in Docker.
   lint:
