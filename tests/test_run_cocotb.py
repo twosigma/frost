@@ -1965,6 +1965,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "NIC registers and frame traffic through raw loopback and a simulated wire"
         ),
     ),
+    "nic_top_64g": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_top",
+        hdl_toplevel_module="nic_top",
+        description="NIC wide descriptors and high-address alias rejection at 64 GiB",
+        verilator_extra_args=(
+            "-GADDR_WIDTH=37",
+            '"-GAPERTURE_BYTES=64\'h1000000000"',
+        ),
+    ),
     "dma_test_engine_wide": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_dma_test_engine_wide",
         hdl_toplevel_module="dma_test_engine",
