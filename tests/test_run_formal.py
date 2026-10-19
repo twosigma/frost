@@ -35,6 +35,7 @@ FORMAL_DIR = "formal"
 
 # Per-task hang backstop in seconds; proof depth is set by each .sby file.
 SBY_TASK_TIMEOUT_S = 2400
+# The unchanged ROB BMC can take about an hour on a shared runner.
 # These tasks run in separate CI jobs. Their proof depth and input contracts
 # stay unchanged; only the solver's wall-clock allowance differs.
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
