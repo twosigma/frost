@@ -2045,6 +2045,27 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GAXI_ADDR_WIDTH=36",
         ),
     ),
+    **{
+        f"axi_behavioral_memory_{mode}": CocotbRunConfig(
+            python_test_module="cocotb_tests.cache.test_axi_behavioral_memory",
+            hdl_toplevel_module="axi_behavioral_memory",
+            description=f"DDR image loading and reset contents in {mode} storage",
+            verilator_extra_args=(
+                "-GMEM_BYTES=4096",
+                "-GAXI_ADDR_WIDTH=36",
+                "-GLATENCY=2",
+                "-GUSE_INIT_FILE=1",
+                "-GINIT_FILE='\"../verif/cocotb_tests/cache/axi_memory_init.mem\"'",
+                *defines,
+            ),
+            extra_env=(("FROST_AXI_MEMORY_TEST_MODE", mode),),
+        )
+        for mode, defines in (
+            ("dense", ()),
+            ("wide", ("-DFROST_WIDE_DDR_TEST",)),
+            ("dii", ("-DFROST_WIDE_DDR_TEST", "-DFROST_RVFI_DII")),
+        )
+    },
     "x3_ddr_init": CocotbRunConfig(
         python_test_module="cocotb_tests.test_x3_ddr_init",
         hdl_toplevel_module="x3_ddr_init",

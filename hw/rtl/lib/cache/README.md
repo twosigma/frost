@@ -356,6 +356,12 @@ cycle the reset arrives and drops those beats, so none is presented after the
 interconnect restarts. The behavioral DDR model in simulation resets with
 the CPU, so there the CPU reset serves as both.
 
+Reset clears the model's outstanding transactions but preserves its memory
+contents, including the initial `sw_ddr.mem` image and completed writes.
+This also applies to the sparse storage selected by `FROST_WIDE_DDR_TEST`.
+Only TestRIG (`FROST_RVFI_DII`) skips image loading and clears memory on reset,
+so each instruction sequence starts with empty storage.
+
 ## The L2 line size
 
 The L1s, the walker, and the DMA port use 32-byte lines, and so does
@@ -584,6 +590,7 @@ to answer.
 | `l2_stream_prefetcher` | Stream confirmation, read distance, page bounds, and the in-flight cap |
 | `line_port_arbiter*` | Arbitration and tagged responses |
 | `line_port_axi_bridge` | The bridge across a CPU reset against a slave that keeps running: held beats, AW/W pairing, dropped stale responses, and a reused id held back until the stale response for it has arrived; and across the slave's own reset, which withdraws the held beats |
+| `axi_behavioral_memory_*` | Boot-image loading and reset persistence for dense and wide sparse DDR, distinct high-address writes, and TestRIG's empty-memory reset contract |
 | `fence_speed_slow`, `fence_speed_fast` | Maintenance latency; CLI-only |
 | `dma_envelope_lock3` through `dma_envelope_lock8`, `dma_envelope_lock3_mem30`, `dma_envelope_lock3_big_l2` | DMA throughput and latency by lock count and scenario; CLI-only |
 | `l2_slots_4x2`, `l2_slots_8x2`, `l2_slots_16x4` | L2 miss-slot use with every port missing at once, by slot count, with no read waiting more than 1,000 cycles; `l2_slots_8x2` and `l2_slots_16x4` CLI-only |

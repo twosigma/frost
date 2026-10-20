@@ -42,9 +42,11 @@
  *
  * TestRIG builds (FROST_RVFI_DII, see hw/sim/frost_rvfi_dii.sv) instead keep
  * a sparse array that reads zero where nothing was written and clears on
- * reset, since every test starts from zeroed memory. FROST_WIDE_DDR_TEST
- * enables that sparse array with full-width address keys to check the 64 GiB
- * offset aperture without allocating an enormous simulation array. Neither
+ * reset, since every test starts from zeroed memory; they do not load an
+ * image. FROST_WIDE_DDR_TEST enables that sparse array with full-width
+ * address keys to check configured DDR apertures without allocating an
+ * enormous simulation array. Wide tests retain the normal image loading
+ * and reset persistence unless FROST_RVFI_DII is also defined. Neither
  * sparse mode represents production DDR hardware.
  */
 module axi_behavioral_memory #(
@@ -119,7 +121,7 @@ module axi_behavioral_memory #(
 `endif
 
 `ifndef YOSYS
-`ifndef FROST_SPARSE_DDR_MEMORY
+`ifndef FROST_RVFI_DII
   // Image load, simulation only: Yosys cannot elaborate $fopen, and this
   // module is never instantiated in a synthesized configuration.
   initial begin
@@ -294,7 +296,9 @@ module axi_behavioral_memory #(
 `ifdef FROST_SPARSE_DDR_MEMORY
   always @(negedge i_clk) begin
     if (i_rst) begin
+`ifdef FROST_RVFI_DII
       memory.delete();
+`endif
     end else if (dii_write_valid_q) begin
       for (int unsigned w = 0; w < WordsPerLine; w++) begin
         longint unsigned word_index;

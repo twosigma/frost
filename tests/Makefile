@@ -414,6 +414,10 @@ else ifeq ($(TOPLEVEL),line_port_axi_bridge)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/cache/line_port_axi_bridge.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),axi_behavioral_memory)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/lib/cache/axi_behavioral_memory.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),x3_ddr_init)
 # X3 power-up DDR4 region writer unit bench (AXI write master only)
 COMPILE_ARGS := \
