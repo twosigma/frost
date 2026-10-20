@@ -22,7 +22,7 @@
 # REPORTS_DIR receives:
 #   <stage>_paths.tsv           the worst path to every constrained endpoint
 #   <stage>_register_paths.tsv  the worst path between registers for each
-#                               pair of launching and capturing core clocks
+#                               pair of core clocks and launching edge
 #   <stage>_worst_paths.json    the worst core clock paths, every pin with
 #                               its arrival time, in OpenSTA's JSON format
 #   <stage>_worst_paths.rpt     the worst paths of each clock, for reading
@@ -31,7 +31,8 @@
 # launching clocks, the slack, the arrival times at the startpoint and the
 # endpoint, the required time, the clock skew, the cells after the
 # startpoint and how many of them are buffers or inverters, and the
-# startpoint and endpoint (a register's instance, or a port).
+# startpoint and endpoint (a register's instance, or a port). The register
+# table also includes the launch and capture edge times, without latency.
 
 source $::env(SCRIPTS_DIR)/load.tcl
 
@@ -85,10 +86,28 @@ proc frost_point { pin } {
 
 proc frost_columns { } {
   return [join {capture launch slack launched arrival required skew cells \
-    buffers startpoint endpoint} "\t"]
+    buffers startpoint endpoint launch_edge capture_edge} "\t"]
 }
 
-proc frost_row { path_end } {
+# OpenSTA's full report includes the cycle offsets for paths between clocks.
+# ClockEdge.time alone is only the edge's phase within its clock's waveform.
+proc frost_clock_edges { path_end } {
+  set options {-format full -digits 10}
+  sta::parse_report_path_options "frost_clock_edges" options full 1
+  tee -quiet -variable report [list sta::report_path_end $path_end]
+  set edges {}
+  foreach line [split $report "\n"] {
+    if { [regexp {(\S+)\s+clock \S+ \((?:rise|fall) edge\)\s*$} $line -> time] } {
+      lappend edges $time
+    }
+  }
+  if { [llength $edges] != 2 } {
+    error "expected launch and capture clock edges in the register path report"
+  }
+  return $edges
+}
+
+proc frost_row { path_end {edges {- -}} } {
   set path [$path_end path]
   set start_path [$path start_path]
   set start_pin [$start_path pin]
@@ -120,7 +139,8 @@ proc frost_row { path_end } {
   return [join [list $capture [frost_launch_clock $path] \
     [frost_ns [$path_end slack]] [frost_ns $launched] [frost_ns $arrival] \
     [frost_ns [$path_end data_required_time]] [frost_ns [$path_end clk_skew]] \
-    $cells $buffers [frost_point $start_pin] [frost_point [$path_end pin]]] "\t"]
+    $cells $buffers [frost_point $start_pin] [frost_point [$path_end pin]] \
+    {*}$edges] "\t"]
 }
 
 set frost_out [open $::env(REPORTS_DIR)/${frost_stage}_paths.tsv w]
@@ -134,16 +154,34 @@ close $frost_out
 # The requirements of these paths scale with the core period, unlike those
 # of paths from and to ports, which also carry the I/O delays. An endpoint
 # can have both, and paths from both core clocks, so each pair of clocks is
-# searched on its own.
+# searched on its own, with rising and falling launches separate: a path
+# with better slack can limit the frequency if it has only half a cycle.
+# The registers and SRAM inputs capture on rising edges. A clock's I/O copy
+# (constraint.sdc) counts as the clock, and its register as one of the clock's.
+# The search names the launching clocks, since the data memory's macros have
+# a clock pin on each core clock; it skips the paths from ports, which the
+# copies also launch, and the endpoints that the other clock captures.
+proc frost_master_clock { clock } {
+  return [regsub {_io$} $clock {}]
+}
 set frost_out [open $::env(REPORTS_DIR)/${frost_stage}_register_paths.tsv w]
 puts $frost_out [frost_columns]
 foreach launch {core_clk core_clk_div4} {
   foreach capture {core_clk core_clk_div4} {
-    foreach path_end [find_timing_paths -path_delay max \
-      -from [all_registers -clock [get_clocks $launch]] \
-      -to [all_registers -clock [get_clocks $capture] -data_pins] \
-      -group_path_count 1 -endpoint_path_count 1 -sort_by_slack] {
-      puts $frost_out [frost_row $path_end]
+    foreach edge {rise fall} {
+      foreach path_end [find_timing_paths -path_delay max \
+        -${edge}_from [get_clocks -quiet [list $launch ${launch}_io]] \
+        -to [all_registers -clock [get_clocks -quiet [list $capture ${capture}_io]] \
+          -data_pins] \
+        -group_path_count 100 -endpoint_path_count 1 -sort_by_slack] {
+        set target [$path_end target_clk]
+        if { $target ne "NULL" && \
+             ![[[[$path_end path] start_path] pin] is_top_level_port] && \
+             [frost_master_clock [get_name $target]] eq $capture } {
+          puts $frost_out [frost_row $path_end [frost_clock_edges $path_end]]
+          break
+        }
+      }
     }
   }
 }

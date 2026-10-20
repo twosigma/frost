@@ -153,8 +153,14 @@ DESIGN_FILELISTS = {
 class YosysRunner:
     """Run Yosys synthesis on a design filelist."""
 
-    def __init__(self, filelist_key: str = "frost") -> None:
-        """Initialize paths for a filelist_key from DESIGN_FILELISTS."""
+    def __init__(
+        self, filelist_key: str = "frost", *, memory_images: bool = True
+    ) -> None:
+        """Initialize paths for a filelist_key from DESIGN_FILELISTS.
+
+        memory_images compiles hello_world for the block RAMs' $readmemh
+        images. The ASIC flow, whose memories read none, turns it off.
+        """
         self.test_dir = Path(__file__).parent.resolve()
         self.root_dir = self.test_dir.parent
         self.filelist_key = filelist_key
@@ -168,7 +174,7 @@ class YosysRunner:
         self.filelist = self.root_dir / DESIGN_FILELISTS[filelist_key]
 
         # Only designs with BRAM init (frost) need the sw.mem/sw64.mem symlinks.
-        if filelist_key == "frost":
+        if filelist_key == "frost" and memory_images:
             self.setup_sw_mem()
 
     def setup_sw_mem(self) -> None:

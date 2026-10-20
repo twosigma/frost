@@ -6,15 +6,24 @@ This directory runs FROST through
 Open Cell Library. Yosys synthesizes `cpu_and_mem`; OpenROAD floorplans,
 places, builds the clock trees, and routes it; KLayout writes the GDS.
 OpenSTA reports timing after each stage. FreePDK45 is not a manufacturable
-process, so the flow shows that the RTL maps onto standard cells and
-estimates its area and timing. It does not replace a foundry flow.
+process, so the flow shows that the RTL maps onto standard cells and SRAM
+macros and estimates its area and timing. It does not replace a foundry flow.
 
-The large memories are mocked: each memory larger than 4,096 bits keeps a
-single row, built from flip-flops, until an SRAM macro takes its place. The
-area therefore leaves out most of the storage, and paths through the memories
-do not have SRAM timing. The threshold also catches some shallow, wide
-arrays, such as queues and register-file banks, that an ASIC would build from
-flip-flops, so the logic area is low as well. The summary lists every mocked
+The memories behind the RAM wrappers in
+[`hw/rtl/lib/ram`](../hw/rtl/lib/ram) are dual-port SRAM macros that
+[OpenRAM](https://github.com/VLSIDA/OpenRAM) generates for FreePDK45: the
+caches' data, the L1D's and the L2's tags, the data memory, the NIC's FIFOs,
+and the BTB's slot-2 payload tables ([SRAM macros](#sram-macros)). The L2
+holds 256 KiB, where the X3's holds 2 MiB, so that the flow fits CI's
+runners ([CI](#ci)). Arrays of 4,096 bits or less, such as the L1I's tags
+and the caches' replacement state, become flip-flops. The other
+memories larger than 4,096 bits are mocked: each keeps a single row, built
+from flip-flops. They are the instruction memory, which infers its own
+arrays in `imem_predecode.sv`; the NIC's frame and packet buffers, which the
+NIC infers; and the arrays read without a clock, such as the BTB tags, the
+TAGE tables, and banks of the ROB and the INT RS, which an ASIC would build
+from flip-flops or latches rather than SRAM. Their area and the paths through
+them are therefore missing. The summary lists the macros and every mocked
 memory with its dimensions.
 
 ## Running
@@ -36,16 +45,18 @@ The script needs Docker and the `frost` image (see the
 `--frost-image`, or `FROST_DOCKER_IMAGE`, names another frost image. Both
 images run as the invoking user, with the checkout mounted at `/workspace`,
 and everything the flow writes goes under `asic/build`, which git ignores.
-With 16 threads the whole flow takes about three hours. Detailed routing
-needs about 18 GB of memory, and the stages' databases about 15 GB of disk.
+With 16 threads the whole flow takes about three hours. The final report
+needs about 25 GB of memory, detailed routing 20 GB, and global routing
+16 GB, and the stages' databases about 22 GB of disk.
 
 `run` has three steps:
 
-1. In the frost image, `orfs.py prepare` compiles `hello_world` for the data
-   memory's `$readmemh` image, converts the NIC and MAC/PCS sources with sv2v
-   as [`tests/test_run_yosys.py`](../tests/test_run_yosys.py) does, and
-   writes the source list from [`hw/rtl/frost.f`](../hw/rtl/frost.f) to
-   `asic/build/sources.mk`.
+1. In the frost image, `orfs.py prepare` converts the NIC and MAC/PCS
+   sources with sv2v as [`tests/test_run_yosys.py`](../tests/test_run_yosys.py)
+   does, and writes the source list from [`hw/rtl/frost.f`](../hw/rtl/frost.f)
+   to `asic/build/sources.mk`. No memory reads a `$readmemh` image here: the
+   SRAM macros have no initial contents, and the instruction memory reads its
+   images only outside Yosys.
 2. In the ORFS image, ORFS's Makefile runs the flow with
    [`config.mk`](config.mk). Make reruns only the stages whose input files
    changed since the last run. It does not track `config.mk`, so delete
@@ -62,7 +73,7 @@ the stage before it.
 
 | Output in `asic/build` | Contents |
 | --- | --- |
-| `summary.md` | Core clock period, cell count and area, worst slack for each clock, elapsed time and peak memory for each step, and the mocked memories |
+| `summary.md` | Core clock period, cell and macro counts and areas, worst slack for each clock, elapsed time and peak memory for each step, the SRAM macros, and the mocked memories |
 | `paths_<stage>.md` | The setup report of `paths` for one stage |
 | `orfs.log` | Output of both containers |
 | `logs/nangate45/frost/base/` | A log and a metrics file for each step |
@@ -73,21 +84,181 @@ the stage before it.
 
 | Setting | Value |
 | --- | --- |
-| Top module | `cpu_and_mem`, with `ENABLE_CACHED_TIER=1` and `USE_BEHAVIORAL_DDR=0`, so the cached tier ends at the DDR AXI port; other parameters keep their defaults |
-| Defines | `SYNTHESIS`; not `FROST_XILINX_PRIMS`, so every block uses its portable version |
-| Memories | `SYNTH_MOCK_LARGE_MEMORIES=1`: memories over 4,096 bits keep one row; smaller ones become flip-flops |
-| Die size | `CORE_UTILIZATION=40`: the core is sized so that the synthesized cells fill 40% of it |
-| Placement density | `PLACE_DENSITY_LB_ADDON=0.20`, since the platform's default density, 0.30, is below the utilization |
+| Top module | `cpu_and_mem`, with `ENABLE_CACHED_TIER=1` and `USE_BEHAVIORAL_DDR=0`, so the cached tier ends at the DDR AXI port, and `L2_CACHE_BYTES=262144`, a 256 KiB L2 where the X3's holds 2 MiB, so that the flow fits CI's runners ([CI](#ci)); other parameters keep their defaults |
+| Defines | `SYNTHESIS`, and `FROST_SRAM_MACROS` for the [SRAM macros](#sram-macros); not `FROST_XILINX_PRIMS`, so every block uses its portable version |
+| Memories | The RAM wrappers' memories are SRAM macros. `SYNTH_MOCK_LARGE_MEMORIES=1`: other memories over 4,096 bits keep one row; smaller ones become flip-flops |
+| Die size | `DIE_AREA`: 5.13 by 4.695 mm; `CORE_AREA` leaves 15 um on each side. The core fits the macro placement |
+| Macro placement | [`macro_placement.tcl`](macro_placement.tcl) (`MACRO_PLACEMENT_TCL`) |
+| Pin placement | `PLACE_PINS_ARGS`: the die's left and right edges only, in front of the logic |
+| Power grid | The platform's, with [`sram_power.tcl`](sram_power.tcl) (`PRE_PDN_TCL`) connecting the macros' supply pins and [`check_power_grid.tcl`](check_power_grid.tcl) (`POST_PDN_TCL`) checking that everything placed reaches the grid |
+| Placement density | `PLACE_DENSITY_LB_ADDON=0.20`: the lower bound plus a fifth of the remaining room |
+| Clock tree synthesis | `CTS_ARGS`: ORFS's default arguments, with the clock ports' nets as the roots ([Timing constraints](#timing-constraints)) |
+| Repairs after global routing | `SKIP_INCREMENTAL_REPAIR=1`: with 4 threads they add over two hours to global routing, 82 minutes of it repairing slew and capacitance over the routed wires and 49 the timing repair, and raise its peak memory from 15.6 to 21.1 GB, more than a CI job allows; the repairs after placement and clock tree synthesis still run |
+| Antenna repair after global routing | `SKIP_ANTENNA_REPAIR=1`: it finds nothing to repair, and the placement check after it needs 4.5 GB of memory |
+| Antenna repair after detailed routing | `SKIP_ANTENNA_REPAIR_POST_DRT=1`: prevents diode insertion before another detailed routing call reuses pin access; the platform has no antenna diode cell, and the final antenna check still writes `reports/.../drt_antennas.log` |
+| Detailed routing | `DETAILED_ROUTE_ARGS` replaces the script's defaults with `-droute_end_iter 64 -verbose 1 -drc_report_iter_step 5 -no_pin_access`, reusing global routing's saved access points; this requires all three repair skips above to stay 1 and `RECOVER_POWER` to stay at its default 0 so cells and placement stay unchanged |
 | Equivalence check | `LEC_CHECK=0`: ORFS's formal check of the final netlist against synthesis needs over 40 GB of memory on this design |
 
 [`canonicalize.tcl`](canonicalize.tcl) edits the elaborated design before
-synthesis. It keeps the 10G receive parser's state encoding, as the Yosys
-checks do. It also clocks the data memory's program-loading port from `i_clk`
-instead of `i_clk_div4`: the data memory (`tdp_bram_dc_byte_en`) is written
-from both clocks, and flip-flops cannot implement a memory with two write
-clocks, even mocked as one row. A two-port SRAM macro removes the need for
-this. [`clock_slack.tcl`](clock_slack.tcl) runs after the final report and
-writes each clock's worst setup and hold slack.
+synthesis: it keeps the 10G receive parser's state encoding, as the Yosys
+checks do. [`clock_slack.tcl`](clock_slack.tcl) runs after the final report
+and writes each clock's worst setup and hold slack.
+
+## SRAM macros
+
+[`config.mk`](config.mk) defines `FROST_SRAM_MACROS`, as do the simulations
+of the macros' models below; the FPGA build and the other simulations never
+do. Under it, the RAM wrappers in
+[`hw/rtl/lib/ram`](../hw/rtl/lib/ram) keep their storage in two modules:
+[`frost_sram_1w1r`](sram/frost_sram_1w1r.sv), with a write port and a read
+port, for `sdp_block_ram`, `sdp_block_ram_dc`, `sdp_ram_byte_en`, and
+`sdp_packed_tag_uram`; and [`frost_sram_2rw`](sram/frost_sram_2rw.sv), with
+two read and write ports on their own clocks, for `tdp_bram_dc_byte_en`. A
+memory of more than 4,096 bits whose depth and width are multiples of a
+macro's, with write-mask lanes that the macro can build, becomes a grid of
+that macro: its high address bits select a row of macros, and each column
+holds a slice of the word. Other memories stay behavioral arrays, which
+synthesis builds from flip-flops, or mocks above 4,096 bits. Without the
+define, the wrappers' code is unchanged, and the FPGA build and the other
+simulations never read these modules.
+
+| Macro | Words x bits | Write mask | Size (um) | Read (ns) | Minimum period (ns) | Instances | Memories |
+| --- | --- | --- | --- | ---: | ---: | ---: | --- |
+| `sram_1w1r_4096x64_m8` | 4,096 x 64 | Bytes | 751.9 x 845.1 | 0.514 to 0.581 | 2.15 | 8 | L2 data, 1 row of 8 |
+| `sram_2rw_4096x64_m8` | 4,096 x 64 | Bytes, both ports | 752.5 x 859.4 | 0.514 to 0.581 | 2.15 | 4 | Data memory, 4 rows |
+| `sram_1w1r_1024x64_m8` | 1,024 x 64 | Bytes | 416.5 x 436.5 | 0.378 to 0.445 | 1.65 | 16 | L1D data, 1 row of 4 in each way's bank |
+| `sram_1w1r_1024x19` | 1,024 x 19 | | 263.4 x 261.0 | 0.306 to 0.373 | 1.38 | 4 | L1D tags, one for each way |
+| `sram_1w1r_1024x18` | 1,024 x 18 | | 253.5 x 260.7 | 0.302 to 0.369 | 1.37 | 4 | L2 tags, 1 row of 4 ways |
+| `sram_1w1r_512x68` | 512 x 68 | | 436.7 x 245.7 | 0.384 to 0.451 | 1.67 | 2 | The NIC's receive and transmit FIFOs |
+| `sram_1w1r_256x36` | 256 x 36 | | 167.6 x 237.2 | 0.266 to 0.334 | 1.24 | 3 | The BTB's slot-2 payload tables |
+| `sram_1w1r_128x64_m8` | 128 x 64 | Bytes | 248.6 x 143.5 | 0.308 to 0.376 | 1.39 | 16 | L1I data, 1 row of 4 in each way's bank |
+
+The macros cover 12.0 mm^2, half of the die. Read is the delay
+from the read clock's falling edge to the read data in the macro's Liberty
+model, driving 0.84 fF and 53.5 fF: an OpenRAM macro registers its inputs at
+the rising edge and reads in the second half of the cycle, so a read returns
+its word in the next cycle, as a block RAM's registered read does. A macro
+needs a clock period of at least its minimum period, so the 4,096 by 64
+macros would limit a run with `--clock-period` below 2.15 ns. The macros
+differ from the block RAMs they replace in these cases:
+
+- A macro's read of the word that its write port writes in the same cycle
+  returns undefined data, where a block RAM on one clock returns the old
+  word. For the memories that write whole words on one clock, the L1D tags
+  and the BTB's payload tables, `frost_sram_1w1r` keeps the block RAM's
+  behavior: the macros take each
+  write a cycle late, from a register, and a read of the word that the
+  register holds returns the register's copy. The L1D depends on it: a fill
+  writes its line's tag in a cycle in which a request for another line of
+  the set can read the tags, and the old tag, invalid, keeps that request
+  from hitting the fill's way. The memories with write lanes, the caches'
+  data and the L2's tags, keep the undefined read, which frost_cache never
+  uses: in simulation its data arrays reject such a read when the cache uses
+  its data (`sdp_ram_byte_en`), and the L2 discards a delayed tag read that a
+  write of its set crossed. Across the data memory's two clocks, such a read
+  is undefined in a block RAM as well.
+- A data memory port's read data after a cycle that writes that port is
+  undefined, where the block RAM returns the written bytes. The CPU accepts
+  no load while it stores, and the debug slice writer reads the
+  program-loading port only in cycles that do not write it.
+- The L2 data macros' read data is undefined in the cycle after one
+  without a read, where the block RAM keeps the word it last read, and the
+  read pipeline of `sdp_ram_byte_en` carries it on. frost_cache uses the
+  array's read data only when a request's data is due.
+- A macro completes a write half a write-clock period after the clock edge.
+  The NIC's FIFOs use a word's read data only from two and a half
+  read-clock periods after its write pointer leaves the write side, which
+  covers that while the write clock's period is under five read-clock
+  periods. The NIC's clocks keep their 6.206 ns period, twice the core
+  clock's at the default target, so the receive FIFO, which the NIC writes
+  and the core reads, needs a core clock period above 1.25 ns.
+- The macros have no initial contents and no bulk clear. Simulation starts
+  the data memory with its program image, which a chip would load through
+  the program-loading port. The caches clear their tags and replacement
+  state with a sweep at reset; simulation's fast maintenance
+  (`SIM_FAST_MAINT`) clears those macros' models directly.
+
+The registry's `sram_macros_*` benches build each wrapper with the
+parameters of one of the design's memories and the macros' Verilog models,
+check the grid of macros, and compare random reads and writes with a model
+of the wrapper, including reads of the word being written where the macros
+hold writes. The `*_sram_macros` programs run `isa_test`, `ddr_test`,
+`ddr_exec_test`, and `nic_loopback` on the SoC built from the macros. In
+both, the X that a model drives for undefined read data becomes a random
+value, as does a macro's read of the word that it writes in the same cycle,
+so a user that depended on one would fail.
+
+[`openram.py`](openram.py) generates the macros:
+
+```bash
+./asic/openram.py generate                    # every macro, all at once
+./asic/openram.py generate sram_1w1r_1024x18  # one macro
+./asic/openram.py list
+```
+
+It runs OpenRAM in the ORFS image that `orfs.py` pins, in a virtual
+environment of the Python packages that
+[`sram/requirements.txt`](sram/requirements.txt) pins by hash, with OpenRAM
+fetched at the commit that `OPENRAM_COMMIT` names, from its dev branch. The
+last release, 1.2.48 from January 2024, connects an array's cells to the
+supply nets in quadratic time and caps the slew at the address pins at
+0.04 ns; on a 512 by 64 macro with a read-write port and a read port it had
+not finished routing the supply ring after 41 minutes, where the dev branch
+builds the same macro in 8 minutes. OpenRAM characterizes the macros with
+its analytical delay model at the Nangate45 library's corner, typical
+process at 1.1 V and 25 C, so no SPICE simulator is needed. Its tables reach
+53.5 fF of load and 0.5 ns of input slew (`LOAD_SCALES` and `SLEW_SCALES`);
+with OpenRAM's defaults, which stop at 0.84 fF, the read data's maximum
+capacitance would be below a single Nangate45 gate's input, so the flow
+could not buffer it. OpenRAM sets the minimum period to 3.7 times the read
+delay at the largest load. It skips DRC and LVS, which need Magic and
+Netgen. Each macro has a supply ring on metal3 and metal4 and its pins on
+its edges. The 4,096 by 64 macros take about half an hour and 3.5 GB each,
+on one thread, and the others less than ten minutes; all of them at once
+take 34 minutes. OpenRAM could not route the pins of a 512 by 128 macro to
+its edges, so the L1s' data uses 64-bit macros, four to a way's 256-bit
+line.
+
+The generator copies each macro's abstract LEF, Liberty model, and Verilog
+model into `sram/macros/<macro>/`, 363 KB in all, which git tracks, so the
+flow and CI never run OpenRAM. It fixes Python's hash seed, which sets the
+order in which OpenRAM writes shapes, so a rerun writes the same views byte
+for byte. Everything else stays in `asic/build/openram`, which git ignores,
+including each macro's GDS, 20 MB for a 4,096 by 64 macro. The final GDS
+therefore leaves the macros' cells empty, as ORFS allows for macros without
+layouts (`GDS_ALLOW_EMPTY`). OpenRAM draws FreePDK45 on a 2.5 nm grid, and
+OpenROAD's router rejects a pin off Nangate45's 5 nm manufacturing grid, so
+the generator widens the macro's outline and each rectangle in its LEF to
+that grid, moving an edge outward by at most 2.5 nm. In the Verilog models,
+the generator sets `VERBOSE` to 0, which also silences their collision
+warnings, and their delays to 0.1 and 0.5 ns, to fit the simulations' 3 ns
+clock.
+
+[`macro_placement.tcl`](macro_placement.tcl) places the macros in two bands
+across the core, with the logic in a band between them. The bottom band
+holds the L2 data's eight 64-bit slices, a macro each, in two blocks of two
+by two, and the data memory's four macros between them. The top band holds
+the L1D data in the middle, a row of four macros for each way; at its left
+the L1I data, arranged the same way, then the NIC's FIFOs and the BTB's
+payload tables; and at its right the L1D tags and the L2 tags, a macro for
+each way. The logic band is 800 um high, and the script stops the flow if
+the core leaves less than 600 um for it. Macros above one another stand
+40 um apart and groups of macros 80 um. Macros side by side stand 62 um
+apart, because the cell rows between them take their power from the metal4
+straps that cross the gap: the platform's grid has a strap of each supply
+every 56 um and keeps the straps' vias 2 um from a macro, so a 40 um gap can
+leave its rows without one. A 120 um ring of free core surrounds the macros and
+carries the wires from the pins past the macros' corners; with the macros
+against the core's edges, global routing could not get the wires past them.
+The I/O placer puts the pins, over a thousand of them the DDR port's, on
+the die's left and right edges (`PLACE_PINS_ARGS`), in front of the logic
+band rather than a macro.
+[`check_power_grid.tcl`](check_power_grid.tcl) stops the
+floorplan if a macro or a row is cut off from the grid, which the final
+report's IR drop analysis would otherwise find at the end of the flow. The
+platform's grid straps each macro's supply ring through metal5 and metal6,
+and [`sram_power.tcl`](sram_power.tcl) connects OpenRAM's `vdd` and `gnd`
+pins to the grid's nets.
 
 ## Timing constraints
 
@@ -113,17 +284,120 @@ two-flop synchronizers, and handshakes.
 Inputs and outputs take a fifth of their clock's period outside the design:
 the program-loading port on `core_clk_div4`, the raw transceiver data on the
 NIC clocks, the JTAG pins on `jtag_tck`, and the other ports on `core_clk`.
-The asynchronous levels (`i_jtag_trst_n`, the NIC's clock-presence and PHY
-status inputs) are not timed. A missed target does not stop the flow: ORFS's
-repair steps after synthesis work toward it with their default effort, and
+The delays count from the clock as it arrives inside the design, as if a PLL
+aligned the board's clock with a point inside the chip, or the logic beyond
+the ports shared the clock tree. Each clock has an I/O copy, a generated
+clock named after it with `_io` appended, defined at the clock pin of one
+register at its interface, and each port's delay is set against its clock's
+copy:
+
+| Clock | Pin of its I/O copy |
+| --- | --- |
+| `core_clk` | The DDR bridge's AXI read request register |
+| `core_clk_div4` | The program-loading port of the data memory's first macro |
+| `nic_tx_clk` | The NIC's transmit gearbox |
+| `nic_rx_clk` | The NIC's receive gearbox |
+| `jtag_tck` | The JTAG TAP's bypass register |
+
+After clock tree synthesis, a copy's edges arrive with the tree's delay to
+its pin, and the paths through the ports are timed against the skew between
+that pin and the registers they reach. Against the clock at the port, every
+path to an output would lose the tree's whole delay, and the hold repair
+would add as much in buffers in front of every input. Before clock tree
+synthesis, while the clocks are ideal, a copy's edges are its clock's.
+OpenSTA's `-reference_pin` option to `set_input_delay` would say the same,
+but the OpenROAD build in the ORFS image crashes on any input delay that
+uses it. Clock tree synthesis takes the nets of the clock ports as its
+roots from `CTS_ARGS` in [`config.mk`](config.mk): from the SDC's clocks, it
+would take each copy for a second clock on its master's net and stop.
+
+The register at a copy's pin is clocked by the copy. In the tables of worst
+slack by capture clock, in `summary.md` and the `paths` report, each copy
+has its own row for the paths that it captures: those to the output ports
+and to that register. The `paths` report's other tables count a copy's
+paths as its clock's. The asynchronous levels (`i_jtag_trst_n`, the NIC's
+clock-presence and PHY status inputs) are not timed. A missed target does
+not stop the flow: ORFS's repair steps after synthesis work toward it, and
 synthesis maps the same netlist for any target
 ([Finding the fmax](#finding-the-fmax)).
 
-The mocked memories add paths between the two core clocks that SRAM macros do
-not have: the instruction memory's single row is written on `i_clk_div4` and
-read by registers on `i_clk`, and the data memory's reclocked programming
-port meets the `i_clk_div4` logic with one core cycle. The flow times and
-repairs them like any other path.
+The data memory's macros clock their program-loading port with `i_clk_div4`
+and their core port with `i_clk`, as the X3's block RAMs do. The instruction
+memory's mocked row adds paths between the two core clocks that a two-port
+memory would not have: it is written on `i_clk_div4` and read by registers on
+`i_clk`. The flow times and repairs them like any other path.
+
+## Results with the SRAM macros
+
+The default run at the X3's 3.103 ns core clock, with 16 threads, against the
+same flow with the X3's 2 MiB L2 at commit `ea7289e0`, whose 64 L2 data
+macros needed a 9.6 by 7.315 mm die, and against the last run with every
+memory over 4,096 bits mocked whose results are recorded here, which CI made
+before the caches became 4-way set-associative (commit `e54df6da`) and which
+counted the I/O delays from the clock at its port:
+
+| | Memories mocked | 2 MiB L2 | 256 KiB L2 |
+| --- | ---: | ---: | ---: |
+| Die | 1.89 by 1.89 mm, 3.58 mm^2 | 9.6 by 7.315 mm, 70.2 mm^2 | 5.13 by 4.695 mm, 24.1 mm^2 |
+| SRAM macros | | 119, 49.0 mm^2 | 57, 12.0 mm^2 |
+| Standard cells, final | 752,118, 1.46 mm^2 | 1,045,105, 1.78 mm^2 | 923,924, 1.71 mm^2 |
+| Hold buffers from clock tree synthesis | 11,347 | 22,495 | 14,083 |
+| Routed wire | 20.1 m | 68.6 m | 41.0 m |
+| Core clock latency, final | about 1 ns | 2.94 to 3.65 ns | 1.80 to 2.32 ns |
+| Clock skew, final | 0.15 ns | 0.55 ns | 0.61 ns |
+| Core clock setup WNS, final | 0.375 ns | -0.955 ns | -0.411 ns |
+| Worst core path between registers, final | met | -0.955 ns | -0.411 ns |
+| Core clock fmax estimate, final | | 199.5 MHz | 254.8 MHz |
+| `core_clk_div4` setup WNS, final | 1.774 ns | 0.057 ns | 0.952 ns |
+| Core clock hold WNS, final | 0.025 ns | -0.119 ns | -0.046 ns |
+| Detailed-route DRC errors | 0 | 0 | 0 |
+| Worst IR drop on VDD | 49 mV | 193 mV | 88 mV |
+
+The 256 KiB L2 takes eight data macros, 5.1 mm^2, where the 2 MiB L2 took
+64, 40.7 mm^2, and the die shrinks to a third. The macros still take half of
+it, and the logic fills the band between their two bands and the room around
+them, so the wires stay long: the routed wire is twice the mocked run's. The
+clock tree spans the die, and the core clock's latency is 1.80 to 2.32 ns,
+where the 2 MiB L2's die put it at 2.94 to 3.65 ns.
+
+The ports meet timing, since their I/O delays count from the clocks' I/O
+copies ([Timing constraints](#timing-constraints)): the worst output has
+1.20 ns of setup slack and 0.68 ns of hold slack, and the worst input 0.52 ns
+of each. The hold repair after clock tree synthesis adds 14,083 buffers, none
+at the ports. Before it, 484 endpoints fail their hold checks: about half are
+on the mocked instruction memory's paths from the quarter-rate clock, by up
+to 1.27 ns, and about half in the L2, by up to 0.33 ns. The quarter-rate
+clock's tree, with about 400 registers and the data memory's four macros,
+reaches them 0.7 to 0.9 ns after its clock pin, and the core clock's tree
+reaches its registers 1.8 to 2.3 ns after its own, so a path from the
+quarter-rate clock to the core clock needs the difference in delay. On the
+2 MiB L2's die the difference grows to about 2.5 ns, and the quarter-rate
+clock's reset synchronizer, which `i_rst` reaches on the core clock's I/O
+copy, keeps 0.06 ns of setup slack, where it has 0.95 ns here.
+
+Between registers, the data memory's paths to the load queue fail worst, by
+up to 0.411 ns. Then come the paths into the L1D's and the L1I's MSHRs, which
+take the L2's responses, from one register that synthesis renamed, through
+two multiplexer trees and 35 buffers, by up to 0.213 and 0.099 ns; the L1D's
+tags to its request registers, by up to 0.212 ns; and the BTB's payload
+tables to the PC controller, by up to 0.112 ns. A macro drives its read data
+0.3 to 0.6 ns after the clock's falling edge, which leaves the paths from a
+macro about 1 ns of the 3.103 ns cycle, less the skew between the macro's
+clock and the capturing register's. The 256 KiB build's worst path launches
+at 1.5515 ns and captures at 3.103 ns, so its -0.411165 ns slack gives a
+minimum period of 3.925330 ns and an estimated fmax of 254.8 MHz. The 2 MiB
+build's worst path has the same half-cycle budget and -0.954699 ns slack,
+giving 5.012398 ns and 199.5 MHz. These estimates use the saved final path
+reports and their unrounded TSV slacks. Each of the L2's eight data macros
+feeds its read register directly, and those paths meet timing with 0.33 ns
+to spare, where the 2 MiB L2's 64 macros, in rows millimeters from the cache's
+logic, failed by up to 0.955 ns. The multiplexer that returns a held write
+adds 0.07 to 0.11 ns to the BTB's and the L1D's paths. Since the flow skips
+the repairs after global routing, the final design keeps 98 maximum-slew and
+3,050 maximum-capacitance violations (none and 632 in the mocked run, which
+ran those repairs, and 770 and 6,602 with the 2 MiB L2) and 36 hold
+violations. The worst IR drop is 88 mV on VDD and 81 mV on VSS; ORFS's map of
+the VSS drop puts its worst at the core's left edge, beside the NIC's FIFOs.
 
 ## Finding the fmax
 
@@ -131,12 +405,20 @@ A target the design cannot meet shows how fast it can run and which paths
 stop it. `--clock-period` sets the core clock period in ns, below 100 ns with
 at most four decimals; the quarter-rate clock and the I/O delays follow it.
 With a period shorter than the design reaches, ORFS's repair steps resize,
-buffer, clone, and swap pins on the failing paths until no move helps, and
-the worst slack that remains gives the fmax, 1 / (period - WNS). `paths`
-reports the setup paths of one stage's database:
+buffer, clone, and swap pins on the failing paths until no move helps. For a
+register path whose launch and capture edges span f core periods, its slack
+gives a minimum period of P - slack / f. The fmax estimate is the smallest
+1 / (P - slack / f) across the reported register paths. The expression
+1 / (period - WNS) applies only when those paths have a full core cycle.
+OpenRAM reads launch on the falling edge and reach rising-edge registers
+with half a cycle, so f is 0.5 for those core paths. The flow skips the
+repairs after global routing, so clock tree synthesis is the last stage
+that repairs timing in this configuration. Below 2.15 ns the 4,096 by 64
+macros also miss their minimum period. `paths` reports the setup paths of
+one stage's database:
 
 ```bash
-./asic/orfs.py run --target grt --num-cores 16 --clock-period 1.6
+./asic/orfs.py run --target grt --num-cores 16 --clock-period 2.2
 ./asic/orfs.py paths --stage place    # or cts, grt, final
 ```
 
@@ -147,7 +429,7 @@ with the parasitics and clocks of the stage's own report, logs OpenROAD to
 | Table | Contents |
 | --- | --- |
 | Worst slack by capture clock | Endpoints, failing endpoints, WNS, and TNS of each clock |
-| Paths between core clock registers | The worst path between registers for each pair of launching and capturing core clocks, and the fmax it allows |
+| Paths between core clock registers | The worst path between registers for each pair of core clocks and launching edge, and the fmax it allows |
 | Core clock endpoints by block | The blocks whose registers have the worst core clock slack |
 | Core clock paths by start and end block | Each endpoint's worst path, grouped by the blocks of its startpoint and endpoint, with its cells and notes on ports, the quarter-rate clock, and mocked memories |
 
@@ -156,23 +438,26 @@ counts only paths between registers: the I/O delays are a fifth of the period
 on each side of a port, so a port's slack shrinks faster than the period. The
 tables behind the report are in `reports/nangate45/frost/base/`:
 `<database>_paths.tsv` has the worst path to every endpoint,
-`<database>_register_paths.tsv` the worst path for each pair of core clocks,
-`<database>_worst_paths.json` the worst 100 core clock paths pin by pin, and
-`<database>_worst_paths.rpt` the worst five paths of each clock.
+`<database>_register_paths.tsv` the worst path for each pair of core clocks
+and launching edge, including its launch and capture edge times without
+clock latency, `<database>_worst_paths.json` the worst 100 core clock paths
+pin by pin, and `<database>_worst_paths.rpt` the worst five paths of each clock.
 
 Synthesis does not depend on the period. ORFS hands the period to ABC as a
 delay target, but the ABC script it runs maps for delay without reading the
 target, so every period gives the same netlist: the 1.6 ns build's
 `1_synth.odb` matches the default build's byte for byte. The period steers
 the steps after synthesis, which resize gates in the floorplan, weight the
-global placement, and repair the paths after clock tree synthesis and global
-routing.
+global placement, and finish timing repair at clock tree synthesis.
 
 ### Results
 
-These runs used the RTL of commit `e6eb7a47`, eight threads each, and ORFS's
-default repair settings; the repair after global routing took 12 minutes at
-1.6 ns, and the 1.6 ns run took 2.7 hours through global routing. The core
+These runs predate the SRAM macros: they used the RTL of commit `e6eb7a47`
+with every memory over 4,096 bits mocked, I/O delays counted from the clock
+at its port rather than from an I/O copy, eight threads each, and ORFS's
+default repair settings, including the repairs after global routing, which
+took 12 minutes at 1.6 ns; the 1.6 ns run took 2.7 hours through global
+routing. The core
 WNS, TNS, and failing endpoints are those of the core clock's endpoints, and
 the fmax is that of the worst path between registers. A met target bounds the
 fmax from below, since the repairs stop once a path meets it.
@@ -218,9 +503,10 @@ between the registers. Both integer ALUs have it. Synthesized alone, the
 maps the same logic, which costs 15% more area.
 
 The table gives the time each family needs, the core period less the slack of
-its worst path, after global routing. The 3.103 ns run repairs a path only
-until it meets 3.103 ns, so its column shows how each family comes out of
-synthesis and placement, and the 1.6 ns column what the repairs reach.
+its worst path, after global routing. These mocked-memory paths have a full
+core cycle. The 3.103 ns run repairs a path only until it meets 3.103 ns, so
+its column shows how each family comes out of synthesis and placement, and
+the 1.6 ns column what the repairs reach.
 
 | Family | Worst path | Cells at 1.6 ns | 3.103 ns run (ns) | 1.6 ns run (ns) |
 | --- | --- | ---: | ---: | ---: |
@@ -266,13 +552,13 @@ stands out, but the families behind the multiplier are slower.
 ### What the mocked memories hide
 
 Each mocked memory is one row of flip-flops, so these timings leave out what
-the memories cost. A synchronous read here is a flip-flop feeding the read
-register, where an SRAM macro would put its output; the macro's
-clock-to-output time replaces the flip-flop's. The paths after those read
-registers have room at 1.6 ns: 0.63 ns from the data memory's read register to
-the load queue, and 0.99 ns from the L1 data array's. ORFS's `fakeram45` model
-of a 2,048 x 39 array, as one reference, gives 0.435 ns from the clock to the
-output.
+the memories cost. A synchronous read in these runs is a flip-flop feeding
+the read register, where an SRAM macro puts its output; the paths after
+those read registers had room at 1.6 ns: 0.63 ns from the data memory's read
+register to the load queue, and 0.99 ns from the L1 data array's. With the
+SRAM macros, the paths from the data memory to the load queue fail worst at
+the X3's clock, and with the X3's 2 MiB L2, those from the L2 data
+([Results with the SRAM macros](#results-with-the-sram-macros)).
 
 The shallow arrays that the threshold also catches are distributed RAMs,
 read without a clock, which the X3 builds from LUTs: the BTB and TAGE tables,
@@ -308,21 +594,43 @@ four-entry packet array is mocked, leaving out a small read multiplexer),
 INT RS wakeup, and the L2 response. The two families that set the ASIC fmax
 are arithmetic, which the X3 builds from carry chains and DSP slices, so the
 results are consistent with FPGA-shaped arithmetic becoming expensive in this
-mapping. The PC loop reads the BTB and TAGE tables and the load path reads the
-data memory, all mocked here, so this flow cannot rank those two families
-until SRAM macros or real arrays replace the mocks.
+mapping. The PC loop reads the BTB and TAGE tables, which the flow still
+mocks, so it cannot rank that family until real arrays replace the mocks.
 
 ## CI
 
-Two chained jobs run the flow on every pull request and every push to `main`.
-`ASIC Flow (synthesis to global routing)` runs
-`./asic/orfs.py run --target grt` and passes the global routing database to
-`ASIC Flow (detailed routing to GDS)`, which runs
-`./asic/orfs.py run --from route`. The second job's step summary shows
-`summary.md`, and its `asic-flow-results` artifact holds the logs, reports,
-and summary of both jobs. The routing job adds swap space for detailed
-routing, and both jobs delete preinstalled toolchains to make room for the
+Four chained jobs run the flow on every pull request and every push to
+`main`, each resuming from the database of the one before:
+
+| Job | Runs |
+| --- | --- |
+| `ASIC Flow (synthesis to clock tree synthesis)` | `./asic/orfs.py run --target cts` |
+| `ASIC Flow (global routing)` | `./asic/orfs.py run --from grt --target grt` |
+| `ASIC Flow (detailed routing)` | `./asic/orfs.py run --from route --target route` |
+| `ASIC Flow (GDS and final report)` | `./asic/orfs.py run --from finish` |
+
+The last job's step summary shows `summary.md`, and its `asic-flow-results`
+artifact holds the logs, reports, and summary of all four. The runners have
+four CPUs and 16 GB of memory. With four threads, the steps through clock
+tree synthesis peak at 11.3 GB, and global routing, detailed routing, and
+the final report at 15.6, 19.9, and 24.8 GB, so their jobs add swap space;
+each job also deletes preinstalled toolchains to make room for the
 databases.
+
+Detailed routing reuses the pin access saved in the global routing database.
+On the same 256 KiB input with four threads, `-no_pin_access` cut its CPU
+time from 24,280 to 18,282 seconds, about 25%, and produced byte-identical
+routed DEF with no DRC or antenna violations. That puts the detailed
+routing job at an estimated 3.5 to 3.9 hours, below the six-hour job limit.
+
+Those three steps' memory follows the design's 920,000 cells more than its
+die. Global routing holds 3.7 GB after its pin access and about 11 GB more in
+its router. Detailed routing builds its own model of the cells, their 3
+million pins, and the power grid's shapes, about 9 GB, then adds 3 GB for the
+routing guides, and its track assignment peaks 6 GB above that. In the final report, the IR drop analysis
+takes about 9 GB and the layout images that ORFS saves about 8 GB. With 16
+threads, the same three steps peaked at 40, 31, and 34 GB on the 2 MiB L2's
+die, three times as large, and at 21, 20, and 25 GB on this one.
 
 ## The ORFS image
 
@@ -331,4 +639,6 @@ databases.
 It is the ORFS 26Q4 quarterly release, commit `ecb3cfdeb`, which Docker Hub
 publishes under its `git describe` tag. It contains Yosys 0.68, OpenROAD
 `c487fc70`, and KLayout 0.30.12; the frost image's Yosys 0.70 reads the same
-sources. To update the image, change `ORFS_IMAGE` and run the whole flow.
+sources. To update the image, recheck `detail_route.tcl`'s default arguments
+and the pin access assumptions, update `ORFS_IMAGE`, `DETAILED_ROUTE_ARGS`,
+and the guard in `tests/test_asic_flow.py` as needed, and run the whole flow.

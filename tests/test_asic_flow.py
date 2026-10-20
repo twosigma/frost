@@ -33,6 +33,119 @@ def test_orfs_image_is_pinned_by_digest() -> None:
     assert re.fullmatch(r"openroad/orfs:[\w.-]+@sha256:[0-9a-f]{64}", orfs.ORFS_IMAGE)
 
 
+def _check_pin_access_reuse(config: str) -> None:
+    """Check literal Make settings before allowing saved pin access to be reused."""
+    guarded = {
+        "DETAILED_ROUTE_ARGS",
+        "SKIP_INCREMENTAL_REPAIR",
+        "SKIP_ANTENNA_REPAIR",
+        "SKIP_ANTENNA_REPAIR_POST_DRT",
+        "RECOVER_POWER",
+    }
+    settings: dict[str, str] = {}
+    depth = 0
+    definitions = 0
+    for raw in re.sub(r"\\\r?\n", " ", config).splitlines():
+        line = raw.partition("#")[0].strip()
+        if re.match(r"^(ifeq|ifneq|ifdef|ifndef)\b", line):
+            depth += 1
+        if re.match(r"^(?:(?:export|override)\s+)*define\b", line):
+            definitions += 1
+        if guarded.intersection(re.findall(r"\b\w+\b", line)):
+            assert not re.search(r"\boverride\b", line), (
+                f"guarded setting in an override directive: {line}"
+            )
+            assert depth == 0, f"guarded setting in a conditional: {line}"
+            assert definitions == 0 and not raw.startswith("\t"), (
+                f"cannot evaluate guarded setting: {line}"
+            )
+            assignment = re.fullmatch(
+                r"(?:export\s+)?(\w+)\s*(::=|:=|\?=|=)\s*([-\w. \t]*)", line
+            )
+            assert assignment and assignment[1] in guarded, (
+                f"cannot evaluate guarded setting: {line}"
+            )
+            name, _, value = assignment.groups()
+            assert name not in settings, f"duplicate assignment to {name}"
+            settings[name] = value.strip()
+        if re.match(r"^endif\b", line):
+            depth -= 1
+            assert depth >= 0, "unmatched endif"
+        if re.match(r"^endef\b", line):
+            definitions -= 1
+            assert definitions >= 0, "unmatched endef"
+    assert depth == 0, "unterminated conditional"
+    assert definitions == 0, "unterminated define"
+    if "-no_pin_access" not in settings.get("DETAILED_ROUTE_ARGS", "").split():
+        return
+
+    for setting in (
+        "SKIP_INCREMENTAL_REPAIR",
+        "SKIP_ANTENNA_REPAIR",
+        "SKIP_ANTENNA_REPAIR_POST_DRT",
+    ):
+        assert settings.get(setting) == "1", (
+            f"-no_pin_access requires {setting}=1 so repairs cannot invalidate "
+            "the saved pin access"
+        )
+    assert settings.get("RECOVER_POWER", "0") == "0", (
+        "-no_pin_access requires RECOVER_POWER=0 so power recovery cannot resize cells"
+    )
+    assert orfs.ORFS_IMAGE == (
+        "openroad/orfs:26Q3-705-gecb3cfdeb"
+        "@sha256:6da005d1c3447799f7401215174196c75ba9ec7e28417624d0c20225f85d594c"
+    ), (
+        "ORFS_IMAGE changed: recheck detail_route.tcl's default arguments and "
+        "pin access assumptions before updating DETAILED_ROUTE_ARGS and this guard"
+    )
+
+
+def test_pin_access_reuse_requires_disabled_repairs_and_pinned_defaults() -> None:
+    """Pin access is reusable only while cells and their placement stay unchanged."""
+    _check_pin_access_reuse((ASIC_DIRECTORY / "config.mk").read_text())
+
+
+@pytest.mark.parametrize(
+    ("change", "error"),
+    [
+        ("", None),
+        ("export RECOVER_POWER := 20", "requires RECOVER_POWER=0"),
+        ("SKIP_INCREMENTAL_REPAIR = 0", "requires SKIP_INCREMENTAL_REPAIR=1"),
+        ("SKIP_ANTENNA_REPAIR = 1", "duplicate assignment"),
+        ("DETAILED_ROUTE_ARGS += -no_pin_access", "cannot evaluate"),
+        ("override RECOVER_POWER = 0", "override directive"),
+        ("export override RECOVER_POWER = 0", "override directive"),
+        ("ifdef OPTIONAL\nRECOVER_POWER = 0\nendif", "conditional"),
+        ("ifdef RECOVER_POWER\nendif", "conditional"),
+        ("RECOVER_POWER = $(POWER)", "cannot evaluate"),
+        ("RECOVER_POWER != echo 0", "cannot evaluate"),
+        ("route: RECOVER_POWER = 0", "cannot evaluate"),
+        ("define RECOVER_POWER\n0\nendef", "cannot evaluate"),
+        ("define OPTIONS\nRECOVER_POWER = 0\nendef", "cannot evaluate"),
+        ("route:\n\tRECOVER_POWER = 0", "cannot evaluate"),
+    ],
+)
+def test_pin_access_guard_checks_make_assignments(
+    change: str, error: str | None
+) -> None:
+    """Assignment syntax cannot hide settings that invalidate saved pin access."""
+    config = (
+        "export DETAILED_ROUTE_ARGS := -verbose 1 \\\n  -no_pin_access # reuse\n"
+        "SKIP_INCREMENTAL_REPAIR = 1\n"
+        "export SKIP_ANTENNA_REPAIR ::= 1\n"
+        "SKIP_ANTENNA_REPAIR_POST_DRT ?= 1\n"
+    )
+    if change == "SKIP_INCREMENTAL_REPAIR = 0":
+        config = config.replace("SKIP_INCREMENTAL_REPAIR = 1", change)
+    else:
+        config += change
+    if error is None:
+        _check_pin_access_reuse(config)
+    else:
+        with pytest.raises(AssertionError, match=error):
+            _check_pin_access_reuse(config)
+
+
 def test_orfs_runs_as_host_user_with_checkout_mounted() -> None:
     """ORFS writes only into asic/build, as the invoking user."""
     command = orfs.orfs_command(["NUM_CORES=4", "finish"], uid=1234, gid=5678)
@@ -158,16 +271,30 @@ def test_sources_makefile_is_independent_of_the_mount_point(tmp_path: Path) -> N
 
 
 # Stand-ins for the OpenSTA commands that asic/constraint.sdc calls. Each
-# command prints what it constrains: "clock <name> <period>", "<input|output>
-# <port> <clock> <delay>", or "false_path <ports>".
+# command prints what it constrains: "clock <name> <period>", "generated
+# <name> <master> <divisor> <pin>", "<input|output> <port> <clock> <delay>",
+# or "false_path <hold|all> <ports>". With FROST_HARNESS_NO_PINS set,
+# get_pins finds nothing.
 SDC_HARNESS = r"""
 set clocks [dict create]
+set clock_ports [dict create]
 proc option {arguments name} {
     return [lindex $arguments [expr {[lsearch -exact $arguments $name] + 1}]]
 }
 proc create_clock {args} {
     dict set ::clocks [option $args -name] [option $args -period]
+    dict set ::clock_ports [lindex $args end] [option $args -name]
     puts "clock [option $args -name] [option $args -period] [lindex $args end]"
+}
+proc create_generated_clock {args} {
+    set master [dict get $::clock_ports [option $args -source]]
+    dict set ::clocks [option $args -name] [dict get $::clocks $master]
+    puts "generated [option $args -name] $master [option $args -divide_by]\
+        [join [lindex $args end] { }]"
+}
+proc get_pins {args} {
+    if {[info exists ::env(FROST_HARNESS_NO_PINS)]} {return {}}
+    return [list [lindex $args end]]
 }
 proc get_ports {patterns} {return $patterns}
 proc get_clocks {names} {return $names}
@@ -182,7 +309,10 @@ proc set_input_delay {delay args} {
 proc set_output_delay {delay args} {
     puts "output [lindex $args end] [option $args -clock] $delay"
 }
-proc set_false_path {args} {puts "false_path [option $args -from]"}
+proc set_false_path {args} {
+    set checks [expr {"-hold" in $args ? "hold" : "all"}]
+    puts "false_path $checks [join [option $args -from] { }]"
+}
 set inputs {
     i_rst i_instr_mem_en i_instr_mem_wrdata[3] i_ddr_axi_rdata[7]
     i_nic_rx_raw_data[5] i_nic_rx_signal_ok i_jtag_tms i_jtag_tdi i_jtag_trst_n
@@ -213,7 +343,7 @@ PORT_CLOCKS = {
 
 
 def _evaluate_sdc(
-    tmp_path: Path, core_period: str | None = None
+    tmp_path: Path, core_period: str | None = None, *, find_pins: bool = True
 ) -> subprocess.CompletedProcess[str]:
     """Run asic/constraint.sdc in tclsh with FROST_CORE_CLOCK_PERIOD set or not."""
     harness = tmp_path / "harness.tcl"
@@ -221,10 +351,12 @@ def _evaluate_sdc(
     environment = {
         name: value
         for name, value in os.environ.items()
-        if name != orfs.CLOCK_PERIOD_VARIABLE
+        if name not in (orfs.CLOCK_PERIOD_VARIABLE, "FROST_HARNESS_NO_PINS")
     }
     if core_period is not None:
         environment[orfs.CLOCK_PERIOD_VARIABLE] = core_period
+    if not find_pins:
+        environment["FROST_HARNESS_NO_PINS"] = "1"
     return subprocess.run(
         ["tclsh", str(harness), str(ASIC_DIRECTORY / "constraint.sdc")],
         capture_output=True,
@@ -247,6 +379,8 @@ def _sdc_constraints(
         kind, *fields = line.split()
         if kind == "clock":
             periods[fields[0]] = float(fields[1])
+        elif kind == "generated":
+            periods[fields[0]] = periods[fields[1]] / int(fields[2])
         elif kind in ("input", "output"):
             delays[fields[0]] = (fields[1], float(fields[2]))
     return periods, delays
@@ -273,7 +407,8 @@ def test_core_clock_period_sets_the_core_clocks_and_their_ports(
 ) -> None:
     """The quarter-rate clock and every port's delay follow the core period.
 
-    Ports take a fifth of their clock's period; the NIC and JTAG clocks stay.
+    Ports take a fifth of their clock's period, counted from the clock's I/O
+    copy; the NIC and JTAG clocks stay.
     """
     periods, delays = _sdc_constraints(tmp_path, core_period)
     core = orfs.default_clock_period() if core_period is None else float(core_period)
@@ -282,9 +417,85 @@ def test_core_clock_period_sets_the_core_clocks_and_their_ports(
     assert periods["core_clk_div4"] == pytest.approx(4 * core)
     assert periods["nic_tx_clk"] == periods["nic_rx_clk"] == pytest.approx(6.206)
     assert periods["jtag_tck"] == pytest.approx(100.0)
-    assert {port: clock for port, (clock, _) in delays.items()} == PORT_CLOCKS
+    assert {port: clock for port, (clock, _) in delays.items()} == {
+        port: f"{clock}_io" for port, clock in PORT_CLOCKS.items()
+    }
     for port, (clock, delay) in delays.items():
         assert delay == pytest.approx(periods[clock] / 5), port
+
+
+def test_each_clock_has_an_io_copy_at_one_pin(tmp_path: Path) -> None:
+    """Every clock's ports count from a copy generated inside the chip.
+
+    The copy divides by one, so it keeps its master's period, and a reference
+    pattern that matches no pin stops the constraints.
+    """
+    result = _evaluate_sdc(tmp_path)
+    assert result.returncode == 0, result.stderr
+    generated = {
+        fields[0]: (fields[1], fields[2], fields[3:])
+        for kind, *fields in (line.split() for line in result.stdout.splitlines())
+        if kind == "generated"
+    }
+    masters = ("core_clk", "core_clk_div4", "nic_tx_clk", "nic_rx_clk", "jtag_tck")
+    assert {name: master for name, (master, _, _) in generated.items()} == {
+        f"{master}_io": master for master in masters
+    }
+    for name, (_, divisor, pins) in generated.items():
+        assert divisor == "1", name
+        assert len(pins) == 1 and pins[0].endswith(("/CK", "/clk0")), name
+
+    missing = _evaluate_sdc(tmp_path, find_pins=False)
+    assert missing.returncode != 0
+    assert "the I/O reference for core_clk" in missing.stderr
+
+
+def test_clock_tree_synthesis_takes_each_clock_port_as_a_root(tmp_path: Path) -> None:
+    """CTS_ARGS in config.mk lists the net of every clock's port.
+
+    From the SDC's clocks, clock tree synthesis would take each I/O copy for a
+    second clock on its master's net and stop, so it takes its roots from the
+    list, with ORFS's other default arguments.
+    """
+    result = _evaluate_sdc(tmp_path)
+    assert result.returncode == 0, result.stderr
+    ports = {
+        fields[2]
+        for kind, *fields in (line.split() for line in result.stdout.splitlines())
+        if kind == "clock"
+    }
+    config = (ASIC_DIRECTORY / "config.mk").read_text().replace("\\\n", " ")
+    match = re.search(r"^export CTS_ARGS = (.*)$", config, re.MULTILINE)
+    assert match is not None
+    arguments = match[1].split(maxsplit=3)
+    assert arguments[:3] == [
+        "-sink_clustering_enable",
+        "-repair_clock_nets",
+        "-clk_nets",
+    ]
+    assert arguments[3].startswith("{") and arguments[3].endswith("}")
+    assert sorted(arguments[3][1:-1].split()) == sorted(ports)
+
+
+def test_only_the_asynchronous_levels_are_false_paths(tmp_path: Path) -> None:
+    """Every other input keeps its setup and hold checks."""
+    result = _evaluate_sdc(tmp_path)
+    assert result.returncode == 0, result.stderr
+    false_paths: dict[str, set[str]] = {"hold": set(), "all": set()}
+    for line in result.stdout.splitlines():
+        kind, *fields = line.split()
+        if kind == "false_path":
+            false_paths[fields[0]].update(fields[1:])
+
+    assert false_paths == {
+        "hold": set(),
+        "all": {
+            "i_jtag_trst_n",
+            "i_nic_tx_clk_ok",
+            "i_nic_rx_clk_ok",
+            "i_nic_phy_status*",
+        },
+    }
 
 
 def test_core_clock_period_must_be_a_positive_number(tmp_path: Path) -> None:
@@ -327,10 +538,10 @@ def test_quarter_rate_clock_is_related_to_the_core_clock(tmp_path: Path) -> None
     ]
 
     assert sorted(map(sorted, groups)) == [
-        ["core_clk", "core_clk_div4"],
-        ["jtag_tck"],
-        ["nic_rx_clk"],
-        ["nic_tx_clk"],
+        ["core_clk", "core_clk_div4", "core_clk_div4_io", "core_clk_io"],
+        ["jtag_tck", "jtag_tck_io"],
+        ["nic_rx_clk", "nic_rx_clk_io"],
+        ["nic_tx_clk", "nic_tx_clk_io"],
     ]
     assert set().union(*groups) == set(_sdc_constraints(tmp_path)[0])
 
@@ -351,6 +562,31 @@ def test_mocked_memories_come_from_the_synthesis_log(tmp_path: Path) -> None:
         ("top/tags", 4096, 17),
     ]
     assert orfs.mocked_memories(tmp_path / "missing.log") == []
+
+
+def test_sram_macros_come_from_the_synthesis_statistics(tmp_path: Path) -> None:
+    """The summary counts each macro over the whole design."""
+    statistics = tmp_path / "synth_stat.txt"
+    statistics.write_text(
+        "=== cpu_and_mem ===\n"
+        "        2   1.27E+06        2   1.27E+06   sram_1w1r_4096x64_m8\n"
+        "=== design hierarchy ===\n"
+        "       10   6.35E+06        8   5.08E+06   sram_1w1r_4096x64_m8\n"
+        "        4 2.64E+05        4 2.64E+05   sram_1w1r_1024x18\n"
+        "   271588 5.06E+05   187232 3.49E+05   MUX2_X1\n"
+    )
+
+    assert orfs.sram_macros(statistics) == [
+        ("sram_1w1r_4096x64_m8", 10),
+        ("sram_1w1r_1024x18", 4),
+    ]
+    assert orfs.sram_macros(tmp_path / "missing.txt") == []
+
+
+def test_macro_size_reads_the_lef() -> None:
+    """The summary takes each macro's size from its committed LEF."""
+    assert orfs.macro_size("sram_1w1r_4096x64_m8") == (751.9, 845.13)
+    assert orfs.macro_size("sram_missing") is None
 
 
 def test_summary_reports_a_partial_build(tmp_path: Path) -> None:
@@ -443,6 +679,8 @@ def _path(slack: float, start: str, end: str, **fields: object) -> orfs.TimingPa
         "buffers": 4,
         "startpoint": start,
         "endpoint": end,
+        "launch_edge": 0.0,
+        "capture_edge": 1.6,
     }
     values.update(fields)
     return orfs.TimingPath(**values)  # type: ignore[arg-type]
@@ -453,11 +691,11 @@ def test_path_report_ranks_blocks_and_families(tmp_path: Path) -> None:
     table = tmp_path / "5_1_grt_paths.tsv"
     table.write_text(
         "capture\tlaunch\tslack\tlaunched\tarrival\trequired\tskew\tcells\t"
-        "buffers\tstartpoint\tendpoint\n"
+        "buffers\tstartpoint\tendpoint\tlaunch_edge\tcapture_edge\n"
         "core_clk\tcore_clk\t-0.8\t0.5\t2.9\t2.1\t0.01\t31\t9\t"
-        "cpu_inst.u_rob.head_q$_DFF_P_\tcpu_inst.u_int_rs.src_q[3]$_DFF_P_\n"
+        "cpu_inst.u_rob.head_q$_DFF_P_\tcpu_inst.u_int_rs.src_q[3]$_DFF_P_\t0\t1.6\n"
         "core_clk\tcore_clk\t-3.2e-05\t0.5\t2.1\t2.1\t0.01\t12\t2\t"
-        "cpu_inst.u_lq.c_q$_DFF_P_\tcpu_inst.u_lq.d_q$_DFF_P_\n"
+        "cpu_inst.u_lq.c_q$_DFF_P_\tcpu_inst.u_lq.d_q$_DFF_P_\t0\t1.6\n"
     )
     paths = orfs.read_paths(table) + [
         _path(
@@ -477,6 +715,7 @@ def test_path_report_ranks_blocks_and_families(tmp_path: Path) -> None:
             "gen.l1.q$_DFF_P_",
             capture="core_clk_div4",
             launch="core_clk_div4",
+            capture_edge=6.4,
         ),
         _path(
             1.0,
@@ -531,4 +770,165 @@ def test_path_report_ranks_blocks_and_families(tmp_path: Path) -> None:
     # Blocks and families come worst first.
     assert report.index("| `data_memory` | 1 |") < report.index(
         "`cpu_inst.u_int_rs` | 2"
+    )
+
+
+def test_path_report_accounts_for_half_cycle_sram_reads(tmp_path: Path) -> None:
+    """Falling-edge SRAM reads can limit fmax despite a full-cycle path's worse slack."""
+    table = tmp_path / "6_final_register_paths.tsv"
+    table.write_text(
+        "capture\tlaunch\tslack\tlaunched\tarrival\trequired\tskew\tcells\t"
+        "buffers\tstartpoint\tendpoint\tlaunch_edge\tcapture_edge\n"
+        "core_clk\tcore_clk\t-0.4111648799\t4.222745709\t5.428816952\t"
+        "5.017652072\t0.1988385012\t19\t7\tdata_memory.u_macro\t"
+        "cpu_inst.u_lq.data$_DFF_P_\t1.5515\t3.103\n"
+    )
+    macro = orfs.read_paths(table)[0]
+    register = _path(-0.6, "a$_DFF_P_", "b$_DFF_P_", capture_edge=3.103)
+    assert orfs.core_cycles(macro, 3.103) == pytest.approx(0.5)
+    assert orfs.path_fmax(macro, 3.103) == pytest.approx(
+        1e3 / (3.103 + 2 * 0.4111648799)
+    )
+    report = orfs.paths_markdown(
+        "final", [macro, register], [register, macro], {"core_clk": 3.103}, set(), set()
+    )
+    assert "Core clock fmax estimate: 254.8 MHz" in report
+    assert "| core_clk | core_clk | 0.5 | -0.411 | 254.8 |" in report
+
+
+@pytest.mark.parametrize(
+    ("report", "edges"),
+    [
+        (
+            "  1.5515000000  1.5515000000  clock core_clk (fall edge)\n"
+            "  2.0000000000  3.5515000000  clock network delay (propagated)\n"
+            "  3.1030000000  3.1030000000  clock core_clk (rise edge)\n",
+            (1.5515, 3.103),
+        ),
+        (
+            "  0.0000000000  0.0000000000  0.0000000000  clock core_clk (rise edge)\n"
+            "  0.0000000000  1.6000000000  1.6000000000  clock core_clk (rise edge)\n",
+            (0.0, 1.6),
+        ),
+        (
+            "  9.3090000000  9.3090000000  clock core_clk (rise edge)\n"
+            "  12.4120000000  12.4120000000  clock core_clk_div4 (rise edge)\n",
+            (9.309, 12.412),
+        ),
+    ],
+)
+def test_clock_edge_export_reads_times_without_clock_latency(
+    tmp_path: Path, report: str, edges: tuple[float, float]
+) -> None:
+    """The Tcl export reads edge times from ideal and propagated clock reports."""
+    source = (ASIC_DIRECTORY / "critical_paths.tcl").read_text()
+    procedure = source[
+        source.index("proc frost_clock_edges") : source.index("proc frost_row")
+    ]
+    script = tmp_path / "edges.tcl"
+    script.write_text(
+        "namespace eval sta {\n"
+        "  proc parse_report_path_options {cmd options format strict} {}\n"
+        "  proc report_path_end {path_end} { return $path_end }\n"
+        "}\n"
+        "proc tee {quiet option name body} {\n"
+        "  upvar 1 $name output\n"
+        "  set output [uplevel 1 $body]\n"
+        "}\n"
+        + procedure
+        + f"set report {{{report}}}\nputs [frost_clock_edges $report]\n"
+    )
+    result = subprocess.run(
+        ["tclsh", str(script)], capture_output=True, text=True, check=True
+    )
+    assert tuple(map(float, result.stdout.split())) == pytest.approx(edges)
+
+
+@pytest.mark.parametrize(
+    ("launch_edge", "capture_edge", "cycles"),
+    [(0.0, 12.412, 4), (6.206, 12.412, 2), (9.309, 12.412, 1)],
+)
+def test_path_fmax_accounts_for_quarter_rate_clock_edges(
+    launch_edge: float, capture_edge: float, cycles: float
+) -> None:
+    """Clock edges retain the quarter-rate budget and the offset between clocks."""
+    path = _path(
+        -0.8,
+        "a$_DFF_P_",
+        "b$_DFF_P_",
+        launch_edge=launch_edge,
+        capture_edge=capture_edge,
+    )
+    assert orfs.core_cycles(path, 3.103) == pytest.approx(cycles)
+    assert orfs.path_fmax(path, 3.103) == pytest.approx(1e3 / (3.103 + 0.8 / cycles))
+
+
+def test_path_fmax_requires_clock_edges() -> None:
+    """A missing or invalid edge span must not silently assume a full cycle."""
+    with pytest.raises(ValueError, match="no clock edges"):
+        orfs.path_fmax(_path(-0.4, "a", "b", launch_edge=None), 1.6)
+    with pytest.raises(ValueError, match="positive clock edge span"):
+        orfs.path_fmax(_path(-0.4, "a", "b", capture_edge=0.0), 1.6)
+
+
+def test_io_clock_copies_count_as_their_masters() -> None:
+    """Paths on a clock's I/O copy (asic/constraint.sdc) count as on the clock."""
+    sdc = (
+        "create_clock -name core_clk -period 3.1030 [get_ports {i_clk}]\n"
+        "create_clock -name core_clk_div4 -period 12.4120 [get_ports {i_clk_div4}]\n"
+        "create_generated_clock -name core_clk_io -source [get_ports {i_clk}] "
+        "-divide_by 1 [get_pins {ddr.ar_valid_q$_DFF_P_/CK}]\n"
+        "create_generated_clock -name core_clk_div4_io -source "
+        "[get_ports {i_clk_div4}] -divide_by 1 "
+        "[get_pins {data_memory.u_sram.gen_row[0].u_macro/clk0}]\n"
+    )
+    assert orfs.clock_periods(sdc) == pytest.approx(
+        {
+            "core_clk": 3.103,
+            "core_clk_div4": 12.412,
+            "core_clk_io": 3.103,
+            "core_clk_div4_io": 12.412,
+        }
+    )
+    # An input on the core clock's copy needs no note about its clock.
+    path = _path(0.3, "i_ddr_axi_rvalid", "ddr.r_q$_DFF_P_", launch="core_clk_io")
+    assert orfs._path_note(path, set(), {"i_ddr_axi_rvalid"}) == "from an input"
+    # A path to the macro on the quarter-rate copy has four core periods.
+    macro = "data_memory.u_sram.gen_row[0].u_macro"
+    into_macro = _path(
+        1.0,
+        "imem.q$_DFF_P_",
+        macro,
+        launch="core_clk_div4",
+        capture="core_clk_div4_io",
+        capture_edge=12.412,
+    )
+    assert orfs.core_cycles(into_macro, 3.103) == pytest.approx(4)
+    # Outputs on the copy join the core clock's endpoint tables.
+    output = _path(-0.2, "ddr.w_q$_DFF_P_", "o_ddr_axi_wvalid", capture="core_clk_io")
+    register = _path(0.1, "a$_DFF_P_", "b$_DFF_P_", capture_edge=3.103)
+    report = orfs.paths_markdown(
+        "grt",
+        [output, register],
+        [register],
+        {"core_clk": 3.103, "core_clk_io": 3.103},
+        set(),
+        {"o_ddr_axi_wvalid"},
+    )
+    assert "| core_clk_io | 3.103 | 1 | 1 | -0.200 | -0.2 |" in report
+    assert "| `ports` | 1 | 1 | 1 | -0.200 |" in report
+
+
+def test_path_notes_name_the_sram_macros() -> None:
+    """A path from or to an SRAM macro (asic/sram's u_macro) says so."""
+    macro = "l2.data_array.u_sram.gen_macros.gen_row[3].gen_column[5].gen_macro.u_macro"
+    note = orfs._path_note(_path(0.1, macro, "l2.rd_pipe[0][7]$_DFF_P_"), set(), set())
+    assert note == "from an SRAM macro"
+    note = orfs._path_note(
+        _path(0.1, "l2.raddr$_DFF_P_", macro.replace(".", "/")), set(), set()
+    )
+    assert note == "to an SRAM macro"
+    assert (
+        orfs._path_note(_path(0.1, "u_macro_q$_DFF_P_", "a$_DFF_P_"), set(), set())
+        == ""
     )

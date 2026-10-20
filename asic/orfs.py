@@ -21,9 +21,8 @@ images run as the invoking user with the checkout mounted at /workspace, and
 everything the flow writes goes under asic/build.
 
 ``prepare`` runs inside the frost image, like tests/test_run_yosys.py: it
-compiles hello_world for the data memory's $readmemh image and converts the
-NIC and MAC/PCS sources with sv2v. ``summary`` rereads a finished or partial
-build.
+converts the NIC and MAC/PCS sources with sv2v. ``summary`` rereads a
+finished or partial build.
 """
 
 import argparse
@@ -42,6 +41,8 @@ from tempfile import TemporaryDirectory
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 BUILD_DIRECTORY = REPOSITORY_ROOT / "asic" / "build"
+# The SRAM macros' views, one directory each, from asic/openram.py.
+SRAM_MACRO_DIRECTORY = REPOSITORY_ROOT / "asic" / "sram" / "macros"
 SDC_PATH = REPOSITORY_ROOT / "asic" / "constraint.sdc"
 # constraint.sdc reads the core clock period from this environment variable,
 # which run --clock-period passes to the flow's make.
@@ -96,12 +97,12 @@ PATH_DATABASES = {
 PATHS_LOG_SUBDIRECTORY = "logs/paths"
 # The core clock and its quarter-rate programming clock.
 CORE_CLOCKS = ("core_clk", "core_clk_div4")
+# asic/constraint.sdc times each clock's ports against an I/O copy of it,
+# generated inside the chip and named after it with this suffix.
+IO_CLOCK_SUFFIX = "_io"
 # Endpoints within this many ns of the worst core clock slack are near it.
 CRITICAL_WINDOW_NS = 0.1
 
-# Yosys reads the data memory's $readmemh image from its working directory,
-# the build directory. sw.mem is the default name in tdp_bram_dc_byte_en.
-INIT_IMAGES = ("sw.mem", "sw64.mem")
 SV2V_DEFINES = "-DSYNTHESIS"
 SV2V_TIMEOUT_SECONDS = 1800
 
@@ -144,12 +145,10 @@ def prepare(build_directory: Path) -> None:
     finally:
         sys.path.pop(0)
 
-    # Compiles hello_world and links its images into tests/, as the Yosys
-    # checks do.
-    runner = test_run_yosys.YosysRunner()
-    for name in INIT_IMAGES:
-        _write_if_changed(build_directory / name, (runner.test_dir / name).read_bytes())
-
+    # The memories read no $readmemh images in this flow: the SRAM macros
+    # have none, and the instruction memory reads its images only outside
+    # Yosys.
+    runner = test_run_yosys.YosysRunner(memory_images=False)
     sources = runner.parse_filelist(runner.filelist)
     with TemporaryDirectory(prefix="frost-orfs-") as temporary:
         converted = runner.convert_nic_sources(
@@ -334,7 +333,7 @@ def prepare_in_frost_image(frost_image: str, log_path: Path) -> int:
         "asic/orfs.py",
         "prepare",
     ]
-    # hello_world needs no submodules.
+    # sv2v needs no submodules.
     environment = {**os.environ, "FROST_SKIP_SUBMODULE_INIT": "1"}
     status = run_logged(frost, log_path, environment)
     if status != 0:
@@ -377,6 +376,12 @@ def summary_markdown(build_directory: Path, elapsed: str) -> str:
         "| Standard-cell area (um^2) | "
         f"{_number(synth.get('synth__design__instance__area__stdcell'))} | "
         f"{_number(final.get('finish__design__instance__area__stdcell'))} |",
+        "| SRAM macros | "
+        f"{_number(synth.get('synth__design__instance__count__macros'))} | "
+        f"{_number(final.get('finish__design__instance__count__macros'))} |",
+        "| SRAM macro area (um^2) | "
+        f"{_number(synth.get('synth__design__instance__area__macros'))} | "
+        f"{_number(final.get('finish__design__instance__area__macros'))} |",
         f"| Die area (um^2) | | {_number(final.get('finish__design__die__area'))} |",
         "| Standard-cell utilization | | "
         f"{_number(final.get('finish__design__instance__utilization__stdcell'), 3)} |",
@@ -412,6 +417,26 @@ def summary_markdown(build_directory: Path, elapsed: str) -> str:
         lines += ["The final report has not run."]
     lines += ["", "## Elapsed time and peak memory", "", "```", elapsed.strip(), "```"]
 
+    macros = sram_macros(reports / "synth_stat.txt")
+    if macros:
+        lines += [
+            "",
+            "## SRAM macros",
+            "",
+            "| Macro | Instances | Size (um) | Area (um^2) |",
+            "| --- | ---: | --- | ---: |",
+        ]
+        for name, count in macros:
+            size = macro_size(name)
+            if size is None:
+                lines.append(f"| `{name}` | {count:,} | - | - |")
+            else:
+                width, height = size
+                lines.append(
+                    f"| `{name}` | {count:,} | {width:g} x {height:g} | "
+                    f"{count * width * height:,.0f} |"
+                )
+
     mocked = mocked_memories(
         build_directory / FLOW_SUBDIRECTORY.format(kind="logs") / "1_2_yosys.log"
     )
@@ -425,6 +450,37 @@ def summary_markdown(build_directory: Path, elapsed: str) -> str:
         ]
         lines += [f"| `{name}` | {rows:,} | {width} |" for name, rows, width in mocked]
     return "\n".join(lines) + "\n"
+
+
+def sram_macros(synth_stat: Path) -> list[tuple[str, int]]:
+    """Return (macro, instances) for each SRAM macro in the synthesized design.
+
+    The design hierarchy at the end of Yosys's statistics counts each cell
+    type over the whole design.
+    """
+    try:
+        statistics = synth_stat.read_text(errors="replace")
+    except OSError:
+        return []
+    hierarchy = statistics.rpartition("=== design hierarchy ===")[2]
+    return [
+        (match[2], int(match[1]))
+        for match in re.finditer(
+            r"^\s*(\d+)\s+\S+\s+\S+\s+\S+\s+(sram_\w+)\s*$", hierarchy, re.M
+        )
+    ]
+
+
+def macro_size(
+    name: str, directory: Path = SRAM_MACRO_DIRECTORY
+) -> tuple[float, float] | None:
+    """Return an SRAM macro's width and height in um from its LEF, or None."""
+    try:
+        lef = (directory / name / f"{name}.lef").read_text()
+    except OSError:
+        return None
+    match = re.search(r"^\s*SIZE\s+([\d.]+)\s+BY\s+([\d.]+)\s*;", lef, re.M)
+    return (float(match[1]), float(match[2])) if match else None
 
 
 def mocked_memories(yosys_log: Path) -> list[tuple[str, int, int]]:
@@ -476,7 +532,8 @@ class TimingPath:
 
     Times are in ns. launched is the arrival time at the startpoint, the
     register's output or the input port; cells counts the cells after it,
-    and buffers those of them that are buffers or inverters.
+    and buffers those of them that are buffers or inverters. The register
+    table also records the launch and capture clock edges, without latency.
     """
 
     capture: str
@@ -490,6 +547,8 @@ class TimingPath:
     buffers: int
     startpoint: str
     endpoint: str
+    launch_edge: float | None
+    capture_edge: float | None
 
 
 def read_paths(table: Path) -> list[TimingPath]:
@@ -508,19 +567,49 @@ def read_paths(table: Path) -> list[TimingPath]:
                 buffers=int(row["buffers"]),
                 startpoint=row["startpoint"],
                 endpoint=row["endpoint"],
+                launch_edge=(
+                    float(row["launch_edge"])
+                    if row.get("launch_edge", "-") != "-"
+                    else None
+                ),
+                capture_edge=(
+                    float(row["capture_edge"])
+                    if row.get("capture_edge", "-") != "-"
+                    else None
+                ),
             )
             for row in csv.DictReader(handle, delimiter="\t", quoting=csv.QUOTE_NONE)
         ]
 
 
 def clock_periods(sdc: str) -> dict[str, float]:
-    """Return each clock's period in ns from an SDC file that OpenSTA wrote."""
-    return {
-        name: float(period)
-        for name, period in re.findall(
-            r"^create_clock -name (\S+) -period (\S+)", sdc, re.M
-        )
-    }
+    """Return each clock's period in ns from an SDC file that OpenSTA wrote.
+
+    A generated clock has its master's period over its divisor; its master
+    is the clock created on its source port.
+    """
+    periods: dict[str, float] = {}
+    sources: dict[str, str] = {}
+    for name, period, port in re.findall(
+        r"^create_clock -name (\S+) -period (\S+) .*\[get_ports \{([^}]+)\}\]",
+        sdc,
+        re.M,
+    ):
+        periods[name] = float(period)
+        sources[port] = name
+    for name, port, divisor in re.findall(
+        r"^create_generated_clock -name (\S+) -source \[get_ports \{([^}]+)\}\] "
+        r"-divide_by (\d+) ",
+        sdc,
+        re.M,
+    ):
+        periods[name] = periods[sources[port]] / int(divisor)
+    return periods
+
+
+def master_clock(clock: str) -> str:
+    """Return the clock that an I/O copy is generated from, or the clock itself."""
+    return clock.removesuffix(IO_CLOCK_SUFFIX)
 
 
 def port_names(sdc: str) -> set[str]:
@@ -576,17 +665,25 @@ def mocked_rows(points: Iterable[str], memories: Iterable[str]) -> set[str]:
     return mocked
 
 
+# An SRAM macro: asic/sram names every macro instance u_macro.
+_SRAM_MACRO = re.compile(r"(?:^|[./])u_macro$")
+
+
 def _path_note(
     path: TimingPath, mocked: set[str], ports: set[str], clocks: bool = True
 ) -> str:
     """Describe what makes a path differ from one between core registers."""
     notes = []
-    if clocks and path.launch != path.capture:
-        notes.append(f"from {path.launch}")
+    if clocks and master_clock(path.launch) != master_clock(path.capture):
+        notes.append(f"from {master_clock(path.launch)}")
     if path.startpoint in mocked:
         notes.append("reads a mocked memory")
     if path.endpoint in mocked:
         notes.append("writes a mocked memory")
+    if _SRAM_MACRO.search(path.startpoint):
+        notes.append("from an SRAM macro")
+    if _SRAM_MACRO.search(path.endpoint):
+        notes.append("to an SRAM macro")
     if path.startpoint in ports:
         notes.append("from an input")
     if path.endpoint in ports:
@@ -594,24 +691,24 @@ def _path_note(
     return "; ".join(notes)
 
 
-def core_cycles(path: TimingPath) -> int:
-    """Return the core periods a path between core clock registers has.
-
-    Both core clocks rise at time 0, so a path between them has one core
-    period, and a path between quarter-rate registers has four.
-    """
-    return 4 if path.launch == path.capture == "core_clk_div4" else 1
+def core_cycles(path: TimingPath, period: float) -> float:
+    """Return the core periods between a path's launch and capture clock edges."""
+    if path.launch_edge is None or path.capture_edge is None:
+        raise ValueError("register path has no clock edges; rerun the paths report")
+    cycles = (path.capture_edge - path.launch_edge) / period
+    if cycles <= 0:
+        raise ValueError("register path must have a positive clock edge span")
+    return cycles
 
 
 def path_fmax(path: TimingPath, period: float) -> float:
     """Return the core clock frequency in MHz at which a register path just fits.
 
-    Its delay is its requirement, a whole number of core periods, less its
-    slack. Clock skew can leave no delay to fit, and then no frequency limit.
+    If its clock edges span f core periods, its minimum period is P - slack/f.
+    Clock skew can leave no delay to fit, and then no frequency limit.
     """
-    cycles = core_cycles(path)
-    delay = cycles * period - path.slack
-    return cycles * 1e3 / delay if delay > 0 else math.inf
+    minimum_period = period - path.slack / core_cycles(path, period)
+    return 1e3 / minimum_period if minimum_period > 0 else math.inf
 
 
 def _megahertz(frequency: float) -> str:
@@ -631,7 +728,7 @@ def paths_markdown(
     """Return a Markdown report of one stage's setup paths.
 
     paths has the worst path to each endpoint, and register_paths the worst
-    path between registers for each pair of core clocks, which set the fmax.
+    path between registers for each pair of core clock edges, which set the fmax.
     """
     period = periods["core_clk"]
     fmax = min(path_fmax(path, period) for path in register_paths)
@@ -659,9 +756,8 @@ def paths_markdown(
         "",
         "## Paths between core clock registers",
         "",
-        "The worst path for each pair of launching and capturing clocks. The "
-        "fmax is the frequency at which its delay, its core periods less its "
-        "slack, fits.",
+        "The worst path for each pair of launching and capturing clock edges. "
+        "For an edge span of f core periods, the minimum period is P - slack/f.",
         "",
         "| Launch | Capture | Core periods | Slack (ns) | fmax (MHz) | Startpoint "
         "| Endpoint | Note |",
@@ -669,14 +765,14 @@ def paths_markdown(
     ]
     for path in register_paths:
         lines.append(
-            f"| {path.launch} | {path.capture} | {core_cycles(path)} | "
+            f"| {path.launch} | {path.capture} | {core_cycles(path, period):g} | "
             f"{path.slack:.3f} | {_megahertz(path_fmax(path, period))} | "
             f"`{path.startpoint}` | `{path.endpoint}` | "
             f"{_path_note(path, mocked, ports, clocks=False)} |"
         )
 
     core = sorted(
-        (path for path in paths if path.capture == "core_clk"),
+        (path for path in paths if master_clock(path.capture) == "core_clk"),
         key=lambda path: path.slack,
     )
     worst = core[0].slack
