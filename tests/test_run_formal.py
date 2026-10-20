@@ -194,8 +194,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "line_arbiter_grant.sby",
-        "Three-port line arbitration matches bounded-starvation priority",
-        tasks=("bmc", "bmc_xilinx"),
+        "Two- and three-port line arbitration matches bounded-starvation priority",
+        tasks=("bmc", "bmc_xilinx", "bmc_2port", "bmc_xilinx_2port"),
     ),
     FormalTarget(
         "lq_cached_flags.sby",
@@ -726,6 +726,8 @@ SBY_TASKS = [
     ("cover_64g", "Physical-address reachability at a 64 GiB DDR capacity"),
     ("cover_128g", "Physical-address reachability at a 128 GiB DDR capacity"),
     ("bmc_xilinx", "Bounded equivalence with the Xilinx primitive implementation"),
+    ("bmc_2port", "Bounded two-port arbitration equivalence"),
+    ("bmc_xilinx_2port", "Bounded two-port arbitration with Xilinx primitives"),
     ("bmc_queued", "Bounded check with decoded-queue admission contract"),
     ("bmc", "Check assertions up to the configured depth"),
     ("cover", "Search for reachable cover scenarios"),

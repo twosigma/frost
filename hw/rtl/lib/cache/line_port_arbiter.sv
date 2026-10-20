@@ -148,36 +148,51 @@ module line_port_arbiter #(
   end
 
 `ifdef FROST_XILINX_PRIMS
-  if ((NUM_PORTS == 3) && (STARVATION_LIMIT != 0)) begin : gen_three_port_grant
-    // Explicit LUT6 grants preserve the request/limit selection for timing.
+  if (((NUM_PORTS == 2) || (NUM_PORTS == 3)) &&
+      (STARVATION_LIMIT != 0)) begin : gen_small_port_grant
+    // Each bounded two-/three-port grant fits one LUT4/LUT6. Preserve that
+    // mapping so live request validity crosses only one grant-selection
+    // level before the payload mux and downstream coherence-ready check.
     function automatic logic [63:0] grant_truth(input int winner);
-      logic [2:0] requests, limits;
+      logic [NUM_PORTS-1:0] requests, limits;
       int selected;
       for (int row = 0; row < 64; row++) begin
-        requests = 3'(row);
-        limits   = 3'(row >> 3);
+        requests = NUM_PORTS'(row);
+        limits   = NUM_PORTS'(row >> NUM_PORTS);
         selected = 0;
-        for (int port = 2; port >= 0; port--) begin
+        for (int port = int'(NUM_PORTS) - 1; port >= 0; port--) begin
           if (requests[port]) selected = port;
         end
-        for (int port = 2; port >= 0; port--) begin
+        for (int port = int'(NUM_PORTS) - 1; port >= 0; port--) begin
           if (requests[port] && limits[port]) selected = port;
         end
         grant_truth[row] = selected == winner;
       end
     endfunction
-    for (genvar port = 0; port < 3; port++) begin : gen_port
-      (* dont_touch = "true" *) LUT6 #(
-          .INIT(grant_truth(port))
-      ) grant_lut (
-          .I0(i_up_req_valid[0]),
-          .I1(i_up_req_valid[1]),
-          .I2(i_up_req_valid[2]),
-          .I3(at_limit[0]),
-          .I4(at_limit[1]),
-          .I5(at_limit[2]),
-          .O (grant[port])
-      );
+    for (genvar port = 0; port < NUM_PORTS; port++) begin : gen_port
+      if (NUM_PORTS == 2) begin : gen_lut4
+        (* dont_touch = "true" *) LUT4 #(
+            .INIT(16'(grant_truth(port)))
+        ) grant_lut (
+            .I0(i_up_req_valid[0]),
+            .I1(i_up_req_valid[1]),
+            .I2(at_limit[0]),
+            .I3(at_limit[1]),
+            .O (grant[port])
+        );
+      end else begin : gen_lut6
+        (* dont_touch = "true" *) LUT6 #(
+            .INIT(grant_truth(port))
+        ) grant_lut (
+            .I0(i_up_req_valid[0]),
+            .I1(i_up_req_valid[1]),
+            .I2(i_up_req_valid[2]),
+            .I3(at_limit[0]),
+            .I4(at_limit[1]),
+            .I5(at_limit[2]),
+            .O (grant[port])
+        );
+      end
     end
   end else begin : gen_other_grant
     assign grant = grant_generic;
