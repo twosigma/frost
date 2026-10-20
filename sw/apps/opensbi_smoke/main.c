@@ -491,7 +491,9 @@ static void wait_irqs(volatile uint64_t *counter, uint64_t target)
 {
     uint64_t start = csr_read(cycle);
     while (*counter < target) {
-        __asm__ volatile("wfi");
+        /* Poll with interrupts enabled. The handler can run after the counter
+         * read and disarm its one-shot source; WFI there would sleep forever.
+         * Polling also lets the timeout expire if no interrupt arrives. */
         if (csr_read(cycle) - start > 20000000ul) {
             g_failed = 1;
             puts_("  timeout waiting for an interrupt\n");
