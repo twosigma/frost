@@ -26,8 +26,8 @@
  * Each fill writes one full memory-response beat; a lookup sees it from the
  * next cycle.
  *
- * MMIO addresses always miss (the addr[31:30] == 2'b01 quadrant; DDR at
- * 0x8000_0000+ is cacheable).
+ * MMIO addresses in the zero-extended 01 quadrant always miss; DDR is
+ * cacheable even when its upper addresses share those low quadrant bits.
  *
  * i_flush_all clears every valid bit, but the LQ ties it to 0: L0 contents
  * always reflect architectural memory, so lines stay hot across pipeline
@@ -83,16 +83,17 @@ module lq_l0_cache #(
   // Local Parameters
   // ===========================================================================
   localparam int unsigned IndexWidth = $clog2(DEPTH);
-  // Tags cover physical bits [31 : 3+IndexWidth] at any XLEN. The LQ faults
-  // addresses outside the 32-bit physical map (riscv_pkg::PhysAddrBits).
-  localparam int unsigned TagWidth   = 32 - 3 - IndexWidth;
+  // Include every configured physical address bit in the tag; otherwise
+  // upper DDR lines can falsely hit a low-address L0 entry.
+  localparam int unsigned TagWidth   = riscv_pkg::PhysAddrBits - 3 - IndexWidth;
 
   // Four adjacent dwords form one DMA line. The index needs at least one
   // bit above that line, and at least one physical tag bit must remain.
   initial begin
     if (DEPTH < 8 || DEPTH > 2 ** 28 || (DEPTH & (DEPTH - 1)) != 0)
       $fatal(1, "L0 DEPTH must be a power of two in [8, 2**28]");
-    if (XLEN < 32) $fatal(1, "L0 requires at least 32 physical address bits");
+    if (XLEN < riscv_pkg::PhysAddrBits)
+      $fatal(1, "L0 XLEN must cover the configured physical address width");
   end
 
   // ===========================================================================
@@ -111,10 +112,10 @@ module lq_l0_cache #(
 
   wire [IndexWidth-1:0] lookup_index = i_lookup_addr[3+:IndexWidth];
   wire [TagWidth-1:0] lookup_tag = i_lookup_addr[(3+IndexWidth)+:TagWidth];
-  // Decode MMIO from physical bits [31:30], not the top XLEN bits. At RV64,
-  // bits [63:62] are zero for valid physical addresses and would cache MMIO.
+  // Decode the full zero-extended MMIO quadrant. Upper DDR addresses can
+  // share bits [31:30] and must remain cacheable.
   // BRAM and DDR are cacheable; stores invalidate their lines.
-  wire lookup_mmio = (i_lookup_addr[31:30] == 2'b01);
+  wire lookup_mmio = riscv_pkg::pma_device_quadrant(i_lookup_addr);
 
   wire [IndexWidth-1:0] fill_index = i_fill_addr[3+:IndexWidth];
   wire [TagWidth-1:0] fill_tag = i_fill_addr[(3+IndexWidth)+:TagWidth];
@@ -273,7 +274,7 @@ module lq_l0_cache #(
 
   // MMIO addresses never hit
   always_comb begin
-    if (i_rst_n && (i_lookup_addr[31:30] == 2'b01)) begin
+    if (i_rst_n && lookup_mmio) begin
       p_mmio_never_hits : assert (!o_lookup_hit);
     end
   end
@@ -316,7 +317,7 @@ module lq_l0_cache #(
     if (f_past_valid && i_rst_n && f_fill_valid_q
         && !i_flush_all
         && i_lookup_addr[XLEN-1:3] == f_fill_addr_q[XLEN-1:3]
-        && !(i_lookup_addr[31:30] == 2'b01)
+        && !lookup_mmio
         && !(i_lookup_invalidate_valid
              && i_lookup_invalidate_addr[3+:IndexWidth]
                 == f_fill_addr_q[3+:IndexWidth])

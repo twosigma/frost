@@ -247,8 +247,8 @@ def compile_app_for_board(
 ) -> bool:
     """Compile an app with board settings and optional Make overrides.
 
-    ddr_bytes, for linux_boot, is the board's DDR size (board_ddr_bytes), which
-    the device tree advertises in place of the simulation-sized default.
+    ddr_bytes sets the application's physical aperture from board_ddr_bytes.
+    linux_boot also advertises that size in its device tree.
     """
     env = os.environ.copy()
     if "RISCV_PREFIX" not in env:
@@ -256,7 +256,28 @@ def compile_app_for_board(
 
     env["FPGA_CPU_CLK_FREQ"] = str(clock_freq)
     if ddr_bytes is not None:
-        env["FROST_LINUX_MEM_SIZE"] = str(ddr_bytes)
+        if not (1 << 30 <= ddr_bytes <= 1 << 37) or ddr_bytes & (ddr_bytes - 1):
+            print("Error: board DDR capacity must be a power of two from 1 to 128 GiB")
+            return False
+        capacity_log2 = str(ddr_bytes.bit_length() - 1)
+        inherited_capacity = env.get("FROST_DDR_CAPACITY_LOG2_BYTES")
+        if inherited_capacity is not None and inherited_capacity != capacity_log2:
+            print(
+                "Error: FROST_DDR_CAPACITY_LOG2_BYTES conflicts with the board DDR map"
+            )
+            return False
+        if (
+            make_vars
+            and make_vars.get("FROST_DDR_CAPACITY_LOG2_BYTES", capacity_log2)
+            != capacity_log2
+        ):
+            print(
+                "Error: application capacity override conflicts with the board DDR map"
+            )
+            return False
+        env["FROST_DDR_CAPACITY_LOG2_BYTES"] = capacity_log2
+        if app_name == "linux_boot":
+            env["FROST_LINUX_MEM_SIZE"] = str(ddr_bytes)
     if app_name == "coremark":
         env["ITERATIONS"] = str(coremark_iterations)
     # MEM_CONFIG relinks any app from the default BRAM into cached DDR; the
@@ -777,9 +798,9 @@ def main() -> None:
     if clock_overridden:
         print(f"CPU clock override: {CPU_CLK_ENV}={clock_freq} Hz")
     coremark_iterations = board_config["coremark_iterations"]
-    # linux_boot's device tree advertises all of the board's DDR.
+    # Application aperture checks and Linux's device tree use the board map.
     board_memory: dict[str, int] = {}
-    if args.software_app == "linux_boot":
+    if board_config["has_ddr"] and not args.skip_build:
         try:
             board_memory["ddr_bytes"] = board_ddr_bytes(args.board)
         except (OSError, ValueError) as error:
@@ -799,7 +820,7 @@ def main() -> None:
     if args.software_app == "coremark":
         print(f"  CoreMark iterations: {coremark_iterations}")
     if board_memory:
-        print(f"  Linux memory: {board_memory['ddr_bytes'] >> 20} MiB")
+        print(f"  Board DDR: {board_memory['ddr_bytes'] >> 20} MiB")
     make_vars = coremark_pro_make_vars(
         args.software_app,
         hardware=True,

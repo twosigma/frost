@@ -885,6 +885,23 @@ if {$step eq "synth"} {
             lappend current_verilog_defines $define_name
         }
     }
+    if {$board_has_ddr} {
+        set ddr_capacity_log2 [getenv_default FROST_DDR_CAPACITY_LOG2_BYTES ""]
+        if {![string is integer -strict $ddr_capacity_log2] ||
+            $ddr_capacity_log2 < 30 || $ddr_capacity_log2 > 37} {
+            error "FROST_DDR_CAPACITY_LOG2_BYTES must match the board's 1-128 GiB DDR map"
+        }
+        set capacity_define FROST_DDR_CAPACITY_LOG2_BYTES=$ddr_capacity_log2
+        foreach existing_define $current_verilog_defines {
+            if {[string match FROST_DDR_CAPACITY_LOG2_BYTES=* $existing_define] &&
+                $existing_define ne $capacity_define} {
+                error "Vivado already has a conflicting FROST DDR capacity define"
+            }
+        }
+        if {[lsearch -exact $current_verilog_defines $capacity_define] < 0} {
+            lappend current_verilog_defines $capacity_define
+        }
+    }
     # build.py --debug-ila compiles the fetch ILA mirrors in.
     if {[getenv_default FROST_DEBUG_ILA 0] eq "1" &&
         [lsearch -exact $current_verilog_defines FROST_DEBUG_FETCH_ILA] < 0} {

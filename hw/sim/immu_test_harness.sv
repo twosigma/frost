@@ -39,8 +39,8 @@ module immu_test_harness #(
     input logic [XLEN-1:0] i_pc_d,
     output logic [XLEN-1:0] o_pc,
 
-    output logic [31:0] o_pa0,
-    output logic [31:0] o_pa1,
+    output logic [riscv_pkg::PhysAddrBits-1:0] o_pa0,
+    output logic [riscv_pkg::PhysAddrBits-1:0] o_pa1,
     output logic o_pa_valid,
     output logic [PA_VALID_COPIES-1:0] o_pa_valid_copy,
     output logic o_fault0,

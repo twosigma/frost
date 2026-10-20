@@ -10,10 +10,9 @@
  * interrupt and RESET contract this driver follows are documented in the
  * FROST repository, hw/rtl/peripherals/nic/README.md.
  *
- * Every register access is readl() or writel() at a 4-aligned offset. The
- * register bus replicates an 8- or 16-bit store over the whole 32-bit
- * register (writeb(1, CTRL) would issue RESET), and a 64-bit store writes
- * only the upper register of its dword.
+ * Legacy registers use readl()/writel() at 4-aligned offsets. The extended
+ * ring bases use one aligned readq()/writeq() each; split 32-bit stores are
+ * deliberately refused by the NIC so a high/low pair cannot tear.
  *
  * The loopback feature is the NIC's MAC loopback (its raw transmit stream
  * into its own receiver) on a build whose two MAC directions share one clock,
@@ -73,6 +72,9 @@
 #define NET10G_LINK			0x060
 #define NET10G_PHY_CTRL			0x064
 #define NET10G_PHY_STATUS		0x068
+#define NET10G_ABI_CTRL			0x06c
+#define NET10G_RX_BASE64		0x070
+#define NET10G_TX_BASE64		0x078
 
 #define NET10G_ID_VALUE			0x4e494301
 
@@ -94,8 +96,10 @@
 #define NET10G_PHY_CTRL_MAC_LOOPBACK	BIT(0)
 #define NET10G_PHY_CTRL_PMA_LOOPBACK	BIT(2)
 #define NET10G_PHY_STATUS_CLK_SHARED	BIT(0)
+#define NET10G_ABI_EXTENDED		BIT(0)
+#define NET10G_ABI_EXTENDED_SUPPORTED	BIT(1)
 
-/* Descriptor word 1 (TX frame flags) and word 2 (status, written by the NIC) */
+/* TX frame flags and completion status (their word shifts with ABI mode) */
 #define NET10G_DESC_TX_SOP		BIT(16)
 #define NET10G_DESC_TX_EOP		BIT(17)
 #define NET10G_DESC_LEN			GENMASK(15, 0)
@@ -120,10 +124,10 @@
 
 /* One ring descriptor: 16 bytes, two per 32-byte line */
 struct frost_desc {
-	__le32 addr;		/* buffer DMA address */
-	__le32 len;		/* RX: buffer length; TX: length | SOP | EOP */
-	__le32 status;		/* written by the NIC */
-	__le32 reserved;
+	__le32 word0;		/* address low */
+	__le32 word1;		/* legacy length or extended address high */
+	__le32 word2;		/* legacy status or extended length */
+	__le32 word3;		/* legacy reserved or extended status */
 };
 
 struct frost_buf {
@@ -148,6 +152,7 @@ struct frost_priv {
 
 	bool link_refresh;	/* the next poll reads LINK */
 	bool broken;		/* a RESET did not complete; never cleared */
+	bool wide_abi;		/* selected only when hardware and DMA API support it */
 	unsigned long reenables;	/* CTRL rewrites after a READY loss */
 
 	unsigned int rx_buf_len;
@@ -174,6 +179,29 @@ struct frost_priv {
 	u64_stats_t tx_errors;
 	u64_stats_t tx_dropped;
 };
+
+static void frost_desc_post(const struct frost_priv *priv,
+			    struct frost_desc *desc, dma_addr_t dma, u32 len)
+{
+	desc->word0 = cpu_to_le32(lower_32_bits(dma));
+	if (priv->wide_abi) {
+		desc->word1 = cpu_to_le32(upper_32_bits(dma));
+		desc->word2 = cpu_to_le32(len);
+		desc->word3 = 0;
+	} else {
+		desc->word1 = cpu_to_le32(len);
+		desc->word2 = 0;
+		desc->word3 = 0;
+	}
+}
+
+static u32 frost_desc_status(const struct frost_priv *priv,
+			     const struct frost_desc *desc)
+{
+	const __le32 *status = priv->wide_abi ? &desc->word3 : &desc->word2;
+
+	return le32_to_cpu(READ_ONCE(*status));
+}
 
 static u32 frost_tx_free(const struct frost_priv *priv)
 {
@@ -257,10 +285,7 @@ static unsigned int frost_rx_fill(struct frost_priv *priv, gfp_t gfp)
 		buf->dma = dma;
 		buf->len = priv->rx_buf_len;
 
-		desc->addr = cpu_to_le32(lower_32_bits(dma));
-		desc->len = cpu_to_le32(priv->rx_buf_len);
-		desc->status = 0;
-		desc->reserved = 0;
+		frost_desc_post(priv, desc, dma, priv->rx_buf_len);
 		priv->rx_tail = (priv->rx_tail + 1) & FROST_RING_MASK;
 		posted++;
 	}
@@ -283,7 +308,7 @@ static void frost_tx_reap(struct frost_priv *priv, int budget)
 	while (priv->tx_clean != priv->tx_head) {
 		struct frost_desc *desc = &priv->tx_ring[priv->tx_clean];
 		struct frost_buf *buf = &priv->tx_bufs[priv->tx_clean];
-		u32 status = le32_to_cpu(READ_ONCE(desc->status));
+		u32 status = frost_desc_status(priv, desc);
 
 		/*
 		 * The NIC writes DD once every buffer read it issued has
@@ -332,7 +357,7 @@ static int frost_rx_reap(struct frost_priv *priv, int budget)
 	while (work < budget && priv->rx_clean != priv->rx_tail) {
 		struct frost_desc *desc = &priv->rx_ring[priv->rx_clean];
 		struct frost_buf *buf = &priv->rx_bufs[priv->rx_clean];
-		u32 status = le32_to_cpu(READ_ONCE(desc->status));
+		u32 status = frost_desc_status(priv, desc);
 		u32 len = status & NET10G_DESC_LEN;
 		struct sk_buff *skb = buf->skb;
 
@@ -662,15 +687,33 @@ static int frost_up(struct net_device *ndev)
 	writel(get_unaligned_le32(ndev->dev_addr), priv->base + NET10G_MAC_LO);
 	writel(get_unaligned_le16(ndev->dev_addr + 4),
 	       priv->base + NET10G_MAC_HI);
-	writel(lower_32_bits(priv->rx_ring_dma), priv->base + NET10G_RX_BASE);
+	if (priv->wide_abi) {
+		writel(NET10G_ABI_EXTENDED, priv->base + NET10G_ABI_CTRL);
+		if ((readl(priv->base + NET10G_ABI_CTRL) &
+		     (NET10G_ABI_EXTENDED | NET10G_ABI_EXTENDED_SUPPORTED)) !=
+		    (NET10G_ABI_EXTENDED | NET10G_ABI_EXTENDED_SUPPORTED)) {
+			netdev_err(ndev, "extended address mode refused\n");
+			err = -EIO;
+			goto err_reset;
+		}
+		writeq(priv->rx_ring_dma, priv->base + NET10G_RX_BASE64);
+		writeq(priv->tx_ring_dma, priv->base + NET10G_TX_BASE64);
+	} else {
+		writel(lower_32_bits(priv->rx_ring_dma),
+		       priv->base + NET10G_RX_BASE);
+		writel(lower_32_bits(priv->tx_ring_dma),
+		       priv->base + NET10G_TX_BASE);
+	}
 	writel(FROST_RING_LOG2, priv->base + NET10G_RX_SIZE);
-	writel(lower_32_bits(priv->tx_ring_dma), priv->base + NET10G_TX_BASE);
 	writel(FROST_RING_LOG2, priv->base + NET10G_TX_SIZE);
-	if (readl(priv->base + NET10G_RX_BASE) !=
-	    lower_32_bits(priv->rx_ring_dma) ||
+	if ((priv->wide_abi ?
+	     readq(priv->base + NET10G_RX_BASE64) != priv->rx_ring_dma ||
+	     readq(priv->base + NET10G_TX_BASE64) != priv->tx_ring_dma :
+	     readl(priv->base + NET10G_RX_BASE) !=
+	     lower_32_bits(priv->rx_ring_dma) ||
+	     readl(priv->base + NET10G_TX_BASE) !=
+	     lower_32_bits(priv->tx_ring_dma)) ||
 	    readl(priv->base + NET10G_RX_SIZE) != FROST_RING_LOG2 ||
-	    readl(priv->base + NET10G_TX_BASE) !=
-	    lower_32_bits(priv->tx_ring_dma) ||
 	    readl(priv->base + NET10G_TX_SIZE) != FROST_RING_LOG2) {
 		netdev_err(ndev, "ring registers not accepted\n");
 		err = -EIO;
@@ -782,11 +825,8 @@ static netdev_tx_t frost_start_xmit(struct sk_buff *skb,
 	 */
 	desc = &priv->tx_ring[priv->tx_head];
 	buf = &priv->tx_bufs[priv->tx_head];
-	desc->addr = cpu_to_le32(lower_32_bits(dma));
-	desc->len = cpu_to_le32(skb->len | NET10G_DESC_TX_SOP |
-				NET10G_DESC_TX_EOP);
-	desc->status = 0;
-	desc->reserved = 0;
+	frost_desc_post(priv, desc, dma, skb->len | NET10G_DESC_TX_SOP |
+			NET10G_DESC_TX_EOP);
 	buf->skb = skb;
 	buf->dma = dma;
 	buf->len = skb->len;
@@ -888,6 +928,7 @@ static int frost_probe(struct platform_device *pdev)
 	struct net_device *ndev;
 	struct frost_priv *priv;
 	void __iomem *base;
+	bool wide_abi = false;
 	int irq, err;
 	u32 id;
 
@@ -903,13 +944,19 @@ static int frost_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return irq;
 
-	/*
-	 * The NIC reaches [0x80000000, 0xc0000000). A 32-bit mask does not
-	 * express that aperture; the SoC's memory lies inside it.
-	 */
-	err = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
-	if (err)
-		return dev_err_probe(dev, err, "no usable DMA mask\n");
+	/* Prefer the versioned 64-bit ABI; old hardware keeps its 32-bit mask. */
+	if (readl(base + NET10G_ABI_CTRL) & NET10G_ABI_EXTENDED_SUPPORTED) {
+		err = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64));
+		if (!err)
+			wide_abi = true;
+		else
+			dev_warn(dev, "64-bit DMA mask unavailable; using legacy NIC mode\n");
+	}
+	if (!wide_abi) {
+		err = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
+		if (err)
+			return dev_err_probe(dev, err, "no usable DMA mask\n");
+	}
 
 	ndev = devm_alloc_etherdev(dev, sizeof(*priv));
 	if (!ndev)
@@ -922,6 +969,7 @@ static int frost_probe(struct platform_device *pdev)
 	priv->dev = dev;
 	priv->base = base;
 	priv->irq = irq;
+	priv->wide_abi = wide_abi;
 	spin_lock_init(&priv->ctrl_lock);
 	u64_stats_init(&priv->rx_syncp);
 	u64_stats_init(&priv->tx_syncp);
@@ -952,8 +1000,8 @@ static int frost_probe(struct platform_device *pdev)
 	if (err)
 		return dev_err_probe(dev, err, "cannot register netdev\n");
 
-	netdev_info(ndev, "FROST net10g, IRQ %d, MAC %pM\n", irq,
-		    ndev->dev_addr);
+	netdev_info(ndev, "FROST net10g, IRQ %d, MAC %pM, %s DMA ABI\n", irq,
+		    ndev->dev_addr, priv->wide_abi ? "extended" : "legacy");
 	return 0;
 }
 

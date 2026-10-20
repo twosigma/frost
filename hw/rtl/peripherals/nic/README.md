@@ -169,11 +169,23 @@ Descriptors are 16 bytes, two per 32-byte line:
 | 0 | Buffer address, any byte alignment |
 | 1 | Length in `[15:0]`: the buffer length for RX, the frame length for TX. TX also sets SOP (bit 16) and EOP (bit 17) |
 | 2 | Status, written by hardware: `[15:0]` received length (RX), 16 DD, 17 TRUNC, 18 ERR, 19 ABORT |
-| 3 | Reserved |
+| 3 | Reserved (ignored even if nonzero in legacy mode) |
+
+The reset-default layout above is ABI version 1. Writing ABI_CTRL bit 0
+while both directions are disabled and idle selects the extended layout:
+words 0–1 are one little-endian 64-bit buffer address, word 2 holds the
+length/flags, and word 3 is the hardware-written status. The descriptor is
+still 16 bytes and two descriptors still share a line. A mode change clears
+both ring bases/sizes/tails and restarts both descriptor caches; software
+must fully reprogram the rings before enabling. A RESET returns to legacy
+mode. The old reserved word is **not** an implicit address high half.
 
 A ring has 2^SIZE entries at a 32-byte-aligned BASE in cached DDR. Software
-posts descriptors below TAIL, zeroing word 2; hardware consumes them in order
-from HEAD, one frame per descriptor, and writes word 2 when it is done.
+posts descriptors below TAIL, zeroing the status word: word 2 in the legacy
+layout or word 3 in the extended layout. Hardware consumes them in order
+from HEAD, one frame per descriptor, and writes that status word when it is
+done. Software polls DD in the same word; extended word 2 retains the
+length and flags.
 
 `nic_desc_fetch` runs a prefetch cursor ahead of HEAD. When the cursor is
 below TAIL, it reads the line holding the cursor's descriptor into a two-line
@@ -258,13 +270,18 @@ bits:
 | `0x060` | LINK | 0 RX_LOCKED, 1 RX_HIGH_BER, 2 RX_LOCAL_FAULT, 3 RX_REMOTE_FAULT, 4 TX_LINK_READY, 5 RX_SIGNAL_OK, 6 TX_CLK_OK, 7 RX_CLK_OK, 8 CARRIER (RX locked with no high BER or fault, and TX link ready) |
 | `0x064` | PHY_CTRL | 0 MAC_LOOPBACK, 1 PHY_RESET, 2 PMA_LOOPBACK, 3 TX_DISABLE |
 | `0x068` | PHY_STATUS | 0 CLK_SHARED, 1 GT_RESET_DONE, 2 CDR_LOCK, 3 MODULE_PRESENT, 4 LOS |
+| `0x06C` | ABI_CTRL | R: bit 0 extended mode, bit 1 extended mode supported; W: bit 0 selects mode only while both directions are disabled and idle |
+| `0x070`, `0x078` | RX_BASE64, TX_BASE64 | Aligned 64-bit ring bases; accept only one complete eight-byte store in extended mode. Partial writes and high bits beyond `ADDR_WIDTH` are ignored |
 | `0x080`–`0x0FF` | Counters | 64-bit counters in `nic_pkg` order: RX frames, bytes, filtered, truncated, descriptor errors, and aborts; TX frames, bytes, descriptor errors, and aborts; then the MAC's RX overflow, bad frame, bad FCS, and PCS bad block, and TX drop and PCS bad block |
 
-Use 32-bit loads and stores. The register bus has no byte enables, so a byte
+Use 32-bit loads and stores for the legacy bank. The register bus has no byte enables, so a byte
 or halfword store is replicated over the whole register (a byte store of 1 to
 CTRL sets RESET), and a 64-bit store writes only the upper register of its
 dword. A 64-bit load returns an aligned register pair; read each counter
-whole with one 64-bit load.
+whole with one 64-bit load. The two extended ring-base registers are the
+exception: the CPU router admits only one aligned, full-strobe `sd`, passed
+unmodified to the NIC. The legacy base register reads the low 32 bits in
+extended mode but cannot change the active extended base.
 
 - An enable is accepted only while the direction is READY and its ring is
   valid: SIZE in 2..16 and the whole ring inside cached DDR. BASE ignores the

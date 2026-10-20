@@ -36,7 +36,7 @@ module tomasulo_wrapper #(
     parameter bit ENABLE_DISPATCH_DONE_REPAIR = 1'b0,
     // Address range for tagged cached-load slots and cached-store routing.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
-    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,
+    parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
@@ -1613,8 +1613,8 @@ module tomasulo_wrapper #(
 
   // Store immediates are sign-extended S-immediates or zero (SC), so they can
   // move the base by at most one 4 KiB page. The low 13-bit sum supplies the
-  // page carry and alignment bits. Legal store pages are [0, 0x3f] and
-  // [0x40000, 0xbffff], as in riscv_pkg::pma_store_ok. The device quadrant
+  // page carry and alignment bits. Legal store pages are [0, 0x3f], the
+  // device quadrant, and [DdrBase, DdrLimit), as in riscv_pkg::pma_store_ok. The device quadrant
   // includes unserved addresses, whose writes the device bus ignores.
   //
   // A one-page move changes membership only at interval boundaries. The
@@ -1627,6 +1627,7 @@ module tomasulo_wrapper #(
   logic store_base_z19;
   logic store_base_z30;
   logic store_base_z32;
+  logic store_base_ddr_ok;
   logic store_base_page_lo6_zero;
   logic store_base_page_lo6_ones;
   logic store_base_page_tail_zero;
@@ -1637,8 +1638,10 @@ module tomasulo_wrapper #(
   logic store_base_page_eq_40;
   logic store_base_page_eq_3ffff;
   logic store_base_page_eq_40000;
-  logic store_base_page_eq_bffff;
-  logic store_base_page_eq_c0000;
+  logic store_base_page_eq_ddr_before;
+  logic store_base_page_eq_ddr_first;
+  logic store_base_page_eq_ddr_last;
+  logic store_base_page_eq_ddr_end;
   logic store_base_page_eq_max;
   logic store_page_inc_toggle;
   logic store_page_dec_toggle;
@@ -1654,6 +1657,9 @@ module tomasulo_wrapper #(
   assign store_base_z19 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:19]);
   assign store_base_z30 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:30]);
   assign store_base_z32 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:32]);
+  assign store_base_ddr_ok = riscv_pkg::pma_cached_ok(
+      o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0]
+  );
   assign store_base_page_lo6_zero = !(|o_mem_rs_issue.src1_value[17:12]);
   assign store_base_page_lo6_ones = &o_mem_rs_issue.src1_value[17:12];
   assign store_base_page_tail_zero = !(|o_mem_rs_issue.src1_value[29:12]);
@@ -1661,10 +1667,9 @@ module tomasulo_wrapper #(
 
   assign mem_rs_issue_is_sc = (o_mem_rs_issue.op == riscv_pkg::SC_W) ||
       (o_mem_rs_issue.op == riscv_pkg::SC_D);
-  assign store_base_pma_ok = store_base_z18 ||
-      (store_base_z32 && ((o_mem_rs_issue.src1_value[31:30] == 2'b10) ||
-                          ((o_mem_rs_issue.src1_value[31:30] == 2'b01) &&
-                           !mem_rs_issue_is_sc)));
+  assign store_base_pma_ok = store_base_z18 || store_base_ddr_ok ||
+      (store_base_z32 && (o_mem_rs_issue.src1_value[31:30] == 2'b01) &&
+       !mem_rs_issue_is_sc);
   assign store_base_page_eq_0 = store_base_z18 && store_base_page_lo6_zero;
   assign store_base_page_eq_3f = store_base_z18 && store_base_page_lo6_ones;
   assign store_base_page_eq_40 = store_base_z19 && o_mem_rs_issue.src1_value[18] &&
@@ -1672,16 +1677,26 @@ module tomasulo_wrapper #(
   assign store_base_page_eq_3ffff = store_base_z30 && store_base_page_tail_ones;
   assign store_base_page_eq_40000 = store_base_z32 &&
       (o_mem_rs_issue.src1_value[31:30] == 2'b01) && store_base_page_tail_zero;
-  assign store_base_page_eq_bffff = store_base_z32 &&
-      (o_mem_rs_issue.src1_value[31:30] == 2'b10) && store_base_page_tail_ones;
-  assign store_base_page_eq_c0000 = store_base_z32 &&
-      (o_mem_rs_issue.src1_value[31:30] == 2'b11) && store_base_page_tail_zero;
+  assign store_base_page_eq_ddr_before =
+      o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:12] ==
+      (riscv_pkg::XLEN-12)'((riscv_pkg::DdrBase - 4096) >> 12);
+  assign store_base_page_eq_ddr_first =
+      o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:12] ==
+      (riscv_pkg::XLEN-12)'(riscv_pkg::DdrBase >> 12);
+  assign store_base_page_eq_ddr_last =
+      o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:12] ==
+      (riscv_pkg::XLEN-12)'((riscv_pkg::DdrLimit - 4096) >> 12);
+  assign store_base_page_eq_ddr_end =
+      o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:12] ==
+      (riscv_pkg::XLEN-12)'(riscv_pkg::DdrLimit >> 12);
   assign store_base_page_eq_max = &o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:12];
 
   assign store_page_inc_toggle = store_base_page_eq_max || store_base_page_eq_3f ||
-      store_base_page_eq_3ffff || store_base_page_eq_bffff;
+      (!mem_rs_issue_is_sc && store_base_page_eq_3ffff) || store_base_page_eq_ddr_last ||
+      (mem_rs_issue_is_sc && store_base_page_eq_ddr_before);
   assign store_page_dec_toggle = store_base_page_eq_0 || store_base_page_eq_40 ||
-      store_base_page_eq_40000 || store_base_page_eq_c0000;
+      (!mem_rs_issue_is_sc && store_base_page_eq_40000) || store_base_page_eq_ddr_end ||
+      (mem_rs_issue_is_sc && store_base_page_eq_ddr_first);
   // Without a carry, only a negative immediate changes the page. With a
   // carry, only a nonnegative immediate does. Select between both cases.
   assign store_pma_without_page_carry = store_base_pma_ok ^
@@ -3322,12 +3337,11 @@ module tomasulo_wrapper #(
   // before launch, so downstream decodes see only in-map addresses.
   assign lq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
 
-  // MMIO detection: the 01 address quadrant [0x4000_0000, 0x8000_0000),
-  // decoded from bits [31:30]. The cached (DDR) region is the 10 quadrant
-  // [0x8000_0000, 0xC000_0000) and must not be flagged MMIO, so a lower-bound
-  // test alone would be wrong.
+  // MMIO detection: only the zero-extended 01 address quadrant
+  // [0x4000_0000, 0x8000_0000). Upper DDR addresses can have the same low
+  // quadrant bits and must remain cached accesses.
   logic lq_addr_is_mmio;
-  assign lq_addr_is_mmio = (lq_effective_addr[31:30] == 2'b01);
+  assign lq_addr_is_mmio = riscv_pkg::pma_device_quadrant(lq_effective_addr);
 
   riscv_pkg::lq_addr_update_t lq_addr_update;
   always_comb begin
@@ -3812,7 +3826,7 @@ module tomasulo_wrapper #(
 
   logic sq_addr_is_mmio;
   // MMIO quadrant test; see lq_addr_is_mmio above.
-  assign sq_addr_is_mmio = (sq_effective_addr[31:30] == 2'b01);
+  assign sq_addr_is_mmio = riscv_pkg::pma_device_quadrant(sq_effective_addr);
 
   // With translation, MMU S2 supplies the checked PA and aligned store data.
   // Faulting updates set neither address-valid nor data-valid. Early prefill

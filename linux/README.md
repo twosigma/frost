@@ -301,3 +301,11 @@ OpenSBI and directed bare-metal tests, but not a full Linux boot. On the
 board, the [hardware regression](../fpga/README.md#hardware-regression) boots
 Debian from its NFS root, and `fpga/linux_boot_soak.py` boots the test image
 repeatedly.
+
+CI boots the packaged kernel and initramfs on QEMU's `virt` machine with
+256 MiB using both bundled OpenSBI and FROST's firmware. A third boot uses
+FROST's firmware and 3 GiB of RAM starting at `0x8000_0000`. It requires
+Linux's `NODE_DATA` allocation above 4 GiB, successful module loads, the
+userspace stress token, and a login prompt. This checks firmware and Linux
+use of high physical memory on QEMU. It does not exercise FROST's RTL, DDR
+controller, or NIC traffic above 4 GiB.

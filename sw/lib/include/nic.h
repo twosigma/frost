@@ -61,7 +61,12 @@
 #define NIC_LINK 0x060u
 #define NIC_PHY_CTRL 0x064u
 #define NIC_PHY_STATUS 0x068u
+#define NIC_ABI_CTRL 0x06Cu
+#define NIC_RX_BASE64 0x070u
+#define NIC_TX_BASE64 0x078u
 #define NIC_COUNTERS 0x080u
+#define NIC_ABI_WIDE (1u << 0)
+#define NIC_ABI_WIDE_SUPPORTED (1u << 1)
 
 #define NIC_CTRL_RX_EN (1u << 0)
 #define NIC_CTRL_TX_EN (1u << 1)
@@ -149,6 +154,16 @@ struct nic_desc {
     uint32_t reserved;
 };
 
+/** Extended mode only: buffer address is one 64-bit field; status is word 3. */
+struct nic_desc64 {
+    uint64_t addr;
+    uint32_t len;
+    uint32_t status;
+};
+
+_Static_assert(sizeof(struct nic_desc) == 16, "legacy NIC descriptor size");
+_Static_assert(sizeof(struct nic_desc64) == 16, "wide NIC descriptor size");
+
 static inline volatile mmio_u32_t *nic_reg(uint32_t offset)
 {
     return (volatile mmio_u32_t *) (NIC_BASE + offset);
@@ -162,6 +177,17 @@ static inline void nic_write(uint32_t offset, uint32_t value)
 static inline uint32_t nic_read(uint32_t offset)
 {
     return *nic_reg(offset);
+}
+
+/** Call only when RX and TX are disabled and idle; mode change resets rings. */
+static inline void nic_select_wide(void)
+{
+    nic_write(NIC_ABI_CTRL, NIC_ABI_WIDE);
+}
+
+static inline void nic_write64(uint32_t offset, uint64_t value)
+{
+    *(volatile uint64_t *) (NIC_BASE + offset) = value;
 }
 
 /** A 64-bit counter, read atomically. */

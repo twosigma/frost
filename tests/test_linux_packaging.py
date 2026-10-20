@@ -350,8 +350,8 @@ def test_sbi_packer_places_the_dtb_by_image_size(tmp_path: Path) -> None:
     assert "    li   a1, 0x81200000\n" in (out / "frost_boot_shim.S").read_text()
     dts = (out / "frost.dts").read_text()
     initrd_start = packer.DDR_BASE + initrd_offset
-    assert f"linux,initrd-start = <0x{initrd_start:08x}>;" in dts
-    assert f"linux,initrd-end = <0x{initrd_start + len(initrd):08x}>;" in dts
+    assert f"linux,initrd-start = <0x00000000 0x{initrd_start:08x}>;" in dts
+    assert f"linux,initrd-end = <0x00000000 0x{initrd_start + len(initrd):08x}>;" in dts
     dtb = (out / "frost.dtb").read_bytes()
     regions = [
         (packer.FW_OFFSET, firmware),
@@ -523,8 +523,8 @@ def test_sbi_packer_nfsroot_through_an_initramfs(
     )
     assert f'bootargs = "{bootargs}";' in dts
     initrd_start = packer.DDR_BASE + LOWEST_DTB_OFFSET + packer.DTB_SLOT_BYTES
-    assert f"linux,initrd-start = <0x{initrd_start:08x}>;" in dts
-    assert f"linux,initrd-end = <0x{initrd_start + len(initrd):08x}>;" in dts
+    assert f"linux,initrd-start = <0x00000000 0x{initrd_start:08x}>;" in dts
+    assert f"linux,initrd-end = <0x00000000 0x{initrd_start + len(initrd):08x}>;" in dts
     records = _ddr_records(out / "sw_ddr.mem")
     assert list(records) == [
         packer.FW_OFFSET,
@@ -624,7 +624,10 @@ def test_sbi_packer_memory_node_size(
     packer = _load_module(SBI_PACKER)
     assert packer.MEM_SIZE == 0x0400_0000
     out = _pack_minimal(packer, tmp_path, *mem_args)
-    assert f"reg = <0x80000000 0x{size:08x}>;" in (out / "frost.dts").read_text()
+    assert (
+        f"reg = <0x00000000 0x80000000\n"
+        f"\t\t       0x{size >> 32:08x} 0x{size & 0xFFFFFFFF:08x}>;"
+    ) in (out / "frost.dts").read_text()
 
 
 def test_sbi_layout_checks_use_the_memory_size(
@@ -671,7 +674,7 @@ def test_sbi_layout_fits_debian_kernel_and_initramfs_in_1_gib() -> None:
 
 
 def test_sbi_packer_rejects_bad_memory_sizes() -> None:
-    """--mem-size takes a multiple of 2 MiB within the 1 GiB cached region."""
+    """--mem-size takes a multiple of 2 MiB within the supported PA range."""
     packer = _load_module(SBI_PACKER)
     base = ["--firmware", "fw_jump.bin", "--payload", "Image", "--mem-size"]
     for bad in (
@@ -679,13 +682,27 @@ def test_sbi_packer_rejects_bad_memory_sizes() -> None:
         "-0x200000",
         "0x100000",  # 1 MiB
         "0x4000001",
-        "0x40200000",  # past the cached region
-        "0x80000000",
+        "0x2000200000",  # past the largest supported cached region
         "64M",
         "",
     ):
         with pytest.raises(SystemExit):
             packer.parse_args(base + [bad])
+
+
+@pytest.mark.parametrize("log2_bytes", range(30, 38))
+def test_sbi_dtb_describes_configured_ddr_capacity(
+    log2_bytes: int, tmp_path: Path
+) -> None:
+    """The 1..128 GiB matrix must not truncate a /memory size above 4 GiB."""
+    packer = _load_module(SBI_PACKER)
+    size = 1 << log2_bytes
+    assert packer.memory_size(str(size)) == size
+    dts = packer.gen_dts(
+        clk_hz=10_000_000, initrd_range=None, bootargs="", model="FROST", mem_size=size
+    )
+    assert (f"0x{size >> 32:08x} 0x{size & 0xFFFFFFFF:08x}>") in dts
+    packer.compile_dtb(dts, tmp_path, "dtc")
 
 
 def test_sbi_memory_bounds_match_the_rtl_and_the_ddr_model() -> None:
@@ -697,10 +714,9 @@ def test_sbi_memory_bounds_match_the_rtl_and_the_ddr_model() -> None:
     packer = _load_module(SBI_PACKER)
     rtl = CPU_AND_MEM.read_text()
     base = re.search(r"CACHED_BASE = 32'h([0-9A-Fa-f_]+)", rtl)
-    size = re.search(r"CACHED_SIZE_BYTES = 32'h([0-9A-Fa-f_]+)", rtl)
-    assert base is not None and size is not None
+    assert base is not None
     assert packer.DDR_BASE == int(base.group(1).replace("_", ""), 16)
-    assert packer.CACHED_REGION_BYTES == int(size.group(1).replace("_", ""), 16)
+    assert packer.CACHED_REGION_BYTES == 1 << 37
     model = re.search(r"^DDR_MODEL_BYTES \?= (\d+)$", TESTS_MAKEFILE.read_text(), re.M)
     assert model is not None and packer.MEM_SIZE == int(model.group(1))
 
@@ -710,8 +726,8 @@ def test_load_software_takes_each_board_ddr_from_its_block_design(
 ) -> None:
     """Use the CPU port's DDR range from fpga/build/<board>_ddr_bd.tcl.
 
-    Every DDR board's range must fit the packer; the X3 uses the full 1 GiB
-    cached region. Ignore the JTAG master's range.
+    Every DDR board's range must fit the packer; the X3 has 1 GiB installed
+    within the potentially larger cached aperture. Ignore the JTAG master's range.
     """
     loader = _load_script("linux_packaging_loader", LOADER)
     packer = _load_module(SBI_PACKER)
@@ -723,7 +739,7 @@ def test_load_software_takes_each_board_ddr_from_its_block_design(
     width = re.search(r"CONFIG\.ADDR_WIDTH \{(\d+)\}", X3_DDR_BD.read_text())
     assert width is not None
     assert loader.board_ddr_bytes("x3") == 1 << int(width.group(1))
-    assert loader.board_ddr_bytes("x3") == packer.CACHED_REGION_BYTES
+    assert loader.board_ddr_bytes("x3") <= packer.CACHED_REGION_BYTES
 
     build = tmp_path / "fpga" / "build"
     build.mkdir(parents=True)
@@ -1005,8 +1021,8 @@ def test_linux_boot_make_substitutes_the_kernel_and_initramfs(tmp_path: Path) ->
     assert records[0x121_0000][: len(initrd)] == initrd
     dts = (app / "frost.dts").read_text()
     assert f'bootargs = "{packer.DEFAULT_BOOTARGS}";' in dts
-    assert "linux,initrd-start = <0x81210000>;" in dts
-    assert f"linux,initrd-end = <0x{0x8121_0000 + len(initrd):08x}>;" in dts
+    assert "linux,initrd-start = <0x00000000 0x81210000>;" in dts
+    assert f"linux,initrd-end = <0x00000000 0x{0x8121_0000 + len(initrd):08x}>;" in dts
     assert "li   a1, 0x81200000" in (app / "frost_boot_shim.S").read_text()
 
 
@@ -1058,7 +1074,7 @@ def test_linux_boot_make_nfsroot(
     if initramfs:
         offsets.append(LOWEST_DTB_OFFSET + packer.DTB_SLOT_BYTES)
         assert records[offsets[-1]][: len(initrd)] == initrd
-        assert "linux,initrd-start = <0x81010000>;" in dts
+        assert "linux,initrd-start = <0x00000000 0x81010000>;" in dts
     else:
         assert "initrd" not in dts
     assert list(records) == offsets

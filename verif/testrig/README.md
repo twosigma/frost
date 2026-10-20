@@ -41,12 +41,17 @@ repository root:
 ./scripts/frost.py run python3 tests/test_testrig.py --trace tests/testrig_failures/failure-<time>.S
 ./scripts/frost.py run python3 tests/test_testrig.py --trace-dir verif/testrig/traces
 ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200         # A-extension tests
+./scripts/frost.py run python3 tests/test_testrig.py --ddr-capacity-log2-bytes 37 --trace-dir verif/testrig/traces
 ```
 
 The first run builds the `rvfi_dii` simulation, and later runs reuse it
 until `tests/` is cleaned. Counterexamples go to
 `tests/testrig_failures/`, and the simulation log, Sail's log, and the
 engine's instruction coverage table go to `tests/testrig_logs/`. A
+generated Sail configuration in that log directory records the selected DDR
+capacity. The runner gives the same setting to FROST's RTL and enables the
+full-width sparse DDR simulation model; the default is 1 GiB. This is a
+simulation model, not a physical DDR-controller test. A
 counterexample file lists the sequence as `.4byte` words with both traces in
 comments; `--trace` replays it, and editing the words is the quickest way to
 narrow a bug down. `FROST_RVFI_DII_DEBUG=1` logs every record the harness
@@ -61,6 +66,7 @@ its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 |--------|---------|---------|
 | `--arch` | `rv64imfdcs_zicsr_zifencei` | Architecture the templates target |
 | `--tests` | 50 | Tests per template |
+| `--ddr-capacity-log2-bytes` | 30 (1 GiB) | Set the DDR aperture for both FROST and Sail; accepted values 30–37 (1–128 GiB) |
 | `--atomics` | 0 | Replay this many random A-extension tests instead of the templates |
 | `--seed` | random | Seed for `--atomics`; the runner prints the one it used |
 | `--test-length` | 200 | Maximum instructions per test |
@@ -134,7 +140,7 @@ different implementation choice:
 | Setting | FROST |
 |---------|-------|
 | Extensions | RV64IMAFDC, B, Zicond, Zbkb, Zihintpause, Zicntr, S, U, Sv39, Svade, Sstc; `misa` read-only |
-| Memory regions | The PMA map: low BRAM, the device pages, the rest of the device quadrant (stores only), and 1 GiB of DDR, the only region page-table walks read |
+| Memory regions | The PMA map: low BRAM, the device pages, the rest of the device quadrant (stores only), and configurable DDR (1 GiB default), the only region page-table walks read |
 | Physical addresses | 64 bits wide, so an untranslated access beyond the memory map faults with its full address in `mtval` |
 | Misaligned accesses | Address-misaligned trap, after the PMA check |
 | `mtval` | 0 for illegal instructions |
@@ -227,7 +233,7 @@ CI's TestRIG jobs replays all of them before its random run.
 
 | Trace | Checks |
 |-------|--------|
-| [`clint_window_load.S`](traces/clint_window_load.S) | A load just below 2^35, outside FROST's map, is an access fault (Sail's CLINT once sat there and answered it) |
+| [`clint_window_load.S`](traces/clint_window_load.S) | A load just below 2^35 faults at the 1 GiB default and reaches DDR with a 64 GiB configuration; Sail disables its CLINT in both configurations |
 | [`envcfg_fiom.S`](traces/envcfg_fiom.S) | `menvcfg.FIOM` and `senvcfg.FIOM` are writable |
 | [`fence_r0.S`](traces/fence_r0.S) | `fence r,0` retires (it was decoded as PAUSE and hung the core) |
 | [`hpm_counters.S`](traces/hpm_counters.S) | `mhpmcounter3..31` and `mhpmevent3..31` read zero |

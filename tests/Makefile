@@ -360,6 +360,10 @@ else ifeq ($(TOPLEVEL),nic_dma_front)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/peripherals/nic/nic_dma_front.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),dma_test_engine)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/dma_test_engine.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),nic_byte_pack)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/peripherals/nic/nic_byte_pack.sv
@@ -414,6 +418,10 @@ else ifeq ($(TOPLEVEL),line_port_axi_bridge)
 # Line-port AXI bridge unit bench (the bench plays an AXI slave it never resets)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/cache/line_port_axi_bridge.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),axi_behavioral_memory)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/lib/cache/axi_behavioral_memory.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),x3_ddr_init)
 # X3 power-up DDR4 region writer unit bench (AXI write master only)

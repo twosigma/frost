@@ -29,8 +29,8 @@
     // tree; 0 makes every register start at zero, as on FROST after the reset
     // preamble.
     "dtb_address": {"len": 64, "value": "0x0"},
-    // FROST compares whole 64-bit physical addresses and maps nothing above
-    // 4 GiB, so a page-table PPN or an untranslated address beyond the map
+    // FROST compares whole 64-bit physical addresses, so a page-table PPN
+    // or an untranslated address beyond the configured DDR aperture
     // faults instead of aliasing, and mtval holds the full address. No ASID
     // bits; no PMP entries.
     "physaddr_bits": 64,
@@ -242,7 +242,8 @@
         },
         "include_in_device_tree": false
       },
-      // Cached DDR: 1 GiB at 0x8000_0000, the only region page-table walks read.
+      // Cached DDR: 1 GiB default at 0x8000_0000, the only region page-table walks read.
+      // The TestRIG runner replaces this size for other supported capacities.
       {
         "base": {
           "len": 64,

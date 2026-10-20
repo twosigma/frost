@@ -183,7 +183,7 @@ def test_loader_build_only_never_discovers(
     descriptor = {"app": "hello_world", "startStrategy": "main"}
     monkeypatch.setattr(loader, "validate_prebuilt_app", lambda *a, **k: descriptor)
     loader.main()
-    assert calls == [{"mem_config": None, "debug": True}]
+    assert calls == [{"mem_config": None, "debug": True, "ddr_bytes": 1 << 30}]
     records = [
         line
         for line in capsys.readouterr().out.splitlines()
@@ -191,6 +191,49 @@ def test_loader_build_only_never_discovers(
     ]
     assert len(records) == 1
     assert json.loads(records[0].split("=", 1)[1]) == descriptor
+
+
+def test_loader_passes_board_capacity_to_dma_torture(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """DMA aperture checks compile with the DDR range of the selected board."""
+    compile_app_for_board = loader.compile_app_for_board
+    monkeypatch.setattr(
+        sys, "argv", ["load_software.py", "x3", "dma_torture", "--build-only"]
+    )
+    monkeypatch.setattr(loader, "validate_prebuilt_app", lambda *a, **k: None)
+    monkeypatch.setattr(
+        loader, "select_target", lambda *a, **k: pytest.fail("cable touched")
+    )
+    builds: list[dict[str, Any]] = []
+
+    def compile_app(*args: Any, **kwargs: Any) -> bool:
+        builds.append(kwargs)
+        return True
+
+    monkeypatch.setattr(loader, "compile_app_for_board", compile_app)
+    loader.main()
+    assert builds[0]["ddr_bytes"] == 1 << 30
+    environments: list[dict[str, str]] = []
+
+    def run(command: list[str], **kwargs: Any) -> Any:
+        environments.append(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.delenv("FROST_DDR_CAPACITY_LOG2_BYTES", raising=False)
+    monkeypatch.setenv("EXTRA_CFLAGS", "-DDMA_TORTURE_QUICK=1")
+    monkeypatch.setattr(loader.subprocess, "run", run)
+    (tmp_path / "sw.mem").write_text("")
+    (tmp_path / "sw.txt").write_text("")
+    assert compile_app_for_board("dma_torture", tmp_path, 1, 1, **builds[0])
+    assert len(environments) == 2
+    for env in environments:
+        assert env["FROST_DDR_CAPACITY_LOG2_BYTES"] == "30"
+        assert env["EXTRA_CFLAGS"] == "-DDMA_TORTURE_QUICK=1"
+
+    monkeypatch.setenv("FROST_DDR_CAPACITY_LOG2_BYTES", "36")
+    assert not compile_app_for_board("dma_torture", tmp_path, 1, 1, **builds[0])
+    assert len(environments) == 2
 
 
 def test_skip_build_loads_without_make(monkeypatch: pytest.MonkeyPatch) -> None:

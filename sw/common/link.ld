@@ -17,11 +17,11 @@
  *       first 44B (named below), the ns16550 UART alias at +0x1000, the
  *       SiFive CLINT alias at +0x10000..+0x1BFFC, the DMA test engine at
  *       +0x20000, and the 4KiB NIC window at +0x30000
- *   [0x80000000, +1GiB)       cached region, DDR-backed, loadable
+ *   [0x80000000, +usable DDR) cached region, DDR-backed, loadable
  *       .ddr_text:             code fetched through the L1I (opt-in)
  *       .ddr_rodata/.ddr_data: large loaded sections (e.g. radix2 FFT tables)
  *       .ddr_bss:              large zero-init sections (zeroed by crt0)
- *       .ddr_heap:             everything else, to the end of the gigabyte
+ *       .ddr_heap:             everything else, to the configured usable end
  *
  * Hardware coupling:
  *   - 256KiB low region must match MEM_SIZE_BYTES (hw/rtl/frost.sv) and the
@@ -57,7 +57,7 @@ MEMORY
     ROM  (rx)  : ORIGIN = 0x00000000, LENGTH = 95K    /* code + read-only data */
     DEBUG (rx) : ORIGIN = 0x00017C00, LENGTH = 1K    /* debug-module slice: reserved, never allocated (hw/rtl/README.md) */
     RAM  (rwx) : ORIGIN = 0x00018000, LENGTH = 160K   /* data + bss + stack */
-    DDR  (rwx) : ORIGIN = 0x80000000, LENGTH = 1024M  /* cached region: big data + heap */
+    DDR  (rwx) : ORIGIN = 0x80000000, LENGTH = DEFINED(__frost_ddr_usable_bytes) ? __frost_ddr_usable_bytes : 1024M
     MMIO (rw)  : ORIGIN = 0x40000000, LENGTH = 44     /* peripherals: UART, FIFOs, timer, MSIP */
 }
 
@@ -188,7 +188,7 @@ SECTIONS
         __ddr_bss_end = .;
     } > DDR
 
-    /* Heap: the rest of the gigabyte. memory.c's _sbrk allocates
+    /* Heap: the rest of configured usable DDR. memory.c's _sbrk allocates
      * [_heap_start, _heap_end); no fixed size carved out here. */
     .ddr_heap (NOLOAD) : {
         . = ALIGN(16);

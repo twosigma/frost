@@ -572,10 +572,16 @@ def render(strands: list[Strand], header: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_tests(directory: Path, count: int, seed: int, length: int) -> list[Path]:
+def write_tests(
+    directory: Path,
+    count: int,
+    seed: int,
+    length: int,
+    config_path: Path = SAIL_CONFIG,
+) -> list[Path]:
     """Write `count` tests from `seed` into `directory`; return their paths."""
     rng = random.Random(seed)
-    generator = Generator(rng, load_regions())
+    generator = Generator(rng, load_regions(config_path))
     directory.mkdir(parents=True, exist_ok=True)
     paths = []
     for index in range(count):

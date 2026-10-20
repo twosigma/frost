@@ -34,7 +34,7 @@ import subprocess
 import sys
 import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from collections.abc import Iterable, Mapping
@@ -237,11 +237,95 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="ddr_test",
         description="Cached DDR loads and stores through the cache hierarchy",
     ),
+    **{
+        f"pa_width_test_{1 << (bits - 30)}g": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="pa_width_test",
+            description=f"Bare CPU access through the last line of a {1 << (bits - 30)} GiB DDR aperture",
+            include_in_pytest=False,
+            extra_env=(("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),),
+            verilator_extra_args=(
+                "-DFROST_WIDE_DDR_TEST",
+                f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}",
+            ),
+        )
+        for bits in range(30, 38)
+    },
+    **{
+        f"pa_vm_fetch_test_{1 << (bits - 30)}g": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="pa_vm_fetch_test",
+            description=f"Sv39 fetch from the final physical DDR page at {1 << (bits - 30)} GiB",
+            include_in_pytest=False,
+            extra_env=(("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),),
+            verilator_extra_args=(
+                "-DFROST_WIDE_DDR_TEST",
+                f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}",
+            ),
+        )
+        for bits in range(30, 38)
+    },
+    **{
+        f"pa_dma_test_{1 << (bits - 30)}g": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="pa_dma_test",
+            description=f"Full-top coherent DMA at final {1 << (bits - 30)} GiB DDR lines",
+            include_in_pytest=False,
+            extra_env=(("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),),
+            verilator_extra_args=(
+                "-DFROST_WIDE_DDR_TEST",
+                f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}",
+            ),
+        )
+        for bits in range(30, 38)
+    },
+    **{
+        f"pa_nic_mmio_test_{1 << (bits - 30)}g": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="pa_nic_mmio_test",
+            description=f"Full-top 64-bit NIC register ABI at {1 << (bits - 30)} GiB",
+            include_in_pytest=False,
+            extra_env=(("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),),
+            verilator_extra_args=(
+                "-DFROST_WIDE_DDR_TEST",
+                f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}",
+            ),
+        )
+        for bits in range(30, 38)
+    },
+    **{
+        f"pa_nic_packet_test_{1 << (bits - 30)}g": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="pa_nic_packet_test",
+            description=f"Full-top high-DDR coherent NIC packet loopback at {1 << (bits - 30)} GiB",
+            include_in_pytest=False,
+            extra_env=(("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),),
+            verilator_extra_args=(
+                "-DFROST_WIDE_DDR_TEST",
+                f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}",
+            ),
+        )
+        for bits in range(30, 38)
+    },
     "dma_torture": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="dma_torture",
         description=("DMA coherence with CPU caches and atomics"),
+    ),
+    "dma_torture_1g": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="dma_torture",
+        description="Legacy DMA coherence and DDR-end rejection at 1 GiB",
+        include_in_pytest=False,
+        extra_env=(("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=30"),),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
     ),
     # Programs on the memories that the ASIC flow builds from SRAM macros
     # (FROST_SRAM_MACROS), at the ASIC flow's sizes: its L2 holds 256 KiB
@@ -407,6 +491,33 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Physical-memory access faults with precise trap state and fault priority"
         ),
     ),
+    "pma_fault_test_128g": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="pma_fault_test",
+        description="Out-of-range traps beyond the 128 GiB DDR aperture",
+        include_in_pytest=False,
+        extra_env=(("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=37"),),
+        verilator_extra_args=(
+            "-DFROST_WIDE_DDR_TEST",
+            "-DFROST_DDR_CAPACITY_LOG2_BYTES=37",
+        ),
+    ),
+    **{
+        f"pma_fault_test_{1 << (bits - 30)}g": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="pma_fault_test",
+            description=f"Out-of-range traps beyond the {1 << (bits - 30)} GiB DDR aperture",
+            include_in_pytest=False,
+            extra_env=(("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),),
+            verilator_extra_args=(
+                "-DFROST_WIDE_DDR_TEST",
+                f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}",
+            ),
+        )
+        for bits in range(31, 37)
+    },
     "fs_off_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -423,6 +534,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Sv39 data translation, permissions, and precise faults through MPRV"
         ),
     ),
+    **{
+        f"vm_test_{1 << (bits - 30)}g": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name="vm_test",
+            description=(
+                f"Sv39 final-word access and DDR-end walker fault at {1 << (bits - 30)} GiB"
+            ),
+            include_in_pytest=False,
+            extra_env=(("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),),
+            verilator_extra_args=(
+                "-DFROST_WIDE_DDR_TEST",
+                f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}",
+            ),
+        )
+        for bits in range(31, 38)
+    },
     "slot2_fault_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -439,6 +567,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         # Case Z's repeated L1I eviction and L1D writeback exceed the default
         # 500k-cycle budget from DDR.
         extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
+    ),
+    "itlb_test_1g": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="itlb_test",
+        description="Sv39 instruction fetch and bare out-of-range fault at 1 GiB DDR",
+        include_in_pytest=False,
+        extra_env=(
+            ("COCOTB_MAX_CYCLES", "2000000"),
+            ("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=30"),
+        ),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
     ),
     "debug_test": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_debug",
@@ -1104,8 +1244,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         include_in_pytest=False,
         verilator_extra_args=(
             "+define+FROST_RVFI_DII",
+            "-DFROST_WIDE_DDR_TEST",
             str(RVFI_DII_HARNESS),
-            # The harness's sparse DDR model covers the whole cached region.
+            # Sparse wide-DDR mode keeps full-width keys; this parameter is
+            # unused for the sparse address range but keeps the old budget.
             "-GDDR_MODEL_BYTES=1073741824",
         ),
     ),
@@ -1355,6 +1497,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "handling"
         ),
     ),
+    "data_mem_request_router_1g": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_request_router",
+        hdl_toplevel_module="data_mem_request_router",
+        description="Memory-request router device and cached boundaries at 1 GiB DDR",
+        include_in_pytest=False,
+        extra_env=(("FROST_DDR_CAPACITY_LOG2_BYTES", "30"),),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
+    ),
     "trap_unit": CocotbRunConfig(
         python_test_module="cocotb_tests.control.test_trap_unit",
         hdl_toplevel_module="trap_unit",
@@ -1434,6 +1584,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GSUPPORT_BULK_CLEAR=1",
         ),
         extra_env=(("PACKED_TAG_TEST_BULK_CLEAR", "1"),),
+    ),
+    "frost_cache_wide_addr": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_wide",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="64 GiB DDR-offset identity across cache fill and eviction",
+        verilator_extra_args=(
+            "-GADDR_WIDTH=37",
+            "-GAXI_ADDR_WIDTH=36",
+            "-DFROST_WIDE_DDR_TEST",
+        ),
     ),
     # The RAM wrappers built from the ASIC flow's SRAM macros, each with the
     # parameters of one of the design's memories.
@@ -1941,6 +2101,38 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "NIC registers and frame traffic through raw loopback and a simulated wire"
         ),
     ),
+    "nic_top_64g": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_top",
+        hdl_toplevel_module="nic_top",
+        description="NIC wide descriptors and high-address alias rejection at 64 GiB",
+        verilator_extra_args=(
+            "-GADDR_WIDTH=37",
+            '"-GAPERTURE_BYTES=64\'h1000000000"',
+        ),
+    ),
+    "dma_test_engine_wide": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_dma_test_engine_wide",
+        hdl_toplevel_module="dma_test_engine",
+        description="64 GiB coherent-DMA address ABI and out-of-range rejection",
+        include_in_pytest=False,
+        verilator_extra_args=(
+            "-GADDR_WIDTH=37",
+            '"-GAPERTURE_BYTES=64\'h1000000000"',
+        ),
+    ),
+    **{
+        f"dma_test_engine_wide_{1 << (bits - 30)}g": CocotbRunConfig(
+            python_test_module="cocotb_tests.cache.test_dma_test_engine_wide",
+            hdl_toplevel_module="dma_test_engine",
+            description=f"Wide DMA last-line and range checks at {1 << (bits - 30)} GiB",
+            include_in_pytest=False,
+            verilator_extra_args=(
+                f"-GADDR_WIDTH={(0x80000000 + (1 << bits) - 1).bit_length()}",
+                f'"-GAPERTURE_BYTES=64\'h{1 << bits:x}"',
+            ),
+        )
+        for bits in range(30, 38)
+    },
     "nic_top_unrelated_clocks": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_top",
         hdl_toplevel_module="nic_top",
@@ -1979,6 +2171,37 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         verilator_extra_args=("-GLINE_BYTES=64",),
     ),
+    "line_port_axi_bridge_wide": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_line_port_axi_bridge",
+        hdl_toplevel_module="line_port_axi_bridge",
+        description="37-bit physical lines and 36-bit DDR offsets without 4 GiB aliases",
+        verilator_extra_args=(
+            "-GLINE_BYTES=64",
+            "-GADDR_WIDTH=37",
+            "-GAXI_ADDR_WIDTH=36",
+        ),
+    ),
+    **{
+        f"axi_behavioral_memory_{mode}": CocotbRunConfig(
+            python_test_module="cocotb_tests.cache.test_axi_behavioral_memory",
+            hdl_toplevel_module="axi_behavioral_memory",
+            description=f"DDR image loading and reset contents in {mode} storage",
+            verilator_extra_args=(
+                "-GMEM_BYTES=4096",
+                "-GAXI_ADDR_WIDTH=36",
+                "-GLATENCY=2",
+                "-GUSE_INIT_FILE=1",
+                "-GINIT_FILE='\"../verif/cocotb_tests/cache/axi_memory_init.mem\"'",
+                *defines,
+            ),
+            extra_env=(("FROST_AXI_MEMORY_TEST_MODE", mode),),
+        )
+        for mode, defines in (
+            ("dense", ()),
+            ("wide", ("-DFROST_WIDE_DDR_TEST",)),
+            ("dii", ("-DFROST_WIDE_DDR_TEST", "-DFROST_RVFI_DII")),
+        )
+    },
     "x3_ddr_init": CocotbRunConfig(
         python_test_module="cocotb_tests.test_x3_ddr_init",
         hdl_toplevel_module="x3_ddr_init",
@@ -2176,6 +2399,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Sv39 data translation, fault priority, and recovery at the MMU ports"
         ),
     ),
+    "dmmu_1g": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_dmmu",
+        hdl_toplevel_module="dmmu",
+        description="Sv39 data translation and PMA faults at 1 GiB DDR",
+        include_in_pytest=False,
+        extra_env=(("FROST_DDR_CAPACITY_LOG2_BYTES", "30"),),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
+    ),
     "immu": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_immu",
         hdl_toplevel_module="immu_test_harness",
@@ -2183,6 +2414,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Sv39 fetch translation and fault visibility across retargets and page "
             "crossings"
         ),
+    ),
+    "immu_1g": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.test_immu",
+        hdl_toplevel_module="immu_test_harness",
+        description="Sv39 instruction translation and PMA faults at 1 GiB DDR",
+        include_in_pytest=False,
+        extra_env=(("FROST_DDR_CAPACITY_LOG2_BYTES", "30"),),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
     ),
     "instruction_aligner": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_instruction_aligner",
@@ -2225,6 +2464,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Tomasulo integration with single-bus dispatch and dispatch done "
         "repair enabled",
         verilator_extra_args=("-GENABLE_DISPATCH_DONE_REPAIR=1",),
+    ),
+    "tomasulo_wrapper_1g": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
+        hdl_toplevel_module="tomasulo_wrapper",
+        description="Tomasulo integration and store PMA boundaries at 1 GiB DDR",
+        include_in_pytest=False,
+        extra_env=(("FROST_DDR_CAPACITY_LOG2_BYTES", "30"),),
+        verilator_extra_args=(
+            "-GENABLE_DISPATCH_DONE_REPAIR=1",
+            "-DFROST_DDR_CAPACITY_LOG2_BYTES=30",
+        ),
     ),
     "tomasulo_wrapper_no_early_load": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
@@ -2295,6 +2545,43 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         include_in_pytest=False,
     ),
 }
+
+# The full power-of-two raw-DDR capacity matrix. Keep the historical 64 GiB
+# entry above for existing callers; all entries use the same byte-level
+# bridge test, including the last representable line and +4 GiB separation.
+for _capacity_log2 in (30, 31, 32, 33, 34, 35, 37):
+    _physical_bits = max(32, _capacity_log2 + 1)
+    TEST_REGISTRY[f"line_port_axi_bridge_{1 << (_capacity_log2 - 30)}g"] = (
+        CocotbRunConfig(
+            python_test_module="cocotb_tests.cache.test_line_port_axi_bridge",
+            hdl_toplevel_module="line_port_axi_bridge",
+            description=f"{1 << (_capacity_log2 - 30)} GiB DDR AXI offset/address identity",
+            verilator_extra_args=(
+                "-GLINE_BYTES=64",
+                f"-GADDR_WIDTH={_physical_bits}",
+                f"-GAXI_ADDR_WIDTH={_capacity_log2}",
+            ),
+        )
+    )
+
+# Select wide apertures explicitly for programs otherwise using the default.
+for _program in ("dma_torture", "nic_loopback", "itlb_test"):
+    for _capacity_log2 in (36, 37):
+        _base_config = TEST_REGISTRY[_program]
+        TEST_REGISTRY[f"{_program}_{1 << (_capacity_log2 - 30)}g"] = replace(
+            _base_config,
+            description=f"{_base_config.description} at {1 << (_capacity_log2 - 30)} GiB DDR",
+            include_in_pytest=False,
+            extra_env=(
+                *_base_config.extra_env,
+                ("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={_capacity_log2}"),
+            ),
+            verilator_extra_args=(
+                *_base_config.verilator_extra_args,
+                "-DFROST_WIDE_DDR_TEST",
+                f"-DFROST_DDR_CAPACITY_LOG2_BYTES={_capacity_log2}",
+            ),
+        )
 
 # Registry entries that build an app and are collected by pytest. The unit
 # benches have no app_name and are excluded.

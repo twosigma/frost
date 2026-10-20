@@ -1,0 +1,20 @@
+#    Copyright (c) 2026 John Goodacre
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+
+# Sparse-DDR, full-aperture bare-metal CPU load/store/AMO regression.
+SRC_C := ../../lib/src/uart.c pa_width_test.c
+ifeq ($(filter -DFROST_DDR_CAPACITY_LOG2_BYTES=%,$(EXTRA_CFLAGS)),)
+EXTRA_CFLAGS += -DFROST_DDR_CAPACITY_LOG2_BYTES=30
+endif
+include ../../common/common.mk

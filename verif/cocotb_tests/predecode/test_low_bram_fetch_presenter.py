@@ -65,7 +65,8 @@ def _check_presented(
     faults: tuple[int, int, int, int] = (0, 0, 0, 0),
 ) -> None:
     """Check every externally presented request field."""
-    assert int(dut.o_fetch_address.value) == pc
+    assert int(dut.o_fetch_address.value) == (pc & 0xFFFF_FFFF)
+    assert int(dut.o_fetch_pc.value) == pc
     assert int(dut.o_fetch_pa0.value) == pa0
     assert int(dut.o_fetch_pa1.value) == (pa0 + 4) & 0xFFFF_FFFF
     assert int(dut.o_fetch_pa_valid.value) == pa_valid
@@ -73,6 +74,34 @@ def _check_presented(
     assert int(dut.o_fetch_fault0_page.value) == faults[1]
     assert int(dut.o_fetch_fault1.value) == faults[2]
     assert int(dut.o_fetch_fault1_page.value) == faults[3]
+
+
+@cocotb.test()
+async def test_high_pc_cannot_alias_low_response_identity(dut: Any) -> None:
+    """A faulting upper fetch retains its full PC even on 32-bit BRAM pins."""
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
+    dut.i_rst.value = 1
+    dut.i_response_ready.value = 0
+    dut.i_response_overlay_hit.value = 0
+    dut.i_response_claim.value = 0
+    dut.i_publish_hold.value = 0
+    dut.i_retarget.value = 0
+    _drive_request(dut, 0, pa_valid=0)
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    dut.i_rst.value = 0
+
+    high_pc = 0x20_8000_0200
+    _drive_request(dut, high_pc, pa0=0x8000_0200, faults=(1, 0, 1, 0))
+    await _settle()
+    _check_presented(dut, high_pc, 0x8000_0200, faults=(1, 0, 1, 0))
+    await RisingEdge(dut.i_clk)
+    _drive_request(dut, 0x8000_0200, pa0=0x8000_0200)
+    await _settle()
+    _check_presented(dut, high_pc, 0x8000_0200, faults=(1, 0, 1, 0))
+    dut.i_retarget.value = 1
+    await _settle()
+    _check_presented(dut, 0x8000_0200, 0x8000_0200)
 
 
 @cocotb.test()

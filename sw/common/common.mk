@@ -122,7 +122,13 @@ endif
 
 # Linker flags: $(RISCV_FLAGS) plus the linker script and --gc-sections.
 EXTRA_LDFLAGS ?=
-LDFLAGS  += $(RISCV_FLAGS) -T $(LINKER_SCRIPT) -Wl,--gc-sections $(EXTRA_LDFLAGS)
+FROST_DDR_USABLE_LOG2_BYTES ?= 30
+ifneq ($(filter $(FROST_DDR_USABLE_LOG2_BYTES),30 31 32 33 34 35 36 37),$(FROST_DDR_USABLE_LOG2_BYTES))
+$(error FROST_DDR_USABLE_LOG2_BYTES must be 30..37)
+endif
+FROST_DDR_USABLE_BYTES := $(shell printf '0x%x' $$((1 << $(FROST_DDR_USABLE_LOG2_BYTES))))
+LDFLAGS  += $(RISCV_FLAGS) -T $(LINKER_SCRIPT) -Wl,--gc-sections \
+            -Wl,--defsym=__frost_ddr_usable_bytes=$(FROST_DDR_USABLE_BYTES) $(EXTRA_LDFLAGS)
 
 # C flags and include paths.
 CFLAGS = $(RISCV_FLAGS)
@@ -133,6 +139,21 @@ CFLAGS += '-DCOMPILER_VERSION="$(COMPILER_VERSION)"' \
           '-DCOMPILER_FLAGS="$(strip $(RISCV_FLAGS) $(APP_TUNE_FLAGS) $(FROST_DEBUG_FLAGS))"' \
           '-DFPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ)' \
           $(EXTRA_CFLAGS)
+
+# Board builds set the physical aperture independently of app-specific flags.
+ifneq ($(strip $(FROST_DDR_CAPACITY_LOG2_BYTES)),)
+ifeq ($(filter $(FROST_DDR_CAPACITY_LOG2_BYTES),30 31 32 33 34 35 36 37),)
+$(error FROST_DDR_CAPACITY_LOG2_BYTES must be 30..37)
+endif
+DDR_CAPACITY_CFLAG := -DFROST_DDR_CAPACITY_LOG2_BYTES=$(FROST_DDR_CAPACITY_LOG2_BYTES)
+DDR_CAPACITY_EXTRA_CFLAGS := $(filter -DFROST_DDR_CAPACITY_LOG2_BYTES=%,$(EXTRA_CFLAGS))
+ifneq ($(filter-out $(DDR_CAPACITY_CFLAG),$(DDR_CAPACITY_EXTRA_CFLAGS)),)
+$(error EXTRA_CFLAGS conflicts with FROST_DDR_CAPACITY_LOG2_BYTES)
+endif
+ifeq ($(DDR_CAPACITY_EXTRA_CFLAGS),)
+CFLAGS += $(DDR_CAPACITY_CFLAG)
+endif
+endif
 
 # Assembly startup code (initializes stack, zeroes BSS, calls main)
 ASSEMBLY_STARTUP_FILE := ../../common/crt0.S

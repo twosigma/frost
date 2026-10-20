@@ -153,6 +153,23 @@ def test_driver_license_is_gpl_compatible() -> None:
         assert path.read_text().splitlines()[0] == f"# {SPDX}", path.name
 
 
+def test_driver_negotiates_full_width_nic_dma_without_breaking_legacy() -> None:
+    """The kernel driver must not advertise 64-bit DMA then truncate descriptors."""
+    source = DRIVER_SOURCE.read_text()
+    assert "NET10G_ABI_EXTENDED_SUPPORTED" in source
+    assert "dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64))" in source
+    assert "dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32))" in source
+    assert "writel(NET10G_ABI_EXTENDED, priv->base + NET10G_ABI_CTRL)" in source
+    assert "writeq(priv->rx_ring_dma, priv->base + NET10G_RX_BASE64)" in source
+    assert "writeq(priv->tx_ring_dma, priv->base + NET10G_TX_BASE64)" in source
+    assert "readq(priv->base + NET10G_RX_BASE64)" in source
+    assert "readq(priv->base + NET10G_TX_BASE64)" in source
+    assert "desc->word1 = cpu_to_le32(upper_32_bits(dma));" in source
+    assert "desc->word2 = cpu_to_le32(len);" in source
+    assert "priv->wide_abi ? &desc->word3 : &desc->word2" in source
+    assert "desc->addr = cpu_to_le32(lower_32_bits(dma));" not in source
+
+
 def _debian_kernel() -> ModuleType:
     """Import linux/debian_kernel.py by path (it is a script, not a package)."""
     spec = importlib.util.spec_from_file_location("debian_kernel", DEBIAN_KERNEL)

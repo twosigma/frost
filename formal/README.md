@@ -28,8 +28,26 @@ Run through the pinned Docker image:
 
 Other task names are parameter or width variants of these, such as
 `bmc_xlen32` or `bmc_xilinx`. Each target and task is a separate SymbiYosys
-run with a 40-minute timeout, and `--verbose` prints solver output. SymbiYosys
-writes logs and any counterexample trace to `formal/<target>_<task>/`, which
+run. The timeout is 40 minutes except for `csr_file:bmc`,
+`csr_file:bmc_perf_off`, and `reorder_buffer:bmc`, which have 90 minutes each.
+CI gives each of these three tasks a separate job with a 120-minute job
+limit, including image setup. The remaining tasks share a job with a
+240-minute limit. Each job stays below GitHub's six-hour limit.
+
+The CI jobs collect `tests/test_run_formal.py` and
+`tests/test_pa_bridge_mutation.py` through `./scripts/frost.py run pytest`
+with `-m formal` and a task filter. The two AXI address-truncation mutation
+checks run in the remaining-tasks job. To inspect a job's selection without
+running the solver, add `--collect-only -q` and its `-k` filter. The
+`./scripts/frost.py pytest` shortcut collects only cocotb tests.
+
+The CSR tasks retain depth 20 and the ROB task retains depth 12. Assertions,
+assumptions, engines, and cover depths are unchanged by the timeout settings.
+Each slow task's 90-minute backstop leaves 30 minutes for image setup and
+teardown within its 120-minute job limit.
+`--verbose` prints solver output, and timeouts retain the last 40 captured
+log lines. SymbiYosys writes logs and any counterexample trace to
+`formal/<target>_<task>/`, which
 git ignores. Formal values are two-state, so these checks do not cover X or Z
 behavior in simulation.
 
@@ -257,10 +275,10 @@ divider runs in the `divider` simulation, against Python integer division.
 | `data_mem_request_router` | Device reads are staged and accepted only after committed stores drain, a flush cancels an unaccepted device read, read enables match acceptances, and a blocked request keeps its address. Assumes the load queue presents no new read while one is held |
 | `data_mem_response_mux` | Load data selected among BRAM, MMIO, and cached DDR equals the reference selection at 32 and 64 bits, for portable and Xilinx LUT5 builds |
 | `dmmu_mmio` | The DMMU's MMIO classification, the DTLB's per-entry device-window, atomic, and permission checks, and the stage-2 address split equal the reference logic |
-| `immu_bare` | With translation off, the IMMU's physical addresses and fault flags equal the reference for every PC, and word 1's fault is the PMA check of the next page. The XLEN 32 and 72 variants check only Bare mode and width conversion |
+| `immu_bare` | With translation off, the IMMU's physical addresses and fault flags equal the reference for every PC, and word 1's fault is the PMA check of the next page. Capacity tasks select 1, 64, and 128 GiB explicitly. The XLEN 32 and 72 variants check only Bare mode and width conversion |
 | `immu_page_offset` | Translation preserves the page offset, and the visible physical addresses equal the reference; unbounded. The ITLB is replaced by arbitrary outputs. Assumes one initial reset |
-| `line_arbiter_grant` | Three-port line arbiter grants equal the reference starvation-priority rule, for portable and Xilinx-primitive builds |
-| `line_port_axi_bridge` | At the 64-byte width used below the L2, AR, AW, and W hold steady until accepted, also through a CPU reset, and are low through the AXI side's reset, which drops them; read responses carry the right ID, stale read responses are dropped, and in-flight IDs are tracked. Against a reference that splits owed transactions at each reset, no request is accepted while one from before a reset is owed, so every forwarded read or write response answers a request made since the reset. Assumes unique in-flight IDs |
+| `line_arbiter_grant` | Two- and three-port line arbiter grants equal the reference starvation-priority rule, for portable and Xilinx-primitive builds |
+| `line_port_axi_bridge` | At the 64-byte width used below the L2, AR, AW, and W hold steady until accepted, also through a CPU reset, and are low through the AXI side's reset, which drops them; read responses carry the right ID, stale read responses are dropped, and in-flight IDs are tracked. Against a reference that splits owed transactions at each reset, no request is accepted while one from before a reset is owed, so every forwarded read or write response answers a request made since the reset. BMC and cover tasks check the default, 64 GiB, and 128 GiB address widths. Assumes unique in-flight IDs |
 | `line_size_adapter` | A request goes to its sector of the wider L2 line: aligned address, data copied into every sector, strobes only in its sector, id and kind unchanged. For an arbitrary id, a response returns the sector recorded when that id's request fired, through the outstanding-transaction table. Assumes ids unique among requests in flight and one response per request |
 | `low_bram_presenter_tier` | `low_bram_fetch_presenter` presents the same low-BRAM fetch responses with and without separate address retargeting. See below |
 | `ptw` | The page-table walker against a reference PTE classification: one outstanding read, always to DDR, the right result for a valid leaf, a descent only through a pointer the classification accepts, a page fault only for a reason the PTEs give, never a misalignment fault, and no response for a discarded walk. The cause of an access fault is not checked. Assumes a response arrives only for an outstanding read |

@@ -24,6 +24,7 @@ import pytest
 
 
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "run-clang-tidy.py"
+REPO_ROOT = SCRIPT_PATH.parent.parent
 
 
 def _load_wrapper() -> ModuleType:
@@ -37,6 +38,50 @@ def _load_wrapper() -> ModuleType:
 
 
 wrapper = _load_wrapper()
+
+
+@pytest.mark.parametrize(
+    "app",
+    ("pa_width", "pa_vm_fetch", "pa_dma", "pa_nic_mmio", "pa_nic_packet"),
+)
+def test_pa_app_tidy_capacity_defaults_and_overrides(
+    app: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PA program builds expose one capacity define to both CI lint and tests."""
+    source = (
+        f"sw/apps/{app}_test/{'pa_width_test.c' if app == 'pa_width' else 'main.c'}"
+    )
+    monkeypatch.delenv("EXTRA_CFLAGS", raising=False)
+    monkeypatch.delenv("FROST_DDR_CAPACITY_LOG2_BYTES", raising=False)
+    flags, _ = wrapper.extract_flags_for_file(source, REPO_ROOT, "", "")
+    assert flags.count("-DFROST_DDR_CAPACITY_LOG2_BYTES=30") == 1
+
+    monkeypatch.setenv("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=37")
+    flags, _ = wrapper.extract_flags_for_file(source, REPO_ROOT, "", "")
+    assert flags.count("-DFROST_DDR_CAPACITY_LOG2_BYTES=37") == 1
+    assert "-DFROST_DDR_CAPACITY_LOG2_BYTES=30" not in flags
+
+
+@pytest.mark.parametrize("app", ("dma_torture", "hello_world", "coremark"))
+def test_board_capacity_reaches_application_cflags(
+    app: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Board capacity survives an application's own EXTRA_CFLAGS assignment."""
+    monkeypatch.setenv("FROST_DDR_CAPACITY_LOG2_BYTES", "30")
+    monkeypatch.delenv("EXTRA_CFLAGS", raising=False)
+    source = f"sw/apps/{app}/main.c"
+    flags, _ = wrapper.extract_flags_for_file(source, REPO_ROOT, "", "")
+    assert flags.count("-DFROST_DDR_CAPACITY_LOG2_BYTES=30") == 1
+
+
+def test_board_capacity_rejects_conflicting_cflags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A software override cannot disable the board's DDR boundary check."""
+    monkeypatch.setenv("FROST_DDR_CAPACITY_LOG2_BYTES", "30")
+    monkeypatch.setenv("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=36")
+    with pytest.raises(RuntimeError, match="conflicts"):
+        wrapper.extract_flags_for_file("sw/apps/dma_torture/main.c", REPO_ROOT, "", "")
 
 
 def _write_common_mk(root_dir: Path) -> None:

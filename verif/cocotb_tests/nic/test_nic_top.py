@@ -31,7 +31,15 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
-from cocotb_tests.nic.dma_model import DD, EOP, SOP, Memory, desc_status, post_desc
+from cocotb_tests.nic.dma_model import (
+    DD,
+    EOP,
+    SOP,
+    Memory,
+    desc_status,
+    post_desc,
+    post_desc64,
+)
 from net10g.test_codec import encode_reference
 from net10g.test_integration import WireReceiver, frame_words
 from net10g.test_mac_rx import frame_symbols, pack_symbols
@@ -50,6 +58,7 @@ RX_BASE, RX_SIZE, RX_TAIL, RX_HEAD = 0x020, 0x024, 0x028, 0x02C
 TX_BASE, TX_SIZE, TX_TAIL, TX_HEAD = 0x030, 0x034, 0x038, 0x03C
 IRQ_STATUS, IRQ_MASK, RX_ITR, TX_ITR, TICK = 0x040, 0x044, 0x048, 0x04C, 0x050
 LINK, PHY_CTRL, PHY_STATUS, COUNTERS = 0x060, 0x064, 0x068, 0x080
+ABI_CTRL, RX_BASE64, TX_BASE64 = 0x06C, 0x070, 0x078
 CTRL_RX_EN, CTRL_TX_EN, CTRL_PROMISC, CTRL_RESET = 1, 2, 4, 0x100
 ST_RX_IDLE, ST_TX_IDLE, ST_RESET_BUSY, ST_RX_FIFO_EMPTY = 1, 2, 4, 8
 ST_RX_READY, ST_TX_READY, ST_RX_CONFIG_ERR, ST_TX_CONFIG_ERR = 0x10, 0x20, 0x40, 0x80
@@ -95,6 +104,7 @@ class _LinePort:
         self.pending: list[list[Any]] = []
         self.requests = 0
         self.writes = 0
+        self.seen_addrs: list[int] = []
         self._task = cocotb.start_soon(self._run())
 
     async def _run(self) -> None:
@@ -120,9 +130,11 @@ class _LinePort:
             ):
                 dut.i_dma_req_ready.value = 1
                 addr = int(dut.o_dma_req_addr.value)
-                assert 0x8000_0000 <= addr < 0xC000_0000, (
-                    f"request outside the aperture: {addr:#x}"
-                )
+                assert (
+                    int(dut.APERTURE_BASE.value)
+                    <= addr
+                    < (int(dut.APERTURE_BASE.value) + int(dut.APERTURE_BYTES.value))
+                ), f"request outside the aperture: {addr:#x}"
                 rid = int(dut.o_dma_req_id.value)
                 rdata = 0
                 if int(dut.o_dma_req_write.value):
@@ -135,6 +147,7 @@ class _LinePort:
                 else:
                     rdata = self.mem.read_line(addr)
                 self.requests += 1
+                self.seen_addrs.append(addr)
                 self.pending.append([self.rng.randint(2, 10), rid, rdata])
             else:
                 dut.i_dma_req_ready.value = 0
@@ -239,6 +252,16 @@ class _Nic:
         await RisingEdge(dut.i_clk)
         await Timer(1, unit="ps")
         dut.i_wr_en.value = 0
+
+    async def wr64(self, off: int, val: int) -> None:
+        dut = self.dut
+        await FallingEdge(dut.i_clk)
+        dut.i_wr64_en.value = 1
+        dut.i_wr_offset.value = off
+        dut.i_wr64_data.value = val
+        await RisingEdge(dut.i_clk)
+        await Timer(1, unit="ps")
+        dut.i_wr64_en.value = 0
 
     async def rd64(self, off: int) -> int:
         dut = self.dut
@@ -365,6 +388,8 @@ async def _start(
         dut.i_wr_en,
         dut.i_wr_offset,
         dut.i_wr_data,
+        dut.i_wr64_en,
+        dut.i_wr64_data,
         dut.i_rd_offset,
         dut.i_dma_req_ready,
         dut.i_dma_resp_valid,
@@ -393,6 +418,59 @@ async def _start(
     await nic.wr(MAC_LO, int.from_bytes(STATION[:4], "little"))
     await nic.wr(MAC_HI, int.from_bytes(STATION[4:], "little"))
     return nic
+
+
+@cocotb.test()
+async def test_extended_address_descriptor(dut: Any) -> None:
+    """A versioned TX descriptor above 4 GiB must not alias its low 32 bits."""
+    if len(dut.o_dma_req_addr) < 37:
+        return
+    assert int(dut.APERTURE_BYTES.value) == 1 << 36
+    nic = await _start(dut, seed=6810, loopback=True)
+    try:
+        ring = 0x1_8011_0000
+        buf = 0x1_8030_0023
+        frame = nic.frame(97)
+        assert await nic.rd(ABI_CTRL) == 0x2
+        await nic.wr(ABI_CTRL, 1)
+        assert await nic.rd(ABI_CTRL) == 0x3
+        await nic.wr64(TX_BASE64, ring)
+        await nic.wr(TX_SIZE, TX_SIZE_LOG2)
+        assert await nic.rd64(TX_BASE64) == ring
+        nic.mem.write_bytes(buf, frame)
+        post_desc64(nic.mem, ring, 0, buf, len(frame) | SOP | EOP)
+        await nic.wr(CTRL, CTRL_TX_EN)
+        await nic.wr(TX_TAIL, 1)
+        for _ in range(20000):
+            status = nic.mem.read_word32(ring + 12)
+            if status & DD:
+                break
+            await nic.cycles(10)
+        else:
+            raise AssertionError("wide TX descriptor never completed")
+        assert status == DD
+        assert not (status & (1 << 18))
+        assert nic.mem.read_word32(ring + 8) == len(frame) | SOP | EOP
+        assert any(a >= 0x1_0000_0000 for a in nic.port.seen_addrs)
+        # A descriptor with a set bit above the configured PA width must
+        # complete with ERR and never fetch the matching low-address buffer.
+        invalid = (1 << len(dut.o_dma_req_addr)) | (buf & 0xFFFF_FFFF)
+        post_desc64(nic.mem, ring, 1, invalid, len(frame) | SOP | EOP)
+        before = list(nic.port.seen_addrs)
+        await nic.wr(TX_TAIL, 2)
+        for _ in range(20000):
+            bad_status = nic.mem.read_word32(ring + 16 + 12)
+            if bad_status & DD:
+                break
+            await nic.cycles(10)
+        else:
+            raise AssertionError("invalid wide descriptor never completed")
+        assert bad_status & (1 << 18)
+        assert not any(
+            a == (buf & 0xFFFF_FFE0) for a in nic.port.seen_addrs[len(before) :]
+        )
+    finally:
+        nic.stop()
 
 
 @cocotb.skipif(not RAW_LOOPBACK, reason="runs in the RAW_LOOPBACK = 1 build")

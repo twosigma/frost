@@ -59,8 +59,8 @@ module immu #(
     // outputs are formed directly from it.
     input logic [XLEN-1:0] i_pc,
 
-    output logic [31:0] o_pa0,
-    output logic [31:0] o_pa1,
+    output logic [riscv_pkg::PhysAddrBits-1:0] o_pa0,
+    output logic [riscv_pkg::PhysAddrBits-1:0] o_pa1,
     output logic o_pa_valid,
     // Copies of o_pa_valid for fanout to decoded-queue shadow selects.
     output logic [PA_VALID_COPIES-1:0] o_pa_valid_copy,
@@ -79,67 +79,20 @@ module immu #(
 );
 
   localparam int unsigned VpnBits = riscv_pkg::Sv39VpnBits;
+  localparam int unsigned PpnBits = riscv_pkg::PhysAddrBits - 12;
   localparam int unsigned NpBits  = XLEN - riscv_pkg::Sv39PageOffsetBits;
 
   // ---------------------------------------------------------------------------
   // Bare bypass (translation off).
   // ---------------------------------------------------------------------------
   riscv_pkg::fetch_verdict_t bare_verdict;
-  logic [31:0] bare_pa1;
-  // Convert i_pc to package XLEN as fetch_verdict does. Keep high-bit
-  // reductions separate from Sv39 checks, for timing.
-  localparam int unsigned PmaHighBits   = riscv_pkg::XLEN - 32;
-  localparam int unsigned PmaHighChunks = (PmaHighBits + 5) / 6;
-  logic [riscv_pkg::XLEN-1:0] bare_pma_pc;
-  assign bare_pma_pc = riscv_pkg::XLEN'(i_pc);
-  (* keep = "true" *) logic [PmaHighChunks-1:0] bare_pma_high_zero_chunk;
-  (* keep = "true" *) logic bare_pma_high_zero;
-  (* keep = "true" *) logic bare_pma_low_ok;
-  for (genvar k = 0; k < PmaHighChunks; k++) begin : gen_bare_pma_high_zero
-    localparam int unsigned ChunkBits = ((PmaHighBits - 6 * k) < 6) ? (PmaHighBits - 6 * k) : 6;
-    assign bare_pma_high_zero_chunk[k] = (bare_pma_pc[32+6*k+:ChunkBits] == '0);
-  end
-  assign bare_pma_high_zero = &bare_pma_high_zero_chunk;
-  assign bare_pma_low_ok = (bare_pma_pc[31:riscv_pkg::LowBramCodeAddrBits] == '0) ||
-      (bare_pma_pc[31:30] == 2'b10);
-  assign bare_verdict.straddle = &bare_pma_pc[11:2];
-  assign bare_verdict.bare_fault0 = !(bare_pma_high_zero && bare_pma_low_ok);
-  // Keep the next-page PMA reductions separate for timing.
-  (* keep = "true" *) logic [PmaHighChunks-1:0] bare_pma_high_ones_chunk;
-  (* keep = "true" *) logic bare_pma_high_ones;
-  (* keep = "true" *) logic bare_pma_low_ones;
-  (* keep = "true" *) logic bare_pma_code_low_zero;
-  (* keep = "true" *) logic bare_pma_code_page_ones;
-  (* keep = "true" *) logic bare_pma_cached_page_ones;
-  logic bare_next_page_ok;
-  for (genvar k = 0; k < PmaHighChunks; k++) begin : gen_bare_pma_high_ones
-    localparam int unsigned ChunkBits = ((PmaHighBits - 6 * k) < 6) ? (PmaHighBits - 6 * k) : 6;
-    assign bare_pma_high_ones_chunk[k] = &bare_pma_pc[32+6*k+:ChunkBits];
-  end
-  assign bare_pma_high_ones = &bare_pma_high_ones_chunk;
-  assign bare_pma_low_ones = &bare_pma_pc[31:12];
-  assign bare_pma_code_low_zero = (bare_pma_pc[31:riscv_pkg::LowBramCodeAddrBits] == '0);
-  assign bare_pma_code_page_ones = &bare_pma_pc[riscv_pkg::LowBramCodeAddrBits-1:12];
-  assign bare_pma_cached_page_ones = &bare_pma_pc[29:12];
-  assign bare_next_page_ok =
-      (bare_pma_high_zero && bare_pma_code_low_zero && !bare_pma_code_page_ones) ||
-      (bare_pma_high_ones && bare_pma_low_ones) ||
-      (bare_pma_high_zero &&
-       (((bare_pma_pc[31:30] == 2'b10) && !bare_pma_cached_page_ones) ||
-        ((bare_pma_pc[31:30] == 2'b01) && bare_pma_cached_page_ones)));
-  assign bare_verdict.bare_fault1 = bare_verdict.straddle ? !bare_next_page_ok :
-                                                            bare_verdict.bare_fault0;
-`ifndef SYNTHESIS
-  always_comb begin
-    if (!$isunknown(bare_pma_pc)) begin
-      p_bare_next_page_ok_exact :
-      assert (bare_next_page_ok == riscv_pkg::pma_fetch_next_page_ok(bare_pma_pc));
-    end
-  end
-`endif
-  assign bare_verdict.line_after_in_page =
-      (bare_pma_pc[11:5] != 7'h7F) || (bare_pma_pc[4:2] == 3'b111);
-  assign bare_pa1 = {i_pc[31:2] + 30'd1, 2'b00};
+  logic [riscv_pkg::PhysAddrBits-1:0] bare_pc;
+  logic [riscv_pkg::PhysAddrBits-1:0] bare_pc_aligned;
+  logic [riscv_pkg::PhysAddrBits-1:0] bare_pa1;
+  assign bare_verdict = riscv_pkg::fetch_verdict(i_pc);
+  assign bare_pc = riscv_pkg::PhysAddrBits'(i_pc);
+  assign bare_pc_aligned = {bare_pc[riscv_pkg::PhysAddrBits-1:2], 2'b00};
+  assign bare_pa1 = bare_pc_aligned + riscv_pkg::PhysAddrBits'(4);
 
 `ifndef SYNTHESIS
   // Sample the settled bypass at its consuming edge; continuous struct-field
@@ -207,7 +160,7 @@ module immu #(
   // ---------------------------------------------------------------------------
   logic [1:0][VpnBits-1:0] tlb_vpn;
   logic [1:0] tlb_hit;
-  logic [1:0][19:0] tlb_ppn20;
+  logic [1:0][PpnBits-1:0] tlb_ppn;
   logic [1:0] tlb_hi_nonzero;
   logic [1:0] tlb_r, tlb_w, tlb_x, tlb_u, tlb_d;
   logic [1:0][1:0] tlb_level;
@@ -232,7 +185,7 @@ module immu #(
       .i_install(i_walk_resp),
       .i_lookup_vpn(tlb_vpn),
       .o_hit(tlb_hit),
-      .o_ppn20(tlb_ppn20),
+      .o_ppn(tlb_ppn),
       .o_ppn_hi_nonzero(tlb_hi_nonzero),
       .o_perm_r(tlb_r),
       .o_perm_w(tlb_w),
@@ -282,12 +235,12 @@ module immu #(
   // stale response still fills the ITLB or memo for the recheck cycle to pick
   // up, but it cannot make another key's payload visible.
   // ---------------------------------------------------------------------------
-  function automatic logic [19:0] ppn20_from_resp(input riscv_pkg::ptw_resp_t resp,
-                                                  input logic [VpnBits-1:0] vpn);
+  function automatic logic [PpnBits-1:0] ppn_from_resp(input riscv_pkg::ptw_resp_t resp,
+                                                       input logic [VpnBits-1:0] vpn);
     unique case (resp.level)
-      2'd2: ppn20_from_resp = {resp.ppn[19:18], vpn[17:0]};
-      2'd1: ppn20_from_resp = {resp.ppn[19:9], vpn[8:0]};
-      default: ppn20_from_resp = resp.ppn[19:0];
+      2'd2: ppn_from_resp = {resp.ppn[PpnBits-1:18], vpn[17:0]};
+      2'd1: ppn_from_resp = {resp.ppn[PpnBits-1:9], vpn[8:0]};
+      default: ppn_from_resp = resp.ppn[PpnBits-1:0];
     endcase
   endfunction
 
@@ -295,7 +248,7 @@ module immu #(
     logic resolved;
     logic fault;
     logic page;
-    logic [19:0] ppn20;
+    logic [PpnBits-1:0] ppn;
     logic hi_nonzero;
     logic [1:0] level;
     logic clean_hit;
@@ -304,14 +257,14 @@ module immu #(
   // Hits use ITLB permission and PMA checks; walk responses are checked here.
   function automatic port_res_t resolve_port(
       input logic noncanon, input logic [VpnBits-1:0] vpn, input logic hit,
-      input logic [19:0] ppn20, input logic hi_nonzero, input logic tlb_perm_fault,
+      input logic [PpnBits-1:0] ppn, input logic hi_nonzero, input logic tlb_perm_fault,
       input logic tlb_pma_bad, input logic [1:0] level, input logic priv_u, input logic invalidate,
       input logic resp_valid, input riscv_pkg::ptw_resp_t resp, input logic memo_valid,
       input logic [VpnBits-1:0] memo_vpn, input logic memo_page);
     port_res_t r;
     logic resp_match, use_resp_leaf, have;
     logic e_hi_nonzero;
-    logic [19:0] e_ppn20;
+    logic [PpnBits-1:0] e_ppn;
     logic [1:0] e_level;
     logic perm_ok, pma_bad;
     begin
@@ -320,19 +273,19 @@ module immu #(
       use_resp_leaf = resp_match && (resp.fault_kind == riscv_pkg::DFAULT_NONE);
       have = (hit && !invalidate) || use_resp_leaf;
       if (use_resp_leaf && !(hit && !invalidate)) begin
-        e_hi_nonzero = |resp.ppn[riscv_pkg::PtePpnBits-1:20];
-        e_ppn20 = ppn20_from_resp(resp, vpn);
+        e_hi_nonzero = |resp.ppn[riscv_pkg::PtePpnBits-1:PpnBits];
+        e_ppn = ppn_from_resp(resp, vpn);
         e_level = resp.level;
         perm_ok = resp.perm_x && (resp.perm_u == priv_u);
-        pma_bad = e_hi_nonzero || !riscv_pkg::pma_fetch_ok({32'b0, e_ppn20, 12'h000});
+        pma_bad = e_hi_nonzero || !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({e_ppn, 12'h000}));
       end else begin
         e_hi_nonzero = hi_nonzero;
-        e_ppn20 = ppn20;
+        e_ppn = ppn;
         e_level = level;
         perm_ok = !tlb_perm_fault;
         pma_bad = tlb_pma_bad;
       end
-      r.ppn20 = e_ppn20;
+      r.ppn = e_ppn;
       r.hi_nonzero = e_hi_nonzero;
       r.level = e_level;
       if (noncanon) begin
@@ -368,7 +321,7 @@ module immu #(
       pc_noncanon,
       pc_vpn,
       tlb_hit[0],
-      tlb_ppn20[0],
+      tlb_ppn[0],
       tlb_hi_nonzero[0],
       tlb_fetch_perm_fault[0],
       tlb_fetch_pma_bad[0],
@@ -385,7 +338,7 @@ module immu #(
       np_noncanon,
       np_va_q[VpnBits-1:0],
       tlb_hit[1],
-      tlb_ppn20[1],
+      tlb_ppn[1],
       tlb_hi_nonzero[1],
       tlb_fetch_perm_fault[1],
       tlb_fetch_pma_bad[1],
@@ -404,14 +357,14 @@ module immu #(
   always_comb begin
     for (int p = 0; p < 2; p++) begin
       if (tlb_hit[p] && !$isunknown(
-              {tlb_x[p], tlb_u[p], tlb_hi_nonzero[p], tlb_ppn20[p], i_priv_u,
+              {tlb_x[p], tlb_u[p], tlb_hi_nonzero[p], tlb_ppn[p], i_priv_u,
                tlb_fetch_perm_fault[p], tlb_fetch_pma_bad[p]}
           )) begin
         p_itlb_fetch_verdicts_exact :
         assert (tlb_fetch_perm_fault[p] == !(tlb_x[p] && (tlb_u[p] == i_priv_u)) &&
                 tlb_fetch_pma_bad[p] ==
                 (tlb_hi_nonzero[p] || !riscv_pkg::pma_fetch_ok(
-            {32'b0, tlb_ppn20[p], 12'h000}
+            riscv_pkg::XLEN'({tlb_ppn[p], 12'h000})
         )));
       end
     end
@@ -423,7 +376,7 @@ module immu #(
   // walk responses use the selected fields.
   logic super_end;
   logic super_next_ok;
-  logic [19:0] super_next_ppn20;
+  logic [PpnBits-1:0] super_next_ppn;
   logic super_next_pma_bad;
   logic super_next_pma_bad_selected;
   logic res0_from_tlb;
@@ -432,20 +385,22 @@ module immu #(
     unique case (res0.level)
       2'd2: begin
         super_end = &pc_vpn[17:0];
-        super_next_ppn20 = {res0.ppn20[19:18], pc_vpn[17:0] + 18'd1};
+        super_next_ppn = {res0.ppn[PpnBits-1:18], pc_vpn[17:0] + 18'd1};
       end
       2'd1: begin
         super_end = &pc_vpn[8:0];
-        super_next_ppn20 = {res0.ppn20[19:9], pc_vpn[8:0] + 9'd1};
+        super_next_ppn = {res0.ppn[PpnBits-1:9], pc_vpn[8:0] + 9'd1};
       end
       default: begin
         super_end = 1'b1;
-        super_next_ppn20 = res0.ppn20;
+        super_next_ppn = res0.ppn;
       end
     endcase
   end
   assign super_next_ok = res0.clean_hit && (res0.level != 2'd0) && !super_end;
-  assign super_next_pma_bad_selected = !riscv_pkg::pma_fetch_ok({32'b0, super_next_ppn20, 12'h000});
+  assign super_next_pma_bad_selected = !riscv_pkg::pma_fetch_ok(
+      riscv_pkg::XLEN'({super_next_ppn, 12'h000})
+  );
   assign super_next_pma_bad = res0_from_tlb ? tlb_fetch_next_pma_bad[0] :
                                               super_next_pma_bad_selected;
 `ifndef SYNTHESIS
@@ -459,14 +414,14 @@ module immu #(
   // ---------------------------------------------------------------------------
   // Tag and result capture. The key and its result always load together.
   // ---------------------------------------------------------------------------
-  logic [31:0] pa0_d, pa1_d;
+  logic [riscv_pkg::PhysAddrBits-1:0] pa0_d, pa1_d;
   logic resolved_d, f0_d, f0p_d, f1_d, f1p_d, after_ok_d;
   logic miss0_d, miss1_d;
   logic resolved1;
 
   always_comb begin
-    pa0_d = res0.fault ? i_pc[31:0] : {res0.ppn20, i_pc[11:0]};
-    pa1_d = {pa0_d[31:12], pc_plus4_lo, 2'b00};
+    pa0_d = res0.fault ? bare_pc : {res0.ppn, i_pc[11:0]};
+    pa1_d = {pa0_d[riscv_pkg::PhysAddrBits-1:12], pc_plus4_lo, 2'b00};
     f0_d = res0.fault;
     f0p_d = res0.page;
     f1_d = res0.fault;
@@ -478,11 +433,11 @@ module immu #(
 
     if (pc_page_cross) begin
       if (super_next_ok) begin
-        pa1_d = {super_next_ppn20, 12'h000};
+        pa1_d = {super_next_ppn, 12'h000};
         f1_d  = super_next_pma_bad;
         f1p_d = 1'b0;
       end else if (np_sample_matches) begin
-        pa1_d = res1.fault ? {np_va_q[19:0], 12'h000} : {res1.ppn20, 12'h000};
+        pa1_d = res1.fault ? {np_va_q[PpnBits-1:0], 12'h000} : {res1.ppn, 12'h000};
         f1_d = res1.fault;
         f1p_d = res1.page;
         resolved1 = res1.resolved;
@@ -499,7 +454,7 @@ module immu #(
     after_ok_d = (pa0_d[11:5] != 7'h7F) || (pa0_d[4:2] == 3'b111);
   end
 
-  logic [31:0] pa0_q, pa1_q;
+  logic [riscv_pkg::PhysAddrBits-1:0] pa0_q, pa1_q;
   logic f0_q, f0p_q, f1_q, f1p_q, after_ok_q;
   logic miss0_q, miss1_q;
 
@@ -586,8 +541,15 @@ module immu #(
   // ---------------------------------------------------------------------------
   // Translation preserves the page offset and visible tags match i_pc, so
   // both modes can use the live PC's offset.
-  assign o_pa0 = {i_active ? pa0_q[31:12] : i_pc[31:12], i_pc[11:0]};
-  assign o_pa1 = {i_active ? pa1_q[31:12] : bare_pa1[31:12], pc_plus4_lo, 2'b00};
+  assign o_pa0 = {
+    i_active ? pa0_q[riscv_pkg::PhysAddrBits-1:12] : bare_pc[riscv_pkg::PhysAddrBits-1:12],
+    i_pc[11:0]
+  };
+  assign o_pa1 = {
+    i_active ? pa1_q[riscv_pkg::PhysAddrBits-1:12] : bare_pa1[riscv_pkg::PhysAddrBits-1:12],
+    pc_plus4_lo,
+    2'b00
+  };
   // Apply the live-PC compare last, for timing.
   (* keep = "true" *) logic visible_before_pc_compare;
   assign visible_before_pc_compare = !i_tlb_invalidate && key_valid_q &&
@@ -630,8 +592,8 @@ module immu #(
             }
         )) begin
       if (!i_active) begin
-        p_bare_pa0_exact : assert (o_pa0 == i_pc[31:0]);
-        p_bare_pa1_exact : assert (o_pa1 == {i_pc[31:2] + 30'd1, 2'b00});
+        p_bare_pa0_exact : assert (o_pa0 == bare_pc);
+        p_bare_pa1_exact : assert (o_pa1 == bare_pa1);
         p_bare_valid : assert (o_pa_valid);
         p_bare_faults_exact :
         assert (o_fault0 == bare_verdict.bare_fault0 &&

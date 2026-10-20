@@ -15,7 +15,7 @@
  */
 
 // With translation off (Bare), the IMMU's ports must equal the reference for
-// every PC: PA0 is the PC's low 32 bits, PA1 the address of the next 4-byte
+// every PC: PA0 is the PC's physical-address slice, PA1 the address of the next 4-byte
 // word, the fault flags come from riscv_pkg::fetch_verdict, and the remaining
 // flags are constant. Word 1's fault is also checked against pma_fetch_ok of
 // the next page itself, computed with the incrementer that
@@ -27,12 +27,14 @@ module immu_bare_formal #(
 ) (
     input logic [XLEN-1:0] pc
 );
-  logic [31:0] pa0, pa1;
+  logic [riscv_pkg::PhysAddrBits-1:0] pa0, pa1;
+  logic [riscv_pkg::PhysAddrBits-1:0] reference_pa1;
   logic pa_valid, fault0, fault1, page0, page1, line_after_ok;
   logic [riscv_pkg::XLEN-1:0] package_pc;
   riscv_pkg::fetch_verdict_t reference_verdict;
   logic [riscv_pkg::XLEN-1:0] next_page_pc;
   assign package_pc = riscv_pkg::XLEN'(pc);
+  assign reference_pa1 = {package_pc[riscv_pkg::PhysAddrBits-1:2] + 1'b1, 2'b00};
   assign reference_verdict = riscv_pkg::fetch_verdict(package_pc);
   // The 52-bit page number wraps, as in pma_fetch_next_page_ok.
   assign next_page_pc = {package_pc[riscv_pkg::XLEN-1:12] + 1'b1, 12'h000};
@@ -60,8 +62,8 @@ module immu_bare_formal #(
   );
 
   always_comb begin
-    p_bare_pa0_matches_original : assert (pa0 == pc[31:0]);
-    p_bare_pa1_matches_original : assert (pa1 == {pc[31:2] + 30'd1, 2'b00});
+    p_bare_pa0_matches_original : assert (pa0 == package_pc[riscv_pkg::PhysAddrBits-1:0]);
+    p_bare_pa1_matches_original : assert (pa1 == reference_pa1);
     p_bare_fault0_matches_original : assert (fault0 == reference_verdict.bare_fault0);
     p_bare_fault1_matches_original : assert (fault1 == reference_verdict.bare_fault1);
     p_bare_fault1_matches_next_page_pma :

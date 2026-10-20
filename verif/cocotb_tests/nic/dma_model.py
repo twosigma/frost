@@ -227,6 +227,15 @@ def post_desc(mem: Memory, base: int, index: int, buf_addr: int, word1: int) -> 
     mem.write_word32(a + 12, 0)
 
 
+def post_desc64(mem: Memory, base: int, index: int, buf_addr: int, word1: int) -> None:
+    """Post an extended descriptor with a full-width address and clear status."""
+    a = desc_addr(base, index)
+    mem.write_word32(a, buf_addr & 0xFFFF_FFFF)
+    mem.write_word32(a + 4, buf_addr >> 32)
+    mem.write_word32(a + 8, word1)
+    mem.write_word32(a + 12, 0)
+
+
 def desc_status(mem: Memory, base: int, index: int) -> int:
     """Return the descriptor's status word (word 2)."""
     return mem.read_word32(desc_addr(base, index) + 8)

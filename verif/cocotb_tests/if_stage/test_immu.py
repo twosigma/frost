@@ -23,6 +23,7 @@ must agree with that visibility rule.
 """
 
 from dataclasses import dataclass
+import os
 from typing import Any
 
 import cocotb
@@ -34,6 +35,11 @@ CLOCK_PERIOD_NS = 10
 XLEN_MASK = (1 << 64) - 1
 VPN_MASK = (1 << 27) - 1
 PPN_MASK = (1 << 44) - 1
+DDR_CAPACITY_LOG2_BYTES = int(os.environ.get("FROST_DDR_CAPACITY_LOG2_BYTES", "30"))
+PHYS_BITS = max(32, DDR_CAPACITY_LOG2_BYTES + 1)
+PHYS_MASK = (1 << PHYS_BITS) - 1
+PHYS_PPN_BITS = PHYS_BITS - 12
+DDR_LIMIT = 0x8000_0000 + (1 << DDR_CAPACITY_LOG2_BYTES)
 
 DFAULT_NONE = 0
 DFAULT_PAGE = 2
@@ -77,7 +83,7 @@ def _canonical(va: int) -> bool:
 def _fetch_pma_ok(address: int) -> bool:
     # Fetch reaches the low BRAM's 128 KiB code region, not the rest of it.
     address &= XLEN_MASK
-    return address < 0x0002_0000 or 0x8000_0000 <= address < 0xC000_0000
+    return address < 0x0002_0000 or 0x8000_0000 <= address < DDR_LIMIT
 
 
 def _next_page_va(va: int) -> int:
@@ -89,18 +95,18 @@ def _page_cross(va: int) -> bool:
     return ((va >> 2) & 0x3FF) == 0x3FF
 
 
-def _next_word_low32(va: int) -> int:
-    return (((va & 0xFFFF_FFFF) >> 2) + 1 << 2) & 0xFFFF_FFFF
+def _next_word_pa(va: int) -> int:
+    return ((va & ~3) + 4) & PHYS_MASK
 
 
 def _bare_window(va: int) -> Window:
     va &= XLEN_MASK
-    next_word = _next_word_low32(va)
+    next_word = _next_word_pa(va)
     fault0 = int(not _fetch_pma_ok(va))
     word1_va = _next_page_va(va) if _page_cross(va) else va
     fault1 = int(not _fetch_pma_ok(word1_va)) if _page_cross(va) else fault0
     return Window(
-        pa0=va & 0xFFFF_FFFF,
+        pa0=va & PHYS_MASK,
         pa1=next_word,
         fault0=fault0,
         fault1=fault1,
@@ -117,7 +123,7 @@ def _leaf_matches(leaf: Leaf, vpn: int) -> bool:
 
 
 def _materialized_ppn(leaf: Leaf, vpn: int) -> int:
-    ppn20 = leaf.ppn & 0xF_FFFF
+    ppn20 = leaf.ppn & ((1 << PHYS_PPN_BITS) - 1)
     if leaf.level == 2:
         return (ppn20 & ~0x3_FFFF) | (vpn & 0x3_FFFF)
     if leaf.level == 1:
@@ -130,15 +136,15 @@ def _resolve_word(va: int, leaf: Leaf | None, priv_u: int) -> tuple[int, int, in
     va &= XLEN_MASK
     vpn = (va >> 12) & VPN_MASK
     if not _canonical(va):
-        return va & 0xFFFF_FFFF, 1, 1
+        return va & PHYS_MASK, 1, 1
     if leaf is None or not _leaf_matches(leaf, vpn):
         raise AssertionError(f"reference has no leaf for VPN 0x{vpn:x}")
     if not leaf.perm_x or leaf.perm_u != priv_u:
-        return va & 0xFFFF_FFFF, 1, 1
+        return va & PHYS_MASK, 1, 1
     ppn20 = _materialized_ppn(leaf, vpn)
     physical_page = ppn20 << 12
-    if leaf.ppn >> 20 or not _fetch_pma_ok(physical_page):
-        return va & 0xFFFF_FFFF, 1, 0
+    if leaf.ppn >> PHYS_PPN_BITS or not _fetch_pma_ok(physical_page):
+        return va & PHYS_MASK, 1, 0
     return physical_page | (va & 0xFFF), 0, 0
 
 
@@ -153,12 +159,12 @@ def _translated_window(
     """Resolve the two-word window independently from the RTL."""
     pa0, fault0, page0 = _resolve_word(va, leaf0, priv_u)
     if not _page_cross(va):
-        pa1 = (pa0 & 0xFFFF_F000) | (_next_word_low32(va) & 0xFFF)
+        pa1 = (pa0 & ~0xFFF) | (_next_word_pa(va) & 0xFFF)
         fault1, page1 = fault0, page0
     else:
         va1 = _next_page_va(va)
         if fault1_kind is not None:
-            pa1 = va1 & 0xFFFF_FFFF
+            pa1 = va1 & PHYS_MASK
             fault1 = 1
             page1 = int(fault1_kind == DFAULT_PAGE)
         else:
@@ -318,6 +324,9 @@ async def test_bare_exact_selected_pc_window(dut: Any) -> None:
         0x0003_FFFC,
         0x7FFF_FFFC,
         0xBFFF_FFFC,
+        DDR_LIMIT - 4,
+        DDR_LIMIT,
+        DDR_LIMIT + (1 << 32),
         0x1_0000_1002,
         0xFFFF_FFFF_FFFF_FFFF,
     )
@@ -329,6 +338,32 @@ async def test_bare_exact_selected_pc_window(dut: Any) -> None:
         # Holding the PC for another cycle still gives the direct result.
         await _cycle(dut)
         _assert_window(dut, _bare_window(pc))
+
+
+@cocotb.test()
+async def test_sv39_configured_ddr_top_and_out_of_range_leaf(dut: Any) -> None:
+    """A top-page translation works; the next physical page faults without alias."""
+    await _setup(dut)
+    pc = 0x0000_4040
+    top_leaf = Leaf(vpn=pc >> 12, ppn=(DDR_LIMIT - 0x1000) >> 12)
+    await _move_pc(dut, pc)
+    dut.i_active.value = 1
+    await _cycle(dut)
+    await _accept_request(dut, top_leaf.vpn)
+    await _return_leaf(dut, top_leaf)
+    _assert_window(dut, _translated_window(pc, top_leaf))
+    assert int(dut.o_pa0.value) == DDR_LIMIT - 0x1000 + 0x40
+
+    outside_pc = 0x0000_5040
+    outside_leaf = Leaf(vpn=outside_pc >> 12, ppn=DDR_LIMIT >> 12)
+    await _move_pc(dut, outside_pc)
+    _assert_invisible(dut)
+    await _cycle(dut)
+    await _accept_request(dut, outside_leaf.vpn)
+    await _return_leaf(dut, outside_leaf)
+    _assert_window(dut, _translated_window(outside_pc, outside_leaf))
+    assert int(dut.o_fault0.value) == 1
+    assert int(dut.o_fault0_page.value) == 0
 
 
 @cocotb.test()
@@ -550,8 +585,8 @@ async def test_translation_faults_and_refusal_memo(dut: Any) -> None:
     _assert_window(
         dut,
         Window(
-            pa0=noncanon & 0xFFFF_FFFF,
-            pa1=_next_word_low32(noncanon),
+            pa0=noncanon & PHYS_MASK,
+            pa1=_next_word_pa(noncanon),
             fault0=1,
             fault0_page=1,
             fault1=1,
@@ -566,7 +601,7 @@ async def test_translation_faults_and_refusal_memo(dut: Any) -> None:
         (0x0001_4040, Leaf(vpn=0x14, ppn=0x50, perm_x=0), 1),
         (0x0001_6040, Leaf(vpn=0x16, ppn=0x51, perm_u=1), 1),
         (0x0001_8040, Leaf(vpn=0x18, ppn=0x40000), 0),
-        (0x0001_A040, Leaf(vpn=0x1A, ppn=1 << 20), 0),
+        (0x0001_A040, Leaf(vpn=0x1A, ppn=1 << PHYS_PPN_BITS), 0),
     )
     for pc, leaf, page_kind in episodes:
         await _move_pc(dut, pc)
@@ -592,7 +627,7 @@ async def test_translation_faults_and_refusal_memo(dut: Any) -> None:
     await _pulse_response(dut, vpn=refused_vpn, fault_kind=DFAULT_PAGE)
     expected_refusal = Window(
         pa0=refused_pc,
-        pa1=_next_word_low32(refused_pc),
+        pa1=_next_word_pa(refused_pc),
         fault0=1,
         fault0_page=1,
         fault1=1,
@@ -620,7 +655,7 @@ async def test_translation_faults_and_refusal_memo(dut: Any) -> None:
     await _pulse_response(dut, vpn=refused_vpn, fault_kind=DFAULT_ACCESS)
     expected_access_refusal = Window(
         pa0=refused_pc,
-        pa1=_next_word_low32(refused_pc),
+        pa1=_next_word_pa(refused_pc),
         fault0=1,
         fault1=1,
         line_after_ok=1,

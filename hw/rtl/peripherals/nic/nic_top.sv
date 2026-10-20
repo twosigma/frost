@@ -34,8 +34,8 @@
 module nic_top #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 32,
-    parameter logic [31:0] APERTURE_BASE = 32'h8000_0000,
-    parameter logic [31:0] APERTURE_BYTES = 32'h4000_0000,
+    parameter logic [63:0] APERTURE_BASE = 64'h8000_0000,
+    parameter logic [63:0] APERTURE_BYTES = 64'h4000_0000,
     parameter logic [31:0] TICK_DEFAULT = 32'd300,
     parameter int unsigned FIFO_DEPTH = 512,
     parameter int MAX_FRAME_BYTES = 9216,
@@ -46,10 +46,13 @@ module nic_top #(
     input logic i_clk,
     input logic i_rst,
 
-    // Register window.
+    // Register window. Wide-address writes are a separate complete 64-bit
+    // transaction, never a pair of legacy 32-bit lane writes.
     input  logic        i_wr_en,
     input  logic [11:0] i_wr_offset,
     input  logic [31:0] i_wr_data,
+    input  logic        i_wr64_en,
+    input  logic [63:0] i_wr64_data,
     input  logic [11:0] i_rd_offset,
     output logic [63:0] o_rd_pair,
     output logic        o_irq,
@@ -83,7 +86,7 @@ module nic_top #(
   localparam int unsigned TagBits = 4;
 
   // ---- reset controller and the MAC domains -------------------------------------------
-  logic reset_req, stop_dma, soft_rst, reset_busy, front_idle;
+  logic reset_req, stop_dma, soft_rst, reset_busy, front_idle, wide_mode;
   logic [1:0] clk_ok, in_reset, applied_gen, applied_valid, req, gen, core_rst_dom, ready;
   // i_rst is the caller's next reset value, so rst_q matches its registered
   // reset. Compute nic_rst_q ahead of the edge to equal rst_q || soft_rst.
@@ -218,6 +221,8 @@ module nic_top #(
       .i_wr_en(i_wr_en),
       .i_wr_offset(i_wr_offset),
       .i_wr_data(i_wr_data),
+      .i_wr64_en(i_wr64_en),
+      .i_wr64_data(i_wr64_data),
       .i_rd_offset(i_rd_offset),
       .o_rd_pair(o_rd_pair),
       .i_irq_status(irq_status),
@@ -227,6 +232,7 @@ module nic_top #(
       .i_tick(tick),
       .o_rx_en(rx_en),
       .o_tx_en(tx_en),
+      .o_wide_mode(wide_mode),
       .o_promisc(promisc),
       .o_mac(mac),
       .o_reset_req(reset_req),
@@ -311,6 +317,7 @@ module nic_top #(
       .i_clk           (i_clk),
       .i_rst           (nic_rst_q),
       .i_enable        (rx_en),
+      .i_wide_mode     (wide_mode),
       .i_base          (rx_base),
       .i_size_log2     (rx_size),
       .i_tail          (rx_tail),
@@ -354,6 +361,7 @@ module nic_top #(
       .i_clk           (i_clk),
       .i_rst           (nic_rst_q),
       .i_enable        (tx_en),
+      .i_wide_mode     (wide_mode),
       .i_base          (tx_base),
       .i_size_log2     (tx_size),
       .i_tail          (tx_tail),

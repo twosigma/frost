@@ -470,3 +470,35 @@ async def test_axi_reset_withdraws_held_beats(dut: Any) -> None:
     assert not slave.violations, "; ".join(slave.violations)
     slave.stop()
     log.stop()
+
+
+@cocotb.test()
+async def test_wide_axi_addresses_do_not_alias(dut: Any) -> None:
+    """The first, last, and (where present) +4 GiB lines retain their offsets."""
+    slave, log = await _start(dut)
+    low = BASE_ADDR + 0x100
+    capacity_bits = len(dut.o_axi_awaddr)
+    lines = [(low, _pattern(11))]
+    if capacity_bits > 32:
+        lines.append((low + (1 << 32), _pattern(12)))
+    top = BASE_ADDR + (1 << capacity_bits) - LINE_BYTES
+    if top < (1 << len(dut.i_req_addr)):
+        lines.append((top, _pattern(13)))
+
+    for req_id, (addr, data) in enumerate(lines):
+        after = log.cycle
+        await _fire(dut, write=True, addr=addr, req_id=req_id, wdata=data)
+        await log.wait_for(req_id, after=after)
+
+    assert [addr for addr, _, _ in slave.performed] == [
+        addr - BASE_ADDR for addr, _ in lines
+    ]
+    for req_id, (addr, data) in enumerate(lines, start=4):
+        after = log.cycle
+        await _fire(dut, write=False, addr=addr, req_id=req_id)
+        assert await log.wait_for(req_id, after=after) == data
+
+    assert [addr for _, addr in slave.reads] == [addr - BASE_ADDR for addr, _ in lines]
+    assert not slave.violations, "; ".join(slave.violations)
+    slave.stop()
+    log.stop()

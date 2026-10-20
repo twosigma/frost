@@ -4,7 +4,7 @@ This directory holds FROST's synthesizable SystemVerilog: a single-hart
 RV64GCB out-of-order CPU, its memory system, and its peripherals. The CPU
 schedules with Tomasulo's algorithm, decodes, renames, and commits up to two
 instructions per cycle, and runs M, S, and U modes with Sv39 virtual memory.
-Around it sit 256 KiB of on-chip BRAM, a three-cache hierarchy over 1 GiB of
+Around it sit 256 KiB of on-chip BRAM, a three-cache hierarchy over a configurable DDR aperture of
 DDR, a PLIC, a RISC-V debug module, and a 10GBASE-R NIC.
 
 The RTL is portable. Defining `FROST_XILINX_PRIMS` selects explicit Xilinx
@@ -87,14 +87,17 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 | RAM | `0x0001_8000` | 160 KiB | Data, BSS, and stack (low BRAM) |
 | MMIO | `0x4000_0000` | 196 KiB | Device registers (table below) |
 | PLIC | `0x4400_0000` | 4 MiB | Platform-level interrupt controller |
-| DDR | `0x8000_0000` | 1 GiB | Cached region: `.ddr_text` code, large data, and the heap |
+| DDR | `0x8000_0000` | Configured 1–128 GiB (1 GiB default aperture) | Cached region: `.ddr_text` code, large data, and the heap; software must use the populated size |
 
-Every other address, including the rest of the device quadrant
-`[0x4000_0000, 0x8000_0000)` and any address with bits 63:32 set, is
+Addresses outside the defined regions, including the rest of the device
+quadrant `[0x4000_0000, 0x8000_0000)` and addresses at or beyond the
+configured DDR end (`0x8000_0000 + 2^FROST_DDR_CAPACITY_LOG2_BYTES`), are
 unmapped: a fetch, load, store, or AMO there raises a precise access fault
-(cause 1, 5, or 7) and never aliases onto the map. Fetch also faults in the
-low BRAM above its 128 KiB code region `[0, 0x2_0000)`. The one exception is a
-store to the rest of the device quadrant with translation off: the
+(cause 1, 5, or 7) and never aliases onto the map. DDR addresses above 4 GiB
+remain valid when they are inside the configured aperture. At the default
+1 GiB capacity, `0xc000_0000` and higher addresses fault. Fetch also faults
+in the low BRAM above its 128 KiB code region `[0, 0x2_0000)`. The one
+exception is a store to the rest of the device quadrant with translation off: the
 store-issue check covers the whole quadrant, so the store issues and the
 device bus ignores it. Under Sv39, a misaligned-address or page fault takes priority over the
 access fault; for an untranslated access, the access fault takes priority
@@ -153,7 +156,7 @@ MMIO registers:
 | `0x4001_0000` | CLINT MSIP | SiFive CLINT alias of MSIP |
 | `0x4001_4000`/`4004` | CLINT MTIMECMP_LO/HI | SiFive CLINT alias of MTIMECMP |
 | `0x4001_BFF8`/`BFFC` | CLINT MTIME_LO/HI | SiFive CLINT alias of MTIME |
-| `0x4002_0000`–`0024` | DMA test engine | CTRL/ACK/SRC/DST/LEN/MODE/PATTERN/STATUS_ADDR/STATUS_VALUE/LINES (`dma_test_engine.sv`, `sw/lib/include/dma_engine.h`) |
+| `0x4002_0000`–`0057` | DMA test engine | Legacy CTRL/ACK/SRC/DST/LEN/MODE/PATTERN/STATUS_ADDR/STATUS_VALUE/LINES plus versioned ABI_CTRL and SRC64/DST64/STATUS_ADDR64 (`dma_test_engine.sv`, `sw/lib/include/dma_engine.h`) |
 | `0x4002_1000`–`1038` | Memory error unit | CAPS/STATUS/IRQ_EN/CE_COUNT/UE_COUNT/AXI_RD_ERRS/AXI_WR_ERRS/CE_ADDR/UE_ADDR/AXI_ERR/ECC_POLLS (`memory_error_unit.sv`, `sw/lib/include/memory_error.h`) |
 | `0x4003_0000`–`0FFF` | NIC | 4 KiB window: control and status, station address, rings, link and PHY, 64-bit counters (`peripherals/nic/nic_pkg.sv`, `sw/lib/include/nic.h`) |
 
@@ -205,8 +208,9 @@ reserves it as the `DEBUG` region.
 Every data-side bus below the load and store queues (the BRAM tier, the
 cached tier, MMIO, the request router, and adapter responses) moves one
 aligned 64-bit beat per transaction (`riscv_pkg::MemDataBits`) with an 8-lane
-byte strobe (`MemStrbBits`). The beat is the dword at `addr[31:3]`, and byte
-lane *i* is byte address `{addr[31:3], i}`. Producers position data by
+byte strobe (`MemStrbBits`). The beat is selected by the configured physical
+address bits above bit 2, and byte lane *i* has that same beat address with
+byte offset *i*. Producers position data by
 `addr[2:0]` and consumers extract by `addr[2:0]`:
 
 - Stores replicate their data across the beat (`{8{byte}}`, `{4{half}}`,
@@ -320,7 +324,8 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `MEM_SIZE_BYTES` | `2 ** 18` | Low BRAM size (256 KiB); instruction fetch reaches its first 128 KiB (`riscv_pkg::LowBramCodeAddrBits`) |
 | `frost.sv` | `SIM_TIMER_SPEEDUP` | `1` | `mtime` increment per cycle (simulation) |
 | `frost.sv` | `CACHED_BASE` | `32'h8000_0000` | Cached-region base address |
-| `frost.sv` | `CACHED_SIZE_BYTES` | `32'h4000_0000` | Cached-region size (1 GiB) |
+| `riscv_pkg.sv` | `FROST_DDR_CAPACITY_LOG2_BYTES` | `30` | Compile-time DDR aperture size as log2 bytes; 30–37 selects 1–128 GiB and derives the physical and AXI-offset widths |
+| `frost.sv` | `CACHED_SIZE_BYTES` | `riscv_pkg::DdrCapacityBytes` | Cached-region aperture; keep equal to the package setting so PMA, caches, DMA and AXI agree |
 | `frost.sv` | `ENABLE_CACHED_TIER` | `0` | 1 builds the cache hierarchy; simulation sets it with `-G`, and boards with a DDR controller pass 1 |
 | `frost.sv` | `L1_CACHE_BYTES` / `L1I_CACHE_BYTES` / `L2_CACHE_BYTES` | `128 KiB` / `16 KiB` / `2 MiB` | L1D, L1I, and L2 sizes |
 | `frost.sv` | `L2_PREFETCH` | `1` | 1 builds the L2 stream prefetcher |
@@ -333,6 +338,15 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `DEBUG_JTAG_TAP` | `1` | 1 uses the generic TAP on `i_jtag_*`; 0 takes the BSCAN bundle from the board |
 | `frost.sv` | `RAW_LOOPBACK` | `1` | 1 builds the NIC's raw TX-to-RX loopback, which needs one clock on both MAC clock ports; 0 for a transceiver's independent clocks |
 | `cpu_ooo.sv` | `MMIO_ADDR` | `32'h4000_0000` (`riscv_pkg::MmioWindowAddr`) | MMIO window base; the UART RX data and FIFO pop registers are fixed offsets from it |
+
+The compile-time aperture is an address-transport limit, not a claim that a
+board has that much installed DRAM. Bare-metal links retain a safe 1 GiB
+usable-DRAM default and accept `FROST_DDR_USABLE_LOG2_BYTES=30..37` in
+`sw/common/common.mk`; set it no larger than the installed memory and the RTL
+aperture. Linux obtains its usable range from the generated device tree's
+`/memory` node (`frost_boot_image.py --mem-size`), whose 64-bit cells support
+the same 1–128 GiB matrix. The boot loader must supply the installed size;
+neither the CPU PA width nor the 1 GiB default identifies a DIMM's capacity.
 
 ## License
 

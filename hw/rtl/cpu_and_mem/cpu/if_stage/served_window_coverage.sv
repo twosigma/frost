@@ -33,16 +33,18 @@
 //
 // Separate provider instances and explicit mux primitives are used for timing.
 (* keep_hierarchy = "yes" *)
-module served_window_coverage (
-    input  logic [29:0] i_pc_word,
-    input  logic [29:0] i_served_word,
-    input  logic [29:0] i_served_last_word,
-    input  logic [29:0] i_served_prev_word,
-    input  logic        i_served_prev_word_valid,
-    input  logic        i_use_instr_buffer,
-    input  logic        i_no_buffer_accepts_served_last,
-    input  logic        i_pc_high,
-    output logic        o_covers
+module served_window_coverage #(
+    parameter int unsigned WORD_BITS = 30
+) (
+    input  logic [WORD_BITS-1:0] i_pc_word,
+    input  logic [WORD_BITS-1:0] i_served_word,
+    input  logic [WORD_BITS-1:0] i_served_last_word,
+    input  logic [WORD_BITS-1:0] i_served_prev_word,
+    input  logic                 i_served_prev_word_valid,
+    input  logic                 i_use_instr_buffer,
+    input  logic                 i_no_buffer_accepts_served_last,
+    input  logic                 i_pc_high,
+    output logic                 o_covers
 );
 
   (* keep = "true" *)logic [9:0] same_chunk;
@@ -55,16 +57,30 @@ module served_window_coverage (
     assign prev_chunk[k] = ~|(i_pc_word[3*k+:3] ^ i_served_prev_word[3*k+:3]);
   end
 
+  // Retain the original timing-shaped low-word comparator. High VA bits
+  // compare in parallel and qualify the three low-word equalities, so PCs
+  // separated by 4 GiB cannot claim the same served window.
+  logic same_upper, last_upper, prev_upper;
+  if (WORD_BITS > 30) begin : gen_upper
+    assign same_upper = i_pc_word[WORD_BITS-1:30] == i_served_word[WORD_BITS-1:30];
+    assign last_upper = i_pc_word[WORD_BITS-1:30] == i_served_last_word[WORD_BITS-1:30];
+    assign prev_upper = i_pc_word[WORD_BITS-1:30] == i_served_prev_word[WORD_BITS-1:30];
+  end else begin : gen_no_upper
+    assign same_upper = 1'b1;
+    assign last_upper = 1'b1;
+    assign prev_upper = 1'b1;
+  end
+
   (* keep = "true" *) logic same_lo, same_hi;
   (* keep = "true" *) logic last_lo, last_hi;
   (* keep = "true" *) logic prev_lo_valid, prev_hi;
 
   assign same_lo = &same_chunk[4:0];
-  assign same_hi = &same_chunk[9:5];
+  assign same_hi = (&same_chunk[9:5]) && same_upper;
   assign last_lo = &last_chunk[4:0];
-  assign last_hi = &last_chunk[9:5];
+  assign last_hi = (&last_chunk[9:5]) && last_upper;
   assign prev_lo_valid = (&prev_chunk[4:0]) && i_served_prev_word_valid;
-  assign prev_hi = &prev_chunk[9:5];
+  assign prev_hi = (&prev_chunk[9:5]) && prev_upper;
 
   // Candidates cover each combination of buffer use and need for word P+1.
   (* keep = "true" *) logic no_buffer_covers_same_only, no_buffer_covers_served_last;

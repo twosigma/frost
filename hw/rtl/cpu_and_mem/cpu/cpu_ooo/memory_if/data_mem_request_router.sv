@@ -38,10 +38,11 @@
  * The cached read enable also leaves split on its one late term, the live LQ
  * launch (o_data_mem_cached_read_sel), so the adapter can apply it last.
  *
- * Addresses have passed the PMA: bits 63:32 are zero, and a load in the
- * device quadrant (addr[31:30] = 01) is inside a served device window, since
- * the load queue and the data MMU fault the others. The quadrant decode is
- * therefore the whole device classification here.
+ * Addresses have passed the PMA. DDR uses the configured physical width;
+ * device addresses have bits 63:32 clear and addr[31:30] = 01. Device loads
+ * are inside a served window, since the load queue and the data MMU fault
+ * the others. Device classification checks both the quadrant and the upper
+ * address bits.
  */
 
 module data_mem_request_router #(
@@ -53,7 +54,7 @@ module data_mem_request_router #(
     // CACHED_SIZE_BYTES) are served by the cache hierarchy with variable
     // latency.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
-    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
+    parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -231,8 +232,8 @@ module data_mem_request_router #(
       lq_mem_request_valid ? lq_mem_request_no_merge : i_lq_mem_read_no_merge;
   // The live device-quadrant decode forces capture. Acceptance and MMIO
   // effects use only the held address.
-  assign lq_live_request_requires_park = (lq_mem_read_addr[31:30] == 2'b01);
-  assign lq_pending_request_requires_drain = (lq_mem_request_addr[31:30] == 2'b01);
+  assign lq_live_request_requires_park = riscv_pkg::pma_device_quadrant(lq_mem_read_addr);
+  assign lq_pending_request_requires_drain = riscv_pkg::pma_device_quadrant(lq_mem_request_addr);
 
   // -------------------------------------------------------------------------
   // Tier decode.

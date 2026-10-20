@@ -35,6 +35,14 @@ FORMAL_DIR = "formal"
 
 # Per-task hang backstop in seconds; proof depth is set by each .sby file.
 SBY_TASK_TIMEOUT_S = 2400
+# The unchanged ROB BMC can take about an hour on a shared runner.
+# These tasks run in separate CI jobs. Their proof depth and input contracts
+# stay unchanged; only the solver's wall-clock allowance differs.
+SBY_TASK_TIMEOUT_OVERRIDES_S = {
+    ("csr_file", "bmc"): 5400,
+    ("csr_file", "bmc_perf_off"): 5400,
+    ("reorder_buffer", "bmc"): 5400,
+}
 
 
 @dataclass(frozen=True)
@@ -186,8 +194,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "line_arbiter_grant.sby",
-        "Three-port line arbitration matches bounded-starvation priority",
-        tasks=("bmc", "bmc_xilinx"),
+        "Two- and three-port line arbitration matches bounded-starvation priority",
+        tasks=("bmc", "bmc_xilinx", "bmc_2port", "bmc_xilinx_2port"),
     ),
     FormalTarget(
         "lq_cached_flags.sby",
@@ -494,7 +502,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "line_port_axi_bridge.sby",
-        "AXI handshake legality and response tracking across CPU and AXI resets",
+        "AXI handshake legality, full-width offsets, and response tracking across "
+        "CPU and AXI resets at default, 64 GiB, and 128 GiB widths",
+        tasks=("bmc", "cover", "bmc_64g", "cover_64g", "bmc_128g", "cover_128g"),
     ),
     FormalTarget(
         "line_size_adapter.sby",
@@ -528,7 +538,7 @@ FORMAL_TARGETS = [
         "immu_bare.sby",
         "Bare instruction-fetch addresses and PMA faults match the reference across "
         "datapath widths",
-        tasks=("bmc", "bmc_xlen32", "bmc_xlen72"),
+        tasks=("bmc", "bmc_1g", "bmc_64g", "bmc_128g", "bmc_xlen32", "bmc_xlen72"),
     ),
     FormalTarget(
         "fetch_pc_mux.sby",
@@ -710,7 +720,14 @@ SBY_TASKS = [
     ("bmc8", "Bounded local equivalence at depth 8"),
     ("bmc16", "Bounded local equivalence at depth 16"),
     ("bmc32", "Bounded local equivalence at depth 32"),
+    ("bmc_1g", "Bounded physical-address check at a 1 GiB DDR capacity"),
+    ("bmc_64g", "Bounded physical-address check at a 64 GiB DDR capacity"),
+    ("bmc_128g", "Bounded physical-address check at a 128 GiB DDR capacity"),
+    ("cover_64g", "Physical-address reachability at a 64 GiB DDR capacity"),
+    ("cover_128g", "Physical-address reachability at a 128 GiB DDR capacity"),
     ("bmc_xilinx", "Bounded equivalence with the Xilinx primitive implementation"),
+    ("bmc_2port", "Bounded two-port arbitration equivalence"),
+    ("bmc_xilinx_2port", "Bounded two-port arbitration with Xilinx primitives"),
     ("bmc_queued", "Bounded check with decoded-queue admission contract"),
     ("bmc", "Check assertions up to the configured depth"),
     ("cover", "Search for reachable cover scenarios"),
@@ -795,6 +812,20 @@ def test_formal_target_tasks_are_registered() -> None:
     assert not missing, f"Formal tasks would be silently skipped: {missing}"
 
 
+def formal_task_timeout_s(target: str, task: str) -> int:
+    """Return the wall-clock backstop for a target's task."""
+    return SBY_TASK_TIMEOUT_OVERRIDES_S.get((target, task), SBY_TASK_TIMEOUT_S)
+
+
+def timeout_log_tail(error: subprocess.TimeoutExpired) -> str:
+    """Keep recent solver progress when a captured run exceeds its backstop."""
+    output = "".join(
+        part.decode(errors="replace") if isinstance(part, bytes) else part or ""
+        for part in (error.stdout, error.stderr)
+    )
+    return "\n".join(output.splitlines()[-40:])
+
+
 class FormalRunner:
     """Run SymbiYosys tasks from the repository's formal/ directory."""
 
@@ -835,13 +866,13 @@ class FormalRunner:
                 capture_output=True,
                 text=True,
                 cwd=self.formal_dir,
-                timeout=SBY_TASK_TIMEOUT_S,
+                timeout=formal_task_timeout_s(target.name, task),
             )
         else:
             return subprocess.run(
                 cmd,
                 cwd=self.formal_dir,
-                timeout=SBY_TASK_TIMEOUT_S,
+                timeout=formal_task_timeout_s(target.name, task),
                 text=True,
             )
 
@@ -903,6 +934,56 @@ class FormalRunner:
                 info["elapsed"] = line
 
         return info
+
+
+@pytest.mark.parametrize("capture_output", (False, True))
+@pytest.mark.parametrize(
+    "target_name,task,expected_timeout",
+    (
+        ("csr_file", "bmc", 5400),
+        ("csr_file", "bmc_perf_off", 5400),
+        ("reorder_buffer", "bmc", 5400),
+        ("csr_file", "cover", 2400),
+        ("reorder_buffer", "cover", 2400),
+        ("line_port_axi_bridge", "bmc_128g", 2400),
+    ),
+)
+def test_formal_runner_task_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    target_name: str,
+    task: str,
+    expected_timeout: int,
+    capture_output: bool,
+) -> None:
+    """CLI and captured runs give only the slow BMC tasks extra wall time."""
+    target = next(target for target in FORMAL_TARGETS if target.name == target_name)
+    assert task in target.tasks
+    calls: list[dict[str, Any]] = []
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(kwargs)
+        assert command[-1] == task
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    FormalRunner().run_formal(target, task, capture_output=capture_output)
+    assert calls[0]["timeout"] == expected_timeout
+
+
+@pytest.mark.parametrize("as_bytes", (False, True))
+def test_timeout_retains_solver_progress(as_bytes: bool) -> None:
+    """Timed-out subprocesses may expose bytes even when text mode is enabled."""
+    output = "".join(f"step {step}\n" for step in range(50))
+    error = subprocess.TimeoutExpired(
+        ["sby"],
+        5400,
+        output=output.encode() if as_bytes else output,
+        stderr=b"solver pending\n" if as_bytes else "solver pending\n",
+    )
+    lines = timeout_log_tail(error).splitlines()
+    assert len(lines) == 40
+    assert lines[0] == "step 11"
+    assert lines[-1] == "solver pending"
 
 
 # ===========================================================================
@@ -986,10 +1067,10 @@ class TestFormalVerification:
                 )
                 pytest.fail(error_msg)
 
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as error:
             pytest.fail(
                 f"Formal {task_name} for {target.name} timed out after "
-                f"{SBY_TASK_TIMEOUT_S // 60} minutes"
+                f"{error.timeout // 60} minutes\n{timeout_log_tail(error)}"
             )
         except Exception as e:
             pytest.fail(
@@ -1132,8 +1213,10 @@ With pytest:
                     print(f"\n{test_id} PASSED")
                     passed += 1
 
-            except subprocess.TimeoutExpired:
-                print(f"\n{test_id} TIMEOUT ({SBY_TASK_TIMEOUT_S // 60} minutes)")
+            except subprocess.TimeoutExpired as error:
+                print(f"\n{test_id} TIMEOUT ({error.timeout // 60} minutes)")
+                if output := timeout_log_tail(error):
+                    print(output)
                 failed.append(test_id)
             except Exception as e:
                 print(f"\n{test_id} ERROR: {e}")

@@ -37,13 +37,14 @@ module nic_tx_engine #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 32,
     parameter int unsigned TAG_BITS = 4,
-    parameter logic [31:0] APERTURE_BASE = 32'h8000_0000,
-    parameter logic [31:0] APERTURE_BYTES = 32'h4000_0000
+    parameter logic [63:0] APERTURE_BASE = 64'h8000_0000,
+    parameter logic [63:0] APERTURE_BYTES = 64'h4000_0000
 ) (
     input logic i_clk,
     input logic i_rst,
 
     input  logic                  i_enable,
+    input  logic                  i_wide_mode,
     input  logic [ADDR_WIDTH-1:0] i_base,
     input  logic [           4:0] i_size_log2,
     input  logic [          15:0] i_tail,
@@ -96,7 +97,8 @@ module nic_tx_engine #(
   logic df_pending, df_rd_valid, df_rd_ready, df_desc_valid, df_take;
   logic [ADDR_WIDTH-1:0] df_rd_addr, df_status_addr;
   logic [TAG_BITS-1:0] df_rd_tag;
-  logic [31:0] df_word0, df_word1;
+  logic [63:0] df_word0;
+  logic [31:0] df_word1;
   nic_desc_fetch #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .LINE_BYTES(LINE_BYTES),
@@ -105,6 +107,7 @@ module nic_tx_engine #(
       .i_clk             (i_clk),
       .i_rst             (i_rst),
       .i_enable          (i_enable),
+      .i_wide_mode       (i_wide_mode),
       .i_base            (i_base),
       .i_size_log2       (i_size_log2),
       .i_tail            (i_tail),
@@ -171,11 +174,12 @@ module nic_tx_engine #(
   logic [RobEntries-1:0] rob_busy_q, rob_valid_q;  // busy: issued; valid: data landed
   logic [LINE_BYTES*8-1:0] rob_data_q[RobEntries];
 
-  function automatic logic in_aperture(input logic [ADDR_WIDTH-1:0] addr, input logic [15:0] len);
-    logic [32:0] last_plus_one;
-    last_plus_one = 33'(addr) + 33'(len);
+  function automatic logic in_aperture(input logic [63:0] addr, input logic [15:0] len);
+    logic [64:0] last_plus_one;
+    last_plus_one = 65'(addr) + 65'(len);
     in_aperture = (addr >= APERTURE_BASE) &&
-        (last_plus_one <= (33'(APERTURE_BASE) + 33'(APERTURE_BYTES)));
+        ((ADDR_WIDTH == 64) || ((addr >> ADDR_WIDTH) == 0)) &&
+        (last_plus_one <= (65'(APERTURE_BASE) + 65'(APERTURE_BYTES)));
   endfunction
 
   logic desc_ok;

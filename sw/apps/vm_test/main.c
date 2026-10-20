@@ -33,6 +33,12 @@
 
 #include "trap.h"
 
+#ifndef FROST_DDR_CAPACITY_LOG2_BYTES
+#define FROST_DDR_CAPACITY_LOG2_BYTES 30
+#endif
+#define DDR_LIMIT (0x80000000ul + (1ul << FROST_DDR_CAPACITY_LOG2_BYTES))
+#define DDR_LAST_WORD (DDR_LIMIT - 8ul)
+
 static void uart_putc(char c)
 {
     UART_TX = (uint8_t) c;
@@ -190,6 +196,7 @@ static int report_val(const char *name, unsigned long got, unsigned long want)
 #define VA_2M_MISALIGNED 0x02200000ul
 #define VA_1G_TOUCH 0x83000000ul
 #define VA_BADPTR 0x40000000ul
+#define VA_BAD_DDR_PTR 0x100000000ul
 #define VA_2M_DEVICE 0x02400000ul
 #define VA_1G_DEVICE 0xC0000000ul
 
@@ -235,11 +242,13 @@ static void build_tables(void)
 
     /* Root A: [0] -> L1 A; [1] -> pointer aimed at BRAM (walker PMA
      * refusal: page tables must live in cached DDR); [2] -> 1 GiB DDR
-     * identity leaf; [3] -> 1 GiB leaf over the device quadrant. */
+     * identity leaf; [3] -> 1 GiB leaf over the device quadrant;
+     * [4] -> first page outside configured DDR (must not wrap/alias). */
     root_a[0] = PTE_PPN(PT_L1_A) | PTE_V;
     root_a[1] = PTE_PPN(0x0ul) | PTE_V;
     root_a[2] = PTE_PPN(0x80000000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
     root_a[3] = PTE_PPN(0x40000000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+    root_a[4] = PTE_PPN(DDR_LIMIT) | PTE_V;
 
     /* L1 A: [2] -> L0 A (the VA_4K window); [16] -> 2 MiB leaf; [17] ->
      * misaligned 2 MiB leaf (its PPN low bits are nonzero); [18] -> 2 MiB
@@ -265,12 +274,15 @@ static void build_tables(void)
     l0_a[6] = 0;                                                                 /* V=0 */
     l0_a[7] = PTE_PPN(FRAME(7)) | PTE_V | PTE_W | PTE_A | PTE_D;                 /* W&!R */
     l0_a[8] = PTE_PPN(FRAME(8)) | (1ul << 60) | PTE_V | PTE_R | PTE_A;           /* rsvd */
-    l0_a[9] = PTE_PPN(0x100000000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;    /* >4G */
+    l0_a[9] = PTE_PPN(DDR_LIMIT) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;        /* beyond DDR */
     l0_a[10] = PTE_PPN(PT_L0_A) | PTE_V;                                         /* nonleaf */
     l0_a[11] = PTE_PPN(0x40000000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;    /* device */
     l0_a[12] = PTE_PPN(FRAME(12)) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;       /* K rewrite */
     l0_a[13] = PTE_PPN(FRAME(13)) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;       /* LR/SC ok */
     l0_a[14] = PTE_PPN(0x40100000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;    /* unserved */
+#if FROST_DDR_CAPACITY_LOG2_BYTES >= 32
+    l0_a[15] = PTE_PPN(DDR_LIMIT - 4096ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+#endif
 
     /* Root B: same VA_4K(0) window backed by FRAME(14) (satp-switch). */
     root_b[0] = PTE_PPN(PT_L1_B) | PTE_V;
@@ -299,6 +311,9 @@ int main(void)
     *(volatile unsigned long *) FRAME(14) = 0xBBBBBBBBBBBBBBBBul;
     *(volatile unsigned long *) (FRAME_2M + 0x12340ul) = 0;
     *(volatile unsigned long *) VA_1G_TOUCH = 0x1919191919191919ul;
+#if FROST_DDR_CAPACITY_LOG2_BYTES >= 32
+    *(volatile unsigned long *) DDR_LAST_WORD = 0xA1A2A3A4A5A6A7A8ul;
+#endif
     /* W: a zone object at VA_4K(0)+0x800 (fields at the kernel's offsets)
      * and a NULL-terminated zoneref list at VA_4K(0)+0x100, both RW/S. */
     for (int i = 0; i < 0x90 / 8; i++)
@@ -342,6 +357,20 @@ int main(void)
     RUN_CASE(WIN_S "li  t1, 0x83000000\n" LREG " t2, 0(t1)\n" WIN_END "la  t1, g_val\n" SREG
                    " t2, 0(t1)");
     all_ok &= report_val("C 1g-identity-load", g_val, 0x1919191919191919ul);
+
+#if FROST_DDR_CAPACITY_LOG2_BYTES >= 32
+    /* Map the final legal physical word through a distinct Sv39 VA. */
+    RUN_CASE(WIN_S "li t1, 0x0040FFF8\n" LREG " t2, 0(t1)\n" WIN_END "la t1, g_val\n" SREG
+                   " t2, 0(t1)");
+    all_ok &= report_val("C2 high-pa-translated-load", g_val, 0xA1A2A3A4A5A6A7A8ul);
+    RUN_CASE(WIN_S "li t1, 0x0040FFF8\n"
+                   "li t2, 0xB1B2B3B4B5B6B7B8\n" SREG " t2, 0(t1)\n" WIN_END);
+    all_ok &= report3("C3 high-pa-translated-store", 11, 0, 0, 0);
+    if (*(volatile unsigned long *) DDR_LAST_WORD != 0xB1B2B3B4B5B6B7B8ul) {
+        uart_puts("[FAIL] C3 high-pa-backing-frame\r\n");
+        all_ok = 0;
+    }
+#endif
 
     /* D1: store to R-only -> 15, mtval = VA. */
     RUN_CASE(WIN_S "li t1, 0x00401000\n" SREG " t2, 0(t1)");
@@ -446,6 +475,13 @@ int main(void)
     /* I2: bad interior pointer, store -> 7. */
     RUN_CASE(WIN_S "li t1, 0x40000000\n" SREG " t2, 0(t1)");
     all_ok &= report3("I2 walker-pma-store", 7, VA_BADPTR, 0, 0);
+
+    /* I3/I4: page-table walk at the raw DDR end must access-fault before
+     * any PA-width cast can alias a lower page-table page. */
+    RUN_CASE("sfence.vma\n" WIN_S "li t1, 0x100000000\n" LREG " t2, 0(t1)");
+    all_ok &= report3("I3 walker-ddr-end-load", 5, VA_BAD_DDR_PTR, 0, 0);
+    RUN_CASE("sfence.vma\n" WIN_S "li t1, 0x100000000\n" SREG " t2, 0(t1)");
+    all_ok &= report3("I4 walker-ddr-end-store", 7, VA_BAD_DDR_PTR, 0, 0);
 
     /* J: non-canonical VA -> 13, mtval = the full VA (no walk). */
     RUN_CASE(WIN_S "li t1, 0x0100000000000000\n" LREG " t2, 0(t1)");

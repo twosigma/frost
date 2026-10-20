@@ -770,3 +770,32 @@ async def test_perf_miss_stall_qualifies_frontend_progress(dut: Any) -> None:
     dut.i_l1i_miss_outstanding.value = 0
     await FallingEdge(dut.i_clk)
     assert int(dut.o_perf_miss_stall.value) == 0
+
+
+@cocotb.test()
+async def test_served_tags_preserve_full_virtual_pc(dut: Any) -> None:
+    """Equal low 32 bits must not make distinct virtual fetches identical."""
+    await _setup(dut)
+    reqs: list[int] = []
+    cocotb.start_soon(_line_slave(dut, latency=4, log=reqs))
+
+    low_pc = DDR_BASE + 0x180
+    high_pc = low_pc + (1 << 32)
+    _drive_pc(dut, low_pc)
+    await _wait_window(dut, low_pc)
+    assert int(dut.o_served_word.value) == low_pc >> 2
+
+    # Translate the upper VA to the same physical line deliberately. The
+    # payload may be a cache hit; its served identity must still be the VA.
+    dut.i_retarget.value = 1
+    _drive_pc(dut, high_pc)
+    for _ in range(TIMEOUT):
+        await FallingEdge(dut.i_clk)
+        if (
+            int(dut.o_instr_valid.value)
+            and int(dut.o_served_word.value) == high_pc >> 2
+        ):
+            break
+    else:
+        raise AssertionError("upper-VA served tag was truncated")
+    assert int(dut.o_served_word.value) != low_pc >> 2

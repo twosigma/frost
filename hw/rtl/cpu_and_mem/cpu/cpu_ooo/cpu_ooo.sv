@@ -35,7 +35,7 @@ module cpu_ooo #(
     // CACHED_SIZE_BYTES) go to the cache hierarchy and complete by handshake,
     // with variable latency. Low-BRAM data accesses take one cycle.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
-    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,
+    parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
@@ -55,8 +55,8 @@ module cpu_ooo #(
     // providers tag and match windows by it); the o_fetch_* results below are
     // its physical side (see if_stage / mmu/immu).
     output logic [XLEN-1:0] o_pc,
-    output logic [31:0] o_fetch_pa0,  // PA of the window's word 0
-    output logic [31:0] o_fetch_pa1,  // PA of the window's aligned successor word
+    output logic [riscv_pkg::PhysAddrBits-1:0] o_fetch_pa0,  // PA of the window's word 0
+    output logic [riscv_pkg::PhysAddrBits-1:0] o_fetch_pa1,  // PA of the next word
     output logic o_fetch_pa_valid,  // always with translation off; Sv39: o_pc's result is visible
     output logic o_fetch_fault0,  // word 0 unfetchable (deliver a fault-tagged window)
     output logic o_fetch_fault0_page,  // ...page fault (else access fault)
@@ -89,13 +89,13 @@ module cpu_ooo #(
     // Word tags (address bits [31:2]) that each provider registers beside its
     // window, with the next and previous word, for IF's served-window check.
     // IF compares against both providers in parallel and selects the results.
-    input logic [29:0] i_served_word_low,
-    input logic [29:0] i_served_last_word_low,
-    input logic [29:0] i_served_prev_word_low,
+    input logic [riscv_pkg::XLEN-3:0] i_served_word_low,
+    input logic [riscv_pkg::XLEN-3:0] i_served_last_word_low,
+    input logic [riscv_pkg::XLEN-3:0] i_served_prev_word_low,
     input logic i_served_prev_word_valid_low,
-    input logic [29:0] i_served_word_high,
-    input logic [29:0] i_served_last_word_high,
-    input logic [29:0] i_served_prev_word_high,
+    input logic [riscv_pkg::XLEN-3:0] i_served_word_high,
+    input logic [riscv_pkg::XLEN-3:0] i_served_last_word_high,
+    input logic [riscv_pkg::XLEN-3:0] i_served_prev_word_high,
     input logic i_served_prev_word_valid_high,
     // Fetch window valid (see if_stage). Low BRAM may withhold it for a
     // metadata fallback miss or a captured-response publication hold.
@@ -131,7 +131,7 @@ module cpu_ooo #(
     // time.
     output logic o_walk_line_req_valid,
     input logic i_walk_line_req_ready,
-    output logic [31:0] o_walk_line_req_addr,
+    output logic [riscv_pkg::PhysAddrBits-1:0] o_walk_line_req_addr,
     output logic [1:0] o_walk_line_req_id,
     input logic i_walk_line_resp_valid,
     input logic [1:0] i_walk_line_resp_id,

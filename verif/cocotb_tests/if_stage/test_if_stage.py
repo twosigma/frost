@@ -356,13 +356,13 @@ def _drive_served_word_tags(
     dut: Any, served_word: int, *, provider: str | None = None
 ) -> None:
     """Drive one or both provider-local S/S+1/S-1 tag sets."""
-    phys_mask = (1 << 30) - 1
-    served_word &= phys_mask
+    word_mask = (1 << (XLEN - 2)) - 1
+    served_word &= word_mask
     providers = ("low", "high") if provider is None else (provider,)
     for lane in providers:
         getattr(dut, f"i_served_word_{lane}").value = served_word
-        getattr(dut, f"i_served_last_word_{lane}").value = (served_word + 1) & phys_mask
-        getattr(dut, f"i_served_prev_word_{lane}").value = (served_word - 1) & phys_mask
+        getattr(dut, f"i_served_last_word_{lane}").value = (served_word + 1) & word_mask
+        getattr(dut, f"i_served_prev_word_{lane}").value = (served_word - 1) & word_mask
         getattr(dut, f"i_served_prev_word_valid_{lane}").value = int(served_word != 0)
 
 
@@ -426,12 +426,12 @@ def _start_served_addr_tracker(dut: Any, *, word_offset: int = 0) -> None:
     Drive S+1, S-1, and S != 0 with S, as the providers do. word_offset
     places S that many words ahead of P to exercise the guard.
     """
-    phys_mask = (1 << 30) - 1
+    word_mask = (1 << (XLEN - 2)) - 1
 
     async def _tracker() -> None:
         while True:
-            pc_word = (int(dut.pc_reg.value) & 0xFFFF_FFFF) >> 2
-            _drive_served_word_tags(dut, (pc_word + word_offset) & phys_mask)
+            pc_word = int(dut.pc_reg.value) >> 2
+            _drive_served_word_tags(dut, (pc_word + word_offset) & word_mask)
             await RisingEdge(dut.i_clk)
             await Timer(1, unit="step")
 
@@ -465,15 +465,15 @@ async def _redirect_to(dut: Any, target: int) -> None:
 async def test_served_window_registered_tags_match_base_shape_oracle(dut: Any) -> None:
     """Both providers' served-window guards match a reference at word-address edges.
 
-    The guard compares the low 32 bits of pc_reg (riscv_pkg::canonical_paddr),
-    and providers tag windows with 30-bit word addresses, so S+1 wraps within
-    30 bits. The S-1 arm rejects S=0 through the S != 0 tag. These
+    The guard compares all XLEN bits of pc_reg and providers tag windows with
+    XLEN-2-bit word addresses, so S+1 wraps only at the end of XLEN. The S-1
+    arm rejects S=0 through the S != 0 tag. These
     word-aligned PCs never need a successor word; the native high-parcel case
     is covered separately below.
     """
     await _setup_test(dut)
 
-    phys_mask = (1 << 30) - 1
+    word_mask = (1 << (XLEN - 2)) - 1
     cases = [
         (0, 0),
         (1, 0),
@@ -484,10 +484,12 @@ async def test_served_window_registered_tags_match_base_shape_oracle(dut: Any) -
         (0x10000, 0xFFFF),  # S=P-1 across bit 16, not S=P+1
         (0xFFFFF, 0xFFFFE),
         (0x100000, 0xFFFFF),
-        (phys_mask - 1, phys_mask),  # highest S=P+1 within 30 bits
-        (phys_mask, phys_mask - 1),
-        (phys_mask, 0),  # guarded S=P+1 wrap is rejected (S=0 has no predecessor)
-        (0, phys_mask),  # S=P-1 wraps through the registered last-word tag
+        (word_mask - 1, word_mask),  # highest S=P+1 within XLEN
+        (word_mask, word_mask - 1),
+        (word_mask, 0),  # guarded S=P+1 wrap is rejected (S=0 has no predecessor)
+        (0, word_mask),  # S=P-1 wraps through the registered last-word tag
+        ((1 << 30) + 0x40, 0x40),  # identical low 32 bits must not match
+        (0x40, (1 << 30) + 0x40),
         (0x200FFFFF, 0x20100000),
         (0x20100000, 0x200FFFFF),
         (0x20100000, 0x20100002),
@@ -501,14 +503,14 @@ async def test_served_window_registered_tags_match_base_shape_oracle(dut: Any) -
             served_high=served_high,
         )
         for pc_word, served_word in cases:
-            dut.pc_controller_inst.o_pc_reg.value = (pc_word & phys_mask) << 2
+            dut.pc_controller_inst.o_pc_reg.value = (pc_word & word_mask) << 2
             _drive_served_word_tags(dut, served_word, provider=provider)
             await Timer(1, unit="step")
 
             expected_same = served_word == pc_word
-            expected_m1 = ((served_word + 1) & phys_mask) == pc_word
+            expected_m1 = ((served_word + 1) & word_mask) == pc_word
             expected_p1 = (
-                served_word != 0 and ((served_word - 1) & phys_mask) == pc_word
+                served_word != 0 and ((served_word - 1) & word_mask) == pc_word
             )
             expected_covers = (
                 expected_same

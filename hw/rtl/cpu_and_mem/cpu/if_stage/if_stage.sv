@@ -66,15 +66,15 @@ module if_stage #(
     input logic [3:0] i_slot2_start_valid_lo_by_provider_parity,
     input logic i_instr_pc_metadata_served_high,
     input logic i_instr_bank_sel_r,  // Fetch-word parity (PC[2] from fetch cycle)
-    // Served-window word tags: S = fetch PC[31:2], S+1, S-1, and S != 0,
+    // Served-window word tags: S = full fetch PC[XLEN-1:2], S+1, S-1,
     // registered with each provider's payload.
-    input logic [29:0] i_served_word_low,
-    input logic [29:0] i_served_last_word_low,
-    input logic [29:0] i_served_prev_word_low,
+    input logic [XLEN-3:0] i_served_word_low,
+    input logic [XLEN-3:0] i_served_last_word_low,
+    input logic [XLEN-3:0] i_served_prev_word_low,
     input logic i_served_prev_word_valid_low,
-    input logic [29:0] i_served_word_high,
-    input logic [29:0] i_served_last_word_high,
-    input logic [29:0] i_served_prev_word_high,
+    input logic [XLEN-3:0] i_served_word_high,
+    input logic [XLEN-3:0] i_served_last_word_high,
+    input logic [XLEN-3:0] i_served_prev_word_high,
     input logic i_served_prev_word_valid_high,
     // Payload, sideband, parity, and fault flags are valid for the served
     // word tags. The owed request can lag the live fetch PC. Without a valid
@@ -135,8 +135,8 @@ module if_stage #(
     // tagged result for the registered o_pc, and valid drops, stalling the
     // front end, for one bubble after o_pc moves, possibly a second at a
     // 4 KiB page crossing, and through an ITLB miss.
-    output logic [31:0] o_fetch_pa0,
-    output logic [31:0] o_fetch_pa1,
+    output logic [riscv_pkg::PhysAddrBits-1:0] o_fetch_pa0,
+    output logic [riscv_pkg::PhysAddrBits-1:0] o_fetch_pa1,
     output logic o_fetch_pa_valid,
     output logic o_fetch_fault0,
     output logic o_fetch_fault0_page,
@@ -1201,14 +1201,12 @@ module if_stage #(
   // instruction spans there, and a buffered high-parcel RVC can pair there.
   // Bank parity alone cannot distinguish an unrelated word with equal parity.
   // Each provider has its own coverage check for timing.
-  logic [XLEN-1:0] pc_reg_serve_view;
-  logic [29:0] pc_reg_word;
+  logic [XLEN-3:0] pc_reg_word;
   logic served_window_covers_low;
   logic served_window_covers_high;
   logic served_window_covers_pc_reg;
   logic prev_was_compressed_at_lo_for_coverage_timing;
-  assign pc_reg_serve_view = riscv_pkg::canonical_paddr(pc_reg);
-  assign pc_reg_word = pc_reg_serve_view[31:2];
+  assign pc_reg_word = pc_reg[XLEN-1:2];
   // This buffer select omits the FENCE-class term and uses a copy of
   // pc_reg[1]. It drives prediction and coverage only; a FENCE-class flush
   // squashes any difference from the packet's select. Without a buffer,
@@ -1237,7 +1235,9 @@ module if_stage #(
   end
 `endif
 
-  served_window_coverage u_served_window_coverage_low (
+  served_window_coverage #(
+      .WORD_BITS(XLEN - 2)
+  ) u_served_window_coverage_low (
       .i_pc_word(pc_reg_word),
       .i_served_word(i_served_word_low),
       .i_served_last_word(i_served_last_word_low),
@@ -1249,7 +1249,9 @@ module if_stage #(
       .o_covers(served_window_covers_low)
   );
 
-  served_window_coverage u_served_window_coverage_high (
+  served_window_coverage #(
+      .WORD_BITS(XLEN - 2)
+  ) u_served_window_coverage_high (
       .i_pc_word(pc_reg_word),
       .i_served_word(i_served_word_high),
       .i_served_last_word(i_served_last_word_high),
@@ -1265,9 +1267,9 @@ module if_stage #(
       served_window_covers_high : served_window_covers_low;
 
 `ifndef SYNTHESIS
-  logic [29:0] selected_served_word;
-  logic [29:0] selected_served_last_word;
-  logic [29:0] selected_served_prev_word;
+  logic [XLEN-3:0] selected_served_word;
+  logic [XLEN-3:0] selected_served_last_word;
+  logic [XLEN-3:0] selected_served_prev_word;
   logic selected_served_prev_word_valid;
   logic served_eq_pc_word;
   logic served_last_eq_pc_word;

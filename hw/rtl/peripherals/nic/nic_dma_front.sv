@@ -55,8 +55,8 @@ module nic_dma_front #(
     parameter int unsigned SIDE_CAP = 3,
     parameter int unsigned STARVATION_LIMIT = 8,
     parameter int unsigned TAG_BITS = 4,
-    parameter logic [31:0] APERTURE_BASE = 32'h8000_0000,
-    parameter logic [31:0] APERTURE_BYTES = 32'h4000_0000,
+    parameter logic [63:0] APERTURE_BASE = 64'h8000_0000,
+    parameter logic [63:0] APERTURE_BYTES = 64'h4000_0000,
     localparam int unsigned IdBits = (NUM_ENTRIES > 1) ? $clog2(NUM_ENTRIES) : 1
 ) (
     input  logic i_clk,
@@ -102,7 +102,8 @@ module nic_dma_front #(
   end
 
   function automatic logic in_aperture(input logic [ADDR_WIDTH-1:0] a);
-    in_aperture = (a >= APERTURE_BASE) && (a < (APERTURE_BASE + APERTURE_BYTES));
+    in_aperture = (65'(a) >= 65'(APERTURE_BASE)) &&
+        (65'(a) < (65'(APERTURE_BASE) + 65'(APERTURE_BYTES)));
   endfunction
 
   // ---- entries -----------------------------------------------------------------

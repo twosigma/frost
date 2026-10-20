@@ -62,15 +62,18 @@
  * BASE_ADDR is subtracted from the line address so the AXI side sees a
  * zero-based region offset: in simulation the behavioral DDR indexes from 0,
  * and on hardware the memory controller's address space also starts at 0.
- * For the 1 GiB region at 0x8000_0000 the subtraction reduces to dropping the
- * top address bit.
+ * The AXI address width is independently configurable because a physical
+ * aperture can start above zero while its zero-based controller offset needs
+ * fewer bits. For the default 1 GiB region at 0x8000_0000 the subtraction
+ * reduces to dropping the top address bit.
  */
 module line_port_axi_bridge #(
     parameter int unsigned ADDR_WIDTH = 32,
+    parameter int unsigned AXI_ADDR_WIDTH = ADDR_WIDTH,
     parameter int unsigned LINE_BYTES = 32,
     parameter int unsigned ID_BITS = 4,
     parameter int unsigned AXI_ID_BITS = 4,
-    parameter logic [31:0] BASE_ADDR = 32'h8000_0000
+    parameter logic [ADDR_WIDTH-1:0] BASE_ADDR = ADDR_WIDTH'(32'h8000_0000)
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -90,35 +93,35 @@ module line_port_axi_bridge #(
     output logic [LINE_BYTES*8-1:0] o_resp_rdata,
 
     // AXI4 master (single-beat bursts).
-    output logic                    o_axi_awvalid,
-    input  logic                    i_axi_awready,
-    output logic [ AXI_ID_BITS-1:0] o_axi_awid,
-    output logic [            31:0] o_axi_awaddr,
-    output logic [             7:0] o_axi_awlen,
-    output logic [             2:0] o_axi_awsize,
-    output logic [             1:0] o_axi_awburst,
-    output logic                    o_axi_wvalid,
-    input  logic                    i_axi_wready,
-    output logic [LINE_BYTES*8-1:0] o_axi_wdata,
-    output logic [  LINE_BYTES-1:0] o_axi_wstrb,
-    output logic                    o_axi_wlast,
-    input  logic                    i_axi_bvalid,
-    output logic                    o_axi_bready,
-    input  logic [ AXI_ID_BITS-1:0] i_axi_bid,
-    input  logic [             1:0] i_axi_bresp,
-    output logic                    o_axi_arvalid,
-    input  logic                    i_axi_arready,
-    output logic [ AXI_ID_BITS-1:0] o_axi_arid,
-    output logic [            31:0] o_axi_araddr,
-    output logic [             7:0] o_axi_arlen,
-    output logic [             2:0] o_axi_arsize,
-    output logic [             1:0] o_axi_arburst,
-    input  logic                    i_axi_rvalid,
-    output logic                    o_axi_rready,
-    input  logic [ AXI_ID_BITS-1:0] i_axi_rid,
-    input  logic [LINE_BYTES*8-1:0] i_axi_rdata,
-    input  logic [             1:0] i_axi_rresp,
-    input  logic                    i_axi_rlast,
+    output logic                      o_axi_awvalid,
+    input  logic                      i_axi_awready,
+    output logic [   AXI_ID_BITS-1:0] o_axi_awid,
+    output logic [AXI_ADDR_WIDTH-1:0] o_axi_awaddr,
+    output logic [               7:0] o_axi_awlen,
+    output logic [               2:0] o_axi_awsize,
+    output logic [               1:0] o_axi_awburst,
+    output logic                      o_axi_wvalid,
+    input  logic                      i_axi_wready,
+    output logic [  LINE_BYTES*8-1:0] o_axi_wdata,
+    output logic [    LINE_BYTES-1:0] o_axi_wstrb,
+    output logic                      o_axi_wlast,
+    input  logic                      i_axi_bvalid,
+    output logic                      o_axi_bready,
+    input  logic [   AXI_ID_BITS-1:0] i_axi_bid,
+    input  logic [               1:0] i_axi_bresp,
+    output logic                      o_axi_arvalid,
+    input  logic                      i_axi_arready,
+    output logic [   AXI_ID_BITS-1:0] o_axi_arid,
+    output logic [AXI_ADDR_WIDTH-1:0] o_axi_araddr,
+    output logic [               7:0] o_axi_arlen,
+    output logic [               2:0] o_axi_arsize,
+    output logic [               1:0] o_axi_arburst,
+    input  logic                      i_axi_rvalid,
+    output logic                      o_axi_rready,
+    input  logic [   AXI_ID_BITS-1:0] i_axi_rid,
+    input  logic [  LINE_BYTES*8-1:0] i_axi_rdata,
+    input  logic [               1:0] i_axi_rresp,
+    input  logic                      i_axi_rlast,
 
     // Error responses, registered: one pulse per R or B taken that is not
     // OKAY, with its response code and AXI id.
@@ -134,25 +137,27 @@ module line_port_axi_bridge #(
 
   initial begin
     if (AXI_ID_BITS < ID_BITS) $fatal(1, "line_port_axi_bridge: AXI_ID_BITS must cover ID_BITS");
+    if (AXI_ADDR_WIDTH > ADDR_WIDTH || AXI_ADDR_WIDTH < 1)
+      $fatal(1, "line_port_axi_bridge: AXI_ADDR_WIDTH must be in 1..ADDR_WIDTH");
   end
 
   // ---- Issue registers ------------------------------------------------------
   // The valids clear on their handshakes and on i_axi_rst, never on i_rst
   // (see the header); the initializers are the power-up state.
-  logic                    ar_valid_q = 1'b0;
-  logic [            31:0] ar_addr_q;
-  logic [     ID_BITS-1:0] ar_id_q;
-  logic                    aw_valid_q = 1'b0;
-  logic                    w_valid_q = 1'b0;
-  logic [            31:0] aw_addr_q;
-  logic [     ID_BITS-1:0] aw_id_q;
-  logic [LINE_BYTES*8-1:0] w_data_q;
-  logic [  LINE_BYTES-1:0] w_strb_q;
+  logic                      ar_valid_q = 1'b0;
+  logic [AXI_ADDR_WIDTH-1:0] ar_addr_q;
+  logic [       ID_BITS-1:0] ar_id_q;
+  logic                      aw_valid_q = 1'b0;
+  logic                      w_valid_q = 1'b0;
+  logic [AXI_ADDR_WIDTH-1:0] aw_addr_q;
+  logic [       ID_BITS-1:0] aw_id_q;
+  logic [  LINE_BYTES*8-1:0] w_data_q;
+  logic [    LINE_BYTES-1:0] w_strb_q;
 
   // Set while a transaction accepted before the last i_rst still owes its
   // response (the stale bitmap below). Registered, so ready gains no logic
   // depth.
-  logic                    stale_any_q = 1'b0;
+  logic                      stale_any_q = 1'b0;
 
   // A write is issuable when both its channels are free; a read when AR is.
   logic write_slot_free, read_slot_free;
@@ -198,13 +203,13 @@ module line_port_axi_bridge #(
       if (i_req_write) begin
         aw_valid_q <= 1'b1;
         w_valid_q  <= 1'b1;
-        aw_addr_q  <= i_req_addr - BASE_ADDR;
+        aw_addr_q  <= AXI_ADDR_WIDTH'(i_req_addr - BASE_ADDR);
         aw_id_q    <= i_req_id;
         w_data_q   <= i_req_wdata;
         w_strb_q   <= i_req_wstrb;
       end else begin
         ar_valid_q <= 1'b1;
-        ar_addr_q  <= i_req_addr - BASE_ADDR;
+        ar_addr_q  <= AXI_ADDR_WIDTH'(i_req_addr - BASE_ADDR);
         ar_id_q    <= i_req_id;
       end
     end
@@ -388,6 +393,16 @@ module line_port_axi_bridge #(
         p_w_held : assert (o_axi_wvalid && $stable(o_axi_wdata) && $stable(o_axi_wstrb));
       end
     end
+    if (f_past_valid && $past(req_fire)) begin
+      // Compare the registered AXI offset with the complete physical-line
+      // subtraction, before any narrowing. A 32-bit intermediate would alias
+      // a request above 4 GiB and fail the wide formal configurations.
+      if ($past(i_req_write)) begin
+        p_aw_full_offset : assert (o_axi_awaddr == AXI_ADDR_WIDTH'($past(i_req_addr) - BASE_ADDR));
+      end else begin
+        p_ar_full_offset : assert (o_axi_araddr == AXI_ADDR_WIDTH'($past(i_req_addr) - BASE_ADDR));
+      end
+    end
     if (f_past_valid && $past(i_axi_rst)) begin
       p_axi_reset_drops_beats : assert (!ar_valid_q && !aw_valid_q && !w_valid_q);
     end
@@ -401,6 +416,12 @@ module line_port_axi_bridge #(
       if ($past(r_accept && !r_known) && !$past(b_q_valid) && !$past(b_accept && b_known)) begin
         p_stale_r_dropped : assert (!o_resp_valid);
       end
+    end
+  end
+
+  if (ADDR_WIDTH > 32) begin : gen_high_offset_cover
+    always @(posedge i_clk) begin
+      c_high_physical_request : cover (req_fire && (i_req_addr >= ADDR_WIDTH'(64'h1_0000_0000)));
     end
   end
 
