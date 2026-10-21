@@ -45,7 +45,11 @@
  * seven-line loop plus its prefetch. Invalidation drops slots and victim lines.
  */
 module fetch_provider #(
-    parameter int unsigned LINE_BYTES   = 32,
+    parameter int unsigned LINE_BYTES = 32,
+    parameter bit ENABLE_RESPONSE_ERRORS = 1'b0,
+    // Uncached instruction memory uses 8-byte windows and no victim store.
+    // The caller forbids prefetch and supplies PMA faults for device regions.
+    parameter bit CACHED_PROVIDER = 1'b1,
     // Line-port transaction id width. Each slot's fill engine keeps one fill
     // in flight, tagged with the slot number (ids 0 and 1); the echo is
     // checked in simulation.
@@ -94,7 +98,7 @@ module fetch_provider #(
     output logic o_served_fault1,
     output logic o_served_fault1_page,
     output logic o_instr_valid,
-    // Next valid value before reset/invalidate clearing. cpu_and_mem applies
+    // Next valid value before reset/invalidate clearing. cpu_top applies
     // those clears to its local registered copy on the same edge.
     output logic o_instr_valid_next,
     // Passive performance observer: the cache supplies a source-registered
@@ -112,6 +116,7 @@ module fetch_provider #(
     output logic [LINE_BYTES-1:0] o_line_req_wstrb,
     output logic [LINE_ID_BITS-1:0] o_line_req_id,
     input logic i_line_resp_valid,
+    input logic i_line_resp_error = 1'b0,
     input logic [LINE_ID_BITS-1:0] i_line_resp_id,
     input logic [LINE_BYTES*8-1:0] i_line_resp_rdata,
 
@@ -259,6 +264,8 @@ module fetch_provider #(
   // Two-line fetch buffer (parity-mapped slots) + per-word sideband
   // ===========================================================================
   logic [1:0] slot_valid_q;
+  // Fault records carry identity, never executable bytes or victim entries.
+  logic [1:0] slot_error_q;
   logic [1:0][LineAddrBits-1:0] slot_line_q;
   logic [1:0][LineBits-1:0] slot_data_q;
   logic [1:0][LineSbBits-1:0] slot_sb_q;
@@ -370,13 +377,16 @@ module fetch_provider #(
   // Window readiness (computed for the presented ask, registered with its tag)
   // ===========================================================================
   logic fetch_high;
-  assign fetch_high = riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(fetch_pa0));
+  assign fetch_high = CACHED_PROVIDER == riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(fetch_pa0));
 
   // A faulted word needs no line (its bytes are never used); an unresolved
   // pair forms no window at all.
   logic window_ready;
+  logic window_fault0, window_fault1;
+  assign window_fault0 = fetch_fault0 || (present0 && slot_error_q[win_line0[0]]);
+  assign window_fault1 = fetch_fault1 || (present1 && slot_error_q[win_line1[0]]);
   assign window_ready = fetch_high && fetch_pa_valid &&
-      (fetch_fault0 || (present0 && (fetch_fault1 || present1)));
+      (window_fault0 || (present0 && (window_fault1 || present1)));
 
   // Registered high-address window. An invalidate kills the in-flight validity
   // so a pre-invalidate window is never consumed. window_ready_q is the folded
@@ -417,9 +427,9 @@ module fetch_provider #(
     served_last_word_q <= fetch_addr[riscv_pkg::XLEN-1:2] + 1'b1;
     served_prev_word_q <= fetch_addr[riscv_pkg::XLEN-1:2] - 1'b1;
     served_prev_word_valid_q <= |fetch_addr[riscv_pkg::XLEN-1:2];
-    served_fault0_q <= fetch_fault0;
+    served_fault0_q <= window_fault0;
     served_fault0_page_q <= fetch_fault0_page;
-    served_fault1_q <= fetch_fault1;
+    served_fault1_q <= window_fault1;
     served_fault1_page_q <= fetch_fault1_page;
     bank_sel_q <= fetch_addr[2];
     ddr_instr_q <= {ddr_word1, ddr_word0};
@@ -591,11 +601,13 @@ module fetch_provider #(
   logic [1:0] copy_base;
   always_comb begin
     for (int p = 0; p < 2; p++) begin
-      want_cand[p] = ask_pa_valid_q && riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(ask_pa0_q)) &&
+      want_cand[p] = ask_pa_valid_q &&
+          (CACHED_PROVIDER == riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(ask_pa0_q))) &&
           cand_fetchable[p] && !cand_present[p] && !fill_busy_q[p];
       want_fill[p] = want_cand[p] && !vs_hit[p] &&
           !((VICTIM_LINES > 0) && ev_pending_q[p] && (ev_line_q[p] == cand_line_q[p]));
-      copy_reg_ok[p] = ask_pa_valid_q && riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(ask_pa0_q)) &&
+      copy_reg_ok[p] = ask_pa_valid_q &&
+          (CACHED_PROVIDER == riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(ask_pa0_q))) &&
           cand_fetchable[p] && !fill_busy_q[p] && !ev_pending_q[p];
       copy_base[p] = copy_reg_ok[p] && vs_hit[p] && !cand_present[p];
     end
@@ -682,6 +694,7 @@ module fetch_provider #(
     fill_discard_q <= fill_discard_next;
     if (i_rst) begin
       fill_sent_q     <= '0;
+      slot_error_q    <= '0;
       slot_valid_q[0] <= 1'b0;
       slot_valid_q[1] <= 1'b0;
     end else begin
@@ -691,6 +704,9 @@ module fetch_provider #(
       end
 
       for (int p = 0; p < 2; p++) begin
+        // A retry after recovery must ask memory again, not replay a cached
+        // failure. Successful buffer lines keep the usual retarget behavior.
+        if (retarget_now && slot_error_q[p]) slot_valid_q[p] <= 1'b0;
         if (!fill_busy_q[p]) begin
           if (want_fill[p]) begin
             fill_sent_q[p] <= 1'b0;
@@ -700,12 +716,18 @@ module fetch_provider #(
           if (o_line_req_valid && i_line_req_ready && (req_sel == 1'(p))) fill_sent_q[p] <= 1'b1;
           if (resp_for_slot[p]) begin
             fill_sent_q[p] <= 1'b0;
-            if (!fill_discard_q[p] && !i_invalidate) slot_valid_q[p] <= 1'b1;
+            if (!fill_discard_q[p] && !i_invalidate) begin
+              slot_valid_q[p] <= 1'b1;
+              slot_error_q[p] <= ENABLE_RESPONSE_ERRORS && i_line_resp_error;
+            end
           end
         end
         // A copy from the victim store validates the slot. copy_now is built
         // to exclude cycles carrying a response or an invalidate.
-        if (copy_now[p]) slot_valid_q[p] <= 1'b1;
+        if (copy_now[p]) begin
+          slot_valid_q[p] <= 1'b1;
+          slot_error_q[p] <= 1'b0;
+        end
       end
     end
   end
@@ -788,7 +810,7 @@ module fetch_provider #(
     end else begin
       if (ev_write) ev_pending_q[ev_sel] <= 1'b0;
       for (int p = 0; p < 2; p++) begin
-        if (slot_write[p]) ev_pending_q[p] <= slot_valid_q[p];
+        if (slot_write[p]) ev_pending_q[p] <= slot_valid_q[p] && !slot_error_q[p];
         if (!ev_pending_q[p]) begin
           ev_line_q[p] <= slot_line_q[p];
           ev_data_q[p] <= slot_data_q[p];
@@ -869,7 +891,7 @@ module fetch_provider #(
   // Protocol checks (simulation only).
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
-      if (i_line_resp_valid && i_line_resp_id[LINE_ID_BITS-1:1] != '0)
+      if (i_line_resp_valid && (i_line_resp_id >> 1) != '0)
         $error("fetch_provider: line response id %0d (expected 0 or 1)", i_line_resp_id);
       if (i_line_resp_valid && !(fill_busy_q[resp_slot] && fill_sent_q[resp_slot]))
         $error("fetch_provider: line response for slot %0d with no fill in flight", resp_slot);

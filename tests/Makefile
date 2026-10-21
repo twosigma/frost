@@ -309,6 +309,12 @@ else ifneq ($(filter $(TOPLEVEL),sdp_ram_byte_en sdp_block_ram sdp_block_ram_dc 
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/ram/$(TOPLEVEL).sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),frost_cache)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/ram/ram.f \
+        $(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv \
+        $(ROOT)/hw/rtl/lib/cache/frost_cache.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),frost_cache_test_harness)
 # Cache hierarchy unit bench (L1/L2 + AXI bridge + behavioral memory)
 COMPILE_ARGS := \
@@ -414,6 +420,24 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cache/cache.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),ptw)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/ptw.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),soc_axi_slave)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/soc_top/soc_axi_slave.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),cpu_axi_master)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_top/cpu_axi_master.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),cpu_uncached_adapter)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_top/cpu_uncached_adapter.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),line_port_axi_bridge)
 # Line-port AXI bridge unit bench (the bench plays an AXI slave it never resets)
 COMPILE_ARGS := \
@@ -453,6 +477,9 @@ VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),low_bram_fetch_presenter)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/low_bram_fetch_presenter.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),cpu_top)
+COMPILE_ARGS := -f $(ROOT)/hw/rtl/cpu_top/cpu_top.f
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),fetch_provider)
 # Fetch window provider unit bench (quadrant steer, fetch buffer, fills)

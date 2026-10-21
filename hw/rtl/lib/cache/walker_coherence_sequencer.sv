@@ -59,6 +59,7 @@ module walker_coherence_sequencer #(
     input  logic [  ADDR_WIDTH-1:0] i_walk_req_addr,
     input  logic [     ID_BITS-1:0] i_walk_req_id,
     output logic                    o_walk_resp_valid,
+    output logic                    o_walk_resp_error,
     output logic [     ID_BITS-1:0] o_walk_resp_id,
     output logic [LINE_BYTES*8-1:0] o_walk_resp_rdata,
 
@@ -79,6 +80,7 @@ module walker_coherence_sequencer #(
     output logic [  ADDR_WIDTH-1:0] o_down_req_addr,
     output logic [     ID_BITS-1:0] o_down_req_id,
     input  logic                    i_down_resp_valid,
+    input  logic                    i_down_resp_error = 1'b0,
     input  logic [     ID_BITS-1:0] i_down_resp_id,
     input  logic [LINE_BYTES*8-1:0] i_down_resp_rdata
 );
@@ -124,6 +126,7 @@ module walker_coherence_sequencer #(
   // arbiter tree echoes the id it was given.
   assign o_walk_resp_valid = i_down_resp_valid;
   assign o_walk_resp_id = i_down_resp_id;
+  assign o_walk_resp_error = i_down_resp_error;
   assign o_walk_resp_rdata = i_down_resp_rdata;
 
   always_ff @(posedge i_clk) begin

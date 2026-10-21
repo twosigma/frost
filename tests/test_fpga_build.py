@@ -1362,132 +1362,23 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     assert "make_pc_metadata_bank_replica" not in generator
     assert "make_compressed_hi_replica" not in generator
 
-    cpu_and_mem = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu_and_mem.sv").read_text()
+    # Fetch metadata for the production CPU now comes from its two AXI-backed
+    # providers. The fixed-latency presenter remains a TestRIG/unit fixture.
+    cpu_top = (REPO_ROOT / "hw/rtl/cpu_top/cpu_top.sv").read_text()
     fetch_provider = (REPO_ROOT / "hw/rtl/cpu_and_mem/fetch_provider.sv").read_text()
-    assert "bram_fetch_odd_slot2_start_valid_lo_read_available" not in cpu_and_mem
-    assert "bram_fetch_compressed_hi_read_available" not in cpu_and_mem
-
-    # Check each generate arm separately: a duplicate presenter in one arm
-    # must not hide a missing instance in another.
-    assert (
-        "`ifdef FROST_RVFI_DII\n  localparam bit EnableCachedFetchProvider = 1'b0;"
-        in cpu_and_mem
-    )
-    assert (
-        "`else\n  localparam bit EnableCachedFetchProvider = ENABLE_CACHED_TIER != 0;"
-        in cpu_and_mem
-    )
-    fuzz_start = cpu_and_mem.index("if (FETCH_VALID_FUZZ != 0) begin : gen_fetch_fuzz")
-    provider_start = cpu_and_mem.index(
-        "end else if (EnableCachedFetchProvider) begin : gen_fetch_provider",
-        fuzz_start,
-    )
-    direct_start = cpu_and_mem.index(
-        "end else begin : gen_fetch_direct", provider_start
-    )
-    fetch_assertions_start = cpu_and_mem.index("`ifndef SYNTHESIS", direct_start)
-    fuzz_block = cpu_and_mem[fuzz_start:provider_start]
-    provider_block = cpu_and_mem[provider_start:direct_start]
-    direct_block = cpu_and_mem[direct_start:fetch_assertions_start]
-    for block in (fuzz_block, provider_block, direct_block):
-        assert (
-            len(
-                re.findall(
-                    r"low_bram_fetch_presenter(?:\s*#\s*\(.*?\))?\s+u_low_bram_fetch_presenter",
-                    block,
-                    re.DOTALL,
-                )
-            )
-            == 1
-        )
-        assert block.count(".i_response_ready(bram_fetch_response_ready)") == 1
-        assert block.count(".i_response_claim(fetch_live_claim)") == 1
-        assert block.count(".o_response_valid(low_bram_response_valid)") == 1
-
-    assert "assign fuzz_publish_hold = !fuzz_ok || pipeline_stall_q;" in fuzz_block
-    assert "assign instruction_valid = low_bram_response_valid;" in fuzz_block
-    assert ".i_response_overlay_hit(1'b0)" in fuzz_block
-    assert ".i_publish_hold(fuzz_publish_hold)" in fuzz_block
-    assert ".i_owner_low(1'b1)" in fuzz_block
-    assert ".i_retarget(fetch_redirect)" in fuzz_block
-    assert "pipeline_stall_q <= pipeline_stall;" in fuzz_block
-    for retired_fuzz_state in (
-        "fuzz_launch_live",
-        "fuzz_slow_published_q",
-        "fuzz_live_matches_served",
-        "fuzz_pins_match_served",
-    ):
-        assert retired_fuzz_state not in fuzz_block
-
-    assert re.search(
-        r"fetch_high_valid_q \? cached_fetch_valid_local_q\s*:\s*"
-        r"low_bram_response_valid",
-        provider_block,
-    )
-    assert "output logic o_instr_valid_next" in fetch_provider
-    assert (
-        "assign o_instr_valid_next = window_ready && (fetch_addr == ask_d) && "
-        "!i_pipeline_stall;" in fetch_provider
-    )
-    assert "cached_fetch_valid_local_q <= cached_fetch_valid_next;" in provider_block
-    assert ".o_instr_valid_next(cached_fetch_valid_next)" in provider_block
-    assert "cached_fetch_valid_local_q == cached_fetch_valid" in provider_block
-    # Select the cached PC sideband by parity before registering it, for timing.
-    for port, signal, declaration in (
-        (
-            "o_pc_metadata_by_parity",
-            "high_fetch_pc_metadata_by_parity",
-            "output logic [7:0] o_pc_metadata_by_parity",
-        ),
-        (
-            "o_pc_pairability_by_parity",
-            "high_fetch_pc_pairability_by_parity",
-            "output logic [3:0] o_pc_pairability_by_parity",
-        ),
+    assert "assign fetch_pa0_is_cached = riscv_pkg::pma_cached_ok(" in cpu_top
+    for port, signal in (
+        ("o_pc_metadata_by_parity", "fetch_metadata[1]"),
+        ("o_pc_pairability_by_parity", "fetch_pairability[1]"),
         (
             "o_slot2_start_valid_lo_by_parity",
-            "high_fetch_slot2_start_valid_lo_by_parity",
-            "output logic [1:0] o_slot2_start_valid_lo_by_parity",
+            "fetch_slot2_valid[1]",
         ),
     ):
-        assert declaration in fetch_provider
-        assert f".{port}({signal})" in provider_block
+        assert f".{port}({signal})" in cpu_top
     assert "pc_metadata_by_parity_q" in fetch_provider
     assert "pc_pairability_by_parity_q" in fetch_provider
     assert "slot2_start_valid_lo_by_parity_q" in fetch_provider
-    assert (
-        "assign high_fetch_pc_metadata_by_parity = cached_fetch_bank_sel_r ?"
-        not in (provider_block)
-    )
-    assert "cached_fetch_pc_pairability" not in provider_block
-    assert ".i_publish_hold(low_bram_pipeline_stall_q)" in provider_block
-    assert ".i_response_overlay_hit(bram_fetch_window_overlay_hit)" in provider_block
-    assert "low_bram_pipeline_stall_q <= pipeline_stall;" in provider_block
-    assert "assign fetch_pa0_is_cached = riscv_pkg::pma_cached_ok(" in cpu_and_mem
-    assert ".i_owner_low(!fetch_pa0_is_cached)" in provider_block
-    assert ".i_retarget(fetch_redirect || fetch_high_transition)" in provider_block
-    assert ".i_retarget(fetch_cached_retarget)" in provider_block
-
-    assert "assign instruction_valid = low_bram_response_valid;" in direct_block
-    assert ".i_publish_hold(low_bram_pipeline_stall_q)" in direct_block
-    assert ".i_response_overlay_hit(bram_fetch_window_overlay_hit)" in direct_block
-    assert "low_bram_pipeline_stall_q <= pipeline_stall;" in direct_block
-    assert ".i_owner_low(1'b1)" in direct_block
-    assert ".i_retarget(fetch_redirect)" in direct_block
-
-    assert (
-        len(
-            re.findall(
-                r"low_bram_fetch_presenter(?:\s*#\s*\(.*?\))?\s+u_low_bram_fetch_presenter",
-                cpu_and_mem,
-                re.DOTALL,
-            )
-        )
-        == 3
-    )
-    assert cpu_and_mem.count(".i_response_ready(bram_fetch_response_ready)") == 3
-    assert ".o_port_b_response_ready(bram_fetch_response_ready)" in cpu_and_mem
-    assert ".o_port_b_window_overlay_hit(bram_fetch_window_overlay_hit)" in cpu_and_mem
 
     presenter = (
         REPO_ROOT / "hw/rtl/cpu_and_mem/low_bram_fetch_presenter.sv"
@@ -1533,8 +1424,6 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     # Only PA bits [15:0] take the separate address retarget; the VA, PA[31:16],
     # and the other outputs keep the full retarget.
     assert "parameter bit SEPARATE_ADDRESS_RETARGET = 1'b0" in presenter
-    assert ".SEPARATE_ADDRESS_RETARGET(1'b1)" in provider_block
-    assert ".i_address_retarget(fetch_redirect)" in provider_block
     for pa in ("pa0", "pa1"):
         assert (
             f"repeat_presented ? presented_{pa}_q[31:16] : i_{pa}[31:16]" in presenter
@@ -2518,7 +2407,8 @@ def test_perf_counters_generic_reaches_synthesis_and_the_cpu() -> None:
         "boards/x3/x3_frost.sv",
         "boards/xilinx_frost_subsystem.sv",
         "hw/rtl/frost.sv",
-        "hw/rtl/cpu_and_mem/cpu_and_mem.sv",
+        "hw/rtl/platform_top.sv",
+        "hw/rtl/cpu_top/cpu_top.sv",
     ):
         text = (root / rel).read_text()
         assert "parameter int unsigned PERF_COUNTERS = 0" in text, rel

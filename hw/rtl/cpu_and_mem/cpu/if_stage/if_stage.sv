@@ -35,6 +35,7 @@ module if_stage #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     input logic i_clk,
+    input logic [riscv_pkg::XLEN-1:0] i_boot_addr = '0,
     input riscv_pkg::from_ex_comb_t i_from_ex_comb,
     // Early-recovery counter update candidate, computed in parallel with
     // lower-priority updates. i_from_ex_comb alone selects the BTB write.
@@ -812,6 +813,7 @@ module if_stage #(
       .PENDING_HANDOFF_EXCLUDES_SLOT2(1'b1)
   ) pc_controller_inst (
       .i_clk,
+      .i_boot_addr,
       .i_reset(i_pipeline_ctrl.reset),
       .i_stall(pc_controller_stall),
       .i_fetch_progress(fetch_progress),
@@ -1592,7 +1594,7 @@ module if_stage #(
                                                       spanning_second_half_low;
 `ifndef SYNTHESIS
   // Sampled at the clock so the check sees settled values; a valid window has
-  // the two bank selects equal (checked in cpu_and_mem).
+  // the two bank selects equal (checked in cpu_top).
   always_ff @(posedge i_clk) begin
     if (i_instr_valid && !$isunknown(
             {i_instr, i_instr_bank_sel_r, pc_reg[2], spanning_second_half}
@@ -1983,8 +1985,9 @@ module if_stage #(
 
 `ifndef SYNTHESIS
 `ifndef FROST_RVFI_DII
-  // With translation off, the fault flag must equal the PMA check of the
-  // packet PC whenever the packet is real, not replayed, and its current word
+  // With translation off, a failed PMA check must set the fault flag of the
+  // packet PC. A permitted address can still report an external bus fault.
+  // Check whenever the packet is real, not replayed, and its current word
   // came from the live window rather than the buffer. A straddle into an
   // unmapped word is the one extra fault case, so it is excluded. TestRIG
   // builds (hw/sim/frost_rvfi_dii.sv) drop instruction access faults on
@@ -1995,7 +1998,7 @@ module if_stage #(
             {fetch_fault_live, pc_reg, i_instr_fault0, i_instr_fault1}
         )) begin
       p_bare_fetch_fault_matches_pma :
-      assert (fetch_fault_live[2] == !riscv_pkg::pma_fetch_ok(pc_reg))
+      assert (riscv_pkg::pma_fetch_ok(pc_reg) || fetch_fault_live[2])
       else
         $error(
             "if_stage: Bare fetch-fault tag %0d disagrees with PMA(pc_reg=%h)",

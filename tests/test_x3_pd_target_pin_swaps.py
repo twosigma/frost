@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 TCL_MODEL = r"""
 
-set prefix subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/c_ext_state_inst
+set prefix subsystem/frost_processor/cpu_and_memory_subsystem/cpu/cpu_inst/if_stage_inst/c_ext_state_inst
 set first ${prefix}/u_pd_target_compressed_candidate_i_12
 set second ${prefix}/u_pd_target_compressed_candidate_i_2
 set model [dict create]

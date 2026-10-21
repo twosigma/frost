@@ -30,7 +30,7 @@ from typing import Any
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-CPU_AND_MEM = REPO_ROOT / "hw" / "rtl" / "cpu_and_mem" / "cpu_and_mem.sv"
+SOC_TOP = REPO_ROOT / "hw" / "rtl" / "soc_top" / "soc_top.sv"
 SBI_PACKER = (
     REPO_ROOT
     / "linux"
@@ -250,7 +250,7 @@ def test_opensbi_helper_finds_buildroot_compiler(
 def test_sbi_device_tree_matches_rtl_windows() -> None:
     """PLIC, CLINT, UART, DMA engine and NIC addresses in the generated DT match the RTL."""
     packer = _load_module(SBI_PACKER)
-    rtl_text = CPU_AND_MEM.read_text()
+    rtl_text = SOC_TOP.read_text()
     assert packer.CLINT_BASE == _rtl_localparam(rtl_text, "ClintMsip")
     mmio_size = re.search(r"MmioSizeBytes = 32'h([0-9A-Fa-f_]+);", rtl_text)
     assert mmio_size is not None
@@ -712,8 +712,8 @@ def test_sbi_memory_bounds_match_the_rtl_and_the_ddr_model() -> None:
     cocotb DDR model (tests/Makefile DDR_MODEL_BYTES) holds.
     """
     packer = _load_module(SBI_PACKER)
-    rtl = CPU_AND_MEM.read_text()
-    base = re.search(r"CACHED_BASE = 32'h([0-9A-Fa-f_]+)", rtl)
+    package = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv").read_text()
+    base = re.search(r"`define FROST_PMA_CACHED_BASE 64'h([0-9A-Fa-f_]+)", package)
     assert base is not None
     assert packer.DDR_BASE == int(base.group(1).replace("_", ""), 16)
     assert packer.CACHED_REGION_BYTES == 1 << 37

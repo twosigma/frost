@@ -3,7 +3,7 @@
 This directory runs FROST through
 [OpenROAD-flow-scripts](https://github.com/The-OpenROAD-Project/OpenROAD-flow-scripts)
 (ORFS) on its Nangate45 platform: the FreePDK45 process with the Nangate
-Open Cell Library. Yosys synthesizes `cpu_and_mem`; OpenROAD floorplans,
+Open Cell Library. Yosys synthesizes `platform_top`; OpenROAD floorplans,
 places, builds the clock trees, and routes it; KLayout writes the GDS.
 OpenSTA reports timing after each stage. FreePDK45 is not a manufacturable
 process, so the flow shows that the RTL maps onto standard cells and SRAM
@@ -84,7 +84,7 @@ the stage before it.
 
 | Setting | Value |
 | --- | --- |
-| Top module | `cpu_and_mem`, with `ENABLE_CACHED_TIER=1` and `USE_BEHAVIORAL_DDR=0`, so the cached tier ends at the DDR AXI port, and `L2_CACHE_BYTES=262144`, a 256 KiB L2 where the X3's holds 2 MiB, so that the flow fits CI's runners ([CI](#ci)); other parameters keep their defaults |
+| Top module | `platform_top`, with `ENABLE_CACHED_TIER=1` and `USE_BEHAVIORAL_DDR=0`, so the cached tier ends at the DDR AXI port, and `L2_CACHE_BYTES=262144`, a 256 KiB L2 where the X3's holds 2 MiB, so that the flow fits CI's runners ([CI](#ci)); other parameters keep their defaults |
 | Defines | `SYNTHESIS`, and `FROST_SRAM_MACROS` for the [SRAM macros](#sram-macros); not `FROST_XILINX_PRIMS`, so every block uses its portable version |
 | Memories | The RAM wrappers' memories are SRAM macros. `SYNTH_MOCK_LARGE_MEMORIES=1`: other memories over 4,096 bits keep one row; smaller ones become flip-flops |
 | Die size | `DIE_AREA`: 5.13 by 4.695 mm; `CORE_AREA` leaves 15 um on each side. The core fits the macro placement |
@@ -270,7 +270,7 @@ pins to the grid's nets.
 | `core_clk_div4` | `i_clk_div4` | Four core periods, 12.412 ns | The program-loading port's clock, a quarter of the CPU clock |
 | `nic_tx_clk` | `i_nic_tx_clk` | 6.206 ns (161.1328125 MHz) | The X3 transceiver's TX user clock |
 | `nic_rx_clk` | `i_nic_rx_clk` | 6.206 ns | The X3 transceiver's recovered RX user clock |
-| `jtag_tck` | `i_jtag_tck` | 100 ns (10 MHz) | The JTAG TAP inside `cpu_and_mem` (`DEBUG_JTAG_TAP=1`) |
+| `jtag_tck` | `i_jtag_tck` | 100 ns (10 MHz) | The JTAG TAP inside `platform_top` (`DEBUG_JTAG_TAP=1`) |
 
 `core_clk_div4` is derived from the core clock, as on the X3, so the two are
 related: both rise at time 0, and OpenSTA times the paths between them, as

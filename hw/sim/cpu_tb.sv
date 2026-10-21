@@ -347,7 +347,7 @@ module cpu_tb
       .i_port_a_byte_write_enable('0),
       .o_port_a_read_data(  /*not connected*/),
       // Port B: CPU data memory access, written with the BRAM-only byte enables
-      // (MMIO and cached-tier stores masked off), as in cpu_and_mem.
+      // (MMIO and cached-tier stores masked off), as in frost_rvfi_platform.
       .i_port_b_byte_address(riscv_pkg::MemDataBits'(o_data_mem_addr)),
       .i_port_b_write_data(o_data_mem_wr_data),
       .i_port_b_byte_write_enable(o_data_mem_bram_byte_wr_en),

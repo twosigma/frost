@@ -43,5 +43,11 @@ $(ROOT)/hw/rtl/cpu_and_mem/hang_triage.sv
 # Data-port read response mux (low BRAM, MMIO, cached tier)
 $(ROOT)/hw/rtl/cpu_and_mem/data_mem_response_mux.sv
 
-# CPU and memory integration module
-$(ROOT)/hw/rtl/cpu_and_mem/cpu_and_mem.sv
+# Reusable CPU and FROST SoC composition.
+$(ROOT)/hw/rtl/cpu_top/cpu_axi_master.sv
+$(ROOT)/hw/rtl/cpu_top/cpu_uncached_adapter.sv
+$(ROOT)/hw/rtl/cpu_top/cpu_memory_fabric.sv
+$(ROOT)/hw/rtl/cpu_top/cpu_top.sv
+$(ROOT)/hw/rtl/soc_top/soc_axi_slave.sv
+$(ROOT)/hw/rtl/soc_top/soc_top.sv
+$(ROOT)/hw/rtl/platform_top.sv

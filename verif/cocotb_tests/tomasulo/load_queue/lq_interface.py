@@ -224,6 +224,7 @@ class LQInterface:
         self.dut.i_sq_forward.value = 0
         self.dut.i_mem_read_data.value = 0
         self.dut.i_mem_read_valid.value = 0
+        self.dut.i_mem_read_error.value = 0
         self.dut.i_mem_read_is_cached.value = 0
         self.dut.i_mem_read_id.value = 0
         self.dut.i_mem_bus_busy.value = 0
@@ -247,6 +248,7 @@ class LQInterface:
         self.dut.i_sq_committed_empty.value = 1
         self.dut.i_trap_misaligned_accesses.value = 0
         self.dut.i_amo_mem_write_done.value = 0
+        self.dut.i_amo_mem_write_error.value = 0
         # DMA coherence port: idle.
         self.dut.i_coh_inval_valid.value = 0
         self.dut.i_coh_inval_addr.value = 0
@@ -393,6 +395,7 @@ class LQInterface:
         dword: bool = False,
         cached: bool | None = None,
         slot: int | None = None,
+        error: bool = False,
     ) -> None:
         """Drive an aligned 64-bit response (hw/rtl/README.md, "Data-tier bus contract").
 
@@ -411,10 +414,12 @@ class LQInterface:
         self.dut.i_mem_read_is_cached.value = 1 if is_cached else 0
         self.dut.i_mem_read_id.value = self.last_launch_slot if slot is None else slot
         self.dut.i_mem_read_valid.value = 1
+        self.dut.i_mem_read_error.value = int(error)
 
     def clear_mem_response(self) -> None:
         """Clear memory read response."""
         self.dut.i_mem_read_valid.value = 0
+        self.dut.i_mem_read_error.value = 0
         self.dut.i_mem_read_is_cached.value = 0
 
     def drive_mem_bus_busy(self, busy: bool = True) -> None:

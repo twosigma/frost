@@ -26,7 +26,7 @@
  * independent TX and RX clocks, where PHY_STATUS reads CLK_SHARED as 0.
  *
  * i_rst carries the next-cycle value of the caller's registered subsystem
- * reset (the D input of cpu_and_mem's rst_core). nic_top registers it
+ * reset (the D input of soc_top's rst_core). nic_top registers it
  * (rst_q) and so resets in the same cycle as the rest of the subsystem; the
  * core-domain reset nic_rst_q, the OR of that reset and the RESET sequence's
  * pulse, is likewise a register computed one cycle ahead.
@@ -66,6 +66,7 @@ module nic_top #(
     output logic [  LINE_BYTES-1:0] o_dma_req_wstrb,
     output logic [      IdBits-1:0] o_dma_req_id,
     input  logic                    i_dma_resp_valid,
+    input  logic                    i_dma_resp_error = 1'b0,
     input  logic [      IdBits-1:0] i_dma_resp_id,
     input  logic [LINE_BYTES*8-1:0] i_dma_resp_rdata,
 
@@ -427,6 +428,7 @@ module nic_top #(
       .o_dma_req_wstrb (o_dma_req_wstrb),
       .o_dma_req_id    (o_dma_req_id),
       .i_dma_resp_valid(i_dma_resp_valid),
+      .i_dma_resp_error(i_dma_resp_error),
       .i_dma_resp_id   (i_dma_resp_id),
       .i_dma_resp_rdata(i_dma_resp_rdata)
   );

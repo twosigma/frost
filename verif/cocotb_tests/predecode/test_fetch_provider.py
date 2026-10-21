@@ -89,6 +89,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_l1i_miss_outstanding.value = 0
     dut.i_line_req_ready.value = 0
     dut.i_line_resp_valid.value = 0
+    dut.i_line_resp_error.value = 0
     dut.i_line_resp_id.value = 0
     dut.i_line_resp_rdata.value = 0
     dut.i_invalidate.value = 0
@@ -114,6 +115,7 @@ async def _line_slave(
     accept_gap: int = 0,
     inflight: list[tuple[int, int]] | None = None,
     responses: list[tuple[int, int]] | None = None,
+    errors: set[int] | None = None,
 ) -> None:
     """Serve patterned lines on the line port with several requests in flight.
 
@@ -141,6 +143,7 @@ async def _line_slave(
             dut.i_line_resp_valid.value = 1
             dut.i_line_resp_id.value = entry[2]
             dut.i_line_resp_rdata.value = _line_at(entry[3])
+            dut.i_line_resp_error.value = int(errors is not None and entry[3] in errors)
             if responses is not None:
                 responses.append((entry[2], entry[3]))
         # Request side: accept one per cycle unless in an accept gap.

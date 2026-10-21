@@ -258,7 +258,7 @@ replays the saved counterexamples in `verif/testrig/traces/`.
 
 ### `test_run_yosys.py`
 
-Synthesizes `cpu_and_mem` (the CPU, memory system, and NIC, from
+Synthesizes `platform_top` (the CPU tile, SoC memory system, and NIC, from
 `hw/rtl/frost.f`) with portable coarse synthesis (`generic`) and with full
 Xilinx UltraScale+ synthesis. Both fail on unresolved modules or latches.
 sv2v converts the NIC, MAC, and PCS sources for Yosys first. Generic

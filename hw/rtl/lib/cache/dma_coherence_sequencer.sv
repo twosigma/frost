@@ -102,6 +102,7 @@ module dma_coherence_sequencer #(
     input  logic [  LINE_BYTES-1:0] i_dma_req_wstrb,
     input  logic [     ID_BITS-1:0] i_dma_req_id,
     output logic                    o_dma_resp_valid,
+    output logic                    o_dma_resp_error,
     output logic [     ID_BITS-1:0] o_dma_resp_id,
     output logic [LINE_BYTES*8-1:0] o_dma_resp_rdata,
 
@@ -140,6 +141,7 @@ module dma_coherence_sequencer #(
     output logic [  LINE_BYTES-1:0] o_down_req_wstrb,
     output logic [     ID_BITS-1:0] o_down_req_id,
     input  logic                    i_down_resp_valid,
+    input  logic                    i_down_resp_error = 1'b0,
     input  logic [     ID_BITS-1:0] i_down_resp_id,
     input  logic [LINE_BYTES*8-1:0] i_down_resp_rdata
 );
@@ -300,11 +302,13 @@ module dma_coherence_sequencer #(
   logic                    down_resp_valid_q;
   logic [     ID_BITS-1:0] down_resp_id_q;
   logic [LINE_BYTES*8-1:0] down_resp_rdata_q;
+  logic                    down_resp_error_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) down_resp_valid_q <= 1'b0;
     else down_resp_valid_q <= i_down_resp_valid;
     down_resp_id_q    <= i_down_resp_id;
     down_resp_rdata_q <= i_down_resp_rdata;
+    down_resp_error_q <= i_down_resp_error;
   end
 
   // Downstream response decode: the DMA id names the entry in E_RESP.
@@ -355,6 +359,7 @@ module dma_coherence_sequencer #(
       admit_active_q        <= 1'b0;
       inval_active_q        <= 1'b0;
       o_dma_resp_valid      <= 1'b0;
+      o_dma_resp_error      <= 1'b0;
       o_coh_release_valid   <= 1'b0;
       o_probe_release_valid <= 1'b0;
       out_valid_q           <= 1'b0;
@@ -403,6 +408,7 @@ module dma_coherence_sequencer #(
         o_dma_resp_valid <= 1'b1;
         o_dma_resp_id    <= id_q[resp_sel];
         o_dma_resp_rdata <= down_resp_rdata_q;
+        o_dma_resp_error <= down_resp_error_q;
       end
       if (dma_req_fire) begin
         // The new entry is younger than every active entry.

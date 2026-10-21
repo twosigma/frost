@@ -77,6 +77,8 @@ module line_port_arbiter_test_harness #(
       .UP_ID_BITS      (UP_ID_BITS),
       .STARVATION_LIMIT(STARVATION_LIMIT)
   ) arbiter (
+      .o_up_resp_error(),
+
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_up_req_valid({i_up1_req_valid, i_up0_req_valid}),

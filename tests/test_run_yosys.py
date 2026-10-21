@@ -72,9 +72,9 @@ def _hierarchy_command(synth_command: str) -> str:
     family = _xilinx_family(synth_command)
     commands = []
     if family == "xcup":
-        commands.append("chparam -set ENABLE_CACHED_TIER 1 cpu_and_mem")
-        commands.append("chparam -set USE_BEHAVIORAL_DDR 0 cpu_and_mem")
-    commands.append("hierarchy -top cpu_and_mem")
+        commands.append("chparam -set ENABLE_CACHED_TIER 1 platform_top")
+        commands.append("chparam -set USE_BEHAVIORAL_DDR 0 platform_top")
+    commands.append("hierarchy -top platform_top")
     return "\n".join(commands)
 
 
@@ -136,13 +136,13 @@ def _synthesis_defines() -> str:
 #
 # Stop generic synthesis before mapping RAMs and wide arrays to flops, for
 # runtime. The Xilinx target performs full synthesis.
-GENERIC_SYNTH_COMMAND = "synth -top cpu_and_mem -run coarse"
+GENERIC_SYNTH_COMMAND = "synth -top platform_top -run coarse"
 SYNTHESIS_TARGETS = [
     ("generic", GENERIC_SYNTH_COMMAND, "Generic/ASIC (coarse synthesis)"),
     ("xilinx_ultrascale_plus", "synth_xilinx -family xcup", "Xilinx UltraScale+"),
 ]
 
-# Use the complete integration filelist even though cpu_and_mem is the
+# Use the complete integration filelist even though platform_top is the
 # synthesis top: its cached tier instantiates the NIC and MAC/PCS, whose
 # dependencies are listed before cpu_and_mem.f in frost.f.
 DESIGN_FILELISTS = {
@@ -394,7 +394,7 @@ def test_synthesis_filelist_includes_cached_tier_dependencies(
     sources = runner.parse_filelist(runner.filelist)
     names = {Path(source).name for source in sources}
     assert {
-        "cpu_and_mem.sv",
+        "platform_top.sv",
         "nic_pkg.sv",
         "nic_top.sv",
         "eth10g_crc_pkg.sv",
@@ -511,9 +511,9 @@ def test_synthesis_rejects_invalid_nic(
     runner.root_dir = tmp_path
     runner.test_dir = tmp_path
     runner.filelist = tmp_path / "design.f"
-    top = tmp_path / "cpu_and_mem.sv"
+    top = tmp_path / "platform_top.sv"
     top.write_text(
-        "module cpu_and_mem(input logic en, data, output logic value);\n"
+        "module platform_top(input logic en, data, output logic value);\n"
         "  nic_top nic(.en(en), .data(data), .value(value));\n"
         "endmodule\n"
     )
@@ -551,9 +551,9 @@ def test_synthesis_accepts_specialized_top(
     runner.root_dir = tmp_path
     runner.test_dir = tmp_path
     runner.filelist = tmp_path / "design.f"
-    top = tmp_path / "cpu_and_mem.sv"
+    top = tmp_path / "platform_top.sv"
     top.write_text(
-        "module cpu_and_mem #(parameter ENABLE_CACHED_TIER=1, "
+        "module platform_top #(parameter ENABLE_CACHED_TIER=1, "
         "USE_BEHAVIORAL_DDR=1)(input data, output value);\n"
         "  assign value = data;\n"
         "endmodule\n"
@@ -563,7 +563,7 @@ def test_synthesis_accepts_specialized_top(
     # hierarchy, without elaborating the complete CPU in this small test.
     result = runner.run_synthesis(
         synth_command="synth_xilinx -family xcup -run begin:begin\n"
-        "rename -top specialized_cpu_and_mem"
+        "rename -top specialized_platform_top"
     )
     has_error, errors = runner.check_for_errors(result)
     assert not has_error, errors
@@ -580,9 +580,9 @@ def test_xilinx_pc_hierarchy_keeps_parameterized_dependencies(
     runner.root_dir = tmp_path
     runner.test_dir = tmp_path
     runner.filelist = tmp_path / "design.f"
-    top = tmp_path / "cpu_and_mem.sv"
+    top = tmp_path / "platform_top.sv"
     top.write_text(
-        "module cpu_and_mem #(parameter ENABLE_CACHED_TIER=1, "
+        "module platform_top #(parameter ENABLE_CACHED_TIER=1, "
         "USE_BEHAVIORAL_DDR=1)(input reset, output [63:0] value);\n"
         "  pc_controller #(.PENDING_HANDOFF_EXCLUDES_SLOT2(1)) pc "
         "(.i_reset(reset), .o_pc(value));\n"

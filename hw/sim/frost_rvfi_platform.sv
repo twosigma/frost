@@ -19,7 +19,11 @@
   port A on i_clk_div4; runtime fetch and data access use port B on i_clk.
   The cached tier connects to DDR through the cache hierarchy and AXI bridge.
 */
-module cpu_and_mem #(
+// Simulation-only TestRIG platform. The instruction stream is injected by
+// retirement position, so this fixture intentionally retains the pipeline's
+// fixed-latency test interface. Production FPGA/ASIC builds use platform_top;
+// cpu_top's public AXI protocol is checked by the standalone integration bench.
+module frost_rvfi_platform #(
     parameter int unsigned MEM_SIZE_BYTES = 2 ** 17,
     // Simulation mtime multiplier; use 1 for synthesis.
     parameter int unsigned SIM_TIMER_SPEEDUP = 1,
@@ -736,7 +740,7 @@ module cpu_and_mem #(
   cpu_ooo #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth),
       .MMIO_ADDR(MmioAddr),
-      .CACHED_BASE(CACHED_BASE),
+      .CACHED_BASE(64'(CACHED_BASE)),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
       .PERF_COUNTERS(PERF_COUNTERS),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
@@ -745,6 +749,11 @@ module cpu_and_mem #(
       .INT_RS_DEPTH(INT_RS_DEPTH),
       .DECODED_QUEUE_DEPTH(DECODED_QUEUE_DEPTH)
   ) cpu_inst (
+      .o_uncached_read_enable(),
+      .o_uncached_read_size(),
+      .o_uncached_read_ready(),
+      .o_uncached_write_byte_en(),
+      .o_uncached_write_size(),
       .i_clk,
       .i_rst(rst_core),
       .o_pc(cpu_pc_xlen),
@@ -1825,6 +1834,8 @@ module cpu_and_mem #(
         .LINE_ID_BITS(LineIdBits),
         .SPLIT_READ_REQ(1'b1)
     ) cached_adapter (
+        .o_read_error(),
+
         .i_clk(i_clk),
         .i_rst(rst_core),
         .i_read_req(data_memory_cached_read_enable),
@@ -1885,6 +1896,13 @@ module cpu_and_mem #(
         .SIM_FAST_MAINT(SIM_FAST_MAINT),
         .NUM_DMA_LOCK(riscv_pkg::DmaCoherenceLocks)
     ) cache_hierarchy (
+        .o_up_resp_error(),
+        .o_iup_resp_error(),
+        .o_wup_resp_error(),
+        .o_dma_resp_error(),
+        .o_fatal_error(),
+        .o_fatal_addr(),
+
         .i_clk(i_clk),
         .i_rst(rst_core),
         .i_up_req_valid(line_req_valid),
@@ -1961,6 +1979,8 @@ module cpu_and_mem #(
         .UP_ID_BITS(DmaAgentIdBits),
         .STARVATION_LIMIT(8)
     ) dma_arbiter (
+        .o_up_resp_error(),
+
         .i_clk(i_clk),
         .i_rst(rst_core),
         .i_up_req_valid(agent_req_valid),
@@ -2669,4 +2689,4 @@ module cpu_and_mem #(
     end
   end
 
-endmodule : cpu_and_mem
+endmodule : frost_rvfi_platform

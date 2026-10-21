@@ -100,7 +100,7 @@ namespace eval frost_x3_pd_target_pin_swaps {
     proc apply {audit_file {mode strict}} {
         if {$mode ni {auto strict}} {error "Pin refinement mode must be auto or strict"}
         file delete $audit_file
-        set prefix subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/c_ext_state_inst
+        set prefix subsystem/frost_processor/cpu_and_memory_subsystem/cpu/cpu_inst/if_stage_inst/c_ext_state_inst
         set recipes [list \
             [list ${prefix}/u_pd_target_compressed_candidate_i_12 LUT3 8'hB8 SLICE_X63Y358 \
                 {I0:A5 I1:A6 I2:A4} {I0:A5 I1:A4 I2:A6}] \

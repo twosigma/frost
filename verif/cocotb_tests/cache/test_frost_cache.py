@@ -151,6 +151,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_coh_inval_done.value = 0
     dut.i_fence_sync.value = 0
     dut.i_down_hold.value = 0
+    dut.i_down_response_error.value = 0
 
 
 def l2_line_bytes(dut: Any) -> int:

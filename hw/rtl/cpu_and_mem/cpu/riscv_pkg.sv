@@ -1314,23 +1314,86 @@ package riscv_pkg;
 
   localparam bit [31:0] NOP = 32'h0000_0013;  // addi x0, x0, 0
 
-  // One build setting selects the raw DDR capacity. Derive the controller's
-  // zero-based offset width and the CPU's physical width from it; the latter
-  // must include the nonzero DDR base. The SoC can expose a smaller public
-  // aperture when it reserves top-of-DDR metadata.
+  // Static CPU integration configuration. Define settings on the compiler
+  // command line or in FROST_CPU_CONFIG (a quoted include-file path). All
+  // users of riscv_pkg in one build share this configuration. FROST's SoC
+  // uses the defaults; an independent SoC supplies its own map.
+`ifdef FROST_CPU_CONFIG
+  `include `FROST_CPU_CONFIG
+`endif
 `ifndef FROST_DDR_CAPACITY_LOG2_BYTES
   `define FROST_DDR_CAPACITY_LOG2_BYTES 30
 `endif
+`ifndef FROST_PMA_CACHED_BASE
+  `define FROST_PMA_CACHED_BASE 64'h0000_0000_8000_0000
+`endif
+`ifndef FROST_PMA_UNCACHED_BASE
+  `define FROST_PMA_UNCACHED_BASE 64'd0
+`endif
+`ifndef FROST_PMA_UNCACHED_BYTES
+  `define FROST_PMA_UNCACHED_BYTES 64'd262144
+`endif
+`ifndef FROST_PMA_UNCACHED_EXEC_BYTES
+  `define FROST_PMA_UNCACHED_EXEC_BYTES 64'd131072
+`endif
+`ifndef FROST_PMA_DEVICE0_BASE
+  `define FROST_PMA_DEVICE0_BASE 64'h0000_0000_4000_0000
+`endif
+`ifndef FROST_PMA_DEVICE0_BYTES
+  `define FROST_PMA_DEVICE0_BYTES 64'h0000_0000_0003_1000
+`endif
+`ifndef FROST_PMA_DEVICE1_BASE
+  `define FROST_PMA_DEVICE1_BASE 64'h0000_0000_4400_0000
+`endif
+`ifndef FROST_PMA_DEVICE1_BYTES
+  `define FROST_PMA_DEVICE1_BYTES 64'h0000_0000_0040_0000
+`endif
+`ifndef FROST_PMA_LEGACY_DEVICE_STORES
+  `define FROST_PMA_LEGACY_DEVICE_STORES 1
+`endif
+`ifndef FROST_CPU_DEBUG_BASE
+  `define FROST_CPU_DEBUG_BASE 32'h0001_7C00
+`endif
   localparam int unsigned DdrCapacityLog2Bytes = `FROST_DDR_CAPACITY_LOG2_BYTES;
-  localparam longint unsigned DdrBase = 64'h0000_0000_8000_0000;
+  localparam longint unsigned DdrBase = `FROST_PMA_CACHED_BASE;
   localparam longint unsigned DdrCapacityBytes = 64'(1) << DdrCapacityLog2Bytes;
   localparam int unsigned DdrAxiAddrBits = DdrCapacityLog2Bytes;
-  localparam int unsigned PhysAddrBits = $clog2(DdrBase + DdrCapacityBytes);
   localparam longint unsigned DdrLimit = DdrBase + DdrCapacityBytes;
-  localparam int unsigned CachedRegionBit = 31;
+  localparam longint unsigned PmaUncachedBase = `FROST_PMA_UNCACHED_BASE;
+  localparam longint unsigned PmaUncachedBytes = `FROST_PMA_UNCACHED_BYTES;
+  localparam longint unsigned PmaUncachedLimit =
+      PmaUncachedBytes == 0 ? 0 : PmaUncachedBase + PmaUncachedBytes;
+  localparam longint unsigned PmaUncachedExecBytes = `FROST_PMA_UNCACHED_EXEC_BYTES;
+  localparam longint unsigned PmaUncachedExecLimit = PmaUncachedBase + PmaUncachedExecBytes;
+  localparam longint unsigned PmaDevice0Base = `FROST_PMA_DEVICE0_BASE;
+  localparam longint unsigned PmaDevice0Bytes = `FROST_PMA_DEVICE0_BYTES;
+  localparam longint unsigned PmaDevice0Limit =
+      PmaDevice0Bytes == 0 ? 0 : PmaDevice0Base + PmaDevice0Bytes;
+  localparam longint unsigned PmaDevice1Base = `FROST_PMA_DEVICE1_BASE;
+  localparam longint unsigned PmaDevice1Bytes = `FROST_PMA_DEVICE1_BYTES;
+  localparam longint unsigned PmaDevice1Limit =
+      PmaDevice1Bytes == 0 ? 0 : PmaDevice1Base + PmaDevice1Bytes;
+  localparam longint unsigned PmaMemoryLimit =
+      DdrLimit > PmaUncachedLimit ? DdrLimit : PmaUncachedLimit;
+  localparam longint unsigned PmaDeviceLimit =
+      PmaDevice0Limit > PmaDevice1Limit ? PmaDevice0Limit : PmaDevice1Limit;
+  localparam longint unsigned PmaAddressLimit =
+      PmaMemoryLimit > PmaDeviceLimit ? PmaMemoryLimit : PmaDeviceLimit;
+  // At least 32 bits keeps the fixed-width ISA/debug and legacy SoC ports
+  // available; an external map can grow the physical fabric up to 56 bits.
+  localparam int unsigned PhysAddrBits = $clog2(
+      PmaAddressLimit
+  ) > 32 ? $clog2(
+      PmaAddressLimit
+  ) : 32;
+  localparam bit PmaUsesFrostMap = (`FROST_PMA_LEGACY_DEVICE_STORES != 0) &&
+      DdrBase == 64'h8000_0000 &&
+      PmaUncachedBase == 0 && PmaUncachedBytes == 262144 && PmaUncachedExecBytes == 131072 &&
+      PmaDevice0Base == 64'h4000_0000 && PmaDevice0Bytes == 64'h31000 &&
+      PmaDevice1Base == 64'h4400_0000 && PmaDevice1Bytes == 64'h400000;
   // Low BRAM: loads, stores and atomics reach all 2**LowBramAddrBits bytes;
   // instruction fetch reaches only the first 2**LowBramCodeAddrBits, the
-  // code region the instruction memory holds (cpu_and_mem sizes it from
+  // code region the instruction memory holds (soc_top sizes it from
   // this constant). Fetch above the code region raises an instruction
   // access fault.
   localparam int unsigned LowBramAddrBits = 18;
@@ -1343,7 +1406,7 @@ package riscv_pkg;
   //   0x08..0x10 abstract a0..a2   0x14..0x30 progbuf[0..7]
   //   0x34 ebreak (impebreak)   0x38 dret (resume)   0x3C ebreak
   // Fits MEM_SIZE_BYTES >= 96 KiB and uses fixed physical address bits.
-  localparam bit [31:0] DebugSliceBase = 32'h0001_7C00;
+  localparam bit [31:0] DebugSliceBase = `FROST_CPU_DEBUG_BASE;
   localparam int unsigned DebugSliceBytes = 1024;
   localparam bit [31:0] DebugParkAddr = DebugSliceBase + 32'h00;
   localparam bit [31:0] DebugAbstractAddr = DebugSliceBase + 32'h08;
@@ -1419,7 +1482,7 @@ package riscv_pkg;
   // all PhysAddrBits, including the high DDR address bits.
   //
   // Device windows use whole 4 KiB pages. Keep them aligned with the register
-  // decode in cpu_and_mem.sv (hw/rtl/README.md, "Memory Map"). Its startup
+  // decode in soc_top.sv (hw/rtl/README.md, "Memory Map"). Its startup
   // checks validate the layout used by the store-issue and DTLB page decodes.
   localparam logic [19:0] MmioFirstPage = 20'h4_0000;
   localparam logic [19:0] MmioLastPage  = 20'h4_0030;
@@ -1431,14 +1494,18 @@ package riscv_pkg;
     pma_cached_ok = (addr >= XLEN'(DdrBase)) && (addr < XLEN'(DdrLimit));
   endfunction
 
-  // Instruction fetch: the low BRAM's code region and cached DDR.
+  // Instruction fetch: configured executable Normal memory regions.
   function automatic logic pma_fetch_ok(input logic [XLEN-1:0] addr);
-    pma_fetch_ok = (addr[XLEN-1:LowBramCodeAddrBits] == '0) || pma_cached_ok(addr);
+    pma_fetch_ok = ((PmaUncachedExecBytes != 0) &&
+        ((addr - PmaUncachedBase) <= PmaUncachedExecBytes - 1)) ||
+        pma_cached_ok(addr);
   endfunction
 
-  // Memory for data accesses: all of the low BRAM and cached DDR.
+  // Data accesses: configured uncached and cached Normal memory.
   function automatic logic pma_memory_ok(input logic [XLEN-1:0] addr);
-    pma_memory_ok = (addr[XLEN-1:LowBramAddrBits] == '0) || pma_cached_ok(addr);
+    pma_memory_ok = ((PmaUncachedBytes != 0) &&
+        ((addr - PmaUncachedBase) <= PmaUncachedBytes - 1)) ||
+        pma_cached_ok(addr);
   endfunction
 
   // Device-page check for PA[31:12]. MMIO occupies part of one aligned
@@ -1453,13 +1520,16 @@ package riscv_pkg;
   endfunction
 
   function automatic logic pma_device_ok(input logic [XLEN-1:0] addr);
-    pma_device_ok = (addr[XLEN-1:32] == '0) && pma_device_page_ok(addr[31:12]);
+    pma_device_ok = PmaUsesFrostMap ? (addr[XLEN-1:32] == '0) && pma_device_page_ok(addr[31:12]) :
+        ((PmaDevice0Bytes != 0) && ((addr - PmaDevice0Base) <= PmaDevice0Bytes - 1)) ||
+        ((PmaDevice1Bytes != 0) && ((addr - PmaDevice1Base) <= PmaDevice1Bytes - 1));
   endfunction
 
-  // Legacy untranslated stores may reach any device-quadrant address. The
+  // The enabled FROST compatibility mode admits untranslated device-quadrant stores. The
   // upper-bit check is essential once DDR extends above the first 4 GiB.
   function automatic logic pma_device_quadrant(input logic [XLEN-1:0] addr);
-    pma_device_quadrant = (addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b01);
+    pma_device_quadrant = PmaUsesFrostMap ?
+        (addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b01) : pma_device_ok(addr);
   endfunction
 
   // Loads and stores.
@@ -1489,11 +1559,9 @@ package riscv_pkg;
   function automatic logic pma_fetch_next_page_ok(input logic [XLEN-1:0] va);
     logic [XLEN-1:0] page_base;
     page_base = {va[XLEN-1:12], 12'b0};
-    pma_fetch_next_page_ok =
-        (page_base < XLEN'((64'(1) << LowBramCodeAddrBits) - 4096)) ||
-        (&va[XLEN-1:12]) ||
-        ((page_base >= XLEN'(DdrBase - 4096)) &&
-         (page_base < XLEN'(DdrLimit - 4096)));
+    pma_fetch_next_page_ok = !PmaUsesFrostMap ? pma_fetch_ok(page_base + XLEN'(4096)) :
+        (page_base < XLEN'((64'(1) << LowBramCodeAddrBits) - 4096)) || (&va[XLEN-1:12]) ||
+        ((page_base >= XLEN'(DdrBase - 4096)) && (page_base < XLEN'(DdrLimit - 4096)));
   endfunction
 
   // VA-only facts for a fetch window {va, aligned-word-after-va}: whether it

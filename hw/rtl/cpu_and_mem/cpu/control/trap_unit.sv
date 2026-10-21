@@ -68,7 +68,7 @@ module trap_unit #(
 
     // AMO interrupt shield, registered in cpu_ooo. A flush after the write
     // launches could repeat the AMO and discard its completion while
-    // amo_cached_inflight hides it from the SQ, stranding write_inflight_cnt
+    // amo_variable_inflight hides it from the SQ, stranding write_inflight_cnt
     // for a colliding handler store. AMOs issue after committed stores drain,
     // and commit stays enabled during deferral, so the interrupt follows commit.
     // The shield rises one cycle after the AMO reaches the head, before its

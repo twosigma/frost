@@ -249,6 +249,7 @@ For native builds outside the container, initialize the submodules first with
 | Document | Covers |
 |----------|--------|
 | [RTL overview](hw/rtl/README.md) | SoC structure, memory map, and the data bus rules |
+| [CPU integration boundary](hw/rtl/cpu_top/README.md) | Standalone CPU AXI, PMA, reset, debug and coherent ingress contract |
 | [CPU](hw/rtl/cpu_and_mem/cpu/README.md) | Front end, branch prediction, address translation, and debug |
 | [Out-of-order back end](hw/rtl/cpu_and_mem/cpu/tomasulo/README.md) | Renaming, scheduling, memory ordering, and commit, with a README for each block |
 | [Cache hierarchy](hw/rtl/lib/cache/README.md) | Caches, coherence, and the DMA port |

@@ -477,15 +477,19 @@ class TomasuloInterface:
 
         # SQ: memory write done
         self.dut.i_sq_mem_write_done.value = 0
+        self.dut.i_sq_mem_write_error.value = 0
+        self.dut.i_uncached_store_shield.value = 0
 
         # LQ: memory interface
         self.dut.i_lq_mem_read_data.value = 0
         self.dut.i_lq_mem_read_valid.value = 0
+        self.dut.i_lq_mem_read_error.value = 0
         self.dut.i_lq_mem_read_is_cached.value = 0
         self.dut.i_lq_mem_read_id.value = 0
         self.dut.i_lq_mem_request_pending.value = 0
         self.dut.i_cached_read_held.value = 0
         self.dut.i_slow_write_inflight.value = 0
+        self.dut.i_uncached_read_busy.value = 0
 
         # DMA coherence handshake: idle.
         self.dut.i_coh_admit_valid.value = 0
@@ -498,6 +502,7 @@ class TomasuloInterface:
 
         # AMO memory write interface
         self.dut.i_amo_mem_write_done.value = 0
+        self.dut.i_amo_mem_write_error.value = 0
 
         # RS dispatch
         self.dut.i_rs_dispatch.value = 0

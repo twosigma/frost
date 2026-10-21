@@ -51,7 +51,7 @@
  * The up, iup, and dma ports carry UP_ID_BITS; the wup port and the L1I's
  * downstream carry UP_ID_BITS-1. With the default UP_ID_BITS=3, that leaves
  * the L1I 2 miss slots, all its master (the two-line fetch provider) ever
- * uses, and DownIdBits is 5. cpu_and_mem uses UP_ID_BITS=4, which the L1D's
+ * uses, and DownIdBits is 5. cpu_top uses UP_ID_BITS=4, which the L1D's
  * {type, slot} ids need for 8 miss slots (L1D_NUM_MSHR), so DownIdBits is 6
  * there. The walker keeps one walk in flight with id 0.
  * The L2 takes DownIdBits ids and gives its own downstream requests
@@ -66,6 +66,7 @@
  */
 module frost_cache_hierarchy #(
     parameter int unsigned ADDR_WIDTH = 32,
+    parameter bit ENABLE_RESPONSE_ERRORS = 1'b0,
     // Lines above the L2 (the L1s and every upstream port), and in the L2 and
     // its downstream port.
     parameter int unsigned L1_LINE_BYTES = 32,
@@ -138,6 +139,7 @@ module frost_cache_hierarchy #(
     output logic                       o_up_resp_valid,
     output logic [     UP_ID_BITS-1:0] o_up_resp_id,
     output logic [L1_LINE_BYTES*8-1:0] o_up_resp_rdata,
+    output logic                       o_up_resp_error,
 
     // Upstream line port (slave): instruction side, used read-only. FROST
     // never issues writes here; wdata/wstrb exist for protocol symmetry.
@@ -151,6 +153,7 @@ module frost_cache_hierarchy #(
     output logic                       o_iup_resp_valid,
     output logic [     UP_ID_BITS-1:0] o_iup_resp_id,
     output logic [L1_LINE_BYTES*8-1:0] o_iup_resp_rdata,
+    output logic                       o_iup_resp_error,
 
     // Walker reads probe L1D, then go to L2 without a private cache. Write
     // inputs are ignored and flagged in simulation. IDs have UP_ID_BITS-1 bits.
@@ -164,6 +167,7 @@ module frost_cache_hierarchy #(
     output logic                       o_wup_resp_valid,
     output logic [     UP_ID_BITS-2:0] o_wup_resp_id,
     output logic [L1_LINE_BYTES*8-1:0] o_wup_resp_rdata,
+    output logic                       o_wup_resp_error,
     // DMA port: a fourth upstream line-port slave with UP_ID_BITS
     // ids, coherent with the L1D and the load queue (see the header). With
     // L2_PREFETCH, the ids' top bit must be clear.
@@ -177,6 +181,7 @@ module frost_cache_hierarchy #(
     output logic                       o_dma_resp_valid,
     output logic [     UP_ID_BITS-1:0] o_dma_resp_id,
     output logic [L1_LINE_BYTES*8-1:0] o_dma_resp_rdata,
+    output logic                       o_dma_resp_error,
     // Load-queue coherence handshake for DMA writes (dma_coherence_sequencer:
     // admit fires on ready, inval fires on done, release is a pulse). The
     // core's lq_coherence_port (tomasulo_wrapper/coherence/) answers it; a
@@ -214,6 +219,12 @@ module frost_cache_hierarchy #(
     input  logic                       i_down_resp_valid,
     input  logic [L2_DOWN_ID_BITS-1:0] i_down_resp_id,
     input  logic [L2_LINE_BYTES*8-1:0] i_down_resp_rdata,
+    input  logic                       i_down_resp_error = 1'b0,
+
+    // Fatal buffered-store failures require external recovery. Read-only
+    // refill errors instead return to the matching upstream requester.
+    output logic o_fatal_error,
+    output logic [ADDR_WIDTH-1:0] o_fatal_addr,
 
     // Source-registered per-instance performance observers.
     output cache_perf_pkg::cache_hierarchy_perf_events_t o_perf_events
@@ -243,6 +254,7 @@ module frost_cache_hierarchy #(
   logic                       l1_down_resp_valid;
   logic [     UP_ID_BITS-1:0] l1_down_resp_id;
   logic [L1_LINE_BYTES*8-1:0] l1_down_resp_rdata;
+  logic                       l1_down_resp_error;
 
   logic                       l1i_down_req_valid;
   logic                       l1i_down_req_ready;
@@ -254,6 +266,7 @@ module frost_cache_hierarchy #(
   logic                       l1i_down_resp_valid;
   logic [     WalkIdBits-1:0] l1i_down_resp_id;
   logic [L1_LINE_BYTES*8-1:0] l1i_down_resp_rdata;
+  logic                       l1i_down_resp_error;
 
   // Walker/L1I sub-arbiter downstream (port 1 of the top arbiter).
   logic                       wi_down_req_valid;
@@ -267,6 +280,7 @@ module frost_cache_hierarchy #(
   logic                       wi_down_resp_valid;
   logic [     UP_ID_BITS-1:0] wi_down_resp_id;
   logic [L1_LINE_BYTES*8-1:0] wi_down_resp_rdata;
+  logic                       wi_down_resp_error;
 
   logic                       arb_down_req_valid;
   logic                       arb_down_req_ready;
@@ -279,6 +293,7 @@ module frost_cache_hierarchy #(
   logic                       arb_down_resp_valid;
   logic [     DownIdBits-1:0] arb_down_resp_id;
   logic [L1_LINE_BYTES*8-1:0] arb_down_resp_rdata;
+  logic                       arb_down_resp_error;
 
   // fence.i sequencer handshakes (FSM below, after the arbiter).
   logic l1d_maint_busy, l1i_maint_busy;
@@ -376,6 +391,7 @@ module frost_cache_hierarchy #(
   logic walk_down_resp_valid;
   logic [WalkIdBits-1:0] walk_down_resp_id;
   logic [L1_LINE_BYTES*8-1:0] walk_down_resp_rdata;
+  logic walk_down_resp_error;
 
   walker_coherence_sequencer #(
       .ADDR_WIDTH(ADDR_WIDTH),
@@ -392,6 +408,7 @@ module frost_cache_hierarchy #(
       .i_walk_req_id(i_wup_req_id),
       .o_walk_resp_valid(o_wup_resp_valid),
       .o_walk_resp_id(o_wup_resp_id),
+      .o_walk_resp_error(o_wup_resp_error),
       .o_walk_resp_rdata(o_wup_resp_rdata),
       .o_probe_req_valid(walk_probe_req_valid),
       .i_probe_req_ready(walk_probe_req_ready),
@@ -405,6 +422,7 @@ module frost_cache_hierarchy #(
       .o_down_req_id(walk_down_req_id),
       .i_down_resp_valid(walk_down_resp_valid),
       .i_down_resp_id(walk_down_resp_id),
+      .i_down_resp_error(walk_down_resp_error),
       .i_down_resp_rdata(walk_down_resp_rdata)
   );
 
@@ -417,6 +435,7 @@ module frost_cache_hierarchy #(
   logic dma_down_resp_valid;
   logic [UP_ID_BITS-1:0] dma_down_resp_id;
   logic [L1_LINE_BYTES*8-1:0] dma_down_resp_rdata;
+  logic dma_down_resp_error;
 
   dma_coherence_sequencer #(
       .ADDR_WIDTH(ADDR_WIDTH),
@@ -426,6 +445,7 @@ module frost_cache_hierarchy #(
       .PROBE_ID_BITS(L1dIdBits),
       .PROBE_ID_BASE(ProbeIdBase)
   ) dma_sequencer (
+
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_dma_req_valid(i_dma_req_valid),
@@ -437,6 +457,7 @@ module frost_cache_hierarchy #(
       .i_dma_req_id(i_dma_req_id),
       .o_dma_resp_valid(o_dma_resp_valid),
       .o_dma_resp_id(o_dma_resp_id),
+      .o_dma_resp_error(o_dma_resp_error),
       .o_dma_resp_rdata(o_dma_resp_rdata),
       .o_probe_req_valid(dma_probe_req_valid),
       .i_probe_req_ready(dma_probe_req_ready),
@@ -465,9 +486,15 @@ module frost_cache_hierarchy #(
       .o_down_req_id(dma_down_req_id),
       .i_down_resp_valid(dma_down_resp_valid),
       .i_down_resp_id(dma_down_resp_id),
+      .i_down_resp_error(dma_down_resp_error),
       .i_down_resp_rdata(dma_down_resp_rdata)
   );
 
+  logic [2:0] cache_fatal;
+  logic [2:0][ADDR_WIDTH-1:0] cache_fatal_addr;
+  assign o_fatal_error = |cache_fatal;
+  assign o_fatal_addr = cache_fatal[2] ? cache_fatal_addr[2] :
+      cache_fatal[0] ? cache_fatal_addr[0] : cache_fatal_addr[1];
   cache_perf_pkg::cache_instance_perf_events_t l1d_perf_events;
   cache_perf_pkg::cache_instance_perf_events_t l1i_perf_events;
   cache_perf_pkg::cache_instance_perf_events_t l2_perf_events;
@@ -476,6 +503,7 @@ module frost_cache_hierarchy #(
   assign o_perf_events.l2  = l2_perf_events;
 
   frost_cache #(
+      .ENABLE_RESPONSE_ERRORS(ENABLE_RESPONSE_ERRORS),
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_SIZE_BYTES(L1_CACHE_BYTES),
       .LINE_BYTES(L1_LINE_BYTES),
@@ -493,6 +521,8 @@ module frost_cache_hierarchy #(
       .DATA_WRITE_LATENCY(L1_DATA_WRITE_LATENCY),
       .SIM_FAST_MAINT(SIM_FAST_MAINT)
   ) l1_cache (
+      .o_fatal_error(cache_fatal[0]),
+      .o_fatal_addr(cache_fatal_addr[0]),
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_writeback_all(l1d_writeback_req),
@@ -512,6 +542,7 @@ module frost_cache_hierarchy #(
       .i_probe_release_id(probe_release_id),
       .o_up_resp_valid(l1d_up_resp_valid),
       .o_up_resp_id(l1d_up_resp_id),
+      .o_up_resp_error(o_up_resp_error),
       .o_up_resp_rdata(o_up_resp_rdata),
       .o_down_req_valid(l1_down_req_valid),
       .i_down_req_ready(l1_down_req_ready),
@@ -523,11 +554,13 @@ module frost_cache_hierarchy #(
       .o_down_req_maintenance(l1_down_req_maintenance),
       .i_down_resp_valid(l1_down_resp_valid),
       .i_down_resp_id(l1_down_resp_id),
+      .i_down_resp_error(l1_down_resp_error),
       .i_down_resp_rdata(l1_down_resp_rdata),
       .o_perf_events(l1d_perf_events)
   );
 
   frost_cache #(
+      .ENABLE_RESPONSE_ERRORS(ENABLE_RESPONSE_ERRORS),
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_SIZE_BYTES(L1I_CACHE_BYTES),
       .LINE_BYTES(L1_LINE_BYTES),
@@ -545,6 +578,8 @@ module frost_cache_hierarchy #(
       .DATA_READ_LATENCY(L1I_DATA_READ_LATENCY),
       .SIM_FAST_MAINT(SIM_FAST_MAINT)
   ) l1i_cache (
+      .o_fatal_error(cache_fatal[1]),
+      .o_fatal_addr(cache_fatal_addr[1]),
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_writeback_all(1'b0),
@@ -564,6 +599,7 @@ module frost_cache_hierarchy #(
       .i_probe_release_id('0),
       .o_up_resp_valid(o_iup_resp_valid),
       .o_up_resp_id(o_iup_resp_id),
+      .o_up_resp_error(o_iup_resp_error),
       .o_up_resp_rdata(o_iup_resp_rdata),
       .o_down_req_valid(l1i_down_req_valid),
       .i_down_req_ready(l1i_down_req_ready),
@@ -575,6 +611,7 @@ module frost_cache_hierarchy #(
       .o_down_req_maintenance(),
       .i_down_resp_valid(l1i_down_resp_valid),
       .i_down_resp_id(l1i_down_resp_id),
+      .i_down_resp_error(l1i_down_resp_error),
       .i_down_resp_rdata(l1i_down_resp_rdata),
       .o_perf_events(l1i_perf_events)
   );
@@ -599,6 +636,7 @@ module frost_cache_hierarchy #(
       .i_up_req_maintenance({1'b0, 1'b0}),
       .o_up_resp_valid({l1i_down_resp_valid, walk_down_resp_valid}),
       .o_up_resp_id({l1i_down_resp_id, walk_down_resp_id}),
+      .o_up_resp_error({l1i_down_resp_error, walk_down_resp_error}),
       .o_up_resp_rdata({l1i_down_resp_rdata, walk_down_resp_rdata}),
       .o_down_req_valid(wi_down_req_valid),
       .i_down_req_ready(wi_down_req_ready),
@@ -610,6 +648,7 @@ module frost_cache_hierarchy #(
       .o_down_req_maintenance(wi_down_req_maintenance),
       .i_down_resp_valid(wi_down_resp_valid),
       .i_down_resp_id(wi_down_resp_id),
+      .i_down_resp_error(wi_down_resp_error),
       .i_down_resp_rdata(wi_down_resp_rdata)
   );
 
@@ -630,6 +669,7 @@ module frost_cache_hierarchy #(
   logic dp_down_resp_valid;
   logic [UP_ID_BITS-1:0] dp_down_resp_id;
   logic [L1_LINE_BYTES*8-1:0] dp_down_resp_rdata;
+  logic dp_down_resp_error;
   if (L2_PREFETCH != 0) begin : gen_prefetch
     localparam int unsigned SharedIdBits = UP_ID_BITS - 1;
     logic pf_down_req_valid, pf_down_req_ready;
@@ -639,6 +679,7 @@ module frost_cache_hierarchy #(
     logic [SharedIdBits-1:0] pf_down_resp_id, dma_shared_resp_id;
     /* verilator lint_off UNUSEDSIGNAL */
     logic [L1_LINE_BYTES*8-1:0] pf_down_resp_rdata;
+    logic pf_down_resp_error;
     logic dp_maintenance_unused;
     /* verilator lint_on UNUSEDSIGNAL */
     l2_stream_prefetcher #(
@@ -678,6 +719,7 @@ module frost_cache_hierarchy #(
         .i_up_req_maintenance(2'b00),
         .o_up_resp_valid({pf_down_resp_valid, dma_down_resp_valid}),
         .o_up_resp_id({pf_down_resp_id, dma_shared_resp_id}),
+        .o_up_resp_error({pf_down_resp_error, dma_down_resp_error}),
         .o_up_resp_rdata({pf_down_resp_rdata, dma_down_resp_rdata}),
         .o_down_req_valid(dp_down_req_valid),
         .i_down_req_ready(dp_down_req_ready),
@@ -689,6 +731,7 @@ module frost_cache_hierarchy #(
         .o_down_req_maintenance(dp_maintenance_unused),
         .i_down_resp_valid(dp_down_resp_valid),
         .i_down_resp_id(dp_down_resp_id),
+        .i_down_resp_error(dp_down_resp_error),
         .i_down_resp_rdata(dp_down_resp_rdata)
     );
     assign dma_down_resp_id = UP_ID_BITS'(dma_shared_resp_id);
@@ -712,6 +755,7 @@ module frost_cache_hierarchy #(
     assign dma_down_resp_valid = dp_down_resp_valid;
     assign dma_down_resp_id    = dp_down_resp_id;
     assign dma_down_resp_rdata = dp_down_resp_rdata;
+    assign dma_down_resp_error = dp_down_resp_error;
   end
 
   // Prioritize data misses, then walker/L1I, then DMA and prefetches. The
@@ -736,6 +780,7 @@ module frost_cache_hierarchy #(
       .i_up_req_maintenance({1'b0, wi_down_req_maintenance, l1_down_req_maintenance}),
       .o_up_resp_valid({dp_down_resp_valid, wi_down_resp_valid, l1_down_resp_valid}),
       .o_up_resp_id({dp_down_resp_id, wi_down_resp_id, l1_down_resp_id}),
+      .o_up_resp_error({dp_down_resp_error, wi_down_resp_error, l1_down_resp_error}),
       .o_up_resp_rdata({dp_down_resp_rdata, wi_down_resp_rdata, l1_down_resp_rdata}),
       .o_down_req_valid(arb_down_req_valid),
       .i_down_req_ready(arb_down_req_ready),
@@ -747,6 +792,7 @@ module frost_cache_hierarchy #(
       .o_down_req_maintenance(arb_down_req_maintenance),
       .i_down_resp_valid(arb_down_resp_valid),
       .i_down_resp_id(arb_down_resp_id),
+      .i_down_resp_error(arb_down_resp_error),
       .i_down_resp_rdata(arb_down_resp_rdata)
   );
 
@@ -812,6 +858,7 @@ module frost_cache_hierarchy #(
   logic                       l2_up_resp_valid;
   logic [     DownIdBits-1:0] l2_up_resp_id;
   logic [L2_LINE_BYTES*8-1:0] l2_up_resp_rdata;
+  logic                       l2_up_resp_error;
 
   if (L2_LINE_BYTES == L1_LINE_BYTES) begin : gen_l2_same_lines
     assign l2_up_req_valid = arb_down_req_valid;
@@ -825,6 +872,7 @@ module frost_cache_hierarchy #(
     assign arb_down_resp_valid = l2_up_resp_valid;
     assign arb_down_resp_id = l2_up_resp_id;
     assign arb_down_resp_rdata = l2_up_resp_rdata;
+    assign arb_down_resp_error = l2_up_resp_error;
   end else begin : gen_l2_wide_lines
     line_size_adapter #(
         .ADDR_WIDTH(ADDR_WIDTH),
@@ -844,6 +892,7 @@ module frost_cache_hierarchy #(
         .i_up_req_maintenance(arb_down_req_maintenance),
         .o_up_resp_valid(arb_down_resp_valid),
         .o_up_resp_id(arb_down_resp_id),
+        .o_up_resp_error(arb_down_resp_error),
         .o_up_resp_rdata(arb_down_resp_rdata),
         .o_down_req_valid(l2_up_req_valid),
         .i_down_req_ready(l2_up_req_ready),
@@ -855,11 +904,13 @@ module frost_cache_hierarchy #(
         .o_down_req_maintenance(l2_up_req_maintenance),
         .i_down_resp_valid(l2_up_resp_valid),
         .i_down_resp_id(l2_up_resp_id),
+        .i_down_resp_error(l2_up_resp_error),
         .i_down_resp_rdata(l2_up_resp_rdata)
     );
   end
 
   frost_cache #(
+      .ENABLE_RESPONSE_ERRORS(ENABLE_RESPONSE_ERRORS),
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_SIZE_BYTES(L2_CACHE_BYTES),
       .LINE_BYTES(L2_LINE_BYTES),
@@ -878,6 +929,8 @@ module frost_cache_hierarchy #(
       // Fast simulation reset bulk-clears tags; hardware sweeps one per cycle.
       .SIM_FAST_MAINT(SIM_FAST_MAINT)
   ) l2_cache (
+      .o_fatal_error(cache_fatal[2]),
+      .o_fatal_addr(cache_fatal_addr[2]),
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_writeback_all(1'b0),
@@ -898,6 +951,7 @@ module frost_cache_hierarchy #(
       .i_probe_release_id('0),
       .o_up_resp_valid(l2_up_resp_valid),
       .o_up_resp_id(l2_up_resp_id),
+      .o_up_resp_error(l2_up_resp_error),
       .o_up_resp_rdata(l2_up_resp_rdata),
       .o_down_req_valid(o_down_req_valid),
       .i_down_req_ready(i_down_req_ready),
@@ -909,6 +963,7 @@ module frost_cache_hierarchy #(
       .o_down_req_maintenance(),
       .i_down_resp_valid(i_down_resp_valid),
       .i_down_resp_id(i_down_resp_id),
+      .i_down_resp_error(i_down_resp_error),
       .i_down_resp_rdata(i_down_resp_rdata),
       .o_perf_events(l2_perf_events)
   );

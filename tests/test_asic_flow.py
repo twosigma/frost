@@ -199,7 +199,7 @@ def _write_synthesized_build(build: Path, core_period: str) -> None:
     results = build / orfs.FLOW_SUBDIRECTORY.format(kind="results")
     results.mkdir(parents=True)
     (results / "1_synth.sdc").write_text(
-        "current_design cpu_and_mem\n"
+        "current_design platform_top\n"
         f"create_clock -name core_clk -period {core_period} [get_ports {{i_clk}}]\n"
     )
     (build / "sources.mk").write_text("export VERILOG_FILES =\n")
@@ -388,7 +388,7 @@ def _sdc_constraints(
 
 def test_clock_periods_match_the_rtl_and_board(tmp_path: Path) -> None:
     """The core clock is CLK_FREQ_HZ; the NIC clocks are the Ethernet reference."""
-    rtl = (orfs.REPOSITORY_ROOT / "hw/rtl/cpu_and_mem/cpu_and_mem.sv").read_text()
+    rtl = (orfs.REPOSITORY_ROOT / "hw/rtl/platform_top.sv").read_text()
     match = re.search(r"parameter int unsigned CLK_FREQ_HZ = (\d+)", rtl)
     assert match is not None
     core_ns = 1e9 / int(match[1])
@@ -568,7 +568,7 @@ def test_sram_macros_come_from_the_synthesis_statistics(tmp_path: Path) -> None:
     """The summary counts each macro over the whole design."""
     statistics = tmp_path / "synth_stat.txt"
     statistics.write_text(
-        "=== cpu_and_mem ===\n"
+        "=== platform_top ===\n"
         "        2   1.27E+06        2   1.27E+06   sram_1w1r_4096x64_m8\n"
         "=== design hierarchy ===\n"
         "       10   6.35E+06        8   5.08E+06   sram_1w1r_4096x64_m8\n"

@@ -36,6 +36,8 @@ module pc_controller #(
     parameter bit PENDING_HANDOFF_EXCLUDES_SLOT2 = 1'b0
 ) (
     input logic i_clk,
+    // Sampled synchronously while reset is asserted; bit 0 must be zero.
+    input logic [XLEN-1:0] i_boot_addr = '0,
 
     // Pipeline control
     input logic i_reset,
@@ -955,7 +957,7 @@ module pc_controller #(
     npc_cond[12] = hold_pending_prediction_fetch_pc_mux;
     npc_cond[13] = 1'b1;  // default arm: sequential
 
-    npc_val[0] = '0;
+    npc_val[0] = i_boot_addr;
     npc_val[1] = i_trap_target;
     npc_val[2] = i_fence_i_target;
     npc_val[3] = i_branch_target;
@@ -1277,7 +1279,7 @@ module pc_controller #(
         .I3(npc_val[7][bit_idx]),
         .I4(next_pc_sequential_target[bit_idx]),
         .I5(npc_slot1_or_nonseq_data[bit_idx]),
-        .O (next_pc[bit_idx])
+        .O (next_pc_zero_boot[bit_idx])
     );
   end
 `else
@@ -1287,9 +1289,13 @@ module pc_controller #(
       next_pc_without_prediction_or_sequential;
   assign npc_slot1_or_nonseq_data = i_reset ? '0 : npc_prediction_permission && npc_cond[8] ?
       npc_val[8] : npc_final_nonseq_data;
-  assign next_pc = npc_fetch_mux_permission && slot2_request_for_fetch_mux ? npc_val[7] :
+  assign next_pc_zero_boot = npc_fetch_mux_permission && slot2_request_for_fetch_mux ? npc_val[7] :
       npc_final_sequential_request ? next_pc_sequential_target : npc_slot1_or_nonseq_data;
 `endif
+
+  logic [XLEN-1:0] next_pc_zero_boot, next_pc_reg_zero_boot;
+  assign next_pc = i_reset ? i_boot_addr : next_pc_zero_boot;
+  assign next_pc_reg = i_reset ? i_boot_addr : next_pc_reg_zero_boot;
 
   // Build pc_reg data without reset, slot-2, or sequential selection.
   // Slot-1 predictions enter through the registered handoff.
@@ -1406,14 +1412,14 @@ module pc_controller #(
         .I3(i_slot2_live_predicted_target[bit_idx]),
         .I4(pc_reg_staged_or_sequential[bit_idx]),
         .I5(pc_reg_nonseq_wcs0_without_slot2[bit_idx]),
-        .O (next_pc_reg[bit_idx])
+        .O (next_pc_reg_zero_boot[bit_idx])
     );
   end
 `else
   assign pc_reg_staged_or_sequential = i_slot2_staged_prediction_used_for_pc ?
       i_slot2_staged_predicted_target :
       pc_reg_seq_candidate ? seq_next_pc_reg : pc_reg_nonseq_wcs0_without_slot2;
-  assign next_pc_reg = i_reset ? '0 : !pc_reg_live_redirect_permission ?
+  assign next_pc_reg_zero_boot = i_reset ? '0 : !pc_reg_live_redirect_permission ?
       pc_reg_nonseq_wcs0_without_slot2 : pc_reg_live_candidate ?
       i_slot2_live_predicted_target : pc_reg_staged_or_sequential;
 `endif
@@ -1681,7 +1687,7 @@ module pc_controller #(
   // holds implemented by the load enable. Disabled load data is irrelevant.
   logic [XLEN-1:0] next_pc_reg_priority_ref;
   always_comb begin
-    if (i_reset) next_pc_reg_priority_ref = '0;
+    if (i_reset) next_pc_reg_priority_ref = i_boot_addr;
     else if (trap_or_mret) next_pc_reg_priority_ref = i_trap_target;
     else if (i_fence_i_flush) next_pc_reg_priority_ref = i_fence_i_target;
     else if (i_branch_taken) next_pc_reg_priority_ref = i_branch_target;
@@ -1935,7 +1941,7 @@ module pc_controller #(
   // Check the fetch-PC mux against a serial priority chain every cycle.
   logic [XLEN-1:0] npc_ref;
   always_comb begin
-    if (i_reset) npc_ref = '0;
+    if (i_reset) npc_ref = i_boot_addr;
     else if (trap_or_mret) npc_ref = i_trap_target;
     else if (i_fence_i_flush) npc_ref = i_fence_i_target;
     else if (i_branch_taken) npc_ref = i_branch_target;
@@ -1980,7 +1986,7 @@ module pc_controller #(
   logic [XLEN-1:0] pc_mux_nested_reference_without_live_slot2;
   logic [XLEN-1:0] pc_mux_nested_reference;
   always_comb begin
-    if (i_reset) pc_mux_nested_reference_without_live_slot2 = '0;
+    if (i_reset) pc_mux_nested_reference_without_live_slot2 = i_boot_addr;
     else if (trap_or_mret) pc_mux_nested_reference_without_live_slot2 = i_trap_target;
     else if (i_fence_i_flush) pc_mux_nested_reference_without_live_slot2 = i_fence_i_target;
     else if (i_branch_taken) pc_mux_nested_reference_without_live_slot2 = i_branch_target;
@@ -2244,7 +2250,7 @@ module pc_controller #(
     end
   end
   always_comb begin
-    if (i_reset) fetch_ref = '0;
+    if (i_reset) fetch_ref = i_boot_addr;
     else if (trap_or_mret) fetch_ref = i_trap_target;
     else if (i_fence_i_flush) fetch_ref = i_fence_i_target;
     else if (i_branch_taken) fetch_ref = i_branch_target;

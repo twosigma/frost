@@ -18,7 +18,9 @@
  * Store queue with store-to-load forwarding. DEPTH ring entries allocate at the
  * tail in program order. An entry receives its address and data, commits with
  * the ROB, writes memory as one 64-bit beat, and frees when the write completes.
- * Writes launch in program order and only after commit, and each launch
+ * Cached writes launch in program order after commit. PRECISE_UNCACHED waits
+ * at the ROB head, launches behind the interrupt/debug shield and reports
+ * the real bus completion before retirement. Each launch
  * invalidates the store's line in the LQ's L0 cache. A partial flush removes
  * uncommitted entries younger than the flush point. A full flush empties the
  * queue, committed entries included, so its sources first wait for
@@ -31,9 +33,12 @@ module store_queue #(
     // give no credit for same-cycle frees, so !dispatch_full_q implies !full.
     // This permits omitting the local room checks.
     parameter bit TRUST_DISPATCH_VALID = 1'b0,
+    // cpu_top executes uncached stores at the ROB head and reports their
+    // bus response before retirement. Cached stores retain buffered draining.
+    parameter bit PRECISE_UNCACHED = 1'b0,
     // Stores in [CACHED_BASE, CACHED_BASE+CACHED_SIZE_BYTES) use the cached tier.
     // Register the tier flag with the write enable for router timing.
-    parameter int unsigned CACHED_BASE = 32'h8000_0000,
+    parameter longint unsigned CACHED_BASE = riscv_pkg::DdrBase,
     parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes
 ) (
     input logic i_clk,
@@ -128,16 +133,28 @@ module store_queue #(
     // =========================================================================
     // Memory Write Interface (to data memory bus)
     // =========================================================================
-    output logic                              o_mem_write_en,
-    output logic [       riscv_pkg::XLEN-1:0] o_mem_write_addr,
+    output logic o_mem_write_en,
+    output logic [riscv_pkg::XLEN-1:0] o_mem_write_addr,
     output logic [riscv_pkg::MemDataBits-1:0] o_mem_write_data,
     output logic [riscv_pkg::MemStrbBits-1:0] o_mem_write_byte_en,
+    output riscv_pkg::mem_size_e o_mem_write_size,
     // Registered MMIO classification used to gate BRAM write enables.
-    output logic                              o_mem_write_is_mmio,
+    output logic o_mem_write_is_mmio,
     // Registered cached-tier flag of the write on the bus (parallels is_mmio).
     // The router steers the store's byte-write enables to the cached tier when set.
-    output logic                              o_mem_write_is_cached,
-    input  logic                              i_mem_write_done,
+    output logic o_mem_write_is_cached,
+    input logic i_mem_write_done,
+    input logic i_mem_write_error = 1'b0,
+    // Raised before any uncached side effect. The core holds its interrupt /
+    // Debug Mode shield until retirement or a synchronous fault flush.
+    output logic o_uncached_store_pending,
+    input logic i_uncached_store_shield = 1'b0,
+    input logic i_head_side_effects_allowed = 1'b0,
+    // A successful head SC authorizes its store; a failed SC never does.
+    input logic i_uncached_sc_success = 1'b0,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_uncached_sc_tag = '0,
+    output riscv_pkg::fu_complete_t o_uncached_store_complete,
+    input logic i_uncached_store_result_ready = 1'b0,
 
     // =========================================================================
     // L0 Cache Invalidation (to LQ)
@@ -789,7 +806,66 @@ module store_queue #(
   // cycle after the bus cycle, allowing two in flight. Cached and MMIO writes
   // wait for an empty pipeline (write_inflight_cnt == 0 && !o_mem_write_en).
 
-  assign drain_ready = sq_valid[drain_idx_q] && sq_committed[drain_idx_q] &&
+  logic uncached_pending_q, uncached_armed_q;
+  logic uncached_sc_permit_q;
+  logic [ReorderBufferTagWidth-1:0] uncached_sc_tag_q;
+  logic uncached_precommit_ready;
+  assign o_uncached_store_pending = PRECISE_UNCACHED && sq_valid[drain_idx_q] &&
+      !sq_committed[drain_idx_q] && !sq_sent[drain_idx_q] &&
+      sq_addr_valid[drain_idx_q] && sq_data_valid[drain_idx_q] &&
+      !mem_write_addr_cached_for_plain_next &&
+      (sq_rob_tag[drain_idx_q] == i_rob_head_tag);
+  assign uncached_precommit_ready = o_uncached_store_pending &&
+      uncached_armed_q && i_uncached_store_shield && i_head_side_effects_allowed &&
+      !i_flush_en && !i_flush_all && !o_uncached_store_complete.valid &&
+      (!sq_is_sc[drain_idx_q] || (uncached_sc_permit_q &&
+          (uncached_sc_tag_q == sq_rob_tag[drain_idx_q])));
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all || i_flush_en) begin
+      uncached_pending_q <= 1'b0;
+      uncached_armed_q   <= 1'b0;
+    end else begin
+      uncached_pending_q <= o_uncached_store_pending;
+      uncached_armed_q <= o_uncached_store_pending && uncached_pending_q && i_uncached_store_shield;
+    end
+    if (!i_rst_n || i_flush_all) begin
+      uncached_sc_permit_q <= 1'b0;
+    end else begin
+      if (i_uncached_sc_success && !(i_flush_en && flush_all_uncommitted)) begin
+        uncached_sc_permit_q <= 1'b1;
+        uncached_sc_tag_q <= i_uncached_sc_tag;
+      end else if ((mem_write_fire_next && uncached_precommit_ready) ||
+          (i_flush_en && (flush_all_uncommitted ||
+              is_younger(
+              uncached_sc_tag_q, i_flush_tag, i_rob_head_tag
+          )))) begin
+        uncached_sc_permit_q <= 1'b0;
+      end
+    end
+  end
+
+  // The head cannot retire until this held completion reaches the ROB. The
+  // in-order response FIFO identifies the exact store, including failed SC.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      o_uncached_store_complete <= '0;
+    end else begin
+      if (i_uncached_store_result_ready) o_uncached_store_complete.valid <= 1'b0;
+      if (PRECISE_UNCACHED && i_mem_write_done && (write_inflight_cnt != 0) &&
+          !sq_committed[write_entry_idx]) begin
+        o_uncached_store_complete <= '0;
+        o_uncached_store_complete.valid <= 1'b1;
+        o_uncached_store_complete.tag <= sq_rob_tag[write_entry_idx];
+        o_uncached_store_complete.exception <= i_mem_write_error;
+        o_uncached_store_complete.exc_cause <= i_mem_write_error ?
+            riscv_pkg::exc_cause_t'(riscv_pkg::ExcStoreAccessFault) : '0;
+      end
+    end
+  end
+
+  assign drain_ready = sq_valid[drain_idx_q] &&
+                       (sq_committed[drain_idx_q] || uncached_precommit_ready) &&
                        sq_addr_valid[drain_idx_q] && sq_data_valid[drain_idx_q] &&
                        !sq_sent[drain_idx_q];
 
@@ -825,7 +901,7 @@ module store_queue #(
       (sq_address[drain_idx_q] <  (XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)));
   // Every store is one beat and completes its entry, including DOUBLE.
   assign mem_write_completes_next = 1'b1;
-  assign mem_write_plain_fast_next = !sq_is_mmio[drain_idx_q] &&
+  assign mem_write_plain_fast_next = !PRECISE_UNCACHED && !sq_is_mmio[drain_idx_q] &&
                                      !mem_write_addr_cached_for_plain_next;
 
   // Serial launches require an empty pipeline. Plain BRAM launches may overlap
@@ -860,6 +936,7 @@ module store_queue #(
     o_mem_write_addr    <= mem_write_addr_next;
     o_mem_write_data    <= mem_write_data_next;
     o_mem_write_byte_en <= mem_write_byte_en_next;
+    o_mem_write_size <= sq_size[drain_idx_q];
     o_mem_write_is_mmio <= mem_write_is_mmio_next;
     o_mem_write_is_cached <= mem_write_is_cached_next;
 
@@ -1614,7 +1691,10 @@ module store_queue #(
   // these hold under drain pipelining).
   always_comb begin
     if (i_rst_n && o_mem_write_en) begin
-      p_write_needs_committed : assert (sq_committed[mem_write_entry_idx_stg]);
+      p_write_has_irrevocable_permission :
+      assert (sq_committed[mem_write_entry_idx_stg] ||
+          (PRECISE_UNCACHED && i_uncached_store_shield &&
+           (sq_rob_tag[mem_write_entry_idx_stg] == i_rob_head_tag)));
       p_write_needs_addr : assert (sq_addr_valid[mem_write_entry_idx_stg]);
       p_write_needs_data : assert (sq_data_valid[mem_write_entry_idx_stg]);
       p_write_from_valid : assert (sq_valid[mem_write_entry_idx_stg]);
