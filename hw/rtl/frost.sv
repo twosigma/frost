@@ -287,7 +287,10 @@ module frost #(
       .SIM_TIMER_SPEEDUP(SIM_TIMER_SPEEDUP),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
+`ifndef FROST_RVFI_DII
+      // The TestRIG fixture retains its fixed-latency Normal memory interface.
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
+`endif
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
       .L1_CACHE_BYTES(L1_CACHE_BYTES),
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),

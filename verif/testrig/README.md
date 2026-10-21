@@ -23,6 +23,7 @@ conformance bugs fixed for
 | [`tests/test_testrig.py`](../../tests/test_testrig.py) | Runner: starts Sail, the simulation, and the engine |
 | [`verif/cocotb_tests/test_rvfi_dii.py`](../cocotb_tests/test_rvfi_dii.py) | RVFI-DII server for the simulated SoC |
 | [`hw/sim/frost_rvfi_dii.sv`](../../hw/sim/frost_rvfi_dii.sv) | Simulation-only harness: instruction injection, retirement records, device RAM |
+| [`hw/sim/frost_rvfi_platform.sv`](../../hw/sim/frost_rvfi_platform.sv) | Simulation-only platform retaining the fixed-latency interface used by instruction injection |
 | [`rvfi_dii.py`](rvfi_dii.py) | RVFI-DII packet formats |
 | [`preamble.py`](preamble.py) | Instructions FROST runs after each reset, before a test |
 | [`atomics.py`](atomics.py) | Random A-extension tests (see [The A extension](#the-a-extension)) |
@@ -84,7 +85,15 @@ puts the branch and the add at the same address, one after the other.
 
 The `rvfi_dii` build (`FROST_RVFI_DII`, defined only by its entry in
 [`tests/test_run_cocotb.py`](../../tests/test_run_cocotb.py)) leaves the CPU
-unchanged except where noted below. `frost_rvfi_dii.sv` replaces the low-BRAM
+unchanged except where noted below. It selects `frost_rvfi_platform` in place
+of the production `platform_top`. This fixture retains the fixed-latency
+Normal memory interface; the production AXI `CACHE_NORMAL_MEMORY` policy is
+not passed to it, and the CPU's unused variable-latency request outputs are
+left open.
+The [CPU boundary tests](../../hw/rtl/cpu_top/README.md#verification) cover
+the production AXI interface separately.
+
+`frost_rvfi_dii.sv` replaces the low-BRAM
 instruction memory, and every fetch goes through the low-BRAM presenter. It
 answers each fetch window from a layout of the sequence: word r at address R,
 the next word right after it, and so on, with C.NOP outside the layout. The
