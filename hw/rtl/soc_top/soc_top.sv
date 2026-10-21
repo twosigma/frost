@@ -873,15 +873,28 @@ module soc_top #(
 
 
   logic local_valid, local_ready, local_write, local_error;
+  logic local_req_write, local_req_error;
+  logic [riscv_pkg::PhysAddrBits-1:0] local_req_addr;
+  logic [2:0] local_req_size, local_req_prot;
+  logic [63:0] local_req_wdata;
+  logic [7:0] local_req_wstrb;
   logic [riscv_pkg::PhysAddrBits-1:0] local_addr;
   logic [2:0] local_size, local_prot;
   logic [63:0] local_wdata;
   logic [ 7:0] local_wstrb;
   logic local_resp_valid, local_resp_ready;
-  logic [63:0] local_resp_data;
-  logic [ 1:0] local_resp_status;
-  logic [ 2:0] local_state_q;
+  logic [L2_LINE_BYTES*8-1:0] local_resp_data;
+  logic [1:0] local_resp_status;
+  logic [2:0] local_state_q;
   logic local_fire, local_ok, local_bram, local_device, local_instruction;
+  logic fast_bram_q;
+  wire fast_bram_request = !local_req_error && !local_req_prot[2] &&
+      local_req_size <= 3 && 64'(local_req_addr) < 64'(MEM_SIZE_BYTES);
+  wire fast_bram_fire = local_valid && local_ready && fast_bram_request;
+  logic [1:0] local_dword_q;
+  wire local_line = local_size == 5 && local_instruction && !local_error;
+
+
   logic local_read_instruction_q, local_read_device_q;
   logic [15:0] fetch_fuzz_lfsr_q;
   always_ff @(posedge i_clk) begin
@@ -894,7 +907,10 @@ module soc_top #(
       };
   end
   assign local_ready = local_state_q == 0 && !o_cpu_axi_rst;
-  assign local_fire = local_valid && local_ready;
+  // MMIO captures the chosen request before decoding or executing it. Narrow
+  // BRAM requests can access the synchronous RAM on acceptance; their response
+  // still waits for that read/write edge. Both paths retain the payload.
+  assign local_fire = local_state_q == 4 && !o_cpu_axi_rst;
   assign local_bram = 64'(local_addr) < 64'(MEM_SIZE_BYTES);
   assign local_device = riscv_pkg::pma_device_ok(riscv_pkg::XLEN'(local_addr));
   assign local_instruction = local_prot[2];
@@ -904,22 +920,59 @@ module soc_top #(
        (local_write && riscv_pkg::pma_device_quadrant(
       riscv_pkg::XLEN'(local_addr)
   )));
-  assign data_memory_address = local_addr;
+  wire [riscv_pkg::PhysAddrBits-1:0] local_lane_addr = local_line ?
+      {local_addr[riscv_pkg::PhysAddrBits-1:5], local_dword_q, 3'b0} : local_addr;
+  assign data_memory_address = fast_bram_fire ? local_req_addr : local_lane_addr;
   // Existing register files take replicated word writes; AXI permits the
   // unused lanes to be arbitrary, so reconstruct that view at this boundary.
-  assign data_memory_write_data = (local_device && local_size <= 2) ?
+  assign data_memory_write_data = fast_bram_fire ? local_req_wdata[63:0] :
+      (local_device && local_size <= 2) ?
       {2{local_addr[2] ? local_wdata[63:32] : local_wdata[31:0]}} : local_wdata;
-  assign data_memory_byte_write_enable = local_fire && local_write && local_ok ? local_wstrb : '0;
-  assign data_memory_bram_byte_write_enable = local_bram ? data_memory_byte_write_enable : '0;
+  assign data_memory_byte_write_enable = fast_bram_fire && local_req_write ?
+      local_req_wstrb[7:0] : local_fire && local_write && local_ok ? local_wstrb : '0;
+  wire fast_bram_store = fast_bram_fire && local_req_write;
+  wire staged_bram_store = local_fire && local_write && local_ok && local_bram;
+  assign data_memory_bram_byte_write_enable =
+      ({8{fast_bram_store}} & local_req_wstrb) | ({8{staged_bram_store}} & local_wstrb);
   assign data_memory_read_enable = local_fire && !local_write && local_ok && !local_instruction;
-  assign fetch_pa_word0 = {local_addr[31:3], 3'b000};
-  assign fetch_pa_word1 = {local_addr[31:3], 3'b100};
+  // Instruction reads always use the registered local request. The fast
+  // acceptance path serves data only; its arbitration must not retarget the
+  // instruction RAM and its legacy metadata banks on unused read cycles.
+  // Once the first dword is in the synchronous RAM output, request its
+  // successor while capturing the current one. A line then delivers one
+  // dword per clock; only the final response waits for optional fetch fuzz.
+  // Rejected requests discard their data, so PMA decoding need not gate
+  // this read-only lookahead address. Execution/status still use local_ok.
+  wire [1:0] instruction_read_dword = local_dword_q + 2'(local_line && local_state_q == 1);
+  wire [31:0] instruction_read_addr = local_line ?
+      {local_addr[31:5], instruction_read_dword, 3'b000} : local_addr[31:0];
+  assign fetch_pa_word0 = {instruction_read_addr[31:3], 3'b000};
+  assign fetch_pa_word1 = {instruction_read_addr[31:3], 3'b100};
   assign mmio_load_addr = local_addr[31:0];
   assign mmio_load_valid = local_state_q != 0;
   assign mmio_read_pulse = local_fire && !local_write && local_device && local_ok;
-  assign dbg_bram_store = |data_memory_bram_byte_write_enable;
-  assign dbg_bram_store_addr = local_addr[31:0];
+  // Reduce each strobe candidate before selecting its launch, keeping the
+  // late AXI arbitration off a byte-mux/reduction chain into the CDC FIFO.
+  assign dbg_bram_store = (fast_bram_store && (|local_req_wstrb)) ||
+      (staged_bram_store && (|local_wstrb));
+  assign dbg_bram_store_addr = fast_bram_store ? local_req_addr[31:0] : local_addr[31:0];
   assign dbg_bram_store_strb = data_memory_bram_byte_write_enable;
+
+`ifndef SYNTHESIS
+  always @(posedge i_clk) begin
+    if (!o_cpu_axi_rst) begin
+      assert (data_memory_bram_byte_write_enable ==
+          ((fast_bram_fire || local_bram) ? data_memory_byte_write_enable : 8'b0));
+      assert (dbg_bram_store == (|data_memory_bram_byte_write_enable));
+      if (dbg_bram_store) assert (dbg_bram_store_addr == data_memory_address[31:0]);
+      if (local_fire && local_instruction)
+        assert (fetch_pa_word0 == {data_memory_address[31:3], 3'b000} &&
+                fetch_pa_word1 == {data_memory_address[31:3], 3'b100});
+    end
+  end
+`endif
+  wire [63:0] local_read_word = local_read_instruction_q ? bram_fetch_instr :
+      local_read_device_q ? mmio_read_data_reg : data_memory_read_data;
   always_ff @(posedge i_clk) begin
     if (o_cpu_axi_rst) begin
       local_state_q <= 0;
@@ -931,15 +984,38 @@ module soc_top #(
       mmio_fifo0_read_pulse <= mmio_read_pulse && mmio_load_addr == Fifo0MmioAddr;
       mmio_fifo1_read_pulse <= mmio_read_pulse && mmio_load_addr == Fifo1MmioAddr;
       mmio_uart_rx_ready_pulse <= mmio_read_pulse && mmio_load_addr == UartRxDataMmioAddr;
-      if (local_fire) begin
+      if (local_valid && local_ready) begin
+        local_state_q <= fast_bram_request ? 1 : 4;
+        fast_bram_q   <= fast_bram_request;
+        if (fast_bram_request) begin
+          local_read_instruction_q <= 1'b0;
+          local_read_device_q <= 1'b0;
+          local_resp_status <= 2'b00;
+        end
+        local_dword_q <= 0;
+        local_resp_data <= 0;
+        local_write <= local_req_write;
+        local_error <= local_req_error;
+        local_addr <= local_req_addr;
+        local_size <= local_req_size;
+        local_prot <= local_req_prot;
+        local_wdata <= local_req_wdata;
+        local_wstrb <= local_req_wstrb;
+      end else if (local_fire) begin
         local_state_q <= 1;
         local_read_instruction_q <= local_instruction;
         local_read_device_q <= local_device;
         local_resp_status <= local_ok ? 2'b00 : 2'b11;
       end else if (local_state_q == 1) begin
-        local_state_q <= 2;
-        local_resp_data <= local_read_instruction_q ? bram_fetch_instr :
-            local_read_device_q ? mmio_read_data_reg : data_memory_read_data;
+        local_state_q <= fast_bram_q ? 3 : 2;
+        if (fast_bram_q) local_resp_valid <= 1'b1;
+        if (local_line) begin
+          local_resp_data[local_dword_q*64+:64] <= local_read_word;
+          if (local_ok && local_dword_q != 2'd3) begin
+            local_dword_q <= local_dword_q + 1'b1;
+            local_state_q <= 1;
+          end
+        end else local_resp_data <= (L2_LINE_BYTES * 8)'(local_read_word);
       end else if (local_state_q == 2 &&
                    (FETCH_VALID_FUZZ == 0 || !local_read_instruction_q ||
                     fetch_fuzz_lfsr_q[1:0] == 0)) begin
@@ -1153,13 +1229,13 @@ module soc_top #(
       .i_axi_rst(o_cpu_axi_rst),
       .o_local_valid(local_valid),
       .i_local_ready(local_ready),
-      .o_local_write(local_write),
-      .o_local_addr(local_addr),
-      .o_local_size(local_size),
-      .o_local_prot(local_prot),
-      .o_local_wdata(local_wdata),
-      .o_local_wstrb(local_wstrb),
-      .o_local_error(local_error),
+      .o_local_write(local_req_write),
+      .o_local_addr(local_req_addr),
+      .o_local_size(local_req_size),
+      .o_local_prot(local_req_prot),
+      .o_local_wdata(local_req_wdata),
+      .o_local_wstrb(local_req_wstrb),
+      .o_local_error(local_req_error),
       .i_local_resp_valid(local_resp_valid),
       .o_local_resp_ready(local_resp_ready),
       .i_local_resp_rdata(local_resp_data),

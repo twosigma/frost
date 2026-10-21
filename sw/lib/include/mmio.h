@@ -21,7 +21,7 @@
  * Memory-mapped I/O addresses for the on-chip peripherals.
  *
  * The addresses are PROVIDE symbols in the linker scripts (common/link.ld and
- * the others under sw/) and must match the decode in cpu_and_mem.sv.
+ * the others under sw/) and must match the decode in soc_top.sv.
  *
  * Usage:
  *   #include "mmio.h"

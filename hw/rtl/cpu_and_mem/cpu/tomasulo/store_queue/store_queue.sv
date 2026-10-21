@@ -18,23 +18,26 @@
  * Store queue with store-to-load forwarding. DEPTH ring entries allocate at the
  * tail in program order. An entry receives its address and data, commits with
  * the ROB, writes memory as one 64-bit beat, and frees when the write completes.
- * Cached writes launch in program order after commit. PRECISE_UNCACHED waits
+ * Cached and optional Normal buffered writes launch in order after commit.
+ * PRECISE_UNCACHED otherwise waits
  * at the ROB head, launches behind the interrupt/debug shield and reports
- * the real bus completion before retirement. Each launch
- * invalidates the store's line in the LQ's L0 cache. A partial flush removes
+ * the real bus completion before retirement. Each launch invalidates or
+ * byte-updates the store's dword in the LQ's L0 cache. A partial flush removes
  * uncommitted entries younger than the flush point. A full flush empties the
  * queue, committed entries included, so its sources first wait for
  * o_committed_empty.
  */
 
 module store_queue #(
+    parameter bit CACHE_NORMAL_MEMORY = 1'b0,
     parameter int unsigned DEPTH = riscv_pkg::SqDepth,  // 8
     // Rely on dispatch to check SQ room. Its conservative registered full flags
     // give no credit for same-cycle frees, so !dispatch_full_q implies !full.
     // This permits omitting the local room checks.
     parameter bit TRUST_DISPATCH_VALID = 1'b0,
-    // cpu_top executes uncached stores at the ROB head and reports their
-    // bus response before retirement. Cached stores retain buffered draining.
+    // Execute precise uncached stores at the ROB head and report their bus
+    // response before retirement. Cached and optional ordinary Normal stores
+    // retain buffered draining; SC remains precise in either profile.
     parameter bit PRECISE_UNCACHED = 1'b0,
     // Stores in [CACHED_BASE, CACHED_BASE+CACHED_SIZE_BYTES) use the cached tier.
     // Register the tier flag with the write enable for router timing.
@@ -139,6 +142,7 @@ module store_queue #(
     output logic [riscv_pkg::MemStrbBits-1:0] o_mem_write_byte_en,
     output riscv_pkg::mem_size_e o_mem_write_size,
     // Registered MMIO classification used to gate BRAM write enables.
+    output logic o_mem_write_buffered,
     output logic o_mem_write_is_mmio,
     // Registered cached-tier flag of the write on the bus (parallels is_mmio).
     // The router steers the store's byte-write enables to the cached tier when set.
@@ -405,8 +409,8 @@ module store_queue #(
   (* keep = "true", max_fanout = 16 *)logic [     DEPTH-1:0] slot2_alloc_oh;
   (* keep = "true", max_fanout = 16 *)logic [     DEPTH-1:0] alloc_oh;
 
-  // Track up to two plain BRAM writes: one bus cycle and one awaiting its
-  // one-cycle done. A two-entry FIFO holds metadata in completion order.
+  // Track up to two ordinary Normal writes in completion order. The legacy
+  // port completes one cycle later; AXI holds each owner until its B response.
   // Cached and MMIO writes allow only one outstanding write.
   logic [           1:0] write_inflight_cnt;
   logic                  write_inflight_special;
@@ -802,9 +806,10 @@ module store_queue #(
   // Memory Write Logic (combinational)
   // ===========================================================================
   // A committed, address-ready, data-ready cursor entry writes one beat.
-  // Register the bus interface for timing. Plain BRAM writes complete one
-  // cycle after the bus cycle, allowing two in flight. Cached and MMIO writes
-  // wait for an empty pipeline (write_inflight_cnt == 0 && !o_mem_write_en).
+  // Register the bus interface for timing. The two-entry completion FIFO
+  // permits overlapping ordinary Normal writes; the AXI profile holds each
+  // entry through B. Cached and MMIO writes wait for an empty pipeline
+  // (write_inflight_cnt == 0 && !o_mem_write_en).
 
   logic uncached_pending_q, uncached_armed_q;
   logic uncached_sc_permit_q;
@@ -813,7 +818,9 @@ module store_queue #(
   assign o_uncached_store_pending = PRECISE_UNCACHED && sq_valid[drain_idx_q] &&
       !sq_committed[drain_idx_q] && !sq_sent[drain_idx_q] &&
       sq_addr_valid[drain_idx_q] && sq_data_valid[drain_idx_q] &&
-      !mem_write_addr_cached_for_plain_next &&
+      (!(CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
+      sq_address[drain_idx_q]
+  )) || sq_is_sc[drain_idx_q]) && !mem_write_addr_cached_for_plain_next &&
       (sq_rob_tag[drain_idx_q] == i_rob_head_tag);
   assign uncached_precommit_ready = o_uncached_store_pending &&
       uncached_armed_q && i_uncached_store_shield && i_head_side_effects_allowed &&
@@ -901,8 +908,11 @@ module store_queue #(
       (sq_address[drain_idx_q] <  (XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)));
   // Every store is one beat and completes its entry, including DOUBLE.
   assign mem_write_completes_next = 1'b1;
-  assign mem_write_plain_fast_next = !PRECISE_UNCACHED && !sq_is_mmio[drain_idx_q] &&
-                                     !mem_write_addr_cached_for_plain_next;
+  assign mem_write_plain_fast_next = (!PRECISE_UNCACHED ||
+      ((CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
+      sq_address[drain_idx_q]
+  )) && !sq_is_sc[drain_idx_q])) && !sq_is_mmio[drain_idx_q] &&
+      !mem_write_addr_cached_for_plain_next;
 
   // Serial launches require an empty pipeline. Plain BRAM launches may overlap
   // if the two-entry FIFO has room after the current bus push and done pop.
@@ -933,11 +943,16 @@ module store_queue #(
       o_mem_write_en <= mem_write_fire_next;
     end
 
-    o_mem_write_addr    <= mem_write_addr_next;
-    o_mem_write_data    <= mem_write_data_next;
+    o_mem_write_addr <= mem_write_addr_next;
+    o_mem_write_data <= mem_write_data_next;
     o_mem_write_byte_en <= mem_write_byte_en_next;
     o_mem_write_size <= sq_size[drain_idx_q];
     o_mem_write_is_mmio <= mem_write_is_mmio_next;
+    o_mem_write_buffered <= PRECISE_UNCACHED && CACHE_NORMAL_MEMORY &&
+        !sq_is_sc[drain_idx_q] && !mem_write_is_mmio_next &&
+        riscv_pkg::pma_writethrough_ok(
+        mem_write_addr_next
+    );
     o_mem_write_is_cached <= mem_write_is_cached_next;
 
     if (mem_write_fire_next) begin

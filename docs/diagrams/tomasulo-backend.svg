@@ -18,7 +18,7 @@
         four RS instances, two INT ALUs, independent FU adapters, CDB wakeup,
         direct successful-store completion, DMMU and LQ/SQ update routing.
       hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv:
-        direct-mapped 128-entry, eight-byte-granule L0 cache.
+        direct-mapped 256-entry, eight-byte-granule L0 cache in FROST.
       hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv:
         older-store checks and head ordering for LR/AMO/device loads.
       hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/atomics/sc_pending_unit.sv:
@@ -171,7 +171,7 @@
     <rect x="730" y="690" width="146" height="146" rx="11" class="memory"/>
     <text x="803" y="725" class="label">LQ · 8</text>
     <text x="803" y="755" class="body">+ L0 cache</text>
-    <text x="803" y="782" class="body">128 × 8 B</text>
+    <text x="803" y="782" class="body">256 × 8 B</text>
     <text x="803" y="811" class="small">Load / AMO / LR</text>
     <rect x="898" y="690" width="132" height="146" rx="11" class="memory"/>
     <text x="964" y="725" class="label">SQ · 8</text>

@@ -1,8 +1,74 @@
 # Single-core performance
 
-FROST runs CoreMark at 4.27 CoreMark/MHz on the X3, 1,375 CoreMark at
-322.265625 MHz. This page describes the current CPU defaults and the benchmark
-configuration, how to measure the score, and how to compare changes.
+The CPU/SoC separation has been measured on X3 at 161.132812 MHz with the
+standard benchmark builds. Compared with the earlier platform at the same
+clock, both benchmark scores meet the original 1% regression tolerance:
+
+| Benchmark | Earlier platform | AXI CPU boundary | Score change |
+| --- | ---: | ---: | ---: |
+| CoreMark | 687.441404 | 681.431231 | -0.87% |
+| CoreMark-PRO, all nine workloads | 46.09 | 45.636421 | -0.984% |
+
+The full X3 hardware regression passes all 48 stages, including Debian,
+networking, and DDR ECC. Both official CoreMark seed sets pass their CRC checks
+with 14,000 iterations: the performance run takes 20.544993 seconds and the
+validation run takes 20.982811 seconds.
+Workloads, compiler flags, memory placement, and baseline thresholds are
+unchanged. The complete CoreMark-PRO sweep passes every workload's verification
+and reports 45.64 after rounding; the acceptance comparison uses the unrounded
+aggregate, above the 45.6291 floor.
+
+These results come from a complete repeat on the same bitstream after the
+first run passed 47 of 48 stages. That run's Debian check found a degraded
+system: a 60-second login timeout expired while APT startup competed with
+the user service. The repeat passes with the same Linux configuration and
+checks; no timeout or health check was relaxed.
+
+The aggregate does not imply that every workload has the same performance.
+SHA takes 29.251 seconds versus 22.662 before the refactor, about 29.1% longer;
+other workloads improve, including ZIP. The individual timed sections are:
+
+| CoreMark-PRO workload | Earlier seconds | Current seconds | Runtime change |
+| --- | ---: | ---: | ---: |
+| core | 43.001 | 41.672 | -3.09% |
+| cjpeg | 18.297 | 18.333 | +0.20% |
+| linear_alg | 70.034 | 68.874 | -1.66% |
+| loops | 70.277 | 69.964 | -0.45% |
+| nnet | 128.811 | 128.456 | -0.28% |
+| parser | 17.350 | 17.542 | +1.11% |
+| radix2 | 76.475 | 76.233 | -0.32% |
+| sha | 22.662 | 29.251 | +29.08% |
+| zip | 19.517 | 17.305 | -11.33% |
+
+FROST enables the CPU's optional Normal read caches: an 8 KiB direct
+instruction cache and dword data fills into a 256-entry (2 KiB) L0.
+Stores remain narrow write-through accesses, with byte updates to L0 and
+queue ownership retained until the AXI write response. The debug data page
+and all Device accesses bypass these caches. There are no dirty BRAM cache
+lines. The standalone CPU defaults to strict uncached Normal memory; see the
+[interface contract](../hw/rtl/cpu_top/README.md#optional-normal-read-caching-and-write-through-stores).
+
+The final 161 MHz implementation passes setup (+0.077 ns), hold (+0.012 ns),
+pulse-width, and all 74 bus-skew checks, with no DRC errors. The same RTL
+passes post-opt setup at 322.265625 MHz (+0.034 ns, zero failing endpoints),
+using the normal build settings and constraints. Full 322 MHz placement,
+routing, and hardware validation remain pending. The earlier full-rate
+platform measured 1,375 CoreMark, or 4.27 CoreMark/MHz; that is a historical
+baseline, not a measured full-rate result for this boundary.
+
+The initial performance diagnosis used identical CoreMark images on the
+earlier platform and the fully uncached AXI prototype, with the pinned
+container and DDR timing seed `cpu-top-performance-ddr`:
+
+| Code/data placement | Stack placement | Earlier timed cycles | Uncached prototype timed cycles |
+| --- | --- | ---: | ---: |
+| Cached DDR | Uncached BRAM, as in `link_ddr.ld` | 304,836 | 830,701 |
+| Cached DDR | Cached DDR at `0x81000000`, diagnostic only | 351,745 | 352,072 |
+
+All CRCs pass. This comparison isolated the uncached-access cost and motivated
+the Normal read caches; it did not change the platform linker or replace the
+BRAM hardware baseline. The rest of this page describes the CPU defaults,
+benchmark configuration, and measurement procedure.
 
 ## CPU configuration
 
@@ -14,8 +80,10 @@ defaults:
 | Decoded queue | Four two-instruction bundles, bypassed when empty |
 | INT reservation station | 16 entries; the second issue port scans the lowest eight |
 | Early load wakeup | A load's result wakes dependent memory operations a cycle early, through an idle result-bus lane |
-| Load preparation while the memory port is busy | The next load's address is staged; its store-queue check, use of an L0 hit, and memory request wait for the port |
-| Load-queue L0 cache | 128 entries |
+| Load preparation while the memory port is busy | The next load's address is staged; an unrelated L0 hit can complete while an older Normal read or buffered store waits for its response, after store disambiguation |
+| Load-queue L0 cache | 256 entries with Normal read caching; 128 otherwise |
+| Normal instruction cache | 256 direct-mapped 32-byte lines (8 KiB), enabled by the FROST wrapper |
+| Normal data policy | L0 read caching and narrow write-through stores, excluding the debug data page |
 | Word multiply / divide latency | 3 / 33 cycles |
 | Full-width multiply / divide latency | 6 / 65 cycles |
 
@@ -64,9 +132,9 @@ gives the same counts and the same benchmark image.
 
 A reportable score comes from a run of at least ten seconds with both seed
 sets, and every seed, list, matrix, and state CRC must pass. At
-322.265625 MHz, 14,000 iterations take a little over ten seconds; check the
-reported elapsed time. The loader sets the software timebase to the board
-clock.
+322.265625 MHz, the historical baseline took a little over ten seconds for
+14,000 iterations. Check the actual elapsed time after an RTL or clock
+change. The loader sets the software timebase to the board clock.
 
 CoreMark/MHz is the score divided by the clock in MHz. For a cycle-counted run
 it is `1,000,000 × iterations / timed_cycles`. Compiler flags, PGO,
@@ -105,12 +173,21 @@ set up, build and test natively:
 ./fpga/build/build.py x3
 ./fpga/program_bitstream/program_bitstream.py x3
 ./fpga/hw_regression.py --board x3
+COREMARK_SEED_SET=validation ./fpga/hw_regression.py --board x3 coremark
 ```
 
-The hardware regression runs this same CoreMark build. When reporting a
-score, keep the benchmark ELF, load images, and flags with the result, along
+The full hardware regression uses CoreMark's performance seed set. The
+additional stage checks the official validation seed set; two CPU-reset
+runs of one simulation image do not replace this check. Keep both runs at
+the same board clock and confirm each lasts at least ten seconds. When
+reporting a score, keep the benchmark ELF, load images, and flags with the result, along
 with the source revision, tool versions, bitstream, UART output, and final
 timing reports.
+
+With `FROST_CPU_CLK_HZ` set for a divided-clock build, the runner checks
+functional results but skips the standard-clock performance threshold.
+Compare measured scores at the same frequency, or compare cycles per
+iteration; a functional PASS alone does not establish performance parity.
 
 ## Comparing changes
 

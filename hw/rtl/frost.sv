@@ -26,6 +26,7 @@
   use the portable implementations.
 */
 module frost #(
+    parameter bit CACHE_NORMAL_MEMORY = 1'b1,
     parameter int unsigned CLK_FREQ_HZ = 322265625,
     // Low-memory size; override in simulation with Verilator -G.
     parameter int unsigned MEM_SIZE_BYTES = 2 ** 18,
@@ -38,7 +39,8 @@ module frost #(
     parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes,
     // 0 omits the hierarchy: cached loads return zero and stores have no effect.
     parameter int unsigned ENABLE_CACHED_TIER = 0,
-    parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
+    parameter int unsigned L0_CACHE_DEPTH = CACHE_NORMAL_MEMORY ?
+        riscv_pkg::NormalLqL0Depth : riscv_pkg::LqL0Depth,
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
     parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
@@ -285,6 +287,7 @@ module frost #(
       .SIM_TIMER_SPEEDUP(SIM_TIMER_SPEEDUP),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
+      .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
       .L1_CACHE_BYTES(L1_CACHE_BYTES),
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),

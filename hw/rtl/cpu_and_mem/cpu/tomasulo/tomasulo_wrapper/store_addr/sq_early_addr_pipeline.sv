@@ -554,7 +554,6 @@ module sq_early_addr_pipeline (
   (* keep = "true" *) logic [1:0][riscv_pkg::XLEN-1:0] address_nonlive;
   (* keep = "true" *) logic [1:0][2:0] address_source_take;
   logic [1:0][riscv_pkg::XLEN-1:0] address_final;
-  logic [1:0] mmio_captured_repair;
   (* keep = "true" *) logic [1:0] mmio_nonlive;
   logic [1:0] mmio_final;
   for (genvar slot = 0; slot < 2; slot++) begin : gen_live_address_final
@@ -570,16 +569,25 @@ module sq_early_addr_pipeline (
     assign address_source_take[slot][1] = live_allowed && !repair_conditions[slot][6] &&
         repair_conditions[slot][7];
     assign address_source_take[slot][2] = !(|address_source_take[slot][1:0]);
-    assign mmio_captured_repair[slot] = repair_half_matches[slot][0] ?
-        repair_mmio_halves[slot][0] : repair_pair_matches[slot][2] ?
-        repair_mmio_pairs[slot][2] : riscv_pkg::pma_device_quadrant(
-        repair_immediates[slot]
-    );
-    assign mmio_nonlive[slot] = address_fresh[slot] ? riscv_pkg::pma_device_quadrant(
-        address_fresh_data[slot]
-    ) : address_held[slot] ? riscv_pkg::pma_device_quadrant(
-        address_held_data[slot]
-    ) : address_waiting[slot] && mmio_captured_repair[slot];
+    // Decode source priority in parallel with each address sum and PMA
+    // check. A flat masked reduction avoids cascading the late MMIO result
+    // through the pair, half, captured, held and fresh muxes.
+    (* keep = "true" *)logic [8:0] mmio_take;
+    logic [8:0] mmio_value;
+    assign mmio_take[0]  = address_fresh[slot];
+    assign mmio_take[1]  = !address_fresh[slot] && address_held[slot];
+    assign mmio_value[0] = riscv_pkg::pma_device_quadrant(address_fresh_data[slot]);
+    assign mmio_value[1] = riscv_pkg::pma_device_quadrant(address_held_data[slot]);
+    for (genvar source = 0; source < 6; source++) begin : gen_mmio_source
+      wire earlier_match = |(repair_conditions[slot] & 8'((1 << source) - 1));
+      assign mmio_take[source+2] = !address_fresh[slot] && !address_held[slot] &&
+          address_waiting[slot] && !earlier_match && repair_conditions[slot][source];
+      assign mmio_value[source+2] = repair_mmio_candidates[slot][source];
+    end
+    assign mmio_take[8] = !address_fresh[slot] && !address_held[slot] &&
+        address_waiting[slot] && !(|repair_conditions[slot][5:0]);
+    assign mmio_value[8] = riscv_pkg::pma_device_quadrant(repair_immediates[slot]);
+    assign mmio_nonlive[slot] = |(mmio_take & mmio_value);
     assign mmio_final[slot] =
         (repair_mmio_candidates[slot][6] && address_source_take[slot][0]) ||
         (repair_mmio_candidates[slot][7] && address_source_take[slot][1]) ||

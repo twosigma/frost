@@ -1432,9 +1432,12 @@ package riscv_pkg;
   localparam int unsigned CachedLoadSlotBits = 3;
 
   // Entries in the load queue's direct-mapped L0 cache, eight bytes each.
-  // frost's L0_CACHE_DEPTH defaults to this and changes the L0's capacity
-  // without changing the queue or coherence-table capacity.
+  // Default when Normal read caching is disabled. L0_CACHE_DEPTH can override
+  // this capacity without changing the queue or coherence-table capacity.
   localparam int unsigned LqL0Depth = 128;
+  // Normal AXI reads have a longer miss path than the legacy local port.
+  // The optional read-cache policy defaults to 2 KiB of clean data.
+  localparam int unsigned NormalLqL0Depth = 256;
 
   // DMA sequencer lock count (frost_cache_hierarchy NUM_DMA_LOCK), mirrored
   // by lq_coherence_port. A write holds a lock from admission until the
@@ -1488,6 +1491,14 @@ package riscv_pkg;
   localparam logic [19:0] MmioLastPage  = 20'h4_0030;
   localparam logic [19:0] PlicFirstPage = 20'h4_4000;
   localparam logic [19:0] PlicLastPage  = 20'h4_43FF;
+
+  // Eligible private Normal memory for the optional read-cache/write-through
+  // profile. Debug data bypasses L0 to observe transport updates immediately.
+  function automatic logic pma_writethrough_ok(input logic [XLEN-1:0] addr);
+    pma_writethrough_ok = PmaUncachedBytes != 0 &&
+        ((addr - PmaUncachedBase) < PmaUncachedBytes) &&
+        ((addr >> 12) != (XLEN'(DebugSliceBase) >> 12));
+  endfunction
 
   // Cached DDR, the same for fetch and data.
   function automatic logic pma_cached_ok(input logic [XLEN-1:0] addr);

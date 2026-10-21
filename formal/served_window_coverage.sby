@@ -1,0 +1,29 @@
+[tasks]
+bmc
+bmc_xilinx
+bmc_32
+bmc_32_xilinx
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+bmc: read_verilog -formal -sv served_window_coverage.sv
+bmc_32: read_verilog -formal -sv served_window_coverage.sv
+bmc_xilinx: read_verilog -formal +/xilinx/cells_sim.v
+bmc_xilinx: read_verilog -formal -D FROST_XILINX_PRIMS -sv served_window_coverage.sv
+bmc_32_xilinx: read_verilog -formal +/xilinx/cells_sim.v
+bmc_32_xilinx: read_verilog -formal -D FROST_XILINX_PRIMS -sv served_window_coverage.sv
+bmc: chparam -set WORD_BITS 62 served_window_coverage
+bmc_xilinx: chparam -set WORD_BITS 62 served_window_coverage
+prep -top served_window_coverage -flatten
+select -assert-count 1 t:$check
+select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/if_stage/served_window_coverage.sv

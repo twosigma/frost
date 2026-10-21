@@ -444,6 +444,30 @@ module dmmu (
   end
   assign s2_mmio_next = tlb_is_mmio ? s2_mmio_cases[1] : s2_mmio_cases[0];
 
+  // The per-entry device-page verdict arrives after VPN matching and winner
+  // selection. Resolve fault priority for both values in advance, leaving
+  // one select between that late verdict and the S2 fault register.
+  (* keep = "true" *) logic [1:0][1:0] s2_fault_cases;
+  logic [1:0] s2_fault_next;
+  for (genvar device = 0; device < 2; device++) begin : gen_s2_fault_cases
+    riscv_pkg::data_fault_kind_e leaf_fault, resolved_fault;
+    always_comb begin
+      leaf_fault = riscv_pkg::DFAULT_NONE;
+      if (!tlb_perm_ok[0]) leaf_fault = riscv_pkg::DFAULT_PAGE;
+      else if (tlb_hi_nonzero[0] || !(tlb_atomic_page[0] || ((device != 0) && !s1_q.atomic)))
+        leaf_fault = riscv_pkg::DFAULT_ACCESS;
+      resolved_fault = riscv_pkg::DFAULT_NONE;
+      if (s1_valid_q) begin
+        if (i_trap_misaligned && s1_misaligned) resolved_fault = riscv_pkg::DFAULT_MISALIGN;
+        else if (s1_noncanonical) resolved_fault = riscv_pkg::DFAULT_PAGE;
+        else if (tlb_hit[0]) resolved_fault = leaf_fault;
+        else if (walk_resp_for_s1) resolved_fault = walk_fault;
+      end
+    end
+    assign s2_fault_cases[device] = resolved_fault;
+  end
+  assign s2_fault_next = tlb_device_page[0] ? s2_fault_cases[1] : s2_fault_cases[0];
+
   always_ff @(posedge i_clk) begin
     s2_is_mmio_q <= s2_mmio_next;
     if (!i_rst_n || i_flush_all) begin
@@ -457,7 +481,7 @@ module dmmu (
     s2_va_q <= s1_q.va;
     s2_ppn_q <= resolve_ppn;
     s2_pa_q <= resolve_pa;
-    s2_fault_q <= resolve_fault;
+    s2_fault_q <= riscv_pkg::data_fault_kind_e'(s2_fault_next);
     s2_needs_sq_q <= s1_q.needs_sq;
     s2_is_sc_q <= s1_q.is_sc;
     s2_store_data_q <= s1_q.store_data;
@@ -649,6 +673,7 @@ module dmmu (
     p_tlb_leaf_checks_exact :
     assert (tlb_perm_ok == f_tlb_perm_ok_ref && tlb_atomic_page == f_tlb_atomic_page_ref);
     p_mmio_capture_exact : assert (s2_mmio_next == (s1_resolved ? resolve_is_mmio : s2_is_mmio_q));
+    p_fault_capture_exact : assert (s2_fault_next == resolve_fault);
     p_resolve_mmio_exact :
     assert (resolve_is_mmio ==
         ((resolve_fault == riscv_pkg::DFAULT_NONE) &&

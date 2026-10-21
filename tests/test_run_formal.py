@@ -63,6 +63,11 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "uncached_read_capture.sby",
+        "Uncached read ownership preserves enqueue, handoff, and reset priority",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
         "rs_lq_prematch.sby",
         "MEM reservation-station and load-queue pre-issue matches agree with the "
         "reference CAM",
@@ -172,6 +177,11 @@ FORMAL_TARGETS = [
         tasks=("bmc4", "bmc8", "bmc16"),
     ),
     FormalTarget(
+        "lq_normal_fill_policy.sby",
+        "Early Normal-PMA classification preserves the selected-response L0 fill policy",
+        tasks=("bmc_strict", "bmc_normal", "bmc_legacy"),
+    ),
+    FormalTarget(
         "lq_response_bypass.sby",
         "Load-response bypass matches full acceptance under the partial-flush guard",
         tasks=("bmc",),
@@ -243,7 +253,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "dmmu_mmio.sby",
-        "Data-MMU MMIO classification, leaf checks, and address splitting match the "
+        "Data-MMU MMIO classification, leaf checks, address splitting, and fault capture match the "
         "reference",
         tasks=("bmc",),
     ),
@@ -418,6 +428,12 @@ FORMAL_TARGETS = [
         tasks=("prove",),
     ),
     FormalTarget(
+        "served_window_coverage.sby",
+        "Fetch-window coverage matches full-address comparisons for 32/64-bit "
+        "addresses and portable/Xilinx implementations",
+        tasks=("bmc", "bmc_xilinx", "bmc_32", "bmc_32_xilinx"),
+    ),
+    FormalTarget(
         "rs_primary_payload.sby",
         "Primary RS payload storage and selection match the reference",
         tasks=("bmc16", "bmc8", "bmc4", "prove"),
@@ -483,7 +499,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "sc_head_query.sby",
-        "SC head line matching agrees with the selected-address reference",
+        "SC head line matching and cache classification agree with the selected-address reference",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -563,7 +579,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "pc_register_mux.sby",
-        "Architectural PC selection matches reference priority",
+        "Architectural PC and pending-relation selection match reference priority",
         tasks=("bmc", "bmc_integrated", "bmc_xilinx", "bmc_integrated_xilinx"),
     ),
     FormalTarget(
@@ -631,6 +647,9 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("bmc_strict", "Bounded check with strict uncached Normal memory"),
+    ("bmc_normal", "Bounded check with Normal read caching"),
+    ("bmc_legacy", "Bounded check with legacy unconditional data caching"),
     ("x32", "Unbounded catch-up contracts at XLEN 32"),
     ("x64", "Unbounded catch-up contracts at XLEN 64"),
     ("x66", "Unbounded catch-up contracts at XLEN 66"),
@@ -726,6 +745,11 @@ SBY_TASKS = [
     ("cover_64g", "Physical-address reachability at a 64 GiB DDR capacity"),
     ("cover_128g", "Physical-address reachability at a 128 GiB DDR capacity"),
     ("bmc_xilinx", "Bounded equivalence with the Xilinx primitive implementation"),
+    ("bmc_32", "Bounded equivalence with 32-bit addresses"),
+    (
+        "bmc_32_xilinx",
+        "Bounded equivalence with 32-bit addresses and Xilinx primitives",
+    ),
     ("bmc_2port", "Bounded two-port arbitration equivalence"),
     ("bmc_xilinx_2port", "Bounded two-port arbitration with Xilinx primitives"),
     ("bmc_queued", "Bounded check with decoded-queue admission contract"),

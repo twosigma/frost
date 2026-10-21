@@ -62,6 +62,9 @@ module data_mem_request_router #(
 ) (
     input logic i_clk,
     input logic i_rst,
+    // Fatal-stop gate for new accesses. Payload selection stays independent
+    // of this gate so it does not feed the cache address-comparison path.
+    input logic i_block_new_requests = 1'b0,
     // The flush that clears the LQ: a full pipeline flush or commit-time
     // recovery. It cancels a held request that has not been accepted, and the
     // LQ then expects no response for it.
@@ -74,6 +77,7 @@ module data_mem_request_router #(
     input logic [riscv_pkg::MemStrbBits-1:0] i_sq_mem_write_byte_en,
     input riscv_pkg::mem_size_e i_sq_mem_write_size = riscv_pkg::MEM_SIZE_DOUBLE,
     input logic i_sq_mem_write_is_mmio,
+    input logic i_sq_mem_write_buffered = 1'b0,
     // Registered cached-tier flag for the SQ write (parallels is_mmio).
     input logic i_sq_mem_write_is_cached,
 
@@ -129,6 +133,7 @@ module data_mem_request_router #(
     input logic [1:0] i_uncached_read_status = 2'b00,
     output logic [riscv_pkg::MemStrbBits-1:0] o_uncached_write_byte_en,
     output riscv_pkg::mem_size_e o_uncached_write_size,
+    output logic o_uncached_write_buffered,
     input logic i_uncached_write_done = 1'b0,
     input logic [1:0] i_uncached_write_status = 2'b00,
     input logic i_uncached_write_inflight = 1'b0,
@@ -182,6 +187,7 @@ module data_mem_request_router #(
     output logic [riscv_pkg::CachedLoadSlotBits-1:0] o_lq_mem_read_id
 );
 
+  assign o_uncached_write_buffered = i_sq_mem_write_en && i_sq_mem_write_buffered;
   assign o_uncached_write_size = i_sq_mem_write_en ? i_sq_mem_write_size :
       i_amo_mem_write_is_dword ? riscv_pkg::MEM_SIZE_DOUBLE : riscv_pkg::MEM_SIZE_WORD;
 
@@ -200,13 +206,13 @@ module data_mem_request_router #(
   logic                              lq_mem_read_en;
   logic [                  XLEN-1:0] lq_mem_read_addr;
   logic                              lq_mem_addr_valid;
-  assign sq_mem_write_en         = i_sq_mem_write_en;
+  assign sq_mem_write_en         = i_sq_mem_write_en && !i_block_new_requests;
   assign sq_mem_write_addr       = i_sq_mem_write_addr;
   assign sq_mem_write_data       = i_sq_mem_write_data;
   assign sq_mem_write_byte_en    = i_sq_mem_write_byte_en;
   assign sq_mem_write_is_mmio    = i_sq_mem_write_is_mmio;
   assign sq_mem_write_is_cached  = i_sq_mem_write_is_cached;
-  assign amo_mem_write_en        = i_amo_mem_write_en;
+  assign amo_mem_write_en        = i_amo_mem_write_en && !i_block_new_requests;
   assign amo_mem_write_addr      = i_amo_mem_write_addr;
   assign amo_mem_write_data      = i_amo_mem_write_data;
   assign amo_mem_write_is_dword  = i_amo_mem_write_is_dword;
@@ -216,7 +222,7 @@ module data_mem_request_router #(
   assign amo_write_strobes = riscv_pkg::mem_strobe_for(
       amo_mem_write_is_dword ? 2'b11 : 2'b10, amo_mem_write_addr[2:0]
   );
-  assign lq_mem_read_en = i_lq_mem_read_en;
+  assign lq_mem_read_en = i_lq_mem_read_en && !i_block_new_requests;
   assign lq_mem_read_addr = i_lq_mem_read_addr;
   assign lq_mem_addr_valid = i_lq_mem_addr_valid;
 
@@ -326,7 +332,8 @@ module data_mem_request_router #(
       !lq_live_request_requires_park &&
       (!VARIABLE_UNCACHED || lq_live_is_cached || i_uncached_read_request_ready);
   assign lq_pending_read_candidate =
-      !i_rst && !i_flush_all && !write_port_busy && lq_mem_request_valid &&
+      !i_rst && !i_flush_all && !i_block_new_requests &&
+      !write_port_busy && lq_mem_request_valid &&
       (!VARIABLE_UNCACHED || lq_held_is_cached || i_uncached_read_request_ready);
   assign lq_pending_read_shielded =
       lq_pending_read_candidate &&
@@ -361,13 +368,13 @@ module data_mem_request_router #(
 
     // Address changes without read_enable are harmless; select independently
     // of the read-accept gate, for timing.
-    o_data_mem_addr = sq_mem_write_en ? sq_mem_write_addr :
-                      amo_mem_write_en ? amo_mem_write_addr :
+    o_data_mem_addr = i_sq_mem_write_en ? sq_mem_write_addr :
+                      i_amo_mem_write_en ? amo_mem_write_addr :
                       (lq_mem_request_valid || lq_mem_addr_valid) ?
                       lq_mem_request_addr_eff : '0;
 
-    o_data_mem_wr_data = sq_mem_write_en ? sq_mem_write_data :
-                         amo_mem_write_en ? amo_mem_write_data : '0;
+    o_data_mem_wr_data = i_sq_mem_write_en ? sq_mem_write_data :
+                         i_amo_mem_write_en ? amo_mem_write_data : '0;
     // Unmasked byte-write-enable for peripherals (UART/FIFO/timer). MMIO
     // writes must remain visible here so the registered shadow in frost_rvfi_platform
     // can dispatch them on the next cycle.
@@ -401,7 +408,8 @@ module data_mem_request_router #(
     // is the only candidate, and without one only the held request can be
     // accepted.
     o_data_mem_cached_read_sel = lq_mem_read_en;
-    o_data_mem_cached_read_if_sel = !i_rst && !i_flush_all && !write_port_busy &&
+    o_data_mem_cached_read_if_sel = !i_rst && !i_flush_all && !i_block_new_requests &&
+        !write_port_busy &&
         !lq_live_request_requires_park && lq_live_is_cached;
     o_data_mem_cached_read_if_clear = lq_pending_read_accepted && lq_held_is_cached;
     o_data_mem_cached_read_id = lq_mem_request_id_eff;
@@ -544,7 +552,7 @@ module data_mem_request_router #(
   assign fast_read_accepted = !VARIABLE_UNCACHED && lq_mem_read_accepted &&
       !lq_mem_request_is_cached;
 
-  // Fast (BRAM/MMIO) 1-cycle valid.
+  // Legacy local (BRAM/MMIO) one-cycle valid; inactive with AXI.
   (* max_fanout = 32 *) logic fast_read_valid;
   always_ff @(posedge i_clk) begin
     if (i_rst || i_flush_all) fast_read_valid <= 1'b0;
@@ -632,10 +640,13 @@ module data_mem_request_router #(
       p_live_read_accept_equivalent :
       assert (lq_live_read_accepted ==
               (!i_flush_all && !write_port_busy && lq_mem_read_en &&
-               !lq_live_request_requires_park));
+               !lq_live_request_requires_park &&
+               (!VARIABLE_UNCACHED || lq_live_is_cached || i_uncached_read_request_ready)));
       p_pending_read_candidate_equivalent :
       assert (lq_pending_read_candidate ==
-              (!i_flush_all && !write_port_busy && lq_mem_request_valid));
+              (!i_flush_all && !i_block_new_requests && !write_port_busy &&
+               lq_mem_request_valid &&
+               (!VARIABLE_UNCACHED || lq_held_is_cached || i_uncached_read_request_ready)));
       p_pending_read_shielded_equivalent :
       assert (lq_pending_read_shielded ==
               (lq_pending_read_candidate &&
@@ -678,7 +689,7 @@ module data_mem_request_router #(
         p_mmio_effect_needs_sq_drain : assert (i_sq_committed_empty);
       end
     end
-    if (i_rst || i_flush_all) begin
+    if (i_rst || i_flush_all || i_block_new_requests) begin
       p_reset_or_flush_suppresses_accept :
       assert (!lq_live_read_accepted && !lq_pending_read_candidate &&
               !lq_pending_read_shielded && !lq_pending_read_accepted &&
@@ -686,6 +697,11 @@ module data_mem_request_router #(
       p_reset_or_flush_has_no_combinational_read_effect :
       assert (!o_data_mem_read_enable && !o_data_mem_cached_read_enable &&
               !o_mmio_read_pulse && !o_mmio_load_valid);
+    end
+    if (i_block_new_requests) begin
+      p_stop_suppresses_writes :
+      assert (!(|o_data_mem_bram_byte_wr_en) && !(|o_data_mem_per_byte_wr_en) &&
+              !(|o_data_mem_cached_byte_wr_en) && !(|o_uncached_write_byte_en));
     end
   end
 

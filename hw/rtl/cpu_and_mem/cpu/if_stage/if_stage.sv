@@ -1134,17 +1134,18 @@ module if_stage #(
       .o_slot2_kill_transient(slot2_kill_transient_live)
   );
 
-  // pd_redirect_q implies !prediction_holdoff, so its sel_nop term is
-  // redundant. A PD redirect either clears the prediction metadata or finds
-  // its holdoff already blocking new predictions. The holdoff can only clear
-  // while pd_redirect_q holds.
+  // A PD redirect applies even without a fetch response. Capture its bubble
+  // on that edge, then retain it until fetch progresses without a stall.
+  // Prediction metadata can still be held from an earlier BTB hit across the
+  // gap, so pd_redirect_q must override the prediction-holdoff exemption:
+  // the target is not the deferred predicted branch. Emitting it while the
+  // redirect holdoff holds pc_reg would dispatch the target bundle twice.
   logic pd_redirect_q;
   always_ff @(posedge i_clk) begin
-    // Updates only on an unstalled cycle with fetch progress, the same gate as
-    // pc_controller's o_slot2_redirect_q, so it holds through stalls and
-    // no-progress cycles (control_flow_holdoff can still set during them).
     if (i_pipeline_ctrl.reset) pd_redirect_q <= 1'b0;
-    else if (!i_pipeline_ctrl.stall && fetch_progress) pd_redirect_q <= i_pd_redirect;
+    else if (!i_pipeline_ctrl.stall && (i_pd_redirect || fetch_progress)) begin
+      pd_redirect_q <= i_pd_redirect;
+    end
   end
 
   // With pc == pc_reg, a prediction can emit its branch on the redirect
@@ -1196,7 +1197,8 @@ module if_stage #(
   // exempting them could dispatch the branch before its metadata is ready
   // and again at handoff. Slot-2 redirects always bubble: a simultaneous
   // slot-1 hit can set prediction_holdoff while the next response is stale.
-  // pd_redirect_q is redundant in the exemption, as explained above.
+  // PD redirects also override the exemption when an earlier prediction's
+  // holdoff survives a gap in fetch responses.
   //
   // For served word S, pc_reg's word P must be S or S+1, or S-1 if buffered.
   // P = S+1 is insufficient when P+1 is needed: a high-parcel native

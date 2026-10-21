@@ -35,8 +35,10 @@
  *
  * Invalidation has two per-address ports, one for SQ store-write launch and
  * one for AMO completion, plus a tag-blind line port for DMA writes. A store
- * invalidates the whole dword line that contains it, which is conservative
- * for sub-dword stores.
+ * invalidates its dword unless i_store_strb supplies committed data. Then a
+ * matching cached word updates exactly those bytes; a full dword may allocate.
+ * A store update owns the RAM write port over a coincident read fill. AMO and
+ * DMA invalidation still win over both kinds of write.
  */
 
 module lq_l0_cache #(
@@ -59,6 +61,8 @@ module lq_l0_cache #(
     // Invalidate valid bits on the clock edge.
     input logic            i_invalidate_valid,
     input logic [XLEN-1:0] i_invalidate_addr,
+    input logic [    63:0] i_store_data = '0,
+    input logic [     7:0] i_store_strb = '0,
 
     // AMO write completion uses a separate port for timing. LQ serialization
     // makes the two invalidate sources exclusive, but this cache does not
@@ -136,16 +140,26 @@ module lq_l0_cache #(
   logic lookup_fill_bypass;
   logic lookup_invalidated;
 
+  // Known committed stores update matching L0 bytes; full
+  // dwords may allocate. A coincident response fill can be dropped safely.
+  wire store_update = i_invalidate_valid && (|i_store_strb) &&
+      ((&i_store_strb) || (valid[inv_index] && inv_tag_match));
+  wire ram_write = store_update || i_fill_valid;
+  wire [IndexWidth-1:0] ram_index = store_update ? inv_index : fill_index;
+  wire [TagWidth-1:0] ram_tag = store_update ? inv_tag : fill_tag;
+  wire [63:0] ram_data = store_update ? i_store_data : i_fill_data;
+  wire [7:0] ram_strobe = store_update ? i_store_strb : {8{i_fill_valid}};
+
   // Duplicate the tag LUTRAM for independent lookup and invalidate reads.
   sdp_dist_ram #(
       .ADDR_WIDTH(IndexWidth),
       .DATA_WIDTH(TagWidth)
   ) u_tag_lookup_ram (
       .i_clk,
-      .i_write_enable (i_fill_valid),
-      .i_write_address(fill_index),
+      .i_write_enable (ram_write),
+      .i_write_address(ram_index),
       .i_read_address (lookup_index),
-      .i_write_data   (fill_tag),
+      .i_write_data   (ram_tag),
       .o_read_data    (tag_lookup_rd)
   );
 
@@ -154,10 +168,10 @@ module lq_l0_cache #(
       .DATA_WIDTH(TagWidth)
   ) u_tag_inv_ram (
       .i_clk,
-      .i_write_enable (i_fill_valid),
-      .i_write_address(fill_index),
+      .i_write_enable (ram_write),
+      .i_write_address(ram_index),
       .i_read_address (inv_index),
-      .i_write_data   (fill_tag),
+      .i_write_data   (ram_tag),
       .o_read_data    (tag_inv_rd)
   );
 
@@ -167,46 +181,74 @@ module lq_l0_cache #(
       .DATA_WIDTH(TagWidth)
   ) u_tag_inv2_ram (
       .i_clk,
-      .i_write_enable (i_fill_valid),
-      .i_write_address(fill_index),
+      .i_write_enable (ram_write),
+      .i_write_address(ram_index),
       .i_read_address (inv2_index),
-      .i_write_data   (fill_tag),
+      .i_write_data   (ram_tag),
       .o_read_data    (tag_inv2_rd)
   );
 
-  // Data uses one write port and one combinational lookup port.
-  sdp_dist_ram #(
-      .ADDR_WIDTH(IndexWidth),
-      .DATA_WIDTH(riscv_pkg::MemDataBits)
-  ) u_data_ram (
-      .i_clk,
-      .i_write_enable (i_fill_valid),
-      .i_write_address(fill_index),
-      .i_read_address (lookup_index),
-      .i_write_data   (i_fill_data),
-      .o_read_data    (data_lookup_rd)
-  );
+  // Independent byte enables avoid a read/modify/write mux on the store path.
+  for (genvar byte_idx = 0; byte_idx < 8; byte_idx++) begin : gen_data_bytes
+    sdp_dist_ram #(
+        .ADDR_WIDTH(IndexWidth),
+        .DATA_WIDTH(8)
+    ) u_data_ram (
+        .i_clk,
+        .i_write_enable(ram_strobe[byte_idx]),
+        .i_write_address(ram_index),
+        .i_read_address(lookup_index),
+        .i_write_data(ram_data[8*byte_idx+:8]),
+        .o_read_data(data_lookup_rd[8*byte_idx+:8])
+    );
+  end
 
   // ===========================================================================
   // Combinational Lookup
   // ===========================================================================
-  assign invalidate_fill_entry =
-      i_invalidate_valid && i_fill_valid &&
-      (fill_index == inv_index) && (fill_tag == inv_tag);
-  assign invalidate_existing_entry =
-      i_invalidate_valid &&
-      valid[inv_index] &&
-      (tag_inv_rd == inv_tag) &&
-      !(i_fill_valid && (fill_index == inv_index) && (fill_tag != inv_tag));
-  assign invalidate2_fill_entry =
-      i_invalidate2_valid && i_fill_valid &&
-      (fill_index == inv2_index) && (fill_tag == inv2_tag);
-  assign invalidate2_existing_entry =
-      i_invalidate2_valid &&
-      valid[inv2_index] &&
-      (tag_inv2_rd == inv2_tag) &&
-      !(i_fill_valid && (fill_index == inv2_index) && (fill_tag != inv2_tag));
-  assign lookup_hit_array = valid[lookup_index] && (tag_lookup_rd == lookup_tag);
+  // Compare the fill and store candidates independently of the late store
+  // tag hit. Selecting the RAM's address/tag before comparing them again
+  // puts two tag comparisons in series on the valid-bit path.
+  wire fill_at_inv = i_fill_valid && fill_index == inv_index;
+  wire fill_at_inv2 = i_fill_valid && fill_index == inv2_index;
+  wire store_at_inv2 = inv_index == inv2_index;
+  wire inv2_store_fill = store_at_inv2 && inv_tag == inv2_tag;
+  wire inv2_read_fill = fill_at_inv2 && fill_tag == inv2_tag;
+  wire inv2_store_replaces = store_at_inv2 && inv_tag != inv2_tag;
+  wire inv2_read_replaces = fill_at_inv2 && fill_tag != inv2_tag;
+  assign invalidate_fill_entry = i_invalidate_valid && !store_update &&
+      fill_at_inv && fill_tag == inv_tag;
+  assign invalidate_existing_entry = i_invalidate_valid && !store_update &&
+      valid[inv_index] && inv_tag_match && !(fill_at_inv && fill_tag != inv_tag);
+  assign invalidate2_fill_entry = i_invalidate2_valid &&
+      (store_update ? inv2_store_fill : inv2_read_fill);
+  assign invalidate2_existing_entry = i_invalidate2_valid &&
+      valid[inv2_index] && inv2_tag_match &&
+      !(store_update ? inv2_store_replaces : inv2_read_replaces);
+  // Three-bit comparisons fit one LUT6. Keep two balanced reduction levels
+  // instead of allowing the wide tag equality to become a carry chain after
+  // the asynchronous tag RAM, on the same-cycle load-launch path.
+  localparam int unsigned TagChunks = (TagWidth + 2) / 3;
+  localparam int unsigned TagGroups = (TagChunks + 5) / 6;
+  (* keep = "true" *)logic [TagChunks-1:0] lookup_tag_chunks;
+  (* keep = "true" *)logic [TagGroups-1:0] lookup_tag_groups;
+  (* keep = "true" *) logic [TagChunks-1:0] inv_tag_chunks, inv2_tag_chunks;
+  (* keep = "true" *) logic [TagGroups-1:0] inv_tag_groups, inv2_tag_groups;
+  wire inv_tag_match = &inv_tag_groups;
+  wire inv2_tag_match = &inv2_tag_groups;
+  for (genvar c = 0; c < TagChunks; c++) begin : gen_lookup_tag_chunk
+    localparam int unsigned Bits = (TagWidth - 3 * c < 3) ? TagWidth - 3 * c : 3;
+    assign lookup_tag_chunks[c] = tag_lookup_rd[3*c+:Bits] == lookup_tag[3*c+:Bits];
+    assign inv_tag_chunks[c] = tag_inv_rd[3*c+:Bits] == inv_tag[3*c+:Bits];
+    assign inv2_tag_chunks[c] = tag_inv2_rd[3*c+:Bits] == inv2_tag[3*c+:Bits];
+  end
+  for (genvar g = 0; g < TagGroups; g++) begin : gen_lookup_tag_group
+    localparam int unsigned Chunks = (TagChunks - 6 * g < 6) ? TagChunks - 6 * g : 6;
+    assign lookup_tag_groups[g] = &lookup_tag_chunks[6*g+:Chunks];
+    assign inv_tag_groups[g] = &inv_tag_chunks[6*g+:Chunks];
+    assign inv2_tag_groups[g] = &inv2_tag_chunks[6*g+:Chunks];
+  end
+  assign lookup_hit_array = valid[lookup_index] && (&lookup_tag_groups);
   // No same-cycle fill forwarding, for timing. A filled line is visible
   // on the next cycle.
   assign lookup_fill_bypass = 1'b0;
@@ -230,8 +272,8 @@ module lq_l0_cache #(
     end else if (i_flush_all) begin
       valid <= '0;
     end else begin
-      if (i_fill_valid) begin
-        valid[fill_index] <= 1'b1;
+      if (ram_write) begin
+        valid[ram_index] <= 1'b1;
       end
 
       // A fill at the invalidated index wins only if it has a different tag.
@@ -256,6 +298,29 @@ module lq_l0_cache #(
   // ===========================================================================
   // Formal Verification
   // ===========================================================================
+`ifndef SYNTHESIS
+  always @(posedge i_clk) begin
+    p_tag_reduction_exact :
+    assert (lookup_hit_array == (valid[lookup_index] && (tag_lookup_rd == lookup_tag)));
+    p_store_tag_reduction_exact : assert (inv_tag_match == (tag_inv_rd == inv_tag));
+    p_amo_tag_reduction_exact : assert (inv2_tag_match == (tag_inv2_rd == inv2_tag));
+    p_store_fill_invalidate_exact :
+    assert (invalidate_fill_entry ==
+        (i_invalidate_valid && !store_update && ram_write &&
+         ram_index == inv_index && ram_tag == inv_tag));
+    p_store_existing_invalidate_exact :
+    assert (invalidate_existing_entry ==
+        (i_invalidate_valid && !store_update && valid[inv_index] && tag_inv_rd == inv_tag &&
+         !(ram_write && ram_index == inv_index && ram_tag != inv_tag)));
+    p_amo_fill_invalidate_exact :
+    assert (invalidate2_fill_entry ==
+        (i_invalidate2_valid && ram_write && ram_index == inv2_index && ram_tag == inv2_tag));
+    p_amo_existing_invalidate_exact :
+    assert (invalidate2_existing_entry ==
+        (i_invalidate2_valid && valid[inv2_index] && tag_inv2_rd == inv2_tag &&
+         !(ram_write && ram_index == inv2_index && ram_tag != inv2_tag)));
+  end
+`endif
 `ifdef FORMAL
 
   initial assume (!i_rst_n);
@@ -303,7 +368,7 @@ module lq_l0_cache #(
       f_fill_valid_q <= 1'b0;
       f_fill_addr_q  <= '0;
     end else begin
-      f_fill_valid_q <= i_fill_valid & ~i_flush_all & !invalidate_fill_entry &
+      f_fill_valid_q <= i_fill_valid & !store_update & ~i_flush_all & !invalidate_fill_entry &
                         !invalidate2_fill_entry &
                         !(i_invalidate_line_valid &&
                           (i_invalidate_line_addr[5+:(IndexWidth-2)] ==
@@ -332,6 +397,34 @@ module lq_l0_cache #(
       p_fill_then_hit : assert (o_lookup_hit);
       p_fill_data_preserved : assert (o_lookup_data == f_fill_data_q);
     end
+  end
+
+  // A store updating a known dword changes exactly its selected byte lanes.
+  // Observe the pre-store word through the independent lookup port; the
+  // antecedent requires that port to name this store's address.
+  logic f_store_valid_q;
+  logic [XLEN-1:0] f_store_addr_q;
+  logic [63:0] f_store_expected_q;
+  always_ff @(posedge i_clk) begin
+    f_store_valid_q <= i_rst_n && store_update && !i_flush_all &&
+        (i_lookup_addr[riscv_pkg::PhysAddrBits-1:3] ==
+         i_invalidate_addr[riscv_pkg::PhysAddrBits-1:3]) &&
+        !invalidate2_fill_entry &&
+        !(i_invalidate_line_valid &&
+          (i_invalidate_line_addr[5+:(IndexWidth-2)] ==
+           i_invalidate_addr[5+:(IndexWidth-2)]));
+    f_store_addr_q <= i_invalidate_addr;
+    for (int byte_idx = 0; byte_idx < 8; byte_idx++) begin
+      f_store_expected_q[byte_idx*8+:8] <= i_store_strb[byte_idx] ?
+          i_store_data[byte_idx*8+:8] : data_lookup_rd[byte_idx*8+:8];
+    end
+    if (f_past_valid && i_rst_n && f_store_valid_q && !i_flush_all &&
+        i_lookup_addr[riscv_pkg::PhysAddrBits-1:3] == f_store_addr_q[riscv_pkg::PhysAddrBits-1:3] &&
+        !lookup_mmio && !lookup_invalidated && !lookup_line_invalidated) begin
+      p_store_then_hit : assert (o_lookup_hit);
+      p_store_bytes_exact : assert (o_lookup_data == f_store_expected_q);
+    end
+    cover (f_store_valid_q && !(&i_store_strb));
   end
 
   // DMA invalidation is tag-blind and wins even over a simultaneous fill.

@@ -133,12 +133,20 @@ sustained-load testing that repeatedly exercise the recovery paths.
 
 ## Single-core performance
 
-FROST runs CoreMark at 4.27 CoreMark/MHz, 1,375 CoreMark at 322.265625 MHz,
+Before the CPU/SoC separation, FROST measured 4.27 CoreMark/MHz,
+1,375 CoreMark at 322.265625 MHz,
 past the goal of 4 CoreMark/MHz. The next goal is 5 CoreMark/MHz at the same
 clock, or 1,611 CoreMark on one hart. A score counts only from a run of at
 least ten seconds that passes the CRC checks for both official seed sets, with
 the compiler flags, the `sw.bin` hash, and memory and cache settings recorded.
 RTL changes must also keep routed timing at the target clock.
+
+The AXI CPU boundary's Normal read-cache and write-through implementation
+meets the original 1% aggregate CoreMark and CoreMark-PRO tolerance at
+161.132812 MHz and passes all 48 X3 hardware stages. Individual workloads
+vary; see the [current measurements](docs/single_core_performance.md).
+The trace-model estimates below use the earlier local-BRAM baseline, not the
+refactored memory path.
 
 A CoreMark iteration is about 234,000 instructions, so 5 CoreMark/MHz, or
 200,000 cycles per iteration, needs 1.17 instructions per cycle, up from 1.00.
@@ -185,16 +193,17 @@ Priorities, guided by the performance counters and timing reports:
    loads, and load preparation while the memory port is busy are in place.
    Next, take a cycle out of load-to-use latency, try associativity in the
    load queue's L0 cache if its conflict counters justify it, then
-   prefetching for dependent loads. A 256-entry L0 added little over the
-   default 128 entries.
+   prefetching for dependent loads. The earlier local-BRAM measurements
+   found little benefit from 256 entries over 128. The AXI Normal read-cache
+   profile now uses 256 entries to reduce its more expensive misses.
 4. Back-to-back integer issue. Dependent integer operations issue two cycles
    apart because the stations wake from the registered CDB, so serial chains,
    such as the table-driven CRC code GCC generates for CoreMark, run at half
    rate. Issuing them back to back needs wakeup at selection, with the ALU
    result forwarded to the dependent operation.
 5. Fewer front-end bubbles. Beyond the four-bundle decoded queue and the
-   single-cycle fetch region (the first 64 KiB of BRAM), compare a larger
-   single-cycle region with a tagged predecode cache or a stream buffer. A
+   Normal instruction cache, compare a tagged predecode cache with a stream
+   buffer. In the earlier local-BRAM front-end measurements, a
    taken slot-2 prediction costs one bubble and a PD redirect two. Fetch must
    keep working with variable-latency memory.
 6. Cheaper 32-bit operations on RV64. `MULW` takes three cycles and word
@@ -219,21 +228,23 @@ still make progress, including for loads that have not yet retired.
 ## Core area
 
 A second hart duplicates the core and its L1 caches and shares the L2, the
-DDR controller, the NIC, and the DMA engine. In the X3 build, the core, its
-L1 caches, and its fetch logic use about 107,000 of the design's 164,500
-LUTs, so two harts would use about 26% of the device's LUTs. The limit is
-placement, not capacity: some single-hart placements already show routing
-congestion, and the build meets timing only with its better placements.
+DDR controller, the NIC, and the DMA engine. In the X3 baseline before the
+CPU/SoC separation, the core, its L1 caches, and its fetch logic used about
+107,000 of the design's 164,500 LUTs, suggesting about 26% of the device's
+LUTs for two harts. Some single-hart placements already showed routing
+congestion, and that build met timing only with its better placements.
 Each LUT cut from the core is saved once per hart. The largest blocks are the
 fetch stage and its predictors, the integer reservation station, the ROB, and
 the two ALUs.
 
 ## Timing margin
 
-The X3 build meets 322.265625 MHz only with its better placements: the flow
-places several candidates and keeps one that qualifies (see
-[X3 placement](fpga/README.md#x3-placement)). The goal is enough slack that a
-single default placement meets timing.
+The X3 baseline before the CPU/SoC separation met 322.265625 MHz only with
+its better placements: the flow places several candidates and keeps one
+that qualifies (see [X3 placement](fpga/README.md#x3-placement)). The CPU/SoC
+boundary currently passes post-opt setup at 322 MHz; full implementation
+validation remains pending. The goal is enough slack that a single default
+placement meets timing.
 
 ## Possible future work
 

@@ -35,7 +35,10 @@
 // The store-fault path, the MEM-adapter input mux, and lq_result_accepted
 // live in the wrapper.
 // =============================================================================
-module sc_pending_unit (
+module sc_pending_unit #(
+    parameter longint unsigned CACHED_BASE = riscv_pkg::DdrBase,
+    parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes
+) (
     input logic i_clk,
     input logic i_rst_n,
     input logic i_flush_en,
@@ -79,6 +82,7 @@ module sc_pending_unit (
     output logic o_sc_head_query_match,
     output logic o_sc_head_addr_valid,
     output logic [riscv_pkg::XLEN-1:0] o_sc_head_addr,
+    output logic o_sc_head_is_cached,
     output logic o_sc_fire_success,
 
     output logic o_sc_pending,
@@ -122,6 +126,17 @@ module sc_pending_unit (
   logic [ScTableDepth-1:0] sct_addr_valid;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sct_tag[ScTableDepth];
   logic [riscv_pkg::XLEN-1:0] sct_addr[ScTableDepth];
+  // Classify each stored PA in parallel with the ROB-head lookup. Selecting
+  // one class bit avoids a wide address mux followed by range comparisons
+  // on the uncached SC completion path.
+  (* keep = "true" *) logic [ScTableDepth-1:0] sct_is_cached;
+  function automatic logic addr_is_cached(input logic [riscv_pkg::XLEN-1:0] addr);
+    addr_is_cached = (addr >= riscv_pkg::XLEN'(CACHED_BASE)) &&
+        (addr < riscv_pkg::XLEN'(CACHED_BASE) + riscv_pkg::XLEN'(CACHED_SIZE_BYTES));
+  endfunction
+  for (genvar i = 0; i < ScTableDepth; i++) begin : gen_cached_class
+    assign sct_is_cached[i] = addr_is_cached(sct_addr[i]);
+  end
 
   // Compare ROB ages relative to the head for partial flushes.
   function automatic logic is_younger(input logic [riscv_pkg::ReorderBufferTagWidth-1:0] entry_tag,
@@ -159,11 +174,13 @@ module sc_pending_unit (
     sct_hit_resv_match    = (lq_reservation_addr[riscv_pkg::XLEN-1:3] == '0);
     sct_hit_oh            = '0;
     o_sc_head_query_match = 1'b0;
+    o_sc_head_is_cached   = addr_is_cached('0);
     for (int i = 0; i < ScTableDepth; i++) begin
       if (sct_valid[i] && (sct_tag[i] == head_tag)) begin
         sct_hit = 1'b1;
         sct_hit_addr_valid = sct_addr_valid[i];
         sct_hit_addr = sct_addr[i];
+        o_sc_head_is_cached = sct_is_cached[i];
         sct_hit_resv_match = sct_resv_match[i];
         sct_hit_oh[i] = 1'b1;
         // Use sct_hit_addr's highest-index priority, even if its address is invalid.
@@ -245,6 +262,7 @@ module sc_pending_unit (
 `ifdef FORMAL
 `ifdef SC_HEAD_QUERY_LOCAL_PROOF
   always_comb begin
+    assert (o_sc_head_is_cached == addr_is_cached(o_sc_head_addr));
     assert (o_sc_head_query_match ==
             (o_sc_head_addr_valid &&
              (o_sc_head_addr[riscv_pkg::XLEN-1:riscv_pkg::DmaCoherenceLineLsb] ==

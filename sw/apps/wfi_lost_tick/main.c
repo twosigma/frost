@@ -20,10 +20,12 @@
  * Models the Linux idle sequence `csrci MIE; fence; wfi; csrsi MIE` and the
  * CLINT handler, which clears MTIE, re-enables it, programs a future mtimecmp
  * and returns with MRET. The model runs in M-mode, so raw MTIP wakes WFI but
- * delivery waits for the csrsi. Re-arm periods of 24..87 cycles sweep the
+ * delivery waits for the csrsi. Re-arm periods of 24..535 cycles sweep the
  * deadline phase across WFI, csrsi, and MRET.
  *
- * Expect one trap per idle iteration, with each trap re-arming the timer.
+ * Each idle iteration needs a timer trap. The short periods also exercise
+ * immediate re-entry at MRET; longer periods must let the handler return
+ * after uncached AXI stack and MMIO accesses so the idle loop can advance.
  * Allow g_jiffies to fall at most four ticks behind the iteration count.
  */
 
@@ -57,7 +59,7 @@ static void uart_hex(uint32_t v)
  * M-mode handler matching the CLINT driver:
  *   clint_timer_interrupt:  csr_clear(mie, MTIE)               [mask on entry]
  *   clint_clock_next_event: csr_set(mie, MTIE); write mtimecmp [re-arm]
- * then MRET. The phase-sweep period is 24 + (jiffies&63).
+ * then MRET. The phase-sweep period is 24 + (jiffies&511).
  */
 __attribute__((naked, aligned(4))) static void clint_like_handler(void)
 {
@@ -73,8 +75,8 @@ __attribute__((naked, aligned(4))) static void clint_like_handler(void)
                      "lw   t1, 0(t0)\n"
                      "addi t1, t1, 1\n"
                      "sw   t1, 0(t0)\n" /* g_jiffies++  (the tick) */
-                     "andi t2, t1, 0x3f\n"
-                     "addi t2, t2, 24\n" /* period = 24 + (jiffies & 63): phase sweep */
+                     "andi t2, t1, 0x1ff\n"
+                     "addi t2, t2, 24\n" /* period = 24 + (jiffies & 511): phase sweep */
                      "li   t0, 0x80\n"
                      "csrrs x0, mie, t0\n"   /* csr_set(mie, MTIE) to re-arm */
                      "li   t0, 0x40000010\n" /* MTIME_LO */

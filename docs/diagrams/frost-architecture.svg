@@ -15,7 +15,7 @@
     about two cycles; JALR mispredictions and traps recover at commit.
     Sv39 uses an eight-entry ITLB in IF and a 16-entry DTLB ahead of the
     eight-entry load and store queues. The load queue contains a direct-mapped
-    128-entry, eight-byte-granule L0 cache and receives store forwarding.
+    256-entry, eight-byte-granule L0 cache in FROST and receives store forwarding.
     Matching I and D badges connect the CPU to the system view below.
     Cached instruction fetch uses a two-line fetch buffer and 16 KiB L1I;
     cached data uses a 128 KiB L1D. One shared page-table walker serves both
@@ -200,7 +200,7 @@
     <path d="M 754 591 H 842" stroke="#4b8674"/>
     <text x="790" y="619" class="label">LQ · 8</text>
     <text x="790" y="646" class="small">+ L0 cache</text>
-    <text x="790" y="671" class="small">128 × 8 B</text>
+    <text x="790" y="671" class="small">256 × 8 B</text>
     <text x="790" y="712" class="label">SQ · 8</text>
     <path d="M 828 704 H 846 V 617 H 830" class="memlink" marker-end="url(#memory-arrow)"/>
   </g>

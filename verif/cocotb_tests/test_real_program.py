@@ -38,6 +38,7 @@ from cocotb.utils import get_sim_time
 from typing import Any, TextIO
 
 from config import XLEN
+from cocotb_tests.bram_programmer import program_bram_image, read_bram_image
 from cocotb_tests.cpu_structs import (
     COMMIT_FIELDS,
     FROM_EX_FIELDS,
@@ -236,7 +237,7 @@ MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 500000))
 # Set to 1 for ISA tests that modify .text-resident data (e.g. riscv-tests rvc).
 NUM_RUNS = int(os.environ.get("COCOTB_NUM_RUNS", 2))
 
-# The DMA torture program takes about 770k cycles with uncached BRAM
+# The DMA torture program takes about 895k cycles with uncached BRAM
 # instruction fetches using AXI; allow headroom for response-latency variants.
 DMA_TORTURE_MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 1500000))
 
@@ -245,20 +246,23 @@ DMA_TORTURE_MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 1500000))
 COREMARK_MAX_CYCLES = int(os.environ.get("COCOTB_COREMARK_MAX_CYCLES", 15000000))
 # nic_loopback and nic_echo wait for the PCS BER window before CARRIER,
 # then process frames byte by byte. nic_loopback also resets during traffic.
-# The AXI uncached path completes the full loopback in about 2.47M cycles.
+# The AXI uncached path completes the full loopback in about 2.89M cycles.
 NIC_LOOPBACK_MAX_CYCLES = int(os.environ.get("COCOTB_NIC_LOOPBACK_MAX_CYCLES", 4000000))
 
-# sprintf_test's FP formatting cases need more than the generic budget.
+# All 344 sprintf/snprintf checks take about 1.23M cycles in BRAM or DDR
+# with Normal read caching; retain every formatting case with headroom.
 SPRINTF_TEST_MAX_CYCLES = 2000000
 
 # Cover the complete lookup/cache-churn and store-forwarding sweep.
 PDE_RETURN_HAZARD_MAX_CYCLES = 2000000
 
-# Allow for DDR cold-fetch and per-tick latency.
-WFI_LOST_TICK_MAX_CYCLES = 800000
+# Cover 3,000 idle iterations across the 24..535-cycle deadline sweep.
+# Normal read caching takes about 1.38M cycles with the CI DDR timing seed.
+WFI_LOST_TICK_MAX_CYCLES = 2000000
 
-# Allow for cold-DDR frame eviction in the restore-window sweep.
-RESTORE_WINDOW_STRESS_MAX_CYCLES = 1000000
+# All 800 cold-DDR frame-eviction/restore iterations take about 1.03M
+# cycles in BRAM and 0.77M in DDR with the slow-DDR CI configuration.
+RESTORE_WINDOW_STRESS_MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 1500000))
 
 # DDR boot and BSS clearing exceed the generic budget before the first banner.
 # This budget also covers the jitter variant.
@@ -4366,6 +4370,15 @@ async def test_real_program(dut: Any) -> None:
     if coverage is not None:
         cocotb.start_soon(coverage.run())
 
+    reset_image = None
+    if os.environ.get("FROST_ARCH_BRAM_RESET_IMAGE") == "1":
+        image = read_bram_image(Path("sw.mem"))
+        assert image, "architecture BRAM image is empty"
+        # link_arch_test_bram.ld reserves 95 KiB ROM plus 1 KiB debug;
+        # above that, a load image shares mutable RAM with its destination.
+        if any(address >= 0x18000 for address, _ in image):
+            reset_image = image
+
     for run_number in range(1, NUM_RUNS + 1):
         if run_number > 1:
             cocotb.log.info(f"=== Asserting reset for {RESET_CYCLES} cycles ===")
@@ -4379,6 +4392,12 @@ async def test_real_program(dut: Any) -> None:
                 dut.i_external_interrupt.value = 0
             for _ in range(RESET_CYCLES):
                 await RisingEdge(dut.i_clk)
+            if reset_image is not None:
+                cocotb.log.info(
+                    "Reloading architecture BRAM image while reset is held: "
+                    "startup overwrites its RAM-resident initialization image"
+                )
+                await program_bram_image(dut, reset_image)
             dut.i_rst_n.value = 1
         else:
             dut.i_instr_mem_en.value = 0

@@ -1,12 +1,13 @@
 /* Unified linker script for FROST RISC-V bare-metal programs (hardware and simulation)
  *
  * Memory model shared by hardware and simulation (the cache hierarchy is opaque):
- *   [0x00000000, 0x00040000)  256KiB uncached, JTAG-loadable low BRAM
- *       Data accesses take 1 cycle. Fetch reaches only the first 128KiB
- *       (ROM, DEBUG, and the start of RAM); above that it raises an
- *       instruction access fault. Fetch windows wholly below 64KiB also
- *       take 1 cycle; later fetch windows repeat once for registered
- *       predecode metadata.
+ *   [0x00000000, 0x00040000)  256KiB Normal, JTAG-loadable low BRAM
+ *       Instruction and data accesses use the CPU's variable-latency AXI
+ *       master. Fetch reaches only the first 128KiB (ROM, DEBUG, and the
+ *       start of RAM); above that it raises an instruction access fault.
+ *       The CPU performs fetch predecode after the AXI response.
+ *       FROST enables instruction/L0 read caching with write-through stores;
+ *       the standalone CPU's default leaves this Normal region uncached.
  *       ROM  95KiB: .text + small .rodata (+ .data/.sdata load image)
  *       DEBUG 1KiB @0x17C00: the debug module's execution slice (park loop,
  *           abstract-command and program-buffer words); reserved in every
@@ -33,7 +34,7 @@
  *     same region.
  *   - 0x80000000 must match CACHED_BASE (hw/rtl/frost.sv / the data-mem
  *     request router).
- *   - MMIO addresses must match the cpu_and_mem.sv MmioAddr constants and
+ *   - MMIO addresses must match the soc_top.sv MmioAddr constants and
  *     the other copies listed in hw/rtl/README.md, "Memory Map".
  *
  * Image emission (two files; loader/sim write the regions separately):
@@ -41,7 +42,7 @@
  *   sw_ddr.mem  = objcopy -O verilog -j .ddr_text -j .ddr_rodata -j .ddr_data
  *                   --change-addresses -0x80000000 ...      (DDR image, region-relative)
  *
- * Stack: lives in low BRAM for every program (fast, uncached). The ASSERT at
+ * Stack: lives in low BRAM for every program. The ASSERT at
  * the bottom keeps any program's data+bss out of the 112KiB __stack_reserve.
  *
  * .ddr_data caveat: it loads in place at its runtime address (LMA == VMA), so
@@ -84,7 +85,7 @@ SECTIONS
         *(.text.*)
     } > ROM
 
-    /* Small/hot read-only data stays in fast BRAM. Large datasets destined
+    /* Small/hot read-only data stays in low BRAM. Large datasets destined
      * for the cached region are EXCLUDEd here and collected in .ddr_rodata
      * below: add one EXCLUDE_FILE glob per big-data object. Objects can also
      * opt in with __attribute__((section(".ddr_rodata"))). */
@@ -214,7 +215,7 @@ SECTIONS
     PROVIDE(__global_pointer$ = ADDR(.sdata) + 0x800);
 
     /* Memory-mapped I/O peripheral addresses. These must match the hardware
-     * addresses in cpu_and_mem.sv. */
+     * addresses in soc_top.sv. */
     PROVIDE(UART_ADDR           = 0x40000000);  /* UART transmit register (write-only) */
     PROVIDE(UART_RX_DATA_ADDR   = 0x40000004);  /* UART receive data (read consumes byte) */
     PROVIDE(UART_RX_STATUS_ADDR = 0x40000024);  /* UART RX status (bit 0 = data available) */

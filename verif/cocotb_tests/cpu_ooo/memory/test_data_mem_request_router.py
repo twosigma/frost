@@ -44,6 +44,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_sq_mem_write_is_mmio.value = 0
     dut.i_sq_mem_write_is_cached.value = 0
     dut.i_flush_all.value = 0
+    dut.i_block_new_requests.value = 0
     # Idle: no committed store is waiting to be written. The drain-fence tests
     # drive it low themselves.
     dut.i_sq_committed_empty.value = 1

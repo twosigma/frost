@@ -15,10 +15,10 @@
  */
 
 /*
- * Cached-DDR fetch provider for physical addresses with bit 31 set.
- * Two parity-mapped line slots sit before L1I; low-BRAM fetches use
- * low_bram_fetch_presenter. Filled words get the same predecode sideband as
- * low BRAM through imem_predecode_line.
+ * Instruction fetch provider for the PMA-selected memory tier. Cached
+ * requests use two parity-mapped line slots before L1I; strict uncached requests
+ * use two 8-byte slots connected to the outgoing AXI master. Filled words
+ * receive their predecode sideband through imem_predecode_line.
  *
  * The owed request uses the virtual PC as its identity and holds the physical
  * word pair, faults, and prefetch permission. An unresolved request starts no
@@ -43,6 +43,11 @@
  * prefetched line after a loop. Straight-line loops of up to VICTIM_LINES lines
  * re-enter without L1I traffic; the default six-entry store also holds a
  * seven-line loop plus its prefetch. Invalidation drops slots and victim lines.
+ *
+ * DIRECT_LOOKUP instead uses that storage as a direct-mapped instruction
+ * cache, read directly when forming a window. Successful fills remain there
+ * until conflict replacement or invalidation; there is no copy/eviction step.
+ * The two parity engines still track independent fills and their errors.
  */
 module fetch_provider #(
     parameter int unsigned LINE_BYTES = 32,
@@ -54,8 +59,10 @@ module fetch_provider #(
     // in flight, tagged with the slot number (ids 0 and 1); the echo is
     // checked in simulation.
     parameter int unsigned LINE_ID_BITS = 3,
-    // Victim-store depth; 0 disables it.
-    parameter int unsigned VICTIM_LINES = 6
+    // Victim-store depth, or direct-cache line count with DIRECT_LOOKUP.
+    // Zero disables the victim store; the direct cache requires a power of two.
+    parameter int unsigned VICTIM_LINES = 6,
+    parameter bit DIRECT_LOOKUP = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -150,14 +157,20 @@ module fetch_provider #(
   // explicit pulse could abandon their still-owed branch window. Slot-2 and
   // served-window movements need i_retarget because they can follow acceptance.
   //
-  // A cross-tier page straddle can leave the owed request on a faulted leading
-  // word after the core resteers back. Acceptance masks the movement detector,
-  // and the fault's low VA becomes its PA, so this high provider cannot serve
-  // it. Re-sync a faulted word-0 request when the live PC differs. Clean
-  // requests remain fillable; a matching low fault is served by low BRAM.
-  logic retarget_now;
+  // A faulted leading word can belong to the other provider after a resteer.
+  // Re-sync that request when the live PC differs. Also take ownership when
+  // translation selects this provider but its owed PA belongs to the other
+  // tier. Replay may have masked the PC movement, leaving that inactive ask
+  // behind; it can never become publishable here. This includes a cached-page
+  // boundary whose next page faults and is presented by the uncached provider.
+  logic retarget_now, provider_handoff;
+  assign provider_handoff = i_pa_valid && (CACHED_PROVIDER == riscv_pkg::pma_cached_ok(
+      riscv_pkg::XLEN'(i_pa0)
+  )) && (CACHED_PROVIDER != riscv_pkg::pma_cached_ok(
+      riscv_pkg::XLEN'(ask_pa0_q)
+  ));
   assign retarget_now = (!accepted_prev_q && !i_fetch_replay_consume && (i_pc != pc_prev_q)) ||
-      i_retarget || (!o_instr_valid && ask_fault0_q && (i_pc != ask_q));
+      i_retarget || provider_handoff || (!o_instr_valid && ask_fault0_q && (i_pc != ask_q));
 
   // Use the same next request for state update and publication matching.
   logic [riscv_pkg::XLEN-1:0] ask_d;
@@ -282,9 +295,20 @@ module fetch_provider #(
   assign win_line0 = win_addr0[riscv_pkg::PhysAddrBits-1:OffsetBits];
   assign win_line1 = win_addr1[riscv_pkg::PhysAddrBits-1:OffsetBits];
 
-  logic present0, present1;
-  assign present0 = slot_valid_q[win_line0[0]] && (slot_line_q[win_line0[0]] == win_line0);
-  assign present1 = slot_valid_q[win_line1[0]] && (slot_line_q[win_line1[0]] == win_line1);
+  localparam int unsigned DirectIndexBits = VICTIM_LINES > 1 ? $clog2(VICTIM_LINES) : 1;
+  logic present0, present1, error_present0, error_present1;
+  wire [DirectIndexBits-1:0] direct_idx0 = win_line0[DirectIndexBits-1:0];
+  wire [DirectIndexBits-1:0] direct_idx1 = win_line1[DirectIndexBits-1:0];
+  assign error_present0 = slot_valid_q[win_line0[0]] && slot_error_q[win_line0[0]] &&
+      slot_line_q[win_line0[0]] == win_line0;
+  assign error_present1 = slot_valid_q[win_line1[0]] && slot_error_q[win_line1[0]] &&
+      slot_line_q[win_line1[0]] == win_line1;
+  assign present0 = DIRECT_LOOKUP ? error_present0 ||
+      (vs_valid_q[direct_idx0] && vs_line_q[direct_idx0] == win_line0) :
+      slot_valid_q[win_line0[0]] && slot_line_q[win_line0[0]] == win_line0;
+  assign present1 = DIRECT_LOOKUP ? error_present1 ||
+      (vs_valid_q[direct_idx1] && vs_line_q[direct_idx1] == win_line1) :
+      slot_valid_q[win_line1[0]] && slot_line_q[win_line1[0]] == win_line1;
 
   // Positions are {line parity, word index}. IMMU preserves page offsets:
   // fetch_pa1[OffsetBits:2] is fetch_pa0[OffsetBits:2] + 1, including across
@@ -302,12 +326,22 @@ module fetch_provider #(
 
   logic [31:0] ddr_word0, ddr_word1;
   logic [SbWidth-1:0] ddr_sb0, ddr_sb1, ddr_sb_even, ddr_sb_odd;
-  assign ddr_word0 = slot_data_q[word0_pos[WordSelBits]][word0_pos[WordSelBits-1:0]*32+:32];
-  assign ddr_word1 = slot_data_q[word1_pos[WordSelBits]][word1_pos[WordSelBits-1:0]*32+:32];
-  assign ddr_sb0 = slot_sb_q[word0_pos[WordSelBits]][word0_pos[WordSelBits-1:0]*SbWidth+:SbWidth];
-  assign ddr_sb1 = slot_sb_q[word1_pos[WordSelBits]][word1_pos[WordSelBits-1:0]*SbWidth+:SbWidth];
-  assign ddr_sb_even = slot_sb_q[even_pos[WordSelBits]][even_pos[WordSelBits-1:0]*SbWidth+:SbWidth];
-  assign ddr_sb_odd = slot_sb_q[odd_pos[WordSelBits]][odd_pos[WordSelBits-1:0]*SbWidth+:SbWidth];
+  wire [LineBits-1:0] window_line0 = DIRECT_LOOKUP ? vs_data_q[direct_idx0] :
+      slot_data_q[word0_pos[WordSelBits]];
+  wire [LineBits-1:0] window_line1 = DIRECT_LOOKUP ? vs_data_q[direct_idx1] :
+      slot_data_q[word1_pos[WordSelBits]];
+  wire [LineSbBits-1:0] window_sb0 = DIRECT_LOOKUP ? vs_sb_q[direct_idx0] :
+      slot_sb_q[word0_pos[WordSelBits]];
+  wire [LineSbBits-1:0] window_sb1 = DIRECT_LOOKUP ? vs_sb_q[direct_idx1] :
+      slot_sb_q[word1_pos[WordSelBits]];
+  assign ddr_word0 = window_line0[word0_pos[WordSelBits-1:0]*32+:32];
+  assign ddr_word1 = window_line1[word1_pos[WordSelBits-1:0]*32+:32];
+  assign ddr_sb0 = window_sb0[word0_pos[WordSelBits-1:0]*SbWidth+:SbWidth];
+  assign ddr_sb1 = window_sb1[word1_pos[WordSelBits-1:0]*SbWidth+:SbWidth];
+  assign ddr_sb_even = DIRECT_LOOKUP ? (fetch_addr[2] ? ddr_sb1 : ddr_sb0) :
+      slot_sb_q[even_pos[WordSelBits]][even_pos[WordSelBits-1:0]*SbWidth+:SbWidth];
+  assign ddr_sb_odd = DIRECT_LOOKUP ? (fetch_addr[2] ? ddr_sb0 : ddr_sb1) :
+      slot_sb_q[odd_pos[WordSelBits]][odd_pos[WordSelBits-1:0]*SbWidth+:SbWidth];
 
   // Select IF metadata directly by physical parity, for timing.
   logic [3:0] ddr_pc_metadata_even, ddr_pc_metadata_odd;
@@ -341,8 +375,10 @@ module fetch_provider #(
   logic [31:0] ddr_word1_ref;
   logic [SbWidth-1:0] ddr_sb_even_ref, ddr_sb_odd_ref;
   assign word_sel1_ref = win_addr1[2+:WordSelBits];
-  assign ddr_word1_ref = slot_data_q[win_line1[0]][word_sel1_ref*32+:32];
-  assign ddr_sb1_ref = slot_sb_q[win_line1[0]][word_sel1_ref*SbWidth+:SbWidth];
+  assign ddr_word1_ref = DIRECT_LOOKUP ? vs_data_q[direct_idx1][word_sel1_ref*32+:32] :
+      slot_data_q[win_line1[0]][word_sel1_ref*32+:32];
+  assign ddr_sb1_ref = DIRECT_LOOKUP ? vs_sb_q[direct_idx1][word_sel1_ref*SbWidth+:SbWidth] :
+      slot_sb_q[win_line1[0]][word_sel1_ref*SbWidth+:SbWidth];
   assign ddr_sb_even_ref = fetch_addr[2] ? ddr_sb1_ref : ddr_sb0;
   assign ddr_sb_odd_ref = fetch_addr[2] ? ddr_sb0 : ddr_sb1_ref;
   // Armed after the first reset, like the ask checks below: before it the
@@ -383,8 +419,8 @@ module fetch_provider #(
   // pair forms no window at all.
   logic window_ready;
   logic window_fault0, window_fault1;
-  assign window_fault0 = fetch_fault0 || (present0 && slot_error_q[win_line0[0]]);
-  assign window_fault1 = fetch_fault1 || (present1 && slot_error_q[win_line1[0]]);
+  assign window_fault0 = fetch_fault0 || error_present0;
+  assign window_fault1 = fetch_fault1 || error_present1;
   assign window_ready = fetch_high && fetch_pa_valid &&
       (window_fault0 || (present0 && (window_fault1 || present1)));
 
@@ -495,10 +531,16 @@ module fetch_provider #(
       if (cand_is_line0[p]) begin
         cand_fetchable[p] = !ask_fault0_q;
       end else begin
-        cand_fetchable[p] = !ask_fault0_q && (fill_straddle ? !ask_fault1_q : ask_after_ok_q);
+        cand_fetchable[p] = !ask_fault0_q && (fill_straddle ? !ask_fault1_q :
+            (ask_after_ok_q && riscv_pkg::pma_fetch_ok(
+            riscv_pkg::XLEN'({cand_line_q[p], {OffsetBits{1'b0}}}))));
       end
       // Include validity in the tag comparison, for timing.
-      cand_present[p] = ({slot_valid_q[p], slot_line_q[p]} == {1'b1, cand_line_q[p]});
+      cand_present[p] = DIRECT_LOOKUP ?
+          ((vs_valid_q[cand_line_q[p][DirectIndexBits-1:0]] &&
+            vs_line_q[cand_line_q[p][DirectIndexBits-1:0]] == cand_line_q[p]) ||
+           (slot_valid_q[p] && slot_error_q[p] && slot_line_q[p] == cand_line_q[p])) :
+          ({slot_valid_q[p], slot_line_q[p]} == {1'b1, cand_line_q[p]});
     end
   end
 
@@ -549,15 +591,29 @@ module fetch_provider #(
   logic [1:0][VictimLines-1:0] vs_hit_vec;
   logic [1:0] vs_hit;
   (* max_fanout = 64 *) logic [1:0][VictimPtrBits-1:0] vs_hit_idx;
-  always_comb begin
-    for (int p = 0; p < 2; p++) begin
-      vs_hit_idx[p] = '0;
-      for (int v = 0; v < int'(VictimLines); v++) begin
-        vs_hit_vec[p][v] = (VICTIM_LINES > 0) &&
+  if (DIRECT_LOOKUP) begin : gen_indexed_victims
+    initial begin
+      if (VICTIM_LINES < 2 || (VICTIM_LINES & (VICTIM_LINES - 1)) != 0)
+        $fatal(1, "indexed victim store depth must be a power of two");
+    end
+    for (genvar p = 0; p < 2; p++) begin : gen_lookup
+      assign vs_hit_idx[p] = cand_line_q[p][VictimPtrBits-1:0];
+      assign vs_hit[p] = vs_valid_q[vs_hit_idx[p]] && vs_line_q[vs_hit_idx[p]] == cand_line_q[p];
+      // A whole-slice driver avoids partial packed-array processes and
+      // keeps the one-hot vector combinational in both synthesis flows.
+      assign vs_hit_vec[p] = VictimLines'(vs_hit[p]) << vs_hit_idx[p];
+    end
+  end else begin : gen_associative_victims
+    always_comb begin
+      for (int p = 0; p < 2; p++) begin
+        vs_hit_idx[p] = '0;
+        for (int v = 0; v < int'(VictimLines); v++) begin
+          vs_hit_vec[p][v] = (VICTIM_LINES > 0) &&
             ({vs_valid_q[v], vs_line_q[v]} == {1'b1, cand_line_q[p]});
-        vs_hit_idx[p] |= {VictimPtrBits{vs_hit_vec[p][v]}} & VictimPtrBits'(v);
+          vs_hit_idx[p] |= {VictimPtrBits{vs_hit_vec[p][v]}} & VictimPtrBits'(v);
+        end
+        vs_hit[p] = |vs_hit_vec[p];
       end
-      vs_hit[p] = |vs_hit_vec[p];
     end
   end
 
@@ -586,7 +642,10 @@ module fetch_provider #(
   always_ff @(posedge i_clk) begin
     if (ask_line_next_armed_q && !$isunknown({vs_hit_vec, vs_hit_ref, vs_hit_idx_ref})) begin
       p_vs_hit_onehot : assert ($onehot0(vs_hit_vec[0]) && $onehot0(vs_hit_vec[1]));
-      p_vs_hit_idx_exact : assert (vs_hit == vs_hit_ref && vs_hit_idx == vs_hit_idx_ref);
+      p_vs_hit_idx_exact :
+      assert (vs_hit == vs_hit_ref &&
+        (!vs_hit[0] || vs_hit_idx[0] == vs_hit_idx_ref[0]) &&
+        (!vs_hit[1] || vs_hit_idx[1] == vs_hit_idx_ref[1]));
     end
   end
 `endif
@@ -613,7 +672,7 @@ module fetch_provider #(
     end
     for (int p = 0; p < 2; p++) begin
       // p is an int: ~p would be -1/-2, outside the two-bit vector.
-      copy_now[p] = !i_line_resp_valid && !i_invalidate && copy_base[p] &&
+      copy_now[p] = !DIRECT_LOOKUP && !i_line_resp_valid && !i_invalidate && copy_base[p] &&
           ((fill_line0[0] == 1'(p)) || !copy_base[p ^ 1]);
     end
   end
@@ -625,7 +684,7 @@ module fetch_provider #(
   logic [1:0] copy_now_ref;
   always_comb begin
     copy_now_ref = '0;
-    if (!i_line_resp_valid && !i_invalidate) begin
+    if (!DIRECT_LOOKUP && !i_line_resp_valid && !i_invalidate) begin
       if (want_cand[fill_line0[0]] && vs_hit[fill_line0[0]] && !ev_pending_q[fill_line0[0]])
         copy_now_ref[fill_line0[0]] = 1'b1;
       else if (want_cand[~fill_line0[0]] && vs_hit[~fill_line0[0]] && !ev_pending_q[~fill_line0[0]])
@@ -805,7 +864,7 @@ module fetch_provider #(
   assign ev_sel   = ~ev_pending_q[0];
 
   always_ff @(posedge i_clk) begin
-    if (i_rst || i_invalidate) begin
+    if (i_rst || i_invalidate || DIRECT_LOOKUP) begin
       ev_pending_q <= '0;
     end else begin
       if (ev_write) ev_pending_q[ev_sel] <= 1'b0;
@@ -835,12 +894,21 @@ module fetch_provider #(
       end
     end
   end
-  assign vs_wr_idx = vs_free_found ? vs_free_idx : vs_wr_ptr_q;
+  assign vs_wr_idx = DIRECT_LOOKUP ? ev_line_q[ev_sel][VictimPtrBits-1:0] :
+      vs_free_found ? vs_free_idx : vs_wr_ptr_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst || i_invalidate) begin
       vs_valid_q  <= '0;
       vs_wr_ptr_q <= '0;
+    end else if (DIRECT_LOOKUP) begin
+      if (i_line_resp_valid && fill_busy_q[resp_slot] && fill_sent_q[resp_slot] &&
+          !fill_discard_q[resp_slot] && !(ENABLE_RESPONSE_ERRORS && i_line_resp_error)) begin
+        vs_valid_q[fill_line_q[resp_slot][DirectIndexBits-1:0]] <= 1'b1;
+        vs_line_q[fill_line_q[resp_slot][DirectIndexBits-1:0]] <= fill_line_q[resp_slot];
+        vs_data_q[fill_line_q[resp_slot][DirectIndexBits-1:0]] <= i_line_resp_rdata;
+        vs_sb_q[fill_line_q[resp_slot][DirectIndexBits-1:0]] <= fill_sideband;
+      end
     end else begin
       // Release first so a same-cycle store write to that entry wins, for the
       // case where the round-robin pointer happens to sit there.
@@ -850,7 +918,7 @@ module fetch_provider #(
         vs_line_q[vs_wr_idx] <= ev_line_q[ev_sel];
         vs_data_q[vs_wr_idx] <= ev_data_q[ev_sel];
         vs_sb_q[vs_wr_idx] <= ev_sb_q[ev_sel];
-        if (!vs_free_found)
+        if (!DIRECT_LOOKUP && !vs_free_found)
           vs_wr_ptr_q <= (vs_wr_ptr_q == VictimPtrBits'(VictimLines - 1)) ? '0 : vs_wr_ptr_q + 1'b1;
       end
     end

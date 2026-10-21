@@ -20,6 +20,7 @@
   coherent-agent port. The SoC owns board memory, peripheral and debug CDC.
 */
 module platform_top #(
+    parameter bit CACHE_NORMAL_MEMORY = 1'b1,
     parameter logic [63:0] BOOT_ADDR = 64'd0,
     parameter int unsigned MEM_SIZE_BYTES = 2 ** 17,
     // Simulation mtime multiplier; use 1 for synthesis.
@@ -28,7 +29,8 @@ module platform_top #(
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes,
     parameter int unsigned ENABLE_CACHED_TIER = 1,
-    parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
+    parameter int unsigned L0_CACHE_DEPTH = CACHE_NORMAL_MEMORY ?
+        riscv_pkg::NormalLqL0Depth : riscv_pkg::LqL0Depth,
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
     parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
@@ -310,6 +312,7 @@ module platform_top #(
   end
 
   cpu_top #(
+      .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),

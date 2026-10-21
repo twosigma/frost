@@ -131,6 +131,13 @@ point is marked `slow`:
 Runs the implemented parts of riscv-arch-test and compares each test's
 signature, printed over the UART, with a committed Spike reference under
 `sw/apps/arch_test/references/`, which mirrors the suite's directory layout.
+Every reset/restart run's signature is checked. BRAM runs twice. Small images
+retain memory across reset and startup restores their initialized data. When
+a larger image's initialization data extends into mutable RAM, startup
+overwrites that copy; the bench reloads the original image through the BRAM
+programming port while holding reset before the second run. Both signatures
+must still match the reference. DDR and `icache` run once because their
+images load in place and a CPU reset does not restore mutated inputs.
 The extensions are I, M, A, F, D, C, B, K (Zbkb only), Zicond, Zifencei,
 privilege, D_Zcd, and hints; Zcf exists only on RV32. The tests come from the
 suite's `rv64i_m` directory; F and D also run the tests that RV32 and RV64
@@ -170,8 +177,10 @@ fit low BRAM (the larger `*_b8` and `*_b9` arithmetic sets) and those above
 5,000 cases (the `*_b1` fused multiply-adds and the `*_b11` adds and
 subtracts) therefore run only locally, for example with
 `--test rv32i_m/F/src/fmadd_b1-01.S --mem-config ddr`. `icache` runs only
-locally. The F and D shards set `FROST_ARCH_SIM_TIMEOUT_SEC=3600`, an hour
-per test; the runner's default limit is sized for the largest tests in DDR.
+locally. F uses four BRAM shards and D uses five, with
+`FROST_ARCH_SIM_TIMEOUT_SEC=3600` allowing one hour per test; the runner's
+default limit is sized for the largest tests in DDR. I, C, and B retain
+unsharded BRAM jobs and collect line coverage and cover points.
 
 In many of the pinned F and D sources, most `NAN_BOXED` data constants run
 the intended hex value together with its own decimal digits, less the first:
@@ -303,7 +312,8 @@ which have 90 minutes each. `--verbose` prints solver output.
 | `FROST_COVERAGE_DIR` | Where each run writes its coverage file (default `tests/coverage`; a relative path starts at the repository root) |
 | `NUMBER_OF_CPU_CORES` | Parallel Verilator build jobs (default: every core; a seed sweep divides them among its workers) |
 | `COCOTB_MAX_CYCLES` | Cycle budget per application run (default 500,000); some targets set their own |
-| `COCOTB_COREMARK_MAX_CYCLES` | CoreMark and CoreMark-PRO cycle budget (default 15,000,000; coremark_pro_loops sets 20,000,000 in the test registry) |
+| `COCOTB_COREMARK_MAX_CYCLES` | CoreMark and CoreMark-PRO cycle budget (default 15,000,000; the registry sets 20,000,000 for `coremark_pro_loops`) |
+| `COCOTB_COREMARK_PROGRESS_INTERVAL` | CoreMark progress diagnostics interval in cycles (default 500,000); `0` disables the optional per-cycle Python observer, as CI does for CoreMark-PRO to reduce host runtime without changing workloads or verification |
 | `COCOTB_NUM_RUNS` | Runs per application, with a reset between them (default 2; always 1 in the DDR tier) |
 | `SIM_FAST_MAINT` | Fast `fence.i` cache maintenance in whole-SoC simulation (default 1; hardware uses the full sweeps, as `0` does) |
 
@@ -314,7 +324,9 @@ failures. Before running a runner any way other than the `cocotb` and
 `pytest` shortcuts, clean `tests/` yourself
 (`./scripts/frost.py run make -C tests clean`). If `doctor` reports a missing
 tool or a version that differs from the Dockerfile, rebuild the image. If a
-long program runs out of cycles, raise its budget.
+long program runs out of cycles, first measure a complete passing run with
+an extended limit, then set its budget with headroom. A passing workload
+with a larger budget does not establish performance parity.
 
 ## Coverage
 
@@ -424,7 +436,7 @@ pinned Docker image, except the ASIC flow, which runs in its own image:
 | Cocotb applications | BRAM and DDR where supported; each CoreMark-PRO workload runs separately |
 | Cocotb unit benches, DDR probes, fetch fuzzers, programs on the SRAM macros, OpenSBI smoke | BRAM only: tier-independent or fixed-layout runs |
 | Physical address apertures | Software boundary, fetch, translation, DMA, and NIC checks at 1, 64, and 128 GiB; generic synthesis at 1 and 128 GiB |
-| Architecture compliance | BRAM and DDR; excludes Zifencei on BRAM and F/D on DDR; F and D run in BRAM shards |
+| Architecture compliance | BRAM and DDR; excludes Zifencei on BRAM and F/D on DDR; F uses four BRAM shards and D uses five, without coverage; other extensions collect coverage |
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both |
 | Torture | BRAM, DDR, and paged DDR |
 | TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples |

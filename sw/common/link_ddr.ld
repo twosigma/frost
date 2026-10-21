@@ -6,7 +6,8 @@
  * program, code and data and bss, lives in the cached DDR region at
  * 0x8000_0000, fetched through the L1I and accessed through the L1D. The
  * opt-in .ddr_* sections stay in DDR after the relocated program, and the heap
- * follows.  The stack stays in low BRAM (fast).
+ * follows. The stack stays in Normal low BRAM, with L0 read caching and
+ * write-through AXI stores in the FROST platform.
  *
  * DDR sections load in place (LMA == VMA): the sim preloads the behavioral DDR
  * from sw_ddr.mem, so crt0's .data copy loop self-copies (a no-op).
@@ -27,7 +28,7 @@ MEMORY
     MMIO (rw)  : ORIGIN = 0x40000000, LENGTH = 44     /* peripherals */
 }
 
-/* Stack stays in low BRAM (fast, uncached) for every program. */
+/* Stack stays in Normal low BRAM for every program. */
 _end_of_stack = ORIGIN(RAM) + LENGTH(RAM);
 PROVIDE(_stack_top = _end_of_stack);
 __freertos_irq_stack_top = _end_of_stack;

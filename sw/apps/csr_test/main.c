@@ -99,45 +99,66 @@ static void spin(void)
         ;
 }
 
-/* READ_LOOP_COUNT back-to-back reads of one CSR, bracketed by reads of the
- * same CSR; returns the bracket delta. A read that costs a tick shows up as a
- * delta short by READ_LOOP_COUNT, far outside READ_LOOP_TOLERANCE. */
+/* The read-only and machine instret aliases must retire the same number of
+ * instructions. Code placement and memory latency cannot change that count. */
 #define READ_LOOP_COUNT 512
 #define READ_LOOP_TOLERANCE 64
 
-static uint64_t read_loop_delta(unsigned csr)
+static uint64_t instret_read_loop_delta(int machine)
 {
     uint64_t start, end, scratch;
     int i;
 
-    switch (csr) {
-        case 0xC00:
-            __asm volatile("csrr %0, 0xC00" : "=r"(start));
-            for (i = 0; i < READ_LOOP_COUNT; i++)
-                __asm volatile("csrr %0, 0xC00" : "=r"(scratch));
-            __asm volatile("csrr %0, 0xC00" : "=r"(end));
-            break;
-        case 0xB00:
-            __asm volatile("csrr %0, 0xB00" : "=r"(start));
-            for (i = 0; i < READ_LOOP_COUNT; i++)
-                __asm volatile("csrr %0, 0xB00" : "=r"(scratch));
-            __asm volatile("csrr %0, 0xB00" : "=r"(end));
-            break;
-        case 0xC02:
-            __asm volatile("csrr %0, 0xC02" : "=r"(start));
-            for (i = 0; i < READ_LOOP_COUNT; i++)
-                __asm volatile("csrr %0, 0xC02" : "=r"(scratch));
-            __asm volatile("csrr %0, 0xC02" : "=r"(end));
-            break;
-        default:
-            __asm volatile("csrr %0, 0xB02" : "=r"(start));
-            for (i = 0; i < READ_LOOP_COUNT; i++)
-                __asm volatile("csrr %0, 0xB02" : "=r"(scratch));
-            __asm volatile("csrr %0, 0xB02" : "=r"(end));
-            break;
+    if (machine) {
+        __asm volatile("csrr %0, 0xB02" : "=r"(start));
+        for (i = 0; i < READ_LOOP_COUNT; i++)
+            __asm volatile("csrr %0, 0xB02" : "=r"(scratch));
+        __asm volatile("csrr %0, 0xB02" : "=r"(end));
+    } else {
+        __asm volatile("csrr %0, 0xC02" : "=r"(start));
+        for (i = 0; i < READ_LOOP_COUNT; i++)
+            __asm volatile("csrr %0, 0xC02" : "=r"(scratch));
+        __asm volatile("csrr %0, 0xC02" : "=r"(end));
     }
     (void) scratch;
     return end - start;
+}
+
+/* FROST's mtime advances once per CPU clock independently of mcycle. Bracket
+ * each mcycle sample with time reads to bound its sampling instant, then
+ * require its elapsed ticks to fit the independent timer's interval. This
+ * catches reads that accidentally write mcycle and lose ticks without
+ * comparing the execution times of differently placed instruction loops. */
+static void check_mcycle_reads(void)
+{
+    uint64_t start_lo, start, start_hi, end_lo, end, end_hi, scratch;
+    __asm volatile("rdtime %0\n"
+                   "csrr %1, 0xB00\n"
+                   "rdtime %2\n"
+                   : "=&r"(start_lo), "=&r"(start), "=&r"(start_hi));
+    for (int i = 0; i < READ_LOOP_COUNT; i++)
+        __asm volatile("csrr %0, 0xB00" : "=r"(scratch));
+    __asm volatile("rdtime %0\n"
+                   "csrr %1, 0xB00\n"
+                   "rdtime %2\n"
+                   : "=&r"(end_lo), "=&r"(end), "=&r"(end_hi));
+    (void) scratch;
+
+    uint64_t elapsed = end - start;
+    uint64_t lower = end_lo - start_hi;
+    uint64_t upper = end_hi - start_lo;
+    uart_puts("  mcycle elapsed and independent time bounds: ");
+    uart_hex64(elapsed);
+    uart_putc(' ');
+    uart_hex64(lower);
+    uart_putc(' ');
+    uart_hex64(upper);
+    uart_puts("\r\n");
+    /* Keep the observation windows narrower than the 512 deliberately
+     * exercised reads, so a broad timing interval cannot hide a lost tick
+     * on every read. Normal fetch latency comfortably meets this bound. */
+    check("counter sampling windows resolve lost ticks", upper - lower < READ_LOOP_COUNT);
+    check("mcycle reads cost no ticks", elapsed >= lower && elapsed <= upper);
 }
 
 static void counter_tests(void)
@@ -220,21 +241,9 @@ static void counter_tests(void)
     check("mcycle write of 0 restarts from 0", a < 256);
 
     uart_puts("\r\nTest 7: M-mode reads of mcycle/minstret are pure reads\r\n");
-    /* The commit stage raises the CSR write enable for every CSR
-     * instruction. If a csrr of the M-mode alias were treated as a write of
-     * the value it read, every read would swallow one cycle tick (and, for
-     * minstret, its own retirement). Time the same read loop against the M
-     * alias and the read-only alias: they must agree closely. */
-    c = read_loop_delta(0xC00);
-    a = read_loop_delta(0xB00);
-    uart_puts("  cycle-loop deltas via cycle/mcycle: ");
-    uart_hex64(c);
-    uart_putc(' ');
-    uart_hex64(a);
-    uart_puts("\r\n");
-    check("mcycle reads cost no ticks", a + READ_LOOP_TOLERANCE > c && a < c + READ_LOOP_TOLERANCE);
-    c = read_loop_delta(0xC02);
-    a = read_loop_delta(0xB02);
+    check_mcycle_reads();
+    c = instret_read_loop_delta(0);
+    a = instret_read_loop_delta(1);
     uart_puts("  instret-loop deltas via instret/minstret: ");
     uart_hex64(c);
     uart_putc(' ');

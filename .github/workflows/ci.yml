@@ -224,6 +224,9 @@ jobs:
           # (tests/README.md#coverage).
           FROST_COVERAGE: ${{ !contains(matrix.shard.name, 'CoreMark-PRO') && '1' || '0' }}
           FROST_COVERAGE_TOGGLE: ${{ matrix.shard.name == 'Unit Tests' && '1' || '0' }}
+          # Optional per-cycle Python progress tracing adds host runtime to
+          # these long workloads. Keep their checks and reset runs unchanged.
+          COCOTB_COREMARK_PROGRESS_INTERVAL: ${{ contains(matrix.shard.name, 'CoreMark-PRO') && '0' || '500000' }}
           PYTEST_MARK: ${{ matrix.shard.pytest_mark }}
           PYTEST_FILTER: ${{ matrix.shard.pytest_filter }}
         run: |
