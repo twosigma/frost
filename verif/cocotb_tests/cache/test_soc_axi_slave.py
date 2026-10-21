@@ -15,6 +15,7 @@
 """FROST bridge channel ownership, narrow lanes, and delayed completion."""
 
 from typing import Any
+import random
 
 import cocotb
 from cocotb.triggers import Timer
@@ -232,3 +233,108 @@ async def unsupported_ddr_id_is_rejected_without_alias(dut: Any) -> None:
     await b.step(local_ready=0, local_resp_valid=1, local_resp_status=3)
     s = await b.step(local_resp_valid=0, axi_rready=1)
     assert s["axi_rvalid"] and s["axi_rid"] == 35 and s["axi_rresp"] == 3
+
+
+@cocotb.test()
+async def concurrent_local_channels_keep_every_request_and_response(dut: Any) -> None:
+    """Mix independent address/data arrivals, response errors, and backpressure."""
+    rng = random.Random(0xA41B84)
+    b = Bench(dut)
+    await b.reset()
+    count = 32
+    reads = []
+    writes = []
+    for index in range(count):
+        size = 5 if index % 5 == 0 else index % 4
+        offset = 32 if size == 5 else ((7 - index % 8) * 8)
+        address = 0x1000 + 64 * index + offset
+        data = rng.getrandbits(256 if size == 5 else 64)
+        reads.append((address, size, data, (0, 2, 3)[index % 3]))
+        size = index % 4
+        address = 0x5000 + 64 * index + (64 - (1 << size))
+        data = 0x90ABCDEF12345678 ^ index
+        strobes = ((1 << (1 << size)) - 1) << (address & 63)
+        writes.append((address, size, data, strobes, (3, 0, 2)[index % 3]))
+    read_index = {row[0]: index for index, row in enumerate(reads)}
+    write_index = {row[0]: index for index, row in enumerate(writes)}
+    aw = ar = w = completed_r = completed_b = 0
+    aw_active = ar_active = w_active = False
+    pending: tuple[int, int, int] | None = None
+    seen = set()
+    for cycle in range(5000):
+        aw_active = aw < count and (aw_active or rng.random() < 0.7)
+        ar_active = ar < count and (ar_active or rng.random() < 0.7)
+        w_active = w < count and (w_active or rng.random() < 0.7)
+        rready, bready, local_ready = (int(rng.random() < 0.6) for _ in range(3))
+        response = pending is not None and pending[0] <= cycle
+        drive = dict(
+            axi_awvalid=int(aw_active),
+            axi_arvalid=int(ar_active),
+            axi_wvalid=int(w_active),
+            axi_rready=rready,
+            axi_bready=bready,
+            local_ready=local_ready,
+            local_resp_valid=int(response),
+            local_resp_rdata=pending[1] if pending is not None else 0,
+            local_resp_status=pending[2] if pending is not None else 0,
+        )
+        if aw_active:
+            drive.update(
+                axi_awid=32 + aw % 4,
+                axi_awaddr=writes[aw][0],
+                axi_awsize=writes[aw][1],
+                axi_awprot=3,
+            )
+        if ar_active:
+            drive.update(
+                axi_arid=40 + ar % 4,
+                axi_araddr=reads[ar][0],
+                axi_arsize=reads[ar][1],
+                axi_arprot=7 if reads[ar][1] == 5 else 3,
+            )
+        if w_active:
+            data = sum(writes[w][2] << (64 * lane) for lane in range(8))
+            drive.update(axi_wdata=data, axi_wstrb=writes[w][3])
+        sample = await b.step(**drive)
+        if aw_active and sample["axi_awready"]:
+            aw += 1
+            aw_active = False
+        if ar_active and sample["axi_arready"]:
+            ar += 1
+            ar_active = False
+        if w_active and sample["axi_wready"]:
+            w += 1
+            w_active = False
+        if response and sample["local_resp_ready"]:
+            pending = None
+        if sample["local_valid"] and local_ready:
+            key = (sample["local_write"], sample["local_addr"])
+            assert key not in seen
+            seen.add(key)
+            assert not sample["local_error"]
+            assert pending is None
+            if sample["local_write"]:
+                row = writes[write_index[sample["local_addr"]]]
+                address, size, data, strobes, status = row
+                assert sample["local_wdata"] == data
+                assert sample["local_wstrb"] == strobes >> (address & 56)
+                assert sample["local_size"] == size
+                pending = (cycle + rng.randrange(1, 9), 0, status)
+            else:
+                address, size, data, status = reads[read_index[sample["local_addr"]]]
+                assert sample["local_size"] == size
+                pending = (cycle + rng.randrange(1, 9), data, status)
+        if sample["axi_rvalid"] and rready:
+            address, _, data, status = reads[completed_r]
+            assert sample["axi_rid"] == 40 + completed_r % 4
+            assert sample["axi_rdata"] == data << ((address & 56) * 8)
+            assert sample["axi_rresp"] == status and sample["axi_rlast"]
+            completed_r += 1
+        if sample["axi_bvalid"] and bready:
+            assert sample["axi_bid"] == 32 + completed_b % 4
+            assert sample["axi_bresp"] == writes[completed_b][4]
+            completed_b += 1
+        if completed_r == completed_b == count:
+            break
+    assert aw == ar == w == completed_r == completed_b == count
+    assert b.local_count == 2 * count

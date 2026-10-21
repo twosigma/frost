@@ -155,10 +155,11 @@ puts [format "FROST_STEP2_PC=0x%x" [dict get [get_reg -force pc] pc]]
 write_memory {syms["flag"]:#x} 64 {{1}}
 resume
 sleep 20
-# The U-mode loop ecalls into an M-mode handler every 64th iteration; halt
-# again until the halt lands in U (priv 0).
+# The U-mode loop ecalls into M every 64th iteration. Startup and device
+# accesses have variable latency; allow enough halt attempts to reach U.
+# Exhaustion must fail here, before a write to a still-running target.
 set priv 3
-for {{set i 0}} {{$i < 8}} {{incr i}} {{
+for {{set i 0}} {{$i < 64}} {{incr i}} {{
     halt
     wait_halt 2000
     set priv [dict get [get_reg -force priv] priv]
@@ -167,6 +168,8 @@ for {{set i 0}} {{$i < 8}} {{incr i}} {{
     sleep 5
 }}
 puts [format "FROST_PRIV=%d" $priv]
+if {{$priv != 0}} {{error "hart did not reach U-mode within 64 halt attempts"}}
+puts [format "FROST_U_POLLS=%d" [expr {{$i + 1}}]]
 write_memory {syms["flag"]:#x} 64 {{2}}
 resume
 sleep 50

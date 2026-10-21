@@ -27,6 +27,7 @@
  */
 
 module cpu_ooo #(
+    parameter bit CACHE_NORMAL_MEMORY = 1'b0,
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned MEM_BYTE_ADDR_WIDTH = 16,
     parameter bit VARIABLE_UNCACHED = 1'b0,
@@ -188,6 +189,7 @@ module cpu_ooo #(
     input logic [1:0] i_uncached_read_status = 2'b00,
     output logic [riscv_pkg::MemStrbBits-1:0] o_uncached_write_byte_en,
     output riscv_pkg::mem_size_e o_uncached_write_size,
+    output logic o_uncached_write_buffered,
     input logic i_uncached_write_done = 1'b0,
     input logic [1:0] i_uncached_write_status = 2'b00,
     input logic i_uncached_write_inflight = 1'b0,
@@ -246,6 +248,17 @@ module cpu_ooo #(
   // Active-low reset for Tomasulo modules
   logic rst_n;
   assign rst_n = ~i_rst;
+
+  // Fatal errors block retirement and new memory requests immediately.
+  // Internal execution quiesces on the following edge: none of its results
+  // can retire or create a new side effect during that cycle. Registering
+  // this execution-only control keeps fatal aggregation off the branch
+  // completion path through the reservation stations and ROB.
+  logic fatal_backend_hold_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) fatal_backend_hold_q <= 1'b0;
+    else fatal_backend_hold_q <= i_fatal_stop;
+  end
 
   // ===========================================================================
   // Pipeline Control
@@ -1864,7 +1877,7 @@ module cpu_ooo #(
   logic [XLEN-1:0] sq_mem_write_addr;
   logic [riscv_pkg::MemDataBits-1:0] sq_mem_write_data;
   logic [riscv_pkg::MemStrbBits-1:0] sq_mem_write_byte_en;
-  logic sq_mem_write_is_mmio;
+  logic sq_mem_write_is_mmio, sq_mem_write_buffered;
   // Registered SQ tier flag routes cached stores away from BRAM.
   logic sq_mem_write_is_cached;
   logic sq_mem_write_done;
@@ -1996,6 +2009,7 @@ module cpu_ooo #(
   logic csr_mtvec_traps_misaligned;  // |mtvec[XLEN-1:2], registered in csr_file
 
   tomasulo_wrapper #(
+      .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .MEM_RESPONSE_ERRORS(VARIABLE_UNCACHED),
       .SPLIT_RS_DISPATCH(1'b1),
       .ENABLE_DISPATCH_DONE_REPAIR(1'b1),
@@ -2132,7 +2146,7 @@ module cpu_ooo #(
       .i_flush_tag(flush_tag),
       .i_flush_all(flush_all),
       .i_flush_after_head_commit(commit_recovery_flush_after_head),
-      .i_backend_recovery_hold(early_backend_recovery_hold || i_fatal_stop),
+      .i_backend_recovery_hold(early_backend_recovery_hold || fatal_backend_hold_q),
       .i_slow_write_inflight(slow_write_inflight),
       .i_uncached_read_busy(VARIABLE_UNCACHED && !i_uncached_read_request_ready),
       .i_coh_admit_valid(i_coh_admit_valid),
@@ -2339,6 +2353,7 @@ module cpu_ooo #(
       .o_sq_mem_write_addr(sq_mem_write_addr),
       .o_sq_mem_write_data(sq_mem_write_data),
       .o_sq_mem_write_byte_en(sq_mem_write_byte_en),
+      .o_sq_mem_write_buffered(sq_mem_write_buffered),
       .o_sq_mem_write_size(sq_mem_write_size),
       .o_sq_mem_write_is_mmio(sq_mem_write_is_mmio),
       .o_sq_mem_write_is_cached(sq_mem_write_is_cached),
@@ -3256,20 +3271,22 @@ module cpu_ooo #(
   ) data_mem_request_router_inst (
       .i_clk,
       .i_rst,
+      .i_block_new_requests(i_fatal_stop),
       .i_flush_all(lq_router_flush_all || i_fatal_stop),
-      .i_sq_mem_write_en(sq_mem_write_en && !i_fatal_stop),
+      .i_sq_mem_write_en(sq_mem_write_en),
       .i_sq_mem_write_addr(sq_mem_write_addr),
       .i_sq_mem_write_data(sq_mem_write_data),
       .i_sq_mem_write_byte_en(sq_mem_write_byte_en),
+      .i_sq_mem_write_buffered(sq_mem_write_buffered),
       .i_sq_mem_write_size(sq_mem_write_size),
       .i_sq_mem_write_is_mmio(sq_mem_write_is_mmio),
       .i_sq_mem_write_is_cached(sq_mem_write_is_cached),
-      .i_amo_mem_write_en(amo_mem_write_en && !i_fatal_stop),
+      .i_amo_mem_write_en(amo_mem_write_en),
       .i_amo_mem_write_addr(amo_mem_write_addr),
       .i_amo_mem_write_data(amo_mem_write_data),
       .i_amo_mem_write_is_dword(amo_mem_write_is_dword),
       .i_amo_mem_write_is_cached(amo_mem_write_is_cached),
-      .i_lq_mem_read_en(lq_mem_read_en && !i_fatal_stop),
+      .i_lq_mem_read_en(lq_mem_read_en),
       .i_lq_mem_read_addr(lq_mem_read_addr),
       .i_lq_mem_addr_valid(lq_mem_addr_valid),
       .i_lq_mem_read_id(lq_mem_read_launch_id),
@@ -3294,6 +3311,7 @@ module cpu_ooo #(
       .i_uncached_read_status,
       .o_uncached_write_byte_en,
       .o_uncached_write_size,
+      .o_uncached_write_buffered,
       .i_uncached_write_done,
       .i_uncached_write_status,
       .i_uncached_write_inflight,

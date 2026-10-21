@@ -225,12 +225,16 @@ configured physical-memory attributes:
 | Provider | Serves | Response |
 |----------|--------|----------|
 | Uncached, 8-byte blocks | Executable uncached Normal memory | Narrow AXI reads, two owned slots, no victim cache or next-block prefetch |
+| Optional Normal cache, 32-byte lines | Same Normal region with `CACHE_NORMAL_MEMORY=1` | Two AXI fill slots and a direct-mapped cache, 256 lines by default |
 | Cached, 32-byte lines | Executable cached Normal memory | Two buffers over L1I, next-line prefetch and a six-line victim store |
 
 FROST low BRAM sits behind the SoC AXI slave. Both providers generate their
 predecode metadata from returned instruction bytes. A bus error creates an
 instruction access fault and never installs a victim entry. Device regions
-cannot be fetched. The fixed-latency `low_bram_fetch_presenter` remains only
+cannot be fetched. FROST enables the optional Normal cache; its entries survive
+branches and invalidate on FENCE.I, reset, and accepted debug GO. Next-line
+prefetches must remain executable under the configured PMA. The standalone
+CPU defaults to strict uncached access. The fixed-latency `low_bram_fetch_presenter` remains only
 in the positional TestRIG fixture and component tests.
 
 IF tolerates any provider latency. When no valid window arrives, IF emits NOP
@@ -424,6 +428,9 @@ bench, such as `branch_predictor`, `pc_controller`, `instruction_aligner`,
 `fetch_provider`, `immu`, and `decoded_bundle_queue`. Whole-program tests run
 the integrated core; the `*_fetch_fuzz` variants, such as
 `branch_pred_test_fetch_fuzz`, add random fetch gaps with `FETCH_VALID_FUZZ=1`.
+The `if_stage` tests also cover a PD redirect arriving during a fetch gap
+after a BTB prediction: the redirect bubble must survive the gap and stalls,
+and the first target bundle must be emitted exactly once.
 Formal targets cover the PC muxes and holdoffs, the pending-prediction
 handoff, predictor aliasing, RV64C predecode (`rvc_predecode` checks every
 16-bit parcel against the reference decompressor), the TLBs and walker, and the

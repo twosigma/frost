@@ -9,7 +9,7 @@ All ports are synchronous to the rising edge of `i_clk`. There are no clock cros
 - `i_rst` is the active-high synchronous CPU reset. Hold it for at least two clock edges. Keep the halfword-aligned `i_boot_addr` stable throughout reset; both fetch PCs sample it on reset edges. After release, cache initialization and normal fetch handshakes determine when execution starts. `o_rst_done` clears on reset and rises after 255 rising edges without CPU reset. It is a reset-duration indication; it does not gate execution or indicate fabric idle.
 - `i_axi_rst` resets **both sides** of the AXI connection. Assert it together with `i_rst` during initial system reset, and whenever the fabric discards outstanding transactions. Keep `i_rst` asserted for every edge on which `i_axi_rst` is asserted; resetting the transport alone would strand requests still owned by the CPU memory system. It clears ownership and gates outgoing VALID and incoming READY low. Its release must be synchronous to `i_clk`.
 - A CPU-only reset does not withdraw an already presented AXI request. The master completes outstanding AW/W/AR handshakes, drains R/B responses from the old CPU epoch, and blocks new requests until that debt is gone. The fabric must continue making progress. A previously accepted device access can still have its side effect during this drain.
-- CPU reset invalidates caches and discards their dirty contents. Preserve memory that must survive reset before asserting it. Reset is not a cache writeback operation.
+- CPU reset invalidates caches and discards dirty lines in the writeback region. The Normal read-cache policy creates no dirty lines. Drain stores and write back cached data that must survive reset before asserting it; reset itself performs no cache writeback.
 - `o_axi_idle` covers the master's queued requests, fabric transactions, buffered responses, and reset drain. It does not prove that all dirty cache lines have reached memory, and it is not a clock-gating permission by itself.
 
 FROST's SoC combines external reset and the Debug Module's `ndmreset` for CPU reset. The Debug Module survives `ndmreset`. Its board and JTAG clock crossings remain in `soc_top` and `frost`.
@@ -18,7 +18,7 @@ FROST's SoC combines external reset and the Debug Module's `ndmreset` for CPU re
 
 The flat `o_axi_*` / `i_axi_*` ports are one AXI4 master. Addresses are full physical byte addresses; `cpu_top` never subtracts a platform base. Address width is `riscv_pkg::PhysAddrBits`. Data width is `8 * L2_LINE_BYTES` (default 512 bits; 256 bits with 32-byte L2 lines). `AXI_ID_BITS` defaults to 6; supported widths are 6 through 8 bits. AW and W handshake independently.
 
-Every transaction has AxLEN=0, AxBURST=INCR, AxLOCK=0, and WLAST/RLAST=1. A wrapper must preserve AxADDR, AxSIZE, AxCACHE, AxPROT, WSTRB, IDs and RRESP/BRESP. Narrow data accesses use their original byte address and size (1, 2, 4 or 8 bytes). Data and strobes occupy the addressed lanes of the wide bus. Uncached instruction fetch uses aligned 8-byte reads, with no speculative read of a following block beyond the requested instruction window. Device memory is never fetched, prefetched, or line-filled.
+Every transaction has AxLEN=0, AxBURST=INCR, AxLOCK=0, and WLAST/RLAST=1. A wrapper must preserve AxADDR, AxSIZE, AxCACHE, AxPROT, WSTRB, IDs and RRESP/BRESP. Device data accesses and all non-writeback stores use their original byte address and size (1, 2, 4 or 8 bytes). Data and strobes occupy the addressed lanes of the wide bus. With the standalone default `CACHE_NORMAL_MEMORY=0`, uncached Normal data also retains its original size, and instruction fetch uses aligned 8-byte reads without next-block prefetch. The optional Normal read-cache policy is described below. Device memory is never fetched, prefetched, or line-filled.
 
 | Traffic | AxCACHE | AxPROT[2] | Size |
 | --- | --- | --- | --- |
@@ -26,16 +26,27 @@ Every transaction has AxLEN=0, AxBURST=INCR, AxLOCK=0, and WLAST/RLAST=1. A wrap
 | Uncached Normal data | `0010` | 0 | Original access size |
 | Device data | `0000` | 0 | Original access size |
 | Uncached instruction memory | `0010` | 1 | 8 bytes |
+| Optional Normal read-cache data fill | AR `1110` | 0 | Aligned 8 bytes |
+| Optional Normal write-through store | AW `0110` | 0 | Original access size |
+| Optional Normal instruction-cache fill | AR `1110` | 1 | Aligned 32 bytes |
 
 The cache is a unified physical memory domain below its private levels: a downstream cache fill can serve instruction, data, walker, or coherent-agent requests. Its AXI transactions use the configured `AXI_MEMORY_PROT` (default `011`, privileged and Non-secure). This is the tile's bus security domain, **not** a reflection of the current RISC-V privilege mode. The CPU's MMUs enforce RISC-V permissions before cache access. An external security firewall must trust that domain; translating AxPROT into the hart's current privilege would mislabel outstanding walks and writebacks. Uncached instruction requests set bit 2 on that domain value.
 
 | AXI ID | Owner |
 | --- | --- |
 | 0–31 | L2 fill/writeback ownership |
-| 32 | Uncached data adapter |
-| 34–35 | Two uncached instruction fetch slots |
+| 32 | Normal/Device data adapter, including optional write-through traffic |
+| 34–35 | Two Normal instruction fetch slots |
 
 ID 33 and IDs above 35 are unused. An ID stays owned until its CPU-side response is consumed. Different IDs may complete out of order; each response is matched to its owner. ID values do not select cacheability, device behavior, ordering or address routing.
+
+An internal request register separates client arbitration from the master's ID and channel availability checks. It holds the complete address, attributes, ID, data and strobes under backpressure and permits simultaneous dequeue and replacement. CPU reset discards this request if it has not reached the master; already presented AXI traffic still drains. `o_axi_idle` includes this register.
+
+On a successful response, the uncached adapter may enqueue its next waiting
+request into that register on the same edge. The master still releases the
+previous ID ownership before accepting its replacement. Read and write
+completions remain registered, held read responses remain stable, and error
+responses retain their existing recovery timing.
 
 `AXI_USER_BITS` is a positive width, default 1. AWUSER, ARUSER and WUSER are zero. RUSER and BUSER are ignored. A wrapper may omit USER or carry its own metadata without changing CPU semantics. AxQOS and AxREGION are zero. AXI exclusive transactions and ATOP extensions are not used.
 
@@ -43,17 +54,31 @@ Attribute encodings follow the [Arm AXI specification](https://developer.arm.com
 
 ## Completion, faults and ordering
 
-Uncached reads and writes complete only on their R or B response. Backpressure has no fixed deadline. A request is presented once and is never retried automatically; holding a response does not repeat a device side effect. Device reads and uncached stores execute at the ROB head behind the existing interrupt/debug shield. Successful uncached store-conditionals also wait for B before retiring. Failed store-conditionals perform no write.
+External reads and writes complete only on their R or B response. Backpressure has no fixed deadline. A request is presented once and is never retried automatically; holding a response does not repeat a device side effect. Device reads and precise uncached stores execute at the ROB head behind the existing interrupt/debug shield. Successful uncached store-conditionals and AMOs wait for B before retiring, including when Normal read caching is enabled. Failed store-conditionals perform no write. The optional policy allows ordinary Normal stores to retire into the store queue before B; the queue retains their ownership until the response.
 
 Misaligned loads, stores and atomics trap in the CPU before issuing an AXI
 request, including before firmware installs `mtvec`. The standalone interface
 does not split misaligned accesses into multiple transactions.
 
-RRESP/BRESP SLVERR and DECERR propagate as access faults for data reads, uncached stores/AMOs, instruction fetch and page-table walks. Read-fill errors never install cache data or an executable fetch-buffer victim. Data-bus faults report zero in `xtval`; instruction and translation faults retain their existing virtual-address reporting. RISC-V permits zero `xtval` for these faults; a physical address must not be reported as though it were the faulting virtual address. See the [privileged architecture](https://docs.riscv.org/reference/isa/priv/machine.html).
+RRESP/BRESP SLVERR and DECERR propagate as access faults for data reads, precise uncached stores/AMOs, instruction fetch and page-table walks. Read-fill errors never install cache data or executable instruction-cache entries. Data-bus faults report zero in `xtval`; instruction and translation faults retain their existing virtual-address reporting. RISC-V permits zero `xtval` for these faults; a physical address must not be reported as though it were the faulting virtual address. See the [privileged architecture](https://docs.riscv.org/reference/isa/priv/machine.html).
 
 Buffered cached stores may already have retired when a writeback or write-allocated refill fails. Such failures retain the dirty cache ownership, assert sticky `o_fatal_error`, record `o_fatal_addr`, and stop further CPU retirement and new side effects. They do not fabricate a precise exception for an instruction that has already retired. The wrapper must handle the fatal indication and eventually reset the CPU; automatic retries are not performed.
 
+The same fatal contract applies to a failed B response for an already-retired Normal write-through store. Its adapter ownership is retained, later requests are blocked, and fences cannot complete past the failure. SC/AMO and Device writes remain precise and do not use this buffered-store error path. Retirement and new memory requests are blocked immediately; the internal execution hold is registered one cycle later, and any intervening execution result cannot retire.
+
 Fences cannot pass an uncached store waiting for B. The request router drains older committed stores before a device read. FENCE.I writes L1D back to the shared cache level, invalidates L1I and the fetch buffers, and discards old fetch responses before refetch. Ordinary FENCE orders accesses; it is not a flush of all dirty L2 data to external memory. Agents accessing cached memory must use the coherent ingress below. A noncoherent agent cannot assume that an ordinary fence makes private dirty data visible on AXI.
+
+## Optional Normal read caching and write-through stores
+
+`CACHE_NORMAL_MEMORY=0` is the standalone default. FROST's `platform_top` and `frost` enable it by default to avoid paying an AXI round trip for every BRAM instruction and repeated data load. It applies only to the configured Normal region named by `FROST_PMA_UNCACHED_BASE` / `..._BYTES`; it does not reclassify Device regions or route BRAM through the DDR writeback caches.
+
+With this option, data reads outside the configured debug slice's 4 KiB page fetch an aligned dword into L0. `L0_CACHE_DEPTH` defaults to 256 entries (2 KiB) with this option and 128 entries otherwise; an explicit override selects either profile's capacity. Ordinary stores remain narrow write-through transactions. They update matching L0 bytes; a full-dword store can allocate an entry, but a partial store cannot allocate unknown bytes. A read that overlaps a newer store may complete to its original load but cannot reinstall stale L0 data. Debug-page data accesses bypass this cache and remain precise.
+
+Executable Normal memory uses a direct-mapped instruction cache with `NORMAL_FETCH_LINES` 32-byte lines (default 256 lines, or 8 KiB). Two fill slots serve instruction windows and permitted next-line prefetches. The prefetch address must remain executable under the configured PMA. Branches retain these entries; FENCE.I, CPU reset, and accepted debug GO invalidate them and discard old fills. Accepted debug GO therefore observes newly written debug code.
+
+Use this option only for memory private to the CPU or externally coordinated with it. The FROST coherent ingress covers the separate writeback region, not these Normal read caches. External data writes require CPU reset before cached data is reused; executable-memory changes require FENCE.I or reset before execution. FROST's programming flow holds the CPU in reset while replacing BRAM contents. Its separate instruction/data BRAM copies retain their existing programming rules.
+
+This policy creates no dirty BRAM cache lines. FENCE waits for buffered Normal stores' B responses. FROST's BRAM slave responds only after the RAM write, so a successful fence leaves those BRAM bytes updated. An external AXI fabric may acknowledge write-through traffic at an intermediate buffer; it must preserve ordering with subsequent accesses and drain those buffers before resetting or powering down that fabric. B completion alone does not prove final-memory visibility in such a fabric. Reset can still discard unissued store-buffer entries; software must drain writes whose persistence it requires before requesting CPU reset. Already presented AXI writes drain across CPU-only reset as specified above.
 
 ## Static address map and PMA configuration
 
@@ -69,7 +94,7 @@ The CPU map is a build configuration shared by all modules using `riscv_pkg`. Su
 | `FROST_PMA_DEVICE0_BASE` / `..._BYTES` | `0x40000000` / `0x31000` | First Device region |
 | `FROST_PMA_DEVICE1_BASE` / `..._BYTES` | `0x44000000` / `0x400000` | Second Device region |
 | `FROST_PMA_LEGACY_DEVICE_STORES` | 1 | Allow the legacy untranslated device-quadrant stores only with the FROST map; set 0 for strict configured regions |
-| `FROST_CPU_DEBUG_BASE` | `0x17c00` | Debug execution slice, within executable memory below 4 GiB |
+| `FROST_CPU_DEBUG_BASE` | `0x17c00` | Debug execution slice; when debug is used, place it in executable memory below 4 GiB |
 
 Regions use nonoverlapping, page-aligned half-open intervals; elaboration checks alignment, overflow and overlap. A zero size disables an uncached or Device region. The cached region always has its configured power-of-two size. The executable uncached prefix must fit within its data region. Physical width is derived from the highest region limit, with a minimum of 32 bits and a maximum of 56 bits. Device addresses may be above 4 GiB. There is one cached region and one uncached memory region in this implementation; it is not a runtime-programmable PMA table.
 
@@ -96,7 +121,7 @@ An integration without debug ties the input controls/data low and supplies ordin
 
 With `ENABLE_COHERENCE=1`, `i_coherent_req_*` / `o_coherent_resp_*` expose the FROST 32-byte line protocol. This is a separate **incoming** interface, not another outgoing CPU memory master and not ACE/CHI. Requests carry full physical addresses, 256-bit data, 32 byte strobes, write/read selection and a 4-bit ID. Hold a request until valid/ready acceptance. Each accepted request produces one response pulse with the same ID, data and an error flag; there is no response-ready signal, so the agent must always be able to consume responses. With L2 prefetch enabled, agents must leave ID bit 3 clear. IDs cannot be reused while outstanding.
 
-CPU reset cancels inbound coherence requests and responses. Reset or reinitialize each connected agent's outstanding-request ownership at the same time; pre-reset ingress requests are not guaranteed a response. Outgoing AXI transactions already presented still drain as described above.
+The ingress registers each accepted request before cache admission. It holds the payload through hierarchy backpressure and can accept a replacement on the edge that admits the previous request. CPU reset clears this request register and cancels inbound coherence requests and responses. Reset or reinitialize each connected agent's outstanding-request ownership at the same time; pre-reset ingress requests are not guaranteed a response. Outgoing AXI transactions already presented still drain as described above.
 
 Requests must be aligned to 32 bytes and remain within the configured cached memory region. An invalid address is not accepted and triggers a simulation assertion. Its sequencer probes dirty L1D lines, orders traffic at L2, and coordinates writes with the load queue and reservation/SC windows. FROST connects its NIC and DMA test engine through an arbiter in `soc_top`. External masters accessing cached memory must use this path; bypassing it on the external AXI fabric is noncoherent. AMOs use CPU serialization and this coherence protocol, not AXI exclusives. Uncached atomic memory must be private to the hart or protected by the integrating system from competing noncoherent masters.
 
@@ -117,14 +142,40 @@ Run tests in the pinned repository container:
 ./scripts/frost.py cocotb cpu_top_boundary
 ./scripts/frost.py cocotb cpu_top_custom_map
 ./scripts/frost.py cocotb cpu_top_strict_map
+./scripts/frost.py cocotb cpu_top_writethrough
+./scripts/frost.py cocotb cpu_top_writethrough_custom_map
+./scripts/frost.py cocotb cpu_writethrough_adapter
+./scripts/frost.py cocotb load_queue_writethrough
+./scripts/frost.py cocotb fetch_provider_direct
 ./scripts/frost.py cocotb soc_axi_slave
 ./scripts/frost.py cocotb ptw_errors
 ./scripts/frost.py cocotb cpu_axi_master
+./scripts/frost.py cocotb cpu_memory_fabric
 ./scripts/frost.py cocotb cpu_uncached_adapter
 ./scripts/frost.py cocotb frost_cache_hierarchy_errors
 ./scripts/frost.py cocotb fetch_provider_errors
+./scripts/frost.py cocotb fetch_provider_uncached
 ./scripts/frost.py cocotb tomasulo_wrapper_axi
 ./scripts/frost.py cocotb hello_world
 ```
 
-The standalone bench executes real instructions while an external AXI model varies channel readiness and response latency. Unit benches separately exercise ownership, reset draining, held responses, cache faults, narrow strobes, and precise uncached store completion.
+The standalone bench executes real instructions while an external AXI model varies channel readiness and response latency. It checks every aligned byte, halfword, word and dword lane for uncached Normal memory and Device traffic, including retained RAM across reset and exact AXI sizes/attributes. Unit benches separately exercise ownership, reset draining, held responses, cache faults, narrow strobes, and precise uncached store completion. Fetch tests cover replay handoff between cached and uncached memory, including delivery of an instruction-page fault without issuing a memory read.
+
+| Interface requirement | Directed coverage |
+| --- | --- |
+| Cached traffic and uncached instruction fetch | `cpu_top_boundary` boots real code and exercises the cache; `fetch_provider_uncached` checks memory-tier handoff and page faults |
+| Narrow MMIO and side-effecting reads | `cpu_top_boundary` and `cpu_uncached_adapter` check all aligned sizes/lanes, exact attributes/strobes, and one side effect per accepted access |
+| Backpressure and response ownership | `cpu_axi_master` and `cpu_memory_fabric` stall channels, reorder responses, and check stable payloads and IDs |
+| AXI errors | `cpu_top_boundary` checks precise instruction/data/device faults and a fatal buffered-store failure; `ptw_errors` checks walker failures |
+| Ordering and fences | `cpu_top_boundary`, `data_mem_request_router_axi`, and `tomasulo_wrapper_axi` check store draining, delayed B responses, and store-conditional completion |
+| Interrupts | `cpu_top_boundary` asserts an interrupt during side-effecting reads and writes and checks that it waits for completion without replaying the access |
+| Reset and boot address | `cpu_top_boundary`, `cpu_axi_master`, and `cpu_memory_fabric` distinguish queued cancellation from draining presented transactions, check retained external RAM, and boot at a new address |
+| Inactive coherence | `cpu_top_boundary` checks that the disabled ingress remains inactive while outgoing traffic runs |
+| Configurable PMA | `cpu_top_custom_map` and `cpu_top_strict_map` check relocated regions and rejection outside the configured device windows |
+| Optional Normal read caching | `cpu_top_writethrough` repeats the standalone boundary cases and checks FENCE.I, read faults, precise SC/AMO errors, and fatal buffered writes; `cpu_top_writethrough_custom_map` relocates the regions above 4 GiB |
+| Read-cache coherence and fills | `load_queue_writethrough` prevents stale responses from replacing newer store data; `lq_l0_cache_128` / `256` check byte updates and invalidation priority; `fetch_provider_direct` checks hits, conflicts, straddles, late fills and executable-region limits |
+
+The full-platform `debug_openocd_test` additionally checks halt, resume,
+single-step, breakpoints, register/memory access, privilege, and reset through
+the external Debug Module and transport. Set `FROST_REQUIRE_OPENOCD=1` when
+running it to require the real OpenOCD session.

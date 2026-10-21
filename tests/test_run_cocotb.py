@@ -465,7 +465,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="csr_test",
-        description=("Machine-mode CSR writes and cycle/instret counter controls"),
+        description=(
+            "Machine-mode counter controls and pure reads checked against independent time"
+        ),
     ),
     "instret_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -733,8 +735,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="restore_window_stress",
         description=(
-            "Timer interrupts across exception-return restore windows with a small L2 "
-            "and slow DDR"
+            "Timer interrupts across 800 exception-return restore windows with a "
+            "small L2 and slow DDR"
         ),
         # Small L2 and slow memory extend cold SC/load and store-drain windows.
         # These settings detect a stale interrupt resume PC during restoration.
@@ -745,7 +747,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="mtimer_stress",
         description=(
-            "Machine-timer interrupts and MRET keep making progress across timer phases"
+            "Machine-timer interrupts and MRET keep making progress across timer phases "
+            "through all 20,000 memory/ALU loop iterations"
         ),
     ),
     "mret_drain_deadlock": CocotbRunConfig(
@@ -763,7 +766,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="wfi_lost_tick",
         description="Timer ticks keep arriving across Linux-style WFI idle and "
-        "interrupt masking",
+        "interrupt masking, with a 24..535-cycle CLINT deadline sweep",
     ),
     "irq_mie_window": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1133,6 +1136,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(
             ("FROST_EXPECT_PERF_COUNTERS", "1"),
             ("EXTRA_CFLAGS", "-DTOMASULO_PERF_ENABLE_PROFILE=1"),
+            # All 14 benchmarks and reports take about 540K cycles with
+            # Normal read caching; retain the complete workload and checks.
+            ("COCOTB_MAX_CYCLES", "750000"),
         ),
     ),
     "uart_echo": CocotbRunConfig(
@@ -1213,9 +1219,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="window_skip_repro",
         description=(
-            "Fall-through instructions survive recovery from a mispredicted taken "
-            "branch"
+            "Fall-through instructions survive recovery from mispredicted taken "
+            "branches across all 6,000 calls"
         ),
+        # Keep the original 4M budget with Normal read caching; all calls
+        # and register-value checks remain enabled.
         extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
     ),
     "window_skip_repro_fetch_fuzz": CocotbRunConfig(
@@ -1743,6 +1751,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Instruction read faults, line straddles, and recovery without poisoned victims",
         verilator_extra_args=("-GENABLE_RESPONSE_ERRORS=1",),
     ),
+    "fetch_provider_uncached": CocotbRunConfig(
+        python_test_module="cocotb_tests.predecode.test_fetch_provider_uncached",
+        hdl_toplevel_module="fetch_provider",
+        description="Replay handoff from cached fetch to uncached instructions or page faults",
+        verilator_extra_args=(
+            "-GLINE_BYTES=8",
+            "-GLINE_ID_BITS=1",
+            "-GVICTIM_LINES=0",
+            "-GENABLE_RESPONSE_ERRORS=1",
+            "-GCACHED_PROVIDER=0",
+        ),
+    ),
     "frost_cache_errors": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache_errors",
         hdl_toplevel_module="frost_cache",
@@ -2222,6 +2242,24 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-DFROST_PMA_DEVICE1_BYTES=0",
         ),
     ),
+    "cpu_top_writethrough_custom_map": CocotbRunConfig(
+        python_test_module="cocotb_tests.integration.test_cpu_top_custom_map",
+        hdl_toplevel_module="cpu_top",
+        description="Read-cache/write-through policy with relocated Normal and Device regions above 4 GiB",
+        extra_env=(("FROST_TEST_NORMAL_CACHE", "1"),),
+        verilator_extra_args=(
+            "-GCACHE_NORMAL_MEMORY=1",
+            "-GSIM_FAST_MAINT=1",
+            "-GL1_CACHE_BYTES=2048",
+            "-GL1I_CACHE_BYTES=2048",
+            "-GL2_CACHE_BYTES=4096",
+            "-GL2_PREFETCH=0",
+            '"-DFROST_PMA_UNCACHED_BASE=64\'h1000000000"',
+            '"-DFROST_PMA_DEVICE0_BASE=64\'h1400000000"',
+            '"-DFROST_PMA_CACHED_BASE=64\'h1800000000"',
+            "-DFROST_PMA_DEVICE1_BYTES=0",
+        ),
+    ),
     "cpu_top_strict_map": CocotbRunConfig(
         python_test_module="cocotb_tests.integration.test_cpu_top_strict_map",
         hdl_toplevel_module="cpu_top",
@@ -2233,6 +2271,55 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GL2_CACHE_BYTES=4096",
             "-GL2_PREFETCH=0",
             "-DFROST_PMA_LEGACY_DEVICE_STORES=0",
+        ),
+    ),
+    "load_queue_writethrough": CocotbRunConfig(
+        python_test_module=(
+            "cocotb_tests.tomasulo.load_queue.test_load_queue_axi_errors,"
+            "cocotb_tests.tomasulo.load_queue.test_load_queue_writethrough"
+        ),
+        hdl_toplevel_module="load_queue",
+        description="Normal read-cache byte updates, stale-response filtering and simultaneous cache-hit/read completions",
+        verilator_extra_args=(
+            "-GCACHE_NORMAL_MEMORY=1",
+            "-GCACHE_UNCACHED_DATA=0",
+            "-GMEM_RESPONSE_ERRORS=1",
+        ),
+    ),
+    "cpu_top_writethrough": CocotbRunConfig(
+        python_test_module=(
+            "cocotb_tests.integration.test_cpu_top,"
+            "cocotb_tests.integration.test_cpu_top_writethrough"
+        ),
+        hdl_toplevel_module="cpu_top",
+        description="Normal read caching, narrow write-through stores, fences, reset and precise atomic errors",
+        verilator_extra_args=(
+            "-GCACHE_NORMAL_MEMORY=1",
+            "-GSIM_FAST_MAINT=1",
+            "-GL1_CACHE_BYTES=2048",
+            "-GL1I_CACHE_BYTES=2048",
+            "-GL2_CACHE_BYTES=4096",
+            "-GL2_PREFETCH=0",
+        ),
+        extra_env=(("FROST_TEST_NORMAL_CACHE", "1"),),
+    ),
+    "cpu_writethrough_adapter": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_cpu_writethrough_adapter",
+        hdl_toplevel_module="cpu_uncached_adapter",
+        description="Normal read-cache attributes, narrow stores, delayed completion and buffered versus precise errors",
+        verilator_extra_args=("-GCACHE_NORMAL_MEMORY=1",),
+    ),
+    "fetch_provider_direct": CocotbRunConfig(
+        python_test_module=(
+            "cocotb_tests.predecode.test_fetch_provider_errors,"
+            "cocotb_tests.predecode.test_fetch_provider_direct"
+        ),
+        hdl_toplevel_module="fetch_provider",
+        description="Direct instruction-cache hits, conflict replacement, backpressure, errors and invalidation",
+        verilator_extra_args=(
+            "-GDIRECT_LOOKUP=1",
+            "-GVICTIM_LINES=64",
+            "-GENABLE_RESPONSE_ERRORS=1",
         ),
     ),
     "cpu_top_boundary": CocotbRunConfig(
@@ -2261,7 +2348,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "soc_axi_slave": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_soc_axi_slave",
         hdl_toplevel_module="soc_axi_slave",
-        description="FROST AXI decode, narrow lanes, response ownership and backpressure",
+        description="FROST AXI decode, narrow lanes and concurrent read/write ownership under errors and backpressure",
+    ),
+    "cpu_memory_fabric": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_cpu_memory_fabric",
+        hdl_toplevel_module="cpu_memory_fabric",
+        description=(
+            "CPU client arbitration, queued payload ownership under AXI backpressure, "
+            "response routing, and reset cancellation versus AXI draining"
+        ),
     ),
     "cpu_axi_master": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_cpu_axi_master",

@@ -2319,6 +2319,72 @@ async def test_pd_redirect_btb_collision_stall_keeps_wrong_path_bubble(
 
 
 @cocotb.test()
+async def test_pd_redirect_during_fetch_gap_does_not_duplicate_target(dut: Any) -> None:
+    """A PD redirect must arm its bubble even without a fetch response.
+
+    A preceding BTB prediction leaves prediction_holdoff set. If the PD
+    redirect arrives in a fetch gap, losing its marker lets the first target
+    bundle dispatch while pc_reg holds, then dispatch again on the next cycle.
+    """
+    await _setup_test(dut)
+    branch_pc = BASE_PC + 8
+    pd_target = BASE_PC + 0x104
+    await _train_btb(dut, pc=branch_pc, target=pd_target)
+    dut.i_disable_branch_prediction.value = 0
+    await _redirect_to(dut, BASE_PC)
+    bpc = dut.branch_prediction_controller_inst
+    for _ in range(20):
+        if int(bpc.o_prediction_used.value):
+            break
+        await _advance_cycle(dut)
+    else:
+        raise AssertionError("BTB prediction never fired")
+    await _advance_cycle(dut)
+    assert bpc.o_prediction_holdoff.value
+
+    # The previous packet redirects from PD while AXI has no response.
+    dut.i_instr_valid.value = 0
+    dut.i_pd_redirect.value = 1
+    dut.i_pd_redirect_target.value = pd_target
+    await _advance_cycle(dut)
+    dut.i_pd_redirect.value = 0
+    assert int(dut.o_pc.value) == pd_target
+    assert int(dut.pc_reg.value) == pd_target
+    for stalled in (False, True, True, False, False):
+        _drive_pipeline_ctrl(dut, {"stall": stalled})
+        await _advance_cycle(dut)
+        assert _read_if_packet(dut)["sel_nop"]
+    _drive_pipeline_ctrl(dut, {})
+
+    # The first response restores the fetch lead without emitting a packet.
+    dut.i_instr_valid.value = 1
+    _drive_fetch(
+        dut,
+        current_word=ADD_INSTR_A,
+        next_word=ADD_INSTR_B,
+        current_sb=_sideband(native_pairable_lo=True),
+        next_sb=_sideband(native_pairable_lo=True),
+        bank_sel=(pd_target >> 2) & 1,
+    )
+    await _settle()
+    assert dut.control_flow_holdoff.value
+    assert bpc.o_prediction_holdoff.value
+    assert _read_if_packet(dut)["sel_nop"], "PD target escaped its redirect bubble"
+    assert _read_if_packet(dut, slot2=True)["sel_nop"]
+
+    presented: list[int] = []
+    for _ in range(5):
+        for slot2 in (False, True):
+            packet = _read_if_packet(dut, slot2=slot2)
+            if not packet["sel_nop"]:
+                presented.append(packet["program_counter"])
+        await _advance_cycle(dut)
+    assert presented.count(pd_target) == 1, presented
+    assert presented.count(pd_target + 4) == 1, presented
+    assert len(presented) == len(set(presented)), presented
+
+
+@cocotb.test()
 async def test_pd_redirect_kills_pending_saved_prediction_metadata(dut: Any) -> None:
     """A PD redirect must clear the pending prediction's saved metadata.
 

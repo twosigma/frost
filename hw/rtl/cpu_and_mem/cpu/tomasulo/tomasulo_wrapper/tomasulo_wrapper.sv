@@ -32,6 +32,7 @@
  */
 
 module tomasulo_wrapper #(
+    parameter bit CACHE_NORMAL_MEMORY = 1'b0,
     parameter bit SPLIT_RS_DISPATCH = 1'b0,
     parameter bit ENABLE_DISPATCH_DONE_REPAIR = 1'b0,
     parameter bit MEM_RESPONSE_ERRORS = 1'b0,
@@ -486,6 +487,7 @@ module tomasulo_wrapper #(
     output logic                 [       riscv_pkg::XLEN-1:0] o_sq_mem_write_addr,
     output logic                 [riscv_pkg::MemDataBits-1:0] o_sq_mem_write_data,
     output logic                 [riscv_pkg::MemStrbBits-1:0] o_sq_mem_write_byte_en,
+    output logic                                              o_sq_mem_write_buffered,
     output riscv_pkg::mem_size_e                              o_sq_mem_write_size,
     output logic                                              o_sq_mem_write_is_mmio,
     output logic                                              o_sq_mem_write_is_cached,
@@ -1605,10 +1607,7 @@ module tomasulo_wrapper #(
   // uncached SC until the AXI write response. Failed SC still returns 1
   // immediately and the commit-side discard removes its SQ entry.
   assign uncached_sc_success = MEM_RESPONSE_ERRORS && sc_resolution.valid &&
-      (sc_resolution.value == '0) &&
-      !((coh_sc_head_addr >= riscv_pkg::XLEN'(CACHED_BASE)) &&
-        (coh_sc_head_addr < riscv_pkg::XLEN'(CACHED_BASE) +
-                            riscv_pkg::XLEN'(CACHED_SIZE_BYTES)));
+      (sc_resolution.value == '0) && !coh_sc_head_is_cached;
   always_comb begin
     sc_fu_complete = sc_resolution;
     sc_fu_complete.valid = sc_resolution.valid && !uncached_sc_success;
@@ -2090,7 +2089,7 @@ module tomasulo_wrapper #(
   // DMA coherence port: admitted-line mirror, SC window, validation
   // table and the ROB's replay mask.
   // ===========================================================================
-  logic coh_sc_hold, coh_sc_head_addr_valid, coh_sc_fire_success;
+  logic coh_sc_hold, coh_sc_head_addr_valid, coh_sc_head_is_cached, coh_sc_fire_success;
   logic coh_sc_head_query_match;
   logic [riscv_pkg::XLEN-1:0] coh_sc_head_addr;
   logic [riscv_pkg::XLEN-1:0] coh_lq_query_addr, coh_lq_inval_addr, coh_observe_addr;
@@ -2143,7 +2142,10 @@ module tomasulo_wrapper #(
       .o_replay_set_mask(coh_replay_set_mask)
   );
 
-  sc_pending_unit sc_pending_unit_inst (
+  sc_pending_unit #(
+      .CACHED_BASE(CACHED_BASE),
+      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
+  ) sc_pending_unit_inst (
       .i_clk                           (i_clk),
       .i_rst_n                         (i_rst_n),
       .i_flush_en                      (i_flush_en),
@@ -2169,6 +2171,7 @@ module tomasulo_wrapper #(
       .o_sc_head_query_match           (coh_sc_head_query_match),
       .o_sc_head_addr_valid            (coh_sc_head_addr_valid),
       .o_sc_head_addr                  (coh_sc_head_addr),
+      .o_sc_head_is_cached             (coh_sc_head_is_cached),
       .o_sc_fire_success               (coh_sc_fire_success),
       .o_sc_pending                    (sc_pending),
       .o_sc_fu_complete                (sc_resolution)
@@ -2256,9 +2259,11 @@ module tomasulo_wrapper #(
       .i_cdb_match_tag_2(cdb_rob_match_tag_2),
       .i_store_complete_valid(store_issue_fire &&
           (!MEM_RESPONSE_ERRORS ||
-           (((i_translation_active ? dmmu_out_addr : sq_effective_addr) >=
+           (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
+          i_translation_active ? dmmu_out_addr : sq_effective_addr
+      )) || (((i_translation_active ? dmmu_out_addr : sq_effective_addr) >=
               riscv_pkg::XLEN'(CACHED_BASE)) &&
-            ((i_translation_active ? dmmu_out_addr : sq_effective_addr) <
+             ((i_translation_active ? dmmu_out_addr : sq_effective_addr) <
               riscv_pkg::XLEN'(CACHED_BASE) + riscv_pkg::XLEN'(CACHED_SIZE_BYTES))))),
       .i_store_complete_tag(store_complete_tag),
 
@@ -3415,6 +3420,7 @@ module tomasulo_wrapper #(
   // Load Queue Instance
   // ===========================================================================
   load_queue #(
+      .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .MEM_RESPONSE_ERRORS(MEM_RESPONSE_ERRORS),
       .CACHE_UNCACHED_DATA(!MEM_RESPONSE_ERRORS),
       .PREISSUE_CANDIDATES(EARLY_LOAD_WAKEUP),
@@ -3492,6 +3498,9 @@ module tomasulo_wrapper #(
       // write port. The router's one-entry hold is reserved for device reads.
       .i_mem_bus_busy  (o_sq_mem_write_en || o_amo_mem_write_en || i_backend_recovery_hold ||
                         i_slow_write_inflight || i_uncached_read_busy || i_lq_mem_request_pending),
+      .i_l0_hit_allowed(CACHE_NORMAL_MEMORY &&
+          !((o_sq_mem_write_en && !o_sq_mem_write_buffered) || o_amo_mem_write_en ||
+            i_backend_recovery_hold || i_lq_mem_request_pending)),
       .i_cached_resp_held(i_cached_read_held),
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
@@ -3530,7 +3539,9 @@ module tomasulo_wrapper #(
 
       // L0 cache invalidation (from SQ)
       .i_cache_invalidate_valid(sq_cache_invalidate_valid),
-      .i_cache_invalidate_addr (sq_cache_invalidate_addr),
+      .i_cache_invalidate_addr(sq_cache_invalidate_addr),
+      .i_cache_store_data(o_sq_mem_write_data),
+      .i_cache_store_strb(o_sq_mem_write_byte_en),
 
       // DMA coherence (lq_coherence_port)
       .i_coh_inval_valid(coh_lq_inval_valid),
@@ -3960,6 +3971,7 @@ module tomasulo_wrapper #(
   // Store Queue Instance
   // ===========================================================================
   store_queue #(
+      .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .PRECISE_UNCACHED(MEM_RESPONSE_ERRORS),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
@@ -4033,6 +4045,7 @@ module tomasulo_wrapper #(
       .o_mem_write_addr             (o_sq_mem_write_addr),
       .o_mem_write_data             (o_sq_mem_write_data),
       .o_mem_write_byte_en          (o_sq_mem_write_byte_en),
+      .o_mem_write_buffered         (o_sq_mem_write_buffered),
       .o_mem_write_size             (o_sq_mem_write_size),
       .o_mem_write_is_mmio          (o_sq_mem_write_is_mmio),
       .o_mem_write_is_cached        (o_sq_mem_write_is_cached),

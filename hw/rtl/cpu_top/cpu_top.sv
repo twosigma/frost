@@ -18,8 +18,13 @@
 // Board memory, debug transport, interrupt controllers, and DMA agents are
 // instantiated by the SoC wrapper, never by this module.
 module cpu_top #(
+    // Optional private Normal-memory read caches and buffered write-through
+    // stores. Device accesses retain precise, narrow AXI completion.
+    parameter bit CACHE_NORMAL_MEMORY = 1'b0,
+    parameter int unsigned NORMAL_FETCH_LINES = 256,
     parameter int unsigned ENABLE_CACHED_TIER = 1,
-    parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
+    parameter int unsigned L0_CACHE_DEPTH = CACHE_NORMAL_MEMORY ?
+        riscv_pkg::NormalLqL0Depth : riscv_pkg::LqL0Depth,
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
     parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
@@ -283,23 +288,28 @@ module cpu_top #(
   logic [L2_LINE_BYTES*8-1:0] data_req_wdata, data_resp_data;
   logic [L2_LINE_BYTES-1:0] data_req_wstrb;
   logic data_resp_valid;
+  logic uncached_write_buffered;
   logic [1:0] data_resp_status;
   logic low_req_valid, low_req_ready, low_req_id;
   logic [riscv_pkg::PhysAddrBits-1:0] low_req_addr;
   logic low_resp_valid, low_resp_id, low_resp_error;
-  logic [63:0] low_resp_data;
+  localparam int unsigned NormalFetchBytes = CACHE_NORMAL_MEMORY ? 32 : 8;
+  logic [NormalFetchBytes*8-1:0] low_resp_data;
   logic cache_fatal;
+  logic uncached_fatal;
+  logic [riscv_pkg::PhysAddrBits-1:0] uncached_fatal_addr;
   logic [riscv_pkg::PhysAddrBits-1:0] cache_fatal_addr;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       o_fatal_error <= 1'b0;
       o_fatal_addr  <= '0;
-    end else if (cache_fatal && !o_fatal_error) begin
+    end else if ((cache_fatal || uncached_fatal) && !o_fatal_error) begin
       o_fatal_error <= 1'b1;
-      o_fatal_addr  <= cache_fatal_addr;
+      o_fatal_addr  <= uncached_fatal ? uncached_fatal_addr : cache_fatal_addr;
     end
   end
   cpu_ooo #(
+      .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .MEM_BYTE_ADDR_WIDTH(riscv_pkg::LowBramAddrBits),
       .VARIABLE_UNCACHED(1'b1),
       .MMIO_ADDR(riscv_pkg::MmioWindowAddr),
@@ -314,7 +324,7 @@ module cpu_top #(
   ) cpu_inst (
       .i_clk,
       .i_boot_addr,
-      .i_fatal_stop(o_fatal_error || cache_fatal),
+      .i_fatal_stop(o_fatal_error || cache_fatal || uncached_fatal),
       .i_rst(i_rst),
       .o_pc(cpu_pc_xlen),
       .i_instr(instruction),
@@ -396,6 +406,7 @@ module cpu_top #(
       .i_uncached_read_status(uncached_read_status),
       .o_uncached_write_byte_en(uncached_write_strb),
       .o_uncached_write_size(uncached_write_size),
+      .o_uncached_write_buffered(uncached_write_buffered),
       .i_uncached_write_done(uncached_write_done),
       .i_uncached_write_status(uncached_write_status),
       .i_uncached_write_inflight(uncached_write_inflight),
@@ -497,10 +508,13 @@ module cpu_top #(
   assign instruction_fault1 = served_fault1[provider_q];
   assign instruction_fault0_page = served_page0[provider_q];
   assign instruction_fault1_page = served_page1[provider_q];
+  wire normal_fetch_invalidate = fence_i_flush ||
+      (CACHE_NORMAL_MEMORY ? o_dbg_go_taken : fetch_cached_retarget);
   fetch_provider #(
-      .LINE_BYTES(8),
+      .LINE_BYTES(NormalFetchBytes),
       .LINE_ID_BITS(1),
-      .VICTIM_LINES(0),
+      .VICTIM_LINES(CACHE_NORMAL_MEMORY ? NORMAL_FETCH_LINES : 0),
+      .DIRECT_LOOKUP(CACHE_NORMAL_MEMORY),
       .ENABLE_RESPONSE_ERRORS(1'b1),
       .CACHED_PROVIDER(1'b0)
   ) uncached_fetch (
@@ -514,7 +528,7 @@ module cpu_top #(
       .i_fault0_page(fetch_fault0_page),
       .i_fault1(fetch_fault1),
       .i_fault1_page(fetch_fault1_page),
-      .i_line_after_ok(1'b0),
+      .i_line_after_ok(CACHE_NORMAL_MEMORY && fetch_line_after_ok),
       .i_retarget(fetch_cached_retarget),
       .i_fetch_replay_consume(fetch_replay_consume),
       .i_pipeline_stall(pipeline_stall || o_fatal_error),
@@ -534,7 +548,7 @@ module cpu_top #(
       .o_served_fault1_page(served_page1[0]),
       .o_instr_valid(fetch_valid[0]),
       .o_instr_valid_next(),
-      .i_invalidate(fence_i_flush || fetch_cached_retarget),
+      .i_invalidate(normal_fetch_invalidate),
       .i_l1i_miss_outstanding(1'b0),
       .o_perf_miss_stall(),
       .o_line_req_valid(low_req_valid),
@@ -608,15 +622,33 @@ module cpu_top #(
   wire coherent_address_ok = riscv_pkg::pma_cached_ok(
       riscv_pkg::XLEN'(i_coherent_req_addr)
   ) && i_coherent_req_addr[4:0] == 0;
-  wire dma_req_valid = ENABLE_COHERENCE &&
-      !o_fatal_error && coherent_address_ok && i_coherent_req_valid;
-  wire dma_req_write = i_coherent_req_write;
-  wire [riscv_pkg::PhysAddrBits-1:0] dma_req_addr = i_coherent_req_addr;
-  wire [255:0] dma_req_wdata = i_coherent_req_wdata;
-  wire [31:0] dma_req_wstrb = i_coherent_req_wstrb;
-  wire [3:0] dma_req_id = i_coherent_req_id;
-  assign o_coherent_req_ready = ENABLE_COHERENCE &&
-      !o_fatal_error && coherent_address_ok && dma_req_ready;
+  // Register ingress ownership before the hierarchy's same-line checks.
+  // This separates a wrapper's arbitration/address mux from the cache
+  // admission path, while permitting dequeue and replacement on one edge.
+  logic coherent_pending_q;
+  logic dma_req_write;
+  logic [riscv_pkg::PhysAddrBits-1:0] dma_req_addr;
+  logic [255:0] dma_req_wdata;
+  logic [31:0] dma_req_wstrb;
+  logic [3:0] dma_req_id;
+  wire dma_req_valid = ENABLE_COHERENCE && !i_rst && !o_fatal_error && coherent_pending_q;
+  assign o_coherent_req_ready = ENABLE_COHERENCE && (ENABLE_CACHED_TIER != 0) &&
+      !i_rst && !o_fatal_error && coherent_address_ok &&
+      (!coherent_pending_q || dma_req_ready);
+  always_ff @(posedge i_clk) begin
+    if (i_rst) coherent_pending_q <= 1'b0;
+    else begin
+      if (dma_req_valid && dma_req_ready) coherent_pending_q <= 1'b0;
+      if (i_coherent_req_valid && o_coherent_req_ready) begin
+        coherent_pending_q <= 1'b1;
+        dma_req_write <= i_coherent_req_write;
+        dma_req_addr <= i_coherent_req_addr;
+        dma_req_wdata <= i_coherent_req_wdata;
+        dma_req_wstrb <= i_coherent_req_wstrb;
+        dma_req_id <= i_coherent_req_id;
+      end
+    end
+  end
   assign o_coherent_resp_valid = ENABLE_COHERENCE && dma_resp_valid;
   assign o_coherent_resp_id = ENABLE_COHERENCE ? dma_resp_id : '0;
   assign o_coherent_resp_rdata = ENABLE_COHERENCE ? dma_resp_rdata : '0;
@@ -840,10 +872,13 @@ module cpu_top #(
   end
 
   cpu_uncached_adapter #(
+      .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
       .DATA_BYTES(L2_LINE_BYTES),
-      .DATA_PROT (AXI_MEMORY_PROT)
+      .DATA_PROT(AXI_MEMORY_PROT)
   ) uncached_adapter (
+      .o_fatal_error(uncached_fatal),
+      .o_fatal_addr(uncached_fatal_addr),
       .i_clk,
       .i_rst,
       .i_read_enable(uncached_read_enable && !o_fatal_error),
@@ -859,6 +894,7 @@ module cpu_top #(
       .o_write_ready(),
       .i_write_addr(data_memory_address),
       .i_write_size(uncached_write_size),
+      .i_write_buffered(uncached_write_buffered),
       .i_write_device(!riscv_pkg::pma_memory_ok(cpu_data_mem_addr_xlen)),
       .i_write_data(data_memory_write_data),
       .i_write_strb(uncached_write_strb),
@@ -881,6 +917,7 @@ module cpu_top #(
   );
 
   cpu_memory_fabric #(
+      .FETCH_BYTES(NormalFetchBytes),
       .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
       .DATA_BYTES(L2_LINE_BYTES),
       .ID_BITS(AXI_ID_BITS),

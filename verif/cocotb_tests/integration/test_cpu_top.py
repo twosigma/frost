@@ -16,10 +16,15 @@
 
 from typing import Any
 
-from collections import deque
+import os
+
+from collections import Counter, deque
 
 import cocotb
 from cocotb.triggers import Timer
+
+
+NORMAL_CACHE = os.environ.get("FROST_TEST_NORMAL_CACHE") == "1"
 
 
 def addi(rd: int, rs: int, imm: int) -> int:
@@ -115,6 +120,9 @@ class System:
             getattr(self.dut, "i_" + name).value = value
         for _ in range(5):
             await self.step(reset=True)
+        # Fatal state clears synchronously; the previous test may have left it
+        # asserted before the first reset edge.
+        assert not int(self.dut.o_fatal_error.value)
         self.dut.i_rst.value = 0
         self.dut.i_axi_rst.value = 0
 
@@ -149,7 +157,8 @@ class System:
         assert not int(d.o_coherent_req_ready.value)
         assert not int(d.o_coherent_resp_valid.value)
         assert not int(d.o_coherent_resp_error.value)
-        assert self.allow_fatal or not int(d.o_fatal_error.value)
+        if not reset:
+            assert self.allow_fatal or not int(d.o_fatal_error.value)
         for channel, fields in (
             ("ar", ("id", "addr", "len", "size", "cache", "prot")),
             ("aw", ("id", "addr", "len", "size", "cache", "prot")),
@@ -269,7 +278,10 @@ async def boot_cache_narrow_mmio_fence_and_inactive_coherence(dut: Any) -> None:
         if kind == "read"
     )
     assert any(
-        addr == s.boot and size == 3 and cache == 2 and prot & 4
+        addr == s.boot
+        and size == (5 if NORMAL_CACHE else 3)
+        and cache == (14 if NORMAL_CACHE else 2)
+        and prot & 4
         for _, kind, addr, size, cache, prot in s.transactions
         if kind == "read"
     )
@@ -526,3 +538,122 @@ async def buffered_store_refill_error_stops_retirement(dut: Any) -> None:
             effects_after_drain = len(s.effects)
         elif cycle > 20:
             assert len(s.effects) == effects_after_drain
+
+
+@cocotb.test()
+async def uncached_byte_lanes_and_retained_memory_after_reset(dut: Any) -> None:
+    """Exercise every aligned byte/halfword/word/dword lane across two boots."""
+    memory = {0x5000 + n: 0xA0 + n for n in range(8)}
+    device_value = 0xE1D2C3B4A5968778
+    for n in range(8):
+        memory[0x40000600 + n] = (device_value >> (8 * n)) & 255
+        memory[0x5100 + n] = (device_value >> (8 * n)) & 255
+
+    for pattern in (0xFEDCBA9876543210, 0x0123456789ABCDEF):
+        # Fabric reset discards old responses; external RAM retains its bytes.
+        s = System(dut)
+        s.memory = memory
+        for n in range(8):
+            memory[0x6000 + n] = (pattern >> (8 * n)) & 255
+        code = [0x400000B7, 0x00005237, 0x000062B7, load(2, 5, 0, 3)]
+        expected = {}
+        expected_accesses = []
+        report_offset = 0x100
+        ram = bytearray(memory[0x5000 + n] for n in range(8))
+        for size in range(4):
+            width = 1 << size
+            load_kind = size + 4 if size < 3 else 3
+            for offset in range(0, 8, width):
+                code += [
+                    store(2, 4, offset, size),
+                    load(3, 4, offset, load_kind),
+                    store(3, 1, report_offset, 3),
+                    load(3, 4, 0, 3),
+                    store(3, 1, report_offset + 8, 3),
+                ]
+                expected_accesses += [
+                    ("write", 0x5000 + offset, size, 2),
+                    ("read", 0x5000 + offset, size, 2),
+                    ("read", 0x5000, 3, 2),
+                ]
+                ram[offset : offset + width] = pattern.to_bytes(8, "little")[:width]
+                expected[0x40000000 + report_offset] = pattern & (
+                    (1 << (8 * width)) - 1
+                )
+                expected[0x40000000 + report_offset + 8] = int.from_bytes(ram, "little")
+                report_offset += 16
+        # Independent Normal reads cannot forward from the stores above.
+        # The strict profile issues each narrow access; the read-cache profile
+        # fills one aligned dword and may serve subsequent lanes from L0.
+        for size in range(4):
+            width = 1 << size
+            load_kind = size + 4 if size < 3 else 3
+            for offset in range(0, 8, width):
+                code += [
+                    load(3, 4, 0x100 + offset, load_kind),
+                    store(3, 1, report_offset, 3),
+                ]
+                expected_accesses.append(("read", 0x5100 + offset, size, 2))
+                expected[0x40000000 + report_offset] = (
+                    device_value >> (8 * offset)
+                ) & ((1 << (8 * width)) - 1)
+                report_offset += 8
+        for size in range(4):
+            width = 1 << size
+            load_kind = size + 4 if size < 3 else 3
+            for offset in range(0, 8, width):
+                # This model's device register is read-only; writes are
+                # observed as transactions without changing the read value.
+                code += [
+                    load(3, 1, 0x600 + offset, load_kind),
+                    store(3, 1, report_offset, 3),
+                    store(2, 1, 0x600 + offset, size),
+                ]
+                expected_accesses += [
+                    ("read", 0x40000600 + offset, size, 0),
+                    ("write", 0x40000600 + offset, size, 0),
+                ]
+                expected[0x40000000 + report_offset] = (
+                    device_value >> (8 * offset)
+                ) & ((1 << (8 * width)) - 1)
+                report_offset += 8
+        code += [addi(6, 0, 1), store(6, 1, 8, 0), 0x0000006F]
+        s.program(code)
+        await s.reset()
+        assert await s.until_write(0x40000008) == 1
+        observed = {addr: value for _, addr, value in s.effects if addr in expected}
+        assert observed == expected
+        assert bytes(memory[0x5000 + n] for n in range(8)) == ram
+        observed_accesses = [
+            (kind, addr, size, cache)
+            for _, kind, addr, size, cache, _ in s.transactions
+            if (
+                0x5000 <= addr < 0x5008
+                or 0x5100 <= addr < 0x5108
+                or 0x40000600 <= addr < 0x40000608
+            )
+        ]
+        if NORMAL_CACHE:
+            expected_accesses = [
+                (kind, addr & ~7, 3, 14)
+                if kind == "read" and cache == 2
+                else (kind, addr, size, 6)
+                if kind == "write" and cache == 2
+                else (kind, addr, size, cache)
+                for kind, addr, size, cache in expected_accesses
+            ]
+        observed_counts = Counter(observed_accesses)
+        expected_counts = Counter(expected_accesses)
+        assert not observed_counts - expected_counts
+        for access, count in expected_counts.items():
+            kind, addr, _, cache = access
+            # A dependent Normal load may forward from the store queue.
+            # Device reads and the independent Normal reads must reach AXI.
+            if (
+                kind == "write"
+                or cache == 0
+                or (not NORMAL_CACHE and 0x5100 <= addr < 0x5108)
+            ):
+                assert observed_counts[access] == count, access
+        if NORMAL_CACHE:
+            assert observed_counts[("read", 0x5100, 3, 14)] >= 1

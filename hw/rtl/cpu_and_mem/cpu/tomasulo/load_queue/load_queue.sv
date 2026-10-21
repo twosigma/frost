@@ -26,6 +26,7 @@
  */
 
 module load_queue #(
+    parameter bit CACHE_NORMAL_MEMORY = 1'b0,
     parameter int unsigned DEPTH = riscv_pkg::LqDepth,  // 8
     parameter bit ENABLE_L0_FAST_PATH = 1'b1,
     parameter bit PREISSUE_CANDIDATES = 1'b0,
@@ -213,6 +214,9 @@ module load_queue #(
     // =========================================================================
     input logic i_cache_invalidate_valid,
     input logic [riscv_pkg::XLEN-1:0] i_cache_invalidate_addr,
+    input logic [63:0] i_cache_store_data = '0,
+    input logic [7:0] i_cache_store_strb = '0,
+    input logic i_l0_hit_allowed = 1'b0,
     // =========================================================================
     // DMA coherence (from the wrapper's lq_coherence_port)
     // =========================================================================
@@ -660,11 +664,12 @@ module load_queue #(
   logic sq_check_entry_issueable;
   logic sq_check_phase2;
 
-  // BRAM/MMIO responses arrive one cycle after router acceptance. The fast_*
-  // tracker supports consecutive BRAM loads; MMIO pending feedback blocks
-  // later handoffs until acceptance. Cached requests hold cs_* slots until
-  // response. issued_idx selects the answering cached slot or fast tracker.
-  // A simultaneous launch overrides response clearing of mem_outstanding.
+  // The fast_* tracker owns the single uncached response. The legacy local
+  // path returns one cycle after router acceptance and permits consecutive
+  // BRAM loads. With AXI, bus-busy holds later handoffs through completion.
+  // Cached requests hold cs_* slots until response. issued_idx selects the
+  // answering cached slot or fast tracker. A simultaneous legacy launch
+  // overrides response clearing of mem_outstanding.
   logic mem_outstanding;  // fast tier: a BRAM/MMIO response is owed
   logic [IdxWidth-1:0] issued_idx;  // Entry for this cycle's response
   // Capture fast-tier attributes at launch and hold them until response.
@@ -681,6 +686,18 @@ module load_queue #(
   logic [ReorderBufferTagWidth-1:0] fast_rob_tag;
   amo_kind_e fast_amo_kind;
   logic [XLEN-1:0] fast_amo_rs2;
+  // Remember a committed store that overtook a delayed read. That old reply
+  // can complete its load, but cannot replace the newer L0 bytes.
+  logic fast_line_invalidated;
+  wire fast_line_invalidate_now = i_cache_invalidate_valid &&
+      i_cache_invalidate_addr[XLEN-1:3] == fast_addr[XLEN-1:3];
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) fast_line_invalidated <= 1'b0;
+    else if (o_mem_read_en && !launching_is_cached)
+      fast_line_invalidated <= i_cache_invalidate_valid &&
+          i_cache_invalidate_addr[XLEN-1:3] == launch_mem_issue_addr[XLEN-1:3];
+    else if (mem_outstanding && fast_line_invalidate_now) fast_line_invalidated <= 1'b1;
+  end
 
   localparam int unsigned CachedSlots = riscv_pkg::CachedLoadSlots;
   localparam int unsigned CachedSlotBits = riscv_pkg::CachedLoadSlotBits;
@@ -1565,6 +1582,7 @@ module load_queue #(
   // Keep this predicate aligned with sq_check_stage_clears below.
   logic sq_check_will_clear;
   logic cache_hit_fast_path;
+  wire  l0_lookup_busy = i_mem_bus_busy && !i_l0_hit_allowed;
   logic sq_do_forward;
   logic launch_mem_issue;
   logic older_amo_write_pending;
@@ -1676,7 +1694,7 @@ module load_queue #(
     o_sq_check_size    = sq_check_size_q;
 
     if (!i_flush_all && !i_flush_en && !drop_mem_response_pending &&
-        !i_mem_bus_busy && !sq_commit_check_block && sq_check_entry_issueable &&
+        !l0_lookup_busy && !sq_commit_check_block && sq_check_entry_issueable &&
         !sq_check_misaligned &&
         !(sq_check_no_older_store_q || i_sq_empty)) begin
       o_sq_check_valid = 1'b1;
@@ -1687,7 +1705,7 @@ module load_queue #(
     // while blocked.
     o_sq_check_capture_valid = 1'b0;
     if (!drop_mem_response_pending &&
-        !i_mem_bus_busy && sq_check_entry_issueable &&
+        !l0_lookup_busy && sq_check_entry_issueable &&
         !sq_check_misaligned &&
         !(sq_check_no_older_store_q || i_sq_empty)) begin
       o_sq_check_capture_valid = 1'b1;
@@ -1859,10 +1877,14 @@ module load_queue #(
 
       // SQ launch and AMO completion use separate invalidate ports for timing.
       // AMO serialization makes them exclusive; the cache does not require it.
-      .i_invalidate_valid (i_cache_invalidate_valid),
-      .i_invalidate_addr  (i_cache_invalidate_addr),
+      .i_invalidate_valid(i_cache_invalidate_valid),
+      .i_invalidate_addr(i_cache_invalidate_addr),
+      .i_store_data(i_cache_store_data),
+      .i_store_strb((CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
+          i_cache_invalidate_addr
+      )) ? i_cache_store_strb : 8'b0),
       .i_invalidate2_valid(amo_cache_inv),
-      .i_invalidate2_addr (amo_write_addr_q),
+      .i_invalidate2_addr(amo_write_addr_q),
 
       // SQ writes suppress same-cycle hits. AMO completion needs only sequential
       // invalidation because head serialization blocks younger loads.
@@ -1888,28 +1910,27 @@ module load_queue #(
 `endif
 `endif
 
-  // Use an L0 hit after SQ disambiguation for ordinary loads. Block even hits
-  // while the bus is busy: a store or AMO may hold it a cycle before its L0
-  // invalidation is visible. load_unit extracts sub-dword results.
-  assign cache_hit_fast_path = ENABLE_L0_FAST_PATH
-      && (CACHE_UNCACHED_DATA || sq_check_is_cached_region)
-      && !i_flush_all && !i_flush_en
-      && !i_mem_bus_busy
-      && sq_can_issue
-      && cache_lookup_hit
-      && !sq_check_is_mmio_q
-      && !sq_check_is_lr_q
-      && !sq_check_is_amo_q;
+  // Use an L0 hit after SQ disambiguation for ordinary loads. The wrapper
+  // may permit an unrelated hit during a buffered Normal store or older
+  // Normal read. Same-dword stores, AMOs, precise writes and pending Device
+  // handoffs still block it through disambiguation/invalidation or permission.
+  wire sq_check_cacheable = CACHE_UNCACHED_DATA || sq_check_is_cached_region ||
+      (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
+      sq_check_addr_q
+  ));
+  assign cache_hit_fast_path = ENABLE_L0_FAST_PATH && sq_check_cacheable &&
+      !i_flush_all && !i_flush_en && !l0_lookup_busy && sq_can_issue && cache_lookup_hit &&
+      !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
 
   assign stage_mem_issue_addr = sq_check_addr_q;
 
   assign stage_mem_issue = !i_flush_en && !i_flush_all && sq_can_issue && !cache_hit_fast_path;
   assign stage_mem_issue_size = sq_check_size_q;
 
-  // BRAM's fixed response pipeline permits a launch each cycle without a
-  // !mem_outstanding gate. Bus-busy prevents collisions with writes or the
-  // router's single pending request. MMIO first enters that pending register,
-  // which blocks later handoffs through acceptance.
+  // The legacy fixed-latency BRAM profile permits a launch each cycle without
+  // a !mem_outstanding gate. The AXI profile uses bus-busy to keep ownership
+  // through uncached completion. In both profiles it also prevents collisions
+  // with writes and the router's pending device request.
   //
   // Launch uses the staged payload directly; stalls keep sq_check_pending
   // armed until launch. Both flush gates are required: a full flush alone
@@ -2061,8 +2082,7 @@ module load_queue #(
   // sq_head_amo_clear implies sq_check_is_amo_q, which excludes both
   // cache and forward writes. Its ROB-head comparison is not a data select.
   assign ram_cache_payload_select = ENABLE_L0_FAST_PATH &&
-      (CACHE_UNCACHED_DATA || sq_check_is_cached_region) && !i_flush_all &&
-      !i_flush_en && !i_mem_bus_busy && cache_lookup_hit &&
+      sq_check_cacheable && !i_flush_all && !i_flush_en && !l0_lookup_busy && cache_lookup_hit &&
       (sq_no_older_store || (i_sq_all_older_addrs_known && !i_sq_forward.match));
   assign ram_sq_payload = ram_cache_payload_select ?
       ((sq_check_size_q == riscv_pkg::MEM_SIZE_DOUBLE) ?
@@ -2164,11 +2184,27 @@ module load_queue #(
   // fill. Use the launch-time issued_addr snapshot.
   assign cache_fill_response_valid = i_mem_read_valid && resp_outstanding &&
       !i_flush_all && !resp_drop && lq_valid[issued_idx];
-  assign cache_fill_valid = cache_fill_response_valid
-      && (CACHE_UNCACHED_DATA || issued_is_cached)
-      && !mem_response_error && !issued_is_mmio && !issued_is_lr && !issued_is_amo
-      && !(issued_is_cached &&
-           (issued_cached_line_invalidated || issued_cached_line_invalidate_now));
+  // Only the uncached response needs Normal-PMA qualification. Classify
+  // its retained address before the late cached/uncached response select,
+  // rather than putting that select ahead of the full-width range checks.
+  wire cache_fill_memory_type_ok = CACHE_UNCACHED_DATA || issued_is_cached ||
+      (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
+      fast_addr
+  ) && !fast_line_invalidated && !fast_line_invalidate_now);
+  assign cache_fill_valid = cache_fill_response_valid && cache_fill_memory_type_ok &&
+      !mem_response_error &&
+      !issued_is_mmio && !issued_is_lr && !issued_is_amo &&
+      !(issued_is_cached && (issued_cached_line_invalidated || issued_cached_line_invalidate_now));
+`ifdef F_LQ_NORMAL_FILL_POLICY_PROOF
+  always_comb begin
+    p_fill_policy_matches_selected_address :
+    assert (cache_fill_memory_type_ok ==
+        (CACHE_UNCACHED_DATA || issued_is_cached ||
+         (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
+        issued_addr
+    ) && !fast_line_invalidated && !fast_line_invalidate_now)));
+  end
+`endif
   assign cache_fill_addr = issued_addr;
   assign cache_fill_data = i_mem_read_data;
 
@@ -4478,10 +4514,13 @@ module load_queue #(
   // load, but must not complete the killed entry.
   always_comb begin
     if (i_rst_n && issued_entry_flushed && cache_fill_response_valid &&
-        (CACHE_UNCACHED_DATA || issued_is_cached) &&
-        !mem_response_error && !issued_is_mmio && !issued_is_lr && !issued_is_amo &&
-        !(issued_is_cached &&
-          (issued_cached_line_invalidated || issued_cached_line_invalidate_now))) begin
+        (CACHE_UNCACHED_DATA || issued_is_cached ||
+         (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
+            issued_addr
+        ) && !fast_line_invalidated && !fast_line_invalidate_now)) && !mem_response_error &&
+            !issued_is_mmio && !issued_is_lr && !issued_is_amo &&
+            !(issued_is_cached &&
+              (issued_cached_line_invalidated || issued_cached_line_invalidate_now))) begin
       p_partial_flush_response_fills_l0 : assert (cache_fill_valid);
       p_partial_flush_fill_not_accepted : assert (!accept_mem_response);
       p_partial_flush_fill_is_drained : assert (drop_mem_response_now);

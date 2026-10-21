@@ -16,7 +16,7 @@ MEMORY
     RAM (rwx) : ORIGIN = 0x00018000, LENGTH = 160K  /* Initialized data + BSS + stack + FreeRTOS heap */
 
     /* Memory-mapped peripherals, never data or code. These addresses must match
-     * the MmioAddr constants in hw/rtl/cpu_and_mem/cpu_and_mem.sv and the
+     * the MmioAddr constants in hw/rtl/soc_top/soc_top.sv and the
      * PROVIDE statements at the end of this file. */
     MMIO (rw) : ORIGIN = 0x40000000, LENGTH = 44    /* Peripherals: UART, FIFOs, Timer, MSIP */
 }
@@ -112,7 +112,7 @@ SECTIONS
     PROVIDE(__ddr_bss_end = 0);
 
     /* Memory-mapped peripheral addresses, referenced by C code through
-     * sw/lib/include/mmio.h. They must match cpu_and_mem.sv. */
+     * sw/lib/include/mmio.h. They must match soc_top.sv. */
     PROVIDE(UART_ADDR          = 0x40000000);  /* UART transmit register */
     PROVIDE(UART_RX_DATA_ADDR  = 0x40000004);  /* UART receive data (read pops byte) */
     PROVIDE(FIFO0_ADDR          = 0x40000008);  /* MMIO FIFO 0 */

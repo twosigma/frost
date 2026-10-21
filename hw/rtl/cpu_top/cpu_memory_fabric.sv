@@ -20,6 +20,7 @@
 module cpu_memory_fabric #(
     parameter int unsigned ADDR_WIDTH = riscv_pkg::PhysAddrBits,
     parameter int unsigned DATA_BYTES = 64,
+    parameter int unsigned FETCH_BYTES = 8,
     parameter int unsigned ID_BITS = 6,
     parameter int unsigned USER_BITS = 1,
     parameter logic [2:0] MEMORY_PROT = 3'b011
@@ -56,7 +57,7 @@ module cpu_memory_fabric #(
     input logic i_fetch_id,
     output logic o_fetch_resp_valid,
     output logic o_fetch_resp_id,
-    output logic [63:0] o_fetch_resp_data,
+    output logic [FETCH_BYTES*8-1:0] o_fetch_resp_data,
     output logic o_fetch_resp_error,
     output logic o_idle,
     output logic o_axi_awvalid,
@@ -106,16 +107,28 @@ module cpu_memory_fabric #(
 );
   initial begin
     if (ID_BITS < 6) $fatal(1, "cpu_memory_fabric requires at least six AXI ID bits");
+    if (FETCH_BYTES < 8 || FETCH_BYTES > DATA_BYTES || (FETCH_BYTES & (FETCH_BYTES - 1)) != 0)
+      $fatal(
+          1, "cpu_memory_fabric fetch size must be an 8-byte-or-larger power of two fitting AXI"
+      );
   end
   logic [1:0] next_client_q, selected;
   logic [2:0] requests;
   logic req_valid, req_ready, req_write;
+  logic master_ready, master_idle, pending_q;
   logic [ADDR_WIDTH-1:0] req_addr;
   logic [2:0] req_size, req_prot;
   logic [3:0] req_cache;
   logic [DATA_BYTES*8-1:0] req_data;
   logic [DATA_BYTES-1:0] req_strb;
   logic [ID_BITS-1:0] req_id, resp_id;
+  logic queued_write;
+  logic [ADDR_WIDTH-1:0] queued_addr;
+  logic [2:0] queued_size, queued_prot;
+  logic [3:0] queued_cache;
+  logic [DATA_BYTES*8-1:0] queued_data;
+  logic [DATA_BYTES-1:0] queued_strb;
+  logic [ID_BITS-1:0] queued_id;
   logic resp_valid;
   logic [DATA_BYTES*8-1:0] resp_data;
   logic [1:0] resp_status;
@@ -148,22 +161,43 @@ module cpu_memory_fabric #(
     end else if (selected == 2) begin
       req_write = 1'b0;
       req_addr = i_fetch_addr;
-      req_size = 3'd3;
-      req_cache = 4'b0010;
+      req_size = 3'($clog2(FETCH_BYTES));
+      req_cache = FETCH_BYTES > 8 ? 4'b1110 : 4'b0010;
       req_prot = MEMORY_PROT | 3'b100;
       req_data = '0;
       req_strb = '0;
       req_id = ID_BITS'(34) | ID_BITS'(i_fetch_id);
     end
   end
-  // The line protocol selects at acceptance. The AXI master registers the
-  // chosen payload and owns AXI VALID stability independently of arbitration.
+  // Register the arbitration result before the master's ID/channel checks.
+  // Cache acceptance must not traverse the other clients' live valids,
+  // the wide request mux, and the master's busy-ID lookup in one cycle.
+  // A queued request has not yet been presented to AXI and may be discarded
+  // by CPU reset; the master independently drains already presented beats.
+  assign req_ready = !i_rst && !i_axi_rst && (!pending_q || master_ready);
+  assign o_idle = master_idle && !pending_q;
   assign o_cache_ready = req_ready && selected == 0;
-  assign o_data_ready  = req_ready && selected == 1;
+  assign o_data_ready = req_ready && selected == 1;
   assign o_fetch_ready = req_ready && selected == 2;
   always_ff @(posedge i_clk) begin
-    if (i_rst) next_client_q <= 0;
-    else if (req_valid && req_ready) next_client_q <= selected == 2 ? 0 : selected + 1'b1;
+    if (i_rst || i_axi_rst) begin
+      next_client_q <= 0;
+      pending_q <= 1'b0;
+    end else begin
+      if (pending_q && master_ready) pending_q <= 1'b0;
+      if (req_valid && req_ready) begin
+        next_client_q <= selected == 2 ? 0 : selected + 1'b1;
+        pending_q <= 1'b1;
+        queued_write <= req_write;
+        queued_addr <= req_addr;
+        queued_size <= req_size;
+        queued_prot <= req_prot;
+        queued_cache <= req_cache;
+        queued_data <= req_data;
+        queued_strb <= req_strb;
+        queued_id <= req_id;
+      end
+    end
     if (i_fetch_valid && o_fetch_ready)
       fetch_dword_q[i_fetch_id] <= i_fetch_addr[$clog2(DATA_BYTES)-1:3];
   end
@@ -176,7 +210,7 @@ module cpu_memory_fabric #(
   assign o_data_resp_status = resp_status;
   assign o_fetch_resp_valid = resp_valid && (resp_id == ID_BITS'(34) || resp_id == ID_BITS'(35));
   assign o_fetch_resp_id = resp_id[0];
-  assign o_fetch_resp_data = 64'(resp_data >> {fetch_dword_q[resp_id[0]], 6'b0});
+  assign o_fetch_resp_data = (FETCH_BYTES * 8)'(resp_data >> {fetch_dword_q[resp_id[0]], 6'b0});
   assign o_fetch_resp_error = resp_status[1];
   cpu_axi_master #(
       .ADDR_WIDTH(ADDR_WIDTH),
@@ -187,23 +221,23 @@ module cpu_memory_fabric #(
       .i_clk,
       .i_rst,
       .i_axi_rst,
-      .i_req_valid(req_valid),
-      .o_req_ready(req_ready),
-      .i_req_write(req_write),
-      .i_req_addr(req_addr),
-      .i_req_size(req_size),
-      .i_req_cache(req_cache),
-      .i_req_prot(req_prot),
-      .i_req_wdata(req_data),
-      .i_req_wstrb(req_strb),
-      .i_req_id(req_id),
+      .i_req_valid(pending_q),
+      .o_req_ready(master_ready),
+      .i_req_write(queued_write),
+      .i_req_addr(queued_addr),
+      .i_req_size(queued_size),
+      .i_req_cache(queued_cache),
+      .i_req_prot(queued_prot),
+      .i_req_wdata(queued_data),
+      .i_req_wstrb(queued_strb),
+      .i_req_id(queued_id),
       .o_resp_valid(resp_valid),
       .i_resp_ready(1'b1),
       .o_resp_write(),
       .o_resp_id(resp_id),
       .o_resp_rdata(resp_data),
       .o_resp_status(resp_status),
-      .o_idle,
+      .o_idle(master_idle),
       .o_axi_awvalid,
       .i_axi_awready,
       .o_axi_awid,

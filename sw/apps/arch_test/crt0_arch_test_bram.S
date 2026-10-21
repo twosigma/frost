@@ -7,7 +7,8 @@
 //
 // A large .data load image can run past the ROM into RAM and overlap its
 // destination (see link_arch_test_bram.ld). Copy backward so the startup
-// behaves like memmove when dest > src.
+// behaves like memmove when dest > src. That overwrites the load image;
+// the architecture-test bench reloads it before a second reset run.
 
     .section .init
     .globl _start

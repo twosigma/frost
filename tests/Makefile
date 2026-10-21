@@ -436,6 +436,7 @@ COMPILE_ARGS := \
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),cpu_uncached_adapter)
 COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_top/cpu_uncached_adapter.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),line_port_axi_bridge)

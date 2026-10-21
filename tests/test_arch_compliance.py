@@ -263,6 +263,7 @@ def compile_test(
 
 def run_simulation(
     coverage_label: str = "arch_test",
+    mem_config: str = DEFAULT_MEM_CONFIG,
 ) -> subprocess.CompletedProcess[str] | None:
     """Simulate the compiled test; return the result, or None on timeout.
 
@@ -274,9 +275,18 @@ def run_simulation(
         app_name=None,  # compile_test builds the image before this runs
     )
     runner.coverage_label = coverage_label
+    # Only the BRAM startup restores its initialized data on CPU reset.
+    # DDR and icache images load in place; a second boot would execute with
+    # mutated inputs. Apply the shared runner's single-run policy to them.
+    runner.mem_config = "bram" if mem_config == "bram" else "ddr"
 
     os.environ["SIM"] = "verilator"
     env = runner.setup_environment()
+    # Large BRAM test images can place their .data load image in RAM,
+    # overlapping the destination that startup writes. The bench reloads
+    # those images through the programming port before the second reset run;
+    # smaller images retain the ordinary reset-without-reload check.
+    env["FROST_ARCH_BRAM_RESET_IMAGE"] = "1" if mem_config == "bram" else "0"
     # The boot stub uses 256 KiB low BRAM. MEM_CONFIG selects which test
     # sections the DDR model preloads from sw_ddr.mem; see MEMORY_CONFIGS.
     sim_build_dir = runner._get_sim_build_dir(env)
@@ -329,22 +339,26 @@ def run_simulation(
         os.chdir(original_dir)
 
 
-def extract_signature(sim_output: str) -> list[str]:
-    """Collect lowercase hex words before a line starting with <<PASS>>.
+def extract_signatures(sim_output: str) -> list[list[str]]:
+    """Collect a signature for each completed reset/restart run.
 
     RVMODEL_HALT prints one 8-digit word per line, then the marker. The program
     prints no other bare 8-digit hex lines. Ignore interspersed simulator logs;
-    a marker embedded in a log message does not end the dump.
+    a marker embedded in a log message does not end the dump. Retain empty
+    dumps so a missing signature cannot hide behind an earlier correct run.
     """
-    lines = sim_output.splitlines()
+    signatures: list[list[str]] = []
     sig_lines: list[str] = []
-    for line in lines:
+    for line in sim_output.splitlines():
         stripped = line.strip()
         if len(stripped) == 8 and all(c in "0123456789abcdefABCDEF" for c in stripped):
             sig_lines.append(stripped.lower())
-        elif sig_lines and stripped.startswith("<<PASS>>"):
-            break
-    return sig_lines
+        elif stripped.startswith("<<PASS>>"):
+            signatures.append(sig_lines)
+            sig_lines = []
+    if sig_lines:
+        raise ValueError(f"Unterminated signature for run {len(signatures) + 1}")
+    return signatures
 
 
 def load_reference(ref_path: Path) -> list[str]:
@@ -414,7 +428,9 @@ def run_single_test(
             )
         return TestResult(test_name, extension, "FAIL", "Compilation failed")
 
-    result = run_simulation(coverage_label=f"arch_{extension}_{test_name}")
+    result = run_simulation(
+        coverage_label=f"arch_{extension}_{test_name}", mem_config=mem_config
+    )
     if result is None:
         return TestResult(
             test_name,
@@ -439,19 +455,28 @@ def run_single_test(
     if "<<PASS>>" not in combined_output:
         return TestResult(test_name, extension, "FAIL", "No <<PASS>> marker in output")
 
-    actual_sig = extract_signature(combined_output)
-    if not actual_sig:
+    try:
+        actual_signatures = extract_signatures(combined_output)
+    except ValueError as error:
+        return TestResult(test_name, extension, "FAIL", str(error))
+    if not actual_signatures:
         return TestResult(test_name, extension, "FAIL", "No signature data in output")
 
     expected_sig = load_reference(ref_path)
-    match, diff_msg = compare_signatures(actual_sig, expected_sig)
-
-    if match:
-        return TestResult(test_name, extension, "PASS")
-    else:
-        return TestResult(
-            test_name, extension, "FAIL", f"Signature mismatch:\n{diff_msg}"
-        )
+    for run, actual_sig in enumerate(actual_signatures, 1):
+        if not actual_sig:
+            return TestResult(
+                test_name, extension, "FAIL", f"No signature data for run {run}"
+            )
+        match, diff_msg = compare_signatures(actual_sig, expected_sig)
+        if not match:
+            return TestResult(
+                test_name,
+                extension,
+                "FAIL",
+                f"Signature mismatch in run {run}:\n{diff_msg}",
+            )
+    return TestResult(test_name, extension, "PASS")
 
 
 def run_extension_tests(

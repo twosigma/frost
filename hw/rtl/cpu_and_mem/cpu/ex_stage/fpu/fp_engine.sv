@@ -1097,8 +1097,21 @@ module fp_engine (
   assign q_mul = dec_q.src_d ? {3'b0, !cb_q.exp_zero, opb_q[51:0]} :
       {32'b0, !cb_q.exp_zero, opb_q[22:0]};
 
+  // Keep the 113-bit zero test balanced before normalization selects the
+  // exponent operation. Sharing partial reductions with the other R tests
+  // otherwise creates a deep chain ahead of the exponent adder.
+  (* keep = "true" *) logic [18:0] r_nonzero_chunks;
+  (* keep = "true" *) logic [3:0] r_nonzero_groups;
   logic r_nonzero;
-  assign r_nonzero = |r_q;
+  for (genvar chunk = 0; chunk < 19; chunk++) begin : gen_r_nonzero_chunks
+    localparam int BITS = ((113 - 6 * chunk) < 6) ? (113 - 6 * chunk) : 6;
+    assign r_nonzero_chunks[chunk] = |r_q[6*chunk+:BITS];
+  end
+  for (genvar group_idx = 0; group_idx < 4; group_idx++) begin : gen_r_nonzero_groups
+    localparam int CHUNKS = ((19 - 6 * group_idx) < 6) ? (19 - 6 * group_idx) : 6;
+    assign r_nonzero_groups[group_idx] = |r_nonzero_chunks[6*group_idx+:CHUNKS];
+  end
+  assign r_nonzero = |r_nonzero_groups;
 
   logic r_needs_norm, x_needs_norm, r_top8_zero;
   assign r_needs_norm = !zr_q && !r_q[111];

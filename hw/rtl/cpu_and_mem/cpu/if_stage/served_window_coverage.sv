@@ -17,7 +17,7 @@
 // Served-window check for one fetch provider: does the window it presents
 // hold every word that pc_reg's packet needs?
 //
-// Tags are 30-bit word addresses, bits [31:2] of the fetch PC the window was
+// Tags are WORD_BITS-wide word addresses of the fetch PC the window was
 // fetched for and of pc_reg. With S the window's first word, the provider
 // registers S, S+1, S-1, and S != 0 beside its payload. pc_reg's word P is
 // covered when:
@@ -31,7 +31,7 @@
 // upper half of P always needs P+1: a 32-bit slot 1 spans into it, and a
 // compressed slot 1 can pair with a slot 2 in its lower half.
 //
-// Separate provider instances and explicit mux primitives are used for timing.
+// Separate provider instances and balanced equality trees are used for timing.
 (* keep_hierarchy = "yes" *)
 module served_window_coverage #(
     parameter int unsigned WORD_BITS = 30
@@ -47,80 +47,61 @@ module served_window_coverage #(
     output logic                 o_covers
 );
 
-  (* keep = "true" *)logic [9:0] same_chunk;
-  (* keep = "true" *)logic [9:0] last_chunk;
-  (* keep = "true" *)logic [9:0] prev_chunk;
-
-  for (genvar k = 0; k < 10; k++) begin : gen_eq_chunks
-    assign same_chunk[k] = ~|(i_pc_word[3*k+:3] ^ i_served_word[3*k+:3]);
-    assign last_chunk[k] = ~|(i_pc_word[3*k+:3] ^ i_served_last_word[3*k+:3]);
-    assign prev_chunk[k] = ~|(i_pc_word[3*k+:3] ^ i_served_prev_word[3*k+:3]);
+  // Apply the same three-bit comparisons to the entire virtual address.
+  // A separate wide upper equality inferred carry chains on the PC path.
+  localparam int unsigned ChunkCount = (WORD_BITS + 2) / 3;
+  localparam int unsigned GroupCount = (ChunkCount + 5) / 6;
+  (* keep = "true" *) logic [ChunkCount-1:0] same_chunk, last_chunk, prev_chunk;
+  (* keep = "true" *) logic [GroupCount-1:0] same_group, last_group, prev_group;
+  for (genvar k = 0; k < ChunkCount; k++) begin : gen_eq_chunks
+    localparam int unsigned Width = WORD_BITS - 3 * k < 3 ? WORD_BITS - 3 * k : 3;
+    assign same_chunk[k] = ~|(i_pc_word[3*k+:Width] ^ i_served_word[3*k+:Width]);
+    assign last_chunk[k] = ~|(i_pc_word[3*k+:Width] ^ i_served_last_word[3*k+:Width]);
+    assign prev_chunk[k] = ~|(i_pc_word[3*k+:Width] ^ i_served_prev_word[3*k+:Width]);
   end
-
-  // Retain the original timing-shaped low-word comparator. High VA bits
-  // compare in parallel and qualify the three low-word equalities, so PCs
-  // separated by 4 GiB cannot claim the same served window.
-  logic same_upper, last_upper, prev_upper;
-  if (WORD_BITS > 30) begin : gen_upper
-    assign same_upper = i_pc_word[WORD_BITS-1:30] == i_served_word[WORD_BITS-1:30];
-    assign last_upper = i_pc_word[WORD_BITS-1:30] == i_served_last_word[WORD_BITS-1:30];
-    assign prev_upper = i_pc_word[WORD_BITS-1:30] == i_served_prev_word[WORD_BITS-1:30];
-  end else begin : gen_no_upper
-    assign same_upper = 1'b1;
-    assign last_upper = 1'b1;
-    assign prev_upper = 1'b1;
+  for (genvar k = 0; k < GroupCount; k++) begin : gen_eq_groups
+    localparam int unsigned Width = ChunkCount - 6 * k < 6 ? ChunkCount - 6 * k : 6;
+    assign same_group[k] = &same_chunk[6*k+:Width];
+    assign last_group[k] = &last_chunk[6*k+:Width];
+    assign prev_group[k] = &prev_chunk[6*k+:Width];
   end
+  (* keep = "true" *) logic same_word, last_word, prev_word_valid;
+  assign same_word = &same_group;
+  assign last_word = &last_group;
+  assign prev_word_valid = (&prev_group) && i_served_prev_word_valid;
 
-  (* keep = "true" *) logic same_lo, same_hi;
-  (* keep = "true" *) logic last_lo, last_hi;
-  (* keep = "true" *) logic prev_lo_valid, prev_hi;
-
-  assign same_lo = &same_chunk[4:0];
-  assign same_hi = (&same_chunk[9:5]) && same_upper;
-  assign last_lo = &last_chunk[4:0];
-  assign last_hi = (&last_chunk[9:5]) && last_upper;
-  assign prev_lo_valid = (&prev_chunk[4:0]) && i_served_prev_word_valid;
-  assign prev_hi = (&prev_chunk[9:5]) && prev_upper;
-
-  // Candidates cover each combination of buffer use and need for word P+1.
-  (* keep = "true" *) logic no_buffer_covers_same_only, no_buffer_covers_served_last;
-  (* keep = "true" *) logic buffer_covers_base, buffer_covers_successor;
-  assign no_buffer_covers_same_only = same_lo && same_hi;
-  assign no_buffer_covers_served_last = (same_lo && same_hi) || (last_lo && last_hi);
-  assign buffer_covers_base = (same_lo && same_hi) || (last_lo && last_hi) ||
-      (prev_lo_valid && prev_hi);
-  assign buffer_covers_successor = (same_lo && same_hi) || (prev_lo_valid && prev_hi);
-
-  // MUXF7 selects within each buffer case; MUXF8 selects the buffer case.
+  // Once the three equalities are available, all buffer/packet cases fit in
+  // one LUT: S always covers; S+1 needs no successor; S-1 needs the buffer.
 `ifdef FROST_XILINX_PRIMS
-  (* keep = "true" *)logic covers_without_buffer;
-  (* keep = "true" *)logic covers_with_buffer;
-
-  MUXF7 u_covers_without_buffer_mux (
-      .O (covers_without_buffer),
-      .I0(no_buffer_covers_same_only),
-      .I1(no_buffer_covers_served_last),
-      .S (i_no_buffer_accepts_served_last)
-  );
-
-  MUXF7 u_covers_with_buffer_mux (
-      .O (covers_with_buffer),
-      .I0(buffer_covers_base),
-      .I1(buffer_covers_successor),
-      .S (i_pc_high)
-  );
-
-  MUXF8 u_covers_buffer_mux (
+  (* dont_touch = "true" *)
+  LUT6 #(
+      .INIT(64'hFAEEFEEEFAAAFEAA)
+  ) u_covers (
       .O (o_covers),
-      .I0(covers_without_buffer),
-      .I1(covers_with_buffer),
-      .S (i_use_instr_buffer)
+      .I0(same_word),
+      .I1(last_word),
+      .I2(prev_word_valid),
+      .I3(i_use_instr_buffer),
+      .I4(i_pc_high),
+      .I5(i_no_buffer_accepts_served_last)
   );
 `else
-  assign o_covers = i_use_instr_buffer ?
-      (i_pc_high ? buffer_covers_successor : buffer_covers_base) :
-      (i_no_buffer_accepts_served_last ? no_buffer_covers_served_last :
-                                         no_buffer_covers_same_only);
+  assign o_covers = same_word ||
+      (last_word && (i_use_instr_buffer ? !i_pc_high : i_no_buffer_accepts_served_last)) ||
+      (prev_word_valid && i_use_instr_buffer);
+`endif
+
+`ifdef FORMAL
+  // Check the complete word address and every combination of packet shape
+  // and buffer state, without assuming relationships between the tags.
+  always_comb begin
+    p_coverage_matches_full_address_reference :
+    assert (o_covers == ((i_pc_word == i_served_word) ||
+            ((i_pc_word == i_served_last_word) &&
+             (i_use_instr_buffer ? !i_pc_high : i_no_buffer_accepts_served_last)) ||
+            ((i_pc_word == i_served_prev_word) && i_served_prev_word_valid &&
+             i_use_instr_buffer)));
+  end
 `endif
 
 endmodule

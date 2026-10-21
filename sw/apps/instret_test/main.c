@@ -24,10 +24,11 @@
  * their count must equal (mepc - block start) / 4.
  *
  * The timer sweep must interrupt at least one waiting WFI (mepc past it).
- * The software-interrupt test follows the MSIP store with a device load.
- * The load waits for the store to drain and shields interrupts until it
- * commits, allowing the interrupt to coincide with the next instruction's
- * commit. At least one interrupt must land after the load.
+ * A second timer sweep crosses a device load and its interrupt shield.
+ * An MSIP store before that load would already make the interrupt pending
+ * while the AXI store itself shields retirement, so it cannot reliably
+ * exercise the read-completion boundary. At least one take must follow the
+ * load, and every take must have the exact instruction count.
  */
 
 #include <stdint.h>
@@ -35,11 +36,13 @@
 #include "trap.h"
 #include "uart.h"
 
-#define MSIP_REG 0x40000020u
 #define UART_TX_STATUS_REG 0x40000028u
 
 #define WFI_MARGINS 96u
+#define WFI_MARGIN_STEP 16u
 #define SHIELD_PADS 4u /* SHIELD_TRIAL variants: 0 to 3 instructions before the load */
+#define SHIELD_MARGINS 48u
+#define SHIELD_MARGIN_STEP 32u
 
 static int g_failed;
 
@@ -191,7 +194,8 @@ static void wfi_test(void)
         uint64_t start = 0, start_pc = 0, wfi_pc = 0, resume = 0, scratch = 0;
         uint32_t before = g_trap_count;
 
-        set_timer_cmp(rdmtime() + margin);
+        /* Cover both early takes and waiting WFI after AXI timer writes. */
+        set_timer_cmp(rdmtime() + margin * WFI_MARGIN_STEP);
         __asm__ volatile(".option push\n.option norvc\n"
                          "la    %[res], 2f\n"
                          "csrw  mscratch, %[res]\n"
@@ -235,9 +239,10 @@ static void wfi_test(void)
 }
 
 /*
- * One shield trial: a store raises MSIP, NPAD instructions follow, then a
- * load from the UART TX status register and eight independent instructions.
- * The block ends in a WFI in case the take comes late.
+ * One shield trial: an already armed timer crosses NPAD instructions, a
+ * UART TX status load, and eight independent instructions. The four padding
+ * phases and deadline sweep exercise takes before and after the load without
+ * relying on a fixed AXI response latency. WFI waits for any late take.
  */
 #define SHIELD_TRIAL(NPAD)                                                                         \
     __asm__ volatile(".option push\n.option norvc\n"                                               \
@@ -245,16 +250,13 @@ static void wfi_test(void)
                      "csrw  mscratch, %[res]\n"                                                    \
                      "la    %[spc], 1f\n"                                                          \
                      "la    %[lpc], 5f\n"                                                          \
-                     "li    t0, 1\n"                                                               \
-                     "li    t1, %[msip]\n"                                                         \
+                     "li    t1, %[txs]\n"                                                          \
                      "1:\n"                                                                        \
                      "csrr  %[start], minstret\n"                                                  \
                      "csrsi mstatus, 8\n"                                                          \
-                     "sw    t0, 0(t1)\n"                                                           \
                      ".rept " #NPAD "\n"                                                           \
                      "addi  t0, x0, 1\n"                                                           \
                      ".endr\n"                                                                     \
-                     "li    t1, %[txs]\n"                                                          \
                      "5:\n"                                                                        \
                      "lw    %[scr], 0(t1)\n"                                                       \
                      ".rept 8\n"                                                                   \
@@ -269,7 +271,7 @@ static void wfi_test(void)
                        [spc] "=&r"(start_pc),                                                      \
                        [start] "=&r"(start),                                                       \
                        [scr] "=&r"(scratch)                                                        \
-                     : [msip] "i"(MSIP_REG), [txs] "i"(UART_TX_STATUS_REG)                         \
+                     : [txs] "i"(UART_TX_STATUS_REG)                                               \
                      : "t0", "t1", "memory")
 
 static void shield_test(void)
@@ -277,11 +279,12 @@ static void shield_test(void)
     uint32_t mismatches = 0, after_load = 0, before_load = 0;
 
     uart_printf("\nTest 4: an interrupt the device-read shield defers\n");
-    enable_software_interrupt();
-    for (uint32_t trial = 0; trial < 4 * SHIELD_PADS; trial++) {
+    enable_timer_interrupt();
+    for (uint32_t trial = 0; trial < SHIELD_MARGINS * SHIELD_PADS; trial++) {
         uint64_t start = 0, start_pc = 0, load_pc = 0, resume = 0, scratch = 0;
         uint32_t before = g_trap_count;
 
+        set_timer_cmp(rdmtime() + (trial / SHIELD_PADS) * SHIELD_MARGIN_STEP);
         switch (trial % SHIELD_PADS) {
             case 0:
                 SHIELD_TRIAL(0);
@@ -310,7 +313,7 @@ static void shield_test(void)
         if (!trap_count_exact(start, start_pc))
             mismatches++;
     }
-    disable_software_interrupt();
+    disable_timer_interrupt();
     uart_printf("  takes: %u after the load, %u at or before it\n", after_load, before_load);
     check("every take counts exactly the instructions before mepc", mismatches == 0);
     check("some take followed the shielded load", after_load > 0);

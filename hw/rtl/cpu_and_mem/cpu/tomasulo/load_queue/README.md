@@ -4,7 +4,7 @@ The load queue (LQ) tracks every load, LR and AMO from dispatch until its
 result leaves for the CDB. It has eight entries (`riscv_pkg::LqDepth`) and two
 allocation ports, one per dispatch slot. For each load it decides when the
 load may read memory and where the data comes from: an older store still in
-the store queue (SQ), a 128-entry L0 cache that answers in the same cycle, or
+the store queue (SQ), a configurable L0 cache that answers in the same cycle, or
 one of three memory classes behind the data-memory router (uncached Normal
 memory, Device registers, and the cached hierarchy). Ordinary loads issue out of
 order; device loads, LRs and AMOs wait for the head of the reorder buffer
@@ -32,6 +32,10 @@ extracts and sign-extends bytes, halfwords and words from a 64-bit beat.
 | `PREISSUE_CANDIDATES`, `PREISSUE_SEL_WIDTH` | 0, 2; 1, 3 in the core | Register 2^`PREISSUE_SEL_WIDTH` look-ahead matches and select afterward (early load wakeup) |
 | `PREISSUE_READY_PICK`, `PREISSUE_RS_DEPTH` | 0, 8; 1, 8 in the core | Compare RS entry tags first, then select a match using each candidate's ready vector |
 | `CACHED_BASE`, `CACHED_SIZE_BYTES` | `0x8000_0000`, 1 GiB | Cached (DDR) region |
+
+FROST passes a 256-entry L0 when Normal read caching is enabled; the raw LQ
+and strict CPU profile retain the 128-entry default. Cache depth does not
+change the number of in-flight loads or coherence observation entries.
 
 ## Allocation and capacity
 
@@ -102,12 +106,19 @@ the SQ picked. The
 [store queue](../store_queue/README.md#store-to-load-forwarding) documents
 which stores count. Device loads, LRs and AMOs never forward.
 
-A load staged while the SQ is empty skips the probe. Launch does not wait for
-the previous response, and the staging register takes the next load in the
-cycle the current one launches, so such low-BRAM loads can launch one per
-cycle; a probe costs one more cycle. With `PREPARE_LOAD_WHILE_BUSY=1` a load
-may be staged while the memory port is busy (`i_mem_bus_busy`), but the probe,
-L0 hit and launch still wait for the port. A staged head AMO does not wait for
+A load staged while the SQ is empty skips the probe. The staging register
+can take the next load in the cycle the current one launches; a probe costs
+one more cycle. The legacy local-BRAM fixture permits a launch each cycle,
+whereas the AXI Normal path retains its one owner through the response.
+With `PREPARE_LOAD_WHILE_BUSY=1` a load may be staged while the memory port
+is busy (`i_mem_bus_busy`). The wrapper can separately permit an unrelated L0 hit while an ordinary
+Normal store launches or drains, or while an older Normal read waits for its
+response. Store disambiguation and same-dword invalidation still apply.
+AMOs, precise store launches, recovery, and a pending Device handoff block
+this overlap; external read launches still wait for the port. A cache hit
+and an older read response can write distinct LQ entries on the same edge,
+and both results subsequently reach the CDB.
+A staged head AMO does not wait for
 younger stores' addresses (`sq_head_amo_clear`), since no store older than it
 exists.
 
@@ -137,12 +148,13 @@ point, and so younger than the load.
 
 | Tier | Addresses | Response | In flight |
 |------|-----------|----------|-----------|
-| Uncached Normal | Configured PMA region (FROST low BRAM) | Variable AXI R latency | One until response consumed |
+| Normal outside the DDR cache | Configured PMA region (FROST low BRAM) | Optional L0 hit, otherwise variable AXI R latency | One external read until response consumed |
 | Device | Configured PMA device regions | Variable AXI R latency after head/shield admission | One, and it blocks every other handoff |
 | Cached (DDR) | `CACHED_BASE`, `CACHED_SIZE_BYTES` | Variable: an L1D hit after a few cycles, a miss after a fill round trip | Up to eight (`riscv_pkg::CachedLoadSlots`), answered in any order |
 
-Every response uses an aligned 64-bit container; only requested bytes are
-valid for uncached traffic (see the
+Every response uses an aligned 64-bit container. Optional Normal read-cache
+fills return a full dword; strict uncached and Device responses guarantee
+only their requested bytes (see the
 [memory map](../../../../README.md#memory-map) and the
 [data-tier bus contract](../../../../README.md#data-tier-bus-contract)).
 Uncached Normal and device loads share one in-flight tracker (`mem_outstanding` and
@@ -169,7 +181,7 @@ response mux, so a cached response in the flush cycle cannot hide it.
 ## Device loads
 
 Device reads can have side effects (clear-on-read registers, FIFO pops), so a
-device load (any address with `addr[31:30] == 2'b01`) runs exactly once and
+device load (classified by the configured PMA) runs exactly once and
 never speculatively: it leaves the LQ only at the ROB head.
 It may probe the SQ and hand off to the
 [data-memory router](../../cpu_ooo/memory_if/data_mem_request_router.sv)
@@ -234,10 +246,13 @@ cycles.
 
 ## L0 cache
 
-`cpu_top` sets `CACHE_UNCACHED_DATA=0`: uncached Normal and Device accesses
-bypass L0 and cannot fill it. This matters for narrow AXI reads, whose unused
-byte lanes are not valid data. The parameter defaults to 1 for legacy unit
-benches; Device traffic bypasses L0 in either setting.
+`cpu_top` sets `CACHE_UNCACHED_DATA=0`: strict uncached and Device accesses
+bypass L0 and cannot fill it, because unused narrow AXI byte lanes are not
+valid data. That parameter defaults to 1 for legacy unit benches.
+The independent `CACHE_NORMAL_MEMORY` option permits caching the configured
+Normal region outside the debug slice's 4 KiB page; its AXI adapter fetches
+complete aligned dwords. FROST enables this option, while standalone
+`cpu_top` defaults it off. Device traffic always bypasses L0.
 
 The L0 is direct-mapped with 8-byte (dword) lines: valid bits in flip-flops,
 tags and data in LUTRAM. The staged load looks it up combinationally
@@ -247,22 +262,31 @@ AMOs never hit or fill.
 
 A memory response fills its line with the whole beat, except on a full-flush
 cycle, when the response is being drained (apart from the partial-flush case
-below), or when a store or DMA write hit the line while a cached load was in
-flight. Each invalidation source has its own port:
+below), or when a store or DMA write hit the line while the load was in
+flight. The Normal response tracker remembers overlapping stores through
+the response edge, including same-cycle invalidation, so an old read cannot
+replace newer L0 store data. Each invalidation source has its own port:
 
 | Source | Granule | When |
 |--------|---------|------|
-| SQ store write | Dword | The cycle the SQ launches the write; a same-cycle hit is suppressed |
+| SQ store write | Dword | At launch, suppress same-cycle hits; update selected bytes for eligible Normal memory, otherwise invalidate |
 | AMO write | Dword | When the write completes |
 | DMA write | 32-byte line (four entries, tag-blind) | On the coherence port's invalidation edge; a same-cycle hit is suppressed |
 
-An L0 hit also waits for a free memory port (`!i_mem_bus_busy`), because a
-store or AMO write can own the port before its invalidation takes effect.
+A Normal write-through store updates a matching dword using its byte enables.
+A full-dword store may allocate a new entry; a partial miss cannot allocate
+unknown bytes. Store updates take the RAM port ahead of a simultaneous read
+fill, while AMO and DMA invalidation take priority over both.
 
-The L0 is never flushed: cached stores write memory after commit and
-invalidate their line when they do, and successful loads fill with what
-memory returned, so a mispredict leaves nothing speculative in it. The
-variable-latency uncached path does not use L0. A response that arrives with the
+An L0 hit waits for a free memory port unless the wrapper explicitly asserts
+`i_l0_hit_allowed`. FROST permits hits during an older store's response wait,
+after its L0 update, but blocks the launch edge, AMO activity and recovery.
+SQ disambiguation still applies to every hit.
+
+The L0 survives pipeline flushes: committed stores invalidate or update their
+dword, and filtered successful loads fill with what memory returned, so a
+mispredict leaves no speculative store data in it. CPU reset invalidates it.
+A response that arrives with the
 partial flush that kills its load may therefore still fill. A lookup sees a
 fill only from the next cycle; forwarding the fill would put the flush logic
 on the data-memory read-address path.

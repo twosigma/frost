@@ -54,8 +54,9 @@ adapter wiring.
 | `ROB_SHARED_LINK_BANK` | 0 | Shares the ROB value memories' allocation link bank when dispatch guarantees at most one branch allocation per cycle; enabled by `cpu_ooo` |
 | `INT_RS_DEPTH` | 16 (`riscv_pkg::IntRsDepth`) | INT_RS entries: a power of two from 2 to 32, the ROB depth. It changes only INT_RS and the width of its occupancy count; port 1's window stays at eight entries, or the whole station if smaller |
 | `EARLY_LOAD_WAKEUP` | 1 (`riscv_pkg::EarlyLoadWakeup`) | [Early dependent memory wakeup](#early-dependent-memory-wakeup) |
-| `PREPARE_LOAD_WHILE_BUSY` | 1 (`riscv_pkg::PrepareLoadWhileBusy`) | LQ: stage a load while the memory port is busy; its SQ check, L0 hit, and launch still wait for the port |
-| `L0_CACHE_DEPTH` | 128 (`riscv_pkg::LqL0Depth`) | LQ L0 cache entries |
+| `PREPARE_LOAD_WHILE_BUSY` | 1 (`riscv_pkg::PrepareLoadWhileBusy`) | LQ: stage a load while the memory port is busy; the wrapper may separately permit unrelated L0 hits during buffered Normal stores and older Normal reads |
+| `CACHE_NORMAL_MEMORY` | 0 | Optional Normal read-cache/write-through policy; FROST enables it, excluding the debug data page |
+| `L0_CACHE_DEPTH` | 128 (`riscv_pkg::LqL0Depth`) | LQ L0 entries; FROST passes 256 with Normal read caching |
 | `CACHED_BASE`, `CACHED_SIZE_BYTES` | `0x8000_0000`, `0x4000_0000` | Cached (DDR) region, for LQ and SQ tier tagging |
 | `PERF_COUNTERS` | 1 | 0 leaves out `tomasulo_perf_counters`; `o_perf_counter_data` then reads zero |
 
@@ -110,6 +111,11 @@ signals and ROB head tag.
 
 `i_backend_recovery_hold` is not a flush. While it is high, the wrapper blocks
 dispatch into every station, blocks issue, and holds the FP dispatch buffer.
+A fatal memory error immediately stops architectural retirement, front-end
+admission, and new memory requests. Its execution-only hold reaches the
+wrapper one clock later, keeping the fatal aggregation out of the branch
+completion path; results produced in that interval cannot retire or launch
+new side effects.
 
 Some wide payload registers are written even when the write will be
 discarded. The SQ writes a store's address and data payload even if the store

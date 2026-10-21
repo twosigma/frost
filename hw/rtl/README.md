@@ -113,10 +113,14 @@ the first 32 KiB of RAM. The JTAG loader writes both copies (the instruction
 copy only below 128 KiB), but outside Debug Mode CPU stores reach only the
 data copy, so code in low BRAM cannot be modified at run time; put
 self-modifying code in DDR. Low-BRAM data and instruction accesses cross
-the same variable-latency AXI boundary as other CPU requests. Fetch reads
-use 8-byte transfers, and the CPU computes predecode metadata from each
-returned window. The SoC executes each local access once and buffers its
-completion independently of AXI backpressure.
+the same variable-latency AXI boundary as other CPU requests. FROST enables
+Normal read caching: 32-byte fetches fill an 8 KiB direct instruction cache,
+and aligned dword data reads fill L0. Stores remain narrow write-through
+accesses, and the debug data page bypasses the read cache. The standalone
+CPU defaults to strict uncached access with 8-byte instruction fetches.
+The CPU computes predecode metadata from the returned bytes. The SoC executes
+each local access once and buffers its completion independently of AXI
+backpressure; see the [CPU interface](cpu_top/README.md).
 
 Instruction fetch and data accesses both reach the cached region. The
 hierarchy has a 128 KiB L1D, a 16 KiB L1I, and a shared 2 MiB L2. All three
@@ -222,8 +226,9 @@ byte offset *i*. Producers position data by
   `WORD = addr[2] ? 8'hF0 : 8'h0F`, `DOUBLE = 8'hFF`
   (`riscv_pkg::mem_strobe_for`). Replication keeps the write-data mux
   shallow; there is no byte-lane shifter.
-- Cached reads return the whole beat. Uncached AXI reads guarantee only the
-  requested byte lanes; these accesses never fill L0. `load_unit` selects the word by `addr[2]`,
+- Cached reads and optional Normal read-cache fills return the whole beat.
+  Strict uncached and Device AXI reads guarantee only the requested byte lanes
+  and never fill L0. `load_unit` selects the word by `addr[2]`,
   then the halfword or byte, then sign- or zero-extends. LD and FLD take the
   beat whole.
 - MMIO registers sit in their address-matching lanes (a 32-bit register at
@@ -243,7 +248,8 @@ byte offset *i*. Producers position data by
   Uncached Normal and Device reads share one response owner until AXI R is
   consumed. The router arbitrates their completed response with cached beats;
   no later uncached read may overwrite that owner. The outgoing 256/512-bit
-  AXI port preserves the original narrow size, address and strobes; see the
+  AXI port preserves the original narrow Device size, address and strobes;
+  optional Normal read caching widens only eligible reads. See the
   [CPU interface](cpu_top/README.md).
 
 The MMIO bus follows the same rules. The dword-aligned timer pairs, native

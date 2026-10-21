@@ -46,5 +46,11 @@
 - Suggested the RVFI-DII port and the TestRIG comparison against Sail that now runs in CI
 - Co-authored the fixes that make the machine HPM counters read-only zero and that page-fault on a non-leaf PTE with D, A, or U set
 - Designed the 64-byte L2 and its 512-bit DDR port
+- Implemented configurable physical addressing for DDR apertures up to 128 GiB
+  across the CPU, MMUs, caches, AXI, DMA, NIC, and firmware, including full-width
+  NIC descriptors and Linux driver support
+- Proposed the reusable `cpu_top` integration boundary and
+  `platform_top = cpu_top + soc_top` separation, with a unified AXI4 master,
+  configurable PMA, and explicit interrupt, debug, boot, and reset interfaces
 - Proposed the open ASIC flow on FreePDK45
-- Proposed the roadmap's L1-level coherence unit for SMP
+- Proposed an L1-level coherence unit for SMP

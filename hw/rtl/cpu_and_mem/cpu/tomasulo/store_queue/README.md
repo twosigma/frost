@@ -3,12 +3,15 @@
 The SQ holds stores from dispatch until they are written to memory. It has
 eight entries (`riscv_pkg::SqDepth`) and two allocation ports. Stores write
 cached memory after commit, in program order. With `PRECISE_UNCACHED=1`
-(as in `cpu_top`), uncached stores execute at the ROB head with the interrupt
-and debug shield armed, and retire only after the AXI B response. The SQ also answers the load queue's store-to-load forwarding
-checks.
+(as in `cpu_top`), Device and strict uncached stores execute at the ROB head
+with the interrupt and debug shield armed, and retire only after the AXI B
+response. `CACHE_NORMAL_MEMORY=1` permits ordinary stores to the configured
+Normal read-cache region to commit before draining as narrow write-through
+transactions. SC and debug-page stores remain precise. The SQ also answers
+the load queue's store-to-load forwarding checks.
 
-A cached entry is allocated, receives its address/data, commits, writes memory
-and frees. An uncached entry waits at the ROB head, writes memory, then sends
+A cached or buffered Normal entry is allocated, receives its address/data,
+commits, writes memory and frees. A precise entry waits at the ROB head, writes memory, then sends
 a successful or faulting completion to the ROB; it never launches speculatively.
 
 ## Store-to-load forwarding
@@ -75,18 +78,23 @@ set.
 
 A drain cursor points at the oldest entry not yet sent. It launches when that
 entry is eligible and has its address and data, and it never skips ahead.
-Cached entries require commit; precise uncached entries require ROB-head
+Cached and buffered Normal entries require commit; precise uncached entries require ROB-head
 permission and the shield.
 Every store is a single 64-bit beat: sub-dword data is replicated across the
 beat and the byte strobe selects the lanes. The write outputs are registered,
 including `is_mmio` and `is_cached` flags that let the memory router steer the
-write without decoding the address again. Launching a write also invalidates
-the store's line in the load queue's L0 cache.
+write without decoding the address again. `o_mem_write_buffered` identifies
+an ordinary Normal store that has already retired; this distinguishes its
+late fatal AXI error from a precise SC/AMO failure. Launching a write also
+invalidates its L0 dword, or updates its selected bytes when the optional
+Normal read-cache policy applies.
 
 In the legacy `PRECISE_UNCACHED=0` profile, plain BRAM stores complete one
 cycle after launch with up to two writes in flight. In `cpu_top`, every
-uncached store waits for B; SLVERR/DECERR becomes cause 7 and successful SC
-completion is likewise delayed until B. Completions carry no tag,
+Normal/Device store keeps its SQ entry until B. A precise store's
+SLVERR/DECERR becomes cause 7; successful SC completion is likewise delayed
+until B. A failed buffered Normal store retains ownership and raises the
+tile's fatal indication. Completions carry no tag,
 so the memory side must return them in launch order: each one frees the
 oldest in-flight write. A cached or MMIO store
 launches only when no other write is in flight, and nothing else launches until
@@ -98,8 +106,9 @@ visible to forwarding until then.
 
 ## Commit and flush
 
-Cached stores commit through two ports, one per ROB commit slot. Uncached
-stores report completion before retirement and free their SQ owner after B. Slot 2 retires only
+Cached and buffered Normal stores commit through two ports, one per ROB
+commit slot. Precise uncached stores report completion before retirement
+and free their SQ owner after B. Slot 2 retires only
 plain stores; the ROB keeps SCs and AMOs on slot 1. The committed-empty
 status is a register, with copies for its distant consumers (the ROB, the
 trap unit, and the LQ). Each commit port has a combinational copy

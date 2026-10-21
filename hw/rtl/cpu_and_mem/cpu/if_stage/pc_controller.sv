@@ -1540,6 +1540,9 @@ module pc_controller #(
   riscv_pkg::pc_pending_rel_t pending_rel_next;
   // The advances with raw WCS clear (_wcs0) and set (_wcs).
   logic [4:0] rel_hold, rel_advance_wcs0, rel_advance_wcs;
+  logic [4:0] rel_advance_wcs0_select;
+  (* keep = "true" *) logic rel_seq_pending_wcs0, rel_seq_fetch_wcs0;
+  (* keep = "true" *) logic [4:0] rel_nonseq_wcs0;
   logic [4:0] rel_base, rel_base_select;
   logic [4:0] pending_rel_next_bits, pending_rel_next_select;
   logic seq_reaches_next, seq_reaches_hold;
@@ -1564,6 +1567,24 @@ module pc_controller #(
   assign live_target_rel_pending = i_slot2_live_target_rel_pending;
   assign staged_target_rel_pending = i_slot2_staged_target_rel_pending;
   assign seq_reaches_fetch_live = seq_next_pc_reg_hw_q >= o_pc[XLEN-1:1];
+  // Choose the relation's owner before the late slot-2 increment result.
+  // Each result bit then traverses one parallel select, rather than the
+  // sequential/pending/landing priority muxes after pc_increment_calculator.
+  always_comb begin
+    rel_seq_pending_wcs0 = 1'b0;
+    rel_seq_fetch_wcs0 = 1'b0;
+    rel_nonseq_wcs0 = '0;
+    if (pending_prediction_valid) begin
+      if (rel_seq_candidate_wcs0) rel_seq_pending_wcs0 = 1'b1;
+      else if (rel_lands_on_pending) rel_nonseq_wcs0 = 5'b10000;
+      else rel_nonseq_wcs0 = pc_reg_rel_pending;
+    end else begin
+      if (rel_seq_candidate_wcs0) rel_seq_fetch_wcs0 = 1'b1;
+      else rel_nonseq_wcs0 = pc_reg_rel_fetch;
+    end
+  end
+  assign rel_advance_wcs0 = ({5{rel_seq_pending_wcs0}} & seq_next_pc_reg_rel_pending_wcs0) |
+      ({5{rel_seq_fetch_wcs0}} & seq_next_pc_reg_rel_fetch_wcs0) | rel_nonseq_wcs0;
   // Without a redirect, pc_reg loads only when fetch advances, and a
   // prediction is captured exactly when none is valid and fetch is not
   // stalled; a valid one keeps its PC. A slot-2 target never loads while a
@@ -1575,9 +1596,9 @@ module pc_controller #(
   always_comb begin
     if (pending_prediction_valid) begin
       rel_hold = pc_reg_rel_pending;
-      if (rel_seq_candidate_wcs0) rel_advance_wcs0 = seq_next_pc_reg_rel_pending_wcs0;
-      else if (rel_lands_on_pending) rel_advance_wcs0 = 5'b10000;  // at only
-      else rel_advance_wcs0 = pc_reg_rel_pending;
+      if (rel_seq_candidate_wcs0) rel_advance_wcs0_select = seq_next_pc_reg_rel_pending_wcs0;
+      else if (rel_lands_on_pending) rel_advance_wcs0_select = 5'b10000;  // at only
+      else rel_advance_wcs0_select = pc_reg_rel_pending;
       if (rel_seq_candidate_wcs) rel_advance_wcs = seq_next_pc_reg_rel_pending_nop;
       else if (rel_lands_on_pending) rel_advance_wcs = 5'b10000;
       else rel_advance_wcs = pc_reg_rel_pending;
@@ -1586,8 +1607,8 @@ module pc_controller #(
       seq_reaches_advance_wcs = !seq_next_pc_reg_rel_pending_nop.below;
     end else begin
       rel_hold = pc_reg_rel_fetch;
-      if (rel_seq_candidate_wcs0) rel_advance_wcs0 = seq_next_pc_reg_rel_fetch_wcs0;
-      else rel_advance_wcs0 = pc_reg_rel_fetch;
+      if (rel_seq_candidate_wcs0) rel_advance_wcs0_select = seq_next_pc_reg_rel_fetch_wcs0;
+      else rel_advance_wcs0_select = pc_reg_rel_fetch;
       if (rel_seq_candidate_wcs) rel_advance_wcs = seq_next_pc_reg_rel_fetch_nop;
       else rel_advance_wcs = pc_reg_rel_fetch;
       seq_reaches_hold = seq_reaches_fetch_live;
@@ -1599,7 +1620,7 @@ module pc_controller #(
         rel_base_select  = rel_advance_wcs;
         seq_reaches_next = seq_reaches_advance_wcs;
       end else begin
-        rel_base_select  = rel_advance_wcs0;
+        rel_base_select  = rel_advance_wcs0_select;
         seq_reaches_next = seq_reaches_advance_wcs0;
       end
     end else begin
@@ -2028,6 +2049,7 @@ module pc_controller #(
   always_comb begin
     p_pc_register_slot2_mux_matches_nested_original :
     assert (next_pc_reg == pc_mux_nested_reference);
+    p_pending_rel_advance_matches_select : assert (rel_advance_wcs0 == rel_advance_wcs0_select);
     // The relation registers' base and final slot-2 LUTs
     // (FROST_XILINX_PRIMS) match their behavioral selects.
     p_pending_rel_base_matches_select : assert (rel_base == rel_base_select);

@@ -177,13 +177,19 @@ async def side_effect_read_issues_once_and_holds_its_result(dut: Any) -> None:
     """One request handoff produces one read despite long request/response stalls."""
     b = Bench(dut)
     await b.reset()
+    for offset in range(0, 64, 8):
+        s = await b.step(read_addr=0x10000 + offset, read_size=3, read_device=0)
+        assert s["idle"] and s["read_ready"] and not s["req_valid"]
     await b.step(read_enable=1, read_addr=0x4000_0004, read_size=2, read_device=1)
     for _ in range(12):
-        s = await b.step(read_enable=0)
+        s = await b.step(read_enable=0, read_addr=0x10038, read_size=0, read_device=0)
         assert s["req_valid"] and not s["read_valid"] and not s["read_ready"]
+        assert (s["req_addr"], s["req_size"], s["req_cache"]) == (0x4000_0004, 2, 0)
     await b.step(req_ready=1)
-    for _ in range(30):
-        assert not (await b.step(req_ready=0))["req_valid"]
+    for n in range(30):
+        assert not (await b.step(req_ready=0, read_addr=0x10000 + 8 * (n % 8)))[
+            "req_valid"
+        ]
     await b.step(resp_valid=1, resp_rdata=0xDEADBEEF << 32, resp_status=3)
     for _ in range(15):
         s = await b.step(resp_valid=0)

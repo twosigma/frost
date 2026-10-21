@@ -101,7 +101,12 @@ Simulation and the board use the same address map. The default
 | RAM | `0x00018000` | 160 KiB | Data, BSS, and stack |
 | DDR | `0x80000000` | 1 GiB | Cached code and data, then the heap |
 
-ROM, DEBUG, and RAM make up the 256 KiB low BRAM, which is uncached.
+ROM, DEBUG, and RAM make up the 256 KiB low BRAM. FROST caches its instruction
+reads and ordinary data loads, with narrow write-through stores. The 4 KiB
+page containing DEBUG bypasses the data read cache. This optional policy
+creates no dirty BRAM cache lines; fences still wait for store responses.
+The standalone CPU defaults to strict uncached Normal memory. See the
+[CPU interface](../hw/rtl/cpu_top/README.md#optional-normal-read-caching-and-write-through-stores).
 Instruction fetch reaches only its first 128 KiB, which holds ROM and DEBUG;
 a fetch above that raises an instruction access fault. The linker reserves
 112 KiB of RAM for the stack and fails the link if data and BSS reach into
@@ -222,6 +227,13 @@ reinitialized and may still hold writes from the first run. DDR-tier programs
 run once, and so do the long CoreMark-PRO `loops` and `nnet` simulations, to
 fit CI's six-hour job limit.
 
+The `coremark_pro_core` target keeps both BRAM reset runs and allows
+15,000,000 cycles per run; Normal read caching completes each in about
+5,700,000 cycles. NNET retains the default 15,000,000-cycle budget; a complete
+verified run with Normal read caching takes about 12,900,000 cycles.
+CI disables optional CoreMark-PRO progress tracing to reduce host runtime,
+while retaining all workload verification and reset checks.
+
 ```bash
 ./scripts/frost.py cocotb hello_world                               # simulate from low BRAM
 FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb hello_world   # simulate from cached DDR
@@ -244,7 +256,7 @@ can be debugged and where each one first stops.
 |-----|-------------|
 | `ad_fault_test/` | Sv39 A/D faults: after a live PTE's A or D bit is cleared and fenced, the next access that needs the bit must page-fault (the walker never sets A or D) |
 | `amo_irq_torture/` | Timer interrupts swept across cached-DDR AMO bursts; counts every update to catch lost or duplicated ones |
-| `arch_test/` | riscv-arch-test cases compared with committed Spike signatures; built per test with `TEST_SRC` |
+| `arch_test/` | riscv-arch-test cases compared with committed Spike signatures on every run; built per test with `TEST_SRC`. Large BRAM images whose initialization copy overlaps RAM are reloaded before their second reset run; see the [architecture-test reset policy](../tests/README.md#test_arch_compliancepy) |
 | `branch_pred_test/` | Self-checking branch, loop, call, and indirect-jump cases in assembly |
 | `c_ext_test/` | Calls and returns through mixed 16- and 32-bit code, plus value checks of the RV64C-only encodings |
 | `call_stress/` | Repeated and nested calls and returns, built with compressed instructions |
@@ -253,7 +265,7 @@ can be debugged and where each one first stops.
 | `coremark/` | EEMBC CoreMark, built without the C extension by default; see the [measurement sweeps](../docs/single_core_performance.md#reproducing-and-retaining-measurements) and [Spike tools](apps/coremark/iss/README.md) |
 | `coremark_pro/` | All nine EEMBC CoreMark-PRO workloads, loaded as `coremark_pro_<workload>`; the heap and large datasets live in DDR |
 | `csr_rmw_test/` | Old and new values for `csrrw`/`csrrs`/`csrrc`, including the same-register `mscratch` swap that OpenSBI's trap entry uses |
-| `csr_test/` | `mstatus.MIE` writes and the M-mode counter controls: `mcountinhibit`, 64-bit `mcycle`/`minstret` writes, and the Zicsr rule that a `minstret` write replaces the writing instruction's own increment |
+| `csr_test/` | `mstatus.MIE` writes and the M-mode counter controls: `mcountinhibit`, 64-bit `mcycle`/`minstret` writes, pure reads checked against the independent timer/retirement count, and the Zicsr rule that a `minstret` write replaces the writing instruction's own increment |
 | `ddr_atomic_test/` | Word LR/SC and AMOs on cached DDR, printing a progress letter before each step |
 | `ddr_bench/` | Memory-bound kernels on cold cached-DDR regions (sequential, strided, interleaved, interleaved within one cache set, random, dependent, copy, write), with cycles and cache-counter deltas per kernel; `DDR_BENCH_SHIFT` shrinks them for simulation |
 | `ddr_exec_test/` | Code in DDR: calls into BRAM, recursion, a body larger than the fetch buffer, cold and warm runs |
@@ -272,7 +284,7 @@ can be debugged and where each one first stops.
 | `freertos_demo/` | FreeRTOS tasks passing data through a queue and sharing the UART under a mutex, while worker tasks increment one counter with `amoadd.w` and the 1 ms tick time-slices them; a tick inside a critical section must defer its task switch |
 | `fs_off_test/` | F/D instructions with `mstatus.FS` Off: illegal-instruction ahead of access and misaligned faults, no device read by a trapping FP load, and `mstatus.FS` writes, through `mstatus` or `sstatus`, that apply from the next instruction |
 | `hello_world/` | Prints a greeting and the cycle-count delta once a second; the program the bitstream boots |
-| `instret_test/` | `minstret` counts NOPs, `mret`, `fence.i`, `sfence.vma`, a `wfi` that a timer interrupt ends, and an interrupt held off by the device-read shield; each interrupt's count must equal the instructions before `mepc` |
+| `instret_test/` | `minstret` counts NOPs, `mret`, `fence.i`, `sfence.vma`, a timer-ended `wfi`, and timer takes across a device load; 96 WFI deadlines and 48 device-load deadlines at four padding phases cover AXI latency, with each take's count equal to the instructions before `mepc` |
 | `irq_mie_window/` | A pending timer interrupt must be taken when a `csrsi`/`csrci` pair opens `mstatus.MIE` for one instruction |
 | `isa_test/` | Self-checks for RV64IMAFDCB, Zicsr, Zicntr, Zifencei, Zicond, Zbkb, and Zihintpause, plus M-mode CSRs and traps |
 | `itlb_test/` | Sv39 instruction translation in S- and U-mode: superpages, page-crossing instructions, fetch faults, `sfence.vma` and `satp` changes |
@@ -290,7 +302,7 @@ can be debugged and where each one first stops.
 | `memory_test/` | Arena allocator and `malloc`/`free`/`calloc`/`realloc`, including coalescing and overflow rejection |
 | `mret_drain_deadlock/` | `mret` right after cached-DDR stores must wait for them to drain, then continue |
 | `mret_timer_resume_test/` | A timer pending as `mret` drops to U-mode must save the U-mode entry point in `mepc` |
-| `mtimer_stress/` | Frequent timer interrupts swept across an M-mode loop and its `mret`; a deadlock times out |
+| `mtimer_stress/` | Frequent timer interrupts swept across 20,000 memory/ALU loop iterations and `mret`; a deadlock times out within the default 500,000-cycle simulation budget |
 | `nic_echo/` | Interrupt-driven Ethernet echo; needs a link partner, which the simulation bench provides |
 | `nic_loopback/` | NIC loopback, descriptor rings, interrupts, filtering, and reset during traffic |
 | `ns16550_irq_console_test/` | Console output written one byte per THRE interrupt, each claimed and completed through the PLIC |
@@ -308,7 +320,7 @@ can be debugged and where each one first stops.
 | `ras_slot_bench/` | Return prediction with the call and the return in either slot of their fetch bundle: per-phase cycles and flush-recovery cycles from the profiling counters (`PERF_COUNTERS=1`) |
 | `ras_stress_test/` | Return-address-stack stress: calls mixed with branches, data-dependent calls, and function pointers |
 | `ras_test/` | Return-address stack: deep nesting, overflow and underflow, coroutine swaps, compressed returns, and calls at halfword offsets |
-| `restore_window_stress/` | Timer interrupts swept across a Linux-style M-mode exception return; none may be taken between its `csrci` and `mret` |
+| `restore_window_stress/` | Timer interrupts swept across 800 Linux-style M-mode exception returns; none may be taken between `csrci` and `mret`. Simulation allows 1.5M cycles for cold DDR and restore latency |
 | `riscv_tests/` | Upstream riscv-tests ISA suites, built per test with `TEST_SRC`, and benchmarks, built with `Makefile.bench` |
 | `riscv_torture/` | Committed riscv-torture random tests compared with Spike register signatures; built per test with `TEST_SRC` |
 | `rv64_amo_test/` | Doubleword AMOs, LR.D/SC.D, and word AMOs on a dword cell, with full 64-bit value checks |
@@ -319,11 +331,11 @@ can be debugged and where each one first stops.
 | `smc_fencei_test/` | Self-modifying code with `fence.i` across store-to-fence gaps, warm and cold L1D, and tight loops |
 | `smode_test/` | S-mode: delegation, `sret`, TSR/TVM/TW, supervisor CSRs, counter permissions, CSR existence (illegal CSRs and the read-only-zero machine HPM CSRs), and interrupts |
 | `spanning_test/` | 32-bit instructions that straddle a fetch-word boundary |
-| `sprintf_test/` | `sprintf`/`snprintf` checked against constant expected strings |
+| `sprintf_test/` | All 344 `sprintf`/`snprintf` checks against constant expected strings; the 2M-cycle simulation budget covers the measured 1.23M cycles in BRAM and DDR |
 | `sstc_test/` | Sstc: `menvcfg.STCE`, `stimecmp` access rules, and an S-mode timer interrupt through `stimecmp`; also the writable `menvcfg` and `senvcfg` bits |
 | `strings_test/` | `string.h`, `ctype.h`, and `stdlib.h` functions |
 | `tick_torture/` | CLINT timer re-arming, lost-tick detection, and `wfi` wakeup under DDR traffic |
-| `tomasulo_perf/` | IPC of dependent and independent integer and FP instruction chains, and of a load/AMO loop; `-DTOMASULO_PERF_ENABLE_PROFILE=1` adds profiling-counter reports and fails the run unless the head-load counter split adds up and the reserved counters read 0 |
+| `tomasulo_perf/` | IPC of dependent and independent integer and FP instruction chains, and of a load/AMO loop; `-DTOMASULO_PERF_ENABLE_PROFILE=1` adds profiling-counter reports and fails the run unless the head-load counter split adds up and the reserved counters read 0. Simulation allows 750,000 cycles for all 14 benchmarks and reports |
 | `tomasulo_test/` | RAW/WAR/WAW hazards, register renaming, and out-of-order execution, with order-independent results |
 | `trap_s2l_fwd/` | A counter a timer handler stores to cached DDR must be visible to later loads (Linux `handle_exception` pattern) |
 | `uart_burst/` | UART bytes written by back-to-back stores into an idle transmitter; the bench checks the serial TX line |
@@ -331,8 +343,8 @@ can be debugged and where each one first stops.
 | `umode_test/` | U-mode: `ecall`, timer preemption, illegal CSR and `mret` access, and `mcounteren` gating |
 | `vm_test/` | Sv39 data translation through MPRV: page sizes, permissions, Svade, malformed PTEs, `sfence.vma`, atomics, MMIO, and access faults through device mappings |
 | `wfi_drain_mepc_test/` | A timer interrupt at `wfi` while a cached store drains must set `mepc` past the `wfi` |
-| `wfi_lost_tick/` | The Linux idle loop (`wfi` with MIE toggling and CLINT re-arm) must not lose timer ticks |
+| `wfi_lost_tick/` | The Linux idle loop (`wfi` with MIE toggling and CLINT re-arm) must not lose timer ticks; a 24..535-cycle deadline sweep covers immediate re-entry and return after AXI handler accesses |
 | `wfi_mepc_test/` | A timer interrupt at `wfi` must set `mepc` to the next instruction |
 | `wfi_seed_recovery/` | Mispredicted `jr` jumps with `wfi` on the wrong path; the bench checks that a wrong-path `wfi` at the ROB head during recovery does not set the interrupt resume PC |
-| `window_skip_repro/` | After a branch trained taken resolves not-taken, fetch must not skip the fall-through window |
+| `window_skip_repro/` | After a branch trained taken resolves not-taken, fetch must not skip the fall-through window; all 6,000 calls run with a 4M-cycle simulation budget (8M with fetch-latency fuzzing) |
 | `writecount_probe/` | `lr.w` sign extension on both dword halves in the Linux `i_writecount` sequence, with `sc.w` and `amoadd.w` |

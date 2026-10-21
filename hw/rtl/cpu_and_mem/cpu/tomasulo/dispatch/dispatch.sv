@@ -820,8 +820,33 @@ module dispatch #(
   logic slot2_present_for_admission;
   assign slot2_present_for_admission = SLOT2_VALID_FROM_BUNDLE ?
       (i_from_id_to_ex_2.is_real && !slot2_fp_compute_serialized) : dispatch_valid_2;
-  assign slot2_can_fire = slot1_can_fire && slot2_present_for_admission && slot2_resources_ok;
-  assign slot2_bundle_ok = !slot2_present_for_admission || slot2_resources_ok;
+  // Decode resource ownership independently of the late RS-full flags.
+  // Each three-product reduction fits a LUT6, so a full flag reaches bundle
+  // admission through two LUTs rather than two RS muxes and serial gates.
+  (* keep = "true" *) logic [5:0] slot2_rs_needs;
+  (* keep = "true" *) logic [1:0] slot2_rs_blocks;
+  logic slot2_other_block;
+  assign slot2_rs_needs[0] = slot2_present_for_admission &&
+      rs_type_2 == riscv_pkg::RS_INT && rs_type == riscv_pkg::RS_INT;
+  assign slot2_rs_needs[1] = slot2_present_for_admission &&
+      rs_type_2 == riscv_pkg::RS_INT && rs_type != riscv_pkg::RS_INT;
+  assign slot2_rs_needs[2] = slot2_present_for_admission &&
+      rs_type_2 == riscv_pkg::RS_MUL && rs_type == riscv_pkg::RS_MUL;
+  assign slot2_rs_needs[3] = slot2_present_for_admission &&
+      rs_type_2 == riscv_pkg::RS_MUL && rs_type != riscv_pkg::RS_MUL;
+  assign slot2_rs_needs[4] = slot2_present_for_admission &&
+      rs_type_2 == riscv_pkg::RS_MEM && rs_type == riscv_pkg::RS_MEM;
+  assign slot2_rs_needs[5] = slot2_present_for_admission &&
+      rs_type_2 == riscv_pkg::RS_MEM && rs_type != riscv_pkg::RS_MEM;
+  assign slot2_rs_blocks[0] = (slot2_rs_needs[0] && i_int_rs_full_for_2) ||
+      (slot2_rs_needs[1] && i_int_rs_full) || (slot2_rs_needs[2] && i_mul_rs_full_for_2);
+  assign slot2_rs_blocks[1] = (slot2_rs_needs[3] && i_mul_rs_full) ||
+      (slot2_rs_needs[4] && i_mem_rs_full_for_2) || (slot2_rs_needs[5] && i_mem_rs_full);
+  assign slot2_other_block = slot2_present_for_admission &&
+      (is_branch_flag || i_rob_full_for_2 || (need_lq_2 && lq_full_for_slot2) ||
+       (need_sq_2 && sq_full_for_slot2) || (need_checkpoint_2 && !i_checkpoint_available));
+  assign slot2_bundle_ok = !(|slot2_rs_blocks) && !slot2_other_block;
+  assign slot2_can_fire = slot1_can_fire && slot2_present_for_admission && slot2_bundle_ok;
   // Count cycles where slot 2 alone blocks dispatch.
   assign slot2_only_block = dispatch_valid_2 && slot1_can_fire && !slot2_resources_ok;
   // Both admitted slots fire together; absent slot 2 adds no restriction.

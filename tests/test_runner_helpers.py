@@ -69,6 +69,41 @@ def test_arch_timeout_is_a_failure(
     assert "timed out" in result.message
 
 
+@pytest.mark.parametrize(
+    ("second_dump", "status", "detail"),
+    (
+        ("00000001\n<<PASS>>\n", "PASS", ""),
+        ("00000002\n<<PASS>>\n", "FAIL", "run 2"),
+        ("<<PASS>>\n", "FAIL", "run 2"),
+        ("00000001\n", "FAIL", "Unterminated signature"),
+    ),
+)
+def test_arch_checks_every_reset_signature(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    second_dump: str,
+    status: str,
+    detail: str,
+) -> None:
+    """A correct first boot cannot conceal a bad or missing second signature."""
+    source = tmp_path / "add-01.S"
+    reference = tmp_path / "add-01.reference_output"
+    source.write_text("")
+    reference.write_text("00000001\n")
+    monkeypatch.setattr(test_arch_compliance, "get_reference_path", lambda _: reference)
+    monkeypatch.setattr(
+        test_arch_compliance, "compile_test", lambda *_, **__: (True, "")
+    )
+    output = "00000001\n<<PASS>>\nINFO cocotb: asserting reset\n" + second_dump
+    simulation = subprocess.CompletedProcess(["make"], 0, output, "")
+    monkeypatch.setattr(test_arch_compliance, "run_simulation", lambda **_: simulation)
+
+    result = test_arch_compliance.run_single_test(source, "I")
+
+    assert result.status == status
+    assert detail in result.message
+
+
 def test_arch_missing_reference_fails_the_run(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -195,7 +230,7 @@ def test_signature_extractors_ignore_interspersed_logs() -> None:
         )
     )
 
-    assert test_arch_compliance.extract_signature(output) == ["00000001", "00000002"]
+    assert test_arch_compliance.extract_signatures(output) == [["00000001", "00000002"]]
     assert test_riscv_torture.extract_signature(output) == ["00000001", "00000002"]
 
 

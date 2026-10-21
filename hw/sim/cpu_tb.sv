@@ -360,7 +360,27 @@ module cpu_tb
   // instructions stall mid-pipeline and need that immediate view.
   assign pipeline_stall_comb = device_under_test.pipeline_ctrl.stall;
 
-  // Device under test. Every port connects by name through the .* wildcard.
-  cpu_ooo device_under_test (.*);
+  // The pipeline harness retains the legacy fixed-latency memory path.
+  // Tie off the unused variable-latency completions explicitly; the remaining
+  // ports connect by name to the instruction and data memories above.
+  cpu_ooo device_under_test (
+      .i_boot_addr('0),
+      .i_fatal_stop(1'b0),
+      .i_walk_line_resp_error(1'b0),
+      .i_cached_read_error(1'b0),
+      .i_uncached_read_request_ready(1'b1),
+      .o_uncached_read_enable(),
+      .o_uncached_read_size(),
+      .i_uncached_read_valid(1'b0),
+      .o_uncached_read_ready(),
+      .i_uncached_read_data('0),
+      .i_uncached_read_status(2'b00),
+      .o_uncached_write_byte_en(),
+      .o_uncached_write_size(),
+      .i_uncached_write_done(1'b0),
+      .i_uncached_write_status(2'b00),
+      .i_uncached_write_inflight(1'b0),
+      .*
+  );
 
 endmodule : cpu_tb

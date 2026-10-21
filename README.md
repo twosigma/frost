@@ -4,10 +4,13 @@
 
 FROST is a two-wide, out-of-order RISC-V processor for FPGAs, written in
 SystemVerilog. It implements RV64GCB with machine, supervisor, and user modes
-and Sv39 virtual memory. On an AMD Alveo X3522PV it runs at 322 MHz and boots
+and Sv39 virtual memory. The AMD Alveo X3522PV configuration targets 322 MHz and boots
 Debian 13 with Debian's unmodified riscv64 kernel, mounting its root
-filesystem over NFS through its own 10 Gigabit Ethernet NIC. It runs CoreMark
-at 4.27 CoreMark/MHz, which gives 1,375 CoreMark at 322 MHz.
+filesystem over NFS through its own 10 Gigabit Ethernet NIC. The CPU/SoC
+separation passes routed timing at 161 MHz and post-opt timing at 322 MHz;
+full 322 MHz timing validation remains pending. See the
+[performance measurements](docs/single_core_performance.md) for the earlier
+4.27 CoreMark/MHz baseline and validation of the new AXI memory path.
 
 [![FROST architecture: two-wide out-of-order CPU, Sv39 translation, X3 cache hierarchy, and system peripherals](docs/diagrams/frost-architecture.svg)](docs/diagrams/frost-architecture.svg)
 
@@ -143,8 +146,9 @@ every supported extension and privilege mode.
 - Sv39 virtual memory with hardware page-table walks and separate instruction
   and data TLBs.
 - Separate instruction and data paths into a cache hierarchy. On X3: 16 KiB
-  L1I, 128 KiB L1D, 2 MiB L2, and a 128-entry L0 cache in the load queue. DMA
-  is coherent with the data caches.
+  L1I, 128 KiB L1D, 2 MiB L2, and a 256-entry L0 cache in the load queue. Low
+  BRAM uses an 8 KiB instruction cache and L0 data reads with write-through
+  stores. DMA is coherent with the DDR data caches.
 - 256 KiB of on-chip BRAM and 1 GiB of cached DDR4, with the same
   [memory map](sw/README.md#memory-map) in simulation and on hardware.
 - UART, CLINT-compatible timer, PLIC interrupt controller, and 10GBASE-R
@@ -166,7 +170,7 @@ See the [board guide](boards/README.md) for pinouts, clocking, and adding a boar
 
 ### FPGA Resource Utilization
 
-**Alveo X3522PV** (Virtex UltraScale+ @ 322 MHz; post-route report)
+**Alveo X3522PV** (Virtex UltraScale+ @ 322 MHz; post-route baseline before the CPU/SoC separation)
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|

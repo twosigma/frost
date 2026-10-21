@@ -3,7 +3,8 @@
  * MEM_CONFIG=ddr selects this script. The .boot stub in crt0_ddr_boot.S
  * runs from low BRAM and jumps to _start in cached DDR at 0x8000_0000.
  * Code uses L1I; data and the FreeRTOS heap use L1D. The startup stack
- * stays in uncached BRAM; task stacks come from the DDR heap.
+ * stays in Normal BRAM (L0 read caching and write-through stores in FROST);
+ * task stacks come from the DDR heap.
  *
  * DDR sections load in place (LMA == VMA): the sim preloads the behavioral DDR
  * from sw_ddr.mem, so crt0's .data copy loop self-copies (a no-op).
@@ -29,7 +30,7 @@ MEMORY
     MMIO (rw)  : ORIGIN = 0x40000000, LENGTH = 44     /* Peripherals: UART, FIFOs, Timer, MSIP */
 }
 
-/* crt0.S initializes the startup stack in uncached BRAM. */
+/* crt0.S initializes the startup stack in Normal BRAM. */
 _end_of_stack = ORIGIN(RAM) + LENGTH(RAM);
 PROVIDE(_stack_top = _end_of_stack);
 
@@ -122,7 +123,7 @@ SECTIONS
     PROVIDE(__ddr_bss_end = 0);
 
     /* Memory-mapped peripheral addresses, referenced by C code through
-     * sw/lib/include/mmio.h. They must match cpu_and_mem.sv. */
+     * sw/lib/include/mmio.h. They must match soc_top.sv. */
     PROVIDE(UART_ADDR          = 0x40000000);  /* UART transmit register */
     PROVIDE(UART_RX_DATA_ADDR  = 0x40000004);  /* UART receive data (read pops byte) */
     PROVIDE(FIFO0_ADDR          = 0x40000008);  /* MMIO FIFO 0 */

@@ -105,14 +105,53 @@ module dtlb #(
   (* keep = "true" *)logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] vpn2_eq;
   (* keep = "true" *)logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] vpn1_eq;
   (* keep = "true" *)logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] vpn0_eq;
-  logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] match;
-  logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] lowest_match;
+  (* keep = "true" *)logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] match;
+  (* keep = "true" *)logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] lowest_match;
+  // Isolate the hit/miss reduction from priority-selected PPN and PMA
+  // outputs. A miss starts a page walk in this cycle, so it must not inherit
+  // the selected-entry mux depth through shared synthesis terms.
+  localparam int unsigned HitGroups = (NUM_ENTRIES + 5) / 6;
+  localparam int unsigned VerdictGroups = (NUM_ENTRIES + 2) / 3;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0][8:0] vpn_chunk_eq;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][HitGroups-1:0] hit_groups;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] leaf_device_page;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] leaf_atomic_page;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] leaf_permissions;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] device_groups;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] atomic_groups;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] permission_groups;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] high_ppn_groups;
+  for (genvar p = 0; p < NUM_PORTS; p++) begin : gen_hit_port
+    for (genvar e = 0; e < NUM_ENTRIES; e++) begin : gen_entry
+      for (genvar c = 0; c < 9; c++) begin : gen_vpn_chunk
+        assign vpn_chunk_eq[p][e][c] = i_lookup_vpn[p][3*c+:3] == e_vpn[e][3*c+:3];
+      end
+    end
+    for (genvar g = 0; g < HitGroups; g++) begin : gen_hit_group
+      localparam int unsigned Entries = (NUM_ENTRIES - 6 * g < 6) ? NUM_ENTRIES - 6 * g : 6;
+      assign hit_groups[p][g] = |match[p][6*g+:Entries];
+    end
+    // Resolve each entry's permissions/PMA before the VPN winner arrives.
+    // Three masked verdicts fit one LUT6; the final OR stays separate from
+    // the priority decoder and the MMU's fault-selection logic.
+    for (genvar g = 0; g < VerdictGroups; g++) begin : gen_verdict_group
+      localparam int unsigned Entries = (NUM_ENTRIES - 3 * g < 3) ? NUM_ENTRIES - 3 * g : 3;
+      assign device_groups[p][g] = |(lowest_match[p][3*g+:Entries] &
+          leaf_device_page[p][3*g+:Entries]);
+      assign atomic_groups[p][g] = |(lowest_match[p][3*g+:Entries] &
+          leaf_atomic_page[p][3*g+:Entries]);
+      assign permission_groups[p][g] = |(lowest_match[p][3*g+:Entries] &
+          leaf_permissions[p][3*g+:Entries]);
+      assign high_ppn_groups[p][g] = |(lowest_match[p][3*g+:Entries] &
+          e_ppn_hi_nonzero[3*g+:Entries]);
+    end
+  end
   always_comb begin
     for (int p = 0; p < NUM_PORTS; p++) begin
       for (int e = 0; e < NUM_ENTRIES; e++) begin
-        vpn2_eq[p][e] = (i_lookup_vpn[p][26:18] == e_vpn[e][26:18]);
-        vpn1_eq[p][e] = (i_lookup_vpn[p][17:9] == e_vpn[e][17:9]);
-        vpn0_eq[p][e] = (i_lookup_vpn[p][8:0] == e_vpn[e][8:0]);
+        vpn2_eq[p][e] = &vpn_chunk_eq[p][e][8:6];
+        vpn1_eq[p][e] = &vpn_chunk_eq[p][e][5:3];
+        vpn0_eq[p][e] = &vpn_chunk_eq[p][e][2:0];
         unique case (e_level[e])
           2'd2:    match[p][e] = e_valid[e] && vpn2_eq[p][e];
           2'd1:    match[p][e] = e_valid[e] && vpn2_eq[p][e] && vpn1_eq[p][e];
@@ -145,12 +184,12 @@ module dtlb #(
 
   always_comb begin
     for (int p = 0; p < NUM_PORTS; p++) begin
-      o_hit[p] = |match[p];
+      o_hit[p] = |hit_groups[p];
       o_ppn[p] = '0;
-      o_device_page[p] = 1'b0;
-      o_perm_ok[p] = 1'b0;
-      o_atomic_page[p] = 1'b0;
-      o_ppn_hi_nonzero[p] = 1'b0;
+      o_device_page[p] = |device_groups[p];
+      o_perm_ok[p] = |permission_groups[p];
+      o_atomic_page[p] = |atomic_groups[p];
+      o_ppn_hi_nonzero[p] = |high_ppn_groups[p];
       o_perm_r[p] = 1'b0;
       o_perm_w[p] = 1'b0;
       o_perm_x[p] = 1'b0;
@@ -180,16 +219,10 @@ module dtlb #(
           end
         endcase
         o_ppn[p] |= {PpnBits{lowest_match[p][e]}} & ppn;
-        o_device_page[p] |= lowest_match[p][e] && riscv_pkg::pma_device_ok(
-            riscv_pkg::XLEN'({ppn, 12'h000})
-        );
-        o_perm_ok[p] |= lowest_match[p][e] && leaf_perm_ok(
-            i_perm_store[p], e_r[e], e_w[e], e_x[e], e_u[e], e_d[e]
-        );
-        o_atomic_page[p] |= lowest_match[p][e] && riscv_pkg::pma_atomic_ok(
-            riscv_pkg::XLEN'({ppn, 12'h000})
-        );
-        o_ppn_hi_nonzero[p] |= lowest_match[p][e] && e_ppn_hi_nonzero[e];
+        leaf_device_page[p][e] = riscv_pkg::pma_device_ok(riscv_pkg::XLEN'({ppn, 12'h000}));
+        leaf_permissions[p][e] =
+            leaf_perm_ok(i_perm_store[p], e_r[e], e_w[e], e_x[e], e_u[e], e_d[e]);
+        leaf_atomic_page[p][e] = riscv_pkg::pma_atomic_ok(riscv_pkg::XLEN'({ppn, 12'h000}));
         o_perm_r[p] |= lowest_match[p][e] && e_r[e];
         o_perm_w[p] |= lowest_match[p][e] && e_w[e];
         o_perm_x[p] |= lowest_match[p][e] && e_x[e];
@@ -240,6 +273,7 @@ module dtlb #(
   // Reference lookup: the priority chain in which the lowest matching index
   // wins. The select tree above must give the same result for every lookup.
   for (genvar gp = 0; gp < NUM_PORTS; gp++) begin : gen_lookup_reference
+    logic [NUM_ENTRIES-1:0] ref_match;
     logic [PpnBits-1:0] ref_ppn, ref_next_ppn;
     logic ref_device_page, ref_ppn_hi_nonzero, ref_r, ref_w, ref_x, ref_u, ref_d;
     logic ref_perm_ok, ref_atomic_page;
@@ -258,7 +292,12 @@ module dtlb #(
       ref_fetch_pma_bad = 1'b0;
       ref_fetch_next_pma_bad = 1'b0;
       for (int e = NUM_ENTRIES - 1; e >= 0; e--) begin
-        if (match[gp][e]) begin
+        case (e_level[e])
+          2'd2: ref_match[e] = e_valid[e] && i_lookup_vpn[gp][26:18] == e_vpn[e][26:18];
+          2'd1: ref_match[e] = e_valid[e] && i_lookup_vpn[gp][26:9] == e_vpn[e][26:9];
+          default: ref_match[e] = e_valid[e] && i_lookup_vpn[gp] == e_vpn[e];
+        endcase
+        if (ref_match[e]) begin
           unique case (e_level[e])
             2'd2: begin
               ref_ppn = {e_ppn[e][PpnBits-1:18], i_lookup_vpn[gp][17:0]};
@@ -290,6 +329,8 @@ module dtlb #(
       end
     end
     always_ff @(posedge i_clk) begin
+      // Leave this generated assertion unnamed for Yosys's frontend.
+      assert (match[gp] == ref_match && o_hit[gp] == (|ref_match));
       assert ({o_ppn[gp], o_device_page[gp], o_ppn_hi_nonzero[gp], o_perm_r[gp], o_perm_w[gp],
                o_perm_x[gp], o_perm_u[gp], o_perm_d[gp], o_level[gp], o_perm_ok[gp],
                o_atomic_page[gp]} ==

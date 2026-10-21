@@ -16,6 +16,8 @@
 
 from typing import Any
 
+import os
+
 import cocotb
 from cocotb_tests.integration.test_cpu_top import System, addi, csr, load, store
 
@@ -74,9 +76,10 @@ async def relocated_boot_memory_and_devices_preserve_full_addresses(dut: Any) ->
         if kind == "read"
     }
     assert reads[CACHED][:2] == (6, 15)
-    assert reads[UNCACHED][:2] == (3, 2)
+    enabled = os.environ.get("FROST_TEST_NORMAL_CACHE") == "1"
+    assert reads[UNCACHED][:2] == (3, 14 if enabled else 2)
     assert reads[DEVICE + 4][:2] == (0, 0)
-    assert reads[BOOT] == (3, 2, 7)
+    assert reads[BOOT] == ((5, 14, 7) if enabled else (3, 2, 7))
     assert not any(address < 0x1_00000000 for _, _, address, *_ in s.transactions)
 
 

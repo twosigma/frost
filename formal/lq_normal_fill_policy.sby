@@ -1,0 +1,36 @@
+[tasks]
+bmc_strict
+bmc_normal
+bmc_legacy
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -sv sdp_dist_ram.sv
+read -sv mwp_dist_ram.sv
+read -sv load_unit.sv
+read -sv lq_l0_cache.sv
+read -sv lq_issue_selector.sv
+read -formal -D SYNTHESIS -D F_LQ_PREMATCH_ONLY -D F_LQ_NORMAL_FILL_POLICY_PROOF -sv load_queue.sv
+bmc_strict: chparam -set CACHE_UNCACHED_DATA 0 -set CACHE_NORMAL_MEMORY 0 load_queue
+bmc_normal: chparam -set CACHE_UNCACHED_DATA 0 -set CACHE_NORMAL_MEMORY 1 load_queue
+bmc_legacy: chparam -set CACHE_UNCACHED_DATA 1 -set CACHE_NORMAL_MEMORY 1 load_queue
+prep -top load_queue
+select -assert-none t:$assume
+select -assert-count 2 t:$check
+select -assert-count 1 load_queue/p_fill_policy_matches_selected_address
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv

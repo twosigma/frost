@@ -304,8 +304,9 @@ module ooo_pipeline_control #(
 `endif
 `endif
 
-  // Post-flush holdoff: BRAM has 1-cycle read latency, so i_instr is stale for
-  // one cycle after a flush/redirect.
+  // Post-flush holdoff covers the legacy local fetch port's one-cycle stale
+  // instruction after a redirect. AXI fetch additionally waits for its
+  // provider's valid response.
   logic [1:0] post_flush_holdoff_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) post_flush_holdoff_q <= '0;

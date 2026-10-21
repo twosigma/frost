@@ -55,6 +55,8 @@ class Bench:
             "cached_read_ready",
             "cached_read_held",
             "data_mem_addr",
+            "data_mem_cached_byte_wr_en",
+            "data_mem_cached_read_enable",
         )
         s = {n: int(getattr(self.dut, "o_" + n).value) for n in names}
         self.dut.i_clk.value = 1
@@ -191,3 +193,58 @@ async def uncached_amo_write_is_not_reissued_while_waiting(dut: Any) -> None:
     assert not s["sq_mem_write_done"] and not s["sq_mem_write_error"]
     s = await b.step(amo_mem_write_en=0, uncached_write_done=0)
     assert not s["uncached_write_byte_en"] and not s["amo_mem_write_done"]
+
+
+@cocotb.test()
+async def fatal_stop_blocks_new_accesses_but_drains_responses(dut: Any) -> None:
+    """Suppress every request source without stranding an accepted response."""
+    b = Bench(dut)
+    for cached in (0, 1):
+        for source in ("sq", "amo", "lq"):
+            await b.reset()
+            addr = 0x80000100 if cached else 0x100
+            if source == "lq":
+                request = dict(
+                    lq_mem_read_en=1, lq_mem_addr_valid=1, lq_mem_read_addr=addr
+                )
+            elif source == "sq":
+                request = dict(
+                    sq_mem_write_en=1,
+                    sq_mem_write_addr=addr,
+                    sq_mem_write_byte_en=255,
+                    sq_mem_write_is_cached=cached,
+                )
+            else:
+                request = dict(
+                    amo_mem_write_en=1,
+                    amo_mem_write_addr=addr,
+                    amo_mem_write_is_dword=1,
+                    amo_mem_write_is_cached=cached,
+                )
+            for _ in range(4):
+                s = await b.step(block_new_requests=1, **request)
+                assert s["data_mem_addr"] == addr
+                assert not s["uncached_write_byte_en"]
+                assert not s["uncached_read_enable"]
+                assert not s["data_mem_cached_byte_wr_en"]
+                assert not s["data_mem_cached_read_enable"]
+                assert not s["lq_mem_request_valid"]
+            s = await b.step(
+                uncached_read_valid=1,
+                uncached_read_data=0x1234,
+                uncached_write_done=1,
+            )
+            assert s["uncached_read_ready"] and s["lq_mem_read_valid"]
+            assert s["lq_mem_read_data"] == 0x1234
+            assert s["sq_mem_write_done"]
+
+    # A device read parked before the fatal event must not slip through when
+    # the fabric becomes ready on the same edge as the stop and flush.
+    await b.reset()
+    await b.step(lq_mem_read_en=1, lq_mem_read_addr=0x40000008)
+    await b.step(lq_mem_read_en=0, uncached_read_request_ready=0)
+    for _ in range(3):
+        await b.step()
+    s = await b.step(block_new_requests=1, flush_all=1, uncached_read_request_ready=1)
+    assert not s["uncached_read_enable"] and not s["mmio_read_pulse"]
+    assert not (await b.step())["lq_mem_request_valid"]

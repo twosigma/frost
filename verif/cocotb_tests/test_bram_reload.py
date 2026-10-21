@@ -31,6 +31,7 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge, Timer
 
+from cocotb_tests.bram_programmer import program_bram_image, read_bram_image
 from cocotb_tests.test_real_program import (
     CLK_PERIOD_NS,
     RESET_CYCLES,
@@ -40,65 +41,9 @@ from cocotb_tests.test_real_program import (
 
 BANNER = "Frost: Hello, world!"
 
-# file_to_bram.tcl runs bounded 64-transaction batches and rewrites word 0
-# (the image_load_reset rearm) between batches, so the hardware sees a
-# non-monotonic address sequence; mirror it to keep that ordering covered.
-BATCH_LIMIT = 64
-
 BOOT_TIMEOUT_CYCLES = int(os.environ.get("COCOTB_RELOAD_BOOT_CYCLES", "800000"))
 NO_BOOT_WINDOW_CYCLES = int(os.environ.get("COCOTB_RELOAD_NOBOOT_CYCLES", "300000"))
 CLOBBER_WORDS = 64
-
-
-def _parse_readmemh_words(path: Path) -> list[tuple[int, int]]:
-    """Parse a $readmemh image into (byte_address, word) pairs."""
-    words: list[tuple[int, int]] = []
-    word_index = 0
-    for raw_line in path.read_text().splitlines():
-        line = raw_line.split("//")[0].strip()
-        if not line:
-            continue
-        for token in line.split():
-            if token.startswith("@"):
-                word_index = int(token[1:], 16)
-                continue
-            words.append((word_index * 4, int(token, 16)))
-            word_index += 1
-    return words
-
-
-async def _port_a_write(dut: Any, byte_address: int, word: int) -> None:
-    """One programming write, one i_clk_div4 cycle (the AXI BRAM ctrl pace)."""
-    dut.i_instr_mem_en.value = 1
-    dut.i_instr_mem_we.value = 0xF
-    dut.i_instr_mem_addr.value = byte_address
-    dut.i_instr_mem_wrdata.value = word
-    await RisingEdge(dut.i_clk_div4)
-
-
-async def _port_a_idle(dut: Any) -> None:
-    dut.i_instr_mem_en.value = 0
-    dut.i_instr_mem_we.value = 0
-    # Drain the imem's one-cycle registered write staging before releasing
-    # reset, matching the trailing gap in the JTAG flow.
-    for _ in range(4):
-        await RisingEdge(dut.i_clk_div4)
-
-
-async def _stream_image(dut: Any, words: list[tuple[int, int]]) -> None:
-    """Stream an image through the programming port exactly like file2bram."""
-    first = words[0] if words else None
-    await RisingEdge(dut.i_clk_div4)
-    in_batch = 0
-    for byte_address, word in words:
-        await _port_a_write(dut, byte_address, word)
-        in_batch += 1
-        if in_batch >= BATCH_LIMIT and first is not None:
-            # The tcl rearms the board's image-load reset one-shot by
-            # rewriting the first word between batches.
-            await _port_a_write(dut, first[0], first[1])
-            in_batch = 0
-    await _port_a_idle(dut)
 
 
 async def _hold_reset(dut: Any) -> None:
@@ -131,7 +76,7 @@ async def test_bram_reload(dut: Any) -> None:
     uart_monitor = UartMonitor(dut)
     await uart_monitor.start()
 
-    image = _parse_readmemh_words(Path("sw.mem"))
+    image = read_bram_image(Path("sw.mem"))
     assert image, "sw.mem parsed to zero words"
     cocotb.log.info(f"Parsed {len(image)} words from sw.mem")
 
@@ -158,7 +103,7 @@ async def test_bram_reload(dut: Any) -> None:
     uart_monitor.clear()
     await _hold_reset(dut)
     clobber = [(addr, 0x0000_0000) for addr in range(0, CLOBBER_WORDS * 4, 4)]
-    await _stream_image(dut, clobber)
+    await program_bram_image(dut, clobber)
     dut.i_rst_n.value = 1
 
     booted = await _wait_for_banner(
@@ -172,7 +117,7 @@ async def test_bram_reload(dut: Any) -> None:
     # --- Phase 2: reload the full original image; boot again ---
     uart_monitor.clear()
     await _hold_reset(dut)
-    await _stream_image(dut, image)
+    await program_bram_image(dut, image)
     dut.i_rst_n.value = 1
 
     booted = await _wait_for_banner(
