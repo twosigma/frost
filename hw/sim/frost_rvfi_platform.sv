@@ -754,6 +754,7 @@ module frost_rvfi_platform #(
       .o_uncached_read_ready(),
       .o_uncached_write_byte_en(),
       .o_uncached_write_size(),
+      .o_uncached_write_buffered(),
       .i_clk,
       .i_rst(rst_core),
       .o_pc(cpu_pc_xlen),
