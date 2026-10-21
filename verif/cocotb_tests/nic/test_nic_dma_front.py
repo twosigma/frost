@@ -56,6 +56,7 @@ class _PortModel:
         )
         self.rng = random.Random(seed)
         self.accepted: list[dict[str, int]] = []
+        self.errors: set[int] = set()
         self.hold = False  # withhold every response
         self._pending: list[list[int]] = []  # [cycles_left, id, addr]
         self.cycle = 0
@@ -69,6 +70,7 @@ class _PortModel:
             await FallingEdge(dut.i_clk)
             self.cycle += 1
             # Responses.
+            dut.i_dma_resp_error.value = 0
             dut.i_dma_resp_valid.value = 0
             if not self.hold:
                 ready_ones = [p for p in self._pending if p[0] <= 0]
@@ -78,6 +80,7 @@ class _PortModel:
                     dut.i_dma_resp_valid.value = 1
                     dut.i_dma_resp_id.value = p[1]
                     dut.i_dma_resp_rdata.value = _rdata(p[2])
+                    dut.i_dma_resp_error.value = int(p[2] in self.errors)
             for p in self._pending:
                 p[0] -= 1
             # Requests: decide ready on the presented request once the bench's
@@ -196,6 +199,7 @@ async def _setup(dut: Any) -> None:
         dut.i_req_tag,
         dut.i_dma_req_ready,
         dut.i_dma_resp_valid,
+        dut.i_dma_resp_error,
         dut.i_dma_resp_id,
         dut.i_dma_resp_rdata,
     ):
@@ -487,3 +491,22 @@ async def test_stop_registration_edge_fire_drains_once(dut: Any) -> None:
     for _ in range(4):
         await FallingEdge(dut.i_clk)
         assert int(dut.o_resp_valid.value) == 0, "the request was answered twice"
+
+
+@cocotb.test()
+async def test_fabric_errors_reach_both_engines(dut: Any) -> None:
+    """Preserve failed-response ownership and leave later transfers usable."""
+    await _setup(dut)
+    port = _PortModel(dut, seed=91)
+    port.errors = {BASE + 0x100, BASE + 0x200}
+    bus = _ReqBus(dut)
+    rx, tx = _Engine(dut, 0, bus), _Engine(dut, 1, bus)
+    await rx.request(BASE + 0x100, 2, 1)
+    await tx.request(BASE + 0x200, 3, 2, write=True)
+    await rx.request(BASE + 0x300, 1, 3)
+    await _idle(dut)
+    assert sorted((r["tag"], r["error"]) for r in rx.responses) == [(1, 1), (3, 0)]
+    assert [(r["tag"], r["error"]) for r in tx.responses] == [(2, 1)]
+    port.stop()
+    rx.stop()
+    tx.stop()

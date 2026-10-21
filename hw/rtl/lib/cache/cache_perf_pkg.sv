@@ -53,7 +53,7 @@ package cache_perf_pkg;
     cache_instance_perf_events_t l2;
   } cache_hierarchy_perf_events_t;
 
-  // cpu_and_mem adds the fetch-provider stall event for the CPU.
+  // cpu_top adds the fetch-provider stall event for the CPU.
   typedef struct packed {
     cache_hierarchy_perf_events_t hierarchy;
     logic                         l1i_fetch_miss_stall;

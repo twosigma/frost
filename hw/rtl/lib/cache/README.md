@@ -85,10 +85,10 @@ instances differ in size, line size, storage, and slot counts:
 | L2 | 2 MiB | 64 B | 4 x 8192 | UltraRAM, a set's four ways in one 72-bit row, 3-cycle read | UltraRAM | 4 | 2 | 2 | 0 |
 
 The ways are the hierarchy's `L1D_WAYS`, `L1I_WAYS`, and `L2_WAYS`
-parameters, which `frost` and `cpu_and_mem` take too. The L1D's miss slots
+parameters, which `frost` and `cpu_top` take too. The L1D's miss slots
 are the hierarchy's `L1D_NUM_MSHR` parameter and the L2's counts its
 `L2_NUM_MSHR`, `L2_NUM_WAITERS`, and `L2_NUM_WB` parameters, which
-`cpu_and_mem` sets as in the table. Its downstream ids, `L2_DOWN_ID_BITS` wide
+`cpu_top` sets as in the table. Its downstream ids, `L2_DOWN_ID_BITS` wide
 (5 on the X3), hold up to 16 slots of each type.
 
 ### Sets and ways
@@ -306,7 +306,7 @@ Each arbiter prefixes its port index to the ids it forwards, so ids stay
 unique across all upstream masters without a global plan. The tree yields a
 prefix-free code in `UP_ID_BITS + 2` bits:
 
-| Master | Id below the top arbiter | Local id bits (`UP_ID_BITS=4`, as `cpu_and_mem` sets) |
+| Master | Id below the top arbiter | Local id bits (`UP_ID_BITS=4`, as `cpu_top` sets) |
 |--------|--------------------------|--------------------------------|
 | L1D | `{2'b00, id}` | 4 |
 | Walker | `{2'b01, 1'b0, id}` | 3 |
@@ -338,15 +338,25 @@ promptly in another way: nothing orders the JTAG loader's DDR writes after
 the bridge's, so each write the bridge accepted before the reset must land
 before the loader's first DDR write.
 
-An error response (anything but OKAY) completes its transaction like any
-other, so a read's data still fills the line. The bridge reports each one,
-with its response code and AXI id, on `o_rd_err_*` or `o_wr_err_*` to the
-memory error unit (`cpu_and_mem/memory_error_unit.sv`), where software reads
-it. Simulation also flags an error response as a failure unless the test
-passes `+axi_error_check=0`. The behavioral DDR model injects them for such a
-test: `+axi_rd_error_addr=<hex>` and `+axi_wr_error_addr=<hex>` make every
-read or write of the line holding that region-relative address answer SLVERR
-(`sw/apps/memerr_test`).
+Production `cpu_top` uses `cpu_memory_fabric` and `cpu_axi_master` to combine
+cache lines with narrow uncached data and instruction traffic. The older
+`line_port_axi_bridge` remains a library/component-test block. ID allocation
+and AXI attributes are documented in the [CPU interface](../../cpu_top/README.md).
+
+With `ENABLE_RESPONSE_ERRORS=1`, SLVERR/DECERR on a read fill returns an error
+to every waiter and never installs the line. LQ, instruction fetch and the
+page-table walker translate that error into an architectural access fault.
+Failed writebacks or write-allocated fills retain dirty ownership, latch a
+fatal address and stop CPU retirement. They cannot be made precise after a
+buffered store has retired. FROST's SoC also counts board DDR error responses
+in `memory_error_unit`; `memerr_test` checks the read exception, ECC/PLIC
+reporting and final fatal writeback stop. Coherent responses carry errors
+through the DMA sequencer and arbiter to their agents. With response errors
+disabled, legacy library benches retain their original completion behavior.
+
+The behavioral DDR model accepts `+axi_rd_error_addr=<hex>` and
+`+axi_wr_error_addr=<hex>` for region-relative failed lines. The legacy bridge
+also requires `+axi_error_check=0` when such errors are intentional.
 
 The interconnect's own reset is different. While it is in reset, AXI
 requires every VALID low, so the bridge takes that reset as a second input
@@ -374,7 +384,7 @@ merge, and write it back; the L2 writes back only whole lines.
 
 In general `L2_LINE_BYTES` is a power-of-2 multiple of `L1_LINE_BYTES`, and
 each L2 line holds that many L1 lines as sectors. With equal line sizes the
-adapter below is left out. `frost` and `cpu_and_mem` take `L2_LINE_BYTES`,
+adapter below is left out. `frost` and `cpu_top` take `L2_LINE_BYTES`,
 64 by default; at 32 the DDR AXI port is 256 bits wide. The X3 top sets 64,
 one line per beat of its block design's 512-bit CPU port.
 
@@ -426,7 +436,7 @@ faults.
 ## The stream prefetcher
 
 `l2_stream_prefetcher` reads ahead of ascending L1D miss streams into the L2.
-`cpu_and_mem` turns it on (`L2_PREFETCH`); 0 removes it. It watches the
+`cpu_top` turns it on (`L2_PREFETCH`); 0 removes it. It watches the
 L1D's read requests as the top arbiter takes them, which are its misses,
 store misses included. A table of 4 streams holds the last L2 line each
 stream missed on. A miss on the line after a stream's confirms the stream

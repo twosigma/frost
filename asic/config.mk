@@ -16,7 +16,7 @@
 # with asic/orfs.py, which writes $(WORK_HOME)/sources.mk before calling the
 # flow's Makefile.
 
-export DESIGN_NAME = cpu_and_mem
+export DESIGN_NAME = platform_top
 export DESIGN_NICKNAME = frost
 export PLATFORM = nangate45
 

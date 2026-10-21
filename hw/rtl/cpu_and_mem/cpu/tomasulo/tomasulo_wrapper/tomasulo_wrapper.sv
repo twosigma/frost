@@ -34,8 +34,9 @@
 module tomasulo_wrapper #(
     parameter bit SPLIT_RS_DISPATCH = 1'b0,
     parameter bit ENABLE_DISPATCH_DONE_REPAIR = 1'b0,
+    parameter bit MEM_RESPONSE_ERRORS = 1'b0,
     // Address range for tagged cached-load slots and cached-store routing.
-    parameter int unsigned CACHED_BASE = 32'h8000_0000,
+    parameter longint unsigned CACHED_BASE = riscv_pkg::DdrBase,
     parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
@@ -220,6 +221,9 @@ module tomasulo_wrapper #(
     // A cached store is in flight. Block LQ launches throughout its handshake
     // to avoid overwriting the router's single pending-load register.
     input logic                                        i_slow_write_inflight,
+    // Protect the single uncached response owner until a variable-latency
+    // read has returned. This is separate from an unaccepted router request.
+    input logic                                        i_uncached_read_busy = 1'b0,
     // A cached load response is held behind the fast tier's fixed-latency
     // beat this cycle (router). The LQ registers it into its launch hold so
     // one launch is skipped and the held response gets the port.
@@ -478,13 +482,17 @@ module tomasulo_wrapper #(
     // =========================================================================
     // Store Queue: Memory Write Interface
     // =========================================================================
-    output logic                              o_sq_mem_write_en,
-    output logic [       riscv_pkg::XLEN-1:0] o_sq_mem_write_addr,
-    output logic [riscv_pkg::MemDataBits-1:0] o_sq_mem_write_data,
-    output logic [riscv_pkg::MemStrbBits-1:0] o_sq_mem_write_byte_en,
-    output logic                              o_sq_mem_write_is_mmio,
-    output logic                              o_sq_mem_write_is_cached,
-    input  logic                              i_sq_mem_write_done,
+    output logic                                              o_sq_mem_write_en,
+    output logic                 [       riscv_pkg::XLEN-1:0] o_sq_mem_write_addr,
+    output logic                 [riscv_pkg::MemDataBits-1:0] o_sq_mem_write_data,
+    output logic                 [riscv_pkg::MemStrbBits-1:0] o_sq_mem_write_byte_en,
+    output riscv_pkg::mem_size_e                              o_sq_mem_write_size,
+    output logic                                              o_sq_mem_write_is_mmio,
+    output logic                                              o_sq_mem_write_is_cached,
+    input  logic                                              i_sq_mem_write_done,
+    input  logic                                              i_sq_mem_write_error = 1'b0,
+    output logic                                              o_uncached_store_pending,
+    input  logic                                              i_uncached_store_shield = 1'b0,
 
     // =========================================================================
     // Load Queue: Memory Interface
@@ -501,6 +509,7 @@ module tomasulo_wrapper #(
     output logic                                                     o_lq_mem_read_no_merge,
     input  logic                 [       riscv_pkg::MemDataBits-1:0] i_lq_mem_read_data,
     input  logic                                                     i_lq_mem_read_valid,
+    input  logic                                                     i_lq_mem_read_error = 1'b0,
     input  logic                                                     i_lq_mem_read_is_cached,
     input  logic                 [riscv_pkg::CachedLoadSlotBits-1:0] i_lq_mem_read_id,
 
@@ -530,6 +539,7 @@ module tomasulo_wrapper #(
     // Registered cached-tier flag of o_amo_mem_write_addr (load_queue).
     output logic                              o_amo_mem_write_is_cached,
     input  logic                              i_amo_mem_write_done,
+    input  logic                              i_amo_mem_write_error = 1'b0,
 
     // =========================================================================
     // Profiling Snapshot Interface
@@ -1586,7 +1596,23 @@ module tomasulo_wrapper #(
   endfunction
 
   // SC result computation (combinational)
-  riscv_pkg::fu_complete_t sc_fu_complete;  // driven by sc_pending_unit
+  riscv_pkg::fu_complete_t sc_fu_complete;
+  riscv_pkg::fu_complete_t sc_resolution;
+  riscv_pkg::fu_complete_t uncached_store_complete;
+  logic uncached_store_result_ready;
+  logic uncached_sc_success;
+  // Resolve the reservation at the head, but do not announce successful
+  // uncached SC until the AXI write response. Failed SC still returns 1
+  // immediately and the commit-side discard removes its SQ entry.
+  assign uncached_sc_success = MEM_RESPONSE_ERRORS && sc_resolution.valid &&
+      (sc_resolution.value == '0) &&
+      !((coh_sc_head_addr >= riscv_pkg::XLEN'(CACHED_BASE)) &&
+        (coh_sc_head_addr < riscv_pkg::XLEN'(CACHED_BASE) +
+                            riscv_pkg::XLEN'(CACHED_SIZE_BYTES)));
+  always_comb begin
+    sc_fu_complete = sc_resolution;
+    sc_fu_complete.valid = sc_resolution.valid && !uncached_sc_success;
+  end
   logic store_issue_fire;
   logic store_misalign_issue;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] store_complete_tag;
@@ -1703,8 +1729,15 @@ module tomasulo_wrapper #(
       (o_mem_rs_issue.imm[11] && store_page_dec_toggle);
   assign store_pma_with_page_carry = store_base_pma_ok ^
       (!o_mem_rs_issue.imm[11] && store_page_inc_toggle);
-  assign store_addr_pma_ok = store_page_offset_sum[12] ? store_pma_with_page_carry :
-      store_pma_without_page_carry;
+  // The reduced page-carry decoder is specific to FROST's map. Other
+  // integrations use the full configured PMA predicate on the effective PA.
+  assign store_addr_pma_ok = riscv_pkg::PmaUsesFrostMap ?
+      (store_page_offset_sum[12] ? store_pma_with_page_carry : store_pma_without_page_carry) :
+      (mem_rs_issue_is_sc ? riscv_pkg::pma_atomic_ok(
+      sq_effective_addr
+  ) : riscv_pkg::pma_store_ok(
+      sq_effective_addr
+  ));
   assign store_addr_misaligned = is_mem_access_misaligned(
       riscv_pkg::mem_size_e'(o_mem_rs_issue.mem_size),
       {
@@ -1938,17 +1971,22 @@ module tomasulo_wrapper #(
     end else if (sc_valid_adapter_q) begin
       mem_fu_to_adapter = sc_fu_complete_reg;
       mem_fu_to_adapter.valid = 1'b1;
+    end else if (uncached_store_complete.valid) begin
+      mem_fu_to_adapter = uncached_store_complete;
     end else begin
       mem_fu_to_adapter = lq_fu_complete;
     end
   end
 
-  // LQ yields to registered SC completions and store faults. SC fires only
+  // LQ yields to registered SC completions, uncached stores, and store faults. SC fires only
   // when the LQ has no result. Acceptance must match the presentation mux.
   // Unless cdb_kill is set, MEM always wins one of two CDB lanes: only MUL
   // outranks it. Pop each result once to avoid rebroadcasting a recycled tag.
   // A live store fault takes the MEM slot next cycle and needs no yield yet.
+  assign uncached_store_result_ready = !sc_valid_adapter_q &&
+      !store_misalign_fu_complete_reg.valid && !mem_adapter_result_pending;
   assign lq_result_accepted = lq_fu_complete.valid &&
+                              !uncached_store_complete.valid &&
                               !sc_valid_lq_q &&
                               !store_misalign_fu_complete_reg.valid &&
                               !mem_adapter_result_pending;
@@ -2133,7 +2171,7 @@ module tomasulo_wrapper #(
       .o_sc_head_addr                  (coh_sc_head_addr),
       .o_sc_fire_success               (coh_sc_fire_success),
       .o_sc_pending                    (sc_pending),
-      .o_sc_fu_complete                (sc_fu_complete)
+      .o_sc_fu_complete                (sc_resolution)
   );
 
   // ===========================================================================
@@ -2216,7 +2254,12 @@ module tomasulo_wrapper #(
       .i_cdb_write_2(cdb_write_from_arbiter_2),
       .i_cdb_match_tag(cdb_rob_match_tag),
       .i_cdb_match_tag_2(cdb_rob_match_tag_2),
-      .i_store_complete_valid(store_issue_fire),
+      .i_store_complete_valid(store_issue_fire &&
+          (!MEM_RESPONSE_ERRORS ||
+           (((i_translation_active ? dmmu_out_addr : sq_effective_addr) >=
+              riscv_pkg::XLEN'(CACHED_BASE)) &&
+            ((i_translation_active ? dmmu_out_addr : sq_effective_addr) <
+              riscv_pkg::XLEN'(CACHED_BASE) + riscv_pkg::XLEN'(CACHED_SIZE_BYTES))))),
       .i_store_complete_tag(store_complete_tag),
 
       // Branch
@@ -2747,8 +2790,11 @@ module tomasulo_wrapper #(
   logic mem_rs_early_load_injected;
   logic mem_rs_early_wakeup_enable;
   logic [2:0] mem_rs_pre_issue_raw_valid;
+  // The early token must use the same completion ownership as the MEM mux.
+  // A simultaneous uncached-store B response delays the staged load.
   assign mem_rs_early_wakeup_enable = EARLY_LOAD_WAKEUP && !sc_valid_wakeup_q &&
-      !store_misalign_fu_complete_reg.valid && !mem_adapter_result_pending;
+      !uncached_store_complete.valid && !store_misalign_fu_complete_reg.valid &&
+      !mem_adapter_result_pending;
   assign mem_rs_pre_issue_raw_valid = {
     mem_rs_early_wakeup_enable && lq_fu_complete_staged && !lq_fu_complete.exception,
     cdb_bus_2_mem_qualified.valid,
@@ -3369,6 +3415,8 @@ module tomasulo_wrapper #(
   // Load Queue Instance
   // ===========================================================================
   load_queue #(
+      .MEM_RESPONSE_ERRORS(MEM_RESPONSE_ERRORS),
+      .CACHE_UNCACHED_DATA(!MEM_RESPONSE_ERRORS),
       .PREISSUE_CANDIDATES(EARLY_LOAD_WAKEUP),
       .PREISSUE_SEL_WIDTH(3),
       .PREISSUE_READY_PICK(EARLY_LOAD_WAKEUP),
@@ -3430,6 +3478,7 @@ module tomasulo_wrapper #(
       .o_mem_read_no_merge(o_lq_mem_read_no_merge),
       .i_mem_read_data(i_lq_mem_read_data),
       .i_mem_read_valid(i_lq_mem_read_valid),
+      .i_mem_read_error(i_lq_mem_read_error),
       .i_mem_read_is_cached(i_lq_mem_read_is_cached),
       .i_mem_read_id(i_lq_mem_read_id),
       // Keep the exact router Q separate from the composite busy expression:
@@ -3442,7 +3491,7 @@ module tomasulo_wrapper #(
       // Cover every router write-busy term so read handoff cannot overlap a busy
       // write port. The router's one-entry hold is reserved for device reads.
       .i_mem_bus_busy  (o_sq_mem_write_en || o_amo_mem_write_en || i_backend_recovery_hold ||
-                        i_slow_write_inflight || i_lq_mem_request_pending),
+                        i_slow_write_inflight || i_uncached_read_busy || i_lq_mem_request_pending),
       .i_cached_resp_held(i_cached_read_held),
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
@@ -3477,6 +3526,7 @@ module tomasulo_wrapper #(
       .o_amo_mem_write_is_dword(o_amo_mem_write_is_dword),
       .o_amo_mem_write_is_cached(o_amo_mem_write_is_cached),
       .i_amo_mem_write_done(i_amo_mem_write_done),
+      .i_amo_mem_write_error(i_amo_mem_write_error),
 
       // L0 cache invalidation (from SQ)
       .i_cache_invalidate_valid(sq_cache_invalidate_valid),
@@ -3910,6 +3960,7 @@ module tomasulo_wrapper #(
   // Store Queue Instance
   // ===========================================================================
   store_queue #(
+      .PRECISE_UNCACHED(MEM_RESPONSE_ERRORS),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
       // sq_alloc_req.valid derives from mem_rs_dispatch_valid(_2), which
@@ -3978,13 +4029,22 @@ module tomasulo_wrapper #(
       .o_sq_forward              (sq_forward),
 
       // Memory write interface (external)
-      .o_mem_write_en       (o_sq_mem_write_en),
-      .o_mem_write_addr     (o_sq_mem_write_addr),
-      .o_mem_write_data     (o_sq_mem_write_data),
-      .o_mem_write_byte_en  (o_sq_mem_write_byte_en),
-      .o_mem_write_is_mmio  (o_sq_mem_write_is_mmio),
-      .o_mem_write_is_cached(o_sq_mem_write_is_cached),
-      .i_mem_write_done     (i_sq_mem_write_done),
+      .o_mem_write_en               (o_sq_mem_write_en),
+      .o_mem_write_addr             (o_sq_mem_write_addr),
+      .o_mem_write_data             (o_sq_mem_write_data),
+      .o_mem_write_byte_en          (o_sq_mem_write_byte_en),
+      .o_mem_write_size             (o_sq_mem_write_size),
+      .o_mem_write_is_mmio          (o_sq_mem_write_is_mmio),
+      .o_mem_write_is_cached        (o_sq_mem_write_is_cached),
+      .i_mem_write_done             (i_sq_mem_write_done),
+      .i_mem_write_error            (i_sq_mem_write_error),
+      .o_uncached_store_pending,
+      .i_uncached_store_shield,
+      .i_head_side_effects_allowed  (!i_commit_hold && !i_backend_recovery_hold && o_head_valid),
+      .i_uncached_sc_success        (uncached_sc_success),
+      .i_uncached_sc_tag            (sc_resolution.tag),
+      .o_uncached_store_complete    (uncached_store_complete),
+      .i_uncached_store_result_ready(uncached_store_result_ready),
 
       // L0 cache invalidation (to LQ)
       .o_cache_invalidate_valid(sq_cache_invalidate_valid),

@@ -99,6 +99,7 @@ module cached_tier_adapter #(
     output logic [riscv_pkg::MemDataBits-1:0] o_read_data,
     output logic [              SlotBits-1:0] o_read_id,
     output logic                              o_read_valid,
+    output logic                              o_read_error,
     input  logic                              i_read_ready,
     output logic                              o_write_done,
     output logic                              o_write_inflight,
@@ -112,6 +113,7 @@ module cached_tier_adapter #(
     output logic [  LINE_BYTES-1:0] o_line_req_wstrb,
     output logic [LINE_ID_BITS-1:0] o_line_req_id,
     input  logic                    i_line_resp_valid,
+    input  logic                    i_line_resp_error = 1'b0,
     input  logic [LINE_ID_BITS-1:0] i_line_resp_id,
     input  logic [LINE_BYTES*8-1:0] i_line_resp_rdata
 );
@@ -139,6 +141,7 @@ module cached_tier_adapter #(
   // slot's index names it, so a live group's opening slot is always valid.
   logic [  READ_SLOTS-1:0] rd_valid_q;
   logic [  READ_SLOTS-1:0] rd_ready_q;
+  logic [  READ_SLOTS-1:0] rd_error_q;
   logic [  READ_SLOTS-1:0] rd_group_oh_q                                   [READ_SLOTS];
   logic [    BeatBits-1:0] rd_data_q                                       [READ_SLOTS];
   // Use flops because all free slots sample i_req_addr on each edge. A valid
@@ -502,12 +505,15 @@ module cached_tier_adapter #(
         rd_addr_q[s] <= i_req_addr;
         rd_group_oh_q[s] <= attach_any ? attach_match : READ_SLOTS'(1) << s;
       end
-      if (!rd_ready_q[s] && !answered[s])
-        rd_data_q[s] <= rd_valid_q[s] ? resp_beat[s] : accept_beat;
+      if (!rd_ready_q[s] && !answered[s]) begin
+        rd_data_q[s]  <= rd_valid_q[s] ? resp_beat[s] : accept_beat;
+        rd_error_q[s] <= i_line_resp_error;
+      end
     end
     if (out_take) begin
       o_read_data <= ready_any ? rd_data_q[ready_pick] : bypass_beat;
-      o_read_id   <= ready_any ? ready_pick : bypass_slot;
+      o_read_id <= ready_any ? ready_pick : bypass_slot;
+      o_read_error <= ready_any ? rd_error_q[ready_pick] : i_line_resp_error;
     end
   end
 

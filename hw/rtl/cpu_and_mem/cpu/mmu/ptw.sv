@@ -34,7 +34,8 @@
  *   - a PTE address outside the cached-DDR window => DFAULT_ACCESS, which
  *     the requester turns into the access fault of the original access type.
  *     Page tables must be in cached DDR because the walk path cannot reach
- *     BRAM or devices.
+ *     uncached memory or devices. With ENABLE_RESPONSE_ERRORS, a failed
+ *     PTE read also returns DFAULT_ACCESS without interpreting its data.
  *   - reserved bits, V=0, W&!R, a non-leaf with D, A, or U set, a non-leaf
  *     at level 0, a misaligned superpage, or A=0 => DFAULT_PAGE.
  * A clean leaf answers DFAULT_NONE with {ppn, level, RWXUD} and echoes the
@@ -54,9 +55,10 @@
  * next level's read.
  */
 module ptw #(
-    parameter  int unsigned LINE_BYTES   = 32,
-    parameter  int unsigned WALK_ID_BITS = 2,
-    localparam int unsigned LineAddrLow  = $clog2(LINE_BYTES)
+    parameter bit ENABLE_RESPONSE_ERRORS = 1'b0,
+    parameter int unsigned LINE_BYTES = 32,
+    parameter int unsigned WALK_ID_BITS = 2,
+    localparam int unsigned LineAddrLow = $clog2(LINE_BYTES)
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -85,6 +87,7 @@ module ptw #(
     output logic [riscv_pkg::PhysAddrBits-1:0] o_line_req_addr,
     output logic [           WALK_ID_BITS-1:0] o_line_req_id,
     input  logic                               i_line_resp_valid,
+    input  logic                               i_line_resp_error = 1'b0,
     input  logic [           WALK_ID_BITS-1:0] i_line_resp_id,
     input  logic [           LINE_BYTES*8-1:0] i_line_resp_rdata
 );
@@ -255,8 +258,15 @@ module ptw #(
             // Single-id master with one read in flight, so any response
             // belongs to this walk. Capture this level's PTE; PTW_DECODE
             // classifies it.
-            pte_q   <= pte_live;
-            state_q <= PTW_DECODE;
+            if (ENABLE_RESPONSE_ERRORS && i_line_resp_error) begin
+              resp_q <= '0;
+              resp_q.fault_kind <= riscv_pkg::DFAULT_ACCESS;
+              resp_q.vpn <= vpn_q;
+              state_q <= PTW_RESP;
+            end else begin
+              pte_q   <= pte_live;
+              state_q <= PTW_DECODE;
+            end
           end
         end
 

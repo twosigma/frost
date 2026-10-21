@@ -12,16 +12,16 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Timing constraints for cpu_and_mem in the OpenROAD flow (asic/config.mk).
+# Timing constraints for platform_top in the OpenROAD flow (asic/config.mk).
 #
 # The core clock is the X3 target, 322.265625 MHz (CLK_FREQ_HZ in
-# cpu_and_mem.sv), unless the environment variable FROST_CORE_CLOCK_PERIOD
+# platform_top.sv), unless the environment variable FROST_CORE_CLOCK_PERIOD
 # gives another period in ns; asic/README.md describes finding the fmax with
 # it. ORFS reads the default for ABC from the first clk_period assignment, so
 # that assignment keeps a plain number. The program-loading port runs on the
 # core clock divided by four. The NIC's MAC clocks are the X3 GTY's TX and RX
 # user clocks, the 161.1328125 MHz Ethernet reference rate
-# (boards/x3/constr/x3.xdc). The JTAG clock serves the TAP that cpu_and_mem
+# (boards/x3/constr/x3.xdc). The JTAG clock serves the TAP that platform_top
 # instantiates with its default DEBUG_JTAG_TAP=1; 10 MHz is ten times the
 # OpenOCD adapter speed in fpga/debug.
 set clk_period 3.103
@@ -58,11 +58,11 @@ create_clock -name jtag_tck -period 100.0 [get_ports i_jtag_tck]
 # clock on its master's net, so it takes the clock ports' nets as its roots
 # from CTS_ARGS in config.mk, which lists each clock's port.
 set io_references {
-  core_clk i_clk {gen_cached_tier.ddr_bridge.ar_valid_q$*/CK}
-  core_clk_div4 i_clk_div4 {data_memory.u_sram.gen_row[0].u_macro/clk0}
-  nic_tx_clk i_nic_tx_clk {gen_cached_tier.nic.u_mac.u_mac.tx_gearbox.reservoir[0]$*/CK}
-  nic_rx_clk i_nic_rx_clk {gen_cached_tier.nic.u_mac.u_mac.rx_gearbox.reservoir[0]$*/CK}
-  jtag_tck i_jtag_tck {gen_jtag_tap.u_jtag_tap.bypass_shift$*/CK}
+  core_clk i_clk {cpu.memory_fabric.master.ar_valid_q$*/CK}
+  core_clk_div4 i_clk_div4 {soc.data_memory.u_sram.gen_row[0].u_macro/clk0}
+  nic_tx_clk i_nic_tx_clk {soc.gen_cached_tier.nic.u_mac.u_mac.tx_gearbox.reservoir[0]$*/CK}
+  nic_rx_clk i_nic_rx_clk {soc.gen_cached_tier.nic.u_mac.u_mac.rx_gearbox.reservoir[0]$*/CK}
+  jtag_tck i_jtag_tck {soc.gen_jtag_tap.u_jtag_tap.bypass_shift$*/CK}
 }
 foreach {clock source pattern} $io_references {
   set pins [get_pins -quiet $pattern]

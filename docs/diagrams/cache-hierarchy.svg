@@ -6,7 +6,7 @@
     then DMA with bounded starvation, and a stream prefetcher that watches L1D
     misses shares the DMA port after DMA. A line-size adapter places each 32-byte
     request in its half of a 64-byte line of the shared 2 MiB L2, which feeds
-    the 512-bit AXI bridge and DDR4. All caches are 4-way set-associative; the
+    the Unified AXI4 master and DDR4. All caches are 4-way set-associative; the
     L1s use 32-byte lines and the L2 64-byte lines. Request paths are shown;
     responses route by transaction ID.
   </desc>
@@ -26,8 +26,8 @@
         load-queue invalidation, ordering at L2).
       hw/rtl/lib/cache/walker_coherence_sequencer.sv: the walker's entry
         (probe-clean, acknowledgement, then the shared-level read).
-      hw/rtl/lib/cache/line_port_axi_bridge.sv: 512-bit single-beat AXI requests.
-      hw/rtl/cpu_and_mem/cpu_and_mem.sv: cache/bridge integration.
+      hw/rtl/cpu_top/cpu_axi_master.sv: shared single-beat AXI4 transport.
+      hw/rtl/platform_top.sv + cpu_top/cpu_top.sv + soc_top/soc_top.sv: cache/bridge integration.
       hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv: one shared page-table walker.
       hw/rtl/frost.sv, boards/x3/x3_frost.sv: X3 capacities and DDR backing.
   -->
@@ -130,7 +130,7 @@
     <text x="460" y="829" class="small">Write-back, write-allocate</text>
     <path d="M 576 792 H 624" class="link"/>
     <rect x="624" y="740" width="232" height="104" rx="12" class="memory"/>
-    <text x="740" y="773" class="heading">Line → AXI4</text>
+    <text x="740" y="773" class="heading">AXI4 master</text>
     <text x="740" y="802" class="body">512-bit single beats</text>
     <text x="740" y="829" class="small">Many in flight</text>
     <path d="M 856 792 H 904" class="link"/>

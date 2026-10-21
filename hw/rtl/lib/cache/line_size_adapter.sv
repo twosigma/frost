@@ -62,6 +62,7 @@ module line_size_adapter #(
     input  logic [        ID_BITS-1:0] i_up_req_id,
     input  logic                       i_up_req_maintenance,
     output logic                       o_up_resp_valid,
+    output logic                       o_up_resp_error,
     output logic [        ID_BITS-1:0] o_up_resp_id,
     output logic [UP_LINE_BYTES*8-1:0] o_up_resp_rdata,
 
@@ -75,6 +76,7 @@ module line_size_adapter #(
     output logic [          ID_BITS-1:0] o_down_req_id,
     output logic                         o_down_req_maintenance,
     input  logic                         i_down_resp_valid,
+    input  logic                         i_down_resp_error = 1'b0,
     input  logic [          ID_BITS-1:0] i_down_resp_id,
     input  logic [DOWN_LINE_BYTES*8-1:0] i_down_resp_rdata
 );
@@ -126,6 +128,7 @@ module line_size_adapter #(
   assign resp_sector = sector_q[i_down_resp_id];
   assign o_up_resp_valid = i_down_resp_valid;
   assign o_up_resp_id = i_down_resp_id;
+  assign o_up_resp_error = i_down_resp_error;
   assign o_up_resp_rdata = i_down_resp_rdata[resp_sector*UpLineBits+:UpLineBits];
 
 `ifndef SYNTHESIS

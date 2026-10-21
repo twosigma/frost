@@ -29,12 +29,14 @@
 module cpu_ooo #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned MEM_BYTE_ADDR_WIDTH = 16,
+    parameter bit VARIABLE_UNCACHED = 1'b0,
     // MMIO register window base, by default the PMA's (riscv_pkg).
     parameter int unsigned MMIO_ADDR = riscv_pkg::MmioWindowAddr,
     // Cached tier: loads and stores to [CACHED_BASE, CACHED_BASE +
     // CACHED_SIZE_BYTES) go to the cache hierarchy and complete by handshake,
-    // with variable latency. Low-BRAM data accesses take one cycle.
-    parameter int unsigned CACHED_BASE = 32'h8000_0000,
+    // with variable latency. VARIABLE_UNCACHED likewise waits for the external
+    // uncached response; its zero setting retains the one-cycle test profile.
+    parameter longint unsigned CACHED_BASE = riscv_pkg::DdrBase,
     parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
@@ -51,6 +53,8 @@ module cpu_ooo #(
 ) (
     input logic i_clk,
     input logic i_rst,
+    input logic [XLEN-1:0] i_boot_addr = '0,
+    input logic i_fatal_stop = 1'b0,
     // Instruction memory interface. o_pc is the virtual fetch address (the
     // providers tag and match windows by it); the o_fetch_* results below are
     // its physical side (see if_stage / mmu/immu).
@@ -126,7 +130,7 @@ module cpu_ooo #(
     input logic i_fence_i_sync_done,
     output logic o_fence_i_flush,
     // Page-table walker line port: read-only master to the
-    // hierarchy's wup port (cpu_and_mem wires it through and zero-extends
+    // hierarchy's wup port (cpu_top wires it through and zero-extends
     // the 2-bit ids to the port's width); the walker issues one walk at a
     // time.
     output logic o_walk_line_req_valid,
@@ -134,6 +138,7 @@ module cpu_ooo #(
     output logic [riscv_pkg::PhysAddrBits-1:0] o_walk_line_req_addr,
     output logic [1:0] o_walk_line_req_id,
     input logic i_walk_line_resp_valid,
+    input logic i_walk_line_resp_error = 1'b0,
     input logic [1:0] i_walk_line_resp_id,
     input logic [WalkLineBytes*8-1:0] i_walk_line_resp_rdata,
     // Data memory interface
@@ -168,9 +173,24 @@ module cpu_ooo #(
     input logic [riscv_pkg::MemDataBits-1:0] i_cached_read_data,
     input logic [riscv_pkg::CachedLoadSlotBits-1:0] i_cached_read_id,
     input logic i_cached_read_valid,
+    input logic i_cached_read_error = 1'b0,
     output logic o_cached_read_ready,
     input logic i_cached_write_done,
     input logic i_cached_write_inflight,
+    // Single-cycle handoffs to cpu_top's variable-latency uncached adapter.
+    // Address and write data share o_data_mem_addr/o_data_mem_wr_data.
+    input logic i_uncached_read_request_ready = 1'b1,
+    output logic o_uncached_read_enable,
+    output riscv_pkg::mem_size_e o_uncached_read_size,
+    input logic i_uncached_read_valid = 1'b0,
+    output logic o_uncached_read_ready,
+    input logic [riscv_pkg::MemDataBits-1:0] i_uncached_read_data = '0,
+    input logic [1:0] i_uncached_read_status = 2'b00,
+    output logic [riscv_pkg::MemStrbBits-1:0] o_uncached_write_byte_en,
+    output riscv_pkg::mem_size_e o_uncached_write_size,
+    input logic i_uncached_write_done = 1'b0,
+    input logic [1:0] i_uncached_write_status = 2'b00,
+    input logic i_uncached_write_inflight = 1'b0,
     // DMA coherence handshake: the cache hierarchy's sequencer to
     // the load queue's coherence port inside tomasulo_wrapper.
     input logic i_coh_admit_valid,
@@ -348,7 +368,7 @@ module cpu_ooo #(
       .i_mret_taken(xret_taken),
       .i_trap_target(trap_target),
       .i_dispatch_stall(dispatch_stall),
-      .i_frontend_resource_stall(decoded_queue_full),
+      .i_frontend_resource_stall(decoded_queue_full || i_fatal_stop),
       .i_csr_wb_pending(csr_wb_pending),
       .i_branch_resolved_correct(branch_resolved_correct),
       .i_branch_resolved_checkpoint_id(branch_resolved_checkpoint_id),
@@ -711,6 +731,7 @@ module cpu_ooo #(
       .XLEN(XLEN)
   ) if_stage_inst (
       .i_clk,
+      .i_boot_addr,
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_instr,
       .i_instr_low_by_parity,
@@ -1847,6 +1868,11 @@ module cpu_ooo #(
   // Registered SQ tier flag routes cached stores away from BRAM.
   logic sq_mem_write_is_cached;
   logic sq_mem_write_done;
+  logic sq_mem_write_error;
+  riscv_pkg::mem_size_e sq_mem_write_size;
+  logic slow_write_inflight;
+  assign slow_write_inflight = i_cached_write_inflight ||
+      (VARIABLE_UNCACHED && i_uncached_write_inflight);
 
   logic lq_mem_read_en;
   logic lq_mem_addr_valid;
@@ -1854,6 +1880,7 @@ module cpu_ooo #(
   riscv_pkg::mem_size_e lq_mem_read_size;
   logic [riscv_pkg::MemDataBits-1:0] lq_mem_read_data;
   logic lq_mem_read_valid;
+  logic lq_mem_read_error;
   logic lq_mem_read_is_cached;
   logic [riscv_pkg::CachedLoadSlotBits-1:0] lq_mem_read_id;
   logic [riscv_pkg::CachedLoadSlotBits-1:0] lq_mem_read_launch_id;
@@ -1861,6 +1888,7 @@ module cpu_ooo #(
   logic lq_mem_request_valid;
   logic cached_read_held;
   logic lq_device_request_pending;
+  logic uncached_store_pending;
 
   // AMO memory interface
   logic amo_mem_write_en;
@@ -1869,6 +1897,7 @@ module cpu_ooo #(
   logic amo_mem_write_is_dword;
   logic amo_mem_write_is_cached;
   logic amo_mem_write_done;
+  logic amo_mem_write_error;
   // Router-derived |o_data_mem_bram_byte_wr_en for the debug store mirror.
   logic data_mem_bram_write_any;
 
@@ -1967,6 +1996,7 @@ module cpu_ooo #(
   logic csr_mtvec_traps_misaligned;  // |mtvec[XLEN-1:2], registered in csr_file
 
   tomasulo_wrapper #(
+      .MEM_RESPONSE_ERRORS(VARIABLE_UNCACHED),
       .SPLIT_RS_DISPATCH(1'b1),
       .ENABLE_DISPATCH_DONE_REPAIR(1'b1),
       // u_dispatch never fires slot 2 behind a slot-1 branch
@@ -2050,7 +2080,8 @@ module cpu_ooo #(
       .i_widen_commit_ok(widen_commit_ok && !step_armed_rob_q),
       // Commit-time branch recovery is registered for timing; hold the ROB
       // during that recovery cycle so younger wrong-path entries cannot retire.
-      .i_commit_hold(csr_commit_fire || trap_mret_commit_hold_q || mispredict_recovery_pending),
+      .i_commit_hold(csr_commit_fire || trap_mret_commit_hold_q ||
+                     mispredict_recovery_pending || i_fatal_stop),
 
       // ROB external coordination
       .o_csr_start(csr_start),
@@ -2090,7 +2121,10 @@ module cpu_ooo #(
       .i_trap_misaligned_accesses(1'b1),
 `else
       .i_interrupt_pending(interrupt_pending || csr_debug_mode || step_armed_q),
-      .i_trap_misaligned_accesses(csr_mtvec_traps_misaligned),
+      // The AXI integration never emits misaligned accesses, including
+      // speculative accesses before firmware has installed mtvec. Keep the
+      // legacy local-memory policy only for the fixed-latency test interface.
+      .i_trap_misaligned_accesses(VARIABLE_UNCACHED || csr_mtvec_traps_misaligned),
 `endif
 
       // Flush
@@ -2098,8 +2132,9 @@ module cpu_ooo #(
       .i_flush_tag(flush_tag),
       .i_flush_all(flush_all),
       .i_flush_after_head_commit(commit_recovery_flush_after_head),
-      .i_backend_recovery_hold(early_backend_recovery_hold),
-      .i_slow_write_inflight(i_cached_write_inflight),
+      .i_backend_recovery_hold(early_backend_recovery_hold || i_fatal_stop),
+      .i_slow_write_inflight(slow_write_inflight),
+      .i_uncached_read_busy(VARIABLE_UNCACHED && !i_uncached_read_request_ready),
       .i_coh_admit_valid(i_coh_admit_valid),
       .i_coh_admit_slot(i_coh_admit_slot),
       .i_coh_admit_addr(i_coh_admit_addr),
@@ -2304,9 +2339,13 @@ module cpu_ooo #(
       .o_sq_mem_write_addr(sq_mem_write_addr),
       .o_sq_mem_write_data(sq_mem_write_data),
       .o_sq_mem_write_byte_en(sq_mem_write_byte_en),
+      .o_sq_mem_write_size(sq_mem_write_size),
       .o_sq_mem_write_is_mmio(sq_mem_write_is_mmio),
       .o_sq_mem_write_is_cached(sq_mem_write_is_cached),
       .i_sq_mem_write_done(sq_mem_write_done),
+      .i_sq_mem_write_error(sq_mem_write_error),
+      .o_uncached_store_pending(uncached_store_pending),
+      .i_uncached_store_shield(device_read_shield_q),
 
       // Load queue memory interface
       .o_lq_mem_read_en(lq_mem_read_en),
@@ -2317,6 +2356,7 @@ module cpu_ooo #(
       .o_lq_mem_read_no_merge(lq_mem_read_no_merge),
       .i_lq_mem_read_data(lq_mem_read_data),
       .i_lq_mem_read_valid(lq_mem_read_valid),
+      .i_lq_mem_read_error(lq_mem_read_error),
       .i_lq_mem_read_is_cached(lq_mem_read_is_cached),
       .i_lq_mem_read_id(lq_mem_read_id),
 
@@ -2337,6 +2377,7 @@ module cpu_ooo #(
       .o_amo_mem_write_is_dword(amo_mem_write_is_dword),
       .o_amo_mem_write_is_cached(amo_mem_write_is_cached),
       .i_amo_mem_write_done(amo_mem_write_done),
+      .i_amo_mem_write_error(amo_mem_write_error),
 
       // Profiling snapshot
       .i_perf_snapshot_capture(perf_snapshot_capture),
@@ -2624,7 +2665,8 @@ module cpu_ooo #(
   // LQ bus-busy includes router write-port terms and pending valid, so a
   // handoff cannot meet a busy write port or an occupied hold. Device reads
   // use the hold for staging; full flush cancels them before acceptance.
-  // Accepted MMIO reads return one cycle later.
+  // The legacy profile returns accepted MMIO reads next cycle; cpu_top
+  // uses the explicit variable-latency response handshake.
   //
   // Use explicit one-cycle histories below; Verilator rejects $past outside
   // assertions.
@@ -2637,7 +2679,7 @@ module cpu_ooo #(
 
   always @(posedge i_clk) begin
     if (!i_rst) begin
-      if (lq_mem_read_en && (sq_mem_write_en || amo_mem_write_en || i_cached_write_inflight))
+      if (lq_mem_read_en && (sq_mem_write_en || amo_mem_write_en || slow_write_inflight))
         $error("cpu_ooo: LQ read handoff overlapped router write_port_busy");
       if (lq_mem_request_valid && lq_mem_read_en)
         $error("cpu_ooo: LQ read handoff overlapped held router request");
@@ -2657,7 +2699,7 @@ module cpu_ooo #(
       // still hold the write port, and device reads launch only at the ROB
       // head, so no AMO can be writing either.
       if (lq_mem_request_valid && sq_committed_empty &&
-          (sq_mem_write_en || amo_mem_write_en || i_cached_write_inflight))
+          (sq_mem_write_en || amo_mem_write_en || slow_write_inflight))
         $error("cpu_ooo: drained held LQ request remained write-blocked");
       // Device-read interrupt shield (trap_unit.i_device_read_at_head): the
       // device read must never happen before the shield is up.
@@ -3206,6 +3248,7 @@ module cpu_ooo #(
 `endif
 
   data_mem_request_router #(
+      .VARIABLE_UNCACHED(VARIABLE_UNCACHED),
       .XLEN(XLEN),
       .MMIO_ADDR(MMIO_ADDR),
       .CACHED_BASE(CACHED_BASE),
@@ -3213,32 +3256,47 @@ module cpu_ooo #(
   ) data_mem_request_router_inst (
       .i_clk,
       .i_rst,
-      .i_flush_all(lq_router_flush_all),
-      .i_sq_mem_write_en(sq_mem_write_en),
+      .i_flush_all(lq_router_flush_all || i_fatal_stop),
+      .i_sq_mem_write_en(sq_mem_write_en && !i_fatal_stop),
       .i_sq_mem_write_addr(sq_mem_write_addr),
       .i_sq_mem_write_data(sq_mem_write_data),
       .i_sq_mem_write_byte_en(sq_mem_write_byte_en),
+      .i_sq_mem_write_size(sq_mem_write_size),
       .i_sq_mem_write_is_mmio(sq_mem_write_is_mmio),
       .i_sq_mem_write_is_cached(sq_mem_write_is_cached),
-      .i_amo_mem_write_en(amo_mem_write_en),
+      .i_amo_mem_write_en(amo_mem_write_en && !i_fatal_stop),
       .i_amo_mem_write_addr(amo_mem_write_addr),
       .i_amo_mem_write_data(amo_mem_write_data),
       .i_amo_mem_write_is_dword(amo_mem_write_is_dword),
       .i_amo_mem_write_is_cached(amo_mem_write_is_cached),
-      .i_lq_mem_read_en(lq_mem_read_en),
+      .i_lq_mem_read_en(lq_mem_read_en && !i_fatal_stop),
       .i_lq_mem_read_addr(lq_mem_read_addr),
       .i_lq_mem_addr_valid(lq_mem_addr_valid),
       .i_lq_mem_read_id(lq_mem_read_launch_id),
       .i_lq_mem_read_no_merge(lq_mem_read_no_merge),
+      .i_lq_mem_read_size(lq_mem_read_size),
       .i_sq_committed_empty(sq_committed_empty),
       .i_data_mem_rd_data(i_data_mem_rd_data),
       .i_cached_read_data(i_cached_read_data),
       .i_cached_read_id(i_cached_read_id),
       .i_cached_read_valid(i_cached_read_valid),
+      .i_cached_read_error(i_cached_read_error),
       .o_cached_read_ready(o_cached_read_ready),
       .o_cached_read_held(cached_read_held),
       .i_cached_write_done(i_cached_write_done),
       .i_cached_write_inflight(i_cached_write_inflight),
+      .i_uncached_read_request_ready,
+      .o_uncached_read_enable,
+      .o_uncached_read_size,
+      .i_uncached_read_valid,
+      .o_uncached_read_ready,
+      .i_uncached_read_data,
+      .i_uncached_read_status,
+      .o_uncached_write_byte_en,
+      .o_uncached_write_size,
+      .i_uncached_write_done,
+      .i_uncached_write_status,
+      .i_uncached_write_inflight,
       .o_data_mem_addr(o_data_mem_addr),
       .o_data_mem_wr_data(o_data_mem_wr_data),
       .o_data_mem_per_byte_wr_en(o_data_mem_per_byte_wr_en),
@@ -3260,11 +3318,14 @@ module cpu_ooo #(
       .o_mmio_fifo1_read_pulse(o_mmio_fifo1_read_pulse),
       .o_mmio_uart_rx_ready_pulse(o_mmio_uart_rx_ready_pulse),
       .o_sq_mem_write_done(sq_mem_write_done),
+      .o_sq_mem_write_error(sq_mem_write_error),
       .o_amo_mem_write_done(amo_mem_write_done),
+      .o_amo_mem_write_error(amo_mem_write_error),
       .o_lq_mem_request_valid(lq_mem_request_valid),
       .o_device_request_pending(lq_device_request_pending),
       .o_lq_mem_read_data(lq_mem_read_data),
       .o_lq_mem_read_valid(lq_mem_read_valid),
+      .o_lq_mem_read_error(lq_mem_read_error),
       .o_lq_mem_read_is_cached(lq_mem_read_is_cached),
       .o_lq_mem_read_id(lq_mem_read_id)
   );
@@ -3511,6 +3572,7 @@ module cpu_ooo #(
   assign iwalk_resp_valid = ptw_resp_valid && walk_owner_i_q;
 
   ptw #(
+      .ENABLE_RESPONSE_ERRORS(VARIABLE_UNCACHED),
       .LINE_BYTES(WalkLineBytes)
   ) u_ptw (
       .i_clk(i_clk),
@@ -3527,6 +3589,7 @@ module cpu_ooo #(
       .o_line_req_addr(o_walk_line_req_addr),
       .o_line_req_id(o_walk_line_req_id),
       .i_line_resp_valid(i_walk_line_resp_valid),
+      .i_line_resp_error(i_walk_line_resp_error),
       .i_line_resp_id(i_walk_line_resp_id),
       .i_line_resp_rdata(i_walk_line_resp_rdata)
   );
@@ -3788,15 +3851,16 @@ module cpu_ooo #(
     else amo_at_head_shield_q <= rob_head_is_amo && head_valid;
   end
 
-  // Hold interrupts from before device-read acceptance through load commit
+  // Hold interrupts from before a device read or uncached store is accepted
+  // through its commit. Uncached stores arm their shield in the SQ;
   // (see trap_unit.i_device_read_at_head). The router stages the request before
-  // arming. It launches only at the ROB head, whose pending response blocks
-  // both commit slots, so the first later commit is this load's. Set wins over
+  // arming a device read. Both launch only at the ROB head; a pending response blocks
+  // both commit slots, so the first later commit is this access's. Set wins over
   // clear. Flush before arming cancels the request; the shield prevents an
   // interrupt flush after arming.
   always_ff @(posedge i_clk) begin
     if (i_rst || lq_router_flush_all) device_read_shield_q <= 1'b0;
-    else if (lq_device_request_pending) device_read_shield_q <= 1'b1;
+    else if (lq_device_request_pending || uncached_store_pending) device_read_shield_q <= 1'b1;
     else if (rob_commit_valid) device_read_shield_q <= 1'b0;
   end
 
@@ -3918,7 +3982,7 @@ module cpu_ooo #(
   // i_mret_taken input), so this ack also covers SRET and DRET.
   assign mret_done_ack = mret_taken_reg;
 
-  // Status bits for the hang-triage report (hang_triage in cpu_and_mem).
+  // Status bits for the hang-triage report (hang_triage in soc_top).
   // Packed as: [5]=xRET, [4]=trap, [3:2]=priv, [1]=mstatus.MIE, [0]=mie.MTIE.
   assign o_debug_irq_status = {
     xret_taken, trap_taken, csr_priv, csr_mstatus_mie_direct, csr_mie[riscv_pkg::MieMtiBit]

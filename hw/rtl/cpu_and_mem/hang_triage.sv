@@ -19,7 +19,7 @@
  *
  * After QUIET_CYCLES without a CPU console write, take the UART and print a
  * snapshot. Repeat REEMIT_CYCLES after each print while the console is quiet.
- * Takeover waits for an edge with no CPU byte; cpu_and_mem drops CPU bytes
+ * Takeover waits for an edge with no CPU byte; soc_top drops CPU bytes
  * while o_active is high. Each value is eight hex digits:
  *
  *   "\n!!HANG c=<commits> t=<timer> q=<cread_req> v=<cread_resp> w=<wreq:wdone>"

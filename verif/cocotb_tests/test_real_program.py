@@ -15,6 +15,7 @@
 """Run complete programs on the simulated CPU and memories.
 
 Programs report success with <<PASS>> and failure with <<FAIL>>;
+memerr_test instead ends with an independently checked fatal writeback stop;
 hello_world passes on "Hello, world!". CoreMark uses ITERATIONS=1 in simulation.
 Each program runs twice by default, with reset between runs.
 
@@ -32,7 +33,7 @@ from collections import Counter
 from collections.abc import Callable
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
+from cocotb.triggers import ClockCycles, FallingEdge, ReadOnly, RisingEdge
 from cocotb.utils import get_sim_time
 from typing import Any, TextIO
 
@@ -58,7 +59,7 @@ MCAUSE_INTERRUPT_BIT = 1 << (XLEN - 1)
 # commit-time recovery; a branch that early recovery already redirected at
 # execute does not raise it.
 COMMIT_MISPREDICTION_PATH = (
-    "cpu_and_memory_subsystem.cpu_inst.misprediction_flush_controller_inst."
+    "cpu_and_memory_subsystem.cpu.cpu_inst.misprediction_flush_controller_inst."
     "commit_is_misprediction"
 )
 
@@ -235,12 +236,17 @@ MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 500000))
 # Set to 1 for ISA tests that modify .text-resident data (e.g. riscv-tests rvc).
 NUM_RUNS = int(os.environ.get("COCOTB_NUM_RUNS", 2))
 
+# The DMA torture program takes about 770k cycles with uncached BRAM
+# instruction fetches using AXI; allow headroom for response-latency variants.
+DMA_TORTURE_MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 1500000))
+
 # CoreMark's list and matrix phases exceed the generic budget even at
 # ITERATIONS=1.
 COREMARK_MAX_CYCLES = int(os.environ.get("COCOTB_COREMARK_MAX_CYCLES", 15000000))
 # nic_loopback and nic_echo wait for the PCS BER window before CARRIER,
 # then process frames byte by byte. nic_loopback also resets during traffic.
-NIC_LOOPBACK_MAX_CYCLES = int(os.environ.get("COCOTB_NIC_LOOPBACK_MAX_CYCLES", 1500000))
+# The AXI uncached path completes the full loopback in about 2.47M cycles.
+NIC_LOOPBACK_MAX_CYCLES = int(os.environ.get("COCOTB_NIC_LOOPBACK_MAX_CYCLES", 4000000))
 
 # sprintf_test's FP formatting cases need more than the generic budget.
 SPRINTF_TEST_MAX_CYCLES = 2000000
@@ -595,7 +601,7 @@ async def ddr_write_watch(dut: Any) -> None:
     hi = int(os.environ.get("FROST_DDR_WATCH_HI", "0"), 16)
     if hi <= lo:
         return
-    base = "cpu_and_memory_subsystem.gen_cached_tier.gen_behavioral_ddr.ddr_model"
+    base = "cpu_and_memory_subsystem.soc.gen_behavioral_ddr.ddr_model"
     awv = _get_signal(dut, f"{base}.i_axi_awvalid")
     awr = _get_signal(dut, f"{base}.o_axi_awready")
     awa = _get_signal(dut, f"{base}.i_axi_awaddr")
@@ -642,7 +648,7 @@ async def l0_hit_watch(dut: Any) -> None:
     hi = int(os.environ.get("FROST_L0_WATCH_HI", "0"), 16)
     if hi <= lo:
         return
-    lq = "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_lq"
+    lq = "cpu_and_memory_subsystem.cpu.cpu_inst.u_tomasulo.u_lq"
     hit = _get_signal(dut, f"{lq}.cache_hit_fast_path")
     addr = _get_signal(dut, f"{lq}.u_l0_cache.i_lookup_addr")
     data = _get_signal(dut, f"{lq}.u_l0_cache.o_lookup_data")
@@ -689,7 +695,7 @@ class WfiRecoveryWatch:
     def __init__(self, dut: Any) -> None:
         """Resolve the cpu_ooo signals the check reads."""
         self.dut = dut
-        cpu = "cpu_and_memory_subsystem.cpu_inst"
+        cpu = "cpu_and_memory_subsystem.cpu.cpu_inst"
         self.sig = {name: _get_signal(dut, f"{cpu}.{name}") for name in self.SIGNALS}
         missing = [name for name, sig in self.sig.items() if sig is None]
         assert not missing, f"WfiRecoveryWatch: unresolvable {missing}"
@@ -729,7 +735,7 @@ class CoverageCounter:
         self.dut = dut
         self.label = label
         self.signal = _get_signal(dut, path)
-        self.reset = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.i_rst")
+        self.reset = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.i_rst")
         _require_signals(
             f"coverage of {label}",
             {path: self.signal, "cpu_inst.i_rst": self.reset},
@@ -750,7 +756,7 @@ COVERAGE_POINTS: dict[str, tuple[str, str]] = {
     # if_stage's resteer to pc_reg's word when the fetch window cannot hold
     # pc_reg's packet; reached only under the fetch-latency fuzz.
     "served_window_resteer": (
-        "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.window_resteer_pc_reg",
+        "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.window_resteer_pc_reg",
         "served-window resteer",
     ),
 }
@@ -778,8 +784,8 @@ async def wedge_monitor(dut: Any, uart_monitor: "UartMonitor | None") -> None:
     def g(path: str) -> Any:
         return _get_signal(dut, path)
 
-    cpu = "cpu_and_memory_subsystem.cpu_inst"
-    mem = "cpu_and_memory_subsystem"
+    cpu = "cpu_and_memory_subsystem.cpu.cpu_inst"
+    mem = "cpu_and_memory_subsystem.soc"
 
     # 1-bit signals: aggregated as cycles-high + 0->1 edge counts per interval.
     bool_sig = {
@@ -806,7 +812,9 @@ async def wedge_monitor(dut: Any, uart_monitor: "UartMonitor | None") -> None:
         "mtip_registered": g(f"{mem}.mtip_registered"),
         "mtip_comparison": g(f"{mem}.mtip_comparison"),
         "mtimecmp_write_pulse": g(f"{mem}.mtimecmp_write_pulse"),
-        "cached_write_inflight": g(f"{mem}.data_memory_cached_write_inflight"),
+        "cached_write_inflight": g(
+            "cpu_and_memory_subsystem.cpu.data_memory_cached_write_inflight"
+        ),
     }
     # Load-address taps: show which addresses the core reads while it spins,
     # which separates a clobbered base register from a lost store.
@@ -1072,22 +1080,22 @@ class UartMmioDebugMonitor:
         self.mmio_read_pulse = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.o_mmio_read_pulse",
-                "cpu_and_memory_subsystem.mmio_read_pulse",
+                "cpu_and_memory_subsystem.soc.mmio_read_pulse",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.o_mmio_read_pulse",
             ],
         )
         self.mmio_load_addr = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.o_mmio_load_addr",
-                "cpu_and_memory_subsystem.mmio_load_addr",
+                "cpu_and_memory_subsystem.soc.mmio_load_addr",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.o_mmio_load_addr",
             ],
         )
         self.mmio_load_valid = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.o_mmio_load_valid",
-                "cpu_and_memory_subsystem.mmio_load_valid",
+                "cpu_and_memory_subsystem.soc.mmio_load_valid",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.o_mmio_load_valid",
             ],
         )
         self.uart_rx_ready = _get_signal(
@@ -1106,13 +1114,13 @@ class UartMmioDebugMonitor:
         self.uart_rx_module_data = _get_signal(dut, "uart_receiver.o_data")
         self.uart_rx_module_ready = _get_signal(dut, "uart_receiver.i_ready")
         self.mmio_read_data_reg = _get_signal(
-            dut, "cpu_and_memory_subsystem.mmio_read_data_reg"
+            dut, "cpu_and_memory_subsystem.soc.mmio_read_data_reg"
         )
         self.mmio_read_data_comb = _get_signal(
-            dut, "cpu_and_memory_subsystem.mmio_read_data_comb"
+            dut, "cpu_and_memory_subsystem.soc.mmio_read_data_comb"
         )
         self.data_mem_or_periph = _get_signal(
-            dut, "cpu_and_memory_subsystem.data_memory_response_data"
+            dut, "cpu_and_memory_subsystem.soc.local_resp_data"
         )
         # dc_fifo pointers and state
         self.fifo_read_ptr = _get_signal(
@@ -1424,7 +1432,7 @@ class EccReportDriver:
 
     def __init__(self, dut: Any) -> None:  # noqa: D107 - the class docstring covers it
         self._dut = dut
-        self._irq_en = dut.cpu_and_memory_subsystem.memory_errors.irq_en_q
+        self._irq_en = dut.cpu_and_memory_subsystem.soc.memory_errors.irq_en_q
         dut.i_ecc_present.value = 1
         for name in self.PULSES:
             getattr(dut, name).value = 0
@@ -1799,233 +1807,240 @@ async def run_until_complete(
         or coremark_retire_trace_path is not None
     ):
         retire_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_valid"
         )
         retire_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_pc"
         )
         retire_2_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_valid"
         )
         retire_2_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_pc"
         )
         retire_mispredict_sig = _get_signal(dut, COMMIT_MISPREDICTION_PATH)
-        pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.o_pc")
-        pc_vld_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.o_pc_vld")
+        pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.o_pc")
+        pc_vld_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.o_pc_vld")
         mem_rd_en_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.o_data_mem_read_enable"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.o_data_mem_read_enable"
         )
         mem_addr_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.o_data_mem_addr"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.o_data_mem_addr"
         )
         mem_wr_en_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.o_data_mem_per_byte_wr_en"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.o_data_mem_per_byte_wr_en"
         )
-        sq_count_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.sq_count")
-        sq_full_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.sq_full")
-        rob_count_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.rob_count")
+        sq_count_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.sq_count"
+        )
+        sq_full_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.sq_full")
+        rob_count_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.rob_count"
+        )
         dispatch_stall_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_dispatch_stall"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_dispatch_stall"
         )
         head_tag_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.head_tag"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.head_tag"
         )
         head_valid_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.head_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.head_valid"
         )
         head_done_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.head_done"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.head_done"
         )
         head_pc_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rob.head_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.u_tomasulo.u_rob.head_pc"
         )
         head_is_branch_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rob.head_is_branch"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.u_tomasulo.u_rob.head_is_branch"
         )
         head_is_store_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rob.head_is_store"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.u_tomasulo.u_rob.head_is_store"
         )
         head_has_checkpoint_live_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rob.head_has_checkpoint",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.u_tomasulo.u_rob.head_has_checkpoint",
         )
         checkpoint_available_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_available"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.checkpoint_available"
         )
         issue_valid_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_issue_valid"
         )
         issue_pc_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_issue_pc"
         )
         rs_dispatch_valid_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rs_dispatch_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rs_dispatch_valid"
         )
         rs_dispatch_pc_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rs_dispatch_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rs_dispatch_pc"
         )
         rs_dispatch_rob_tag_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rs_dispatch_rob_tag"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rs_dispatch_rob_tag"
         )
         rs_dispatch_src1_ready_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rs_dispatch_src1_ready"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rs_dispatch_src1_ready"
         )
         rs_dispatch_src1_tag_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rs_dispatch_src1_tag"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rs_dispatch_src1_tag"
         )
         rs_dispatch_src2_ready_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rs_dispatch_src2_ready"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rs_dispatch_src2_ready"
         )
         rs_dispatch_src2_tag_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rs_dispatch_src2_tag"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rs_dispatch_src2_tag"
         )
         rat_a0_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rat.dbg_int_a0_valid"
+            dut,
+            "cpu_and_memory_subsystem.cpu.cpu_inst.u_tomasulo.u_rat.dbg_int_a0_valid",
         )
         rat_a0_tag_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rat.dbg_int_a0_tag"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.u_tomasulo.u_rat.dbg_int_a0_tag"
         )
         rat_a0_commit_hit_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rat.dbg_int_a0_commit_hit",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.u_tomasulo.u_rat.dbg_int_a0_commit_hit",
         )
         rat_a0_commit_tag_match_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rat.dbg_int_a0_commit_tag_match",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.u_tomasulo.u_rat.dbg_int_a0_commit_tag_match",
         )
         rat_a0_alloc_hit_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rat.dbg_int_a0_alloc_hit",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.u_tomasulo.u_rat.dbg_int_a0_alloc_hit",
         )
         rat_alloc_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rat_alloc_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rat_alloc_valid"
         )
         rat_alloc_dest_rf_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rat_alloc_dest_rf"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rat_alloc_dest_rf"
         )
         rat_alloc_dest_reg_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rat_alloc_dest_reg"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rat_alloc_dest_reg"
         )
         rat_alloc_rob_tag_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rat_alloc_rob_tag"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rat_alloc_rob_tag"
         )
         last_a0_alloc_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_last_a0_alloc_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_last_a0_alloc_pc"
         )
         last_a0_alloc_tag_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_last_a0_alloc_tag"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_last_a0_alloc_tag"
         )
         branch_pred_off_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.disable_branch_prediction_ooo"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.disable_branch_prediction_ooo"
         )
         if_stall_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pipeline_stall"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_pipeline_stall"
         )
         if_stall_registered_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pipeline_stall_registered"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_pipeline_stall_registered"
         )
         front_end_cf_serialize_stall_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_front_end_cf_serialize_stall"
+            dut,
+            "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_front_end_cf_serialize_stall",
         )
         front_end_stall_q_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_stall_q"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_stall_q"
         )
         replay_after_dispatch_stall_q_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_replay_after_dispatch_stall_q"
+            dut,
+            "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_replay_after_dispatch_stall_q",
         )
         if coremark_cf_debug_enabled:
             if_btb_pred_sig = _struct_field(
                 dut,
-                "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.from_if_to_pd",
                 IF_TO_PD_FIELDS,
                 "btb_predicted_taken",
             )
             pd_btb_pred_sig = _struct_field(
                 dut,
-                "cpu_and_memory_subsystem.cpu_inst.from_pd_to_id",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.from_pd_to_id",
                 PD_TO_ID_FIELDS,
                 "btb_predicted_taken",
             )
             id_btb_pred_sig = _struct_field(
                 dut,
-                "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.from_id_to_ex",
                 ID_TO_EX_FIELDS,
                 "btb_predicted_taken",
             )
         lq_issue_mem_found_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_lq.issue_mem_found",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.u_tomasulo.u_lq.issue_mem_found",
         )
         lq_sq_check_valid_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.sq_check_valid",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.u_tomasulo.sq_check_valid",
         )
         lq_sq_can_issue_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_lq.sq_can_issue",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.u_tomasulo.u_lq.sq_can_issue",
         )
         lq_sq_do_forward_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_lq.sq_do_forward",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.u_tomasulo.u_lq.sq_do_forward",
         )
         lq_cache_hit_fast_path_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_lq.cache_hit_fast_path",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.u_tomasulo.u_lq.cache_hit_fast_path",
         )
         lq_mem_outstanding_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_lq.mem_outstanding",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.u_tomasulo.u_lq.mem_outstanding",
         )
         if_pc_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_if_to_pd",
             IF_TO_PD_FIELDS,
             "program_counter",
         )
         if_sel_nop_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_if_to_pd",
             IF_TO_PD_FIELDS,
             "sel_nop",
         )
         if_sel_compressed_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_if_to_pd",
             IF_TO_PD_FIELDS,
             "sel_compressed",
         )
         if_raw_parcel_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_if_to_pd",
             IF_TO_PD_FIELDS,
             "raw_parcel",
         )
         if_effective_instr_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_if_to_pd",
             IF_TO_PD_FIELDS,
             "effective_instr",
         )
-        pd_pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_pc")
+        pd_pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_pd_pc")
         pd_instr_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_instr"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_pd_instr"
         )
-        id_pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_pc")
+        id_pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_id_pc")
         id_instr_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_instr"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_id_instr"
         )
         id_op_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_id_to_ex",
             ID_TO_EX_FIELDS,
             "instruction_operation",
         )
         issue_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_issue_valid"
         )
         issue_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_issue_pc"
         )
         if coremark_if_check_enabled:
             coremark_matrix_expected = _load_symbol_machine_code(
@@ -2039,7 +2054,7 @@ async def run_until_complete(
             coremark_if_check_lo = min(coremark_matrix_expected)
             coremark_if_check_hi = max(coremark_matrix_expected) + 4
             coremark_if_check_alloc_sig = _get_signal(
-                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_alloc_valid"
+                dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_alloc_valid"
             )
             _require_signals(
                 "FROST_COREMARK_IF_CHECK",
@@ -2051,7 +2066,7 @@ async def run_until_complete(
             )
             coremark_if_check_slot2 = _packed_struct(
                 dut,
-                "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex_2",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.from_id_to_ex_2",
                 ID_TO_EX_FIELDS,
                 "FROST_COREMARK_IF_CHECK",
             )
@@ -2082,10 +2097,10 @@ async def run_until_complete(
             coremark_matrix_base_pc = retire_trace_range[0]
             coremark_matrix_last_pc = retire_trace_range[1] - 1
             coremark_retire_slot2_valid_sig = _get_signal(
-                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_valid"
+                dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_valid"
             )
             coremark_retire_slot2_pc_sig = _get_signal(
-                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_pc"
+                dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_pc"
             )
             _require_signals(
                 "FROST_COREMARK_RETIRE_TRACE_PATH",
@@ -2099,13 +2114,13 @@ async def run_until_complete(
             coremark_retire_commits = (
                 _packed_struct(
                     dut,
-                    "cpu_and_memory_subsystem.cpu_inst.rob_commit_comb",
+                    "cpu_and_memory_subsystem.cpu.cpu_inst.rob_commit_comb",
                     COMMIT_FIELDS,
                     "FROST_COREMARK_RETIRE_TRACE_PATH",
                 ),
                 _packed_struct(
                     dut,
-                    "cpu_and_memory_subsystem.cpu_inst.rob_commit_comb_2",
+                    "cpu_and_memory_subsystem.cpu.cpu_inst.rob_commit_comb_2",
                     COMMIT_FIELDS,
                     "FROST_COREMARK_RETIRE_TRACE_PATH",
                 ),
@@ -2117,126 +2132,129 @@ async def run_until_complete(
                 "w" if run_number == 1 else "a", buffering=1
             )
             coremark_retire_trace_file.write(f"# run {run_number}\n")
-    elif (
+    if (
         app_name in {"branch_pred_test", "ras_stress_test"}
         or control_flow_trace_ranges
         or os.environ.get("FROST_CHECKPOINT_TRACE") == "1"
     ):
         retire_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_valid"
         )
         retire_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_pc"
         )
         retire_2_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_valid"
         )
         retire_2_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_pc"
         )
         retire_mispredict_sig = _get_signal(dut, COMMIT_MISPREDICTION_PATH)
-        pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.o_pc")
-        pc_vld_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.o_pc_vld")
+        pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.o_pc")
+        pc_vld_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.o_pc_vld")
         branch_pred_off_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.disable_branch_prediction_ooo"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.disable_branch_prediction_ooo"
         )
         dispatch_stall_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_dispatch_stall"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_dispatch_stall"
         )
         if_stall_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pipeline_stall"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_pipeline_stall"
         )
         if_stall_registered_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pipeline_stall_registered"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_pipeline_stall_registered"
         )
         front_end_cf_serialize_stall_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_front_end_cf_serialize_stall"
+            dut,
+            "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_front_end_cf_serialize_stall",
         )
         front_end_stall_q_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_stall_q"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_stall_q"
         )
         replay_after_dispatch_stall_q_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_replay_after_dispatch_stall_q"
+            dut,
+            "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_replay_after_dispatch_stall_q",
         )
         replay_after_serialize_stall_q_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_replay_after_serialize_stall_q"
+            dut,
+            "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_replay_after_serialize_stall_q",
         )
         btb_hit_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.btb_hit",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.branch_prediction_controller_inst.btb_hit",
         )
         btb_pred_taken_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.btb_predicted_taken",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.branch_prediction_controller_inst.btb_predicted_taken",
         )
         pred_used_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.o_prediction_used",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.branch_prediction_controller_inst.o_prediction_used",
         )
         pred_holdoff_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.o_prediction_holdoff",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.branch_prediction_controller_inst.o_prediction_holdoff",
         )
         if_pc_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_if_to_pd",
             IF_TO_PD_FIELDS,
             "program_counter",
         )
         if_sel_nop_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_if_to_pd",
             IF_TO_PD_FIELDS,
             "sel_nop",
         )
         if_raw_parcel_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_if_to_pd",
             IF_TO_PD_FIELDS,
             "raw_parcel",
         )
         if_ras_ckpt_tos_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_if_ras_checkpoint_tos"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_if_ras_checkpoint_tos"
         )
         if_ras_ckpt_vc_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.dbg_if_ras_checkpoint_valid_count",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_if_ras_checkpoint_valid_count",
         )
         pd_pc_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_pd_to_id",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_pd_to_id",
             PD_TO_ID_FIELDS,
             "program_counter",
         )
         pd_instr_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_pd_to_id",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_pd_to_id",
             PD_TO_ID_FIELDS,
             "instruction",
         )
         pd_ras_ckpt_tos_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_ras_checkpoint_tos"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_pd_ras_checkpoint_tos"
         )
         pd_ras_ckpt_vc_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.dbg_pd_ras_checkpoint_valid_count",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_pd_ras_checkpoint_valid_count",
         )
         id_pc_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_id_to_ex",
             ID_TO_EX_FIELDS,
             "program_counter",
         )
         id_ras_ckpt_tos_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_ras_checkpoint_tos"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_id_ras_checkpoint_tos"
         )
         id_ras_ckpt_vc_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.dbg_id_ras_checkpoint_valid_count",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_id_ras_checkpoint_valid_count",
         )
         id_op_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_id_to_ex",
             ID_TO_EX_FIELDS,
             "instruction_operation",
         )
@@ -2246,15 +2264,17 @@ async def run_until_complete(
         int_rf_write_ports = [
             (
                 _get_signal(
-                    dut, f"cpu_and_memory_subsystem.cpu_inst.dbg_port{port}_int_we"
+                    dut, f"cpu_and_memory_subsystem.cpu.cpu_inst.dbg_port{port}_int_we"
                 ),
                 _get_signal(
-                    dut, f"cpu_and_memory_subsystem.cpu_inst.dbg_port{port}_int_addr"
+                    dut,
+                    f"cpu_and_memory_subsystem.cpu.cpu_inst.dbg_port{port}_int_addr",
                 ),
                 _get_signal(
-                    dut, f"cpu_and_memory_subsystem.cpu_inst.dbg_port{port}_int_data"
+                    dut,
+                    f"cpu_and_memory_subsystem.cpu.cpu_inst.dbg_port{port}_int_data",
                 ),
-                _get_signal(dut, f"cpu_and_memory_subsystem.cpu_inst.{pc_tap}"),
+                _get_signal(dut, f"cpu_and_memory_subsystem.cpu.cpu_inst.{pc_tap}"),
             )
             for port, pc_tap in (
                 (0, "dbg_rob_commit_reg_pc"),
@@ -2266,457 +2286,462 @@ async def run_until_complete(
         # no debug tap for the issue source operands, so src1/src2 are not
         # traced.
         issue_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_issue_valid"
         )
         issue_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_issue_pc"
         )
         issue_pred_taken_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_predicted_taken"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_issue_predicted_taken"
         )
         redirect_pc_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.rob_commit_comb",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.rob_commit_comb",
             COMMIT_FIELDS,
             "redirect_pc",
         )
         btb_update_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_btb_update"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_btb_update"
         )
         btb_update_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_btb_update_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_btb_update_pc"
         )
         btb_update_target_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_btb_update_target"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_btb_update_target"
         )
         btb_update_taken_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_btb_update_taken"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_btb_update_taken"
         )
         btb_update_compressed_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_btb_update_compressed"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_btb_update_compressed"
         )
         if_pc_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.pc"
         )
         if_pc_reg_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.pc_reg"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.pc_reg"
         )
         if_raw_parcel_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.raw_parcel"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.raw_parcel"
         )
         if_effective_instr_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.effective_instr"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.effective_instr"
         )
         if_sel_nop_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.sel_nop"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.sel_nop"
         )
         if_sel_compressed_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.sel_compressed"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.sel_compressed"
         )
         pending_prediction_active_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.pending_prediction_active",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.pending_prediction_active",
         )
         pending_prediction_fetch_holdoff_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.pending_prediction_fetch_holdoff",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.pending_prediction_fetch_holdoff",
         )
         if_use_instr_buffer_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.use_instr_buffer"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.use_instr_buffer"
         )
         if_prev_compressed_lo_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.prev_was_compressed_at_lo",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.prev_was_compressed_at_lo",
         )
         pc_seq_next_pc_reg_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.pc_controller_inst.seq_next_pc_reg",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.pc_controller_inst.seq_next_pc_reg",
         )
         pc_next_pc_reg_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.pc_controller_inst.next_pc_reg",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.pc_controller_inst.next_pc_reg",
         )
         ras_tos_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.tos",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.tos",
         )
         ras_valid_count_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.valid_count",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.valid_count",
         )
         ras_write_enable_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.ras_write_enable",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.ras_write_enable",
         )
         ras_write_data_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.ras_write_data",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.ras_write_data",
         )
         ras_pending_pop_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.pending_pop",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.pending_pop",
         )
         ras_do_push_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.do_push",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.do_push",
         )
         ras_target_live_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_top",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_top",
         )
         # IF's push and pop for the packet PD takes this cycle, and the link
         # address of the registered push the stack applies now.
         ras_is_call_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.ras_push"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.ras_push"
         )
         ras_is_return_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.ras_pop"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.ras_pop"
         )
         ras_link_address_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.ras_pending_push_address",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.ras_pending_push_address",
         )
         ras_misprediction_live_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_ex_comb_synth",
             FROM_EX_FIELDS,
             "ras_misprediction",
         )
         ras_restore_tos_live_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_ex_comb_synth",
             FROM_EX_FIELDS,
             "ras_restore_tos",
         )
         ras_restore_valid_count_live_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_ex_comb_synth",
             FROM_EX_FIELDS,
             "ras_restore_valid_count",
         )
         ras_pop_after_restore_live_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_ex_comb_synth",
             FROM_EX_FIELDS,
             "ras_pop_after_restore",
         )
         commit_valid_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_valid"
         )
         commit_pc_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_pc"
         )
         commit0_dest_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_dest_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_dest_valid"
         )
         commit0_dest_rf_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_dest_rf"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_dest_rf"
         )
         commit0_dest_reg_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_dest_reg"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_dest_reg"
         )
         commit0_value_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_value"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_value"
         )
         commit1_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_valid"
         )
         commit1_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_pc"
         )
         commit1_dest_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_dest_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_dest_valid"
         )
         commit1_dest_rf_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_dest_rf"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_dest_rf"
         )
         commit1_dest_reg_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_dest_reg"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_dest_reg"
         )
         commit1_value_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_value"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_value"
         )
         commit_is_return_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_is_return"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_is_return"
         )
         commit_is_call_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_is_call"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_is_call"
         )
         commit_checkpoint_id_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_checkpoint_id"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_checkpoint_id"
         )
         commit_has_checkpoint_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_has_checkpoint"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_has_checkpoint"
         )
         commit_predicted_taken_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_predicted_taken"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_predicted_taken"
         )
         commit_branch_taken_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_branch_taken"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_branch_taken"
         )
         checkpoint_save_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_save"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.checkpoint_save"
         )
         checkpoint_id_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_id"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.checkpoint_id"
         )
         checkpoint_restore_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_restore"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.checkpoint_restore"
         )
         checkpoint_restore_id_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_restore_id"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.checkpoint_restore_id"
         )
         checkpoint_free_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_free"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.checkpoint_free"
         )
         checkpoint_free_id_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_free_id"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.checkpoint_free_id"
         )
         checkpoint_in_use_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_in_use"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.checkpoint_in_use"
         )
         checkpoint_available_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_available"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.checkpoint_available"
         )
         checkpoint_alloc_id_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_alloc_id"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.checkpoint_alloc_id"
         )
         checkpoint_flush_pending_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_flush_pending"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.checkpoint_flush_pending"
         )
         early_mispredict_pending_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.early_mispredict_pending"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.early_mispredict_pending"
         )
         mispredict_recovery_pending_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.mispredict_recovery_pending"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.mispredict_recovery_pending"
         )
         correct_branch_commit_pending_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.correct_branch_commit_pending"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.correct_branch_commit_pending"
         )
         flush_en_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.flush_en"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.flush_en"
         )
         flush_tag_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.flush_tag"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.flush_tag"
         )
         commit_is_mret_live_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.rob_commit",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.rob_commit",
             COMMIT_FIELDS,
             "is_mret",
         )
         branch_taken_live_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_ex_comb_synth",
             FROM_EX_FIELDS,
             "branch_taken",
         )
         branch_target_live_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            "cpu_and_memory_subsystem.cpu.cpu_inst.from_ex_comb_synth",
             FROM_EX_FIELDS,
             "branch_target_address",
         )
         trap_taken_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.trap_taken"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.trap_taken"
         )
         trap_taken_reg_dbg_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_trap_taken_q",
-                "cpu_and_memory_subsystem.cpu_inst.trap_taken_reg",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_trap_taken_q",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.trap_taken_reg",
             ],
         )
         trap_cause_internal_live_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_trap_cause_internal",
-                "cpu_and_memory_subsystem.cpu_inst.trap_cause_internal",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_trap_cause_internal",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.trap_cause_internal",
             ],
         )
         mret_taken_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.mret_taken"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.mret_taken"
         )
         trap_target_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.trap_target"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.trap_target"
         )
         trap_pending_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.trap_pending"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.trap_pending"
         )
         rob_trap_pc_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.rob_trap_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.rob_trap_pc"
         )
         trap_pc_internal_live_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_trap_pc_internal",
-                "cpu_and_memory_subsystem.cpu_inst.rob_trap_pc",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_trap_pc_internal",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.rob_trap_pc",
             ],
         )
         interrupt_resume_pc_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_interrupt_resume_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_interrupt_resume_pc"
         )
         rob_trap_cause_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.rob_trap_cause"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.rob_trap_cause"
         )
         mret_start_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.mret_start"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.mret_start"
         )
         csr_commit_fire_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.csr_commit_fire"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.csr_commit_fire"
         )
         csr_mtvec_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.csr_mtvec"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.csr_mtvec"
         )
         csr_mepc_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.csr_mepc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.csr_mepc"
         )
         flush_all_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.flush_all"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.flush_all"
         )
         port0_int_we_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_port0_int_we",
-                "cpu_and_memory_subsystem.cpu_inst.port0_int_we",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_port0_int_we",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.port0_int_we",
             ],
         )
         port0_int_addr_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_port0_int_addr",
-                "cpu_and_memory_subsystem.cpu_inst.port0_int_addr",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_port0_int_addr",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.port0_int_addr",
             ],
         )
         port0_int_data_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_port0_int_data",
-                "cpu_and_memory_subsystem.cpu_inst.port0_int_data",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_port0_int_data",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.port0_int_data",
             ],
         )
         port1_int_we_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_port1_int_we",
-                "cpu_and_memory_subsystem.cpu_inst.port1_int_we",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_port1_int_we",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.port1_int_we",
             ],
         )
         port1_int_addr_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_port1_int_addr",
-                "cpu_and_memory_subsystem.cpu_inst.port1_int_addr",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_port1_int_addr",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.port1_int_addr",
             ],
         )
         port1_int_data_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_port1_int_data",
-                "cpu_and_memory_subsystem.cpu_inst.port1_int_data",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_port1_int_data",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.port1_int_data",
             ],
         )
         rob_commit0_reg_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_reg_valid"
         )
         rob_commit0_reg_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_reg_pc"
         )
         rob_commit0_reg_dest_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_dest_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_reg_dest_valid"
         )
         rob_commit0_reg_dest_rf_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_dest_rf"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_reg_dest_rf"
         )
         rob_commit0_reg_dest_reg_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_dest_reg"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_reg_dest_reg"
         )
         rob_commit1_reg_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_2_reg_valid"
         )
         rob_commit1_reg_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_2_reg_pc"
         )
         rob_commit1_reg_dest_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_dest_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_2_reg_dest_valid"
         )
         rob_commit1_reg_dest_rf_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_dest_rf"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_2_reg_dest_rf"
         )
         rob_commit1_reg_dest_reg_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_dest_reg"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_2_reg_dest_reg"
         )
         flush_pipeline_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.flush_pipeline"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.flush_pipeline"
         )
         commit_is_misprediction_live_sig = _get_signal(dut, COMMIT_MISPREDICTION_PATH)
         pd_final_instruction_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_instr"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_pd_instr"
         )
         pd_program_counter_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_pd_pc"
         )
         id_program_counter_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_id_pc"
         )
         id_is_mret_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_is_mret"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_id_is_mret"
         )
         id_instruction_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_instr"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_id_instr"
         )
         if_valid_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_if_valid_q"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_if_valid_q"
         )
         pd_valid_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_valid_q"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_pd_valid_q"
         )
         id_valid_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_id_valid"
         )
         post_flush_holdoff_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_post_flush_holdoff_q"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_post_flush_holdoff_q"
         )
         csr_in_flight_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_csr_in_flight"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_csr_in_flight"
         )
         pipeline_stall_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pipeline_stall"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_pipeline_stall"
         )
         pipeline_stall_registered_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pipeline_stall_registered"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_pipeline_stall_registered"
         )
         rob_full_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.rob_full"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.rob_full"
         )
         int_rs_full_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.int_rs_full"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.int_rs_full"
         )
         mul_rs_full_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.mul_rs_full"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.mul_rs_full"
         )
         mem_rs_full_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.mem_rs_full"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.mem_rs_full"
         )
         fp_rs_full_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.fp_rs_full"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.fp_rs_full"
         )
-        lq_full_live_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.lq_full")
-        sq_full_live_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.sq_full")
+        lq_full_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.lq_full"
+        )
+        sq_full_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.sq_full"
+        )
         rob_alloc_valid_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_alloc_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_alloc_valid"
         )
         rob_alloc_pc_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_alloc_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_alloc_pc"
         )
         rob_alloc_is_csr_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_alloc_is_csr"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_alloc_is_csr"
         )
         rob_alloc_is_mret_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_alloc_is_mret"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_alloc_is_mret"
         )
         if_control_flow_holdoff_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.control_flow_holdoff"
+            dut,
+            "cpu_and_memory_subsystem.cpu.cpu_inst.if_stage_inst.control_flow_holdoff",
         )
         if app_name == "branch_pred_test":
             if control_flow_trace_label is None:
@@ -2735,152 +2760,152 @@ async def run_until_complete(
 
     if irq_precision_check:
         trap_taken_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.trap_taken"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.trap_taken"
         )
         trap_taken_reg_dbg_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_trap_taken_q",
-                "cpu_and_memory_subsystem.cpu_inst.trap_taken_reg",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_trap_taken_q",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.trap_taken_reg",
             ],
         )
         # The unregistered commit bus, for the event log.
         commit_valid_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_valid"
         )
         commit_pc_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_pc"
         )
         commit0_dest_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_dest_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_dest_valid"
         )
         commit0_dest_rf_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_dest_rf"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_dest_rf"
         )
         commit0_dest_reg_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_dest_reg"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_dest_reg"
         )
         commit0_value_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_value"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_value"
         )
         commit1_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_valid"
         )
         commit1_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_pc"
         )
         commit1_dest_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_dest_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_dest_valid"
         )
         commit1_dest_rf_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_dest_rf"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_dest_rf"
         )
         commit1_dest_reg_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_dest_reg"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_dest_reg"
         )
         commit1_value_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_value"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_commit_2_value"
         )
         trap_cause_internal_live_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_trap_cause_internal",
-                "cpu_and_memory_subsystem.cpu_inst.trap_cause_internal",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_trap_cause_internal",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.trap_cause_internal",
             ],
         )
         rob_trap_pc_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.rob_trap_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.rob_trap_pc"
         )
         trap_pc_internal_live_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_trap_pc_internal",
-                "cpu_and_memory_subsystem.cpu_inst.rob_trap_pc",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_trap_pc_internal",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.rob_trap_pc",
             ],
         )
         interrupt_resume_pc_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_interrupt_resume_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_interrupt_resume_pc"
         )
         csr_commit_fire_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.csr_commit_fire"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.csr_commit_fire"
         )
         csr_mepc_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.csr_mepc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.csr_mepc"
         )
         flush_all_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.flush_all"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.flush_all"
         )
         port0_int_we_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_port0_int_we",
-                "cpu_and_memory_subsystem.cpu_inst.port0_int_we",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_port0_int_we",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.port0_int_we",
             ],
         )
         port0_int_addr_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_port0_int_addr",
-                "cpu_and_memory_subsystem.cpu_inst.port0_int_addr",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_port0_int_addr",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.port0_int_addr",
             ],
         )
         port0_int_data_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_port0_int_data",
-                "cpu_and_memory_subsystem.cpu_inst.port0_int_data",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_port0_int_data",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.port0_int_data",
             ],
         )
         port1_int_we_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_port1_int_we",
-                "cpu_and_memory_subsystem.cpu_inst.port1_int_we",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_port1_int_we",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.port1_int_we",
             ],
         )
         port1_int_addr_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_port1_int_addr",
-                "cpu_and_memory_subsystem.cpu_inst.port1_int_addr",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_port1_int_addr",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.port1_int_addr",
             ],
         )
         port1_int_data_sig = _first_signal(
             dut,
             [
-                "cpu_and_memory_subsystem.cpu_inst.dbg_port1_int_data",
-                "cpu_and_memory_subsystem.cpu_inst.port1_int_data",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_port1_int_data",
+                "cpu_and_memory_subsystem.cpu.cpu_inst.port1_int_data",
             ],
         )
         rob_commit0_reg_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_reg_valid"
         )
         rob_commit0_reg_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_reg_pc"
         )
         rob_commit0_reg_dest_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_dest_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_reg_dest_valid"
         )
         rob_commit0_reg_dest_rf_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_dest_rf"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_reg_dest_rf"
         )
         rob_commit0_reg_dest_reg_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_dest_reg"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_reg_dest_reg"
         )
         rob_commit1_reg_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_2_reg_valid"
         )
         rob_commit1_reg_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_pc"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_2_reg_pc"
         )
         rob_commit1_reg_dest_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_dest_valid"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_2_reg_dest_valid"
         )
         rob_commit1_reg_dest_rf_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_dest_rf"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_2_reg_dest_rf"
         )
         rob_commit1_reg_dest_reg_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_dest_reg"
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_commit_2_reg_dest_reg"
         )
         _require_signals(
             "FROST_IRQ_PRECISION_CHECK",
@@ -3997,14 +4022,14 @@ async def run_until_complete(
             )
             cocotb.log.info(
                 f"Run {run_number} CLINT/serial: cycle={cycle + 1} "
-                f"mtime=0x{(_read_u64(_get_signal(dut, 'cpu_and_memory_subsystem.mtime')) or 0):016x} "
-                f"mtimecmp=0x{(_read_u64(_get_signal(dut, 'cpu_and_memory_subsystem.mtimecmp')) or 0):016x} "
-                f"mtip={_read_bool(_get_signal(dut, 'cpu_and_memory_subsystem.mtip_registered'))} "
+                f"mtime=0x{(_read_u64(_get_signal(dut, 'cpu_and_memory_subsystem.soc.mtime')) or 0):016x} "
+                f"mtimecmp=0x{(_read_u64(_get_signal(dut, 'cpu_and_memory_subsystem.soc.mtimecmp')) or 0):016x} "
+                f"mtip={_read_bool(_get_signal(dut, 'cpu_and_memory_subsystem.soc.mtip_registered'))} "
                 # Sstc: the S-mode timer compare an Sstc kernel or firmware
                 # re-arms (opensbi_smoke drives it from its S-mode payload).
-                f"stimecmp=0x{(_read_u64(_get_signal(dut, 'cpu_and_memory_subsystem.cpu_inst.csr_file_inst.stimecmp')) or 0):016x} "
-                f"priv={_read_int(_get_signal(dut, 'cpu_and_memory_subsystem.cpu_inst.csr_priv'))} "
-                f"mstatus=0x{(_read_int(_get_signal(dut, 'cpu_and_memory_subsystem.cpu_inst.csr_mstatus')) or 0):08x}"
+                f"stimecmp=0x{(_read_u64(_get_signal(dut, 'cpu_and_memory_subsystem.cpu.cpu_inst.csr_file_inst.stimecmp')) or 0):016x} "
+                f"priv={_read_int(_get_signal(dut, 'cpu_and_memory_subsystem.cpu.cpu_inst.csr_priv'))} "
+                f"mstatus=0x{(_read_int(_get_signal(dut, 'cpu_and_memory_subsystem.cpu.cpu_inst.csr_mstatus')) or 0):08x}"
             )
             last_progress_retired = retired_count
             last_progress_mispredicts = retired_mispredicts
@@ -4014,6 +4039,24 @@ async def run_until_complete(
             cocotb.log.error(f"Run {run_number} FAILED: Program printed failure marker")
             test_failed = True
             break
+
+        if app_name == "memerr_test" and uart_monitor.contains("<<EXPECT_FATAL>>"):
+            platform = dut.cpu_and_memory_subsystem
+            if int(platform.cpu.o_fatal_error.value):
+                assert int(platform.cpu.o_fatal_addr.value) == 0x82000000
+                assert int(platform.soc.memory_errors.axi_wr_errs_q.value) == 1
+                # Let registered observations settle, then prove no retirement
+                # continues after the retained dirty-line failure.
+                await ClockCycles(dut.i_clk, 3)
+                for _ in range(20):
+                    await RisingEdge(dut.i_clk)
+                    assert not int(platform.cpu.o_debug_commit_valid.value)
+                cocotb.log.info(
+                    "Memory-error regression passed: precise read fault, "
+                    "ECC/PLIC reports, and fatal writeback stop"
+                )
+                test_passed = True
+                break
 
         if has_defined_endpoint:
             # Test suite: look for pass marker
@@ -4253,6 +4296,8 @@ async def test_real_program(dut: Any) -> None:
     # through COCOTB_COREMARK_MAX_CYCLES.
     if app_name is not None and app_name.startswith("coremark"):
         max_cycles = COREMARK_MAX_CYCLES
+    elif app_name == "dma_torture":
+        max_cycles = DMA_TORTURE_MAX_CYCLES
     elif app_name == "sprintf_test":
         max_cycles = SPRINTF_TEST_MAX_CYCLES
     elif app_name == "pde_return_hazard":

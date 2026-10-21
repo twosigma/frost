@@ -62,6 +62,9 @@
  * sets ERROR without moving data or raising an interrupt. START snapshots
  * configuration, so writes while BUSY program only the next transfer.
  *
+ * A coherent response error aborts the transfer, sets ERROR (not DONE), and
+ * suppresses any subsequent data or success-status write.
+ *
  * Once latched, ABORT issues no further data or status request, waits for
  * any outstanding response, then reports ERROR without DONE and raises the
  * interrupt if the transfer enabled it. Requests already accepted are never
@@ -105,6 +108,7 @@ module dma_test_engine #(
     output logic [  LINE_BYTES-1:0] o_dma_req_wstrb,
     output logic [     ID_BITS-1:0] o_dma_req_id,
     input  logic                    i_dma_resp_valid,
+    input  logic                    i_dma_resp_error = 1'b0,
     input  logic [     ID_BITS-1:0] i_dma_resp_id,
     input  logic [LINE_BYTES*8-1:0] i_dma_resp_rdata
 );
@@ -361,7 +365,8 @@ module dma_test_engine #(
         S_READ_WAIT: begin
           if (i_dma_resp_valid) begin
             line_data_q <= i_dma_resp_rdata;
-            state_q     <= abort_pending_q ? S_FINISH : S_WRITE;
+            state_q <= (abort_pending_q || i_dma_resp_error) ? S_FINISH : S_WRITE;
+            if (i_dma_resp_error) abort_pending_q <= 1'b1;
           end
         end
         S_WRITE: begin
@@ -370,8 +375,9 @@ module dma_test_engine #(
         end
         S_WRITE_WAIT: begin
           if (i_dma_resp_valid) begin
-            lines_q <= lines_q + 1'b1;
-            if (abort_pending_q) begin
+            if (!i_dma_resp_error) lines_q <= lines_q + 1'b1;
+            if (i_dma_resp_error) abort_pending_q <= 1'b1;
+            if (abort_pending_q || i_dma_resp_error) begin
               state_q <= S_FINISH;
             end else if (more_lines) begin
               cur_line_q <= cur_line_q + 64'(LINE_BYTES);
@@ -387,7 +393,11 @@ module dma_test_engine #(
           if (abort_pending_q) state_q <= S_FINISH;
           else if (req_fire) state_q <= S_STATUS_WAIT;
         end
-        S_STATUS_WAIT: if (i_dma_resp_valid) state_q <= S_FINISH;
+        S_STATUS_WAIT:
+        if (i_dma_resp_valid) begin
+          state_q <= S_FINISH;
+          if (i_dma_resp_error) abort_pending_q <= 1'b1;
+        end
         S_FINISH: begin
           busy_q          <= 1'b0;
           done_q          <= !abort_pending_q;
@@ -396,7 +406,7 @@ module dma_test_engine #(
           state_q         <= S_IDLE;
           abort_pending_q <= 1'b0;  // an abort written this cycle came too late
         end
-        default:       state_q <= S_IDLE;
+        default: state_q <= S_IDLE;
       endcase
     end
   end

@@ -37,14 +37,19 @@ module load_queue #(
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
     parameter bit ENABLE_SQ_FORWARD_FAST_PATH = 1'b0,
+    parameter bit MEM_RESPONSE_ERRORS = 1'b0,
+    // The legacy local-BRAM path permits L0 caching. An AXI uncached region
+    // must bypass L0 as well as the line caches.
+    parameter bit CACHE_UNCACHED_DATA = 1'b1,
     // Loads in [CACHED_BASE, CACHED_BASE+CACHED_SIZE_BYTES) have variable
     // latency. Each uses a cs_* slot whose ID tags the request and response.
     // AMOs launch only at ROB head and block younger loads until their write
     // completes, so cached AMOs need no extra exclusivity. BRAM/device responses
-    // arrive one cycle after router acceptance and share the fast_* tracker.
+    // share the fast_* tracker. The legacy local-memory path responds one
+    // cycle after acceptance; the AXI path holds bus-busy through its response.
     // Device requests first wait in the router's pending register, which
     // blocks later handoffs through i_mem_bus_busy.
-    parameter int unsigned CACHED_BASE = 32'h8000_0000,
+    parameter longint unsigned CACHED_BASE = riscv_pkg::DdrBase,
     parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes
 ) (
     input logic i_clk,
@@ -130,6 +135,7 @@ module load_queue #(
     // consumers extract by addr[2:0].
     input  logic                 [       riscv_pkg::MemDataBits-1:0] i_mem_read_data,
     input  logic                                                     i_mem_read_valid,
+    input  logic                                                     i_mem_read_error = 1'b0,
     // Response tracker: a tagged cached slot or the single fast-tier request.
     input  logic                                                     i_mem_read_is_cached,
     input  logic                 [riscv_pkg::CachedLoadSlotBits-1:0] i_mem_read_id,
@@ -189,6 +195,7 @@ module load_queue #(
     // timing. PMA excludes device AMOs, so it selects cached memory or BRAM.
     output logic                              o_amo_mem_write_is_cached,
     input  logic                              i_amo_mem_write_done,
+    input  logic                              i_amo_mem_write_error = 1'b0,
 
     // =========================================================================
     // Flush
@@ -437,6 +444,11 @@ module load_queue #(
   logic [DEPTH-1:0] lq_is_mmio;
   logic [DEPTH-1:0] lq_issued;
   logic [DEPTH-1:0] lq_data_valid;
+  // Transport faults complete through the ordinary staged CDB path. A bad
+  // beat must not fill L0, establish a reservation, or start an AMO write.
+  logic [DEPTH-1:0] lq_response_error;
+  logic mem_response_error;
+  assign mem_response_error = MEM_RESPONSE_ERRORS && i_mem_read_error;
   logic [DEPTH-1:0] lq_forwarded;
   logic [DEPTH-1:0] lq_is_lr;
   logic [DEPTH-1:0] lq_is_amo;
@@ -1880,6 +1892,7 @@ module load_queue #(
   // while the bus is busy: a store or AMO may hold it a cycle before its L0
   // invalidation is visible. load_unit extracts sub-dword results.
   assign cache_hit_fast_path = ENABLE_L0_FAST_PATH
+      && (CACHE_UNCACHED_DATA || sq_check_is_cached_region)
       && !i_flush_all && !i_flush_en
       && !i_mem_bus_busy
       && sq_can_issue
@@ -2047,7 +2060,8 @@ module load_queue #(
   logic [FLEN-1:0] ram_sq_payload;
   // sq_head_amo_clear implies sq_check_is_amo_q, which excludes both
   // cache and forward writes. Its ROB-head comparison is not a data select.
-  assign ram_cache_payload_select = ENABLE_L0_FAST_PATH && !i_flush_all &&
+  assign ram_cache_payload_select = ENABLE_L0_FAST_PATH &&
+      (CACHE_UNCACHED_DATA || sq_check_is_cached_region) && !i_flush_all &&
       !i_flush_en && !i_mem_bus_busy && cache_lookup_hit &&
       (sq_no_older_store || (i_sq_all_older_addrs_known && !i_sq_forward.match));
   assign ram_sq_payload = ram_cache_payload_select ?
@@ -2151,7 +2165,8 @@ module load_queue #(
   assign cache_fill_response_valid = i_mem_read_valid && resp_outstanding &&
       !i_flush_all && !resp_drop && lq_valid[issued_idx];
   assign cache_fill_valid = cache_fill_response_valid
-      && !issued_is_mmio && !issued_is_lr && !issued_is_amo
+      && (CACHE_UNCACHED_DATA || issued_is_cached)
+      && !mem_response_error && !issued_is_mmio && !issued_is_lr && !issued_is_amo
       && !(issued_is_cached &&
            (issued_cached_line_invalidated || issued_cached_line_invalidate_now));
   assign cache_fill_addr = issued_addr;
@@ -2231,7 +2246,15 @@ module load_queue #(
     issue_cdb_result.valid = issue_cdb_found && !i_flush_en;
     issue_cdb_result.tag = lq_rob_tag[issue_cdb_idx];
 
-    if (riscv_pkg::mem_size_e'(lq_size_issue_cdb_rd) == riscv_pkg::MEM_SIZE_DOUBLE) begin
+    if (MEM_RESPONSE_ERRORS && lq_response_error[issue_cdb_idx]) begin
+      issue_cdb_result.exception = 1'b1;
+      issue_cdb_result.exc_cause = riscv_pkg::exc_cause_t'(
+          lq_is_amo[issue_cdb_idx] ? riscv_pkg::ExcStoreAccessFault :
+                                   riscv_pkg::ExcLoadAccessFault);
+      // External response faults report xtval=0. The physical response
+      // address is not a valid substitute for the original virtual address.
+      issue_cdb_result.value = '0;
+    end else if (riscv_pkg::mem_size_e'(lq_size_issue_cdb_rd) == riscv_pkg::MEM_SIZE_DOUBLE) begin
       // FLD/RV64 LD: raw 64-bit beat from the LUTRAM
       issue_cdb_result.value = lq_data_rd;
     end else if (lq_is_fp[issue_cdb_idx]) begin
@@ -2279,7 +2302,7 @@ module load_queue #(
   // therefore does not need the age-dependent issued_entry_flushed term,
   // which itself implies i_flush_en. Full-flush, stale-response and live-tracker
   // checks remain in cache_fill_response_valid, exactly as in acceptance.
-  assign resp_bypass_ok = cache_fill_response_valid && !issued_is_amo;
+  assign resp_bypass_ok = cache_fill_response_valid && !issued_is_amo && !mem_response_error;
 
   assign resp_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
                             resp_bypass_ok && !i_flush_en;
@@ -2289,7 +2312,7 @@ module load_queue #(
     p_response_bypass_flush_factoring :
     assert (resp_bypass_fire ==
         (cdb_stage_slot_available && !issue_cdb_fire && accept_mem_response &&
-         !issued_is_amo && !i_flush_en));
+         !issued_is_amo && !mem_response_error && !i_flush_en));
   end
 `endif
 
@@ -2304,7 +2327,7 @@ module load_queue #(
   logic resp_bypass_data_sel;
   logic misalign_bypass_data_sel;
   assign resp_bypass_data_sel = i_mem_read_valid && resp_outstanding &&
-      !resp_drop && lq_valid[issued_idx] && !issued_is_amo;
+      !resp_drop && lq_valid[issued_idx] && !issued_is_amo && !mem_response_error;
   assign misalign_bypass_data_sel = !resp_bypass_data_sel && sq_check_misaligned;
 
   // cache_hit_fast_path is already flush-gated at its own assign.
@@ -2821,6 +2844,7 @@ module load_queue #(
       lq_addr_valid             <= '0;
       lq_issued                 <= '0;
       lq_data_valid             <= '0;
+      lq_response_error         <= '0;
       lq_forwarded              <= '0;
       mem_outstanding           <= 1'b0;
       drop_mem_response_pending <= 1'b0;
@@ -2838,6 +2862,7 @@ module load_queue #(
       lq_addr_valid <= '0;
       lq_issued <= '0;
       lq_data_valid <= '0;
+      lq_response_error <= '0;
       lq_forwarded <= '0;
       mem_outstanding <= 1'b0;
       // On full flush, retain response debt for accepted fast requests unless
@@ -2946,7 +2971,10 @@ module load_queue #(
         end
       end else if (accept_mem_response) begin
         if (!resp_from_slot) mem_outstanding <= 1'b0;
-        if (issued_is_amo) begin
+        if (mem_response_error) begin
+          lq_response_error[issued_idx] <= 1'b1;
+          lq_data_valid[issued_idx] <= 1'b1;
+        end else if (issued_is_amo) begin
           // MIN/MAX writes the next cycle; ordinary AMOs first use COMPUTE. The IDLE
           // guard prevents an overlapping response from replacing an active AMO.
           if (amo_response_capture)
@@ -3003,8 +3031,9 @@ module load_queue #(
       // AMO Write Completion: latch old value as result, invalidate cache
       // -----------------------------------------------------------------
       if (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done) begin
-        lq_data_valid[amo_entry_idx] <= 1'b1;
-        amo_state                    <= AMO_IDLE;
+        lq_data_valid[amo_entry_idx]     <= 1'b1;
+        lq_response_error[amo_entry_idx] <= MEM_RESPONSE_ERRORS && i_amo_mem_write_error;
+        amo_state                        <= AMO_IDLE;
       end
 
       // -----------------------------------------------------------------
@@ -3028,11 +3057,12 @@ module load_queue #(
       // vectors are disjoint.
       for (int unsigned i = 0; i < DEPTH; i++) begin
         if (alloc_oh[i]) begin
-          lq_valid[i]      <= 1'b1;
-          lq_addr_valid[i] <= 1'b0;
-          lq_issued[i]     <= 1'b0;
-          lq_data_valid[i] <= 1'b0;
-          lq_forwarded[i]  <= 1'b0;
+          lq_valid[i]          <= 1'b1;
+          lq_addr_valid[i]     <= 1'b0;
+          lq_issued[i]         <= 1'b0;
+          lq_data_valid[i]     <= 1'b0;
+          lq_response_error[i] <= 1'b0;
+          lq_forwarded[i]      <= 1'b0;
         end
       end
 
@@ -3454,7 +3484,8 @@ module load_queue #(
   logic amo_response_minmax_is_max;
   // AMO ordering permits responses only in IDLE. Guard capture locally so
   // even an invalid overlap cannot overwrite a stalled write's payload.
-  assign amo_response_capture = accept_mem_response && issued_is_amo && (amo_state == AMO_IDLE);
+  assign amo_response_capture = accept_mem_response && !mem_response_error &&
+      issued_is_amo && (amo_state == AMO_IDLE);
   assign amo_response_old_value = issued_amo_is_d ? XLEN'(i_mem_read_data) : amo_old_word_sext;
   // Reuse the old-value and rs2 capture registers for normal arithmetic.
   // .W's architectural old-value sign extension does not affect its low32
@@ -3522,7 +3553,7 @@ module load_queue #(
   // Internal data: reservation address
   // -----------------------------------------------------------------
   always_ff @(posedge i_clk) begin
-    if (accept_mem_response && issued_is_lr) begin
+    if (accept_mem_response && issued_is_lr && !mem_response_error) begin
       reservation_addr <= issued_addr;
     end
   end
@@ -4447,7 +4478,8 @@ module load_queue #(
   // load, but must not complete the killed entry.
   always_comb begin
     if (i_rst_n && issued_entry_flushed && cache_fill_response_valid &&
-        !issued_is_mmio && !issued_is_lr && !issued_is_amo &&
+        (CACHE_UNCACHED_DATA || issued_is_cached) &&
+        !mem_response_error && !issued_is_mmio && !issued_is_lr && !issued_is_amo &&
         !(issued_is_cached &&
           (issued_cached_line_invalidated || issued_cached_line_invalidate_now))) begin
       p_partial_flush_response_fills_l0 : assert (cache_fill_valid);

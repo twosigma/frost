@@ -615,8 +615,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="memerr_test",
         description=(
-            "Memory error unit counts DDR error responses and ECC reports and "
-            "interrupts through the PLIC"
+            "Precise DDR read fault, ECC/PLIC reporting, and fatal cached writeback error"
         ),
         extra_env=(
             (
@@ -1246,6 +1245,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "+define+FROST_RVFI_DII",
             "-DFROST_WIDE_DDR_TEST",
             str(RVFI_DII_HARNESS),
+            str(RVFI_DII_HARNESS.with_name("frost_rvfi_platform.sv")),
             # Sparse wide-DDR mode keeps full-width keys; this parameter is
             # unused for the sparse address range but keeps the old budget.
             "-GDDR_MODEL_BYTES=1073741824",
@@ -1342,6 +1342,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GPREPARE_LOAD_WHILE_BUSY=0",),
         extra_env=(("FROST_TEST_PREPARE_LOAD_WHILE_BUSY", "0"),),
     ),
+    "load_queue_axi_errors": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.load_queue.test_load_queue_axi_errors",
+        hdl_toplevel_module="load_queue",
+        description="Load/LR/AMO response faults, cache poisoning, and stale response recovery",
+        verilator_extra_args=("-GMEM_RESPONSE_ERRORS=1",),
+    ),
     "load_queue_sq_forward": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.load_queue.test_load_queue",
         hdl_toplevel_module="load_queue",
@@ -1364,6 +1370,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="store_queue",
         description="Store-queue allocation, forwarding, committed writes, and "
         "recovery",
+    ),
+    "store_queue_axi": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.store_queue.test_store_queue_axi",
+        hdl_toplevel_module="store_queue",
+        description="Head-only uncached stores, shield arming, AXI faults, SC, and ordering",
+        verilator_extra_args=("-GPRECISE_UNCACHED=1",),
     ),
     "int_alu_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_alu_shim",
@@ -1496,6 +1508,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Memory-request arbitration, device staging, store draining, and flush "
             "handling"
         ),
+    ),
+    "data_mem_request_router_axi": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_request_router_axi",
+        hdl_toplevel_module="data_mem_request_router",
+        description=(
+            "Variable-latency uncached reads and writes, device read arming, "
+            "flush cancellation, response arbitration, and AXI error delivery"
+        ),
+        verilator_extra_args=("-GVARIABLE_UNCACHED=1",),
     ),
     "data_mem_request_router_1g": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_request_router",
@@ -1710,6 +1731,29 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ),
         )
     },
+    "frost_cache_hierarchy_errors": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_hierarchy_errors",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="Read errors and successful retries through all four hierarchy clients",
+        verilator_extra_args=("-GENABLE_RESPONSE_ERRORS=1", "-GSIM_FAST_MAINT=1"),
+    ),
+    "fetch_provider_errors": CocotbRunConfig(
+        python_test_module="cocotb_tests.predecode.test_fetch_provider_errors",
+        hdl_toplevel_module="fetch_provider",
+        description="Instruction read faults, line straddles, and recovery without poisoned victims",
+        verilator_extra_args=("-GENABLE_RESPONSE_ERRORS=1",),
+    ),
+    "frost_cache_errors": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_errors",
+        hdl_toplevel_module="frost_cache",
+        description="Refill faults reach all readers without cache poisoning; dirty failures retain data",
+        verilator_extra_args=(
+            "-GENABLE_RESPONSE_ERRORS=1",
+            "-GCACHE_SIZE_BYTES=1024",
+            "-GNUM_WAITERS=2",
+            "-GSIM_FAST_MAINT=1",
+        ),
+    ),
     "frost_cache": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache",
         hdl_toplevel_module="frost_cache_test_harness",
@@ -2162,6 +2206,79 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Tagged line-port arbitration with out-of-order DDR responses",
         verilator_extra_args=("-GMEM_REORDER=1",),
     ),
+    "cpu_top_custom_map": CocotbRunConfig(
+        python_test_module="cocotb_tests.integration.test_cpu_top_custom_map",
+        hdl_toplevel_module="cpu_top",
+        description="Relocated physical memory, boot and device PMA above 4 GiB",
+        verilator_extra_args=(
+            "-GSIM_FAST_MAINT=1",
+            "-GL1_CACHE_BYTES=2048",
+            "-GL1I_CACHE_BYTES=2048",
+            "-GL2_CACHE_BYTES=4096",
+            "-GL2_PREFETCH=0",
+            '"-DFROST_PMA_UNCACHED_BASE=64\'h1000000000"',
+            '"-DFROST_PMA_DEVICE0_BASE=64\'h1400000000"',
+            '"-DFROST_PMA_CACHED_BASE=64\'h1800000000"',
+            "-DFROST_PMA_DEVICE1_BYTES=0",
+        ),
+    ),
+    "cpu_top_strict_map": CocotbRunConfig(
+        python_test_module="cocotb_tests.integration.test_cpu_top_strict_map",
+        hdl_toplevel_module="cpu_top",
+        description="Strict PMA rejects legacy FROST device-quadrant holes before AXI",
+        verilator_extra_args=(
+            "-GSIM_FAST_MAINT=1",
+            "-GL1_CACHE_BYTES=2048",
+            "-GL1I_CACHE_BYTES=2048",
+            "-GL2_CACHE_BYTES=4096",
+            "-GL2_PREFETCH=0",
+            "-DFROST_PMA_LEGACY_DEVICE_STORES=0",
+        ),
+    ),
+    "cpu_top_boundary": CocotbRunConfig(
+        python_test_module="cocotb_tests.integration.test_cpu_top",
+        hdl_toplevel_module="cpu_top",
+        description="Standalone CPU boot, cached/narrow traffic, fences, errors, and inactive coherence",
+        verilator_extra_args=(
+            "-GSIM_FAST_MAINT=1",
+            "-GL1_CACHE_BYTES=2048",
+            "-GL1I_CACHE_BYTES=2048",
+            "-GL2_CACHE_BYTES=4096",
+            "-GL2_PREFETCH=0",
+        ),
+    ),
+    "dma_errors": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_dma_errors",
+        hdl_toplevel_module="dma_test_engine",
+        description="Coherent DMA read/write/status errors abort without false success",
+    ),
+    "ptw_errors": CocotbRunConfig(
+        python_test_module="cocotb_tests.mmu.test_ptw_errors",
+        hdl_toplevel_module="ptw",
+        description="Page-table bus errors at every level, discard and successful retry",
+        verilator_extra_args=("-GENABLE_RESPONSE_ERRORS=1",),
+    ),
+    "soc_axi_slave": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_soc_axi_slave",
+        hdl_toplevel_module="soc_axi_slave",
+        description="FROST AXI decode, narrow lanes, response ownership and backpressure",
+    ),
+    "cpu_axi_master": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_cpu_axi_master",
+        hdl_toplevel_module="cpu_axi_master",
+        description=(
+            "Unified CPU AXI master: narrow sizes and attributes, independent channel "
+            "backpressure, response errors, ID ownership, and reset draining"
+        ),
+    ),
+    "cpu_uncached_adapter": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_cpu_uncached_adapter",
+        hdl_toplevel_module="cpu_uncached_adapter",
+        description=(
+            "Uncached CPU reads and stores: exact narrow byte lanes, two-store queue, "
+            "variable response latency, errors, and side-effect-free backpressure"
+        ),
+    ),
     "line_port_axi_bridge": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_line_port_axi_bridge",
         hdl_toplevel_module="line_port_axi_bridge",
@@ -2464,6 +2581,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Tomasulo integration with single-bus dispatch and dispatch done "
         "repair enabled",
         verilator_extra_args=("-GENABLE_DISPATCH_DONE_REPAIR=1",),
+    ),
+    "tomasulo_wrapper_axi": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper_axi",
+        hdl_toplevel_module="tomasulo_wrapper",
+        description="Precise variable-latency uncached store and SC retirement and faults",
+        verilator_extra_args=("-GMEM_RESPONSE_ERRORS=1",),
     ),
     "tomasulo_wrapper_1g": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",

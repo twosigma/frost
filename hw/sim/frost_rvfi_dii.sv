@@ -15,7 +15,7 @@
  */
 
 /*
-  RVFI-DII harness for TestRIG (simulation only). cpu_and_mem instantiates it
+  RVFI-DII harness for TestRIG (simulation only). frost_rvfi_platform instantiates it
   when FROST_RVFI_DII is defined; verif/cocotb_tests/test_rvfi_dii.py loads an
   instruction stream into it, releases reset, and reads back one record per
   retired or trapped instruction.
@@ -36,7 +36,7 @@
       head (dispatch gives every instruction one ROB entry, in order);
     - PD redirect: the target and one past the PD branch, found by its PC in
       the current layout.
-  cpu_and_mem disables branch prediction in this build, so fetch never leaves
+  frost_rvfi_platform disables branch prediction in this build, so fetch never leaves
   the current layout on its own and every instruction in IF, PD, and ID was
   fetched from it. Responses take one cycle and are computed from the layout
   current when they are presented, so a response presented after a redirect
@@ -54,7 +54,7 @@
   Device window. Loads and stores that FROST's PMA sends to the device
   quadrant use a RAM here instead of the devices, so the reference model can
   describe them as memory. The RAM, the DDR model (axi_behavioral_memory),
-  and the low BRAM data copy (cpu_and_mem) clear on every reset.
+  and the low BRAM data copy (frost_rvfi_platform) clear on every reset.
 */
 module frost_rvfi_dii #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
@@ -592,7 +592,7 @@ module frost_rvfi_dii #(
         '0;
   end
 
-  // i_dev_read_capture is unused here: cpu_and_mem registers the value on it.
+  // i_dev_read_capture is unused here: frost_rvfi_platform registers the value on it.
   logic unused_dev_read_capture;
   assign unused_dev_read_capture = i_dev_read_capture;
 

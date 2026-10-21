@@ -63,8 +63,10 @@ waits and checks again. With no overlapping older store, the load reads the
 L0 cache or memory. See the
 [store queue](store_queue/README.md#store-to-load-forwarding) for the rules.
 
-Stores write memory only after they commit. An MMIO load issues only at the
-ROB head, and its device read also waits for committed stores to drain, so no
+Cached stores write memory after they commit. In `cpu_top`, uncached stores
+execute at the ROB head behind the interrupt/debug shield and retire only
+after their AXI B response, allowing precise access faults. An MMIO load
+also issues only at the ROB head, and its device read also waits for committed stores to drain, so no
 device access is speculative. There is no memory-dependence prediction, so
 no load is replayed for a store conflict (loads are replayed only for DMA
 coherence; see the [load queue](load_queue/README.md#dma-coherence)). The
@@ -108,12 +110,12 @@ invalidates the TLBs and walker on its own: on every `satp` access, and on an
 `mstatus` or `sstatus` write that changes SUM, MXR, or MPRV (or MPP while MPRV
 is set).
 
-Interrupts are held off until an AMO or MMIO read commits: for an AMO from one
+Interrupts are held off until an AMO, MMIO read, or uncached store commits: for an AMO from one
 cycle after it reaches the ROB head, which is before its write can launch, and
-for an MMIO read from before the device accepts it. Once either has touched
-memory or a device, an interrupt cannot squash it and make it run twice.
-Exceptions stay enabled, because a faulting operation has no memory side
-effect. See the [load queue](load_queue/README.md) for the details.
+for an MMIO read or uncached store from before its request is accepted. Once
+an access has touched memory or a device, an interrupt cannot squash it and
+make it run twice. Synchronous exceptions stay enabled, including precise
+AXI response faults; a failed device transaction is never automatically retried. See the [load queue](load_queue/README.md) for the details.
 
 ### CDB priority and tag reuse
 

@@ -90,7 +90,7 @@ module csr_file #(
     // Number of instructions retired this cycle: 0, 1, or 2.
     input logic [1:0] i_instruction_retired_count,
 
-    // Interrupt pending inputs (meip/mtip registered upstream in cpu_and_mem; msip direct)
+    // Interrupt pending inputs (meip/mtip registered upstream in soc_top; msip direct)
     input riscv_pkg::interrupt_t i_interrupts,
 
     // mtime input (from memory-mapped timer)
@@ -134,8 +134,8 @@ module csr_file #(
     output logic [XLEN-1:0] o_mstatus,
     output logic [XLEN-1:0] o_mie,
     output logic [XLEN-1:0] o_mtvec,
-    // Registered |mtvec[XLEN-1:2]: a nonzero trap base enables load/store
-    // misalignment traps. Updated with mtvec from the same write data.
+    // Registered |mtvec[XLEN-1:2] for the legacy local-memory test profile.
+    // cpu_top always traps misaligned accesses, independent of this bit.
     output logic o_mtvec_traps_misaligned,
     output logic [XLEN-1:0] o_mepc,
     output logic [XLEN-1:0] o_stvec,

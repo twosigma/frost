@@ -125,7 +125,7 @@ DMA_ENGINE_PLIC_SOURCE = 3
 MEMORY_ERROR_BASE = 0x4002_1000
 MEMORY_ERROR_SIZE = 0x100
 MEMORY_ERROR_PLIC_SOURCE = 5
-# NIC register window at the end of strongly ordered MMIO (cpu_and_mem.sv,
+# NIC register window at the end of strongly ordered MMIO (soc_top.sv,
 # MmioSizeBytes). See frost,net10g.yaml for the binding, linux/frost-net10g for
 # the driver, and hw/rtl/peripherals/nic for the RTL.
 NIC_BASE = 0x4003_0000

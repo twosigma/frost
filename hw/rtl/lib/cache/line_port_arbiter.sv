@@ -70,6 +70,7 @@ module line_port_arbiter #(
     input  logic [NUM_PORTS-1:0][  UP_ID_BITS-1:0] i_up_req_id,
     input  logic [NUM_PORTS-1:0]                   i_up_req_maintenance,
     output logic [NUM_PORTS-1:0]                   o_up_resp_valid,
+    output logic [NUM_PORTS-1:0]                   o_up_resp_error,
     output logic [NUM_PORTS-1:0][  UP_ID_BITS-1:0] o_up_resp_id,
     output logic [NUM_PORTS-1:0][LINE_BYTES*8-1:0] o_up_resp_rdata,
 
@@ -83,6 +84,7 @@ module line_port_arbiter #(
     output logic [  DownIdBits-1:0] o_down_req_id,
     output logic                    o_down_req_maintenance,
     input  logic                    i_down_resp_valid,
+    input  logic                    i_down_resp_error = 1'b0,
     input  logic [  DownIdBits-1:0] i_down_resp_id,
     input  logic [LINE_BYTES*8-1:0] i_down_resp_rdata
 );
@@ -265,6 +267,7 @@ module line_port_arbiter #(
       o_up_resp_valid[p] = i_down_resp_valid && (resp_port == PortBits'(p));
       o_up_resp_id[p]    = i_down_resp_id[UP_ID_BITS-1:0];
       o_up_resp_rdata[p] = i_down_resp_rdata;
+      o_up_resp_error[p] = i_down_resp_error;
     end
   end
 

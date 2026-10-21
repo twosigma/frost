@@ -170,6 +170,12 @@ class SQInterface:
         self.dut.i_sq_check_rob_tag.value = 0
         self.dut.i_sq_check_size.value = 0
         self.dut.i_mem_write_done.value = 0
+        self.dut.i_mem_write_error.value = 0
+        self.dut.i_uncached_store_shield.value = 0
+        self.dut.i_head_side_effects_allowed.value = 0
+        self.dut.i_uncached_sc_success.value = 0
+        self.dut.i_uncached_sc_tag.value = 0
+        self.dut.i_uncached_store_result_ready.value = 0
         self.dut.i_rob_head_tag.value = 0
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0

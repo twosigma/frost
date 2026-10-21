@@ -15,7 +15,7 @@
  */
 
 /*
-  FROST system top level: the CPU and memory subsystem (cpu_and_mem), reset
+  FROST system top level: the CPU/SoC integration (platform_top), reset
   synchronization, the UART with its clock-crossing FIFOs, and the two MMIO
   FIFOs. The debug transport arrives on i_jtag_* (generic TAP) or, with
   DEBUG_JTAG_TAP=0, as the board's BSCAN bundle. i_clk runs the CPU and
@@ -63,7 +63,7 @@ module frost #(
     parameter int unsigned L2_PREFETCH_DISTANCE = 8,
     parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
     // L2 line size: 64 bytes, or 32 with no line-size adapter (see
-    // cpu_and_mem). One L2 line is one beat of the DDR AXI port.
+    // cpu_top). One L2 line is one beat of the DDR AXI port.
     parameter int unsigned L2_LINE_BYTES = 64,
     // Simulation-only fast cache maintenance for fence.i: 0 selects the FPGA
     // cycle-accurate path; non-zero selects the sim fast path (see frost_cache).
@@ -81,13 +81,13 @@ module frost #(
     // 0 = it ends at the o_ddr_axi_*/i_ddr_axi_* ports (hardware boards wire
     // them to their DDR controller subsystem).
     parameter int unsigned USE_BEHAVIORAL_DDR = 1,
-    // Simulation-only fetch-latency fuzz (see cpu_and_mem). Hardware keeps 0.
+    // Simulation-only fetch-latency fuzz (see soc_top). Hardware keeps 0.
     parameter int unsigned FETCH_VALID_FUZZ = 0,
     // Low 16 bits seed the fuzz LFSR; use a nonzero value.
     parameter int unsigned FETCH_VALID_FUZZ_SEED = 32'h0000_ACE1,
     // Optional on-silicon boot-hang classifier that can emit over UART.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,
-    // Triage pacing (see cpu_and_mem): silicon-scale defaults; sim runs
+    // Triage pacing (see soc_top): silicon-scale defaults; sim runs
     // override these to fit the cycle budget.
     parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd900_000_000,
     parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd322_265_625,
@@ -241,7 +241,7 @@ module frost #(
                                                    ~i_rst_n;
   assign reset_div4_synchronized = reset_div4_synchronizer_shift_register[NumResetSyncStages-1];
 
-  // UART TX: cpu_and_mem's registered UART write feeds the transmit FIFO
+  // UART TX: soc_top's registered UART write feeds the transmit FIFO
   // directly, and the transmit status it reads comes back from that FIFO and
   // the transmitter (see the FIFO below).
   logic        uart_write_enable_from_cpu;
@@ -275,7 +275,12 @@ module frost #(
   logic        mmio_fifo1_read_enable;
 
   // The programming port stays in the div4 domain through this connection.
-  cpu_and_mem #(
+`ifdef FROST_RVFI_DII
+  `define FROST_PLATFORM_MODULE frost_rvfi_platform
+`else
+  `define FROST_PLATFORM_MODULE platform_top
+`endif
+  `FROST_PLATFORM_MODULE #(
       .MEM_SIZE_BYTES(MEM_SIZE_BYTES),
       .SIM_TIMER_SPEEDUP(SIM_TIMER_SPEEDUP),
       .CACHED_BASE(CACHED_BASE),
@@ -503,10 +508,10 @@ module frost #(
   /*
     Transmitter empty (the ns16550 LSR TEMT bit): no byte is in the FIFO, is
     entering it this cycle, waits in its output register, or is being shifted
-    out. A THR write is already in cpu_and_mem's o_uart_wr_en, or past it,
+    out. A THR write is already in soc_top's o_uart_wr_en, or past it,
     when a later LSR read is performed, because a device load waits for every
     committed store to drain plus an arming cycle (data_mem_request_router).
-    (While hang_triage owns the console, cpu_and_mem drops CPU writes, so
+    (While hang_triage owns the console, soc_top drops CPU writes, so
     TEMT never sees them.) The transmitter's idle level crosses into i_clk
     through two stages, like the FIFO's read pointer, so both views come from
     the same clk_div4 edge.
@@ -560,4 +565,5 @@ module frost #(
       .i_ready(uart_rx_data_ready_from_cpu)
   );
 
+  `undef FROST_PLATFORM_MODULE
 endmodule : frost

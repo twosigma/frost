@@ -112,6 +112,7 @@
  */
 module frost_cache #(
     parameter int unsigned ADDR_WIDTH = 32,
+    parameter bit ENABLE_RESPONSE_ERRORS = 1'b0,
     parameter int unsigned CACHE_SIZE_BYTES = 128 * 1024,
     parameter int unsigned LINE_BYTES = 32,
     // Ways per set, a power of 2; 1 is direct-mapped. The cache must have at
@@ -184,6 +185,12 @@ module frost_cache #(
     output logic                    o_up_resp_valid,
     output logic [  UP_ID_BITS-1:0] o_up_resp_id,
     output logic [LINE_BYTES*8-1:0] o_up_resp_rdata,
+    output logic                    o_up_resp_error,
+    // Buffered stores can have retired before a refill/writeback fails.
+    // Preserve their dirty state, stop accepting requests, and require the
+    // integrating CPU to stop retirement until system recovery/reset.
+    output logic                    o_fatal_error,
+    output logic [  ADDR_WIDTH-1:0] o_fatal_addr,
 
     // Maintenance requests (see header). Hold the request until o_maint_busy
     // rises; the walk completes when it falls.
@@ -201,6 +208,7 @@ module frost_cache #(
     output logic [DOWN_ID_BITS-1:0] o_down_req_id,
     output logic                    o_down_req_maintenance,
     input  logic                    i_down_resp_valid,
+    input  logic                    i_down_resp_error = 1'b0,
     input  logic [DOWN_ID_BITS-1:0] i_down_resp_id,
     input  logic [LINE_BYTES*8-1:0] i_down_resp_rdata,
 
@@ -650,6 +658,7 @@ module frost_cache #(
   logic [LineBits-1:0] mshr_data_q[NUM_MSHR];
   logic [NUM_WB-1:0] mshr_wb_wait_q[NUM_MSHR];  // writebacks of the same line
   logic [NUM_MSHR-1:0] mshr_resp_primary_done_q;
+  logic [NUM_MSHR-1:0] mshr_error_q;
 
   typedef enum logic [1:0] {
     WB_FREE,
@@ -733,7 +742,7 @@ module frost_cache #(
   // Ready requires an empty skid and idle maintenance state. A maintenance
   // request masks ready immediately so the pipeline can drain.
   assign o_up_req_ready = (mstate_q == M_IDLE) && !sk_valid_q && !i_invalidate_all &&
-      !i_writeback_all;
+      !i_writeback_all && !o_fatal_error;
 
   logic up_req_fire;
   assign up_req_fire = i_up_req_valid && o_up_req_ready;
@@ -1299,6 +1308,7 @@ module frost_cache #(
       ack_nonempty ? ack_id_q[ack_rd_q[UP_ID_BITS-1:0]] :
       (mshr_resp_is_waiter ? mshr_waiter_id_q[mshr_resp_sel][0] : mshr_id_q[mshr_resp_sel]);
   assign o_up_resp_rdata = resp_data_now ? data_rdata : mshr_data_q[mshr_resp_sel];
+  assign o_up_resp_error = mshr_resp_fire && mshr_error_q[mshr_resp_sel];
 
   // ===========================================================================
   // Downstream request arbitration: fills first, then writebacks, with a
@@ -1424,10 +1434,30 @@ module frost_cache #(
   logic resp_is_fill, resp_is_wb;
   logic [MshrBits-1:0] resp_fill_slot;
   logic [  WbBits-1:0] resp_wb_slot;
-  assign resp_is_fill   = i_down_resp_valid && !i_down_resp_id[DOWN_ID_BITS-1];
-  assign resp_is_wb     = i_down_resp_valid && i_down_resp_id[DOWN_ID_BITS-1];
+  logic response_error, fatal_fill_error, fatal_writeback_error;
+  assign response_error = ENABLE_RESPONSE_ERRORS && i_down_resp_error;
+  assign fatal_fill_error = i_down_resp_valid && response_error &&
+      !i_down_resp_id[DOWN_ID_BITS-1] && mshr_write_q[resp_fill_slot];
+  assign fatal_writeback_error = i_down_resp_valid && response_error &&
+      i_down_resp_id[DOWN_ID_BITS-1];
+  // A failed buffered write is not an acknowledgement and a failed RMW
+  // refill must not overwrite the MSHR's dirty bytes or byte-valid mask.
+  assign resp_is_fill = i_down_resp_valid && !i_down_resp_id[DOWN_ID_BITS-1] && !fatal_fill_error;
+  assign resp_is_wb = i_down_resp_valid && i_down_resp_id[DOWN_ID_BITS-1] && !response_error;
   assign resp_fill_slot = MshrBits'(i_down_resp_id[DownSlotBits-1:0]);
-  assign resp_wb_slot   = WbBits'(i_down_resp_id[DownSlotBits-1:0]);
+  assign resp_wb_slot = WbBits'(i_down_resp_id[DownSlotBits-1:0]);
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      o_fatal_error <= 1'b0;
+      o_fatal_addr  <= '0;
+    end else if (!o_fatal_error && (fatal_fill_error || fatal_writeback_error)) begin
+      o_fatal_error <= 1'b1;
+      o_fatal_addr <= fatal_fill_error ?
+          {mshr_line_q[resp_fill_slot], {OffsetBits{1'b0}}} :
+          {wb_line_q[resp_wb_slot], {OffsetBits{1'b0}}};
+    end
+  end
 
   // ===========================================================================
   // Write-port arbitration: the sweep or the flush walk's clean marks while
@@ -1505,6 +1535,7 @@ module frost_cache #(
           !(w_valid_q && w_is_alloc && (w_mshr_q == MshrBits'(i))) &&
           (((mshr_state_q[i] == MS_WRITING) && mshr_write_fire && (fw_sel_q == MshrBits'(i)) &&
             (!mshr_write_q[i] || mshr_has_waiter[i])) ||
+           ((mshr_state_q[i] == MS_MERGE) && mshr_error_q[i]) ||
            ((mshr_state_q[i] == MS_RESP) &&
             !(mshr_resp_fire && (mshr_resp_sel == MshrBits'(i)) &&
               (mshr_resp_is_waiter ? !mshr_more_waiters[i] : !mshr_has_waiter[i]))));
@@ -1819,6 +1850,7 @@ module frost_cache #(
       wb_probe_q    <= '0;
       probe_valid_q <= '0;
       probe_ack_q   <= '0;
+      mshr_error_q <= '0;
     end else begin
       // ---- Writeback slots ------------------------------------------------
       // Victim data arrives through the read pipeline; the ack frees the slot
@@ -1875,8 +1907,13 @@ module frost_cache #(
           MS_SENT:
           if (resp_is_fill && (resp_fill_slot == MshrBits'(i))) begin
             mshr_state_q[i] <= MS_MERGE;
+            mshr_error_q[i] <= response_error;
+            mshr_resp_primary_done_q[i] <= 1'b0;
           end
-          MS_MERGE: mshr_state_q[i] <= MS_WRITE;
+          // Keep the merge cycle so a read waiter accepted with the response
+          // reaches its seat before primary completion. Failed data never
+          // enters the array or installs a valid tag.
+          MS_MERGE: mshr_state_q[i] <= mshr_error_q[i] ? MS_RESP : MS_WRITE;
           MS_WRITE:
           if ((!fw_valid_q || mshr_write_fire) && (mstate_q == M_IDLE) && mshr_write_any &&
               (mshr_write_sel == MshrBits'(i)))
@@ -1923,6 +1960,7 @@ module frost_cache #(
         mshr_waiter_valid_q[w_mshr_q]      <= '0;
         mshr_wb_wait_q[w_mshr_q]           <= w_wb_wait_q & wb_still_pending;
         mshr_resp_primary_done_q[w_mshr_q] <= 1'b0;
+        mshr_error_q[w_mshr_q]             <= 1'b0;
       end
       if (w_valid_q && (w_op_q == W_WAITER)) begin
         mshr_waiter_valid_q[w_mshr_q][w_seat] <= 1'b1;

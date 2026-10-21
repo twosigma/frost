@@ -25,7 +25,8 @@
  * has one request register. Its ready requires that register free and the
  * engine holding fewer than SIDE_CAP entries, so the other engine always
  * finds an entry once responses return. Every request accepted here gets
- * exactly one response.
+ * exactly one response. A failed coherent response preserves its owner, kind
+ * and tag and raises o_resp_error for the engine; its data is not usable.
  *
  * The registered requests are muxed onto the port every cycle, RX first. TX
  * goes first once it has watched STARVATION_LIMIT grants go to RX while it
@@ -89,6 +90,7 @@ module nic_dma_front #(
     output logic [  LINE_BYTES-1:0] o_dma_req_wstrb,
     output logic [      IdBits-1:0] o_dma_req_id,
     input  logic                    i_dma_resp_valid,
+    input  logic                    i_dma_resp_error = 1'b0,
     input  logic [      IdBits-1:0] i_dma_resp_id,
     input  logic [LINE_BYTES*8-1:0] i_dma_resp_rdata
 );
@@ -231,6 +233,7 @@ module nic_dma_front #(
     end
     if (i_dma_resp_valid) begin
       o_resp_valid[resp_owner] = 1'b1;
+      o_resp_error[resp_owner] = i_dma_resp_error;
     end
     // A refusal answers on a cycle with no real response for that engine.
     for (int e = 0; e < 2; e++) begin
@@ -262,7 +265,8 @@ module nic_dma_front #(
       rq_valid_q  <= rq_valid_n;
       present_q   <= fire ? present_if_fire1 : present_if_fire0;
       for (int e = 0; e < 2; e++) begin
-        if (o_resp_valid[e] && o_resp_error[e]) err_pending_q[e] <= 1'b0;
+        if (err_pending_q[e] && !(i_dma_resp_valid && (resp_owner == 1'(e))))
+          err_pending_q[e] <= 1'b0;
       end
       for (int e = 0; e < 2; e++) begin
         if (load[e]) begin

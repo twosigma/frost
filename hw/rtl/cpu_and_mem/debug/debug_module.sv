@@ -47,7 +47,7 @@
  * overflowed during the command, see debug_slice_writer). dmactive = 0 holds
  * every other register in reset.
  *
- * Reset: i_rst is cpu_and_mem's system reset (the board-level reset, which
+ * Reset: i_rst is soc_top's system reset (the board-level reset, which
  * on X3 follows the clock lock and DDR readiness, and the image-load reset),
  * and it resets this module too, dmactive included. Debug Spec 0.13.2
  * section 3.2 resets the module only at power-up and while dmactive is 0; on
@@ -83,7 +83,7 @@ module debug_module #(
     input  logic        i_core_in_reset,
     output logic        o_ndmreset,
 
-    // Slice writer (WRITE requests only; mirrors come from cpu_and_mem)
+    // Slice writer (WRITE requests only; mirrors come from soc_top)
     output logic o_slice_req_valid,
     output logic [MEM_BYTE_ADDR_WIDTH-1:2] o_slice_word_addr,
     output logic [31:0] o_slice_data,

@@ -34,7 +34,7 @@
  * Accepted requests increment the core request counter; completed writes
  * increment a div4 counter synchronized back in Gray code. o_all_done compares
  * them. Completion waits past imem_predecode's port-A stage so the word is
- * visible to fetch. cpu_and_mem arbitrates requests: the debug module can
+ * visible to fetch. soc_top arbitrates requests: the debug module can
  * wait, but a refused store snoop becomes a sticky command error.
  */
 module debug_slice_writer #(

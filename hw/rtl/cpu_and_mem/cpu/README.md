@@ -50,7 +50,7 @@ walker (`mmu/ptw`), and these glue submodules from [`cpu_ooo/`](cpu_ooo/):
 | `tage_history` | `branch_recovery/` | The tagged direction predictor's path history and its restores, the saved lookup of each conditional branch, and training at commit |
 | `ex_comb_synthesizer` | `recovery/` | Builds IF's redirect, BTB-update, and RAS-restore bus from early recovery, commit-time recovery, and correct-branch commits, in that priority |
 | `data_mem_request_router` | `memory_if/` | Data-port arbitration (SQ writes, then AMO writes, then LQ reads), staged device reads, tagged completion for the cached tier; see the [data-tier bus rules](../../README.md#data-tier-bus-contract) |
-| `cached_tier_adapter` | `memory_if/` | Converts 64-bit data beats to 32-byte cache lines, with one line request for the loads of a line; instantiated in `cpu_and_mem.sv` next to the cache hierarchy |
+| `cached_tier_adapter` | `memory_if/` | Converts 64-bit data beats to 32-byte cache lines, with one line request for the loads of a line; instantiated in `cpu_top.sv` next to the cache hierarchy |
 | `perf_counter_aggregator` | `perf/` | Top-level and cache profiling counters and the counter read mux, present only with `PERF_COUNTERS=1` ([counter reference](cpu_ooo/perf/README.md)) |
 
 `cpu_ooo.sv` itself keeps the logic that ties these blocks together:
@@ -219,17 +219,19 @@ the [ROB README](tomasulo/reorder_buffer/README.md) covers two-wide commit.
 
 ### Instruction fetch providers
 
-`cpu_and_mem` feeds IF from one of two providers, chosen by bit 31 of the
-window's physical address:
+`cpu_top` feeds IF from two instances of `fetch_provider`, selected using the
+configured physical-memory attributes:
 
-| Provider | Serves | Latency |
-|----------|--------|---------|
-| Low BRAM (`imem_predecode.sv` through `low_bram_fetch_presenter.sv`) | The low BRAM's 128 KiB code region at address 0 | Without stalls, one cycle for a window entirely inside `[0, 64 KiB)` and two cycles for any other window |
-| `fetch_provider.sv` | Cached DDR from `0x8000_0000` | Variable. Two line buffers over the L1I, filled in parallel with next-line prefetch, plus a six-line victim store that returns an evicted line in one cycle instead of an L1I round trip, so short loops re-enter without L1I accesses |
+| Provider | Serves | Response |
+|----------|--------|----------|
+| Uncached, 8-byte blocks | Executable uncached Normal memory | Narrow AXI reads, two owned slots, no victim cache or next-block prefetch |
+| Cached, 32-byte lines | Executable cached Normal memory | Two buffers over L1I, next-line prefetch and a six-line victim store |
 
-Only the first 64 KiB of low BRAM keeps a LUTRAM copy of the predecode bits
-that feed the next-PC logic; elsewhere those bits are recomputed from the
-fetched words, which takes the second cycle.
+FROST low BRAM sits behind the SoC AXI slave. Both providers generate their
+predecode metadata from returned instruction bytes. A bus error creates an
+instruction access fault and never installs a victim entry. Device regions
+cannot be fetched. The fixed-latency `low_bram_fetch_presenter` remains only
+in the positional TestRIG fixture and component tests.
 
 IF tolerates any provider latency. When no valid window arrives, IF emits NOP
 bubbles and freezes its PC and per-packet state while the provider keeps
@@ -242,10 +244,10 @@ bits (instruction size, pairing, and slot-2 eligibility) and, for each
 halfword, the full RV64C expansion with its illegal flag and whether an
 indirect jump (JALR, C.JR, C.JALR) starts there. The expansion's
 source-register fields are stored separately, and PD takes a compressed
-instruction's register fields from them. Low-BRAM initialization, debugger
-and loader writes, and L1I fills all compute the metadata with
+instruction's register fields from them. CPU fetch fills compute the metadata with
 `riscv_pkg::imem_make_sideband`, and
-`sw/common/generate_imem_predecode_init.py` mirrors it for Vivado init files.
+`sw/common/generate_imem_predecode_init.py` mirrors it for the legacy
+instruction-memory metadata arrays used by component tests.
 
 ## Address translation
 
@@ -344,7 +346,7 @@ word. When `pc_reg` is in the upper half of that word, the retry's BTB lookup
 names the parcel before it, which is off the program path, so `pc_controller`
 flags the lookup, `branch_prediction_controller` ignores that BTB entry, and
 IF gives the packet a not-taken direction with its own bimodal index. With
-fixed-latency fetch no program reaches the resteer; the
+the legacy fixed-latency test provider no program reaches the resteer; the
 `served_window_resteer_fetch_fuzz` test reaches it under the fetch-latency
 fuzz.
 

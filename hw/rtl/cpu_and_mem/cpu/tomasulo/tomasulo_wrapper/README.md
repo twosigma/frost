@@ -23,7 +23,8 @@ FP station, and the early store-address path. The
 | [FU shims](../fu_shims/README.md) | 4 | `int_alu_shim` ×2, `int_muldiv_shim` (feeds both the MUL and DIV slots), `fp_shim` |
 
 The MEM slot's adapter has no shim: its input is a mux of the registered store
-fault, the registered SC result, and the LQ result. INT_RS's port-0 issue
+fault, the registered SC result, the held uncached-store completion, and the
+LQ result. INT_RS's port-0 issue
 packet also goes out on `o_rs_issue` to branch resolution in `cpu_ooo`, and
 `o_rs_issue_branch_predicate_tag` is a separate register copy of its ROB tag
 that branch resolution uses only for its checkpoint and age compares.
@@ -279,8 +280,11 @@ doubleword or an AMO writes it, when a DMA write invalidates the line, and on
 a trap, xRET, or FENCE-class flush (the LQ's `i_full_flush`); a branch
 recovered at commit keeps it. An LR launches only once no committed store is
 left to write, so every SQ write that clears the reservation is from a store
-after the LR. The SC's result (0 on success, 1 on failure) is
-registered and presented to the MEM adapter in the following cycle. When a failed SC commits, the wrapper sends `sc_discard` to
+after the LR. A cached SC's result (0 on success, 1 on failure) is
+registered and presented to the MEM adapter in the following cycle. With
+`MEM_RESPONSE_ERRORS=1`, a successful uncached SC instead authorizes the
+SQ write and waits for its AXI B response before reporting success or an
+access fault. A failed SC still reports failure immediately. When a failed SC commits, the wrapper sends `sc_discard` to
 the SQ, which drops the entry without writing memory.
 
 The pending table is keyed by ROB tag because MEM_RS issues SCs out of order:
@@ -295,7 +299,8 @@ since an older SC may still be waiting for the head; a full flush clears the
 table.
 
 The MEM adapter's input gives priority to the registered store fault, then the
-registered SC result, then the LQ result. (The SC result's valid bit has
+registered SC result, then a held uncached-store completion, then the LQ
+result. (The SC result's valid bit has
 separate copies for the adapter mux, LQ result acceptance, MEM_RS issue
 readiness, and the early-wakeup enable, which an assertion keeps equal.) The
 fault register cannot wait, because another store fault can arrive the next
@@ -304,6 +309,9 @@ registered fault strobe kills its table entry before it can fire. Each SC
 result must reach the CDB exactly once, since a second broadcast could land on
 a reused ROB tag; simulation assertions check this, and they are also part of
 the wrapper formal target.
+
+A pending uncached-store completion also inhibits early load wakeup: the
+early token may only announce the load selected for the actual MEM broadcast.
 
 ## Early dependent memory wakeup
 

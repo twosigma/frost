@@ -31,7 +31,7 @@ The crossing primitives live in `hw/rtl/lib/cdc` (`cdc_sync`,
 
 ## Integration
 
-`cpu_and_mem.sv` instantiates `nic_top`:
+`soc_top.sv` instantiates `nic_top`:
 
 | Interface | Connection |
 | --- | --- |

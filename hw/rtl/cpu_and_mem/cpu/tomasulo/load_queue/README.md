@@ -5,8 +5,8 @@ result leaves for the CDB. It has eight entries (`riscv_pkg::LqDepth`) and two
 allocation ports, one per dispatch slot. For each load it decides when the
 load may read memory and where the data comes from: an older store still in
 the store queue (SQ), a 128-entry L0 cache that answers in the same cycle, or
-one of three memory tiers behind the data-memory router (one-cycle low BRAM,
-device registers, and the cached DDR hierarchy). Ordinary loads issue out of
+one of three memory classes behind the data-memory router (uncached Normal
+memory, Device registers, and the cached hierarchy). Ordinary loads issue out of
 order; device loads, LRs and AMOs wait for the head of the reorder buffer
 (ROB). The LQ also holds the LR reservation, runs each AMO's
 read-modify-write, and reports loads to the DMA coherence logic.
@@ -137,14 +137,15 @@ point, and so younger than the load.
 
 | Tier | Addresses | Response | In flight |
 |------|-----------|----------|-----------|
-| Low BRAM | `0x0000_0000`, 256 KiB | The cycle after launch | One; the next launch can overlap its response |
-| Device | `addr[31:30] == 2'b01` | The cycle after the router accepts it, at least four cycles after handoff | One, and it blocks every other handoff |
+| Uncached Normal | Configured PMA region (FROST low BRAM) | Variable AXI R latency | One until response consumed |
+| Device | Configured PMA device regions | Variable AXI R latency after head/shield admission | One, and it blocks every other handoff |
 | Cached (DDR) | `CACHED_BASE`, `CACHED_SIZE_BYTES` | Variable: an L1D hit after a few cycles, a miss after a fill round trip | Up to eight (`riscv_pkg::CachedLoadSlots`), answered in any order |
 
-Every response is one aligned 64-bit beat (see the
+Every response uses an aligned 64-bit container; only requested bytes are
+valid for uncached traffic (see the
 [memory map](../../../../README.md#memory-map) and the
 [data-tier bus contract](../../../../README.md#data-tier-bus-contract)).
-Low-BRAM and device loads share one in-flight tracker (`mem_outstanding` and
+Uncached Normal and device loads share one in-flight tracker (`mem_outstanding` and
 the `fast_*` registers); each cached load holds a `cs_*` slot whose id travels
 with the request (`o_mem_read_id`) and the response (`i_mem_read_is_cached`,
 `i_mem_read_id`). An LR or AMO also sets `o_mem_read_no_merge`, so the
@@ -233,6 +234,11 @@ cycles.
 
 ## L0 cache
 
+`cpu_top` sets `CACHE_UNCACHED_DATA=0`: uncached Normal and Device accesses
+bypass L0 and cannot fill it. This matters for narrow AXI reads, whose unused
+byte lanes are not valid data. The parameter defaults to 1 for legacy unit
+benches; Device traffic bypasses L0 in either setting.
+
 The L0 is direct-mapped with 8-byte (dword) lines: valid bits in flip-flops,
 tags and data in LUTRAM. The staged load looks it up combinationally
 alongside the SQ check, and a hit completes the load in the cycle the SQ
@@ -253,9 +259,10 @@ flight. Each invalidation source has its own port:
 An L0 hit also waits for a free memory port (`!i_mem_bus_busy`), because a
 store or AMO write can own the port before its invalidation takes effect.
 
-The L0 is never flushed: stores write memory only after commit and invalidate
-their line when they do, and loads fill with what memory returned, so a
-mispredict leaves nothing speculative in it. A response that arrives with the
+The L0 is never flushed: cached stores write memory after commit and
+invalidate their line when they do, and successful loads fill with what
+memory returned, so a mispredict leaves nothing speculative in it. The
+variable-latency uncached path does not use L0. A response that arrives with the
 partial flush that kills its load may therefore still fill. A lookup sees a
 fill only from the next cycle; forwarding the fill would put the flush logic
 on the data-memory read-address path.
@@ -409,6 +416,13 @@ the faulting address, which becomes the trap value. A parked fault comes
 first, and the data MMU ranks misalignment and page faults above access
 faults; without translation, the access fault (cause 5, or 7 for an AMO)
 outranks misalignment.
+
+With `MEM_RESPONSE_ERRORS=1`, a failed R response completes its matching load
+with cause 5, or cause 7 for an AMO. It neither installs L0 data, establishes
+an LR reservation nor launches an AMO write. Failed AMO writes also report
+cause 7. These bus faults report zero as the trap value because the response
+owner stores a physical address. Responses for flushed owners drain without
+faulting a newer instruction.
 
 ## Storage
 

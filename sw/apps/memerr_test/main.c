@@ -23,10 +23,11 @@
  * DDR model answers SLVERR to every read of RD_ERROR_LINE and every write of
  * WR_ERROR_LINE. A write reaches DDR only when the L2 evicts the line, so the
  * test writes the line, has fence.i write the L1D back to the L2, and then
- * reads eight lines that share its L2 set. The bench plays the X3's ECC
- * reader (test_real_program.py, EccReportDriver): it holds i_ecc_present high
- * and, once IRQ_EN enables both ECC kinds, reports the corrected and
- * uncorrectable errors and polls this program expects.
+ * reads eight lines that share its L2 set. The read fault is handled precisely;
+ * the final writeback error must stop the CPU with a sticky fatal indication. The bench plays the
+ * X3's ECC reader (test_real_program.py, EccReportDriver): it holds i_ecc_present high and, once
+ * IRQ_EN enables both ECC kinds, reports the corrected and uncorrectable errors and polls this
+ * program expects.
  */
 
 #include <stdint.h>
@@ -90,12 +91,20 @@ static void check(const char *name, unsigned long got, unsigned long want)
 static volatile uint32_t g_irq_count;
 static volatile uint32_t g_status_seen;
 static volatile uint32_t g_other_claims;
+static volatile uint32_t g_expected_read_fault;
+static volatile uint32_t g_read_faults;
 
 __attribute__((noinline, used)) void memerr_irq_c(void)
 {
     unsigned long cause = csr_read(mcause);
     if (!(cause >> 63)) {
-        /* An error response must not fault: the bridge completes the access. */
+        if (cause == 5 && g_expected_read_fault) {
+            g_expected_read_fault = 0;
+            g_read_faults++;
+            /* The deliberate faulting LD below is explicitly noncompressed. */
+            csr_write(mepc, csr_read(mepc) + 4);
+            return;
+        }
         uart_puts("[FAIL] exception mcause=");
         uart_hex(cause);
         uart_puts(" mepc=");
@@ -172,28 +181,24 @@ int main(void)
     PLIC_EN_M = 1u << MEMORY_ERROR_PLIC_SOURCE;
     memory_error_write32(MEMORY_ERROR_IRQ_EN, MEMORY_ERROR_AXI_RD | MEMORY_ERROR_AXI_WR);
     enable_external_interrupt();
-    enable_interrupts();
+    /* Keep MIE clear until the expected access fault has been handled. The
+     * DDR monitor raises its interrupt before the failed fill returns through
+     * both cache levels; servicing it first would restart the failing load. */
 
-    /* A read answered SLVERR still completes, and is counted and reported. */
-    (void) *(volatile uint64_t *) RD_ERROR_LINE;
+    /* A failed fill raises a precise access fault and never installs data. */
+    g_expected_read_fault = 1;
+    __asm__ volatile(".option push\n.option norvc\nld zero, 0(%0)\n.option pop"
+                     :
+                     : "r"(RD_ERROR_LINE)
+                     : "memory");
+    enable_interrupts();
+    check("read-access-fault", g_read_faults, 1);
     check("rd-errs", wait_reg(MEMORY_ERROR_AXI_RD_ERRS, 1), 1);
     uint32_t axi_err = memory_error_read32(MEMORY_ERROR_AXI_ERR);
     check("rd-err-write-bit", MEMORY_ERROR_AXI_ERR_WRITE(axi_err), 0);
     check("rd-err-resp", MEMORY_ERROR_AXI_ERR_RESP(axi_err), AXI_RESP_SLVERR);
     check("rd-err-irq", wait_seen(MEMORY_ERROR_AXI_RD), MEMORY_ERROR_AXI_RD);
     check("wr-errs-none", memory_error_read32(MEMORY_ERROR_AXI_WR_ERRS), 0);
-
-    /* A write reaches DDR when the L2 evicts the dirty line. */
-    *(volatile uint64_t *) WR_ERROR_LINE = 0x5A5A5A5A5A5A5A5Aul;
-    __asm__ volatile("fence.i" ::: "memory");
-    for (unsigned long k = 1; k <= EVICT_LINES; k++)
-        (void) *(volatile uint64_t *) (WR_ERROR_LINE + k * L2_SET_STRIDE);
-    check("wr-errs", wait_reg(MEMORY_ERROR_AXI_WR_ERRS, 1), 1);
-    axi_err = memory_error_read32(MEMORY_ERROR_AXI_ERR);
-    check("wr-err-write-bit", MEMORY_ERROR_AXI_ERR_WRITE(axi_err), 1);
-    check("wr-err-resp", MEMORY_ERROR_AXI_ERR_RESP(axi_err), AXI_RESP_SLVERR);
-    check("wr-err-irq", wait_seen(MEMORY_ERROR_AXI_WR), MEMORY_ERROR_AXI_WR);
-    check("rd-errs-unchanged", memory_error_read32(MEMORY_ERROR_AXI_RD_ERRS), 1);
 
     /* Enabling both ECC kinds starts the bench's reports. */
     memory_error_write32(MEMORY_ERROR_IRQ_EN, MEMORY_ERROR_ALL);
@@ -212,7 +217,19 @@ int main(void)
     check("status-cleared", memory_error_read32(MEMORY_ERROR_STATUS), 0);
     check("other-claims", g_other_claims, 0);
 
-    uart_puts(g_ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
+    if (!g_ok) {
+        uart_puts("\r\n<<FAIL>>\r\n");
+        for (;;) {
+        }
+    }
+    /* A buffered-store writeback error cannot be a precise trap. The bench
+     * checks the sticky fatal address, DDR error counter and stopped retirement
+     * after this banner; software cannot report success after the fatal stop. */
+    uart_puts("\r\n<<EXPECT_FATAL>>\r\n");
+    *(volatile uint64_t *) WR_ERROR_LINE = 0x5A5A5A5A5A5A5A5Aul;
+    __asm__ volatile("fence.i" ::: "memory");
+    for (unsigned long k = 1; k <= EVICT_LINES; k++)
+        (void) *(volatile uint64_t *) (WR_ERROR_LINE + k * L2_SET_STRIDE);
     for (;;) {
     }
     return 0;
