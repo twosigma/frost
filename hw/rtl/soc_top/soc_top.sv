@@ -269,9 +269,9 @@ module soc_top #(
   localparam int unsigned MemDwordAddrWidth = MemByteAddrWidth - 3;
 
   // Memory-mapped I/O addresses for peripherals. Keep them in step with every
-  // copy listed in hw/rtl/README.md, "Memory Map". The request router derives
-  // the UART RX and FIFO addresses as fixed offsets from the MMIO_ADDR
-  // parameter passed to cpu_ooo.
+  // copy listed in hw/rtl/README.md, "Memory Map". This SoC decodes the UART
+  // RX and FIFO side effects from accepted local AXI accesses; the CPU tile
+  // only classifies the configured Device regions.
   localparam int unsigned MmioAddr = 32'h4000_0000;
   // ns16550 @ +0x1000, CLINT @ +0x10000, DMA test engine @ +0x20000, NIC @
   // +0x30000 (a 4 KiB window).
@@ -338,7 +338,7 @@ module soc_top #(
   // 2 = i_external_interrupt, 3 = the DMA test engine's completion, 4 = the
   // NIC, 5 = the memory error unit. Contexts: 0 = hart0 M, 1 = hart0 S. The claim read
   // (0x20_0004 + 0x1000*ctx) is destructive, so its consume pulse is decoded
-  // from mmio_read_capture, which the router fires once per performed read.
+  // from mmio_read_capture, which the local access logic fires once per read.
   localparam logic [9:0] PlicWindowSel = 10'h110;
   localparam int unsigned PlicClaimM = 32'h4420_0004;
   localparam int unsigned PlicClaimS = 32'h4420_1004;
@@ -1353,16 +1353,16 @@ module soc_top #(
     data_memory_write_data_registered <= data_memory_write_data;
   end
 
-  // cpu_ooo already qualifies this pulse against the same MMIO bounds.
+  // The local access logic already qualifies this pulse against MMIO bounds.
   assign mmio_read_capture = mmio_read_pulse;
 
   // Capture the performed MMIO read on mmio_read_pulse. Each case selects
   // an aligned dword {word at +4, word at +0}; addr[2] selects a 32-bit result
   // downstream. CLINT 64-bit reads are atomic in one beat.
   //
-  // Destructive reads decode the exact word address: UART and FIFO pops in
-  // the router, RBR pops and PLIC claims here. Merely including a neighbor in
-  // the other lane does not consume it. See hw/rtl/README.md,
+  // Destructive reads decode the exact word address for UART/FIFO/RBR pops
+  // and PLIC claims in this SoC. Merely including a neighbor in the other
+  // lane does not consume it. See hw/rtl/README.md,
   // "Data-tier bus contract".
   always_comb begin
     logic [31:0] ns_thr_rbr_word;
@@ -1374,7 +1374,7 @@ module soc_top #(
     unique case ({
       mmio_load_addr[31:3], 3'b000
     })
-      // {UART RX data (read consumes byte, via the router's word pulse),
+      // {UART RX data (read consumes byte, via the SoC's one-shot pulse),
       //  UART TX (write-only, reads 0)}
       {UartMmioAddr[31:3], 3'b000} : mmio_read_data_comb = {{24'b0, i_uart_rx_data}, 32'b0};
       // {FIFO1, FIFO0}
