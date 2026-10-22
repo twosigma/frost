@@ -218,3 +218,20 @@ stores are ignored rather than reported as access faults, which the spec
 permits; the SoC filters them before the write port. A file's size is fixed
 by `NUM_IDS` and cannot be changed by software. The major interrupt
 priorities (`*iselect` `0x30` to `0x3F`) belong to the CSR file.
+
+## Verification
+
+The cocotb bench `verif/cocotb_tests/imsic/test_imsic.py` drives the write
+port and every file's hart-side port and compares, every cycle, each file's
+`*ireg` read, illegal flag and `*topei`, and after every edge both lines of
+every hart, with a cycle-level model (`imsic_model.py`). It checks all 256
+selects of every file, `eidelivery`'s and `eithreshold`'s write rules, the
+`eip` and `eie` words in all three Zicsr forms, MSIs of every identity (of a
+spread of them with 2047) in randomly chosen byte orders, identity 0 and
+values above `NUM_IDS`, the other offsets, unused pages and addresses outside
+the regions, `*topei` and claims, the lines with each `eidelivery` value, the
+simultaneous events above, separate harts and levels, the register sequences
+of OpenSBI's and Linux's IMSIC drivers, and random traffic on back-to-back
+cycles. `tests/test_run_cocotb.py` runs it in three shapes: `imsic` (two
+harts, 191 identities), `imsic_default` (the defaults) and `imsic_limits`
+(three harts, 2047 identities, no APLIC delivery, other bases).

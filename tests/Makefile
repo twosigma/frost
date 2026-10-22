@@ -458,6 +458,11 @@ else ifeq ($(TOPLEVEL),x3_ecc_reader)
 COMPILE_ARGS := \
 	$(ROOT)/boards/x3/x3_ecc_reader.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),imsic)
+# IMSIC unit bench (machine and supervisor interrupt files per hart)
+COMPILE_ARGS := \
+	-f $(ROOT)/hw/rtl/peripherals/imsic/imsic.f
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),memory_error_unit)
 # Memory error unit bench (registers, counters, interrupt)
 COMPILE_ARGS := \

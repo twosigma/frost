@@ -2474,6 +2474,49 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GPOLL_CYCLES=64",),
         extra_env=(("ECC_READER_POLL_CYCLES", "64"),),
     ),
+    # The IMSIC in three shapes: two harts with 191 identities, three eip
+    # words of which identities 192-255 do not exist; the module defaults;
+    # and three harts, a page per region unused, with the spec's 2047
+    # identities, no APLIC delivery and other region bases. The bench reads
+    # the shape from IMSIC_*.
+    **{
+        name: CocotbRunConfig(
+            python_test_module="cocotb_tests.imsic.test_imsic",
+            hdl_toplevel_module="imsic",
+            description=description,
+            verilator_extra_args=tuple(
+                f"-G{parameter}={value}" for parameter, value in shape
+            ),
+            extra_env=tuple(
+                (f"IMSIC_{parameter}", str(value)) for parameter, value in shape
+            ),
+        )
+        for name, description, shape in (
+            (
+                "imsic",
+                "IMSIC registers, MSIs in both byte orders, claims, races and "
+                "delivery with two harts and 191 identities",
+                (("NUM_HARTS", 2), ("NUM_IDS", 191), ("APLIC_DELIVERY", 1)),
+            ),
+            (
+                "imsic_default",
+                "IMSIC behavior with the module defaults: one hart, 63 identities",
+                (("NUM_HARTS", 1), ("NUM_IDS", 63), ("APLIC_DELIVERY", 1)),
+            ),
+            (
+                "imsic_limits",
+                "IMSIC behavior with three harts, 2047 identities and no APLIC "
+                "delivery",
+                (
+                    ("NUM_HARTS", 3),
+                    ("NUM_IDS", 2047),
+                    ("APLIC_DELIVERY", 0),
+                    ("M_BASE_ADDR", 0x2400_0000),
+                    ("S_BASE_ADDR", 0x2800_0000),
+                ),
+            ),
+        )
+    },
     "memory_error_unit": CocotbRunConfig(
         python_test_module="cocotb_tests.test_memory_error_unit",
         hdl_toplevel_module="memory_error_unit",
