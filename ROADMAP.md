@@ -3,6 +3,63 @@
 [Prof. John Goodacre](https://github.com/goodacre-manchester) is helping to
 set the direction of this roadmap. The sections are in priority order.
 
+## SMP
+
+Two harts on the X3, sharing one L2, with RVWMO litmus tests and Debian
+running on both. `cpu_top` holds one hart with its L0, L1D, L1I, and L2, and
+its outgoing AXI4 master is not coherent, so two `cpu_top` instances on
+shared memory do not form an SMP system. Its coherent ingress gives DMA and
+the NIC access to one tile's caches; it is not a protocol between tiles (see
+the [CPU boundary](hw/rtl/cpu_top/README.md)). The SMP configuration splits
+out a per-hart block, the core with its MMUs and its L0 and L1 caches, and
+puts the shared L2 and the coherence logic between the harts in a cluster
+wrapper whose memory master stays plain AXI4. The single-hart `cpu_top` keeps
+its integration interface by composing one hart with its L2. Defining that
+per-hart boundary and the coherent interface inside the cluster comes first.
+An L2 in every hart instead would need its own coherence design between the
+private L2s.
+
+Both candidate coherence points fit inside the cluster. One is the L2, the
+ordering point for all traffic below the L1s; the sequencer in front of it
+already probes the L1D for every DMA request and would probe both harts'
+L1Ds. The other is a coherence unit at
+the L1 level, between the L1D caches and the L2. It keeps a copy of each L1D's
+tags, so a request probes only the caches that hold the line; it runs MESI
+with cache-to-cache transfer, and the DMA port connects to it as another
+requester.
+
+Either way, the coherence design has to cover everything a hart can hold: L0
+data, outstanding fills, executed but unretired loads, AMOs, LR/SC
+reservations, and DMA. Snooping live load-queue entries is not enough,
+because an entry is freed as soon as its result is staged for the common data
+bus, before the load retires. The DMA observation table, which tracks loads
+until they retire, is the starting point. A tag copy that filters probes must
+also cover data the load queue still holds after the L1D evicts a line. Probe
+data and acknowledgements must keep making progress when every queue is
+full. The single-hart queue sizes and lane choices will need revisiting
+against the timing and memory-traffic cost of the second hart.
+
+The instruction and data read caches in front of BRAM are outside the
+coherent ingress. Memory they cache must stay private to one hart, or not be
+cached there when it is shared, unless the coherence design covers them: a
+write-through store does not invalidate another hart's copy.
+
+Interrupts follow the RISC-V Advanced Interrupt Architecture (AIA) 1.0, which
+Linux and OpenSBI support, in two steps:
+
+1. An APLIC replaces the PLIC for wired interrupts. In direct delivery mode it
+   drives each hart's external interrupt inputs as the PLIC does, so the harts
+   need no change, and inter-processor interrupts go through OpenSBI and each
+   hart's machine software interrupt.
+2. An IMSIC per hart, with the Smaia and Ssaia CSRs, receives message-signaled
+   interrupts. An inter-processor interrupt is then a write to the other
+   hart's IMSIC, the APLIC forwards wired interrupts as messages, and devices
+   that signal with writes, such as PCIe devices, reach the harts directly.
+
+Done means Debian running on both harts, multi-hart scaling reported
+separately from single-hart performance, and hours of sustained-load testing
+that repeatedly exercise the recovery paths.
+
 ## Memory system
 
 The L1D, L1I, and L2 are 4-way set-associative with tree pseudo-LRU
@@ -10,8 +67,8 @@ replacement, one design for every target. The L1D inserts lines bimodally: a
 fill becomes its set's most recently used only one time in 32, so a working
 set somewhat larger than the L1D keeps part of itself resident instead of
 evicting each line just before its next use. The L1s read every way's data at
-the tag decision, so their hits take as long as the direct-mapped caches'
-did. The L2 reads its data after the tag compare picks the way, one cycle
+the tag decision, which keeps their hit latency at that of a direct-mapped
+cache. The L2 reads its data after the tag compare picks the way, one cycle
 more than a parallel read.
 
 The L2 uses 64-byte lines, following John Goodacre's design. An adapter maps
@@ -19,29 +76,32 @@ each 32-byte request from the L1 caches, the page-table walker, and the DMA
 port onto its half of a line. The L2 writes back only whole lines, each as a
 single 512-bit AXI transfer that the X3's ECC DDR4 controller takes without
 a read-modify-write, and a 32-byte write that misses fetches its line and
-merges into it. Two costs of the design remain to measure on hardware, with
-programs running from DDR, such as CoreMark-PRO and Linux, and with NIC
-receive traffic: a 32-byte write to a line the L2 lacks reads the line from
-DDR first, and a write to the other half of a line with a read in flight
-waits for that read and holds up the L2.
+merges into it.
+
+The physical address width follows the configured DDR aperture, from 1 GiB,
+the default and the X3's, to 128 GiB, through the fetch and data paths, the
+MMUs and page-table walker, the caches, the DMA engine, and the NIC. The DMA
+engine and the NIC keep their original descriptor formats and add
+full-width ones. Accesses outside the aperture fault or are rejected rather
+than alias lower addresses. Simulation, formal checks, and a Linux boot in
+QEMU cover addresses above 4 GiB; on hardware, the X3 build uses a 1 GiB
+aperture.
 
 Software sees memory errors through the memory error unit. On the X3 a
 reader polls the DDR controller's ECC registers about once a millisecond and
 passes on corrected and uncorrectable errors with their physical addresses,
 the cache hierarchy's AXI bridge passes on every error response, and Linux
-logs both and shows the counts in sysfs (`linux/frost-memerr`). What remains
-is scrubbing, which rewrites corrected data so that single-bit errors do not
-build up into uncorrectable ones.
+logs both and shows the counts in sysfs (`linux/frost-memerr`).
 
-## VCU118 board support
+What remains:
 
-Add the AMD VCU118 (Virtex UltraScale+ VU9P, -2L speed grade) as a second
-board. The port needs board files and build support but no core RTL
-changes: constraints, clocking, the DDR4 controller, and the UART and
-Ethernet connections. The VCU118 gets its own clock target; the X3 stays at
-322.265625 MHz and remains the reference for performance and timing.
-Contributors with the board run its hardware tests. Done means the full
-hardware regression, including Debian, passes on a VCU118.
+1. Measure the L2's two write costs on hardware, with programs running from
+   DDR, such as CoreMark-PRO and Linux, and with NIC receive traffic: a
+   32-byte write to a line the L2 lacks reads the line from DDR first, and a
+   write to the other half of a line with a read in flight waits for that
+   read and holds up the L2.
+2. Scrubbing, which rewrites corrected data so that single-bit errors do not
+   build up into uncorrectable ones.
 
 ## Verification
 
@@ -56,11 +116,10 @@ cover points for microarchitectural corner cases, such as a DMA write to a
 line that an executed, unretired load has read, into one
 [report](tests/README.md#coverage) of what the tests reach.
 
-Next is to reach what that report shows no test reaching, with directed
-tests for the corner cases whose cover points no whole-SoC run hits, and to
-add cover points where the design documents call a case hard to reach. Toggle coverage
-of the whole-SoC runs also remains: Verilator's slows them about sixfold, so
-they need a cheaper form first.
+Next is to add cover points where the design documents call a case hard to
+reach, and directed tests for those that no whole-SoC run hits. Toggle
+coverage of the whole-SoC runs also remains: Verilator's slows them about
+sixfold, so they need a cheaper form first.
 
 ## ASIC-ready RTL
 
@@ -103,77 +162,21 @@ for an ASIC, the RTL also needs:
    maps onto standard cells and SRAM macros and estimates its area and
    timing; it does not replace a foundry flow.
 
-## SMP
-
-Two X3 harts with inter-processor interrupts, per-hart PLIC contexts, and
-RVWMO litmus tests. The single-hart queue sizes and lane choices will need
-revisiting against the timing and memory-traffic cost of the second hart.
-
-The current standalone `cpu_top` contains L0, L1D, L1I, and L2. Its outgoing
-AXI4 master is noncoherent: connecting two such masters to shared RAM does
-not establish coherent SMP. The separate FROST coherent ingress gives DMA
-and NIC access to one tile's hierarchy; it is not a complete inter-tile
-ownership and snoop protocol. See the [CPU boundary](hw/rtl/cpu_top/README.md).
-
-The proposed organization for the shared-L2 options below is a per-hart
-submodule containing the pipeline, MMUs, and private caches, with a cluster
-wrapper containing the shared L2 and inter-hart coherence logic. The existing
-single-hart `cpu_top` can retain its integration interface by composing one
-hart with its L2. Thus the shared L2 would sit outside each per-hart boundary
-but inside the cluster, whose downstream memory master can remain plain
-AXI4. Factoring that boundary and specifying the coherent internal interface
-are prerequisites to SMP implementation. Keeping an L2 in every hart instead
-would require a separate design for coherence between those private L2s.
-
-Within the proposed cluster there are two candidate coherence points. One
-is the shared L2, the ordering point for all traffic below the L1s; today's
-sequencer already probes the single L1D for every DMA request and would need
-to handle all harts. The other is a coherence unit at the L1 level,
-between the L1D caches and the L2. It keeps a copy of each L1D's tags, so a
-request probes only the caches that hold the line; it runs MESI with
-cache-to-cache transfer, and the DMA port connects to it as another
-requester.
-
-Either way, the coherence design has to cover everything a hart can hold: L0
-data, outstanding fills, executed but unretired loads, AMOs, LR/SC
-reservations, and DMA. Snooping live load-queue entries is not enough,
-because an entry is freed as soon as its result is staged for the common data
-bus, before the load retires. The DMA observation table, which tracks loads
-until they retire, is the starting point. A tag copy that filters probes must
-also cover data the load queue still holds after the L1D evicts a line. Probe
-data and acknowledgements must keep making progress when every queue is
-full.
-
-The optional Normal-memory read caches are outside today's coherent ingress.
-Keep their memory private to a hart, disable that caching for shared memory,
-or explicitly extend the coherence design to cover it; write-through stores
-alone do not invalidate another hart's cached copy.
-
-Done means Debian running on both harts, multi-hart scaling reported
-separately from single-hart performance, routed timing met, and hours of
-sustained-load testing that repeatedly exercise the recovery paths.
-
 ## Single-core performance
 
-Before the CPU/SoC separation, FROST measured 4.27 CoreMark/MHz,
-1,375 CoreMark at 322.265625 MHz,
-past the goal of 4 CoreMark/MHz. The next goal is 5 CoreMark/MHz at the same
-clock, or 1,611 CoreMark on one hart. A score counts only from a run of at
-least ten seconds that passes the CRC checks for both official seed sets, with
-the compiler flags, the `sw.bin` hash, and memory and cache settings recorded.
-RTL changes must also keep routed timing at the target clock.
-
-The AXI CPU boundary's Normal read-cache and write-through implementation
-meets the original 1% aggregate CoreMark and CoreMark-PRO tolerance and
-passes all 48 X3 hardware stages. Individual workloads vary; see the
-[current measurements](docs/single_core_performance.md).
-The trace-model estimates below use the earlier local-BRAM baseline, not the
-refactored memory path.
+FROST runs CoreMark at 4.23 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
+The next goal is 5 CoreMark/MHz. A score counts only from a run of at least
+ten seconds that passes the CRC checks for both official seed sets, with the
+compiler flags, the `sw.bin` hash, and memory and cache settings recorded.
+The [performance measurements](docs/single_core_performance.md) give each
+CoreMark-PRO workload and how it is measured.
 
 A CoreMark iteration is about 234,000 instructions, so 5 CoreMark/MHz, or
-200,000 cycles per iteration, needs 1.17 instructions per cycle, up from 1.00.
+200,000 cycles per iteration, needs 1.17 instructions per cycle, up from 0.99.
 A model driven by the CoreMark instruction trace gives these estimates for
-each change on its own:
+each change on its own. It treats the BRAM as attached directly to the core,
+without the instruction and data read caches in front of it, so its baseline
+is 4.27:
 
 | Change | Estimated CoreMark/MHz |
 | --- | --- |
@@ -215,19 +218,19 @@ Priorities, guided by the performance counters and timing reports:
    loads, and load preparation while the memory port is busy are in place.
    Next, take a cycle out of load-to-use latency, try associativity in the
    load queue's L0 cache if its conflict counters justify it, then
-   prefetching for dependent loads. The earlier local-BRAM measurements
-   found little benefit from 256 entries over 128. The AXI Normal read-cache
-   profile now uses 256 entries to reduce its more expensive misses.
+   prefetching for dependent loads. The L0 holds 256 entries because its
+   misses to BRAM cross the AXI boundary. CoreMark-PRO's sha workload takes
+   29% longer with the read caches in front of BRAM than with BRAM attached
+   directly, so it is the first workload to profile.
 4. Back-to-back integer issue. Dependent integer operations issue two cycles
    apart because the stations wake from the registered CDB, so serial chains,
    such as the table-driven CRC code GCC generates for CoreMark, run at half
    rate. Issuing them back to back needs wakeup at selection, with the ALU
    result forwarded to the dependent operation.
 5. Fewer front-end bubbles. Beyond the four-bundle decoded queue and the
-   Normal instruction cache, compare a tagged predecode cache with a stream
-   buffer. In the earlier local-BRAM front-end measurements, a
-   taken slot-2 prediction costs one bubble and a PD redirect two. Fetch must
-   keep working with variable-latency memory.
+   instruction read cache in front of BRAM, compare a tagged predecode cache
+   with a stream buffer. A taken slot-2 prediction costs one bubble and a PD
+   redirect two. Fetch must keep working with variable-latency memory.
 6. Cheaper 32-bit operations on RV64. `MULW` takes three cycles and word
    division or remainder thirty-three, though CoreMark gains little from a
    faster `MULW`. Use instruction traces to evaluate fusion or elimination at
@@ -249,26 +252,33 @@ still make progress, including for loads that have not yet retired.
 
 ## Core area
 
-A second hart duplicates the core and its L1 caches and shares the L2, the
-DDR controller, the NIC, and the DMA engine. In the X3 baseline before the
-CPU/SoC separation, the core, its L1 caches, and its fetch logic used about
-107,000 of the design's 164,500 LUTs, suggesting about 26% of the device's
-LUTs for two harts. Some single-hart placements already showed routing
-congestion, and that build met timing only with its better placements.
-Each LUT cut from the core is saved once per hart. The largest blocks are the
-fetch stage and its predictors, the integer reservation station, the ROB, and
-the two ALUs.
-
-## Timing margin
-
-The X3 flow places several candidates at 322.265625 MHz and keeps one that
-qualifies (see [X3 placement](fpga/README.md#x3-placement)). The goal is
-enough slack that a single default placement meets timing.
+A second hart duplicates the core and its L0 and L1 caches and shares the
+L2, the DDR controller, the NIC, and the DMA engine, so each LUT cut from the
+core is saved once per hart. The largest blocks are the fetch stage and its
+predictors, the integer reservation station, the ROB, and the two ALUs.
 
 ## Possible future work
 
+- Support for the AMD VCU118 (Virtex UltraScale+ VU9P, -2L speed grade) as a
+  second board: constraints, clocking, the DDR4 controller, and the UART and
+  Ethernet connections, with its own clock target and no core RTL changes.
+  Contributors with the board would run its hardware tests.
+- A PCIe Gen3 x4 root complex between the 64-bit AXI interconnect and PIPE,
+  the PHY interface that ASIC PCIe PHYs also use, with a small wrapper for
+  the FPGA's transceivers, so that Linux finds NVMe drives and other devices
+  with its standard drivers. The X3's PCIe lanes go to its host connector,
+  where FROST is the device rather than the root, so hardware tests of the
+  root complex need a board with a downstream slot or connector.
+- Storage beyond the NFS root: NVMe drives through the root complex, a block
+  device that the host serves through the X3's PCIe Gen4 x8 host interface
+  with FROST as the endpoint, or iSCSI with ext4. NFS is the supported root
+  filesystem.
+- A frame buffer with HDMI output for a local display, in dual-ported on-chip
+  memory such as UltraRAM so that refresh traffic stays off DDR, with a
+  clock-domain crossing from the SoC clock to the pixel clock. It needs a
+  board or bridge board with an HDMI output.
+- Enough timing margin at 322.265625 MHz that a single default placement
+  meets timing
 - A general three-wide redesign
 - The V and H extensions
 - The full crypto extensions
-- Storage beyond the NFS root, such as iSCSI with ext4 or host-backed
-  PCIe/virtio block devices; NFS is the supported root filesystem
