@@ -22,6 +22,8 @@
 
 #include <stdint.h>
 
+#include "aplic.h"
+
 /* ---- native UART (identity-mapped under the MMIO megapage) ---- */
 #define UART_TX (*(volatile uint8_t *) 0x40000000ul)
 #define UART_TX_STATUS (*(volatile uint32_t *) 0x40000028ul)
@@ -91,6 +93,7 @@ static void check_eq(const char *name, uint64_t got, uint64_t want)
 #define SSTATUS_SUM (1ul << 18)
 #define SIE_SSIE (1ul << 1)
 #define SIE_STIE (1ul << 5)
+#define SIE_SEIE (1ul << 9)
 #define CAUSE_MISALIGNED_LOAD 4
 #define CAUSE_MISALIGNED_STORE 6
 #define CAUSE_USER_ECALL 8
@@ -99,6 +102,7 @@ static void check_eq(const char *name, uint64_t got, uint64_t want)
 #define CAUSE_ILLEGAL 2
 #define IRQ_S_SOFT 1
 #define IRQ_S_TIMER 5
+#define IRQ_S_EXTERNAL 9
 
 /* ---- SBI ---- */
 struct sbiret {
@@ -142,7 +146,7 @@ static struct sbiret sbi_ecall(
 #define SBI_FWFT_MISALIGNED_EXC_DELEG 0
 
 /* ---- trap record (filled by handle_trap) ---- */
-static volatile uint64_t g_timer_irqs, g_soft_irqs;
+static volatile uint64_t g_timer_irqs, g_soft_irqs, g_external_irqs, g_external_claim;
 static volatile uint64_t g_last_cause, g_last_tval, g_last_epc, g_trap_count;
 static volatile uint64_t g_illegal_count;
 
@@ -174,6 +178,9 @@ int handle_trap(struct frame *f)
         } else if (irq == IRQ_S_SOFT) {
             g_soft_irqs++;
             csr_clear(sip, SIE_SSIE);
+        } else if (irq == IRQ_S_EXTERNAL) {
+            g_external_claim = APLIC_CLAIMI(APLIC_S_BASE);
+            g_external_irqs++;
         } else {
             g_failed = 1;
             puts_("  unexpected interrupt\n");
@@ -583,6 +590,36 @@ int main(unsigned long hartid, unsigned long fdt)
         (unsigned long) ubody_blocked_counters, 0, (unsigned long) (g_ustack + sizeof(g_ustack)));
     check_eq("U-mode cycle and instret raise illegal instruction", g_illegal_count, 2);
     check_eq("only two illegal instructions and the final ecall trapped to S", g_trap_count, 3);
+
+    /* OpenSBI delegates all wired sources before entering S-mode. */
+    puts_("APLIC: delegated supervisor delivery\n");
+    check_eq("supervisor direct-mode domain", APLIC_DOMAINCFG(APLIC_S_BASE), 0x80000000);
+    for (unsigned int source = 1; source <= APLIC_NUM_SOURCES; source++) {
+        APLIC_SOURCECFG(APLIC_S_BASE, source) = APLIC_SOURCE_DETACHED;
+        check_eq("source delegated to supervisor",
+                 APLIC_SOURCECFG(APLIC_S_BASE, source),
+                 APLIC_SOURCE_DETACHED);
+        APLIC_SOURCECFG(APLIC_S_BASE, source) = 0;
+    }
+    APLIC_SOURCECFG(APLIC_S_BASE, 2) = APLIC_SOURCE_DETACHED;
+    APLIC_TARGET(APLIC_S_BASE, 2) = 1;
+    APLIC_SETIENUM(APLIC_S_BASE) = 2;
+    APLIC_ITHRESHOLD(APLIC_S_BASE) = 0;
+    APLIC_IDELIVERY(APLIC_S_BASE) = 1;
+    APLIC_DOMAINCFG(APLIC_S_BASE) = APLIC_DOMAINCFG_IE;
+    check_eq("supervisor domain enabled", APLIC_DOMAINCFG(APLIC_S_BASE), 0x80000100);
+    APLIC_SETIPNUM(APLIC_S_BASE) = 2;
+    csr_set(sie, SIE_SEIE);
+    csr_set(sstatus, SSTATUS_SIE);
+    wait_irqs(&g_external_irqs, 1);
+    csr_clear(sstatus, SSTATUS_SIE);
+    csr_clear(sie, SIE_SEIE);
+    check_eq("one supervisor external interrupt", g_external_irqs, 1);
+    check_eq("supervisor claim identity and priority", g_external_claim, 0x00020001);
+    check_eq("supervisor claim consumed pending", APLIC_SETIP(APLIC_S_BASE), 0);
+    APLIC_SOURCECFG(APLIC_S_BASE, 2) = 0;
+    APLIC_IDELIVERY(APLIC_S_BASE) = 0;
+    APLIC_DOMAINCFG(APLIC_S_BASE) = 0;
 
     /* C: timers. */
     puts_("C: timers\n");

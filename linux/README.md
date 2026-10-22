@@ -197,6 +197,7 @@ A replacement kernel selected with `FROST_LINUX_KERNEL` must provide:
 |---|---|
 | `CONFIG_MMU`, `CONFIG_ARCH_RV64I`, `CONFIG_64BIT` | Sv39 RV64 kernel in S-mode. Leave `CONFIG_RISCV_M_MODE` unset. |
 | `CONFIG_RISCV_SBI` | Runs under OpenSBI and calls the SBI interface |
+| `CONFIG_RISCV_APLIC` | Wired interrupts through the APLIC supervisor domain in direct delivery mode. The pinned kernel builds this driver in. |
 | `CONFIG_RISCV_PMU`, `CONFIG_RISCV_PMU_SBI` | Cycle and instruction counters through the SBI PMU |
 | `CONFIG_RISCV_MISALIGNED` | Handles misaligned accesses once the kernel takes FWFT delegation. The pin selects it through `CONFIG_RISCV_PROBE_UNALIGNED_ACCESS`; `CONFIG_RISCV_EMULATED_UNALIGNED_ACCESS` also works. |
 | `CONFIG_BINFMT_ELF`, `CONFIG_FPU` | ELF userspace with LP64D hard float |

@@ -93,7 +93,9 @@ the language lockfiles consistent. Some constraints that are easy to break:
   compiler change, rebuild Buildroot in a fresh output directory.
 - After updating OpenSBI or the compiler, run
   `./scripts/frost.py run make -C sw/apps/opensbi_smoke distclean`. A plain
-  `clean` keeps that application's cached firmware.
+  `clean` keeps that application's cached firmware. Changes to
+  `linux/opensbi_frost_defconfig` or `linux/opensbi_build.py` rerun the
+  firmware build on the next `make` of `opensbi_smoke` or `linux_boot`.
 - The Debian kernel and its headers must match the driver modules' ABI.
 - OpenOCD is Ubuntu's package, and `OPENOCD_VERSION` is the upstream release
   it must report. The image build fails when a base-image change or an

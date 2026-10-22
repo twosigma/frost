@@ -963,8 +963,8 @@ def _prebuilt_modules(tmp_path: Path) -> dict[str, Path]:
     return modules
 
 
-def _make_linux_boot(app: Path, **variables: str) -> subprocess.CompletedProcess[str]:
-    """Clean and build with only the supplied FROST_* environment variables.
+def _linux_boot_env(app: Path, **variables: str) -> dict[str, str]:
+    """Return an environment with only the supplied FROST_* variables.
 
     Use the packer's default cross prefix, the Makefile's default clock, and
     the synthetic cache and module from _linux_boot_tree.
@@ -980,6 +980,12 @@ def _make_linux_boot(app: Path, **variables: str) -> subprocess.CompletedProcess
     env["FROST_NET10G_MODULE"] = str(tree / "frost_net10g.ko")
     env["FROST_MEMERR_MODULE"] = str(tree / "frost_memerr.ko")
     env.update(variables)
+    return env
+
+
+def _make_linux_boot(app: Path, **variables: str) -> subprocess.CompletedProcess[str]:
+    """Clean and build with only the supplied FROST_* environment variables."""
+    env = _linux_boot_env(app, **variables)
     subprocess.run(
         ["make", "-C", str(app), "clean"],
         env=env,
@@ -1168,6 +1174,55 @@ def test_linux_boot_make_refuses_a_build_directory_that_built_a_kernel(
     assert "make -C sw/apps/linux_boot distclean" in result.stdout
     assert "BUILDROOT_INVOKED" not in result.stdout
     assert not (app / "sw_ddr.mem").exists()
+
+
+def test_linux_boot_make_rebuilds_firmware_after_an_opensbi_change(
+    tmp_path: Path,
+) -> None:
+    """A newer OpenSBI defconfig reruns Buildroot, without a userspace rebuild.
+
+    Buildroot's post-image hook rebuilds fw_jump.bin on every run, so an
+    existing build must not keep packing firmware with the old interrupt
+    driver. A stand-in Buildroot copies the defconfig into the firmware.
+    """
+    app = _linux_boot_tree(tmp_path)
+    linux = tmp_path / "linux"
+    firmware = linux / "build-mmu" / "images" / "fw_jump.bin"
+    defconfig = linux / "opensbi_frost_defconfig"
+    defconfig.write_text("CONFIG_FDT_IRQCHIP_PLIC=y\n")
+    builder = linux / "opensbi_build.py"
+    builder.write_text("")
+    for path in (defconfig, builder):
+        os.utime(path, ns=(1, 1))
+    (linux / "build-mmu" / ".config").write_text(
+        f'BR2_EXTERNAL_FROST_PATH="{linux / "buildroot-external"}"\n'
+    )
+    runs = tmp_path / "buildroot-runs"
+    buildroot = linux / "buildroot"
+    buildroot.mkdir()
+    (buildroot / "Makefile").write_text(
+        "all frost-stress-rebuild:\n"
+        f"\techo $@ >> '{runs}'\n"
+        f"\tcp '{defconfig}' '{firmware}'\n"
+    )
+    command = ["make", "--no-print-directory", "-C", str(app), str(firmware)]
+    env = _linux_boot_env(app)
+
+    result = subprocess.run(
+        command, env=env, capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not runs.exists()
+
+    defconfig.write_text("CONFIG_FDT_IRQCHIP_APLIC=y\n")
+    newer = firmware.stat().st_mtime_ns + 1
+    os.utime(defconfig, ns=(newer, newer))
+    result = subprocess.run(
+        command, env=env, capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert runs.read_text().splitlines() == ["all"]
+    assert firmware.read_text() == defconfig.read_text()
 
 
 # --- Debian's kernel ------------------------------------------------------------

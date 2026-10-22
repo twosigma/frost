@@ -845,7 +845,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="opensbi_smoke",
         description=(
-            "OpenSBI boot and SBI services from an S-mode payload (fixed memory layout)"
+            "OpenSBI boot, SBI services and delegated APLIC interrupts (fixed memory layout)"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "10000000"), ("COCOTB_NUM_RUNS", "1")),
     ),

@@ -307,7 +307,7 @@ can be debugged and where each one first stops.
 | `nic_loopback/` | NIC loopback, descriptor rings, interrupts, filtering, and reset during traffic |
 | `ns16550_irq_console_test/` | Console output written one byte per THRE interrupt, each claimed through the APLIC |
 | `ns16550_test/` | The 16550 UART registers: Linux 8250 initialization, register file, LSR.THRE and LSR.TEMT around a write, and transmit |
-| `opensbi_smoke/` | OpenSBI boots a bare S-mode payload that tests SBI calls; fixed layout, ignores `MEM_CONFIG` |
+| `opensbi_smoke/` | OpenSBI boots a bare S-mode payload that tests SBI calls, APLIC delegation and supervisor interrupt delivery; fixed layout, ignores `MEM_CONFIG` |
 | `packet_parser/` | FIX message parser demo fed through the MMIO FIFOs; reports parse time in cycles |
 | `pause_test/` | `pause` (`0x0100000F`) retires without draining committed stores, while `fence r,0` and the other FENCE encodings next to it wait for the drain |
 | `pde_return_hazard/` | A return value computed from `s1` just before the epilogue restores `s1` (Linux `pde_subdir_find` shape) |
