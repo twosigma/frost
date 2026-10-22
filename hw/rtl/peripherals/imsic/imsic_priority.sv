@@ -14,9 +14,12 @@
  *    limitations under the License.
  */
 
-
-// Preserve the priority tree before the file's late claim/write selection.
-(* keep_hierarchy = "yes" *)
+/*
+ * The lowest set bit of an interrupt file's candidates, as an identity and as
+ * a one-hot, zero when there is none. Eight-identity groups and 64-identity
+ * words find earlier candidates in parallel, and each identity bit is a
+ * reduction of a fixed mask.
+ */
 module imsic_priority #(
     parameter int unsigned NUM_IDS = 63
 ) (
@@ -27,15 +30,15 @@ module imsic_priority #(
   localparam int unsigned NumBits   = NUM_IDS + 1;
   localparam int unsigned NumWords  = NumBits / 64;
   localparam int unsigned NumGroups = NumBits / 8;
-  (* keep = "true" *)logic [NumGroups-1:0] group_any;
-  (* keep = "true" *)logic [ NumWords-1:0] word_any;
+  logic [NumGroups-1:0] group_any;
+  logic [ NumWords-1:0] word_any;
   for (genvar w = 0; w < int'(NumWords); w++) begin : gen_word
     assign word_any[w] = |group_any[8*w+:8];
   end
   for (genvar g = 0; g < int'(NumGroups); g++) begin : gen_group
     localparam int Word  = g / 8;
     localparam int Group = g % 8;
-    (* keep = "true" *) logic earlier_word, earlier_group;
+    logic earlier_word, earlier_group;
     assign group_any[g] = |i_candidates[8*g+:8];
     if (Word == 0) assign earlier_word = 1'b0;
     else assign earlier_word = |word_any[Word-1:0];

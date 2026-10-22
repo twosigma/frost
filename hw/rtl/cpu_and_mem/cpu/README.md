@@ -302,7 +302,10 @@ lines pass through at reset. The CSR file implements Smaia and Ssaia,
 including exact major-interrupt selection in `mtopi` and `stopi`, read-only
 zero major priorities and `mvien`, and `mvip` aliases of software pending
 bits. The ROB samples indirect-access legality at allocation. Serialized
-select writes prevent a younger access from using stale legality.
+select writes prevent a younger access from using stale legality. The files
+report `*topei` and their lines from their registers a cycle late. CSR commits
+never come in consecutive cycles, which a simulation assertion checks, so
+every CSR access sees the effect of the one before it.
 See the [CPU interface](../../cpu_top/README.md#interrupt-and-debug-controls).
 
 ## CSR writes

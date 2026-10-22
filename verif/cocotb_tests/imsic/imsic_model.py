@@ -20,9 +20,11 @@ where the spec leaves one (see the module's README.md): eidelivery's
 0x40000000 option, the update order within a cycle, and the one-cycle decode
 register between a memory-mapped write and its interrupt file.
 
-Each call to ImsicModel.clock is one rising clock edge. Hart-side reads see
-the state before the edge, as the RTL's combinational reads and registered
-topei do; the interrupt lines are compared after the edge.
+Each call to ImsicModel.clock is one rising clock edge. *ireg reads see the
+state before the edge, as the RTL's combinational reads do. *topei, the
+identity a claim clears, and the interrupt lines are registered from the
+state before each edge, so they report the state a cycle earlier; the lines
+are compared after the edge.
 """
 
 from dataclasses import dataclass, field
@@ -81,7 +83,8 @@ class InterruptFile:
     eie: int = 0
     eithreshold: int = 0
     eidelivery: int = 0
-    aplic_line: int = 0  # the APLIC line as the last edge sampled it
+    top_q: int = 0  # *topei's identity, from the state before the last edge
+    line_q: int = 0  # the interrupt line, from the same state
 
     def __post_init__(self) -> None:
         """Start from the reset state."""
@@ -108,7 +111,8 @@ class InterruptFile:
         self.eie = 0
         self.eithreshold = 0
         self.eidelivery = EIDELIVERY_APLIC if self.aplic_delivery else 0
-        self.aplic_line = 0
+        self.top_q = 0
+        self.line_q = 0
 
     def candidates(self) -> int:
         """Pending and enabled identities below a nonzero eithreshold."""
@@ -123,15 +127,19 @@ class InterruptFile:
         return (candidates & -candidates).bit_length() - 1 if candidates else 0
 
     def topei(self) -> int:
-        """Return the *topei value."""
-        return topei_value(self.top())
+        """Return the *topei value, which reports the state a cycle earlier."""
+        return topei_value(self.top_q)
 
     def line(self) -> int:
         """Return the external interrupt line for mip.MEIP or mip.SEIP."""
+        return self.line_q
+
+    def next_line(self, aplic_line: int) -> int:
+        """Return the line the next edge registers from the current state."""
         if self.eidelivery == 1:
             return int(self.candidates() != 0)
         if self.eidelivery == EIDELIVERY_APLIC:
-            return self.aplic_line
+            return aplic_line
         return 0
 
     @staticmethod
@@ -173,7 +181,7 @@ class InterruptFile:
 
     def claim(self) -> int:
         """Write *topei: clear the reported identity; return the value read."""
-        identity = self.top()
+        identity = self.top_q
         if identity:
             self.eip &= ~(1 << identity)
         return topei_value(identity)
@@ -251,10 +259,19 @@ class ImsicModel:
     ) -> dict[tuple[int, int], int]:
         """One rising edge; return each claimed file's *topei value.
 
-        Each file applies its claim, then its *ireg write, then the MSI the
-        decode register held; the edge then decodes this cycle's write and
-        samples the APLIC lines (bit h of aplic_lines[level] for hart h).
+        Each file registers *topei and its line from the state before the
+        edge (with bit h of aplic_lines[level] as hart h's APLIC line), then
+        applies its claim, then its *ireg write, then the MSI the decode
+        register held; the edge then decodes this cycle's write.
         """
+        snapshots = {
+            (level, hart): (
+                interrupt_file.top(),
+                interrupt_file.next_line((aplic_lines[level] >> hart) & 1),
+            )
+            for level in LEVELS
+            for hart, interrupt_file in enumerate(self.files[level])
+        }
         claims = {}
         for (level, hart), access in accesses.items():
             interrupt_file = self.files[level][hart]
@@ -266,7 +283,7 @@ class ImsicModel:
             level, hart, identity = self.pending_msi
             self.files[level][hart].msi(identity)
         self.pending_msi = None if write is None else self.decode(*write)
-        for level in LEVELS:
-            for hart in range(self.num_harts):
-                self.files[level][hart].aplic_line = (aplic_lines[level] >> hart) & 1
+        for (level, hart), (top, line) in snapshots.items():
+            self.files[level][hart].top_q = top
+            self.files[level][hart].line_q = line
         return claims

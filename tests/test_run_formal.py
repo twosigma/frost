@@ -635,9 +635,9 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
-        "imsic_top_equiv.sby",
-        "IMSIC parallel strobe cases equal claim, write, MSI next-state priority",
-        tasks=("prove", "prove_wide", "prove_predecoded"),
+        "imsic_file.sby",
+        "IMSIC interrupt file with the CPU's registered select and identity decodes",
+        tasks=("prove", "cover"),
     ),
     FormalTarget(
         "imsic.sby",

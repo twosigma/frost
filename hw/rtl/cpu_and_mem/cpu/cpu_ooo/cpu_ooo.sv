@@ -3521,6 +3521,26 @@ module cpu_ooo #(
   assign file_interrupts = {imsic_eip[0], i_interrupts.mtip, i_interrupts.msip};
   assign file_seip = imsic_eip[1];
 
+`ifndef SYNTHESIS
+  // The files report *topei from their registers a cycle late, so a claim or
+  // *ireg write must not be followed by a file access in the next cycle. Only
+  // CSR commits access the files, one strobe at a time, and the commit hold
+  // keeps CSR commits apart.
+  logic imsic_access_checks_armed = 1'b0;
+  logic csr_commit_fire_q;
+  always_ff @(posedge i_clk) begin
+    imsic_access_checks_armed <= !i_rst;
+    csr_commit_fire_q <= csr_commit_fire;
+    if (!i_rst) begin
+      p_imsic_access_is_csr_commit : assert (!(|{imsic_we, imsic_claim}) || csr_commit_fire);
+      p_imsic_one_strobe : assert ($onehot0({imsic_we, imsic_claim}));
+      if (imsic_access_checks_armed) begin
+        p_csr_commits_apart : assert (!(csr_commit_fire && csr_commit_fire_q));
+      end
+    end
+  end
+`endif
+
   csr_file #(
       .XLEN(XLEN),
       .COMMIT_EXCLUDES_CONTROL_TAKE(1'b1),

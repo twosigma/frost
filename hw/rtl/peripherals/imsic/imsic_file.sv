@@ -46,12 +46,13 @@
  *   Bits of identities the file does not implement stay zero.
  *   o_topei is *topei: the lowest pending and enabled identity, below
  *   eithreshold when that is nonzero, in bits 26:16 and again in bits 10:0
- *   as its priority, or zero when there is none. It is registered and always
- *   equals that function of the current registers. i_topei_claim is a write
- *   to *topei (a csrrw, or a csrrs or csrrc with a nonzero rs1 field): it
- *   clears the pending bit of the identity o_topei reports in the same cycle,
- *   so a csrrw reads and claims atomically; with o_topei zero it changes
- *   nothing.
+ *   as its priority, or zero when there is none. It is registered from the
+ *   registers alone, so it reports them as they were a cycle earlier: the
+ *   hart must leave at least one cycle between a claim or *ireg write and
+ *   its next *topei read or claim. i_topei_claim is a write to *topei (a
+ *   csrrw, or a csrrs or csrrc with a nonzero rs1 field): it clears the
+ *   pending bit of the identity o_topei reports in the same cycle, so a csrrw
+ *   reads and claims atomically; with o_topei zero it changes nothing.
  *
  * Updates in one cycle take effect in this order: the claim, the *ireg
  * write, then the MSI. An MSI that arrives with the claim or a clear of its
@@ -66,9 +67,10 @@
  * leaves 0x40000000 with APLIC_DELIVERY, else 0, and clears the rest of the
  * file.
  *
- * o_eip, registered, is the interrupt line for mip.MEIP or mip.SEIP: with
- * eidelivery 1 it is set while o_topei is nonzero, with 0x40000000 it is
- * i_aplic_eip one cycle later, and with 0 it is clear.
+ * o_eip, registered, is the interrupt line for mip.MEIP or mip.SEIP, from
+ * the registers of a cycle earlier: with eidelivery 1 it is set while some
+ * identity is pending, enabled and below a nonzero eithreshold, with
+ * 0x40000000 it is i_aplic_eip one cycle later, and with 0 it is clear.
  */
 module imsic_file #(
     // Implemented identities 1..NUM_IDS: one less than a multiple of 64, 63 to 2047.
@@ -204,46 +206,24 @@ module imsic_file #(
   assign deliver_d = wr_eidelivery ? (eidelivery_new[0] && !aplic_d) : deliver_q;
 
   // ---------------------------------------------------------------------------
-  // Top identity and interrupt line of the next state
+  // Top identity and interrupt line, a cycle behind the registers
   // ---------------------------------------------------------------------------
-  // Each strobe case computes its candidates and winner independently. The
-  // late claim/write strobes select only the finished results. MSI and RMW
-  // operands arrive from registers, and the claim identity is already decoded.
-  (* keep = "true" *) logic [IdBits-1:0] top_case[4];
-  (* keep = "true" *) logic [NumBits-1:0] first_case[4];
-  (* keep = "true" *) logic [3:0] line_case;
-  for (genvar c = 0; c < 4; c++) begin : gen_top_case
-    localparam bit Claim = (c & 1) != 0;
-    localparam bit Write = (c & 2) != 0;
-    logic [NumBits-1:0] pending, enabled, candidates;
-    logic [IdBits-1:0] threshold;
-    logic delivery, aplic;
-    assign threshold = (Write && select_onehot[1]) ? eithreshold_new[IdBits-1:0] : eithreshold_q;
-    assign aplic = (Write && select_onehot[0]) ? (APLIC_DELIVERY && eidelivery_new[30]) : aplic_q;
-    assign delivery = (Write && select_onehot[0]) ? (eidelivery_new[0] && !aplic) : deliver_q;
-    always_comb begin
-      for (int i = 0; i < int'(NumBits); i++) begin
-        pending[i] = eip_q[i] && !(Claim && top_onehot_q[i]);
-        if (Write && select_onehot[2+i/64])
-          pending[i] = (pending[i] && i_ireg_keep[i%64]) || i_ireg_set[i%64];
-        pending[i] |= msi_onehot[i];
-        enabled[i] = (Write && select_onehot[2+NumWords+i/64]) ?
-            ((eie_q[i] && i_ireg_keep[i%64]) || i_ireg_set[i%64]) : eie_q[i];
-        candidates[i] = (i != 0) && pending[i] && enabled[i] &&
-            ((threshold == '0) || (IdBits'(i) < threshold));
-      end
-      line_case[c] = (delivery && (|candidates)) || (aplic && i_aplic_eip);
+  // No claim, write or MSI reaches the priority tree in the cycle it happens.
+  logic [NumBits-1:0] candidates, top_onehot_d;
+  logic [IdBits-1:0] top_d;
+  always_comb begin
+    for (int i = 0; i < int'(NumBits); i++) begin
+      candidates[i] = (i != 0) && eip_q[i] && eie_q[i] &&
+          ((eithreshold_q == '0) || (IdBits'(i) < eithreshold_q));
     end
-    imsic_priority #(
-        .NUM_IDS(NUM_IDS)
-    ) priority_tree (
-        .i_candidates(candidates),
-        .o_top(top_case[c]),
-        .o_onehot(first_case[c])
-    );
   end
-  logic [1:0] strobe_case;
-  assign strobe_case = {i_ireg_we, i_topei_claim};
+  imsic_priority #(
+      .NUM_IDS(NUM_IDS)
+  ) priority_tree (
+      .i_candidates(candidates),
+      .o_top(top_d),
+      .o_onehot(top_onehot_d)
+  );
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -261,9 +241,9 @@ module imsic_file #(
       eithreshold_q <= eithreshold_d;
       deliver_q <= deliver_d;
       aplic_q <= aplic_d;
-      top_q <= top_case[strobe_case];
-      top_onehot_q <= first_case[strobe_case];
-      eip_line_q <= line_case[strobe_case];
+      top_q <= top_d;
+      top_onehot_q <= top_onehot_d;
+      eip_line_q <= (deliver_q && (|candidates)) || (aplic_q && i_aplic_eip);
     end
   end
 
@@ -366,23 +346,37 @@ module imsic_file #(
     end
   end
 
-  // *topei: zero, or a candidate; no candidate is lower. The value repeats
-  // the identity as its priority.
+  // Last cycle's candidates, which *topei and the line report.
+  logic [NumBits-1:0] f_cand_p;
   always_comb begin
-    if (f_past_valid) begin
-      assert ((top_q == '0) || f_top_is_cand);
+    for (int i = 0; i < int'(NumBits); i++) begin
+      f_cand_p[i] = (i != 0) && (i <= int'(NUM_IDS)) && f_eip_p[i] && f_eie_p[i] &&
+          ((f_thr_p == '0) || (i < int'(f_thr_p)));
+    end
+  end
+
+  // *topei: the lowest of last cycle's candidates, or zero when there were
+  // none. Without a claim or write last cycle it is still a candidate, since
+  // an MSI only adds pending bits. The value repeats the identity as its
+  // priority.
+  always_comb begin
+    if (f_past_valid && !f_rst_p) begin
+      assert ((top_q == '0) || f_cand_p[top_q]);
       for (int i = 1; i < int'(NumBits); i++) begin
-        if (f_cand[i]) assert ((top_q != '0) && (int'(top_q) <= i));
+        if (f_cand_p[i]) assert ((top_q != '0) && (int'(top_q) <= i));
       end
+      if (!f_we_p && !f_claim_p) assert ((top_q == '0) || f_top_is_cand);
+    end
+    if (f_past_valid) begin
       assert (o_topei == ((top_q == '0) ? 32'b0 : ((32'(top_q) << 16) | 32'(top_q))));
     end
   end
 
-  // The interrupt line: with eidelivery 1, a candidate exists; with
-  // 0x40000000, the APLIC's line a cycle earlier.
+  // The interrupt line, from last cycle's registers: with eidelivery 1, a
+  // candidate existed; with 0x40000000, the APLIC's line.
   always_comb begin
     if (f_past_valid && !f_rst_p) begin
-      assert (o_eip == ((deliver_q && (|f_cand)) || (aplic_q && f_aplic_eip_p)));
+      assert (o_eip == ((f_deliver_p && (|f_cand_p)) || (f_aplic_p && f_aplic_eip_p)));
     end
   end
 
@@ -425,47 +419,6 @@ module imsic_file #(
     end
   end
 
-`ifdef IMSIC_TOP_EQUIV
-  logic [NumBits-1:0] f_pending_next, f_enabled_next;
-  logic [IdBits-1:0] f_threshold_next, f_top_next;
-  logic [63:0] f_delivery_next;
-  logic f_line_next;
-  always_comb begin
-    f_pending_next   = eip_q;
-    f_enabled_next   = eie_q;
-    f_threshold_next = eithreshold_q;
-    f_delivery_next  = eidelivery;
-    if (i_topei_claim) f_pending_next[top_q] = 1'b0;
-    if (i_ireg_we) begin
-      if (i_iselect == 8'h70) f_delivery_next = (eidelivery & i_ireg_keep) | i_ireg_set;
-      if (i_iselect == 8'h72)
-        f_threshold_next = IdBits'((64'(eithreshold_q) & i_ireg_keep) | i_ireg_set);
-      for (int w = 0; w < int'(NumWords); w++) begin
-        if (i_iselect == 8'(8'h80 + 2 * w))
-          f_pending_next[64*w+:64] = (f_pending_next[64*w+:64] & i_ireg_keep) | i_ireg_set;
-        if (i_iselect == 8'(8'hC0 + 2 * w))
-          f_enabled_next[64*w+:64] = (eie_q[64*w+:64] & i_ireg_keep) | i_ireg_set;
-      end
-    end
-    if (i_msi_valid && (i_msi_id <= 11'(NUM_IDS))) f_pending_next[i_msi_id] = 1'b1;
-    f_pending_next[0] = 1'b0;
-    f_enabled_next[0] = 1'b0;
-    f_top_next = '0;
-    for (int i = int'(NUM_IDS); i > 0; i--) begin
-      if (f_pending_next[i] && f_enabled_next[i] &&
-          ((f_threshold_next == '0) || (i < int'(f_threshold_next))))
-        f_top_next = IdBits'(i);
-    end
-    f_line_next = (APLIC_DELIVERY && f_delivery_next[30]) ? i_aplic_eip :
-        (f_delivery_next[0] && (f_top_next != '0));
-    if (f_past_valid) begin
-      assert (top_case[strobe_case] == f_top_next);
-      assert (line_case[strobe_case] == f_line_next);
-      assert (eip_d == f_pending_next);
-      assert (eie_d == f_enabled_next);
-    end
-  end
-`endif
 
   // Reachability.
   always_comb begin

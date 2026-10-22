@@ -210,19 +210,24 @@ in bits 10:0, or zero when there is none. It does not depend on
 of the identity `o_*_topei` reports in the same cycle and ignores the value
 written; with `*topei` zero it changes nothing. A csrrw of `*topei`
 therefore reads an identity and claims it in one access. `o_*_topei` is
-registered, and the file recomputes it from its next state on every edge, so
-it always reports the current registers: a claim on the next cycle reports
-the next identity.
+registered from the file's registers alone, so it reports them as they were a
+cycle earlier: after a claim, a `*ireg` write or an MSI, it shows the result
+one cycle after the registers do. The hart must therefore leave at least one
+cycle between a claim or `*ireg` write and its next `*topei` read or claim.
+FROST's CSR accesses never come in consecutive cycles, which an assertion in
+`cpu_ooo` checks. Between two accesses only MSIs change a file, and they only
+add pending bits, so the identity a claim reads is always still pending and
+enabled.
 
 ## Delivery
 
 A file's line is set while `eidelivery` is 1 and some identity is pending,
-enabled, and below a nonzero `eithreshold`, that is, while `*topei` is
-nonzero. With `eidelivery` 0 the line is clear. The line is registered on the
-same clock edge as the file's state, so it always matches the state: a store
-presented to the write port in one cycle sets its pending bit, and can raise
-the line, at the end of the next cycle, and a claim of the last such identity
-drops the line at the end of the claim's cycle.
+enabled, and below a nonzero `eithreshold`. With `eidelivery` 0 the line is
+clear. Like `*topei`, the line is registered from the file's registers and
+follows them a cycle later: a store presented to the write port in one cycle
+sets its pending bit at the end of the next cycle and can raise the line a
+cycle after that, and a claim of the last such identity drops the line at the
+end of the cycle after the claim.
 
 With `APLIC_DELIVERY`, `eidelivery` may hold `0x40000000`. The hart's
 external interrupt at the file's level then comes from the APLIC in direct
@@ -241,7 +246,8 @@ holds only 0 or 1 and resets to 0, and the APLIC inputs are unused.
 ## Simultaneous events
 
 The updates of one cycle take effect in this order: a claim, then a `*ireg`
-write, then an MSI. Hart-side reads report the state before all three. An
+write, then an MSI. A `*ireg` read reports the state before all three, and
+`*topei` the state a cycle before that. An
 MSI therefore acts as if it arrived a cycle after a hart-side access in the
 same cycle, which the AIA allows because a store's effect on a file may be
 delayed:
@@ -249,7 +255,7 @@ delayed:
 | In one cycle, at one file | Result |
 |---------------------------|--------|
 | An MSI for identity i and a claim of i | The claim reads and clears i; i is pending again after the edge |
-| An MSI for identity j and a claim of i | The claim reads and clears i; j is pending after the edge, and the next `*topei` reports it if it wins |
+| An MSI for identity j and a claim of i | The claim reads and clears i; j is pending after the edge, and `*topei` reports it a cycle later if it wins |
 | An MSI for i and a `*ireg` write to i's `eip` word | The write's read returns the word without i, the write lands, and i is pending after the edge, even if the write cleared it |
 | An MSI and a write to `eie`, `eithreshold` or `eidelivery` | Both take effect |
 | A claim and a `*ireg` write | The write applies to the state after the claim; the CSR file issues one CSR access at a time, so this does not arise |
@@ -290,15 +296,19 @@ values above `NUM_IDS`, the other offsets, unused pages and addresses outside
 the regions, `*topei` and claims, the lines with each `eidelivery` value, the
 simultaneous events above, separate harts and levels, the register sequences
 of OpenSBI's and Linux's IMSIC drivers, and random traffic on back-to-back
-cycles. `tests/test_run_cocotb.py` runs it in three shapes: `imsic` (two
+cycles. The directed tests leave a cycle after each write or claim, as the CPU
+does; the random traffic does not, and a claim in the cycle right after
+another is checked to read the same identity again. `tests/test_run_cocotb.py` runs it in three shapes: `imsic` (two
 harts, 191 identities), `imsic_default` (the defaults) and `imsic_limits`
 (three harts, 2047 identities, no APLIC delivery, other bases).
 
 The formal target `formal/imsic.sby` checks the properties in the modules'
 `ifdef FORMAL` blocks, written from the spec's register map and rules apart
-from the logic. For each file: `*topei` is zero or a candidate and no
-candidate is lower; the line is set exactly when `eidelivery` is 1 and a
-candidate exists, or follows the APLIC's line with `0x40000000`; every `*ireg`
+from the logic. For each file: `*topei` is the lowest candidate of a cycle
+earlier, or zero when there was none, and after a cycle without a claim or
+`*ireg` write it is still a candidate; the line is set exactly when
+`eidelivery` was 1 and a candidate existed a cycle earlier, or follows the
+APLIC's line with `0x40000000`; every `*ireg`
 read matches the map and only the odd selects from `0x81` are illegal; each
 `eip` and `eie` bit, `eithreshold` and `eidelivery` take exactly the update
 the claim, the write and the MSI of the previous cycle give, so an MSI sets
@@ -323,20 +333,18 @@ harts, locked addresses, source and `genmsi` delivery, direct passthrough,
 level EOI and claim races, CPU-store arbitration, marker ordering and
 rejection of every high address bit before the 32-bit IMSIC port.
 
-The file computes the next top identity, its one-hot decode and the output
-line for all four claim/write strobe combinations in parallel, then selects
-the finished result with the strobes. Each case uses an `imsic_priority`
-instance with preserved hierarchy. Its eight-identity groups and 64-identity
-words compute earlier candidates in parallel, and each identity bit is a
-reduction of a fixed mask. The final strobe mux is outside that hierarchy.
-`formal/imsic_top_equiv.sby` proves
-that result equals a sequential claim, write and MSI reference at 63 and 191
-identities, including simultaneous claims and writes. `PREDECODED_SELECT`
-accepts a registered one-hot select in the order eidelivery, eithreshold,
-eip words, eie words. `PREDECODED_MSI` accepts a registered identity bitmap.
-The CPU uses both; the standalone controller uses combinational decodes.
-The select decode and MSI bitmap must describe the accompanying binary
-select and MSI inputs. Identity zero is always ignored.
+The file computes the top identity, its one-hot decode and the output line
+from its registers alone, through one `imsic_priority` tree, so no claim,
+`*ireg` write or MSI reaches the tree in the cycle it happens. The tree's
+eight-identity groups and 64-identity words find earlier candidates in
+parallel, and each identity bit is a reduction of a fixed mask.
+`PREDECODED_SELECT` accepts a registered one-hot select in the order
+eidelivery, eithreshold, eip words, eie words. `PREDECODED_MSI` accepts a
+registered identity bitmap. The CPU uses both; the standalone controller uses
+combinational decodes. The select decode and MSI bitmap must describe the
+accompanying binary select and MSI inputs. Identity zero is always ignored.
+`formal/imsic_file.sby` proves the file's properties in the CPU's
+configuration, with both decodes registered.
 
 The CPU programs `imsic_csr_test`, `imsic_msi_test` and
 `imsic_aplic_coexist_test` run in the interrupt CI group. They cover CSR

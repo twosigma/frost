@@ -20,7 +20,10 @@ CSR file will: an *iselect value, *ireg writes in the Zicsr keep/set form,
 and *topei claims. Every cycle it compares each file's *ireg read, illegal
 flag and *topei with the cycle-level model in imsic_model.py, and after
 every clock edge both interrupt lines of every hart; the directed tests also
-check the values the AIA specification gives. IMSIC_NUM_HARTS,
+check the values the AIA specification gives. A file reports *topei a cycle
+behind its registers, so the directed tests, like the CPU, leave a cycle
+after each write or claim; the random test does not, and the model checks
+every cycle of it. IMSIC_NUM_HARTS,
 IMSIC_NUM_IDS, IMSIC_APLIC_DELIVERY, IMSIC_M_BASE_ADDR and IMSIC_S_BASE_ADDR
 must match the -G parameters of the build (test_run_cocotb.py sets both).
 """
@@ -226,8 +229,14 @@ class Bench:
             await self.mmio_write(page + SETEIPNUM_LE, identity)
 
     async def access(self, level: int, hart: int, access: CsrAccess) -> tuple[int, int]:
-        """One hart-side access; return the (ireg, topei) read with it."""
+        """One hart-side access; return the (ireg, topei) read with it.
+
+        A write or claim is followed by an idle cycle, as the CPU leaves one
+        between CSR accesses, so the next access sees *topei after it.
+        """
         samples = await self.cycle(accesses={(level, hart): access})
+        if access.write or access.claim:
+            await self.idle()
         return samples[(level, hart)]
 
     async def read(self, level: int, hart: int, select: int) -> int:
@@ -556,8 +565,9 @@ async def test_topei_and_claims(dut: Any) -> None:
     """*topei reports the lowest pending and enabled identity; a claim clears it.
 
     A claim with nothing to report changes nothing; a disabled identity is
-    neither reported nor cleared; claims on consecutive cycles take the
-    identities in order.
+    neither reported nor cleared; claims a cycle apart take the identities in
+    order. A claim in the cycle right after another, which the CPU never
+    issues, reads the same identity again and clears nothing.
     """
     bench = Bench(dut)
     await bench.start()
@@ -576,16 +586,22 @@ async def test_topei_and_claims(dut: Any) -> None:
     await bench.settle()
     assert bench.line(level, hart) == 0
     assert await bench.read(level, hart, eip_select(disabled)) == 1 << disabled
-    # The same claims on consecutive cycles, with no settling between them.
+    # The same claims a cycle apart, with no settling between them.
     for identity in identities:
         await bench.msi(level, hart, identity)
     values = []
     for _ in range(len(identities) + 1):
-        _, topei = await bench.access(
-            level, hart, CsrAccess(bench.selects[(level, hart)], claim=True)
-        )
-        values.append(topei)
+        values.append(await bench.claim(level, hart))
     assert values == [topei_value(identity) for identity in identities] + [0]
+    # Back-to-back claims: the second reads the first's identity again.
+    first, second = identities[:2]
+    for identity in (first, second):
+        await bench.msi(level, hart, identity)
+    claim = {(level, hart): CsrAccess(bench.selects[(level, hart)], claim=True)}
+    values = [(await bench.cycle(accesses=claim))[(level, hart)][1] for _ in range(2)]
+    assert values == [topei_value(first)] * 2
+    await bench.expect_topei(level, hart, second)
+    assert await bench.claim(level, hart) == topei_value(second)
 
 
 @cocotb.test()
