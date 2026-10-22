@@ -377,6 +377,7 @@ module cpu_tb
       .i_uncached_read_status(2'b00),
       .o_uncached_write_byte_en(),
       .o_uncached_write_size(),
+      .o_uncached_write_buffered(),
       .i_uncached_write_done(1'b0),
       .i_uncached_write_status(2'b00),
       .i_uncached_write_inflight(1'b0),

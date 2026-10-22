@@ -57,8 +57,9 @@ INCLUDES = -I. -Iriscv-arch-test/riscv-test-suite/env
 # tests/test_arch_compliance.py selects this with --mem-config
 # (FROST_ARCH_MEM_CONFIG under pytest).
 #   ddr:    code, data, and signature in cached DDR (default).
-#   icache: code in DDR; data and signature in uncached low BRAM.
-#   bram:   code, data, and signature in low BRAM; neither cache is used.
+#   icache: code in DDR; data and signature in low BRAM.
+#   bram:   code, data, and signature in low BRAM. The platform's Normal
+#           read caches and narrow write-through stores serve this region.
 MEM_CONFIG ?= ddr
 
 # Each config picks a linker script, a boot stub, and the set of sections

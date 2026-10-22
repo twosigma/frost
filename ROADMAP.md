@@ -109,9 +109,26 @@ Two X3 harts with inter-processor interrupts, per-hart PLIC contexts, and
 RVWMO litmus tests. The single-hart queue sizes and lane choices will need
 revisiting against the timing and memory-traffic cost of the second hart.
 
-There are two candidate coherence points. One is the L2, the ordering point
-for all traffic below the L1s; a sequencer in front of it already probes the
-L1D for every DMA request. The other is a coherence unit at the L1 level,
+The current standalone `cpu_top` contains L0, L1D, L1I, and L2. Its outgoing
+AXI4 master is noncoherent: connecting two such masters to shared RAM does
+not establish coherent SMP. The separate FROST coherent ingress gives DMA
+and NIC access to one tile's hierarchy; it is not a complete inter-tile
+ownership and snoop protocol. See the [CPU boundary](hw/rtl/cpu_top/README.md).
+
+The proposed organization for the shared-L2 options below is a per-hart
+submodule containing the pipeline, MMUs, and private caches, with a cluster
+wrapper containing the shared L2 and inter-hart coherence logic. The existing
+single-hart `cpu_top` can retain its integration interface by composing one
+hart with its L2. Thus the shared L2 would sit outside each per-hart boundary
+but inside the cluster, whose downstream memory master can remain plain
+AXI4. Factoring that boundary and specifying the coherent internal interface
+are prerequisites to SMP implementation. Keeping an L2 in every hart instead
+would require a separate design for coherence between those private L2s.
+
+Within the proposed cluster there are two candidate coherence points. One
+is the shared L2, the ordering point for all traffic below the L1s; today's
+sequencer already probes the single L1D for every DMA request and would need
+to handle all harts. The other is a coherence unit at the L1 level,
 between the L1D caches and the L2. It keeps a copy of each L1D's tags, so a
 request probes only the caches that hold the line; it runs MESI with
 cache-to-cache transfer, and the DMA port connects to it as another
@@ -126,6 +143,11 @@ until they retire, is the starting point. A tag copy that filters probes must
 also cover data the load queue still holds after the L1D evicts a line. Probe
 data and acknowledgements must keep making progress when every queue is
 full.
+
+The optional Normal-memory read caches are outside today's coherent ingress.
+Keep their memory private to a hart, disable that caching for shared memory,
+or explicitly extend the coherence design to cover it; write-through stores
+alone do not invalidate another hart's cached copy.
 
 Done means Debian running on both harts, multi-hart scaling reported
 separately from single-hart performance, routed timing met, and hours of

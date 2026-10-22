@@ -85,6 +85,13 @@ Block benches ignore this setting, and so do applications with a fixed
 layout, such as `opensbi_smoke`. In the DDR tier, pytest skips the programs
 in `DDR_TIER_EXCLUDE`: the DDR probes (`ddr_*`), which already target DDR,
 and the fetch fuzzers (`*_fetch_fuzz`), which use their own build.
+`served_window_resteer_fetch_fuzz` disables the optional Normal read caches
+so its loop continues to encounter the SoC's AXI instruction-delay model.
+Each reset run must encounter both injected AXI delays and predicted-target
+fetch waits, and finish all 2,000 iterations with correct counts and sums.
+The AXI provider retains its delayed request, so this program no longer
+requires a stale-window resteer. The `if_stage` bench supplies stale window
+tags explicitly and checks rejection, retry, and delayed-target handling.
 
 `debug_test` drives the JTAG debug module directly; `debug_openocd_test` runs
 a real OpenOCD session through `remote_bitbang`. Without OpenOCD installed
@@ -138,6 +145,9 @@ overwrites that copy; the bench reloads the original image through the BRAM
 programming port while holding reset before the second run. Both signatures
 must still match the reference. DDR and `icache` run once because their
 images load in place and a CPU reset does not restore mutated inputs.
+Both startup stubs initialize `a4`, which the pinned suite's
+`RVTEST_INIT_GPRS` omits but its hints signatures record. This makes the
+initial state match Spike on every run without assuming GPRs clear on reset.
 The extensions are I, M, A, F, D, C, B, K (Zbkb only), Zicond, Zifencei,
 privilege, D_Zcd, and hints; Zcf exists only on RV32. The tests come from the
 suite's `rv64i_m` directory; F and D also run the tests that RV32 and RV64

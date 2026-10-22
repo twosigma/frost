@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Served-window resteer loop for the fetch-latency fuzz build, with a
+# Predicted branch-target loop for the fetch-latency fuzz build, with a
 # self-defined _start (no crt0.S).
 # ARCH is common.mk's ISA without F and D, and must stay within that ISA.
 include ../../common/arch.mk
