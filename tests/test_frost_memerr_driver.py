@@ -196,3 +196,28 @@ def test_register_map_matches_the_hardware() -> None:
     assert "#define MEMORY_ERROR_CE_ADDR_NEW (1u << 4)" in BARE_METAL_HEADER.read_text()
     assert "#define MEMORY_ERROR_UE_ADDR_NEW (1u << 5)" in BARE_METAL_HEADER.read_text()
     assert "#define MEMORY_ERROR_PLIC_SOURCE 5u" in BARE_METAL_HEADER.read_text()
+
+
+def test_sysfs_attributes_are_documented() -> None:
+    """The public sysfs table includes every hardware and software counter."""
+    source = DRIVER_SOURCE.read_text()
+    attrs = set(re.findall(r"&dev_attr_(\w+)\.attr,", source))
+    readme = (DRIVER_DIR / "README.md").read_text()
+    table = readme.split("| Attribute | Contents |", 1)[1].split("\n\n", 1)[0]
+    documented = {
+        name
+        for row in table.splitlines()
+        if row.startswith("|")
+        for name in re.findall(r"`(\w+)`", row.split("|")[1])
+    }
+    assert attrs == documented
+    assert {"scrubbed_lines", "scrub_skipped", "patrol_lines", "patrol_passes"} <= attrs
+
+
+def test_scrub_line_size_matches_the_ddr_port() -> None:
+    """The scrubber must cover one whole line at FROST's DDR port."""
+    driver = _defines(DRIVER_SOURCE.read_text(), "MEMERR_")
+    frost = (REPO_ROOT / "hw/rtl/frost.sv").read_text()
+    size = re.search(r"parameter int unsigned L2_LINE_BYTES = (\d+),", frost)
+    assert size is not None
+    assert driver["LINE_BYTES"] == int(size.group(1))

@@ -42,13 +42,44 @@ logs what arrived since the last one: an uncorrectable error at `KERN_CRIT`,
 with its address or, when the controller's capture was lost, without one;
 the number of corrected errors, and each newly captured corrected-error
 address, as rate-limited warnings; and DDR error responses with the latest
-one's response code and AXI id as a rate-limited error. A read that ends in an error response
-still delivers its data, so the log is the only sign of it; the driver does not
-stop the kernel.
+one's response code and AXI id as a rate-limited error. A read that ends in an
+error response still delivers its data. The driver reports the error without
+stopping the kernel.
+
+Each new corrected-error address queues a scrub in a work item. The driver
+maps its page with `vmap(..., PAGE_KERNEL)` and performs an `atomic64_add(0)`
+on each of the line's eight words. FROST writes even an unchanged AMO result.
+The caches hold the corrected data until the dirty line reaches DDR and gets
+fresh ECC. Coherent DMA and NIC writes wait for each AMO's atomic window, so
+the scrub cannot overwrite a concurrent device write with an older value.
+The temporary mapping is writable even when the linear-map alias is not.
+Only lines wholly within System RAM with an online `struct page` are touched.
+Other addresses, including reserved firmware outside System RAM, are skipped.
+
+The unit retains only the latest address. The X3 reader captures at most one
+corrected-error address per poll interval, and some captures have no address.
+Scrubbing therefore cannot account for every corrected-error count. The
+driver queues up to 64 observed addresses. A full queue, an unsafe address,
+or a failed temporary mapping increments `scrub_skipped`.
+
+A delayed work item patrols System RAM with one 8-byte
+`copy_from_kernel_nofault` read per 64-byte line through the linear map.
+An L2 miss fetches the whole line and lets the DDR controller check its ECC.
+An L2 hit does not check DDR again. Unmapped pages are tolerated, and pages
+without an online `struct page` are not read. A batch attempts at most 4096
+lines, yields between pages, and stops at a time limit checked after each
+page. Corrected errors found by patrol use the same interrupt and scrub path.
+
+The read-only module parameter `patrol_seconds` sets the target time for a
+full pass. Its default is `86400` (one day); `0` disables patrol. Work is
+spread over the pass, with smaller batches at low rates. Scheduling and the
+batch limits can make a fast requested pass take longer. Set the parameter
+when loading the module, for example `modprobe frost_memerr patrol_seconds=3600`.
+Reload the module to change it.
 
 The device's sysfs directory,
 `/sys/bus/platform/drivers/frost_memerr/40021000.memory-controller/`, holds
-read-only attributes that read the unit's registers:
+read-only attributes:
 
 | Attribute | Contents |
 |---|---|
@@ -57,12 +88,44 @@ read-only attributes that read the unit's registers:
 | `ce_count`, `ue_count` | Corrected errors, and uncorrectable errors the reader reported |
 | `axi_read_errors`, `axi_write_errors` | DDR error responses to the cache hierarchy's reads and writes |
 | `ce_addr`, `ue_addr` | The physical address of the 64-byte line of the latest error of each kind with a captured address |
+| `scrubbed_lines` | Line scrubs completed, including debugfs requests |
+| `scrub_skipped` | Scrub requests skipped, including the self-test's deliberate MMIO request |
+| `patrol_lines` | Successful patrol reads, one per line |
+| `patrol_passes` | Completed traversals of System RAM, including lines whose read was skipped or faulted |
 
-Counts start at the unit's reset, the CPU reset before the kernel was loaded.
+Hardware counts start at the unit's reset, the CPU reset before the kernel was
+loaded. The four software counters start at driver probe and reset on reload.
 The X3's controller captures one corrected-error address per poll interval,
 and one uncorrectable-error address until its UE status is cleared over JTAG.
 Each uncorrectable read the CPU makes also returns an error response, which
 `axi_read_errors` counts.
+
+## debugfs
+
+With debugfs mounted at `/sys/kernel/debug`, the driver provides two files in
+`frost_memerr/`. Root can write a physical address to `scrub`. The driver
+rounds it down to a 64-byte line and scrubs it synchronously. A skipped request
+returns `ENXIO` for an address outside eligible RAM or `ENOMEM` for a failed
+mapping. For example:
+
+```bash
+echo 0x80200000 > /sys/kernel/debug/frost_memerr/scrub
+cat /sys/kernel/debug/frost_memerr/selftest
+```
+
+Reading `selftest` allocates a page, fills a pattern, scrubs all its lines
+through the physical-address path, and checks that the pattern survived.
+It also requires the unit's own MMIO address to be rejected. It prints exactly
+`FROST_MEMERR_SELFTEST_PASS` or `FROST_MEMERR_SELFTEST_FAIL`. On the pinned
+kernel's 4 KiB pages, a successful run adds 64 scrubbed lines and one skipped
+request. This tests the software path without injecting an ECC error.
+
+The simulation program `sw/apps/ecc_scrub_test` runs from BRAM and tests the
+writeback mechanism. The DDR model returns SLVERR on writes of its test line,
+and `AXI_WR_ERRS` counts those writes. A clean read followed by eviction
+produces no write. Eight AMO no-ops preserve the data and produce exactly one
+write after `fence.i` and L2 eviction. Run it with
+`./scripts/frost.py cocotb ecc_scrub_test`.
 
 ## In the FROST test initramfs and the hardware regression
 
@@ -71,8 +134,11 @@ kernel's headers, and `../debian_kernel.py initramfs` adds the module and a
 boot script that loads it and prints `FROST_MEMERR_MODULE_PASS <release>`. See
 [Driver modules](../README.md#driver-modules). The hardware regression's
 `linux_boot` stage builds the module, installs it in the NFS root's
-`/usr/local/bin`, loads it after login, and requires the reader to be active
-and polling with every count zero.
+`/usr/local/bin`, loads it after login with `patrol_seconds=10`, and runs the
+debugfs self-test. It requires its pass line, the expected scrub counters,
+advancing patrol reads, and a full patrol pass within 150 one-second waits.
+The reader must be active and polling, with all four hardware error counts
+zero. The stage reloads the module at the default daily rate before continuing.
 
 ## As a DKMS module on Debian
 

@@ -357,6 +357,9 @@ disabled, legacy library benches retain their original completion behavior.
 The behavioral DDR model accepts `+axi_rd_error_addr=<hex>` and
 `+axi_wr_error_addr=<hex>` for region-relative failed lines. The legacy bridge
 also requires `+axi_error_check=0` when such errors are intentional.
+`sw/apps/ecc_scrub_test` counts writebacks with the write form: after an
+eviction, a clean line produces none, and a line rewritten with atomic no-ops,
+as the Linux memory error driver scrubs, produces exactly one.
 
 The interconnect's own reset is different. While it is in reset, AXI
 requires every VALID low, so the bridge takes that reset as a second input

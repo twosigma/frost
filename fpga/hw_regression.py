@@ -255,27 +255,63 @@ LINUX_COUNTER_FAIL_RE = re.compile(
 
 # The memory error unit's driver (linux/frost-memerr). The Debian root does not
 # carry it, so the preflight installs the module built for the pinned kernel
-# beside the programs, and the stage loads it and reads its counters before and
-# after a one-second sleep: the X3's ECC reader must be active and polling, and
-# nothing may have reported a memory error. Digits after ``active=`` tell the
-# output from the echoed command. The device is the packer's
-# memory-controller@40021000 node.
+# beside the programs. Check the scrub self-test and an accelerated RAM patrol,
+# allowing up to LINUX_MEMERR_PATROL_WAITS one-second sleeps for a pass, then
+# reload with the daily default.
+# Hardware error counts must stay zero. The self-test accounts for 64 scrubbed
+# lines and one skipped MMIO request on the pinned kernel's 4 KiB pages.
+# Digits after ``active=`` distinguish output from the echoed command.
 LINUX_MEMERR_TOKEN = "FROST_MEMERR"
+# The batch and time limits stretch an accelerated pass over the X3's 1 GiB to
+# about 80 s.
+LINUX_MEMERR_PATROL_WAITS = 150
+LINUX_MEMERR_SELFTEST_PASS = "FROST_MEMERR_SELFTEST_PASS"
+LINUX_MEMERR_SELFTEST_RE = re.compile(
+    r"^\r*" + LINUX_MEMERR_SELFTEST_PASS + r"[ \t\r]*\n", re.MULTILINE
+)
 LINUX_MEMERR_MODULE = f"{LINUX_ROOT_BIN}/{MEMERR.name}.ko"
 LINUX_MEMERR_DEVICE = (
     f"/sys/bus/platform/drivers/{MEMERR.name}/40021000.memory-controller"
 )
 LINUX_MEMERR_COMMAND = (
-    f"insmod {LINUX_MEMERR_MODULE}; d={LINUX_MEMERR_DEVICE}; "
-    "p=$(cat $d/ecc_polls); sleep 1; "
-    f"echo {LINUX_MEMERR_TOKEN} active=$(cat $d/ecc_active) "
+    f"rmmod {MEMERR.name} 2>/dev/null; "
+    f"if insmod {LINUX_MEMERR_MODULE} patrol_seconds=10; then "
+    "mountpoint -q /sys/kernel/debug || mount -t debugfs debugfs /sys/kernel/debug; "
+    f"d={LINUX_MEMERR_DEVICE}; p=$(cat $d/ecc_polls); "
+    "l=$(cat $d/patrol_lines); b=$(cat $d/patrol_passes); "
+    f"cat /sys/kernel/debug/{MEMERR.name}/selftest; n=0; "
+    'while [ "$(cat $d/patrol_passes)" -le "$b" ] && '
+    f'[ "$n" -lt {LINUX_MEMERR_PATROL_WAITS} ]; do '
+    "sleep 1; n=$((n+1)); done; "
+    'm="active=$(cat $d/ecc_active) '
     "polls=$p,$(cat $d/ecc_polls) ce=$(cat $d/ce_count) ue=$(cat $d/ue_count) "
-    "rd=$(cat $d/axi_read_errors) wr=$(cat $d/axi_write_errors)"
+    "rd=$(cat $d/axi_read_errors) wr=$(cat $d/axi_write_errors) "
+    "scrubbed=$(cat $d/scrubbed_lines) skipped=$(cat $d/scrub_skipped) "
+    'patrol=$l,$(cat $d/patrol_lines) passes=$b,$(cat $d/patrol_passes)"; '
+    f"rmmod {MEMERR.name} && insmod {LINUX_MEMERR_MODULE}; r=$?; "
+    f"echo {LINUX_MEMERR_TOKEN} $m restore=$r; "
+    "else echo FROST_MEMERR_LOAD_FAIL; fi"
 )
-LINUX_MEMERR_FIELDS = ("active", "polls_before", "polls_after", "ce", "ue", "rd", "wr")
+LINUX_MEMERR_FIELDS = (
+    "active",
+    "polls_before",
+    "polls_after",
+    "ce",
+    "ue",
+    "rd",
+    "wr",
+    "scrubbed",
+    "skipped",
+    "patrol_before",
+    "patrol_after",
+    "passes_before",
+    "passes_after",
+    "restore",
+)
 LINUX_MEMERR_RE = re.compile(
     r"^\r*" + LINUX_MEMERR_TOKEN + r" active=(\d+) polls=(\d+),(\d+) ce=(\d+) "
-    r"ue=(\d+) rd=(\d+) wr=(\d+)[ \t\r]*\n",
+    r"ue=(\d+) rd=(\d+) wr=(\d+) scrubbed=(\d+) skipped=(\d+) "
+    r"patrol=(\d+),(\d+) passes=(\d+),(\d+) restore=(\d+)[ \t\r]*\n",
     re.MULTILINE,
 )
 
@@ -833,8 +869,15 @@ def memerr_values(serial_buf: str) -> dict[str, int] | None:
     matches = list(LINUX_MEMERR_RE.finditer(serial_buf))
     if not matches:
         return None
-    values = (int(value) for value in matches[-1].groups())
-    return dict(zip(LINUX_MEMERR_FIELDS, values, strict=True))
+    match = matches[-1]
+    values = (int(value) for value in match.groups())
+    result = dict(zip(LINUX_MEMERR_FIELDS, values, strict=True))
+    # A previous command's pass cannot validate a later readback.
+    start = matches[-2].end() if len(matches) > 1 else 0
+    result["selftest"] = int(
+        LINUX_MEMERR_SELFTEST_RE.search(serial_buf, start, match.start()) is not None
+    )
+    return result
 
 
 def memerr_problems(values: Mapping[str, int]) -> list[str]:
@@ -855,6 +898,16 @@ def memerr_problems(values: Mapping[str, int]) -> list[str]:
     ):
         if values[name]:
             problems.append(f"{values[name]} {label}")
+    if not values["selftest"]:
+        problems.append(f"no {LINUX_MEMERR_SELFTEST_PASS} line")
+    if values["scrubbed"] < 64 or values["skipped"] != 1:
+        problems.append("scrub counters do not include the page and MMIO self-test")
+    if values["patrol_after"] <= values["patrol_before"]:
+        problems.append("RAM patrol lines did not advance")
+    if values["passes_after"] <= values["passes_before"]:
+        problems.append("RAM patrol did not complete a pass")
+    if values["restore"]:
+        problems.append("reloading the daily patrol failed")
     return problems
 
 
@@ -1114,10 +1167,13 @@ def linux_stage(root: LinuxRoot) -> UartStage:
 
     Require the pinned kernel and driver before login. After login, check the
     NFSv3 mount, systemd startup, stress result, nonzero counters, the memory
-    error readback, and loopback with root access restored. Explicit failures
-    end capture immediately.
+    error readback, scrub self-test, RAM patrol, and loopback with root access
+    restored. Explicit failures end capture immediately.
     """
-    failure_markers = LINUX_FAILURE_MARKERS + (LINUX_TOKEN_FAIL, LINUX_NET_TOKEN_FAIL)
+    failure_markers = LINUX_FAILURE_MARKERS + (
+        LINUX_TOKEN_FAIL,
+        LINUX_NET_TOKEN_FAIL,
+    )
     # Debian's initramfs does not run this tree's init scripts. Require the
     # driver's own probe message before login.
     boot_lines = ((LINUX_DRIVER_LINE, re.compile(re.escape(LINUX_DRIVER_LINE))),)
@@ -1132,6 +1188,10 @@ def linux_stage(root: LinuxRoot) -> UartStage:
         counter_fail = LINUX_COUNTER_FAIL_RE.search(serial_buf)
         if counter_fail:
             hit.append(counter_fail.group(0).strip())
+        # Anchor these too: the load-failure token is in the typed command.
+        for token in ("FROST_MEMERR_SELFTEST_FAIL", "FROST_MEMERR_LOAD_FAIL"):
+            if re.search(r"^\r*" + token + r"[ \t\r]*\n", serial_buf, re.MULTILINE):
+                hit.append(token)
         state = systemd_state(serial_buf)
         if state is not None and state != LINUX_SYSTEMD_RUNNING:
             hit.append(f"systemd is {state}, not {LINUX_SYSTEMD_RUNNING}")
@@ -1215,10 +1275,12 @@ def linux_stage(root: LinuxRoot) -> UartStage:
             )
         summary = " ".join(f"{event}={counts[event]}" for event in LINUX_COUNTER_EVENTS)
         polls = memerr["polls_after"] - memerr["polls_before"]
+        patrol = memerr["patrol_after"] - memerr["patrol_before"]
         return True, (
             f"{KERNEL_RELEASE}, NIC driver, {mount_note}, systemd "
             f"{LINUX_SYSTEMD_RUNNING}, login, stress token, counters "
-            f"{summary}, no memory errors ({polls} ECC polls across a 1 s sleep), "
+            f"{summary}, no memory errors ({polls} ECC polls), scrub self-test, "
+            f"RAM patrol ({patrol} lines, a full pass), "
             f"{LINUX_NET_COMMAND}, root alive"
         )
 

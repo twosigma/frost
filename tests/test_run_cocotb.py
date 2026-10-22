@@ -627,6 +627,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ),
         ),
     ),
+    "ecc_scrub_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ecc_scrub_test",
+        description=(
+            "Eight AMO no-ops preserve a line and cause exactly one DDR writeback; "
+            "a clean read causes none"
+        ),
+        extra_env=(("COCOTB_PLUSARGS", "+axi_error_check=0 +axi_wr_error_addr=0"),),
+    ),
     "memerr_readback": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -2837,10 +2847,14 @@ UNIT_TEST_PARAMS = [
 #   - ddr_*: already DDR-focused (execute-from-DDR, SMC, cached-region writes at
 #     CACHED_BASE). A whole-program DDR relocation would be redundant or would
 #     clobber their fixed-address writes, so they run in the bram-tier job only.
+#   - ecc_scrub_test: the patterned line must be at CACHED_BASE, with the
+#     program in BRAM, so the write-error plusarg counts only its writebacks.
 DDR_TIER_EXCLUDE = {
     name
     for name in REAL_PROGRAM_TESTS
-    if name.endswith("_fetch_fuzz") or name.startswith("ddr_")
+    if name.endswith("_fetch_fuzz")
+    or name.startswith("ddr_")
+    or name == "ecc_scrub_test"
 }
 
 

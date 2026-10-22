@@ -324,10 +324,13 @@ reports a problem as `ENV_FAIL`, not as a board failure. Without
 boot, and the tests. Raise it for a divided-clock bitstream, or for a first
 build that must download the Buildroot toolchain or the kernel.
 
-The stage checks the NFS mount and systemd, runs the stress, counter, and NIC
-loopback tests, and then writes and syncs a file on the root to prove that the
-root came back after the loopback test took its link down. It leaves
-`frost_stress` and `frost_nettest` in `/usr/local/bin`. The SoC has no
+The stage checks the NFS mount and systemd and runs the stress and counter
+tests. It loads the memory error driver, requires its scrub self-test and an
+accelerated RAM patrol pass with zero hardware errors, and reloads it at the
+daily default. The patrol check allows 150 one-second waits. It then runs the
+NIC loopback test and writes and syncs a file on the root to prove that the
+root came back after the test took its link down. It leaves `frost_stress`,
+`frost_nettest`, and `frost_memerr.ko` in `/usr/local/bin`. The SoC has no
 software reset, so reload the image before the next boot.
 
 ## Operation

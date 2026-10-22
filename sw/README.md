@@ -276,6 +276,7 @@ can be debugged and where each one first stops.
 | `debug_target/` | Debuggee with known symbols for the JTAG debug tests; waits for a debugger to write its flags |
 | `dma_torture/` | DMA test engine against the CPU caches: visibility, ordering, atomics and evictions racing engine writes, the completion interrupt, abort and reuse |
 | `drain_trapframe_test/` | Trap-frame stores to DDR must survive the L1D evicting their line during a timer interrupt |
+| `ecc_scrub_test/` | In simulation, eight atomic no-op writes preserve a patterned line and cause exactly one DDR writeback after eviction; a clean read causes none |
 | `fetch_lead_repro/` | A call into a cold cached line whose first bundle advances 6 bytes, followed by a 32-bit instruction split across fetch words |
 | `fetch_stall_repro/` | 32-bit instructions near cache-line boundaries, fetched cold from DDR; a PC+2 mis-step traps |
 | `fp_dyn_rm_test/` | FP instructions with the dynamic rounding mode trap as illegal while `frm` holds a reserved value; static modes and a valid `frm` work |

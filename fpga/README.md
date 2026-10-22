@@ -164,7 +164,10 @@ are reported as `ENV_FAIL` before the board is touched. The runner also builds
 the memory error driver (`linux/frost-memerr`) for the pinned kernel and
 installs it in that `usr/local/bin`; after login the stage loads it and
 requires the X3's ECC reader to be active and polling, with no memory error
-reported. `FROST_MEMERR_MODULE` names a prebuilt module instead.
+reported. It runs the debugfs scrub self-test and requires its pass line and
+counters. With `patrol_seconds=10`, it requires patrol progress and a full
+pass within 150 one-second waits, then reloads the module at the daily default.
+`FROST_MEMERR_MODULE` names a prebuilt module instead.
 
 The interactive `debug_target` and `nic_echo` applications are not run.
 `perf_off_test` checks that the profiling counters are absent, so it fails

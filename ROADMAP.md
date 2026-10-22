@@ -29,9 +29,11 @@ Software sees memory errors through the memory error unit. On the X3 a
 reader polls the DDR controller's ECC registers about once a millisecond and
 passes on corrected and uncorrectable errors with their physical addresses,
 the cache hierarchy's AXI bridge passes on every error response, and Linux
-logs both and shows the counts in sysfs (`linux/frost-memerr`). What remains
-is scrubbing, which rewrites corrected data so that single-bit errors do not
-build up into uncorrectable ones.
+logs both and shows the counts in sysfs (`linux/frost-memerr`). The driver
+also scrubs: it rewrites each line with a reported corrected error, so the L2
+writes the corrected data back to DDR with fresh ECC, and a background patrol
+reads all of memory, once a day by default, to find errors in data that
+nothing else reads.
 
 ## VCU118 board support
 
