@@ -361,11 +361,14 @@ module cpu_tb
   assign pipeline_stall_comb = device_under_test.pipeline_ctrl.stall;
 
   // The pipeline harness retains the legacy fixed-latency memory path.
-  // Tie off the unused variable-latency completions explicitly; the remaining
-  // ports connect by name to the instruction and data memories above.
+  // Tie off the unused MSI ingress and variable-latency completions explicitly;
+  // the remaining ports connect by name to the instruction and data memories.
   cpu_ooo device_under_test (
       .i_boot_addr('0),
       .i_fatal_stop(1'b0),
+      .i_msi_valid(1'b0),
+      .i_msi_level(1'b0),
+      .i_msi_id('0),
       .i_walk_line_resp_error(1'b0),
       .i_cached_read_error(1'b0),
       .i_uncached_read_request_ready(1'b1),

@@ -461,8 +461,7 @@ VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),aplic_imsic_test_harness)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/peripherals/aplic/aplic.sv \
-        $(ROOT)/hw/rtl/peripherals/imsic/imsic_file.sv \
-        $(ROOT)/hw/rtl/peripherals/imsic/imsic.sv \
+        -f $(ROOT)/hw/rtl/peripherals/imsic/imsic.f \
         $(ROOT)/hw/sim/aplic_imsic_test_harness.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),imsic)
