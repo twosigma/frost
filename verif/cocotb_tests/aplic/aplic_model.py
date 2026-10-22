@@ -15,16 +15,17 @@
 """Register-level model of the APLIC (hw/rtl/peripherals/aplic/aplic.sv).
 
 The model follows RISC-V AIA 1.0 chapter 4 for a machine-level root domain
-with one supervisor-level child, both in direct delivery mode, plus the
-implementation's choices where the spec leaves one (see the module's
-README.md). It describes the state once every registered effect has
-settled: the bench lets a few cycles pass after each operation.
+with one supervisor-level child, each supporting direct delivery and optional
+MSI forwarding, plus the implementation choices in the module's README.md.
+The direct-only bench uses settled register operations. The MSI bench uses
+tick() to compare each cycle, including simultaneous input and bus events.
 
 Each domain is described separately, as software sees it: a sourcecfg value
 per domain and source, and pending, enable and target state for the domain
 that holds a source. Offsets are byte offsets inside the 4 MiB window.
 """
 
+from copy import copy
 from dataclasses import dataclass, field
 
 ROOT = 0
@@ -35,6 +36,9 @@ REGION_BYTES = 0x8000
 DOMAINCFG = 0x0000
 SOURCECFG = 0x0000  # sourcecfg[i] at +4*i
 MMSIADDRCFG = 0x1BC0  # the four MSI address registers, 0x1BC0..0x1BCC
+MMSIADDRCFGH = 0x1BC4
+SMSIADDRCFG = 0x1BC8
+SMSIADDRCFGH = 0x1BCC
 SETIP = 0x1C00  # setip[k] at +4*k
 SETIPNUM = 0x1CDC
 IN_CLRIP = 0x1D00
@@ -80,6 +84,17 @@ class Source:
     enabled: bool = False
     hart: int = 0
     priority: int = 1
+    eiid: int = 1
+
+
+@dataclass(frozen=True)
+class Msi:
+    """An immutable offered store, identified by its arbitration slot."""
+
+    slot: int
+    domain: int
+    address: int
+    data: int
 
 
 @dataclass
@@ -93,14 +108,24 @@ class Idc:
 
 @dataclass
 class AplicModel:
-    """Settled register-level state of the two-domain APLIC."""
+    """Register and forwarding state of the two-domain APLIC."""
 
     num_sources: int
     num_harts: int
     iprio_len: int
+    msi_enable: bool = False
+    msi_addr_width: int = 56
+    msicfg_reset: tuple[int, int, int, int] = (0, 0, 0, 0)
     sources: list[Source] = field(default_factory=list)
     domain_ie: list[int] = field(default_factory=list)
     idcs: list[list[Idc]] = field(default_factory=list)
+    domain_dm: list[int] = field(default_factory=list)
+    msicfg: list[int] = field(default_factory=list)
+    genmsi: list[int] = field(default_factory=list)
+    inflight: Msi | None = None
+    inflight_live: bool = False
+    round_robin: int = 0
+    wire_history: int = 0
 
     def __post_init__(self) -> None:
         """Start from the reset state."""
@@ -113,6 +138,18 @@ class AplicModel:
         for source, wire in zip(self.sources, wires):
             source.wire = wire
         self.domain_ie = [0, 0]
+        self.domain_dm = [0, 0]
+        self.msicfg = [
+            self.legal_msicfg(index, value) if self.msi_enable else 0
+            for index, value in enumerate(self.msicfg_reset)
+        ]
+        self.genmsi = [0, 0]
+        self.inflight = None
+        self.inflight_live = False
+        self.round_robin = 0
+        self.wire_history = sum(
+            s.wire << (n - 1) for n, s in enumerate(self.sources) if n
+        )
         self.idcs = [[Idc() for _ in range(self.num_harts)] for _ in range(2)]
 
     # -- source helpers ------------------------------------------------------
@@ -173,9 +210,15 @@ class AplicModel:
         """Apply the input rules after the rectified input may have moved."""
         source = self.sources[number]
         after = self.rect(number)
-        if self.is_level(source.mode):
+        if self.is_level(source.mode) and not self.domain_dm[self.holder(number)]:
             source.pending = bool(after)
-        elif self.is_edge(source.mode) and after and not rect_before:
+        elif self.is_level(source.mode) and not after:
+            source.pending = False
+        elif (
+            (self.is_edge(source.mode) or self.is_level(source.mode))
+            and after
+            and not rect_before
+        ):
             source.pending = True
 
     # -- register access -----------------------------------------------------
@@ -196,6 +239,11 @@ class AplicModel:
         domain, reg = location
         if reg == DOMAINCFG:
             self.domain_ie[domain] = (data >> 8) & 1
+            self.domain_dm[domain] = int(self.msi_enable and bool(data & 4))
+        elif MMSIADDRCFG <= reg <= SMSIADDRCFGH:
+            if self.msi_enable and domain == ROOT and not self.msicfg[1] & (1 << 31):
+                index = (reg - MMSIADDRCFG) // 4
+                self.msicfg[index] = self.legal_msicfg(index, data)
         elif reg < 0x1000:
             if self.implemented(reg >> 2):
                 self._write_sourcecfg(domain, reg >> 2, data)
@@ -230,9 +278,20 @@ class AplicModel:
                 source = self.sources[number]
                 hart_mask = (1 << self.hart_bits()) - 1
                 source.hart = (data >> 18) & hart_mask if self.num_harts > 1 else 0
-                priority = data & ((1 << self.iprio_len) - 1)
-                source.priority = priority or 1
-        elif reg >= IDC:
+                if self.domain_dm[domain]:
+                    source.eiid = data & 0x7FF
+                else:
+                    priority = data & ((1 << self.iprio_len) - 1)
+                    source.priority = priority or 1
+        elif reg == GENMSI:
+            if self.domain_dm[domain] and not self.genmsi[domain] & (1 << 12):
+                hart = (
+                    (data >> 18) & ((1 << self.hart_bits()) - 1)
+                    if self.num_harts > 1
+                    else 0
+                )
+                self.genmsi[domain] = (hart << 18) | (1 << 12) | (data & 0x7FF)
+        elif reg >= IDC and not self.domain_dm[domain]:
             hart, word = (reg - IDC) >> 5, reg & 0x1F
             if hart < self.num_harts:
                 idc = self.idcs[domain][hart]
@@ -275,14 +334,19 @@ class AplicModel:
         if moved:
             source.hart = 0
             source.priority = 1
+            source.eiid = 1
         self._settle(number, rect_before)
 
     def _set_pending(self, domain: int, number: int) -> None:
-        if self.active_in(domain, number) and self.latched(number):
+        if self.active_in(domain, number) and (
+            self.latched(number) or (self.domain_dm[domain] and self.rect(number))
+        ):
             self.sources[number].pending = True
 
     def _clear_pending(self, domain: int, number: int) -> None:
-        if self.active_in(domain, number) and self.latched(number):
+        if self.active_in(domain, number) and (
+            self.latched(number) or self.domain_dm[domain]
+        ):
             self.sources[number].pending = False
 
     def _set_enable(self, domain: int, number: int, value: bool) -> None:
@@ -296,7 +360,15 @@ class AplicModel:
             return 0
         domain, reg = location
         if reg == DOMAINCFG:
-            return 0x8000_0000 | (self.domain_ie[domain] << 8)
+            return (
+                0x8000_0000
+                | (self.domain_ie[domain] << 8)
+                | (self.domain_dm[domain] << 2)
+            )
+        if MMSIADDRCFG <= reg <= SMSIADDRCFGH:
+            return self.msicfg[(reg - MMSIADDRCFG) // 4] if domain == ROOT else 0
+        if reg == GENMSI:
+            return self.genmsi[domain] if self.domain_dm[domain] else 0
         if reg < 0x1000:
             number = reg >> 2
             if not self.implemented(number):
@@ -325,9 +397,11 @@ class AplicModel:
             number = (reg - TARGET) >> 2
             if self.active_in(domain, number):
                 source = self.sources[number]
-                return (source.hart << 18) | source.priority
+                return (source.hart << 18) | (
+                    source.eiid if self.domain_dm[domain] else source.priority
+                )
             return 0
-        if reg >= IDC:
+        if reg >= IDC and not self.domain_dm[domain]:
             hart, word = (reg - IDC) >> 5, reg & 0x1F
             if hart >= self.num_harts:
                 return 0
@@ -346,6 +420,8 @@ class AplicModel:
 
     def topi(self, domain: int, hart: int) -> int:
         """Highest-priority pending, enabled source for an IDC, as topi reads."""
+        if self.domain_dm[domain]:
+            return 0
         threshold = self.idcs[domain][hart].ithreshold
         best: tuple[int, int] | None = None
         for number in range(1, self.num_sources + 1):
@@ -366,6 +442,8 @@ class AplicModel:
 
     def claim(self, domain: int, hart: int) -> int:
         """Read claimi: topi, clearing a latched pending bit or else iforce."""
+        if self.domain_dm[domain]:
+            return 0
         value = self.topi(domain, hart)
         if value:
             number = value >> 16
@@ -378,9 +456,169 @@ class AplicModel:
     def eip(self, domain: int, hart: int) -> int:
         """Return the domain's external interrupt line to a hart (MEIP or SEIP)."""
         idc = self.idcs[domain][hart]
-        if not (self.domain_ie[domain] and idc.idelivery):
+        if self.domain_dm[domain] or not (self.domain_ie[domain] and idc.idelivery):
             return 0
         return int(bool(idc.iforce or self.topi(domain, hart)))
+
+    def legal_msicfg(self, index: int, value: int) -> int:
+        """WARL address fields, including the address port's representable range."""
+        ppn_bits = min(44, self.msi_addr_width - 12)
+        if index in (0, 2):
+            return value & ((1 << min(32, ppn_bits)) - 1)
+        ppn_high = value & ((1 << max(0, ppn_bits - 32)) - 1)
+        low_shift = (value >> 20) & 7
+        if index == 3:
+            return ppn_high | (low_shift << 20)
+        high_shift = min((value >> 24) & 31, self.msi_addr_width - 31)
+        return ppn_high | (value & 0x8007_F000) | (low_shift << 20) | (high_shift << 24)
+
+    def msi_address(self, domain: int, hart: int) -> int:
+        """AIA 1.0 section 4.9.1, with identical M/S hart numbering and no guests."""
+        machine_high = self.msicfg[1]
+        low_width = (machine_high >> 12) & 15
+        high_width = (machine_high >> 16) & 7
+        high_shift = (machine_high >> 24) & 31
+        low, high = self.msicfg[2 * domain : 2 * domain + 2]
+        low_shift = (high >> 20) & 7
+        group = (hart >> low_width) & ((1 << high_width) - 1)
+        local_hart = hart & ((1 << low_width) - 1)
+        ppn = ((high & 0xFFF) << 32) | low
+        return (ppn | (group << (high_shift + 12)) | (local_hart << low_shift)) << 12
+
+    def choose_msi(self) -> Msi | None:
+        """Choose the first eligible slot in cyclic order."""
+        for distance in range(self.num_sources + 2):
+            slot = (self.round_robin + distance) % (self.num_sources + 2)
+            if slot < self.num_sources:
+                number = slot + 1
+                source = self.sources[number]
+                domain = self.holder(number)
+                if not (
+                    self.domain_dm[domain]
+                    and self.domain_ie[domain]
+                    and self.active_in(domain, number)
+                    and source.pending
+                    and source.enabled
+                ):
+                    continue
+                hart, eiid = source.hart, source.eiid
+            else:
+                domain = slot - self.num_sources
+                value = self.genmsi[domain]
+                if not (self.domain_dm[domain] and value & (1 << 12)):
+                    continue
+                hart, eiid = value >> 18, value & 0x7FF
+            return Msi(slot, domain, self.msi_address(domain, hart), eiid)
+        return None
+
+    def tick(
+        self,
+        *,
+        write: tuple[int, int] | None = None,
+        capture: int | None = None,
+        ready: bool = False,
+    ) -> tuple[int, int]:
+        """Advance one clock with the currently driven wires, including collisions.
+
+        The MSI bench uses this clocked entry point; the original direct bench
+        uses the settled operations above. Register reads always use read().
+        """
+        lines = tuple(
+            sum(self.eip(d, h) << h for h in range(self.num_harts)) for d in (0, 1)
+        )
+        previous = [copy(s) for s in self.sources]
+        old_dm = self.domain_dm.copy()
+        offered = self.choose_msi() if self.inflight is None else None
+        accepted = self.inflight if ready else None
+        claimed = 0
+        if capture is not None and (location := self.split(capture)) is not None:
+            d, reg = location
+            if reg >= IDC and reg & 31 == CLAIMI and (reg - IDC) // 32 < self.num_harts:
+                claimed = self.claim(d, (reg - IDC) // 32) >> 16
+        location = self.split(write[0]) if write else None
+        data = write[1] & 0xFFFF_FFFF if write else 0
+        if write:
+            self.write(*write)
+        invalidated = set()
+        for number in range(1, self.num_sources + 1):
+            old, new = previous[number], self.sources[number]
+            domain = int(old.delegated)
+            rect = old.wire ^ (old.mode & 1) if old.mode >= 4 else 0
+            prior_wire = (self.wire_history >> (number - 1)) & 1
+            rect_before = prior_wire ^ (old.mode & 1) if old.mode >= 4 else 0
+            active = old.mode != SM_INACTIVE
+            set_bit = clear_bit = False
+            cfg_clear = old.delegated != new.delegated or new.mode == SM_INACTIVE
+            if location is not None and location[0] == domain and active:
+                reg = location[1]
+                set_bit = (
+                    (
+                        reg == SETIP + (number // 32) * 4
+                        and bool(data & (1 << (number % 32)))
+                    )
+                    or (reg in (SETIPNUM, SETIPNUM_LE) and data == number)
+                    or (reg == SETIPNUM_BE and byteswap32(data) == number)
+                )
+                clear_bit = (
+                    reg == IN_CLRIP + (number // 32) * 4
+                    and bool(data & (1 << (number % 32)))
+                ) or (reg == CLRIPNUM and data == number)
+            held = (
+                old.mode == SM_DETACHED
+                or self.is_edge(old.mode)
+                or (self.is_level(old.mode) and old_dm[domain])
+            )
+            edge = old.mode >= 4 and held and rect and not rect_before
+            retired = (
+                accepted is not None
+                and accepted.slot == number - 1
+                and self.inflight_live
+            )
+            pending = (
+                (old.pending and not clear_bit and claimed != number and not retired)
+                or set_bit
+                or edge
+                if held
+                else bool(rect)
+            )
+            if self.is_level(old.mode) and old_dm[domain] and not rect:
+                pending = False
+            if cfg_clear:
+                pending = False
+            new_rect = self.rect(number)
+            new_dm = self.domain_dm[self.holder(number)]
+            if (
+                new.mode >= 4
+                and (self.is_edge(new.mode) or new_dm)
+                and new_rect
+                and not rect
+            ):
+                pending = True
+            if self.is_level(new.mode) and (not new_dm or not new_rect):
+                pending = bool(new_rect)
+            new.pending = bool(pending)
+            if (
+                cfg_clear
+                or old_dm[domain] != self.domain_dm[domain]
+                or (held and clear_bit)
+                or (self.is_level(old.mode) and old_dm[domain] and not rect)
+                or (self.is_level(new.mode) and new_dm and not new_rect)
+            ):
+                invalidated.add(number - 1)
+        self.wire_history = sum(
+            s.wire << (n - 1) for n, s in enumerate(self.sources) if n
+        )
+        if accepted is not None:
+            if accepted.slot >= self.num_sources:
+                self.genmsi[accepted.domain] &= ~(1 << 12)
+            self.round_robin = (accepted.slot + 1) % (self.num_sources + 2)
+            self.inflight = None
+        elif offered is not None:
+            self.inflight = offered
+            self.inflight_live = offered.slot not in invalidated
+        elif self.inflight is not None and self.inflight.slot in invalidated:
+            self.inflight_live = False
+        return lines[0], lines[1]
 
 
 def idc_offset(domain: int, hart: int, word: int) -> int:

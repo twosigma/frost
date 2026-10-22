@@ -3,13 +3,15 @@
 `aplic.sv` is an Advanced Platform-Level Interrupt Controller as specified by
 the RISC-V Advanced Interrupt Architecture (AIA) 1.0, chapter 4. It has two
 interrupt domains, a machine-level root domain and one supervisor-level child
-domain, and delivers interrupts directly to harts: the root domain drives each
-hart's machine external interrupt (MEIP) and the supervisor domain each hart's
-supervisor external interrupt (SEIP). Software sees two separate controllers,
-one per domain, as OpenSBI and Linux expect from a device tree with one
-`riscv,aplic` node per domain. The SoC instantiates it with five sources and
-one hart. The machine domain is at `0x4400_0000` and the supervisor domain
-at `0x4400_8000`.
+domain. In direct delivery mode the root domain drives each hart's machine
+external interrupt (MEIP) and the supervisor domain each hart's supervisor
+external interrupt (SEIP). With MSI support enabled, either domain can instead
+forward interrupts as 32-bit writes to the harts' IMSIC interrupt files.
+Software sees two separate controllers, one per domain, as OpenSBI and Linux
+expect from a device tree with one `riscv,aplic` node per domain. The SoC
+instantiates it with five sources, one hart and direct delivery only. The
+machine domain is at `0x4400_0000` and the supervisor domain at
+`0x4400_8000`.
 
 ## Parameters
 
@@ -18,9 +20,17 @@ at `0x4400_8000`.
 | `NUM_SOURCES` | 5 | 1 to 1023 | Interrupt sources, with identity numbers 1 to `NUM_SOURCES` |
 | `NUM_HARTS` | 1 | 1 to 512 | Hart indices 0 to `NUM_HARTS - 1`, one IDC per hart in each domain |
 | `IPRIOLEN` | 3 | 1 to 8 | Implemented priority bits; priority numbers run from 1 to `2^IPRIOLEN - 1` |
+| `MSI_ENABLE` | 0 | 0 or 1 | Implement MSI delivery alongside direct delivery |
+| `MSI_ADDR_WIDTH` | 56 | 32 to 64 | Physical byte address width of the MSI master |
+| `MMSIADDRCFG_RESET` | 0 | 32 bits | Root machine MSI low configuration at system reset |
+| `MMSIADDRCFGH_RESET` | 0 | 32 bits | Root machine MSI high configuration, including lock, at system reset |
+| `SMSIADDRCFG_RESET` | 0 | 32 bits | Root supervisor MSI low configuration at system reset |
+| `SMSIADDRCFGH_RESET` | 0 | 32 bits | Root supervisor MSI high configuration at system reset |
 
 The default covers the SoC's five sources. Simulation stops at time zero if a
-parameter is out of range.
+parameter is out of range. Reset parameters pass through the same WARL rules
+as register writes. `MSI_ENABLE = 0` preserves the direct-only register behavior
+and ties all MSI outputs to zero; `i_msi_ready` then has no effect.
 
 ## Interface
 
@@ -33,6 +43,8 @@ The register interface connects to the SoC's 64-bit MMIO read and write paths.
 | `i_rd_offset[21:0]`, `o_rd_pair[63:0]` | Combinational read of the aligned dword: the register at `offset & ~7` in bits 31:0 and the next word in bits 63:32 |
 | `i_rd_capture` | Pulses once for each performed read, on the clock edge that captures `o_rd_pair` into the bus response |
 | `o_meip[NUM_HARTS-1:0]`, `o_seip[NUM_HARTS-1:0]` | Registered interrupt lines of the root and supervisor domains, by hart index |
+| `o_msi_valid`, `i_msi_ready` | A write is accepted on a rising edge with both asserted; reset suppresses valid |
+| `o_msi_addr[MSI_ADDR_WIDTH-1:0]`, `o_msi_data[31:0]` | Physical byte address and little-endian data of a naturally aligned 32-bit MSI store |
 
 The AIA supports only naturally aligned 32-bit reads and writes in a domain's
 control region and requires other accesses to be ignored. The SoC therefore
@@ -64,9 +76,9 @@ control regions. Every register is 32 bits wide.
 
 | Offset | Register | Behavior |
 |--------|----------|----------|
-| `0x0000` | `domaincfg` | Bits 31:24 read `0x80`; bit 8 is IE, the domain's interrupt enable. DM (bit 2) and BE (bit 0) read zero: direct delivery, little-endian |
+| `0x0000` | `domaincfg` | Bits 31:24 read `0x80`; bit 8 is IE, the domain's interrupt enable. DM (bit 2) selects MSI delivery when `MSI_ENABLE = 1`, otherwise reads zero. BE (bit 0) reads zero |
 | `0x0004` + 4(i-1) | `sourcecfg[i]` | Source mode or delegation of source i (below) |
-| `0x1BC0`–`0x1BCC` | `mmsiaddrcfg`, `mmsiaddrcfgh`, `smsiaddrcfg`, `smsiaddrcfgh` | Read zero: no domain has MSI delivery mode |
+| `0x1BC0`–`0x1BCC` | `mmsiaddrcfg`, `mmsiaddrcfgh`, `smsiaddrcfg`, `smsiaddrcfgh` | Root-only MSI address configuration when `MSI_ENABLE = 1`; otherwise read zero |
 | `0x1C00` + 4k | `setip[k]` | Reads the pending bits of sources 32k to 32k+31; writing ones sets them where the source mode allows |
 | `0x1CDC` | `setipnum` | Writing i sets source i's pending bit where allowed; reads zero |
 | `0x1D00` + 4k | `in_clrip[k]` | Reads the rectified inputs; writing ones clears pending bits where allowed |
@@ -77,8 +89,8 @@ control regions. Every register is 32 bits wide.
 | `0x1FDC` | `clrienum` | Writing i clears source i's enable bit; reads zero |
 | `0x2000` | `setipnum_le` | As `setipnum` |
 | `0x2004` | `setipnum_be` | As `setipnum`, with the source number in big-endian byte order |
-| `0x3000` | `genmsi` | Reads zero, as the spec requires in direct delivery mode |
-| `0x3004` + 4(i-1) | `target[i]` | Hart index in bits 31:18, priority number (IPRIO) in bits 7:0 |
+| `0x3000` | `genmsi` | Hart index, Busy and EIID in MSI mode; read-only zero in direct mode |
+| `0x3004` + 4(i-1) | `target[i]` | Hart index in bits 31:18; IPRIO in bits 7:0 in direct mode, EIID in bits 10:0 in MSI mode |
 | `0x4000` + 32h | IDC of hart index h | The five registers below |
 
 A write naming a source that is not active in the domain, by a bit or by
@@ -97,6 +109,10 @@ Each interrupt delivery control (IDC) structure has these registers:
 | `0x1C` | `claimi` | Reads as `topi`; a performed read claims the reported interrupt (below) |
 
 The IDCs of hart indices at or above `NUM_HARTS` read zero and ignore writes.
+In MSI mode all IDC reads return zero and accesses have no side effects.
+IDC state is retained across delivery-mode changes. The registered direct
+interrupt line is gated by DM as well as IE, so it goes low on the clock
+after the mode change.
 
 ## Domains and delegation
 
@@ -118,13 +134,13 @@ holding only the supervisor domain cannot reach the root's sources. The
 supervisor domain has no children, so writing its `sourcecfg[i]` with D set
 writes the register as zero. A write that makes a source inactive, or moves it
 between the domains, clears its enable bit and its pending bit, and a move
-resets the source's target to hart 0 and priority 1. In the new mode the
-pending bit then follows the wire (level-sensitive modes), or is set by the
-write if it raises the rectified input (edge-sensitive modes, below).
+resets the source's target to hart 0, priority 1 and EIID 1. In the new mode the
+pending bit then follows the wire for direct-mode level sources, or is set by
+the write if it raises an edge or MSI-level rectified input.
 
 ## Source modes and pending bits
 
-| SM | Mode | Rectified input | Pending bit |
+| SM | Mode | Rectified input | Pending bit in direct mode |
 |----|------|-----------------|-------------|
 | 0 | Inactive | 0 | Zero, read-only |
 | 1 | Detached | 0 | Set by `setip` and the `setipnum` registers; cleared by a claim or by `in_clrip` and `clripnum` |
@@ -136,8 +152,8 @@ write if it raises the rectified input (edge-sensitive modes, below).
 The reserved encodings 2 and 3 write as Inactive. A set and a clear of one
 pending bit in the same cycle leave it set, so an edge that arrives with the
 claim of its source is not lost. The spec lets a `sourcecfg` write set the
-pending bit when the new mode's rectified input is high; this design sets it
-when the write leaves the source edge-sensitive and raises its rectified input,
+pending bit when the new mode's rectified input is high. In direct mode this
+design sets it when the write leaves the source edge-sensitive and raises its rectified input,
 comparing the new mode with the mode it had before the write, in whichever
 domain held it. The bit is set at the write, so a claim or a clear in the next
 cycle takes effect. The cycle of a mode change follows the old mode's rules
@@ -146,7 +162,23 @@ that cycle stays pending in its new mode. The edge detector compares the wire
 with its previous value under the current mode, so a change of mode is never
 seen as an edge later.
 
-## Delivery
+For Detached and edge sources, MSI mode uses the same pending rules except
+that an accepted MSI replaces a claim. For Level1 and Level0 in MSI mode,
+a rising rectified input sets pending. A software set also sets pending
+while that input is high. A low rectified input, a software clear, or an
+accepted MSI clears pending. A held high input does not retrigger after
+forwarding. Software can rearm it with `setipnum`, as Linux does at EOI,
+or wait for a new low-to-high transition. A low rectified input takes
+precedence over a simultaneous software set.
+
+In MSI mode a `sourcecfg` write sets pending when it raises a rectified
+edge or level input. The cycle of a source-mode or delivery-mode change
+first applies the old mode's input, claim and MSI retirement rules, then
+the new mode's rectified-input constraints. Switching an asserted level
+source from direct mode to MSI mode preserves its pending interrupt;
+switching back to direct mode resumes following the wire.
+
+## Direct delivery
 
 For each IDC, `topi` reports the pending and enabled source of the domain whose
 target names the IDC's hart and whose priority number is below a nonzero
@@ -173,25 +205,114 @@ zero until then. OpenSBI and Linux write targets before they activate sources,
 and Linux's boot hart retargeting relies on such writes. Portable software
 writes `target` after activating a source.
 
-Reset clears IE, `idelivery`, `iforce` and `ithreshold` in both domains, makes
-every source inactive and undelegated, and sets every target to hart 0 with
-priority 1.
+Reset clears IE, DM, `idelivery`, `iforce` and `ithreshold` in both domains,
+makes every source inactive and undelegated, and sets every target to hart 0
+with priority 1 and EIID 1. Priority and EIID are stored separately; a target
+write changes the field selected by DM and the shared hart index. A mode
+change retains both fields. The specification leaves target fields
+unspecified on a delivery-mode change, so software should rewrite them.
+
+## MSI address configuration
+
+The four address registers exist only at the root domain and are independent
+of its current DM. `mmsiaddrcfgh.L`, bit 31, locks all four registers until
+system reset. The write setting L also writes its other fields. Locked
+values remain visible. Setting L in the reset parameter makes the configuration
+fixed from reset. The SoC must connect `i_rst` to system reset, not to a
+software-accessible local reset that could unlock the configuration.
+
+Each pair supplies a 44-bit Base PPN: the low register contributes bits 31:0
+and the high register bits 11:0. PPN bits beyond `MSI_ADDR_WIDTH - 12` are
+read-only zero. The machine high register also holds LHXW in bits 15:12,
+HHXW in bits 18:16, LHXS in bits 22:20 and HHXS in bits 28:24. The supervisor
+high register has only LHXS in bits 22:20 in addition to its high PPN.
+Reserved bits read zero. LHXW, HHXW and LHXS retain all their field bits.
+HHXS is clamped to `min(31, MSI_ADDR_WIDTH - 31)` so even a seven-bit high
+index cannot overflow the address port. This bound is conservative when
+HHXW is smaller. Overlapping base and index bits are combined with OR;
+the registers do not force those base bits to zero.
+
+Machine and supervisor domains use the same hart index numbering. For
+machine delivery, let `g = (hart >> LHXW) & ((1 << HHXW) - 1)` and
+`h = hart & ((1 << LHXW) - 1)`. The byte address is
+`(BasePPN | (g << (HHXS + 12)) | (h << LHXS)) << 12`.
+Supervisor delivery uses its own Base PPN and LHXS, with LHXW, HHXW and HHXS
+from the machine high register. There is no hypervisor extension: Guest Index,
+bits 17:12 of both domains' MSI targets, is read-only zero. Bit 11 is reserved.
+EIID keeps all 11 bits, including zero, and the write data is its zero extension
+to 32 bits. Hart Index retains the same bits as in direct mode. An unused
+hart-index encoding produces its calculated address in MSI mode; software
+must use an implemented hart index and an EIID supported by the IMSIC.
+
+## MSI delivery and ordering
+
+A source is eligible when it is active, pending and enabled and its domain
+has DM and IE set. The forwarder snapshots that eligibility, its target and
+the address configuration when offering a write. Address, data and valid
+remain stable until acceptance. A later disable, target write, address write,
+mode change or delegation cannot retract an offered write. Such a write can
+therefore arrive after software reconfigures its source. Reset discards the
+offer and suppresses valid.
+
+The pending bit is retired on acceptance, not on selection or while stalled.
+A simultaneous set or edge keeps it set. If software clears the pending bit,
+deactivates or moves the source, changes its domain's DM, or a level input
+clears pending, the old transaction no longer owns that pending state. Its
+later acceptance cannot clear a new pending interrupt. A target or enable
+write alone does not end the pending state. Other input and software pending
+rules continue to operate while the master is stalled.
+
+Sources 1 through `NUM_SOURCES`, root `genmsi` and supervisor `genmsi` share
+one round-robin ring, in that order. The pointer advances past the accepted
+slot. With eventual ready and stable eligibility, no slot waits through more
+than `NUM_SOURCES + 1` other acceptances. There is one outstanding offer and
+one idle selection cycle after each acceptance, giving at most one accepted
+write every two cycles. There is no source-priority ordering in MSI mode.
+
+Writing `genmsi` in MSI mode when Busy is zero stores Hart Index and EIID and
+sets Busy, bit 12. All other bits read zero. Writes while Busy is one are
+ignored, including on the acceptance edge. Acceptance clears Busy and retains
+Hart Index and EIID. IE does not gate these writes. A queued generator shares
+the bounded arbitration delay above. Switching to direct mode hides `genmsi`
+and pauses a generator not yet offered; switching back resumes it. An offered
+generator write still completes. System reset clears both generators.
+
+The port issues one global sequence of stores. The SoC receiver must preserve
+that order through visibility at the IMSICs, at least for writes to the same
+hart, including across the M and S interrupt files. This supplies the AIA
+`genmsi` guarantee that its marker becomes visible only after earlier MSIs to
+that hart. Busy becoming zero means the store was accepted by the receiver;
+software still waits for the marker in the IMSIC when synchronizing.
+
+## SoC connection
+
+Decode `o_msi_addr` to the IMSIC machine and supervisor page regions and send
+each accepted store to offset zero, the little-endian `seteipnum` register.
+For a directly connected, always-accepting IMSIC, tie `i_msi_ready` high and
+pulse its write enable with `o_msi_valid && i_msi_ready`. Pass the address and
+32-bit data through an arbiter shared with CPU and device MSI stores. The
+arbiter asserts ready only when it has accepted responsibility for delivery.
+If it buffers stores, it must preserve the ordering described above. An AXI
+bridge must retain the whole request through its address and data handshakes
+and guarantee delivery once it asserts ready here; this interface has no
+separate completion or error channel.
+
+For two harts with 4 KiB pages at machine base `0x48000000` and supervisor
+base `0x48100000`, set `mmsiaddrcfg = 0x48000`, `mmsiaddrcfgh = 0x1000`,
+`smsiaddrcfg = 0x48100` and `smsiaddrcfgh = 0`. These values give LHXW = 1,
+HHXW = 0 and both LHXS = 0. Hart 1 uses base + `0x1000` in each region.
+Set L after configuration, or use locked reset parameters for fixed pages.
+An integration with a 32-bit IMSIC address input can select `MSI_ADDR_WIDTH = 32`.
+The APLIC register windows remain separate MMIO slaves, with the root window
+accessible only to machine-level software. SoC integration and device-tree
+updates are outside this module.
 
 ## Not implemented
 
-MSI delivery mode is not implemented: `domaincfg.DM` reads zero, the MSI
-address configuration registers and `genmsi` read zero, and there is no MSI
-write port. Big-endian control regions are not implemented (`domaincfg.BE`
-reads zero), and there are no other domains. Hart indices stop at 511, the
-IDCs that fit in a 32 KiB region.
-
-MSI delivery mode would add the root domain's MSI address configuration, the
-MSI format of `target` (hart index, guest index, EIID), `genmsi`, the pending
-rules that MSI mode gives level-sensitive sources, and a forwarder that writes
-each pending and enabled source's MSI and then clears its pending bit. The
-source state, the delegation logic and the register decode are shared with
-direct delivery mode; the IDCs and `topi` selection serve direct delivery
-mode only.
+Big-endian control regions are not implemented (`domaincfg.BE` reads zero),
+and there are no guest interrupt files or other domains. Hart indices stop
+at 511, the IDCs that fit in a 32 KiB region. The master provides no error
+response or retry protocol; acceptance must guarantee delivery.
 
 ## Verification
 
@@ -220,6 +341,32 @@ word of both control regions and of the rest of the window. `bmc` (depth 12),
 `prove_one_hart` one of each; `prove_wide` 33 sources, which use a second
 word in each bitmap; and `prove_three_harts` three harts and 8-bit
 priorities. The `prove` tasks are unbounded (k-induction).
+
+The MSI bench `verif/cocotb_tests/aplic/test_aplic_msi.py` checks every read pair,
+every offered MSI and the registered interrupt lines against the clocked model.
+It covers address WARL and lock behavior, all source modes, both address
+formulas with two harts, EIID zero, Busy and IE, mixed delivery modes,
+delegation, backpressure, simultaneous retirement and writes, fairness, reset
+in flight and random traffic. The `aplic_msi` shape has 40 sources, two harts
+and 56-bit addresses. `aplic_msi_32` checks 32-bit address WARL behavior and
+`aplic_msi_locked` checks reset-locked configuration, each with five sources
+and two harts.
+
+The MSI formal tasks check selection eligibility, cyclic arbitration rank,
+snapshot address and data, request stability, acceptance-only retirement,
+every pending transition, EIID writes, address WARL, lock and generator state.
+Inputs, including ready and register writes during backpressure, are arbitrary.
+`msi_bmc` has depth 12, `msi_prove` uses unbounded induction, and `msi_cover`
+reaches both domains, every active source mode, generators with IE clear,
+stalls, concurrent sets and edges, a new pending episode after delegation,
+and locked writes. `msi_prove_32`, `msi_prove_locked` and `msi_prove_wide`
+check 32-bit addresses with three harts, reset locking with one hart, and
+33 sources spanning two bitmap words. Each prove task uses depth 5 induction.
+
+The software-sequence tests exercise the address and delegation writes in
+[OpenSBI's APLIC driver](https://github.com/riscv-software-src/opensbi/blob/master/lib/utils/irqchip/aplic.c)
+and the target and level EOI writes in
+[Linux's MSI driver](https://github.com/torvalds/linux/blob/master/drivers/irqchip/irq-riscv-aplic-msi.c).
 
 The `aplic_test` program checks the SoC register path in BRAM and DDR
 configurations, including both domains, delegation, machine interrupt entry,

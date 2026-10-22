@@ -2480,8 +2480,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Memory error unit registers, counters and interrupt",
         verilator_extra_args=("-GID_BITS=5",),
     ),
-    # The APLIC in four shapes: two harts and two bitmap words; the module
-    # defaults the SoC uses; the spec's 1023 sources with three harts and
+    # The APLIC's four direct-only shapes: two harts and two bitmap words; the
+    # module defaults; the spec's 1023 sources with three harts and
     # 8-bit priorities; and 512 harts. The bench reads the shape from APLIC_*.
     **{
         name: CocotbRunConfig(
@@ -2516,6 +2516,62 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
                 "aplic_512_harts",
                 "APLIC behavior with 512 harts, every IDC a control region holds",
                 (("NUM_SOURCES", 5), ("NUM_HARTS", 512), ("IPRIOLEN", 2)),
+            ),
+        )
+    },
+    **{
+        name: CocotbRunConfig(
+            python_test_module="cocotb_tests.aplic.test_aplic_msi",
+            hdl_toplevel_module="aplic",
+            description=description,
+            verilator_extra_args=tuple(f"-G{p}={v}" for p, v in shape),
+            extra_env=tuple((f"APLIC_{p}", str(v)) for p, v in shape),
+        )
+        for name, description, shape in (
+            (
+                "aplic_msi",
+                "APLIC MSI registers, pending rules, ordered forwarding and backpressure",
+                (
+                    ("NUM_SOURCES", 40),
+                    ("NUM_HARTS", 2),
+                    ("IPRIOLEN", 3),
+                    ("MSI_ENABLE", 1),
+                    ("MSI_ADDR_WIDTH", 56),
+                    ("MMSIADDRCFG_RESET", 0x48000),
+                    ("MMSIADDRCFGH_RESET", 0x1000),
+                    ("SMSIADDRCFG_RESET", 0x48100),
+                    ("SMSIADDRCFGH_RESET", 0),
+                ),
+            ),
+            (
+                "aplic_msi_32",
+                "APLIC MSI WARL address fields with a 32-bit master",
+                (
+                    ("NUM_SOURCES", 5),
+                    ("NUM_HARTS", 2),
+                    ("IPRIOLEN", 3),
+                    ("MSI_ENABLE", 1),
+                    ("MSI_ADDR_WIDTH", 32),
+                    ("MMSIADDRCFG_RESET", 0x48000),
+                    ("MMSIADDRCFGH_RESET", 0x1000),
+                    ("SMSIADDRCFG_RESET", 0x48100),
+                    ("SMSIADDRCFGH_RESET", 0),
+                ),
+            ),
+            (
+                "aplic_msi_locked",
+                "APLIC MSI with address configuration locked by reset parameters",
+                (
+                    ("NUM_SOURCES", 5),
+                    ("NUM_HARTS", 2),
+                    ("IPRIOLEN", 3),
+                    ("MSI_ENABLE", 1),
+                    ("MSI_ADDR_WIDTH", 56),
+                    ("MMSIADDRCFG_RESET", 0x48000),
+                    ("MMSIADDRCFGH_RESET", 0x80001000),
+                    ("SMSIADDRCFG_RESET", 0x48100),
+                    ("SMSIADDRCFGH_RESET", 0),
+                ),
             ),
         )
     },

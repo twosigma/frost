@@ -641,7 +641,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "aplic.sby",
         "APLIC topi selection, pending-bit rules, delegation, domain isolation, "
-        "claims, and register reads",
+        "claims, MSI forwarding, address configuration, and register reads",
         tasks=(
             "bmc",
             "prove",
@@ -649,6 +649,12 @@ FORMAL_TARGETS = [
             "prove_one_hart",
             "prove_wide",
             "prove_three_harts",
+            "msi_bmc",
+            "msi_prove",
+            "msi_cover",
+            "msi_prove_32",
+            "msi_prove_locked",
+            "msi_prove_wide",
         ),
     ),
     FormalTarget(
@@ -660,6 +666,18 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("msi_bmc", "Bounded APLIC MSI forwarding and pending transitions"),
+    ("msi_prove", "Unbounded APLIC MSI registers, forwarding and ordering"),
+    (
+        "msi_cover",
+        "APLIC MSI acceptance, backpressure, delegation and lock reachability",
+    ),
+    ("msi_prove_32", "Unbounded APLIC MSI with 32-bit addresses and three harts"),
+    (
+        "msi_prove_locked",
+        "Unbounded APLIC MSI with address configuration locked at reset",
+    ),
+    ("msi_prove_wide", "Unbounded APLIC MSI with two words of source bits"),
     ("bmc_strict", "Bounded check with strict uncached Normal memory"),
     ("bmc_normal", "Bounded check with Normal read caching"),
     ("bmc_legacy", "Bounded check with legacy unconditional data caching"),

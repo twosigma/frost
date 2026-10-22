@@ -15,11 +15,10 @@
  */
 
 /*
- * Advanced Platform-Level Interrupt Controller (RISC-V AIA 1.0, chapter 4)
- * in direct delivery mode, with two interrupt domains: the machine-level root
- * domain and one supervisor-level child domain. The root domain drives each
- * hart's MEIP and the supervisor domain each hart's SEIP. README.md beside
- * this file gives the register map and the implementation choices.
+ * Advanced Platform-Level Interrupt Controller (RISC-V AIA 1.0, chapter 4),
+ * with a machine-level root domain and one supervisor-level child. Each
+ * domain selects direct delivery or, with MSI_ENABLE, MSI forwarding.
+ * README.md beside this file gives the register map and implementation choices.
  *
  * Window (byte offsets inside the 4 MiB SoC window):
  *   0x0000_0000  root domain control region, 32 KiB
@@ -27,9 +26,10 @@
  * The rest of the window reads zero and ignores writes.
  *
  * Domain control region (offsets inside a region):
- *   0x0000         domaincfg     bits 31:24 read 0x80, bit 8 IE; DM and BE
- *                                read zero (direct delivery, little-endian)
+ *   0x0000         domaincfg     bits 31:24 read 0x80, bit 8 IE, bit 2 DM;
+ *                                BE reads zero (little-endian)
  *   0x0000 + 4*i   sourcecfg[i]  i = 1..NUM_SOURCES
+ *   0x1BC0..1BCC   MSI address configuration (root only, when implemented)
  *   0x1C00 + 4*k   setip[k]      k = 0..31, bit i % 32 is source i
  *   0x1CDC         setipnum
  *   0x1D00 + 4*k   in_clrip[k]   reads rectified inputs
@@ -40,50 +40,41 @@
  *   0x1FDC         clrienum
  *   0x2000         setipnum_le
  *   0x2004         setipnum_be   byte-swapped setipnum
- *   0x3000         genmsi        reads zero (DM is zero)
- *   0x3000 + 4*i   target[i]     hart index bits 31:18, IPRIO bits 7:0
+ *   0x3000         genmsi        hart, Busy and EIID in MSI mode; otherwise zero
+ *   0x3000 + 4*i   target[i]     hart and IPRIO (direct) or EIID (MSI), no guests
  *   0x4000 + 32*h  IDC of hart index h = 0..NUM_HARTS-1: idelivery +0x00,
  *                  iforce +0x04, ithreshold +0x08, topi +0x18, claimi +0x1C
- * Every other offset, including the MSI address configuration registers and
- * the IDCs of hart indices at or above NUM_HARTS, reads zero and ignores
- * writes. The number registers (setipnum and the like) read zero.
+ * Every other offset reads zero and ignores writes. IDCs read zero and
+ * ignore accesses in MSI mode. Number registers (setipnum, etc.) read zero.
  *
- * Each source is active in at most one domain, so its state is held once:
- * the root's delegate bit, the source mode of the domain that holds it, the
- * pending and enable bits, and the target. A domain sees the sources it does
- * not hold as inactive (the root sees D = 1 for a delegated one) or, in the
- * supervisor domain, as not implemented. Delegating a source in the root
- * leaves it inactive in the supervisor domain until that domain configures
- * it, as the spec requires. A write that makes a source inactive, or moves it
- * between domains, clears its enable bit and its pending bit, and a move
- * resets its target; in the new mode the pending bit then follows the input
- * (level modes) or is set by the write when it raises the rectified input
- * (edge modes).
+ * Each source is held by one domain. Moving it clears its pending and enable
+ * bits and resets its target. The root can delegate to its one child; sources
+ * not delegated to the supervisor domain are inaccessible to that domain.
  *
- * Pending bits (AIA 1.0, 4.7):
- *   Detached  set by setip/setipnum writes; cleared by a claim or by
- *             in_clrip/clripnum writes
- *   Edge1/0   as Detached, and also set by a rising edge of the wire,
- *             rectified, and by a sourcecfg write that raises the rectified
- *             input (the spec allows either choice for such a write)
- *   Level1/0  the rectified input of the previous cycle, under the mode
- *             in force from this cycle; writes and claims neither set nor
- *             clear it
- * A set wins over a clear in the same cycle, so an edge that coincides with
- * a claim stays pending. A claim read is ordered before a register write in
- * the same cycle.
+ * Detached and edge sources latch pending until a claim, accepted MSI or
+ * software clear. Direct-mode level sources follow the rectified wire. In
+ * MSI mode, a level source latches a rising rectified input or a software set
+ * while that input is high; a low input, accepted MSI or software clear ends
+ * pending. A simultaneous set wins over a clear, subject to the level input.
+ * A sourcecfg write that raises a rectified edge or MSI-level input sets pending.
  *
- * Source wires are synchronous to i_clk. topi is combinational from the
- * registers, so a claim's value and its side effect use the same state; the
- * interrupt lines are registered. The delivery mode is a per-domain choice
- * in the spec: MSI delivery mode would add the MSI address configuration,
- * genmsi, the MSI format of target, the MSI-mode rules for level-sensitive
- * pending bits, and a forwarder beside the direct-mode IDCs below.
+ * Source wires are synchronous to i_clk. topi is combinational; interrupt
+ * lines are registered. Claims and accepted MSIs precede simultaneous writes.
+ * An MSI offer snapshots eligibility, address and data and stays stable until
+ * ready. Later writes cannot retract it. One pending episode is retired on
+ * acceptance; a later episode created after a clear, deactivation, domain
+ * change or level deassertion is unaffected by that old transaction.
  */
 module aplic #(
     parameter int unsigned NUM_SOURCES = 5,  // source IDs 1..NUM_SOURCES (at most 1023)
-    parameter int unsigned NUM_HARTS   = 1,  // hart indices 0..NUM_HARTS-1 (at most 512)
-    parameter int unsigned IPRIOLEN    = 3   // implemented priority bits (1 to 8)
+    parameter int unsigned NUM_HARTS = 1,  // hart indices 0..NUM_HARTS-1 (at most 512)
+    parameter int unsigned IPRIOLEN = 3,  // implemented priority bits (1 to 8)
+    parameter bit MSI_ENABLE = 1'b0,
+    parameter int unsigned MSI_ADDR_WIDTH = 56,  // physical address bits, 32 to 64
+    parameter logic [31:0] MMSIADDRCFG_RESET = 32'b0,
+    parameter logic [31:0] MMSIADDRCFGH_RESET = 32'b0,
+    parameter logic [31:0] SMSIADDRCFG_RESET = 32'b0,
+    parameter logic [31:0] SMSIADDRCFGH_RESET = 32'b0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -110,12 +101,23 @@ module aplic #(
 
     // Registered external-interrupt-pending lines, by hart index.
     output logic [NUM_HARTS-1:0] o_meip,
-    output logic [NUM_HARTS-1:0] o_seip
+    output logic [NUM_HARTS-1:0] o_seip,
+
+    // One little-endian 32-bit MSI store. The request stays stable until
+    // accepted. The receiver must preserve acceptance order to the IMSICs.
+    output logic o_msi_valid,
+    input logic i_msi_ready,
+    output logic [MSI_ADDR_WIDTH-1:0] o_msi_addr,
+    output logic [31:0] o_msi_data
 );
 
   localparam int unsigned HartBits = (NUM_HARTS > 1) ? $clog2(NUM_HARTS) : 1;
   // IDC c serves domain c / NUM_HARTS (0 = root) and hart index c % NUM_HARTS.
   localparam int unsigned NumIdcs = 2 * NUM_HARTS;
+  localparam int unsigned NumMsiSlots = NUM_SOURCES + 2;
+  localparam int unsigned MsiSlotBits = $clog2(NumMsiSlots);
+  localparam int unsigned MaxHhxs = (MSI_ADDR_WIDTH < 62) ? MSI_ADDR_WIDTH - 31 : 31;
+  localparam logic [43:0] BasePpnMask = 44'((64'd1 << (MSI_ADDR_WIDTH - 12)) - 1);
 
   // sourcecfg.SM. Bit 2 marks the wire-driven modes, bit 1 level over edge,
   // and bit 0 an inverted wire.
@@ -124,6 +126,10 @@ module aplic #(
 
   // Register offsets inside a domain control region.
   localparam logic [14:0] DomaincfgOff = 15'h0000;
+  localparam logic [14:0] MmsiaddrcfgOff = 15'h1BC0;
+  localparam logic [14:0] MmsiaddrcfghOff = 15'h1BC4;
+  localparam logic [14:0] SmsiaddrcfgOff = 15'h1BC8;
+  localparam logic [14:0] SmsiaddrcfghOff = 15'h1BCC;
   localparam logic [14:0] SetipOff = 15'h1C00;
   localparam logic [14:0] SetipnumOff = 15'h1CDC;
   localparam logic [14:0] InClripOff = 15'h1D00;
@@ -147,6 +153,8 @@ module aplic #(
     if (NUM_SOURCES < 1 || NUM_SOURCES > 1023) $fatal(1, "aplic: NUM_SOURCES must be 1 to 1023");
     if (NUM_HARTS < 1 || NUM_HARTS > 512) $fatal(1, "aplic: NUM_HARTS must be 1 to 512");
     if (IPRIOLEN < 1 || IPRIOLEN > 8) $fatal(1, "aplic: IPRIOLEN must be 1 to 8");
+    if (MSI_ADDR_WIDTH < 32 || MSI_ADDR_WIDTH > 64)
+      $fatal(1, "aplic: MSI_ADDR_WIDTH must be 32 to 64");
   end
 `endif
 
@@ -167,6 +175,14 @@ module aplic #(
     legal_sm = (sm[2:1] == 2'b01) ? SmInactive : sm;
   endfunction
 
+  // Keep the implemented PPN bits and fields. Bound HHXS so even all seven
+  // high hart-index bits fit in the master address, without truncation.
+  function automatic logic [31:0] legal_msicfgh(input logic [31:0] data, input logic supervisor);
+    legal_msicfgh = data & (supervisor ? 32'h0070_0FFF : 32'h9F77_FFFF);
+    legal_msicfgh[11:0] = data[11:0] & BasePpnMask[43:32];
+    if (!supervisor && (data[28:24] > 5'(MaxHhxs))) legal_msicfgh[28:24] = 5'(MaxHhxs);
+  endfunction
+
   // ---------------------------------------------------------------------------
   // State
   // ---------------------------------------------------------------------------
@@ -178,9 +194,16 @@ module aplic #(
   logic [2:0] sm_q[1:NUM_SOURCES];
   logic [HartBits-1:0] tgt_hart_q[1:NUM_SOURCES];
   logic [IPRIOLEN-1:0] tgt_prio_q[1:NUM_SOURCES];
+  logic [10:0] tgt_eiid_q[1:NUM_SOURCES];
 
-  // Per domain: domaincfg.IE. Per IDC: idelivery, iforce, ithreshold.
+  // Per domain: domaincfg.IE/DM and genmsi. The root owns the four address
+  // configuration registers. Per IDC: idelivery, iforce, ithreshold.
   logic [1:0] dom_ie_q;
+  logic [1:0] dom_dm_q, dom_dm_d;
+  logic [31:0] mmsiaddrcfg_q, mmsiaddrcfgh_q, smsiaddrcfg_q, smsiaddrcfgh_q;
+  logic [1:0] gen_busy_q;
+  logic [HartBits-1:0] gen_hart_q[2];
+  logic [10:0] gen_eiid_q[2];
   logic [NumIdcs-1:0] idelivery_q, iforce_q;
   logic [IPRIOLEN-1:0] ithreshold_q[NumIdcs];
 
@@ -195,11 +218,11 @@ module aplic #(
       src[s] = i_src[s-1];
       // Zero for Inactive and Detached sources.
       rect[s] = sm_q[s][2] && (src[s] ^ sm_q[s][0]);
-      // A pending bit that holds until a claim or a write clears it, and that
-      // writes can set: Detached and the edge modes.
-      latched[s] = (sm_q[s] == SmDetached) || (sm_q[s][2] && !sm_q[s][1]);
+      // Detached, edge and MSI-level pending bits latch. An MSI-level bit
+      // additionally clears whenever its rectified input is low.
+      latched[s] = (sm_q[s] == SmDetached) || (sm_q[s][2] && (!sm_q[s][1] || dom_dm_q[deleg_q[s]]));
       // A rising edge of the wire, rectified under the current mode.
-      edge_rise[s] = sm_q[s][2] && !sm_q[s][1] && rect[s] && !rect_q[s];
+      edge_rise[s] = sm_q[s][2] && (!sm_q[s][1] || dom_dm_q[deleg_q[s]]) && rect[s] && !rect_q[s];
     end
   end
 
@@ -217,7 +240,7 @@ module aplic #(
       top_prio[c] = '1;
       // Descending with <= keeps the lowest ID on equal priority.
       for (int s = NUM_SOURCES; s >= 1; s--) begin
-        if (ip_q[s] && ie_q[s] && (deleg_q[s] == 1'(c / NUM_HARTS)) &&
+        if (!dom_dm_q[c/NUM_HARTS] && ip_q[s] && ie_q[s] && (deleg_q[s] == 1'(c / NUM_HARTS)) &&
             (tgt_hart_q[s] == HartBits'(c % NUM_HARTS)) &&
             ((ithreshold_q[c] == '0) || (tgt_prio_q[s] < ithreshold_q[c])) &&
             (tgt_prio_q[s] <= top_prio[c])) begin
@@ -246,6 +269,10 @@ module aplic #(
   assign wr_off = {i_wr_offset[14:2], 2'b00};
   // setipnum_be holds its source number in big-endian byte order.
   assign wr_data_swapped = {i_wr_data[7:0], i_wr_data[15:8], i_wr_data[23:16], i_wr_data[31:24]};
+  always_comb begin
+    dom_dm_d = dom_dm_q;
+    if (wr_hit && (wr_off == DomaincfgOff)) dom_dm_d[wr_dom] = MSI_ENABLE && i_wr_data[2];
+  end
 
   // Per source: whether it is active in the written domain, and the writes
   // that name it. A write naming a source that is not active in the written
@@ -276,7 +303,7 @@ module aplic #(
   always_comb begin
     claim_clr = '0;
     for (int c = 0; c < NumIdcs; c++) begin
-      claim[c] = i_rd_capture && in_region(i_rd_offset[21:16]) &&
+      claim[c] = !dom_dm_q[c/NUM_HARTS] && i_rd_capture && in_region(i_rd_offset[21:16]) &&
           (i_rd_offset[15] == 1'(c / NUM_HARTS)) && i_rd_offset[14] &&
           (i_rd_offset[13:5] == 9'(c % NUM_HARTS)) && (i_rd_offset[4:2] == ClaimiWord);
       for (int s = 1; s <= NUM_SOURCES; s++) begin
@@ -287,9 +314,8 @@ module aplic #(
 
   // Next source configuration. cfg_clear marks a write that leaves the source
   // inactive, or moves it between domains: its pending and enable bits clear.
-  // level_d and rect_d give the next mode's level sensitivity and rectified
-  // input. cfg_raise marks a write that leaves the source in an edge mode and
-  // raises its rectified input, which sets the pending bit at the write.
+  // level_d and rect_d describe the next mode. cfg_raise marks a write that
+  // raises an edge or MSI-level rectified input, setting pending at the write.
   logic [NUM_SOURCES:1] deleg_d, cfg_clear, level_d, rect_d, cfg_raise;
   logic [2:0] sm_d[1:NUM_SOURCES];
   always_comb begin
@@ -320,7 +346,151 @@ module aplic #(
       end
       level_d[s] = sm_d[s][2] && sm_d[s][1];
       rect_d[s] = sm_d[s][2] && (src[s] ^ sm_d[s][0]);
-      cfg_raise[s] = sm_d[s][2] && !sm_d[s][1] && rect_d[s] && !rect[s];
+      cfg_raise[s] = sm_d[s][2] && (!sm_d[s][1] || dom_dm_d[deleg_d[s]]) && rect_d[s] && !rect[s];
+    end
+  end
+
+  // ---------------------------------------------------------------------------
+  // MSI forwarder. Sources and the two genmsi registers share a round-robin
+  // ring. Once offered, a transaction cannot be retracted by configuration
+  // writes. The pending episode it represents may end before acceptance;
+  // msi_live_q prevents that old transaction from clearing a later episode.
+  // ---------------------------------------------------------------------------
+  logic [NumMsiSlots-1:0] msi_req;
+  logic msi_pick_valid, msi_valid_q, msi_live_q, msi_fire;
+  logic [MsiSlotBits-1:0] msi_pick, msi_slot_q, msi_rr_q;
+  logic [MSI_ADDR_WIDTH-1:0] msi_addr_q;
+  logic [31:0] msi_data_q;
+  logic [NUM_SOURCES:1] msi_clear, msi_invalidate;
+  logic msi_pick_dom;
+  logic [HartBits-1:0] msi_pick_hart;
+  logic [10:0] msi_pick_eiid;
+
+  function automatic logic [MSI_ADDR_WIDTH-1:0] msi_address(input logic dom,
+                                                            input logic [HartBits-1:0] hart);
+    logic [63:0] ppn, high_index, low_index;
+    logic [2:0] low_shift;
+    ppn = dom ? {20'b0, smsiaddrcfgh_q[11:0], smsiaddrcfg_q} :
+        {20'b0, mmsiaddrcfgh_q[11:0], mmsiaddrcfg_q};
+    low_shift = dom ? smsiaddrcfgh_q[22:20] : mmsiaddrcfgh_q[22:20];
+    low_index = 64'(hart) & ((64'd1 << mmsiaddrcfgh_q[15:12]) - 1);
+    high_index = (64'(hart) >> mmsiaddrcfgh_q[15:12]) & ((64'd1 << mmsiaddrcfgh_q[18:16]) - 1);
+    msi_address = MSI_ADDR_WIDTH'((ppn | (low_index << low_shift) |
+        (high_index << (int'(mmsiaddrcfgh_q[28:24]) + 12))) << 12);
+  endfunction
+
+  always_comb begin
+    for (int s = 1; s <= NUM_SOURCES; s++) begin
+      msi_req[s-1] = MSI_ENABLE && dom_dm_q[deleg_q[s]] && dom_ie_q[deleg_q[s]] &&
+          (sm_q[s] != SmInactive) && ip_q[s] && ie_q[s];
+      msi_invalidate[s] = cfg_clear[s] || (dom_dm_d[deleg_q[s]] != dom_dm_q[deleg_q[s]]) ||
+          (latched[s] && wr_clr_ip[s] && wr_active[s]) ||
+          (sm_q[s][2] && sm_q[s][1] && dom_dm_q[deleg_q[s]] && !rect[s]) ||
+          (level_d[s] && dom_dm_d[deleg_d[s]] && !rect_d[s]);
+      msi_clear[s] = msi_fire && (msi_slot_q == MsiSlotBits'(s - 1)) && msi_live_q;
+    end
+    for (int d = 0; d < 2; d++) msi_req[NUM_SOURCES+d] = MSI_ENABLE && dom_dm_q[d] && gen_busy_q[d];
+    msi_pick_valid = |msi_req;
+    msi_pick = '0;
+    for (int k = NumMsiSlots - 1; k >= 0; k--) if (msi_req[k]) msi_pick = MsiSlotBits'(k);
+    for (int k = NumMsiSlots - 1; k >= 0; k--)
+    if (msi_req[k] && (MsiSlotBits'(k) >= msi_rr_q)) msi_pick = MsiSlotBits'(k);
+    msi_pick_dom  = 1'b0;
+    msi_pick_hart = '0;
+    msi_pick_eiid = '0;
+    for (int s = 1; s <= NUM_SOURCES; s++) begin
+      if (msi_pick == MsiSlotBits'(s - 1)) begin
+        msi_pick_dom  = deleg_q[s];
+        msi_pick_hart = tgt_hart_q[s];
+        msi_pick_eiid = tgt_eiid_q[s];
+      end
+    end
+    for (int d = 0; d < 2; d++) begin
+      if (msi_pick == MsiSlotBits'(NUM_SOURCES + d)) begin
+        msi_pick_dom  = 1'(d);
+        msi_pick_hart = gen_hart_q[d];
+        msi_pick_eiid = gen_eiid_q[d];
+      end
+    end
+  end
+
+  assign o_msi_valid = MSI_ENABLE && msi_valid_q && !i_rst;
+  assign o_msi_addr = msi_addr_q;
+  assign o_msi_data = msi_data_q;
+  assign msi_fire = o_msi_valid && i_msi_ready;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      msi_valid_q <= 1'b0;
+      msi_live_q <= 1'b0;
+      msi_slot_q <= '0;
+      msi_rr_q <= '0;
+      msi_addr_q <= '0;
+      msi_data_q <= '0;
+    end else begin
+      if (msi_fire) begin
+        msi_valid_q <= 1'b0;
+        msi_rr_q <= (msi_slot_q == MsiSlotBits'(NumMsiSlots - 1)) ? '0 : msi_slot_q + 1'b1;
+      end
+      if (!msi_valid_q && msi_pick_valid) begin
+        msi_valid_q <= 1'b1;
+        msi_slot_q  <= msi_pick;
+        msi_addr_q  <= msi_address(msi_pick_dom, msi_pick_hart);
+        msi_data_q  <= {21'b0, msi_pick_eiid};
+        msi_live_q  <= 1'b1;
+        for (int s = 1; s <= NUM_SOURCES; s++)
+        if ((msi_pick == MsiSlotBits'(s - 1)) && msi_invalidate[s]) msi_live_q <= 1'b0;
+      end else begin
+        for (int s = 1; s <= NUM_SOURCES; s++)
+        if ((msi_slot_q == MsiSlotBits'(s - 1)) && msi_invalidate[s]) msi_live_q <= 1'b0;
+      end
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      mmsiaddrcfg_q <= MSI_ENABLE ? MMSIADDRCFG_RESET & BasePpnMask[31:0] : '0;
+      mmsiaddrcfgh_q <= MSI_ENABLE ? legal_msicfgh(MMSIADDRCFGH_RESET, 1'b0) : '0;
+      smsiaddrcfg_q <= MSI_ENABLE ? SMSIADDRCFG_RESET & BasePpnMask[31:0] : '0;
+      smsiaddrcfgh_q <= MSI_ENABLE ? legal_msicfgh(SMSIADDRCFGH_RESET, 1'b1) : '0;
+      gen_busy_q <= '0;
+      for (int d = 0; d < 2; d++) begin
+        gen_hart_q[d] <= '0;
+        gen_eiid_q[d] <= '0;
+      end
+    end else begin
+      if (MSI_ENABLE && wr_hit && !wr_dom && !mmsiaddrcfgh_q[31]) begin
+        case (wr_off)
+          MmsiaddrcfgOff: mmsiaddrcfg_q <= i_wr_data & BasePpnMask[31:0];
+          MmsiaddrcfghOff: mmsiaddrcfgh_q <= legal_msicfgh(i_wr_data, 1'b0);
+          SmsiaddrcfgOff: smsiaddrcfg_q <= i_wr_data & BasePpnMask[31:0];
+          SmsiaddrcfghOff: smsiaddrcfgh_q <= legal_msicfgh(i_wr_data, 1'b1);
+          default: ;
+        endcase
+      end
+      for (int d = 0; d < 2; d++) begin
+        if (msi_fire && (msi_slot_q == MsiSlotBits'(NUM_SOURCES + d))) gen_busy_q[d] <= 1'b0;
+        if (wr_hit && (wr_dom == 1'(d)) && (wr_off == TargetOff) &&
+            dom_dm_q[d] && !gen_busy_q[d]) begin
+          gen_busy_q[d] <= 1'b1;
+          gen_hart_q[d] <= (NUM_HARTS > 1) ? i_wr_data[18+:HartBits] : '0;
+          gen_eiid_q[d] <= i_wr_data[10:0];
+        end
+      end
+    end
+  end
+
+  logic [NUM_SOURCES:1] ip_d;
+  always_comb begin
+    for (int s = 1; s <= NUM_SOURCES; s++) begin
+      if (latched[s])
+        ip_d[s] = (ip_q[s] && !(wr_clr_ip[s] && wr_active[s]) && !claim_clr[s] && !msi_clear[s]) ||
+            (wr_set_ip[s] && wr_active[s]) || edge_rise[s];
+      else ip_d[s] = rect[s];
+      if (sm_q[s][2] && sm_q[s][1] && dom_dm_q[deleg_q[s]] && !rect[s]) ip_d[s] = 1'b0;
+      if (cfg_clear[s]) ip_d[s] = 1'b0;
+      if (cfg_raise[s]) ip_d[s] = 1'b1;
+      if (level_d[s] && !dom_dm_d[deleg_d[s]]) ip_d[s] = rect_d[s];
+      if (level_d[s] && dom_dm_d[deleg_d[s]] && !rect_d[s]) ip_d[s] = 1'b0;
     end
   end
 
@@ -334,6 +504,7 @@ module aplic #(
         sm_q[s] <= SmInactive;
         tgt_hart_q[s] <= '0;
         tgt_prio_q[s] <= IPRIOLEN'(1);
+        tgt_eiid_q[s] <= 11'd1;
       end
     end else begin
       // The edge history follows the next mode, so a mode change is never
@@ -342,17 +513,9 @@ module aplic #(
       for (int s = 1; s <= NUM_SOURCES; s++) begin
         deleg_q[s] <= deleg_d[s];
         sm_q[s] <= sm_d[s];
-        // The pending bit. A level-sensitive source's follows its rectified
-        // input under the mode it has from the next cycle, so a mode change
-        // leaves no stale bit. One that is inactive or level-sensitive now
-        // and Detached or edge-sensitive next takes this cycle's rectified
-        // input under the current mode, and then the write's raise.
-        if (level_d[s]) ip_q[s] <= rect_d[s];
-        else if (cfg_clear[s]) ip_q[s] <= cfg_raise[s];
-        else if (latched[s])
-          ip_q[s] <= (ip_q[s] && !(wr_clr_ip[s] && wr_active[s]) && !claim_clr[s]) ||
-              (wr_set_ip[s] && wr_active[s]) || edge_rise[s] || cfg_raise[s];
-        else ip_q[s] <= rect[s] || cfg_raise[s];
+        // Input events and retirement precede configuration writes; direct
+        // level sources then follow the new mode's rectified input.
+        ip_q[s] <= ip_d[s];
         if (cfg_clear[s]) ie_q[s] <= 1'b0;
         else if (wr_set_ie[s] && wr_active[s]) ie_q[s] <= 1'b1;
         else if (wr_clr_ie[s] && wr_active[s]) ie_q[s] <= 1'b0;
@@ -361,12 +524,16 @@ module aplic #(
         // inactive, but a write from the domain holding the source still
         // lands, and the source uses it once active (the spec leaves the
         // value at activation unspecified). A move between domains resets it.
+        // MSI writes keep all 11 EIID bits; Guest Index is read-only zero.
         if (deleg_d[s] != deleg_q[s]) begin
           tgt_hart_q[s] <= '0;
           tgt_prio_q[s] <= IPRIOLEN'(1);
+          tgt_eiid_q[s] <= 11'd1;
         end else if (wr_target[s] && (deleg_q[s] == wr_dom)) begin
           tgt_hart_q[s] <= (NUM_HARTS > 1) ? i_wr_data[18+:HartBits] : '0;
-          tgt_prio_q[s] <= (i_wr_data[IPRIOLEN-1:0] == '0) ? IPRIOLEN'(1) : i_wr_data[IPRIOLEN-1:0];
+          if (dom_dm_q[wr_dom]) tgt_eiid_q[s] <= i_wr_data[10:0];
+          else if (i_wr_data[IPRIOLEN-1:0] == '0) tgt_prio_q[s] <= IPRIOLEN'(1);
+          else tgt_prio_q[s] <= i_wr_data[IPRIOLEN-1:0];
         end
       end
     end
@@ -377,14 +544,16 @@ module aplic #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       dom_ie_q <= '0;
+      dom_dm_q <= '0;
       idelivery_q <= '0;
       iforce_q <= '0;
       for (int c = 0; c < NumIdcs; c++) ithreshold_q[c] <= '0;
     end else begin
+      dom_dm_q <= dom_dm_d;
       if (wr_hit && (wr_off == DomaincfgOff)) dom_ie_q[wr_dom] <= i_wr_data[8];
       for (int c = 0; c < NumIdcs; c++) begin
         if (claim[c] && (top_id[c] == '0)) iforce_q[c] <= 1'b0;
-        if (wr_hit && (wr_dom == 1'(c / NUM_HARTS)) && wr_off[14] &&
+        if (!dom_dm_q[c/NUM_HARTS] && wr_hit && (wr_dom == 1'(c / NUM_HARTS)) && wr_off[14] &&
             (wr_off[13:5] == 9'(c % NUM_HARTS))) begin
           if (wr_off[4:2] == IdeliveryWord) idelivery_q[c] <= i_wr_data[0];
           if (wr_off[4:2] == IforceWord) iforce_q[c] <= i_wr_data[0];
@@ -402,7 +571,8 @@ module aplic #(
     if (i_rst) eip_q <= '0;
     else begin
       for (int c = 0; c < NumIdcs; c++) begin
-        eip_q[c] <= dom_ie_q[c/NUM_HARTS] && idelivery_q[c] && (iforce_q[c] || (top_id[c] != '0));
+        eip_q[c] <= !dom_dm_q[c/NUM_HARTS] && dom_ie_q[c/NUM_HARTS] && idelivery_q[c] &&
+            (iforce_q[c] || (top_id[c] != '0));
       end
     end
   end
@@ -419,7 +589,18 @@ module aplic #(
     r = {word_off[14:2], 2'b00};
     read_word = '0;
     if (in_region(word_off[21:16])) begin
-      if (r == DomaincfgOff) read_word = {8'h80, 15'b0, dom_ie_q[dom], 8'b0};
+      if (r == DomaincfgOff) read_word = {8'h80, 15'b0, dom_ie_q[dom], 5'b0, dom_dm_q[dom], 2'b0};
+      if (MSI_ENABLE && !dom) begin
+        case (r)
+          MmsiaddrcfgOff: read_word = mmsiaddrcfg_q;
+          MmsiaddrcfghOff: read_word = mmsiaddrcfgh_q;
+          SmsiaddrcfgOff: read_word = smsiaddrcfg_q;
+          SmsiaddrcfghOff: read_word = smsiaddrcfgh_q;
+          default: ;
+        endcase
+      end
+      if ((r == TargetOff) && dom_dm_q[dom])
+        read_word = {14'(gen_hart_q[dom]), 5'b0, gen_busy_q[dom], 1'b0, gen_eiid_q[dom]};
       for (int s = 1; s <= NUM_SOURCES; s++) begin
         if (r == 15'(4 * s)) begin
           if (!dom) read_word = deleg_q[s] ? 32'h0000_0400 : 32'(sm_q[s]);
@@ -431,11 +612,13 @@ module aplic #(
           if (r == bitmap_word(InClripOff, s)) read_word[s%32] = rect[s];
           if (r == bitmap_word(SetieOff, s)) read_word[s%32] = ie_q[s];
           if ((r == TargetOff + 15'(4 * s)) && (sm_q[s] != SmInactive))
-            read_word = {14'(tgt_hart_q[s]), 10'b0, 8'(tgt_prio_q[s])};
+            read_word = dom_dm_q[dom] ? {14'(tgt_hart_q[s]), 7'b0, tgt_eiid_q[s]} :
+                {14'(tgt_hart_q[s]), 10'b0, 8'(tgt_prio_q[s])};
         end
       end
       for (int c = 0; c < NumIdcs; c++) begin
-        if ((dom == 1'(c / NUM_HARTS)) && r[14] && (r[13:5] == 9'(c % NUM_HARTS))) begin
+        if (!dom_dm_q[dom] && (dom == 1'(c / NUM_HARTS)) && r[14] &&
+            (r[13:5] == 9'(c % NUM_HARTS))) begin
           case (r[4:2])
             IdeliveryWord: read_word = 32'(idelivery_q[c]);
             IforceWord: read_word = 32'(iforce_q[c]);
@@ -531,7 +714,8 @@ module aplic #(
   always_comb begin
     for (int c = 0; c < NumIdcs; c++) begin
       for (int s = 1; s <= NUM_SOURCES; s++) begin
-        f_cand[c][s] = ip_q[s] && ie_q[s] && (deleg_q[s] == 1'(c / NUM_HARTS)) &&
+        f_cand[c][s] = !dom_dm_q[c/NUM_HARTS] && ip_q[s] && ie_q[s] &&
+            (deleg_q[s] == 1'(c / NUM_HARTS)) &&
             (tgt_hart_q[s] == HartBits'(c % NUM_HARTS)) &&
             ((ithreshold_q[c] == '0) || (tgt_prio_q[s] < ithreshold_q[c]));
       end
@@ -543,7 +727,15 @@ module aplic #(
   logic [NUM_SOURCES:1] f_rect;
   function automatic logic [31:0] f_expected(input logic d, input logic [14:0] r);
     f_expected = '0;
-    if (r == 15'h0) f_expected = {8'h80, 15'b0, dom_ie_q[d], 8'b0};
+    if (r == 15'h0) f_expected = 32'h8000_0000 | (32'(dom_ie_q[d]) << 8) | (32'(dom_dm_q[d]) << 2);
+    if (!d && MSI_ENABLE) begin
+      if (r == 15'h1BC0) f_expected = mmsiaddrcfg_q;
+      if (r == 15'h1BC4) f_expected = mmsiaddrcfgh_q;
+      if (r == 15'h1BC8) f_expected = smsiaddrcfg_q;
+      if (r == 15'h1BCC) f_expected = smsiaddrcfgh_q;
+    end
+    if ((r == 15'h3000) && dom_dm_q[d])
+      f_expected = (32'(gen_hart_q[d]) << 18) | (32'(gen_busy_q[d]) << 12) | 32'(gen_eiid_q[d]);
     for (int s = 1; s <= NUM_SOURCES; s++) begin
       // sourcecfg: the root sees D for a delegated source; the supervisor
       // domain sees only the sources delegated to it.
@@ -553,14 +745,15 @@ module aplic #(
       end
       // target, and the bitmap bits, of a source the domain holds.
       if ((r == FTarget + 15'(4 * s)) && (deleg_q[s] == d) && (sm_q[s] != SmInactive))
-        f_expected = {14'(tgt_hart_q[s]), 10'b0, 8'(tgt_prio_q[s])};
+        f_expected = (32'(tgt_hart_q[s]) << 18) |
+            (dom_dm_q[d] ? 32'(tgt_eiid_q[s]) : 32'(tgt_prio_q[s]));
       if ((r == f_bitmap(FSetip, s)) && (deleg_q[s] == d)) f_expected[s%32] = ip_q[s];
       if ((r == f_bitmap(FInClrip, s)) && (deleg_q[s] == d)) f_expected[s%32] = f_rect[s];
       if ((r == f_bitmap(FSetie, s)) && (deleg_q[s] == d)) f_expected[s%32] = ie_q[s];
     end
     // The IDCs of the domain's harts; claimi reads as topi.
     for (int c = 0; c < NumIdcs; c++) begin
-      if (d == 1'(c / NUM_HARTS)) begin
+      if (!dom_dm_q[d] && (d == 1'(c / NUM_HARTS))) begin
         if (r == f_idc(c, 0)) f_expected = 32'(idelivery_q[c]);
         if (r == f_idc(c, 1)) f_expected = 32'(iforce_q[c]);
         if (r == f_idc(c, 2)) f_expected = 32'(ithreshold_q[c]);
@@ -584,7 +777,8 @@ module aplic #(
     for (int s = 1; s <= NUM_SOURCES; s++) begin
       f_rect[s] = f_rectified(sm_q[s], i_src[s-1]);
       // A rising edge of the wire, both cycles rectified under this mode.
-      f_edge[s] = f_edge_mode(sm_q[s]) && f_rect[s] && !f_rectified(sm_q[s], f_src_p[s-1]);
+      f_edge[s] = (f_edge_mode(sm_q[s]) || (f_level_mode(sm_q[s]) && dom_dm_q[deleg_q[s]])) &&
+          f_rect[s] && !f_rectified(sm_q[s], f_src_p[s-1]);
       f_set[s] = ((f_wr == f_w(deleg_q[s], f_bitmap(FSetip, s))) && i_wr_data[s%32]) ||
           ((f_wr == f_w(deleg_q[s], FSetipnum)) && (i_wr_data == 32'(s))) ||
           ((f_wr == f_w(deleg_q[s], FSetipnumLe)) && (i_wr_data == 32'(s))) ||
@@ -602,13 +796,13 @@ module aplic #(
     for (int c = 0; c < NumIdcs; c++) begin
       f_any[c] = |f_cand[c];
       f_zero_claim[c] = 1'b0;
-      if (f_cap == f_w(1'(c / NUM_HARTS), f_idc(c, 7))) begin
+      if (!dom_dm_q[c/NUM_HARTS] && (f_cap == f_w(1'(c / NUM_HARTS), f_idc(c, 7)))) begin
         f_zero_claim[c] = (top_id[c] == '0);
         for (int s = 1; s <= NUM_SOURCES; s++) if (top_id[c] == 10'(s)) f_claimed[s] = 1'b1;
       end
-      f_idelivery_wr[c] = (f_wr == f_w(1'(c / NUM_HARTS), f_idc(c, 0)));
-      f_iforce_wr[c] = (f_wr == f_w(1'(c / NUM_HARTS), f_idc(c, 1)));
-      f_ithreshold_wr[c] = (f_wr == f_w(1'(c / NUM_HARTS), f_idc(c, 2)));
+      f_idelivery_wr[c] = !dom_dm_q[c/NUM_HARTS] && (f_wr == f_w(1'(c / NUM_HARTS), f_idc(c, 0)));
+      f_iforce_wr[c] = !dom_dm_q[c/NUM_HARTS] && (f_wr == f_w(1'(c / NUM_HARTS), f_idc(c, 1)));
+      f_ithreshold_wr[c] = !dom_dm_q[c/NUM_HARTS] && (f_wr == f_w(1'(c / NUM_HARTS), f_idc(c, 2)));
     end
     for (int d = 0; d < 2; d++) f_domaincfg_wr[d] = (f_wr == f_w(1'(d), 15'h0));
   end
@@ -617,7 +811,7 @@ module aplic #(
   logic f_rst_p;
   logic [1:0] f_wr_dom_p;  // last cycle wrote inside domain d's region
   logic [31:0] f_wr_data_p;
-  logic [1:0] f_dom_ie_p, f_domaincfg_wr_p;
+  logic [1:0] f_dom_ie_p, f_dom_dm_p, f_domaincfg_wr_p;
   logic [NUM_SOURCES:1] f_deleg_p, f_ip_p, f_ie_p, f_edge_p, f_set_p, f_clr_p;
   logic [NUM_SOURCES:1] f_set_ie_p, f_clr_ie_p, f_claimed_p, f_cfg_root_p, f_cfg_s_p, f_tgt_p;
   logic [2:0] f_sm_p[1:NUM_SOURCES];
@@ -628,6 +822,7 @@ module aplic #(
   logic [IPRIOLEN-1:0] f_ithreshold_p[NumIdcs];
   always_ff @(posedge i_clk) begin
     f_rst_p <= i_rst;
+    f_dom_dm_p <= dom_dm_q;
     f_src_p <= i_src;
     f_wr_dom_p <= {
       i_wr_en && (i_wr_offset[21:15] == 7'd1), i_wr_en && (i_wr_offset[21:15] == 7'd0)
@@ -720,29 +915,31 @@ module aplic #(
               f_wr_data_p[2:0]
           )));
         end
-        // Level modes: the pending bit is last cycle's wire rectified under
-        // the current mode, also in the cycle after a change of mode.
-        if (f_level_mode(sm_q[s])) assert (ip_q[s] == f_rectified(sm_q[s], f_src_p[s-1]));
-        // Detached and edge modes, unchanged: set by a set write or an edge,
-        // cleared by a clear write or a claim, a set winning over a clear.
-        if ((deleg_q[s] == f_deleg_p[s]) && (sm_q[s] == f_sm_p[s]) && f_held(sm_q[s]))
-          assert (ip_q[s] == (f_set_p[s] || f_edge_p[s] ||
+        if (!MSI_ENABLE) begin
+          // Level modes: the pending bit is last cycle's wire rectified under
+          // the current mode, also in the cycle after a change of mode.
+          if (f_level_mode(sm_q[s])) assert (ip_q[s] == f_rectified(sm_q[s], f_src_p[s-1]));
+          // Detached and edge modes, unchanged: set by a set write or an edge,
+          // cleared by a clear write or a claim, a set winning over a clear.
+          if ((deleg_q[s] == f_deleg_p[s]) && (sm_q[s] == f_sm_p[s]) && f_held(sm_q[s]))
+            assert (ip_q[s] == (f_set_p[s] || f_edge_p[s] ||
                               (f_ip_p[s] && !f_clr_p[s] && !f_claimed_p[s])));
-        // A sourcecfg write that leaves the source in Detached or an edge
-        // mode: a write that raises an edge mode's rectified input sets the
-        // pending bit; otherwise a move between domains or from Inactive
-        // leaves it zero, from a level mode it takes the old mode's
-        // rectified input that cycle, and from Detached or an edge mode a
-        // claim in the same cycle clears it and an edge sets it.
-        if (((deleg_q[s] != f_deleg_p[s]) || (sm_q[s] != f_sm_p[s])) && f_held(sm_q[s])) begin
-          if ((deleg_q[s] != f_deleg_p[s]) || (f_sm_p[s] == SmInactive)) begin
-            assert (ip_q[s] == f_raise[s]);
-          end
-          if ((deleg_q[s] == f_deleg_p[s]) && f_level_mode(f_sm_p[s])) begin
-            assert (ip_q[s] == (f_rectified(f_sm_p[s], f_src_p[s-1]) || f_raise[s]));
-          end
-          if ((deleg_q[s] == f_deleg_p[s]) && f_held(f_sm_p[s])) begin
-            assert (ip_q[s] == (f_edge_p[s] || (f_ip_p[s] && !f_claimed_p[s]) || f_raise[s]));
+          // A sourcecfg write that leaves the source in Detached or an edge
+          // mode: a write that raises an edge mode's rectified input sets the
+          // pending bit; otherwise a move between domains or from Inactive
+          // leaves it zero, from a level mode it takes the old mode's
+          // rectified input that cycle, and from Detached or an edge mode a
+          // claim in the same cycle clears it and an edge sets it.
+          if (((deleg_q[s] != f_deleg_p[s]) || (sm_q[s] != f_sm_p[s])) && f_held(sm_q[s])) begin
+            if ((deleg_q[s] != f_deleg_p[s]) || (f_sm_p[s] == SmInactive)) begin
+              assert (ip_q[s] == f_raise[s]);
+            end
+            if ((deleg_q[s] == f_deleg_p[s]) && f_level_mode(f_sm_p[s])) begin
+              assert (ip_q[s] == (f_rectified(f_sm_p[s], f_src_p[s-1]) || f_raise[s]));
+            end
+            if ((deleg_q[s] == f_deleg_p[s]) && f_held(f_sm_p[s])) begin
+              assert (ip_q[s] == (f_edge_p[s] || (f_ip_p[s] && !f_claimed_p[s]) || f_raise[s]));
+            end
           end
         end
         // Enable bits of a source active in an unchanged domain follow
@@ -762,7 +959,8 @@ module aplic #(
           assert (f_tgt_p[s]);
         end
         if ((deleg_q[s] == f_deleg_p[s]) && f_tgt_p[s]) begin
-          assert (tgt_prio_q[s] == ((f_wr_data_p[IPRIOLEN-1:0] == '0) ?
+          assert (tgt_prio_q[s] == (f_dom_dm_p[f_deleg_p[s]] ? f_prio_p[s] :
+                                  (f_wr_data_p[IPRIOLEN-1:0] == '0) ?
                                     IPRIOLEN'(1) : f_wr_data_p[IPRIOLEN-1:0]));
           assert ((NUM_HARTS == 1) || (tgt_hart_q[s] == f_wr_data_p[18+:HartBits]));
         end
@@ -773,9 +971,11 @@ module aplic #(
                   (ie_q[s] == f_ie_p[s]) && (tgt_hart_q[s] == f_hart_p[s]) &&
                   (tgt_prio_q[s] == f_prio_p[s]));
       end
-      // domaincfg: only IE is writable.
+      // domaincfg: IE and, when implemented, DM are writable.
       for (int d = 0; d < 2; d++) begin
         assert (dom_ie_q[d] == (f_domaincfg_wr_p[d] ? f_wr_data_p[8] : f_dom_ie_p[d]));
+        assert (dom_dm_q[d] == (MSI_ENABLE &&
+            (f_domaincfg_wr_p[d] ? f_wr_data_p[2] : f_dom_dm_p[d])));
       end
       for (int c = 0; c < NumIdcs; c++) begin
         // idelivery and iforce keep bit 0 of a write, ithreshold IPRIOLEN
@@ -797,8 +997,9 @@ module aplic #(
       // The interrupt pins: a domain's IE, the hart's idelivery, and iforce
       // or a candidate, a cycle earlier.
       for (int h = 0; h < NUM_HARTS; h++) begin
-        assert (o_meip[h] == (f_dom_ie_p[0] && f_idelivery_p[h] && (f_iforce_p[h] || f_any_p[h])));
-        assert (o_seip[h] == (f_dom_ie_p[1] && f_idelivery_p[NUM_HARTS+h] &&
+        assert (o_meip[h] == (!f_dom_dm_p[0] && f_dom_ie_p[0] && f_idelivery_p[h] &&
+            (f_iforce_p[h] || f_any_p[h])));
+        assert (o_seip[h] == (!f_dom_dm_p[1] && f_dom_ie_p[1] && f_idelivery_p[NUM_HARTS+h] &&
                               (f_iforce_p[NUM_HARTS+h] || f_any_p[NUM_HARTS+h])));
       end
     end
@@ -823,6 +1024,261 @@ module aplic #(
       f_expected_pair[31:0]  = f_expected(i_rd_offset[15], {i_rd_offset[14:3], 3'b000});
     end
     assert (o_rd_pair == f_expected_pair);
+  end
+
+  // MSI properties include arbitrary writes during a stalled offer. Eligibility
+  // and payload are sampled when the request is offered; an offer already on
+  // the master cannot be retracted. Retirement belongs to its pending episode.
+  if (MSI_ENABLE) begin : gen_msi_formal
+    logic [NumMsiSlots-1:0] f_eligible;
+    logic [NUM_SOURCES:1] f_invalid, f_invalid_p, f_retired_p;
+    logic f_valid_p, f_ready_p, f_live_p, f_pick_valid_p;
+    logic [MsiSlotBits-1:0] f_slot_p, f_rr_p, f_pick_p;
+    logic [MSI_ADDR_WIDTH-1:0] f_address_p, f_offer_address_p;
+    logic [31:0] f_payload_p, f_offer_payload_p;
+    logic [10:0] f_eiid_p[1:NUM_SOURCES];
+    logic [31:0] f_cfg_q[4], f_cfg_next[4], f_cfg_expected_p[4];
+    logic [31:0] f_gen_q[2], f_gen_next[2], f_gen_expected_p[2];
+    logic f_locked_p, f_stalled_q;
+
+    // Field-by-field WARL rules, independent of the write decoder and helper.
+    function automatic logic [31:0] f_cfg_value(input int regnum, input logic [31:0] data);
+      logic [31:0] value;
+      value = '0;
+      if ((regnum == 0) || (regnum == 2)) begin
+        for (int b = 0; b < 32; b++) if (b + 12 < MSI_ADDR_WIDTH) value[b] = data[b];
+      end else begin
+        for (int b = 0; b < 12; b++) if (b + 44 < MSI_ADDR_WIDTH) value[b] = data[b];
+        value[22:20] = data[22:20];
+        if (regnum == 1) begin
+          value[31] = data[31];
+          value[18:12] = data[18:12];
+          value[28:24] = (int'(data[28:24]) + 31 > MSI_ADDR_WIDTH) ?
+              5'(MSI_ADDR_WIDTH - 31) : data[28:24];
+        end
+      end
+      f_cfg_value = value;
+    endfunction
+
+    // Place each hart-index bit at its specified byte-address position. This
+    // checks the PPN formula without using msi_address or its split indices.
+    function automatic logic [MSI_ADDR_WIDTH-1:0] f_address(input logic d,
+                                                            input logic [HartBits-1:0] hart);
+      logic [63:0] address_value;
+      logic [31:0] high_cfg;
+      high_cfg = d ? smsiaddrcfgh_q : mmsiaddrcfgh_q;
+      address_value = {8'b0, high_cfg[11:0], d ? smsiaddrcfg_q : mmsiaddrcfg_q, 12'b0};
+      for (int b = 0; b < HartBits; b++) begin
+        if (b < int'(mmsiaddrcfgh_q[15:12]))
+          address_value = address_value | (64'(hart[b]) << (12 + int'(high_cfg[22:20]) + b));
+        if ((b >= int'(mmsiaddrcfgh_q[15:12])) &&
+            (b < int'(mmsiaddrcfgh_q[15:12]) + int'(mmsiaddrcfgh_q[18:16])))
+          address_value = address_value | (64'(hart[b]) <<
+              (24 + int'(mmsiaddrcfgh_q[28:24]) + b - int'(mmsiaddrcfgh_q[15:12])));
+      end
+      f_address = MSI_ADDR_WIDTH'(address_value);
+    endfunction
+
+    always_comb begin
+      for (int s = 1; s <= NUM_SOURCES; s++) begin
+        f_eligible[s-1] = (sm_q[s] != 3'd0) && ip_q[s] && ie_q[s] &&
+            dom_dm_q[deleg_q[s]] && dom_ie_q[deleg_q[s]];
+        f_invalid[s] =
+            (f_cfg_root[s] && ((i_wr_data[10] && !deleg_q[s]) ||
+                (!i_wr_data[10] && (deleg_q[s] || (f_legal_sm(i_wr_data[2:0]) == 3'd0))))) ||
+            (f_cfg_s[s] && deleg_q[s] && (i_wr_data[10] || (f_legal_sm(i_wr_data[2:0]) == 3'd0))) ||
+            (f_domaincfg_wr[deleg_q[s]] && (i_wr_data[2] != dom_dm_q[deleg_q[s]])) ||
+            (f_clr[s] && (f_held(sm_q[s]) || (f_level_mode(sm_q[s]) && dom_dm_q[deleg_q[s]]))) ||
+            (f_level_mode(sm_q[s]) && dom_dm_q[deleg_q[s]] && !f_rect[s]);
+        if ((f_cfg_root[s] && !i_wr_data[10]) || (f_cfg_s[s] && deleg_q[s] && !i_wr_data[10])) begin
+          if (f_level_mode(
+                  i_wr_data[2:0]
+              ) && dom_dm_q[f_cfg_s[s]] && !f_rectified(
+                  i_wr_data[2:0], i_src[s-1]
+              ))
+            f_invalid[s] = 1'b1;
+        end
+      end
+      for (int d = 0; d < 2; d++) f_eligible[NUM_SOURCES+d] = dom_dm_q[d] && gen_busy_q[d];
+      f_cfg_q[0] = mmsiaddrcfg_q;
+      f_cfg_q[1] = mmsiaddrcfgh_q;
+      f_cfg_q[2] = smsiaddrcfg_q;
+      f_cfg_q[3] = smsiaddrcfgh_q;
+      for (int r = 0; r < 4; r++) begin
+        f_cfg_next[r] = f_cfg_q[r];
+        if (!mmsiaddrcfgh_q[31] && (f_wr == f_w(1'b0, 15'h1BC0 + 15'(4 * r))))
+          f_cfg_next[r] = f_cfg_value(r, i_wr_data);
+      end
+      for (int d = 0; d < 2; d++) begin
+        f_gen_q[d] = (32'(gen_hart_q[d]) << 18) | (32'(gen_busy_q[d]) << 12) | 32'(gen_eiid_q[d]);
+        f_gen_next[d] = f_gen_q[d];
+        if (o_msi_valid && i_msi_ready && (msi_slot_q == MsiSlotBits'(NUM_SOURCES + d)))
+          f_gen_next[d][12] = 1'b0;
+        if (dom_dm_q[d] && !gen_busy_q[d] && (f_wr == f_w(1'(d), 15'h3000))) begin
+          f_gen_next[d] = (32'(i_wr_data[10:0])) | 32'h1000;
+          if (NUM_HARTS > 1) f_gen_next[d] = f_gen_next[d] | (32'(i_wr_data[18+:HartBits]) << 18);
+        end
+      end
+    end
+
+    always_ff @(posedge i_clk) begin
+      f_valid_p <= msi_valid_q;
+      f_ready_p <= i_msi_ready;
+      f_live_p <= msi_live_q;
+      f_slot_p <= msi_slot_q;
+      f_rr_p <= msi_rr_q;
+      f_pick_p <= msi_pick;
+      f_pick_valid_p <= |f_eligible;
+      f_invalid_p <= f_invalid;
+      f_address_p <= o_msi_addr;
+      f_payload_p <= o_msi_data;
+      f_locked_p <= mmsiaddrcfgh_q[31];
+      f_offer_address_p <= '0;
+      f_offer_payload_p <= '0;
+      for (int s = 1; s <= NUM_SOURCES; s++) begin
+        f_eiid_p[s] <= tgt_eiid_q[s];
+        f_retired_p[s] <= o_msi_valid && i_msi_ready && msi_live_q &&
+            (msi_slot_q == MsiSlotBits'(s-1));
+        if (msi_pick == MsiSlotBits'(s - 1)) begin
+          f_offer_address_p <= f_address(deleg_q[s], tgt_hart_q[s]);
+          f_offer_payload_p <= 32'(tgt_eiid_q[s]);
+        end
+      end
+      for (int d = 0; d < 2; d++) begin
+        f_gen_expected_p[d] <= f_gen_next[d];
+        if (msi_pick == MsiSlotBits'(NUM_SOURCES + d)) begin
+          f_offer_address_p <= f_address(1'(d), gen_hart_q[d]);
+          f_offer_payload_p <= 32'(gen_eiid_q[d]);
+        end
+      end
+      for (int r = 0; r < 4; r++) f_cfg_expected_p[r] <= f_cfg_next[r];
+      if (i_rst || !msi_valid_q) f_stalled_q <= 1'b0;
+      else if (!i_msi_ready) f_stalled_q <= 1'b1;
+    end
+
+    // Cyclic rank proves the next eligible slot wins and that the pointer
+    // advances past each accepted slot. With eventual ready, a continuously
+    // eligible slot cannot be bypassed by a second turn of another slot.
+    function automatic int unsigned f_rank(input int slot, input logic [MsiSlotBits-1:0] start);
+      f_rank = (slot >= int'(start)) ? slot - int'(start) : slot + NumMsiSlots - int'(start);
+    endfunction
+    always_comb begin
+      if (f_past_valid) begin
+        assert (int'(msi_rr_q) < NumMsiSlots);
+        assert (int'(msi_slot_q) < NumMsiSlots);
+        for (int s = 1; s <= NUM_SOURCES; s++)
+        if (msi_valid_q && msi_live_q && (msi_slot_q == MsiSlotBits'(s - 1)))
+          assert (ip_q[s] && (sm_q[s] != 3'd0) && dom_dm_q[deleg_q[s]]);
+        assert (msi_pick_valid == (|f_eligible));
+        if (msi_pick_valid) begin
+          assert (f_eligible[msi_pick]);
+          for (int k = 0; k < NumMsiSlots; k++)
+          if (f_eligible[k]) assert (f_rank(int'(msi_pick), msi_rr_q) <= f_rank(k, msi_rr_q));
+        end
+        assert (o_msi_valid == (msi_valid_q && !i_rst));
+        if (o_msi_valid) assert ((o_msi_addr[11:0] == '0) && (o_msi_data[31:11] == '0));
+        if (f_rst_p) begin
+          assert (!msi_valid_q && !msi_live_q && (msi_rr_q == '0) && (dom_dm_q == '0));
+          assert ((o_msi_addr == '0) && (o_msi_data == '0));
+          assert (mmsiaddrcfg_q == f_cfg_value(0, MMSIADDRCFG_RESET));
+          assert (mmsiaddrcfgh_q == f_cfg_value(1, MMSIADDRCFGH_RESET));
+          assert (smsiaddrcfg_q == f_cfg_value(2, SMSIADDRCFG_RESET));
+          assert (smsiaddrcfgh_q == f_cfg_value(3, SMSIADDRCFGH_RESET));
+          for (int d = 0; d < 2; d++) assert (f_gen_q[d] == '0);
+          for (int s = 1; s <= NUM_SOURCES; s++) assert (tgt_eiid_q[s] == 11'd1);
+        end else begin
+          for (int r = 0; r < 4; r++) assert (f_cfg_q[r] == f_cfg_expected_p[r]);
+          if (f_locked_p) assert (mmsiaddrcfgh_q[31]);
+          for (int d = 0; d < 2; d++) assert (f_gen_q[d] == f_gen_expected_p[d]);
+          assert (msi_valid_q == (f_valid_p ? !f_ready_p : f_pick_valid_p));
+          assert (msi_rr_q == ((f_valid_p && f_ready_p) ?
+              ((f_slot_p == MsiSlotBits'(NumMsiSlots-1)) ? '0 : f_slot_p + 1'b1) : f_rr_p));
+          if (!f_valid_p && f_pick_valid_p) begin
+            assert (msi_slot_q == f_pick_p);
+            assert ((o_msi_addr == f_offer_address_p) && (o_msi_data == f_offer_payload_p));
+            for (int k = 0; k < NumMsiSlots; k++) begin
+              if (msi_slot_q == MsiSlotBits'(k)) begin
+                if (k < NUM_SOURCES)
+                  assert (msi_live_q == !f_invalid_p[k+1]);
+                  else assert (msi_live_q);
+              end
+            end
+          end else begin
+            assert ((msi_slot_q == f_slot_p) && (o_msi_addr == f_address_p) &&
+                (o_msi_data == f_payload_p));
+            for (int k = 0; k < NumMsiSlots; k++) begin
+              if (msi_slot_q == MsiSlotBits'(k)) begin
+                if (k < NUM_SOURCES)
+                  assert (msi_live_q == (f_live_p && !f_invalid_p[k+1]));
+                  else assert (msi_live_q == f_live_p);
+              end
+            end
+          end
+          for (int s = 1; s <= NUM_SOURCES; s++) begin
+            if (deleg_q[s] != f_deleg_p[s])
+              assert (tgt_eiid_q[s] == 11'd1);
+              else
+                assert (tgt_eiid_q[s] == ((f_tgt_p[s] && f_dom_dm_p[f_deleg_p[s]]) ?
+                f_wr_data_p[10:0] : f_eiid_p[s]));
+          end
+        end
+      end
+    end
+
+    // Complete pending transition, including mode changes and simultaneous
+    // input, software and retirement events. Only an accepted live offer is
+    // a retirement; a set or edge on that edge wins over its clear.
+    logic [NUM_SOURCES:1] f_pending;
+    always_comb begin
+      for (int s = 1; s <= NUM_SOURCES; s++) begin
+        if (f_held(f_sm_p[s]) || (f_level_mode(f_sm_p[s]) && f_dom_dm_p[f_deleg_p[s]]))
+          f_pending[s] = f_edge_p[s] || (f_set_p[s] && (f_sm_p[s] != 3'd0)) ||
+              (f_ip_p[s] && !f_clr_p[s] && !f_claimed_p[s] && !f_retired_p[s]);
+        else f_pending[s] = f_rectified(f_sm_p[s], f_src_p[s-1]);
+        if (f_level_mode(
+                f_sm_p[s]
+            ) && f_dom_dm_p[f_deleg_p[s]] && !f_rectified(
+                f_sm_p[s], f_src_p[s-1]
+            ))
+          f_pending[s] = 1'b0;
+        if ((deleg_q[s] != f_deleg_p[s]) || (sm_q[s] == 3'd0)) f_pending[s] = 1'b0;
+        if ((f_edge_mode(
+                sm_q[s]
+            ) || (f_level_mode(
+                sm_q[s]
+            ) && dom_dm_q[deleg_q[s]])) && f_rectified(
+                sm_q[s], f_src_p[s-1]
+            ) && !f_rectified(
+                f_sm_p[s], f_src_p[s-1]
+            ))
+          f_pending[s] = 1'b1;
+        if (f_level_mode(sm_q[s])) begin
+          if (!dom_dm_q[deleg_q[s]] || !f_rectified(sm_q[s], f_src_p[s-1]))
+            f_pending[s] = f_rectified(sm_q[s], f_src_p[s-1]);
+        end
+        if (f_past_valid && !f_rst_p) assert (ip_q[s] == f_pending[s]);
+      end
+    end
+
+    always_comb begin
+      if (f_past_valid && !i_rst) begin
+        for (int d = 0; d < 2; d++) begin
+          cover (msi_fire && (msi_slot_q == MsiSlotBits'(NUM_SOURCES + d)) && !dom_ie_q[d]);
+          for (int mode = 4; mode < 8; mode++)
+          cover (msi_fire && msi_live_q && (msi_slot_q == '0) &&
+                (deleg_q[1] == 1'(d)) && (sm_q[1] == 3'(mode)));
+        end
+        cover (msi_fire && f_stalled_q);
+        cover (msi_fire && msi_live_q && (msi_slot_q == '0) && (sm_q[1] == 3'd1));
+        cover (msi_fire && msi_live_q && (msi_slot_q == '0) && f_set[1]);
+        cover (msi_fire && msi_live_q && (msi_slot_q == '0) && f_edge[1]);
+        cover (msi_fire && !msi_live_q && (msi_slot_q == '0) && deleg_q[1] && ip_q[1]);
+        cover (msi_fire && (o_msi_addr[12]) && (o_msi_data == 32'h7FF));
+        cover (mmsiaddrcfgh_q[31] && (smsiaddrcfg_q != '0) && (f_wr == f_w(
+            1'b0, 15'h1BC8
+        )) && (i_wr_data != smsiaddrcfg_q));
+      end
+    end
   end
 
   // Reachability.
