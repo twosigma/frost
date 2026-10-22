@@ -539,7 +539,11 @@ module soc_top #(
       .i_rd_capture(mmio_read_capture && (mmio_load_addr[31:22] == AplicWindowSel) &&
                     (local_size == 3'd2)),
       .o_meip(aplic_meip),
-      .o_seip(aplic_seip)
+      .o_seip(aplic_seip),
+      .o_msi_valid(),
+      .i_msi_ready(1'b0),
+      .o_msi_addr(),
+      .o_msi_data()
   );
   assign interrupts.msip = msip;
 

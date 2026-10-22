@@ -606,6 +606,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Committed DDR stores drain before satp and mstatus writes retire"
         ),
     ),
+    "imsic_csr_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="imsic_csr_test",
+        extra_env=(("COCOTB_MAX_CYCLES", "1500000"),),
+        description="AIA CSR legality, indirect registers, claims, aliases and exact topi priority",
+    ),
     "aplic_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

@@ -210,6 +210,9 @@ module reorder_buffer #(
     input logic [2:0] i_counter_blocked,
     // Sstc: S-mode stimecmp access with menvcfg.STCE=0 is illegal.
     input logic i_stimecmp_blocked,
+    input logic i_mireg_illegal = 1'b0,
+    input logic i_sireg_illegal = 1'b0,
+    input logic i_stopei_illegal = 1'b0,
     input logic i_sret_illegal,
     input logic i_sfence_illegal,
     input logic i_wfi_illegal,
@@ -410,6 +413,17 @@ module reorder_buffer #(
       riscv_pkg::CsrScounteren, riscv_pkg::CsrSenvcfg, riscv_pkg::CsrSscratch,
       riscv_pkg::CsrSepc, riscv_pkg::CsrScause, riscv_pkg::CsrStval,
       riscv_pkg::CsrSip, riscv_pkg::CsrSatp, riscv_pkg::CsrStimecmp,
+      // AIA CSRs
+      riscv_pkg::CsrMiselect,
+      riscv_pkg::CsrMireg,
+      riscv_pkg::CsrMtopei,
+      riscv_pkg::CsrMtopi,
+      riscv_pkg::CsrMvien,
+      riscv_pkg::CsrMvip,
+      riscv_pkg::CsrSiselect,
+      riscv_pkg::CsrSireg,
+      riscv_pkg::CsrStopei,
+      riscv_pkg::CsrStopi,
       // Machine CSRs
       riscv_pkg::CsrMstatus, riscv_pkg::CsrMisa, riscv_pkg::CsrMedeleg,
       riscv_pkg::CsrMideleg, riscv_pkg::CsrMie, riscv_pkg::CsrMtvec,
@@ -477,6 +491,9 @@ module reorder_buffer #(
           (needs_m_priv && (i_priv != riscv_pkg::PrivM)) ||
           (needs_s_priv && i_priv_is_u) ||
           (is_stimecmp_csr && i_stimecmp_blocked) ||
+          (req.is_csr && (req.csr_addr == riscv_pkg::CsrMireg) && i_mireg_illegal) ||
+          (req.is_csr && (req.csr_addr == riscv_pkg::CsrSireg) && i_sireg_illegal) ||
+          (req.is_csr && (req.csr_addr == riscv_pkg::CsrStopei) && i_stopei_illegal) ||
           (|(ucounter_sel & i_counter_blocked)) ||
           (req.is_sret && i_sret_illegal) ||
           (req.is_dret && !i_debug_mode) ||

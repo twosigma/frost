@@ -92,60 +92,23 @@ module imsic #(
     output logic [NUM_HARTS-1:0] o_seip
 );
 
-  localparam int unsigned HartBits = (NUM_HARTS > 1) ? $clog2(NUM_HARTS) : 0;
-  // A region holds 2^HartBits pages; its address bits above RegionShift
-  // match its base.
-  localparam int unsigned RegionShift = 12 + HartBits;
-  localparam logic [19:0] PageMask = 20'((1 << HartBits) - 1);
-
-`ifndef SYNTHESIS
-  initial begin
-    if (NUM_HARTS < 1 || NUM_HARTS > 4096) $fatal(1, "imsic: NUM_HARTS must be 1 to 4096");
-    if (((M_BASE_ADDR & 32'((1 << RegionShift) - 1)) != 0) ||
-        ((S_BASE_ADDR & 32'((1 << RegionShift) - 1)) != 0))
-      $fatal(1, "imsic: M_BASE_ADDR and S_BASE_ADDR must be aligned to their region size");
-    if ((M_BASE_ADDR >> RegionShift) == (S_BASE_ADDR >> RegionShift))
-      $fatal(1, "imsic: the machine-level and supervisor-level regions overlap");
-  end
-`endif
-
-  // ---------------------------------------------------------------------------
-  // MSI decode: the region, the hart's page, the register, and the identity.
-  // ---------------------------------------------------------------------------
-  logic wr_m, wr_s, wr_le, wr_be, wr_valid;
-  logic [19:0] wr_page;
-  logic [31:0] wr_value;
-  assign wr_m = i_wr_en && ((i_wr_addr >> RegionShift) == (M_BASE_ADDR >> RegionShift));
-  assign wr_s = i_wr_en && ((i_wr_addr >> RegionShift) == (S_BASE_ADDR >> RegionShift));
-  assign wr_page = i_wr_addr[31:12] & PageMask;
-  assign wr_le = (i_wr_addr[11:2] == 10'h000);
-  assign wr_be = (i_wr_addr[11:2] == 10'h001);
-  // seteipnum_be holds its identity in big-endian byte order.
-  assign wr_value = wr_be ?
-      {i_wr_data[7:0], i_wr_data[15:8], i_wr_data[23:16], i_wr_data[31:24]} : i_wr_data;
-  assign wr_valid = (wr_le || wr_be) && (wr_value != '0) && (wr_value <= 32'(NUM_IDS));
-
-  // Accesses are whole words, so the byte offset inside the word is unused.
-  /* verilator lint_off UNUSEDSIGNAL */
-  logic [1:0] byte_offset_unused;
-  /* verilator lint_on UNUSEDSIGNAL */
-  assign byte_offset_unused = i_wr_addr[1:0];
-
-  // One registered MSI per cycle: a valid bit per file and the identity.
-  logic [NUM_HARTS-1:0] msi_m_q, msi_s_q;
-  logic [10:0] msi_id_q;
-  always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      msi_m_q <= '0;
-      msi_s_q <= '0;
-    end else begin
-      for (int h = 0; h < int'(NUM_HARTS); h++) begin
-        msi_m_q[h] <= wr_m && wr_valid && (wr_page == 20'(h));
-        msi_s_q[h] <= wr_s && wr_valid && (wr_page == 20'(h));
-      end
-    end
-    msi_id_q <= wr_value[10:0];
-  end
+  logic [NUM_HARTS-1:0] msi_valid, msi_level;
+  logic [10:0] msi_id;
+  imsic_decode #(
+      .NUM_HARTS(NUM_HARTS),
+      .NUM_IDS(NUM_IDS),
+      .M_BASE_ADDR(M_BASE_ADDR),
+      .S_BASE_ADDR(S_BASE_ADDR)
+  ) decode (
+      .i_clk,
+      .i_rst,
+      .i_wr_en,
+      .i_wr_addr,
+      .i_wr_data,
+      .o_msi_valid(msi_valid),
+      .o_msi_level(msi_level),
+      .o_msi_id(msi_id)
+  );
 
   // ---------------------------------------------------------------------------
   // Interrupt files
@@ -157,8 +120,8 @@ module imsic #(
     ) m_file (
         .i_clk,
         .i_rst,
-        .i_msi_valid(msi_m_q[h]),
-        .i_msi_id(msi_id_q),
+        .i_msi_valid((msi_valid[h] && !msi_level[h])),
+        .i_msi_id(msi_id),
         .i_iselect(i_m_iselect[8*h+:8]),
         .o_ireg(o_m_ireg[64*h+:64]),
         .o_ireg_illegal(o_m_ireg_illegal[h]),
@@ -176,8 +139,8 @@ module imsic #(
     ) s_file (
         .i_clk,
         .i_rst,
-        .i_msi_valid(msi_s_q[h]),
-        .i_msi_id(msi_id_q),
+        .i_msi_valid((msi_valid[h] && msi_level[h])),
+        .i_msi_id(msi_id),
         .i_iselect(i_s_iselect[8*h+:8]),
         .o_ireg(o_s_ireg[64*h+:64]),
         .o_ireg_illegal(o_s_ireg_illegal[h]),
@@ -190,68 +153,5 @@ module imsic #(
         .o_eip(o_seip[h])
     );
   end
-
-`ifdef FORMAL
-  // ---------------------------------------------------------------------------
-  // Formal properties of the decode (formal/imsic.sby); the files check their
-  // own. Reset is held in the first cycle; inputs are arbitrary afterwards.
-  // The page addresses are written from the spec's formula, base + 0x1000 *
-  // hart, apart from the decode above.
-  // ---------------------------------------------------------------------------
-  logic f_past_valid;
-  initial f_past_valid = 1'b0;
-  always_ff @(posedge i_clk) f_past_valid <= 1'b1;
-  always_comb if (!f_past_valid) assume (i_rst);
-
-  logic f_rst_p, f_wr_en_p;
-  logic [31:0] f_wr_addr_p, f_wr_data_p;
-  always_ff @(posedge i_clk) begin
-    f_rst_p <= i_rst;
-    f_wr_en_p <= i_wr_en;
-    f_wr_addr_p <= i_wr_addr;
-    f_wr_data_p <= i_wr_data;
-  end
-
-  // Last cycle's write: the identity it carried in either byte order, and
-  // whether it named an implemented identity at offset 0 or 4 of a page.
-  logic [31:0] f_value_p;
-  logic f_ok_p;
-  assign f_value_p = (f_wr_addr_p[11:2] == 10'd1) ?
-      {f_wr_data_p[7:0], f_wr_data_p[15:8], f_wr_data_p[23:16], f_wr_data_p[31:24]} : f_wr_data_p;
-  assign f_ok_p = f_wr_en_p && (f_wr_addr_p[11:2] <= 10'd1) && (f_value_p >= 32'd1) &&
-      (f_value_p <= 32'(NUM_IDS));
-
-  // Each file receives exactly the valid writes to its own page, with their
-  // identity; any other write reaches no file.
-  always_comb begin
-    if (f_past_valid && !f_rst_p) begin
-      for (int h = 0; h < int'(NUM_HARTS); h++) begin
-        assert (msi_m_q[h] == (f_ok_p && (f_wr_addr_p[31:12] == (M_BASE_ADDR[31:12] + 20'(h)))));
-        assert (msi_s_q[h] == (f_ok_p && (f_wr_addr_p[31:12] == (S_BASE_ADDR[31:12] + 20'(h)))));
-        if (msi_m_q[h] || msi_s_q[h]) assert (msi_id_q == f_value_p[10:0]);
-      end
-    end
-    if (f_past_valid && f_rst_p) assert ((msi_m_q == '0) && (msi_s_q == '0));
-  end
-
-  // Reachability: each byte order reaches the last hart's files, with the
-  // highest identity.
-  always_comb begin
-    if (f_past_valid && !f_rst_p) begin
-      cover (msi_s_q[NUM_HARTS-1] && (f_wr_addr_p[11:2] == 10'd1));
-      cover (msi_m_q[NUM_HARTS-1] && (f_wr_addr_p[11:2] == 10'd0) && (msi_id_q == 11'(NUM_IDS)));
-    end
-  end
-  if ((1 << HartBits) > NUM_HARTS) begin : gen_unused_page_cover
-    // A region with more pages than harts: a write to an unused page.
-    always_comb begin
-      if (f_past_valid && !f_rst_p) begin
-        cover (f_wr_en_p && ((f_wr_addr_p >> RegionShift) == (S_BASE_ADDR >> RegionShift)) &&
-               ((f_wr_addr_p[31:12] & PageMask) >= 20'(NUM_HARTS)) &&
-               (f_wr_addr_p[11:0] == 12'h0) && (f_wr_data_p == 32'd1));
-      end
-    end
-  end
-`endif
 
 endmodule : imsic

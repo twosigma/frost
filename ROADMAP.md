@@ -52,11 +52,11 @@ external interrupt inputs. OpenSBI delegates the sources to the supervisor
 domain for Linux. A second hart needs its own IDC in each domain and a
 machine software interrupt register for OpenSBI's inter-processor interrupts.
 
-IMSICs and MSI delivery remain to be implemented. An IMSIC per hart, with
-the Smaia and Ssaia CSRs, receives message-signaled interrupts. An
-inter-processor interrupt is then a write to the other hart's IMSIC. The
-APLIC forwards wired interrupts as messages, and devices that signal with
-writes, such as PCIe devices, reach the harts directly.
+The CPU contains machine and supervisor IMSIC files with 63 identities,
+Smaia and Ssaia CSRs, and registered MSI ingress. The APLIC supports optional
+MSI delivery, and a standalone decoder accepts stores to machine and
+supervisor interrupt-file pages. The SoC currently uses direct APLIC delivery;
+its store connection and the firmware's IMSIC device-tree nodes are not present.
 
 Done means Debian running on both harts, multi-hart scaling reported
 separately from single-hart performance, and hours of sustained-load testing

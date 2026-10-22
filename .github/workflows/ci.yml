@@ -101,7 +101,7 @@ jobs:
           - name: Real Programs (Interrupts)
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
-              [aplic_test] or [sstc_test] or [ns16550_irq_console_test] or [wfi_mepc_test] or
+              [imsic_csr_test] or [aplic_test] or [sstc_test] or [ns16550_irq_console_test] or [wfi_mepc_test] or
               [wfi_drain_mepc_test] or [mret_timer_resume_test] or [mtimer_stress] or
               [wfi_lost_tick] or [irq_mie_window] or [ns16550_test] or [clint_test] or
               [linux_irq_ddr_test] or [linux_irq_active_ddr_test] or [linux_irq_stack_slot_test] or
@@ -123,7 +123,7 @@ jobs:
               [drain_trapframe_test] or [restore_window_stress] or [mret_drain_deadlock] or
               [linux_clksrc_faithful] or [trap_s2l_fwd] or [pde_return_hazard] or [csr_test] or
               [umode_test] or [pma_fault_test] or [vm_test] or [itlb_test] or [satp_drain_test] or
-              [ad_fault_test] or [smode_test] or [csr_rmw_test] or [aplic_test] or [sstc_test] or
+              [ad_fault_test] or [smode_test] or [csr_rmw_test] or [imsic_csr_test] or [aplic_test] or [sstc_test] or
               [ns16550_irq_console_test] or [wfi_mepc_test] or [wfi_drain_mepc_test] or
               [mret_timer_resume_test] or [mtimer_stress] or [wfi_lost_tick] or [irq_mie_window] or
               [ns16550_test] or [clint_test] or [linux_irq_ddr_test] or [linux_irq_active_ddr_test]

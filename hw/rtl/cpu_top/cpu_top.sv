@@ -15,8 +15,8 @@
  */
 
 // Reusable CPU tile. See cpu_top/README.md for reset, AXI, PMA, and coherence.
-// Board memory, debug transport, interrupt controllers, and DMA agents are
-// instantiated by the SoC wrapper, never by this module.
+// Board memory, debug transport, the APLIC, and DMA agents belong to the SoC.
+// The hart owns its machine and supervisor IMSIC files.
 module cpu_top #(
     // Optional private Normal-memory read caches and buffered write-through
     // stores. Device accesses retain precise, narrow AXI completion.
@@ -56,6 +56,10 @@ module cpu_top #(
     input logic [riscv_pkg::XLEN-1:0] i_boot_addr,
     input riscv_pkg::interrupt_t i_interrupts,
     input logic i_seip,
+    // One MSI per cycle; level 0 is machine, level 1 supervisor.
+    input logic i_msi_valid = 1'b0,
+    input logic i_msi_level = 1'b0,
+    input logic [10:0] i_msi_id = '0,
     input logic [63:0] i_mtime,
     input logic i_disable_branch_prediction = 1'b0,
     input logic i_dbg_haltreq = 1'b0,
@@ -434,6 +438,9 @@ module cpu_top #(
       // Interrupt and timer interface
       .i_interrupts(i_interrupts),
       .i_seip_line(i_seip),
+      .i_msi_valid,
+      .i_msi_level,
+      .i_msi_id,
 
       .i_mtime(i_mtime),
       .o_debug_irq_status(o_debug_irq_status),

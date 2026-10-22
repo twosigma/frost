@@ -29,6 +29,8 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/branch_jump_unit.sv
 # CSR file (Zicsr + Zicntr extensions)
 -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/csr/csr.f
 
+$(ROOT)/hw/rtl/peripherals/imsic/imsic_file.sv
+
 # Trap unit (exception/interrupt handling)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/control/trap_unit.sv
 

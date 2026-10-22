@@ -74,24 +74,31 @@ module imsic_file #(
     // Implemented identities 1..NUM_IDS: one less than a multiple of 64, 63 to 2047.
     parameter int unsigned NUM_IDS = 63,
     // eidelivery supports 0x40000000, delivery by an APLIC in direct mode.
-    parameter bit APLIC_DELIVERY = 1'b1
+    parameter bit APLIC_DELIVERY = 1'b1,
+    // The hart can register the select decode alongside *iselect.
+    parameter bit PREDECODED_SELECT = 1'b0,
+    // The hart can expand its narrow ingress before the file's state update.
+    parameter bit PREDECODED_MSI = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst,
 
     // MSI: set the pending bit of one identity.
-    input logic        i_msi_valid,
-    input logic [10:0] i_msi_id,
+    input logic             i_msi_valid,
+    input logic [     10:0] i_msi_id,
+    input logic [NUM_IDS:0] i_msi_onehot = '0,
 
     // Hart side: *iselect/*ireg and *topei.
-    input  logic [ 7:0] i_iselect,
-    output logic [63:0] o_ireg,
-    output logic        o_ireg_illegal,
-    input  logic        i_ireg_we,
-    input  logic [63:0] i_ireg_keep,
-    input  logic [63:0] i_ireg_set,
-    output logic [31:0] o_topei,
-    input  logic        i_topei_claim,
+    input  logic [                   7:0] i_iselect,
+    // {eie words, eip words, eithreshold, eidelivery}, least word first.
+    input  logic [2*((NUM_IDS+1)/64)+1:0] i_select_onehot = '0,
+    output logic [                  63:0] o_ireg,
+    output logic                          o_ireg_illegal,
+    input  logic                          i_ireg_we,
+    input  logic [                  63:0] i_ireg_keep,
+    input  logic [                  63:0] i_ireg_set,
+    output logic [                  31:0] o_topei,
+    input  logic                          i_topei_claim,
 
     // The APLIC's direct-mode interrupt line for this hart and level.
     input  logic i_aplic_eip,
@@ -124,32 +131,34 @@ module imsic_file #(
   logic [NumBits-1:0] eip_q, eie_q;
   logic [IdBits-1:0] eithreshold_q;
   logic deliver_q, aplic_q;
-  logic [IdBits-1:0] top_q;
-  logic              eip_line_q;
+  logic [ IdBits-1:0] top_q;
+  logic [NumBits-1:0] top_onehot_q;
+  logic               eip_line_q;
 
-  logic [      63:0] eidelivery;
+  logic [       63:0] eidelivery;
   assign eidelivery = aplic_q ? EideliveryAplic : 64'(deliver_q);
 
   // ---------------------------------------------------------------------------
   // *ireg reads
   // ---------------------------------------------------------------------------
-  // An eip or eie word: an even select from 0x80 up, word number in bits 5:1
-  // and bit 6 choosing eie.
-  logic       sel_array;
-  logic [4:0] sel_word;
-  assign sel_array = i_iselect[7] && !i_iselect[0];
-  assign sel_word  = i_iselect[5:1];
-
+  logic [2*NumWords+1:0] select_onehot, select_decode;
   always_comb begin
-    o_ireg = '0;
-    if (i_iselect == SelEidelivery) o_ireg = eidelivery;
-    if (i_iselect == SelEithreshold) o_ireg = 64'(eithreshold_q);
+    select_decode = '0;
+    select_decode[0] = i_iselect == SelEidelivery;
+    select_decode[1] = i_iselect == SelEithreshold;
     for (int w = 0; w < int'(NumWords); w++) begin
-      if (sel_array && (sel_word == 5'(w)))
-        o_ireg = i_iselect[6] ? eie_q[64*w+:64] : eip_q[64*w+:64];
+      select_decode[2+w] = i_iselect == 8'(8'h80 + 2 * w);
+      select_decode[2+NumWords+w] = i_iselect == 8'(8'hC0 + 2 * w);
     end
   end
-
+  assign select_onehot = PREDECODED_SELECT ? i_select_onehot : select_decode;
+  always_comb begin
+    o_ireg = ({64{select_onehot[0]}} & eidelivery) | ({64{select_onehot[1]}} & 64'(eithreshold_q));
+    for (int w = 0; w < int'(NumWords); w++) begin
+      o_ireg |= ({64{select_onehot[2+w]}} & eip_q[64*w+:64]) |
+          ({64{select_onehot[2+NumWords+w]}} & eie_q[64*w+:64]);
+    end
+  end
   assign o_ireg_illegal = i_iselect[7] && i_iselect[0];
 
   // ---------------------------------------------------------------------------
@@ -157,21 +166,23 @@ module imsic_file #(
   // ---------------------------------------------------------------------------
   logic [NumWords-1:0] wr_eip, wr_eie;
   logic wr_eidelivery, wr_eithreshold;
-  always_comb begin
-    for (int w = 0; w < int'(NumWords); w++) begin
-      wr_eip[w] = i_ireg_we && sel_array && !i_iselect[6] && (sel_word == 5'(w));
-      wr_eie[w] = i_ireg_we && sel_array && i_iselect[6] && (sel_word == 5'(w));
-    end
+  assign wr_eip = {NumWords{i_ireg_we}} & select_onehot[2+:NumWords];
+  assign wr_eie = {NumWords{i_ireg_we}} & select_onehot[2+NumWords+:NumWords];
+  assign wr_eidelivery = i_ireg_we && select_onehot[0];
+  assign wr_eithreshold = i_ireg_we && select_onehot[1];
+
+  logic [NumBits-1:0] msi_onehot;
+  for (genvar i = 0; i < int'(NumBits); i++) begin : gen_msi_decode
+    assign msi_onehot[i] = (i != 0) && (PREDECODED_MSI ? i_msi_onehot[i] :
+        (i_msi_valid && (i_msi_id == 11'(i))));
   end
-  assign wr_eidelivery  = i_ireg_we && (i_iselect == SelEidelivery);
-  assign wr_eithreshold = i_ireg_we && (i_iselect == SelEithreshold);
 
   logic [NumBits-1:0] eip_claimed, eip_d, eie_d;
   always_comb begin
     for (int i = 0; i < int'(NumBits); i++) begin
-      eip_claimed[i] = eip_q[i] && !(i_topei_claim && (top_q == IdBits'(i)));
+      eip_claimed[i] = eip_q[i] && !(i_topei_claim && top_onehot_q[i]);
       eip_d[i] = (wr_eip[i/64] ? ((eip_claimed[i] && i_ireg_keep[i%64]) || i_ireg_set[i%64]) :
-                  eip_claimed[i]) || (i_msi_valid && (i_msi_id == 11'(i)));
+                  eip_claimed[i]) || msi_onehot[i];
       eie_d[i] = wr_eie[i/64] ? ((eie_q[i] && i_ireg_keep[i%64]) || i_ireg_set[i%64]) : eie_q[i];
     end
     eip_d[0] = 1'b0;
@@ -195,48 +206,57 @@ module imsic_file #(
   // ---------------------------------------------------------------------------
   // Top identity and interrupt line of the next state
   // ---------------------------------------------------------------------------
-  // Candidates: pending, enabled, and below a nonzero threshold.
-  logic [NumBits-1:0] cand_d;
-  always_comb begin
-    for (int i = 0; i < int'(NumBits); i++) begin
-      cand_d[i] = eip_d[i] && eie_d[i] && ((eithreshold_d == '0) || (IdBits'(i) < eithreshold_d));
-    end
-  end
-
-  // The lowest set bit of 64, by a prefix OR rather than a priority chain,
-  // for timing: seen[i] is set when bit i or a lower one is.
-  function automatic logic [5:0] lowest_of_64(input logic [63:0] v);
+  // Each strobe case computes its candidates and winner independently. The
+  // late claim/write strobes select only the finished results. MSI and RMW
+  // operands arrive from registers, and the claim identity is already decoded.
+  function automatic logic [63:0] first_of_64(input logic [63:0] v);
     logic [63:0] seen;
-    logic [63:0] first;
     seen = v;
-    for (int s = 1; s < 64; s = s * 2) seen = seen | (seen << s);
-    first = v & ~(seen << 1);
-    lowest_of_64 = '0;
-    for (int b = 0; b < 6; b++) begin
-      for (int i = 0; i < 64; i++) begin
-        if (((i >> b) & 1) == 1) lowest_of_64[b] = lowest_of_64[b] | first[i];
-      end
-    end
+    for (int s = 1; s < 64; s = s * 2) seen |= seen << s;
+    first_of_64 = v & ~(seen << 1);
   endfunction
 
-  // The lowest candidate: the lowest word that holds one, then the lowest
-  // bit in that word. The words find their lowest bits in parallel, which
-  // also keeps a wide file's logic linear in its size.
-  logic [63:0] word_any_d;  // bit w: word w holds a candidate
-  logic [6*NumWords-1:0] word_low_d;  // bits 6w+5:6w: word w's lowest one
-  logic [5:0] top_word_d, top_bit_d;
-  always_comb begin
-    word_any_d = '0;
-    for (int w = 0; w < int'(NumWords); w++) begin
-      word_any_d[w] = |cand_d[64*w+:64];
-      word_low_d[6*w+:6] = lowest_of_64(cand_d[64*w+:64]);
-    end
-    top_word_d = lowest_of_64(word_any_d);
-    top_bit_d  = '0;
-    for (int w = 0; w < int'(NumWords); w++) begin
-      if (top_word_d == 6'(w)) top_bit_d = word_low_d[6*w+:6];
+  logic [IdBits-1:0] top_case[4];
+  logic [NumBits-1:0] first_case[4];
+  logic [3:0] line_case;
+  for (genvar c = 0; c < 4; c++) begin : gen_top_case
+    localparam bit Claim = (c & 1) != 0;
+    localparam bit Write = (c & 2) != 0;
+    logic [NumBits-1:0] pending, enabled, candidates;
+    logic [IdBits-1:0] threshold;
+    logic delivery, aplic;
+    logic [63:0] word_any, first_word;
+    logic [NumBits-1:0] word_first;
+    assign threshold = (Write && select_onehot[1]) ? eithreshold_new[IdBits-1:0] : eithreshold_q;
+    assign aplic = (Write && select_onehot[0]) ? (APLIC_DELIVERY && eidelivery_new[30]) : aplic_q;
+    assign delivery = (Write && select_onehot[0]) ? (eidelivery_new[0] && !aplic) : deliver_q;
+    always_comb begin
+      for (int i = 0; i < int'(NumBits); i++) begin
+        pending[i] = eip_q[i] && !(Claim && top_onehot_q[i]);
+        if (Write && select_onehot[2+i/64])
+          pending[i] = (pending[i] && i_ireg_keep[i%64]) || i_ireg_set[i%64];
+        pending[i] |= msi_onehot[i];
+        enabled[i] = (Write && select_onehot[2+NumWords+i/64]) ?
+            ((eie_q[i] && i_ireg_keep[i%64]) || i_ireg_set[i%64]) : eie_q[i];
+        candidates[i] = (i != 0) && pending[i] && enabled[i] &&
+            ((threshold == '0) || (IdBits'(i) < threshold));
+      end
+      word_any = '0;
+      for (int w = 0; w < int'(NumWords); w++) begin
+        word_any[w] = |candidates[64*w+:64];
+        word_first[64*w+:64] = first_of_64(candidates[64*w+:64]);
+      end
+      first_word = first_of_64(word_any);
+      for (int w = 0; w < int'(NumWords); w++)
+      first_case[c][64*w+:64] = word_first[64*w+:64] & {64{first_word[w]}};
+      top_case[c] = '0;
+      for (int i = 1; i < int'(NumBits); i++)
+      top_case[c] |= IdBits'(i) & {IdBits{first_case[c][i]}};
+      line_case[c] = (delivery && (|word_any)) || (aplic && i_aplic_eip);
     end
   end
+  logic [1:0] strobe_case;
+  assign strobe_case = {i_ireg_we, i_topei_claim};
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -246,6 +266,7 @@ module imsic_file #(
       deliver_q <= 1'b0;
       aplic_q <= APLIC_DELIVERY;
       top_q <= '0;
+      top_onehot_q <= '0;
       eip_line_q <= 1'b0;
     end else begin
       eip_q <= eip_d;
@@ -253,8 +274,9 @@ module imsic_file #(
       eithreshold_q <= eithreshold_d;
       deliver_q <= deliver_d;
       aplic_q <= aplic_d;
-      top_q <= IdBits'({top_word_d[4:0], top_bit_d});
-      eip_line_q <= (deliver_d && (|cand_d)) || (aplic_d && i_aplic_eip);
+      top_q <= top_case[strobe_case];
+      top_onehot_q <= first_case[strobe_case];
+      eip_line_q <= line_case[strobe_case];
     end
   end
 
@@ -271,6 +293,15 @@ module imsic_file #(
   initial f_past_valid = 1'b0;
   always_ff @(posedge i_clk) f_past_valid <= 1'b1;
   always_comb if (!f_past_valid) assume (i_rst);
+
+  // Registered input decodes are an interface contract of the hart.
+  always_comb begin
+    if (PREDECODED_SELECT) assume (i_select_onehot == select_decode);
+    if (PREDECODED_MSI) begin
+      for (int i = 1; i < int'(NumBits); i++)
+      assume (i_msi_onehot[i] == (i_msi_valid && (i_msi_id == 11'(i))));
+    end
+  end
 
   // f_cand[i]: identity i is pending and enabled and, with a nonzero
   // eithreshold, below it.
@@ -341,6 +372,8 @@ module imsic_file #(
   always_comb begin
     if (f_past_valid) begin
       assert (!eip_q[0] && !eie_q[0]);
+      for (int i = 0; i < int'(NumBits); i++)
+      assert (top_onehot_q[i] == ((i != 0) && (top_q == IdBits'(i))));
       assert (!(deliver_q && aplic_q));
       assert (APLIC_DELIVERY || !aplic_q);
     end
@@ -404,6 +437,48 @@ module imsic_file #(
       end
     end
   end
+
+`ifdef IMSIC_TOP_EQUIV
+  logic [NumBits-1:0] f_pending_next, f_enabled_next;
+  logic [IdBits-1:0] f_threshold_next, f_top_next;
+  logic [63:0] f_delivery_next;
+  logic f_line_next;
+  always_comb begin
+    f_pending_next   = eip_q;
+    f_enabled_next   = eie_q;
+    f_threshold_next = eithreshold_q;
+    f_delivery_next  = eidelivery;
+    if (i_topei_claim) f_pending_next[top_q] = 1'b0;
+    if (i_ireg_we) begin
+      if (i_iselect == 8'h70) f_delivery_next = (eidelivery & i_ireg_keep) | i_ireg_set;
+      if (i_iselect == 8'h72)
+        f_threshold_next = IdBits'((64'(eithreshold_q) & i_ireg_keep) | i_ireg_set);
+      for (int w = 0; w < int'(NumWords); w++) begin
+        if (i_iselect == 8'(8'h80 + 2 * w))
+          f_pending_next[64*w+:64] = (f_pending_next[64*w+:64] & i_ireg_keep) | i_ireg_set;
+        if (i_iselect == 8'(8'hC0 + 2 * w))
+          f_enabled_next[64*w+:64] = (eie_q[64*w+:64] & i_ireg_keep) | i_ireg_set;
+      end
+    end
+    if (i_msi_valid && (i_msi_id <= 11'(NUM_IDS))) f_pending_next[i_msi_id] = 1'b1;
+    f_pending_next[0] = 1'b0;
+    f_enabled_next[0] = 1'b0;
+    f_top_next = '0;
+    for (int i = int'(NUM_IDS); i > 0; i--) begin
+      if (f_pending_next[i] && f_enabled_next[i] &&
+          ((f_threshold_next == '0) || (i < int'(f_threshold_next))))
+        f_top_next = IdBits'(i);
+    end
+    f_line_next = (APLIC_DELIVERY && f_delivery_next[30]) ? i_aplic_eip :
+        (f_delivery_next[0] && (f_top_next != '0));
+    if (f_past_valid) begin
+      assert (top_case[strobe_case] == f_top_next);
+      assert (line_case[strobe_case] == f_line_next);
+      assert (eip_d == f_pending_next);
+      assert (eie_d == f_enabled_next);
+    end
+  end
+`endif
 
   // Reachability.
   always_comb begin

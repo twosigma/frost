@@ -56,6 +56,7 @@ VALID_APPS = [
     "coremark",
     *COREMARK_PRO_APP_NAMES,
     "csr_test",
+    "imsic_csr_test",
     "debug_target",
     "ddr_exec_test",
     "ddr_atomic_test",

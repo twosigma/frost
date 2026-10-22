@@ -26,8 +26,13 @@ enabled. Software reaches a file through the Smaia and Ssaia CSRs: `miselect`
 and `mireg` with `mtopei` at machine level, `siselect` and `sireg` with
 `stopei` at supervisor level. The module gives each file a port for those
 CSRs, which the hart's CSR file connects to. An inter-processor interrupt is a
-store to the target hart's page. The SoC does not instantiate the IMSIC yet,
-and the CSR file does not implement the AIA CSRs yet.
+store to the target hart's page. `cpu_top` owns the two files beside
+`csr_file` in `cpu_ooo`, with 63 identities and APLIC delivery. The CSR file
+implements the Smaia and Ssaia register interface. `imsic_decode.sv` converts
+word stores into registered valid, level and identity signals per hart.
+`imsic.sv` composes that decoder and the files for standalone verification.
+The SoC currently supplies the direct APLIC lines; its MSI store connection
+is not yet present.
 
 ## Parameters
 
@@ -114,7 +119,7 @@ recommends. The SoC derives the APLIC parameters from this module's bases:
 `MMSIADDRCFG_RESET = M_BASE_ADDR >> 12`,
 `MMSIADDRCFGH_RESET = 0x80000000 | (clog2(NUM_HARTS) << 12)`,
 `SMSIADDRCFG_RESET = S_BASE_ADDR >> 12` and `SMSIADDRCFGH_RESET = 0`.
-For the X3's two harts at `0x48000000` and `0x48100000`, these are
+For two harts at `0x48000000` and `0x48100000`, these are
 `0x00048000`, `0x80001000`, `0x00048100` and `0x00000000`. The IMSIC uses
 `NUM_IDS = 63` and `APLIC_DELIVERY = 1`.
 
@@ -324,3 +329,14 @@ through `aplic_imsic_h4`. It checks both interrupt levels with one to four
 harts, locked addresses, source and `genmsi` delivery, direct passthrough,
 level EOI and claim races, CPU-store arbitration, marker ordering and
 rejection of every high address bit before the 32-bit IMSIC port.
+
+The file computes the next top identity, its one-hot decode and the output
+line for all four claim/write strobe combinations in parallel, then selects
+the finished result with the strobes. `formal/imsic_top_equiv.sby` proves
+that result equals a sequential claim, write and MSI reference at 63 and 191
+identities, including simultaneous claims and writes. `PREDECODED_SELECT`
+accepts a registered one-hot select in the order eidelivery, eithreshold,
+eip words, eie words. `PREDECODED_MSI` accepts a registered identity bitmap.
+The CPU uses both; the standalone controller uses combinational decodes.
+The select decode and MSI bitmap must describe the accompanying binary
+select and MSI inputs. Identity zero is always ignored.

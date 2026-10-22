@@ -1105,6 +1105,16 @@ package riscv_pkg;
   localparam bit [11:0] CsrMepc = 12'h341;  // Machine exception PC
   localparam bit [11:0] CsrMcause = 12'h342;  // Machine trap cause
   localparam bit [11:0] CsrMtval = 12'h343;  // Machine trap value
+  localparam bit [11:0] CsrMiselect = 12'h350;  // Machine indirect select
+  localparam bit [11:0] CsrMireg = 12'h351;  // Machine indirect register
+  localparam bit [11:0] CsrMtopei = 12'h35C;  // Machine top external interrupt
+  localparam bit [11:0] CsrMtopi = 12'hFB0;  // Machine top interrupt (read-only)
+  localparam bit [11:0] CsrMvien = 12'h308;  // Virtual interrupt enables (read-only zero)
+  localparam bit [11:0] CsrMvip = 12'h309;  // Virtual interrupt pending aliases
+  localparam bit [11:0] CsrSiselect = 12'h150;  // Supervisor indirect select
+  localparam bit [11:0] CsrSireg = 12'h151;  // Supervisor indirect register
+  localparam bit [11:0] CsrStopei = 12'h15C;  // Supervisor top external interrupt
+  localparam bit [11:0] CsrStopi = 12'hDB0;  // Supervisor top interrupt (read-only)
   localparam bit [11:0] CsrMip = 12'h344;  // Machine interrupt pending
 
   // Supervisor-mode CSR addresses. sstatus/sie/sip are

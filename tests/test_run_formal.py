@@ -635,6 +635,11 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "imsic_top_equiv.sby",
+        "IMSIC parallel strobe cases equal claim, write, MSI next-state priority",
+        tasks=("prove", "prove_wide", "prove_predecoded"),
+    ),
+    FormalTarget(
         "imsic.sby",
         "IMSIC topei selection, pending and enable updates, claims, interrupt "
         "lines, register reads, and the MSI address decode",
@@ -681,6 +686,7 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("prove_predecoded", "Unbounded IMSIC equivalence with registered input decodes"),
     ("msi_bmc", "Bounded APLIC MSI forwarding and pending transitions"),
     ("msi_prove", "Unbounded APLIC MSI registers, forwarding and ordering"),
     (
