@@ -32,8 +32,12 @@ _start:
     addi t0, t0, 4
     j    3b
 
+    // RVTEST_INIT_GPRS leaves x14 untouched unless instruction counting is
+    // enabled. Hints signatures require the Spike reference's initial zero;
+    // establish it explicitly rather than depending on reset GPR contents.
+4:  li   a4, 0
     // Far jump to the DDR-resident framework entry point
-4:  ld   t0, 32(t2)         // rvtest_init
+    ld   t0, 32(t2)         // rvtest_init
     jr   t0
 
     .balign 8

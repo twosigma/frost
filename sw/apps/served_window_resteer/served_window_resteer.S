@@ -12,20 +12,20 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Served-window resteer with FETCH_VALID_FUZZ=1
+# Predicted upper-half branch targets with FETCH_VALID_FUZZ=1
 #
-# IF must discard a fetch window that cannot serve pc_reg and request the
-# correct word again (window_cannot_serve_pc_reg). This loop creates the
-# condition by delaying fetch responses:
+# This loop stresses delayed responses around a predicted branch:
 #   - Two never-taken bnez x0 branches give the loop branch its own bundle
 #     and BTB lookup while pc_reg still holds the preceding branch.
 #   - The target is a compressed instruction in the upper half of a word.
 #     Its first window arrives in the post-redirect lead-restoring bubble
-#     and is dropped, requiring the provider to serve that word again.
-#   - A fuzz gap delays the response until fetch advances and cancels it.
-#     The next word's window cannot serve pc_reg, requiring a resteer.
-# The harness requires at least one resteer. Count and sum checks detect
-# instructions decoded from the wrong word.
+#     and must not execute twice when the provider serves the target again.
+# The AXI provider retains its owed request through a gap, so the old BRAM
+# path's stale-window resteer is no longer guaranteed. The harness disables
+# the Normal instruction cache and requires both AXI fuzz delays and waiting
+# predicted targets on each reset run. IF-stage directed tests separately
+# inject stale windows and check their rejection and retry. Count and sum
+# checks detect skipped or duplicated instructions across all 2,000 iterations.
 
     .equ ITERATIONS, 2000
     .equ UART_TX, 0x40000000

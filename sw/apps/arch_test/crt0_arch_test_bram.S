@@ -44,5 +44,9 @@ _start:
     addi t0, t0, 4
     j    5b
 
-    // Jump to framework entry point
-6:  j    rvtest_init
+    // RVTEST_INIT_GPRS leaves x14 untouched unless instruction counting is
+    // enabled. Hints tests include it in their signature, whose Spike
+    // reference starts with zero. GPR contents are not reset-defined; the
+    // previous run's UART signature printer leaves a4 at -4.
+6:  li   a4, 0
+    j    rvtest_init

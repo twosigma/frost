@@ -1195,9 +1195,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="served_window_resteer",
         description=(
-            "Fetch redirects to a delayed branch-target window with randomized latency"
+            "Predicted upper-half branch targets survive delayed uncached AXI fetches"
         ),
-        verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
+        # Keep the loop's instruction requests visible to the SoC delay model;
+        # the Normal instruction cache would serve its hot loop without AXI.
+        verilator_extra_args=("-GFETCH_VALID_FUZZ=1", "-GCACHE_NORMAL_MEMORY=0"),
     ),
     "fetch_lead_repro": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

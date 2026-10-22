@@ -10,6 +10,7 @@ All ports are synchronous to the rising edge of `i_clk`. There are no clock cros
 - `i_axi_rst` resets **both sides** of the AXI connection. Assert it together with `i_rst` during initial system reset, and whenever the fabric discards outstanding transactions. Keep `i_rst` asserted for every edge on which `i_axi_rst` is asserted; resetting the transport alone would strand requests still owned by the CPU memory system. It clears ownership and gates outgoing VALID and incoming READY low. Its release must be synchronous to `i_clk`.
 - A CPU-only reset does not withdraw an already presented AXI request. The master completes outstanding AW/W/AR handshakes, drains R/B responses from the old CPU epoch, and blocks new requests until that debt is gone. The fabric must continue making progress. A previously accepted device access can still have its side effect during this drain.
 - CPU reset invalidates caches and discards dirty lines in the writeback region. The Normal read-cache policy creates no dirty lines. Drain stores and write back cached data that must survive reset before asserting it; reset itself performs no cache writeback.
+- CPU reset does not clear the integer or floating-point register files. Apart from hardwired `x0`, software must initialize register values before using them; integration must not assume zeroed GPRs after reset.
 - `o_axi_idle` covers the master's queued requests, fabric transactions, buffered responses, and reset drain. It does not prove that all dirty cache lines have reached memory, and it is not a clock-gating permission by itself.
 
 FROST's SoC combines external reset and the Debug Module's `ndmreset` for CPU reset. The Debug Module survives `ndmreset`. Its board and JTAG clock crossings remain in `soc_top` and `frost`.
@@ -124,6 +125,15 @@ With `ENABLE_COHERENCE=1`, `i_coherent_req_*` / `o_coherent_resp_*` expose the F
 The ingress registers each accepted request before cache admission. It holds the payload through hierarchy backpressure and can accept a replacement on the edge that admits the previous request. CPU reset clears this request register and cancels inbound coherence requests and responses. Reset or reinitialize each connected agent's outstanding-request ownership at the same time; pre-reset ingress requests are not guaranteed a response. Outgoing AXI transactions already presented still drain as described above.
 
 Requests must be aligned to 32 bytes and remain within the configured cached memory region. An invalid address is not accepted and triggers a simulation assertion. Its sequencer probes dirty L1D lines, orders traffic at L2, and coordinates writes with the load queue and reservation/SC windows. FROST connects its NIC and DMA test engine through an arbiter in `soc_top`. External masters accessing cached memory must use this path; bypassing it on the external AXI fabric is noncoherent. AMOs use CPU serialization and this coherence protocol, not AXI exclusives. Uncached atomic memory must be private to the hart or protected by the integrating system from competing noncoherent masters.
+
+L2 is inside this single-hart `cpu_top`. Neither the outgoing plain AXI4
+master nor this DMA-oriented ingress constitutes a complete inter-tile SMP
+coherence protocol. Two `cpu_top` instances connected to shared RAM are not
+therefore coherent. The [SMP proposal](../../../ROADMAP.md#smp) requires an
+explicit boundary refactor: private per-hart blocks connect through a
+coherent internal interface to a shared L2 and coherence logic in a cluster
+wrapper. That organization is future work; the current single-hart interface
+does not imply that L2 has already moved outside the tile.
 
 ## Legacy BRAM-only platform profile
 
