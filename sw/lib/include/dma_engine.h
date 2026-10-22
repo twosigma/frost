@@ -23,7 +23,7 @@
  * their offset within a 32-byte line) or fills [DST, DST+LEN), writing
  * PATTERN + i to its i-th 32-bit word (the word holding DST is word 0). It
  * optionally writes STATUS_VALUE to STATUS_ADDR after every data write has
- * completed, and optionally interrupts (PLIC source 3) once the transfer and
+ * completed, and optionally interrupts (APLIC source 3) once the transfer and
  * any status write have completed (or after an ABORT has drained, with ERROR
  * set). START snapshots the registers, so they may be reprogrammed while BUSY
  * for the next transfer. Addresses must lie in cached DDR.
@@ -64,7 +64,7 @@
 #define DMA_ENGINE_MODE_STATUS (1u << 1)
 #define DMA_ENGINE_MODE_IRQ (1u << 2)
 
-#define DMA_ENGINE_PLIC_SOURCE 3u
+#define DMA_ENGINE_APLIC_SOURCE 3u
 
 static inline volatile mmio_u32_t *dma_engine_reg(uint32_t offset)
 {

@@ -7,8 +7,9 @@ domain, and delivers interrupts directly to harts: the root domain drives each
 hart's machine external interrupt (MEIP) and the supervisor domain each hart's
 supervisor external interrupt (SEIP). Software sees two separate controllers,
 one per domain, as OpenSBI and Linux expect from a device tree with one
-`riscv,aplic` node per domain. The SoC does not instantiate it yet; FROST's
-interrupt controller is still the PLIC in `cpu_and_mem/plic.sv`.
+`riscv,aplic` node per domain. The SoC instantiates it with five sources and
+one hart. The machine domain is at `0x4400_0000` and the supervisor domain
+at `0x4400_8000`.
 
 ## Parameters
 
@@ -18,29 +19,34 @@ interrupt controller is still the PLIC in `cpu_and_mem/plic.sv`.
 | `NUM_HARTS` | 1 | 1 to 512 | Hart indices 0 to `NUM_HARTS - 1`, one IDC per hart in each domain |
 | `IPRIOLEN` | 3 | 1 to 8 | Implemented priority bits; priority numbers run from 1 to `2^IPRIOLEN - 1` |
 
-The default covers the PLIC's five sources. Simulation stops at time zero if a
+The default covers the SoC's five sources. Simulation stops at time zero if a
 parameter is out of range.
 
 ## Interface
 
-The register interface has the shape of the PLIC's, so that the two can be
-exchanged in the SoC.
+The register interface connects to the SoC's 64-bit MMIO read and write paths.
 
 | Port | Meaning |
 |------|---------|
 | `i_src[NUM_SOURCES-1:0]` | Source wires, bit 0 for source 1, synchronous to `i_clk` |
 | `i_wr_en`, `i_wr_offset[21:0]`, `i_wr_data[31:0]` | One register write: its byte offset in the 4 MiB window and its 32-bit value |
-| `i_rd_offset[21:0]`, `o_rd_pair[63:0]` | Combinational read of the aligned dword at the offset: the register at offset+4 in bits 63:32, the one at offset in bits 31:0 |
+| `i_rd_offset[21:0]`, `o_rd_pair[63:0]` | Combinational read of the aligned dword: the register at `offset & ~7` in bits 31:0 and the next word in bits 63:32 |
 | `i_rd_capture` | Pulses once for each performed read, on the clock edge that captures `o_rd_pair` into the bus response |
 | `o_meip[NUM_HARTS-1:0]`, `o_seip[NUM_HARTS-1:0]` | Registered interrupt lines of the root and supervisor domains, by hart index |
 
 The AIA supports only naturally aligned 32-bit reads and writes in a domain's
 control region and requires other accesses to be ignored. The SoC therefore
 asserts `i_wr_en` only for a 32-bit store, and `i_rd_capture` only for a
-32-bit load. A read's side effect, the claim of a `claimi` read, applies to
+32-bit load. Other read sizes return zero at the SoC boundary and cause no
+side effect. A read's side effect, the claim of a `claimi` read, applies to
 the word at `i_rd_offset`, so the SoC passes the load's full offset, with bit
 2 selecting the word of the pair. The byte offset within a word, bits 1:0, is
 ignored.
+
+The source identities are 1 for the ns16550 UART, 2 for the external pin,
+3 for the DMA test engine, 4 for the NIC, and 5 for the memory error unit.
+OpenSBI delegates them to the supervisor domain, which Linux configures for
+level-high delivery. Bare-metal programs use `sw/lib/include/aplic.h`.
 
 ## Window
 
@@ -214,3 +220,9 @@ word of both control regions and of the rest of the window. `bmc` (depth 12),
 `prove_one_hart` one of each; `prove_wide` 33 sources, which use a second
 word in each bitmap; and `prove_three_harts` three harts and 8-bit
 priorities. The `prove` tasks are unbounded (k-induction).
+
+The `aplic_test` program checks the SoC register path in BRAM and DDR
+configurations, including both domains, delegation, machine interrupt entry,
+level-sensitive claims, thresholds, `iforce`, and byte, halfword and doubleword
+accesses. Invalid read sizes return zero without consuming pending interrupts
+or clearing `iforce`; invalid write sizes leave both register lanes unchanged.

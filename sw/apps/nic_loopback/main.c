@@ -26,6 +26,7 @@
  */
 #include <stdint.h>
 
+#include "aplic.h"
 #include "csr.h"
 #include "nic.h"
 #include "trap.h"
@@ -49,13 +50,6 @@
 /* Bring-up's enable gets at most this many CTRL writes with a transceiver and
  * one where the MAC clock is shared (bringup). */
 #define ENABLE_TRIES_TRANSCEIVER 3u
-
-#define REG32(a) (*(volatile uint32_t *) (uintptr_t) (a))
-#define PLIC_BASE 0x44000000ul
-#define PLIC_PRIO(s) REG32(PLIC_BASE + 4ul * (s))
-#define PLIC_EN_M REG32(PLIC_BASE + 0x2000ul)
-#define PLIC_THR_M REG32(PLIC_BASE + 0x200000ul)
-#define PLIC_CLAIM_M REG32(PLIC_BASE + 0x200004ul)
 
 /* Rings and buffers 24 MiB into cached DDR, above every image. */
 #define DDR_SCRATCH 0x81800000u
@@ -338,11 +332,11 @@ static void test_frames(void)
     check("frames", ok);
 }
 
-/* ---- interrupts: completions and LINK through the PLIC ---- */
+/* ---- interrupts: completions and LINK through the APLIC ---- */
 __attribute__((noinline, used)) void nic_irq_c(void)
 {
-    uint32_t claim = PLIC_CLAIM_M;
-    if (claim == NIC_PLIC_SOURCE) {
+    uint32_t claim = aplic_claim_machine();
+    if (claim == NIC_APLIC_SOURCE) {
         uint32_t status = nic_read(NIC_IRQ_STATUS);
         g_irq_seen |= status;
         g_irq_count++;
@@ -351,7 +345,6 @@ __attribute__((noinline, used)) void nic_irq_c(void)
     } else {
         g_spurious++;
     }
-    PLIC_CLAIM_M = claim;
 }
 
 __attribute__((naked, aligned(4))) static void nic_irq_entry(void)
@@ -389,9 +382,7 @@ static void test_irq(void)
         ok = 0;
     }
     set_trap_handler(&nic_irq_entry);
-    PLIC_PRIO(NIC_PLIC_SOURCE) = 1;
-    PLIC_THR_M = 0;
-    PLIC_EN_M = 1u << NIC_PLIC_SOURCE;
+    aplic_enable_machine_source(NIC_APLIC_SOURCE);
     nic_write(NIC_IRQ_STATUS, NIC_IRQ_ALL);
     nic_write(NIC_IRQ_MASK, NIC_IRQ_RX | NIC_IRQ_TX);
     enable_external_interrupt();
@@ -436,7 +427,7 @@ static void test_irq(void)
         ok = 0;
     }
     disable_interrupts();
-    PLIC_EN_M = 0;
+    aplic_disable_machine_source(NIC_APLIC_SOURCE);
     nic_write(NIC_IRQ_MASK, 0);
     nic_write(NIC_RX_ITR, 0);
     check("irq", ok && g_spurious == 0);
@@ -502,7 +493,7 @@ static void test_reset(void)
      * link comes back so the carrier transition raises it. */
     g_irq_seen = 0;
     nic_write(NIC_IRQ_MASK, NIC_IRQ_LINK);
-    PLIC_EN_M = 1u << NIC_PLIC_SOURCE;
+    aplic_enable_machine_source(NIC_APLIC_SOURCE);
     enable_interrupts();
     if (!bringup(0)) {
         ok = 0;
@@ -517,7 +508,7 @@ static void test_reset(void)
             ok = 0;
     }
     disable_interrupts();
-    PLIC_EN_M = 0;
+    aplic_disable_machine_source(NIC_APLIC_SOURCE);
     nic_write(NIC_IRQ_MASK, 0);
     check("reset", ok);
 }

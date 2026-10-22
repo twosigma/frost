@@ -248,7 +248,7 @@ def test_opensbi_helper_finds_buildroot_compiler(
 
 
 def test_sbi_device_tree_matches_rtl_windows() -> None:
-    """PLIC, CLINT, UART, DMA engine and NIC addresses in the generated DT match the RTL."""
+    """APLIC, CLINT, UART, DMA engine and NIC addresses in the generated DT match the RTL."""
     packer = _load_module(SBI_PACKER)
     rtl_text = SOC_TOP.read_text()
     assert packer.CLINT_BASE == _rtl_localparam(rtl_text, "ClintMsip")
@@ -265,32 +265,54 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
     assert packer.MEMORY_ERROR_BASE + packer.MEMORY_ERROR_SIZE <= packer.NIC_BASE
     assert packer.NIC_BASE + packer.NIC_SIZE == rtl_mmio_end
     assert packer.UART_BASE == _rtl_localparam(rtl_text, "Ns16550ThrRbr")
-    # PLIC window: bits [31:22] select it (PlicWindowSel), 4 MiB wide.
-    window_sel = re.search(r"PlicWindowSel = 10'h([0-9A-Fa-f]+);", rtl_text)
+    # APLIC window: bits [31:22] select it (AplicWindowSel), 4 MiB wide.
+    window_sel = re.search(r"AplicWindowSel = 10'h([0-9A-Fa-f]+);", rtl_text)
     assert window_sel is not None
-    assert packer.PLIC_BASE == int(window_sel.group(1), 16) << 22
-    assert packer.PLIC_SIZE == 1 << 22
-    # The SoC's PLIC instance sets the source count (the module default is
+    assert packer.APLIC_M_BASE == int(window_sel.group(1), 16) << 22
+    assert packer.APLIC_S_BASE == packer.APLIC_M_BASE + 0x8000
+    assert packer.APLIC_DOMAIN_SIZE == 0x8000
+    # The SoC's APLIC instance sets the source count (the module default is
     # generic): 1 = ns16550, 2 = board pin, 3 = DMA test engine, 4 = NIC,
     # 5 = the memory error unit.
     sources = re.search(r"\.NUM_SOURCES\s*\((\d+)\)", rtl_text)
-    assert sources is not None and packer.PLIC_NDEV == int(sources.group(1))
-    assert packer.NIC_PLIC_SOURCE == 4
-    assert packer.MEMORY_ERROR_PLIC_SOURCE == packer.PLIC_NDEV
+    assert sources is not None and packer.APLIC_NUM_SOURCES == int(sources.group(1))
+    assert packer.NIC_APLIC_SOURCE == 4
+    assert packer.MEMORY_ERROR_APLIC_SOURCE == packer.APLIC_NUM_SOURCES
     dts = packer.gen_dts(clk_hz=300_000_000, initrd_range=None, bootargs="", model="t")
-    assert "interrupts-extended = <&cpu0_intc 11 &cpu0_intc 9>;" in dts
-    assert f"interrupts = <{packer.UART_PLIC_SOURCE}>;" in dts
+    for base, cause in ((packer.APLIC_M_BASE, 11), (packer.APLIC_S_BASE, 9)):
+        node = re.search(rf"interrupt-controller@{base:x} {{(.*?)}};", dts, re.S)
+        assert node is not None
+        domain = node.group(1)
+        assert 'compatible = "riscv,aplic";' in domain
+        assert f"reg = <0x{base:08x} 0x00008000>;" in domain
+        assert "#interrupt-cells = <0x02>;" in domain
+        assert "#address-cells = <0x00>;" in domain
+        assert f"interrupts-extended = <&cpu0_intc {cause}>;" in domain
+        assert "riscv,num-sources = <5>;" in domain
+    assert "riscv,children = <&aplic_s>;" in dts
+    assert "riscv,delegation = <&aplic_s 1 5>;" in dts
+    for label, source in (
+        ("serial", 1),
+        ("dma-test-engine", 3),
+        ("memory-controller", 5),
+        ("ethernet", 4),
+    ):
+        node = re.search(rf"{label}@[0-9a-f]+ {{(.*?)}};", dts, re.S)
+        assert node is not None
+        assert "interrupt-parent = <&aplic_s>;" in node.group(1)
+        assert f"interrupts = <{source} 4>;" in node.group(1)
+    assert f"interrupts = <{packer.UART_APLIC_SOURCE} 4>;" in dts
     # The NIC node: the binding in frost,net10g.yaml next to the packer.
     assert 'compatible = "frost,net10g";' in dts
     assert f"reg = <0x{packer.NIC_BASE:08x} 0x{packer.NIC_SIZE:x}>;" in dts
-    assert f"interrupts = <{packer.NIC_PLIC_SOURCE}>;" in dts
+    assert f"interrupts = <{packer.NIC_APLIC_SOURCE} 4>;" in dts
     # The memory error unit's node: frost,memory-error.yaml next to the packer.
     assert 'compatible = "frost,memory-error";' in dts
     assert (
         f"reg = <0x{packer.MEMORY_ERROR_BASE:08x} 0x{packer.MEMORY_ERROR_SIZE:x}>;"
         in dts
     )
-    assert f"interrupts = <{packer.MEMORY_ERROR_PLIC_SOURCE}>;" in dts
+    assert f"interrupts = <{packer.MEMORY_ERROR_APLIC_SOURCE} 4>;" in dts
     assert "dma-coherent;" in dts
     assert f"local-mac-address = [{packer.NIC_MAC_ADDRESS}];" in dts
     assert "clock-frequency = <300000000>;" in dts

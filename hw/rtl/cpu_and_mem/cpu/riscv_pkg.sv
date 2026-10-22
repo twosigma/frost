@@ -1472,7 +1472,7 @@ package riscv_pkg;
   //   [0x0000_0000, 0x0002_0000)  128 KiB BRAM code fetch, loads, stores, atomics
   //   [0x0002_0000, 0x0004_0000)  128 KiB BRAM      loads, stores, atomics
   //   [0x4000_0000, 0x4003_1000)  MMIO registers    loads and stores
-  //   [0x4400_0000, 0x4440_0000)  PLIC              loads and stores
+  //   [0x4400_0000, 0x4440_0000)  APLIC             loads and stores
   //   [DdrBase, DdrLimit)          configured cached DDR
   // Other addresses fault, except untranslated stores anywhere in the device
   // quadrant [0x4000_0000, 0x8000_0000); the bus ignores unserved addresses.
@@ -1487,10 +1487,10 @@ package riscv_pkg;
   // Device windows use whole 4 KiB pages. Keep them aligned with the register
   // decode in soc_top.sv (hw/rtl/README.md, "Memory Map"). Its startup
   // checks validate the layout used by the store-issue and DTLB page decodes.
-  localparam logic [19:0] MmioFirstPage = 20'h4_0000;
-  localparam logic [19:0] MmioLastPage  = 20'h4_0030;
-  localparam logic [19:0] PlicFirstPage = 20'h4_4000;
-  localparam logic [19:0] PlicLastPage  = 20'h4_43FF;
+  localparam logic [19:0] MmioFirstPage  = 20'h4_0000;
+  localparam logic [19:0] MmioLastPage   = 20'h4_0030;
+  localparam logic [19:0] AplicFirstPage = 20'h4_4000;
+  localparam logic [19:0] AplicLastPage  = 20'h4_43FF;
 
   // Eligible private Normal memory for the optional read-cache/write-through
   // profile. Debug data bypasses L0 to observe transport updates immediately.
@@ -1520,14 +1520,14 @@ package riscv_pkg;
   endfunction
 
   // Device-page check for PA[31:12]. MMIO occupies part of one aligned
-  // 64-page block; PLIC occupies one aligned 1024-page block. Match the
+  // 64-page block; APLIC occupies one aligned 1024-page block. Match the
   // block, then look up the MMIO page offset in MmioBlockPages, for timing.
   localparam logic [63:0] MmioBlockPages =
       ~(64'hFFFF_FFFF_FFFF_FFFF << (MmioLastPage[5:0] + 1)) &
       (64'hFFFF_FFFF_FFFF_FFFF << MmioFirstPage[5:0]);
   function automatic logic pma_device_page_ok(input logic [19:0] page);
     pma_device_page_ok = ((page[19:6] == MmioFirstPage[19:6]) && MmioBlockPages[page[5:0]]) ||
-                         (page[19:10] == PlicFirstPage[19:10]);
+                         (page[19:10] == AplicFirstPage[19:10]);
   endfunction
 
   function automatic logic pma_device_ok(input logic [XLEN-1:0] addr);

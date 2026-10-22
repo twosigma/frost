@@ -1,12 +1,12 @@
 # FROST SoC wrapper
 
-`platform_top` composes [cpu_top](../cpu_top/README.md) and `soc_top`. `frost` supplies the existing UART, FIFOs, board-facing signals and clock/reset synchronization. `soc_top` owns low instruction/data BRAM, the programming port, Debug Module/transport, timers, PLIC, UART register faces, memory-error registers, NIC and DMA test engine.
+`platform_top` composes [cpu_top](../cpu_top/README.md) and `soc_top`. `frost` supplies the existing UART, FIFOs, board-facing signals and clock/reset synchronization. `soc_top` owns low instruction/data BRAM, the programming port, Debug Module/transport, timers, APLIC, UART register faces, memory-error registers, NIC and DMA test engine.
 
 `soc_axi_slave` receives the CPU's full physical-address AXI master. Cached DDR addresses go to the existing board DDR port after base subtraction. That private port remains five ID bits wide and uses whole-line beats; requests that cannot be represented there are rejected instead of truncating an ID or address. Other requests pass through a local request/response interface. Each local access executes once, with response buffering independent of AXI backpressure. An error or an instruction fetch to device memory produces no peripheral side effect.
 
 Local instruction reads select the instruction BRAM copy using AxPROT[2]; data reads select the data copy. Programming still writes both copies through the div4 interface, and debug stores still use the slice writer to mirror data into instruction memory. The CPU performs fetch predecode after the AXI response. Normal CPU stores do not silently rewrite the separate instruction copy.
 
-When an address slot is empty, an accepted AXI address can pass directly to the local port; a stalled request is retained in that slot with its original owner and payload. Device requests are then registered before address decoding and execution, separating AXI arbitration from peripheral side-effect controls. Completions wait until the memory access or peripheral write/read-consume pulse has executed. Narrow transfers retain their byte enables; the boundary reconstructs the legacy register files' replicated-word write view from AXI's addressed lanes. Device response data is captured before a destructive read consumes UART/FIFO/PLIC state, and holding RVALID does not consume a second item.
+When an address slot is empty, an accepted AXI address can pass directly to the local port; a stalled request is retained in that slot with its original owner and payload. Device requests are then registered before address decoding and execution, separating AXI arbitration from peripheral side-effect controls. Completions wait until the memory access or peripheral write/read-consume pulse has executed. Narrow transfers retain their byte enables; the boundary reconstructs the legacy register files' replicated-word write view from AXI's addressed lanes. Device response data is captured before a destructive read consumes UART/FIFO/APLIC state, and holding RVALID does not consume a second item.
 
 FROST enables `cpu_top.CACHE_NORMAL_MEMORY` for BRAM read caching and narrow write-through stores. The local slave also accepts aligned 32-byte instruction reads, assembled from four BRAM dwords before one AXI response. After the first synchronous RAM read, the serializer captures one dword per clock while requesting the next. Wide Device accesses and wide writes are rejected. Narrow BRAM requests access RAM on acceptance and complete after the RAM edge; Device requests retain their registered side-effect sequence. A completed local response can pass directly to AXI when its response slot is empty. AXI backpressure or a previously selected DDR response instead captures it in that slot; neither case repeats the access. The private local read response is as wide as the outgoing AXI data bus, while local writes remain a 64-bit value with eight byte strobes.
 
@@ -21,3 +21,8 @@ available for platform diagnostics until CPU reset.
 
 `FETCH_VALID_FUZZ=1` delays local instruction completion using the configured
 LFSR seed; it never changes a presented AXI response or repeats a memory access.
+
+The APLIC has five sources and one hart in direct delivery mode. Its machine
+and supervisor domains occupy 32 KiB at `0x4400_0000` and `0x4400_8000`.
+Only 32-bit accesses reach its registers. Other writes are ignored and other
+reads return zero without side effects, including reads covering `claimi`.

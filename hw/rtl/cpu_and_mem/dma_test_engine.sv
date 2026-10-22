@@ -86,7 +86,7 @@ module dma_test_engine #(
     input logic i_rst,
 
     // Register interface: 32-bit lane writes and a dword read pair, the
-    // same shape the PLIC uses. i_wr_offset / i_rd_offset are byte offsets
+    // same shape the APLIC uses. i_wr_offset / i_rd_offset are byte offsets
     // within the window (bit 2 selects the word of a dword).
     input  logic        i_wr_en,
     input  logic [ 7:0] i_wr_offset,

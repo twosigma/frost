@@ -125,7 +125,7 @@
         },
         "include_in_device_tree": false
       },
-      // Rest of the device quadrant below the PLIC: FROST faults loads and ignores untranslated stores.
+      // Rest of the device quadrant below the APLIC: FROST faults loads and ignores untranslated stores.
       {
         "base": {
           "len": 64,
@@ -164,7 +164,7 @@
         },
         "include_in_device_tree": false
       },
-      // PLIC window, backed by the same RAM.
+      // APLIC window, backed by the same RAM.
       {
         "base": {
           "len": 64,
@@ -203,7 +203,7 @@
         },
         "include_in_device_tree": false
       },
-      // Rest of the device quadrant above the PLIC.
+      // Rest of the device quadrant above the APLIC.
       {
         "base": {
           "len": 64,

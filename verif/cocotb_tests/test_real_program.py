@@ -4090,7 +4090,7 @@ async def run_until_complete(
                     assert not int(platform.cpu.o_debug_commit_valid.value)
                 cocotb.log.info(
                     "Memory-error regression passed: precise read fault, "
-                    "ECC/PLIC reports, and fatal writeback stop"
+                    "ECC/APLIC reports, and fatal writeback stop"
                 )
                 test_passed = True
                 break

@@ -301,7 +301,7 @@ module trap_unit #(
   // Suppress re-latching on the class's own take to prevent double entry.
   // Feedback passes through the pending register. trap_taken_prev clears
   // the losing class next cycle; delivery relies on level sources that
-  // re-latch when eligible again (mip bits, the PLIC line, and Sstc compare).
+  // re-latch when eligible again (mip bits, the APLIC line, and Sstc compare).
   logic take_trap_m, take_trap_s;
   assign m_int_pending_comb =
       (meip_enabled || mtip_enabled || msip_enabled ||

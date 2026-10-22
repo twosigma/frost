@@ -190,9 +190,9 @@ module cpu_tb
   logic [63:0] i_mtime_reg;
   interrupt_t i_interrupts;
   logic [63:0] i_mtime;
-  // PLIC S-context interrupt line: held low in this bench.
-  logic i_plic_seip;
-  assign i_plic_seip = 1'b0;
+  // Supervisor external-interrupt line: held low in this bench.
+  logic i_seip_line;
+  assign i_seip_line = 1'b0;
 
   initial begin
     i_interrupts_reg = 3'b000;

@@ -15,8 +15,8 @@
  */
 
 /*
- * ns16550 interrupt-driven console test. THRE drives PLIC source 1. Each
- * handler invocation claims, sends one byte and completes; the asserted
+ * ns16550 interrupt-driven console test. THRE drives APLIC source 1. Each
+ * handler invocation claims and sends one byte; the asserted
  * level triggers the next invocation. After the message, one final claim
  * disables IER. Main then disables interrupts, checks the byte and claim
  * counts, and reports through the native UART TX register.
@@ -24,6 +24,7 @@
 
 #include <stdint.h>
 
+#include "aplic.h"
 #include "trap.h"
 
 static void uart_putc(char c)
@@ -40,11 +41,6 @@ static void uart_puts(const char *s)
 }
 
 #define REG32(a) (*(volatile uint32_t *) (a))
-#define PLIC_BASE 0x44000000UL
-#define PLIC_PRIO1 REG32(PLIC_BASE + 4ul)
-#define PLIC_EN_M REG32(PLIC_BASE + 0x2000ul)
-#define PLIC_THR_M REG32(PLIC_BASE + 0x200000ul)
-#define PLIC_CLAIM_M REG32(PLIC_BASE + 0x200004ul)
 #define NS16550_THR REG32(0x40001000UL)
 #define NS16550_IER REG32(0x40001004UL)
 
@@ -56,7 +52,7 @@ static volatile uint32_t g_claims;
 static volatile uint32_t g_bad_claim;
 
 /* Send one byte per claim while THRE indicates FIFO space. At the end of
- * the message, disable IER before completing to stop further interrupts. */
+ * the message, disable IER to stop further interrupts. */
 __attribute__((naked, aligned(4))) static void m_irq_handler(void)
 {
     __asm__ volatile("addi sp, sp, -32\n"
@@ -64,8 +60,9 @@ __attribute__((naked, aligned(4))) static void m_irq_handler(void)
                      "sd   t1, 8(sp)\n"
                      "sd   t2, 16(sp)\n"
                      "sd   t3, 24(sp)\n"
-                     "li   t1, 0x44200004\n"
-                     "lw   t0, 0(t1)\n" /* claim */
+                     "li   t1, 0x4400401c\n"
+                     "lw   t0, 0(t1)\n" /* claimi: identity in bits 25:16 */
+                     "srli t0, t0, 16\n"
                      "la   t2, g_claims\n"
                      "lw   t3, 0(t2)\n"
                      "addiw t3, t3, 1\n"
@@ -93,7 +90,6 @@ __attribute__((naked, aligned(4))) static void m_irq_handler(void)
                      "li   t3, 0x40001004\n"
                      "sw   zero, 0(t3)\n" /* IER = 0: drop the level for good */
                      "2:\n"
-                     "sw   t0, 0(t1)\n" /* complete */
                      "ld   t0, 0(sp)\n"
                      "ld   t1, 8(sp)\n"
                      "ld   t2, 16(sp)\n"
@@ -111,9 +107,7 @@ int main(void)
     g_claims = 0;
     g_bad_claim = 0;
 
-    PLIC_PRIO1 = 1;
-    PLIC_THR_M = 0;
-    PLIC_EN_M = 0x2;   /* source 1 in context M */
+    aplic_enable_machine_source(1);
     NS16550_IER = 0x2; /* THRE interrupt: raised while the TX FIFO has room */
     enable_external_interrupt();
     enable_interrupts();
@@ -124,7 +118,7 @@ int main(void)
 
     disable_interrupts();
     disable_external_interrupt();
-    PLIC_EN_M = 0;
+    aplic_disable_machine_source(1);
 
     /* One claim per byte plus the final silencing claim. */
     int ok = (g_sent == msg_len) && (g_bad_claim == 0) && (g_claims == msg_len + 1);

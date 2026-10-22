@@ -606,18 +606,20 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Committed DDR stores drain before satp and mstatus writes retire"
         ),
     ),
-    "plic_test": CocotbRunConfig(
+    "aplic_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
-        app_name="plic_test",
-        description=("PLIC register behavior and interrupt claim/complete handling"),
+        app_name="aplic_test",
+        description=(
+            "APLIC direct delivery, delegation, claims and 32-bit access enforcement"
+        ),
     ),
     "memerr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="memerr_test",
         description=(
-            "Precise DDR read fault, ECC/PLIC reporting, and fatal cached writeback error"
+            "Precise DDR read fault, ECC/APLIC reporting, and fatal cached writeback error"
         ),
         extra_env=(
             (
@@ -649,7 +651,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ns16550_irq_console_test",
-        description=("ns16550 console output through PLIC interrupt handlers"),
+        description=("ns16550 console output through APLIC interrupt handlers"),
     ),
     "ad_fault_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

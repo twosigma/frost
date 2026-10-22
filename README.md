@@ -149,7 +149,7 @@ every supported extension and privilege mode.
   stores. DMA is coherent with the DDR data caches.
 - 256 KiB of on-chip BRAM and 1 GiB of cached DDR4, with the same
   [memory map](sw/README.md#memory-map) in simulation and on hardware.
-- UART, CLINT-compatible timer, PLIC interrupt controller, and 10GBASE-R
+- UART, CLINT-compatible timer, APLIC interrupt controller, and 10GBASE-R
   Ethernet.
 - JTAG debugging with halt, resume, and single-step through OpenOCD and GDB.
 

@@ -46,17 +46,17 @@ coherent ingress, and its instruction and data copies are separate, so a
 store to it does not reach another hart's cached copies, and an AMO on it is
 not atomic between harts. Data the harts share lives in DDR.
 
-Interrupts follow the RISC-V Advanced Interrupt Architecture (AIA) 1.0, which
-Linux and OpenSBI support, in two steps:
+The SoC has an AIA 1.0 APLIC in direct delivery mode, with machine and
+supervisor domains and five wired interrupt sources. It drives the hart's
+external interrupt inputs. OpenSBI delegates the sources to the supervisor
+domain for Linux. A second hart needs its own IDC in each domain and a
+machine software interrupt register for OpenSBI's inter-processor interrupts.
 
-1. An APLIC replaces the PLIC for wired interrupts. In direct delivery mode it
-   drives each hart's external interrupt inputs as the PLIC does, so the harts
-   need no change, and inter-processor interrupts go through OpenSBI and each
-   hart's machine software interrupt.
-2. An IMSIC per hart, with the Smaia and Ssaia CSRs, receives message-signaled
-   interrupts. An inter-processor interrupt is then a write to the other
-   hart's IMSIC, the APLIC forwards wired interrupts as messages, and devices
-   that signal with writes, such as PCIe devices, reach the harts directly.
+IMSICs and MSI delivery remain to be implemented. An IMSIC per hart, with
+the Smaia and Ssaia CSRs, receives message-signaled interrupts. An
+inter-processor interrupt is then a write to the other hart's IMSIC. The
+APLIC forwards wired interrupts as messages, and devices that signal with
+writes, such as PCIe devices, reach the harts directly.
 
 Done means Debian running on both harts, multi-hart scaling reported
 separately from single-hart performance, and hours of sustained-load testing

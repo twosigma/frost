@@ -2,7 +2,7 @@
 
 FROST's NIC puts the [10GBASE-R MAC/PCS](../../net10g/README.md) on the SoC.
 Software sees a 4 KiB register window at `0x4003_0000` and one interrupt
-(PLIC source 4). Frames move through RX and TX descriptor rings in cached
+(APLIC source 4). Frames move through RX and TX descriptor rings in cached
 DDR, which the NIC reads and writes over the cache hierarchy's coherent DMA
 port, so the driver needs no cache maintenance. Packet FIFOs cross between
 the CPU clock and the MAC's two clocks; on the X3 those are the transceiver's
@@ -36,7 +36,7 @@ The crossing primitives live in `hw/rtl/lib/cdc` (`cdc_sync`,
 | Interface | Connection |
 | --- | --- |
 | Registers | A 4 KiB window at `0x4003_0000`, inside the strongly ordered MMIO range |
-| Interrupt | PLIC source 4 |
+| Interrupt | APLIC source 4 |
 | DMA | The cache hierarchy's coherent DMA port, through a two-port `line_port_arbiter` shared with the DMA test engine. The NIC is port 0 and has priority, within the arbiter's starvation bound. Each agent uses 2-bit ids, and the arbiter adds the port bit |
 | MAC clocks | `frost.sv` brings in the TX and RX clocks separately, each with a presence level (`i_nic_tx_clk`, `i_nic_rx_clk`, `i_nic_tx_clk_ok`, `i_nic_rx_clk_ok`), and gives the PHY inputs defaults |
 | Block lock | `o_nic_rx_block_lock` exports the PCS block lock (LINK's RX_LOCKED, already synchronized to the core clock) for a board's transceiver supervisor |

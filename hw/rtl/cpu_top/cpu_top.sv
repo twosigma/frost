@@ -433,7 +433,7 @@ module cpu_top #(
       .o_pc_vld(),
       // Interrupt and timer interface
       .i_interrupts(i_interrupts),
-      .i_plic_seip(i_seip),
+      .i_seip_line(i_seip),
 
       .i_mtime(i_mtime),
       .o_debug_irq_status(o_debug_irq_status),

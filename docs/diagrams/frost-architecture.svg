@@ -27,8 +27,8 @@
     whose wait is bounded, into a 2 MiB UltraRAM L2 with 64-byte lines, then a
     Unified AXI4 master and the board DDR4 controller. Software sees a 1 GiB cached region at
     0x80000000. Uncached instruction/data accesses use the same AXI master to reach
-    SoC low BRAM and UART, FIFO0/1, CLINT, PLIC and the NIC's register
-    window MMIO, and the NIC raises one PLIC source. JTAG connects through the
+    SoC low BRAM and UART, FIFO0/1, CLINT, APLIC and the NIC's register
+    window MMIO, and the NIC raises one APLIC source. JTAG connects through the
     DTM to the debug module for halt, resume and single-step. Capacities show
     the X3 configuration. Only selected connections are drawn; memory arrows
     follow requests, with responses omitted.
@@ -314,7 +314,7 @@
     <rect x="438" y="1404" width="324" height="112" rx="12" class="system"/>
     <text x="458" y="1437" class="heading">AXI → SoC MMIO</text>
     <text x="458" y="1467" class="body">UART · FIFO0/1 · NIC 0x4003_0000</text>
-    <text x="458" y="1495" class="small">CLINT + PLIC (NIC source) → M/S</text>
+    <text x="458" y="1495" class="small">CLINT + APLIC (NIC source) → M/S</text>
     <rect x="812" y="1404" width="324" height="112" rx="12" class="system"/>
     <text x="832" y="1437" class="heading">JTAG debug</text>
     <text x="832" y="1467" class="body">DTM → debug module → core</text>

@@ -115,7 +115,7 @@ module frost #(
     output logic o_uart_tx,
     input  logic i_uart_rx,
 
-    // External interrupt input: PLIC source 2, level-triggered.
+    // External interrupt input: APLIC source 2, level-triggered.
     // Optional: tie to 0 if not used
     input logic        i_external_interrupt = 1'b0,
     // DDR ECC reports from the board's reader (boards/x3/x3_ecc_reader.sv);
@@ -384,7 +384,7 @@ module frost #(
       .i_fifo1_rd_data(mmio_fifo1_read_data),
       .i_fifo1_empty(mmio_fifo1_is_empty),
       .o_fifo1_rd_en(mmio_fifo1_read_enable),
-      // External interrupt (PLIC source 2)
+      // External interrupt (APLIC source 2)
       .i_external_interrupt(i_external_interrupt),
       .i_ecc_present(i_ecc_present),
       .i_ecc_poll(i_ecc_poll),

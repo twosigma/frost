@@ -110,31 +110,32 @@ DEFAULT_SHIM_MABI = "lp64"
 UART_BASE = 0x4000_1000
 CLINT_BASE = 0x4001_0000
 CLINT_SIZE = 0xC000
-PLIC_BASE = 0x4400_0000
-PLIC_SIZE = 0x40_0000
+APLIC_M_BASE = 0x4400_0000
+APLIC_S_BASE = 0x4400_8000
+APLIC_DOMAIN_SIZE = 0x8000
 # 1 = ns16550, 2 = board pin, 3 = DMA test engine, 4 = NIC, 5 = memory errors
-PLIC_NDEV = 5
+APLIC_NUM_SOURCES = 5
 # The DMA test engine's register window; no Linux driver binds to it, the
-# node only records the device and its PLIC source.
+# node only records the device and its APLIC source.
 DMA_ENGINE_BASE = 0x4002_0000
 DMA_ENGINE_SIZE = 0x1000
-DMA_ENGINE_PLIC_SOURCE = 3
+DMA_ENGINE_APLIC_SOURCE = 3
 # The memory error unit's register window: DDR ECC and AXI error reports
 # (hw/rtl/cpu_and_mem/memory_error_unit.sv). See frost,memory-error.yaml for
 # the binding and linux/frost-memerr for the driver.
 MEMORY_ERROR_BASE = 0x4002_1000
 MEMORY_ERROR_SIZE = 0x100
-MEMORY_ERROR_PLIC_SOURCE = 5
+MEMORY_ERROR_APLIC_SOURCE = 5
 # NIC register window at the end of strongly ordered MMIO (soc_top.sv,
 # MmioSizeBytes). See frost,net10g.yaml for the binding, linux/frost-net10g for
 # the driver, and hw/rtl/peripherals/nic for the RTL.
 NIC_BASE = 0x4003_0000
 NIC_SIZE = 0x1000
-NIC_PLIC_SOURCE = 4
+NIC_APLIC_SOURCE = 4
 # The default local-mac-address, as DT bytes: locally administered; the driver
 # honors it. --mac replaces it.
 NIC_MAC_ADDRESS = "02 11 22 33 44 55"
-UART_PLIC_SOURCE = 1
+UART_APLIC_SOURCE = 1
 
 
 def to_words(data: bytes) -> list[str]:
@@ -337,8 +338,8 @@ def gen_dts(
 \t\t\treg-shift = <0x02>;
 \t\t\treg-io-width = <0x04>;
 \t\t\tclock-frequency = <{clk_hz}>;
-\t\t\tinterrupt-parent = <&plic>;
-\t\t\tinterrupts = <{UART_PLIC_SOURCE}>;
+\t\t\tinterrupt-parent = <&aplic_s>;
+\t\t\tinterrupts = <{UART_APLIC_SOURCE} 4>;
 \t\t}};
 
 \t\tclint@{CLINT_BASE:x} {{
@@ -347,32 +348,43 @@ def gen_dts(
 \t\t\tinterrupts-extended = <&cpu0_intc 3 &cpu0_intc 7>;
 \t\t}};
 
-\t\tplic: interrupt-controller@{PLIC_BASE:x} {{
-\t\t\tcompatible = "sifive,plic-1.0.0", "riscv,plic0";
-\t\t\treg = <0x{PLIC_BASE:08x} 0x{PLIC_SIZE:08x}>;
-\t\t\t#interrupt-cells = <0x01>;
+\t\taplic_m: interrupt-controller@{APLIC_M_BASE:x} {{
+\t\t\tcompatible = "riscv,aplic";
+\t\t\treg = <0x{APLIC_M_BASE:08x} 0x{APLIC_DOMAIN_SIZE:08x}>;
+\t\t\t#interrupt-cells = <0x02>;
 \t\t\t#address-cells = <0x00>;
 \t\t\tinterrupt-controller;
-\t\t\triscv,ndev = <{PLIC_NDEV}>;
-\t\t\tinterrupts-extended = <&cpu0_intc 11 &cpu0_intc 9>;
+\t\t\triscv,num-sources = <{APLIC_NUM_SOURCES}>;
+\t\t\tinterrupts-extended = <&cpu0_intc 11>;
+\t\t\triscv,children = <&aplic_s>;
+\t\t\triscv,delegation = <&aplic_s 1 {APLIC_NUM_SOURCES}>;
+\t\t}};
+\t\taplic_s: interrupt-controller@{APLIC_S_BASE:x} {{
+\t\t\tcompatible = "riscv,aplic";
+\t\t\treg = <0x{APLIC_S_BASE:08x} 0x{APLIC_DOMAIN_SIZE:08x}>;
+\t\t\t#interrupt-cells = <0x02>;
+\t\t\t#address-cells = <0x00>;
+\t\t\tinterrupt-controller;
+\t\t\triscv,num-sources = <{APLIC_NUM_SOURCES}>;
+\t\t\tinterrupts-extended = <&cpu0_intc 9>;
 \t\t}};
 \t\tdma-test-engine@{DMA_ENGINE_BASE:x} {{
 \t\t\tcompatible = "frost,dma-test-engine";
 \t\t\treg = <0x{DMA_ENGINE_BASE:08x} 0x{DMA_ENGINE_SIZE:x}>;
-\t\t\tinterrupt-parent = <&plic>;
-\t\t\tinterrupts = <{DMA_ENGINE_PLIC_SOURCE}>;
+\t\t\tinterrupt-parent = <&aplic_s>;
+\t\t\tinterrupts = <{DMA_ENGINE_APLIC_SOURCE} 4>;
 \t\t}};
 \t\tmemory-controller@{MEMORY_ERROR_BASE:x} {{
 \t\t\tcompatible = "frost,memory-error";
 \t\t\treg = <0x{MEMORY_ERROR_BASE:08x} 0x{MEMORY_ERROR_SIZE:x}>;
-\t\t\tinterrupt-parent = <&plic>;
-\t\t\tinterrupts = <{MEMORY_ERROR_PLIC_SOURCE}>;
+\t\t\tinterrupt-parent = <&aplic_s>;
+\t\t\tinterrupts = <{MEMORY_ERROR_APLIC_SOURCE} 4>;
 \t\t}};
 \t\tethernet@{NIC_BASE:x} {{
 \t\t\tcompatible = "frost,net10g";
 \t\t\treg = <0x{NIC_BASE:08x} 0x{NIC_SIZE:x}>;
-\t\t\tinterrupt-parent = <&plic>;
-\t\t\tinterrupts = <{NIC_PLIC_SOURCE}>;
+\t\t\tinterrupt-parent = <&aplic_s>;
+\t\t\tinterrupts = <{NIC_APLIC_SOURCE} 4>;
 \t\t\tdma-coherent;
 \t\t\tlocal-mac-address = [{mac}];
 \t\t\tclock-frequency = <{clk_hz}>;

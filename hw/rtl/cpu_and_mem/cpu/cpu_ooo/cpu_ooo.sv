@@ -219,9 +219,9 @@ module cpu_ooo #(
     // Interrupts
     input riscv_pkg::interrupt_t i_interrupts,
     input logic [63:0] i_mtime,
-    // PLIC S-context external-interrupt line. csr_file ORs it into the SEIP
+    // Supervisor external-interrupt line. csr_file ORs it into the SEIP
     // readback and the S-pending exports.
-    input logic i_plic_seip,
+    input logic i_seip_line,
     output logic [5:0] o_debug_irq_status,
     output logic [XLEN-1:0] o_debug_commit_pc,
     output logic [XLEN-1:0] o_debug_commit_2_pc,
@@ -3482,7 +3482,7 @@ module cpu_ooo #(
       .i_instruction_retired_count(instruction_retired_count),
       .i_interrupts(i_interrupts),
       .i_mtime(i_mtime),
-      .i_seip_line(i_plic_seip),
+      .i_seip_line(i_seip_line),
       // Takes with no CSR side effect (Debug Mode go and re-park redirects,
       // memory-order replays) do not reach csr_file.
       .i_trap_taken(trap_taken && !trap_no_csr),

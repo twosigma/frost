@@ -21,7 +21,7 @@
  * hart's MEIP and the supervisor domain each hart's SEIP. README.md beside
  * this file gives the register map and the implementation choices.
  *
- * Window (byte offsets inside the 4 MiB window, as the PLIC's):
+ * Window (byte offsets inside the 4 MiB SoC window):
  *   0x0000_0000  root domain control region, 32 KiB
  *   0x0000_8000  supervisor domain control region, 32 KiB
  * The rest of the window reads zero and ignores writes.

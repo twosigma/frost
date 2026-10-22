@@ -24,17 +24,11 @@
  */
 #include <stdint.h>
 
+#include "aplic.h"
 #include "csr.h"
 #include "nic.h"
 #include "trap.h"
 #include "uart.h"
-
-#define REG32(a) (*(volatile uint32_t *) (uintptr_t) (a))
-#define PLIC_BASE 0x44000000ul
-#define PLIC_PRIO(s) REG32(PLIC_BASE + 4ul * (s))
-#define PLIC_EN_M REG32(PLIC_BASE + 0x2000ul)
-#define PLIC_THR_M REG32(PLIC_BASE + 0x200000ul)
-#define PLIC_CLAIM_M REG32(PLIC_BASE + 0x200004ul)
 
 /* The peer's plan (verif/cocotb_tests/test_real_program.py, NicEchoPeer). */
 #define EXPECT_RX 24u      /* frames that land in the ring */
@@ -84,8 +78,8 @@ static int wait_status(uint32_t mask, uint32_t value, uint32_t budget)
 
 __attribute__((noinline, used)) void nic_irq_c(void)
 {
-    uint32_t claim = PLIC_CLAIM_M;
-    if (claim == NIC_PLIC_SOURCE) {
+    uint32_t claim = aplic_claim_machine();
+    if (claim == NIC_APLIC_SOURCE) {
         uint32_t status = nic_read(NIC_IRQ_STATUS);
         g_irq_seen |= status;
         g_irq_count++;
@@ -94,7 +88,6 @@ __attribute__((noinline, used)) void nic_irq_c(void)
     } else {
         g_spurious++;
     }
-    PLIC_CLAIM_M = claim;
 }
 
 __attribute__((naked, aligned(4))) static void nic_irq_entry(void)
@@ -188,9 +181,7 @@ static int bringup(void)
     nic_write(NIC_IRQ_STATUS, NIC_IRQ_ALL);
     nic_write(NIC_IRQ_MASK, NIC_IRQ_RX | NIC_IRQ_TX | NIC_IRQ_DESC_ERR);
     set_trap_handler(&nic_irq_entry);
-    PLIC_PRIO(NIC_PLIC_SOURCE) = 1;
-    PLIC_THR_M = 0;
-    PLIC_EN_M = 1u << NIC_PLIC_SOURCE;
+    aplic_enable_machine_source(NIC_APLIC_SOURCE);
     enable_external_interrupt();
     enable_interrupts();
     nic_write(NIC_CTRL, NIC_CTRL_RX_EN | NIC_CTRL_TX_EN);
@@ -314,7 +305,7 @@ int main(void)
     while (budget-- && g_tx_reaped < g_tx_posted)
         reap_tx();
     disable_interrupts();
-    PLIC_EN_M = 0;
+    aplic_disable_machine_source(NIC_APLIC_SOURCE);
     int ok = 1;
     if (g_echoed != EXPECT_TX || g_truncated != EXPECT_TRUNC || g_errors != 0 ||
         g_tx_reaped != g_tx_posted) {

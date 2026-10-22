@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# PLIC directed test.
+# APLIC directed test.
 SRC_C := main.c
 include ../../common/common.mk

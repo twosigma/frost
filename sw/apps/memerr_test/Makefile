@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Memory error unit test (AXI error responses, ECC reports, PLIC source 5).
+# Memory error unit test (AXI error responses, ECC reports, APLIC source 5).
 SRC_C := main.c
 include ../../common/common.mk

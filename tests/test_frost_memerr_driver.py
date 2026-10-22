@@ -195,4 +195,4 @@ def test_register_map_matches_the_hardware() -> None:
     assert "#define MEMERR_UE_ADDR_NEW BIT(5)" in DRIVER_SOURCE.read_text()
     assert "#define MEMORY_ERROR_CE_ADDR_NEW (1u << 4)" in BARE_METAL_HEADER.read_text()
     assert "#define MEMORY_ERROR_UE_ADDR_NEW (1u << 5)" in BARE_METAL_HEADER.read_text()
-    assert "#define MEMORY_ERROR_PLIC_SOURCE 5u" in BARE_METAL_HEADER.read_text()
+    assert "#define MEMORY_ERROR_APLIC_SOURCE 5u" in BARE_METAL_HEADER.read_text()
