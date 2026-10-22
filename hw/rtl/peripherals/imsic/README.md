@@ -31,8 +31,8 @@ store to the target hart's page. `cpu_top` owns the two files beside
 implements the Smaia and Ssaia register interface. `imsic_decode.sv` converts
 word stores into registered valid, level and identity signals per hart.
 `imsic.sv` composes that decoder and the files for standalone verification.
-The SoC currently supplies the direct APLIC lines; its MSI store connection
-is not yet present.
+The SoC supplies the direct APLIC lines and arbitrates CPU stores and APLIC
+MSI offers into the store decoder. Its PMA window covers both file regions.
 
 ## Parameters
 
@@ -57,12 +57,11 @@ The machine-level files form one region and the supervisor-level files
 another, the arrangement the AIA recommends and Linux and OpenSBI expect:
 hart h's file at a level is the page at that level's base + `0x1000` * h.
 
-These pages need a PMA device window in `pma_device_page_ok` in
-`hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv`, together with consistent store-issue
-page boundaries and SoC address checks. The default bases are outside the
-current MMIO and APLIC windows. Linux sends IPIs with translated stores
-through an ioremap mapping, so permitting untranslated device stores alone
-is insufficient. Without the PMA window, Linux's IMSIC stores fault.
+The SoC maps a 2 MiB PMA device window at `0x4800_0000`, matching
+`page[19:9] == 11'h240` in `pma_device_page_ok`. It admits translated
+loads and stores and rejects instruction fetch and atomics. Unused pages
+read zero and ignore writes. Each file region has room for 256 harts; the
+current platform connects hart 0.
 
 | Offset in a file's page | Register | Behavior |
 |-------------------------|----------|----------|

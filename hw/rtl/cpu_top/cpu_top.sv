@@ -158,6 +158,8 @@ module cpu_top #(
         (riscv_pkg::PmaDevice0Bytes & 4095) != 0 ||
         (riscv_pkg::PmaDevice1Base & 4095) != 0 ||
         (riscv_pkg::PmaDevice1Bytes & 4095) != 0 ||
+        (riscv_pkg::PmaDevice2Base & 4095) != 0 ||
+        (riscv_pkg::PmaDevice2Bytes & 4095) != 0 ||
         riscv_pkg::DdrCapacityLog2Bytes < 12 || riscv_pkg::DdrCapacityLog2Bytes > 55)
       $fatal(1, "cpu_top: PMA regions must use whole pages");
     if (riscv_pkg::DdrLimit <= riscv_pkg::DdrBase ||
@@ -166,7 +168,9 @@ module cpu_top #(
         (riscv_pkg::PmaDevice0Bytes != 0 &&
          riscv_pkg::PmaDevice0Limit <= riscv_pkg::PmaDevice0Base) ||
         (riscv_pkg::PmaDevice1Bytes != 0 &&
-         riscv_pkg::PmaDevice1Limit <= riscv_pkg::PmaDevice1Base))
+         riscv_pkg::PmaDevice1Limit <= riscv_pkg::PmaDevice1Base) ||
+        (riscv_pkg::PmaDevice2Bytes != 0 &&
+         riscv_pkg::PmaDevice2Limit <= riscv_pkg::PmaDevice2Base))
       $fatal(1, "cpu_top: PMA region overflows the address space");
     if (regions_overlap(
             riscv_pkg::DdrBase,
@@ -200,6 +204,28 @@ module cpu_top #(
             riscv_pkg::PmaDevice1Bytes
         ))
       $fatal(1, "cpu_top: PMA regions overlap");
+    if (regions_overlap(
+            riscv_pkg::PmaDevice2Base,
+            riscv_pkg::PmaDevice2Bytes,
+            riscv_pkg::DdrBase,
+            riscv_pkg::DdrCapacityBytes
+        ) || regions_overlap(
+            riscv_pkg::PmaDevice2Base,
+            riscv_pkg::PmaDevice2Bytes,
+            riscv_pkg::PmaUncachedBase,
+            riscv_pkg::PmaUncachedBytes
+        ) || regions_overlap(
+            riscv_pkg::PmaDevice2Base,
+            riscv_pkg::PmaDevice2Bytes,
+            riscv_pkg::PmaDevice0Base,
+            riscv_pkg::PmaDevice0Bytes
+        ) || regions_overlap(
+            riscv_pkg::PmaDevice2Base,
+            riscv_pkg::PmaDevice2Bytes,
+            riscv_pkg::PmaDevice1Base,
+            riscv_pkg::PmaDevice1Bytes
+        ))
+      $fatal(1, "cpu_top: third device region overlaps another PMA region");
     if (riscv_pkg::PmaUncachedExecBytes > riscv_pkg::PmaUncachedBytes)
       $fatal(1, "cpu_top: executable uncached prefix exceeds the memory region");
   end

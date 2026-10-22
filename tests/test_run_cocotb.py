@@ -613,6 +613,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("COCOTB_MAX_CYCLES", "1500000"),),
         description="AIA CSR legality, indirect registers, claims, aliases and exact topi priority",
     ),
+    "imsic_msi_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="imsic_msi_test",
+        description="IMSIC MSI stores, access sizes, byte orders, translated access and trap claims",
+    ),
+    "imsic_aplic_coexist_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="imsic_aplic_coexist_test",
+        description="IMSIC and APLIC UART/DMA direct delivery coexistence",
+    ),
     "aplic_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -2251,6 +2263,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             '"-DFROST_PMA_DEVICE0_BASE=64\'h1400000000"',
             '"-DFROST_PMA_CACHED_BASE=64\'h1800000000"',
             "-DFROST_PMA_DEVICE1_BYTES=0",
+            "-DFROST_PMA_DEVICE2_BYTES=0",
         ),
     ),
     "cpu_top_writethrough_custom_map": CocotbRunConfig(
@@ -2269,6 +2282,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             '"-DFROST_PMA_DEVICE0_BASE=64\'h1400000000"',
             '"-DFROST_PMA_CACHED_BASE=64\'h1800000000"',
             "-DFROST_PMA_DEVICE1_BYTES=0",
+            "-DFROST_PMA_DEVICE2_BYTES=0",
         ),
     ),
     "cpu_top_strict_map": CocotbRunConfig(

@@ -54,9 +54,9 @@ machine software interrupt register for OpenSBI's inter-processor interrupts.
 
 The CPU contains machine and supervisor IMSIC files with 63 identities,
 Smaia and Ssaia CSRs, and registered MSI ingress. The APLIC supports optional
-MSI delivery, and a standalone decoder accepts stores to machine and
-supervisor interrupt-file pages. The SoC currently uses direct APLIC delivery;
-its store connection and the firmware's IMSIC device-tree nodes are not present.
+MSI delivery. The SoC decodes stores to machine and supervisor interrupt-file
+pages in a 2 MiB device window and registers the per-hart MSI ingress.
+The firmware currently uses direct APLIC delivery without IMSIC device-tree nodes.
 
 Done means Debian running on both harts, multi-hart scaling reported
 separately from single-hart performance, and hours of sustained-load testing

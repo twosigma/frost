@@ -20,6 +20,7 @@
   The cached tier connects to DDR through the cache hierarchy and AXI bridge.
 */
 module soc_top #(
+    parameter int unsigned NUM_HARTS = 1,
     parameter int unsigned AXI_ID_BITS = 6,
     parameter int unsigned AXI_USER_BITS = 1,
     parameter int unsigned MEM_SIZE_BYTES = 2 ** 17,
@@ -170,6 +171,9 @@ module soc_top #(
     output logic                                                o_cpu_rst,
     output logic                                                o_cpu_axi_rst,
     output riscv_pkg::interrupt_t                               o_cpu_interrupts,
+    output logic                  [              NUM_HARTS-1:0] o_cpu_msi_valid,
+    output logic                  [              NUM_HARTS-1:0] o_cpu_msi_level,
+    output logic                  [                       10:0] o_cpu_msi_id,
     output logic                                                o_cpu_seip,
     output logic                  [                       63:0] o_cpu_mtime,
     output logic                                                o_dbg_haltreq,
@@ -340,11 +344,14 @@ module soc_top #(
   // the supervisor domain at +0x8000, with one IDC per domain for hart 0.
   // A 32-bit claimi read consumes its interrupt on mmio_read_capture.
   localparam logic [9:0] AplicWindowSel = 10'h110;
+  localparam logic [10:0] ImsicWindowSel = 11'h240;
+  localparam logic [31:0] ImsicMBase = 32'h4800_0000;
+  localparam logic [31:0] ImsicSBase = 32'h4810_0000;
 
   // The data PMA accepts device accesses only in riscv_pkg's device-window
-  // pages, so they must be exactly the MMIO and APLIC windows decoded here: a
+  // pages, so they must match the MMIO, APLIC and IMSIC windows decoded here: a
   // page only the PMA had would reach no register, and one it lacked would
-  // fault. The pages must also keep the layout their decodes assume: both
+  // fault. The pages must also keep the layout their decodes assume: all
   // windows inside the device quadrant, which the load and store queues order
   // as devices; the MMIO window inside one aligned 64-page block
   // (riscv_pkg::pma_device_page_ok); and each window nonempty with an
@@ -354,8 +361,12 @@ module soc_top #(
     if ((MmioAddr != {riscv_pkg::MmioFirstPage, 12'h000}) ||
         ((MmioAddr + MmioSizeBytes) != {riscv_pkg::MmioLastPage + 20'd1, 12'h000}) ||
         ({AplicWindowSel, 22'h00_0000} != {riscv_pkg::AplicFirstPage, 12'h000}) ||
-        ({AplicWindowSel, 22'h3F_FFFF} != {riscv_pkg::AplicLastPage, 12'hFFF}))
-      $fatal(1, "soc_top: MMIO or APLIC window differs from the riscv_pkg device-window pages");
+        ({AplicWindowSel, 22'h3F_FFFF} != {riscv_pkg::AplicLastPage, 12'hFFF}) ||
+        ({ImsicWindowSel, 21'b0} != {riscv_pkg::ImsicFirstPage, 12'b0}) ||
+        ({ImsicWindowSel, 21'h1F_FFFF} != {riscv_pkg::ImsicLastPage, 12'hFFF}))
+      $fatal(
+          1, "soc_top: MMIO, APLIC or IMSIC window differs from the riscv_pkg device-window pages"
+      );
     if ((riscv_pkg::MmioFirstPage[19:18] != 2'b01) || (riscv_pkg::AplicFirstPage[19:18] != 2'b01) ||
         (riscv_pkg::MmioLastPage[19:6] != riscv_pkg::MmioFirstPage[19:6]) ||
         (riscv_pkg::MmioFirstPage > riscv_pkg::MmioLastPage) ||
@@ -363,6 +374,14 @@ module soc_top #(
         ((riscv_pkg::MmioLastPage + 20'd1 >= riscv_pkg::AplicFirstPage) &&
          (riscv_pkg::AplicLastPage + 20'd1 >= riscv_pkg::MmioFirstPage)))
       $fatal(1, "soc_top: riscv_pkg device-window pages break the layout their decodes assume");
+    if (NUM_HARTS < 1 || NUM_HARTS > 256 ||
+        (riscv_pkg::ImsicFirstPage[19:18] != 2'b01) ||
+        (riscv_pkg::ImsicLastPage[19:9] != riscv_pkg::ImsicFirstPage[19:9]) ||
+        (riscv_pkg::ImsicFirstPage > riscv_pkg::ImsicLastPage) ||
+        (riscv_pkg::ImsicLastPage == 20'h7_FFFF) ||
+        (riscv_pkg::AplicLastPage + 20'd1 >= riscv_pkg::ImsicFirstPage) ||
+        (riscv_pkg::MmioLastPage + 20'd1 >= riscv_pkg::ImsicFirstPage))
+      $fatal(1, "soc_top: IMSIC pages break the device-window layout");
   end
 
   // Peripheral-local views of the single accepted AXI access and passive
@@ -411,7 +430,7 @@ module soc_top #(
     else ns_iir = 8'hC1;  // FIFO enabled, no interrupt pending.
   end
 
-  logic [0:0] aplic_meip, aplic_seip;
+  logic [NUM_HARTS-1:0] aplic_meip, aplic_seip;
 
   // Interrupt signals to CPU
   riscv_pkg::interrupt_t interrupts;
@@ -431,8 +450,11 @@ module soc_top #(
   // select the write lane; claimi consumes only the addressed read word.
   // ---------------------------------------------------------------------------
   // Capture window selects on the same edge as the MMIO write address.
-  logic aplic_sel_q, dma_engine_sel_q, nic_sel_q, memerr_sel_q;
+  logic aplic_sel_q, imsic_sel_q, dma_engine_sel_q, nic_sel_q, memerr_sel_q;
   always_ff @(posedge i_clk) begin
+    imsic_sel_q <= riscv_pkg::pma_device_quadrant(
+        riscv_pkg::XLEN'(data_memory_address)
+    ) && (data_memory_address[31:21] == ImsicWindowSel);
     aplic_sel_q <= riscv_pkg::pma_device_quadrant(
         riscv_pkg::XLEN'(data_memory_address)
     ) && (data_memory_address[31:22] == AplicWindowSel);
@@ -516,9 +538,44 @@ module soc_top #(
       .i_wr_err_resp(ddr_wr_err_resp),
       .i_wr_err_id(ddr_wr_err_id)
   );
+  logic aplic_msi_valid, aplic_msi_ready;
+  logic [55:0] aplic_msi_addr;
+  logic [31:0] aplic_msi_data;
+  logic imsic_cpu_write, imsic_write;
+  logic [31:0] imsic_write_addr, imsic_write_data;
+  assign imsic_cpu_write = imsic_sel_q &&
+      ((data_memory_byte_write_enable_registered == 8'h0F) ||
+       (data_memory_byte_write_enable_registered == 8'hF0));
+  // CPU IPI stores win the single port. Invalid high APLIC addresses are
+  // consumed and dropped before narrowing, never aliased into a valid page.
+  assign aplic_msi_ready = !imsic_cpu_write;
+  assign imsic_write = imsic_cpu_write ||
+      (aplic_msi_valid && aplic_msi_ready && (aplic_msi_addr[55:32] == '0));
+  assign imsic_write_addr = imsic_cpu_write ?
+      {data_memory_address_registered[31:3],
+       data_memory_byte_write_enable_registered[4] ? 3'b100 : 3'b000} : aplic_msi_addr[31:0];
+  assign imsic_write_data = imsic_cpu_write ?
+      (data_memory_byte_write_enable_registered[4] ? data_memory_write_data_registered[63:32] :
+       data_memory_write_data_registered[31:0]) : aplic_msi_data;
+  imsic_decode #(
+      .NUM_HARTS(NUM_HARTS),
+      .NUM_IDS(63),
+      .M_BASE_ADDR(ImsicMBase),
+      .S_BASE_ADDR(ImsicSBase)
+  ) imsic_store_decode (
+      .i_clk,
+      .i_rst(o_cpu_rst),
+      .i_wr_en(imsic_write),
+      .i_wr_addr(imsic_write_addr),
+      .i_wr_data(imsic_write_data),
+      .o_msi_valid(o_cpu_msi_valid),
+      .o_msi_level(o_cpu_msi_level),
+      .o_msi_id(o_cpu_msi_id)
+  );
+
   aplic #(
       .NUM_SOURCES(5),
-      .NUM_HARTS(1),
+      .NUM_HARTS(NUM_HARTS),
       .IPRIOLEN(3)
   ) aplic_inst (
       .i_clk(i_clk),
@@ -540,10 +597,10 @@ module soc_top #(
                     (local_size == 3'd2)),
       .o_meip(aplic_meip),
       .o_seip(aplic_seip),
-      .o_msi_valid(),
-      .i_msi_ready(1'b0),
-      .o_msi_addr(),
-      .o_msi_data()
+      .o_msi_valid(aplic_msi_valid),
+      .i_msi_ready(aplic_msi_ready),
+      .o_msi_addr(aplic_msi_addr),
+      .o_msi_data(aplic_msi_data)
   );
   assign interrupts.msip = msip;
 

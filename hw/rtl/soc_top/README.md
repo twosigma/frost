@@ -26,3 +26,17 @@ The APLIC has five sources and one hart in direct delivery mode. Its machine
 and supervisor domains occupy 32 KiB at `0x4400_0000` and `0x4400_8000`.
 Only 32-bit accesses reach its registers. Other writes are ignored and other
 reads return zero without side effects, including reads covering `claimi`.
+
+The IMSIC store decoder covers `[0x4800_0000, 0x4820_0000)`. Hart h's
+machine page is `0x4800_0000 + 0x1000*h` and its supervisor page is
+`0x4810_0000 + 0x1000*h`. `NUM_HARTS` defaults to one and supports up to
+256 pages at each level. Each CPU owns its two 63-identity files and their
+CSR ports. The SoC outputs registered per-hart valid and level signals and
+a shared identity. The CPU registers the identity as a one-hot pending mask.
+
+Only aligned 32-bit stores at offsets 0 and 4 generate MSIs. Byte, halfword
+and doubleword stores are ignored. Loads throughout the window return zero
+without consuming an interrupt. CPU stores have priority over APLIC MSI
+offers on the decoder port. An APLIC address with any bit above bit 31 set
+is consumed and dropped before narrowing. The PMA device window permits
+translated stores and prohibits instruction fetch, AMO, LR and SC.

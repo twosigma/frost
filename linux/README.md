@@ -77,11 +77,12 @@ The board and simulation share one physical map.
 | `[0x4002_1000, +0x100)` | Memory error unit, APLIC source 5, bound by the `frost_memerr` driver ([device-tree binding](buildroot-external/board/frost/frost,memory-error.yaml)) |
 | `[0x4003_0000, +4 KiB)` | DMA-coherent NIC, bound by the `frost_net10g` driver ([device-tree binding](buildroot-external/board/frost/frost,net10g.yaml)) |
 | `[0x4400_0000, +4 MiB)` | AIA APLIC in direct delivery mode, with M and S domains at `0x4400_0000` and `0x4400_8000`, each 32 KiB and each with one IDC for hart 0. Sources 1 to 5 are the UART, external pin, DMA test engine, NIC, and memory error unit. OpenSBI delegates all sources to S mode and disables the M-domain node in Linux's DT. |
+| `[0x4800_0000, +2 MiB)` | IMSIC device window. Machine files start at `0x4800_0000` and supervisor files at `0x4810_0000`, with 4 KiB per hart and 63 identities per file. |
 | `[0x8000_0000, +1 GiB)` | Cached DDR. The DTB advertises the board's DDR size: 1 GiB on X3. |
 
-The PMA map has four regions: the BRAM, the MMIO register window
+The PMA map has five regions: the BRAM, the MMIO register window
 `[0x4000_0000, 0x4003_1000)`, the APLIC window `[0x4400_0000, 0x4440_0000)`,
-and cached DDR. An access anywhere else, including the rest of the device
+the IMSIC window `[0x4800_0000, 0x4820_0000)`, and cached DDR. An access anywhere else, including the rest of the device
 quadrant `[0x4000_0000, 0x8000_0000)` and any address with bits 63:32 set,
 raises a precise access fault (cause 1, 5, or 7 for a fetch, load, or store)
 with the exact address in `mtval`, except that an untranslated store to the

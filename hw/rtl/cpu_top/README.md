@@ -94,6 +94,7 @@ The CPU map is a build configuration shared by all modules using `riscv_pkg`. Su
 | `FROST_PMA_UNCACHED_EXEC_BYTES` | 131072 | Executable prefix of the uncached region |
 | `FROST_PMA_DEVICE0_BASE` / `..._BYTES` | `0x40000000` / `0x31000` | First Device region |
 | `FROST_PMA_DEVICE1_BASE` / `..._BYTES` | `0x44000000` / `0x400000` | Second Device region |
+| `FROST_PMA_DEVICE2_BASE` / `..._BYTES` | `0x48000000` / `0x200000` | Third Device region |
 | `FROST_PMA_LEGACY_DEVICE_STORES` | 1 | Allow the legacy untranslated device-quadrant stores only with the FROST map; set 0 for strict configured regions |
 | `FROST_CPU_DEBUG_BASE` | `0x17c00` | Debug execution slice; when debug is used, place it in executable memory below 4 GiB |
 
