@@ -6,9 +6,7 @@ FROST is a two-wide, out-of-order RISC-V processor for FPGAs, written in
 SystemVerilog. It implements RV64GCB with machine, supervisor, and user modes
 and Sv39 virtual memory. The AMD Alveo X3522PV configuration targets 322 MHz and boots
 Debian 13 with Debian's unmodified riscv64 kernel, mounting its root
-filesystem over NFS through its own 10 Gigabit Ethernet NIC. The CPU/SoC
-separation passes routed timing at 161 MHz and post-opt timing at 322 MHz;
-full 322 MHz timing validation remains pending. See the
+filesystem over NFS through its own 10 Gigabit Ethernet NIC. See the
 [performance measurements](docs/single_core_performance.md) for the earlier
 4.27 CoreMark/MHz baseline and validation of the new AXI memory path.
 
@@ -170,7 +168,7 @@ See the [board guide](boards/README.md) for pinouts, clocking, and adding a boar
 
 ### FPGA Resource Utilization
 
-**Alveo X3522PV** (Virtex UltraScale+ @ 322 MHz; post-route baseline before the CPU/SoC separation)
+**Alveo X3522PV** (Virtex UltraScale+ @ 322 MHz; post-route report)
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|

@@ -169,9 +169,10 @@ reported. `FROST_MEMERR_MODULE` names a prebuilt module instead.
 The interactive `debug_target` and `nic_echo` applications are not run.
 `perf_off_test` checks that the profiling counters are absent, so it fails
 against a bitstream built with `--perf-counters`. `--timeout` covers build,
-load, and untimed input preparation as well as benchmark execution. The
-161 MHz validation uses `--timeout 4200 --linux-timeout 3600` with every
-application, benchmark workload, and Linux check retained.
+load, and untimed input preparation as well as benchmark execution. A
+bitstream at half the standard clock needs
+`--timeout 4200 --linux-timeout 3600` to run every application, benchmark
+workload, and Linux check.
 
 Set `FROST_CPU_CLK_HZ` to the bitstream's actual CPU frequency. A clock
 override skips the standard-clock CoreMark and CoreMark-PRO score thresholds;
