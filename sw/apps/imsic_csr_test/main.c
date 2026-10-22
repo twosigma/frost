@@ -14,7 +14,6 @@
  *    limitations under the License.
  */
 
-/* AIA direct-delivery registers. All accesses are naturally aligned words. */
 /* Indirect CSR legality, write intent, aliases and major-interrupt priority. */
 #include "imsic.h"
 #include "trap.h"

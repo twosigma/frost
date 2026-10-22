@@ -14,7 +14,7 @@
  *    limitations under the License.
  */
 
-/* AIA direct-delivery registers. All accesses are naturally aligned words. */
+/* Local interrupt-file CSRs and naturally aligned 32-bit MSI stores. */
 #ifndef IMSIC_H
 #define IMSIC_H
 

@@ -125,8 +125,10 @@ int main(void)
         }
         *(volatile uint8_t *) base = 7;
         *(volatile uint8_t *) (base + 4) = 7;
+        *(volatile uint8_t *) (base + 7) = 7;
         *(volatile uint16_t *) base = 7;
         *(volatile uint16_t *) (base + 4) = 7;
+        *(volatile uint16_t *) (base + 6) = 0x0700;
         *(volatile uint64_t *) base = 0x0700000000000007ul;
         imsic_send(level, 0, 0);
         imsic_send(level, 0, 64);
