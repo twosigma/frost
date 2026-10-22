@@ -77,6 +77,7 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 | [lib/cache/](lib/cache/README.md) | Cache hierarchy, coherence, DDR bridge, and simulation DDR model |
 | `lib/` | RAM, FIFO, and clock-domain-crossing primitives |
 | [peripherals/nic/](peripherals/nic/README.md) | Ethernet NIC with coherent DMA |
+| [peripherals/aplic/](peripherals/aplic/README.md) | AIA APLIC with machine and supervisor domains in direct delivery mode, not yet instantiated |
 | [net10g/](net10g/README.md) | Portable 10GBASE-R MAC/PCS |
 | `peripherals/` | UART transmit and receive blocks |
 
