@@ -368,6 +368,24 @@ The software-sequence tests exercise the address and delegation writes in
 and the target and level EOI writes in
 [Linux's MSI driver](https://github.com/torvalds/linux/blob/master/drivers/irqchip/irq-riscv-aplic-msi.c).
 
+`tests/aplic_msi_mutations.py` checks a correct baseline and five isolated
+single-change faults. Every fault must fail a cocotb assertion and produce
+a bounded formal counterexample; compilation errors do not count as detection.
+The diagnostic runs serially, cleans before each cocotb run, and keeps its
+private RTL copies, logs and XML reports under the worktree's `sim_build/`.
+
+```bash
+./scripts/frost.py run python3 tests/aplic_msi_mutations.py
+```
+
+| Fault | Directed cocotb check | Formal check |
+|-------|-----------------------|--------------|
+| Use machine LHXS for supervisor addresses | Target and address formulas | Offered address matches the snapshot |
+| Retire on valid before ready | Pending under backpressure | Pending transition and live-request invariant |
+| Allow writes after lock | Address configuration | WARL and locked-register next state |
+| Gate `genmsi` by domain IE | Generator with IE clear | Eligibility and selection |
+| Reset the arbiter pointer after every acceptance | Continuous-traffic fairness | Pointer advancement |
+
 The `aplic_test` program checks the SoC register path in BRAM and DDR
 configurations, including both domains, delegation, machine interrupt entry,
 level-sensitive claims, thresholds, `iforce`, and byte, halfword and doubleword
