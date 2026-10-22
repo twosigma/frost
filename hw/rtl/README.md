@@ -75,6 +75,7 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 | `cpu_and_mem/cpu/ex_stage/` | ALU, multiply/divide, FPU, and branch execution |
 | [lib/cache/](lib/cache/README.md) | Cache hierarchy, coherence, DDR bridge, and simulation DDR model |
 | `lib/` | RAM, FIFO, and clock-domain-crossing primitives |
+| [peripherals/imsic/](peripherals/imsic/README.md) | AIA IMSIC with machine and supervisor interrupt files per hart, not yet instantiated |
 | [peripherals/nic/](peripherals/nic/README.md) | Ethernet NIC with coherent DMA |
 | [peripherals/aplic/](peripherals/aplic/README.md) | AIA APLIC with machine and supervisor domains, direct delivery and optional MSI forwarding |
 | [net10g/](net10g/README.md) | Portable 10GBASE-R MAC/PCS |
