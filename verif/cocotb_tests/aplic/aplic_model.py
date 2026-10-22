@@ -17,7 +17,7 @@
 The model follows RISC-V AIA 1.0 chapter 4 for a machine-level root domain
 with one supervisor-level child, each supporting direct delivery and optional
 MSI forwarding, plus the implementation choices in the module's README.md.
-The direct-only bench uses settled register operations. The MSI bench uses
+The direct-mode bench uses settled register operations. The MSI bench uses
 tick() to compare each cycle, including simultaneous input and bus events.
 
 Each domain is described separately, as software sees it: a sourcecfg value
@@ -123,7 +123,6 @@ class AplicModel:
     msicfg: list[int] = field(default_factory=list)
     genmsi: list[int] = field(default_factory=list)
     inflight: Msi | None = None
-    inflight_live: bool = False
     round_robin: int = 0
     wire_history: int = 0
 
@@ -145,7 +144,6 @@ class AplicModel:
         ]
         self.genmsi = [0, 0]
         self.inflight = None
-        self.inflight_live = False
         self.round_robin = 0
         self.wire_history = sum(
             s.wire << (n - 1) for n, s in enumerate(self.sources) if n
@@ -505,7 +503,7 @@ class AplicModel:
             else:
                 domain = slot - self.num_sources
                 value = self.genmsi[domain]
-                if not (self.domain_dm[domain] and value & (1 << 12)):
+                if not (value & (1 << 12)):
                     continue
                 hart, eiid = value >> 18, value & 0x7FF
             return Msi(slot, domain, self.msi_address(domain, hart), eiid)
@@ -539,7 +537,6 @@ class AplicModel:
         data = write[1] & 0xFFFF_FFFF if write else 0
         if write:
             self.write(*write)
-        invalidated = set()
         for number in range(1, self.num_sources + 1):
             old, new = previous[number], self.sources[number]
             domain = int(old.delegated)
@@ -569,11 +566,7 @@ class AplicModel:
                 or (self.is_level(old.mode) and old_dm[domain])
             )
             edge = old.mode >= 4 and held and rect and not rect_before
-            retired = (
-                accepted is not None
-                and accepted.slot == number - 1
-                and self.inflight_live
-            )
+            retired = offered is not None and offered.slot == number - 1
             pending = (
                 (old.pending and not clear_bit and claimed != number and not retired)
                 or set_bit
@@ -597,14 +590,6 @@ class AplicModel:
             if self.is_level(new.mode) and (not new_dm or not new_rect):
                 pending = bool(new_rect)
             new.pending = bool(pending)
-            if (
-                cfg_clear
-                or old_dm[domain] != self.domain_dm[domain]
-                or (held and clear_bit)
-                or (self.is_level(old.mode) and old_dm[domain] and not rect)
-                or (self.is_level(new.mode) and new_dm and not new_rect)
-            ):
-                invalidated.add(number - 1)
         self.wire_history = sum(
             s.wire << (n - 1) for n, s in enumerate(self.sources) if n
         )
@@ -615,9 +600,6 @@ class AplicModel:
             self.inflight = None
         elif offered is not None:
             self.inflight = offered
-            self.inflight_live = offered.slot not in invalidated
-        elif self.inflight is not None and self.inflight.slot in invalidated:
-            self.inflight_live = False
         return lines[0], lines[1]
 
 

@@ -2523,9 +2523,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Memory error unit registers, counters and interrupt",
         verilator_extra_args=("-GID_BITS=5",),
     ),
-    # The APLIC's four direct-only shapes: two harts and two bitmap words; the
+    # The APLIC's direct-mode shapes: two harts and two bitmap words; the
     # module defaults; the spec's 1023 sources with three harts and
-    # 8-bit priorities; and 512 harts. The bench reads the shape from APLIC_*.
+    # 8-bit priorities; 512 harts; and an MSI-capable build. The bench reads APLIC_*.
     **{
         name: CocotbRunConfig(
             python_test_module="cocotb_tests.aplic.test_aplic",
@@ -2544,6 +2544,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
                 "APLIC registers, source modes, delegation, claims and delivery "
                 "with 40 sources and two harts",
                 (("NUM_SOURCES", 40), ("NUM_HARTS", 2), ("IPRIOLEN", 3)),
+            ),
+            (
+                "aplic_direct_msi",
+                "APLIC direct delivery with MSI support enabled, 40 sources and two harts",
+                (
+                    ("NUM_SOURCES", 40),
+                    ("NUM_HARTS", 2),
+                    ("IPRIOLEN", 3),
+                    ("MSI_ENABLE", 1),
+                ),
             ),
             (
                 "aplic_default",

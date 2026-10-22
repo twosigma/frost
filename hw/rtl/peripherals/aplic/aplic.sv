@@ -51,19 +51,18 @@
  * bits and resets its target. The root can delegate to its one child; sources
  * not delegated to the supervisor domain are inaccessible to that domain.
  *
- * Detached and edge sources latch pending until a claim, accepted MSI or
+ * Detached and edge sources latch pending until a claim, MSI selection or
  * software clear. Direct-mode level sources follow the rectified wire. In
  * MSI mode, a level source latches a rising rectified input or a software set
- * while that input is high; a low input, accepted MSI or software clear ends
+ * while that input is high; a low input, MSI selection or software clear ends
  * pending. A simultaneous set wins over a clear, subject to the level input.
  * A sourcecfg write that raises a rectified edge or MSI-level input sets pending.
  *
  * Source wires are synchronous to i_clk. topi is combinational; interrupt
- * lines are registered. Claims and accepted MSIs precede simultaneous writes.
+ * lines are registered. Claims and MSI selection precede simultaneous writes.
  * An MSI offer snapshots eligibility, address and data and stays stable until
- * ready. Later writes cannot retract it. One pending episode is retired on
- * acceptance; a later episode created after a clear, deactivation, domain
- * change or level deassertion is unaffected by that old transaction.
+ * ready. Later writes cannot retract it. Selection retires the pending bit;
+ * acceptance never clears a new interrupt recorded during the stall.
  */
 module aplic #(
     parameter int unsigned NUM_SOURCES = 5,  // source IDs 1..NUM_SOURCES (at most 1023)
@@ -353,15 +352,15 @@ module aplic #(
   // ---------------------------------------------------------------------------
   // MSI forwarder. Sources and the two genmsi registers share a round-robin
   // ring. Once offered, a transaction cannot be retracted by configuration
-  // writes. The pending episode it represents may end before acceptance;
-  // msi_live_q prevents that old transaction from clearing a later episode.
+  // writes. Selection retires the pending bit; later input and software
+  // sets are new interrupts even while the offered store is stalled.
   // ---------------------------------------------------------------------------
   logic [NumMsiSlots-1:0] msi_req;
-  logic msi_pick_valid, msi_valid_q, msi_live_q, msi_fire;
+  logic msi_pick_valid, msi_valid_q, msi_fire;
   logic [MsiSlotBits-1:0] msi_pick, msi_slot_q, msi_rr_q;
   logic [MSI_ADDR_WIDTH-1:0] msi_addr_q;
   logic [31:0] msi_data_q;
-  logic [NUM_SOURCES:1] msi_clear, msi_invalidate;
+  logic [NUM_SOURCES:1] msi_clear;
   logic msi_pick_dom;
   logic [HartBits-1:0] msi_pick_hart;
   logic [10:0] msi_pick_eiid;
@@ -383,18 +382,15 @@ module aplic #(
     for (int s = 1; s <= NUM_SOURCES; s++) begin
       msi_req[s-1] = MSI_ENABLE && dom_dm_q[deleg_q[s]] && dom_ie_q[deleg_q[s]] &&
           (sm_q[s] != SmInactive) && ip_q[s] && ie_q[s];
-      msi_invalidate[s] = cfg_clear[s] || (dom_dm_d[deleg_q[s]] != dom_dm_q[deleg_q[s]]) ||
-          (latched[s] && wr_clr_ip[s] && wr_active[s]) ||
-          (sm_q[s][2] && sm_q[s][1] && dom_dm_q[deleg_q[s]] && !rect[s]) ||
-          (level_d[s] && dom_dm_d[deleg_d[s]] && !rect_d[s]);
-      msi_clear[s] = msi_fire && (msi_slot_q == MsiSlotBits'(s - 1)) && msi_live_q;
     end
-    for (int d = 0; d < 2; d++) msi_req[NUM_SOURCES+d] = MSI_ENABLE && dom_dm_q[d] && gen_busy_q[d];
+    for (int d = 0; d < 2; d++) msi_req[NUM_SOURCES+d] = MSI_ENABLE && gen_busy_q[d];
     msi_pick_valid = |msi_req;
     msi_pick = '0;
     for (int k = NumMsiSlots - 1; k >= 0; k--) if (msi_req[k]) msi_pick = MsiSlotBits'(k);
     for (int k = NumMsiSlots - 1; k >= 0; k--)
     if (msi_req[k] && (MsiSlotBits'(k) >= msi_rr_q)) msi_pick = MsiSlotBits'(k);
+    for (int s = 1; s <= NUM_SOURCES; s++)
+    msi_clear[s] = !msi_valid_q && msi_pick_valid && (msi_pick == MsiSlotBits'(s - 1));
     msi_pick_dom  = 1'b0;
     msi_pick_hart = '0;
     msi_pick_eiid = '0;
@@ -421,7 +417,6 @@ module aplic #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       msi_valid_q <= 1'b0;
-      msi_live_q <= 1'b0;
       msi_slot_q <= '0;
       msi_rr_q <= '0;
       msi_addr_q <= '0;
@@ -436,12 +431,6 @@ module aplic #(
         msi_slot_q  <= msi_pick;
         msi_addr_q  <= msi_address(msi_pick_dom, msi_pick_hart);
         msi_data_q  <= {21'b0, msi_pick_eiid};
-        msi_live_q  <= 1'b1;
-        for (int s = 1; s <= NUM_SOURCES; s++)
-        if ((msi_pick == MsiSlotBits'(s - 1)) && msi_invalidate[s]) msi_live_q <= 1'b0;
-      end else begin
-        for (int s = 1; s <= NUM_SOURCES; s++)
-        if ((msi_slot_q == MsiSlotBits'(s - 1)) && msi_invalidate[s]) msi_live_q <= 1'b0;
       end
     end
   end
@@ -1028,11 +1017,11 @@ module aplic #(
 
   // MSI properties include arbitrary writes during a stalled offer. Eligibility
   // and payload are sampled when the request is offered; an offer already on
-  // the master cannot be retracted. Retirement belongs to its pending episode.
+  // the master cannot be retracted. Selection retires the pending interrupt.
   if (MSI_ENABLE) begin : gen_msi_formal
     logic [NumMsiSlots-1:0] f_eligible;
-    logic [NUM_SOURCES:1] f_invalid, f_invalid_p, f_retired_p;
-    logic f_valid_p, f_ready_p, f_live_p, f_pick_valid_p;
+    logic [  NUM_SOURCES:1] f_retired_p;
+    logic f_valid_p, f_ready_p, f_pick_valid_p;
     logic [MsiSlotBits-1:0] f_slot_p, f_rr_p, f_pick_p;
     logic [MSI_ADDR_WIDTH-1:0] f_address_p, f_offer_address_p;
     logic [31:0] f_payload_p, f_offer_payload_p;
@@ -1083,23 +1072,8 @@ module aplic #(
       for (int s = 1; s <= NUM_SOURCES; s++) begin
         f_eligible[s-1] = (sm_q[s] != 3'd0) && ip_q[s] && ie_q[s] &&
             dom_dm_q[deleg_q[s]] && dom_ie_q[deleg_q[s]];
-        f_invalid[s] =
-            (f_cfg_root[s] && ((i_wr_data[10] && !deleg_q[s]) ||
-                (!i_wr_data[10] && (deleg_q[s] || (f_legal_sm(i_wr_data[2:0]) == 3'd0))))) ||
-            (f_cfg_s[s] && deleg_q[s] && (i_wr_data[10] || (f_legal_sm(i_wr_data[2:0]) == 3'd0))) ||
-            (f_domaincfg_wr[deleg_q[s]] && (i_wr_data[2] != dom_dm_q[deleg_q[s]])) ||
-            (f_clr[s] && (f_held(sm_q[s]) || (f_level_mode(sm_q[s]) && dom_dm_q[deleg_q[s]]))) ||
-            (f_level_mode(sm_q[s]) && dom_dm_q[deleg_q[s]] && !f_rect[s]);
-        if ((f_cfg_root[s] && !i_wr_data[10]) || (f_cfg_s[s] && deleg_q[s] && !i_wr_data[10])) begin
-          if (f_level_mode(
-                  i_wr_data[2:0]
-              ) && dom_dm_q[f_cfg_s[s]] && !f_rectified(
-                  i_wr_data[2:0], i_src[s-1]
-              ))
-            f_invalid[s] = 1'b1;
-        end
       end
-      for (int d = 0; d < 2; d++) f_eligible[NUM_SOURCES+d] = dom_dm_q[d] && gen_busy_q[d];
+      for (int d = 0; d < 2; d++) f_eligible[NUM_SOURCES+d] = gen_busy_q[d];
       f_cfg_q[0] = mmsiaddrcfg_q;
       f_cfg_q[1] = mmsiaddrcfgh_q;
       f_cfg_q[2] = smsiaddrcfg_q;
@@ -1124,12 +1098,10 @@ module aplic #(
     always_ff @(posedge i_clk) begin
       f_valid_p <= msi_valid_q;
       f_ready_p <= i_msi_ready;
-      f_live_p <= msi_live_q;
       f_slot_p <= msi_slot_q;
       f_rr_p <= msi_rr_q;
       f_pick_p <= msi_pick;
       f_pick_valid_p <= |f_eligible;
-      f_invalid_p <= f_invalid;
       f_address_p <= o_msi_addr;
       f_payload_p <= o_msi_data;
       f_locked_p <= mmsiaddrcfgh_q[31];
@@ -1137,8 +1109,7 @@ module aplic #(
       f_offer_payload_p <= '0;
       for (int s = 1; s <= NUM_SOURCES; s++) begin
         f_eiid_p[s] <= tgt_eiid_q[s];
-        f_retired_p[s] <= o_msi_valid && i_msi_ready && msi_live_q &&
-            (msi_slot_q == MsiSlotBits'(s-1));
+        f_retired_p[s] <= !msi_valid_q && (|f_eligible) && (msi_pick == MsiSlotBits'(s - 1));
         if (msi_pick == MsiSlotBits'(s - 1)) begin
           f_offer_address_p <= f_address(deleg_q[s], tgt_hart_q[s]);
           f_offer_payload_p <= 32'(tgt_eiid_q[s]);
@@ -1166,9 +1137,6 @@ module aplic #(
       if (f_past_valid) begin
         assert (int'(msi_rr_q) < NumMsiSlots);
         assert (int'(msi_slot_q) < NumMsiSlots);
-        for (int s = 1; s <= NUM_SOURCES; s++)
-        if (msi_valid_q && msi_live_q && (msi_slot_q == MsiSlotBits'(s - 1)))
-          assert (ip_q[s] && (sm_q[s] != 3'd0) && dom_dm_q[deleg_q[s]]);
         assert (msi_pick_valid == (|f_eligible));
         if (msi_pick_valid) begin
           assert (f_eligible[msi_pick]);
@@ -1178,7 +1146,7 @@ module aplic #(
         assert (o_msi_valid == (msi_valid_q && !i_rst));
         if (o_msi_valid) assert ((o_msi_addr[11:0] == '0) && (o_msi_data[31:11] == '0));
         if (f_rst_p) begin
-          assert (!msi_valid_q && !msi_live_q && (msi_rr_q == '0) && (dom_dm_q == '0));
+          assert (!msi_valid_q && (msi_rr_q == '0) && (dom_dm_q == '0));
           assert ((o_msi_addr == '0) && (o_msi_data == '0));
           assert (mmsiaddrcfg_q == f_cfg_value(0, MMSIADDRCFG_RESET));
           assert (mmsiaddrcfgh_q == f_cfg_value(1, MMSIADDRCFGH_RESET));
@@ -1196,23 +1164,9 @@ module aplic #(
           if (!f_valid_p && f_pick_valid_p) begin
             assert (msi_slot_q == f_pick_p);
             assert ((o_msi_addr == f_offer_address_p) && (o_msi_data == f_offer_payload_p));
-            for (int k = 0; k < NumMsiSlots; k++) begin
-              if (msi_slot_q == MsiSlotBits'(k)) begin
-                if (k < NUM_SOURCES)
-                  assert (msi_live_q == !f_invalid_p[k+1]);
-                  else assert (msi_live_q);
-              end
-            end
           end else begin
             assert ((msi_slot_q == f_slot_p) && (o_msi_addr == f_address_p) &&
                 (o_msi_data == f_payload_p));
-            for (int k = 0; k < NumMsiSlots; k++) begin
-              if (msi_slot_q == MsiSlotBits'(k)) begin
-                if (k < NUM_SOURCES)
-                  assert (msi_live_q == (f_live_p && !f_invalid_p[k+1]));
-                  else assert (msi_live_q == f_live_p);
-              end
-            end
           end
           for (int s = 1; s <= NUM_SOURCES; s++) begin
             if (deleg_q[s] != f_deleg_p[s])
@@ -1225,9 +1179,32 @@ module aplic #(
       end
     end
 
+    // AIA 4.7 and 4.9: without a software clear, reconfiguration or a low
+    // level input, an MSI pending interrupt remains pending or is forwarded.
+    // Acceptance of an older offer cannot consume a later pending interrupt.
+    always_comb begin
+      if (f_past_valid && !f_rst_p) begin
+        for (int s = 1; s <= NUM_SOURCES; s++) begin
+          if (f_ip_p[s] && f_dom_dm_p[f_deleg_p[s]] &&
+              (f_sm_p[s] != 3'd0) && (sm_q[s] == f_sm_p[s]) &&
+              (deleg_q[s] == f_deleg_p[s]) && dom_dm_q[deleg_q[s]] &&
+              !f_clr_p[s] && (!f_level_mode(
+                  f_sm_p[s]
+              ) || f_rectified(
+                  f_sm_p[s], f_src_p[s-1]
+              ))) begin
+            assert (ip_q[s] || (msi_valid_q && !f_valid_p && (msi_slot_q == MsiSlotBits'(s - 1))));
+          end
+          if (msi_valid_q && !f_valid_p && (msi_slot_q == MsiSlotBits'(s - 1)))
+            assert (f_ip_p[s] && f_ie_p[s] && (f_sm_p[s] != 3'd0) &&
+                f_dom_dm_p[f_deleg_p[s]] && f_dom_ie_p[f_deleg_p[s]]);
+        end
+      end
+    end
+
     // Complete pending transition, including mode changes and simultaneous
-    // input, software and retirement events. Only an accepted live offer is
-    // a retirement; a set or edge on that edge wins over its clear.
+    // input, software and retirement events. A newly selected offer retires
+    // pending; a set or edge in that cycle wins over its clear.
     logic [NUM_SOURCES:1] f_pending;
     always_comb begin
       for (int s = 1; s <= NUM_SOURCES; s++) begin
@@ -1265,14 +1242,16 @@ module aplic #(
         for (int d = 0; d < 2; d++) begin
           cover (msi_fire && (msi_slot_q == MsiSlotBits'(NUM_SOURCES + d)) && !dom_ie_q[d]);
           for (int mode = 4; mode < 8; mode++)
-          cover (msi_fire && msi_live_q && (msi_slot_q == '0) &&
-                (deleg_q[1] == 1'(d)) && (sm_q[1] == 3'(mode)));
+          cover (msi_fire && (msi_slot_q == '0) && (deleg_q[1] == 1'(d)) && (sm_q[1] == 3'(mode)));
         end
+        cover (!msi_valid_q && msi_pick_valid && (msi_pick == '0) && f_set[1]);
+        cover (!msi_valid_q && msi_pick_valid && (msi_pick == '0) && f_edge[1]);
+        cover (msi_fire && (msi_slot_q == MsiSlotBits'(NUM_SOURCES)) && !dom_dm_q[0]);
         cover (msi_fire && f_stalled_q);
-        cover (msi_fire && msi_live_q && (msi_slot_q == '0) && (sm_q[1] == 3'd1));
-        cover (msi_fire && msi_live_q && (msi_slot_q == '0) && f_set[1]);
-        cover (msi_fire && msi_live_q && (msi_slot_q == '0) && f_edge[1]);
-        cover (msi_fire && !msi_live_q && (msi_slot_q == '0) && deleg_q[1] && ip_q[1]);
+        cover (msi_fire && (msi_slot_q == '0) && (sm_q[1] == 3'd1));
+        cover (msi_fire && (msi_slot_q == '0) && f_set[1]);
+        cover (msi_fire && (msi_slot_q == '0) && f_edge[1]);
+        cover (msi_fire && f_stalled_q && (msi_slot_q == '0) && deleg_q[1] && ip_q[1]);
         cover (msi_fire && (o_msi_addr[12]) && (o_msi_data == 32'h7FF));
         cover (mmsiaddrcfgh_q[31] && (smsiaddrcfg_q != '0) && (f_wr == f_w(
             1'b0, 15'h1BC8

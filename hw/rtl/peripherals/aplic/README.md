@@ -163,10 +163,10 @@ with its previous value under the current mode, so a change of mode is never
 seen as an edge later.
 
 For Detached and edge sources, MSI mode uses the same pending rules except
-that an accepted MSI replaces a claim. For Level1 and Level0 in MSI mode,
+that selecting an MSI offer replaces a claim. For Level1 and Level0 in MSI mode,
 a rising rectified input sets pending. A software set also sets pending
-while that input is high. A low rectified input, a software clear, or an
-accepted MSI clears pending. A held high input does not retrigger after
+while that input is high. A low rectified input, a software clear, or a
+selected MSI offer clears pending. A held high input does not retrigger after
 forwarding. Software can rearm it with `setipnum`, as Linux does at EOI,
 or wait for a new low-to-high transition. A low rectified input takes
 precedence over a simultaneous software set.
@@ -254,13 +254,14 @@ mode change or delegation cannot retract an offered write. Such a write can
 therefore arrive after software reconfigures its source. Reset discards the
 offer and suppresses valid.
 
-The pending bit is retired on acceptance, not on selection or while stalled.
-A simultaneous set or edge keeps it set. If software clears the pending bit,
-deactivates or moves the source, changes its domain's DM, or a level input
-clears pending, the old transaction no longer owns that pending state. Its
-later acceptance cannot clear a new pending interrupt. A target or enable
-write alone does not end the pending state. Other input and software pending
-rules continue to operate while the master is stalled.
+The pending bit is retired on the edge that selects and registers the offer.
+This is the forwarding event in AIA 1.0 section 4.9: the source is pending,
+enabled and active in an MSI-mode domain with IE set when it is forwarded.
+A simultaneous set or edge keeps the bit set. Later sets and edges record
+new interrupts, including while the offer is stalled. Acceptance does not
+change a source's pending bit. Other input and software pending rules
+continue to operate during a stall. A mode change does not restore the
+interrupt already represented by an offer.
 
 Sources 1 through `NUM_SOURCES`, root `genmsi` and supervisor `genmsi` share
 one round-robin ring, in that order. The pointer advances past the accepted
@@ -273,9 +274,13 @@ Writing `genmsi` in MSI mode when Busy is zero stores Hart Index and EIID and
 sets Busy, bit 12. All other bits read zero. Writes while Busy is one are
 ignored, including on the acceptance edge. Acceptance clears Busy and retains
 Hart Index and EIID. IE does not gate these writes. A queued generator shares
-the bounded arbitration delay above. Switching to direct mode hides `genmsi`
-and pauses a generator not yet offered; switching back resumes it. An offered
-generator write still completes. System reset clears both generators.
+the bounded arbitration delay above. In direct mode `genmsi` reads zero and
+ignores writes, as AIA 1.0 section 4.5.15 requires, even if a marker is queued.
+A marker requested in MSI mode remains eligible across a change to direct
+mode, so it completes with minimal delay instead of waiting for another
+mode change. The specification does not prescribe cancellation on a DM
+change. Both queued and offered markers retain Busy internally until
+acceptance. System reset clears both generators.
 
 The port issues one global sequence of stores. The SoC receiver must preserve
 that order through visibility at the IMSICs, at least for writes to the same
@@ -325,10 +330,11 @@ view of the sources, priorities and thresholds, claims, `iforce` and
 after a write and in the same cycle as one, a reset during traffic, writes to
 every unused word of both control regions with state in place, and the
 programming sequences of OpenSBI's and Linux's APLIC drivers, and runs random
-register traffic against the model. `tests/test_run_cocotb.py` runs it in four
+register traffic against the model. `tests/test_run_cocotb.py` runs it in five
 shapes: `aplic` (40 sources, two harts), `aplic_default` (the defaults),
 `aplic_limits` (1023 sources, three harts, 8-bit priorities) and
-`aplic_512_harts`.
+`aplic_512_harts`, plus `aplic_direct_msi` (40 sources, two harts and
+`MSI_ENABLE = 1`, with direct delivery).
 
 The formal target `formal/aplic.sby` checks the properties in the module's
 `ifdef FORMAL` block, written from the spec's register offsets and rules
@@ -346,31 +352,41 @@ The MSI bench `verif/cocotb_tests/aplic/test_aplic_msi.py` checks every read pai
 every offered MSI and the registered interrupt lines against the clocked model.
 It covers address WARL and lock behavior, all source modes, both address
 formulas with two harts, EIID zero, Busy and IE, mixed delivery modes,
-delegation, backpressure, simultaneous retirement and writes, fairness, reset
+delegation, backpressure, sets after a stalled retarget, source masking and
+domain disable during a stall, simultaneous selection and writes, fairness, reset
 in flight and random traffic. The `aplic_msi` shape has 40 sources, two harts
 and 56-bit addresses. `aplic_msi_32` checks 32-bit address WARL behavior and
 `aplic_msi_locked` checks reset-locked configuration, each with five sources
 and two harts.
 
 The MSI formal tasks check selection eligibility, cyclic arbitration rank,
-snapshot address and data, request stability, acceptance-only retirement,
+snapshot address and data, request stability, selection retirement,
 every pending transition, EIID writes, address WARL, lock and generator state.
+An independent conservation property checks that, absent a software clear,
+reconfiguration or a low level input, a pending interrupt remains pending
+or appears as a new offer. It observes registered offers rather than the
+retirement decoder. Every new source offer also requires a previously
+pending, enabled, active source in an MSI-mode domain with IE set.
 Inputs, including ready and register writes during backpressure, are arbitrary.
 `msi_bmc` has depth 12, `msi_prove` uses unbounded induction, and `msi_cover`
 reaches both domains, every active source mode, generators with IE clear,
-stalls, concurrent sets and edges, a new pending episode after delegation,
-and locked writes. `msi_prove_32`, `msi_prove_locked` and `msi_prove_wide`
+stalls, concurrent sets and edges at selection and acceptance, pending
+interrupts after delegation, generator completion in direct mode and locked
+writes. `msi_prove_32`, `msi_prove_locked` and `msi_prove_wide`
 check 32-bit addresses with three harts, reset locking with one hart, and
-33 sources spanning two bitmap words. Each prove task uses depth 5 induction.
+33 sources spanning two bitmap words. `msi_prove_four_harts` checks multi-bit
+hart indices with 56-bit addresses. Each MSI prove task uses depth 5 induction.
 
 The software-sequence tests exercise the address and delegation writes in
 [OpenSBI's APLIC driver](https://github.com/riscv-software-src/opensbi/blob/master/lib/utils/irqchip/aplic.c)
 and the target and level EOI writes in
 [Linux's MSI driver](https://github.com/torvalds/linux/blob/master/drivers/irqchip/irq-riscv-aplic-msi.c).
 
-`tests/aplic_msi_mutations.py` checks a correct baseline and five isolated
-single-change faults. Every fault must fail a cocotb assertion and produce
+`tests/aplic_msi_mutations.py` checks a correct baseline and five
+isolated faults. Every fault must fail a cocotb assertion and produce
 a bounded formal counterexample; compilation errors do not count as detection.
+The acceptance-retirement mutant includes pending-episode tracking and a
+delayed clear. A further run removes the complete pending transition assertion to check that the conservation property rejects it alone.
 The diagnostic runs serially, cleans before each cocotb run, and keeps its
 private RTL copies, logs and XML reports under the worktree's `sim_build/`.
 
@@ -381,7 +397,7 @@ private RTL copies, logs and XML reports under the worktree's `sim_build/`.
 | Fault | Directed cocotb check | Formal check |
 |-------|-----------------------|--------------|
 | Use machine LHXS for supervisor addresses | Target and address formulas | Offered address matches the snapshot |
-| Retire on valid before ready | Pending under backpressure | Pending transition and live-request invariant |
+| Retire on acceptance with pending-episode tracking | Stalled mask and retarget sequences | Pending transition and independent conservation |
 | Allow writes after lock | Address configuration | WARL and locked-register next state |
 | Gate `genmsi` by domain IE | Generator with IE clear | Eligibility and selection |
 | Reset the arbiter pointer after every acceptance | Continuous-traffic fairness | Pointer advancement |

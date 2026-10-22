@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Check that both MSI verification layers reject five single-change faults.
+"""Check that both MSI verification layers reject five isolated faults.
 
 Run in the frost image: python3 tests/aplic_msi_mutations.py. Each case gets a
 small private copy under sim_build/, leaving the working RTL and tests alone.
@@ -38,9 +38,9 @@ MUTATIONS = (
         "low_shift = dom ? mmsiaddrcfgh_q[22:20] : mmsiaddrcfgh_q[22:20];",
     ),
     (
-        "early_retirement",
-        "msi_clear[s] = msi_fire &&",
-        "msi_clear[s] = o_msi_valid &&",
+        "retire_at_accept",
+        "msi_clear[s] = !msi_valid_q && msi_pick_valid && (msi_pick == MsiSlotBits'(s - 1));",
+        "msi_clear[s] = msi_fire && (msi_slot_q == MsiSlotBits'(s - 1)) && msi_live_q;",
     ),
     (
         "unlocked_writes",
@@ -49,8 +49,8 @@ MUTATIONS = (
     ),
     (
         "generator_ie",
-        "msi_req[NUM_SOURCES+d] = MSI_ENABLE && dom_dm_q[d] && gen_busy_q[d];",
-        "msi_req[NUM_SOURCES+d] = MSI_ENABLE && dom_dm_q[d] && gen_busy_q[d] && dom_ie_q[d];",
+        "msi_req[NUM_SOURCES+d] = MSI_ENABLE && gen_busy_q[d];",
+        "msi_req[NUM_SOURCES+d] = MSI_ENABLE && gen_busy_q[d] && dom_ie_q[d];",
     ),
     (
         "fixed_priority",
@@ -58,6 +58,32 @@ MUTATIONS = (
         "msi_rr_q <= '0;",
     ),
 )
+
+
+# Restore the pending-episode tracking as well as the old acceptance clear.
+# This keeps the mutant's behavior on reconfiguration identical to the old RTL.
+RETIRE_AT_ACCEPT_STATE = """
+  logic msi_live_q;
+  logic [NUM_SOURCES:1] msi_invalidate;
+  always_comb begin
+    for (int s = 1; s <= NUM_SOURCES; s++)
+      msi_invalidate[s] = cfg_clear[s] || (dom_dm_d[deleg_q[s]] != dom_dm_q[deleg_q[s]]) ||
+          (latched[s] && wr_clr_ip[s] && wr_active[s]) ||
+          (sm_q[s][2] && sm_q[s][1] && dom_dm_q[deleg_q[s]] && !rect[s]) ||
+          (level_d[s] && dom_dm_d[deleg_d[s]] && !rect_d[s]);
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) msi_live_q <= 1'b0;
+    else if (!msi_valid_q && msi_pick_valid) begin
+      msi_live_q <= 1'b1;
+      for (int s = 1; s <= NUM_SOURCES; s++)
+        if ((msi_pick == MsiSlotBits'(s - 1)) && msi_invalidate[s]) msi_live_q <= 1'b0;
+    end else begin
+      for (int s = 1; s <= NUM_SOURCES; s++)
+        if ((msi_slot_q == MsiSlotBits'(s - 1)) && msi_invalidate[s]) msi_live_q <= 1'b0;
+    end
+  end
+"""
 
 
 def _copy_case(destination: Path, source: str) -> None:
@@ -169,8 +195,43 @@ def main() -> None:
     for name, original, changed in MUTATIONS:
         assert source.count(original) == 1, f"mutation anchor changed: {name}"
         case = output / name
-        _copy_case(case, source.replace(original, changed, 1))
+        mutated = source.replace(original, changed, 1)
+        if name == "retire_at_accept":
+            anchor = "  function automatic logic [MSI_ADDR_WIDTH-1:0] msi_address"
+            assert mutated.count(anchor) == 1
+            mutated = mutated.replace(anchor, RETIRE_AT_ACCEPT_STATE + "\n" + anchor, 1)
+        _copy_case(case, mutated)
         _check_case(case, mutant=True)
+        if name == "retire_at_accept":
+            # Check the spec's conservation property independently of the
+            # complete transition equation, which also detects this fault.
+            transition = (
+                "if (f_past_valid && !f_rst_p) assert (ip_q[s] == f_pending[s]);"
+            )
+            assert mutated.count(transition) == 1
+            (case / RTL).write_text(mutated.replace(transition, ""), encoding="utf-8")
+            formal = _run(
+                [
+                    sys.executable,
+                    "test_run_formal.py",
+                    "--target",
+                    "aplic",
+                    "--task",
+                    "msi_bmc",
+                    "--verbose",
+                ],
+                case,
+                "formal_conservation.log",
+            )
+            assert (
+                formal.returncode != 0
+                and "Assert failed" in formal.stdout
+                and "DONE (FAIL" in formal.stdout
+            )
+            print(
+                "retire_at_accept: spec conservation alone rejects the mutant",
+                flush=True,
+            )
     print("All five mutants rejected by both cocotb and formal.", flush=True)
 
 

@@ -669,6 +669,7 @@ FORMAL_TARGETS = [
             "msi_prove_32",
             "msi_prove_locked",
             "msi_prove_wide",
+            "msi_prove_four_harts",
         ),
     ),
     FormalTarget(
@@ -692,6 +693,7 @@ SBY_TASKS = [
         "Unbounded APLIC MSI with address configuration locked at reset",
     ),
     ("msi_prove_wide", "Unbounded APLIC MSI with two words of source bits"),
+    ("msi_prove_four_harts", "MSI proof with four harts and 56-bit addresses"),
     ("bmc_strict", "Bounded check with strict uncached Normal memory"),
     ("bmc_normal", "Bounded check with Normal read caching"),
     ("bmc_legacy", "Bounded check with legacy unconditional data caching"),

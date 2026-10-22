@@ -11,6 +11,7 @@ msi_cover
 msi_prove_32
 msi_prove_locked
 msi_prove_wide
+msi_prove_four_harts
 
 [options]
 bmc: mode bmc
@@ -37,6 +38,8 @@ msi_prove_locked: mode prove
 msi_prove_locked: depth 5
 msi_prove_wide: mode prove
 msi_prove_wide: depth 5
+msi_prove_four_harts: mode prove
+msi_prove_four_harts: depth 5
 
 [engines]
 smtbmc boolector
@@ -59,6 +62,7 @@ msi_cover: chparam -set MSI_ENABLE 1 -set NUM_SOURCES 3 -set NUM_HARTS 2 -set IP
 msi_prove_32: chparam -set MSI_ENABLE 1 -set NUM_SOURCES 3 -set NUM_HARTS 3 -set MSI_ADDR_WIDTH 32 aplic
 msi_prove_locked: chparam -set MSI_ENABLE 1 -set NUM_SOURCES 1 -set NUM_HARTS 1 -set MMSIADDRCFGH_RESET 2147487744 -set MMSIADDRCFG_RESET 294912 -set SMSIADDRCFG_RESET 295168 aplic
 msi_prove_wide: chparam -set MSI_ENABLE 1 -set NUM_SOURCES 33 -set NUM_HARTS 2 aplic
+msi_prove_four_harts: chparam -set MSI_ENABLE 1 -set NUM_SOURCES 3 -set NUM_HARTS 4 aplic
 prep -top aplic
 
 [files]

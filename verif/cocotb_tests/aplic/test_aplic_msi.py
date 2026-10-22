@@ -15,7 +15,7 @@
 """Clocked APLIC MSI tests: every read pair, offered store and pin is modeled.
 
 APLIC_* environment variables match the RTL parameters in the registry. The
-original direct-only tests remain separate and run without MSI_ENABLE.
+direct-mode tests remain separate and run with and without MSI_ENABLE.
 """
 
 import os
@@ -390,7 +390,7 @@ async def test_msi_pending_modes(dut: Any) -> None:
 
 @cocotb.test()
 async def test_msi_backpressure_and_reconfiguration(dut: Any) -> None:
-    """Stable offers, acceptance-only retirement and writes during backpressure."""
+    """Stable offers, selection retirement and writes during backpressure."""
     b = MsiBench(dut)
     await b.start()
     await b.mode(ROOT)
@@ -399,7 +399,7 @@ async def test_msi_backpressure_and_reconfiguration(dut: Any) -> None:
     await b.write(SETIPNUM, 1)
     await b.step()
     for _ in range(20):
-        assert await b.pending(ROOT, 1)
+        assert not await b.pending(ROOT, 1)
     original = b.model.inflight
     assert original is not None
     await b.write(TARGET + 4, (1 << 18) | 12)
@@ -436,7 +436,7 @@ async def test_msi_backpressure_and_reconfiguration(dut: Any) -> None:
 
 @cocotb.test()
 async def test_msi_acceptance_collisions(dut: Any) -> None:
-    """An edge or set on acceptance wins; dropping a level ends its episode."""
+    """An edge or set on acceptance remains pending; a low level clears pending."""
     b = MsiBench(dut)
     await b.start()
     await b.mode(ROOT)
@@ -450,14 +450,14 @@ async def test_msi_acceptance_collisions(dut: Any) -> None:
         await b.write(SETIPNUM, 1)
         await b.step()
         await b.step(write=(SETIPNUM_LE, 1), ready=True)
-        assert await b.pending(ROOT, 1), "set wins over retirement"
+        assert await b.pending(ROOT, 1), "set on acceptance remains pending"
         await b.drain(1)
         await b.step(ready=False)
         if mode in (SM_EDGE1, SM_EDGE0):
             await b.write(SETIPNUM, 1)
             await b.wire(1, inverted)
             await b.step(wires=1 - inverted, ready=True)
-            assert await b.pending(ROOT, 1), "edge wins over retirement"
+            assert await b.pending(ROOT, 1), "edge on acceptance remains pending"
             await b.drain(1)
         if mode in (SM_LEVEL1, SM_LEVEL0):
             await b.write(SETIPNUM, 1)
@@ -571,30 +571,133 @@ async def test_msi_mode_changes(dut: Any) -> None:
     await b.expect(idc_offset(ROOT, 0, IDELIVERY), 1)
     await b.expect(TARGET + 4, 3)
     assert await b.pending(ROOT, 1)
+    await b.write(4, SM_DETACHED)
+    await b.write(CLRIPNUM, 1)
     await b.step(ready=False)
     await b.mode(ROOT)
+    await b.write(SETIPNUM, 1)
     await b.step()
+    assert not await b.pending(ROOT, 1)
     await b.mode(ROOT, msi=False)
+    await b.write(SETIPNUM, 1)
     await b.step(ready=True)
     assert await b.pending(ROOT, 1), "old MSI cannot clear direct-mode pending state"
-    # Queued genmsi is hidden and paused in direct mode, then resumed.
-    await b.step(ready=False)
+    await b.write(CLRIPNUM, 1)
     await b.mode(ROOT)
-    await b.write(GENMSI, 71)
-    await b.mode(ROOT, msi=False)
-    await b.expect(GENMSI, 0)
-    await b.step(ready=True)
-    await b.wire(1, 0)
-    await b.step(ready=False)
-    await b.mode(ROOT)
-    await b.drain(1)
-    assert b.sent[-1].data == 71
     await b.step(ready=False)
     await b.write(GENMSI, 72)
     await b.step()
     await b.step(reset=True, ready=True, write=(GENMSI, 73))
     await b.expect(GENMSI, 0)
     assert b.model.inflight is None
+
+
+@cocotb.test()
+async def test_msi_offer_after_mask_and_ie_clear(dut: Any) -> None:
+    """AIA 4.9: forwarding requires pending, source enable and domain IE."""
+    b = MsiBench(dut)
+    await b.start()
+    await b.mode(ROOT)
+    await b.activate(ROOT, 1, eiid=11)
+    await b.write(SETIPNUM, 1)
+    await b.step()
+    await b.write(CLRIENUM, 1)
+    await b.mode(ROOT, enable=False)
+    await b.expect(SETIE, 0)
+    pending = await b.pending(ROOT, 1)
+    await b.step(ready=True)
+    assert b.sent[-1].data == 11
+    assert await b.pending(ROOT, 1) == pending, (
+        "acceptance cannot retire a disabled source"
+    )
+    assert not pending, (
+        "the pending interrupt was forwarded when the offer was selected"
+    )
+
+
+@cocotb.test()
+async def test_msi_set_after_stalled_retarget(dut: Any) -> None:
+    """A set after mask and retarget must reach the new hart and EIID."""
+    b = MsiBench(dut)
+    await b.start()
+    for set_reg in (SETIP, SETIPNUM):
+        await b.step(ready=False)
+        await b.mode(ROOT)
+        await b.activate(ROOT, 1, hart=0, eiid=11)
+        await b.write(SETIPNUM, 1)
+        await b.step()
+        old_address = b.model.msi_address(ROOT, 0)
+        await b.write(CLRIENUM, 1)
+        await b.write(TARGET + 4, (1 << 18) | 12)
+        await b.write(set_reg, 2 if set_reg == SETIP else 1)
+        await b.step(ready=True)
+        assert (b.sent[-1].address, b.sent[-1].data) == (old_address, 11)
+        assert await b.pending(ROOT, 1), (
+            "the set during the stall must survive acceptance"
+        )
+        await b.step(ready=False)
+        await b.write(SETIENUM, 1)
+        await b.drain(1)
+        assert (b.sent[-1].address, b.sent[-1].data) == (
+            b.model.msi_address(ROOT, 1),
+            12,
+        )
+
+
+@cocotb.test()
+async def test_msi_selection_collisions(dut: Any) -> None:
+    """A software set or rising edge on the selection edge wins over retirement."""
+    b = MsiBench(dut)
+    await b.start()
+    for mode in (SM_DETACHED, SM_EDGE1, SM_EDGE0, SM_LEVEL1, SM_LEVEL0):
+        inverted = int(mode in (SM_EDGE0, SM_LEVEL0))
+        await b.step(reset=True, wires=inverted, ready=False)
+        await b.step()
+        await b.mode(ROOT)
+        await b.activate(ROOT, 1, mode)
+        if mode == SM_DETACHED:
+            await b.write(SETIPNUM, 1)
+        else:
+            await b.wire(1, 1 - inverted)
+        await b.write(SETIPNUM_LE, 1)  # selection and a new set on the same edge
+        assert await b.pending(ROOT, 1)
+        await b.drain(2)
+        if mode in (SM_EDGE1, SM_EDGE0):
+            await b.step(ready=False)
+            await b.wire(1, inverted)
+            await b.write(SETIPNUM, 1)
+            await b.wire(1, 1 - inverted)  # selection and a rising rectified input
+            assert await b.pending(ROOT, 1)
+            await b.drain(2)
+
+
+@cocotb.test()
+async def test_genmsi_delivery_mode_change(dut: Any) -> None:
+    """Direct mode reads zero and ignores writes; a queued marker still completes."""
+    b = MsiBench(dut)
+    await b.start()
+    for domain in (ROOT, SUPERVISOR):
+        await b.step(ready=False)
+        await b.mode(domain)
+        await b.activate(domain, 1, eiid=11)
+        await b.write(reg_offset(domain, SETIPNUM), 1)
+        await b.step()  # stall a source so the marker cannot yet be selected
+        await b.write(reg_offset(domain, GENMSI), 71)
+        await b.mode(domain, msi=False)
+        await b.expect(reg_offset(domain, GENMSI), 0)
+        await b.write(reg_offset(domain, GENMSI), 72)
+        await b.drain(2)
+        assert [m.data for m in b.sent[-2:]] == [11, 71]
+        await b.mode(domain)
+        await b.expect(reg_offset(domain, GENMSI), 71)
+        await b.drain(0)
+        await b.step(ready=False)
+        await b.write(reg_offset(domain, GENMSI), 73)
+        await b.step()  # an offered marker also survives a switch to direct mode
+        await b.mode(domain, msi=False)
+        await b.expect(reg_offset(domain, GENMSI), 0)
+        await b.drain(1)
+        assert b.sent[-1].data == 73
 
 
 @cocotb.test()
