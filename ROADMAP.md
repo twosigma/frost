@@ -19,30 +19,32 @@ per-hart boundary and the coherent interface inside the cluster comes first.
 An L2 in every hart instead would need its own coherence design between the
 private L2s.
 
-Both candidate coherence points fit inside the cluster. One is the L2, the
-ordering point for all traffic below the L1s; the sequencer in front of it
-already probes the L1D for every DMA request and would probe both harts'
-L1Ds. The other is a coherence unit at
-the L1 level, between the L1D caches and the L2. It keeps a copy of each L1D's
-tags, so a request probes only the caches that hold the line; it runs MESI
-with cache-to-cache transfer, and the DMA port connects to it as another
-requester.
+Coherence is ordered at the shared L2, the ordering point for all traffic
+below the L1s. A sequencer in front of it takes the requests for each line in
+turn and probes both harts' L1Ds, as the existing sequencer probes the L1D for
+every DMA request. The L1Ds hold lines in MESI states, and dirty data passes
+through the L2 rather than directly between the L1Ds. A coherence unit at the
+L1 level can follow if measurements show that the probes or the trip through
+the L2 limit performance: it would keep a copy of each L1D's tags, so that a
+request probes only the caches that hold the line, and move lines directly
+between the L1Ds.
 
-Either way, the coherence design has to cover everything a hart can hold: L0
-data, outstanding fills, executed but unretired loads, AMOs, LR/SC
-reservations, and DMA. Snooping live load-queue entries is not enough,
-because an entry is freed as soon as its result is staged for the common data
-bus, before the load retires. The DMA observation table, which tracks loads
-until they retire, is the starting point. A tag copy that filters probes must
-also cover data the load queue still holds after the L1D evicts a line. Probe
-data and acknowledgements must keep making progress when every queue is
-full. The single-hart queue sizes and lane choices will need revisiting
-against the timing and memory-traffic cost of the second hart.
+The coherence design has to cover everything a hart can hold: L0 data,
+outstanding fills, executed but unretired loads, AMOs, LR/SC reservations,
+and DMA. Snooping live load-queue entries is not enough, because an entry is
+freed as soon as its result is staged for the common data bus, before the
+load retires. The DMA observation table, which tracks loads until they
+retire, is the starting point. Stores need write permission: today the L1D
+writes a line it hits without checking for other copies, and completes a
+write miss before its fill arrives. Probe data and acknowledgements must keep
+making progress when every queue is full. The single-hart queue sizes and
+lane choices will need revisiting against the timing and memory-traffic cost
+of the second hart.
 
-The instruction and data read caches in front of BRAM are outside the
-coherent ingress. Memory they cache must stay private to one hart, or not be
-cached there when it is shared, unless the coherence design covers them: a
-write-through store does not invalidate another hart's copy.
+Writable BRAM stays private to one hart. Its read caches are outside the
+coherent ingress, and its instruction and data copies are separate, so a
+store to it does not reach another hart's cached copies, and an AMO on it is
+not atomic between harts. Data the harts share lives in DDR.
 
 Interrupts follow the RISC-V Advanced Interrupt Architecture (AIA) 1.0, which
 Linux and OpenSBI support, in two steps:
