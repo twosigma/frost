@@ -129,6 +129,7 @@ every supported extension and privilege mode.
 | **Zihintpause**  | Pause hint for spin-wait loops                 |
 | **Machine Mode** | M-mode privilege (mret, wfi, ecall, ebreak)    |
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
+| **Smaia, Ssaia** | AIA CSRs and machine/supervisor IMSIC files with 63 identities |
 | **Svade**        | Software-managed accessed and dirty bits: an access that needs one set raises a page fault |
 | **User Mode**    | U-mode privilege and system calls |
 

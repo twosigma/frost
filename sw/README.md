@@ -145,7 +145,7 @@ copy.
 | Memory error unit | `0x40021000` | Counts and addresses of DDR ECC errors and DDR error responses |
 | NIC | `0x40030000` | 10G Ethernet control, descriptor rings, and counters |
 | IMSIC | `0x48000000` | 2 MiB device window; M/S pages at +0/+0x100000 with 4 KiB hart stride and 63 identities |
-| APLIC | `0x44000000` | AIA direct delivery: 4 MiB window, M domain at +0 and S domain at +0x8000, one IDC each for hart 0 |
+| APLIC | `0x44000000` | AIA direct and MSI delivery: 4 MiB window, M domain at +0 and S domain at +0x8000, one IDC each for hart 0 |
 
 [`mmio.h`](lib/include/mmio.h) defines `volatile` accessors named after the
 native registers, `UART_TX` through `UART_TX_STATUS`. Use naturally aligned
@@ -316,7 +316,7 @@ can be debugged and where each one first stops.
 | `perf_off_test/` | Core built without profiling counters: `mperf*` CSRs read zero and ignore writes, while `cycle` and `instret` count |
 | `imsic_csr_test/` | Smaia and Ssaia select legality, indirect registers, write-intent claims, virtual pending aliases, and major-interrupt priority |
 | `imsic_msi_test/` | MSI stores in both byte orders, ignored access sizes, translated accesses, delivery masks, thresholds, WFI and trap claims |
-| `imsic_aplic_coexist_test/` | UART and DMA direct delivery at reset and supervisor direct delivery alongside machine MSIs |
+| `imsic_aplic_coexist_test/` | UART and DMA direct delivery at reset and supervisor direct delivery alongside machine MSIs, locked MSI destinations and APLIC forwarding |
 | `aplic_test/` | APLIC direct delivery, both domains, delegation, level claims, thresholds, forced interrupts, machine interrupt entry, and 32-bit access enforcement |
 | `pma_fault_test/` | Access faults for fetch, load, store, AMO, and LR outside the physical map (fetch from the low BRAM above its 128 KiB code region and loads from device-quadrant addresses outside the device windows included; untranslated stores there are ignored) and for AMO, LR, and SC to device registers, with exact `mepc` and `mtval` |
 | `print_clock_speed/` | Prints the `FPGA_CPU_CLK_FREQ` it was built with |

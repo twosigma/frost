@@ -576,7 +576,12 @@ module soc_top #(
   aplic #(
       .NUM_SOURCES(5),
       .NUM_HARTS(NUM_HARTS),
-      .IPRIOLEN(3)
+      .IPRIOLEN(3),
+      .MSI_ENABLE(1'b1),
+      .MMSIADDRCFG_RESET(ImsicMBase >> 12),
+      .MMSIADDRCFGH_RESET(32'h8000_0000 | (32'($clog2(NUM_HARTS)) << 12)),
+      .SMSIADDRCFG_RESET(ImsicSBase >> 12),
+      .SMSIADDRCFGH_RESET(32'b0)
   ) aplic_inst (
       .i_clk(i_clk),
       .i_rst(rst_core),

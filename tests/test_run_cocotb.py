@@ -623,7 +623,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="imsic_aplic_coexist_test",
-        description="IMSIC and APLIC UART/DMA direct delivery coexistence",
+        description="IMSIC and APLIC UART/DMA direct delivery coexistence and MSI forwarding",
     ),
     "aplic_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

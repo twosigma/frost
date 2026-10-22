@@ -22,7 +22,10 @@ available for platform diagnostics until CPU reset.
 `FETCH_VALID_FUZZ=1` delays local instruction completion using the configured
 LFSR seed; it never changes a presented AXI response or repeats a memory access.
 
-The APLIC has five sources and one hart in direct delivery mode. Its machine
+The APLIC has five sources and one hart, with direct and MSI delivery. Both
+domains reset to direct mode. The four MSI address registers reset to locked
+machine and supervisor IMSIC page addresses derived from the decoder bases
+and `NUM_HARTS`. Its machine
 and supervisor domains occupy 32 KiB at `0x4400_0000` and `0x4400_8000`.
 Only 32-bit accesses reach its registers. Other writes are ignored and other
 reads return zero without side effects, including reads covering `claimi`.

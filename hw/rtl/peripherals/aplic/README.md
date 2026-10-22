@@ -9,7 +9,8 @@ external interrupt (SEIP). With MSI support enabled, either domain can instead
 forward interrupts as 32-bit writes to the harts' IMSIC interrupt files.
 Software sees two separate controllers, one per domain, as OpenSBI and Linux
 expect from a device tree with one `riscv,aplic` node per domain. The SoC
-instantiates it with five sources, one hart and direct delivery only. The
+instantiates it with five sources, one hart and MSI support enabled. Both
+domains reset to direct mode; firmware selects MSI delivery for Linux. The
 machine domain is at `0x4400_0000` and the supervisor domain at
 `0x4400_8000`.
 
@@ -308,7 +309,7 @@ system reset to the IMSIC's addresses, as AIA 1.0 recommends. Derive
 `MMSIADDRCFGH_RESET = 0x80000000 | (clog2(NUM_HARTS) << 12)`,
 `SMSIADDRCFG_RESET = S_BASE_ADDR >> 12` and `SMSIADDRCFGH_RESET = 0` from
 the parameters shared with the IMSIC. This gives L = 1, HHXW = 0 and both
-LHXS = 0. The X3's two-hart configuration uses `M_BASE_ADDR = 0x48000000`
+LHXS = 0. A two-hart configuration uses `M_BASE_ADDR = 0x48000000`
 and `S_BASE_ADDR = 0x48100000`, so the four APLIC reset parameters are
 `0x00048000`, `0x80001000`, `0x00048100` and `0x00000000`, respectively.
 Hart 1 uses base + `0x1000` in each region.
@@ -325,9 +326,9 @@ bit above 31 before passing the low 32 bits to the IMSIC. An accepted MSI
 with any high address bit set is dropped, never truncated into an IMSIC
 page. The master connects only to the IMSIC decode, not to memory. CPU IPI
 stores share the IMSIC's one write port and take priority, so the APLIC's
-ready is low during a CPU store. The integration bench implements this
-connection. The IMSIC pages also require a PMA device window in
-`pma_device_page_ok` in `riscv_pkg.sv`: Linux IPIs use translated stores.
+ready is low during a CPU store. The SoC and integration bench implement
+this connection. A 2 MiB PMA device window in `pma_device_page_ok` in
+`riscv_pkg.sv` admits translated IMSIC stores.
 
 FROST has no PMP. The root APLIC window is hidden from Linux by the device
 tree, but hardware does not prevent supervisor software from accessing it.

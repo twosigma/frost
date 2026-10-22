@@ -1,6 +1,6 @@
 # OpenSBI Kconfig defconfig for the FROST firmware build (linux/opensbi_build.py
 # passes it as PLATFORM_DEFCONFIG). It trims the generic platform's driver set
-# to the devices FROST has: the ns16550 console, the APLIC, and the SiFive-layout
+# to the devices FROST has: the ns16550 console, the APLIC, the IMSIC, and the SiFive-layout
 # CLINT (ACLINT mswi + mtimer). Every driver family the generic defconfig
 # enables beyond these (platform overrides for other SoCs, RPMI mailboxes,
 # regmaps, GPIO, I2C, resets, HSM/suspend/CPPC/MPXY) is left disabled, which
@@ -11,6 +11,7 @@ CONFIG_FDT_IPI=y
 CONFIG_FDT_IPI_MSWI=y
 CONFIG_FDT_IRQCHIP=y
 CONFIG_FDT_IRQCHIP_APLIC=y
+CONFIG_FDT_IRQCHIP_IMSIC=y
 CONFIG_FDT_SERIAL=y
 CONFIG_FDT_SERIAL_UART8250=y
 CONFIG_FDT_TIMER=y

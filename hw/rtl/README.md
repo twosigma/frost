@@ -89,7 +89,7 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 | DEBUG | `0x0001_7C00` | 1 KiB | Debug-module execution slice (see [Debug](#debug)); reserved by every linker script that uses low BRAM and written only by the debug module |
 | RAM | `0x0001_8000` | 160 KiB | Data, BSS, and stack (low BRAM) |
 | MMIO | `0x4000_0000` | 196 KiB | Device registers (table below) |
-| APLIC | `0x4400_0000` | 4 MiB | AIA direct delivery, M and S domains of 32 KiB each |
+| APLIC | `0x4400_0000` | 4 MiB | AIA direct and MSI delivery, M and S domains of 32 KiB each |
 | IMSIC | `0x4800_0000` | 2 MiB | 4 KiB M and S pages at `0x4800_0000` and `0x4810_0000`, with `0x1000` hart stride |
 | DDR | `0x8000_0000` | Configured 1–128 GiB (1 GiB default aperture) | Cached region: `.ddr_text` code, large data, and the heap; software must use the populated size |
 
@@ -180,7 +180,7 @@ standard 8250 and CLINT drivers work without a board-specific driver. The
 driver's 16-byte burst per THRE always fits, and LSR.TEMT reads 1 only once
 every byte written has been sent.
 
-The [APLIC](peripherals/aplic/README.md) implements AIA 1.0 direct delivery.
+The [APLIC](peripherals/aplic/README.md) implements AIA 1.0 direct and MSI delivery.
 Its machine and supervisor domains at `0x4400_0000` and `0x4400_8000`
 drive the CPU's IMSIC direct inputs. Each file resets to APLIC delivery;
 its registered line supplies `mip.MEIP` or the external contribution to
@@ -188,7 +188,9 @@ its registered line supplies `mip.MEIP` or the external contribution to
 0. Source identities are 1 for the ns16550 UART, 2 for the external pin,
 3 for the DMA test engine, 4 for the NIC, and 5 for the memory error unit.
 OpenSBI delegates all five sources to the supervisor domain. Linux configures
-them for level-high delivery.
+them for level-high delivery through the supervisor IMSIC file. Both APLIC
+domains reset to direct delivery for programs that do not configure MSIs.
+The generated firmware tree links both APLIC domains to their IMSIC nodes.
 
 A `claimi` read returns the identity in bits 25:16 and priority in bits 7:0.
 It clears detached and edge-sensitive pending bits; a level-sensitive source

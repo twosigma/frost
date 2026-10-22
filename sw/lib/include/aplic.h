@@ -14,7 +14,7 @@
  *    limitations under the License.
  */
 
-/* AIA direct-delivery registers. All accesses are naturally aligned words. */
+/* AIA direct and MSI delivery registers. Accesses are aligned words. */
 #ifndef APLIC_H
 #define APLIC_H
 
@@ -26,6 +26,11 @@
 #define APLIC_REG(base, offset) (*(volatile uint32_t *) ((base) + (offset)))
 #define APLIC_DOMAINCFG(base) APLIC_REG(base, 0x0000ul)
 #define APLIC_SOURCECFG(base, source) APLIC_REG(base, 4ul * (source))
+#define APLIC_MMSIADDRCFG APLIC_REG(APLIC_M_BASE, 0x1BC0ul)
+#define APLIC_MMSIADDRCFGH APLIC_REG(APLIC_M_BASE, 0x1BC4ul)
+#define APLIC_SMSIADDRCFG APLIC_REG(APLIC_M_BASE, 0x1BC8ul)
+#define APLIC_SMSIADDRCFGH APLIC_REG(APLIC_M_BASE, 0x1BCCul)
+#define APLIC_GENMSI(base) APLIC_REG(base, 0x3000ul)
 #define APLIC_SETIP(base) APLIC_REG(base, 0x1C00ul)
 #define APLIC_SETIPNUM(base) APLIC_REG(base, 0x1CDCul)
 #define APLIC_CLRIPNUM(base) APLIC_REG(base, 0x1DDCul)
@@ -40,6 +45,7 @@
 #define APLIC_TOPI(base) APLIC_REG(base, 0x4018ul)
 #define APLIC_CLAIMI(base) APLIC_REG(base, 0x401Cul)
 
+#define APLIC_DOMAINCFG_DM (1u << 2)
 #define APLIC_DOMAINCFG_IE (1u << 8)
 #define APLIC_SOURCE_DELEGATE (1u << 10)
 #define APLIC_SOURCE_DETACHED 1u

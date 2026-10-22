@@ -84,7 +84,7 @@ Both nodes also carry `interrupt-controller`, `msi-controller`,
 of `interrupts-extended` entries, so a node that lists every hart needs no
 `riscv,hart-index-bits`.
 
-The CPU nodes advertise `smaia` and `ssaia` when their CSRs are implemented.
+The CPU node advertises `smaia` and `ssaia`.
 OpenSBI disables the machine IMSIC node in the tree passed to Linux. FROST
 has no PMP, so this hides the pages without preventing supervisor software
 from accessing them. The generic compatible is what the drivers match;
@@ -101,14 +101,10 @@ sources 1 through N. FROST's Linux configuration delegates every wired
 source. The [APLIC README](../aplic/README.md#device-tree) gives the direct
 and MSI node rules.
 
-Until the supervisor APLIC forwards MSIs, omit the supervisor IMSIC node.
-Linux otherwise sets `eidelivery = 1`, cutting off the supervisor APLIC's
-direct line. An interim tree may expose only the machine IMSIC for OpenSBI
-IPIs and keep supervisor wired interrupts direct, with Linux sending IPIs
-through SBI. Because OpenSBI then disconnects the root APLIC's direct line,
-all wired sources must be delegated to the supervisor. Add the supervisor
-IMSIC node and its APLIC `msi-parent` together when enabling supervisor
-MSI delivery.
+FROST exposes both IMSIC nodes and both APLIC `msi-parent` links. OpenSBI
+uses the machine file for IPIs. Linux uses the supervisor file for IPIs and
+wired interrupts forwarded by the supervisor APLIC. The CLINT remains
+available for timekeeping and legacy machine software interrupts.
 
 ## APLIC connection
 
@@ -134,8 +130,7 @@ narrowing an APLIC address, check that all bits above 31 are zero. An MSI
 with any high bit set is accepted and dropped, never truncated into a valid
 page. The APLIC master connects only to the IMSIC decode. Stores that do
 reach a file retain APLIC order, including across machine and supervisor
-files of one hart. The joint bench implements this connection; the SoC
-connection and PMA changes remain integration work.
+files of one hart. The SoC and joint bench implement this connection.
 
 ## Interface
 
@@ -235,13 +230,12 @@ delivery mode, on `i_aplic_meip` or `i_aplic_seip`, registered once more, and
 the file acts as if `eidelivery` were 0; it still records MSIs and reports
 `*topei`. Reset sets `0x40000000`, as the spec requires when the value is
 supported. Software that does not know about IMSICs, which includes FROST's
-bare-metal tests, Linux with a device tree that names only the APLIC, and
+existing direct-delivery programs, Linux with a device tree that names only the APLIC, and
 OpenSBI without an IMSIC node, therefore keeps its external interrupts from
 the APLIC. OpenSBI and Linux write `eidelivery` 1 when their device tree
 names the IMSIC, each at its own level, so firmware can take
 inter-processor interrupts through the machine-level files while Linux
-keeps the APLIC's direct delivery at supervisor level, until the APLIC
-forwards wired interrupts as MSIs. Without `APLIC_DELIVERY`, `eidelivery`
+receives IPIs and APLIC MSIs through the supervisor files. Without `APLIC_DELIVERY`, `eidelivery`
 holds only 0 or 1 and resets to 0, and the APLIC inputs are unused.
 
 ## Simultaneous events

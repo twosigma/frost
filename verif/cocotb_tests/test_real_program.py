@@ -4098,6 +4098,10 @@ async def run_until_complete(
         if has_defined_endpoint:
             # Test suite: look for pass marker
             if success_marker and uart_monitor.contains(success_marker):
+                if app_name == "opensbi_smoke":
+                    assert "aia-imsic" in uart_monitor.get_output(), (
+                        "OpenSBI did not select its IMSIC IPI device"
+                    )
                 cocotb.log.info(
                     f"Run {run_number} PASSED: Program printed success marker"
                 )

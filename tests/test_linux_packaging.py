@@ -248,7 +248,7 @@ def test_opensbi_helper_finds_buildroot_compiler(
 
 
 def test_sbi_device_tree_matches_rtl_windows() -> None:
-    """APLIC, CLINT, UART, DMA engine and NIC addresses in the generated DT match the RTL."""
+    """Interrupt topology and peripheral addresses in the DT match the RTL."""
     packer = _load_module(SBI_PACKER)
     rtl_text = SOC_TOP.read_text()
     assert packer.CLINT_BASE == _rtl_localparam(rtl_text, "ClintMsip")
@@ -279,16 +279,32 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
     assert packer.NIC_APLIC_SOURCE == 4
     assert packer.MEMORY_ERROR_APLIC_SOURCE == packer.APLIC_NUM_SOURCES
     dts = packer.gen_dts(clk_hz=300_000_000, initrd_range=None, bootargs="", model="t")
-    for base, cause in ((packer.APLIC_M_BASE, 11), (packer.APLIC_S_BASE, 9)):
+    for base, level in ((packer.APLIC_M_BASE, "m"), (packer.APLIC_S_BASE, "s")):
         node = re.search(rf"interrupt-controller@{base:x} {{(.*?)}};", dts, re.S)
         assert node is not None
         domain = node.group(1)
-        assert 'compatible = "riscv,aplic";' in domain
+        assert 'compatible = "frost,aplic", "riscv,aplic";' in domain
         assert f"reg = <0x{base:08x} 0x00008000>;" in domain
         assert "#interrupt-cells = <0x02>;" in domain
         assert "#address-cells = <0x00>;" in domain
-        assert f"interrupts-extended = <&cpu0_intc {cause}>;" in domain
+        assert f"msi-parent = <&imsic_{level}>;" in domain
+        assert "interrupts-extended" not in domain
         assert "riscv,num-sources = <5>;" in domain
+    for base, cause, name in (
+        (packer.IMSIC_M_BASE, 11, "ImsicMBase"),
+        (packer.IMSIC_S_BASE, 9, "ImsicSBase"),
+    ):
+        address = re.search(rf"{name} = 32'h([0-9A-Fa-f_]+);", rtl_text)
+        assert address is not None and int(address[1].replace("_", ""), 16) == base
+        node = re.search(rf"interrupt-controller@{base:x} {{(.*?)}};", dts, re.S)
+        assert node is not None
+        file = node.group(1)
+        assert 'compatible = "frost,imsics", "riscv,imsics";' in file
+        assert f"reg = <0x{base:08x} 0x00001000>;" in file
+        assert "interrupt-controller;" in file and "#interrupt-cells = <0>;" in file
+        assert "msi-controller;" in file and "#msi-cells = <0>;" in file
+        assert f"interrupts-extended = <&cpu0_intc {cause}>;" in file
+        assert "riscv,num-ids = <63>;" in file
     assert "riscv,children = <&aplic_s>;" in dts
     assert "riscv,delegation = <&aplic_s 1 5>;" in dts
     for label, source in (
@@ -317,7 +333,7 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
     assert f"local-mac-address = [{packer.NIC_MAC_ADDRESS}];" in dts
     assert "clock-frequency = <300000000>;" in dts
     assert 'mmu-type = "riscv,sv39";' in dts
-    for ext in ("sstc", "svade", "zicntr"):
+    for ext in ("smaia", "ssaia", "sstc", "svade", "zicntr"):
         assert f'"{ext}"' in dts and f"_{ext}" in packer.ISA_STRING
     assert "bootargs" not in dts and "initrd" not in dts
     # The SBI-v3 EVENT_GET_INFO probe only reports events present in OpenSBI's
@@ -947,6 +963,9 @@ def _linux_boot_tree(tmp_path: Path) -> Path:
             if name == "image"
             else f"# synthetic {name}\n".encode()
         )
+    helper.required_files(root)["config"].write_text(
+        "".join(f"{name}=y\n" for name in helper.REQUIRED_IRQCHIP_CONFIG)
+    )
     helper.write_manifest(root)
     (tmp_path / "frost_net10g.ko").write_bytes(bytes(range(97)) * 5)
     (tmp_path / "frost_memerr.ko").write_bytes(bytes(range(89)) * 3)
@@ -1364,7 +1383,14 @@ def _synthetic_packages(helper: ModuleType) -> dict[str, bytes]:
         f"linux-image-{release}": [
             ("dir", "boot", b""),
             ("file", f"boot/vmlinux-{release}", b"Image" * 100),
-            ("file", f"boot/config-{release}", b"CONFIG_MODVERSIONS=y\n"),
+            (
+                "file",
+                f"boot/config-{release}",
+                (
+                    b"CONFIG_MODVERSIONS=y\nCONFIG_RISCV_APLIC=y\n"
+                    b"CONFIG_RISCV_APLIC_MSI=y\nCONFIG_RISCV_IMSIC=y\n"
+                ),
+            ),
             # Skipped by the member filter: the modules FROST never loads.
             ("file", f"usr/lib/modules/{release}/kernel/drivers/x.ko", b"x" * 1000),
         ],
@@ -2009,3 +2035,24 @@ def test_linux_boot_make_passes_br2_external_to_every_buildroot_call() -> None:
     assert len(calls) == 3, calls  # defconfig, frost-stress-rebuild, the build
     for call in calls:
         assert 'BR2_EXTERNAL="$(BR2_EXTERNAL)"' in call, call
+
+
+@pytest.mark.parametrize(
+    "missing", ["CONFIG_RISCV_APLIC", "CONFIG_RISCV_APLIC_MSI", "CONFIG_RISCV_IMSIC"]
+)
+@pytest.mark.parametrize("value", ["m", "n"])
+def test_debian_kernel_rejects_missing_builtin_irqchips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str, value: str
+) -> None:
+    """A valid cached extraction must still support the advertised MSI topology."""
+    helper = _load_module(DEBIAN_KERNEL)
+    fetched = _offline_download(helper, monkeypatch)
+    root = helper.fetch(tmp_path)
+    assert len(fetched) == len(helper.PACKAGES)
+    config = helper.required_files(root)["config"]
+    config.write_text(config.read_text().replace(f"{missing}=y", f"{missing}={value}"))
+    helper.write_manifest(root)
+    assert helper.manifest_holds(root)
+    with pytest.raises(RuntimeError, match=missing):
+        helper.fetch(tmp_path)
+    assert len(fetched) == len(helper.PACKAGES)

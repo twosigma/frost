@@ -14,7 +14,7 @@
  *    limitations under the License.
  */
 
-/* APLIC wired interrupts and per-level IMSIC delivery selection. */
+/* APLIC wired interrupts, per-level delivery selection and MSI forwarding. */
 #include "aplic.h"
 #include "dma_engine.h"
 #include "imsic.h"
@@ -39,6 +39,15 @@ static unsigned long pending(unsigned long want)
         if ((csr_read(mip) & EXTERNAL_MASK) == want)
             return want;
     return csr_read(mip) & EXTERNAL_MASK;
+}
+static unsigned long top_wait(unsigned int level, unsigned long want)
+{
+    for (unsigned int n = 0; n < 20000; n++) {
+        unsigned long top = imsic_top(level);
+        if (top == want)
+            return top;
+    }
+    return imsic_top(level);
 }
 static void dma_start(void)
 {
@@ -96,6 +105,50 @@ int main(void)
     check("M direct restored", pending(1ul << 11), 1ul << 11);
     NS_IER = 0;
     check("all quiet", pending(0), 0);
+    check("M MSI base", APLIC_MMSIADDRCFG, IMSIC_M_BASE >> 12);
+    check("M MSI address lock", APLIC_MMSIADDRCFGH, 0x80000000);
+    check("S MSI base", APLIC_SMSIADDRCFG, IMSIC_S_BASE >> 12);
+    check("S MSI address high", APLIC_SMSIADDRCFGH, 0);
+    APLIC_MMSIADDRCFG = 0;
+    APLIC_MMSIADDRCFGH = 0;
+    APLIC_SMSIADDRCFG = 0;
+    APLIC_SMSIADDRCFGH = ~0u;
+    check("M locked base retained", APLIC_MMSIADDRCFG, IMSIC_M_BASE >> 12);
+    check("M lock retained", APLIC_MMSIADDRCFGH, 0x80000000);
+    check("S locked base retained", APLIC_SMSIADDRCFG, IMSIC_S_BASE >> 12);
+    check("S locked high retained", APLIC_SMSIADDRCFGH, 0);
+    for (unsigned int level = 0; level < 2; level++) {
+        imsic_write(level, IMSIC_EIE0, ~1ul);
+        imsic_write(level, IMSIC_EIDELIVERY, 1);
+    }
+    APLIC_DOMAINCFG(APLIC_M_BASE) = APLIC_DOMAINCFG_IE | APLIC_DOMAINCFG_DM;
+    APLIC_DOMAINCFG(APLIC_S_BASE) = APLIC_DOMAINCFG_IE | APLIC_DOMAINCFG_DM;
+    APLIC_SOURCECFG(APLIC_M_BASE, 2) = APLIC_SOURCE_DETACHED;
+    APLIC_TARGET(APLIC_M_BASE, 2) = 23;
+    APLIC_SETIENUM(APLIC_M_BASE) = 2;
+    APLIC_TARGET(APLIC_M_BASE, 1) = 25;
+    APLIC_TARGET(APLIC_S_BASE, 3) = 24;
+    APLIC_SETIPNUM(APLIC_M_BASE) = 2;
+    imsic_send(0, 0, 21);
+    check("CPU MSI beside APLIC offer", top_wait(0, 0x150015), 0x150015);
+    check("CPU MSI claim", imsic_claim(0), 0x150015);
+    check("APLIC M MSI", top_wait(0, 0x170017), 0x170017);
+    check("APLIC M claim", imsic_claim(0), 0x170017);
+    APLIC_GENMSI(APLIC_M_BASE) = 26;
+    check("APLIC generated MSI", top_wait(0, 0x1a001a), 0x1a001a);
+    check("APLIC generated claim", imsic_claim(0), 0x1a001a);
+    for (unsigned int n = 0; n < 2; n++) {
+        NS_IER = 2;
+        check("UART MSI", top_wait(0, 0x190019), 0x190019);
+        check("UART MSI claim", imsic_claim(0), 0x190019);
+        NS_IER = 0;
+        check("UART MSI cleared", top_wait(0, 0), 0);
+    }
+    dma_start();
+    check("DMA S MSI", top_wait(1, 0x180018), 0x180018);
+    check("DMA S claim", imsic_claim(1), 0x180018);
+    dma_engine_ack();
+    check("MSI lines quiet", pending(0), 0);
     uart_printf("IMSIC/APLIC checks: %u passed, %u failed\n", checks - failures, failures);
     uart_puts(failures ? "<<FAIL>>\n" : "<<PASS>>\n");
     for (;;) {
