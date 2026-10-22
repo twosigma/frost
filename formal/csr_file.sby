@@ -12,7 +12,7 @@ bmc_perf_off: mode bmc
 bmc_perf_off: depth 20
 
 [engines]
-smtbmc z3
+smtbmc boolector
 
 [script]
 read -formal -sv riscv_pkg.sv

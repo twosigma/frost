@@ -325,7 +325,11 @@ rejection of every high address bit before the 32-bit IMSIC port.
 
 The file computes the next top identity, its one-hot decode and the output
 line for all four claim/write strobe combinations in parallel, then selects
-the finished result with the strobes. `formal/imsic_top_equiv.sby` proves
+the finished result with the strobes. Each case uses an `imsic_priority`
+instance with preserved hierarchy. Its eight-identity groups and 64-identity
+words compute earlier candidates in parallel, and each identity bit is a
+reduction of a fixed mask. The final strobe mux is outside that hierarchy.
+`formal/imsic_top_equiv.sby` proves
 that result equals a sequential claim, write and MSI reference at 63 and 191
 identities, including simultaneous claims and writes. `PREDECODED_SELECT`
 accepts a registered one-hot select in the order eidelivery, eithreshold,
@@ -333,3 +337,10 @@ eip words, eie words. `PREDECODED_MSI` accepts a registered identity bitmap.
 The CPU uses both; the standalone controller uses combinational decodes.
 The select decode and MSI bitmap must describe the accompanying binary
 select and MSI inputs. Identity zero is always ignored.
+
+The CPU programs `imsic_csr_test`, `imsic_msi_test` and
+`imsic_aplic_coexist_test` run in the interrupt CI group. They cover CSR
+legality and major-interrupt priority, both store byte orders and ignored
+sizes, translated MSI stores, WFI wakeup, trap claims, thresholds, delivery
+selection, UART/DMA direct delivery and APLIC MSI forwarding. The OpenSBI
+smoke test checks that firmware selects its `aia-imsic` IPI device.

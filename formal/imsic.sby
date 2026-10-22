@@ -27,7 +27,7 @@ bmc_ids2047: depth 3
 smtbmc boolector
 
 [script]
-read -formal -sv imsic_file.sv imsic_decode.sv imsic.sv
+read -formal -sv imsic_priority.sv imsic_file.sv imsic_decode.sv imsic.sv
 # Two harts with 63 identities and APLIC delivery; three harts, a page per
 # region unused, 191 identities (three eip words; identities 192-255 do not
 # exist) and no APLIC delivery; one hart with 511 identities (eight words);
@@ -45,6 +45,7 @@ bmc_ids2047: chparam -set NUM_HARTS 1 -set NUM_IDS 2047 -set APLIC_DELIVERY 1 im
 prep -top imsic
 
 [files]
+../hw/rtl/peripherals/imsic/imsic_priority.sv
 ../hw/rtl/peripherals/imsic/imsic_file.sv
 ../hw/rtl/peripherals/imsic/imsic_decode.sv
 ../hw/rtl/peripherals/imsic/imsic.sv

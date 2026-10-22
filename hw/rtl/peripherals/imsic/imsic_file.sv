@@ -209,24 +209,15 @@ module imsic_file #(
   // Each strobe case computes its candidates and winner independently. The
   // late claim/write strobes select only the finished results. MSI and RMW
   // operands arrive from registers, and the claim identity is already decoded.
-  function automatic logic [63:0] first_of_64(input logic [63:0] v);
-    logic [63:0] seen;
-    seen = v;
-    for (int s = 1; s < 64; s = s * 2) seen |= seen << s;
-    first_of_64 = v & ~(seen << 1);
-  endfunction
-
-  logic [IdBits-1:0] top_case[4];
-  logic [NumBits-1:0] first_case[4];
-  logic [3:0] line_case;
+  (* keep = "true" *) logic [IdBits-1:0] top_case[4];
+  (* keep = "true" *) logic [NumBits-1:0] first_case[4];
+  (* keep = "true" *) logic [3:0] line_case;
   for (genvar c = 0; c < 4; c++) begin : gen_top_case
     localparam bit Claim = (c & 1) != 0;
     localparam bit Write = (c & 2) != 0;
     logic [NumBits-1:0] pending, enabled, candidates;
     logic [IdBits-1:0] threshold;
     logic delivery, aplic;
-    logic [63:0] word_any, first_word;
-    logic [NumBits-1:0] word_first;
     assign threshold = (Write && select_onehot[1]) ? eithreshold_new[IdBits-1:0] : eithreshold_q;
     assign aplic = (Write && select_onehot[0]) ? (APLIC_DELIVERY && eidelivery_new[30]) : aplic_q;
     assign delivery = (Write && select_onehot[0]) ? (eidelivery_new[0] && !aplic) : deliver_q;
@@ -241,19 +232,15 @@ module imsic_file #(
         candidates[i] = (i != 0) && pending[i] && enabled[i] &&
             ((threshold == '0) || (IdBits'(i) < threshold));
       end
-      word_any = '0;
-      for (int w = 0; w < int'(NumWords); w++) begin
-        word_any[w] = |candidates[64*w+:64];
-        word_first[64*w+:64] = first_of_64(candidates[64*w+:64]);
-      end
-      first_word = first_of_64(word_any);
-      for (int w = 0; w < int'(NumWords); w++)
-      first_case[c][64*w+:64] = word_first[64*w+:64] & {64{first_word[w]}};
-      top_case[c] = '0;
-      for (int i = 1; i < int'(NumBits); i++)
-      top_case[c] |= IdBits'(i) & {IdBits{first_case[c][i]}};
-      line_case[c] = (delivery && (|word_any)) || (aplic && i_aplic_eip);
+      line_case[c] = (delivery && (|candidates)) || (aplic && i_aplic_eip);
     end
+    imsic_priority #(
+        .NUM_IDS(NUM_IDS)
+    ) priority_tree (
+        .i_candidates(candidates),
+        .o_top(top_case[c]),
+        .o_onehot(first_case[c])
+    );
   end
   logic [1:0] strobe_case;
   assign strobe_case = {i_ireg_we, i_topei_claim};

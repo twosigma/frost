@@ -90,7 +90,7 @@ module csr_file #(
     // Number of instructions retired this cycle: 0, 1, or 2.
     input logic [1:0] i_instruction_retired_count,
 
-    // Interrupt pending inputs (meip/mtip registered upstream in soc_top; msip direct)
+    // Pending inputs: registered IMSIC MEIP, registered timer, and software IRQ
     input riscv_pkg::interrupt_t i_interrupts,
 
     // mtime input (from memory-mapped timer)
