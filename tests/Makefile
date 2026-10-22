@@ -458,6 +458,13 @@ else ifeq ($(TOPLEVEL),x3_ecc_reader)
 COMPILE_ARGS := \
 	$(ROOT)/boards/x3/x3_ecc_reader.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),aplic_imsic_test_harness)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/peripherals/aplic/aplic.sv \
+        $(ROOT)/hw/rtl/peripherals/imsic/imsic_file.sv \
+        $(ROOT)/hw/rtl/peripherals/imsic/imsic.sv \
+        $(ROOT)/hw/sim/aplic_imsic_test_harness.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),imsic)
 # IMSIC unit bench (machine and supervisor interrupt files per hart)
 COMPILE_ARGS := \

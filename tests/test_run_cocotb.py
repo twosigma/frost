@@ -2474,6 +2474,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GPOLL_CYCLES=64",),
         extra_env=(("ECC_READER_POLL_CYCLES", "64"),),
     ),
+    # Joint APLIC/IMSIC delivery, including an unused hart encoding at three harts.
+    **{
+        f"aplic_imsic_h{harts}": CocotbRunConfig(
+            python_test_module="cocotb_tests.aplic_imsic.test_aplic_imsic",
+            hdl_toplevel_module="aplic_imsic_test_harness",
+            description=f"APLIC to IMSIC delivery at both levels with {harts} harts, locked addresses and CPU arbitration",
+            verilator_extra_args=(f"-GNUM_HARTS={harts}",),
+            extra_env=(("JOINT_NUM_HARTS", str(harts)),),
+        )
+        for harts in range(1, 5)
+    },
     # The IMSIC in three shapes: two harts with 191 identities, three eip
     # words of which identities 192-255 do not exist; the module defaults;
     # and three harts, a page per region unused, with the spec's 2047

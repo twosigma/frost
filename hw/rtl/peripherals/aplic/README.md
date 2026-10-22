@@ -302,22 +302,80 @@ bridge must retain the whole request through its address and data handshakes
 and guarantee delivery once it asserts ready here; this interface has no
 separate completion or error channel.
 
-For two harts with 4 KiB pages at machine base `0x48000000` and supervisor
-base `0x48100000`, set `mmsiaddrcfg = 0x48000`, `mmsiaddrcfgh = 0x1000`,
-`smsiaddrcfg = 0x48100` and `smsiaddrcfgh = 0`. These values give LHXW = 1,
-HHXW = 0 and both LHXS = 0. Hart 1 uses base + `0x1000` in each region.
-Set L after configuration, or use locked reset parameters for fixed pages.
-An integration with a 32-bit IMSIC address input can select `MSI_ADDR_WIDTH = 32`.
-The APLIC register windows remain separate MMIO slaves, with the root window
-accessible only to machine-level software. SoC integration and device-tree
-updates are outside this module.
+FROST's SoC connection hardwires and locks the four MSI address registers at
+system reset to the IMSIC's addresses, as AIA 1.0 recommends. Derive
+`MMSIADDRCFG_RESET = M_BASE_ADDR >> 12`,
+`MMSIADDRCFGH_RESET = 0x80000000 | (clog2(NUM_HARTS) << 12)`,
+`SMSIADDRCFG_RESET = S_BASE_ADDR >> 12` and `SMSIADDRCFGH_RESET = 0` from
+the parameters shared with the IMSIC. This gives L = 1, HHXW = 0 and both
+LHXS = 0. The X3's two-hart configuration uses `M_BASE_ADDR = 0x48000000`
+and `S_BASE_ADDR = 0x48100000`, so the four APLIC reset parameters are
+`0x00048000`, `0x80001000`, `0x00048100` and `0x00000000`, respectively.
+Hart 1 uses base + `0x1000` in each region.
+
+OpenSBI programs these registers only when the root APLIC node has
+`msi-parent`. It skips the writes when L is set, and Linux never programs
+the root registers. Locking the addresses at reset therefore also supports
+a root domain in direct mode with a supervisor domain in MSI mode. The
+module's default reset parameters remain zero for standalone use; the SoC
+must supply the locked values above.
+
+The FROST connection retains the APLIC's 56-bit MSI address and checks every
+bit above 31 before passing the low 32 bits to the IMSIC. An accepted MSI
+with any high address bit set is dropped, never truncated into an IMSIC
+page. The master connects only to the IMSIC decode, not to memory. CPU IPI
+stores share the IMSIC's one write port and take priority, so the APLIC's
+ready is low during a CPU store. The integration bench implements this
+connection. The IMSIC pages also require a PMA device window in
+`pma_device_page_ok` in `riscv_pkg.sv`: Linux IPIs use translated stores.
+
+FROST has no PMP. The root APLIC window is hidden from Linux by the device
+tree, but hardware does not prevent supervisor software from accessing it.
+The same applies to machine-level IMSIC pages. The address lock prevents
+software from changing the MSI destinations; it does not restrict access to
+the root domain's other registers. SoC integration remains separate work.
+
+## Device tree
+
+Each APLIC domain has a node with `compatible = "frost,aplic", "riscv,aplic"`,
+`interrupt-controller`, `#interrupt-cells = <2>` and `riscv,num-sources`
+equal to `NUM_SOURCES`. Each `reg` has size `0x8000`: the root starts at
+window offset 0 and the supervisor domain at `0x8000`. The root node has
+`riscv,children = <&aplic_s>` and `riscv,delegation = <&aplic_s 1 N>` to
+delegate sources 1 through N to the supervisor domain. FROST delegates all
+wired sources in the Linux configuration.
+
+In direct mode a domain uses `interrupts-extended` to name every hart's
+`cpu-intc`, in hart-index order, with interrupt 11 at machine level or 9 at
+supervisor level. In MSI mode replace those entries with
+`msi-parent = <&imsic_m>` on the root and `msi-parent = <&imsic_s>` on the
+supervisor node. The IMSIC nodes use the layout and properties in the
+[IMSIC README](../imsic/README.md#memory-map). The root can omit
+`msi-parent` while the supervisor has it only when the reset configuration
+already supplies the locked IMSIC addresses.
+
+An interim configuration can expose only the machine-level IMSIC for
+OpenSBI IPIs, keep the supervisor APLIC in direct mode and omit the
+supervisor IMSIC node. Every wired source must then be delegated, because
+OpenSBI enables machine IMSIC delivery and disconnects the root's direct
+line. Do not expose a supervisor IMSIC node while the supervisor APLIC is
+in direct mode: Linux sets supervisor `eidelivery = 1`, which disconnects
+the APLIC's wired interrupts. Once the supervisor domain forwards MSIs,
+expose its IMSIC node and `msi-parent` together. OpenSBI removes the
+machine-level controllers from Linux's usable tree. The CPU nodes advertise
+`smaia` and `ssaia` only when the hart implements their CSRs.
+
+The drivers match `riscv,aplic` and `riscv,imsics`. The FROST vendor
+compatibles need corresponding device-tree binding entries for schema
+validation; the existing QEMU and SpacemiT compatibles do not describe FROST.
 
 ## Not implemented
 
 Big-endian control regions are not implemented (`domaincfg.BE` reads zero),
 and there are no guest interrupt files or other domains. Hart indices stop
 at 511, the IDCs that fit in a 32 KiB region. The master provides no error
-response or retry protocol; acceptance must guarantee delivery.
+response or retry protocol; acceptance must guarantee delivery to a valid
+IMSIC destination. The receiver ignores invalid addresses and identities.
 
 ## Verification
 
@@ -376,6 +434,15 @@ writes. `msi_prove_32`, `msi_prove_locked` and `msi_prove_wide`
 check 32-bit addresses with three harts, reset locking with one hart, and
 33 sources spanning two bitmap words. `msi_prove_four_harts` checks multi-bit
 hart indices with 56-bit addresses. Each MSI prove task uses depth 5 induction.
+
+The joint bench `verif/cocotb_tests/aplic_imsic/test_aplic_imsic.py` uses
+`hw/sim/aplic_imsic_test_harness.sv` to connect the APLIC to the IMSIC with
+locked reset addresses, CPU-store arbitration and rejection of addresses
+above 32 bits. Shapes `aplic_imsic_h1` through `aplic_imsic_h4` cover one to
+four harts, both levels, source and `genmsi` delivery, a direct root with an
+MSI supervisor domain, direct passthrough, level EOI and claim races, and
+marker ordering behind a stalled store. High address bits are injected at
+the receiver to check rejection without unlocking the reset configuration.
 
 The software-sequence tests exercise the address and delegation writes in
 [OpenSBI's APLIC driver](https://github.com/riscv-software-src/opensbi/blob/master/lib/utils/irqchip/aplic.c)
