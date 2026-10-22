@@ -15,8 +15,8 @@
 """Run complete programs on the simulated CPU and memories.
 
 Programs report success with <<PASS>> and failure with <<FAIL>>;
-memerr_test instead ends with an independently checked fatal writeback stop;
-hello_world passes on "Hello, world!". CoreMark uses ITERATIONS=1 in simulation.
+memerr_test and ecc_scrub_test instead end with an independently checked fatal
+writeback stop; hello_world passes on "Hello, world!". CoreMark uses ITERATIONS=1 in simulation.
 Each program runs twice by default, with reset between runs.
 
 FROST_UART_LINE_CHECK=1 also compares serial TX bytes with CPU UART writes
@@ -67,6 +67,9 @@ COMMIT_MISPREDICTION_PATH = (
 # Success/failure markers that programs print
 PASS_MARKER = "<<PASS>>"
 FAIL_MARKER = "<<FAIL>>"
+# Programs that end in a fatal writeback stop, and the line whose one failed
+# writeback must stop the CPU.
+FATAL_WRITEBACK_LINES = {"memerr_test": 0x82000000, "ecc_scrub_test": 0x80000000}
 
 _OBJDUMP_RE = re.compile(r"^\s*([0-9a-f]+):\s+([0-9a-f ]+)\s+\s*.*$")
 
@@ -4077,10 +4080,11 @@ async def run_until_complete(
             test_failed = True
             break
 
-        if app_name == "memerr_test" and uart_monitor.contains("<<EXPECT_FATAL>>"):
+        fatal_line = FATAL_WRITEBACK_LINES.get(app_name) if app_name else None
+        if fatal_line is not None and uart_monitor.contains("<<EXPECT_FATAL>>"):
             platform = dut.cpu_and_memory_subsystem
             if int(platform.cpu.o_fatal_error.value):
-                assert int(platform.cpu.o_fatal_addr.value) == 0x82000000
+                assert int(platform.cpu.o_fatal_addr.value) == fatal_line
                 assert int(platform.soc.memory_errors.axi_wr_errs_q.value) == 1
                 # Let registered observations settle, then prove no retirement
                 # continues after the retained dirty-line failure.
@@ -4089,8 +4093,7 @@ async def run_until_complete(
                     await RisingEdge(dut.i_clk)
                     assert not int(platform.cpu.o_debug_commit_valid.value)
                 cocotb.log.info(
-                    "Memory-error regression passed: precise read fault, "
-                    "ECC/PLIC reports, and fatal writeback stop"
+                    f"{app_name} passed: fatal writeback stop at {fatal_line:#x}"
                 )
                 test_passed = True
                 break

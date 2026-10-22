@@ -17,8 +17,11 @@
 /*
  * A clean read must not write DDR; eight atomic no-ops must dirty the line.
  * The DDR image supplies the pattern without a CPU store. The registry's
- * +axi_wr_error_addr=0 makes writes of that line return SLVERR, so AXI_WR_ERRS
- * counts its writebacks. No ECC reports are injected by the bench.
+ * +axi_wr_error_addr=0 makes writes of that line return SLVERR, and a failed
+ * writeback stops the CPU. The clean eviction must therefore leave AXI_WR_ERRS
+ * at zero with the program still running, and the scrubbed line's eviction
+ * ends the run in a fatal stop that the bench checks. No ECC reports are
+ * injected by the bench.
  */
 
 #include <stdint.h>
@@ -105,15 +108,21 @@ int main(void)
             intact = 0;
     }
     check("scrub-preserves-data", intact);
-    evict();
-    check("scrub-one-writeback", settled_writes() == 1);
     check("no-read-errors", memory_error_read32(MEMORY_ERROR_AXI_RD_ERRS) == 0);
-    check("write-status", memory_error_read32(MEMORY_ERROR_STATUS) == MEMORY_ERROR_AXI_WR);
-    uint32_t error = memory_error_read32(MEMORY_ERROR_AXI_ERR);
-    check("write-slverr",
-          MEMORY_ERROR_AXI_ERR_WRITE(error) && MEMORY_ERROR_AXI_ERR_RESP(error) == 2);
+    if (!g_ok) {
+        uart_puts("\r\n<<FAIL>>\r\n");
+        for (;;) {
+        }
+    }
 
-    uart_puts(g_ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
+    /* The bench checks the fatal address, the one failed write and stopped
+     * retirement after this banner. */
+    uart_puts("\r\n<<EXPECT_FATAL>>\r\n");
+    evict();
+    (void) settled_writes();
+    /* Reached only if the eviction wrote nothing. */
+    check("scrub-writeback", 0);
+    uart_puts("\r\n<<FAIL>>\r\n");
     for (;;) {
     }
     return 0;

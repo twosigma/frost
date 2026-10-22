@@ -122,9 +122,10 @@ request. This tests the software path without injecting an ECC error.
 
 The simulation program `sw/apps/ecc_scrub_test` runs from BRAM and tests the
 writeback mechanism. The DDR model returns SLVERR on writes of its test line,
-and `AXI_WR_ERRS` counts those writes. A clean read followed by eviction
-produces no write. Eight AMO no-ops preserve the data and produce exactly one
-write after `fence.i` and L2 eviction. Run it with
+`AXI_WR_ERRS` counts those writes, and a failed writeback stops the CPU. A
+clean read followed by eviction produces no write. Eight AMO no-ops preserve
+the data and produce exactly one write after `fence.i` and L2 eviction, which
+the bench checks at the fatal stop. Run it with
 `./scripts/frost.py cocotb ecc_scrub_test`.
 
 ## In the FROST test initramfs and the hardware regression
