@@ -261,4 +261,173 @@ module imsic_file #(
   assign o_topei = {5'b0, 11'(top_q), 5'b0, 11'(top_q)};
   assign o_eip   = eip_line_q;
 
+`ifdef FORMAL
+  // ---------------------------------------------------------------------------
+  // Formal properties (formal/imsic.sby). Reset is held in the first cycle;
+  // inputs are arbitrary afterwards. The register map and the update rules
+  // are written out again here from the spec, apart from the logic above.
+  // ---------------------------------------------------------------------------
+  logic f_past_valid;
+  initial f_past_valid = 1'b0;
+  always_ff @(posedge i_clk) f_past_valid <= 1'b1;
+  always_comb if (!f_past_valid) assume (i_rst);
+
+  // f_cand[i]: identity i is pending and enabled and, with a nonzero
+  // eithreshold, below it.
+  logic [NumBits-1:0] f_cand;
+  logic f_top_is_cand;
+  always_comb begin
+    f_top_is_cand = 1'b0;
+    for (int i = 0; i < int'(NumBits); i++) begin
+      f_cand[i] = (i != 0) && (i <= int'(NUM_IDS)) && eip_q[i] && eie_q[i] &&
+          ((eithreshold_q == '0) || (i < int'(eithreshold_q)));
+      if ((int'(top_q) == i) && f_cand[i]) f_top_is_cand = 1'b1;
+    end
+  end
+
+  // The value of the register a select names, from the spec's map.
+  function automatic logic [63:0] f_ireg(input logic [7:0] sel);
+    f_ireg = '0;
+    if (sel == 8'h70) f_ireg = aplic_q ? 64'h4000_0000 : 64'(deliver_q);
+    if (sel == 8'h72) f_ireg = 64'(eithreshold_q);
+    for (int i = 1; i <= int'(NUM_IDS); i++) begin
+      if (sel == 8'(8'h80 + 2 * (i / 64))) f_ireg[i%64] = eip_q[i];
+      if (sel == 8'(8'hC0 + 2 * (i / 64))) f_ireg[i%64] = eie_q[i];
+    end
+  endfunction
+
+  // Last cycle's state, inputs and the events they make.
+  logic f_rst_p, f_deliver_p, f_aplic_p, f_aplic_eip_p;
+  logic [NumBits-1:0] f_eip_p, f_eie_p;
+  logic [IdBits-1:0] f_thr_p, f_top_p;
+  logic f_msi_p, f_we_p, f_claim_p;
+  logic [10:0] f_msi_id_p;
+  logic [ 7:0] f_sel_p;
+  logic [63:0] f_keep_p, f_set_p;
+  always_ff @(posedge i_clk) begin
+    f_rst_p <= i_rst;
+    {f_deliver_p, f_aplic_p, f_aplic_eip_p} <= {deliver_q, aplic_q, i_aplic_eip};
+    {f_eip_p, f_eie_p, f_thr_p, f_top_p} <= {eip_q, eie_q, eithreshold_q, top_q};
+    {f_msi_p, f_msi_id_p, f_claim_p} <= {i_msi_valid, i_msi_id, i_topei_claim};
+    {f_we_p, f_sel_p, f_keep_p, f_set_p} <= {i_ireg_we, i_iselect, i_ireg_keep, i_ireg_set};
+  end
+
+  // Per identity, last cycle: the claim reported and cleared it, a write
+  // reached its eip or eie word, an MSI named it.
+  logic [NumBits-1:0] f_claimed_p, f_eip_wr_p, f_eie_wr_p, f_msi_hit_p, f_after_claim_p;
+  always_comb begin
+    for (int i = 0; i < int'(NumBits); i++) begin
+      f_claimed_p[i] = f_claim_p && (int'(f_top_p) == i) && (i != 0);
+      f_eip_wr_p[i] = f_we_p && (f_sel_p == 8'(8'h80 + 2 * (i / 64)));
+      f_eie_wr_p[i] = f_we_p && (f_sel_p == 8'(8'hC0 + 2 * (i / 64)));
+      f_msi_hit_p[i] = f_msi_p && (int'(f_msi_id_p) == i) && (i != 0) && (i <= int'(NUM_IDS));
+      f_after_claim_p[i] = f_eip_p[i] && !f_claimed_p[i];
+    end
+  end
+  logic [63:0] f_eidelivery_new_p, f_thr_new_p;
+  assign f_eidelivery_new_p = ((f_aplic_p ? 64'h4000_0000 : 64'(f_deliver_p)) & f_keep_p) | f_set_p;
+  assign f_thr_new_p = (64'(f_thr_p) & f_keep_p) | f_set_p;
+
+  // Reset: everything clear, eidelivery 0x40000000 or 0.
+  always_comb begin
+    if (f_past_valid && f_rst_p) begin
+      assert ((eip_q == '0) && (eie_q == '0) && (eithreshold_q == '0) && (top_q == '0));
+      assert (!deliver_q && (aplic_q == APLIC_DELIVERY) && !o_eip);
+    end
+  end
+
+  // Invariants: identity 0 is never pending or enabled, and eidelivery holds
+  // one of its legal values.
+  always_comb begin
+    if (f_past_valid) begin
+      assert (!eip_q[0] && !eie_q[0]);
+      assert (!(deliver_q && aplic_q));
+      assert (APLIC_DELIVERY || !aplic_q);
+    end
+  end
+
+  // *topei: zero, or a candidate; no candidate is lower. The value repeats
+  // the identity as its priority.
+  always_comb begin
+    if (f_past_valid) begin
+      assert ((top_q == '0) || f_top_is_cand);
+      for (int i = 1; i < int'(NumBits); i++) begin
+        if (f_cand[i]) assert ((top_q != '0) && (int'(top_q) <= i));
+      end
+      assert (o_topei == ((top_q == '0) ? 32'b0 : ((32'(top_q) << 16) | 32'(top_q))));
+    end
+  end
+
+  // The interrupt line: with eidelivery 1, a candidate exists; with
+  // 0x40000000, the APLIC's line a cycle earlier.
+  always_comb begin
+    if (f_past_valid && !f_rst_p) begin
+      assert (o_eip == ((deliver_q && (|f_cand)) || (aplic_q && f_aplic_eip_p)));
+    end
+  end
+
+  // *ireg reads and the illegal selects.
+  always_comb begin
+    if (f_past_valid) assert (o_ireg == f_ireg(i_iselect));
+    assert (o_ireg_illegal == ((i_iselect >= 8'h80) && i_iselect[0]));
+  end
+
+  // One-cycle updates.
+  always_comb begin
+    if (f_past_valid && !f_rst_p) begin
+      for (int i = 1; i <= int'(NUM_IDS); i++) begin
+        // eip: the claim, then a write to its word, then an MSI.
+        assert (eip_q[i] == (f_msi_hit_p[i] || (f_eip_wr_p[i] ?
+            ((f_after_claim_p[i] && f_keep_p[i%64]) || f_set_p[i%64]) : f_after_claim_p[i])));
+        assert (eie_q[i] == (f_eie_wr_p[i] ?
+            ((f_eie_p[i] && f_keep_p[i%64]) || f_set_p[i%64]) : f_eie_p[i]));
+        // The same rules case by case: an MSI sets exactly its bit; a claim
+        // clears exactly the reported bit; nothing else changes a bit.
+        if (f_msi_hit_p[i]) assert (eip_q[i]);
+        if (f_claimed_p[i] && !f_msi_hit_p[i] && !f_eip_wr_p[i]) assert (!eip_q[i]);
+        if (!f_msi_hit_p[i] && !f_claimed_p[i] && !f_eip_wr_p[i]) assert (eip_q[i] == f_eip_p[i]);
+        if (!f_eie_wr_p[i]) assert (eie_q[i] == f_eie_p[i]);
+      end
+      // eithreshold keeps IdBits bits of a write to select 0x72.
+      if (f_we_p && (f_sel_p == 8'h72)) begin
+        assert (eithreshold_q == f_thr_new_p[IdBits-1:0]);
+      end else begin
+        assert (eithreshold_q == f_thr_p);
+      end
+      // eidelivery: bit 30 selects the APLIC where supported, else bit 0.
+      if (f_we_p && (f_sel_p == 8'h70)) begin
+        assert (aplic_q == (APLIC_DELIVERY && f_eidelivery_new_p[30]));
+        assert (deliver_q ==
+                (f_eidelivery_new_p[0] && !(APLIC_DELIVERY && f_eidelivery_new_p[30])));
+      end else begin
+        assert ((aplic_q == f_aplic_p) && (deliver_q == f_deliver_p));
+      end
+    end
+  end
+
+  // Reachability.
+  always_comb begin
+    if (f_past_valid && !i_rst) begin
+      cover (o_eip && deliver_q);
+      // Claims of the highest identity, and of one racing an MSI for it.
+      cover (i_topei_claim && (int'(top_q) == int'(NUM_IDS)));
+      cover (i_topei_claim && (top_q != '0) && i_msi_valid && (i_msi_id == 11'(top_q)));
+      // An MSI with a write to the word holding its identity.
+      cover (i_msi_valid && (i_msi_id == 11'd1) && wr_eip[0]);
+      // A threshold that hides a pending and enabled identity.
+      cover ((eithreshold_q != '0) && (top_q == '0) && (|(eip_q & eie_q)));
+    end
+  end
+  if (APLIC_DELIVERY) begin : gen_aplic_cover
+    // The APLIC's line delivered, and eidelivery switched from the APLIC to
+    // the file.
+    always_comb begin
+      if (f_past_valid && !i_rst) begin
+        cover (o_eip && aplic_q);
+        cover (wr_eidelivery && aplic_q && deliver_d);
+      end
+    end
+  end
+`endif
+
 endmodule : imsic_file

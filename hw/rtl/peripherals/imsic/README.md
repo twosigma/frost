@@ -235,3 +235,25 @@ of OpenSBI's and Linux's IMSIC drivers, and random traffic on back-to-back
 cycles. `tests/test_run_cocotb.py` runs it in three shapes: `imsic` (two
 harts, 191 identities), `imsic_default` (the defaults) and `imsic_limits`
 (three harts, 2047 identities, no APLIC delivery, other bases).
+
+The formal target `formal/imsic.sby` checks the properties in the modules'
+`ifdef FORMAL` blocks, written from the spec's register map and rules apart
+from the logic. For each file: `*topei` is zero or a candidate and no
+candidate is lower; the line is set exactly when `eidelivery` is 1 and a
+candidate exists, or follows the APLIC's line with `0x40000000`; every `*ireg`
+read matches the map and only the odd selects from `0x81` are illegal; each
+`eip` and `eie` bit, `eithreshold` and `eidelivery` take exactly the update
+the claim, the write and the MSI of the previous cycle give, so an MSI sets
+exactly its bit, a claim clears exactly the reported bit, and nothing else
+changes; and reset leaves the values given under Reset. For the decode: each
+file receives exactly the valid stores to its own page, with their identity, a
+cycle later. Reset is held in the first cycle; inputs are arbitrary
+afterwards. `bmc`, `prove` and `cover` use two harts and 63 identities with
+APLIC delivery, `prove_harts3` and `cover_harts3` three harts and 191
+identities without it, and `prove_ids511` one hart with 511 identities.
+`bmc_ids2047` checks one hart with 2047 identities to depth 3: the decode of
+11-bit identities, every register read, and single writes. No identity is both
+pending and enabled within that depth, so at 2047 identities the
+lowest-candidate search and claims rest on the unbounded proofs at the smaller
+sizes, which use the same per-word logic, and on the cocotb shape
+`imsic_limits`.

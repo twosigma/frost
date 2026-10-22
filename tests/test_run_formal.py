@@ -635,6 +635,20 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "imsic.sby",
+        "IMSIC topei selection, pending and enable updates, claims, interrupt "
+        "lines, register reads, and the MSI address decode",
+        tasks=(
+            "bmc",
+            "prove",
+            "cover",
+            "prove_harts3",
+            "cover_harts3",
+            "prove_ids511",
+            "bmc_ids2047",
+        ),
+    ),
+    FormalTarget(
         "async_fifo.sby",
         "FIFO capacity, flow control, and data ordering across unrelated clocks",
     ),
@@ -848,6 +862,18 @@ SBY_TASKS = [
         "Cover checking of INT station features at eight-entry capacity",
     ),
     ("bmc_perf_off", "Bounded model checking with the profiling counters left out"),
+    (
+        "prove_harts3",
+        "Unbounded proof with three harts, 191 interrupt identities, and no APLIC "
+        "delivery",
+    ),
+    (
+        "cover_harts3",
+        "Cover checking with three harts, 191 interrupt identities, and no APLIC "
+        "delivery",
+    ),
+    ("prove_ids511", "Unbounded proof with 511 interrupt identities"),
+    ("bmc_ids2047", "Bounded checking with 2047 interrupt identities"),
     ("bmc_width8", "Bounded checking against a reference model at 8 bits"),
     ("cover_width8", "Cover checking at 8 bits"),
     ("prove_width64", "Unbounded invariant proof at 64 bits"),
