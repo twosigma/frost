@@ -186,3 +186,19 @@ each pending and enabled source's MSI and then clears its pending bit. The
 source state, the delegation logic and the register decode are shared with
 direct delivery mode; the IDCs and `topi` selection serve direct delivery
 mode only.
+
+## Verification
+
+The cocotb bench `verif/cocotb_tests/aplic/test_aplic.py` compares register
+reads and both interrupt lines with a register-level model of the settled
+state after each operation, and checks the values the spec gives in directed
+tests. It covers every register and source mode, delegation and each domain's
+view of the sources, priorities and thresholds, claims, `iforce` and
+`idelivery`, several harts and a hart index with no IDC, claims in the cycle
+after a write and in the same cycle as one, a reset during traffic, writes to
+every unused word of both control regions with state in place, and the
+programming sequences of OpenSBI's and Linux's APLIC drivers, and runs random
+register traffic against the model. `tests/test_run_cocotb.py` runs it in four
+shapes: `aplic` (40 sources, two harts), `aplic_default` (the defaults),
+`aplic_limits` (1023 sources, three harts, 8-bit priorities) and
+`aplic_512_harts`.

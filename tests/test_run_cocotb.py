@@ -2478,6 +2478,45 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Memory error unit registers, counters and interrupt",
         verilator_extra_args=("-GID_BITS=5",),
     ),
+    # The APLIC in four shapes: two harts and two bitmap words; the module
+    # defaults the SoC uses; the spec's 1023 sources with three harts and
+    # 8-bit priorities; and 512 harts. The bench reads the shape from APLIC_*.
+    **{
+        name: CocotbRunConfig(
+            python_test_module="cocotb_tests.aplic.test_aplic",
+            hdl_toplevel_module="aplic",
+            description=description,
+            verilator_extra_args=tuple(
+                f"-G{parameter}={value}" for parameter, value in shape
+            ),
+            extra_env=tuple(
+                (f"APLIC_{parameter}", str(value)) for parameter, value in shape
+            ),
+        )
+        for name, description, shape in (
+            (
+                "aplic",
+                "APLIC registers, source modes, delegation, claims and delivery "
+                "with 40 sources and two harts",
+                (("NUM_SOURCES", 40), ("NUM_HARTS", 2), ("IPRIOLEN", 3)),
+            ),
+            (
+                "aplic_default",
+                "APLIC behavior with the module defaults: five sources, one hart",
+                (("NUM_SOURCES", 5), ("NUM_HARTS", 1), ("IPRIOLEN", 3)),
+            ),
+            (
+                "aplic_limits",
+                "APLIC behavior with 1023 sources, three harts and 8-bit priorities",
+                (("NUM_SOURCES", 1023), ("NUM_HARTS", 3), ("IPRIOLEN", 8)),
+            ),
+            (
+                "aplic_512_harts",
+                "APLIC behavior with 512 harts, every IDC a control region holds",
+                (("NUM_SOURCES", 5), ("NUM_HARTS", 512), ("IPRIOLEN", 2)),
+            ),
+        )
+    },
     "imem_predecode_line": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_imem_predecode_line",
         hdl_toplevel_module="imem_predecode_line",
