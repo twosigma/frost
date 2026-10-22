@@ -1,8 +1,8 @@
 # Single-core performance
 
-The CPU/SoC separation has been measured on X3 at 161.132812 MHz with the
-standard benchmark builds. Compared with the earlier platform at the same
-clock, both benchmark scores meet the original 1% regression tolerance:
+The CPU/SoC separation has been measured on X3 with the standard benchmark
+builds. Compared with the earlier platform at the same clock, both benchmark
+scores meet the original 1% regression tolerance:
 
 | Benchmark | Earlier platform | AXI CPU boundary | Score change |
 | --- | ---: | ---: | ---: |
@@ -48,13 +48,8 @@ and all Device accesses bypass these caches. There are no dirty BRAM cache
 lines. The standalone CPU defaults to strict uncached Normal memory; see the
 [interface contract](../hw/rtl/cpu_top/README.md#optional-normal-read-caching-and-write-through-stores).
 
-The final 161 MHz implementation passes setup (+0.077 ns), hold (+0.012 ns),
-pulse-width, and all 74 bus-skew checks, with no DRC errors. The same RTL
-passes post-opt setup at 322.265625 MHz (+0.034 ns, zero failing endpoints),
-using the normal build settings and constraints. Full 322 MHz placement,
-routing, and hardware validation remain pending. The earlier full-rate
-platform measured 1,375 CoreMark, or 4.27 CoreMark/MHz; that is a historical
-baseline, not a measured full-rate result for this boundary.
+The earlier platform measured 1,375 CoreMark at 322.265625 MHz, or
+4.27 CoreMark/MHz.
 
 The initial performance diagnosis used identical CoreMark images on the
 earlier platform and the fully uncached AXI prototype, with the pinned

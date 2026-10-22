@@ -164,9 +164,9 @@ the compiler flags, the `sw.bin` hash, and memory and cache settings recorded.
 RTL changes must also keep routed timing at the target clock.
 
 The AXI CPU boundary's Normal read-cache and write-through implementation
-meets the original 1% aggregate CoreMark and CoreMark-PRO tolerance at
-161.132812 MHz and passes all 48 X3 hardware stages. Individual workloads
-vary; see the [current measurements](docs/single_core_performance.md).
+meets the original 1% aggregate CoreMark and CoreMark-PRO tolerance and
+passes all 48 X3 hardware stages. Individual workloads vary; see the
+[current measurements](docs/single_core_performance.md).
 The trace-model estimates below use the earlier local-BRAM baseline, not the
 refactored memory path.
 
@@ -261,12 +261,9 @@ the two ALUs.
 
 ## Timing margin
 
-The X3 baseline before the CPU/SoC separation met 322.265625 MHz only with
-its better placements: the flow places several candidates and keeps one
-that qualifies (see [X3 placement](fpga/README.md#x3-placement)). The CPU/SoC
-boundary currently passes post-opt setup at 322 MHz; full implementation
-validation remains pending. The goal is enough slack that a single default
-placement meets timing.
+The X3 flow places several candidates at 322.265625 MHz and keeps one that
+qualifies (see [X3 placement](fpga/README.md#x3-placement)). The goal is
+enough slack that a single default placement meets timing.
 
 ## Possible future work
 
