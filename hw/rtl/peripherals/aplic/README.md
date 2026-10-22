@@ -202,3 +202,15 @@ register traffic against the model. `tests/test_run_cocotb.py` runs it in four
 shapes: `aplic` (40 sources, two harts), `aplic_default` (the defaults),
 `aplic_limits` (1023 sources, three harts, 8-bit priorities) and
 `aplic_512_harts`.
+
+The formal target `formal/aplic.sby` checks the properties in the module's
+`ifdef FORMAL` block, written from the spec's register offsets and rules
+rather than taken from the logic: `topi` selection; the pending-bit rules of
+every mode, including the cycle of a mode change; the `sourcecfg`, `target`,
+`domaincfg` and IDC write rules; delegation; isolation of the root domain from
+supervisor writes; the reset state; the interrupt pins; and the value of every
+word of both control regions and of the rest of the window. `bmc` (depth 12),
+`prove` and `cover` use three sources, two harts and two priority bits;
+`prove_one_hart` one of each; `prove_wide` 33 sources, which use a second
+word in each bitmap; and `prove_three_harts` three harts and 8-bit
+priorities. The `prove` tasks are unbounded (k-induction).

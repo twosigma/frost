@@ -453,4 +453,400 @@ module aplic #(
     o_rd_pair = {read_word({i_rd_offset[21:3], 1'b1}), read_word({i_rd_offset[21:3], 1'b0})};
   end
 
+`ifdef FORMAL
+  // ---------------------------------------------------------------------------
+  // Formal properties (formal/aplic.sby). Inputs are arbitrary on every
+  // cycle; reset is held in the first cycle and arbitrary after it. The
+  // register offsets, the read values and the pending-bit rules are written
+  // out again here from the spec, apart from the logic above.
+  // ---------------------------------------------------------------------------
+  logic f_past_valid;
+  initial f_past_valid = 1'b0;
+  always_ff @(posedge i_clk) f_past_valid <= 1'b1;
+  always_comb if (!f_past_valid) assume (i_rst);
+
+  localparam logic [14:0] FSetip = 15'h1C00;
+  localparam logic [14:0] FSetipnum = 15'h1CDC;
+  localparam logic [14:0] FInClrip = 15'h1D00;
+  localparam logic [14:0] FClripnum = 15'h1DDC;
+  localparam logic [14:0] FSetie = 15'h1E00;
+  localparam logic [14:0] FSetienum = 15'h1EDC;
+  localparam logic [14:0] FClrie = 15'h1F00;
+  localparam logic [14:0] FClrienum = 15'h1FDC;
+  localparam logic [14:0] FSetipnumLe = 15'h2000;
+  localparam logic [14:0] FSetipnumBe = 15'h2004;
+  localparam logic [14:0] FTarget = 15'h3000;
+  localparam logic [14:0] FIdc = 15'h4000;
+
+  // The rectified input: the wire, inverted for Edge0 and Level0, and zero
+  // for Inactive and Detached.
+  function automatic logic f_rectified(input logic [2:0] mode, input logic wire_value);
+    case (mode)
+      3'd4, 3'd6: f_rectified = wire_value;
+      3'd5, 3'd7: f_rectified = !wire_value;
+      default: f_rectified = 1'b0;
+    endcase
+  endfunction
+
+  // Source mode classes: Detached or an edge mode (pending held until
+  // cleared), an edge mode, a level mode.
+  function automatic logic f_held(input logic [2:0] mode);
+    f_held = (mode == 3'd1) || (mode == 3'd4) || (mode == 3'd5);
+  endfunction
+  function automatic logic f_edge_mode(input logic [2:0] mode);
+    f_edge_mode = (mode == 3'd4) || (mode == 3'd5);
+  endfunction
+  function automatic logic f_level_mode(input logic [2:0] mode);
+    f_level_mode = (mode == 3'd6) || (mode == 3'd7);
+  endfunction
+
+  // sourcecfg.SM as a domain reads it back: the reserved 2 and 3 are
+  // Inactive.
+  function automatic logic [2:0] f_legal_sm(input logic [2:0] sm);
+    f_legal_sm = (sm == 3'd2 || sm == 3'd3) ? 3'd0 : sm;
+  endfunction
+
+  // The bitmap word (setip and the like) holding source s.
+  function automatic logic [14:0] f_bitmap(input logic [14:0] base, input int s);
+    f_bitmap = base + 15'(4 * (s / 32));
+  endfunction
+
+  // A register of the IDC of IDC index c, by word.
+  function automatic logic [14:0] f_idc(input int c, input int word);
+    f_idc = FIdc + 15'(32 * (c % NUM_HARTS)) + 15'(4 * word);
+  endfunction
+
+  // This cycle's write and performed read, as {valid, word offset}, and
+  // the same form for word r of domain d's control region.
+  logic [20:0] f_wr, f_cap;
+  assign f_wr  = {i_wr_en, i_wr_offset[21:2]};
+  assign f_cap = {i_rd_capture, i_rd_offset[21:2]};
+  function automatic logic [20:0] f_w(input logic d, input logic [14:0] r);
+    f_w = {1'b1, 6'b0, d, r[14:2]};
+  endfunction
+
+  // f_cand[c][s]: source s is a candidate for IDC c, pending, enabled, in
+  // the IDC's domain, aimed at its hart, and under a nonzero threshold.
+  logic [NUM_SOURCES:1] f_cand[NumIdcs];
+  always_comb begin
+    for (int c = 0; c < NumIdcs; c++) begin
+      for (int s = 1; s <= NUM_SOURCES; s++) begin
+        f_cand[c][s] = ip_q[s] && ie_q[s] && (deleg_q[s] == 1'(c / NUM_HARTS)) &&
+            (tgt_hart_q[s] == HartBits'(c % NUM_HARTS)) &&
+            ((ithreshold_q[c] == '0) || (tgt_prio_q[s] < ithreshold_q[c]));
+      end
+    end
+  end
+
+  // The word a read of word r of domain d's control region returns: the
+  // register map of the AIA, with every other word zero.
+  logic [NUM_SOURCES:1] f_rect;
+  function automatic logic [31:0] f_expected(input logic d, input logic [14:0] r);
+    f_expected = '0;
+    if (r == 15'h0) f_expected = {8'h80, 15'b0, dom_ie_q[d], 8'b0};
+    for (int s = 1; s <= NUM_SOURCES; s++) begin
+      // sourcecfg: the root sees D for a delegated source; the supervisor
+      // domain sees only the sources delegated to it.
+      if (r == 15'(4 * s)) begin
+        if (!d) f_expected = deleg_q[s] ? 32'h400 : 32'(sm_q[s]);
+        else f_expected = deleg_q[s] ? 32'(sm_q[s]) : 32'b0;
+      end
+      // target, and the bitmap bits, of a source the domain holds.
+      if ((r == FTarget + 15'(4 * s)) && (deleg_q[s] == d) && (sm_q[s] != SmInactive))
+        f_expected = {14'(tgt_hart_q[s]), 10'b0, 8'(tgt_prio_q[s])};
+      if ((r == f_bitmap(FSetip, s)) && (deleg_q[s] == d)) f_expected[s%32] = ip_q[s];
+      if ((r == f_bitmap(FInClrip, s)) && (deleg_q[s] == d)) f_expected[s%32] = f_rect[s];
+      if ((r == f_bitmap(FSetie, s)) && (deleg_q[s] == d)) f_expected[s%32] = ie_q[s];
+    end
+    // The IDCs of the domain's harts; claimi reads as topi.
+    for (int c = 0; c < NumIdcs; c++) begin
+      if (d == 1'(c / NUM_HARTS)) begin
+        if (r == f_idc(c, 0)) f_expected = 32'(idelivery_q[c]);
+        if (r == f_idc(c, 1)) f_expected = 32'(iforce_q[c]);
+        if (r == f_idc(c, 2)) f_expected = 32'(ithreshold_q[c]);
+        if ((r == f_idc(c, 6)) || (r == f_idc(c, 7)))
+          f_expected = (top_id[c] != '0) ? {6'b0, top_id[c], 8'b0, 8'(top_prio[c])} : 32'b0;
+      end
+    end
+  endfunction
+
+  // This cycle's events per source, in the domain that holds it, and per
+  // IDC; registered below for the next cycle's checks.
+  logic [31:0] f_data_be;  // the written value read big-endian
+  logic [NUM_SOURCES:1] f_edge, f_set, f_clr, f_set_ie, f_clr_ie;
+  logic [NUM_SOURCES:1] f_claimed, f_cfg_root, f_cfg_s, f_tgt;
+  logic [NumIdcs-1:0] f_any, f_zero_claim, f_idelivery_wr, f_iforce_wr, f_ithreshold_wr;
+  logic [1:0] f_domaincfg_wr;
+  logic [NUM_SOURCES-1:0] f_src_p;  // last cycle's wires
+  assign f_data_be = {i_wr_data[7:0], i_wr_data[15:8], i_wr_data[23:16], i_wr_data[31:24]};
+  always_comb begin
+    f_claimed = '0;
+    for (int s = 1; s <= NUM_SOURCES; s++) begin
+      f_rect[s] = f_rectified(sm_q[s], i_src[s-1]);
+      // A rising edge of the wire, both cycles rectified under this mode.
+      f_edge[s] = f_edge_mode(sm_q[s]) && f_rect[s] && !f_rectified(sm_q[s], f_src_p[s-1]);
+      f_set[s] = ((f_wr == f_w(deleg_q[s], f_bitmap(FSetip, s))) && i_wr_data[s%32]) ||
+          ((f_wr == f_w(deleg_q[s], FSetipnum)) && (i_wr_data == 32'(s))) ||
+          ((f_wr == f_w(deleg_q[s], FSetipnumLe)) && (i_wr_data == 32'(s))) ||
+          ((f_wr == f_w(deleg_q[s], FSetipnumBe)) && (f_data_be == 32'(s)));
+      f_clr[s] = ((f_wr == f_w(deleg_q[s], f_bitmap(FInClrip, s))) && i_wr_data[s%32]) ||
+          ((f_wr == f_w(deleg_q[s], FClripnum)) && (i_wr_data == 32'(s)));
+      f_set_ie[s] = ((f_wr == f_w(deleg_q[s], f_bitmap(FSetie, s))) && i_wr_data[s%32]) ||
+          ((f_wr == f_w(deleg_q[s], FSetienum)) && (i_wr_data == 32'(s)));
+      f_clr_ie[s] = ((f_wr == f_w(deleg_q[s], f_bitmap(FClrie, s))) && i_wr_data[s%32]) ||
+          ((f_wr == f_w(deleg_q[s], FClrienum)) && (i_wr_data == 32'(s)));
+      f_cfg_root[s] = (f_wr == f_w(1'b0, 15'(4 * s)));
+      f_cfg_s[s] = (f_wr == f_w(1'b1, 15'(4 * s)));
+      f_tgt[s] = (f_wr == f_w(deleg_q[s], FTarget + 15'(4 * s)));
+    end
+    for (int c = 0; c < NumIdcs; c++) begin
+      f_any[c] = |f_cand[c];
+      f_zero_claim[c] = 1'b0;
+      if (f_cap == f_w(1'(c / NUM_HARTS), f_idc(c, 7))) begin
+        f_zero_claim[c] = (top_id[c] == '0);
+        for (int s = 1; s <= NUM_SOURCES; s++) if (top_id[c] == 10'(s)) f_claimed[s] = 1'b1;
+      end
+      f_idelivery_wr[c] = (f_wr == f_w(1'(c / NUM_HARTS), f_idc(c, 0)));
+      f_iforce_wr[c] = (f_wr == f_w(1'(c / NUM_HARTS), f_idc(c, 1)));
+      f_ithreshold_wr[c] = (f_wr == f_w(1'(c / NUM_HARTS), f_idc(c, 2)));
+    end
+    for (int d = 0; d < 2; d++) f_domaincfg_wr[d] = (f_wr == f_w(1'(d), 15'h0));
+  end
+
+  // Last cycle's state and events.
+  logic f_rst_p;
+  logic [1:0] f_wr_dom_p;  // last cycle wrote inside domain d's region
+  logic [31:0] f_wr_data_p;
+  logic [1:0] f_dom_ie_p, f_domaincfg_wr_p;
+  logic [NUM_SOURCES:1] f_deleg_p, f_ip_p, f_ie_p, f_edge_p, f_set_p, f_clr_p;
+  logic [NUM_SOURCES:1] f_set_ie_p, f_clr_ie_p, f_claimed_p, f_cfg_root_p, f_cfg_s_p, f_tgt_p;
+  logic [2:0] f_sm_p[1:NUM_SOURCES];
+  logic [HartBits-1:0] f_hart_p[1:NUM_SOURCES];
+  logic [IPRIOLEN-1:0] f_prio_p[1:NUM_SOURCES];
+  logic [NumIdcs-1:0] f_idelivery_p, f_iforce_p, f_any_p, f_zero_claim_p;
+  logic [NumIdcs-1:0] f_idelivery_wr_p, f_iforce_wr_p, f_ithreshold_wr_p;
+  logic [IPRIOLEN-1:0] f_ithreshold_p[NumIdcs];
+  always_ff @(posedge i_clk) begin
+    f_rst_p <= i_rst;
+    f_src_p <= i_src;
+    f_wr_dom_p <= {
+      i_wr_en && (i_wr_offset[21:15] == 7'd1), i_wr_en && (i_wr_offset[21:15] == 7'd0)
+    };
+    f_wr_data_p <= i_wr_data;
+    {f_dom_ie_p, f_domaincfg_wr_p} <= {dom_ie_q, f_domaincfg_wr};
+    {f_deleg_p, f_ip_p, f_ie_p, f_edge_p} <= {deleg_q, ip_q, ie_q, f_edge};
+    {f_set_p, f_clr_p, f_set_ie_p, f_clr_ie_p} <= {f_set, f_clr, f_set_ie, f_clr_ie};
+    {f_claimed_p, f_cfg_root_p, f_cfg_s_p, f_tgt_p} <= {f_claimed, f_cfg_root, f_cfg_s, f_tgt};
+    {f_idelivery_p, f_iforce_p, f_any_p} <= {idelivery_q, iforce_q, f_any};
+    f_zero_claim_p <= f_zero_claim;
+    {f_idelivery_wr_p, f_iforce_wr_p, f_ithreshold_wr_p} <= {
+      f_idelivery_wr, f_iforce_wr, f_ithreshold_wr
+    };
+    for (int s = 1; s <= NUM_SOURCES; s++) begin
+      f_sm_p[s]   <= sm_q[s];
+      f_hart_p[s] <= tgt_hart_q[s];
+      f_prio_p[s] <= tgt_prio_q[s];
+    end
+    for (int c = 0; c < NumIdcs; c++) f_ithreshold_p[c] <= ithreshold_q[c];
+  end
+
+  // Reset: every source inactive and undelegated with target hart 0 and
+  // priority 1, IE, idelivery, iforce and ithreshold zero, both lines low.
+  always_comb begin
+    if (f_past_valid && f_rst_p) begin
+      assert ((deleg_q == '0) && (ip_q == '0) && (ie_q == '0) && (dom_ie_q == '0));
+      assert ((idelivery_q == '0) && (iforce_q == '0) && (o_meip == '0) && (o_seip == '0));
+      for (int s = 1; s <= NUM_SOURCES; s++)
+      assert ((sm_q[s] == SmInactive) && (tgt_hart_q[s] == '0) && (tgt_prio_q[s] == IPRIOLEN'(1)));
+      for (int c = 0; c < NumIdcs; c++) assert (ithreshold_q[c] == '0);
+    end
+  end
+
+  // State invariants, from the first cycle after the initial reset.
+  always_comb begin
+    if (f_past_valid) begin
+      for (int s = 1; s <= NUM_SOURCES; s++) begin
+        // The edge history is last cycle's wire rectified under this mode.
+        assert (rect_q[s] == f_rectified(sm_q[s], f_src_p[s-1]));
+        // Only an active source has pending and enable bits; SM and IPRIO
+        // hold legal values.
+        assert (!ip_q[s] || (sm_q[s] != SmInactive));
+        assert (!ie_q[s] || (sm_q[s] != SmInactive));
+        assert (sm_q[s][2:1] != 2'b01);
+        assert (tgt_prio_q[s] != '0);
+        assert ((NUM_HARTS > 1) || (tgt_hart_q[s] == '0));
+      end
+    end
+  end
+
+  // topi: the reported source is a candidate with its own priority, and no
+  // candidate has a smaller priority number, or the same one and a lower ID.
+  always_comb begin
+    for (int c = 0; c < NumIdcs; c++) begin
+      assert (top_id[c] <= 10'(NUM_SOURCES));
+      for (int s = 1; s <= NUM_SOURCES; s++) begin
+        if (top_id[c] == 10'(s)) assert (f_cand[c][s] && (top_prio[c] == tgt_prio_q[s]));
+        if (f_cand[c][s])
+          assert ((top_id[c] != '0) &&
+                  ((top_prio[c] < tgt_prio_q[s]) ||
+                   ((top_prio[c] == tgt_prio_q[s]) && (top_id[c] <= 10'(s)))));
+      end
+    end
+  end
+
+  // One-cycle effects, against last cycle's state and events.
+  always_comb begin
+    if (f_past_valid && !f_rst_p) begin
+      for (int s = 1; s <= NUM_SOURCES; s++) begin
+        // The source configuration changes only by a sourcecfg write; a
+        // change of domain or a move to Inactive clears the enable bit.
+        if ((deleg_q[s] != f_deleg_p[s]) || (sm_q[s] != f_sm_p[s]))
+          assert (f_cfg_root_p[s] || f_cfg_s_p[s]);
+        if (deleg_q[s] != f_deleg_p[s]) assert (!ie_q[s]);
+        // The root's D = 1 delegates to the one child: a newly delegated
+        // source starts Inactive there, one already delegated is untouched.
+        // Its D = 0 takes the source back with the written SM.
+        if (f_cfg_root_p[s] && f_wr_data_p[10]) begin
+          assert (deleg_q[s] && (sm_q[s] == (f_deleg_p[s] ? f_sm_p[s] : SmInactive)));
+        end
+        if (f_cfg_root_p[s] && !f_wr_data_p[10]) begin
+          assert (!deleg_q[s] && (sm_q[s] == f_legal_sm(f_wr_data_p[2:0])));
+        end
+        // The supervisor domain, a leaf, writes only the sources delegated to
+        // it, and D = 1 writes zero.
+        if (f_cfg_s_p[s]) begin
+          assert (deleg_q[s] == f_deleg_p[s]);
+          assert (sm_q[s] == (!f_deleg_p[s] ? f_sm_p[s] : f_wr_data_p[10] ? SmInactive : f_legal_sm(
+              f_wr_data_p[2:0]
+          )));
+        end
+        // Level modes: the pending bit is last cycle's wire rectified under
+        // the current mode, also in the cycle after a change of mode.
+        if (f_level_mode(sm_q[s])) assert (ip_q[s] == f_rectified(sm_q[s], f_src_p[s-1]));
+        // Detached and edge modes, unchanged: set by a set write or an edge,
+        // cleared by a clear write or a claim, a set winning over a clear.
+        if ((deleg_q[s] == f_deleg_p[s]) && (sm_q[s] == f_sm_p[s]) && f_held(sm_q[s]))
+          assert (ip_q[s] == (f_set_p[s] || f_edge_p[s] ||
+                              (f_ip_p[s] && !f_clr_p[s] && !f_claimed_p[s])));
+        // A sourcecfg write that leaves the source in Detached or an edge
+        // mode: a write that raises an edge mode's rectified input sets the
+        // pending bit; otherwise a move between domains or from Inactive
+        // leaves it zero, from a level mode it takes the old mode's
+        // rectified input that cycle, and from Detached or an edge mode a
+        // claim in the same cycle clears it and an edge sets it.
+        if (((deleg_q[s] != f_deleg_p[s]) || (sm_q[s] != f_sm_p[s])) && f_held(sm_q[s])) begin
+          if ((deleg_q[s] != f_deleg_p[s]) || (f_sm_p[s] == SmInactive)) begin
+            assert (ip_q[s] == f_raise[s]);
+          end
+          if ((deleg_q[s] == f_deleg_p[s]) && f_level_mode(f_sm_p[s])) begin
+            assert (ip_q[s] == (f_rectified(f_sm_p[s], f_src_p[s-1]) || f_raise[s]));
+          end
+          if ((deleg_q[s] == f_deleg_p[s]) && f_held(f_sm_p[s])) begin
+            assert (ip_q[s] == (f_edge_p[s] || (f_ip_p[s] && !f_claimed_p[s]) || f_raise[s]));
+          end
+        end
+        // Enable bits of a source active in an unchanged domain follow
+        // setie and clrie for an active source; activation leaves them zero.
+        if ((deleg_q[s] == f_deleg_p[s]) && (sm_q[s] != SmInactive))
+          assert (ie_q[s] == ((f_set_ie_p[s] && (f_sm_p[s] != SmInactive)) ||
+                              (f_ie_p[s] && !f_clr_ie_p[s])));
+        // target: a move between domains resets it to hart 0, priority 1.
+        // Otherwise it changes only by a write in the domain holding the
+        // source, active or not, which sets the hart index from bits 31:18
+        // and IPRIO, a zero written as 1.
+        if (deleg_q[s] != f_deleg_p[s]) begin
+          assert ((tgt_hart_q[s] == '0) && (tgt_prio_q[s] == IPRIOLEN'(1)));
+        end
+        if ((deleg_q[s] == f_deleg_p[s]) &&
+            ((tgt_hart_q[s] != f_hart_p[s]) || (tgt_prio_q[s] != f_prio_p[s]))) begin
+          assert (f_tgt_p[s]);
+        end
+        if ((deleg_q[s] == f_deleg_p[s]) && f_tgt_p[s]) begin
+          assert (tgt_prio_q[s] == ((f_wr_data_p[IPRIOLEN-1:0] == '0) ?
+                                    IPRIOLEN'(1) : f_wr_data_p[IPRIOLEN-1:0]));
+          assert ((NUM_HARTS == 1) || (tgt_hart_q[s] == f_wr_data_p[18+:HartBits]));
+        end
+        // Only the root's writes reach a source the root holds, and only
+        // writes to the two domains reach any source.
+        if ((!f_wr_dom_p[0] && !f_deleg_p[s]) || (f_wr_dom_p == 2'b00))
+          assert ((deleg_q[s] == f_deleg_p[s]) && (sm_q[s] == f_sm_p[s]) &&
+                  (ie_q[s] == f_ie_p[s]) && (tgt_hart_q[s] == f_hart_p[s]) &&
+                  (tgt_prio_q[s] == f_prio_p[s]));
+      end
+      // domaincfg: only IE is writable.
+      for (int d = 0; d < 2; d++) begin
+        assert (dom_ie_q[d] == (f_domaincfg_wr_p[d] ? f_wr_data_p[8] : f_dom_ie_p[d]));
+      end
+      for (int c = 0; c < NumIdcs; c++) begin
+        // idelivery and iforce keep bit 0 of a write, ithreshold IPRIOLEN
+        // bits; a claim that reports zero clears iforce, and a write in the
+        // same cycle lands after it.
+        assert (idelivery_q[c] == (f_idelivery_wr_p[c] ? f_wr_data_p[0] : f_idelivery_p[c]));
+        assert (ithreshold_q[c] == (f_ithreshold_wr_p[c] ?
+                                    f_wr_data_p[IPRIOLEN-1:0] : f_ithreshold_p[c]));
+        assert (iforce_q[c] == (f_iforce_wr_p[c] ?
+                                f_wr_data_p[0] : (f_iforce_p[c] && !f_zero_claim_p[c])));
+        // Writes to the other domain, or outside both, leave a domain's IE
+        // and IDCs alone.
+        if (!f_wr_dom_p[c/NUM_HARTS])
+          assert ((idelivery_q[c] == f_idelivery_p[c]) &&
+                  (ithreshold_q[c] == f_ithreshold_p[c]) &&
+                  (dom_ie_q[c/NUM_HARTS] == f_dom_ie_p[c/NUM_HARTS]) &&
+                  ((iforce_q[c] == f_iforce_p[c]) || f_zero_claim_p[c]));
+      end
+      // The interrupt pins: a domain's IE, the hart's idelivery, and iforce
+      // or a candidate, a cycle earlier.
+      for (int h = 0; h < NUM_HARTS; h++) begin
+        assert (o_meip[h] == (f_dom_ie_p[0] && f_idelivery_p[h] && (f_iforce_p[h] || f_any_p[h])));
+        assert (o_seip[h] == (f_dom_ie_p[1] && f_idelivery_p[NUM_HARTS+h] &&
+                              (f_iforce_p[NUM_HARTS+h] || f_any_p[NUM_HARTS+h])));
+      end
+    end
+  end
+
+  // f_raise[s]: a sourcecfg write in the last cycle left source s in an
+  // edge mode and raised its rectified input.
+  logic [NUM_SOURCES:1] f_raise;
+  always_comb begin
+    for (int s = 1; s <= NUM_SOURCES; s++)
+    f_raise[s] = f_edge_mode(sm_q[s]) && f_rectified(sm_q[s], f_src_p[s-1]) &&
+        !f_rectified(f_sm_p[s], f_src_p[s-1]);
+  end
+
+  // Every read, at whatever offset i_rd_offset holds; outside both control
+  // regions the window reads zero.
+  logic [63:0] f_expected_pair;
+  always_comb begin
+    f_expected_pair = '0;
+    if (i_rd_offset[21:16] == '0) begin
+      f_expected_pair[63:32] = f_expected(i_rd_offset[15], {i_rd_offset[14:3], 3'b100});
+      f_expected_pair[31:0]  = f_expected(i_rd_offset[15], {i_rd_offset[14:3], 3'b000});
+    end
+    assert (o_rd_pair == f_expected_pair);
+  end
+
+  // Reachability.
+  always_comb begin
+    if (f_past_valid && !i_rst) begin
+      cover (o_meip[NUM_HARTS-1]);
+      cover (o_seip[NUM_HARTS-1]);
+      // A claim of each kind: a supervisor edge source on the last hart, and
+      // a root level source.
+      cover (claim[NumIdcs-1] && (top_id[NumIdcs-1] == 10'(NUM_SOURCES)) &&
+             (sm_q[NUM_SOURCES] == 3'd5));
+      cover (claim[0] && (top_id[0] == 10'd1) && (sm_q[1] == 3'd7));
+      // A spurious interrupt from iforce, and the zero claim that ends it.
+      cover (eip_q[NumIdcs-1] && iforce_q[NumIdcs-1] && !f_any[NumIdcs-1]);
+      cover (claim[NUM_HARTS] && (top_id[NUM_HARTS] == '0) && iforce_q[NUM_HARTS]);
+      // The root takes back an active delegated source.
+      cover (wr_cfg[1] && !wr_dom && !i_wr_data[10] && deleg_q[1] && (sm_q[1] != SmInactive));
+      // A set write, an edge, or a raising sourcecfg write, in the same
+      // cycle as a claim of the source.
+      cover (claim_clr[1] && wr_set_ip[1] && wr_active[1]);
+      cover (claim_clr[1] && edge_rise[1]);
+      cover (claim_clr[1] && cfg_raise[1]);
+    end
+  end
+`endif
+
 endmodule : aplic

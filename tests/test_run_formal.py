@@ -639,6 +639,19 @@ FORMAL_TARGETS = [
         "FIFO capacity, flow control, and data ordering across unrelated clocks",
     ),
     FormalTarget(
+        "aplic.sby",
+        "APLIC topi selection, pending-bit rules, delegation, domain isolation, "
+        "claims, and register reads",
+        tasks=(
+            "bmc",
+            "prove",
+            "cover",
+            "prove_one_hart",
+            "prove_wide",
+            "prove_three_harts",
+        ),
+    ),
+    FormalTarget(
         "tomasulo_wrapper.sby",
         "Tomasulo commit and flush integration, including FP dispatch done repair",
         tasks=("bmc", "cover", "fp_repair_bmc"),
@@ -822,6 +835,12 @@ SBY_TASKS = [
     ("prove_width64", "Unbounded invariant proof at 64 bits"),
     ("bmc_256", "Bounded checking with a 256-entry L0 cache"),
     ("cover_256", "Cover checking with a 256-entry L0 cache"),
+    (
+        "prove_one_hart",
+        "Unbounded proof with one source, one hart, and one priority bit",
+    ),
+    ("prove_wide", "Unbounded proof with 33 sources, two words of each bitmap"),
+    ("prove_three_harts", "Unbounded proof with three harts and 8-bit priorities"),
 ]
 
 

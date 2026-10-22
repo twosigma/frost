@@ -3,8 +3,8 @@
 FROST checks its RTL with [SymbiYosys](https://github.com/YosysHQ/sby) as well
 as simulation. The targets cover the fetch stage, the out-of-order back end
 (ROB, rename, reservation stations, load and store queues), the execution
-units, the MMU and caches, and the NIC's clock-crossing FIFO. Each `.sby` file
-in this directory is one target, registered in `FORMAL_TARGETS` in
+units, the MMU and caches, the NIC's clock-crossing FIFO, and the APLIC. Each
+`.sby` file in this directory is one target, registered in `FORMAL_TARGETS` in
 `tests/test_run_formal.py`, and CI runs every task of every target. Most
 properties live in the RTL module they check, under `ifdef FORMAL`. The `.sv`
 harnesses in this directory hold the proofs that connect several modules or
@@ -311,6 +311,7 @@ cycles, which clears arbitrary memory history.
 | Target | Checks |
 | --- | --- |
 | `async_fifo` | The NIC's clock-crossing FIFO with two unrelated free-running clocks: occupancy bound, conservative credits, ready margin, no underflow, Gray-coded pointers, and in-order, intact delivery of a watched word, at 4 entries of 4 bits. Both resets are held for the first six steps; registers start at their reset values, because a clock may have no edge during the reset window |
+| `aplic` | The APLIC's `topi` is a pending, enabled candidate of its domain and hart under the threshold, and no candidate has a smaller priority number or the same one and a lower identity. Pending bits follow each source mode's rules, including the cycle of a mode change, with a set winning over a clear; `sourcecfg`, `target`, `domaincfg` and the IDC registers follow their write rules; delegation starts the child's configuration at zero; a write to the supervisor domain changes nothing the root holds; reset leaves the documented state; the interrupt pins follow IE, `idelivery`, `iforce` and the candidates; and every word of the window reads as the spec's register map gives. Reset is held in the first cycle; inputs are arbitrary afterwards. `bmc`, `prove` and `cover` use three sources, two harts and two priority bits, `prove_one_hart` one of each, `prove_wide` 33 sources, and `prove_three_harts` three harts with 8-bit priorities |
 
 ## Property Style
 
