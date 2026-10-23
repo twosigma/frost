@@ -1101,6 +1101,20 @@ def _read_u64(signal: Any) -> int | None:
     return None
 
 
+def read_low_bram_words(dut: Any, byte_address: int, count: int) -> list[int]:
+    """Read count 32-bit words at byte_address from the data copy of low BRAM.
+
+    Its rows are little-endian dwords, so a word whose address has bit 2 set
+    is the upper half of its row.
+    """
+    memory = dut.cpu_and_memory_subsystem.soc.data_memory.memory
+    words = []
+    for word_address in range(byte_address // 4, byte_address // 4 + count):
+        row = int(memory[word_address // 2].value)
+        words.append((row >> (32 * (word_address % 2))) & 0xFFFF_FFFF)
+    return words
+
+
 class UartMmioDebugMonitor:
     """Capture MMIO/UART RX activity for debugging uart_echo."""
 
@@ -4452,6 +4466,10 @@ async def test_real_program(dut: Any) -> None:
         # above that, a load image shares mutable RAM with its destination.
         if any(address >= 0x18000 for address, _ in image):
             reset_image = image
+    # The architecture-test runner names the low-BRAM bytes that hold the
+    # signature once the program passes, as "address:length" in hex, and the
+    # file to write them to (tests/test_arch_compliance.py).
+    arch_signature = os.environ.get("FROST_ARCH_SIGNATURE")
 
     for run_number in range(1, NUM_RUNS + 1):
         if coverage is not None:
@@ -4516,6 +4534,13 @@ async def test_real_program(dut: Any) -> None:
             )
             if nic_peer is not None:
                 nic_peer.verify()
+            if arch_signature is not None:
+                address, length = (
+                    int(field, 16) for field in arch_signature.split(":")
+                )
+                words = read_low_bram_words(dut, address, length // 4)
+                with open(os.environ["FROST_ARCH_SIGNATURE_FILE"], "a") as signature:
+                    signature.write(" ".join(f"{word:08x}" for word in words) + "\n")
         if line_monitor is not None:
             await check_uart_line(dut, uart_monitor, line_monitor)
         if coverage is not None:

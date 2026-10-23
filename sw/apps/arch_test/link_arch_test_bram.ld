@@ -81,6 +81,9 @@ SECTIONS
         *(.eh_frame_hdr*)
     }
 
+    /* The bench reads the signature in place (model_test.h, RVMODEL_HALT). */
+    frost_bram_signature = begin_signature;
+
     PROVIDE(__global_pointer$ = ADDR(.sdata) + 0x800);
     PROVIDE(UART_ADDR           = 0x40000000);
     PROVIDE(UART_RX_DATA_ADDR   = 0x40000004);

@@ -42,46 +42,37 @@
 #define RVMODEL_BOOT
 
 //-----------------------------------------------------------------------
-// RVMODEL_HALT: dump signature via UART, then print <<PASS>> and loop.
+// RVMODEL_HALT: leave the signature in low BRAM, print <<PASS>> and loop.
 //
-// Print each 32-bit signature word as eight lowercase hex digits and a
-// newline, followed by "<<PASS>>" to terminate the simulation.
-//
-// The dump does not check UART_TX_STATUS, so on the serial line a dump
-// larger than the 16 KiB transmit FIFO loses bytes. The suite runs only in
-// simulation, where the runner reads the dump from the CPU's UART writes,
-// ahead of the FIFO, and turns off frost.sv's dropped-byte check
-// (+uart_tx_drop_check=0).
+// When "<<PASS>>" appears, the bench reads the signature from the data
+// copy of low BRAM at frost_bram_signature, which the linker script
+// defines. The bram and icache configs keep the signature in low BRAM, so
+// there frost_bram_signature is begin_signature itself. The ddr config
+// keeps it in DDR, behind the write-back L1D and L2, so this sequence
+// copies it to frost_bram_signature with ordinary loads and stores. The
+// fence waits until every earlier store has completed: low-BRAM stores
+// write through, and the BRAM acknowledges a store only after writing it.
+// lui and addi form the low-BRAM address absolutely, which reaches it from
+// DDR code; clang-format would split their %hi and %lo operators.
 //-----------------------------------------------------------------------
+// clang-format off
 #define RVMODEL_HALT                                                                               \
     la a0, begin_signature;                                                                        \
     la a1, end_signature;                                                                          \
-    li a2, 0x40000000; /* UART TX address */                                                       \
+    lui a2, %hi(frost_bram_signature);                                                             \
+    addi a2, a2, %lo(frost_bram_signature);                                                        \
+    beq a0, a2, _frost_sig_done;                                                                   \
     _frost_sig_loop:                                                                               \
     bgeu a0, a1, _frost_sig_done;                                                                  \
-    lw a3, 0(a0);                                                                                  \
-    /* Print 32-bit word as 8 lowercase hex chars (MSB first) */                                   \
-    li a4, 28; /* shift amount, starts at 28 for MSB nibble */                                     \
-    _frost_hex_loop:                                                                               \
-    srl a5, a3, a4;                                                                                \
-    andi a5, a5, 0xf;                                                                              \
-    li a6, 10;                                                                                     \
-    blt a5, a6, _frost_hex_digit;                                                                  \
-    addi a5, a5, ('a' - 10);                                                                       \
-    j _frost_hex_out;                                                                              \
-    _frost_hex_digit:                                                                              \
-    addi a5, a5, '0';                                                                              \
-    _frost_hex_out:                                                                                \
-    sb a5, 0(a2);                                                                                  \
-    addi a4, a4, -4;                                                                               \
-    bge a4, zero, _frost_hex_loop;                                                                 \
-    /* Newline after each word */                                                                  \
-    li a5, '\n';                                                                                   \
-    sb a5, 0(a2);                                                                                  \
-    addi a0, a0, 4;                                                                                \
+    ld a3, 0(a0);                                                                                  \
+    sd a3, 0(a2);                                                                                  \
+    addi a0, a0, 8;                                                                                \
+    addi a2, a2, 8;                                                                                \
     j _frost_sig_loop;                                                                             \
     _frost_sig_done:                                                                               \
+    fence;                                                                                         \
     /* Print <<PASS>> marker for cocotb test harness */                                            \
+    li a2, 0x40000000; /* UART TX address */                                                       \
     li a5, '<';                                                                                    \
     sb a5, 0(a2);                                                                                  \
     li a5, '<';                                                                                    \
@@ -102,6 +93,7 @@
     sb a5, 0(a2);                                                                                  \
     _frost_halt_loop:                                                                              \
     j _frost_halt_loop;
+// clang-format on
 
 //-----------------------------------------------------------------------
 // RVMODEL_DATA_BEGIN / RVMODEL_DATA_END: signature area markers

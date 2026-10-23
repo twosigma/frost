@@ -17,6 +17,7 @@
 import importlib
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -299,3 +300,16 @@ def test_required_signals_name_every_missing_handle() -> None:
         real_program._require_signals(
             "CHECK", {"b": None, "present": object(), "a": None}
         )
+
+
+def test_low_bram_words_take_the_upper_half_of_odd_words() -> None:
+    """A word whose address has bit 2 set is the upper half of its dword row."""
+    real_program = importlib.import_module("cocotb_tests.test_real_program")
+    rows = [_VectorHandle(64, ((2 * n + 1) << 32) | (2 * n)) for n in range(4)]
+    dut = SimpleNamespace(
+        cpu_and_memory_subsystem=SimpleNamespace(
+            soc=SimpleNamespace(data_memory=SimpleNamespace(memory=rows))
+        )
+    )
+
+    assert real_program.read_low_bram_words(dut, 4, 5) == [1, 2, 3, 4, 5]

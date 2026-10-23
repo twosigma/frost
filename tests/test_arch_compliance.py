@@ -52,6 +52,8 @@ ARCH_TEST_DIR = ARCH_TEST_APP_DIR / "riscv-arch-test"
 REFERENCES_DIR = ARCH_TEST_APP_DIR / "references"
 
 SUITE_ROOT = ARCH_TEST_DIR / "riscv-test-suite"
+# The bench writes each test's signature here (run_simulation).
+SIGNATURE_FILE = TESTS_DIR / "arch_signature.txt"
 
 # rv32i_m holds F and D tests shared with RV64; rv64i_m holds RV64-only
 # tests. Select only RVTEST_ISA strings naming RV64 and .S files directly in
@@ -261,12 +263,34 @@ def compile_test(
     return result.returncode == 0, result.stdout + result.stderr
 
 
+def signature_location(elf: Path) -> tuple[int, int]:
+    """Return the low-BRAM byte address and the length of a test's signature.
+
+    RVMODEL_HALT (model_test.h) leaves the signature at frost_bram_signature,
+    and begin_signature and end_signature bound it.
+    """
+    nm = os.environ.get("RISCV_PREFIX", "riscv64-linux-") + "nm"
+    symbols = {}
+    for line in subprocess.run(
+        [nm, str(elf)], capture_output=True, text=True, check=True
+    ).stdout.splitlines():
+        fields = line.split()
+        if len(fields) == 3:
+            symbols[fields[2]] = int(fields[0], 16)
+    return (
+        symbols["frost_bram_signature"],
+        symbols["end_signature"] - symbols["begin_signature"],
+    )
+
+
 def run_simulation(
     coverage_label: str = "arch_test",
     mem_config: str = DEFAULT_MEM_CONFIG,
 ) -> subprocess.CompletedProcess[str] | None:
     """Simulate the compiled test; return the result, or None on timeout.
 
+    When a run passes, the bench reads the test's signature from the data
+    BRAM and writes it to SIGNATURE_FILE, a line of words per run.
     coverage_label names the run's coverage file under FROST_COVERAGE=1.
     """
     runner = CocotbRunner(
@@ -291,12 +315,10 @@ def run_simulation(
     # sections the DDR model preloads from sw_ddr.mem; see MEMORY_CONFIGS.
     sim_build_dir = runner._get_sim_build_dir(env)
     env["COCOTB_MAX_CYCLES"] = "50000000"
-    # RVMODEL_HALT writes the signature without checking the UART TX status, so
-    # a large dump overflows the transmit FIFO. The dump is read from the CPU's
-    # UART writes, ahead of the FIFO, so turn off frost's dropped-byte check.
-    env["COCOTB_PLUSARGS"] = (
-        env.get("COCOTB_PLUSARGS", "") + " +uart_tx_drop_check=0"
-    ).strip()
+    SIGNATURE_FILE.unlink(missing_ok=True)
+    address, length = signature_location(ARCH_TEST_APP_DIR / "sw.elf")
+    env["FROST_ARCH_SIGNATURE"] = f"{address:#x}:{length:#x}"
+    env["FROST_ARCH_SIGNATURE_FILE"] = str(SIGNATURE_FILE)
 
     original_dir = os.getcwd()
     os.chdir(TESTS_DIR)
@@ -339,26 +361,15 @@ def run_simulation(
         os.chdir(original_dir)
 
 
-def extract_signatures(sim_output: str) -> list[list[str]]:
-    """Collect a signature for each completed reset/restart run.
+def read_signatures(path: Path) -> list[list[str]]:
+    """Return the signature the bench read after each passing run.
 
-    RVMODEL_HALT prints one 8-digit word per line, then the marker. The program
-    prints no other bare 8-digit hex lines. Ignore interspersed simulator logs;
-    a marker embedded in a log message does not end the dump. Retain empty
-    dumps so a missing signature cannot hide behind an earlier correct run.
+    The bench writes a line of 8-digit hex words per run, so a run whose
+    signature is missing cannot hide behind another run's.
     """
-    signatures: list[list[str]] = []
-    sig_lines: list[str] = []
-    for line in sim_output.splitlines():
-        stripped = line.strip()
-        if len(stripped) == 8 and all(c in "0123456789abcdefABCDEF" for c in stripped):
-            sig_lines.append(stripped.lower())
-        elif stripped.startswith("<<PASS>>"):
-            signatures.append(sig_lines)
-            sig_lines = []
-    if sig_lines:
-        raise ValueError(f"Unterminated signature for run {len(signatures) + 1}")
-    return signatures
+    if not path.exists():
+        return []
+    return [line.split() for line in path.read_text().splitlines()]
 
 
 def load_reference(ref_path: Path) -> list[str]:
@@ -455,12 +466,9 @@ def run_single_test(
     if "<<PASS>>" not in combined_output:
         return TestResult(test_name, extension, "FAIL", "No <<PASS>> marker in output")
 
-    try:
-        actual_signatures = extract_signatures(combined_output)
-    except ValueError as error:
-        return TestResult(test_name, extension, "FAIL", str(error))
+    actual_signatures = read_signatures(SIGNATURE_FILE)
     if not actual_signatures:
-        return TestResult(test_name, extension, "FAIL", "No signature data in output")
+        return TestResult(test_name, extension, "FAIL", "The bench read no signature")
 
     expected_sig = load_reference(ref_path)
     for run, actual_sig in enumerate(actual_signatures, 1):

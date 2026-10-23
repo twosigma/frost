@@ -80,6 +80,15 @@ SECTIONS
         *(.eh_frame_hdr*)
     }
 
+    /* RVMODEL_HALT (model_test.h) copies the signature to the top of low
+     * BRAM, where the bench reads it. The test uses no low BRAM after the
+     * boot stub; a signature larger than RAM extends down over the debug
+     * slice, which is free without a debugger attached, and the ROM. */
+    ASSERT(end_signature - begin_signature <=
+           ORIGIN(RAM) + LENGTH(RAM) - (ADDR(.init) + SIZEOF(.init)),
+           "the signature does not fit in low BRAM above the boot stub")
+    frost_bram_signature = ABSOLUTE(ORIGIN(RAM) + LENGTH(RAM) - (end_signature - begin_signature));
+
     PROVIDE(__global_pointer$ = ADDR(.sdata) + 0x800);
     PROVIDE(UART_ADDR           = 0x40000000);
     PROVIDE(UART_RX_DATA_ADDR   = 0x40000004);

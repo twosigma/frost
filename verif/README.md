@@ -20,8 +20,10 @@ flowchart LR
     ISA[ISA and torture cases] --> RTL
     RTL --> Checks[Assertions and directed checks]
     RTL --> UART[UART output]
+    RTL --> Memory[Low-BRAM contents]
     UART --> Pass[Application pass/fail]
     UART --> Signatures[Signature comparison]
+    Memory --> Signatures
     Spike[Committed Spike references] --> Signatures
     Engine[TestRIG instruction sequences] --> RTL
     Engine --> Sail[Sail RISC-V model]
