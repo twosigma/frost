@@ -105,8 +105,8 @@ module fetch_provider #(
     output logic o_served_fault1,
     output logic o_served_fault1_page,
     output logic o_instr_valid,
-    // Next valid value before reset/invalidate clearing. cpu_top applies
-    // those clears to its local registered copy on the same edge.
+    // Next valid value before reset/invalidate clearing. frost_rvfi_platform
+    // applies those clears to its local registered copy on the same edge.
     output logic o_instr_valid_next,
     // Passive performance observer: the cache supplies a source-registered
     // "demand miss outstanding" level. This block adds the fetch-progress
