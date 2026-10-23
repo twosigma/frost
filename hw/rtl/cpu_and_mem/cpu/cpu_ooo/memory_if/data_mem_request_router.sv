@@ -360,6 +360,15 @@ module data_mem_request_router #(
       (!lq_pending_request_requires_drain || device_accept_armed_q);
 `endif
   assign lq_mem_read_accepted = lq_live_read_accepted || lq_pending_read_accepted;
+  // The uncached read enable for each value of the late launch, so the launch
+  // only selects between them.
+  (* keep = "true" *) logic uncached_read_if_launch, uncached_read_if_idle;
+  assign uncached_read_if_idle = VARIABLE_UNCACHED && !lq_mem_request_is_cached &&
+      lq_pending_read_accepted;
+  assign uncached_read_if_launch = VARIABLE_UNCACHED && !lq_mem_request_is_cached &&
+      (lq_pending_read_accepted ||
+       (!i_rst && !i_flush_all && !write_port_busy && !lq_live_request_requires_park &&
+        (lq_live_is_cached || i_uncached_read_request_ready)));
   assign lq_pending_mmio_read_accepted =
       lq_pending_read_accepted && lq_pending_request_requires_drain;
 
@@ -415,7 +424,7 @@ module data_mem_request_router #(
     o_data_mem_cached_read_id = lq_mem_request_id_eff;
     o_data_mem_cached_read_no_merge = lq_mem_request_no_merge_eff;
 
-    o_uncached_read_enable = VARIABLE_UNCACHED && lq_mem_read_accepted && !lq_mem_request_is_cached;
+    o_uncached_read_enable = lq_mem_read_en ? uncached_read_if_launch : uncached_read_if_idle;
     o_uncached_read_size = lq_mem_request_valid ? lq_mem_request_size : i_lq_mem_read_size;
     o_uncached_write_byte_en = !VARIABLE_UNCACHED ? '0 :
         (sq_mem_write_en && !sq_mem_write_is_cached) ? sq_mem_write_byte_en :
@@ -833,6 +842,14 @@ module data_mem_request_router #(
     end
   end
 `endif  // FORMAL
+
+`ifndef SYNTHESIS
+  always_comb begin
+    p_uncached_read_enable_exact :
+    assert (o_uncached_read_enable ==
+            (VARIABLE_UNCACHED && lq_mem_read_accepted && !lq_mem_request_is_cached));
+  end
+`endif
 
 `ifndef SYNTHESIS
 `ifdef FROST_COVERAGE
