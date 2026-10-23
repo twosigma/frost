@@ -155,9 +155,12 @@ puts [format "FROST_STEP2_PC=0x%x" [dict get [get_reg -force pc] pc]]
 write_memory {syms["flag"]:#x} 64 {{1}}
 resume
 sleep 20
-# The U-mode loop ecalls into M every 64th iteration. Startup and device
-# accesses have variable latency; allow enough halt attempts to reach U.
-# Exhaustion must fail here, before a write to a still-running target.
+# The U-mode loop ecalls into M every 64th iteration, so most halts land in
+# U. The JTAG traffic between a resume and the next halt takes a fixed time,
+# which can be a whole number of loop periods and put every halt on the same
+# handler instruction; idle TCK cycles that grow with each attempt move the
+# halts through the loop. Exhaustion must fail here, before a write to a
+# still-running target.
 set priv 3
 for {{set i 0}} {{$i < 64}} {{incr i}} {{
     halt
@@ -165,7 +168,7 @@ for {{set i 0}} {{$i < 64}} {{incr i}} {{
     set priv [dict get [get_reg -force priv] priv]
     if {{$priv == 0}} break
     resume
-    sleep 5
+    runtest [expr {{29 * ($i + 1)}}]
 }}
 puts [format "FROST_PRIV=%d" $priv]
 if {{$priv != 0}} {{error "hart did not reach U-mode within 64 halt attempts"}}
