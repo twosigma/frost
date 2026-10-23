@@ -1461,11 +1461,34 @@ module csr_file #(
   assign o_mmu_sum = mmu_sum_q;
   assign o_mmu_mxr = mmu_mxr_q;
   assign o_mmu_eff_priv_u = mmu_eff_priv_u_q;
-  // Fetch decodes from fetch_priv_q; the attributes limit fanout.
-  (* keep = "true", max_fanout = 16 *) logic fetch_translation_active;
-  assign fetch_translation_active = satp_mode_sv39 && (fetch_priv_q != riscv_pkg::PrivM);
-  assign o_fetch_translation_active = fetch_translation_active;
-  assign o_fetch_priv_u = (fetch_priv_q == riscv_pkg::PrivU);
+  // Fetch reads translation from a register written with the next satp
+  // mode and privilege, so it always equals satp_mode_sv39 && fetch_priv_q
+  // != M without a decode after the registers. satp's mode changes only
+  // through the storage write below, under the same rules.
+  logic next_satp_mode_sv39;
+  always_comb begin
+    next_satp_mode_sv39 = satp_mode_sv39;
+    if (storage_csr_write && (i_csr_address == riscv_pkg::CsrSatp)) begin
+      if (satp_new_value[63:60] == SatpModeBare) next_satp_mode_sv39 = 1'b0;
+      else if (SatpSv39Supported && (satp_new_value[63:60] == SatpModeSv39))
+        next_satp_mode_sv39 = 1'b1;
+    end
+  end
+  (* max_fanout = 16 *) logic fetch_translation_active_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) fetch_translation_active_q <= 1'b0;
+    else fetch_translation_active_q <= next_satp_mode_sv39 && (next_priv != riscv_pkg::PrivM);
+  end
+  assign o_fetch_translation_active = fetch_translation_active_q;
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      p_fetch_translation_active_exact :
+      assert (fetch_translation_active_q == (satp_mode_sv39 && (fetch_priv_q != riscv_pkg::PrivM)));
+    end
+  end
+`endif
+  assign o_fetch_priv_u  = (fetch_priv_q == riscv_pkg::PrivU);
   assign o_satp_root_ppn = satp_ppn;
 
   // ==========================================================================
