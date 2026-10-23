@@ -48,7 +48,7 @@ submodule, built by [`opensbi_build.py`](opensbi_build.py) with:
 - An empty `FW_JUMP_FDT_OFFSET`, so the DTB address in `a1` passes through
   unchanged.
 - The drivers in [`opensbi_frost_defconfig`](opensbi_frost_defconfig) (the
-  ns16550 UART, the APLIC, and the CLINT) and `FDT_ASSUME_MASK=7`, which lets
+  ns16550 UART, the APLIC, the IMSIC, and the CLINT) and `FDT_ASSUME_MASK=7`, which lets
   libfdt trust the packer's DTB.
 
 It builds with the Bootlin `riscv64-linux-` toolchain by default, found on PATH
@@ -76,12 +76,13 @@ The board and simulation share one physical map.
 | `[0x4001_0000, +0xC000)` | SiFive CLINT alias: `msip` at `+0`, `mtimecmp` at `+0x4000`, `mtime` at `+0xBFF8` |
 | `[0x4002_1000, +0x100)` | Memory error unit, APLIC source 5, bound by the `frost_memerr` driver ([device-tree binding](buildroot-external/board/frost/frost,memory-error.yaml)) |
 | `[0x4003_0000, +4 KiB)` | DMA-coherent NIC, bound by the `frost_net10g` driver ([device-tree binding](buildroot-external/board/frost/frost,net10g.yaml)) |
-| `[0x4400_0000, +4 MiB)` | AIA APLIC in direct delivery mode, with M and S domains at `0x4400_0000` and `0x4400_8000`, each 32 KiB and each with one IDC for hart 0. Sources 1 to 5 are the UART, external pin, DMA test engine, NIC, and memory error unit. OpenSBI delegates all sources to S mode and disables the M-domain node in Linux's DT. |
+| `[0x4400_0000, +4 MiB)` | AIA APLIC with direct and MSI delivery, with M and S domains at `0x4400_0000` and `0x4400_8000`, each 32 KiB and each with one IDC for hart 0. Sources 1 to 5 are the UART, external pin, DMA test engine, NIC, and memory error unit. OpenSBI delegates all sources to S mode and disables the M-domain node in Linux's DT. |
+| `[0x4800_0000, +2 MiB)` | IMSIC device window. Machine files start at `0x4800_0000` and supervisor files at `0x4810_0000`, with 4 KiB per hart and 63 identities per file. |
 | `[0x8000_0000, +1 GiB)` | Cached DDR. The DTB advertises the board's DDR size: 1 GiB on X3. |
 
-The PMA map has four regions: the BRAM, the MMIO register window
+The PMA map has five regions: the BRAM, the MMIO register window
 `[0x4000_0000, 0x4003_1000)`, the APLIC window `[0x4400_0000, 0x4440_0000)`,
-and cached DDR. An access anywhere else, including the rest of the device
+the IMSIC window `[0x4800_0000, 0x4820_0000)`, and cached DDR. An access anywhere else, including the rest of the device
 quadrant `[0x4000_0000, 0x8000_0000)` and any address with bits 63:32 set,
 raises a precise access fault (cause 1, 5, or 7 for a fetch, load, or store)
 with the exact address in `mtval`, except that an untranslated store to the
@@ -116,11 +117,16 @@ fit.
 
 ## Interrupts and time
 
-The DT connects the CLINT to the hart's `cpu-intc` for the machine software
-(cause 3) and machine timer (cause 7) interrupts, and the APLIC's M and S
-domains to causes 11 and 9. The DT uses `riscv,aplic` for each domain,
-with two interrupt cells per source: identity and level-high type (4).
-Linux reports `APLIC-DIRECT` in `/proc/interrupts`. The CLINT registers are
+The DT connects the CLINT to the hart's `cpu-intc` for machine software
+(cause 3) and machine timer (cause 7) interrupts. Machine and supervisor
+IMSIC files connect to causes 11 and 9, with 63 identities per file. Each
+APLIC domain uses an `msi-parent` link to its IMSIC node, with two interrupt
+cells per source: identity and level-high type (4). OpenSBI selects its
+`aia-imsic` IPI device and disables the machine APLIC and IMSIC nodes in the
+tree passed to Linux. Linux uses the supervisor IMSIC for IPIs and APLIC
+MSIs for wired sources. The APLIC's destination registers are locked at
+reset. Programs that leave `eidelivery` at its reset value `0x40000000`
+continue to receive direct APLIC lines. The CLINT registers are
 dword-aligned and support 64-bit access: an `ld` reads `mtime` atomically, with no rv32-style
 hi/lo/hi loop, and an 8-byte store to `mtimecmp` lands atomically.
 
@@ -136,7 +142,7 @@ directly through Sstc (`stimecmp`) instead of an SBI call.
 
 The generated DTB declares the
 [implemented extensions](../README.md#supported-risc-v-extensions), Sstc,
-Svade, and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF and the LP64D
+Smaia, Ssaia, Svade, and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF and the LP64D
 ABI.
 
 ## Counters and mcounteren
@@ -175,7 +181,9 @@ payload reports cycle, instruction, time, and IPC deltas for its own workload.
 ## Kernel
 
 [`debian_kernel.py`](debian_kernel.py) downloads Debian's riscv64 kernel and
-headers from snapshot.debian.org and checks their sizes and SHA-256 sums. The
+headers from snapshot.debian.org and checks their sizes and SHA-256 sums.
+It also requires built-in APLIC, APLIC MSI and IMSIC drivers in the packaged
+kernel configuration, including when reusing a cached extraction. The
 pinned release is `6.12.107+deb13-riscv64`; the snapshot, versions, and
 checksums are in the script. FROST runs this kernel unmodified, with its NIC
 and memory error drivers built as separate modules.
@@ -197,7 +205,7 @@ A replacement kernel selected with `FROST_LINUX_KERNEL` must provide:
 |---|---|
 | `CONFIG_MMU`, `CONFIG_ARCH_RV64I`, `CONFIG_64BIT` | Sv39 RV64 kernel in S-mode. Leave `CONFIG_RISCV_M_MODE` unset. |
 | `CONFIG_RISCV_SBI` | Runs under OpenSBI and calls the SBI interface |
-| `CONFIG_RISCV_APLIC` | Wired interrupts through the APLIC supervisor domain in direct delivery mode. The pinned kernel builds this driver in. |
+| `CONFIG_RISCV_APLIC`, `CONFIG_RISCV_APLIC_MSI`, `CONFIG_RISCV_IMSIC` | Built-in APLIC MSI delivery and IMSIC interrupt files for wired interrupts and IPIs. All three are enabled in the pinned kernel. |
 | `CONFIG_RISCV_PMU`, `CONFIG_RISCV_PMU_SBI` | Cycle and instruction counters through the SBI PMU |
 | `CONFIG_RISCV_MISALIGNED` | Handles misaligned accesses once the kernel takes FWFT delegation. The pin selects it through `CONFIG_RISCV_PROBE_UNALIGNED_ACCESS`; `CONFIG_RISCV_EMULATED_UNALIGNED_ACCESS` also works. |
 | `CONFIG_BINFMT_ELF`, `CONFIG_FPU` | ELF userspace with LP64D hard float |

@@ -442,6 +442,9 @@ module load_queue #(
   wire [IdxWidth-1:0] head_idx = head_ptr[IdxWidth-1:0];
   // Per-entry 1-bit flags (packed vectors for bulk operations)
   logic [DEPTH-1:0] lq_valid;
+  // The memory issue launch as the LQ's own logic reads it; o_mem_read_en
+  // drives the same value to the router.
+  logic mem_read_en;
   logic [DEPTH-1:0] lq_is_fp;
   logic [DEPTH-1:0] lq_addr_valid;
   logic [DEPTH-1:0] lq_sign_ext;
@@ -693,7 +696,7 @@ module load_queue #(
       i_cache_invalidate_addr[XLEN-1:3] == fast_addr[XLEN-1:3];
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) fast_line_invalidated <= 1'b0;
-    else if (o_mem_read_en && !launching_is_cached)
+    else if (mem_read_en && !launching_is_cached)
       fast_line_invalidated <= i_cache_invalidate_valid &&
           i_cache_invalidate_addr[XLEN-1:3] == launch_mem_issue_addr[XLEN-1:3];
     else if (mem_outstanding && fast_line_invalidate_now) fast_line_invalidated <= 1'b1;
@@ -1855,6 +1858,7 @@ module load_queue #(
   logic [riscv_pkg::MemDataBits-1:0] cache_lookup_data;
   logic                              cache_fill_response_valid;
   logic                              cache_fill_valid;
+  logic                              cache_fill_write;
   logic [                  XLEN-1:0] cache_fill_addr;
   logic [riscv_pkg::MemDataBits-1:0] cache_fill_data;
 
@@ -1872,6 +1876,7 @@ module load_queue #(
 
       // Fill: on memory response
       .i_fill_valid(cache_fill_valid),
+      .i_fill_write(cache_fill_write),
       .i_fill_addr (cache_fill_addr),
       .i_fill_data (cache_fill_data),
 
@@ -1946,7 +1951,23 @@ module load_queue #(
   // retain trackers until their responses drain.
   assign launch_mem_issue = !i_flush_en && !i_flush_all && !i_mem_bus_busy && stage_mem_issue &&
       !cached_launch_hold_q;
-  assign launch_mem_issue_idx = sq_check_idx;
+  // The memory issue port carries the same launch with the L0 hit selecting
+  // between values prepared without it, so the hit reaches the router
+  // through one LUT. The hit value adds only the fast path's own conditions,
+  // since the miss value already holds the flush and issue terms. Internal
+  // consumers keep launch_mem_issue.
+  (* keep = "true" *) logic launch_if_miss, launch_if_hit;
+  assign launch_if_miss = !i_flush_en && !i_flush_all && !i_mem_bus_busy && sq_can_issue &&
+      !cached_launch_hold_q;
+  assign launch_if_hit = launch_if_miss && !(ENABLE_L0_FAST_PATH && sq_check_cacheable &&
+      !l0_lookup_busy && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q);
+  assign o_mem_read_en = cache_lookup_hit ? launch_if_hit : launch_if_miss;
+`ifndef SYNTHESIS
+  always_comb begin
+    p_mem_read_en_exact : assert (o_mem_read_en == launch_mem_issue);
+  end
+`endif
+  assign launch_mem_issue_idx  = sq_check_idx;
   assign launch_mem_issue_addr = stage_mem_issue_addr;
   assign launch_mem_issue_size = stage_mem_issue_size;
 
@@ -1964,7 +1985,7 @@ module load_queue #(
   // forwarded value and must stay validated, while the port drops the
   // observation of a load the same-cycle flush kills.
   assign o_coh_observe_valid = (cache_hit_fast_path || sq_do_forward ||
-                                (o_mem_read_en && launching_is_cached && !sq_check_is_amo_q)) &&
+                                (mem_read_en && launching_is_cached && !sq_check_is_amo_q)) &&
       is_cached_addr(
       sq_check_addr_q
   );
@@ -1984,7 +2005,7 @@ module load_queue #(
   logic [CachedSlotBits-1:0] last_launch_slot_q;
   logic [CachedSlots-1:0] cs_router_canceled;
   always_ff @(posedge i_clk) begin
-    if (o_mem_read_en) begin
+    if (mem_read_en) begin
       last_launch_cached_q <= launching_is_cached;
       last_launch_slot_q   <= cs_alloc_idx;
     end
@@ -1998,7 +2019,7 @@ module load_queue #(
     end
     cs_valid_next = cs_valid;
     if (i_mem_read_valid && i_mem_read_is_cached) cs_valid_next[resp_slot] = 1'b0;
-    if (o_mem_read_en && launching_is_cached) cs_valid_next[cs_alloc_idx] = 1'b1;
+    if (mem_read_en && launching_is_cached) cs_valid_next[cs_alloc_idx] = 1'b1;
     if (i_flush_all) begin
       cs_valid_next = cs_valid & ~(resp_from_slot ? (CachedSlots'(1) << resp_slot) : '0) &
           ~cs_router_canceled;
@@ -2018,7 +2039,7 @@ module load_queue #(
   assign cached_hold_if_launch = (&cs_if_launch) || i_cached_resp_held;
   assign cached_hold_if_idle = (&cs_after_response) || i_cached_resp_held;
   assign cached_launch_hold_next = i_flush_all ? ((&cs_if_flush) || i_cached_resp_held) :
-      ((o_mem_read_en && launching_is_cached) ? cached_hold_if_launch : cached_hold_if_idle);
+      ((mem_read_en && launching_is_cached) ? cached_hold_if_launch : cached_hold_if_idle);
 `ifdef F_LQ_CACHED_HOLD_PROOF
   always_comb assert (cached_launch_hold_next == ((&cs_valid_next) || i_cached_resp_held));
 `endif
@@ -2026,7 +2047,7 @@ module load_queue #(
   // Memory issue port: driven straight from the launch terms (no second-deep
   // staging register, see above).
   always_comb begin
-    o_mem_read_en = launch_mem_issue;
+    mem_read_en = launch_mem_issue;
     o_mem_read_addr = launch_mem_issue_addr;
     o_mem_read_size = launch_mem_issue_size;
     o_mem_read_id = cs_alloc_idx;
@@ -2191,10 +2212,30 @@ module load_queue #(
       (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
       fast_addr
   ) && !fast_line_invalidated && !fast_line_invalidate_now);
+  // The fill qualification once more for the L0 RAM write enables, prepared
+  // for each response source so the response valid and its tier arrive at
+  // the last gate. cache_fill_valid keeps the shared response selects above
+  // for the valid bits and every other consumer.
+  (* keep = "true" *) logic cache_fill_if_slot, cache_fill_if_fast;
+  assign cache_fill_if_slot = cs_valid[resp_slot] && !i_flush_all && !cs_drop[resp_slot] &&
+      lq_valid[cs_idx[resp_slot]] && !cs_is_lr[resp_slot] && !cs_is_amo[resp_slot] &&
+      !(cs_inval[resp_slot] || cs_inval_now[resp_slot] || cs_coh_inval_now[resp_slot]);
+  assign cache_fill_if_fast = mem_outstanding && !i_flush_all && !drop_mem_response_pending &&
+      lq_valid[fast_idx] && !fast_is_mmio && !fast_is_lr && !fast_is_amo &&
+      (CACHE_UNCACHED_DATA || (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
+      fast_addr
+  ) && !fast_line_invalidated && !fast_line_invalidate_now));
+  assign cache_fill_write = i_mem_read_valid && !mem_response_error &&
+      (i_mem_read_is_cached ? cache_fill_if_slot : cache_fill_if_fast);
   assign cache_fill_valid = cache_fill_response_valid && cache_fill_memory_type_ok &&
       !mem_response_error &&
       !issued_is_mmio && !issued_is_lr && !issued_is_amo &&
       !(issued_is_cached && (issued_cached_line_invalidated || issued_cached_line_invalidate_now));
+`ifndef SYNTHESIS
+  always_comb begin
+    p_cache_fill_write_exact : assert (cache_fill_write == cache_fill_valid);
+  end
+`endif
 `ifdef F_LQ_NORMAL_FILL_POLICY_PROOF
   always_comb begin
     p_fill_policy_matches_selected_address :
@@ -3041,7 +3082,7 @@ module load_queue #(
       // response and a launch use distinct LQ entries; a dropped response may
       // name an index already reused, and its branch leaves that entry alone.
       // Cached launches use separate slots.
-      if (o_mem_read_en) begin
+      if (mem_read_en) begin
         lq_issued[launch_mem_issue_idx] <= 1'b1;
         if (launching_is_cached) begin
           cs_valid[cs_alloc_idx] <= 1'b1;
@@ -3392,7 +3433,7 @@ module load_queue #(
   logic [CachedSlots-1:0] cs_inval_next, cs_lr_suppress_next;
   for (genvar sl = 0; sl < CachedSlots; sl++) begin : gen_cached_inval
     logic launch_slot;
-    assign launch_slot = o_mem_read_en && launching_is_cached &&
+    assign launch_slot = mem_read_en && launching_is_cached &&
         (cs_alloc_idx == CachedSlotBits'(sl));
     assign cs_inval_next[sl] = !launch_slot &&
         (cs_inval[sl] || cs_inval_now[sl] || cs_coh_inval_now[sl]);
@@ -3433,7 +3474,7 @@ module load_queue #(
     always_comb begin
       f_inval_next = cs_inval[sl];
       f_lr_next = cs_lr_suppress[sl];
-      if (o_mem_read_en && launching_is_cached && (cs_alloc_idx == CachedSlotBits'(sl))) begin
+      if (mem_read_en && launching_is_cached && (cs_alloc_idx == CachedSlotBits'(sl))) begin
         f_inval_next = 1'b0;
         f_lr_next = 1'b0;
       end else begin
@@ -3447,7 +3488,7 @@ module load_queue #(
   end
 
   // AMOs cannot hit L0. Omit its lookup from the AMO snapshot enable for timing;
-  // amo_launch equals o_mem_read_en && sq_check_is_amo_q.
+  // amo_launch equals mem_read_en && sq_check_is_amo_q.
   logic amo_launch;
   assign amo_launch = sq_check_is_amo_q && !i_flush_en && !i_flush_all && !i_mem_bus_busy &&
                       sq_can_issue && !cached_launch_hold_q;
@@ -3458,7 +3499,7 @@ module load_queue #(
     // An MMIO handoff keeps the fast snapshot to itself: the router's pending
     // bit, part of the wrapper's i_mem_bus_busy, blocks every later launch
     // through the router's accept cycle.
-    if (o_mem_read_en && !launching_is_cached) begin
+    if (mem_read_en && !launching_is_cached) begin
       fast_idx      <= launch_mem_issue_idx;
       fast_addr     <= launch_mem_issue_addr;
       fast_size     <= launch_mem_issue_size;
@@ -3473,7 +3514,7 @@ module load_queue #(
       fast_amo_kind <= lq_amo_kind[launch_mem_issue_idx];
       fast_amo_rs2  <= lq_amo_rs2_rd;
     end
-    if (o_mem_read_en && launching_is_cached) begin
+    if (mem_read_en && launching_is_cached) begin
       cs_idx[cs_alloc_idx]      <= launch_mem_issue_idx;
       cs_addr[cs_alloc_idx]     <= launch_mem_issue_addr;
       cs_size[cs_alloc_idx]     <= launch_mem_issue_size;
@@ -3490,8 +3531,8 @@ module load_queue #(
   end
 `ifndef SYNTHESIS
   always_comb begin
-    if (!$isunknown({amo_launch, o_mem_read_en, sq_check_is_amo_q})) begin
-      p_amo_launch_is_the_amo_launch : assert (amo_launch == (o_mem_read_en && sq_check_is_amo_q));
+    if (!$isunknown({amo_launch, mem_read_en, sq_check_is_amo_q})) begin
+      p_amo_launch_is_the_amo_launch : assert (amo_launch == (mem_read_en && sq_check_is_amo_q));
     end
   end
 `endif
@@ -3723,14 +3764,14 @@ module load_queue #(
               (cs_idx[sl] == cs_idx[sl2]))
             $error("LQ: live cached slots %0d and %0d both name entry %0d", sl, sl2, cs_idx[sl]);
         end
-        if (o_mem_read_en && cs_valid[sl] && !cs_drop[sl] && (cs_idx[sl] == launch_mem_issue_idx))
+        if (mem_read_en && cs_valid[sl] && !cs_drop[sl] && (cs_idx[sl] == launch_mem_issue_idx))
           $error(
               "LQ: launch of entry %0d while live cached slot %0d still names it",
               launch_mem_issue_idx,
               sl
           );
       end
-      if (o_mem_read_en &&
+      if (mem_read_en &&
           !(lq_valid[launch_mem_issue_idx] && !lq_issued[launch_mem_issue_idx] &&
             (lq_rob_tag[launch_mem_issue_idx] == sq_check_rob_tag_q)))
         $error(
@@ -3797,7 +3838,7 @@ module load_queue #(
         $error("LQ: AMO compute owner's entry %0d was reallocated under it", amo_entry_idx);
       // The compact-kind write must have drained before launch snapshots it.
       // This is guaranteed by the intervening address/SQ-check staging edge.
-      if (o_mem_read_en && sq_check_is_amo_q) begin
+      if (mem_read_en && sq_check_is_amo_q) begin
         if (amo_kind_alloc_present_q[0] &&
             dep_replaced_oh[amo_kind_alloc_idx_q[0]] &&
             (amo_kind_alloc_idx_q[0] == launch_mem_issue_idx))
@@ -4084,7 +4125,7 @@ module load_queue #(
   // snapshots it. Even an address update in the first cycle after allocation
   // only captures SQ-check; phase-2 and launch occur later.
   always_comb begin
-    if (i_rst_n && o_mem_read_en && sq_check_is_amo_q) begin
+    if (i_rst_n && mem_read_en && sq_check_is_amo_q) begin
       p_amo_kind_slot1_write_drained :
       assert (!amo_kind_alloc_present_q[0] ||
               !dep_replaced_oh[amo_kind_alloc_idx_q[0]] ||
@@ -4402,14 +4443,14 @@ module load_queue #(
 
   // Memory launch uses the staged address, whose validity is sq_check_pending.
   always_comb begin
-    if (i_rst_n && o_mem_read_en) begin
+    if (i_rst_n && mem_read_en) begin
       p_no_mem_issue_without_addr : assert (sq_check_entry_valid && sq_check_entry_issueable);
     end
   end
 
   // No memory issue for already-issued entries
   always_comb begin
-    if (i_rst_n && o_mem_read_en) begin
+    if (i_rst_n && mem_read_en) begin
       p_no_mem_issue_when_issued : assert (!lq_issued[launch_mem_issue_idx]);
     end
   end
@@ -4435,9 +4476,9 @@ module load_queue #(
   // i_rob_head_tag cannot establish that guarantee here.
   always_comb begin
     if (i_rst_n && cached_launch_hold_q) begin
-      p_launch_hold_blocks_mem_handoff : assert (!o_mem_read_en);
+      p_launch_hold_blocks_mem_handoff : assert (!mem_read_en);
     end
-    if (i_rst_n && o_mem_read_en && launching_is_cached) begin
+    if (i_rst_n && mem_read_en && launching_is_cached) begin
       p_cached_handoff_takes_free_slot : assert (!cs_valid[cs_alloc_idx]);
     end
   end
@@ -4561,13 +4602,13 @@ module load_queue #(
 
       // A cached launch reserves its slot and captures its snapshot together.
       // Only its response normally releases the slot.
-      if ($past(o_mem_read_en && launching_is_cached)) begin
+      if ($past(mem_read_en && launching_is_cached)) begin
         p_cached_handoff_sets_slot : assert (cs_valid[$past(cs_alloc_idx)]);
       end
       if ($past(
               (accept_mem_response || drop_mem_response_now) && resp_from_slot
           ) && !$past(
-              o_mem_read_en && launching_is_cached && (cs_alloc_idx == resp_slot)
+              mem_read_en && launching_is_cached && (cs_alloc_idx == resp_slot)
           )) begin
         p_cached_response_frees_slot : assert (!cs_valid[$past(resp_slot)]);
       end
@@ -4722,7 +4763,7 @@ module load_queue #(
     if (i_rst_n) begin
       cover_alloc : cover (i_alloc.valid && !full);
       cover_addr_update : cover (i_addr_update.valid);
-      cover_mem_issue : cover (o_mem_read_en);
+      cover_mem_issue : cover (mem_read_en);
       cover_cdb_broadcast : cover (o_fu_complete.valid);
       if (ENABLE_SQ_FORWARD_FAST_PATH) begin
         cover_sq_forward : cover (sq_do_forward);

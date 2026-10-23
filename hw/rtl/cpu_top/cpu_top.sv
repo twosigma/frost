@@ -15,8 +15,8 @@
  */
 
 // Reusable CPU tile. See cpu_top/README.md for reset, AXI, PMA, and coherence.
-// Board memory, debug transport, interrupt controllers, and DMA agents are
-// instantiated by the SoC wrapper, never by this module.
+// Board memory, debug transport, the APLIC, and DMA agents belong to the SoC.
+// The hart owns its machine and supervisor IMSIC files.
 module cpu_top #(
     // Optional private Normal-memory read caches and buffered write-through
     // stores. Device accesses retain precise, narrow AXI completion.
@@ -56,6 +56,10 @@ module cpu_top #(
     input logic [riscv_pkg::XLEN-1:0] i_boot_addr,
     input riscv_pkg::interrupt_t i_interrupts,
     input logic i_seip,
+    // One MSI per cycle; level 0 is machine, level 1 supervisor.
+    input logic i_msi_valid = 1'b0,
+    input logic i_msi_level = 1'b0,
+    input logic [10:0] i_msi_id = '0,
     input logic [63:0] i_mtime,
     input logic i_disable_branch_prediction = 1'b0,
     input logic i_dbg_haltreq = 1'b0,
@@ -154,6 +158,8 @@ module cpu_top #(
         (riscv_pkg::PmaDevice0Bytes & 4095) != 0 ||
         (riscv_pkg::PmaDevice1Base & 4095) != 0 ||
         (riscv_pkg::PmaDevice1Bytes & 4095) != 0 ||
+        (riscv_pkg::PmaDevice2Base & 4095) != 0 ||
+        (riscv_pkg::PmaDevice2Bytes & 4095) != 0 ||
         riscv_pkg::DdrCapacityLog2Bytes < 12 || riscv_pkg::DdrCapacityLog2Bytes > 55)
       $fatal(1, "cpu_top: PMA regions must use whole pages");
     if (riscv_pkg::DdrLimit <= riscv_pkg::DdrBase ||
@@ -162,7 +168,9 @@ module cpu_top #(
         (riscv_pkg::PmaDevice0Bytes != 0 &&
          riscv_pkg::PmaDevice0Limit <= riscv_pkg::PmaDevice0Base) ||
         (riscv_pkg::PmaDevice1Bytes != 0 &&
-         riscv_pkg::PmaDevice1Limit <= riscv_pkg::PmaDevice1Base))
+         riscv_pkg::PmaDevice1Limit <= riscv_pkg::PmaDevice1Base) ||
+        (riscv_pkg::PmaDevice2Bytes != 0 &&
+         riscv_pkg::PmaDevice2Limit <= riscv_pkg::PmaDevice2Base))
       $fatal(1, "cpu_top: PMA region overflows the address space");
     if (regions_overlap(
             riscv_pkg::DdrBase,
@@ -196,6 +204,28 @@ module cpu_top #(
             riscv_pkg::PmaDevice1Bytes
         ))
       $fatal(1, "cpu_top: PMA regions overlap");
+    if (regions_overlap(
+            riscv_pkg::PmaDevice2Base,
+            riscv_pkg::PmaDevice2Bytes,
+            riscv_pkg::DdrBase,
+            riscv_pkg::DdrCapacityBytes
+        ) || regions_overlap(
+            riscv_pkg::PmaDevice2Base,
+            riscv_pkg::PmaDevice2Bytes,
+            riscv_pkg::PmaUncachedBase,
+            riscv_pkg::PmaUncachedBytes
+        ) || regions_overlap(
+            riscv_pkg::PmaDevice2Base,
+            riscv_pkg::PmaDevice2Bytes,
+            riscv_pkg::PmaDevice0Base,
+            riscv_pkg::PmaDevice0Bytes
+        ) || regions_overlap(
+            riscv_pkg::PmaDevice2Base,
+            riscv_pkg::PmaDevice2Bytes,
+            riscv_pkg::PmaDevice1Base,
+            riscv_pkg::PmaDevice1Bytes
+        ))
+      $fatal(1, "cpu_top: third device region overlaps another PMA region");
     if (riscv_pkg::PmaUncachedExecBytes > riscv_pkg::PmaUncachedBytes)
       $fatal(1, "cpu_top: executable uncached prefix exceeds the memory region");
   end
@@ -290,6 +320,7 @@ module cpu_top #(
   logic data_resp_valid;
   logic uncached_write_buffered;
   logic [1:0] data_resp_status;
+  logic data_resp_ok;
   logic low_req_valid, low_req_ready, low_req_id;
   logic [riscv_pkg::PhysAddrBits-1:0] low_req_addr;
   logic low_resp_valid, low_resp_id, low_resp_error;
@@ -434,6 +465,9 @@ module cpu_top #(
       // Interrupt and timer interface
       .i_interrupts(i_interrupts),
       .i_seip_line(i_seip),
+      .i_msi_valid,
+      .i_msi_level,
+      .i_msi_id,
 
       .i_mtime(i_mtime),
       .o_debug_irq_status(o_debug_irq_status),
@@ -913,7 +947,8 @@ module cpu_top #(
       .o_req_wstrb(data_req_wstrb),
       .i_resp_valid(data_resp_valid),
       .i_resp_rdata(data_resp_data),
-      .i_resp_status(data_resp_status)
+      .i_resp_status(data_resp_status),
+      .i_resp_ok(data_resp_ok)
   );
 
   cpu_memory_fabric #(
@@ -950,6 +985,7 @@ module cpu_top #(
       .o_data_resp_valid(data_resp_valid),
       .o_data_resp_data(data_resp_data),
       .o_data_resp_status(data_resp_status),
+      .o_data_resp_ok(data_resp_ok),
       .i_fetch_valid(low_req_valid),
       .o_fetch_ready(low_req_ready),
       .i_fetch_addr(low_req_addr),

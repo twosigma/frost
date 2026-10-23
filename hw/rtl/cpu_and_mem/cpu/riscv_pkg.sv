@@ -1105,6 +1105,16 @@ package riscv_pkg;
   localparam bit [11:0] CsrMepc = 12'h341;  // Machine exception PC
   localparam bit [11:0] CsrMcause = 12'h342;  // Machine trap cause
   localparam bit [11:0] CsrMtval = 12'h343;  // Machine trap value
+  localparam bit [11:0] CsrMiselect = 12'h350;  // Machine indirect select
+  localparam bit [11:0] CsrMireg = 12'h351;  // Machine indirect register
+  localparam bit [11:0] CsrMtopei = 12'h35C;  // Machine top external interrupt
+  localparam bit [11:0] CsrMtopi = 12'hFB0;  // Machine top interrupt (read-only)
+  localparam bit [11:0] CsrMvien = 12'h308;  // Virtual interrupt enables (read-only zero)
+  localparam bit [11:0] CsrMvip = 12'h309;  // Virtual interrupt pending aliases
+  localparam bit [11:0] CsrSiselect = 12'h150;  // Supervisor indirect select
+  localparam bit [11:0] CsrSireg = 12'h151;  // Supervisor indirect register
+  localparam bit [11:0] CsrStopei = 12'h15C;  // Supervisor top external interrupt
+  localparam bit [11:0] CsrStopi = 12'hDB0;  // Supervisor top interrupt (read-only)
   localparam bit [11:0] CsrMip = 12'h344;  // Machine interrupt pending
 
   // Supervisor-mode CSR addresses. sstatus/sie/sip are
@@ -1348,6 +1358,12 @@ package riscv_pkg;
 `ifndef FROST_PMA_DEVICE1_BYTES
   `define FROST_PMA_DEVICE1_BYTES 64'h0000_0000_0040_0000
 `endif
+`ifndef FROST_PMA_DEVICE2_BASE
+  `define FROST_PMA_DEVICE2_BASE 64'h0000_0000_4800_0000
+`endif
+`ifndef FROST_PMA_DEVICE2_BYTES
+  `define FROST_PMA_DEVICE2_BYTES 64'h0000_0000_0020_0000
+`endif
 `ifndef FROST_PMA_LEGACY_DEVICE_STORES
   `define FROST_PMA_LEGACY_DEVICE_STORES 1
 `endif
@@ -1373,10 +1389,16 @@ package riscv_pkg;
   localparam longint unsigned PmaDevice1Bytes = `FROST_PMA_DEVICE1_BYTES;
   localparam longint unsigned PmaDevice1Limit =
       PmaDevice1Bytes == 0 ? 0 : PmaDevice1Base + PmaDevice1Bytes;
+  localparam longint unsigned PmaDevice2Base = `FROST_PMA_DEVICE2_BASE;
+  localparam longint unsigned PmaDevice2Bytes = `FROST_PMA_DEVICE2_BYTES;
+  localparam longint unsigned PmaDevice2Limit =
+      PmaDevice2Bytes == 0 ? 0 : PmaDevice2Base + PmaDevice2Bytes;
   localparam longint unsigned PmaMemoryLimit =
       DdrLimit > PmaUncachedLimit ? DdrLimit : PmaUncachedLimit;
-  localparam longint unsigned PmaDeviceLimit =
+  localparam longint unsigned PmaDevice01Limit =
       PmaDevice0Limit > PmaDevice1Limit ? PmaDevice0Limit : PmaDevice1Limit;
+  localparam longint unsigned PmaDeviceLimit =
+      PmaDevice01Limit > PmaDevice2Limit ? PmaDevice01Limit : PmaDevice2Limit;
   localparam longint unsigned PmaAddressLimit =
       PmaMemoryLimit > PmaDeviceLimit ? PmaMemoryLimit : PmaDeviceLimit;
   // At least 32 bits keeps the fixed-width ISA/debug and legacy SoC ports
@@ -1390,7 +1412,8 @@ package riscv_pkg;
       DdrBase == 64'h8000_0000 &&
       PmaUncachedBase == 0 && PmaUncachedBytes == 262144 && PmaUncachedExecBytes == 131072 &&
       PmaDevice0Base == 64'h4000_0000 && PmaDevice0Bytes == 64'h31000 &&
-      PmaDevice1Base == 64'h4400_0000 && PmaDevice1Bytes == 64'h400000;
+      PmaDevice1Base == 64'h4400_0000 && PmaDevice1Bytes == 64'h400000 &&
+      PmaDevice2Base == 64'h4800_0000 && PmaDevice2Bytes == 64'h200000;
   // Low BRAM: loads, stores and atomics reach all 2**LowBramAddrBits bytes;
   // instruction fetch reaches only the first 2**LowBramCodeAddrBits, the
   // code region the instruction memory holds (soc_top sizes it from
@@ -1491,6 +1514,8 @@ package riscv_pkg;
   localparam logic [19:0] MmioLastPage   = 20'h4_0030;
   localparam logic [19:0] AplicFirstPage = 20'h4_4000;
   localparam logic [19:0] AplicLastPage  = 20'h4_43FF;
+  localparam logic [19:0] ImsicFirstPage = 20'h4_8000;
+  localparam logic [19:0] ImsicLastPage  = 20'h4_81FF;
 
   // Eligible private Normal memory for the optional read-cache/write-through
   // profile. Debug data bypasses L0 to observe transport updates immediately.
@@ -1520,20 +1545,22 @@ package riscv_pkg;
   endfunction
 
   // Device-page check for PA[31:12]. MMIO occupies part of one aligned
-  // 64-page block; APLIC occupies one aligned 1024-page block. Match the
+  // 64-page block; APLIC occupies 1024 pages and IMSIC 512 pages. Match the
   // block, then look up the MMIO page offset in MmioBlockPages, for timing.
   localparam logic [63:0] MmioBlockPages =
       ~(64'hFFFF_FFFF_FFFF_FFFF << (MmioLastPage[5:0] + 1)) &
       (64'hFFFF_FFFF_FFFF_FFFF << MmioFirstPage[5:0]);
   function automatic logic pma_device_page_ok(input logic [19:0] page);
     pma_device_page_ok = ((page[19:6] == MmioFirstPage[19:6]) && MmioBlockPages[page[5:0]]) ||
-                         (page[19:10] == AplicFirstPage[19:10]);
+                         (page[19:10] == AplicFirstPage[19:10]) ||
+                         (page[19:9] == 11'h240);
   endfunction
 
   function automatic logic pma_device_ok(input logic [XLEN-1:0] addr);
     pma_device_ok = PmaUsesFrostMap ? (addr[XLEN-1:32] == '0) && pma_device_page_ok(addr[31:12]) :
         ((PmaDevice0Bytes != 0) && ((addr - PmaDevice0Base) <= PmaDevice0Bytes - 1)) ||
-        ((PmaDevice1Bytes != 0) && ((addr - PmaDevice1Base) <= PmaDevice1Bytes - 1));
+        ((PmaDevice1Bytes != 0) && ((addr - PmaDevice1Base) <= PmaDevice1Bytes - 1)) ||
+        ((PmaDevice2Bytes != 0) && ((addr - PmaDevice2Base) <= PmaDevice2Bytes - 1));
   endfunction
 
   // The enabled FROST compatibility mode admits untranslated device-quadrant stores. The

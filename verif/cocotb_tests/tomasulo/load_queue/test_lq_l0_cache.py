@@ -34,6 +34,7 @@ async def test_capacity_and_coherence(dut: Any) -> None:
     for name in (
         "i_lookup_addr",
         "i_fill_valid",
+        "i_fill_write",
         "i_fill_addr",
         "i_fill_data",
         "i_invalidate_valid",
@@ -75,6 +76,7 @@ async def test_capacity_and_coherence(dut: Any) -> None:
         )
         dut.i_lookup_addr.value = lookup
         dut.i_fill_valid.value = fill is not None
+        dut.i_fill_write.value = fill is not None
         dut.i_fill_addr.value = fill[0] if fill else 0
         dut.i_fill_data.value = fill[1] if fill else 0
         for prefix, address in zip(("i_invalidate", "i_invalidate2"), invalidates):

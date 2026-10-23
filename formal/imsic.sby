@@ -1,0 +1,51 @@
+[tasks]
+bmc
+prove
+cover
+prove_harts3
+cover_harts3
+prove_ids511
+bmc_ids2047
+
+[options]
+bmc: mode bmc
+bmc: depth 10
+prove: mode prove
+prove: depth 2
+cover: mode cover
+cover: depth 12
+prove_harts3: mode prove
+prove_harts3: depth 2
+cover_harts3: mode cover
+cover_harts3: depth 12
+prove_ids511: mode prove
+prove_ids511: depth 2
+bmc_ids2047: mode bmc
+bmc_ids2047: depth 3
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv imsic_priority.sv imsic_file.sv imsic_decode.sv imsic.sv
+# Two harts with 63 identities and APLIC delivery; three harts, a page per
+# region unused, 191 identities (three eip words; identities 192-255 do not
+# exist) and no APLIC delivery; one hart with 511 identities (eight words);
+# and one hart with the spec's 2047, to depth 3: the decode of 11-bit
+# identities, every register read, and single writes. No identity is both
+# pending and enabled within that depth; deeper or unbounded runs at 2047 take
+# from a quarter of an hour to several hours.
+bmc: chparam -set NUM_HARTS 2 -set NUM_IDS 63 -set APLIC_DELIVERY 1 imsic
+prove: chparam -set NUM_HARTS 2 -set NUM_IDS 63 -set APLIC_DELIVERY 1 imsic
+cover: chparam -set NUM_HARTS 2 -set NUM_IDS 63 -set APLIC_DELIVERY 1 imsic
+prove_harts3: chparam -set NUM_HARTS 3 -set NUM_IDS 191 -set APLIC_DELIVERY 0 imsic
+cover_harts3: chparam -set NUM_HARTS 3 -set NUM_IDS 191 -set APLIC_DELIVERY 0 imsic
+prove_ids511: chparam -set NUM_HARTS 1 -set NUM_IDS 511 -set APLIC_DELIVERY 1 imsic
+bmc_ids2047: chparam -set NUM_HARTS 1 -set NUM_IDS 2047 -set APLIC_DELIVERY 1 imsic
+prep -top imsic
+
+[files]
+../hw/rtl/peripherals/imsic/imsic_priority.sv
+../hw/rtl/peripherals/imsic/imsic_file.sv
+../hw/rtl/peripherals/imsic/imsic_decode.sv
+../hw/rtl/peripherals/imsic/imsic.sv

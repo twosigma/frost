@@ -34,7 +34,8 @@ expands renaming, execution, result broadcast, and load/store ordering.
 ## Inside cpu_ooo
 
 `cpu_ooo.sv` instantiates the IF, PD, and ID stages, `dispatch`,
-`tomasulo_wrapper` (the back end), `csr_file`, `trap_unit`, the page-table
+`tomasulo_wrapper` (the back end), `csr_file`, two IMSIC interrupt files,
+`trap_unit`, the page-table
 walker (`mmu/ptw`), and these glue submodules from [`cpu_ooo/`](cpu_ooo/):
 
 | Submodule | Directory | Role |
@@ -292,6 +293,20 @@ armed, commit is one-wide, and a `wfi` runs as a `nop`, so a step over the
 instruction before a `wfi` halts at the `wfi`. Because trap entry presets the
 interrupt resume PC to the trap target, a stepped instruction that traps halts
 with `dpc` at the handler's first instruction, as the specification requires.
+
+## AIA interrupt files
+
+The machine and supervisor IMSIC files live beside the CSR file inside
+`cpu_ooo`. Each has 63 identities and a registered MSI ingress. APLIC direct
+lines pass through at reset. The CSR file implements Smaia and Ssaia,
+including exact major-interrupt selection in `mtopi` and `stopi`, read-only
+zero major priorities and `mvien`, and `mvip` aliases of software pending
+bits. The ROB samples indirect-access legality at allocation. Serialized
+select writes prevent a younger access from using stale legality. The files
+report `*topei` and their lines from their registers a cycle late. CSR commits
+never come in consecutive cycles, which a simulation assertion checks, so
+every CSR access sees the effect of the one before it.
+See the [CPU interface](../../cpu_top/README.md#interrupt-and-debug-controls).
 
 ## CSR writes
 

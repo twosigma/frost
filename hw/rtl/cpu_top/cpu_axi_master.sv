@@ -31,7 +31,10 @@ module cpu_axi_master #(
     parameter int unsigned ID_BITS = 6,
     // USER has no CPU semantics. All outgoing USER bits are zero; incoming
     // USER bits are ignored. A wrapper may omit these sidebands entirely.
-    parameter int unsigned USER_BITS = 1
+    parameter int unsigned USER_BITS = 1,
+    // o_resp_valid_id and o_resp_ok_id report a visible response carrying
+    // this ID, and one with an OKAY status.
+    parameter int unsigned FLAG_RESP_ID = 0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -54,6 +57,8 @@ module cpu_axi_master #(
     output logic [ID_BITS-1:0] o_resp_id,
     output logic [DATA_BYTES*8-1:0] o_resp_rdata,
     output logic [1:0] o_resp_status,
+    output logic o_resp_valid_id,
+    output logic o_resp_ok_id,
     // Includes queued requests, fabric transactions, buffered responses, and
     // pre-reset traffic. It is not merely an AXI channel-idle indication.
     output logic o_idle,
@@ -217,6 +222,17 @@ module cpu_axi_master #(
   assign o_resp_id = select_b ? b_id_q : r_id_q;
   assign o_resp_rdata = select_b ? '0 : r_data_q;
   assign o_resp_status = select_b ? b_status_q : r_status_q;
+  // The same functions as o_resp_valid && o_resp_id == FLAG_RESP_ID, and
+  // that with o_resp_status == OKAY, compared per channel before the select
+  // and kept apart from the widely loaded response valid.
+  (* keep = "true" *) logic resp_valid_id, resp_ok_id;
+  assign resp_valid_id = !i_rst && !i_axi_rst && (r_valid_q || b_valid_q) &&
+      (select_b ? (b_id_q == ID_BITS'(FLAG_RESP_ID)) : (r_id_q == ID_BITS'(FLAG_RESP_ID)));
+  assign resp_ok_id = !i_rst && !i_axi_rst && (r_valid_q || b_valid_q) &&
+      (select_b ? (b_id_q == ID_BITS'(FLAG_RESP_ID)) && (b_status_q == 2'b00) :
+                  (r_id_q == ID_BITS'(FLAG_RESP_ID)) && (r_status_q == 2'b00));
+  assign o_resp_valid_id = resp_valid_id;
+  assign o_resp_ok_id = resp_ok_id;
   assign resp_fire = o_resp_valid && i_resp_ready;
   assign o_axi_rready = !i_axi_rst && (i_rst || !r_valid_q || (resp_fire && !select_b));
   assign o_axi_bready = !i_axi_rst && (i_rst || !b_valid_q || (resp_fire && select_b));
@@ -283,6 +299,13 @@ module cpu_axi_master #(
   assign unused_user = ^{i_axi_ruser, i_axi_buser};
 
 `ifndef SYNTHESIS
+  always_comb begin
+    p_resp_valid_id_exact :
+    assert (o_resp_valid_id == (o_resp_valid && (o_resp_id == ID_BITS'(FLAG_RESP_ID))));
+    p_resp_ok_id_exact :
+    assert (o_resp_ok_id ==
+            (o_resp_valid && (o_resp_id == ID_BITS'(FLAG_RESP_ID)) && (o_resp_status == 2'b00)));
+  end
   always @(posedge i_clk) begin
     if (req_fire) begin
       assert (i_req_size <= 3'($clog2(DATA_BYTES)))

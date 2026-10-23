@@ -227,6 +227,8 @@ module platform_top #(
   logic cpu_rst;
   logic cpu_axi_rst;
   riscv_pkg::interrupt_t cpu_interrupts;
+  logic cpu_msi_valid, cpu_msi_level;
+  logic [10:0] cpu_msi_id;
   logic cpu_seip;
   logic [63:0] cpu_mtime;
   logic dbg_haltreq;
@@ -343,6 +345,9 @@ module platform_top #(
       .i_boot_addr(BOOT_ADDR),
       .i_interrupts(cpu_interrupts),
       .i_seip(cpu_seip),
+      .i_msi_valid(cpu_msi_valid),
+      .i_msi_level(cpu_msi_level),
+      .i_msi_id(cpu_msi_id),
       .i_mtime(cpu_mtime),
       .i_disable_branch_prediction(1'b0),
       .i_dbg_haltreq(dbg_haltreq),
@@ -539,6 +544,9 @@ module platform_top #(
       .o_cpu_axi_rst(cpu_axi_rst),
       .o_cpu_interrupts(cpu_interrupts),
       .o_cpu_seip(cpu_seip),
+      .o_cpu_msi_valid(cpu_msi_valid),
+      .o_cpu_msi_level(cpu_msi_level),
+      .o_cpu_msi_id(cpu_msi_id),
       .o_cpu_mtime(cpu_mtime),
       .o_dbg_haltreq(dbg_haltreq),
       .o_dbg_go(dbg_go),

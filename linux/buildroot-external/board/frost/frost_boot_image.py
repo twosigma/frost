@@ -78,19 +78,17 @@ LINUX_IMAGE_MAGIC = b"RISCV\x00\x00\x00"  # header offset 0x30
 LINUX_IMAGE_SIZE_OFFSET = 0x10  # u64 image_size (text + bss)
 
 # What the DT advertises: the ISA the core implements, in the spelling both
-# OpenSBI and Linux parse. Keep it in sync with FROST_MARCH_EXTENSIONS in
-# sw/common/common.mk, misa (MisaValue in hw/rtl/cpu_and_mem/cpu/csr/csr_file.sv),
-# and linux/README.md ("Advertised ISA").
+# OpenSBI and Linux parse. The unprivileged subset matches
+# FROST_MARCH_EXTENSIONS in sw/common/common.mk and misa in csr_file.sv.
+# linux/README.md documents the privileged extensions too.
 ISA_BASE = "rv64i"
 ISA_EXTENSIONS = (
     "i", "m", "a", "f", "d", "c",
     "zicsr", "zifencei", "zicntr",
     "zba", "zbb", "zbs", "zbkb", "zicond", "zihintpause",
-    "sstc", "svade",
+    "smaia", "ssaia", "sstc", "svade",
 )  # fmt: skip
-ISA_STRING = (
-    "rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbs_zbkb_zicond_zihintpause_sstc_svade"
-)
+ISA_STRING = "rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbs_zbkb_zicond_zihintpause_smaia_ssaia_sstc_svade"
 
 # Disable IPv6 autoconfiguration traffic, which returns through NIC loopback
 # and fails frost_nettest's idle checks. The initramfs needs no IPv6.
@@ -115,6 +113,10 @@ APLIC_S_BASE = 0x4400_8000
 APLIC_DOMAIN_SIZE = 0x8000
 # 1 = ns16550, 2 = board pin, 3 = DMA test engine, 4 = NIC, 5 = memory errors
 APLIC_NUM_SOURCES = 5
+IMSIC_M_BASE = 0x4800_0000
+IMSIC_S_BASE = 0x4810_0000
+IMSIC_FILE_SIZE = 0x1000
+IMSIC_NUM_IDS = 63
 # The DMA test engine's register window; no Linux driver binds to it, the
 # node only records the device and its APLIC source.
 DMA_ENGINE_BASE = 0x4002_0000
@@ -348,25 +350,47 @@ def gen_dts(
 \t\t\tinterrupts-extended = <&cpu0_intc 3 &cpu0_intc 7>;
 \t\t}};
 
+\t\timsic_m: interrupt-controller@{IMSIC_M_BASE:x} {{
+\t\t\tcompatible = "frost,imsics", "riscv,imsics";
+\t\t\treg = <0x{IMSIC_M_BASE:08x} 0x{IMSIC_FILE_SIZE:08x}>;
+\t\t\tinterrupt-controller;
+\t\t\t#interrupt-cells = <0>;
+\t\t\tmsi-controller;
+\t\t\t#msi-cells = <0>;
+\t\t\tinterrupts-extended = <&cpu0_intc 11>;
+\t\t\triscv,num-ids = <{IMSIC_NUM_IDS}>;
+\t\t}};
+
+\t\timsic_s: interrupt-controller@{IMSIC_S_BASE:x} {{
+\t\t\tcompatible = "frost,imsics", "riscv,imsics";
+\t\t\treg = <0x{IMSIC_S_BASE:08x} 0x{IMSIC_FILE_SIZE:08x}>;
+\t\t\tinterrupt-controller;
+\t\t\t#interrupt-cells = <0>;
+\t\t\tmsi-controller;
+\t\t\t#msi-cells = <0>;
+\t\t\tinterrupts-extended = <&cpu0_intc 9>;
+\t\t\triscv,num-ids = <{IMSIC_NUM_IDS}>;
+\t\t}};
+
 \t\taplic_m: interrupt-controller@{APLIC_M_BASE:x} {{
-\t\t\tcompatible = "riscv,aplic";
+\t\t\tcompatible = "frost,aplic", "riscv,aplic";
 \t\t\treg = <0x{APLIC_M_BASE:08x} 0x{APLIC_DOMAIN_SIZE:08x}>;
 \t\t\t#interrupt-cells = <0x02>;
 \t\t\t#address-cells = <0x00>;
 \t\t\tinterrupt-controller;
 \t\t\triscv,num-sources = <{APLIC_NUM_SOURCES}>;
-\t\t\tinterrupts-extended = <&cpu0_intc 11>;
+\t\t\tmsi-parent = <&imsic_m>;
 \t\t\triscv,children = <&aplic_s>;
 \t\t\triscv,delegation = <&aplic_s 1 {APLIC_NUM_SOURCES}>;
 \t\t}};
 \t\taplic_s: interrupt-controller@{APLIC_S_BASE:x} {{
-\t\t\tcompatible = "riscv,aplic";
+\t\t\tcompatible = "frost,aplic", "riscv,aplic";
 \t\t\treg = <0x{APLIC_S_BASE:08x} 0x{APLIC_DOMAIN_SIZE:08x}>;
 \t\t\t#interrupt-cells = <0x02>;
 \t\t\t#address-cells = <0x00>;
 \t\t\tinterrupt-controller;
 \t\t\triscv,num-sources = <{APLIC_NUM_SOURCES}>;
-\t\t\tinterrupts-extended = <&cpu0_intc 9>;
+\t\t\tmsi-parent = <&imsic_s>;
 \t\t}};
 \t\tdma-test-engine@{DMA_ENGINE_BASE:x} {{
 \t\t\tcompatible = "frost,dma-test-engine";

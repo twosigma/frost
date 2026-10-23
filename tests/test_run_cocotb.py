@@ -606,6 +606,25 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Committed DDR stores drain before satp and mstatus writes retire"
         ),
     ),
+    "imsic_csr_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="imsic_csr_test",
+        extra_env=(("COCOTB_MAX_CYCLES", "1500000"),),
+        description="AIA CSR legality, indirect registers, claims, aliases and exact topi priority",
+    ),
+    "imsic_msi_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="imsic_msi_test",
+        description="IMSIC MSI stores, access sizes, byte orders, translated access and trap claims",
+    ),
+    "imsic_aplic_coexist_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="imsic_aplic_coexist_test",
+        description="IMSIC and APLIC UART/DMA direct delivery coexistence and MSI forwarding",
+    ),
     "aplic_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -2244,6 +2263,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             '"-DFROST_PMA_DEVICE0_BASE=64\'h1400000000"',
             '"-DFROST_PMA_CACHED_BASE=64\'h1800000000"',
             "-DFROST_PMA_DEVICE1_BYTES=0",
+            "-DFROST_PMA_DEVICE2_BYTES=0",
         ),
     ),
     "cpu_top_writethrough_custom_map": CocotbRunConfig(
@@ -2262,6 +2282,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             '"-DFROST_PMA_DEVICE0_BASE=64\'h1400000000"',
             '"-DFROST_PMA_CACHED_BASE=64\'h1800000000"',
             "-DFROST_PMA_DEVICE1_BYTES=0",
+            "-DFROST_PMA_DEVICE2_BYTES=0",
         ),
     ),
     "cpu_top_strict_map": CocotbRunConfig(
@@ -2474,15 +2495,69 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GPOLL_CYCLES=64",),
         extra_env=(("ECC_READER_POLL_CYCLES", "64"),),
     ),
+    # Joint APLIC/IMSIC delivery, including an unused hart encoding at three harts.
+    **{
+        f"aplic_imsic_h{harts}": CocotbRunConfig(
+            python_test_module="cocotb_tests.aplic_imsic.test_aplic_imsic",
+            hdl_toplevel_module="aplic_imsic_test_harness",
+            description=f"APLIC to IMSIC delivery at both levels with {harts} harts, locked addresses and CPU arbitration",
+            verilator_extra_args=(f"-GNUM_HARTS={harts}",),
+            extra_env=(("JOINT_NUM_HARTS", str(harts)),),
+        )
+        for harts in range(1, 5)
+    },
+    # The IMSIC in three shapes: two harts with 191 identities, three eip
+    # words of which identities 192-255 do not exist; the module defaults;
+    # and three harts, a page per region unused, with the spec's 2047
+    # identities, no APLIC delivery and other region bases. The bench reads
+    # the shape from IMSIC_*.
+    **{
+        name: CocotbRunConfig(
+            python_test_module="cocotb_tests.imsic.test_imsic",
+            hdl_toplevel_module="imsic",
+            description=description,
+            verilator_extra_args=tuple(
+                f"-G{parameter}={value}" for parameter, value in shape
+            ),
+            extra_env=tuple(
+                (f"IMSIC_{parameter}", str(value)) for parameter, value in shape
+            ),
+        )
+        for name, description, shape in (
+            (
+                "imsic",
+                "IMSIC registers, MSIs in both byte orders, claims, races and "
+                "delivery with two harts and 191 identities",
+                (("NUM_HARTS", 2), ("NUM_IDS", 191), ("APLIC_DELIVERY", 1)),
+            ),
+            (
+                "imsic_default",
+                "IMSIC behavior with the module defaults: one hart, 63 identities",
+                (("NUM_HARTS", 1), ("NUM_IDS", 63), ("APLIC_DELIVERY", 1)),
+            ),
+            (
+                "imsic_limits",
+                "IMSIC behavior with three harts, 2047 identities and no APLIC "
+                "delivery",
+                (
+                    ("NUM_HARTS", 3),
+                    ("NUM_IDS", 2047),
+                    ("APLIC_DELIVERY", 0),
+                    ("M_BASE_ADDR", 0x2400_0000),
+                    ("S_BASE_ADDR", 0x2800_0000),
+                ),
+            ),
+        )
+    },
     "memory_error_unit": CocotbRunConfig(
         python_test_module="cocotb_tests.test_memory_error_unit",
         hdl_toplevel_module="memory_error_unit",
         description="Memory error unit registers, counters and interrupt",
         verilator_extra_args=("-GID_BITS=5",),
     ),
-    # The APLIC in four shapes: two harts and two bitmap words; the module
-    # defaults the SoC uses; the spec's 1023 sources with three harts and
-    # 8-bit priorities; and 512 harts. The bench reads the shape from APLIC_*.
+    # The APLIC's direct-mode shapes: two harts and two bitmap words; the
+    # module defaults; the spec's 1023 sources with three harts and
+    # 8-bit priorities; 512 harts; and an MSI-capable build. The bench reads APLIC_*.
     **{
         name: CocotbRunConfig(
             python_test_module="cocotb_tests.aplic.test_aplic",
@@ -2503,6 +2578,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
                 (("NUM_SOURCES", 40), ("NUM_HARTS", 2), ("IPRIOLEN", 3)),
             ),
             (
+                "aplic_direct_msi",
+                "APLIC direct delivery with MSI support enabled, 40 sources and two harts",
+                (
+                    ("NUM_SOURCES", 40),
+                    ("NUM_HARTS", 2),
+                    ("IPRIOLEN", 3),
+                    ("MSI_ENABLE", 1),
+                ),
+            ),
+            (
                 "aplic_default",
                 "APLIC behavior with the module defaults: five sources, one hart",
                 (("NUM_SOURCES", 5), ("NUM_HARTS", 1), ("IPRIOLEN", 3)),
@@ -2516,6 +2601,62 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
                 "aplic_512_harts",
                 "APLIC behavior with 512 harts, every IDC a control region holds",
                 (("NUM_SOURCES", 5), ("NUM_HARTS", 512), ("IPRIOLEN", 2)),
+            ),
+        )
+    },
+    **{
+        name: CocotbRunConfig(
+            python_test_module="cocotb_tests.aplic.test_aplic_msi",
+            hdl_toplevel_module="aplic",
+            description=description,
+            verilator_extra_args=tuple(f"-G{p}={v}" for p, v in shape),
+            extra_env=tuple((f"APLIC_{p}", str(v)) for p, v in shape),
+        )
+        for name, description, shape in (
+            (
+                "aplic_msi",
+                "APLIC MSI registers, pending rules, ordered forwarding and backpressure",
+                (
+                    ("NUM_SOURCES", 40),
+                    ("NUM_HARTS", 2),
+                    ("IPRIOLEN", 3),
+                    ("MSI_ENABLE", 1),
+                    ("MSI_ADDR_WIDTH", 56),
+                    ("MMSIADDRCFG_RESET", 0x48000),
+                    ("MMSIADDRCFGH_RESET", 0x1000),
+                    ("SMSIADDRCFG_RESET", 0x48100),
+                    ("SMSIADDRCFGH_RESET", 0),
+                ),
+            ),
+            (
+                "aplic_msi_32",
+                "APLIC MSI WARL address fields with a 32-bit master",
+                (
+                    ("NUM_SOURCES", 5),
+                    ("NUM_HARTS", 2),
+                    ("IPRIOLEN", 3),
+                    ("MSI_ENABLE", 1),
+                    ("MSI_ADDR_WIDTH", 32),
+                    ("MMSIADDRCFG_RESET", 0x48000),
+                    ("MMSIADDRCFGH_RESET", 0x1000),
+                    ("SMSIADDRCFG_RESET", 0x48100),
+                    ("SMSIADDRCFGH_RESET", 0),
+                ),
+            ),
+            (
+                "aplic_msi_locked",
+                "APLIC MSI with address configuration locked by reset parameters",
+                (
+                    ("NUM_SOURCES", 5),
+                    ("NUM_HARTS", 2),
+                    ("IPRIOLEN", 3),
+                    ("MSI_ENABLE", 1),
+                    ("MSI_ADDR_WIDTH", 56),
+                    ("MMSIADDRCFG_RESET", 0x48000),
+                    ("MMSIADDRCFGH_RESET", 0x80001000),
+                    ("SMSIADDRCFG_RESET", 0x48100),
+                    ("SMSIADDRCFGH_RESET", 0),
+                ),
             ),
         )
     },

@@ -458,13 +458,24 @@ else ifeq ($(TOPLEVEL),x3_ecc_reader)
 COMPILE_ARGS := \
 	$(ROOT)/boards/x3/x3_ecc_reader.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),aplic_imsic_test_harness)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/peripherals/aplic/aplic.sv \
+        -f $(ROOT)/hw/rtl/peripherals/imsic/imsic.f \
+        $(ROOT)/hw/sim/aplic_imsic_test_harness.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),imsic)
+# IMSIC unit bench (machine and supervisor interrupt files per hart)
+COMPILE_ARGS := \
+	-f $(ROOT)/hw/rtl/peripherals/imsic/imsic.f
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),memory_error_unit)
 # Memory error unit bench (registers, counters, interrupt)
 COMPILE_ARGS := \
 	$(ROOT)/hw/rtl/cpu_and_mem/memory_error_unit.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),aplic)
-# APLIC unit bench (two interrupt domains in direct delivery mode)
+# APLIC unit benches (direct delivery and optional MSI forwarding)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/peripherals/aplic/aplic.sv
 VERILOG_SOURCES :=

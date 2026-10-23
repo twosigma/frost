@@ -635,13 +635,32 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "imsic_file.sby",
+        "IMSIC interrupt file with the CPU's registered select and identity decodes",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "imsic.sby",
+        "IMSIC topei selection, pending and enable updates, claims, interrupt "
+        "lines, register reads, and the MSI address decode",
+        tasks=(
+            "bmc",
+            "prove",
+            "cover",
+            "prove_harts3",
+            "cover_harts3",
+            "prove_ids511",
+            "bmc_ids2047",
+        ),
+    ),
+    FormalTarget(
         "async_fifo.sby",
         "FIFO capacity, flow control, and data ordering across unrelated clocks",
     ),
     FormalTarget(
         "aplic.sby",
         "APLIC topi selection, pending-bit rules, delegation, domain isolation, "
-        "claims, and register reads",
+        "claims, MSI forwarding, address configuration, and register reads",
         tasks=(
             "bmc",
             "prove",
@@ -649,6 +668,13 @@ FORMAL_TARGETS = [
             "prove_one_hart",
             "prove_wide",
             "prove_three_harts",
+            "msi_bmc",
+            "msi_prove",
+            "msi_cover",
+            "msi_prove_32",
+            "msi_prove_locked",
+            "msi_prove_wide",
+            "msi_prove_four_harts",
         ),
     ),
     FormalTarget(
@@ -660,6 +686,20 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("prove_predecoded", "Unbounded IMSIC equivalence with registered input decodes"),
+    ("msi_bmc", "Bounded APLIC MSI forwarding and pending transitions"),
+    ("msi_prove", "Unbounded APLIC MSI registers, forwarding and ordering"),
+    (
+        "msi_cover",
+        "APLIC MSI acceptance, backpressure, delegation and lock reachability",
+    ),
+    ("msi_prove_32", "Unbounded APLIC MSI with 32-bit addresses and three harts"),
+    (
+        "msi_prove_locked",
+        "Unbounded APLIC MSI with address configuration locked at reset",
+    ),
+    ("msi_prove_wide", "Unbounded APLIC MSI with two words of source bits"),
+    ("msi_prove_four_harts", "MSI proof with four harts and 56-bit addresses"),
     ("bmc_strict", "Bounded check with strict uncached Normal memory"),
     ("bmc_normal", "Bounded check with Normal read caching"),
     ("bmc_legacy", "Bounded check with legacy unconditional data caching"),
@@ -830,6 +870,18 @@ SBY_TASKS = [
         "Cover checking of INT station features at eight-entry capacity",
     ),
     ("bmc_perf_off", "Bounded model checking with the profiling counters left out"),
+    (
+        "prove_harts3",
+        "Unbounded proof with three harts, 191 interrupt identities, and no APLIC "
+        "delivery",
+    ),
+    (
+        "cover_harts3",
+        "Cover checking with three harts, 191 interrupt identities, and no APLIC "
+        "delivery",
+    ),
+    ("prove_ids511", "Unbounded proof with 511 interrupt identities"),
+    ("bmc_ids2047", "Bounded checking with 2047 interrupt identities"),
     ("bmc_width8", "Bounded checking against a reference model at 8 bits"),
     ("cover_width8", "Cover checking at 8 bits"),
     ("prove_width64", "Unbounded invariant proof at 64 bits"),

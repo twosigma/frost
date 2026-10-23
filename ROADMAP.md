@@ -46,17 +46,17 @@ coherent ingress, and its instruction and data copies are separate, so a
 store to it does not reach another hart's cached copies, and an AMO on it is
 not atomic between harts. Data the harts share lives in DDR.
 
-The SoC has an AIA 1.0 APLIC in direct delivery mode, with machine and
-supervisor domains and five wired interrupt sources. It drives the hart's
-external interrupt inputs. OpenSBI delegates the sources to the supervisor
-domain for Linux. A second hart needs its own IDC in each domain and a
-machine software interrupt register for OpenSBI's inter-processor interrupts.
+The SoC has an AIA 1.0 APLIC with machine and supervisor domains, five
+wired interrupt sources, and direct and MSI delivery. Each CPU contains
+machine and supervisor IMSIC files with 63 identities and Smaia/Ssaia
+CSRs. The SoC decodes a 2 MiB device window into registered per-hart MSI
+inputs. Files reset to direct APLIC delivery for existing programs.
 
-IMSICs and MSI delivery remain to be implemented. An IMSIC per hart, with
-the Smaia and Ssaia CSRs, receives message-signaled interrupts. An
-inter-processor interrupt is then a write to the other hart's IMSIC. The
-APLIC forwards wired interrupts as messages, and devices that signal with
-writes, such as PCIe devices, reach the harts directly.
+The generated device tree advertises both IMSIC levels and links the APLIC
+domains with `msi-parent`. OpenSBI uses the machine IMSIC for IPIs and
+delegates the wired sources to the supervisor APLIC. Linux uses supervisor
+IMSIC delivery for IPIs and wired interrupts. The build connects one hart;
+the decoder and APLIC retain their hart-count parameters.
 
 Done means Debian running on both harts, multi-hart scaling reported
 separately from single-hart performance, and hours of sustained-load testing

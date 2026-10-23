@@ -75,8 +75,9 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 | `cpu_and_mem/cpu/ex_stage/` | ALU, multiply/divide, FPU, and branch execution |
 | [lib/cache/](lib/cache/README.md) | Cache hierarchy, coherence, DDR bridge, and simulation DDR model |
 | `lib/` | RAM, FIFO, and clock-domain-crossing primitives |
+| [peripherals/imsic/](peripherals/imsic/README.md) | AIA IMSIC with machine and supervisor interrupt files in each CPU, with SoC MSI store decode |
 | [peripherals/nic/](peripherals/nic/README.md) | Ethernet NIC with coherent DMA |
-| [peripherals/aplic/](peripherals/aplic/README.md) | AIA APLIC with machine and supervisor domains in direct delivery mode |
+| [peripherals/aplic/](peripherals/aplic/README.md) | AIA APLIC with machine and supervisor domains, direct delivery and optional MSI forwarding |
 | [net10g/](net10g/README.md) | Portable 10GBASE-R MAC/PCS |
 | `peripherals/` | UART transmit and receive blocks |
 
@@ -88,7 +89,8 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 | DEBUG | `0x0001_7C00` | 1 KiB | Debug-module execution slice (see [Debug](#debug)); reserved by every linker script that uses low BRAM and written only by the debug module |
 | RAM | `0x0001_8000` | 160 KiB | Data, BSS, and stack (low BRAM) |
 | MMIO | `0x4000_0000` | 196 KiB | Device registers (table below) |
-| APLIC | `0x4400_0000` | 4 MiB | AIA direct delivery, M and S domains of 32 KiB each |
+| APLIC | `0x4400_0000` | 4 MiB | AIA direct and MSI delivery, M and S domains of 32 KiB each |
+| IMSIC | `0x4800_0000` | 2 MiB | 4 KiB M and S pages at `0x4800_0000` and `0x4810_0000`, with `0x1000` hart stride |
 | DDR | `0x8000_0000` | Configured 1–128 GiB (1 GiB default aperture) | Cached region: `.ddr_text` code, large data, and the heap; software must use the populated size |
 
 Addresses outside the defined regions, including the rest of the device
@@ -178,14 +180,17 @@ standard 8250 and CLINT drivers work without a board-specific driver. The
 driver's 16-byte burst per THRE always fits, and LSR.TEMT reads 1 only once
 every byte written has been sent.
 
-The [APLIC](peripherals/aplic/README.md) implements AIA 1.0 direct delivery.
-Its machine domain at `0x4400_0000` drives `mip.MEIP`; its supervisor domain
-at `0x4400_8000` drives the line ORed into `mip.SEIP` with the SEIP bit that
-M-mode software can set. Each domain occupies 32 KiB and has one IDC for hart
+The [APLIC](peripherals/aplic/README.md) implements AIA 1.0 direct and MSI delivery.
+Its machine and supervisor domains at `0x4400_0000` and `0x4400_8000`
+drive the CPU's IMSIC direct inputs. Each file resets to APLIC delivery;
+its registered line supplies `mip.MEIP` or the external contribution to
+`mip.SEIP`, which is ORed with the SEIP bit M-mode software can set. Each domain occupies 32 KiB and has one IDC for hart
 0. Source identities are 1 for the ns16550 UART, 2 for the external pin,
 3 for the DMA test engine, 4 for the NIC, and 5 for the memory error unit.
 OpenSBI delegates all five sources to the supervisor domain. Linux configures
-them for level-high delivery.
+them for level-high delivery through the supervisor IMSIC file. Both APLIC
+domains reset to direct delivery for programs that do not configure MSIs.
+The generated firmware tree links both APLIC domains to their IMSIC nodes.
 
 A `claimi` read returns the identity in bits 25:16 and priority in bits 7:0.
 It clears detached and edge-sensitive pending bits; a level-sensitive source
@@ -204,7 +209,7 @@ ECC registers about once a millisecond and reports to the unit; on a board
 without a reader, `CAPS` bit 0 reads 0 and only the error responses count.
 
 If these addresses change, update `soc_top/soc_top.sv`, the device-window pages
-in `riscv_pkg.sv` (`MmioFirstPage` through `AplicLastPage`), the MMIO `PROVIDE`
+in `riscv_pkg.sv` (`MmioFirstPage` through `ImsicLastPage`), the MMIO `PROVIDE`
 symbols in the linker scripts under `sw/` (`sw/common/link.ld`,
 `sw/common/link_ddr.ld`, and several app-specific scripts),
 `sw/lib/include/mmio.h`, the verification constants in `verif/config.py`, and
@@ -266,12 +271,17 @@ only the addressed word. The APLIC accepts only 32-bit accesses. Byte,
 halfword and doubleword writes are ignored; reads of those sizes return zero without side effects. The DMA
 test engine, memory error unit, and NIC windows take 32-bit accesses: a 64-bit load returns an aligned register pair, and a 64-bit
 store writes only the upper register. Devices take loads and stores only, and
-only inside the MMIO and APLIC windows. A load or store elsewhere in the device
+only inside the MMIO, APLIC and IMSIC windows. A load or store elsewhere in the device
 quadrant raises an access fault (cause 5 or 7), and so does an AMO, LR, or SC
 anywhere in the quadrant (cause 7, 5, or 7); the one exception is an
 untranslated store, which the device bus ignores. The device sees neither a read
 nor a write, and the [memory map](#memory-map) gives how these faults rank
 against misaligned-address and page faults.
+
+IMSIC pages accept only aligned 32-bit stores, at offset 0 for little-endian
+identity data or offset 4 for big-endian data. Other sizes and offsets are
+ignored. All loads in the 2 MiB window return zero without side effects.
+The SoC registers the decoded MSI before sending it to the addressed CPU.
 
 MMIO is strongly ordered: accesses from one hart complete in program order
 without fences. Uncached stores retire only after B; reads wait for R. Errors

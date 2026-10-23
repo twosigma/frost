@@ -15,7 +15,7 @@
  */
 
 /*
-  CSR storage for Zicsr, Zicntr, Sstc, M/S/U privilege, Debug Mode, FP state,
+  CSR storage for Zicsr, Zicntr, Sstc, Smaia, Ssaia, M/S/U privilege, Debug Mode, FP state,
   and FROST profiling. cpu_ooo serializes CSR instructions on the registered
   commit bus (see "CSR writes" in the CPU README). The ROB checks access
   legality at allocation; this module exports the required state.
@@ -90,7 +90,7 @@ module csr_file #(
     // Number of instructions retired this cycle: 0, 1, or 2.
     input logic [1:0] i_instruction_retired_count,
 
-    // Interrupt pending inputs (meip/mtip registered upstream in soc_top; msip direct)
+    // Pending inputs: registered IMSIC MEIP, registered timer, and software IRQ
     input riscv_pkg::interrupt_t i_interrupts,
 
     // mtime input (from memory-mapped timer)
@@ -99,6 +99,25 @@ module csr_file #(
     // Supervisor external-interrupt line: ORed into the SEIP readback and
     // o_s_pending; mip.SEIP writes change only the software-injection bit.
     input logic i_seip_line,
+
+    // Local IMSIC files. Select decodes are registered with *iselect.
+    output logic [7:0] o_m_iselect,
+    o_s_iselect,
+    output logic [3:0] o_m_select_onehot,
+    o_s_select_onehot,
+    input logic [63:0] i_m_ireg = '0,
+    input logic [63:0] i_s_ireg = '0,
+    input logic [31:0] i_m_topei = '0,
+    input logic [31:0] i_s_topei = '0,
+    output logic o_m_ireg_we,
+    o_s_ireg_we,
+    output logic o_m_topei_claim,
+    o_s_topei_claim,
+    output logic [63:0] o_ireg_keep,
+    o_ireg_set,
+    output logic o_mireg_illegal,
+    o_sireg_illegal,
+    o_stopei_illegal,
 
     // Trap entry signals (from trap unit)
     input logic            i_trap_taken,  // Trap is being taken
@@ -539,6 +558,48 @@ module csr_file #(
     sip_view[riscv_pkg::MieSeiBit] = seip_eff && mideleg_sei;
   end
 
+  // AIA major priorities are read-only zero. The default order is the
+  // trap unit's MEI, MSI, MTI, SEI, SSI, STI; global enables do not mask topi.
+  logic [XLEN-1:0] mtopi, stopi, mvip;
+  logic [XLEN-1:0] m_top_pending, s_top_pending;
+  assign m_top_pending = mip & mie & ~mideleg;
+  assign s_top_pending = sip_view & sie_view;
+  always_comb begin
+    mtopi = '0;
+    if (m_top_pending[5]) mtopi = XLEN'(32'h0005_0001);
+    if (m_top_pending[1]) mtopi = XLEN'(32'h0001_0001);
+    if (m_top_pending[9]) mtopi = XLEN'(32'h0009_0001);
+    if (m_top_pending[7]) mtopi = XLEN'(32'h0007_0001);
+    if (m_top_pending[3]) mtopi = XLEN'(32'h0003_0001);
+    if (m_top_pending[11]) mtopi = XLEN'(32'h000B_0001);
+    stopi = '0;
+    if (s_top_pending[5]) stopi = XLEN'(32'h0005_0001);
+    if (s_top_pending[1]) stopi = XLEN'(32'h0001_0001);
+    if (s_top_pending[9]) stopi = XLEN'(32'h0009_0001);
+    mvip = '0;
+    mvip[1] = mip_ssip;
+    mvip[5] = !menvcfg_stce && mip_stip;
+    mvip[9] = mip_seip;
+  end
+
+  logic [8:0] miselect_q, siselect_q;
+  logic [XLEN-1:0] miselect_new, siselect_new, mvip_new;
+  logic [8:0] miselect_warl, siselect_warl;
+  function automatic logic [3:0] imsic_select(input logic [8:0] sel);
+    imsic_select = {sel == 9'h0C0, sel == 9'h080, sel == 9'h072, sel == 9'h070};
+  endfunction
+  function automatic logic ireg_illegal(input logic [8:0] sel);
+    ireg_illegal = !(((sel >= 9'h030) && (sel <= 9'h03F) && !sel[0]) ||
+        ((sel >= 9'h070) && (sel <= 9'h07F)) ||
+        ((sel >= 9'h080) && (sel <= 9'h0FF) && !sel[0]));
+  endfunction
+  assign o_m_iselect = miselect_q[8] ? 8'b0 : miselect_q[7:0];
+  assign o_s_iselect = siselect_q[8] ? 8'b0 : siselect_q[7:0];
+  assign o_mireg_illegal = ireg_illegal(miselect_q);
+  assign o_sireg_illegal = ireg_illegal(siselect_q);
+  // mvien is read-only zero, so it never blocks S-mode file access.
+  assign o_stopei_illegal = 1'b0;
+
   // misa is read-only: IMAFDC + B + S + U (= GCB with Supervisor and User
   // modes). Bit 0 (A), Bit 1 (B), Bit 2 (C), Bit 3 (D), Bit 5 (F),
   // Bit 8 (I), Bit 12 (M), Bit 18 (S), Bit 20 (U) = 0x0014_112F; MXL sits
@@ -591,6 +652,9 @@ module csr_file #(
       riscv_pkg::CsrMcause: csr_current_value = mcause;
       riscv_pkg::CsrMtval: csr_current_value = mtval;
       riscv_pkg::CsrMip: csr_current_value = mip;
+      riscv_pkg::CsrMiselect: csr_current_value = XLEN'(miselect_q);
+      riscv_pkg::CsrSiselect: csr_current_value = XLEN'(siselect_q);
+      riscv_pkg::CsrMvip: csr_current_value = mvip;
       // Supervisor CSRs (views and dedicated registers)
       riscv_pkg::CsrSstatus: csr_current_value = sstatus;
       riscv_pkg::CsrSie: csr_current_value = sie_view;
@@ -700,6 +764,22 @@ module csr_file #(
   logic [XLEN-1:0] mperfsel_new_value, mperfctl_new_value;
   logic [XLEN-1:0] dcsr_new_value, dpc_new_value, dscratch0_new_value, dscratch1_new_value;
   logic [XLEN-1:0] ddata_new_value;
+  assign miselect_new = zicsr_rmw(csr_rmw_keep, csr_rmw_set, XLEN'(miselect_q));
+  assign siselect_new = zicsr_rmw(csr_rmw_keep, csr_rmw_set, XLEN'(siselect_q));
+  assign miselect_warl = (|miselect_new[XLEN-1:9]) ? 9'h1FF : miselect_new[8:0];
+  assign siselect_warl = (|siselect_new[XLEN-1:9]) ? 9'h1FF : siselect_new[8:0];
+  assign mvip_new = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mvip);
+  assign o_ireg_keep = csr_rmw_keep;
+  assign o_ireg_set = csr_rmw_set;
+  assign o_m_ireg_we = !i_rst && storage_csr_write && csr_write_intent &&
+      (i_csr_address == riscv_pkg::CsrMireg) && !o_mireg_illegal;
+  assign o_s_ireg_we = !i_rst && storage_csr_write && csr_write_intent &&
+      (i_csr_address == riscv_pkg::CsrSireg) && !o_sireg_illegal;
+  assign o_m_topei_claim = !i_rst && storage_csr_write && csr_write_intent &&
+      (i_csr_address == riscv_pkg::CsrMtopei);
+  assign o_s_topei_claim = !i_rst && storage_csr_write && csr_write_intent &&
+      (i_csr_address == riscv_pkg::CsrStopei);
+
   assign fflags_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, XLEN'({27'b0, fflags}));
   assign frm_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, XLEN'({29'b0, frm}));
   assign fcsr_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, fcsr);
@@ -781,6 +861,9 @@ module csr_file #(
       riscv_pkg::CsrMedeleg: csr_local_new_value = medeleg_new_value;
       riscv_pkg::CsrMideleg: csr_local_new_value = mideleg_new_value;
       riscv_pkg::CsrMip: csr_local_new_value = mip_new_value;
+      riscv_pkg::CsrMvip: csr_local_new_value = mvip_new;
+      riscv_pkg::CsrMiselect: csr_local_new_value = miselect_new;
+      riscv_pkg::CsrSiselect: csr_local_new_value = siselect_new;
       riscv_pkg::CsrSip: csr_local_new_value = sip_new_value;
       riscv_pkg::CsrStvec: csr_local_new_value = stvec_new_value;
       riscv_pkg::CsrScounteren: csr_local_new_value = scounteren_new_value;
@@ -1135,6 +1218,10 @@ module csr_file #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
+      miselect_q                 <= '0;
+      siselect_q                 <= '0;
+      o_m_select_onehot          <= '0;
+      o_s_select_onehot          <= '0;
       mtvec                      <= '0;
       mtvec_traps_misaligned_q   <= 1'b0;
       mcounteren_q               <= 3'b111;
@@ -1167,6 +1254,19 @@ module csr_file #(
       perf_cache_previous_select <= 1'b0;
     end else if (storage_csr_write) begin
       unique case (i_csr_address)
+        riscv_pkg::CsrMiselect: begin
+          miselect_q <= miselect_warl;
+          o_m_select_onehot <= imsic_select(miselect_warl);
+        end
+        riscv_pkg::CsrSiselect: begin
+          siselect_q <= siselect_warl;
+          o_s_select_onehot <= imsic_select(siselect_warl);
+        end
+        riscv_pkg::CsrMvip: begin
+          mip_ssip <= mvip_new[1];
+          if (!menvcfg_stce) mip_stip <= mvip_new[5];
+          mip_seip <= mvip_new[9];
+        end
         riscv_pkg::CsrMtvec: begin
           mtvec                    <= {mtvec_new_value[XLEN-1:2], 1'b0, mtvec_new_value[0]};
           mtvec_traps_misaligned_q <= |mtvec_new_value[XLEN-1:2];
@@ -1361,11 +1461,34 @@ module csr_file #(
   assign o_mmu_sum = mmu_sum_q;
   assign o_mmu_mxr = mmu_mxr_q;
   assign o_mmu_eff_priv_u = mmu_eff_priv_u_q;
-  // Fetch decodes from fetch_priv_q; the attributes limit fanout.
-  (* keep = "true", max_fanout = 16 *) logic fetch_translation_active;
-  assign fetch_translation_active = satp_mode_sv39 && (fetch_priv_q != riscv_pkg::PrivM);
-  assign o_fetch_translation_active = fetch_translation_active;
-  assign o_fetch_priv_u = (fetch_priv_q == riscv_pkg::PrivU);
+  // Fetch reads translation from a register written with the next satp
+  // mode and privilege, so it always equals satp_mode_sv39 && fetch_priv_q
+  // != M without a decode after the registers. satp's mode changes only
+  // through the storage write below, under the same rules.
+  logic next_satp_mode_sv39;
+  always_comb begin
+    next_satp_mode_sv39 = satp_mode_sv39;
+    if (storage_csr_write && (i_csr_address == riscv_pkg::CsrSatp)) begin
+      if (satp_new_value[63:60] == SatpModeBare) next_satp_mode_sv39 = 1'b0;
+      else if (SatpSv39Supported && (satp_new_value[63:60] == SatpModeSv39))
+        next_satp_mode_sv39 = 1'b1;
+    end
+  end
+  (* max_fanout = 16 *) logic fetch_translation_active_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) fetch_translation_active_q <= 1'b0;
+    else fetch_translation_active_q <= next_satp_mode_sv39 && (next_priv != riscv_pkg::PrivM);
+  end
+  assign o_fetch_translation_active = fetch_translation_active_q;
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      p_fetch_translation_active_exact :
+      assert (fetch_translation_active_q == (satp_mode_sv39 && (fetch_priv_q != riscv_pkg::PrivM)));
+    end
+  end
+`endif
+  assign o_fetch_priv_u  = (fetch_priv_q == riscv_pkg::PrivU);
   assign o_satp_root_ppn = satp_ppn;
 
   // ==========================================================================
@@ -1393,8 +1516,18 @@ module csr_file #(
   // selects with read enable. Addresses must be distinct so the masked
   // OR equals an address mux. ReadCsrAddrs[k] corresponds to read_csr_value[k].
   logic [XLEN-1:0] csr_read_data_comb;
-  localparam int unsigned NumReadCsrs = 43;
+  localparam int unsigned NumReadCsrs = 53;
   localparam logic [12*NumReadCsrs-1:0] ReadCsrAddrs = {
+    riscv_pkg::CsrStopi,  // 52
+    riscv_pkg::CsrStopei,  // 51
+    riscv_pkg::CsrSireg,  // 50
+    riscv_pkg::CsrSiselect,  // 49
+    riscv_pkg::CsrMvip,  // 48
+    riscv_pkg::CsrMvien,  // 47
+    riscv_pkg::CsrMtopi,  // 46
+    riscv_pkg::CsrMtopei,  // 45
+    riscv_pkg::CsrMireg,  // 44
+    riscv_pkg::CsrMiselect,  // 43
     riscv_pkg::CsrSenvcfg,  // 42
     riscv_pkg::CsrDdata,  // 41
     riscv_pkg::CsrDscratch1,  // 40
@@ -1509,6 +1642,17 @@ module csr_file #(
     read_csr_value[40] = dscratch1;  // CsrDscratch1
     read_csr_value[41] = XLEN'(i_dbg_data);  // CsrDdata
     read_csr_value[42] = senvcfg;  // CsrSenvcfg
+    read_csr_value[43] = XLEN'(miselect_q);  // CsrMiselect
+    read_csr_value[44] = i_m_ireg;  // CsrMireg
+    read_csr_value[45] = XLEN'(i_m_topei);  // CsrMtopei
+    read_csr_value[46] = mtopi;  // CsrMtopi
+    read_csr_value[47] = '0;  // CsrMvien
+    read_csr_value[48] = mvip;  // CsrMvip
+    read_csr_value[49] = XLEN'(siselect_q);  // CsrSiselect
+    read_csr_value[50] = i_s_ireg;  // CsrSireg
+    read_csr_value[51] = XLEN'(i_s_topei);  // CsrStopei
+    read_csr_value[52] = stopi;  // CsrStopi
+
   end
   always_comb begin
     csr_read_data_comb = '0;
@@ -1550,6 +1694,104 @@ module csr_file #(
   always @(posedge i_clk) begin
     f_minstret_written_q <= !i_rst && minstret_write;
     f_minstret_value_q   <= csr_new_value;
+  end
+
+  function automatic logic [XLEN-1:0] f_topi(input logic [XLEN-1:0] pending);
+    integer best, rank;
+    f_topi = '0;
+    best   = 6;
+    for (int id = 0; id < 12; id++) begin
+      case (id)
+        11: rank = 0;
+        3: rank = 1;
+        7: rank = 2;
+        9: rank = 3;
+        1: rank = 4;
+        5: rank = 5;
+        default: rank = 6;
+      endcase
+      if (pending[id] && rank < best) begin
+        best   = rank;
+        f_topi = (XLEN'(id) << 16) | XLEN'(1);
+      end
+    end
+  endfunction
+  function automatic logic f_ireg_legal(input logic [8:0] sel);
+    f_ireg_legal = 1'b0;
+    if (sel >= 9'h30 && sel < 9'h40) f_ireg_legal = !sel[0];
+    if (sel >= 9'h70 && sel < 9'h80) f_ireg_legal = 1'b1;
+    if (sel >= 9'h80 && sel < 9'h100) f_ireg_legal = !sel[0];
+  endfunction
+  always @(posedge i_clk) begin
+    if (f_past_valid) begin
+      assert (o_mireg_illegal == !f_ireg_legal(miselect_q));
+      assert (o_sireg_illegal == !f_ireg_legal(siselect_q));
+      assert (!o_stopei_illegal);
+      assert (o_m_select_onehot == {miselect_q == 9'hC0, miselect_q == 9'h80,
+          miselect_q == 9'h72, miselect_q == 9'h70});
+      assert (o_s_select_onehot == {siselect_q == 9'hC0, siselect_q == 9'h80,
+          siselect_q == 9'h72, siselect_q == 9'h70});
+      assert (mtopi == f_topi(mip & mie & ~mideleg));
+      assert (stopi == f_topi(mip & mie & mideleg));
+      assert (mvip == ((XLEN'(mip_ssip) << 1) |
+          (XLEN'(!menvcfg_stce && mip_stip) << 5) | (XLEN'(mip_seip) << 9)));
+      if (!csr_write_intent || !i_csr_write_enable || !i_csr_read_enable || i_rst)
+        assert (!(o_m_topei_claim || o_s_topei_claim || o_m_ireg_we || o_s_ireg_we));
+      if (i_csr_read_enable) begin
+        case (i_csr_address)
+          riscv_pkg::CsrMtopi: begin
+            assert (o_csr_read_data_comb == f_topi(mip & mie & ~mideleg));
+          end
+          riscv_pkg::CsrStopi: begin
+            assert (o_csr_read_data_comb == f_topi(mip & mie & mideleg));
+          end
+          riscv_pkg::CsrMvien: begin
+            assert (o_csr_read_data_comb == '0);
+          end
+          riscv_pkg::CsrMvip: begin
+            assert (o_csr_read_data_comb == mvip);
+          end
+          riscv_pkg::CsrMiselect: begin
+            assert (o_csr_read_data_comb == XLEN'(miselect_q));
+          end
+          riscv_pkg::CsrSiselect: begin
+            assert (o_csr_read_data_comb == XLEN'(siselect_q));
+          end
+          riscv_pkg::CsrMtopei: begin
+            assert (o_csr_read_data_comb == XLEN'(i_m_topei));
+          end
+          riscv_pkg::CsrStopei: begin
+            assert (o_csr_read_data_comb == XLEN'(i_s_topei));
+          end
+          riscv_pkg::CsrMireg: begin
+            assert (o_csr_read_data_comb == i_m_ireg);
+          end
+          riscv_pkg::CsrSireg: begin
+            assert (o_csr_read_data_comb == i_s_ireg);
+          end
+          default: ;
+        endcase
+      end
+      if ($past(i_rst)) begin
+        assert ((miselect_q == '0) && (siselect_q == '0));
+      end else begin
+        if ($past(storage_csr_write && i_csr_address == riscv_pkg::CsrMiselect))
+          assert (miselect_q == (($past(miselect_new) > 511) ? 9'h1FF : 9'($past(miselect_new))));
+          else assert (miselect_q == $past(miselect_q));
+        if ($past(storage_csr_write && i_csr_address == riscv_pkg::CsrSiselect))
+          assert (siselect_q == (($past(siselect_new) > 511) ? 9'h1FF : 9'($past(siselect_new))));
+          else assert (siselect_q == $past(siselect_q));
+        if ($past(storage_csr_write && i_csr_address == riscv_pkg::CsrMvip)) begin
+          assert (mip_ssip == $past(csr_new_value[1]));
+          assert (mip_seip == $past(csr_new_value[9]));
+          assert (mip_stip == ($past(menvcfg_stce) ? $past(mip_stip) : $past(csr_new_value[5])));
+        end
+      end
+      cover (o_m_topei_claim);
+      cover (o_s_topei_claim && priv_q == riscv_pkg::PrivS);
+      cover (mtopi == XLEN'(32'h000B_0001) && stopi == XLEN'(32'h0009_0001));
+      cover (miselect_q == 9'h1FF && siselect_q == 9'h72);
+    end
   end
 
   // Structural constraints
@@ -2296,6 +2538,11 @@ module csr_file #(
         // sip: SSIP is the only S-writable pending bit, and only where
         // delegated (the RMW base was the masked view, so set/clear forms
         // cannot leak through a non-delegated bit either).
+        riscv_pkg::CsrMvip: begin
+          f_old_mip_ssip <= csr_new_value[1];
+          if (!menvcfg_stce) f_old_mip_stip <= csr_new_value[5];
+          f_old_mip_seip <= csr_new_value[9];
+        end
         riscv_pkg::CsrSip: begin
           if (mideleg_ssi) f_old_mip_ssip <= csr_new_value[riscv_pkg::MieSsiBit];
         end

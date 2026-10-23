@@ -144,7 +144,8 @@ copy.
 | DMA test engine | `0x40020000` | Coherent DMA copy and fill engine |
 | Memory error unit | `0x40021000` | Counts and addresses of DDR ECC errors and DDR error responses |
 | NIC | `0x40030000` | 10G Ethernet control, descriptor rings, and counters |
-| APLIC | `0x44000000` | AIA direct delivery: 4 MiB window, M domain at +0 and S domain at +0x8000, one IDC each for hart 0 |
+| IMSIC | `0x48000000` | 2 MiB device window; M/S pages at +0/+0x100000 with 4 KiB hart stride and 63 identities |
+| APLIC | `0x44000000` | AIA direct and MSI delivery: 4 MiB window, M domain at +0 and S domain at +0x8000, one IDC each for hart 0 |
 
 [`mmio.h`](lib/include/mmio.h) defines `volatile` accessors named after the
 native registers, `UART_TX` through `UART_TX_STATUS`. Use naturally aligned
@@ -179,6 +180,7 @@ calls into `ctype.c`, `memory.c` and `sprintf.c` call into `string.c`, and
 | [stdlib.h](lib/include/stdlib.h), [limits.h](lib/include/limits.h) | Numeric conversion and LP64 integer limits |
 | [memory.h](lib/include/memory.h) | Arena allocator and a coalescing `malloc`/`free` heap in DDR |
 | [sprintf.h](lib/include/sprintf.h) | `sprintf`/`snprintf` without stdio; link with `EXTRA_LDFLAGS := -lgcc` |
+| [imsic.h](lib/include/imsic.h) | IMSIC indirect registers, claims and MSI stores for machine and supervisor files |
 | [timer.h](lib/include/timer.h), [csr.h](lib/include/csr.h) | Cycle timing, counters, and CSR access |
 | [trap.h](lib/include/trap.h) | Trap handlers, interrupt enables, `mtime`/`mtimecmp`, and software interrupts |
 | [sync.h](lib/include/sync.h) | `fence` and `fence.i` |
@@ -312,6 +314,9 @@ can be debugged and where each one first stops.
 | `pause_test/` | `pause` (`0x0100000F`) retires without draining committed stores, while `fence r,0` and the other FENCE encodings next to it wait for the drain |
 | `pde_return_hazard/` | A return value computed from `s1` just before the epilogue restores `s1` (Linux `pde_subdir_find` shape) |
 | `perf_off_test/` | Core built without profiling counters: `mperf*` CSRs read zero and ignore writes, while `cycle` and `instret` count |
+| `imsic_csr_test/` | Smaia and Ssaia select legality, indirect registers, write-intent claims, virtual pending aliases, and major-interrupt priority |
+| `imsic_msi_test/` | MSI stores in both byte orders, ignored access sizes, translated accesses, delivery masks, thresholds, WFI and trap claims |
+| `imsic_aplic_coexist_test/` | UART and DMA direct delivery at reset and supervisor direct delivery alongside machine MSIs, locked MSI destinations and APLIC forwarding |
 | `aplic_test/` | APLIC direct delivery, both domains, delegation, level claims, thresholds, forced interrupts, machine interrupt entry, and 32-bit access enforcement |
 | `pma_fault_test/` | Access faults for fetch, load, store, AMO, and LR outside the physical map (fetch from the low BRAM above its 128 KiB code region and loads from device-quadrant addresses outside the device windows included; untranslated stores there are ignored) and for AMO, LR, and SC to device registers, with exact `mepc` and `mtval` |
 | `print_clock_speed/` | Prints the `FPGA_CPU_CLK_FREQ` it was built with |

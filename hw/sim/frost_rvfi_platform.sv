@@ -686,7 +686,11 @@ module frost_rvfi_platform #(
       .i_rd_capture(mmio_read_capture && (mmio_load_addr[31:22] == AplicWindowSel) &&
                     (mmio_load_size == riscv_pkg::MEM_SIZE_WORD)),
       .o_meip(aplic_meip),
-      .o_seip(aplic_seip)
+      .o_seip(aplic_seip),
+      .o_msi_valid(),
+      .i_msi_ready(1'b0),
+      .o_msi_addr(),
+      .o_msi_data()
   );
   assign interrupts.msip = msip;
 

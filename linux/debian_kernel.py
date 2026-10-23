@@ -511,6 +511,24 @@ def fix_headers_tree(root: Path) -> None:
         )
 
 
+REQUIRED_IRQCHIP_CONFIG = (
+    "CONFIG_RISCV_APLIC",
+    "CONFIG_RISCV_APLIC_MSI",
+    "CONFIG_RISCV_IMSIC",
+)
+
+
+def check_interrupt_config(root: Path) -> None:
+    """Require built-in drivers for the interrupt topology in FROST's DT."""
+    config = required_files(root)["config"]
+    settings = set(config.read_text().splitlines())
+    missing = [name for name in REQUIRED_IRQCHIP_CONFIG if f"{name}=y" not in settings]
+    if missing:
+        raise RuntimeError(
+            f"{config}: missing built-in interrupt drivers: {', '.join(missing)}"
+        )
+
+
 def fetch(cache: Path | str | None = None, dl_dir: Path | None = None) -> Path:
     """Download, verify, and extract pinned packages; return the sysroot.
 
@@ -518,9 +536,11 @@ def fetch(cache: Path | str | None = None, dl_dir: Path | None = None) -> Path:
     """
     root = sysroot(cache)
     if manifest_holds(root):
+        check_interrupt_config(root)
         return root
     with cache_lock(cache):
         if manifest_holds(root):  # another builder finished while we waited
+            check_interrupt_config(root)
             return root
         if root.exists():
             log(f"{root.name} is incomplete; extracting it again")
@@ -534,6 +554,7 @@ def fetch(cache: Path | str | None = None, dl_dir: Path | None = None) -> Path:
             for package, deb in debs:
                 extract(package, deb, staged)
             fix_headers_tree(staged)
+            check_interrupt_config(staged)
             write_manifest(staged)
             publish(staged, root)
         finally:

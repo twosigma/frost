@@ -1,6 +1,6 @@
 # CPU integration boundary
 
-`cpu_top` contains the RV64 CPU pipeline, MMUs and page-table walker, L0/L1D/L1I/L2 caches, fetch buffers, coherence sequencing, and outgoing AXI master. It has one clock and no board memory, peripherals, interrupt controller, debug transport, DMA engine, NIC, or power controller. Compile `cpu_top.f` with `ROOT` set to the repository root. `platform_top` connects it to the FROST `soc_top`.
+`cpu_top` contains the RV64 CPU pipeline, MMUs and page-table walker, L0/L1D/L1I/L2 caches, fetch buffers, coherence sequencing, machine and supervisor IMSIC files, and outgoing AXI master. It has one clock and no board memory, external interrupt controller, debug transport, DMA engine, NIC, or power controller. Compile `cpu_top.f` with `ROOT` set to the repository root. `platform_top` connects it to the FROST `soc_top`.
 
 ## Clock, reset and boot
 
@@ -94,6 +94,7 @@ The CPU map is a build configuration shared by all modules using `riscv_pkg`. Su
 | `FROST_PMA_UNCACHED_EXEC_BYTES` | 131072 | Executable prefix of the uncached region |
 | `FROST_PMA_DEVICE0_BASE` / `..._BYTES` | `0x40000000` / `0x31000` | First Device region |
 | `FROST_PMA_DEVICE1_BASE` / `..._BYTES` | `0x44000000` / `0x400000` | Second Device region |
+| `FROST_PMA_DEVICE2_BASE` / `..._BYTES` | `0x48000000` / `0x200000` | Third Device region |
 | `FROST_PMA_LEGACY_DEVICE_STORES` | 1 | Allow the legacy untranslated device-quadrant stores only with the FROST map; set 0 for strict configured regions |
 | `FROST_CPU_DEBUG_BASE` | `0x17c00` | Debug execution slice; when debug is used, place it in executable memory below 4 GiB |
 
@@ -105,7 +106,27 @@ The generic CPU has no knowledge of UART/FIFO/APLIC register offsets. The FROST 
 
 ## Interrupt and debug controls
 
-`i_interrupts` is the packed `riscv_pkg::interrupt_t` value `{meip, mtip, msip}`. `i_seip` supplies supervisor external interrupt pending. These are synchronous level inputs; hold them until the interrupt source is serviced. CSR enables, delegation and privilege determine delivery. Reset clears the CPU's enables, not the external source. `i_mtime` supplies the synchronous 64-bit time value for the time CSR; the wrapper provides any timer and any required coherent clock crossing.
+`i_interrupts` is the packed `riscv_pkg::interrupt_t` value `{meip, mtip, msip}`. `i_interrupts.meip` and `i_seip` supply the machine and supervisor APLIC direct lines to the local IMSIC files. These are synchronous level inputs; hold them until the interrupt source is serviced. CSR enables, delegation and privilege determine delivery. Reset clears the CPU's enables, not the external source. `i_mtime` supplies the synchronous 64-bit time value for the time CSR; the wrapper provides any timer and any required coherent clock crossing.
+
+Each hart owns two 63-identity IMSIC files beside `csr_file` in `cpu_ooo`.
+`i_msi_valid`, `i_msi_level` and `i_msi_id[10:0]` accept one MSI on each edge,
+with level zero for machine and one for supervisor. There is no backpressure.
+The ingress registers a one-hot identity per file before updating pending
+state. The files register their output lines into the CPU's interrupt inputs.
+Reset clears pending and enabled identities and selects APLIC direct delivery
+with `eidelivery = 0x40000000` at both levels.
+
+The hart implements `miselect`, `mireg`, `mtopei`, `mtopi`, `mvien`, `mvip`,
+`siselect`, `sireg`, `stopei` and `stopi`. Select registers retain values up to
+`0x1ff` and map larger writes to `0x1ff`. Their implemented register decodes
+are flops written with the selects. Major priorities and `mvien` read zero.
+`mtopi` reports the highest pending, enabled, undelegated major interrupt in
+MEI, MSI, MTI, SEI, SSI, STI order. `stopi` reports delegated SEI, SSI, STI in
+that order. Both report priority 1 and ignore global interrupt enables.
+`mvip` exposes the software SSIP and SEIP bits and the software STIP bit while
+STCE is clear. A `*topei` write claims its reported identity; a pure read has
+no side effect. The [IMSIC guide](../peripherals/imsic/README.md) gives the
+indirect register map and simultaneous-event rules.
 
 The Debug Module interface uses the core clock:
 

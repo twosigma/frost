@@ -222,6 +222,9 @@ module cpu_ooo #(
     // Supervisor external-interrupt line. csr_file ORs it into the SEIP
     // readback and the S-pending exports.
     input logic i_seip_line,
+    input logic i_msi_valid = 1'b0,
+    input logic i_msi_level = 1'b0,
+    input logic [10:0] i_msi_id = '0,
     output logic [5:0] o_debug_irq_status,
     output logic [XLEN-1:0] o_debug_commit_pc,
     output logic [XLEN-1:0] o_debug_commit_2_pc,
@@ -713,6 +716,7 @@ module cpu_ooo #(
   logic [2:0] csr_scounteren;
   logic [2:0] csr_counter_blocked;
   logic csr_stimecmp_blocked;
+  logic csr_mireg_illegal, csr_sireg_illegal, csr_stopei_illegal;
   logic csr_sret_illegal, csr_sfence_illegal, csr_wfi_illegal, csr_priv_is_u;
   // Registered translation-invalidate pulse from csr_file: every satp access,
   // and an mstatus/sstatus write only when it changes translation. Through
@@ -2054,6 +2058,9 @@ module cpu_ooo #(
       // state
       .i_counter_blocked(csr_counter_blocked),
       .i_stimecmp_blocked(csr_stimecmp_blocked),
+      .i_mireg_illegal(csr_mireg_illegal),
+      .i_sireg_illegal(csr_sireg_illegal),
+      .i_stopei_illegal(csr_stopei_illegal),
       .i_sret_illegal(csr_sret_illegal),
       .i_sfence_illegal(csr_sfence_illegal),
       .i_wfi_illegal(csr_wfi_illegal),
@@ -3464,6 +3471,76 @@ module cpu_ooo #(
        (csr_priv == riscv_pkg::PrivS)) ?
           riscv_pkg::ExcEcallSmode[riscv_pkg::ExcCauseWidth-1:0] : rob_trap_cause;
 
+  // The hart owns both IMSIC files beside its CSR storage. The ingress
+  // register expands the identity before pending/priority logic uses it.
+  riscv_pkg::interrupt_t file_interrupts;
+  logic file_seip;
+  logic [1:0] msi_valid_q;
+  logic [10:0] msi_id_q;
+  logic [63:0] msi_onehot_q[2];
+  logic [7:0] imsic_select[2];
+  logic [3:0] imsic_select_onehot[2];
+  logic [63:0] imsic_ireg[2];
+  logic [31:0] imsic_topei[2];
+  logic [1:0] imsic_we, imsic_claim, imsic_eip;
+  logic [63:0] imsic_keep, imsic_set;
+  always_ff @(posedge i_clk) begin
+    msi_id_q <= i_msi_id;
+    for (int level = 0; level < 2; level++) begin
+      msi_valid_q[level] <= !i_rst && i_msi_valid && (i_msi_level == 1'(level));
+      for (int id = 0; id < 64; id++)
+      msi_onehot_q[level][id] <= !i_rst && (id != 0) && i_msi_valid &&
+            (i_msi_level == 1'(level)) && (i_msi_id == 11'(id));
+    end
+  end
+  for (genvar level = 0; level < 2; level++) begin : gen_imsic
+    imsic_file #(
+        .NUM_IDS(63),
+        .APLIC_DELIVERY(1'b1),
+        .PREDECODED_SELECT(1'b1),
+        .PREDECODED_MSI(1'b1)
+    ) interrupt_file (
+        .i_clk,
+        .i_rst,
+        .i_msi_valid(msi_valid_q[level]),
+        .i_msi_id(msi_id_q),
+        .i_msi_onehot(msi_onehot_q[level]),
+        .i_iselect(imsic_select[level]),
+        .i_select_onehot(imsic_select_onehot[level]),
+        .o_ireg(imsic_ireg[level]),
+        .o_ireg_illegal(),
+        .i_ireg_we(imsic_we[level]),
+        .i_ireg_keep(imsic_keep),
+        .i_ireg_set(imsic_set),
+        .o_topei(imsic_topei[level]),
+        .i_topei_claim(imsic_claim[level]),
+        .i_aplic_eip(level == 0 ? i_interrupts.meip : i_seip_line),
+        .o_eip(imsic_eip[level])
+    );
+  end
+  assign file_interrupts = {imsic_eip[0], i_interrupts.mtip, i_interrupts.msip};
+  assign file_seip = imsic_eip[1];
+
+`ifndef SYNTHESIS
+  // The files report *topei from their registers a cycle late, so a claim or
+  // *ireg write must not be followed by a file access in the next cycle. Only
+  // CSR commits access the files, one strobe at a time, and the commit hold
+  // keeps CSR commits apart.
+  logic imsic_access_checks_armed = 1'b0;
+  logic csr_commit_fire_q;
+  always_ff @(posedge i_clk) begin
+    imsic_access_checks_armed <= !i_rst;
+    csr_commit_fire_q <= csr_commit_fire;
+    if (!i_rst) begin
+      p_imsic_access_is_csr_commit : assert (!(|{imsic_we, imsic_claim}) || csr_commit_fire);
+      p_imsic_one_strobe : assert ($onehot0({imsic_we, imsic_claim}));
+      if (imsic_access_checks_armed) begin
+        p_csr_commits_apart : assert (!(csr_commit_fire && csr_commit_fire_q));
+      end
+    end
+  end
+`endif
+
   csr_file #(
       .XLEN(XLEN),
       .COMMIT_EXCLUDES_CONTROL_TAKE(1'b1),
@@ -3480,9 +3557,9 @@ module cpu_ooo #(
       .o_csr_read_data(csr_read_data),
       .o_csr_read_data_comb(),
       .i_instruction_retired_count(instruction_retired_count),
-      .i_interrupts(i_interrupts),
+      .i_interrupts(file_interrupts),
       .i_mtime(i_mtime),
-      .i_seip_line(i_seip_line),
+      .i_seip_line(file_seip),
       // Takes with no CSR side effect (Debug Mode go and re-park redirects,
       // memory-order replays) do not reach csr_file.
       .i_trap_taken(trap_taken && !trap_no_csr),
@@ -3522,6 +3599,23 @@ module cpu_ooo #(
       .o_scounteren(csr_scounteren),
       .o_counter_blocked(csr_counter_blocked),
       .o_stimecmp_blocked(csr_stimecmp_blocked),
+      .o_mireg_illegal(csr_mireg_illegal),
+      .o_sireg_illegal(csr_sireg_illegal),
+      .o_stopei_illegal(csr_stopei_illegal),
+      .o_m_iselect(imsic_select[0]),
+      .o_s_iselect(imsic_select[1]),
+      .o_m_select_onehot(imsic_select_onehot[0]),
+      .o_s_select_onehot(imsic_select_onehot[1]),
+      .i_m_ireg(imsic_ireg[0]),
+      .i_s_ireg(imsic_ireg[1]),
+      .i_m_topei(imsic_topei[0]),
+      .i_s_topei(imsic_topei[1]),
+      .o_m_ireg_we(imsic_we[0]),
+      .o_s_ireg_we(imsic_we[1]),
+      .o_m_topei_claim(imsic_claim[0]),
+      .o_s_topei_claim(imsic_claim[1]),
+      .o_ireg_keep(imsic_keep),
+      .o_ireg_set(imsic_set),
       .o_sret_illegal(csr_sret_illegal),
       .o_sfence_illegal(csr_sfence_illegal),
       .o_wfi_illegal(csr_wfi_illegal),
@@ -3637,7 +3731,7 @@ module cpu_ooo #(
   // wake. WFI resumes on any of them, which the spec permits (it requires
   // resuming even while interrupts are globally disabled); the trap unit
   // separately decides whether to take the interrupt.
-  assign interrupt_pending = i_interrupts.meip || i_interrupts.mtip || i_interrupts.msip ||
+  assign interrupt_pending = file_interrupts.meip || file_interrupts.mtip || file_interrupts.msip ||
       (|csr_s_pending);
 
   function automatic logic [XLEN-1:0] retired_next_pc(
@@ -3916,7 +4010,7 @@ module cpu_ooo #(
       .i_interrupts('0),
       .i_s_pending('0),
 `else
-      .i_interrupts(i_interrupts),
+      .i_interrupts(file_interrupts),
       .i_s_pending(csr_s_pending),
 `endif
       // Exception from the ROB head. i_pipeline_stall does not gate the trap

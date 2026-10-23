@@ -73,6 +73,7 @@ from cocotb_tests.aplic.aplic_model import (
 NUM_SOURCES = int(os.environ.get("APLIC_NUM_SOURCES", "5"))
 NUM_HARTS = int(os.environ.get("APLIC_NUM_HARTS", "1"))
 IPRIOLEN = int(os.environ.get("APLIC_IPRIOLEN", "3"))
+MSI_ENABLE = bool(int(os.environ.get("APLIC_MSI_ENABLE", "0")))
 MAX_PRIORITY = (1 << IPRIOLEN) - 1
 DOMAINS = (ROOT, SUPERVISOR)
 SETTLE_CYCLES = 3  # a write's effects reach the registered interrupt lines
@@ -99,7 +100,7 @@ class Bench:
     def __init__(self, dut: Any) -> None:
         """Keep the DUT and a model in its reset state."""
         self.dut = dut
-        self.model = AplicModel(NUM_SOURCES, NUM_HARTS, IPRIOLEN)
+        self.model = AplicModel(NUM_SOURCES, NUM_HARTS, IPRIOLEN, MSI_ENABLE)
         self.wires = 0
 
     async def start(self) -> None:
@@ -118,6 +119,7 @@ class Bench:
         self.dut.i_wr_data.value = 0
         self.dut.i_rd_offset.value = 0
         self.dut.i_rd_capture.value = 0
+        self.dut.i_msi_ready.value = 0
         for _ in range(3):
             await RisingEdge(self.dut.i_clk)
         await FallingEdge(self.dut.i_clk)
@@ -378,19 +380,19 @@ async def test_reset_values(dut: Any) -> None:
 
 @cocotb.test()
 async def test_domaincfg(dut: Any) -> None:
-    """Only IE is writable; bits 31:24 read 0x80; DM and BE read zero."""
+    """IE and implemented DM are writable; bits 31:24 read 0x80 and BE is zero."""
     bench = Bench(dut)
     await bench.start()
     for domain in DOMAINS:
         offset = reg_offset(domain, DOMAINCFG)
         other = reg_offset(1 - domain, DOMAINCFG)
         await bench.write(offset, 0xFFFF_FFFF)
-        await bench.expect(offset, 0x8000_0100)
+        await bench.expect(offset, 0x8000_0100 | (4 if MSI_ENABLE else 0))
         await bench.expect(other, 0x8000_0000)
         # The spec's write for an unknown byte order, (x << 24) | x, with BE
-        # and DM requested: both stay zero.
+        # and DM requested: only an implemented DM bit is retained.
         await bench.write(offset, (0x05 << 24) | 0x05)
-        await bench.expect(offset, 0x8000_0000)
+        await bench.expect(offset, 0x8000_0000 | (4 if MSI_ENABLE else 0))
         await bench.write(offset, 0x0100)
         await bench.expect(offset, 0x8000_0100)
         await bench.write(offset, 0)
@@ -673,7 +675,7 @@ async def test_bitmap_and_number_registers(dut: Any) -> None:
     for k in range(words):
         await bench.expect(reg_offset(ROOT, SETIP + 4 * k), 0)
         await bench.expect(reg_offset(ROOT, SETIE + 4 * k), 0)
-    # Write-only registers, the MSI registers and genmsi read zero.
+    # Write-only registers, unimplemented MSI registers and direct genmsi read zero.
     await bench.write(reg_offset(ROOT, SETIE), 0xFFFF_FFFF)
     for reg in (
         SETIPNUM,
@@ -684,11 +686,7 @@ async def test_bitmap_and_number_registers(dut: Any) -> None:
         SETIPNUM_BE,
         CLRIE,
         GENMSI,
-        MMSIADDRCFG,
-        MMSIADDRCFG + 4,
-        MMSIADDRCFG + 8,
-        MMSIADDRCFG + 12,
-    ):
+    ) + (() if MSI_ENABLE else tuple(range(MMSIADDRCFG, MMSIADDRCFG + 16, 4))):
         await bench.write(reg_offset(ROOT, reg), 0xFFFF_FFFF)
         await bench.expect(reg_offset(ROOT, reg), 0)
 
@@ -1333,7 +1331,7 @@ async def test_random_against_model(dut: Any) -> None:
         data = rng.getrandbits(32)
         n = number()
         if kind == 0:
-            return reg_offset(domain, DOMAINCFG), rng.choice((0x100, 0, data))
+            return reg_offset(domain, DOMAINCFG), rng.choice((0x100, 0, data & ~4))
         if kind <= 2:
             mode = rng.choice(SOURCE_MODES + (2, 3))
             if domain == ROOT and rng.random() < 0.4:
@@ -1364,6 +1362,8 @@ async def test_random_against_model(dut: Any) -> None:
         choice = rng.random()
         if choice < 0.45:
             offset, data = write_op()
+            if offset in (reg_offset(d, DOMAINCFG) for d in DOMAINS):
+                data &= ~4  # this bench keeps random traffic in direct mode
             await bench.write(offset, data)
         elif choice < 0.6:
             await bench.set_wire(rng.randint(1, NUM_SOURCES), rng.randint(0, 1))
