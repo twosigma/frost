@@ -70,38 +70,72 @@ def test_arch_timeout_is_a_failure(
 
 
 @pytest.mark.parametrize(
-    ("second_dump", "status", "detail"),
+    ("signature", "status", "detail"),
     (
-        ("00000001\n<<PASS>>\n", "PASS", ""),
-        ("00000002\n<<PASS>>\n", "FAIL", "run 2"),
-        ("<<PASS>>\n", "FAIL", "run 2"),
-        ("00000001\n", "FAIL", "Unterminated signature"),
+        ("00000001\n", "PASS", ""),
+        ("00000002\n", "FAIL", "mismatch in run 1"),
+        ("00000001 00000000\n", "FAIL", "actual=2 words"),
+        ("00000001\n00000002\n", "FAIL", "run 2"),
+        ("00000001\n\n", "FAIL", "run 2"),
+        ("", "FAIL", "no signature"),
+        (None, "FAIL", "no signature"),
     ),
 )
-def test_arch_checks_every_reset_signature(
+def test_arch_checks_the_signature_the_bench_read(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    second_dump: str,
+    signature: str | None,
     status: str,
     detail: str,
 ) -> None:
-    """A correct first boot cannot conceal a bad or missing second signature."""
+    """Every run's signature must match the reference, and a missing one fails."""
     source = tmp_path / "add-01.S"
     reference = tmp_path / "add-01.reference_output"
+    signature_file = tmp_path / "arch_signature.txt"
     source.write_text("")
     reference.write_text("00000001\n")
     monkeypatch.setattr(test_arch_compliance, "get_reference_path", lambda _: reference)
+    monkeypatch.setattr(test_arch_compliance, "SIGNATURE_FILE", signature_file)
     monkeypatch.setattr(
         test_arch_compliance, "compile_test", lambda *_, **__: (True, "")
     )
-    output = "00000001\n<<PASS>>\nINFO cocotb: asserting reset\n" + second_dump
-    simulation = subprocess.CompletedProcess(["make"], 0, output, "")
-    monkeypatch.setattr(test_arch_compliance, "run_simulation", lambda **_: simulation)
+
+    def run_simulation(**_: object) -> subprocess.CompletedProcess[str]:
+        if signature is not None:
+            signature_file.write_text(signature)
+        return subprocess.CompletedProcess(["make"], 0, "<<PASS>>\n", "")
+
+    monkeypatch.setattr(test_arch_compliance, "run_simulation", run_simulation)
 
     result = test_arch_compliance.run_single_test(source, "I")
 
     assert result.status == status
     assert detail in result.message
+
+
+def test_arch_signature_location_comes_from_the_elf_symbols(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The bench reads end - begin bytes at frost_bram_signature."""
+    symbols = (
+        "000000000003ec90 A frost_bram_signature\n"
+        "                 U undefined_symbol\n"
+        "0000000080006000 D begin_signature\n"
+        "0000000080007370 D end_signature\n"
+    )
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, symbols, "")
+
+    monkeypatch.setenv("RISCV_PREFIX", "riscv64-unknown-elf-")
+    monkeypatch.setattr(test_arch_compliance.subprocess, "run", run)
+
+    location = test_arch_compliance.signature_location(tmp_path / "sw.elf")
+
+    assert location == (0x3EC90, 0x1370)
+    assert commands == [["riscv64-unknown-elf-nm", str(tmp_path / "sw.elf")]]
 
 
 def test_arch_missing_reference_fails_the_run(
@@ -219,7 +253,7 @@ def test_signature_alignment_accepts_a_commented_define(tmp_path: Path) -> None:
     assert generator._signature_alignment(tmp_path / "model_test.h") == (4, 4)
 
 
-def test_signature_extractors_ignore_interspersed_logs() -> None:
+def test_signature_extractor_ignores_interspersed_logs() -> None:
     """Progress logging inside a UART dump must not truncate its signature."""
     output = "\n".join(
         (
@@ -230,7 +264,6 @@ def test_signature_extractors_ignore_interspersed_logs() -> None:
         )
     )
 
-    assert test_arch_compliance.extract_signatures(output) == [["00000001", "00000002"]]
     assert test_riscv_torture.extract_signature(output) == ["00000001", "00000002"]
 
 
@@ -450,14 +483,28 @@ def test_ddr_model_timing_needs_a_seed_and_the_soc(
     assert unit_bench.verilator_extra_args == ()
 
 
-def test_arch_simulation_turns_off_the_uart_tx_drop_check(
+def test_arch_simulation_tells_the_bench_where_the_signature_is(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Arch runs pass +uart_tx_drop_check=0: the signature dump can outgrow the TX FIFO."""
+    """Arch runs name the signature's low-BRAM bytes and its file.
+
+    The UART carries only the pass marker, so frost.sv's dropped-byte check
+    stays on.
+    """
     monkeypatch.setenv("SIM", "verilator")
+    signature_file = tmp_path / "tests" / "arch_signature.txt"
     monkeypatch.setattr(test_arch_compliance, "TESTS_DIR", tmp_path / "tests")
     monkeypatch.setattr(test_arch_compliance, "ARCH_TEST_APP_DIR", tmp_path / "app")
+    monkeypatch.setattr(test_arch_compliance, "SIGNATURE_FILE", signature_file)
     (tmp_path / "tests").mkdir()
+    signature_file.write_text("stale\n")
+    elves: list[Path] = []
+
+    def signature_location(elf: Path) -> tuple[int, int]:
+        elves.append(elf)
+        return 0x3EC90, 0x1370
+
+    monkeypatch.setattr(test_arch_compliance, "signature_location", signature_location)
     runner_class = test_run_cocotb.CocotbRunner
     monkeypatch.setattr(
         runner_class, "setup_environment", lambda _self: {"COCOTB_PLUSARGS": "+seed"}
@@ -478,9 +525,16 @@ def test_arch_simulation_turns_off_the_uart_tx_drop_check(
 
     test_arch_compliance.run_simulation()
 
-    assert [env["COCOTB_PLUSARGS"].split() for env in environments] == [
-        ["+seed", "+uart_tx_drop_check=0"]
-    ]
+    assert elves == [tmp_path / "app" / "sw.elf"]
+    assert not signature_file.exists()
+    assert [
+        (
+            env["FROST_ARCH_SIGNATURE"],
+            env["FROST_ARCH_SIGNATURE_FILE"],
+            env["COCOTB_PLUSARGS"],
+        )
+        for env in environments
+    ] == [("0x3ec90:0x1370", str(signature_file), "+seed")]
 
 
 def test_run_in_process_group_returns_output() -> None:

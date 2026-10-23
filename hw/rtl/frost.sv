@@ -489,7 +489,7 @@ module frost #(
 
 `ifndef SYNTHESIS
   // Report lost TX bytes. +uart_tx_drop_check=0 disables this for unpaced
-  // output captured before the FIFO, such as arch-test signature dumps.
+  // output that a bench captures before the FIFO.
   int unsigned uart_tx_drop_check;
   initial if (!$value$plusargs("uart_tx_drop_check=%d", uart_tx_drop_check)) uart_tx_drop_check = 1;
   always_ff @(posedge i_clk)

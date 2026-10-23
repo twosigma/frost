@@ -194,9 +194,9 @@ def run_simulation(
 def extract_signature(sim_output: str) -> list[str]:
     """Extract hex signature lines from simulation UART output.
 
-    Same logic as arch_test: collect 8-char hex lines before <<PASS>>, ignoring
-    interspersed simulator log lines. Long UART dumps can cross cocotb's
-    periodic progress messages; those messages do not delimit a new signature.
+    Collect 8-char hex lines before <<PASS>>, ignoring interspersed simulator
+    log lines. Long UART dumps can cross cocotb's periodic progress messages;
+    those messages do not delimit a new signature.
     """
     lines = sim_output.splitlines()
     sig_lines: list[str] = []

@@ -139,15 +139,21 @@ point is marked `slow`:
 ### `test_arch_compliance.py`
 
 Runs the implemented parts of riscv-arch-test and compares each test's
-signature, printed over the UART, with a committed Spike reference under
+signature with a committed Spike reference under
 `sw/apps/arch_test/references/`, which mirrors the suite's directory layout.
-Every reset/restart run's signature is checked. BRAM runs twice. Small images
-retain memory across reset and startup restores their initialized data. When
-a larger image's initialization data extends into mutable RAM, startup
-overwrites that copy; the bench reloads the original image through the BRAM
-programming port while holding reset before the second run. Both signatures
-must still match the reference. DDR and `icache` run once because their
-images load in place and a CPU reset does not restore mutated inputs.
+At the end of a test, `RVMODEL_HALT` (`sw/apps/arch_test/model_test.h`)
+prints `<<PASS>>` over the UART, and the bench then reads the signature from
+the data copy of low BRAM. The `bram` and `icache` tiers keep the signature
+there. The `ddr` tier keeps it in DDR, behind the write-back L1D and L2, so
+`RVMODEL_HALT` first copies it to the top of low BRAM with ordinary loads and
+stores. A fence before the marker waits until every store has reached the
+BRAM. Every reset/restart run's signature is checked. BRAM runs twice. Small
+images retain memory across reset and startup restores their initialized
+data. When a larger image's initialization data extends into mutable RAM,
+startup overwrites that copy; the bench reloads the original image through
+the BRAM programming port while holding reset before the second run. Both
+signatures must still match the reference. DDR and `icache` run once because
+their images load in place and a CPU reset does not restore mutated inputs.
 Both startup stubs initialize `a4`, which the pinned suite's
 `RVTEST_INIT_GPRS` omits but its hints signatures record. This makes the
 initial state match Spike on every run without assuming GPRs clear on reset.
