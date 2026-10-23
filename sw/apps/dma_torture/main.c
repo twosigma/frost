@@ -29,6 +29,7 @@
  */
 #include <stdint.h>
 
+#include "aplic.h"
 #include "csr.h"
 #include "dma_engine.h"
 #include "trap.h"
@@ -40,13 +41,6 @@
 #ifndef INT_MEI
 #define INT_MEI 11ul
 #endif
-
-#define REG32(a) (*(volatile uint32_t *) (uintptr_t) (a))
-#define PLIC_BASE 0x44000000ul
-#define PLIC_PRIO(s) REG32(PLIC_BASE + 4ul * (s))
-#define PLIC_EN_M REG32(PLIC_BASE + 0x2000ul)
-#define PLIC_THR_M REG32(PLIC_BASE + 0x200000ul)
-#define PLIC_CLAIM_M REG32(PLIC_BASE + 0x200004ul)
 
 #define LINE_BYTES 32u
 #define LINE_WORDS (LINE_BYTES / 4u)
@@ -341,8 +335,8 @@ static void test_amo(void)
 /* ---- irq: the completion interrupt follows the status write ---- */
 __attribute__((noinline, used)) void dma_irq_c(void)
 {
-    uint32_t claim = PLIC_CLAIM_M;
-    if (claim == DMA_ENGINE_PLIC_SOURCE) {
+    uint32_t claim = aplic_claim_machine();
+    if (claim == DMA_ENGINE_APLIC_SOURCE) {
         g_irq_status = dma_engine_status();
         g_irq_data = g_mp[0];
         g_irq_count++;
@@ -350,7 +344,6 @@ __attribute__((noinline, used)) void dma_irq_c(void)
     } else {
         g_spurious++;
     }
-    PLIC_CLAIM_M = claim; /* complete */
 }
 
 __attribute__((naked, aligned(4))) static void dma_irq_entry(void)
@@ -382,9 +375,7 @@ static void test_irq(void)
     g_mp[LINE_WORDS] = 0;
     g_irq_count = 0;
     set_trap_handler(&dma_irq_entry);
-    PLIC_PRIO(DMA_ENGINE_PLIC_SOURCE) = 1;
-    PLIC_THR_M = 0;
-    PLIC_EN_M = 1u << DMA_ENGINE_PLIC_SOURCE;
+    aplic_enable_machine_source(DMA_ENGINE_APLIC_SOURCE);
     enable_external_interrupt();
     enable_interrupts();
     start_engine(0,
@@ -399,7 +390,7 @@ static void test_irq(void)
         spins++;
     disable_interrupts();
     disable_external_interrupt();
-    PLIC_EN_M = 0;
+    aplic_disable_machine_source(DMA_ENGINE_APLIC_SOURCE);
     int ok = g_irq_count == 1 && (g_irq_status & DMA_ENGINE_STATUS_DONE) &&
              (g_irq_status & DMA_ENGINE_STATUS_IRQ) && g_irq_data == 0x77u &&
              g_mp[LINE_WORDS] == 0x1234u && g_spurious == 0;
@@ -492,9 +483,7 @@ static void test_abort_read(void)
      * interrupt enabled the abort still raises it, with ERROR set. */
     g_irq_count = 0;
     set_trap_handler(&dma_irq_entry);
-    PLIC_PRIO(DMA_ENGINE_PLIC_SOURCE) = 1;
-    PLIC_THR_M = 0;
-    PLIC_EN_M = 1u << DMA_ENGINE_PLIC_SOURCE;
+    aplic_enable_machine_source(DMA_ENGINE_APLIC_SOURCE);
     enable_external_interrupt();
     enable_interrupts();
     dma_engine_setup(
@@ -508,7 +497,7 @@ static void test_abort_read(void)
         spins++;
     disable_interrupts();
     disable_external_interrupt();
-    PLIC_EN_M = 0;
+    aplic_disable_machine_source(DMA_ENGINE_APLIC_SOURCE);
     int ok = lines == 0 && g_irq_count == 1 && (g_irq_status & DMA_ENGINE_STATUS_ERROR) &&
              !(g_irq_status & DMA_ENGINE_STATUS_DONE);
     for (uint32_t i = 0; i < BUF_WORDS; i++) {

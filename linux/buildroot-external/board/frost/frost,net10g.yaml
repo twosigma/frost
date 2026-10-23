@@ -33,7 +33,7 @@ properties:
 
   interrupts:
     maxItems: 1
-    description: The NIC's level interrupt (PLIC source).
+    description: The NIC's level interrupt (APLIC source).
 
   dma-coherent: true
 
@@ -60,8 +60,8 @@ examples:
     ethernet@40030000 {
         compatible = "frost,net10g";
         reg = <0x40030000 0x1000>;
-        interrupt-parent = <&plic>;
-        interrupts = <4>;
+        interrupt-parent = <&aplic_s>;
+        interrupts = <4 4>;
         dma-coherent;
         local-mac-address = [02 11 22 33 44 55];
         clock-frequency = <322265625>;

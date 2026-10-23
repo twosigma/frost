@@ -88,8 +88,8 @@ The `rvfi_dii` build (`FROST_RVFI_DII`, defined only by its entry in
 unchanged except where noted below. It selects `frost_rvfi_platform` in place
 of the production `platform_top`. This fixture retains the fixed-latency
 Normal memory interface; the production AXI `CACHE_NORMAL_MEMORY` policy is
-not passed to it, and the CPU's unused variable-latency request outputs are
-left open.
+not passed to it. The CPU's read-size output qualifies the legacy MMIO
+path's 32-bit APLIC reads; unused request outputs remain open.
 The [CPU boundary tests](../../hw/rtl/cpu_top/README.md#verification) cover
 the production AXI interface separately.
 

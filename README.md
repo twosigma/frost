@@ -6,9 +6,9 @@ FROST is a two-wide, out-of-order RISC-V processor for FPGAs, written in
 SystemVerilog. It implements RV64GCB with machine, supervisor, and user modes
 and Sv39 virtual memory. The AMD Alveo X3522PV configuration targets 322 MHz and boots
 Debian 13 with Debian's unmodified riscv64 kernel, mounting its root
-filesystem over NFS through its own 10 Gigabit Ethernet NIC. See the
-[performance measurements](docs/single_core_performance.md) for the earlier
-4.27 CoreMark/MHz baseline and validation of the new AXI memory path.
+filesystem over NFS through its own 10 Gigabit Ethernet NIC. It runs
+CoreMark at 4.23 CoreMark/MHz; see the
+[performance measurements](docs/single_core_performance.md).
 
 [![FROST architecture: two-wide out-of-order CPU, Sv39 translation, X3 cache hierarchy, and system peripherals](docs/diagrams/frost-architecture.svg)](docs/diagrams/frost-architecture.svg)
 
@@ -149,7 +149,7 @@ every supported extension and privilege mode.
   stores. DMA is coherent with the DDR data caches.
 - 256 KiB of on-chip BRAM and 1 GiB of cached DDR4, with the same
   [memory map](sw/README.md#memory-map) in simulation and on hardware.
-- UART, CLINT-compatible timer, PLIC interrupt controller, and 10GBASE-R
+- UART, CLINT-compatible timer, APLIC interrupt controller, and 10GBASE-R
   Ethernet.
 - JTAG debugging with halt, resume, and single-step through OpenOCD and GDB.
 
@@ -294,8 +294,8 @@ the image.
 ## Status and Roadmap
 
 FROST supports one board, the Alveo X3522PV, and a single hart. Planned work
-includes support for the AMD VCU118 board, a two-hart SMP configuration, and
-5 CoreMark/MHz at the same clock; see [ROADMAP.md](ROADMAP.md).
+includes a two-hart SMP configuration with the RISC-V Advanced Interrupt
+Architecture and 5 CoreMark/MHz; see [ROADMAP.md](ROADMAP.md).
 
 ## Contributors and License
 

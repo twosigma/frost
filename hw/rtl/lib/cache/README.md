@@ -349,7 +349,7 @@ page-table walker translate that error into an architectural access fault.
 Failed writebacks or write-allocated fills retain dirty ownership, latch a
 fatal address and stop CPU retirement. They cannot be made precise after a
 buffered store has retired. FROST's SoC also counts board DDR error responses
-in `memory_error_unit`; `memerr_test` checks the read exception, ECC/PLIC
+in `memory_error_unit`; `memerr_test` checks the read exception, ECC/APLIC
 reporting and final fatal writeback stop. Coherent responses carry errors
 through the DMA sequencer and arbiter to their agents. With response errors
 disabled, legacy library benches retain their original completion behavior.

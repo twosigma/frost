@@ -21,7 +21,7 @@
  * The NIC is the net10g MAC/PCS on the cache hierarchy's coherent DMA port:
  * a 4 KiB window of 32-bit registers at NIC_BASE (64-bit counters from
  * NIC_COUNTERS, read with one 64-bit load), an RX and a TX descriptor ring
- * in cached DDR, and one PLIC interrupt. Descriptors are 16 bytes, two per
+ * in cached DDR, and one APLIC interrupt. Descriptors are 16 bytes, two per
  * 32-byte line; software fills words 0 and 1, zeroes word 2, orders those
  * stores before the doorbell with "fence w, o" (memory writes before the
  * I/O write), then writes TAIL; hardware writes word 2 (DD and the outcome)
@@ -132,7 +132,7 @@
 #define NIC_CNT_TX_PCS_BAD_BLOCK 15u
 #define NIC_NUM_COUNTERS 16u
 
-#define NIC_PLIC_SOURCE 4u
+#define NIC_APLIC_SOURCE 4u
 #define NIC_MAX_FRAME_BYTES 9216u
 #define NIC_RING_SIZE_LOG2_MIN 2u
 #define NIC_RING_SIZE_LOG2_MAX 16u

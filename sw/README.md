@@ -144,7 +144,7 @@ copy.
 | DMA test engine | `0x40020000` | Coherent DMA copy and fill engine |
 | Memory error unit | `0x40021000` | Counts and addresses of DDR ECC errors and DDR error responses |
 | NIC | `0x40030000` | 10G Ethernet control, descriptor rings, and counters |
-| PLIC | `0x44000000` | Platform-level interrupt controller: 4 MiB window, M and S contexts for hart 0 |
+| APLIC | `0x44000000` | AIA direct delivery: 4 MiB window, M domain at +0 and S domain at +0x8000, one IDC each for hart 0 |
 
 [`mmio.h`](lib/include/mmio.h) defines `volatile` accessors named after the
 native registers, `UART_TX` through `UART_TX_STATUS`. Use naturally aligned
@@ -298,21 +298,21 @@ can be debugged and where each one first stops.
 | `lq_stale_slot_probe/` | Cached-load results must reach the right load across two partial flushes and ROB-tag reuse, with slow, reordered DDR responses |
 | `mem_divergence_probe/` | Cold versus warm reads of cached DDR (both dword halves, 64-bit reads, store forwarding) |
 | `memerr_readback/` | The memory error unit on the X3: the ECC reader is active and polling, and a DDR write and readback twice the L2's size reports no error |
-| `memerr_test/` | The memory error unit in simulation: DDR error responses injected by the model and ECC reports from the bench reach its counters, addresses, and PLIC interrupt |
+| `memerr_test/` | The memory error unit in simulation: DDR error responses injected by the model and ECC reports from the bench reach its counters, addresses, and APLIC interrupt |
 | `memory_test/` | Arena allocator and `malloc`/`free`/`calloc`/`realloc`, including coalescing and overflow rejection |
 | `mret_drain_deadlock/` | `mret` right after cached-DDR stores must wait for them to drain, then continue |
 | `mret_timer_resume_test/` | A timer pending as `mret` drops to U-mode must save the U-mode entry point in `mepc` |
 | `mtimer_stress/` | Frequent timer interrupts swept across 20,000 memory/ALU loop iterations and `mret`; a deadlock times out within the default 500,000-cycle simulation budget |
 | `nic_echo/` | Interrupt-driven Ethernet echo; needs a link partner, which the simulation bench provides |
 | `nic_loopback/` | NIC loopback, descriptor rings, interrupts, filtering, and reset during traffic |
-| `ns16550_irq_console_test/` | Console output written one byte per THRE interrupt, each claimed and completed through the PLIC |
+| `ns16550_irq_console_test/` | Console output written one byte per THRE interrupt, each claimed through the APLIC |
 | `ns16550_test/` | The 16550 UART registers: Linux 8250 initialization, register file, LSR.THRE and LSR.TEMT around a write, and transmit |
-| `opensbi_smoke/` | OpenSBI boots a bare S-mode payload that tests SBI calls; fixed layout, ignores `MEM_CONFIG` |
+| `opensbi_smoke/` | OpenSBI boots a bare S-mode payload that tests SBI calls, APLIC delegation and supervisor interrupt delivery; fixed layout, ignores `MEM_CONFIG` |
 | `packet_parser/` | FIX message parser demo fed through the MMIO FIFOs; reports parse time in cycles |
 | `pause_test/` | `pause` (`0x0100000F`) retires without draining committed stores, while `fence r,0` and the other FENCE encodings next to it wait for the drain |
 | `pde_return_hazard/` | A return value computed from `s1` just before the epilogue restores `s1` (Linux `pde_subdir_find` shape) |
 | `perf_off_test/` | Core built without profiling counters: `mperf*` CSRs read zero and ignore writes, while `cycle` and `instret` count |
-| `plic_test/` | PLIC registers, level gateway, claim and complete, threshold, both contexts, an M-mode external interrupt, and completions from contexts that do not enable the source |
+| `aplic_test/` | APLIC direct delivery, both domains, delegation, level claims, thresholds, forced interrupts, machine interrupt entry, and 32-bit access enforcement |
 | `pma_fault_test/` | Access faults for fetch, load, store, AMO, and LR outside the physical map (fetch from the low BRAM above its 128 KiB code region and loads from device-quadrant addresses outside the device windows included; untranslated stores there are ignored) and for AMO, LR, and SC to device registers, with exact `mepc` and `mtval` |
 | `print_clock_speed/` | Prints the `FPGA_CPU_CLK_FREQ` it was built with |
 | `ptw_coherence_test/` | Sv39 walks must see page tables still dirty in the L1D, without `sfence.vma` |

@@ -101,7 +101,7 @@ Regions use nonoverlapping, page-aligned half-open intervals; elaboration checks
 
 Only the exact default FROST map with `FROST_PMA_LEGACY_DEVICE_STORES=1` retains its legacy allowance for untranslated stores anywhere in `0x40000000..0x80000000`; FROST's SoC ignores writes to unimplemented registers there. Other maps, and builds setting this definition to 0, admit only their configured regions. The optimized FROST store-PMA decoder is bypassed for a different map. Devices permit loads/stores, prohibit instruction fetch and atomics, and bypass every cache including L0. Page tables must reside in the configured cached region; the walker coherently probes L1D and reads through L2.
 
-The generic CPU has no knowledge of UART/FIFO/PLIC register offsets. The FROST SoC's register map and programming interface remain platform-specific. Changing the standalone CPU configuration does not automatically readdress FROST's peripherals or linker scripts.
+The generic CPU has no knowledge of UART/FIFO/APLIC register offsets. The FROST SoC's register map and programming interface remain platform-specific. Changing the standalone CPU configuration does not automatically readdress FROST's peripherals or linker scripts.
 
 ## Interrupt and debug controls
 

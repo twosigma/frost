@@ -48,7 +48,7 @@ submodule, built by [`opensbi_build.py`](opensbi_build.py) with:
 - An empty `FW_JUMP_FDT_OFFSET`, so the DTB address in `a1` passes through
   unchanged.
 - The drivers in [`opensbi_frost_defconfig`](opensbi_frost_defconfig) (the
-  ns16550 UART, the PLIC, and the CLINT) and `FDT_ASSUME_MASK=7`, which lets
+  ns16550 UART, the APLIC, and the CLINT) and `FDT_ASSUME_MASK=7`, which lets
   libfdt trust the packer's DTB.
 
 It builds with the Bootlin `riscv64-linux-` toolchain by default, found on PATH
@@ -72,15 +72,15 @@ The board and simulation share one physical map.
 |---|---|
 | `[0x0000_0000, 256 KiB)` | Uncached boot BRAM, outside Linux's memory node. Code runs only from its first 128 KiB. `[0x17C00, 0x18000)` is reserved for the debug module. |
 | `[0x4000_0000, 0x4003_1000)` | Native MMIO: UART, FIFOs, timer, DMA test engine, memory error unit, and NIC. See `sw/lib/include/mmio.h`. |
-| `[0x4000_1000, +0x100)` | ns16550a UART alias, PLIC source 1, with `reg-shift=2` and `reg-io-width=4` |
+| `[0x4000_1000, +0x100)` | ns16550a UART alias, APLIC source 1, with `reg-shift=2` and `reg-io-width=4` |
 | `[0x4001_0000, +0xC000)` | SiFive CLINT alias: `msip` at `+0`, `mtimecmp` at `+0x4000`, `mtime` at `+0xBFF8` |
-| `[0x4002_1000, +0x100)` | Memory error unit, PLIC source 5, bound by the `frost_memerr` driver ([device-tree binding](buildroot-external/board/frost/frost,memory-error.yaml)) |
+| `[0x4002_1000, +0x100)` | Memory error unit, APLIC source 5, bound by the `frost_memerr` driver ([device-tree binding](buildroot-external/board/frost/frost,memory-error.yaml)) |
 | `[0x4003_0000, +4 KiB)` | DMA-coherent NIC, bound by the `frost_net10g` driver ([device-tree binding](buildroot-external/board/frost/frost,net10g.yaml)) |
-| `[0x4400_0000, +4 MiB)` | PLIC with M and S contexts for hart 0. Sources 1 to 5 are the UART, external pin, DMA test engine, NIC, and memory error unit. OpenSBI hides the M context from Linux. |
+| `[0x4400_0000, +4 MiB)` | AIA APLIC in direct delivery mode, with M and S domains at `0x4400_0000` and `0x4400_8000`, each 32 KiB and each with one IDC for hart 0. Sources 1 to 5 are the UART, external pin, DMA test engine, NIC, and memory error unit. OpenSBI delegates all sources to S mode and disables the M-domain node in Linux's DT. |
 | `[0x8000_0000, +1 GiB)` | Cached DDR. The DTB advertises the board's DDR size: 1 GiB on X3. |
 
 The PMA map has four regions: the BRAM, the MMIO register window
-`[0x4000_0000, 0x4003_1000)`, the PLIC window `[0x4400_0000, 0x4440_0000)`,
+`[0x4000_0000, 0x4003_1000)`, the APLIC window `[0x4400_0000, 0x4440_0000)`,
 and cached DDR. An access anywhere else, including the rest of the device
 quadrant `[0x4000_0000, 0x8000_0000)` and any address with bits 63:32 set,
 raises a precise access fault (cause 1, 5, or 7 for a fetch, load, or store)
@@ -117,9 +117,11 @@ fit.
 ## Interrupts and time
 
 The DT connects the CLINT to the hart's `cpu-intc` for the machine software
-(cause 3) and machine timer (cause 7) interrupts, and the PLIC's M and S
-contexts to causes 11 and 9. The CLINT registers are dword-aligned and
-support 64-bit access: an `ld` reads `mtime` atomically, with no rv32-style
+(cause 3) and machine timer (cause 7) interrupts, and the APLIC's M and S
+domains to causes 11 and 9. The DT uses `riscv,aplic` for each domain,
+with two interrupt cells per source: identity and level-high type (4).
+Linux reports `APLIC-DIRECT` in `/proc/interrupts`. The CLINT registers are
+dword-aligned and support 64-bit access: an `ld` reads `mtime` atomically, with no rv32-style
 hi/lo/hi loop, and an 8-byte store to `mtimecmp` lands atomically.
 
 `timebase-frequency` equals the CPU clock: `mtime` counts every core cycle,
@@ -195,6 +197,7 @@ A replacement kernel selected with `FROST_LINUX_KERNEL` must provide:
 |---|---|
 | `CONFIG_MMU`, `CONFIG_ARCH_RV64I`, `CONFIG_64BIT` | Sv39 RV64 kernel in S-mode. Leave `CONFIG_RISCV_M_MODE` unset. |
 | `CONFIG_RISCV_SBI` | Runs under OpenSBI and calls the SBI interface |
+| `CONFIG_RISCV_APLIC` | Wired interrupts through the APLIC supervisor domain in direct delivery mode. The pinned kernel builds this driver in. |
 | `CONFIG_RISCV_PMU`, `CONFIG_RISCV_PMU_SBI` | Cycle and instruction counters through the SBI PMU |
 | `CONFIG_RISCV_MISALIGNED` | Handles misaligned accesses once the kernel takes FWFT delegation. The pin selects it through `CONFIG_RISCV_PROBE_UNALIGNED_ACCESS`; `CONFIG_RISCV_EMULATED_UNALIGNED_ACCESS` also works. |
 | `CONFIG_BINFMT_ELF`, `CONFIG_FPU` | ELF userspace with LP64D hard float |

@@ -82,8 +82,8 @@ module soc_top #(
     input  logic        i_fifo1_empty,
     output logic        o_fifo1_rd_en,
 
-    // External interrupt input: PLIC source 2 (the ns16550 IRQ is source 1).
-    // The PLIC's M-context line is registered one cycle before driving MEIP.
+    // External interrupt input: APLIC source 2 (the ns16550 IRQ is source 1).
+    // The APLIC's machine-domain line is registered one cycle before driving MEIP.
     input logic        i_external_interrupt,
     // DDR ECC reports from the board's reader (boards/x3/x3_ecc_reader.sv on
     // the X3) for the memory error unit; a board without one ties them low.
@@ -317,34 +317,32 @@ module soc_top #(
   // DMA test engine @ 0x4002_0000, a 256-byte window of
   // 32-bit registers (dma_test_engine.sv). It reaches the cache hierarchy's
   // coherent DMA port through the line-port arbiter it shares with the NIC;
-  // its completion interrupt is PLIC source 3.
+  // its completion interrupt is APLIC source 3.
   localparam int unsigned DmaEngineBase = 32'h4002_0000;
   // NIC @ 0x4003_0000, a 4 KiB window of 32-bit registers
   // (hw/rtl/peripherals/nic/nic_pkg.sv). It shares the coherent DMA port with
-  // the test engine through a line-port arbiter; its interrupt is PLIC
+  // the test engine through a line-port arbiter; its interrupt is APLIC
   // source 4.
   localparam int unsigned NicBase = 32'h4003_0000;
   // Memory error unit @ 0x4002_1000, a 256-byte window of 32-bit registers
   // (memory_error_unit.sv): counts of DDR ECC errors and of the DDR bridge's
-  // AXI error responses; its interrupt is PLIC source 5.
+  // AXI error responses; its interrupt is APLIC source 5.
   localparam int unsigned MemErrBase = 32'h4002_1000;
 
   // mtimecmp resets to all-ones so no timer interrupt fires until software
   // programs it.
   localparam logic [63:0] MtimecmpDefault = 64'hFFFF_FFFF_FFFF_FFFF;
 
-  // PLIC @ 0x4400_0000, a 4 MiB device-quadrant window
+  // APLIC @ 0x4400_0000, a 4 MiB device-quadrant window
   // (addr[31:22] == 10'h110) of 32-bit registers. Sources: 1 = ns16550 irq,
   // 2 = i_external_interrupt, 3 = the DMA test engine's completion, 4 = the
-  // NIC, 5 = the memory error unit. Contexts: 0 = hart0 M, 1 = hart0 S. The claim read
-  // (0x20_0004 + 0x1000*ctx) is destructive, so its consume pulse is decoded
-  // from mmio_read_capture, which the local access logic fires once per read.
-  localparam logic [9:0] PlicWindowSel = 10'h110;
-  localparam int unsigned PlicClaimM = 32'h4420_0004;
-  localparam int unsigned PlicClaimS = 32'h4420_1004;
+  // NIC, 5 = the memory error unit. The machine domain is at +0x0000,
+  // the supervisor domain at +0x8000, with one IDC per domain for hart 0.
+  // A 32-bit claimi read consumes its interrupt on mmio_read_capture.
+  localparam logic [9:0] AplicWindowSel = 10'h110;
 
   // The data PMA accepts device accesses only in riscv_pkg's device-window
-  // pages, so they must be exactly the MMIO and PLIC windows decoded here: a
+  // pages, so they must be exactly the MMIO and APLIC windows decoded here: a
   // page only the PMA had would reach no register, and one it lacked would
   // fault. The pages must also keep the layout their decodes assume: both
   // windows inside the device quadrant, which the load and store queues order
@@ -355,15 +353,15 @@ module soc_top #(
   initial begin
     if ((MmioAddr != {riscv_pkg::MmioFirstPage, 12'h000}) ||
         ((MmioAddr + MmioSizeBytes) != {riscv_pkg::MmioLastPage + 20'd1, 12'h000}) ||
-        ({PlicWindowSel, 22'h00_0000} != {riscv_pkg::PlicFirstPage, 12'h000}) ||
-        ({PlicWindowSel, 22'h3F_FFFF} != {riscv_pkg::PlicLastPage, 12'hFFF}))
-      $fatal(1, "soc_top: MMIO or PLIC window differs from the riscv_pkg device-window pages");
-    if ((riscv_pkg::MmioFirstPage[19:18] != 2'b01) || (riscv_pkg::PlicFirstPage[19:18] != 2'b01) ||
+        ({AplicWindowSel, 22'h00_0000} != {riscv_pkg::AplicFirstPage, 12'h000}) ||
+        ({AplicWindowSel, 22'h3F_FFFF} != {riscv_pkg::AplicLastPage, 12'hFFF}))
+      $fatal(1, "soc_top: MMIO or APLIC window differs from the riscv_pkg device-window pages");
+    if ((riscv_pkg::MmioFirstPage[19:18] != 2'b01) || (riscv_pkg::AplicFirstPage[19:18] != 2'b01) ||
         (riscv_pkg::MmioLastPage[19:6] != riscv_pkg::MmioFirstPage[19:6]) ||
         (riscv_pkg::MmioFirstPage > riscv_pkg::MmioLastPage) ||
-        (riscv_pkg::MmioLastPage == 20'h7_FFFF) || (riscv_pkg::PlicLastPage == 20'h7_FFFF) ||
-        ((riscv_pkg::MmioLastPage + 20'd1 >= riscv_pkg::PlicFirstPage) &&
-         (riscv_pkg::PlicLastPage + 20'd1 >= riscv_pkg::MmioFirstPage)))
+        (riscv_pkg::MmioLastPage == 20'h7_FFFF) || (riscv_pkg::AplicLastPage == 20'h7_FFFF) ||
+        ((riscv_pkg::MmioLastPage + 20'd1 >= riscv_pkg::AplicFirstPage) &&
+         (riscv_pkg::AplicLastPage + 20'd1 >= riscv_pkg::MmioFirstPage)))
       $fatal(1, "soc_top: riscv_pkg device-window pages break the layout their decodes assume");
   end
 
@@ -413,35 +411,31 @@ module soc_top #(
     else ns_iir = 8'hC1;  // FIFO enabled, no interrupt pending.
   end
 
-  logic [1:0] plic_eip;
+  logic [0:0] aplic_meip, aplic_seip;
 
   // Interrupt signals to CPU
   riscv_pkg::interrupt_t interrupts;
-  // Register the PLIC M-context level for timing. A one-cycle delay is safe
+  // Register the APLIC machine-domain level for timing. A one-cycle delay is safe
   // for level interrupts; UART status and IIR reads still use live conditions.
   logic meip_registered;
   always_ff @(posedge i_clk) begin
     if (rst_core) meip_registered <= 1'b0;
-    else meip_registered <= plic_eip[0];  // PLIC M-context line
+    else meip_registered <= aplic_meip[0];  // APLIC machine-domain line
   end
   assign interrupts.meip = meip_registered;
 
   logic [riscv_pkg::MemStrbBits-1:0] data_memory_byte_write_enable_registered;
 
   // ---------------------------------------------------------------------------
-  // PLIC. Register writes ride the registered MMIO write bus like the
-  // ns16550 block; the byte enables select the 32-bit lane. The spec requires
-  // 32-bit accesses, so an out-of-spec 64-bit store lands only its high lane
-  // (plic_wr_hi wins). Claim pulses decode the exact word address of the
-  // performed read.
+  // APLIC. Only 32-bit accesses reach its registers. The byte enables
+  // select the write lane; claimi consumes only the addressed read word.
   // ---------------------------------------------------------------------------
-  logic [1:0] plic_claim_pulse;
   // Capture window selects on the same edge as the MMIO write address.
-  logic plic_sel_q, dma_engine_sel_q, nic_sel_q, memerr_sel_q;
+  logic aplic_sel_q, dma_engine_sel_q, nic_sel_q, memerr_sel_q;
   always_ff @(posedge i_clk) begin
-    plic_sel_q <= riscv_pkg::pma_device_quadrant(
+    aplic_sel_q <= riscv_pkg::pma_device_quadrant(
         riscv_pkg::XLEN'(data_memory_address)
-    ) && (data_memory_address[31:22] == PlicWindowSel);
+    ) && (data_memory_address[31:22] == AplicWindowSel);
     dma_engine_sel_q <= riscv_pkg::pma_device_quadrant(
         riscv_pkg::XLEN'(data_memory_address)
     ) && (data_memory_address[31:8] == DmaEngineBase[31:8]);
@@ -452,18 +446,18 @@ module soc_top #(
         riscv_pkg::XLEN'(data_memory_address)
     ) && (data_memory_address[31:8] == MemErrBase[31:8]);
   end
-  logic plic_wr_en, plic_wr_hi;
-  assign plic_wr_hi = |data_memory_byte_write_enable_registered[7:4];
-  assign plic_wr_en = |data_memory_byte_write_enable_registered && plic_sel_q;
-  assign plic_claim_pulse[0] = mmio_read_capture && (mmio_load_addr == PlicClaimM);
-  assign plic_claim_pulse[1] = mmio_read_capture && (mmio_load_addr == PlicClaimS);
-  logic [63:0] plic_rd_pair;
-  // DMA test engine register bus (same shape as the PLIC's) and interrupt.
+  logic aplic_wr_en, aplic_wr_hi;
+  assign aplic_wr_hi = |data_memory_byte_write_enable_registered[7:4];
+  assign aplic_wr_en = aplic_sel_q &&
+      ((data_memory_byte_write_enable_registered == 8'h0F) ||
+       (data_memory_byte_write_enable_registered == 8'hF0));
+  logic [63:0] aplic_rd_pair;
+  // DMA test engine register bus (same shape as the APLIC's) and interrupt.
   logic dma_engine_wr_en, dma_engine_wr_hi, dma_engine_wr64_en, dma_engine_irq;
   logic [63:0] dma_engine_rd_pair;
   assign dma_engine_wr_hi = |data_memory_byte_write_enable_registered[7:4];
   // The extended address bank is reached only by one complete 64-bit store.
-  // Never fold it into the PLIC-style 32-bit lane mux, which discards a half.
+  // Never fold it into the APLIC-style 32-bit lane mux, which discards a half.
   assign dma_engine_wr64_en = dma_engine_sel_q &&
       (data_memory_byte_write_enable_registered == 8'hff) &&
       ((data_memory_address_registered[7:0] == 8'h40) ||
@@ -522,27 +516,30 @@ module soc_top #(
       .i_wr_err_resp(ddr_wr_err_resp),
       .i_wr_err_id(ddr_wr_err_id)
   );
-  plic #(
-      .NUM_SOURCES (5),
-      .NUM_CONTEXTS(2)
-  ) plic_inst (
+  aplic #(
+      .NUM_SOURCES(5),
+      .NUM_HARTS(1),
+      .IPRIOLEN(3)
+  ) aplic_inst (
       .i_clk(i_clk),
       .i_rst(rst_core),
       // Source ID 1 = ns16550, ID 2 = the board pin, ID 3 = the DMA test
       // engine, ID 4 = the NIC, ID 5 = the memory error unit. The === clamp
       // keeps an un-driven i_external_interrupt in simulation from
-      // propagating X into the PLIC and mip.
-      .i_src_level({
+      // propagating X into the APLIC and mip.
+      .i_src({
         memerr_irq, nic_irq, dma_engine_irq, (i_external_interrupt === 1'b1), ns_irq_pending
       }),
-      .i_wr_en(plic_wr_en),
-      .i_wr_offset({data_memory_address_registered[21:3], plic_wr_hi ? 3'b100 : 3'b000}),
-      .i_wr_data(plic_wr_hi ? data_memory_write_data_registered[63:32] :
+      .i_wr_en(aplic_wr_en),
+      .i_wr_offset({data_memory_address_registered[21:3], aplic_wr_hi ? 3'b100 : 3'b000}),
+      .i_wr_data(aplic_wr_hi ? data_memory_write_data_registered[63:32] :
                               data_memory_write_data_registered[31:0]),
-      .i_rd_offset({mmio_load_addr[21:3], 3'b000}),
-      .o_rd_pair(plic_rd_pair),
-      .i_claim_pulse(plic_claim_pulse),
-      .o_eip(plic_eip)
+      .i_rd_offset(mmio_load_addr[21:0]),
+      .o_rd_pair(aplic_rd_pair),
+      .i_rd_capture(mmio_read_capture && (mmio_load_addr[31:22] == AplicWindowSel) &&
+                    (local_size == 3'd2)),
+      .o_meip(aplic_meip),
+      .o_seip(aplic_seip)
   );
   assign interrupts.msip = msip;
 
@@ -581,7 +578,7 @@ module soc_top #(
   assign o_cpu_rst = rst_core || o_cpu_axi_rst;
   assign o_cpu_axi_rst = (USE_BEHAVIORAL_DDR != 0) ? i_rst : i_ddr_axi_rst;
   assign o_cpu_interrupts = interrupts;
-  assign o_cpu_seip = plic_eip[1];
+  assign o_cpu_seip = aplic_seip[0];
   assign o_cpu_mtime = mtime;
   assign o_dbg_haltreq = dbg_haltreq;
   assign o_dbg_go = dbg_go;
@@ -1437,7 +1434,7 @@ module soc_top #(
   // downstream. CLINT 64-bit reads are atomic in one beat.
   //
   // Destructive reads decode the exact word address for UART/FIFO/RBR pops
-  // and PLIC claims in this SoC. Merely including a neighbor in the other
+  // and APLIC claims in this SoC. Merely including a neighbor in the other
   // lane does not consume it. See hw/rtl/README.md,
   // "Data-tier bus contract".
   always_comb begin
@@ -1488,9 +1485,10 @@ module soc_top #(
       {ClintMtimeLo[31:3], 3'b000} : mmio_read_data_comb = mtime;
       default: ;
     endcase
-    // PLIC window: range-decoded outside the exact-address case; the
-    // PLIC returns the addressed 64-bit register pair.
-    if (mmio_load_addr[31:22] == PlicWindowSel) mmio_read_data_comb = plic_rd_pair;
+    // APLIC window: range-decoded outside the exact-address case; the
+    // APLIC returns a register pair only for a 32-bit load.
+    if (mmio_load_addr[31:22] == AplicWindowSel)
+      mmio_read_data_comb = (local_size == 3'd2) ? aplic_rd_pair : 64'b0;
     // DMA test engine window: the addressed 64-bit register pair.
     if (mmio_load_addr[31:8] == DmaEngineBase[31:8]) mmio_read_data_comb = dma_engine_rd_pair;
     // NIC window: likewise.

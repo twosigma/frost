@@ -26,7 +26,7 @@
  *   [0, 128 KiB) BRAM and the configured DDR aperture support fetch,
  *   loads, stores and atomics. BRAM [128 KiB, 256 KiB) supports loads, stores
  *   and atomics, but no fetch.
- *   MMIO [0x4000_0000, 0x4003_1000) and PLIC [0x4400_0000, 0x4440_0000)
+ *   MMIO [0x4000_0000, 0x4003_1000) and APLIC [0x4400_0000, 0x4440_0000)
  *   support loads and stores, but no fetch or atomics.
  *
  * The M-mode handler records the first trap and returns to the continuation
@@ -149,7 +149,7 @@ static volatile uint64_t g_ddr_word __attribute__((section(".ddr_data")));
 #define NS16550_SCR 0x4000101Cul
 
 /* Unserved device-quadrant addresses the N loads probe: just past the MMIO
- * window, on both sides of the PLIC, and the top of the quadrant. */
+ * window, on both sides of the APLIC, and the top of the quadrant. */
 static const unsigned long k_unserved_loads[] = {
     0x40031000ul,
     0x43FFFFFCul,
@@ -264,9 +264,9 @@ int main(void)
              "lw   t2, 0(t1)\n"
              "li   t1, 0x40030FF8\n" /* last dword of the MMIO window (NIC) */
              "ld   t2, 0(t1)\n"
-             "li   t1, 0x44000004\n" /* PLIC source 1 priority */
+             "li   t1, 0x44000004\n" /* APLIC source 1 configuration */
              "lw   t2, 0(t1)\n"
-             "li   t1, 0x443FFFF8\n" /* last dword of the PLIC window */
+             "li   t1, 0x443FFFF8\n" /* last dword of the APLIC window */
              "ld   t2, 0(t1)\n"
              "mv   t1, %0\n"
              "ld   t2, 0(t1)\n"

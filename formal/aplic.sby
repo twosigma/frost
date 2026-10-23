@@ -1,0 +1,41 @@
+[tasks]
+bmc
+prove
+cover
+prove_one_hart
+prove_wide
+prove_three_harts
+
+[options]
+bmc: mode bmc
+bmc: depth 12
+prove: mode prove
+prove: depth 4
+cover: mode cover
+cover: depth 16
+prove_one_hart: mode prove
+prove_one_hart: depth 4
+prove_wide: mode prove
+prove_wide: depth 4
+prove_three_harts: mode prove
+prove_three_harts: depth 4
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv aplic.sv
+# Three sources, two harts and two priority bits; the narrowest shape, one
+# of each; 33 sources, which use the second word of each bitmap; and three
+# harts, a count that leaves hart index 3 without an IDC, with 8-bit
+# priorities.
+bmc: chparam -set NUM_SOURCES 3 -set NUM_HARTS 2 -set IPRIOLEN 2 aplic
+prove: chparam -set NUM_SOURCES 3 -set NUM_HARTS 2 -set IPRIOLEN 2 aplic
+cover: chparam -set NUM_SOURCES 3 -set NUM_HARTS 2 -set IPRIOLEN 2 aplic
+prove_one_hart: chparam -set NUM_SOURCES 1 -set NUM_HARTS 1 -set IPRIOLEN 1 aplic
+prove_wide: chparam -set NUM_SOURCES 33 -set NUM_HARTS 2 -set IPRIOLEN 3 aplic
+prove_three_harts: chparam -set NUM_SOURCES 3 -set NUM_HARTS 3 -set IPRIOLEN 8 aplic
+prep -top aplic
+
+[files]
+../hw/rtl/peripherals/aplic/aplic.sv

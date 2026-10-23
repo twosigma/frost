@@ -5,7 +5,7 @@ RV64GCB out-of-order CPU, its memory system, and its peripherals. The CPU
 schedules with Tomasulo's algorithm, decodes, renames, and commits up to two
 instructions per cycle, and runs M, S, and U modes with Sv39 virtual memory.
 Around it sit 256 KiB of on-chip BRAM, a three-cache hierarchy over a configurable DDR aperture of
-DDR, a PLIC, a RISC-V debug module, and a 10GBASE-R NIC.
+DDR, an APLIC, a RISC-V debug module, and a 10GBASE-R NIC.
 
 The RTL is portable. Defining `FROST_XILINX_PRIMS` selects explicit Xilinx
 primitives in a few modules. `FROST_RVFI_DII`, for simulation only, builds
@@ -26,7 +26,7 @@ crossings, and MMIO FIFOs. `platform_top` connects the reusable
 [cpu_top](cpu_top/README.md) to the FROST [soc_top](soc_top/README.md) through
 one AXI4 master and an optional coherent-agent ingress. `cpu_top` contains the
 pipeline, MMUs, caches and memory-system logic. `soc_top` owns low BRAM,
-peripheral registers, timers/PLIC, debug transport, NIC, DMA and the DDR
+peripheral registers, timers/APLIC, debug transport, NIC, DMA and the DDR
 connection. `i_clk` runs the CPU and SoC logic; `i_clk_div4` runs UART and
 programming logic. The standalone CPU has only one clock; CDC belongs in its
 integrating wrapper.
@@ -63,7 +63,6 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 | `cpu_and_mem/imem_predecode.sv` | Low-BRAM instruction memory and predecode metadata |
 | `cpu_and_mem/low_bram_fetch_presenter.sv` | Fixed-latency TestRIG and unit-bench fetch presenter |
 | `cpu_and_mem/fetch_provider.sv` | Cached and uncached instruction fetch buffers |
-| `cpu_and_mem/plic.sv` | Four-source interrupt controller with M and S contexts |
 | `cpu_and_mem/dma_test_engine.sv` | Coherent DMA copy/fill engine |
 | `cpu_and_mem/hang_triage.sv` | UART diagnostics for hardware hangs (`ENABLE_HANG_TRIAGE=1`; default 0) |
 | `cpu_and_mem/debug/` | JTAG transport and RISC-V debug module |
@@ -77,6 +76,7 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 | [lib/cache/](lib/cache/README.md) | Cache hierarchy, coherence, DDR bridge, and simulation DDR model |
 | `lib/` | RAM, FIFO, and clock-domain-crossing primitives |
 | [peripherals/nic/](peripherals/nic/README.md) | Ethernet NIC with coherent DMA |
+| [peripherals/aplic/](peripherals/aplic/README.md) | AIA APLIC with machine and supervisor domains in direct delivery mode |
 | [net10g/](net10g/README.md) | Portable 10GBASE-R MAC/PCS |
 | `peripherals/` | UART transmit and receive blocks |
 
@@ -88,7 +88,7 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 | DEBUG | `0x0001_7C00` | 1 KiB | Debug-module execution slice (see [Debug](#debug)); reserved by every linker script that uses low BRAM and written only by the debug module |
 | RAM | `0x0001_8000` | 160 KiB | Data, BSS, and stack (low BRAM) |
 | MMIO | `0x4000_0000` | 196 KiB | Device registers (table below) |
-| PLIC | `0x4400_0000` | 4 MiB | Platform-level interrupt controller |
+| APLIC | `0x4400_0000` | 4 MiB | AIA direct delivery, M and S domains of 32 KiB each |
 | DDR | `0x8000_0000` | Configured 1–128 GiB (1 GiB default aperture) | Cached region: `.ddr_text` code, large data, and the heap; software must use the populated size |
 
 Addresses outside the defined regions, including the rest of the device
@@ -178,15 +178,20 @@ standard 8250 and CLINT drivers work without a board-specific driver. The
 driver's 16-byte burst per THRE always fits, and LSR.TEMT reads 1 only once
 every byte written has been sent.
 
-The PLIC uses the standard register layout: per-source priorities, the
-pending word, per-context enables at `0x2000 + 0x80*ctx`, and threshold and
-claim/complete at `0x20_0000 + 0x1000*ctx`. Its five level-triggered sources
-are 1, the ns16550 UART; 2, the board's external-interrupt pin; 3, the DMA
-test engine; 4, the NIC; and 5, the memory error unit. The UART interrupt reaches the core only through
-the PLIC. Context 0 (M mode, hart 0) drives `mip.MEIP`. Context 1 (S mode) is
-ORed into `mip.SEIP` with the SEIP bit that M-mode software can set. A claim
-read is destructive, so the router handles it as a device read like the UART
-RX pop (see the [data-tier bus contract](#data-tier-bus-contract)).
+The [APLIC](peripherals/aplic/README.md) implements AIA 1.0 direct delivery.
+Its machine domain at `0x4400_0000` drives `mip.MEIP`; its supervisor domain
+at `0x4400_8000` drives the line ORed into `mip.SEIP` with the SEIP bit that
+M-mode software can set. Each domain occupies 32 KiB and has one IDC for hart
+0. Source identities are 1 for the ns16550 UART, 2 for the external pin,
+3 for the DMA test engine, 4 for the NIC, and 5 for the memory error unit.
+OpenSBI delegates all five sources to the supervisor domain. Linux configures
+them for level-high delivery.
+
+A `claimi` read returns the identity in bits 25:16 and priority in bits 7:0.
+It clears detached and edge-sensitive pending bits; a level-sensitive source
+stays pending until the device drops its level. There is no completion write.
+The SoC performs claims only on 32-bit reads (see the
+[data-tier bus contract](#data-tier-bus-contract)).
 
 The memory error unit counts the DDR controller's corrected and uncorrectable
 ECC errors and the error responses DDR returns to the cache hierarchy's AXI
@@ -199,7 +204,7 @@ ECC registers about once a millisecond and reports to the unit; on a board
 without a reader, `CAPS` bit 0 reads 0 and only the error responses count.
 
 If these addresses change, update `soc_top/soc_top.sv`, the device-window pages
-in `riscv_pkg.sv` (`MmioFirstPage` through `PlicLastPage`), the MMIO `PROVIDE`
+in `riscv_pkg.sv` (`MmioFirstPage` through `AplicLastPage`), the MMIO `PROVIDE`
 symbols in the linker scripts under `sw/` (`sw/common/link.ld`,
 `sw/common/link_ddr.ld`, and several app-specific scripts),
 `sw/lib/include/mmio.h`, the verification constants in `verif/config.py`, and
@@ -257,10 +262,11 @@ and CLINT alias, support 64-bit access: an 8-byte load of `mtime`
 (`0x4001_BFF8`) returns the whole counter atomically, and an 8-byte
 `mtimecmp` store lands atomically. The 32-bit lo/hi aliases keep their word
 behavior. UART and FIFO registers are 32-bit-access-max: a wider store writes
-only the addressed word. The PLIC, DMA test engine, memory error unit, and
-NIC windows take 32-bit accesses: a 64-bit load returns an aligned register pair, and a 64-bit
+only the addressed word. The APLIC accepts only 32-bit accesses. Byte,
+halfword and doubleword writes are ignored; reads of those sizes return zero without side effects. The DMA
+test engine, memory error unit, and NIC windows take 32-bit accesses: a 64-bit load returns an aligned register pair, and a 64-bit
 store writes only the upper register. Devices take loads and stores only, and
-only inside the MMIO and PLIC windows. A load or store elsewhere in the device
+only inside the MMIO and APLIC windows. A load or store elsewhere in the device
 quadrant raises an access fault (cause 5 or 7), and so does an AMO, LR, or SC
 anywhere in the quadrant (cause 7, 5, or 7); the one exception is an
 untranslated store, which the device bus ignores. The device sees neither a read
@@ -272,7 +278,7 @@ without fences. Uncached stores retire only after B; reads wait for R. Errors
 raise precise access faults. Failed cached reads do not fill caches, and late
 errors on buffered cached stores stop the CPU with a sticky fatal indication. A device read waits for committed stores to drain and is
 shielded from interrupt replay, so a destructive read (the UART RX pop, a
-PLIC claim) happens exactly once. See the
+APLIC claim) happens exactly once. See the
 [load queue guide](cpu_and_mem/cpu/tomasulo/load_queue/README.md).
 
 ## Debug

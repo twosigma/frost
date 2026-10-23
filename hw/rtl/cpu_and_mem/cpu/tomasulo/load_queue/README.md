@@ -186,7 +186,7 @@ never speculatively: it leaves the LQ only at the ROB head.
 It may probe the SQ and hand off to the
 [data-memory router](../../cpu_ooo/memory_if/data_mem_request_router.sv)
 while older committed stores still drain, since neither step touches the
-device. A device-quadrant load outside the MMIO and PLIC windows reads
+device. A device-quadrant load outside the MMIO and APLIC windows reads
 nothing: it faults instead (see [Completion](#completion)).
 
 The router parks every device request in its one-entry request register and

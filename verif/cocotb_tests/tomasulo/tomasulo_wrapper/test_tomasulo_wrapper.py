@@ -826,7 +826,7 @@ async def test_store_page_carry_pma_and_alignment_exact(dut: Any) -> None:
         # The whole device quadrant is legal for a store, so stepping past a
         # device window does not change the result.
         ("inc-past-mmio-window", 0x40030, 0xFFF, 1, True),
-        ("dec-into-plic-gap", 0x44000, 0, -1, True),
+        ("dec-into-aplic-gap", 0x44000, 0, -1, True),
         # Sign controls with no page movement: carry/borrow gating is required.
         ("positive-no-carry", 0x3F, 0, 1, True),
         ("negative-no-borrow", 0x40000, 1, -1, True),
@@ -930,7 +930,7 @@ async def test_sc_to_device_quadrant_faults_at_issue(dut: Any) -> None:
     cases = [
         ("sw-mmio-window", OP_SW, 0x4000_101C, False),
         ("sc-mmio-window", OP_SC_W, 0x4000_101C, True),
-        ("sc-plic-window", OP_SC_W, 0x4400_0004, True),
+        ("sc-aplic-window", OP_SC_W, 0x4400_0004, True),
         ("sc-unserved-device", OP_SC_W, 0x4011_8000, True),
         ("sc-ddr", OP_SC_W, 0x8000_0100, False),
     ]

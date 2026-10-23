@@ -1189,13 +1189,13 @@ async def test_device_atomics_and_unserved_device_loads_fault_without_a_read(
     cases: list[tuple[str, int, bool, bool, int, int | None]] = [
         ("amo-mmio-window", 0x4000_101C, True, False, AMOSWAP_W, 7),
         ("lr-mmio-window", 0x4000_101C, False, True, LR_W, 5),
-        ("amo-plic-window", 0x4400_0004, True, False, AMOSWAP_W, 7),
+        ("amo-aplic-window", 0x4400_0004, True, False, AMOSWAP_W, 7),
         ("amo-unserved", 0x4011_8000, True, False, AMOSWAP_W, 7),
         ("load-unserved", 0x4011_8000, False, False, 0, 5),
         ("load-past-mmio-window", 0x4003_1000, False, False, 0, 5),
-        ("load-past-plic-window", 0x4440_0000, False, False, 0, 5),
+        ("load-past-aplic-window", 0x4440_0000, False, False, 0, 5),
         ("load-mmio-window", 0x4000_101C, False, False, 0, None),
-        ("load-plic-window", 0x4400_0004, False, False, 0, None),
+        ("load-aplic-window", 0x4400_0004, False, False, 0, None),
     ]
     dut_if, _ = await setup(dut)
     for name, address, is_amo, is_lr, amo_op, cause in cases:

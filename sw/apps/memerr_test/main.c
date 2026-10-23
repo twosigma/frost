@@ -17,7 +17,7 @@
 /*
  * Memory error unit test, for simulation: error responses from the DDR model
  * and ECC reports from the bench reach the unit's registers and its interrupt,
- * PLIC source 5.
+ * APLIC source 5.
  *
  * The registry entry passes +axi_rd_error_addr and +axi_wr_error_addr, so the
  * DDR model answers SLVERR to every read of RD_ERROR_LINE and every write of
@@ -32,6 +32,7 @@
 
 #include <stdint.h>
 
+#include "aplic.h"
 #include "csr.h"
 #include "memory_error.h"
 #include "trap.h"
@@ -50,13 +51,6 @@
 
 #define AXI_RESP_SLVERR 2u
 #define WAIT_LOOPS 200000
-
-#define REG32(a) (*(volatile uint32_t *) (a))
-#define PLIC_BASE 0x44000000UL
-#define PLIC_PRIO(s) REG32(PLIC_BASE + 4ul * (s))
-#define PLIC_EN_M REG32(PLIC_BASE + 0x2000ul)
-#define PLIC_THR_M REG32(PLIC_BASE + 0x200000ul)
-#define PLIC_CLAIM_M REG32(PLIC_BASE + 0x200004ul)
 
 static void uart_puts(const char *s)
 {
@@ -87,7 +81,7 @@ static void check(const char *name, unsigned long got, unsigned long want)
         g_ok = 0;
 }
 
-/* ---- Interrupt: claim, note and clear the unit's status, complete ---- */
+/* ---- Interrupt: claim, note and clear the unit's status ---- */
 static volatile uint32_t g_irq_count;
 static volatile uint32_t g_status_seen;
 static volatile uint32_t g_other_claims;
@@ -113,8 +107,8 @@ __attribute__((noinline, used)) void memerr_irq_c(void)
         for (;;) {
         }
     }
-    uint32_t claim = PLIC_CLAIM_M;
-    if (claim == MEMORY_ERROR_PLIC_SOURCE) {
+    uint32_t claim = aplic_claim_machine();
+    if (claim == MEMORY_ERROR_APLIC_SOURCE) {
         uint32_t status = memory_error_read32(MEMORY_ERROR_STATUS);
         g_status_seen |= status;
         memory_error_write32(MEMORY_ERROR_STATUS, status); /* drops the level */
@@ -122,7 +116,6 @@ __attribute__((noinline, used)) void memerr_irq_c(void)
     } else {
         g_other_claims++;
     }
-    PLIC_CLAIM_M = claim;
 }
 
 __attribute__((naked, aligned(4))) static void memerr_irq_entry(void)
@@ -176,9 +169,7 @@ int main(void)
     check("unmapped-reads-zero", memory_error_read32(0x40u), 0);
 
     set_trap_handler(memerr_irq_entry);
-    PLIC_PRIO(MEMORY_ERROR_PLIC_SOURCE) = 1;
-    PLIC_THR_M = 0;
-    PLIC_EN_M = 1u << MEMORY_ERROR_PLIC_SOURCE;
+    aplic_enable_machine_source(MEMORY_ERROR_APLIC_SOURCE);
     memory_error_write32(MEMORY_ERROR_IRQ_EN, MEMORY_ERROR_AXI_RD | MEMORY_ERROR_AXI_WR);
     enable_external_interrupt();
     /* Keep MIE clear until the expected access fault has been handled. The

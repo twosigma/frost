@@ -463,6 +463,11 @@ else ifeq ($(TOPLEVEL),memory_error_unit)
 COMPILE_ARGS := \
 	$(ROOT)/hw/rtl/cpu_and_mem/memory_error_unit.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),aplic)
+# APLIC unit bench (two interrupt domains in direct delivery mode)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/peripherals/aplic/aplic.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),imem_predecode_line)
 # Per-line predecode sideband unit bench (cross-check vs the python generator)
 COMPILE_ARGS := \

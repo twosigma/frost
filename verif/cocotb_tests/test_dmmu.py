@@ -89,7 +89,7 @@ class Op:
 
 
 def _device_ok(pa: int) -> bool:
-    """Return whether a PA is in a device window (MMIO registers or PLIC)."""
+    """Return whether a PA is in a device window (MMIO registers or APLIC)."""
     return 0x4000_0000 <= pa < 0x4003_1000 or 0x4400_0000 <= pa < 0x4440_0000
 
 

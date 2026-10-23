@@ -96,7 +96,7 @@ module csr_file #(
     // mtime input (from memory-mapped timer)
     input logic [63:0] i_mtime,
 
-    // PLIC S-context external-interrupt line: ORed into the SEIP readback and
+    // Supervisor external-interrupt line: ORed into the SEIP readback and
     // o_s_pending; mip.SEIP writes change only the software-injection bit.
     input logic i_seip_line,
 
@@ -152,7 +152,7 @@ module csr_file #(
     output logic [ 2:0] o_mideleg_s,
 
     // Effective supervisor interrupt-pending bits {SEIP, STIP, SSIP}, as mip
-    // reads them: SEIP includes the PLIC S-context line, and STIP is the Sstc
+    // reads them: SEIP includes the external SEIP line, and STIP is the Sstc
     // compare while menvcfg.STCE is set. Consumed by the trap unit and the
     // WFI wake OR.
     output logic [2:0] o_s_pending,
@@ -497,7 +497,7 @@ module csr_file #(
 
   // mip: the machine bits are read-only reflections of the interrupt inputs.
   // The supervisor bits SSIP/STIP/SEIP are software-writable state that
-  // M-mode uses to inject supervisor interrupts; the PLIC S-context line ORs
+  // M-mode uses to inject supervisor interrupts; the external SEIP line ORs
   // into the SEIP readback.
   logic mip_ssip, mip_stip, mip_seip;
   // With STCE=1, STIP uses registered mtime >= stimecmp in every consumer.
@@ -621,7 +621,7 @@ module csr_file #(
   // Counter writes and mperfctl separately require write intent.
   //
   // For mip RMW (privileged spec, mip.SEIP note), use the software SEIP/STIP
-  // bits alone. Readback also includes the PLIC line or Sstc compare; using
+  // bits alone. Readback also includes the external SEIP line or Sstc compare; using
   // that readback would latch a transient pending signal into software state.
   logic [XLEN-1:0] csr_rmw_base;
   always_comb begin
@@ -1832,7 +1832,7 @@ module csr_file #(
       p_mtvec_traps_misaligned_mirror : assert (mtvec_traps_misaligned_q == (|mtvec[XLEN-1:2]));
 
       // mip's machine bits are read-only and reflect the inputs; the
-      // supervisor SEIP/STIP readbacks compose the PLIC S-context line and
+      // supervisor SEIP/STIP readbacks compose the external SEIP line and
       // the Sstc compare with the software-injection registers.
       p_mip_reflects_inputs :
       assert (mip == {20'b0, i_interrupts.meip, 1'b0, seip_eff, 1'b0,

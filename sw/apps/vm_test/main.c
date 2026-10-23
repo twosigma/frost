@@ -721,7 +721,7 @@ int main(void)
     /* X: leaves onto unserved device addresses. The 4 KiB page at
      * VA_4K(14) maps PA 0x4010_0000, where every access faults, so it is
      * checked on the walk only. The superpage cases load a served register
-     * through the leaf first (mtime, a PLIC priority), so the faulting
+     * through the leaf first (mtime, an APLIC source configuration), so the faulting
      * access hits the DTLB. */
     RUN_CASE("sfence.vma\n" WIN_S "li   t1, 0x0040E000\n" LREG " t2, 0(t1)");
     all_ok &= report3("X1 unserved-4k-load", 5, VA_4K(14), 0, 0);

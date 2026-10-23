@@ -23,7 +23,7 @@
  * AXI bridge receives from DDR. Its 256-byte window at MEMORY_ERROR_BASE
  * holds 32-bit registers; the 64-bit address registers also read with one
  * 64-bit load. STATUS bits are cleared by writing ones, and the unit's
- * interrupt (PLIC source 5) is STATUS & IRQ_EN. STATUS also flags a new
+ * interrupt (APLIC source 5) is STATUS & IRQ_EN. STATUS also flags a new
  * CE_ADDR or UE_ADDR, so software can tell a report with an address from one
  * without.
  *
@@ -73,7 +73,7 @@
 #define MEMORY_ERROR_AXI_ERR_RESP(v) (((v) >> 1) & 3u)
 #define MEMORY_ERROR_AXI_ERR_ID(v) (((v) >> 8) & 0xFFu)
 
-#define MEMORY_ERROR_PLIC_SOURCE 5u
+#define MEMORY_ERROR_APLIC_SOURCE 5u
 
 static inline uint32_t memory_error_read32(uint32_t offset)
 {

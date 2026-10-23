@@ -137,8 +137,8 @@ module platform_top #(
     input  logic        i_fifo1_empty,
     output logic        o_fifo1_rd_en,
 
-    // External interrupt input: PLIC source 2 (the ns16550 IRQ is source 1).
-    // The PLIC's M-context line is registered one cycle before driving MEIP.
+    // External interrupt input: APLIC source 2 (the ns16550 IRQ is source 1).
+    // The APLIC's machine-domain line is registered one cycle before driving MEIP.
     input logic        i_external_interrupt,
     // DDR ECC reports from the board's reader (boards/x3/x3_ecc_reader.sv on
     // the X3) for the memory error unit; a board without one ties them low.
