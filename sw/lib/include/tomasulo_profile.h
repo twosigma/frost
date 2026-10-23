@@ -23,17 +23,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define TOMASULO_PROFILE_COUNTER_COUNT 130U
+#define TOMASULO_PROFILE_COUNTER_COUNT 134U
 #define TOMASULO_PROFILE_LEGACY_COUNTER_COUNT 106U
-#define TOMASULO_PROFILE_CACHE_COUNTER_COUNT 24U
+#define TOMASULO_PROFILE_CACHE_COUNTER_COUNT 28U
 /*
  * Counter indices must match the RTL; see "Numbering contract" in
  * hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/README.md.
  *
  * A snapshot captures counters 0-105. The capture loop runs before a
  * benchmark's timed region, so it and the snapshot layout stay fixed: changing
- * either changes the code and stores that precede the timer. The 24 cache
- * counters (106-129) are read after the region instead, into caller-bound
+ * either changes the code and stores that precede the timer. The 28 cache
+ * counters (106-133) are read after the region instead, into caller-bound
  * arrays. Hardware keeps the preceding cache snapshot, so both ends of the
  * region are still available then. A snapshot holds its array's address in
  * cache_counters_addr, a 32-bit field in what would otherwise be alignment
@@ -150,7 +150,7 @@ enum tomasulo_profile_counter_idx {
     /* 104 is reserved and reads 0. */
     TOMASULO_PERF_HEAD_LOAD_BBS_CAPTURE_GAP = 105,
     /*
-     * Cache-hierarchy block: global indices 106-129. Indices are a software
+     * Cache-hierarchy block: global indices 106-133. Indices are a software
      * interface: add new counters at the end and never renumber existing ones.
      */
     TOMASULO_PERF_L1I_ACCESS = 106,
@@ -181,6 +181,13 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_L2_CONFLICT_STALL = 127,
     TOMASULO_PERF_L1D_MISS_OVERLAP_CYCLES = 128,
     TOMASULO_PERF_L2_MISS_OVERLAP_CYCLES = 129,
+    /* The L2's write costs: write misses that fetch their line and the miss
+     * slots they hold, and writes that wait for a read of their line and the
+     * cycles they hold the L2's tag stage. */
+    TOMASULO_PERF_L2_WRITE_FILL = 130,
+    TOMASULO_PERF_L2_WRITE_FILL_CYCLES_SUM = 131,
+    TOMASULO_PERF_L2_WRITE_READ_WAIT = 132,
+    TOMASULO_PERF_L2_WRITE_READ_WAIT_CYCLES = 133,
 };
 
 typedef struct tomasulo_profile_snapshot {

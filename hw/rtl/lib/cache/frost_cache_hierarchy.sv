@@ -263,9 +263,11 @@ module frost_cache_hierarchy #(
   cache_perf_pkg::cache_instance_perf_events_t l1d_perf_events;
   cache_perf_pkg::cache_instance_perf_events_t l1i_perf_events;
   cache_perf_pkg::cache_instance_perf_events_t l2_perf_events;
+  cache_perf_pkg::cache_write_perf_events_t l2_write_perf_events;
   assign o_perf_events.l1d = l1d_perf_events;
   assign o_perf_events.l1i = l1i_perf_events;
-  assign o_perf_events.l2  = l2_perf_events;
+  assign o_perf_events.l2 = l2_perf_events;
+  assign o_perf_events.l2_write = l2_write_perf_events;
 
   frost_hart_cache #(
       .ADDR_WIDTH(ADDR_WIDTH),
@@ -466,7 +468,8 @@ module frost_cache_hierarchy #(
       .i_down_resp_error(i_down_resp_error),
       .o_fatal_error(cluster_fatal),
       .o_fatal_addr(cluster_fatal_addr),
-      .o_l2_perf_events(l2_perf_events)
+      .o_l2_perf_events(l2_perf_events),
+      .o_l2_write_perf_events(l2_write_perf_events)
   );
 
 endmodule : frost_cache_hierarchy

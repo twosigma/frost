@@ -20,7 +20,8 @@ L2 places each upstream request in its half. An AXI monitor records every
 transfer below the bridge, so a test can count the fills and writebacks of a
 line and check that every transfer is one 64-byte beat and every writeback a
 whole line. Memory contents are set and checked directly in the behavioral
-DDR, for lines no cache holds.
+DDR, for lines no cache holds. The L2's write-cost events are checked against
+those transfers and against the L2's tag-stage decisions on a line's writes.
 """
 
 from collections.abc import Iterable
@@ -33,8 +34,10 @@ from cocotb_tests.cache.test_frost_cache import (
     BASE_ADDR,
     LINE_BYTES,
     ReferenceModel,
+    _copy_perf_counts,
     _monitor_perf_events,
     _new_perf_counts,
+    _perf_field,
     _port_transaction,
     cache_geometry,
     evict_l1d,
@@ -70,6 +73,8 @@ FENCE_BASE = BASE_ADDR + 0xC80000
 REFILL_BASE = BASE_ADDR + 0xCC0000
 RESET_BASE = BASE_ADDR + 0xD00000
 SLOTS_BASE = BASE_ADDR + 0xD40000
+WRITE_FILL_BASE = BASE_ADDR + 0xE40000
+WRITE_WAIT_BASE = BASE_ADDR + 0xE80000
 
 
 async def _setup(dut: Any) -> None:
@@ -269,6 +274,94 @@ async def _check(dut: Any, model: ReferenceModel, port: str, addr: int) -> None:
     )
 
 
+def _perf_delta(
+    counts: dict[str, dict[str, int]], before: dict[str, dict[str, int]]
+) -> dict[str, dict[str, int]]:
+    """Return the event totals accumulated since the copy `before`."""
+    return {
+        bundle: {
+            field: total - before[bundle][field] for field, total in fields.items()
+        }
+        for bundle, fields in counts.items()
+    }
+
+
+class WriteDecisions:
+    """Time the L2 tag stage's decisions on the writes to one L2 line.
+
+    The tag stage takes one request at a time, so a write that waits holds it
+    from its first decision until the decision that completes it, and every
+    request behind it waits too. A completing decision merges the write into
+    its line's miss slot, hits, or allocates a slot. The line's AXI read data
+    beats are timed on the same cycle count.
+    """
+
+    def __init__(self, dut: Any, addr: int) -> None:
+        """Start watching addr's L2 line at the next falling edge."""
+        self._dut = dut
+        self._line = addr >> 6
+        self._offset = (addr & ~(L2_LINE_BYTES - 1)) - BASE_ADDR
+        self.cycle = 0
+        # (cycle, completed, what a completing decision does: merge, hit, alloc)
+        self.decisions: list[tuple[int, bool, str]] = []
+        self.read_done: list[int] = []  # cycles of the line's read data beats
+        self._read_ids: set[int] = set()
+        self._task = cocotb.start_soon(self._run())
+
+    async def _run(self) -> None:
+        dut = self._dut
+        l2 = _l2(dut)
+        while True:
+            await FallingEdge(dut.i_clk)
+            self.cycle += 1
+            await ReadOnly()
+            if (
+                int(l2.decide.value)
+                and int(l2.t_write_q.value)
+                and int(l2.t_addr_q.value) >> 6 == self._line
+            ):
+                if int(l2.same_line.value):
+                    outcome = "merge"
+                elif int(l2.hit.value):
+                    outcome = "hit"
+                else:
+                    outcome = "alloc"
+                completed = bool(int(l2.t_done.value))
+                self.decisions.append((self.cycle, completed, outcome))
+            if int(dut.axi_arvalid.value) and int(dut.axi_arready.value):
+                if int(dut.axi_araddr.value) == self._offset:
+                    self._read_ids.add(int(dut.axi_arid.value))
+            if int(dut.axi_rvalid.value) and int(dut.axi_rready.value):
+                rid = int(dut.axi_rid.value)
+                if rid in self._read_ids:
+                    self._read_ids.discard(rid)
+                    self.read_done.append(self.cycle)
+
+    def requests(self) -> list[tuple[int, int, str]]:
+        """Return (first decision, completing decision, outcome) of each write."""
+        out = []
+        first = None
+        for cycle, completed, outcome in self.decisions:
+            first = cycle if first is None else first
+            if completed:
+                out.append((first, cycle, outcome))
+                first = None
+        assert first is None, "a write's decisions never completed"
+        return out
+
+    def outcomes(self) -> list[str]:
+        """Return what each write's completing decision did, in order."""
+        return [outcome for _, _, outcome in self.requests()]
+
+    def waits(self) -> list[tuple[int, int]]:
+        """Return the requests that held the tag stage past their first decision."""
+        return [(first, done) for first, done, _ in self.requests() if done > first]
+
+    def stop(self) -> None:
+        """Stop watching."""
+        self._task.cancel()
+
+
 @cocotb.test()
 async def test_halves_share_one_fill_and_a_reader_past_the_seats_waits(
     dut: Any,
@@ -320,6 +413,9 @@ async def test_halves_share_one_fill_and_a_reader_past_the_seats_waits(
         got = (await cols[port].wait_for(req_id))[1]
         assert got == (lo if addr == a else hi), f"{port} read the wrong data"
     assert len(mon.reads_of(a)) == 1, f"line read {len(mon.reads_of(a))} times"
+    await _settle(dut)
+    # The request that waited is a read, so no write-cost event counts it.
+    assert set(counts["l2_write"].values()) == {0}, counts["l2_write"]
     stop[0] = True
     mon.assert_clean()
     for col in cols.values():
@@ -980,6 +1076,330 @@ async def test_many_misses_reach_the_high_miss_slots(dut: Any) -> None:
             await _check(dut, model, "wup", half)
     for col in cols.values():
         col.stop()
+    mon.assert_clean()
+    mon.stop()
+    lq.stop()
+
+
+@cocotb.test()
+async def test_write_fill_counts_the_writes_that_fetch_their_line(dut: Any) -> None:
+    """The write-fill event counts each 32-byte write that fetches its L2 line.
+
+    An L1D writeback of a half whose line the L2 lacks allocates a miss slot
+    that fetches the line, and counts once, for either half. The same
+    writeback to a resident line hits and does not count. With the bridge
+    held, the writebacks of both halves of a missing line share one fetch, as
+    do a DMA write of a four-byte status word in one half and of the whole
+    other half, the way the NIC writes a frame: the write that allocates
+    counts and the one that merges into its slot does not. A DMA write to a
+    second missing line meanwhile holds a second slot, and with write fills
+    holding every busy slot, their slot-cycles equal the miss slots'. A read
+    miss fetches but is not a write and does not count. The tag stage's
+    decisions on each line and its fetches at the AXI port are checked too.
+    """
+    await _setup(dut)
+    lq = LoadQueueStub(dut)
+    mon = AxiMonitor(dut)
+    model = ReferenceModel()
+    counts = _new_perf_counts()
+    stop = [False]
+    cocotb.start_soon(_monitor_perf_events(dut, counts, stop))
+
+    # A writeback of either half to a line the L2 lacks: one fetch, counted.
+    for k in range(2):
+        _, _, whole = _two_halves(200 + k)
+        a, b = _half(WRITE_FILL_BASE + (3 + 4 * k) * L2_LINE_BYTES)
+        dirty = a if k == 0 else b
+        _ddr_put_line(dut, model, a, whole)
+        new = _pattern(210 + k)
+        model.write_line(dirty, new, FULL)
+        # A whole-line store allocates in the L1D without reaching the L2.
+        await _port_transaction(
+            dut, "up", write=True, addr=dirty, wdata=new, wstrb=FULL
+        )
+        mark = mon.cycle
+        watch = WriteDecisions(dut, a)
+        before = _copy_perf_counts(counts)
+        await _evict_from_l1d(dut, [dirty])
+        await _settle(dut)
+        watch.stop()
+        d = _perf_delta(counts, before)
+        assert len(mon.reads_of(a, since=mark)) == 1, "the writeback did not fetch"
+        assert watch.outcomes() == ["alloc"] and not watch.waits(), watch.decisions
+        assert d["l2_write"]["write_fill"] == 1, d
+        assert d["l2_write"]["write_fill_outstanding"] > 0, d
+        assert d["l2_write"]["write_read_wait"] == 0, d
+        await _check(dut, model, "wup", dirty)
+
+    # The same writeback to a line the L2 holds hits: no fetch, not counted.
+    _, _, whole = _two_halves(220)
+    a, b = _half(WRITE_FILL_BASE + 0x1000 + 3 * L2_LINE_BYTES)
+    _ddr_put_line(dut, model, a, whole)
+    await _read(dut, "wup", a)  # the line becomes resident in the L2
+    new = _pattern(221)
+    model.write_line(b, new, FULL)
+    await _port_transaction(dut, "up", write=True, addr=b, wdata=new, wstrb=FULL)
+    mark = mon.cycle
+    watch = WriteDecisions(dut, a)
+    before = _copy_perf_counts(counts)
+    await _evict_from_l1d(dut, [b])
+    await _settle(dut)
+    watch.stop()
+    d = _perf_delta(counts, before)
+    assert not mon.reads_of(a, since=mark), "a resident line was fetched"
+    assert watch.outcomes() == ["hit"] and not watch.waits(), watch.decisions
+    assert set(d["l2_write"].values()) == {0}, d
+    await _check(dut, model, "wup", b)
+
+    # Writebacks of both halves of a missing line, the bridge held: the
+    # second merges into the first's miss slot, and one fetch serves both.
+    _, _, whole = _two_halves(230)
+    a, b = _half(WRITE_FILL_BASE + 0x2000 + 2 * L2_LINE_BYTES)
+    _ddr_put_line(dut, model, a, whole)
+    new_lo, new_hi = _pattern(231), _pattern(232)
+    model.write_line(a, new_lo, FULL)
+    model.write_line(b, new_hi, FULL)
+    await _port_transaction(dut, "up", write=True, addr=a, wdata=new_lo, wstrb=FULL)
+    await _port_transaction(dut, "up", write=True, addr=b, wdata=new_hi, wstrb=FULL)
+    await _settle(dut)  # the stores are acknowledged before they install
+    evict_a = await _next_miss_evicts_from_l1d(dut, a)
+    evict_b = await _next_miss_evicts_from_l1d(dut, b)
+    mark = mon.cycle
+    watch = WriteDecisions(dut, a)
+    before = _copy_perf_counts(counts)
+    col = _Collector(dut, "up")
+    await _hold(dut, 1)
+    await _fire(dut, "up", write=False, addr=evict_a, req_id=1)
+    await _fire(dut, "up", write=False, addr=evict_b, req_id=2)
+    await _settle(dut, 60)
+    await _hold(dut, 0)
+    await col.wait_for(1)
+    await col.wait_for(2)
+    col.stop()
+    await _settle(dut)
+    watch.stop()
+    d = _perf_delta(counts, before)
+    assert len(mon.reads_of(a, since=mark)) == 1, "the halves took two fetches"
+    assert watch.outcomes() == ["alloc", "merge"], watch.decisions
+    assert not watch.waits(), watch.decisions
+    assert d["l2_write"]["write_fill"] == 1, d
+    await _check(dut, model, "wup", a)
+    await _check(dut, model, "wup", b)
+
+    # The bridge held, a DMA status word in the lower half and a whole upper
+    # half of one missing line share a fetch, and a DMA write to a second
+    # missing line takes a second slot. Only write fills hold miss slots.
+    _, _, whole = _two_halves(240)
+    a, b = _half(WRITE_FILL_BASE + 0x3000 + 2 * L2_LINE_BYTES)
+    _ddr_put_line(dut, model, a, whole)
+    c = WRITE_FILL_BASE + 0x3000 + 6 * L2_LINE_BYTES
+    _ddr_put_line(dut, model, c, _two_halves(243)[2])
+    status, frame, other = _pattern(241), _pattern(242), _pattern(244)
+    mark = mon.cycle
+    watch_a, watch_c = WriteDecisions(dut, a), WriteDecisions(dut, c)
+    before = _copy_perf_counts(counts)
+    dma = _Collector(dut, "dma")
+    await _hold(dut, 1)
+    for req_id, addr, data, strobe in (
+        (1, a, status, 0xF),
+        (2, b, frame, FULL),
+        (3, c, other, FULL),
+    ):
+        model.write_line(addr, data, strobe)
+        await _fire(
+            dut, "dma", write=True, addr=addr, req_id=req_id, wdata=data, wstrb=strobe
+        )
+    await _settle(dut, 60)
+    busy = len(_l2_slots_for(dut, a)) + len(_l2_slots_for(dut, c))
+    assert busy == 2, f"{busy} miss slots for the two lines"
+    assert _perf_field(dut, "l2_write", "write_fill_outstanding") == 2
+    await _hold(dut, 0)
+    for req_id in (1, 2, 3):
+        await dma.wait_for(req_id)
+    dma.stop()
+    await _settle(dut)
+    watch_a.stop()
+    watch_c.stop()
+    d = _perf_delta(counts, before)
+    assert len(mon.reads_of(a, since=mark)) == 1, "line a was fetched twice"
+    assert len(mon.reads_of(c, since=mark)) == 1, "line c was not fetched once"
+    assert watch_a.outcomes() == ["alloc", "merge"], watch_a.decisions
+    assert watch_c.outcomes() == ["alloc"], watch_c.decisions
+    assert d["l2"]["miss"] == 3, d
+    assert d["l2_write"]["write_fill"] == 2, d
+    # Both slots are write fills, so the slot-cycle sums agree.
+    assert d["l2_write"]["write_fill_outstanding"] == d["l2"]["miss_outstanding"], d
+    assert d["l2_write"]["write_read_wait"] == 0, d
+    for addr in (a, b, c):
+        await _check(dut, model, "wup", addr)
+
+    # A read miss fetches its line but is no write.
+    e = WRITE_FILL_BASE + 0x4000 + 3 * L2_LINE_BYTES
+    mark = mon.cycle
+    before = _copy_perf_counts(counts)
+    await _read(dut, "wup", e)
+    await _settle(dut)
+    d = _perf_delta(counts, before)
+    assert len(mon.reads_of(e, since=mark)) == 1
+    assert d["l2"]["miss"] == 1 and d["l2"]["miss_outstanding"] > 0, d
+    assert set(d["l2_write"].values()) == {0}, d
+
+    stop[0] = True
+    mon.assert_clean()
+    mon.stop()
+    lq.stop()
+
+
+@cocotb.test()
+async def test_write_read_wait_counts_writes_held_behind_a_read(dut: Any) -> None:
+    """The write-read wait events count writes that wait for a read of their line.
+
+    With the bridge held, an L1I read of one half takes the line's miss slot,
+    and the L1D's writeback of the other half, or of the same half, waits
+    until that fill installs, then hits. Then a DMA write takes a missing
+    line's slot, a walker read of either half waits on it, and a second DMA
+    write of that half waits for the read. Each waiting write counts once,
+    and the cycles it holds the L2 equal the cycles from its first tag-stage
+    decision to the one that completes it, which comes after the line's
+    fill. A write that waited for a read fetches nothing itself. A DMA write
+    that merges into a write's miss slot with no read on it does not wait.
+    """
+    await _setup(dut)
+    lq = LoadQueueStub(dut)
+    mon = AxiMonitor(dut)
+    model = ReferenceModel()
+    counts = _new_perf_counts()
+    stop = [False]
+    cocotb.start_soon(_monitor_perf_events(dut, counts, stop))
+
+    def check_one_wait(watch: WriteDecisions, d: dict[str, dict[str, int]]) -> None:
+        waits = watch.waits()
+        assert len(waits) == 1, f"writes that held the tag stage: {waits}"
+        first, done = waits[0]
+        assert watch.read_done and first < watch.read_done[0] < done, (
+            f"the write waited from cycle {first} to {done}, the line's fill "
+            f"arrived in {watch.read_done}"
+        )
+        assert d["l2_write"]["write_read_wait"] == 1, d
+        assert d["l2_write"]["write_read_waiting"] == done - first, (d, waits)
+        assert d["l2"]["conflict_stall"] > 0, d
+        dut._log.info(
+            f"a write held the L2 for {done - first} cycles, from its first "
+            f"decision to the one after its line's fill"
+        )
+
+    # An L1D writeback while an L1I read of the line is fetching it: of the
+    # other half, then, in the third round, of the same half, where the read
+    # returns the line from before the writeback.
+    for k, (read_lower, dirty_lower) in enumerate(
+        ((True, False), (False, True), (True, True))
+    ):
+        _, _, whole = _two_halves(300 + k)
+        a, b = _half(WRITE_WAIT_BASE + (3 + 4 * k) * L2_LINE_BYTES)
+        read_half = a if read_lower else b
+        dirty = a if dirty_lower else b
+        _ddr_put_line(dut, model, a, whole)
+        expected_read = model.read_line(read_half)
+        new = _pattern(310 + k)
+        model.write_line(dirty, new, FULL)
+        await _port_transaction(
+            dut, "up", write=True, addr=dirty, wdata=new, wstrb=FULL
+        )
+        await _settle(dut)  # the store is acknowledged before it installs
+        evictor = await _next_miss_evicts_from_l1d(dut, dirty)
+        watch = WriteDecisions(dut, a)
+        before = _copy_perf_counts(counts)
+        iup, up = _Collector(dut, "iup"), _Collector(dut, "up")
+        await _hold(dut, 1)
+        await _fire(dut, "iup", write=False, addr=read_half, req_id=1)
+        await _settle(dut, 30)
+        await _fire(dut, "up", write=False, addr=evictor, req_id=1)
+        await _settle(dut, 40)
+        await _hold(dut, 0)
+        assert (await iup.wait_for(1))[1] == expected_read
+        await up.wait_for(1)
+        iup.stop()
+        up.stop()
+        await _settle(dut)
+        watch.stop()
+        d = _perf_delta(counts, before)
+        check_one_wait(watch, d)
+        assert watch.outcomes() == ["hit"], watch.decisions
+        assert d["l2_write"]["write_fill"] == 0, d
+        await _check(dut, model, "wup", dirty)
+
+    # A second DMA write of a half held behind a walker read waiting on the
+    # first DMA write's miss slot: the same half, then the other half.
+    for k in range(2):
+        _, _, whole = _two_halves(320 + k)
+        a, b = _half(WRITE_WAIT_BASE + 0x2000 + (2 + 4 * k) * L2_LINE_BYTES)
+        _ddr_put_line(dut, model, a, whole)
+        first_data, second_data = _pattern(330 + k), _pattern(340 + k)
+        later = a if k == 0 else b
+        watch = WriteDecisions(dut, a)
+        before = _copy_perf_counts(counts)
+        dma, wup = _Collector(dut, "dma"), _Collector(dut, "wup")
+        await _hold(dut, 1)
+        await _fire(
+            dut, "dma", write=True, addr=a, req_id=1, wdata=first_data, wstrb=FULL
+        )
+        model.write_line(a, first_data, FULL)
+        expected_read = model.read_line(later)
+        await _settle(dut, 40)
+        await _fire(dut, "wup", write=False, addr=later, req_id=1)
+        await _settle(dut, 40)
+        await _fire(
+            dut, "dma", write=True, addr=later, req_id=2, wdata=second_data, wstrb=FULL
+        )
+        model.write_line(later, second_data, FULL)
+        await _settle(dut, 40)
+        await _hold(dut, 0)
+        assert (await wup.wait_for(1))[1] == expected_read
+        await dma.wait_for(1)
+        await dma.wait_for(2)
+        dma.stop()
+        wup.stop()
+        await _settle(dut)
+        watch.stop()
+        d = _perf_delta(counts, before)
+        check_one_wait(watch, d)
+        assert watch.outcomes() == ["alloc", "hit"], watch.decisions
+        assert d["l2_write"]["write_fill"] == 1, d
+        await _check(dut, model, "wup", a)
+        await _check(dut, model, "wup", b)
+
+    # A second DMA write of the other half merges into the first's miss slot,
+    # which no read waits on: no write holds the tag stage.
+    _, _, whole = _two_halves(350)
+    a, b = _half(WRITE_WAIT_BASE + 0x4000 + 2 * L2_LINE_BYTES)
+    _ddr_put_line(dut, model, a, whole)
+    watch = WriteDecisions(dut, a)
+    before = _copy_perf_counts(counts)
+    dma = _Collector(dut, "dma")
+    await _hold(dut, 1)
+    for req_id, addr in ((1, a), (2, b)):
+        data = _pattern(351 + req_id)
+        model.write_line(addr, data, FULL)
+        await _fire(
+            dut, "dma", write=True, addr=addr, req_id=req_id, wdata=data, wstrb=FULL
+        )
+    await _settle(dut, 60)
+    await _hold(dut, 0)
+    await dma.wait_for(1)
+    await dma.wait_for(2)
+    dma.stop()
+    await _settle(dut)
+    watch.stop()
+    d = _perf_delta(counts, before)
+    assert watch.outcomes() == ["alloc", "merge"], watch.decisions
+    assert not watch.waits(), watch.decisions
+    assert d["l2_write"]["write_read_wait"] == 0, d
+    assert d["l2_write"]["write_read_waiting"] == 0, d
+    assert d["l2_write"]["write_fill"] == 1, d
+    await _check(dut, model, "wup", a)
+    await _check(dut, model, "wup", b)
+
+    stop[0] = True
     mon.assert_clean()
     mon.stop()
     lq.stop()

@@ -308,12 +308,14 @@ module cpu_top #(
   // The caches' source-registered events and the fetch-provider stall event
   // for the hart's performance counters.
   cache_perf_pkg::cache_instance_perf_events_t l1d_perf_events, l1i_perf_events, l2_perf_events;
+  cache_perf_pkg::cache_write_perf_events_t l2_write_perf_events;
   cache_perf_pkg::cache_hierarchy_perf_events_t cache_hierarchy_perf_events;
   cache_perf_pkg::cache_perf_events_t cache_perf_events;
   logic l1i_fetch_miss_stall;
   assign cache_hierarchy_perf_events.l1d = l1d_perf_events;
   assign cache_hierarchy_perf_events.l1i = l1i_perf_events;
   assign cache_hierarchy_perf_events.l2 = l2_perf_events;
+  assign cache_hierarchy_perf_events.l2_write = l2_write_perf_events;
   assign cache_perf_events.hierarchy = cache_hierarchy_perf_events;
   assign cache_perf_events.l1i_fetch_miss_stall = l1i_fetch_miss_stall;
 
@@ -550,6 +552,7 @@ module cpu_top #(
       .o_cache_fatal(cluster_cache_fatal),
       .o_cache_fatal_addr(cluster_cache_fatal_addr),
       .o_l2_perf_events(l2_perf_events),
+      .o_l2_write_perf_events(l2_write_perf_events),
       .o_axi_idle,
       .o_axi_awvalid,
       .i_axi_awready,

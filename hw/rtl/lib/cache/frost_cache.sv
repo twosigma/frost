@@ -108,7 +108,9 @@
  *
  * Performance events register one cycle after the stage that produces them:
  * hits, misses, and writebacks from W, stalls from T. Probes and maintenance
- * traffic are excluded.
+ * traffic are excluded. The write-cost events (o_write_perf_events) count
+ * write misses that fetch their line, from W, and writes that wait in T for
+ * a read of their line.
  */
 module frost_cache #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -212,8 +214,10 @@ module frost_cache #(
     input  logic [DOWN_ID_BITS-1:0] i_down_resp_id,
     input  logic [LINE_BYTES*8-1:0] i_down_resp_rdata,
 
-    // Source-registered performance observer bundle.
-    output cache_perf_pkg::cache_instance_perf_events_t o_perf_events
+    // Source-registered performance observer bundles: the cache's traffic and
+    // stalls, and the costs of writes narrower than its line.
+    output cache_perf_pkg::cache_instance_perf_events_t o_perf_events,
+    output cache_perf_pkg::cache_write_perf_events_t o_write_perf_events
 );
 
   localparam int unsigned LineBits = LINE_BYTES * 8;
@@ -2155,6 +2159,46 @@ module frost_cache #(
   end
   assign o_perf_events = perf_events_q;
 
+  // The write costs. A slot records at its allocation whether its write miss
+  // fetches the line, so the slots such misses hold are counted until they
+  // free. A write whose line's slot fetches for a read, or holds a read
+  // waiter, can neither merge nor proceed, and t_write_read_waiting_q keeps
+  // whether T's request was such a write at its last decision. These
+  // registers drive only o_write_perf_events and carry no keep, so they are
+  // removed when nothing counts the events.
+  logic [NUM_MSHR-1:0] mshr_write_fill_q;
+  always_ff @(posedge i_clk) begin
+    if (w_valid_q && w_is_alloc) begin
+      mshr_write_fill_q[w_mshr_q] <= w_write_q && w_needs_fill_q && !w_maint_q;
+    end
+  end
+  logic [cache_perf_pkg::MissOutstandingBits-1:0] write_fill_count;
+  always_comb begin
+    write_fill_count = '0;
+    for (int i = 0; i < int'(NUM_MSHR); i++) begin
+      if (mshr_valid[i] && mshr_write_fill_q[i]) write_fill_count = write_fill_count + 1'b1;
+    end
+  end
+  logic t_write_read_wait, t_write_read_waiting_q;
+  assign t_write_read_wait = decide && t_plain && !t_maint_q && t_write_q && same_line &&
+      (!mshr_write_q[match_mshr] || mshr_has_waiter[match_mshr]);
+  always_ff @(posedge i_clk) begin
+    if (i_rst) t_write_read_waiting_q <= 1'b0;
+    else if (decide) t_write_read_waiting_q <= t_write_read_wait;
+  end
+  cache_perf_pkg::cache_write_perf_events_t write_perf_events_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      write_perf_events_q <= '0;
+    end else begin
+      write_perf_events_q.write_fill <= w_counts_miss && w_is_alloc && w_write_q && w_needs_fill_q;
+      write_perf_events_q.write_fill_outstanding <= write_fill_count;
+      write_perf_events_q.write_read_wait <= t_write_read_wait && !t_write_read_waiting_q;
+      write_perf_events_q.write_read_waiting <= t_write_read_waiting_q;
+    end
+  end
+  assign o_write_perf_events = write_perf_events_q;
+
 `ifndef SYNTHESIS
   // ---- Compare visible captures with references written only when enabled.
   localparam int unsigned WPayloadBits = SetBits + TagBits + LineAddrBits + 1 + LineBits +
@@ -2394,6 +2438,14 @@ module frost_cache #(
       assert (tag_re == ((mstate_q == M_FLUSH_SCAN) ||
                          ((mstate_q == M_IDLE) && (t_accept || reread_q))));
       p_cache_perf_hit_miss_onehot : assert (!(perf_events_q.hit && perf_events_q.miss));
+      // The write costs are subsets of the misses and the conflict stalls,
+      // and write fills hold no more slots than misses do.
+      p_cache_perf_write_fill_is_miss :
+      assert (!write_perf_events_q.write_fill || perf_events_q.miss);
+      p_cache_perf_write_wait_is_conflict :
+      assert (!write_perf_events_q.write_read_wait || perf_events_q.conflict_stall);
+      p_cache_perf_write_fill_slots :
+      assert (write_perf_events_q.write_fill_outstanding <= perf_events_q.miss_outstanding);
       // Two writebacks of one line could reach AXI in reverse age order.
       // Check uniqueness and forbid writes or installs while a snapshot is held.
       for (int j = 0; j < int'(NUM_WB); j++) begin

@@ -32,11 +32,11 @@ setting.
 
 | CSR | Address | Access | Purpose |
 |-----|---------|--------|---------|
-| `mperfsel` | `0x7C0` | RW | Global counter index to read (0–129) |
+| `mperfsel` | `0x7C0` | RW | Global counter index to read (0–133) |
 | `mperfctl` | `0x7C1` | W | Bit 0 = take a snapshot; bit 1 = read the preceding cache snapshot (reads as 0) |
 | `mperfdata` | `0xFC0` | R | Selected counter, low 32 bits |
 | `mperfdatah` | `0xFC1` | R | Selected counter, high 32 bits |
-| `mperfcount` | `0xFC2` | R | Number of counters (130; 0 without `PERF_COUNTERS`) |
+| `mperfcount` | `0xFC2` | R | Number of counters (134; 0 without `PERF_COUNTERS`) |
 
 Every counter is 64 bits wide and free-running, and only reset clears it.
 Each cycle a counter adds 0 or 1, except a `sum` counter, which adds a value
@@ -56,7 +56,7 @@ Reads return a snapshot, never a live value, so take a snapshot first:
 The cache block also keeps the snapshot before the current one: each capture
 moves the cache block's current snapshot into a preceding bank. Every
 `mperfctl` write sets the bank select from bit 1, and a read leaves it
-unchanged. While it is set, indices 106–129 read the preceding bank; indices
+unchanged. While it is set, indices 106–133 read the preceding bank; indices
 0–105 are unaffected. Bit 1 alone does not take a snapshot. Software can
 therefore snapshot both ends of a timed region and read both sets of cache
 counters afterward.
@@ -73,7 +73,7 @@ and `mperfdatah` (`UsePerfCsrHalf`). The pick must use the raw commit address
 that the commit bus registers on the same edge; any other copy of the address
 returns the wrong half.
 
-The counters decode only the low 8 bits of `mperfsel`: indices 130–255 read 0,
+The counters decode only the low 8 bits of `mperfsel`: indices 134–255 read 0,
 and larger values wrap.
 
 ## Numbering contract
@@ -84,7 +84,7 @@ The global index space is three blocks placed end to end:
 |-------|----------------|------------|-------------|
 | Top level | 0–41, `[0, PerfTopCounterCount)` | `perf_counter_aggregator.sv` | Same as global |
 | Back end (wrapper) | 42–105, `[PerfWrapperBase, PerfCacheBase)` | `tomasulo_perf_counters.sv` | Global − 42 |
-| Cache | 106–129, `[PerfCacheBase, PerfCounterCount)` | `perf_counter_aggregator.sv` | Global − 106 |
+| Cache | 106–133, `[PerfCacheBase, PerfCounterCount)` | `perf_counter_aggregator.sv` | Global − 106 |
 
 `PerfWrapperBase = PerfTopCounterCount` = 42 and
 `PerfCacheBase = PerfTopCounterCount + PerfWrapperCounterCount` = 106.
@@ -340,13 +340,13 @@ and done, and they partition the hazard-blocked gap:
 | 104 | 62 | (reserved) | n/a | Reads 0 |
 | 105 | 63 | `HEAD_LOAD_BBS_CAPTURE_GAP` | cycle | `HEAD_LOAD_BB_STAGING`, and staging is free: the head load has not been captured yet (a selector or capture-recycle bubble) |
 
-### Cache hierarchy 106–129: cache traffic, fetch stalls, miss latency, concurrency
+### Cache hierarchy 106–133: cache traffic, fetch stalls, miss latency, concurrency, L2 write costs
 
 Sources: the registered event bundle from each `frost_cache` instance (L1I,
-L1D, and L2) and the fetch-miss stall from `fetch_provider.sv`. Each is
-registered at its source, so it lags the cache or fetch state it observes by a
-cycle, on top of the counter's own increment register. Totals and snapshot
-deltas are unaffected.
+L1D, and L2), the L2's write-cost bundle, and the fetch-miss stall from
+`fetch_provider.sv`. Each is registered at its source, so it lags the cache
+or fetch state it observes by a cycle, on top of the counter's own increment
+register. Totals and snapshot deltas are unaffected.
 
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
@@ -374,6 +374,10 @@ deltas are unaffected.
 | 127 | 21 | `L2_CONFLICT_STALL` | cycle | Same, L2 |
 | 128 | 22 | `L1D_MISS_OVERLAP_CYCLES` | cycle | Two or more L1D miss-status slots were in use |
 | 129 | 23 | `L2_MISS_OVERLAP_CYCLES` | cycle | Two or more L2 miss-status slots were in use |
+| 130 | 24 | `L2_WRITE_FILL` | event | An L2 write miss took a miss-status slot that fetches its line from DDR to merge into: a 32-byte write covers half of a 64-byte L2 line. A write that merges into a pending write miss of its line does not count |
+| 131 | 25 | `L2_WRITE_FILL_CYCLES_SUM` | sum | The number of L2 miss-status slots held by those write misses this cycle, from their allocation until they free (a subset of 120) |
+| 132 | 26 | `L2_WRITE_READ_WAIT` | event | An L2 write waited in the tag stage for a read of its line: the line's miss-status slot was fetching for a read, or held a read waiting on it, so the write could neither merge nor proceed. Counted once per waiting write |
+| 133 | 27 | `L2_WRITE_READ_WAIT_CYCLES` | cycle | The tag stage held such a write: from the decision that found the read until the write's next decision, so each wait adds the cycles from its first decision to the one that completes it |
 
 Access accounting is an exact partition:
 
@@ -410,6 +414,25 @@ L2_MISS_CYCLES_SUM  / L2_MISS
 When every miss allocates its own slot, this is the average miss latency in
 cycles. Merged and waiting requests pull the quotient below the latency of the
 misses that allocate.
+
+Counters 130–133 measure the two costs of the L2's 64-byte lines under the
+32-byte writes of the L1D and the DMA port (see
+[The L2 line size](../../../../lib/cache/README.md#the-l2-line-size)). A
+write that misses reads its line from DDR before merging, and a write to a
+line with a read in flight waits for that read in the tag stage, which takes
+one request at a time, so every L2 request behind it waits too:
+
+```text
+L2_WRITE_FILL / L2_MISS                         share of L2 misses that are write fills
+L2_WRITE_FILL_CYCLES_SUM / L2_WRITE_FILL        slot-cycles per write fill
+L2_WRITE_FILL_CYCLES_SUM / L2_MISS_CYCLES_SUM   share of L2 slot occupancy
+L2_WRITE_READ_WAIT_CYCLES / L2_WRITE_READ_WAIT  cycles each waiting write held the L2
+```
+
+Each write fill is also a miss, and each waiting write's decisions are among
+the conflict stalls, so 130 ≤ 116 and 132 ≤ 127. Like every cache counter,
+these leave out `fence.i` writeback traffic, including the L1D writeback-all
+that `sfence.vma` runs.
 
 With `ENABLE_CACHED_TIER=0`, all cache counters read 0.
 
@@ -449,7 +472,7 @@ garbage value that later gets used as the cache-counter array address.
 `mperfdata`, and `mperfdatah`.
 
 `tomasulo_profile_read_cache_pair()` reads the current (end) and preceding
-(start) cache snapshots into the two bound 24-entry arrays. It reads only the
+(start) cache snapshots into the two bound 28-entry arrays. It reads only the
 counters `mperfcount` reports and zeroes the rest, and the report prints "n/a"
 for counters that do not exist. Call it after the end snapshot and before the
 next one, which advances both cache banks.
@@ -460,12 +483,12 @@ indexed by the `TOMASULO_PERF_*` enum.
 `tomasulo_profile_print_report()` prints the full breakdown: front-end
 progress, the 2-wide width funnel, dispatch stalls, retirement, back-end
 pressure, cache activity and hit rates, L1I fetch-miss stalls, slot-cycles
-per miss, diagnostics, and average occupancy, with raw hex values and
-percentages. In the tree, `sw/apps/coremark` (`core_portme.c`) snapshots
-around the timed region and prints the full report, and `sw/apps/tomasulo_perf`
-prints a brief report for each micro-benchmark and checks that the head-load
-split (86 and 93 above) adds up and that the reserved counters (12, 13, 50,
-51, 61, 62, 74, 75, 89, 91 and 104) read 0.
+per miss, the L2's write costs, diagnostics, and average occupancy, with raw
+hex values and percentages. In the tree, `sw/apps/coremark` (`core_portme.c`)
+snapshots around the timed region and prints the full report, and
+`sw/apps/tomasulo_perf` prints a brief report for each micro-benchmark and
+checks that the head-load split (86 and 93 above) adds up and that the
+reserved counters (12, 13, 50, 51, 61, 62, 74, 75, 89, 91 and 104) read 0.
 
 ## Verification
 
@@ -473,7 +496,7 @@ The `perf_counter_aggregator` cocotb bench checks event counting, snapshots,
 the preceding cache bank, and out-of-range selects; `perf_csr_half` checks the
 CSR read path against a plain full-width read. `perf_off_test` and the
 `csr_file` task `bmc_perf_off` check the build without counters. Cache benches
-check hit and miss accounting and maintenance exclusion.
+check hit and miss accounting, the L2's write costs, and maintenance exclusion.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

@@ -40,7 +40,7 @@ RS_TYPE_WIDTH = 3
 PERF_TOP_COUNTER_COUNT = 42
 PERF_WRAPPER_COUNTER_COUNT = 64
 PERF_WRAPPER_BASE = PERF_TOP_COUNTER_COUNT
-PERF_CACHE_COUNTER_COUNT = 24
+PERF_CACHE_COUNTER_COUNT = 28
 PERF_CACHE_BASE = PERF_WRAPPER_BASE + PERF_WRAPPER_COUNTER_COUNT
 PERF_COUNTER_COUNT = PERF_CACHE_BASE + PERF_CACHE_COUNTER_COUNT
 
@@ -102,6 +102,12 @@ PERF_L2_WRITEBACK = 117
 PERF_L1I_FETCH_MISS_STALL = 118
 PERF_L1D_MISS_CYCLES_SUM = 119
 PERF_L2_MISS_CYCLES_SUM = 120
+PERF_L2_CONFLICT_STALL = 127
+PERF_L2_MISS_OVERLAP_CYCLES = 129
+PERF_L2_WRITE_FILL = 130
+PERF_L2_WRITE_FILL_CYCLES_SUM = 131
+PERF_L2_WRITE_READ_WAIT = 132
+PERF_L2_WRITE_READ_WAIT_CYCLES = 133
 
 
 DISPATCH_STATUS_FIELDS = [
@@ -161,6 +167,10 @@ CACHE_PERF_EVENTS_FIELDS = [
     ("l2_hit_under_miss", 1),
     ("l2_slot_full_stall", 1),
     ("l2_conflict_stall", 1),
+    ("l2_write_fill", 1),
+    ("l2_write_fill_outstanding", 5),
+    ("l2_write_read_wait", 1),
+    ("l2_write_read_waiting", 1),
     ("l1i_fetch_miss_stall", 1),
 ]
 
@@ -619,6 +629,56 @@ async def test_cache_block_bounds_and_out_of_range_selects(dut: Any) -> None:
     assert await _read_counter(dut, PERF_L2_MISS_CYCLES_SUM) == 1
     assert await _read_counter(dut, PERF_COUNTER_COUNT) == 0
     assert await _read_counter(dut, 0xFF) == 0
+
+
+@cocotb.test()
+async def test_l2_write_cost_counters(dut: Any) -> None:
+    """The L2's write-cost events land in the last four cache counters.
+
+    The fill and wait pulses count events, the outstanding-fill count adds
+    its value each cycle, and the waiting level counts cycles. None of them
+    moves another cache counter, and the preceding cache bank keeps them.
+    """
+    await _setup_test(dut)
+
+    patterns: list[dict[str, int | bool]] = [
+        {"l2_write_fill": True, "l2_write_fill_outstanding": 1},
+        {"l2_write_fill": True, "l2_write_fill_outstanding": 2},
+        {"l2_write_fill_outstanding": 3, "l2_write_read_wait": True},
+        {"l2_write_fill_outstanding": 1, "l2_write_read_waiting": True},
+        {"l2_write_read_waiting": True},
+        {"l2_write_read_wait": True, "l2_write_read_waiting": True},
+    ]
+    for pattern in patterns:
+        _drive_cache_perf_events(dut, pattern)
+        await _advance_cycle(dut)
+
+    await _finish_event_pipeline(dut)
+    await _capture_snapshot(dut)
+
+    expected = {
+        PERF_L2_WRITE_FILL: 2,
+        PERF_L2_WRITE_FILL_CYCLES_SUM: 7,
+        PERF_L2_WRITE_READ_WAIT: 2,
+        PERF_L2_WRITE_READ_WAIT_CYCLES: 3,
+        PERF_L2_MISS: 0,
+        PERF_L2_MISS_CYCLES_SUM: 0,
+        PERF_L2_CONFLICT_STALL: 0,
+        PERF_L2_MISS_OVERLAP_CYCLES: 0,
+    }
+    for counter, value in expected.items():
+        assert await _read_counter(dut, counter) == value
+
+    # A second capture moves these into the preceding bank.
+    _drive_cache_perf_events(dut, {"l2_write_fill": True})
+    await _advance_cycle(dut)
+    await _finish_event_pipeline(dut)
+    await _capture_snapshot(dut)
+    assert await _read_counter(dut, PERF_L2_WRITE_FILL) == 3
+    dut.i_perf_cache_previous_select.value = 1
+    for counter, value in expected.items():
+        assert await _read_counter(dut, counter) == value
+    dut.i_perf_cache_previous_select.value = 0
 
 
 @cocotb.test()
