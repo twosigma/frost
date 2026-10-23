@@ -31,11 +31,14 @@
  *          the whole word also makes partial stores (a halfword c.ebreak
  *          breakpoint) exact.
  *
- * Accepted requests increment the core request counter; completed writes
- * increment a div4 counter synchronized back in Gray code. o_all_done compares
- * them. Completion waits past imem_predecode's port-A stage so the word is
- * visible to fetch. soc_top arbitrates requests: the debug module can
- * wait, but a refused store snoop becomes a sticky command error.
+ * A one-entry stage registers each accepted request before the FIFO, so the
+ * FIFO's write port starts at flip-flops. Accepted requests increment the
+ * core request counter; completed writes increment a div4 counter
+ * synchronized back in Gray code. o_all_done compares them, so it also
+ * covers a request waiting in the stage. Completion waits past
+ * imem_predecode's port-A stage so the word is visible to fetch. soc_top
+ * arbitrates requests: the debug module can wait, but a refused store snoop
+ * becomes a sticky command error.
  */
 module debug_slice_writer #(
     parameter int unsigned MEM_BYTE_ADDR_WIDTH = 18,
@@ -68,17 +71,27 @@ module debug_slice_writer #(
   localparam int unsigned CountBits = 8;
 
   // ---------------------------------------------------------------------------
-  // Core domain: request FIFO push + request counter
+  // Core domain: input stage, request FIFO push and request counter
   // ---------------------------------------------------------------------------
+  // The stage takes a request while it is empty or its entry enters the FIFO
+  // in the same cycle. Its payload loads whenever it can take one; only a
+  // valid entry is pushed.
   logic fifo_ready;
-  logic push;
-  assign push = i_req_valid && fifo_ready;
-  assign o_req_ready = fifo_ready;
+  logic stage_valid_q;
+  logic [ReqBits-1:0] stage_q;
+  logic accept;
+  assign o_req_ready = !i_rst && (!stage_valid_q || fifo_ready);
+  assign accept = i_req_valid && o_req_ready;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) stage_valid_q <= 1'b0;
+    else if (o_req_ready) stage_valid_q <= i_req_valid;
+    if (o_req_ready) stage_q <= {i_req_mirror, i_req_word_addr, i_req_data};
+  end
 
   logic [CountBits-1:0] req_count_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) req_count_q <= '0;
-    else if (push) req_count_q <= req_count_q + 1'b1;
+    else if (accept) req_count_q <= req_count_q + 1'b1;
   end
 
   logic [ReqBits-1:0] fifo_out;
@@ -89,8 +102,8 @@ module debug_slice_writer #(
   ) u_req_fifo (
       .i_clk        (i_clk),
       .i_rst        (i_rst),
-      .i_data       ({i_req_mirror, i_req_word_addr, i_req_data}),
-      .i_valid      (i_req_valid),
+      .i_data       (stage_q),
+      .i_valid      (stage_valid_q),
       .o_ready      (fifo_ready),
       .o_almost_full(),
       .o_empty      (),
@@ -211,9 +224,10 @@ module debug_slice_writer #(
   assign o_all_done = (req_count_q == done_count_core);
 
 `ifndef SYNTHESIS
-  // The counters may never run more than DEPTH + engine depth apart.
+  // The counters may never run more than the stage, DEPTH and the engine
+  // depth apart.
   always_ff @(posedge i_clk) begin
-    if (!i_rst && ((req_count_q - done_count_core) > CountBits'(DEPTH + 4)))
+    if (!i_rst && ((req_count_q - done_count_core) > CountBits'(DEPTH + 5)))
       $error("debug_slice_writer: request/done counters diverged");
   end
 `endif
