@@ -1858,6 +1858,7 @@ module load_queue #(
   logic [riscv_pkg::MemDataBits-1:0] cache_lookup_data;
   logic                              cache_fill_response_valid;
   logic                              cache_fill_valid;
+  logic                              cache_fill_write;
   logic [                  XLEN-1:0] cache_fill_addr;
   logic [riscv_pkg::MemDataBits-1:0] cache_fill_data;
 
@@ -1875,6 +1876,7 @@ module load_queue #(
 
       // Fill: on memory response
       .i_fill_valid(cache_fill_valid),
+      .i_fill_write(cache_fill_write),
       .i_fill_addr (cache_fill_addr),
       .i_fill_data (cache_fill_data),
 
@@ -2210,10 +2212,30 @@ module load_queue #(
       (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
       fast_addr
   ) && !fast_line_invalidated && !fast_line_invalidate_now);
+  // The fill qualification once more for the L0 RAM write enables, prepared
+  // for each response source so the response valid and its tier arrive at
+  // the last gate. cache_fill_valid keeps the shared response selects above
+  // for the valid bits and every other consumer.
+  (* keep = "true" *) logic cache_fill_if_slot, cache_fill_if_fast;
+  assign cache_fill_if_slot = cs_valid[resp_slot] && !i_flush_all && !cs_drop[resp_slot] &&
+      lq_valid[cs_idx[resp_slot]] && !cs_is_lr[resp_slot] && !cs_is_amo[resp_slot] &&
+      !(cs_inval[resp_slot] || cs_inval_now[resp_slot] || cs_coh_inval_now[resp_slot]);
+  assign cache_fill_if_fast = mem_outstanding && !i_flush_all && !drop_mem_response_pending &&
+      lq_valid[fast_idx] && !fast_is_mmio && !fast_is_lr && !fast_is_amo &&
+      (CACHE_UNCACHED_DATA || (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
+      fast_addr
+  ) && !fast_line_invalidated && !fast_line_invalidate_now));
+  assign cache_fill_write = i_mem_read_valid && !mem_response_error &&
+      (i_mem_read_is_cached ? cache_fill_if_slot : cache_fill_if_fast);
   assign cache_fill_valid = cache_fill_response_valid && cache_fill_memory_type_ok &&
       !mem_response_error &&
       !issued_is_mmio && !issued_is_lr && !issued_is_amo &&
       !(issued_is_cached && (issued_cached_line_invalidated || issued_cached_line_invalidate_now));
+`ifndef SYNTHESIS
+  always_comb begin
+    p_cache_fill_write_exact : assert (cache_fill_write == cache_fill_valid);
+  end
+`endif
 `ifdef F_LQ_NORMAL_FILL_POLICY_PROOF
   always_comb begin
     p_fill_policy_matches_selected_address :

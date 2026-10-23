@@ -55,6 +55,8 @@ module lq_l0_cache #(
 
     // Fill (write on memory response)
     input logic                              i_fill_valid,
+    // The same value as i_fill_valid, for the RAM write enables only.
+    input logic                              i_fill_write,
     input logic [                  XLEN-1:0] i_fill_addr,
     input logic [riscv_pkg::MemDataBits-1:0] i_fill_data,
 
@@ -145,10 +147,14 @@ module lq_l0_cache #(
   wire store_update = i_invalidate_valid && (|i_store_strb) &&
       ((&i_store_strb) || (valid[inv_index] && inv_tag_match));
   wire ram_write = store_update || i_fill_valid;
+  // The data and tag RAMs take the write through i_fill_write, which the LQ
+  // forms so the memory response enters at its last gate; the valid bits and
+  // invalidation checks keep i_fill_valid.
+  wire ram_write_en = store_update || i_fill_write;
   wire [IndexWidth-1:0] ram_index = store_update ? inv_index : fill_index;
   wire [TagWidth-1:0] ram_tag = store_update ? inv_tag : fill_tag;
   wire [63:0] ram_data = store_update ? i_store_data : i_fill_data;
-  wire [7:0] ram_strobe = store_update ? i_store_strb : {8{i_fill_valid}};
+  wire [7:0] ram_strobe = store_update ? i_store_strb : {8{i_fill_write}};
 
   // Duplicate the tag LUTRAM for independent lookup and invalidate reads.
   sdp_dist_ram #(
@@ -156,7 +162,7 @@ module lq_l0_cache #(
       .DATA_WIDTH(TagWidth)
   ) u_tag_lookup_ram (
       .i_clk,
-      .i_write_enable (ram_write),
+      .i_write_enable (ram_write_en),
       .i_write_address(ram_index),
       .i_read_address (lookup_index),
       .i_write_data   (ram_tag),
@@ -168,7 +174,7 @@ module lq_l0_cache #(
       .DATA_WIDTH(TagWidth)
   ) u_tag_inv_ram (
       .i_clk,
-      .i_write_enable (ram_write),
+      .i_write_enable (ram_write_en),
       .i_write_address(ram_index),
       .i_read_address (inv_index),
       .i_write_data   (ram_tag),
@@ -181,7 +187,7 @@ module lq_l0_cache #(
       .DATA_WIDTH(TagWidth)
   ) u_tag_inv2_ram (
       .i_clk,
-      .i_write_enable (ram_write),
+      .i_write_enable (ram_write_en),
       .i_write_address(ram_index),
       .i_read_address (inv2_index),
       .i_write_data   (ram_tag),
@@ -248,6 +254,11 @@ module lq_l0_cache #(
     assign inv_tag_groups[g] = &inv_tag_chunks[6*g+:Chunks];
     assign inv2_tag_groups[g] = &inv2_tag_chunks[6*g+:Chunks];
   end
+`ifndef SYNTHESIS
+  always_comb begin
+    p_fill_write_matches_fill_valid : assert (i_fill_write == i_fill_valid);
+  end
+`endif
   assign lookup_hit_array = valid[lookup_index] && (&lookup_tag_groups);
   // No same-cycle fill forwarding, for timing. A filled line is visible
   // on the next cycle.
@@ -332,6 +343,8 @@ module lq_l0_cache #(
   always @(posedge i_clk) begin
     if (f_past_valid) assume (i_rst_n);
   end
+  // The LQ drives both fill inputs with the same value.
+  always_comb assume (i_fill_write == i_fill_valid);
 
   // -------------------------------------------------------------------------
   // Assertions
