@@ -163,7 +163,7 @@ async def test_snapshot_selector_and_previous_cache_bank_phase(dut: Any) -> None
     for address, value, op in (
         (MPERF_SEL, 42, 1),
         (MPERF_DATAH, 0, 0),
-        (MPERF_SEL, 130, 1),
+        (MPERF_SEL, 134, 1),
         (MPERF_DATA, 0, 0),
         (MPERF_CTL, 1, 1),
         (MPERF_DATAH, 0, 0),
@@ -277,7 +277,7 @@ async def test_random_raw_commit_and_snapshot_histories(dut: Any) -> None:
         address = rng.choice(addresses)
         value, op = 0, 0
         if address == MPERF_SEL:
-            value, op = rng.choice((0, 7, 42, 49, 106, 129, 130, 255)), 1
+            value, op = rng.choice((0, 7, 42, 49, 106, 129, 133, 134, 255)), 1
         elif address == MPERF_CTL:
             value, op = rng.randrange(4), 1
         elif address == 0x340:

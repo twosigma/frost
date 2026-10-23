@@ -76,7 +76,7 @@ module perf_counter_aggregator #(
 
   localparam int unsigned PerfTopCounterCount = 42;
   localparam int unsigned PerfWrapperCounterCount = 64;
-  localparam int unsigned PerfCacheCounterCount = 24;
+  localparam int unsigned PerfCacheCounterCount = 28;
   localparam int unsigned PerfWrapperBase = PerfTopCounterCount;
   // Global indices are a software interface; append counters without
   // renumbering (README.md, "Numbering contract").
@@ -159,6 +159,13 @@ module perf_counter_aggregator #(
   localparam int unsigned PerfCacheL2ConflictStall = 21;
   localparam int unsigned PerfCacheL1dMissOverlapCycles = 22;
   localparam int unsigned PerfCacheL2MissOverlapCycles = 23;
+  // The L2's write costs: write misses that fetch their line, with the
+  // miss-status slots they hold, and writes that wait for a read of their
+  // line, with the cycles they hold the tag stage.
+  localparam int unsigned PerfCacheL2WriteFill = 24;
+  localparam int unsigned PerfCacheL2WriteFillCyclesSum = 25;
+  localparam int unsigned PerfCacheL2WriteReadWait = 26;
+  localparam int unsigned PerfCacheL2WriteReadWaitCycles = 27;
   localparam int unsigned PerfCacheSnapshotBankSpan = (PerfCacheCounterCount + 3) / 4;
   localparam int unsigned PerfCacheSelBits = $clog2(PerfCacheCounterCount);
 
@@ -394,6 +401,17 @@ module perf_counter_aggregator #(
     perf_cache_inc[PerfCacheL2MissOverlapCycles] = {
       {63{1'b0}},
       (i_cache_perf_events.hierarchy.l2.miss_outstanding >= cache_perf_pkg::MissOutstandingBits'(2))
+    };
+    perf_cache_inc[PerfCacheL2WriteFill] = {
+      {63{1'b0}}, i_cache_perf_events.hierarchy.l2_write.write_fill
+    };
+    perf_cache_inc[PerfCacheL2WriteFillCyclesSum] =
+        64'(i_cache_perf_events.hierarchy.l2_write.write_fill_outstanding);
+    perf_cache_inc[PerfCacheL2WriteReadWait] = {
+      {63{1'b0}}, i_cache_perf_events.hierarchy.l2_write.write_read_wait
+    };
+    perf_cache_inc[PerfCacheL2WriteReadWaitCycles] = {
+      {63{1'b0}}, i_cache_perf_events.hierarchy.l2_write.write_read_waiting
     };
   end
 

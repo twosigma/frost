@@ -24,7 +24,7 @@ still dirty in the L1D, and software never flushes a cache for them.
 | `l2_stream_prefetcher.sv` | Watches the L1D's misses and reads the lines ahead of ascending streams into the L2, never past the page of the last miss |
 | `line_port_axi_bridge.sv` | Line port to single-beat AXI4 master; line ids become AXI ids |
 | `axi_behavioral_memory.sv` | Simulation-only DDR model: concurrent transactions, latency and jitter settings, optional out-of-order completion, and injected error responses |
-| `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, and writeback pulses, hit-under-miss, the outstanding-miss count, and two stall classes |
+| `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, and writeback pulses, hit-under-miss, the outstanding-miss count, and two stall classes; and the L2's write costs: write misses that fetch their line, and writes that wait for a read of their line |
 | `*_test_harness.sv` | cocotb tops: hierarchy + bridge + memory (with a bench-paced hold on the bridge), and arbiter + bridge + memory |
 
 ## Line protocol
@@ -440,6 +440,18 @@ With several L1 lines in one, the L2 works as follows:
   request at a time, so all L2 traffic waits behind it for that fill.
 - An eviction writes the whole line, with every strobe set, in one transfer.
 
+The profiling counters measure both write costs
+([counters 130–133](../../cpu_and_mem/cpu/cpu_ooo/perf/README.md)).
+`frost_cache` exports them as a second event bundle, and the hierarchy
+carries the L2's to the counters. A write fill is a write miss that takes a
+miss slot to fetch its line: it counts when it allocates, and the slots that
+write fills hold are summed each cycle. A write that merges into such a slot
+does not count. A write that finds its line's slot fetching for a read, or
+holding a read waiter, counts once when it starts to wait, and every cycle
+until its next decision counts while the decision stage holds it, so a wait
+adds the cycles from its first decision to the one that completes it. Like
+every cache event, they leave out `fence.i` writebacks.
+
 Reset clears the L2's 8,192 sets, one set per cycle on hardware.
 
 DMA coherence and atomics work the same with either line size. DMA is
@@ -607,7 +619,7 @@ to answer.
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, and dirty-L1D walker coherence |
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, a miss waiting for a way of its set, writeback and fill progress, and `fence.i` |
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |
-| `frost_cache_l2_lines*` | 64-byte L2 lines: both halves of a line sharing one fill and a reader past the waiter seats waiting, write misses that fill and merge in either half, a writeback waiting behind its line's read fill, halves combining in one line, whole-line writebacks, DMA writes changing only their half, L2 ordering across halves, a refill waiting for its line's writeback, `fence.i` into lines the L2 lacks, reset with misses in flight, and every port's misses at once; every AXI transfer checked as one whole-line beat |
+| `frost_cache_l2_lines*` | 64-byte L2 lines: both halves of a line sharing one fill and a reader past the waiter seats waiting, write misses that fill and merge in either half, a writeback waiting behind its line's read fill, halves combining in one line, whole-line writebacks, DMA writes changing only their half, L2 ordering across halves, a refill waiting for its line's writeback, `fence.i` into lines the L2 lacks, reset with misses in flight, and every port's misses at once; every AXI transfer checked as one whole-line beat. The write-cost events count each write miss that fetches its line once, and no hit, merge, or read miss, and each write held behind a read of its line once, with the cycles from its first decision to the one that completes it, and no merge or waiting read |
 | `*_equal_lines` | The data-integrity, concurrency, and DMA suites with 32-byte L2 lines, equal to the L1s', as a control; also DDR load and store, fetch, atomic, DMA, page-table-walk, and `fence.i` programs on the whole system with 32-byte L2 lines and a 256-bit DDR port |
 | `*_16x4` | The L2-line, concurrency, and DMA suites with 16 L2 miss slots and 4 writeback slots |
 | `frost_cache_l2_lines_waiters2` | The L2-line suite with two waiter seats per L2 miss slot |

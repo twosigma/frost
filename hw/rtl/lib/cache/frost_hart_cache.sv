@@ -383,7 +383,8 @@ module frost_hart_cache #(
       .i_down_resp_id(i_l1d_down_resp_id),
       .i_down_resp_error(i_l1d_down_resp_error),
       .i_down_resp_rdata(i_l1d_down_resp_rdata),
-      .o_perf_events(o_l1d_perf_events)
+      .o_perf_events(o_l1d_perf_events),
+      .o_write_perf_events()
   );
 
   frost_cache #(
@@ -440,7 +441,8 @@ module frost_hart_cache #(
       .i_down_resp_id(i_l1i_down_resp_id),
       .i_down_resp_error(i_l1i_down_resp_error),
       .i_down_resp_rdata(i_l1i_down_resp_rdata),
-      .o_perf_events(o_l1i_perf_events)
+      .o_perf_events(o_l1i_perf_events),
+      .o_write_perf_events()
   );
 
   // ---------------------------------------------------------------------------

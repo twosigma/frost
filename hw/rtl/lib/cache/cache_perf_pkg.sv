@@ -47,10 +47,34 @@ package cache_perf_pkg;
     logic conflict_stall;
   } cache_instance_perf_events_t;
 
+  // The costs of writes narrower than a cache's line. In the hierarchy they
+  // are the L2's: the L1D's writebacks and the DMA port's writes cover at
+  // most 32 bytes, half of an L2 line. frost_cache registers them like the
+  // events above, without keep, so a build without the counters removes
+  // them, and the hierarchy carries the L2's. Maintenance traffic is
+  // excluded.
+  typedef struct packed {
+    // A write miss took a miss-status slot that fetches its line from the
+    // level below to merge into (a pulse, with the miss).
+    logic write_fill;
+    // Miss-status slots held by those write misses this cycle (a level, a
+    // subset of miss_outstanding).
+    logic [MissOutstandingBits-1:0] write_fill_outstanding;
+    // A write's tag-stage decision found a read of its line in flight: the
+    // line's miss-status slot fetches for a read, or a read waits on it, so
+    // the write waits (a conflict stall). The pulse marks the first such
+    // decision of a wait, not the decisions that repeat it.
+    logic write_read_wait;
+    // The tag stage holds such a write this cycle, from a decision that
+    // found the read until the write's next decision (a level).
+    logic write_read_waiting;
+  } cache_write_perf_events_t;
+
   typedef struct packed {
     cache_instance_perf_events_t l1i;
     cache_instance_perf_events_t l1d;
     cache_instance_perf_events_t l2;
+    cache_write_perf_events_t    l2_write;
   } cache_hierarchy_perf_events_t;
 
   // cpu_top adds the fetch-provider stall event for the CPU.

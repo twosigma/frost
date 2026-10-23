@@ -153,10 +153,11 @@ module frost_cluster_memory #(
     output logic o_fetch_resp_error,
 
     // Fatal buffered-store failures in the L2, and its source-registered
-    // performance observer.
+    // performance observers.
     output logic o_cache_fatal,
     output logic [riscv_pkg::PhysAddrBits-1:0] o_cache_fatal_addr,
     output cache_perf_pkg::cache_instance_perf_events_t o_l2_perf_events,
+    output cache_perf_pkg::cache_write_perf_events_t o_l2_write_perf_events,
 
     // Outgoing AXI4 master (cpu_top's o_axi_* / i_axi_*).
     output logic o_axi_idle,
@@ -341,6 +342,7 @@ module frost_cluster_memory #(
         .o_dma_probe_release_valid(o_dma_probe_release_valid),
         .o_dma_probe_release_id(o_dma_probe_release_id),
         .o_l2_perf_events(o_l2_perf_events),
+        .o_l2_write_perf_events(o_l2_write_perf_events),
         .o_down_req_valid(down_req_valid),
         .i_down_req_ready(down_req_ready),
         .o_down_req_write(down_req_write),
@@ -359,6 +361,7 @@ module frost_cluster_memory #(
     assign o_cache_fatal = 1'b0;
     assign o_cache_fatal_addr = '0;
     assign o_l2_perf_events = '0;
+    assign o_l2_write_perf_events = '0;
     assign dma_req_ready = 1'b0;
     assign dma_resp_valid = 1'b0;
     assign dma_resp_id = '0;

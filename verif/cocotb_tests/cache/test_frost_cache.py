@@ -94,16 +94,6 @@ _port_ids = {
 # Packed cache_instance_perf_events_t layout, MSB first: access, hit, miss,
 # writeback (1 bit each), the MissOutstandingBits-wide outstanding count, then
 # hit_under_miss, slot_full_stall, conflict_stall (1 bit each).
-PERF_FIELDS = (
-    "access",
-    "hit",
-    "miss",
-    "writeback",
-    "miss_outstanding",
-    "hit_under_miss",
-    "slot_full_stall",
-    "conflict_stall",
-)
 PERF_FIELD_WIDTHS = {
     "access": 1,
     "hit": 1,
@@ -114,11 +104,25 @@ PERF_FIELD_WIDTHS = {
     "slot_full_stall": 1,
     "conflict_stall": 1,
 }
+# Packed cache_write_perf_events_t layout, MSB first: write_fill (1 bit), the
+# MissOutstandingBits-wide write_fill_outstanding count, then write_read_wait
+# and write_read_waiting (1 bit each).
+PERF_WRITE_FIELD_WIDTHS = {
+    "write_fill": 1,
+    "write_fill_outstanding": 5,
+    "write_read_wait": 1,
+    "write_read_waiting": 1,
+}
 PERF_INSTANCE_WIDTH = sum(PERF_FIELD_WIDTHS.values())
-PERF_INSTANCE_SHIFTS = {
-    "l1i": 2 * PERF_INSTANCE_WIDTH,
-    "l1d": PERF_INSTANCE_WIDTH,
-    "l2": 0,
+PERF_WRITE_WIDTH = sum(PERF_WRITE_FIELD_WIDTHS.values())
+# cache_hierarchy_perf_events_t, MSB first: the l1i, l1d, and l2 instance
+# bundles, then the L2's write costs (l2_write). Each bundle's least
+# significant bit and its fields, MSB first.
+PERF_BUNDLES = {
+    "l1i": (PERF_WRITE_WIDTH + 2 * PERF_INSTANCE_WIDTH, PERF_FIELD_WIDTHS),
+    "l1d": (PERF_WRITE_WIDTH + PERF_INSTANCE_WIDTH, PERF_FIELD_WIDTHS),
+    "l2": (PERF_WRITE_WIDTH, PERF_FIELD_WIDTHS),
+    "l2_write": (0, PERF_WRITE_FIELD_WIDTHS),
 }
 
 
@@ -591,27 +595,34 @@ def _line_int(data: bytes) -> int:
 
 
 def _new_perf_counts() -> dict[str, dict[str, int]]:
-    """Create zeroed per-instance event/cycle totals."""
+    """Create zeroed per-bundle event/cycle totals."""
     return {
-        level: {field: 0 for field in PERF_FIELDS} for level in PERF_INSTANCE_SHIFTS
+        bundle: {field: 0 for field in widths}
+        for bundle, (_, widths) in PERF_BUNDLES.items()
     }
+
+
+def _bundle_fields(raw: int, bundle: str) -> dict[str, int]:
+    """Unpack one bundle of a packed hierarchy event value."""
+    shift, widths = PERF_BUNDLES[bundle]
+    shift += sum(widths.values())
+    fields = {}
+    for field, width in widths.items():
+        shift -= width
+        fields[field] = (raw >> shift) & ((1 << width) - 1)
+    return fields
 
 
 def _sample_perf_events(dut: Any, counts: dict[str, dict[str, int]]) -> None:
     """Accumulate one cycle of the packed hierarchy event bundle.
 
-    Pulse fields add 0/1; the outstanding-miss count adds its value, so the
-    total is the miss-cycle integral the aggregator's *_MISS_CYCLES_SUM keeps.
+    Pulse fields add 0/1; the outstanding-miss counts add their value, so the
+    totals are the slot-cycle integrals the aggregator's *_CYCLES_SUM keep.
     """
     raw = int(dut.o_perf_events.value)
-    for level, instance_shift in PERF_INSTANCE_SHIFTS.items():
-        field_shift = PERF_INSTANCE_WIDTH
-        for field in PERF_FIELDS:
-            width = PERF_FIELD_WIDTHS[field]
-            field_shift -= width
-            counts[level][field] += (raw >> (instance_shift + field_shift)) & (
-                (1 << width) - 1
-            )
+    for bundle in PERF_BUNDLES:
+        for field, value in _bundle_fields(raw, bundle).items():
+            counts[bundle][field] += value
 
 
 async def _monitor_perf_events(
@@ -633,14 +644,8 @@ def _copy_perf_counts(
 
 
 def _perf_field(dut: Any, level: str, field: str) -> int:
-    """Read one field of one instance from the packed hierarchy event bundle."""
-    raw = int(dut.o_perf_events.value)
-    shift = PERF_INSTANCE_SHIFTS[level] + PERF_INSTANCE_WIDTH
-    for name in PERF_FIELDS:
-        shift -= PERF_FIELD_WIDTHS[name]
-        if name == field:
-            return (raw >> shift) & ((1 << PERF_FIELD_WIDTHS[name]) - 1)
-    raise KeyError(field)
+    """Read one field of one bundle from the packed hierarchy event bundle."""
+    return _bundle_fields(int(dut.o_perf_events.value), level)[field]
 
 
 async def _check_read(dut: Any, model: ReferenceModel, addr: int) -> None:
@@ -1619,15 +1624,24 @@ async def test_perf_events_partition_known_traffic_and_exclude_maintenance(
     assert counts["l2"]["miss_outstanding"] > 0
     assert counts["l2"]["hit"] + counts["l2"]["miss"] == counts["l2"]["access"]
 
+    # Each victim writeback misses in the L2. With L2 lines wider than the
+    # L1D's, it covers half of its line and fetches the line; with equal
+    # lines it covers the whole line and allocates without a fetch.
+    wide = l2_line_bytes(dut) > LINE_BYTES
+    assert counts["l2_write"]["write_fill"] == (l1d_writebacks if wide else 0)
+    assert (counts["l2_write"]["write_fill_outstanding"] > 0) == wide
+    assert counts["l2_write"]["write_read_wait"] == 0
+    assert counts["l2_write"]["write_read_waiting"] == 0
+
     before_fence = _copy_perf_counts(counts)
     await _fence_sync(dut)
     await _settle(dut)
     await Timer(1, unit="ns")
 
     # The fence writes the L1D's dirty lines back; in the L2 they miss in a
-    # set of dirty lines and force more L2 victim writebacks. Neither the walk
-    # nor that lower-level work is ordinary traffic, so no event or
-    # miss-occupancy total may move.
+    # set of dirty lines, fetch their lines when those are wider, and force
+    # more L2 victim writebacks. Neither the walk nor that lower-level work is
+    # ordinary traffic, so no event or miss-occupancy total may move.
     assert counts == before_fence
 
     stop[0] = True
@@ -1725,4 +1739,9 @@ async def test_l2_stall_events_exclude_fence_writebacks(dut: Any) -> None:
     assert counted == (0, 0), (
         f"the L2 counted {counted[0]} conflict stalls and {counted[1]} slot-full "
         "stalls of fence.i writebacks"
+    )
+    # Every L2 write here is a fence.i writeback: the first waits for the read
+    # of its line, and with wider L2 lines the second fetches its line.
+    assert set(counts["l2_write"].values()) == {0}, (
+        f"the L2 counted fence.i writebacks as write costs: {counts['l2_write']}"
     )

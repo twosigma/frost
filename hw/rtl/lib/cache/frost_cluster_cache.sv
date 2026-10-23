@@ -56,7 +56,8 @@
  * its DDR block design (fpga/build/x3_ddr_bd.tcl), enough for 16 slots of
  * each type.
  *
- * The L2 exports a registered performance-event bundle. The L1D's
+ * The L2 exports two registered performance-event bundles: its traffic and
+ * stalls, and the costs of writes narrower than its lines. The L1D's
  * writeback-all traffic carries the maintenance bit through the arbiters, so
  * the L2 leaves fence.i writebacks out of every event. Walker traffic carries
  * maintenance=0 and counts as ordinary.
@@ -218,8 +219,9 @@ module frost_cluster_cache #(
     output logic o_fatal_error,
     output logic [ADDR_WIDTH-1:0] o_fatal_addr,
 
-    // Source-registered performance observer of the L2.
-    output cache_perf_pkg::cache_instance_perf_events_t o_l2_perf_events
+    // Source-registered performance observers of the L2.
+    output cache_perf_pkg::cache_instance_perf_events_t o_l2_perf_events,
+    output cache_perf_pkg::cache_write_perf_events_t o_l2_write_perf_events
 );
 
   // Walker/L1I local id width under the 2-bit prefix (see the id tree in
@@ -630,7 +632,8 @@ module frost_cluster_cache #(
       .i_down_resp_id(i_down_resp_id),
       .i_down_resp_error(i_down_resp_error),
       .i_down_resp_rdata(i_down_resp_rdata),
-      .o_perf_events(o_l2_perf_events)
+      .o_perf_events(o_l2_perf_events),
+      .o_write_perf_events(o_l2_write_perf_events)
   );
 
 `ifndef SYNTHESIS

@@ -72,6 +72,10 @@ static const char l1d_conflict_label[] CACHE_PROFILE_RODATA = "L1D index-conflic
 static const char l2_conflict_label[] CACHE_PROFILE_RODATA = "L2 index-conflict stall";
 static const char l1d_overlap_label[] CACHE_PROFILE_RODATA = "L1D >=2 misses in flight";
 static const char l2_overlap_label[] CACHE_PROFILE_RODATA = "L2 >=2 misses in flight";
+static const char l2_write_fill_label[] CACHE_PROFILE_RODATA = "L2 write fill";
+static const char l2_write_wait_label[] CACHE_PROFILE_RODATA = "L2 write held behind read";
+static const char l2_write_wait_cycles_label[] CACHE_PROFILE_RODATA =
+    "L2 write-behind-read hold cycles";
 
 /*
  * Number of cache counters the CPU implements, clamped to the size of a
@@ -210,6 +214,10 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
     uint64_t l2_conflict_stall;
     uint64_t l1d_overlap;
     uint64_t l2_overlap;
+    uint64_t l2_write_fill;
+    uint64_t l2_write_fill_cycles;
+    uint64_t l2_write_read_wait;
+    uint64_t l2_write_read_wait_cycles;
 
     /*
      * The deltas require the full bank. Print n/a if counters are absent
@@ -263,6 +271,10 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
     l2_conflict_stall = CACHE_DELTA(21);
     l1d_overlap = CACHE_DELTA(22);
     l2_overlap = CACHE_DELTA(23);
+    l2_write_fill = CACHE_DELTA(24);
+    l2_write_fill_cycles = CACHE_DELTA(25);
+    l2_write_read_wait = CACHE_DELTA(26);
+    l2_write_read_wait_cycles = CACHE_DELTA(27);
 #undef CACHE_DELTA
 
     uart_printf(cache_header);
@@ -296,6 +308,13 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
     print_metric(l2_conflict_label, l2_conflict_stall, cycles);
     print_metric(l1d_overlap_label, l1d_overlap, cycles);
     print_metric(l2_overlap_label, l2_overlap, cycles);
+    /* The L2's write costs: fills as a share of L2 misses, with their
+     * slot-cycles per fill, and writes held behind reads as a share of L2
+     * accesses, with the cycles they held the tag stage. */
+    print_metric(l2_write_fill_label, l2_write_fill, l2_miss);
+    print_slot_cycles_per_miss(l2_write_fill_label, l2_write_fill_cycles, l2_write_fill);
+    print_metric(l2_write_wait_label, l2_write_read_wait, l2_access);
+    print_metric(l2_write_wait_cycles_label, l2_write_read_wait_cycles, cycles);
     uart_printf(report_diagnostic_header);
 }
 
