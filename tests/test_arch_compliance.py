@@ -285,12 +285,11 @@ def signature_location(elf: Path) -> tuple[int, int]:
 
 def run_simulation(
     coverage_label: str = "arch_test",
-    mem_config: str = DEFAULT_MEM_CONFIG,
 ) -> subprocess.CompletedProcess[str] | None:
     """Simulate the compiled test; return the result, or None on timeout.
 
-    When a run passes, the bench reads the test's signature from the data
-    BRAM and writes it to SIGNATURE_FILE, a line of words per run.
+    When the test passes, the bench reads its signature from the data BRAM
+    and writes it to SIGNATURE_FILE, a line of words per run.
     coverage_label names the run's coverage file under FROST_COVERAGE=1.
     """
     runner = CocotbRunner(
@@ -299,18 +298,13 @@ def run_simulation(
         app_name=None,  # compile_test builds the image before this runs
     )
     runner.coverage_label = coverage_label
-    # Only the BRAM startup restores its initialized data on CPU reset.
-    # DDR and icache images load in place; a second boot would execute with
-    # mutated inputs. Apply the shared runner's single-run policy to them.
-    runner.mem_config = "bram" if mem_config == "bram" else "ddr"
 
     os.environ["SIM"] = "verilator"
     env = runner.setup_environment()
-    # Large BRAM test images can place their .data load image in RAM,
-    # overlapping the destination that startup writes. The bench reloads
-    # those images through the programming port before the second reset run;
-    # smaller images retain the ordinary reset-without-reload check.
-    env["FROST_ARCH_BRAM_RESET_IMAGE"] = "1" if mem_config == "bram" else "0"
+    # One run: the real-program jobs reset and rerun the BRAM programs, and
+    # the cpu_top_writethrough and bram_reload benches check that a CPU reset
+    # empties the read caches.
+    env["COCOTB_NUM_RUNS"] = "1"
     # The boot stub uses 256 KiB low BRAM. MEM_CONFIG selects which test
     # sections the DDR model preloads from sw_ddr.mem; see MEMORY_CONFIGS.
     sim_build_dir = runner._get_sim_build_dir(env)
@@ -439,9 +433,7 @@ def run_single_test(
             )
         return TestResult(test_name, extension, "FAIL", "Compilation failed")
 
-    result = run_simulation(
-        coverage_label=f"arch_{extension}_{test_name}", mem_config=mem_config
-    )
+    result = run_simulation(coverage_label=f"arch_{extension}_{test_name}")
     if result is None:
         return TestResult(
             test_name,

@@ -144,16 +144,10 @@ the data copy of low BRAM. The `bram` and `icache` tiers keep the signature
 there. The `ddr` tier keeps it in DDR, behind the write-back L1D and L2, so
 `RVMODEL_HALT` first copies it to the top of low BRAM with ordinary loads and
 stores. A fence before the marker waits until every store has reached the
-BRAM. Every reset/restart run's signature is checked. BRAM runs twice. Small
-images retain memory across reset and startup restores their initialized
-data. When a larger image's initialization data extends into mutable RAM,
-startup overwrites that copy; the bench reloads the original image through
-the BRAM programming port while holding reset before the second run. Both
-signatures must still match the reference. DDR and `icache` run once because
-their images load in place and a CPU reset does not restore mutated inputs.
-Both startup stubs initialize `a4`, which the pinned suite's
+BRAM. Each test runs once; the application jobs cover reset and rerun in the
+BRAM tier. Both startup stubs initialize `a4`, which the pinned suite's
 `RVTEST_INIT_GPRS` omits but its hints signatures record. This makes the
-initial state match Spike on every run without assuming GPRs clear on reset.
+initial state match Spike without assuming GPRs clear on reset.
 The extensions are I, M, A, F, D, C, B, K (Zbkb only), Zicond, Zifencei,
 privilege, D_Zcd, and hints; Zcf exists only on RV32. The tests come from the
 suite's `rv64i_m` directory; F and D also run the tests that RV32 and RV64

@@ -38,7 +38,6 @@ from cocotb.utils import get_sim_time
 from typing import Any, TextIO
 
 from config import XLEN
-from cocotb_tests.bram_programmer import program_bram_image, read_bram_image
 from cocotb_tests.cpu_structs import (
     COMMIT_FIELDS,
     FROM_EX_FIELDS,
@@ -4458,14 +4457,6 @@ async def test_real_program(dut: Any) -> None:
     if coverage is not None:
         cocotb.start_soon(coverage.run())
 
-    reset_image = None
-    if os.environ.get("FROST_ARCH_BRAM_RESET_IMAGE") == "1":
-        image = read_bram_image(Path("sw.mem"))
-        assert image, "architecture BRAM image is empty"
-        # link_arch_test_bram.ld reserves 95 KiB ROM plus 1 KiB debug;
-        # above that, a load image shares mutable RAM with its destination.
-        if any(address >= 0x18000 for address, _ in image):
-            reset_image = image
     # The architecture-test runner names the low-BRAM bytes that hold the
     # signature once the program passes, as "address:length" in hex, and the
     # file to write them to (tests/test_arch_compliance.py).
@@ -4486,12 +4477,6 @@ async def test_real_program(dut: Any) -> None:
                 dut.i_external_interrupt.value = 0
             for _ in range(RESET_CYCLES):
                 await RisingEdge(dut.i_clk)
-            if reset_image is not None:
-                cocotb.log.info(
-                    "Reloading architecture BRAM image while reset is held: "
-                    "startup overwrites its RAM-resident initialization image"
-                )
-                await program_bram_image(dut, reset_image)
             dut.i_rst_n.value = 1
         else:
             dut.i_instr_mem_en.value = 0

@@ -10,10 +10,9 @@
  * RAM. A load image that does not fit in the rest of the ROM continues across
  * the debug slice (nothing writes it without a debugger attached) into RAM,
  * where it can overlap its own destination, so crt0 copies backward
- * (memmove-safe for dest > src).
- * Such a copy overwrites its own load image. The architecture-test bench
- * reloads images extending into RAM through the programming port before
- * executing a second reset run; CPU reset alone cannot restore them.
+ * (memmove-safe for dest > src). Such a copy overwrites its own load image,
+ * so the test cannot restart from a CPU reset alone; the bench runs each
+ * test once.
  */
 
 ENTRY(_start)

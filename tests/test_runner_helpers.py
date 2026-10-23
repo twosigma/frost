@@ -486,7 +486,7 @@ def test_ddr_model_timing_needs_a_seed_and_the_soc(
 def test_arch_simulation_tells_the_bench_where_the_signature_is(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Arch runs name the signature's low-BRAM bytes and its file.
+    """Arch runs name the signature's low-BRAM bytes and its file, and run once.
 
     The UART carries only the pass marker, so frost.sv's dropped-byte check
     stays on.
@@ -531,10 +531,11 @@ def test_arch_simulation_tells_the_bench_where_the_signature_is(
         (
             env["FROST_ARCH_SIGNATURE"],
             env["FROST_ARCH_SIGNATURE_FILE"],
+            env["COCOTB_NUM_RUNS"],
             env["COCOTB_PLUSARGS"],
         )
         for env in environments
-    ] == [("0x3ec90:0x1370", str(signature_file), "+seed")]
+    ] == [("0x3ec90:0x1370", str(signature_file), "1", "+seed")]
 
 
 def test_run_in_process_group_returns_output() -> None:
