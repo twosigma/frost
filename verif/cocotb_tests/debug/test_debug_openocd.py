@@ -56,11 +56,15 @@ CYCLES_PER_EDGE = 4
 
 
 class RemoteBitbangServer:
-    """Serve one OpenOCD remote_bitbang client from the simulator."""
+    """Serve OpenOCD remote_bitbang clients from the simulator, one at a time."""
 
-    def __init__(self, dut: Any) -> None:
-        """Open the listening socket and park the JTAG pins."""
+    def __init__(self, dut: Any, sessions: int = 1) -> None:
+        """Open the listening socket and park the JTAG pins.
+
+        The server stops once `sessions` clients have sent Q.
+        """
         self.dut = dut
+        self.sessions = sessions
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.listener.bind(("127.0.0.1", 0))
@@ -116,7 +120,8 @@ class RemoteBitbangServer:
                     self.dut.i_jtag_trst_n.value = 0 if trst else 1
                     await ClockCycles(clk, CYCLES_PER_EDGE)
                 elif c == "Q":
-                    self.quit = True
+                    self.sessions -= 1
+                    self.quit = self.sessions == 0
                 # 'B'/'b' blink: ignored
             if responses:
                 self.conn.sendall(bytes(responses))

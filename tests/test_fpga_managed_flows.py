@@ -528,6 +528,7 @@ def test_coremark_pro_prebuilt_binds_alias_mode_and_diagnostics(tmp_path: Path) 
         key: "0"
         for key in [
             "COREMARK_PRO_TRACE",
+            "COREMARK_PRO_CACHE_COUNTERS",
             "FROST_MALLOC_DISABLE_FREE",
             "FROST_MALLOC_GUARD_FREE",
             "FROST_MALLOC_EVICT_FREE",

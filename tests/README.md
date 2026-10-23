@@ -84,7 +84,9 @@ FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb hello_world
 Block benches ignore this setting, and so do applications with a fixed
 layout, such as `opensbi_smoke`. In the DDR tier, pytest skips the programs
 in `DDR_TIER_EXCLUDE`: the DDR probes (`ddr_*`), which already target DDR,
-and the fetch fuzzers (`*_fetch_fuzz`), which use their own build.
+the fetch fuzzers (`*_fetch_fuzz`), which use their own build, and
+`ecc_scrub_test` and `cache_counters_openocd`, whose programs run from BRAM
+in either tier.
 `served_window_resteer_fetch_fuzz` disables the optional Normal read caches
 so its loop continues to encounter the SoC's AXI instruction-delay model.
 Each reset run must encounter both injected AXI delays and predicted-target
@@ -94,9 +96,10 @@ requires a stale-window resteer. The `if_stage` bench supplies stale window
 tags explicitly and checks rejection, retry, and delayed-target handling.
 
 `debug_test` drives the JTAG debug module directly; `debug_openocd_test` runs
-a real OpenOCD session through `remote_bitbang`. Without OpenOCD installed
-that target logs a warning and passes; set `FROST_REQUIRE_OPENOCD=1`, as CI
-does, to make it fail instead. The
+a real OpenOCD session through `remote_bitbang`, and `cache_counters_openocd`
+reads the cache profiling counters that way with `fpga/debug/cache_counters.py`.
+Without OpenOCD installed those targets log a warning and pass; set
+`FROST_REQUIRE_OPENOCD=1`, as CI does, to make them fail instead. The
 [memory-response tests](../verif/cocotb_tests/cpu_ooo/memory/README.md) cover
 the portable and Xilinx builds of the load-data mux.
 

@@ -19,7 +19,8 @@
  *
  * Each kernel works on a region that nothing touched before, so every line
  * starts outside the L1D and the L2, and prints its cycles and instructions
- * with the cache-counter deltas of its region (zero without PERF_COUNTERS).
+ * with the cache-counter deltas of its region (zero without PERF_COUNTERS),
+ * the L2's write costs among them.
  * The program itself runs from BRAM. The kernels:
  *   - seq_read: every word of 1 MiB, in order;
  *   - stride_read: one word in each 32-byte L1 line of 1 MiB;
@@ -84,6 +85,10 @@
 #define L2_FULL_STALL 19u
 #define L2_CONFLICT_STALL 21u
 #define L2_OVERLAP 23u
+#define L2_WRITE_FILL 24u
+#define L2_WRITE_FILL_CYCLES 25u
+#define L2_WRITE_READ_WAIT 26u
+#define L2_WRITE_READ_WAIT_CYCLES 27u
 
 static tomasulo_profile_snapshot_t snap_start;
 static tomasulo_profile_snapshot_t snap_end;
@@ -108,7 +113,8 @@ static void end_region(const char *name)
     tomasulo_profile_read_cache_pair(&snap_start, &snap_end);
     uart_printf("KERNEL %s cycles=%lu instret=%lu l1d_miss=%lu l2_access=%lu l2_miss=%lu "
                 "l2_wb=%lu l2_miss_cycles=%lu l2_overlap=%lu l2_full_stall=%lu "
-                "l2_conflict_stall=%lu\n",
+                "l2_conflict_stall=%lu l2_write_fill=%lu l2_write_fill_cycles=%lu "
+                "l2_write_read_wait=%lu l2_write_read_wait_cycles=%lu\n",
                 name,
                 (unsigned long) (snap_end.cycles - snap_start.cycles),
                 (unsigned long) (snap_end.instret - snap_start.instret),
@@ -119,7 +125,11 @@ static void end_region(const char *name)
                 (unsigned long) cache_delta(L2_MISS_CYCLES),
                 (unsigned long) cache_delta(L2_OVERLAP),
                 (unsigned long) cache_delta(L2_FULL_STALL),
-                (unsigned long) cache_delta(L2_CONFLICT_STALL));
+                (unsigned long) cache_delta(L2_CONFLICT_STALL),
+                (unsigned long) cache_delta(L2_WRITE_FILL),
+                (unsigned long) cache_delta(L2_WRITE_FILL_CYCLES),
+                (unsigned long) cache_delta(L2_WRITE_READ_WAIT),
+                (unsigned long) cache_delta(L2_WRITE_READ_WAIT_CYCLES));
 }
 
 static inline uint32_t xorshift32(uint32_t x)

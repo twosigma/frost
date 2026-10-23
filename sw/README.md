@@ -261,11 +261,12 @@ can be debugged and where each one first stops.
 | `arch_test/` | riscv-arch-test cases compared with committed Spike signatures on every run; built per test with `TEST_SRC`. Large BRAM images whose initialization copy overlaps RAM are reloaded before their second reset run; see the [architecture-test reset policy](../tests/README.md#test_arch_compliancepy) |
 | `branch_pred_test/` | Self-checking branch, loop, call, and indirect-jump cases in assembly |
 | `c_ext_test/` | Calls and returns through mixed 16- and 32-bit code, plus value checks of the RV64C-only encodings |
+| `cache_counter_target/` | Makes L2 write fills, prints the cache counters from its own snapshot, then sleeps in `wfi` without touching the caches until a UART byte starts a second run, which the JTAG reader (`fpga/debug/cache_counters.py`) measures; runs from low BRAM in either memory configuration |
 | `call_stress/` | Repeated and nested calls and returns, built with compressed instructions |
 | `cf_ext_test/` | Compressed double-precision FP loads and stores (Zcd) |
 | `clint_test/` | SiFive CLINT alias: writes reach the native timer registers, and a timer interrupt armed through the alias fires |
 | `coremark/` | EEMBC CoreMark, built without the C extension by default; see the [measurement sweeps](../docs/single_core_performance.md#reproducing-and-retaining-measurements) and [Spike tools](apps/coremark/iss/README.md) |
-| `coremark_pro/` | All nine EEMBC CoreMark-PRO workloads, loaded as `coremark_pro_<workload>`; the heap and large datasets live in DDR |
+| `coremark_pro/` | All nine EEMBC CoreMark-PRO workloads, loaded as `coremark_pro_<workload>`; the heap and large datasets live in DDR. `COREMARK_PRO_CACHE_COUNTERS=1` prints the cache counters' deltas over the timed region as one `FROST_CACHE_COUNTERS` line |
 | `csr_rmw_test/` | Old and new values for `csrrw`/`csrrs`/`csrrc`, including the same-register `mscratch` swap that OpenSBI's trap entry uses |
 | `csr_test/` | `mstatus.MIE` writes and the M-mode counter controls: `mcountinhibit`, 64-bit `mcycle`/`minstret` writes, pure reads checked against the independent timer/retirement count, and the Zicsr rule that a `minstret` write replaces the writing instruction's own increment |
 | `ddr_atomic_test/` | Word LR/SC and AMOs on cached DDR, printing a progress letter before each step |

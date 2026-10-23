@@ -598,6 +598,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "OpenOCD debug integration (optional unless FROST_REQUIRE_OPENOCD=1)"
         ),
     ),
+    # fpga/debug/cache_counters.py through OpenOCD against a program with L2
+    # write fills, which 4 KiB caches make quick.
+    "cache_counters_openocd": CocotbRunConfig(
+        python_test_module="cocotb_tests.debug.test_cache_counters_openocd",
+        hdl_toplevel_module="frost",
+        app_name="cache_counter_target",
+        description=(
+            "Cache profiling counters read over JTAG while a program runs "
+            "(optional unless FROST_REQUIRE_OPENOCD=1)"
+        ),
+        verilator_extra_args=(
+            "-GPERF_COUNTERS=1",
+            "-GL1_CACHE_BYTES=4096",
+            "-GL2_CACHE_BYTES=4096",
+        ),
+    ),
     "satp_drain_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -3031,12 +3047,14 @@ UNIT_TEST_PARAMS = [
 #     clobber their fixed-address writes, so they run in the bram-tier job only.
 #   - ecc_scrub_test: the patterned line must be at CACHED_BASE, with the
 #     program in BRAM, so the write-error plusarg counts only its writebacks.
+#   - cache_counters_openocd: its program runs from low BRAM in either tier,
+#     so a ddr-tier run would repeat the bram-tier one.
 DDR_TIER_EXCLUDE = {
     name
     for name in REAL_PROGRAM_TESTS
     if name.endswith("_fetch_fuzz")
     or name.startswith("ddr_")
-    or name == "ecc_scrub_test"
+    or name in {"ecc_scrub_test", "cache_counters_openocd"}
 }
 
 
@@ -3578,9 +3596,7 @@ class TestRealPrograms:
         """
         mem_config = os.environ.get("FROST_COCOTB_MEM_CONFIG", "bram")
         if mem_config == "ddr" and test_name in DDR_TIER_EXCLUDE:
-            pytest.skip(
-                f"{test_name} does not run in the ddr tier (fetch fuzzer or DDR probe)"
-            )
+            pytest.skip(f"{test_name} does not run in the ddr tier (DDR_TIER_EXCLUDE)")
         run_test(test_name, capsys)
 
 
