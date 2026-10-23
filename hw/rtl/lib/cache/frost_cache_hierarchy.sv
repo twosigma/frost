@@ -34,7 +34,9 @@
  * adapter, and the L2). The two connect by wires: the L1D's, the L1I's, and
  * the walker sequencer's line ports, and the DMA sequencer's probes into the
  * L1D with their acknowledgements and releases. Each documents its ids and
- * line sizes.
+ * line sizes. The cache unit benches and the TestRIG platform use this
+ * module; cpu_top instantiates the two parts itself, in frost_hart and
+ * frost_cluster_memory.
  */
 module frost_cache_hierarchy #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -174,7 +176,7 @@ module frost_cache_hierarchy #(
     // sync cannot leave pre-writeback data in the freshly invalidated L1I.
     // The L2 needs no maintenance: it sits below both L1s, so everything the
     // L1D writes back is visible to L1I fills. Done answers only a request
-    // held since its sequence started (see the sequencer below).
+    // held since its sequence started (see the sequencer in frost_hart_cache).
     input  logic i_fence_sync,
     output logic o_fence_done,
 

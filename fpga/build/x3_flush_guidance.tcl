@@ -22,8 +22,8 @@
 # The caller opens the design, places it, and handles constraints and
 # checkpoints.
 namespace eval ::frost_x3_flush_guidance {
-    variable driver_name {subsystem/frost_processor/cpu_and_memory_subsystem/cpu/cpu_inst/misprediction_flush_controller_inst/full_flush_side_effect_kill_q_reg}
-    variable net_name {subsystem/frost_processor/cpu_and_memory_subsystem/cpu/cpu_inst/misprediction_flush_controller_inst/full_flush_side_effect_kill_q}
+    variable driver_name {subsystem/frost_processor/cpu_and_memory_subsystem/cpu/hart/cpu_inst/misprediction_flush_controller_inst/full_flush_side_effect_kill_q_reg}
+    variable net_name {subsystem/frost_processor/cpu_and_memory_subsystem/cpu/hart/cpu_inst/misprediction_flush_controller_inst/full_flush_side_effect_kill_q}
     variable cells {}
     variable state {}
 }

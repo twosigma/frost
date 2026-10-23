@@ -623,11 +623,12 @@ def port_names(sdc: str) -> set[str]:
 _SCOPE_SEPARATOR = re.compile(r"[./](?![^\[]*\])")
 
 
-def block(point: str, ports: Set[str] = frozenset(), levels: int = 3) -> str:
+def block(point: str, ports: Set[str] = frozenset(), levels: int = 4) -> str:
     """Return the block of a path's startpoint or endpoint.
 
     A register's block is the first levels of its hierarchy, or "top" for a
-    register at the top level; the ports form the block "ports".
+    register at the top level; the ports form the block "ports". Four levels
+    reach a unit of the core, such as cpu.hart.cpu_inst.u_tomasulo.
     """
     if point in ports:
         return "ports"

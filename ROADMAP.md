@@ -10,14 +10,15 @@ running on both. `cpu_top` holds one hart with its L0, L1D, L1I, and L2, and
 its outgoing AXI4 master is not coherent, so two `cpu_top` instances on
 shared memory do not form an SMP system. Its coherent ingress gives DMA and
 the NIC access to one tile's caches; it is not a protocol between tiles (see
-the [CPU boundary](hw/rtl/cpu_top/README.md)). The SMP configuration splits
-out a per-hart block, the core with its MMUs and its L0 and L1 caches, and
-puts the shared L2 and the coherence logic between the harts in a cluster
-wrapper whose memory master stays plain AXI4. The single-hart `cpu_top` keeps
-its integration interface by composing one hart with its L2. Defining that
-per-hart boundary and the coherent interface inside the cluster comes first.
-An L2 in every hart instead would need its own coherence design between the
-private L2s.
+the [CPU boundary](hw/rtl/cpu_top/README.md)). Inside `cpu_top`, the
+per-hart block `frost_hart` holds the core with its MMUs and its L0 and L1
+caches, and `frost_cluster_memory` holds the shared L2, the DMA coherence
+sequencer, and the memory master, which stays plain AXI4. The single-hart
+`cpu_top` keeps its integration interface by composing one of each. The link
+between them carries the single-hart protocol: the L1s' line ports and the
+DMA sequencer's probes into the one L1D. The coherent interface inside the
+cluster, which a second hart needs, comes first. An L2 in every hart instead
+would need its own coherence design between the private L2s.
 
 Coherence is ordered at the shared L2, the ordering point for all traffic
 below the L1s. A sequencer in front of it takes the requests for each line in

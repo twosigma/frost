@@ -16,7 +16,7 @@ still dirty in the L1D, and software never flushes a cache for them.
 | `frost_cache.sv` | The line cache, used at every level; the L1D instance also takes per-line coherence probes |
 | `frost_hart_cache.sv` | One hart's private caches: the L1D and the L1I, the walker port's coherence sequencer, the probe injection register that the walker and DMA probes share into the L1D, and `fence.i` sequencing |
 | `frost_cluster_cache.sv` | The shared level: the L1D, walker, L1I, and DMA ports and the stream prefetcher over the arbiter tree, the DMA coherence sequencer, the line-size adapter, and the L2 |
-| `frost_cache_hierarchy.sv` | The two above as one module |
+| `frost_cache_hierarchy.sv` | The two above as one module, for the unit benches and the TestRIG platform; `cpu_top` places them in `frost_hart` and `frost_cluster_memory` |
 | `line_size_adapter.sv` | Places each L1-line request in its sector of a wider L2 line and returns that sector of the response; an outstanding-transaction table holds each request's sector by id |
 | `line_port_arbiter.sv` | N:1 tagged arbiter: fixed priority by port index, optional starvation bound, port index prefixed to ids |
 | `dma_coherence_sequencer.sv` | Takes each DMA request through the L1D, and each DMA write through the load queue as well, before it reaches the L2 |
@@ -282,9 +282,13 @@ port's traffic and the stream prefetcher's reads over one arbiter tree into
 the L2, through the line-size adapter. The L2 is the ordering point for all
 traffic below the L1s and drives the AXI bridge. The parts connect through
 the L1D's, the L1I's, and the walker sequencer's line ports and the DMA
-sequencer's probes into the L1D. The arbiters and the adapter are
-combinational, so the boundary between the parts adds no cycle.
-`frost_cache_hierarchy` composes the two parts as one module.
+sequencer's probes into the L1D. Requests and responses pass through the
+arbiters and the adapter without a register stage, so the boundary between
+the parts adds no cycle.
+`frost_cache_hierarchy` composes the two parts as one module for the cache
+unit benches and the TestRIG platform. `cpu_top` instantiates
+`frost_hart_cache` in its hart (`frost_hart`) and `frost_cluster_cache` in
+the memory side the hart shares (`frost_cluster_memory`).
 
 [![FROST cache hierarchy: L1D, walker, L1I and DMA arbitration through the line-size adapter into the L2 and DDR, each of the walker and DMA ports entering through its own coherence sequencer](../../../../docs/diagrams/cache-hierarchy.svg)](../../../../docs/diagrams/cache-hierarchy.svg)
 

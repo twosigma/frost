@@ -623,13 +623,15 @@ def test_summary_reports_a_partial_build(tmp_path: Path) -> None:
 
 
 def test_blocks_follow_both_hierarchy_separators() -> None:
-    """Blocks are the first three scopes, whether Yosys or OpenROAD named them."""
+    """Blocks are the first four scopes, whether Yosys or OpenROAD named them."""
     assert (
-        orfs.block("cpu_inst.u_tomasulo.u_rob/u_bank.g_banks[0].ram[0][7]$_DFFE_PP_")
-        == "cpu_inst.u_tomasulo.u_rob"
+        orfs.block(
+            "cpu.hart.cpu_inst.u_tomasulo.u_rob/u_bank.g_banks[0].ram[0][7]$_DFFE_PP_"
+        )
+        == "cpu.hart.cpu_inst.u_tomasulo"
     )
-    assert orfs.block("cpu_inst.if_stage_inst.ras_q[63]$_DFF_P_") == (
-        "cpu_inst.if_stage_inst"
+    assert orfs.block("cpu.hart.cpu_inst.if_stage_inst.ras_q[63]$_DFF_P_") == (
+        "cpu.hart.cpu_inst.if_stage_inst"
     )
     assert orfs.block("data_memory.memory[0][23]$_DFFE_PP_") == "data_memory"
     assert orfs.block("data_memory_address_registered[25]$_DFF_P_") == "top"

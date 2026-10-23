@@ -58,7 +58,7 @@ create_clock -name jtag_tck -period 100.0 [get_ports i_jtag_tck]
 # clock on its master's net, so it takes the clock ports' nets as its roots
 # from CTS_ARGS in config.mk, which lists each clock's port.
 set io_references {
-  core_clk i_clk {cpu.memory_fabric.master.ar_valid_q$*/CK}
+  core_clk i_clk {cpu.cluster_memory.memory_fabric.master.ar_valid_q$*/CK}
   core_clk_div4 i_clk_div4 {soc.data_memory.u_sram.gen_row[0].u_macro/clk0}
   nic_tx_clk i_nic_tx_clk {soc.gen_cached_tier.nic.u_mac.u_mac.tx_gearbox.reservoir[0]$*/CK}
   nic_rx_clk i_nic_rx_clk {soc.gen_cached_tier.nic.u_mac.u_mac.rx_gearbox.reservoir[0]$*/CK}
