@@ -148,9 +148,12 @@ COUNTER_LINE = (
     f"ipc_x1000=1012 verdict=PASS\r\r\n{PROMPT}"
 )
 MEMERR_ECHO = hw.LINUX_MEMERR_COMMAND + "\r\r\n"
+MEMERR_SELFTEST_LINE = f"{hw.LINUX_MEMERR_SELFTEST_PASS}\r\r\n"
+MEMERR_PROGRESS = "scrubbed=64 skipped=1 patrol=20,16760832 passes=0,1 restore=0"
 MEMERR_LINE = (
-    f"{hw.LINUX_MEMERR_TOKEN} active=1 polls=4113,5342 ce=0 ue=0 rd=0 wr=0\r\r\n"
-    f"{PROMPT}"
+    MEMERR_SELFTEST_LINE
+    + f"{hw.LINUX_MEMERR_TOKEN} active=1 polls=4113,5342 ce=0 ue=0 rd=0 wr=0 "
+    + f"{MEMERR_PROGRESS}\r\r\n{PROMPT}"
 )
 # What the program prints when perf_event_open on the child fails.
 COUNTER_FAIL_LINE = (
@@ -203,7 +206,7 @@ def test_stage_passes_on_the_whole_debian_transcript() -> None:
     assert NFSROOT in note and "vers=3" in note
     assert "systemd running" in note
     assert "cycles=4433680" in note and "instret=3275440" in note
-    assert "no memory errors (1229 ECC polls across a 1 s sleep)" in note
+    assert "no memory errors (1229 ECC polls)" in note
     assert hw.LINUX_NET_COMMAND in note
 
 
@@ -518,7 +521,8 @@ def test_the_memory_error_readback_must_be_clean(line: str, expected: str) -> No
     transcript = (
         COUNTER_TRANSCRIPT
         + MEMERR_ECHO
-        + f"{hw.LINUX_MEMERR_TOKEN} {line}\r\r\n{PROMPT}"
+        + MEMERR_SELFTEST_LINE
+        + f"{hw.LINUX_MEMERR_TOKEN} {line} {MEMERR_PROGRESS}\r\r\n{PROMPT}"
         + NET_ECHO
         + NET_START
         + NET_PASS
@@ -541,6 +545,59 @@ def test_an_unbound_memory_error_driver_prints_no_counts() -> None:
     assert not ok and f"no {hw.LINUX_MEMERR_TOKEN} line" in note
     # The echoed command is never mistaken for the output.
     assert hw.memerr_values(COUNTER_TRANSCRIPT + MEMERR_ECHO) is None
+
+
+@pytest.mark.parametrize(
+    "before,after,expected",
+    [
+        (MEMERR_SELFTEST_LINE, "", "no FROST_MEMERR_SELFTEST_PASS line"),
+        (
+            MEMERR_SELFTEST_LINE,
+            "echo FROST_MEMERR_SELFTEST_PASS\r\n",
+            "no FROST_MEMERR_SELFTEST_PASS line",
+        ),
+        ("scrubbed=64", "scrubbed=63", "scrub counters"),
+        ("skipped=1", "skipped=0", "scrub counters"),
+        ("skipped=1", "skipped=2", "scrub counters"),
+        ("patrol=20,16760832", "patrol=20,20", "patrol lines did not advance"),
+        ("patrol=20,16760832", "patrol=20,0", "patrol lines did not advance"),
+        ("passes=0,1", "passes=0,0", "patrol did not complete a pass"),
+        ("restore=0", "restore=1", "reloading the daily patrol failed"),
+        ("rd=0 wr=0 scrubbed", "rd=1 wr=0 scrubbed", "1 DDR read error responses"),
+    ],
+)
+def test_scrub_and_patrol_evidence_is_required(
+    before: str, after: str, expected: str
+) -> None:
+    """Require a scrub pass, its counters, patrol progress, and a daily reload."""
+    ok, note = stage().judge(FULL_TRANSCRIPT.replace(before, after))
+    assert not ok and expected in note
+
+
+def test_memerr_readback_parses_progress_and_rejects_an_old_selftest() -> None:
+    """Only the self-test associated with the latest readback can validate it."""
+    values = hw.memerr_values(MEMERR_ECHO + MEMERR_LINE)
+    assert values is not None
+    assert values["scrubbed"] == 64 and values["skipped"] == 1
+    assert values["patrol_before"] == 20 and values["patrol_after"] == 16760832
+    assert values["passes_before"] == 0 and values["passes_after"] == 1
+    assert hw.memerr_problems(values) == []
+    latest = hw.memerr_values(
+        MEMERR_LINE + MEMERR_ECHO + MEMERR_LINE.replace(MEMERR_SELFTEST_LINE, "")
+    )
+    assert latest is not None
+    assert "no FROST_MEMERR_SELFTEST_PASS line" in hw.memerr_problems(latest)
+
+
+@pytest.mark.parametrize(
+    "token", ["FROST_MEMERR_SELFTEST_FAIL", "FROST_MEMERR_LOAD_FAIL"]
+)
+def test_memerr_failures_end_capture_without_matching_the_command(token: str) -> None:
+    """A load or self-test failure ends capture as soon as its line arrives."""
+    assert not stage().failure_done(COUNTER_TRANSCRIPT + MEMERR_ECHO)
+    transcript = COUNTER_TRANSCRIPT + MEMERR_ECHO + token + "\r\r\n"
+    assert stage().failure_done(transcript)
+    assert token in stage().judge(transcript)[1]
 
 
 def test_the_memory_error_device_is_the_packers_node() -> None:
@@ -1377,8 +1434,10 @@ def test_the_real_board_capture_ends_and_passes_the_stage() -> None:
     assert hw.KERNEL_RELEASE in note
     assert BOARD_NFSROOT in note and "vers=3" in note
     assert "systemd running" in note
-    assert "cycles=659285" in note and "instret=127196" in note
-    assert "no memory errors (923 ECC polls across a 1 s sleep)" in note
+    counts = hw.counter_values(hw.console_text(console))
+    assert all(int(counts[event]) > 0 for event in hw.LINUX_COUNTER_EVENTS)
+    assert "no memory errors" in note
+    assert "scrub self-test" in note and "a full pass" in note
     assert "root alive" in note
 
 

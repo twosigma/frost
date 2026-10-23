@@ -10,7 +10,8 @@ config FROST_MEMERR
 	  Driver for the memory error unit of the FROST SoC, which counts
 	  the DDR controller's corrected and uncorrectable ECC errors and
 	  the error responses DDR returns to the cache hierarchy. The
-	  driver logs each report and shows the counters in sysfs.
+	  driver logs each report, scrubs corrected lines with atomic
+	  writes, patrols RAM in the background, and shows counters in sysfs.
 
 	  To compile this driver as a module, choose M here. The module
 	  will be called frost_memerr.

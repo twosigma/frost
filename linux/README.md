@@ -215,6 +215,7 @@ A replacement kernel selected with `FROST_LINUX_KERNEL` must provide:
 | `CONFIG_OF`, `CONFIG_OF_EARLY_FLATTREE` | Device-tree probing and the early console (`earlycon=uart8250,mmio32,0x40001000`) |
 | `CONFIG_NET`, `CONFIG_INET`, `CONFIG_PACKET` | Packet sockets for `frost_nettest`, and IPv4 for an NFS root |
 | `CONFIG_MODULES`, or the drivers built in (`CONFIG_NETDEVICES`, `CONFIG_ETHERNET`, `CONFIG_NET_VENDOR_FROST`, `CONFIG_FROST_NET10G`, `CONFIG_FROST_MEMERR`) | The `frost_net10g` driver for the `frost,net10g` node and `frost_memerr` for `frost,memory-error`. The pin loads both as modules ([Driver modules](#driver-modules)). |
+| `CONFIG_DEBUG_FS` | The memory error driver's manual scrub and self-test files. The hardware regression requires the self-test. |
 | `CONFIG_NFS_FS`, `CONFIG_NFS_V3` | The kernel's NFS client, needed for either kind of [NFS root](#nfs-root): the kernel performs the mount even when an initramfs requests it. The pin builds both as modules, which its initramfs carries. |
 | `CONFIG_ROOT_NFS`, `CONFIG_IP_PNP` (`CONFIG_IP_PNP_DHCP` for `ip=dhcp`) | Only for a kernel that mounts the NFS root itself from `ip=` and `nfsroot=`. That kernel also needs the NFS client and the NIC driver built in. The pin has neither option. |
 | `CONFIG_CGROUPS`, `CONFIG_UNIX` | Required by systemd on the NFS root, which needs the cgroup v2 hierarchy but no particular controller (the pin enables the usual ones). `CONFIG_AUTOFS_FS`, `CONFIG_TMPFS_POSIX_ACL`, and `CONFIG_TMPFS_XATTR` are recommended. systemd's other requirements, and the seccomp support it recommends, are kernel defaults. |
@@ -250,6 +251,10 @@ Debian's initramfs, as the
 describes. The memory error driver is not needed to mount the root: the
 hardware regression installs and loads its own build, and a DKMS install
 ([its guide](frost-memerr/README.md)) loads it at every boot.
+
+The memory error driver also rewrites lines with corrected errors and reads
+all of memory in the background to find more; [its guide](frost-memerr/README.md)
+describes both and the hardware regression's checks.
 
 ## NFS root
 

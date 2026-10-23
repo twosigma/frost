@@ -93,17 +93,17 @@ Software sees memory errors through the memory error unit. On the X3 a
 reader polls the DDR controller's ECC registers about once a millisecond and
 passes on corrected and uncorrectable errors with their physical addresses,
 the cache hierarchy's AXI bridge passes on every error response, and Linux
-logs both and shows the counts in sysfs (`linux/frost-memerr`).
+logs both and shows the counts in sysfs (`linux/frost-memerr`). The driver
+also scrubs: it rewrites each line with a reported corrected error, so the L2
+writes the corrected data back to DDR with fresh ECC, and a background patrol
+reads all of memory, once a day by default, to find errors in data that
+nothing else reads.
 
-What remains:
-
-1. Measure the L2's two write costs on hardware, with programs running from
-   DDR, such as CoreMark-PRO and Linux, and with NIC receive traffic: a
-   32-byte write to a line the L2 lacks reads the line from DDR first, and a
-   write to the other half of a line with a read in flight waits for that
-   read and holds up the L2.
-2. Scrubbing, which rewrites corrected data so that single-bit errors do not
-   build up into uncorrectable ones.
+What remains is to measure the L2's two write costs on hardware, with
+programs running from DDR, such as CoreMark-PRO and Linux, and with NIC
+receive traffic: a 32-byte write to a line the L2 lacks reads the line from
+DDR first, and a write to the other half of a line with a read in flight
+waits for that read and holds up the L2.
 
 ## Verification
 
