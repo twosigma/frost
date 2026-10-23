@@ -1596,7 +1596,7 @@ module if_stage #(
                                                       spanning_second_half_low;
 `ifndef SYNTHESIS
   // Sampled at the clock so the check sees settled values; a valid window has
-  // the two bank selects equal (checked in cpu_top).
+  // the two bank selects equal (checked in frost_rvfi_platform).
   always_ff @(posedge i_clk) begin
     if (i_instr_valid && !$isunknown(
             {i_instr, i_instr_bank_sel_r, pc_reg[2], spanning_second_half}
