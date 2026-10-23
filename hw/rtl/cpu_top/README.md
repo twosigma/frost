@@ -2,6 +2,17 @@
 
 `cpu_top` contains the RV64 CPU pipeline, MMUs and page-table walker, L0/L1D/L1I/L2 caches, fetch buffers, coherence sequencing, machine and supervisor IMSIC files, and outgoing AXI master. It has one clock and no board memory, external interrupt controller, debug transport, DMA engine, NIC, or power controller. Compile `cpu_top.f` with `ROOT` set to the repository root. `platform_top` connects it to the FROST `soc_top`.
 
+## Internal structure
+
+`cpu_top` composes one `frost_hart` with one `frost_cluster_memory`:
+
+| Module | Contents |
+| --- | --- |
+| `frost_hart` | `cpu_ooo` with its MMUs, walker, L0 and IMSIC files; the cached and uncached instruction fetch providers; the L1D and L1I in `frost_hart_cache` with the walker's coherence sequencer, the L1D's probe injection and the `fence.i` sequence; `cached_tier_adapter`; and `cpu_uncached_adapter` |
+| `frost_cluster_memory` | The coherent ingress register; the shared level in `frost_cluster_cache`, with the line arbiters, the DMA coherence sequencer, the stream prefetcher, the line-size adapter and the L2; and `cpu_memory_fabric` with its AXI master |
+
+They connect through the L1D's, the L1I's and the walker's line ports, the DMA sequencer's probes into the L1D with their acknowledgements and releases, its load-queue handshake, and the uncached data and instruction requests. Requests and responses pass through the line arbiters and the line-size adapter without a register stage, and the boundary adds no register. `cpu_top` itself latches the fatal indication and address from the hart's caches, the L2 and the uncached adapter, and assembles the caches' performance events for the hart's counters. Each parameter passes through to the module that uses it. With `ENABLE_CACHED_TIER=0`, neither module builds its caches, and each ties off its side of the line and coherence ports.
+
 ## Clock, reset and boot
 
 All ports are synchronous to the rising edge of `i_clk`. There are no clock crossings in `cpu_top`; the integrating wrapper must synchronize external controls and interrupt levels and provide a coherent snapshot of multibit inputs.
@@ -150,20 +161,22 @@ Requests must be aligned to 32 bytes and remain within the configured cached mem
 L2 is inside this single-hart `cpu_top`. Neither the outgoing plain AXI4
 master nor this DMA-oriented ingress constitutes a complete inter-tile SMP
 coherence protocol. Two `cpu_top` instances connected to shared RAM are not
-therefore coherent. The [SMP proposal](../../../ROADMAP.md#smp) requires an
-explicit boundary refactor: private per-hart blocks connect through a
-coherent internal interface to a shared L2 and coherence logic in a cluster
-wrapper. That organization is future work; the current single-hart interface
-does not imply that L2 has already moved outside the tile.
+therefore coherent. Inside the tile, `frost_hart` holds the per-hart blocks
+and `frost_cluster_memory` the shared L2, but the link between them carries
+the single-hart protocol: line ports from the one L1D and L1I, and probes
+from the DMA sequencer into that L1D. The [SMP plan](../../../ROADMAP.md#smp)
+replaces it with a coherent interface inside the cluster, which a second
+hart needs.
 
 ## Legacy BRAM-only platform profile
 
 `ENABLE_CACHED_TIER=1` is the supported standalone integration default.
 FROST retains `ENABLE_CACHED_TIER=0` for its BRAM-only simulation profile;
-that profile instantiates no hierarchy or coherent agents and must not execute
-cached memory accesses or page-table walks. Cached data has its historical
-zero-read/no-op-write stub in that profile. External integrations should keep
-the cached tier enabled even if their boot code resides in uncached memory.
+that profile instantiates no L1 or L2 cache and no coherent agents and must
+not execute cached memory accesses or page-table walks. Cached data has its
+historical zero-read/no-op-write stub in that profile. External integrations
+should keep the cached tier enabled even if their boot code resides in
+uncached memory.
 
 ## Verification
 

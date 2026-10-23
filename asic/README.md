@@ -433,7 +433,8 @@ with the parasitics and clocks of the stage's own report, logs OpenROAD to
 | Core clock endpoints by block | The blocks whose registers have the worst core clock slack |
 | Core clock paths by start and end block | Each endpoint's worst path, grouped by the blocks of its startpoint and endpoint, with its cells and notes on ports, the quarter-rate clock, and mocked memories |
 
-A block is the first three levels of a register's instance name. The fmax
+A block is the first four levels of a register's instance name, such as
+`cpu.hart.cpu_inst.u_tomasulo` for the out-of-order back end. The fmax
 counts only paths between registers: the I/O delays are a fifth of the period
 on each side of a port, so a port's slack shrinks faster than the period. The
 tables behind the report are in `reports/nangate45/frost/base/`:

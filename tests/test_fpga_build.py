@@ -1364,9 +1364,9 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
 
     # Fetch metadata for the production CPU now comes from its two AXI-backed
     # providers. The fixed-latency presenter remains a TestRIG/unit fixture.
-    cpu_top = (REPO_ROOT / "hw/rtl/cpu_top/cpu_top.sv").read_text()
+    hart = (REPO_ROOT / "hw/rtl/cpu_top/frost_hart.sv").read_text()
     fetch_provider = (REPO_ROOT / "hw/rtl/cpu_and_mem/fetch_provider.sv").read_text()
-    assert "assign fetch_pa0_is_cached = riscv_pkg::pma_cached_ok(" in cpu_top
+    assert "assign fetch_pa0_is_cached = riscv_pkg::pma_cached_ok(" in hart
     for port, signal in (
         ("o_pc_metadata_by_parity", "fetch_metadata[1]"),
         ("o_pc_pairability_by_parity", "fetch_pairability[1]"),
@@ -1375,7 +1375,7 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
             "fetch_slot2_valid[1]",
         ),
     ):
-        assert f".{port}({signal})" in cpu_top
+        assert f".{port}({signal})" in hart
     assert "pc_metadata_by_parity_q" in fetch_provider
     assert "pc_pairability_by_parity_q" in fetch_provider
     assert "slot2_start_valid_lo_by_parity_q" in fetch_provider
@@ -2409,6 +2409,7 @@ def test_perf_counters_generic_reaches_synthesis_and_the_cpu() -> None:
         "hw/rtl/frost.sv",
         "hw/rtl/platform_top.sv",
         "hw/rtl/cpu_top/cpu_top.sv",
+        "hw/rtl/cpu_top/frost_hart.sv",
     ):
         text = (root / rel).read_text()
         assert "parameter int unsigned PERF_COUNTERS = 0" in text, rel

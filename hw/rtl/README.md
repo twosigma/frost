@@ -25,11 +25,12 @@ cache hierarchy.
 crossings, and MMIO FIFOs. `platform_top` connects the reusable
 [cpu_top](cpu_top/README.md) to the FROST [soc_top](soc_top/README.md) through
 one AXI4 master and an optional coherent-agent ingress. `cpu_top` contains the
-pipeline, MMUs, caches and memory-system logic. `soc_top` owns low BRAM,
-peripheral registers, timers/APLIC, debug transport, NIC, DMA and the DDR
-connection. `i_clk` runs the CPU and SoC logic; `i_clk_div4` runs UART and
-programming logic. The standalone CPU has only one clock; CDC belongs in its
-integrating wrapper.
+pipeline, MMUs, caches and memory-system logic, as one hart (`frost_hart`)
+and the shared L2 and AXI master below it (`frost_cluster_memory`). `soc_top`
+owns low BRAM, peripheral registers, timers/APLIC, debug transport, NIC, DMA
+and the DDR connection. `i_clk` runs the CPU and SoC logic; `i_clk_div4` runs
+UART and programming logic. The standalone CPU has only one clock; CDC
+belongs in its integrating wrapper.
 
 | Stage | Main files | Role |
 |-------|------------|------|
@@ -57,7 +58,7 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 |------|---------|
 | `frost.sv`, `frost.f` | SoC wrapper and RTL source list |
 | `platform_top.sv` | FROST CPU/SoC composition |
-| `cpu_top/` | Standalone CPU and outgoing AXI master |
+| `cpu_top/` | Standalone CPU: one hart (`frost_hart.sv`), the shared L2 and outgoing AXI master (`frost_cluster_memory.sv`), and their composition (`cpu_top.sv`) |
 | `soc_top/` | FROST memory, peripheral and debug integration |
 | `cpu_and_mem/` | Shared pipeline and platform component implementations |
 | `cpu_and_mem/imem_predecode.sv` | Low-BRAM instruction memory and predecode metadata |
@@ -73,7 +74,7 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 | `cpu_and_mem/cpu/csr/`, `control/trap_unit.sv` | Privileged state, exceptions, and interrupts |
 | `cpu_and_mem/cpu/wb_stage/generic_regfile.sv` | Integer and FP register files |
 | `cpu_and_mem/cpu/ex_stage/` | ALU, multiply/divide, FPU, and branch execution |
-| [lib/cache/](lib/cache/README.md) | Cache hierarchy, coherence, DDR bridge, and simulation DDR model |
+| [lib/cache/](lib/cache/README.md) | Cache hierarchy (a hart's L1s in `frost_hart_cache.sv`, the shared L2 level in `frost_cluster_cache.sv`), coherence, DDR bridge, and simulation DDR model |
 | `lib/` | RAM, FIFO, and clock-domain-crossing primitives |
 | [peripherals/imsic/](peripherals/imsic/README.md) | AIA IMSIC with machine and supervisor interrupt files in each CPU, with SoC MSI store decode |
 | [peripherals/nic/](peripherals/nic/README.md) | Ethernet NIC with coherent DMA |

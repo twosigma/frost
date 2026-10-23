@@ -130,10 +130,9 @@ module cpu_ooo #(
     output logic o_fence_i_sync_req,
     input logic i_fence_i_sync_done,
     output logic o_fence_i_flush,
-    // Page-table walker line port: read-only master to the
-    // hierarchy's wup port (cpu_top wires it through and zero-extends
-    // the 2-bit ids to the port's width); the walker issues one walk at a
-    // time.
+    // Page-table walker line port: read-only master to the wup port of the
+    // hart's caches (frost_hart wires it through and zero-extends the 2-bit
+    // ids to the port's width); the walker issues one walk at a time.
     output logic o_walk_line_req_valid,
     input logic i_walk_line_req_ready,
     output logic [riscv_pkg::PhysAddrBits-1:0] o_walk_line_req_addr,
@@ -178,7 +177,7 @@ module cpu_ooo #(
     output logic o_cached_read_ready,
     input logic i_cached_write_done,
     input logic i_cached_write_inflight,
-    // Single-cycle handoffs to cpu_top's variable-latency uncached adapter.
+    // Single-cycle handoffs to frost_hart's variable-latency uncached adapter.
     // Address and write data share o_data_mem_addr/o_data_mem_wr_data.
     input logic i_uncached_read_request_ready = 1'b1,
     output logic o_uncached_read_enable,

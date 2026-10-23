@@ -29,7 +29,8 @@
       hw/rtl/lib/cache/walker_coherence_sequencer.sv: the walker's entry
         (probe-clean, acknowledgement, then the shared-level read).
       hw/rtl/cpu_top/cpu_axi_master.sv: shared single-beat AXI4 transport.
-      hw/rtl/platform_top.sv + cpu_top/cpu_top.sv + soc_top/soc_top.sv: cache/bridge integration.
+      hw/rtl/platform_top.sv + cpu_top/{cpu_top,frost_hart,frost_cluster_memory}.sv
+        + soc_top/soc_top.sv: cache/bridge integration.
       hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv: one shared page-table walker.
       hw/rtl/frost.sv, boards/x3/x3_frost.sv: X3 capacities and DDR backing.
   -->

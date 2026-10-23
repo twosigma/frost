@@ -26,7 +26,7 @@ enabled. Software reaches a file through the Smaia and Ssaia CSRs: `miselect`
 and `mireg` with `mtopei` at machine level, `siselect` and `sireg` with
 `stopei` at supervisor level. The module gives each file a port for those
 CSRs, which the hart's CSR file connects to. An inter-processor interrupt is a
-store to the target hart's page. `cpu_top` owns the two files beside
+store to the target hart's page. `frost_hart` holds the two files beside
 `csr_file` in `cpu_ooo`, with 63 identities and APLIC delivery. The CSR file
 implements the Smaia and Ssaia register interface. `imsic_decode.sv` converts
 word stores into registered valid, level and identity signals per hart.
