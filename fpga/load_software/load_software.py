@@ -523,6 +523,7 @@ def validate_prebuilt_app(
             required[key] = make_vars[key]
         for key in (
             "COREMARK_PRO_TRACE",
+            "COREMARK_PRO_CACHE_COUNTERS",
             "FROST_MALLOC_DISABLE_FREE",
             "FROST_MALLOC_GUARD_FREE",
             "FROST_MALLOC_EVICT_FREE",

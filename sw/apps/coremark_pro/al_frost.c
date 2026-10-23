@@ -42,6 +42,13 @@
 #define FPGA_CPU_CLK_FREQ 30000000u
 #endif
 
+#ifndef COREMARK_PRO_CACHE_COUNTERS
+#define COREMARK_PRO_CACHE_COUNTERS 0
+#endif
+#if COREMARK_PRO_CACHE_COUNTERS
+#include "tomasulo_profile.h" /* the counter blocks and 64-bit counter reads */
+#endif
+
 static volatile int coremark_pro_error_seen;
 /* Keep trap diagnostics XLEN-wide: benchmark state includes 64-bit values and
  * cached-DDR pointers even when the default image executes from low BRAM. */
@@ -226,6 +233,75 @@ int vprintf(const char *fmt, va_list ap)
     return n;
 }
 
+#if COREMARK_PRO_CACHE_COUNTERS
+/* ========================================================================== */
+/* Cache profiling counters over MITH's timed region */
+/* With COREMARK_PRO_CACHE_COUNTERS=1 the Makefile points mith_lib.c's timer */
+/* start and stop at these wrappers, which take a profiling-counter snapshot */
+/* just outside the timed region. The cache block keeps the snapshot before */
+/* the current one, so exit() can read both ends and print each cache */
+/* counter's delta on one line (fpga/debug/cache_counters.py summarizes it): */
+/*   FROST_CACHE_COUNTERS cycles=<n> 106=<n> 107=<n> ... */
+/* ========================================================================== */
+void al_signal_start(void);
+size_t al_signal_finished(void);
+
+static uint64_t cache_counter_cycles[2];
+static unsigned int cache_counter_snapshots;
+
+static void cache_counter_snapshot(void)
+{
+    csr_write_imm(CSR_MPERFCTL, 1U);
+    if (cache_counter_snapshots < 2U) {
+        cache_counter_cycles[cache_counter_snapshots] = rdcycle64();
+    }
+    cache_counter_snapshots++;
+}
+
+void frost_coremark_pro_signal_start(void)
+{
+    cache_counter_snapshot();
+    al_signal_start();
+}
+
+size_t frost_coremark_pro_signal_finished(void)
+{
+    size_t elapsed = al_signal_finished();
+
+    cache_counter_snapshot();
+    return elapsed;
+}
+
+static void print_cache_counters(void)
+{
+    uint32_t count = (uint32_t) csr_read_imm(CSR_MPERFCOUNT);
+    uint32_t i;
+
+    if (cache_counter_snapshots != 2U) {
+        return;
+    }
+    if (count <= TOMASULO_PROFILE_LEGACY_COUNTER_COUNT) {
+        uart_puts("FROST_CACHE_COUNTERS absent\n");
+        return;
+    }
+    uart_printf("FROST_CACHE_COUNTERS cycles=%llu",
+                (unsigned long long) (cache_counter_cycles[1] - cache_counter_cycles[0]));
+    for (i = TOMASULO_PROFILE_LEGACY_COUNTER_COUNT; i < count; i++) {
+        uint64_t end;
+        uint64_t start;
+
+        csr_write_imm(CSR_MPERFSEL, i);
+        csr_write_imm(CSR_MPERFCTL, 0U);
+        end = tomasulo_profile_read_selected_counter64();
+        csr_write_imm(CSR_MPERFCTL, 2U);
+        start = tomasulo_profile_read_selected_counter64();
+        uart_printf(" %u=%llu", (unsigned) i, (unsigned long long) (end - start));
+    }
+    csr_write_imm(CSR_MPERFCTL, 0U);
+    uart_puts("\n");
+}
+#endif
+
 /* ========================================================================== */
 /* Process control: exit() / abort() */
 /* al_exit() calls exit(), which emits the UART PASS/FAIL marker and spins. */
@@ -233,6 +309,9 @@ int vprintf(const char *fmt, va_list ap)
 /* ========================================================================== */
 void exit(int code)
 {
+#if COREMARK_PRO_CACHE_COUNTERS
+    print_cache_counters();
+#endif
     uart_puts(code == 0 ? "<<PASS>>\n" : "<<FAIL>>\n");
     for (;;) {
     }

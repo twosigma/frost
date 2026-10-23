@@ -486,7 +486,8 @@ it, until the fill.
 
 [`ddr_bench`](../../../../sw/apps/ddr_bench/) times memory-bound kernels on
 cold DDR regions, among them four streams whose lines share one set of
-each cache, with the L2's slot-full and conflict stall counts per kernel.
+each cache, with the L2's slot-full and conflict stall counts and its write
+costs per kernel.
 
 ## The page-table walker port
 

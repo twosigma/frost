@@ -106,6 +106,35 @@ by default, at any clock, and the counter CSRs then read zero. The setting is
 fixed at synthesis. See the
 [counter reference](../hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/README.md).
 
+The counters are machine-mode CSRs, so Linux cannot read them.
+`debug/cache_counters.py` reads the cache counters over JTAG while anything
+runs, halting the hart through OpenOCD only to take each snapshot and read
+it. `window` takes a snapshot, runs a command or waits, then takes another
+and reads both from the cache block's two snapshot banks, and prints the
+deltas with the L2's write costs. It counts the window's cycles with the
+`time` CSR, since Linux's perf support can stop and preload `mcycle`.
+OpenOCD runs `fence.i` before each resume, which writes the L1D back and
+empties the L1I, so a window starts that way. Stop the Vivado `hw_server`
+first; `FROST_JTAG_SERIAL` selects the cable as for `debug/openocd_x3.cfg`:
+
+```bash
+./fpga/debug/cache_counters.py window -- ssh root@192.0.2.2 'dd if=/root/big of=/dev/null bs=1M'
+./fpga/debug/cache_counters.py window --seconds 30
+```
+
+An OpenOCD run stopped between its halt and its resume, by a timeout or
+Ctrl-C, can leave the hart halted; `cache_counters.py resume` resumes it.
+
+Bare-metal programs read the counters themselves. CoreMark-PRO built with
+`COREMARK_PRO_CACHE_COUNTERS=1` prints the deltas over its timed region as a
+`FROST_CACHE_COUNTERS` line, which the loader passes through from the
+environment, and `cache_counters.py summarize` reports a sweep's log:
+
+```bash
+COREMARK_PRO_CACHE_COUNTERS=1 ./fpga/sweep_coremark_pro.py --board x3 -v0 | tee sweep.log
+./fpga/debug/cache_counters.py summarize sweep.log
+```
+
 ## VS Code debugging
 
 The [FROST extension](../tools/vscode-frost/README.md) handles programming,

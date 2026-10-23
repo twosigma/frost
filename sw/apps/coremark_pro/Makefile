@@ -31,6 +31,12 @@
 # pgo_training_run off and builds the datasets and macros the EEMBC README
 # specifies.
 #
+# COREMARK_PRO_CACHE_COUNTERS=1 takes a profiling-counter snapshot at each
+# end of MITH's timed region and prints the cache counters' deltas before
+# the result marker, as one FROST_CACHE_COUNTERS line (al_frost.c). The
+# loader passes it through from the environment. It needs a core built with
+# the profiling counters, and adds code to the image.
+#
 # verify_output forces one outer iteration (mith_main_loop in mith_lib.c).
 # Size simulation runs through the preset, not the iteration count.
 #
@@ -48,6 +54,7 @@ WORKLOAD ?= core
 COREMARK_PRO_RUN_ARGS ?=
 COREMARK_PRO_OFFICIAL ?= 0
 COREMARK_PRO_TRACE ?= 0
+COREMARK_PRO_CACHE_COUNTERS ?= 0
 FROST_MALLOC_DISABLE_FREE ?= 0
 FROST_MALLOC_GUARD_FREE ?= 0
 FROST_MALLOC_EVICT_FREE ?= 0
@@ -461,7 +468,19 @@ FROST_CFLAGS := $(BASE_FLAGS) -I$(LIB_DIR)/include \
                 -DFROST_MALLOC_DISABLE_FREE=$(FROST_MALLOC_DISABLE_FREE) \
                 -DFROST_MALLOC_GUARD_FREE=$(FROST_MALLOC_GUARD_FREE) \
                 -DFROST_MALLOC_EVICT_FREE=$(FROST_MALLOC_EVICT_FREE) \
-                -DFROST_MEMORY_FENCE_WRITES=$(FROST_MEMORY_FENCE_WRITES)
+                -DFROST_MEMORY_FENCE_WRITES=$(FROST_MEMORY_FENCE_WRITES) \
+                -DCOREMARK_PRO_CACHE_COUNTERS=$(COREMARK_PRO_CACHE_COUNTERS)
+
+# The counter snapshots wrap MITH's timer start and stop: mith_lib.c alone
+# calls al_frost.c's wrappers in their place (see the mith_lib.o rule).
+ifeq ($(COREMARK_PRO_CACHE_COUNTERS),1)
+MITH_TIMER_RENAMES := -Dal_signal_start=frost_coremark_pro_signal_start \
+                      -Dal_signal_finished=frost_coremark_pro_signal_finished
+else ifeq ($(COREMARK_PRO_CACHE_COUNTERS),0)
+MITH_TIMER_RENAMES :=
+else
+$(error COREMARK_PRO_CACHE_COUNTERS must be 0 or 1)
+endif
 
 # FROST interpose: passes the chosen pgo flag and argv string (see
 # frost_mith_main.c). Hardware builds set the argv string through
@@ -578,7 +597,7 @@ DISASSEMBLY_FILE    := sw.S
 
 # Shared objects depend on this stamp, rewritten only when configuration
 # changes, so incremental builds cannot reuse another workload's defines.
-EFFECTIVE_BUILD_CONFIG = WORKLOAD=$(WORKLOAD)|WORKLOAD_SRC=$(WORKLOAD_SRC)|COREMARK_PRO_RUN_ARGS=$(COREMARK_PRO_RUN_ARGS)|COREMARK_PRO_OFFICIAL=$(COREMARK_PRO_OFFICIAL)|COREMARK_PRO_TRACE=$(COREMARK_PRO_TRACE)|FROST_MALLOC_DISABLE_FREE=$(FROST_MALLOC_DISABLE_FREE)|FROST_MALLOC_GUARD_FREE=$(FROST_MALLOC_GUARD_FREE)|FROST_MALLOC_EVICT_FREE=$(FROST_MALLOC_EVICT_FREE)|FROST_MEMORY_FENCE_WRITES=$(FROST_MEMORY_FENCE_WRITES)|CMP_DIR=$(CMP_DIR)|MEM_CONFIG=$(MEM_CONFIG)|FROST_DEBUG=$(FROST_DEBUG)|FPGA_CPU_CLK_FREQ=$(strip $(FPGA_CPU_CLK_FREQ))|FROST_DEBUG_FLAGS=$(FROST_DEBUG_FLAGS)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|ARCH=$(ARCH)|ABI=$(ABI)|BASE_FLAGS=$(BASE_FLAGS)|MITH_CFLAGS=$(MITH_CFLAGS)|FROST_CFLAGS=$(FROST_CFLAGS)|INTERPOSE_CFLAGS=$(INTERPOSE_CFLAGS)|LDFLAGS=$(LDFLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|DDR_BOOT_STUB=$(DDR_BOOT_STUB)|DDR_SPLIT_SECTIONS=$(DDR_SPLIT_SECTIONS)|ALL_MITH_SRC=$(ALL_MITH_SRC)|COMPILED_OBJS=$(COMPILED_OBJS)
+EFFECTIVE_BUILD_CONFIG = WORKLOAD=$(WORKLOAD)|WORKLOAD_SRC=$(WORKLOAD_SRC)|COREMARK_PRO_RUN_ARGS=$(COREMARK_PRO_RUN_ARGS)|COREMARK_PRO_OFFICIAL=$(COREMARK_PRO_OFFICIAL)|COREMARK_PRO_TRACE=$(COREMARK_PRO_TRACE)|COREMARK_PRO_CACHE_COUNTERS=$(COREMARK_PRO_CACHE_COUNTERS)|FROST_MALLOC_DISABLE_FREE=$(FROST_MALLOC_DISABLE_FREE)|FROST_MALLOC_GUARD_FREE=$(FROST_MALLOC_GUARD_FREE)|FROST_MALLOC_EVICT_FREE=$(FROST_MALLOC_EVICT_FREE)|FROST_MEMORY_FENCE_WRITES=$(FROST_MEMORY_FENCE_WRITES)|CMP_DIR=$(CMP_DIR)|MEM_CONFIG=$(MEM_CONFIG)|FROST_DEBUG=$(FROST_DEBUG)|FPGA_CPU_CLK_FREQ=$(strip $(FPGA_CPU_CLK_FREQ))|FROST_DEBUG_FLAGS=$(FROST_DEBUG_FLAGS)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|ARCH=$(ARCH)|ABI=$(ABI)|BASE_FLAGS=$(BASE_FLAGS)|MITH_CFLAGS=$(MITH_CFLAGS)|FROST_CFLAGS=$(FROST_CFLAGS)|INTERPOSE_CFLAGS=$(INTERPOSE_CFLAGS)|LDFLAGS=$(LDFLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|DDR_BOOT_STUB=$(DDR_BOOT_STUB)|DDR_SPLIT_SECTIONS=$(DDR_SPLIT_SECTIONS)|ALL_MITH_SRC=$(ALL_MITH_SRC)|COMPILED_OBJS=$(COMPILED_OBJS)
 shell_quote = '$(subst ','"'"',$(1))'
 
 # --- Build targets ---------------------------------------------------------
@@ -619,9 +638,11 @@ al_frost.o: al_frost.c
 # mith_lib.c: rename the harness entry mith_main() -> mith_main_real() so the
 # FROST interpose (frost_mith_main.c) can wrap it. This explicit rule overrides
 # the generic pattern for this translation unit alone, so the workload's
-# mith_main() call site still resolves to the wrapper.
+# mith_main() call site still resolves to the wrapper. MITH_TIMER_RENAMES
+# likewise routes its timer start and stop through al_frost.c's counter
+# snapshots when COREMARK_PRO_CACHE_COUNTERS=1.
 mith_lib.o: $(CMP_DIR)/mith/src/mith_lib.c
-	$(CC) $(MITH_CFLAGS) $(FROST_DEBUG_FLAGS) -Dmith_main=mith_main_real -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
+	$(CC) $(MITH_CFLAGS) $(FROST_DEBUG_FLAGS) -Dmith_main=mith_main_real $(MITH_TIMER_RENAMES) -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
 
 # The workload wrapper (WORKLOAD_SRC): rename its main() -> cmp_workload_main()
 # so the FROST main() in frost_mith_main.c can select a simulation-friendly
