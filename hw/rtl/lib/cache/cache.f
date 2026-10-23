@@ -24,7 +24,15 @@ $(ROOT)/hw/rtl/lib/cache/line_size_adapter.sv
 # Stream prefetcher: reads lines ahead of L1D miss streams into the L2.
 $(ROOT)/hw/rtl/lib/cache/l2_stream_prefetcher.sv
 
-# Cache hierarchy wrapper (L1s + walker + DMA ports + URAM L2)
+# One hart's private caches: the L1s, the walker port, and the L1D's probe
+# injection and fence.i sequencing.
+$(ROOT)/hw/rtl/lib/cache/frost_hart_cache.sv
+
+# Shared level below the hart's caches: the arbiter tree, the DMA port, the
+# stream prefetcher, and the URAM L2.
+$(ROOT)/hw/rtl/lib/cache/frost_cluster_cache.sv
+
+# Cache hierarchy wrapper: the two above as one module.
 $(ROOT)/hw/rtl/lib/cache/frost_cache_hierarchy.sv
 
 # Tagged line-port -> AXI4 master bridge, multiple outstanding (bottom of the hierarchy)

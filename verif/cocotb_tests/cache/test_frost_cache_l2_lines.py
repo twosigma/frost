@@ -205,7 +205,7 @@ class AxiMonitor:
 
 
 def _l2(dut: Any) -> Any:
-    return dut.cache_hierarchy.l2_cache
+    return dut.cache_hierarchy.cluster_cache.l2_cache
 
 
 def _l2_slots_for(dut: Any, addr: int) -> list[tuple[int, int]]:

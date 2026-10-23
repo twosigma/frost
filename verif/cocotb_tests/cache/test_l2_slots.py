@@ -113,7 +113,7 @@ async def test_l2_slot_parallelism(dut: Any) -> None:
     geom = cache_geometry(dut)
     assert geom.l2_way_bytes // geom.l2_line >= len(READERS), "a reader without a set"
     lq = LoadQueueStub(dut)
-    l2 = dut.cache_hierarchy.l2_cache
+    l2 = dut.cache_hierarchy.cluster_cache.l2_cache
     num_mshr = int(l2.NUM_MSHR.value)
     num_wb = int(l2.NUM_WB.value)
     mem_latency = int(dut.MEM_LATENCY.value)

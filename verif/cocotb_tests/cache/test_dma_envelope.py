@@ -66,7 +66,7 @@ class _PhaseSampler:
 
     def __init__(self, dut: Any) -> None:
         self._dut = dut
-        self._seq = dut.cache_hierarchy.dma_sequencer
+        self._seq = dut.cache_hierarchy.cluster_cache.dma_sequencer
         self.num_lock = int(self._seq.NUM_LOCK.value)
         self.counts = [0] * len(PHASES)
         self.l2_hits = 0

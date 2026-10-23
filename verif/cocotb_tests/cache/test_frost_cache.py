@@ -165,7 +165,7 @@ def _l2_sweeping(dut: Any) -> bool:
     No upstream ready reflects the L2 (the walker sequencer answers ready
     itself), so the bench reads the L2's maintenance state directly.
     """
-    return int(dut.cache_hierarchy.l2_cache.o_maint_busy.value) == 1
+    return int(dut.cache_hierarchy.cluster_cache.l2_cache.o_maint_busy.value) == 1
 
 
 @dataclass(frozen=True)
@@ -309,7 +309,7 @@ async def evict_l2(dut: Any, addr: int, read: Any = None) -> list[int]:
 
 def _l1d_ways_state(dut: Any, addr: int) -> list[tuple[bool, bool, int]]:
     """Return (valid, dirty, tag) of every way of addr's L1D set."""
-    l1 = dut.cache_hierarchy.l1_cache
+    l1 = dut.cache_hierarchy.hart_cache.l1_cache
     set_bits = int(l1.SetBits.value)
     tag_bits = int(l1.TagBits.value)
     index = (addr >> 5) & ((1 << set_bits) - 1)
@@ -328,7 +328,7 @@ def _l1d_ways_state(dut: Any, addr: int) -> list[tuple[bool, bool, int]]:
 
 def l1d_tag_state(dut: Any, addr: int) -> tuple[bool, bool]:
     """Return (held, dirty) for addr's line in the L1D, read from its tags."""
-    set_bits = int(dut.cache_hierarchy.l1_cache.SetBits.value)
+    set_bits = int(dut.cache_hierarchy.hart_cache.l1_cache.SetBits.value)
     expected_tag = addr >> (5 + set_bits)
     for valid, dirty, tag in _l1d_ways_state(dut, addr):
         if valid and tag == expected_tag:
@@ -360,7 +360,7 @@ def _next_victim_is(
 
 def l1d_next_victim_is(dut: Any, addr: int) -> bool:
     """Report whether a miss in addr's L1D set would now evict addr's line."""
-    l1 = dut.cache_hierarchy.l1_cache
+    l1 = dut.cache_hierarchy.hart_cache.l1_cache
     ways = int(l1.WAYS.value)
     set_bits = int(l1.SetBits.value)
     index = (addr >> 5) & ((1 << set_bits) - 1)
@@ -374,7 +374,7 @@ def _l2_ways_state(dut: Any, addr: int) -> list[tuple[bool, bool, int]]:
     Reads the packed tag rows of the L2's simulation model, unpacking them
     as sdp_packed_tag_uram packs a set's ways (READ_WORDS = WAYS).
     """
-    l2 = dut.cache_hierarchy.l2_cache
+    l2 = dut.cache_hierarchy.cluster_cache.l2_cache
     ways = int(l2.WAYS.value)
     set_bits = int(l2.SetBits.value)
     tag_bits = int(l2.TagBits.value)
@@ -415,7 +415,7 @@ def _l2_ways_state(dut: Any, addr: int) -> list[tuple[bool, bool, int]]:
 
 def l2_next_victim_is(dut: Any, addr: int) -> bool:
     """Report whether a miss in addr's L2 set would now evict addr's L2 line."""
-    l2 = dut.cache_hierarchy.l2_cache
+    l2 = dut.cache_hierarchy.cluster_cache.l2_cache
     ways = int(l2.WAYS.value)
     set_bits = int(l2.SetBits.value)
     offset_bits = int(l2.OffsetBits.value)
@@ -1260,7 +1260,7 @@ class _WritebackHazardMonitor:
         self._task = cocotb.start_soon(self._run())
 
     async def _run(self) -> None:
-        l1 = self._dut.cache_hierarchy.l1_cache
+        l1 = self._dut.cache_hierarchy.hart_cache.l1_cache
         num_mshr = int(l1.NUM_MSHR.value)
         while True:
             await FallingEdge(self._dut.i_clk)
@@ -1479,7 +1479,7 @@ async def test_no_fetch_refill_waits_for_own_writeback(dut: Any) -> None:
     )
 
 
-# fence_state_e ordinal of FENCE_L1I_REQ (frost_cache_hierarchy.sv): IDLE,
+# fence_state_e ordinal of FENCE_L1I_REQ (frost_hart_cache.sv): IDLE,
 # L1D_REQ, L1D_WAIT, L1I_REQ, ...
 FENCE_L1I_REQ = 3
 
@@ -1497,7 +1497,7 @@ async def test_fence_request_raised_again_mid_sequence(dut: Any) -> None:
     await _setup(dut)
     model = ReferenceModel()
     full = (1 << LINE_BYTES) - 1
-    hierarchy = dut.cache_hierarchy
+    hart_cache = dut.cache_hierarchy.hart_cache
     code = FENCE2_BASE + 0x20000 + 5 * LINE_BYTES
     held = FENCE2_BASE + 0x30000 + 9 * LINE_BYTES
 
@@ -1510,7 +1510,7 @@ async def test_fence_request_raised_again_mid_sequence(dut: Any) -> None:
     dut.i_fence_sync.value = 1
     for _ in range(SWEEP_TIMEOUT_CYCLES):
         await FallingEdge(dut.i_clk)
-        if int(hierarchy.fence_state_q.value) == FENCE_L1I_REQ:
+        if int(hart_cache.fence_state_q.value) == FENCE_L1I_REQ:
             break
     else:
         raise AssertionError("the fence sequence never reached its L1I phase")
@@ -1524,7 +1524,7 @@ async def test_fence_request_raised_again_mid_sequence(dut: Any) -> None:
     # The re-executed fence.i raises the request again before the old
     # sequence has finished.
     await FallingEdge(dut.i_clk)
-    assert int(hierarchy.fence_state_q.value) == FENCE_L1I_REQ, (
+    assert int(hart_cache.fence_state_q.value) == FENCE_L1I_REQ, (
         "the old sequence left its L1I phase before the request came back"
     )
     dut.i_fence_sync.value = 1
@@ -1648,7 +1648,7 @@ async def test_l2_stall_events_exclude_fence_writebacks(dut: Any) -> None:
     checks too.
     """
     await _setup(dut)
-    l2 = dut.cache_hierarchy.l2_cache
+    l2 = dut.cache_hierarchy.cluster_cache.l2_cache
     counts = _new_perf_counts()
     stop = [False]
     monitor = cocotb.start_soon(_monitor_perf_events(dut, counts, stop))

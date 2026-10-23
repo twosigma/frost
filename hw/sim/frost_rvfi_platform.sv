@@ -39,20 +39,21 @@ module frost_rvfi_platform #(
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
-    // Ways per set of the L1D, L1I, and L2 (see frost_cache_hierarchy).
+    // Ways per set of the L1D, L1I, and L2 (see frost_hart_cache and
+    // frost_cluster_cache).
     parameter int unsigned L1D_WAYS = 4,
     parameter int unsigned L1I_WAYS = 4,
     parameter int unsigned L2_WAYS = 4,
     // L1D miss-status slots, and L2 miss-status and writeback slots (see
-    // frost_cache_hierarchy).
+    // frost_hart_cache and frost_cluster_cache).
     parameter int unsigned L1D_NUM_MSHR = 8,
     parameter int unsigned L2_NUM_MSHR = 4,
     parameter int unsigned L2_NUM_WB = 2,
-    // Read waiter seats per L2 miss slot (see frost_cache_hierarchy). A
+    // Read waiter seats per L2 miss slot (see frost_cluster_cache). A
     // stream prefetch holds its slot's primary seat, so the L1D's reads of
     // both halves of the line need two.
     parameter int unsigned L2_NUM_WAITERS = 2,
-    // The L2 stream prefetcher (see frost_cache_hierarchy): 0 turns it off.
+    // The L2 stream prefetcher (see frost_cluster_cache): 0 turns it off.
     parameter int unsigned L2_PREFETCH = 1,
     parameter int unsigned L2_PREFETCH_DISTANCE = 8,
     parameter int unsigned L2_PREFETCH_INFLIGHT = 4,

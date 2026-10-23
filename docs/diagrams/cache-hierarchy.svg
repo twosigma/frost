@@ -13,9 +13,11 @@
   <!--
     Self-contained SVG; edit the text, boxes and paths directly.
     Source map (paths relative to the repository root):
-      hw/rtl/lib/cache/frost_cache_hierarchy.sv: L1s, port order, ID prefixes,
-        the adapter and the L2, production cache geometry and tag/data memory
-        selection.
+      hw/rtl/lib/cache/frost_hart_cache.sv: the L1s, their tag/data memory
+        selection, and the probe injection shared by the two sequencers.
+      hw/rtl/lib/cache/frost_cluster_cache.sv: port order, ID prefixes, the
+        adapter and the L2, and its tag/data memory selection.
+      hw/rtl/lib/cache/frost_cache_hierarchy.sv: the two above as one module.
       hw/rtl/lib/cache/line_size_adapter.sv: 32-byte requests as halves of
         64-byte L2 lines.
       hw/rtl/lib/cache/l2_stream_prefetcher.sv: reads ahead of L1D miss

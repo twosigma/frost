@@ -14,7 +14,9 @@ still dirty in the L1D, and software never flushes a cache for them.
 | File | Role |
 |------|------|
 | `frost_cache.sv` | The line cache, used at every level; the L1D instance also takes per-line coherence probes |
-| `frost_cache_hierarchy.sv` | L1D, walker, L1I, and DMA ports and the stream prefetcher over the arbiter tree, the two coherence sequencers sharing one probe path into the L1D, the L2, and `fence.i` sequencing |
+| `frost_hart_cache.sv` | One hart's private caches: the L1D and the L1I, the walker port's coherence sequencer, the probe injection register that the walker and DMA probes share into the L1D, and `fence.i` sequencing |
+| `frost_cluster_cache.sv` | The shared level: the L1D, walker, L1I, and DMA ports and the stream prefetcher over the arbiter tree, the DMA coherence sequencer, the line-size adapter, and the L2 |
+| `frost_cache_hierarchy.sv` | The two above as one module |
 | `line_size_adapter.sv` | Places each L1-line request in its sector of a wider L2 line and returns that sector of the response; an outstanding-transaction table holds each request's sector by id |
 | `line_port_arbiter.sv` | N:1 tagged arbiter: fixed priority by port index, optional starvation bound, port index prefixed to ids |
 | `dma_coherence_sequencer.sv` | Takes each DMA request through the L1D, and each DMA write through the load queue as well, before it reaches the L2 |
@@ -249,8 +251,8 @@ pipeline stage is empty:
   replacement state per cycle (128 cycles in the L1I). It discards dirty
   data, so only the read-only L1I uses it.
 
-The hierarchy runs them in order: the L1D writes back first, then the L1I
-invalidates, so an instruction fill racing the sequence cannot leave
+`frost_hart_cache` runs them in order: the L1D writes back first, then the
+L1I invalidates, so an instruction fill racing the sequence cannot leave
 pre-writeback data in the freshly invalidated L1I. The L2 needs no
 maintenance: it sits below both L1s, so everything the L1D writes back is
 visible to L1I fills.
@@ -272,10 +274,17 @@ sets with dirty lines, with the same functional effect.
 
 ## The hierarchy
 
-`frost_cache_hierarchy` puts the L1D, walker, L1I, and DMA ports and the
-stream prefetcher over one arbiter tree into the L2, through the line-size
-adapter. The L2 is the ordering point for all traffic below the L1s and
-drives the AXI bridge.
+The hierarchy has two parts. `frost_hart_cache` holds one hart's private
+caches: the L1D, the L1I, the walker port's coherence sequencer, and the
+probe injection register in front of the L1D. `frost_cluster_cache` holds
+the shared level, which puts the L1D's, the walker's, the L1I's, and the DMA
+port's traffic and the stream prefetcher's reads over one arbiter tree into
+the L2, through the line-size adapter. The L2 is the ordering point for all
+traffic below the L1s and drives the AXI bridge. The parts connect through
+the L1D's, the L1I's, and the walker sequencer's line ports and the DMA
+sequencer's probes into the L1D. The arbiters and the adapter are
+combinational, so the boundary between the parts adds no cycle.
+`frost_cache_hierarchy` composes the two parts as one module.
 
 [![FROST cache hierarchy: L1D, walker, L1I and DMA arbitration through the line-size adapter into the L2 and DDR, each of the walker and DMA ports entering through its own coherence sequencer](../../../../docs/diagrams/cache-hierarchy.svg)](../../../../docs/diagrams/cache-hierarchy.svg)
 

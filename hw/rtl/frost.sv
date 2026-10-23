@@ -59,7 +59,7 @@ module frost #(
     parameter int unsigned L2_NUM_MSHR = 4,
     parameter int unsigned L2_NUM_WB = 2,
     // Read waiter seats per L2 miss slot, and the L2 stream prefetcher (see
-    // frost_cache_hierarchy): 0 turns the prefetcher off.
+    // frost_cluster_cache): 0 turns the prefetcher off.
     parameter int unsigned L2_NUM_WAITERS = 2,
     parameter int unsigned L2_PREFETCH = 1,
     parameter int unsigned L2_PREFETCH_DISTANCE = 8,
