@@ -489,6 +489,8 @@ else ifeq ($(TOPLEVEL),imem_predecode)
 # Low-BRAM instruction/predecode bank, scalar overlay, and fallback unit bench
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram_init.sv \
+        $(ROOT)/hw/rtl/lib/ram/sdp_block_ram_dc_init.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),low_bram_fetch_presenter)

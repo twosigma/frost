@@ -10,7 +10,8 @@ process, so the flow shows that the RTL maps onto standard cells and SRAM
 macros and estimates its area and timing. It does not replace a foundry flow.
 
 The memories behind the RAM wrappers in
-[`hw/rtl/lib/ram`](../hw/rtl/lib/ram) are dual-port SRAM macros that
+[`hw/rtl/lib/ram`](../hw/rtl/lib/ram), apart from the instruction memory's,
+are dual-port SRAM macros that
 [OpenRAM](https://github.com/VLSIDA/OpenRAM) generates for FreePDK45: the
 caches' data, the L1D's and the L2's tags, the data memory, the NIC's FIFOs,
 and the BTB's slot-2 payload tables ([SRAM macros](#sram-macros)). The L2
@@ -18,8 +19,8 @@ holds 256 KiB, where the X3's holds 2 MiB, so that the flow fits CI's
 runners ([CI](#ci)). Arrays of 4,096 bits or less, such as the L1I's tags
 and the caches' replacement state, become flip-flops. The other
 memories larger than 4,096 bits are mocked: each keeps a single row, built
-from flip-flops. They are the instruction memory, which infers its own
-arrays in `imem_predecode.sv`; the NIC's frame and packet buffers, which the
+from flip-flops. They are the instruction memory, whose wrappers keep
+behavioral arrays here; the NIC's frame and packet buffers, which the
 NIC infers; and the arrays read without a clock, such as the BTB tags, the
 TAGE tables, and banks of the ROB and the INT RS, which an ASIC would build
 from flip-flops or latches rather than SRAM. Their area and the paths through
@@ -118,9 +119,10 @@ memory of more than 4,096 bits whose depth and width are multiples of a
 macro's, with write-mask lanes that the macro can build, becomes a grid of
 that macro: its high address bits select a row of macros, and each column
 holds a slice of the word. Other memories stay behavioral arrays, which
-synthesis builds from flip-flops, or mocks above 4,096 bits. Without the
-define, the wrappers' code is unchanged, and the FPGA build and the other
-simulations never read these modules.
+synthesis builds from flip-flops, or mocks above 4,096 bits. The instruction
+memory's wrappers, `sdp_block_ram_dc_init` and `sdp_dist_ram_init`, always
+keep behavioral arrays. Without the define, the wrappers' code is unchanged,
+and the FPGA build and the other simulations never read these modules.
 
 | Macro | Words x bits | Write mask | Size (um) | Read (ns) | Minimum period (ns) | Instances | Memories |
 | --- | --- | --- | --- | ---: | ---: | ---: | --- |

@@ -247,7 +247,7 @@ def _check_offline_init_replica(words: list[int]) -> None:
                 )
 
 
-# Block-RAM images per parity bank: (imem_predecode array suffix, generator
+# Block-RAM images per parity bank: (imem_predecode bank suffix, generator
 # option suffix).
 BLOCK_RAM_IMAGES = (
     ("cold", "cold"),
@@ -306,21 +306,21 @@ def _check_rtl_images_match_generator(dut: Any, words: list[int]) -> None:
     overlay_rows = OVERLAY_WORD_COUNT // 2
     for parity in ("even", "odd"):
         for row in range(len(words) // 2):
-            for array_suffix, image in BLOCK_RAM_IMAGES:
-                got = int(getattr(dut, f"memory_{parity}_{array_suffix}")[row].value)
+            for bank_suffix, image in BLOCK_RAM_IMAGES:
+                bank = f"u_{parity}_{bank_suffix}"
+                got = int(getattr(dut, bank).ram[row].value)
                 want = images[f"{parity}-{image}"][row]
                 assert got == want, (
-                    f"memory_{parity}_{array_suffix}[{row}] = 0x{got:x}, "
-                    f"generator image 0x{want:x}"
+                    f"{bank}.ram[{row}] = 0x{got:x}, generator image 0x{want:x}"
                 )
             if row >= overlay_rows:
                 continue
             for name in SCALAR_REPLICA_BITS:
                 bank = f"u_{parity}_{name}_bank"
-                got = int(getattr(dut, bank).memory[row].value)
+                got = int(getattr(dut, bank).u_ram.ram[row].value)
                 want = images[f"{parity}-{name.replace('_', '-')}"][row]
                 assert got == want, (
-                    f"{bank}.memory[{row}] = {got}, generator image {want}"
+                    f"{bank}.u_ram.ram[{row}] = {got}, generator image {want}"
                 )
 
 

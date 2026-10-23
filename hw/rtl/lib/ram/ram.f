@@ -9,11 +9,19 @@ $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram.sv
 # One-hot-read-select variant of mwp_dist_ram (LVT select from a one-hot read address)
 $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
 
+# Simple dual-port distributed RAM with an optional initial image (the
+# instruction memory's PC-metadata overlays)
+$(ROOT)/hw/rtl/lib/ram/sdp_dist_ram_init.sv
+
 # Simple dual-port block RAM (sync read, sync write)
 $(ROOT)/hw/rtl/lib/ram/sdp_block_ram.sv
 
 # Dual-clock simple dual-port block RAM (for clock domain crossing)
 $(ROOT)/hw/rtl/lib/ram/sdp_block_ram_dc.sv
+
+# Dual-clock simple dual-port block RAM with a read enable and an optional
+# initial image (the instruction memory's banks)
+$(ROOT)/hw/rtl/lib/ram/sdp_block_ram_dc_init.sv
 
 # True dual-port block RAM with dual clocks and byte enables
 $(ROOT)/hw/rtl/lib/ram/tdp_bram_dc_byte_en.sv
