@@ -114,7 +114,7 @@ SIM_MAX_TEST_CASES = 5000
 # Per-test simulation timeout in seconds; FROST_ARCH_SIM_TIMEOUT_SEC overrides it.
 # This and the cycle budget in run_simulation cover the largest tests, the
 # fused multiply-add *_b1 sets that --no-sim-filter adds, in the ddr tier.
-ARCH_SIM_TIMEOUT_SEC = int(os.environ.get("FROST_ARCH_SIM_TIMEOUT_SEC", "12600"))
+ARCH_SIM_TIMEOUT_SEC = int(os.environ.get("FROST_ARCH_SIM_TIMEOUT_SEC", "3600"))
 
 # --mem-config sets the Makefile's MEM_CONFIG, selecting linker script and crt0.
 #   bram   - code, data, and signature in low BRAM (pure ISA conformance).
@@ -308,7 +308,7 @@ def run_simulation(
     # The boot stub uses 256 KiB low BRAM. MEM_CONFIG selects which test
     # sections the DDR model preloads from sw_ddr.mem; see MEMORY_CONFIGS.
     sim_build_dir = runner._get_sim_build_dir(env)
-    env["COCOTB_MAX_CYCLES"] = "50000000"
+    env["COCOTB_MAX_CYCLES"] = "10000000"
     SIGNATURE_FILE.unlink(missing_ok=True)
     address, length = signature_location(ARCH_TEST_APP_DIR / "sw.elf")
     env["FROST_ARCH_SIGNATURE"] = f"{address:#x}:{length:#x}"

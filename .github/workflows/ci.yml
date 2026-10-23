@@ -393,40 +393,32 @@ jobs:
             tests/net10g/sim_build/synthesis/summary.json
             tests/net10g/sim_build/synthesis/synthesis.ys
 
-  # Architecture tests by extension: bram puts code, data, and signatures in low
-  # BRAM; ddr puts them in cached DDR to exercise instruction and data caches.
+  # Architecture tests: bram puts code, data, and signatures in low BRAM; ddr
+  # puts them in cached DDR to exercise instruction and data caches. Each job
+  # runs a group of extensions in one tier, at most about an hour of tests.
   # Local-only ``icache`` (code in DDR, data/signature in BRAM) isolates fetch;
   # it is diagnostic, not a compliance target.
   test-arch-compliance:
-    name: Arch Tests (${{ matrix.extension }} / ${{ matrix.mem_config }}${{ matrix.shard && format(' / {0}', matrix.shard) || '' }})
+    name: Arch Tests (${{ matrix.extensions }} / ${{ matrix.mem_config }}${{ matrix.shard && format(' / {0}', matrix.shard) || '' }})
     runs-on: ubuntu-26.04
-    # Headroom beyond per-test timeouts for slow extension batches.
-    timeout-minutes: 300
+    timeout-minutes: 120
     needs: build-docker
     strategy:
       fail-fast: false
       matrix:
         # Zcf is RV32-only; its C.FLW/C.FSW slots encode C.LD/C.SD on RV64.
-        # F and D run only in the shards below.
-        extension: [I, M, A, C, B, K, Zicond, Zifencei, privilege, D_Zcd, hints]
-        mem_config: [bram, ddr]
         # Zifencei self-modifying code needs cached DDR. Low BRAM is Harvard:
         # stores cannot update instruction BRAM, and fence.i only maintains the
-        # cached tier.
-        exclude:
-          - extension: Zifencei
-            mem_config: bram
-        # F and D use BRAM shards (--shard K/N); DDR batches exceed runner budgets.
+        # cached tier. F and D run only in BRAM, split by --shard K/N, and
+        # without coverage (tests/README.md#coverage).
         include:
-          - {extension: F, mem_config: bram, shard: 1/4}
-          - {extension: F, mem_config: bram, shard: 2/4}
-          - {extension: F, mem_config: bram, shard: 3/4}
-          - {extension: F, mem_config: bram, shard: 4/4}
-          - {extension: D, mem_config: bram, shard: 1/5}
-          - {extension: D, mem_config: bram, shard: 2/5}
-          - {extension: D, mem_config: bram, shard: 3/5}
-          - {extension: D, mem_config: bram, shard: 4/5}
-          - {extension: D, mem_config: bram, shard: 5/5}
+          - {extensions: I B C, mem_config: bram, coverage: 1}
+          - {extensions: M A K Zicond privilege D_Zcd hints, mem_config: bram, coverage: 1}
+          - {extensions: I M hints, mem_config: ddr, coverage: 1}
+          - {extensions: B C A K Zicond Zifencei privilege D_Zcd, mem_config: ddr, coverage: 1}
+          - {extensions: F D, mem_config: bram, shard: 1/3, coverage: 0}
+          - {extensions: F D, mem_config: bram, shard: 2/3, coverage: 0}
+          - {extensions: F D, mem_config: bram, shard: 3/3, coverage: 0}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -444,30 +436,32 @@ jobs:
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
 
-      - name: Run arch compliance tests (${{ matrix.extension }} / ${{ matrix.mem_config }}${{ matrix.shard && format(' / {0}', matrix.shard) || '' }})
+      - name: Run arch compliance tests (${{ matrix.extensions }} / ${{ matrix.mem_config }}${{ matrix.shard && format(' / {0}', matrix.shard) || '' }})
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
-          # Every extension but the F and D shards collects line coverage and
-          # the cover points (tests/README.md#coverage).
-          FROST_COVERAGE: ${{ !matrix.shard && '1' || '0' }}
-        # Bound each F/D test to one hour; the runner default allows longer DDR runs.
+          # Line coverage and the cover points (tests/README.md#coverage).
+          FROST_COVERAGE: ${{ matrix.coverage }}
+          # Fail a hung test after 20 minutes, well before the job timeout.
+          FROST_ARCH_SIM_TIMEOUT_SEC: "1200"
         run: |
-          docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_COVERAGE \
-            ${{ matrix.shard && '-e FROST_ARCH_SIM_TIMEOUT_SEC=3600' || '' }} \
+          docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_COVERAGE -e FROST_ARCH_SIM_TIMEOUT_SEC \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            python3 tests/test_arch_compliance.py --extensions ${{ matrix.extension }} \
+            python3 tests/test_arch_compliance.py --extensions ${{ matrix.extensions }} \
               --mem-config ${{ matrix.mem_config }} \
               ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
 
       - name: Merge the job's coverage
-        if: ${{ !cancelled() && !matrix.shard }}
+        if: ${{ !cancelled() && matrix.coverage == 1 }}
+        env:
+          COVERAGE_NAME: arch ${{ matrix.extensions }} ${{ matrix.mem_config }}
         run: |
+          name=$(printf '%s' "$COVERAGE_NAME" | tr -cs 'A-Za-z0-9' '_')
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/coverage_report.py merge tests/coverage \
-              --output coverage-job/arch_${{ matrix.extension }}_${{ matrix.mem_config }}.dat
+              --output "coverage-job/$name.dat"
 
       - name: Upload the job's coverage
-        if: ${{ !cancelled() && !matrix.shard }}
+        if: ${{ !cancelled() && matrix.coverage == 1 }}
         uses: actions/upload-artifact@v7.0.1
         with:
           name: coverage-job-${{ github.job }}-${{ strategy.job-index }}
