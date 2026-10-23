@@ -161,7 +161,7 @@ exclusions in the runner define the exact set.
 ./scripts/frost.py run python3 tests/test_arch_compliance.py --test rv64i_m/I/src/addw-01.S
 ./scripts/frost.py run python3 tests/test_arch_compliance.py --test rv32i_m/F/src/fadd_b1-01.S
 ./scripts/frost.py run python3 tests/test_arch_compliance.py --extensions I --mem-config icache
-./scripts/frost.py run python3 tests/test_arch_compliance.py --extensions F --mem-config bram --shard 1/4
+./scripts/frost.py run python3 tests/test_arch_compliance.py --extensions F D --mem-config bram --shard 1/3
 ```
 
 | Memory tier | Code | Data and signature |
@@ -181,16 +181,18 @@ fails; `sw/apps/arch_test/generate_references.py`, run in the frost image,
 generates references with the pinned Spike.
 
 CI skips Zifencei in BRAM, because ordinary stores cannot reach the separate
-instruction BRAM, and F and D in DDR, to fit the runner time budget; the BRAM
-jobs cover FPU conformance, split into shards. The F and D tests that do not
-fit low BRAM (the larger `*_b8` and `*_b9` arithmetic sets) and those above
-5,000 cases (the `*_b1` fused multiply-adds and the `*_b11` adds and
-subtracts) therefore run only locally, for example with
+instruction BRAM, and F and D in DDR, to save runner time; the BRAM jobs
+cover FPU conformance. The F and D tests that do not fit low BRAM (the larger
+`*_b8` and `*_b9` arithmetic sets) and those above 5,000 cases (the `*_b1`
+fused multiply-adds and the `*_b11` adds and subtracts) therefore run only
+locally, for example with
 `--test rv32i_m/F/src/fmadd_b1-01.S --mem-config ddr`. `icache` runs only
-locally. F uses four BRAM shards and D uses five, with
-`FROST_ARCH_SIM_TIMEOUT_SEC=3600` allowing one hour per test; the runner's
-default limit is sized for the largest tests in DDR. I, C, and B retain
-unsharded BRAM jobs and collect line coverage and cover points.
+locally. Each CI job runs a group of extensions in one tier, and three jobs
+share F and D through `--shard K/3`, so that no job runs much longer than an
+hour. `FROST_ARCH_SIM_TIMEOUT_SEC=1200` fails a hung test there after 20
+minutes; the runner's default limit of an hour is sized for the largest
+tests in DDR. The F and D jobs run without coverage, and the others collect
+line coverage and cover points.
 
 In many of the pinned F and D sources, most `NAN_BOXED` data constants run
 the intended hex value together with its own decimal digits, less the first:
@@ -446,7 +448,7 @@ pinned Docker image, except the ASIC flow, which runs in its own image:
 | Cocotb applications | BRAM and DDR where supported; each CoreMark-PRO workload runs separately |
 | Cocotb unit benches, DDR probes, fetch fuzzers, programs on the SRAM macros, OpenSBI smoke | BRAM only: tier-independent or fixed-layout runs |
 | Physical address apertures | Software boundary, fetch, translation, DMA, and NIC checks at 1, 64, and 128 GiB; generic synthesis at 1 and 128 GiB |
-| Architecture compliance | BRAM and DDR; excludes Zifencei on BRAM and F/D on DDR; F uses four BRAM shards and D uses five, without coverage; other extensions collect coverage |
+| Architecture compliance | BRAM and DDR, in groups of extensions; excludes Zifencei on BRAM and F/D on DDR; F and D share three BRAM shards without coverage; the other groups collect coverage |
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both |
 | Torture | BRAM, DDR, and paged DDR |
 | TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples |
@@ -468,7 +470,7 @@ matrix index. A failing test's output names the draw, and rerunning the job
 repeats it.
 
 The simulating jobs build with `FROST_COVERAGE=1`, except the CoreMark-PRO
-workloads, the F and D architecture-test shards, and the riscv-tests
+workloads, the F and D architecture-test jobs, and the riscv-tests
 benchmarks: long runs of compute code, which line coverage would slow by about
 a third while adding little that the other jobs miss. The unit-bench job also
 sets `FROST_COVERAGE_TOGGLE=1`. Toggle coverage stays out of the whole-SoC
