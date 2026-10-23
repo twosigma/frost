@@ -985,10 +985,14 @@ module soc_top #(
   )));
   wire [riscv_pkg::PhysAddrBits-1:0] local_lane_addr = local_line ?
       {local_addr[riscv_pkg::PhysAddrBits-1:5], local_dword_q, 3'b0} : local_addr;
-  assign data_memory_address = fast_bram_fire ? local_req_addr : local_lane_addr;
+  // A fast BRAM access is accepted only in state 0 and a staged access runs
+  // only in state 4, so the state alone selects the payload; the enables
+  // still decide whether anything is read or written.
+  wire use_incoming_payload = local_state_q == 0;
+  assign data_memory_address = use_incoming_payload ? local_req_addr : local_lane_addr;
   // Existing register files take replicated word writes; AXI permits the
   // unused lanes to be arbitrary, so reconstruct that view at this boundary.
-  assign data_memory_write_data = fast_bram_fire ? local_req_wdata[63:0] :
+  assign data_memory_write_data = use_incoming_payload ? local_req_wdata[63:0] :
       (local_device && local_size <= 2) ?
       {2{local_addr[2] ? local_wdata[63:32] : local_wdata[31:0]}} : local_wdata;
   assign data_memory_byte_write_enable = fast_bram_fire && local_req_write ?
@@ -1018,7 +1022,7 @@ module soc_top #(
   // late AXI arbitration off a byte-mux/reduction chain into the CDC FIFO.
   assign dbg_bram_store = (fast_bram_store && (|local_req_wstrb)) ||
       (staged_bram_store && (|local_wstrb));
-  assign dbg_bram_store_addr = fast_bram_store ? local_req_addr[31:0] : local_addr[31:0];
+  assign dbg_bram_store_addr = use_incoming_payload ? local_req_addr[31:0] : local_addr[31:0];
   assign dbg_bram_store_strb = data_memory_bram_byte_write_enable;
 
 `ifndef SYNTHESIS
