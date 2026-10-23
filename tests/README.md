@@ -422,7 +422,7 @@ all of them.
 | `frost_cache` | `cover_writeback_takes_starvation_turn` | A writeback takes the request register from a pending fill on its starvation turn |
 | `frost_cache` | `cover_fill_withheld_by_probe` | A held PROBE_INVAL withholds the fill of a miss on its line (the L1D) |
 | `frost_cache` | `cover_probe_waits_for_writeback` | A probe waits for a writeback of its line (the L1D) |
-| `frost_cache_hierarchy` | `cover_demand_read_meets_prefetch` | An L1D read reaches the L2 while the prefetcher's read of the same L2 line is outstanding |
+| `frost_cluster_cache` | `cover_demand_read_meets_prefetch` | An L1D read reaches the L2 while the prefetcher's read of the same L2 line is outstanding |
 | `line_port_arbiter` | `cover_starved_port_granted` | A port that waited through the starvation limit wins over a request of higher priority |
 
 Only the load queue's unit bench reaches two of them, because the whole SoC

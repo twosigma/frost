@@ -44,8 +44,9 @@
       hw/rtl/cpu_and_mem/cpu/mmu/{immu,dmmu}.sv: ITLB/DTLB integration.
       hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv: L0 geometry.
       hw/rtl/platform_top.sv + cpu_top/cpu_top.sv + soc_top/soc_top.sv: fetch buffer, memory, MMIO, debug.
-      hw/rtl/lib/cache/frost_cache_hierarchy.sv: D > walker > I > DMA tree
-        and L2; {dma,walker}_coherence_sequencer.sv: the two probing entries.
+      hw/rtl/lib/cache/frost_{hart,cluster}_cache.sv: the L1s, then the
+        D > walker > I > DMA tree and L2; {dma,walker}_coherence_sequencer.sv:
+        the two probing entries.
       hw/rtl/peripherals/nic/nic_top.sv: the NIC's register window, rings,
         DMA front and interrupt.
       hw/rtl/frost.sv, boards/{xilinx_frost_subsystem,x3/x3_frost}.sv:

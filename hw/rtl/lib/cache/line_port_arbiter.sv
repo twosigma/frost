@@ -21,7 +21,7 @@
  * Every port speaks the tagged line protocol ("Line protocol" in
  * hw/rtl/lib/cache/README.md). Fixed priority by port index: port 0 wins
  * whenever it is requesting, port 1 when port 0 is not, and so on.
- * frost_cache_hierarchy composes a 2:1 instance (walker over L1I) under a
+ * frost_cluster_cache composes a 2:1 instance (walker over L1I) under a
  * starvation-bounded 3:1 instance (L1D, then that pair, then DMA).
  *
  * The downstream id is {port index, upstream id}, so responses are steered

@@ -421,7 +421,7 @@ async def test_set_conflict(dut: Any) -> None:
     await _setup(dut)
     col = _Collector(dut, "up")
     model = ReferenceModel()
-    l1 = dut.cache_hierarchy.l1_cache
+    l1 = dut.cache_hierarchy.hart_cache.l1_cache
     ways = cache_geometry(dut).l1d_ways
     # 1 KiB apart: one L1 set at any number of ways.
     lines = [CONFLICT_BASE + 6 * LINE_BYTES + n * 1024 for n in range(ways + 1)]
@@ -700,7 +700,7 @@ async def test_writeback_wins_within_bound_under_fill_stream(dut: Any) -> None:
     await _setup(dut)
     col = _Collector(dut, "up")
     model = ReferenceModel()
-    cache = dut.cache_hierarchy.l2_cache
+    cache = dut.cache_hierarchy.cluster_cache.l2_cache
 
     a = STARVE_BASE + 7 * LINE_BYTES
     v0 = _line_int(bytes([(0xA5 + b) & 0xFF for b in range(32)]))
@@ -798,7 +798,7 @@ async def test_writeback_slots_take_turns_under_dirty_victim_stream(dut: Any) ->
     Read every line back after the hierarchy drains.
     """
     await _setup(dut)
-    cache = dut.cache_hierarchy.l2_cache
+    cache = dut.cache_hierarchy.cluster_cache.l2_cache
     if int(cache.NUM_WB.value) != 2:
         dut._log.info("skipped: the bench drives exactly two writeback slots")
         return
@@ -912,10 +912,10 @@ async def test_fill_slots_take_turns_under_recycled_misses(dut: Any) -> None:
     at least one acceptance, then fire within the bound.
     """
     await _setup(dut)
-    cache = dut.cache_hierarchy.l2_cache
+    cache = dut.cache_hierarchy.cluster_cache.l2_cache
     num_mshr = int(cache.NUM_MSHR.value)
     l2_line = int(cache.LINE_BYTES.value)
-    l1d_mshr = int(dut.cache_hierarchy.l1_cache.NUM_MSHR.value)
+    l1d_mshr = int(dut.cache_hierarchy.hart_cache.l1_cache.NUM_MSHR.value)
     if num_mshr > l1d_mshr:
         dut._log.info(
             f"skipped: the L1D's {l1d_mshr} miss slots cannot hold {num_mshr - 1} "
@@ -1007,7 +1007,7 @@ async def test_l2_fill_tag_install_races_resident_lookup(dut: Any) -> None:
     spanning that install must be discarded and retried to avoid a duplicate
     miss. Require two misses (allocation and waiter) and one hit (retry).
     """
-    seats = int(dut.cache_hierarchy.l2_cache.NUM_WAITERS.value)
+    seats = int(dut.cache_hierarchy.cluster_cache.l2_cache.NUM_WAITERS.value)
     if seats > 1:
         dut._log.info(f"skipped: with {seats} L2 waiter seats all three reads attach")
         return

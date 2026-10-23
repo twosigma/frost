@@ -1462,7 +1462,7 @@ package riscv_pkg;
   // The optional read-cache policy defaults to 2 KiB of clean data.
   localparam int unsigned NormalLqL0Depth = 256;
 
-  // DMA sequencer lock count (frost_cache_hierarchy NUM_DMA_LOCK), mirrored
+  // DMA sequencer lock count (frost_cluster_cache NUM_DMA_LOCK), mirrored
   // by lq_coherence_port. A write holds a lock from admission until the
   // shared cache level orders it.
   localparam int unsigned DmaCoherenceLocks = 3;

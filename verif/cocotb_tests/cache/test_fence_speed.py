@@ -78,7 +78,7 @@ async def _setup(dut: Any) -> None:
         if (
             int(dut.o_up_req_ready.value) == 1
             and int(dut.o_iup_req_ready.value) == 1
-            and int(dut.cache_hierarchy.l2_cache.o_maint_busy.value) == 0
+            and int(dut.cache_hierarchy.cluster_cache.l2_cache.o_maint_busy.value) == 0
         ):
             return
     raise AssertionError("cache never became ready after reset (sweep stuck?)")

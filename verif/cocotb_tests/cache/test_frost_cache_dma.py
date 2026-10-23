@@ -329,7 +329,7 @@ async def test_lock_serves_post_write_line_to_racing_miss(dut: Any) -> None:
     read_task = cocotb.start_soon(_line_transaction(dut, write=False, addr=addr))
     for _ in range(RESP_TIMEOUT_CYCLES):
         await FallingEdge(dut.i_clk)
-        if int(dut.cache_hierarchy.l1_cache.mshr_fill_held.value) != 0:
+        if int(dut.cache_hierarchy.hart_cache.l1_cache.mshr_fill_held.value) != 0:
             blocked_seen = True
         if read_task.done():
             break

@@ -16,8 +16,8 @@
 
 /*
  * cached_tier_adapter: converts the data-memory request router's 64-bit beats
- * into line requests on the cache hierarchy's upstream port
- * (frost_cache_hierarchy).
+ * into line requests on the data-side upstream port of the hart's caches
+ * (frost_hart_cache).
  *
  * The router side moves one MemDataBits beat per transaction with MemStrbBits
  * byte strobes, as defined under "Data-tier bus contract" in hw/rtl/README.md.
