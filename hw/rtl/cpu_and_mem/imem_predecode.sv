@@ -16,11 +16,12 @@
 
 
 /*
- * LUTRAM overlay of one IMEM predicate for one parity bank. The default
- * range is [0, 64 KiB). Its registered output matches the BRAM read latency
- * and enable hold. Outside the overlay, it captures a predicate redecoded
- * from the previous BRAM response; the caller repeats the request
- * (imem_predecode withholds ready until the predicates line up).
+ * LUTRAM overlay of one IMEM predicate for one parity bank, in an
+ * sdp_dist_ram_init. The default range is [0, 64 KiB). Its registered output
+ * matches the BRAM read latency and enable hold. Outside the overlay, it
+ * captures a predicate redecoded from the previous BRAM response; the caller
+ * repeats the request (imem_predecode withholds ready until the predicates
+ * line up).
  *
  * keep_hierarchy preserves independently placeable copies. All banks use the
  * same staged programming writes. The parent withholds fetch readiness around
@@ -64,46 +65,52 @@ module imem_sideband_scalar_bank #(
     sideband_bit_from_word = sideband[SIDEBAND_BIT];
   endfunction
 
-  // Declare the element as a packed [0:0] vector rather than a scalar: Vivado
-  // rejects $readmemh on a memory of unpacked scalar elements.
-  /* verilator lint_off MULTIDRIVEN */
-  (* ram_style = "distributed" *) logic [0:0] memory[BankDepth];
-  /* verilator lint_on MULTIDRIVEN */
+  // Vivado loads the bank's image (BANK_INIT_FILE); simulation fills the
+  // array from INIT_FILE below, and Yosys leaves it without initial contents.
+`ifdef FROST_VIVADO_SYNTH
+  localparam bit LoadBankImage = USE_INIT_FILE;
+`else
+  localparam bit LoadBankImage = 1'b0;
+`endif
+
+  // Writes outside the overlay are ignored.
+  logic [0:0] memory_read_data;
+  sdp_dist_ram_init #(
+      .ADDR_WIDTH(STORAGE_ADDR_WIDTH),
+      .DATA_WIDTH(1),
+      .USE_INIT_FILE(LoadBankImage),
+      .INIT_FILE(BANK_INIT_FILE)
+  ) u_ram (
+      .i_clk(i_write_clk),
+      .i_write_enable(i_write_enable && ((i_write_address >> STORAGE_ADDR_WIDTH) == '0)),
+      .i_write_address(i_write_address[STORAGE_ADDR_WIDTH-1:0]),
+      .i_read_address(i_read_address[STORAGE_ADDR_WIDTH-1:0]),
+      .i_write_data(i_write_data),
+      .o_read_data(memory_read_data)
+  );
 
 `ifndef YOSYS
 `ifndef FROST_VIVADO_SYNTH
   logic [31:0] init_mem[FullDepth];
-`endif
   initial begin
     if (USE_INIT_FILE) begin
-`ifdef FROST_VIVADO_SYNTH
-      $readmemh(BANK_INIT_FILE, memory, 0, BankDepth - 1);
-`else
       $readmemh(INIT_FILE, init_mem);
       for (int i = 0; i < BankDepth; i++) begin
-        memory[i][0] = sideband_bit_from_word(init_mem[2*i+IS_ODD_BANK]);
+        u_ram.ram[i][0] = sideband_bit_from_word(init_mem[2*i+IS_ODD_BANK]);
       end
-`endif
     end else begin
       for (int i = 0; i < BankDepth; i++) begin
         logic [31:0] default_word;
         default_word = 32'(2 * i + IS_ODD_BANK);
-        memory[i][0] = sideband_bit_from_word(default_word);
+        u_ram.ram[i][0] = sideband_bit_from_word(default_word);
       end
     end
   end
+`endif
 `endif  // YOSYS
 
-  always_ff @(posedge i_write_clk) begin
-    if (i_write_enable && ((i_write_address >> STORAGE_ADDR_WIDTH) == '0)) begin
-      memory[i_write_address[STORAGE_ADDR_WIDTH-1:0]][0] <= i_write_data;
-    end
-  end
-
   // Register the asynchronous read to match the BRAM latency and enable hold.
-  logic [0:0] memory_read_data;
   (* keep = "true" *) logic read_q;
-  assign memory_read_data = memory[i_read_address[STORAGE_ADDR_WIDTH-1:0]];
 
   always_ff @(posedge i_read_clk) begin
     if (i_read_enable) begin
@@ -120,9 +127,10 @@ endmodule : imem_sideband_scalar_bank
  * Two interleaved banks provide consecutive 32-bit words, eliminating the
  * C-extension spanning penalty for PC[1]=1.
  *
- * Banks:
- *   memory_even_{cold,frontend_hot}: words 0, 2, 4, ...
- *   memory_odd_{cold,frontend_hot}:  words 1, 3, 5, ...
+ * Each parity has four block-RAM banks, cold, frontend_hot, sideband, and
+ * compressed, each an sdp_block_ram_dc_init (hw/rtl/lib/ram):
+ *   u_even_*: words 0, 2, 4, ...
+ *   u_odd_*:  words 1, 3, 5, ...
  *
  * Both banks read in parallel. For word index W:
  *   even W: EVEN[W>>1] = W,   ODD[W>>1] = W+1
@@ -141,10 +149,11 @@ endmodule : imem_sideband_scalar_bank
  * each RAMB36 holds two lanes, so this split adds no BRAM. Four more lanes
  * replicate C[15], C[13], C[12], and AllowsSlot2AfterHi.
  *
- * PC predicates use registered LUTRAM overlays, covering [0, 64 KiB) by
- * default. Outside that range, repeat the window while predicates are
- * redecoded into the same output flops. The full-depth sideband is the
- * simulation reference; its unused hardware predicate lanes can be trimmed.
+ * PC predicates use registered LUTRAM overlays (imem_sideband_scalar_bank),
+ * covering [0, 64 KiB) by default. Outside that range, repeat the window
+ * while predicates are redecoded into the same output flops. The full-depth
+ * sideband is the simulation reference; its unused hardware predicate lanes
+ * can be trimmed.
  *
  * Port A programs and reads on the slow clock. Its write path is registered,
  * so writes commit one port-A cycle after presentation. Port B is the
@@ -167,14 +176,15 @@ module imem_predecode #(
     // memory takes the image's first 2**ADDR_WIDTH words; the rest belong to
     // the data memory alone. Only simulation reads INIT_FILE.
     parameter int unsigned INIT_ADDR_WIDTH = ADDR_WIDTH,
-    parameter bit [255:0] INIT_FILE_EVEN_COLD = "sw_imem_even_cold.mem",
-    parameter bit [255:0] INIT_FILE_ODD_COLD = "sw_imem_odd_cold.mem",
-    parameter bit [255:0] INIT_FILE_EVEN_FRONTEND_HOT = "sw_imem_even_frontend_hot.mem",
-    parameter bit [255:0] INIT_FILE_ODD_FRONTEND_HOT = "sw_imem_odd_frontend_hot.mem",
-    parameter bit [199:0] INIT_FILE_EVEN_SIDEBAND = "sw_imem_even_sideband.mem",
-    parameter bit [191:0] INIT_FILE_ODD_SIDEBAND = "sw_imem_odd_sideband.mem",
-    parameter bit [255:0] INIT_FILE_EVEN_COMPRESSED = "sw_imem_even_compressed.mem",
-    parameter bit [255:0] INIT_FILE_ODD_COMPRESSED = "sw_imem_odd_compressed.mem",
+    // One block-RAM image per bank, as wide as the wrappers' INIT_FILE.
+    parameter bit [319:0] INIT_FILE_EVEN_COLD = "sw_imem_even_cold.mem",
+    parameter bit [319:0] INIT_FILE_ODD_COLD = "sw_imem_odd_cold.mem",
+    parameter bit [319:0] INIT_FILE_EVEN_FRONTEND_HOT = "sw_imem_even_frontend_hot.mem",
+    parameter bit [319:0] INIT_FILE_ODD_FRONTEND_HOT = "sw_imem_odd_frontend_hot.mem",
+    parameter bit [319:0] INIT_FILE_EVEN_SIDEBAND = "sw_imem_even_sideband.mem",
+    parameter bit [319:0] INIT_FILE_ODD_SIDEBAND = "sw_imem_odd_sideband.mem",
+    parameter bit [319:0] INIT_FILE_EVEN_COMPRESSED = "sw_imem_even_compressed.mem",
+    parameter bit [319:0] INIT_FILE_ODD_COMPRESSED = "sw_imem_odd_compressed.mem",
     // One scalar LUTRAM overlay image per sideband predicate and parity bank.
     parameter bit [319:0] INIT_FILE_EVEN_IS_COMPRESSED_LO = "sw_imem_even_is_compressed_lo.mem",
     parameter bit [319:0] INIT_FILE_ODD_IS_COMPRESSED_LO = "sw_imem_odd_is_compressed_lo.mem",
@@ -247,9 +257,9 @@ module imem_predecode #(
   localparam int unsigned HalfDepth = 2 ** (ADDR_WIDTH - 1);
   localparam int unsigned FullDepth = 2 ** ADDR_WIDTH;
   localparam int unsigned ByteAddrBits = 2;  // 32-bit word alignment
-  // Lane order of the narrow high-parcel block RAM (memory_*_compressed;
-  // despite the name it holds no instruction-size bits, which live in the
-  // scalar LUTRAM overlay).
+  // Lane order of the narrow high-parcel block RAM (u_*_compressed; despite
+  // the name it holds no instruction-size bits, which live in the scalar
+  // LUTRAM overlay).
   localparam int unsigned FastLaneC15 = 0;  // word[31]
   localparam int unsigned FastLaneC12 = 1;  // word[28]
   localparam int unsigned FastLaneC13 = 2;  // word[29]
@@ -302,86 +312,57 @@ module imem_predecode #(
   endfunction
 
   // =========================================================================
-  // Even/odd interleaved memory banks
-  // =========================================================================
-  // The even pair holds the word whose full word-index is 2*k.
-  // The odd pair holds the word whose full word-index is 2*k+1.
-  /* verilator lint_off MULTIDRIVEN */
-  (* ram_style = "block" *) logic [ColdDataWidth-1:0] memory_even_cold[HalfDepth];
-  (* ram_style = "block" *) logic [ColdDataWidth-1:0] memory_odd_cold[HalfDepth];
-  // Separate four-bit banks for timing; at 16K depth each uses two RAMB36s.
-  (* ram_style = "block", keep = "true", dont_touch = "yes" *)
-  logic [FrontendHotWidth-1:0] memory_even_frontend_hot[HalfDepth];
-  (* ram_style = "block", keep = "true", dont_touch = "yes" *)
-  logic [FrontendHotWidth-1:0] memory_odd_frontend_hot[HalfDepth];
-  // Full-depth sideband uses BRAM for timing.
-  (* ram_style = "block" *) logic [SidebandWidth-1:0] memory_even_sideband[HalfDepth];
-  (* ram_style = "block" *) logic [SidebandWidth-1:0] memory_odd_sideband[HalfDepth];
-  // Same-edge high-parcel copies, for timing. The *_compressed.mem images
-  // pack {allows_slot2_after_hi, word[29], word[28], word[31]}; instruction-size
-  // bits live in the scalar overlay. Each RAMB36 holds two lanes at 16K depth.
-  (* ram_style = "block", keep = "true", dont_touch = "yes" *)
-  logic [FastLaneWidth-1:0] memory_even_compressed[HalfDepth];
-  (* ram_style = "block", keep = "true", dont_touch = "yes" *)
-  logic [FastLaneWidth-1:0] memory_odd_compressed[HalfDepth];
-  /* verilator lint_on MULTIDRIVEN */
-
-  // =========================================================================
   // Initialization: split sw.mem into even/odd banks
   // =========================================================================
+  // Vivado loads each bank's already split image (INIT_FILE_*), so every
+  // synthesized memory has an explicit power-up image. Simulation fills the
+  // banks below. Yosys leaves them without initial contents: the preload split
+  // would expand the temporary init_mem array into registers during frontend
+  // elaboration.
+`ifdef FROST_VIVADO_SYNTH
+  localparam bit LoadBankImages = USE_INIT_FILE;
+`else
+  localparam bit LoadBankImages = 1'b0;
+`endif
+
 `ifndef YOSYS
-  // Keep the preload split out of Yosys: it expands the temporary init_mem
-  // array into registers during frontend elaboration. Vivado reads the already
-  // split init files directly so every synthesized memory has an explicit
-  // power-up image.
 `ifndef FROST_VIVADO_SYNTH
   logic [DataWidth-1:0] init_mem[2**INIT_ADDR_WIDTH];
-`endif
 
   initial begin
     if (USE_INIT_FILE) begin
-`ifdef FROST_VIVADO_SYNTH
-      $readmemh(INIT_FILE_EVEN_COLD, memory_even_cold);
-      $readmemh(INIT_FILE_ODD_COLD, memory_odd_cold);
-      $readmemh(INIT_FILE_EVEN_FRONTEND_HOT, memory_even_frontend_hot);
-      $readmemh(INIT_FILE_ODD_FRONTEND_HOT, memory_odd_frontend_hot);
-      $readmemh(INIT_FILE_EVEN_SIDEBAND, memory_even_sideband);
-      $readmemh(INIT_FILE_ODD_SIDEBAND, memory_odd_sideband);
-      $readmemh(INIT_FILE_EVEN_COMPRESSED, memory_even_compressed);
-      $readmemh(INIT_FILE_ODD_COMPRESSED, memory_odd_compressed);
-`else
       $readmemh(INIT_FILE, init_mem);
       for (int i = 0; i < FullDepth; i++) begin
         if (i[0] == 1'b0) begin
-          memory_even_cold[i>>1] = pack_cold_data(init_mem[i]);
-          memory_even_frontend_hot[i>>1] = pack_frontend_hot(init_mem[i]);
-          memory_even_sideband[i>>1] = riscv_pkg::imem_make_sideband(init_mem[i]);
-          memory_even_compressed[i>>1] = pack_fast_lanes(init_mem[i], memory_even_sideband[i>>1]);
+          u_even_cold.ram[i>>1] = pack_cold_data(init_mem[i]);
+          u_even_frontend_hot.ram[i>>1] = pack_frontend_hot(init_mem[i]);
+          u_even_sideband.ram[i>>1] = riscv_pkg::imem_make_sideband(init_mem[i]);
+          u_even_compressed.ram[i>>1] = pack_fast_lanes(init_mem[i], u_even_sideband.ram[i>>1]);
         end else begin
-          memory_odd_cold[i>>1] = pack_cold_data(init_mem[i]);
-          memory_odd_frontend_hot[i>>1] = pack_frontend_hot(init_mem[i]);
-          memory_odd_sideband[i>>1] = riscv_pkg::imem_make_sideband(init_mem[i]);
-          memory_odd_compressed[i>>1] = pack_fast_lanes(init_mem[i], memory_odd_sideband[i>>1]);
+          u_odd_cold.ram[i>>1] = pack_cold_data(init_mem[i]);
+          u_odd_frontend_hot.ram[i>>1] = pack_frontend_hot(init_mem[i]);
+          u_odd_sideband.ram[i>>1] = riscv_pkg::imem_make_sideband(init_mem[i]);
+          u_odd_compressed.ram[i>>1] = pack_fast_lanes(init_mem[i], u_odd_sideband.ram[i>>1]);
         end
       end
-`endif
     end else begin
       for (int i = 0; i < HalfDepth; i++) begin
         logic [DataWidth-1:0] even_default_word;
         logic [DataWidth-1:0] odd_default_word;
         even_default_word = DataWidth'(2 * i);
         odd_default_word = DataWidth'(2 * i + 1);
-        memory_even_cold[i] = pack_cold_data(even_default_word);
-        memory_odd_cold[i] = pack_cold_data(odd_default_word);
-        memory_even_frontend_hot[i] = pack_frontend_hot(even_default_word);
-        memory_odd_frontend_hot[i] = pack_frontend_hot(odd_default_word);
-        memory_even_sideband[i] = riscv_pkg::imem_make_sideband(even_default_word);
-        memory_odd_sideband[i] = riscv_pkg::imem_make_sideband(odd_default_word);
-        memory_even_compressed[i] = pack_fast_lanes(even_default_word, memory_even_sideband[i]);
-        memory_odd_compressed[i] = pack_fast_lanes(odd_default_word, memory_odd_sideband[i]);
+        u_even_cold.ram[i] = pack_cold_data(even_default_word);
+        u_odd_cold.ram[i] = pack_cold_data(odd_default_word);
+        u_even_frontend_hot.ram[i] = pack_frontend_hot(even_default_word);
+        u_odd_frontend_hot.ram[i] = pack_frontend_hot(odd_default_word);
+        u_even_sideband.ram[i] = riscv_pkg::imem_make_sideband(even_default_word);
+        u_odd_sideband.ram[i] = riscv_pkg::imem_make_sideband(odd_default_word);
+        u_even_compressed.ram[i] = pack_fast_lanes(even_default_word, u_even_sideband.ram[i]);
+        u_odd_compressed.ram[i] = pack_fast_lanes(odd_default_word, u_odd_sideband.ram[i]);
       end
     end
   end
+`endif
 `endif  // YOSYS
 
   // =========================================================================
@@ -428,33 +409,16 @@ module imem_predecode #(
     port_a_write_odd_q    <= i_port_a_enable && i_port_a_write_enable && port_a_bank_sel;
   end
 
-  // Compute sideband from the staged write data at write time.
+  // Compute sideband from the staged write data at write time. The staged
+  // enables write one parity's four banks (below) together.
   logic [SidebandWidth-1:0] write_sideband;
+  logic [ColdDataWidth-1:0] write_cold;
+  logic [FrontendHotWidth-1:0] write_frontend_hot;
+  logic [FastLaneWidth-1:0] write_fast_lanes;
   assign write_sideband = riscv_pkg::imem_make_sideband(port_a_write_data_q);
-
-  // Port A: even bank
-  always_ff @(posedge i_port_a_clk) begin
-    if (port_a_write_even_q) begin
-      memory_even_cold[port_a_half_address_q] <= pack_cold_data(port_a_write_data_q);
-      memory_even_frontend_hot[port_a_half_address_q] <= pack_frontend_hot(port_a_write_data_q);
-      memory_even_sideband[port_a_half_address_q] <= write_sideband;
-      memory_even_compressed[port_a_half_address_q] <= pack_fast_lanes(
-          port_a_write_data_q, write_sideband
-      );
-    end
-  end
-
-  // Port A: odd bank
-  always_ff @(posedge i_port_a_clk) begin
-    if (port_a_write_odd_q) begin
-      memory_odd_cold[port_a_half_address_q] <= pack_cold_data(port_a_write_data_q);
-      memory_odd_frontend_hot[port_a_half_address_q] <= pack_frontend_hot(port_a_write_data_q);
-      memory_odd_sideband[port_a_half_address_q] <= write_sideband;
-      memory_odd_compressed[port_a_half_address_q] <= pack_fast_lanes(
-          port_a_write_data_q, write_sideband
-      );
-    end
-  end
+  assign write_cold = pack_cold_data(port_a_write_data_q);
+  assign write_frontend_hot = pack_frontend_hot(port_a_write_data_q);
+  assign write_fast_lanes = pack_fast_lanes(port_a_write_data_q, write_sideband);
 
 `ifndef SYNTHESIS
   // Port A read (write-first): read back from whichever bank was addressed
@@ -464,9 +428,9 @@ module imem_predecode #(
         o_port_a_read_data <= i_port_a_write_data;
       end else begin
         o_port_a_read_data <= port_a_bank_sel ? join_data_banks(
-            memory_odd_cold[port_a_half_address], memory_odd_frontend_hot[port_a_half_address]) :
-            join_data_banks(memory_even_cold[port_a_half_address],
-                            memory_even_frontend_hot[port_a_half_address]);
+            u_odd_cold.ram[port_a_half_address], u_odd_frontend_hot.ram[port_a_half_address]) :
+            join_data_banks(u_even_cold.ram[port_a_half_address],
+                            u_even_frontend_hot.ram[port_a_half_address]);
       end
     end
   end
@@ -855,18 +819,160 @@ module imem_predecode #(
     odd_pairable_native_hi, odd_pairable_compressed_hi, odd_is_compressed_hi, odd_is_compressed_lo
   };
 
-  always_ff @(posedge i_port_b_clk) begin
-    if (i_port_b_enable) begin
-      even_read_data_cold <= memory_even_cold[even_read_addr];
-      odd_read_data_cold <= memory_odd_cold[odd_read_addr];
-      even_read_data_frontend_hot <= memory_even_frontend_hot[even_read_addr];
-      odd_read_data_frontend_hot <= memory_odd_frontend_hot[odd_read_addr];
-      even_sideband <= memory_even_sideband[even_read_addr];
-      odd_sideband <= memory_odd_sideband[odd_read_addr];
-      even_compressed <= memory_even_compressed[even_read_addr];
-      odd_compressed <= memory_odd_compressed[odd_read_addr];
-    end
+  // =========================================================================
+  // Even/odd interleaved memory banks
+  // =========================================================================
+  // The even banks hold the words whose full word index is 2*k, the odd banks
+  // those at 2*k+1. The staged port-A enables write one parity's four banks
+  // together, and each enabled port-B cycle reads all eight.
+  //
+  // Fetch takes word[31] from the compressed banks' C15 lane, so only
+  // simulation checks read the cold banks' copy of it, their top bit. Read
+  // through the bank wrapper's port, Vivado would keep that bit in the block
+  // RAM, whose last slice would then take a RAMB36 where a RAMB18 holds the
+  // bit below it alone; the FPGA build stores the cold bits below word[31].
+`ifdef FROST_VIVADO_SYNTH
+  localparam int unsigned ColdBankWidth = ColdDataWidth - 1;
+`else
+  localparam int unsigned ColdBankWidth = ColdDataWidth;
+`endif
+  sdp_block_ram_dc_init #(
+      .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .DATA_WIDTH(ColdBankWidth),
+      .USE_INIT_FILE(LoadBankImages),
+      .INIT_FILE(INIT_FILE_EVEN_COLD)
+  ) u_even_cold (
+      .i_write_clock(i_port_a_clk),
+      .i_write_enable(port_a_write_even_q),
+      .i_write_address(port_a_half_address_q),
+      .i_write_data(write_cold[ColdBankWidth-1:0]),
+      .i_read_clock(i_port_b_clk),
+      .i_read_enable(i_port_b_enable),
+      .i_read_address(even_read_addr),
+      .o_read_data(even_read_data_cold[ColdBankWidth-1:0])
+  );
+
+  sdp_block_ram_dc_init #(
+      .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .DATA_WIDTH(ColdBankWidth),
+      .USE_INIT_FILE(LoadBankImages),
+      .INIT_FILE(INIT_FILE_ODD_COLD)
+  ) u_odd_cold (
+      .i_write_clock(i_port_a_clk),
+      .i_write_enable(port_a_write_odd_q),
+      .i_write_address(port_a_half_address_q),
+      .i_write_data(write_cold[ColdBankWidth-1:0]),
+      .i_read_clock(i_port_b_clk),
+      .i_read_enable(i_port_b_enable),
+      .i_read_address(odd_read_addr),
+      .o_read_data(odd_read_data_cold[ColdBankWidth-1:0])
+  );
+
+  if (ColdBankWidth < ColdDataWidth) begin : gen_cold_word31_from_c15_lane
+    assign even_read_data_cold[ColdDataWidth-1] = even_compressed[FastLaneC15];
+    assign odd_read_data_cold[ColdDataWidth-1]  = odd_compressed[FastLaneC15];
   end
+
+  // Separate four-bit banks for timing; at 16K depth each uses two RAMB36s.
+  sdp_block_ram_dc_init #(
+      .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .DATA_WIDTH(FrontendHotWidth),
+      .USE_INIT_FILE(LoadBankImages),
+      .INIT_FILE(INIT_FILE_EVEN_FRONTEND_HOT)
+  ) u_even_frontend_hot (
+      .i_write_clock(i_port_a_clk),
+      .i_write_enable(port_a_write_even_q),
+      .i_write_address(port_a_half_address_q),
+      .i_write_data(write_frontend_hot),
+      .i_read_clock(i_port_b_clk),
+      .i_read_enable(i_port_b_enable),
+      .i_read_address(even_read_addr),
+      .o_read_data(even_read_data_frontend_hot)
+  );
+
+  sdp_block_ram_dc_init #(
+      .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .DATA_WIDTH(FrontendHotWidth),
+      .USE_INIT_FILE(LoadBankImages),
+      .INIT_FILE(INIT_FILE_ODD_FRONTEND_HOT)
+  ) u_odd_frontend_hot (
+      .i_write_clock(i_port_a_clk),
+      .i_write_enable(port_a_write_odd_q),
+      .i_write_address(port_a_half_address_q),
+      .i_write_data(write_frontend_hot),
+      .i_read_clock(i_port_b_clk),
+      .i_read_enable(i_port_b_enable),
+      .i_read_address(odd_read_addr),
+      .o_read_data(odd_read_data_frontend_hot)
+  );
+
+  // Full-depth sideband uses BRAM for timing.
+  sdp_block_ram_dc_init #(
+      .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .DATA_WIDTH(SidebandWidth),
+      .USE_INIT_FILE(LoadBankImages),
+      .INIT_FILE(INIT_FILE_EVEN_SIDEBAND)
+  ) u_even_sideband (
+      .i_write_clock(i_port_a_clk),
+      .i_write_enable(port_a_write_even_q),
+      .i_write_address(port_a_half_address_q),
+      .i_write_data(write_sideband),
+      .i_read_clock(i_port_b_clk),
+      .i_read_enable(i_port_b_enable),
+      .i_read_address(even_read_addr),
+      .o_read_data(even_sideband)
+  );
+
+  sdp_block_ram_dc_init #(
+      .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .DATA_WIDTH(SidebandWidth),
+      .USE_INIT_FILE(LoadBankImages),
+      .INIT_FILE(INIT_FILE_ODD_SIDEBAND)
+  ) u_odd_sideband (
+      .i_write_clock(i_port_a_clk),
+      .i_write_enable(port_a_write_odd_q),
+      .i_write_address(port_a_half_address_q),
+      .i_write_data(write_sideband),
+      .i_read_clock(i_port_b_clk),
+      .i_read_enable(i_port_b_enable),
+      .i_read_address(odd_read_addr),
+      .o_read_data(odd_sideband)
+  );
+
+  // Same-edge high-parcel copies, for timing. The *_compressed.mem images
+  // pack {allows_slot2_after_hi, word[29], word[28], word[31]}; instruction-size
+  // bits live in the scalar overlay. Each RAMB36 holds two lanes at 16K depth.
+  sdp_block_ram_dc_init #(
+      .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .DATA_WIDTH(FastLaneWidth),
+      .USE_INIT_FILE(LoadBankImages),
+      .INIT_FILE(INIT_FILE_EVEN_COMPRESSED)
+  ) u_even_compressed (
+      .i_write_clock(i_port_a_clk),
+      .i_write_enable(port_a_write_even_q),
+      .i_write_address(port_a_half_address_q),
+      .i_write_data(write_fast_lanes),
+      .i_read_clock(i_port_b_clk),
+      .i_read_enable(i_port_b_enable),
+      .i_read_address(even_read_addr),
+      .o_read_data(even_compressed)
+  );
+
+  sdp_block_ram_dc_init #(
+      .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .DATA_WIDTH(FastLaneWidth),
+      .USE_INIT_FILE(LoadBankImages),
+      .INIT_FILE(INIT_FILE_ODD_COMPRESSED)
+  ) u_odd_compressed (
+      .i_write_clock(i_port_a_clk),
+      .i_write_enable(port_a_write_odd_q),
+      .i_write_address(port_a_half_address_q),
+      .i_write_data(write_fast_lanes),
+      .i_read_clock(i_port_b_clk),
+      .i_read_enable(i_port_b_enable),
+      .i_read_address(odd_read_addr),
+      .o_read_data(odd_compressed)
+  );
 
   assign even_read_data = join_data_banks(even_read_data_cold, even_read_data_frontend_hot);
   assign odd_read_data  = join_data_banks(odd_read_data_cold, odd_read_data_frontend_hot);

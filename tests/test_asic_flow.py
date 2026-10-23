@@ -648,7 +648,7 @@ def test_mocked_rows_are_single_row_memories_from_the_log() -> None:
     points = {
         "data_memory.memory[0][23]$_DFFE_PP_",
         "cpu_inst.u_rob/u_alloc.g_banks[1].u_bank.ram[0][5]$_DFFE_PP_",
-        "cpu_inst.u_fetch.u_side.memory[0]$_DFFE_PP_",
+        "cpu_inst.u_fetch.u_side.u_ram.ram[0]$_DFFE_PP_",
         "cpu_inst.u_fifo.memory[0][3]$_DFFE_PP_",
         "cpu_inst.u_fifo.memory[1][3]$_DFFE_PP_",
         "cpu_inst.u_rob/u_alloc.g_banks[1].u_bank.ram_q[2]$_DFF_P_",
@@ -657,13 +657,13 @@ def test_mocked_rows_are_single_row_memories_from_the_log() -> None:
     memories = [
         "cpu_and_mem/data_memory.memory",
         "$paramod\\reorder_buffer/u_alloc.g_banks[1].u_bank.ram",
-        "$paramod$0123\\imem_sideband_scalar_bank/memory",
+        "$paramod$0123\\imem_sideband_scalar_bank/u_ram.ram",
     ]
 
     assert orfs.mocked_rows(points, memories) == {
         "data_memory.memory[0][23]$_DFFE_PP_",
         "cpu_inst.u_rob/u_alloc.g_banks[1].u_bank.ram[0][5]$_DFFE_PP_",
-        "cpu_inst.u_fetch.u_side.memory[0]$_DFFE_PP_",
+        "cpu_inst.u_fetch.u_side.u_ram.ram[0]$_DFFE_PP_",
     }
 
 

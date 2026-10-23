@@ -1325,7 +1325,14 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
         "INIT_FILE_ODD_PC_METADATA",
     ):
         assert retired not in imem
-    assert "logic [FastLaneWidth-1:0] memory_even_compressed[HalfDepth];" in imem
+    for parity in ("even", "odd"):
+        assert re.search(
+            r"sdp_block_ram_dc_init #\(\s*\.ADDR_WIDTH\(ADDR_WIDTH - 1\),\s*"
+            r"\.DATA_WIDTH\(FastLaneWidth\),\s*\.USE_INIT_FILE\(LoadBankImages\),\s*"
+            rf"\.INIT_FILE\(INIT_FILE_{parity.upper()}_COMPRESSED\)\s*\)\s*"
+            rf"u_{parity}_compressed \(",
+            imem,
+        )
     assert "localparam int unsigned FastLaneWidth = 4;" in imem
     assert "even_sideband_with_fast_metadata[1:0] = even_pc_metadata[1:0];" in imem
     assert "odd_sideband_with_fast_metadata[1:0] = odd_pc_metadata[1:0];" in imem
