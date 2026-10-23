@@ -84,10 +84,21 @@ namespace eval ::frost_x3_post_place_gate {
         if {![finite $slack]} {error "Missing finite global setup slack"}
         report_timing -of_objects $worst -file [file join $work_directory post_place_gate_worst.rpt]
 
-        # Check the worst CPU-to-CPU path's report for the CPU clock period and
-        # zero user uncertainty (UU). The global worst path may be in a MAC
-        # clock domain, whose report says nothing about the CPU clock.
-        set cpu_path [one [{*}$command -from $clock -to $clock] "CPU max-delay path"]
+        # Check the report of the worst CPU-to-CPU path timed at the full CPU
+        # period for that period and zero user uncertainty (UU). The global
+        # worst path may be in a MAC clock domain, whose report says nothing
+        # about the CPU clock, and a CPU path under a timing exception such as
+        # set_max_delay has its own requirement; with a divided clock, such a
+        # path can be the worst CPU path.
+        set cpu_path {}
+        foreach path [get_timing_paths -delay_type max -sort_by slack -max_paths 1000 \
+                          -nworst 1 -from $clock -to $clock] {
+            if {[displays_as [get_property REQUIREMENT $path] $period]} {
+                set cpu_path $path
+                break
+            }
+        }
+        if {$cpu_path eq {}} {error "Expected a full-period CPU max-delay path"}
         foreach key {STARTPOINT_CLOCK ENDPOINT_CLOCK GROUP} {
             if {[get_property $key $cpu_path] ne "clock_from_mmcm"} {
                 error "Post-place gate CPU path has unexpected clock ownership"

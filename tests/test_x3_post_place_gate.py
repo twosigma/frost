@@ -33,12 +33,25 @@ proc get_property {key object} {
         PART {return $env(PART)}
         PERIOD {return $env(PERIOD)}
         SLACK {return $env(SLACK)}
+        REQUIREMENT {
+            if {$object eq "max_delay_path"} {return 3.000}
+            return $env(REQUIREMENT)
+        }
         STARTPOINT_CLOCK - ENDPOINT_CLOCK - GROUP {return $env(PATH_CLOCK)}
         default {error "Unexpected property $key"}
     }
 }
 proc get_timing_paths {args} {
     global env
+    if {[lsearch -exact $args -from] >= 0} {
+        if {$args ne [list -delay_type max -sort_by slack -max_paths 1000 -nworst 1 \
+                          -from clock_from_mmcm -to clock_from_mmcm]} {
+            error "Changed CPU control scope"
+        }
+        if {$env(EMPTY_CPU)} {return {}}
+        if {$env(MAX_DELAY_FIRST)} {return {max_delay_path cpu_path}}
+        return cpu_path
+    }
     if {[lrange $args 0 7] ne {-delay_type max -sort_by slack -max_paths 1 -nworst 1}} {
         error "Changed global query scope"
     }
@@ -49,13 +62,6 @@ proc get_timing_paths {args} {
         if {$env(BELOW)} {return below_path}
         return {}
     }
-    if {[lsearch -exact $args -from] >= 0} {
-        if {[lrange $args 8 end] ne {-from clock_from_mmcm -to clock_from_mmcm}} {
-            error "Changed CPU control scope"
-        }
-        if {$env(EMPTY_CPU)} {return {}}
-        return cpu_path
-    }
     if {$env(EMPTY_GLOBAL)} {return {}}
     return global_path
 }
@@ -63,6 +69,7 @@ proc report_timing {args} {
     global env
     if {[llength $args] != 4 || [lindex $args 0] ne "-of_objects" ||
         [lindex $args 2] ne "-file"} {error "Report must use actual returned object"}
+    if {[lindex $args 1] eq "max_delay_path"} {error "Gate reported an exception path"}
     set f [open [lindex $args 3] w]
     puts $f "| Design State : $env(STATE)"
     puts $f "Path Type: Setup (Max at Slow Process Corner)"
@@ -93,6 +100,7 @@ def run_gate(tmp_path: Path, **overrides: str) -> subprocess.CompletedProcess[st
         "BELOW": "0",
         "EMPTY_GLOBAL": "0",
         "EMPTY_CPU": "0",
+        "MAX_DELAY_FIRST": "0",
         "STATE": "Fully Placed",
         "UU": "implicit",
         **overrides,
@@ -195,3 +203,18 @@ def test_printed_requirement_is_compared_within_display_rounding(
         assert f"CPU_PERIOD_NS={period}" in audit.read_text()
     else:
         assert not audit.exists()
+
+
+def test_cpu_path_under_an_exception_is_skipped(tmp_path: Path) -> None:
+    """A worst CPU path timed by set_max_delay does not stand in for the clock."""
+    result = run_gate(tmp_path, PERIOD="6.666", SLACK="0.500", MAX_DELAY_FIRST="1")
+    assert result.returncode == 0, result.stderr
+    assert "CPU_PERIOD_NS=6.666" in (tmp_path / "post_place_gate.txt").read_text()
+
+
+def test_no_full_period_cpu_path_removes_stale_pass(tmp_path: Path) -> None:
+    """Without a CPU path timed at the clock period, the gate fails."""
+    result = run_gate(tmp_path, MAX_DELAY_FIRST="1", REQUIREMENT="3.334")
+    assert result.returncode != 0
+    assert "full-period CPU" in result.stderr
+    assert not (tmp_path / "post_place_gate.txt").exists()
