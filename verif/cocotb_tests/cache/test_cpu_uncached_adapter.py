@@ -27,12 +27,18 @@ class Bench:
         """Initialize the interface and scoreboard."""
         self.dut = dut
         self.held: tuple[int, ...] | None = None
+        self.resp_valid = 0
+        self.resp_status = 0
 
     async def step(self, **inputs: int) -> dict[str, int]:
         """Advance one clock edge and sample the interface."""
         self.dut.i_clk.value = 0
         for name, value in inputs.items():
             getattr(self.dut, "i_" + name).value = value
+        # The fabric decodes an OKAY data response before its response mux.
+        self.resp_valid = inputs.get("resp_valid", self.resp_valid)
+        self.resp_status = inputs.get("resp_status", self.resp_status)
+        self.dut.i_resp_ok.value = int(bool(self.resp_valid) and self.resp_status == 0)
         await Timer(5, unit="ns")
         names = (
             "read_ready",

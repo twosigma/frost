@@ -67,7 +67,9 @@ module cpu_uncached_adapter #(
     output logic [DATA_BYTES-1:0] o_req_wstrb,
     input logic i_resp_valid,
     input logic [DATA_BYTES*8-1:0] i_resp_rdata,
-    input logic [1:0] i_resp_status
+    input logic [1:0] i_resp_status,
+    // i_resp_valid with an OKAY status, decoded before the response mux.
+    input logic i_resp_ok
 );
   localparam int unsigned OffsetBits = $clog2(DATA_BYTES);
   initial begin
@@ -112,12 +114,20 @@ module cpu_uncached_adapter #(
   // request register still separates it from AXI, whose master releases
   // this ID only after consuming the old response. Errors retain the
   // existing completion/recovery timing and never enable this turnover.
-  assign response_turnover = i_resp_valid && active_q && i_resp_status == 2'b00;
+  assign response_turnover = i_resp_ok && active_q;
   assign request_head = write_head_q ^ write_pop;
   assign request_has_write = write_count_q > (write_pop ? 2'd1 : 2'd0);
   assign request_write = request_held_q ? held_write_q : request_has_write;
-  assign o_req_valid = !i_rst && !o_fatal_error && (!active_q || response_turnover) &&
-      (request_has_write || read_pending_q);
+  // The request valid for each value of i_resp_ok, from registers only, so
+  // the response reaches the fabric through one LUT. An OKAY response is a
+  // valid one without an error, so it turns the active request over and pops
+  // a completed write; otherwise an active request blocks.
+  (* keep = "true" *) logic req_valid_if_ok, req_valid_if_none;
+  assign req_valid_if_ok = !i_rst && !o_fatal_error &&
+      (read_pending_q || (write_count_q > ((active_q && active_write_q) ? 2'd1 : 2'd0)));
+  assign req_valid_if_none = !i_rst && !o_fatal_error && !active_q &&
+      (read_pending_q || (write_count_q != 2'd0));
+  assign o_req_valid = i_resp_ok ? req_valid_if_ok : req_valid_if_none;
   assign o_req_write = request_write;
   wire [ADDR_WIDTH-1:0] read_axi_addr = read_writethrough ?
       {read_addr_q[ADDR_WIDTH-1:3], 3'b0} : read_addr_q;
@@ -225,6 +235,12 @@ module cpu_uncached_adapter #(
 `endif
 
 `ifndef SYNTHESIS
+  always_comb begin
+    p_resp_ok_exact : assert (i_resp_ok == (i_resp_valid && (i_resp_status == 2'b00)));
+    p_req_valid_exact :
+    assert (o_req_valid == (!i_rst && !o_fatal_error && (!active_q || response_turnover) &&
+                            (request_has_write || read_pending_q)));
+  end
   always @(posedge i_clk) begin
     if (!i_rst) begin
       assert (!i_read_enable || o_read_ready)

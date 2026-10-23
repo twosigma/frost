@@ -320,6 +320,7 @@ module cpu_top #(
   logic data_resp_valid;
   logic uncached_write_buffered;
   logic [1:0] data_resp_status;
+  logic data_resp_ok;
   logic low_req_valid, low_req_ready, low_req_id;
   logic [riscv_pkg::PhysAddrBits-1:0] low_req_addr;
   logic low_resp_valid, low_resp_id, low_resp_error;
@@ -946,7 +947,8 @@ module cpu_top #(
       .o_req_wstrb(data_req_wstrb),
       .i_resp_valid(data_resp_valid),
       .i_resp_rdata(data_resp_data),
-      .i_resp_status(data_resp_status)
+      .i_resp_status(data_resp_status),
+      .i_resp_ok(data_resp_ok)
   );
 
   cpu_memory_fabric #(
@@ -983,6 +985,7 @@ module cpu_top #(
       .o_data_resp_valid(data_resp_valid),
       .o_data_resp_data(data_resp_data),
       .o_data_resp_status(data_resp_status),
+      .o_data_resp_ok(data_resp_ok),
       .i_fetch_valid(low_req_valid),
       .o_fetch_ready(low_req_ready),
       .i_fetch_addr(low_req_addr),

@@ -51,6 +51,8 @@ module cpu_memory_fabric #(
     output logic o_data_resp_valid,
     output logic [DATA_BYTES*8-1:0] o_data_resp_data,
     output logic [1:0] o_data_resp_status,
+    // o_data_resp_valid with an OKAY status.
+    output logic o_data_resp_ok,
     input logic i_fetch_valid,
     output logic o_fetch_ready,
     input logic [ADDR_WIDTH-1:0] i_fetch_addr,
@@ -176,8 +178,24 @@ module cpu_memory_fabric #(
   // by CPU reset; the master independently drains already presented beats.
   assign req_ready = !i_rst && !i_axi_rst && (!pending_q || master_ready);
   assign o_idle = master_idle && !pending_q;
-  assign o_cache_ready = req_ready && selected == 0;
-  assign o_data_ready = req_ready && selected == 1;
+  // The cache client's grant for each pointer value, so the L2's ready does
+  // not wait for the encoded selection. Equal to selected == 0.
+  logic cache_selected;
+  always_comb begin
+    unique case (next_client_q)
+      2'd0: cache_selected = i_cache_valid || !(i_data_valid || i_fetch_valid);
+      2'd1: cache_selected = i_cache_valid && !i_data_valid && !i_fetch_valid;
+      2'd2: cache_selected = i_cache_valid && !i_fetch_valid;
+      default: cache_selected = i_cache_valid;
+    endcase
+  end
+  assign o_cache_ready = req_ready && cache_selected;
+`ifndef SYNTHESIS
+  always_comb begin
+    p_cache_selected_exact : assert (cache_selected == (selected == 0));
+  end
+`endif
+  assign o_data_ready  = req_ready && selected == 1;
   assign o_fetch_ready = req_ready && selected == 2;
   always_ff @(posedge i_clk) begin
     if (i_rst || i_axi_rst) begin
@@ -205,9 +223,13 @@ module cpu_memory_fabric #(
   assign o_cache_resp_id = resp_id[4:0];
   assign o_cache_resp_data = resp_data;
   assign o_cache_resp_error = resp_status[1];
-  assign o_data_resp_valid = resp_valid && resp_id == ID_BITS'(32);
-  assign o_data_resp_data = resp_data;
+  // The master decodes the data client's ID before its response select.
+  logic data_resp_valid;
+  assign o_data_resp_valid  = data_resp_valid;
+  assign o_data_resp_data   = resp_data;
   assign o_data_resp_status = resp_status;
+  logic data_resp_ok;
+  assign o_data_resp_ok = data_resp_ok;
   assign o_fetch_resp_valid = resp_valid && (resp_id == ID_BITS'(34) || resp_id == ID_BITS'(35));
   assign o_fetch_resp_id = resp_id[0];
   assign o_fetch_resp_data = (FETCH_BYTES * 8)'(resp_data >> {fetch_dword_q[resp_id[0]], 6'b0});
@@ -216,7 +238,8 @@ module cpu_memory_fabric #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .DATA_BYTES(DATA_BYTES),
       .ID_BITS(ID_BITS),
-      .USER_BITS(USER_BITS)
+      .USER_BITS(USER_BITS),
+      .FLAG_RESP_ID(32)
   ) master (
       .i_clk,
       .i_rst,
@@ -237,6 +260,8 @@ module cpu_memory_fabric #(
       .o_resp_id(resp_id),
       .o_resp_rdata(resp_data),
       .o_resp_status(resp_status),
+      .o_resp_valid_id(data_resp_valid),
+      .o_resp_ok_id(data_resp_ok),
       .o_idle(master_idle),
       .o_axi_awvalid,
       .i_axi_awready,
