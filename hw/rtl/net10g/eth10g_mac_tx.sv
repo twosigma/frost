@@ -67,10 +67,8 @@ module eth10g_mac_tx #(
     TX_GAP
   } tx_state_t;
 
-  // buffer_full hides uninitialized memory. Prefetch during preamble and
-  // payload. A single array with buffer select as the top address bit and
-  // one synchronous read port permits block RAM inference.
-  (* ram_style = "block" *) logic [63:0] frame_memory[2 << WordIndexWidth];
+  // buffer_full hides uninitialized memory. The frame RAM uses buffer select
+  // as its top address bit and prefetches during preamble and payload.
   logic [1:0] buffer_full;
   int unsigned frame_length[2];
   logic write_buffer;
@@ -238,9 +236,20 @@ module eth10g_mac_tx #(
       end
     end
   end
-  always_ff @(posedge i_clk) begin
-    if (read_enable) payload_word <= frame_memory[read_address];
-  end
+  sdp_block_ram_dc_init #(
+      .ADDR_WIDTH(WordIndexWidth + 1),
+      .DATA_WIDTH(64)
+  ) u_frame_memory (
+      .i_write_clock(i_clk),
+      .i_write_enable(!i_rst && i_enable && s_axis_tvalid && s_axis_tready && !write_discard &&
+                      !bad_beat),
+      .i_write_address({write_buffer, WordIndexWidth'(write_length >> 3)}),
+      .i_write_data(s_axis_tdata),
+      .i_read_clock(i_clk),
+      .i_read_enable(read_enable),
+      .i_read_address(read_address),
+      .o_read_data(payload_word)
+  );
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -270,7 +279,6 @@ module eth10g_mac_tx #(
       if (i_enable) begin
         if (s_axis_tvalid && s_axis_tready) begin
           if (!write_discard && !bad_beat) begin
-            frame_memory[{write_buffer, WordIndexWidth'(write_length>>3)}] <= s_axis_tdata;
             write_length <= write_length + input_bytes;
           end
           if (s_axis_tlast) begin

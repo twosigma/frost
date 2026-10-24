@@ -352,8 +352,8 @@ module eth10g_mac_rx #(
   // read_data only for a published packet. A packet is published on or after
   // the edge that writes its last bytes, and its words are never written again
   // until the output handshake has consumed them, so every copied word was
-  // fetched after its final write. Its first word completes at least seven
-  // word-stage edges before publication, since every accepted frame spans at
+  // fetched after its final write. Its first word's final write edge precedes
+  // publication by at least seven clocks, since every accepted frame spans at
   // least eight words. Fetches while nothing is published may collide with
   // writes; the reader does not copy them, and the fetch repeats every clock.
   // The simulation check at the end of the file reports a copy of a word
@@ -529,12 +529,19 @@ module eth10g_mac_rx #(
     end
   end
   for (genvar lane = 0; lane < 8; lane++) begin : g_memory_lane
-    (* ram_style = "block" *) logic [7:0] packet_memory[MemoryWords];
-    always_ff @(posedge i_clk) begin
-      if (!i_rst && memory_write_enable[lane])
-        packet_memory[memory_write_address[lane]] <= memory_write_data[lane];
-      read_data[lane] <= packet_memory[next_read_word];
-    end
+    sdp_block_ram_dc_init #(
+        .ADDR_WIDTH(MemoryAddrWidth),
+        .DATA_WIDTH(8)
+    ) u_packet_memory (
+        .i_write_clock(i_clk),
+        .i_write_enable(!i_rst && memory_write_enable[lane]),
+        .i_write_address(memory_write_address[lane]),
+        .i_write_data(memory_write_data[lane]),
+        .i_read_clock(i_clk),
+        .i_read_enable(1'b1),
+        .i_read_address(next_read_word),
+        .o_read_data(read_data[lane])
+    );
   end
 
 `ifndef SYNTHESIS

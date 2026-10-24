@@ -118,7 +118,8 @@ class Macro:
 # the RAM wrappers' memories from, with the memories each one builds, in
 # rows by columns of macros.
 MACROS = (
-    # L2 data: 1 row of 8, each a 64-bit slice of every {way, set} line
+    # L2 data: 1 row of 8, each a 64-bit slice of every {way, set} line;
+    # the NIC's transmit frame buffer: 1 macro
     Macro("1w1r", 4096, 64, 8),
     # L1D data: 1 row of 4 in each way's bank. The L1 macros are 64 bits
     # wide because OpenRAM could not route the pins of a 512 by 128 macro to
@@ -141,6 +142,9 @@ MACROS = (
     # Instruction memory: 2 rows of 1 in each parity's frontend-hot and
     # compressed banks
     Macro("1w1r", 8192, 4, None),
+    # The NIC's receive packet buffer: one macro per independently addressed
+    # byte lane
+    Macro("1w1r", 4096, 8, None),
     # Data memory: 4 rows of 1, with the program-loading port and the core's
     Macro("2rw", 4096, 64, 8),
 )

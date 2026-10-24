@@ -41,6 +41,9 @@ TARGETS: dict[str, tuple[str, str, int | None]] = {
     "mac_rx_60": ("eth10g_mac_rx", "test_mac_rx", 60),
     "mac_rx_124": ("eth10g_mac_rx", "test_mac_rx", 124),
     "integration": ("eth10g_mac_pcs", "test_integration", None),
+    "mac_tx_sram_macros": ("eth10g_mac_tx", "test_mac_tx", None),
+    "mac_rx_sram_macros": ("eth10g_mac_rx", "test_mac_rx", None),
+    "integration_sram_macros": ("eth10g_mac_pcs", "test_integration", None),
 }
 
 
@@ -71,6 +74,8 @@ def main() -> None:
         result.parent.mkdir(parents=True, exist_ok=True)
         result.unlink(missing_ok=True)
         environment = os.environ.copy()
+        if target.endswith("_sram_macros"):
+            environment["NET10G_SRAM_MACROS"] = "1"
         if frame_limit is not None:
             environment["NET10G_MAX_FRAME_BYTES"] = str(frame_limit)
         subprocess.run(command, cwd=directory, env=environment, check=True)

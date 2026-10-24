@@ -20,7 +20,7 @@ $(ROOT)/hw/rtl/lib/ram/sdp_block_ram.sv
 $(ROOT)/hw/rtl/lib/ram/sdp_block_ram_dc.sv
 
 # Dual-clock simple dual-port block RAM with a read enable and an optional
-# initial image (the instruction memory's banks)
+# initial image (the instruction memory's banks and Ethernet MAC buffers)
 $(ROOT)/hw/rtl/lib/ram/sdp_block_ram_dc_init.sv
 
 # True dual-port block RAM with dual clocks and byte enables

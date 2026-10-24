@@ -100,7 +100,7 @@ module frost_sram_1w1r #(
   // The macros, in order of preference (asic/openram.py, MACROS), and the
   // memories they build. An earlier macro that also fits takes a memory.
   localparam int unsigned ArrayMacro = 0;
-  localparam int unsigned Macro4096x64m8 = 1;  // L2 data
+  localparam int unsigned Macro4096x64m8 = 1;  // L2 data and NIC transmit buffer
   localparam int unsigned Macro1024x64m8 = 2;  // L1D data
   localparam int unsigned Macro1024x19 = 3;  // L1D tags
   localparam int unsigned Macro1024x18 = 4;  // L2 tags
@@ -109,6 +109,7 @@ module frost_sram_1w1r #(
   localparam int unsigned Macro128x64m8 = 7;  // L1I data
   localparam int unsigned Macro8192x28 = 8;  // Instruction memory, cold banks
   localparam int unsigned Macro8192x4 = 9;  // Instruction memory, four-bit banks
+  localparam int unsigned Macro4096x8 = 10;  // NIC receive packet lanes
   function automatic int unsigned select_macro();
     if (fits(12, 64, 8)) select_macro = Macro4096x64m8;
     else if (fits(10, 64, 8)) select_macro = Macro1024x64m8;
@@ -119,12 +120,13 @@ module frost_sram_1w1r #(
     else if (fits(7, 64, 8)) select_macro = Macro128x64m8;
     else if (fits(13, 28, 0)) select_macro = Macro8192x28;
     else if (fits(13, 4, 0)) select_macro = Macro8192x4;
+    else if (fits(12, 8, 0)) select_macro = Macro4096x8;
     else select_macro = ArrayMacro;
   endfunction
   localparam int unsigned Macro = select_macro();
   localparam int unsigned TileAddrWidth =
       (Macro == Macro8192x28 || Macro == Macro8192x4) ? 13 :
-      (Macro == Macro4096x64m8) ? 12 :
+      (Macro == Macro4096x64m8 || Macro == Macro4096x8) ? 12 :
       (Macro == Macro1024x64m8 || Macro == Macro1024x19 || Macro == Macro1024x18) ? 10 :
       (Macro == Macro512x68) ? 9 :
       (Macro == Macro256x36) ? 8 :
@@ -136,7 +138,8 @@ module frost_sram_1w1r #(
       (Macro == Macro512x68) ? 68 :
       (Macro == Macro256x36) ? 36 :
       (Macro == Macro8192x28) ? 28 :
-      (Macro == Macro8192x4) ? 4 : DATA_WIDTH;
+      (Macro == Macro8192x4) ? 4 :
+      (Macro == Macro4096x8) ? 8 : DATA_WIDTH;
   // Bits per write-mask bit of the macro; 0 for whole-word writes.
   localparam int unsigned TileMaskGranule =
       (Macro == Macro4096x64m8 || Macro == Macro1024x64m8 || Macro == Macro128x64m8) ? 8 : 0;
@@ -327,6 +330,17 @@ module frost_sram_1w1r #(
           );
         end else if (Macro == Macro8192x4) begin : gen_macro
           sram_1w1r_8192x4 u_macro (
+              .clk0 (i_write_clock),
+              .csb0 (!write_select),
+              .addr0(write_address),
+              .din0 (write_data),
+              .clk1 (i_read_clock),
+              .csb1 (!read_select),
+              .addr1(read_address),
+              .dout1(tile_read_data)
+          );
+        end else if (Macro == Macro4096x8) begin : gen_macro
+          sram_1w1r_4096x8 u_macro (
               .clk0 (i_write_clock),
               .csb0 (!write_select),
               .addr0(write_address),

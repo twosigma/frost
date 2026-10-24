@@ -25,7 +25,8 @@
  * With USE_INIT_FILE, the array starts with the first 2**ADDR_WIDTH words of
  * the hex image INIT_FILE. Without it, the array has no initial contents,
  * and a simulation may fill ram directly. imem_predecode keeps its block
- * RAMs here.
+ * RAMs here, and the Ethernet MAC keeps its frame and packet buffers here
+ * with both ports on the corresponding MAC direction's clock.
  *
  * The ASIC flow defines FROST_SRAM_MACROS and keeps the array in
  * frost_sram_1w1r (asic/sram), in SRAM macros or flip-flops, with no initial
