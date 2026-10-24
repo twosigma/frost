@@ -34,6 +34,7 @@ from collections.abc import Callable
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge, ReadOnly, RisingEdge
+from cocotb.types import LogicArray
 from cocotb.utils import get_sim_time
 from typing import Any, TextIO
 
@@ -487,6 +488,24 @@ def _load_rvc_expand() -> Callable[[int], tuple[int, bool]]:
     return rvc_expand
 
 
+# A LogicArray is resolvable when every bit is 0, 1, L or H. Its
+# is_resolvable property builds a Logic object for every bit, too slow for
+# wide signals read every cycle, so _resolved_int checks the bit string, which
+# cocotb keeps in upper case.
+_UNRESOLVABLE_BIT = re.compile("[^01LH]")
+
+
+def _resolved_int(value: Any) -> int | None:
+    """Return a signal value as int, or None if a bit is not resolvable."""
+    if isinstance(value, LogicArray):
+        if _UNRESOLVABLE_BIT.search(str(value)):
+            return None
+        return int(value)
+    if value.is_resolvable:
+        return int(value)
+    return None
+
+
 def _read_int(signal: Any) -> int | None:
     """Read a signal as int, return None if not resolvable."""
     if signal is None:
@@ -499,9 +518,7 @@ def _read_int(signal: Any) -> int | None:
         value = signal.value
     except AttributeError:
         return None
-    if value.is_resolvable:
-        return int(value)
-    return None
+    return _resolved_int(value)
 
 
 def _read_bool(signal: Any) -> bool | None:
@@ -1096,9 +1113,7 @@ def _read_u64(signal: Any) -> int | None:
         value = signal.value
     except AttributeError:
         return None
-    if value.is_resolvable:
-        return int(value)
-    return None
+    return _resolved_int(value)
 
 
 def read_low_bram_words(dut: Any, byte_address: int, count: int) -> list[int]:
