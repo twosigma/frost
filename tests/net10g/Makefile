@@ -18,9 +18,16 @@ ROOT := $(abspath ../..)
 RTL := $(ROOT)/hw/rtl/net10g
 VERILOG_SOURCES := $(RTL)/eth10g_crc_pkg.sv $(RTL)/eth10g_pcs_pkg.sv
 VERILOG_SOURCES += $(filter-out %_pkg.sv,$(sort $(wildcard $(RTL)/*.sv)))
-# The fault-status crossing uses the library's two-flop synchronizer.
+# Library modules for the fault-status crossing and MAC buffers.
 VERILOG_SOURCES += $(ROOT)/hw/rtl/lib/cdc/cdc_sync.sv
+VERILOG_SOURCES += $(ROOT)/hw/rtl/lib/ram/sdp_block_ram_dc_init.sv
 VERILOG_SOURCES += $(sort $(wildcard $(CURDIR)/*_tb.sv))
+ifdef NET10G_SRAM_MACROS
+VERILOG_SOURCES += $(ROOT)/asic/sram/frost_sram_1w1r.sv
+VERILOG_SOURCES += $(sort $(wildcard $(ROOT)/asic/sram/macros/*/*.v))
+COMPILE_ARGS += +define+FROST_SRAM_MACROS --timing --x-assign unique --x-initial 0
+COCOTB_PLUSARGS += +verilator+rand+reset+2 +verilator+seed+1
+endif
 EXTRA_ARGS += -j 2
 # Pass the same frame limit to the RTL and stimulus generators.
 ifdef NET10G_MAX_FRAME_BYTES

@@ -19,6 +19,7 @@ import math
 import os
 import re
 import subprocess
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -587,6 +588,76 @@ def test_macro_size_reads_the_lef() -> None:
     """The summary takes each macro's size from its committed LEF."""
     assert orfs.macro_size("sram_1w1r_4096x64_m8") == (751.9, 845.13)
     assert orfs.macro_size("sram_missing") is None
+
+
+@pytest.mark.synthesis
+def test_mac_buffers_map_to_sram_and_only_descriptors_need_mocking(
+    tmp_path: Path,
+) -> None:
+    """The full-size MAC uses nine SRAMs; its large array is the descriptor queue."""
+    root = orfs.REPOSITORY_ROOT
+    net10g = root / "hw/rtl/net10g"
+    sources = sorted(net10g.glob("*_pkg.sv")) + sorted(
+        path for path in net10g.glob("*.sv") if not path.name.endswith("_pkg.sv")
+    )
+    converted = tmp_path / "net10g.v"
+    subprocess.run(
+        [
+            "sv2v",
+            "-DSYNTHESIS",
+            "--exclude=Always",
+            f"--write={converted}",
+            *map(str, sources),
+            "+RTS",
+            "-N2",
+            "-M2G",
+            "-RTS",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    converted.write_text(re.sub(r"\balways_comb\b", "always @*", converted.read_text()))
+    commands = [
+        f"read_liberty -lib {path}"
+        for path in sorted((ASIC_DIRECTORY / "sram/macros").glob("*/*.lib"))
+    ]
+    for source in (
+        converted,
+        root / "hw/rtl/lib/cdc/cdc_sync.sv",
+        root / "hw/rtl/lib/ram/sdp_block_ram_dc_init.sv",
+        ASIC_DIRECTORY / "sram/frost_sram_1w1r.sv",
+    ):
+        commands.append(f"read_verilog -sv -DSYNTHESIS -DFROST_SRAM_MACROS {source}")
+    netlist = tmp_path / "net10g.json"
+    commands += [
+        "hierarchy -check -top eth10g_mac_pcs",
+        "synth -top eth10g_mac_pcs -flatten -nofsm -run coarse",
+        "check -assert",
+        f"write_json {netlist}",
+    ]
+    subprocess.run(
+        ["yosys", "-Q", "-T", "-p", "; ".join(commands)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    cells = json.loads(netlist.read_text())["modules"]["eth10g_mac_pcs"]["cells"]
+    macros = Counter(
+        cell["type"] for cell in cells.values() if cell["type"].startswith("sram_")
+    )
+    assert macros == {"sram_1w1r_4096x64_m8": 1, "sram_1w1r_4096x8": 8}
+    large_arrays = []
+    for name, cell in cells.items():
+        if cell["type"] not in ("$mem", "$mem_v2"):
+            continue
+        rows = int(cell["parameters"]["SIZE"], 2)
+        width = int(cell["parameters"]["WIDTH"], 2)
+        if rows * width > 4096:
+            large_arrays.append((name, rows, width))
+    assert large_arrays == [("mac_rx.packet_length", 512, 14)]
 
 
 def test_summary_reports_a_partial_build(tmp_path: Path) -> None:

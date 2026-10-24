@@ -4,7 +4,9 @@ The 10GBASE-R Ethernet MAC and PCS in
 [`hw/rtl/net10g`](../../hw/rtl/net10g/README.md) have their own cocotb
 benches and a portable synthesis check. The benches compile only the
 `net10g` modules, the two-flop synchronizer they take from `hw/rtl/lib/cdc`
-(`cdc_sync.sv`), and the harnesses in this directory. They do not depend on
+(`cdc_sync.sv`), the `sdp_block_ram_dc_init` RAM wrapper, and the harnesses
+in this directory. The SRAM targets also compile the generated macro models
+in `asic/sram`. They do not depend on
 the CPU, software applications, the main test registry, or a GTY simulation
 model. The [RTL README](../../hw/rtl/net10g/README.md) describes the
 interfaces, rates, packet behavior, and implementation limits.
@@ -45,6 +47,7 @@ Cases that cannot occur at those limits are skipped.
 | `mac_rx` | Independent XGMII source and zlib FCS; both start lanes, including across enable gaps; malformed frames at every preamble position and termination lane; stalls and overflow; data and descriptor wraparound and rollback; mixed sizes; restart after early drops; clock-exact handshake release and final-beat credit; reset of the decode stage and output register |
 | `mac_rx_60`, `mac_rx_124` | The `mac_rx` cases at small frame limits, plus a frame that runs past the limit and out of space at once (reported as overlength) and admission with an empty output register |
 | `integration` | Independent raw-bitstream peers in both directions; AXIS stalls from startup; every receive bit phase; invalid termination lookahead; CRC rejection; PMA loss midframe and relock |
+| `mac_tx_sram_macros`, `mac_rx_sram_macros`, `integration_sram_macros` | The MAC and integration cases with the ASIC flow's SRAM models, including writes at falling edges, held TX reads, and undefined read data between accesses |
 
 The integration bench runs the transmit and receive clocks at the same period
 with different phases, so it does not test metastability or board clocking.

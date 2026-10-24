@@ -171,6 +171,13 @@ keeps a Gray-coded count in the source domain and accumulates 64-bit totals
 in the core domain. Its rebase input, driven while the domain is not READY,
 keeps a source reset from reading as a counter wrap.
 
+The MAC's frame and packet buffers use `sdp_block_ram_dc_init` from
+`hw/rtl/lib/ram`. Both ports of the TX frame buffer run on the TX clock;
+both ports of each RX packet byte lane run on the RX clock. These buffers
+have no initial image or reset of their contents. The MAC's full flags and
+published packet descriptors qualify the use of read data. The wrappers
+infer block RAM on the FPGA and use SRAM macros in the ASIC flow.
+
 ## Descriptor rings and the DMA path
 
 Descriptors are 16 bytes, two per 32-byte line:

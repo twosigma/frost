@@ -8,9 +8,10 @@ scrambling, the gearboxes, and block lock all in soft logic. The
 DMA, and Linux; it also builds and tests on its own.
 
 The top is `eth10g_mac_pcs`, and `net10g.f` lists its modules with paths
-relative to the repository root. Their one outside dependency is the
-two-flop synchronizer `cdc_sync` from `hw/rtl/lib/cdc`, which the including
-file list supplies (`cdc.f`). All datapaths are native 64-bit,
+relative to the repository root. Their library dependencies are the
+two-flop synchronizer `cdc_sync` from `hw/rtl/lib/cdc` and the RAM wrapper
+`sdp_block_ram_dc_init` from `hw/rtl/lib/ram`, which the including file list
+supplies through `cdc.f` and `ram.f`. All datapaths are native 64-bit,
 with separate transmit and receive clock domains and a raw parallel interface
 for a board's GTY wrapper (the X3's is `boards/x3/x3_nic_gty.sv`). There are
 no vendor primitive instances.
@@ -131,7 +132,13 @@ least 60.
 
 By default TX holds two complete frames of up to 9216 bytes each, in the two
 16 KiB halves of one RAM; RX has a 32 KiB circular data buffer and 512
-descriptors. Both data stores use synchronous reads suitable for block RAM.
+descriptors. Both data stores use `sdp_block_ram_dc_init` with no initial
+image: one 64-bit TX memory with an enabled read and eight independently
+addressed RX byte memories that read every clock. Each memory's two ports
+share its MAC direction's clock. The wrappers infer block RAM on the FPGA
+and use SRAM macros in the [ASIC flow](../../../asic/README.md#sram-macros).
+The FPGA build preserves the TX RAM's write-port enable nets through
+optimization, keeping the BRAM enable inputs active high.
 RX frame starts are word-aligned, and FCS bytes consume storage until the
 frame drains. A two-entry output register decouples the
 RX storage from AXIS backpressure.

@@ -205,12 +205,12 @@ def main() -> None:
     print(json.dumps(versions, indent=2), flush=True)
 
     rtl = root / "hw/rtl/net10g"
-    # The MAC/PCS modules, plus the library synchronizer its fault-status
-    # crossing instantiates.
+    # The MAC/PCS modules, their fault-status synchronizer and RAM wrapper.
     sources = (
         sorted(rtl.glob("*_pkg.sv"))
         + sorted(path for path in rtl.glob("*.sv") if not path.name.endswith("_pkg.sv"))
         + [root / "hw/rtl/lib/cdc/cdc_sync.sv"]
+        + [root / "hw/rtl/lib/ram/sdp_block_ram_dc_init.sv"]
     )
     manifest: dict[str, str] = {}
     snapshots = []
