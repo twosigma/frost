@@ -118,15 +118,37 @@ jobs:
               [branch_pred_test] or [c_ext_test] or [cf_ext_test] or [call_stress] or [fpu_test] or
               [fpu_assembly_test] or [isa_test] or [rv64_smoke] or [rv64_amo_test] or
               [spanning_test] or [ras_test] or [ras_stress_test] or [tomasulo_test] or
-              [tomasulo_perf] or [jal_target_seam] or [fetch_lead_repro] or [fetch_stall_repro] or
-              [window_skip_repro]
+              [tomasulo_perf] or [jal_target_seam] or [fetch_lead_repro] or [fetch_stall_repro]
+          - name: Real Programs (Fetch recovery)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: "[window_skip_repro]"
+          - name: Real Programs (Load queue slots)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: "[lq_stale_slot_probe]"
+          - name: Real Programs (C library and RTOS)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              [sprintf_test] or [strings_test] or [memory_test] or [freertos_demo] or
+              [packet_parser]
+          - name: Real Programs (DMA, NIC and coherence)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              [nic_loopback] or [nic_echo] or [dma_torture] or [dma_torture_equal_lines] or
+              [ptw_coherence_test] or [ptw_coherence_test_equal_lines] or [smc_fencei_test] or
+              [smc_fencei_test_equal_lines] or [ddr_test_equal_lines] or [ddr_exec_test_equal_lines]
+              or [ddr_atomic_test_equal_lines]
+          - name: Real Programs (Debug and UART)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              [debug_test] or [debug_openocd_test] or [bram_reload] or [instret_test] or
+              [hello_world] or [uart_burst] or [uart_echo] or [print_clock_speed]
           # The complement keeps new non-CoreMark-PRO programs in CI.
           # Keep it in sync when moving a test into a named shard.
           - name: Real Programs (Runtime and other)
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
-              not ([coremark] or [coremark_profile] or [amo_irq_torture_sim] or [tick_torture_sim] or
-              [drain_trapframe_test] or [restore_window_stress] or [mret_drain_deadlock] or
+              not ([coremark] or [coremark_profile] or [amo_irq_torture_sim] or [tick_torture_sim]
+              or [drain_trapframe_test] or [restore_window_stress] or [mret_drain_deadlock] or
               [linux_clksrc_faithful] or [trap_s2l_fwd] or [pde_return_hazard] or [csr_test] or
               [umode_test] or [pma_fault_test] or [vm_test] or [itlb_test] or [satp_drain_test] or
               [ad_fault_test] or [smode_test] or [csr_rmw_test] or [ptw_bus_fault_test] or
@@ -141,39 +163,36 @@ jobs:
               [fpu_assembly_test] or [isa_test] or [rv64_smoke] or [rv64_amo_test] or
               [spanning_test] or [ras_test] or [ras_stress_test] or [tomasulo_test] or
               [tomasulo_perf] or [jal_target_seam] or [fetch_lead_repro] or [fetch_stall_repro] or
-              [window_skip_repro] or [ddr_test] or [ddr_exec_test] or [ddr_smc_test] or
+              [window_skip_repro] or [lq_stale_slot_probe] or [sprintf_test] or [strings_test] or
+              [memory_test] or [freertos_demo] or [packet_parser] or [nic_loopback] or [nic_echo] or
+              [dma_torture] or [dma_torture_equal_lines] or [ptw_coherence_test] or
+              [ptw_coherence_test_equal_lines] or [smc_fencei_test] or [smc_fencei_test_equal_lines]
+              or [ddr_test_equal_lines] or [ddr_exec_test_equal_lines] or
+              [ddr_atomic_test_equal_lines] or [debug_test] or [debug_openocd_test] or [bram_reload]
+              or [instret_test] or [hello_world] or [uart_burst] or [uart_echo] or
+              [print_clock_speed] or [ddr_test] or [ddr_exec_test] or [ddr_smc_test] or
               [ddr_heap_test] or [ddr_mlp_test] or [ddr_atomic_test] or [ddr_bench] or
-              [hello_world_fetch_fuzz] or
-              [branch_pred_test_fetch_fuzz] or [c_ext_test_fetch_fuzz] or [call_stress_fetch_fuzz]
-              or [itlb_test_fetch_fuzz] or [opensbi_smoke] or [isa_test_sram_macros] or
-              [ddr_test_sram_macros] or [ddr_exec_test_sram_macros] or [nic_loopback_sram_macros])
+              [hello_world_fetch_fuzz] or [branch_pred_test_fetch_fuzz] or [c_ext_test_fetch_fuzz]
+              or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz] or [opensbi_smoke] or
+              [isa_test_sram_macros] or [ddr_test_sram_macros] or [ddr_exec_test_sram_macros] or
+              [nic_loopback_sram_macros])
           - name: Real Programs (CoreMark-PRO / core)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
             pytest_filter: "[coremark_pro_core]"
-          - name: Real Programs (CoreMark-PRO / cjpeg)
-            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: "[coremark_pro_cjpeg]"
-          - name: Real Programs (CoreMark-PRO / linear_alg)
-            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: "[coremark_pro_linear_alg]"
           - name: Real Programs (CoreMark-PRO / loops)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
             pytest_filter: "[coremark_pro_loops]"
           - name: Real Programs (CoreMark-PRO / nnet)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
             pytest_filter: "[coremark_pro_nnet]"
-          - name: Real Programs (CoreMark-PRO / parser)
-            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: "[coremark_pro_parser]"
           - name: Real Programs (CoreMark-PRO / radix2)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
             pytest_filter: "[coremark_pro_radix2]"
-          - name: Real Programs (CoreMark-PRO / sha)
+          - name: Real Programs (CoreMark-PRO / cjpeg, linear_alg, parser, sha, zip)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: "[coremark_pro_sha]"
-          - name: Real Programs (CoreMark-PRO / zip)
-            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: "[coremark_pro_zip]"
+            pytest_filter: >-
+              [coremark_pro_cjpeg] or [coremark_pro_linear_alg] or [coremark_pro_parser] or
+              [coremark_pro_sha] or [coremark_pro_zip]
         include:
           - mem_config: bram
             shard:
