@@ -34,6 +34,8 @@ FAST_BYTES = 64 * 1024
 @cocotb.test()
 async def test_default_capacity_streaming_and_boundary(dut: Any) -> None:
     """The default fast window covers 64 KiB without aliasing or bubbles."""
+    dut.i_port_a_rst.value = 1
+    dut.i_port_b_rst.value = 1
     dut.i_port_a_enable.value = 0
     dut.i_port_a_byte_address.value = 0
     dut.i_port_a_write_data.value = 0
@@ -43,6 +45,11 @@ async def test_default_capacity_streaming_and_boundary(dut: Any) -> None:
     dut.i_port_b_next_byte_address.value = 4
     Clock(dut.i_port_a_clk, reference.PORT_A_PERIOD_NS, unit="ns").start()
     Clock(dut.i_port_b_clk, reference.PORT_B_PERIOD_NS, unit="ns").start()
+    for _ in range(3):
+        await FallingEdge(dut.i_port_a_clk)
+    dut.i_port_a_rst.value = 0
+    await FallingEdge(dut.i_port_b_clk)
+    dut.i_port_b_rst.value = 0
 
     fast_addresses = (
         0,
@@ -56,12 +63,12 @@ async def test_default_capacity_streaming_and_boundary(dut: Any) -> None:
         0x8004,
         0xBFFC,
         0xC000,
+        0xC004,
         0xFFF8,
     )
     slow_addresses = (FAST_BYTES - 4, FAST_BYTES, 0x17C00, IMEM_BYTES)
-    # USE_INIT_FILE=0 initializes each word to its word index. Program only
-    # the sparse windows under test, including distinct rows whose addresses
-    # are equal modulo 16 KiB.
+    # Program every word read by the sparse windows, including distinct rows
+    # whose addresses are equal modulo 16 KiB.
     words = list(range(IMEM_BYTES // 4))
     write_indices = {
         ((address // 4) + offset) % len(words)

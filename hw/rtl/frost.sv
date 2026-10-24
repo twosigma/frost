@@ -108,6 +108,10 @@ module frost #(
     input logic i_cpu_clk = 1'b0,
     input logic i_clk_div4,
     input logic i_rst_n,
+`ifndef SYNTHESIS
+    // FPGA configuration supplies the power-up values; benches pulse this.
+    input logic i_power_on_rst,
+`endif
 
     input logic        i_instr_mem_en,
     input logic [ 3:0] i_instr_mem_we,
@@ -348,6 +352,11 @@ module frost #(
       .CLK_FREQ_HZ(CLK_FREQ_HZ),
       .RAW_LOOPBACK(RAW_LOOPBACK)
   ) cpu_and_memory_subsystem (
+`ifdef SYNTHESIS
+      .i_power_on_rst(1'b0),
+`else
+      .i_power_on_rst(i_power_on_rst),
+`endif
       .i_clk,
 `ifndef FROST_RVFI_DII
       .i_cpu_clk,

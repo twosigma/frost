@@ -324,6 +324,9 @@ module xilinx_frost_subsystem #(
       .DEBUG_JTAG_TAP(0),
       .RAW_LOOPBACK(RAW_LOOPBACK)
   ) frost_processor (
+`ifndef SYNTHESIS
+      .i_power_on_rst(1'b0),
+`endif
       .i_clk(i_clk),
       .i_clk_div4(i_clk_div4),
       .i_rst_n(i_rst_n & image_load_reset_n & programming_reset_n),  // Combined reset

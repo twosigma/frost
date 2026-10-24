@@ -175,8 +175,11 @@ seeded random reset. `FROST_RANDOM_START` selects unknown values for hardware
 declaration initializers and omits deterministic RAM fills. Verilator turns
 those unknowns into random bits. Assertion-history initializers and program
 image loads execute normally, including instruction predecode metadata.
-Reset then runs through the ordinary testbench sequence. Changing only the
-seed reuses the compiled model; enabling or disabling the mode rebuilds it.
+Instruction-image padding is zero in every packed copy, matching the
+generated bank images. The benches pulse power-on reset at time zero in both modes, alongside
+the ordinary system-reset sequence. Warm resets leave the transport
+handshake intact. Changing only the seed reuses the compiled model; enabling
+or disabling the mode rebuilds it.
 
 This is a two-state power-up test. It does not model metastability, reset
 recovery or removal timing, SRAM analog behavior, or power-domain sequencing.

@@ -260,11 +260,19 @@ async def generate_divided_clock(dut: Any) -> None:
 
     The dc_fifo crosses binary pointers without Gray coding and requires
     related clocks. Toggle i_clk_div4 on every second i_clk rising edge.
+    Apply power-on reset during the first eight core clock edges.
     """
     clock_edge = RisingEdge(dut.i_clk)
     divided = dut.i_clk_div4
     level = 0
+    dut.i_power_on_rst.value = 1
     divided.value = level
+    for _ in range(4):
+        await clock_edge
+        await clock_edge
+        level ^= 1
+        divided.value = level
+    dut.i_power_on_rst.value = 0
     while True:
         await clock_edge
         await clock_edge
@@ -4688,6 +4696,10 @@ async def test_real_program(dut: Any) -> None:
                 dut.i_external_interrupt.value = 0
             for _ in range(RESET_CYCLES):
                 await RisingEdge(dut.i_clk)
+            # Output qualifiers are arbitrary before the first completed reset.
+            uart_monitor.clear()
+            if line_monitor is not None:
+                line_monitor.clear()
             dut.i_rst_n.value = 1
 
         cocotb.log.info(f"=== Starting run {run_number} of {NUM_RUNS} ===")
