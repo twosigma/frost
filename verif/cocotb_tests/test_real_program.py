@@ -174,14 +174,15 @@ async def generate_divided_clock(dut: Any) -> None:
     The dc_fifo crosses binary pointers without Gray coding and requires
     related clocks. Toggle i_clk_div4 on every second i_clk rising edge.
     """
-    counter = 0
-    dut.i_clk_div4.value = 0
+    clock_edge = RisingEdge(dut.i_clk)
+    divided = dut.i_clk_div4
+    level = 0
+    divided.value = level
     while True:
-        await RisingEdge(dut.i_clk)
-        counter += 1
-        if counter == 2:
-            counter = 0
-            dut.i_clk_div4.value = 0 if int(dut.i_clk_div4.value) else 1
+        await clock_edge
+        await clock_edge
+        level ^= 1
+        divided.value = level
 
 
 # The NIC's MAC clock period (frost.sv i_nic_tx_clk and i_nic_rx_clk): 1.75
@@ -312,19 +313,24 @@ class UartMonitor:
 
     async def _monitor_uart(self) -> None:
         """Monitor UART write signals and collect characters."""
+        clock_edge = RisingEdge(self.dut.i_clk)
+        try:
+            platform = self.dut.cpu_and_memory_subsystem
+            wr_en, wr_data = platform.o_uart_wr_en, platform.o_uart_wr_data
+        except AttributeError:
+            # The UART signals may be optimized out in some simulators.
+            wr_en = wr_data = None
         while self._running:
-            await RisingEdge(self.dut.i_clk)
-            try:
-                uart_wr_en = self.dut.cpu_and_memory_subsystem.o_uart_wr_en.value
-                if uart_wr_en.is_resolvable and uart_wr_en == 1:
-                    uart_data = self.dut.cpu_and_memory_subsystem.o_uart_wr_data.value
-                    if uart_data.is_resolvable:
-                        char = chr(int(uart_data))
-                        self.output_buffer += char
-                        print(char, end="", flush=True)
-            except AttributeError:
-                # The UART signals may be optimized out in some simulators.
-                pass
+            await clock_edge
+            if wr_en is None:
+                continue
+            uart_wr_en = wr_en.value
+            if uart_wr_en.is_resolvable and uart_wr_en == 1:
+                uart_data = _resolved_int(wr_data.value)
+                if uart_data is not None:
+                    char = chr(uart_data)
+                    self.output_buffer += char
+                    print(char, end="", flush=True)
 
     def contains(self, text: str) -> bool:
         """Check if the output buffer contains the given text."""
@@ -3238,8 +3244,35 @@ async def run_until_complete(
             f"of {coremark_retire_trace_symbol} to {coremark_retire_trace_path}"
         )
 
+    # Writeback ports whose x2 writes the IRQ precision check and the traces
+    # follow; a port without a write-enable tap never writes.
+    x2_writeback_ports = [
+        port
+        for port in (
+            (
+                port0_int_we_sig,
+                port0_int_addr_sig,
+                port0_int_data_sig,
+                rob_commit0_reg_pc_sig,
+            ),
+            (
+                port1_int_we_sig,
+                port1_int_addr_sig,
+                port1_int_data_sig,
+                rob_commit1_reg_pc_sig,
+            ),
+        )
+        if port[0] is not None
+    ]
+    fatal_line = FATAL_WRITEBACK_LINES.get(app_name) if app_name else None
+    # The UART output only grows during a run, so the marker checks can only
+    # change in a cycle that added to it. Once <<EXPECT_FATAL>> is out, the
+    # fatal-stop check runs every cycle.
+    checked_output_length = -1
+    expect_fatal = False
+    clock_edge = RisingEdge(dut.i_clk)
     for cycle in range(max_cycles):
-        await RisingEdge(dut.i_clk)
+        await clock_edge
         if external_irq_enabled and hasattr(dut, "i_external_interrupt"):
             if external_irq_active:
                 if external_irq_hold_remaining > 0:
@@ -3291,7 +3324,7 @@ async def run_until_complete(
             raw_x2_events = []
             for (
                 valid_sig,
-                pc_sig,
+                commit_pc_sig,
                 dest_valid_sig,
                 dest_rf_sig,
                 dest_reg_sig,
@@ -3321,7 +3354,7 @@ async def run_until_complete(
                     and _read_int(dest_reg_sig) == 2
                 ):
                     value = _read_int(value_sig)
-                    pc = _read_int(pc_sig)
+                    pc = _read_int(commit_pc_sig)
                     last_x2_raw_commit = value
                     last_x2_raw_commit_pc = pc
                     raw_x2_events.append(f"0x{(value or 0):08x}@0x{(pc or 0):08x}")
@@ -3329,7 +3362,7 @@ async def run_until_complete(
             current_x2_commit = last_x2_commit
             current_x2_commit_pc = last_x2_commit_pc
             wb_x2_events = []
-            for port_name, we_sig, addr_sig, data_sig, pc_sig in (
+            for port_name, we_sig, addr_sig, data_sig, commit_pc_sig in (
                 (
                     "p0",
                     port0_int_we_sig,
@@ -3347,7 +3380,7 @@ async def run_until_complete(
             ):
                 if bool(_read_bool(we_sig)) and _read_int(addr_sig) == 2:
                     value = _read_int(data_sig)
-                    pc = _read_int(pc_sig)
+                    pc = _read_int(commit_pc_sig)
                     current_x2_commit = value
                     current_x2_commit_pc = pc
                     wb_x2_events.append(
@@ -3465,23 +3498,10 @@ async def run_until_complete(
                         f"mepc=0x{(_read_int(csr_mepc_live_sig) or 0):08x}"
                     )
 
-        for we_sig, addr_sig, data_sig, pc_sig in (
-            (
-                port0_int_we_sig,
-                port0_int_addr_sig,
-                port0_int_data_sig,
-                rob_commit0_reg_pc_sig,
-            ),
-            (
-                port1_int_we_sig,
-                port1_int_addr_sig,
-                port1_int_data_sig,
-                rob_commit1_reg_pc_sig,
-            ),
-        ):
+        for we_sig, addr_sig, data_sig, commit_pc_sig in x2_writeback_ports:
             if bool(_read_bool(we_sig)) and _read_int(addr_sig) == 2:
                 last_x2_commit = _read_int(data_sig)
-                last_x2_commit_pc = _read_int(pc_sig)
+                last_x2_commit_pc = _read_int(commit_pc_sig)
 
         for (
             write_we_sig,
@@ -3726,7 +3746,12 @@ async def run_until_complete(
                         f"0x{(dispatch_instr or 0):08x}, sw.S has {sw_s_text}"
                     )
 
-        if is_coremark_like and len(coremark_matrix_events) < coremark_matrix_limit:
+        # Without the symbol ranges no PC is in the window.
+        if (
+            is_coremark_like
+            and coremark_symbol_ranges
+            and len(coremark_matrix_events) < coremark_matrix_limit
+        ):
             if_pc = _read_int(if_pc_sig)
             pd_pc = _read_int(pd_pc_sig)
             id_pc = _read_int(id_pc_sig)
@@ -4152,14 +4177,21 @@ async def run_until_complete(
             last_progress_retired = retired_count
             last_progress_mispredicts = retired_mispredicts
 
+        output_length = len(uart_monitor.get_output())
+        output_changed = output_length != checked_output_length
+        checked_output_length = output_length
+
         # The failure marker is checked first, so it wins if both appear.
-        if uart_monitor.contains(FAIL_MARKER):
+        if output_changed and uart_monitor.contains(FAIL_MARKER):
             cocotb.log.error(f"Run {run_number} FAILED: Program printed failure marker")
             test_failed = True
             break
 
-        fatal_line = FATAL_WRITEBACK_LINES.get(app_name) if app_name else None
-        if fatal_line is not None and uart_monitor.contains("<<EXPECT_FATAL>>"):
+        if fatal_line is not None and (
+            expect_fatal
+            or (output_changed and uart_monitor.contains("<<EXPECT_FATAL>>"))
+        ):
+            expect_fatal = True
             platform = dut.cpu_and_memory_subsystem
             if int(platform.cpu.o_fatal_error.value):
                 assert int(platform.cpu.o_fatal_addr.value) == fatal_line
@@ -4176,6 +4208,8 @@ async def run_until_complete(
                 test_passed = True
                 break
 
+        if not output_changed:
+            continue
         if has_defined_endpoint:
             # Test suite: look for pass marker
             if success_marker and uart_monitor.contains(success_marker):
@@ -4197,7 +4231,7 @@ async def run_until_complete(
                 test_passed = True
                 # Continue running a bit more to let output complete
                 for _ in range(10000):
-                    await RisingEdge(dut.i_clk)
+                    await clock_edge
                 break
 
     close_coremark_retire_trace()
