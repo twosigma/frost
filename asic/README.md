@@ -17,8 +17,9 @@ memory, the NIC's FIFOs and MAC frame and packet buffers, and the BTB's
 slot-2 payload tables ([SRAM macros](#sram-macros)). The L2 holds 256 KiB,
 where the X3's holds 2 MiB, so that the flow fits CI's runners ([CI](#ci)).
 Arrays of 4,096 bits or less, such as the L1I's tags and the caches'
-replacement state, become flip-flops. The other memories larger than 4,096 bits are mocked: each keeps
-a single row, built from flip-flops. They are arrays read without a clock,
+replacement state, become flip-flops. The other memories larger than 4,096
+bits are mocked: each keeps a single row, built from flip-flops. They are
+arrays read without a clock,
 such as the BTB tags, the TAGE tables, the instruction memory's PC-metadata
 overlays, the MAC's packet descriptors, and banks of the ROB and the INT RS,
 which an ASIC would build from flip-flops or latches rather than SRAM.
@@ -199,8 +200,8 @@ differ from the block RAMs they replace in these cases:
   fetched after its final write. Its macro write therefore completes at least
   half a period before the rising edge that requests that read. Output
   handshakes return storage credit after copying, so allocation cannot
-  overwrite a word that the reader needs. Unused RX fetches may collide with writes;
-  the reader discards them and fetches again. The RX simulation check
+  overwrite a word that the reader needs. Unused RX fetches may collide with
+  writes; the reader discards them and fetches again. The RX simulation check
   rejects a copied word whose fetch shared a write's edge.
 - The macros have no initial contents and no bulk clear. Simulation starts
   the data memory and the instruction memory with their program images,
@@ -424,7 +425,7 @@ mocked and I/O delays counted from the clock at its port.
 | Standard cells, final | 752,118, 1.46 mm^2 | 1,045,105, 1.78 mm^2 | 988,462, 1.83 mm^2 |
 | Hold buffers from clock tree synthesis | 11,347 | 22,495 | 642 |
 | Routed wire | 20.1 m | 68.6 m | 48.5 m |
-| Core clock latency, final | about 1 ns | 2.94 to 3.65 ns | 1.93 / 2.44 ns, worst-skew path |
+| Core clock latency, final | about 1 ns | 2.94 to 3.65 ns | 1.93 and 2.44 ns on the most-skewed path |
 | Clock skew, final | 0.15 ns | 0.55 ns | 0.51 ns |
 | Core clock setup WNS, final | 0.375 ns | -0.955 ns | -0.350 ns |
 | Worst core path between registers, final | met | -0.955 ns | -0.350 ns |
@@ -438,9 +439,9 @@ The macros occupy 17.1 mm^2 of the 31.3 mm^2 die. The L2's eight data
 macros take 5.1 mm^2, the instruction memory's twelve take 3.5 mm^2, and
 the MAC's nine frame and packet macros take 1.55 mm^2. The logic fills the
 band between the top macros and the instruction memory's row and the room
-around the macros. The routed wire totals 48.5 m. The core clock path with
-the largest setup skew has 2.44 ns of source latency and 1.93 ns of capture
-latency, giving 0.51 ns of skew.
+around the macros. The routed wire totals 48.5 m. On the path with the most
+setup skew, the core clock reaches the launching register 2.44 ns after its
+pin and the capturing register 1.93 ns after it, 0.51 ns apart.
 
 Between registers, the paths from the L1D's tag macros to its read-way
 selection registers fail worst, by up to 0.350 ns. The data memory's macros
@@ -678,9 +679,9 @@ Four chained jobs run the flow on every pull request and every push to
 
 The last job's step summary shows `summary.md`, and its `asic-flow-results`
 artifact holds the logs, reports, and summary of all four. The runners have
-four CPUs and 16 GB of memory. The global routing, detailed routing, and
-final report jobs add swap space. Each job also deletes preinstalled
-toolchains to make room for the databases.
+four CPUs and 16 GB of memory, less than global routing, detailed routing,
+and the final report need, so their jobs add swap space. Each job also
+deletes preinstalled toolchains to make room for the databases.
 
 Detailed routing reuses the pin access saved in the global routing database.
 On the same 256 KiB input with four threads, `-no_pin_access` cut its CPU
