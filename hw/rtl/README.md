@@ -64,7 +64,7 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 | `cpu_and_mem/imem_predecode.sv` | Low-BRAM instruction memory and predecode metadata |
 | `cpu_and_mem/low_bram_fetch_presenter.sv` | Fixed-latency TestRIG and unit-bench fetch presenter |
 | `cpu_and_mem/fetch_provider.sv` | Cached and uncached instruction fetch buffers |
-| `cpu_and_mem/dma_test_engine.sv` | Coherent DMA copy/fill engine |
+| `cpu_and_mem/dma_test_engine.sv`, `dma_test_engine_axi.sv` | Coherent DMA copy/fill engine, and its AXI4 master |
 | `cpu_and_mem/hang_triage.sv` | UART diagnostics for hardware hangs (`ENABLE_HANG_TRIAGE=1`; default 0) |
 | `cpu_and_mem/debug/` | JTAG transport and RISC-V debug module |
 | `cpu_and_mem/cpu/cpu_ooo/` | CPU integration and pipeline control |

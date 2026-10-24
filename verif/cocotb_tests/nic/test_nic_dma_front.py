@@ -510,3 +510,93 @@ async def test_fabric_errors_reach_both_engines(dut: Any) -> None:
     port.stop()
     rx.stop()
     tx.stop()
+
+
+@cocotb.test()
+async def test_same_line_stream_cannot_hold_a_request(dut: Any) -> None:
+    """A stream of writes to a line cannot hold a read of it for long.
+
+    RX writes the line back to back, each write answered after 8 to 12
+    cycles, so one is always in flight. Once the read has waited HOLD_LIMIT
+    cycles RX can load no more, its writes drain, and the read goes while RX
+    still has writes to issue.
+    """
+    await _setup(dut)
+    port = _PortModel(dut, latency=(8, 12), reorder=False, seed=11)
+    bus = _ReqBus(dut)
+    rx, tx = _Engine(dut, 0, bus), _Engine(dut, 1, bus)
+    line = BASE + 0xC00
+    hold_limit = int(dut.HOLD_LIMIT.value)
+
+    async def stream() -> None:
+        for k in range(4 * hold_limit):
+            await rx.request(line, 0, k % 16, write=True)
+
+    task = cocotb.start_soon(stream())
+    for _ in range(20):
+        await FallingEdge(dut.i_clk)
+    assert any(r["write"] for r in port.accepted), "the stream never started"
+    waited = await tx.request(line + 8, 1, 3)
+    start = port.cycle
+    for _ in range(hold_limit + 60):
+        if any(not r["write"] for r in port.accepted):
+            break
+        await FallingEdge(dut.i_clk)
+    reads = [r for r in port.accepted if not r["write"]]
+    assert reads, (
+        f"the read waited more than {hold_limit + 60} cycles (load wait {waited})"
+    )
+    assert reads[0]["cycle"] - start <= hold_limit + 40, reads[0]
+    # RX still had writes to issue when the read went.
+    assert len([r for r in port.accepted if r["write"]]) < 4 * hold_limit
+    await task
+    await _idle(dut)
+    assert len(rx.responses) == 4 * hold_limit and len(tx.responses) == 1
+    port.stop()
+    rx.stop()
+    tx.stop()
+
+
+@cocotb.test()
+async def test_same_line_waits_for_the_other_direction(dut: Any) -> None:
+    """A read of a line with a write in flight waits for its response, and back."""
+    await _setup(dut)
+    port = _PortModel(dut, seed=9)
+    port.hold = True
+    bus = _ReqBus(dut)
+    rx, tx = _Engine(dut, 0, bus), _Engine(dut, 1, bus)
+    line = BASE + 0x400
+    other = BASE + 0x800
+    # Write then read of one line: the read must wait for the write.
+    await rx.request(line, 0, 1, write=True)
+    await tx.request(line + 8, 1, 2)
+    # The other direction's traffic to other lines still flows.
+    await rx.request(other, 0, 3, write=True)
+    for _ in range(40):
+        await FallingEdge(dut.i_clk)
+    assert [r["addr"] for r in port.accepted] == [line, other], port.accepted
+    port.hold = False
+    await _idle(dut)
+    assert [(r["addr"], r["write"]) for r in port.accepted] == [
+        (line, 1),
+        (other, 1),
+        (line + 8, 0),
+    ]
+    # Read then write of one line: the write must wait for the read.
+    port.hold = True
+    start = len(port.accepted)
+    await tx.request(other + 16, 1, 4)
+    await rx.request(other + 4, 2, 5, write=True)
+    for _ in range(40):
+        await FallingEdge(dut.i_clk)
+    assert [r["addr"] for r in port.accepted[start:]] == [other + 16]
+    port.hold = False
+    await _idle(dut)
+    assert [(r["addr"], r["write"]) for r in port.accepted[start:]] == [
+        (other + 16, 0),
+        (other + 4, 1),
+    ]
+    assert len(rx.responses) == 3 and len(tx.responses) == 2
+    port.stop()
+    rx.stop()
+    tx.stop()

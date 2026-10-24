@@ -3,8 +3,9 @@
 FROST's NIC puts the [10GBASE-R MAC/PCS](../../net10g/README.md) on the SoC.
 Software sees a 4 KiB register window at `0x4003_0000` and one interrupt
 (APLIC source 4). Frames move through RX and TX descriptor rings in cached
-DDR, which the NIC reads and writes over the cache hierarchy's coherent DMA
-port, so the driver needs no cache maintenance. Packet FIFOs cross between
+DDR, which the NIC reads and writes through its AXI4 master and the
+cache hierarchy's coherent DMA port, so the driver needs no cache
+maintenance. Packet FIFOs cross between
 the CPU clock and the MAC's two clocks; on the X3 those are the transceiver's
 161.13 MHz TX and RX clocks. This file is the hardware reference the Linux
 driver ([`frost_net10g`](../../../../linux/frost-net10g/README.md)) follows.
@@ -12,11 +13,11 @@ driver ([`frost_net10g`](../../../../linux/frost-net10g/README.md)) follows.
 | Module | Domain | Responsibility |
 | --- | --- | --- |
 | `nic_pkg.sv` | - | Register map, interrupt bits, beat codes, request kinds, and descriptor bits, shared with the benches and `sw/lib/include/nic.h` |
-| `nic_top.sv` | all | The NIC: the core-domain blocks below around `nic_mac_wrap`. Faces the SoC with the register window, DMA line port, and interrupt, and the board with the MAC clocks, the raw PMA interface, and the PCS block lock |
+| `nic_top.sv` | all | The NIC: the core-domain blocks below around `nic_mac_wrap`, and a `line_port_axi_bridge` (from `hw/rtl/lib/cache`) that carries the DMA front end's line requests over AXI4. Faces the SoC with the register window, the AXI4 DMA master, and the interrupt, and the board with the MAC clocks, the raw PMA interface, and the PCS block lock |
 | `nic_csr.sv` | core | Register file: control, status, station address, rings, link and PHY registers, 64-bit counters |
 | `nic_irq.sv` | core | Interrupt status, mask, and per-direction completion moderation |
 | `nic_mac_wrap.sv` | MAC + core | The MAC/PCS in its two domains, the packet FIFOs, the domain resets, status synchronizers, event counters, and the raw loopback (`RAW_LOOPBACK`) |
-| `nic_dma_front.sv` | core | Both engines' requests onto the one DMA line port: four entries with at most three per side, RX priority with a grant-counted bound, response steering, aperture refusal, and the RESET drain |
+| `nic_dma_front.sv` | core | Both engines' requests onto the one DMA line port: eight entries with at most six per side, an order guard for a read and a write of one line, RX priority with a grant-counted bound, response steering, aperture refusal, and the RESET drain |
 | `nic_desc_fetch.sv` | core | One ring's descriptor supply: prefetch cursor, two-line cache, eligibility fixed when the read is requested |
 | `nic_rx_engine.sv` | core | Frames from the RX FIFO into ring buffers: filter, `nic_byte_pack`, truncation, status writes |
 | `nic_tx_engine.sv` | core | Ring buffers into the TX FIFO: validation, reads through a reorder buffer, `nic_byte_unpack`, status writes |
@@ -37,7 +38,7 @@ The crossing primitives live in `hw/rtl/lib/cdc` (`cdc_sync`,
 | --- | --- |
 | Registers | A 4 KiB window at `0x4003_0000`, inside the strongly ordered MMIO range |
 | Interrupt | APLIC source 4 |
-| DMA | The cache hierarchy's coherent DMA port, through a two-port `line_port_arbiter` shared with the DMA test engine. The NIC is port 0 and has priority, within the arbiter's starvation bound. Each agent uses 2-bit ids, and the arbiter adds the port bit |
+| DMA | An AXI4 master with 256-bit data, 3-bit ids and 64-bit addresses. Each line request is one 32-byte beat (AxLEN 0, AxSIZE 5, INCR) at its full physical address, and an SLVERR or DECERR response fails it. `soc_top` connects it to port 0 of the `axi_mux` it shares with the DMA test engine, round-robin per burst, and `axi_coherent_bridge` takes the bursts to the cache hierarchy's coherent DMA port ([AXI library](../../lib/axi/README.md)) |
 | MAC clocks | `frost.sv` brings in the TX and RX clocks separately, each with a presence level (`i_nic_tx_clk`, `i_nic_rx_clk`, `i_nic_tx_clk_ok`, `i_nic_rx_clk_ok`), and gives the PHY inputs defaults |
 | Block lock | `o_nic_rx_block_lock` exports the PCS block lock (LINK's RX_LOCKED, already synchronized to the core clock) for a board's transceiver supervisor |
 
@@ -237,9 +238,17 @@ that the frame reached the wire.
 `nic_dma_front` puts both engines on the one DMA port. Every request an
 engine hands it gets exactly one response.
 
-- It has four entries, and the port id is the entry index, so every
+- It has eight entries, and the port id is the entry index, so every
   accepted request has a place for its response. Each engine may hold at most
-  three, so the other always finds one.
+  six, so the other always finds one.
+- It presents a request only while no entry of the other kind (a read
+  against a write, or a write against a read) holds its line. The AXI4
+  master carries reads and writes on separate channels, which AXI does not
+  order against each other, so a read and a write of one line keep the order
+  in which the front end issued them. Once a request has been held this
+  way for `HOLD_LIMIT` (64) cycles in all, the other engine hands over no
+  new requests until it has gone, so a stream of requests to its line
+  cannot hold it forever.
 - It presents RX before TX, but a TX request that has watched
   `STARVATION_LIMIT` (8) RX grants goes first.
 - When the port refuses a request (for example, because the DMA sequencer
@@ -361,10 +370,10 @@ final scan.
 | --- | --- |
 | `async_fifo`, `cdc_gray_count` | Clock crossings, ordering, reset, and event counts |
 | `nic_irq`, `nic_reset` | Interrupt moderation, reset and drain, and absent or lost clocks |
-| `nic_dma_front` | Tagged responses, fairness, aperture errors, and drain |
+| `nic_dma_front` | Tagged responses, fairness, aperture errors, drain, and the same-line order guard with its bound on waiting |
 | `nic_byte_pack`, `nic_byte_unpack` | Byte placement, alignment, truncation, and backpressure |
 | `nic_rx_engine`, `nic_tx_engine` | Rings, filtering, buffer and status ordering, malformed descriptors, aborts, and disables |
-| `nic_top` | Whole NIC with three clocks and raw loopback |
+| `nic_top` | Whole NIC with three clocks and raw loopback, its AXI4 master against a reordering slave, and SLVERR on buffer reads and writes |
 | `nic_top_unrelated_clocks` | Independent TX and RX clocks with `RAW_LOOPBACK=0` |
 | `nic_loopback`, `nic_echo` | Full-system software tests in both memory tiers |
 

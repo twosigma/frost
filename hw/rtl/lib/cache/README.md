@@ -22,7 +22,7 @@ still dirty in the L1D, and software never flushes a cache for them.
 | `dma_coherence_sequencer.sv` | Takes each DMA request through the L1D, and each DMA write through the load queue as well, before it reaches the L2 |
 | `walker_coherence_sequencer.sv` | Probes the L1D before each page-table walk read reaches the L2; one read in flight |
 | `l2_stream_prefetcher.sv` | Watches the L1D's misses and reads the lines ahead of ascending streams into the L2, never past the page of the last miss |
-| `line_port_axi_bridge.sv` | Line port to single-beat AXI4 master; line ids become AXI ids, and each response carries the error bit of its RRESP or BRESP |
+| `line_port_axi_bridge.sv` | Line port to single-beat AXI4 master; line ids become AXI ids, and each response carries the error bit of its RRESP or BRESP. The NIC's DMA master is one |
 | `axi_behavioral_memory.sv` | Simulation-only DDR model: concurrent transactions, latency and jitter settings, optional out-of-order completion, and injected error responses |
 | `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, and writeback pulses, hit-under-miss, the outstanding-miss count, and two stall classes; and the L2's write costs: write misses that fetch their line, and writes that wait for a read of their line |
 | `*_test_harness.sv` | cocotb tops: hierarchy + bridge + memory (with a bench-paced hold on the bridge), and arbiter + bridge + memory |
@@ -332,8 +332,9 @@ ids, `L2_DOWN_ID_BITS` wide: 5 on the X3, the AXI id width its DDR block
 design provides (`fpga/build/x3_ddr_bd.tcl`). The L1D spends one of its 4
 bits on the fill/writeback type and 3 on its 8 miss slots. The L1I has 2 miss
 slots, all its master, the two-line fetch buffer, ever uses. The walker keeps
-one walk in flight and uses id 0. The NIC uses 2 bits of the DMA port's ids,
-and the prefetcher's 4 reads in flight use 2 of its 3.
+one walk in flight and uses id 0. `axi_coherent_bridge`, the DMA port's one
+agent in FROST, uses 3 bits of its ids, and the prefetcher's 4 reads in
+flight use 2 of its 3.
 
 The bridge drops any response whose id is not in flight. That is how a
 transaction interrupted by an image-load CPU reset drains harmlessly on
@@ -353,7 +354,8 @@ before the loader's first DDR write.
 
 Production `cpu_top` uses `cpu_memory_fabric` and `cpu_axi_master` to combine
 cache lines with narrow uncached data and instruction traffic.
-`line_port_axi_bridge` is a library and component-test block. ID allocation
+`line_port_axi_bridge` carries the NIC's DMA requests over AXI4 and connects
+the component tests' hierarchies to their memory models. ID allocation
 and AXI attributes are documented in the [CPU interface](../../cpu_top/README.md).
 
 With `ENABLE_RESPONSE_ERRORS=1`, SLVERR/DECERR on a read fill returns an error
@@ -364,7 +366,8 @@ fatal address and stop CPU retirement. They cannot be made precise after a
 buffered store has retired. FROST's SoC also counts board DDR error responses
 in `memory_error_unit`; `memerr_test` checks the read exception, ECC/APLIC
 reporting and final fatal writeback stop. Coherent responses carry errors
-through the DMA sequencer and arbiter to their agents. `ENABLE_RESPONSE_ERRORS`
+through the DMA sequencer and arbiter to `axi_coherent_bridge`, which answers
+SLVERR to the NIC or the DMA test engine. `ENABLE_RESPONSE_ERRORS`
 defaults to 0 in the library modules; `cpu_top` sets it to 1.
 
 The behavioral DDR model accepts `+axi_rd_error_addr=<hex>` and

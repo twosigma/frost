@@ -40,6 +40,24 @@
  * destination reserved (the descriptor cache line, the reorder slot), and a
  * write holds nothing but its entry.
  *
+ * Same-line order. A request is presented only while no entry of the other
+ * direction (a read against a write, or a write against a read) holds its
+ * 32-byte line. The port's AXI master carries reads and writes on separate
+ * channels, which AXI does not order against each other, so a request that
+ * shares a line with one in flight in the other direction waits for that
+ * response, and is presented the cycle after it. It then observes what it
+ * would have observed queued behind it at the coherent ingress, so the
+ * engines see the outcomes they saw when the port's fire ordered requests.
+ * Same-direction requests stay in order on their channel. The check is
+ * registered like the eligibility: a request already registered is compared
+ * by its whole line with the entries the next cycle holds, and one loaded
+ * this cycle, whose address comes late from its engine, by the low HashBits
+ * bits of its line, so it may wait a cycle it does not need, never fewer than
+ * it must. Once the check has held a request for HOLD_LIMIT cycles in all,
+ * the other engine loads no new requests until that request has gone, so a
+ * stream of the other direction's requests to its line cannot hold it
+ * forever: their entries drain and the check clears.
+ *
  * An address outside the cached-DDR aperture is refused locally: the request
  * is not loaded, and the engine gets a response with o_resp_error set and
  * the request's kind and tag. That response waits behind a real response to
@@ -55,6 +73,7 @@ module nic_dma_front #(
     parameter int unsigned NUM_ENTRIES = 4,
     parameter int unsigned SIDE_CAP = 3,
     parameter int unsigned STARVATION_LIMIT = 8,
+    parameter int unsigned HOLD_LIMIT = 64,
     parameter int unsigned TAG_BITS = 4,
     parameter logic [63:0] APERTURE_BASE = 64'h8000_0000,
     parameter logic [63:0] APERTURE_BYTES = 64'h4000_0000,
@@ -95,12 +114,17 @@ module nic_dma_front #(
     input  logic [LINE_BYTES*8-1:0] i_dma_resp_rdata
 );
   localparam int unsigned CountBits = $clog2(NUM_ENTRIES + 2);
-  localparam int unsigned WaitBits  = $clog2(STARVATION_LIMIT + 1);
+  localparam int unsigned OffsetBits = $clog2(LINE_BYTES);
+  localparam int unsigned LineBits = ADDR_WIDTH - OffsetBits;
+  localparam int unsigned WaitBits = $clog2(STARVATION_LIMIT + 1);
+  localparam int unsigned HoldBits = $clog2(HOLD_LIMIT + 1);
+  localparam int unsigned HashBits = 3;  // line bits a newly loaded request is compared by
 
   initial begin
     if (SIDE_CAP >= NUM_ENTRIES)
       $fatal(1, "nic_dma_front: SIDE_CAP must leave an entry to the other side");
     if (SIDE_CAP < 1) $fatal(1, "nic_dma_front: SIDE_CAP must be >= 1");
+    if (HOLD_LIMIT < 1) $fatal(1, "nic_dma_front: HOLD_LIMIT must be >= 1");
   end
 
   function automatic logic in_aperture(input logic [ADDR_WIDTH-1:0] a);
@@ -112,6 +136,9 @@ module nic_dma_front #(
   logic [NUM_ENTRIES-1:0] ent_valid_q, ent_valid_n;
   logic [NUM_ENTRIES-1:0] ent_owner_q;  // 0 RX, 1 TX
   logic [1:0] ent_kind_q[NUM_ENTRIES];
+  // Each entry's line and direction, for the same-line order check.
+  logic [LineBits-1:0] ent_line_q[NUM_ENTRIES];
+  logic [NUM_ENTRIES-1:0] ent_write_q;
   logic [TAG_BITS-1:0] ent_tag_q[NUM_ENTRIES];
   logic [IdBits-1:0] free_idx;
   always_comb begin
@@ -150,10 +177,19 @@ module nic_dma_front #(
   logic [1:0][1:0] err_kind_q;
   logic [1:0][TAG_BITS-1:0] err_tag_q;
 
+  // Cycles each engine's registered request has been held by the same-line
+  // check; from HOLD_LIMIT until the request leaves, the other engine loads
+  // nothing.
+  logic [1:0][HoldBits-1:0] held_for_q;
+  logic [1:0] long_hold;
+  always_comb begin
+    for (int e = 0; e < 2; e++) long_hold[e] = held_for_q[e] == HoldBits'(HOLD_LIMIT);
+  end
+
   logic [1:0] load, refuse;
   always_comb begin
     for (int e = 0; e < 2; e++) begin
-      o_req_ready[e] = !rq_valid_q[e] && !err_pending_q[e] && !stop_q &&
+      o_req_ready[e] = !rq_valid_q[e] && !err_pending_q[e] && !stop_q && !long_hold[1-e] &&
           ((held[e] + CountBits'(rq_valid_q[e])) < CountBits'(SIDE_CAP));
       load[e] = i_req_valid[e] && o_req_ready[e] && in_aperture(i_req_addr[e]);
       refuse[e] = i_req_valid[e] && o_req_ready[e] && !in_aperture(i_req_addr[e]);
@@ -161,25 +197,26 @@ module nic_dma_front #(
   end
 
   // ---- arbitration toward the port ----------------------------------------------
-  // present_q matches rq_valid_q & free_any_now & !stop_q, computed from
-  // next state. Only eligibility is registered, so arbitration can switch
-  // sides after a refusal.
-  logic [1:0] present_q;
+  // present_q matches rq_valid_q & free_any_now & !stop_q, computed from next
+  // state. Only eligibility is registered, so arbitration can switch sides
+  // after a refusal. avail drops the requests the same-line check holds
+  // (veto_q, computed below, also from next state).
+  logic [1:0] present_q, veto_q, avail;
+  assign avail = present_q & ~veto_q;
   logic [WaitBits-1:0] tx_wait_q;
   logic tx_starved, prefer_tx_q, prefer_rx_q;
-  assign tx_starved = present_q[1] && (tx_wait_q == WaitBits'(STARVATION_LIMIT));
+  assign tx_starved = avail[1] && (tx_wait_q == WaitBits'(STARVATION_LIMIT));
   // RX first; TX when it has watched STARVATION_LIMIT RX grants or RX was
   // just refused; and a refused TX presentation hands the next turn to RX
   // even while TX's priority is saturated, so a TX request to a locked line
   // never blocks RX for longer than a cycle at a time.
   logic sel;  // 0 RX, 1 TX
   always_comb begin
-    if (present_q[1] && (!present_q[0] || ((tx_starved || prefer_tx_q) && !prefer_rx_q)))
-      sel = 1'b1;
+    if (avail[1] && (!avail[0] || ((tx_starved || prefer_tx_q) && !prefer_rx_q))) sel = 1'b1;
     else sel = 1'b0;
   end
   logic fire;
-  assign o_dma_req_valid = |present_q;
+  assign o_dma_req_valid = |avail;
   assign o_dma_req_write = rq_write_q[sel];
   assign o_dma_req_addr  = rq_addr_q[sel];
   assign o_dma_req_wdata = rq_wdata_q[sel];
@@ -221,6 +258,40 @@ module nic_dma_front #(
   assign present_if_fire0 = pending_if_fire0 & {2{free_if_fire0}};
   assign present_if_fire1 = pending_if_fire1 & {2{free_if_fire1}};
 
+  // Same-line order: next cycle's veto of each engine's request. The
+  // entries valid next cycle are those live now and not answered now, plus
+  // the one this cycle's fire allocates (the other engine's request). A
+  // request registered now is compared exactly; one loaded now, whose
+  // address arrives late from its engine, by the low HashBits bits of its
+  // line only, so it can wait a cycle it does not need, never too few.
+  logic [1:0] veto_n;
+  logic [NUM_ENTRIES-1:0] ent_live_n;
+  always_comb begin
+    for (int k = 0; k < int'(NUM_ENTRIES); k++) begin
+      ent_live_n[k] = ent_valid_q[k] && !(i_dma_resp_valid && (i_dma_resp_id == IdBits'(k)));
+    end
+    for (int e = 0; e < 2; e++) begin
+      logic w;
+      logic [LineBits-1:0] line;
+      w = rq_write_q[e];
+      line = rq_addr_q[e][ADDR_WIDTH-1:OffsetBits];
+      veto_n[e] = fire && (sel != 1'(e)) && (rq_write_q[sel] != w) &&
+          (rq_addr_q[sel][ADDR_WIDTH-1:OffsetBits] == line);
+      for (int k = 0; k < int'(NUM_ENTRIES); k++) begin
+        veto_n[e] |= ent_live_n[k] && (ent_write_q[k] != w) && (ent_line_q[k] == line);
+      end
+      if (load[e]) begin
+        w = i_req_write[e];
+        veto_n[e] = fire && (rq_write_q[sel] != w) &&
+            (rq_addr_q[sel][OffsetBits+:HashBits] == i_req_addr[e][OffsetBits+:HashBits]);
+        for (int k = 0; k < int'(NUM_ENTRIES); k++) begin
+          veto_n[e] |= ent_live_n[k] && (ent_write_q[k] != w) &&
+              (ent_line_q[k][HashBits-1:0] == i_req_addr[e][OffsetBits+:HashBits]);
+        end
+      end
+    end
+  end
+
   // ---- responses ---------------------------------------------------------------
   logic resp_owner;
   assign resp_owner = ent_owner_q[i_dma_resp_id];
@@ -260,7 +331,14 @@ module nic_dma_front #(
       tx_wait_q     <= '0;
       prefer_tx_q   <= 1'b0;
       prefer_rx_q   <= 1'b0;
+      held_for_q    <= '0;
+      veto_q        <= '0;
     end else begin
+      veto_q <= veto_n;
+      for (int e = 0; e < 2; e++) begin
+        if (!rq_valid_q[e]) held_for_q[e] <= '0;
+        else if (veto_q[e] && !long_hold[e]) held_for_q[e] <= held_for_q[e] + 1'b1;
+      end
       ent_valid_q <= ent_valid_n;
       rq_valid_q  <= rq_valid_n;
       present_q   <= fire ? present_if_fire1 : present_if_fire0;
@@ -285,18 +363,20 @@ module nic_dma_front #(
       end
       if (fire) begin
         ent_owner_q[free_idx] <= sel;
+        ent_write_q[free_idx] <= rq_write_q[sel];
+        ent_line_q[free_idx]  <= rq_addr_q[sel][ADDR_WIDTH-1:OffsetBits];
         ent_kind_q[free_idx]  <= rq_kind_q[sel];
         ent_tag_q[free_idx]   <= rq_tag_q[sel];
       end
       // Fairness: TX counts RX grants it watched; a refused presentation
       // hands the next cycle to the other engine.
-      if (fire && (sel == 1'b0) && present_q[1]) begin
+      if (fire && (sel == 1'b0) && avail[1]) begin
         if (tx_wait_q != WaitBits'(STARVATION_LIMIT)) tx_wait_q <= tx_wait_q + 1'b1;
       end else if (fire && (sel == 1'b1)) begin
         tx_wait_q <= '0;
       end
-      prefer_tx_q <= o_dma_req_valid && !i_dma_req_ready && (sel == 1'b0) && present_q[1];
-      prefer_rx_q <= o_dma_req_valid && !i_dma_req_ready && (sel == 1'b1) && present_q[0];
+      prefer_tx_q <= o_dma_req_valid && !i_dma_req_ready && (sel == 1'b0) && avail[1];
+      prefer_rx_q <= o_dma_req_valid && !i_dma_req_ready && (sel == 1'b1) && avail[0];
       // The drain withdraws every registered request (none fired: valid
       // toward the port is cleared with stop_q) and answers it with an error,
       // so every request an engine had accepted gets exactly one response.
