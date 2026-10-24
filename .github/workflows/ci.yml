@@ -85,12 +85,9 @@ jobs:
             # In the BRAM tier, the run of this test also records a
             # calibration trace for the performance model's check.
             calibration_test: coremark
-          - name: Real Programs (AMO torture)
+          - name: Real Programs (AMO and timer torture)
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: "[amo_irq_torture_sim]"
-          - name: Real Programs (Timer torture)
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: "[tick_torture_sim]"
+            pytest_filter: "[amo_irq_torture_sim] or [tick_torture_sim]"
           - name: Real Programs (Cache stress)
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
@@ -118,10 +115,8 @@ jobs:
               [branch_pred_test] or [c_ext_test] or [cf_ext_test] or [call_stress] or [fpu_test] or
               [fpu_assembly_test] or [isa_test] or [rv64_smoke] or [rv64_amo_test] or
               [spanning_test] or [ras_test] or [ras_stress_test] or [tomasulo_test] or
-              [tomasulo_perf] or [jal_target_seam] or [fetch_lead_repro] or [fetch_stall_repro]
-          - name: Real Programs (Fetch recovery)
-            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: "[window_skip_repro]"
+              [tomasulo_perf] or [jal_target_seam] or [fetch_lead_repro] or [fetch_stall_repro] or
+              [window_skip_repro]
           - name: Real Programs (Load queue slots)
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: "[lq_stale_slot_probe]"
@@ -175,7 +170,7 @@ jobs:
               [hello_world_fetch_fuzz] or [branch_pred_test_fetch_fuzz] or [c_ext_test_fetch_fuzz]
               or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz] or [opensbi_smoke] or
               [isa_test_sram_macros] or [ddr_test_sram_macros] or [ddr_exec_test_sram_macros] or
-              [nic_loopback_sram_macros])
+              [nic_loopback_sram_macros] or [cache_counters_openocd])
           - name: Real Programs (CoreMark-PRO / core)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
             pytest_filter: "[coremark_pro_core]"
@@ -185,14 +180,11 @@ jobs:
           - name: Real Programs (CoreMark-PRO / nnet)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
             pytest_filter: "[coremark_pro_nnet]"
-          - name: Real Programs (CoreMark-PRO / radix2)
-            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: "[coremark_pro_radix2]"
-          - name: Real Programs (CoreMark-PRO / cjpeg, linear_alg, parser, sha, zip)
+          - name: Real Programs (CoreMark-PRO / cjpeg, linear_alg, parser, radix2, sha, zip)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
             pytest_filter: >-
               [coremark_pro_cjpeg] or [coremark_pro_linear_alg] or [coremark_pro_parser] or
-              [coremark_pro_sha] or [coremark_pro_zip]
+              [coremark_pro_radix2] or [coremark_pro_sha] or [coremark_pro_zip]
         include:
           - mem_config: bram
             shard:
@@ -217,6 +209,13 @@ jobs:
               name: Real Programs (OpenSBI smoke)
               pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
               pytest_filter: "[opensbi_smoke]"
+          # The OpenOCD session that reads the cache counters is long, and its
+          # program runs from low BRAM in either tier.
+          - mem_config: bram
+            shard:
+              name: Real Programs (Cache counters over OpenOCD)
+              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+              pytest_filter: "[cache_counters_openocd]"
           - mem_config: bram
             shard:
               name: Unit Tests
