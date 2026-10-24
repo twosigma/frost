@@ -3082,12 +3082,17 @@ for _program in ("dma_torture", "nic_loopback", "itlb_test"):
         )
 
 # Registry entries that build an app and are collected by pytest. The unit
-# benches have no app_name and are excluded.
-REAL_PROGRAM_TESTS = [
-    name
-    for name, config in TEST_REGISTRY.items()
-    if config.app_name is not None and config.include_in_pytest
-]
+# benches have no app_name and are excluded. Entries with the same Verilator
+# arguments are collected together, in registry order, so that a pytest run
+# builds each configuration once.
+REAL_PROGRAM_TESTS = sorted(
+    (
+        name
+        for name, config in TEST_REGISTRY.items()
+        if config.app_name is not None and config.include_in_pytest
+    ),
+    key=lambda name: TEST_REGISTRY[name].verilator_extra_args,
+)
 REAL_PROGRAM_TEST_PARAMS = [
     pytest.param(
         name,
