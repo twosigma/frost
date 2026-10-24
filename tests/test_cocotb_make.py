@@ -112,6 +112,20 @@ def test_coverage_switches_reach_verilator_and_the_simulator(tmp_path: Path) -> 
     assert "--coverage-toggle" in verilator_command(
         "FROST_COVERAGE=1", "FROST_COVERAGE_TOGGLE=1"
     )
+    control = verilator_command("FROST_COVERAGE=1", "FROST_COVERAGE_TOGGLE=control")
+    assert "--coverage-line --coverage-user +define+FROST_COVERAGE" in control
+    assert "--coverage-toggle --coverage-max-width 8" in control
+    assert control.index("coverage_control.vlt") < control.index(" -f ")
+    assert "--coverage" not in verilator_command("FROST_COVERAGE_TOGGLE=control")
+    invalid = subprocess.run(
+        [*make, "FROST_COVERAGE=1", "FROST_COVERAGE_TOGGLE=typo", "-n"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert invalid.returncode != 0
+    assert "FROST_COVERAGE_TOGGLE must be 0, 1, or control" in invalid.stderr
 
     # The prebuilt stand-in records the arguments the simulator receives.
     (build / "Vtop.mk").touch()

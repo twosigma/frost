@@ -68,10 +68,12 @@ def test_parse_point_reads_every_key() -> None:
         comment="cover_x",
         count=7,
         soc_count=7,
+        soc_instrumented=True,
     )
     bench = _record("user", "frost_cache", "cover_x", 7, top="frost_cache_test_harness")
     bench_point = coverage_report.parse_point(bench.encode())
     assert bench_point is not None and bench_point.soc_count == 0
+    assert not bench_point.soc_instrumented
     assert coverage_report.parse_point(b"# SystemC::Coverage-3\n") is None
 
 
@@ -145,9 +147,61 @@ def test_summary_lists_totals_cover_points_and_modules() -> None:
     )
     assert "| `load_queue` | `cover_hit` | 12 | 10 | `/x/load_queue.sv:9` |" in text
     assert (
-        "| `load_queue` | `/x/load_queue.sv` | 50.0% (1/2) | - | 100.0% (1/1) |" in text
+        "| `load_queue` | `/x/load_queue.sv` | 50.0% (1/2) | - | 100.0% (1/1) | - |"
+        in text
     )
-    assert "| `dispatch` | `/x/dispatch.sv` | - | 100.0% (1/1) | - |" in text
+    assert "| `dispatch` | `/x/dispatch.sv` | - | 100.0% (1/1) | - | - |" in text
+
+
+def test_mixed_toggle_sets_merge_in_stages(tmp_path: Path) -> None:
+    """Full benches and reduced SoC builds share points without sharing denominators."""
+    bench = _write(
+        tmp_path / "bench.dat",
+        _record("toggle", "cache__N4", "ready", 0, top="cache_tb"),
+        _record("toggle", "cache__N4", "valid", 2, top="cache_tb"),
+        _record("toggle", "cache__N4", "data[0]", 8, top="cache_tb"),
+        _record("toggle", "bench_only", "ready", 1, top="cache_tb"),
+    )
+    soc = _write(
+        tmp_path / "soc.dat",
+        _record("toggle", "cache__N8", "ready", 3),
+        _record("toggle", "cache__N16", "ready", 4),
+        _record("toggle", "cache__N8", "valid", 0),
+        _record("toggle", "soc_only", "busy", 0),
+    )
+    line_only = _write(tmp_path / "line.dat", _record("line", "cache", "block", 9))
+    job = tmp_path / "job.dat"
+    merged = tmp_path / "merged.dat"
+    direct = tmp_path / "direct.dat"
+    coverage_report.merge([soc, line_only], job)
+    coverage_report.merge([bench, job], merged)
+    coverage_report.merge([bench, soc, line_only], direct)
+    assert merged.read_bytes() == direct.read_bytes()
+    points = coverage_report.read_points(merged)
+    cache = {point.comment: point for point in points if point.module == "cache"}
+    assert (cache["ready"].count, cache["ready"].soc_count) == (7, 7)
+    assert (cache["valid"].count, cache["valid"].soc_count) == (2, 0)
+    assert cache["valid"].soc_instrumented
+    assert not cache["data[0]"].soc_instrumented
+    text = coverage_report.summary_markdown(points, ["bench.dat", "job.dat"])
+    assert "| Toggle (all runs) | 4 | 5 | 80.0% |" in text
+    assert "| Toggle (whole-SoC) | 1 | 3 | 33.3% |" in text
+    assert "100.0% (3/3) | 50.0% (1/2) |" in text
+    assert "100.0% (1/1) | - |" in text
+    assert "0.0% (0/1) | 0.0% (0/1) |" in text
+
+
+def test_line_only_soc_does_not_claim_toggle_instrumentation(tmp_path: Path) -> None:
+    """A line-only SoC run provides no evidence about bench-only toggle points."""
+    data = _write(
+        tmp_path / "mixed.dat",
+        _record("toggle", "cache", "ready", 0, top="cache_tb"),
+        _record("line", "cache", "block", 1),
+    )
+    text = coverage_report.summary_markdown(coverage_report.read_points(data), [])
+    assert "| Toggle (all runs) | 0 | 1 | 0.0% |" in text
+    assert "| Toggle (whole-SoC) | 0 | 0 | - |" in text
+    assert "0.0% (0/1) | - |" in text
 
 
 def test_coverage_files_search_directories_and_skip_empty_files(tmp_path: Path) -> None:

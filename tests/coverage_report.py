@@ -30,8 +30,10 @@ been reached by a whole-SoC run. The report directory holds the merged file
 (coverage.dat), its line and branch coverage in lcov format (coverage.info,
 with paths relative to the repository root), and summary.md: the totals,
 every cover point with its hits in all runs and in whole-SoC runs, and line,
-branch, and toggle coverage per module. ``--annotate`` also writes annotated
-copies of the sources with verilator_coverage.
+branch, and toggle coverage per module. Toggle totals use the union of the
+points collected, with a separate whole-SoC union for builds that collect a
+subset. ``--annotate`` also writes annotated copies of the sources with
+verilator_coverage.
 """
 
 import argparse
@@ -57,7 +59,7 @@ SOC_TOPLEVEL = "frost"
 KIND_TITLES = {
     "line": "Line",
     "branch": "Branch",
-    "toggle": "Toggle",
+    "toggle": "Toggle (all runs)",
     "user": "Cover points",
 }
 
@@ -67,6 +69,8 @@ class CoveragePoint:
     """One coverage point: where it is, what it counts, and its hit counts.
 
     ``soc_count`` is the part of ``count`` that whole-SoC builds hit.
+    ``soc_instrumented`` distinguishes an unhit whole-SoC point from one
+    that only a unit bench collected.
     """
 
     kind: str
@@ -77,6 +81,7 @@ class CoveragePoint:
     comment: str
     count: int
     soc_count: int = 0
+    soc_instrumented: bool = False
 
 
 @dataclass
@@ -106,6 +111,7 @@ class ModuleSummary:
     """Per-kind tallies of one module and the files its points come from."""
 
     tallies: dict[str, Tally] = field(default_factory=lambda: defaultdict(Tally))
+    soc_toggle: Tally = field(default_factory=Tally)
     files: Counter[str] = field(default_factory=Counter)
 
 
@@ -203,6 +209,7 @@ def parse_point(record: bytes) -> CoveragePoint | None:
         comment=keys.get("o", ""),
         count=count,
         soc_count=count if toplevel(keys.get("h", "")) == SOC_TOPLEVEL else 0,
+        soc_instrumented=toplevel(keys.get("h", "")) == SOC_TOPLEVEL,
     )
 
 
@@ -216,6 +223,7 @@ def read_points(path: Path) -> list[CoveragePoint]:
     counts: dict[tuple[str, str, str, int, int, str], list[int]] = defaultdict(
         lambda: [0, 0]
     )
+    soc_keys = set()
     with path.open("rb") as stream:
         for record in stream:
             point = parse_point(record)
@@ -230,7 +238,14 @@ def read_points(path: Path) -> list[CoveragePoint]:
                 )
                 counts[key][0] += point.count
                 counts[key][1] += point.soc_count
-    return [CoveragePoint(*key, *count) for key, count in counts.items()]
+                if point.soc_instrumented:
+                    soc_keys.add(key)
+    return [
+        CoveragePoint(
+            *key, count=count[0], soc_count=count[1], soc_instrumented=key in soc_keys
+        )
+        for key, count in counts.items()
+    ]
 
 
 def relative_path(path: str, root: Path = REPO_ROOT) -> str:
@@ -255,11 +270,15 @@ def cover_names(points: Iterable[CoveragePoint]) -> str:
 def summary_markdown(points: Sequence[CoveragePoint], inputs: Sequence[str]) -> str:
     """Return the Markdown summary of merged coverage points and their input files."""
     totals: dict[str, Tally] = defaultdict(Tally)
+    soc_toggle = Tally()
     modules: dict[str, ModuleSummary] = defaultdict(ModuleSummary)
     for point in points:
         totals[point.kind].add(point.count)
         summary = modules[point.module]
         summary.tallies[point.kind].add(point.count)
+        if point.kind == "toggle" and point.soc_instrumented:
+            soc_toggle.add(point.soc_count)
+            summary.soc_toggle.add(point.soc_count)
         summary.files[relative_path(point.file)] += 1
 
     lines = [
@@ -273,6 +292,13 @@ def summary_markdown(points: Sequence[CoveragePoint], inputs: Sequence[str]) -> 
         "",
         "</details>",
         "",
+        "Each toggle point is one source bit and transition direction. Toggle",
+        "figures count their union across runs, instances, and parameter sets.",
+        "Whole-SoC toggle figures use only the",
+        "points collected by whole-SoC builds. An omitted point is outside that",
+        "denominator; a collected point with zero hits is uncovered. These",
+        "figures do not imply that every signal was instrumented.",
+        "",
         "| Coverage | Covered | Points | Percent |",
         "| --- | ---: | ---: | ---: |",
     ]
@@ -280,6 +306,16 @@ def summary_markdown(points: Sequence[CoveragePoint], inputs: Sequence[str]) -> 
         tally = totals.get(kind, Tally())
         percent = f"{100 * tally.covered / tally.total:.1f}%" if tally.total else "-"
         lines.append(f"| {title} | {tally.covered:,} | {tally.total:,} | {percent} |")
+        if kind == "toggle":
+            percent = (
+                f"{100 * soc_toggle.covered / soc_toggle.total:.1f}%"
+                if soc_toggle.total
+                else "-"
+            )
+            lines.append(
+                f"| Toggle (whole-SoC) | {soc_toggle.covered:,} | "
+                f"{soc_toggle.total:,} | {percent} |"
+            )
 
     covers = sorted(
         (point for point in points if point.kind == "user"),
@@ -315,8 +351,8 @@ def summary_markdown(points: Sequence[CoveragePoint], inputs: Sequence[str]) -> 
         "",
         "### Modules",
         "",
-        "| Module | Source | Line | Branch | Toggle |",
-        "| --- | --- | ---: | ---: | ---: |",
+        "| Module | Source | Line | Branch | Toggle (all runs) | Toggle (whole-SoC) |",
+        "| --- | --- | ---: | ---: | ---: | ---: |",
     ]
     rows = []
     for name, summary in modules.items():
@@ -327,7 +363,9 @@ def summary_markdown(points: Sequence[CoveragePoint], inputs: Sequence[str]) -> 
             summary.tallies[kind].cell() if kind in summary.tallies else "-"
             for kind in ("line", "branch", "toggle")
         )
-        lines.append(f"| `{name}` | `{source}` | {cells} |")
+        lines.append(
+            f"| `{name}` | `{source}` | {cells} | {summary.soc_toggle.cell()} |"
+        )
     return "\n".join(lines) + "\n"
 
 

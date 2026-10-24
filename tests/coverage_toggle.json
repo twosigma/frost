@@ -1,0 +1,13 @@
+{
+  "max_width": 8,
+  "control_names": [
+    "*valid*", "*ready*", "*req*", "*ack*", "*accept*", "*fire*",
+    "*enable*", "*_en", "*_we", "*_re", "*busy*", "*done*",
+    "*stall*", "*flush*", "*empty*", "*full*", "*error*", "*fault*",
+    "*exception*", "*irq*", "*interrupt*", "*pending*", "*active*",
+    "*hold*", "*kill*", "*squash*", "*redirect*", "*alloc*", "*commit*",
+    "*issue*", "*retire*"
+  ],
+  "exclude_names": ["*clk*", "*clock*", "f_*", "proof_*", "dbg_*", "ref_*", "cov_*"],
+  "exclude_files": ["*/hw/sim/*"]
+}
