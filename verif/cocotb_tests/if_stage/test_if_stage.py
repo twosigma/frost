@@ -396,6 +396,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_walk_resp.value = 0
     _drive_pipeline_ctrl(dut, {})
     _drive_trap_ctrl(dut, {})
+    dut.i_flush_all.value = 0
     dut.i_frontend_state_flush.value = 0
     dut.i_fence_i_flush.value = 0
     dut.i_fence_i_target.value = 0
@@ -403,7 +404,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pd_redirect.value = 0
     dut.i_pd_redirect_taken.value = 1
     dut.i_pd_redirect_target.value = 0
-    # The tagged predictor's tables stay empty: nothing trains them.
+    # Tagged prediction is disabled and its training port is idle.
     dut.i_tage_hist.value = 0
     dut.i_tage_train_valid.value = 0
     dut.i_tage_train_lookup.value = 0
@@ -2085,8 +2086,13 @@ async def test_no_lead_btb_miss_uses_and_replays_live_direction_metadata(
         compressed_control_lo=True,
     )
 
-    # Train only this direction entry into taken; leave the BTB empty so the
-    # packet's direction metadata is what can later trigger the PD redirect.
+    # Give the next lookup a different direction from the branch's entry.
+    # The BTB stays empty so only direction metadata can trigger PD redirect.
+    dut.i_dir_update_idx.value = next_idx
+    dut.i_dir_update_taken.value = 0
+    dut.i_dir_update_valid.value = 1
+    await _advance_cycle(dut)
+    await _advance_cycle(dut)
     dut.i_dir_update_idx.value = branch_idx
     dut.i_dir_update_taken.value = 1
     dut.i_dir_update_valid.value = 1

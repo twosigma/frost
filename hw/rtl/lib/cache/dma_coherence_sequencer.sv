@@ -424,8 +424,11 @@ module dma_coherence_sequencer #(
   end
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       if (i_probe_ack_valid && !ack_hit)
         $error(
             "dma_coherence_sequencer: probe acknowledgement %0d for no pending probe",
