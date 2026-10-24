@@ -67,7 +67,9 @@ module sdp_block_ram_dc #(
 `else
   (* ram_style = "block" *) logic [DATA_WIDTH-1:0] ram[RamDepth];
 
+`ifndef FROST_RANDOM_START
   initial for (int i = 0; i < RamDepth; ++i) ram[i] = '0;
+`endif
 
   always_ff @(posedge i_write_clock) if (i_write_enable) ram[i_write_address] <= i_write_data;
 

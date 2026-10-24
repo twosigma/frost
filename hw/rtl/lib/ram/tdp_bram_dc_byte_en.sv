@@ -65,11 +65,15 @@ module tdp_bram_dc_byte_en #(
   (* ram_style = "block" *) logic [DATA_WIDTH-1:0] memory[MemDepthInWords];
   /* verilator lint_on MULTIDRIVEN */
 
-  initial
+  initial begin
     if (USE_INIT_FILE) $readmemh(INIT_FILE, memory);
-    // The non-zero fill catches code that assumes zero-initialized memory.
-    else
+    else begin
+`ifndef FROST_RANDOM_START
+      // The non-zero fill catches code that assumes zero-initialized memory.
       for (int i = 0; i < MemDepthInWords; ++i) memory[i] = DATA_WIDTH'(i);
+`endif
+    end
+  end
 `endif
 
   // Byte address to word address: drop the low ByteAddrBits byte-offset bits.

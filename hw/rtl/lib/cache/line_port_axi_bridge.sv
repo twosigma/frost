@@ -151,11 +151,17 @@ module line_port_axi_bridge #(
   // ---- Issue registers ------------------------------------------------------
   // The valids clear on their handshakes and on i_axi_rst, never on i_rst
   // (see the header); the initializers are the power-up state.
-  logic                      ar_valid_q = 1'b0;
+`ifdef FROST_RANDOM_START
+  localparam bit RandomStart = 1'b1;
+`else
+  localparam bit RandomStart = 1'b0;
+`endif
+
+  logic                      ar_valid_q = RandomStart ? 'x : 1'b0;
   logic [AXI_ADDR_WIDTH-1:0] ar_addr_q;
   logic [       ID_BITS-1:0] ar_id_q;
-  logic                      aw_valid_q = 1'b0;
-  logic                      w_valid_q = 1'b0;
+  logic                      aw_valid_q = RandomStart ? 'x : 1'b0;
+  logic                      w_valid_q = RandomStart ? 'x : 1'b0;
   logic [AXI_ADDR_WIDTH-1:0] aw_addr_q;
   logic [       ID_BITS-1:0] aw_id_q;
   logic [  LINE_BYTES*8-1:0] w_data_q;
@@ -164,7 +170,7 @@ module line_port_axi_bridge #(
   // Set while a transaction accepted before the last i_rst still owes its
   // response (the stale bitmap below). Registered, so ready gains no logic
   // depth.
-  logic                      stale_any_q = 1'b0;
+  logic                      stale_any_q = RandomStart ? 'x : 1'b0;
 
   // A write is issuable when both its channels are free; a read when AR is.
   logic write_slot_free, read_slot_free;
@@ -227,7 +233,7 @@ module line_port_axi_bridge #(
   // toward the line port. A response for a clear id is stale (see header).
   // The initializer matters: the first reset moves these bits into the stale
   // bitmap below, which only responses clear.
-  logic [NumIds-1:0] inflight_q = '0;
+  logic [NumIds-1:0] inflight_q = RandomStart ? 'x : '0;
 
   logic r_accept, b_accept;
   logic r_known, b_known;
@@ -294,7 +300,7 @@ module line_port_axi_bridge #(
   // clears its bit, and i_axi_rst, which discards the slave's work, clears
   // them all. No request is accepted while any bit is set, so no id is ever
   // owed both from before a reset and from after it.
-  logic [NumIds-1:0] stale_q = '0;
+  logic [NumIds-1:0] stale_q = RandomStart ? 'x : '0;
   logic [NumIds-1:0] stale_d;
   always_comb begin
     stale_d = stale_q;

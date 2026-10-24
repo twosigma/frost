@@ -99,11 +99,13 @@ module imem_sideband_scalar_bank #(
         u_ram.ram[i][0] = sideband_bit_from_word(init_mem[2*i+IS_ODD_BANK]);
       end
     end else begin
+`ifndef FROST_RANDOM_START
       for (int i = 0; i < BankDepth; i++) begin
         logic [31:0] default_word;
         default_word = 32'(2 * i + IS_ODD_BANK);
         u_ram.ram[i][0] = sideband_bit_from_word(default_word);
       end
+`endif
     end
   end
 `endif
@@ -358,6 +360,7 @@ module imem_predecode #(
         end
       end
     end else begin
+`ifndef FROST_RANDOM_START
       for (int i = 0; i < HalfDepth; i++) begin
         logic [DataWidth-1:0] even_default_word;
         logic [DataWidth-1:0] odd_default_word;
@@ -372,6 +375,7 @@ module imem_predecode #(
         u_even_compressed.ram[i] = pack_fast_lanes(even_default_word, u_even_sideband.ram[i]);
         u_odd_compressed.ram[i] = pack_fast_lanes(odd_default_word, u_odd_sideband.ram[i]);
       end
+`endif
     end
   end
 `endif
@@ -395,16 +399,22 @@ module imem_predecode #(
   assign port_a_half_address = port_a_word_address[ADDR_WIDTH-1:1];
   assign port_a_bank_sel     = port_a_word_address[0];
 
-  (* max_fanout = 512 *) logic [ADDR_WIDTH-2:0] port_a_half_address_q;
-  (* max_fanout = 512 *) logic [DataWidth-1:0] port_a_write_data_q;
-  (* max_fanout = 512 *) logic port_a_write_even_q = 1'b0;
-  (* max_fanout = 512 *) logic port_a_write_odd_q = 1'b0;
+  (* max_fanout = 512 *)logic [ADDR_WIDTH-2:0] port_a_half_address_q;
+  (* max_fanout = 512 *)logic [ DataWidth-1:0] port_a_write_data_q;
+`ifdef FROST_RANDOM_START
+  localparam bit RandomStart = 1'b1;
+`else
+  localparam bit RandomStart = 1'b0;
+`endif
+
+  (* max_fanout = 512 *) logic port_a_write_even_q = RandomStart ? 'x : 1'b0;
+  (* max_fanout = 512 *) logic port_a_write_odd_q = RandomStart ? 'x : 1'b0;
 
   // Live writes must invalidate repeated-address history: slow predicates
   // trail the changed BRAM word by one read. Staged write enables precede
   // array commit by a div4 cycle, allowing this synchronizer to block readiness
   // first. This requires the clock relationship documented above.
-  (* ASYNC_REG = "TRUE" *) logic [1:0] port_a_write_active_sync_q = 2'b00;
+  (* ASYNC_REG = "TRUE" *) logic [1:0] port_a_write_active_sync_q = RandomStart ? 'x : 2'b00;
   logic port_a_write_quarantine;
   always_ff @(posedge i_port_b_clk) begin
     port_a_write_active_sync_q <= {
@@ -504,9 +514,9 @@ module imem_predecode #(
   logic [SidebandWidth-1:0] even_sideband_redecoded;
   logic [SidebandWidth-1:0] odd_sideband_redecoded;
   logic pc_metadata_overlay_window_hit;
-  logic pc_metadata_overlay_window_hit_q = 1'b0;
-  logic pc_metadata_response_ready_q = 1'b0;
-  logic pc_metadata_response_history_valid_q = 1'b0;
+  logic pc_metadata_overlay_window_hit_q = RandomStart ? 'x : 1'b0;
+  logic pc_metadata_response_ready_q = RandomStart ? 'x : 1'b0;
+  logic pc_metadata_response_history_valid_q = RandomStart ? 'x : 1'b0;
   logic [31:0] pc_metadata_response_address_q;
   logic [31:0] pc_metadata_response_next_address_q;
   logic [3:0] even_pc_metadata;

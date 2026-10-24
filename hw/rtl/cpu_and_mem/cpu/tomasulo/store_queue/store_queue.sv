@@ -328,7 +328,9 @@ module store_queue #(
   logic [FLEN-1:0] sq_data_fwd_entry[DEPTH];
   logic [(DEPTH*FLEN)-1:0] sq_data_fwd_flat;
 
+`ifndef FROST_RANDOM_START
   initial for (int i = 0; i < DEPTH; i++) sq_data_fwd_entry[i] = '0;
+`endif
 
   always_ff @(posedge i_clk) begin
     if (sq_data_we) begin

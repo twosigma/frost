@@ -91,11 +91,19 @@ module mwp_dist_ram_ohread #(
   // ---------------------------------------------------------------------------
   logic [SelWidth-1:0] lvt[RamDepth];
 
+`ifndef FROST_RANDOM_START
   initial for (int i = 0; i < RamDepth; ++i) lvt[i] = '0;
+`endif
 
   // Declaration initialization is allowed for always_ff state by IEEE 1800
   // 9.2.2.4; a separate initial process would be another writer.
-  logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
+`ifdef FROST_RANDOM_START
+  localparam bit RandomStart = 1'b1;
+`else
+  localparam bit RandomStart = 1'b0;
+`endif
+
+  logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = RandomStart ? 'x : '0;
   // Limit address fanout to the read-port compares.
   (* max_fanout = 48 *) logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
 

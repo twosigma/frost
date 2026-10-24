@@ -59,7 +59,9 @@ module sdp_block_ram #(
 `else
   (* ram_style = "block" *) logic [DATA_WIDTH-1:0] ram[RamDepth];
 
+`ifndef FROST_RANDOM_START
   initial for (int i = 0; i < RamDepth; ++i) ram[i] = '0;
+`endif
 
   // Bulk clear takes priority over a write.
   if (SUPPORT_BULK_CLEAR != 0) begin : gen_clearable_write

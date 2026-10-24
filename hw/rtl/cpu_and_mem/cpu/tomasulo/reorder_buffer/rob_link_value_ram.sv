@@ -123,9 +123,17 @@ module rob_link_value_ram #(
   // ---------------------------------------------------------------------------
   logic [1:0] lvt[RamDepth];
 
+`ifndef FROST_RANDOM_START
   initial for (int i = 0; i < RamDepth; ++i) lvt[i] = CodeZero;
+`endif
 
-  logic [1:0] staged_lvt_we_q = '0;
+`ifdef FROST_RANDOM_START
+  localparam bit RandomStart = 1'b1;
+`else
+  localparam bit RandomStart = 1'b0;
+`endif
+
+  logic [1:0] staged_lvt_we_q = RandomStart ? 'x : '0;
   logic [1:0] staged_lvt_link_q;
   // Limit address fanout to the read-port compares.
   (* max_fanout = 48 *) logic [1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;

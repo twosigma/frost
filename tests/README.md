@@ -157,6 +157,31 @@ software breakpoints, and single stepping through OpenOCD. The
 [memory-response tests](../verif/cocotb_tests/cpu_ooo/memory/README.md) cover
 the portable and Xilinx builds of the load-data mux.
 
+#### Random power-up state
+
+`FROST_RANDOM_START_SEED` enables random power-up state for SoC and unit
+simulations. Its value is a seed string; each run prints that string and the
+derived Verilator seed. Repeating the string reproduces the power-up draw
+for the same compiled design. The DDR timing seed and cocotb's stimulus seed
+are independent.
+
+```bash
+FROST_RANDOM_START_SEED=1 ./scripts/frost.py cocotb hello_world
+FROST_RANDOM_START_SEED=1 FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb hello_world
+```
+
+The mode uses `--x-initial unique`, `--x-assign unique`, and Verilator's
+seeded random reset. `FROST_RANDOM_START` selects unknown values for hardware
+declaration initializers and omits deterministic RAM fills. Verilator turns
+those unknowns into random bits. Assertion-history initializers and program
+image loads execute normally, including instruction predecode metadata.
+Reset then runs through the ordinary testbench sequence. Changing only the
+seed reuses the compiled model; enabling or disabling the mode rebuilds it.
+
+This is a two-state power-up test. It does not model metastability, reset
+recovery or removal timing, SRAM analog behavior, or power-domain sequencing.
+Sparse external-memory models return their defined default for absent keys.
+
 #### Adding a target
 
 Register a bench in `TEST_REGISTRY`:
@@ -385,6 +410,7 @@ which have 90 minutes each. `--verbose` prints solver output.
 | `COCOTB_TEST_FILTER` | Test-function regex (set by `--testcase`) |
 | `COCOTB_RANDOM_SEED` | Random seed (set by `--random-seed`) |
 | `FROST_COCOTB_MEM_CONFIG` | Application memory tier (`bram` default, or `ddr`) |
+| `FROST_RANDOM_START_SEED` | Seed string enabling random register and memory power-up state; each run prints the string and Verilator seed |
 | `FROST_DDR_MODEL_SEED` | Draws the DDR model's latency (1 to 80 cycles), latency jitter, and out-of-order completion for whole-SoC builds from this string, and prints the draw. A setting the target pins, in its registry entry, in `FROST_VERILATOR_EXTRA_ARGS`, or with `DDR_MODEL_LATENCY`, keeps its value |
 | `WAVES=1` | Write `dump.fst` waveforms |
 | `FROST_COVERAGE=1` | Build with line coverage and the cover points (see [Coverage](#coverage)) |
