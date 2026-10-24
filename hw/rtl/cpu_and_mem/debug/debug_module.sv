@@ -176,7 +176,13 @@ module debug_module #(
   // ---------------------------------------------------------------------------
   // Retain a request across reset and answer it once reset ends, with
   // dmactive=0. dtm_core stays busy and holds the payload until the answer.
-  logic dmi_req_pending_q = 1'b0;
+`ifdef FROST_RANDOM_START
+  localparam bit RandomStart = 1'b1;
+`else
+  localparam bit RandomStart = 1'b0;
+`endif
+
+  logic dmi_req_pending_q = RandomStart ? 'x : 1'b0;
   logic dmi_req_valid;
   assign dmi_req_valid = (i_dmi_req_valid || dmi_req_pending_q) && !i_rst;
   always_ff @(posedge i_clk) dmi_req_pending_q <= (i_dmi_req_valid || dmi_req_pending_q) && i_rst;

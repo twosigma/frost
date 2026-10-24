@@ -33,7 +33,9 @@ module sdp_dist_ram #(
   localparam int unsigned RamDepth = 2 ** ADDR_WIDTH;
   (* ram_style = "distributed" *) logic [DATA_WIDTH-1:0] ram[RamDepth];
 
+`ifndef FROST_RANDOM_START
   initial for (int i = 0; i < RamDepth; ++i) ram[i] = '0;
+`endif
 
   always_ff @(posedge i_clk) if (i_write_enable) ram[i_write_address] <= i_write_data;
 

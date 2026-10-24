@@ -459,6 +459,37 @@ def _soc_runner(
     )
 
 
+@pytest.mark.parametrize("toplevel", ("frost", "dtm_core"))
+def test_random_start_seed_and_build_reuse(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    toplevel: str,
+) -> None:
+    """Power-up seeds replay on SoC and unit tops without rebuilding per seed."""
+    monkeypatch.delenv("FROST_RANDOM_START_SEED", raising=False)
+    runner = test_run_cocotb.CocotbRunner(
+        python_test_module="unused", hdl_toplevel_module=toplevel
+    )
+    ordinary_signature = runner._verilator_build_signature()
+    assert "FROST_RANDOM_START" not in runner.setup_environment()
+
+    monkeypatch.setenv("FROST_RANDOM_START_SEED", "job-123")
+    environment = runner.setup_environment()
+    signature = runner._verilator_build_signature()
+    assert signature != ordinary_signature
+    assert environment["FROST_RANDOM_START"] == "1"
+    seed = environment["FROST_RANDOM_START_VERILATOR_SEED"]
+    assert 1 <= int(seed) < 2**31
+    assert runner.setup_environment()["FROST_RANDOM_START_VERILATOR_SEED"] == seed
+    assert "FROST_RANDOM_START_SEED=job-123" in capsys.readouterr().out
+
+    monkeypatch.setenv("FROST_RANDOM_START_SEED", "job-456")
+    assert runner.setup_environment()["FROST_RANDOM_START_VERILATOR_SEED"] != seed
+    assert runner._verilator_build_signature() == signature
+    monkeypatch.delenv("FROST_RANDOM_START_SEED")
+    assert runner._verilator_build_signature() == ordinary_signature
+
+
 def test_ddr_model_seed_draws_repeatable_timing(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -557,15 +557,26 @@ endif
 # A test that defines FROST_SRAM_MACROS builds the RAM wrappers from the ASIC
 # flow's SRAM macros (asic/sram). Their OpenRAM models use delays, so
 # Verilator schedules timing. An X that the design assigns, such as a macro's
-# read data where the macros leave it undefined, becomes a pseudo-random value
-# from a fixed seed; variables still start at zero, as in the other tests.
+# read data where the macros leave it undefined, becomes a pseudo-random value.
+# Ordinary mode uses a fixed seed and zero variable initialization. The
+# random-start settings below also apply to these models.
 ifneq ($(findstring +define+FROST_SRAM_MACROS,$(FROST_VERILATOR_EXTRA_ARGS)),)
 COMPILE_ARGS += \
         $(ROOT)/asic/sram/frost_sram_1w1r.sv \
         $(ROOT)/asic/sram/frost_sram_2rw.sv \
         $(sort $(wildcard $(ROOT)/asic/sram/macros/*/*.v))
-COMPILE_ARGS += --timing --x-assign unique --x-initial 0
+COMPILE_ARGS += --timing
+ifneq ($(FROST_RANDOM_START),1)
+COMPILE_ARGS += --x-assign unique --x-initial 0
 COCOTB_PLUSARGS += +verilator+rand+reset+2 +verilator+seed+1
+endif
+endif
+
+# ASIC power-up: uninitialized state and hardware declaration initializers
+# take seeded random values. Image loading and verification state are separate.
+ifeq ($(FROST_RANDOM_START),1)
+COMPILE_ARGS += --x-assign unique --x-initial unique +define+FROST_RANDOM_START
+COCOTB_PLUSARGS += +verilator+rand+reset+2 +verilator+seed+$(FROST_RANDOM_START_VERILATOR_SEED)
 endif
 
 export VERILOG_SOURCES

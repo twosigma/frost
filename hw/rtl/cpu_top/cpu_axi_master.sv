@@ -126,9 +126,15 @@ module cpu_axi_master #(
       $fatal(1, "cpu_axi_master: ID_BITS must be 1..8 and USER_BITS positive");
   end
 
-  logic ar_valid_q = 1'b0;
-  logic aw_valid_q = 1'b0;
-  logic w_valid_q = 1'b0;
+`ifdef FROST_RANDOM_START
+  localparam bit RandomStart = 1'b1;
+`else
+  localparam bit RandomStart = 1'b0;
+`endif
+
+  logic ar_valid_q = RandomStart ? 'x : 1'b0;
+  logic aw_valid_q = RandomStart ? 'x : 1'b0;
+  logic w_valid_q = RandomStart ? 'x : 1'b0;
   logic [ADDR_WIDTH-1:0] ar_addr_q, aw_addr_q;
   logic [ID_BITS-1:0] ar_id_q, aw_id_q;
   logic [2:0] ar_size_q, aw_size_q, ar_prot_q, aw_prot_q;
@@ -138,12 +144,12 @@ module cpu_axi_master #(
 
   // Busy IDs include responses buffered for the CPU. Fabric-pending IDs
   // exclude those responses, so a CPU reset never waits twice for one reply.
-  logic [NumIds-1:0] busy_q = '0;
-  logic [NumIds-1:0] pending_q = '0;
-  logic [NumIds-1:0] write_q = '0;
-  logic [NumIds-1:0] stale_q = '0;
+  logic [NumIds-1:0] busy_q = RandomStart ? 'x : '0;
+  logic [NumIds-1:0] pending_q = RandomStart ? 'x : '0;
+  logic [NumIds-1:0] write_q = RandomStart ? 'x : '0;
+  logic [NumIds-1:0] stale_q = RandomStart ? 'x : '0;
   logic [NumIds-1:0] stale_d;
-  logic stale_any_q = 1'b0;
+  logic stale_any_q = RandomStart ? 'x : 1'b0;
   logic req_fire, r_fire, b_fire, resp_fire;
   logic r_known, b_known;
 
@@ -212,16 +218,16 @@ module cpu_axi_master #(
     end
   end
 
-  logic r_valid_q = 1'b0;
-  logic b_valid_q = 1'b0;
+  logic r_valid_q = RandomStart ? 'x : 1'b0;
+  logic b_valid_q = RandomStart ? 'x : 1'b0;
   logic [ID_BITS-1:0] r_id_q, b_id_q;
   logic [DATA_BYTES*8-1:0] r_data_q;
   logic [1:0] r_status_q, b_status_q;
-  logic prefer_b_q = 1'b0;
+  logic prefer_b_q = RandomStart ? 'x : 1'b0;
   logic select_b;
   // Lock the selected response while the CPU applies backpressure. A newly
   // arriving response on the other channel must not change the visible ID.
-  logic response_held_q = 1'b0;
+  logic response_held_q = RandomStart ? 'x : 1'b0;
   logic held_select_b_q;
   assign select_b = response_held_q ? held_select_b_q : (b_valid_q && (!r_valid_q || prefer_b_q));
   assign o_resp_valid = !i_rst && !i_axi_rst && (r_valid_q || b_valid_q);

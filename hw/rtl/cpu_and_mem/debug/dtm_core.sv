@@ -86,29 +86,35 @@ module dtm_core (
   // TCK domain
   logic [        31:0] dtmcs_shift;
   logic [DmiWidth-1:0] dmi_shift;
-  logic [         1:0] sticky_q = 2'd0;  // 0 none, 2 failed, 3 busy
-  logic                req_toggle_q = 1'b0;
-  logic [         1:0] req_op_q = 2'd0;
-  logic [   Abits-1:0] req_addr_q = '0;
-  logic [        31:0] req_data_q = '0;
-  (* ASYNC_REG = "TRUE" *)logic                ack_sync1 = 1'b0;
-  (* ASYNC_REG = "TRUE" *)logic                ack_sync2 = 1'b0;
-  logic                ack_seen_q = 1'b0;  // last ack consumed
-  logic                resp_arrived;
-  logic [        31:0] resp_data_tck = '0;
-  logic                drop_q = 1'b0;  // the response owed belongs to an abandoned request
-  logic                hardreset;
-  logic                resp_keep;
-  logic                busy;
-  logic [         1:0] dmi_status;
-  logic [        31:0] dtmcs_value;
+`ifdef FROST_RANDOM_START
+  localparam bit RandomStart = 1'b1;
+`else
+  localparam bit RandomStart = 1'b0;
+`endif
+
+  logic [1:0] sticky_q = RandomStart ? 'x : 2'd0;  // 0 none, 2 failed, 3 busy
+  logic req_toggle_q = RandomStart ? 'x : 1'b0;
+  logic [1:0] req_op_q = RandomStart ? 'x : 2'd0;
+  logic [Abits-1:0] req_addr_q = RandomStart ? 'x : '0;
+  logic [31:0] req_data_q = RandomStart ? 'x : '0;
+  (* ASYNC_REG = "TRUE" *) logic ack_sync1 = RandomStart ? 'x : 1'b0;
+  (* ASYNC_REG = "TRUE" *) logic ack_sync2 = RandomStart ? 'x : 1'b0;
+  logic ack_seen_q = RandomStart ? 'x : 1'b0;  // last ack consumed
+  logic resp_arrived;
+  logic [31:0] resp_data_tck = RandomStart ? 'x : '0;
+  logic drop_q = RandomStart ? 'x : 1'b0;  // the response owed belongs to an abandoned request
+  logic hardreset;
+  logic resp_keep;
+  logic busy;
+  logic [1:0] dmi_status;
+  logic [31:0] dtmcs_value;
   // Core domain
-  (* ASYNC_REG = "TRUE" *)logic                req_sync1 = 1'b0;
-  (* ASYNC_REG = "TRUE" *)logic                req_sync2 = 1'b0;
-  logic                req_seen_q = 1'b0;  // last request toggle serviced
-  logic                ack_toggle_q = 1'b0;
-  logic [        31:0] resp_data_q = '0;
-  logic [         1:0] resp_op_q = 2'd0;
+  (* ASYNC_REG = "TRUE" *) logic req_sync1 = RandomStart ? 'x : 1'b0;
+  (* ASYNC_REG = "TRUE" *) logic req_sync2 = RandomStart ? 'x : 1'b0;
+  logic req_seen_q = RandomStart ? 'x : 1'b0;  // last request toggle serviced
+  logic ack_toggle_q = RandomStart ? 'x : 1'b0;
+  logic [31:0] resp_data_q = RandomStart ? 'x : '0;
+  logic [1:0] resp_op_q = RandomStart ? 'x : 2'd0;
 
   // ---------------------------------------------------------------------------
   // TCK domain

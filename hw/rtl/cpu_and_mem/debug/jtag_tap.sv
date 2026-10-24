@@ -105,7 +105,13 @@ module jtag_tap #(
   // Shift-IR shifts LSB-first, Update-IR installs the new instruction on the
   // falling edge; Test-Logic-Reset selects IDCODE.
   logic [4:0] ir_shift;
-  logic [4:0] ir = IrIdcode;
+`ifdef FROST_RANDOM_START
+  localparam bit RandomStart = 1'b1;
+`else
+  localparam bit RandomStart = 1'b0;
+`endif
+
+  logic [4:0] ir = RandomStart ? 'x : IrIdcode;
   always_ff @(posedge i_tck) begin
     if (state == CaptureIr) ir_shift <= 5'b00001;
     else if (state == ShiftIr) ir_shift <= {i_tdi, ir_shift[4:1]};

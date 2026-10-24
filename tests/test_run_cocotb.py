@@ -146,6 +146,7 @@ def coverage_file(label: str) -> Path:
 # in its registry entry, in FROST_VERILATOR_EXTRA_ARGS, or with the
 # DDR_MODEL_LATENCY variable, keeps the pinned value.
 DDR_MODEL_SEED_VARIABLE = "FROST_DDR_MODEL_SEED"
+RANDOM_START_SEED_VARIABLE = "FROST_RANDOM_START_SEED"
 # FROST_CALIBRATION_TEST limits the performance model's calibration capture
 # (verif/cocotb_tests/calibration_trace.py) to the registry test it names:
 # the other tests run without the capture's output files.
@@ -3649,6 +3650,8 @@ class CocotbRunner:
     def _verilator_build_signature(self) -> str:
         """Return the build-affecting signature tracked by the rebuild marker."""
         signature = self._verilator_extra_args_string()
+        if os.environ.get(RANDOM_START_SEED_VARIABLE, "").strip():
+            signature = f"{signature} FROST_RANDOM_START=1".strip()
         # Include external build overrides to prevent reusing a stale Vtop.
         external_verilator_args = os.environ.get("FROST_VERILATOR_EXTRA_ARGS", "")
         if external_verilator_args:
@@ -3714,6 +3717,19 @@ class CocotbRunner:
     def setup_environment(self) -> dict[str, str]:
         """Return a copy of os.environ with the simulation settings applied."""
         environment_variables = os.environ.copy()
+
+        seed = os.environ.get(RANDOM_START_SEED_VARIABLE, "").strip()
+        if seed:
+            verilator_seed = random.Random(seed).randint(1, 2**31 - 1)
+            environment_variables["FROST_RANDOM_START"] = "1"
+            environment_variables["FROST_RANDOM_START_VERILATOR_SEED"] = str(
+                verilator_seed
+            )
+            print(
+                f"Random start from {RANDOM_START_SEED_VARIABLE}={seed}: "
+                f"Verilator seed={verilator_seed}",
+                flush=True,
+            )
 
         environment_variables["SIM"] = "verilator"
         environment_variables["ROOT"] = str(self.repository_root_directory)
