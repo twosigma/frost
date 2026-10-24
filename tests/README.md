@@ -66,7 +66,9 @@ prints a command that reproduces each failing seed.
 
 Within a pytest run, a target reuses generated files only when its build
 settings match, and the files of a failed Verilator build are removed before
-the next target.
+the next target. pytest collects the applications grouped by their Verilator
+arguments, in registry order within each group, so a run builds each
+configuration once.
 
 Whole-CPU simulations, synthesis, and FPGA builds all use the CPU
 configuration in `riscv_pkg`. The `tomasulo_wrapper_no_early_load` and

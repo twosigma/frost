@@ -680,3 +680,32 @@ def test_calibration_test_limits_the_capture_to_one_test(
     assert all(name in coremark.setup_environment() for name in outputs)
     assert not any(name in profile.setup_environment() for name in outputs)
     assert all(os.environ[name] for name in outputs)
+
+
+def test_real_programs_with_the_same_build_are_collected_together() -> None:
+    """Each Verilator argument set is one run of the collection order."""
+    arguments = [
+        test_run_cocotb.TEST_REGISTRY[name].verilator_extra_args
+        for name in test_run_cocotb.REAL_PROGRAM_TESTS
+    ]
+    changes = [arguments[0]] + [
+        current
+        for previous, current in zip(arguments, arguments[1:], strict=False)
+        if current != previous
+    ]
+    assert len(changes) == len(set(changes))
+    registered = [
+        name
+        for name, config in test_run_cocotb.TEST_REGISTRY.items()
+        if config.app_name is not None and config.include_in_pytest
+    ]
+    for build in set(arguments):
+        assert [
+            name
+            for name in test_run_cocotb.REAL_PROGRAM_TESTS
+            if test_run_cocotb.TEST_REGISTRY[name].verilator_extra_args == build
+        ] == [
+            name
+            for name in registered
+            if test_run_cocotb.TEST_REGISTRY[name].verilator_extra_args == build
+        ]
