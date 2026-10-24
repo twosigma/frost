@@ -37,11 +37,10 @@ import cocotb
 
 from cocotb_tests.cpu_structs import ID_TO_EX_FIELDS
 
-CORE_PATH = "cpu_and_memory_subsystem.cpu.cpu_inst"
-HART_CORE_PATH = "cpu_and_memory_subsystem.cpu.hart.cpu_inst"
 CPU_TOP_PATH = "cpu_and_memory_subsystem.cpu"
+CORE_PATH = f"{CPU_TOP_PATH}.hart.cpu_inst"
 COMMIT_MISPREDICTION_PATH = (
-    f"{HART_CORE_PATH}.misprediction_flush_controller_inst.commit_is_misprediction"
+    f"{CORE_PATH}.misprediction_flush_controller_inst.commit_is_misprediction"
 )
 
 
@@ -96,7 +95,11 @@ class CalibrationTrace:
     def __init__(
         self, dut: Any, trace_path: Path, app_name: str | None, run_number: int
     ) -> None:
-        """Bind the signals and open the trace if the window starts at once."""
+        """Bind the signals and open the trace if the window starts at once.
+
+        Raise AssertionError if the build lacks a signal that the capture
+        reads.
+        """
         self.trace_path = trace_path
         self.app_name = app_name
         self.run_number = run_number
@@ -130,61 +133,75 @@ class CalibrationTrace:
         self.rob_occupancy_sum = 0
         self.sq_occupancy_sum = 0
 
-        self.retire = _signal(dut, f"{HART_CORE_PATH}.dbg_commit_valid")
-        self.retire_pc = _signal(dut, f"{HART_CORE_PATH}.dbg_commit_pc")
-        self.retire_2 = _signal(dut, f"{HART_CORE_PATH}.dbg_commit_2_valid")
-        self.retire_2_pc = _signal(dut, f"{HART_CORE_PATH}.dbg_commit_2_pc")
-        self.retire_mispredict = _signal(dut, COMMIT_MISPREDICTION_PATH)
-        self.dispatch = _signal(dut, f"{CORE_PATH}.dbg_rob_alloc_valid")
-        self.dispatch_stall = _signal(dut, f"{CORE_PATH}.dbg_dispatch_stall")
-        self.pipeline_stall = _signal(dut, f"{CORE_PATH}.dbg_pipeline_stall")
-        self.rob_count = _signal(dut, f"{CORE_PATH}.rob_count")
-        self.sq_count = _signal(dut, f"{CORE_PATH}.sq_count")
-        self.slot2 = _signal(dut, f"{CORE_PATH}.from_id_to_ex_2")
-        if self.slot2 is None:
-            cocotb.log.warning(
-                "Could not bind slot2 struct for calibration: FROST_CALIBRATION_TRACE "
-                f"needs signals this build does not expose: {CORE_PATH}.from_id_to_ex_2"
-            )
-        self.slot2_real = _field_slice(ID_TO_EX_FIELDS, "is_real")
+        missing: list[str] = []
+
+        def bind(path: str) -> Any:
+            handle = _signal(dut, path)
+            if handle is None:
+                missing.append(path)
+            return handle
+
+        core, cpu_top = CORE_PATH, CPU_TOP_PATH
+        self.retire = bind(f"{core}.dbg_commit_valid")
+        self.retire_pc = bind(f"{core}.dbg_commit_pc")
+        self.retire_2 = bind(f"{core}.dbg_commit_2_valid")
+        self.retire_2_pc = bind(f"{core}.dbg_commit_2_pc")
+        self.retire_mispredict = bind(COMMIT_MISPREDICTION_PATH)
+        self.dispatch = bind(f"{core}.dbg_rob_alloc_valid")
+        self.dispatch_stall = bind(f"{core}.dbg_dispatch_stall")
+        self.pipeline_stall = bind(f"{core}.dbg_pipeline_stall")
+        self.rob_count = bind(f"{core}.rob_count")
+        self.sq_count = bind(f"{core}.sq_count")
+        self.slot2 = bind(f"{core}.from_id_to_ex_2")
         # cpu_top's AXI channels: each request channel's counter name, valid,
         # ready, ID, address, and direction, and each response channel's
         # counter name, valid, ready, ID, and response.
-        cpu_top = CPU_TOP_PATH
         self.axi_requests = (
             (
                 "ar",
-                _signal(dut, f"{cpu_top}.o_axi_arvalid"),
-                _signal(dut, f"{cpu_top}.i_axi_arready"),
-                _signal(dut, f"{cpu_top}.o_axi_arid"),
-                _signal(dut, f"{cpu_top}.o_axi_araddr"),
+                bind(f"{cpu_top}.o_axi_arvalid"),
+                bind(f"{cpu_top}.i_axi_arready"),
+                bind(f"{cpu_top}.o_axi_arid"),
+                bind(f"{cpu_top}.o_axi_araddr"),
                 "false",
             ),
             (
                 "aw",
-                _signal(dut, f"{cpu_top}.o_axi_awvalid"),
-                _signal(dut, f"{cpu_top}.i_axi_awready"),
-                _signal(dut, f"{cpu_top}.o_axi_awid"),
-                _signal(dut, f"{cpu_top}.o_axi_awaddr"),
+                bind(f"{cpu_top}.o_axi_awvalid"),
+                bind(f"{cpu_top}.i_axi_awready"),
+                bind(f"{cpu_top}.o_axi_awid"),
+                bind(f"{cpu_top}.o_axi_awaddr"),
                 "true",
             ),
         )
         self.axi_responses = (
             (
                 "r",
-                _signal(dut, f"{cpu_top}.i_axi_rvalid"),
-                _signal(dut, f"{cpu_top}.o_axi_rready"),
-                _signal(dut, f"{cpu_top}.i_axi_rid"),
-                _signal(dut, f"{cpu_top}.i_axi_rresp"),
+                bind(f"{cpu_top}.i_axi_rvalid"),
+                bind(f"{cpu_top}.o_axi_rready"),
+                bind(f"{cpu_top}.i_axi_rid"),
+                bind(f"{cpu_top}.i_axi_rresp"),
             ),
             (
                 "b",
-                _signal(dut, f"{cpu_top}.i_axi_bvalid"),
-                _signal(dut, f"{cpu_top}.o_axi_bready"),
-                _signal(dut, f"{cpu_top}.i_axi_bid"),
-                _signal(dut, f"{cpu_top}.i_axi_bresp"),
+                bind(f"{cpu_top}.i_axi_bvalid"),
+                bind(f"{cpu_top}.o_axi_bready"),
+                bind(f"{cpu_top}.i_axi_bid"),
+                bind(f"{cpu_top}.i_axi_bresp"),
             ),
         )
+        if missing:
+            raise AssertionError(
+                "FROST_CALIBRATION_TRACE_PATH needs signals this build does not "
+                f"expose: {', '.join(missing)}"
+            )
+        layout_width = sum(width for _, width in ID_TO_EX_FIELDS)
+        if len(self.slot2) != layout_width:
+            raise AssertionError(
+                f"{core}.from_id_to_ex_2 is {len(self.slot2)} bits wide, but its "
+                f"cpu_structs layout adds up to {layout_width}"
+            )
+        self.slot2_real = _field_slice(ID_TO_EX_FIELDS, "is_real")
         if self.state == "ACTIVE":
             self._open()
 
@@ -235,11 +252,10 @@ class CalibrationTrace:
         # A slot-1 ROB allocation dispatches slot 2 too if its packet is real.
         if _read(self.dispatch):
             uops = 1
-            if self.slot2 is not None:
-                packet = _read(self.slot2)
-                lsb, mask = self.slot2_real
-                if packet is not None and (packet >> lsb) & mask:
-                    uops = 2
+            packet = _read(self.slot2)
+            lsb, mask = self.slot2_real
+            if packet is not None and (packet >> lsb) & mask:
+                uops = 2
             trace.write(
                 f'{{"cycle":{stamp},"event":"dispatch","source":"rob","uops":{uops}}}\n'
             )
@@ -250,7 +266,7 @@ class CalibrationTrace:
 
         if _read(self.dispatch_stall):
             counters["dispatch_stall_cycles"] += 1
-        if self.pipeline_stall is not None and _read(self.pipeline_stall):
+        if _read(self.pipeline_stall):
             counters["pipeline_stall_cycles"] += 1
 
         retired = int(r1_ret) + int(r2_ret)
