@@ -26,6 +26,9 @@
  *
  * Buffers use fixed cached-DDR addresses in both memory tiers. Each case
  * checks data or completion behavior and contributes to <<PASS>> or <<FAIL>>.
+ * A second pass repeats the copy, message-passing, AMO, abort and stress
+ * cases with DMA_ENGINE_MODE_BURST, so each line moves as a four-beat AXI
+ * burst; their names carry a _burst suffix.
  */
 #include <stdint.h>
 
@@ -100,6 +103,8 @@ static volatile uint32_t *way_line(volatile uint32_t *line, uint32_t j)
 }
 
 static uint32_t g_failures;
+/* Mode bits added to every transfer: DMA_ENGINE_MODE_BURST in the second pass. */
+static uint32_t g_mode_extra;
 volatile uint32_t g_irq_count;
 volatile uint32_t g_irq_status;
 volatile uint32_t g_irq_data;
@@ -112,10 +117,11 @@ static uint32_t pa(volatile void *p)
 
 static void check(const char *name, int ok)
 {
+    const char *pass = g_mode_extra ? "_burst" : "";
     if (ok) {
-        uart_printf("%s OK\n", name);
+        uart_printf("%s%s OK\n", name, pass);
     } else {
-        uart_printf("%s FAIL\n", name);
+        uart_printf("%s%s FAIL\n", name, pass);
         g_failures++;
     }
 }
@@ -128,7 +134,7 @@ static uint32_t run_engine(uint32_t src,
                            uint32_t status_addr,
                            uint32_t status_value)
 {
-    dma_engine_setup(src, dst, len, mode, pattern, status_addr, status_value);
+    dma_engine_setup(src, dst, len, mode | g_mode_extra, pattern, status_addr, status_value);
     dma_engine_start();
     return dma_engine_wait();
 }
@@ -141,7 +147,7 @@ static void start_engine(uint32_t src,
                          uint32_t status_addr,
                          uint32_t status_value)
 {
-    dma_engine_setup(src, dst, len, mode, pattern, status_addr, status_value);
+    dma_engine_setup(src, dst, len, mode | g_mode_extra, pattern, status_addr, status_value);
     dma_engine_start();
 }
 
@@ -486,8 +492,13 @@ static void test_abort_read(void)
     aplic_enable_machine_source(DMA_ENGINE_APLIC_SOURCE);
     enable_external_interrupt();
     enable_interrupts();
-    dma_engine_setup(
-        pa(g_src), pa(g_dst), BUF_WORDS * 4u, DMA_ENGINE_MODE_COPY | DMA_ENGINE_MODE_IRQ, 0, 0, 0);
+    dma_engine_setup(pa(g_src),
+                     pa(g_dst),
+                     BUF_WORDS * 4u,
+                     DMA_ENGINE_MODE_COPY | DMA_ENGINE_MODE_IRQ | g_mode_extra,
+                     0,
+                     0,
+                     0);
     dma_engine_start();
     dma_engine_write(DMA_ENGINE_CTRL, DMA_ENGINE_CTRL_ABORT);
     (void) dma_engine_wait(); /* the handler's ack may already have cleared the flags */
@@ -767,6 +778,15 @@ int main(void)
     test_aperture();
     test_stress();
     test_atomics();
+    g_mode_extra = DMA_ENGINE_MODE_BURST;
+    test_copy();
+    test_mp(0);
+    test_mp(1);
+    test_amo();
+    test_abort();
+    test_abort_read();
+    test_stress();
+    g_mode_extra = 0;
     if (g_failures == 0) {
         uart_printf("<<PASS>>\n");
     } else {
