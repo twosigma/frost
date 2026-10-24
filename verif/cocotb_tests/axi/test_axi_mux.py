@@ -203,6 +203,58 @@ async def _traffic(bench: _Bench, rounds: int, per_port: int) -> None:
 
 
 @cocotb.test()
+async def test_slave_w_before_aw(dut: Any) -> None:
+    """The slave completes writes whose data is presented before the address."""
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
+    dut.i_rst.value = 1
+    # Connect the models directly through harness inputs, with the mux in
+    # reset: its downstream W channel waits for AW before presenting data.
+    bus = len(dut.i_up0_wdata) // 8
+    mem: dict[int, int] = {}
+    ref: dict[int, int] = {}
+    slave = AxiSlaveMemory(
+        dut,
+        dut.i_clk,
+        "i_dn_",
+        "i_up0_",
+        bus,
+        mem,
+        random.Random(14),
+        ready_bias=1.0,
+    )
+    master = AxiMaster(
+        dut,
+        dut.i_clk,
+        "i_up0_",
+        "i_dn_",
+        bus,
+        random.Random(15),
+        ready_bias=1.0,
+        gap_bias=0.0,
+    )
+    for length in (0, 3):
+        addr = 0x1000 + length * bus
+        size = bus.bit_length() - 1
+        beats = [(0x12345678 + n, (1 << bus) - 1) for n in range(length + 1)]
+        txn = master.write(length, addr, length, size, INCR, beats)
+        delayed_aw = master._aw_queue.popleft()
+        await RisingEdge(dut.i_clk)
+        await RisingEdge(dut.i_clk)
+        assert int(dut.i_up0_wvalid.value)
+        assert not int(dut.i_up0_awvalid.value)
+        for _ in range(8):
+            await RisingEdge(dut.i_clk)
+        master._aw_queue.append(delayed_aw)
+        await _wait(dut, [txn], limit=100)
+        assert txn.resp == OKAY
+        apply_write(ref, addr, length, size, INCR, beats, bus)
+        assert mem == ref
+    assert len(master.completions) == 2
+    assert not master.violations, master.violations
+    assert not slave.violations, slave.violations
+
+
+@cocotb.test()
 async def test_three_masters(dut: Any) -> None:
     """Concurrent bursts from three ports land and return to the right port."""
     bench = await _start(dut, seed=11)
