@@ -274,7 +274,7 @@ the image.
 | **Compiler** | Native GCC / G++ | 16.2.0 |
 | | Clang / clang-tidy / clang-format | 23.1.1 |
 | | RISC-V GCC for bare metal, OpenSBI and Linux (Bootlin musl) | 15.3.0 (2026.08-1) |
-| | pip / setuptools / wheel | 26.2.1 / 84.0.0 / 0.48.0 |
+| | pip / setuptools / wheel | 26.2.1 / 84.1.0 / 0.48.0 |
 | **Build** | CMake / Meson / Ninja | 4.4.3 / 1.12.0 / 1.13.2 |
 | | Buildroot / OpenSBI | 2026.08 / 1.9 |
 | **Testbench** | Cocotb / pytest / pytest-cov | 2.1.0 / 9.1.1 / 7.1.0 |
