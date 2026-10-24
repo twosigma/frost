@@ -80,6 +80,12 @@ class CocotbRunConfig:
     # again; the DDR tier runs it once. False runs it once in both tiers.
     # tests/README.md lists the applications that do and why.
     rerun_after_reset: bool = True
+    # False simulates the application as on a board with no NIC link clock:
+    # both MAC clocks absent and their clock-OK levels low, so the NIC holds
+    # its MAC domains in reset. Only for applications that never use the NIC
+    # (its registers, DMA, interrupt or link status); the real-program bench
+    # fails one that accesses the NIC's register window.
+    nic_mac_clocks: bool = True
 
 
 # tests/Makefile turns these environment variables into Verilator arguments:
@@ -202,6 +208,7 @@ COREMARK_PRO_TESTS = {
         # per-board iteration counts in software_registry.py.
         extra_env=COREMARK_PRO_SIMULATION_ENV.get(program.app_name, ()),
         rerun_after_reset=program.app_name not in COREMARK_PRO_SINGLE_RUN,
+        nic_mac_clocks=False,
     )
     for program in COREMARK_PRO_PROGRAMS
 }
@@ -220,24 +227,28 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="branch_pred_test",
+        nic_mac_clocks=False,
         description="Branch and jump correctness across prediction patterns",
     ),
     "c_ext_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="c_ext_test",
+        nic_mac_clocks=False,
         description="RV64C instructions and mixed-width calls and returns",
     ),
     "cf_ext_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="cf_ext_test",
+        nic_mac_clocks=False,
         description="Compressed double-precision floating-point loads and stores (Zcd)",
     ),
     "call_stress": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="call_stress",
+        nic_mac_clocks=False,
         description="Repeated and nested calls with compressed instructions",
     ),
     "coremark": CocotbRunConfig(
@@ -245,6 +256,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="coremark",
         rerun_after_reset=False,
+        nic_mac_clocks=False,
         description=("CoreMark benchmark with profiling counters disabled"),
     ),
     "coremark_profile": CocotbRunConfig(
@@ -252,6 +264,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="coremark",
         rerun_after_reset=False,
+        nic_mac_clocks=False,
         description=(
             "CoreMark benchmark and profile report with profiling counters enabled"
         ),
@@ -263,6 +276,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ddr_test",
+        nic_mac_clocks=False,
         description="Cached DDR loads and stores through the cache hierarchy",
     ),
     **{
@@ -270,6 +284,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             python_test_module="cocotb_tests.test_real_program",
             hdl_toplevel_module="frost",
             app_name="pa_width_test",
+            nic_mac_clocks=False,
             description=f"Bare CPU access through the last line of a {1 << (bits - 30)} GiB DDR aperture",
             include_in_pytest=False,
             extra_env=(("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),),
@@ -285,6 +300,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             python_test_module="cocotb_tests.test_real_program",
             hdl_toplevel_module="frost",
             app_name="pa_vm_fetch_test",
+            nic_mac_clocks=False,
             description=f"Sv39 fetch from the final physical DDR page at {1 << (bits - 30)} GiB",
             include_in_pytest=False,
             extra_env=(("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),),
@@ -300,6 +316,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             python_test_module="cocotb_tests.test_real_program",
             hdl_toplevel_module="frost",
             app_name="pa_dma_test",
+            nic_mac_clocks=False,
             description=f"Full-top coherent DMA at final {1 << (bits - 30)} GiB DDR lines",
             include_in_pytest=False,
             extra_env=(("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),),
@@ -344,12 +361,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="dma_torture",
+        nic_mac_clocks=False,
         description=("DMA coherence with CPU caches and atomics"),
     ),
     "dma_torture_1g": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="dma_torture",
+        nic_mac_clocks=False,
         description="Legacy DMA coherence and DDR-end rejection at 1 GiB",
         include_in_pytest=False,
         extra_env=(("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=30"),),
@@ -370,12 +389,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
                 "-GL2_CACHE_BYTES=262144",
             ),
             extra_env=(("GENERATE_IMEM_INIT", "1"),),
+            nic_mac_clocks=nic_mac_clocks,
         )
-        for app, description in (
-            ("isa_test", "Instruction checks for RV64GCB and supported extensions"),
-            ("ddr_test", "Cached DDR loads and stores"),
-            ("ddr_exec_test", "Instruction fetch and execution from cached DDR"),
-            ("nic_loopback", "NIC frame loopback through DDR rings"),
+        for app, description, nic_mac_clocks in (
+            (
+                "isa_test",
+                "Instruction checks for RV64GCB and supported extensions",
+                False,
+            ),
+            ("ddr_test", "Cached DDR loads and stores", False),
+            ("ddr_exec_test", "Instruction fetch and execution from cached DDR", False),
+            ("nic_loopback", "NIC frame loopback through DDR rings", True),
         )
     },
     "nic_loopback": CocotbRunConfig(
@@ -396,18 +420,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ddr_exec_test",
+        nic_mac_clocks=False,
         description="Instruction fetch and execution from cached DDR",
     ),
     "ddr_smc_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ddr_smc_test",
+        nic_mac_clocks=False,
         description="Self-modifying DDR code becomes visible after fence.i",
     ),
     "smc_fencei_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="smc_fencei_test",
+        nic_mac_clocks=False,
         description="Self-modifying DDR code across fence.i timing and cache-state "
         "variations",
     ),
@@ -415,12 +442,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ddr_heap_test",
+        nic_mac_clocks=False,
         description="Large heap allocations in cached DDR",
     ),
     "ddr_mlp_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ddr_mlp_test",
+        nic_mac_clocks=False,
         description=(
             "Overlapping DDR cache misses with 4 KiB L1D/L2 caches and profiling "
             "counters"
@@ -435,6 +464,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ddr_bench",
+        nic_mac_clocks=False,
         description=(
             "Memory-bound kernels on cold DDR regions, at a sixteenth of their "
             "hardware sizes, timed with profiling counters"
@@ -453,6 +483,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ddr_test",
+        nic_mac_clocks=False,
         description="Cached DDR loads and stores with 32-byte L2 lines",
         verilator_extra_args=("-GL2_LINE_BYTES=32",),
     ),
@@ -460,6 +491,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ddr_exec_test",
+        nic_mac_clocks=False,
         description="Instruction fetch and execution from cached DDR with 32-byte L2 lines",
         verilator_extra_args=("-GL2_LINE_BYTES=32",),
     ),
@@ -467,6 +499,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ddr_atomic_test",
+        nic_mac_clocks=False,
         description="Word-form LR/SC and AMO operations in cached DDR with 32-byte L2 lines",
         verilator_extra_args=("-GL2_LINE_BYTES=32",),
     ),
@@ -474,6 +507,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="dma_torture",
+        nic_mac_clocks=False,
         description="DMA coherence with CPU caches and atomics, with 32-byte L2 lines",
         verilator_extra_args=("-GL2_LINE_BYTES=32",),
     ),
@@ -481,6 +515,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ptw_coherence_test",
+        nic_mac_clocks=False,
         description="Sv39 walks see dirty L1D page tables, with 32-byte L2 lines",
         verilator_extra_args=("-GL2_LINE_BYTES=32",),
     ),
@@ -488,6 +523,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="smc_fencei_test",
+        nic_mac_clocks=False,
         description="Self-modifying DDR code across fence.i, with 32-byte L2 lines",
         verilator_extra_args=("-GL2_LINE_BYTES=32",),
     ),
@@ -495,6 +531,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="csr_test",
+        nic_mac_clocks=False,
         description=(
             "Machine-mode counter controls and pure reads checked against independent time"
         ),
@@ -503,6 +540,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="instret_test",
+        nic_mac_clocks=False,
         description=(
             "Exact instruction retirement counts across fences and traps, with serial "
             "TX checks"
@@ -513,6 +551,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="umode_test",
+        nic_mac_clocks=False,
         description="User-mode traps, privilege checks, and counter permissions",
     ),
     "pma_fault_test": CocotbRunConfig(
@@ -554,6 +593,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="fs_off_test",
+        nic_mac_clocks=False,
         description=(
             "F/D instructions trap without memory effects when mstatus.FS is Off"
         ),
@@ -562,6 +602,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="vm_test",
+        nic_mac_clocks=False,
         description=(
             "Sv39 data translation, permissions, and precise faults through MPRV"
         ),
@@ -571,6 +612,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             python_test_module="cocotb_tests.test_real_program",
             hdl_toplevel_module="frost",
             app_name="vm_test",
+            nic_mac_clocks=False,
             description=(
                 f"Sv39 final-word access and DDR-end walker fault at {1 << (bits - 30)} GiB"
             ),
@@ -587,6 +629,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="slot2_fault_test",
+        nic_mac_clocks=False,
         description=("Precise fetch faults on the second instruction of a pair"),
     ),
     "itlb_test": CocotbRunConfig(
@@ -594,6 +637,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="itlb_test",
         rerun_after_reset=False,
+        nic_mac_clocks=False,
         description=(
             "Sv39 instruction fetch in supervisor and user modes, including cached DDR"
         ),
@@ -606,6 +650,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="itlb_test",
         rerun_after_reset=False,
+        nic_mac_clocks=False,
         description="Sv39 instruction fetch and bare out-of-range fault at 1 GiB DDR",
         include_in_pytest=False,
         extra_env=(
@@ -650,6 +695,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="satp_drain_test",
+        nic_mac_clocks=False,
         description=(
             "Committed DDR stores drain before satp and mstatus writes retire"
         ),
@@ -658,6 +704,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="imsic_csr_test",
+        nic_mac_clocks=False,
         extra_env=(("COCOTB_MAX_CYCLES", "1500000"),),
         description="AIA CSR legality, indirect registers, claims, aliases and exact topi priority",
     ),
@@ -665,6 +712,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="imsic_msi_test",
+        nic_mac_clocks=False,
         description="IMSIC MSI stores, access sizes, byte orders, translated access and trap claims",
     ),
     "timer_replay_test": CocotbRunConfig(
@@ -686,12 +734,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="imsic_aplic_coexist_test",
+        nic_mac_clocks=False,
         description="IMSIC and APLIC UART/DMA direct delivery coexistence and MSI forwarding",
     ),
     "aplic_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="aplic_test",
+        nic_mac_clocks=False,
         description=(
             "APLIC direct delivery, delegation, claims and 32-bit access enforcement"
         ),
@@ -724,6 +774,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="memerr_test",
+        nic_mac_clocks=False,
         description=(
             "Precise DDR read fault, ECC/APLIC reporting, and fatal cached writeback error"
         ),
@@ -739,6 +790,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ecc_scrub_test",
+        nic_mac_clocks=False,
         description=(
             "Eight AMO no-ops preserve a line and cause exactly one DDR writeback; "
             "a clean read causes none"
@@ -749,6 +801,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="memerr_readback",
+        nic_mac_clocks=False,
         description=(
             "The X3's memory error readback program, against a bench reader "
             "that only polls"
@@ -759,6 +812,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="sstc_test",
+        nic_mac_clocks=False,
         description=(
             "Sstc timer access controls and delegated supervisor timer interrupts"
         ),
@@ -767,12 +821,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ns16550_irq_console_test",
+        nic_mac_clocks=False,
         description=("ns16550 console output through APLIC interrupt handlers"),
     ),
     "ad_fault_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ad_fault_test",
+        nic_mac_clocks=False,
         description=(
             "Sv39 faults after PTE accessed/dirty bits are cleared, and demand-page "
             "copying"
@@ -782,12 +838,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="smode_test",
+        nic_mac_clocks=False,
         description=("Supervisor-mode traps, returns, delegation, and CSR permissions"),
     ),
     "csr_rmw_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="csr_rmw_test",
+        nic_mac_clocks=False,
         description=(
             "CSR read-modify-write and trap-entry swaps with profiling counters enabled"
         ),
@@ -797,6 +855,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="pause_test",
+        nic_mac_clocks=False,
         description=(
             "PAUSE skips store draining; FENCE waits (profiling counters enabled)"
         ),
@@ -806,6 +865,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="perf_off_test",
+        nic_mac_clocks=False,
         description=(
             "Profiling CSRs read zero with counters disabled; cycle and instret still "
             "count"
@@ -815,12 +875,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="wfi_mepc_test",
+        nic_mac_clocks=False,
         description=("Timer interrupts save the PC after a waiting WFI"),
     ),
     "wfi_seed_recovery": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="wfi_seed_recovery",
+        nic_mac_clocks=False,
         description=(
             "A wrong-path WFI cannot set the interrupt resume PC during recovery"
         ),
@@ -829,12 +891,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="wfi_drain_mepc_test",
+        nic_mac_clocks=False,
         description="Timer-interrupt mepc at WFI while a store drains (DDR tier only)",
     ),
     "drain_trapframe_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="drain_trapframe_test",
+        nic_mac_clocks=False,
         description=(
             "Trap-frame stores survive L1D eviction with a small L2 and slow DDR"
         ),
@@ -845,6 +909,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="mret_timer_resume_test",
+        nic_mac_clocks=False,
         description="A pending timer interrupt after MRET to user mode saves the "
         "target PC",
     ),
@@ -853,6 +918,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="restore_window_stress",
         rerun_after_reset=False,
+        nic_mac_clocks=False,
         description=(
             "Timer interrupts across 800 exception-return restore windows with a "
             "small L2 and slow DDR"
@@ -865,6 +931,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="mtimer_stress",
+        nic_mac_clocks=False,
         description=(
             "Machine-timer interrupts and MRET keep making progress across timer phases "
             "through all 20,000 memory/ALU loop iterations"
@@ -874,6 +941,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="mret_drain_deadlock",
+        nic_mac_clocks=False,
         description=(
             "MRET completes after cached stores drain, with a small L2 and slow DDR"
         ),
@@ -885,6 +953,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="wfi_lost_tick",
         rerun_after_reset=False,
+        nic_mac_clocks=False,
         description="Timer ticks keep arriving across Linux-style WFI idle and "
         "interrupt masking, with a 24..535-cycle CLINT deadline sweep",
     ),
@@ -892,6 +961,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="irq_mie_window",
+        nic_mac_clocks=False,
         description="A pending timer interrupt is taken in a one-instruction MIE "
         "window",
     ),
@@ -899,6 +969,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ns16550_test",
+        nic_mac_clocks=False,
         description=(
             "ns16550 register behavior, transmit status timing, and serial TX output"
         ),
@@ -907,6 +978,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="uart_burst",
+        nic_mac_clocks=False,
         description=(
             "Back-to-back UART stores produce each serial TX byte once, in order"
         ),
@@ -916,6 +988,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="clint_test",
+        nic_mac_clocks=False,
         description="CLINT aliases share native timer registers and deliver timer "
         "interrupts",
     ),
@@ -923,6 +996,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="jal_target_seam",
+        nic_mac_clocks=False,
         description=(
             "JAL redirect after a taken branch (use FROST_COCOTB_MEM_CONFIG=ddr)"
         ),
@@ -931,6 +1005,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="writecount_probe",
+        nic_mac_clocks=False,
         description=(
             "LR.W sign extension in inode write counts (use DDR tier for cached "
             "coverage)"
@@ -940,6 +1015,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="mem_divergence_probe",
+        nic_mac_clocks=False,
         description=(
             "Cold and warm DDR reads agree after cache eviction and partial stores"
         ),
@@ -972,6 +1048,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="linux_irq_ddr_test",
+        nic_mac_clocks=False,
         description="Linux-style timer interrupts preserve context with DDR code, "
         "data, and stack",
     ),
@@ -979,6 +1056,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="amo_irq_torture",
+        nic_mac_clocks=False,
         description=(
             "Timer interrupts preserve DDR atomic effects (hardware-scale; simulate "
             "amo_irq_torture_sim)"
@@ -989,6 +1067,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="tick_torture",
+        nic_mac_clocks=False,
         description=(
             "CLINT timer re-arming under DDR traffic (hardware-scale; simulate "
             "tick_torture_sim)"
@@ -999,6 +1078,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="amo_irq_torture",
+        nic_mac_clocks=False,
         description=(
             "Timer interrupts preserve DDR atomic effects with latency jitter "
             "(hardware-scale workload)"
@@ -1014,6 +1094,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="amo_irq_torture",
         rerun_after_reset=False,
+        nic_mac_clocks=False,
         description=(
             "Timer interrupts preserve DDR atomic effects (simulation-scale workload)"
         ),
@@ -1024,6 +1105,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="tick_torture",
         rerun_after_reset=False,
+        nic_mac_clocks=False,
         description=(
             "CLINT timer re-arming under DDR traffic (simulation-scale workload)"
         ),
@@ -1033,6 +1115,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="linux_irq_active_ddr_test",
+        nic_mac_clocks=False,
         description="Linux-style timer interrupts preserve context during DDR calls "
         "and returns",
     ),
@@ -1040,6 +1123,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="linux_clksrc_faithful",
+        nic_mac_clocks=False,
         description="CLINT enable-then-arm timer sequence with MIE-enabled WFI and DDR "
         "traffic",
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
@@ -1048,6 +1132,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="trap_s2l_fwd",
+        nic_mac_clocks=False,
         description="Cached store-to-load visibility across Linux-style trap entry and "
         "return",
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
@@ -1056,6 +1141,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="linux_irq_stack_slot_test",
+        nic_mac_clocks=False,
         description=(
             "Timer interrupts preserve DDR return-address slots, with strict IRQ "
             "precision checks"
@@ -1069,6 +1155,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="linux_irq_find_next_slot_test",
+        nic_mac_clocks=False,
         description="Timer interrupts preserve DDR return-address slots in a "
         "find-next-bit loop",
     ),
@@ -1077,6 +1164,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="lq_stale_slot_probe",
         rerun_after_reset=False,
+        nic_mac_clocks=False,
         description=(
             "Load data stays with its slot across flush/tag reuse with slow, jittered, "
             "reordered DDR"
@@ -1095,6 +1183,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ptw_coherence_test",
+        nic_mac_clocks=False,
         description=(
             "Sv39 walks see dirty L1D page tables without an intervening sfence.vma"
         ),
@@ -1103,6 +1192,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ddr_atomic_test",
+        nic_mac_clocks=False,
         description="Word-form LR/SC and AMO operations in cached DDR",
         include_in_pytest=True,
     ),
@@ -1111,6 +1201,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="pde_return_hazard",
         rerun_after_reset=False,
+        nic_mac_clocks=False,
         description="Return values survive register restores in a "
         "pde_subdir_find-style epilogue (DDR tier only)",
         # The app forces MEM_CONFIG=ddr. Use a small L2 and slow DDR for misses.
@@ -1121,6 +1212,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="freertos_demo",
+        nic_mac_clocks=False,
         description=(
             "FreeRTOS queues, mutexes, atomics, and tick-driven task switching"
         ),
@@ -1131,18 +1223,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="fpu_test",
+        nic_mac_clocks=False,
         description="Floating-point arithmetic, rounding, and conversion checks",
     ),
     "fpu_assembly_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="fpu_assembly_test",
+        nic_mac_clocks=False,
         description="Floating-point load-use and wrong-path hazards",
     ),
     "fp_dyn_rm_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="fp_dyn_rm_test",
+        nic_mac_clocks=False,
         description=(
             "Dynamic FP rounding traps for reserved frm values and works for valid "
             "modes"
@@ -1152,6 +1247,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="hello_world",
+        nic_mac_clocks=False,
         description="Hello World output reaches the serial TX pin",
         **UART_LINE_CHECK,
     ),
@@ -1159,24 +1255,28 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="isa_test",
+        nic_mac_clocks=False,
         description="Instruction checks for RV64GCB and supported extensions",
     ),
     "memory_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="memory_test",
+        nic_mac_clocks=False,
         description="Arena allocation and malloc/free behavior",
     ),
     "rv64_smoke": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="rv64_smoke",
+        nic_mac_clocks=False,
         description="RV64I arithmetic, shifts, and memory access",
     ),
     "rv64_amo_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="rv64_amo_test",
+        nic_mac_clocks=False,
         description=(
             "Doubleword AMO and LR/SC results, plus word-atomic byte selection"
         ),
@@ -1185,18 +1285,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="packet_parser",
+        nic_mac_clocks=False,
         description="FIX message parsing through MMIO FIFOs",
     ),
     "print_clock_speed": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="print_clock_speed",
+        nic_mac_clocks=False,
         description="UART output of the configured FPGA clock frequency",
     ),
     "spanning_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="spanning_test",
+        nic_mac_clocks=False,
         description="32-bit instructions spanning fetch-word boundaries",
     ),
     "sprintf_test": CocotbRunConfig(
@@ -1204,18 +1307,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="sprintf_test",
         rerun_after_reset=False,
+        nic_mac_clocks=False,
         description="sprintf and snprintf output formatting",
     ),
     "strings_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="strings_test",
+        nic_mac_clocks=False,
         description="String, character, and integer-conversion library checks",
     ),
     "ras_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ras_test",
+        nic_mac_clocks=False,
         description="Call/return correctness across return-stack depth and instruction "
         "alignments",
     ),
@@ -1223,12 +1329,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ras_stress_test",
+        nic_mac_clocks=False,
         description="Calls and returns mixed with branches and function pointers",
     ),
     "ras_slot_bench": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ras_slot_bench",
+        nic_mac_clocks=False,
         description=(
             "Return prediction in both bundle slots, checked with profiling counters"
         ),
@@ -1238,6 +1346,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ras_repair_bench",
+        nic_mac_clocks=False,
         description=(
             "Return-stack repair after wrong-path pops and pushes, checked with "
             "profiling counters"
@@ -1248,6 +1357,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="tomasulo_test",
+        nic_mac_clocks=False,
         description="Register and memory dependencies through out-of-order execution",
     ),
     "tomasulo_perf": CocotbRunConfig(
@@ -1255,6 +1365,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="tomasulo_perf",
         rerun_after_reset=False,
+        nic_mac_clocks=False,
         description=(
             "IPC benchmarks and profile-counter consistency with profiling enabled"
         ),
@@ -1271,6 +1382,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="uart_echo",
+        nic_mac_clocks=False,
         description="UART receive and echo with simulated serial input",
     ),
     # Fetch-latency fuzz: the same real programs with the simulation-only
@@ -1281,6 +1393,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="hello_world",
+        nic_mac_clocks=False,
         description="Hello World with randomized fetch latency",
         verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
     ),
@@ -1288,6 +1401,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="branch_pred_test",
+        nic_mac_clocks=False,
         description="Branch and jump correctness with randomized fetch latency",
         verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
     ),
@@ -1295,6 +1409,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="c_ext_test",
+        nic_mac_clocks=False,
         description="RV64C instructions and alignment with randomized fetch latency",
         verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
     ),
@@ -1302,6 +1417,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="call_stress",
+        nic_mac_clocks=False,
         description="Calls and returns with randomized fetch latency",
         verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
     ),
@@ -1309,6 +1425,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="itlb_test",
+        nic_mac_clocks=False,
         description=(
             "Sv39 fetch with randomized latency (BRAM fetch only; cached-fetch cases "
             "disabled)"
@@ -1320,6 +1437,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="served_window_resteer",
+        nic_mac_clocks=False,
         description=(
             "Predicted upper-half branch targets survive delayed uncached AXI fetches"
         ),
@@ -1331,6 +1449,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="fetch_lead_repro",
+        nic_mac_clocks=False,
         description=(
             "Spanning instructions after a mixed-width bundle on a cold DDR fetch"
         ),
@@ -1339,6 +1458,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="fetch_stall_repro",
+        nic_mac_clocks=False,
         description="32-bit instructions advance the PC by four bytes across DDR fetch "
         "stalls",
     ),
@@ -1347,6 +1467,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="window_skip_repro",
         rerun_after_reset=False,
+        nic_mac_clocks=False,
         description=(
             "Fall-through instructions survive recovery from mispredicted taken "
             "branches across all 6,000 calls"
@@ -1359,6 +1480,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="window_skip_repro",
+        nic_mac_clocks=False,
         description=(
             "Fall-through instructions survive branch recovery with randomized fetch "
             "latency"
@@ -3280,6 +3402,8 @@ class CocotbRunner:
         extra_env = config.extra_env
         if not config.rerun_after_reset:
             extra_env = (*extra_env, ("COCOTB_NUM_RUNS", "1"))
+        if not config.nic_mac_clocks:
+            extra_env = (*extra_env, ("FROST_NIC_MAC_CLOCKS", "0"))
         return cls(
             python_test_module=config.python_test_module,
             hdl_toplevel_module=config.hdl_toplevel_module,

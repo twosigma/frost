@@ -744,3 +744,38 @@ def test_single_run_entries_are_the_ones_tests_readme_lists() -> None:
         and not config.rerun_after_reset
     }
     assert set(re.findall(r"`([a-z0-9_]+)`", table)) == single
+
+
+def test_nic_clock_setting_reaches_the_bench(monkeypatch: pytest.MonkeyPatch) -> None:
+    """nic_mac_clocks=False runs an application without the NIC's MAC clocks."""
+    monkeypatch.delenv("FROST_NIC_MAC_CLOCKS", raising=False)
+    config = test_run_cocotb.CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="hello_world",
+    )
+    clocked = test_run_cocotb.CocotbRunner.from_config(config)
+    clocked.restore_environment()
+    unclocked = test_run_cocotb.CocotbRunner.from_config(
+        replace(config, nic_mac_clocks=False)
+    )
+    unclocked.restore_environment()
+    assert "FROST_NIC_MAC_CLOCKS" not in dict(clocked.extra_env)
+    assert dict(unclocked.extra_env)["FROST_NIC_MAC_CLOCKS"] == "0"
+    assert "FROST_NIC_MAC_CLOCKS" not in os.environ
+
+
+def test_applications_that_name_the_nic_keep_its_clocks() -> None:
+    """An application whose sources use the NIC's registers keeps the MAC clocks."""
+    apps = Path(test_run_cocotb.__file__).resolve().parent.parent / "sw" / "apps"
+    for name, config in test_run_cocotb.TEST_REGISTRY.items():
+        if config.app_name is None or config.nic_mac_clocks:
+            continue
+        app_directory = apps / test_run_cocotb.app_build_directory_name(config.app_name)
+        for source in sorted(app_directory.iterdir()):
+            if source.suffix not in (".c", ".h", ".S") or source.name == "sw.S":
+                continue
+            text = source.read_text(errors="replace")
+            assert not re.search(
+                r"\bnic\.h\b|\bNIC_(BASE|ADDR)\b|\b0x4003_?0[0-9A-Fa-f]{3}", text
+            ), f"{name} runs without the NIC's MAC clocks but {source} uses the NIC"

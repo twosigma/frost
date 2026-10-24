@@ -143,6 +143,17 @@ block refuses an enable, and the domain's event counters rebase. A clock loss
 in operation starts a new generation by itself, so nothing resumes on stale
 state when the clock returns.
 
+From reset with both MAC clocks absent and their clock-OK levels low, as on
+a board with no link clock, both domains stay in reset with their requests
+up, and neither direction becomes READY. The register block works: STATUS
+shows both directions idle and not READY, LINK shows neither clock and no
+carrier, an enable is refused with CONFIG_ERR and DESC_ERR, and RESET
+completes. The engines and the DMA front end stay idle, the interrupt rises
+only for an event that software unmasks, such as that DESC_ERR, and nothing
+else in the SoC waits for the NIC. Full-system simulations of applications
+that never use the NIC run it this way
+([tests/README.md](../../../../tests/README.md#test_run_cocotbpy)).
+
 RESET (the CTRL bit) stops the engines, waits until the DMA front end owes no
 response, pulses the core-domain reset, and starts a new generation in both
 MAC domains. RESET_BUSY covers exactly that and never waits for a MAC clock,
