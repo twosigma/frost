@@ -35,6 +35,9 @@
 module pc_increment_calculator #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
+`ifndef SYNTHESIS
+    input logic i_advance_check_valid = 1'b1,
+`endif
     // Current PC values (registered outputs from pc_controller)
     input logic [XLEN-1:0] i_pc,
     input logic [XLEN-1:0] i_pc_reg,
@@ -440,7 +443,7 @@ module pc_increment_calculator #(
     seq_next_pc_ref = next_sequential_pc_ref;
     if (seq_sel_holdoff) seq_next_pc_reg_ref = i_pc_reg;
     else seq_next_pc_reg_ref = pc_reg_normal_ref;
-    if (!$isunknown(
+    if (i_advance_check_valid && !$isunknown(
             {
               i_sel_nop,
               i_slot2_valid,
@@ -752,7 +755,7 @@ module pc_increment_calculator #(
     end
     // i_sel_nop is i_sel_nop_wcs0 or the served-window failure, so it is
     // set whenever i_sel_nop_wcs0 is.
-    if (i_sel_nop_wcs0 === 1'b1 && i_sel_nop !== 1'b1) begin
+    if (i_advance_check_valid && i_sel_nop_wcs0 === 1'b1 && i_sel_nop !== 1'b1) begin
       $error("pc_increment_calculator: i_sel_nop_wcs0 set without i_sel_nop");
     end
   end
