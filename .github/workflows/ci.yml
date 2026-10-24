@@ -868,8 +868,8 @@ jobs:
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             pytest tests/ -m synthesis -v
 
-  # The ordinary synthesis job checks the 1 GiB default. Check both supported
-  # PA-width endpoints explicitly with the same RTL build setting.
+  # The ordinary synthesis job checks the 1 GiB default. Check the widest
+  # supported PA width, 128 GiB, with the same RTL build setting.
   test-pa-synthesis-width:
     name: PA synthesis aperture (${{ matrix.capacity_log2_bytes }} log2 bytes)
     runs-on: ubuntu-26.04
@@ -877,7 +877,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        capacity_log2_bytes: [30, 37]
+        capacity_log2_bytes: [37]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
