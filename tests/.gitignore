@@ -11,5 +11,7 @@ testrig_logs/
 # Coverage files and reports (FROST_COVERAGE=1, coverage_report.py).
 coverage/
 coverage_report/
+# Calibration traces for the performance model's check (perf-modeling/README.md).
+calibration/
 # The signature that the architecture-test bench writes (test_arch_compliance.py).
 arch_signature.txt

@@ -94,6 +94,8 @@ The script:
 3. Compares hardware pipeline counters against model output counters (IPC, retired uops, cycles).
 4. Emits a structured `calibration.json` report documenting discrepancies, correlation accuracy, and timing.
 
+With `--baseline perf-modeling/calibration/ci_baseline.json`, the script also runs the calibration check that CI applies to CoreMark (see the README's maintainer guide): without `--model-run`, it runs the baseline's model workload; it checks that the trace has the baseline's required event classes, that it agrees with the capture's pipeline counters (`--counters`) and comes from the baseline's program and memory tier (`--manifest`), and that the model's IPC is within the baseline's tolerance of the RTL's. It prints the figures and their deltas and exits with 1 if a check fails; with `--refresh`, a passing check rewrites the baseline's figures.
+
 ---
 
 ## 5. Directory Structure & Deliverables

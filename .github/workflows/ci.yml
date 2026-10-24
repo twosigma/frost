@@ -82,6 +82,9 @@ jobs:
           - name: Real Programs (CoreMark)
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: "[coremark] or [coremark_profile]"
+            # In the BRAM tier, the run of this test also records a
+            # calibration trace for the performance model's check.
+            calibration_test: coremark
           - name: Real Programs (AMO torture)
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: "[amo_irq_torture_sim]"
@@ -229,9 +232,35 @@ jobs:
           COCOTB_COREMARK_PROGRESS_INTERVAL: ${{ contains(matrix.shard.name, 'CoreMark-PRO') && '0' || '500000' }}
           PYTEST_MARK: ${{ matrix.shard.pytest_mark }}
           PYTEST_FILTER: ${{ matrix.shard.pytest_filter }}
+          CALIBRATION_TEST: ${{ matrix.mem_config == 'bram' && matrix.shard.calibration_test || '' }}
         run: |
+          if [ -n "$CALIBRATION_TEST" ]; then
+            # FROST_CALIBRATION_TEST limits the capture to that test's runs.
+            export FROST_CALIBRATION_TEST="$CALIBRATION_TEST"
+            export FROST_CALIBRATION_TRACE_PATH="tests/calibration/$CALIBRATION_TEST.jsonl"
+            export FROST_CALIBRATION_COUNTERS_PATH="tests/calibration/${CALIBRATION_TEST}_counters.json"
+            export FROST_CALIBRATION_MANIFEST_PATH="tests/calibration/${CALIBRATION_TEST}_manifest.json"
+            export FROST_GIT_COMMIT="$GITHUB_SHA"
+          fi
           ./scripts/frost.py --image frost-dev:latest pytest \
             -m "$PYTEST_MARK" -k "$PYTEST_FILTER" -v --durations=0
+
+      # Validate the calibration trace and compare it with the performance
+      # model under perf-modeling/calibration/ci_baseline.json; the step prints
+      # the deltas and fails beyond the baseline's tolerance.
+      - name: Check the calibration trace against the performance model
+        if: ${{ matrix.mem_config == 'bram' && matrix.shard.calibration_test }}
+        env:
+          CALIBRATION_TEST: ${{ matrix.shard.calibration_test }}
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 perf-modeling/tools/run_calibration.py \
+            --trace "tests/calibration/$CALIBRATION_TEST.jsonl" \
+            --counters "tests/calibration/${CALIBRATION_TEST}_counters.json" \
+            --manifest "tests/calibration/${CALIBRATION_TEST}_manifest.json" \
+            --baseline perf-modeling/calibration/ci_baseline.json \
+            --rtl-commit "$GITHUB_SHA" \
+            --out "tests/calibration/${CALIBRATION_TEST}_calibration.json"
 
       - name: Merge the job's coverage
         if: ${{ !cancelled() && !contains(matrix.shard.name, 'CoreMark-PRO') }}

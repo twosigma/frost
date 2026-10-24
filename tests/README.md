@@ -330,6 +330,8 @@ which have 90 minutes each. `--verbose` prints solver output.
 | `COCOTB_COREMARK_MAX_CYCLES` | CoreMark and CoreMark-PRO cycle budget (default 15,000,000; the registry sets 20,000,000 for `coremark_pro_loops`) |
 | `COCOTB_COREMARK_PROGRESS_INTERVAL` | CoreMark progress diagnostics interval in cycles (default 500,000); `0` disables the optional per-cycle Python observer, as CI does for CoreMark-PRO |
 | `COCOTB_NUM_RUNS` | Runs per application, with a reset between them (default 2; always 1 in the DDR tier) |
+| `FROST_CALIBRATION_TRACE_PATH` | Records a calibration trace of one run for the [performance model](../perf-modeling/README.md); the other `FROST_CALIBRATION_*` variables choose the run, the window, and more output files |
+| `FROST_CALIBRATION_TEST` | Limits the calibration capture to the runs of the registry test it names |
 | `SIM_FAST_MAINT` | Fast `fence.i` cache maintenance in whole-SoC simulation (default 1; hardware uses the full sweeps, as `0` does) |
 
 Build products go to `tests/sim_build/`, and cocotb writes JUnit results to
@@ -470,6 +472,15 @@ Every job that simulates the whole SoC draws its own DDR model timing:
 the workflow sets `FROST_DDR_MODEL_SEED` from the run ID, the job, and its
 matrix index. A failing test's output names the draw, and rerunning the job
 repeats it.
+
+In the BRAM job of the CoreMark shard, the `coremark` test also records a
+calibration trace of CoreMark's timed region for the performance model in
+[`perf-modeling/`](../perf-modeling/README.md#calibration-check-in-ci), and
+a step after the tests checks it against the model. The step fails if the
+trace breaks its contract, lacks a required event class, or gives an IPC that
+differs from the model's by more than the tolerance in
+`perf-modeling/calibration/ci_baseline.json`, and it prints the figures and
+deltas either way.
 
 The simulating jobs build with `FROST_COVERAGE=1`, except the CoreMark-PRO
 workloads, the F and D architecture-test jobs, and the riscv-tests

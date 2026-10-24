@@ -652,3 +652,25 @@ def test_coverage_runs_rebuild_and_write_a_file_each(
     assert test_run_cocotb.coverage_file("a b/c") == (
         tmp_path / "relative" / "runs" / "a_b_c.dat"
     )
+
+
+def test_calibration_test_limits_the_capture_to_one_test(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FROST_CALIBRATION_TEST keeps the capture's files from the other tests."""
+    monkeypatch.delenv("FROST_DDR_MODEL_SEED", raising=False)
+    monkeypatch.delenv("FROST_COVERAGE", raising=False)
+    monkeypatch.delenv("FROST_CALIBRATION_TEST", raising=False)
+    # coremark_profile's registry entry sets this when its runner is made.
+    monkeypatch.setenv("FROST_EXPECT_PERF_COUNTERS", "")
+    outputs = test_run_cocotb.CALIBRATION_OUTPUT_VARIABLES
+    for name in outputs:
+        monkeypatch.setenv(name, f"tests/calibration/{name}")
+    coremark = test_run_cocotb.CocotbRunner.for_test("coremark")
+    profile = test_run_cocotb.CocotbRunner.for_test("coremark_profile")
+    assert all(name in profile.setup_environment() for name in outputs)
+
+    monkeypatch.setenv("FROST_CALIBRATION_TEST", "coremark")
+    assert all(name in coremark.setup_environment() for name in outputs)
+    assert not any(name in profile.setup_environment() for name in outputs)
+    assert all(os.environ[name] for name in outputs)

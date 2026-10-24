@@ -20,6 +20,7 @@ traces, and a check that the model still writes the results stored beside it.
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -170,3 +171,228 @@ def test_run_calibration_records_a_sample_trace(tmp_path: Path) -> None:
     record = json.loads(out.read_text(encoding="utf-8"))
     assert record["status"] == "comparison-recorded"
     assert record["observed"]["event_counts"]["dispatch"] > 0
+
+
+def _write_trace(path: Path, cycles: int, retired: int, events: set[str]) -> None:
+    """Write a trace of cycles cycles that retires one micro-op in each of the first retired.
+
+    Its records are the events named in events: dispatch, one each cycle,
+    and axi, one request and its response.
+    """
+    rows: list[dict[str, Any]] = [
+        {
+            "cycle": 0,
+            "event": "meta",
+            "source": "test",
+            "rtl_commit": "abc",
+            "clock_domain": "cpu",
+            "memory_configuration": "axi_behavioral_memory",
+        }
+    ]
+    if "axi" in events:
+        rows.append(
+            {
+                "cycle": 0,
+                "event": "axi_request",
+                "source": "axi",
+                "axi_id": 34,
+                "address": "0x00005880",
+                "is_write": False,
+                "bytes": 64,
+            }
+        )
+        rows.append(
+            {
+                "cycle": 0,
+                "event": "axi_response",
+                "source": "axi",
+                "axi_id": 34,
+                "ok": True,
+            }
+        )
+    for cycle in range(cycles):
+        if "dispatch" in events:
+            rows.append(
+                {"cycle": cycle, "event": "dispatch", "source": "rob", "uops": 1}
+            )
+        if cycle < retired:
+            rows.append({"cycle": cycle, "event": "retire", "source": "rob", "uops": 1})
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+
+def _baseline(path: Path, ipc: float) -> None:
+    """Write a stored baseline whose RTL and model both ran at ipc."""
+    figures = {"cycles": 100, "retired_uops": round(100 * ipc), "ipc": ipc}
+    baseline = {
+        "benchmark": "coremark",
+        "test": "coremark",
+        "memory_tier": "bram",
+        "model_workload": "coremark",
+        "model_seed": 11,
+        "required_events": ["dispatch", "retire", "axi_request", "axi_response"],
+        "ipc_tolerance": 0.1,
+        "rtl": {
+            "commit": "old",
+            **figures,
+            "dispatched_uops": 100,
+            "event_counts": {"dispatch": 100, "retire": 100},
+        },
+        "model": figures,
+        "ipc_delta": 0.0,
+    }
+    path.write_text(json.dumps(baseline, indent=2) + "\n", encoding="utf-8")
+
+
+ALL_EVENTS = frozenset({"dispatch", "axi"})
+
+
+def _check(
+    tmp_path: Path,
+    *extra: str,
+    cycles: int = 100,
+    events: frozenset[str] = ALL_EVENTS,
+) -> subprocess.CompletedProcess[str]:
+    """Run run_calibration.py's check of a 100-uop trace against a model IPC of 1."""
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(trace, cycles, 100, set(events))
+    model_run = tmp_path / "model.json"
+    model_run.write_text(json.dumps({"cycles": 100, "retired": 100}), encoding="utf-8")
+    return subprocess.run(
+        [sys.executable, str(PERF_MODELING / "tools" / "run_calibration.py")]
+        + ["--trace", str(trace), "--rtl-commit", "abc", "--model-run", str(model_run)]
+        + ["--baseline", str(tmp_path / "baseline.json")]
+        + ["--out", str(tmp_path / "record.json"), *extra],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def test_calibration_check_passes_within_the_tolerance(tmp_path: Path) -> None:
+    """A trace whose IPC is within the tolerance of the model's passes."""
+    _baseline(tmp_path / "baseline.json", 1.0)
+    result = _check(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "model vs RTL IPC: +0.00%" in result.stdout
+    assert result.stdout.rstrip().endswith("PASS")
+
+
+@pytest.mark.parametrize(
+    "cycles,events,reason",
+    [
+        (100, frozenset({"axi"}), "the trace has no dispatch records"),
+        (100, frozenset({"dispatch"}), "the trace has no axi_request, axi_response"),
+        # 100 retirements in 120 cycles put the model's IPC 20% above the RTL's.
+        (
+            120,
+            ALL_EVENTS,
+            r"the model's IPC differs from the RTL's by \+20\.00%, beyond the tolerance",
+        ),
+    ],
+)
+def test_calibration_check_fails_and_prints_the_deltas(
+    tmp_path: Path, cycles: int, events: frozenset[str], reason: str
+) -> None:
+    """A missing event class or an IPC beyond the tolerance fails the check."""
+    _baseline(tmp_path / "baseline.json", 1.0)
+    result = _check(tmp_path, cycles=cycles, events=events)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert re.search(f"^FAIL: {reason}", result.stdout, re.MULTILINE), result.stdout
+    assert "model vs RTL IPC" in result.stdout
+
+
+@pytest.mark.parametrize("ipc_ratio,passes", [(1.1, True), (0.9, True), (1.11, False)])
+def test_calibration_check_takes_the_tolerance_as_inclusive(
+    ipc_ratio: float, passes: bool
+) -> None:
+    """A model IPC exactly 10% from the RTL's passes; one further out fails."""
+    baseline = {
+        "required_events": ["retire"],
+        "ipc_tolerance": 0.1,
+        "rtl": {"ipc": 1.0, "cycles": 100},
+        "model": {"ipc": 1.0},
+        "ipc_delta": 0.0,
+    }
+    rtl = {"ipc": 1.0, "cycles": 100, "event_counts": {"retire": 100}}
+    _, failures = trace_contract.check_calibration(rtl, {"ipc": ipc_ratio}, baseline)
+    assert (not failures) == passes, failures
+
+
+def test_calibration_check_compares_the_counters_and_the_manifest(
+    tmp_path: Path,
+) -> None:
+    """The trace must agree with its counters, and come from the baseline's run."""
+    _baseline(tmp_path / "baseline.json", 1.0)
+    counters = tmp_path / "counters.json"
+    counters.write_text(
+        json.dumps(
+            {
+                "cycles": 100,
+                "retired_uops": 99,
+                "dispatch_distribution": {
+                    "cycles_1_uop": 100,
+                    "cycles_2_uops": 0,
+                    "total_dispatched_uops": 100,
+                },
+                "commit_distribution": {"cycles_1_uop": 99, "cycles_2_uops": 0},
+                "axi_totals": {
+                    "ar_requests": 1,
+                    "aw_requests": 1,
+                    "r_responses": 1,
+                    "b_responses": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({"benchmark": "coremark", "memory_configuration": {"tier": "ddr"}}),
+        encoding="utf-8",
+    )
+    result = _check(tmp_path, "--counters", str(counters), "--manifest", str(manifest))
+    assert result.returncode == 1
+    assert "FAIL: the trace has 100 retired_uops, its counters 99" in result.stdout
+    assert "FAIL: the trace has 100 retire records, its counters 99" in result.stdout
+    assert "FAIL: the trace has 1 axi_request records, its counters 2" in result.stdout
+    assert "axi_response records" not in result.stdout
+    assert "dispatch records" not in result.stdout
+    assert "FAIL: the trace is from the ddr tier, the baseline from the bram tier" in (
+        result.stdout
+    )
+
+
+def test_refresh_rewrites_the_figures_only_when_the_check_passes(
+    tmp_path: Path,
+) -> None:
+    """--refresh keeps the tolerance and the run, and refuses a failing check."""
+    baseline = tmp_path / "baseline.json"
+    _baseline(baseline, 0.95)
+    passing = _check(tmp_path, "--refresh")
+    assert passing.returncode == 0, passing.stdout + passing.stderr
+    refreshed = json.loads(baseline.read_text(encoding="utf-8"))
+    assert refreshed["rtl"]["commit"] == "abc"
+    assert refreshed["rtl"]["ipc"] == 1.0
+    assert refreshed["rtl"]["event_counts"]["axi_request"] == 1
+    assert refreshed["ipc_delta"] == 0.0
+    assert refreshed["ipc_tolerance"] == 0.1
+
+    before = baseline.read_text(encoding="utf-8")
+    failing = _check(tmp_path, "--refresh", events=frozenset({"axi"}))
+    assert failing.returncode == 1
+    assert baseline.read_text(encoding="utf-8") == before
+
+
+def test_the_stored_baseline_matches_the_model() -> None:
+    """The baseline's model figures are the model's, and its RTL within tolerance."""
+    baseline = json.loads(
+        (PERF_MODELING / "calibration" / "ci_baseline.json").read_text(encoding="utf-8")
+    )
+    run = model.run_workload(
+        model.ModelConfig(), baseline["model_workload"], baseline["model_seed"]
+    )
+    assert trace_contract.model_figures(run) == baseline["model"]
+    delta = baseline["model"]["ipc"] / baseline["rtl"]["ipc"] - 1
+    assert delta == pytest.approx(baseline["ipc_delta"])
+    assert abs(delta) <= baseline["ipc_tolerance"]

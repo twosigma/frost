@@ -37,9 +37,11 @@ perf-modeling/
 │   └── rtl_correlation_guide.md # Comprehensive guide for RTL correlation and trace capture
 ├── calibration/
 │   ├── trace_schema.json        # JSON Schema for cycle-accurate trace validation
-│   └── trace_contract.py        # Python validator enforcing the trace contract
+│   ├── trace_contract.py        # Python validator enforcing the trace contract
+│   └── ci_baseline.json         # Stored CoreMark figures and tolerance of the CI calibration check
 ├── tools/
-│   └── run_calibration.py       # Calibration tool: validates traces, compares metrics, generates calibration.json
+│   ├── run_calibration.py       # Calibration tool: validates traces, compares metrics, generates calibration.json
+│   └── refresh_baseline.py      # Recaptures CoreMark and rewrites the figures in ci_baseline.json
 ├── rtl/
 │   └── frost_perf_probe.sv      # Simulation-only Verilog event monitor mapping RTL handshakes to JSONL
 ├── tests/
@@ -243,6 +245,28 @@ A change to the model that moves those results must rewrite them, with the comma
 python3 perf-modeling/frost_perf_model.py selftest --out perf-modeling/results/frost_perf_selftest.json
 python3 perf-modeling/frost_perf_model.py audit --out perf-modeling/results/frost_perf_rtl_alignment.json
 ```
+
+### Calibration Check in CI
+
+In CI's Real Programs (CoreMark) shard, the BRAM job records a calibration trace of CoreMark's timed region during its CoreMark run, and the next step checks it with `tools/run_calibration.py` against the stored baseline in `calibration/ci_baseline.json`. The check fails if the trace breaks the contract, if it has no dispatch, retirement, AXI request, or AXI response records, if it disagrees with the capture's pipeline counters or comes from another program or memory tier, or if the IPC of the model's `coremark` workload differs from the RTL's by more than the baseline's `ipc_tolerance` (10%). Pass or fail, the step prints the model's and the RTL's figures, the delta between their IPCs, and how far each has moved from the stored figures. To run the same check on a local capture:
+
+```bash
+./scripts/frost.py run python3 perf-modeling/tools/run_calibration.py \
+    --trace tests/calibration/coremark.jsonl \
+    --counters tests/calibration/coremark_counters.json \
+    --manifest tests/calibration/coremark_manifest.json \
+    --baseline perf-modeling/calibration/ci_baseline.json \
+    --rtl-commit "$(git rev-parse HEAD)" \
+    --out tests/calibration/coremark_calibration.json
+```
+
+After an intentional performance change, refresh the stored baseline with one command:
+
+```bash
+./scripts/frost.py run python3 perf-modeling/tools/refresh_baseline.py
+```
+
+It runs CoreMark in the BRAM tier with the capture on, writing to `tests/calibration/`, applies the same check, and if the check passes, rewrites the RTL's and the model's figures and their delta in `ci_baseline.json`; the tolerance stays. In a git worktree, where git does not work in the container, set `FROST_GIT_COMMIT` to name the commit. If the model's IPC now differs from the RTL's by more than the tolerance, the refresh fails too, and the model's CoreMark workload or configuration needs recalibrating, or the tolerance a deliberate change.
 
 ### Adopting, Extending, and Refining the Model
 
