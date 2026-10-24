@@ -416,6 +416,18 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/peripherals/nic/nic_reset_ctrl.sv \
         $(ROOT)/hw/rtl/peripherals/nic/nic_reset_test_harness.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),axi_coherent_bridge)
+# AXI4 to coherent line-port bridge unit bench
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
+        $(ROOT)/hw/rtl/lib/axi/axi_coherent_bridge.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),axi_mux_test_harness)
+# AXI4 N:1 mux unit bench (three ports, each named separately)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/lib/axi/axi_mux.sv \
+        $(ROOT)/hw/rtl/lib/axi/axi_mux_test_harness.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),line_port_arbiter_test_harness)
 # Line-port arbiter unit bench (arbiter + AXI bridge + behavioral memory)
 COMPILE_ARGS := \

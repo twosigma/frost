@@ -523,6 +523,20 @@ FORMAL_TARGETS = [
         tasks=("bmc", "cover", "bmc_64g", "cover_64g", "bmc_128g", "cover_128g"),
     ),
     FormalTarget(
+        "axi_coherent_bridge.sby",
+        "AXI4 safety: response ordering and conservation, burst bytes to line "
+        "requests and back, error bursts, and "
+        "the coherent ingress's request rules, unbounded on narrow, line-wide and "
+        "soc_top buses",
+        tasks=("prove", "prove_full_width", "prove_soc", "cover"),
+    ),
+    FormalTarget(
+        "axi_mux.sby",
+        "AXI4 rules on every port, W in AW-grant order, and B and R steered by port, "
+        "unbounded",
+        tasks=("prove", "prove_soc", "cover"),
+    ),
+    FormalTarget(
         "line_size_adapter.sby",
         "L1-line requests map onto their sector of a wider L2 line and back",
     ),
@@ -793,6 +807,8 @@ SBY_TASKS = [
     ("bmc16", "Bounded local equivalence at depth 16"),
     ("bmc32", "Bounded local equivalence at depth 32"),
     ("bmc_1g", "Bounded physical-address check at a 1 GiB DDR capacity"),
+    ("prove_full_width", "Unbounded proof with a bus as wide as a line"),
+    ("prove_soc", "Unbounded proof in soc_top's configuration"),
     ("bmc_64g", "Bounded physical-address check at a 64 GiB DDR capacity"),
     ("bmc_128g", "Bounded physical-address check at a 128 GiB DDR capacity"),
     ("cover_64g", "Physical-address reachability at a 64 GiB DDR capacity"),

@@ -2686,6 +2686,33 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("dii", ("-DFROST_WIDE_DDR_TEST", "-DFROST_RVFI_DII")),
         )
     },
+    # The coherent bridge (hw/rtl/lib/axi) against a model of cpu_top's
+    # coherent ingress, at the SoC's 256-bit width and at narrower widths
+    # whose beats share lines.
+    **{
+        f"axi_coherent_bridge{suffix}": CocotbRunConfig(
+            python_test_module="cocotb_tests.axi.test_axi_coherent_bridge",
+            hdl_toplevel_module="axi_coherent_bridge",
+            description=(
+                f"AXI4 bursts of every type, size and alignment become coherent line "
+                f"requests{note}; errors, ordering, backpressure and reset"
+            ),
+            verilator_extra_args=args,
+        )
+        for suffix, note, args in (
+            ("", "", ()),
+            ("_64", " on a 64-bit bus", ("-GDATA_WIDTH=64",)),
+            ("_32", " on a 32-bit bus", ("-GDATA_WIDTH=32", "-GID_WIDTH=2")),
+        )
+    },
+    "axi_mux": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_axi_mux",
+        hdl_toplevel_module="axi_mux_test_harness",
+        description=(
+            "Three AXI4 masters through the mux: W follows the AW grants, B and R "
+            "return by port, and reset abandons transfers in flight"
+        ),
+    ),
     "x3_ddr_init": CocotbRunConfig(
         python_test_module="cocotb_tests.test_x3_ddr_init",
         hdl_toplevel_module="x3_ddr_init",
