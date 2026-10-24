@@ -1144,13 +1144,15 @@ module imem_predecode #(
   // unready windows, whose slow predicates may still be stale. The check
   // samples at the clock edge, where the registers that read the banks do:
   // the ASIC flow's SRAM macro models change their read data mid-cycle.
+  logic pc_metadata_reset_seen_q = 1'b0;
   logic pc_metadata_compare_valid_q = 1'b0;
   always_ff @(posedge i_port_b_clk) begin
-    pc_metadata_compare_valid_q <= !i_port_b_rst && i_port_b_enable;
+    if (i_port_b_rst) pc_metadata_reset_seen_q <= 1'b1;
+    pc_metadata_compare_valid_q <= pc_metadata_reset_seen_q && !i_port_b_rst && i_port_b_enable;
   end
 
   always @(posedge i_port_b_clk) begin
-    if (pc_metadata_compare_valid_q && pc_metadata_response_ready_q && !$isunknown(
+    if (!i_port_b_rst && pc_metadata_compare_valid_q && pc_metadata_response_ready_q && !$isunknown(
             {
               even_read_data,
               odd_read_data,

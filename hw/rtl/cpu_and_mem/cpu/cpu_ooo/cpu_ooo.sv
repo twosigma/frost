@@ -1494,7 +1494,7 @@ module cpu_ooo #(
       assign id_valid_2 = id_valid_2_preflush && !dispatch_flush;
 `ifndef SYNTHESIS
       always_ff @(posedge i_clk) begin
-        if (!i_rst) begin
+        if (reset_seen_q && !i_rst) begin
           p_queue_dispatch_recovery_discards_producer : assert (!dispatch_flush || flush_pipeline);
           if (!flush_pipeline) begin
             p_queue_full_holds_id : assert (!decoded_queue_full || pipeline_ctrl.stall);
@@ -1708,13 +1708,13 @@ module cpu_ooo #(
   logic [riscv_pkg::BpDirIdxBits-1:0] dir_update_held_idx_ref;
   logic dir_update_held_taken_ref;
   always_ff @(posedge i_clk) begin
-    if (!i_rst && dir_update_valid_2_comb && !dir_slot2_pass) begin
+    if (reset_seen_q && !i_rst && dir_update_valid_2_comb && !dir_slot2_pass) begin
       dir_update_held_idx_ref   <= dir_update_idx_2_comb;
       dir_update_held_taken_ref <= rob_head_next_branch_taken_early;
     end
   end
   always_ff @(posedge i_clk) begin
-    if (!i_rst && dir_update_held_valid) begin
+    if (reset_seen_q && !i_rst && dir_update_held_valid) begin
       p_dir_update_held_payload_exact :
       assert ((dir_update_held_idx == dir_update_held_idx_ref) &&
               (dir_update_held_taken == dir_update_held_taken_ref));
@@ -2451,7 +2451,7 @@ module cpu_ooo #(
   end
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       assert (step_armed_rob_q == step_armed_q)
       else $error("step_armed_rob_q diverged from step_armed_q");
     end
@@ -2699,7 +2699,7 @@ module cpu_ooo #(
   end
 
   always @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       if (lq_mem_read_en && (sq_mem_write_en || amo_mem_write_en || slow_write_inflight))
         $error("cpu_ooo: LQ read handoff overlapped router write_port_busy");
       if (lq_mem_request_valid && lq_mem_read_en)
@@ -2890,7 +2890,7 @@ module cpu_ooo #(
   // The bypass qualifiers must track the architectural write enables
   // cycle-for-cycle outside reset/full-flush cycles.
   always_ff @(posedge i_clk) begin
-    if (!i_rst && !flush_all) begin
+    if (reset_seen_q && !i_rst && !flush_all) begin
       assert (bypass_p0_int_we_q == (port0_int_we && |port0_int_addr))
       else $error("bypass_p0_int_we_q mismatch");
       assert (bypass_p0_fp_we_q == port0_fp_we)
@@ -3161,7 +3161,7 @@ module cpu_ooo #(
       tage_entry_pc[u_tage_history.ftq_write_ptr] <= tage_pd_branch_pc_q;
   end
   always @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       if (tage_commit_valid[0] && tage_commit_cond_branch[0])
         p_tage_entry_matches_branch_0 :
         assert (tage_entry_pc[u_tage_history.commit_ftq_idx[0]] == rob_commit.pc);
@@ -3179,14 +3179,17 @@ module cpu_ooo #(
   // for debug and these checks. When recovery ends, its flush has already
   // cleared pd_valid_q (and emptied the decoded queue), so even the preflush
   // candidates are low.
+  logic reset_seen_q = 1'b0;
   logic mispredict_recovery_pending_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
-    if (i_rst) mispredict_recovery_pending_seen_q <= 1'b0;
-    else mispredict_recovery_pending_seen_q <= mispredict_recovery_pending;
+    if (i_rst) begin
+      reset_seen_q <= 1'b1;
+      mispredict_recovery_pending_seen_q <= 1'b0;
+    end else mispredict_recovery_pending_seen_q <= mispredict_recovery_pending;
   end
 
-  always_comb begin
-    if (!$isunknown(
+  always_ff @(posedge i_clk) begin
+    if (reset_seen_q && !i_rst && !$isunknown(
             {
               mispredict_recovery_pending,
               mispredict_recovery_pending_seen_q,
@@ -3530,7 +3533,7 @@ module cpu_ooo #(
   always_ff @(posedge i_clk) begin
     imsic_access_checks_armed <= !i_rst;
     csr_commit_fire_q <= csr_commit_fire;
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       p_imsic_access_is_csr_commit : assert (!(|{imsic_we, imsic_claim}) || csr_commit_fire);
       p_imsic_one_strobe : assert ($onehot0({imsic_we, imsic_claim}));
       if (imsic_access_checks_armed) begin
@@ -3857,7 +3860,7 @@ module cpu_ooo #(
 `ifndef SYNTHESIS
   // A take that counts a waiting WFI saves the seeded resume PC past it.
   always_ff @(posedge i_clk) begin
-    if (!i_rst && trap_taken && !trap_no_csr && resume_pc_past_wfi_q) begin
+    if (reset_seen_q && !i_rst && trap_taken && !trap_no_csr && resume_pc_past_wfi_q) begin
       p_counted_wfi_take_saves_seed :
       assert (trap_pc_internal == interrupt_resume_pc)
       else
@@ -3875,7 +3878,7 @@ module cpu_ooo #(
   // commit fires, the precomputed value must match retired_next_pc() of the
   // (gated) commit payload.
   always @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       if (trap_or_xret_taken != (trap_taken || xret_taken)) begin
         $error("cpu_ooo: combined trap/xRET take differs from individual takes");
       end
@@ -3922,7 +3925,7 @@ module cpu_ooo #(
     wfi_waiting_pc_q <= rob_trap_pc;
   end
   always @(posedge i_clk) begin
-    if (!i_rst && wfi_waiting_q && trap_taken && !trap_to_d && !trap_no_csr &&
+    if (reset_seen_q && !i_rst && wfi_waiting_q && trap_taken && !trap_to_d && !trap_no_csr &&
         trap_cause_internal[XLEN-1] && rob_head_is_wfi && head_valid &&
         (rob_trap_pc == wfi_waiting_pc_q)) begin
       if (wfi_waiting_legal_q) begin
@@ -4061,7 +4064,7 @@ module cpu_ooo #(
 
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
-    if (!i_rst && !$isunknown(
+    if (reset_seen_q && !i_rst && !$isunknown(
             {translation_csr_commit_shadow, fence_class_quiesce, csr_commit_fire,
              rob_commit.valid, rob_commit.is_csr, rob_commit.csr_addr, trap_taken, xret_taken}
         )) begin

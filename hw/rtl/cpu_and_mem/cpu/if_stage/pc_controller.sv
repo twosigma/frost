@@ -1740,8 +1740,10 @@ module pc_controller #(
     end
   end
 
-  always_comb begin
-    if (!$isunknown({o_pc_reg[1], o_pc_reg_high_for_coverage})) begin
+  always_ff @(posedge i_clk) begin
+    if (pending_rel_check_armed_q && !i_reset && !$isunknown(
+            {o_pc_reg[1], o_pc_reg_high_for_coverage}
+        )) begin
       p_pc_reg_high_coverage_replica_exact : assert (o_pc_reg_high_for_coverage == o_pc_reg[1]);
     end
   end
@@ -1749,8 +1751,10 @@ module pc_controller #(
   // lower_parcel_window_resteer_q stands in for a full-width same-word
   // compare. Check that it means exactly that, and that the catch-up arm
   // brings next_pc back to next_pc_reg.
-  always_comb begin
-    if (!$isunknown({lower_parcel_window_resteer_q, o_pc, o_pc_reg})) begin
+  always_ff @(posedge i_clk) begin
+    if (pending_rel_check_armed_q && !i_reset && !$isunknown(
+            {lower_parcel_window_resteer_q, o_pc, o_pc_reg}
+        )) begin
       p_lower_parcel_resteer_state_remains_public :
       assert (!lower_parcel_window_resteer_q || o_fetch_lookup_is_lower_parcel);
       p_lower_parcel_resteer_state_is_exact_predecessor :

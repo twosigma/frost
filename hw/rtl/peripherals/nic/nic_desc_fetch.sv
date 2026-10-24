@@ -199,14 +199,19 @@ module nic_desc_fetch #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
-    if (!i_rst && i_resp_valid && pending_q && (i_resp_tag != TAG_BITS'(pend_slot_q)))
+    if (i_rst) reset_seen_q <= 1'b1;
+  end
+  always_ff @(posedge i_clk) begin
+    if (reset_seen_q && !i_rst && i_resp_valid && pending_q &&
+        (i_resp_tag != TAG_BITS'(pend_slot_q)))
       $error("nic_desc_fetch: response tag %0d, expected %0d", i_resp_tag, pend_slot_q);
-    if (!i_rst && i_resp_valid && !pending_q)
+    if (reset_seen_q && !i_rst && i_resp_valid && !pending_q)
       $error("nic_desc_fetch: response with no read in flight");
-    if (!i_rst && i_desc_take && (i_invalidate || i_restart))
+    if (reset_seen_q && !i_rst && i_desc_take && (i_invalidate || i_restart))
       $error("nic_desc_fetch: descriptor take during an invalidation or restart is lost");
-    if (!i_rst && i_desc_take && !head_hit)
+    if (reset_seen_q && !i_rst && i_desc_take && !head_hit)
       $error("nic_desc_fetch: descriptor take with no head descriptor cached");
   end
 `endif

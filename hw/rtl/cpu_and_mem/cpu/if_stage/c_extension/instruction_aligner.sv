@@ -28,6 +28,10 @@
 module instruction_aligner #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
+`ifndef SYNTHESIS
+    // Checks require a valid provider response; idle RAM payload is arbitrary.
+    input logic i_metadata_check_valid = 1'b1,
+`endif
     // 64-bit instruction fetch: {next_word[31:0], current_word[31:0]}
     input logic [63:0] i_instr,
     // i_instr's sources kept apart: the low BRAM's words in physical bank
@@ -939,7 +943,9 @@ module instruction_aligner #(
 
 `ifndef SYNTHESIS
   always_comb begin
-    if (!$isunknown({o_slot2_plus2_candidate_valid, o_slot2_plus4_candidate_valid})) begin
+    if (i_metadata_check_valid && !$isunknown(
+            {o_slot2_plus2_candidate_valid, o_slot2_plus4_candidate_valid}
+        )) begin
       p_slot2_candidates_are_onehot :
       assert ($onehot0({o_slot2_plus4_candidate_valid, o_slot2_plus2_candidate_valid}));
     end

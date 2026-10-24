@@ -1070,6 +1070,9 @@ module if_stage #(
   instruction_aligner #(
       .XLEN(XLEN)
   ) instruction_aligner_inst (
+`ifndef SYNTHESIS
+      .i_metadata_check_valid(coverage_reset_seen_q && !i_pipeline_ctrl.reset && i_instr_valid),
+`endif
       .i_instr(i_instr),
       .i_instr_low_by_parity(i_instr_low_by_parity),
       .i_instr_high(i_instr_high),
@@ -1222,8 +1225,12 @@ module if_stage #(
       prev_was_compressed_at_lo_for_coverage_timing && pc_reg_high_for_coverage;
 
 `ifndef SYNTHESIS
-  always_comb begin
-    if (!$isunknown(
+  logic coverage_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) coverage_reset_seen_q <= 1'b1;
+  end
+  always_ff @(posedge i_clk) begin
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
             {
               use_instr_buffer_for_coverage_timing,
               prev_was_compressed_at_lo_for_coverage_timing,
@@ -1282,7 +1289,7 @@ module if_stage #(
   logic served_window_covers_low_reference;
   logic served_window_covers_high_reference;
   logic served_window_native_high;
-  logic served_contract_check_valid_q;
+  logic served_contract_check_valid_q = 1'b0;
 
   assign served_window_native_high = pc_reg[1] && !is_compressed_for_pc_advance;
 
@@ -1317,7 +1324,7 @@ module if_stage #(
 
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) served_contract_check_valid_q <= 1'b0;
-    else served_contract_check_valid_q <= 1'b1;
+    else served_contract_check_valid_q <= coverage_reset_seen_q;
   end
 
   always_comb begin

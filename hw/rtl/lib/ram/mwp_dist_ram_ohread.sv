@@ -26,7 +26,8 @@
  * The caller must hold i_read_onehot == (1 << i_read_address) in every cycle
  * where o_read_data is consumed; o_read_data then equals the base module's.
  * An all-zero i_read_onehot reads bank 0. A simulation-only check below
- * fires on any other mismatch.
+ * fires on any other mismatch when i_read_check_enable is set. Registered
+ * address producers enable the check after their first completed reset.
  *
  * The ROB supplies registered head masks; reservation stations supply their
  * second-issue winner mask.
@@ -42,6 +43,11 @@ module mwp_dist_ram_ohread #(
     parameter int unsigned NARROW_DATA_WIDTH      = DATA_WIDTH
 ) (
     input logic i_clk,
+`ifndef SYNTHESIS
+`ifndef FORMAL
+    input logic i_read_check_enable = 1'b1,
+`endif
+`endif
 
     // Write ports (active-high enables, independent addresses and data)
     input logic [NUM_WRITE_PORTS-1:0]                 i_write_enable,
@@ -199,7 +205,7 @@ module mwp_dist_ram_ohread #(
   // port. FORMAL excludes this check because Yosys cannot elaborate a clocked
   // $error.
   always @(posedge i_clk) begin
-    if (!$isunknown(
+    if (i_read_check_enable && !$isunknown(
             i_read_address
         ) && !$isunknown(
             i_read_onehot

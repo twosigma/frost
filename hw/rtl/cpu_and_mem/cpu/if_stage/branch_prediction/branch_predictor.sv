@@ -772,6 +772,7 @@ module branch_predictor #(
   // late RAM copies both match it, and that next_counter follows the
   // saturating-counter rule. The model computes its own next counter and never
   // reads next_counter.
+  logic update_reset_seen_q = 1'b0;
   logic reference_update_valid[BtbEntries];
   logic [TagBits-1:0] reference_update_tag[BtbEntries];
   logic [1:0] reference_update_counter[BtbEntries];
@@ -805,6 +806,7 @@ module branch_predictor #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
+      update_reset_seen_q <= 1'b1;
       for (int i = 0; i < BtbEntries; i++) begin
         reference_update_valid[i] <= 1'b0;
       end
@@ -819,11 +821,18 @@ module branch_predictor #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (!$isunknown({late_update_index, early_update_index})) begin
+    // Invalid BTB rows have arbitrary payloads until trained.
+    if (update_reset_seen_q && reference_update_valid[late_update_index] && !$isunknown(
+            late_update_index
+        )) begin
       p_late_update_tag_state_equivalent :
       assert (btb_tag_update_late == reference_update_tag[late_update_index]);
       p_late_update_counter_state_equivalent :
       assert (btb_counter_update_late == reference_update_counter[late_update_index]);
+    end
+    if (update_reset_seen_q && reference_update_valid[early_update_index] && !$isunknown(
+            early_update_index
+        )) begin
       p_early_update_tag_state_equivalent :
       assert (btb_tag_update_early == reference_update_tag[early_update_index]);
       p_early_update_counter_state_equivalent :

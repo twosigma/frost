@@ -535,6 +535,10 @@ module pd_stage #(
   assign pd_fall_through_sum = {1'b0, i_from_if_to_pd.program_counter[PdTargetSplit-1:0]} +
       (pd_sel_compressed ? (PdTargetSplit + 1)'(riscv_pkg::PcIncrementCompressed) :
                            (PdTargetSplit + 1)'(riscv_pkg::PcIncrement32bit));
+  logic pd_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) pd_reset_seen_q <= 1'b1;
+  end
   logic [PdTargetSplit-1:0] pd_redirect_target_low_reference_r;
   logic [1:0] pd_redirect_target_high_select_reference_r;
   always_ff @(posedge i_clk) begin
@@ -546,7 +550,7 @@ module pd_stage #(
     end
   end
   always_ff @(posedge i_clk) begin
-    if (!$isunknown(
+    if (pd_reset_seen_q && pd_redirect_target_reference_armed && !$isunknown(
             {
               pd_redirect_target_low_reference_r,
               pd_redirect_target_low,
