@@ -286,6 +286,7 @@ module frost_cache_test_harness #(
       .o_resp_valid(stack_down_resp_valid),
       .o_resp_id(stack_down_resp_id),
       .o_resp_rdata(stack_down_resp_rdata),
+      .o_resp_error(),
       .o_axi_awvalid(axi_awvalid),
       .i_axi_awready(axi_awready),
       .o_axi_awid(axi_awid),

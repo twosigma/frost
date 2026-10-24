@@ -22,7 +22,7 @@ still dirty in the L1D, and software never flushes a cache for them.
 | `dma_coherence_sequencer.sv` | Takes each DMA request through the L1D, and each DMA write through the load queue as well, before it reaches the L2 |
 | `walker_coherence_sequencer.sv` | Probes the L1D before each page-table walk read reaches the L2; one read in flight |
 | `l2_stream_prefetcher.sv` | Watches the L1D's misses and reads the lines ahead of ascending streams into the L2, never past the page of the last miss |
-| `line_port_axi_bridge.sv` | Line port to single-beat AXI4 master; line ids become AXI ids |
+| `line_port_axi_bridge.sv` | Line port to single-beat AXI4 master; line ids become AXI ids, and each response carries the error bit of its RRESP or BRESP |
 | `axi_behavioral_memory.sv` | Simulation-only DDR model: concurrent transactions, latency and jitter settings, optional out-of-order completion, and injected error responses |
 | `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, and writeback pulses, hit-under-miss, the outstanding-miss count, and two stall classes; and the L2's write costs: write misses that fetch their line, and writes that wait for a read of their line |
 | `*_test_harness.sv` | cocotb tops: hierarchy + bridge + memory (with a bench-paced hold on the bridge), and arbiter + bridge + memory |
@@ -640,8 +640,9 @@ the exact names. The benches live in
 full-system programs `dma_torture` and `ptw_coherence_test` check DMA and
 walker coherence against the running CPU. Formal targets cover the bridge
 (`line_port_axi_bridge`: AXI handshakes, also across a CPU reset, VALIDs low
-through the AXI side's reset, id conservation, stale-response drops, and no
-request accepted while a response from before a reset is owed), the
+through the AXI side's reset, id conservation, stale-response drops, no
+request accepted while a response from before a reset is owed, and each
+response's error bit), the
 line-size adapter (`line_size_adapter`: strobes and data in the request's
 sector, and each response returning the sector its request recorded), the
 arbiter grant (`line_arbiter_grant`), the miss-slot byte merge

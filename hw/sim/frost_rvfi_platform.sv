@@ -2127,6 +2127,7 @@ module frost_rvfi_platform #(
         .o_resp_valid(down_resp_valid),
         .o_resp_id(down_resp_id),
         .o_resp_rdata(down_resp_rdata),
+        .o_resp_error(),
         .o_axi_awvalid(axi_awvalid),
         .i_axi_awready(axi_awready),
         .o_axi_awid(axi_awid),
