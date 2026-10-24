@@ -132,6 +132,15 @@ def coverage_file(label: str) -> Path:
 # in its registry entry, in FROST_VERILATOR_EXTRA_ARGS, or with the
 # DDR_MODEL_LATENCY variable, keeps the pinned value.
 DDR_MODEL_SEED_VARIABLE = "FROST_DDR_MODEL_SEED"
+# FROST_CALIBRATION_TEST limits the performance model's calibration capture
+# (verif/cocotb_tests/calibration_trace.py) to the registry test it names:
+# the other tests run without the capture's output files.
+CALIBRATION_TEST_VARIABLE = "FROST_CALIBRATION_TEST"
+CALIBRATION_OUTPUT_VARIABLES = (
+    "FROST_CALIBRATION_TRACE_PATH",
+    "FROST_CALIBRATION_COUNTERS_PATH",
+    "FROST_CALIBRATION_MANIFEST_PATH",
+)
 DDR_MODEL_LATENCY_RANGE = (1, 80)  # cycles, inclusive; the model's default is 30
 DDR_MODEL_JITTER_CHOICES = (0, 3, 7, 15, 31)
 
@@ -3188,6 +3197,8 @@ class CocotbRunner:
         self.mem_config = os.environ.get("FROST_COCOTB_MEM_CONFIG", "bram")
         # Names the run's coverage file; callers that know the test name set it.
         self.coverage_label = app_name or hdl_toplevel_module
+        # The registry test, when the runner was made for one.
+        self.test_name: str | None = None
 
     @classmethod
     def from_config(cls, config: CocotbRunConfig) -> "CocotbRunner":
@@ -3208,6 +3219,7 @@ class CocotbRunner:
         memory tier.
         """
         runner = cls.from_config(TEST_REGISTRY[test_name])
+        runner.test_name = test_name
         runner.coverage_label = (
             f"{test_name}_{runner.mem_config}" if runner.app_name else test_name
         )
@@ -3338,6 +3350,11 @@ class CocotbRunner:
             environment_variables["FROST_COVERAGE_FILE"] = str(
                 coverage_file(self.coverage_label)
             )
+
+        calibration_test = os.environ.get(CALIBRATION_TEST_VARIABLE)
+        if calibration_test and calibration_test != self.test_name:
+            for name in CALIBRATION_OUTPUT_VARIABLES:
+                environment_variables.pop(name, None)
 
         return environment_variables
 
