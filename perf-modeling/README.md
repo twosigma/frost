@@ -114,7 +114,6 @@ Run the benchmark using `./scripts/frost.py cocotb <benchmark>` with the calibra
 FROST_CALIBRATION_TRACE_PATH=perf-modeling/results/coremark/coremark_timed.jsonl \
 FROST_CALIBRATION_COUNTERS_PATH=perf-modeling/results/coremark/pipeline_counters.json \
 FROST_CALIBRATION_MANIFEST_PATH=perf-modeling/results/coremark/manifest.json \
-FROST_CALIBRATION_TARGET_RUN=2 \
 FROST_GIT_COMMIT=$(git rev-parse HEAD) \
 ./scripts/frost.py cocotb coremark
 ```
