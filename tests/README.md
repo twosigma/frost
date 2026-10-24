@@ -503,7 +503,7 @@ pinned Docker image, except the ASIC flow, which runs in its own image:
 
 | Suite | Configurations |
 | --- | --- |
-| Cocotb applications | BRAM and DDR where supported; each CoreMark-PRO workload runs separately |
+| Cocotb applications | BRAM and DDR where supported; the four longest CoreMark-PRO workloads run in jobs of their own and the other five share one |
 | Cocotb unit benches, DDR probes, fetch fuzzers, programs on the SRAM macros, OpenSBI smoke | BRAM only: tier-independent or fixed-layout runs |
 | Physical address apertures | Software boundary, fetch, translation, DMA, and NIC checks at 1, 64, and 128 GiB; generic synthesis at 1 and 128 GiB |
 | Architecture compliance | BRAM and DDR, in groups of extensions; excludes Zifencei on BRAM and F/D on DDR; F and D share three BRAM shards without coverage; the other groups collect coverage |
@@ -550,10 +550,12 @@ ones included.
 
 The workflow has the exact job filters. The named real-program shards select
 applications by name, and the "Runtime and other" shard runs every
-application they don't list. When you add an application to a named shard or
-remove one, update the "Runtime and other" exclusion list to match, or the
-application will run twice or not at all. To see what a filter selects
-without running it:
+application they don't list. The shards are sized so that each job takes
+about an hour or less on a CI runner, except the jobs of the longest
+CoreMark-PRO workloads, which run one workload each. When you add an
+application to a named shard or remove one, update the "Runtime and other"
+exclusion list to match, or the application will run twice or not at all. To
+see what a filter selects without running it:
 
 ```bash
 FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py pytest --collect-only -q \
