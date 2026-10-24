@@ -29,7 +29,7 @@ module instruction_aligner #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
 `ifndef SYNTHESIS
-    // Checks require a valid provider response; idle RAM payload is arbitrary.
+    // Checks require fault-free metadata; idle and fault payloads are arbitrary.
     input logic i_metadata_check_valid = 1'b1,
 `endif
     // 64-bit instruction fetch: {next_word[31:0], current_word[31:0]}
