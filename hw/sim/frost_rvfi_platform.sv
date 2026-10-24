@@ -95,6 +95,7 @@ module frost_rvfi_platform #(
     // board's BSCANE2 primitives on the FPGA's own TAP (boards/) and the
     // i_jtag_* pins are ignored.
     parameter int unsigned DEBUG_JTAG_TAP = 1,
+    parameter int unsigned POWER_ON_RESET_ENABLE = 1,
     // CPU profiling counters (see cpu_ooo); disabled in production.
     parameter int unsigned PERF_COUNTERS = 0,
     // Core clock frequency; sets the NIC's default TICK (cycles per
@@ -1374,23 +1375,29 @@ module frost_rvfi_platform #(
   logic dtm_tck, dtm_tdi, dtm_tlr, dtm_capture, dtm_shift, dtm_update;
   logic dtm_sel_dtmcs, dtm_sel_dmi, dtm_tdo_dtmcs, dtm_tdo_dmi;
   logic power_on_rst_core, power_on_rst_tck, power_on_rst_div4;
-  // The core clock runs throughout power-on reset. System reset is separate.
-  cdc_sync u_power_on_core (
-      .i_clk  (i_clk),
-      .i_rst  (1'b0),
-      .i_async(i_power_on_rst),
-      .o_sync (power_on_rst_core)
-  );
-  cdc_reset_sync u_power_on_div4 (
-      .i_clk (i_clk_div4),
-      .i_arst(i_power_on_rst),
-      .o_rst (power_on_rst_div4)
-  );
-  cdc_reset_sync u_power_on_tck (
-      .i_clk (dtm_tck),
-      .i_arst(i_power_on_rst),
-      .o_rst (power_on_rst_tck)
-  );
+  if (POWER_ON_RESET_ENABLE != 0) begin : gen_power_on_reset
+    // The core clock runs throughout power-on reset. System reset is separate.
+    cdc_sync u_power_on_core (
+        .i_clk  (i_clk),
+        .i_rst  (1'b0),
+        .i_async(i_power_on_rst),
+        .o_sync (power_on_rst_core)
+    );
+    cdc_reset_sync u_power_on_div4 (
+        .i_clk (i_clk_div4),
+        .i_arst(i_power_on_rst),
+        .o_rst (power_on_rst_div4)
+    );
+    cdc_reset_sync u_power_on_tck (
+        .i_clk (dtm_tck),
+        .i_arst(i_power_on_rst),
+        .o_rst (power_on_rst_tck)
+    );
+  end else begin : gen_no_power_on_reset
+    assign power_on_rst_core = 1'b0;
+    assign power_on_rst_tck  = 1'b0;
+    assign power_on_rst_div4 = 1'b0;
+  end
   if (DEBUG_JTAG_TAP != 0) begin : gen_jtag_tap
     jtag_tap u_jtag_tap (
         .i_tck(i_jtag_tck),

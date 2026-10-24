@@ -94,6 +94,7 @@ module platform_top #(
     // board's BSCANE2 primitives on the FPGA's own TAP (boards/) and the
     // i_jtag_* pins are ignored.
     parameter int unsigned DEBUG_JTAG_TAP = 1,
+    parameter int unsigned POWER_ON_RESET_ENABLE = 1,
     // CPU profiling counters (see cpu_ooo); disabled in production.
     parameter int unsigned PERF_COUNTERS = 0,
     // SoC clock frequency; sets the NIC's default TICK (cycles per
@@ -452,6 +453,7 @@ module platform_top #(
       .HANG_TRIAGE_QUIET_CYCLES(HANG_TRIAGE_QUIET_CYCLES),
       .HANG_TRIAGE_REEMIT_CYCLES(HANG_TRIAGE_REEMIT_CYCLES),
       .DEBUG_JTAG_TAP(DEBUG_JTAG_TAP),
+      .POWER_ON_RESET_ENABLE(POWER_ON_RESET_ENABLE),
       .CLK_FREQ_HZ(CLK_FREQ_HZ),
       .RAW_LOOPBACK(RAW_LOOPBACK)
   ) soc (
