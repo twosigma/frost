@@ -239,7 +239,7 @@ module decoded_bundle_queue #(
 `else
   // Sampled on the edge: every operand is its pre-edge value.
   always_ff @(posedge i_clk) begin
-    if (shadow_armed_q) begin
+    if (shadow_armed_q && !i_rst) begin
       assert (i_shadow == shadow_next_q);
       assert (o_shadow == (nonempty_q ? head_shadow_q : i_shadow));
     end
@@ -247,7 +247,7 @@ module decoded_bundle_queue #(
 `endif
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst && !i_flush) begin
+    if (shadow_armed_q && !i_rst && !i_flush) begin
       assert (count_q <= (PtrBits + 1)'(DEPTH));
       assert (count_q == $countones(live_q));
       assert (nonempty_q == (count_q != '0));
@@ -279,7 +279,13 @@ module decoded_bundle_queue #(
     f_count = '0;
     f_consumed = 1'b0;
   end
-  always_comb if ($initstate) assume (i_rst);
+  always_comb begin
+    if ($initstate) begin
+      assume (i_rst);
+    end else begin
+      assert (shadow_armed_q);
+    end
+  end
   always_comb assume (i_shadow == i_packet[SHADOW_WIDTH-1:0]);
   always_ff @(posedge i_clk) begin
     if (i_rst || i_flush) begin

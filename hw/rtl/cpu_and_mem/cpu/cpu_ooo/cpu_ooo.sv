@@ -1319,7 +1319,7 @@ module cpu_ooo #(
       // The queue's split shadow select rebuilds the stall from its terms and
       // takes ID's two outcomes; both must match what ID itself uses.
       always_comb begin
-        if (!$isunknown(
+        if (reset_seen_q && !i_rst && !$isunknown(
                 {
                   frontend_stall_without_pa_hold,
                   fetch_pa_hold,
@@ -1333,7 +1333,7 @@ module cpu_ooo #(
                    pipeline_ctrl.stall) &&
                   (fetch_pa_hold_copy == {riscv_pkg::FetchPaHoldCopies{fetch_pa_hold}}));
         end
-        if (!$isunknown(
+        if (reset_seen_q && !i_rst && !$isunknown(
                 {
                   pipeline_ctrl.stall,
                   producer_ctrl_next,
@@ -1388,8 +1388,8 @@ module cpu_ooo #(
         queue_ctrl.instruction.source_reg_1
       };
       always_ff @(posedge i_clk) begin
-        shadow_src_copies_armed_q <= 1'b1;
-        if (shadow_src_copies_armed_q) begin
+        if (i_rst) shadow_src_copies_armed_q <= 1'b1;
+        if (shadow_src_copies_armed_q && !i_rst) begin
           p_shadow_src_copies_exact :
           assert (rat_fp_src_addr_q == shadow_src_addr && rf_bypass_src_addr_q == shadow_src_addr &&
                   rat_int_src_addr_q == {shadow_src_addr[24:15], shadow_src_addr[9:0]});
@@ -3261,7 +3261,7 @@ module cpu_ooo #(
   // outside a full flush and a commit-time recovery (which the LQ treats as a
   // full flush), the only back-end partial flush is the early-recovery pulse.
   always_comb begin
-    if (!$isunknown(
+    if (reset_seen_q && !i_rst && !$isunknown(
             {flush_all, commit_recovery_flush_after_head, flush_en, early_backend_recovery_pending}
         )) begin
       p_lq_partial_flush_identity_when_observable :
@@ -3658,7 +3658,8 @@ module cpu_ooo #(
   logic fs_off_checks_armed = 1'b0;
   always_ff @(posedge i_clk) begin
     fs_off_checks_armed <= !i_rst;
-    if (fs_off_checks_armed && !i_rst && (csr_mstatus_fs_off != id_mstatus_fs_off_q)) begin
+    if (reset_seen_q && fs_off_checks_armed && !i_rst &&
+        (csr_mstatus_fs_off != id_mstatus_fs_off_q)) begin
       p_fs_off_change_flushes_decode : assert (flush_all);
     end
   end
