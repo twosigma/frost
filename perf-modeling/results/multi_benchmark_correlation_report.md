@@ -1,10 +1,10 @@
 # FROST Multi-Benchmark RTL Correlation & Simulation Speedup Report
 
-**Platform Baseline**: FROST `platform_top.sv` (`cpu_top.sv` + `soc_top.sv`)  
-**Memory Architecture**: Single-channel 512-bit (64B) AXI4 master/slave interface to DDR (`axi_behavioral_memory.sv`, `LATENCY=30`)  
-**RTL Source Commit**: `411dee2224700a3d9d325a4f2df8bcbe83a9bed5`  
-**Toolchain**: Bootlin GCC 15.3.0 (`riscv64-buildroot-linux-gnu 15.3.0`)  
-**RTL Simulator**: Verilator 5.052 with cocotb 1.9.2  
+**Platform Baseline**: FROST `platform_top.sv` (`cpu_top.sv` + `soc_top.sv`)\
+**Memory Architecture**: Single-channel 512-bit (64B) AXI4 master/slave interface to DDR (`axi_behavioral_memory.sv`, `LATENCY=30`)\
+**RTL Source Commit**: `411dee2224700a3d9d325a4f2df8bcbe83a9bed5`\
+**Toolchain**: Bootlin GCC 15.3.0 (`riscv64-buildroot-linux-gnu 15.3.0`)\
+**RTL Simulator**: Verilator 5.052 with cocotb 1.9.2\
 
 ---
 
@@ -137,4 +137,3 @@ The wall-clock timing captured across all runs quantifies the execution velocity
 | `perf-modeling/traces/ddr_mlp_head5k.jsonl` | 390 KB | 5,000-event trace slice for instant memory-level parallelism replay tests. |
 | `perf-modeling/results/coremark_optimization_report.md` | 3 KB | 20-variant architectural sensitivity study identifying MEM RS and L2 MSHR bottlenecks. |
 | `perf-modeling/results/multi_benchmark_correlation_report.md` | This file | Cross-benchmark correlation report spanning compute, microarchitecture, and memory tiers. |
-

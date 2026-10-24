@@ -103,4 +103,3 @@ Every calibrated benchmark directory in `perf-modeling/results/<benchmark>/` con
 - `<benchmark>_timed.jsonl`: Cycle-accurate JSONL event trace captured during the timed benchmark region.
 - `pipeline_counters.json`: Cycle and uop counts, IPC, dispatch/commit distributions, and AXI transaction totals directly measured from RTL.
 - `calibration.json`: Output from `run_calibration.py` comparing RTL vs. performance model.
-

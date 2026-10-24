@@ -1,8 +1,8 @@
 # CoreMark RTL Correlation Findings & Calibration Report
 
-**Target Workload**: CoreMark (1 iteration, PGO enabled, no compressed instructions, Bootlin GCC 15.3.0, stack memory)  
-**RTL Source Commit**: `411dee2224700a3d9d325a4f2df8bcbe83a9bed5`  
-**Branch**: `perf-modeling`  
+**Target Workload**: CoreMark (1 iteration, PGO enabled, no compressed instructions, Bootlin GCC 15.3.0, stack memory)\
+**RTL Source Commit**: `411dee2224700a3d9d325a4f2df8bcbe83a9bed5`\
+**Branch**: `perf-modeling`\
 **Platform Configuration**: FROST `platform_top` (`cpu_top` + `soc_top`), single-channel 512-bit AXI memory, behavioral DDR (`LATENCY=30`).
 
 ---
@@ -117,4 +117,3 @@ The baseline `perf-modeling/frost_perf_model.py` directly models the FROST platf
    - `perf-modeling/results/coremark/pipeline_counters.json`: Aggregated stall, occupancy, dispatch, and AXI distribution metrics.
    - `perf-modeling/results/coremark/calibration.json`: Formatted calibration delta and contract validation record.
    - `perf-modeling/results/coremark_optimization_report.md`: Rapid architectural exploration evaluating 20+ hardware variants against the calibrated baseline.
-

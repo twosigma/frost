@@ -120,6 +120,7 @@ repos:
             sw/FreeRTOS-Kernel/.*|
             sw/apps/coremark/coremark/.*|
             verif/cocotb_tests/cache/test_(dma_test_engine|frost_cache)_wide\.py|
+            perf-modeling/(frost_perf_model|calibration/trace_contract|tools/run_calibration|tests/test_trace_contract)\.py|
             tests/test_pa_bridge_mutation\.py
           )$
         args:
@@ -154,6 +155,7 @@ repos:
           (?x)^(
             hw/third_party/.*|
             tests/test_(ddr_width_config|ptw_high_addr)\.sv|
+            perf-modeling/rtl/frost_perf_probe\.sv|
             asic/sram/macros/.*
           )$
         args:

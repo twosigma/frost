@@ -1,7 +1,7 @@
 # FROST Architectural Optimization & Design Refinement Report
 
-**Target Evaluation**: `coremark` (3128 micro-ops simulated)  
-**Baseline Performance**: 3101 cycles, **IPC 1.0087**  
+**Target Evaluation**: `coremark` (3128 micro-ops simulated)\
+**Baseline Performance**: 3101 cycles, **IPC 1.0087**\
 **Model Grounding**: FROST `platform_top.sv` (`cpu_top` + `soc_top` single-channel 512-bit AXI memory)
 
 ---
