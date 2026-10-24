@@ -534,8 +534,8 @@ pinned Docker image, except the ASIC flow, which runs in its own image:
 
 | Suite | Configurations |
 | --- | --- |
-| Cocotb applications | BRAM and DDR where supported; the four longest CoreMark-PRO workloads run in jobs of their own and the other five share one |
-| Cocotb unit benches, DDR probes, fetch fuzzers, programs on the SRAM macros, OpenSBI smoke | BRAM only: tier-independent or fixed-layout runs |
+| Cocotb applications | BRAM and DDR where supported; the three longest CoreMark-PRO workloads run in jobs of their own and the other six share one |
+| Cocotb unit benches, DDR probes, fetch fuzzers, programs on the SRAM macros, OpenSBI smoke, cache counters over OpenOCD | BRAM only: tier-independent or fixed-layout runs |
 | Physical address apertures | Software boundary, fetch, translation, DMA, and NIC checks at 1, 64, and 128 GiB; generic synthesis at 1 and 128 GiB |
 | Architecture compliance | BRAM and DDR, in groups of extensions; excludes Zifencei on BRAM and F/D on DDR; F and D share three BRAM shards without coverage; the other groups collect coverage |
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
