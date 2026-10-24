@@ -222,17 +222,17 @@ cycles unless the app has its own, and `COCOTB_MAX_CYCLES` changes the
 default. Hello World passes on its greeting, and `uart_echo` passes when it
 echoes input the harness injects.
 
-In the BRAM tier the harness normally runs each program twice, with a reset
-but no reload in between, so a program must reinitialize its own state.
-`crt0.S` restores `.data` and clears the BSS sections, but `.ddr_data` is not
+In the BRAM tier the harness runs most programs twice, with a reset but no
+reload in between, so a program must reinitialize its own state. `crt0.S`
+restores `.data` and clears the BSS sections, but `.ddr_data` is not
 reinitialized and may still hold writes from the first run. DDR-tier programs
-run once, and so do the long CoreMark-PRO `loops` and `nnet` simulations, to
-fit CI's six-hour job limit.
+run once, and so do the registry entries that
+[tests/README.md](../tests/README.md#test_run_cocotbpy) lists, among them the
+long CoreMark-PRO simulations.
 
-`coremark_pro_core` runs twice in the BRAM tier, about 5,700,000 cycles each
-within the default 15,000,000-cycle budget, and `coremark_pro_nnet` takes
-about 12,900,000. CI turns off CoreMark-PRO's optional progress tracing to
-save host time.
+`coremark_pro_core` takes about 5,700,000 cycles within the default
+15,000,000-cycle budget, and `coremark_pro_nnet` about 12,900,000. CI turns
+off CoreMark-PRO's optional progress tracing to save host time.
 
 ```bash
 ./scripts/frost.py cocotb hello_world                               # simulate from low BRAM

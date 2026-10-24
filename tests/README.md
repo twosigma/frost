@@ -97,6 +97,25 @@ holds its delayed request, the program does not require a stale-window
 resteer; the `if_stage` bench supplies stale window tags directly and checks
 rejection, retry, and delayed-target handling.
 
+In the BRAM tier an application runs twice, with a reset in between. The
+second run starts from what the first leaves for the reset to clear, such as
+dirty L1D and L2 lines, interrupt enables and pending interrupts, a CLINT
+compare, the NIC or the DMA test engine set up, a fatal writeback stop with
+the memory-error log set, and FPU state, and with the branch predictor's
+tables trained, which the reset does not clear. The DDR tier runs each
+application once, because its first run changes its image in DDR. Entries
+with `rerun_after_reset=False` run once in both tiers; a new entry keeps the
+two runs.
+
+`freertos_demo` runs twice in BRAM to check that its private linker script
+and startup code reinitialize the kernel, heap, and application state.
+
+| Entries that run once | Reason |
+| --- | --- |
+| `coremark_pro_loops`, `coremark_pro_nnet`, `lq_stale_slot_probe` | Run time |
+| `opensbi_smoke` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
+| `amo_irq_torture_sim`, `coremark`, `coremark_profile`, `coremark_pro_core`, `coremark_pro_linear_alg`, `coremark_pro_radix2`, `itlb_test` (and its aperture variants), `pde_return_hazard`, `restore_window_stress`, `sprintf_test`, `tick_torture_sim`, `tomasulo_perf`, `wfi_lost_tick`, `window_skip_repro` | Each kind of state it leaves for the reset is also left by a shorter application that runs twice, and where CI collects its coverage, its second run reaches no coverage point that another application misses |
+
 `debug_test` drives the JTAG debug module directly; `debug_openocd_test` runs
 a real OpenOCD session through `remote_bitbang`, and `cache_counters_openocd`
 reads the cache profiling counters that way with `fpga/debug/cache_counters.py`.
@@ -331,7 +350,7 @@ which have 90 minutes each. `--verbose` prints solver output.
 | `COCOTB_MAX_CYCLES` | Cycle budget per application run (default 500,000); some targets set their own |
 | `COCOTB_COREMARK_MAX_CYCLES` | CoreMark and CoreMark-PRO cycle budget (default 15,000,000; the registry sets 20,000,000 for `coremark_pro_loops`) |
 | `COCOTB_COREMARK_PROGRESS_INTERVAL` | CoreMark progress diagnostics interval in cycles (default 500,000); `0` disables the optional per-cycle Python observer, as CI does for CoreMark-PRO |
-| `COCOTB_NUM_RUNS` | Runs per application, with a reset between them (default 2; always 1 in the DDR tier) |
+| `COCOTB_NUM_RUNS` | Runs per application, with a reset between them (default 2; 1 in the DDR tier and for entries with `rerun_after_reset=False`) |
 | `FROST_CALIBRATION_TRACE_PATH` | Records a calibration trace of one run for the [performance model](../perf-modeling/README.md); the other `FROST_CALIBRATION_*` variables choose the run, the window, and more output files |
 | `FROST_CALIBRATION_TEST` | Limits the calibration capture to the runs of the registry test it names |
 | `SIM_FAST_MAINT` | Fast `fence.i` cache maintenance in whole-SoC simulation (default 1; hardware uses the full sweeps, as `0` does) |

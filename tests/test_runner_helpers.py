@@ -16,10 +16,12 @@
 
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 
@@ -709,3 +711,36 @@ def test_real_programs_with_the_same_build_are_collected_together() -> None:
             for name in registered
             if test_run_cocotb.TEST_REGISTRY[name].verilator_extra_args == build
         ]
+
+
+def test_rerun_setting_reaches_the_bench(monkeypatch: pytest.MonkeyPatch) -> None:
+    """rerun_after_reset=False runs an application once; the default keeps two."""
+    monkeypatch.delenv("COCOTB_NUM_RUNS", raising=False)
+    config = test_run_cocotb.CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="hello_world",
+    )
+    twice = test_run_cocotb.CocotbRunner.from_config(config)
+    twice.restore_environment()
+    once = test_run_cocotb.CocotbRunner.from_config(
+        replace(config, rerun_after_reset=False)
+    )
+    once.restore_environment()
+    assert "COCOTB_NUM_RUNS" not in dict(twice.extra_env)
+    assert dict(once.extra_env)["COCOTB_NUM_RUNS"] == "1"
+    assert "COCOTB_NUM_RUNS" not in os.environ
+
+
+def test_single_run_entries_are_the_ones_tests_readme_lists() -> None:
+    """The table of applications that run once matches the registry."""
+    readme = (Path(test_run_cocotb.__file__).parent / "README.md").read_text()
+    table = readme.split("| Entries that run once | Reason |", 1)[1].split("\n\n", 1)[0]
+    single = {
+        name
+        for name, config in test_run_cocotb.TEST_REGISTRY.items()
+        if config.app_name is not None
+        and config.include_in_pytest
+        and not config.rerun_after_reset
+    }
+    assert set(re.findall(r"`([a-z0-9_]+)`", table)) == single

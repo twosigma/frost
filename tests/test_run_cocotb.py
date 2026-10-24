@@ -75,6 +75,11 @@ class CocotbRunConfig:
     # Environment overrides applied to the app build and the simulation
     # (e.g. COCOTB_MAX_CYCLES budgets or EXTRA_CFLAGS build knobs).
     extra_env: tuple[tuple[str, str], ...] = ()
+    # The BRAM tier runs an application twice, with a reset in between, to
+    # check that the SoC leaves reset in a state from which a program runs
+    # again; the DDR tier runs it once. False runs it once in both tiers.
+    # tests/README.md lists the applications that do and why.
+    rerun_after_reset: bool = True
 
 
 # tests/Makefile turns these environment variables into Verilator arguments:
@@ -166,15 +171,25 @@ def parameter_overrides(verilator_args: Iterable[str]) -> set[str]:
 
 
 # test_real_program sees all workloads as coremark_pro, so per-workload
-# budgets belong here. Run loops and nnet once in either tier for runtime;
-# each run still checks the workload's verification and success marker.
+# budgets belong here.
 COREMARK_PRO_SIMULATION_ENV: dict[str, tuple[tuple[str, str], ...]] = {
-    "coremark_pro_loops": (
-        ("COCOTB_COREMARK_MAX_CYCLES", "20000000"),
-        ("COCOTB_NUM_RUNS", "1"),
-    ),
-    "coremark_pro_nnet": (("COCOTB_NUM_RUNS", "1"),),
+    "coremark_pro_loops": (("COCOTB_COREMARK_MAX_CYCLES", "20000000"),),
 }
+
+# Workloads that run once in the BRAM tier too (rerun_after_reset): loops and
+# nnet for their run time, and core, linear_alg and radix2 because other
+# applications' second runs check every kind of state that theirs leave for
+# the reset (tests/README.md). Each run still checks the workload's
+# verification and success marker.
+COREMARK_PRO_SINGLE_RUN = frozenset(
+    {
+        "coremark_pro_core",
+        "coremark_pro_linear_alg",
+        "coremark_pro_loops",
+        "coremark_pro_nnet",
+        "coremark_pro_radix2",
+    }
+)
 
 COREMARK_PRO_TESTS = {
     program.app_name: CocotbRunConfig(
@@ -186,6 +201,7 @@ COREMARK_PRO_TESTS = {
         # configuration. Hardware runs use the official datasets, with the
         # per-board iteration counts in software_registry.py.
         extra_env=COREMARK_PRO_SIMULATION_ENV.get(program.app_name, ()),
+        rerun_after_reset=program.app_name not in COREMARK_PRO_SINGLE_RUN,
     )
     for program in COREMARK_PRO_PROGRAMS
 }
@@ -228,12 +244,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="coremark",
+        rerun_after_reset=False,
         description=("CoreMark benchmark with profiling counters disabled"),
     ),
     "coremark_profile": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="coremark",
+        rerun_after_reset=False,
         description=(
             "CoreMark benchmark and profile report with profiling counters enabled"
         ),
@@ -575,6 +593,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="itlb_test",
+        rerun_after_reset=False,
         description=(
             "Sv39 instruction fetch in supervisor and user modes, including cached DDR"
         ),
@@ -586,6 +605,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="itlb_test",
+        rerun_after_reset=False,
         description="Sv39 instruction fetch and bare out-of-range fault at 1 GiB DDR",
         include_in_pytest=False,
         extra_env=(
@@ -832,6 +852,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="restore_window_stress",
+        rerun_after_reset=False,
         description=(
             "Timer interrupts across 800 exception-return restore windows with a "
             "small L2 and slow DDR"
@@ -863,6 +884,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="wfi_lost_tick",
+        rerun_after_reset=False,
         description="Timer ticks keep arriving across Linux-style WFI idle and "
         "interrupt masking, with a 24..535-cycle CLINT deadline sweep",
     ),
@@ -940,10 +962,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="opensbi_smoke",
+        rerun_after_reset=False,
         description=(
             "OpenSBI boot, SBI services and delegated APLIC interrupts (fixed memory layout)"
         ),
-        extra_env=(("COCOTB_MAX_CYCLES", "10000000"), ("COCOTB_NUM_RUNS", "1")),
+        extra_env=(("COCOTB_MAX_CYCLES", "10000000"),),
     ),
     "linux_irq_ddr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -990,6 +1013,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="amo_irq_torture",
+        rerun_after_reset=False,
         description=(
             "Timer interrupts preserve DDR atomic effects (simulation-scale workload)"
         ),
@@ -999,6 +1023,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="tick_torture",
+        rerun_after_reset=False,
         description=(
             "CLINT timer re-arming under DDR traffic (simulation-scale workload)"
         ),
@@ -1051,6 +1076,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="lq_stale_slot_probe",
+        rerun_after_reset=False,
         description=(
             "Load data stays with its slot across flush/tag reuse with slow, jittered, "
             "reordered DDR"
@@ -1063,7 +1089,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(
             ("EXTRA_CFLAGS", "-DSTALE_ITERS=512"),
             ("COCOTB_MAX_CYCLES", "16000000"),
-            ("COCOTB_NUM_RUNS", "1"),
         ),
     ),
     "ptw_coherence_test": CocotbRunConfig(
@@ -1085,6 +1110,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="pde_return_hazard",
+        rerun_after_reset=False,
         description="Return values survive register restores in a "
         "pde_subdir_find-style epilogue (DDR tier only)",
         # The app forces MEM_CONFIG=ddr. Use a small L2 and slow DDR for misses.
@@ -1177,6 +1203,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="sprintf_test",
+        rerun_after_reset=False,
         description="sprintf and snprintf output formatting",
     ),
     "strings_test": CocotbRunConfig(
@@ -1227,6 +1254,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="tomasulo_perf",
+        rerun_after_reset=False,
         description=(
             "IPC benchmarks and profile-counter consistency with profiling enabled"
         ),
@@ -1318,6 +1346,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="window_skip_repro",
+        rerun_after_reset=False,
         description=(
             "Fall-through instructions survive recovery from mispredicted taken "
             "branches across all 6,000 calls"
@@ -3248,12 +3277,15 @@ class CocotbRunner:
     @classmethod
     def from_config(cls, config: CocotbRunConfig) -> "CocotbRunner":
         """Create a CocotbRunner from a CocotbRunConfig."""
+        extra_env = config.extra_env
+        if not config.rerun_after_reset:
+            extra_env = (*extra_env, ("COCOTB_NUM_RUNS", "1"))
         return cls(
             python_test_module=config.python_test_module,
             hdl_toplevel_module=config.hdl_toplevel_module,
             app_name=config.app_name,
             verilator_extra_args=config.verilator_extra_args,
-            extra_env=config.extra_env,
+            extra_env=extra_env,
         )
 
     @classmethod
