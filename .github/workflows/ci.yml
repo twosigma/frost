@@ -312,15 +312,18 @@ jobs:
         run: |
           tests="$PA_TESTS"
           for program in $PA_PROGRAMS; do
-            test_name="${program}_${PA_CAPACITY_GIB}g"
-            case "$test_name" in
-              pma_fault_test_1g|vm_test_1g|nic_loopback_1g) test_name="$program" ;;
+            case "${program}_${PA_CAPACITY_GIB}g" in
+              # At the default 1 GiB aperture these are the programs that the
+              # Real Programs jobs already run.
+              pma_fault_test_1g|vm_test_1g|nic_loopback_1g) continue ;;
             esac
-            tests="$tests $test_name"
+            tests="$tests ${program}_${PA_CAPACITY_GIB}g"
           done
-          for test_name in $tests; do
-            ./scripts/frost.py --image frost-dev:latest cocotb "$test_name"
-          done
+          # One clean, then the runner reuses the Verilator build for each
+          # test whose build signature matches the previous one.
+          ./scripts/frost.py --image frost-dev:latest run bash -c \
+            'cd tests && make clean && for test_name; do ./test_run_cocotb.py "$test_name" || exit 1; done' \
+            _ $tests
 
       - name: Merge the job's coverage
         if: ${{ !cancelled() }}
@@ -472,27 +475,27 @@ jobs:
 
   # riscv-tests: p runs physically without a kernel; v runs user suites on DDR
   # under env_v's Sv39 supervisor, with delegated page faults and Svade A/D handling.
+  # Each job runs a group of suites on one Verilator build, at most about an
+  # hour of tests.
   test-riscv-tests:
-    name: riscv-tests (${{ matrix.suite }} / ${{ matrix.mem_config }} / ${{ matrix.env }})
+    name: riscv-tests (${{ matrix.label || matrix.suites }} / ${{ matrix.mem_config }} / ${{ matrix.env }})
     runs-on: ubuntu-26.04
     needs: build-docker
     strategy:
       fail-fast: false
       matrix:
-        suite: [rv64ui, rv64um, rv64ua, rv64uc, rv64uf, rv64ud, rv64uzba, rv64uzbb, rv64uzbs, rv64uzbkb, rv64mi, rv64si]
-        mem_config: [bram, ddr]
-        env: [p]
         include:
-          - {suite: rv64ui, mem_config: ddr, env: v}
-          - {suite: rv64um, mem_config: ddr, env: v}
-          - {suite: rv64ua, mem_config: ddr, env: v}
-          - {suite: rv64uc, mem_config: ddr, env: v}
-          - {suite: rv64uf, mem_config: ddr, env: v}
-          - {suite: rv64ud, mem_config: ddr, env: v}
-          - {suite: rv64uzba, mem_config: ddr, env: v}
-          - {suite: rv64uzbb, mem_config: ddr, env: v}
-          - {suite: rv64uzbs, mem_config: ddr, env: v}
-          - {suite: rv64uzbkb, mem_config: ddr, env: v}
+          - label: all suites
+            suites: rv64ui rv64um rv64ua rv64uc rv64uf rv64ud rv64uzba rv64uzbb rv64uzbs rv64uzbkb rv64mi rv64si
+            mem_config: bram
+            env: p
+          - label: all suites
+            suites: rv64ui rv64um rv64ua rv64uc rv64uf rv64ud rv64uzba rv64uzbb rv64uzbs rv64uzbkb rv64mi rv64si
+            mem_config: ddr
+            env: p
+          - {suites: rv64ui rv64ud rv64uc, mem_config: ddr, env: v}
+          - {suites: rv64ua rv64uzbb, mem_config: ddr, env: v}
+          - {suites: rv64uf rv64um rv64uzbs rv64uzba rv64uzbkb, mem_config: ddr, env: v}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -510,7 +513,7 @@ jobs:
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
 
-      - name: Run riscv-tests ISA suite (${{ matrix.suite }} / ${{ matrix.mem_config }} / ${{ matrix.env }})
+      - name: Run riscv-tests ISA suites (${{ matrix.label || matrix.suites }} / ${{ matrix.mem_config }} / ${{ matrix.env }})
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           # Line coverage and the cover points (tests/README.md#coverage).
@@ -518,15 +521,18 @@ jobs:
         run: |
           docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_COVERAGE \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            python3 tests/test_riscv_tests.py --suites ${{ matrix.suite }} \
+            python3 tests/test_riscv_tests.py --suites ${{ matrix.suites }} \
               --mem-config ${{ matrix.mem_config }} --env ${{ matrix.env }}
 
       - name: Merge the job's coverage
         if: ${{ !cancelled() }}
+        env:
+          COVERAGE_NAME: riscv tests ${{ matrix.suites }} ${{ matrix.mem_config }} ${{ matrix.env }}
         run: |
+          name=$(printf '%s' "$COVERAGE_NAME" | tr -cs 'A-Za-z0-9' '_')
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/coverage_report.py merge tests/coverage \
-              --output coverage-job/riscv_tests_${{ matrix.suite }}_${{ matrix.mem_config }}_${{ matrix.env }}.dat
+              --output "coverage-job/$name.dat"
 
       - name: Upload the job's coverage
         if: ${{ !cancelled() }}
@@ -538,16 +544,20 @@ jobs:
           if-no-files-found: ignore
           overwrite: true
 
-  # riscv-tests benchmarks by memory tier.
+  # riscv-tests benchmarks by memory tier, on one Verilator build per job; mm,
+  # the longest, runs on its own.
   test-riscv-benchmarks:
-    name: riscv-tests Benchmarks (${{ matrix.benchmark }} / ${{ matrix.mem_config }})
+    name: riscv-tests Benchmarks (${{ matrix.benchmarks }} / ${{ matrix.mem_config }})
     runs-on: ubuntu-26.04
     needs: build-docker
     strategy:
       fail-fast: false
       matrix:
-        benchmark: [median, multiply, qsort, rsort, towers, vvadd, dhrystone, mm, spmv]
-        mem_config: [bram, ddr]
+        include:
+          - {benchmarks: median multiply qsort rsort towers vvadd dhrystone spmv, mem_config: bram}
+          - {benchmarks: median multiply qsort rsort towers vvadd dhrystone spmv, mem_config: ddr}
+          - {benchmarks: mm, mem_config: bram}
+          - {benchmarks: mm, mem_config: ddr}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -565,13 +575,13 @@ jobs:
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
 
-      - name: Run riscv-tests benchmark (${{ matrix.benchmark }} / ${{ matrix.mem_config }})
+      - name: Run riscv-tests benchmarks (${{ matrix.benchmarks }} / ${{ matrix.mem_config }})
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
         run: |
           docker run --rm -e FROST_DDR_MODEL_SEED \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            python3 tests/test_riscv_tests.py --benchmarks ${{ matrix.benchmark }} \
+            python3 tests/test_riscv_tests.py --benchmarks ${{ matrix.benchmarks }} \
               --mem-config ${{ matrix.mem_config }}
 
   # Compare RV64 torture with Spike in both tiers; the DDR-only paged run uses
