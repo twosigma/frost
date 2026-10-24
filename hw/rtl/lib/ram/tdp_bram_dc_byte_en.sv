@@ -68,7 +68,11 @@ module tdp_bram_dc_byte_en #(
   initial begin
     if (USE_INIT_FILE) $readmemh(INIT_FILE, memory);
     else begin
-`ifndef FROST_RANDOM_START
+`ifdef FROST_RANDOM_START
+      for (int row = 0; row < MemDepthInWords; row++)
+      for (int chunk = 0; chunk < (DATA_WIDTH + 31) / 32; chunk++)
+      memory[row] = (memory[row] << 32) | DATA_WIDTH'($urandom);
+`else
       // The non-zero fill catches code that assumes zero-initialized memory.
       for (int i = 0; i < MemDepthInWords; ++i) memory[i] = DATA_WIDTH'(i);
 `endif

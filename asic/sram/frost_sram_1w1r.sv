@@ -200,7 +200,15 @@ module frost_sram_1w1r #(
     end
     always_ff @(posedge i_read_clock) if (i_read_enable) read_data <= memory[i_read_address];
 `ifndef SYNTHESIS
-    initial if (USE_INIT_FILE) $readmemh(INIT_FILE, memory);
+    initial begin
+      if (USE_INIT_FILE) $readmemh(INIT_FILE, memory);
+`ifdef FROST_RANDOM_START
+      if (!USE_INIT_FILE)
+        for (int row = 0; row < 2 ** ADDR_WIDTH; row++)
+        for (int chunk = 0; chunk < (DATA_WIDTH + 31) / 32; chunk++)
+        memory[row] = (memory[row] << 32) | DATA_WIDTH'($urandom);
+`endif
+    end
 `endif
   end else begin : gen_macros
     // A grid of Rows by Columns macros: the high address bits pick a row,
@@ -380,6 +388,15 @@ module frost_sram_1w1r #(
             end
           end
         end
+`ifdef FROST_RANDOM_START
+        if (!USE_INIT_FILE) begin : gen_random_start
+          initial begin
+            for (int i = 0; i < 2 ** TileAddrWidth; i++)
+            for (int chunk = 0; chunk < (TileDataWidth + 31) / 32; chunk++)
+            gen_macro.u_macro.mem[i] = (gen_macro.u_macro.mem[i] << 32) | TileDataWidth'($urandom);
+          end
+        end
+`endif
 `endif
       end
     end

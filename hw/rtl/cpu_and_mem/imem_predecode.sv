@@ -79,6 +79,7 @@ module imem_sideband_scalar_bank #(
       .ADDR_WIDTH(STORAGE_ADDR_WIDTH),
       .DATA_WIDTH(1),
       .USE_INIT_FILE(LoadBankImage),
+      .SIM_EXTERNAL_INIT(USE_INIT_FILE),
       .INIT_FILE(BANK_INIT_FILE)
   ) u_ram (
       .i_clk(i_write_clk),
@@ -889,6 +890,7 @@ module imem_predecode #(
       .ADDR_WIDTH(ADDR_WIDTH - 1),
       .DATA_WIDTH(ColdBankWidth),
       .USE_INIT_FILE(LoadBankImages),
+      .SIM_EXTERNAL_INIT(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE_EVEN_COLD)
   ) u_even_cold (
       .i_write_clock(i_port_a_clk),
@@ -905,6 +907,7 @@ module imem_predecode #(
       .ADDR_WIDTH(ADDR_WIDTH - 1),
       .DATA_WIDTH(ColdBankWidth),
       .USE_INIT_FILE(LoadBankImages),
+      .SIM_EXTERNAL_INIT(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE_ODD_COLD)
   ) u_odd_cold (
       .i_write_clock(i_port_a_clk),
@@ -927,6 +930,7 @@ module imem_predecode #(
       .ADDR_WIDTH(ADDR_WIDTH - 1),
       .DATA_WIDTH(FrontendHotWidth),
       .USE_INIT_FILE(LoadBankImages),
+      .SIM_EXTERNAL_INIT(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE_EVEN_FRONTEND_HOT)
   ) u_even_frontend_hot (
       .i_write_clock(i_port_a_clk),
@@ -943,6 +947,7 @@ module imem_predecode #(
       .ADDR_WIDTH(ADDR_WIDTH - 1),
       .DATA_WIDTH(FrontendHotWidth),
       .USE_INIT_FILE(LoadBankImages),
+      .SIM_EXTERNAL_INIT(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE_ODD_FRONTEND_HOT)
   ) u_odd_frontend_hot (
       .i_write_clock(i_port_a_clk),
@@ -960,6 +965,7 @@ module imem_predecode #(
       .ADDR_WIDTH(ADDR_WIDTH - 1),
       .DATA_WIDTH(SidebandWidth),
       .USE_INIT_FILE(LoadBankImages),
+      .SIM_EXTERNAL_INIT(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE_EVEN_SIDEBAND)
   ) u_even_sideband (
       .i_write_clock(i_port_a_clk),
@@ -976,6 +982,7 @@ module imem_predecode #(
       .ADDR_WIDTH(ADDR_WIDTH - 1),
       .DATA_WIDTH(SidebandWidth),
       .USE_INIT_FILE(LoadBankImages),
+      .SIM_EXTERNAL_INIT(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE_ODD_SIDEBAND)
   ) u_odd_sideband (
       .i_write_clock(i_port_a_clk),
@@ -995,6 +1002,7 @@ module imem_predecode #(
       .ADDR_WIDTH(ADDR_WIDTH - 1),
       .DATA_WIDTH(FastLaneWidth),
       .USE_INIT_FILE(LoadBankImages),
+      .SIM_EXTERNAL_INIT(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE_EVEN_COMPRESSED)
   ) u_even_compressed (
       .i_write_clock(i_port_a_clk),
@@ -1011,6 +1019,7 @@ module imem_predecode #(
       .ADDR_WIDTH(ADDR_WIDTH - 1),
       .DATA_WIDTH(FastLaneWidth),
       .USE_INIT_FILE(LoadBankImages),
+      .SIM_EXTERNAL_INIT(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE_ODD_COMPRESSED)
   ) u_odd_compressed (
       .i_write_clock(i_port_a_clk),

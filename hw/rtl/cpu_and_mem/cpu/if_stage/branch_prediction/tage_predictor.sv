@@ -271,8 +271,8 @@ module tage_predictor #(
                   (write_index[1] == i_train_lookup.index2)) ? write2 :
                  i_train_bank ? train_entry[1][1] : train_entry[1][0];
 
-  // The write stage's registers. The valid has an initial value instead of a
-  // reset because this module has none; the training port is idle in reset.
+  // Training is idle during reset. A power-up write can only change
+  // speculative predictions; branch resolution corrects any wrong prediction.
 `ifdef FROST_RANDOM_START
   localparam bit RandomStart = 1'b1;
 `else

@@ -239,6 +239,14 @@ module sdp_ram_byte_en #(
   // without the ultra hint, Yosys attempts to decompose large arrays into BRAM.
   if (MEMORY_PRIMITIVE == "ultra") begin : gen_ultra_storage
     (* ram_style = "ultra" *) logic [DATA_WIDTH-1:0] memory[Depth];
+
+`ifdef FROST_RANDOM_START
+    initial begin
+      for (int row = 0; row < Depth; row++)
+      for (int chunk = 0; chunk < (DATA_WIDTH + 31) / 32; chunk++)
+      memory[row] = (memory[row] << 32) | DATA_WIDTH'($urandom);
+    end
+`endif
     for (genvar byte_index = 0; byte_index < int'(NumBytes); byte_index++) begin : gen_write_byte
       always_ff @(posedge i_clk)
         if (wbyte_en_q[byte_index])
@@ -252,6 +260,14 @@ module sdp_ram_byte_en #(
     assign row_dout = rd_pipe[XpmReadLatency-1];
   end else begin : gen_block_storage
     (* ram_style = "block" *) logic [DATA_WIDTH-1:0] memory[Depth];
+
+`ifdef FROST_RANDOM_START
+    initial begin
+      for (int row = 0; row < Depth; row++)
+      for (int chunk = 0; chunk < (DATA_WIDTH + 31) / 32; chunk++)
+      memory[row] = (memory[row] << 32) | DATA_WIDTH'($urandom);
+    end
+`endif
     for (genvar byte_index = 0; byte_index < int'(NumBytes); byte_index++) begin : gen_write_byte
       always_ff @(posedge i_clk)
         if (wbyte_en_q[byte_index])

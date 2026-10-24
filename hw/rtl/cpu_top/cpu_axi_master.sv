@@ -146,6 +146,7 @@ module cpu_axi_master #(
   // exclude those responses, so a CPU reset never waits twice for one reply.
   logic [NumIds-1:0] busy_q = RandomStart ? 'x : '0;
   logic [NumIds-1:0] pending_q = RandomStart ? 'x : '0;
+  // pending_q qualifies this payload and each accepted request sets its bit.
   logic [NumIds-1:0] write_q = RandomStart ? 'x : '0;
   logic [NumIds-1:0] stale_q = RandomStart ? 'x : '0;
   logic [NumIds-1:0] stale_d;

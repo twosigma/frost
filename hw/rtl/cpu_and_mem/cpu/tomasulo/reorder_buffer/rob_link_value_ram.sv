@@ -123,7 +123,14 @@ module rob_link_value_ram #(
   // ---------------------------------------------------------------------------
   logic [1:0] lvt[RamDepth];
 
-`ifndef FROST_RANDOM_START
+  // Rows are unspecified until written. A startup staged write can only
+  // affect an unowned row; allocation establishes its bank before a live read.
+`ifdef FROST_RANDOM_START
+  initial begin
+    for (int row = 0; row < RamDepth; row++)
+    for (int chunk = 0; chunk < (2 + 31) / 32; chunk++) lvt[row] = (lvt[row] << 32) | 2'($urandom);
+  end
+`else
   initial for (int i = 0; i < RamDepth; ++i) lvt[i] = CodeZero;
 `endif
 

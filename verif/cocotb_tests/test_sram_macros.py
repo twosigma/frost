@@ -496,10 +496,17 @@ async def _tdp_bram_dc_byte_en(dut: Any) -> None:
         getattr(dut, f"i_port_{port}_byte_address").value = 0
     await _start_cycle(dut.i_port_a_clk)
 
-    # Simulation starts the macros with each word's index (USE_INIT_FILE=0).
+    # Snapshot untouched bytes before the traffic's partial writes.
+    tiles = dut.u_sram.gen_row
+    tile_depth = len(tiles[0].u_macro.mem)
     memory: dict[int, int | None] = {
-        address: address & ((1 << data_width) - 1) for address in addresses
+        address: int(
+            tiles[address // tile_depth].u_macro.mem[address % tile_depth].value
+        )
+        for address in addresses
     }
+    if not os.environ.get("FROST_RANDOM_START_SEED"):
+        assert all(memory[address] == address for address in addresses)
     expected = {port: Expected(f"tdp_bram_dc_byte_en port {port}") for port in "ab"}
     for cycle in range(CYCLES):
         for port in ("b", "a") if cycle % 4 == 0 else ("b",):
