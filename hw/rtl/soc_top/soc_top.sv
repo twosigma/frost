@@ -1097,73 +1097,44 @@ module soc_top #(
     end
   end
   if (ENABLE_CACHED_TIER != 0) begin : gen_cached_tier
-    // The hierarchy's DMA port, fed by a line-port arbiter over the NIC
-    // (port 0, priority) and the DMA test engine (port 1): each presents
-    // 2-bit ids, and the arbiter prefixes the port bit. Those 3 bits fill the
-    // low bits of the port's LineIdBits-bit ids, and responses come back with
-    // the high bit clear, which the hierarchy's stream prefetcher needs.
-    localparam int unsigned DmaAgentIdBits = 2;
-    logic dma_req_valid, dma_req_ready, dma_req_write;
-    logic [riscv_pkg::PhysAddrBits-1:0] dma_req_addr;
-    logic [L1LineBytes*8-1:0] dma_req_wdata;
-    logic [L1LineBytes-1:0] dma_req_wstrb;
-    logic [LineIdBits-1:0] dma_req_id;
-    logic [DmaAgentIdBits:0] dma_agents_req_id, dma_agents_resp_id;
-    logic dma_resp_valid;
-    logic [LineIdBits-1:0] dma_resp_id;
-    logic [L1LineBytes*8-1:0] dma_resp_rdata;
-    /* verilator lint_off UNUSEDSIGNAL */  // the agents' ids fill the low bits
-    logic dma_resp_id_high_unused;
-    /* verilator lint_on UNUSEDSIGNAL */
-    assign dma_req_id = LineIdBits'(dma_agents_req_id);
-    assign dma_agents_resp_id = dma_resp_id[DmaAgentIdBits:0];
-    assign dma_resp_id_high_unused = |dma_resp_id[LineIdBits-1:DmaAgentIdBits+1];
-    logic [1:0] agent_req_valid, agent_req_ready, agent_req_write, agent_resp_valid;
-    logic [1:0] agent_resp_error;
-    logic [1:0][riscv_pkg::PhysAddrBits-1:0] agent_req_addr;
-    logic [1:0][L1LineBytes*8-1:0] agent_req_wdata;
-    logic [1:0][L1LineBytes-1:0] agent_req_wstrb;
-    logic [1:0][DmaAgentIdBits-1:0] agent_req_id, agent_resp_id;
-    logic [1:0][L1LineBytes*8-1:0] agent_resp_rdata;
-    /* verilator lint_off UNUSEDSIGNAL */  // the DMA port carries no maintenance requests
-    logic dma_req_maintenance_unused;
-    /* verilator lint_on UNUSEDSIGNAL */
+    // DMA: the NIC (port 0) and the DMA test engine (port 1) are AXI4 masters
+    // on dma_interconnect, whose one master enters the hierarchy's coherent
+    // DMA port through dma_bridge (hw/rtl/lib/axi/README.md). The bus is 256
+    // bits, one beat per line. The bridge's line ids fill the low bits of
+    // the port's LineIdBits-bit ids, so bit 3 stays clear, which the
+    // hierarchy's stream prefetcher needs. All four reset with rst_core. The
+    // ingress resets with o_cpu_rst, which adds the DDR interconnect's reset;
+    // the platform asserts i_rst whenever it holds that reset (README.md).
+    localparam int unsigned DmaPorts = 2;
+    localparam int unsigned DmaAxiAddrBits = 64;
+    localparam int unsigned DmaAxiDataBits = 8 * L1LineBytes;
+    // The NIC's ids, 3 bits; the engine's 2-bit ids are zero-extended.
+    localparam int unsigned DmaUpIdBits = 3;
+    localparam int unsigned DmaDownIdBits = DmaUpIdBits + 1;
+    localparam int unsigned DmaLineIdBits = 3;
 
-    line_port_arbiter #(
-        .NUM_PORTS(2),
-        .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
-        .LINE_BYTES(L1LineBytes),
-        .UP_ID_BITS(DmaAgentIdBits),
-        .STARVATION_LIMIT(8)
-    ) dma_arbiter (
-        .o_up_resp_error(agent_resp_error),
+    logic [DmaPorts-1:0] up_awvalid, up_awready, up_awlock, up_wvalid, up_wready, up_wlast;
+    logic [DmaPorts-1:0] up_bvalid, up_bready, up_arvalid, up_arready, up_arlock;
+    logic [DmaPorts-1:0] up_rvalid, up_rready, up_rlast;
+    logic [DmaPorts-1:0][DmaUpIdBits-1:0] up_awid, up_bid, up_arid, up_rid;
+    logic [DmaPorts-1:0][DmaAxiAddrBits-1:0] up_awaddr, up_araddr;
+    logic [DmaPorts-1:0][7:0] up_awlen, up_arlen;
+    logic [DmaPorts-1:0][2:0] up_awsize, up_arsize, up_awprot, up_arprot;
+    logic [DmaPorts-1:0][1:0] up_awburst, up_arburst, up_bresp, up_rresp;
+    logic [DmaPorts-1:0][3:0] up_awcache, up_arcache, up_awqos, up_arqos;
+    logic [DmaPorts-1:0][DmaAxiDataBits-1:0] up_wdata, up_rdata;
+    logic [DmaPorts-1:0][DmaAxiDataBits/8-1:0] up_wstrb;
 
-        .i_clk(i_clk),
-        .i_rst(rst_core),
-        .i_up_req_valid(agent_req_valid),
-        .o_up_req_ready(agent_req_ready),
-        .i_up_req_write(agent_req_write),
-        .i_up_req_addr(agent_req_addr),
-        .i_up_req_wdata(agent_req_wdata),
-        .i_up_req_wstrb(agent_req_wstrb),
-        .i_up_req_id(agent_req_id),
-        .i_up_req_maintenance(2'b00),
-        .o_up_resp_valid(agent_resp_valid),
-        .o_up_resp_id(agent_resp_id),
-        .o_up_resp_rdata(agent_resp_rdata),
-        .o_down_req_valid(dma_req_valid),
-        .i_down_req_ready(dma_req_ready),
-        .o_down_req_write(dma_req_write),
-        .o_down_req_addr(dma_req_addr),
-        .o_down_req_wdata(dma_req_wdata),
-        .o_down_req_wstrb(dma_req_wstrb),
-        .o_down_req_id(dma_agents_req_id),
-        .o_down_req_maintenance(dma_req_maintenance_unused),
-        .i_down_resp_valid(dma_resp_valid),
-        .i_down_resp_error(i_coherent_resp_error),
-        .i_down_resp_id(dma_agents_resp_id),
-        .i_down_resp_rdata(dma_resp_rdata)
-    );
+    logic dn_awvalid, dn_awready, dn_awlock, dn_wvalid, dn_wready, dn_wlast;
+    logic dn_bvalid, dn_bready, dn_arvalid, dn_arready, dn_arlock, dn_rvalid, dn_rready, dn_rlast;
+    logic [DmaDownIdBits-1:0] dn_awid, dn_bid, dn_arid, dn_rid;
+    logic [DmaAxiAddrBits-1:0] dn_awaddr, dn_araddr;
+    logic [7:0] dn_awlen, dn_arlen;
+    logic [2:0] dn_awsize, dn_arsize, dn_awprot, dn_arprot;
+    logic [1:0] dn_awburst, dn_arburst, dn_bresp, dn_rresp;
+    logic [3:0] dn_awcache, dn_arcache, dn_awqos, dn_arqos;
+    logic [DmaAxiDataBits-1:0] dn_wdata, dn_rdata;
+    logic [DmaAxiDataBits/8-1:0] dn_wstrb;
 
     nic_top #(
         .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
@@ -1171,7 +1142,9 @@ module soc_top #(
         .APERTURE_BASE(64'(CACHED_BASE)),
         .APERTURE_BYTES(CACHED_SIZE_BYTES),
         .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000),
-        .RAW_LOOPBACK(RAW_LOOPBACK)
+        .RAW_LOOPBACK(RAW_LOOPBACK),
+        .DMA_AXI_ADDR_BITS(DmaAxiAddrBits),
+        .DMA_AXI_ID_BITS(DmaUpIdBits)
     ) nic (
         .i_clk(i_clk),
         .i_rst(rst_core_next),  // registered inside nic_top; see its header
@@ -1188,17 +1161,43 @@ module soc_top #(
         .i_rd_offset({mmio_load_addr[11:3], 3'b000}),
         .o_rd_pair(nic_rd_pair),
         .o_irq(nic_irq),
-        .o_dma_req_valid(agent_req_valid[0]),
-        .i_dma_req_ready(agent_req_ready[0]),
-        .o_dma_req_write(agent_req_write[0]),
-        .o_dma_req_addr(agent_req_addr[0]),
-        .o_dma_req_wdata(agent_req_wdata[0]),
-        .o_dma_req_wstrb(agent_req_wstrb[0]),
-        .o_dma_req_id(agent_req_id[0]),
-        .i_dma_resp_valid(agent_resp_valid[0]),
-        .i_dma_resp_error(agent_resp_error[0]),
-        .i_dma_resp_id(agent_resp_id[0]),
-        .i_dma_resp_rdata(agent_resp_rdata[0]),
+        .o_dma_axi_awvalid(up_awvalid[0]),
+        .o_dma_axi_awid(up_awid[0]),
+        .o_dma_axi_awaddr(up_awaddr[0]),
+        .o_dma_axi_awlen(up_awlen[0]),
+        .o_dma_axi_awsize(up_awsize[0]),
+        .o_dma_axi_awburst(up_awburst[0]),
+        .o_dma_axi_awlock(up_awlock[0]),
+        .o_dma_axi_awcache(up_awcache[0]),
+        .o_dma_axi_awprot(up_awprot[0]),
+        .o_dma_axi_awqos(up_awqos[0]),
+        .o_dma_axi_wvalid(up_wvalid[0]),
+        .o_dma_axi_wdata(up_wdata[0]),
+        .o_dma_axi_wstrb(up_wstrb[0]),
+        .o_dma_axi_wlast(up_wlast[0]),
+        .o_dma_axi_bready(up_bready[0]),
+        .o_dma_axi_arvalid(up_arvalid[0]),
+        .o_dma_axi_arid(up_arid[0]),
+        .o_dma_axi_araddr(up_araddr[0]),
+        .o_dma_axi_arlen(up_arlen[0]),
+        .o_dma_axi_arsize(up_arsize[0]),
+        .o_dma_axi_arburst(up_arburst[0]),
+        .o_dma_axi_arlock(up_arlock[0]),
+        .o_dma_axi_arcache(up_arcache[0]),
+        .o_dma_axi_arprot(up_arprot[0]),
+        .o_dma_axi_arqos(up_arqos[0]),
+        .o_dma_axi_rready(up_rready[0]),
+        .i_dma_axi_awready(up_awready[0]),
+        .i_dma_axi_wready(up_wready[0]),
+        .i_dma_axi_bvalid(up_bvalid[0]),
+        .i_dma_axi_bid(up_bid[0]),
+        .i_dma_axi_bresp(up_bresp[0]),
+        .i_dma_axi_arready(up_arready[0]),
+        .i_dma_axi_rvalid(up_rvalid[0]),
+        .i_dma_axi_rid(up_rid[0]),
+        .i_dma_axi_rdata(up_rdata[0]),
+        .i_dma_axi_rresp(up_rresp[0]),
+        .i_dma_axi_rlast(up_rlast[0]),
         .i_tx_clk(i_nic_tx_clk),
         .i_rx_clk(i_nic_rx_clk),
         .i_tx_clk_ok(i_nic_tx_clk_ok),
@@ -1213,12 +1212,14 @@ module soc_top #(
         .o_rx_block_lock(o_nic_rx_block_lock)
     );
 
-    dma_test_engine #(
+    dma_test_engine_axi #(
         .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
         .LINE_BYTES(L1LineBytes),
-        .ID_BITS(DmaAgentIdBits),
+        .ID_BITS(2),
         .APERTURE_BASE(64'(CACHED_BASE)),
-        .APERTURE_BYTES(CACHED_SIZE_BYTES)
+        .APERTURE_BYTES(CACHED_SIZE_BYTES),
+        .DMA_AXI_ADDR_BITS(DmaAxiAddrBits),
+        .DMA_AXI_ID_BITS(DmaUpIdBits)
     ) dma_engine (
         .i_clk(i_clk),
         .i_rst(rst_core),
@@ -1233,30 +1234,282 @@ module soc_top #(
         .i_rd_offset({mmio_load_addr[7:3], 3'b000}),
         .o_rd_pair(dma_engine_rd_pair),
         .o_irq(dma_engine_irq),
-        .o_dma_req_valid(agent_req_valid[1]),
-        .i_dma_req_ready(agent_req_ready[1]),
-        .o_dma_req_write(agent_req_write[1]),
-        .o_dma_req_addr(agent_req_addr[1]),
-        .o_dma_req_wdata(agent_req_wdata[1]),
-        .o_dma_req_wstrb(agent_req_wstrb[1]),
-        .o_dma_req_id(agent_req_id[1]),
-        .i_dma_resp_valid(agent_resp_valid[1]),
-        .i_dma_resp_error(agent_resp_error[1]),
-        .i_dma_resp_id(agent_resp_id[1]),
-        .i_dma_resp_rdata(agent_resp_rdata[1])
+        .o_dma_axi_awvalid(up_awvalid[1]),
+        .o_dma_axi_awid(up_awid[1]),
+        .o_dma_axi_awaddr(up_awaddr[1]),
+        .o_dma_axi_awlen(up_awlen[1]),
+        .o_dma_axi_awsize(up_awsize[1]),
+        .o_dma_axi_awburst(up_awburst[1]),
+        .o_dma_axi_awlock(up_awlock[1]),
+        .o_dma_axi_awcache(up_awcache[1]),
+        .o_dma_axi_awprot(up_awprot[1]),
+        .o_dma_axi_awqos(up_awqos[1]),
+        .o_dma_axi_wvalid(up_wvalid[1]),
+        .o_dma_axi_wdata(up_wdata[1]),
+        .o_dma_axi_wstrb(up_wstrb[1]),
+        .o_dma_axi_wlast(up_wlast[1]),
+        .o_dma_axi_bready(up_bready[1]),
+        .o_dma_axi_arvalid(up_arvalid[1]),
+        .o_dma_axi_arid(up_arid[1]),
+        .o_dma_axi_araddr(up_araddr[1]),
+        .o_dma_axi_arlen(up_arlen[1]),
+        .o_dma_axi_arsize(up_arsize[1]),
+        .o_dma_axi_arburst(up_arburst[1]),
+        .o_dma_axi_arlock(up_arlock[1]),
+        .o_dma_axi_arcache(up_arcache[1]),
+        .o_dma_axi_arprot(up_arprot[1]),
+        .o_dma_axi_arqos(up_arqos[1]),
+        .o_dma_axi_rready(up_rready[1]),
+        .i_dma_axi_awready(up_awready[1]),
+        .i_dma_axi_wready(up_wready[1]),
+        .i_dma_axi_bvalid(up_bvalid[1]),
+        .i_dma_axi_bid(up_bid[1]),
+        .i_dma_axi_bresp(up_bresp[1]),
+        .i_dma_axi_arready(up_arready[1]),
+        .i_dma_axi_rvalid(up_rvalid[1]),
+        .i_dma_axi_rid(up_rid[1]),
+        .i_dma_axi_rdata(up_rdata[1]),
+        .i_dma_axi_rresp(up_rresp[1]),
+        .i_dma_axi_rlast(up_rlast[1])
     );
 
+    axi_mux #(
+        .NUM_PORTS(DmaPorts),
+        .ADDR_WIDTH(DmaAxiAddrBits),
+        .DATA_WIDTH(DmaAxiDataBits),
+        .UP_ID_WIDTH(DmaUpIdBits),
+        .W_DEPTH(4)
+    ) dma_interconnect (
+        .i_clk(i_clk),
+        .i_rst(rst_core),
+        .i_up_awvalid(up_awvalid),
+        .i_up_awid(up_awid),
+        .i_up_awaddr(up_awaddr),
+        .i_up_awlen(up_awlen),
+        .i_up_awsize(up_awsize),
+        .i_up_awburst(up_awburst),
+        .i_up_awlock(up_awlock),
+        .i_up_awcache(up_awcache),
+        .i_up_awprot(up_awprot),
+        .i_up_awqos(up_awqos),
+        .i_up_wvalid(up_wvalid),
+        .i_up_wdata(up_wdata),
+        .i_up_wstrb(up_wstrb),
+        .i_up_wlast(up_wlast),
+        .i_up_bready(up_bready),
+        .i_up_arvalid(up_arvalid),
+        .i_up_arid(up_arid),
+        .i_up_araddr(up_araddr),
+        .i_up_arlen(up_arlen),
+        .i_up_arsize(up_arsize),
+        .i_up_arburst(up_arburst),
+        .i_up_arlock(up_arlock),
+        .i_up_arcache(up_arcache),
+        .i_up_arprot(up_arprot),
+        .i_up_arqos(up_arqos),
+        .i_up_rready(up_rready),
+        .o_up_awready(up_awready),
+        .o_up_wready(up_wready),
+        .o_up_bvalid(up_bvalid),
+        .o_up_bid(up_bid),
+        .o_up_bresp(up_bresp),
+        .o_up_arready(up_arready),
+        .o_up_rvalid(up_rvalid),
+        .o_up_rid(up_rid),
+        .o_up_rdata(up_rdata),
+        .o_up_rresp(up_rresp),
+        .o_up_rlast(up_rlast),
+        .o_dn_awvalid(dn_awvalid),
+        .o_dn_awid(dn_awid),
+        .o_dn_awaddr(dn_awaddr),
+        .o_dn_awlen(dn_awlen),
+        .o_dn_awsize(dn_awsize),
+        .o_dn_awburst(dn_awburst),
+        .o_dn_awlock(dn_awlock),
+        .o_dn_awcache(dn_awcache),
+        .o_dn_awprot(dn_awprot),
+        .o_dn_awqos(dn_awqos),
+        .o_dn_wvalid(dn_wvalid),
+        .o_dn_wdata(dn_wdata),
+        .o_dn_wstrb(dn_wstrb),
+        .o_dn_wlast(dn_wlast),
+        .o_dn_bready(dn_bready),
+        .o_dn_arvalid(dn_arvalid),
+        .o_dn_arid(dn_arid),
+        .o_dn_araddr(dn_araddr),
+        .o_dn_arlen(dn_arlen),
+        .o_dn_arsize(dn_arsize),
+        .o_dn_arburst(dn_arburst),
+        .o_dn_arlock(dn_arlock),
+        .o_dn_arcache(dn_arcache),
+        .o_dn_arprot(dn_arprot),
+        .o_dn_arqos(dn_arqos),
+        .o_dn_rready(dn_rready),
+        .i_dn_awready(dn_awready),
+        .i_dn_wready(dn_wready),
+        .i_dn_bvalid(dn_bvalid),
+        .i_dn_bid(dn_bid),
+        .i_dn_bresp(dn_bresp),
+        .i_dn_arready(dn_arready),
+        .i_dn_rvalid(dn_rvalid),
+        .i_dn_rid(dn_rid),
+        .i_dn_rdata(dn_rdata),
+        .i_dn_rresp(dn_rresp),
+        .i_dn_rlast(dn_rlast)
+    );
 
-    assign o_coherent_req_valid = dma_req_valid;
-    assign dma_req_ready = i_coherent_req_ready;
-    assign o_coherent_req_write = dma_req_write;
-    assign o_coherent_req_addr = dma_req_addr;
-    assign o_coherent_req_wdata = dma_req_wdata;
-    assign o_coherent_req_wstrb = dma_req_wstrb;
-    assign o_coherent_req_id = dma_req_id;
-    assign dma_resp_valid = i_coherent_resp_valid;
-    assign dma_resp_id = i_coherent_resp_id;
-    assign dma_resp_rdata = i_coherent_resp_rdata;
+    logic [DmaLineIdBits-1:0] dma_line_req_id;
+    axi_coherent_bridge #(
+        .ADDR_WIDTH(DmaAxiAddrBits),
+        .DATA_WIDTH(DmaAxiDataBits),
+        .ID_WIDTH(DmaDownIdBits),
+        .LINE_ADDR_WIDTH(riscv_pkg::PhysAddrBits),
+        .LINE_ID_BITS(DmaLineIdBits),
+        .REGION_BASE(64'(CACHED_BASE)),
+        .REGION_BYTES(CACHED_SIZE_BYTES)
+    ) dma_bridge (
+        .i_clk(i_clk),
+        .i_rst(rst_core),
+        .i_axi_awvalid(dn_awvalid),
+        .i_axi_awid(dn_awid),
+        .i_axi_awaddr(dn_awaddr),
+        .i_axi_awlen(dn_awlen),
+        .i_axi_awsize(dn_awsize),
+        .i_axi_awburst(dn_awburst),
+        .i_axi_awlock(dn_awlock),
+        .i_axi_awcache(dn_awcache),
+        .i_axi_awprot(dn_awprot),
+        .i_axi_awqos(dn_awqos),
+        .i_axi_wvalid(dn_wvalid),
+        .i_axi_wdata(dn_wdata),
+        .i_axi_wstrb(dn_wstrb),
+        .i_axi_wlast(dn_wlast),
+        .i_axi_bready(dn_bready),
+        .i_axi_arvalid(dn_arvalid),
+        .i_axi_arid(dn_arid),
+        .i_axi_araddr(dn_araddr),
+        .i_axi_arlen(dn_arlen),
+        .i_axi_arsize(dn_arsize),
+        .i_axi_arburst(dn_arburst),
+        .i_axi_arlock(dn_arlock),
+        .i_axi_arcache(dn_arcache),
+        .i_axi_arprot(dn_arprot),
+        .i_axi_arqos(dn_arqos),
+        .i_axi_rready(dn_rready),
+        .o_axi_awready(dn_awready),
+        .o_axi_wready(dn_wready),
+        .o_axi_bvalid(dn_bvalid),
+        .o_axi_bid(dn_bid),
+        .o_axi_bresp(dn_bresp),
+        .o_axi_arready(dn_arready),
+        .o_axi_rvalid(dn_rvalid),
+        .o_axi_rid(dn_rid),
+        .o_axi_rdata(dn_rdata),
+        .o_axi_rresp(dn_rresp),
+        .o_axi_rlast(dn_rlast),
+        .o_line_req_valid(o_coherent_req_valid),
+        .i_line_req_ready(i_coherent_req_ready),
+        .o_line_req_write(o_coherent_req_write),
+        .o_line_req_addr(o_coherent_req_addr),
+        .o_line_req_wdata(o_coherent_req_wdata),
+        .o_line_req_wstrb(o_coherent_req_wstrb),
+        .o_line_req_id(dma_line_req_id),
+        .i_line_resp_valid(i_coherent_resp_valid),
+        .i_line_resp_id(i_coherent_resp_id[DmaLineIdBits-1:0]),
+        .i_line_resp_rdata(i_coherent_resp_rdata),
+        .i_line_resp_error(i_coherent_resp_error)
+    );
+    assign o_coherent_req_id = LineIdBits'(dma_line_req_id);
+    /* verilator lint_off UNUSEDSIGNAL */  // the bridge's ids fill the low bits
+    logic dma_resp_id_high_unused;
+    /* verilator lint_on UNUSEDSIGNAL */
+    assign dma_resp_id_high_unused = |i_coherent_resp_id[LineIdBits-1:DmaLineIdBits];
+
+`ifndef SYNTHESIS
+    // Protocol checks on the two masters' ports and the bridge's.
+    for (genvar g = 0; g < DmaPorts; g++) begin : gen_dma_port_check
+      axi_checker #(
+          .ADDR_WIDTH(DmaAxiAddrBits),
+          .DATA_WIDTH(DmaAxiDataBits),
+          .ID_WIDTH(DmaUpIdBits),
+          .PORT(g)
+      ) u_check (
+          .i_clk(i_clk),
+          .i_rst(rst_core),
+          .i_awvalid(up_awvalid[g]),
+          .i_awready(up_awready[g]),
+          .i_awid(up_awid[g]),
+          .i_awaddr(up_awaddr[g]),
+          .i_awlen(up_awlen[g]),
+          .i_awsize(up_awsize[g]),
+          .i_awburst(up_awburst[g]),
+          .i_awlock(up_awlock[g]),
+          .i_wvalid(up_wvalid[g]),
+          .i_wready(up_wready[g]),
+          .i_wdata(up_wdata[g]),
+          .i_wstrb(up_wstrb[g]),
+          .i_wlast(up_wlast[g]),
+          .i_bvalid(up_bvalid[g]),
+          .i_bready(up_bready[g]),
+          .i_bid(up_bid[g]),
+          .i_bresp(up_bresp[g]),
+          .i_arvalid(up_arvalid[g]),
+          .i_arready(up_arready[g]),
+          .i_arid(up_arid[g]),
+          .i_araddr(up_araddr[g]),
+          .i_arlen(up_arlen[g]),
+          .i_arsize(up_arsize[g]),
+          .i_arburst(up_arburst[g]),
+          .i_arlock(up_arlock[g]),
+          .i_rvalid(up_rvalid[g]),
+          .i_rready(up_rready[g]),
+          .i_rid(up_rid[g]),
+          .i_rdata(up_rdata[g]),
+          .i_rresp(up_rresp[g]),
+          .i_rlast(up_rlast[g])
+      );
+    end
+    axi_checker #(
+        .ADDR_WIDTH(DmaAxiAddrBits),
+        .DATA_WIDTH(DmaAxiDataBits),
+        .ID_WIDTH(DmaDownIdBits),
+        .PORT(DmaPorts)
+    ) u_dma_bridge_check (
+        .i_clk(i_clk),
+        .i_rst(rst_core),
+        .i_awvalid(dn_awvalid),
+        .i_awready(dn_awready),
+        .i_awid(dn_awid),
+        .i_awaddr(dn_awaddr),
+        .i_awlen(dn_awlen),
+        .i_awsize(dn_awsize),
+        .i_awburst(dn_awburst),
+        .i_awlock(dn_awlock),
+        .i_wvalid(dn_wvalid),
+        .i_wready(dn_wready),
+        .i_wdata(dn_wdata),
+        .i_wstrb(dn_wstrb),
+        .i_wlast(dn_wlast),
+        .i_bvalid(dn_bvalid),
+        .i_bready(dn_bready),
+        .i_bid(dn_bid),
+        .i_bresp(dn_bresp),
+        .i_arvalid(dn_arvalid),
+        .i_arready(dn_arready),
+        .i_arid(dn_arid),
+        .i_araddr(dn_araddr),
+        .i_arlen(dn_arlen),
+        .i_arsize(dn_arsize),
+        .i_arburst(dn_arburst),
+        .i_arlock(dn_arlock),
+        .i_rvalid(dn_rvalid),
+        .i_rready(dn_rready),
+        .i_rid(dn_rid),
+        .i_rdata(dn_rdata),
+        .i_rresp(dn_rresp),
+        .i_rlast(dn_rlast)
+    );
+`endif
   end else begin : gen_no_dma
     assign o_coherent_req_valid = 1'b0;
     assign o_coherent_req_write = 1'b0;

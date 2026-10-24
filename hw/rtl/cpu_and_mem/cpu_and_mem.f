@@ -34,6 +34,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/low_bram_fetch_presenter.sv
 $(ROOT)/hw/rtl/peripherals/aplic/aplic.sv
 $(ROOT)/hw/rtl/peripherals/imsic/imsic_decode.sv
 $(ROOT)/hw/rtl/cpu_and_mem/dma_test_engine.sv
+$(ROOT)/hw/rtl/cpu_and_mem/dma_test_engine_axi.sv
 $(ROOT)/hw/rtl/cpu_and_mem/memory_error_unit.sv
 # RISC-V debug module and JTAG DTM; requires riscv_pkg from the core.
 -f $(ROOT)/hw/rtl/cpu_and_mem/debug/debug.f

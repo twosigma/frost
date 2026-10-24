@@ -18,7 +18,12 @@
  * NIC integration across the core and MAC clock domains.
  *
  * Toward the SoC: the register window (32-bit writes and a 64-bit read pair,
- * by byte offset), one DMA line port (ids of IdBits), and a level interrupt.
+ * by byte offset), an AXI4 master for DMA, and a level interrupt. The DMA
+ * master issues single-beat bursts of one 32-byte line (AxSIZE 5, INCR) at
+ * full physical addresses, with ids of IdBits, AxCACHE 0011, AxPROT 010 and
+ * AxLOCK 0; it always accepts B and R. Its line_port_axi_bridge resets with
+ * the subsystem reset only: the RESET drain leaves it idle before the
+ * front end's reset.
  * Toward the board: the MAC clocks, the raw PMA interface, the PHY status and
  * control lines, and the PCS block lock for a board-level transceiver
  * supervisor. RAW_LOOPBACK selects whether the raw TX-to-RX loopback exists
@@ -41,7 +46,11 @@ module nic_top #(
     parameter int MAX_FRAME_BYTES = 9216,
     parameter int unsigned STARVATION_LIMIT = 8,
     parameter int unsigned RAW_LOOPBACK = 1,
-    localparam int unsigned IdBits = 2
+    // The DMA master's AXI address and id widths; addresses are zero-extended
+    // from ADDR_WIDTH and ids from IdBits.
+    parameter int unsigned DMA_AXI_ADDR_BITS = 64,
+    parameter int unsigned DMA_AXI_ID_BITS = 3,
+    localparam int unsigned IdBits = 3
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -57,18 +66,44 @@ module nic_top #(
     output logic [63:0] o_rd_pair,
     output logic        o_irq,
 
-    // DMA line port (master).
-    output logic                    o_dma_req_valid,
-    input  logic                    i_dma_req_ready,
-    output logic                    o_dma_req_write,
-    output logic [  ADDR_WIDTH-1:0] o_dma_req_addr,
-    output logic [LINE_BYTES*8-1:0] o_dma_req_wdata,
-    output logic [  LINE_BYTES-1:0] o_dma_req_wstrb,
-    output logic [      IdBits-1:0] o_dma_req_id,
-    input  logic                    i_dma_resp_valid,
-    input  logic                    i_dma_resp_error = 1'b0,
-    input  logic [      IdBits-1:0] i_dma_resp_id,
-    input  logic [LINE_BYTES*8-1:0] i_dma_resp_rdata,
+    // DMA AXI4 master.
+    output logic                         o_dma_axi_awvalid,
+    input  logic                         i_dma_axi_awready,
+    output logic [  DMA_AXI_ID_BITS-1:0] o_dma_axi_awid,
+    output logic [DMA_AXI_ADDR_BITS-1:0] o_dma_axi_awaddr,
+    output logic [                  7:0] o_dma_axi_awlen,
+    output logic [                  2:0] o_dma_axi_awsize,
+    output logic [                  1:0] o_dma_axi_awburst,
+    output logic                         o_dma_axi_awlock,
+    output logic [                  3:0] o_dma_axi_awcache,
+    output logic [                  2:0] o_dma_axi_awprot,
+    output logic [                  3:0] o_dma_axi_awqos,
+    output logic                         o_dma_axi_wvalid,
+    input  logic                         i_dma_axi_wready,
+    output logic [     LINE_BYTES*8-1:0] o_dma_axi_wdata,
+    output logic [       LINE_BYTES-1:0] o_dma_axi_wstrb,
+    output logic                         o_dma_axi_wlast,
+    input  logic                         i_dma_axi_bvalid,
+    output logic                         o_dma_axi_bready,
+    input  logic [  DMA_AXI_ID_BITS-1:0] i_dma_axi_bid,
+    input  logic [                  1:0] i_dma_axi_bresp,
+    output logic                         o_dma_axi_arvalid,
+    input  logic                         i_dma_axi_arready,
+    output logic [  DMA_AXI_ID_BITS-1:0] o_dma_axi_arid,
+    output logic [DMA_AXI_ADDR_BITS-1:0] o_dma_axi_araddr,
+    output logic [                  7:0] o_dma_axi_arlen,
+    output logic [                  2:0] o_dma_axi_arsize,
+    output logic [                  1:0] o_dma_axi_arburst,
+    output logic                         o_dma_axi_arlock,
+    output logic [                  3:0] o_dma_axi_arcache,
+    output logic [                  2:0] o_dma_axi_arprot,
+    output logic [                  3:0] o_dma_axi_arqos,
+    input  logic                         i_dma_axi_rvalid,
+    output logic                         o_dma_axi_rready,
+    input  logic [  DMA_AXI_ID_BITS-1:0] i_dma_axi_rid,
+    input  logic [     LINE_BYTES*8-1:0] i_dma_axi_rdata,
+    input  logic [                  1:0] i_dma_axi_rresp,
+    input  logic                         i_dma_axi_rlast,
 
     // MAC domains and the board.
     input  logic        i_tx_clk,
@@ -85,6 +120,11 @@ module nic_top #(
     output logic        o_rx_block_lock  // PCS block lock, synchronized to i_clk (a flop)
 );
   localparam int unsigned TagBits = 4;
+
+  initial begin
+    if (DMA_AXI_ID_BITS < IdBits) $fatal(1, "nic_top: DMA_AXI_ID_BITS must cover the 3 id bits");
+    if (DMA_AXI_ADDR_BITS < ADDR_WIDTH) $fatal(1, "nic_top: DMA_AXI_ADDR_BITS below ADDR_WIDTH");
+  end
 
   // ---- reset controller and the MAC domains -------------------------------------------
   logic reset_req, stop_dma, soft_rst, reset_busy, front_idle, wide_mode;
@@ -393,11 +433,18 @@ module nic_top #(
       .o_complete_bytes(tx_complete_bytes)
   );
 
+  // The front end's line port, carried by the AXI master below.
+  logic dma_req_valid, dma_req_ready, dma_req_write, dma_resp_valid, dma_resp_error;
+  logic [ADDR_WIDTH-1:0] dma_req_addr;
+  logic [LINE_BYTES*8-1:0] dma_req_wdata, dma_resp_rdata;
+  logic [LINE_BYTES-1:0] dma_req_wstrb;
+  logic [IdBits-1:0] dma_req_id, dma_resp_id;
+
   nic_dma_front #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .LINE_BYTES(LINE_BYTES),
-      .NUM_ENTRIES(4),
-      .SIDE_CAP(3),
+      .NUM_ENTRIES(8),
+      .SIDE_CAP(6),
       .STARVATION_LIMIT(STARVATION_LIMIT),
       .TAG_BITS(TagBits),
       .APERTURE_BASE(APERTURE_BASE),
@@ -420,16 +467,91 @@ module nic_top #(
       .o_resp_tag      (resp_tag),
       .o_resp_error    (resp_error),
       .o_resp_rdata    (resp_rdata),
-      .o_dma_req_valid (o_dma_req_valid),
-      .i_dma_req_ready (i_dma_req_ready),
-      .o_dma_req_write (o_dma_req_write),
-      .o_dma_req_addr  (o_dma_req_addr),
-      .o_dma_req_wdata (o_dma_req_wdata),
-      .o_dma_req_wstrb (o_dma_req_wstrb),
-      .o_dma_req_id    (o_dma_req_id),
-      .i_dma_resp_valid(i_dma_resp_valid),
-      .i_dma_resp_error(i_dma_resp_error),
-      .i_dma_resp_id   (i_dma_resp_id),
-      .i_dma_resp_rdata(i_dma_resp_rdata)
+      .o_dma_req_valid (dma_req_valid),
+      .i_dma_req_ready (dma_req_ready),
+      .o_dma_req_write (dma_req_write),
+      .o_dma_req_addr  (dma_req_addr),
+      .o_dma_req_wdata (dma_req_wdata),
+      .o_dma_req_wstrb (dma_req_wstrb),
+      .o_dma_req_id    (dma_req_id),
+      .i_dma_resp_valid(dma_resp_valid),
+      .i_dma_resp_error(dma_resp_error),
+      .i_dma_resp_id   (dma_resp_id),
+      .i_dma_resp_rdata(dma_resp_rdata)
   );
+
+  // ---- the DMA AXI4 master ---------------------------------------------------------------
+  logic [ADDR_WIDTH-1:0] dma_axi_awaddr, dma_axi_araddr;
+  logic [IdBits-1:0] dma_axi_awid, dma_axi_arid;
+  line_port_axi_bridge #(
+      .ADDR_WIDTH(ADDR_WIDTH),
+      .AXI_ADDR_WIDTH(ADDR_WIDTH),
+      .LINE_BYTES(LINE_BYTES),
+      .ID_BITS(IdBits),
+      .AXI_ID_BITS(IdBits),
+      .BASE_ADDR('0),
+      .RESP_ERRORS(1'b1)
+  ) u_dma_axi (
+      .i_clk         (i_clk),
+      .i_rst         (rst_q),
+      .i_axi_rst     (rst_q),
+      .i_req_valid   (dma_req_valid),
+      .o_req_ready   (dma_req_ready),
+      .i_req_write   (dma_req_write),
+      .i_req_addr    (dma_req_addr),
+      .i_req_wdata   (dma_req_wdata),
+      .i_req_wstrb   (dma_req_wstrb),
+      .i_req_id      (dma_req_id),
+      .o_resp_valid  (dma_resp_valid),
+      .o_resp_id     (dma_resp_id),
+      .o_resp_rdata  (dma_resp_rdata),
+      .o_resp_error  (dma_resp_error),
+      .o_axi_awvalid (o_dma_axi_awvalid),
+      .i_axi_awready (i_dma_axi_awready),
+      .o_axi_awid    (dma_axi_awid),
+      .o_axi_awaddr  (dma_axi_awaddr),
+      .o_axi_awlen   (o_dma_axi_awlen),
+      .o_axi_awsize  (o_dma_axi_awsize),
+      .o_axi_awburst (o_dma_axi_awburst),
+      .o_axi_wvalid  (o_dma_axi_wvalid),
+      .i_axi_wready  (i_dma_axi_wready),
+      .o_axi_wdata   (o_dma_axi_wdata),
+      .o_axi_wstrb   (o_dma_axi_wstrb),
+      .o_axi_wlast   (o_dma_axi_wlast),
+      .i_axi_bvalid  (i_dma_axi_bvalid),
+      .o_axi_bready  (o_dma_axi_bready),
+      .i_axi_bid     (IdBits'(i_dma_axi_bid)),
+      .i_axi_bresp   (i_dma_axi_bresp),
+      .o_axi_arvalid (o_dma_axi_arvalid),
+      .i_axi_arready (i_dma_axi_arready),
+      .o_axi_arid    (dma_axi_arid),
+      .o_axi_araddr  (dma_axi_araddr),
+      .o_axi_arlen   (o_dma_axi_arlen),
+      .o_axi_arsize  (o_dma_axi_arsize),
+      .o_axi_arburst (o_dma_axi_arburst),
+      .i_axi_rvalid  (i_dma_axi_rvalid),
+      .o_axi_rready  (o_dma_axi_rready),
+      .i_axi_rid     (IdBits'(i_dma_axi_rid)),
+      .i_axi_rdata   (i_dma_axi_rdata),
+      .i_axi_rresp   (i_dma_axi_rresp),
+      .i_axi_rlast   (i_dma_axi_rlast),
+      .o_rd_err_valid(),
+      .o_rd_err_resp (),
+      .o_rd_err_id   (),
+      .o_wr_err_valid(),
+      .o_wr_err_resp (),
+      .o_wr_err_id   ()
+  );
+  assign o_dma_axi_awid    = DMA_AXI_ID_BITS'(dma_axi_awid);
+  assign o_dma_axi_arid    = DMA_AXI_ID_BITS'(dma_axi_arid);
+  assign o_dma_axi_awaddr  = DMA_AXI_ADDR_BITS'(dma_axi_awaddr);
+  assign o_dma_axi_araddr  = DMA_AXI_ADDR_BITS'(dma_axi_araddr);
+  assign o_dma_axi_awlock  = 1'b0;
+  assign o_dma_axi_arlock  = 1'b0;
+  assign o_dma_axi_awcache = 4'b0011;
+  assign o_dma_axi_arcache = 4'b0011;
+  assign o_dma_axi_awprot  = 3'b010;
+  assign o_dma_axi_arprot  = 3'b010;
+  assign o_dma_axi_awqos   = 4'd0;
+  assign o_dma_axi_arqos   = 4'd0;
 endmodule : nic_top

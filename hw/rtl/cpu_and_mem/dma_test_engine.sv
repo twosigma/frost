@@ -15,7 +15,8 @@
  */
 
 /*
- * MMIO-controlled DMA master on the cache hierarchy's coherent port.
+ * MMIO-controlled DMA master on the cache hierarchy's coherent port, through
+ * dma_test_engine_axi, which carries its line requests over AXI4.
  * Data writes complete before an optional status write; the interrupt follows
  * the final write's completion.
  *
@@ -31,7 +32,12 @@
  *   0x10 LEN     transfer length in bytes (0 performs no data transfer)
  *   0x14 MODE    bit 0: 0 = copy SRC to DST, 1 = fill DST;
  *                bit 1: write STATUS_VALUE to STATUS_ADDR after the data;
- *                bit 2: raise the interrupt on completion
+ *                bit 2: raise the interrupt on completion;
+ *                bit 3 (BURST): move each line as four 8-byte AXI beats,
+ *                each a coherent line request of its own, instead of one
+ *                32-byte beat (o_burst); without concurrent stores to the
+ *                source or destination the data is the same, and status
+ *                and interrupt still follow all data writes
  *   0x18 PATTERN fill mode writes PATTERN + i to the i-th 32-bit word of the
  *                transfer (the word holding DST is word 0), so a reader can
  *                check the order in which values become visible
@@ -98,6 +104,8 @@ module dma_test_engine #(
     input  logic [ 7:0] i_rd_offset,
     output logic [63:0] o_rd_pair,
     output logic        o_irq,
+    // MODE's BURST bit of the active transfer, for the AXI adapter.
+    output logic        o_burst,
 
     // DMA line port (master).
     output logic                    o_dma_req_valid,
@@ -147,7 +155,8 @@ module dma_test_engine #(
       default: o_rd_pair = '0;
     endcase
   end
-  assign o_irq = irq_q;
+  assign o_irq   = irq_q;
+  assign o_burst = a_burst_q;
 
   // ---------------------------------------------------------------------------
   // Transfer state
@@ -173,7 +182,7 @@ module dma_test_engine #(
   // The active transfer's copy of the programming registers, taken at START.
   logic [63:0] a_dst_q, a_status_addr_q;
   logic [31:0] a_pattern_q, a_status_value_q;
-  logic a_fill_q, a_status_q, a_irq_q;
+  logic a_fill_q, a_status_q, a_irq_q, a_burst_q;
   logic mode_fill, mode_status;
   assign mode_fill   = mode_q[0];
   assign mode_status = mode_q[1];
@@ -346,6 +355,7 @@ module dma_test_engine #(
             a_fill_q         <= mode_fill;
             a_status_q       <= mode_status;
             a_irq_q          <= mode_q[2];
+            a_burst_q        <= mode_q[3];
             if (!layout_ok) begin
               error_q <= 1'b1;
               busy_q  <= 1'b0;

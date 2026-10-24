@@ -12,6 +12,18 @@ FROST enables `cpu_top.CACHE_NORMAL_MEMORY` for BRAM read caching and narrow wri
 
 A core-only reset leaves the AXI decoder running so it can drain transactions from the old CPU epoch. Fabric reset clears the decoder and its response buffers and also asserts CPU reset, so the CPU cannot retain requests that the fabric has discarded. The behavioral DDR model also takes the fabric reset and keeps its memory contents. All CDC for programming, debug transport, NIC, and board I/O is outside `cpu_top`.
 
+The NIC and the DMA test engine are AXI4 masters with 256-bit data. Each
+moves a 32-byte line per beat, except in the engine's burst mode, which uses
+four narrow beats per line ([AXI library](../lib/axi/README.md)).
+`axi_mux` joins the masters, round-robin per burst, and
+`axi_coherent_bridge` turns their bursts into line requests on `cpu_top`'s
+coherent ingress ([lib/axi](../lib/axi/README.md)). A burst outside cached
+DDR is answered DECERR and an illegal one SLVERR, without a line request. The
+NIC, the engine, the mux and the bridge reset with `rst_core`. The ingress
+resets with `o_cpu_rst`, which adds the DDR interconnect's reset, so a
+platform must assert `i_rst` whenever it holds that reset; otherwise a line
+request the ingress drops would leave the NIC or the engine waiting.
+
 Coherent read errors propagate to the NIC's failed-descriptor path.
 The DMA test engine aborts a failed transfer, drains its accepted response,
 sets ERROR instead of DONE, and does not write success status. Board DDR

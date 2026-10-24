@@ -14,7 +14,8 @@
 
 """Test nic_top across core, TX, and RX clocks.
 
-The DMA memory model reorders responses. Register accesses match the SoC:
+The DMA memory model answers the NIC's AXI4 master, reordering responses
+across ids. Register accesses match the SoC:
 32-bit write lanes and 64-bit read pairs selected by offset. Frames use
 nic_mac_wrap's raw loopback or the independent net10g 64b/66b wire model.
 
@@ -29,11 +30,12 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, RisingEdge, Timer
+from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge, Timer
 
 from cocotb_tests.nic.dma_model import (
     DD,
     EOP,
+    ERR,
     SOP,
     Memory,
     desc_status,
@@ -76,6 +78,7 @@ CNT_RX_MAC_OVERFLOW, CNT_RX_MAC_BAD_FRAME, CNT_RX_MAC_BAD_FCS = 10, 11, 12
 RX_RING, TX_RING = 0x8010_0000, 0x8011_0000
 RX_SIZE_LOG2, TX_SIZE_LOG2 = 4, 4
 RX_BUF, TX_BUF = 0x8020_0000, 0x8030_0000
+SLVERR = 2
 STATION = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
 OTHER = bytes([0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE])
 BROADCAST = bytes([0xFF] * 6)
@@ -94,63 +97,128 @@ def _raw_loopback_built() -> bool:
 RAW_LOOPBACK = _raw_loopback_built()
 
 
-class _LinePort:
-    """The coherent DMA port: a memory, random acceptance gaps, reordered responses."""
+class _AxiPort:
+    """The NIC's DMA AXI4 master's slave: a memory, gaps, reordered responses.
+
+    Like the coherent port behind the bridge it holds at most three requests
+    at once. It answers each single-beat line burst after 2 to 10 cycles, in
+    any order across ids, and checks the burst forms the NIC must use. A
+    burst to a line in one of error_ranges ([start, end) pairs) is answered
+    SLVERR: a failed read returns zeros and a failed write leaves memory
+    unchanged.
+    """
 
     def __init__(self, dut: Any, mem: Memory, seed: int) -> None:
         self.dut = dut
         self.mem = mem
         self.rng = random.Random(seed)
-        self.pending: list[list[Any]] = []
+        self.pending: list[list[Any]] = []  # [cycles left, "b" or "r", id, rdata]
         self.requests = 0
         self.writes = 0
         self.seen_addrs: list[int] = []
+        self.error_ranges: list[tuple[int, int]] = []
+        self._aw: list[tuple[int, int]] = []  # accepted AWs waiting for W: (id, addr)
+        self._b: list[Any] | None = None
+        self._r: list[Any] | None = None
         self._task = cocotb.start_soon(self._run())
+
+    def _fails(self, addr: int) -> bool:
+        return any(start <= addr < end for start, end in self.error_ranges)
+
+    def _check_form(self, addr: int, length: int, size: int, burst: int) -> None:
+        dut = self.dut
+        base = int(dut.APERTURE_BASE.value)
+        assert base <= addr < base + int(dut.APERTURE_BYTES.value), (
+            f"request outside the aperture: {addr:#x}"
+        )
+        assert addr % LINE == 0 and length == 0 and size == 5 and burst == 1, (
+            f"not a single-beat line burst: {addr:#x} len {length} size {size} burst {burst}"
+        )
 
     async def _run(self) -> None:
         dut = self.dut
-        dut.i_dma_req_ready.value = 0
-        dut.i_dma_resp_valid.value = 0
+        for sig in (dut.i_dma_axi_awready, dut.i_dma_axi_wready, dut.i_dma_axi_arready):
+            sig.value = 0
+        dut.i_dma_axi_bvalid.value = 0
+        dut.i_dma_axi_rvalid.value = 0
         while True:
             await FallingEdge(dut.i_clk)
-            dut.i_dma_resp_valid.value = 0
-            ready_ones = [p for p in self.pending if p[0] <= 0]
-            if ready_ones:
-                p = self.rng.choice(ready_ones)
-                self.pending.remove(p)
-                dut.i_dma_resp_valid.value = 1
-                dut.i_dma_resp_id.value = p[1]
-                dut.i_dma_resp_rdata.value = p[2]
-            for p in self.pending:
-                p[0] -= 1
-            if (
-                int(dut.o_dma_req_valid.value) == 1
-                and len(self.pending) < 3
-                and self.rng.random() >= 0.15
-            ):
-                dut.i_dma_req_ready.value = 1
-                addr = int(dut.o_dma_req_addr.value)
-                assert (
-                    int(dut.APERTURE_BASE.value)
-                    <= addr
-                    < (int(dut.APERTURE_BASE.value) + int(dut.APERTURE_BYTES.value))
-                ), f"request outside the aperture: {addr:#x}"
-                rid = int(dut.o_dma_req_id.value)
-                rdata = 0
-                if int(dut.o_dma_req_write.value):
-                    self.writes += 1
-                    wdata = int(dut.o_dma_req_wdata.value)
-                    wstrb = int(dut.o_dma_req_wstrb.value)
-                    for b in range(LINE):
-                        if (wstrb >> b) & 1:
-                            self.mem.write(addr + b, (wdata >> (8 * b)) & 0xFF)
-                else:
-                    rdata = self.mem.read_line(addr)
+            rng = self.rng
+            for entry in self.pending:
+                entry[0] -= 1
+            for kind in ("b", "r"):
+                if getattr(self, "_" + kind) is None:
+                    due = [e for e in self.pending if e[0] <= 0 and e[1] == kind]
+                    if due:
+                        entry = rng.choice(due)
+                        self.pending.remove(entry)
+                        setattr(self, "_" + kind, entry)
+            dut.i_dma_axi_bvalid.value = int(self._b is not None)
+            if self._b is not None:
+                dut.i_dma_axi_bid.value = self._b[2]
+                dut.i_dma_axi_bresp.value = self._b[3]
+            dut.i_dma_axi_rvalid.value = int(self._r is not None)
+            if self._r is not None:
+                dut.i_dma_axi_rid.value = self._r[2]
+                dut.i_dma_axi_rdata.value = self._r[3]
+                dut.i_dma_axi_rresp.value = self._r[4]
+                dut.i_dma_axi_rlast.value = 1
+            room = len(self.pending) + len(self._aw) < 3
+            awready = room and rng.random() >= 0.15
+            arready = room and not awready and rng.random() >= 0.15
+            dut.i_dma_axi_awready.value = int(awready)
+            dut.i_dma_axi_arready.value = int(arready)
+            dut.i_dma_axi_wready.value = int(bool(self._aw) and rng.random() >= 0.15)
+            await ReadOnly()
+            if self._b is not None and int(dut.o_dma_axi_bready.value):
+                self._b = None
+            if self._r is not None and int(dut.o_dma_axi_rready.value):
+                self._r = None
+            if awready and int(dut.o_dma_axi_awvalid.value):
+                addr = int(dut.o_dma_axi_awaddr.value)
+                self._check_form(
+                    addr,
+                    int(dut.o_dma_axi_awlen.value),
+                    int(dut.o_dma_axi_awsize.value),
+                    int(dut.o_dma_axi_awburst.value),
+                )
+                self._aw.append((int(dut.o_dma_axi_awid.value), addr))
+            if int(dut.i_dma_axi_wready.value) and int(dut.o_dma_axi_wvalid.value):
+                wid, addr = self._aw.pop(0)
+                assert int(dut.o_dma_axi_wlast.value) == 1
+                wdata = int(dut.o_dma_axi_wdata.value)
+                wstrb = int(dut.o_dma_axi_wstrb.value)
+                fails = self._fails(addr)
+                for b in range(LINE):
+                    if (wstrb >> b) & 1 and not fails:
+                        self.mem.write(addr + b, (wdata >> (8 * b)) & 0xFF)
+                self.writes += 1
                 self.requests += 1
                 self.seen_addrs.append(addr)
-                self.pending.append([self.rng.randint(2, 10), rid, rdata])
-            else:
-                dut.i_dma_req_ready.value = 0
+                self.pending.append(
+                    [rng.randint(2, 10), "b", wid, SLVERR if fails else 0]
+                )
+            if arready and int(dut.o_dma_axi_arvalid.value):
+                addr = int(dut.o_dma_axi_araddr.value)
+                self._check_form(
+                    addr,
+                    int(dut.o_dma_axi_arlen.value),
+                    int(dut.o_dma_axi_arsize.value),
+                    int(dut.o_dma_axi_arburst.value),
+                )
+                self.requests += 1
+                self.seen_addrs.append(addr)
+                resp = SLVERR if self._fails(addr) else 0
+                rdata = 0 if resp else self.mem.read_line(addr)
+                self.pending.append(
+                    [
+                        rng.randint(2, 10),
+                        "r",
+                        int(dut.o_dma_axi_arid.value),
+                        rdata,
+                        resp,
+                    ]
+                )
 
     def stop(self) -> None:
         self._task.cancel()
@@ -233,7 +301,7 @@ class _Nic:
         self.dut = dut
         self.rng = random.Random(seed)
         self.mem = Memory()
-        self.port = _LinePort(dut, self.mem, seed + 1)
+        self.port = _AxiPort(dut, self.mem, seed + 1)
         self.wire = _Wire(dut)
         self.rx_posted = 0
         self.tx_posted = 0
@@ -391,10 +459,11 @@ async def _start(
         dut.i_wr64_en,
         dut.i_wr64_data,
         dut.i_rd_offset,
-        dut.i_dma_req_ready,
-        dut.i_dma_resp_valid,
-        dut.i_dma_resp_id,
-        dut.i_dma_resp_rdata,
+        dut.i_dma_axi_awready,
+        dut.i_dma_axi_wready,
+        dut.i_dma_axi_arready,
+        dut.i_dma_axi_bvalid,
+        dut.i_dma_axi_rvalid,
         dut.i_rx_raw_data,
         dut.i_rx_raw_valid,
     ):
@@ -423,7 +492,7 @@ async def _start(
 @cocotb.test()
 async def test_extended_address_descriptor(dut: Any) -> None:
     """A versioned TX descriptor above 4 GiB must not alias its low 32 bits."""
-    if len(dut.o_dma_req_addr) < 37:
+    if int(dut.ADDR_WIDTH.value) < 37:
         return
     assert int(dut.APERTURE_BYTES.value) == 1 << 36
     nic = await _start(dut, seed=6810, loopback=True)
@@ -454,7 +523,7 @@ async def test_extended_address_descriptor(dut: Any) -> None:
         assert any(a >= 0x1_0000_0000 for a in nic.port.seen_addrs)
         # A descriptor with a set bit above the configured PA width must
         # complete with ERR and never fetch the matching low-address buffer.
-        invalid = (1 << len(dut.o_dma_req_addr)) | (buf & 0xFFFF_FFFF)
+        invalid = (1 << int(dut.ADDR_WIDTH.value)) | (buf & 0xFFFF_FFFF)
         post_desc64(nic.mem, ring, 1, invalid, len(frame) | SOP | EOP)
         before = list(nic.port.seen_addrs)
         await nic.wr(TX_TAIL, 2)
@@ -674,6 +743,46 @@ async def test_wire_rx_filter_and_tx_capture(dut: Any) -> None:
             break
     assert nic.wire.frames == [out]
     assert desc_status(nic.mem, TX_RING, idx) == DD
+    nic.stop()
+
+
+@cocotb.skipif(not RAW_LOOPBACK, reason="needs the raw loopback")
+@cocotb.test()
+async def test_dma_error_responses(dut: Any) -> None:
+    """SLVERR on a buffer read or write fails the descriptor it serves.
+
+    A TX frame whose buffer reads fail still leaves with the zeros those reads
+    returned, so its destination address is filtered; the frames around the
+    failures are delivered intact.
+    """
+    nic = await _start(dut, 6, loopback=True)
+    await nic.program_rings()
+    await nic.post_rx(4)
+    await nic.wr(CTRL, CTRL_RX_EN | CTRL_TX_EN)
+    await nic.wait_carrier()
+    # TX descriptor 1's buffer reads fail.
+    nic.port.error_ranges.append((TX_BUF + 0x4000, TX_BUF + 0x8000))
+    frames = [nic.frame(n) for n in (100, 200, 300)]
+    for f in frames:
+        await nic.send_tx(f)
+    statuses = [await nic.wait_dd(TX_RING, i) for i in range(3)]
+    assert statuses == [DD, DD | ERR, DD], [hex(s) for s in statuses]
+    for i, f in enumerate((frames[0], frames[2])):
+        assert await nic.wait_dd(RX_RING, i) == DD | len(f)
+        assert nic.rx_frame(i) == f, f"RX frame {i} differs"
+    # RX descriptor 2's buffer writes fail.
+    nic.port.error_ranges = [(RX_BUF + 0x8000, RX_BUF + 0xC000)]
+    more = [nic.frame(n) for n in (400, 500)]
+    for f in more:
+        await nic.send_tx(f)
+    s = await nic.wait_dd(RX_RING, 2)
+    assert s & (DD | ERR) == DD | ERR, hex(s)
+    assert await nic.wait_dd(RX_RING, 3) == DD | len(more[1])
+    assert nic.rx_frame(3) == more[1]
+    assert (
+        desc_status(nic.mem, TX_RING, 3) == DD
+        and desc_status(nic.mem, TX_RING, 4) == DD
+    )
     nic.stop()
 
 

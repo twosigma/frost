@@ -1,7 +1,8 @@
 # AXI library
 
-AXI4 blocks for the masters that reach cached memory without a CPU, such as
-DMA engines and NICs. `axi_mux` joins the masters and `axi_coherent_bridge` turns their bursts
+AXI4 blocks for the masters that reach cached memory without a CPU: the NIC
+and the DMA test engine in `soc_top`, and later any block with an AXI4 master
+port. `axi_mux` joins the masters and `axi_coherent_bridge` turns their bursts
 into requests on `cpu_top`'s coherent ingress, so their reads see data still
 dirty in the L1D and their writes update or invalidate the CPU's cached
 copies.
@@ -12,6 +13,28 @@ copies.
 | `axi_mux.sv` | N AXI4 slave ports onto one AXI4 master port, round-robin per burst, with the port index prefixed to ids |
 | `axi_checker.sv` | Simulation-only protocol monitor for one AXI4 interface |
 | `axi_mux_test_harness.sv` | cocotb top: `axi_mux` with three ports, each named separately |
+
+In `soc_top` and the TestRIG platform:
+
+```
+nic_top (line_port_axi_bridge inside) --+
+                                        +-- axi_mux -- axi_coherent_bridge -- coherent ingress
+dma_test_engine_axi ---------------------+
+```
+
+The bus is 256 bits. The NIC moves one 32-byte beat per line. The engine
+does the same or, with `MODE.BURST` set, moves each line as four 8-byte
+beats: a WRAP read starting at dword (line index mod 4) and an INCR write.
+The bridge makes each narrow beat a line request of its own, skipping write
+beats with no strobes, so a CPU store can land between two beats of one
+line. A line copied in burst mode can then mix older and newer source data,
+and its destination changes a beat at a time. Without concurrent stores to
+either region both modes produce the same data, and in both the data writes
+complete before the optional status write and interrupt.
+
+The NIC is port 0 and the engine port 1; their 3-bit ids reach the bridge as
+4-bit ids. An `axi_checker` watches each port and the bridge's slave port
+in simulation.
 
 ## axi_coherent_bridge
 
@@ -57,7 +80,9 @@ next cycle; each segment occupies the line port for one cycle.
 
 `i_rst` is synchronous, and while it is asserted every VALID and READY is
 low. The bridge resets with its AXI masters, and each reset of the ingress,
-which drops the requests it holds, must overlap one of the bridge.
+which drops the requests it holds, must overlap one of the bridge. In
+`soc_top` the masters, the mux and the bridge reset with `rst_core`, and the
+ingress's reset includes it.
 
 ## axi_mux
 
@@ -100,4 +125,7 @@ AW-grant order, and B and R reaching the port their id names); see the
 ordering, no duplicate responses and conservation of outstanding requests;
 they do not establish eventual completion or starvation freedom. The three
 bridge cocotb benches and the mux bench check completion with timeouts,
-including reads under sustained writes in the bridge.
+including reads under sustained writes in the bridge. The whole-system programs
+`dma_torture`, `nic_loopback`, `nic_echo` and the `pa_dma_test` and
+`pa_nic_packet_test` families run the NIC and the engine through the bridge
+in both memory configurations.

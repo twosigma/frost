@@ -1,6 +1,6 @@
-# NIC: the net10g MAC/PCS on the coherent DMA port. Depends on the library
-# file lists (cdc.f, fifo.f, ram.f) and net10g.f; the reset bench harness is
-# listed by tests/Makefile only.
+# NIC: the net10g MAC/PCS with an AXI4 DMA master. Depends on the library
+# file lists (cdc.f, fifo.f, ram.f), net10g.f, and line_port_axi_bridge from
+# cache.f; the reset bench harness is listed by tests/Makefile only.
 
 $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_irq.sv

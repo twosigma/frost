@@ -279,15 +279,16 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   the NIC's registers, descriptors, driver, and coherent DMA, and its QSFP
   ports could add 10 and 40 Gb/s later. Contributors with the board would run
   its hardware tests.
-- A PCIe Gen3 x4 root complex between the 64-bit AXI interconnect and PIPE,
-  the PHY interface that ASIC PCIe PHYs also use, with a small wrapper for
-  the FPGA's transceivers, so that Linux finds NVMe drives and other devices
-  with its standard drivers. The X3's PCIe lanes go to its host connector,
-  where FROST is the device rather than the root, so hardware tests of the
-  root complex need a board with a downstream slot or connector. Its
+- A PCIe Gen3 x4 root complex between `soc_top` and PIPE, the PHY interface
+  that ASIC PCIe PHYs also use, with a small wrapper for the FPGA's
+  transceivers, so that Linux finds NVMe drives and other devices with its
+  standard drivers. The X3's PCIe lanes go to its host connector, where
+  FROST is the device rather than the root, so hardware tests of the root
+  complex need a board with a downstream slot or connector. Its
   configuration space and device memory windows would sit in `soc_top`'s
-  device decode, and the devices' DMA would enter `cpu_top`'s coherent
-  ingress through the arbiter that the NIC and the DMA engine share.
+  device decode, and the devices' DMA would be another master on the AXI4
+  mux that carries the NIC's and the DMA engine's DMA into `cpu_top`'s
+  coherent ingress.
 - Storage beyond the NFS root: NVMe drives through the root complex, a block
   device that the host serves through the X3's PCIe Gen4 x8 host interface
   with FROST as the endpoint, or iSCSI with ext4. NFS is the supported root
