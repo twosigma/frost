@@ -631,6 +631,7 @@ def test_coverage_runs_rebuild_and_write_a_file_each(
     monkeypatch.delenv("FROST_COCOTB_MEM_CONFIG", raising=False)
     monkeypatch.delenv("FROST_COVERAGE_FILE", raising=False)
     monkeypatch.delenv("FROST_COVERAGE", raising=False)
+    monkeypatch.delenv("FROST_COVERAGE_TOGGLE", raising=False)
     monkeypatch.setenv("FROST_COVERAGE_DIR", str(tmp_path / "coverage"))
     runner = test_run_cocotb.CocotbRunner.for_test("dma_torture")
     plain_signature = runner._verilator_build_signature()
@@ -639,6 +640,11 @@ def test_coverage_runs_rebuild_and_write_a_file_each(
     monkeypatch.setenv("FROST_COVERAGE", "1")
     assert "FROST_COVERAGE=1" in runner._verilator_build_signature()
     assert runner._verilator_build_signature() != plain_signature
+    signatures = set()
+    for mode in ("0", "1", "control"):
+        monkeypatch.setenv("FROST_COVERAGE_TOGGLE", mode)
+        signatures.add(runner._verilator_build_signature())
+    assert len(signatures) == 3
     first = Path(runner.setup_environment()["FROST_COVERAGE_FILE"])
     assert first == tmp_path / "coverage" / "dma_torture_bram.dat"
     first.write_text("written by the first run")

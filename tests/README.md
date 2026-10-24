@@ -323,7 +323,7 @@ which have 90 minutes each. `--verbose` prints solver output.
 | `FROST_DDR_MODEL_SEED` | Draws the DDR model's latency (1 to 80 cycles), latency jitter, and out-of-order completion for whole-SoC builds from this string, and prints the draw. A setting the target pins, in its registry entry, in `FROST_VERILATOR_EXTRA_ARGS`, or with `DDR_MODEL_LATENCY`, keeps its value |
 | `WAVES=1` | Write `dump.fst` waveforms |
 | `FROST_COVERAGE=1` | Build with line coverage and the cover points (see [Coverage](#coverage)) |
-| `FROST_COVERAGE_TOGGLE=1` | With `FROST_COVERAGE=1`, add toggle coverage |
+| `FROST_COVERAGE_TOGGLE` | With `FROST_COVERAGE=1`: `0` disables toggle coverage, `1` collects the default set, and `control` selects control signals |
 | `FROST_COVERAGE_DIR` | Where each run writes its coverage file (default `tests/coverage`; a relative path starts at the repository root) |
 | `NUMBER_OF_CPU_CORES` | Parallel Verilator build jobs (default: every core; a seed sweep divides them among its workers) |
 | `COCOTB_MAX_CYCLES` | Cycle budget per application run (default 500,000); some targets set their own |
@@ -349,15 +349,30 @@ an extended limit, then set its budget with headroom.
 `FROST_COVERAGE=1` builds each simulation with Verilator line coverage, which
 counts statement blocks and the arms of every `if` and `case`, and with the
 [cover points](#cover-points) in the RTL. `FROST_COVERAGE_TOGGLE=1` adds
-toggle coverage, which counts each bit's rises and falls. The runners above
-and TestRIG all take the switches. Each run writes a file named after its test
-to `tests/coverage/`, or to `FROST_COVERAGE_DIR`, and the files collect there
-until you delete them: the clean step of the `cocotb` and `pytest` shortcuts
-leaves them. `coverage_report.py` merges them into a report:
+toggle coverage, which counts each bit's rises and falls, for every signal
+of at most 256 bits, Verilator's default limit, counting the elements of
+unpacked arrays. `FROST_COVERAGE_TOGGLE=control` limits it to control
+signals of at most 8 bits: scalar ports and scalar registers written by
+nonblocking assignments whose names match the patterns in
+[coverage_toggle.json](coverage_toggle.json), and enum state registers. It
+leaves out clocks, formal, debug, reference and coverage bookkeeping, and
+`hw/sim/`, as well as data buses, memories, counters and combinational
+temporaries. Other declarations on a source line with a selected signal or
+a covered statement are included too, within the same limit. To select
+them, `coverage_toggle.py` elaborates the design and writes a Verilator
+configuration file, `coverage_control.vlt`, into the simulation build
+directory. Neither toggle setting changes line coverage or the cover
+points.
+
+The runners above and TestRIG all take the switches. Each run writes a file
+named after its test to `tests/coverage/`, or to `FROST_COVERAGE_DIR`, and
+the files collect there until you delete them: the clean step of the
+`cocotb` and `pytest` shortcuts leaves them. `coverage_report.py` merges
+them into a report:
 
 ```bash
-FROST_COVERAGE=1 ./scripts/frost.py cocotb load_queue
-FROST_COVERAGE=1 ./scripts/frost.py pytest -k '[dma_torture] or [nic_loopback]'
+FROST_COVERAGE=1 FROST_COVERAGE_TOGGLE=1 ./scripts/frost.py cocotb load_queue
+FROST_COVERAGE=1 FROST_COVERAGE_TOGGLE=control ./scripts/frost.py pytest -k '[dma_torture] or [nic_loopback]'
 FROST_COVERAGE=1 ./scripts/frost.py run python3 tests/test_testrig.py --tests 20
 ./scripts/frost.py run python3 tests/coverage_report.py report tests/coverage
 ```
@@ -370,6 +385,12 @@ line, branch, and toggle coverage, and every cover point with its hits, in
 all runs and in whole-SoC runs (the programs, the ISA suites, and TestRIG),
 naming the cover points that no run hits and those that only unit benches
 hit. A module's figures combine every parameter set it was built with.
+A toggle point is one direction of one bit. The report counts each point
+once, adding its hits across runs, and its whole-SoC toggle figures use
+only the points that whole-SoC builds collected. A point that a run
+collected but never hit is uncovered, and a point that no run collected is
+left out of the total, so whole-SoC figures from the control set cover
+control signals only.
 `--annotate` also writes copies of the sources with each line's count.
 `merge` combines files without the report:
 
@@ -385,6 +406,9 @@ SoC, compiled with four jobs:
 | Without coverage | 55 s | 6.9 s | |
 | `FROST_COVERAGE=1` | 100 s | 9.1 s | 3.8 MB |
 | `FROST_COVERAGE=1 FROST_COVERAGE_TOGGLE=1` | 115 s | 39.7 s | 160 MB |
+
+With `FROST_COVERAGE_TOGGLE=control`, CoreMark simulates about a quarter
+slower than with `FROST_COVERAGE=1` alone.
 
 ### Cover points
 
@@ -515,8 +539,9 @@ workloads, the F and D architecture-test jobs, and the riscv-tests
 benchmarks: long runs of compute code, which line coverage would slow by about
 a third while adding little that the other jobs miss. The unit-bench job also
 sets `FROST_COVERAGE_TOGGLE=1`. Toggle coverage stays out of the whole-SoC
-jobs, which it would slow about sixfold. Each job merges its files into a
-`coverage-job-*` artifact, and the Coverage Report job merges those into the
+jobs, which the full set would slow about sixfold, and the control set is
+for local runs. Each job merges its files into a `coverage-job-*` artifact,
+and the Coverage Report job merges those into the
 `coverage-report` artifact (the [report](#coverage) with annotated sources)
 and shows its summary on the job's page, after the other jobs finish, failed
 ones included.

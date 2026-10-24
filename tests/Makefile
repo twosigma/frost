@@ -24,6 +24,7 @@ COCOTB_TEST_MODULES ?= cocotb_tests.test_directed_traps
 # Git repository root (with fallback for Docker/non-git contexts)
 ROOT            ?= $(shell git rev-parse --show-toplevel 2>/dev/null || echo /workspace)
 WAVES           ?= 0
+SIM_BUILD       ?= sim_build
 
 export TOPLEVEL COCOTB_TEST_MODULES TOPLEVEL_LANG SIM ROOT
 
@@ -565,8 +566,10 @@ endif
 
 # Coverage (tests/README.md). FROST_COVERAGE=1 builds with line coverage
 # (statement blocks and branches) and the cover points of the RTL, which only
-# a build that defines FROST_COVERAGE compiles; FROST_COVERAGE_TOGGLE=1 adds
-# toggle coverage, which makes whole-SoC simulations about six times slower.
+# a build that defines FROST_COVERAGE compiles. FROST_COVERAGE_TOGGLE=1 uses
+# Verilator's default toggle set. The control value selects scalar control
+# ports and registers and enum state through coverage_toggle.json and a
+# generated declaration filter, without changing line or user coverage.
 # The simulation writes its coverage to FROST_COVERAGE_FILE, which
 # test_run_cocotb.py sets for each run, or to coverage.dat in this directory.
 FROST_COVERAGE ?= 0
@@ -575,6 +578,14 @@ ifeq ($(FROST_COVERAGE),1)
 	EXTRA_ARGS += --coverage-line --coverage-user +define+FROST_COVERAGE
 ifeq ($(FROST_COVERAGE_TOGGLE),1)
 	EXTRA_ARGS += --coverage-toggle
+else ifeq ($(FROST_COVERAGE_TOGGLE),control)
+	EXTRA_ARGS += --coverage-toggle --coverage-max-width $(shell python3 $(ROOT)/tests/coverage_toggle.py width)
+	TOGGLE_CONFIG := $(SIM_BUILD)/coverage_control.vlt
+	TOGGLE_SCAN := $(SIM_BUILD)/coverage_scan
+	COMPILE_ARGS := $(TOGGLE_CONFIG) $(COMPILE_ARGS)
+	CUSTOM_COMPILE_DEPS += $(TOGGLE_CONFIG)
+else ifneq ($(FROST_COVERAGE_TOGGLE),0)
+$(error FROST_COVERAGE_TOGGLE must be 0, 1, or control)
 endif
 ifneq ($(strip $(FROST_COVERAGE_FILE)),)
 	SIM_ARGS += +verilator+coverage+file+$(FROST_COVERAGE_FILE)
@@ -613,6 +624,19 @@ ifeq ($(TOPLEVEL),reorder_buffer)
 endif
 
 include $(shell cocotb-config --makefiles)/Makefile.sim
+
+ifneq ($(TOGGLE_CONFIG),)
+# The elaborated tree supplies declaration locations, types, and register
+# writes. The filter protects executable coverage, including initializers
+# that span several lines. Verilator's dependencies track the source files
+# and nested file lists so edits also regenerate the declaration filter.
+$(TOGGLE_CONFIG): $(ROOT)/tests/coverage_toggle.py $(ROOT)/tests/coverage_toggle.json $(VERILOG_SOURCES) | $(SIM_BUILD)
+	@mkdir -p $(TOGGLE_SCAN)
+	$(CMD) --json-only --MMD --MP -Mdir $(TOGGLE_SCAN) $(TOPMODULE_ARG) $(filter-out $(TOGGLE_CONFIG),$(COMPILE_ARGS)) $(EXTRA_ARGS) $(VERILOG_SOURCES) --json-only-output $(TOGGLE_SCAN)/tree.json --json-only-meta-output $(TOGGLE_SCAN)/meta.json
+	python3 $(ROOT)/tests/coverage_toggle.py generate $(TOGGLE_SCAN)/tree.json $(TOGGLE_SCAN)/meta.json $@ --dependencies $(TOGGLE_SCAN)/Vtop__ver.d
+
+-include $(TOGGLE_CONFIG).d
+endif
 
 # Cocotb makes cleanup and regression sibling prerequisites. Under parallel
 # make, stale XML can suppress execution. Require cleanup before the result

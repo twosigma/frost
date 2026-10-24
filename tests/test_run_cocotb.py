@@ -92,8 +92,9 @@ MAKEFILE_BUILD_VARIABLES = (
 )
 
 # FROST_COVERAGE=1 builds simulations with line coverage and the cover points,
-# and FROST_COVERAGE_TOGGLE=1 adds toggle coverage (tests/Makefile). Each run
-# writes its own file, named after the test, to FROST_COVERAGE_DIR
+# and FROST_COVERAGE_TOGGLE selects full or control toggle coverage
+# (tests/Makefile). Each run writes its own file, named after the test, to
+# FROST_COVERAGE_DIR
 # (tests/coverage by default; a relative path is taken from the repository
 # root). tests/coverage_report.py merges and summarizes the files.
 COVERAGE_VARIABLE = "FROST_COVERAGE"

@@ -130,10 +130,10 @@ failing test's output names. CI merges the line coverage of those
 simulations, the toggle coverage of the unit benches, and the counts of
 cover points for microarchitectural corner cases, such as a DMA write to a
 line that an executed, unretired load has read, into one
-[report](tests/README.md#coverage) of what the tests reach.
-
-Toggle coverage of the whole-SoC runs remains: Verilator's slows them about
-sixfold, so they need a cheaper form first.
+[report](tests/README.md#coverage) of what the tests reach. Local runs can
+add toggle coverage of control signals to the whole-SoC simulations, which
+slows them by about a quarter where full toggle coverage slows them about
+sixfold.
 
 ## ASIC-ready RTL
 
