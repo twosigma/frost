@@ -10,7 +10,7 @@ The FROST performance model provides an ultra-fast (>100x trace replay, >7,000x 
 
 Key objectives:
 1. **Zero Intrusion**: Probes monitor RTL simulation state without perturbing DUT timing, changing clocking, or altering synthesizable RTL (`hw/rtl/`).
-2. **Deterministic & Reproducible**: Every benchmark run records full provenance (`manifest.json` with commit SHA, binary checksums, compiler flags, seeds, and execution wall-time).
+2. **Deterministic & Reproducible**: Every benchmark run records full provenance (`manifest.json` with commit SHA, binary checksums, compiler version, DDR model seed, and execution wall-time).
 3. **Structured Trace Contract**: Simulation events are emitted as JSONL records adhering to a strict schema (`calibration/trace_schema.json`), validated automatically by `calibration/trace_contract.py`.
 
 ---
@@ -99,7 +99,7 @@ The script:
 ## 5. Directory Structure & Deliverables
 
 Every calibrated benchmark directory in `perf-modeling/results/<benchmark>/` contains:
-- `manifest.json`: Toolchain versions, binary SHA256 hashes, command-line arguments, hardware clock, timed cycle window, and wall-clock execution time.
+- `manifest.json`: Toolchain versions, binary SHA256 hashes, memory tier and DDR model settings, simulated clock, timed cycle window, and wall-clock execution time. The commit comes from `FROST_GIT_COMMIT`, or from git when it is unset; the compiler version comes from the program's ELF, the tool versions from cocotb and the simulator, and the clock from the bench's clock period.
 - `<benchmark>_timed.jsonl`: Cycle-accurate JSONL event trace captured during the timed benchmark region.
 - `pipeline_counters.json`: Cycle and uop counts, IPC, dispatch/commit distributions, and AXI transaction totals directly measured from RTL.
 - `calibration.json`: Output from `run_calibration.py` comparing RTL vs. performance model.

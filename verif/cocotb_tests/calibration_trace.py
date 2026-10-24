@@ -22,14 +22,23 @@ defaults to its timed region. FROST_CALIBRATION_COUNTERS_PATH and
 FROST_CALIBRATION_MANIFEST_PATH name optional files for the window's pipeline
 counters and the run's manifest. perf-modeling/README.md describes the trace
 format.
+
+The trace and the manifest record the commit from FROST_GIT_COMMIT, or else
+from git. The manifest takes the tool versions from cocotb and the simulator,
+the compiler from the program's ELF, the clock from the bench's clock period,
+and the memory tier and DDR model settings from the environment that the
+runner gives the simulation.
 """
 
 import hashlib
 import json
 import os
 import re
+import struct
+import subprocess
 import time
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -42,6 +51,14 @@ CORE_PATH = f"{CPU_TOP_PATH}.hart.cpu_inst"
 COMMIT_MISPREDICTION_PATH = (
     f"{CORE_PATH}.misprediction_flush_controller_inst.commit_is_misprediction"
 )
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+# The DDR model settings that tests/Makefile and frost.sv give a run that
+# does not set them.
+DDR_MODEL_DEFAULTS = {
+    "DDR_MODEL_LATENCY": 30,
+    "DDR_MODEL_LATENCY_JITTER": 0,
+    "DDR_MODEL_REORDER": 0,
+}
 
 
 def _signal(dut: Any, path: str) -> Any | None:
@@ -64,6 +81,95 @@ def _read(handle: Any | None) -> int | None:
         return None
 
 
+def git_commit() -> str:
+    """Return FROST_GIT_COMMIT, else the checkout's HEAD, else "unknown"."""
+    commit = os.environ.get("FROST_GIT_COMMIT", "").strip()
+    if commit:
+        return commit
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(REPOSITORY_ROOT), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    head = result.stdout.strip()
+    return head if result.returncode == 0 and head else "unknown"
+
+
+def program_directory(app_name: str | None) -> Path | None:
+    """Return the directory of the program the run loaded, if it is known.
+
+    The runner links tests/sw.mem, the simulation's working directory's
+    sw.mem, to the program's image.
+    """
+    image = Path("sw.mem")
+    if image.is_symlink():
+        return image.resolve().parent
+    if app_name is not None and (REPOSITORY_ROOT / "sw" / "apps" / app_name).is_dir():
+        return REPOSITORY_ROOT / "sw" / "apps" / app_name
+    return None
+
+
+def elf_comment(path: Path) -> str | None:
+    """Return the first string in an ELF file's .comment section, or None.
+
+    GCC records its version there, as "GCC: (<vendor>) <version>".
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 64 or data[:4] != b"\x7fELF" or data[4] not in (1, 2):
+        return None
+    order = "<" if data[5] == 1 else ">"
+    if data[4] == 2:
+        (shoff,) = struct.unpack_from(f"{order}Q", data, 0x28)
+        shentsize, shnum, shstrndx = struct.unpack_from(f"{order}HHH", data, 0x3A)
+        section = f"{order}IIQQQQ"
+    else:
+        (shoff,) = struct.unpack_from(f"{order}I", data, 0x20)
+        shentsize, shnum, shstrndx = struct.unpack_from(f"{order}HHH", data, 0x2E)
+        section = f"{order}IIIIII"
+    try:
+        headers = [
+            struct.unpack_from(section, data, shoff + index * shentsize)
+            for index in range(shnum)
+        ]
+        names_offset = headers[shstrndx][4]
+        for name, _type, _flags, _address, offset, size in headers:
+            end = data.index(b"\0", names_offset + name)
+            if data[names_offset + name : end] == b".comment":
+                strings = data[offset : offset + size].split(b"\0")
+                text = next((item for item in strings if item), b"")
+                return text.decode("utf-8", "replace") or None
+    except (IndexError, ValueError, struct.error):
+        return None
+    return None
+
+
+def ddr_model_settings(environment: Mapping[str, str]) -> dict[str, int]:
+    """Return the DDR model's latency, jitter, and reordering for a run.
+
+    A -G argument in FROST_VERILATOR_EXTRA_ARGS sets a parameter, the last one
+    winning as in Verilator; tests/Makefile passes DDR_MODEL_LATENCY ahead of
+    those arguments. FROST_DDR_MODEL_SEED's draw reaches the simulation as
+    such arguments.
+    """
+    settings = dict(DDR_MODEL_DEFAULTS)
+    latency = environment.get("DDR_MODEL_LATENCY", "").strip()
+    if latency:
+        settings["DDR_MODEL_LATENCY"] = int(latency, 0)
+    for argument in environment.get("FROST_VERILATOR_EXTRA_ARGS", "").split():
+        match = re.fullmatch(r"-G(\w+)=(\S+)", argument)
+        if match and match.group(1) in settings:
+            settings[match.group(1)] = int(match.group(2), 0)
+    return settings
+
+
 def _field_slice(layout: list[tuple[str, int]], name: str) -> tuple[int, int]:
     """Return a packed-struct field's LSB and mask from its MSB-first layout."""
     lsb = sum(width for _, width in layout)
@@ -83,17 +189,28 @@ class CalibrationTrace:
 
     @classmethod
     def from_environment(
-        cls, dut: Any, app_name: str | None, run_number: int, num_runs: int
+        cls,
+        dut: Any,
+        *,
+        app_name: str | None,
+        run_number: int,
+        num_runs: int,
+        clock_period_ns: float,
     ) -> "CalibrationTrace | None":
         """Return the capture for this run, or None when it is off."""
         trace_path = os.environ.get("FROST_CALIBRATION_TRACE_PATH", "")
         target_run = int(os.environ.get("FROST_CALIBRATION_TARGET_RUN", str(num_runs)))
         if not trace_path or run_number != target_run:
             return None
-        return cls(dut, Path(trace_path), app_name, run_number)
+        return cls(dut, Path(trace_path), app_name, run_number, clock_period_ns)
 
     def __init__(
-        self, dut: Any, trace_path: Path, app_name: str | None, run_number: int
+        self,
+        dut: Any,
+        trace_path: Path,
+        app_name: str | None,
+        run_number: int,
+        clock_period_ns: float,
     ) -> None:
         """Bind the signals and open the trace if the window starts at once.
 
@@ -103,6 +220,7 @@ class CalibrationTrace:
         self.trace_path = trace_path
         self.app_name = app_name
         self.run_number = run_number
+        self.clock_period_ns = clock_period_ns
         self.is_coremark_like = app_name is not None and app_name.startswith("coremark")
         self.counters_path = os.environ.get("FROST_CALIBRATION_COUNTERS_PATH")
         self.manifest_path = os.environ.get("FROST_CALIBRATION_MANIFEST_PATH")
@@ -120,9 +238,7 @@ class CalibrationTrace:
             ),
             0,
         )
-        self.commit = os.environ.get(
-            "FROST_GIT_COMMIT", "411dee2224700a3d9d325a4f2df8bcbe83a9bed5"
-        )
+        self.commit = git_commit()
         self.state = "ARMED" if self.start_pc else "ACTIVE"
         self.file: TextIO | None = None
         self.timed_cycle = 0
@@ -381,19 +497,52 @@ class CalibrationTrace:
 
         if not self.manifest_path:
             return
-        app_name = self.app_name
-        app_dir = (
-            (Path("sw/apps") / app_name)
-            if (app_name and (Path("sw/apps") / app_name).exists())
-            else (Path("sw/apps/coremark") if self.is_coremark_like else Path("."))
+        manifest = self.manifest(uart_text, wall_time_s)
+        manifest_file = Path(self.manifest_path)
+        manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )
+        cocotb.log.info(f"Wrote manifest to {self.manifest_path}")
+
+    def manifest(self, uart_text: str, wall_time_s: float) -> dict[str, Any]:
+        """Return the run's manifest; a field that the run cannot tell is left out."""
+        total_timed = self.timed_cycle
+        program = program_directory(self.app_name)
         file_hashes = {}
-        for name in ("sw.bin", "sw.elf", "sw.S", "sw.mem"):
-            path = app_dir / name
-            if path.exists():
-                file_hashes[name + "_sha256"] = hashlib.sha256(
-                    path.read_bytes()
-                ).hexdigest()
+        environment = {}
+        if program is not None:
+            for name in ("sw.bin", "sw.elf", "sw.S", "sw.mem"):
+                path = program / name
+                if path.is_file():
+                    file_hashes[f"{name}_sha256"] = hashlib.sha256(
+                        path.read_bytes()
+                    ).hexdigest()
+            toolchain = elf_comment(program / "sw.elf")
+            if toolchain:
+                environment["toolchain"] = toolchain
+        simulator = " ".join(
+            str(part)
+            for part in (
+                getattr(cocotb, "SIM_NAME", None),
+                getattr(cocotb, "SIM_VERSION", None),
+            )
+            if part
+        )
+        if simulator:
+            environment["simulator"] = simulator
+        environment["testbench"] = f"cocotb {cocotb.__version__}"
+        ddr = ddr_model_settings(os.environ)
+        memory: dict[str, Any] = {
+            "tier": os.environ.get("FROST_COCOTB_MEM_CONFIG", "bram"),
+            "ddr_model": "axi_behavioral_memory",
+            "ddr_latency": ddr["DDR_MODEL_LATENCY"],
+            "ddr_latency_jitter": ddr["DDR_MODEL_LATENCY_JITTER"],
+            "ddr_reorder": bool(ddr["DDR_MODEL_REORDER"]),
+        }
+        seed = os.environ.get("FROST_DDR_MODEL_SEED", "").strip()
+        if seed:
+            memory["ddr_model_seed"] = seed
         seedcrc = re.search(r"seedcrc\s*:\s*(0x[0-9a-fA-F]+)", uart_text)
         crcfinal = re.search(r"\[0\]crcfinal\s*:\s*(0x[0-9a-fA-F]+)", uart_text)
         status = (
@@ -401,26 +550,15 @@ class CalibrationTrace:
             if "<<PASS>>" in uart_text or "Correct operation validated" in uart_text
             else "UNKNOWN"
         )
-        manifest = {
-            "benchmark": app_name or "program",
+        return {
+            "benchmark": self.app_name or "program",
             "run_number": self.run_number,
             "wall_time_seconds": round(wall_time_s, 3),
             "simulated_cycles_per_second": int(total_timed / max(1e-9, wall_time_s)),
             "git_commit": self.commit,
-            "branch": "perf-modeling",
-            "clock_frequency_hz": 322265625,
-            "command_line": f"./scripts/frost.py cocotb {app_name or 'coremark'}",
-            "environment": {
-                "toolchain": "Bootlin GCC 15.3.0 (riscv64-buildroot-linux-gnu 15.3.0)",
-                "simulator": "Verilator 5.052",
-                "testbench": "cocotb 1.9.2",
-            },
-            "memory_configuration": {
-                "boot_and_stack": "low_bram",
-                "ddr_model": "axi_behavioral_memory",
-                "ddr_latency": 30,
-                "cache_normal_memory": True,
-            },
+            "clock_frequency_hz": round(1e9 / self.clock_period_ns),
+            "environment": environment,
+            "memory_configuration": memory,
             "artifacts": file_hashes,
             "timed_region": {
                 "start_pc": f"0x{self.start_pc:08x}" if self.start_pc else "0x00000000",
@@ -435,9 +573,3 @@ class CalibrationTrace:
                 "status": status,
             },
         }
-        manifest_file = Path(self.manifest_path)
-        manifest_file.parent.mkdir(parents=True, exist_ok=True)
-        manifest_file.write_text(
-            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-        )
-        cocotb.log.info(f"Wrote manifest to {self.manifest_path}")
