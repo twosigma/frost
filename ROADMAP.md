@@ -112,6 +112,13 @@ to about 4.5% in a UDP stream. The counters leave out maintenance traffic,
 so the Linux figures do not include write fills from the L1D writebacks that
 `sfence.vma` triggers.
 
+The [performance model](perf-modeling/README.md) is a cycle-approximate
+model of `cpu_top` and `soc_top` that CI compares with a CoreMark trace from
+the RTL. Its next use is a sweep of the memory system in the X3's
+configuration: the misses in flight in the L1D and the L2, the AXI IDs, and
+the L2's size, including how many transactions in flight a memory with more
+channels than the X3's needs.
+
 ## Verification
 
 FROST is tested with formal proofs of individual modules, unit benches, full
