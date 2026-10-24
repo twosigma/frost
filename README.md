@@ -242,6 +242,7 @@ For native builds outside the container, initialize the submodules first with
 | [tests/](tests/README.md) | Test runners |
 | [verif/](verif/README.md) | Cocotb tests, reference models, and monitors |
 | [formal/](formal/README.md) | Formal verification |
+| [perf-modeling/](perf-modeling/README.md) | Cycle-approximate performance model of the CPU and SoC, checked against RTL traces |
 | [asic/](asic/README.md) | OpenROAD flow on FreePDK45 and its OpenRAM SRAM macros |
 | [tools/vscode-frost/](tools/vscode-frost/README.md) | VS Code extension |
 | [docs/](docs/) | Debian setup, performance, and toolchain guides; diagrams |
