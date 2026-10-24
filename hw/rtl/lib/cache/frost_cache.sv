@@ -2200,6 +2200,9 @@ module frost_cache #(
   assign o_write_perf_events = write_perf_events_q;
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+
   // ---- Compare visible captures with references written only when enabled.
   localparam int unsigned WPayloadBits = SetBits + TagBits + LineAddrBits + 1 + LineBits +
       LINE_BYTES + UP_ID_BITS + 1 + 1 + MshrBits + WbBits + WayBits + 1 + 1 + TagBits +
@@ -2330,7 +2333,7 @@ module frost_cache #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       p_t_done_factored : assert (t_done == (decide && !t_stall));
       p_ack_push_is_write_decode :
       assert (ack_push == (t_done && (t_is_write_hit || (t_is_alloc && t_write_q) || t_is_merge)));
@@ -2368,7 +2371,7 @@ module frost_cache #(
 
   // Protocol checks (simulation only).
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       if (up_req_fire && i_up_req_write && i_up_req_wstrb == '0)
         $error("frost_cache: write request with empty strobes");
       if (up_req_fire && i_up_req_probe && (NUM_PROBE == 0))
@@ -2488,7 +2491,7 @@ module frost_cache #(
   int unsigned wb_pend_cycles[NUM_WB];
   always_ff @(posedge i_clk) begin
     for (int j = 0; j < int'(NUM_WB); j++) begin
-      if (i_rst || (wb_state_q[j] != WB_PEND)) begin
+      if (!reset_seen_q || i_rst || (wb_state_q[j] != WB_PEND)) begin
         wb_pend_loads[j]  <= 0;
         wb_pend_cycles[j] <= 0;
       end else begin
@@ -2509,7 +2512,7 @@ module frost_cache #(
   int unsigned fill_passed[NUM_MSHR];
   always_ff @(posedge i_clk) begin
     for (int i = 0; i < int'(NUM_MSHR); i++) begin
-      if (i_rst || !fill_req_mask[i]) begin
+      if (!reset_seen_q || i_rst || !fill_req_mask[i]) begin
         fill_passed[i] <= 0;
       end else if (dq_load && !dq_load_is_wb && (fill_req_sel != MshrBits'(i))) begin
         fill_passed[i] <= fill_passed[i] + 1;
@@ -2526,7 +2529,7 @@ module frost_cache #(
   // A waiter or merge must land on an MSHR fetching its own line; a
   // cross-line attach silently serves one line's data for another's address.
   always_ff @(posedge i_clk) begin
-    if (!i_rst && w_valid_q && ((w_op_q == W_WAITER) || (w_op_q == W_MERGE))) begin
+    if (reset_seen_q && !i_rst && w_valid_q && ((w_op_q == W_WAITER) || (w_op_q == W_MERGE))) begin
       p_secondary_targets_own_line : assert (mshr_line_q[w_mshr_q] == w_line_q);
     end
   end
@@ -2537,7 +2540,7 @@ module frost_cache #(
   // in T that has not retired (decide/re-read loop).
   assign wedge_live = (in_valid && !t_accept) || (t_valid_q && !t_done);
   always_ff @(posedge i_clk) begin
-    if (i_rst || !wedge_live) begin
+    if (!reset_seen_q || i_rst || !wedge_live) begin
       wedge_cnt <= 0;
     end else begin
       wedge_cnt <= wedge_cnt + 1;

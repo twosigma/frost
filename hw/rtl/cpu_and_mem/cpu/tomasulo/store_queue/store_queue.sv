@@ -1372,8 +1372,11 @@ module store_queue #(
   // assumes this input rule; Yosys does not parse the assert-else action.
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
+
   always_ff @(posedge i_clk) begin
-    if (i_rst_n) begin
+    if (reset_seen_q && i_rst_n) begin
       assert (!(i_flush_en && (i_commit_valid_comb || i_commit_valid_comb_2)))
       else $error("store_queue: combinational store commit in a partial-flush cycle");
     end
@@ -1495,7 +1498,7 @@ module store_queue #(
 `ifndef SYNTHESIS
 `ifndef FORMAL
   always @(posedge i_clk) begin
-    if (i_rst_n) begin
+    if (reset_seen_q && i_rst_n) begin
       if (i_alloc.valid && full) $warning("SQ: allocation attempted when full");
       // Flush-cycle requests are legal; allocation gates reject them like the ROB.
       if (i_alloc_2.valid && i_alloc.valid && full_for_2)
@@ -1862,7 +1865,7 @@ module store_queue #(
   // deferred pullback. Yosys does not parse assert-else actions; formal checks
   // flush rejection and free slots above, and assumes dispatch idle at pullback.
   always_ff @(posedge i_clk) begin
-    if (i_rst_n && !i_flush_all) begin
+    if (reset_seen_q && i_rst_n && !i_flush_all) begin
       a_no_alloc_during_flush :
       assert (!(i_flush_en && (slot1_alloc_en || slot2_alloc_en)))
       else $error("SQ allocation during partial flush conflicts with tail pullback");

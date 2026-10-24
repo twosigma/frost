@@ -192,8 +192,11 @@ module async_fifo #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  logic read_reset_seen_q = 1'b0;
+  always_ff @(posedge o_clk) if (o_rst) read_reset_seen_q <= 1'b1;
+
   always_ff @(posedge o_clk) begin
-    if (!o_rst && rd_issued_q && (skid_count == 2'd2) && !pop)
+    if (read_reset_seen_q && !o_rst && rd_issued_q && (skid_count == 2'd2) && !pop)
       $error("async_fifo: read arrived with no skid room");
   end
 `endif

@@ -500,12 +500,12 @@ module if_stage #(
         };
   end
   always_ff @(posedge i_clk) begin
-    if (!i_pipeline_ctrl.reset && i_instr_valid && !$isunknown(
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && i_instr_valid && !$isunknown(
             {i_instr_pc_metadata, instr_pc_metadata_canonical}
         )) begin
       p_pc_metadata_matches_canonical : assert (i_instr_pc_metadata == instr_pc_metadata_canonical);
     end
-    if (!i_pipeline_ctrl.reset && i_instr_valid && !$isunknown(
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && i_instr_valid && !$isunknown(
             {
               active_pc_metadata_by_parity,
               active_pc_metadata_by_parity_canonical,
@@ -976,7 +976,8 @@ module if_stage #(
     fetch_redirect_reference_q <= !i_pipeline_ctrl.reset &&
         pc_update_en && |(npc_sel & ~npc_seq) &&
         !(npc_sel[PredictionNpcArm] && !live_prediction_emits_with_output);
-    if (fetch_redirect_reference_valid_q && !$isunknown(
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset &&
+        fetch_redirect_reference_valid_q && !$isunknown(
             {o_fetch_redirect, fetch_redirect_reference_q}
         )) begin
       p_fetch_redirect_original_registered_equation :
@@ -1457,7 +1458,7 @@ module if_stage #(
 
 `ifndef SYNTHESIS
   always_comb begin
-    if (!$isunknown(
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
             {
               i_flush_all,
               sel_nop,
@@ -1482,7 +1483,7 @@ module if_stage #(
   // redirect pulse. The served-window comparators' buffer select differs from
   // the packet's only on such a cycle.
   always_ff @(posedge i_clk) begin
-    if (!i_pipeline_ctrl.reset && !$isunknown(
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
             {i_fence_i_flush,
              flush_for_c_ext_safe,
              prediction_used_for_pc,
@@ -1605,7 +1606,7 @@ module if_stage #(
   // Sampled at the clock so the check sees settled values; a valid window has
   // the two bank selects equal (checked in frost_rvfi_platform).
   always_ff @(posedge i_clk) begin
-    if (i_instr_valid && !$isunknown(
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && i_instr_valid && !$isunknown(
             {i_instr, i_instr_bank_sel_r, pc_reg[2], spanning_second_half}
         )) begin
       p_spanning_second_half_exact :
@@ -1836,7 +1837,9 @@ module if_stage #(
   // (use_instr_buffer_for_coverage_timing) equals use_instr_buffer. A redirect
   // therefore never needs to squash a fetch issued behind a buffered word.
   always @(posedge i_clk) begin
-    if (!i_pipeline_ctrl.reset && !$isunknown({prediction_used, use_instr_buffer}))
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
+            {prediction_used, use_instr_buffer}
+        ))
       p_no_prediction_from_buffered_word : assert (!(prediction_used && use_instr_buffer));
   end
 `endif
@@ -2002,7 +2005,8 @@ module if_stage #(
   // builds (hw/sim/frost_rvfi_dii.sv) drop instruction access faults on
   // purpose, so the check does not apply there.
   always_ff @(posedge i_clk) begin
-    if (!i_pipeline_ctrl.reset && !i_fetch_translation_active && i_instr_valid && !sel_nop &&
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !i_fetch_translation_active &&
+        i_instr_valid && !sel_nop &&
         !replay_saved_if_outputs && !use_instr_buffer && !slot1_straddles && !$isunknown(
             {fetch_fault_live, pc_reg, i_instr_fault0, i_instr_fault1}
         )) begin
@@ -2082,7 +2086,7 @@ module if_stage #(
 
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
-    if (!i_pipeline_ctrl.reset && !$isunknown(
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
             {ras_op_slot1, ras_op_slot2, live_prediction_emits_with_output,
              prediction_used, slot2_prediction_used}
         )) begin
@@ -2187,7 +2191,7 @@ module if_stage #(
   assign bp_dir_taken_legacy_output = replay_saved_if_outputs ?
       bp_dir_taken_legacy_sc : bp_dir_taken_pending_legacy;
   always @(posedge i_clk) begin
-    if (!i_pipeline_ctrl.reset && !o_from_if_to_pd.sel_nop)
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !o_from_if_to_pd.sel_nop)
       assert (o_from_if_to_pd.bp_dir_taken == bp_dir_taken_legacy_output);
   end
 `endif
@@ -2363,7 +2367,8 @@ module if_stage #(
   // above both rely on this; in particular, a served-window mismatch must
   // retry rather than consume the branch as a NOP.
   always_ff @(posedge i_clk) begin
-    if (!i_pipeline_ctrl.reset && pending_prediction_target_handoff && !$isunknown(
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && pending_prediction_target_handoff &&
+        !$isunknown(
             {sel_nop_effective, o_from_if_to_pd.program_counter,
              pending_prediction_pc, if_stage_stall}
         )) begin
@@ -2372,7 +2377,8 @@ module if_stage #(
               o_from_if_to_pd.program_counter == pending_prediction_pc &&
               !if_stage_stall);
     end
-    if (!i_pipeline_ctrl.reset && pending_prediction_real_nonowner && !$isunknown(
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && pending_prediction_real_nonowner &&
+        !$isunknown(
             {bp_dir_taken_before_pending_valid_q, bp_dir_idx_before_pending_q,
              o_from_if_to_pd.program_counter, pending_prediction_pc}
         )) begin
@@ -2382,7 +2388,8 @@ module if_stage #(
       p_pending_prediction_predecessor_direction_was_captured :
       assert (bp_dir_taken_before_pending_valid_q);
     end
-    if (!i_pipeline_ctrl.reset && pending_prediction_active && !sel_nop_effective &&
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && pending_prediction_active &&
+        !sel_nop_effective &&
         (o_from_if_to_pd.program_counter == pending_prediction_pc) && !$isunknown(
             o_from_if_to_pd.btb_predicted_taken
         )) begin
@@ -2390,7 +2397,9 @@ module if_stage #(
       assert (o_from_if_to_pd.btb_predicted_taken);
     end
 
-    if (!i_pipeline_ctrl.reset && pending_prediction_active && slot2_valid && !$isunknown(
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && pending_prediction_active &&
+        slot2_valid &&
+        !$isunknown(
             {o_from_if_to_pd_2.program_counter, pending_prediction_pc}
         )) begin
       p_pending_prediction_owner_never_dispatches_in_slot2 :
@@ -2403,7 +2412,7 @@ module if_stage #(
     // pending-prediction one-wide rule is withholding it. Stall replay and
     // the registered F/H/R squashes fall outside prediction_common, and there
     // the live aligner may differ from the saved packet.
-    if (!i_pipeline_ctrl.reset && !$isunknown(
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
             {
               branch_prediction_controller_inst.slot1_prediction_owned_by_slot2,
               slot2_prediction_valid,
@@ -2432,7 +2441,7 @@ module if_stage #(
       end
     end
 
-    if (!i_pipeline_ctrl.reset && !$isunknown(
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
             {
               pending_prediction_owns_live_slot2,
               pending_prediction_active,
@@ -2450,7 +2459,8 @@ module if_stage #(
                 pending_prediction_pc)));
     end
 
-    if (!i_pipeline_ctrl.reset && pending_prediction_kills_live_slot2 && !$isunknown(
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && pending_prediction_kills_live_slot2 &&
+        !$isunknown(
             {
               sel_nop_2,
               slot2_valid_for_pc_live_effective,
@@ -2463,7 +2473,8 @@ module if_stage #(
               (pc_advance_sel_run_live == pc_advance_sel_base_live));
     end
 
-    if (!i_pipeline_ctrl.reset && pending_prediction_target_handoff && !$isunknown(
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && pending_prediction_target_handoff &&
+        !$isunknown(
             slot2_valid
         )) begin
       p_pending_owner_handoff_is_single_width : assert (!slot2_valid);

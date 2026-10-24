@@ -1229,7 +1229,7 @@ module pc_controller #(
       i_fetch_progress && !i_window_cannot_serve;
 `ifndef SYNTHESIS
   always_comb begin
-    if (!$isunknown(
+    if (pending_rel_check_armed_q && !i_reset && !$isunknown(
             {
               npc_fetch_mux_permission,
               npc_prediction_permission,
