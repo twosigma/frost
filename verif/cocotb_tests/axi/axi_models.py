@@ -512,9 +512,10 @@ class AxiSlaveMemory:
 
     `inputs` and `outputs` prefix the DUT's input and output names (for
     example "i_dma_axi_" and "o_dma_axi_"). AW, W and AR take ready with
-    probability `ready_bias`. Writes apply to `mem` in AW order once all
-    their beats are in, and reads read `mem` when their AR is accepted. B and
-    R come back after 1 to `max_latency` cycles; with `reorder`, responses of
+    probability `ready_bias`, with W waiting for a queued AW. Writes apply
+    to `mem` in AW order once all their beats are in, and reads read `mem`
+    when their AR is accepted. B and R come back after 1 to `max_latency`
+    cycles; with `reorder`, responses of
     different ids may pass each other. Lines (32-byte addresses) in
     `error_lines` answer SLVERR. VALID and payload stability on the DUT's
     channels, WLAST, and legal burst forms are checked into `violations`.
@@ -595,7 +596,7 @@ class AxiSlaveMemory:
             self.cycle += 1
             rng = self.rng
             awready = rng.random() < self.ready_bias
-            wready = rng.random() < self.ready_bias
+            wready = rng.random() < self.ready_bias and bool(self._aw)
             arready = rng.random() < self.ready_bias
             self._sig(self._in, "awready").value = int(awready)
             self._sig(self._in, "wready").value = int(wready)
