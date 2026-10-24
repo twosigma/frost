@@ -14,9 +14,13 @@
 
 """Tests for the real-program bench's calibration capture, on a stand-in DUT."""
 
+import hashlib
 import importlib
 import json
 import logging
+import re
+import struct
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -64,6 +68,17 @@ class _Node:
 
 def _dut(absent: frozenset[str] = frozenset(), slot2_width: int = SLOT2_WIDTH) -> _Node:
     return _Node("", set(absent), {SLOT2: slot2_width})
+
+
+# The second of two runs of hello_world, and the first, with the bench's
+# 3 ns clock.
+_RUN: dict[str, Any] = {
+    "app_name": "hello_world",
+    "run_number": 2,
+    "num_runs": 2,
+    "clock_period_ns": 3,
+}
+_FIRST_RUN = {**_RUN, "run_number": 1}
 
 
 def _drive(dut: _Node, values: dict[str, int]) -> None:
@@ -122,6 +137,11 @@ def _environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         "FROST_CALIBRATION_TARGET_RUN",
         "FROST_CALIBRATION_START_PC",
         "FROST_CALIBRATION_STOP_PC",
+        "FROST_GIT_COMMIT",
+        "FROST_COCOTB_MEM_CONFIG",
+        "FROST_VERILATOR_EXTRA_ARGS",
+        "FROST_DDR_MODEL_SEED",
+        "DDR_MODEL_LATENCY",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(tmp_path)
@@ -132,12 +152,12 @@ def test_capture_is_off_without_a_trace_path_or_for_another_run(
 ) -> None:
     """Only the target run, the last one by default, records a trace."""
     trace = calibration_trace.CalibrationTrace
-    assert trace.from_environment(_dut(), "hello_world", 2, 2) is None
+    assert trace.from_environment(_dut(), **_RUN) is None
     monkeypatch.setenv("FROST_CALIBRATION_TRACE_PATH", str(tmp_path / "t.jsonl"))
-    assert trace.from_environment(_dut(), "hello_world", 1, 2) is None
-    assert trace.from_environment(_dut(), "hello_world", 2, 2) is not None
+    assert trace.from_environment(_dut(), **_FIRST_RUN) is None
+    assert trace.from_environment(_dut(), **_RUN) is not None
     monkeypatch.setenv("FROST_CALIBRATION_TARGET_RUN", "1")
-    assert trace.from_environment(_dut(), "hello_world", 1, 2) is not None
+    assert trace.from_environment(_dut(), **_FIRST_RUN) is not None
 
 
 def test_missing_signals_fail_the_capture(
@@ -153,9 +173,7 @@ def test_missing_signals_fail_the_capture(
             f"{CORE}.rob_count, {CPU_TOP}.i_axi_bid$"
         ),
     ):
-        calibration_trace.CalibrationTrace.from_environment(
-            _dut(absent), "hello_world", 2, 2
-        )
+        calibration_trace.CalibrationTrace.from_environment(_dut(absent), **_RUN)
 
 
 def test_a_slot2_layout_of_another_width_fails_the_capture(
@@ -165,7 +183,7 @@ def test_a_slot2_layout_of_another_width_fails_the_capture(
     monkeypatch.setenv("FROST_CALIBRATION_TRACE_PATH", str(tmp_path / "t.jsonl"))
     with pytest.raises(AssertionError, match="bits wide"):
         calibration_trace.CalibrationTrace.from_environment(
-            _dut(slot2_width=SLOT2_WIDTH + 1), "hello_world", 2, 2
+            _dut(slot2_width=SLOT2_WIDTH + 1), **_RUN
         )
 
 
@@ -180,9 +198,7 @@ def test_the_window_runs_from_the_start_pc_to_the_stop_pc(
     monkeypatch.setenv("FROST_CALIBRATION_START_PC", "0x100")
     monkeypatch.setenv("FROST_CALIBRATION_STOP_PC", "0x200")
     dut = _dut()
-    capture = calibration_trace.CalibrationTrace.from_environment(
-        dut, "hello_world", 2, 2
-    )
+    capture = calibration_trace.CalibrationTrace.from_environment(dut, **_RUN)
     assert capture is not None
     real_slot2 = packed_structs.pack_struct(cpu_structs.ID_TO_EX_FIELDS, {"is_real": 1})
     cycles = [
@@ -248,3 +264,141 @@ def test_the_window_runs_from_the_start_pc_to_the_stop_pc(
     assert counters["stalls"]["dispatch_stall_cycles"] == 1
     assert counters["occupancy"]["mean_rob_occupancy"] == 3.0
     assert counters["axi_totals"]["aw_backpressure_cycles"] == 1
+
+
+def _elf_with_comment(comment: bytes) -> bytes:
+    """Return a minimal little-endian ELF64 file whose .comment holds comment."""
+    names = b"\0.shstrtab\0.comment\0"
+    comment_data = comment + b"\0"
+    names_offset = 64
+    comment_offset = names_offset + len(names)
+    shoff = comment_offset + len(comment_data)
+    shoff += -shoff % 8
+    image = bytearray(shoff)
+    image[:7] = b"\x7fELF\x02\x01\x01"
+    struct.pack_into("<Q", image, 0x28, shoff)
+    struct.pack_into("<HHH", image, 0x3A, 64, 3, 1)
+    image[names_offset:comment_offset] = names
+    image[comment_offset : comment_offset + len(comment_data)] = comment_data
+    for name, kind, offset, size in (
+        (0, 0, 0, 0),
+        (1, 3, names_offset, len(names)),
+        (11, 1, comment_offset, len(comment_data)),
+    ):
+        image += struct.pack("<IIQQQQIIQQ", name, kind, 0, 0, offset, size, 0, 0, 1, 0)
+    return bytes(image)
+
+
+def test_the_commit_comes_from_frost_git_commit_then_git(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """FROST_GIT_COMMIT wins; otherwise git names HEAD, or the commit is unknown."""
+    monkeypatch.setenv("FROST_GIT_COMMIT", " 0123abc ")
+    assert calibration_trace.git_commit() == "0123abc"
+    monkeypatch.delenv("FROST_GIT_COMMIT")
+    monkeypatch.setattr(calibration_trace, "REPOSITORY_ROOT", tmp_path)
+    assert calibration_trace.git_commit() == "unknown"
+    git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "t"], check=True)
+    head = subprocess.run(
+        [*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    assert calibration_trace.git_commit() == head
+
+
+def test_ddr_model_settings_follow_the_simulation_arguments() -> None:
+    """The last -G argument sets a parameter, over DDR_MODEL_LATENCY."""
+    settings = calibration_trace.ddr_model_settings
+    assert settings({}) == calibration_trace.DDR_MODEL_DEFAULTS
+    assert settings({"DDR_MODEL_LATENCY": "45"})["DDR_MODEL_LATENCY"] == 45
+    assert settings(
+        {
+            "DDR_MODEL_LATENCY": "45",
+            "FROST_VERILATOR_EXTRA_ARGS": (
+                "-GL2_CACHE_BYTES=4096 -GDDR_MODEL_LATENCY=12 -GDDR_MODEL_REORDER=1 "
+                "-GDDR_MODEL_LATENCY=17"
+            ),
+        }
+    ) == {
+        "DDR_MODEL_LATENCY": 17,
+        "DDR_MODEL_LATENCY_JITTER": 0,
+        "DDR_MODEL_REORDER": 1,
+    }
+
+
+def test_ddr_model_defaults_match_the_makefile_and_frost() -> None:
+    """The defaults are tests/Makefile's latency and frost.sv's jitter and reordering."""
+    root = Path(__file__).resolve().parents[1]
+    makefile = (root / "tests" / "Makefile").read_text()
+    frost = (root / "hw" / "rtl" / "frost.sv").read_text()
+    latency = re.search(r"^DDR_MODEL_LATENCY \?= (\d+)$", makefile, re.MULTILINE)
+    assert latency is not None
+    expected = {"DDR_MODEL_LATENCY": int(latency.group(1))}
+    for name in ("DDR_MODEL_LATENCY_JITTER", "DDR_MODEL_REORDER"):
+        default = re.search(rf"parameter int unsigned {name} = (\d+)", frost)
+        assert default is not None
+        expected[name] = int(default.group(1))
+    assert calibration_trace.DDR_MODEL_DEFAULTS == expected
+
+
+def test_elf_comment_reads_the_compiler_version(tmp_path: Path) -> None:
+    """The first .comment string names the compiler; other files give None."""
+    elf = tmp_path / "sw.elf"
+    elf.write_bytes(
+        _elf_with_comment(b"GCC: (toolchains.bootlin.com 2026.08-1) 15.3.0")
+    )
+    assert (
+        calibration_trace.elf_comment(elf)
+        == "GCC: (toolchains.bootlin.com 2026.08-1) 15.3.0"
+    )
+    elf.write_bytes(b"not an ELF file" * 8)
+    assert calibration_trace.elf_comment(elf) is None
+    assert calibration_trace.elf_comment(tmp_path / "missing.elf") is None
+
+
+def test_the_manifest_takes_its_metadata_from_the_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The commit, tools, clock, tier, DDR settings, and images come from the run."""
+    program = tmp_path / "sw" / "apps" / "hello_world"
+    program.mkdir(parents=True)
+    elf = _elf_with_comment(b"GCC: (vendor) 15.3.0")
+    (program / "sw.elf").write_bytes(elf)
+    (program / "sw.mem").write_text("@0\n")
+    (tmp_path / "sw.mem").symlink_to(program / "sw.mem")
+    trace_path = tmp_path / "t.jsonl"
+    monkeypatch.setenv("FROST_CALIBRATION_TRACE_PATH", str(trace_path))
+    monkeypatch.setenv("FROST_GIT_COMMIT", "abc123")
+    monkeypatch.setenv("FROST_COCOTB_MEM_CONFIG", "ddr")
+    monkeypatch.setenv(
+        "FROST_VERILATOR_EXTRA_ARGS",
+        "-GDDR_MODEL_LATENCY=44 -GDDR_MODEL_LATENCY_JITTER=7",
+    )
+    monkeypatch.setenv("FROST_DDR_MODEL_SEED", "123-job-0")
+    capture = calibration_trace.CalibrationTrace.from_environment(_dut(), **_RUN)
+    assert capture is not None
+    capture.finish("")
+
+    meta = json.loads(trace_path.read_text().splitlines()[0])
+    assert meta["rtl_commit"] == "abc123"
+    manifest = capture.manifest("", 1.0)
+    assert manifest["git_commit"] == "abc123"
+    assert manifest["clock_frequency_hz"] == 333_333_333
+    assert manifest["environment"] == {
+        "toolchain": "GCC: (vendor) 15.3.0",
+        "testbench": f"cocotb {cocotb.__version__}",
+    }
+    assert manifest["memory_configuration"] == {
+        "tier": "ddr",
+        "ddr_model": "axi_behavioral_memory",
+        "ddr_latency": 44,
+        "ddr_latency_jitter": 7,
+        "ddr_reorder": False,
+        "ddr_model_seed": "123-job-0",
+    }
+    assert manifest["artifacts"] == {
+        "sw.elf_sha256": hashlib.sha256(elf).hexdigest(),
+        "sw.mem_sha256": hashlib.sha256(b"@0\n").hexdigest(),
+    }
+    assert "branch" not in manifest and "command_line" not in manifest

@@ -1839,7 +1839,13 @@ async def run_until_complete(
     coremark_retire_slot2_pc_sig = None
     # The performance model's calibration trace (calibration_trace.py), None
     # unless FROST_CALIBRATION_TRACE_PATH asks for this run.
-    calibration = CalibrationTrace.from_environment(dut, app_name, run_number, NUM_RUNS)
+    calibration = CalibrationTrace.from_environment(
+        dut,
+        app_name=app_name,
+        run_number=run_number,
+        num_runs=NUM_RUNS,
+        clock_period_ns=CLK_PERIOD_NS,
+    )
     if control_flow_trace_env:
         parsed_ranges: list[tuple[int, int]] = []
         for raw_range in control_flow_trace_env.split(","):
