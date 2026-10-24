@@ -87,13 +87,13 @@ in `DDR_TIER_EXCLUDE`: the DDR probes (`ddr_*`), which already target DDR,
 the fetch fuzzers (`*_fetch_fuzz`), which use their own build, and
 `ecc_scrub_test` and `cache_counters_openocd`, whose programs run from BRAM
 in either tier.
-`served_window_resteer_fetch_fuzz` disables the optional Normal read caches
-so its loop continues to encounter the SoC's AXI instruction-delay model.
-Each reset run must encounter both injected AXI delays and predicted-target
-fetch waits, and finish all 2,000 iterations with correct counts and sums.
-The AXI provider retains its delayed request, so this program no longer
-requires a stale-window resteer. The `if_stage` bench supplies stale window
-tags explicitly and checks rejection, retry, and delayed-target handling.
+`served_window_resteer_fetch_fuzz` turns off the optional Normal read caches
+so that its loop meets the SoC's AXI instruction-delay model. Each reset run
+must see both injected AXI delays and predicted-target fetch waits and finish
+all 2,000 iterations with correct counts and sums. Because the AXI provider
+holds its delayed request, the program does not require a stale-window
+resteer; the `if_stage` bench supplies stale window tags directly and checks
+rejection, retry, and delayed-target handling.
 
 `debug_test` drives the JTAG debug module directly; `debug_openocd_test` runs
 a real OpenOCD session through `remote_bitbang`, and `cache_counters_openocd`
@@ -328,7 +328,7 @@ which have 90 minutes each. `--verbose` prints solver output.
 | `NUMBER_OF_CPU_CORES` | Parallel Verilator build jobs (default: every core; a seed sweep divides them among its workers) |
 | `COCOTB_MAX_CYCLES` | Cycle budget per application run (default 500,000); some targets set their own |
 | `COCOTB_COREMARK_MAX_CYCLES` | CoreMark and CoreMark-PRO cycle budget (default 15,000,000; the registry sets 20,000,000 for `coremark_pro_loops`) |
-| `COCOTB_COREMARK_PROGRESS_INTERVAL` | CoreMark progress diagnostics interval in cycles (default 500,000); `0` disables the optional per-cycle Python observer, as CI does for CoreMark-PRO to reduce host runtime without changing workloads or verification |
+| `COCOTB_COREMARK_PROGRESS_INTERVAL` | CoreMark progress diagnostics interval in cycles (default 500,000); `0` disables the optional per-cycle Python observer, as CI does for CoreMark-PRO |
 | `COCOTB_NUM_RUNS` | Runs per application, with a reset between them (default 2; always 1 in the DDR tier) |
 | `SIM_FAST_MAINT` | Fast `fence.i` cache maintenance in whole-SoC simulation (default 1; hardware uses the full sweeps, as `0` does) |
 
@@ -340,8 +340,7 @@ failures. Before running a runner any way other than the `cocotb` and
 (`./scripts/frost.py run make -C tests clean`). If `doctor` reports a missing
 tool or a version that differs from the Dockerfile, rebuild the image. If a
 long program runs out of cycles, first measure a complete passing run with
-an extended limit, then set its budget with headroom. A passing workload
-with a larger budget does not establish performance parity.
+an extended limit, then set its budget with headroom.
 
 ## Coverage
 

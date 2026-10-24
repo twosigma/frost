@@ -89,7 +89,7 @@ late fatal AXI error from a precise SC/AMO failure. Launching a write also
 invalidates its L0 dword, or updates its selected bytes when the optional
 Normal read-cache policy applies.
 
-In the legacy `PRECISE_UNCACHED=0` profile, plain BRAM stores complete one
+With `PRECISE_UNCACHED=0`, plain BRAM stores complete one
 cycle after launch with up to two writes in flight. In `cpu_top`, every
 Normal/Device store keeps its SQ entry until B. A precise store's
 SLVERR/DECERR becomes cause 7; successful SC completion is likewise delayed

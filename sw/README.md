@@ -229,12 +229,10 @@ reinitialized and may still hold writes from the first run. DDR-tier programs
 run once, and so do the long CoreMark-PRO `loops` and `nnet` simulations, to
 fit CI's six-hour job limit.
 
-The `coremark_pro_core` target keeps both BRAM reset runs and allows
-15,000,000 cycles per run; Normal read caching completes each in about
-5,700,000 cycles. NNET retains the default 15,000,000-cycle budget; a complete
-verified run with Normal read caching takes about 12,900,000 cycles.
-CI disables optional CoreMark-PRO progress tracing to reduce host runtime,
-while retaining all workload verification and reset checks.
+`coremark_pro_core` runs twice in the BRAM tier, about 5,700,000 cycles each
+within the default 15,000,000-cycle budget, and `coremark_pro_nnet` takes
+about 12,900,000. CI turns off CoreMark-PRO's optional progress tracing to
+save host time.
 
 ```bash
 ./scripts/frost.py cocotb hello_world                               # simulate from low BRAM

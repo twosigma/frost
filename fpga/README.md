@@ -209,7 +209,6 @@ workload, and Linux check.
 Set `FROST_CPU_CLK_HZ` to the bitstream's actual CPU frequency. A clock
 override skips the standard-clock CoreMark and CoreMark-PRO score thresholds;
 the runner still reports the measured values and checks functional results.
-Compare scores at the same frequency before claiming performance parity.
 
 `ddr_ecc/ddr_ecc_status.py` reads the DDR controller's accumulated error
 counts; `--clear` starts a new interval. FROST's own view of the same errors

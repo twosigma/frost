@@ -334,7 +334,7 @@ runs in the pinned container, the [FPGA guide](../../fpga/README.md) for
 native Vivado builds, and the [ASIC guide](../../asic/README.md) for the
 OpenROAD flow. `frost.f` is the system source list and
 `cpu_top/cpu_top.f` the standalone CPU's. TestRIG alone compiles
-`hw/sim/frost_rvfi_platform.sv`, which retains positional instruction injection
+`hw/sim/frost_rvfi_platform.sv`, which provides positional instruction injection
 and the fixed-latency pipeline test interface.
 
 Simulation sets parameters with Verilator `-G` overrides. For the `frost`

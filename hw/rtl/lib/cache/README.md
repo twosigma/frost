@@ -352,8 +352,8 @@ the bridge's, so each write the bridge accepted before the reset must land
 before the loader's first DDR write.
 
 Production `cpu_top` uses `cpu_memory_fabric` and `cpu_axi_master` to combine
-cache lines with narrow uncached data and instruction traffic. The older
-`line_port_axi_bridge` remains a library/component-test block. ID allocation
+cache lines with narrow uncached data and instruction traffic.
+`line_port_axi_bridge` is a library and component-test block. ID allocation
 and AXI attributes are documented in the [CPU interface](../../cpu_top/README.md).
 
 With `ENABLE_RESPONSE_ERRORS=1`, SLVERR/DECERR on a read fill returns an error
@@ -364,11 +364,11 @@ fatal address and stop CPU retirement. They cannot be made precise after a
 buffered store has retired. FROST's SoC also counts board DDR error responses
 in `memory_error_unit`; `memerr_test` checks the read exception, ECC/APLIC
 reporting and final fatal writeback stop. Coherent responses carry errors
-through the DMA sequencer and arbiter to their agents. With response errors
-disabled, legacy library benches retain their original completion behavior.
+through the DMA sequencer and arbiter to their agents. `ENABLE_RESPONSE_ERRORS`
+defaults to 0 in the library modules; `cpu_top` sets it to 1.
 
 The behavioral DDR model accepts `+axi_rd_error_addr=<hex>` and
-`+axi_wr_error_addr=<hex>` for region-relative failed lines. The legacy bridge
+`+axi_wr_error_addr=<hex>` for region-relative failed lines. `line_port_axi_bridge`
 also requires `+axi_error_check=0` when such errors are intentional.
 `sw/apps/ecc_scrub_test` observes writebacks with the write form: evicting a
 clean line writes nothing, and evicting a line rewritten with atomic no-ops, as

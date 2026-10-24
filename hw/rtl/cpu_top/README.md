@@ -55,10 +55,9 @@ ID 33 and IDs above 35 are unused. An ID stays owned until its CPU-side response
 An internal request register separates client arbitration from the master's ID and channel availability checks. It holds the complete address, attributes, ID, data and strobes under backpressure and permits simultaneous dequeue and replacement. CPU reset discards this request if it has not reached the master; already presented AXI traffic still drains. `o_axi_idle` includes this register.
 
 On a successful response, the uncached adapter may enqueue its next waiting
-request into that register on the same edge. The master still releases the
-previous ID ownership before accepting its replacement. Read and write
-completions remain registered, held read responses remain stable, and error
-responses retain their existing recovery timing.
+request into that register on the same edge. The master releases the previous
+ID's ownership before accepting the replacement. Read and write completions
+are registered, and held read responses stay stable.
 
 `AXI_USER_BITS` is a positive width, default 1. AWUSER, ARUSER and WUSER are zero. RUSER and BUSER are ignored. A wrapper may omit USER or carry its own metadata without changing CPU semantics. AxQOS and AxREGION are zero. AXI exclusive transactions and ATOP extensions are not used.
 
@@ -66,13 +65,13 @@ Attribute encodings follow the [Arm AXI specification](https://developer.arm.com
 
 ## Completion, faults and ordering
 
-External reads and writes complete only on their R or B response. Backpressure has no fixed deadline. A request is presented once and is never retried automatically; holding a response does not repeat a device side effect. Device reads and precise uncached stores execute at the ROB head behind the existing interrupt/debug shield. Successful uncached store-conditionals and AMOs wait for B before retiring, including when Normal read caching is enabled. Failed store-conditionals perform no write. The optional policy allows ordinary Normal stores to retire into the store queue before B; the queue retains their ownership until the response.
+External reads and writes complete only on their R or B response. Backpressure has no fixed deadline. A request is presented once and is never retried automatically; holding a response does not repeat a device side effect. Device reads and precise uncached stores execute at the ROB head behind the interrupt/debug shield. Successful uncached store-conditionals and AMOs wait for B before retiring, including when Normal read caching is enabled. Failed store-conditionals perform no write. The optional policy allows ordinary Normal stores to retire into the store queue before B; the queue retains their ownership until the response.
 
 Misaligned loads, stores and atomics trap in the CPU before issuing an AXI
 request, including before firmware installs `mtvec`. The standalone interface
 does not split misaligned accesses into multiple transactions.
 
-RRESP/BRESP SLVERR and DECERR propagate as access faults for data reads, precise uncached stores/AMOs, instruction fetch and page-table walks. Read-fill errors never install cache data or executable instruction-cache entries. Data-bus faults report zero in `xtval`; instruction and translation faults retain their existing virtual-address reporting. RISC-V permits zero `xtval` for these faults; a physical address must not be reported as though it were the faulting virtual address. See the [privileged architecture](https://docs.riscv.org/reference/isa/priv/machine.html).
+RRESP/BRESP SLVERR and DECERR propagate as access faults for data reads, precise uncached stores/AMOs, instruction fetch and page-table walks. Read-fill errors never install cache data or executable instruction-cache entries. Data-bus faults report zero in `xtval`; instruction and translation faults report the virtual address. RISC-V permits zero `xtval` for these faults; a physical address must not be reported as though it were the faulting virtual address. See the [privileged architecture](https://docs.riscv.org/reference/isa/priv/machine.html).
 
 Buffered cached stores may already have retired when a writeback or write-allocated refill fails. Such failures retain the dirty cache ownership, assert sticky `o_fatal_error`, record `o_fatal_addr`, and stop further CPU retirement and new side effects. They do not fabricate a precise exception for an instruction that has already retired. The wrapper must handle the fatal indication and eventually reset the CPU; automatic retries are not performed.
 
@@ -88,7 +87,7 @@ With this option, data reads outside the configured debug slice's 4 KiB page fet
 
 Executable Normal memory uses a direct-mapped instruction cache with `NORMAL_FETCH_LINES` 32-byte lines (default 256 lines, or 8 KiB). Two fill slots serve instruction windows and permitted next-line prefetches. The prefetch address must remain executable under the configured PMA. Branches retain these entries; FENCE.I, CPU reset, and accepted debug GO invalidate them and discard old fills. Accepted debug GO therefore observes newly written debug code.
 
-Use this option only for memory private to the CPU or externally coordinated with it. The FROST coherent ingress covers the separate writeback region, not these Normal read caches. External data writes require CPU reset before cached data is reused; executable-memory changes require FENCE.I or reset before execution. FROST's programming flow holds the CPU in reset while replacing BRAM contents. Its separate instruction/data BRAM copies retain their existing programming rules.
+Use this option only for memory private to the CPU or externally coordinated with it. The FROST coherent ingress covers the separate writeback region, not these Normal read caches. External data writes require CPU reset before cached data is reused; executable-memory changes require FENCE.I or reset before execution. FROST's programming flow holds the CPU in reset while replacing BRAM contents.
 
 This policy creates no dirty BRAM cache lines. FENCE waits for buffered Normal stores' B responses. FROST's BRAM slave responds only after the RAM write, so a successful fence leaves those BRAM bytes updated. An external AXI fabric may acknowledge write-through traffic at an intermediate buffer; it must preserve ordering with subsequent accesses and drain those buffers before resetting or powering down that fabric. B completion alone does not prove final-memory visibility in such a fabric. Reset can still discard unissued store-buffer entries; software must drain writes whose persistence it requires before requesting CPU reset. Already presented AXI writes drain across CPU-only reset as specified above.
 
@@ -111,9 +110,9 @@ The CPU map is a build configuration shared by all modules using `riscv_pkg`. Su
 
 Regions use nonoverlapping, page-aligned half-open intervals; elaboration checks alignment, overflow and overlap. A zero size disables an uncached or Device region. The cached region always has its configured power-of-two size. The executable uncached prefix must fit within its data region. Physical width is derived from the highest region limit, with a minimum of 32 bits and a maximum of 56 bits. Device addresses may be above 4 GiB. There is one cached region and one uncached memory region in this implementation; it is not a runtime-programmable PMA table.
 
-Only the exact default FROST map with `FROST_PMA_LEGACY_DEVICE_STORES=1` retains its legacy allowance for untranslated stores anywhere in `0x40000000..0x80000000`; FROST's SoC ignores writes to unimplemented registers there. Other maps, and builds setting this definition to 0, admit only their configured regions. The optimized FROST store-PMA decoder is bypassed for a different map. Devices permit loads/stores, prohibit instruction fetch and atomics, and bypass every cache including L0. Page tables must reside in the configured cached region; the walker coherently probes L1D and reads through L2.
+Only the exact default FROST map with `FROST_PMA_LEGACY_DEVICE_STORES=1` allows untranslated stores anywhere in `0x40000000..0x80000000`; FROST's SoC ignores writes to unimplemented registers there. Other maps, and builds setting this definition to 0, admit only their configured regions. The optimized FROST store-PMA decoder is bypassed for a different map. Devices permit loads/stores, prohibit instruction fetch and atomics, and bypass every cache including L0. Page tables must reside in the configured cached region; the walker coherently probes L1D and reads through L2.
 
-The generic CPU has no knowledge of UART/FIFO/APLIC register offsets. The FROST SoC's register map and programming interface remain platform-specific. Changing the standalone CPU configuration does not automatically readdress FROST's peripherals or linker scripts.
+The generic CPU has no knowledge of UART/FIFO/APLIC register offsets. The FROST SoC's register map and programming interface are platform-specific. Changing the standalone CPU configuration does not automatically readdress FROST's peripherals or linker scripts.
 
 ## Interrupt and debug controls
 
@@ -168,15 +167,14 @@ from the DMA sequencer into that L1D. The [SMP plan](../../../ROADMAP.md#smp)
 replaces it with a coherent interface inside the cluster, which a second
 hart needs.
 
-## Legacy BRAM-only platform profile
+## BRAM-only profile
 
-`ENABLE_CACHED_TIER=1` is the supported standalone integration default.
-FROST retains `ENABLE_CACHED_TIER=0` for its BRAM-only simulation profile;
-that profile instantiates no L1 or L2 cache and no coherent agents and must
-not execute cached memory accesses or page-table walks. Cached data has its
-historical zero-read/no-op-write stub in that profile. External integrations
-should keep the cached tier enabled even if their boot code resides in
-uncached memory.
+`ENABLE_CACHED_TIER=1` is the default. FROST's BRAM-only simulation profile
+sets `ENABLE_CACHED_TIER=0`, which builds no L1 or L2 cache and no coherent
+agents. That profile must not execute cached memory accesses or page-table
+walks; its cached data reads return zero and its cached writes do nothing.
+External integrations should keep the cached tier enabled even if their boot
+code resides in uncached memory.
 
 ## Verification
 

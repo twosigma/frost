@@ -235,8 +235,8 @@ instruction access fault and never installs a victim entry. Device regions
 cannot be fetched. FROST enables the optional Normal cache; its entries survive
 branches and invalidate on FENCE.I, reset, and accepted debug GO. Next-line
 prefetches must remain executable under the configured PMA. The standalone
-CPU defaults to strict uncached access. The fixed-latency `low_bram_fetch_presenter` remains only
-in the positional TestRIG fixture and component tests.
+CPU defaults to strict uncached access. The fixed-latency `low_bram_fetch_presenter`
+serves only the positional TestRIG fixture and component tests.
 
 IF tolerates any provider latency. When no valid window arrives, IF emits NOP
 bubbles and freezes its PC and per-packet state while the provider keeps
@@ -251,8 +251,8 @@ indirect jump (JALR, C.JR, C.JALR) starts there. The expansion's
 source-register fields are stored separately, and PD takes a compressed
 instruction's register fields from them. CPU fetch fills compute the metadata with
 `riscv_pkg::imem_make_sideband`, and
-`sw/common/generate_imem_predecode_init.py` mirrors it for the legacy
-instruction-memory metadata arrays used by component tests.
+`sw/common/generate_imem_predecode_init.py` mirrors it for the
+instruction-memory metadata arrays that component tests use.
 
 ## Address translation
 
@@ -365,7 +365,7 @@ word. When `pc_reg` is in the upper half of that word, the retry's BTB lookup
 names the parcel before it, which is off the program path, so `pc_controller`
 flags the lookup, `branch_prediction_controller` ignores that BTB entry, and
 IF gives the packet a not-taken direction with its own bimodal index. With
-the legacy fixed-latency test provider no program reaches the resteer; the
+the fixed-latency test provider no program reaches the resteer; the
 `served_window_resteer_fetch_fuzz` test reaches it under the fetch-latency
 fuzz.
 

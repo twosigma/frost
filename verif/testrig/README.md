@@ -86,10 +86,10 @@ puts the branch and the add at the same address, one after the other.
 The `rvfi_dii` build (`FROST_RVFI_DII`, defined only by its entry in
 [`tests/test_run_cocotb.py`](../../tests/test_run_cocotb.py)) leaves the CPU
 unchanged except where noted below. It selects `frost_rvfi_platform` in place
-of the production `platform_top`. This fixture retains the fixed-latency
+of the production `platform_top`. This fixture uses the fixed-latency
 Normal memory interface; the production AXI `CACHE_NORMAL_MEMORY` policy is
-not passed to it. The CPU's read-size output qualifies the legacy MMIO
-path's 32-bit APLIC reads; unused request outputs remain open.
+not passed to it. The CPU's read-size output qualifies 32-bit APLIC reads on
+the fixture's MMIO path; unused request outputs are left open.
 The [CPU boundary tests](../../hw/rtl/cpu_top/README.md#verification) cover
 the production AXI interface separately.
 

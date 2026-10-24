@@ -108,8 +108,8 @@ which stores count. Device loads, LRs and AMOs never forward.
 
 A load staged while the SQ is empty skips the probe. The staging register
 can take the next load in the cycle the current one launches; a probe costs
-one more cycle. The legacy local-BRAM fixture permits a launch each cycle,
-whereas the AXI Normal path retains its one owner through the response.
+one more cycle. The fixed-latency local-BRAM fixture permits a launch each
+cycle, whereas the AXI Normal path keeps its one owner through the response.
 With `PREPARE_LOAD_WHILE_BUSY=1` a load may be staged while the memory port
 is busy (`i_mem_bus_busy`). The wrapper can separately permit an unrelated L0 hit while an ordinary
 Normal store launches or drains, or while an older Normal read waits for its
@@ -248,7 +248,7 @@ cycles.
 
 `cpu_top` sets `CACHE_UNCACHED_DATA=0`: strict uncached and Device accesses
 bypass L0 and cannot fill it, because unused narrow AXI byte lanes are not
-valid data. That parameter defaults to 1 for legacy unit benches.
+valid data. It defaults to 1, which the unit benches use.
 The independent `CACHE_NORMAL_MEMORY` option permits caching the configured
 Normal region outside the debug slice's 4 KiB page; its AXI adapter fetches
 complete aligned dwords. FROST enables this option, while standalone
