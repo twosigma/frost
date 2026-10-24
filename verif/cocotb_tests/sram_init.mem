@@ -1,0 +1,10 @@
+// Copyright 2026 Two Sigma Open Source, LLC
+// SPDX-License-Identifier: Apache-2.0
+// Starting image of the sram_macros_imem_cold bench: words at the edges of
+// both rows of 8,192-word macros, which test_sram_macros.py reads back.
+@0000
+0123456 789ABCD
+@1FFE
+EF01234 56789AB CDEF012 3456789
+@3FFE
+ABCDEF0 1234567

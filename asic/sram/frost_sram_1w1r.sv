@@ -45,6 +45,10 @@
  * wrappers' behavioral clear does. The macros have no such operation;
  * simulation clears their models' words directly, so a macro's read in that
  * cycle returns zeros rather than the old word.
+ *
+ * The macros have no initial contents. With USE_INIT_FILE, simulation starts
+ * the memory with the hex image INIT_FILE, of at most 2**ADDR_WIDTH words,
+ * as a block RAM would; a chip writes the memory before reading it.
  */
 module frost_sram_1w1r #(
     parameter int unsigned ADDR_WIDTH = 9,
@@ -52,7 +56,10 @@ module frost_sram_1w1r #(
     parameter int unsigned MASK_GRANULE = DATA_WIDTH,
     // Both ports run on one clock, so a read and a write share cycles.
     parameter bit COMMON_CLOCK = 1'b1,
-    parameter bit SIM_BULK_CLEAR = 1'b0
+    parameter bit SIM_BULK_CLEAR = 1'b0,
+    // Simulation only: the starting image, at most 40 characters.
+    parameter bit USE_INIT_FILE = 1'b0,
+    parameter bit [319:0] INIT_FILE = ""
 ) (
     input logic                               i_write_clock,
     input logic                               i_bulk_clear,
@@ -100,6 +107,8 @@ module frost_sram_1w1r #(
   localparam int unsigned Macro512x68 = 5;  // NIC FIFOs
   localparam int unsigned Macro256x36 = 6;  // BTB slot-2 payloads
   localparam int unsigned Macro128x64m8 = 7;  // L1I data
+  localparam int unsigned Macro8192x28 = 8;  // Instruction memory, cold banks
+  localparam int unsigned Macro8192x4 = 9;  // Instruction memory, four-bit banks
   function automatic int unsigned select_macro();
     if (fits(12, 64, 8)) select_macro = Macro4096x64m8;
     else if (fits(10, 64, 8)) select_macro = Macro1024x64m8;
@@ -108,10 +117,13 @@ module frost_sram_1w1r #(
     else if (fits(9, 68, 0)) select_macro = Macro512x68;
     else if (fits(8, 36, 0)) select_macro = Macro256x36;
     else if (fits(7, 64, 8)) select_macro = Macro128x64m8;
+    else if (fits(13, 28, 0)) select_macro = Macro8192x28;
+    else if (fits(13, 4, 0)) select_macro = Macro8192x4;
     else select_macro = ArrayMacro;
   endfunction
   localparam int unsigned Macro = select_macro();
   localparam int unsigned TileAddrWidth =
+      (Macro == Macro8192x28 || Macro == Macro8192x4) ? 13 :
       (Macro == Macro4096x64m8) ? 12 :
       (Macro == Macro1024x64m8 || Macro == Macro1024x19 || Macro == Macro1024x18) ? 10 :
       (Macro == Macro512x68) ? 9 :
@@ -122,7 +134,9 @@ module frost_sram_1w1r #(
       (Macro == Macro1024x19) ? 19 :
       (Macro == Macro1024x18) ? 18 :
       (Macro == Macro512x68) ? 68 :
-      (Macro == Macro256x36) ? 36 : DATA_WIDTH;
+      (Macro == Macro256x36) ? 36 :
+      (Macro == Macro8192x28) ? 28 :
+      (Macro == Macro8192x4) ? 4 : DATA_WIDTH;
   // Bits per write-mask bit of the macro; 0 for whole-word writes.
   localparam int unsigned TileMaskGranule =
       (Macro == Macro4096x64m8 || Macro == Macro1024x64m8 || Macro == Macro128x64m8) ? 8 : 0;
@@ -182,6 +196,9 @@ module frost_sram_1w1r #(
       end
     end
     always_ff @(posedge i_read_clock) if (i_read_enable) read_data <= memory[i_read_address];
+`ifndef SYNTHESIS
+    initial if (USE_INIT_FILE) $readmemh(INIT_FILE, memory);
+`endif
   end else begin : gen_macros
     // A grid of Rows by Columns macros: the high address bits pick a row,
     // and each column holds TileDataWidth bits of the word.
@@ -297,6 +314,28 @@ module frost_sram_1w1r #(
               .addr1(read_address),
               .dout1(tile_read_data)
           );
+        end else if (Macro == Macro8192x28) begin : gen_macro
+          sram_1w1r_8192x28 u_macro (
+              .clk0 (i_write_clock),
+              .csb0 (!write_select),
+              .addr0(write_address),
+              .din0 (write_data),
+              .clk1 (i_read_clock),
+              .csb1 (!read_select),
+              .addr1(read_address),
+              .dout1(tile_read_data)
+          );
+        end else if (Macro == Macro8192x4) begin : gen_macro
+          sram_1w1r_8192x4 u_macro (
+              .clk0 (i_write_clock),
+              .csb0 (!write_select),
+              .addr0(write_address),
+              .din0 (write_data),
+              .clk1 (i_read_clock),
+              .csb1 (!read_select),
+              .addr1(read_address),
+              .dout1(tile_read_data)
+          );
         end else begin : gen_macro
           sram_1w1r_128x64_m8 u_macro (
               .clk0  (i_write_clock),
@@ -315,6 +354,17 @@ module frost_sram_1w1r #(
           always @(posedge i_write_clock)
             if (bulk_clear)
               for (int i = 0; i < 2 ** TileAddrWidth; i++) gen_macro.u_macro.mem[i] = '0;
+        end
+        // This macro's slice of the starting image.
+        if (USE_INIT_FILE) begin : gen_init
+          initial begin
+            logic [DATA_WIDTH-1:0] image[2**ADDR_WIDTH];
+            $readmemh(INIT_FILE, image);
+            for (int i = 0; i < 2 ** TileAddrWidth; i++) begin
+              gen_macro.u_macro.mem[i] =
+                  image[row*(2**TileAddrWidth)+i][column*TileDataWidth+:TileDataWidth];
+            end
+          end
         end
 `endif
       end

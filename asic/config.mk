@@ -78,13 +78,13 @@ export LEC_CHECK = 0
 
 # The core holds the SRAM macros where asic/macro_placement.tcl puts them,
 # with a 120 um ring around them and an 800 um band for the logic between
-# their two bands: 5.1 mm by 4.665 mm with the macros' current sizes. The die
-# adds 15 um on each side for the pins.
-export DIE_AREA = 0 0 5130 4695
-export CORE_AREA = 15 15 5115 4680
+# the top band and the instruction memory's: 5.1 mm by 5.625 mm with the
+# macros' current sizes. The die adds 15 um on each side for the pins.
+export DIE_AREA = 0 0 5130 5655
+export CORE_AREA = 15 15 5115 5640
 export MACRO_PLACEMENT_TCL = $(DESIGN_DIR)/macro_placement.tcl
-# The pins go on the left and right edges, in front of the logic band, not
-# on the top and bottom edges, in front of the macros.
+# The pins go on the left and right edges, which pass the logic band, not
+# on the top and bottom edges, which run along the macros.
 export PLACE_PINS_ARGS = -exclude top:* -exclude bottom:*
 # Place the standard cells at the lower bound of the density plus a fifth of
 # the remaining room, as the platform's gcd design does.

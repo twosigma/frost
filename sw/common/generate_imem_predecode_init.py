@@ -30,9 +30,11 @@ own image, and every sideband predicate the IF next-PC logic reads
 The generator writes the full overlay image; the RTL reads the prefix selected
 by ``PC_METADATA_OVERLAY_ADDR_WIDTH``.
 
-Simulation derives these memories from sw.mem. Vivado uses a separate init
-file for each synthesized memory. The predecode functions mirror those in
-riscv_pkg, including ``imem_make_sideband`` and ``imem_rvc_expand``.
+Simulation derives these memories from sw.mem, except that simulations of
+the ASIC flow's SRAM macros load the block-RAM images into the macros.
+Vivado uses a separate init file for each synthesized memory. The predecode
+functions mirror those in riscv_pkg, including ``imem_make_sideband`` and
+``imem_rvc_expand``.
 """
 
 from __future__ import annotations

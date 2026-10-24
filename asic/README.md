@@ -10,20 +10,19 @@ process, so the flow shows that the RTL maps onto standard cells and SRAM
 macros and estimates its area and timing. It does not replace a foundry flow.
 
 The memories behind the RAM wrappers in
-[`hw/rtl/lib/ram`](../hw/rtl/lib/ram), apart from the instruction memory's,
-are dual-port SRAM macros that
+[`hw/rtl/lib/ram`](../hw/rtl/lib/ram) are dual-port SRAM macros that
 [OpenRAM](https://github.com/VLSIDA/OpenRAM) generates for FreePDK45: the
-caches' data, the L1D's and the L2's tags, the data memory, the NIC's FIFOs,
-and the BTB's slot-2 payload tables ([SRAM macros](#sram-macros)). The L2
-holds 256 KiB, where the X3's holds 2 MiB, so that the flow fits CI's
-runners ([CI](#ci)). Arrays of 4,096 bits or less, such as the L1I's tags
-and the caches' replacement state, become flip-flops. The other
-memories larger than 4,096 bits are mocked: each keeps a single row, built
-from flip-flops. They are the instruction memory, whose wrappers keep
-behavioral arrays here; the NIC's frame and packet buffers, which the
-NIC infers; and the arrays read without a clock, such as the BTB tags, the
-TAGE tables, and banks of the ROB and the INT RS, which an ASIC would build
-from flip-flops or latches rather than SRAM. Their area and the paths through
+caches' data, the L1D's and the L2's tags, the data memory, the instruction
+memory, the NIC's FIFOs, and the BTB's slot-2 payload tables
+([SRAM macros](#sram-macros)). The L2 holds 256 KiB, where the X3's holds
+2 MiB, so that the flow fits CI's runners ([CI](#ci)). Arrays of 4,096 bits
+or less, such as the L1I's tags and the caches' replacement state, become
+flip-flops. The other memories larger than 4,096 bits are mocked: each keeps
+a single row, built from flip-flops. They are the NIC's frame and packet
+buffers, which the NIC infers, and the arrays read without a clock, such as
+the BTB tags, the TAGE tables, the instruction memory's PC-metadata overlays,
+and banks of the ROB and the INT RS, which an ASIC would build from
+flip-flops or latches rather than SRAM. Their area and the paths through
 them are therefore missing. The summary lists the macros and every mocked
 memory with its dimensions.
 
@@ -47,7 +46,7 @@ The script needs Docker and the `frost` image (see the
 images run as the invoking user, with the checkout mounted at `/workspace`,
 and everything the flow writes goes under `asic/build`, which git ignores.
 With 16 threads the whole flow takes about three hours. The final report
-needs about 25 GB of memory, detailed routing 20 GB, and global routing
+needs about 26 GB of memory, detailed routing 20 GB, and global routing
 16 GB, and the stages' databases about 22 GB of disk.
 
 `run` has three steps:
@@ -56,8 +55,8 @@ needs about 25 GB of memory, detailed routing 20 GB, and global routing
    sources with sv2v as [`tests/test_run_yosys.py`](../tests/test_run_yosys.py)
    does, and writes the source list from [`hw/rtl/frost.f`](../hw/rtl/frost.f)
    to `asic/build/sources.mk`. No memory reads a `$readmemh` image here: the
-   SRAM macros have no initial contents, and the instruction memory reads its
-   images only outside Yosys.
+   SRAM macros have no initial contents, and the instruction memory's
+   PC-metadata overlays read their images only outside Yosys.
 2. In the ORFS image, ORFS's Makefile runs the flow with
    [`config.mk`](config.mk). Make reruns only the stages whose input files
    changed since the last run. It does not track `config.mk`, so delete
@@ -88,9 +87,9 @@ the stage before it.
 | Top module | `platform_top`, with `ENABLE_CACHED_TIER=1` and `USE_BEHAVIORAL_DDR=0`, so the cached tier ends at the DDR AXI port, and `L2_CACHE_BYTES=262144`, a 256 KiB L2 where the X3's holds 2 MiB, so that the flow fits CI's runners ([CI](#ci)); other parameters keep their defaults |
 | Defines | `SYNTHESIS`, and `FROST_SRAM_MACROS` for the [SRAM macros](#sram-macros); not `FROST_XILINX_PRIMS`, so every block uses its portable version |
 | Memories | The RAM wrappers' memories are SRAM macros. `SYNTH_MOCK_LARGE_MEMORIES=1`: other memories over 4,096 bits keep one row; smaller ones become flip-flops |
-| Die size | `DIE_AREA`: 5.13 by 4.695 mm; `CORE_AREA` leaves 15 um on each side. The core fits the macro placement |
+| Die size | `DIE_AREA`: 5.13 by 5.655 mm; `CORE_AREA` leaves 15 um on each side. The core fits the macro placement |
 | Macro placement | [`macro_placement.tcl`](macro_placement.tcl) (`MACRO_PLACEMENT_TCL`) |
-| Pin placement | `PLACE_PINS_ARGS`: the die's left and right edges only, in front of the logic |
+| Pin placement | `PLACE_PINS_ARGS`: the die's left and right edges only, which pass the logic band |
 | Power grid | The platform's, with [`sram_power.tcl`](sram_power.tcl) (`PRE_PDN_TCL`) connecting the macros' supply pins and [`check_power_grid.tcl`](check_power_grid.tcl) (`POST_PDN_TCL`) checking that everything placed reaches the grid |
 | Placement density | `PLACE_DENSITY_LB_ADDON=0.20`: the lower bound plus a fifth of the remaining room |
 | Clock tree synthesis | `CTS_ARGS`: ORFS's default arguments, with the clock ports' nets as the roots ([Timing constraints](#timing-constraints)) |
@@ -112,17 +111,17 @@ of the macros' models below; the FPGA build and the other simulations never
 do. Under it, the RAM wrappers in
 [`hw/rtl/lib/ram`](../hw/rtl/lib/ram) keep their storage in two modules:
 [`frost_sram_1w1r`](sram/frost_sram_1w1r.sv), with a write port and a read
-port, for `sdp_block_ram`, `sdp_block_ram_dc`, `sdp_ram_byte_en`, and
-`sdp_packed_tag_uram`; and [`frost_sram_2rw`](sram/frost_sram_2rw.sv), with
-two read and write ports on their own clocks, for `tdp_bram_dc_byte_en`. A
-memory of more than 4,096 bits whose depth and width are multiples of a
-macro's, with write-mask lanes that the macro can build, becomes a grid of
-that macro: its high address bits select a row of macros, and each column
-holds a slice of the word. Other memories stay behavioral arrays, which
-synthesis builds from flip-flops, or mocks above 4,096 bits. The instruction
-memory's wrappers, `sdp_block_ram_dc_init` and `sdp_dist_ram_init`, always
-keep behavioral arrays. Without the define, the wrappers' code is unchanged,
-and the FPGA build and the other simulations never read these modules.
+port, for `sdp_block_ram`, `sdp_block_ram_dc`, `sdp_block_ram_dc_init`,
+`sdp_ram_byte_en`, and `sdp_packed_tag_uram`; and
+[`frost_sram_2rw`](sram/frost_sram_2rw.sv), with two read and write ports on
+their own clocks, for `tdp_bram_dc_byte_en`. A memory of more than 4,096
+bits whose depth and width are multiples of a macro's, with write-mask lanes
+that the macro can build, becomes a grid of that macro: its high address
+bits select a row of macros, and each column holds a slice of the word.
+Other memories stay behavioral arrays, which synthesis builds from
+flip-flops, or mocks above 4,096 bits. Without the define, the wrappers'
+code is unchanged, and the FPGA build and the other simulations never read
+these modules.
 
 | Macro | Words x bits | Write mask | Size (um) | Read (ns) | Minimum period (ns) | Instances | Memories |
 | --- | --- | --- | --- | ---: | ---: | ---: | --- |
@@ -134,8 +133,10 @@ and the FPGA build and the other simulations never read these modules.
 | `sram_1w1r_512x68` | 512 x 68 | | 436.7 x 245.7 | 0.384 to 0.451 | 1.67 | 2 | The NIC's receive and transmit FIFOs |
 | `sram_1w1r_256x36` | 256 x 36 | | 167.6 x 237.2 | 0.266 to 0.334 | 1.24 | 3 | The BTB's slot-2 payload tables |
 | `sram_1w1r_128x64_m8` | 128 x 64 | Bytes | 248.6 x 143.5 | 0.308 to 0.376 | 1.39 | 16 | L1I data, 1 row of 4 in each way's bank |
+| `sram_1w1r_8192x28` | 8,192 x 28 | | 665.7 x 877.4 | 0.466 to 0.533 | 1.97 | 4 | Instruction memory's cold banks, 2 rows in each parity's |
+| `sram_1w1r_8192x4` | 8,192 x 4 | | 173.1 x 871.8 | 0.268 to 0.335 | 1.24 | 8 | Instruction memory's frontend-hot and compressed banks, 2 rows in each |
 
-The macros cover 12.0 mm^2, half of the die. Read is the delay
+The macros cover 15.6 mm^2, more than half of the die. Read is the delay
 from the read clock's falling edge to the read data in the macro's Liberty
 model, driving 0.84 fF and 53.5 fF: an OpenRAM macro registers its inputs at
 the rising edge and reads in the second half of the cycle, so a read returns
@@ -157,8 +158,8 @@ differ from the block RAMs they replace in these cases:
   data and the L2's tags, keep the undefined read, which frost_cache never
   uses: in simulation its data arrays reject such a read when the cache uses
   its data (`sdp_ram_byte_en`), and the L2 discards a delayed tag read that a
-  write of its set crossed. Across the data memory's two clocks, such a read
-  is undefined in a block RAM as well.
+  write of its set crossed. Across the data memory's and the instruction
+  memory's two clocks, such a read is undefined in a block RAM as well.
 - A data memory port's read data after a cycle that writes that port is
   undefined, where the block RAM returns the written bytes. The CPU accepts
   no load while it stores, and the debug slice writer reads the
@@ -166,17 +167,30 @@ differ from the block RAMs they replace in these cases:
 - The L2 data macros' read data is undefined in the cycle after one
   without a read, where the block RAM keeps the word it last read, and the
   read pipeline of `sdp_ram_byte_en` carries it on. frost_cache uses the
-  array's read data only when a request's data is due.
+  array's read data only when a request's data is due. The instruction
+  memory's banks keep the block RAM's behavior with a register of the last
+  word read (`sdp_block_ram_dc_init`), which synthesis removes, since
+  `soc_top` reads them every cycle.
 - A macro completes a write half a write-clock period after the clock edge.
   The NIC's FIFOs use a word's read data only from two and a half
   read-clock periods after its write pointer leaves the write side, which
   covers that while the write clock's period is under five read-clock
   periods. The NIC's clocks keep their 6.206 ns period, twice the core
   clock's at the default target, so the receive FIFO, which the NIC writes
-  and the core reads, needs a core clock period above 1.25 ns.
+  and the core reads, needs a core clock period above 1.25 ns. The
+  instruction memory takes its writes on the quarter-rate clock, so its
+  macros complete one two core cycles after the edge. `soc_top` reads the
+  instruction memory every cycle, and the CPU fetches a written word only
+  after the program loader releases the CPU's reset or after the debug slice
+  writer reports the write done, four core cycles after the macros complete
+  it. For readers of `imem_predecode`'s readiness flag, its write quarantine
+  lets through a read one and a half core cycles after that, with the
+  quarter-rate clock phase-locked to the core's, as on the X3.
 - The macros have no initial contents and no bulk clear. Simulation starts
-  the data memory with its program image, which a chip would load through
-  the program-loading port. The caches clear their tags and replacement
+  the data memory and the instruction memory with their program images,
+  which a chip would load through the program-loading port; the instruction
+  memory's come from the app's block-RAM images, which its build writes with
+  `GENERATE_IMEM_INIT=1`. The caches clear their tags and replacement
   state with a sweep at reset; simulation's fast maintenance
   (`SIM_FAST_MAINT`) clears those macros' models directly.
 
@@ -184,8 +198,10 @@ The registry's `sram_macros_*` benches build each wrapper with the
 parameters of one of the design's memories and the macros' Verilog models,
 check the grid of macros, and compare random reads and writes with a model
 of the wrapper, including reads of the word being written where the macros
-hold writes. The `*_sram_macros` programs run `isa_test`, `ddr_test`,
-`ddr_exec_test`, and `nic_loopback` on the SoC built from the macros. In
+hold writes; the instruction memory's banks take writes on a clock a
+quarter of the read clock's rate, as on the X3. The `*_sram_macros`
+programs run `isa_test`, `ddr_test`, `ddr_exec_test`, and `nic_loopback` on
+the SoC built from the macros. In
 both, the X that a model drives for undefined read data becomes a random
 value, as does a macro's read of the word that it writes in the same cycle,
 so a user that depended on one would fail.
@@ -216,13 +232,15 @@ could not buffer it. OpenRAM sets the minimum period to 3.7 times the read
 delay at the largest load. It skips DRC and LVS, which need Magic and
 Netgen. Each macro has a supply ring on metal3 and metal4 and its pins on
 its edges. The 4,096 by 64 macros take about half an hour and 3.5 GB each,
-on one thread, and the others less than ten minutes; all of them at once
-take 34 minutes. OpenRAM could not route the pins of a 512 by 128 macro to
-its edges, so the L1s' data uses 64-bit macros, four to a way's 256-bit
-line.
+on one thread, the 8,192 by 28 macro about 25 minutes, and the others less
+than ten minutes; all of them at once take 34 minutes. OpenRAM could not
+route the pins of a 512 by 128 macro to its edges, so the L1s' data uses
+64-bit macros, four to a way's 256-bit line. A macro holds at most 8,192
+words, 512 rows of 16, so each of the instruction memory's 16,384-word
+banks takes two rows of macros.
 
 The generator copies each macro's abstract LEF, Liberty model, and Verilog
-model into `sram/macros/<macro>/`, 363 KB in all, which git tracks, so the
+model into `sram/macros/<macro>/`, 419 KB in all, which git tracks, so the
 flow and CI never run OpenRAM. It fixes Python's hash seed, which sets the
 order in which OpenRAM writes shapes, so a rerun writes the same views byte
 for byte. Everything else stays in `asic/build/openram`, which git ignores,
@@ -236,31 +254,63 @@ the generator sets `VERBOSE` to 0, which also silences their collision
 warnings, and their delays to 0.1 and 0.5 ns, to fit the simulations' 3 ns
 clock.
 
-[`macro_placement.tcl`](macro_placement.tcl) places the macros in two bands
-across the core, with the logic in a band between them. The bottom band
-holds the L2 data's eight 64-bit slices, a macro each, in two blocks of two
-by two, and the data memory's four macros between them. The top band holds
-the L1D data in the middle, a row of four macros for each way; at its left
-the L1I data, arranged the same way, then the NIC's FIFOs and the BTB's
-payload tables; and at its right the L1D tags and the L2 tags, a macro for
-each way. The logic band is 800 um high, and the script stops the flow if
-the core leaves less than 600 um for it. Macros above one another stand
-40 um apart and groups of macros 80 um. Macros side by side stand 62 um
-apart, because the cell rows between them take their power from the metal4
-straps that cross the gap: the platform's grid has a strap of each supply
-every 56 um and keeps the straps' vias 2 um from a macro, so a 40 um gap can
-leave its rows without one. A 120 um ring of free core surrounds the macros and
-carries the wires from the pins past the macros' corners; with the macros
-against the core's edges, global routing could not get the wires past them.
-The I/O placer puts the pins, over a thousand of them the DDR port's, on
-the die's left and right edges (`PLACE_PINS_ARGS`), in front of the logic
-band rather than a macro.
+[`macro_placement.tcl`](macro_placement.tcl) places the macros in three
+bands across the core, with the logic in a band between the top two. The
+bottom band holds the L2 data's eight 64-bit slices, a macro each, in two
+blocks of two by two, and the data memory's four macros between them. The
+band above it holds the instruction memory's twelve macros in a row: each
+parity's cold, frontend-hot, and compressed banks side by side, two macros a
+bank, the even parity at the left and the odd parity, in mirror order, at
+the right. The top band holds the L1D data in the middle, a row of four
+macros for each way; at its left the L1I data, arranged the same way, then
+the NIC's FIFOs and the BTB's payload tables; and at its right the L1D tags
+and the L2 tags, a macro for each way. The logic band is 800 um high, and
+the script stops the flow if the core leaves less than 600 um for it.
+Macros above one another stand 40 um apart and groups of macros 80 um.
+Macros side by side stand 62 um apart, because the cell rows between them
+take their power from the metal4 straps that cross the gap: the platform's
+grid has a strap of each supply every 56 um and keeps the straps' vias 2 um
+from a macro, so a 40 um gap can leave its rows without one. A 120 um ring
+of free core surrounds the macros and carries the wires from the pins past
+the macros' corners; with the macros against the core's edges, global
+routing could not get the wires past them. The I/O placer puts the pins,
+over a thousand of them the DDR port's, on the die's left and right edges
+(`PLACE_PINS_ARGS`): the DDR port's write data beside the bottom band, its
+read data beside the instruction memory's row and the logic band, and the
+NIC's transceiver data beside the top band.
 [`check_power_grid.tcl`](check_power_grid.tcl) stops the
 floorplan if a macro or a row is cut off from the grid, which the final
 report's IR drop analysis would otherwise find at the end of the flow. The
 platform's grid straps each macro's supply ring through metal5 and metal6,
 and [`sram_power.tcl`](sram_power.tcl) connects OpenRAM's `vdd` and `gnd`
 pins to the grid's nets.
+
+### Instances built from SRAM macros
+
+These RAM wrapper instances, named in `platform_top`'s hierarchy, keep their
+memories in SRAM macros; synthesis names each macro after its instance, as
+in `soc.data_memory.u_sram.gen_row[0].u_macro`. An index `w` runs from 0
+to 3, one for each way.
+
+| Instance | Wrapper | Memory | Macros |
+| --- | --- | --- | --- |
+| `cpu.cluster_memory.gen_cached_tier.cluster_cache.l2_cache.gen_data_array.data_array` | `sdp_ram_byte_en` | 4,096 x 512, byte lanes | 1 row of 8 `sram_1w1r_4096x64_m8` |
+| `cpu.cluster_memory.gen_cached_tier.cluster_cache.l2_cache.gen_tag_ultra.tag_array` | `sdp_packed_tag_uram` | 4,096 tags of 18 bits, read four at a time | 1 row of 4 `sram_1w1r_1024x18` |
+| `cpu.hart.gen_cached_tier.hart_cache.l1_cache.gen_data_banks.gen_bank[w].data_bank` | `sdp_ram_byte_en` | 1,024 x 256, byte lanes | 1 row of 4 `sram_1w1r_1024x64_m8` each |
+| `cpu.hart.gen_cached_tier.hart_cache.l1_cache.gen_tag_block.gen_way[w].tag_array` | `sdp_block_ram` | 1,024 x 19 | 1 `sram_1w1r_1024x19` each |
+| `cpu.hart.gen_cached_tier.hart_cache.l1i_cache.gen_data_banks.gen_bank[w].data_bank` | `sdp_ram_byte_en` | 128 x 256, byte lanes | 1 row of 4 `sram_1w1r_128x64_m8` each |
+| `cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.branch_predictor_inst.btb_payload_ram_lookup_2`, `_alt`, and `_rot` | `sdp_block_ram` | 256 x 36 | 1 `sram_1w1r_256x36` each |
+| `soc.data_memory` | `tdp_bram_dc_byte_en` | 16,384 x 64, byte lanes, two ports | 4 rows of 1 `sram_2rw_4096x64_m8` |
+| `soc.instruction_memory.u_even_cold` and `u_odd_cold` | `sdp_block_ram_dc_init` | 16,384 x 28 | 2 rows of 1 `sram_1w1r_8192x28` each |
+| `soc.instruction_memory.u_even_frontend_hot`, `u_odd_frontend_hot`, `u_even_compressed`, and `u_odd_compressed` | `sdp_block_ram_dc_init` | 16,384 x 4 | 2 rows of 1 `sram_1w1r_8192x4` each |
+| `soc.gen_cached_tier.nic.u_mac.u_rx_fifo.storage` and `u_tx_fifo.storage` | `sdp_block_ram_dc` | 512 x 68 | 1 `sram_1w1r_512x68` each |
+
+The instruction memory's sideband banks, `u_even_sideband` and
+`u_odd_sideband`, are `sdp_block_ram_dc_init` instances that only simulation
+reads, so synthesis removes them; simulations of the macros build them from
+`sram_1w1r_8192x4` macros too. The wrappers of distributed RAMs, such as the
+instruction memory's PC-metadata overlays (`sdp_dist_ram_init`), keep
+behavioral arrays.
 
 ## Timing constraints
 
@@ -324,82 +374,90 @@ synthesis maps the same netlist for any target
 ([Finding the fmax](#finding-the-fmax)).
 
 The data memory's macros clock their program-loading port with `i_clk_div4`
-and their core port with `i_clk`, as the X3's block RAMs do. The instruction
-memory's mocked row adds paths between the two core clocks that a two-port
-memory would not have: it is written on `i_clk_div4` and read by registers on
-`i_clk`. The flow times and repairs them like any other path.
+and their core port with `i_clk`, and the instruction memory's macros their
+write port and their read port, as the X3's block RAMs do.
 
 ## Results with the SRAM macros
 
 The default run at the X3's 3.103 ns core clock, with 16 threads, against the
-same flow with the X3's 2 MiB L2 at commit `ea7289e0`, whose 64 L2 data
-macros needed a 9.6 by 7.315 mm die, and against the last run with every
-memory over 4,096 bits mocked whose results are recorded here, which CI made
-before the caches became 4-way set-associative (commit `e54df6da`) and which
-counted the I/O delays from the clock at its port:
+same flow with the X3's 2 MiB L2 and a mocked instruction memory at commit
+`ea7289e0`, whose 64 L2 data macros needed a 9.6 by 7.315 mm die, and against
+the last run with every memory over 4,096 bits mocked whose results are
+recorded here, which CI made before the caches became 4-way set-associative
+(commit `e54df6da`) and which counted the I/O delays from the clock at its
+port:
 
 | | Memories mocked | 2 MiB L2 | 256 KiB L2 |
 | --- | ---: | ---: | ---: |
-| Die | 1.89 by 1.89 mm, 3.58 mm^2 | 9.6 by 7.315 mm, 70.2 mm^2 | 5.13 by 4.695 mm, 24.1 mm^2 |
-| SRAM macros | | 119, 49.0 mm^2 | 57, 12.0 mm^2 |
-| Standard cells, final | 752,118, 1.46 mm^2 | 1,045,105, 1.78 mm^2 | 923,924, 1.71 mm^2 |
-| Hold buffers from clock tree synthesis | 11,347 | 22,495 | 14,083 |
-| Routed wire | 20.1 m | 68.6 m | 41.0 m |
-| Core clock latency, final | about 1 ns | 2.94 to 3.65 ns | 1.80 to 2.32 ns |
-| Clock skew, final | 0.15 ns | 0.55 ns | 0.61 ns |
-| Core clock setup WNS, final | 0.375 ns | -0.955 ns | -0.411 ns |
-| Worst core path between registers, final | met | -0.955 ns | -0.411 ns |
-| Core clock fmax estimate, final | | 199.5 MHz | 254.8 MHz |
-| `core_clk_div4` setup WNS, final | 1.774 ns | 0.057 ns | 0.952 ns |
-| Core clock hold WNS, final | 0.025 ns | -0.119 ns | -0.046 ns |
+| Die | 1.89 by 1.89 mm, 3.58 mm^2 | 9.6 by 7.315 mm, 70.2 mm^2 | 5.13 by 5.655 mm, 29.0 mm^2 |
+| SRAM macros | | 119, 49.0 mm^2 | 69, 15.6 mm^2 |
+| Standard cells, final | 752,118, 1.46 mm^2 | 1,045,105, 1.78 mm^2 | 978,369, 1.83 mm^2 |
+| Hold buffers from clock tree synthesis | 11,347 | 22,495 | 844 |
+| Routed wire | 20.1 m | 68.6 m | 45.7 m |
+| Core clock latency, final | about 1 ns | 2.94 to 3.65 ns | 1.89 to 2.43 ns |
+| Clock skew, final | 0.15 ns | 0.55 ns | 0.49 ns |
+| Core clock setup WNS, final | 0.375 ns | -0.955 ns | -0.468 ns |
+| Worst core path between registers, final | met | -0.955 ns | -0.468 ns |
+| Core clock fmax estimate, final | | 199.5 MHz | 247.6 MHz |
+| `core_clk_div4` setup WNS, final | 1.774 ns | 0.057 ns | 0.607 ns |
+| Core clock hold WNS, final | 0.025 ns | -0.119 ns | -0.061 ns |
 | Detailed-route DRC errors | 0 | 0 | 0 |
 | Worst IR drop on VDD | 49 mV | 193 mV | 88 mV |
 
 The 256 KiB L2 takes eight data macros, 5.1 mm^2, where the 2 MiB L2 took
-64, 40.7 mm^2, and the die shrinks to a third. The macros still take half of
-it, and the logic fills the band between their two bands and the room around
-them, so the wires stay long: the routed wire is twice the mocked run's. The
-clock tree spans the die, and the core clock's latency is 1.80 to 2.32 ns,
-where the 2 MiB L2's die put it at 2.94 to 3.65 ns.
+64, 40.7 mm^2, and the die, which also holds the instruction memory's twelve
+macros, 3.5 mm^2, is two fifths the size. The macros take more than half of
+it, and the logic fills the band between the top band and the instruction
+memory's row and the room around the macros, so the wires stay long: the
+routed wire is more than twice the mocked run's. The clock tree spans the
+die, and the core clock's latency is 1.89 to 2.43 ns, where the 2 MiB L2's
+die put it at 2.94 to 3.65 ns.
 
-The ports meet timing, since their I/O delays count from the clocks' I/O
+The outputs meet timing, since their I/O delays count from the clocks' I/O
 copies ([Timing constraints](#timing-constraints)): the worst output has
-1.20 ns of setup slack and 0.68 ns of hold slack, and the worst input 0.52 ns
-of each. The hold repair after clock tree synthesis adds 14,083 buffers, none
-at the ports. Before it, 484 endpoints fail their hold checks: about half are
-on the mocked instruction memory's paths from the quarter-rate clock, by up
-to 1.27 ns, and about half in the L2, by up to 0.33 ns. The quarter-rate
-clock's tree, with about 400 registers and the data memory's four macros,
-reaches them 0.7 to 0.9 ns after its clock pin, and the core clock's tree
-reaches its registers 1.8 to 2.3 ns after its own, so a path from the
-quarter-rate clock to the core clock needs the difference in delay. On the
-2 MiB L2's die the difference grows to about 2.5 ns, and the quarter-rate
-clock's reset synchronizer, which `i_rst` reaches on the core clock's I/O
-copy, keeps 0.06 ns of setup slack, where it has 0.95 ns here.
+0.49 ns of setup slack and 0.73 ns of hold slack. The inputs keep 0.63 ns of
+hold slack, but 139 paths from the DDR port's reset input, `i_ddr_axi_rst`,
+miss setup by up to 0.062 ns: they reach the L2's downstream request
+register through 50 cells, 40 of them buffers. The hold repair after
+clock tree synthesis adds 844 buffers, none at the ports. Before it, 92
+endpoints fail their hold checks, by up to 1.22 ns, the worst of them the
+first stages of the debug slice writer's synchronizers, which bring its
+request FIFO's read pointer and its count of finished writes from the
+quarter-rate clock to the core clock. The quarter-rate clock's tree, with
+181 registers, the data memory's four macros, and the write ports of the
+instruction memory's twelve, reaches them 0.9 to 1.1 ns after its clock pin,
+and the core clock's tree reaches its registers 1.9 to 2.4 ns after its own,
+so a path from the quarter-rate clock to the core clock needs the difference
+in delay. On the 2 MiB L2's die the difference grows to about 2.5 ns, and
+the quarter-rate clock's reset synchronizer, which `i_rst` reaches on the
+core clock's I/O copy, keeps 0.06 ns of setup slack, where it has 0.61 ns
+here.
 
-Between registers, the data memory's paths to the load queue fail worst, by
-up to 0.411 ns. Then come the paths into the L1D's and the L1I's MSHRs, which
-take the L2's responses, from one register that synthesis renamed, through
-two multiplexer trees and 35 buffers, by up to 0.213 and 0.099 ns; the L1D's
-tags to its request registers, by up to 0.212 ns; and the BTB's payload
-tables to the PC controller, by up to 0.112 ns. A macro drives its read data
-0.3 to 0.6 ns after the clock's falling edge, which leaves the paths from a
-macro about 1 ns of the 3.103 ns cycle, less the skew between the macro's
-clock and the capturing register's. The 256 KiB build's worst path launches
-at 1.5515 ns and captures at 3.103 ns, so its -0.411165 ns slack gives a
-minimum period of 3.925330 ns and an estimated fmax of 254.8 MHz. The 2 MiB
-build's worst path has the same half-cycle budget and -0.954699 ns slack,
-giving 5.012398 ns and 199.5 MHz. These estimates use the saved final path
-reports and their unrounded TSV slacks. Each of the L2's eight data macros
-feeds its read register directly, and those paths meet timing with 0.33 ns
-to spare, where the 2 MiB L2's 64 macros, in rows millimeters from the cache's
-logic, failed by up to 0.955 ns. The multiplexer that returns a held write
-adds 0.07 to 0.11 ns to the BTB's and the L1D's paths. Since the flow skips
-the repairs after global routing, the final design keeps 98 maximum-slew and
-3,050 maximum-capacitance violations (none and 632 in the mocked run, which
-ran those repairs, and 770 and 6,602 with the 2 MiB L2) and 36 hold
-violations. The worst IR drop is 88 mV on VDD and 81 mV on VSS; ORFS's map of
-the VSS drop puts its worst at the core's left edge, beside the NIC's FIFOs.
+Between registers, the paths from the data memory's macros to `soc_top`'s
+local response register (`local_resp_data`) fail worst, by up to 0.468 ns.
+Then come the L1D's tags to its request registers, by up to 0.367 ns; the
+instruction memory's macros to the same response register, by up to 0.231 ns;
+and the BTB's payload tables to the PC controller, by up to 0.112 ns. A macro
+drives its read data 0.3 to 0.6 ns after the clock's falling edge, which
+leaves the paths from a macro about 1 ns of the 3.103 ns cycle, less the skew
+between the macro's clock and the capturing register's. The 256 KiB build's
+worst path launches at 1.5515 ns and captures at 3.103 ns, so its -0.467590 ns
+slack gives a minimum period of 4.038180 ns and an estimated fmax of
+247.6 MHz. The 2 MiB build's worst path has the same half-cycle budget and
+-0.954699 ns slack, giving 5.012398 ns and 199.5 MHz. These estimates use the
+saved final path reports and their unrounded TSV slacks. Each of the L2's
+eight data macros feeds its read register directly, and those paths meet
+timing with 0.29 ns to spare, where the 2 MiB L2's 64 macros, in rows
+millimeters from the cache's logic, failed by up to 0.955 ns. The multiplexer
+that returns a held write adds 0.07 to 0.11 ns to the BTB's and the L1D's
+paths. Since the flow skips the repairs after global routing, the final design
+keeps 86 maximum-slew and 2,754 maximum-capacitance violations (none and 632
+in the mocked run, which ran those repairs, and 770 and 6,602 with the 2 MiB
+L2) and 16 hold violations, by up to 0.061 ns: 12 on the core clock, 8 of them
+in the L2's data array, and 4 at the instruction memory's macros' write ports
+on the quarter-rate clock. The worst IR drop is 88 mV on VDD and 82 mV on VSS;
+ORFS's map of the VSS drop puts its worst between the L1I's data macros, at
+the die's top left.
 
 ## Finding the fmax
 
@@ -559,8 +617,9 @@ the memories cost. A synchronous read in these runs is a flip-flop feeding
 the read register, where an SRAM macro puts its output; the paths after
 those read registers had room at 1.6 ns: 0.63 ns from the data memory's read
 register to the load queue, and 0.99 ns from the L1 data array's. With the
-SRAM macros, the paths from the data memory to the load queue fail worst at
-the X3's clock, and with the X3's 2 MiB L2, those from the L2 data
+SRAM macros, the paths from the data memory to `soc_top`'s local response
+register fail worst at the X3's clock, and with the X3's 2 MiB L2, those
+from the L2 data
 ([Results with the SRAM macros](#results-with-the-sram-macros)).
 
 The shallow arrays that the threshold also catches are distributed RAMs,
@@ -626,14 +685,14 @@ time from 24,280 to 18,282 seconds, about 25%, and produced byte-identical
 routed DEF with no DRC or antenna violations. That puts the detailed
 routing job at an estimated 3.5 to 3.9 hours, below the six-hour job limit.
 
-Those three steps' memory follows the design's 920,000 cells more than its
+Those three steps' memory follows the design's 980,000 cells more than its
 die. Global routing holds 3.7 GB after its pin access and about 11 GB more in
 its router. Detailed routing builds its own model of the cells, their 3
 million pins, and the power grid's shapes, about 9 GB, then adds 3 GB for the
 routing guides, and its track assignment peaks 6 GB above that. In the final report, the IR drop analysis
 takes about 9 GB and the layout images that ORFS saves about 8 GB. With 16
 threads, the same three steps peaked at 40, 31, and 34 GB on the 2 MiB L2's
-die, three times as large, and at 21, 20, and 25 GB on this one.
+die, two and a half times as large, and at 16, 20, and 26 GB on this one.
 
 ## The ORFS image
 

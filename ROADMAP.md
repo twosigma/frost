@@ -145,9 +145,12 @@ for an ASIC, the RTL also needs:
    matter, checked by simulations that start registers and memories at
    random values, across several seeds.
 2. Memory wrappers. The CPU's memories use the wrappers in `hw/rtl/lib/ram`,
-   the instruction memory's block RAMs and PC-metadata overlays included.
-   What remains is to list the instances that an ASIC flow replaces with
-   SRAM macros.
+   the instruction memory's block RAMs and PC-metadata overlays included,
+   and the ASIC flow
+   [lists the instances](asic/README.md#instances-built-from-sram-macros)
+   that it builds from SRAM macros. The wrappers' arrays read without a
+   clock, such as the PC-metadata overlays and the BTB tags, have no macro
+   form (item 3).
 3. The remaining memories in the ASIC flow. The [ASIC flow](asic/README.md)
    synthesizes, places, and routes the design with OpenROAD's flow scripts
    on FreePDK45 (their Nangate45 platform), from synthesis to GDS in CI on
@@ -156,15 +159,15 @@ for an ASIC, the RTL also needs:
    FROST's block RAMs have two ports and bsg_fakeram models only single-port
    memories. Its L2 holds 256 KiB, an eighth of the X3's, so that the flow
    fits CI's runners. The flow still mocks the other memories larger than
-   4,096 bits as a single row of flip-flops: the instruction memory, whose
-   wrappers keep behavioral arrays in the flow; the NIC's frame and packet
-   buffers; and the arrays read without a clock, such as the BTB tags and the
-   TAGE tables, which need flip-flop or latch arrays rather than SRAM macros.
+   4,096 bits as a single row of flip-flops: the NIC's frame and packet
+   buffers, and the arrays read without a clock, such as the BTB tags, the
+   TAGE tables, and the instruction memory's PC-metadata overlays, which
+   need flip-flop or latch arrays rather than SRAM macros.
    The final GDS leaves the macros' cells empty, since their layouts are not
    in the repository. At the X3's clock, the macros' read paths fail by up
-   to 0.41 ns, the worst from the data memory to the load queue. That path
-   has half a clock cycle from launch to capture, giving an estimated core
-   fmax of 254.8 MHz
+   to 0.47 ns, the worst from the data memory to `soc_top`'s local response
+   register. That path has half a clock cycle from launch to capture, giving
+   an estimated core fmax of 247.6 MHz
    ([results](asic/README.md#results-with-the-sram-macros)).
    FreePDK45 is not a manufacturable process, so the flow shows that the RTL
    maps onto standard cells and SRAM macros and estimates its area and

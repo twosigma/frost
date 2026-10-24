@@ -26,6 +26,15 @@
  * the hex image INIT_FILE. Without it, the array has no initial contents,
  * and a simulation may fill ram directly. imem_predecode keeps its block
  * RAMs here.
+ *
+ * The ASIC flow defines FROST_SRAM_MACROS and keeps the array in
+ * frost_sram_1w1r (asic/sram), in SRAM macros or flip-flops, with no initial
+ * contents; simulations of the macros start them with INIT_FILE. The macros'
+ * read data is undefined after a cycle without a read, so a register of the
+ * last word read holds o_read_data instead; with i_read_enable tied high,
+ * synthesis removes it. A macro completes a write half a write-clock period
+ * after the write's edge, where the block RAM completes it at the edge, so a
+ * read of the word before then is undefined.
  */
 module sdp_block_ram_dc_init #(
     parameter int unsigned ADDR_WIDTH = 5,  // Address width in bits
@@ -45,6 +54,35 @@ module sdp_block_ram_dc_init #(
     output logic [DATA_WIDTH-1:0] o_read_data
 );
 
+`ifdef FROST_SRAM_MACROS
+  logic [DATA_WIDTH-1:0] memory_read_data;
+  frost_sram_1w1r #(
+      .ADDR_WIDTH   (ADDR_WIDTH),
+      .DATA_WIDTH   (DATA_WIDTH),
+      .COMMON_CLOCK (1'b0),
+      .USE_INIT_FILE(USE_INIT_FILE),
+      .INIT_FILE    (INIT_FILE)
+  ) u_sram (
+      .i_write_clock,
+      .i_bulk_clear(1'b0),
+      .i_write_mask(i_write_enable),
+      .i_write_address,
+      .i_write_data,
+      .i_read_clock,
+      .i_read_enable,
+      .i_read_address,
+      .o_read_data (memory_read_data)
+  );
+
+  // Hold the last word read through cycles without a read.
+  logic                  read_enable_q;
+  logic [DATA_WIDTH-1:0] held_read_data_q;
+  always_ff @(posedge i_read_clock) begin
+    read_enable_q    <= i_read_enable;
+    held_read_data_q <= o_read_data;
+  end
+  assign o_read_data = read_enable_q ? memory_read_data : held_read_data_q;
+`else
   localparam int unsigned RamDepth = 2 ** ADDR_WIDTH;
 
   // A simulation that fills the array writes it from outside this module.
@@ -58,5 +96,6 @@ module sdp_block_ram_dc_init #(
 
   // The read register permits block RAM inference; its enable holds it.
   always_ff @(posedge i_read_clock) if (i_read_enable) o_read_data <= ram[i_read_address];
+`endif
 
 endmodule : sdp_block_ram_dc_init

@@ -329,7 +329,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
     # Programs on the memories that the ASIC flow builds from SRAM macros
     # (FROST_SRAM_MACROS), at the ASIC flow's sizes: its L2 holds 256 KiB
-    # (asic/config.mk). One build serves all.
+    # (asic/config.mk). One build serves all. The instruction memory's
+    # macros start with the app's block-RAM images (GENERATE_IMEM_INIT).
     **{
         f"{app}_sram_macros": CocotbRunConfig(
             python_test_module="cocotb_tests.test_real_program",
@@ -340,6 +341,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
                 "+define+FROST_SRAM_MACROS",
                 "-GL2_CACHE_BYTES=262144",
             ),
+            extra_env=(("GENERATE_IMEM_INIT", "1"),),
         )
         for app, description in (
             ("isa_test", "Instruction checks for RV64GCB and supported extensions"),
@@ -1780,6 +1782,25 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
                 ("-GADDR_WIDTH=9", "-GDATA_WIDTH=68"),
             ),
             (
+                "sram_macros_imem_cold",
+                "sdp_block_ram_dc_init",
+                "Instruction memory cold bank of one parity, from a starting image",
+                "2x1",
+                (
+                    "-GADDR_WIDTH=14",
+                    "-GDATA_WIDTH=28",
+                    "-GUSE_INIT_FILE=1",
+                    "-GINIT_FILE='\"../verif/cocotb_tests/sram_init.mem\"'",
+                ),
+            ),
+            (
+                "sram_macros_imem_lanes",
+                "sdp_block_ram_dc_init",
+                "Instruction memory four-bit bank of one parity",
+                "2x1",
+                ("-GADDR_WIDTH=14", "-GDATA_WIDTH=4"),
+            ),
+            (
                 "sram_macros_data_memory",
                 "tdp_bram_dc_byte_en",
                 "Data memory",
@@ -3064,6 +3085,26 @@ DDR_TIER_EXCLUDE = {
 
 PROGRAM_MEMORY_FILENAMES = ("sw.mem", "sw64.mem", "sw_ddr.mem")
 
+# The instruction memory's block-RAM images, which an app build writes with
+# GENERATE_IMEM_INIT=1 (sw/common/common.mk). Simulations of the ASIC flow's
+# SRAM macros start the instruction memory's macros with them.
+IMEM_BANK_IMAGE_FILENAMES = tuple(
+    f"sw_imem_{parity}_{bank}.mem"
+    for parity in ("even", "odd")
+    for bank in ("cold", "frontend_hot", "sideband", "compressed")
+)
+
+
+def program_memory_filenames() -> tuple[str, ...]:
+    """Return the app images a run links into tests/.
+
+    A run whose environment sets GENERATE_IMEM_INIT=1 also links the
+    instruction memory's block-RAM images.
+    """
+    if os.environ.get("GENERATE_IMEM_INIT") == "1":
+        return PROGRAM_MEMORY_FILENAMES + IMEM_BANK_IMAGE_FILENAMES
+    return PROGRAM_MEMORY_FILENAMES
+
 
 def run_in_process_group(
     command: list[str], *, env: Mapping[str, str], timeout: float
@@ -3480,7 +3521,7 @@ class CocotbRunner:
             # form, and the cached-region image read by the behavioral DDR.
             program_memory_file = self._get_program_memory_file()
             if program_memory_file:
-                for mem_name in PROGRAM_MEMORY_FILENAMES:
+                for mem_name in program_memory_filenames():
                     self._ensure_symlink(
                         Path(mem_name),
                         _program_memory_target(program_memory_file, mem_name),
@@ -3538,7 +3579,7 @@ class CocotbRunner:
             # Sweep workers share the symlinks with their siblings; the sweep
             # parent removes them after the whole pool drains.
             if self.app_name and not self.skip_app_compile:
-                for mem_name in PROGRAM_MEMORY_FILENAMES:
+                for mem_name in program_memory_filenames():
                     mem_path = Path(mem_name)
                     if mem_path.exists() or mem_path.is_symlink():
                         mem_path.unlink()
@@ -3709,7 +3750,7 @@ def run_seed_sweep(
                 )
             program_memory_file = parent_runner._get_program_memory_file()
             if program_memory_file:
-                for mem_name in PROGRAM_MEMORY_FILENAMES:
+                for mem_name in program_memory_filenames():
                     CocotbRunner._ensure_symlink(
                         parent_runner.test_directory / mem_name,
                         _program_memory_target(program_memory_file, mem_name),
@@ -3739,7 +3780,7 @@ def run_seed_sweep(
 
         # The workers shared the parent-created symlinks; clean up after the pool.
         if parent_runner.app_name:
-            for mem_name in PROGRAM_MEMORY_FILENAMES:
+            for mem_name in program_memory_filenames():
                 mem_path = parent_runner.test_directory / mem_name
                 if mem_path.exists() or mem_path.is_symlink():
                     mem_path.unlink()

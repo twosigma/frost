@@ -161,7 +161,10 @@ endmodule : imem_sideband_scalar_bank
  * relies on the production phase-related div4 clock: at least three Port-B
  * edges separate the staged write enable from the array commit, allowing the
  * two-flop quarantine synchronizer to land first. A different clock ratio
- * requires holding fetch externally or adding a write handshake.
+ * requires holding fetch externally or adding a write handshake. The ASIC
+ * flow's SRAM macros complete a write two Port-B cycles after the block RAM
+ * does, at the div4 clock's falling edge; the first read that the
+ * quarantine lets through comes a cycle and a half after that.
  */
 module imem_predecode #(
     parameter int unsigned ADDR_WIDTH = 14,
@@ -277,6 +280,10 @@ module imem_predecode #(
     p_pc_metadata_overlay_width_valid :
     assert (PC_METADATA_OVERLAY_ADDR_WIDTH > 0 && PC_METADATA_OVERLAY_ADDR_WIDTH <= ADDR_WIDTH - 1);
     p_init_image_covers_memory : assert (INIT_ADDR_WIDTH >= ADDR_WIDTH);
+`ifdef FROST_SRAM_MACROS
+    // The macros start only from the banks' images.
+    p_macro_banks_start_from_images : assert (USE_INIT_FILE);
+`endif
   end
 `endif
 
@@ -315,11 +322,15 @@ module imem_predecode #(
   // Initialization: split sw.mem into even/odd banks
   // =========================================================================
   // Vivado loads each bank's already split image (INIT_FILE_*), so every
-  // synthesized memory has an explicit power-up image. Simulation fills the
-  // banks below. Yosys leaves them without initial contents: the preload split
-  // would expand the temporary init_mem array into registers during frontend
-  // elaboration.
+  // synthesized memory has an explicit power-up image, and simulations of
+  // the ASIC flow's SRAM macros (FROST_SRAM_MACROS) start the macros with the
+  // same images, which an app build writes for the 128 KiB code region
+  // (sw/common/common.mk). Other simulations fill the banks below. Yosys
+  // leaves them without initial contents: the preload split would expand the
+  // temporary init_mem array into registers during frontend elaboration.
 `ifdef FROST_VIVADO_SYNTH
+  localparam bit LoadBankImages = USE_INIT_FILE;
+`elsif FROST_SRAM_MACROS
   localparam bit LoadBankImages = USE_INIT_FILE;
 `else
   localparam bit LoadBankImages = 1'b0;
@@ -327,6 +338,7 @@ module imem_predecode #(
 
 `ifndef YOSYS
 `ifndef FROST_VIVADO_SYNTH
+`ifndef FROST_SRAM_MACROS
   logic [DataWidth-1:0] init_mem[2**INIT_ADDR_WIDTH];
 
   initial begin
@@ -362,6 +374,7 @@ module imem_predecode #(
       end
     end
   end
+`endif
 `endif
 `endif  // YOSYS
 
@@ -421,6 +434,11 @@ module imem_predecode #(
   assign write_fast_lanes = pack_fast_lanes(port_a_write_data_q, write_sideband);
 
 `ifndef SYNTHESIS
+`ifndef FROST_SRAM_MACROS
+  `define IMEM_PREDECODE_PORT_A_READBACK
+`endif
+`endif
+`ifdef IMEM_PREDECODE_PORT_A_READBACK
   // Port A read (write-first): read back from whichever bank was addressed
   always_ff @(posedge i_port_a_clk) begin
     if (i_port_a_enable) begin
@@ -434,10 +452,12 @@ module imem_predecode #(
       end
     end
   end
+  `undef IMEM_PREDECODE_PORT_A_READBACK
 `else
   // The programming-side readback is unused by the core. Removing this BRAM
   // read port under synthesis keeps the two-bank memory in a Xilinx-mappable
-  // one-write/one-read shape.
+  // one-write/one-read shape. The ASIC flow's macros have only those two
+  // ports, so their simulations pass the write data through as well.
   assign o_port_a_read_data = i_port_a_write_data;
 `endif
 
@@ -1092,13 +1112,15 @@ module imem_predecode #(
 
 `ifndef SYNTHESIS
   // Compare ready metadata with the same-edge full-depth banks. Skip
-  // unready windows, whose slow predicates may still be stale.
+  // unready windows, whose slow predicates may still be stale. The check
+  // samples at the clock edge, where the registers that read the banks do:
+  // the ASIC flow's SRAM macro models change their read data mid-cycle.
   logic pc_metadata_compare_valid_q = 1'b0;
   always_ff @(posedge i_port_b_clk) begin
     pc_metadata_compare_valid_q <= i_port_b_enable;
   end
 
-  always_comb begin
+  always @(posedge i_port_b_clk) begin
     if (pc_metadata_compare_valid_q && pc_metadata_response_ready_q && !$isunknown(
             {
               even_read_data,

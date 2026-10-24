@@ -146,8 +146,8 @@ def prepare(build_directory: Path) -> None:
         sys.path.pop(0)
 
     # The memories read no $readmemh images in this flow: the SRAM macros
-    # have none, and the instruction memory reads its images only outside
-    # Yosys.
+    # have none, and the instruction memory's PC-metadata overlays read
+    # their images only outside Yosys.
     runner = test_run_yosys.YosysRunner(memory_images=False)
     sources = runner.parse_filelist(runner.filelist)
     with TemporaryDirectory(prefix="frost-orfs-") as temporary:

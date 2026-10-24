@@ -283,21 +283,31 @@ def test_unsafe_parallel_runner_modes_fail_before_starting(
         runner()
 
 
+@pytest.mark.parametrize("imem_images", (False, True))
 def test_cocotb_runner_removes_every_program_memory_symlink(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, imem_images: bool
 ) -> None:
-    """A completed app run removes every program-memory symlink it made in tests/."""
+    """A completed app run removes every program-memory symlink it made in tests/.
+
+    With GENERATE_IMEM_INIT=1, the run links the instruction memory's
+    block-RAM images as well.
+    """
     test_directory = tmp_path / "tests"
     app_directory = tmp_path / "sw" / "apps" / "sample"
     test_directory.mkdir()
     app_directory.mkdir(parents=True)
-    for mem_name in test_run_cocotb.PROGRAM_MEMORY_FILENAMES:
+    monkeypatch.delenv("GENERATE_IMEM_INIT", raising=False)
+    mem_names: tuple[str, ...] = test_run_cocotb.PROGRAM_MEMORY_FILENAMES
+    if imem_images:
+        mem_names += test_run_cocotb.IMEM_BANK_IMAGE_FILENAMES
+    for mem_name in mem_names:
         (app_directory / mem_name).write_text("00\n")
 
     runner = test_run_cocotb.CocotbRunner(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="sample",
+        extra_env=(("GENERATE_IMEM_INIT", "1"),) if imem_images else (),
     )
     runner.test_directory = test_directory
     runner.repository_root_directory = tmp_path
@@ -314,8 +324,8 @@ def test_cocotb_runner_removes_every_program_memory_symlink(
     def simulation_run(
         *_args: object, **_kwargs: object
     ) -> subprocess.CompletedProcess[str]:
-        for mem_name in test_run_cocotb.PROGRAM_MEMORY_FILENAMES:
-            assert (test_directory / mem_name).is_symlink()
+        linked = {path.name for path in test_directory.iterdir() if path.is_symlink()}
+        assert linked == set(mem_names)
         (test_directory / "results.xml").write_text(
             '<testsuites><testsuite><testcase name="sample"/></testsuite></testsuites>'
         )
@@ -325,7 +335,7 @@ def test_cocotb_runner_removes_every_program_memory_symlink(
 
     runner.run_simulation()
 
-    for mem_name in test_run_cocotb.PROGRAM_MEMORY_FILENAMES:
+    for mem_name in mem_names:
         assert not (test_directory / mem_name).exists()
         assert not (test_directory / mem_name).is_symlink()
 

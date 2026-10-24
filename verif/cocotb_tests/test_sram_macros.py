@@ -31,6 +31,7 @@ sample outputs just before rising edges and drive inputs just after them.
 
 import os
 import random
+from pathlib import Path
 from typing import Any
 
 import cocotb
@@ -39,6 +40,9 @@ from cocotb.triggers import RisingEdge, Timer
 
 CLOCK_PERIOD_NS = 10
 CYCLES = 3000
+# The starting image that the instruction memory's cold-bank bench loads
+# (USE_INIT_FILE, INIT_FILE in tests/test_run_cocotb.py).
+INIT_IMAGE = Path(__file__).with_name("sram_init.mem")
 
 
 async def _start_cycle(clock: Any) -> None:
@@ -50,6 +54,20 @@ async def _start_cycle(clock: Any) -> None:
 async def _sample_point(period_ns: float) -> None:
     """From a cycle's start, wait until just before its closing edge."""
     await Timer(period_ns - 2, unit="ns")
+
+
+def _read_hex_image(path: Path, data_width: int) -> dict[int, int]:
+    """Return a $readmemh image's words by address."""
+    words: dict[int, int] = {}
+    address = 0
+    for raw_line in path.read_text().splitlines():
+        for token in raw_line.split("//", 1)[0].split():
+            if token.startswith("@"):
+                address = int(token[1:], 16)
+            else:
+                words[address] = int(token, 16) & ((1 << data_width) - 1)
+                address += 1
+    return words
 
 
 def _hot_addresses(address_width: int, tile_address_width: int) -> list[int]:
@@ -383,6 +401,77 @@ async def _sdp_block_ram_dc(dut: Any) -> None:
     assert checked > 300, f"{checked} reads checked"
 
 
+async def _sdp_block_ram_dc_init(dut: Any) -> None:
+    """Check the instruction memory's banks: quarter-rate writes, held reads.
+
+    The write port runs on a quarter of the read clock, with aligned rising
+    edges, as imem_predecode's port A does. A read returns the last word
+    written to its address, and a cycle without a read leaves the output
+    unchanged. A write presented in cycle c reaches the macros at the write
+    clock's falling edge in cycle c + 6, and a read presented in cycle r reads
+    at the read clock's falling edge in cycle r + 1, so the traffic reads a
+    word being written only from cycle c + 5. With USE_INIT_FILE, the bench
+    first reads back the starting image, INIT_IMAGE.
+    """
+    data_width = len(dut.i_write_data)
+    address_width = len(dut.i_write_address)
+    addresses = _hot_addresses(address_width, 12)
+
+    Clock(dut.i_read_clock, CLOCK_PERIOD_NS, unit="ns").start()
+    Clock(dut.i_write_clock, 4 * CLOCK_PERIOD_NS, unit="ns").start()
+    dut.i_write_enable.value = 0
+    dut.i_read_enable.value = 0
+    await _start_cycle(dut.i_write_clock)
+
+    memory: dict[int, int] = {}
+    if int(dut.USE_INIT_FILE.value):
+        memory = _read_hex_image(INIT_IMAGE, data_width)
+        for address, word in sorted(memory.items()):
+            dut.i_read_enable.value = 1
+            dut.i_read_address.value = address
+            await _start_cycle(dut.i_read_clock)
+            dut.i_read_enable.value = 0
+            await _sample_point(CLOCK_PERIOD_NS)
+            got = int(dut.o_read_data.value)
+            assert got == word, (
+                f"sdp_block_ram_dc_init: address {address:#x} starts with "
+                f"{got:#x}, not the image's {word:#x}"
+            )
+            await _start_cycle(dut.i_read_clock)
+        addresses = sorted(set(addresses) | set(memory))
+    # Writes not yet readable: address -> (first cycle a read sees it, data).
+    landing: dict[int, tuple[int, int]] = {}
+    expected = Expected("sdp_block_ram_dc_init")
+    held: int | None = None
+    for cycle in range(CYCLES):
+        for address in [a for a, (due, _) in landing.items() if due <= cycle]:
+            memory[address] = landing.pop(address)[1]
+        if cycle % 4 == 0:
+            write = random.random() < 0.5
+            write_address = random.choice(addresses)
+            data = random.getrandbits(data_width)
+            dut.i_write_enable.value = int(write)
+            dut.i_write_address.value = write_address
+            dut.i_write_data.value = data
+            if write:
+                landing[write_address] = (cycle + 5, data)
+        read_address = random.choice(addresses)
+        read = random.random() < 0.6 and read_address not in landing
+        dut.i_read_enable.value = int(read)
+        dut.i_read_address.value = read_address
+        if read:
+            expected.expect(cycle + 1, read_address, memory.get(read_address))
+        await _sample_point(CLOCK_PERIOD_NS)
+        response = expected.reads.get(cycle)
+        if expected.check(cycle, dut.o_read_data):
+            held = response[1] if response is not None else None
+        elif held is not None:
+            got = int(dut.o_read_data.value)
+            assert got == held, f"cycle {cycle}: the output changed to {got:#x}"
+        await _start_cycle(dut.i_read_clock)
+    assert expected.checked > CYCLES // 10, f"{expected.checked} reads checked"
+
+
 async def _tdp_bram_dc_byte_en(dut: Any) -> None:
     """Check the data memory: byte-write ports on the core and quarter clocks."""
     data_width = len(dut.i_port_a_write_data)
@@ -446,6 +535,7 @@ BENCHES = {
     "sdp_block_ram": _sdp_block_ram,
     "sdp_packed_tag_uram": _sdp_packed_tag_uram,
     "sdp_block_ram_dc": _sdp_block_ram_dc,
+    "sdp_block_ram_dc_init": _sdp_block_ram_dc_init,
     "tdp_bram_dc_byte_en": _tdp_bram_dc_byte_en,
 }
 
