@@ -113,11 +113,11 @@ FROST_CALIBRATION_TRACE_PATH=perf-modeling/results/coremark/coremark_timed.jsonl
 FROST_CALIBRATION_COUNTERS_PATH=perf-modeling/results/coremark/pipeline_counters.json \
 FROST_CALIBRATION_MANIFEST_PATH=perf-modeling/results/coremark/manifest.json \
 FROST_CALIBRATION_TARGET_RUN=2 \
-FROST_CALIBRATION_START_PC=0x5848 \
-FROST_CALIBRATION_STOP_PC=0x584c \
 FROST_GIT_COMMIT=$(git rev-parse HEAD) \
 ./scripts/frost.py cocotb coremark
 ```
+
+CoreMark's window runs from the return of `start_time` to the entry of `stop_time`, which the capture finds in the program's `sw.S`, so it follows changes of the code layout. `FROST_CALIBRATION_START_PC` and `FROST_CALIBRATION_STOP_PC` override either end; for other programs they set the window, which is otherwise the whole run. Without `FROST_GIT_COMMIT`, the capture takes the commit from git.
 
 ### Step 2: Validate the Trace and Run Correlation
 
