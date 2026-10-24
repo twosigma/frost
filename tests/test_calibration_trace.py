@@ -476,3 +476,22 @@ def test_a_window_that_never_opens_or_closes_fails(
         capture.sample(cycle)
     with pytest.raises(AssertionError, match=error):
         capture.finish("")
+
+
+def test_relative_output_paths_start_at_the_repository_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The documented commands name their files from the repository root."""
+    monkeypatch.setattr(calibration_trace, "REPOSITORY_ROOT", tmp_path)
+    monkeypatch.setenv("FROST_CALIBRATION_TRACE_PATH", "out/t.jsonl")
+    monkeypatch.setenv("FROST_CALIBRATION_COUNTERS_PATH", "out/counters.json")
+    absolute = tmp_path / "elsewhere" / "manifest.json"
+    monkeypatch.setenv("FROST_CALIBRATION_MANIFEST_PATH", str(absolute))
+    (tmp_path / "tests").mkdir()
+    monkeypatch.chdir(tmp_path / "tests")
+    capture = calibration_trace.CalibrationTrace.from_environment(_dut(), **_RUN)
+    assert capture is not None
+    capture.finish("")
+    assert (tmp_path / "out" / "t.jsonl").is_file()
+    assert (tmp_path / "out" / "counters.json").is_file()
+    assert absolute.is_file()

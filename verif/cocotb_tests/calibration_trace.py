@@ -23,8 +23,8 @@ entry of stop_time, which the capture finds in the program's sw.S; the two
 variables override either end. A run that never retires the window's start
 PC, or a stop PC that it sets, fails. FROST_CALIBRATION_COUNTERS_PATH and
 FROST_CALIBRATION_MANIFEST_PATH name optional files for the window's pipeline
-counters and the run's manifest. perf-modeling/README.md describes the trace
-format.
+counters and the run's manifest. A relative path starts at the repository
+root. perf-modeling/README.md describes the trace format.
 
 The trace and the manifest record the commit from FROST_GIT_COMMIT, or else
 from git. The manifest takes the tool versions from cocotb and the simulator,
@@ -87,6 +87,12 @@ def _read(handle: Any | None) -> int | None:
         return int(handle.value)
     except (AttributeError, ValueError):
         return None
+
+
+def output_path(value: str) -> Path:
+    """Return an output file's path; a relative one starts at the repository root."""
+    path = Path(value)
+    return path if path.is_absolute() else REPOSITORY_ROOT / path
 
 
 def git_commit() -> str:
@@ -251,7 +257,7 @@ class CalibrationTrace:
             return None
         return cls(
             dut,
-            Path(trace_path),
+            output_path(trace_path),
             app_name,
             run_number,
             clock_period_ns,
@@ -276,8 +282,10 @@ class CalibrationTrace:
         self.app_name = app_name
         self.run_number = run_number
         self.clock_period_ns = clock_period_ns
-        self.counters_path = os.environ.get("FROST_CALIBRATION_COUNTERS_PATH")
-        self.manifest_path = os.environ.get("FROST_CALIBRATION_MANIFEST_PATH")
+        counters_path = os.environ.get("FROST_CALIBRATION_COUNTERS_PATH", "")
+        manifest_path = os.environ.get("FROST_CALIBRATION_MANIFEST_PATH", "")
+        self.counters_path = output_path(counters_path) if counters_path else None
+        self.manifest_path = output_path(manifest_path) if manifest_path else None
         self.start_pc, self.stop_pc = window
         self.commit = git_commit()
         self.state = "ARMED" if self.start_pc else "ACTIVE"
@@ -542,18 +550,18 @@ class CalibrationTrace:
                 "aw_backpressure_cycles": counters["axi_aw_backpressure_cycles"],
             },
         }
-        if self.counters_path:
-            counters_file = Path(self.counters_path)
+        if self.counters_path is not None:
+            counters_file = self.counters_path
             counters_file.parent.mkdir(parents=True, exist_ok=True)
             counters_file.write_text(
                 json.dumps(pipeline_counters, indent=2) + "\n", encoding="utf-8"
             )
             cocotb.log.info(f"Wrote pipeline counters to {self.counters_path}")
 
-        if not self.manifest_path:
+        if self.manifest_path is None:
             return
         manifest = self.manifest(uart_text, wall_time_s)
-        manifest_file = Path(self.manifest_path)
+        manifest_file = self.manifest_path
         manifest_file.parent.mkdir(parents=True, exist_ok=True)
         manifest_file.write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
