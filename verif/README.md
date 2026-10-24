@@ -104,15 +104,17 @@ drivers add work of their own.
 Verilator's evaluation of the model takes most of the simulation time.
 cocotb's own clocks deposit their edges, and Verilator applies a deposit only
 after the evaluation that opens the time step, so every clock edge would cost
-an evaluation that changes nothing. `start_clocks` writes the core clock's
-and the NIC clocks' edges without delay instead, which lets that evaluation
-take the edge. The debug and BRAM-reload benches start their core clock the
-same way. These tests run under `takes_last_edge`, so that the model takes
-the edge a test returns or fails in before the simulation stops. The
-docstring of `start_clocks` gives the conditions under which the
-simulation stays the same as with cocotb's clocks: no combinational logic
-reads the simulation time or a sampled value, and no timer callback reads a
-clock or changes an input at an edge time.
+an evaluation that changes nothing. `start_clocks` writes the core clock's and
+the NIC clocks' edges without delay instead, which lets that evaluation take
+the edge. Applications that never use the NIC run without its MAC clocks, as
+on a board with no link clock, and fail if they access the NIC's registers
+(`hold_nic_without_mac_clocks`). The debug and BRAM-reload benches start their
+core clock the same way and leave the MAC clocks off. These tests run under
+`takes_last_edge`, so that the model takes the edge a test returns or fails in
+before the simulation stops. The docstring of `start_clocks` gives the
+conditions under which the simulation stays the same as with cocotb's clocks:
+no combinational logic reads the simulation time or a sampled value, and no
+timer callback reads a clock or changes an input at an edge time.
 
 ## Extending the Framework
 

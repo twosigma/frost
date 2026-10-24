@@ -279,6 +279,35 @@ def start_nic_mac_clocks(dut: Any, edges_without_delay: bool = False) -> None:
     cocotb.start_soon(check_nic_mac_clocks_aligned(dut.i_nic_rx_clk, dut.i_nic_tx_clk))
 
 
+def hold_nic_without_mac_clocks(dut: Any) -> None:
+    """Drive the NIC's ports as on a board with no link clock.
+
+    Both MAC clocks stay low and their clock-OK levels are low, so the NIC's
+    reset controller keeps the MAC domains in reset and neither direction
+    READY (hw/rtl/peripherals/nic/README.md). The registry runs applications
+    that never use the NIC this way (FROST_NIC_MAC_CLOCKS=0), and
+    fail_on_nic_access fails one that touches the NIC's registers.
+    """
+    dut.i_nic_tx_clk.value = 0
+    dut.i_nic_rx_clk.value = 0
+    dut.i_nic_tx_clk_ok.value = 0
+    dut.i_nic_rx_clk_ok.value = 0
+    dut.i_nic_phy_status.value = 0b01111
+    dut.i_nic_rx_raw_data.value = 0
+    dut.i_nic_rx_raw_valid.value = 0
+    dut.i_nic_rx_signal_ok.value = 0
+    cocotb.start_soon(fail_on_nic_access(dut))
+
+
+async def fail_on_nic_access(dut: Any) -> None:
+    """Fail the test when a load or store reaches the NIC's register window."""
+    await RisingEdge(dut.cpu_and_memory_subsystem.soc.nic_sel_q)
+    raise AssertionError(
+        "the program accessed the NIC's registers but runs without the NIC's MAC "
+        "clocks; give its registry entry nic_mac_clocks=True"
+    )
+
+
 async def check_nic_mac_clocks_aligned(
     watched: Any, other: Any, cycles: int = 16
 ) -> None:
@@ -4495,7 +4524,10 @@ async def test_real_program(dut: Any) -> None:
         # frost.sv always has the NIC's ports. They are driven without a
         # per-port check, so a renamed port fails here instead of silently
         # leaving the MAC unclocked.
-        start_nic_mac_clocks(dut, edges_without_delay=True)
+        if os.environ.get("FROST_NIC_MAC_CLOCKS", "1") == "0":
+            hold_nic_without_mac_clocks(dut)
+        else:
+            start_nic_mac_clocks(dut, edges_without_delay=True)
 
     disable_branch_prediction = int(
         os.environ.get("FROST_DISABLE_BRANCH_PREDICTION", "0")

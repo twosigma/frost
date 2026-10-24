@@ -116,6 +116,17 @@ and startup code reinitialize the kernel, heap, and application state.
 | `opensbi_smoke` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
 | `amo_irq_torture_sim`, `coremark`, `coremark_profile`, `coremark_pro_core`, `coremark_pro_linear_alg`, `coremark_pro_radix2`, `itlb_test` (and its aperture variants), `pde_return_hazard`, `restore_window_stress`, `sprintf_test`, `tick_torture_sim`, `tomasulo_perf`, `wfi_lost_tick`, `window_skip_repro` | Each kind of state it leaves for the reset is also left by a shorter application that runs twice, and where CI collects its coverage, its second run reaches no coverage point that another application misses |
 
+Entries with `nic_mac_clocks=False` run as on a board with no NIC link
+clock: both MAC clocks absent and their clock-OK levels low, so the NIC keeps
+its MAC domains in reset ([NIC](../hw/rtl/peripherals/nic/README.md#reset-and-clock-domains)),
+and the simulation saves the evaluations of the MAC clocks' edges. They are
+the applications that never touch the NIC's registers, DMA, interrupt, or
+link status, and a run fails if such an application loads or stores in the
+NIC's register window. The NIC programs, `opensbi_smoke`, and
+`pma_fault_test`, which loads from the NIC's window to check a PMA boundary,
+keep the clocks. The standalone `linux_*` instruction-pattern tests run
+without them. Registry entries default to keeping the clocks.
+
 `debug_test` drives the JTAG debug module directly; `debug_openocd_test` runs
 a real OpenOCD session through `remote_bitbang`, and `cache_counters_openocd`
 reads the cache profiling counters that way with `fpga/debug/cache_counters.py`.
@@ -353,6 +364,7 @@ which have 90 minutes each. `--verbose` prints solver output.
 | `COCOTB_NUM_RUNS` | Runs per application, with a reset between them (default 2; 1 in the DDR tier and for entries with `rerun_after_reset=False`) |
 | `FROST_CALIBRATION_TRACE_PATH` | Records a calibration trace of one run for the [performance model](../perf-modeling/README.md); the other `FROST_CALIBRATION_*` variables choose the run, the window, and more output files |
 | `FROST_CALIBRATION_TEST` | Limits the calibration capture to the runs of the registry test it names |
+| `FROST_NIC_MAC_CLOCKS` | `0` runs an application without the NIC's MAC clocks and with their clock-OK levels low, as entries with `nic_mac_clocks=False` do |
 | `SIM_FAST_MAINT` | Fast `fence.i` cache maintenance in whole-SoC simulation (default 1; hardware uses the full sweeps, as `0` does) |
 
 Build products go to `tests/sim_build/`, and cocotb writes JUnit results to
