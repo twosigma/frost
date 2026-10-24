@@ -181,8 +181,8 @@ skip random fill as well as arrays with their own image file.
 Instruction-image padding is zero in every packed copy, matching the
 generated bank images. The benches pulse power-on reset at time zero in
 both modes, alongside the ordinary system-reset sequence. Warm resets leave
-the transport handshake intact. Changing only the seed reuses the compiled model; enabling
-or disabling the mode rebuilds it.
+the transport handshake intact. Changing only the seed reuses the compiled
+model; enabling or disabling the mode rebuilds it.
 
 This is a two-state power-up test. It does not model metastability, reset
 recovery or removal timing, SRAM analog behavior, or power-domain sequencing.
@@ -634,10 +634,13 @@ The AXI bridge unit tests cover all eight power-of-two capacities in CI.
 The standalone `test_ddr_width_config.sv` and `test_ptw_high_addr.sv`
 harnesses are not registered with the test runners or invoked by CI.
 
-Every job that simulates the whole SoC draws its own DDR model timing:
-the workflow sets `FROST_DDR_MODEL_SEED` from the run ID, the job, and its
-matrix index. A failing test's output names the draw, and rerunning the job
-repeats it.
+Every job that simulates the whole SoC draws DDR model timing and power-up
+state. The workflow sets `FROST_DDR_MODEL_SEED` and
+`FROST_RANDOM_START_SEED` from the run ID, the job, and its matrix index.
+A failing test's output names both draws, and rerunning the job repeats
+them. These checks run in the pull-request and merge jobs. Each program runs
+once per configured reset sequence; random power-up adds no simulation runs.
+Unit benches can select random power-up with `FROST_RANDOM_START_SEED`.
 
 In the BRAM job of the CoreMark shard, the `coremark` test also records a
 calibration trace of CoreMark's timed region for the performance model in
