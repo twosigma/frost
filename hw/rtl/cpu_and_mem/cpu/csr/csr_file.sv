@@ -1481,8 +1481,10 @@ module csr_file #(
   end
   assign o_fetch_translation_active = fetch_translation_active_q;
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (i_rst) reset_seen_q <= 1'b1;
+    if (reset_seen_q && !i_rst) begin
       p_fetch_translation_active_exact :
       assert (fetch_translation_active_q == (satp_mode_sv39 && (fetch_priv_q != riscv_pkg::PrivM)));
     end
@@ -2165,13 +2167,13 @@ module csr_file #(
 
 `ifndef SYNTHESIS
   always @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       p_integrated_trap_enables_match_inputs :
       assert (i_trap_save_m == (i_trap_taken && !i_trap_to_d && !i_trap_to_s) &&
               i_trap_save_s == (i_trap_taken && !i_trap_to_d && i_trap_to_s) &&
               i_trap_enter_d == (i_trap_taken && i_trap_to_d));
     end
-    if (!i_rst && COMMIT_EXCLUDES_CONTROL_TAKE) begin
+    if (reset_seen_q && !i_rst && COMMIT_EXCLUDES_CONTROL_TAKE) begin
       p_integrated_csr_excludes_control_take :
       assert (!(i_csr_write_enable && i_csr_read_enable &&
                 (i_trap_taken || i_mret_taken || i_sret_taken || i_dret_taken)));

@@ -520,13 +520,15 @@ module cached_tier_adapter #(
   assign o_write_inflight = pending_write_valid;
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
   logic                  launch_check_q;
   logic [  SlotBits-1:0] launch_id_q;
   logic [      XLEN-1:0] launch_addr_q;
   logic [READ_SLOTS-1:0] launch_group_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) launch_check_q <= 1'b0;
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       if (i_read_req && rd_valid_q[i_read_id])
         $error("cached_tier_adapter: read request on slot %0d while it is pending", i_read_id);
       if (SPLIT_READ_REQ &&
@@ -583,7 +585,7 @@ module cached_tier_adapter #(
   logic [BeatBits-1:0] ref_out_data_q;
   logic [SlotBits-1:0] ref_out_id_q;
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       for (int s = 0; s < int'(READ_SLOTS); s++) begin
         if (resp_member[s]) ref_beat_q[s] <= resp_beat[s];
       end

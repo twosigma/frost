@@ -396,6 +396,8 @@ module dmmu (
   end
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
   // Reference payload loaded only when an op slips in behind a held S1. Both
   // hold the same op whenever the skid is valid.
   iss_payload_t s0_ref_q;
@@ -403,7 +405,7 @@ module dmmu (
     if (i_rst_n && !i_flush_all && !s1_can_load && i_iss_valid && i_active && !s0_valid_q &&
         !iss_killed)
       s0_ref_q <= iss_in;
-    if (i_rst_n && s0_valid_q) begin
+    if (reset_seen_q && i_rst_n && s0_valid_q) begin
       p_s0_payload_matches_slip_in : assert (s0_q == s0_ref_q);
     end
   end
@@ -506,7 +508,7 @@ module dmmu (
       ref_s2_store_data_q <= s1_q.store_data;
       ref_s2_amo_rs2_q <= s1_q.amo_rs2;
     end
-    if (i_rst_n && s2_valid_q) begin
+    if (reset_seen_q && i_rst_n && s2_valid_q) begin
       p_s2_payload_exact :
       assert ({s2_tag_q, o_iss_out_addr, s2_fault_q, s2_needs_sq_q, s2_is_sc_q, s2_store_data_q,
                s2_amo_rs2_q} ==

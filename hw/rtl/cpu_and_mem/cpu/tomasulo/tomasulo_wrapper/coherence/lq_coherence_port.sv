@@ -560,8 +560,10 @@ module lq_coherence_port #(
   end
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
-    if (i_rst_n) begin
+    if (!i_rst_n) reset_seen_q <= 1'b1;
+    if (reset_seen_q && i_rst_n) begin
       assert (i_sc_head_query_match === (i_sc_head_addr_valid && (line_of(
           i_sc_head_addr
       ) == adm_req_line_q)))
