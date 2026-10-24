@@ -354,7 +354,7 @@ proc set_false_path {args} {
 }
 set inputs {
     i_rst i_instr_mem_en i_instr_mem_wrdata[3] i_ddr_axi_rdata[7]
-    i_nic_rx_raw_data[5] i_nic_rx_signal_ok i_jtag_tms i_jtag_tdi i_jtag_trst_n
+    i_power_on_rst i_nic_rx_raw_data[5] i_nic_rx_signal_ok i_jtag_tms i_jtag_tdi i_jtag_trst_n
     i_nic_tx_clk_ok i_nic_rx_clk_ok i_nic_phy_status[2]
 }
 set outputs {o_uart_wr_en o_ddr_axi_araddr[4] o_nic_tx_raw_data[9] o_jtag_tdo}
@@ -371,6 +371,7 @@ PORT_CLOCKS = {
     "i_jtag_tms": "jtag_tck",
     "i_jtag_tdi": "jtag_tck",
     "i_jtag_trst_n": "core_clk",
+    "i_power_on_rst": "core_clk",
     "i_nic_tx_clk_ok": "core_clk",
     "i_nic_rx_clk_ok": "core_clk",
     "i_nic_phy_status[2]": "core_clk",
@@ -541,6 +542,7 @@ def test_only_the_asynchronous_levels_are_false_paths(tmp_path: Path) -> None:
         "hold": set(),
         "all": {
             "i_jtag_trst_n",
+            "i_power_on_rst",
             "i_nic_tx_clk_ok",
             "i_nic_rx_clk_ok",
             "i_nic_phy_status*",

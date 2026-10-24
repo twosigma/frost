@@ -107,6 +107,7 @@ module frost_rvfi_platform #(
     input logic i_clk,
     input logic i_clk_div4,  // Divided clock for the low-BRAM programming port
     input logic i_rst,
+    input logic i_power_on_rst,
 
     // Low-BRAM programming interface (div4 clock domain); writes go to both the
     // instruction and data copies
@@ -1372,12 +1373,30 @@ module frost_rvfi_platform #(
   // ===========================================================================
   logic dtm_tck, dtm_tdi, dtm_tlr, dtm_capture, dtm_shift, dtm_update;
   logic dtm_sel_dtmcs, dtm_sel_dmi, dtm_tdo_dtmcs, dtm_tdo_dmi;
+  logic power_on_rst_core, power_on_rst_tck, power_on_rst_div4;
+  // The core clock runs throughout power-on reset. System reset is separate.
+  cdc_sync u_power_on_core (
+      .i_clk  (i_clk),
+      .i_rst  (1'b0),
+      .i_async(i_power_on_rst),
+      .o_sync (power_on_rst_core)
+  );
+  cdc_reset_sync u_power_on_div4 (
+      .i_clk (i_clk_div4),
+      .i_arst(i_power_on_rst),
+      .o_rst (power_on_rst_div4)
+  );
+  cdc_reset_sync u_power_on_tck (
+      .i_clk (dtm_tck),
+      .i_arst(i_power_on_rst),
+      .o_rst (power_on_rst_tck)
+  );
   if (DEBUG_JTAG_TAP != 0) begin : gen_jtag_tap
     jtag_tap u_jtag_tap (
         .i_tck(i_jtag_tck),
         .i_tms(i_jtag_tms),
         .i_tdi(i_jtag_tdi),
-        .i_trst_n(i_jtag_trst_n),
+        .i_trst_n(i_jtag_trst_n && !power_on_rst_tck),
         .o_tdo(o_jtag_tdo),
         .o_tlr(dtm_tlr),
         .o_capture(dtm_capture),
@@ -1411,6 +1430,8 @@ module frost_rvfi_platform #(
   logic [6:0] dmi_req_addr;
   logic [31:0] dmi_req_data, dmi_resp_data;
   dtm_core u_dtm (
+      .i_power_on_rst(power_on_rst_core),
+      .i_tck_power_on_rst(power_on_rst_tck),
       .i_tck(dtm_tck),
       .i_tlr(dtm_tlr),
       .i_capture(dtm_capture),
@@ -1487,6 +1508,7 @@ module frost_rvfi_platform #(
   debug_module #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth)
   ) u_debug_module (
+      .i_power_on_rst(power_on_rst_core),
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_dmi_req_valid(dmi_req_valid),
@@ -1652,6 +1674,8 @@ module frost_rvfi_platform #(
       .INIT_FILE("sw.mem"),
       .INIT_ADDR_WIDTH(MemWordAddrWidth)
   ) instruction_memory (
+      .i_port_a_rst(power_on_rst_div4),
+      .i_port_b_rst(rst_core),
       .i_port_a_clk(i_clk_div4),
       .i_port_a_enable(1'b1),
       // Port A: Instruction programming (div4 clock, write only)

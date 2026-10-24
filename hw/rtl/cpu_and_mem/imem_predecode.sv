@@ -94,6 +94,8 @@ module imem_sideband_scalar_bank #(
   logic [31:0] init_mem[FullDepth];
   initial begin
     if (USE_INIT_FILE) begin
+      // Image padding agrees across the independently packed banks.
+      for (int i = 0; i < FullDepth; i++) init_mem[i] = '0;
       $readmemh(INIT_FILE, init_mem);
       for (int i = 0; i < BankDepth; i++) begin
         u_ram.ram[i][0] = sideband_bit_from_word(init_mem[2*i+IS_ODD_BANK]);
@@ -214,6 +216,7 @@ module imem_predecode #(
 ) (
     // Port A: Programming interface (slow clock)
     input  logic        i_port_a_clk,
+    input  logic        i_port_a_rst,
     input  logic        i_port_a_enable,
     input  logic [31:0] i_port_a_byte_address,
     input  logic [31:0] i_port_a_write_data,
@@ -222,6 +225,7 @@ module imem_predecode #(
 
     // Port B: Instruction fetch (fast clock), 64-bit output
     input logic i_port_b_clk,
+    input logic i_port_b_rst,
     input logic i_port_b_enable,
     input logic [31:0] i_port_b_byte_address,
     // Physical address of aligned word 1. It follows word 0 within a page,
@@ -345,6 +349,8 @@ module imem_predecode #(
 
   initial begin
     if (USE_INIT_FILE) begin
+      // Image padding agrees across the independently packed banks.
+      for (int i = 0; i < FullDepth; i++) init_mem[i] = '0;
       $readmemh(INIT_FILE, init_mem);
       for (int i = 0; i < FullDepth; i++) begin
         if (i[0] == 1'b0) begin
@@ -417,9 +423,11 @@ module imem_predecode #(
   (* ASYNC_REG = "TRUE" *) logic [1:0] port_a_write_active_sync_q = RandomStart ? 'x : 2'b00;
   logic port_a_write_quarantine;
   always_ff @(posedge i_port_b_clk) begin
-    port_a_write_active_sync_q <= {
-      port_a_write_active_sync_q[0], port_a_write_even_q || port_a_write_odd_q
-    };
+    if (i_port_b_rst) port_a_write_active_sync_q <= '0;
+    else
+      port_a_write_active_sync_q <= {
+        port_a_write_active_sync_q[0], port_a_write_even_q || port_a_write_odd_q
+      };
   end
   // Only the second stage drives functional logic; stage 0 is the
   // metastability-catching flop.
@@ -428,9 +436,20 @@ module imem_predecode #(
   always_ff @(posedge i_port_a_clk) begin
     port_a_half_address_q <= port_a_half_address;
     port_a_write_data_q   <= i_port_a_write_data;
-    port_a_write_even_q   <= i_port_a_enable && i_port_a_write_enable && !port_a_bank_sel;
-    port_a_write_odd_q    <= i_port_a_enable && i_port_a_write_enable && port_a_bank_sel;
+    if (i_port_a_rst) begin
+      port_a_write_even_q <= 1'b0;
+      port_a_write_odd_q  <= 1'b0;
+    end else begin
+      port_a_write_even_q <= i_port_a_enable && i_port_a_write_enable && !port_a_bank_sel;
+      port_a_write_odd_q  <= i_port_a_enable && i_port_a_write_enable && port_a_bank_sel;
+    end
   end
+
+  // Qualify the first edge too: the staged enables have not seen reset yet.
+  // Programming reset is independent of the reset held while loading an image.
+  logic port_a_write_even, port_a_write_odd;
+  assign port_a_write_even = port_a_write_even_q && !i_port_a_rst;
+  assign port_a_write_odd  = port_a_write_odd_q && !i_port_a_rst;
 
   // Compute sideband from the staged write data at write time. The staged
   // enables write one parity's four banks (below) together.
@@ -542,7 +561,7 @@ module imem_predecode #(
       .IS_ODD_BANK(1'b0)
   ) u_even_is_compressed_lo_bank (
       .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_even_q),
+      .i_write_enable(port_a_write_even),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_sideband[riscv_pkg::ImemSbIsCompressedLo]),
       .i_read_clk(i_port_b_clk),
@@ -564,7 +583,7 @@ module imem_predecode #(
       .IS_ODD_BANK(1'b1)
   ) u_odd_is_compressed_lo_bank (
       .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_odd_q),
+      .i_write_enable(port_a_write_odd),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_sideband[riscv_pkg::ImemSbIsCompressedLo]),
       .i_read_clk(i_port_b_clk),
@@ -586,7 +605,7 @@ module imem_predecode #(
       .IS_ODD_BANK(1'b0)
   ) u_even_is_compressed_hi_bank (
       .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_even_q),
+      .i_write_enable(port_a_write_even),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_sideband[riscv_pkg::ImemSbIsCompressedHi]),
       .i_read_clk(i_port_b_clk),
@@ -608,7 +627,7 @@ module imem_predecode #(
       .IS_ODD_BANK(1'b1)
   ) u_odd_is_compressed_hi_bank (
       .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_odd_q),
+      .i_write_enable(port_a_write_odd),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_sideband[riscv_pkg::ImemSbIsCompressedHi]),
       .i_read_clk(i_port_b_clk),
@@ -630,7 +649,7 @@ module imem_predecode #(
       .IS_ODD_BANK(1'b0)
   ) u_even_even_local_pair_valid_bank (
       .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_even_q),
+      .i_write_enable(port_a_write_even),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_sideband[riscv_pkg::ImemSbEvenLocalPairValid]),
       .i_read_clk(i_port_b_clk),
@@ -652,7 +671,7 @@ module imem_predecode #(
       .IS_ODD_BANK(1'b1)
   ) u_odd_even_local_pair_valid_bank (
       .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_odd_q),
+      .i_write_enable(port_a_write_odd),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_sideband[riscv_pkg::ImemSbEvenLocalPairValid]),
       .i_read_clk(i_port_b_clk),
@@ -674,7 +693,7 @@ module imem_predecode #(
       .IS_ODD_BANK(1'b0)
   ) u_even_pairable_native_lo_bank (
       .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_even_q),
+      .i_write_enable(port_a_write_even),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_sideband[riscv_pkg::ImemSbPairableNativeLo]),
       .i_read_clk(i_port_b_clk),
@@ -696,7 +715,7 @@ module imem_predecode #(
       .IS_ODD_BANK(1'b1)
   ) u_odd_pairable_native_lo_bank (
       .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_odd_q),
+      .i_write_enable(port_a_write_odd),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_sideband[riscv_pkg::ImemSbPairableNativeLo]),
       .i_read_clk(i_port_b_clk),
@@ -718,7 +737,7 @@ module imem_predecode #(
       .IS_ODD_BANK(1'b0)
   ) u_even_pairable_compressed_hi_bank (
       .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_even_q),
+      .i_write_enable(port_a_write_even),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_sideband[riscv_pkg::ImemSbPairableCompressedHi]),
       .i_read_clk(i_port_b_clk),
@@ -740,7 +759,7 @@ module imem_predecode #(
       .IS_ODD_BANK(1'b1)
   ) u_odd_pairable_compressed_hi_bank (
       .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_odd_q),
+      .i_write_enable(port_a_write_odd),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_sideband[riscv_pkg::ImemSbPairableCompressedHi]),
       .i_read_clk(i_port_b_clk),
@@ -762,7 +781,7 @@ module imem_predecode #(
       .IS_ODD_BANK(1'b0)
   ) u_even_pairable_native_hi_bank (
       .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_even_q),
+      .i_write_enable(port_a_write_even),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_sideband[riscv_pkg::ImemSbPairableNativeHi]),
       .i_read_clk(i_port_b_clk),
@@ -784,7 +803,7 @@ module imem_predecode #(
       .IS_ODD_BANK(1'b1)
   ) u_odd_pairable_native_hi_bank (
       .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_odd_q),
+      .i_write_enable(port_a_write_odd),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_sideband[riscv_pkg::ImemSbPairableNativeHi]),
       .i_read_clk(i_port_b_clk),
@@ -806,7 +825,7 @@ module imem_predecode #(
       .IS_ODD_BANK(1'b0)
   ) u_even_slot2_start_valid_lo_bank (
       .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_even_q),
+      .i_write_enable(port_a_write_even),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_sideband[riscv_pkg::ImemSbSlot2StartValidLo]),
       .i_read_clk(i_port_b_clk),
@@ -828,7 +847,7 @@ module imem_predecode #(
       .IS_ODD_BANK(1'b1)
   ) u_odd_slot2_start_valid_lo_bank (
       .i_write_clk(i_port_a_clk),
-      .i_write_enable(port_a_write_odd_q),
+      .i_write_enable(port_a_write_odd),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_sideband[riscv_pkg::ImemSbSlot2StartValidLo]),
       .i_read_clk(i_port_b_clk),
@@ -873,7 +892,7 @@ module imem_predecode #(
       .INIT_FILE(INIT_FILE_EVEN_COLD)
   ) u_even_cold (
       .i_write_clock(i_port_a_clk),
-      .i_write_enable(port_a_write_even_q),
+      .i_write_enable(port_a_write_even),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_cold[ColdBankWidth-1:0]),
       .i_read_clock(i_port_b_clk),
@@ -889,7 +908,7 @@ module imem_predecode #(
       .INIT_FILE(INIT_FILE_ODD_COLD)
   ) u_odd_cold (
       .i_write_clock(i_port_a_clk),
-      .i_write_enable(port_a_write_odd_q),
+      .i_write_enable(port_a_write_odd),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_cold[ColdBankWidth-1:0]),
       .i_read_clock(i_port_b_clk),
@@ -911,7 +930,7 @@ module imem_predecode #(
       .INIT_FILE(INIT_FILE_EVEN_FRONTEND_HOT)
   ) u_even_frontend_hot (
       .i_write_clock(i_port_a_clk),
-      .i_write_enable(port_a_write_even_q),
+      .i_write_enable(port_a_write_even),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_frontend_hot),
       .i_read_clock(i_port_b_clk),
@@ -927,7 +946,7 @@ module imem_predecode #(
       .INIT_FILE(INIT_FILE_ODD_FRONTEND_HOT)
   ) u_odd_frontend_hot (
       .i_write_clock(i_port_a_clk),
-      .i_write_enable(port_a_write_odd_q),
+      .i_write_enable(port_a_write_odd),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_frontend_hot),
       .i_read_clock(i_port_b_clk),
@@ -944,7 +963,7 @@ module imem_predecode #(
       .INIT_FILE(INIT_FILE_EVEN_SIDEBAND)
   ) u_even_sideband (
       .i_write_clock(i_port_a_clk),
-      .i_write_enable(port_a_write_even_q),
+      .i_write_enable(port_a_write_even),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_sideband),
       .i_read_clock(i_port_b_clk),
@@ -960,7 +979,7 @@ module imem_predecode #(
       .INIT_FILE(INIT_FILE_ODD_SIDEBAND)
   ) u_odd_sideband (
       .i_write_clock(i_port_a_clk),
-      .i_write_enable(port_a_write_odd_q),
+      .i_write_enable(port_a_write_odd),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_sideband),
       .i_read_clock(i_port_b_clk),
@@ -979,7 +998,7 @@ module imem_predecode #(
       .INIT_FILE(INIT_FILE_EVEN_COMPRESSED)
   ) u_even_compressed (
       .i_write_clock(i_port_a_clk),
-      .i_write_enable(port_a_write_even_q),
+      .i_write_enable(port_a_write_even),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_fast_lanes),
       .i_read_clock(i_port_b_clk),
@@ -995,7 +1014,7 @@ module imem_predecode #(
       .INIT_FILE(INIT_FILE_ODD_COMPRESSED)
   ) u_odd_compressed (
       .i_write_clock(i_port_a_clk),
-      .i_write_enable(port_a_write_odd_q),
+      .i_write_enable(port_a_write_odd),
       .i_write_address(port_a_half_address_q),
       .i_write_data(write_fast_lanes),
       .i_read_clock(i_port_b_clk),
@@ -1068,7 +1087,7 @@ module imem_predecode #(
   // Check both full physical addresses: mixed windows are slow, and high
   // addresses aliasing the finite memory pins must not hit the overlay.
   always_ff @(posedge i_port_b_clk) begin
-    if (port_a_write_quarantine) begin
+    if (i_port_b_rst || port_a_write_quarantine) begin
       // Block responses until the write commits and fresh history is captured.
       pc_metadata_overlay_window_hit_q <= 1'b0;
       pc_metadata_response_ready_q <= 1'b0;
@@ -1127,7 +1146,7 @@ module imem_predecode #(
   // the ASIC flow's SRAM macro models change their read data mid-cycle.
   logic pc_metadata_compare_valid_q = 1'b0;
   always_ff @(posedge i_port_b_clk) begin
-    pc_metadata_compare_valid_q <= i_port_b_enable;
+    pc_metadata_compare_valid_q <= !i_port_b_rst && i_port_b_enable;
   end
 
   always @(posedge i_port_b_clk) begin
@@ -1174,7 +1193,15 @@ module imem_predecode #(
         odd_sideband[riscv_pkg::ImemSbPairableCompressedHi],
         odd_sideband[riscv_pkg::ImemSbIsCompressedHi],
         odd_sideband[riscv_pkg::ImemSbIsCompressedLo]
-      });
+      })
+      else
+        $error(
+            "imem_predecode: odd word %h metadata %h at %h / %h",
+            odd_read_data,
+            odd_pc_metadata,
+            pc_metadata_response_address_q,
+            pc_metadata_response_next_address_q
+        );
       p_even_pc_pairable_compressed_hi_matches_fast_fields :
       assert ((even_pc_metadata[1] && even_compressed[FastLaneAllowsSlot2AfterHi]) ==
               even_pc_metadata[2]);

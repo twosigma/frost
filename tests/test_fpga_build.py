@@ -1351,7 +1351,7 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
                 rf"{parity}_{re.escape(source_name)};",
                 imem,
             )
-    assert "pc_metadata_compare_valid_q <= i_port_b_enable;" in imem
+    assert "pc_metadata_compare_valid_q <= !i_port_b_rst && i_port_b_enable;" in imem
     for predicate in (
         "even_local_pair_valid",
         "pairable_native_lo",

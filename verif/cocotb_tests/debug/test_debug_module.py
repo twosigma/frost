@@ -52,8 +52,11 @@ async def _setup(dut: Any) -> None:
     dut.i_slice_req_ready.value = 1
     dut.i_slice_all_done.value = 1
     dut.i_rst.value = 1
+    dut.i_power_on_rst.value = 1
     for _ in range(4):
         await RisingEdge(dut.i_clk)
+    await FallingEdge(dut.i_clk)
+    dut.i_power_on_rst.value = 0
 
 
 async def _present(dut: Any, op: int, addr: int, data: int = 0) -> None:

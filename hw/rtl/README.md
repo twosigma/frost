@@ -341,6 +341,37 @@ For OpenOCD, GDB, and VS Code use, see the
 
 ## Build and Simulation
 
+Synchronous resets establish pipeline validity, queue ownership, control
+state, and architectural control registers. Cache reset walks clear tags
+and replacement state before accepting requests; cache data arrays do not
+need clearing. The BTB clears its valid bits, and the return-address stack
+clears its occupancy. Direction and TAGE tables provide speculative hints;
+their contents affect prediction accuracy rather than architectural state.
+Payload RAMs are qualified by ownership or validity, or written before use.
+Integer consumers substitute zero for x0; the unwritten register-file row
+has an unspecified read value. Software initializes the other integer and
+floating-point registers it uses. Program images supply the
+instruction and data memories independently of reset.
+
+`platform_top.i_power_on_rst` is an asynchronous power-on request, separate
+from system reset. Hold both resets at power-up with the core clock running.
+The core synchronizes the power-on request before synchronously resetting
+the debug transport handshake and the debug module's pending DMI request.
+These survive system reset. TCK reset asserts asynchronously, releases after
+two TCK edges, and resets the TAP and transport handshake even if TCK is
+stopped. TRST_N resets the TAP alone. Either transport domain may release
+first: a held TCK produces no request, and a request launched while the core
+is held waits for its answer after core reset releases.
+
+The programming-clock domain also synchronizes power-on reset. It clears
+instruction-memory staged write enables and blocks writes on the first
+reset edge. System reset leaves this programming path available for image
+loading. Fetch reset clears metadata readiness and repeated-address history.
+FPGA tops tie the power-on request inactive and use configuration-loaded
+initial values. Simulation pulses it independently of system reset in both
+ordinary and [random power-up mode](../../tests/README.md#random-power-up-state).
+The random mode checks dependencies on initializers and uninitialized storage.
+
 Use the [test guide](../../tests/README.md) for simulation, formal, and Yosys
 runs in the pinned container, the [FPGA guide](../../fpga/README.md) for
 native Vivado builds, and the [ASIC guide](../../asic/README.md) for the

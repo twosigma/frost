@@ -411,7 +411,8 @@ The register at a copy's pin is clocked by the copy. In the tables of worst
 slack by capture clock, in `summary.md` and the `paths` report, each copy
 has its own row for the paths that it captures: those to the output ports
 and to that register. The `paths` report's other tables count a copy's
-paths as its clock's. The asynchronous levels (`i_jtag_trst_n`, the NIC's
+paths as its clock's. The asynchronous levels (`i_power_on_rst`,
+`i_jtag_trst_n`, the NIC's
 clock-presence and PHY status inputs) are not timed. A missed target does
 not stop the flow: ORFS's repair steps after synthesis work toward it, and
 synthesis maps the same netlist for any target

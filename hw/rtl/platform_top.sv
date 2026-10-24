@@ -107,6 +107,7 @@ module platform_top #(
     input logic i_cpu_clk = 1'b0,
     input logic i_clk_div4,  // Divided clock for the low-BRAM programming port
     input logic i_rst,
+    input logic i_power_on_rst,
 
     // Low-BRAM programming interface (div4 clock domain); writes go to both the
     // instruction and data copies
@@ -454,6 +455,7 @@ module platform_top #(
       .CLK_FREQ_HZ(CLK_FREQ_HZ),
       .RAW_LOOPBACK(RAW_LOOPBACK)
   ) soc (
+      .i_power_on_rst(i_power_on_rst),
       .i_clk(i_clk),
       .i_cpu_clk(cpu_clk),
       .i_clk_div4(i_clk_div4),
