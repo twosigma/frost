@@ -367,9 +367,10 @@ The programming-clock domain also synchronizes power-on reset. It clears
 instruction-memory staged write enables and blocks writes on the first
 reset edge. System reset leaves this programming path available for image
 loading. Fetch reset clears metadata readiness and repeated-address history.
-FPGA tops tie the power-on request inactive and use configuration-loaded
-initial values. Simulation pulses it independently of system reset in both
-ordinary and [random power-up mode](../../tests/README.md#random-power-up-state).
+FPGA tops tie the power-on request inactive, select `POWER_ON_RESET_ENABLE=0`
+to omit its synchronizers, and use configuration-loaded initial values.
+`platform_top` enables power-on reset by default. Simulation pulses it
+independently of system reset in both ordinary and [random power-up mode](../../tests/README.md#random-power-up-state).
 The random mode checks dependencies on initializers and uninitialized storage.
 
 Use the [test guide](../../tests/README.md) for simulation, formal, and Yosys
