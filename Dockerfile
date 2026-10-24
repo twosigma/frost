@@ -273,7 +273,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Python's ensurepip does not install setuptools or wheel, and QEMU's offline
 # build environment needs both to install its bundled qemu.qmp wheel.
-ARG SETUPTOOLS_VERSION=84.0.0
+ARG SETUPTOOLS_VERSION=84.1.0
 ARG WHEEL_VERSION=0.48.0
 RUN python3 -m pip install --no-cache-dir \
     "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
