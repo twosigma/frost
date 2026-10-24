@@ -48,6 +48,7 @@ def _dir_idx(pc: int) -> int:
 
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs except reset to idle values."""
+    dut.i_metadata_check_valid.value = 1
     dut.i_stall.value = 0
     dut.i_stall_registered.value = 0
     dut.i_fetch_progress.value = 1

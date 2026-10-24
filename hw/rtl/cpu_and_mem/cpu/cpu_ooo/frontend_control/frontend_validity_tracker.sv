@@ -189,9 +189,10 @@ module frontend_validity_tracker (
   assign if_has_control_flow = i_if_has_control_flow;
   assign if_has_indirect_control_flow = !from_if_to_pd.sel_nop && i_if_is_indirect;
 `ifndef SYNTHESIS
-  // Sampled at the clock so the check sees settled values.
+  // Fault payloads need not match their predecode. Sample defined bytes at
+  // the clock so the check sees settled values.
   always_ff @(posedge i_clk) begin
-    if (reset_seen_q && !i_rst && !$isunknown(
+    if (reset_seen_q && !i_rst && !from_if_to_pd.fetch_fault && !$isunknown(
             {from_if_to_pd.sel_nop, from_if_to_pd.raw_parcel, i_if_is_indirect}
         )) begin
       p_if_indirect_predecode_exact :

@@ -30,6 +30,10 @@ module branch_prediction_controller #(
     // Set only when i_pc_2/alt are structurally i_pc_2_base + 2/+4.
     parameter bit SLOT2_PC_FROM_BASE = 1'b0
 ) (
+`ifndef SYNTHESIS
+    // Fault responses have undefined candidate metadata.
+    input logic i_metadata_check_valid = 1'b1,
+`endif
     input logic i_clk,
     input logic i_reset,
     input logic i_stall,
@@ -1115,13 +1119,14 @@ module branch_prediction_controller #(
       if (!$isunknown(
               {i_slot2_valid, i_slot2_plus2_candidate_valid, i_slot2_plus4_candidate_valid}
           )) begin
-        // Idle provider payloads are arbitrary; check metadata when consumed.
-        if (i_slot2_valid || (prediction_common && i_fetch_progress)) begin
+        // Idle and fault payloads do not describe executable instructions.
+        if (i_metadata_check_valid &&
+            (i_slot2_valid || (prediction_common && i_fetch_progress))) begin
           p_slot2_candidate_valids_are_onehot :
           assert ($onehot0({i_slot2_plus4_candidate_valid, i_slot2_plus2_candidate_valid}));
         end
         p_live_slot2_has_exactly_one_candidate :
-        assert (!i_slot2_valid || $onehot(
+        assert (!i_metadata_check_valid || !i_slot2_valid || $onehot(
             {i_slot2_plus4_candidate_valid, i_slot2_plus2_candidate_valid}
         ));
         p_slot2_target_selector_uses_plus4_valid :

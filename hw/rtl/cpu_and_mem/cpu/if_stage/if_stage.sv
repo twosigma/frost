@@ -433,6 +433,10 @@ module if_stage #(
   logic [3:0] active_pc_pairability_by_parity_canonical;
   logic [1:0] active_slot2_start_valid_lo_by_parity;
   logic [1:0] active_slot2_start_valid_lo_by_parity_canonical;
+  // Fault responses carry arbitrary bytes and predecode metadata.
+  logic provider_metadata_check_valid;
+  assign provider_metadata_check_valid = coverage_reset_seen_q &&
+      !i_pipeline_ctrl.reset && i_instr_valid && !i_instr_fault0 && !i_instr_fault1;
   // Check metadata replicas and the +2/+4 candidate selects. Compare the
   // latter only when prediction_common would be set; the fast size may
   // differ while prediction is blocked.
@@ -500,12 +504,12 @@ module if_stage #(
         };
   end
   always_ff @(posedge i_clk) begin
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && i_instr_valid && !$isunknown(
+    if (provider_metadata_check_valid && !$isunknown(
             {i_instr_pc_metadata, instr_pc_metadata_canonical}
         )) begin
       p_pc_metadata_matches_canonical : assert (i_instr_pc_metadata == instr_pc_metadata_canonical);
     end
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && i_instr_valid && !$isunknown(
+    if (provider_metadata_check_valid && !$isunknown(
             {
               active_pc_metadata_by_parity,
               active_pc_metadata_by_parity_canonical,
@@ -656,6 +660,9 @@ module if_stage #(
   branch_prediction_controller #(
       .SLOT2_PC_FROM_BASE(XLEN == riscv_pkg::XLEN)
   ) branch_prediction_controller_inst (
+`ifndef SYNTHESIS
+      .i_metadata_check_valid(provider_metadata_check_valid && !cur_fault_pair[1]),
+`endif
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
       // Serialization stalls (for unresolved older branches or CSRs) must also
@@ -1072,7 +1079,7 @@ module if_stage #(
       .XLEN(XLEN)
   ) instruction_aligner_inst (
 `ifndef SYNTHESIS
-      .i_metadata_check_valid(coverage_reset_seen_q && !i_pipeline_ctrl.reset && i_instr_valid),
+      .i_metadata_check_valid(provider_metadata_check_valid && !cur_fault_pair[1]),
 `endif
       .i_instr(i_instr),
       .i_instr_low_by_parity(i_instr_low_by_parity),

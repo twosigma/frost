@@ -3485,3 +3485,37 @@ async def test_fetch_window_lead_parity_plus2_desync(dut: Any) -> None:
         f"pc_reg landed mid-32-bit-instruction at {pc2:#x} "
         "(F=W+1 fetch-window-lead parity hole; is_compressed_fast read the wrong word)"
     )
+
+
+@cocotb.test()
+async def test_fetch_fault_preserves_tags_with_arbitrary_metadata(dut: Any) -> None:
+    """Fault responses carry their tags independently of undefined metadata."""
+    await _setup_test(dut)
+    await _redirect_to(dut, BASE_PC)
+    for _ in range(4):
+        await _advance_cycle(dut)
+
+    dut.i_instr_fault0.value = 1
+    dut.i_instr_fault1.value = 1
+    _drive_fetch(dut, current_word=ADD_INSTR_A, next_word=ADD_INSTR_B)
+    # A fault response need not encode exclusive pairing candidates or
+    # matching replicas. Its bytes do not describe an executable instruction.
+    dut.i_instr_pc_metadata.value = 0xFF
+    dut.i_instr_pc_metadata_by_provider_parity.value = 0xFFFF
+    dut.i_pc_pairability_by_provider_parity.value = 0xFF
+    dut.i_slot2_start_valid_lo_by_provider_parity.value = 0xF
+    await _settle()
+    for slot2 in (False, True):
+        packet = _read_if_packet(dut, slot2=slot2)
+        assert packet["fetch_fault"]
+        assert not packet["fetch_fault_page"]
+    await _advance_cycle(dut)
+    assert _read_if_packet(dut)["fetch_fault"]
+    assert not int(dut.prediction_used.value)
+    assert not int(dut.slot2_prediction_used.value)
+
+    _drive_fetch(dut, current_word=NOP_INSTR, next_word=NOP_INSTR)
+    dut.i_instr_fault0.value = 0
+    dut.i_instr_fault1.value = 0
+    await _settle()
+    assert not _read_if_packet(dut)["fetch_fault"]
