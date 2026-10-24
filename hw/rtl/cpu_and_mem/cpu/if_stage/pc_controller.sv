@@ -1960,7 +1960,7 @@ module pc_controller #(
     if (i_reset) begin
       fence_i_flush_q <= 1'b0;
     end else begin
-      if (fence_i_flush_q) begin
+      if (pending_rel_check_armed_q && fence_i_flush_q) begin
         p_fence_clears_carve_latch : assert (!carve_out_engaged_q);
       end
       fence_i_flush_q <= i_fence_i_flush;
