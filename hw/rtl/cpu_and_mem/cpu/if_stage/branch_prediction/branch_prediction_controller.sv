@@ -68,10 +68,10 @@ module branch_prediction_controller #(
     // is attached to slot 2 only with i_slot2_valid.
     input logic                       i_lookup_lead_collapsed,
     // Early candidate valids, which may stay high while IF's full packet-valid
-    // gate suppresses slot 2.  They are still enough to identify a live lookup
-    // that belongs to the slot-2 position; an actual slot-2 redirect or
-    // fallback also needs i_slot2_valid.  At most one is high, and exactly one
-    // while i_slot2_valid is high (asserted below).
+    // gate suppresses slot 2. They identify a live lookup belonging to the
+    // slot-2 position; a slot-2 redirect or fallback also needs i_slot2_valid.
+    // At most one is high when a served window is consumed, and exactly one
+    // while i_slot2_valid is high (asserted below). Idle metadata is unspecified.
     input logic                       i_slot2_plus2_candidate_valid,
     input logic                       i_slot2_plus4_candidate_valid,
     input logic                       i_slot2_valid,
@@ -265,9 +265,8 @@ module branch_prediction_controller #(
   logic            btb_entry_is_return_2_plus4;
 
   // Target, hit, bimodal index, and the other selected metadata all follow
-  // the same candidate.  The +4 candidate valid is already qualified, and
-  // since at most one candidate valid is high (asserted below), selecting +2
-  // is the safe default when neither is.
+  // the same candidate. For a consumed window, at most one candidate valid
+  // is high (asserted below), so selecting +2 is safe when neither is.
   logic            slot2_pc_use_alt;
   assign slot2_pc_use_alt = i_slot2_plus4_candidate_valid;
 
@@ -1114,8 +1113,11 @@ module branch_prediction_controller #(
       if (!$isunknown(
               {i_slot2_valid, i_slot2_plus2_candidate_valid, i_slot2_plus4_candidate_valid}
           )) begin
-        p_slot2_candidate_valids_are_onehot :
-        assert ($onehot0({i_slot2_plus4_candidate_valid, i_slot2_plus2_candidate_valid}));
+        // Idle provider payloads are arbitrary; check metadata when consumed.
+        if (i_slot2_valid || (prediction_common && i_fetch_progress)) begin
+          p_slot2_candidate_valids_are_onehot :
+          assert ($onehot0({i_slot2_plus4_candidate_valid, i_slot2_plus2_candidate_valid}));
+        end
         p_live_slot2_has_exactly_one_candidate :
         assert (!i_slot2_valid || $onehot(
             {i_slot2_plus4_candidate_valid, i_slot2_plus2_candidate_valid}

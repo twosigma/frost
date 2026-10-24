@@ -1186,6 +1186,11 @@ module reorder_buffer #(
       .DATA_WIDTH(AllocHeadWidth),
       .NUM_WRITE_PORTS(2)
   ) u_rob_alloc_head (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
       .i_clk,
       .i_write_enable({alloc_en_2, alloc_en}),
       .i_write_address({tail_idx_2, tail_idx}),
@@ -1230,6 +1235,11 @@ module reorder_buffer #(
       .DATA_WIDTH(AllocNextWidth),
       .NUM_WRITE_PORTS(2)
   ) u_rob_alloc_head_next (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
       .i_clk,
       .i_write_enable({alloc_en_2, alloc_en}),
       .i_write_address({tail_idx_2, tail_idx}),
@@ -1293,6 +1303,11 @@ module reorder_buffer #(
         .NUM_NARROW_WRITE_PORTS(2),
         .NARROW_DATA_WIDTH     (XLEN)
     ) u_rob_value_head (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
         .i_clk,
         .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
         .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
@@ -1313,6 +1328,11 @@ module reorder_buffer #(
         .NUM_NARROW_WRITE_PORTS(2),
         .NARROW_DATA_WIDTH     (XLEN)
     ) u_rob_value_head_next (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
         .i_clk,
         .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
         .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
@@ -1600,6 +1620,11 @@ module reorder_buffer #(
       .DATA_WIDTH     (ExcCauseWidth),
       .NUM_WRITE_PORTS(4)
   ) u_rob_exc_cause (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
       .i_clk,
       .i_write_enable({cdb_exc_cause_wr_en_2, cdb_exc_cause_wr_en, alloc_en_2, alloc_en}),
       .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
@@ -1620,6 +1645,11 @@ module reorder_buffer #(
       .DATA_WIDTH     (FpFlagsWidth),
       .NUM_WRITE_PORTS(4)
   ) u_rob_fp_flags (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
       .i_clk,
       .i_write_enable({alloc_en_2, alloc_en, cdb_ram_wr_en_2, cdb_ram_wr_en}),
       .i_write_address({tail_idx_2, tail_idx, i_cdb_write_2.tag, i_cdb_write.tag}),
@@ -1637,6 +1667,11 @@ module reorder_buffer #(
       .DATA_WIDTH     (FpFlagsWidth),
       .NUM_WRITE_PORTS(4)
   ) u_rob_fp_flags_next (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
       .i_clk,
       .i_write_enable({alloc_en_2, alloc_en, cdb_ram_wr_en_2, cdb_ram_wr_en}),
       .i_write_address({tail_idx_2, tail_idx, i_cdb_write_2.tag, i_cdb_write.tag}),
@@ -1655,13 +1690,18 @@ module reorder_buffer #(
       .DATA_WIDTH     (XLEN),
       .NUM_WRITE_PORTS(2)
   ) u_rob_branch_target_jal (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
       .i_clk,
-      .i_write_enable ({alloc_en_2 && i_alloc_req_2.is_jal, alloc_en && i_alloc_req.is_jal}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({alloc_branch_target_data_2, alloc_branch_target_data}),
-      .i_read_address (head_idx),
-      .i_read_onehot  (head_clear_mask),
-      .o_read_data    (head_branch_target_jal)
+      .i_write_enable     ({alloc_en_2 && i_alloc_req_2.is_jal, alloc_en && i_alloc_req.is_jal}),
+      .i_write_address    ({tail_idx_2, tail_idx}),
+      .i_write_data       ({alloc_branch_target_data_2, alloc_branch_target_data}),
+      .i_read_address     (head_idx),
+      .i_read_onehot      (head_clear_mask),
+      .o_read_data        (head_branch_target_jal)
   );
 
   // Widen-commit replica: head+1 read port for branch_target_jal.
@@ -1670,13 +1710,18 @@ module reorder_buffer #(
       .DATA_WIDTH     (XLEN),
       .NUM_WRITE_PORTS(2)
   ) u_rob_branch_target_jal_next (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
       .i_clk,
-      .i_write_enable ({alloc_en_2 && i_alloc_req_2.is_jal, alloc_en && i_alloc_req.is_jal}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({alloc_branch_target_data_2, alloc_branch_target_data}),
-      .i_read_address (head_next_idx),
-      .i_read_onehot  (head_next_clear_mask),
-      .o_read_data    (head_next_branch_target_jal)
+      .i_write_enable     ({alloc_en_2 && i_alloc_req_2.is_jal, alloc_en && i_alloc_req.is_jal}),
+      .i_write_address    ({tail_idx_2, tail_idx}),
+      .i_write_data       ({alloc_branch_target_data_2, alloc_branch_target_data}),
+      .i_read_address     (head_next_idx),
+      .i_read_onehot      (head_next_clear_mask),
+      .o_read_data        (head_next_branch_target_jal)
   );
 
   sdp_dist_ram #(
