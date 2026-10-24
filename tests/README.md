@@ -452,7 +452,7 @@ pinned Docker image, except the ASIC flow, which runs in its own image:
 | Cocotb unit benches, DDR probes, fetch fuzzers, programs on the SRAM macros, OpenSBI smoke | BRAM only: tier-independent or fixed-layout runs |
 | Physical address apertures | Software boundary, fetch, translation, DMA, and NIC checks at 1, 64, and 128 GiB; generic synthesis at 1 and 128 GiB |
 | Architecture compliance | BRAM and DDR, in groups of extensions; excludes Zifencei on BRAM and F/D on DDR; F and D share three BRAM shards without coverage; the other groups collect coverage |
-| riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both |
+| riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
 | Torture | BRAM, DDR, and paged DDR |
 | TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
