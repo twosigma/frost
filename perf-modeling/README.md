@@ -101,7 +101,7 @@ The architectural model was calibrated and validated against three distinct RTL 
 
 ## 4. How to Extract Traces from Verilator RTL
 
-Trace extraction is fully automated and integrated into the FROST test infrastructure (`verif/cocotb_tests/test_real_program.py`). The monitor activates exclusively during the timed region of the target benchmark and introduces zero simulation timing perturbation.
+Trace extraction is fully automated and integrated into the FROST test infrastructure (`verif/cocotb_tests/calibration_trace.py`, called from the real-program bench in `verif/cocotb_tests/test_real_program.py`). The monitor activates exclusively during the timed region of the target benchmark and introduces zero simulation timing perturbation.
 
 ### Step 1: Execute Simulation with Trace Capture
 
