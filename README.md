@@ -24,7 +24,8 @@ The diagram shows the X3 configuration; click it for the full-size version.
 - An open-source flow: simulation (Verilator and cocotb), synthesis checks
   (Yosys), and formal proofs (SymbiYosys) run in a pinned Docker image, and
   OpenROAD takes the design from synthesis to GDS on the FreePDK45 process,
-  with SRAM macros that OpenRAM generates for the caches and the data memory.
+  with SRAM macros that OpenRAM generates for the caches and the instruction
+  and data memories.
   AMD Vivado is needed only for the FPGA itself: building bitstreams and
   programming and loading the board.
 - Continuous testing against the RISC-V architecture tests and random

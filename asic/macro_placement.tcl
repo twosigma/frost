@@ -12,19 +12,20 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Places the SRAM macros (MACRO_PLACEMENT_TCL) in two bands across the core,
-# with the logic in a band between them:
+# Places the SRAM macros (MACRO_PLACEMENT_TCL) in three bands across the
+# core, with the logic in a band between the top two:
 #
 #   top:    L1I data, NIC FIFOs, BTB | L1D data, a row per way | L1D, L2 tags
 #   middle: the logic, with the pins on the core's left and right edges
+#   lower:  instruction memory, even parity | odd parity
 #   bottom: L2 data, slices 0-3 | data memory | L2 data, slices 4-7
 #
 # Each L2 slice holds 64 bits of every {way, set} line in one macro. The I/O
 # placer keeps the pins off the top and bottom edges (PLACE_PINS_ARGS in
-# config.mk), so they face the logic band rather than a macro. The core is
-# sized for this arrangement (DIE_AREA and CORE_AREA in config.mk), and the
-# script fails if a macro is left out or does not fit. Positions are in
-# microns from the core's lower-left corner, on the placement site grid.
+# config.mk). The core is sized for this arrangement (DIE_AREA and CORE_AREA
+# in config.mk), and the script fails if a macro is left out or does not
+# fit. Positions are in microns from the core's lower-left corner, on the
+# placement site grid.
 
 set frost_block [ord::get_db_block]
 set frost_dbu [$frost_block getDefUnits]
@@ -123,6 +124,31 @@ proc frost_place_grid { macros x y columns } {
   }
 }
 
+# Place macros of any widths side by side from (x, y), left to right.
+proc frost_place_row { macros x y } {
+  foreach inst $macros {
+    frost_place $inst $x $y
+    set x [expr { $x + [frost_width $inst] + $::frost_side_gap }]
+  }
+}
+
+# The width and height of such a row.
+proc frost_row_width { macros } {
+  set width [expr { -$::frost_side_gap }]
+  foreach inst $macros {
+    set width [expr { $width + [frost_width $inst] + $::frost_side_gap }]
+  }
+  return $width
+}
+
+proc frost_row_height { macros } {
+  set height 0.0
+  foreach inst $macros {
+    set height [expr { max($height, [frost_height $inst]) }]
+  }
+  return $height
+}
+
 # The width and height of such a grid of equal macros.
 proc frost_grid_width { macros columns } {
   return [expr { $columns * [frost_width [lindex $macros 0]] + \
@@ -143,6 +169,17 @@ set frost_l1d_tags [frost_macros {l1_cache\.gen_tag_block\.}]
 set frost_l1i_data [frost_macros {l1i_cache\.gen_data_banks\.}]
 set frost_nic [frost_macros {u_[rt]x_fifo\.storage\.}]
 set frost_btb [frost_macros {btb_payload_ram}]
+# Each parity's instruction memory banks, two macros a bank: the cold bank's,
+# then the frontend-hot bank's, then the compressed bank's.
+proc frost_imem_parity { parity } {
+  set macros {}
+  foreach bank {cold frontend_hot compressed} {
+    lappend macros {*}[frost_macros "instruction_memory\\.u_${parity}_${bank}\\."]
+  }
+  return $macros
+}
+set frost_imem_even [frost_imem_parity even]
+set frost_imem_odd [frost_imem_parity odd]
 
 set frost_core_width [frost_um [$frost_core dx]]
 set frost_core_height [frost_um [$frost_core dy]]
@@ -161,6 +198,23 @@ frost_place_grid $frost_data_memory $frost_memory_x $frost_edge 2
 frost_place_grid [lrange $frost_l2_data 4 7] $frost_right_x $frost_edge 2
 set frost_bottom_top [expr { $frost_edge + max([frost_grid_height $frost_data_memory 2], \
   [frost_grid_height [lrange $frost_l2_data 0 3] 2]) }]
+
+# The lower band, a channel above the bottom band: the instruction memory's
+# even parity at the left and its odd parity, in mirror order, at the right,
+# centered.
+set frost_imem_even_width [frost_row_width $frost_imem_even]
+set frost_imem_width [expr { $frost_imem_even_width + $frost_channel + \
+  [frost_row_width $frost_imem_odd] }]
+set frost_imem_x [expr { ($frost_core_width - $frost_imem_width) / 2 }]
+if { $frost_imem_x < $frost_edge } {
+  error "the core is too narrow for the instruction memory's macros; widen CORE_AREA in config.mk"
+}
+set frost_imem_y [expr { $frost_bottom_top + $frost_channel }]
+frost_place_row $frost_imem_even $frost_imem_x $frost_imem_y
+frost_place_row [lreverse $frost_imem_odd] \
+  [expr { $frost_imem_x + $frost_imem_even_width + $frost_channel }] $frost_imem_y
+set frost_bottom_top [expr { $frost_imem_y + max([frost_row_height $frost_imem_even], \
+  [frost_row_height $frost_imem_odd]) }]
 
 # The top band: the L1D data in the middle, way (gen_bank) w's bank in row
 # w with its 64-bit slices side by side; at the left the L1I data, arranged

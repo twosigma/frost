@@ -304,7 +304,8 @@ else ifeq ($(TOPLEVEL),sdp_packed_tag_uram)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/ram/sdp_packed_tag_uram.sv
 VERILOG_SOURCES :=
-else ifneq ($(filter $(TOPLEVEL),sdp_ram_byte_en sdp_block_ram sdp_block_ram_dc tdp_bram_dc_byte_en),)
+else ifneq ($(filter $(TOPLEVEL),sdp_ram_byte_en sdp_block_ram sdp_block_ram_dc \
+                sdp_block_ram_dc_init tdp_bram_dc_byte_en),)
 # RAM wrapper unit benches (the ASIC flow's SRAM macros)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/ram/$(TOPLEVEL).sv

@@ -29,8 +29,10 @@
  * after its edge, and the FIFOs read a word at least two and a half
  * read-clock periods after its pointer leaves the write side, which covers
  * that while the write clock's period is under five read-clock periods. The
- * NIC's FIFOs, the users large enough for macros, cross between clocks a
- * factor of two apart.
+ * users large enough for macros are the NIC's FIFOs, which cross between
+ * clocks a factor of two apart, and, in the frost top that simulations of
+ * the macros build, the UART's transmit FIFO, written on a clock four times
+ * its read clock's rate.
  */
 module sdp_block_ram_dc #(
     parameter int unsigned ADDR_WIDTH = 5,  // Address width in bits

@@ -134,6 +134,13 @@ MACROS = (
     Macro("1w1r", 256, 36, None),
     # L1I data: 1 row of 4 in each way's bank
     Macro("1w1r", 128, 64, 8),
+    # Instruction memory: 2 rows of 1 in each parity's cold bank, written on
+    # the program-loading clock and read on the core's. A bank of OpenRAM
+    # holds at most 8,192 words, 512 rows of 16.
+    Macro("1w1r", 8192, 28, None),
+    # Instruction memory: 2 rows of 1 in each parity's frontend-hot and
+    # compressed banks
+    Macro("1w1r", 8192, 4, None),
     # Data memory: 4 rows of 1, with the program-loading port and the core's
     Macro("2rw", 4096, 64, 8),
 )
