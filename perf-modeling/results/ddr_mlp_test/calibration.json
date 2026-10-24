@@ -1,0 +1,18 @@
+{
+  "calibration_status": "valid trace only; fit parameters only with archived directed-case evidence",
+  "model": null,
+  "observed": {
+    "cycles_observed": 94010,
+    "event_counts": {
+      "axi_request": 5443,
+      "axi_response": 5443,
+      "dispatch": 26575,
+      "meta": 1,
+      "retire": 20945
+    },
+    "retired_uops": 30427
+  },
+  "rtl_commit": "411dee2224700a3d9d325a4f2df8bcbe83a9bed5",
+  "status": "trace-valid",
+  "trace": "perf-modeling/results/ddr_mlp_test/ddr_mlp_timed.jsonl"
+}

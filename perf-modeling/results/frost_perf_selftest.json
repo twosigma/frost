@@ -1,0 +1,77 @@
+{
+  "checks": [
+    {
+      "detail": "",
+      "name": "id_roundtrip_4_fill",
+      "passed": true
+    },
+    {
+      "detail": "",
+      "name": "id_roundtrip_4_writeback",
+      "passed": true
+    },
+    {
+      "detail": "",
+      "name": "id_roundtrip_5_fill",
+      "passed": true
+    },
+    {
+      "detail": "",
+      "name": "id_roundtrip_5_writeback",
+      "passed": true
+    },
+    {
+      "detail": "",
+      "name": "id_overflow_rejected",
+      "passed": true
+    },
+    {
+      "detail": "",
+      "name": "mshr_owns_victim_way",
+      "passed": true
+    },
+    {
+      "detail": "",
+      "name": "dirty_victim_writeback_address",
+      "passed": true
+    },
+    {
+      "detail": "",
+      "name": "single_channel_ddr_slot_scaling",
+      "passed": true
+    },
+    {
+      "detail": "",
+      "name": "soc_accepts_ddr_and_local",
+      "passed": true
+    },
+    {
+      "detail": "",
+      "name": "soc_axi_slave_routes_ddr_and_local",
+      "passed": true
+    },
+    {
+      "detail": "",
+      "name": "pipeline_retires_all_ops",
+      "passed": true
+    },
+    {
+      "detail": "",
+      "name": "same_line_miss_coalesces",
+      "passed": true
+    },
+    {
+      "detail": "",
+      "name": "replaceable_soc_top_boundary",
+      "passed": true
+    },
+    {
+      "detail": "",
+      "name": "deterministic_workload",
+      "passed": true
+    }
+  ],
+  "model_version": "1.0",
+  "passed": true,
+  "rtl_commit": "410aa8f3e866fffb078fc8f7fd3672866d83d131"
+}

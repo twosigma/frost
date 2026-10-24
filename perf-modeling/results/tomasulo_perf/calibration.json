@@ -1,0 +1,18 @@
+{
+  "calibration_status": "valid trace only; fit parameters only with archived directed-case evidence",
+  "model": null,
+  "observed": {
+    "cycles_observed": 487313,
+    "event_counts": {
+      "axi_request": 24484,
+      "axi_response": 24484,
+      "dispatch": 159932,
+      "meta": 1,
+      "retire": 116776
+    },
+    "retired_uops": 175025
+  },
+  "rtl_commit": "411dee2224700a3d9d325a4f2df8bcbe83a9bed5",
+  "status": "trace-valid",
+  "trace": "perf-modeling/results/tomasulo_perf/tomasulo_perf_timed.jsonl"
+}

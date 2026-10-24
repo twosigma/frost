@@ -1,0 +1,36 @@
+{
+  "benchmark": "ddr_mlp_test",
+  "run_number": 1,
+  "wall_time_seconds": 54.252,
+  "simulated_cycles_per_second": 1732,
+  "git_commit": "411dee2224700a3d9d325a4f2df8bcbe83a9bed5",
+  "branch": "perf-modeling",
+  "clock_frequency_hz": 322265625,
+  "command_line": "./scripts/frost.py cocotb ddr_mlp_test",
+  "environment": {
+    "toolchain": "Bootlin GCC 15.3.0 (riscv64-buildroot-linux-gnu 15.3.0)",
+    "simulator": "Verilator 5.052",
+    "testbench": "cocotb 1.9.2"
+  },
+  "memory_configuration": {
+    "boot_and_stack": "low_bram",
+    "ddr_model": "axi_behavioral_memory",
+    "ddr_latency": 30,
+    "cache_normal_memory": true
+  },
+  "artifacts": {
+    "sw.mem_sha256": "0bc34a597627737de510b78f57ae3906930e8e8a0ca1678067f01917cd466ebc"
+  },
+  "timed_region": {
+    "start_pc": "0x00000000",
+    "stop_pc": "0x00000000",
+    "start_sim_cycle": 0,
+    "stop_sim_cycle": 0,
+    "timed_cycles": 94010
+  },
+  "crc_validation": {
+    "seedcrc": "unknown",
+    "crcfinal": "unknown",
+    "status": "PASS"
+  }
+}

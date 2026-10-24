@@ -1,0 +1,35 @@
+{
+  "cycles": 487313,
+  "retired_uops": 175025,
+  "ipc": 0.359163,
+  "wall_time_seconds": 306.881,
+  "simulated_cycles_per_second": 1587,
+  "branch_mispredicts": 2176,
+  "dispatch_distribution": {
+    "cycles_0_uops": 327381,
+    "cycles_1_uop": 110106,
+    "cycles_2_uops": 49826,
+    "total_dispatched_uops": 209758
+  },
+  "commit_distribution": {
+    "cycles_0_uops": 370537,
+    "cycles_1_uop": 58527,
+    "cycles_2_uops": 58249
+  },
+  "stalls": {
+    "dispatch_stall_cycles": 208300,
+    "pipeline_stall_cycles": 269415
+  },
+  "occupancy": {
+    "mean_rob_occupancy": 16.239,
+    "mean_sq_occupancy": 1.755
+  },
+  "axi_totals": {
+    "ar_requests": 8206,
+    "aw_requests": 16278,
+    "r_responses": 8206,
+    "b_responses": 16278,
+    "ar_backpressure_cycles": 35,
+    "aw_backpressure_cycles": 0
+  }
+}
