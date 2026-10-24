@@ -23,9 +23,11 @@
  * to one per id value, and the memory controller may complete different ids
  * in any order. Writes drive AW and W and complete on B; reads complete on R.
  * An error response (not OKAY) still completes its transaction, so a read
- * returns the response's data, and is reported on o_rd_err_* or o_wr_err_*
- * for the memory error unit; simulation also flags it unless the
- * +axi_error_check=0 plusarg turns that off for a test that injects errors.
+ * returns the response's data; o_resp_error carries RRESP[1] or BRESP[1] with
+ * it, and o_rd_err_* or o_wr_err_* report it for the memory error unit.
+ * Simulation also flags it unless RESP_ERRORS is set, for a master to which
+ * error responses are normal traffic, or the +axi_error_check=0 plusarg turns
+ * that off for a test that injects errors.
  * The bridge never orders
  * a read against a write: the caches above keep same-line ordering ("Line
  * protocol" in hw/rtl/lib/cache/README.md).
@@ -73,7 +75,10 @@ module line_port_axi_bridge #(
     parameter int unsigned LINE_BYTES = 32,
     parameter int unsigned ID_BITS = 4,
     parameter int unsigned AXI_ID_BITS = 4,
-    parameter logic [ADDR_WIDTH-1:0] BASE_ADDR = ADDR_WIDTH'(32'h8000_0000)
+    parameter logic [ADDR_WIDTH-1:0] BASE_ADDR = ADDR_WIDTH'(32'h8000_0000),
+    // 1: error responses are expected traffic (an I/O master's); no
+    // simulation $error for them.
+    parameter bit RESP_ERRORS = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -91,6 +96,8 @@ module line_port_axi_bridge #(
     output logic                    o_resp_valid,
     output logic [     ID_BITS-1:0] o_resp_id,
     output logic [LINE_BYTES*8-1:0] o_resp_rdata,
+    // RRESP[1] or BRESP[1] of the response forwarded with o_resp_valid.
+    output logic                    o_resp_error,
 
     // AXI4 master (single-beat bursts).
     output logic                      o_axi_awvalid,
@@ -233,8 +240,10 @@ module line_port_axi_bridge #(
   logic                    r_q_valid;
   logic [     ID_BITS-1:0] r_q_id;
   logic [LINE_BYTES*8-1:0] r_q_data;
+  logic                    r_q_error;
   logic                    b_q_valid;
   logic [     ID_BITS-1:0] b_q_id;
+  logic                    b_q_error;
 
   // R always drains the cycle after capture (it has priority on the response
   // port), so the AXI R channel is always ready. B drains when R is absent;
@@ -247,6 +256,7 @@ module line_port_axi_bridge #(
   assign o_resp_valid = r_q_valid || b_q_valid;
   assign o_resp_id    = r_q_valid ? r_q_id : b_q_id;
   assign o_resp_rdata = r_q_data;
+  assign o_resp_error = r_q_valid ? r_q_error : b_q_error;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -262,6 +272,7 @@ module line_port_axi_bridge #(
       if (r_accept && r_known) begin
         r_q_id <= i_axi_rid[ID_BITS-1:0];
         r_q_data <= i_axi_rdata;
+        r_q_error <= i_axi_rresp[1];
         inflight_q[i_axi_rid[ID_BITS-1:0]] <= 1'b0;
       end
 
@@ -269,6 +280,7 @@ module line_port_axi_bridge #(
       if (b_accept && b_known) begin
         b_q_valid <= 1'b1;
         b_q_id    <= i_axi_bid[ID_BITS-1:0];
+        b_q_error <= i_axi_bresp[1];
         inflight_q[i_axi_bid[ID_BITS-1:0]] <= 1'b0;
       end else if (b_drain) begin
         b_q_valid <= 1'b0;
@@ -322,9 +334,11 @@ module line_port_axi_bridge #(
       if (r_accept && r_known && b_accept && b_known &&
           (i_axi_rid[ID_BITS-1:0] == i_axi_bid[ID_BITS-1:0]))
         $error("line_port_axi_bridge: R and B for the same id %0d", i_axi_rid);
-      if (axi_error_check != 0 && i_axi_bvalid && o_axi_bready && i_axi_bresp != 2'b00)
+      if (!RESP_ERRORS && axi_error_check != 0 && i_axi_bvalid && o_axi_bready &&
+          i_axi_bresp != 2'b00)
         $error("line_port_axi_bridge: write response error (bresp=%0d)", i_axi_bresp);
-      if (axi_error_check != 0 && i_axi_rvalid && o_axi_rready && i_axi_rresp != 2'b00)
+      if (!RESP_ERRORS && axi_error_check != 0 && i_axi_rvalid && o_axi_rready &&
+          i_axi_rresp != 2'b00)
         $error("line_port_axi_bridge: read response error (rresp=%0d)", i_axi_rresp);
       if (i_axi_rvalid && o_axi_rready && !i_axi_rlast)
         $error("line_port_axi_bridge: multi-beat read response (expected single beat)");
@@ -416,6 +430,20 @@ module line_port_axi_bridge #(
       if ($past(r_accept && !r_known) && !$past(b_q_valid) && !$past(b_accept && b_known)) begin
         p_stale_r_dropped : assert (!o_resp_valid);
       end
+      // A forwarded R carries its own RRESP error bit.
+      if ($past(r_accept && r_known)) begin
+        p_r_error_forwarded : assert (o_resp_error == $past(i_axi_rresp[1]));
+      end
+    end
+  end
+
+  // A held B keeps the error bit it was taken with while R responses pass it,
+  // and reaches the line port with that bit.
+  logic f_b_error_q;
+  always @(posedge i_clk) begin
+    if (b_accept && b_known) f_b_error_q <= i_axi_bresp[1];
+    if (f_past_valid && !i_rst && !$past(i_rst) && b_q_valid && !r_q_valid) begin
+      p_b_error_forwarded : assert (o_resp_error == f_b_error_q);
     end
   end
 
