@@ -493,8 +493,10 @@ module frost_cluster_memory #(
       .i_axi_ruser
   );
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
   always @(posedge i_clk) begin
-    if (!i_rst && ENABLE_COHERENCE && i_coherent_req_valid)
+    if (i_rst) reset_seen_q <= 1'b1;
+    if (reset_seen_q && !i_rst && ENABLE_COHERENCE && i_coherent_req_valid)
       assert (coherent_address_ok)
       else $error("frost_cluster_memory: coherent request outside cached memory");
   end

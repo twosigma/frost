@@ -239,6 +239,10 @@ module frost_rvfi_platform #(
   // Limit reset fanout per replica.
   (* max_fanout = 256 *) logic rst_core;
   always_ff @(posedge i_clk) rst_core <= rst_core_next;
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (rst_core) reset_seen_q <= 1'b1;
+`endif
 
   // Memory addressing parameters
   localparam int unsigned MemByteAddrWidth = $clog2(MEM_SIZE_BYTES);
@@ -1114,7 +1118,7 @@ module frost_rvfi_platform #(
     // Timing replicas that select payload-derived metadata must remain
     // cycle-identical to the served-provider selector.
     always_ff @(posedge i_clk) begin
-      if (!rst_core) begin
+      if (reset_seen_q && !rst_core) begin
         p_cached_fetch_valid_timing_twin_exact :
         assert (cached_fetch_valid_local_q == cached_fetch_valid);
         p_fetch_high_pc_metadata_select_aligned :
@@ -1303,13 +1307,13 @@ module frost_rvfi_platform #(
         };
   end
   always_ff @(posedge i_clk) begin
-    if (!rst_core && instruction_valid && !$isunknown(
+    if (reset_seen_q && !rst_core && instruction_valid && !$isunknown(
             {instruction_pc_metadata, instruction_pc_metadata_canonical}
         )) begin
       p_selected_pc_metadata_matches_canonical :
       assert (instruction_pc_metadata == instruction_pc_metadata_canonical);
     end
-    if (!rst_core && instruction_valid && !instruction_served_high && !$isunknown(
+    if (reset_seen_q && !rst_core && instruction_valid && !instruction_served_high && !$isunknown(
             {
               bram_fetch_pc_metadata_by_parity,
               bram_pc_metadata_by_parity_canonical,
@@ -1342,7 +1346,7 @@ module frost_rvfi_platform #(
   end
 
   always_comb begin
-    if (served_contract_check_valid_q && !$isunknown(
+    if (reset_seen_q && !rst_core && served_contract_check_valid_q && !$isunknown(
             {instruction_served_word_low,
              instruction_served_last_word_low,
              instruction_served_prev_word_low,
@@ -1743,7 +1747,7 @@ module frost_rvfi_platform #(
     if (rst_core) begin
       bram_fetch_bank_sel_compare_valid <= 1'b0;
     end else begin
-      if (bram_fetch_bank_sel_compare_valid) begin
+      if (reset_seen_q && bram_fetch_bank_sel_compare_valid) begin
         assert (bram_fetch_bank_sel_cpu_r == bram_fetch_bank_sel_r)
         else $error("BRAM fetch bank-select CPU copy diverged from imem_predecode");
       end

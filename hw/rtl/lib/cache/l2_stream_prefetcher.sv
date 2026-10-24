@@ -222,8 +222,10 @@ module l2_stream_prefetcher #(
   end
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (i_rst) reset_seen_q <= 1'b1;
+    if (reset_seen_q && !i_rst) begin
       if (i_resp_valid && !id_busy_q[i_resp_id])
         $error("l2_stream_prefetcher: response for id %0d with no read out", i_resp_id);
       if (load && id_busy_q[free_id]) $error("l2_stream_prefetcher: no free id for a load");

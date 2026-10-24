@@ -159,8 +159,10 @@ module int_alu_shim #(
   end
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
   always_comb begin
-    if (i_rst_n && i_rs_issue.valid) begin
+    if (reset_seen_q && i_rst_n && i_rs_issue.valid) begin
 `ifndef FORMAL
       // The wrapper's formal harness leaves op/RS pairing symbolic, so this
       // check runs in simulation only.

@@ -381,6 +381,8 @@ module sq_early_addr_pipeline (
 `ifndef SYNTHESIS
   // Reference registers load only on an accepted repair. The hold registers
   // must match them whenever repair_ready permits a read.
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
   logic [riscv_pkg::XLEN-1:0] f_ref_hold_q, f_ref_hold_2_q;
   always_ff @(posedge i_clk) begin
     if (i_rst_n && !i_flush_all && !i_flush_en) begin
@@ -391,10 +393,10 @@ module sq_early_addr_pipeline (
           sq_early_addr_repair_fire_2 && slot2_port_taken_by_fresh)
         f_ref_hold_2_q <= sq_early_repair_effective_addr_2;
     end
-    if (i_rst_n && sq_early_addr_repair_ready_q) begin
+    if (reset_seen_q && i_rst_n && sq_early_addr_repair_ready_q) begin
       p_repair_hold_load_exact : assert (sq_early_addr_repair_addr_hold_q == f_ref_hold_q);
     end
-    if (i_rst_n && sq_early_addr_repair_ready_2_q) begin
+    if (reset_seen_q && i_rst_n && sq_early_addr_repair_ready_2_q) begin
       p_repair_hold_load_2_exact : assert (sq_early_addr_repair_addr_hold_2_q == f_ref_hold_2_q);
     end
   end
@@ -693,12 +695,12 @@ module sq_early_addr_pipeline (
     if (i_rst_n && !slot2_new_unready_store && !slot2_mem_rs_issue_kill &&
         sq_early_addr_repair_fire_2 && slot2_port_taken_by_fresh)
       f_hold_base_2 <= sq_early_addr_repair_base_2_reference;
-    if (i_rst_n && sq_early_addr_repair_ready_q) begin
+    if (reset_seen_q && i_rst_n && sq_early_addr_repair_ready_q) begin
       p_repair_hold_exact :
       assert (sq_early_addr_repair_addr_hold_q ==
               riscv_pkg::XLEN'(f_hold_base + sq_early_addr_repair_imm_q));
     end
-    if (i_rst_n && sq_early_addr_repair_ready_2_q) begin
+    if (reset_seen_q && i_rst_n && sq_early_addr_repair_ready_2_q) begin
       p_repair_hold_2_exact :
       assert (sq_early_addr_repair_addr_hold_2_q ==
               riscv_pkg::XLEN'(f_hold_base_2 + sq_early_addr_repair_imm_2_q));

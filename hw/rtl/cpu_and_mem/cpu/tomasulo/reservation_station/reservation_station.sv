@@ -595,6 +595,9 @@ module reservation_station #(
   logic [FLEN-1:0] stage2_cdb_value_l1;  // lane-1 CDB value captured at issue time
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
+
 `ifndef FORMAL
   // Simulation-only reference for CAPTURE_PRIMARY_EFFECTIVE_OPERANDS. It
   // tracks stage2 lifetime and independently records the three-arm CDB bypass
@@ -1555,7 +1558,7 @@ module reservation_station #(
       // The tags have identical input and enable behavior but no reset;
       // compare only while stage2_valid is set.
       always_ff @(posedge i_clk) begin
-        if (i_rst_n && stage2_valid) begin
+        if (reset_seen_q && i_rst_n && stage2_valid) begin
           assert (stage2_branch_predicate_tag == stage2_rob_tag)
           else $error("reservation_station: branch predicate tag twin differs from stage2_rob_tag");
         end
@@ -1669,7 +1672,7 @@ module reservation_station #(
         if (dispatch_fire_2) branch_payload_shadow[dispatch_rob_tag_2] <= branch_payload_wr_data_2;
       end
       always_ff @(posedge i_clk) begin
-        if (i_rst_n && !i_flush_all && !i_flush_en) begin
+        if (reset_seen_q && i_rst_n && !i_flush_all && !i_flush_en) begin
           if (dispatch_fire && branch_payload_tag_live(dispatch_rob_tag)) begin
             assert (branch_payload_shadow[dispatch_rob_tag] == branch_payload_wr_data_1)
             else
@@ -1695,7 +1698,7 @@ module reservation_station #(
               );
           end
         end
-        if (i_rst_n && stage2_valid) begin
+        if (reset_seen_q && i_rst_n && stage2_valid) begin
           assert (stage2_branch_payload_tag == stage2_rob_tag)
           else $error("reservation_station: branch payload tag twin differs from stage2_rob_tag");
         end
@@ -1713,7 +1716,7 @@ module reservation_station #(
         end
       end
       always_ff @(posedge i_clk) begin
-        if (i_rst_n && stage2_valid) begin
+        if (reset_seen_q && i_rst_n && stage2_valid) begin
           assert (branch_payload_rd_data == branch_payload_stage2_shadow)
           else
             $error(
@@ -2265,9 +2268,11 @@ module reservation_station #(
         if (!i_rst_n) begin
           stage2b_operand_oracle_valid_q <= 1'b0;
         end else begin
-          assert (stage2b_operand_oracle_valid_q == stage2b_valid)
-          else $error("RS: issue-2 operand oracle valid diverged from stage2b");
-          if (stage2b_valid) begin
+          if (reset_seen_q) begin
+            assert (stage2b_operand_oracle_valid_q == stage2b_valid)
+            else $error("RS: issue-2 operand oracle valid diverged from stage2b");
+          end
+          if (reset_seen_q && stage2b_valid) begin
             assert (stage2b_src1_value == stage2b_src1_value_oracle_q)
             else $error("RS: issue-2 src1 effective capture differs from the reference");
             assert (stage2b_src2_value == stage2b_src2_value_oracle_q)
@@ -2349,7 +2354,7 @@ module reservation_station #(
       logic [6:0] stage2b_shift_controls_check;
       assign stage2b_shift_controls_check = riscv_pkg::projected_shift_controls(stage2b_op);
       always_ff @(posedge i_clk) begin
-        if (i_rst_n && stage2b_valid) begin
+        if (reset_seen_q && i_rst_n && stage2b_valid) begin
           p_issue2_shift_amount_matches_payload :
           assert (
               stage2b_shift_amount == (stage2b_shift_controls_check[0] ?
@@ -2367,7 +2372,7 @@ module reservation_station #(
 `ifndef FORMAL
       // Port-1 discipline: never a branch-class entry, never port 0's entry.
       always_ff @(posedge i_clk) begin
-        if (i_rst_n && issue_fire_2) begin
+        if (reset_seen_q && i_rst_n && issue_fire_2) begin
           assert (rs_valid[issue_idx_2] && entry_ready[issue_idx_2])
           else $error("issue2 fired a non-ready entry");
           assert (!rs_is_branch_class[issue_idx_2])
@@ -2986,9 +2991,11 @@ module reservation_station #(
         if (!i_rst_n) begin
           primary_operand_oracle_valid_q <= 1'b0;
         end else begin
-          assert (primary_operand_oracle_valid_q == stage2_valid)
-          else $error("RS: primary operand oracle valid diverged from stage2");
-          if (stage2_valid) begin
+          if (reset_seen_q) begin
+            assert (primary_operand_oracle_valid_q == stage2_valid)
+            else $error("RS: primary operand oracle valid diverged from stage2");
+          end
+          if (reset_seen_q && stage2_valid) begin
             assert (stage2_src1_value == primary_src1_value_oracle_q)
             else $error("RS: primary src1 effective capture differs from the reference");
             assert (stage2_src2_value == primary_src2_value_oracle_q)
@@ -3048,7 +3055,7 @@ module reservation_station #(
   end
 
   always @(posedge i_clk) begin
-    if (i_rst_n) begin
+    if (reset_seen_q && i_rst_n) begin
       // Warn on refused dispatch requests.
       if (dispatch_valid && full && !i_flush_all && !i_flush_en)
         $warning("RS: dispatch attempted when full");

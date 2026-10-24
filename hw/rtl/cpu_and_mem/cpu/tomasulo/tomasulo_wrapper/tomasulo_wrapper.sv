@@ -744,7 +744,9 @@ module tomasulo_wrapper #(
 `ifndef SYNTHESIS
 `ifndef FORMAL
   always_comb begin
-    if (!$isunknown({lq_partial_flush_en, speculative_flush_en, speculative_flush_all})) begin
+    if (sc_check_armed && !$isunknown(
+            {lq_partial_flush_en, speculative_flush_en, speculative_flush_all}
+        )) begin
       p_lq_partial_flush_exact_when_observable :
       assert (speculative_flush_all || (lq_partial_flush_en == speculative_flush_en));
     end
@@ -1208,7 +1210,7 @@ module tomasulo_wrapper #(
   // Check local copies against shared CDB registers and restore selection.
   // Skip pre-reset payload checks because payload/select registers are unreset.
   always_comb begin
-    if (i_rst_n) begin
+    if (i_rst_n && sc_check_armed) begin
       p_cdb_lane0_post_q_restore_mux :
       assert (
         cdb_bus.value ==
@@ -1261,7 +1263,7 @@ module tomasulo_wrapper #(
     if (!i_rst_n) begin
       cdb_post_q_phase_oracle_valid <= 1'b0;
     end else begin
-      if (cdb_post_q_phase_oracle_valid) begin
+      if (sc_check_armed && cdb_post_q_phase_oracle_valid) begin
         p_cdb_lane0_registered_valid_phase : assert (cdb_bus.valid == cdb_lane0_phase_oracle.valid);
         p_cdb_lane1_registered_valid_phase :
         assert (cdb_bus_2.valid == cdb_lane1_phase_oracle.valid);
@@ -1804,7 +1806,7 @@ module tomasulo_wrapper #(
        store_addr_pma_ok_full_ref &&
        (!i_trap_misaligned_accesses || !store_addr_misaligned_full_ref));
   always_comb begin
-    if (i_rst_n && (i_translation_active === 1'b0) && !$isunknown(
+    if (i_rst_n && sc_check_armed && (i_translation_active === 1'b0) && !$isunknown(
             {o_mem_rs_issue.valid,
              o_mem_rs_issue.mem_needs_sq,
              o_mem_rs_issue.op,
@@ -2553,7 +2555,7 @@ module tomasulo_wrapper #(
 
 `ifndef SYNTHESIS
   always_comb begin
-    if (i_rst_n) begin
+    if (i_rst_n && sc_check_armed) begin
       p_int_rs_issue_cdb_lane0_anchor_phase_identity :
       assert (
         int_rs_issue_cdb_valid == cdb_bus_int_rs_valid &&
@@ -2900,12 +2902,12 @@ module tomasulo_wrapper #(
   // neither a prediction nor a second completion. During recovery it may
   // precede that broadcast, while MEM_RS blocks new issue selection.
   always @(posedge i_clk) begin
-    if (i_rst_n && mem_rs_early_load_injected) begin
+    if (i_rst_n && sc_check_armed && mem_rs_early_load_injected) begin
       p_early_load_accepted_or_recovering :
       assert (lq_result_accepted || speculative_flush_all || speculative_flush_en ||
               lq_partial_flush_en);
     end
-    if (i_rst_n && mem_rs_early_load_injected && !speculative_flush_all &&
+    if (i_rst_n && sc_check_armed && mem_rs_early_load_injected && !speculative_flush_all &&
         !speculative_flush_en && !lq_partial_flush_en) begin
       p_early_load_really_broadcasts :
       assert (
@@ -3133,7 +3135,7 @@ module tomasulo_wrapper #(
 `ifndef SYNTHESIS
 `ifndef FORMAL
   always_ff @(posedge i_clk) begin
-    if (i_rst_n) begin
+    if (i_rst_n && sc_check_armed) begin
       if (fp_pending_repair_capture_q) begin
         p_fp_pending_repair_packet_phase : assert (fp_dispatch_pending_valid);
         if (!$isunknown(
@@ -3324,7 +3326,7 @@ module tomasulo_wrapper #(
   // Pending gates each INT_RS ready input, which qualifies stage2 issue valid.
   // These checks protect the ALU adapters' simplified payload write enables.
   always_comb begin
-    if (i_rst_n) begin
+    if (i_rst_n && sc_check_armed) begin
       p_alu_pending_blocks_payload_refill :
       assert (!(alu_adapter_result_pending && alu_shim_out.valid));
       p_alu2_pending_blocks_payload_refill :
@@ -4003,7 +4005,7 @@ module tomasulo_wrapper #(
   // payload only.  These checks keep any consumer from turning it into
   // architectural visibility or a completion side effect.
   always_comb begin
-    if (i_rst_n && (i_translation_active === 1'b1) && !$isunknown(
+    if (i_rst_n && sc_check_armed && (i_translation_active === 1'b1) && !$isunknown(
             {dmmu_out_valid, dmmu_out_sq_capture_valid, dmmu_out_needs_sq,
              sq_addr_update.valid, sq_data_update.valid, dmmu_store_ok,
              dmmu_store_fault, store_issue_fire, dmmu_out_is_sc}
@@ -4268,7 +4270,7 @@ module tomasulo_wrapper #(
   // uses this to distinguish an unaccepted staged request from an accepted
   // one whose stale response is still due.
   always @(posedge i_clk) begin
-    if (i_rst_n && i_lq_mem_request_pending && !lq_mem_outstanding)
+    if (i_rst_n && sc_check_armed && i_lq_mem_request_pending && !lq_mem_outstanding)
       $error("tomasulo_wrapper: router pending request has no LQ response owner");
   end
 `endif
@@ -5057,7 +5059,7 @@ module tomasulo_wrapper #(
   // ===========================================================================
 `ifdef VERILATOR
   always @(posedge i_clk)
-    if (i_rst_n) begin
+    if (i_rst_n && sc_check_armed) begin
       if (fp_rs_dispatch.valid) assert (fp_rs_dispatch.rm != riscv_pkg::FRM_DYN);
     end
 

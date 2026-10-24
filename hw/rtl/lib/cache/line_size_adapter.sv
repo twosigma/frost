@@ -135,11 +135,13 @@ module line_size_adapter #(
 `ifndef FORMAL
   // The table's other columns, for the protocol checks: which ids are
   // outstanding, and whether each is a write.
+  logic reset_seen_q = 1'b0;
   logic [NumIds-1:0] outstanding_q, write_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
+      reset_seen_q  <= 1'b1;
       outstanding_q <= '0;
-    end else begin
+    end else if (reset_seen_q) begin
       if (i_down_resp_valid) begin
         if (!outstanding_q[i_down_resp_id])
           $error(

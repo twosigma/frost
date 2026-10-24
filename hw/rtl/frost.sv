@@ -529,12 +529,14 @@ module frost #(
   // Report lost TX bytes. +uart_tx_drop_check=0 disables this for unpaced
   // output that a bench captures before the FIFO.
   int unsigned uart_tx_drop_check;
+  bit uart_reset_seen_q = 1'b0;
   initial if (!$value$plusargs("uart_tx_drop_check=%d", uart_tx_drop_check)) uart_tx_drop_check = 1;
   always_ff @(posedge i_clk)
-    if (uart_tx_drop_check != 0 &&
+    if (ASYNC_CPU_CLOCK ? async_soc_reset : reset_synchronized) uart_reset_seen_q <= 1'b1;
+  always_ff @(posedge i_clk)
+    if (uart_reset_seen_q && uart_tx_drop_check != 0 &&
         !(ASYNC_CPU_CLOCK ? async_soc_reset : reset_synchronized) &&
-        uart_write_enable_from_cpu &&
-        !uart_fifo_input_ready)
+        uart_write_enable_from_cpu && !uart_fifo_input_ready)
       $error("frost: UART TX byte dropped: the transmit FIFO was full");
 `endif
 

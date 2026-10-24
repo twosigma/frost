@@ -289,14 +289,16 @@ module line_port_arbiter #(
   // Protocol checks (simulation only): every response carries a port prefix
   // that exists, and the per-port in-flight count never goes negative,
   // because the downstream may only answer what was fired.
+  logic reset_seen_q = 1'b0;
   logic [NUM_PORTS-1:0] chk_fire, chk_done;
   logic [NUM_PORTS-1:0][7:0] inflight_q;
   assign chk_fire = i_up_req_valid & o_up_req_ready;
   assign chk_done = o_up_resp_valid;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      inflight_q <= '0;
-    end else begin
+      reset_seen_q <= 1'b1;
+      inflight_q   <= '0;
+    end else if (reset_seen_q) begin
       p_grant_is_priority : assert ((sel == chk_sel) && (grant == (NUM_PORTS'(1) << chk_sel)));
       if (i_down_resp_valid && (32'(resp_port) >= NUM_PORTS))
         $error("line_port_arbiter: response for nonexistent port %0d", resp_port);
