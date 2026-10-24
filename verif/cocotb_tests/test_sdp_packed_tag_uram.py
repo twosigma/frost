@@ -117,8 +117,13 @@ async def test_packed_tag_uram(dut: Any) -> None:
         )
         memory = getattr(dut.gen_bank[0], branch).memory
         rows = [int(word.value) for word in memory]
-        assert len(set(rows)) > 1, "power-up rows share one random word"
-        assert len({word >> 32 for word in rows}) > 1, "wide rows lack random high bits"
+        # The bulk-clear model can clear on the first evaluation edge before
+        # bench inputs settle. Check startup entropy on the hardware model.
+        if os.environ["PACKED_TAG_TEST_BULK_CLEAR"] != "1":
+            assert len(set(rows)) > 1, "power-up rows share one random word"
+            assert len({word >> 32 for word in rows}) > 1, (
+                "wide rows lack random high bits"
+            )
         digest = hashlib.sha256(repr(rows).encode()).hexdigest()
         dut._log.info("Power-up memory digest: %s", digest)
     Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()

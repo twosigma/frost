@@ -240,6 +240,8 @@ async def test_direction_slot1_snapshot_holds_during_stall(dut: Any) -> None:
     """The registered slot-1 direction metadata holds while IF is stalled."""
     await _setup_test(dut)
 
+    await _dir_update(dut, idx=_dir_idx(PC_B), taken=False)
+    await _dir_update(dut, idx=_dir_idx(PC_B), taken=False)
     await _dir_update(dut, idx=_dir_idx(PC_A), taken=True)
     await _dir_update(dut, idx=_dir_idx(PC_A), taken=True)
 

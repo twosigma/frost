@@ -187,6 +187,7 @@ async def _setup(
     Clock(dut.i_clk, 10, unit="ns").start()
     for sig in (
         dut.i_enable,
+        dut.i_wide_mode,
         dut.i_base,
         dut.i_size_log2,
         dut.i_tail,
