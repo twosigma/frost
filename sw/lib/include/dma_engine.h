@@ -26,7 +26,12 @@
  * completed, and optionally interrupts (APLIC source 3) once the transfer and
  * any status write have completed (or after an ABORT has drained, with ERROR
  * set). START snapshots the registers, so they may be reprogrammed while BUSY
- * for the next transfer. Addresses must lie in cached DDR.
+ * for the next transfer. Addresses must lie in cached DDR. MODE_BURST moves
+ * each line as four 8-byte AXI beats, each a coherent line request of its
+ * own, instead of one 32-byte beat. Without concurrent stores to the source
+ * or destination both modes produce the same data; with them, a line copied
+ * in burst mode can mix older and newer source data. In both modes the data
+ * writes complete before the optional status write and completion interrupt.
  */
 #ifndef DMA_ENGINE_H
 #define DMA_ENGINE_H
@@ -63,6 +68,7 @@
 #define DMA_ENGINE_MODE_FILL (1u << 0)
 #define DMA_ENGINE_MODE_STATUS (1u << 1)
 #define DMA_ENGINE_MODE_IRQ (1u << 2)
+#define DMA_ENGINE_MODE_BURST (1u << 3)
 
 #define DMA_ENGINE_APLIC_SOURCE 3u
 
