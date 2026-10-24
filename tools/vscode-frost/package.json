@@ -49,6 +49,9 @@
     "@vscode/vsce": "4.0.0",
     "typescript": "7.0.2"
   },
+  "overrides": {
+    "@azure/msal-node": "7.1.0"
+  },
   "contributes": {
     "commands": [
       {
