@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import Any
 
 import cocotb
-from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge
 
 from cocotb_tests.debug.jtag_dtm import (
@@ -79,6 +78,8 @@ from cocotb_tests.test_real_program import (
     RESET_CYCLES,
     UartMonitor,
     generate_divided_clock,
+    start_clocks,
+    takes_last_edge,
 )
 
 BANNER_START = "debug_target: start"
@@ -138,9 +139,10 @@ def _cause(dcsr: int) -> int:
 
 
 @cocotb.test()
+@takes_last_edge
 async def test_debug(dut: Any) -> None:
     """Bit-bang a full debugger session against the frost toplevel."""
-    Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start()
+    start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
     cocotb.start_soon(generate_divided_clock(dut))
     log = cocotb.log
     syms = _read_symbols()

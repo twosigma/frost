@@ -405,9 +405,9 @@ SoC, compiled with four jobs:
 
 | Build | Build time | Simulation time | Coverage file |
 | --- | --- | --- | --- |
-| Without coverage | 55 s | 6.9 s | |
-| `FROST_COVERAGE=1` | 100 s | 9.1 s | 3.8 MB |
-| `FROST_COVERAGE=1 FROST_COVERAGE_TOGGLE=1` | 115 s | 39.7 s | 160 MB |
+| Without coverage | 55 s | 5.2 s | |
+| `FROST_COVERAGE=1` | 100 s | 6.6 s | 3.8 MB |
+| `FROST_COVERAGE=1 FROST_COVERAGE_TOGGLE=1` | 115 s | 29.7 s | 160 MB |
 
 With `FROST_COVERAGE_TOGGLE=control`, CoreMark simulates about a quarter
 slower than with `FROST_COVERAGE=1` alone.
