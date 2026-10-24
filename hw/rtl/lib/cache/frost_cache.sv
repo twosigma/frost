@@ -2605,6 +2605,24 @@ module frost_cache #(
   // A write merges into the pending write-allocate miss of its line.
   cover_write_merges_into_miss :
   cover property (@(posedge i_clk) disable iff (i_rst) w_valid_q && (w_op_q == W_MERGE));
+  // Store bytes win when a merge and its miss's fill arrive together.
+  cover_write_merge_on_fill :
+  cover property (@(posedge i_clk) disable iff (i_rst)
+      w_valid_q && (w_op_q == W_MERGE) && resp_is_fill &&
+      (resp_fill_slot == w_mshr_q) && !response_error);
+  // A reader attaches on the edge that captures its miss's fill.
+  cover_waiter_on_fill :
+  cover property (@(posedge i_clk) disable iff (i_rst)
+      w_valid_q && (w_op_q == W_WAITER) && resp_is_fill &&
+      (resp_fill_slot == w_mshr_q) && !response_error);
+  // A fill installation crosses a delayed tag lookup of the same set.
+  cover_fill_retries_tag_lookup :
+  cover property (@(posedge i_clk) disable iff (i_rst)
+      t_tag_retry && mshr_write_fire && (fw_set_q == t_set));
+  // A failed read fill owes an error to attached readers as well as its owner.
+  cover_read_error_with_waiter :
+  cover property (@(posedge i_clk) disable iff (i_rst)
+      resp_is_fill && response_error && mshr_has_waiter[resp_fill_slot]);
   // A writeback takes the request register from a pending fill on its
   // starvation turn.
   cover_writeback_takes_starvation_turn :

@@ -155,6 +155,7 @@ async def test_capacity_and_coherence(dut: Any) -> None:
             store=(address, rng.getrandbits(64), mask),
         )
         await cycle(address)
+
     # Cold partial writes must not allocate unknown bytes. AMO and DMA
     # invalidations still win over a store's cache update.
     await cycle(address, flush=True)
@@ -188,3 +189,88 @@ async def test_capacity_and_coherence(dut: Any) -> None:
             else None,
         )
         await cycle(address)
+
+
+@cocotb.test()
+async def test_fill_collision_priorities(dut: Any) -> None:
+    """Concurrent invalidations and store updates preserve the visible dword data."""
+    depth = int(os.environ["FROST_TEST_L0_DEPTH"])
+
+    async def step(**values: int) -> None:
+        dut.i_clk.value = 0
+        for name, value in values.items():
+            getattr(dut, "i_" + name).value = value
+        await Timer(5, unit="ns")
+        dut.i_clk.value = 1
+        await Timer(5, unit="ns")
+
+    await step(
+        rst_n=0,
+        lookup_addr=0,
+        fill_valid=0,
+        fill_write=0,
+        fill_addr=0,
+        fill_data=0,
+        invalidate_valid=0,
+        invalidate_addr=0,
+        store_data=0,
+        store_strb=0,
+        invalidate2_valid=0,
+        invalidate2_addr=0,
+        lookup_invalidate_valid=0,
+        lookup_invalidate_addr=0,
+        invalidate_line_valid=0,
+        invalidate_line_addr=0,
+        flush_all=0,
+    )
+    await step(rst_n=1)
+    address = 0x80002000
+    for lane in range(4):
+        await step(
+            fill_valid=1, fill_write=1, fill_addr=address + 8 * lane, fill_data=lane + 1
+        )
+    # An alias has a different tag but the same four DMA invalidation indexes.
+    await step(
+        fill_addr=address + 24,
+        fill_data=0xDEAD,
+        invalidate_line_valid=1,
+        invalidate_line_addr=address ^ (depth * 8),
+    )
+    for lane in range(4):
+        await step(
+            fill_valid=0,
+            fill_write=0,
+            invalidate_line_valid=0,
+            lookup_addr=address + 8 * lane,
+        )
+        assert not int(dut.o_lookup_hit.value), "DMA alias left a dword valid"
+    await step(
+        fill_valid=1,
+        fill_write=1,
+        fill_addr=address,
+        fill_data=0xBAD,
+        invalidate2_valid=1,
+        invalidate2_addr=address,
+        lookup_addr=address,
+    )
+    await step(fill_valid=0, fill_write=0, invalidate2_valid=0)
+    assert not int(dut.o_lookup_hit.value), "AMO invalidation lost to the fill"
+    original = 0x0123456789ABCDEF
+    await step(fill_valid=1, fill_write=1, fill_addr=address, fill_data=original)
+    await step(fill_addr=address + 8, fill_data=0x11223344)
+    await step(
+        fill_data=0xDEADBEEF,
+        invalidate_valid=1,
+        invalidate_addr=address,
+        store_data=0xFEDCBA9876543210,
+        store_strb=0xA5,
+    )
+    await step(fill_valid=0, fill_write=0, invalidate_valid=0, store_strb=0)
+    assert int(dut.o_lookup_hit.value)
+    mask = 0xFF00FF0000FF00FF
+    assert int(dut.o_lookup_data.value) == (original & ~mask) | (
+        0xFEDCBA9876543210 & mask
+    )
+    await step(lookup_addr=address + 8)
+    assert int(dut.o_lookup_hit.value)
+    assert int(dut.o_lookup_data.value) == 0x11223344, "displaced fill changed data"

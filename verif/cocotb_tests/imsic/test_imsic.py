@@ -885,3 +885,41 @@ async def test_random_against_model(dut: Any) -> None:
         await bench.cycle(write=random_write(), accesses=accesses)
     await bench.settle()
     await bench.sweep()
+
+
+@cocotb.test()
+async def test_msi_clear_collisions_at_word_boundaries(dut: Any) -> None:
+    """Both byte orders reassert claims and CSR-cleared bits in every file."""
+    bench = Bench(dut)
+    await bench.start()
+    identities = sorted({i for i in (1, 63, 64, 127, NUM_IDS) if i <= NUM_IDS})
+    for level, hart in FILES:
+        await bench.enable_all(level, hart)
+        await bench.deliver(level, hart)
+        page = bench.model.page_address(level, hart)
+        for identity in identities:
+            bit = 1 << (identity % 64)
+            select = eip_select(identity)
+            for big_endian in (False, True):
+                address = page + (SETEIPNUM_BE if big_endian else SETEIPNUM_LE)
+                data = byteswap32(identity) if big_endian else identity
+                await bench.msi(level, hart, identity)
+                await bench.cycle(write=(address, data))
+                samples = await bench.cycle(
+                    accesses={(level, hart): CsrAccess(select, claim=True)}
+                )
+                assert samples[(level, hart)][1] == topei_value(identity)
+                await bench.settle()
+                await bench.expect_topei(level, hart, identity)
+                assert bench.line(level, hart) == 1
+                for keep in (0, ~bit & MASK64):
+                    await bench.cycle(write=(address, data))
+                    samples = await bench.cycle(
+                        accesses={(level, hart): CsrAccess(select, True, keep, 0)}
+                    )
+                    assert samples[(level, hart)][0] == bit
+                    await bench.settle()
+                    assert await bench.read(level, hart, select) == bit
+                    await bench.expect_topei(level, hart, identity)
+                assert await bench.claim(level, hart) == topei_value(identity)
+                assert await bench.claim(level, hart) == 0

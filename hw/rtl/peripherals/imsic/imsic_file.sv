@@ -445,4 +445,19 @@ module imsic_file #(
   end
 `endif
 
+`ifndef SYNTHESIS
+`ifdef FROST_COVERAGE
+  // An MSI sets the identity that the same edge's claim clears.
+  cover_msi_reasserts_claimed_identity :
+  cover property (@(posedge i_clk) disable iff (i_rst)
+      i_topei_claim && (|(top_onehot_q & msi_onehot)));
+  for (genvar w = 0; w < int'(NumWords); w++) begin : gen_eip_cover
+    // An MSI wins over a CSR write clearing its pending bit.
+    cover_msi_over_eip_clear :
+    cover property (@(posedge i_clk) disable iff (i_rst)
+        wr_eip[w] && (|(msi_onehot[64*w+:64] & ~i_ireg_keep & ~i_ireg_set)));
+  end
+`endif
+`endif
+
 endmodule : imsic_file

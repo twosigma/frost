@@ -134,3 +134,35 @@ async def discarded_error_drains_without_faulting_the_next_request(dut: Any) -> 
     await b.step()
     s = await b.step()
     assert s["resp_valid"] and (s["resp"] >> 78) == 0
+
+
+@cocotb.test()
+async def discard_on_accept_drains_once_before_retry(dut: Any) -> None:
+    """Accept the registered read on discard, drain it, and complete a fresh walk."""
+    b = Bench(dut)
+    for error in (False, True):
+        await b.reset()
+        await b.issue()
+        for _ in range(3):
+            assert (await b.step())["line_req_valid"]
+        s = await b.step(discard=1, line_req_ready=1)
+        assert s["line_req_valid"] and s["line_req_addr"] == 0x80000000
+        for _ in range(5):
+            s = await b.step(discard=0, line_req_ready=0)
+            assert not s["req_ready"] and not s["resp_valid"]
+            assert not s["line_req_valid"], "discarded read was issued twice"
+        await b.step(
+            line_resp_valid=1,
+            line_resp_error=int(error),
+            line_resp_rdata=(0x80000 << 10) | 0xCF,
+        )
+        for _ in range(6):
+            s = await b.step(line_resp_valid=0, line_resp_error=0)
+            assert not s["resp_valid"] and not s["line_req_valid"]
+        assert s["req_ready"], "discarded response did not release the walker"
+        await b.issue()
+        await b.line(0x80000000, (0x80000 << 10) | 0xCF)
+        await b.step()
+        s = await b.step()
+        assert s["resp_valid"] and (s["resp"] >> 78) == 0
+        assert (s["resp"] >> 7) & ((1 << 44) - 1) == 0x80000

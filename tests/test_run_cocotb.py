@@ -646,6 +646,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="imsic_msi_test",
         description="IMSIC MSI stores, access sizes, byte orders, translated access and trap claims",
     ),
+    "timer_replay_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="timer_replay_test",
+        description="Timer interrupt overlaps coherent DMA replay and committed-store drain",
+    ),
+    "imsic_collision_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="imsic_collision_test",
+        description=(
+            "APLIC MSI bursts overlap IMSIC claims and pending-bit clears; "
+            "a final marker checks delivery and complete draining"
+        ),
+    ),
     "imsic_aplic_coexist_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -658,6 +673,30 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="aplic_test",
         description=(
             "APLIC direct delivery, delegation, claims and 32-bit access enforcement"
+        ),
+    ),
+    "ptw_recovery_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ptw_recovery_test",
+        description=(
+            "Wrong-path translation faults drain through branch and SFENCE recovery; "
+            "replacement loads preserve their data"
+        ),
+    ),
+    "ptw_bus_fault_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ptw_bus_fault_test",
+        description=(
+            "Shared-fill read errors and interior PTE faults preserve cause, VA and PC; "
+            "repaired walks succeed"
+        ),
+        extra_env=(
+            (
+                "COCOTB_PLUSARGS",
+                "+axi_error_check=0 +axi_rd_error_addr=3000000",
+            ),
         ),
     ),
     "memerr_test": CocotbRunConfig(

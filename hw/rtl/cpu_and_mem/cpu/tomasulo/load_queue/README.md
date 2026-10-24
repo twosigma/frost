@@ -486,7 +486,9 @@ load other than an AMO stays tracked (by the fast tracker or a cached slot)
 until its data is valid or a flush removes it. In coverage builds,
 [cover points](../../../../../../tests/README.md#cover-points) count corner
 cases such as a DMA write that cancels the LR reservation or hits a load in
-flight, and the ROB-head load evicting a younger staged load.
+flight, and the ROB-head load evicting a younger staged load. The L0's cover
+points count a response fill that coincides with a DMA or AMO invalidation,
+and a store update that takes the RAM port from a fill at another index.
 
 Formally, `load_queue` checks queue invariants from reset,
 `load_queue_amo_compute` the AMO datapath with no reset or admission

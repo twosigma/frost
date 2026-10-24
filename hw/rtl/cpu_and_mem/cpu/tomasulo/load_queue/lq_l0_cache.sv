@@ -473,4 +473,22 @@ module lq_l0_cache #(
 
 `endif  // FORMAL
 
+`ifndef SYNTHESIS
+`ifdef FROST_COVERAGE
+  // DMA clears all four indexed dwords even when a response fills one.
+  cover_dma_invalidation_overrides_fill :
+  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+      !i_flush_all && i_fill_valid && i_invalidate_line_valid &&
+      (fill_index[IndexWidth-1:2] == i_invalidate_line_addr[5+:(IndexWidth-2)]));
+  // AMO completion invalidates a matching response fill on the same edge.
+  cover_amo_invalidation_overrides_fill :
+  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+      !i_flush_all && i_fill_valid && !store_update && invalidate2_fill_entry);
+  // A store takes the RAM write port while an unrelated response fills.
+  cover_store_update_displaces_fill :
+  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+      !i_flush_all && store_update && i_fill_valid && (inv_index != fill_index));
+`endif
+`endif
+
 endmodule
