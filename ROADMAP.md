@@ -178,9 +178,8 @@ for an ASIC, the RTL also needs:
 FROST runs CoreMark at 4.23 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
 The next goal is 5 CoreMark/MHz. A score counts only from a run of at least
 ten seconds that passes the CRC checks for both official seed sets, with the
-compiler flags, the `sw.bin` hash, and memory and cache settings recorded.
-The [performance measurements](docs/single_core_performance.md) give each
-CoreMark-PRO workload and how it is measured.
+compiler flags, the `sw.bin` hash, and memory and cache settings recorded;
+see the [CoreMark README](sw/apps/coremark/README.md).
 
 A CoreMark iteration is about 234,000 instructions, so 5 CoreMark/MHz, or
 200,000 cycles per iteration, needs 1.17 instructions per cycle, up from 0.99.
@@ -230,9 +229,7 @@ Priorities, guided by the performance counters and timing reports:
    Next, take a cycle out of load-to-use latency, try associativity in the
    load queue's L0 cache if its conflict counters justify it, then
    prefetching for dependent loads. The L0 holds 256 entries because its
-   misses to BRAM cross the AXI boundary. CoreMark-PRO's sha workload takes
-   29% longer with the read caches in front of BRAM than with BRAM attached
-   directly, so it is the first workload to profile.
+   misses to BRAM cross the AXI boundary.
 4. Back-to-back integer issue. Dependent integer operations issue two cycles
    apart because the stations wake from the registered CDB, so serial chains,
    such as the table-driven CRC code GCC generates for CoreMark, run at half

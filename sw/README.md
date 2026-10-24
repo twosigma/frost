@@ -265,7 +265,7 @@ can be debugged and where each one first stops.
 | `call_stress/` | Repeated and nested calls and returns, built with compressed instructions |
 | `cf_ext_test/` | Compressed double-precision FP loads and stores (Zcd) |
 | `clint_test/` | SiFive CLINT alias: writes reach the native timer registers, and a timer interrupt armed through the alias fires |
-| `coremark/` | EEMBC CoreMark, built without the C extension by default; see the [measurement sweeps](../docs/single_core_performance.md#reproducing-and-retaining-measurements) and [Spike tools](apps/coremark/iss/README.md) |
+| `coremark/` | EEMBC CoreMark, built without the C extension by default; see its [README](apps/coremark/README.md) and [Spike tools](apps/coremark/iss/README.md) |
 | `coremark_pro/` | All nine EEMBC CoreMark-PRO workloads, loaded as `coremark_pro_<workload>`; the heap and large datasets live in DDR. `COREMARK_PRO_CACHE_COUNTERS=1` prints the cache counters' deltas over the timed region as one `FROST_CACHE_COUNTERS` line |
 | `csr_rmw_test/` | Old and new values for `csrrw`/`csrrs`/`csrrc`, including the same-register `mscratch` swap that OpenSBI's trap entry uses |
 | `csr_test/` | `mstatus.MIE` writes and the M-mode counter controls: `mcountinhibit`, 64-bit `mcycle`/`minstret` writes, pure reads checked against the independent timer/retirement count, and the Zicsr rule that a `minstret` write replaces the writing instruction's own increment |

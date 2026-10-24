@@ -13,7 +13,7 @@
 #    limitations under the License.
 
 # EEMBC CoreMark: the unmodified sources in coremark/ plus FROST's port layer.
-# docs/single_core_performance.md describes the benchmark configuration.
+# README.md describes the benchmark configuration.
 
 # COREMARK_SOURCE_ORDER sets benchmark link order for placement sweeps.
 COREMARK_SOURCES := core_list_join core_main core_matrix core_state core_util
@@ -70,7 +70,7 @@ COREMARK_LTO_TUNE := -flto --param max-completely-peeled-insns=0 \
 # puts them in the reported compiler flags. -fbranch-probabilities reads edge
 # counts without the extra transformations that -fprofile-use enables. The
 # PGO build uses the out-of-order cost model; its flags are the published
-# configuration (docs/single_core_performance.md). COREMARK_PGO=0 builds
+# configuration (README.md). COREMARK_PGO=0 builds
 # without the profiles, with the static-layout and LTO flags instead.
 #
 # iss/generate_profile.py writes profiles for the benchmark sources; the
