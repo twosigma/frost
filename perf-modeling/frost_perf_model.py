@@ -1,3 +1,17 @@
+# Copyright (c) 2026 John Goodacre.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """FROST architectural performance model (aligned to FROST platform_top = cpu_top + soc_top).
 
 This is a deterministic, event-driven *architectural performance model*, not an
@@ -38,7 +52,8 @@ import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Protocol, Tuple, Union
+from typing import Any, Protocol
+from collections.abc import Callable, Iterable
 
 
 RTL_COMMIT = "410aa8f3e866fffb078fc8f7fd3672866d83d131"
@@ -46,6 +61,7 @@ MODEL_VERSION = "1.0"
 
 
 def json_default(value: Any) -> Any:
+    """Return a JSON-serializable form of a dataclass, Counter, or Path."""
     if dataclasses.is_dataclass(value):
         return dataclasses.asdict(value)
     if isinstance(value, Counter):
@@ -56,8 +72,12 @@ def json_default(value: Any) -> Any:
 
 
 def dump_json(path: Path, value: Any) -> None:
+    """Write value to path as indented JSON with sorted keys, creating its directory."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True, default=json_default) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(value, indent=2, sort_keys=True, default=json_default) + "\n",
+        encoding="utf-8",
+    )
 
 
 @dataclass(frozen=True)
@@ -160,12 +180,19 @@ class ModelConfig:
     alu_cycles: int = 1
     # cpu_top <-> soc_top AXI4 boundary geometry (cpu_memory_fabric.sv / soc_axi_slave.sv).
     axi_data_bytes: int = 64
-    cpu_axi_id_bits: int = 6  # 6-bit AXI ID at cpu_top master boundary (0..31 cache, 32 data, 34/35 fetch)
+    cpu_axi_id_bits: int = (
+        6  # 6-bit AXI ID at cpu_top master boundary (0..31 cache, 32 data, 34/35 fetch)
+    )
     axi_id_bits: int = 5  # 5-bit L2 downstream / board DDR AXI ID width (DdrAxiIdBits)
     soc: SocConfig = field(default_factory=SocConfig)
     ddr: DdrConfig = field(default_factory=DdrConfig)
 
     def validate(self) -> None:
+        """Check the configuration against the RTL's structural limits.
+
+        Raise ValueError for an invalid cache geometry, ID width, line size, or
+        DDR setting.
+        """
         for label, size, line, ways in (
             ("L1I", self.l1i_bytes, self.l1_line_bytes, self.l1i_ways),
             ("L1D", self.l1d_bytes, self.l1_line_bytes, self.l1d_ways),
@@ -177,23 +204,34 @@ class ModelConfig:
             raise ValueError("L2 line must contain an integral number of L1 lines")
         # L1D downstream ID is {type, slot} in a fixed four-bit CPU-top line ID.
         if self.l1d_mshrs > 8 or self.l1d_wb_slots > 8:
-            raise ValueError("FROST L1D four-bit {type,slot} downstream ID permits at most 8 slots/type")
+            raise ValueError(
+                "FROST L1D four-bit {type,slot} downstream ID permits at most 8 slots/type"
+            )
         # L2 downstream ID is five bits in cpu_top / soc_axi_slave, leaving 16 per type.
         if self.l2_mshrs > 16 or self.l2_wb_slots > 16:
-            raise ValueError("FROST five-bit L2 downstream {type,slot} ID permits at most 16 slots/type")
+            raise ValueError(
+                "FROST five-bit L2 downstream {type,slot} ID permits at most 16 slots/type"
+            )
         if self.axi_data_bytes != self.l2_line_bytes:
             raise ValueError("the modeled AXI beat is exactly one L2 line")
         if self.cpu_axi_id_bits < 6:
-            raise ValueError("cpu_memory_fabric requires at least 6 AXI ID bits at the cpu_top boundary")
+            raise ValueError(
+                "cpu_memory_fabric requires at least 6 AXI ID bits at the cpu_top boundary"
+            )
         if self.axi_id_bits != 5 or self.ddr.id_bits != 5:
             raise ValueError("FROST soc_axi_slave DDR port uses 5-bit AXI IDs (0..31)")
         if self.ddr.line_bytes != self.axi_data_bytes:
             raise ValueError("DDR line_bytes must match the L2/AXI beat width")
-        if self.ddr.num_slots <= 0 or self.ddr.latency_cycles < 0 or self.ddr.latency_jitter < 0:
+        if (
+            self.ddr.num_slots <= 0
+            or self.ddr.latency_cycles < 0
+            or self.ddr.latency_jitter < 0
+        ):
             raise ValueError("invalid DDR slot or latency configuration")
 
 
 def with_config(base: ModelConfig, name: str, **changes: Any) -> ModelConfig:
+    """Return a validated copy of base named name, with the given fields changed."""
     data = dataclasses.asdict(base)
     data.update(changes)
     if isinstance(data.get("soc"), dict):
@@ -210,29 +248,37 @@ class EventLoop:
     """Small deterministic event loop shared by cpu_top and soc_top."""
 
     def __init__(self) -> None:
+        """Start at cycle 0 with no pending events."""
         self.cycle = 0
         self._sequence = 0
-        self._events: List[Tuple[int, int, Callable[[], None]]] = []
+        self._events: list[tuple[int, int, Callable[[], None]]] = []
 
     def after(self, cycles: int, callback: Callable[[], None]) -> None:
+        """Schedule callback the given number of cycles from now."""
         if cycles < 0:
             raise ValueError("cannot schedule an event in the past")
         self._sequence += 1
         heapq.heappush(self._events, (self.cycle + cycles, self._sequence, callback))
 
     def at(self, cycle: int, callback: Callable[[], None]) -> None:
+        """Schedule callback at an absolute cycle, not in the past."""
         if cycle < self.cycle:
             raise ValueError("cannot schedule an event in the past")
         self._sequence += 1
         heapq.heappush(self._events, (cycle, self._sequence, callback))
 
     def run_ready(self) -> None:
+        """Run the events due by the current cycle, earliest first.
+
+        Events that they schedule for the current cycle run too.
+        """
         while self._events and self._events[0][0] <= self.cycle:
             _, _, callback = heapq.heappop(self._events)
             callback()
 
     @property
     def empty(self) -> bool:
+        """Return True when no event is pending."""
         return not self._events
 
 
@@ -246,18 +292,30 @@ class TransactionId:
     bits: int
 
     def encode(self) -> int:
+        """Return the {type, slot} encoding of the ID.
+
+        Raise ValueError for an unknown kind or a slot that does not fit.
+        """
         if self.kind not in {"fill", "writeback"}:
             raise ValueError(f"unsupported transaction class {self.kind}")
         type_bit = 0 if self.kind == "fill" else 1
         slot_bits = self.bits - 1
         if self.slot < 0 or self.slot >= (1 << slot_bits):
-            raise ValueError(f"slot {self.slot} does not fit in {self.bits}-bit {{type,slot}} id")
+            raise ValueError(
+                f"slot {self.slot} does not fit in {self.bits}-bit {{type,slot}} id"
+            )
         return (type_bit << slot_bits) | self.slot
 
     @classmethod
-    def decode(cls, value: int, bits: int, owner: str) -> "TransactionId":
+    def decode(cls, value: int, bits: int, owner: str) -> TransactionId:
+        """Return the ID that a {type, slot} value of the given width encodes."""
         slot_bits = bits - 1
-        return cls(owner, "writeback" if value & (1 << slot_bits) else "fill", value & ((1 << slot_bits) - 1), bits)
+        return cls(
+            owner,
+            "writeback" if value & (1 << slot_bits) else "fill",
+            value & ((1 << slot_bits) - 1),
+            bits,
+        )
 
 
 Completion = Callable[[bool], None]
@@ -265,6 +323,8 @@ Completion = Callable[[bool], None]
 
 @dataclass
 class Request:
+    """One cache request and the callback that completes it."""
+
     address: int
     is_write: bool
     source: str
@@ -277,31 +337,42 @@ class Request:
 
 @dataclass
 class CacheLine:
-    tag: Optional[int] = None
+    """The state of one cache way."""
+
+    tag: int | None = None
     valid: bool = False
     dirty: bool = False
-    reserved_by: Optional[int] = None
+    reserved_by: int | None = None
     last_used: int = 0
     prefetched: bool = False
 
 
 @dataclass
 class MissStatus:
+    """One MSHR: the missing line, the way it reserves, and its requests.
+
+    A miss that evicts a dirty line waits for that line's writeback
+    before it fetches.
+    """
+
     slot: int
     line_address: int
     set_index: int
     way_index: int
     primary: Request
-    waiters: List[Request] = field(default_factory=list)
+    waiters: list[Request] = field(default_factory=list)
     write_intent: bool = False
     fill_started: bool = False
     waiting_for_wb: bool = False
-    wb_slot: Optional[int] = None
-    evicted_line_address: Optional[int] = None
+    wb_slot: int | None = None
+    evicted_line_address: int | None = None
 
 
 class SubmissionPort(Protocol):
+    """A lower level that returns False from submit to apply backpressure."""
+
     def submit(self, request: Request) -> bool:
+        """Offer a request; return True if the level accepts it."""
         ...
 
 
@@ -330,8 +401,14 @@ class CacheLevel:
         response_cycles: int,
         id_bits: int,
         bimodal_insert: bool = False,
-        miss_observer: Optional[Callable[[int], None]] = None,
+        miss_observer: Callable[[int], None] | None = None,
     ) -> None:
+        """Create an empty cache with the given geometry, miss resources, and latencies.
+
+        id_bits is the width of the {type, slot} IDs of its requests to the
+        lower level. miss_observer, when given, receives the line address of
+        each L1D demand miss.
+        """
         self.name = name
         self.loop = loop
         self.lower = lower
@@ -349,8 +426,8 @@ class CacheLevel:
         self.id_bits = id_bits
         self.bimodal_insert = bimodal_insert
         self.miss_observer = miss_observer
-        self.sets: Dict[int, List[CacheLine]] = {}
-        self.mshrs: Dict[int, MissStatus] = {}
+        self.sets: dict[int, list[CacheLine]] = {}
+        self.mshrs: dict[int, MissStatus] = {}
         self._used_mshr_slots: set[int] = set()
         self._used_wb_slots: set[int] = set()
         self._last_accept_cycle = -1
@@ -358,34 +435,38 @@ class CacheLevel:
         self._touch_counter = 0
         self.stats: Counter = Counter()
 
-    def _set_and_tag(self, address: int) -> Tuple[int, int, int]:
+    def _set_and_tag(self, address: int) -> tuple[int, int, int]:
         line = address // self.line_bytes
         return line, line % self.sets_count, line // self.sets_count
 
-    def _ways(self, set_index: int) -> List[CacheLine]:
+    def _ways(self, set_index: int) -> list[CacheLine]:
         if set_index not in self.sets:
             self.sets[set_index] = [CacheLine() for _ in range(self.ways)]
         return self.sets[set_index]
 
-    def _find(self, set_index: int, tag: int) -> Optional[int]:
+    def _find(self, set_index: int, tag: int) -> int | None:
         for idx, line in enumerate(self._ways(set_index)):
             if line.valid and line.tag == tag and line.reserved_by is None:
                 return idx
         return None
 
-    def _allocate_slot(self, used: set[int], total: int) -> Optional[int]:
+    def _allocate_slot(self, used: set[int], total: int) -> int | None:
         for slot in range(total):
             if slot not in used:
                 used.add(slot)
                 return slot
         return None
 
-    def _victim(self, set_index: int) -> Optional[int]:
+    def _victim(self, set_index: int) -> int | None:
         lines = self._ways(set_index)
         for index, line in enumerate(lines):
             if not line.valid and line.reserved_by is None:
                 return index
-        options = [(line.last_used, index) for index, line in enumerate(lines) if line.reserved_by is None]
+        options = [
+            (line.last_used, index)
+            for index, line in enumerate(lines)
+            if line.reserved_by is None
+        ]
         return min(options)[1] if options else None
 
     def _touch(self, line: CacheLine, prefetched: bool = False) -> None:
@@ -411,7 +492,9 @@ class CacheLevel:
                 self.stats["useful_prefetches"] += 1
                 line.prefetched = False
             self.stats["hits"] += 1
-            self.loop.after(self.tag_cycles + self.data_cycles, lambda: self._respond(request))
+            self.loop.after(
+                self.tag_cycles + self.data_cycles, lambda: self._respond(request)
+            )
             return True
 
         active = self.mshrs.get(line_address)
@@ -437,8 +520,12 @@ class CacheLevel:
             return False
         victim = self._ways(set_index)[victim_way]
         needs_wb = victim.valid and victim.dirty
-        evicted_line_address = (victim.tag * self.sets_count + set_index) if victim.valid and victim.tag is not None else None
-        wb_slot: Optional[int] = None
+        evicted_line_address = (
+            (victim.tag * self.sets_count + set_index)
+            if victim.valid and victim.tag is not None
+            else None
+        )
+        wb_slot: int | None = None
         if needs_wb:
             wb_slot = self._allocate_slot(self._used_wb_slots, self.wb_slots)
             if wb_slot is None:
@@ -522,7 +609,10 @@ class CacheLevel:
     def _fill_done(self, status: MissStatus, ok: bool) -> None:
         if self.mshrs.get(status.line_address) is not status:
             return
-        self.loop.after(self.fill_cycles, lambda status=status, ok=ok: self._install_and_respond(status, ok))
+        self.loop.after(
+            self.fill_cycles,
+            lambda status=status, ok=ok: self._install_and_respond(status, ok),
+        )
 
     def _install_and_respond(self, status: MissStatus, ok: bool) -> None:
         if self.mshrs.get(status.line_address) is not status:
@@ -542,27 +632,39 @@ class CacheLevel:
             self._respond(response, ok)
 
     def _respond(self, request: Request, ok: bool = True) -> None:
-        response_cycle = max(self.loop.cycle, self._last_response_cycle + 1) + self.response_cycles
+        response_cycle = (
+            max(self.loop.cycle, self._last_response_cycle + 1) + self.response_cycles
+        )
         self._last_response_cycle = response_cycle
         self.loop.at(response_cycle, lambda: request.complete(ok))
 
-    def occupancy(self) -> Dict[str, int]:
+    def occupancy(self) -> dict[str, int]:
+        """Return the numbers of busy MSHRs and writeback slots."""
         return {"mshrs": len(self.mshrs), "writeback_slots": len(self._used_wb_slots)}
 
 
 class LineSizeAdapter:
     """Models the 32-byte L1 to 64-byte L2 sector adapter in ``frost_cache_hierarchy.sv``."""
 
-    def __init__(self, lower: SubmissionPort, up_line_bytes: int, down_line_bytes: int) -> None:
+    def __init__(
+        self, lower: SubmissionPort, up_line_bytes: int, down_line_bytes: int
+    ) -> None:
+        """Forward requests for up_line_bytes lines as down_line_bytes lines."""
         self.lower = lower
         self.up_line_bytes = up_line_bytes
         self.down_line_bytes = down_line_bytes
         self.stats: Counter = Counter()
 
     def submit(self, request: Request) -> bool:
+        """Forward a request as a request for its whole lower line.
+
+        Return the lower level's answer, and count the sector it selects.
+        """
         self.stats["requests"] += 1
         sector = (request.address % self.down_line_bytes) // self.up_line_bytes
-        forwarded = dataclasses.replace(request, sector=sector, bytes_size=self.down_line_bytes)
+        forwarded = dataclasses.replace(
+            request, sector=sector, bytes_size=self.down_line_bytes
+        )
         accepted = self.lower.submit(forwarded)
         if accepted:
             self.stats[f"sector_{sector}"] += 1
@@ -584,6 +686,7 @@ class AxiTransaction:
     bytes_size: int = 64
 
     def __post_init__(self) -> None:
+        """Take the AXI ID from the transaction ID when none is given."""
         if self.axi_id == 0 and isinstance(self.transaction_id, TransactionId):
             self.axi_id = self.transaction_id.encode()
 
@@ -592,9 +695,11 @@ class DdrController(Protocol):
     """Protocol for the single-port DDR endpoint behind ``soc_top``."""
 
     def submit(self, transaction: AxiTransaction) -> bool:
+        """Offer a transaction; return True if the controller accepts it."""
         ...
 
-    def summary(self) -> Dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
+        """Return the controller's configuration and statistics."""
         ...
 
 
@@ -602,9 +707,11 @@ class SocTopPort(Protocol):
     """Protocol for ``soc_top`` attached to ``cpu_top``'s AXI4 master interface."""
 
     def submit_axi(self, transaction: AxiTransaction) -> bool:
+        """Offer a transaction from cpu_top; return True if soc_top accepts it."""
         ...
 
-    def summary(self) -> Dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
+        """Return soc_top's configuration and statistics."""
         ...
 
 
@@ -632,12 +739,17 @@ class SingleChannelDdrController:
         l2_mshrs: int = 4,
         l2_wb_slots: int = 2,
     ) -> None:
+        """Create an idle controller.
+
+        Each channel's slot pool covers the configured slots, the L2's miss
+        and writeback slots, and at least eight.
+        """
         self.loop = loop
         self.config = config
         l2_max_slots = max(l2_mshrs, l2_wb_slots)
         self.effective_slots = max(config.num_slots, l2_max_slots, 8)
-        self._rd_queue: Deque[Tuple[int, int, AxiTransaction]] = deque()
-        self._wr_queue: Deque[Tuple[int, int, AxiTransaction]] = deque()
+        self._rd_queue: deque[tuple[int, int, AxiTransaction]] = deque()
+        self._wr_queue: deque[tuple[int, int, AxiTransaction]] = deque()
         self._inflight_rd_ids: set[int] = set()
         self._inflight_wr_ids: set[int] = set()
         self._rd_seq = 0
@@ -660,15 +772,29 @@ class SingleChannelDdrController:
 
     def _sample_latency(self) -> int:
         self._advance_lfsr_to(self.loop.cycle)
-        jitter = (self._lfsr % (self.config.latency_jitter + 1)) if self.config.latency_jitter > 0 else 0
+        jitter = (
+            (self._lfsr % (self.config.latency_jitter + 1))
+            if self.config.latency_jitter > 0
+            else 0
+        )
         reorder_spread = ((self._lfsr >> 13) & 0x7) if self.config.reorder else 0
         return max(1, self.config.latency_cycles + jitter + reorder_spread)
 
     def submit(self, transaction: AxiTransaction) -> bool:
+        """Queue a transaction to complete after a sampled latency.
+
+        Return False when its channel's slots are full or its ID is already
+        in flight. Raise ValueError for a transfer that is not one line or
+        an ID wider than the DDR port's.
+        """
         if transaction.bytes_size != self.config.line_bytes:
-            raise ValueError(f"DDR port requires {self.config.line_bytes}-byte single-beat line transactions")
+            raise ValueError(
+                f"DDR port requires {self.config.line_bytes}-byte single-beat line transactions"
+            )
         if transaction.axi_id < 0 or transaction.axi_id >= (1 << self.config.id_bits):
-            raise ValueError(f"AXI ID {transaction.axi_id} exceeds {self.config.id_bits}-bit DDR AXI ID width")
+            raise ValueError(
+                f"AXI ID {transaction.axi_id} exceeds {self.config.id_bits}-bit DDR AXI ID width"
+            )
 
         if transaction.is_write:
             if len(self._wr_queue) >= self.effective_slots:
@@ -702,8 +828,8 @@ class SingleChannelDdrController:
         self._schedule_pump()
         return True
 
-    def _next_ready_cycle(self) -> Optional[int]:
-        candidates: List[int] = []
+    def _next_ready_cycle(self) -> int | None:
+        candidates: list[int] = []
         if self._rd_queue:
             if self.config.reorder:
                 candidates.append(min(item[0] for item in self._rd_queue))
@@ -726,7 +852,9 @@ class SingleChannelDdrController:
         target = max(self.loop.cycle + 1, next_cycle)
         self.loop.at(target, self._pump)
 
-    def _pop_ready(self, queue: Deque[Tuple[int, int, AxiTransaction]]) -> Optional[AxiTransaction]:
+    def _pop_ready(
+        self, queue: deque[tuple[int, int, AxiTransaction]]
+    ) -> AxiTransaction | None:
         if not queue:
             return None
         if not self.config.reorder:
@@ -760,7 +888,8 @@ class SingleChannelDdrController:
         if self._rd_queue or self._wr_queue:
             self._schedule_pump()
 
-    def summary(self) -> Dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
+        """Return the configuration, slot count, statistics, and queued transactions."""
         return {
             "kind": "frost_single_channel_axi_ddr",
             "configuration": dataclasses.asdict(self.config),
@@ -790,8 +919,13 @@ class SocTopModel:
         self,
         config: ModelConfig,
         loop: EventLoop,
-        controller: Optional[DdrController] = None,
+        controller: DdrController | None = None,
     ) -> None:
+        """Model soc_top in front of a DDR controller.
+
+        Without controller, build a SingleChannelDdrController from the
+        configuration.
+        """
         self.config = config
         self.soc_config = config.soc
         self.loop = loop
@@ -806,18 +940,39 @@ class SocTopModel:
         self.stats: Counter = Counter()
 
     def _is_ddr_address(self, address: int) -> bool:
-        return self.soc_config.ddr_base <= address < (self.soc_config.ddr_base + self.soc_config.ddr_bytes)
+        return (
+            self.soc_config.ddr_base
+            <= address
+            < (self.soc_config.ddr_base + self.soc_config.ddr_bytes)
+        )
 
     def _is_bram_address(self, address: int) -> bool:
-        return self.soc_config.bram_base <= address < (self.soc_config.bram_base + self.soc_config.bram_bytes)
+        return (
+            self.soc_config.bram_base
+            <= address
+            < (self.soc_config.bram_base + self.soc_config.bram_bytes)
+        )
 
     def _is_mmio_address(self, address: int) -> bool:
-        return self.soc_config.mmio_base <= address < (self.soc_config.mmio_base + self.soc_config.mmio_bytes)
+        return (
+            self.soc_config.mmio_base
+            <= address
+            < (self.soc_config.mmio_base + self.soc_config.mmio_bytes)
+        )
 
     def submit_axi(self, transaction: AxiTransaction) -> bool:
+        """Route a transaction by address; return False on backpressure.
+
+        A DDR transaction with an ID of 32 or more, or that is not one line,
+        completes with an error. An address outside DDR, BRAM, and MMIO
+        completes with a decode error.
+        """
         addr = transaction.address
         if self._is_ddr_address(addr):
-            if transaction.axi_id >= 32 or transaction.bytes_size != self.config.axi_data_bytes:
+            if (
+                transaction.axi_id >= 32
+                or transaction.bytes_size != self.config.axi_data_bytes
+            ):
                 self.stats["ddr_protocol_reject"] += 1
                 self.loop.after(1, lambda: transaction.complete(False))
                 return True
@@ -840,7 +995,11 @@ class SocTopModel:
                 return True
             accepted = self.ddr.submit(ddr_tx)
             if accepted:
-                self.stats["ddr_writes_forwarded" if transaction.is_write else "ddr_reads_forwarded"] += 1
+                self.stats[
+                    "ddr_writes_forwarded"
+                    if transaction.is_write
+                    else "ddr_reads_forwarded"
+                ] += 1
             else:
                 self.stats["ddr_backpressure"] += 1
             return accepted
@@ -882,9 +1041,12 @@ class SocTopModel:
             self._aw_slot_busy = False
         else:
             self.stats["ddr_backpressure"] += 1
-            self.loop.after(1, lambda ddr_tx=ddr_tx: self._forward_registered_ddr_write(ddr_tx))
+            self.loop.after(
+                1, lambda ddr_tx=ddr_tx: self._forward_registered_ddr_write(ddr_tx)
+            )
 
-    def summary(self) -> Dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
+        """Return the configuration, statistics, and DDR controller summary."""
         return {
             "kind": "frost_soc_top",
             "configuration": dataclasses.asdict(self.soc_config),
@@ -903,6 +1065,7 @@ class AxiBridge:
         axi_data_bytes: int,
         axi_id_bits: int,
     ) -> None:
+        """Send line requests to soc, accepting one read and one write per cycle."""
         self.loop = loop
         self.soc = soc
         self.axi_data_bytes = axi_data_bytes
@@ -912,10 +1075,20 @@ class AxiBridge:
         self.stats: Counter = Counter()
 
     def submit(self, request: Request) -> bool:
+        """Send a line request to soc_top as an AXI transaction.
+
+        Return False on backpressure. Raise TypeError or ValueError for a
+        request without a {type, slot} ID, a misaligned address, or an ID
+        wider than the AXI port's.
+        """
         if not isinstance(request.request_id, TransactionId):
-            raise TypeError("AXI-facing cache request must own an explicit {type,slot} ID")
+            raise TypeError(
+                "AXI-facing cache request must own an explicit {type,slot} ID"
+            )
         if request.address % self.axi_data_bytes:
-            raise ValueError("AXI bridge receives only L2-line-aligned 64-byte transfers")
+            raise ValueError(
+                "AXI bridge receives only L2-line-aligned 64-byte transfers"
+            )
         if request.request_id.bits > self.axi_id_bits:
             raise ValueError("cache ID does not fit the DDR AXI ID width")
         if request.is_write:
@@ -955,14 +1128,21 @@ class StreamPrefetcher:
     """Small, intentionally transparent approximation of the RTL L2 stream prefetcher."""
 
     def __init__(self, adapter: LineSizeAdapter, config: ModelConfig) -> None:
+        """Prefetch through adapter with the configuration's distance and limit."""
         self.adapter = adapter
         self.config = config
-        self.last_line: Optional[int] = None
+        self.last_line: int | None = None
         self.inflight = 0
         self.next_id = 0
         self.stats: Counter = Counter()
 
     def observe(self, l1_line: int) -> None:
+        """Note an L1D miss and prefetch ahead of a sequential stream.
+
+        A miss on the line after the previous miss requests the line
+        l2_prefetch_distance lines ahead, unless l2_prefetch_inflight
+        prefetches are already in flight.
+        """
         if not self.config.l2_prefetch:
             return
         sequential = self.last_line is not None and l1_line == self.last_line + 1
@@ -1003,15 +1183,22 @@ class CpuTopMemoryHierarchy:
         self,
         config: ModelConfig,
         loop: EventLoop,
-        controller: Optional[DdrController] = None,
-        soc: Optional[SocTopPort] = None,
+        controller: DdrController | None = None,
+        soc: SocTopPort | None = None,
     ) -> None:
+        """Build the L1I, L1D, sector adapter, prefetcher, L2, and AXI bridge.
+
+        The bridge leads to soc, or to a SocTopModel built from the
+        configuration.
+        """
         config.validate()
         self.config = config
         self.loop = loop
         self.soc: SocTopPort = soc or SocTopModel(config, loop, controller=controller)
         self.controller: DdrController = (
-            self.soc.ddr if isinstance(self.soc, SocTopModel) else (controller or SingleChannelDdrController(loop, config.ddr))
+            self.soc.ddr
+            if isinstance(self.soc, SocTopModel)
+            else (controller or SingleChannelDdrController(loop, config.ddr))
         )
         self.axi = AxiBridge(loop, self.soc, config.axi_data_bytes, config.axi_id_bits)
         self.l2 = CacheLevel(
@@ -1030,7 +1217,9 @@ class CpuTopMemoryHierarchy:
             config.cache_response_cycles,
             config.axi_id_bits,
         )
-        self.adapter = LineSizeAdapter(self.l2, config.l1_line_bytes, config.l2_line_bytes)
+        self.adapter = LineSizeAdapter(
+            self.l2, config.l1_line_bytes, config.l2_line_bytes
+        )
         self.prefetcher = StreamPrefetcher(self.adapter, config)
         self.l1d = CacheLevel(
             "l1d",
@@ -1067,7 +1256,8 @@ class CpuTopMemoryHierarchy:
             3,
         )
 
-    def summary(self) -> Dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
+        """Return the levels' statistics and occupancy and the SoC and DDR summaries."""
         return {
             "l1i": {"stats": dict(self.l1i.stats), "occupancy": self.l1i.occupancy()},
             "l1d": {"stats": dict(self.l1d.stats), "occupancy": self.l1d.occupancy()},
@@ -1085,16 +1275,24 @@ MemoryHierarchy = CpuTopMemoryHierarchy
 
 @dataclass(frozen=True)
 class MicroOp:
+    """One micro-op of a workload.
+
+    It names its kind, fetch and data addresses, the micro-ops it depends
+    on, and whether it is a mispredicted branch.
+    """
+
     op_id: int
     kind: str  # alu, branch, load, store
     fetch_address: int
-    data_address: Optional[int] = None
-    depends_on: Tuple[int, ...] = ()
+    data_address: int | None = None
+    depends_on: tuple[int, ...] = ()
     mispredict: bool = False
 
 
 @dataclass
 class RobEntry:
+    """The ROB state of a dispatched micro-op."""
+
     op: MicroOp
     dispatched_cycle: int
     issued: bool = False
@@ -1113,27 +1311,32 @@ class FrostPipeline:
     def __init__(
         self,
         config: ModelConfig,
-        program: List[MicroOp],
-        controller: Optional[DdrController] = None,
-        soc: Optional[SocTopPort] = None,
+        program: list[MicroOp],
+        controller: DdrController | None = None,
+        soc: SocTopPort | None = None,
     ) -> None:
+        """Set up the pipeline, caches, and SoC to run program."""
         self.config = config
         self.program = program
         self.loop = EventLoop()
-        self.soc: SocTopPort = soc or SocTopModel(config, self.loop, controller=controller)
-        self.memory = CpuTopMemoryHierarchy(config, self.loop, controller=controller, soc=self.soc)
-        self.rob: Deque[RobEntry] = deque()
-        self.entries: Dict[int, RobEntry] = {}
+        self.soc: SocTopPort = soc or SocTopModel(
+            config, self.loop, controller=controller
+        )
+        self.memory = CpuTopMemoryHierarchy(
+            config, self.loop, controller=controller, soc=self.soc
+        )
+        self.rob: deque[RobEntry] = deque()
+        self.entries: dict[int, RobEntry] = {}
         self.completed_ids: set[int] = set()
-        self.l0_cache: Dict[int, int] = {}
-        self.fetch_state: Dict[int, str] = {}
+        self.l0_cache: dict[int, int] = {}
+        self.fetch_state: dict[int, str] = {}
         self.next_dispatch = 0
         self.retired = 0
         self.int_rs_in_use = 0
         self.mem_rs_in_use = 0
         self.lq_in_use = 0
         self.sq_in_use = 0
-        self.completions: List[RobEntry] = []
+        self.completions: list[RobEntry] = []
         self.frontend_blocked_until = 0
         self.stats: Counter = Counter()
         self.max_occupancy: Counter = Counter()
@@ -1142,7 +1345,11 @@ class FrostPipeline:
         return address // self.config.l1_line_bytes
 
     def _issue_fetches(self) -> None:
-        limit = min(len(self.program), self.next_dispatch + self.config.decoded_queue_bundles * self.config.dispatch_width)
+        limit = min(
+            len(self.program),
+            self.next_dispatch
+            + self.config.decoded_queue_bundles * self.config.dispatch_width,
+        )
         for index in range(self.next_dispatch, limit):
             line = self._fetch_line(self.program[index].fetch_address)
             if line in self.fetch_state:
@@ -1164,12 +1371,18 @@ class FrostPipeline:
     def _fetch_done(self, line: int, ok: bool) -> None:
         self.fetch_state[line] = "ready" if ok else "error"
 
-    def _can_dispatch(self, op: MicroOp) -> Optional[str]:
+    def _can_dispatch(self, op: MicroOp) -> str | None:
         if len(self.rob) >= self.config.rob_entries:
             return "rob"
-        if op.kind in {"alu", "branch"} and self.int_rs_in_use >= self.config.int_rs_entries:
+        if (
+            op.kind in {"alu", "branch"}
+            and self.int_rs_in_use >= self.config.int_rs_entries
+        ):
             return "int_rs"
-        if op.kind in {"load", "store"} and self.mem_rs_in_use >= self.config.mem_rs_entries:
+        if (
+            op.kind in {"load", "store"}
+            and self.mem_rs_in_use >= self.config.mem_rs_entries
+        ):
             return "mem_rs"
         if op.kind == "load" and self.lq_in_use >= self.config.load_queue_entries:
             return "lq"
@@ -1182,7 +1395,9 @@ class FrostPipeline:
             self.stats["frontend_recovery_stall"] += 1
             return
         dispatched = 0
-        while dispatched < self.config.dispatch_width and self.next_dispatch < len(self.program):
+        while dispatched < self.config.dispatch_width and self.next_dispatch < len(
+            self.program
+        ):
             op = self.program[self.next_dispatch]
             if self.fetch_state.get(self._fetch_line(op.fetch_address)) != "ready":
                 self.stats["frontend_fetch_stall"] += 1
@@ -1244,16 +1459,26 @@ class FrostPipeline:
             elif op.kind == "load":
                 if mem_issued >= self.config.load_issue_width:
                     continue
-                if first_unresolved_store_id is not None and first_unresolved_store_id < op.op_id:
+                if (
+                    first_unresolved_store_id is not None
+                    and first_unresolved_store_id < op.op_id
+                ):
                     self.stats["load_store_disambiguation_stall"] += 1
                     continue
 
                 addr = op.data_address or 0
                 dword = addr >> 3
-                l0_idx = dword % self.config.l0_cache_depth if self.config.l0_cache_depth > 0 else -1
+                l0_idx = (
+                    dword % self.config.l0_cache_depth
+                    if self.config.l0_cache_depth > 0
+                    else -1
+                )
 
                 # FROST LQ L0 Data Cache Fast-Path (direct bypass to CDB, 1 cycle)
-                if self.config.l0_cache_depth > 0 and self.l0_cache.get(l0_idx) == dword:
+                if (
+                    self.config.l0_cache_depth > 0
+                    and self.l0_cache.get(l0_idx) == dword
+                ):
                     self.stats["l0_hits"] += 1
                     entry.issued = True
                     mem_issued += 1
@@ -1263,7 +1488,12 @@ class FrostPipeline:
 
                 self.stats["l0_misses"] += 1
 
-                def on_load_complete(ok: bool, entry: RobEntry = entry, dword: int = dword, l0_idx: int = l0_idx) -> None:
+                def on_load_complete(
+                    ok: bool,
+                    entry: RobEntry = entry,
+                    dword: int = dword,
+                    l0_idx: int = l0_idx,
+                ) -> None:
                     if ok:
                         if self.config.l0_cache_depth > 0:
                             self.l0_cache[l0_idx] = dword
@@ -1294,7 +1524,9 @@ class FrostPipeline:
     def _drain_cdb(self) -> None:
         if not self.completions:
             return
-        self.completions.sort(key=lambda e: (0 if e.op.kind == "load" else 1, e.op.op_id))
+        self.completions.sort(
+            key=lambda e: (0 if e.op.kind == "load" else 1, e.op.op_id)
+        )
         admitted = self.completions[: self.config.cdb_width]
         self.completions = self.completions[self.config.cdb_width :]
         if self.completions:
@@ -1306,7 +1538,8 @@ class FrostPipeline:
                 self.int_rs_in_use -= 1
                 if entry.op.kind == "branch" and entry.op.mispredict:
                     self.frontend_blocked_until = max(
-                        self.frontend_blocked_until, self.loop.cycle + self.config.branch_recovery_cycles
+                        self.frontend_blocked_until,
+                        self.loop.cycle + self.config.branch_recovery_cycles,
                     )
                     self.stats["branch_mispredicts"] += 1
             else:
@@ -1378,7 +1611,11 @@ class FrostPipeline:
         if self.sq_in_use > self.max_occupancy["sq"]:
             self.max_occupancy["sq"] = self.sq_in_use
 
-    def run(self, max_cycles: int = 2_000_000) -> Dict[str, Any]:
+    def run(self, max_cycles: int = 2_000_000) -> dict[str, Any]:
+        """Run until every micro-op retires; return cycles, IPC, and statistics.
+
+        Raise RuntimeError after max_cycles cycles.
+        """
         start_time = time.perf_counter()
         while self.retired < len(self.program):
             if self.loop.cycle >= max_cycles:
@@ -1402,9 +1639,15 @@ class FrostPipeline:
             "wall_time_seconds": round(elapsed_s, 6),
             "simulated_cycles_per_second": int(self.loop.cycle / max(1e-9, elapsed_s)),
             "micro_ops_per_second": int(self.retired / max(1e-9, elapsed_s)),
-            "pipeline": {"stats": dict(self.stats), "max_occupancy": dict(self.max_occupancy)},
+            "pipeline": {
+                "stats": dict(self.stats),
+                "max_occupancy": dict(self.max_occupancy),
+            },
             "cpu_top": {
-                "pipeline": {"stats": dict(self.stats), "max_occupancy": dict(self.max_occupancy)},
+                "pipeline": {
+                    "stats": dict(self.stats),
+                    "max_occupancy": dict(self.max_occupancy),
+                },
                 "l1i": mem_summary["l1i"],
                 "l1d": mem_summary["l1d"],
                 "l2": mem_summary["l2"],
@@ -1419,23 +1662,36 @@ class FrostPipeline:
 
 
 class ProgramBuilder:
+    """Build a list of micro-ops with sequential IDs."""
+
     def __init__(self) -> None:
-        self.ops: List[MicroOp] = []
+        """Start with no micro-ops."""
+        self.ops: list[MicroOp] = []
 
     def emit(
         self,
         kind: str,
         fetch_address: int,
-        data_address: Optional[int] = None,
+        data_address: int | None = None,
         depends_on: Iterable[int] = (),
         mispredict: bool = False,
     ) -> int:
+        """Append a micro-op and return its ID."""
         op_id = len(self.ops)
-        self.ops.append(MicroOp(op_id, kind, fetch_address, data_address, tuple(depends_on), mispredict))
+        self.ops.append(
+            MicroOp(
+                op_id, kind, fetch_address, data_address, tuple(depends_on), mispredict
+            )
+        )
         return op_id
 
 
-def workload_redis_kv(seed: int, requests: int = 96) -> List[MicroOp]:
+def workload_redis_kv(seed: int, requests: int = 96) -> list[MicroOp]:
+    """Return a key-value mix: four dependent lookups per request.
+
+    Most keys come from a hot set; some requests store, and some
+    branches mispredict.
+    """
     rng = random.Random(seed)
     b = ProgramBuilder()
     code_base, data_base = 0x8000_0000, 0x8400_0000
@@ -1445,7 +1701,11 @@ def workload_redis_kv(seed: int, requests: int = 96) -> List[MicroOp]:
         pc = code_base + ((request * 196) % (12 * 1024))
         last = b.emit("alu", pc)
         for lookup in range(4):
-            key = rng.randrange(hot_keys) if rng.random() < 0.80 else rng.randrange(all_keys)
+            key = (
+                rng.randrange(hot_keys)
+                if rng.random() < 0.80
+                else rng.randrange(all_keys)
+            )
             load = b.emit("load", pc + 4 + lookup * 4, data_base + key * 32, (last,))
             last = b.emit("alu", pc + 28 + lookup * 4, depends_on=(load,))
         if request % 5 == 0:
@@ -1454,7 +1714,11 @@ def workload_redis_kv(seed: int, requests: int = 96) -> List[MicroOp]:
     return b.ops
 
 
-def workload_http_api(seed: int, requests: int = 96) -> List[MicroOp]:
+def workload_http_api(seed: int, requests: int = 96) -> list[MicroOp]:
+    """Return a request-handling mix.
+
+    Each request makes six dependent field loads, two branches, and a store.
+    """
     rng = random.Random(seed)
     b = ProgramBuilder()
     code_base, data_base = 0x8100_0000, 0x8600_0000
@@ -1463,15 +1727,25 @@ def workload_http_api(seed: int, requests: int = 96) -> List[MicroOp]:
         last = b.emit("alu", pc)
         for field_idx in range(6):
             line = (request * 7 + field_idx * 151 + rng.randrange(0, 32)) % (256 * 1024)
-            load = b.emit("load", pc + 4 + field_idx * 4, data_base + line * 32, (last,))
+            load = b.emit(
+                "load", pc + 4 + field_idx * 4, data_base + line * 32, (last,)
+            )
             last = b.emit("alu", pc + 44 + field_idx * 4, depends_on=(load,))
             if field_idx in {1, 4}:
-                last = b.emit("branch", pc + 80 + field_idx * 4, depends_on=(last,), mispredict=((request + field_idx) % 29 == 0))
-        b.emit("store", pc + 96, data_base + ((request * 13) % (64 * 1024)) * 32, (last,))
+                last = b.emit(
+                    "branch",
+                    pc + 80 + field_idx * 4,
+                    depends_on=(last,),
+                    mispredict=((request + field_idx) % 29 == 0),
+                )
+        b.emit(
+            "store", pc + 96, data_base + ((request * 13) % (64 * 1024)) * 32, (last,)
+        )
     return b.ops
 
 
-def workload_faas_cold(seed: int, invocations: int = 40) -> List[MicroOp]:
+def workload_faas_cold(seed: int, invocations: int = 40) -> list[MicroOp]:
+    """Return a cold-start mix: each invocation runs from its own code and heap."""
     rng = random.Random(seed)
     b = ProgramBuilder()
     for invocation in range(invocations):
@@ -1481,16 +1755,28 @@ def workload_faas_cold(seed: int, invocations: int = 40) -> List[MicroOp]:
         last = b.emit("alu", code_base)
         for step in range(24):
             pc = code_base + step * 64
-            load = b.emit("load", pc + 4, heap_base + ((step * 97 + rng.randrange(64)) % 4096) * 32, (last,))
+            load = b.emit(
+                "load",
+                pc + 4,
+                heap_base + ((step * 97 + rng.randrange(64)) % 4096) * 32,
+                (last,),
+            )
             last = b.emit("alu", pc + 16, depends_on=(load,))
             if step % 6 == 5:
                 b.emit("store", pc + 24, heap_base + ((step * 13) % 4096) * 32, (last,))
             if step % 8 == 7:
-                last = b.emit("branch", pc + 36, depends_on=(last,), mispredict=(step == 15))
+                last = b.emit(
+                    "branch", pc + 36, depends_on=(last,), mispredict=(step == 15)
+                )
     return b.ops
 
 
-def workload_linux_service(seed: int, requests: int = 80) -> List[MicroOp]:
+def workload_linux_service(seed: int, requests: int = 80) -> list[MicroOp]:
+    """Return a service mix.
+
+    Each request makes eight dependent loads from user and kernel data, then a
+    store and a branch.
+    """
     rng = random.Random(seed)
     b = ProgramBuilder()
     code_base, user_base, kernel_base = 0x8200_0000, 0x8800_0000, 0x8C00_0000
@@ -1502,12 +1788,15 @@ def workload_linux_service(seed: int, requests: int = 80) -> List[MicroOp]:
             line = (request * 31 + access * 733 + rng.randrange(128)) % (192 * 1024)
             load = b.emit("load", pc + 4 + access * 4, base + line * 32, (last,))
             last = b.emit("alu", pc + 52 + access * 4, depends_on=(load,))
-        b.emit("store", pc + 96, user_base + ((request * 19) % (96 * 1024)) * 32, (last,))
+        b.emit(
+            "store", pc + 96, user_base + ((request * 19) % (96 * 1024)) * 32, (last,)
+        )
         b.emit("branch", pc + 108, depends_on=(last,), mispredict=(request % 23 == 0))
     return b.ops
 
 
-def workload_memory_stress(seed: int, operations: int = 960) -> List[MicroOp]:
+def workload_memory_stress(seed: int, operations: int = 960) -> list[MicroOp]:
+    """Return independent loads over 40 MiB; every seventh feeds a store."""
     rng = random.Random(seed)
     b = ProgramBuilder()
     # Keep code and data inside FROST's default 1 GiB cached DDR aperture [0x8000_0000, 0xC000_0000).
@@ -1517,13 +1806,14 @@ def workload_memory_stress(seed: int, operations: int = 960) -> List[MicroOp]:
         line = ((index * 129) + rng.randrange(0, 64)) % (640 * 1024)
         load = b.emit("load", pc, data_base + line * 64)
         if index % 7 == 0:
-            b.emit("store", pc + 4, data_base + ((line + 3) % (640 * 1024)) * 64, (load,))
+            b.emit(
+                "store", pc + 4, data_base + ((line + 3) % (640 * 1024)) * 64, (load,)
+            )
     return b.ops
 
 
-def workload_coremark(seed: int, operations: int = 1200) -> List[MicroOp]:
+def workload_coremark(seed: int, operations: int = 1200) -> list[MicroOp]:
     """Model CoreMark kernel micro-ops: list traversal, matrix ops, state machine & CRC."""
-    rng = random.Random(seed)
     b = ProgramBuilder()
     code_base = 0x8000_2000
     data_base = 0x8001_0000
@@ -1536,7 +1826,9 @@ def workload_coremark(seed: int, operations: int = 1200) -> List[MicroOp]:
     for node in range(16):
         pc = code_base + (node * 16) % 512
         load_ptr = b.emit("load", pc, list_base + ((node * 64) % 2048), (last_ptr,))
-        load_val = b.emit("load", pc + 4, list_base + ((node * 64 + 32) % 2048), (load_ptr,))
+        load_val = b.emit(
+            "load", pc + 4, list_base + ((node * 64 + 32) % 2048), (load_ptr,)
+        )
         cmp_alu = b.emit("alu", pc + 8, depends_on=(load_val,))
         b.emit("branch", pc + 12, depends_on=(cmp_alu,), mispredict=(node % 64 == 63))
         last_ptr = load_ptr
@@ -1545,7 +1837,7 @@ def workload_coremark(seed: int, operations: int = 1200) -> List[MicroOp]:
     acc0 = b.emit("alu", code_base + 0x600)
     acc1 = b.emit("alu", code_base + 0x604)
     state = b.emit("alu", code_base + 0x608)
-    crc = b.emit("alu", code_base + 0x60c)
+    crc = b.emit("alu", code_base + 0x60C)
 
     for i in range(operations - 16):
         pc = code_base + 0x1000 + ((i * 12) % 1024)
@@ -1565,13 +1857,18 @@ def workload_coremark(seed: int, operations: int = 1200) -> List[MicroOp]:
             b.emit("branch", pc + 8, depends_on=(state,), mispredict=(i % 550 == 0))
         else:
             table_idx = b.emit("alu", pc, depends_on=(crc,))
-            crc_val = b.emit("load", pc + 4, crc_table_base + ((i * 4) % 1024), depends_on=(table_idx,))
+            crc_val = b.emit(
+                "load",
+                pc + 4,
+                crc_table_base + ((i * 4) % 1024),
+                depends_on=(table_idx,),
+            )
             crc = b.emit("alu", pc + 8, depends_on=(crc_val, crc))
 
     return b.ops
 
 
-WORKLOADS: Dict[str, Callable[[int], List[MicroOp]]] = {
+WORKLOADS: dict[str, Callable[[int], list[MicroOp]]] = {
     "redis_kv": workload_redis_kv,
     "http_api": workload_http_api,
     "faas_cold": workload_faas_cold,
@@ -1581,7 +1878,12 @@ WORKLOADS: Dict[str, Callable[[int], List[MicroOp]]] = {
 }
 
 
-def run_workload(config: ModelConfig, workload_name: str, seed: int) -> Dict[str, Any]:
+def run_workload(config: ModelConfig, workload_name: str, seed: int) -> dict[str, Any]:
+    """Run a named workload on config and return the result.
+
+    The result also names the workload, its seed, and its micro-op count.
+    The CoreMark workload starts with every fetch line ready.
+    """
     if workload_name not in WORKLOADS:
         raise KeyError(workload_name)
     program = WORKLOADS[workload_name](seed)
@@ -1597,19 +1899,29 @@ def run_workload(config: ModelConfig, workload_name: str, seed: int) -> Dict[str
     return result
 
 
-def score_result(result: Dict[str, Any]) -> Dict[str, int]:
+def score_result(result: dict[str, Any]) -> dict[str, int]:
+    """Return the cycles and the backpressure and stall counts of a result."""
     memory = result["memory"]
     stalls = result["pipeline"]["stats"]
     return {
         "cycles": int(result["cycles"]),
-        "l1d_mshr_backpressure": int(memory["l1d"]["stats"].get("mshr_backpressure", 0)),
+        "l1d_mshr_backpressure": int(
+            memory["l1d"]["stats"].get("mshr_backpressure", 0)
+        ),
         "l2_mshr_backpressure": int(memory["l2"]["stats"].get("mshr_backpressure", 0)),
-        "axi_controller_backpressure": int(memory["axi"].get("controller_backpressure", 0)),
+        "axi_controller_backpressure": int(
+            memory["axi"].get("controller_backpressure", 0)
+        ),
         "retire_head_not_ready": int(stalls.get("retire_head_not_ready", 0)),
     }
 
 
-def sweep_configurations(seed: int = 11) -> Dict[str, Any]:
+def sweep_configurations(seed: int = 11) -> dict[str, Any]:
+    """Run every workload on the baseline and five L2 variants.
+
+    Return each run and each configuration's mean cycles, mean IPC, MSHR
+    backpressure, and geometric-mean cycle ratio to the baseline.
+    """
     baseline = ModelConfig()
     candidates = [
         baseline,
@@ -1619,7 +1931,7 @@ def sweep_configurations(seed: int = 11) -> Dict[str, Any]:
         with_config(baseline, "l2_mshr_12", l2_mshrs=12),
         with_config(baseline, "l2_mshr_12_wb_4", l2_mshrs=12, l2_wb_slots=4),
     ]
-    runs: List[Dict[str, Any]] = []
+    runs: list[dict[str, Any]] = []
     for config in candidates:
         for offset, workload in enumerate(WORKLOADS):
             result = run_workload(config, workload, seed + offset)
@@ -1631,24 +1943,34 @@ def sweep_configurations(seed: int = 11) -> Dict[str, Any]:
                     "score": score_result(result),
                 }
             )
-    aggregate: Dict[str, Dict[str, Any]] = {}
+    aggregate: dict[str, dict[str, Any]] = {}
     for config in candidates:
         subset = [item for item in runs if item["config"] == config.name]
         aggregate[config.name] = {
             "mean_cycles": statistics.mean(item["score"]["cycles"] for item in subset),
             "geomean_cycle_ratio_to_baseline": 1.0,
             "mean_ipc": statistics.mean(item["result"]["ipc"] for item in subset),
-            "total_l2_mshr_backpressure": sum(item["score"]["l2_mshr_backpressure"] for item in subset),
-            "total_l1d_mshr_backpressure": sum(item["score"]["l1d_mshr_backpressure"] for item in subset),
+            "total_l2_mshr_backpressure": sum(
+                item["score"]["l2_mshr_backpressure"] for item in subset
+            ),
+            "total_l1d_mshr_backpressure": sum(
+                item["score"]["l1d_mshr_backpressure"] for item in subset
+            ),
         }
-    base_by_workload = {item["workload"]: item["score"]["cycles"] for item in runs if item["config"] == baseline.name}
+    base_by_workload = {
+        item["workload"]: item["score"]["cycles"]
+        for item in runs
+        if item["config"] == baseline.name
+    }
     for config in candidates:
         ratios = [
             item["score"]["cycles"] / base_by_workload[item["workload"]]
             for item in runs
             if item["config"] == config.name
         ]
-        aggregate[config.name]["geomean_cycle_ratio_to_baseline"] = statistics.geometric_mean(ratios)
+        aggregate[config.name]["geomean_cycle_ratio_to_baseline"] = (
+            statistics.geometric_mean(ratios)
+        )
     return {
         "model_version": MODEL_VERSION,
         "rtl_commit": RTL_COMMIT,
@@ -1658,7 +1980,7 @@ def sweep_configurations(seed: int = 11) -> Dict[str, Any]:
     }
 
 
-def load_trace_ops(path: Path, max_ops: Optional[int] = None) -> List[MicroOp]:
+def load_trace_ops(path: Path, max_ops: int | None = None) -> list[MicroOp]:
     """Load an execution or micro-op trace and convert it into MicroOps for cycle simulation.
 
     Supported formats:
@@ -1668,7 +1990,7 @@ def load_trace_ops(path: Path, max_ops: Optional[int] = None) -> List[MicroOp]:
         - Calibration events: extracts dispatch/retire/axi_request events into synthetic sequence.
     - CSV/TSV: pc,kind,data_address,depends_on,mispredict
     """
-    ops: List[MicroOp] = []
+    ops: list[MicroOp] = []
     text = path.read_text(encoding="utf-8")
     is_jsonl = path.suffix.lower() == ".jsonl" or text.lstrip().startswith("{")
 
@@ -1690,7 +2012,11 @@ def load_trace_ops(path: Path, max_ops: Optional[int] = None) -> List[MicroOp]:
                     uops = int(record.get("uops", 1))
                     if uops == 1:
                         op_id = len(ops)
-                        dep = (op_id - 2,) if op_id >= 2 else ((op_id - 1,) if op_id > 0 else ())
+                        dep = (
+                            (op_id - 2,)
+                            if op_id >= 2
+                            else ((op_id - 1,) if op_id > 0 else ())
+                        )
                         pc = 0x8000_1000 + (op_id * 4) % 4096
                         ops.append(MicroOp(op_id, "alu", pc, None, dep))
                     elif uops >= 2:
@@ -1706,7 +2032,9 @@ def load_trace_ops(path: Path, max_ops: Optional[int] = None) -> List[MicroOp]:
                     op_id = len(ops)
                     is_wr = bool(record.get("is_write", False))
                     addr_str = record.get("address", "0x80000000")
-                    addr = int(addr_str, 0) if isinstance(addr_str, str) else int(addr_str)
+                    addr = (
+                        int(addr_str, 0) if isinstance(addr_str, str) else int(addr_str)
+                    )
                     kind = "store" if is_wr else "load"
                     pc = 0x8000_2000 + (op_id * 4) % 4096
                     dep = (op_id - 2,) if op_id >= 2 and not is_wr else ()
@@ -1714,10 +2042,16 @@ def load_trace_ops(path: Path, max_ops: Optional[int] = None) -> List[MicroOp]:
             elif "kind" in record:
                 op_id = len(ops)
                 kind = str(record["kind"]).lower()
-                fetch_addr = int(record.get("fetch_address") or record.get("pc") or 0x8000_0000)
+                fetch_addr = int(
+                    record.get("fetch_address") or record.get("pc") or 0x8000_0000
+                )
                 data_addr = record.get("data_address") or record.get("addr")
                 if data_addr is not None:
-                    data_addr = int(data_addr) if isinstance(data_addr, int) else int(str(data_addr), 0)
+                    data_addr = (
+                        int(data_addr)
+                        if isinstance(data_addr, int)
+                        else int(str(data_addr), 0)
+                    )
                 deps = tuple(int(d) for d in record.get("depends_on", ()))
                 mispred = bool(record.get("mispredict", False))
                 ops.append(MicroOp(op_id, kind, fetch_addr, data_addr, deps, mispred))
@@ -1733,8 +2067,16 @@ def load_trace_ops(path: Path, max_ops: Optional[int] = None) -> List[MicroOp]:
                 op_id = len(ops)
                 pc = int(parts[0], 0)
                 kind = parts[1].lower()
-                data_addr = int(parts[2], 0) if len(parts) > 2 and parts[2] not in {"", "null", "None"} else None
-                deps = tuple(int(x) for x in parts[3].split(";")) if len(parts) > 3 and parts[3] not in {"", "()"} else ()
+                data_addr = (
+                    int(parts[2], 0)
+                    if len(parts) > 2 and parts[2] not in {"", "null", "None"}
+                    else None
+                )
+                deps = (
+                    tuple(int(x) for x in parts[3].split(";"))
+                    if len(parts) > 3 and parts[3] not in {"", "()"}
+                    else ()
+                )
                 mispred = parts[4].lower() in {"1", "true"} if len(parts) > 4 else False
                 ops.append(MicroOp(op_id, kind, pc, data_addr, deps, mispred))
                 if max_ops and len(ops) >= max_ops:
@@ -1745,21 +2087,25 @@ def load_trace_ops(path: Path, max_ops: Optional[int] = None) -> List[MicroOp]:
     return ops
 
 
-def get_design_variants(baseline: Optional[ModelConfig] = None) -> Dict[str, ModelConfig]:
+def get_design_variants(baseline: ModelConfig | None = None) -> dict[str, ModelConfig]:
     """Suite of candidate microarchitectural and memory variants for FROST optimization studies."""
     base = baseline or ModelConfig()
     return {
         "baseline": base,
         # Core Pipeline & Queue Resizing
         "l0_fastpath_off": with_config(base, "l0_fastpath_off", l0_cache_depth=0),
-        "early_wakeup_off": with_config(base, "early_wakeup_off", early_load_wakeup=False),
+        "early_wakeup_off": with_config(
+            base, "early_wakeup_off", early_load_wakeup=False
+        ),
         "core_rob_48": with_config(base, "core_rob_48", rob_entries=48),
         "core_rob_64": with_config(base, "core_rob_64", rob_entries=64),
         "core_mem_rs_12": with_config(base, "core_mem_rs_12", mem_rs_entries=12),
         "core_mem_rs_16": with_config(base, "core_mem_rs_16", mem_rs_entries=16),
         "core_int_rs_24": with_config(base, "core_int_rs_24", int_rs_entries=24),
         "core_int_rs_32": with_config(base, "core_int_rs_32", int_rs_entries=32),
-        "core_lq_sq_12": with_config(base, "core_lq_sq_12", load_queue_entries=12, store_queue_entries=12),
+        "core_lq_sq_12": with_config(
+            base, "core_lq_sq_12", load_queue_entries=12, store_queue_entries=12
+        ),
         "core_expanded_window": with_config(
             base,
             "core_expanded_window",
@@ -1771,11 +2117,19 @@ def get_design_variants(baseline: Optional[ModelConfig] = None) -> Dict[str, Mod
         ),
         # L2 Cache & Miss Handling
         "l2_mshr_8": with_config(base, "l2_mshr_8", l2_mshrs=8),
-        "l2_mshr_8_wb_4": with_config(base, "l2_mshr_8_wb_4", l2_mshrs=8, l2_wb_slots=4),
-        "l2_mshr_12_wb_4": with_config(base, "l2_mshr_12_wb_4", l2_mshrs=12, l2_wb_slots=4),
+        "l2_mshr_8_wb_4": with_config(
+            base, "l2_mshr_8_wb_4", l2_mshrs=8, l2_wb_slots=4
+        ),
+        "l2_mshr_12_wb_4": with_config(
+            base, "l2_mshr_12_wb_4", l2_mshrs=12, l2_wb_slots=4
+        ),
         "l2_waiters_4": with_config(base, "l2_waiters_4", l2_waiters=4),
-        "l2_prefetch_dist_12": with_config(base, "l2_prefetch_dist_12", l2_prefetch_distance=12),
-        "l2_prefetch_inflight_8": with_config(base, "l2_prefetch_inflight_8", l2_prefetch_inflight=8),
+        "l2_prefetch_dist_12": with_config(
+            base, "l2_prefetch_dist_12", l2_prefetch_distance=12
+        ),
+        "l2_prefetch_inflight_8": with_config(
+            base, "l2_prefetch_inflight_8", l2_prefetch_inflight=8
+        ),
         "l2_prefetch_aggressive": with_config(
             base,
             "l2_prefetch_aggressive",
@@ -1799,18 +2153,24 @@ def get_design_variants(baseline: Optional[ModelConfig] = None) -> Dict[str, Mod
             l2_prefetch_distance=12,
         ),
         # DDR Memory Latency Sensitivity
-        "ddr_fast_20cyc": with_config(base, "ddr_fast_20cyc", ddr=dataclasses.replace(base.ddr, latency_cycles=20)),
-        "ddr_slow_45cyc": with_config(base, "ddr_slow_45cyc", ddr=dataclasses.replace(base.ddr, latency_cycles=45)),
+        "ddr_fast_20cyc": with_config(
+            base, "ddr_fast_20cyc", ddr=dataclasses.replace(base.ddr, latency_cycles=20)
+        ),
+        "ddr_slow_45cyc": with_config(
+            base, "ddr_slow_45cyc", ddr=dataclasses.replace(base.ddr, latency_cycles=45)
+        ),
     }
 
 
 def explore_design_variants(
-    workload_or_trace: Union[str, Path],
+    workload_or_trace: str | Path,
     seed: int = 11,
-    variant_names: Optional[List[str]] = None,
-) -> Dict[str, Any]:
-    """Run baseline and candidate design variants against a workload or replayed trace,
-    quantifying speedup, stall reduction, and resource bottlenecks."""
+    variant_names: list[str] | None = None,
+) -> dict[str, Any]:
+    """Run baseline and candidate design variants against a workload or replayed trace.
+
+    Quantifies speedup, stall reduction, and resource bottlenecks.
+    """
     p = Path(str(workload_or_trace))
     if p.exists() or "/" in str(workload_or_trace):
         trace_path = p
@@ -1819,13 +2179,15 @@ def explore_design_variants(
     else:
         workload_name = str(workload_or_trace)
         if workload_name not in WORKLOADS:
-            raise KeyError(f"Unknown workload: {workload_name}. Available: {sorted(WORKLOADS)}")
+            raise KeyError(
+                f"Unknown workload: {workload_name}. Available: {sorted(WORKLOADS)}"
+            )
         program = WORKLOADS[workload_name](seed)
 
     all_variants = get_design_variants()
     selected_names = variant_names or list(all_variants.keys())
 
-    def _run_candidate(cfg: ModelConfig) -> Dict[str, Any]:
+    def _run_candidate(cfg: ModelConfig) -> dict[str, Any]:
         pipe = FrostPipeline(cfg, program)
         if "coremark" in workload_name:
             for op in program:
@@ -1839,7 +2201,7 @@ def explore_design_variants(
     base_ipc = float(base_res["ipc"])
     base_stalls = base_res["pipeline"]["stats"]
 
-    variant_runs: List[Dict[str, Any]] = []
+    variant_runs: list[dict[str, Any]] = []
     for vname in selected_names:
         cfg = all_variants[vname]
         res = _run_candidate(cfg)
@@ -1847,55 +2209,67 @@ def explore_design_variants(
         v_ipc = float(res["ipc"])
         speedup_pct = ((base_cycles - v_cycles) / max(1, base_cycles)) * 100.0
         v_stalls = res["pipeline"]["stats"]
-        variant_runs.append({
-            "name": vname,
-            "cycles": v_cycles,
-            "cycle_delta": v_cycles - base_cycles,
-            "speedup_pct": round(speedup_pct, 2),
-            "ipc": round(v_ipc, 4),
-            "ipc_delta": round(v_ipc - base_ipc, 4),
-            "stalls": {
-                "dispatch_stall_rob": v_stalls.get("dispatch_stall_rob", 0),
-                "dispatch_stall_mem_rs": v_stalls.get("dispatch_stall_mem_rs", 0),
-                "dispatch_stall_int_rs": v_stalls.get("dispatch_stall_int_rs", 0),
-                "retire_head_not_ready": v_stalls.get("retire_head_not_ready", 0),
-            },
-            "l2_mshr_backpressure": int(res["memory"]["l2"]["stats"].get("mshr_backpressure", 0)),
-        })
+        variant_runs.append(
+            {
+                "name": vname,
+                "cycles": v_cycles,
+                "cycle_delta": v_cycles - base_cycles,
+                "speedup_pct": round(speedup_pct, 2),
+                "ipc": round(v_ipc, 4),
+                "ipc_delta": round(v_ipc - base_ipc, 4),
+                "stalls": {
+                    "dispatch_stall_rob": v_stalls.get("dispatch_stall_rob", 0),
+                    "dispatch_stall_mem_rs": v_stalls.get("dispatch_stall_mem_rs", 0),
+                    "dispatch_stall_int_rs": v_stalls.get("dispatch_stall_int_rs", 0),
+                    "retire_head_not_ready": v_stalls.get("retire_head_not_ready", 0),
+                },
+                "l2_mshr_backpressure": int(
+                    res["memory"]["l2"]["stats"].get("mshr_backpressure", 0)
+                ),
+            }
+        )
 
     ranked = sorted(variant_runs, key=lambda x: x["speedup_pct"], reverse=True)
 
     bottlenecks = []
     if base_stalls.get("dispatch_stall_mem_rs", 0) > 20:
-        bottlenecks.append({
-            "resource": "mem_rs",
-            "impact_stalls": base_stalls["dispatch_stall_mem_rs"],
-            "description": "Memory Reservation Station (8 entries) limits concurrency under memory dependencies.",
-            "remedy": "Increase MEM_RS_DEPTH from 8 to 12 or 16.",
-        })
+        bottlenecks.append(
+            {
+                "resource": "mem_rs",
+                "impact_stalls": base_stalls["dispatch_stall_mem_rs"],
+                "description": "Memory Reservation Station (8 entries) limits concurrency under memory dependencies.",
+                "remedy": "Increase MEM_RS_DEPTH from 8 to 12 or 16.",
+            }
+        )
     if base_stalls.get("dispatch_stall_rob", 0) > 20:
-        bottlenecks.append({
-            "resource": "rob",
-            "impact_stalls": base_stalls["dispatch_stall_rob"],
-            "description": "Reorder Buffer (32 entries) fills up while waiting for long-latency instructions.",
-            "remedy": "Increase ROB_DEPTH from 32 to 48 or 64.",
-        })
+        bottlenecks.append(
+            {
+                "resource": "rob",
+                "impact_stalls": base_stalls["dispatch_stall_rob"],
+                "description": "Reorder Buffer (32 entries) fills up while waiting for long-latency instructions.",
+                "remedy": "Increase ROB_DEPTH from 32 to 48 or 64.",
+            }
+        )
     if base_res["memory"]["l2"]["stats"].get("mshr_backpressure", 0) > 10:
-        bottlenecks.append({
-            "resource": "l2_mshr",
-            "impact_stalls": base_res["memory"]["l2"]["stats"]["mshr_backpressure"],
-            "description": "L2 MSHR concurrency limit (4 slots) causes backpressure during concurrent cache misses.",
-            "remedy": "Increase L2_NUM_MSHR from 4 to 8, with 4 writeback slots.",
-        })
+        bottlenecks.append(
+            {
+                "resource": "l2_mshr",
+                "impact_stalls": base_res["memory"]["l2"]["stats"]["mshr_backpressure"],
+                "description": "L2 MSHR concurrency limit (4 slots) causes backpressure during concurrent cache misses.",
+                "remedy": "Increase L2_NUM_MSHR from 4 to 8, with 4 writeback slots.",
+            }
+        )
 
     recommendations = []
     for r in ranked:
         if r["speedup_pct"] > 0.5 and r["name"] != "baseline":
-            recommendations.append({
-                "variant": r["name"],
-                "speedup_pct": r["speedup_pct"],
-                "cycles_saved": base_cycles - r["cycles"],
-            })
+            recommendations.append(
+                {
+                    "variant": r["name"],
+                    "speedup_pct": r["speedup_pct"],
+                    "cycles_saved": base_cycles - r["cycles"],
+                }
+            )
 
     return {
         "workload": workload_name,
@@ -1911,7 +2285,7 @@ def explore_design_variants(
     }
 
 
-def generate_optimization_report(exploration: Dict[str, Any]) -> str:
+def generate_optimization_report(exploration: dict[str, Any]) -> str:
     """Render a GitHub-flavored Markdown report suggesting FROST design refinements."""
     workload = exploration["workload"]
     uops = exploration["micro_ops"]
@@ -1921,11 +2295,11 @@ def generate_optimization_report(exploration: Dict[str, Any]) -> str:
     recs = exploration["recommendations"]
 
     lines = [
-        f"# FROST Architectural Optimization & Design Refinement Report",
+        "# FROST Architectural Optimization & Design Refinement Report",
         "",
-        f"**Target Evaluation**: `{workload}` ({uops} micro-ops simulated)  ",
-        f"**Baseline Performance**: {base['cycles']} cycles, **IPC {base['ipc']}**  ",
-        f"**Model Grounding**: FROST `platform_top.sv` (`cpu_top` + `soc_top` single-channel 512-bit AXI memory)",
+        f"**Target Evaluation**: `{workload}` ({uops} micro-ops simulated)\\",
+        f"**Baseline Performance**: {base['cycles']} cycles, **IPC {base['ipc']}**\\",
+        "**Model Grounding**: FROST `platform_top.sv` (`cpu_top` + `soc_top` single-channel 512-bit AXI memory)",
         "",
         "---",
         "",
@@ -1942,37 +2316,50 @@ def generate_optimization_report(exploration: Dict[str, Any]) -> str:
             f"{v['ipc']:.4f} | {st['dispatch_stall_rob']} | {st['dispatch_stall_mem_rs']} | {v['l2_mshr_backpressure']} |"
         )
 
-    lines.extend([
-        "",
-        "## 2. Identified Hardware Bottlenecks in Current FROST Design",
-        "",
-    ])
+    lines.extend(
+        [
+            "",
+            "## 2. Identified Hardware Bottlenecks in Current FROST Design",
+            "",
+        ]
+    )
 
     if not bottlenecks:
-        lines.append("No major structural bottlenecks observed for this trace/workload.")
+        lines.append(
+            "No major structural bottlenecks observed for this trace/workload."
+        )
     else:
         for b in bottlenecks:
-            lines.append(f"### Bottleneck: `{b['resource']}` ({b['impact_stalls']} stall cycles)")
+            lines.append(
+                f"### Bottleneck: `{b['resource']}` ({b['impact_stalls']} stall cycles)"
+            )
             lines.append(f"- **Diagnosis**: {b['description']}")
             lines.append(f"- **Suggested RTL Refinement**: {b['remedy']}")
             lines.append("")
 
-    lines.extend([
-        "## 3. Prioritized Design Recommendations for FROST RTL",
-        "",
-    ])
+    lines.extend(
+        [
+            "## 3. Prioritized Design Recommendations for FROST RTL",
+            "",
+        ]
+    )
 
     if recs:
         for i, r in enumerate(recs[:5], start=1):
-            lines.append(f"{i}. **Adopt `{r['variant']}`**: Yields **{r['speedup_pct']:+.2f}% speedup** ({r['cycles_saved']} cycles saved).")
+            lines.append(
+                f"{i}. **Adopt `{r['variant']}`**: Yields **{r['speedup_pct']:+.2f}% speedup** ({r['cycles_saved']} cycles saved)."
+            )
     else:
-        lines.append("The current baseline configuration is well-balanced for this workload.")
+        lines.append(
+            "The current baseline configuration is well-balanced for this workload."
+        )
 
     lines.append("")
     return "\n".join(lines)
 
 
-def rtl_audit() -> Dict[str, Any]:
+def rtl_audit() -> dict[str, Any]:
+    """Return the model's source-backed RTL facts, its features, and its assumptions."""
     return {
         "model_version": MODEL_VERSION,
         "rtl_commit": RTL_COMMIT,
@@ -2028,8 +2415,9 @@ def rtl_audit() -> Dict[str, Any]:
     }
 
 
-def selftest() -> Dict[str, Any]:
-    checks: List[Dict[str, Any]] = []
+def selftest() -> dict[str, Any]:
+    """Run the model's self-checks and return each result and whether all passed."""
+    checks: list[dict[str, Any]] = []
 
     def check(name: str, condition: bool, detail: str = "") -> None:
         checks.append({"name": name, "passed": bool(condition), "detail": detail})
@@ -2039,7 +2427,10 @@ def selftest() -> Dict[str, Any]:
         for kind in ("fill", "writeback"):
             original = TransactionId("test", kind, slot, bits)
             decoded = TransactionId.decode(original.encode(), bits, "test")
-            check(f"id_roundtrip_{bits}_{kind}", decoded.kind == kind and decoded.slot == slot)
+            check(
+                f"id_roundtrip_{bits}_{kind}",
+                decoded.kind == kind and decoded.slot == slot,
+            )
     try:
         TransactionId("test", "fill", 8, 4).encode()
         check("id_overflow_rejected", False, "overflow did not fail")
@@ -2055,18 +2446,21 @@ def selftest() -> Dict[str, Any]:
             return True
 
     cache = CacheLevel("test", loop, BlockingLower(), 64, 32, 1, 1, 1, 1, 1, 1, 1, 1, 2)
-    completed: List[bool] = []
+    completed: list[bool] = []
     first = cache.submit(Request(0, False, "test", 0, completed.append))
     loop.cycle += 1
     second = cache.submit(Request(32, False, "test", 1, completed.append))
-    check("mshr_owns_victim_way", first and not second and cache.stats["mshr_backpressure"] == 1)
+    check(
+        "mshr_owns_victim_way",
+        first and not second and cache.stats["mshr_backpressure"] == 1,
+    )
 
     # Dirty eviction preserves the evicted line address until its writeback
     # acknowledgement; this guards against a common ownership-model shortcut.
     class LoopbackLower:
         def __init__(self, event_loop: EventLoop) -> None:
             self.event_loop = event_loop
-            self.seen: List[Request] = []
+            self.seen: list[Request] = []
 
         def submit(self, request: Request) -> bool:
             self.seen.append(request)
@@ -2075,12 +2469,16 @@ def selftest() -> Dict[str, Any]:
 
     dirty_loop = EventLoop()
     dirty_lower = LoopbackLower(dirty_loop)
-    dirty_cache = CacheLevel("dirty", dirty_loop, dirty_lower, 64, 32, 1, 1, 1, 1, 1, 1, 1, 1, 2)
+    dirty_cache = CacheLevel(
+        "dirty", dirty_loop, dirty_lower, 64, 32, 1, 1, 1, 1, 1, 1, 1, 1, 2
+    )
     dirty_cache.submit(Request(0, True, "test", 0, lambda _ok: None))
     for _ in range(6):
         dirty_loop.run_ready()
         dirty_loop.cycle += 1
-    dirty_cache.submit(Request(64, False, "test", 1, lambda _ok: None))  # same direct-mapped set as line 0
+    dirty_cache.submit(
+        Request(64, False, "test", 1, lambda _ok: None)
+    )  # same direct-mapped set as line 0
     for _ in range(6):
         dirty_loop.run_ready()
         dirty_loop.cycle += 1
@@ -2091,13 +2489,15 @@ def selftest() -> Dict[str, Any]:
 
     # Check single-channel DDR slot sizing and soc_axi_slave address decode.
     ddr_loop = EventLoop()
-    ddr = SingleChannelDdrController(ddr_loop, DdrConfig(latency_cycles=30, num_slots=8), l2_mshrs=12, l2_wb_slots=2)
+    ddr = SingleChannelDdrController(
+        ddr_loop, DdrConfig(latency_cycles=30, num_slots=8), l2_mshrs=12, l2_wb_slots=2
+    )
     check("single_channel_ddr_slot_scaling", ddr.effective_slots == 12)
 
     soc_loop = EventLoop()
     soc = SocTopModel(ModelConfig(), soc_loop)
-    ddr_done: List[Tuple[int, bool]] = []
-    local_done: List[Tuple[int, bool]] = []
+    ddr_done: list[tuple[int, bool]] = []
+    local_done: list[tuple[int, bool]] = []
     tx_ddr = AxiTransaction(
         address=0x8000_0040,
         is_write=False,
@@ -2114,7 +2514,9 @@ def selftest() -> Dict[str, Any]:
         axi_id=32,
         bytes_size=8,
     )
-    check("soc_accepts_ddr_and_local", soc.submit_axi(tx_ddr) and soc.submit_axi(tx_bram))
+    check(
+        "soc_accepts_ddr_and_local", soc.submit_axi(tx_ddr) and soc.submit_axi(tx_bram)
+    )
     for _ in range(40):
         soc_loop.run_ready()
         soc_loop.cycle += 1
@@ -2139,7 +2541,7 @@ def selftest() -> Dict[str, Any]:
             self.event_loop.after(5, lambda: transaction.complete(True))
             return True
 
-        def summary(self) -> Dict[str, Any]:
+        def summary(self) -> dict[str, Any]:
             return {"kind": "custom_soc_stub", "requests": self.requests}
 
     # Coalescing and full-pipeline functional completion.
@@ -2150,7 +2552,10 @@ def selftest() -> Dict[str, Any]:
     simple.emit("store", 0x8000_0008, 0x8400_0000, (load0,))
     result = FrostPipeline(config, simple.ops).run()
     check("pipeline_retires_all_ops", result["retired"] == 3 and result["cycles"] > 0)
-    check("same_line_miss_coalesces", result["memory"]["l1d"]["stats"].get("mshr_merges", 0) >= 1)
+    check(
+        "same_line_miss_coalesces",
+        result["memory"]["l1d"]["stats"].get("mshr_merges", 0) >= 1,
+    )
 
     custom_pipeline = FrostPipeline(config, simple.ops)
     custom_soc = CustomSocStub(custom_pipeline.loop)
@@ -2160,21 +2565,39 @@ def selftest() -> Dict[str, Any]:
     custom_result = custom_pipeline.run()
     check(
         "replaceable_soc_top_boundary",
-        custom_result["retired"] == 3 and custom_soc.requests >= 2 and custom_result["cycles"] < result["cycles"],
+        custom_result["retired"] == 3
+        and custom_soc.requests >= 2
+        and custom_result["cycles"] < result["cycles"],
     )
 
     # Determinism matters for sweeps and regression comparisons.
     a = run_workload(config, "memory_stress", 77)
     b = run_workload(config, "memory_stress", 77)
-    check("deterministic_workload", a["cycles"] == b["cycles"] and a["memory"]["ddr"]["stats"] == b["memory"]["ddr"]["stats"])
-    return {"model_version": MODEL_VERSION, "rtl_commit": RTL_COMMIT, "passed": all(c["passed"] for c in checks), "checks": checks}
+    check(
+        "deterministic_workload",
+        a["cycles"] == b["cycles"]
+        and a["memory"]["ddr"]["stats"] == b["memory"]["ddr"]["stats"],
+    )
+    return {
+        "model_version": MODEL_VERSION,
+        "rtl_commit": RTL_COMMIT,
+        "passed": all(c["passed"] for c in checks),
+        "checks": checks,
+    }
 
 
-def report_markdown(sweep: Dict[str, Any]) -> str:
+def report_markdown(sweep: dict[str, Any]) -> str:
+    """Render a sweep as the configuration study report."""
     aggregate = sweep["aggregate"]
-    ranked = sorted(aggregate.items(), key=lambda item: item[1]["geomean_cycle_ratio_to_baseline"])
+    ranked = sorted(
+        aggregate.items(), key=lambda item: item[1]["geomean_cycle_ratio_to_baseline"]
+    )
     recommended, rec = ranked[0]
-    recommended_mshrs = int(recommended.split("_")[2]) if "_" in recommended and recommended != "rtl_baseline" else 4
+    recommended_mshrs = (
+        int(recommended.split("_")[2])
+        if "_" in recommended and recommended != "rtl_baseline"
+        else 4
+    )
     baseline = aggregate["rtl_baseline"]
     rows = [
         "| Candidate | Geomean cycles / baseline | Mean cycles | Mean IPC | L2-MSHR backpressure |",
@@ -2185,18 +2608,31 @@ def report_markdown(sweep: Dict[str, Any]) -> str:
             f"| {name} | {values['geomean_cycle_ratio_to_baseline']:.3f} | {values['mean_cycles']:.1f} | "
             f"{values['mean_ipc']:.3f} | {values['total_l2_mshr_backpressure']} |"
         )
-    workload_rows = ["| Workload | Baseline cycles | Recommended cycles | Delta |", "|---|---:|---:|---:|"]
-    base_runs = {item["workload"]: item for item in sweep["runs"] if item["config"] == "rtl_baseline"}
-    rec_runs = {item["workload"]: item for item in sweep["runs"] if item["config"] == recommended}
+    workload_rows = [
+        "| Workload | Baseline cycles | Recommended cycles | Delta |",
+        "|---|---:|---:|---:|",
+    ]
+    base_runs = {
+        item["workload"]: item
+        for item in sweep["runs"]
+        if item["config"] == "rtl_baseline"
+    }
+    rec_runs = {
+        item["workload"]: item
+        for item in sweep["runs"]
+        if item["config"] == recommended
+    }
     for workload in WORKLOADS:
         base_cycles = base_runs[workload]["score"]["cycles"]
         rec_cycles = rec_runs[workload]["score"]["cycles"]
-        workload_rows.append(f"| {workload} | {base_cycles} | {rec_cycles} | {(rec_cycles / base_cycles - 1) * 100:+.1f}% |")
+        workload_rows.append(
+            f"| {workload} | {base_cycles} | {rec_cycles} | {(rec_cycles / base_cycles - 1) * 100:+.1f}% |"
+        )
     return f"""# FROST Performance Model — Configuration Study (aligned to FROST cpu_top + soc_top)
 
 ## Decision
 
-For the model's workload mix on FROST's single-channel 512-bit AXI memory architecture, the best evaluated configuration is **{recommended}**. Its comparative geomean cycle ratio is **{rec['geomean_cycle_ratio_to_baseline']:.3f}** versus the RTL baseline (lower is better). The recommended model configuration is therefore **L2 MSHR = {recommended_mshrs}** with FROST's 64-byte/512-bit AXI boundary and single-channel DDR endpoint. Retain L1D MSHR = 8 because the current cached-load and L1D ID ownership are both eight-slot bounded. In implementation, stage 8 MSHRs first if it materially lowers Fmax/area risk, then validate the 12-slot endpoint against RTL traces and synthesis.
+For the model's workload mix on FROST's single-channel 512-bit AXI memory architecture, the best evaluated configuration is **{recommended}**. Its comparative geomean cycle ratio is **{rec["geomean_cycle_ratio_to_baseline"]:.3f}** versus the RTL baseline (lower is better). The recommended model configuration is therefore **L2 MSHR = {recommended_mshrs}** with FROST's 64-byte/512-bit AXI boundary and single-channel DDR endpoint. Retain L1D MSHR = 8 because the current cached-load and L1D ID ownership are both eight-slot bounded. In implementation, stage 8 MSHRs first if it materially lowers Fmax/area risk, then validate the 12-slot endpoint against RTL traces and synthesis.
 
 This is an evidence-backed *model recommendation*, not a claim that the RTL already achieves the reported absolute cycle counts. The candidate remains subject to RTL waveform comparison, synthesis/Fmax/area review, and controller-timing calibration.
 
@@ -2213,7 +2649,7 @@ This is an evidence-backed *model recommendation*, not a claim that the RTL alre
 
 {chr(10).join(workload_rows)}
 
-The baseline has {baseline['total_l2_mshr_backpressure']} modeled L2-MSHR backpressure events across the workload set. Enlarging L2 concurrency is a more focused next RTL experiment than enlarging L1D MSHRs: the latter cannot exceed eight without changing the existing four-bit L1D `{{type, slot}}` ownership/ID contract and is not useful beyond the 8-entry load queue in this model.
+The baseline has {baseline["total_l2_mshr_backpressure"]} modeled L2-MSHR backpressure events across the workload set. Enlarging L2 concurrency is a more focused next RTL experiment than enlarging L1D MSHRs: the latter cannot exceed eight without changing the existing four-bit L1D `{{type, slot}}` ownership/ID contract and is not useful beyond the 8-entry load queue in this model.
 
 ## Low-hanging-fruit refinements
 
@@ -2237,6 +2673,7 @@ The cache stage latencies, PLRU/bimodal details, workload instruction mixes, and
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse the command line."""
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     for command in ("selftest", "sweep", "audit"):
@@ -2249,20 +2686,43 @@ def parse_args() -> argparse.Namespace:
     run.add_argument("--workload", choices=sorted(WORKLOADS), required=True)
     run.add_argument("--seed", type=int, default=11)
     run.add_argument("--out", type=Path, required=True)
-    replay = sub.add_parser("replay", help="Replay an external trace through the FROST architectural model")
-    replay.add_argument("--trace", type=Path, required=True, help="Path to trace file (.jsonl, .csv, etc.)")
-    replay.add_argument("--config", default="baseline", help="Design variant configuration to use (default: baseline)")
+    replay = sub.add_parser(
+        "replay", help="Replay an external trace through the FROST architectural model"
+    )
+    replay.add_argument(
+        "--trace",
+        type=Path,
+        required=True,
+        help="Path to trace file (.jsonl, .csv, etc.)",
+    )
+    replay.add_argument(
+        "--config",
+        default="baseline",
+        help="Design variant configuration to use (default: baseline)",
+    )
     replay.add_argument("--out", type=Path, help="Optional output JSON path")
-    explore = sub.add_parser("explore", help="Explore design variants and generate optimization suggestions for FROST")
-    explore.add_argument("--workload", choices=sorted(WORKLOADS), help="Built-in workload to evaluate")
-    explore.add_argument("--trace", type=Path, help="Execution trace file to replay and optimize against")
+    explore = sub.add_parser(
+        "explore",
+        help="Explore design variants and generate optimization suggestions for FROST",
+    )
+    explore.add_argument(
+        "--workload", choices=sorted(WORKLOADS), help="Built-in workload to evaluate"
+    )
+    explore.add_argument(
+        "--trace", type=Path, help="Execution trace file to replay and optimize against"
+    )
     explore.add_argument("--seed", type=int, default=11)
-    explore.add_argument("--out", type=Path, help="Path to save exploration JSON results")
-    explore.add_argument("--report", type=Path, help="Path to save Markdown optimization report")
+    explore.add_argument(
+        "--out", type=Path, help="Path to save exploration JSON results"
+    )
+    explore.add_argument(
+        "--report", type=Path, help="Path to save Markdown optimization report"
+    )
     return parser.parse_args()
 
 
 def main() -> int:
+    """Run the selected command; return 1 if the self-test fails, else 0."""
     args = parse_args()
     if args.command == "selftest":
         result = selftest()
@@ -2302,13 +2762,17 @@ def main() -> int:
     if args.command == "explore":
         target = args.trace or args.workload
         if not target:
-            raise ValueError("Either --workload or --trace must be provided for explore")
+            raise ValueError(
+                "Either --workload or --trace must be provided for explore"
+            )
         exploration = explore_design_variants(target, seed=args.seed)
         if args.out:
             dump_json(args.out, exploration)
         if args.report:
             args.report.parent.mkdir(parents=True, exist_ok=True)
-            args.report.write_text(generate_optimization_report(exploration), encoding="utf-8")
+            args.report.write_text(
+                generate_optimization_report(exploration), encoding="utf-8"
+            )
         if not args.out and not args.report:
             print(generate_optimization_report(exploration))
         return 0

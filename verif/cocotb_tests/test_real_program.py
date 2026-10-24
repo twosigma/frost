@@ -31,7 +31,6 @@ import os
 import random
 from pathlib import Path
 import re
-import subprocess
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -1842,16 +1841,36 @@ async def run_until_complete(
     coremark_retire_slot2_pc_sig = None
 
     # FROST performance model calibration trace support
-    perf_calib_trace_path = os.environ.get("FROST_CALIBRATION_TRACE_PATH")
+    perf_calib_trace_path = os.environ.get("FROST_CALIBRATION_TRACE_PATH", "")
     perf_calib_counters_path = os.environ.get("FROST_CALIBRATION_COUNTERS_PATH")
     perf_calib_manifest_path = os.environ.get("FROST_CALIBRATION_MANIFEST_PATH")
-    perf_calib_target_run = int(os.environ.get("FROST_CALIBRATION_TARGET_RUN", str(NUM_RUNS)))
-    perf_calib_start_pc = int(os.environ.get("FROST_CALIBRATION_START_PC", "0x5848" if is_coremark_like else "0"), 0)
-    perf_calib_stop_pc = int(os.environ.get("FROST_CALIBRATION_STOP_PC", "0x584c" if is_coremark_like else "0"), 0)
-    perf_calib_commit = os.environ.get("FROST_GIT_COMMIT", "411dee2224700a3d9d325a4f2df8bcbe83a9bed5")
-    perf_calib_enabled = bool(perf_calib_trace_path) and (run_number == perf_calib_target_run)
-    calib_state = "ARMED" if (perf_calib_enabled and perf_calib_start_pc) else ("ACTIVE" if perf_calib_enabled else "OFF")
-    calib_file = None
+    perf_calib_target_run = int(
+        os.environ.get("FROST_CALIBRATION_TARGET_RUN", str(NUM_RUNS))
+    )
+    perf_calib_start_pc = int(
+        os.environ.get(
+            "FROST_CALIBRATION_START_PC", "0x5848" if is_coremark_like else "0"
+        ),
+        0,
+    )
+    perf_calib_stop_pc = int(
+        os.environ.get(
+            "FROST_CALIBRATION_STOP_PC", "0x584c" if is_coremark_like else "0"
+        ),
+        0,
+    )
+    perf_calib_commit = os.environ.get(
+        "FROST_GIT_COMMIT", "411dee2224700a3d9d325a4f2df8bcbe83a9bed5"
+    )
+    perf_calib_enabled = bool(perf_calib_trace_path) and (
+        run_number == perf_calib_target_run
+    )
+    calib_state = (
+        "ARMED"
+        if (perf_calib_enabled and perf_calib_start_pc)
+        else ("ACTIVE" if perf_calib_enabled else "OFF")
+    )
+    calib_file: TextIO | None = None
     calib_timed_cycle = 0
     calib_start_sim_cycle = 0
     calib_stop_sim_cycle = 0
@@ -2247,11 +2266,21 @@ async def run_until_complete(
     calib_axi_bresp = None
 
     if perf_calib_enabled:
-        calib_dispatch_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_alloc_valid")
-        calib_dispatch_stall_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_dispatch_stall")
-        calib_pipeline_stall_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_pipeline_stall")
-        calib_rob_count_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.rob_count")
-        calib_sq_count_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.sq_count")
+        calib_dispatch_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_alloc_valid"
+        )
+        calib_dispatch_stall_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_dispatch_stall"
+        )
+        calib_pipeline_stall_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_pipeline_stall"
+        )
+        calib_rob_count_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.rob_count"
+        )
+        calib_sq_count_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu.cpu_inst.sq_count"
+        )
         try:
             calib_slot2_struct = _packed_struct(
                 dut,
@@ -2262,12 +2291,20 @@ async def run_until_complete(
         except Exception as e:
             cocotb.log.warning(f"Could not bind slot2 struct for calibration: {e}")
 
-        calib_axi_arvalid = _get_signal(dut, "cpu_and_memory_subsystem.cpu.o_axi_arvalid")
-        calib_axi_arready = _get_signal(dut, "cpu_and_memory_subsystem.cpu.i_axi_arready")
+        calib_axi_arvalid = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu.o_axi_arvalid"
+        )
+        calib_axi_arready = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu.i_axi_arready"
+        )
         calib_axi_arid = _get_signal(dut, "cpu_and_memory_subsystem.cpu.o_axi_arid")
         calib_axi_araddr = _get_signal(dut, "cpu_and_memory_subsystem.cpu.o_axi_araddr")
-        calib_axi_awvalid = _get_signal(dut, "cpu_and_memory_subsystem.cpu.o_axi_awvalid")
-        calib_axi_awready = _get_signal(dut, "cpu_and_memory_subsystem.cpu.i_axi_awready")
+        calib_axi_awvalid = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu.o_axi_awvalid"
+        )
+        calib_axi_awready = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu.i_axi_awready"
+        )
         calib_axi_awid = _get_signal(dut, "cpu_and_memory_subsystem.cpu.o_axi_awid")
         calib_axi_awaddr = _get_signal(dut, "cpu_and_memory_subsystem.cpu.o_axi_awaddr")
         calib_axi_rvalid = _get_signal(dut, "cpu_and_memory_subsystem.cpu.i_axi_rvalid")
@@ -3622,7 +3659,9 @@ async def run_until_complete(
             r2_pc = _read_int(retire_2_pc_sig) if r2_ret else None
 
             if calib_state == "ARMED":
-                if (r1_ret and r1_pc == perf_calib_start_pc) or (r2_ret and r2_pc == perf_calib_start_pc):
+                if (r1_ret and r1_pc == perf_calib_start_pc) or (
+                    r2_ret and r2_pc == perf_calib_start_pc
+                ):
                     calib_state = "STARTING"
                     calib_start_sim_cycle = cycle + 1
             elif calib_state == "STARTING":
@@ -3635,9 +3674,12 @@ async def run_until_complete(
                 )
 
             if calib_state == "ACTIVE":
+                assert calib_file is not None
                 is_stop_cycle = False
                 if perf_calib_stop_pc:
-                    if (r1_ret and r1_pc == perf_calib_stop_pc) or (r2_ret and r2_pc == perf_calib_stop_pc):
+                    if (r1_ret and r1_pc == perf_calib_stop_pc) or (
+                        r2_ret and r2_pc == perf_calib_stop_pc
+                    ):
                         is_stop_cycle = True
                         calib_stop_sim_cycle = cycle + 1
 
@@ -3647,7 +3689,9 @@ async def run_until_complete(
                     d_uops = 1
                     if calib_slot2_struct is not None:
                         pkt2 = calib_slot2_struct.read()
-                        if pkt2 is not None and calib_slot2_struct.field(pkt2, "is_real"):
+                        if pkt2 is not None and calib_slot2_struct.field(
+                            pkt2, "is_real"
+                        ):
                             d_uops = 2
                     calib_file.write(
                         f'{{"cycle":{calib_timed_cycle},"event":"dispatch","source":"rob","uops":{d_uops}}}\n'
@@ -3662,7 +3706,9 @@ async def run_until_complete(
 
                 if _read_bool(calib_dispatch_stall_sig):
                     calib_counters["dispatch_stall_cycles"] += 1
-                if calib_pipeline_stall_sig is not None and _read_bool(calib_pipeline_stall_sig):
+                if calib_pipeline_stall_sig is not None and _read_bool(
+                    calib_pipeline_stall_sig
+                ):
                     calib_counters["pipeline_stall_cycles"] += 1
 
                 # 2. Retire event
@@ -4543,7 +4589,9 @@ async def run_until_complete(
             "retired_uops": ret_uops,
             "ipc": round(calib_ipc, 6),
             "wall_time_seconds": round(calib_wall_time_s, 3),
-            "simulated_cycles_per_second": int(total_timed / max(1e-9, calib_wall_time_s)),
+            "simulated_cycles_per_second": int(
+                total_timed / max(1e-9, calib_wall_time_s)
+            ),
             "branch_mispredicts": calib_counters["branch_mispredicts"],
             "dispatch_distribution": {
                 "cycles_0_uops": calib_counters["dispatch_0"],
@@ -4577,27 +4625,41 @@ async def run_until_complete(
         if perf_calib_counters_path:
             p_counters = Path(perf_calib_counters_path)
             p_counters.parent.mkdir(parents=True, exist_ok=True)
-            p_counters.write_text(json.dumps(pipeline_counters, indent=2) + "\n", encoding="utf-8")
+            p_counters.write_text(
+                json.dumps(pipeline_counters, indent=2) + "\n", encoding="utf-8"
+            )
             cocotb.log.info(f"Wrote pipeline counters to {perf_calib_counters_path}")
 
         if perf_calib_manifest_path:
-            app_dir = (Path("sw/apps") / app_name) if (app_name and (Path("sw/apps") / app_name).exists()) else (Path("sw/apps/coremark") if is_coremark_like else Path("."))
+            app_dir = (
+                (Path("sw/apps") / app_name)
+                if (app_name and (Path("sw/apps") / app_name).exists())
+                else (Path("sw/apps/coremark") if is_coremark_like else Path("."))
+            )
             file_hashes = {}
             for fname in ("sw.bin", "sw.elf", "sw.S", "sw.mem"):
                 fpath = app_dir / fname
                 if fpath.exists():
-                    file_hashes[fname + "_sha256"] = hashlib.sha256(fpath.read_bytes()).hexdigest()
+                    file_hashes[fname + "_sha256"] = hashlib.sha256(
+                        fpath.read_bytes()
+                    ).hexdigest()
 
             uart_text = uart_monitor.get_output()
             seedcrc_m = re.search(r"seedcrc\s*:\s*(0x[0-9a-fA-F]+)", uart_text)
             crcfinal_m = re.search(r"\[0\]crcfinal\s*:\s*(0x[0-9a-fA-F]+)", uart_text)
-            status_str = "PASS" if "<<PASS>>" in uart_text or "Correct operation validated" in uart_text else "UNKNOWN"
+            status_str = (
+                "PASS"
+                if "<<PASS>>" in uart_text or "Correct operation validated" in uart_text
+                else "UNKNOWN"
+            )
 
             manifest = {
                 "benchmark": app_name or "program",
                 "run_number": run_number,
                 "wall_time_seconds": round(calib_wall_time_s, 3),
-                "simulated_cycles_per_second": int(total_timed / max(1e-9, calib_wall_time_s)),
+                "simulated_cycles_per_second": int(
+                    total_timed / max(1e-9, calib_wall_time_s)
+                ),
                 "git_commit": perf_calib_commit,
                 "branch": "perf-modeling",
                 "clock_frequency_hz": 322265625,
@@ -4615,8 +4677,12 @@ async def run_until_complete(
                 },
                 "artifacts": file_hashes,
                 "timed_region": {
-                    "start_pc": f"0x{perf_calib_start_pc:08x}" if perf_calib_start_pc else "0x00000000",
-                    "stop_pc": f"0x{perf_calib_stop_pc:08x}" if perf_calib_stop_pc else "0x00000000",
+                    "start_pc": f"0x{perf_calib_start_pc:08x}"
+                    if perf_calib_start_pc
+                    else "0x00000000",
+                    "stop_pc": f"0x{perf_calib_stop_pc:08x}"
+                    if perf_calib_stop_pc
+                    else "0x00000000",
                     "start_sim_cycle": calib_start_sim_cycle,
                     "stop_sim_cycle": calib_stop_sim_cycle,
                     "timed_cycles": total_timed,
@@ -4629,7 +4695,9 @@ async def run_until_complete(
             }
             p_manifest = Path(perf_calib_manifest_path)
             p_manifest.parent.mkdir(parents=True, exist_ok=True)
-            p_manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+            p_manifest.write_text(
+                json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+            )
             cocotb.log.info(f"Wrote manifest to {perf_calib_manifest_path}")
 
 
