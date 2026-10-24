@@ -164,15 +164,15 @@ for an ASIC, the RTL also needs:
    FROST's block RAMs have two ports and bsg_fakeram models only single-port
    memories. Its L2 holds 256 KiB, an eighth of the X3's, so that the flow
    fits CI's runners. The flow still mocks the other memories larger than
-   4,096 bits as a single row of flip-flops: the NIC's frame and packet
-   buffers, and the arrays read without a clock, such as the BTB tags, the
-   TAGE tables, and the instruction memory's PC-metadata overlays, which
-   need flip-flop or latch arrays rather than SRAM macros.
+   4,096 bits as a single row of flip-flops: the arrays read without a
+   clock, such as the BTB tags, the TAGE tables, and the instruction
+   memory's PC-metadata overlays, which need flip-flop or latch arrays rather
+   than SRAM macros.
    The final GDS leaves the macros' cells empty, since their layouts are not
    in the repository. At the X3's clock, the macros' read paths fail by up
-   to 0.47 ns, the worst from the data memory to `soc_top`'s local response
-   register. That path has half a clock cycle from launch to capture, giving
-   an estimated core fmax of 247.6 MHz
+   to 0.35 ns, the worst from the L1D's tags to its read-way selection. That
+   path has half a clock cycle from launch to capture, giving an estimated
+   core fmax of 263.0 MHz
    ([results](asic/README.md#results-with-the-sram-macros)).
    FreePDK45 is not a manufacturable process, so the flow shows that the RTL
    maps onto standard cells and SRAM macros and estimates its area and
