@@ -24,11 +24,15 @@ to check the TX FIFO crossing and transmitter. Registry entries can lower
 CLK_FREQ_HZ to shorten the simulated bit time.
 """
 
+import hashlib
 import importlib.util
+import json
 import os
 import random
 from pathlib import Path
 import re
+import subprocess
+import time
 from collections import Counter
 from collections.abc import Callable
 import cocotb
@@ -1836,6 +1840,25 @@ async def run_until_complete(
     coremark_retire_commits: tuple[_PackedStruct, _PackedStruct] | None = None
     coremark_retire_slot2_valid_sig = None
     coremark_retire_slot2_pc_sig = None
+
+    # FROST performance model calibration trace support
+    perf_calib_trace_path = os.environ.get("FROST_CALIBRATION_TRACE_PATH")
+    perf_calib_counters_path = os.environ.get("FROST_CALIBRATION_COUNTERS_PATH")
+    perf_calib_manifest_path = os.environ.get("FROST_CALIBRATION_MANIFEST_PATH")
+    perf_calib_target_run = int(os.environ.get("FROST_CALIBRATION_TARGET_RUN", str(NUM_RUNS)))
+    perf_calib_start_pc = int(os.environ.get("FROST_CALIBRATION_START_PC", "0x5848" if is_coremark_like else "0"), 0)
+    perf_calib_stop_pc = int(os.environ.get("FROST_CALIBRATION_STOP_PC", "0x584c" if is_coremark_like else "0"), 0)
+    perf_calib_commit = os.environ.get("FROST_GIT_COMMIT", "411dee2224700a3d9d325a4f2df8bcbe83a9bed5")
+    perf_calib_enabled = bool(perf_calib_trace_path) and (run_number == perf_calib_target_run)
+    calib_state = "ARMED" if (perf_calib_enabled and perf_calib_start_pc) else ("ACTIVE" if perf_calib_enabled else "OFF")
+    calib_file = None
+    calib_timed_cycle = 0
+    calib_start_sim_cycle = 0
+    calib_stop_sim_cycle = 0
+    calib_start_wall_time = time.perf_counter()
+    calib_counters: Counter = Counter()
+    calib_rob_occ_sum = 0
+    calib_sq_occ_sum = 0
     if control_flow_trace_env:
         parsed_ranges: list[tuple[int, int]] = []
         for raw_range in control_flow_trace_env.split(","):
@@ -1858,6 +1881,7 @@ async def run_until_complete(
         or external_irq_enabled
         or coremark_if_check_enabled
         or coremark_retire_trace_path is not None
+        or perf_calib_enabled
     ):
         retire_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu.hart.cpu_inst.dbg_commit_valid"
@@ -2198,6 +2222,69 @@ async def run_until_complete(
                 "w" if run_number == 1 else "a", buffering=1
             )
             coremark_retire_trace_file.write(f"# run {run_number}\n")
+
+    calib_dispatch_sig = None
+    calib_dispatch_stall_sig = None
+    calib_pipeline_stall_sig = None
+    calib_rob_count_sig = None
+    calib_sq_count_sig = None
+    calib_slot2_struct = None
+    calib_axi_arvalid = None
+    calib_axi_arready = None
+    calib_axi_arid = None
+    calib_axi_araddr = None
+    calib_axi_awvalid = None
+    calib_axi_awready = None
+    calib_axi_awid = None
+    calib_axi_awaddr = None
+    calib_axi_rvalid = None
+    calib_axi_rready = None
+    calib_axi_rid = None
+    calib_axi_rresp = None
+    calib_axi_bvalid = None
+    calib_axi_bready = None
+    calib_axi_bid = None
+    calib_axi_bresp = None
+
+    if perf_calib_enabled:
+        calib_dispatch_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_rob_alloc_valid")
+        calib_dispatch_stall_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_dispatch_stall")
+        calib_pipeline_stall_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.dbg_pipeline_stall")
+        calib_rob_count_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.rob_count")
+        calib_sq_count_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu.cpu_inst.sq_count")
+        try:
+            calib_slot2_struct = _packed_struct(
+                dut,
+                "cpu_and_memory_subsystem.cpu.cpu_inst.from_id_to_ex_2",
+                ID_TO_EX_FIELDS,
+                "FROST_CALIBRATION_TRACE",
+            )
+        except Exception as e:
+            cocotb.log.warning(f"Could not bind slot2 struct for calibration: {e}")
+
+        calib_axi_arvalid = _get_signal(dut, "cpu_and_memory_subsystem.cpu.o_axi_arvalid")
+        calib_axi_arready = _get_signal(dut, "cpu_and_memory_subsystem.cpu.i_axi_arready")
+        calib_axi_arid = _get_signal(dut, "cpu_and_memory_subsystem.cpu.o_axi_arid")
+        calib_axi_araddr = _get_signal(dut, "cpu_and_memory_subsystem.cpu.o_axi_araddr")
+        calib_axi_awvalid = _get_signal(dut, "cpu_and_memory_subsystem.cpu.o_axi_awvalid")
+        calib_axi_awready = _get_signal(dut, "cpu_and_memory_subsystem.cpu.i_axi_awready")
+        calib_axi_awid = _get_signal(dut, "cpu_and_memory_subsystem.cpu.o_axi_awid")
+        calib_axi_awaddr = _get_signal(dut, "cpu_and_memory_subsystem.cpu.o_axi_awaddr")
+        calib_axi_rvalid = _get_signal(dut, "cpu_and_memory_subsystem.cpu.i_axi_rvalid")
+        calib_axi_rready = _get_signal(dut, "cpu_and_memory_subsystem.cpu.o_axi_rready")
+        calib_axi_rid = _get_signal(dut, "cpu_and_memory_subsystem.cpu.i_axi_rid")
+        calib_axi_rresp = _get_signal(dut, "cpu_and_memory_subsystem.cpu.i_axi_rresp")
+        calib_axi_bvalid = _get_signal(dut, "cpu_and_memory_subsystem.cpu.i_axi_bvalid")
+        calib_axi_bready = _get_signal(dut, "cpu_and_memory_subsystem.cpu.o_axi_bready")
+        calib_axi_bid = _get_signal(dut, "cpu_and_memory_subsystem.cpu.i_axi_bid")
+        calib_axi_bresp = _get_signal(dut, "cpu_and_memory_subsystem.cpu.i_axi_bresp")
+
+        if calib_state == "ACTIVE":
+            Path(perf_calib_trace_path).parent.mkdir(parents=True, exist_ok=True)
+            calib_file = open(perf_calib_trace_path, "w", buffering=1048576)
+            calib_file.write(
+                f'{{"cycle":0,"event":"meta","source":"frost_perf_probe","rtl_commit":"{perf_calib_commit}","clock_domain":"cpu","memory_configuration":"axi_behavioral_memory"}}\n'
+            )
     if (
         app_name in {"branch_pred_test", "ras_stress_test"}
         or control_flow_trace_ranges
@@ -3528,6 +3615,141 @@ async def run_until_complete(
                         )
             if _read_bool(retire_mispredict_sig):
                 retired_mispredicts += 1
+        if perf_calib_enabled:
+            r1_ret = bool(_read_bool(retire_sig))
+            r2_ret = bool(_read_bool(retire_2_sig))
+            r1_pc = _read_int(retire_pc_sig) if r1_ret else None
+            r2_pc = _read_int(retire_2_pc_sig) if r2_ret else None
+
+            if calib_state == "ARMED":
+                if (r1_ret and r1_pc == perf_calib_start_pc) or (r2_ret and r2_pc == perf_calib_start_pc):
+                    calib_state = "STARTING"
+                    calib_start_sim_cycle = cycle + 1
+            elif calib_state == "STARTING":
+                calib_state = "ACTIVE"
+                calib_timed_cycle = 0
+                Path(perf_calib_trace_path).parent.mkdir(parents=True, exist_ok=True)
+                calib_file = open(perf_calib_trace_path, "w", buffering=1048576)
+                calib_file.write(
+                    f'{{"cycle":0,"event":"meta","source":"frost_perf_probe","rtl_commit":"{perf_calib_commit}","clock_domain":"cpu","memory_configuration":"axi_behavioral_memory"}}\n'
+                )
+
+            if calib_state == "ACTIVE":
+                is_stop_cycle = False
+                if perf_calib_stop_pc:
+                    if (r1_ret and r1_pc == perf_calib_stop_pc) or (r2_ret and r2_pc == perf_calib_stop_pc):
+                        is_stop_cycle = True
+                        calib_stop_sim_cycle = cycle + 1
+
+                # 1. Dispatch event
+                d_val = bool(_read_bool(calib_dispatch_sig))
+                if d_val:
+                    d_uops = 1
+                    if calib_slot2_struct is not None:
+                        pkt2 = calib_slot2_struct.read()
+                        if pkt2 is not None and calib_slot2_struct.field(pkt2, "is_real"):
+                            d_uops = 2
+                    calib_file.write(
+                        f'{{"cycle":{calib_timed_cycle},"event":"dispatch","source":"rob","uops":{d_uops}}}\n'
+                    )
+                    if d_uops == 1:
+                        calib_counters["dispatch_1"] += 1
+                    else:
+                        calib_counters["dispatch_2"] += 1
+                    calib_counters["dispatched_uops"] += d_uops
+                else:
+                    calib_counters["dispatch_0"] += 1
+
+                if _read_bool(calib_dispatch_stall_sig):
+                    calib_counters["dispatch_stall_cycles"] += 1
+                if calib_pipeline_stall_sig is not None and _read_bool(calib_pipeline_stall_sig):
+                    calib_counters["pipeline_stall_cycles"] += 1
+
+                # 2. Retire event
+                r_uops = (1 if r1_ret else 0) + (1 if r2_ret else 0)
+                if r_uops > 0:
+                    calib_file.write(
+                        f'{{"cycle":{calib_timed_cycle},"event":"retire","source":"rob","uops":{r_uops}}}\n'
+                    )
+                    if r_uops == 1:
+                        calib_counters["commit_1"] += 1
+                    elif r_uops == 2:
+                        calib_counters["commit_2"] += 1
+                    calib_counters["retired_uops"] += r_uops
+                else:
+                    calib_counters["commit_0"] += 1
+
+                if _read_bool(retire_mispredict_sig):
+                    calib_counters["branch_mispredicts"] += 1
+
+                # 3. AXI AR
+                ar_v = bool(_read_bool(calib_axi_arvalid))
+                ar_r = bool(_read_bool(calib_axi_arready))
+                if ar_v and ar_r:
+                    arid = _read_int(calib_axi_arid) or 0
+                    araddr = _read_int(calib_axi_araddr) or 0
+                    calib_file.write(
+                        f'{{"cycle":{calib_timed_cycle},"event":"axi_request","source":"axi","axi_id":{arid},"address":"0x{araddr:08x}","is_write":false,"bytes":64}}\n'
+                    )
+                    calib_counters["axi_ar"] += 1
+                elif ar_v and not ar_r:
+                    calib_counters["axi_ar_backpressure_cycles"] += 1
+
+                # 4. AXI AW
+                aw_v = bool(_read_bool(calib_axi_awvalid))
+                aw_r = bool(_read_bool(calib_axi_awready))
+                if aw_v and aw_r:
+                    awid = _read_int(calib_axi_awid) or 0
+                    awaddr = _read_int(calib_axi_awaddr) or 0
+                    calib_file.write(
+                        f'{{"cycle":{calib_timed_cycle},"event":"axi_request","source":"axi","axi_id":{awid},"address":"0x{awaddr:08x}","is_write":true,"bytes":64}}\n'
+                    )
+                    calib_counters["axi_aw"] += 1
+                elif aw_v and not aw_r:
+                    calib_counters["axi_aw_backpressure_cycles"] += 1
+
+                # 5. AXI R
+                r_v = bool(_read_bool(calib_axi_rvalid))
+                r_r = bool(_read_bool(calib_axi_rready))
+                if r_v and r_r:
+                    rid = _read_int(calib_axi_rid) or 0
+                    rresp = _read_int(calib_axi_rresp) or 0
+                    ok_str = "true" if rresp == 0 else "false"
+                    calib_file.write(
+                        f'{{"cycle":{calib_timed_cycle},"event":"axi_response","source":"axi","axi_id":{rid},"ok":{ok_str}}}\n'
+                    )
+                    calib_counters["axi_r"] += 1
+
+                # 6. AXI B
+                b_v = bool(_read_bool(calib_axi_bvalid))
+                b_r = bool(_read_bool(calib_axi_bready))
+                if b_v and b_r:
+                    bid = _read_int(calib_axi_bid) or 0
+                    bresp = _read_int(calib_axi_bresp) or 0
+                    ok_str = "true" if bresp == 0 else "false"
+                    calib_file.write(
+                        f'{{"cycle":{calib_timed_cycle},"event":"axi_response","source":"axi","axi_id":{bid},"ok":{ok_str}}}\n'
+                    )
+                    calib_counters["axi_b"] += 1
+
+                # Occupancy tracking
+                rc = _read_int(calib_rob_count_sig)
+                if rc is not None:
+                    calib_rob_occ_sum += rc
+                sc = _read_int(calib_sq_count_sig)
+                if sc is not None:
+                    calib_sq_occ_sum += sc
+
+                calib_timed_cycle += 1
+
+                if is_stop_cycle:
+                    calib_state = "DONE"
+                    calib_file.close()
+                    calib_file = None
+                    cocotb.log.info(
+                        f"Performance calibration: timed window finished! {calib_timed_cycle} cycles, "
+                        f"{calib_counters['retired_uops']} retired uops -> {perf_calib_trace_path}"
+                    )
             if target_pc_trace is not None and len(target_pc_events) < 128:
                 if retire_pc == target_pc_trace:
                     target_pc_events.append(
@@ -4303,6 +4525,112 @@ async def run_until_complete(
             f"Run {run_number}: IRQ precision check saw {irq_take_count} "
             f"interrupt{'' if irq_take_count == 1 else 's'} taken"
         )
+
+    if calib_file is not None:
+        calib_file.close()
+        calib_file = None
+
+    if perf_calib_enabled:
+        total_timed = calib_timed_cycle
+        calib_wall_time_s = time.perf_counter() - calib_start_wall_time
+        ret_uops = calib_counters["retired_uops"]
+        calib_ipc = ret_uops / max(1, total_timed)
+        mean_rob = calib_rob_occ_sum / max(1, total_timed)
+        mean_sq = calib_sq_occ_sum / max(1, total_timed)
+
+        pipeline_counters = {
+            "cycles": total_timed,
+            "retired_uops": ret_uops,
+            "ipc": round(calib_ipc, 6),
+            "wall_time_seconds": round(calib_wall_time_s, 3),
+            "simulated_cycles_per_second": int(total_timed / max(1e-9, calib_wall_time_s)),
+            "branch_mispredicts": calib_counters["branch_mispredicts"],
+            "dispatch_distribution": {
+                "cycles_0_uops": calib_counters["dispatch_0"],
+                "cycles_1_uop": calib_counters["dispatch_1"],
+                "cycles_2_uops": calib_counters["dispatch_2"],
+                "total_dispatched_uops": calib_counters["dispatched_uops"],
+            },
+            "commit_distribution": {
+                "cycles_0_uops": calib_counters["commit_0"],
+                "cycles_1_uop": calib_counters["commit_1"],
+                "cycles_2_uops": calib_counters["commit_2"],
+            },
+            "stalls": {
+                "dispatch_stall_cycles": calib_counters["dispatch_stall_cycles"],
+                "pipeline_stall_cycles": calib_counters["pipeline_stall_cycles"],
+            },
+            "occupancy": {
+                "mean_rob_occupancy": round(mean_rob, 3),
+                "mean_sq_occupancy": round(mean_sq, 3),
+            },
+            "axi_totals": {
+                "ar_requests": calib_counters["axi_ar"],
+                "aw_requests": calib_counters["axi_aw"],
+                "r_responses": calib_counters["axi_r"],
+                "b_responses": calib_counters["axi_b"],
+                "ar_backpressure_cycles": calib_counters["axi_ar_backpressure_cycles"],
+                "aw_backpressure_cycles": calib_counters["axi_aw_backpressure_cycles"],
+            },
+        }
+
+        if perf_calib_counters_path:
+            p_counters = Path(perf_calib_counters_path)
+            p_counters.parent.mkdir(parents=True, exist_ok=True)
+            p_counters.write_text(json.dumps(pipeline_counters, indent=2) + "\n", encoding="utf-8")
+            cocotb.log.info(f"Wrote pipeline counters to {perf_calib_counters_path}")
+
+        if perf_calib_manifest_path:
+            app_dir = (Path("sw/apps") / app_name) if (app_name and (Path("sw/apps") / app_name).exists()) else (Path("sw/apps/coremark") if is_coremark_like else Path("."))
+            file_hashes = {}
+            for fname in ("sw.bin", "sw.elf", "sw.S", "sw.mem"):
+                fpath = app_dir / fname
+                if fpath.exists():
+                    file_hashes[fname + "_sha256"] = hashlib.sha256(fpath.read_bytes()).hexdigest()
+
+            uart_text = uart_monitor.get_output()
+            seedcrc_m = re.search(r"seedcrc\s*:\s*(0x[0-9a-fA-F]+)", uart_text)
+            crcfinal_m = re.search(r"\[0\]crcfinal\s*:\s*(0x[0-9a-fA-F]+)", uart_text)
+            status_str = "PASS" if "<<PASS>>" in uart_text or "Correct operation validated" in uart_text else "UNKNOWN"
+
+            manifest = {
+                "benchmark": app_name or "program",
+                "run_number": run_number,
+                "wall_time_seconds": round(calib_wall_time_s, 3),
+                "simulated_cycles_per_second": int(total_timed / max(1e-9, calib_wall_time_s)),
+                "git_commit": perf_calib_commit,
+                "branch": "perf-modeling",
+                "clock_frequency_hz": 322265625,
+                "command_line": f"./scripts/frost.py cocotb {app_name or 'coremark'}",
+                "environment": {
+                    "toolchain": "Bootlin GCC 15.3.0 (riscv64-buildroot-linux-gnu 15.3.0)",
+                    "simulator": "Verilator 5.052",
+                    "testbench": "cocotb 1.9.2",
+                },
+                "memory_configuration": {
+                    "boot_and_stack": "low_bram",
+                    "ddr_model": "axi_behavioral_memory",
+                    "ddr_latency": 30,
+                    "cache_normal_memory": True,
+                },
+                "artifacts": file_hashes,
+                "timed_region": {
+                    "start_pc": f"0x{perf_calib_start_pc:08x}" if perf_calib_start_pc else "0x00000000",
+                    "stop_pc": f"0x{perf_calib_stop_pc:08x}" if perf_calib_stop_pc else "0x00000000",
+                    "start_sim_cycle": calib_start_sim_cycle,
+                    "stop_sim_cycle": calib_stop_sim_cycle,
+                    "timed_cycles": total_timed,
+                },
+                "crc_validation": {
+                    "seedcrc": seedcrc_m.group(1) if seedcrc_m else "unknown",
+                    "crcfinal": crcfinal_m.group(1) if crcfinal_m else "unknown",
+                    "status": status_str,
+                },
+            }
+            p_manifest = Path(perf_calib_manifest_path)
+            p_manifest.parent.mkdir(parents=True, exist_ok=True)
+            p_manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+            cocotb.log.info(f"Wrote manifest to {perf_calib_manifest_path}")
 
 
 async def run_uart_echo_interaction(

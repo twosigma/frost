@@ -1,0 +1,36 @@
+{
+  "benchmark": "tomasulo_perf",
+  "run_number": 1,
+  "wall_time_seconds": 306.881,
+  "simulated_cycles_per_second": 1587,
+  "git_commit": "411dee2224700a3d9d325a4f2df8bcbe83a9bed5",
+  "branch": "perf-modeling",
+  "clock_frequency_hz": 322265625,
+  "command_line": "./scripts/frost.py cocotb tomasulo_perf",
+  "environment": {
+    "toolchain": "Bootlin GCC 15.3.0 (riscv64-buildroot-linux-gnu 15.3.0)",
+    "simulator": "Verilator 5.052",
+    "testbench": "cocotb 1.9.2"
+  },
+  "memory_configuration": {
+    "boot_and_stack": "low_bram",
+    "ddr_model": "axi_behavioral_memory",
+    "ddr_latency": 30,
+    "cache_normal_memory": true
+  },
+  "artifacts": {
+    "sw.mem_sha256": "30284c4500c96cca0fd65ff72f0ea68728874e3a583c87fb81bb340e68de1a26"
+  },
+  "timed_region": {
+    "start_pc": "0x00000000",
+    "stop_pc": "0x00000000",
+    "start_sim_cycle": 0,
+    "stop_sim_cycle": 0,
+    "timed_cycles": 487313
+  },
+  "crc_validation": {
+    "seedcrc": "unknown",
+    "crcfinal": "unknown",
+    "status": "PASS"
+  }
+}

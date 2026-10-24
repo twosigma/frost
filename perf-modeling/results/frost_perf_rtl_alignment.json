@@ -1,0 +1,53 @@
+{
+  "assumptions_not_claimed_as_rtl_calibration": [
+    "Cache T/W-stage sequencing, PLRU/bimodal insertion probability, and exact pipeline stage latencies are structural timing models pending cycle-by-cycle trace calibration.",
+    "The default DDR endpoint models FROST's single-channel axi_behavioral_memory.sv (LATENCY=30, NUM_SLOTS=max(L2MaxSlots,8)); board DDR4 MIG refresh and bank/row timing require hardware or VIP trace calibration.",
+    "Workload micro-ops are representative pressure patterns, not captured Redis, HTTP, Linux or FaaS execution traces.",
+    "The model does not execute the RISC-V ISA, model Sv39 page walks/DMA coherence traffic as workload events, or prove functional RTL equivalence.",
+    "The candidate sweep may rank sensitivities, but synthesis/Fmax/area and RTL waveform comparison are required before an RTL change is accepted."
+  ],
+  "implemented_features": [
+    "Explicit CpuTopModel + SocTopModel separation across the 6-bit-ID, 512-bit AXI4 boundary so downstream projects can replace SocTopModel or DdrController independently.",
+    "Two-wide dispatch/retire, bounded ROB/RS/LQ/SQ, out-of-order load/ALU completion, two-lane CDB contention, conservative non-speculative stores at commit.",
+    "Load Queue L0 Data Cache (256 dword entries) with 1-cycle CDB fast-path bypass and fill from L1D memory responses.",
+    "Separate L1I and L1D caches; 32-byte to 64-byte sector adapter; L2 with stream prefetcher; fill ownership; coalescing; writeback slots; write intent; cache-line dirty state.",
+    "Explicit cache lower transaction IDs ({type, slot}), 64-byte single-beat AXI transfers, soc_axi_slave physical address decode (DDR vs. local BRAM/MMIO), and a single-channel 512-bit AXI DDR model matching axi_behavioral_memory.sv.",
+    "Deterministic workload generators, sweep driver, self-tests, and machine-readable bottleneck counters."
+  ],
+  "model_version": "1.0",
+  "rtl_commit": "410aa8f3e866fffb078fc8f7fd3672866d83d131",
+  "source_proven_facts": [
+    {
+      "fact": "Platform composition splits cpu_top and soc_top across a single 6-bit-ID, 512-bit (64B) AXI4 master/slave boundary.",
+      "source": "hw/rtl/platform_top.sv:18-21, 316-451; hw/rtl/cpu_top/cpu_memory_fabric.sv:17-26; hw/rtl/soc_top/soc_axi_slave.sv:17-29"
+    },
+    {
+      "fact": "Two-wide dispatch and commit; 32-entry ROB; 8-entry load and store queues; explicit RS capacities (16 INT RS, 8 MEM RS); 4-bundle decoded queue.",
+      "source": "hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv:2241-2263; hw/rtl/cpu_and_mem/cpu/tomasulo/README.md"
+    },
+    {
+      "fact": "Production cache parameters in cpu_top are L1I 16 KiB, L1D 128 KiB, L2 2 MiB, four ways, L1D MSHR 8, L2 MSHR 4, L2 WB 2, L2 waiters 2, prefetch enabled.",
+      "source": "hw/rtl/cpu_top/cpu_top.sv:32-45"
+    },
+    {
+      "fact": "L1 lines are 32 bytes; L2 and DDR-facing AXI lines are 64 bytes/512 bits; AXI transactions are single beat.",
+      "source": "hw/rtl/cpu_top/cpu_top.sv:45, 709-768; hw/rtl/lib/cache/line_port_axi_bridge.sv:18-24"
+    },
+    {
+      "fact": "Cache MSHRs reserve their victim way until fill and downstream IDs encode {type,slot}; L1D uses four-bit IDs and L2 uses five-bit IDs (DdrAxiIdBits=5).",
+      "source": "hw/rtl/lib/cache/frost_cache.sv:124-132, 974-982; hw/rtl/lib/cache/frost_cache_hierarchy.sv:45-56; hw/rtl/soc_top/soc_top.sv:395-397"
+    },
+    {
+      "fact": "A line-size adapter maps 32-byte L1 sectors into 64-byte L2 lines; L2 supports bounded MSHR waiters and stream prefetching.",
+      "source": "hw/rtl/lib/cache/README.md; hw/rtl/lib/cache/frost_cache_hierarchy.sv:845-927"
+    },
+    {
+      "fact": "soc_axi_slave routes physical DDR addresses [0x8000_0000, +DdrCapacityBytes) to a single 5-bit-ID, 512-bit DDR AXI port (backed in simulation by axi_behavioral_memory with latency=30, NUM_SLOTS=max(L2MaxSlots,8), optional LFSR jitter and reorder) and routes low BRAM/MMIO to a single local port.",
+      "source": "hw/rtl/soc_top/soc_axi_slave.sv:130-238; hw/rtl/soc_top/soc_top.sv:35-39, 396-399, 1396-1430; hw/rtl/lib/cache/axi_behavioral_memory.sv:18-67"
+    },
+    {
+      "fact": "Load Queue direct-mapped L0 Data Cache (NormalLqL0Depth = 256 dword entries) provides 1-cycle fast-path bypass for cached hits; EARLY_LOAD_WAKEUP enables 1-cycle dependent scheduling.",
+      "source": "hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv:18-47; hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv:1926-1928; hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv:43, 2806-2817"
+    }
+  ]
+}

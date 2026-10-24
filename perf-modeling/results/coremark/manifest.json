@@ -1,0 +1,38 @@
+{
+  "benchmark": "coremark",
+  "run_number": 2,
+  "git_commit": "411dee2224700a3d9d325a4f2df8bcbe83a9bed5",
+  "branch": "perf-modeling",
+  "clock_frequency_hz": 322265625,
+  "command_line": "./scripts/frost.py cocotb coremark",
+  "environment": {
+    "toolchain": "Bootlin GCC 15.3.0 (riscv64-buildroot-linux-gnu 15.3.0)",
+    "simulator": "Verilator 5.052",
+    "testbench": "cocotb 1.9.2"
+  },
+  "memory_configuration": {
+    "boot_and_stack": "low_bram",
+    "ddr_model": "axi_behavioral_memory",
+    "ddr_latency": 30,
+    "cache_normal_memory": true
+  },
+  "artifacts": {
+    "sw.bin_sha256": "2f033249c83c94e5ecdfe35b3cc197cf51ebb27ca513df89ac4ed96acb9ea9fa",
+    "sw.elf_sha256": "c0bb3bba7b4eaad0b521e5f64589572301b30155c39e840ea53f60a2af8ecb6f",
+    "sw.S_sha256": "522e85c561beeeeb4519ba272609bb286419aa8824db62ed9060a50f089388f6",
+    "sw.mem_sha256": "ca95ed022added6e12096caeed9b92668b50879ecf4206d540c8dd0c4a9c3200"
+  },
+  "timed_region": {
+    "start_pc": "0x00005848",
+    "stop_pc": "0x0000584c",
+    "start_sim_cycle": 29455,
+    "stop_sim_cycle": 268907,
+    "timed_cycles": 239452
+  },
+  "crc_validation": {
+    "seedcrc": "0xe9f5",
+    "crcfinal": "0xe714",
+    "status": "PASS"
+  },
+  "git_dirty": true
+}
