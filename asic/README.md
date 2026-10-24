@@ -674,7 +674,7 @@ Four chained jobs run the flow on every pull request and every push to
 The last job's step summary shows `summary.md`, and its `asic-flow-results`
 artifact holds the logs, reports, and summary of all four. The runners have
 four CPUs and 16 GB of memory. With four threads, the steps through clock
-tree synthesis peak at 11.3 GB, and global routing, detailed routing, and
+tree synthesis peak at 12.0 GB, and global routing, detailed routing, and
 the final report at 15.6, 19.9, and 24.8 GB, so their jobs add swap space;
 each job also deletes preinstalled toolchains to make room for the
 databases.
@@ -682,8 +682,8 @@ databases.
 Detailed routing reuses the pin access saved in the global routing database.
 On the same 256 KiB input with four threads, `-no_pin_access` cut its CPU
 time from 24,280 to 18,282 seconds, about 25%, and produced byte-identical
-routed DEF with no DRC or antenna violations. That puts the detailed
-routing job at an estimated 3.5 to 3.9 hours, below the six-hour job limit.
+routed DEF with no DRC or antenna violations. The detailed routing job
+takes 3 to 3.5 hours, below the six-hour job limit.
 
 Those three steps' memory follows the design's 980,000 cells more than its
 die. Global routing holds 3.7 GB after its pin access and about 11 GB more in
