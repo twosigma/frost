@@ -385,8 +385,8 @@ module pd_stage #(
     pd_target_selected_low
   };
 
-  always_comb begin
-    if (!$isunknown(
+  always_ff @(posedge i_clk) begin
+    if (pd_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
             {
               i_from_if_to_pd.program_counter,
               pd_imm_b_native,

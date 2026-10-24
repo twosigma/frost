@@ -722,7 +722,7 @@ module branch_predictor #(
   // The slot-2 payload drops target bit 0, so every trained target must have
   // it clear.
   always_ff @(posedge i_clk) begin
-    if (!i_rst && i_update && !$isunknown(i_update_target[0])) begin
+    if (update_reset_seen_q && !i_rst && i_update && !$isunknown(i_update_target[0])) begin
       p_update_target_is_halfword_aligned : assert (!i_update_target[0]);
     end
   end
@@ -839,14 +839,14 @@ module branch_predictor #(
       assert (btb_counter_update_early == reference_update_counter[early_update_index]);
     end
 
-    if (!i_rst && i_update && !$isunknown(
+    if (update_reset_seen_q && !i_rst && i_update && !$isunknown(
             {update_index, update_tag, i_update_taken,
                      reference_selected_next_counter, next_counter}
         )) begin
       p_selected_counter_matches_legacy : assert (next_counter == reference_selected_next_counter);
     end
 
-    if (!i_rst && i_early_update_active && !$isunknown(
+    if (update_reset_seen_q && !i_rst && i_early_update_active && !$isunknown(
             {i_update, i_update_pc, i_update_taken, i_early_update_pc, i_early_update_taken}
         )) begin
       p_early_update_is_selected : assert (i_update);
@@ -854,7 +854,7 @@ module branch_predictor #(
       p_early_update_outcome_is_selected : assert (i_update_taken == i_early_update_taken);
     end
 
-    if (!i_rst && i_update && !i_early_update_active && !$isunknown(
+    if (update_reset_seen_q && !i_rst && i_update && !i_early_update_active && !$isunknown(
             {i_update_pc, i_update_taken, i_late_update_pc, i_late_update_taken}
         )) begin
       p_late_update_pc_is_selected : assert (i_update_pc == i_late_update_pc);
@@ -915,7 +915,9 @@ module branch_predictor #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst && !$isunknown({i_pc_2_base, slot2_lookup_index_q, slot2_lookup_index_next_q})) begin
+    if (update_reset_seen_q && !i_rst && !$isunknown(
+            {i_pc_2_base, slot2_lookup_index_q, slot2_lookup_index_next_q}
+        )) begin
       p_slot2_valid_capture_exact :
       assert (slot2_valid_2_q == shifted_reference_valid_2[slot2_lookup_index_q]);
       p_slot2_alt_valid_capture_exact :

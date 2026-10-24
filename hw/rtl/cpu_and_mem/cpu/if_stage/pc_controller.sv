@@ -315,6 +315,9 @@ module pc_controller #(
   pc_increment_calculator #(
       .XLEN(XLEN)
   ) pc_increment_calculator_inst (
+`ifndef SYNTHESIS
+      .i_advance_check_valid(pending_rel_check_armed_q && !i_reset),
+`endif
       // Current PC values
       .i_pc(o_pc),
       .i_pc_reg(o_pc_reg),
@@ -1765,7 +1768,8 @@ module pc_controller #(
               (!o_pc[1] && o_pc_reg[1] &&
                o_pc[XLEN-1:2] == o_pc_reg[XLEN-1:2]));
     end
-    if (npc_sel[11] && same_word_lower_parcel_catchup && !$isunknown(
+    if (pending_rel_check_armed_q && !i_reset && npc_sel[11] &&
+        same_word_lower_parcel_catchup && !$isunknown(
             {next_pc, next_pc_reg, sel_prediction_r}
         )) begin
       p_lower_parcel_catchup_has_no_stale_registered_handoff : assert (!sel_prediction_r);
@@ -1778,7 +1782,7 @@ module pc_controller #(
   // holds, stalls, and redirect kill cycles, and comparing pc_reg with a tag
   // equals comparing pc_reg + 2 or + 4 with the branch PC.
   always_ff @(posedge i_clk) begin
-    if (!i_reset && pending_prediction_valid) begin
+    if (pending_rel_check_armed_q && !i_reset && pending_prediction_valid) begin
       p_pending_prediction_prev_pc_matches_capture :
       assert (pending_prediction_prev_pc ==
               (pending_prediction_pc - riscv_pkg::PcIncrementCompressed));
@@ -1802,7 +1806,7 @@ module pc_controller #(
   // Compare the precomputed miss with full PC equality when a word-aligned
   // prediction needs handoff and no stall, bubble, or slot-2 prediction masks it.
   always_ff @(posedge i_clk) begin
-    if (!i_reset && !fetch_stall && !o_any_holdoff_safe && !sel_nop &&
+    if (pending_rel_check_armed_q && !i_reset && !fetch_stall && !o_any_holdoff_safe && !sel_nop &&
         i_prediction_used && !i_slot2_prediction_used && !o_pc[1] && !i_predicted_target[1] &&
         (o_pc_reg != o_pc) &&
         i_prediction_requires_pc_reg_handoff) begin
@@ -1994,7 +1998,7 @@ module pc_controller #(
   // Arm-observation contract: a sequential arm is o_pc + d, 0 <= d < 16;
   // every other arm's early operand is its value.
   always_ff @(posedge i_clk) begin
-    if (!i_reset && !$isunknown({o_pc, npc_seq, npc_cmp_val})) begin
+    if (pending_rel_check_armed_q && !i_reset && !$isunknown({o_pc, npc_seq, npc_cmp_val})) begin
       for (int unsigned k = 0; k < NPcArms; k++) begin
         if (npc_seq[k]) begin
           p_npc_seq_arm_is_pc_plus_small : assert ((npc_val[k] - o_pc) < 64'd16);

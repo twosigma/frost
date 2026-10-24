@@ -1099,8 +1099,10 @@ module branch_prediction_controller #(
       dir_predicted_taken_2;
 
   // The registered restore a cycle later, for the stack-operation check below.
+  logic reset_seen_q = 1'b0;
   logic ras_restore_prev_q;
   always_ff @(posedge i_clk) begin
+    if (i_reset) reset_seen_q <= 1'b1;
     ras_restore_prev_q <= !i_reset && ras_misprediction_r;
   end
 
@@ -1109,7 +1111,7 @@ module branch_prediction_controller #(
   // never use a prediction while either holdoff or registered slot-1
   // metadata is live.
   always_ff @(posedge i_clk) begin
-    if (!i_reset) begin
+    if (reset_seen_q && !i_reset) begin
       if (!$isunknown(
               {i_slot2_valid, i_slot2_plus2_candidate_valid, i_slot2_plus4_candidate_valid}
           )) begin

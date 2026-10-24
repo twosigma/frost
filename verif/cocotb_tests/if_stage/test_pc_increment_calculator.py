@@ -61,7 +61,10 @@ async def _settle() -> None:
 
 async def _setup_test(dut: Any) -> None:
     """Initialize the combinational calculator inputs."""
+    dut.i_advance_check_valid.value = 0
     _clear_inputs(dut)
+    await _settle()
+    dut.i_advance_check_valid.value = 1
     await _settle()
 
 
