@@ -505,3 +505,93 @@ async def test_early_port_needs_store_permission_and_a_data_page(dut: Any) -> No
         if expected_ok:
             assert int(dut.o_early_pa.value) == pa
             assert int(dut.o_early_is_mmio.value) == int(_device_ok(pa))
+
+
+@cocotb.test()
+async def test_walk_response_on_flush_and_reused_tag(dut: Any) -> None:
+    """Recovery cancels a resolving operation without losing a later tag reuse."""
+    await _setup(dut)
+    old = Op(tag=5)
+    replacement = Op(tag=5, va=0x00600120, needs_sq=1, store=1)
+    leaf = Leaf(vpn=replacement.va >> 12, ppn=0x80012)
+    for full in (False, True):
+        for fault in (NONE, PAGE, ACCESS):
+            await _clear(dut)
+            _issue(dut, old)
+            await _cycle(dut)
+            dut.i_iss_valid.value = 0
+            await _cycle(dut)
+            dut.i_flush_tag.value = 2
+            dut.i_flush_en.value = int(not full)
+            dut.i_flush_all.value = int(full)
+            _response(dut, Leaf(vpn=old.va >> 12, fault=fault))
+            await _cycle(dut)
+            assert not int(dut.o_iss_out_valid.value)
+            dut.i_flush_en.value = 0
+            dut.i_flush_all.value = 0
+            dut.i_walk_resp_valid.value = 0
+            for _ in range(3):
+                await _cycle(dut)
+                assert not int(dut.o_iss_out_valid.value)
+            _issue(dut, replacement)
+            await _cycle(dut)
+            dut.i_iss_valid.value = 0
+            _response(dut, leaf)
+            await _cycle(dut)
+            _check(dut, replacement, leaf)
+            dut.i_walk_resp_valid.value = 0
+            await _cycle(dut)
+            assert not int(dut.o_iss_out_valid.value), "replacement completed twice"
+
+
+@cocotb.test()
+async def test_killed_walk_fault_does_not_resolve_replacement(dut: Any) -> None:
+    """A walk outlives partial recovery while a different VPN occupies S1."""
+    await _setup(dut)
+    for fault in (PAGE, ACCESS):
+        await _clear(dut)
+        old = Op(tag=6)
+        current = Op(tag=6, va=0x00800120)
+        leaf = Leaf(vpn=current.va >> 12, ppn=0x80020)
+        _issue(dut, old)
+        await _cycle(dut)
+        dut.i_iss_valid.value = 0
+        await _cycle(dut)
+        dut.i_flush_en.value = 1
+        dut.i_flush_tag.value = 2
+        await _cycle(dut)
+        dut.i_flush_en.value = 0
+        _issue(dut, current)
+        await _cycle(dut)
+        dut.i_iss_valid.value = 0
+        _response(dut, Leaf(vpn=old.va >> 12, fault=fault))
+        await _cycle(dut)
+        assert not int(dut.o_iss_out_valid.value), "stale walk faulted the reused tag"
+        dut.i_walk_resp_valid.value = 0
+        for _ in range(3):
+            await _cycle(dut)
+            assert not int(dut.o_iss_out_valid.value)
+        _response(dut, leaf)
+        await _cycle(dut)
+        _check(dut, current, leaf)
+
+
+@cocotb.test()
+async def test_superpage_hit_over_matching_walk_fault(dut: Any) -> None:
+    """A superpage hit keeps its PA and store permissions when a stale fault arrives."""
+    await _setup(dut)
+    op = Op(needs_sq=1, store=1)
+    for level in (1, 2):
+        for fault in (PAGE, ACCESS):
+            await _clear(dut)
+            hit = Leaf(vpn=op.va >> 12, ppn=0x80000, level=level)
+            await _install(dut, hit)
+            _issue(dut, op)
+            await _cycle(dut)
+            dut.i_iss_valid.value = 0
+            _response(dut, Leaf(vpn=op.va >> 12, fault=fault))
+            await _cycle(dut)
+            _check(dut, op, hit)
+            dut.i_walk_resp_valid.value = 0
+            await _cycle(dut)
+            assert not int(dut.o_iss_out_valid.value)

@@ -430,6 +430,23 @@ all of them.
 | `frost_cache` | `cover_probe_waits_for_writeback` | A probe waits for a writeback of its line (the L1D) |
 | `frost_cluster_cache` | `cover_demand_read_meets_prefetch` | An L1D read reaches the L2 while the prefetcher's read of the same L2 line is outstanding |
 | `line_port_arbiter` | `cover_starved_port_granted` | A port that waited through the starvation limit wins over a request of higher priority |
+| `frost_cache` | `cover_write_merge_on_fill` | A store merges into its miss slot on the successful fill-response edge |
+| `frost_cache` | `cover_waiter_on_fill` | A reader attaches to its miss slot on the successful fill-response edge |
+| `frost_cache` | `cover_fill_retries_tag_lookup` | A fill installation crosses a delayed tag response for the same set and forces a retry |
+| `frost_cache` | `cover_read_error_with_waiter` | A failed read fill has an attached reader that must also receive the error |
+| `lq_l0_cache` | `cover_dma_invalidation_overrides_fill` | DMA invalidation clears the four indexed dwords while a response fills one of them |
+| `lq_l0_cache` | `cover_amo_invalidation_overrides_fill` | AMO invalidation and a response fill target the same dword |
+| `lq_l0_cache` | `cover_store_update_displaces_fill` | A store update takes the RAM port from a response fill at another index |
+| `dmmu` | `cover_tlb_hit_with_walk_response` | A DTLB hit resolves an operation while a matching walker response arrives |
+| `dmmu` | `cover_stale_walk_fault_with_live_op` | A walker fault arrives while a live operation holds a different VPN |
+| `dmmu` | `cover_flush_on_walk_response` | Recovery kills the operation on its matching walker-response edge |
+| `ptw` | `cover_discard_on_read_accept` | A PTE read is accepted on the edge that discards its walk |
+| `ptw` | `cover_discard_on_read_response` | A PTE read response arrives on the edge that discards its walk |
+| `ptw` | `cover_interior_pte_read_error` | A PTE read fails after the walker follows a valid parent pointer |
+| `trap_unit` | `cover_interrupt_over_memory_replay` | An interrupt takes priority over a pending memory-order replay |
+| `trap_unit` | `cover_wfi_wakes_without_enabled_interrupt` | A raw pending source wakes WFI while neither interrupt class is latched |
+| `imsic_file` | `cover_msi_reasserts_claimed_identity` | An MSI sets the identity that a same-cycle claim clears |
+| `imsic_file` | `cover_msi_over_eip_clear` | An MSI sets a pending bit that a same-cycle CSR write clears |
 
 Only the load queue's unit bench reaches two of them, because the whole SoC
 never builds the state they check. For `cover_dma_write_hits_lr_in_flight`,
@@ -438,6 +455,17 @@ flight, and the load queue holds LR launches on the line until the write is
 released. For `cover_staged_load_yields_to_amo`, dispatch allocates
 load-queue entries in program order, so a load's older AMOs are already
 pending when it is allocated, and a load blocked by one is never staged.
+
+Three cover points can be reached only from their unit benches. The trap
+unit's WFI point checks its standalone interface: `cpu_ooo` ties that
+interface's start input low and handles WFI in the ROB. In the integrated
+core an AMO cannot meet an L0 fill: older loads have responded before the
+AMO reaches the ROB head, younger loads wait for its write, its own read
+does not fill the L0, and a response whose saved drop flag is set cannot
+fill it. The data MMU's hit with a matching walk response checks a
+defensive priority: the shared walker serves one request at a time, the
+data MMU requests a walk only on a miss, and only a successful data-walk
+response installs a DTLB entry.
 
 To add one, write the `cover property` in its module's cover-point block,
 or start one at the end of the module, and add a row here.

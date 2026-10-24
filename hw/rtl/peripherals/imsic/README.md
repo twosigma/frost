@@ -245,6 +245,16 @@ holds only 0 or 1 and resets to 0, and the APLIC inputs are unused.
 
 ## Simultaneous events
 
+The [simulation cover points](../../../../tests/README.md#cover-points)
+count an MSI that sets an identity in the cycle that a claim clears it, and
+an MSI that sets a pending bit in the cycle that a CSR write clears it.
+
+`imsic_collision_test` sends bursts of MSIs through the APLIC while
+software claims an identity or clears its pending bit. The last MSI of
+each burst sets a marker identity, and software then checks that the
+identities it reads are pending ones it sent and drains the file. The unit
+bench checks the outcome of each collision against a model of the file.
+
 The updates of one cycle take effect in this order: a claim, then a `*ireg`
 write, then an MSI. A `*ireg` read reports the state before all three, and
 `*topei` the state a cycle before that. An

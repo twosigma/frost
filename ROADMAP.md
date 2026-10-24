@@ -132,9 +132,7 @@ cover points for microarchitectural corner cases, such as a DMA write to a
 line that an executed, unretired load has read, into one
 [report](tests/README.md#coverage) of what the tests reach.
 
-Next is to add cover points where the design documents call a case hard to
-reach, and directed tests for those that no whole-SoC run hits. Toggle
-coverage of the whole-SoC runs also remains: Verilator's slows them about
+Toggle coverage of the whole-SoC runs remains: Verilator's slows them about
 sixfold, so they need a cheaper form first.
 
 ## ASIC-ready RTL

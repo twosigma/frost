@@ -212,3 +212,31 @@ async def test_mixed_out_of_order_read_responses(dut: Any) -> None:
     assert len(b.up) == 2 and by_id[2][2] == 1
     assert by_id[1] == (1, 0xABCDEF, 0)
     assert not dut.o_fatal_error.value
+
+
+@cocotb.test()
+async def test_failed_waiter_pair_beside_successful_fill(dut: Any) -> None:
+    """An out-of-order good fill is independent of both readers of a failed line."""
+    b = Bench(dut)
+    await b.reset()
+    await b.request(0x1000, 1)
+    failed = await b.wait_down(1)
+    await b.request(0x1000, 2)
+    await b.step(12)
+    await b.request(0x1040, 3)
+    good = await b.wait_down(2)
+    await b.response(good[2], data=0x0123456789ABCDEF)
+    await b.response(failed[2], error=True, data=(1 << 256) - 1)
+    await b.step(32)
+    assert len(b.up) == 3
+    by_id = {r[0]: r for r in b.up}
+    assert by_id[1][2] == by_id[2][2] == 1
+    assert by_id[3] == (3, 0x0123456789ABCDEF, 0)
+    assert not int(dut.o_fatal_error.value)
+    await b.request(0x1000, 4)
+    retry = await b.wait_down(3)
+    assert retry[1] == 0x1000, "failed data was installed"
+    await b.response(retry[2], data=0xA55AA55A)
+    await b.step(24)
+    assert b.up[-1] == (4, 0xA55AA55A, 0)
+    assert len(b.up) == 4

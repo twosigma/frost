@@ -655,3 +655,6 @@ an allocation never takes a way a miss slot owns. In coverage builds,
 [cover points](../../../../tests/README.md#cover-points) count corner cases
 such as a read taking a miss slot's second waiter seat, a demand read
 meeting a prefetch of its line, and a writeback taking its starvation turn.
+They also count merges and waiter attachments on the fill-response edge,
+fill installations that force a delayed tag lookup to retry, and failed
+read fills with attached waiters.

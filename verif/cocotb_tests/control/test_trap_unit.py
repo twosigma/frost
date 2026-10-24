@@ -18,7 +18,7 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, Timer
+from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 
 MSTATUS_MIE = 1 << 3
@@ -426,3 +426,68 @@ async def test_no_xret_taken_in_trap_flush_cycle(dut: Any) -> None:
             f"{case}: xRET not taken one cycle later (taken {_xret_taken(dut)})"
         )
         getattr(dut, start).value = 0
+
+
+@cocotb.test()
+async def test_interrupt_replay_collision_at_accepting_edge(dut: Any) -> None:
+    """Drain releases an armed interrupt and replay together; only the interrupt enters."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    await _reset(dut)
+    await FallingEdge(dut.i_clk)
+    dut.i_sq_committed_empty.value = 0
+    dut.i_mstatus.value = MSTATUS_MIE
+    dut.i_mstatus_mie_direct.value = 1
+    dut.i_mie.value = MIE_MTIE
+    dut.i_interrupts.value = INTERRUPT_MTIP
+    for _ in range(4):
+        await FallingEdge(dut.i_clk)
+        assert not int(dut.o_trap_taken.value)
+    dut.i_exception_valid.value = 1
+    dut.i_exception_cause.value = EXC_MEM_REPLAY
+    dut.i_exception_pc.value = 0x3000
+    await FallingEdge(dut.i_clk)
+    dut.i_exception_valid.value = 0
+    dut.i_sq_committed_empty.value = 1
+    await Timer(1, unit="ns")
+    assert int(dut.o_trap_taken.value)
+    assert int(dut.o_trap_cause.value) == MCAUSE_MTI
+    assert int(dut.o_trap_target.value) == 0x1000
+    assert int(dut.o_trap_pc.value) == 0x4000
+    assert int(dut.o_trap_no_csr.value) == 0
+    assert int(dut.o_trap_save_m.value) == 1
+    # Hold the collision through the edge that consumes the take.
+    await RisingEdge(dut.i_clk)
+    await FallingEdge(dut.i_clk)
+    dut.i_interrupts.value = 0
+    dut.i_mstatus_mie_direct.value = 0
+    for _ in range(4):
+        await FallingEdge(dut.i_clk)
+        assert not int(dut.o_trap_taken.value), "losing replay entered after interrupt"
+
+
+@cocotb.test()
+async def test_wfi_wakes_with_local_interrupts_disabled(dut: Any) -> None:
+    """Each raw M/S source releases WFI without a trap when mie is zero."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    await _reset(dut)
+    for port in (dut.i_interrupts, dut.i_s_pending):
+        for source in (1, 2, 4):
+            await FallingEdge(dut.i_clk)
+            dut.i_interrupts.value = 0
+            dut.i_s_pending.value = 0
+            dut.i_mie.value = 0
+            dut.i_wfi_start.value = 1
+            await FallingEdge(dut.i_clk)
+            dut.i_wfi_start.value = 0
+            await FallingEdge(dut.i_clk)
+            assert int(dut.o_stall_for_wfi.value)
+            port.value = source
+            # The pending source is sampled before the registered stall clears.
+            await FallingEdge(dut.i_clk)
+            assert not int(dut.o_trap_taken.value)
+            await FallingEdge(dut.i_clk)
+            assert not int(dut.o_stall_for_wfi.value)
+            for _ in range(3):
+                await FallingEdge(dut.i_clk)
+                assert not int(dut.o_trap_taken.value)
+            port.value = 0

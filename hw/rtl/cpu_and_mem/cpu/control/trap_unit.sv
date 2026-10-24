@@ -1056,6 +1056,15 @@ module trap_unit #(
   cover_interrupt_waits_for_amo :
   cover property (@(posedge i_clk) disable iff (i_rst)
       i_amo_at_head && ((m_int_eligible && m_take_armed_q) || (s_int_eligible && s_take_armed_q)));
+  // An interrupt wins over a pending memory-order replay and saves its CSRs.
+  cover_interrupt_over_memory_replay :
+  cover property (@(posedge i_clk) disable iff (i_rst)
+      exception_replay && (take_trap_m || take_trap_s));
+  // WFI wakes from a raw pending source with neither interrupt class latched.
+  cover_wfi_wakes_without_enabled_interrupt :
+  cover property (@(posedge i_clk) disable iff (i_rst)
+      wfi_active && any_int_pending_raw && !m_int_pending && !s_int_pending &&
+      !(i_wfi_start && !i_pipeline_stall));
 `endif
 `endif
 

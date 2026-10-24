@@ -438,6 +438,41 @@ boundary only near one.
 
 ## Verification
 
+The [simulation cover points](../../../../tests/README.md#cover-points)
+of the page-table walker count a walk discarded on the edge that accepts
+or answers its PTE read, and a bus error on an interior PTE read. Those of
+the data MMU count a matching walker response that arrives with a TLB hit
+or on a recovery flush, and a walker fault that arrives while the live
+operation holds a different VPN. Those of the trap unit count an interrupt
+that takes priority over a memory-order replay, and WFI woken by a raw
+pending source with no interrupt latched.
+
+`ptw_bus_fault_test` makes PTE reads fail at both interior levels and
+checks the load and store access faults that result, their trap values
+and PCs, and that access succeeds once the mapping is repaired. Two loads
+of adjacent L1D sectors then share one failed L2 fill, and the test checks
+the older load's access fault. Its registry entry injects the bus errors in
+the simulated DDR model.
+
+`ptw_recovery_test` sweeps the cycle in which a branch resolves while a
+load on its predicted path walks the page table for an unmapped page. Each
+case first runs the branch not taken with a mapped load, to train the
+predictor, and then taken; the taken target loads from a mapped page, with
+or without an SFENCE.VMA first. The test checks the loaded data and that no
+wrong-path page fault reaches the trap handler.
+
+`timer_replay_test` sweeps a timer deadline across a coherent DMA write
+that invalidates a speculative load, so that some deadlines bring the
+interrupt to the ROB head with the load's memory-order replay. Older
+divides hold retirement, and committed stores delay the replay at the ROB
+head. The test checks one interrupt per transfer, its cause and saved
+privilege mode, the stored data, and the DMA result.
+
+The unit benches check the outcome of each of these cases at the module's
+interface. The programs reach them in the whole SoC and check the architectural results,
+and the [coverage report](../../../../tests/README.md#coverage) shows
+whether they still reach them.
+
 Most front-end modules and `cpu_ooo` glue submodules have their own cocotb
 bench, such as `branch_predictor`, `pc_controller`, `instruction_aligner`,
 `fetch_provider`, `immu`, and `decoded_bundle_queue`. Whole-program tests run

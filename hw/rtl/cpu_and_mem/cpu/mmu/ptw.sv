@@ -455,4 +455,22 @@ module ptw #(
   end
 `endif
 
+`ifndef SYNTHESIS
+`ifdef FROST_COVERAGE
+  // Discard cannot withdraw a registered read accepted on this edge.
+  cover_discard_on_read_accept :
+  cover property (@(posedge i_clk) disable iff (i_rst)
+      i_discard && o_line_req_valid && i_line_req_ready);
+  // A response on the discard edge must drain without installing a leaf.
+  cover_discard_on_read_response :
+  cover property (@(posedge i_clk) disable iff (i_rst)
+      i_discard && (state_q == PTW_WAIT) && i_line_resp_valid);
+  // A valid parent PTE can lead to a bus error at an interior table.
+  cover_interior_pte_read_error :
+  cover property (@(posedge i_clk) disable iff (i_rst)
+      ENABLE_RESPONSE_ERRORS && (state_q == PTW_WAIT) && (level_q != 2) &&
+      i_line_resp_valid && i_line_resp_error && !discard_q && !i_discard);
+`endif
+`endif
+
 endmodule : ptw
