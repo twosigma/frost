@@ -24,16 +24,18 @@ to check the TX FIFO crossing and transmitter. Registry entries can lower
 CLK_FREQ_HZ to shorten the simulated bit time.
 """
 
+import functools
 import importlib.util
 import os
 import random
 from pathlib import Path
 import re
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, FallingEdge, ReadOnly, RisingEdge
+from cocotb.handle import Immediate
+from cocotb.triggers import ClockCycles, FallingEdge, ReadOnly, RisingEdge, Timer
 from cocotb.types import LogicArray
 from cocotb.utils import get_sim_time
 from typing import Any, TextIO
@@ -168,6 +170,61 @@ def _load_symbol_ranges(
     return symbol_ranges
 
 
+def start_clocks(signals: tuple[Any, ...], period_ps: int) -> None:
+    """Drive 50% clocks that rise together at time 0 and once every period.
+
+    cocotb's own clocks deposit their edges, and Verilator applies a deposit
+    only after the evaluation that opens the time step, which sees unchanged
+    inputs. These clocks write every edge after the first without delay, so
+    the step's first evaluation takes the edge and each edge costs one
+    evaluation less. Edge callbacks still read the values from before the
+    edge, and the deposits they make still apply after it. The first edge is
+    a deposit, so that edge triggers awaited at time 0 see it.
+
+    The simulation is the same as with cocotb's clocks while no combinational
+    logic reads the simulation time or a sampled value, which the dropped
+    evaluation would update, and while no timer callback at an edge time
+    reads a clock or deposits: it now sees the edge already written, and its
+    deposit applies after the edge instead of with it. A test that can end in
+    an edge callback runs under takes_last_edge, so that the model takes that
+    edge before the simulation stops.
+    """
+    for signal in signals:
+        signal.value = 1
+    cocotb.start_soon(_write_edges_without_delay(signals, period_ps))
+
+
+async def _write_edges_without_delay(signals: tuple[Any, ...], period_ps: int) -> None:
+    """From the first falling edge, drive the clocks with undelayed C++ clocks."""
+    await Timer(period_ps // 2, "ps")
+    for signal in signals:
+        Clock(signal, period_ps, "ps", impl="gpi", set_action=Immediate).start(
+            start_high=False
+        )
+
+
+def takes_last_edge(
+    test: Callable[[Any], Coroutine[Any, Any, None]],
+) -> Callable[[Any], Coroutine[Any, Any, None]]:
+    """Run a test that uses start_clocks until the model has taken its last edge.
+
+    A test that returns or raises in an edge callback would otherwise stop the
+    simulation before the model takes that edge. A failure in a task that the
+    test started still ends the simulation at once.
+    """
+
+    @functools.wraps(test)
+    async def run(dut: Any) -> None:
+        try:
+            await test(dut)
+        except Exception:
+            await ReadOnly()
+            raise
+        await ReadOnly()
+
+    return run
+
+
 async def generate_divided_clock(dut: Any) -> None:
     """Generate i_clk_div4 with four times i_clk's period and aligned rising edges.
 
@@ -191,7 +248,7 @@ async def generate_divided_clock(dut: Any) -> None:
 NIC_MAC_CLK_PERIOD_PS = 2 * int(CLK_PERIOD_NS * 875)
 
 
-def start_nic_mac_clocks(dut: Any) -> None:
+def start_nic_mac_clocks(dut: Any, edges_without_delay: bool = False) -> None:
     """Drive aligned NIC MAC clocks and PHY status.
 
     RAW_LOOPBACK=1 in frost.sv feeds raw TX words to RX without crossing logic,
@@ -201,9 +258,17 @@ def start_nic_mac_clocks(dut: Any) -> None:
     Top-level simulation ports do not inherit defaults for omitted instance
     ports. Drive shared-clock and transceiver-ready status here. nic_loopback
     uses raw loopback; nic_echo's peer drives the wire.
+
+    edges_without_delay starts the clocks with start_clocks. The core clock
+    must then come from start_clocks too, so that edges of both that share a
+    time step still reach one evaluation.
     """
-    for mac_clock in (dut.i_nic_tx_clk, dut.i_nic_rx_clk):
-        Clock(mac_clock, NIC_MAC_CLK_PERIOD_PS, unit="ps").start()
+    mac_clocks = (dut.i_nic_tx_clk, dut.i_nic_rx_clk)
+    if edges_without_delay:
+        start_clocks(mac_clocks, NIC_MAC_CLK_PERIOD_PS)
+    else:
+        for mac_clock in mac_clocks:
+            Clock(mac_clock, NIC_MAC_CLK_PERIOD_PS, unit="ps").start()
     dut.i_nic_tx_clk_ok.value = 1
     dut.i_nic_rx_clk_ok.value = 1
     dut.i_nic_phy_status.value = 0b01111
@@ -4418,9 +4483,10 @@ async def run_uart_echo_interaction(
 
 
 @cocotb.test()
+@takes_last_edge
 async def test_real_program(dut: Any) -> None:
     """Reset and run the loaded program NUM_RUNS times, checking UART each run."""
-    Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start()
+    start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
     # i_clk_div4 exists only in frost.sv, not in the cpu_tb.sv testbench. It is
     # derived from i_clk rather than started as an independent Clock because the
     # dc_fifo clock domain crossing needs a fixed phase relationship.
@@ -4429,7 +4495,7 @@ async def test_real_program(dut: Any) -> None:
         # frost.sv always has the NIC's ports. They are driven without a
         # per-port check, so a renamed port fails here instead of silently
         # leaving the MAC unclocked.
-        start_nic_mac_clocks(dut)
+        start_nic_mac_clocks(dut, edges_without_delay=True)
 
     disable_branch_prediction = int(
         os.environ.get("FROST_DISABLE_BRANCH_PREDICTION", "0")

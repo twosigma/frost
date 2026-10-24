@@ -28,7 +28,6 @@ from pathlib import Path
 from typing import Any
 
 import cocotb
-from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge, Timer
 
 from cocotb_tests.bram_programmer import program_bram_image, read_bram_image
@@ -37,6 +36,8 @@ from cocotb_tests.test_real_program import (
     RESET_CYCLES,
     UartMonitor,
     generate_divided_clock,
+    start_clocks,
+    takes_last_edge,
 )
 
 BANNER = "Frost: Hello, world!"
@@ -68,9 +69,10 @@ async def _wait_for_banner(
 
 
 @cocotb.test()
+@takes_last_edge
 async def test_bram_reload(dut: Any) -> None:
     """Power-on boot, port-A clobber (must not boot), port-A reload (must boot)."""
-    Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start()
+    start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
     cocotb.start_soon(generate_divided_clock(dut))
 
     uart_monitor = UartMonitor(dut)

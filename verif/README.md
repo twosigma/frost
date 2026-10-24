@@ -90,10 +90,37 @@ modeled instruction. Atomic modeling covers word operations; supervisor
 instructions are tested by other suites. `TestConfig` in
 `cocotb_tests/test_common.py` supplies the reset, clock, and coverage options.
 
+## Application bench
+
+`cocotb_tests/test_real_program.py` runs every application, and the
+architecture-test, riscv-tests, and torture runners use it too. It holds
+reset, runs the program `COCOTB_NUM_RUNS` times with a reset between runs, and
+watches the UART for the program's success or failure marker. Three
+coroutines wake on every rising edge of the core clock, always in the same
+order: the run loop, the divided-clock generator, and the UART monitor, which
+records each byte the CPU writes. Opt-in diagnostics and some applications'
+drivers add work of their own.
+
+Verilator's evaluation of the model takes most of the simulation time.
+cocotb's own clocks deposit their edges, and Verilator applies a deposit only
+after the evaluation that opens the time step, so every clock edge would cost
+an evaluation that changes nothing. `start_clocks` writes the core clock's
+and the NIC clocks' edges without delay instead, which lets that evaluation
+take the edge. The debug and BRAM-reload benches start their core clock the
+same way. These tests run under `takes_last_edge`, so that the model takes
+the edge a test returns or fails in before the simulation stops. The
+docstring of `start_clocks` gives the conditions under which the
+simulation stays the same as with cocotb's clocks: no combinational logic
+reads the simulation time or a sampled value, and no timer callback reads a
+clock or changes an input at an edge time.
+
 ## Extending the Framework
 
 - Add encoder and evaluator pairs to `encoders/op_tables.py`.
 - Add monitors as coroutines started by the test.
+- In a whole-SoC bench that uses `start_clocks`, change inputs from
+  clock-edge callbacks, not timers, and run the test under `takes_last_edge`
+  (see [Application bench](#application-bench)).
 - Override `DUTSignalPaths` for hierarchy differences instead of hardcoding
   paths in test logic.
 - Keep shared constants in `config.py` and per-run behavior in `TestConfig`.

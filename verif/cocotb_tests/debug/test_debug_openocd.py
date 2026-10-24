@@ -33,7 +33,6 @@ from pathlib import Path
 from typing import Any
 
 import cocotb
-from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles
 
 from cocotb_tests.debug.test_debug import (
@@ -48,6 +47,8 @@ from cocotb_tests.test_real_program import (
     CLK_PERIOD_NS,
     UartMonitor,
     generate_divided_clock,
+    start_clocks,
+    takes_last_edge,
 )
 
 OPENOCD_CFG = Path(__file__).resolve().parents[3] / "fpga" / "debug" / "openocd_sim.cfg"
@@ -192,6 +193,7 @@ shutdown
 
 
 @cocotb.test()
+@takes_last_edge
 async def test_debug_openocd(dut: Any) -> None:
     """Run a real OpenOCD session against the simulated hart."""
     log = cocotb.log
@@ -203,7 +205,7 @@ async def test_debug_openocd(dut: Any) -> None:
         log.warning(message)
         return
 
-    Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start()
+    start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
     cocotb.start_soon(generate_divided_clock(dut))
     syms = _read_symbols()
     server = RemoteBitbangServer(dut)
