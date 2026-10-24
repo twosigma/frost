@@ -23,13 +23,13 @@ Traces are formatted as line-delimited JSON (JSONL). The first line is always a 
 
 | Event | Required Fields | RTL Observation Point | Purpose |
 |---|---|---|---|
-| `meta` | `version`, `commit`, `clock_frequency_hz` | Testbench initialization | Trace provenance & clock frequency |
+| `meta` | `rtl_commit`, `clock_domain`, `memory_configuration` | Testbench initialization | Trace provenance |
 | `dispatch` | `cycle`, `uops` | `dbg_rob_alloc_valid` & ready | Accepted dispatch / ROB allocations (1 or 2 uops) |
 | `retire` | `cycle`, `uops` | `dbg_commit_valid` & ready | Accepted retirement / commit (1 or 2 uops) |
 | `cache_request` | `cycle`, `cache`, `address`, `is_write`, `request_id` | L1I / L1D / L2 input | Cache access requests |
 | `cache_response` | `cycle`, `cache`, `request_id`, `ok` | L1I / L1D / L2 output | Cache completion / data return |
 | `mshr_allocate` | `cycle`, `cache`, `slot`, `line_address` | Cache MSHR entry allocation | Track miss concurrency & slot occupancy |
-| `mshr_release` | `cycle`, `cache`, `slot` | Cache MSHR completion | Miss resolution |
+| `mshr_release` | `cycle`, `cache`, `slot`, `line_address` | Cache MSHR completion | Miss resolution |
 | `axi_request` | `cycle`, `axi_id`, `address`, `is_write`, `bytes` | `o_axi_arvalid` / `o_axi_awvalid` | 512-bit (64-byte) single-beat AXI transactions |
 | `axi_response` | `cycle`, `axi_id`, `ok` | `i_axi_rvalid` / `i_axi_bvalid` | AXI read/write completions from DDR/memory |
 | `backpressure` | `cycle`, `resource`, `reason` | Stall signals (`dbg_dispatch_stall`, etc.) | Identifies specific architectural bottleneck cycles |
@@ -89,8 +89,8 @@ python3 perf-modeling/tools/run_calibration.py \
 ```
 
 The script:
-1. Validates every record against `trace_schema.json`.
-2. Verifies monotonic cycle progression and transaction ID integrity.
+1. Checks every record's fields against the event table in `calibration/trace_contract.py`, which `trace_schema.json` also gives.
+2. Verifies that cycles never decrease, that the first record is the `meta` header, and that AXI requests are 64-byte lines.
 3. Compares hardware pipeline counters against model output counters (IPC, retired uops, cycles).
 4. Emits a structured `calibration.json` report documenting discrepancies, correlation accuracy, and timing.
 

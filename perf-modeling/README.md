@@ -140,7 +140,7 @@ python3 perf-modeling/tools/run_calibration.py \
 Traces use line-delimited JSON (`JSONL`). The initial record is a `meta` header, followed by cycle-by-cycle events:
 
 ```json
-{"event": "meta", "version": "1.0", "commit": "411dee2224700a3d9d325a4f2df8bcbe83a9bed5", "clock_frequency_hz": 322265625}
+{"cycle": 0, "event": "meta", "source": "frost_perf_probe", "rtl_commit": "411dee2224700a3d9d325a4f2df8bcbe83a9bed5", "clock_domain": "cpu", "memory_configuration": "axi_behavioral_memory"}
 {"cycle": 29456, "event": "dispatch", "uops": 2, "source": "rob"}
 {"cycle": 29456, "event": "retire", "uops": 2, "source": "rob"}
 {"cycle": 29457, "event": "axi_request", "axi_id": 1, "address": 2147483712, "is_write": false, "bytes": 64, "source": "axi"}

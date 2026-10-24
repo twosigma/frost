@@ -1,7 +1,7 @@
 // Copyright (c) 2026 John Goodacre.
 // SPDX-License-Identifier: Apache-2.0
 // Simulation-only probe. Instantiate from a wrapper or bind module after
-// connecting the accepted handshake events named in perf-modelling/README.md.
+// connecting the accepted handshake events named in perf-modeling/README.md.
 module frost_perf_probe #(
     parameter string TRACE_PATH = "frost_perf.jsonl"
 ) (
