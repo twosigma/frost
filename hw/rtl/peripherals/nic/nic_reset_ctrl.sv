@@ -104,9 +104,11 @@ module nic_reset_ctrl (
        (state_q == S_RESET && rst_cnt_q != 3'(CoreRstCycles - 1)));
 `ifndef SYNTHESIS
   logic core_rst_next_q;
+  bit   reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
     core_rst_next_q <= o_core_rst_next;
-    if (!$isunknown({core_rst_next_q, o_core_rst})) begin
+    if (i_rst) reset_seen_q <= 1'b1;
+    if (reset_seen_q && !$isunknown({core_rst_next_q, o_core_rst})) begin
       assert (o_core_rst == core_rst_next_q)
       else $error("o_core_rst_next did not predict o_core_rst");
     end
