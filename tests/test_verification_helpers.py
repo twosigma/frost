@@ -302,6 +302,21 @@ def test_required_signals_name_every_missing_handle() -> None:
         )
 
 
+def test_signal_reads_resolve_like_cocotb() -> None:
+    """A value reads as an int exactly when cocotb calls it resolvable."""
+    real_program = importlib.import_module("cocotb_tests.test_real_program")
+    from cocotb.types import Logic, LogicArray
+
+    for text in ("0", "1", "0110", "LH10", "lh01", "1" * 64, "X", "10Z1", "U0", "W1"):
+        value = LogicArray(text)
+        expected = int(value) if value.is_resolvable else None
+        assert real_program._resolved_int(value) == expected, text
+    for text in "01LHXZUW-":
+        bit = Logic(text)
+        expected = int(bit) if bit.is_resolvable else None
+        assert real_program._resolved_int(bit) == expected, text
+
+
 def test_low_bram_words_take_the_upper_half_of_odd_words() -> None:
     """A word whose address has bit 2 set is the upper half of its dword row."""
     real_program = importlib.import_module("cocotb_tests.test_real_program")
