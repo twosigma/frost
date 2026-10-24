@@ -1,0 +1,27 @@
+[tasks]
+prove
+prove_soc
+cover
+
+[options]
+prove: mode prove
+prove: depth 3
+prove_soc: mode prove
+prove_soc: depth 3
+cover: mode cover
+cover: depth 16
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv axi_mux.sv
+# prove and cover: three ports, so the port index has an unused value, and
+# narrow fields. prove_soc: soc_top's two ports, ids and W FIFO depth.
+prove: chparam -set NUM_PORTS 3 -set ADDR_WIDTH 12 -set DATA_WIDTH 32 -set UP_ID_WIDTH 2 -set W_DEPTH 2 axi_mux
+cover: chparam -set NUM_PORTS 3 -set ADDR_WIDTH 12 -set DATA_WIDTH 32 -set UP_ID_WIDTH 2 -set W_DEPTH 2 axi_mux
+prove_soc: chparam -set NUM_PORTS 2 -set ADDR_WIDTH 64 -set DATA_WIDTH 256 -set UP_ID_WIDTH 3 -set W_DEPTH 4 axi_mux
+prep -top axi_mux
+
+[files]
+../hw/rtl/lib/axi/axi_mux.sv
