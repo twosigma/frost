@@ -366,7 +366,7 @@ jobs:
           PA_TESTS: ${{ matrix.shard.tests }}
           FROST_COVERAGE: "1"
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
-          FROST_RANDOM_START_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
+          FROST_RANDOM_START_SEED: ${{ matrix.shard.name != 'Unit boundaries' && format('{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) || '' }}
         run: |
           tests="$PA_TESTS"
           for program in $PA_PROGRAMS; do

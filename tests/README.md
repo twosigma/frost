@@ -640,7 +640,8 @@ state. The workflow sets `FROST_DDR_MODEL_SEED` and
 A failing test's output names both draws, and rerunning the job repeats
 them. These checks run in the pull-request and merge jobs. Each program runs
 once per configured reset sequence; random power-up adds no simulation runs.
-Unit benches can select random power-up with `FROST_RANDOM_START_SEED`.
+Standalone unit jobs use ordinary power-up. Unit benches can select random
+power-up with `FROST_RANDOM_START_SEED`.
 
 In the BRAM job of the CoreMark shard, the `coremark` test also records a
 calibration trace of CoreMark's timed region for the performance model in
