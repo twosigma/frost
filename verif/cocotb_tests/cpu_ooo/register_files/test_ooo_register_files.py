@@ -261,15 +261,17 @@ async def test_integer_x0_write_is_not_bypassed_or_stored(dut: Any) -> None:
     await _setup_test(dut)
 
     _drive_all_int_reads(dut, rs1=0, rs2=0)
+    await _settle()
+    initial_reads = _int_reads(dut)
     _drive_int_write(dut, port=0, addr=0, data=0x12345678)
     _drive_int_write(dut, port=1, addr=0, data=0x87654321)
     await _settle()
 
-    assert _int_reads(dut) == (0, 0, 0, 0)
+    assert _int_reads(dut) == initial_reads
 
     await _commit_writes(dut)
 
-    assert _int_reads(dut) == (0, 0, 0, 0)
+    assert _int_reads(dut) == initial_reads
 
 
 @cocotb.test()

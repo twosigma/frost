@@ -202,9 +202,10 @@ def _pattern(seed: int) -> int:
 
 
 async def _start(dut: Any) -> tuple[_AxiSlave, _ResponseLog]:
-    """Start the clock and the slave, and reset the bridge for a few cycles."""
+    """Start with both sides of AXI in reset before testing CPU-only resets."""
     Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
-    dut.i_axi_rst.value = 0
+    dut.i_rst.value = 1
+    dut.i_axi_rst.value = 1
     dut.i_req_valid.value = 0
     dut.i_req_write.value = 0
     dut.i_req_addr.value = 0
@@ -217,6 +218,7 @@ async def _start(dut: Any) -> tuple[_AxiSlave, _ResponseLog]:
     slave = _AxiSlave(dut)
     log = _ResponseLog(dut)
     await _reset(dut)
+    dut.i_axi_rst.value = 0
     return slave, log
 
 
