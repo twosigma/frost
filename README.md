@@ -244,7 +244,7 @@ For native builds outside the container, initialize the submodules first with
 | [formal/](formal/README.md) | Formal verification |
 | [asic/](asic/README.md) | OpenROAD flow on FreePDK45 and its OpenRAM SRAM macros |
 | [tools/vscode-frost/](tools/vscode-frost/README.md) | VS Code extension |
-| [docs/](docs/) | Debian setup, performance, and toolchain guides; diagrams |
+| [docs/](docs/) | Debian setup and toolchain guides; diagrams |
 | [scripts/](scripts/) | Docker wrapper and development tools |
 
 ### Design Documentation
