@@ -17,8 +17,11 @@
 FROST_CALIBRATION_TRACE_PATH turns the capture on for one run of a program,
 FROST_CALIBRATION_TARGET_RUN (the last run by default). The trace covers the
 cycles from the retirement of FROST_CALIBRATION_START_PC to the retirement of
-FROST_CALIBRATION_STOP_PC, or the whole run when no start PC is set; CoreMark
-defaults to its timed region. FROST_CALIBRATION_COUNTERS_PATH and
+FROST_CALIBRATION_STOP_PC, or the whole run when no start PC is set. CoreMark's
+window defaults to its timed region, from the return of start_time to the
+entry of stop_time, which the capture finds in the program's sw.S; the two
+variables override either end. A run that never retires the window's start
+PC, or a stop PC that it sets, fails. FROST_CALIBRATION_COUNTERS_PATH and
 FROST_CALIBRATION_MANIFEST_PATH name optional files for the window's pipeline
 counters and the run's manifest. perf-modeling/README.md describes the trace
 format.
@@ -38,7 +41,7 @@ import struct
 import subprocess
 import time
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -52,6 +55,11 @@ COMMIT_MISPREDICTION_PATH = (
     f"{CORE_PATH}.misprediction_flush_controller_inst.commit_is_misprediction"
 )
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+# The instructions that return from start_time: ret, and c.jr ra.
+RETURN_INSTRUCTIONS = frozenset({0x0000_8067, 0x8082})
+# A function's instructions in the program's sw.S, by address, as word and
+# width; the bench's _load_symbol_machine_code.
+SymbolCode = Callable[[str, str | None], dict[int, tuple[int, int]]]
 # The DDR model settings that tests/Makefile and frost.sv give a run that
 # does not set them.
 DDR_MODEL_DEFAULTS = {
@@ -170,6 +178,41 @@ def ddr_model_settings(environment: Mapping[str, str]) -> dict[str, int]:
     return settings
 
 
+def timed_window(app_name: str | None, symbol_code: SymbolCode) -> tuple[int, int]:
+    """Return the window's start and stop PCs, 0 for an end that is not set.
+
+    Raise AssertionError if CoreMark's sw.S lacks the function of an end
+    that its environment variable does not set.
+    """
+    start_text = os.environ.get("FROST_CALIBRATION_START_PC", "").strip()
+    stop_text = os.environ.get("FROST_CALIBRATION_STOP_PC", "").strip()
+    start = int(start_text, 0) if start_text else 0
+    stop = int(stop_text, 0) if stop_text else 0
+    if app_name is None or not app_name.startswith("coremark"):
+        return start, stop
+    if not start_text:
+        returns = [
+            address
+            for address, (word, _width) in symbol_code("start_time", app_name).items()
+            if word in RETURN_INSTRUCTIONS
+        ]
+        if not returns:
+            raise AssertionError(
+                "FROST_CALIBRATION_TRACE_PATH: sw.S has no return in start_time; "
+                "set FROST_CALIBRATION_START_PC"
+            )
+        start = max(returns)
+    if not stop_text:
+        stop_code = symbol_code("stop_time", app_name)
+        if not stop_code:
+            raise AssertionError(
+                "FROST_CALIBRATION_TRACE_PATH: sw.S has no stop_time; "
+                "set FROST_CALIBRATION_STOP_PC"
+            )
+        stop = min(stop_code)
+    return start, stop
+
+
 def _field_slice(layout: list[tuple[str, int]], name: str) -> tuple[int, int]:
     """Return a packed-struct field's LSB and mask from its MSB-first layout."""
     lsb = sum(width for _, width in layout)
@@ -196,13 +239,24 @@ class CalibrationTrace:
         run_number: int,
         num_runs: int,
         clock_period_ns: float,
+        symbol_code: SymbolCode,
     ) -> "CalibrationTrace | None":
-        """Return the capture for this run, or None when it is off."""
+        """Return the capture for this run, or None when it is off.
+
+        symbol_code reads a function's instructions from the program's sw.S.
+        """
         trace_path = os.environ.get("FROST_CALIBRATION_TRACE_PATH", "")
         target_run = int(os.environ.get("FROST_CALIBRATION_TARGET_RUN", str(num_runs)))
         if not trace_path or run_number != target_run:
             return None
-        return cls(dut, Path(trace_path), app_name, run_number, clock_period_ns)
+        return cls(
+            dut,
+            Path(trace_path),
+            app_name,
+            run_number,
+            clock_period_ns,
+            timed_window(app_name, symbol_code),
+        )
 
     def __init__(
         self,
@@ -211,6 +265,7 @@ class CalibrationTrace:
         app_name: str | None,
         run_number: int,
         clock_period_ns: float,
+        window: tuple[int, int],
     ) -> None:
         """Bind the signals and open the trace if the window starts at once.
 
@@ -221,23 +276,9 @@ class CalibrationTrace:
         self.app_name = app_name
         self.run_number = run_number
         self.clock_period_ns = clock_period_ns
-        self.is_coremark_like = app_name is not None and app_name.startswith("coremark")
         self.counters_path = os.environ.get("FROST_CALIBRATION_COUNTERS_PATH")
         self.manifest_path = os.environ.get("FROST_CALIBRATION_MANIFEST_PATH")
-        self.start_pc = int(
-            os.environ.get(
-                "FROST_CALIBRATION_START_PC",
-                "0x5848" if self.is_coremark_like else "0",
-            ),
-            0,
-        )
-        self.stop_pc = int(
-            os.environ.get(
-                "FROST_CALIBRATION_STOP_PC",
-                "0x584c" if self.is_coremark_like else "0",
-            ),
-            0,
-        )
+        self.start_pc, self.stop_pc = window
         self.commit = git_commit()
         self.state = "ARMED" if self.start_pc else "ACTIVE"
         self.file: TextIO | None = None
@@ -440,10 +481,24 @@ class CalibrationTrace:
             )
 
     def finish(self, uart_text: str) -> None:
-        """Close the trace and write the counters and the manifest."""
+        """Close the trace and write the counters and the manifest.
+
+        Raise AssertionError if the window never opened, or never reached a
+        stop PC that was set.
+        """
         if self.file is not None:
             self.file.close()
             self.file = None
+        if self.state in ("ARMED", "STARTING"):
+            raise AssertionError(
+                "FROST_CALIBRATION_TRACE_PATH: run "
+                f"{self.run_number} never retired the start PC 0x{self.start_pc:x}"
+            )
+        if self.state == "ACTIVE" and self.stop_pc:
+            raise AssertionError(
+                "FROST_CALIBRATION_TRACE_PATH: run "
+                f"{self.run_number} never retired the stop PC 0x{self.stop_pc:x}"
+            )
         counters = self.counters
         total_timed = self.timed_cycle
         wall_time_s = time.perf_counter() - self.start_wall_time

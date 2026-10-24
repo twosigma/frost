@@ -70,6 +70,28 @@ def _dut(absent: frozenset[str] = frozenset(), slot2_width: int = SLOT2_WIDTH) -
     return _Node("", set(absent), {SLOT2: slot2_width})
 
 
+def _no_symbols(name: str, app_name: str | None) -> dict[int, tuple[int, int]]:
+    raise AssertionError(f"looked up {name} for {app_name}")
+
+
+# CoreMark's timing functions as sw.S lists them: start_time ends with its
+# return, and stop_time starts with the cycle-counter read.
+_COREMARK_CODE = {
+    "start_time": {
+        0x57A8: (0x0010_0793, 32),
+        0x5840: (0xC000_22F3, 32),
+        0x5844: (0x8051_BC23, 32),
+        0x5848: (0x0000_8067, 32),
+    },
+    "stop_time": {0x584C: (0xC000_27F3, 32), 0x5850: (0x0010_0293, 32)},
+}
+
+
+def _coremark_symbols(name: str, app_name: str | None) -> dict[int, tuple[int, int]]:
+    assert app_name == "coremark"
+    return _COREMARK_CODE.get(name, {})
+
+
 # The second of two runs of hello_world, and the first, with the bench's
 # 3 ns clock.
 _RUN: dict[str, Any] = {
@@ -77,6 +99,7 @@ _RUN: dict[str, Any] = {
     "run_number": 2,
     "num_runs": 2,
     "clock_period_ns": 3,
+    "symbol_code": _no_symbols,
 }
 _FIRST_RUN = {**_RUN, "run_number": 1}
 
@@ -402,3 +425,54 @@ def test_the_manifest_takes_its_metadata_from_the_run(
         "sw.mem_sha256": hashlib.sha256(b"@0\n").hexdigest(),
     }
     assert "branch" not in manifest and "command_line" not in manifest
+
+
+def test_coremark_s_window_comes_from_its_timing_functions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The window runs from start_time's return to stop_time's entry."""
+    window = calibration_trace.timed_window
+    assert window("coremark", _coremark_symbols) == (0x5848, 0x584C)
+    assert window("hello_world", _no_symbols) == (0, 0)
+    compressed = {"start_time": {0x10: (0x0001_0793, 32), 0x14: (0x8082, 16)}}
+    assert window(
+        "coremark", lambda name, _app: {**_COREMARK_CODE, **compressed}[name]
+    ) == (0x14, 0x584C)
+    monkeypatch.setenv("FROST_CALIBRATION_START_PC", "0x100")
+    assert window("coremark", _coremark_symbols) == (0x100, 0x584C)
+    monkeypatch.setenv("FROST_CALIBRATION_STOP_PC", "0x200")
+    assert window("coremark", _no_symbols) == (0x100, 0x200)
+
+
+@pytest.mark.parametrize("missing", ["start_time", "stop_time"])
+def test_a_coremark_build_without_its_timing_functions_fails(missing: str) -> None:
+    """The capture names the function it could not find in sw.S."""
+    code = {name: lines for name, lines in _COREMARK_CODE.items() if name != missing}
+    with pytest.raises(AssertionError, match=f"sw.S has no .*{missing}"):
+        calibration_trace.timed_window(
+            "coremark", lambda name, _app: code.get(name, {})
+        )
+
+
+@pytest.mark.parametrize(
+    "retired_pcs,error",
+    [
+        ([], "never retired the start PC 0x100"),
+        ([0x100], "never retired the stop PC 0x200"),
+    ],
+)
+def test_a_window_that_never_opens_or_closes_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, retired_pcs: list[int], error: str
+) -> None:
+    """A run that misses the window's start PC, or its stop PC, fails at the end."""
+    monkeypatch.setenv("FROST_CALIBRATION_TRACE_PATH", str(tmp_path / "t.jsonl"))
+    monkeypatch.setenv("FROST_CALIBRATION_START_PC", "0x100")
+    monkeypatch.setenv("FROST_CALIBRATION_STOP_PC", "0x200")
+    dut = _dut()
+    capture = calibration_trace.CalibrationTrace.from_environment(dut, **_RUN)
+    assert capture is not None
+    for cycle, pc in enumerate([*retired_pcs, 0x104, 0x108]):
+        _drive(dut, {f"{CORE}.dbg_commit_valid": 1, f"{CORE}.dbg_commit_pc": pc})
+        capture.sample(cycle)
+    with pytest.raises(AssertionError, match=error):
+        capture.finish("")

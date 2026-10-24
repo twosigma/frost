@@ -1845,6 +1845,7 @@ async def run_until_complete(
         run_number=run_number,
         num_runs=NUM_RUNS,
         clock_period_ns=CLK_PERIOD_NS,
+        symbol_code=_load_symbol_machine_code,
     )
     if control_flow_trace_env:
         parsed_ranges: list[tuple[int, int]] = []
