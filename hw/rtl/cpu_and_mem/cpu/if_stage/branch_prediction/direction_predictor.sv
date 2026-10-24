@@ -30,8 +30,9 @@
  *
  * Lookups are combinational and updates synchronous. The predict and
  * update-read ports are separate RAM copies sharing one write, since
- * sdp_dist_ram has one read port. The counters start at 00 (strongly
- * not-taken) from RAM initialization; reset does not clear them.
+ * sdp_dist_ram has one read port. FPGA configuration sets the counters to
+ * 00 (strongly not-taken); reset does not clear them. Arbitrary power-up
+ * counters affect prediction accuracy, not architectural results.
  */
 module direction_predictor #(
     parameter int unsigned XLEN     = riscv_pkg::XLEN,

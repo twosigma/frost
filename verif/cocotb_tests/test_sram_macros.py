@@ -495,6 +495,8 @@ async def _tdp_bram_dc_byte_en(dut: Any) -> None:
         getattr(dut, f"i_port_{port}_byte_write_enable").value = 0
         getattr(dut, f"i_port_{port}_byte_address").value = 0
     await _start_cycle(dut.i_port_a_clk)
+    # Both macro ports must latch idle controls before sampling untouched bytes.
+    await _start_cycle(dut.i_port_a_clk)
 
     # Snapshot untouched bytes before the traffic's partial writes.
     tiles = dut.u_sram.gen_row
