@@ -100,11 +100,17 @@ writes the corrected data back to DDR with fresh ECC, and a background patrol
 reads all of memory, once a day by default, to find errors in data that
 nothing else reads.
 
-What remains is to measure the L2's two write costs on hardware, with
-programs running from DDR, such as CoreMark-PRO and Linux, and with NIC
-receive traffic: a 32-byte write to a line the L2 lacks reads the line from
-DDR first, and a write to the other half of a line with a read in flight
-waits for that read and holds up the L2.
+Profiling counters measure the L2's two write costs on the X3. A 32-byte
+write to a line the L2 lacks reads the line from DDR first, and a write to
+the other half of a line with a read in flight waits for that read and holds
+up the L2. Writes held behind reads are rare: at most three in any run
+measured. Write fills are negligible for programs running from DDR: none in
+`ddr_bench`, at most 0.02% of the L2's misses in any CoreMark-PRO workload,
+and about 0.3% under Linux. NIC receive raises them to about 6% of the L2's
+misses and of the cycles its miss slots are held in a 512 MiB NFS read, and
+to about 4.5% in a UDP stream. The counters leave out maintenance traffic,
+so the Linux figures do not include write fills from the L1D writebacks that
+`sfence.vma` triggers.
 
 ## Verification
 
