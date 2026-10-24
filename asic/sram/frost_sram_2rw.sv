@@ -116,7 +116,15 @@ module frost_sram_2rw #(
     initial begin
       logic [DATA_WIDTH-1:0] image[2**ADDR_WIDTH];
       if (USE_INIT_FILE) $readmemh(INIT_FILE, image);
-      else for (int i = 0; i < 2 ** ADDR_WIDTH; i++) image[i] = DATA_WIDTH'(i);
+      else begin
+`ifdef FROST_RANDOM_START
+        for (int i = 0; i < 2 ** ADDR_WIDTH; i++)
+        for (int chunk = 0; chunk < (DATA_WIDTH + 31) / 32; chunk++)
+        image[i] = (image[i] << 32) | DATA_WIDTH'($urandom);
+`else
+        for (int i = 0; i < 2 ** ADDR_WIDTH; i++) image[i] = DATA_WIDTH'(i);
+`endif
+      end
       for (int i = 0; i < 2 ** TileAddrWidth; i++) u_macro.mem[i] = image[row*(2**TileAddrWidth)+i];
     end
 `endif

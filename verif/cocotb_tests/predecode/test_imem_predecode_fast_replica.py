@@ -27,7 +27,9 @@ files Vivado loads. Port A runs at one quarter of port B's rate, as required
 by the write-quarantine synchronizer.
 """
 
+import hashlib
 import importlib.util
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -36,7 +38,7 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
+from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge, Timer
 
 PORT_A_PERIOD_NS = 40
 PORT_B_PERIOD_NS = 10
@@ -643,7 +645,15 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
     dut.i_port_b_enable.value = 0
     dut.i_port_b_byte_address.value = 0
     dut.i_port_b_next_byte_address.value = 4
+    dut.i_port_a_clk.value = 0
+    dut.i_port_b_clk.value = 0
+    await Timer(1, unit="ps")
     initial_memory = _memory_snapshot(dut)
+    if os.environ.get("FROST_RANDOM_START_SEED"):
+        cold_rows = [int(row.value) for row in dut.u_even_cold.ram]
+        assert len(set(cold_rows)) > 1, "power-up rows share one random word"
+        digest = hashlib.sha256(repr(initial_memory).encode()).hexdigest()
+        dut._log.info("Power-up memory digest: %s", digest)
     Clock(dut.i_port_a_clk, PORT_A_PERIOD_NS, unit="ns").start()
     Clock(dut.i_port_b_clk, PORT_B_PERIOD_NS, unit="ns").start()
     for _ in range(3):

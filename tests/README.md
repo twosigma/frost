@@ -172,13 +172,16 @@ FROST_RANDOM_START_SEED=1 FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb 
 
 The mode uses `--x-initial unique`, `--x-assign unique`, and Verilator's
 seeded random reset. `FROST_RANDOM_START` selects unknown values for hardware
-declaration initializers and omits deterministic RAM fills. Verilator turns
-those unknowns into random bits. Assertion-history initializers and program
-image loads execute normally, including instruction predecode metadata.
+declaration initializers. Verilator turns those unknowns into random bits.
+RAM wrappers, live-value tables, and the store queue forwarding array fill
+each row with seeded random words, including every bit of wide entries.
+Assertion-history initializers and program image loads execute normally,
+including instruction predecode metadata. Arrays loaded by their parent
+skip random fill as well as arrays with their own image file.
 Instruction-image padding is zero in every packed copy, matching the
-generated bank images. The benches pulse power-on reset at time zero in both modes, alongside
-the ordinary system-reset sequence. Warm resets leave the transport
-handshake intact. Changing only the seed reuses the compiled model; enabling
+generated bank images. The benches pulse power-on reset at time zero in
+both modes, alongside the ordinary system-reset sequence. Warm resets leave
+the transport handshake intact. Changing only the seed reuses the compiled model; enabling
 or disabling the mode rebuilds it.
 
 This is a two-state power-up test. It does not model metastability, reset

@@ -33,7 +33,13 @@ module sdp_dist_ram #(
   localparam int unsigned RamDepth = 2 ** ADDR_WIDTH;
   (* ram_style = "distributed" *) logic [DATA_WIDTH-1:0] ram[RamDepth];
 
-`ifndef FROST_RANDOM_START
+`ifdef FROST_RANDOM_START
+  initial begin
+    for (int row = 0; row < RamDepth; row++)
+    for (int chunk = 0; chunk < (DATA_WIDTH + 31) / 32; chunk++)
+    ram[row] = (ram[row] << 32) | DATA_WIDTH'($urandom);
+  end
+`else
   initial for (int i = 0; i < RamDepth; ++i) ram[i] = '0;
 `endif
 

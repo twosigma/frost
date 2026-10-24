@@ -328,7 +328,13 @@ module store_queue #(
   logic [FLEN-1:0] sq_data_fwd_entry[DEPTH];
   logic [(DEPTH*FLEN)-1:0] sq_data_fwd_flat;
 
-`ifndef FROST_RANDOM_START
+`ifdef FROST_RANDOM_START
+  initial begin
+    for (int row = 0; row < DEPTH; row++)
+    for (int chunk = 0; chunk < (FLEN + 31) / 32; chunk++)
+    sq_data_fwd_entry[row] = (sq_data_fwd_entry[row] << 32) | FLEN'($urandom);
+  end
+`else
   initial for (int i = 0; i < DEPTH; i++) sq_data_fwd_entry[i] = '0;
 `endif
 

@@ -1329,6 +1329,7 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
         assert re.search(
             r"sdp_block_ram_dc_init #\(\s*\.ADDR_WIDTH\(ADDR_WIDTH - 1\),\s*"
             r"\.DATA_WIDTH\(FastLaneWidth\),\s*\.USE_INIT_FILE\(LoadBankImages\),\s*"
+            r"\.SIM_EXTERNAL_INIT\(USE_INIT_FILE\),\s*"
             rf"\.INIT_FILE\(INIT_FILE_{parity.upper()}_COMPRESSED\)\s*\)\s*"
             rf"u_{parity}_compressed \(",
             imem,
