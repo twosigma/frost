@@ -231,6 +231,19 @@ Maintainers evaluating this contribution can verify the model with four standard
    ```
    *Expected output: Completely empty. No synthesizable RTL files are modified.*
 
+CI's Fast Python Tests job runs the unit tests and the self-test through `tests/test_perf_model.py`, which also replays the sample traces in `traces/` and checks that the model still writes the self-test, audit, CoreMark run, CoreMark exploration, and sweep results stored in `results/`, apart from wall-clock fields. To run it locally:
+
+```bash
+./scripts/frost.py run pytest tests/test_perf_model.py -v
+```
+
+A change to the model that moves those results must rewrite them, with the commands in section 6 and these two:
+
+```bash
+python3 perf-modeling/frost_perf_model.py selftest --out perf-modeling/results/frost_perf_selftest.json
+python3 perf-modeling/frost_perf_model.py audit --out perf-modeling/results/frost_perf_rtl_alignment.json
+```
+
 ### Adopting, Extending, and Refining the Model
 
 As the FROST design evolves, maintainers can easily keep the performance model synchronized:
