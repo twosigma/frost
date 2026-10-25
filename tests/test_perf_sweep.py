@@ -45,9 +45,10 @@ def test_controller_probe_measures_latency_budget() -> None:
     assert short["axi"]["max_inflight"] == long["axi"]["max_inflight"] == 4
 
 
-def test_sweep_configurations_are_valid_and_named() -> None:
+@pytest.mark.parametrize("group", ["all", "outstanding"])
+def test_sweep_configurations_are_valid_and_named(group: str) -> None:
     """Every sweep point has a unique identity and valid resource geometry."""
-    configs = sweep.configurations("all")
+    configs = sweep.configurations(group)
     assert len({config.name for config in configs}) == len(configs)
     for config in configs:
         config.validate()
