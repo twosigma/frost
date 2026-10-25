@@ -184,6 +184,8 @@ class ModelConfig:
     l1i_ways: int = 4
     l1d_ways: int = 4
     l2_ways: int = 4
+    l1d_bimodal_insert: bool = True
+    l2_bimodal_insert: bool = False
     l1_line_bytes: int = 32
     l2_line_bytes: int = 64
     l1i_mshrs: int = 2
@@ -227,7 +229,13 @@ class ModelConfig:
             ("L1D", self.l1d_bytes, self.l1_line_bytes, self.l1d_ways),
             ("L2", self.l2_bytes, self.l2_line_bytes, self.l2_ways),
         ):
-            if size <= 0 or line <= 0 or ways <= 0 or size % (line * ways):
+            if (
+                size <= 0
+                or line <= 0
+                or ways <= 0
+                or ways & (ways - 1)
+                or size % (line * ways)
+            ):
                 raise ValueError(f"invalid {label} geometry")
         if self.l2_line_bytes % self.l1_line_bytes:
             raise ValueError("L2 line must contain an integral number of L1 lines")
@@ -374,7 +382,6 @@ class CacheLine:
     valid: bool = False
     dirty: bool = False
     reserved_by: int | None = None
-    last_used: int = 0
     prefetched: bool = False
 
 
@@ -441,6 +448,8 @@ class CacheLevel:
         each L1D demand miss.
         """
         self.name = name
+        if ways < 1 or ways & (ways - 1):
+            raise ValueError("cache ways must be a power of two")
         self.loop = loop
         self.lower = lower
         self.size_bytes = size_bytes
@@ -463,7 +472,9 @@ class CacheLevel:
         self._used_wb_slots: set[int] = set()
         self._last_accept_cycle = -1
         self._last_response_cycle = -1
-        self._touch_counter = 0
+        self.plru: dict[int, int] = {}
+        self._insert_lfsr = 0xACE1
+        self._insert_cycle = 0
         self.stats: Counter = Counter()
 
     def _set_and_tag(self, address: int) -> tuple[int, int, int]:
@@ -493,18 +504,45 @@ class CacheLevel:
         for index, line in enumerate(lines):
             if not line.valid and line.reserved_by is None:
                 return index
-        options = [
-            (line.last_used, index)
-            for index, line in enumerate(lines)
-            if line.reserved_by is None
-        ]
-        return min(options)[1] if options else None
+        available = {
+            index for index, line in enumerate(lines) if line.reserved_by is None
+        }
+        if not available:
+            return None
+        state = self.plru.get(set_index, 0)
+        node, low, half = 1, 0, self.ways // 2
+        while half:
+            left = any(low <= way < low + half for way in available)
+            right = any(low + half <= way < low + 2 * half for way in available)
+            go_right = ((state >> (node - 1)) & 1) if left and right else int(right)
+            node = 2 * node + go_right
+            low += half * go_right
+            half //= 2
+        return node - self.ways
 
-    def _touch(self, line: CacheLine, prefetched: bool = False) -> None:
-        self._touch_counter += 1
-        line.last_used = self._touch_counter
-        if not prefetched:
-            line.prefetched = False
+    def _touch(self, set_index: int, way: int, allocation: bool = False) -> None:
+        if allocation and self.bimodal_insert:
+            while self._insert_cycle < self.loop.cycle:
+                feedback = (
+                    (self._insert_lfsr >> 15)
+                    ^ (self._insert_lfsr >> 13)
+                    ^ (self._insert_lfsr >> 12)
+                    ^ (self._insert_lfsr >> 10)
+                ) & 1
+                self._insert_lfsr = ((self._insert_lfsr << 1) & 0xFFFF) | feedback
+                self._insert_cycle += 1
+            if self._insert_lfsr & 31:
+                self.stats["bimodal_untouched_allocations"] += 1
+                return
+        state = self.plru.get(set_index, 0)
+        node = way + self.ways
+        while node > 1:
+            bit = node // 2 - 1
+            state = (state & ~(1 << bit)) | (int(node % 2 == 0) << bit)
+            node //= 2
+        self.plru[set_index] = state
+        if allocation:
+            self.stats["mru_allocations"] += 1
 
     def submit(self, request: Request) -> bool:
         """Accept at most one tag lookup per modeled cache cycle."""
@@ -516,12 +554,12 @@ class CacheLevel:
         if hit_way is not None:
             self._last_accept_cycle = self.loop.cycle
             line = self._ways(set_index)[hit_way]
-            self._touch(line)
+            self._touch(set_index, hit_way)
             if request.is_write:
                 line.dirty = True
             elif line.prefetched:
                 self.stats["useful_prefetches"] += 1
-                line.prefetched = False
+            line.prefetched = False
             self.stats["hits"] += 1
             self.loop.after(
                 self.tag_cycles + self.data_cycles, lambda: self._respond(request)
@@ -579,6 +617,7 @@ class CacheLevel:
             evicted_line_address=evicted_line_address,
         )
         self.mshrs[line_address] = status
+        self._touch(set_index, victim_way, allocation=True)
         self.stats["misses"] += 1
         if needs_wb:
             self.stats["dirty_evictions"] += 1
@@ -654,7 +693,6 @@ class CacheLevel:
         line.valid = ok
         line.dirty = status.write_intent
         line.reserved_by = None
-        self._touch(line, prefetched=status.primary.source == "prefetch")
         line.prefetched = status.primary.source == "prefetch"
         responses = [status.primary] + status.waiters
         del self.mshrs[status.line_address]
@@ -1411,6 +1449,7 @@ class CpuTopMemoryHierarchy:
             config.cache_fill_cycles,
             config.cache_response_cycles,
             config.l2_id_bits,
+            bimodal_insert=config.l2_bimodal_insert,
         )
         self.adapter = LineSizeAdapter(
             self.l2, config.l1_line_bytes, config.l2_line_bytes
@@ -1431,7 +1470,7 @@ class CpuTopMemoryHierarchy:
             config.cache_fill_cycles,
             config.cache_response_cycles,
             config.l1d_id_bits,
-            bimodal_insert=True,
+            bimodal_insert=config.l1d_bimodal_insert,
             miss_observer=self.prefetcher.observe,
         )
         self.l1i = CacheLevel(
@@ -2624,7 +2663,7 @@ def rtl_audit() -> dict[str, Any]:
             "Deterministic workload generators, sweep driver, self-tests, and machine-readable bottleneck counters.",
         ],
         "assumptions_not_claimed_as_rtl_calibration": [
-            "Cache T/W-stage sequencing, PLRU/bimodal insertion probability, and exact pipeline stage latencies are structural timing models pending cycle-by-cycle trace calibration.",
+            "Cache stage timing, insertion-LFSR phase, and pipeline stage latencies are abstractions that require cycle-by-cycle calibration.",
             "The default DDR endpoint models FROST's single-channel axi_behavioral_memory.sv (LATENCY=30, NUM_SLOTS=max(L2MaxSlots,8)); board DDR4 MIG refresh and bank/row timing require hardware or VIP trace calibration.",
             "Workload micro-ops are representative pressure patterns, not captured Redis, HTTP, Linux or FaaS execution traces.",
             "The model does not execute the RISC-V ISA, model Sv39 page walks/DMA coherence traffic as workload events, or prove functional RTL equivalence.",

@@ -35,6 +35,7 @@
       "l1_data_cycles": 2,
       "l1_line_bytes": 32,
       "l1_tag_cycles": 1,
+      "l1d_bimodal_insert": true,
       "l1d_bytes": 131072,
       "l1d_id_bits": 4,
       "l1d_mshrs": 8,
@@ -43,6 +44,7 @@
       "l1i_bytes": 16384,
       "l1i_mshrs": 2,
       "l1i_ways": 4,
+      "l2_bimodal_insert": false,
       "l2_bytes": 2097152,
       "l2_data_cycles": 6,
       "l2_id_bits": 5,
@@ -90,11 +92,13 @@
           "writeback_slots": 0
         },
         "stats": {
+          "bimodal_untouched_allocations": 141,
           "downstream_backpressure": 294,
           "fills_issued": 144,
           "hits": 403,
           "input_backpressure": 46,
-          "misses": 144
+          "misses": 144,
+          "mru_allocations": 3
         }
       },
       "l1i": {
@@ -114,8 +118,10 @@
           "hits": 57,
           "input_backpressure": 19,
           "misses": 102,
+          "mru_allocations": 102,
           "mshr_backpressure": 290,
-          "mshr_merges": 14
+          "mshr_merges": 14,
+          "useful_prefetches": 16
         }
       },
       "line_size_adapter": {
@@ -199,11 +205,13 @@
           "writeback_slots": 0
         },
         "stats": {
+          "bimodal_untouched_allocations": 141,
           "downstream_backpressure": 294,
           "fills_issued": 144,
           "hits": 403,
           "input_backpressure": 46,
-          "misses": 144
+          "misses": 144,
+          "mru_allocations": 3
         }
       },
       "l1i": {
@@ -223,8 +231,10 @@
           "hits": 57,
           "input_backpressure": 19,
           "misses": 102,
+          "mru_allocations": 102,
           "mshr_backpressure": 290,
-          "mshr_merges": 14
+          "mshr_merges": 14,
+          "useful_prefetches": 16
         }
       },
       "line_size_adapter": {
@@ -284,7 +294,7 @@
       }
     },
     "micro_ops": 3128,
-    "micro_ops_per_second": 98871,
+    "micro_ops_per_second": 87338,
     "model_version": "1.0",
     "pipeline": {
       "max_occupancy": {
@@ -317,7 +327,7 @@
     },
     "retired": 3128,
     "seed": 11,
-    "simulated_cycles_per_second": 98018,
+    "simulated_cycles_per_second": 86585,
     "soc_top": {
       "configuration": {
         "bram_base": 0,
@@ -362,7 +372,7 @@
         "ddr_reads_forwarded": 102
       }
     },
-    "wall_time_seconds": 0.031637,
+    "wall_time_seconds": 0.035815,
     "workload": "coremark"
   },
   "observed": {

@@ -97,7 +97,7 @@ The architectural model was calibrated and validated against three distinct RTL 
 | **tomasulo_perf (Verilator RTL)** | 487,313 | 277.67 s | 1,755 cyc/s | 630 uop/s | **1.0x (Baseline)** |
 | **ddr_mlp_test (Verilator RTL)** | 94,010 | 56.63 s | 1,660 cyc/s | 537 uop/s | **1.0x (Baseline)** |
 | **FROST Perf Model (Trace Replay)** | 5,000 | 0.028 s | **176,550 cyc/s** | **176,550 uop/s** | **~103x Speedup** |
-| **FROST Perf Model (Analytical CoreMark)** | 3,101 | 0.031637 s | **98,018 cyc/s** | **98,871 uop/s** | **57.5x cycle-rate ratio** |
+| **FROST Perf Model (Analytical CoreMark)** | 3,101 | 0.035815 s | **86,585 cyc/s** | **87,338 uop/s** | **50.8x cycle-rate ratio** |
 
 ---
 
@@ -297,6 +297,8 @@ As the FROST design evolves, maintainers can easily keep the performance model s
 | AXI outstanding transaction limit | 32 |
 
 Caches reserve a victim way while a fill is pending. Same-line requests share a bounded miss record. Dirty victims complete their writeback before the replacement fill. Stores issue from the ROB head, and the model waits for their cache completion before retirement.
+
+Replacement follows the tree-PLRU walk in `frost_cache.sv`. An invalid unreserved way takes priority; otherwise the walk avoids reserved subtrees. Hits update the tree. An allocation updates it unless bimodal insertion is enabled and the low five bits of the free-running insertion LFSR are nonzero. The LFSR starts at `0xACE1` and uses the RTL's feedback taps. The model samples it at its allocation decision, not at fill completion. `l1d_bimodal_insert` defaults to true; `l2_bimodal_insert` defaults to false. Tag-stage timing is an abstraction, so the insertion phase is not calibrated cycle by cycle to RTL.
 
 `early_load_wakeup` lets an accepted, nonfaulting load wake a dependent memory operation one modeled cycle before its registered memory wakeup. It requires an idle registered CDB lane and supplies at most one early token per cycle, following `mem_wakeup_merge.sv`. Integer consumers use the ordinary dependency path. The model omits uncached-store completion arbitration and speculative recovery.
 
