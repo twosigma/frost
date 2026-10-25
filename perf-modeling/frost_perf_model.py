@@ -1494,6 +1494,7 @@ class RobEntry:
     issued: bool = False
     done: bool = False
     store_started: bool = False
+    fault: bool = False
 
 
 class FrostPipeline:
@@ -1524,6 +1525,9 @@ class FrostPipeline:
         self.rob: deque[RobEntry] = deque()
         self.entries: dict[int, RobEntry] = {}
         self.completed_ids: set[int] = set()
+        self._load_ready_cycles: dict[int, int] = {}
+        self._early_ready_ids: set[int] = set()
+        self._registered_cdb_count = 0
         self.l0_cache: dict[int, int] = {}
         self.fetch_state: dict[int, str] = {}
         self.next_dispatch = 0
@@ -1619,13 +1623,16 @@ class FrostPipeline:
 
     def _deps_ready(self, entry: RobEntry) -> bool:
         deps = entry.op.depends_on
-        if not deps:
-            return True
-        if len(deps) == 1:
-            return deps[0] in self.completed_ids
-        if len(deps) == 2:
-            return deps[0] in self.completed_ids and deps[1] in self.completed_ids
-        return all(dep in self.completed_ids for dep in deps)
+        for dep in deps:
+            if dep not in self.completed_ids:
+                return False
+            if (
+                entry.op.kind in {"load", "store"}
+                and self._load_ready_cycles.get(dep, 0) > self.loop.cycle
+                and dep not in self._early_ready_ids
+            ):
+                return False
+        return True
 
     def _complete_later(self, entry: RobEntry, delay: int) -> None:
         self.loop.after(delay, lambda entry=entry: self.completions.append(entry))
@@ -1714,22 +1721,37 @@ class FrostPipeline:
                 self.stats["loads_issued"] += 1
 
     def _fault(self, entry: RobEntry) -> None:
+        entry.fault = True
         self.stats["memory_faults"] += 1
         self.completions.append(entry)
 
     def _drain_cdb(self) -> None:
+        early_lane_available = self._registered_cdb_count < self.config.cdb_width
+        self._registered_cdb_count = 0
+        self._early_ready_ids.clear()
         if not self.completions:
             return
         self.completions.sort(
             key=lambda e: (0 if e.op.kind == "load" else 1, e.op.op_id)
         )
         admitted = self.completions[: self.config.cdb_width]
+        self._registered_cdb_count = len(admitted)
         self.completions = self.completions[self.config.cdb_width :]
         if self.completions:
             self.stats["cdb_contention"] += len(self.completions)
         for entry in admitted:
             entry.done = True
             self.completed_ids.add(entry.op.op_id)
+            if entry.op.kind == "load":
+                self._load_ready_cycles[entry.op.op_id] = self.loop.cycle + 1
+                if (
+                    self.config.early_load_wakeup
+                    and early_lane_available
+                    and not entry.fault
+                ):
+                    self._early_ready_ids.add(entry.op.op_id)
+                    early_lane_available = False
+                    self.stats["early_load_tokens"] += 1
             if entry.op.kind in {"alu", "branch"}:
                 self.int_rs_in_use -= 1
                 if entry.op.kind == "branch" and entry.op.mispredict:
@@ -1743,7 +1765,7 @@ class FrostPipeline:
             self.stats["completed"] += 1
 
     def _start_head_store(self, entry: RobEntry) -> bool:
-        if entry.store_started:
+        if entry.store_started or not self._deps_ready(entry):
             return False
         request = Request(
             address=entry.op.data_address or 0,

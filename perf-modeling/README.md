@@ -97,7 +97,7 @@ The architectural model was calibrated and validated against three distinct RTL 
 | **tomasulo_perf (Verilator RTL)** | 487,313 | 277.67 s | 1,755 cyc/s | 630 uop/s | **1.0x (Baseline)** |
 | **ddr_mlp_test (Verilator RTL)** | 94,010 | 56.63 s | 1,660 cyc/s | 537 uop/s | **1.0x (Baseline)** |
 | **FROST Perf Model (Trace Replay)** | 5,000 | 0.028 s | **176,550 cyc/s** | **176,550 uop/s** | **~103x Speedup** |
-| **FROST Perf Model (Analytical CoreMark)** | 3,101 | 0.047959 s | **64,659 cyc/s** | **65,222 uop/s** | **37.9x cycle-rate ratio** |
+| **FROST Perf Model (Analytical CoreMark)** | 3,101 | 0.031637 s | **98,018 cyc/s** | **98,871 uop/s** | **57.5x cycle-rate ratio** |
 
 ---
 
@@ -276,8 +276,70 @@ As the FROST design evolves, maintainers can easily keep the performance model s
 - **Modifying Memory Controller / DDR Timing**: Adjust `DdrConfig` (`latency_cycles`, `num_slots`, reorder jitter) or replace `SingleChannelDdrController`.
 - **Adding New Workload Traces**: Compile any RISC-V binary in `sw/apps/<app>`, run under cocotb with `FROST_CALIBRATION_TRACE_PATH` set, and replay with `--trace`.
 
-## 8. Configurable memory controllers
+## 8. Memory-system configuration
 
-`axi_id_pool_size` limits the total outstanding AXI transactions. `axi_id_bits` sets the DDR port width and must cover `l2_id_bits`. The bridge carries each internal cache ID unchanged, as `line_port_axi_bridge.sv` does, and releases it on its response, including an error response. Read and write transactions share this ownership pool. The cache ID widths and slot counts are separate configuration fields. Widths beyond the production defaults describe architectural experiments and require corresponding RTL changes.
+`ModelConfig` supplies the following production resource defaults. Latencies are model assumptions expressed in core cycles.
 
-`DdrConfig(controller="interleaved")` selects physical channels with address interleaving. `channels` sets their count and `interleave_bytes` sets the stripe size. Each channel has `num_slots` read entries and `num_slots` write entries. Reads and writes share one line of service every `cycles_per_line` core cycles after `latency_cycles`. The shared AXI port returns at most one read and one write response per cycle. This controller has no bank, row, or refresh model. The default `behavioral` controller represents the single-channel simulation endpoint and sizes its queues from the L2 resources.
+| Resource | Default |
+|---|---|
+| Dispatch, retirement, CDB width | 2 |
+| ROB / integer RS / memory RS entries | 32 / 16 / 8 |
+| Load / store queue entries | 8 / 8 |
+| L0 data entries | 256 dwords |
+| L1I / L1D / L2 capacity | 16 KiB / 128 KiB / 2 MiB |
+| Cache associativity | 4 ways |
+| L1 / L2 line bytes | 32 / 64 |
+| L1D / L2 miss slots | 8 / 4 |
+| L1D / L2 writeback slots | 2 / 2 |
+| L2 waiter seats per miss | 2 |
+| L1D / L2 internal ID bits | 4 / 5 |
+| CPU / DDR AXI ID bits | 6 / 5 |
+| AXI outstanding transaction limit | 32 |
+
+Caches reserve a victim way while a fill is pending. Same-line requests share a bounded miss record. Dirty victims complete their writeback before the replacement fill. Stores issue from the ROB head, and the model waits for their cache completion before retirement.
+
+`early_load_wakeup` lets an accepted, nonfaulting load wake a dependent memory operation one modeled cycle before its registered memory wakeup. It requires an idle registered CDB lane and supplies at most one early token per cycle, following `mem_wakeup_merge.sv`. Integer consumers use the ordinary dependency path. The model omits uncached-store completion arbitration and speculative recovery.
+
+`axi_id_pool_size` limits the total outstanding AXI transactions. Read and write transactions share this ownership pool. `axi_id_bits` sets the DDR port width and must cover `l2_id_bits`. The bridge carries each internal cache ID unchanged, as `line_port_axi_bridge.sv` does, and releases it on its response, including an error response. It does not renumber IDs. Cache slot counts and internal ID widths are separate fields. Widths beyond the production defaults describe architectural experiments and require corresponding RTL changes.
+
+## 9. Configurable memory controllers
+
+`DdrConfig(controller="behavioral")` selects the default single-channel endpoint. Its read and write queues are independent, and each has `max(num_slots, l2_mshrs, l2_wb_slots, 8)` entries. It models the configurable delay, LFSR jitter, and cross-ID completion reordering of `axi_behavioral_memory.sv`.
+
+`DdrConfig(controller="interleaved")` selects physical channels with address interleaving. `channels` sets their count, and `interleave_bytes` sets the stripe size. The channel is `(DDR_offset // interleave_bytes) % channels`. Each channel has `num_slots` read entries and `num_slots` write entries, independently of the cache resources. Reads and writes share one line of service every `cycles_per_line` core cycles after `latency_cycles` has elapsed. Jitter and reordering use the same controls as the behavioral endpoint.
+
+The shared AXI return port carries at most one read response and one write response per cycle across all physical channels. A second physical channel can increase aggregate service bandwidth only within this port limit. The interleaved controller has no bank, row, refresh, or bus-turnaround model. Its service rate is an explicit experiment input, not a board measurement.
+
+## 10. Workload models and instruction replay
+
+The built-in workloads are synthetic instruction and memory-pressure patterns: `coremark`, `memory_stress`, `redis_kv`, `http_api`, `faas_cold`, and `linux_service`. The CoreMark generator represents selected kernel dependencies and starts with instruction fetches ready. It is not the compiled CoreMark program.
+
+Instruction replay accepts JSONL records with `kind`, `fetch_address`, `data_address`, `depends_on`, and `mispredict`, or CSV records with the equivalent fields. The supported kinds are `alu`, `branch`, `load`, and `store`. Dependencies refer to earlier operation IDs.
+
+Calibration events contain dispatch and retirement counts and AXI handshakes. They do not contain an architectural instruction stream or its dependencies. They are suitable for trace validation and observed counters, not for reconstructing a program's cache accesses. The [correlation guide](docs/rtl_correlation_guide.md) describes capture and comparison.
+
+## 11. Model experiment commands
+
+Run Python commands in the repository's `frost` Docker image. Store experimental measurements and generated reports outside versioned documentation.
+
+```bash
+python3 perf-modeling/frost_perf_model.py run --workload coremark --out /tmp/coremark.json
+python3 perf-modeling/frost_perf_model.py replay --trace /tmp/instructions.jsonl --out /tmp/replay.json
+python3 perf-modeling/frost_perf_model.py explore --workload coremark --out /tmp/exploration.json
+python3 perf-modeling/frost_perf_model.py sweep --out /tmp/sweep.json
+python3 perf-modeling/frost_perf_model.py report --sweep /tmp/sweep.json --out /tmp/report.md
+python3 perf-modeling/frost_perf_model.py selftest --out /tmp/selftest.json
+python3 perf-modeling/frost_perf_model.py audit --out /tmp/audit.json
+```
+
+## 12. Model tests and calibration scope
+
+The Fast Python Tests job collects `tests/test_perf_model.py` and `tests/test_perf_memory.py`. They cover model invariants, deterministic results, trace contracts, calibration checks, memory channel service, and AXI ownership. The JSON files under `results/` are regression fixtures, not independent RTL validation.
+
+```bash
+pytest tests/test_perf_model.py tests/test_perf_memory.py -q -p no:cacheprovider
+```
+
+A model change that alters the stored results regenerates the corresponding JSON files with `run`, `explore`, `sweep`, `selftest`, and `audit`. The CoreMark fixture uses seed 11 and the default configuration. The exploration and sweep fixtures use their command defaults. Wall-clock fields are excluded from regression comparisons.
+
+CI captures the BRAM CoreMark timed region and compares its observed IPC with the synthetic CoreMark workload. `calibration/ci_baseline.json` names the memory tier, workload, seed, required event classes, and tolerance. A passing comparison is an aggregate calibration check; it does not validate DDR sensitivity or other workloads. `tools/refresh_baseline.py` captures and checks that region before writing the baseline. A baseline refresh accompanies an intentional model or RTL performance change and records its reason in the commit.

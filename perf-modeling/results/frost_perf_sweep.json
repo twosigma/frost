@@ -192,6 +192,7 @@
               "dispatch_stall_lq": 3066,
               "dispatch_stall_mem_rs": 1878,
               "dispatched": 980,
+              "early_load_tokens": 358,
               "fetch_requests": 243,
               "frontend_fetch_stall": 1338,
               "frontend_recovery_stall": 12,
@@ -335,7 +336,7 @@
           }
         },
         "micro_ops": 980,
-        "micro_ops_per_second": 7489,
+        "micro_ops_per_second": 16189,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -351,6 +352,7 @@
             "dispatch_stall_lq": 3066,
             "dispatch_stall_mem_rs": 1878,
             "dispatched": 980,
+            "early_load_tokens": 358,
             "fetch_requests": 243,
             "frontend_fetch_stall": 1338,
             "frontend_recovery_stall": 12,
@@ -367,7 +369,7 @@
         },
         "retired": 980,
         "seed": 11,
-        "simulated_cycles_per_second": 53056,
+        "simulated_cycles_per_second": 114683,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -412,7 +414,7 @@
             "ddr_reads_forwarded": 549
           }
         },
-        "wall_time_seconds": 0.130841,
+        "wall_time_seconds": 0.060532,
         "workload": "redis_kv"
       },
       "score": {
@@ -567,6 +569,7 @@
               "dispatch_stall_lq": 108,
               "dispatch_stall_mem_rs": 15026,
               "dispatched": 1536,
+              "early_load_tokens": 576,
               "fetch_requests": 384,
               "frontend_fetch_stall": 344,
               "frontend_recovery_stall": 12,
@@ -710,7 +713,7 @@
           }
         },
         "micro_ops": 1536,
-        "micro_ops_per_second": 7234,
+        "micro_ops_per_second": 13355,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -726,6 +729,7 @@
             "dispatch_stall_lq": 108,
             "dispatch_stall_mem_rs": 15026,
             "dispatched": 1536,
+            "early_load_tokens": 576,
             "fetch_requests": 384,
             "frontend_fetch_stall": 344,
             "frontend_recovery_stall": 12,
@@ -744,7 +748,7 @@
         },
         "retired": 1536,
         "seed": 12,
-        "simulated_cycles_per_second": 76717,
+        "simulated_cycles_per_second": 141626,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -789,7 +793,7 @@
             "ddr_reads_forwarded": 655
           }
         },
-        "wall_time_seconds": 0.21231,
+        "wall_time_seconds": 0.115006,
         "workload": "http_api"
       },
       "score": {
@@ -951,6 +955,7 @@
               "dispatch_stall_lq": 22,
               "dispatch_stall_mem_rs": 36941,
               "dispatched": 2240,
+              "early_load_tokens": 960,
               "fetch_requests": 1080,
               "frontend_fetch_stall": 226,
               "frontend_recovery_stall": 80,
@@ -1104,7 +1109,7 @@
           }
         },
         "micro_ops": 2240,
-        "micro_ops_per_second": 6707,
+        "micro_ops_per_second": 8279,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -1120,6 +1125,7 @@
             "dispatch_stall_lq": 22,
             "dispatch_stall_mem_rs": 36941,
             "dispatched": 2240,
+            "early_load_tokens": 960,
             "fetch_requests": 1080,
             "frontend_fetch_stall": 226,
             "frontend_recovery_stall": 80,
@@ -1136,7 +1142,7 @@
         },
         "retired": 2240,
         "seed": 13,
-        "simulated_cycles_per_second": 115531,
+        "simulated_cycles_per_second": 142615,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -1184,7 +1190,7 @@
             "ddr_writes_forwarded": 96
           }
         },
-        "wall_time_seconds": 0.33397,
+        "wall_time_seconds": 0.270545,
         "workload": "faas_cold"
       },
       "score": {
@@ -1338,6 +1344,7 @@
               "completed": 1520,
               "dispatch_stall_mem_rs": 23517,
               "dispatched": 1520,
+              "early_load_tokens": 640,
               "fetch_requests": 320,
               "frontend_fetch_stall": 115,
               "frontend_recovery_stall": 8,
@@ -1481,7 +1488,7 @@
           }
         },
         "micro_ops": 1520,
-        "micro_ops_per_second": 7872,
+        "micro_ops_per_second": 9790,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -1496,6 +1503,7 @@
             "completed": 1520,
             "dispatch_stall_mem_rs": 23517,
             "dispatched": 1520,
+            "early_load_tokens": 640,
             "fetch_requests": 320,
             "frontend_fetch_stall": 115,
             "frontend_recovery_stall": 8,
@@ -1514,7 +1522,7 @@
         },
         "retired": 1520,
         "seed": 14,
-        "simulated_cycles_per_second": 127769,
+        "simulated_cycles_per_second": 158904,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -1559,7 +1567,7 @@
             "ddr_reads_forwarded": 889
           }
         },
-        "wall_time_seconds": 0.193089,
+        "wall_time_seconds": 0.155256,
         "workload": "linux_service"
       },
       "score": {
@@ -1712,6 +1720,7 @@
               "dispatch_stall_lq": 60,
               "dispatch_stall_mem_rs": 11668,
               "dispatched": 1098,
+              "early_load_tokens": 960,
               "fetch_requests": 121,
               "frontend_fetch_stall": 290,
               "l0_fills": 960,
@@ -1851,7 +1860,7 @@
           }
         },
         "micro_ops": 1098,
-        "micro_ops_per_second": 3021,
+        "micro_ops_per_second": 5354,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -1865,6 +1874,7 @@
             "dispatch_stall_lq": 60,
             "dispatch_stall_mem_rs": 11668,
             "dispatched": 1098,
+            "early_load_tokens": 960,
             "fetch_requests": 121,
             "frontend_fetch_stall": 290,
             "l0_fills": 960,
@@ -1879,7 +1889,7 @@
         },
         "retired": 1098,
         "seed": 15,
-        "simulated_cycles_per_second": 33347,
+        "simulated_cycles_per_second": 59109,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -1924,7 +1934,7 @@
             "ddr_reads_forwarded": 1159
           }
         },
-        "wall_time_seconds": 0.363448,
+        "wall_time_seconds": 0.205043,
         "workload": "memory_stress"
       },
       "score": {
@@ -2076,6 +2086,7 @@
               "dispatch_stall_lq": 1014,
               "dispatch_stall_mem_rs": 568,
               "dispatched": 3128,
+              "early_load_tokens": 545,
               "frontend_recovery_stall": 2,
               "l0_fills": 448,
               "l0_hits": 768,
@@ -2220,7 +2231,7 @@
           }
         },
         "micro_ops": 3128,
-        "micro_ops_per_second": 54042,
+        "micro_ops_per_second": 98790,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -2237,6 +2248,7 @@
             "dispatch_stall_lq": 1014,
             "dispatch_stall_mem_rs": 568,
             "dispatched": 3128,
+            "early_load_tokens": 545,
             "frontend_recovery_stall": 2,
             "l0_fills": 448,
             "l0_hits": 768,
@@ -2252,7 +2264,7 @@
         },
         "retired": 3128,
         "seed": 16,
-        "simulated_cycles_per_second": 53576,
+        "simulated_cycles_per_second": 97937,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -2297,7 +2309,7 @@
             "ddr_reads_forwarded": 102
           }
         },
-        "wall_time_seconds": 0.05788,
+        "wall_time_seconds": 0.031663,
         "workload": "coremark"
       },
       "score": {
@@ -2453,6 +2465,7 @@
               "dispatch_stall_lq": 2890,
               "dispatch_stall_mem_rs": 1932,
               "dispatched": 980,
+              "early_load_tokens": 354,
               "fetch_requests": 243,
               "frontend_fetch_stall": 1459,
               "frontend_recovery_stall": 12,
@@ -2595,7 +2608,7 @@
           }
         },
         "micro_ops": 980,
-        "micro_ops_per_second": 9251,
+        "micro_ops_per_second": 17151,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -2611,6 +2624,7 @@
             "dispatch_stall_lq": 2890,
             "dispatch_stall_mem_rs": 1932,
             "dispatched": 980,
+            "early_load_tokens": 354,
             "fetch_requests": 243,
             "frontend_fetch_stall": 1459,
             "frontend_recovery_stall": 12,
@@ -2627,7 +2641,7 @@
         },
         "retired": 980,
         "seed": 11,
-        "simulated_cycles_per_second": 65536,
+        "simulated_cycles_per_second": 121492,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -2672,7 +2686,7 @@
             "ddr_reads_forwarded": 549
           }
         },
-        "wall_time_seconds": 0.105926,
+        "wall_time_seconds": 0.057139,
         "workload": "redis_kv"
       },
       "score": {
@@ -2827,6 +2841,7 @@
               "dispatch_stall_lq": 108,
               "dispatch_stall_mem_rs": 15026,
               "dispatched": 1536,
+              "early_load_tokens": 576,
               "fetch_requests": 384,
               "frontend_fetch_stall": 344,
               "frontend_recovery_stall": 12,
@@ -2970,7 +2985,7 @@
           }
         },
         "micro_ops": 1536,
-        "micro_ops_per_second": 7082,
+        "micro_ops_per_second": 13246,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -2986,6 +3001,7 @@
             "dispatch_stall_lq": 108,
             "dispatch_stall_mem_rs": 15026,
             "dispatched": 1536,
+            "early_load_tokens": 576,
             "fetch_requests": 384,
             "frontend_fetch_stall": 344,
             "frontend_recovery_stall": 12,
@@ -3004,7 +3020,7 @@
         },
         "retired": 1536,
         "seed": 12,
-        "simulated_cycles_per_second": 75106,
+        "simulated_cycles_per_second": 140466,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -3049,7 +3065,7 @@
             "ddr_reads_forwarded": 655
           }
         },
-        "wall_time_seconds": 0.216864,
+        "wall_time_seconds": 0.115956,
         "workload": "http_api"
       },
       "score": {
@@ -3211,6 +3227,7 @@
               "dispatch_stall_lq": 22,
               "dispatch_stall_mem_rs": 36941,
               "dispatched": 2240,
+              "early_load_tokens": 960,
               "fetch_requests": 1080,
               "frontend_fetch_stall": 226,
               "frontend_recovery_stall": 80,
@@ -3364,7 +3381,7 @@
           }
         },
         "micro_ops": 2240,
-        "micro_ops_per_second": 7604,
+        "micro_ops_per_second": 8463,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -3380,6 +3397,7 @@
             "dispatch_stall_lq": 22,
             "dispatch_stall_mem_rs": 36941,
             "dispatched": 2240,
+            "early_load_tokens": 960,
             "fetch_requests": 1080,
             "frontend_fetch_stall": 226,
             "frontend_recovery_stall": 80,
@@ -3396,7 +3414,7 @@
         },
         "retired": 2240,
         "seed": 13,
-        "simulated_cycles_per_second": 130993,
+        "simulated_cycles_per_second": 145785,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -3444,7 +3462,7 @@
             "ddr_writes_forwarded": 96
           }
         },
-        "wall_time_seconds": 0.29455,
+        "wall_time_seconds": 0.264662,
         "workload": "faas_cold"
       },
       "score": {
@@ -3598,6 +3616,7 @@
               "completed": 1520,
               "dispatch_stall_mem_rs": 23517,
               "dispatched": 1520,
+              "early_load_tokens": 640,
               "fetch_requests": 320,
               "frontend_fetch_stall": 115,
               "frontend_recovery_stall": 8,
@@ -3741,7 +3760,7 @@
           }
         },
         "micro_ops": 1520,
-        "micro_ops_per_second": 9095,
+        "micro_ops_per_second": 9709,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -3756,6 +3775,7 @@
             "completed": 1520,
             "dispatch_stall_mem_rs": 23517,
             "dispatched": 1520,
+            "early_load_tokens": 640,
             "fetch_requests": 320,
             "frontend_fetch_stall": 115,
             "frontend_recovery_stall": 8,
@@ -3774,7 +3794,7 @@
         },
         "retired": 1520,
         "seed": 14,
-        "simulated_cycles_per_second": 147628,
+        "simulated_cycles_per_second": 157586,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -3819,7 +3839,7 @@
             "ddr_reads_forwarded": 889
           }
         },
-        "wall_time_seconds": 0.167116,
+        "wall_time_seconds": 0.156555,
         "workload": "linux_service"
       },
       "score": {
@@ -3972,6 +3992,7 @@
               "dispatch_stall_lq": 154,
               "dispatch_stall_mem_rs": 7542,
               "dispatched": 1098,
+              "early_load_tokens": 960,
               "fetch_requests": 121,
               "frontend_fetch_stall": 268,
               "l0_fills": 960,
@@ -4111,7 +4132,7 @@
           }
         },
         "micro_ops": 1098,
-        "micro_ops_per_second": 10817,
+        "micro_ops_per_second": 13130,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -4125,6 +4146,7 @@
             "dispatch_stall_lq": 154,
             "dispatch_stall_mem_rs": 7542,
             "dispatched": 1098,
+            "early_load_tokens": 960,
             "fetch_requests": 121,
             "frontend_fetch_stall": 268,
             "l0_fills": 960,
@@ -4139,7 +4161,7 @@
         },
         "retired": 1098,
         "seed": 15,
-        "simulated_cycles_per_second": 79275,
+        "simulated_cycles_per_second": 96231,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -4184,7 +4206,7 @@
             "ddr_reads_forwarded": 1159
           }
         },
-        "wall_time_seconds": 0.101506,
+        "wall_time_seconds": 0.083622,
         "workload": "memory_stress"
       },
       "score": {
@@ -4334,6 +4356,7 @@
               "dispatch_stall_lq": 987,
               "dispatch_stall_mem_rs": 529,
               "dispatched": 3128,
+              "early_load_tokens": 545,
               "frontend_recovery_stall": 2,
               "l0_fills": 448,
               "l0_hits": 768,
@@ -4476,7 +4499,7 @@
           }
         },
         "micro_ops": 3128,
-        "micro_ops_per_second": 84775,
+        "micro_ops_per_second": 105730,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -4493,6 +4516,7 @@
             "dispatch_stall_lq": 987,
             "dispatch_stall_mem_rs": 529,
             "dispatched": 3128,
+            "early_load_tokens": 545,
             "frontend_recovery_stall": 2,
             "l0_fills": 448,
             "l0_hits": 768,
@@ -4508,7 +4532,7 @@
         },
         "retired": 3128,
         "seed": 16,
-        "simulated_cycles_per_second": 82255,
+        "simulated_cycles_per_second": 102587,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -4553,7 +4577,7 @@
             "ddr_reads_forwarded": 102
           }
         },
-        "wall_time_seconds": 0.036897,
+        "wall_time_seconds": 0.029585,
         "workload": "coremark"
       },
       "score": {
@@ -4709,6 +4733,7 @@
               "dispatch_stall_lq": 2890,
               "dispatch_stall_mem_rs": 1932,
               "dispatched": 980,
+              "early_load_tokens": 354,
               "fetch_requests": 243,
               "frontend_fetch_stall": 1459,
               "frontend_recovery_stall": 12,
@@ -4851,7 +4876,7 @@
           }
         },
         "micro_ops": 980,
-        "micro_ops_per_second": 17187,
+        "micro_ops_per_second": 17235,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -4867,6 +4892,7 @@
             "dispatch_stall_lq": 2890,
             "dispatch_stall_mem_rs": 1932,
             "dispatched": 980,
+            "early_load_tokens": 354,
             "fetch_requests": 243,
             "frontend_fetch_stall": 1459,
             "frontend_recovery_stall": 12,
@@ -4883,7 +4909,7 @@
         },
         "retired": 980,
         "seed": 11,
-        "simulated_cycles_per_second": 121751,
+        "simulated_cycles_per_second": 122087,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -4928,7 +4954,7 @@
             "ddr_reads_forwarded": 549
           }
         },
-        "wall_time_seconds": 0.057018,
+        "wall_time_seconds": 0.056861,
         "workload": "redis_kv"
       },
       "score": {
@@ -5083,6 +5109,7 @@
               "dispatch_stall_lq": 108,
               "dispatch_stall_mem_rs": 15026,
               "dispatched": 1536,
+              "early_load_tokens": 576,
               "fetch_requests": 384,
               "frontend_fetch_stall": 344,
               "frontend_recovery_stall": 12,
@@ -5226,7 +5253,7 @@
           }
         },
         "micro_ops": 1536,
-        "micro_ops_per_second": 9444,
+        "micro_ops_per_second": 13323,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -5242,6 +5269,7 @@
             "dispatch_stall_lq": 108,
             "dispatch_stall_mem_rs": 15026,
             "dispatched": 1536,
+            "early_load_tokens": 576,
             "fetch_requests": 384,
             "frontend_fetch_stall": 344,
             "frontend_recovery_stall": 12,
@@ -5260,7 +5288,7 @@
         },
         "retired": 1536,
         "seed": 12,
-        "simulated_cycles_per_second": 100153,
+        "simulated_cycles_per_second": 141280,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -5305,7 +5333,7 @@
             "ddr_reads_forwarded": 655
           }
         },
-        "wall_time_seconds": 0.16263,
+        "wall_time_seconds": 0.115289,
         "workload": "http_api"
       },
       "score": {
@@ -5467,6 +5495,7 @@
               "dispatch_stall_lq": 22,
               "dispatch_stall_mem_rs": 36941,
               "dispatched": 2240,
+              "early_load_tokens": 960,
               "fetch_requests": 1080,
               "frontend_fetch_stall": 226,
               "frontend_recovery_stall": 80,
@@ -5620,7 +5649,7 @@
           }
         },
         "micro_ops": 2240,
-        "micro_ops_per_second": 7133,
+        "micro_ops_per_second": 8572,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -5636,6 +5665,7 @@
             "dispatch_stall_lq": 22,
             "dispatch_stall_mem_rs": 36941,
             "dispatched": 2240,
+            "early_load_tokens": 960,
             "fetch_requests": 1080,
             "frontend_fetch_stall": 226,
             "frontend_recovery_stall": 80,
@@ -5652,7 +5682,7 @@
         },
         "retired": 2240,
         "seed": 13,
-        "simulated_cycles_per_second": 122867,
+        "simulated_cycles_per_second": 147662,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -5700,7 +5730,7 @@
             "ddr_writes_forwarded": 96
           }
         },
-        "wall_time_seconds": 0.31403,
+        "wall_time_seconds": 0.261299,
         "workload": "faas_cold"
       },
       "score": {
@@ -5854,6 +5884,7 @@
               "completed": 1520,
               "dispatch_stall_mem_rs": 23517,
               "dispatched": 1520,
+              "early_load_tokens": 640,
               "fetch_requests": 320,
               "frontend_fetch_stall": 115,
               "frontend_recovery_stall": 8,
@@ -5997,7 +6028,7 @@
           }
         },
         "micro_ops": 1520,
-        "micro_ops_per_second": 6676,
+        "micro_ops_per_second": 9816,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -6012,6 +6043,7 @@
             "completed": 1520,
             "dispatch_stall_mem_rs": 23517,
             "dispatched": 1520,
+            "early_load_tokens": 640,
             "fetch_requests": 320,
             "frontend_fetch_stall": 115,
             "frontend_recovery_stall": 8,
@@ -6030,7 +6062,7 @@
         },
         "retired": 1520,
         "seed": 14,
-        "simulated_cycles_per_second": 108360,
+        "simulated_cycles_per_second": 159331,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -6075,7 +6107,7 @@
             "ddr_reads_forwarded": 889
           }
         },
-        "wall_time_seconds": 0.227676,
+        "wall_time_seconds": 0.154841,
         "workload": "linux_service"
       },
       "score": {
@@ -6228,6 +6260,7 @@
               "dispatch_stall_lq": 154,
               "dispatch_stall_mem_rs": 7542,
               "dispatched": 1098,
+              "early_load_tokens": 960,
               "fetch_requests": 121,
               "frontend_fetch_stall": 268,
               "l0_fills": 960,
@@ -6367,7 +6400,7 @@
           }
         },
         "micro_ops": 1098,
-        "micro_ops_per_second": 9641,
+        "micro_ops_per_second": 13450,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -6381,6 +6414,7 @@
             "dispatch_stall_lq": 154,
             "dispatch_stall_mem_rs": 7542,
             "dispatched": 1098,
+            "early_load_tokens": 960,
             "fetch_requests": 121,
             "frontend_fetch_stall": 268,
             "l0_fills": 960,
@@ -6395,7 +6429,7 @@
         },
         "retired": 1098,
         "seed": 15,
-        "simulated_cycles_per_second": 70663,
+        "simulated_cycles_per_second": 98574,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -6440,7 +6474,7 @@
             "ddr_reads_forwarded": 1159
           }
         },
-        "wall_time_seconds": 0.113877,
+        "wall_time_seconds": 0.081634,
         "workload": "memory_stress"
       },
       "score": {
@@ -6590,6 +6624,7 @@
               "dispatch_stall_lq": 987,
               "dispatch_stall_mem_rs": 529,
               "dispatched": 3128,
+              "early_load_tokens": 545,
               "frontend_recovery_stall": 2,
               "l0_fills": 448,
               "l0_hits": 768,
@@ -6732,7 +6767,7 @@
           }
         },
         "micro_ops": 3128,
-        "micro_ops_per_second": 72308,
+        "micro_ops_per_second": 105489,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -6749,6 +6784,7 @@
             "dispatch_stall_lq": 987,
             "dispatch_stall_mem_rs": 529,
             "dispatched": 3128,
+            "early_load_tokens": 545,
             "frontend_recovery_stall": 2,
             "l0_fills": 448,
             "l0_hits": 768,
@@ -6764,7 +6800,7 @@
         },
         "retired": 3128,
         "seed": 16,
-        "simulated_cycles_per_second": 70158,
+        "simulated_cycles_per_second": 102353,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -6809,7 +6845,7 @@
             "ddr_reads_forwarded": 102
           }
         },
-        "wall_time_seconds": 0.043259,
+        "wall_time_seconds": 0.029652,
         "workload": "coremark"
       },
       "score": {
@@ -6965,6 +7001,7 @@
               "dispatch_stall_lq": 2890,
               "dispatch_stall_mem_rs": 1932,
               "dispatched": 980,
+              "early_load_tokens": 354,
               "fetch_requests": 243,
               "frontend_fetch_stall": 1459,
               "frontend_recovery_stall": 12,
@@ -7107,7 +7144,7 @@
           }
         },
         "micro_ops": 980,
-        "micro_ops_per_second": 13253,
+        "micro_ops_per_second": 17784,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -7123,6 +7160,7 @@
             "dispatch_stall_lq": 2890,
             "dispatch_stall_mem_rs": 1932,
             "dispatched": 980,
+            "early_load_tokens": 354,
             "fetch_requests": 243,
             "frontend_fetch_stall": 1459,
             "frontend_recovery_stall": 12,
@@ -7139,7 +7177,7 @@
         },
         "retired": 980,
         "seed": 11,
-        "simulated_cycles_per_second": 93886,
+        "simulated_cycles_per_second": 125978,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -7184,7 +7222,7 @@
             "ddr_reads_forwarded": 549
           }
         },
-        "wall_time_seconds": 0.073941,
+        "wall_time_seconds": 0.055105,
         "workload": "redis_kv"
       },
       "score": {
@@ -7339,6 +7377,7 @@
               "dispatch_stall_lq": 108,
               "dispatch_stall_mem_rs": 15026,
               "dispatched": 1536,
+              "early_load_tokens": 576,
               "fetch_requests": 384,
               "frontend_fetch_stall": 344,
               "frontend_recovery_stall": 12,
@@ -7482,7 +7521,7 @@
           }
         },
         "micro_ops": 1536,
-        "micro_ops_per_second": 11134,
+        "micro_ops_per_second": 13834,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -7498,6 +7537,7 @@
             "dispatch_stall_lq": 108,
             "dispatch_stall_mem_rs": 15026,
             "dispatched": 1536,
+            "early_load_tokens": 576,
             "fetch_requests": 384,
             "frontend_fetch_stall": 344,
             "frontend_recovery_stall": 12,
@@ -7516,7 +7556,7 @@
         },
         "retired": 1536,
         "seed": 12,
-        "simulated_cycles_per_second": 118075,
+        "simulated_cycles_per_second": 146698,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -7561,7 +7601,7 @@
             "ddr_reads_forwarded": 655
           }
         },
-        "wall_time_seconds": 0.137946,
+        "wall_time_seconds": 0.111031,
         "workload": "http_api"
       },
       "score": {
@@ -7723,6 +7763,7 @@
               "dispatch_stall_lq": 22,
               "dispatch_stall_mem_rs": 36941,
               "dispatched": 2240,
+              "early_load_tokens": 960,
               "fetch_requests": 1080,
               "frontend_fetch_stall": 226,
               "frontend_recovery_stall": 80,
@@ -7876,7 +7917,7 @@
           }
         },
         "micro_ops": 2240,
-        "micro_ops_per_second": 8211,
+        "micro_ops_per_second": 8725,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -7892,6 +7933,7 @@
             "dispatch_stall_lq": 22,
             "dispatch_stall_mem_rs": 36941,
             "dispatched": 2240,
+            "early_load_tokens": 960,
             "fetch_requests": 1080,
             "frontend_fetch_stall": 226,
             "frontend_recovery_stall": 80,
@@ -7908,7 +7950,7 @@
         },
         "retired": 2240,
         "seed": 13,
-        "simulated_cycles_per_second": 141451,
+        "simulated_cycles_per_second": 150296,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -7956,7 +7998,7 @@
             "ddr_writes_forwarded": 96
           }
         },
-        "wall_time_seconds": 0.272772,
+        "wall_time_seconds": 0.256719,
         "workload": "faas_cold"
       },
       "score": {
@@ -8110,6 +8152,7 @@
               "completed": 1520,
               "dispatch_stall_mem_rs": 23517,
               "dispatched": 1520,
+              "early_load_tokens": 640,
               "fetch_requests": 320,
               "frontend_fetch_stall": 115,
               "frontend_recovery_stall": 8,
@@ -8253,7 +8296,7 @@
           }
         },
         "micro_ops": 1520,
-        "micro_ops_per_second": 7962,
+        "micro_ops_per_second": 9794,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -8268,6 +8311,7 @@
             "completed": 1520,
             "dispatch_stall_mem_rs": 23517,
             "dispatched": 1520,
+            "early_load_tokens": 640,
             "fetch_requests": 320,
             "frontend_fetch_stall": 115,
             "frontend_recovery_stall": 8,
@@ -8286,7 +8330,7 @@
         },
         "retired": 1520,
         "seed": 14,
-        "simulated_cycles_per_second": 129233,
+        "simulated_cycles_per_second": 158975,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -8331,7 +8375,7 @@
             "ddr_reads_forwarded": 889
           }
         },
-        "wall_time_seconds": 0.190903,
+        "wall_time_seconds": 0.155188,
         "workload": "linux_service"
       },
       "score": {
@@ -8484,6 +8528,7 @@
               "dispatch_stall_lq": 154,
               "dispatch_stall_mem_rs": 7542,
               "dispatched": 1098,
+              "early_load_tokens": 960,
               "fetch_requests": 121,
               "frontend_fetch_stall": 268,
               "l0_fills": 960,
@@ -8623,7 +8668,7 @@
           }
         },
         "micro_ops": 1098,
-        "micro_ops_per_second": 13124,
+        "micro_ops_per_second": 13193,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -8637,6 +8682,7 @@
             "dispatch_stall_lq": 154,
             "dispatch_stall_mem_rs": 7542,
             "dispatched": 1098,
+            "early_load_tokens": 960,
             "fetch_requests": 121,
             "frontend_fetch_stall": 268,
             "l0_fills": 960,
@@ -8651,7 +8697,7 @@
         },
         "retired": 1098,
         "seed": 15,
-        "simulated_cycles_per_second": 96183,
+        "simulated_cycles_per_second": 96695,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -8696,7 +8742,7 @@
             "ddr_reads_forwarded": 1159
           }
         },
-        "wall_time_seconds": 0.083663,
+        "wall_time_seconds": 0.08322,
         "workload": "memory_stress"
       },
       "score": {
@@ -8844,6 +8890,7 @@
               "dispatch_stall_lq": 1130,
               "dispatch_stall_mem_rs": 751,
               "dispatched": 3128,
+              "early_load_tokens": 545,
               "frontend_recovery_stall": 2,
               "l0_fills": 448,
               "l0_hits": 768,
@@ -8976,7 +9023,7 @@
           }
         },
         "micro_ops": 3128,
-        "micro_ops_per_second": 72355,
+        "micro_ops_per_second": 94349,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -8993,6 +9040,7 @@
             "dispatch_stall_lq": 1130,
             "dispatch_stall_mem_rs": 751,
             "dispatched": 3128,
+            "early_load_tokens": 545,
             "frontend_recovery_stall": 2,
             "l0_fills": 448,
             "l0_hits": 768,
@@ -9008,7 +9056,7 @@
         },
         "retired": 3128,
         "seed": 16,
-        "simulated_cycles_per_second": 78647,
+        "simulated_cycles_per_second": 102553,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -9053,7 +9101,7 @@
             "ddr_reads_forwarded": 96
           }
         },
-        "wall_time_seconds": 0.043231,
+        "wall_time_seconds": 0.033153,
         "workload": "coremark"
       },
       "score": {
@@ -9209,6 +9257,7 @@
               "dispatch_stall_lq": 2890,
               "dispatch_stall_mem_rs": 1932,
               "dispatched": 980,
+              "early_load_tokens": 354,
               "fetch_requests": 243,
               "frontend_fetch_stall": 1459,
               "frontend_recovery_stall": 12,
@@ -9351,7 +9400,7 @@
           }
         },
         "micro_ops": 980,
-        "micro_ops_per_second": 10374,
+        "micro_ops_per_second": 17113,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -9367,6 +9416,7 @@
             "dispatch_stall_lq": 2890,
             "dispatch_stall_mem_rs": 1932,
             "dispatched": 980,
+            "early_load_tokens": 354,
             "fetch_requests": 243,
             "frontend_fetch_stall": 1459,
             "frontend_recovery_stall": 12,
@@ -9383,7 +9433,7 @@
         },
         "retired": 980,
         "seed": 11,
-        "simulated_cycles_per_second": 73486,
+        "simulated_cycles_per_second": 121229,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -9428,7 +9478,7 @@
             "ddr_reads_forwarded": 549
           }
         },
-        "wall_time_seconds": 0.094467,
+        "wall_time_seconds": 0.057263,
         "workload": "redis_kv"
       },
       "score": {
@@ -9583,6 +9633,7 @@
               "dispatch_stall_lq": 108,
               "dispatch_stall_mem_rs": 15026,
               "dispatched": 1536,
+              "early_load_tokens": 576,
               "fetch_requests": 384,
               "frontend_fetch_stall": 344,
               "frontend_recovery_stall": 12,
@@ -9726,7 +9777,7 @@
           }
         },
         "micro_ops": 1536,
-        "micro_ops_per_second": 7669,
+        "micro_ops_per_second": 13369,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -9742,6 +9793,7 @@
             "dispatch_stall_lq": 108,
             "dispatch_stall_mem_rs": 15026,
             "dispatched": 1536,
+            "early_load_tokens": 576,
             "fetch_requests": 384,
             "frontend_fetch_stall": 344,
             "frontend_recovery_stall": 12,
@@ -9760,7 +9812,7 @@
         },
         "retired": 1536,
         "seed": 12,
-        "simulated_cycles_per_second": 81332,
+        "simulated_cycles_per_second": 141773,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -9805,7 +9857,7 @@
             "ddr_reads_forwarded": 655
           }
         },
-        "wall_time_seconds": 0.200264,
+        "wall_time_seconds": 0.114888,
         "workload": "http_api"
       },
       "score": {
@@ -9967,6 +10019,7 @@
               "dispatch_stall_lq": 22,
               "dispatch_stall_mem_rs": 36941,
               "dispatched": 2240,
+              "early_load_tokens": 960,
               "fetch_requests": 1080,
               "frontend_fetch_stall": 226,
               "frontend_recovery_stall": 80,
@@ -10120,7 +10173,7 @@
           }
         },
         "micro_ops": 2240,
-        "micro_ops_per_second": 4729,
+        "micro_ops_per_second": 8292,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -10136,6 +10189,7 @@
             "dispatch_stall_lq": 22,
             "dispatch_stall_mem_rs": 36941,
             "dispatched": 2240,
+            "early_load_tokens": 960,
             "fetch_requests": 1080,
             "frontend_fetch_stall": 226,
             "frontend_recovery_stall": 80,
@@ -10152,7 +10206,7 @@
         },
         "retired": 2240,
         "seed": 13,
-        "simulated_cycles_per_second": 81462,
+        "simulated_cycles_per_second": 142841,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -10200,7 +10254,7 @@
             "ddr_writes_forwarded": 96
           }
         },
-        "wall_time_seconds": 0.473641,
+        "wall_time_seconds": 0.270118,
         "workload": "faas_cold"
       },
       "score": {
@@ -10354,6 +10408,7 @@
               "completed": 1520,
               "dispatch_stall_mem_rs": 23517,
               "dispatched": 1520,
+              "early_load_tokens": 640,
               "fetch_requests": 320,
               "frontend_fetch_stall": 115,
               "frontend_recovery_stall": 8,
@@ -10497,7 +10552,7 @@
           }
         },
         "micro_ops": 1520,
-        "micro_ops_per_second": 5676,
+        "micro_ops_per_second": 9787,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -10512,6 +10567,7 @@
             "completed": 1520,
             "dispatch_stall_mem_rs": 23517,
             "dispatched": 1520,
+            "early_load_tokens": 640,
             "fetch_requests": 320,
             "frontend_fetch_stall": 115,
             "frontend_recovery_stall": 8,
@@ -10530,7 +10586,7 @@
         },
         "retired": 1520,
         "seed": 14,
-        "simulated_cycles_per_second": 92139,
+        "simulated_cycles_per_second": 158852,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -10575,7 +10631,7 @@
             "ddr_reads_forwarded": 889
           }
         },
-        "wall_time_seconds": 0.267757,
+        "wall_time_seconds": 0.155307,
         "workload": "linux_service"
       },
       "score": {
@@ -10727,6 +10783,7 @@
               "dispatch_stall_lq": 92,
               "dispatch_stall_mem_rs": 6811,
               "dispatched": 1098,
+              "early_load_tokens": 960,
               "fetch_requests": 121,
               "frontend_fetch_stall": 270,
               "l0_fills": 960,
@@ -10865,7 +10922,7 @@
           }
         },
         "micro_ops": 1098,
-        "micro_ops_per_second": 9668,
+        "micro_ops_per_second": 14938,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -10879,6 +10936,7 @@
             "dispatch_stall_lq": 92,
             "dispatch_stall_mem_rs": 6811,
             "dispatched": 1098,
+            "early_load_tokens": 960,
             "fetch_requests": 121,
             "frontend_fetch_stall": 270,
             "l0_fills": 960,
@@ -10893,7 +10951,7 @@
         },
         "retired": 1098,
         "seed": 15,
-        "simulated_cycles_per_second": 63828,
+        "simulated_cycles_per_second": 98620,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -10938,7 +10996,7 @@
             "ddr_reads_forwarded": 1159
           }
         },
-        "wall_time_seconds": 0.113569,
+        "wall_time_seconds": 0.073504,
         "workload": "memory_stress"
       },
       "score": {
@@ -11088,6 +11146,7 @@
               "dispatch_stall_lq": 987,
               "dispatch_stall_mem_rs": 529,
               "dispatched": 3128,
+              "early_load_tokens": 545,
               "frontend_recovery_stall": 2,
               "l0_fills": 448,
               "l0_hits": 768,
@@ -11230,7 +11289,7 @@
           }
         },
         "micro_ops": 3128,
-        "micro_ops_per_second": 66492,
+        "micro_ops_per_second": 105870,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -11247,6 +11306,7 @@
             "dispatch_stall_lq": 987,
             "dispatch_stall_mem_rs": 529,
             "dispatched": 3128,
+            "early_load_tokens": 545,
             "frontend_recovery_stall": 2,
             "l0_fills": 448,
             "l0_hits": 768,
@@ -11262,7 +11322,7 @@
         },
         "retired": 3128,
         "seed": 16,
-        "simulated_cycles_per_second": 64515,
+        "simulated_cycles_per_second": 102723,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -11307,7 +11367,7 @@
             "ddr_reads_forwarded": 102
           }
         },
-        "wall_time_seconds": 0.047043,
+        "wall_time_seconds": 0.029545,
         "workload": "coremark"
       },
       "score": {
@@ -11463,6 +11523,7 @@
               "dispatch_stall_lq": 2890,
               "dispatch_stall_mem_rs": 1932,
               "dispatched": 980,
+              "early_load_tokens": 354,
               "fetch_requests": 243,
               "frontend_fetch_stall": 1459,
               "frontend_recovery_stall": 12,
@@ -11605,7 +11666,7 @@
           }
         },
         "micro_ops": 980,
-        "micro_ops_per_second": 10454,
+        "micro_ops_per_second": 17300,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -11621,6 +11682,7 @@
             "dispatch_stall_lq": 2890,
             "dispatch_stall_mem_rs": 1932,
             "dispatched": 980,
+            "early_load_tokens": 354,
             "fetch_requests": 243,
             "frontend_fetch_stall": 1459,
             "frontend_recovery_stall": 12,
@@ -11637,7 +11699,7 @@
         },
         "retired": 980,
         "seed": 11,
-        "simulated_cycles_per_second": 74052,
+        "simulated_cycles_per_second": 122551,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -11682,7 +11744,7 @@
             "ddr_reads_forwarded": 549
           }
         },
-        "wall_time_seconds": 0.093744,
+        "wall_time_seconds": 0.056646,
         "workload": "redis_kv"
       },
       "score": {
@@ -11837,6 +11899,7 @@
               "dispatch_stall_lq": 108,
               "dispatch_stall_mem_rs": 15026,
               "dispatched": 1536,
+              "early_load_tokens": 576,
               "fetch_requests": 384,
               "frontend_fetch_stall": 344,
               "frontend_recovery_stall": 12,
@@ -11980,7 +12043,7 @@
           }
         },
         "micro_ops": 1536,
-        "micro_ops_per_second": 7646,
+        "micro_ops_per_second": 13417,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -11996,6 +12059,7 @@
             "dispatch_stall_lq": 108,
             "dispatch_stall_mem_rs": 15026,
             "dispatched": 1536,
+            "early_load_tokens": 576,
             "fetch_requests": 384,
             "frontend_fetch_stall": 344,
             "frontend_recovery_stall": 12,
@@ -12014,7 +12078,7 @@
         },
         "retired": 1536,
         "seed": 12,
-        "simulated_cycles_per_second": 81082,
+        "simulated_cycles_per_second": 142282,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -12059,7 +12123,7 @@
             "ddr_reads_forwarded": 655
           }
         },
-        "wall_time_seconds": 0.200881,
+        "wall_time_seconds": 0.114477,
         "workload": "http_api"
       },
       "score": {
@@ -12221,6 +12285,7 @@
               "dispatch_stall_lq": 22,
               "dispatch_stall_mem_rs": 36941,
               "dispatched": 2240,
+              "early_load_tokens": 960,
               "fetch_requests": 1080,
               "frontend_fetch_stall": 226,
               "frontend_recovery_stall": 80,
@@ -12374,7 +12439,7 @@
           }
         },
         "micro_ops": 2240,
-        "micro_ops_per_second": 5602,
+        "micro_ops_per_second": 8645,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -12390,6 +12455,7 @@
             "dispatch_stall_lq": 22,
             "dispatch_stall_mem_rs": 36941,
             "dispatched": 2240,
+            "early_load_tokens": 960,
             "fetch_requests": 1080,
             "frontend_fetch_stall": 226,
             "frontend_recovery_stall": 80,
@@ -12406,7 +12472,7 @@
         },
         "retired": 2240,
         "seed": 13,
-        "simulated_cycles_per_second": 96501,
+        "simulated_cycles_per_second": 148918,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -12454,7 +12520,7 @@
             "ddr_writes_forwarded": 96
           }
         },
-        "wall_time_seconds": 0.399829,
+        "wall_time_seconds": 0.259095,
         "workload": "faas_cold"
       },
       "score": {
@@ -12608,6 +12674,7 @@
               "completed": 1520,
               "dispatch_stall_mem_rs": 23517,
               "dispatched": 1520,
+              "early_load_tokens": 640,
               "fetch_requests": 320,
               "frontend_fetch_stall": 115,
               "frontend_recovery_stall": 8,
@@ -12751,7 +12818,7 @@
           }
         },
         "micro_ops": 1520,
-        "micro_ops_per_second": 6184,
+        "micro_ops_per_second": 9829,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -12766,6 +12833,7 @@
             "completed": 1520,
             "dispatch_stall_mem_rs": 23517,
             "dispatched": 1520,
+            "early_load_tokens": 640,
             "fetch_requests": 320,
             "frontend_fetch_stall": 115,
             "frontend_recovery_stall": 8,
@@ -12784,7 +12852,7 @@
         },
         "retired": 1520,
         "seed": 14,
-        "simulated_cycles_per_second": 100381,
+        "simulated_cycles_per_second": 159541,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -12829,7 +12897,7 @@
             "ddr_reads_forwarded": 889
           }
         },
-        "wall_time_seconds": 0.245773,
+        "wall_time_seconds": 0.154637,
         "workload": "linux_service"
       },
       "score": {
@@ -12981,6 +13049,7 @@
               "dispatch_stall_lq": 92,
               "dispatch_stall_mem_rs": 6811,
               "dispatched": 1098,
+              "early_load_tokens": 960,
               "fetch_requests": 121,
               "frontend_fetch_stall": 270,
               "l0_fills": 960,
@@ -13119,7 +13188,7 @@
           }
         },
         "micro_ops": 1098,
-        "micro_ops_per_second": 8791,
+        "micro_ops_per_second": 15467,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -13133,6 +13202,7 @@
             "dispatch_stall_lq": 92,
             "dispatch_stall_mem_rs": 6811,
             "dispatched": 1098,
+            "early_load_tokens": 960,
             "fetch_requests": 121,
             "frontend_fetch_stall": 270,
             "l0_fills": 960,
@@ -13147,7 +13217,7 @@
         },
         "retired": 1098,
         "seed": 15,
-        "simulated_cycles_per_second": 58042,
+        "simulated_cycles_per_second": 102118,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -13192,7 +13262,7 @@
             "ddr_reads_forwarded": 1159
           }
         },
-        "wall_time_seconds": 0.124891,
+        "wall_time_seconds": 0.070986,
         "workload": "memory_stress"
       },
       "score": {
@@ -13342,6 +13412,7 @@
               "dispatch_stall_lq": 987,
               "dispatch_stall_mem_rs": 529,
               "dispatched": 3128,
+              "early_load_tokens": 545,
               "frontend_recovery_stall": 2,
               "l0_fills": 448,
               "l0_hits": 768,
@@ -13484,7 +13555,7 @@
           }
         },
         "micro_ops": 3128,
-        "micro_ops_per_second": 59828,
+        "micro_ops_per_second": 107595,
         "model_version": "1.0",
         "pipeline": {
           "max_occupancy": {
@@ -13501,6 +13572,7 @@
             "dispatch_stall_lq": 987,
             "dispatch_stall_mem_rs": 529,
             "dispatched": 3128,
+            "early_load_tokens": 545,
             "frontend_recovery_stall": 2,
             "l0_fills": 448,
             "l0_hits": 768,
@@ -13516,7 +13588,7 @@
         },
         "retired": 3128,
         "seed": 16,
-        "simulated_cycles_per_second": 58049,
+        "simulated_cycles_per_second": 104396,
         "soc_top": {
           "configuration": {
             "bram_base": 0,
@@ -13561,7 +13633,7 @@
             "ddr_reads_forwarded": 102
           }
         },
-        "wall_time_seconds": 0.052283,
+        "wall_time_seconds": 0.029072,
         "workload": "coremark"
       },
       "score": {

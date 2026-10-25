@@ -44,7 +44,7 @@ Across all evaluated workloads, the architectural performance model reproduces t
   - Correlation accuracy: within **+3.1%** (0.03 IPC delta)
 - **Key Architectural Features Modeled**:
   1. **L0 Data Cache (`lq_l0_cache.sv`)**: Models the 256-dword direct-mapped cache delivering 1-cycle fast-path bypass (`cache_hit_fast_path`).
-  2. **Early Load Wakeup (`EARLY_LOAD_WAKEUP = 1`)**: Dependent ALU instructions wake up immediately on load completion without bubbles.
+  2. **Early Load Wakeup (`EARLY_LOAD_WAKEUP = 1`)**: A nonfaulting load wakes a dependent memory operation one cycle early when a registered CDB lane is free. Integer consumers use the ordinary dependency path.
 
 ---
 
@@ -128,7 +128,7 @@ The wall-clock timing captured across all runs quantifies the execution velocity
 
 | File | Size | Description |
 |---|---|---|
-| `perf-modeling/frost_perf_model.py` | 120 KB | Calibrated architectural performance model with $O(1)$ disambiguation, L0 cache bypass, wall-time telemetry, and multi-variant exploration. |
+| `perf-modeling/frost_perf_model.py` | 121 KB | Calibrated architectural performance model with $O(1)$ disambiguation, L0 cache bypass, wall-time telemetry, and multi-variant exploration. |
 | `perf-modeling/results/coremark/` | 20 MB | Full provenance, manifest, 239k-cycle timed trace, pipeline counters, and calibration record for CoreMark. |
 | `perf-modeling/results/tomasulo_perf/` | 21 MB | Full provenance, manifest, 487k-cycle timed trace, and pipeline counters for `tomasulo_perf`. |
 | `perf-modeling/results/ddr_mlp_test/` | 3.7 MB | Full provenance, manifest, 94k-cycle timed trace, and pipeline counters for `ddr_mlp_test`. |
