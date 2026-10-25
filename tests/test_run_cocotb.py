@@ -470,6 +470,27 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GPERF_COUNTERS=1",
         ),
     ),
+    "ddr_mlp_test_full_cache": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ddr_mlp_test",
+        nic_mac_clocks=False,
+        rerun_after_reset=False,
+        description=(
+            "Overlapping DDR cache misses with 128 KiB L1D and 2 MiB L2 caches "
+            "and conflicting-set eviction"
+        ),
+        verilator_extra_args=(
+            "-GL1_CACHE_BYTES=131072",
+            "-GL2_CACHE_BYTES=2097152",
+            "-GPERF_COUNTERS=1",
+        ),
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DDDR_MLP_FULL_CACHE=1"),
+            ("COCOTB_MAX_CYCLES", "4000000"),
+        ),
+        include_in_pytest=False,
+    ),
     "ddr_bench": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
