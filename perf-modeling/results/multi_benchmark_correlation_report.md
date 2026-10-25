@@ -24,7 +24,7 @@ Across all evaluated workloads, the architectural performance model reproduces t
 
 | Benchmark | Domain Evaluated | RTL Verilator Cycles | RTL Retired Micro-ops | RTL Sustained IPC | Model Replay / Exec IPC | Correlation Delta | RTL Wall Time (s) | Model Wall Time (s) | Model Speedup Factor |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| **`coremark`** (Timed Region) | Integer Compute & Branch Locality | 239,452 | 234,317 | **0.9786** | **1.0087** | **+3.0%** | ~23.5 s | 0.068 s | **~345x** (kernel >7,000x) |
+| **`coremark`** (Timed Region) | Integer Compute & Branch Locality | 239,452 | 234,317 | **0.9786** | **1.0087** | **+3.1%** | ~23.5 s | 0.068 s | **~345x** (kernel >7,000x) |
 | **`tomasulo_perf`** (Full Suite) | Microarchitectural Primitives (14 Benches) | 487,313 | 175,025 | **0.3592** | **0.3710** | **+3.2%** | 306.88 s (~5.1 min) | 0.024 s (head slice) | **~110x** (trace replay) |
 | **`ddr_mlp_test`** (Full Run) | Memory-Level Parallelism & DDR Overlap | 94,010 | 30,427 | **0.3237** | **0.3420** | **+5.6%** | 54.25 s | 0.026 s (head slice) | **~93x** (trace replay) |
 
@@ -41,7 +41,7 @@ Across all evaluated workloads, the architectural performance model reproduces t
 - **Model Correlation**:
   - Model IPC: **1.0087** (3,101 cycles, 3,128 uops)
   - Hardware RTL IPC: **0.9786**
-  - Correlation accuracy: within **+3.0%** (0.03 IPC delta)
+  - Correlation accuracy: within **+3.1%** (0.03 IPC delta)
 - **Key Architectural Features Modeled**:
   1. **L0 Data Cache (`lq_l0_cache.sv`)**: Models the 256-dword direct-mapped cache delivering 1-cycle fast-path bypass (`cache_hit_fast_path`).
   2. **Early Load Wakeup (`EARLY_LOAD_WAKEUP = 1`)**: Dependent ALU instructions wake up immediately on load completion without bubbles.
@@ -128,7 +128,7 @@ The wall-clock timing captured across all runs quantifies the execution velocity
 
 | File | Size | Description |
 |---|---|---|
-| `perf-modeling/frost_perf_model.py` | 85 KB | Calibrated architectural performance model with $O(1)$ disambiguation, L0 cache bypass, wall-time telemetry, and multi-variant exploration. |
+| `perf-modeling/frost_perf_model.py` | 119 KB | Calibrated architectural performance model with $O(1)$ disambiguation, L0 cache bypass, wall-time telemetry, and multi-variant exploration. |
 | `perf-modeling/results/coremark/` | 20 MB | Full provenance, manifest, 239k-cycle timed trace, pipeline counters, and calibration record for CoreMark. |
 | `perf-modeling/results/tomasulo_perf/` | 21 MB | Full provenance, manifest, 487k-cycle timed trace, and pipeline counters for `tomasulo_perf`. |
 | `perf-modeling/results/ddr_mlp_test/` | 3.7 MB | Full provenance, manifest, 94k-cycle timed trace, and pipeline counters for `ddr_mlp_test`. |

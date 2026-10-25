@@ -82,7 +82,7 @@ def dump_json(path: Path, value: Any) -> None:
 
 @dataclass(frozen=True)
 class DdrConfig:
-    """Single-channel FROST DDR endpoint configuration in *core-clock* cycles.
+    """DDR endpoint configuration in core-clock cycles.
 
     Matches the single 512-bit (64-byte) AXI4 DDR port on ``soc_top.sv`` and its
     simulation-default ``axi_behavioral_memory.sv`` endpoint (5-bit AXI IDs,
@@ -98,6 +98,31 @@ class DdrConfig:
     latency_jitter: int = 0  # DDR_MODEL_LATENCY_JITTER default in soc_top.sv
     reorder: bool = False  # DDR_MODEL_REORDER default in soc_top.sv
     jitter_seed: int = 0xACE1  # JITTER_SEED default in axi_behavioral_memory.sv
+    controller: str = "behavioral"
+    channels: int = 1
+    interleave_bytes: int = 64
+    cycles_per_line: int = 1
+
+    def validate(self) -> None:
+        """Check the endpoint geometry, service rate, and queue limits."""
+        if self.controller not in {"behavioral", "interleaved"}:
+            raise ValueError("unknown DDR controller")
+        if self.channels < 1 or self.num_slots < 1 or self.cycles_per_line < 1:
+            raise ValueError(
+                "DDR channels, slots, and cycles per line must be positive"
+            )
+        if self.latency_cycles < 0 or self.latency_jitter < 0 or self.id_bits < 1:
+            raise ValueError("invalid DDR latency or ID width")
+        if self.line_bytes < 1 or self.interleave_bytes % self.line_bytes:
+            raise ValueError("DDR interleave must contain whole lines")
+        if self.interleave_bytes < self.line_bytes:
+            raise ValueError("DDR interleave must contain at least one line")
+        if self.controller == "behavioral" and (
+            self.channels != 1 or self.cycles_per_line != 1
+        ):
+            raise ValueError(
+                "channel and bandwidth sweeps require the interleaved controller"
+            )
 
 
 @dataclass(frozen=True)
@@ -193,6 +218,7 @@ class ModelConfig:
         Raise ValueError for an invalid cache geometry, ID width, line size, or
         DDR setting.
         """
+        self.ddr.validate()
         for label, size, line, ways in (
             ("L1I", self.l1i_bytes, self.l1_line_bytes, self.l1i_ways),
             ("L1D", self.l1d_bytes, self.l1_line_bytes, self.l1d_ways),
@@ -900,6 +926,128 @@ class SingleChannelDdrController:
         }
 
 
+class InterleavedDdrController:
+    """Address-interleaved memory with bounded queues and a shared AXI port.
+
+    Each physical channel has separate read and write queues of num_slots
+    entries. Reads and writes share its data bandwidth. One line completes
+    every cycles_per_line cycles after its latency has elapsed. The AXI
+    return port carries at most one read response and one write response
+    per cycle across all channels.
+    """
+
+    def __init__(self, loop: EventLoop, config: DdrConfig) -> None:
+        """Create empty channel queues and deterministic latency sampling."""
+        config.validate()
+        self.loop = loop
+        self.config = config
+        self.queues: list[list[tuple[int, int, AxiTransaction]]] = [
+            [] for _ in range(2 * config.channels)
+        ]
+        self.next_service = [0] * config.channels
+        self.inflight: set[tuple[bool, int]] = set()
+        self.sequence = 0
+        self.scheduled = False
+        self.stats: Counter = Counter()
+        self.channel_stats = [Counter() for _ in range(config.channels)]
+        self._latency = SingleChannelDdrController(loop, config)
+        self._accounted_cycle = loop.cycle
+
+    def _account(self) -> None:
+        self.stats["inflight_cycles"] += (
+            self.loop.cycle - self._accounted_cycle
+        ) * len(self.inflight)
+        self._accounted_cycle = self.loop.cycle
+
+    def submit(self, transaction: AxiTransaction) -> bool:
+        """Accept a line when its channel has a free slot and its ID is idle."""
+        if transaction.bytes_size != self.config.line_bytes:
+            raise ValueError("DDR transactions must transfer one line")
+        if not 0 <= transaction.axi_id < 1 << self.config.id_bits:
+            raise ValueError("DDR transaction ID exceeds the port width")
+        channel = (
+            transaction.address // self.config.interleave_bytes
+        ) % self.config.channels
+        queue = self.queues[2 * channel + int(transaction.is_write)]
+        key = (transaction.is_write, transaction.axi_id)
+        if key in self.inflight:
+            self.stats["duplicate_id_backpressure"] += 1
+            return False
+        if len(queue) >= self.config.num_slots:
+            self.stats["queue_backpressure"] += 1
+            self.channel_stats[channel]["queue_backpressure"] += 1
+            return False
+        self._account()
+        self.sequence += 1
+        queue.append(
+            (
+                self.loop.cycle + self._latency._sample_latency(),
+                self.sequence,
+                transaction,
+            )
+        )
+        self.inflight.add(key)
+        self.stats["accepted"] += 1
+        self.stats["writes" if transaction.is_write else "reads"] += 1
+        self.stats["max_inflight"] = max(self.stats["max_inflight"], len(self.inflight))
+        self.channel_stats[channel]["accepted"] += 1
+        self._schedule()
+        return True
+
+    def _schedule(self) -> None:
+        if self.inflight and not self.scheduled:
+            self.scheduled = True
+            self.loop.after(1, self._pump)
+
+    def _pump(self) -> None:
+        self.scheduled = False
+        self._account()
+        candidates = []
+        for channel in range(self.config.channels):
+            if self.loop.cycle < self.next_service[channel]:
+                continue
+            for direction in range(2):
+                queue = self.queues[2 * channel + direction]
+                for index, (ready, sequence, transaction) in enumerate(queue):
+                    if ready <= self.loop.cycle:
+                        candidates.append(
+                            (sequence, channel, direction, index, transaction)
+                        )
+                        break
+                    if not self.config.reorder:
+                        break
+        used_channels: set[int] = set()
+        used_directions: set[int] = set()
+        for _, channel, direction, index, transaction in sorted(candidates):
+            if channel in used_channels or direction in used_directions:
+                continue
+            used_channels.add(channel)
+            used_directions.add(direction)
+            del self.queues[2 * channel + direction][index]
+            self.inflight.remove((transaction.is_write, transaction.axi_id))
+            self.next_service[channel] = self.loop.cycle + self.config.cycles_per_line
+            self.stats["completed"] += 1
+            self.stats[
+                "write_completed" if transaction.is_write else "read_completed"
+            ] += 1
+            self.channel_stats[channel]["completed"] += 1
+            transaction.complete(True)
+        self._schedule()
+
+    def summary(self) -> dict[str, Any]:
+        """Return queue occupancy, service counts, and endpoint configuration."""
+        self._account()
+        return {
+            "kind": "interleaved_axi_ddr",
+            "configuration": dataclasses.asdict(self.config),
+            "effective_slots": self.config.num_slots,
+            "stats": dict(self.stats),
+            "channels": [dict(stats) for stats in self.channel_stats],
+            "pending_reads": sum(len(q) for q in self.queues[::2]),
+            "pending_writes": sum(len(q) for q in self.queues[1::2]),
+        }
+
+
 class SocTopModel:
     """FROST ``soc_top.sv`` + ``soc_axi_slave.sv`` model.
 
@@ -929,11 +1077,15 @@ class SocTopModel:
         self.config = config
         self.soc_config = config.soc
         self.loop = loop
-        self.ddr: DdrController = controller or SingleChannelDdrController(
-            loop,
-            config.ddr,
-            l2_mshrs=config.l2_mshrs,
-            l2_wb_slots=config.l2_wb_slots,
+        self.ddr: DdrController = controller or (
+            InterleavedDdrController(loop, config.ddr)
+            if config.ddr.controller == "interleaved"
+            else SingleChannelDdrController(
+                loop,
+                config.ddr,
+                l2_mshrs=config.l2_mshrs,
+                l2_wb_slots=config.l2_wb_slots,
+            )
         )
         self._aw_slot_busy = False
         self._local_busy = False

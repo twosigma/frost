@@ -105,7 +105,7 @@ The baseline `perf-modeling/frost_perf_model.py` directly models the FROST platf
 2. **IPC Correlation**:
    - Hardware RTL CoreMark IPC: **0.9786** (239,452 cycles, 234,317 retired uops)
    - Architectural Model IPC: **1.0087** (3,101 cycles, 3,128 retired uops)
-   - Correlation Delta: within **+3.0%** of hardware RTL execution.
+   - Correlation Delta: within **+3.1%** of hardware RTL execution.
 3. **Key Microarchitectural Mechanisms**:
    - **Load Queue L0 Data Cache (`lq_l0_cache.sv`)**: Modeled the 256-entry direct-mapped dword cache (`NormalLqL0Depth = 256`) delivering 1-cycle fast-path bypass.
    - **Early Load Wakeup (`EARLY_LOAD_WAKEUP = 1`)**: Aligned with `tomasulo_wrapper.sv`, allowing dependent instructions to issue immediately upon load completion without artificial queue dead cycles.
