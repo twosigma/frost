@@ -381,6 +381,9 @@ module frost_sram_1w1r #(
         if (USE_INIT_FILE) begin : gen_init
           initial begin
             logic [DATA_WIDTH-1:0] image[2**ADDR_WIDTH];
+            // Loading an image represents completed programming with an idle
+            // write port. No write is pending before its first rising edge.
+            gen_macro.u_macro.csb0_reg = 1'b1;
             $readmemh(INIT_FILE, image);
             for (int i = 0; i < 2 ** TileAddrWidth; i++) begin
               gen_macro.u_macro.mem[i] =

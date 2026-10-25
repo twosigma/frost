@@ -36,6 +36,7 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
+from cocotb.handle import Immediate
 from cocotb.triggers import RisingEdge, Timer
 
 CLOCK_PERIOD_NS = 10
@@ -54,6 +55,20 @@ async def _start_cycle(clock: Any) -> None:
 async def _sample_point(period_ns: float) -> None:
     """From a cycle's start, wait until just before its closing edge."""
     await Timer(period_ns - 2, unit="ns")
+
+
+async def _check_image_idle_start(tiles: list[Any], clocks: list[Any]) -> None:
+    """Check that establishing idle clocks preserves every preloaded SRAM row."""
+    await Timer(1, unit="ps")
+    snapshots = [[int(word.value) for word in tile] for tile in tiles]
+    # A falling edge can precede the first rising edge at startup.
+    for clock in clocks:
+        clock.value = 0
+    await Timer(1, unit="ns")
+    for tile, before in zip(tiles, snapshots, strict=True):
+        assert [int(word.value) for word in tile] == before, (
+            "the preloaded image changed before the first write-clock rising edge"
+        )
 
 
 def _read_hex_image(path: Path, data_width: int) -> dict[int, int]:
@@ -417,6 +432,16 @@ async def _sdp_block_ram_dc_init(dut: Any) -> None:
     address_width = len(dut.i_write_address)
     addresses = _hot_addresses(address_width, 12)
 
+    if int(dut.USE_INIT_FILE.value):
+        # Inputs must be idle before a high initial clock can capture them.
+        dut.i_write_enable.value = Immediate(0)
+        tiles = [
+            column.gen_macro.u_macro.mem
+            for row in dut.u_sram.gen_macros.gen_row
+            for column in row.gen_column
+        ]
+        await _check_image_idle_start(tiles, [dut.i_write_clock])
+
     Clock(dut.i_read_clock, CLOCK_PERIOD_NS, unit="ns").start()
     Clock(dut.i_write_clock, 4 * CLOCK_PERIOD_NS, unit="ns").start()
     dut.i_write_enable.value = 0
@@ -489,6 +514,14 @@ async def _tdp_bram_dc_byte_en(dut: Any) -> None:
     # cycle c of port B is due at the sample point of cycle c + 7.
     latency = {"a": 7, "b": 1}
 
+    if int(dut.USE_INIT_FILE.value):
+        dut.i_port_a_byte_write_enable.value = Immediate(0)
+        dut.i_port_b_byte_write_enable.value = Immediate(0)
+        await _check_image_idle_start(
+            [row.u_macro.mem for row in dut.u_sram.gen_row],
+            [dut.i_port_a_clk, dut.i_port_b_clk],
+        )
+
     Clock(dut.i_port_b_clk, CLOCK_PERIOD_NS, unit="ns").start()
     Clock(dut.i_port_a_clk, 4 * CLOCK_PERIOD_NS, unit="ns").start()
     for port in ("a", "b"):
@@ -507,7 +540,9 @@ async def _tdp_bram_dc_byte_en(dut: Any) -> None:
         )
         for address in addresses
     }
-    if not os.environ.get("FROST_RANDOM_START_SEED"):
+    if not int(dut.USE_INIT_FILE.value) and not os.environ.get(
+        "FROST_RANDOM_START_SEED"
+    ):
         assert all(memory[address] == address for address in addresses)
     expected = {port: Expected(f"tdp_bram_dc_byte_en port {port}") for port in "ab"}
     for cycle in range(CYCLES):

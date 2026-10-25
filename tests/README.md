@@ -179,8 +179,10 @@ Assertion-history initializers and program image loads execute normally,
 including instruction predecode metadata. Arrays loaded by their parent
 skip random fill as well as arrays with their own image file.
 Instruction-image padding is zero in every packed copy, matching the
-generated bank images. The benches pulse power-on reset at time zero in
-both modes, alongside the ordinary system-reset sequence. Warm resets leave
+generated bank images. SRAM model image loading leaves internal write
+selects idle until their first rising clock edges; initial falling edges
+preserve the loaded contents. The benches pulse power-on reset at time zero
+in both modes, alongside the ordinary system-reset sequence. Warm resets leave
 the transport handshake intact. Changing only the seed reuses the compiled
 model; enabling or disabling the mode rebuilds it.
 

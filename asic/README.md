@@ -206,8 +206,10 @@ differ from the block RAMs they replace in these cases:
   the data memory and the instruction memory with their program images,
   which a chip would load through the program-loading port; the instruction
   memory's come from the app's block-RAM images, which its build writes with
-  `GENERATE_IMEM_INIT=1`. The caches clear their tags and replacement
-  state with a sweep at reset; simulation's fast maintenance
+  `GENERATE_IMEM_INIT=1`. An image load leaves the models' internal write
+  selects inactive until their first rising clock edges, so an initial
+  falling edge cannot write into the loaded image. The caches clear their
+  tags and replacement state with a sweep at reset; simulation's fast maintenance
   (`SIM_FAST_MAINT`) clears those macros' models directly.
 
 The registry's `sram_macros_*` benches build each wrapper with the
