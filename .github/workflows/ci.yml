@@ -1063,7 +1063,7 @@ jobs:
           df -h / /mnt
 
       # Detailed routing peaks at about 20 GB of memory. It reuses global
-      # routing's pin access (asic/config.mk), and this job takes 3 to 3.5
+      # routing's pin access (asic/config.mk), and this job takes about two
       # hours on four CPUs.
       - name: Add swap space
         run: |

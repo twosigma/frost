@@ -687,7 +687,7 @@ Detailed routing reuses the pin access saved in the global routing database.
 On the same 256 KiB input with four threads, `-no_pin_access` cut its CPU
 time from 24,280 to 18,282 seconds, about 25%, and produced byte-identical
 routed DEF with no DRC or antenna violations. The detailed routing job
-takes 3 to 3.5 hours, below the six-hour job limit.
+takes about two hours, below the six-hour job limit.
 
 Those three steps hold the design's cell connectivity, routing guides,
 and power-grid shapes in memory. The final report also runs IR drop
