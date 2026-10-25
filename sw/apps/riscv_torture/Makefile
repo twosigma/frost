@@ -23,7 +23,7 @@ TEST_SRC ?=
 
 # Architecture (see arch.mk)
 include ../../common/arch.mk
-ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause
 ABI  = $(FROST_INT_ABI)
 
 # RV64 medlow sign-extends lui, so it cannot address the DDR image at

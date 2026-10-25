@@ -16,7 +16,7 @@
 # self-defined _start (no crt0.S).
 # ARCH is common.mk's ISA without F and D, and must stay within that ISA.
 include ../../common/arch.mk
-ARCH := $(FROST_XLEN_PREFIX)imac_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+ARCH := $(FROST_XLEN_PREFIX)imac_zicsr_zicntr_zifencei_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause
 ABI := $(FROST_INT_ABI)
 ASM_SRC := served_window_resteer.S
 

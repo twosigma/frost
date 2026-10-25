@@ -750,3 +750,29 @@ def amomaxu(old_value: int, rs2_value: int) -> int:
     unsigned_old = old_value & MASK32
     unsigned_rs2 = rs2_value & MASK32
     return max(unsigned_old, unsigned_rs2)
+
+
+def _polynomial_product(a: int, b: int) -> int:
+    """Return the full unsigned polynomial product over GF(2)."""
+    product = 0
+    a &= MASK_XLEN
+    b &= MASK_XLEN
+    for bit in range(XLEN):
+        if (b >> bit) & 1:
+            product ^= a << bit
+    return product
+
+
+def clmul(a: int, b: int) -> int:
+    """Return the low XLEN bits of the polynomial product."""
+    return _polynomial_product(a, b) & MASK_XLEN
+
+
+def clmulh(a: int, b: int) -> int:
+    """Return the high XLEN bits of the polynomial product."""
+    return (_polynomial_product(a, b) >> XLEN) & MASK_XLEN
+
+
+def clmulr(a: int, b: int) -> int:
+    """Return polynomial product bits 2*XLEN-2 through XLEN-1."""
+    return (_polynomial_product(a, b) >> (XLEN - 1)) & MASK_XLEN

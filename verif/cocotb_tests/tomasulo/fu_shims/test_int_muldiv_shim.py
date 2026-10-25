@@ -14,7 +14,7 @@
 
 """Integer multiply/divide shim tests.
 
-Full-width MUL takes 6 cycles; the word multiplier takes 3. DIV and REM take
+Full-width MUL takes 6 cycles; word and carry-less multipliers take 3. DIV and REM take
 64 cycles, or 32 for word forms, and hold results until accepted. Issue a
 divide only while o_div_busy is low, as MUL_RS does.
 
@@ -47,6 +47,9 @@ SHORT_WORD_OPS = os.environ.get("FROST_TEST_SHORT_WORD_OPS", "1") == "1"
 WORD_MUL_LATENCY = 3 if SHORT_WORD_OPS else 6
 WORD_LATENCIES = (
     ("MULW", WORD_MUL_LATENCY),
+    ("CLMUL", 3),
+    ("CLMULH", 3),
+    ("CLMULR", 3),
     ("DIVW", WORD_DIV_LATENCY),
     ("REMUW", WORD_DIV_LATENCY),
 )
@@ -1313,7 +1316,9 @@ async def test_word_latency_and_hold(dut: Any) -> None:
         a, b = 0x1234_5678_8000_0003, 0xDEAD_BEEF_FFFF_FFFE
         expected = getattr(alu_model, name.lower())(a, b)
         read = (
-            iface.read_mul_fu_complete if name == "MULW" else iface.read_div_fu_complete
+            iface.read_mul_fu_complete
+            if name in ("MULW", "CLMUL", "CLMULH", "CLMULR")
+            else iface.read_div_fu_complete
         )
         iface.drive_issue(True, 7, _op(name), a, b)
         await iface.step()
@@ -1327,7 +1332,7 @@ async def test_word_latency_and_hold(dut: Any) -> None:
         for _ in range(8):
             await iface.step()
             assert read() == result
-        if name == "MULW":
+        if name in ("MULW", "CLMUL", "CLMULH", "CLMULR"):
             iface.drive_mul_accepted()
         else:
             iface.drive_div_accepted()
@@ -1337,9 +1342,9 @@ async def test_word_latency_and_hold(dut: Any) -> None:
 
 @cocotb.test()
 async def test_word_completion_slot_collision(dut: Any) -> None:
-    """A MULW waits only when it shares a full-width multiply's completion cycle."""
+    """Short multiplies wait when they share a full-width multiply's completion cycle."""
     iface = await setup(dut)
-    for full, word, gap in (("MULH", "MULW", 3),):
+    for full, word, gap in (("MULH", "MULW", 3), ("MULHU", "CLMUL", 3)):
         await iface.reset()
         a, b = 0xFFFF_FFFF_8000_0005, 0x1234_5678_0000_0003
         read = iface.read_mul_fu_complete
@@ -1351,7 +1356,7 @@ async def test_word_completion_slot_collision(dut: Any) -> None:
         # The RS holds its registered opcode even when ready masks valid.
         iface.drive_issue(False, 2, _op(word), a, b)
         await Timer(1, unit="ns")
-        assert iface.read_busy() == SHORT_WORD_OPS, (
+        assert iface.read_busy() == (SHORT_WORD_OPS or word == "CLMUL"), (
             full,
             word,
             "wrong collision stall",
@@ -1390,6 +1395,9 @@ async def test_mixed_word_full_random_backpressure(dut: Any) -> None:
         "MULHSU",
         "MULHU",
         "MULW",
+        "CLMUL",
+        "CLMULH",
+        "CLMULR",
         "DIV",
         "DIVU",
         "REM",
@@ -1433,7 +1441,7 @@ async def test_mixed_word_full_random_backpressure(dut: Any) -> None:
                 is_div = name.startswith(("DIV", "REM"))
                 if not iface.read_busy() and not (is_div and iface.read_div_busy()):
                     expected[tag] = (
-                        name.startswith("MUL"),
+                        not is_div,
                         getattr(alu_model, name.lower())(a, b),
                     )
                     iface.drive_issue(True, tag, _op(name), a, b)
@@ -1453,7 +1461,7 @@ async def test_mixed_word_full_random_backpressure(dut: Any) -> None:
 
 @cocotb.test()
 async def test_word_flush_every_pipeline_position(dut: Any) -> None:
-    """Kill a word operation on its issue cycle, in flight, as it completes, or held."""
+    """Kill a short operation on its issue cycle, in flight, as it completes, or held."""
     iface = await setup(dut)
     for name, latency in WORD_LATENCIES:
         for full_flush in (False, True):
@@ -1478,3 +1486,187 @@ async def test_word_flush_every_pipeline_position(dut: Any) -> None:
                     assert not iface.read_div_fu_complete()["valid"]
                     await iface.step()
                 assert not iface.read_busy() and not iface.read_div_busy()
+
+
+@cocotb.test()
+async def test_carryless_products(dut: Any) -> None:
+    """Check each monomial pair, dense operands, and full-width random products."""
+    iface = await setup(dut)
+    rng = random.Random(0xBC)
+    corners = (0, 1, 1 << 63, (1 << 64) - 1, 0xAAAAAAAAAAAAAAAA, 0x5555555555555555)
+    cases = [(1 << a, 1 << b) for a in range(64) for b in range(64)]
+    cases += [(a, b) for a in corners for b in corners]
+    cases += [(rng.getrandbits(64), rng.getrandbits(64)) for _ in range(128)]
+    for name in ("CLMUL", "CLMULH", "CLMULR"):
+        for a, b in cases:
+            iface.drive_issue(True, 3, _op(name), a, b)
+            await iface.step()
+            iface.clear_issue()
+            result = await wait_for_mul_complete(iface)
+            assert (result["tag"], result["value"], result["exception"]) == (
+                3,
+                getattr(alu_model, name.lower())(a, b),
+                False,
+            ), (name, a, b, result)
+
+
+@cocotb.test()
+async def test_carryless_mixed_flush_and_tag_reuse(dut: Any) -> None:
+    """Preserve older mixed completions and discard younger results before tag reuse."""
+    iface = await setup(dut)
+    for old_name in ("CLMUL", "CLMULH", "CLMULR"):
+        for full_flush in (False, True):
+            for delay in range(7):
+                await iface.reset()
+                expected = {}
+                for tag, name in (
+                    (30, old_name),
+                    (31, "MULH"),
+                    (0, "CLMULH"),
+                    (1, "MULW"),
+                ):
+                    a, b = 0xFEDCBA9876543210 ^ tag, 0xA5A5A5A5A5A5A5A5
+                    iface.drive_issue(False, tag, _op(name), a, b)
+                    await Timer(1, unit="ns")
+                    for _ in range(10):
+                        if not iface.read_busy():
+                            break
+                        await iface.step()
+                    assert not iface.read_busy()
+                    iface.drive_issue(True, tag, _op(name), a, b)
+                    if tag in (30, 31) and not full_flush:
+                        expected[tag] = getattr(alu_model, name.lower())(a, b)
+                    await iface.step()
+                    iface.clear_issue()
+                for _ in range(delay):
+                    await iface.step()
+                if full_flush:
+                    iface.drive_flush()
+                else:
+                    iface.drive_partial_flush(31, 30)
+                await iface.step()
+                iface.clear_flush()
+                iface.clear_partial_flush()
+                reused = False
+                for _ in range(MAX_LATENCY):
+                    iface.clear_mul_accepted()
+                    result = iface.read_mul_fu_complete()
+                    if result["valid"]:
+                        assert result["tag"] in expected, (
+                            old_name,
+                            full_flush,
+                            delay,
+                            result,
+                        )
+                        assert result["value"] == expected.pop(result["tag"])
+                        iface.drive_mul_accepted()
+                    iface.clear_issue()
+                    if not reused:
+                        iface.drive_issue(
+                            False, 0, _op("CLMULR"), 1 << 63, 0x123456789ABCDEF0
+                        )
+                        await Timer(1, unit="ns")
+                        if not iface.read_busy():
+                            expected[0] = 0x123456789ABCDEF0
+                            iface.drive_issue(
+                                True, 0, _op("CLMULR"), 1 << 63, expected[0]
+                            )
+                            reused = True
+                    await iface.step()
+                assert reused and not expected, (old_name, full_flush, delay, expected)
+
+
+@cocotb.test()
+async def test_carryless_pipeline_and_divide_recovery(dut: Any) -> None:
+    """Flush each carry-less stage beside an older busy or held divide result."""
+    iface = await setup(dut)
+    for name in ("CLMUL", "CLMULH", "CLMULR"):
+        for delay in range(4):
+            for div_held in (False, True):
+                for full_flush, flush_tag in ((False, 31), (False, 0), (True, 31)):
+                    await iface.reset()
+                    younger_tag = (flush_tag + 1) % 32
+                    a, b = 0xFEDCBA9876543210, 0xA5A5A5A5A5A5A5A5
+                    iface.drive_issue(True, 30, _op("DIVU"), a, 37)
+                    await iface.step()
+                    iface.clear_issue()
+                    if div_held:
+                        for _ in range(MAX_LATENCY):
+                            await iface.step()
+                        assert iface.read_div_fu_complete()["valid"]
+                    else:
+                        assert iface.read_div_busy()
+                    expected = (
+                        {}
+                        if full_flush
+                        else {
+                            30: (False, alu_model.divu(a, 37)),
+                            31: (True, getattr(alu_model, name.lower())(a, b)),
+                        }
+                    )
+                    iface.drive_issue(True, 31, _op(name), a, b)
+                    for cycle in range(delay):
+                        await iface.step()
+                        iface.clear_issue()
+                        if cycle == 0 and delay > 1:
+                            iface.drive_issue(True, younger_tag, _op("CLMUL"), a, 3)
+                    if full_flush:
+                        iface.drive_flush()
+                    else:
+                        iface.drive_partial_flush(flush_tag, 30)
+                    await iface.step()
+                    iface.clear_issue()
+                    iface.clear_flush()
+                    iface.clear_partial_flush()
+                    pending = [(younger_tag, "CLMULR", 1 << 63, 0x123456789ABCDEF0)]
+                    if full_flush:
+                        pending.append((30, "DIVU", 1009, 37))
+                    for cycle in range(3 * MAX_LATENCY):
+                        iface.clear_mul_accepted()
+                        iface.clear_div_accepted()
+                        for is_mul, result, accept, period in (
+                            (
+                                True,
+                                iface.read_mul_fu_complete(),
+                                iface.drive_mul_accepted,
+                                3,
+                            ),
+                            (
+                                False,
+                                iface.read_div_fu_complete(),
+                                iface.drive_div_accepted,
+                                5,
+                            ),
+                        ):
+                            if result["valid"]:
+                                tag = result["tag"]
+                                assert tag in expected, (name, delay, div_held, result)
+                                assert (is_mul, result["value"]) == expected[tag]
+                                if cycle >= 10 and cycle % period == 0:
+                                    del expected[tag]
+                                    accept()
+                        iface.clear_issue()
+                        if pending:
+                            tag, op, src1, src2 = pending[0]
+                            iface.drive_issue(False, tag, _op(op), src1, src2)
+                            await Timer(1, unit="ns")
+                            is_div = op == "DIVU"
+                            if not iface.read_busy() and not (
+                                is_div and iface.read_div_busy()
+                            ):
+                                expected[tag] = (
+                                    not is_div,
+                                    getattr(alu_model, op.lower())(src1, src2),
+                                )
+                                iface.drive_issue(True, tag, _op(op), src1, src2)
+                                pending.pop(0)
+                        await iface.step()
+                    assert not pending and not expected, (
+                        name,
+                        delay,
+                        div_held,
+                        full_flush,
+                        flush_tag,
+                        pending,
+                        expected,
+                    )

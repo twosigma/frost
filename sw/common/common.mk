@@ -67,7 +67,7 @@ MABI ?= $(FROST_FP_ABI)
 
 # Extensions appended to $(FROST_XLEN_PREFIX) for -march. Explicit B subsets
 # support older toolchains. Apps may narrow this before including common.mk.
-FROST_MARCH_EXTENSIONS ?= imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+FROST_MARCH_EXTENSIONS ?= imafdc_zicsr_zicntr_zifencei_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause
 
 # Bare-metal builds omit libc/start files and runtime unwind metadata (the debug
 # profile still emits DWARF for GDB). Explicit static/non-PIE linking and

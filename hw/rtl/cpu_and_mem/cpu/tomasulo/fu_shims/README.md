@@ -11,7 +11,7 @@ depends on how many operations its unit can have in flight.
 | Shim | RS | Units | Unit latency (cycles) | In flight |
 |------|----|-------|-----------------------|-----------|
 | `int_alu_shim` (two copies) | INT_RS | ALU | 0 (combinational) | n/a |
-| `int_muldiv_shim` | MUL_RS | Pipelined multiplier plus a 32-bit word multiplier; iterative divider | MUL 6, MULW 3, DIV/REM 65, word DIV/REM 33 | Up to 4 multiplies, 1 divide |
+| `int_muldiv_shim` | MUL_RS | Pipelined multiplier plus a 32-bit word multiplier and a 64-bit carry-less multiplier; iterative divider | MUL 6, MULW and CLMUL/CLMULH/CLMULR 3, DIV/REM 65, word DIV/REM 33 | Up to 4 multiplies, 1 divide |
 | `fp_shim` | FP_RS | Iterative FP engine: every F and D compute instruction | 3 to 139, by operation and operands (see below) | 1 |
 
 `int_muldiv_shim` stores each multiply result in a FIFO before presenting it,
@@ -50,18 +50,21 @@ hint must equal the amount the ALU would have selected.
 
 ## int_muldiv_shim
 
-One MUL_RS issue port drives the multipliers and the divider. The multiplier
-is pipelined and accepts one operation per cycle; it takes
-`riscv_pkg::MulPipeDepth` cycles (6 at XLEN=64), and a dedicated 32-bit unit
-cuts MULW to 3; that unit spends its spare third stage registering its
-operands (`INPUT_REGISTER`). The multiply path has one tag tracker, a shift
-register as deep as the full-width unit, and one 4-entry result FIFO, both
-shared by the two widths. A MULW enters the tracker partway down, at the stage that lines up
-with the word multiplier, so both widths leave through the same tail. If a
-live full-width operation is about to pass that stage, the MULW waits;
-full-width operations are never held up by it. This busy term depends on the
-opcode, which is safe because the RS presents its registered opcode
-independently of `ready`, so there is no ready/valid loop.
+One MUL_RS issue port drives the multipliers and the divider. The full-width
+multiplier accepts one operation per cycle and takes `riscv_pkg::MulPipeDepth`
+cycles (6 at XLEN=64). A dedicated 32-bit unit computes MULW in 3 cycles;
+its first stage registers the operands (`INPUT_REGISTER`). The carry-less
+multiplier computes CLMUL, CLMULH, and CLMULR in 3 cycles. It registers the
+operands, reduces groups of eight multiplier bits, and combines those partial
+products. Operand and result reversal select the high or reversed result
+through the same low-product datapath.
+
+The multiply path has one tag tracker, a shift register as deep as the
+full-width unit, and one 4-entry result FIFO. MULW and carry-less operations
+enter the tracker partway down to align their data with the shared tail. If a
+live operation is about to enter that stage, the short operation waits.
+Full-width operations enter the head. This busy term depends on the opcode;
+the RS presents its registered opcode independently of `ready`.
 
 Multiply back-pressure (`o_fu_busy`) is credit-based. FIFO occupancy plus
 unflushed operations in flight never exceeds the FIFO depth, so the path holds
@@ -165,10 +168,11 @@ reads those bits must also check the count.
 Each shim has a cocotb target of the same name. `int_alu_shim_shift_hint` and
 `int_muldiv_shim_full_width` rerun the ALU and MUL/DIV tests with
 `USE_SHIFT_AMOUNT_HINT=1` and `SHORT_WORD_OPS=0`. The `int_muldiv_shim` formal
-target proves, under arbitrary flushes and back-pressure, that each completing
-tracker entry matches the multiplier that produced its data, that the credit
-bounds hold, and that a squashed divide never completes. The `fp_shim` target
-replaces the engine with a model of arbitrary latency and result.
+target checks tracker alignment with the integer and carry-less multiplier
+pipelines under arbitrary flushes and back-pressure. It also checks carry-less
+tracker tags and FIFO input data, credit bounds, and divide cancellation.
+The `fp_shim` target replaces the engine with a model of arbitrary latency
+and result.
 `fp_launch_squash` checks both launch modes against a reference with the real
 engine, assuming the bubble after a flushed issue, and `fp_launch_squash_rs`
 checks that FP_RS leaves that bubble. The `divider` targets check the divider against

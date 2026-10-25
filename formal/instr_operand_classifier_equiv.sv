@@ -103,6 +103,7 @@ module instr_operand_classifier_equiv (
       riscv_pkg::PAUSE:
       rs_type_pre = riscv_pkg::RS_INT;
 
+      riscv_pkg::CLMUL, riscv_pkg::CLMULH, riscv_pkg::CLMULR,
       riscv_pkg::MUL, riscv_pkg::MULH,
       riscv_pkg::MULHSU, riscv_pkg::MULHU,
       riscv_pkg::DIV, riscv_pkg::DIVU,
@@ -283,6 +284,7 @@ module instr_operand_classifier_equiv (
       riscv_pkg::ADD_UW, riscv_pkg::SH1ADD_UW,
       riscv_pkg::SH2ADD_UW, riscv_pkg::SH3ADD_UW,
       riscv_pkg::ROLW, riscv_pkg::RORW, riscv_pkg::PACKW,
+      riscv_pkg::CLMUL, riscv_pkg::CLMULH, riscv_pkg::CLMULR,
       riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU,
       riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
       riscv_pkg::MULW, riscv_pkg::DIVW, riscv_pkg::DIVUW,
@@ -387,6 +389,7 @@ module instr_operand_classifier_equiv (
       riscv_pkg::OR, riscv_pkg::XOR, riscv_pkg::SLL,
       riscv_pkg::SRL, riscv_pkg::SRA,
       riscv_pkg::SLT, riscv_pkg::SLTU,
+      riscv_pkg::CLMUL, riscv_pkg::CLMULH, riscv_pkg::CLMULR,
       riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU,
       riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
       riscv_pkg::MULW, riscv_pkg::DIVW, riscv_pkg::DIVUW,

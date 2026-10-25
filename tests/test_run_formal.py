@@ -312,6 +312,11 @@ FORMAL_TARGETS = [
         tasks=("prove", "prove_depth2", "cover"),
     ),
     FormalTarget(
+        "cl_multiplier.sby",
+        "Carry-less result slices and three-stage valid alignment",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "int_muldiv_shim.sby",
         "MUL/DIV completion tracking, data alignment, and backpressure",
         tasks=(

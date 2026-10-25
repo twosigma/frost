@@ -540,16 +540,16 @@ jobs:
       matrix:
         include:
           - label: all suites
-            suites: rv64ui rv64um rv64ua rv64uc rv64uf rv64ud rv64uzba rv64uzbb rv64uzbs rv64uzbkb rv64mi rv64si
+            suites: rv64ui rv64um rv64ua rv64uc rv64uf rv64ud rv64uzba rv64uzbb rv64uzbc rv64uzbs rv64uzbkb rv64mi rv64si
             mem_config: bram
             env: p
           - label: all suites
-            suites: rv64ui rv64um rv64ua rv64uc rv64uf rv64ud rv64uzba rv64uzbb rv64uzbs rv64uzbkb rv64mi rv64si
+            suites: rv64ui rv64um rv64ua rv64uc rv64uf rv64ud rv64uzba rv64uzbb rv64uzbc rv64uzbs rv64uzbkb rv64mi rv64si
             mem_config: ddr
             env: p
           - {suites: rv64ui rv64ud rv64uc, mem_config: ddr, env: v}
           - {suites: rv64ua rv64uzbb, mem_config: ddr, env: v}
-          - {suites: rv64uf rv64um rv64uzbs rv64uzba rv64uzbkb, mem_config: ddr, env: v}
+          - {suites: rv64uf rv64um rv64uzbc rv64uzbs rv64uzba rv64uzbkb, mem_config: ddr, env: v}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -737,6 +737,8 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --trace-dir verif/testrig/traces --continue-on-fail
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --crypto 50 --continue-on-fail
 
       - name: Compare FROST with Sail on random instruction sequences
         run: |

@@ -85,10 +85,10 @@ ISA_BASE = "rv64i"
 ISA_EXTENSIONS = (
     "i", "m", "a", "f", "d", "c",
     "zicsr", "zifencei", "zicntr",
-    "zba", "zbb", "zbs", "zbkb", "zicond", "zihintpause",
+    "zba", "zbb", "zbc", "zbs", "zbkb", "zbkc", "zicond", "zihintpause",
     "smaia", "ssaia", "sstc", "svade",
 )  # fmt: skip
-ISA_STRING = "rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbs_zbkb_zicond_zihintpause_smaia_ssaia_sstc_svade"
+ISA_STRING = "rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbc_zbs_zbkb_zbkc_zicond_zihintpause_smaia_ssaia_sstc_svade"
 
 # Disable IPv6 autoconfiguration traffic, which returns through NIC loopback
 # and fails frost_nettest's idle checks. The initramfs needs no IPv6.

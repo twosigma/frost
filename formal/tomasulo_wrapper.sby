@@ -54,7 +54,7 @@ read -formal -sv mem_wakeup_merge.sv
 read -sv lq_coherence_port.sv
 read -sv divider.sv
 read -sv dsp_tiled_multiplier_unsigned.sv
-read -sv multiplier.sv
+read -sv multiplier.sv cl_multiplier.sv
 read -sv alu.sv
 read -sv fp_engine.sv
 read -sv fp_shim.sv
@@ -94,6 +94,7 @@ prep -top tomasulo_wrapper
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/multiplier.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/cl_multiplier.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/alu.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_engine.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_shim.sv

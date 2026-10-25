@@ -63,7 +63,7 @@ ISA_TEST_SUITES = {
     "rv64uzbkb": "RV64 Zbkb Extension",
     "rv64mi": "RV64 Machine-Mode",
     "rv64si": "RV64 Supervisor-Mode",  # S-mode
-    # rv64uzbc: skipped, FROST does not implement Zbc
+    "rv64uzbc": "RV64 Zbc Extension",
     # rv64uzbkx: skipped, FROST does not implement Zbkx
     # rv64uzfh: skipped, FROST does not implement Zfh
 }
@@ -98,6 +98,7 @@ V_ENV_SUITES = frozenset(
         "rv64ud",
         "rv64uzba",
         "rv64uzbb",
+        "rv64uzbc",
         "rv64uzbs",
         "rv64uzbkb",
     }

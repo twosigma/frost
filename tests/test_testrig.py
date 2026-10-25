@@ -59,6 +59,7 @@ VERIF_DIR = REPO_ROOT / "verif"
 if str(VERIF_DIR) not in sys.path:
     sys.path.insert(0, str(VERIF_DIR))
 atomics = importlib.import_module("testrig.atomics")
+crypto = importlib.import_module("testrig.crypto")
 SAIL_CONFIG = REPO_ROOT / "verif" / "testrig" / "sail_frost.json"
 SAVED_TRACES_DIR = REPO_ROOT / "verif" / "testrig" / "traces"
 DEFAULT_SAVE_DIR = TESTS_DIR / "testrig_failures"
@@ -288,6 +289,20 @@ def run(arguments: argparse.Namespace) -> int:
             command += ["-t", str(Path(arguments.trace).resolve())]
         elif arguments.trace_dir:
             command += ["-d", str(Path(arguments.trace_dir).resolve())]
+        elif arguments.crypto:
+            seed = (
+                arguments.seed
+                if arguments.seed is not None
+                else random.randrange(1 << 32)
+            )
+            trace_dir = work_dir / "crypto"
+            shutil.rmtree(trace_dir, ignore_errors=True)
+            crypto.write_tests(trace_dir, arguments.crypto, seed, arguments.test_length)
+            print(
+                f"Wrote {arguments.crypto} scalar cryptography tests from seed {seed}",
+                flush=True,
+            )
+            command += ["-d", str(trace_dir)]
         elif arguments.atomics:
             seed = arguments.seed
             if seed is None:
@@ -401,6 +416,12 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--trace", help="replay one saved trace instead")
     parser.add_argument("--trace-dir", help="replay every .S trace in a directory")
     parser.add_argument(
+        "--crypto",
+        type=int,
+        default=0,
+        help="replay this many scalar cryptography tests from verif/testrig/crypto.py",
+    )
+    parser.add_argument(
         "--atomics",
         type=int,
         default=0,
@@ -410,7 +431,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--seed",
         type=int,
-        help="seed for --atomics (default: random, printed)",
+        help="seed for --atomics or --crypto (default: random, printed)",
     )
     parser.add_argument(
         "--save-dir",

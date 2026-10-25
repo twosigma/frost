@@ -1667,7 +1667,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_muldiv_shim",
         hdl_toplevel_module="int_muldiv_shim",
         description=(
-            "Mixed-width multiplication and division results, scheduling, and recovery"
+            "Integer and carry-less multiplication, division, scheduling, and recovery"
         ),
     ),
     "int_muldiv_shim_full_width": CocotbRunConfig(

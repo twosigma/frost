@@ -55,7 +55,7 @@ HERE = Path(__file__).resolve().parent
 APP_DIR = HERE.parent
 COREMARK_DIR = APP_DIR / "coremark"
 RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv64-linux-")
-EXTENSIONS = "imafd_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause"
+EXTENSIONS = "imafd_zicsr_zicntr_zifencei_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause"
 # Profile only benchmark translation units, excluding the port layer.
 PROFILED_SOURCES = (
     "core_list_join",

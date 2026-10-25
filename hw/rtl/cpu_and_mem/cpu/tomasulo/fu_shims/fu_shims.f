@@ -14,6 +14,8 @@ $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv
 # Integer ALU shim (INT_RS -> ALU -> fu_complete_t)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/int_alu_shim.sv
 
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/cl_multiplier.sv
+
 # Integer MUL/DIV shim (MUL_RS -> multiplier/divider -> fu_complete_t)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/int_muldiv_shim.sv
 
