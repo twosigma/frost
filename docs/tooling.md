@@ -32,6 +32,9 @@ The image supplies clang, clang-format and clang-tidy 23.1.4, plus
 Verible 0.0-4296-g0f262651. The C/C++ format hook uses the image's
 clang-format binary.
 
+Formal checks use Z3 5.3.2 and Boolector 3.2.4. Boolector links Lingeling
+rel-1.0.0 and btor2tools 1.0.4 at the commits pinned in the Dockerfile.
+
 The Linux boot emulator is QEMU 11.1.2.
 
 The extension build uses Node.js 26.12.1 and npm 12.2.1. TestRIG uses the
@@ -102,8 +105,8 @@ the language lockfiles consistent. Some constraints that are easy to break:
 - Buildroot needs GNU `install`, and native Clang builds use the GCC installed
   in `/opt/gcc`.
 - Yosys and SymbiYosys versions must stay compatible. The reorder-buffer proof
-  uses Boolector's `btormc`; the CMake-compatibility and C17 settings in the
-  Dockerfile apply only to Boolector and its dependencies.
+  uses Boolector's `btormc`. Boolector needs the Dockerfile's CMake policy
+  setting, and Lingeling uses C17.
 - Docker and Buildroot must use the same checksummed Bootlin archive. After a
   compiler change, rebuild Buildroot in a fresh output directory.
 - After updating OpenSBI or the compiler, run

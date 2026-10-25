@@ -48,7 +48,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # cocotb 2.1 requires Verilator 5.036 or newer.
 ARG VERILATOR_VERSION=5.052
 
-ARG Z3_VERSION=5.1.0
+ARG Z3_VERSION=5.3.2
 
 ARG BOOLECTOR_VERSION=3.2.4
 
@@ -210,16 +210,16 @@ RUN git clone https://github.com/YosysHQ/sby.git /tmp/sby \
 RUN git clone https://github.com/Z3Prover/z3.git /tmp/z3 \
     && cd /tmp/z3 \
     && git checkout z3-${Z3_VERSION} \
-    && python3 scripts/mk_make.py \
-    && cd build \
-    && make -j$(nproc) \
-    && make install \
+    && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build --parallel $(nproc) \
+    && cmake --install build --strip \
     && rm -rf /tmp/z3
 
 # Build Lingeling directly rather than through contrib/setup-lingeling.sh, so
 # it gets -Wno-error=incompatible-pointer-types (needed with GCC 14+) and C17
-# instead of GCC 15+'s C23 default. Boolector and its bundled btor2tools
-# predate CMake 4, so the policy-compatibility setting applies only to them.
+# instead of GCC 15+'s C23 default. Boolector requires the CMake policy
+# compatibility setting. Its btor2tools parser uses the pinned release commit.
+ARG BTOR2TOOLS_COMMIT=e6941e37e056084ab6e51c5c1eee6233089a330d
 RUN git clone https://github.com/Boolector/boolector.git /tmp/boolector \
     && cd /tmp/boolector \
     && git checkout ${BOOLECTOR_VERSION} \
@@ -227,14 +227,15 @@ RUN git clone https://github.com/Boolector/boolector.git /tmp/boolector \
     && cd deps \
     && git clone https://github.com/arminbiere/lingeling.git \
     && cd lingeling \
-    && git checkout 7d5db72420b95ab356c98ca7f7a4681ed2c59c70 \
+    && git checkout 89a167d0d2efe98d983c87b5b84175b40ea55842 \
     && ./configure.sh -fPIC \
     && sed -i 's/^CFLAGS=\(.*\)/CFLAGS=\1 -std=gnu17 -Wno-error=incompatible-pointer-types/' makefile \
     && make -j$(nproc) \
     && cp liblgl.a ../install/lib/ \
     && cp lglib.h ../install/include/ \
     && cd /tmp/boolector \
-    && CMAKE_POLICY_VERSION_MINIMUM=3.5 ./contrib/setup-btor2tools.sh \
+    && sed -i "s/^COMMIT_ID=.*/COMMIT_ID=\"${BTOR2TOOLS_COMMIT}\"/" contrib/setup-btor2tools.sh \
+    && ./contrib/setup-btor2tools.sh \
     && CMAKE_POLICY_VERSION_MINIMUM=3.5 ./configure.sh \
     && cd build \
     && make -j$(nproc) \
