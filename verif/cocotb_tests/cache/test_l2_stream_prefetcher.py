@@ -26,7 +26,6 @@ L1_LINE = 32
 L2_LINE = 64
 PAGE = 4096
 DISTANCE = 8  # the module's default
-MAX_INFLIGHT = 4  # the module's default
 
 
 class PrefetchBench:
@@ -70,6 +69,7 @@ class PrefetchBench:
             addr = int(dut.o_req_addr.value)
             rid = int(dut.o_req_id.value)
             assert addr % L2_LINE == 0, f"unaligned prefetch {addr:#x}"
+            assert all(rid != pending_id for _, pending_id in self.pending), rid
             self.reads.append(addr)
             self.pending.append((self.edge + 1 + self.resp_delay, rid))
         due = [p for p in self.pending if p[0] <= self.edge + 1]
@@ -142,15 +142,21 @@ async def test_reads_stop_at_the_page(dut: Any) -> None:
 
 @cocotb.test()
 async def test_outstanding_reads_are_capped(dut: Any) -> None:
-    """Slow responses hold the prefetcher to MAX_INFLIGHT reads."""
-    bench = PrefetchBench(dut, resp_delay=30)
+    """Two streams wait at the request cap and resume as response IDs return."""
+    bench = PrefetchBench(dut, resp_delay=200)
     await bench.start()
     base = 0x8040_0000
-    await bench.cycle(base)
-    await bench.cycle(base + L2_LINE)
-    await bench.idle(100)
-    assert bench.max_outstanding <= MAX_INFLIGHT, bench.max_outstanding
-    assert len(bench.reads) == DISTANCE, [hex(a) for a in bench.reads]
+    for stream in (base, base + 0x10000):
+        await bench.cycle(stream)
+        await bench.cycle(stream + L2_LINE)
+    await bench.idle(80)
+    limit = int(dut.MAX_INFLIGHT.value)
+    assert len(bench.reads) == len(bench.pending) == limit
+    bench.resp_delay = 3
+    await bench.idle(300)
+    assert bench.max_outstanding == limit, bench.max_outstanding
+    assert len(bench.reads) == 2 * DISTANCE, [hex(a) for a in bench.reads]
+    assert not bench.pending
 
 
 @cocotb.test()
