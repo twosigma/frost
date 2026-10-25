@@ -339,14 +339,19 @@ python3 perf-modeling/frost_perf_model.py sweep --out /tmp/sweep.json
 python3 perf-modeling/frost_perf_model.py report --sweep /tmp/sweep.json --out /tmp/report.md
 python3 perf-modeling/frost_perf_model.py selftest --out /tmp/selftest.json
 python3 perf-modeling/frost_perf_model.py audit --out /tmp/audit.json
+python3 perf-modeling/tools/sweep_memory.py --group all --out /tmp/memory_sweep.json
 ```
+
+`tools/sweep_memory.py` records source hashes and complete configurations. Its `x3` group varies one resource at a time from the production defaults. Its `channels` group crosses channel count, latency, service interval, and L2 miss slots. `--kernels`, `--scale-shift`, `--mlp-lines`, and `--passes` select the measured bodies and their sizes.
+
+The `controller` group drives a balanced sequential read stream directly through the AXI bridge and memory endpoint. It isolates the outstanding-transaction budget from CPU dependencies and cache misses. Each read owns an ID until completion. The probe reports steady-state throughput between the first and last response, peak occupancy, and integrated occupancy. Its ideal throughput is `min(1, channels / cycles_per_line)` lines per cycle. The latency-bandwidth product is a lower bound on the required outstanding reads. Channel imbalance, queueing, writes, and CPU issue limits can require a different budget. The `all` group includes all three experiments.
 
 ## 12. Model tests and calibration scope
 
-The Fast Python Tests job collects `tests/test_perf_model.py`, `tests/test_perf_memory.py`, and `tests/test_perf_workloads.py`. They cover model invariants, deterministic results, trace contracts, calibration checks, memory channel service, AXI ownership, and kernel addresses and dependencies. The JSON files under `results/` are regression fixtures, not independent RTL validation.
+The Fast Python Tests job collects `tests/test_perf_model.py`, `tests/test_perf_memory.py`, `tests/test_perf_workloads.py`, and `tests/test_perf_sweep.py`. They cover model invariants, deterministic results, trace contracts, calibration checks, memory channel service, AXI ownership, kernel addresses and dependencies, and controller saturation. The JSON files under `results/` are regression fixtures, not independent RTL validation.
 
 ```bash
-pytest tests/test_perf_model.py tests/test_perf_memory.py tests/test_perf_workloads.py -q -p no:cacheprovider
+pytest tests/test_perf_model.py tests/test_perf_memory.py tests/test_perf_workloads.py tests/test_perf_sweep.py -q -p no:cacheprovider
 ```
 
 A model change that alters the stored results regenerates the corresponding JSON files with `run`, `explore`, `sweep`, `selftest`, and `audit`. The CoreMark fixture uses seed 11 and the default configuration. The exploration and sweep fixtures use their command defaults. Wall-clock fields are excluded from regression comparisons.
