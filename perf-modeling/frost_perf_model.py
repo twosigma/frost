@@ -37,7 +37,7 @@ Examples:
   python frost_perf_model.py sweep --out results/frost_perf_sweep.json
   python frost_perf_model.py audit --out results/frost_perf_rtl_alignment.json
   python frost_perf_model.py report --sweep results/frost_perf_sweep.json \
-      --out results/FROST_perf_model_report.md
+      --out /tmp/perf_model_report.md
 """
 
 from __future__ import annotations
@@ -2287,107 +2287,93 @@ def sweep_configurations(seed: int = 11) -> dict[str, Any]:
 
 
 def load_trace_ops(path: Path, max_ops: int | None = None) -> list[MicroOp]:
-    """Load an execution or micro-op trace and convert it into MicroOps for cycle simulation.
+    """Read instruction records with addresses and backward dependencies.
 
-    Supported formats:
-    - JSON Lines (.jsonl):
-        - MicroOp records: {"op_id": int, "kind": str, "fetch_address": int, "data_address": int|null, "depends_on": [...], "mispredict": bool}
-        - Instruction records: {"pc": int, "kind": str, "data_address": int|null, ...}
-        - Calibration events: extracts dispatch/retire/axi_request events into synthetic sequence.
-    - CSV/TSV: pc,kind,data_address,depends_on,mispredict
+    JSONL records contain kind, fetch_address or pc, data_address, and
+    depends_on. Optional op_id values must be consecutive from zero.
+    CSV and TSV columns are pc, kind, data_address, depends_on, mispredict;
+    semicolons separate dependency IDs. Calibration events are rejected
+    because they do not describe an architectural instruction stream.
     """
+    if max_ops is not None and max_ops < 1:
+        raise ValueError("max_ops must be positive")
     ops: list[MicroOp] = []
     text = path.read_text(encoding="utf-8")
     is_jsonl = path.suffix.lower() == ".jsonl" or text.lstrip().startswith("{")
 
-    if is_jsonl:
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except Exception:
-                continue
-            if not isinstance(record, dict):
-                continue
-            if "event" in record:
-                # Calibration event trace
-                ev = record["event"]
-                if ev == "dispatch":
-                    uops = int(record.get("uops", 1))
-                    if uops == 1:
-                        op_id = len(ops)
-                        dep = (
-                            (op_id - 2,)
-                            if op_id >= 2
-                            else ((op_id - 1,) if op_id > 0 else ())
-                        )
-                        pc = 0x8000_1000 + (op_id * 4) % 4096
-                        ops.append(MicroOp(op_id, "alu", pc, None, dep))
-                    elif uops >= 2:
-                        id0 = len(ops)
-                        dep0 = (id0 - 2,) if id0 >= 2 else ()
-                        pc0 = 0x8000_1000 + (id0 * 4) % 4096
-                        ops.append(MicroOp(id0, "alu", pc0, None, dep0))
-                        id1 = len(ops)
-                        dep1 = (id1 - 3,) if id1 >= 3 else ()
-                        pc1 = 0x8000_1000 + (id1 * 4) % 4096
-                        ops.append(MicroOp(id1, "alu", pc1, None, dep1))
-                elif ev == "axi_request":
-                    op_id = len(ops)
-                    is_wr = bool(record.get("is_write", False))
-                    addr_str = record.get("address", "0x80000000")
-                    addr = (
-                        int(addr_str, 0) if isinstance(addr_str, str) else int(addr_str)
-                    )
-                    kind = "store" if is_wr else "load"
-                    pc = 0x8000_2000 + (op_id * 4) % 4096
-                    dep = (op_id - 2,) if op_id >= 2 and not is_wr else ()
-                    ops.append(MicroOp(op_id, kind, pc, addr, dep))
-            elif "kind" in record:
-                op_id = len(ops)
-                kind = str(record["kind"]).lower()
-                fetch_addr = int(
-                    record.get("fetch_address") or record.get("pc") or 0x8000_0000
-                )
-                data_addr = record.get("data_address") or record.get("addr")
-                if data_addr is not None:
-                    data_addr = (
-                        int(data_addr)
-                        if isinstance(data_addr, int)
-                        else int(str(data_addr), 0)
-                    )
-                deps = tuple(int(d) for d in record.get("depends_on", ()))
-                mispred = bool(record.get("mispredict", False))
-                ops.append(MicroOp(op_id, kind, fetch_addr, data_addr, deps, mispred))
-            if max_ops and len(ops) >= max_ops:
-                break
-    else:
-        for line in text.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = [p.strip() for p in line.replace("\t", ",").split(",")]
-            if len(parts) >= 2 and parts[0].lower() not in {"pc", "cycle"}:
-                op_id = len(ops)
-                pc = int(parts[0], 0)
-                kind = parts[1].lower()
-                data_addr = (
-                    int(parts[2], 0)
-                    if len(parts) > 2 and parts[2] not in {"", "null", "None"}
-                    else None
-                )
-                deps = (
-                    tuple(int(x) for x in parts[3].split(";"))
-                    if len(parts) > 3 and parts[3] not in {"", "()"}
-                    else ()
-                )
-                mispred = parts[4].lower() in {"1", "true"} if len(parts) > 4 else False
-                ops.append(MicroOp(op_id, kind, pc, data_addr, deps, mispred))
-                if max_ops and len(ops) >= max_ops:
-                    break
+    def integer(value: Any) -> int:
+        return int(value, 0) if isinstance(value, str) else int(value)
 
+    for line_number, line in enumerate(text.splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        if is_jsonl:
+            record = json.loads(line)
+            if not isinstance(record, dict):
+                raise ValueError(f"line {line_number}: expected an instruction object")
+            if "event" in record:
+                raise ValueError(
+                    "calibration events cannot be replayed as instructions; "
+                    "supply instruction addresses and dependencies"
+                )
+            op_id = len(ops)
+            if integer(record.get("op_id", op_id)) != op_id:
+                raise ValueError("instruction IDs must be consecutive from zero")
+            kind = str(record["kind"]).lower()
+            pc = record.get("fetch_address", record.get("pc"))
+            if pc is None:
+                raise ValueError("instruction record has no fetch address")
+            data = record.get("data_address", record.get("addr"))
+            dependencies = record.get("depends_on", [])
+            if not isinstance(dependencies, list):
+                raise ValueError("depends_on must be an array of instruction IDs")
+            deps = tuple(integer(dep) for dep in dependencies)
+            mispredict = record.get("mispredict", False)
+            if not isinstance(mispredict, bool):
+                raise ValueError("mispredict must be a boolean")
+        else:
+            if line.startswith("#"):
+                continue
+            parts = [part.strip() for part in line.replace("\t", ",").split(",")]
+            if parts[0].lower() == "pc":
+                continue
+            if len(parts) < 2:
+                raise ValueError(f"line {line_number}: expected pc and kind")
+            op_id = len(ops)
+            pc, kind = parts[0], parts[1].lower()
+            data = (
+                parts[2]
+                if len(parts) > 2 and parts[2] not in {"", "null", "None"}
+                else None
+            )
+            deps = (
+                tuple(integer(dep) for dep in parts[3].split(";"))
+                if len(parts) > 3 and parts[3] not in {"", "()"}
+                else ()
+            )
+            if len(parts) > 4 and parts[4].lower() not in {
+                "0",
+                "1",
+                "false",
+                "true",
+                "",
+            }:
+                raise ValueError("mispredict must be 0, 1, false, or true")
+            mispredict = len(parts) > 4 and parts[4].lower() in {"1", "true"}
+        if kind not in {"alu", "branch", "load", "store"}:
+            raise ValueError(f"unsupported instruction kind: {kind}")
+        if any(dep < 0 or dep >= op_id for dep in deps):
+            raise ValueError("dependencies must name earlier instructions")
+        if kind in {"load", "store"} and data is None:
+            raise ValueError("memory instructions require data_address")
+        fetch_address = integer(pc)
+        data_address = None if data is None else integer(data)
+        if fetch_address < 0 or (data_address is not None and data_address < 0):
+            raise ValueError("instruction addresses must be nonnegative")
+        ops.append(MicroOp(op_id, kind, fetch_address, data_address, deps, mispredict))
+        if max_ops is not None and len(ops) >= max_ops:
+            break
     if not ops:
         raise ValueError(f"No executable micro-ops found in trace: {path}")
     return ops
@@ -3012,6 +2998,7 @@ def parse_args() -> argparse.Namespace:
     replay.add_argument(
         "--config",
         default="baseline",
+        choices=sorted(get_design_variants()),
         help="Design variant configuration to use (default: baseline)",
     )
     replay.add_argument("--out", type=Path, help="Optional output JSON path")
@@ -3073,7 +3060,7 @@ def main() -> int:
         return 0
     if args.command == "replay":
         variants = get_design_variants()
-        config = variants.get(args.config) or ModelConfig()
+        config = variants[args.config]
         ops = load_trace_ops(args.trace)
         pipeline = FrostPipeline(config, ops)
         for op in ops:

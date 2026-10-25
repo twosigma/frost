@@ -8,11 +8,11 @@ This directory provides a **fast, cycle-approximate architectural performance mo
 
 1. **Simulation Speedup**:
    - Full-system Verilator RTL simulation runs at ~1.7 kHz (simulated cycles per second).
-   - This architectural model runs at **~160–176 kHz on trace replay (>100x speedup)** and **~45–50 kHz simulated cycles/s on analytical kernel execution (>7,000x speedup)**.
+   - The recorded analytical CoreMark run executes at **86,585 simulated cycles/s**. Instruction replay requires instruction records with dependencies; aggregate calibration events are rejected.
    - This speed enables broad design space sweeps and bottleneck sensitivity analyses that would be computationally prohibitive in cycle-accurate RTL.
 
 2. **RTL Cycle Correlation**:
-   - Calibrated against physical hardware RTL measurements across three distinct workloads (CoreMark, Tomasulo microarchitectural suite, and DDR MLP stress test).
+   - CoreMark has an aggregate IPC comparison against RTL. The Tomasulo microarchitectural suite and DDR MLP stress test have validated event captures without model IPC comparisons.
    - CoreMark model IPC is **1.0087**, correlating within **+3.1%** of the hardware RTL's measured **0.9786 IPC** (239,452 cycles).
    - Accurately models FROST-specific microarchitectural structures: the 256-entry Load Queue direct-mapped L0 Data Cache (`lq_l0_cache.sv`) with 1-cycle combinational fast-path bypass, early load wakeup (`EARLY_LOAD_WAKEUP = 1`), and the single-channel 512-bit AXI memory system.
 
@@ -81,13 +81,13 @@ perf-modeling/
 
 ### Multi-Benchmark Verification Summary
 
-The architectural model was calibrated and validated against three distinct RTL simulation benchmarks under Verilator:
+The archived RTL results cover three benchmarks under Verilator. CoreMark has a model IPC comparison; the other two captures validate event records:
 
 | Benchmark | Workload Characteristic | Timed RTL Cycles | Retired Uops | Hardware RTL IPC | Calibrated Model IPC | Correlation Delta | Status |
 |---|---|---:|---:|---:|---:|---:|:---:|
 | **CoreMark** | General compute / integer pipeline | 239,452 | 234,317 | **0.9786** | **1.0087** | **+3.1%** | PASS (CRC verified) |
-| **tomasulo_perf** | 14 directed microarchitecture benchmarks | 487,313 | 175,025 | **0.3592** | Calibrated | Structural match | PASS (14/14 sub-benchmarks) |
-| **ddr_mlp_test** | Memory-level parallelism & AXI queueing | 94,010 | 30,427 | **0.3237** | Calibrated | Structural match | PASS |
+| **tomasulo_perf** | 14 directed microarchitecture benchmarks | 487,313 | 175,025 | **0.3592** | Not available | Not compared | PASS (14/14 sub-benchmarks) |
+| **ddr_mlp_test** | Memory-level parallelism & AXI queueing | 94,010 | 30,427 | **0.3237** | Not available | Not compared | PASS |
 
 ### Wall-Time & Simulation Speed Comparison
 
@@ -96,7 +96,7 @@ The architectural model was calibrated and validated against three distinct RTL 
 | **CoreMark (Verilator RTL)** | 239,452 | 140.40 s | 1,705 cyc/s | 1,668 uop/s | **1.0x (Baseline)** |
 | **tomasulo_perf (Verilator RTL)** | 487,313 | 277.67 s | 1,755 cyc/s | 630 uop/s | **1.0x (Baseline)** |
 | **ddr_mlp_test (Verilator RTL)** | 94,010 | 56.63 s | 1,660 cyc/s | 537 uop/s | **1.0x (Baseline)** |
-| **FROST Perf Model (Trace Replay)** | 5,000 | 0.028 s | **176,550 cyc/s** | **176,550 uop/s** | **~103x Speedup** |
+| **FROST Perf Model (Aggregate Trace Replay)** | Rejected | Not available | Not available | Not available | Not available |
 | **FROST Perf Model (Analytical CoreMark)** | 3,101 | 0.035815 s | **86,585 cyc/s** | **87,338 uop/s** | **50.8x cycle-rate ratio** |
 
 ---
@@ -173,10 +173,10 @@ python3 perf-modeling/frost_perf_model.py run \
 ```
 
 ### 2. Trace Replay
-Replay a captured micro-op trace against the baseline or an experimental configuration:
+Replay instruction records with architectural addresses and backward dependencies against the baseline or an experimental configuration:
 ```bash
 python3 perf-modeling/frost_perf_model.py replay \
-    --trace perf-modeling/traces/coremark_head5k.jsonl \
+    --trace /tmp/instructions.jsonl \
     --config core_expanded_window \
     --out /tmp/replay_output.json
 ```
@@ -232,7 +232,7 @@ Maintainers evaluating this contribution can verify the model with four standard
    ```
    *Expected output: Completely empty. No synthesizable RTL files are modified.*
 
-CI's Fast Python Tests job runs the unit tests and the self-test through `tests/test_perf_model.py`, which also replays the sample traces in `traces/` and checks that the model still writes the self-test, audit, CoreMark run, CoreMark exploration, and sweep results stored in `results/`, apart from wall-clock fields. To run it locally:
+CI's Fast Python Tests job runs the unit tests and the self-test through `tests/test_perf_model.py`, which also validates the sample event traces in `traces/`, rejects them as instruction replay, and checks the model output against the self-test, audit, CoreMark run, CoreMark exploration, and sweep results stored in `results/`, apart from wall-clock fields. To run it locally:
 
 ```bash
 ./scripts/frost.py run pytest tests/test_perf_model.py -v
@@ -274,7 +274,7 @@ As the FROST design evolves, maintainers can easily keep the performance model s
 - **Modifying Core Parameters**: Adjust `ModelConfig` in `frost_perf_model.py` (`rob_depth`, `mem_rs_depth`, `int_rs_depth`, `lq_depth`, `sq_depth`, `l0_cache_depth`, `l1d_mshrs`, `l2_mshrs`, etc.).
 - **Modifying SoC / Interconnect**: Adjust `SocConfig` in `frost_perf_model.py` (`ddr_capacity_bytes`, `local_bram_latency`, address decode boundaries) or plug in a custom `SocTopPort` implementation.
 - **Modifying Memory Controller / DDR Timing**: Adjust `DdrConfig` (`latency_cycles`, `num_slots`, reorder jitter) or replace `SingleChannelDdrController`.
-- **Adding New Workload Traces**: Compile any RISC-V binary in `sw/apps/<app>`, run under cocotb with `FROST_CALIBRATION_TRACE_PATH` set, and replay with `--trace`.
+- **Adding New Workload Traces**: Supply instruction records with kinds, fetch and data addresses, and dependencies to `--trace`. Cocotb captures selected by `FROST_CALIBRATION_TRACE_PATH` contain aggregate calibration events.
 
 ## 8. Memory-system configuration
 
@@ -322,9 +322,9 @@ The built-in workloads are synthetic instruction and memory-pressure patterns: `
 
 `--config-file` on `run` and `memory-run` reads a JSON object with `ModelConfig` fields and nested `ddr` and `soc` objects. Omitted fields use their defaults. For example, `{"axi_id_pool_size": 8, "ddr": {"controller": "interleaved", "channels": 2, "cycles_per_line": 4}}` selects two physical channels with a shared eight-transaction AXI limit.
 
-Instruction replay accepts JSONL records with `kind`, `fetch_address`, `data_address`, `depends_on`, and `mispredict`, or CSV records with the equivalent fields. The supported kinds are `alu`, `branch`, `load`, and `store`. Dependencies refer to earlier operation IDs.
+Instruction replay accepts JSONL records with `kind`, `fetch_address` or `pc`, `data_address`, `depends_on`, and `mispredict`, or CSV records with the equivalent fields. The supported kinds are `alu`, `branch`, `load`, and `store`. IDs are consecutive from zero, and dependencies refer to earlier IDs. Memory operations require a data address. Zero addresses are preserved. Unknown kinds, forward dependencies, malformed records, and aggregate calibration events are rejected.
 
-Calibration events contain dispatch and retirement counts and AXI handshakes. They do not contain an architectural instruction stream or its dependencies. They are suitable for trace validation and observed counters, not for reconstructing a program's cache accesses. The [correlation guide](docs/rtl_correlation_guide.md) describes capture and comparison.
+Calibration events contain dispatch and retirement counts and AXI handshakes. They do not contain an architectural instruction stream or its dependencies. They are suitable for trace validation and observed counters, not for reconstructing a program's cache accesses. The stored Tomasulo and DDR MLP calibration files contain observed trace totals and no model comparison. The [correlation guide](docs/rtl_correlation_guide.md) describes capture and comparison.
 
 ## 11. Model experiment commands
 

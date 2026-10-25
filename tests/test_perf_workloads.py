@@ -150,3 +150,67 @@ def test_repeated_passes_reuse_data_cache() -> None:
         twice["memory"]["l1d"]["stats"]["misses"]
         == first["memory"]["l1d"]["stats"]["misses"]
     )
+
+
+def test_instruction_replay_preserves_zero_addresses_and_dependencies(
+    tmp_path: Path,
+) -> None:
+    """Instruction records preserve real addresses and the supplied dependency graph."""
+    path = tmp_path / "instructions.jsonl"
+    rows = [
+        {"op_id": 0, "kind": "load", "pc": "0x0", "data_address": 0},
+        {
+            "op_id": 1,
+            "kind": "load",
+            "pc": "0x4",
+            "data_address": "0x80001000",
+            "depends_on": [0],
+        },
+        {
+            "op_id": 2,
+            "kind": "branch",
+            "fetch_address": 8,
+            "depends_on": [1],
+            "mispredict": True,
+        },
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows))
+    ops = model.load_trace_ops(path)
+    assert ops[0].fetch_address == ops[0].data_address == 0
+    assert ops[1].data_address == 0x80001000 and ops[1].depends_on == (0,)
+    assert ops[2].kind == "branch" and ops[2].mispredict
+    assert len(model.load_trace_ops(path, max_ops=2)) == 2
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"event": "dispatch", "uops": 2},
+        {"event": "axi_request", "address": 0},
+        {"kind": "load", "pc": 0},
+        {"kind": "alu", "pc": 0, "depends_on": [0]},
+        {"kind": "alu", "pc": 0, "depends_on": [-1]},
+        {"kind": "alu", "pc": 0, "op_id": 2},
+        {"kind": "divide", "pc": 0},
+        {"kind": "branch", "pc": 0, "mispredict": "false"},
+    ],
+)
+def test_replay_rejects_incomplete_or_invented_instructions(
+    tmp_path: Path, record: dict[str, Any]
+) -> None:
+    """Ambiguous records fail instead of fabricating program behavior."""
+    path = tmp_path / "invalid.jsonl"
+    path.write_text(json.dumps(record))
+    with pytest.raises(ValueError):
+        model.load_trace_ops(path)
+
+
+def test_csv_instruction_dependencies(tmp_path: Path) -> None:
+    """CSV dependencies refer to earlier instructions and preserve address zero."""
+    path = tmp_path / "instructions.csv"
+    path.write_text(
+        "pc,kind,data_address,depends_on,mispredict\n0,load,0,,false\n4,store,0x80000000,0,false\n"
+    )
+    ops = model.load_trace_ops(path)
+    assert ops[0].data_address == 0
+    assert ops[1].kind == "store" and ops[1].depends_on == (0,)
