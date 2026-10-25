@@ -63,7 +63,13 @@ class Bench:
             await self.step(rst=1, ddr_axi_rst=1)
         for _ in range(4):
             await self.step(
-                rst=0, ddr_axi_rst=0, axi_awburst=1, axi_arburst=1, axi_wlast=1
+                rst=0,
+                ddr_axi_rst=0,
+                axi_awburst=1,
+                axi_arburst=1,
+                axi_wlast=1,
+                axi_awid=(1 << len(self.dut.i_axi_awid)) - 1,
+                axi_arid=1,
             )
 
     async def address(self, channel: str, addr: int, size: int) -> None:
@@ -89,6 +95,7 @@ class Bench:
         strb: int | None = None,
         reset_delay: int | None = None,
         status: int = 0,
+        reset_after_response: bool = False,
     ) -> None:
         """Complete a write, holding B and optionally resetting its slave."""
         await self.address("aw", addr, size)
@@ -102,7 +109,7 @@ class Bench:
                 break
         else:
             raise AssertionError("CPU AXI W timed out")
-        await self.response("b", status, reset_delay)
+        await self.response("b", status, reset_delay, reset_after_response)
 
     async def read(
         self,
@@ -110,24 +117,32 @@ class Bench:
         size: int = 2,
         status: int = 0,
         reset_delay: int | None = None,
+        reset_after_response: bool = False,
     ) -> int:
         """Read a register pair and hold the response under CPU backpressure."""
         await self.address("ar", addr, size)
-        s = await self.response("r", status, reset_delay)
+        s = await self.response("r", status, reset_delay, reset_after_response)
         return (s["rdata"] >> (8 * (addr & (self.bus_bytes - 1)))) & (
             (1 << (8 << size)) - 1
         )
 
     async def response(
-        self, channel: str, status: int, reset_delay: int | None
+        self,
+        channel: str,
+        status: int,
+        reset_delay: int | None,
+        reset_after_response: bool,
     ) -> dict[str, int]:
         """Hold a response through backpressure and an optional reset pulse."""
         cycle = 0
+        reset_start = reset_delay
+        address_channel = "aw" if channel == "b" else "ar"
+        expected_id = int(getattr(self.dut, f"i_axi_{address_channel}id").value)
 
         async def step(**inputs: int) -> dict[str, int]:
             nonlocal cycle
             inputs["rst"] = int(
-                reset_delay is not None and reset_delay <= cycle < reset_delay + 4
+                reset_start is not None and reset_start <= cycle < reset_start + 4
             )
             cycle += 1
             return await self.step(**inputs)
@@ -136,20 +151,29 @@ class Bench:
             sample = await step()
             if sample[channel + "valid"]:
                 assert sample[channel + "resp"] == status
+                assert sample[channel + "id"] == expected_id
                 if channel == "r":
                     assert sample["rlast"]
+                if reset_after_response:
+                    reset_start = cycle + 1
                 for _ in range(4):
                     held = await step()
                     assert held[channel + "valid"]
                     assert held[channel + "resp"] == sample[channel + "resp"]
+                    assert held[channel + "id"] == expected_id
                     if channel == "r":
                         assert held["rdata"] == sample["rdata"] and held["rlast"]
-                await step(**{f"axi_{channel}ready": 1})
+                accepted = await step(**{f"axi_{channel}ready": 1})
+                assert accepted[channel + "valid"]
+                assert accepted[channel + "resp"] == status
+                assert accepted[channel + "id"] == expected_id
+                if channel == "r":
+                    assert accepted["rdata"] == sample["rdata"] and accepted["rlast"]
                 await step(**{f"axi_{channel}ready": 0})
-                while reset_delay is not None and cycle < reset_delay + 4:
+                while reset_start is not None and cycle < reset_start + 4:
                     await step()
                 await self.step(rst=0)
-                return sample
+                return accepted
         raise AssertionError(f"CPU AXI {channel.upper()} timed out")
 
 
@@ -193,13 +217,20 @@ async def device_windows(dut: Any) -> None:
             await b.write(addr, 1)
             assert await b.read(addr) == 1
             value = await b.read(addr, reset_delay=delay)
-            assert value in (0, 1)
-            if delay < 4:
-                assert value == 0
+            assert value == int(delay >= 4)
             for _ in range(5):
                 await b.step(rst=0)
             assert await b.read(addr) == 0
             assert await b.read(nic) == 0x4E494301
+        await b.write(addr, 1, reset_after_response=True)
+        for _ in range(5):
+            await b.step(rst=0)
+        assert await b.read(addr) == 0
+        await b.write(addr, 1)
+        assert await b.read(addr, reset_after_response=True) == 1
+        for _ in range(5):
+            await b.step(rst=0)
+        assert await b.read(addr) == 0
 
 
 @cocotb.test()
