@@ -107,6 +107,8 @@ Every calibrated benchmark directory in `perf-modeling/results/<benchmark>/` con
 
 ## 6. Memory-system resource comparisons
 
+`tools/sweep_memory.py` writes workload results and a direct controller probe with source hashes and full configurations. The controller probe uses sequential 64-byte reads balanced across physical channels. It measures the ID budget needed for the configured service rate behind one shared AXI read port. It does not predict how many independent misses a CPU program can generate. Compare its saturation point with the workload's load queue, cache miss slots, and observed AXI occupancy.
+
 Use the same binary, region, cache state, and memory timing for each RTL comparison point. Compare simulated cycles and retired work. An IPC ratio alone can hide a change in the amount of work. Synthetic kernel micro-operation counts need not equal compiler instruction counts; report that difference with absolute and relative cycle errors.
 
 The DDR kernel generators preserve addresses and dependency structure from the C loop bodies. They omit profiling and surrounding program activity and assume warm fetches and cold data. DDR bench chase addresses assume zero backing data. MLP addresses assume the seeded ring. Match `scale_shift` and `mlp_lines` to the program and record any eviction preparation. `passes` controls reuse within the model, independently of cocotb's reset-and-rerun setting.
