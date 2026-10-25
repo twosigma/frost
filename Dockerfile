@@ -368,9 +368,9 @@ ENV FROST_LINUX_CROSS_COMPILE=riscv64-linux-
 ENV FROST_LINUX_TOOLCHAIN_PATH=/opt/riscv64-linux-musl
 
 # Reproducible VS Code extension build/test/package tooling.
-ARG NODE_VERSION=26.9.0
-ARG NPM_VERSION=12.0.2
-ARG NODE_SHA256=c6ecd8efc1c1d395265891675319da7a7b3785c6be174bd78933cf4f057624d1
+ARG NODE_VERSION=26.12.1
+ARG NPM_VERSION=12.2.1
+ARG NODE_SHA256=6170b2d474e1c626f43cff3adc118df9fe3b573258a4fc3d850c8dbc6b079bbd
 RUN curl -fL -o /tmp/node.tar.xz https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz \
     && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \

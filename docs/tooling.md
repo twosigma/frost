@@ -23,6 +23,8 @@ lint hooks, and [`pyproject.toml`](../pyproject.toml) and the
 [extension lockfile](../tools/vscode-frost/package-lock.json) pin language
 dependencies. The [README](../README.md#toolchain) summarizes the versions.
 
+The extension build uses Node.js 26.12.1 and npm 12.2.1.
+
 Vivado runs on the host and is validated with 2025.2. Native Python scripts
 need Python 3.12 or later. The VS Code extension needs VS Code 1.106 or
 later; the image supplies its build tools.
