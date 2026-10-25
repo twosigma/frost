@@ -316,6 +316,12 @@ The shared AXI return port carries at most one read response and one write respo
 
 The built-in workloads are synthetic instruction and memory-pressure patterns: `coremark`, `memory_stress`, `redis_kv`, `http_api`, `faas_cold`, and `linux_service`. The CoreMark generator represents selected kernel dependencies and starts with instruction fetches ready. It is not the compiled CoreMark program.
 
+`memory_workloads.py` supplies the three timed bodies of `ddr_mlp_test` and all nine `ddr_bench` kernels. It preserves their data addresses, strides, address-generator seeds, record sectors, accumulator chains, copy dependencies, and serialized chase dependencies. Arithmetic and loop-control operations are representative, not a compiled instruction trace. The MLP ring is prepared and evicted before the modeled region. DDR bench data is zero, matching the behavioral memory's initial contents. Setup, eviction, profiling, UART, and verification are outside the modeled region.
+
+`memory-run` starts with cold data and warm instruction fetches. `--scale-shift` applies the DDR bench's size divisor and defaults to 4. `--mlp-lines` defaults to 512. `--passes` repeats a body while sharing cache contents. A production-cache RTL comparison of the MLP bodies requires an eviction sequence that reaches those caches' capacity or conflicting sets.
+
+`--config-file` on `run` and `memory-run` reads a JSON object with `ModelConfig` fields and nested `ddr` and `soc` objects. Omitted fields use their defaults. For example, `{"axi_id_pool_size": 8, "ddr": {"controller": "interleaved", "channels": 2, "cycles_per_line": 4}}` selects two physical channels with a shared eight-transaction AXI limit.
+
 Instruction replay accepts JSONL records with `kind`, `fetch_address`, `data_address`, `depends_on`, and `mispredict`, or CSV records with the equivalent fields. The supported kinds are `alu`, `branch`, `load`, and `store`. Dependencies refer to earlier operation IDs.
 
 Calibration events contain dispatch and retirement counts and AXI handshakes. They do not contain an architectural instruction stream or its dependencies. They are suitable for trace validation and observed counters, not for reconstructing a program's cache accesses. The [correlation guide](docs/rtl_correlation_guide.md) describes capture and comparison.
@@ -326,6 +332,7 @@ Run Python commands in the repository's `frost` Docker image. Store experimental
 
 ```bash
 python3 perf-modeling/frost_perf_model.py run --workload coremark --out /tmp/coremark.json
+python3 perf-modeling/frost_perf_model.py memory-run --kernel ddr_bench_random_read --config-file /tmp/config.json --out /tmp/random_read.json
 python3 perf-modeling/frost_perf_model.py replay --trace /tmp/instructions.jsonl --out /tmp/replay.json
 python3 perf-modeling/frost_perf_model.py explore --workload coremark --out /tmp/exploration.json
 python3 perf-modeling/frost_perf_model.py sweep --out /tmp/sweep.json
@@ -336,10 +343,10 @@ python3 perf-modeling/frost_perf_model.py audit --out /tmp/audit.json
 
 ## 12. Model tests and calibration scope
 
-The Fast Python Tests job collects `tests/test_perf_model.py` and `tests/test_perf_memory.py`. They cover model invariants, deterministic results, trace contracts, calibration checks, memory channel service, and AXI ownership. The JSON files under `results/` are regression fixtures, not independent RTL validation.
+The Fast Python Tests job collects `tests/test_perf_model.py`, `tests/test_perf_memory.py`, and `tests/test_perf_workloads.py`. They cover model invariants, deterministic results, trace contracts, calibration checks, memory channel service, AXI ownership, and kernel addresses and dependencies. The JSON files under `results/` are regression fixtures, not independent RTL validation.
 
 ```bash
-pytest tests/test_perf_model.py tests/test_perf_memory.py -q -p no:cacheprovider
+pytest tests/test_perf_model.py tests/test_perf_memory.py tests/test_perf_workloads.py -q -p no:cacheprovider
 ```
 
 A model change that alters the stored results regenerates the corresponding JSON files with `run`, `explore`, `sweep`, `selftest`, and `audit`. The CoreMark fixture uses seed 11 and the default configuration. The exploration and sweep fixtures use their command defaults. Wall-clock fields are excluded from regression comparisons.

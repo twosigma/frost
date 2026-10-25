@@ -55,6 +55,8 @@ from pathlib import Path
 from typing import Any, Protocol
 from collections.abc import Callable, Iterable
 
+from memory_workloads import KERNELS, build_kernel
+
 
 RTL_COMMIT = "410aa8f3e866fffb078fc8f7fd3672866d83d131"
 MODEL_VERSION = "1.0"
@@ -2156,6 +2158,53 @@ def run_workload(config: ModelConfig, workload_name: str, seed: int) -> dict[str
     return result
 
 
+def run_memory_kernel(
+    config: ModelConfig,
+    kernel: str,
+    scale_shift: int = 4,
+    mlp_lines: int = 512,
+    passes: int = 1,
+) -> dict[str, Any]:
+    """Run a DDR loop body with cold data, warm fetches, and explicit dependencies.
+
+    Repeated passes share cache contents. The MLP bodies assume their ring
+    is prepared and evicted. DDR bench reads assume zeroed backing memory.
+    Setup, eviction, profiling, UART, and data verification are outside the
+    modeled region.
+    """
+    if passes < 1:
+        raise ValueError("passes must be positive")
+    builder = ProgramBuilder()
+    for _ in range(passes):
+        build_kernel(builder, kernel, scale_shift, mlp_lines)
+    pipeline = FrostPipeline(config, builder.ops)
+    for op in builder.ops:
+        pipeline.fetch_state[pipeline._fetch_line(op.fetch_address)] = "ready"
+    result = pipeline.run(max_cycles=20_000_000)
+    result["workload"] = kernel
+    result["workload_parameters"] = {
+        "scale_shift": scale_shift,
+        "mlp_lines": mlp_lines,
+        "passes": passes,
+        "initial_data_cache": "cold",
+        "instruction_fetch": "warm",
+        "backing_data": "prepared_ring" if kernel.startswith("ddr_mlp_") else "zero",
+    }
+    result["micro_ops"] = len(builder.ops)
+    return result
+
+
+def load_config(path: Path | None) -> ModelConfig:
+    """Read model settings from a JSON object, with defaults for omitted fields."""
+    if path is None:
+        return ModelConfig()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("configuration must be a JSON object")
+    name = data.pop("name", "experiment")
+    return with_config(ModelConfig(), name, **data)
+
+
 def score_result(result: dict[str, Any]) -> dict[str, int]:
     """Return the cycles and the backpressure and stall counts of a result."""
     memory = result["memory"]
@@ -2943,6 +2992,14 @@ def parse_args() -> argparse.Namespace:
     run.add_argument("--workload", choices=sorted(WORKLOADS), required=True)
     run.add_argument("--seed", type=int, default=11)
     run.add_argument("--out", type=Path, required=True)
+    run.add_argument("--config-file", type=Path)
+    memory_run = sub.add_parser("memory-run", help="Run a DDR benchmark loop body")
+    memory_run.add_argument("--kernel", choices=KERNELS, required=True)
+    memory_run.add_argument("--scale-shift", type=int, default=4)
+    memory_run.add_argument("--mlp-lines", type=int, default=512)
+    memory_run.add_argument("--passes", type=int, default=1)
+    memory_run.add_argument("--config-file", type=Path)
+    memory_run.add_argument("--out", type=Path, required=True)
     replay = sub.add_parser(
         "replay", help="Replay an external trace through the FROST architectural model"
     )
@@ -2992,7 +3049,22 @@ def main() -> int:
         dump_json(args.out, sweep_configurations())
         return 0
     if args.command == "run":
-        dump_json(args.out, run_workload(ModelConfig(), args.workload, args.seed))
+        dump_json(
+            args.out,
+            run_workload(load_config(args.config_file), args.workload, args.seed),
+        )
+        return 0
+    if args.command == "memory-run":
+        dump_json(
+            args.out,
+            run_memory_kernel(
+                load_config(args.config_file),
+                args.kernel,
+                args.scale_shift,
+                args.mlp_lines,
+                args.passes,
+            ),
+        )
         return 0
     if args.command == "report":
         sweep = json.loads(args.sweep.read_text(encoding="utf-8"))

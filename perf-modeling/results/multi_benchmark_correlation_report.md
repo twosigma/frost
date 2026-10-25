@@ -128,7 +128,7 @@ The wall-clock timing captured across all runs quantifies the execution velocity
 
 | File | Size | Description |
 |---|---|---|
-| `perf-modeling/frost_perf_model.py` | 123 KB | Calibrated architectural performance model with $O(1)$ disambiguation, L0 cache bypass, wall-time telemetry, and multi-variant exploration. |
+| `perf-modeling/frost_perf_model.py` | 126 KB | Calibrated architectural performance model with $O(1)$ disambiguation, L0 cache bypass, wall-time telemetry, and multi-variant exploration. |
 | `perf-modeling/results/coremark/` | 20 MB | Full provenance, manifest, 239k-cycle timed trace, pipeline counters, and calibration record for CoreMark. |
 | `perf-modeling/results/tomasulo_perf/` | 21 MB | Full provenance, manifest, 487k-cycle timed trace, and pipeline counters for `tomasulo_perf`. |
 | `perf-modeling/results/ddr_mlp_test/` | 3.7 MB | Full provenance, manifest, 94k-cycle timed trace, and pipeline counters for `ddr_mlp_test`. |
