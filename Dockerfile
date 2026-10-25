@@ -286,8 +286,8 @@ RUN python3 -m pip install --no-cache-dir \
     "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
 
 # QEMU's RISC-V system emulator and its bundled OpenSBI, for CI's Linux boot check.
-ARG QEMU_VERSION=11.1.1
-ARG QEMU_SHA256=079ffbff8a7111bbc89022107cbabf3bbfd614d5fc9d7cc675991196aca12482
+ARG QEMU_VERSION=11.1.2
+ARG QEMU_SHA256=731b5681e4bb18be313231579b8efd0296c5b015fa36dc533874b639ba838016
 RUN curl -fL -o /tmp/qemu.tar.xz https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz \
     && echo "${QEMU_SHA256}  /tmp/qemu.tar.xz" | sha256sum -c - \
     && tar -xJf /tmp/qemu.tar.xz -C /tmp \
