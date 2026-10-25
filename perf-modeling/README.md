@@ -97,7 +97,7 @@ The architectural model was calibrated and validated against three distinct RTL 
 | **tomasulo_perf (Verilator RTL)** | 487,313 | 277.67 s | 1,755 cyc/s | 630 uop/s | **1.0x (Baseline)** |
 | **ddr_mlp_test (Verilator RTL)** | 94,010 | 56.63 s | 1,660 cyc/s | 537 uop/s | **1.0x (Baseline)** |
 | **FROST Perf Model (Trace Replay)** | 5,000 | 0.028 s | **176,550 cyc/s** | **176,550 uop/s** | **~103x Speedup** |
-| **FROST Perf Model (Analytical CoreMark)** | 3,101 | 0.052849 s | **58,677 cyc/s** | **59,187 uop/s** | **34.4x cycle-rate ratio** |
+| **FROST Perf Model (Analytical CoreMark)** | 3,101 | 0.047959 s | **64,659 cyc/s** | **65,222 uop/s** | **37.9x cycle-rate ratio** |
 
 ---
 
@@ -277,5 +277,7 @@ As the FROST design evolves, maintainers can easily keep the performance model s
 - **Adding New Workload Traces**: Compile any RISC-V binary in `sw/apps/<app>`, run under cocotb with `FROST_CALIBRATION_TRACE_PATH` set, and replay with `--trace`.
 
 ## 8. Configurable memory controllers
+
+`axi_id_pool_size` limits the total outstanding AXI transactions. `axi_id_bits` sets the DDR port width and must cover `l2_id_bits`. The bridge carries each internal cache ID unchanged, as `line_port_axi_bridge.sv` does, and releases it on its response, including an error response. Read and write transactions share this ownership pool. The cache ID widths and slot counts are separate configuration fields. Widths beyond the production defaults describe architectural experiments and require corresponding RTL changes.
 
 `DdrConfig(controller="interleaved")` selects physical channels with address interleaving. `channels` sets their count and `interleave_bytes` sets the stripe size. Each channel has `num_slots` read entries and `num_slots` write entries. Reads and writes share one line of service every `cycles_per_line` core cycles after `latency_cycles`. The shared AXI port returns at most one read and one write response per cycle. This controller has no bank, row, or refresh model. The default `behavioral` controller represents the single-channel simulation endpoint and sizes its queues from the L2 resources.

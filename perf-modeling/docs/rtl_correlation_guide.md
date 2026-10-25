@@ -108,3 +108,5 @@ Every calibrated benchmark directory in `perf-modeling/results/<benchmark>/` con
 ## 6. Memory controller experiments
 
 The default `behavioral` DDR controller represents the RTL simulation endpoint. The `interleaved` controller is an architectural experiment with explicit physical channels, stripe size, queue depth, latency, and cycles per line. Its read and write traffic shares each physical channel's bandwidth and uses one shared AXI return port. A comparison records these settings separately from the cache resource counts. Channel experiments do not represent a board controller's bank or refresh timing.
+
+The AXI bridge preserves cache IDs and records their owners until completion. The pool size bounds the number of live transactions, independently of the cache's miss slots and the wire width. It does not renumber or truncate IDs. A pool-size sensitivity is a limit on outstanding transactions; a wire-width sensitivity must also specify which additional cache IDs can be issued. The production ID widths are four bits for L1D and five bits for L2 and the DDR port.
