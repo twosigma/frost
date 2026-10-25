@@ -181,8 +181,11 @@ skip random fill as well as arrays with their own image file.
 Instruction-image padding is zero in every packed copy, matching the
 generated bank images. SRAM model image loading leaves internal write
 selects idle until their first rising clock edges; initial falling edges
-preserve the loaded contents. The benches pulse power-on reset at time zero
-in both modes, alongside the ordinary system-reset sequence. Warm resets leave
+preserve the loaded contents. The benches establish idle programming clocks
+before HDL initialization, then assert power-on reset at time zero after the
+first HDL evaluation. This supplies an assertion edge to asynchronous reset
+logic even when the input's arbitrary initial value was high. Both modes use
+this pulse alongside the ordinary system-reset sequence. Warm resets leave
 the transport handshake intact. Changing only the seed reuses the compiled
 model; enabling or disabling the mode rebuilds it.
 

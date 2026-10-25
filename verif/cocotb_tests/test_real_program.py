@@ -39,6 +39,7 @@ from cocotb.triggers import (
     ClockCycles,
     FallingEdge,
     ReadOnly,
+    ReadWrite,
     RisingEdge,
     Timer,
 )
@@ -255,6 +256,12 @@ def takes_last_edge(
     return run
 
 
+async def _assert_power_on_reset(dut: Any) -> None:
+    """Give asynchronous reset logic an assertion edge after HDL initialization."""
+    await ReadWrite()
+    dut.i_power_on_rst.value = 1
+
+
 async def generate_divided_clock(dut: Any) -> None:
     """Generate i_clk_div4 with four times i_clk's period and aligned rising edges.
 
@@ -266,8 +273,9 @@ async def generate_divided_clock(dut: Any) -> None:
     divided = dut.i_clk_div4
     level = 0
     # Establish idle inputs before HDL evaluates a possible startup clock edge.
-    dut.i_power_on_rst.value = Immediate(1)
+    dut.i_power_on_rst.value = Immediate(0)
     divided.value = Immediate(level)
+    cocotb.start_soon(_assert_power_on_reset(dut))
     for _ in range(4):
         await clock_edge
         await clock_edge
