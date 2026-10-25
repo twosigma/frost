@@ -16,7 +16,7 @@ read -formal -sv riscv_pkg.sv
 read -formal -D SYNTHESIS -D MISPREDICT_CAPTURE_LOCAL_PROOF -sv misprediction_flush_controller.sv
 prep -top misprediction_flush_controller
 select -assert-none t:$assume
-select -assert-count 1 t:$check
+select -assert-count 3 t:$check
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

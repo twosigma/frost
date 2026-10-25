@@ -216,7 +216,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "mispredict_capture.sby",
-        "Pending recovery retains the payload from the mispredicted commit",
+        "Recovery payload, pulse copies and frontend flush match their references",
         tasks=("bmc", "prove"),
     ),
     FormalTarget(
