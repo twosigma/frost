@@ -23,6 +23,8 @@ lint hooks, and [`pyproject.toml`](../pyproject.toml) and the
 [extension lockfile](../tools/vscode-frost/package-lock.json) pin language
 dependencies. The [README](../README.md#toolchain) summarizes the versions.
 
+The Linux boot emulator is QEMU 11.1.2.
+
 The extension build uses Node.js 26.12.1 and npm 12.2.1. TestRIG uses the
 Sail RISC-V 0.16 reference model. QuickCheckVEngine builds with GHC 9.10.3
 and cabal-install 3.18.2.0 on Ubuntu 26.04.
@@ -115,10 +117,11 @@ the language lockfiles consistent. Some constraints that are easy to break:
 To validate an update, run `doctor` and `check`, unit and program simulations
 in both memory tiers, formal and synthesis checks, regenerate the Spike
 reference results, run the extension's tests, and rebuild the Linux images
-from scratch. CI boots the Linux image under QEMU twice, with QEMU's own
-OpenSBI and with FROST's, and both boots must print `FROST_NET10G_MODULE_PASS`,
-`FROST_MEMERR_MODULE_PASS`, and `FROST_USERSPACE_STRESS_PASS` and reach a login
-prompt. To check how a
+from scratch. CI boots the Linux image under QEMU with QEMU's own OpenSBI
+and with FROST's at 256 MiB, then with FROST's at 3 GiB. Every boot must print
+`FROST_NET10G_MODULE_PASS`, `FROST_MEMERR_MODULE_PASS`, and
+`FROST_USERSPACE_STRESS_PASS` and reach a login prompt. The 3 GiB boot must
+allocate kernel node data above 4 GiB. To check how a
 compiler update affects benchmarks, use the
 [Spike instruction-count harness](../sw/apps/coremark/iss/README.md) and
 matched benchmark runs. QEMU and simulation do not replace the
