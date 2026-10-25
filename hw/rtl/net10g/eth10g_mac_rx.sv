@@ -545,6 +545,9 @@ module eth10g_mac_rx #(
   end
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+
   // RAM collisions are allowed only for unused fetches. A copied beat must
   // come from a read after the word's final write (see the lane-memory notes).
   // Already-copied skid data is unaffected by later fetches or output stalls.
@@ -564,7 +567,7 @@ module eth10g_mac_rx #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst && reader_capture && fetched_word_was_written)
+    if (reset_seen_q && !i_rst && reader_capture && fetched_word_was_written)
       $error("eth10g_mac_rx: word %0d was written on the edge that fetched it", read_word);
   end
 
@@ -574,7 +577,7 @@ module eth10g_mac_rx #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       stalled <= 1'b0;
-    end else begin
+    end else if (reset_seen_q) begin
       if (stalled && !(m_axis_tvalid && {m_axis_tlast, m_axis_tkeep, m_axis_tdata} == stalled_beat))
         $error("eth10g_mac_rx: AXI Stream output changed while stalled");
       stalled <= m_axis_tvalid && !m_axis_tready;
