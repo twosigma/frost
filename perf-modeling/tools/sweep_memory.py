@@ -34,6 +34,43 @@ def configurations(group: str) -> list[Any]:
     """Return independent resource probes and a channel/concurrency grid."""
     base = model.ModelConfig()
     configs = [base]
+    if group == "outstanding":
+        for endpoint in ("behavioral", "channel1", "channel2"):
+            ddr = (
+                base.ddr
+                if endpoint == "behavioral"
+                else dataclasses.replace(
+                    base.ddr,
+                    controller="interleaved",
+                    channels=int(endpoint[-1]),
+                    num_slots=32,
+                    cycles_per_line=4,
+                )
+            )
+            for misses in (4, 8, 12, 16):
+                for profile, l1d, lq, inflight, distance in (
+                    ("base", 8, 8, 4, 8),
+                    ("prefetch8", 8, 8, 8, 8),
+                    ("distance16", 8, 8, 4, 16),
+                    ("prefetch8_distance16", 8, 8, 8, 16),
+                    ("l1d16", 16, 8, 4, 8),
+                    ("lq16", 8, 16, 4, 8),
+                    ("feed16", 16, 16, 8, 16),
+                ):
+                    configs.append(
+                        model.with_config(
+                            base,
+                            f"{endpoint}_l2_{misses}_{profile}",
+                            l2_mshrs=misses,
+                            l1d_mshrs=l1d,
+                            l1d_id_bits=1 + (l1d - 1).bit_length(),
+                            load_queue_entries=lq,
+                            l2_prefetch_inflight=inflight,
+                            l2_prefetch_distance=distance,
+                            ddr=ddr,
+                        )
+                    )
+        return configs
     if group in {"x3", "all"}:
         for field, values in (
             ("l1d_mshrs", [1, 2, 4]),
@@ -195,7 +232,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
-        "--group", choices=["x3", "channels", "controller", "all"], default="all"
+        "--group",
+        choices=["x3", "channels", "controller", "outstanding", "all"],
+        default="all",
     )
     parser.add_argument(
         "--kernels",

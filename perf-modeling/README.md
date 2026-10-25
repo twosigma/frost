@@ -344,6 +344,13 @@ python3 perf-modeling/tools/sweep_memory.py --group all --out /tmp/memory_sweep.
 
 `tools/sweep_memory.py` records source hashes and complete configurations. Its `x3` group varies one resource at a time from the production defaults. Its `channels` group crosses channel count, latency, service interval, and L2 miss slots. `--kernels`, `--scale-shift`, `--mlp-lines`, and `--passes` select the measured bodies and their sizes.
 
+The `outstanding` group tests 4, 8, 12, and 16 L2 miss slots. Its feeder
+profiles vary L1D miss slots, load queue entries, and prefetch concurrency
+and distance. It uses the behavioral endpoint and one or two interleaved
+channels with a four-cycle service interval per channel. L1D ID widths
+cover each profile's miss slots. These are trial configurations;
+`ModelConfig` defaults and the other sweep groups are independent of them.
+
 The `controller` group drives a balanced sequential read stream directly through the AXI bridge and memory endpoint. It isolates the outstanding-transaction budget from CPU dependencies and cache misses. Each read owns an ID until completion. The probe reports average throughput between the first and last response, peak occupancy, and integrated occupancy. It requires at least 256 transactions and eight times the outstanding budget. The complete controller grid requires at least 1,024 transactions per point. Finite response windows can end within a channel burst, so throughput is an estimate of sustained service. Its ideal throughput is `min(1, channels / cycles_per_line)` lines per cycle. The latency-bandwidth product is a lower bound on the required outstanding reads. Channel imbalance, queueing, writes, and CPU issue limits can require a different budget. The `all` group includes all three experiments.
 
 ## 12. Model tests and calibration scope
