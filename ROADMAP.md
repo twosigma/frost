@@ -114,10 +114,11 @@ so the Linux figures do not include write fills from the L1D writebacks that
 
 The [performance model](perf-modeling/README.md) is a cycle-approximate
 model of `cpu_top` and `soc_top` that CI compares with a CoreMark trace from
-the RTL. Its next use is a sweep of the memory system in the X3's
-configuration: the misses in flight in the L1D and the L2, the AXI IDs, and
-the L2's size, including how many transactions in flight a memory with more
-channels than the X3's needs.
+the RTL. Its sweep of the memory system shows that a second memory channel
+needs about 16 reads in flight to use its bandwidth, where the L2 tracks 4
+misses today. Next is to measure 8, 12 and 16 L2 misses in flight, with the
+L1D miss slots and prefetch depth that feed them, in the model and in the
+RTL.
 
 ## Verification
 
@@ -177,6 +178,13 @@ for an ASIC, the RTL also needs:
    FreePDK45 is not a manufacturable process, so the flow shows that the RTL
    maps onto standard cells and SRAM macros and estimates its area and
    timing; it does not replace a foundry flow.
+4. Clock domains. `cpu_top` runs on the same clock as `soc_top`. An optional
+   asynchronous boundary around it, with AXI4 clock-domain crossings on its
+   memory master and DMA ingress and synchronizers for its interrupts, timer
+   and reset, would let the CPU cluster run on its own clock, as an ASIC with
+   an independent CPU clock or a multi-die FPGA with the cluster on its own
+   die needs. The X3 keeps one clock, which spares its cache misses the
+   crossing's latency.
 
 ## Single-core performance
 
@@ -277,8 +285,9 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   Ethernet connections, with its own clock target and no core RTL changes.
   Its RJ-45 port needs a 1 Gb/s MAC as an option behind the NIC, which keeps
   the NIC's registers, descriptors, driver, and coherent DMA, and its QSFP
-  ports could add 10 and 40 Gb/s later. Contributors with the board would run
-  its hardware tests.
+  ports could add 10 and 40 Gb/s later. Its two DDR4 interfaces could each
+  have a memory controller, where the X3 has one DDR4 channel. Contributors
+  with the board would run its hardware tests.
 - A PCIe Gen3 x4 root complex between `soc_top` and PIPE, the PHY interface
   that ASIC PCIe PHYs also use, with a small wrapper for the FPGA's
   transceivers, so that Linux finds NVMe drives and other devices with its
