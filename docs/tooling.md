@@ -23,6 +23,11 @@ lint hooks, and [`pyproject.toml`](../pyproject.toml) and the
 [extension lockfile](../tools/vscode-frost/package-lock.json) pin language
 dependencies. The [README](../README.md#toolchain) summarizes the versions.
 
+The image uses Python 3.14.9, pip 26.2.2 and setuptools 84.2.1. Its build
+helpers are CMake 4.4.4, Meson 1.12.1 and Ninja 1.13.2. Python checks use
+pre-commit 4.7.0, Ruff 0.17.2 and mypy 2.4.0. Cocotb 2.1.0 supports Python
+through 3.14.
+
 The Linux boot emulator is QEMU 11.1.2.
 
 The extension build uses Node.js 26.12.1 and npm 12.2.1. TestRIG uses the
