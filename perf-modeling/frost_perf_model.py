@@ -2307,7 +2307,9 @@ def load_trace_ops(path: Path, max_ops: int | None = None) -> list[MicroOp]:
     is_jsonl = path.suffix.lower() == ".jsonl" or text.lstrip().startswith("{")
 
     def integer(value: Any) -> int:
-        return int(value, 0) if isinstance(value, str) else int(value)
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            raise ValueError("instruction IDs and addresses must be integers")
+        return int(value, 0) if isinstance(value, str) else value
 
     for line_number, line in enumerate(text.splitlines(), 1):
         line = line.strip()
