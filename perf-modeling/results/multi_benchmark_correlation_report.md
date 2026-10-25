@@ -10,13 +10,13 @@
 
 ## 1. Executive Summary
 
-This report establishes comprehensive empirical correlation between the cycle-accurate Verilator RTL simulation of FROST and the fast architectural performance model (`perf-modeling/frost_perf_model.py`) across three complementary benchmark workloads:
+This report records cycle-accurate Verilator RTL measurements across three complementary benchmark workloads, with an aggregate CoreMark IPC comparison to the architectural performance model (`perf-modeling/frost_perf_model.py`):
 
 1. **`coremark`**: Real-world integer / state-machine / pointer / matrix benchmark with compiler optimizations (PGO, `-O3 -funroll-loops`). Evaluates sustained pipeline throughput, branch prediction, and L0/L1 cache locality.
 2. **`tomasulo_perf`**: Microarchitectural directed benchmark measuring 14 isolated execution primitives (dependent vs. independent ALU, multiplier pipelining, store forwarding, loop buffers, FP, and atomics).
 3. **`ddr_mlp_test`**: Memory-Level Parallelism (MLP) probe measuring concurrent L1D/L2 demand misses, MSHR allocation, and single-channel 512-bit AXI DDR latency hiding.
 
-Across all evaluated workloads, the architectural performance model reproduces the RTL out-of-order execution dynamics within a **3–10% correlation band**, while running **~90x to 110x faster on full cycle-by-cycle trace replay** and **~7,200x faster during analytical workload simulation**.
+The synthetic CoreMark workload has a **+3.1% IPC difference** from the archived RTL run and executes at **86,585 simulated cycles/s**. The Tomasulo and DDR MLP event captures have no executable instruction stream or model IPC comparison.
 
 ---
 
@@ -24,9 +24,9 @@ Across all evaluated workloads, the architectural performance model reproduces t
 
 | Benchmark | Domain Evaluated | RTL Verilator Cycles | RTL Retired Micro-ops | RTL Sustained IPC | Model Replay / Exec IPC | Correlation Delta | RTL Wall Time (s) | Model Wall Time (s) | Model Speedup Factor |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| **`coremark`** (Timed Region) | Integer Compute & Branch Locality | 239,452 | 234,317 | **0.9786** | **1.0087** | **+3.1%** | ~23.5 s | 0.068 s | **~345x** (kernel >7,000x) |
-| **`tomasulo_perf`** (Full Suite) | Microarchitectural Primitives (14 Benches) | 487,313 | 175,025 | **0.3592** | **0.3710** | **+3.2%** | 306.88 s (~5.1 min) | 0.024 s (head slice) | **~110x** (trace replay) |
-| **`ddr_mlp_test`** (Full Run) | Memory-Level Parallelism & DDR Overlap | 94,010 | 30,427 | **0.3237** | **0.3420** | **+5.6%** | 54.25 s | 0.026 s (head slice) | **~93x** (trace replay) |
+| **`coremark`** (Timed Region) | Integer Compute & Branch Locality | 239,452 | 234,317 | **0.9786** | **1.0087** | **+3.1%** | ~23.5 s | 0.035815 s | **656.1x runtime ratio** (unequal work) |
+| **`tomasulo_perf`** (Full Suite) | Microarchitectural Primitives (14 Benches) | 487,313 | 175,025 | **0.3592** | Not available | Not compared | 306.88 s (~5.1 min) | Not available | Not available |
+| **`ddr_mlp_test`** (Full Run) | Memory-Level Parallelism & DDR Overlap | 94,010 | 30,427 | **0.3237** | Not available | Not compared | 54.25 s | Not available | Not available |
 
 ---
 
@@ -41,7 +41,7 @@ Across all evaluated workloads, the architectural performance model reproduces t
 - **Model Correlation**:
   - Model IPC: **1.0087** (3,101 cycles, 3,128 uops)
   - Hardware RTL IPC: **0.9786**
-  - Correlation accuracy: within **+3.1%** (0.03 IPC delta)
+  - Correlation accuracy: within **+3.1%** (0.0302 IPC delta)
 - **Key Architectural Features Modeled**:
   1. **L0 Data Cache (`lq_l0_cache.sv`)**: Models the 256-dword direct-mapped cache delivering 1-cycle fast-path bypass (`cache_hit_fast_path`).
   2. **Early Load Wakeup (`EARLY_LOAD_WAKEUP = 1`)**: A nonfaulting load wakes a dependent memory operation one cycle early when a registered CDB lane is free. Integer consumers use the ordinary dependency path.
@@ -112,15 +112,15 @@ The wall-clock timing captured across all runs quantifies the execution velocity
 +----------------------+--------------------+---------------------+---------------------+
 | Benchmark Run        | Verilator RTL Time | Perf Model Wall Time| Speedup vs Verilator|
 +----------------------+--------------------+---------------------+---------------------+
-| tomasulo_perf (Full) | 306.88 s (5.1 min) | 0.024 s (trace 5k)  | 110x faster (trace) |
-| ddr_mlp_test (Full)  | 54.25 s            | 0.026 s (trace 5k)  | 93x faster (trace)  |
-| coremark (Full Timed)| 23.50 s            | 0.068 s (analytical)| 345x - 7,200x faster|
+| tomasulo_perf (Full) | 306.88 s (5.1 min) | Not available      | Not available      |
+| ddr_mlp_test (Full)  | 54.25 s            | Not available      | Not available      |
+| coremark (Full Timed)| 23.50 s            | 0.035815 s       | 656.1x runtime ratio|
 +----------------------+--------------------+---------------------+---------------------+
 ```
 
 - **Verilator Simulation Rate**: ~1,580 to 1,960 cycles/second.
-- **Architectural Model Replay Rate**: ~140,000 to 176,000 cycles/second (**~90x–110x faster**).
-- **Architectural Model Analytical Kernel Rate**: ~45,000 to 50,000 simulated cycles/second (**~7,200x faster** on instruction equivalents).
+- **Architectural Model Replay Rate**: Not available for aggregate calibration events.
+- **Architectural Model Analytical Kernel Rate**: 86,585 simulated cycles/second; the synthetic workload contains 3,128 operations.
 
 ---
 
@@ -128,12 +128,12 @@ The wall-clock timing captured across all runs quantifies the execution velocity
 
 | File | Size | Description |
 |---|---|---|
-| `perf-modeling/frost_perf_model.py` | 126 KB | Calibrated architectural performance model with $O(1)$ disambiguation, L0 cache bypass, wall-time telemetry, and multi-variant exploration. |
+| `perf-modeling/frost_perf_model.py` | 125 KB | Calibrated architectural performance model with $O(1)$ disambiguation, L0 cache bypass, wall-time telemetry, and multi-variant exploration. |
 | `perf-modeling/results/coremark/` | 20 MB | Full provenance, manifest, 239k-cycle timed trace, pipeline counters, and calibration record for CoreMark. |
 | `perf-modeling/results/tomasulo_perf/` | 21 MB | Full provenance, manifest, 487k-cycle timed trace, and pipeline counters for `tomasulo_perf`. |
 | `perf-modeling/results/ddr_mlp_test/` | 3.7 MB | Full provenance, manifest, 94k-cycle timed trace, and pipeline counters for `ddr_mlp_test`. |
-| `perf-modeling/traces/coremark_head5k.jsonl` | 420 KB | 5,000-event trace slice for instant CoreMark replay tests. |
-| `perf-modeling/traces/tomasulo_perf_head5k.jsonl`| 380 KB | 5,000-event trace slice for instant microarchitecture replay tests. |
-| `perf-modeling/traces/ddr_mlp_head5k.jsonl` | 390 KB | 5,000-event trace slice for instant memory-level parallelism replay tests. |
+| `perf-modeling/traces/coremark_head5k.jsonl` | 420 KB | 5,000-event trace slice for CoreMark event validation. |
+| `perf-modeling/traces/tomasulo_perf_head5k.jsonl`| 380 KB | 5,000-event trace slice for microarchitecture event validation. |
+| `perf-modeling/traces/ddr_mlp_head5k.jsonl` | 390 KB | 5,000-event trace slice for memory-level parallelism event validation. |
 | `perf-modeling/results/coremark_optimization_report.md` | 3 KB | 20-variant architectural sensitivity study identifying MEM RS and L2 MSHR bottlenecks. |
 | `perf-modeling/results/multi_benchmark_correlation_report.md` | This file | Cross-benchmark correlation report spanning compute, microarchitecture, and memory tiers. |

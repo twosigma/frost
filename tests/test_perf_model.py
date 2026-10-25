@@ -14,8 +14,8 @@
 
 """Self-checks of the performance model in perf-modeling/.
 
-The model's self-test, its trace-contract unit tests, replays of the sample
-traces, and a check that the model still writes the results stored beside it.
+The model's self-test, its trace-contract unit tests, rejection of aggregate
+events as instructions, and deterministic result fixtures.
 """
 
 import importlib.util
@@ -109,13 +109,12 @@ def test_selftest_command_exits_cleanly(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("trace", SAMPLE_TRACES, ids=lambda path: path.stem)
-def test_sample_traces_meet_the_contract_and_replay(trace: Path) -> None:
-    """Each sample trace passes the contract, and the model replays all of it."""
+def test_sample_traces_meet_the_contract_but_are_not_instructions(trace: Path) -> None:
+    """Aggregate calibration traces validate without inventing instructions."""
     summary = trace_contract.summarize(trace_contract.read_trace(trace))
     assert summary["event_counts"]["meta"] == 1
-    operations = model.load_trace_ops(trace)
-    result = model.FrostPipeline(model.ModelConfig(), operations).run()
-    assert result["retired"] == len(operations) > 0
+    with pytest.raises(ValueError, match="calibration events"):
+        model.load_trace_ops(trace)
 
 
 def test_the_model_reproduces_its_stored_results() -> None:

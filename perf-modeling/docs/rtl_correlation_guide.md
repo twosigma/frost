@@ -6,7 +6,7 @@ This document describes the methodology for capturing cycle-accurate microarchit
 
 ## 1. Overview & Objectives
 
-The FROST performance model provides an ultra-fast (>100x trace replay, >7,000x analytical simulation) cycle-approximate simulator of the FROST platform (`platform_top` = `cpu_top` + `soc_top`). To ensure that architectural recommendations and design space exploration reflect actual hardware behavior, the model is calibrated directly against cycle-accurate Verilator RTL simulation traces.
+The FROST performance model provides a cycle-approximate simulator with a recorded analytical CoreMark rate of 86,585 simulated cycles/s for the FROST platform (`platform_top` = `cpu_top` + `soc_top`). To ensure that architectural recommendations and design space exploration reflect actual hardware behavior, the model is calibrated directly against cycle-accurate Verilator RTL simulation traces.
 
 Key objectives:
 1. **Zero Intrusion**: Probes monitor RTL simulation state without perturbing DUT timing, changing clocking, or altering synthesizable RTL (`hw/rtl/`).
@@ -118,3 +118,9 @@ The AXI bridge preserves internal cache IDs until completion. Its pool size boun
 Early load wakeup affects dependent memory operations. A nonfaulting accepted load can use an idle registered CDB lane to bypass one modeled memory-wakeup cycle. Two occupied registered lanes suppress the token. Integer dependencies use the ordinary path. The model omits speculative recovery and uncached-store completion arbitration.
 
 Cache replacement uses the RTL tree-PLRU victim walk and skips reserved ways. The insertion LFSR advances with modeled core cycles. Bimodal allocation updates replacement state when its low five bits are zero, while hits always update it. The allocation decision samples this state before the fill. Abstract cache-stage timing can shift the sampling phase relative to RTL, so compare miss counts as well as cycles when evaluating capacity or insertion policy.
+
+## 7. Instruction replay inputs
+
+The capture is an event log, not an executable instruction trace. Dispatch includes speculative work. AXI traffic includes instruction fetches and writebacks as well as data requests. Cache hits need not produce AXI traffic. Aggregate events therefore cannot reconstruct instruction kinds, addresses before the caches, or register dependencies. Program replay requires those fields from an instruction trace or a workload generator.
+
+The replay loader rejects aggregate events. Instruction records require a fetch address and kind; loads and stores also require a data address. IDs are consecutive from zero, and dependencies name earlier instructions. Replay does not infer register dependencies or memory addresses from dispatch counts. A stored calibration with `model: null` validates observed events only and supplies no model IPC.
