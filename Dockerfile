@@ -53,8 +53,8 @@ ARG Z3_VERSION=5.1.0
 ARG BOOLECTOR_VERSION=3.2.4
 
 # LLVM supplies clang, clang-format and clang-tidy from the same release.
-ARG LLVM_VERSION=23.1.1
-ARG LLVM_SHA256=832aeb58d105de1cabc7b982dd2c65de0610f7377df48ae8fc2dd8e97420a15c
+ARG LLVM_VERSION=23.1.4
+ARG LLVM_SHA256=25d814fda50d5fb0084b42be09605d8b1595d49d5e2e03a3345d7e112ff6f9f3
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -165,8 +165,8 @@ RUN python3 -m pip install --no-cache-dir \
     "pip==${PIP_VERSION}" "cmake==${CMAKE_VERSION}" "meson==${MESON_VERSION}" "ninja==${NINJA_VERSION}"
 
 # Install Verible (SystemVerilog formatter and linter)
-ARG VERIBLE_VERSION=0.0-4294-gc1d8f5e8
-ARG VERIBLE_SHA256=64499cf72cfe88911a015b707a06e18a47effbc0296348b7ca13331d94db6940
+ARG VERIBLE_VERSION=0.0-4296-g0f262651
+ARG VERIBLE_SHA256=8569defb891d2316067613ea00442af28a7a09d405d95b54c0c91f9942d26635
 RUN curl -fL -o /tmp/verible.tar.gz https://github.com/chipsalliance/verible/releases/download/v${VERIBLE_VERSION}/verible-v${VERIBLE_VERSION}-linux-static-x86_64.tar.gz \
     && echo "${VERIBLE_SHA256}  /tmp/verible.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/verible.tar.gz -C /usr/local --strip-components=1 \

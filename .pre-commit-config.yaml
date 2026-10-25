@@ -32,11 +32,13 @@ repos:
         pass_filenames: false
         entry: mypy verif tests
 
-  # C/C++ - clang-format
-  - repo: https://github.com/pre-commit/mirrors-clang-format
-    rev: v23.1.1
+  # C/C++ - clang-format from the Docker image
+  - repo: local
     hooks:
       - id: clang-format
+        name: clang-format
+        entry: clang-format -i
+        language: system
         types_or: [c, c++]
         # env_v/ and riscv_test.h retain upstream style and licensing.
         # linux/frost-net10g/ and linux/frost-memerr/ follow
