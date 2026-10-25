@@ -9,8 +9,8 @@
 #   make -C linux/buildroot O=$(pwd)/linux/build-mmu
 # Output lands in linux/build-mmu/images/: rootfs.cpio, fw_jump.bin (built by
 # post-image-mmu.sh from the linux/opensbi submodule), Debian's kernel as
-# Image-debian, rootfs-frost.cpio (rootfs.cpio plus the NIC module and its
-# loader), the packed sw.{mem,txt} / sw_ddr.{mem,txt} boot images, and
+# Image-debian, rootfs-frost.cpio (rootfs.cpio plus the driver modules and
+# their loaders), the packed sw.{mem,txt} / sw_ddr.{mem,txt} boot images, and
 # frost.dtb.
 
 # --- Architecture: RISC-V 64-bit general purpose (rv64gc, lp64d), MMU ---

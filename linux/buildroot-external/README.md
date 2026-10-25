@@ -16,11 +16,11 @@
 
 # FROST Buildroot external tree (`BR2_EXTERNAL`)
 
-This Buildroot external tree builds FROST's OpenSBI firmware and a small
-BusyBox/musl test userspace, then packs them with Debian's pinned kernel and
-the FROST NIC module into the images the JTAG loader writes to the board.
-Buildroot compiles no kernel here. At boot, the test initramfs loads the NIC
-module and runs FROST's userspace stress tests before the login prompt.
+This external tree uses Buildroot 2026.08.1 to build FROST's OpenSBI firmware
+and a small BusyBox/musl test userspace. It packs them with Debian's pinned
+kernel and the FROST NIC and memory error modules. Buildroot compiles no
+kernel here. At boot, the test initramfs loads both modules and runs FROST's
+userspace stress tests before the login prompt.
 
 For the boot interface, memory map, and kernel requirements, see the
 [Linux reference](../README.md). For a full Debian system, see the
@@ -35,7 +35,7 @@ For the boot interface, memory map, and kernel requirements, see the
 | `package/frost-stress/` | Boot stress, signal-return, and NIC loopback programs |
 | `board/frost/busybox-mmu.fragment` | BusyBox configuration (statically linked) |
 | `board/frost/rootfs-overlay-mmu/` | Startup scripts and login configuration |
-| `board/frost/post-image-mmu.sh` | Builds the firmware, stages Debian's kernel and the NIC module, and packs the images |
+| `board/frost/post-image-mmu.sh` | Builds the firmware, stages Debian's kernel and driver modules, and packs the images |
 | `board/frost/frost_boot_image.py` | Packs firmware, kernel, device tree, and optional initramfs for the JTAG loader |
 | `board/frost/frost,net10g.yaml` | NIC device-tree binding |
 
@@ -67,7 +67,7 @@ The first build downloads the external toolchain. Outputs land in
 | File | Purpose |
 | --- | --- |
 | `Image-debian` | Flat, uncompressed Debian kernel |
-| `rootfs-frost.cpio` | Test initramfs with the NIC module and its startup script |
+| `rootfs-frost.cpio` | Test initramfs with the NIC and memory error modules and their startup scripts |
 | `rootfs.cpio` | Base BusyBox/musl initramfs, uncompressed |
 | `fw_jump.bin` | OpenSBI firmware |
 | `frost.dtb` | Device tree, generated for the selected clock and memory size |
