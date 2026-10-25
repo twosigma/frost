@@ -86,9 +86,8 @@ SUPPORTED_EXTENSIONS = [
 
 # Extensions FROST implements only in part: extension -> test-name prefixes to
 # run. Extensions not listed are not filtered here.
-# K: FROST implements Zbkb (pack/packh/packw/brev8; zip and unzip are RV32-only
-# encodings) but not Zbkx (xperm4/xperm8), Zkn (AES/SHA256/SHA512), or Zks
-# (SM3/SM4).
+# K supplies Zbkb tests (pack/packh/packw/brev8; zip and unzip are RV32-only).
+# B supplies Zbc/Zbkc tests. Zbkx, AES, SHA, SM3, and SM4 are unsupported.
 # privilege: FROST implements M, S, and U modes but no hypervisor. The envcfg
 # tests are left out: they declare Zicbom, Zicboz, and Ssdtso, and FROST's
 # menvcfg implements only FIOM and STCE.
@@ -97,12 +96,9 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "privilege": {"ebreak", "ecall", "misalign"},
 }
 
-# Tests excluded by filename prefix. FROST implements Zba/Zbb/Zbs but not Zbc,
-# so the carry-less multiply tests do not assemble for its -march. The C
-# directory also holds Zcb tests (clbu/clh/csb/cmul/...), which FROST does not
-# implement.
+# Tests excluded by filename prefix. The C directory holds Zcb tests
+# (clbu/clh/csb/cmul/...), which FROST does not implement.
 EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
-    "B": {"clmul"},
     "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
 }
 

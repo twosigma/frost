@@ -70,7 +70,10 @@ module instr_operand_classifier (
         raw_class.has_int_dest = 1'b1;
         raw_class.uses_int_rs1 = 1'b1;
         raw_class.uses_int_rs2 = 1'b1;
-        raw_class.rs_type = (i_instr.funct7 == 7'b0000001) ? riscv_pkg::RS_MUL : riscv_pkg::RS_INT;
+        raw_class.rs_type = ((i_instr.funct7 == 7'b0000001) ||
+            (i_instr.opcode == riscv_pkg::OPC_OP && i_instr.funct7 == 7'b0000101 &&
+             (i_instr.funct3 == 3'b001 || i_instr.funct3 == 3'b010 ||
+              i_instr.funct3 == 3'b011))) ? riscv_pkg::RS_MUL : riscv_pkg::RS_INT;
       end
       riscv_pkg::OPC_OP_IMM, riscv_pkg::OPC_OP_IMM_32: begin
         raw_class.has_int_dest = 1'b1;

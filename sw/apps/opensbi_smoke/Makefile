@@ -31,7 +31,7 @@ OBJDUMP := $(RISCV_PREFIX)objdump
 OPENSBI_OUT := $(CURDIR)/build/opensbi
 FW_BIN      := $(OPENSBI_OUT)/platform/generic/firmware/fw_jump.bin
 
-CFLAGS := -march=rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause \
+CFLAGS := -march=rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause \
           -mabi=lp64d -mcmodel=medany -O2 -Wall -Wextra -I../../lib/include \
           -nostdlib -nostartfiles -static -fno-pie -no-pie -fno-stack-protector -ffreestanding -fno-builtin \
           -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-strict-aliasing

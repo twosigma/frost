@@ -1030,8 +1030,11 @@ package riscv_pkg;
                                // the ILLEGAL/ECALL completion path
     FETCH_PAGE_FAULT,          // Fetch page-fault pseudo-op: the
                                // translated-fetch twin of FETCH_FAULT (cause 12)
-    DRET                       // Return from Debug Mode: rides the
+    DRET,                      // Return from Debug Mode: rides the
                                // MRET serial path; illegal outside Debug Mode
+    CLMUL,                     // Zbc/Zbkc: low polynomial product
+    CLMULH,                    // Zbc/Zbkc: high polynomial product
+    CLMULR                     // Zbc: reversed polynomial product
   } instr_op_e;
 
   // Barrel-shifter controls decoded from operation bits:
@@ -2325,7 +2328,7 @@ package riscv_pkg;
   // Reservation station type (for dispatch routing)
   typedef enum logic [2:0] {
     RS_INT  = 3'd0,  // INT_RS: Integer ALU ops, branches, CSR
-    RS_MUL  = 3'd1,  // MUL_RS: MUL/DIV
+    RS_MUL  = 3'd1,  // MUL_RS: integer and carry-less multiply, divide
     RS_MEM  = 3'd2,  // MEM_RS: All loads/stores (INT and FP)
     RS_FP   = 3'd3,  // FP_RS: every FP compute operation (3 sources)
     RS_NONE = 3'd6   // No RS needed (JAL, WFI, MRET/SRET/DRET; ROB only)
@@ -2828,7 +2831,8 @@ package riscv_pkg;
       PAUSE:
       get_rs_type = RS_INT;
 
-      // Multiply/divide -> MUL_RS
+      // Integer and carry-less multiply, divide -> MUL_RS
+      CLMUL, CLMULH, CLMULR,
       MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW:
       get_rs_type = RS_MUL;
 
@@ -2887,7 +2891,8 @@ package riscv_pkg;
       ADDIW, SLLIW, SRLIW, SRAIW, ADDW, SUBW, SLLW, SRLW, SRAW,
       ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, SLLI_UW,
       ROLW, RORW, RORIW, CLZW, CTZW, CPOPW, PACKW,
-      // M-extension
+      // Integer and carry-less multiplication, division
+      CLMUL, CLMULH, CLMULR,
       MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW,
       // Integer loads
       LB, LH, LW, LBU, LHU, LWU, LD,
@@ -3028,7 +3033,8 @@ package riscv_pkg;
         BEQ, BNE, BLT, BGE, BLTU, BGEU,
         // R-type integer ALU (have rs2)
         ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU,
-        // M-extension
+        // Integer and carry-less multiplication, division
+        CLMUL, CLMULH, CLMULR,
         MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW,
         // B-extension with rs2
         SH1ADD, SH2ADD, SH3ADD,

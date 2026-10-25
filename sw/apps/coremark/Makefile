@@ -37,7 +37,7 @@ COREMARK_COMPRESSED ?= 0
 ifeq ($(filter $(COREMARK_COMPRESSED),0 1),)
 $(error COREMARK_COMPRESSED must be 0 or 1)
 endif
-FROST_MARCH_EXTENSIONS := imafd$(if $(filter 1,$(COREMARK_COMPRESSED)),c)_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+FROST_MARCH_EXTENSIONS := imafd$(if $(filter 1,$(COREMARK_COMPRESSED)),c)_zicsr_zicntr_zifencei_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause
 
 COREMARK_SEED_SET ?= performance
 ifeq ($(COREMARK_SEED_SET),performance)

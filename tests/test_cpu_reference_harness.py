@@ -43,7 +43,7 @@ config = importlib.import_module("config")
 
 # (assembly, op_tables table, mnemonic, encoder arguments, word). The words come
 # from GNU as; test_expected_words_match_the_assembler re-assembles them.
-ASSEMBLER_MARCH = "rv64gc_zba_zbb_zbs_zbkb"
+ASSEMBLER_MARCH = "rv64gc_zba_zbb_zbc_zbs_zbkb_zbkc"
 ENCODINGS: tuple[tuple[str, str, str, tuple[int, ...], int], ...] = (
     ("slli x1, x2, 40", "I_ALU", "slli", (1, 2, 40), 0x02811093),
     ("slli x1, x2, 8", "I_ALU", "slli", (1, 2, 8), 0x00811093),

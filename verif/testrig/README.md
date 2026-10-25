@@ -30,6 +30,11 @@ conformance bugs fixed for
 | [`sail_frost.json`](sail_frost.json) | Sail settings that describe FROST |
 | [`traces/`](traces/) | Saved counterexamples, replayed in CI |
 
+Scalar cryptography traces use `--crypto 50`. The generator supplies full-width
+operands, source and destination aliases, dependencies, integer multiply and
+divide traffic, taken branches, and environment calls. `--seed` makes these
+traces reproducible. The Sail configuration enables Zbc and Zbkc.
+
 ## Running
 
 The frost image provides `sail_riscv_sim` and `QCVEngine`. From the
@@ -156,7 +161,7 @@ different implementation choice:
 
 | Setting | FROST |
 |---------|-------|
-| Extensions | RV64IMAFDC, B, Zicond, Zbkb, Zihintpause, Zicntr, S, U, Sv39, Svade, Sstc; `misa` read-only |
+| Extensions | RV64IMAFDC, B, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zicntr, S, U, Sv39, Svade, Sstc; `misa` read-only |
 | Memory regions | The PMA map: low BRAM, MMIO, APLIC, IMSIC, the rest of the device quadrant (stores only), and configurable DDR (1 GiB default), the only region page-table walks read |
 | Physical addresses | 64 bits wide, so an untranslated access beyond the memory map faults with its full address in `mtval` |
 | Misaligned accesses | Address-misaligned trap, after the PMA check |

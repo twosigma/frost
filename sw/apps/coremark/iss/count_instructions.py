@@ -49,7 +49,7 @@ RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv64-linux-")
 
 # common.mk's default extension set. Every row keeps C: the shipped CoreMark
 # build leaves C out for FROST's fetch throughput, not for instruction count.
-ISA = "rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause"
+ISA = "rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause"
 BASE_FLAGS = [
     "-mcmodel=medany",
     "-Wall",

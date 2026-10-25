@@ -1,9 +1,7 @@
 # CoreMark
 
 [EEMBC CoreMark](https://github.com/eembc/coremark), unmodified in `coremark/`,
-with FROST's port layer in `core_portme.c` and `core_portme.h`. The score in the
-[top-level README](../../../README.md) comes from the default build described
-here.
+with FROST's port layer in `core_portme.c` and `core_portme.h`.
 
 ## Build
 
@@ -18,6 +16,7 @@ and these tuning flags:
 --param max-inline-insns-auto=200 -fira-algorithm=CB -fstrict-aliasing -fselective-scheduling -fbranch-probabilities -fprofile-correction -Wno-missing-profile -mtune=generic-ooo
 ```
 
+The architecture flags include Zbc and Zbkc for carry-less multiplication.
 CoreMark's report prints the complete compiler flags. [iss/README.md](iss/README.md)
 covers training the profiles.
 

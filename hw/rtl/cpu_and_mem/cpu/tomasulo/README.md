@@ -5,7 +5,7 @@ end fetches and decodes up to two instructions per cycle. The back end renames
 them, parks them in reservation stations (RS) until their operands are ready,
 executes them out of order, and retires them in program order from a 32-entry
 reorder buffer (ROB), so exceptions stay precise. The core implements RV64GCB
-plus Zicntr, Zicond, Zbkb, and Zihintpause (see the
+plus Zicntr, Zicond, Zbc, Zbkb, Zbkc, and Zihintpause (see the
 [ISA table](../../../../../README.md#supported-risc-v-extensions)).
 
 Dispatch, rename, the common data bus (CDB), and commit are all two wide. Four
@@ -172,7 +172,7 @@ it; an SC result waits in its register only behind a store fault.
 | RS         | Depth | Instructions |
 |------------|-------|--------------|
 | `INT_RS`   | 16 (`INT_RS_DEPTH`) | ALU ops including LUI and AUIPC, shifts, Zba/Zbb/Zbs/Zbkb, Zicond, conditional branches, JALR, CSR\*, ECALL, EBREAK, PAUSE (a NOP with no operands), and the illegal-instruction and fetch-fault markers |
-| `MUL_RS`   | 4     | MUL/MULW/MULH\*/DIV\*/REM\* |
+| `MUL_RS`   | 4     | MUL/MULW/MULH\*/CLMUL/CLMULH/CLMULR/DIV\*/REM\* |
 | `MEM_RS`   | 8     | All loads and stores (INT and FP), AMO\*, LR.W, LR.D, SC.W, SC.D, FENCE, FENCE.I, SFENCE.VMA |
 | `FP_RS`    | 2     | Every F and D compute instruction: FADD/FSUB, FMUL, FMA (3-source), FDIV, FSQRT, FMIN/FMAX, FEQ/FLT/FLE, FCVT\*, FMV.{X.W,W.X,X.D,D.X}, FCLASS, FSGNJ\* |
 | (none)     | n/a   | JAL, WFI, MRET, SRET, DRET: ROB only, no operands to wait for |

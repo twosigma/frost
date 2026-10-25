@@ -17,9 +17,9 @@
 /*
  * Integer MUL/DIV shim
  *
- * Translates rs_issue_t from the MUL reservation station into the multiplier
- * and divider ports and packs their results into fu_complete_t for the CDB
- * adapters and arbiter.
+ * Translates rs_issue_t from the MUL reservation station into the integer
+ * multiplier, carry-less multiplier, and divider ports. Packs their results
+ * into fu_complete_t for the CDB adapters and arbiter.
  *
  * Signal flow:  MUL_RS -> int_muldiv_shim -> multiplier -> fu_complete_t (slot 1)
  *                                         -> divider    -> fu_complete_t (slot 2)
@@ -28,6 +28,7 @@
  *   MUL, MULH, MULHSU, MULHU -> full-width multiplier path
  *     (riscv_pkg::MulPipeDepth-cycle latency, pipelined)
  *   MULW -> dedicated unsigned 32-bit multiplier (3 cycles)
+ *   CLMUL, CLMULH, CLMULR -> carry-less multiplier (3 cycles)
  *   DIV, DIVU, REM, REMU and their W forms -> iterative divider, one
  *     operation at a time (result after XLEN + 1 cycles, XLEN/2 + 1 for a W
  *     form)
@@ -38,9 +39,9 @@
  * tag and result select, and a 4-entry result FIFO holds completions waiting
  * for the CDB adapter. Credit-based back-pressure (o_fu_busy) keeps unflushed
  * operations in flight plus FIFO occupancy within the FIFO depth, so the FIFO
- * cannot overflow. A MULW enters the tracker partway down, at the stage that
- * lines up with the word multiplier, and waits while a live operation is
- * about to move into that stage.
+ * cannot overflow. A MULW or carry-less multiply enters the tracker partway
+ * down, at the stage that aligns with its product, and waits while a live
+ * operation is about to move into that stage.
  *
  * The divider holds one operation, and then its result until the DIV adapter
  * takes it; o_div_busy is high from the start until then. MUL_RS
@@ -61,7 +62,7 @@ module int_muldiv_shim #(
     output riscv_pkg::fu_complete_t o_mul_fu_complete,  // -> adapter -> arbiter slot 1
     output riscv_pkg::fu_complete_t o_div_fu_complete,  // -> adapter -> arbiter slot 2
 
-    // Back-pressure: no MUL credit or a MULW tracker slot collision
+    // Back-pressure: no MUL credit or a short-operation tracker slot collision
     output logic o_fu_busy,
 
     // The divider holds an operation or an untaken result, so MUL_RS must not
@@ -91,16 +92,21 @@ module int_muldiv_shim #(
   typedef enum logic [1:0] {
     MUL_SEL_LOW,    // MUL: low XLEN bits of the product
     MUL_SEL_HIGH,   // MULH/MULHSU/MULHU: high XLEN bits
-    MUL_SEL_SEXT_W  // MULW: sext32 of the low 32 product bits (RV64 only)
+    MUL_SEL_SEXT_W, // MULW: sext32 of the low 32 product bits (RV64 only)
+    MUL_SEL_CL     // Carry-less product selected inside cl_multiplier
   } mul_result_sel_e;
   mul_result_sel_e mul_result_sel;
-  logic mul_is_short_word;
+  logic mul_is_short_word, mul_is_cl, mul_is_short;
+  assign mul_is_cl = i_rs_issue.op == riscv_pkg::CLMUL ||
+      i_rs_issue.op == riscv_pkg::CLMULH || i_rs_issue.op == riscv_pkg::CLMULR;
+  assign mul_is_short = mul_is_short_word || mul_is_cl;
   assign mul_is_short_word = SHORT_WORD_OPS && i_rs_issue.op == riscv_pkg::MULW;
 
   always_comb begin
     mul_result_sel = MUL_SEL_LOW;
     case (i_rs_issue.op)
-      riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU, riscv_pkg::MULW: begin
+      riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU, riscv_pkg::MULW,
+      riscv_pkg::CLMUL, riscv_pkg::CLMULH, riscv_pkg::CLMULR: begin
         is_mul = 1'b1;
         is_div = 1'b0;
       end
@@ -117,6 +123,7 @@ module int_muldiv_shim #(
     case (i_rs_issue.op)
       riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU: mul_result_sel = MUL_SEL_HIGH;
       riscv_pkg::MULW: mul_result_sel = MUL_SEL_SEXT_W;
+      riscv_pkg::CLMUL, riscv_pkg::CLMULH, riscv_pkg::CLMULR: mul_result_sel = MUL_SEL_CL;
       default: mul_result_sel = MUL_SEL_LOW;
     endcase
   end
@@ -180,7 +187,7 @@ module int_muldiv_shim #(
       .i_rst                  (~i_rst_n),
       .i_operand_a            (mul_operand_a),
       .i_operand_b            (mul_operand_b),
-      .i_valid_input          (multiplier_valid_input && !mul_is_short_word),
+      .i_valid_input          (multiplier_valid_input && !mul_is_short),
       .o_product_result       (mul_product),
       .o_valid_output         (multiplier_valid_output),
       .o_completing_next_cycle(mul_completing_next_cycle)
@@ -216,6 +223,20 @@ module int_muldiv_shim #(
     assign word_mul_valid   = 1'b0;
   end
 
+  logic [63:0] cl_result;
+  logic cl_valid;
+  cl_multiplier u_cl_multiplier (
+      .i_clk,
+      .i_rst(~i_rst_n),
+      .i_valid_input(multiplier_valid_input && mul_is_cl),
+      .i_operand_a(i_rs_issue.src1_value[63:0]),
+      .i_operand_b(i_rs_issue.src2_value[63:0]),
+      .i_reverse(i_rs_issue.op != riscv_pkg::CLMUL),
+      .i_high(i_rs_issue.op == riscv_pkg::CLMULH),
+      .o_result(cl_result),
+      .o_valid_output(cl_valid)
+  );
+
   // Individual flat arrays avoid less portable unpacked-array-of-packed-struct storage.
   logic                       mul_trk_valid  [MulPipeDepth];
   logic            [TagW-1:0] mul_trk_tag    [MulPipeDepth];
@@ -242,7 +263,7 @@ module int_muldiv_shim #(
           mul_trk_flushed[i] <= 1'b1;
         else mul_trk_flushed[i] <= mul_trk_flushed[i-1];
       end
-      if (multiplier_valid_input && !mul_is_short_word) begin
+      if (multiplier_valid_input && !mul_is_short) begin
         mul_trk_valid[0] <= 1'b1;
         if (i_flush_en && is_younger(i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag))
           mul_trk_flushed[0] <= 1'b1;
@@ -251,10 +272,10 @@ module int_muldiv_shim #(
         mul_trk_valid[0]   <= 1'b0;
         mul_trk_flushed[0] <= 1'b0;
       end
-      // The word multiplier shares the tail and FIFO. A word operation enters
-      // at WordMulInsert so it reaches the tail with its product; mul_busy
+      // The word and carry-less multipliers share the tail and FIFO. Their
+      // operations enter at WordMulInsert to align with the product; mul_busy
       // holds it off while a live entry is about to shift into that stage.
-      if (multiplier_valid_input && mul_is_short_word) begin
+      if (multiplier_valid_input && mul_is_short) begin
         mul_trk_valid[WordMulInsert] <= 1'b1;
         mul_trk_flushed[WordMulInsert] <= i_flush_en && is_younger(
             i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
@@ -269,13 +290,13 @@ module int_muldiv_shim #(
       mul_trk_tag[i]  <= mul_trk_tag[i-1];
       mul_trk_rsel[i] <= mul_trk_rsel[i-1];
     end
-    if (multiplier_valid_input && !mul_is_short_word) begin
+    if (multiplier_valid_input && !mul_is_short) begin
       mul_trk_tag[0]  <= i_rs_issue.rob_tag;
       mul_trk_rsel[0] <= mul_result_sel;
     end
-    if (multiplier_valid_input && mul_is_short_word) begin
+    if (multiplier_valid_input && mul_is_short) begin
       mul_trk_tag[WordMulInsert]  <= i_rs_issue.rob_tag;
-      mul_trk_rsel[WordMulInsert] <= MUL_SEL_SEXT_W;
+      mul_trk_rsel[WordMulInsert] <= mul_result_sel;
     end
   end
 
@@ -322,10 +343,12 @@ module int_muldiv_shim #(
   assign mul_completing = mul_trk_valid[MulPipeDepth-1] && !mul_trk_flushed[MulPipeDepth-1];
 
   // Result selection from the tracker tail: MUL takes the low product word,
-  // MULH/MULHSU/MULHU the high word, MULW the sext32 of the low word.
+  // MULH/MULHSU/MULHU the high word, MULW the sext32 of the low word,
+  // and carry-less operations the carry-less unit result.
   logic [MulXlen-1:0] mul_result_xlen;
   always_comb begin
     case (mul_trk_rsel[MulPipeDepth-1])
+      MUL_SEL_CL: mul_result_xlen = cl_result;
       MUL_SEL_HIGH: mul_result_xlen = mul_product[2*MulXlen-1:MulXlen];
       MUL_SEL_SEXT_W:
       mul_result_xlen = SHORT_WORD_OPS ?
@@ -428,10 +451,10 @@ module int_muldiv_shim #(
   // MUL busy (credit-based to prevent FIFO overflow)
   logic [5:0] mul_total_occupancy;
   assign mul_total_occupancy = 6'(mul_fifo_count) + 6'(mul_inflight_count);
-  // The RS's registered op is independent of ready and valid, so this MULW
+  // The RS's registered op is independent of ready and valid, so this short-op
   // collision check creates no ready/valid loop or full-width multiply stall.
   assign mul_busy = (mul_total_occupancy >= 6'(MulFifoDepth)) ||
-      (mul_is_short_word && mul_trk_valid[WordMulInsert-1] &&
+      (mul_is_short && mul_trk_valid[WordMulInsert-1] &&
        !mul_trk_flushed[WordMulInsert-1]);
 
   // ---------------------------------------------------------------------------
@@ -512,7 +535,8 @@ module int_muldiv_shim #(
   // while the divider is busy would be lost.
   always @(posedge i_clk) begin
     if (i_rst_n) begin
-      if (mul_completing && !(SHORT_WORD_OPS &&
+      if (mul_completing && !(mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_CL ? cl_valid :
+          SHORT_WORD_OPS &&
           mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_SEXT_W ?
           word_mul_valid : multiplier_valid_output))
         $error("int_muldiv_shim: MUL tracker/data pipeline mismatch");
@@ -527,24 +551,36 @@ module int_muldiv_shim #(
 
 `ifdef FORMAL
   logic f_past_valid = 1'b0;
-  // Valid histories of the two multipliers, which flushes do not affect. The
+  // Valid histories of the multipliers, which flushes do not affect. The
   // per-stage assertions below tie each live tracker entry to the unit
   // holding its operation, which makes tail/data alignment inductive.
   logic [MulPipeDepth-1:0] f_full_mul;
-  logic [WordMulDepth-1:0] f_word_mul;
+  logic [WordMulDepth-1:0] f_word_mul, f_cl_mul;
+  logic [TagW-1:0] f_cl_tag[WordMulDepth];
+  always @(posedge i_clk) begin
+    f_cl_tag[0] <= i_rs_issue.rob_tag;
+    for (int stage = 1; stage < WordMulDepth; stage++) f_cl_tag[stage] <= f_cl_tag[stage-1];
+  end
   always @(posedge i_clk) begin
     if (!i_rst_n) begin
       f_full_mul <= '0;
       f_word_mul <= '0;
+      f_cl_mul   <= '0;
     end else begin
-      f_full_mul <= {f_full_mul[MulPipeDepth-2:0], multiplier_valid_input && !mul_is_short_word};
+      f_full_mul <= {f_full_mul[MulPipeDepth-2:0], multiplier_valid_input && !mul_is_short};
       f_word_mul <= {f_word_mul[WordMulDepth-2:0], multiplier_valid_input && mul_is_short_word};
+      f_cl_mul   <= {f_cl_mul[WordMulDepth-2:0], multiplier_valid_input && mul_is_cl};
     end
   end
   for (genvar stage = 0; stage < MulPipeDepth; stage++) begin : gen_f_mul_owner
     always @(posedge i_clk) begin
       if (f_past_valid && i_rst_n && mul_trk_valid[stage] && !mul_trk_flushed[stage]) begin
-        if (SHORT_WORD_OPS && mul_trk_rsel[stage] == MUL_SEL_SEXT_W) begin
+        if (mul_trk_rsel[stage] == MUL_SEL_CL) begin
+          if (stage >= WordMulInsert) begin
+            assert (f_cl_mul[stage-WordMulInsert]);
+            assert (mul_trk_tag[stage] == f_cl_tag[stage-WordMulInsert]);
+          end else assert (1'b0);
+        end else if (SHORT_WORD_OPS && mul_trk_rsel[stage] == MUL_SEL_SEXT_W) begin
           if (stage >= WordMulInsert)
             assert (f_word_mul[stage-WordMulInsert]);
             else assert (1'b0);
@@ -587,7 +623,7 @@ module int_muldiv_shim #(
 `ifndef F_MULDIV_ALIGNMENT
       // Check FIFO credits separately from multiplier pipeline alignment.
       assert (mul_total_occupancy <= 6'(MulFifoDepth));
-      if (multiplier_valid_input && mul_is_short_word)
+      if (multiplier_valid_input && mul_is_short)
         assert (!mul_trk_valid[WordMulInsert-1] || mul_trk_flushed[WordMulInsert-1]);
       // Divider: busy until its result is taken, a completion carries the tag
       // of the divide that started last, and a squashed divide never completes.
@@ -601,12 +637,17 @@ module int_muldiv_shim #(
       // Each surviving completion must select the matching multiplier's result.
       assert (f_full_mul[MulPipeDepth-1] == multiplier_valid_output);
       assert (f_word_mul[WordMulDepth-1] == word_mul_valid);
+      assert (f_cl_mul[WordMulDepth-1] == cl_valid);
+      if (mul_completing && mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_CL)
+        assert (mul_fifo_value_wr_data == cl_result);
       if (mul_completing)
-        assert (SHORT_WORD_OPS && mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_SEXT_W ?
+        assert (mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_CL ? cl_valid :
+            SHORT_WORD_OPS && mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_SEXT_W ?
             word_mul_valid : multiplier_valid_output);
 `endif
       cover (mul_completing && mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_SEXT_W);
-      cover (mul_is_short_word && mul_busy && mul_total_occupancy < 4);
+      cover (mul_completing && mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_CL);
+      cover (mul_is_short && mul_busy && mul_total_occupancy < 4);
       cover (o_div_fu_complete.valid && !i_div_accepted);
       cover (div_kill && !o_div_fu_complete.valid);
       cover (multiplier_valid_input && o_div_busy);

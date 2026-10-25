@@ -50,10 +50,10 @@ TESTS_DIR = SCRIPT_DIR / "tests_rv64"
 REFERENCES_DIR = SCRIPT_DIR / "references_rv64"
 
 # FROST ISA string for Spike
-FROST_ISA = "rv64imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond"
+FROST_ISA = "rv64imafdc_zicsr_zifencei_zba_zbb_zbc_zbs_zbkb_zbkc_zicond"
 
 RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv64-linux-")
-ARCH = "rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause"
+ARCH = "rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause"
 ABI = "lp64"
 
 # Registers available for random operations. x0 is zero, x2 (sp) and x3 (gp)

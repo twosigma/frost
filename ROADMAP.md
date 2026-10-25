@@ -311,4 +311,5 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
 - A redesign three or four instructions wide, sized first with a
   performance model
 - The V and H extensions
-- The full crypto extensions
+- Zbkx, Zknh, Zkne, Zknd, Zksh, and Zksed, together with Zbkb and Zbkc,
+  complete the Zkn and Zks scalar cryptography suites.

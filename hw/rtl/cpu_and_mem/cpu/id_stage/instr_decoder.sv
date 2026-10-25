@@ -15,7 +15,7 @@
  */
 
 /*
-  Combinational decoder for RV64GCB (Zba/Zbb/Zbs), Zicond, Zbkb, Zicsr,
+  Combinational decoder for RV64GCB (Zba/Zbb/Zbs), Zicond, Zbc, Zbkb, Zbkc, Zicsr,
   and M/S/U-mode privileged instructions. Compressed instructions arrive
   already expanded. o_instr_op selects the operation; o_illegal flags any
   encoding not decoded here, including reserved FP rounding modes.
@@ -75,6 +75,10 @@ module instr_decoder (
         10'b0000101_101: o_instr_op = riscv_pkg::MINU;
         10'b0110000_001: o_instr_op = riscv_pkg::ROL;
         10'b0110000_101: o_instr_op = riscv_pkg::ROR;
+        // Zbc and Zbkc carry-less multiplication
+        10'b0000101_001: o_instr_op = riscv_pkg::CLMUL;
+        10'b0000101_010: o_instr_op = riscv_pkg::CLMULR;
+        10'b0000101_011: o_instr_op = riscv_pkg::CLMULH;
         // Zbkb extension (bit manipulation for crypto)
         10'b0000100_100: o_instr_op = riscv_pkg::PACK;  // Pack the low XLEN/2-bit halves
         10'b0000100_111: o_instr_op = riscv_pkg::PACKH;  // Pack bytes

@@ -51,6 +51,7 @@ typedef enum {
     EXT_ZBA,
     EXT_ZBB,
     EXT_ZBS,
+    EXT_ZBC,
     EXT_ZICOND,
     EXT_ZBKB,
     EXT_ZIHINTPAUSE,
@@ -72,6 +73,7 @@ static const char *extension_names[EXT_COUNT] = {
     "Zba",         /* Address generation */
     "Zbb",         /* Bit manipulation */
     "Zbs",         /* Single-bit ops */
+    "Zbc/Zbkc",    /* Carry-less multiplication */
     "Zicond",      /* Conditional zero */
     "Zbkb",        /* Crypto bit ops */
     "Zihintpause", /* Pause hint */
@@ -3076,6 +3078,25 @@ static void test_zbkb(void)
     END_EXTENSION();
 }
 
+/* Polynomial multiplication uses XOR addition without carries. */
+static void test_zbc(void)
+{
+    BEGIN_EXTENSION(EXT_ZBC);
+    uint64_t result;
+    uint64_t a = UINT64_MAX;
+    uint64_t b = UINT64_MAX;
+    __asm__ volatile("clmul %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+    TEST("CLMUL", result == UINT64_C(0x5555555555555555), 1);
+    __asm__ volatile("clmulh %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+    TEST("CLMULH", result == UINT64_C(0x5555555555555555), 1);
+    __asm__ volatile("clmulr %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+    TEST("CLMULR", result == UINT64_C(0xaaaaaaaaaaaaaaaa), 1);
+    a = UINT64_C(1) << 63;
+    __asm__ volatile("clmulh %0, %1, %1" : "=r"(result) : "r"(a));
+    TEST("CLMULH (high bit)", result == (UINT64_C(1) << 62), 1);
+    END_EXTENSION();
+}
+
 /* -- Zihintpause Tests (Pause Hint) -- */
 
 static void test_zihintpause(void)
@@ -3320,7 +3341,8 @@ int main(void)
     uart_printf("============================================================\n");
     uart_printf("     FROST RISC-V ISA COMPLIANCE TEST SUITE\n");
     uart_printf("============================================================\n");
-    uart_printf("  Target: RV64GCB_Zicsr_Zicntr_Zifencei_Zicond_Zbkb_Zihintpause + M-mode\n");
+    uart_printf(
+        "  Target: RV64GCB_Zicsr_Zicntr_Zifencei_Zicond_Zbc_Zbkb_Zbkc_Zihintpause + M-mode\n");
     uart_printf("  Note:   G = IMAFD (base integer + M/A/F/D)\n");
     uart_printf("  Note:   B = Zba + Zbb + Zbs (full bit manipulation extension)\n");
     uart_printf("  Note:   F = Single-precision floating-point\n");
@@ -3344,6 +3366,7 @@ int main(void)
     test_zbs();
     test_zicond();
     test_zbkb();
+    test_zbc();
     test_zihintpause();
     test_mmode();
 

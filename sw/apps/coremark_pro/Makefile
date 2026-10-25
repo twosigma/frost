@@ -75,7 +75,7 @@ CMP_DIR ?= coremark-pro
 
 # --- FROST target architecture / ABI (see arch.mk) --------------------------
 include ../../common/arch.mk
-ARCH := $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+ARCH := $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause
 ABI  := $(FROST_FP_ABI)
 # medlow cannot form the positive 0x8xxx_xxxx DDR addresses at lp64, so use
 # medany, as common.mk's FROST_CMODEL does.

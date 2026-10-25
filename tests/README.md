@@ -199,7 +199,7 @@ BRAM. Each test runs once; the application jobs cover reset and rerun in the
 BRAM tier. Both startup stubs initialize `a4`, which the pinned suite's
 `RVTEST_INIT_GPRS` omits but its hints signatures record. This makes the
 initial state match Spike without assuming GPRs clear on reset.
-The extensions are I, M, A, F, D, C, B, K (Zbkb only), Zicond, Zifencei,
+The extensions are I, M, A, F, D, C, B (including Zbc), K (Zbkb), Zicond, Zifencei,
 privilege, D_Zcd, and hints; Zcf exists only on RV32. The tests come from the
 suite's `rv64i_m` directory; F and D also run the tests that RV32 and RV64
 share, which the suite keeps under `rv32i_m/F` and `rv32i_m/D`, except the
@@ -318,6 +318,7 @@ provides Sail and the engine.
 ./scripts/frost.py run python3 tests/test_testrig.py --include '^(mem|pte)$' --tests 500
 ./scripts/frost.py run python3 tests/test_testrig.py --trace tests/testrig_failures/failure-<time>.S
 ./scripts/frost.py run python3 tests/test_testrig.py --trace-dir verif/testrig/traces
+./scripts/frost.py run python3 tests/test_testrig.py --crypto 50
 ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
 ```
 
