@@ -52,4 +52,4 @@ The baseline has 19908 modeled L2-MSHR backpressure events across the workload s
 
 ## Calibration and interpretation limits
 
-The cache stage latencies, PLRU/bimodal details, workload instruction mixes, and branch rates are explicit modelling assumptions. Treat sweep results as comparative sensitivity directions until calibrated against Verilator RTL traces.
+The cache stage latencies, insertion-LFSR phase, workload instruction mixes, and branch rates are explicit modelling assumptions. Treat sweep results as comparative sensitivity directions until calibrated against Verilator RTL traces.

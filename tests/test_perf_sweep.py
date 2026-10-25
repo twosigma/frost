@@ -22,7 +22,7 @@ sweep = _load("tools/sweep_memory.py", "frost_memory_sweep_test")
 
 
 def test_controller_probe_separates_channels_pool_and_port() -> None:
-    """Extra channels need enough IDs and remain bounded by the shared port."""
+    """Extra channels need enough IDs and share the AXI return port."""
     one = sweep.controller_probe(1, 12, 4, 16, 256)
     two = sweep.controller_probe(2, 12, 4, 16, 256)
     limited = sweep.controller_probe(2, 12, 4, 1, 256)

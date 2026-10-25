@@ -18,11 +18,12 @@ This is a deterministic, event-driven *architectural performance model*, not an
 RTL simulator.  It models the FROST platform composition (``platform_top.sv``):
   - ``CpuTopModel`` (``cpu_top.sv``): two-wide out-of-order pipeline, L1I, L1D,
     the 32B-to-64B L2 sector adapter, L2 with stream prefetcher, and the
-    6-bit-ID, 512-bit (64B) AXI4 master fabric (``cpu_memory_fabric.sv``).
+    default 6-bit-ID, 512-bit (64B) AXI4 master fabric (``cpu_memory_fabric.sv``).
   - ``SocTopModel`` (``soc_top.sv``): replaceable SoC interconnect and memory
     subsystem consisting of ``soc_axi_slave.sv`` (physical address decode to
-    local BRAM/MMIO vs. the 5-bit-ID whole-line DDR port) and a single-channel
+    local BRAM/MMIO vs. the default 5-bit-ID whole-line DDR port) and a default single-channel
     512-bit AXI4 DDR endpoint modelled after ``axi_behavioral_memory.sv``.
+    ``InterleavedDdrController`` supplies configurable physical channels.
 
 Another project can swap ``SocTopModel`` (or ``DdrController``) while keeping
 ``CpuTopModel`` unchanged.  All non-RTL-calibrated latencies remain explicit in
@@ -37,7 +38,7 @@ Examples:
   python frost_perf_model.py sweep --out results/frost_perf_sweep.json
   python frost_perf_model.py audit --out results/frost_perf_rtl_alignment.json
   python frost_perf_model.py report --sweep results/frost_perf_sweep.json \
-      --out /tmp/perf_model_report.md
+      --out results/FROST_perf_model_report.md
 """
 
 from __future__ import annotations
@@ -84,9 +85,9 @@ def dump_json(path: Path, value: Any) -> None:
 
 @dataclass(frozen=True)
 class DdrConfig:
-    """DDR endpoint configuration in core-clock cycles.
+    """FROST DDR endpoint configuration in *core-clock* cycles.
 
-    Matches the single 512-bit (64-byte) AXI4 DDR port on ``soc_top.sv`` and its
+    Defaults match the single 512-bit (64-byte) AXI4 DDR port on ``soc_top.sv`` and its
     simulation-default ``axi_behavioral_memory.sv`` endpoint (5-bit AXI IDs,
     independent read/write slot pools of ``NUM_SLOTS = max(L2MaxSlots, 8)``,
     configurable fixed latency, optional LFSR latency jitter, and optional
@@ -95,7 +96,7 @@ class DdrConfig:
 
     line_bytes: int = 64
     id_bits: int = 5  # riscv_pkg::DdrAxiIdBits (o_ddr_axi_arid / o_ddr_axi_awid)
-    num_slots: int = 8  # minimum slot count per channel (soc_top DdrModelSlots floor)
+    num_slots: int = 8  # queue slots per direction; behavioral DDR applies a floor
     latency_cycles: int = 30  # DDR_MODEL_LATENCY default in soc_top.sv / frost.sv
     latency_jitter: int = 0  # DDR_MODEL_LATENCY_JITTER default in soc_top.sv
     reorder: bool = False  # DDR_MODEL_REORDER default in soc_top.sv
@@ -131,9 +132,10 @@ class DdrConfig:
 class SocConfig:
     """FROST ``soc_top.sv`` + ``soc_axi_slave.sv`` configuration.
 
-    ``soc_axi_slave`` decodes the CPU's 6-bit-ID physical-address AXI4 master:
+    ``soc_axi_slave`` decodes the CPU's physical-address AXI4 master
+    with the ID widths in ``ModelConfig``:
       - Cached DDR aperture ``[ddr_base, ddr_base + ddr_bytes)`` forwards whole
-        64-byte lines with 5-bit IDs (``id < 32``) to the single DDR AXI port
+        64-byte lines with IDs in ``axi_id_bits`` to the single DDR AXI port
         after subtracting ``ddr_base``.  ``AR`` passes combinationally when
         ``ar_ddr_ok``; ``AW`` captures in ``aw_valid_q`` before presenting to DDR.
       - Local aperture (on-chip BRAM and MMIO devices) serializes through a
@@ -1102,12 +1104,12 @@ class SocTopModel:
     """FROST ``soc_top.sv`` + ``soc_axi_slave.sv`` model.
 
     Receives physical-address AXI4 transactions from ``CpuTopModel`` across the
-    single 6-bit-ID, 512-bit AXI4 boundary and routes them by physical address:
+    single AXI4 boundary with configured ID width and routes them by physical address:
       - Cached DDR aperture ``[ddr_base, ddr_base + ddr_bytes)``: validates the
-        5-bit DDR ID contract (``axi_id < 32``) and 64-byte line size, subtracts
+        configured DDR ID width and 64-byte line size, subtracts
         ``ddr_base``, models ``soc_axi_slave``'s write-address register stage
         (``aw_valid_q``) and combinational read pass-through, and submits to the
-        replaceable single-channel ``DdrController``.
+        selected ``DdrController``.
       - Local aperture (BRAM ``[bram_base, bram_base + bram_bytes)`` and MMIO
         ``[mmio_base, mmio_base + mmio_bytes)``): services through the single
         serialized local port.
@@ -1121,8 +1123,8 @@ class SocTopModel:
     ) -> None:
         """Model soc_top in front of a DDR controller.
 
-        Without controller, build a SingleChannelDdrController from the
-        configuration.
+        Without an explicit controller, ddr.controller selects the behavioral
+        or interleaved endpoint.
         """
         self.config = config
         self.soc_config = config.soc
@@ -1165,9 +1167,9 @@ class SocTopModel:
     def submit_axi(self, transaction: AxiTransaction) -> bool:
         """Route a transaction by address; return False on backpressure.
 
-        A DDR transaction with an ID of 32 or more, or that is not one line,
-        completes with an error. An address outside DDR, BRAM, and MMIO
-        completes with a decode error.
+        A DDR transaction with an ID outside the configured width or a
+        transfer size other than one line completes with an error. An
+        address outside DDR, BRAM, and MMIO completes with a decode error.
         """
         addr = transaction.address
         if self._is_ddr_address(addr):
@@ -2967,7 +2969,7 @@ The baseline has {baseline["total_l2_mshr_backpressure"]} modeled L2-MSHR backpr
 
 ## Calibration and interpretation limits
 
-The cache stage latencies, PLRU/bimodal details, workload instruction mixes, and branch rates are explicit modelling assumptions. Treat sweep results as comparative sensitivity directions until calibrated against Verilator RTL traces.
+The cache stage latencies, insertion-LFSR phase, workload instruction mixes, and branch rates are explicit modelling assumptions. Treat sweep results as comparative sensitivity directions until calibrated against Verilator RTL traces.
 """
 
 
