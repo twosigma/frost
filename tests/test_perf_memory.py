@@ -251,3 +251,50 @@ def test_axi_pool_limit_changes_memory_stress_cycles() -> None:
     assert limited["cycles"] > baseline["cycles"]
     assert limited["memory"]["axi"]["max_inflight"] == 1
     assert limited["memory"]["axi"]["id_pool_backpressure"] > 0
+
+
+def test_early_load_wakeup_only_advances_memory_consumers() -> None:
+    """The load token bypasses MEM_RS registration without changing ALU dependencies."""
+    for kind in ("load", "alu"):
+        builder = model.ProgramBuilder()
+        dependency: tuple[int, ...] = ()
+        for index in range(32):
+            load = builder.emit("load", 0x80002000, 0x80400000 + index * 64, dependency)
+            dependency = (
+                (load,)
+                if kind == "load"
+                else (builder.emit("alu", 0x80002004, depends_on=(load,)),)
+            )
+        cycles = []
+        for enabled in (False, True):
+            config = replace(
+                model.ModelConfig(), early_load_wakeup=enabled, l2_prefetch=False
+            )
+            pipeline = model.FrostPipeline(config, builder.ops)
+            pipeline.fetch_state[pipeline._fetch_line(0x80002000)] = "ready"
+            cycles.append(pipeline.run()["cycles"])
+        if kind == "load":
+            assert cycles[0] - cycles[1] == 31
+        else:
+            assert cycles[0] == cycles[1]
+
+
+@pytest.mark.parametrize(
+    "registered,fault,expected",
+    [(0, False, True), (1, False, True), (2, False, False), (0, True, False)],
+)
+def test_early_load_requires_a_free_registered_lane(
+    registered: int, fault: bool, expected: bool
+) -> None:
+    """A fault or two occupied registered lanes prevents early token injection."""
+    producer = model.RobEntry(model.MicroOp(0, "load", 0, 0), 0, fault=fault)
+    consumer = model.RobEntry(model.MicroOp(1, "load", 0, 64, (0,)), 0)
+    pipeline = model.FrostPipeline(model.ModelConfig(), [])
+    pipeline._registered_cdb_count = registered
+    pipeline.mem_rs_in_use = 1
+    pipeline.completions = [producer]
+    pipeline._drain_cdb()
+    assert pipeline._deps_ready(consumer) == expected
+    pipeline.loop.cycle += 1
+    pipeline._drain_cdb()
+    assert pipeline._deps_ready(consumer)

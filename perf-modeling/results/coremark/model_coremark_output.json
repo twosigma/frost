@@ -136,6 +136,7 @@
         "dispatch_stall_lq": 1014,
         "dispatch_stall_mem_rs": 568,
         "dispatched": 3128,
+        "early_load_tokens": 545,
         "frontend_recovery_stall": 2,
         "l0_fills": 448,
         "l0_hits": 768,
@@ -280,7 +281,7 @@
     }
   },
   "micro_ops": 3128,
-  "micro_ops_per_second": 65222,
+  "micro_ops_per_second": 98871,
   "model_version": "1.0",
   "pipeline": {
     "max_occupancy": {
@@ -297,6 +298,7 @@
       "dispatch_stall_lq": 1014,
       "dispatch_stall_mem_rs": 568,
       "dispatched": 3128,
+      "early_load_tokens": 545,
       "frontend_recovery_stall": 2,
       "l0_fills": 448,
       "l0_hits": 768,
@@ -312,7 +314,7 @@
   },
   "retired": 3128,
   "seed": 11,
-  "simulated_cycles_per_second": 64659,
+  "simulated_cycles_per_second": 98018,
   "soc_top": {
     "configuration": {
       "bram_base": 0,
@@ -357,6 +359,6 @@
       "ddr_reads_forwarded": 102
     }
   },
-  "wall_time_seconds": 0.047959,
+  "wall_time_seconds": 0.031637,
   "workload": "coremark"
 }

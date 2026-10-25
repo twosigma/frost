@@ -105,8 +105,12 @@ Every calibrated benchmark directory in `perf-modeling/results/<benchmark>/` con
 - `pipeline_counters.json`: Cycle and uop counts, IPC, dispatch/commit distributions, and AXI transaction totals directly measured from RTL.
 - `calibration.json`: Output from `run_calibration.py` comparing RTL vs. performance model.
 
-## 6. Memory controller experiments
+## 6. Memory-system resource comparisons
 
-The default `behavioral` DDR controller represents the RTL simulation endpoint. The `interleaved` controller is an architectural experiment with explicit physical channels, stripe size, queue depth, latency, and cycles per line. Its read and write traffic shares each physical channel's bandwidth and uses one shared AXI return port. A comparison records these settings separately from the cache resource counts. Channel experiments do not represent a board controller's bank or refresh timing.
+Use the same binary, region, cache state, and memory timing for each RTL comparison point. Compare simulated cycles and retired work. An IPC ratio alone can hide a change in the amount of work. Synthetic kernel micro-operation counts need not equal compiler instruction counts; report that difference with absolute and relative cycle errors.
 
-The AXI bridge preserves cache IDs and records their owners until completion. The pool size bounds the number of live transactions, independently of the cache's miss slots and the wire width. It does not renumber or truncate IDs. A pool-size sensitivity is a limit on outstanding transactions; a wire-width sensitivity must also specify which additional cache IDs can be issued. The production ID widths are four bits for L1D and five bits for L2 and the DDR port.
+The default behavioral DDR endpoint represents the RTL simulation endpoint. The interleaved endpoint describes physical channels with explicit stripe size, queue depth, latency, and service interval. Its reads and writes share each physical channel's bandwidth and one AXI return port. It has no bank or refresh timing. Channel experiments record these settings separately from cache resource counts.
+
+The AXI bridge preserves internal cache IDs until completion. Its pool size bounds live transactions independently of cache miss slots and wire width. It does not renumber or truncate IDs. A width comparison must specify which additional internal IDs can be issued. Production widths are four bits for L1D and five bits for L2 and the DDR port.
+
+Early load wakeup affects dependent memory operations. A nonfaulting accepted load can use an idle registered CDB lane to bypass one modeled memory-wakeup cycle. Two occupied registered lanes suppress the token. Integer dependencies use the ordinary path. The model omits speculative recovery and uncached-store completion arbitration.

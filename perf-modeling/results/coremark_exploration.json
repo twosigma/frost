@@ -9,6 +9,7 @@
       "dispatch_stall_lq": 1014,
       "dispatch_stall_mem_rs": 568,
       "dispatched": 3128,
+      "early_load_tokens": 545,
       "frontend_recovery_stall": 2,
       "l0_fills": 448,
       "l0_hits": 768,
@@ -164,21 +165,6 @@
       "ipc": 1.0087,
       "ipc_delta": 0.0,
       "l2_mshr_backpressure": 290,
-      "name": "early_wakeup_off",
-      "speedup_pct": 0.0,
-      "stalls": {
-        "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 568,
-        "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1274
-      }
-    },
-    {
-      "cycle_delta": 0,
-      "cycles": 3101,
-      "ipc": 1.0087,
-      "ipc_delta": 0.0,
-      "l2_mshr_backpressure": 290,
       "name": "core_rob_48",
       "speedup_pct": 0.0,
       "stalls": {
@@ -291,6 +277,21 @@
         "dispatch_stall_mem_rs": 568,
         "dispatch_stall_rob": 0,
         "retire_head_not_ready": 1274
+      }
+    },
+    {
+      "cycle_delta": 13,
+      "cycles": 3114,
+      "ipc": 1.0045,
+      "ipc_delta": -0.0042,
+      "l2_mshr_backpressure": 289,
+      "name": "early_wakeup_off",
+      "speedup_pct": -0.42,
+      "stalls": {
+        "dispatch_stall_int_rs": 0,
+        "dispatch_stall_mem_rs": 581,
+        "dispatch_stall_rob": 0,
+        "retire_head_not_ready": 1287
       }
     },
     {
