@@ -1,24 +1,24 @@
 {
   "baseline": {
-    "cycles": 3101,
-    "ipc": 1.0087,
+    "cycles": 3067,
+    "ipc": 1.0199,
     "stalls": {
       "branch_mispredicts": 1,
-      "cdb_contention": 898,
+      "cdb_contention": 1026,
       "completed": 3128,
-      "dispatch_stall_lq": 1014,
-      "dispatch_stall_mem_rs": 568,
+      "dispatch_stall_lq": 988,
+      "dispatch_stall_mem_rs": 560,
       "dispatched": 3128,
-      "early_load_tokens": 545,
+      "early_load_tokens": 530,
       "frontend_recovery_stall": 2,
       "l0_fills": 448,
       "l0_hits": 768,
       "l0_misses": 494,
       "l0_store_updates": 48,
       "load_cache_backpressure": 46,
-      "load_store_disambiguation_stall": 1032,
+      "load_store_disambiguation_stall": 1078,
       "loads_issued": 1216,
-      "retire_head_not_ready": 1274,
+      "retire_head_not_ready": 1241,
       "retired": 3128,
       "stores_started_at_commit": 99
     }
@@ -26,13 +26,13 @@
   "bottlenecks": [
     {
       "description": "Memory Reservation Station (8 entries) limits concurrency under memory dependencies.",
-      "impact_stalls": 568,
+      "impact_stalls": 560,
       "remedy": "Increase MEM_RS_DEPTH from 8 to 12 or 16.",
       "resource": "mem_rs"
     },
     {
       "description": "L2 MSHR concurrency limit (4 slots) causes backpressure during concurrent cache misses.",
-      "impact_stalls": 290,
+      "impact_stalls": 333,
       "remedy": "Increase L2_NUM_MSHR from 4 to 8, with 4 writeback slots.",
       "resource": "l2_mshr"
     }
@@ -40,371 +40,366 @@
   "micro_ops": 3128,
   "ranked_variants": [
     {
-      "cycle_delta": -287,
-      "cycles": 2814,
-      "ipc": 1.1116,
-      "ipc_delta": 0.1029,
-      "l2_mshr_backpressure": 169,
+      "cycle_delta": -300,
+      "cycles": 2767,
+      "ipc": 1.1305,
+      "ipc_delta": 0.1106,
+      "l2_mshr_backpressure": 173,
       "name": "ddr_fast_20cyc",
-      "speedup_pct": 9.26,
+      "speedup_pct": 9.78,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 465,
+        "dispatch_stall_mem_rs": 448,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 984
+        "retire_head_not_ready": 943
       }
     },
     {
-      "cycle_delta": -82,
-      "cycles": 3019,
-      "ipc": 1.0361,
-      "ipc_delta": 0.0274,
+      "cycle_delta": -86,
+      "cycles": 2981,
+      "ipc": 1.0493,
+      "ipc_delta": 0.0294,
       "l2_mshr_backpressure": 0,
       "name": "frost_balanced_v2",
-      "speedup_pct": 2.64,
+      "speedup_pct": 2.8,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 549,
+        "dispatch_stall_mem_rs": 544,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1202
+        "retire_head_not_ready": 1148
       }
     },
     {
-      "cycle_delta": -66,
-      "cycles": 3035,
-      "ipc": 1.0306,
-      "ipc_delta": 0.0219,
+      "cycle_delta": -77,
+      "cycles": 2990,
+      "ipc": 1.0462,
+      "ipc_delta": 0.0263,
       "l2_mshr_backpressure": 0,
       "name": "l2_mshr_8",
-      "speedup_pct": 2.13,
+      "speedup_pct": 2.51,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 529,
+        "dispatch_stall_mem_rs": 513,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1209
+        "retire_head_not_ready": 1159
       }
     },
     {
-      "cycle_delta": -66,
-      "cycles": 3035,
-      "ipc": 1.0306,
-      "ipc_delta": 0.0219,
+      "cycle_delta": -77,
+      "cycles": 2990,
+      "ipc": 1.0462,
+      "ipc_delta": 0.0263,
       "l2_mshr_backpressure": 0,
       "name": "l2_mshr_8_wb_4",
-      "speedup_pct": 2.13,
+      "speedup_pct": 2.51,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 529,
+        "dispatch_stall_mem_rs": 513,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1209
+        "retire_head_not_ready": 1159
       }
     },
     {
-      "cycle_delta": -66,
-      "cycles": 3035,
-      "ipc": 1.0306,
-      "ipc_delta": 0.0219,
+      "cycle_delta": -77,
+      "cycles": 2990,
+      "ipc": 1.0462,
+      "ipc_delta": 0.0263,
       "l2_mshr_backpressure": 0,
       "name": "l2_mshr_12_wb_4",
-      "speedup_pct": 2.13,
+      "speedup_pct": 2.51,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 529,
+        "dispatch_stall_mem_rs": 513,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1209
+        "retire_head_not_ready": 1159
       }
     },
     {
-      "cycle_delta": -40,
-      "cycles": 3061,
-      "ipc": 1.0219,
-      "ipc_delta": 0.0132,
-      "l2_mshr_backpressure": 459,
+      "cycle_delta": -31,
+      "cycles": 3036,
+      "ipc": 1.0303,
+      "ipc_delta": 0.0104,
+      "l2_mshr_backpressure": 505,
       "name": "core_lq_sq_12",
-      "speedup_pct": 1.29,
+      "speedup_pct": 1.01,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 928,
+        "dispatch_stall_mem_rs": 911,
         "dispatch_stall_rob": 348,
-        "retire_head_not_ready": 1249
+        "retire_head_not_ready": 1213
       }
     },
     {
-      "cycle_delta": -23,
-      "cycles": 3078,
-      "ipc": 1.0162,
-      "ipc_delta": 0.0075,
-      "l2_mshr_backpressure": 545,
+      "cycle_delta": -13,
+      "cycles": 3054,
+      "ipc": 1.0242,
+      "ipc_delta": 0.0043,
+      "l2_mshr_backpressure": 597,
       "name": "core_expanded_window",
-      "speedup_pct": 0.74,
+      "speedup_pct": 0.42,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 535,
+        "dispatch_stall_mem_rs": 524,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1250
+        "retire_head_not_ready": 1221
       }
     },
     {
       "cycle_delta": 0,
-      "cycles": 3101,
-      "ipc": 1.0087,
+      "cycles": 3067,
+      "ipc": 1.0199,
       "ipc_delta": 0.0,
-      "l2_mshr_backpressure": 290,
+      "l2_mshr_backpressure": 333,
       "name": "baseline",
       "speedup_pct": 0.0,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 568,
+        "dispatch_stall_mem_rs": 560,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1274
+        "retire_head_not_ready": 1241
       }
     },
     {
       "cycle_delta": 0,
-      "cycles": 3101,
-      "ipc": 1.0087,
+      "cycles": 3067,
+      "ipc": 1.0199,
       "ipc_delta": 0.0,
-      "l2_mshr_backpressure": 290,
+      "l2_mshr_backpressure": 333,
       "name": "core_rob_48",
       "speedup_pct": 0.0,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 568,
+        "dispatch_stall_mem_rs": 560,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1274
+        "retire_head_not_ready": 1241
       }
     },
     {
       "cycle_delta": 0,
-      "cycles": 3101,
-      "ipc": 1.0087,
+      "cycles": 3067,
+      "ipc": 1.0199,
       "ipc_delta": 0.0,
-      "l2_mshr_backpressure": 290,
+      "l2_mshr_backpressure": 333,
       "name": "core_rob_64",
       "speedup_pct": 0.0,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 568,
+        "dispatch_stall_mem_rs": 560,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1274
+        "retire_head_not_ready": 1241
       }
     },
     {
       "cycle_delta": 0,
-      "cycles": 3101,
-      "ipc": 1.0087,
+      "cycles": 3067,
+      "ipc": 1.0199,
       "ipc_delta": 0.0,
-      "l2_mshr_backpressure": 294,
+      "l2_mshr_backpressure": 337,
       "name": "core_mem_rs_12",
       "speedup_pct": 0.0,
       "stalls": {
         "dispatch_stall_int_rs": 0,
         "dispatch_stall_mem_rs": 0,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1274
+        "retire_head_not_ready": 1241
       }
     },
     {
       "cycle_delta": 0,
-      "cycles": 3101,
-      "ipc": 1.0087,
+      "cycles": 3067,
+      "ipc": 1.0199,
       "ipc_delta": 0.0,
-      "l2_mshr_backpressure": 294,
+      "l2_mshr_backpressure": 337,
       "name": "core_mem_rs_16",
       "speedup_pct": 0.0,
       "stalls": {
         "dispatch_stall_int_rs": 0,
         "dispatch_stall_mem_rs": 0,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1274
+        "retire_head_not_ready": 1241
       }
     },
     {
       "cycle_delta": 0,
-      "cycles": 3101,
-      "ipc": 1.0087,
+      "cycles": 3067,
+      "ipc": 1.0199,
       "ipc_delta": 0.0,
-      "l2_mshr_backpressure": 290,
+      "l2_mshr_backpressure": 333,
       "name": "core_int_rs_24",
       "speedup_pct": 0.0,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 568,
+        "dispatch_stall_mem_rs": 560,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1274
+        "retire_head_not_ready": 1241
       }
     },
     {
       "cycle_delta": 0,
-      "cycles": 3101,
-      "ipc": 1.0087,
+      "cycles": 3067,
+      "ipc": 1.0199,
       "ipc_delta": 0.0,
-      "l2_mshr_backpressure": 290,
+      "l2_mshr_backpressure": 333,
       "name": "core_int_rs_32",
       "speedup_pct": 0.0,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 568,
+        "dispatch_stall_mem_rs": 560,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1274
+        "retire_head_not_ready": 1241
       }
     },
     {
       "cycle_delta": 0,
-      "cycles": 3101,
-      "ipc": 1.0087,
+      "cycles": 3067,
+      "ipc": 1.0199,
       "ipc_delta": 0.0,
-      "l2_mshr_backpressure": 290,
+      "l2_mshr_backpressure": 333,
       "name": "l2_waiters_4",
       "speedup_pct": 0.0,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 568,
+        "dispatch_stall_mem_rs": 560,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1274
+        "retire_head_not_ready": 1241
       }
     },
     {
       "cycle_delta": 0,
-      "cycles": 3101,
-      "ipc": 1.0087,
+      "cycles": 3067,
+      "ipc": 1.0199,
       "ipc_delta": 0.0,
-      "l2_mshr_backpressure": 290,
+      "l2_mshr_backpressure": 333,
       "name": "l2_prefetch_inflight_8",
       "speedup_pct": 0.0,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 568,
+        "dispatch_stall_mem_rs": 560,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1274
+        "retire_head_not_ready": 1241
       }
     },
     {
-      "cycle_delta": 13,
-      "cycles": 3114,
-      "ipc": 1.0045,
-      "ipc_delta": -0.0042,
-      "l2_mshr_backpressure": 289,
+      "cycle_delta": 6,
+      "cycles": 3073,
+      "ipc": 1.0179,
+      "ipc_delta": -0.002,
+      "l2_mshr_backpressure": 293,
       "name": "early_wakeup_off",
-      "speedup_pct": -0.42,
+      "speedup_pct": -0.2,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 581,
+        "dispatch_stall_mem_rs": 565,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1287
+        "retire_head_not_ready": 1245
       }
     },
     {
-      "cycle_delta": 102,
-      "cycles": 3203,
-      "ipc": 0.9766,
-      "ipc_delta": -0.0321,
-      "l2_mshr_backpressure": 290,
+      "cycle_delta": 100,
+      "cycles": 3167,
+      "ipc": 0.9877,
+      "ipc_delta": -0.0322,
+      "l2_mshr_backpressure": 333,
       "name": "l2_prefetch_dist_12",
-      "speedup_pct": -3.29,
+      "speedup_pct": -3.26,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 616,
+        "dispatch_stall_mem_rs": 612,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1378
+        "retire_head_not_ready": 1343
       }
     },
     {
-      "cycle_delta": 102,
-      "cycles": 3203,
-      "ipc": 0.9766,
-      "ipc_delta": -0.0321,
-      "l2_mshr_backpressure": 290,
+      "cycle_delta": 100,
+      "cycles": 3167,
+      "ipc": 0.9877,
+      "ipc_delta": -0.0322,
+      "l2_mshr_backpressure": 333,
       "name": "l2_prefetch_aggressive",
-      "speedup_pct": -3.29,
+      "speedup_pct": -3.26,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 616,
+        "dispatch_stall_mem_rs": 612,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1378
+        "retire_head_not_ready": 1343
       }
     },
     {
-      "cycle_delta": 341,
-      "cycles": 3442,
-      "ipc": 0.9088,
-      "ipc_delta": -0.0999,
-      "l2_mshr_backpressure": 210,
+      "cycle_delta": 152,
+      "cycles": 3219,
+      "ipc": 0.9717,
+      "ipc_delta": -0.0482,
+      "l2_mshr_backpressure": 333,
+      "name": "l0_fastpath_off",
+      "speedup_pct": -4.96,
+      "stalls": {
+        "dispatch_stall_int_rs": 0,
+        "dispatch_stall_mem_rs": 645,
+        "dispatch_stall_rob": 0,
+        "retire_head_not_ready": 1546
+      }
+    },
+    {
+      "cycle_delta": 350,
+      "cycles": 3417,
+      "ipc": 0.9154,
+      "ipc_delta": -0.1045,
+      "l2_mshr_backpressure": 214,
       "name": "l2_prefetch_off",
-      "speedup_pct": -11.0,
+      "speedup_pct": -11.41,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 791,
+        "dispatch_stall_mem_rs": 793,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1623
+        "retire_head_not_ready": 1598
       }
     },
     {
-      "cycle_delta": 447,
-      "cycles": 3548,
-      "ipc": 0.8816,
-      "ipc_delta": -0.1271,
+      "cycle_delta": 445,
+      "cycles": 3512,
+      "ipc": 0.8907,
+      "ipc_delta": -0.1292,
       "l2_mshr_backpressure": 501,
       "name": "ddr_slow_45cyc",
-      "speedup_pct": -14.41,
+      "speedup_pct": -14.51,
       "stalls": {
         "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 733,
+        "dispatch_stall_mem_rs": 731,
         "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1726
-      }
-    },
-    {
-      "cycle_delta": 694,
-      "cycles": 3795,
-      "ipc": 0.8242,
-      "ipc_delta": -0.1845,
-      "l2_mshr_backpressure": 290,
-      "name": "l0_fastpath_off",
-      "speedup_pct": -22.38,
-      "stalls": {
-        "dispatch_stall_int_rs": 0,
-        "dispatch_stall_mem_rs": 805,
-        "dispatch_stall_rob": 0,
-        "retire_head_not_ready": 1667
+        "retire_head_not_ready": 1687
       }
     }
   ],
   "recommendations": [
     {
-      "cycles_saved": 287,
-      "speedup_pct": 9.26,
+      "cycles_saved": 300,
+      "speedup_pct": 9.78,
       "variant": "ddr_fast_20cyc"
     },
     {
-      "cycles_saved": 82,
-      "speedup_pct": 2.64,
+      "cycles_saved": 86,
+      "speedup_pct": 2.8,
       "variant": "frost_balanced_v2"
     },
     {
-      "cycles_saved": 66,
-      "speedup_pct": 2.13,
+      "cycles_saved": 77,
+      "speedup_pct": 2.51,
       "variant": "l2_mshr_8"
     },
     {
-      "cycles_saved": 66,
-      "speedup_pct": 2.13,
+      "cycles_saved": 77,
+      "speedup_pct": 2.51,
       "variant": "l2_mshr_8_wb_4"
     },
     {
-      "cycles_saved": 66,
-      "speedup_pct": 2.13,
+      "cycles_saved": 77,
+      "speedup_pct": 2.51,
       "variant": "l2_mshr_12_wb_4"
     },
     {
-      "cycles_saved": 40,
-      "speedup_pct": 1.29,
+      "cycles_saved": 31,
+      "speedup_pct": 1.01,
       "variant": "core_lq_sq_12"
-    },
-    {
-      "cycles_saved": 23,
-      "speedup_pct": 0.74,
-      "variant": "core_expanded_window"
     }
   ],
   "workload": "coremark"

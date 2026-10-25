@@ -8,12 +8,12 @@ This directory provides a **fast, cycle-approximate architectural performance mo
 
 1. **Simulation Speedup**:
    - Full-system Verilator RTL simulation runs at ~1.7 kHz (simulated cycles per second).
-   - The recorded analytical CoreMark run executes at **86,585 simulated cycles/s**. Instruction replay requires instruction records with dependencies; aggregate calibration events are rejected.
+   - The recorded analytical CoreMark run executes at **75,122 simulated cycles/s**. Instruction replay requires instruction records with dependencies; aggregate calibration events are rejected.
    - This speed enables broad design space sweeps and bottleneck sensitivity analyses that would be computationally prohibitive in cycle-accurate RTL.
 
 2. **RTL Cycle Correlation**:
    - CoreMark has an aggregate IPC comparison against RTL. The Tomasulo microarchitectural suite and DDR MLP stress test have validated event captures without model IPC comparisons.
-   - CoreMark model IPC is **1.0087**, correlating within **+3.1%** of the hardware RTL's measured **0.9786 IPC** (239,452 cycles).
+   - CoreMark model IPC is **1.0199**, correlating within **+4.2%** of the hardware RTL's measured **0.9786 IPC** (239,452 cycles).
    - Accurately models FROST-specific microarchitectural structures: the 256-entry Load Queue direct-mapped L0 Data Cache (`lq_l0_cache.sv`) with 1-cycle combinational fast-path bypass, early load wakeup (`EARLY_LOAD_WAKEUP = 1`), and the single-channel 512-bit AXI memory system.
 
 3. **Modular SoC / Core Boundary**:
@@ -85,7 +85,7 @@ The archived RTL results cover three benchmarks under Verilator. CoreMark has a 
 
 | Benchmark | Workload Characteristic | Timed RTL Cycles | Retired Uops | Hardware RTL IPC | Calibrated Model IPC | Correlation Delta | Status |
 |---|---|---:|---:|---:|---:|---:|:---:|
-| **CoreMark** | General compute / integer pipeline | 239,452 | 234,317 | **0.9786** | **1.0087** | **+3.1%** | PASS (CRC verified) |
+| **CoreMark** | General compute / integer pipeline | 239,452 | 234,317 | **0.9786** | **1.0199** | **+4.2%** | PASS (CRC verified) |
 | **tomasulo_perf** | 14 directed microarchitecture benchmarks | 487,313 | 175,025 | **0.3592** | Not available | Not compared | PASS (14/14 sub-benchmarks) |
 | **ddr_mlp_test** | Memory-level parallelism & AXI queueing | 94,010 | 30,427 | **0.3237** | Not available | Not compared | PASS |
 
@@ -97,7 +97,7 @@ The archived RTL results cover three benchmarks under Verilator. CoreMark has a 
 | **tomasulo_perf (Verilator RTL)** | 487,313 | 277.67 s | 1,755 cyc/s | 630 uop/s | **1.0x (Baseline)** |
 | **ddr_mlp_test (Verilator RTL)** | 94,010 | 56.63 s | 1,660 cyc/s | 537 uop/s | **1.0x (Baseline)** |
 | **FROST Perf Model (Aggregate Trace Replay)** | Rejected | Not available | Not available | Not available | Not available |
-| **FROST Perf Model (Analytical CoreMark)** | 3,101 | 0.035815 s | **86,585 cyc/s** | **87,338 uop/s** | **50.8x cycle-rate ratio** |
+| **FROST Perf Model (Analytical CoreMark)** | 3,067 | 0.040827 s | **75,122 cyc/s** | **76,616 uop/s** | **44.1x cycle-rate ratio** |
 
 ---
 
@@ -296,7 +296,7 @@ As the FROST design evolves, maintainers can easily keep the performance model s
 | CPU / DDR AXI ID bits | 6 / 5 |
 | AXI outstanding transaction limit | 32 |
 
-Caches reserve a victim way while a fill is pending. Same-line requests share a bounded miss record. Dirty victims complete their writeback before the replacement fill. Stores issue from the ROB head, and the model waits for their cache completion before retirement.
+Caches reserve a victim way while a fill is pending. Same-line requests share a bounded miss record. Dirty victims complete their writeback before the replacement fill. Cache responses are pipelined at one per cycle after their configured latency. Stores issue from the ROB head, and the model waits for their cache completion before retirement.
 
 Replacement follows the tree-PLRU walk in `frost_cache.sv`. An invalid unreserved way takes priority; otherwise the walk avoids reserved subtrees. Hits update the tree. An allocation updates it unless bimodal insertion is enabled and the low five bits of the free-running insertion LFSR are nonzero. The LFSR starts at `0xACE1` and uses the RTL's feedback taps. The model samples it at its allocation decision, not at fill completion. `l1d_bimodal_insert` defaults to true; `l2_bimodal_insert` defaults to false. Tag-stage timing is an abstraction, so the insertion phase is not calibrated cycle by cycle to RTL.
 
