@@ -226,4 +226,5 @@ The standalone bench executes real instructions while an external AXI model vari
 The full-platform `debug_openocd_test` additionally checks halt, resume,
 single-step, breakpoints, register/memory access, privilege, and reset through
 the external Debug Module and transport. Set `FROST_REQUIRE_OPENOCD=1` when
-running it to require the real OpenOCD session.
+running it to require the OpenOCD and GDB sessions. GDB checks register and
+memory access, software breakpoints, and single stepping.

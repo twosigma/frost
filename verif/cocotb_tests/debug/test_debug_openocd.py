@@ -17,7 +17,7 @@ The server translates OpenOCD requests into frost JTAG pin transitions.
 Board configurations in fpga/debug/ use the same dtmcs/dmi protocol over
 FPGA BSCAN chains.
 
-If openocd is missing from PATH, the test warns and passes. Set
+If OpenOCD or the cross GDB is missing from PATH, its test warns and passes. Set
 FROST_REQUIRE_OPENOCD=1 to fail instead, as CI does.
 """
 
@@ -29,6 +29,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -272,3 +273,137 @@ async def test_debug_openocd(dut: Any) -> None:
         monitor.get_output()
     )
     assert "<<FAIL>>" not in monitor.get_output()
+
+
+@cocotb.test()
+@takes_last_edge
+async def test_debug_gdb(dut: Any) -> None:
+    """Check GDB register, memory, breakpoint and step commands through OpenOCD."""
+    openocd = shutil.which("openocd")
+    prefix = os.environ.get("RISCV_PREFIX", "riscv64-linux-")
+    gdb = shutil.which(f"{prefix}gdb")
+    if openocd is None or gdb is None:
+        message = "OpenOCD or cross GDB not on PATH: GDB test not run"
+        if os.environ.get("FROST_REQUIRE_OPENOCD") == "1":
+            raise AssertionError(message)
+        cocotb.log.warning(message)
+        return
+
+    start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
+    cocotb.start_soon(generate_divided_clock(dut))
+    syms = _read_symbols()
+    server = RemoteBitbangServer(dut)
+    await _reset(dut)
+    monitor = UartMonitor(dut)
+    await monitor.start()
+    await _wait_text(monitor, dut, BANNER_START)
+    server_task = cocotb.start_soon(server.serve())
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+
+    with tempfile.TemporaryDirectory(prefix="frost_gdb_") as temporary:
+        directory = Path(temporary)
+        script = directory / "session.gdb"
+        script.write_text(
+            f"""set pagination off
+set confirm off
+set remotetimeout 120
+set trust-readonly-sections on
+target extended-remote 127.0.0.1:{port}
+monitor halt
+printf "FROST_GDB_MISA=0x%lx\\n", $misa
+set $t0 = 0x1122334455667788
+printf "FROST_GDB_T0=0x%lx\\n", $t0
+set {{unsigned long long}}{syms["table"] + 16:#x} = 0x5a5a1234fedc9876
+printf "FROST_GDB_TABLE2=0x%lx\\n", *(unsigned long long *){syms["table"] + 16:#x}
+break *{syms["bp_target"]:#x}
+continue
+printf "FROST_GDB_BP_PC=0x%lx\\n", $pc
+delete breakpoints
+stepi
+printf "FROST_GDB_STEP1_PC=0x%lx\\n", $pc
+stepi
+printf "FROST_GDB_STEP2_PC=0x%lx\\n", $pc
+detach
+quit
+"""
+        )
+        openocd_path = directory / "openocd.log"
+        gdb_path = directory / "gdb.log"
+        command = [
+            openocd,
+            "-c",
+            f"set FROST_RBB_PORT {server.port}",
+            "-f",
+            str(OPENOCD_CFG),
+            "-c",
+            f"bindto 127.0.0.1; gdb_port {port}; init; halt",
+        ]
+        gdb_proc = None
+        with openocd_path.open("w") as openocd_log, gdb_path.open("w") as gdb_log:
+            proc = subprocess.Popen(
+                command, stdout=openocd_log, stderr=subprocess.STDOUT
+            )
+            try:
+                started = time.monotonic()
+                for _ in range(20000):
+                    output = openocd_path.read_text(errors="replace")
+                    assert proc.poll() is None, output
+                    assert time.monotonic() - started < 120, output
+                    if f"Listening on port {port} for gdb connections" in output:
+                        break
+                    await ClockCycles(dut.i_clk, 2000)
+                else:
+                    raise AssertionError("OpenOCD GDB server did not start")
+                gdb_proc = subprocess.Popen(
+                    [
+                        gdb,
+                        "-nx",
+                        "-nh",
+                        "-batch",
+                        "../sw/apps/debug_target/sw.elf",
+                        "-x",
+                        str(script),
+                    ],
+                    stdout=gdb_log,
+                    stderr=subprocess.STDOUT,
+                )
+                started = time.monotonic()
+                for _ in range(20000):
+                    if gdb_proc.poll() is not None:
+                        break
+                    assert time.monotonic() - started < 900, "GDB session timed out"
+                    await ClockCycles(dut.i_clk, 2000)
+                else:
+                    raise AssertionError("GDB session did not finish")
+                output = gdb_path.read_text(errors="replace")
+                assert gdb_proc.returncode == 0, output
+                expected = {
+                    "MISA": 0x8000_0000_0014_112F,
+                    "T0": 0x1122334455667788,
+                    "TABLE2": 0x5A5A1234FEDC9876,
+                    "BP_PC": syms["bp_target"],
+                    "STEP1_PC": syms["bp_target"] + 4,
+                    "STEP2_PC": syms["bp_target"] + 6,
+                }
+                for key, value in expected.items():
+                    match = re.search(
+                        rf"^FROST_GDB_{key}=(0x[0-9a-fA-F]+)$", output, re.M
+                    )
+                    assert match and int(match[1], 16) == value, output
+            finally:
+                for process in (gdb_proc, proc):
+                    if process is not None and process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=5)
+                server_task.cancel()
+                if server.conn is not None:
+                    server.conn.close()
+                server.listener.close()
+                cocotb.log.info(
+                    "OpenOCD GDB server output:\n"
+                    + openocd_path.read_text(errors="replace")
+                )
+                cocotb.log.info("GDB output:\n" + gdb_path.read_text(errors="replace"))

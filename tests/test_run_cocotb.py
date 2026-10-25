@@ -704,7 +704,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="debug_target",
         description=(
-            "OpenOCD debug integration (optional unless FROST_REQUIRE_OPENOCD=1)"
+            "OpenOCD and GDB integration (optional unless FROST_REQUIRE_OPENOCD=1)"
         ),
     ),
     # fpga/debug/cache_counters.py through OpenOCD against a program with L2

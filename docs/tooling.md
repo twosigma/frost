@@ -71,6 +71,9 @@ to the container. `check` keeps going after a failed phase unless you add
 
 ## Shared RISC-V toolchain
 
+The toolchain is Bootlin's 2026.08-1 bleeding-edge musl bundle, with
+GCC 16.2.0, binutils 2.46.1 and GDB 17.1.
+
 One compiler, Bootlin's `riscv64-linux-` musl toolchain, builds bare-metal
 applications, OpenSBI, and Linux userspace. Its debugger is
 `riscv64-linux-gdb`. The image includes it. For native FPGA work, put the

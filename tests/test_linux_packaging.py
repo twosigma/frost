@@ -58,8 +58,9 @@ def test_native_and_container_linux_toolchains_match() -> None:
     dockerfile = (REPO_ROOT / "Dockerfile").read_text()
     version = re.search(r"^ARG BOOTLIN_RISCV64_MUSL_VERSION=(\S+)$", dockerfile, re.M)
     digest = re.search(r"^ARG BOOTLIN_RISCV64_MUSL_SHA256=(\S+)$", dockerfile, re.M)
-    assert version is not None and digest is not None
-    archive = f"riscv64-lp64d--musl--stable-{version[1]}.tar.xz"
+    bundle = re.search(r"/tarballs/(riscv64-lp64d--musl--\S+\.tar\.xz)", dockerfile)
+    assert version is not None and digest is not None and bundle is not None
+    archive = bundle[1].replace("${BOOTLIN_RISCV64_MUSL_VERSION}", version[1])
     external = REPO_ROOT / "linux" / "buildroot-external"
     config = (external / "configs" / "frost_rv64_defconfig").read_text()
     assert "BR2_TOOLCHAIN_EXTERNAL_CUSTOM=y" in config

@@ -7,10 +7,10 @@ with FROST's port layer in `core_portme.c` and `core_portme.h`.
 
 CoreMark runs from BRAM with its workspace on the stack, without compressed
 instructions, and with the profiling counters left out of the bitstream. The
-compiler is Bootlin's GCC 15.3.0 (toolchain 2026.08-1), pinned in the Docker
-image, at `-O3` with the RV64 hard-float ABI. The default build uses branch
-profiles trained on the official profile data set (1,200 bytes, seeds 8/8/8)
-and these tuning flags:
+compiler is Bootlin's GCC 16.2.0 (2026.08-1 bleeding-edge bundle), pinned in
+the Docker image, at `-O3` with the RV64 hard-float ABI. The default build
+uses branch profiles trained on the official profile data set (1,200 bytes,
+seeds 8/8/8) and these tuning flags:
 
 ```text
 --param max-inline-insns-auto=200 -fira-algorithm=CB -fstrict-aliasing -fselective-scheduling -fbranch-probabilities -fprofile-correction -Wno-missing-profile -mtune=generic-ooo

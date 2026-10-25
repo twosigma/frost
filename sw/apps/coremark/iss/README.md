@@ -71,8 +71,11 @@ hooks with stubs that abort visibly, so the image never links libgcov's
 filesystem runtime, and the script rejects a training ELF that contains TLS,
 dynamic loading, or Linux syscalls.
 
-Regenerate the committed profiles whenever the compiler or the training flags
-change. Arguments after `--` replace the script's default tuning flags, the
+Regenerate the five committed profiles with `generate_profile.py` whenever
+the compiler or training flags change. Its `EXTENSIONS` value matches the
+Makefile's `FROST_MARCH_EXTENSIONS` with compressed instructions disabled.
+After changing either ISA string, update the other and run the script.
+Arguments after `--` replace the script's default tuning flags, the
 Makefile's `COREMARK_BASE_TUNE` and `COREMARK_CPU_TUNE`
 (`-mtune=sifive-7-series`).
 The PGO build, which is the published configuration
