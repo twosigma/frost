@@ -214,3 +214,21 @@ def test_csv_instruction_dependencies(tmp_path: Path) -> None:
     ops = model.load_trace_ops(path)
     assert ops[0].data_address == 0
     assert ops[1].kind == "store" and ops[1].depends_on == (0,)
+
+
+@pytest.mark.parametrize("field", ["op_id", "pc", "data_address", "depends_on"])
+@pytest.mark.parametrize("value", [0.5, -0.5, 0.0, True, False])
+def test_replay_rejects_noninteger_numeric_fields(
+    tmp_path: Path, field: str, value: Any
+) -> None:
+    """Numeric fields cannot silently change an address or dependency through coercion."""
+    path = tmp_path / "invalid.jsonl"
+    record = {"op_id": 0, "kind": "load", "pc": 0, "data_address": 0}
+    if field == "depends_on":
+        following = dict(record, op_id=1, depends_on=[value])
+        rows = [record, following]
+    else:
+        rows = [dict(record, **{field: value})]
+    path.write_text("\n".join(json.dumps(row) for row in rows))
+    with pytest.raises(ValueError, match="must be integers"):
+        model.load_trace_ops(path)
