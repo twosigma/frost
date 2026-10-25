@@ -59,8 +59,9 @@ pair would hide an unconstrained crossing. The constraints find each
 synchronizer by its first-stage register, `stage_q` in `cdc_sync`.
 
 On the X3 the link carries Debian's NFS root over fiber. The bare-metal
-examples `sw/apps/nic_loopback` (internal loopback) and `sw/apps/nic_echo`
-(echoes frames from a link partner) both have full-system simulation tests.
+examples `sw/apps/nic_loopback` (internal loopback),
+`sw/apps/nic_dma_stress` (loopback during coherent DMA copies) and `sw/apps/nic_echo`
+(echoes frames from a link partner) have full-system simulation tests.
 The Linux driver is a DKMS module for Debian's kernel; see the
 [driver guide](../../../../linux/frost-net10g/README.md). The hardware
 regression's Linux stage tests it with `frost_nettest` (from the
@@ -383,6 +384,7 @@ final scan.
 | `nic_top` | Whole NIC with three clocks and raw loopback, its AXI4 master against a reordering slave, and SLVERR on buffer reads and writes |
 | `nic_top_unrelated_clocks` | Independent TX and RX clocks with `RAW_LOOPBACK=0` |
 | `nic_loopback`, `nic_echo` | Full-system software tests in both memory tiers |
+| `nic_dma_stress` | Two rounds of 15 queued 1518- and 64-byte loopback frames per mode, each overlapping a 4 KiB DMA copy, in plain and burst modes, in both memory tiers; DMA must be busy at the first RX completion, every frame byte and copied word is checked, and MAC RX overflow must stay zero |
 
 Run with `./scripts/frost.py cocotb <target>`. The
 [NIC benches](../../../../verif/cocotb_tests/nic/) contain the detailed cases.

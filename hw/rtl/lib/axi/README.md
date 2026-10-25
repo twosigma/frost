@@ -126,6 +126,6 @@ ordering, no duplicate responses and conservation of outstanding requests;
 they do not establish eventual completion or starvation freedom. The three
 bridge cocotb benches and the mux bench check completion with timeouts,
 including reads under sustained writes in the bridge. The whole-system programs
-`dma_torture`, `nic_loopback`, `nic_echo` and the `pa_dma_test` and
+`dma_torture`, `nic_loopback`, `nic_dma_stress`, `nic_echo` and the `pa_dma_test` and
 `pa_nic_packet_test` families run the NIC and the engine through the bridge
 in both memory configurations.
