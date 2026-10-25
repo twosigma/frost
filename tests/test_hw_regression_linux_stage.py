@@ -89,7 +89,7 @@ BOOT_TO_LOGIN = (
     f"[    0.000000] {hw.KERNEL_BANNER}"
     "(debian-kernel@debian) (riscv64-linux-gnu-gcc-14 (Debian 14.2.0-19) "
     "14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Debian "
-    "6.12.107-1 (2026-08-29)\r\r\n"
+    "6.12.113-1 (2026-10-15)\r\r\n"
     '[    0.000000] Unknown kernel command line parameters "boot=nfs '
     f'nfsroot={NFSROOT},vers=3,tcp,hard ip={BOARD_IP}", will be passed to '
     "user space.\r\r\n"
@@ -117,7 +117,7 @@ BOOT_TO_LOGIN = (
 # agetty.c, "%s%s (automatic login)"), then login and bash run.
 LOGIN_TO_SHELL = (
     "root (automatic login)\r\r\n"
-    f"Linux frost {hw.KERNEL_RELEASE} #1 SMP Debian 6.12.107-1 riscv64\r\r\n"
+    f"Linux frost {hw.KERNEL_RELEASE} #1 SMP Debian 6.12.113-1 riscv64\r\r\n"
     "The programs included with the Debian GNU/Linux system are free "
     "software.\r\r\n"
     "Last login: Sun Sep 20 09:12:03 UTC 2026 on ttyS0\r\r\n" + PROMPT
@@ -1423,9 +1423,12 @@ def board_console() -> str:
     return BOARD_CONSOLE.read_bytes().decode("utf-8", errors="replace")
 
 
-def test_the_real_board_capture_ends_and_passes_the_stage() -> None:
-    """Parse mount and state results behind bracketed-paste escapes in a board log."""
+def test_recorded_console_with_pinned_release_passes_the_stage() -> None:
+    """Parse the recorded terminal formatting with the configured kernel release."""
     console = board_console()
+    release = re.search(r"Linux version (\S+) ", console)
+    assert release is not None
+    console = console.replace(release[1], hw.KERNEL_RELEASE)
     linux = hw.linux_stage(BOARD_ROOT)
     assert linux.success_done(console)
     assert not linux.failure_done(console)

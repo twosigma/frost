@@ -127,7 +127,7 @@ explicitly, because `uname -r` in the chroot reports the server's kernel.
 
 ```bash
 R=/srv/nfs/debian
-K=$(ls ${R:?}/lib/modules)   # the tree's kernel version: 6.12.107+deb13-riscv64 here
+K=$(ls ${R:?}/lib/modules)   # the tree's kernel version: 6.12.113+deb13-riscv64 here
 ver=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"$/\1/p' linux/frost-net10g/dkms.conf)
 cp -r linux/frost-net10g ${R:?}/tmp/
 chroot ${R:?} dkms add /tmp/frost-net10g   # copies it to /usr/src/frost-net10g-$ver
@@ -186,7 +186,7 @@ kernel and initramfs:
 ```bash
 ./fpga/build/build.py x3
 ./fpga/program_bitstream/program_bitstream.py x3
-K=6.12.107+deb13-riscv64   # step 3's K, the version in the tree's /boot
+K=6.12.113+deb13-riscv64   # step 3's K, the version in the tree's /boot
 FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian \
 FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off \
 FROST_LINUX_KERNEL=/srv/nfs/debian/boot/vmlinux-$K \
@@ -219,7 +219,7 @@ k=$(cut -d' ' -f1,2 /srv/nfs/debian/etc/ssh/ssh_host_ed25519_key.pub) &&
   echo "192.0.2.2 $k" >> ~/.ssh/known_hosts
 
 ssh root@192.0.2.2
-uname -r                       # the packed kernel: 6.12.107+deb13-riscv64 here
+uname -r                       # the packed kernel: 6.12.113+deb13-riscv64 here
 lsmod | grep frost_net10g      # the NIC driver, loaded by the initramfs
 findmnt /                      # 192.0.2.1:/srv/nfs/debian, nfs, vers=3 ... hard,nolock,proto=tcp
 systemctl is-system-running    # running; systemctl --failed lists any failed unit

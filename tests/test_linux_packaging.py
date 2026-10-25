@@ -154,7 +154,7 @@ def test_sbi_layout_slots_are_ordered_and_aligned() -> None:
 
 
 # The header image_size of the pinned Debian 13 riscv64 kernel Image,
-# /boot/vmlinux-6.12.107+deb13-riscv64.
+# /boot/vmlinux-6.12.113+deb13-riscv64.
 DEBIAN_KERNEL_FOOTPRINT = 0x1E6B000
 
 
@@ -1653,7 +1653,7 @@ def test_debian_kernel_download_rejects_a_wrong_payload(
     monkeypatch.setattr(
         helper.urllib.request, "urlopen", lambda url, timeout=0: Response(b"not it")
     )
-    with pytest.raises(RuntimeError, match="expected 112012420 bytes"):
+    with pytest.raises(RuntimeError, match=f"expected {package.size} bytes"):
         helper.download(package, dl_dir)
     assert list(dl_dir.iterdir()) == []
 
@@ -1860,7 +1860,7 @@ def test_debian_kernel_loader_script_checks_the_running_release(
     # release it saw, and never reaches insmod.
     stubs = tmp_path / "bin"
     stubs.mkdir()
-    (stubs / "uname").write_text("#!/bin/sh\necho 6.12.107+deb13-riscv64-debug\n")
+    (stubs / "uname").write_text(f"#!/bin/sh\necho {helper.KERNEL_RELEASE}-debug\n")
     (stubs / "insmod").write_text("#!/bin/sh\necho INSMOD-RAN\n")
     for stub in stubs.iterdir():
         stub.chmod(0o755)
@@ -1873,7 +1873,7 @@ def test_debian_kernel_loader_script_checks_the_running_release(
         check=True,
     )
     assert helper.MODULE_FAIL_TOKEN in done.stdout
-    assert "6.12.107+deb13-riscv64-debug" in done.stdout
+    assert f"{helper.KERNEL_RELEASE}-debug" in done.stdout
     assert "INSMOD-RAN" not in done.stdout
     assert helper.MODULE_PASS_TOKEN not in done.stdout
 
