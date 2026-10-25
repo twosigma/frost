@@ -189,6 +189,13 @@ this pulse alongside the ordinary system-reset sequence. Warm resets leave
 the transport handshake intact. Changing only the seed reuses the compiled
 model; enabling or disabling the mode rebuilds it.
 
+The shared SoC bench loads data images after eighteen core clock edges, while
+system reset is held. This supplies the image after the memory controllers
+have reset and programming writes have drained, including writes to the
+data SRAM macros. The load covers data BRAM, data SRAM and behavioral DDR.
+The image load does not repeat on warm reset. Instruction images use the
+programming domain's power-on write protection.
+
 This is a two-state power-up test. It does not model metastability, reset
 recovery or removal timing, SRAM analog behavior, or power-domain sequencing.
 Sparse external-memory models return their defined default for absent keys.

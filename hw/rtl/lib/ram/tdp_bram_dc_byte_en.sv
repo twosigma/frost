@@ -78,6 +78,10 @@ module tdp_bram_dc_byte_en #(
 `endif
     end
   end
+`ifndef SYNTHESIS
+  logic sim_load_image = 1'b0;
+  always @(posedge sim_load_image) if (USE_INIT_FILE) $readmemh(INIT_FILE, memory);
+`endif
 `endif
 
   // Byte address to word address: drop the low ByteAddrBits byte-offset bits.
