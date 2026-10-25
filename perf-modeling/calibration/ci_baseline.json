@@ -12,7 +12,7 @@
   ],
   "ipc_tolerance": 0.1,
   "rtl": {
-    "commit": "8651769fa81f83373a54d7ed4d6065079821cd9f",
+    "commit": "9c1af863f846d9ebfb4e45e3a7d2d4b37437333e",
     "cycles": 242008,
     "retired_uops": 234317,
     "dispatched_uops": 254991,
@@ -26,9 +26,9 @@
     }
   },
   "model": {
-    "cycles": 3101,
+    "cycles": 3067,
     "retired_uops": 3128,
-    "ipc": 1.0087068687520155
+    "ipc": 1.0198891424845125
   },
-  "ipc_delta": 0.0418157107377517
+  "ipc_delta": 0.053365020866569246
 }

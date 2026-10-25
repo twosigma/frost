@@ -6,7 +6,7 @@ This document describes the methodology for capturing cycle-accurate microarchit
 
 ## 1. Overview & Objectives
 
-The FROST performance model provides a cycle-approximate simulator with a recorded analytical CoreMark rate of 86,585 simulated cycles/s for the FROST platform (`platform_top` = `cpu_top` + `soc_top`). To ensure that architectural recommendations and design space exploration reflect actual hardware behavior, the model is calibrated directly against cycle-accurate Verilator RTL simulation traces.
+The FROST performance model provides a cycle-approximate simulator with a recorded analytical CoreMark rate of 75,122 simulated cycles/s for the FROST platform (`platform_top` = `cpu_top` + `soc_top`). To ensure that architectural recommendations and design space exploration reflect actual hardware behavior, the model is calibrated directly against cycle-accurate Verilator RTL simulation traces.
 
 Key objectives:
 1. **Zero Intrusion**: Probes monitor RTL simulation state without perturbing DUT timing, changing clocking, or altering synthesizable RTL (`hw/rtl/`).

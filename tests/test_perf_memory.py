@@ -131,6 +131,33 @@ def test_reads_and_writes_share_channel_bandwidth() -> None:
 
 
 @pytest.mark.parametrize(
+    "reorder,write,expected",
+    [
+        (False, False, [(0, 8), (1, 9)]),
+        (True, False, [(1, 2), (0, 8)]),
+        (False, True, [(1, 2), (0, 8)]),
+    ],
+)
+def test_behavioral_reschedules_earlier_response(
+    reorder: bool, write: bool, expected: list[tuple[int, int]]
+) -> None:
+    """A pending read cannot delay a ready write or a permitted reordered read."""
+    loop = model.EventLoop()
+    controller = model.SingleChannelDdrController(
+        loop, model.DdrConfig(reorder=reorder)
+    )
+    delays = iter([8, 1])
+    controller._sample_latency = lambda: next(delays)
+    results: list[tuple[int, int, bool]] = []
+    assert controller.submit(transaction(loop, results, 0, 0))
+    advance(loop, 0)
+    assert controller.submit(transaction(loop, results, 1, 64, write))
+    advance(loop, 12)
+    assert [(slot, cycle) for slot, cycle, _ in results] == expected
+    assert controller.summary()["stats"]["completed"] == 2
+
+
+@pytest.mark.parametrize(
     "changes",
     [
         {"channels": 0},
@@ -342,6 +369,27 @@ def test_tree_plru_and_reserved_subtrees() -> None:
     assert cache._victim(0) is None
     cache._ways(0)[2].reserved_by = None
     assert cache._victim(0) == 2
+
+
+def test_cache_response_latency_preserves_one_per_cycle_bandwidth() -> None:
+    """Consecutive hits preserve lookup latency and the pipelined response rate."""
+    cache = cache_for_replacement()
+    cache.response_cycles = 3
+    line = cache._ways(0)[0]
+    line.valid, line.tag = True, 0
+    completed: list[int] = []
+    for slot in range(4):
+        request = model.Request(
+            0,
+            False,
+            "test",
+            model.TransactionId("test", "fill", slot, 4),
+            lambda ok: completed.append(cache.loop.cycle),
+        )
+        assert cache.submit(request)
+        advance(cache.loop, slot)
+    advance(cache.loop, 10)
+    assert completed == [5, 6, 7, 8]
 
 
 def test_bimodal_lfsr_advances_with_cycles_and_only_gates_allocations() -> None:

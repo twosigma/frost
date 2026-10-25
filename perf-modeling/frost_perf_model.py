@@ -703,8 +703,8 @@ class CacheLevel:
             self._respond(response, ok)
 
     def _respond(self, request: Request, ok: bool = True) -> None:
-        response_cycle = (
-            max(self.loop.cycle, self._last_response_cycle + 1) + self.response_cycles
+        response_cycle = max(
+            self.loop.cycle + self.response_cycles, self._last_response_cycle + 1
         )
         self._last_response_cycle = response_cycle
         self.loop.at(response_cycle, lambda: request.complete(ok))
@@ -827,7 +827,7 @@ class SingleChannelDdrController:
         self._wr_seq = 0
         self._lfsr = (config.jitter_seed & 0xFFFF) or 0xACE1
         self._lfsr_cycle = 0
-        self._pump_scheduled = False
+        self._pump_cycle: int | None = None
         self.stats: Counter = Counter()
 
     def _advance_lfsr_to(self, target_cycle: int) -> None:
@@ -914,14 +914,19 @@ class SingleChannelDdrController:
         return min(candidates) if candidates else None
 
     def _schedule_pump(self) -> None:
-        if self._pump_scheduled:
-            return
         next_cycle = self._next_ready_cycle()
         if next_cycle is None:
             return
-        self._pump_scheduled = True
         target = max(self.loop.cycle + 1, next_cycle)
-        self.loop.at(target, self._pump)
+        if self._pump_cycle is not None and self._pump_cycle <= target:
+            return
+        self._pump_cycle = target
+
+        def pump_if_current() -> None:
+            if self._pump_cycle == target:
+                self._pump()
+
+        self.loop.at(target, pump_if_current)
 
     def _pop_ready(
         self, queue: deque[tuple[int, int, AxiTransaction]]
@@ -941,7 +946,7 @@ class SingleChannelDdrController:
         return None
 
     def _pump(self) -> None:
-        self._pump_scheduled = False
+        self._pump_cycle = None
         rd_tx = self._pop_ready(self._rd_queue)
         if rd_tx is not None:
             self._inflight_rd_ids.discard(rd_tx.axi_id)

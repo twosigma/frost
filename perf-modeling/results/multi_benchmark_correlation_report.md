@@ -16,7 +16,7 @@ This report records cycle-accurate Verilator RTL measurements across three compl
 2. **`tomasulo_perf`**: Microarchitectural directed benchmark measuring 14 isolated execution primitives (dependent vs. independent ALU, multiplier pipelining, store forwarding, loop buffers, FP, and atomics).
 3. **`ddr_mlp_test`**: Memory-Level Parallelism (MLP) probe measuring concurrent L1D/L2 demand misses, MSHR allocation, and single-channel 512-bit AXI DDR latency hiding.
 
-The synthetic CoreMark workload has a **+3.1% IPC difference** from the archived RTL run and executes at **86,585 simulated cycles/s**. The Tomasulo and DDR MLP event captures have no executable instruction stream or model IPC comparison.
+The synthetic CoreMark workload has a **+4.2% IPC difference** from the archived RTL run and executes at **75,122 simulated cycles/s**. The Tomasulo and DDR MLP event captures have no executable instruction stream or model IPC comparison.
 
 ---
 
@@ -24,7 +24,7 @@ The synthetic CoreMark workload has a **+3.1% IPC difference** from the archived
 
 | Benchmark | Domain Evaluated | RTL Verilator Cycles | RTL Retired Micro-ops | RTL Sustained IPC | Model Replay / Exec IPC | Correlation Delta | RTL Wall Time (s) | Model Wall Time (s) | Model Speedup Factor |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| **`coremark`** (Timed Region) | Integer Compute & Branch Locality | 239,452 | 234,317 | **0.9786** | **1.0087** | **+3.1%** | ~23.5 s | 0.035815 s | **656.1x runtime ratio** (unequal work) |
+| **`coremark`** (Timed Region) | Integer Compute & Branch Locality | 239,452 | 234,317 | **0.9786** | **1.0199** | **+4.2%** | ~23.5 s | 0.040827 s | **575.6x runtime ratio** (unequal work) |
 | **`tomasulo_perf`** (Full Suite) | Microarchitectural Primitives (14 Benches) | 487,313 | 175,025 | **0.3592** | Not available | Not compared | 306.88 s (~5.1 min) | Not available | Not available |
 | **`ddr_mlp_test`** (Full Run) | Memory-Level Parallelism & DDR Overlap | 94,010 | 30,427 | **0.3237** | Not available | Not compared | 54.25 s | Not available | Not available |
 
@@ -39,9 +39,9 @@ The synthetic CoreMark workload has a **+3.1% IPC difference** from the archived
   - Dual-dispatch cycles: 35.5% (85,041 cycles); Dual-commit cycles: 40.2% (96,191 cycles)
   - TAGE branch mispredictions: only **411** across 234k uops (<0.18%)
 - **Model Correlation**:
-  - Model IPC: **1.0087** (3,101 cycles, 3,128 uops)
+  - Model IPC: **1.0199** (3,067 cycles, 3,128 uops)
   - Hardware RTL IPC: **0.9786**
-  - Correlation accuracy: within **+3.1%** (0.0302 IPC delta)
+  - Correlation accuracy: within **+4.2%** (0.0413 IPC delta)
 - **Key Architectural Features Modeled**:
   1. **L0 Data Cache (`lq_l0_cache.sv`)**: Models the 256-dword direct-mapped cache delivering 1-cycle fast-path bypass (`cache_hit_fast_path`).
   2. **Early Load Wakeup (`EARLY_LOAD_WAKEUP = 1`)**: A nonfaulting load wakes a dependent memory operation one cycle early when a registered CDB lane is free. Integer consumers use the ordinary dependency path.
@@ -114,13 +114,13 @@ The wall-clock timing captured across all runs quantifies the execution velocity
 +----------------------+--------------------+---------------------+---------------------+
 | tomasulo_perf (Full) | 306.88 s (5.1 min) | Not available      | Not available      |
 | ddr_mlp_test (Full)  | 54.25 s            | Not available      | Not available      |
-| coremark (Full Timed)| 23.50 s            | 0.035815 s       | 656.1x runtime ratio|
+| coremark (Full Timed)| 23.50 s            | 0.040827 s       | 575.6x runtime ratio|
 +----------------------+--------------------+---------------------+---------------------+
 ```
 
 - **Verilator Simulation Rate**: ~1,580 to 1,960 cycles/second.
 - **Architectural Model Replay Rate**: Not available for aggregate calibration events.
-- **Architectural Model Analytical Kernel Rate**: 86,585 simulated cycles/second; the synthetic workload contains 3,128 operations.
+- **Architectural Model Analytical Kernel Rate**: 75,122 simulated cycles/second; the synthetic workload contains 3,128 operations.
 
 ---
 
