@@ -280,7 +280,7 @@ the image.
 | | RISC-V GCC for bare metal, OpenSBI and Linux (Bootlin musl) | 16.2.0 (2026.08-1 bleeding-edge) |
 | | pip / setuptools / wheel | 26.2.2 / 84.2.1 / 0.48.0 |
 | **Build** | CMake / Meson / Ninja | 4.4.4 / 1.12.1 / 1.13.2 |
-| | Buildroot / OpenSBI | 2026.08 / 1.9 |
+| | Buildroot / OpenSBI | 2026.08.1 / 1.9 |
 | | Debian Linux kernel | 6.12.113-1 (`6.12.113+deb13-riscv64`) |
 | **Testbench** | Cocotb / pytest / pytest-cov | 2.1.0 / 9.1.1 / 7.1.0 |
 | **Simulator** | Verilator / QEMU | 5.052 / 11.1.2 |
