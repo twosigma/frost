@@ -373,6 +373,12 @@ to omit its synchronizers, and use configuration-loaded initial values.
 independently of system reset in both ordinary and [random power-up mode](../../tests/README.md#random-power-up-state).
 The random mode checks dependencies on initializers and uninitialized storage.
 
+Full-board simulation with power-on reset tied inactive uses configuration
+initializers. The DTM ownership assertions arm only after power-on reset in
+their respective clock domains, so that configuration does not check DTM
+ownership. Transport verification uses a bench that enables and pulses
+power-on reset with the core clock running.
+
 Use the [test guide](../../tests/README.md) for simulation, formal, and Yosys
 runs in the pinned container, the [FPGA guide](../../fpga/README.md) for
 native Vivado builds, and the [ASIC guide](../../asic/README.md) for the
