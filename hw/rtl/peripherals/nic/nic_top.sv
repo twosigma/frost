@@ -17,8 +17,9 @@
 /*
  * NIC integration across the core and MAC clock domains.
  *
- * Toward the SoC: the register window (32-bit writes and a 64-bit read pair,
- * by byte offset), an AXI4 master for DMA, and a level interrupt. The DMA
+ * Toward the SoC: a 64-bit AXI4-Lite register slave, an AXI4 master for
+ * DMA, and a level interrupt. The register bridge selects 32-bit write
+ * lanes, complete wide-address writes, and aligned 64-bit read pairs. The DMA
  * master issues single-beat bursts of one 32-byte line (AxSIZE 5, INCR) at
  * full physical addresses, with ids of IdBits, AxCACHE 0011, AxPROT 010 and
  * AxLOCK 0; it always accepts B and R. Its line_port_axi_bridge resets with
@@ -55,15 +56,26 @@ module nic_top #(
     input logic i_clk,
     input logic i_rst,
 
-    // Register window. Wide-address writes are a separate complete 64-bit
-    // transaction, never a pair of legacy 32-bit lane writes.
-    input  logic        i_wr_en,
-    input  logic [11:0] i_wr_offset,
-    input  logic [31:0] i_wr_data,
-    input  logic        i_wr64_en,
-    input  logic [63:0] i_wr64_data,
-    input  logic [11:0] i_rd_offset,
-    output logic [63:0] o_rd_pair,
+    // AXI4-Lite register window, 64-bit data.
+    input  logic        i_reg_axil_awvalid,
+    output logic        o_reg_axil_awready,
+    input  logic [11:0] i_reg_axil_awaddr,
+    input  logic [ 2:0] i_reg_axil_awprot,
+    input  logic        i_reg_axil_wvalid,
+    output logic        o_reg_axil_wready,
+    input  logic [63:0] i_reg_axil_wdata,
+    input  logic [ 7:0] i_reg_axil_wstrb,
+    output logic        o_reg_axil_bvalid,
+    input  logic        i_reg_axil_bready,
+    output logic [ 1:0] o_reg_axil_bresp,
+    input  logic        i_reg_axil_arvalid,
+    output logic        o_reg_axil_arready,
+    input  logic [11:0] i_reg_axil_araddr,
+    input  logic [ 2:0] i_reg_axil_arprot,
+    output logic        o_reg_axil_rvalid,
+    input  logic        i_reg_axil_rready,
+    output logic [63:0] o_reg_axil_rdata,
+    output logic [ 1:0] o_reg_axil_rresp,
     output logic        o_irq,
 
     // DMA AXI4 master.
@@ -134,6 +146,45 @@ module nic_top #(
   logic core_rst_next;
   (* keep = "true", equivalent_register_removal = "no", max_fanout = 64 *)logic rst_q;
   (* keep = "true", equivalent_register_removal = "no", max_fanout = 128 *)logic nic_rst_q;
+  logic reg_wr_en, reg_wr64_en;
+  logic [11:0] reg_wr_offset, reg_rd_offset;
+  logic [31:0] reg_wr_data;
+  logic [63:0] reg_wr64_data, reg_rd_pair;
+  axil_reg_bridge #(
+      .ADDR_BITS(12),
+      .WIDE_COUNT(2),
+      .WIDE_OFFSETS({nic_pkg::TxBase64Offset, nic_pkg::RxBase64Offset})
+  ) reg_bridge (
+      .i_clk(i_clk),
+      .i_rst(rst_q),
+      .i_axil_awvalid(i_reg_axil_awvalid),
+      .o_axil_awready(o_reg_axil_awready),
+      .i_axil_awaddr(i_reg_axil_awaddr),
+      .i_axil_awprot(i_reg_axil_awprot),
+      .i_axil_wvalid(i_reg_axil_wvalid),
+      .o_axil_wready(o_reg_axil_wready),
+      .i_axil_wdata(i_reg_axil_wdata),
+      .i_axil_wstrb(i_reg_axil_wstrb),
+      .o_axil_bvalid(o_reg_axil_bvalid),
+      .i_axil_bready(i_reg_axil_bready),
+      .o_axil_bresp(o_reg_axil_bresp),
+      .i_axil_arvalid(i_reg_axil_arvalid),
+      .o_axil_arready(o_reg_axil_arready),
+      .i_axil_araddr(i_reg_axil_araddr),
+      .i_axil_arprot(i_reg_axil_arprot),
+      .o_axil_rvalid(o_reg_axil_rvalid),
+      .i_axil_rready(i_reg_axil_rready),
+      .o_axil_rdata(o_reg_axil_rdata),
+      .o_axil_rresp(o_reg_axil_rresp),
+      .o_wr_en(reg_wr_en),
+      .o_wr_offset(reg_wr_offset),
+      .o_wr_data(reg_wr_data),
+      .o_wr64_en(reg_wr64_en),
+      .o_wr64_data(reg_wr64_data),
+      .o_rd_offset(reg_rd_offset),
+      .i_rd_pair(reg_rd_pair)
+  );
+
   always_ff @(posedge i_clk) begin
     rst_q     <= i_rst;
     nic_rst_q <= i_rst || core_rst_next;
@@ -259,13 +310,13 @@ module nic_top #(
       .i_clk(i_clk),
       .i_rst(rst_q),
       .i_soft_rst(soft_rst),
-      .i_wr_en(i_wr_en),
-      .i_wr_offset(i_wr_offset),
-      .i_wr_data(i_wr_data),
-      .i_wr64_en(i_wr64_en),
-      .i_wr64_data(i_wr64_data),
-      .i_rd_offset(i_rd_offset),
-      .o_rd_pair(o_rd_pair),
+      .i_wr_en(reg_wr_en),
+      .i_wr_offset(reg_wr_offset),
+      .i_wr_data(reg_wr_data),
+      .i_wr64_en(reg_wr64_en),
+      .i_wr64_data(reg_wr64_data),
+      .i_rd_offset(reg_rd_offset),
+      .o_rd_pair(reg_rd_pair),
       .i_irq_status(irq_status),
       .i_irq_mask(irq_mask),
       .i_rx_itr(rx_itr),
@@ -323,9 +374,9 @@ module nic_top #(
   ) u_irq (
       .i_clk        (i_clk),
       .i_rst        (nic_rst_q),
-      .i_wr_en      (i_wr_en && !reset_busy && !reset_req),
-      .i_wr_offset  (i_wr_offset),
-      .i_wr_data    (i_wr_data),
+      .i_wr_en      (reg_wr_en && !reset_busy && !reset_req),
+      .i_wr_offset  (reg_wr_offset),
+      .i_wr_data    (reg_wr_data),
       .o_status     (irq_status),
       .o_mask       (irq_mask),
       .o_rx_itr     (rx_itr),

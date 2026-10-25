@@ -75,7 +75,7 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 | `cpu_and_mem/cpu/wb_stage/generic_regfile.sv` | Integer and FP register files |
 | `cpu_and_mem/cpu/ex_stage/` | ALU, multiply/divide, FPU, and branch execution |
 | [lib/cache/](lib/cache/README.md) | Cache hierarchy (a hart's L1s in `frost_hart_cache.sv`, the shared L2 level in `frost_cluster_cache.sv`), coherence, DDR bridge, and simulation DDR model |
-| [lib/axi/](lib/axi/README.md) | AXI4 interconnect for DMA masters and the bridge into the coherent ingress |
+| [lib/axi/](lib/axi/README.md) | AXI4 DMA interconnect, coherent ingress bridge and AXI4-Lite register bridge |
 | `lib/` | RAM, FIFO, and clock-domain-crossing primitives |
 | [peripherals/imsic/](peripherals/imsic/README.md) | AIA IMSIC with machine and supervisor interrupt files in each CPU, with SoC MSI store decode |
 | [peripherals/nic/](peripherals/nic/README.md) | Ethernet NIC with coherent DMA |
@@ -271,8 +271,15 @@ and CLINT alias, support 64-bit access: an 8-byte load of `mtime`
 behavior. UART and FIFO registers are 32-bit-access-max: a wider store writes
 only the addressed word. The APLIC accepts only 32-bit accesses. Byte,
 halfword and doubleword writes are ignored; reads of those sizes return zero without side effects. The DMA
-test engine, memory error unit, and NIC windows take 32-bit accesses: a 64-bit load returns an aligned register pair, and a 64-bit
-store writes only the upper register. Devices take loads and stores only, and
+test engine, memory error unit, and NIC windows provide 32-bit registers:
+a 64-bit load returns an aligned register pair, and a 64-bit store writes
+only the upper register. The NIC's RX_BASE64/TX_BASE64 registers and the DMA
+engine's SRC64/DST64/STATUS_ADDR64 bank accept complete aligned 64-bit
+stores; partial writes to those dwords have no effect. The NIC and DMA
+register windows use 64-bit AXI4-Lite. Each block's register bridge buffers
+AW and W independently, applies the register access once, and holds its
+registered OKAY response until accepted. Other windows use the local MMIO
+sequence. Devices take loads and stores only, and
 only inside the MMIO, APLIC and IMSIC windows. A load or store elsewhere in the device
 quadrant raises an access fault (cause 5 or 7), and so does an AMO, LR, or SC
 anywhere in the quadrant (cause 7, 5, or 7); the one exception is an

@@ -16,7 +16,8 @@
 
 /*
  * MMIO-controlled DMA master on the cache hierarchy's coherent port, through
- * dma_test_engine_axi, which carries its line requests over AXI4.
+ * dma_test_engine_axi, which carries its line requests over AXI4 and
+ * its registers over 64-bit AXI4-Lite.
  * Data writes complete before an optional status write; the interrupt follows
  * the final write's completion.
  *
@@ -50,8 +51,8 @@
  * In wide mode, the legacy address registers are read-only low-word views.
  * Address programming uses aligned, complete 64-bit MMIO stores:
  *   0x40 SRC64, 0x48 DST64, 0x50 STATUS_ADDR64.
- * A partial write to that bank is rejected by the CPU MMIO router. START
- * remains the activation boundary for the group of configuration registers.
+ * The AXI4-Lite register bridge ignores partial writes to that bank and
+ * returns OKAY. START activates the group of configuration registers.
  *
  * A transfer walks DST line by line. Copy mode reads the matching SRC line
  * first (SRC and DST must share their offset within a line), fill mode

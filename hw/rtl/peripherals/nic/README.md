@@ -13,7 +13,7 @@ driver ([`frost_net10g`](../../../../linux/frost-net10g/README.md)) follows.
 | Module | Domain | Responsibility |
 | --- | --- | --- |
 | `nic_pkg.sv` | - | Register map, interrupt bits, beat codes, request kinds, and descriptor bits, shared with the benches and `sw/lib/include/nic.h` |
-| `nic_top.sv` | all | The NIC: the core-domain blocks below around `nic_mac_wrap`, and a `line_port_axi_bridge` (from `hw/rtl/lib/cache`) that carries the DMA front end's line requests over AXI4. Faces the SoC with the register window, the AXI4 DMA master, and the interrupt, and the board with the MAC clocks, the raw PMA interface, and the PCS block lock |
+| `nic_top.sv` | all | The NIC: the core-domain blocks below around `nic_mac_wrap`, and a `line_port_axi_bridge` (from `hw/rtl/lib/cache`) that carries the DMA front end's line requests over AXI4. Faces the SoC with a 64-bit AXI4-Lite register slave through `axil_reg_bridge`, the AXI4 DMA master, and the interrupt, and the board with the MAC clocks, the raw PMA interface, and the PCS block lock |
 | `nic_csr.sv` | core | Register file: control, status, station address, rings, link and PHY registers, 64-bit counters |
 | `nic_irq.sv` | core | Interrupt status, mask, and per-direction completion moderation |
 | `nic_mac_wrap.sv` | MAC + core | The MAC/PCS in its two domains, the packet FIFOs, the domain resets, status synchronizers, event counters, and the raw loopback (`RAW_LOOPBACK`) |
@@ -302,14 +302,18 @@ bits:
 | `0x070`, `0x078` | RX_BASE64, TX_BASE64 | Aligned 64-bit ring bases; accept only one complete eight-byte store in extended mode. Partial writes and high bits beyond `ADDR_WIDTH` are ignored |
 | `0x080`–`0x0FF` | Counters | 64-bit counters in `nic_pkg` order: RX frames, bytes, filtered, truncated, descriptor errors, and aborts; TX frames, bytes, descriptor errors, and aborts; then the MAC's RX overflow, bad frame, bad FCS, and PCS bad block, and TX drop and PCS bad block |
 
-Use 32-bit loads and stores for the legacy bank. The register bus has no byte enables, so a byte
-or halfword store is replicated over the whole register (a byte store of 1 to
-CTRL sets RESET), and a 64-bit store writes only the upper register of its
-dword. A 64-bit load returns an aligned register pair; read each counter
+Use 32-bit loads and stores for the 32-bit register bank. A write updates a
+complete selected word. A byte or halfword store is replicated over the
+whole register, so a byte store of 1 to CTRL sets RESET. A 64-bit store
+writes only the upper register of its dword. A 64-bit load returns an
+aligned register pair; read each counter
 whole with one 64-bit load. The two extended ring-base registers are the
-exception: the CPU router admits only one aligned, full-strobe `sd`, passed
-unmodified to the NIC. The legacy base register reads the low 32 bits in
-extended mode but cannot change the active extended base.
+exception: `axil_reg_bridge` admits only one aligned, full-strobe `sd`, passed
+unmodified to the register file. Partial writes to these dwords have no
+effect and return OKAY. The AXI4-Lite slave buffers AW and W independently
+and holds each B or R response until accepted. The 32-bit base registers read
+the low 32 bits of the active base in extended mode. Writes to them do not
+change the extended base.
 
 - An enable is accepted only while the direction is READY and its ring is
   valid: SIZE in 2..16 and the whole ring inside cached DDR. BASE ignores the
@@ -381,7 +385,7 @@ final scan.
 | `nic_dma_front` | Tagged responses, fairness, aperture errors, drain, and the same-line order guard with its bound on waiting |
 | `nic_byte_pack`, `nic_byte_unpack` | Byte placement, alignment, truncation, and backpressure |
 | `nic_rx_engine`, `nic_tx_engine` | Rings, filtering, buffer and status ordering, malformed descriptors, aborts, and disables |
-| `nic_top` | Whole NIC with three clocks and raw loopback, its AXI4 master against a reordering slave, and SLVERR on buffer reads and writes |
+| `nic_top` | Whole NIC with three clocks and raw loopback, AXI4-Lite register accesses with channel skew and response stalls, its AXI4 master against a reordering slave, and SLVERR on buffer reads and writes |
 | `nic_top_unrelated_clocks` | Independent TX and RX clocks with `RAW_LOOPBACK=0` |
 | `nic_loopback`, `nic_echo` | Full-system software tests in both memory tiers |
 | `nic_dma_stress` | Two rounds of 15 queued 1518- and 64-byte loopback frames per mode, each overlapping a 4 KiB DMA copy, in plain and burst modes, in both memory tiers; DMA must be busy at the first RX completion, every frame byte and copied word is checked, and MAC RX overflow must stay zero |

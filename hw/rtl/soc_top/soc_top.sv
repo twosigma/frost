@@ -450,7 +450,7 @@ module soc_top #(
   // select the write lane; claimi consumes only the addressed read word.
   // ---------------------------------------------------------------------------
   // Capture window selects on the same edge as the MMIO write address.
-  logic aplic_sel_q, imsic_sel_q, dma_engine_sel_q, nic_sel_q, memerr_sel_q;
+  logic aplic_sel_q, imsic_sel_q, memerr_sel_q;
   always_ff @(posedge i_clk) begin
     imsic_sel_q <= riscv_pkg::pma_device_quadrant(
         riscv_pkg::XLEN'(data_memory_address)
@@ -458,12 +458,6 @@ module soc_top #(
     aplic_sel_q <= riscv_pkg::pma_device_quadrant(
         riscv_pkg::XLEN'(data_memory_address)
     ) && (data_memory_address[31:22] == AplicWindowSel);
-    dma_engine_sel_q <= riscv_pkg::pma_device_quadrant(
-        riscv_pkg::XLEN'(data_memory_address)
-    ) && (data_memory_address[31:8] == DmaEngineBase[31:8]);
-    nic_sel_q <= riscv_pkg::pma_device_quadrant(
-        riscv_pkg::XLEN'(data_memory_address)
-    ) && (data_memory_address[31:12] == NicBase[31:12]);
     memerr_sel_q <= riscv_pkg::pma_device_quadrant(
         riscv_pkg::XLEN'(data_memory_address)
     ) && (data_memory_address[31:8] == MemErrBase[31:8]);
@@ -474,32 +468,29 @@ module soc_top #(
       ((data_memory_byte_write_enable_registered == 8'h0F) ||
        (data_memory_byte_write_enable_registered == 8'hF0));
   logic [63:0] aplic_rd_pair;
-  // DMA test engine register bus (same shape as the APLIC's) and interrupt.
-  logic dma_engine_wr_en, dma_engine_wr_hi, dma_engine_wr64_en, dma_engine_irq;
-  logic [63:0] dma_engine_rd_pair;
-  assign dma_engine_wr_hi = |data_memory_byte_write_enable_registered[7:4];
-  // The extended address bank is reached only by one complete 64-bit store.
-  // Never fold it into the APLIC-style 32-bit lane mux, which discards a half.
-  assign dma_engine_wr64_en = dma_engine_sel_q &&
-      (data_memory_byte_write_enable_registered == 8'hff) &&
-      ((data_memory_address_registered[7:0] == 8'h40) ||
-       (data_memory_address_registered[7:0] == 8'h48) ||
-       (data_memory_address_registered[7:0] == 8'h50));
-  assign dma_engine_wr_en = |data_memory_byte_write_enable_registered && dma_engine_sel_q &&
-      !((data_memory_address_registered[7:3] == 5'h08) ||
-        (data_memory_address_registered[7:3] == 5'h09) ||
-        (data_memory_address_registered[7:3] == 5'h0a));
-  // NIC register bus (same shape) and interrupt.
-  logic nic_wr_en, nic_wr_hi, nic_wr64_en, nic_irq;
-  logic [63:0] nic_rd_pair;
-  assign nic_wr_hi = |data_memory_byte_write_enable_registered[7:4];
-  assign nic_wr64_en = nic_sel_q &&
-      (data_memory_byte_write_enable_registered == 8'hff) &&
-      ((data_memory_address_registered[11:0] == nic_pkg::RxBase64Offset) ||
-       (data_memory_address_registered[11:0] == nic_pkg::TxBase64Offset));
-  assign nic_wr_en = |data_memory_byte_write_enable_registered && nic_sel_q &&
-      !((data_memory_address_registered[11:3] == nic_pkg::RxBase64Offset[11:3]) ||
-        (data_memory_address_registered[11:3] == nic_pkg::TxBase64Offset[11:3]));
+  logic dma_engine_irq, nic_irq;
+  logic [1:0] reg_axil_awvalid, reg_axil_awready, reg_axil_wvalid, reg_axil_wready;
+  logic [1:0] reg_axil_bvalid, reg_axil_bready, reg_axil_arvalid, reg_axil_arready;
+  logic [1:0] reg_axil_rvalid, reg_axil_rready;
+  logic [1:0][1:0] reg_axil_bresp, reg_axil_rresp;
+  logic [1:0][63:0] reg_axil_rdata;
+  logic [11:0] reg_axil_addr_q;
+  logic [2:0] reg_axil_prot_q;
+  logic [63:0] reg_axil_wdata_q;
+  logic [7:0] reg_axil_wstrb_q;
+  logic reg_axil_port_q;
+  logic local_axil, reg_axil_done, reg_axil_read_capture;
+
+`ifndef SYNTHESIS
+  // Observe NIC-window accesses in both cached-tier configurations.
+  logic nic_access_q;
+  always_ff @(posedge i_clk) begin
+    nic_access_q <= riscv_pkg::pma_device_quadrant(riscv_pkg::XLEN'(data_memory_address)) &&
+        (data_memory_address[31:12] == NicBase[31:12]);
+  end
+`endif
+  logic mmio_response_capture;
+  logic [63:0] mmio_response_data;
   // Memory error unit register bus (same shape) and interrupt. The DDR
   // bridge's error pulses come from the cached tier below, or stay low
   // without it.
@@ -990,13 +981,14 @@ module soc_top #(
   // still decide whether anything is read or written.
   wire use_incoming_payload = local_state_q == 0;
   assign data_memory_address = use_incoming_payload ? local_req_addr : local_lane_addr;
-  // Existing register files take replicated word writes; AXI permits the
+  // Register files take replicated word writes; AXI permits the
   // unused lanes to be arbitrary, so reconstruct that view at this boundary.
   assign data_memory_write_data = use_incoming_payload ? local_req_wdata[63:0] :
       (local_device && local_size <= 2) ?
       {2{local_addr[2] ? local_wdata[63:32] : local_wdata[31:0]}} : local_wdata;
+  wire local_register_store = local_fire && local_write && local_ok && !local_axil;
   assign data_memory_byte_write_enable = fast_bram_fire && local_req_write ?
-      local_req_wstrb[7:0] : local_fire && local_write && local_ok ? local_wstrb : '0;
+      local_req_wstrb[7:0] : local_register_store ? local_wstrb : '0;
   wire fast_bram_store = fast_bram_fire && local_req_write;
   wire staged_bram_store = local_fire && local_write && local_ok && local_bram;
   assign data_memory_bram_byte_write_enable =
@@ -1017,7 +1009,7 @@ module soc_top #(
   assign fetch_pa_word1 = {instruction_read_addr[31:3], 3'b100};
   assign mmio_load_addr = local_addr[31:0];
   assign mmio_load_valid = local_state_q != 0;
-  assign mmio_read_pulse = local_fire && !local_write && local_device && local_ok;
+  assign mmio_read_pulse = local_fire && !local_write && local_device && local_ok && !local_axil;
   // Reduce each strobe candidate before selecting its launch, keeping the
   // late AXI arbitration off a byte-mux/reduction chain into the CDC FIFO.
   assign dbg_bram_store = (fast_bram_store && (|local_req_wstrb)) ||
@@ -1069,10 +1061,14 @@ module soc_top #(
         local_wdata <= local_req_wdata;
         local_wstrb <= local_req_wstrb;
       end else if (local_fire) begin
-        local_state_q <= 1;
+        local_state_q <= local_axil ? 5 : 1;
         local_read_instruction_q <= local_instruction;
         local_read_device_q <= local_device;
         local_resp_status <= local_ok ? 2'b00 : 2'b11;
+      end else if (reg_axil_done) begin
+        local_state_q <= 1;
+        local_resp_status <= rst_core ? 2'b00 : local_write ?
+            reg_axil_bresp[reg_axil_port_q] : reg_axil_rresp[reg_axil_port_q];
       end else if (local_state_q == 1) begin
         local_state_q <= fast_bram_q ? 3 : 2;
         if (fast_bram_q) local_resp_valid <= 1'b1;
@@ -1096,6 +1092,47 @@ module soc_top #(
       end
     end
   end
+  // Port 0 is the NIC; port 1 is the DMA test engine. Only their windows
+  // enter state 5. Request payloads and each channel VALID hold until the
+  // corresponding handshake, and completion waits for B or R.
+  assign local_axil = ENABLE_CACHED_TIER != 0 && !rst_core && local_ok &&
+      local_device && !local_instruction &&
+      ((local_addr[31:12] == NicBase[31:12]) ||
+       (local_addr[31:8] == DmaEngineBase[31:8]));
+  assign reg_axil_bready = (local_state_q == 5 && local_write && !rst_core &&
+      !o_cpu_axi_rst) ? (2'b01 << reg_axil_port_q) : 2'b00;
+  assign reg_axil_rready = (local_state_q == 5 && !local_write && !rst_core &&
+      !o_cpu_axi_rst) ? (2'b01 << reg_axil_port_q) : 2'b00;
+  assign reg_axil_done = local_state_q == 5 && !o_cpu_axi_rst &&
+      (rst_core || (|(reg_axil_bvalid & reg_axil_bready)) ||
+       (|(reg_axil_rvalid & reg_axil_rready)));
+  assign reg_axil_read_capture = reg_axil_done && !local_write;
+  always_ff @(posedge i_clk) begin
+    if (o_cpu_axi_rst || rst_core) begin
+      reg_axil_awvalid <= '0;
+      reg_axil_wvalid  <= '0;
+      reg_axil_arvalid <= '0;
+      reg_axil_port_q  <= 1'b0;
+    end else begin
+      reg_axil_awvalid <= reg_axil_awvalid & ~reg_axil_awready;
+      reg_axil_wvalid  <= reg_axil_wvalid & ~reg_axil_wready;
+      reg_axil_arvalid <= reg_axil_arvalid & ~reg_axil_arready;
+      if (local_fire && local_axil) begin
+        reg_axil_addr_q  <= local_addr[11:0];
+        reg_axil_prot_q  <= local_prot;
+        reg_axil_wdata_q <= data_memory_write_data;
+        reg_axil_wstrb_q <= local_wstrb;
+        reg_axil_port_q  <= local_addr[31:12] != NicBase[31:12];
+        if (local_write) begin
+          reg_axil_awvalid <= (local_addr[31:12] == NicBase[31:12]) ? 2'b01 : 2'b10;
+          reg_axil_wvalid  <= (local_addr[31:12] == NicBase[31:12]) ? 2'b01 : 2'b10;
+        end else begin
+          reg_axil_arvalid <= (local_addr[31:12] == NicBase[31:12]) ? 2'b01 : 2'b10;
+        end
+      end
+    end
+  end
+
   if (ENABLE_CACHED_TIER != 0) begin : gen_cached_tier
     // DMA: the NIC (port 0) and the DMA test engine (port 1) are AXI4 masters
     // on dma_interconnect, whose one master enters the hierarchy's coherent
@@ -1148,18 +1185,25 @@ module soc_top #(
     ) nic (
         .i_clk(i_clk),
         .i_rst(rst_core_next),  // registered inside nic_top; see its header
-        .i_wr_en(nic_wr_en),
-        // A full-width store selects its aligned register, not the upper
-        // 32-bit lane chosen for legacy word writes.
-        .i_wr_offset(nic_wr64_en ? data_memory_address_registered[11:0] :
-                                 {data_memory_address_registered[11:3],
-                                  nic_wr_hi ? 3'b100 : 3'b000}),
-        .i_wr_data(nic_wr_hi ? data_memory_write_data_registered[63:32] :
-                               data_memory_write_data_registered[31:0]),
-        .i_wr64_en(nic_wr64_en),
-        .i_wr64_data(data_memory_write_data_registered),
-        .i_rd_offset({mmio_load_addr[11:3], 3'b000}),
-        .o_rd_pair(nic_rd_pair),
+        .i_reg_axil_awvalid(reg_axil_awvalid[0]),
+        .o_reg_axil_awready(reg_axil_awready[0]),
+        .i_reg_axil_awaddr(reg_axil_addr_q[11:0]),
+        .i_reg_axil_awprot(reg_axil_prot_q),
+        .i_reg_axil_wvalid(reg_axil_wvalid[0]),
+        .o_reg_axil_wready(reg_axil_wready[0]),
+        .i_reg_axil_wdata(reg_axil_wdata_q),
+        .i_reg_axil_wstrb(reg_axil_wstrb_q),
+        .o_reg_axil_bvalid(reg_axil_bvalid[0]),
+        .i_reg_axil_bready(reg_axil_bready[0]),
+        .o_reg_axil_bresp(reg_axil_bresp[0]),
+        .i_reg_axil_arvalid(reg_axil_arvalid[0]),
+        .o_reg_axil_arready(reg_axil_arready[0]),
+        .i_reg_axil_araddr(reg_axil_addr_q[11:0]),
+        .i_reg_axil_arprot(reg_axil_prot_q),
+        .o_reg_axil_rvalid(reg_axil_rvalid[0]),
+        .i_reg_axil_rready(reg_axil_rready[0]),
+        .o_reg_axil_rdata(reg_axil_rdata[0]),
+        .o_reg_axil_rresp(reg_axil_rresp[0]),
         .o_irq(nic_irq),
         .o_dma_axi_awvalid(up_awvalid[0]),
         .o_dma_axi_awid(up_awid[0]),
@@ -1223,16 +1267,25 @@ module soc_top #(
     ) dma_engine (
         .i_clk(i_clk),
         .i_rst(rst_core),
-        .i_wr_en(dma_engine_wr_en),
-        .i_wr_offset(dma_engine_wr64_en ? data_memory_address_registered[7:0] :
-                                        {data_memory_address_registered[7:3],
-                                         dma_engine_wr_hi ? 3'b100 : 3'b000}),
-        .i_wr_data(dma_engine_wr_hi ? data_memory_write_data_registered[63:32] :
-                                      data_memory_write_data_registered[31:0]),
-        .i_wr64_en(dma_engine_wr64_en),
-        .i_wr64_data(data_memory_write_data_registered),
-        .i_rd_offset({mmio_load_addr[7:3], 3'b000}),
-        .o_rd_pair(dma_engine_rd_pair),
+        .i_reg_axil_awvalid(reg_axil_awvalid[1]),
+        .o_reg_axil_awready(reg_axil_awready[1]),
+        .i_reg_axil_awaddr(reg_axil_addr_q[7:0]),
+        .i_reg_axil_awprot(reg_axil_prot_q),
+        .i_reg_axil_wvalid(reg_axil_wvalid[1]),
+        .o_reg_axil_wready(reg_axil_wready[1]),
+        .i_reg_axil_wdata(reg_axil_wdata_q),
+        .i_reg_axil_wstrb(reg_axil_wstrb_q),
+        .o_reg_axil_bvalid(reg_axil_bvalid[1]),
+        .i_reg_axil_bready(reg_axil_bready[1]),
+        .o_reg_axil_bresp(reg_axil_bresp[1]),
+        .i_reg_axil_arvalid(reg_axil_arvalid[1]),
+        .o_reg_axil_arready(reg_axil_arready[1]),
+        .i_reg_axil_araddr(reg_axil_addr_q[7:0]),
+        .i_reg_axil_arprot(reg_axil_prot_q),
+        .o_reg_axil_rvalid(reg_axil_rvalid[1]),
+        .i_reg_axil_rready(reg_axil_rready[1]),
+        .o_reg_axil_rdata(reg_axil_rdata[1]),
+        .o_reg_axil_rresp(reg_axil_rresp[1]),
         .o_irq(dma_engine_irq),
         .o_dma_axi_awvalid(up_awvalid[1]),
         .o_dma_axi_awid(up_awid[1]),
@@ -1511,15 +1564,21 @@ module soc_top #(
     );
 `endif
   end else begin : gen_no_dma
+    assign reg_axil_awready = '0;
+    assign reg_axil_wready = '0;
+    assign reg_axil_bvalid = '0;
+    assign reg_axil_bresp = '0;
+    assign reg_axil_arready = '0;
+    assign reg_axil_rvalid = '0;
+    assign reg_axil_rresp = '0;
+    assign reg_axil_rdata = '0;
     assign o_coherent_req_valid = 1'b0;
     assign o_coherent_req_write = 1'b0;
     assign o_coherent_req_addr = '0;
     assign o_coherent_req_wdata = '0;
     assign o_coherent_req_wstrb = '0;
     assign o_coherent_req_id = '0;
-    assign dma_engine_rd_pair = '0;
     assign dma_engine_irq = 1'b0;
-    assign nic_rd_pair = '0;
     assign nic_irq = 1'b0;
     assign o_nic_tx_raw_data = '0;
     assign o_nic_tx_raw_valid = 1'b0;
@@ -1751,6 +1810,9 @@ module soc_top #(
 
   // The local access logic already qualifies this pulse against MMIO bounds.
   assign mmio_read_capture = mmio_read_pulse;
+  assign mmio_response_capture = mmio_read_capture || reg_axil_read_capture;
+  assign mmio_response_data = reg_axil_read_capture ?
+      (rst_core ? 64'b0 : reg_axil_rdata[reg_axil_port_q]) : mmio_read_data_comb;
 
   // Capture the performed MMIO read on mmio_read_pulse. Each case selects
   // an aligned dword {word at +4, word at +0}; addr[2] selects a 32-bit result
@@ -1812,10 +1874,6 @@ module soc_top #(
     // APLIC returns a register pair only for a 32-bit load.
     if (mmio_load_addr[31:22] == AplicWindowSel)
       mmio_read_data_comb = (local_size == 3'd2) ? aplic_rd_pair : 64'b0;
-    // DMA test engine window: the addressed 64-bit register pair.
-    if (mmio_load_addr[31:8] == DmaEngineBase[31:8]) mmio_read_data_comb = dma_engine_rd_pair;
-    // NIC window: likewise.
-    if (mmio_load_addr[31:12] == NicBase[31:12]) mmio_read_data_comb = nic_rd_pair;
     // Memory error unit window: likewise.
     if (mmio_load_addr[31:8] == MemErrBase[31:8]) mmio_read_data_comb = memerr_rd_pair;
   end
@@ -1826,7 +1884,7 @@ module soc_top #(
     if (rst_core) begin
       mmio_read_data_valid <= 1'b0;
     end else begin
-      if (mmio_read_capture) begin
+      if (mmio_response_capture) begin
         mmio_read_data_valid <= 1'b1;
       end else if (mmio_read_data_valid && !mmio_load_valid) begin
         mmio_read_data_valid <= 1'b0;
@@ -1843,16 +1901,16 @@ module soc_top #(
         .INIT(1'b0)
     ) mmio_read_data_ff (
         .C (i_clk),
-        .CE(mmio_read_capture),
-        .D (mmio_read_data_comb[g_mmio_read_data]),
+        .CE(mmio_response_capture),
+        .D (mmio_response_data[g_mmio_read_data]),
         .Q (mmio_read_data_reg[g_mmio_read_data]),
         .R (1'b0)
     );
   end
 `else
   always_ff @(posedge i_clk) begin
-    if (mmio_read_capture) begin
-      mmio_read_data_reg <= mmio_read_data_comb;
+    if (mmio_response_capture) begin
+      mmio_read_data_reg <= mmio_response_data;
     end
   end
 `endif

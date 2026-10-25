@@ -8,6 +8,21 @@ Local instruction reads select the instruction BRAM copy using AxPROT[2]; data r
 
 When an address slot is empty, an accepted AXI address can pass directly to the local port; a stalled request waits in that slot with its owner and payload. Device requests are then registered before address decoding and execution, separating AXI arbitration from peripheral side-effect controls. Completions wait until the memory access or peripheral write/read-consume pulse has executed. Narrow transfers keep their byte enables; the boundary rebuilds the register files' replicated-word write view from AXI's addressed lanes. Device response data is captured before a destructive read consumes UART/FIFO/APLIC state, and holding RVALID does not consume a second item.
 
+The NIC and DMA test engine expose 64-bit AXI4-Lite register slaves.
+The local device decoder launches registered AW/W or AR channels for their
+windows and waits for B or R. The returned status reaches the CPU response,
+and RDATA enters the MMIO read-data register once. Other device windows use
+the local side-effect sequence. With the cached tier disabled, the NIC and
+DMA windows read zero and writes have no effect.
+
+Each block's `axil_reg_bridge` selects 32-bit write lanes and aligned read
+pairs. Complete eight-byte stores at the NIC's RX_BASE64/TX_BASE64 offsets
+and the engine's SRC64/DST64/STATUS_ADDR64 offsets use a separate 64-bit
+write enable. Partial stores to those dwords have no effect. The NIC's
+software RESET leaves the AXI4-Lite transaction intact. Subsystem reset
+clears both register slaves and the master's pending channels; an access
+waiting on a reset slave completes with OKAY and zero read data.
+
 FROST enables `cpu_top.CACHE_NORMAL_MEMORY` for BRAM read caching and narrow write-through stores. The local slave also accepts aligned 32-byte instruction reads, assembled from four BRAM dwords before one AXI response. After the first synchronous RAM read, the serializer captures one dword per clock while requesting the next. Wide Device accesses and wide writes are rejected. Narrow BRAM requests access RAM on acceptance and complete after the RAM edge; Device requests go through the registered side-effect sequence. A completed local response can pass directly to AXI when its response slot is empty. AXI backpressure or a previously selected DDR response instead captures it in that slot; neither case repeats the access. The private local read response is as wide as the outgoing AXI data bus, while local writes are a 64-bit value with eight byte strobes.
 
 A core-only reset leaves the AXI decoder running so it can drain transactions from the old CPU epoch. Fabric reset clears the decoder and its response buffers and also asserts CPU reset, so the CPU cannot retain requests that the fabric has discarded. The behavioral DDR model also takes the fabric reset and keeps its memory contents. All CDC for programming, debug transport, NIC, and board I/O is outside `cpu_top`.

@@ -28,6 +28,10 @@ The cocotb benches, models, and monitors themselves live in
 The `axil_reg_bridge` unit bench covers register writes at every strobe
 value, read-pair alignment throughout its window, independent AW/W timing,
 concurrent reads and writes, response backpressure, and reset cancellation.
+The `soc_axil` bench drives the CPU-facing SoC AXI port to check both
+register banks, ignored partial wide stores, error responses, CPU
+backpressure, and subsystem reset during reads and writes. Both `soc_axil`
+and `soc_axil_no_cached_tier` check the NIC-access guard.
 
 ## Fast checks
 
@@ -133,8 +137,10 @@ clock: both MAC clocks absent and their clock-OK levels low, so the NIC keeps
 its MAC domains in reset ([NIC](../hw/rtl/peripherals/nic/README.md#reset-and-clock-domains)),
 and the simulation saves the evaluations of the MAC clocks' edges. Application
 entries using this setting never touch the NIC's registers, DMA, interrupt,
-or link status, and a run fails if such an application loads or stores in the
-NIC's register window. The NIC programs, `opensbi_smoke`, and
+or link status. The SoC's simulation-only NIC-window selector detects register
+accesses with or without the cached tier, and a run fails if such an
+application loads or stores in the NIC's register window. The NIC programs,
+`opensbi_smoke`, and
 `pma_fault_test`, which loads from the NIC's window to check a PMA boundary,
 keep the clocks. The standalone `linux_*` instruction-pattern tests run
 without them. Registry entries default to keeping the clocks.

@@ -15,7 +15,7 @@
  */
 
 /*
- * dma_test_engine_axi: the DMA test engine with an AXI4 master.
+ * dma_test_engine_axi: the DMA test engine with AXI4 DMA and AXI4-Lite registers.
  *
  * dma_test_engine has one line request in flight at a time. This wrapper
  * carries each one over AXI4 and returns its response, with the error flag
@@ -41,14 +41,26 @@ module dma_test_engine_axi #(
     input logic i_clk,
     input logic i_rst,
 
-    // Register interface (dma_test_engine).
-    input  logic        i_wr_en,
-    input  logic [ 7:0] i_wr_offset,
-    input  logic [31:0] i_wr_data,
-    input  logic        i_wr64_en,
-    input  logic [63:0] i_wr64_data,
-    input  logic [ 7:0] i_rd_offset,
-    output logic [63:0] o_rd_pair,
+    // AXI4-Lite register window, 64-bit data.
+    input  logic        i_reg_axil_awvalid,
+    output logic        o_reg_axil_awready,
+    input  logic [ 7:0] i_reg_axil_awaddr,
+    input  logic [ 2:0] i_reg_axil_awprot,
+    input  logic        i_reg_axil_wvalid,
+    output logic        o_reg_axil_wready,
+    input  logic [63:0] i_reg_axil_wdata,
+    input  logic [ 7:0] i_reg_axil_wstrb,
+    output logic        o_reg_axil_bvalid,
+    input  logic        i_reg_axil_bready,
+    output logic [ 1:0] o_reg_axil_bresp,
+    input  logic        i_reg_axil_arvalid,
+    output logic        o_reg_axil_arready,
+    input  logic [ 7:0] i_reg_axil_araddr,
+    input  logic [ 2:0] i_reg_axil_arprot,
+    output logic        o_reg_axil_rvalid,
+    input  logic        i_reg_axil_rready,
+    output logic [63:0] o_reg_axil_rdata,
+    output logic [ 1:0] o_reg_axil_rresp,
     output logic        o_irq,
 
     // DMA AXI4 master.
@@ -99,6 +111,45 @@ module dma_test_engine_axi #(
       $fatal(1, "dma_test_engine_axi: DMA_AXI_ADDR_BITS below ADDR_WIDTH");
   end
 
+  logic reg_wr_en, reg_wr64_en;
+  logic [7:0] reg_wr_offset, reg_rd_offset;
+  logic [31:0] reg_wr_data;
+  logic [63:0] reg_wr64_data, reg_rd_pair;
+  axil_reg_bridge #(
+      .ADDR_BITS(8),
+      .WIDE_COUNT(3),
+      .WIDE_OFFSETS(24'h504840)
+  ) reg_bridge (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_axil_awvalid(i_reg_axil_awvalid),
+      .o_axil_awready(o_reg_axil_awready),
+      .i_axil_awaddr(i_reg_axil_awaddr),
+      .i_axil_awprot(i_reg_axil_awprot),
+      .i_axil_wvalid(i_reg_axil_wvalid),
+      .o_axil_wready(o_reg_axil_wready),
+      .i_axil_wdata(i_reg_axil_wdata),
+      .i_axil_wstrb(i_reg_axil_wstrb),
+      .o_axil_bvalid(o_reg_axil_bvalid),
+      .i_axil_bready(i_reg_axil_bready),
+      .o_axil_bresp(o_reg_axil_bresp),
+      .i_axil_arvalid(i_reg_axil_arvalid),
+      .o_axil_arready(o_reg_axil_arready),
+      .i_axil_araddr(i_reg_axil_araddr),
+      .i_axil_arprot(i_reg_axil_arprot),
+      .o_axil_rvalid(o_reg_axil_rvalid),
+      .i_axil_rready(i_reg_axil_rready),
+      .o_axil_rdata(o_reg_axil_rdata),
+      .o_axil_rresp(o_reg_axil_rresp),
+      .o_wr_en(reg_wr_en),
+      .o_wr_offset(reg_wr_offset),
+      .o_wr_data(reg_wr_data),
+      .o_wr64_en(reg_wr64_en),
+      .o_wr64_data(reg_wr64_data),
+      .o_rd_offset(reg_rd_offset),
+      .i_rd_pair(reg_rd_pair)
+  );
+
   logic req_valid, req_ready, req_write, resp_valid_q, resp_error_q, burst;
   logic [ADDR_WIDTH-1:0] req_addr;
   logic [LINE_BYTES*8-1:0] req_wdata, resp_rdata_q;
@@ -114,13 +165,13 @@ module dma_test_engine_axi #(
   ) engine (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_wr_en(i_wr_en),
-      .i_wr_offset(i_wr_offset),
-      .i_wr_data(i_wr_data),
-      .i_wr64_en(i_wr64_en),
-      .i_wr64_data(i_wr64_data),
-      .i_rd_offset(i_rd_offset),
-      .o_rd_pair(o_rd_pair),
+      .i_wr_en(reg_wr_en),
+      .i_wr_offset(reg_wr_offset),
+      .i_wr_data(reg_wr_data),
+      .i_wr64_en(reg_wr64_en),
+      .i_wr64_data(reg_wr64_data),
+      .i_rd_offset(reg_rd_offset),
+      .o_rd_pair(reg_rd_pair),
       .o_irq(o_irq),
       .o_burst(burst),
       .o_dma_req_valid(req_valid),

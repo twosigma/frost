@@ -35,7 +35,13 @@ from collections.abc import Callable, Coroutine
 import cocotb
 from cocotb.clock import Clock
 from cocotb.handle import Immediate
-from cocotb.triggers import ClockCycles, FallingEdge, ReadOnly, RisingEdge, Timer
+from cocotb.triggers import (
+    ClockCycles,
+    FallingEdge,
+    ReadOnly,
+    RisingEdge,
+    Timer,
+)
 from cocotb.types import LogicArray
 from cocotb.utils import get_sim_time
 from typing import Any, TextIO
@@ -4528,7 +4534,7 @@ async def test_real_program(dut: Any) -> None:
         # leaving the MAC unclocked.
         if os.environ.get("FROST_NIC_MAC_CLOCKS", "1") == "0":
             hold_nic_without_mac_clocks(
-                dut, (dut.cpu_and_memory_subsystem.soc.nic_sel_q,)
+                dut, (dut.cpu_and_memory_subsystem.soc.nic_access_q,)
             )
         else:
             start_nic_mac_clocks(dut, edges_without_delay=True)
