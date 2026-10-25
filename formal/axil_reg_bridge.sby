@@ -1,0 +1,24 @@
+[tasks]
+prove
+prove_engine
+cover
+
+[options]
+prove: mode prove
+prove: depth 12
+prove_engine: mode prove
+prove_engine: depth 12
+cover: mode cover
+cover: depth 20
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv axil_checker.sv axil_reg_bridge.sv
+prove_engine: chparam -set ADDR_BITS 8 -set WIDE_COUNT 3 -set WIDE_OFFSETS 24'h504840 axil_reg_bridge
+prep -top axil_reg_bridge
+
+[files]
+../hw/rtl/lib/axi/axil_checker.sv
+../hw/rtl/lib/axi/axil_reg_bridge.sv

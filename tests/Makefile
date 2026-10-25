@@ -421,6 +421,11 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/peripherals/nic/nic_reset_ctrl.sv \
         $(ROOT)/hw/rtl/peripherals/nic/nic_reset_test_harness.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),axil_reg_bridge)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/lib/axi/axil_checker.sv \
+        $(ROOT)/hw/rtl/lib/axi/axil_reg_bridge.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),axi_coherent_bridge)
 # AXI4 to coherent line-port bridge unit bench
 COMPILE_ARGS := \

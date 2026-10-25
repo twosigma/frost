@@ -553,6 +553,11 @@ FORMAL_TARGETS = [
         tasks=("prove", "prove_full_width", "prove_soc", "cover"),
     ),
     FormalTarget(
+        "axil_reg_bridge.sby",
+        "AXI4-Lite channel independence, response conservation and register mapping",
+        tasks=("prove", "prove_engine", "cover"),
+    ),
+    FormalTarget(
         "axi_mux.sby",
         "AXI4 rules on every port, W in AW-grant order, and B and R steered by port, "
         "unbounded",
@@ -733,6 +738,7 @@ SBY_TASKS = [
     ("channel_prove", "Unbounded coherent endpoint safety"),
     ("channel_cover", "Coherent endpoint completion reachability"),
     ("home_wide", "Coherent home safety with wide physical addresses"),
+    ("prove_engine", "Unbounded AXI4-Lite mapping for the DMA register bank"),
     ("prove_predecoded", "Unbounded IMSIC equivalence with registered input decodes"),
     ("msi_bmc", "Bounded APLIC MSI forwarding and pending transitions"),
     ("msi_prove", "Unbounded APLIC MSI registers, forwarding and ordering"),
