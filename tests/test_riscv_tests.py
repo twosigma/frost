@@ -269,6 +269,7 @@ def run_simulation(
 
     os.environ["SIM"] = simulator
     env = runner.setup_environment()
+    env.setdefault("FROST_NIC_MAC_CLOCKS", "0")
     sim_build_dir = runner._get_sim_build_dir(env)
     env["SIM_BUILD"] = str(sim_build_dir)
     env["COCOTB_MAX_CYCLES"] = max_cycles

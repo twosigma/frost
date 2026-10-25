@@ -58,6 +58,13 @@ comments; `--trace` replays it, and editing the words is the quickest way to
 narrow a bug down. `FROST_RVFI_DII_DEBUG=1` logs every record the harness
 collects, preamble included.
 
+The NIC is instantiated with both MAC clocks and their clock-OK inputs
+held low (`nic_mac_clocks=False` in the `rvfi_dii` registry entry).
+Device loads read the harness RAM, and device stores leave both NIC write
+enables low. The bench fails if either write enable rises. Accesses to the
+RAM at addresses in the NIC's window are allowed. `FROST_NIC_MAC_CLOCKS=1` starts
+the MAC clocks for a comparison run.
+
 CI runs four TestRIG jobs in parallel. Each draws its own 100 sequences per
 template and its own 200 A-extension tests, and each simulates the SoC with
 its own DDR model timing (`FROST_DDR_MODEL_SEED`, see

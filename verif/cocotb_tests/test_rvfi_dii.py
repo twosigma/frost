@@ -40,6 +40,7 @@ from cocotb_tests.test_real_program import (
     CLK_PERIOD_NS,
     RESET_CYCLES,
     generate_divided_clock,
+    hold_nic_without_mac_clocks,
     start_nic_mac_clocks,
 )
 from testrig.preamble import reset_preamble
@@ -194,7 +195,13 @@ async def test_rvfi_dii(dut: Any) -> None:
     """Serve RVFI-DII traces until the verification engine disconnects."""
     Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start()
     cocotb.start_soon(generate_divided_clock(dut))
-    start_nic_mac_clocks(dut)
+    if os.environ.get("FROST_NIC_MAC_CLOCKS", "1") == "0":
+        # Device reads use the harness RAM. Guard both NIC write enables,
+        # which the platform holds low even for stores in the NIC's window.
+        platform = dut.cpu_and_memory_subsystem
+        hold_nic_without_mac_clocks(dut, (platform.nic_wr_en, platform.nic_wr64_en))
+    else:
+        start_nic_mac_clocks(dut)
     dut.i_uart_rx.value = 1
     dut.i_external_interrupt.value = 0
     dut.i_instr_mem_en.value = 0
