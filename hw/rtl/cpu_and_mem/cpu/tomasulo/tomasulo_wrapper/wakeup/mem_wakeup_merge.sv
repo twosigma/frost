@@ -14,7 +14,7 @@
  *    limitations under the License.
  */
 
-// An accepted load completion may wake MEM_RS ahead of the registered CDB.
+// An accepted load completion may wake a station ahead of the registered CDB.
 // Preserve every registered broadcast, and use at most one idle lane. The
 // following cycle's registered copy is harmless: source-ready and pending
 // delivery bits already protect the captured value. No ROB completion is

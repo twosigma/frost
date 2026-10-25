@@ -48,6 +48,9 @@ edge. The same comparison feeds the ready check, so an entry can issue in the
 cycle its last operand is broadcast, taking the value straight from the CDB.
 Both lanes feed this bypass in every instance (`LANE1_ISSUE_BYPASS`). The two
 lanes never carry the same tag, so at most one lane matches a given source.
+The wrapper can place a staged load result into an idle input lane for INT_RS
+and MEM_RS. The same capture and issue rules apply to that early token; see
+[early load wakeup](../tomasulo_wrapper/README.md#early-load-wakeup).
 
 ### During the dispatch cycle
 
@@ -269,7 +272,7 @@ station does:
 | `SPECULATIVE_DATA_WRITES` | 0 | 1 on INT, MUL, MEM | Write tags and values into the target free entry before dispatch is confirmed; only `rs_valid` commits the entry |
 | `BROADCAST_FREE_SOURCE_VALUES` | 0 | 1 on INT | Write slot 1's source values into every free entry and slot 2's into its target; requires speculative writes |
 | `ISSUE_CDB_TAG_SHADOW` | 0 | 1 on INT | A second src1/src2 tag bank used only by the same-cycle bypass; equal to the main tags for every valid entry |
-| `ISSUE_CDB_META_ANCHORS` | 0 | 1 on INT | The same-cycle bypass compares use separate registered copies of each lane's valid and tag (`i_issue_cdb_*`) |
+| `ISSUE_CDB_META_ANCHORS` | 0 | 1 on INT | The issue compares use separate valid/tag inputs (`i_issue_cdb_*`); the wrapper merges early loads into copies of the registered lanes |
 | `CAPTURE_PRIMARY_EFFECTIVE_OPERANDS` | 0 | 1 on INT | Port 0 registers final src1/src2 values at issue instead of muxing CDB values after stage 2; requires `HAS_SRC3=0` |
 | `BRANCH_PREDICATE_TAG_ANCHOR` | 0 | 1 on INT | A copy of the stage-2 ROB tag drives `o_branch_predicate_tag` for branch resolution's checkpoint and age compares; off, the output is the stage-2 tag |
 

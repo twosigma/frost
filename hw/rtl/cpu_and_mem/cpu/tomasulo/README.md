@@ -13,7 +13,8 @@ reservation stations feed six functional-unit (FU) slots. The integer station
 issues two operations per cycle to two ALUs, with branches and JALR only on
 the first; every other station issues one. Up to five operations can
 therefore start in one cycle. A result on either CDB lane can wake a waiting
-RS entry and let it issue in the same cycle.
+RS entry and let it issue in the same cycle. INT_RS and MEM_RS also accept a
+staged load result through an idle lane before its registered CDB broadcast.
 
 ![FROST Tomasulo back-end showing parallel allocation, independent arithmetic and translated-memory execution, two-lane completion, and precise retirement](../../../../../docs/diagrams/tomasulo-backend.svg)
 

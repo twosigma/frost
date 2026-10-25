@@ -38,7 +38,7 @@ Glue that is large enough to stand alone lives in submodules:
 | `sq_early_addr_pipeline` | `store_addr/` | Early store addresses for both dispatch slots, with persistent repair |
 | `sc_pending_unit` | `atomics/` | Store-conditional table and fire decision |
 | `lq_coherence_port` | `coherence/` | The core's side of the DMA coherence handshake: holds atomics off an admitted line, invalidates the LQ's copies, and marks loads that observed the line for replay (see the [cache library](../../../../lib/cache/README.md)) |
-| `mem_wakeup_merge` | `wakeup/` | Early load wakeup for MEM_RS |
+| `mem_wakeup_merge` | `wakeup/` | Early load wakeup for INT_RS and MEM_RS |
 | `tomasulo_perf_counters` | `perf/` | The back-end profiling counters |
 
 The rest stays in `tomasulo_wrapper.sv`: CDB registration, flush
@@ -53,7 +53,7 @@ adapter wiring.
 | `ENABLE_DISPATCH_DONE_REPAIR` | 0 | Answers dispatch's done-repair queries from the ROB (see the [reservation station](../reservation_station/README.md#done-repair)) |
 | `ROB_SHARED_LINK_BANK` | 0 | Shares the ROB value memories' allocation link bank when dispatch guarantees at most one branch allocation per cycle; enabled by `cpu_ooo` |
 | `INT_RS_DEPTH` | 16 (`riscv_pkg::IntRsDepth`) | INT_RS entries: a power of two from 2 to 32, the ROB depth. It changes only INT_RS and the width of its occupancy count; port 1's window stays at eight entries, or the whole station if smaller |
-| `EARLY_LOAD_WAKEUP` | 1 (`riscv_pkg::EarlyLoadWakeup`) | [Early dependent memory wakeup](#early-dependent-memory-wakeup) |
+| `EARLY_LOAD_WAKEUP` | 1 (`riscv_pkg::EarlyLoadWakeup`) | [Early load wakeup](#early-load-wakeup) |
 | `PREPARE_LOAD_WHILE_BUSY` | 1 (`riscv_pkg::PrepareLoadWhileBusy`) | LQ: stage a load while the memory port is busy; the wrapper may separately permit unrelated L0 hits during buffered Normal stores and older Normal reads |
 | `CACHE_NORMAL_MEMORY` | 0 | Optional Normal read-cache/write-through policy; FROST enables it, excluding the debug data page |
 | `L0_CACHE_DEPTH` | 128 (`riscv_pkg::LqL0Depth`) | LQ L0 entries; FROST passes 256 with Normal read caching |
@@ -162,8 +162,9 @@ not the reverse. `cpu_ooo`'s early recovery relies on the forward direction,
 which the wrapper formal target checks. `o_tlb_invalidate` is the ROB's
 SFENCE.VMA window OR the CSR file's `i_csr_translation_flush_req`.
 
-Both CDB lanes are registered once after the arbiter; the ROB and every
-station wake from the registered lanes. The grants stay combinational, so an
+Both CDB lanes are registered once after the arbiter. The ROB and stations
+receive the registered lanes; INT_RS and MEM_RS also receive early load
+results as described below. The grants stay combinational, so an
 adapter can clear its holding register in the cycle it is granted. The
 wrapper also keeps copies of each lane's register for particular consumers
 (per-station tag copies, an INT_RS copy with its own issue-compare valid and
@@ -319,22 +320,28 @@ the wrapper formal target.
 A pending uncached-store completion also inhibits early load wakeup: the
 early token may only announce the load selected for the actual MEM broadcast.
 
-## Early dependent memory wakeup
+## Early load wakeup
 
-With `EARLY_LOAD_WAKEUP=1` (the default), a load's result wakes its dependents
-in MEM_RS one cycle before the registered CDB broadcast, so a load or store
-whose address or store data comes from an earlier load can issue a cycle
-sooner. The other stations, the ROB, and the SQ still see the load on the
-registered CDB as usual.
+With `EARLY_LOAD_WAKEUP=1` (the default), a staged load result can wake its
+dependents in INT_RS and MEM_RS one cycle before the registered CDB
+broadcast. MUL_RS, FP_RS, the ROB, and the SQ receive the registered result.
 
-`mem_wakeup_merge` places the LQ's staged, non-faulting result into an idle
-registered CDB lane on MEM_RS's CDB inputs only. It never displaces a
-registered broadcast; if both lanes are busy, the load wakes MEM_RS through
-the registered copy a cycle later. The merge is enabled only when the LQ
-result is the MEM adapter's input this cycle, with no store fault or SC result
-ahead of it and the adapter idle. Because the merged lanes decide MEM_RS's
-next issue, MEM_RS exports one look-ahead candidate per combination of lane
-valids, and the LQ selects among them after registering (see the
+`mem_wakeup_merge` places the LQ's staged, nonfaulting result into an idle
+registered CDB lane on each station's inputs. Valid registered broadcasts
+have priority. If both lanes are busy, dependents wait for the registered
+load result. The merge requires the LQ result to own the MEM adapter's input,
+with no store fault, SC result, or uncached-store completion ahead of it and
+the adapter idle.
+
+INT_RS merges the token into its local CDB copies. Its issue tag inputs use
+separate copies with the same lane selection. Both issue ports capture the
+final operands in stage 2, including the early load value. A stalled packet
+holds those operands. An assertion checks that issue and resident wakeup
+see matching tags and valid bits.
+
+The merged lanes also decide MEM_RS's next issue. MEM_RS exports one
+look-ahead candidate per combination of lane valids, and the LQ selects among
+them after registering (see the
 [reservation station](../reservation_station/README.md#pre-issue-look-ahead)).
 
 This is safe because:
@@ -344,8 +351,8 @@ This is safe because:
   the CDB is two lanes wide. The wrapper asserts that every injected packet is
   also broadcast in the same cycle.
 - The token is built from registered LQ state and ignores recovery. During
-  recovery MEM_RS accepts no dispatch and moves no new entry into stage 2, and
-  a packet already in stage 2 captured its operands earlier, so a token in a
+  recovery INT_RS and MEM_RS accept no dispatch and select no entry for stage 2.
+  A packet in stage 2 captured its operands earlier, so a token in a
   recovery cycle can only mark sources ready in surviving resident entries. A
   surviving consumer is older than the recovery point, so its producer load is
   too; that load is delayed, not discarded, and its staged value is final. A
@@ -374,8 +381,10 @@ top-level and cache counter blocks. See the
   collisions, flushes, and stale-tag probes. `tomasulo_wrapper_no_early_load`
   runs the same suite with early load wakeup off, and
   `tomasulo_wrapper_split_rs` tests per-station dispatch as the CPU uses it.
-  `tomasulo_load_wakeup` covers early wakeup, and `tomasulo_coherence` and
-  `tomasulo_coherence_l0_256` cover DMA coherence races.
+  `tomasulo_load_wakeup` covers integer and memory wakeup, both integer issue
+  ports, operand capture, lane contention, stalls, recovery, and tag reuse
+  through retirement wraparound.
+  `tomasulo_coherence` and `tomasulo_coherence_l0_256` cover DMA coherence races.
 - The `tomasulo_wrapper` formal target checks commit propagation, flush
   composition, INT_RS's side-RAM tag rule against the real ROB, and the SC and
   CDB-copy assertions above, with translation off; its `fp_repair_bmc` task
