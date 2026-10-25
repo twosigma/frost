@@ -283,7 +283,7 @@ can be debugged and where each one first stops.
 | `fp_dyn_rm_test/` | FP instructions with the dynamic rounding mode trap as illegal while `frm` holds a reserved value; static modes and a valid `frm` work |
 | `fpu_assembly_test/` | FP hazards: squashed FP loads and load-use stalls |
 | `fpu_test/` | Subnormals, fused multiply-add, rounding, and conversions |
-| `freertos_demo/` | FreeRTOS tasks passing data through a queue and sharing the UART under a mutex, while worker tasks increment one counter with `amoadd.w` and the 1 ms tick time-slices them; a tick inside a critical section must defer its task switch |
+| `freertos_demo/` | FreeRTOS V11.3.2 tasks passing data through a queue and sharing the UART under a mutex, while worker tasks increment one counter with `amoadd.w` and the 1 ms tick time-slices them; a tick inside a critical section must defer its task switch |
 | `fs_off_test/` | F/D instructions with `mstatus.FS` Off: illegal-instruction ahead of access and misaligned faults, no device read by a trapping FP load, and `mstatus.FS` writes, through `mstatus` or `sstatus`, that apply from the next instruction |
 | `hello_world/` | Prints a greeting and the cycle-count delta once a second; the program the bitstream boots |
 | `instret_test/` | `minstret` counts NOPs, `mret`, `fence.i`, `sfence.vma`, a timer-ended `wfi`, and timer takes across a device load; 96 WFI deadlines and 48 device-load deadlines at four padding phases cover AXI latency, with each take's count equal to the instructions before `mepc` |
