@@ -1,6 +1,6 @@
 {
   "assumptions_not_claimed_as_rtl_calibration": [
-    "Cache T/W-stage sequencing, PLRU/bimodal insertion probability, and exact pipeline stage latencies are structural timing models pending cycle-by-cycle trace calibration.",
+    "Cache stage timing, insertion-LFSR phase, and pipeline stage latencies are abstractions that require cycle-by-cycle calibration.",
     "The default DDR endpoint models FROST's single-channel axi_behavioral_memory.sv (LATENCY=30, NUM_SLOTS=max(L2MaxSlots,8)); board DDR4 MIG refresh and bank/row timing require hardware or VIP trace calibration.",
     "Workload micro-ops are representative pressure patterns, not captured Redis, HTTP, Linux or FaaS execution traces.",
     "The model does not execute the RISC-V ISA, model Sv39 page walks/DMA coherence traffic as workload events, or prove functional RTL equivalence.",

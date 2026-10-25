@@ -298,3 +298,90 @@ def test_early_load_requires_a_free_registered_lane(
     pipeline.loop.cycle += 1
     pipeline._drain_cdb()
     assert pipeline._deps_ready(consumer)
+
+
+def cache_for_replacement(bimodal: bool = False) -> Any:
+    """Create one four-way set whose lower level holds fills pending."""
+    loop = model.EventLoop()
+
+    class Lower:
+        def submit(self, request: Any) -> bool:
+            return True
+
+    return model.CacheLevel(
+        "test",
+        loop,
+        Lower(),
+        256,
+        64,
+        4,
+        4,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        4,
+        bimodal_insert=bimodal,
+    )
+
+
+def test_tree_plru_and_reserved_subtrees() -> None:
+    """The victim walk visits all four ways and avoids reserved subtrees."""
+    cache = cache_for_replacement()
+    for index, line in enumerate(cache._ways(0)):
+        line.valid, line.tag = True, index
+    for expected in [0, 2, 1, 3, 0]:
+        assert cache._victim(0) == expected
+        cache._touch(0, expected)
+    cache.plru[0] = 0
+    for index in range(4):
+        assert cache._victim(0) == index
+        cache._ways(0)[index].reserved_by = index
+    assert cache._victim(0) is None
+    cache._ways(0)[2].reserved_by = None
+    assert cache._victim(0) == 2
+
+
+def test_bimodal_lfsr_advances_with_cycles_and_only_gates_allocations() -> None:
+    """The RTL seed touches allocation at cycle 154 but not at cycle 153."""
+    cache = cache_for_replacement(True)
+    cache.loop.cycle = 153
+    cache._touch(0, 0, allocation=True)
+    assert cache.plru.get(0, 0) == 0
+    cache.loop.cycle = 154
+    cache._touch(0, 0, allocation=True)
+    assert cache._insert_lfsr == 0xDCA0
+    assert cache.plru[0] == 3
+    cache.loop.cycle = 155
+    cache._touch(0, 3, allocation=True)
+    assert cache.plru[0] == 3
+    cache._touch(0, 3)
+    assert cache.plru[0] == 2
+
+
+def test_bimodal_changes_conflict_workload() -> None:
+    """Insertion policy changes misses when five lines compete for four ways."""
+    builder = model.ProgramBuilder()
+    dependency: tuple[int, ...] = ()
+    for index in range(100):
+        dependency = (
+            builder.emit(
+                "load", 0x80002000, 0x80600000 + (index % 5) * 32768, dependency
+            ),
+        )
+    results = []
+    for bimodal in (False, True):
+        config = replace(
+            model.ModelConfig(),
+            l0_cache_depth=0,
+            l2_prefetch=False,
+            l1d_bimodal_insert=bimodal,
+        )
+        results.append(model.FrostPipeline(config, builder.ops).run())
+    assert results[0]["cycles"] != results[1]["cycles"]
+    assert (
+        results[0]["memory"]["l1d"]["stats"]["misses"]
+        != results[1]["memory"]["l1d"]["stats"]["misses"]
+    )
