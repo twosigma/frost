@@ -126,8 +126,8 @@ ENV PATH="/opt/gcc/bin:${PATH}"
 
 # cocotb embeds Python, so install the shared library and register it with ld.so.
 # Keep /usr/bin/python3 for distribution utilities; repo commands use /usr/local.
-ARG PYTHON_VERSION=3.14.7
-ARG PYTHON_SHA256=3b48dac8fb59f62eaa67ac83c1eb12bda1b7a08406dd286e252c11a66be27f81
+ARG PYTHON_VERSION=3.14.9
+ARG PYTHON_SHA256=e02d9ac21cebda6e46435369744a92c65cc7cd8669697694122cf97ffacd1e53
 RUN curl -fL -o /tmp/python.tar.xz https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tar.xz \
     && echo "${PYTHON_SHA256}  /tmp/python.tar.xz" | sha256sum -c - \
     && tar -xJf /tmp/python.tar.xz -C /tmp \
@@ -157,9 +157,9 @@ RUN echo '--gcc-toolchain=/opt/gcc' > /opt/llvm/bin/clang.cfg \
     && clang-tidy --version | grep -F "version ${LLVM_VERSION}" \
     && clang-format --version | grep -F "version ${LLVM_VERSION}"
 
-ARG PIP_VERSION=26.2.1
-ARG CMAKE_VERSION=4.4.3
-ARG MESON_VERSION=1.12.0
+ARG PIP_VERSION=26.2.2
+ARG CMAKE_VERSION=4.4.4
+ARG MESON_VERSION=1.12.1
 ARG NINJA_VERSION=1.13.2
 RUN python3 -m pip install --no-cache-dir \
     "pip==${PIP_VERSION}" "cmake==${CMAKE_VERSION}" "meson==${MESON_VERSION}" "ninja==${NINJA_VERSION}"
@@ -280,7 +280,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Python's ensurepip does not install setuptools or wheel, and QEMU's offline
 # build environment needs both to install its bundled qemu.qmp wheel.
-ARG SETUPTOOLS_VERSION=84.1.0
+ARG SETUPTOOLS_VERSION=84.2.1
 ARG WHEEL_VERSION=0.48.0
 RUN python3 -m pip install --no-cache-dir \
     "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
@@ -306,7 +306,7 @@ RUN curl -fL -o /tmp/qemu.tar.xz https://download.qemu.org/qemu-${QEMU_VERSION}.
 ARG COCOTB_VERSION=2.1.0
 ARG PYTEST_VERSION=9.1.1
 ARG PYTEST_COV_VERSION=7.1.0
-ARG PRE_COMMIT_VERSION=4.6.2
+ARG PRE_COMMIT_VERSION=4.7.0
 ARG CLICK_VERSION=8.5.0
 RUN python3 -m pip install --no-cache-dir \
     "cocotb==${COCOTB_VERSION}" \

@@ -15,7 +15,7 @@
 repos:
   # Python - Ruff linter and formatter
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.8
+    rev: v0.17.2
     hooks:
       - id: ruff-check
         args: [--fix]
@@ -23,7 +23,7 @@ repos:
 
   # Python - Type checking with mypy
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.3.1
+    rev: v2.4.0
     hooks:
       - id: mypy
         # Match CI's cocotb typing APIs.
