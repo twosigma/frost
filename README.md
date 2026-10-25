@@ -270,25 +270,25 @@ the image.
 | Category | Tool | Version |
 |----------|------|---------|
 | **Image** | Ubuntu | 26.04 |
-| **Runtime** | Python | 3.14.7 (native scripts support 3.12+) |
-| | Node.js / npm | 26.9.0 / 12.0.2 |
+| **Runtime** | Python | 3.14.9 (native scripts support 3.12+) |
+| | Node.js / npm | 26.12.1 / 12.2.1 |
 | **Compiler** | Native GCC / G++ | 16.2.0 |
-| | Clang / clang-tidy / clang-format | 23.1.1 |
+| | Clang / clang-tidy / clang-format | 23.1.4 |
 | | RISC-V GCC for bare metal, OpenSBI and Linux (Bootlin musl) | 15.3.0 (2026.08-1) |
-| | pip / setuptools / wheel | 26.2.1 / 84.1.0 / 0.48.0 |
-| **Build** | CMake / Meson / Ninja | 4.4.3 / 1.12.0 / 1.13.2 |
+| | pip / setuptools / wheel | 26.2.2 / 84.2.1 / 0.48.0 |
+| **Build** | CMake / Meson / Ninja | 4.4.4 / 1.12.1 / 1.13.2 |
 | | Buildroot / OpenSBI | 2026.08 / 1.9 |
 | **Testbench** | Cocotb / pytest / pytest-cov | 2.1.0 / 9.1.1 / 7.1.0 |
-| **Simulator** | Verilator / QEMU | 5.052 / 11.1.1 |
+| **Simulator** | Verilator / QEMU | 5.052 / 11.1.2 |
 | | Spike | `02b1dc182164bb73b19b050676dd89f0834f8b2e` |
-| | Sail RISC-V model / QuickCheckVEngine | 0.15 / `5e15965a819ca1be9f14d2e8e319e98fd89a557f` |
+| | Sail RISC-V model / QuickCheckVEngine | 0.16 / `5e15965a819ca1be9f14d2e8e319e98fd89a557f` |
 | **Synthesis** | Yosys / sv2v | 0.70 / 0.0.13 |
-| **Formal** | SymbiYosys / Z3 / Boolector | 0.70 / 5.1.0 / 3.2.4 |
+| **Formal** | SymbiYosys / Z3 / Boolector | 0.70 / 5.3.2 / 3.2.4 |
 | **Debug** | OpenOCD | 0.12.0 (Ubuntu package) |
 | **FPGA** | Vivado (native, separately installed and validated) | 2025.2 |
 | **ASIC** | OpenROAD-flow-scripts (its own image) | 26Q4 |
-| **Linting** | pre-commit / Ruff / mypy | 4.6.2 / 0.16.8 / 2.3.1 |
-| | Verible | 0.0-4294-gc1d8f5e8 |
+| **Linting** | pre-commit / Ruff / mypy | 4.7.0 / 0.17.2 / 2.4.0 |
+| | Verible | 0.0-4296-g0f262651 |
 | **CLI** | Click | 8.5.0 |
 | **Extension** | TypeScript / vsce | 7.0.2 / 4.0.0 |
 
