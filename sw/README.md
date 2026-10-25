@@ -271,7 +271,7 @@ can be debugged and where each one first stops.
 | `ddr_bench/` | Memory-bound kernels on cold cached-DDR regions (sequential, strided, interleaved, interleaved within one cache set, random, dependent, copy, write), with cycles and cache-counter deltas per kernel; `DDR_BENCH_SHIFT` shrinks them for simulation |
 | `ddr_exec_test/` | Code in DDR: calls into BRAM, recursion, a body larger than the fetch buffer, cold and warm runs |
 | `ddr_heap_test/` | Multi-MiB `malloc` from the DDR heap, checked for address aliasing |
-| `ddr_mlp_test/` | Independent cold DDR loads must overlap their L1D misses, measured with the profiling counters in a build with 4 KiB L1D and L2; a pointer chase is the control |
+| `ddr_mlp_test/` | Independent cold DDR loads must overlap their L1D misses, measured with the profiling counters; a pointer chase is the control. The default eviction window targets 4 KiB caches. `DDR_MLP_FULL_CACHE=1` uses conflicting sets for the 128 KiB L1D and 2 MiB L2; the CLI-only `ddr_mlp_test_full_cache` bench selects this mode |
 | `ddr_smc_test/` | Self-modifying code in DDR: store, `fence.i`, then execute cold and warm |
 | `ddr_test/` | Cached-DDR loads and stores, byte strobes, evictions, the preloaded `.ddr_rodata` image, and AMOs |
 | `debug_target/` | Debuggee with known symbols for the JTAG debug tests; waits for a debugger to write its flags |
