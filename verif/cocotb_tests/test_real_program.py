@@ -265,8 +265,9 @@ async def generate_divided_clock(dut: Any) -> None:
     clock_edge = RisingEdge(dut.i_clk)
     divided = dut.i_clk_div4
     level = 0
-    dut.i_power_on_rst.value = 1
-    divided.value = level
+    # Establish idle inputs before HDL evaluates a possible startup clock edge.
+    dut.i_power_on_rst.value = Immediate(1)
+    divided.value = Immediate(level)
     for _ in range(4):
         await clock_edge
         await clock_edge
