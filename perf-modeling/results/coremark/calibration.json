@@ -7,6 +7,7 @@
       "alu_issue_width": 2,
       "axi_data_bytes": 64,
       "axi_id_bits": 5,
+      "axi_id_pool_size": 32,
       "branch_recovery_cycles": 2,
       "cache_fill_cycles": 1,
       "cache_normal_memory": true,
@@ -35,6 +36,7 @@
       "l1_line_bytes": 32,
       "l1_tag_cycles": 1,
       "l1d_bytes": 131072,
+      "l1d_id_bits": 4,
       "l1d_mshrs": 8,
       "l1d_ways": 4,
       "l1d_wb_slots": 2,
@@ -43,6 +45,7 @@
       "l1i_ways": 4,
       "l2_bytes": 2097152,
       "l2_data_cycles": 6,
+      "l2_id_bits": 5,
       "l2_line_bytes": 64,
       "l2_mshrs": 4,
       "l2_prefetch": true,
@@ -76,7 +79,10 @@
     },
     "cpu_top": {
       "axi_master": {
-        "read_beats": 102
+        "inflight_cycles": 3060,
+        "max_inflight": 4,
+        "read_beats": 102,
+        "responses": 102
       },
       "l1d": {
         "occupancy": {
@@ -156,7 +162,10 @@
     "ipc": 1.0087068687520155,
     "memory": {
       "axi": {
-        "read_beats": 102
+        "inflight_cycles": 3060,
+        "max_inflight": 4,
+        "read_beats": 102,
+        "responses": 102
       },
       "ddr": {
         "configuration": {
@@ -274,7 +283,7 @@
       }
     },
     "micro_ops": 3128,
-    "micro_ops_per_second": 59187,
+    "micro_ops_per_second": 65222,
     "model_version": "1.0",
     "pipeline": {
       "max_occupancy": {
@@ -306,7 +315,7 @@
     },
     "retired": 3128,
     "seed": 11,
-    "simulated_cycles_per_second": 58677,
+    "simulated_cycles_per_second": 64659,
     "soc_top": {
       "configuration": {
         "bram_base": 0,
@@ -351,7 +360,7 @@
         "ddr_reads_forwarded": 102
       }
     },
-    "wall_time_seconds": 0.052849,
+    "wall_time_seconds": 0.047959,
     "workload": "coremark"
   },
   "observed": {

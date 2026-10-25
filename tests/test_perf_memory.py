@@ -145,3 +145,109 @@ def test_invalid_channel_settings(changes: dict[str, Any]) -> None:
     """Invalid queue, interleave, and service settings fail before simulation."""
     with pytest.raises(ValueError):
         replace(model.DdrConfig(controller="interleaved"), **changes).validate()
+
+
+class HeldSoc:
+    """Hold transactions until a test supplies an out-of-order response."""
+
+    def __init__(self) -> None:
+        """Create an accepting endpoint with no transactions."""
+        self.transactions: list[Any] = []
+        self.ready = True
+
+    def submit_axi(self, tx: Any) -> bool:
+        """Accept and record a transaction only while ready."""
+        if self.ready:
+            self.transactions.append(tx)
+        return self.ready
+
+
+def test_axi_pool_ownership_and_out_of_order_release() -> None:
+    """Only a matching response releases its ID and the shared pool entry."""
+    loop = model.EventLoop()
+    soc = HeldSoc()
+    bridge = model.AxiBridge(loop, soc, 64, 6, 2)
+    completed: list[tuple[int, bool]] = []
+
+    def request(slot: int, write: bool = False) -> Any:
+        return model.Request(
+            slot * 64,
+            write,
+            "test",
+            model.TransactionId("l2", "writeback" if write else "fill", slot, 5),
+            lambda ok: completed.append((slot, ok)),
+        )
+
+    assert bridge.submit(request(7))
+    loop.cycle += 1
+    assert bridge.submit(request(3, True))
+    assert [tx.axi_id for tx in soc.transactions] == [7, 19]
+    loop.cycle += 1
+    assert not bridge.submit(request(0))
+    assert not bridge.submit(request(7))
+    soc.transactions[1].complete(False)
+    assert completed == [(3, False)]
+    assert bridge.submit(request(0))
+    assert soc.transactions[2].axi_id == 0
+    assert bridge.inflight.keys() == {7, 0}
+    soc.transactions[0].complete(True)
+    soc.transactions[2].complete(True)
+    assert not bridge.inflight
+    with pytest.raises(RuntimeError, match="owner"):
+        soc.transactions[0].complete(True)
+
+
+def test_axi_rejected_request_does_not_own_an_id() -> None:
+    """Downstream backpressure leaves the ID pool available for a retry."""
+    loop = model.EventLoop()
+    soc = HeldSoc()
+    bridge = model.AxiBridge(loop, soc, 64, 5, 1)
+    req = model.Request(
+        0, False, "test", model.TransactionId("l2", "fill", 0, 5), lambda ok: None
+    )
+    soc.ready = False
+    assert not bridge.submit(req)
+    assert not bridge.inflight
+    soc.ready = True
+    assert bridge.submit(req)
+
+
+def test_explicit_zero_axi_id_is_preserved() -> None:
+    """An explicit zero is distinct from an unspecified AXI ID."""
+    tx = model.AxiTransaction(
+        0,
+        False,
+        model.TransactionId("l2", "fill", 7, 5),
+        lambda ok: None,
+        "test",
+        axi_id=0,
+    )
+    assert tx.axi_id == 0
+
+
+def test_axi_width_and_pool_are_independent_of_cache_slots() -> None:
+    """The wire width covers internal IDs while a separate pool limits concurrency."""
+    cfg = replace(model.ModelConfig(), axi_id_pool_size=1)
+    cfg.validate()
+    cfg = replace(
+        cfg, axi_id_bits=6, cpu_axi_id_bits=7, ddr=replace(cfg.ddr, id_bits=6)
+    )
+    cfg.validate()
+    with pytest.raises(ValueError, match="truncation"):
+        replace(cfg, l2_id_bits=7).validate()
+    with pytest.raises(ValueError, match="pool"):
+        replace(cfg, axi_id_pool_size=65).validate()
+    with pytest.raises(ValueError, match="slots"):
+        replace(cfg, l2_mshrs=32).validate()
+    replace(cfg, l2_mshrs=32, l2_id_bits=6).validate()
+
+
+def test_axi_pool_limit_changes_memory_stress_cycles() -> None:
+    """A one-entry pool serializes misses despite spare L2 miss slots."""
+    baseline = model.run_workload(model.ModelConfig(), "memory_stress", 11)
+    limited = model.run_workload(
+        replace(model.ModelConfig(), axi_id_pool_size=1), "memory_stress", 11
+    )
+    assert limited["cycles"] > baseline["cycles"]
+    assert limited["memory"]["axi"]["max_inflight"] == 1
+    assert limited["memory"]["axi"]["id_pool_backpressure"] > 0

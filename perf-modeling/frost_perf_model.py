@@ -188,8 +188,10 @@ class ModelConfig:
     l2_line_bytes: int = 64
     l1i_mshrs: int = 2
     l1d_mshrs: int = 8
+    l1d_id_bits: int = 4
     l1d_wb_slots: int = 2
     l2_mshrs: int = 4
+    l2_id_bits: int = 5
     l2_wb_slots: int = 2
     l2_waiters: int = 2
     l2_prefetch: bool = True
@@ -209,6 +211,7 @@ class ModelConfig:
         6  # 6-bit AXI ID at cpu_top master boundary (0..31 cache, 32 data, 34/35 fetch)
     )
     axi_id_bits: int = 5  # 5-bit L2 downstream / board DDR AXI ID width (DdrAxiIdBits)
+    axi_id_pool_size: int = 32
     soc: SocConfig = field(default_factory=SocConfig)
     ddr: DdrConfig = field(default_factory=DdrConfig)
 
@@ -228,24 +231,26 @@ class ModelConfig:
                 raise ValueError(f"invalid {label} geometry")
         if self.l2_line_bytes % self.l1_line_bytes:
             raise ValueError("L2 line must contain an integral number of L1 lines")
-        # L1D downstream ID is {type, slot} in a fixed four-bit CPU-top line ID.
-        if self.l1d_mshrs > 8 or self.l1d_wb_slots > 8:
-            raise ValueError(
-                "FROST L1D four-bit {type,slot} downstream ID permits at most 8 slots/type"
-            )
-        # L2 downstream ID is five bits in cpu_top / soc_axi_slave, leaving 16 per type.
-        if self.l2_mshrs > 16 or self.l2_wb_slots > 16:
-            raise ValueError(
-                "FROST five-bit L2 downstream {type,slot} ID permits at most 16 slots/type"
-            )
+        for label, misses, writes, bits in (
+            ("L1D", self.l1d_mshrs, self.l1d_wb_slots, self.l1d_id_bits),
+            ("L2", self.l2_mshrs, self.l2_wb_slots, self.l2_id_bits),
+        ):
+            if (
+                bits < 2
+                or min(misses, writes) < 1
+                or max(misses, writes) > 1 << (bits - 1)
+            ):
+                raise ValueError(f"{label} slots must fit its {{type,slot}} ID width")
         if self.axi_data_bytes != self.l2_line_bytes:
             raise ValueError("the modeled AXI beat is exactly one L2 line")
-        if self.cpu_axi_id_bits < 6:
+        if self.cpu_axi_id_bits < max(6, self.axi_id_bits + 1):
             raise ValueError(
                 "cpu_memory_fabric requires at least 6 AXI ID bits at the cpu_top boundary"
             )
-        if self.axi_id_bits != 5 or self.ddr.id_bits != 5:
-            raise ValueError("FROST soc_axi_slave DDR port uses 5-bit AXI IDs (0..31)")
+        if self.axi_id_bits < self.l2_id_bits or self.ddr.id_bits != self.axi_id_bits:
+            raise ValueError("DDR AXI IDs must carry each L2 ID without truncation")
+        if not 1 <= self.axi_id_pool_size <= 1 << self.axi_id_bits:
+            raise ValueError("AXI ID pool must fit the AXI width")
         if self.ddr.line_bytes != self.axi_data_bytes:
             raise ValueError("DDR line_bytes must match the L2/AXI beat width")
         if (
@@ -708,12 +713,12 @@ class AxiTransaction:
     transaction_id: TransactionId
     complete: Completion
     source: str
-    axi_id: int = 0
+    axi_id: int = -1
     bytes_size: int = 64
 
     def __post_init__(self) -> None:
         """Take the AXI ID from the transaction ID when none is given."""
-        if self.axi_id == 0 and isinstance(self.transaction_id, TransactionId):
+        if self.axi_id == -1:
             self.axi_id = self.transaction_id.encode()
 
 
@@ -1122,7 +1127,7 @@ class SocTopModel:
         addr = transaction.address
         if self._is_ddr_address(addr):
             if (
-                transaction.axi_id >= 32
+                not 0 <= transaction.axi_id < 1 << self.config.axi_id_bits
                 or transaction.bytes_size != self.config.axi_data_bytes
             ):
                 self.stats["ddr_protocol_reject"] += 1
@@ -1132,7 +1137,7 @@ class SocTopModel:
             ddr_tx = dataclasses.replace(
                 transaction,
                 address=ddr_offset,
-                axi_id=transaction.axi_id & 0x1F,
+                axi_id=transaction.axi_id,
             )
             if transaction.is_write and self.soc_config.ddr_aw_register_cycles > 0:
                 if self._aw_slot_busy:
@@ -1216,15 +1221,35 @@ class AxiBridge:
         soc: SocTopPort,
         axi_data_bytes: int,
         axi_id_bits: int,
+        id_pool_size: int | None = None,
     ) -> None:
         """Send line requests to soc, accepting one read and one write per cycle."""
         self.loop = loop
         self.soc = soc
         self.axi_data_bytes = axi_data_bytes
         self.axi_id_bits = axi_id_bits
+        self.id_pool_size = (1 << axi_id_bits) if id_pool_size is None else id_pool_size
+        if not 1 <= self.id_pool_size <= 1 << axi_id_bits:
+            raise ValueError("AXI ID pool must fit the AXI width")
+        self.inflight: dict[int, TransactionId] = {}
+        self._accounted_cycle = loop.cycle
         self._read_accept_cycle = -1
         self._write_accept_cycle = -1
         self.stats: Counter = Counter()
+
+    def _account(self) -> None:
+        self.stats["inflight_cycles"] += (
+            self.loop.cycle - self._accounted_cycle
+        ) * len(self.inflight)
+        self._accounted_cycle = self.loop.cycle
+
+    def _complete(self, axi_id: int, request: Request, ok: bool) -> None:
+        if self.inflight.get(axi_id) != request.request_id:
+            raise RuntimeError("AXI response has no matching owner")
+        self._account()
+        del self.inflight[axi_id]
+        self.stats["responses"] += 1
+        request.complete(ok)
 
     def submit(self, request: Request) -> bool:
         """Send a line request to soc_top as an AXI transaction.
@@ -1253,18 +1278,29 @@ class AxiBridge:
                 return False
 
         axi_id = request.request_id.encode()
+        if axi_id in self.inflight:
+            self.stats["duplicate_id_backpressure"] += 1
+            return False
+        if len(self.inflight) >= self.id_pool_size:
+            self.stats["id_pool_backpressure"] += 1
+            return False
+        self._account()
+        self.inflight[axi_id] = request.request_id
         accepted = self.soc.submit_axi(
             AxiTransaction(
                 address=request.address,
                 is_write=request.is_write,
                 transaction_id=request.request_id,
-                complete=request.complete,
+                complete=lambda ok: self._complete(axi_id, request, ok),
                 source=request.source,
                 axi_id=axi_id,
                 bytes_size=self.axi_data_bytes,
             )
         )
         if accepted:
+            self.stats["max_inflight"] = max(
+                self.stats["max_inflight"], len(self.inflight)
+            )
             if request.is_write:
                 self._write_accept_cycle = self.loop.cycle
                 self.stats["write_beats"] += 1
@@ -1272,6 +1308,7 @@ class AxiBridge:
                 self._read_accept_cycle = self.loop.cycle
                 self.stats["read_beats"] += 1
         else:
+            del self.inflight[axi_id]
             self.stats["controller_backpressure"] += 1
         return accepted
 
@@ -1352,7 +1389,13 @@ class CpuTopMemoryHierarchy:
             if isinstance(self.soc, SocTopModel)
             else (controller or SingleChannelDdrController(loop, config.ddr))
         )
-        self.axi = AxiBridge(loop, self.soc, config.axi_data_bytes, config.axi_id_bits)
+        self.axi = AxiBridge(
+            loop,
+            self.soc,
+            config.axi_data_bytes,
+            config.axi_id_bits,
+            config.axi_id_pool_size,
+        )
         self.l2 = CacheLevel(
             "l2",
             loop,
@@ -1367,7 +1410,7 @@ class CpuTopMemoryHierarchy:
             config.l2_data_cycles,
             config.cache_fill_cycles,
             config.cache_response_cycles,
-            config.axi_id_bits,
+            config.l2_id_bits,
         )
         self.adapter = LineSizeAdapter(
             self.l2, config.l1_line_bytes, config.l2_line_bytes
@@ -1387,7 +1430,7 @@ class CpuTopMemoryHierarchy:
             config.l1_data_cycles,
             config.cache_fill_cycles,
             config.cache_response_cycles,
-            4,
+            config.l1d_id_bits,
             bimodal_insert=True,
             miss_observer=self.prefetcher.observe,
         )
@@ -1410,6 +1453,7 @@ class CpuTopMemoryHierarchy:
 
     def summary(self) -> dict[str, Any]:
         """Return the levels' statistics and occupancy and the SoC and DDR summaries."""
+        self.axi._account()
         return {
             "l1i": {"stats": dict(self.l1i.stats), "occupancy": self.l1i.occupancy()},
             "l1d": {"stats": dict(self.l1d.stats), "occupancy": self.l1d.occupancy()},
