@@ -51,3 +51,12 @@ def test_sweep_configurations_are_valid_and_named() -> None:
     assert len({config.name for config in configs}) == len(configs)
     for config in configs:
         config.validate()
+
+
+@pytest.mark.parametrize("outstanding,transactions", [(2, 2), (64, 256)])
+def test_controller_probe_rejects_short_response_bursts(
+    outstanding: int, transactions: int
+) -> None:
+    """A short channel burst cannot stand in for sustained controller service."""
+    with pytest.raises(ValueError, match="transactions"):
+        sweep.controller_probe(4, 30, 8, outstanding, transactions)
