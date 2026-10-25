@@ -74,6 +74,7 @@ module axi_checker #(
 `ifndef FORMAL
   localparam int unsigned BusSize = $clog2(DATA_WIDTH / 8);
   localparam int unsigned AwQueue = 16;
+  logic reset_seen_q = 1'b0;
 
   // Whether an AW or AR form is legal AXI4 for this bus.
   function automatic logic legal_burst(input logic [11:0] addr, input logic [7:0] len,
@@ -117,16 +118,17 @@ module axi_checker #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
+      reset_seen_q <= 1'b1;
       aw_wait_q <= 1'b0;
-      w_wait_q  <= 1'b0;
-      b_wait_q  <= 1'b0;
+      w_wait_q <= 1'b0;
+      b_wait_q <= 1'b0;
       ar_wait_q <= 1'b0;
-      r_wait_q  <= 1'b0;
-      aw_head   <= 0;
-      aw_count  <= 0;
-      w_beats   <= 0;
-      w_led_q   <= 1'b0;
-    end else begin
+      r_wait_q <= 1'b0;
+      aw_head <= 0;
+      aw_count <= 0;
+      w_beats <= 0;
+      w_led_q <= 1'b0;
+    end else if (reset_seen_q) begin
       if (aw_wait_q && !(i_awvalid && (aw_q == {i_awid, i_awaddr, i_awlen, i_awsize, i_awburst,
                                                   i_awlock})))
         $error("axi_checker %0d: AW withdrawn or changed before AWREADY", PORT);

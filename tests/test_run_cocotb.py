@@ -2854,6 +2854,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="axil_reg_bridge",
         description="AXI4-Lite independent channels, register mapping, stalls and reset",
     ),
+    "axi_checker": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_axi_checker",
+        hdl_toplevel_module="axi_checker",
+        description="AXI checker reset history and held channel payloads",
+    ),
     "axi_mux": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_axi_mux",
         hdl_toplevel_module="axi_mux_test_harness",
