@@ -97,8 +97,11 @@ def controller_probe(
     Each accepted line has a distinct internal owner until its response.
     Cache ID capacity and endpoint queues cover the largest pool under test.
     """
-    if transactions < 2 or not 1 <= outstanding <= 128:
-        raise ValueError("probe requires at least two transactions and 1..128 owners")
+    if not 1 <= outstanding <= 128:
+        raise ValueError("probe requires 1..128 owners")
+    minimum_transactions = max(256, 8 * outstanding)
+    if transactions < minimum_transactions:
+        raise ValueError(f"probe requires at least {minimum_transactions} transactions")
     config = model.with_config(
         model.ModelConfig(),
         "controller_probe",
@@ -153,6 +156,7 @@ def controller_probe(
     return {
         "configuration": dataclasses.asdict(config),
         "transactions": transactions,
+        "measurement": "finite_response_window",
         "cycles": loop.cycle,
         "first_response_cycle": completed[0],
         "last_response_cycle": completed[-1],
@@ -204,6 +208,8 @@ def main() -> None:
     parser.add_argument("--mlp-lines", type=int, default=512)
     parser.add_argument("--probe-transactions", type=int, default=4096)
     args = parser.parse_args()
+    if args.group in {"controller", "all"} and args.probe_transactions < 1024:
+        parser.error("the controller grid requires at least 1024 probe transactions")
     results: dict[str, Any] = {
         "provenance": provenance(),
         "runs": [],
