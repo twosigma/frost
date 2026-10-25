@@ -21,6 +21,7 @@ import importlib.util
 from pathlib import Path
 
 import cocotb
+from cocotb.handle import Immediate
 from cocotb.triggers import Timer
 
 
@@ -253,6 +254,7 @@ def _drive_pc_metadata_replica(dut: Any, positional_metadata: int) -> None:
 
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to idle values."""
+    dut.i_metadata_check_valid.value = Immediate(0)
     current_word = _word(lo=COMPRESSED_NOP, hi=0x0013)
     next_word = _word(lo=0x0023, hi=0x0033)
     dut.i_instr.value = dut.i_instr_high.value = _fetch(
@@ -282,6 +284,7 @@ def _clear_inputs(dut: Any) -> None:
 
 async def _settle(dut: Any) -> None:
     """Drive the inputs derived from pc_reg, the window, and the buffer, then settle."""
+    dut.i_metadata_check_valid.value = Immediate(0)
     # Apply any instruction-bus write made by the caller before deriving its
     # companion predicate; an immediate VPI read can still see the old value.
     await Timer(1, unit="ps")
@@ -303,6 +306,7 @@ async def _settle(dut: Any) -> None:
     dut.i_instr_buffer_sideband.value = buffer_sb | _extra_sideband(
         int(dut.i_instr_buffer.value)
     )
+    dut.i_metadata_check_valid.value = 1
     await Timer(1, unit="ns")
 
 
