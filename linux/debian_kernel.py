@@ -82,21 +82,19 @@ def run_logged(command: list[str], env: dict[str, str] | None = None) -> None:
 # Pin every package to one Debian snapshot and source version. The board's NFS
 # root must have this release installed; see docs/debian_nfsroot.md,
 # "Hardware regression".
-SNAPSHOT = "20260907T023910Z"
-SNAPSHOT_BASE = (
-    f"https://snapshot.debian.org/archive/debian/{SNAPSHOT}/pool/main/l/linux"
-)
+SNAPSHOT = "20261016T133910Z"
+SNAPSHOT_BASE = f"https://snapshot.debian.org/archive/debian-security/{SNAPSHOT}/pool/updates/main/l/linux"
 # Debian's source version, the .deb filename's middle field.
-SOURCE_VERSION = "6.12.107-1"
+SOURCE_VERSION = "6.12.113-1"
 # uname -r of the packaged kernel: the vermagic release the module must match,
 # the /lib/modules directory name, and the release in the boot banner.
-KERNEL_RELEASE = "6.12.107+deb13-riscv64"
+KERNEL_RELEASE = "6.12.113+deb13-riscv64"
 # The trailing space rejects longer releases with the same prefix, such as
-# 6.12.107+deb13-riscv64-debug.
+# 6.12.113+deb13-riscv64-debug.
 KERNEL_BANNER = f"Linux version {KERNEL_RELEASE} "
 # The linux-headers/linux-kbuild trees are named after the ABI, the release
 # without the architecture suffix.
-KERNEL_ABI = "6.12.107+deb13"
+KERNEL_ABI = "6.12.113+deb13"
 
 
 @dataclass(frozen=True)
@@ -126,8 +124,8 @@ class DebianPackage:
 KERNEL_PACKAGE = DebianPackage(
     name=f"linux-image-{KERNEL_RELEASE}",
     arch="riscv64",
-    size=112_012_420,
-    sha256="abe9f65d74b434692149482b031db7a2aaf832921e09f69f775293c0e0c5799c",
+    size=112_406_252,
+    sha256="afd136c8fae9d6140c275da25b12ed84ceaa34d4acec2fd56bc1094cd4420d23",
     members=(f"boot/vmlinux-{KERNEL_RELEASE}", f"boot/config-{KERNEL_RELEASE}"),
 )
 
@@ -141,15 +139,15 @@ HEADER_PACKAGES = (
     DebianPackage(
         name=f"linux-headers-{KERNEL_ABI}-common",
         arch="all",
-        size=11_214_736,
-        sha256="12dc292d7c238928fbcb7eebbe79208758fe263a4e2ea0e9b6734e6df12020a5",
+        size=11_326_108,
+        sha256="fa8f7b1eaa63d5c87141c9244131b5ae56f92272ee2971dfe22a81442a15ae5d",
         members=(f"usr/src/linux-headers-{KERNEL_ABI}-common/",),
     ),
     DebianPackage(
         name=f"linux-headers-{KERNEL_RELEASE}",
         arch="riscv64",
-        size=2_880_864,
-        sha256="aac824a77f6e91407f5fe0b592a491b026ec7fe4cbb4c053a2f9afeed3981445",
+        size=2_978_460,
+        sha256="9a32f903ad347a7f9629f5e0f8e709e8f9010fc0dd0d7cce5769f91bf096bb6c",
         members=(
             f"usr/src/linux-headers-{KERNEL_RELEASE}/.config",
             f"usr/src/linux-headers-{KERNEL_RELEASE}/.kernelvariables",
@@ -164,8 +162,8 @@ HEADER_PACKAGES = (
     DebianPackage(
         name=f"linux-kbuild-{KERNEL_ABI}",
         arch="amd64",
-        size=1_797_128,
-        sha256="0a88527eb05bca1ce75e7d39ec27539d385a24cf90b2b28917cc4903a4f710d3",
+        size=1_899_400,
+        sha256="f7a65a8f794fc2cd70e35749e212da654bc5157ea525f7bf67412f417cd5d0c9",
         members=(f"usr/lib/linux-kbuild-{KERNEL_ABI}/",),
     ),
 )

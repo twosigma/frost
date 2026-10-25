@@ -184,7 +184,7 @@ payload reports cycle, instruction, time, and IPC deltas for its own workload.
 headers from snapshot.debian.org and checks their sizes and SHA-256 sums.
 It also requires built-in APLIC, APLIC MSI and IMSIC drivers in the packaged
 kernel configuration, including when reusing a cached extraction. The
-pinned release is `6.12.107+deb13-riscv64`; the snapshot, versions, and
+pinned release is `6.12.113+deb13-riscv64`; the snapshot, versions, and
 checksums are in the script. FROST runs this kernel unmodified, with its NIC
 and memory error drivers built as separate modules.
 
