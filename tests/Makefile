@@ -435,6 +435,9 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/axi/axil_checker.sv \
         $(ROOT)/hw/rtl/lib/axi/axil_reg_bridge.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),axi_checker)
+VERILOG_SOURCES := $(ROOT)/hw/rtl/lib/axi/axi_checker.sv
+
 else ifeq ($(TOPLEVEL),axi_coherent_bridge)
 # AXI4 to coherent line-port bridge unit bench
 COMPILE_ARGS := \
