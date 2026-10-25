@@ -2512,24 +2512,31 @@ module tomasulo_wrapper #(
   // INT_RS (INT_RS_DEPTH entries, default 16): Integer ALU ops, branches, CSR
   // ---------------------------------------------------------------------------
   // INT_RS dispatch with routed valid
-  riscv_pkg::rs_dispatch_t                                        int_rs_dispatch;
-  riscv_pkg::rs_dispatch_t                                        int_rs_dispatch_2;
-  logic                                                           int_rs_issue_writes_cdb_hint;
+  riscv_pkg::rs_dispatch_t int_rs_dispatch;
+  riscv_pkg::rs_dispatch_t int_rs_dispatch_2;
+  logic                    int_rs_issue_writes_cdb_hint;
+  riscv_pkg::cdb_broadcast_t int_rs_wakeup_0, int_rs_wakeup_1;
+  riscv_pkg::cdb_broadcast_t int_rs_cdb_0, int_rs_cdb_1;
+  riscv_pkg::cdb_broadcast_t int_rs_issue_registered_0, int_rs_issue_registered_1;
+  riscv_pkg::cdb_broadcast_t int_issue_wakeup_0, int_issue_wakeup_1;
+  logic int_rs_early_load_injected;
+  assign int_rs_cdb_0 = EARLY_LOAD_WAKEUP ? int_rs_wakeup_0 : cdb_bus_int_rs_qualified;
+  assign int_rs_cdb_1 = EARLY_LOAD_WAKEUP ? int_rs_wakeup_1 : cdb_bus_2_int_rs_qualified;
   // CDB valid/tag copies for INT_RS issue compares, for fanout. They sample
   // the same edge as the INT-local packets; values are not duplicated.
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
-  logic                                                           int_rs_issue_cdb_valid;
+  logic                                        int_rs_issue_cdb_valid;
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
-  logic                    [riscv_pkg::ReorderBufferTagWidth-1:0] int_rs_issue_cdb_tag;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] int_rs_issue_cdb_tag;
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
-  logic                                                           int_rs_issue_cdb_2_valid;
+  logic                                        int_rs_issue_cdb_2_valid;
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
-  logic                    [riscv_pkg::ReorderBufferTagWidth-1:0] int_rs_issue_cdb_2_tag;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] int_rs_issue_cdb_2_tag;
   // INT_RS head-tag scan splits head_wait_int into operand wait, ready but
   // not issued, stage2, and post-RS cycles.
-  logic                                                           int_rs_head_in_rs;
-  logic                                                           int_rs_head_rs_ready;
-  logic                                                           int_rs_head_in_stage2;
+  logic                                        int_rs_head_in_rs;
+  logic                                        int_rs_head_rs_ready;
+  logic                                        int_rs_head_in_stage2;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       int_rs_issue_cdb_valid   <= 1'b0;
@@ -2617,13 +2624,13 @@ module tomasulo_wrapper #(
       .o_full      (int_rs_full_w),
       .o_full_for_2(int_rs_full_for_2_w),
 
-      // CDB snoop (from arbiter)
-      .i_cdb(cdb_bus_int_rs_qualified),
-      .i_cdb_2(cdb_bus_2_int_rs_qualified),
-      .i_issue_cdb_valid(int_rs_issue_cdb_valid),
-      .i_issue_cdb_tag(int_rs_issue_cdb_tag),
-      .i_issue_cdb_2_valid(int_rs_issue_cdb_2_valid),
-      .i_issue_cdb_2_tag(int_rs_issue_cdb_2_tag),
+      // Registered completions and the staged load result.
+      .i_cdb(int_rs_cdb_0),
+      .i_cdb_2(int_rs_cdb_1),
+      .i_issue_cdb_valid(EARLY_LOAD_WAKEUP ? int_issue_wakeup_0.valid : int_rs_issue_cdb_valid),
+      .i_issue_cdb_tag(EARLY_LOAD_WAKEUP ? int_issue_wakeup_0.tag : int_rs_issue_cdb_tag),
+      .i_issue_cdb_2_valid(EARLY_LOAD_WAKEUP ? int_issue_wakeup_1.valid : int_rs_issue_cdb_2_valid),
+      .i_issue_cdb_2_tag(EARLY_LOAD_WAKEUP ? int_issue_wakeup_1.tag : int_rs_issue_cdb_2_tag),
       .i_repair_valid_1(int_done_repair_valid_1),
       .i_repair_tag_1(i_bypass_tag_1),
       .i_repair_value_1(bypass_value_1),
@@ -2841,7 +2848,54 @@ module tomasulo_wrapper #(
       .o_injected(mem_rs_early_load_injected)
   );
 
+  // INT_RS captures the staged load through an idle lane. Its issue compares
+  // use separate registered CDB tags and the same early-load selection.
+  mem_wakeup_merge #(
+      .FORMAL_STANDALONE_ENV(1'b0)
+  ) u_int_wakeup_merge (
+      .i_enable(mem_rs_early_wakeup_enable),
+      .i_load(lq_early_wakeup_load),
+      .i_registered_0(cdb_bus_int_rs_qualified),
+      .i_registered_1(cdb_bus_2_int_rs_qualified),
+      .o_wakeup_0(int_rs_wakeup_0),
+      .o_wakeup_1(int_rs_wakeup_1),
+      .o_injected(int_rs_early_load_injected)
+  );
+
+  always_comb begin
+    int_rs_issue_registered_0 = '0;
+    int_rs_issue_registered_0.valid = int_rs_issue_cdb_valid;
+    int_rs_issue_registered_0.tag = int_rs_issue_cdb_tag;
+    int_rs_issue_registered_1 = '0;
+    int_rs_issue_registered_1.valid = int_rs_issue_cdb_2_valid;
+    int_rs_issue_registered_1.tag = int_rs_issue_cdb_2_tag;
+  end
+  mem_wakeup_merge #(
+      .FORMAL_STANDALONE_ENV(1'b0)
+  ) u_int_issue_wakeup_merge (
+      .i_enable(mem_rs_early_wakeup_enable),
+      .i_load(lq_early_wakeup_load),
+      .i_registered_0(int_rs_issue_registered_0),
+      .i_registered_1(int_rs_issue_registered_1),
+      .o_wakeup_0(int_issue_wakeup_0),
+      .o_wakeup_1(int_issue_wakeup_1),
+      .o_injected()
+  );
+
 `ifndef SYNTHESIS
+  always_comb begin
+    if (i_rst_n) begin
+      p_int_early_load_matches_mem :
+      assert (int_rs_early_load_injected == mem_rs_early_load_injected);
+      p_int_early_issue_lane0_identity :
+      assert (int_issue_wakeup_0.valid == int_rs_wakeup_0.valid &&
+              int_issue_wakeup_0.tag == int_rs_wakeup_0.tag);
+      p_int_early_issue_lane1_identity :
+      assert (int_issue_wakeup_1.valid == int_rs_wakeup_1.valid &&
+              int_issue_wakeup_1.tag == int_rs_wakeup_1.tag);
+    end
+  end
+
   // Outside recovery, the early token observes a real CDB broadcast; it is
   // neither a prediction nor a second completion. During recovery it may
   // precede that broadcast, while MEM_RS blocks new issue selection.

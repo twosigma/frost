@@ -66,9 +66,9 @@ module reservation_station #(
     // register merging. Committed writes use normal tags, so both banks must
     // match for every valid entry.
     parameter bit ISSUE_CDB_TAG_SHADOW = 1'b0,
-    // Use separate registered CDB valid/tag copies for issue bypass. Resident
-    // wakeup and deferred capture still use i_cdb and i_cdb_2, as does issue
-    // bypass when disabled.
+    // Use separate valid/tag inputs for issue bypass. Their lane identities
+    // match i_cdb and i_cdb_2, which supply resident wakeup and deferred capture.
+    // When disabled, issue bypass also uses i_cdb and i_cdb_2.
     parameter bit ISSUE_CDB_META_ANCHORS = 1'b0,
     // Capture port 0's final src1/src2 operands in stage2, including CDB and
     // repair bypasses, as port 1 does. Requires HAS_SRC3=0. When disabled,
