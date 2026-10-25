@@ -28,6 +28,10 @@ helpers are CMake 4.4.4, Meson 1.12.1 and Ninja 1.13.2. Python checks use
 pre-commit 4.7.0, Ruff 0.17.2 and mypy 2.4.0. Cocotb 2.1.0 supports Python
 through 3.14.
 
+The image supplies clang, clang-format and clang-tidy 23.1.4, plus
+Verible 0.0-4296-g0f262651. The C/C++ format hook uses the image's
+clang-format binary.
+
 The Linux boot emulator is QEMU 11.1.2.
 
 The extension build uses Node.js 26.12.1 and npm 12.2.1. TestRIG uses the
