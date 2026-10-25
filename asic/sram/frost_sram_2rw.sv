@@ -115,8 +115,13 @@ module frost_sram_2rw #(
 `ifndef SYNTHESIS
     initial begin
       logic [DATA_WIDTH-1:0] image[2**ADDR_WIDTH];
-      if (USE_INIT_FILE) $readmemh(INIT_FILE, image);
-      else begin
+      if (USE_INIT_FILE) begin
+        // The loaded image has no writes pending before either port's first
+        // rising edge, including when its clock starts high.
+        u_macro.csb0_reg = 1'b1;
+        u_macro.csb1_reg = 1'b1;
+        $readmemh(INIT_FILE, image);
+      end else begin
 `ifdef FROST_RANDOM_START
         for (int i = 0; i < 2 ** ADDR_WIDTH; i++)
         for (int chunk = 0; chunk < (DATA_WIDTH + 31) / 32; chunk++)
