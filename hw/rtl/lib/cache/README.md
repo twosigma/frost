@@ -86,6 +86,9 @@ instances differ in size, line size, storage, and slot counts:
 | L1I | 16 KiB | 32 B | 4 x 128 | Block RAM per way, 1-cycle read | Block RAM, a bank per way | 2 | 1 | 2 (unused) | 0 |
 | L2 | 2 MiB | 64 B | 4 x 8192 | UltraRAM, a set's four ways in one 72-bit row, 3-cycle read | UltraRAM | 4 | 2 | 2 | 0 |
 
+The X3 overrides the L2 miss-slot count and prefetch request limit to eight.
+The table describes the generic CPU defaults.
+
 The ways are the hierarchy's `L1D_WAYS`, `L1I_WAYS`, and `L2_WAYS`
 parameters, which `frost` and `cpu_top` take too. The L1D's miss slots
 are the hierarchy's `L1D_NUM_MSHR` parameter and the L2's counts its
@@ -333,8 +336,8 @@ design provides (`fpga/build/x3_ddr_bd.tcl`). The L1D spends one of its 4
 bits on the fill/writeback type and 3 on its 8 miss slots. The L1I has 2 miss
 slots, all its master, the two-line fetch buffer, ever uses. The walker keeps
 one walk in flight and uses id 0. `axi_coherent_bridge`, the DMA port's one
-agent in FROST, uses 3 bits of its ids, and the prefetcher's 4 reads in
-flight use 2 of its 3.
+agent in FROST, uses 3 bits of its ids. The prefetcher has 3 local id bits
+for its eight outstanding reads on the X3. Its generic limit is four reads.
 
 The bridge drops any response whose id is not in flight. That is how a
 transaction interrupted by an image-load CPU reset drains harmlessly on
@@ -478,7 +481,8 @@ ahead and never past the 4 KiB page of that miss, so it reads only memory
 that a demand access in the same page showed to exist.
 
 The reads are ordinary line reads on the prefetcher's side of the DMA port,
-at most `L2_PREFETCH_INFLIGHT` (4) outstanding, and their responses only
+at most `L2_PREFETCH_INFLIGHT` outstanding (4 by default, 8 on the X3).
+Their responses only
 free the prefetcher's ids: the point is the L2 fill, which takes a way and
 touches the set's replacement state like a demand fill. A demand read that
 arrives while its line's prefetch is pending meets it in the L2's miss slot,
@@ -627,9 +631,9 @@ to answer.
 | `*_equal_lines` | The data-integrity, concurrency, and DMA suites with 32-byte L2 lines, equal to the L1s', as a control; also DDR load and store, fetch, atomic, DMA, page-table-walk, and `fence.i` programs on the whole system with 32-byte L2 lines and a 256-bit DDR port |
 | `*_16x4` | The L2-line, concurrency, and DMA suites with 16 L2 miss slots and 4 writeback slots |
 | `frost_cache_l2_lines_waiters2` | The L2-line suite with two waiter seats per L2 miss slot |
-| `*_prefetch` | The concurrency and DMA suites with the CPU's ids, L1D miss slots, and L2 waiter seats, and the stream prefetcher reading ahead |
+| `*_prefetch` | The concurrency and DMA suites with the X3's ids, L1D and L2 miss slots, L2 waiter seats, and prefetch request limit |
 | `*_ways1` | The data-integrity, concurrency, DMA, and L2-line suites with direct-mapped caches |
-| `l2_stream_prefetcher` | Stream confirmation, read distance, page bounds, and the in-flight cap |
+| `l2_stream_prefetcher*` | Stream confirmation, read distance, page bounds, response ID reuse, and four- and eight-request caps under excess demand |
 | `line_port_arbiter*` | Arbitration and tagged responses |
 | `line_port_axi_bridge` | The bridge across a CPU reset against a slave that keeps running: held beats, AW/W pairing, dropped stale responses, and a reused id held back until the stale response for it has arrived; and across the slave's own reset, which withdraws the held beats |
 | `axi_behavioral_memory_*` | Boot-image loading and reset persistence for dense and wide sparse DDR, distinct high-address writes, and TestRIG's empty-memory reset contract |

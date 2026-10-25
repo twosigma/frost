@@ -1773,6 +1773,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="l2_stream_prefetcher",
         description="Stream confirmation, read distance, page bounds, and the in-flight cap",
     ),
+    "l2_stream_prefetcher_8": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_l2_stream_prefetcher",
+        hdl_toplevel_module="l2_stream_prefetcher",
+        description="Eight outstanding prefetch reads, page bounds, and response ID reuse",
+        verilator_extra_args=("-GMAX_INFLIGHT=8",),
+    ),
     "cached_tier_adapter": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.memory.test_cached_tier_adapter",
         hdl_toplevel_module="cached_tier_adapter",
@@ -2196,29 +2202,33 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="DMA coherence with 16 L2 miss and 4 writeback slots",
         verilator_extra_args=("-GL2_NUM_MSHR=16", "-GL2_NUM_WB=4"),
     ),
-    # The concurrency and DMA suites with the CPU's ids, L1D miss slots, L2
+    # The concurrency and DMA suites with the X3's ids, L1D miss slots, L2
     # waiter seats, and stream prefetcher, whose reads add L2 traffic.
     "frost_cache_concurrency_prefetch": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache_concurrency",
         hdl_toplevel_module="frost_cache_test_harness",
-        description="Overlapping cache requests with the CPU's slots and the L2 prefetcher",
+        description="Overlapping cache requests with the X3's slots and the L2 prefetcher",
         verilator_extra_args=(
             "-GUP_ID_BITS=4",
             "-GL1D_NUM_MSHR=8",
+            "-GL2_NUM_MSHR=8",
             "-GL2_NUM_WAITERS=2",
             "-GL2_PREFETCH=1",
+            "-GL2_PREFETCH_INFLIGHT=8",
             "-GMEM_REORDER=1",
         ),
     ),
     "frost_cache_dma_prefetch": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache_dma",
         hdl_toplevel_module="frost_cache_test_harness",
-        description="DMA coherence with the CPU's slots and the L2 prefetcher",
+        description="DMA coherence with the X3's slots and the L2 prefetcher",
         verilator_extra_args=(
             "-GUP_ID_BITS=4",
             "-GL1D_NUM_MSHR=8",
+            "-GL2_NUM_MSHR=8",
             "-GL2_NUM_WAITERS=2",
             "-GL2_PREFETCH=1",
+            "-GL2_PREFETCH_INFLIGHT=8",
         ),
     ),
     # The data-integrity, concurrency, DMA, and L2-line suites with

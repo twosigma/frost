@@ -5,6 +5,11 @@ The supported board is the **Alveo X3522PV (X3)**: a 322.265625 MHz CPU,
 See the [FPGA guide](../fpga/README.md) for build, programming, and loading
 commands.
 
+The X3 has eight L2 miss slots, eight L1D miss slots, and eight load queue
+entries. Its stream prefetcher permits eight outstanding requests and reads
+up to eight L2 lines ahead within a page. The L2 has two writeback slots and
+two waiter seats per miss.
+
 ## Architecture Overview
 
 [![X3 clocks, memory, loading, and debug connections](../docs/diagrams/x3-board-integration.svg)](../docs/diagrams/x3-board-integration.svg)

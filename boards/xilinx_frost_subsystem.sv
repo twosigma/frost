@@ -33,6 +33,8 @@ module xilinx_frost_subsystem #(
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     // L2 line size (see frost.sv); the DDR AXI data width follows it.
     parameter int unsigned L2_LINE_BYTES = 64,
+    parameter int unsigned L2_NUM_MSHR = 4,
+    parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
     // Optional boot-hang UART classifier. Leave off for interactive testing.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,
     // Profiling counters (see frost.sv); the board top passes its generic.
@@ -311,6 +313,8 @@ module xilinx_frost_subsystem #(
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
       .L2_LINE_BYTES(L2_LINE_BYTES),
+      .L2_NUM_MSHR(L2_NUM_MSHR),
+      .L2_PREFETCH_INFLIGHT(L2_PREFETCH_INFLIGHT),
       .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE),
       .PERF_COUNTERS(PERF_COUNTERS),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),

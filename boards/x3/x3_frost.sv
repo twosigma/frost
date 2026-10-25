@@ -464,6 +464,8 @@ module x3_frost #(
       .ENABLE_CACHED_TIER(1),
       .USE_BEHAVIORAL_DDR(0),
       .L2_LINE_BYTES(L2LineBytes),
+      .L2_NUM_MSHR(8),
+      .L2_PREFETCH_INFLIGHT(8),
       .PERF_COUNTERS(PERF_COUNTERS),
       // The transceiver's TX and RX clocks are independent, so the NIC has no
       // raw loopback; its self-test loopback is the transceiver's PMA
