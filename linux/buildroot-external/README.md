@@ -41,6 +41,9 @@ For the boot interface, memory map, and kernel requirements, see the
 
 ## Toolchain
 
+Buildroot and the Docker image use Bootlin's 2026.08-1 bleeding-edge
+musl bundle, with GCC 16.2.0 and Linux 6.12 userspace headers.
+
 Initialize the submodules before a native build. The defconfig's toolchain
 URL and the hash in `patches/toolchain-external-custom/` must name the same
 Bootlin musl archive as the Dockerfile. After changing Buildroot or the

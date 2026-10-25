@@ -277,7 +277,7 @@ the image.
 | | Node.js / npm | 26.12.1 / 12.2.1 |
 | **Compiler** | Native GCC / G++ | 16.2.0 |
 | | Clang / clang-tidy / clang-format | 23.1.4 |
-| | RISC-V GCC for bare metal, OpenSBI and Linux (Bootlin musl) | 15.3.0 (2026.08-1) |
+| | RISC-V GCC for bare metal, OpenSBI and Linux (Bootlin musl) | 16.2.0 (2026.08-1 bleeding-edge) |
 | | pip / setuptools / wheel | 26.2.2 / 84.2.1 / 0.48.0 |
 | **Build** | CMake / Meson / Ninja | 4.4.4 / 1.12.1 / 1.13.2 |
 | | Buildroot / OpenSBI | 2026.08 / 1.9 |

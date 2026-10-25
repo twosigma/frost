@@ -19,19 +19,19 @@ BR2_riscv_g=y
 BR2_RISCV_64=y
 BR2_RISCV_ABI_LP64D=y
 
-# --- Toolchain: Bootlin's stable GCC 15.3 / musl release, also in Docker.
-# Buildroot 2026.08's built-in Bootlin choice still selects 2025.08; use the
-# custom download path to keep native and container builds on the same release.
-# The external tree's hash verifies the archive on native builds too.
+# --- Toolchain: Bootlin GCC 16.2 / musl, also in Docker.
+# The custom download and external-tree hash select the 2026.08-1
+# bleeding-edge bundle for native and container builds.
 BR2_TOOLCHAIN_EXTERNAL=y
 BR2_TOOLCHAIN_EXTERNAL_CUSTOM=y
 BR2_TOOLCHAIN_EXTERNAL_DOWNLOAD=y
-BR2_TOOLCHAIN_EXTERNAL_URL="https://toolchains.bootlin.com/downloads/releases/toolchains/riscv64-lp64d/tarballs/riscv64-lp64d--musl--stable-2026.08-1.tar.xz"
+BR2_TOOLCHAIN_EXTERNAL_URL="https://toolchains.bootlin.com/downloads/releases/toolchains/riscv64-lp64d/tarballs/riscv64-lp64d--musl--bleeding-edge-2026.08-1.tar.xz"
 BR2_TOOLCHAIN_EXTERNAL_CUSTOM_PREFIX="riscv64-linux"
-BR2_TOOLCHAIN_EXTERNAL_GCC_15=y
-BR2_TOOLCHAIN_EXTERNAL_HEADERS_5_10=y
+BR2_TOOLCHAIN_EXTERNAL_GCC_16=y
+BR2_TOOLCHAIN_EXTERNAL_HEADERS_6_12=y
 BR2_TOOLCHAIN_EXTERNAL_CUSTOM_MUSL=y
 BR2_TOOLCHAIN_EXTERNAL_CXX=y
+BR2_TOOLCHAIN_EXTERNAL_FORTRAN=y
 BR2_TOOLCHAIN_EXTERNAL_OPENMP=y
 BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_FROST_PATH)/patches"
 

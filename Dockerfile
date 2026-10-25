@@ -360,13 +360,13 @@ RUN curl -fL -o /tmp/sv2v-Linux.zip https://github.com/zachjs/sv2v/releases/down
 # retains its PIE link and Linux userspace uses musl. Keep this archive aligned
 # with frost_rv64_defconfig and the external tree's toolchain hash.
 ARG BOOTLIN_RISCV64_MUSL_VERSION=2026.08-1
-ARG BOOTLIN_RISCV64_MUSL_SHA256=747286a6aec5def762a68491a884195a3a415352c76f70140e36eac48c77b73c
+ARG BOOTLIN_RISCV64_MUSL_SHA256=f8d96c08c00141280103aaf17ed7c19ccbc9b79a35baf94ede05e7f97f37182a
 RUN curl -fL -o /tmp/bootlin-riscv64.tar.xz \
-        https://toolchains.bootlin.com/downloads/releases/toolchains/riscv64-lp64d/tarballs/riscv64-lp64d--musl--stable-${BOOTLIN_RISCV64_MUSL_VERSION}.tar.xz \
+        https://toolchains.bootlin.com/downloads/releases/toolchains/riscv64-lp64d/tarballs/riscv64-lp64d--musl--bleeding-edge-${BOOTLIN_RISCV64_MUSL_VERSION}.tar.xz \
     && echo "${BOOTLIN_RISCV64_MUSL_SHA256}  /tmp/bootlin-riscv64.tar.xz" | sha256sum -c - \
     && tar -xJf /tmp/bootlin-riscv64.tar.xz -C /opt \
     && rm -f /tmp/bootlin-riscv64.tar.xz \
-    && ln -s /opt/riscv64-lp64d--musl--stable-${BOOTLIN_RISCV64_MUSL_VERSION} /opt/riscv64-linux-musl
+    && ln -s /opt/riscv64-lp64d--musl--bleeding-edge-${BOOTLIN_RISCV64_MUSL_VERSION} /opt/riscv64-linux-musl
 
 # Shared compiler prefix. Buildroot downloads the same release itself so
 # native Vivado loaders can build the userspace too.

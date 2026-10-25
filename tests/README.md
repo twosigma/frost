@@ -148,10 +148,12 @@ without them. Registry entries default to keeping the clocks.
 `FROST_NIC_MAC_CLOCKS=0` selects the guarded clock-free mode explicitly.
 
 `debug_test` drives the JTAG debug module directly; `debug_openocd_test` runs
-a real OpenOCD session through `remote_bitbang`, and `cache_counters_openocd`
+OpenOCD and GDB sessions through `remote_bitbang`, and `cache_counters_openocd`
 reads the cache profiling counters that way with `fpga/debug/cache_counters.py`.
 Without OpenOCD installed those targets log a warning and pass; set
-`FROST_REQUIRE_OPENOCD=1`, as CI does, to make them fail instead. The
+`FROST_REQUIRE_OPENOCD=1`, as CI does, to make them fail instead. The GDB
+session also requires `${RISCV_PREFIX}gdb` and checks registers, memory,
+software breakpoints, and single stepping through OpenOCD. The
 [memory-response tests](../verif/cocotb_tests/cpu_ooo/memory/README.md) cover
 the portable and Xilinx builds of the load-data mux.
 
