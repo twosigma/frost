@@ -127,13 +127,15 @@ and startup code reinitialize the kernel, heap, and application state.
 Entries with `nic_mac_clocks=False` run as on a board with no NIC link
 clock: both MAC clocks absent and their clock-OK levels low, so the NIC keeps
 its MAC domains in reset ([NIC](../hw/rtl/peripherals/nic/README.md#reset-and-clock-domains)),
-and the simulation saves the evaluations of the MAC clocks' edges. They are
-the applications that never touch the NIC's registers, DMA, interrupt, or
-link status, and a run fails if such an application loads or stores in the
+and the simulation saves the evaluations of the MAC clocks' edges. Application
+entries using this setting never touch the NIC's registers, DMA, interrupt,
+or link status, and a run fails if such an application loads or stores in the
 NIC's register window. The NIC programs, `opensbi_smoke`, and
 `pma_fault_test`, which loads from the NIC's window to check a PMA boundary,
 keep the clocks. The standalone `linux_*` instruction-pattern tests run
 without them. Registry entries default to keeping the clocks.
+`FROST_NIC_MAC_CLOCKS=1` overrides a clock-free default for comparisons;
+`FROST_NIC_MAC_CLOCKS=0` selects the guarded clock-free mode explicitly.
 
 `debug_test` drives the JTAG debug module directly; `debug_openocd_test` runs
 a real OpenOCD session through `remote_bitbang`, and `cache_counters_openocd`
@@ -159,6 +161,12 @@ Check discovery with `./scripts/frost.py cocotb --list-tests`, then run
 `./scripts/frost.py cocotb new_feature`.
 
 ### Compliance and torture runners
+
+The architecture, riscv-tests ISA and benchmark, and riscv-torture programs
+do not use the NIC. These runners default to `FROST_NIC_MAC_CLOCKS=0` and
+use the application bench's register-window guard. A simulator failure
+fails the run even when a signature matches. `FROST_NIC_MAC_CLOCKS=1` runs
+the same programs with the MAC clocks.
 
 The ISA runners below share application and simulator build directories.
 Run one at a time, with the default `--parallel 1`, and clean `tests/` before
@@ -376,7 +384,7 @@ which have 90 minutes each. `--verbose` prints solver output.
 | `COCOTB_NUM_RUNS` | Runs per application, with a reset between them (default 2; 1 in the DDR tier and for entries with `rerun_after_reset=False`) |
 | `FROST_CALIBRATION_TRACE_PATH` | Records a calibration trace of one run for the [performance model](../perf-modeling/README.md); the other `FROST_CALIBRATION_*` variables choose the run, the window, and more output files |
 | `FROST_CALIBRATION_TEST` | Limits the calibration capture to the runs of the registry test it names |
-| `FROST_NIC_MAC_CLOCKS` | `0` runs an application without the NIC's MAC clocks and with their clock-OK levels low, as entries with `nic_mac_clocks=False` do |
+| `FROST_NIC_MAC_CLOCKS` | For the whole-SoC program and TestRIG benches, overrides the registry or runner default: `0` holds both NIC MAC clocks and their clock-OK inputs low with an access guard; `1` starts the clocks. The ISA, torture, and TestRIG runners default to `0` |
 | `SIM_FAST_MAINT` | Fast `fence.i` cache maintenance in whole-SoC simulation (default 1; hardware uses the full sweeps, as `0` does) |
 
 Build products go to `tests/sim_build/`, and cocotb writes JUnit results to

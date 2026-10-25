@@ -80,11 +80,12 @@ class CocotbRunConfig:
     # again; the DDR tier runs it once. False runs it once in both tiers.
     # tests/README.md lists the applications that do and why.
     rerun_after_reset: bool = True
-    # False simulates the application as on a board with no NIC link clock:
+    # False simulates the SoC as on a board with no NIC link clock:
     # both MAC clocks absent and their clock-OK levels low, so the NIC holds
-    # its MAC domains in reset. Only for applications that never use the NIC
+    # its MAC domains in reset. Only for tests that never use the NIC
     # (its registers, DMA, interrupt or link status); the real-program bench
-    # fails one that accesses the NIC's register window.
+    # fails one that accesses the NIC's register window. FROST_NIC_MAC_CLOCKS
+    # overrides this default.
     nic_mac_clocks: bool = True
 
 
@@ -729,12 +730,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="timer_replay_test",
+        nic_mac_clocks=False,
         description="Timer interrupt overlaps coherent DMA replay and committed-store drain",
     ),
     "imsic_collision_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="imsic_collision_test",
+        nic_mac_clocks=False,
         description=(
             "APLIC MSI bursts overlap IMSIC claims and pending-bit clears; "
             "a final marker checks delivery and complete draining"
@@ -760,6 +763,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ptw_recovery_test",
+        nic_mac_clocks=False,
         description=(
             "Wrong-path translation faults drain through branch and SFENCE recovery; "
             "replacement loads preserve their data"
@@ -769,6 +773,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ptw_bus_fault_test",
+        nic_mac_clocks=False,
         description=(
             "Shared-fill read errors and interior PTE faults preserve cause, VA and PC; "
             "repaired walks succeed"
@@ -1505,6 +1510,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "rvfi_dii": CocotbRunConfig(
         python_test_module="cocotb_tests.test_rvfi_dii",
         hdl_toplevel_module="frost",
+        nic_mac_clocks=False,
         description=(
             "TestRIG RVFI-DII server, run against the Sail model by "
             "tests/test_testrig.py"
@@ -3457,7 +3463,7 @@ class CocotbRunner:
         extra_env = config.extra_env
         if not config.rerun_after_reset:
             extra_env = (*extra_env, ("COCOTB_NUM_RUNS", "1"))
-        if not config.nic_mac_clocks:
+        if not config.nic_mac_clocks and "FROST_NIC_MAC_CLOCKS" not in os.environ:
             extra_env = (*extra_env, ("FROST_NIC_MAC_CLOCKS", "0"))
         return cls(
             python_test_module=config.python_test_module,

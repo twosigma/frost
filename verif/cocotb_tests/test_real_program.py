@@ -279,14 +279,15 @@ def start_nic_mac_clocks(dut: Any, edges_without_delay: bool = False) -> None:
     cocotb.start_soon(check_nic_mac_clocks_aligned(dut.i_nic_rx_clk, dut.i_nic_tx_clk))
 
 
-def hold_nic_without_mac_clocks(dut: Any) -> None:
+def hold_nic_without_mac_clocks(dut: Any, access_signals: tuple[Any, ...]) -> None:
     """Drive the NIC's ports as on a board with no link clock.
 
     Both MAC clocks stay low and their clock-OK levels are low, so the NIC's
     reset controller keeps the MAC domains in reset and neither direction
-    READY (hw/rtl/peripherals/nic/README.md). The registry runs applications
-    that never use the NIC this way (FROST_NIC_MAC_CLOCKS=0), and
-    fail_on_nic_access fails one that touches the NIC's registers.
+    READY (hw/rtl/peripherals/nic/README.md). FROST_NIC_MAC_CLOCKS=0 selects
+    this mode. Each access signal triggers fail_on_nic_access: the SoC's
+    register-window select for applications, or the NIC write enables for
+    TestRIG, whose device reads come from its RAM model.
     """
     dut.i_nic_tx_clk.value = 0
     dut.i_nic_rx_clk.value = 0
@@ -296,15 +297,16 @@ def hold_nic_without_mac_clocks(dut: Any) -> None:
     dut.i_nic_rx_raw_data.value = 0
     dut.i_nic_rx_raw_valid.value = 0
     dut.i_nic_rx_signal_ok.value = 0
-    cocotb.start_soon(fail_on_nic_access(dut))
+    for signal in access_signals:
+        cocotb.start_soon(fail_on_nic_access(signal))
 
 
-async def fail_on_nic_access(dut: Any) -> None:
-    """Fail the test when a load or store reaches the NIC's register window."""
-    await RisingEdge(dut.cpu_and_memory_subsystem.soc.nic_sel_q)
+async def fail_on_nic_access(signal: Any) -> None:
+    """Fail the test when a guarded NIC access signal rises."""
+    await RisingEdge(signal)
     raise AssertionError(
         "the program accessed the NIC's registers but runs without the NIC's MAC "
-        "clocks; give its registry entry nic_mac_clocks=True"
+        "clocks; run with FROST_NIC_MAC_CLOCKS=1"
     )
 
 
@@ -4525,7 +4527,9 @@ async def test_real_program(dut: Any) -> None:
         # per-port check, so a renamed port fails here instead of silently
         # leaving the MAC unclocked.
         if os.environ.get("FROST_NIC_MAC_CLOCKS", "1") == "0":
-            hold_nic_without_mac_clocks(dut)
+            hold_nic_without_mac_clocks(
+                dut, (dut.cpu_and_memory_subsystem.soc.nic_sel_q,)
+            )
         else:
             start_nic_mac_clocks(dut, edges_without_delay=True)
 

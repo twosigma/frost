@@ -136,6 +136,7 @@ def run_simulation(
 
     os.environ["SIM"] = simulator
     env = runner.setup_environment()
+    env.setdefault("FROST_NIC_MAC_CLOCKS", "0")
     sim_build_dir = runner._get_sim_build_dir(env)
     env["SIM_BUILD"] = str(sim_build_dir)
     env["COCOTB_MAX_CYCLES"] = "10000000"
@@ -284,9 +285,13 @@ def run_single_test(
 
     combined_output = (result.stdout or "") + (result.stderr or "")
 
-    # The torture payload is signature-based: once a complete signature has
-    # been dumped, compare it even if the generic real-program monitor later
-    # reports a nonzero simulator exit from the post-dump halt path.
+    # A signature cannot override a simulator failure, including a NIC access
+    # while its MAC clocks are absent.
+    if result.returncode != 0:
+        return TestResult(
+            test_name, "FAIL", f"Simulation error (exit code {result.returncode})"
+        )
+
     actual_sig = extract_signature(combined_output)
     if actual_sig:
         expected_sig = load_reference(ref_path)
@@ -298,11 +303,6 @@ def run_single_test(
             test_name,
             "FAIL",
             f"Signature mismatch ({len(actual_sig)} actual vs {len(expected_sig)} expected words):\n{diff_msg}",
-        )
-
-    if result.returncode != 0:
-        return TestResult(
-            test_name, "FAIL", f"Simulation error (exit code {result.returncode})"
         )
 
     if "<<FAIL>>" in combined_output:

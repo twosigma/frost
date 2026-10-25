@@ -182,6 +182,29 @@ def test_torture_timeout_is_a_failure(
     assert "timed out" in result.message
 
 
+def test_torture_signature_does_not_hide_a_simulator_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failed bench must fail torture even after a matching signature dump."""
+    source = tmp_path / "test_0000.S"
+    reference = tmp_path / "test_0000.reference_output"
+    reference.write_text("00000001\n")
+    monkeypatch.setattr(test_riscv_torture, "get_reference_path", lambda *_: reference)
+    monkeypatch.setattr(test_riscv_torture, "compile_test", lambda *_: True)
+    monkeypatch.setattr(
+        test_riscv_torture,
+        "run_simulation",
+        lambda *_, **__: subprocess.CompletedProcess(
+            ["make"], 2, "00000001\n<<PASS>>\n", "NIC access guard failed"
+        ),
+    )
+
+    result = test_riscv_torture.run_single_test(source, "verilator")
+
+    assert result.status == "FAIL"
+    assert "exit code 2" in result.message
+
+
 def test_arch_shards_partition_tests_by_case_count(tmp_path: Path) -> None:
     """Arch-test shards are disjoint, cover every test, and balance case counts."""
     tests = []
@@ -746,9 +769,14 @@ def test_single_run_entries_are_the_ones_tests_readme_lists() -> None:
     assert set(re.findall(r"`([a-z0-9_]+)`", table)) == single
 
 
-def test_nic_clock_setting_reaches_the_bench(monkeypatch: pytest.MonkeyPatch) -> None:
-    """nic_mac_clocks=False runs an application without the NIC's MAC clocks."""
+@pytest.mark.parametrize("clock_override", (None, "0", "1"))
+def test_nic_clock_setting_reaches_the_bench(
+    monkeypatch: pytest.MonkeyPatch, clock_override: str | None
+) -> None:
+    """The registry supplies a default and respects explicit clock settings."""
     monkeypatch.delenv("FROST_NIC_MAC_CLOCKS", raising=False)
+    if clock_override is not None:
+        monkeypatch.setenv("FROST_NIC_MAC_CLOCKS", clock_override)
     config = test_run_cocotb.CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -759,10 +787,53 @@ def test_nic_clock_setting_reaches_the_bench(monkeypatch: pytest.MonkeyPatch) ->
     unclocked = test_run_cocotb.CocotbRunner.from_config(
         replace(config, nic_mac_clocks=False)
     )
+    assert os.environ["FROST_NIC_MAC_CLOCKS"] == (clock_override or "0")
     unclocked.restore_environment()
     assert "FROST_NIC_MAC_CLOCKS" not in dict(clocked.extra_env)
-    assert dict(unclocked.extra_env)["FROST_NIC_MAC_CLOCKS"] == "0"
-    assert "FROST_NIC_MAC_CLOCKS" not in os.environ
+    assert os.environ.get("FROST_NIC_MAC_CLOCKS") == clock_override
+
+
+@pytest.mark.parametrize(
+    ("module", "app_directory", "arguments"),
+    (
+        (test_arch_compliance, "ARCH_TEST_APP_DIR", ()),
+        (test_riscv_tests, "RISCV_TESTS_APP_DIR", ("verilator",)),
+        (test_riscv_torture, "TORTURE_APP_DIR", ("verilator",)),
+    ),
+)
+@pytest.mark.parametrize("clock_override", (None, "0", "1"))
+def test_isa_runners_default_to_no_nic_clocks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    module: ModuleType,
+    app_directory: str,
+    arguments: tuple[str, ...],
+    clock_override: str | None,
+) -> None:
+    """Each ISA runner passes the default or explicit setting to the bench."""
+    monkeypatch.setenv("SIM", "verilator")
+    environment = {}
+    if clock_override is not None:
+        environment["FROST_NIC_MAC_CLOCKS"] = clock_override
+    runner_class = test_run_cocotb.CocotbRunner
+    monkeypatch.setattr(runner_class, "setup_environment", lambda _: dict(environment))
+    monkeypatch.setattr(runner_class, "_verilator_needs_rebuild", lambda *_: False)
+    monkeypatch.setattr(
+        runner_class, "_update_verilator_toplevel_marker", lambda *_: None
+    )
+    monkeypatch.setattr(module, "TESTS_DIR", tmp_path)
+    monkeypatch.setattr(module, app_directory, tmp_path / "app")
+    monkeypatch.setattr(test_arch_compliance, "SIGNATURE_FILE", tmp_path / "signature")
+    monkeypatch.setattr(test_arch_compliance, "signature_location", lambda _: (0, 4))
+
+    def simulate(
+        *_: object, env: dict[str, str], **__: object
+    ) -> subprocess.CompletedProcess[str]:
+        assert env["FROST_NIC_MAC_CLOCKS"] == (clock_override or "0")
+        return subprocess.CompletedProcess(["make"], 0, "", "")
+
+    monkeypatch.setattr(module, "run_in_process_group", simulate)
+    assert module.run_simulation(*arguments).returncode == 0
 
 
 def test_applications_that_name_the_nic_keep_its_clocks() -> None:

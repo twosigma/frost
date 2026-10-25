@@ -301,6 +301,7 @@ def run_simulation(
 
     os.environ["SIM"] = "verilator"
     env = runner.setup_environment()
+    env.setdefault("FROST_NIC_MAC_CLOCKS", "0")
     # One run: the real-program jobs reset and rerun the BRAM programs, and
     # the cpu_top_writethrough and bram_reload benches check that a CPU reset
     # empties the read caches.

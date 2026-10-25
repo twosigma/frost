@@ -108,13 +108,22 @@ an evaluation that changes nothing. `start_clocks` writes the core clock's and
 the NIC clocks' edges without delay instead, which lets that evaluation take
 the edge. Applications that never use the NIC run without its MAC clocks, as
 on a board with no link clock, and fail if they access the NIC's registers
-(`hold_nic_without_mac_clocks`). The debug and BRAM-reload benches start their
+(`hold_nic_without_mac_clocks`). The architecture, riscv-tests ISA and
+benchmark, and riscv-torture runners select this mode by default.
+`FROST_NIC_MAC_CLOCKS=1` starts the MAC clocks for a comparison run.
+The debug and BRAM-reload benches start their
 core clock the same way and leave the MAC clocks off. These tests run under
 `takes_last_edge`, so that the model takes the edge a test returns or fails in
 before the simulation stops. The docstring of `start_clocks` gives the
 conditions under which the simulation stays the same as with cocotb's clocks:
 no combinational logic reads the simulation time or a sampled value, and no
 timer callback reads a clock or changes an input at an edge time.
+
+The TestRIG bench also holds the MAC clocks and clock-OK inputs low by
+default. Its device reads use the harness RAM, and its access guard watches
+both NIC write enables, which the platform holds low. Loads and stores to
+the RAM at addresses in the NIC's window are valid TestRIG stimuli. The same
+environment override starts the MAC clocks in this bench.
 
 ## Extending the Framework
 
