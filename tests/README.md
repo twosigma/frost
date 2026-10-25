@@ -311,6 +311,10 @@ seed the runner prints. A mismatch is shrunk to a short counterexample
 in `tests/testrig_failures/`, which `--trace` replays; the logs and the
 engine's coverage table go to `tests/testrig_logs/`. The pytest entry point
 replays the saved counterexamples in `verif/testrig/traces/`.
+The reference memory map includes the MMIO, APLIC and full 2 MiB IMSIC
+windows, backed by the injection harness's device RAM. Their aligned loads
+and stores succeed; AMOs, LR and SC fault. The saved IMSIC trace checks an
+aligned doubleword load inside that window.
 
 ### `test_run_yosys.py`
 
