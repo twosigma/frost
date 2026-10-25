@@ -2770,6 +2770,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("_32", " on a 32-bit bus", ("-GDATA_WIDTH=32", "-GID_WIDTH=2")),
         )
     },
+    "axil_reg_bridge": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_axil_reg_bridge",
+        hdl_toplevel_module="axil_reg_bridge",
+        description="AXI4-Lite independent channels, register mapping, stalls and reset",
+    ),
     "axi_mux": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_axi_mux",
         hdl_toplevel_module="axi_mux_test_harness",

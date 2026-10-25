@@ -129,3 +129,26 @@ including reads under sustained writes in the bridge. The whole-system programs
 `dma_torture`, `nic_loopback`, `nic_dma_stress`, `nic_echo` and the `pa_dma_test` and
 `pa_nic_packet_test` families run the NIC and the engine through the bridge
 in both memory configurations.
+
+## AXI4-Lite registers
+
+`axil_reg_bridge` connects a 64-bit AXI4-Lite slave to a register file with
+32-bit writes, separate complete 64-bit writes, and an aligned 64-bit read
+pair. `ADDR_BITS` selects the window offset width. `WIDE_OFFSETS` packs
+`WIDE_COUNT` aligned offsets, least-significant entry first.
+
+The bridge accepts AW and W in either order, buffers their payloads, and
+executes one transaction at a time through response acceptance. B and R are
+registered and return OKAY. AxPROT is accepted and ignored. Reset abandons
+transactions and clears control state. A write with every strobe set at a
+listed wide offset asserts `o_wr64_en`. Other writes to those dwords have no
+effect. For other offsets, any upper-half strobe selects the upper word;
+otherwise the lower word is selected. Any set strobe asserts `o_wr_en`, and
+byte enables within the selected word do not mask its data. Reads align the
+offset down to eight bytes and capture `i_rd_pair` once.
+
+`axil_checker`, instantiated by the bridge, checks held-channel stability,
+responses against accepted requests, and the AXI4-Lite response encoding in
+simulation. It accepts independent AW and W ordering. Its body is empty in
+synthesis and formal builds. `axil_reg_bridge` has formal properties for
+transaction conservation and the complete address, strobe and data mapping.

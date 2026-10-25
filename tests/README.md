@@ -25,6 +25,10 @@ regression run [natively](../fpga/README.md#hardware-regression) instead.
 The cocotb benches, models, and monitors themselves live in
 [`verif/`](../verif/README.md).
 
+The `axil_reg_bridge` unit bench covers register writes at every strobe
+value, read-pair alignment throughout its window, independent AW/W timing,
+concurrent reads and writes, response backpressure, and reset cancellation.
+
 ## Fast checks
 
 ```bash
