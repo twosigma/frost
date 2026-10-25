@@ -109,6 +109,8 @@ Every calibrated benchmark directory in `perf-modeling/results/<benchmark>/` con
 
 Use the same binary, region, cache state, and memory timing for each RTL comparison point. Compare simulated cycles and retired work. An IPC ratio alone can hide a change in the amount of work. Synthetic kernel micro-operation counts need not equal compiler instruction counts; report that difference with absolute and relative cycle errors.
 
+The DDR kernel generators preserve addresses and dependency structure from the C loop bodies. They omit profiling and surrounding program activity and assume warm fetches and cold data. DDR bench chase addresses assume zero backing data. MLP addresses assume the seeded ring. Match `scale_shift` and `mlp_lines` to the program and record any eviction preparation. `passes` controls reuse within the model, independently of cocotb's reset-and-rerun setting.
+
 The default behavioral DDR endpoint represents the RTL simulation endpoint. The interleaved endpoint describes physical channels with explicit stripe size, queue depth, latency, and service interval. Its reads and writes share each physical channel's bandwidth and one AXI return port. It has no bank or refresh timing. Channel experiments record these settings separately from cache resource counts.
 
 The AXI bridge preserves internal cache IDs until completion. Its pool size bounds live transactions independently of cache miss slots and wire width. It does not renumber or truncate IDs. A width comparison must specify which additional internal IDs can be issued. Production widths are four bits for L1D and five bits for L2 and the DDR port.
