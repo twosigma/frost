@@ -408,6 +408,8 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/fifo/fifo.f \
         -f $(ROOT)/hw/rtl/net10g/net10g.f \
         $(ROOT)/hw/rtl/lib/cache/line_port_axi_bridge.sv \
+        $(ROOT)/hw/rtl/lib/axi/axil_checker.sv \
+        $(ROOT)/hw/rtl/lib/axi/axil_reg_bridge.sv \
         -f $(ROOT)/hw/rtl/peripherals/nic/nic.f
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),nic_reset_test_harness)

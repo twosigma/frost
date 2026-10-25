@@ -21,7 +21,8 @@
 */
 // Simulation-only TestRIG platform. The instruction stream is injected by
 // retirement position, so this fixture intentionally retains the pipeline's
-// fixed-latency test interface. Production FPGA/ASIC builds use platform_top;
+// fixed-latency test interface. Device accesses use shadow RAM and the
+// NIC and DMA engine AXI4-Lite ports are idle. Production builds use platform_top;
 // cpu_top's public AXI protocol is checked by the standalone integration bench.
 module frost_rvfi_platform #(
     parameter int unsigned MEM_SIZE_BYTES = 2 ** 17,
@@ -579,17 +580,11 @@ module frost_rvfi_platform #(
   // select the write lane; claimi consumes only the addressed read word.
   // ---------------------------------------------------------------------------
   // Capture window selects on the same edge as the MMIO write address.
-  logic aplic_sel_q, dma_engine_sel_q, nic_sel_q, memerr_sel_q;
+  logic aplic_sel_q, memerr_sel_q;
   always_ff @(posedge i_clk) begin
     aplic_sel_q <= riscv_pkg::pma_device_quadrant(
         riscv_pkg::XLEN'(data_memory_address)
     ) && (data_memory_address[31:22] == AplicWindowSel);
-    dma_engine_sel_q <= riscv_pkg::pma_device_quadrant(
-        riscv_pkg::XLEN'(data_memory_address)
-    ) && (data_memory_address[31:8] == DmaEngineBase[31:8]);
-    nic_sel_q <= riscv_pkg::pma_device_quadrant(
-        riscv_pkg::XLEN'(data_memory_address)
-    ) && (data_memory_address[31:12] == NicBase[31:12]);
     memerr_sel_q <= riscv_pkg::pma_device_quadrant(
         riscv_pkg::XLEN'(data_memory_address)
     ) && (data_memory_address[31:8] == MemErrBase[31:8]);
@@ -600,32 +595,7 @@ module frost_rvfi_platform #(
       ((data_memory_byte_write_enable_registered == 8'h0F) ||
        (data_memory_byte_write_enable_registered == 8'hF0));
   logic [63:0] aplic_rd_pair;
-  // DMA test engine register bus (same shape as the APLIC's) and interrupt.
-  logic dma_engine_wr_en, dma_engine_wr_hi, dma_engine_wr64_en, dma_engine_irq;
-  logic [63:0] dma_engine_rd_pair;
-  assign dma_engine_wr_hi = |data_memory_byte_write_enable_registered[7:4];
-  // The extended address bank is reached only by one complete 64-bit store.
-  // Never fold it into the APLIC-style 32-bit lane mux, which discards a half.
-  assign dma_engine_wr64_en = dma_engine_sel_q &&
-      (data_memory_byte_write_enable_registered == 8'hff) &&
-      ((data_memory_address_registered[7:0] == 8'h40) ||
-       (data_memory_address_registered[7:0] == 8'h48) ||
-       (data_memory_address_registered[7:0] == 8'h50));
-  assign dma_engine_wr_en = |data_memory_byte_write_enable_registered && dma_engine_sel_q &&
-      !((data_memory_address_registered[7:3] == 5'h08) ||
-        (data_memory_address_registered[7:3] == 5'h09) ||
-        (data_memory_address_registered[7:3] == 5'h0a));
-  // NIC register bus (same shape) and interrupt.
-  logic nic_wr_en, nic_wr_hi, nic_wr64_en, nic_irq;
-  logic [63:0] nic_rd_pair;
-  assign nic_wr_hi = |data_memory_byte_write_enable_registered[7:4];
-  assign nic_wr64_en = nic_sel_q &&
-      (data_memory_byte_write_enable_registered == 8'hff) &&
-      ((data_memory_address_registered[11:0] == nic_pkg::RxBase64Offset) ||
-       (data_memory_address_registered[11:0] == nic_pkg::TxBase64Offset));
-  assign nic_wr_en = |data_memory_byte_write_enable_registered && nic_sel_q &&
-      !((data_memory_address_registered[11:3] == nic_pkg::RxBase64Offset[11:3]) ||
-        (data_memory_address_registered[11:3] == nic_pkg::TxBase64Offset[11:3]));
+  logic dma_engine_irq, nic_irq;
   // Memory error unit register bus (same shape) and interrupt. The DDR
   // bridge's error pulses come from the cached tier below, or stay low
   // without it.
@@ -2006,18 +1976,26 @@ module frost_rvfi_platform #(
     ) nic (
         .i_clk(i_clk),
         .i_rst(rst_core_next),  // registered inside nic_top; see its header
-        .i_wr_en(nic_wr_en),
-        // A full-width store selects its aligned register, not the upper
-        // 32-bit lane chosen for legacy word writes.
-        .i_wr_offset(nic_wr64_en ? data_memory_address_registered[11:0] :
-                                 {data_memory_address_registered[11:3],
-                                  nic_wr_hi ? 3'b100 : 3'b000}),
-        .i_wr_data(nic_wr_hi ? data_memory_write_data_registered[63:32] :
-                               data_memory_write_data_registered[31:0]),
-        .i_wr64_en(nic_wr64_en),
-        .i_wr64_data(data_memory_write_data_registered),
-        .i_rd_offset({mmio_load_addr[11:3], 3'b000}),
-        .o_rd_pair(nic_rd_pair),
+        // Device accesses use the TestRIG shadow RAM.
+        .i_reg_axil_awvalid('0),
+        .o_reg_axil_awready(),
+        .i_reg_axil_awaddr('0),
+        .i_reg_axil_awprot('0),
+        .i_reg_axil_wvalid('0),
+        .o_reg_axil_wready(),
+        .i_reg_axil_wdata('0),
+        .i_reg_axil_wstrb('0),
+        .o_reg_axil_bvalid(),
+        .i_reg_axil_bready('0),
+        .o_reg_axil_bresp(),
+        .i_reg_axil_arvalid('0),
+        .o_reg_axil_arready(),
+        .i_reg_axil_araddr('0),
+        .i_reg_axil_arprot('0),
+        .o_reg_axil_rvalid(),
+        .i_reg_axil_rready('0),
+        .o_reg_axil_rdata(),
+        .o_reg_axil_rresp(),
         .o_irq(nic_irq),
         .o_dma_axi_awvalid(up_awvalid[0]),
         .o_dma_axi_awid(up_awid[0]),
@@ -2081,16 +2059,26 @@ module frost_rvfi_platform #(
     ) dma_engine (
         .i_clk(i_clk),
         .i_rst(rst_core),
-        .i_wr_en(dma_engine_wr_en),
-        .i_wr_offset(dma_engine_wr64_en ? data_memory_address_registered[7:0] :
-                                        {data_memory_address_registered[7:3],
-                                         dma_engine_wr_hi ? 3'b100 : 3'b000}),
-        .i_wr_data(dma_engine_wr_hi ? data_memory_write_data_registered[63:32] :
-                                      data_memory_write_data_registered[31:0]),
-        .i_wr64_en(dma_engine_wr64_en),
-        .i_wr64_data(data_memory_write_data_registered),
-        .i_rd_offset({mmio_load_addr[7:3], 3'b000}),
-        .o_rd_pair(dma_engine_rd_pair),
+        // Device accesses use the TestRIG shadow RAM.
+        .i_reg_axil_awvalid('0),
+        .o_reg_axil_awready(),
+        .i_reg_axil_awaddr('0),
+        .i_reg_axil_awprot('0),
+        .i_reg_axil_wvalid('0),
+        .o_reg_axil_wready(),
+        .i_reg_axil_wdata('0),
+        .i_reg_axil_wstrb('0),
+        .o_reg_axil_bvalid(),
+        .i_reg_axil_bready('0),
+        .o_reg_axil_bresp(),
+        .i_reg_axil_arvalid('0),
+        .o_reg_axil_arready(),
+        .i_reg_axil_araddr('0),
+        .i_reg_axil_arprot('0),
+        .o_reg_axil_rvalid(),
+        .i_reg_axil_rready('0),
+        .o_reg_axil_rdata(),
+        .o_reg_axil_rresp(),
         .o_irq(dma_engine_irq),
         .o_dma_axi_awvalid(up_awvalid[1]),
         .o_dma_axi_awid(up_awid[1]),
@@ -2541,9 +2529,7 @@ module frost_rvfi_platform #(
     assign coh_release_slot = '0;
     // No cached tier: the DMA test engine has no memory to move, so its
     // window reads as zero and it never interrupts; likewise the NIC.
-    assign dma_engine_rd_pair = '0;
     assign dma_engine_irq = 1'b0;
-    assign nic_rd_pair = '0;
     assign nic_irq = 1'b0;
     // No DDR bridge, so no AXI error responses.
     assign ddr_rd_err_valid = 1'b0;
@@ -2702,10 +2688,6 @@ module frost_rvfi_platform #(
     // APLIC returns a register pair only for a 32-bit load.
     if (mmio_load_addr[31:22] == AplicWindowSel)
       mmio_read_data_comb = (mmio_load_size == riscv_pkg::MEM_SIZE_WORD) ? aplic_rd_pair : 64'b0;
-    // DMA test engine window: the addressed 64-bit register pair.
-    if (mmio_load_addr[31:8] == DmaEngineBase[31:8]) mmio_read_data_comb = dma_engine_rd_pair;
-    // NIC window: likewise.
-    if (mmio_load_addr[31:12] == NicBase[31:12]) mmio_read_data_comb = nic_rd_pair;
     // Memory error unit window: likewise.
     if (mmio_load_addr[31:8] == MemErrBase[31:8]) mmio_read_data_comb = memerr_rd_pair;
   end

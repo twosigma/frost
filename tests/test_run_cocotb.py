@@ -2682,6 +2682,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Page-table bus errors at every level, discard and successful retry",
         verilator_extra_args=("-GENABLE_RESPONSE_ERRORS=1",),
     ),
+    "soc_axil": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_soc_axil",
+        hdl_toplevel_module="soc_top",
+        description="SoC AXI4-Lite register mapping, CPU backpressure and reset recovery",
+        verilator_extra_args=("-GENABLE_CACHED_TIER=1", "-GUSE_BEHAVIORAL_DDR=0"),
+    ),
+    "soc_axil_no_cached_tier": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_soc_axil",
+        hdl_toplevel_module="soc_top",
+        description="NIC-access guard with the cached tier disabled",
+        verilator_extra_args=("-GENABLE_CACHED_TIER=0", "-GUSE_BEHAVIORAL_DDR=0"),
+        extra_env=(("COCOTB_TEST_FILTER", "nic_access_guard$"),),
+    ),
     "soc_axi_slave": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_soc_axi_slave",
         hdl_toplevel_module="soc_axi_slave",

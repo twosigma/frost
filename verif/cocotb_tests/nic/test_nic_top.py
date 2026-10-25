@@ -15,8 +15,8 @@
 """Test nic_top across core, TX, and RX clocks.
 
 The DMA memory model answers the NIC's AXI4 master, reordering responses
-across ids. Register accesses match the SoC:
-32-bit write lanes and 64-bit read pairs selected by offset. Frames use
+across ids. Register accesses use AXI4-Lite with independent AW and W
+timing, 32-bit write lanes and aligned 64-bit read pairs. Frames use
 nic_mac_wrap's raw loopback or the independent net10g 64b/66b wire model.
 
 RAW_LOOPBACK=1 uses aligned TX and RX clocks. RAW_LOOPBACK=0 runs the
@@ -32,6 +32,7 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge, Timer
 
+from cocotb_tests.axi.axil_model import AxilMaster
 from cocotb_tests.nic.dma_model import (
     DD,
     EOP,
@@ -302,6 +303,7 @@ class _Nic:
         self.rng = random.Random(seed)
         self.mem = Memory()
         self.port = _AxiPort(dut, self.mem, seed + 1)
+        self.regs = AxilMaster(dut, "reg_axil")
         self.wire = _Wire(dut)
         self.rx_posted = 0
         self.tx_posted = 0
@@ -312,31 +314,21 @@ class _Nic:
         self.wire.stop()
 
     async def wr(self, off: int, val: int) -> None:
-        dut = self.dut
-        await FallingEdge(dut.i_clk)
-        dut.i_wr_en.value = 1
-        dut.i_wr_offset.value = off
-        dut.i_wr_data.value = val
-        await RisingEdge(dut.i_clk)
-        await Timer(1, unit="ps")
-        dut.i_wr_en.value = 0
+        await self.regs.write(
+            off,
+            (val << 32) | val,
+            0xF0 if off & 4 else 0x0F,
+            aw_delay=self.rng.randrange(3),
+            w_delay=self.rng.randrange(3),
+        )
 
     async def wr64(self, off: int, val: int) -> None:
-        dut = self.dut
-        await FallingEdge(dut.i_clk)
-        dut.i_wr64_en.value = 1
-        dut.i_wr_offset.value = off
-        dut.i_wr64_data.value = val
-        await RisingEdge(dut.i_clk)
-        await Timer(1, unit="ps")
-        dut.i_wr64_en.value = 0
+        await self.regs.write(
+            off, val, aw_delay=self.rng.randrange(3), w_delay=self.rng.randrange(3)
+        )
 
     async def rd64(self, off: int) -> int:
-        dut = self.dut
-        await FallingEdge(dut.i_clk)
-        dut.i_rd_offset.value = off & ~7
-        await Timer(1, unit="ps")
-        return int(dut.o_rd_pair.value)
+        return await self.regs.read(off, response_delay=self.rng.randrange(3))
 
     async def rd(self, off: int) -> int:
         pair = await self.rd64(off)
@@ -452,13 +444,8 @@ async def _start(
         cocotb.start_soon(_start_clock_after(dut.i_rx_clk, rx_ps, rx_delay_ps))
     else:
         Clock(dut.i_rx_clk, rx_ps, unit="ps").start()
+    AxilMaster(dut, "reg_axil").idle()
     for sig in (
-        dut.i_wr_en,
-        dut.i_wr_offset,
-        dut.i_wr_data,
-        dut.i_wr64_en,
-        dut.i_wr64_data,
-        dut.i_rd_offset,
         dut.i_dma_axi_awready,
         dut.i_dma_axi_wready,
         dut.i_dma_axi_arready,

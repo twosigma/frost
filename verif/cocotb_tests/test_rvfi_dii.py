@@ -196,10 +196,9 @@ async def test_rvfi_dii(dut: Any) -> None:
     Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start()
     cocotb.start_soon(generate_divided_clock(dut))
     if os.environ.get("FROST_NIC_MAC_CLOCKS", "1") == "0":
-        # Device reads use the harness RAM. Guard both NIC write enables,
-        # which the platform holds low even for stores in the NIC's window.
-        platform = dut.cpu_and_memory_subsystem
-        hold_nic_without_mac_clocks(dut, (platform.nic_wr_en, platform.nic_wr64_en))
+        # Device reads use the harness RAM, and the platform ties off the
+        # NIC's register port, so no access reaches the NIC to guard.
+        hold_nic_without_mac_clocks(dut, ())
     else:
         start_nic_mac_clocks(dut)
     dut.i_uart_rx.value = 1
