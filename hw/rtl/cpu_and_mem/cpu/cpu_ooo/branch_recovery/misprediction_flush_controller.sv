@@ -175,6 +175,13 @@ module misprediction_flush_controller #(
     else mispredict_recovery_pending <= commit_is_misprediction;
   end
 
+  // Same-edge recovery copy for frontend fanout.
+  (* dont_touch = "true" *) logic frontend_mispredict_pending_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_all) frontend_mispredict_pending_q <= 1'b0;
+    else frontend_mispredict_pending_q <= commit_is_misprediction;
+  end
+
   // Refresh the payload every edge; it is consumed only while
   // mispredict_recovery_pending is high.
   riscv_pkg::mispredict_commit_capture_t mispredict_commit_d;
@@ -205,6 +212,10 @@ module misprediction_flush_controller #(
     if (commit_is_misprediction) f_gated_capture <= mispredict_commit_d;
     if (f_capture_initialized && mispredict_recovery_pending)
       assert (mispredict_commit_q == f_gated_capture);
+    if (f_capture_initialized) begin
+      assert (frontend_mispredict_pending_q == mispredict_recovery_pending);
+      assert (frontend_state_flush == flush_pipeline);
+    end
   end
 `endif
 
@@ -349,9 +360,10 @@ module misprediction_flush_controller #(
   assign flush_pipeline = frontend_flush_all_q || mispredict_recovery_pending ||
                           early_redirect_fast;
 
-  // IF's internal-state flush is flush_pipeline itself. It follows a trap or
-  // xRET take by one cycle, which IF's internal-state cleanup tolerates.
-  assign frontend_state_flush = flush_pipeline;
+  // IF's internal-state flush uses the frontend recovery copy. It follows
+  // a trap or xRET take by one cycle.
+  assign frontend_state_flush = frontend_flush_all_q || frontend_mispredict_pending_q ||
+      (early_mispredict_pending && !frontend_mispredict_pending_q && !active_fence_i_flush);
 
   // Dispatch needs a same-cycle kill for commit-time partial recovery.
   assign dispatch_flush = mispredict_recovery_pending;
@@ -533,6 +545,9 @@ module misprediction_flush_controller #(
       p_restore_flush_copy_matches : assert (restore_flush_all_q == full_flush_side_effect_kill_q);
       p_frontend_flush_copy_matches :
       assert (frontend_flush_all_q == full_flush_side_effect_kill_q);
+      p_frontend_mispredict_copy_matches :
+      assert (frontend_mispredict_pending_q == mispredict_recovery_pending);
+      p_frontend_flush_matches_pipeline : assert (frontend_state_flush == flush_pipeline);
     end
   end
 `endif
