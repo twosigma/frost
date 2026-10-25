@@ -2054,6 +2054,24 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GSIM_FAST_MAINT=1",
         ),
     ),
+    "coherence_endpoints": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_endpoints",
+        hdl_toplevel_module="coherence_endpoints_test_harness",
+        description="Coherent channel widths, ownership and keyed completion",
+        verilator_extra_args=("--assert",),
+    ),
+    "coherence_endpoints_wide": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_endpoints",
+        hdl_toplevel_module="coherence_endpoints_test_harness",
+        description="Coherent channel widths, ownership and keyed completion",
+        verilator_extra_args=("--assert", "-GADDR_WIDTH=56", "-GL2_NUM_MSHR=16"),
+    ),
+    "coherence_endpoints_single": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_endpoints",
+        hdl_toplevel_module="coherence_endpoints_test_harness",
+        description="Coherent channel widths, ownership and keyed completion",
+        verilator_extra_args=("--assert", "-GNUM_HARTS=1"),
+    ),
     "frost_cache": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache",
         hdl_toplevel_module="frost_cache_test_harness",

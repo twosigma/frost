@@ -49,6 +49,14 @@ which must keep their exact bytes. To run only the fast Python tests:
 blocks, directed CPU tests, and applications from `sw/apps/`, which the
 runner compiles first. A failing RTL assertion fails the simulation.
 
+The `coherence_endpoints`, `coherence_endpoints_single`, and
+`coherence_endpoints_wide` unit benches exercise channel layout, delayed grants,
+identity reuse, independent probe queues, keyed PutAck cancellation, errors,
+and cluster reset. The wide case uses 56-bit physical addresses and 16 fill
+identities. `test_coherence_endpoint_build.py` elaborates and synthesizes these
+geometries, checks the six-bit home-ID capacity boundary, rejects invalid
+parameters, and checks that the production filelist excludes the endpoints.
+
 ```bash
 ./scripts/frost.py cocotb --list-tests                                        # every target, with a description
 ./scripts/frost.py cocotb hello_world                                         # one target

@@ -29,7 +29,11 @@ SIM_BUILD       ?= sim_build
 export TOPLEVEL COCOTB_TEST_MODULES TOPLEVEL_LANG SIM ROOT
 
 # RTL sources by toplevel
-ifeq ($(TOPLEVEL),reorder_buffer)
+ifeq ($(TOPLEVEL),coherence_endpoints_test_harness)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/cache/coherence.f
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),reorder_buffer)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.f
 VERILOG_SOURCES :=

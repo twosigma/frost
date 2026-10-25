@@ -167,6 +167,12 @@ from the DMA sequencer into that L1D. The [SMP plan](../../../ROADMAP.md#smp)
 replaces it with a coherent interface inside the cluster, which a second
 hart needs.
 
+The [coherent endpoint library](../lib/cache/README.md#coherent-endpoint-library)
+defines standalone channel types and ownership records. It is selected by
+`coherence.f` for unit elaboration. The production hierarchy has no instances
+of these endpoints and exposes no coherent CPU selection. `ENABLE_COHERENCE`
+controls the DMA ingress described above.
+
 ## BRAM-only profile
 
 `ENABLE_CACHED_TIER=1` is the default. FROST's BRAM-only simulation profile

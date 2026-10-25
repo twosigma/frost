@@ -6,7 +6,7 @@ that merge line ports, two sequencers that make DMA and page-table walks
 coherent with the L1D, an adapter between the L1s' 32-byte lines and the
 L2's 64-byte lines, a prefetcher that reads ahead of L1D miss streams into
 the L2, the bridge to the DDR controller's AXI port, and a simulation-only
-DDR model. Every block speaks one tagged line protocol, so
+DDR model. Production cache ports carry tagged line requests, so
 levels stack freely and each level can have several transactions in flight.
 Coherence is handled in hardware: DMA and page-table walks see data that is
 still dirty in the L1D, and software never flushes a cache for them.
@@ -74,6 +74,119 @@ response: valid  id[ID_BITS]  rdata[8*LINE_BYTES]
 Masters do use this freedom: the arbiters re-select among their ports every
 cycle, and the walker withdraws a read when its walk is discarded. A new slave
 must take no action on a request until it fires.
+
+## Coherent endpoint library
+
+`coherence.f` selects standalone coherent endpoints and their programmable
+harness. The production `cache.f` and `cpu_top` use the line protocol above.
+The coherent endpoints provide transport and ownership bookkeeping. Cache
+permission changes, line arbitration, dirty-data merging, and CPU cut service
+belong to their callers; these functions have no implementation in this library.
+
+`coherence_pkg` defines opcodes, request identity, and home identity ranges.
+`FROST_COHERENCE_TYPES(P)` in `coherence_types.svh` declares packed payloads
+with physical address width P, from 32 through 56 bits. Fields appear in the
+following order, most significant first. Each channel also has one-bit valid
+and ready signals. A transfer occurs when both are asserted. Senders hold valid
+and every payload bit during a stall. Addresses name aligned 32-byte sectors.
+
+| Channel | Direction | Packed fields and widths | Payload bits |
+| --- | --- | --- | --- |
+| D | Requester to home | opcode 4, q 9, addr P, offset 5, size 3, mask 32, aq 1, rl 1, maintenance 1, wdata 256 | P + 312 |
+| P | Home to hart | opcode 2, tid 6, epoch 1, addr P, requester 2, reason 2, check_q 9, offset 5, size 3 | P + 30 |
+| R | Hart to home | opcode 2, tid 6, epoch 1, hart 1, addr P, state 2, clear 1, data_valid 1, data 256, absorbed 1, put_id 1, put_epoch 1, sc_valid 1, error 1 | P + 275 |
+| W | Hart to home | hart 1, put_id 1, epoch 1, addr P, data 256, maintenance 1 | P + 260 |
+| WA | Home to hart | hart 1, put_id 1, epoch 1, addr P, absorbed 1, tid 6, error 1 | P + 11 |
+| G | Home to requester | opcode 3, q 9, tid 6, addr P, data 256, error 1 | P + 275 |
+| C | Requester to home | q 9, tid 6, addr P, status 2, write_done 1 | P + 18 |
+| U | Home to requester | q 9, tid 6, addr P | P + 15 |
+
+Request identity q contains src 2, port_class 2, id 4, and epoch 1. Sources
+0 and 1 name harts, 2 names DMA, and 3 names prefetch. Classes 0, 1, 2, and 3
+name data, instruction fetch, page-table walk, and agent traffic. Hart data
+IDs are 0 through 7, fetch IDs are 0 and 1, and the walk ID is 0. DMA IDs
+are opaque four-bit values; prefetch IDs are 0 through 3. Admission limits
+are four DMA requests and four prefetch requests. Admission arbitration is
+external to the endpoint slots.
+
+Home tid is six bits. For H harts, `completion_count(H)` is `11*H+8`.
+`fill_base(H)` equals this count, `put_base(H,F)` adds F fill controls, and
+`home_count(H,F)` adds two PutM controls per hart. H is 1 or 2. Home identities
+must fit 64 values. Elaboration rejects invalid geometry and identity
+parameters, including values that would truncate to another identity. A completion endpoint's TID is in the completion range;
+fill and PutM controls have separate lifetimes. The epoch denotes cluster
+reset. Every endpoint resets together, and its epoch input is stable during
+operation. No coherent packet may survive reset. External response debt must
+be drained or discarded before identities are reused.
+
+| Encoding | Values |
+| --- | --- |
+| D opcode | 0 GetS, 1 GetM, 2 LoadReserved, 3 Atomic, 4 StoreConditional, 5 ReadOnceIF, 6 ReadOncePTW, 7 DMARead, 8 DMAWrite, 9 Prefetch |
+| P opcode | 0 ProbeRead, 1 ProbeInvalidate, 2 CheckSC |
+| R opcode | 0 ProbeAck, 1 ProbeData, 2 CheckAck |
+| G opcode | 0 GrantS, 1 GrantE, 2 GrantM, 3 GrantData, 4 GrantAck, 5 GrantFail |
+| C status | 0 Consumed, 1 Killed, 2 Error |
+| MESI state | 0 Invalid, 1 Exclusive, 2 Shared, 3 Modified |
+| Probe reason | 0 Read, 1 Write, 2 Replace, 3 Check |
+
+Unlisted values are reserved. W, WA, C, and U implicitly mean PutM, PutAck,
+Done, and Release. Size is log2 bytes. Offset and mask select bytes within a
+sector. Hart write operands stay local; DMA writes use D.wdata and D.mask.
+ProbeData and data-bearing grants carry a complete sector. Error overrides
+permission installation. GrantFail grants no permission. These encodings
+describe messages; the endpoint library does not implement MESI transitions.
+
+`coherence_request_endpoint` reserves one request identity, a grant register,
+and completion storage at local request acceptance. SOURCE, PORT_CLASS, and
+SLOT select that identity. Separate instances provide independent D, IF, and
+PTW credits. The local caller reserves installation and dirty-victim storage
+before presenting a request. The endpoint holds D through acceptance and
+captures a matching G by q and address. The local grant consumer then sends
+Done. The endpoint keeps its identity through C and the matching U, including
+killed reads. GetM, Atomic, and StoreConditional reject killed completion and
+require write_done for a successful operation that grants permission.
+
+`coherence_home_endpoint` reserves one TID at D acceptance. Its programmable
+service sees `o_work` and supplies `i_result`, a complete G payload held until
+`o_result_ready`. That transfer is the G transfer. The service reserves the
+result source before admitting D. The completion record stores metadata;
+Grant data stays in the service's reserved source until the requester's grant
+register captures it. The dispatcher prevents duplicate live q values across
+records. A record accepts C only after G and emits U only after C and every
+registered absorbed-PutAck dependency. It becomes available on U consumption.
+The caller owns the line lock and destination pin through that edge.
+
+The home service registers an absorbed R through `i_absorb` after preserving
+its dirty image in a reserved sink. This port records cancellation metadata;
+it does not store R.data. `i_cancel_valid` denotes the successful consumption
+of an absorbed WA. It is an event, with the WA payload on `i_cancel`.
+Matching includes hart, put_id, epoch, address, and TID. The record remembers cancellation before or on the absorption
+notification edge. The service registers all absorptions before or on the G
+transfer edge. Repeated absorption of one slot
+within a completion is rejected. A failed WA leaves its dependency pending.
+
+`coherence_put_endpoint` freezes one full sector until WA. HART and SLOT
+select one of two slots per hart. An ordinary W transfer wins a simultaneous
+absorption claim. An absorbed slot keeps W presented, and the home must mask
+ordinary selection until the absorbed WA handshake cancels it. WA ready
+certifies removal of that exact slot on the edge. `o_cancel_valid` reports
+successful cancellation; another slot may keep the shared W port valid.
+Ordinary WA is accepted only after W. Error WA preserves the frozen bytes
+and asserts fatal until reset. The home holds an ordinary PutM's line lock
+through successful WA consumption.
+
+Error C and every completion of an error grant require `i_error_disposed` at
+both endpoints, including killed reads. The service asserts it
+only for an error whose ownership is safely disposed. Dirty data and failed
+retired stores require fatal handling with ownership held through cluster
+reset. Error grants cannot complete as Consumed. A killed read can discard
+its grant without installing permission.
+
+`coherence_channel` is a one-entry registered queue with no fall-through or
+simultaneous refill. Separate instances hold P and R independently of demand
+and PutM slots. Probe service, grant production, completion delivery, and
+release delivery require independent service resources. Debug halt and WFI
+must not stop those resources in an integration.
 
 ## The line cache
 
