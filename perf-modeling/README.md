@@ -13,7 +13,7 @@ This directory provides a **fast, cycle-approximate architectural performance mo
 
 2. **RTL Cycle Correlation**:
    - Calibrated against physical hardware RTL measurements across three distinct workloads (CoreMark, Tomasulo microarchitectural suite, and DDR MLP stress test).
-   - CoreMark model IPC is **1.0087**, correlating within **+3.0%** of the hardware RTL's measured **0.9786 IPC** (239,452 cycles).
+   - CoreMark model IPC is **1.0087**, correlating within **+3.1%** of the hardware RTL's measured **0.9786 IPC** (239,452 cycles).
    - Accurately models FROST-specific microarchitectural structures: the 256-entry Load Queue direct-mapped L0 Data Cache (`lq_l0_cache.sv`) with 1-cycle combinational fast-path bypass, early load wakeup (`EARLY_LOAD_WAKEUP = 1`), and the single-channel 512-bit AXI memory system.
 
 3. **Modular SoC / Core Boundary**:
@@ -85,7 +85,7 @@ The architectural model was calibrated and validated against three distinct RTL 
 
 | Benchmark | Workload Characteristic | Timed RTL Cycles | Retired Uops | Hardware RTL IPC | Calibrated Model IPC | Correlation Delta | Status |
 |---|---|---:|---:|---:|---:|---:|:---:|
-| **CoreMark** | General compute / integer pipeline | 239,452 | 234,317 | **0.9786** | **1.0087** | **+3.0%** | PASS (CRC verified) |
+| **CoreMark** | General compute / integer pipeline | 239,452 | 234,317 | **0.9786** | **1.0087** | **+3.1%** | PASS (CRC verified) |
 | **tomasulo_perf** | 14 directed microarchitecture benchmarks | 487,313 | 175,025 | **0.3592** | Calibrated | Structural match | PASS (14/14 sub-benchmarks) |
 | **ddr_mlp_test** | Memory-level parallelism & AXI queueing | 94,010 | 30,427 | **0.3237** | Calibrated | Structural match | PASS |
 
@@ -97,7 +97,7 @@ The architectural model was calibrated and validated against three distinct RTL 
 | **tomasulo_perf (Verilator RTL)** | 487,313 | 277.67 s | 1,755 cyc/s | 630 uop/s | **1.0x (Baseline)** |
 | **ddr_mlp_test (Verilator RTL)** | 94,010 | 56.63 s | 1,660 cyc/s | 537 uop/s | **1.0x (Baseline)** |
 | **FROST Perf Model (Trace Replay)** | 5,000 | 0.028 s | **176,550 cyc/s** | **176,550 uop/s** | **~103x Speedup** |
-| **FROST Perf Model (Analytical CoreMark)** | 3,101 | 0.063 s | **49,222 cyc/s** | **49,651 uop/s** | **~7,200x Speedup** *(effective)* |
+| **FROST Perf Model (Analytical CoreMark)** | 3,101 | 0.052849 s | **58,677 cyc/s** | **59,187 uop/s** | **34.4x cycle-rate ratio** |
 
 ---
 
@@ -275,3 +275,7 @@ As the FROST design evolves, maintainers can easily keep the performance model s
 - **Modifying SoC / Interconnect**: Adjust `SocConfig` in `frost_perf_model.py` (`ddr_capacity_bytes`, `local_bram_latency`, address decode boundaries) or plug in a custom `SocTopPort` implementation.
 - **Modifying Memory Controller / DDR Timing**: Adjust `DdrConfig` (`latency_cycles`, `num_slots`, reorder jitter) or replace `SingleChannelDdrController`.
 - **Adding New Workload Traces**: Compile any RISC-V binary in `sw/apps/<app>`, run under cocotb with `FROST_CALIBRATION_TRACE_PATH` set, and replay with `--trace`.
+
+## 8. Configurable memory controllers
+
+`DdrConfig(controller="interleaved")` selects physical channels with address interleaving. `channels` sets their count and `interleave_bytes` sets the stripe size. Each channel has `num_slots` read entries and `num_slots` write entries. Reads and writes share one line of service every `cycles_per_line` core cycles after `latency_cycles`. The shared AXI port returns at most one read and one write response per cycle. This controller has no bank, row, or refresh model. The default `behavioral` controller represents the single-channel simulation endpoint and sizes its queues from the L2 resources.

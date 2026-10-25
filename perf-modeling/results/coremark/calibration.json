@@ -14,7 +14,11 @@
       "cdb_width": 2,
       "cpu_axi_id_bits": 6,
       "ddr": {
+        "channels": 1,
+        "controller": "behavioral",
+        "cycles_per_line": 1,
         "id_bits": 5,
+        "interleave_bytes": 64,
         "jitter_seed": 44257,
         "latency_cycles": 30,
         "latency_jitter": 0,
@@ -156,7 +160,11 @@
       },
       "ddr": {
         "configuration": {
+          "channels": 1,
+          "controller": "behavioral",
+          "cycles_per_line": 1,
           "id_bits": 5,
+          "interleave_bytes": 64,
           "jitter_seed": 44257,
           "latency_cycles": 30,
           "latency_jitter": 0,
@@ -236,7 +244,11 @@
         },
         "ddr": {
           "configuration": {
+            "channels": 1,
+            "controller": "behavioral",
+            "cycles_per_line": 1,
             "id_bits": 5,
+            "interleave_bytes": 64,
             "jitter_seed": 44257,
             "latency_cycles": 30,
             "latency_jitter": 0,
@@ -262,7 +274,7 @@
       }
     },
     "micro_ops": 3128,
-    "micro_ops_per_second": 132645,
+    "micro_ops_per_second": 59187,
     "model_version": "1.0",
     "pipeline": {
       "max_occupancy": {
@@ -294,7 +306,7 @@
     },
     "retired": 3128,
     "seed": 11,
-    "simulated_cycles_per_second": 131500,
+    "simulated_cycles_per_second": 58677,
     "soc_top": {
       "configuration": {
         "bram_base": 0,
@@ -311,7 +323,11 @@
       },
       "ddr": {
         "configuration": {
+          "channels": 1,
+          "controller": "behavioral",
+          "cycles_per_line": 1,
           "id_bits": 5,
+          "interleave_bytes": 64,
           "jitter_seed": 44257,
           "latency_cycles": 30,
           "latency_jitter": 0,
@@ -335,7 +351,7 @@
         "ddr_reads_forwarded": 102
       }
     },
-    "wall_time_seconds": 0.023582,
+    "wall_time_seconds": 0.052849,
     "workload": "coremark"
   },
   "observed": {

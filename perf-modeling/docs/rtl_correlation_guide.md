@@ -104,3 +104,7 @@ Every calibrated benchmark directory in `perf-modeling/results/<benchmark>/` con
 - `<benchmark>_timed.jsonl`: Cycle-accurate JSONL event trace captured during the timed benchmark region.
 - `pipeline_counters.json`: Cycle and uop counts, IPC, dispatch/commit distributions, and AXI transaction totals directly measured from RTL.
 - `calibration.json`: Output from `run_calibration.py` comparing RTL vs. performance model.
+
+## 6. Memory controller experiments
+
+The default `behavioral` DDR controller represents the RTL simulation endpoint. The `interleaved` controller is an architectural experiment with explicit physical channels, stripe size, queue depth, latency, and cycles per line. Its read and write traffic shares each physical channel's bandwidth and uses one shared AXI return port. A comparison records these settings separately from the cache resource counts. Channel experiments do not represent a board controller's bank or refresh timing.
