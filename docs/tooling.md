@@ -23,7 +23,9 @@ lint hooks, and [`pyproject.toml`](../pyproject.toml) and the
 [extension lockfile](../tools/vscode-frost/package-lock.json) pin language
 dependencies. The [README](../README.md#toolchain) summarizes the versions.
 
-The extension build uses Node.js 26.12.1 and npm 12.2.1.
+The extension build uses Node.js 26.12.1 and npm 12.2.1. TestRIG uses the
+Sail RISC-V 0.16 reference model. QuickCheckVEngine builds with GHC 9.10.3
+and cabal-install 3.18.2.0 on Ubuntu 26.04.
 
 Vivado runs on the host and is validated with 2025.2. Native Python scripts
 need Python 3.12 or later. The VS Code extension needs VS Code 1.106 or

@@ -14,16 +14,23 @@
 
 # TestRIG's random instruction generator, QuickCheckVEngine
 # (tests/test_testrig.py), builds in its own stage so the Haskell toolchain
-# stays out of the image. Ubuntu supplies GHC and cabal; the Hackage index
-# state fixes the versions of the engine's library dependencies.
+# stays out of the image. Ubuntu supplies GHC, and cabal-install uses a
+# checksummed upstream archive. The Hackage index state fixes the versions
+# of the engine's library dependencies.
 FROM ubuntu:26.04 AS qcvengine
 ARG GHC_VERSION=9.10.3
 ARG QCVENGINE_COMMIT=5e15965a819ca1be9f14d2e8e319e98fd89a557f
 ARG QCVENGINE_HACKAGE_INDEX_STATE=2026-10-01T00:00:00Z
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates git ghc cabal-install libgmp-dev libffi-dev libnuma-dev zlib1g-dev \
+        ca-certificates git ghc curl xz-utils libgmp-dev libffi-dev libnuma-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/* \
     && ghc --numeric-version | grep -Fx "${GHC_VERSION}"
+ARG CABAL_VERSION=3.18.2.0
+ARG CABAL_SHA256=b4f4c83135da77cfc18ccd6056398ca714a2dad86d5f635621ffdda8f9afe587
+RUN curl -fL -o /tmp/cabal.tar.xz https://github.com/haskell/cabal/releases/download/cabal-install-v${CABAL_VERSION}/cabal-install-${CABAL_VERSION}-x86_64-linux-unknown.tar.xz \
+    && echo "${CABAL_SHA256}  /tmp/cabal.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/cabal.tar.xz -C /usr/local/bin cabal && rm /tmp/cabal.tar.xz \
+    && cabal --version
 RUN git clone https://github.com/CTSRD-CHERI/QuickCheckVEngine.git /tmp/qcvengine \
     && cd /tmp/qcvengine \
     && git checkout ${QCVENGINE_COMMIT} \
@@ -382,8 +389,8 @@ RUN curl -fL -o /tmp/node.tar.xz https://nodejs.org/dist/v${NODE_VERSION}/node-v
 # from the stage above. verif/testrig/sail_frost.json configures Sail for
 # FROST. The engine links against libgmp, libffi, and libnuma from the apt
 # layers; the ldd check fails the build if one goes missing.
-ARG SAIL_RISCV_VERSION=0.15
-ARG SAIL_RISCV_SHA256=8bb3626a6ce5d45c1d1fa7b907f9d9602cc23270883e470db5d6401f26a2e143
+ARG SAIL_RISCV_VERSION=0.16
+ARG SAIL_RISCV_SHA256=f9bb8a32b8f3eddbdf69b3a29d96dff4ba1e77f45877165e0478418367da6bee
 RUN curl -fL -o /tmp/sail-riscv.tar.gz \
         https://github.com/riscv/sail-riscv/releases/download/${SAIL_RISCV_VERSION}/sail-riscv-Linux-x86_64.tar.gz \
     && echo "${SAIL_RISCV_SHA256}  /tmp/sail-riscv.tar.gz" | sha256sum -c - \
