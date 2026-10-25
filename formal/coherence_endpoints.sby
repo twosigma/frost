@@ -1,0 +1,56 @@
+#    Copyright 2026 Two Sigma Open Source, LLC
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+
+[tasks]
+request_prove request proof
+request_cover request reach
+home_prove home proof
+home_cover home reach
+put_prove put proof
+put_cover put reach
+channel_prove channel proof
+channel_cover channel reach
+home_wide home proof wide
+layout32 layout
+layout56 layout layout_wide
+
+[options]
+layout: mode bmc
+layout: depth 2
+proof: mode prove
+proof: depth 12
+reach: mode cover
+reach: depth 18
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv coherence_pkg.sv coherence_channel.sv coherence_request_endpoint.sv coherence_home_endpoint.sv coherence_put_endpoint.sv coherence_endpoints_test_harness.sv
+layout_wide: chparam -set ADDR_WIDTH 56 -set L2_NUM_MSHR 16 coherence_endpoints_test_harness
+layout: prep -top coherence_endpoints_test_harness
+wide: chparam -set ADDR_WIDTH 56 -set L2_NUM_MSHR 16 coherence_home_endpoint
+request: prep -top coherence_request_endpoint
+home: prep -top coherence_home_endpoint
+put: prep -top coherence_put_endpoint
+channel: prep -top coherence_channel
+
+[files]
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_request_endpoint.sv
+../hw/rtl/lib/cache/coherence_home_endpoint.sv
+../hw/rtl/lib/cache/coherence_put_endpoint.sv
+../hw/rtl/lib/cache/coherence_channel.sv
+../hw/rtl/lib/cache/coherence_endpoints_test_harness.sv

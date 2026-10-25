@@ -63,6 +63,23 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "coherence_endpoints.sby",
+        "Coherent endpoint payloads, identities and cancellation lifetimes",
+        tasks=(
+            "request_prove",
+            "request_cover",
+            "home_prove",
+            "home_cover",
+            "put_prove",
+            "put_cover",
+            "channel_prove",
+            "channel_cover",
+            "home_wide",
+            "layout32",
+            "layout56",
+        ),
+    ),
+    FormalTarget(
         "uncached_read_capture.sby",
         "Uncached read ownership preserves enqueue, handoff, and reset priority",
         tasks=("bmc",),
@@ -700,6 +717,17 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("layout32", "Coherent channel layout at 32 physical address bits"),
+    ("layout56", "Coherent channel layout at 56 physical address bits"),
+    ("request_prove", "Unbounded coherent endpoint safety"),
+    ("request_cover", "Coherent endpoint completion reachability"),
+    ("home_prove", "Unbounded coherent endpoint safety"),
+    ("home_cover", "Coherent endpoint completion reachability"),
+    ("put_prove", "Unbounded coherent endpoint safety"),
+    ("put_cover", "Coherent endpoint completion reachability"),
+    ("channel_prove", "Unbounded coherent endpoint safety"),
+    ("channel_cover", "Coherent endpoint completion reachability"),
+    ("home_wide", "Coherent home safety with wide physical addresses"),
     ("prove_predecoded", "Unbounded IMSIC equivalence with registered input decodes"),
     ("msi_bmc", "Bounded APLIC MSI forwarding and pending transitions"),
     ("msi_prove", "Unbounded APLIC MSI registers, forwarding and ordering"),
