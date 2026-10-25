@@ -203,7 +203,7 @@
         },
         "include_in_device_tree": false
       },
-      // Rest of the device quadrant above the APLIC.
+      // Unmapped device quadrant between the APLIC and IMSIC.
       {
         "base": {
           "len": 64,
@@ -211,7 +211,85 @@
         },
         "size": {
           "len": 64,
-          "value": "0x3BC00000"
+          "value": "0x3C00000"
+        },
+        "attributes": {
+          "mem_type": "IOMemory",
+          "cacheable": false,
+          "coherent": true,
+          "executable": true,
+          "readable": false,
+          "writable": true,
+          "read_idempotent": true,
+          "write_idempotent": true,
+          "misaligned_exceptions": {
+            "load_store": {
+              "Some": "AlignmentException"
+            },
+            "vector": {
+              "Some": "AlignmentException"
+            },
+            "amo": "AlignmentException",
+            "lrsc": "AlignmentException"
+          },
+          "atomic_support": "AMONone",
+          "misaligned_atomicity_granule_size_exp": 0,
+          "vector_misaligned_atomicity_granule_size_exp": 0,
+          "reservability": "RsrvNone",
+          "supports_cbo_zero": false,
+          "supports_pte_read": false,
+          "supports_pte_write": false
+        },
+        "include_in_device_tree": false
+      },
+      // IMSIC window, backed by the TestRIG device RAM, like MMIO and APLIC.
+      {
+        "base": {
+          "len": 64,
+          "value": "0x48000000"
+        },
+        "size": {
+          "len": 64,
+          "value": "0x200000"
+        },
+        "attributes": {
+          "mem_type": "MainMemory",
+          "cacheable": true,
+          "coherent": true,
+          "executable": true,
+          "readable": true,
+          "writable": true,
+          "read_idempotent": true,
+          "write_idempotent": true,
+          "misaligned_exceptions": {
+            "load_store": {
+              "Some": "AlignmentException"
+            },
+            "vector": {
+              "Some": "AlignmentException"
+            },
+            "amo": "AlignmentException",
+            "lrsc": "AlignmentException"
+          },
+          "atomic_support": "AMONone",
+          "misaligned_atomicity_granule_size_exp": 0,
+          "vector_misaligned_atomicity_granule_size_exp": 0,
+          "reservability": "RsrvNone",
+          "supports_cbo_zero": false,
+          "supports_pte_read": false,
+          "supports_pte_write": false
+        },
+        "include_in_device_tree": false
+      },
+      // Rest of the device quadrant above the IMSIC.
+      {
+        "base": {
+          "len": 64,
+          "value": "0x48200000"
+        },
+        "size": {
+          "len": 64,
+          "value": "0x37E00000"
         },
         "attributes": {
           "mem_type": "IOMemory",

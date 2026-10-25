@@ -98,6 +98,29 @@ def test_regions_follow_the_memory_map() -> None:
     assert allowed(atomics.DDR + 4, 4) == every
 
 
+@pytest.mark.parametrize(
+    ("base", "size"),
+    ((0x4000_0000, 0x31000), (0x4400_0000, 0x400000), (0x4800_0000, 0x200000)),
+)
+def test_device_windows(base: int, size: int) -> None:
+    """Every MMIO, APLIC and IMSIC page admits only simple aligned accesses."""
+    regions = atomics.load_regions()
+    kinds = ("load", "store", "amo", "lr", "sc")
+    for page in range(base, base + size, 4096):
+        for width in (1, 2, 4, 8):
+            for address in (page, page + 4096 - width):
+                allowed = {
+                    k for k in kinds if atomics.allows(regions, address, width, k)
+                }
+                assert allowed == {"load", "store"}, (hex(address), width)
+                assert not atomics.allows(regions, address + (1 << 32), width, "load")
+
+    for address in (base - 8, base + size):
+        allowed = {k for k in kinds if atomics.allows(regions, address, 8, k)}
+        expected = {"store"} if address >= 0x4000_0000 else set()
+        assert allowed == expected, hex(address)
+
+
 def _access(text: str, bases: dict[int, int]) -> tuple[int, int, str] | None:
     """Return a memory access's address, size, and kind, from its text."""
     match = ATOMIC.match(text)

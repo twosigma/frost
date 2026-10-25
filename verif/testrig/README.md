@@ -132,8 +132,9 @@ simulation only:
 - misaligned loads and stores always trap; production FROST traps them only
   once `mtvec` has a nonzero base;
 - WFI completes at once, and no interrupt is ever taken;
-- loads and stores to the device quadrant read and write a RAM instead of the
-  devices;
+- loads and stores to the MMIO, APLIC and IMSIC windows read and write a RAM
+  instead of the devices; the PMA admits loads throughout all three windows,
+  including the full 2 MiB IMSIC window, and rejects atomics and reservations;
 - the DDR model, the low BRAM data copy, and the device RAM clear on every
   reset.
 
@@ -149,7 +150,7 @@ different implementation choice:
 | Setting | FROST |
 |---------|-------|
 | Extensions | RV64IMAFDC, B, Zicond, Zbkb, Zihintpause, Zicntr, S, U, Sv39, Svade, Sstc; `misa` read-only |
-| Memory regions | The PMA map: low BRAM, the device pages, the rest of the device quadrant (stores only), and configurable DDR (1 GiB default), the only region page-table walks read |
+| Memory regions | The PMA map: low BRAM, MMIO, APLIC, IMSIC, the rest of the device quadrant (stores only), and configurable DDR (1 GiB default), the only region page-table walks read |
 | Physical addresses | 64 bits wide, so an untranslated access beyond the memory map faults with its full address in `mtval` |
 | Misaligned accesses | Address-misaligned trap, after the PMA check |
 | `mtval` | 0 for illegal instructions |
@@ -246,6 +247,7 @@ CI's TestRIG jobs replays all of them before its random run.
 | [`envcfg_fiom.S`](traces/envcfg_fiom.S) | `menvcfg.FIOM` and `senvcfg.FIOM` are writable |
 | [`fence_r0.S`](traces/fence_r0.S) | `fence r,0` retires (it was decoded as PAUSE and hung the core) |
 | [`hpm_counters.S`](traces/hpm_counters.S) | `mhpmcounter3..31` and `mhpmevent3..31` read zero |
+| [`imsic_window_load.S`](traces/imsic_window_load.S) | An aligned doubleword load in the IMSIC window reaches the TestRIG device RAM without an access fault |
 | [`instret_nops.S`](traces/instret_nops.S) | NOP and C.NOP count in `minstret` |
 | [`lrsc_amo.S`](traces/lrsc_amo.S) | An AMO to the reserved doubleword cancels the reservation; one to the next doubleword does not |
 | [`lrsc_jump.S`](traces/lrsc_jump.S) | A JAL, JALR, or taken branch between LR and SC keeps the reservation |
