@@ -410,6 +410,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "NIC frame loopback through DDR rings, with completion and interrupt checks"
         ),
     ),
+    "nic_dma_stress": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="nic_dma_stress",
+        description=(
+            "Queued NIC loopback frames overlapping 4 KiB DMA copies in plain "
+            "and burst modes, with byte checks and zero MAC RX overflow"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "400000"), ("COCOTB_NUM_RUNS", "1")),
+    ),
     "nic_echo": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
