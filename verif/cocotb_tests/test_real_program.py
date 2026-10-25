@@ -262,6 +262,29 @@ async def _assert_power_on_reset(dut: Any) -> None:
     dut.i_power_on_rst.value = 1
 
 
+def load_data_images(dut: Any) -> None:
+    """Load data images once the memory controllers have completed cold reset."""
+    platform = dut.cpu_and_memory_subsystem
+    soc = platform.soc if hasattr(platform, "soc") else platform
+    assert int(dut.reset_synchronized.value), "data image load requires system reset"
+    assert int(soc.rst_core.value), "data image load requires core reset"
+    assert int(soc.rst_div4.value), "data image load requires programming reset"
+    memory = soc.data_memory
+    if hasattr(memory, "u_sram"):
+        memory = memory.u_sram
+    memory.sim_load_image.value = 1
+    if hasattr(soc, "gen_behavioral_ddr"):
+        model = soc.gen_behavioral_ddr.ddr_model
+    elif hasattr(soc, "gen_cached_tier") and hasattr(
+        soc.gen_cached_tier, "gen_behavioral_ddr"
+    ):
+        model = soc.gen_cached_tier.gen_behavioral_ddr.ddr_model
+    else:
+        return
+    if hasattr(model, "sim_load_image") and Path("sw_ddr.mem").is_file():
+        model.sim_load_image.value = 1
+
+
 async def generate_divided_clock(dut: Any) -> None:
     """Generate i_clk_div4 with four times i_clk's period and aligned rising edges.
 
@@ -281,7 +304,15 @@ async def generate_divided_clock(dut: Any) -> None:
         await clock_edge
         level ^= 1
         divided.value = level
+    await ReadWrite()
     dut.i_power_on_rst.value = 0
+    for _ in range(5):
+        await clock_edge
+        await clock_edge
+        level ^= 1
+        divided.value = level
+    await ReadWrite()
+    load_data_images(dut)
     while True:
         await clock_edge
         await clock_edge

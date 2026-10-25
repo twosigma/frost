@@ -122,6 +122,10 @@ module axi_behavioral_memory #(
 
 `ifndef YOSYS
 `ifndef FROST_RVFI_DII
+`ifndef SYNTHESIS
+  logic sim_load_image = 1'b0;
+  always @(posedge sim_load_image) if (USE_INIT_FILE) $readmemh(INIT_FILE, memory);
+`endif
   // Image load, simulation only: Yosys cannot elaborate $fopen, and this
   // module is never instantiated in a synthesized configuration.
   initial begin
