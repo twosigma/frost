@@ -1625,6 +1625,8 @@ class EccReportDriver:
     corrected errors with an address, an uncorrectable error, four polls,
     then 2 more corrected errors. For memerr_readback, only poll, every
     POLL_GAP cycles, as a reader of a controller without errors does.
+    Error reports start after the bench completes its first reset, when
+    IRQ_EN reflects software writes rather than arbitrary power-up bits.
     """
 
     POLL_GAP = 2000
@@ -4653,9 +4655,8 @@ async def test_real_program(dut: Any) -> None:
         # UART RX byte unread; the bench sends it (0x5A) once per run.
         uart_driver = UartRxDriver(dut)
     nic_peer = NicEchoPeer(dut, uart_monitor) if app_name == "nic_echo" else None
-    if app_name == "memerr_test":
-        cocotb.start_soon(EccReportDriver(dut).run())
-    elif app_name == "memerr_readback":
+    ecc_driver = EccReportDriver(dut) if app_name == "memerr_test" else None
+    if app_name == "memerr_readback":
         cocotb.start_soon(EccReportDriver(dut).poll())
     wfi_watch = WfiRecoveryWatch(dut) if app_name == "wfi_seed_recovery" else None
     if wfi_watch is not None:
@@ -4701,6 +4702,9 @@ async def test_real_program(dut: Any) -> None:
             if line_monitor is not None:
                 line_monitor.clear()
             dut.i_rst_n.value = 1
+
+            if ecc_driver is not None:
+                cocotb.start_soon(ecc_driver.run())
 
         cocotb.log.info(f"=== Starting run {run_number} of {NUM_RUNS} ===")
 
