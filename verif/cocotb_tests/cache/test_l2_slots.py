@@ -91,18 +91,19 @@ async def _reader(
     A read's wait runs from the cycle it is ready to go, before its port's
     other readers or the port's ready can hold it, to its response.
     """
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     geom = cache_geometry(dut)
     port_timing = timing.setdefault(port, {"worst_wait": 0, "finished": 0})
     for n in range(LINES_PER_READER):
         req_id = ids[n % 2]
         addr = _line(geom, k, n)
+        expected = model.read_line(addr)
         asked = clock.cycle
         async with lock:
             await _fire(dut, port, write=False, addr=addr, req_id=req_id)
         _, got = await col.wait_for(req_id)
         port_timing["worst_wait"] = max(port_timing["worst_wait"], clock.cycle - asked)
-        assert got == model.read_line(addr), f"{port} read @0x{addr:08x}"
+        assert got == expected, f"{port} read @0x{addr:08x}"
     port_timing["finished"] = max(port_timing["finished"], clock.cycle)
 
 
