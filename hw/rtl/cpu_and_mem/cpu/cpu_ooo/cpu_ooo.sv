@@ -2058,7 +2058,8 @@ module cpu_ooo #(
         .i_arm_tag(coherent_arm_tag),
         .i_head_valid(head_valid),
         .i_head_tag(head_tag),
-        .i_entry_wins(flush_all || lq_router_flush_all || trap_taken || xret_taken || i_fatal_stop),
+        .i_entry_wins(flush_all || lq_router_flush_all || trap_taken || xret_taken ||
+            i_fatal_stop || step_done_set || step_done_q),
         .i_commit_valid(rob_commit_valid_raw),
         .i_commit_tag(rob_commit_comb.tag),
         .i_home_live(i_coherent_atomic_live),
@@ -2253,7 +2254,7 @@ module cpu_ooo #(
       .i_flush_tag(flush_tag),
       .i_flush_all(flush_all),
       .i_flush_after_head_commit(commit_recovery_flush_after_head),
-      .i_backend_recovery_hold(backend_recovery_hold),
+      .i_backend_recovery_hold(backend_recovery_hold || (COHERENT_CLUSTER && step_done_q)),
       .i_slow_write_inflight(slow_write_inflight),
       .i_uncached_read_busy(VARIABLE_UNCACHED && !i_uncached_read_request_ready),
       .i_coh_admit_valid(i_coh_admit_valid),
@@ -2514,10 +2515,11 @@ module cpu_ooo #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_all) trap_mret_commit_hold_q <= 1'b0;
-    // trap_drain_wait: a trap or xRET is waiting for committed stores to
-    // drain (see trap_unit). Hold commit so the wait is bounded.
+    // A drain holds younger retirement. The protected cached SC retires
+    // before its pending write can complete.
     else
-      trap_mret_commit_hold_q <= trap_pending || mret_start || trap_drain_wait ||
+      trap_mret_commit_hold_q <= trap_pending || mret_start ||
+      (trap_drain_wait && !coherent_head_protected) ||
       // Single step: after the stepped instruction retires, hold the next
       // head until the debug halt lands (registered: the first retirement
       // decides this cycle, the hold blocks the next one).
@@ -4093,7 +4095,9 @@ module cpu_ooo #(
   // interrupt flush after arming.
   always_ff @(posedge i_clk) begin
     if (i_rst || lq_router_flush_all) device_read_shield_q <= 1'b0;
-    else if (lq_device_request_pending || uncached_store_pending) device_read_shield_q <= 1'b1;
+    else if ((lq_device_request_pending || uncached_store_pending) &&
+        !(COHERENT_CLUSTER && step_done_q))
+      device_read_shield_q <= 1'b1;
     else if (rob_commit_valid) device_read_shield_q <= 1'b0;
   end
 
@@ -4112,7 +4116,8 @@ module cpu_ooo #(
       .i_pipeline_stall(fence_class_quiesce),
       .i_sq_committed_empty(sq_committed_empty_for_trap),
       .o_trap_drain_wait(trap_drain_wait),
-      .i_amo_at_head(amo_at_head_shield_q || coherent_atomic_active),
+      .i_amo_at_head((amo_at_head_shield_q && !(COHERENT_CLUSTER && step_done_q)) ||
+          coherent_atomic_active),
       .i_device_read_at_head(device_read_shield_q),
       .i_mstatus(csr_mstatus),
       .i_mie(csr_mie),

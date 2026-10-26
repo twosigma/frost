@@ -25,9 +25,10 @@
 // at the ROB head can always fire and a younger SC never blocks it.
 //
 // Rules:
-//   * An SC fires when head_tag matches a valid entry whose physical address
-//     is known and the SQ is committed-empty, unless the MEM adapter slot is
-//     busy or the coherence port holds SC fires (sc_fire_now).
+//   * SC selection requires a matching ROB head, a physical address, an
+//     empty committed SQ and available completion resources.
+//   * A selected coherent SC completes independently of SQ drain status.
+//     Its held context survives flushes through result consumption.
 //   * A partial flush clears only entries younger than the flush tag
 //     (is_younger); a full flush clears the table.
 //   * The table must not be smaller than the SQ (see ScTableDepth).
@@ -263,8 +264,10 @@ module sc_pending_unit #(
     logic [riscv_pkg::XLEN-1:0] virtual_address_q[ScTableDepth];
     always_ff @(posedge i_clk) begin
       for (int slot = 0; slot < ScTableDepth; slot++) begin
-        if (sct_payload_alloc && sct_free_oh[slot])
+        if (sct_payload_alloc && sct_free_oh[slot]) begin
           virtual_address_q[slot] <= o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0];
+          sct_size[slot] <= o_mem_rs_issue.op == riscv_pkg::SC_D ? 3'd3 : 3'd2;
+        end
       end
     end
     always_comb begin
@@ -275,6 +278,9 @@ module sc_pending_unit #(
     end
   end else begin : gen_no_coherent_fault_address
     assign coherent_hit_vaddr = '0;
+    for (genvar slot = 0; slot < ScTableDepth; slot++) begin : gen_size
+      assign sct_size[slot] = '0;
+    end
   end
 
   // The fire also waits for the entry's PA (i_sct_addr_fill_* under active
@@ -284,63 +290,95 @@ module sc_pending_unit #(
   assign sc_can_fire = sct_hit && sct_hit_addr_valid && sq_committed_empty;
   // Coherent cached SC matches the exact physical address and W/D size.
   // Other SCs match the reserved doubleword by comparing address[XLEN-1:3].
-  assign sc_success = lq_reservation_valid && sct_hit_resv_match;
+  assign sc_success  = lq_reservation_valid && sct_hit_resv_match;
   // Wait for coherence permission and an idle MEM adapter input. A live store
   // fault is registered first; next cycle it takes priority over the SC result,
   // which the wrapper holds until the adapter is free.
-  assign sc_slot_ready = !mem_adapter_result_pending &&
-                       !lq_fu_complete.valid &&
-                       !sc_completion_pending &&
-                       !store_misalign_fu_complete_reg.valid;
-  assign coherent_head = COHERENT_CLUSTER && o_sc_head_is_cached;
-  assign sc_fire_now = coherent_selected_q ?
-      (coherent_sent_q && i_coherent_result_valid && sc_slot_ready) :
-      (sc_can_fire && !i_coh_sc_hold && sc_slot_ready && (!coherent_head || !sc_success));
-  assign o_coherent_arm_valid = coherent_head && sc_can_fire && sc_success &&
-      !i_coh_sc_hold && sc_slot_ready && !coherent_selected_q;
-  assign o_coherent_arm_tag = head_tag;
-  assign o_coherent_valid = coherent_selected_q && !coherent_sent_q;
-  assign o_coherent_addr = coherent_addr_q;
-  assign o_coherent_size = coherent_size_q;
-  assign o_coherent_tag = coherent_tag_q;
-  assign o_coherent_result_ready = coherent_selected_q && coherent_sent_q && sc_slot_ready;
-
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      coherent_selected_q <= 1'b0;
-      coherent_sent_q <= 1'b0;
-      coherent_addr_q <= '0;
-      coherent_vaddr_q <= '0;
-      coherent_size_q <= '0;
-      coherent_tag_q <= '0;
-    end else if (COHERENT_CLUSTER) begin
-      if (o_coherent_arm_valid && i_atomic_protected && !speculative_flush_all) begin
-        coherent_selected_q <= 1'b1;
-        coherent_sent_q <= 1'b0;
-        coherent_addr_q <= sct_hit_addr;
-        coherent_vaddr_q <= coherent_hit_vaddr;
-        coherent_size_q <= sct_hit_size;
-        coherent_tag_q <= head_tag;
-      end
-      if (o_coherent_valid && i_coherent_ready) coherent_sent_q <= 1'b1;
-      if (i_coherent_result_valid && o_coherent_result_ready) coherent_selected_q <= 1'b0;
-    end
-  end
-
-  // SC fu_complete generation: the firing SC matched head_tag, so that is its tag.
   riscv_pkg::fu_complete_t sc_fu_complete;
-  always_comb begin
-    sc_fu_complete = '0;
-    sc_fu_complete.valid = sc_fire_now;
-    sc_fu_complete.tag = coherent_selected_q ? coherent_tag_q : head_tag;
-    sc_fu_complete.value = {
-      {(riscv_pkg::FLEN - 1) {1'b0}}, ~(coherent_selected_q ? i_coherent_success : sc_success)
-    };
-    if (coherent_selected_q && i_coherent_error) begin
-      sc_fu_complete.value = riscv_pkg::FLEN'(coherent_vaddr_q);
-      sc_fu_complete.exception = 1'b1;
-      sc_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(riscv_pkg::ExcStoreAccessFault);
+  if (COHERENT_CLUSTER) begin : gen_coherent_completion
+    assign sc_slot_ready = !mem_adapter_result_pending &&
+                         !lq_fu_complete.valid &&
+                         !sc_completion_pending &&
+                         !store_misalign_fu_complete_reg.valid;
+    assign coherent_head = COHERENT_CLUSTER && o_sc_head_is_cached;
+    assign sc_fire_now = coherent_selected_q ?
+        (coherent_sent_q && i_coherent_result_valid && sc_slot_ready) :
+        (sc_can_fire && !i_coh_sc_hold && sc_slot_ready && (!coherent_head || !sc_success));
+    assign o_coherent_arm_valid = coherent_head && sc_can_fire && sc_success &&
+        !i_coh_sc_hold && sc_slot_ready && !coherent_selected_q;
+    assign o_coherent_arm_tag = head_tag;
+    assign o_coherent_valid = coherent_selected_q && !coherent_sent_q;
+    assign o_coherent_addr = coherent_addr_q;
+    assign o_coherent_size = coherent_size_q;
+    assign o_coherent_tag = coherent_tag_q;
+    assign o_coherent_result_ready = coherent_selected_q && coherent_sent_q && sc_slot_ready;
+
+    always_ff @(posedge i_clk) begin
+      if (!i_rst_n) begin
+        coherent_selected_q <= 1'b0;
+        coherent_sent_q <= 1'b0;
+        coherent_addr_q <= '0;
+        coherent_vaddr_q <= '0;
+        coherent_size_q <= '0;
+        coherent_tag_q <= '0;
+      end else begin
+        if (o_coherent_arm_valid && i_atomic_protected && !speculative_flush_all) begin
+          coherent_selected_q <= 1'b1;
+          coherent_sent_q <= 1'b0;
+          coherent_addr_q <= sct_hit_addr;
+          coherent_vaddr_q <= coherent_hit_vaddr;
+          coherent_size_q <= sct_hit_size;
+          coherent_tag_q <= head_tag;
+        end
+        if (o_coherent_valid && i_coherent_ready) coherent_sent_q <= 1'b1;
+        if (i_coherent_result_valid && o_coherent_result_ready) coherent_selected_q <= 1'b0;
+      end
     end
+
+    // SC completion carries the selected request identity.
+    always_comb begin
+      sc_fu_complete = '0;
+      sc_fu_complete.valid = sc_fire_now;
+      sc_fu_complete.tag = coherent_selected_q ? coherent_tag_q : head_tag;
+      sc_fu_complete.value = {
+        {(riscv_pkg::FLEN - 1) {1'b0}}, ~(coherent_selected_q ? i_coherent_success : sc_success)
+      };
+      if (coherent_selected_q && i_coherent_error) begin
+        sc_fu_complete.value = riscv_pkg::FLEN'(coherent_vaddr_q);
+        sc_fu_complete.exception = 1'b1;
+        sc_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(riscv_pkg::ExcStoreAccessFault);
+      end
+    end
+    assign o_sc_fire_success = sc_fire_now &&
+        (coherent_selected_q ? i_coherent_success && !i_coherent_error : sc_success);
+  end else begin : gen_line_completion
+    assign sc_slot_ready = 1'b0;
+    assign coherent_head = 1'b0;
+    assign coherent_selected_q = 1'b0;
+    assign coherent_sent_q = 1'b0;
+    assign coherent_addr_q = '0;
+    assign coherent_vaddr_q = '0;
+    assign coherent_size_q = '0;
+    assign coherent_tag_q = '0;
+    assign o_coherent_arm_valid = 1'b0;
+    assign o_coherent_arm_tag = '0;
+    assign o_coherent_valid = 1'b0;
+    assign o_coherent_addr = '0;
+    assign o_coherent_size = '0;
+    assign o_coherent_tag = '0;
+    assign o_coherent_result_ready = 1'b0;
+    assign sc_fire_now = sc_can_fire && !i_coh_sc_hold &&
+                         !mem_adapter_result_pending &&
+                         !lq_fu_complete.valid &&
+                         !sc_completion_pending &&
+                         !store_misalign_fu_complete_reg.valid;
+    always_comb begin
+      sc_fu_complete       = '0;
+      sc_fu_complete.valid = sc_fire_now;
+      sc_fu_complete.tag   = head_tag;
+      sc_fu_complete.value = {{(riscv_pkg::FLEN - 1) {1'b0}}, ~sc_success};
+    end
+    assign o_sc_fire_success = sc_fire_now && sc_success;
   end
   assign o_sc_head_addr_valid = sct_hit && sct_hit_addr_valid;
   assign o_sc_head_addr = sct_hit_addr;
@@ -356,8 +394,6 @@ module sc_pending_unit #(
   end
 `endif
 `endif
-  assign o_sc_fire_success = sc_fire_now &&
-      (coherent_selected_q ? i_coherent_success && !i_coherent_error : sc_success);
 
   // Table valid bits: allocate on SC issue, free on fire, flush younger entries.
   always_ff @(posedge i_clk) begin
@@ -425,7 +461,6 @@ module sc_pending_unit #(
       for (int i = 0; i < ScTableDepth; i++) begin
         if (sct_free_oh[i]) begin
           sct_tag[i]  <= o_mem_rs_issue.rob_tag;
-          sct_size[i] <= o_mem_rs_issue.op == riscv_pkg::SC_D ? 3'd3 : 3'd2;
           // SC has no immediate: dispatch supplies imm==0, so src1 is its address.
           sct_addr[i] <= o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0];
         end
