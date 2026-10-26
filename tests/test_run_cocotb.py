@@ -2766,6 +2766,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "response routing, and reset cancellation versus AXI draining"
         ),
     ),
+    "cpu_memory_fabric_line": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_cpu_memory_fabric",
+        hdl_toplevel_module="cpu_memory_fabric",
+        verilator_extra_args=("--assert", "-GFETCH_BYTES=32"),
+        description="CPU fabric response ownership and word-lane selection for full fetch lines",
+    ),
     "cpu_axi_master": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_cpu_axi_master",
         hdl_toplevel_module="cpu_axi_master",

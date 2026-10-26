@@ -42,9 +42,11 @@ class Bench:
             "resp_id",
             "resp_rdata",
             "resp_status",
+            "read_resp_valid",
             "read_resp_id",
             "read_resp_rdata",
             "read_resp_status",
+            "read_resp_capture",
             "idle",
             "axi_bready",
             "axi_rready",
@@ -71,6 +73,9 @@ class Bench:
             "axi_w" + field for field in ("valid", "data", "strb", "last", "user")
         ]
         result = {name: int(getattr(self.dut, "o_" + name).value) for name in names}
+        assert result["read_resp_valid"] == (
+            result["resp_valid"] and not result["resp_write"]
+        )
         if result["resp_valid"] and not result["resp_write"]:
             for field in ("id", "rdata", "status"):
                 assert result["read_resp_" + field] == result["resp_" + field]
@@ -390,3 +395,63 @@ async def fabric_reset_withdraws_pending_channels(dut: Any) -> None:
     await b.step(rst=0, axi_rst=0)
     s = await b.step()
     assert s["idle"] and s["req_ready"]
+
+
+@cocotb.test()
+async def read_capture_tracks_owned_buffer_updates(dut: Any) -> None:
+    """Capture metadata only when an owned R replaces the response buffer."""
+    b = Bench(dut)
+    await b.reset()
+    await b.step(axi_arready=1, resp_ready=0)
+    await b.request(34, 0x1000, 3)
+    await b.request(35, 0x2000, 3)
+    await b.step()
+    s = await b.step(axi_rvalid=1, axi_rid=34, axi_rdata=0x1234)
+    assert s["axi_rready"] and s["read_resp_capture"]
+    s = await b.step(axi_rvalid=0)
+    assert s["resp_valid"] and not s["read_resp_capture"]
+    for _ in range(3):
+        s = await b.step(axi_rvalid=1, axi_rid=35, axi_rdata=0xBAD)
+        assert not s["axi_rready"] and not s["read_resp_capture"]
+        assert s["read_resp_id"] == 34 and s["read_resp_rdata"] == 0x1234
+    s = await b.step(resp_ready=1)
+    assert s["axi_rready"] and s["read_resp_capture"]
+    s = await b.step(axi_rvalid=0)
+    assert s["resp_valid"] and s["read_resp_id"] == 35
+    assert s["read_resp_rdata"] == 0xBAD and not s["read_resp_capture"]
+    s = await b.step(axi_rvalid=1, axi_rid=36)
+    assert not s["read_resp_capture"]
+    assert (await b.step(axi_rvalid=0))["idle"]
+    await b.request(35, 0x2000, 3)
+    await b.step()
+    s = await b.step(rst=1, axi_rvalid=1, axi_rid=35)
+    assert s["axi_rready"] and not s["read_resp_capture"]
+    s = await b.step(rst=0, axi_rvalid=0)
+    assert not s["resp_valid"] and not s["read_resp_capture"]
+
+
+@cocotb.test()
+async def read_capture_waits_while_b_publication_blocks_r(dut: Any) -> None:
+    """Keep an owned incoming R behind the buffered R during B publication."""
+    b = Bench(dut)
+    await b.reset()
+    await b.step(axi_arready=1, axi_awready=1, axi_wready=1, resp_ready=1)
+    for ident in (34, 35, 36):
+        await b.request(ident, 0x1000 + ident * 8, 3)
+    await b.request(4, 0x2000, 3, write=True)
+    await b.step()
+    await b.step(axi_rvalid=1, axi_rid=34, axi_rdata=0x1234, axi_bvalid=1, axi_bid=4)
+    s = await b.step(axi_rid=35, axi_rdata=0x2345, axi_bvalid=0)
+    assert s["resp_valid"] and not s["resp_write"] and s["resp_id"] == 34
+    assert s["read_resp_capture"]
+    s = await b.step(axi_rid=36, axi_rdata=0x3456)
+    assert s["resp_valid"] and s["resp_write"] and s["resp_id"] == 4
+    assert not s["axi_rready"] and not s["read_resp_capture"]
+    assert s["read_resp_id"] == 35 and s["read_resp_rdata"] == 0x2345
+    s = await b.step()
+    assert s["resp_valid"] and s["resp_id"] == 35
+    assert s["axi_rready"] and s["read_resp_capture"]
+    s = await b.step(axi_rvalid=0)
+    assert s["resp_valid"] and s["resp_id"] == 36
+    assert s["read_resp_rdata"] == 0x3456
+    assert (await b.step())["idle"]
