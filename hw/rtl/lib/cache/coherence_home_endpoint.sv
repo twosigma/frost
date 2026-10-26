@@ -95,8 +95,31 @@ module coherence_home_endpoint #(
   assign o_g_valid = !i_rst && phase_q == Work && i_result_valid && result_matches;
   assign o_result_ready = !i_rst && phase_q == Work && result_matches && i_g_ready;
   assign o_g = result_in;
-  assign o_c_ready = !i_rst && phase_q == WaitC && completion_in.q == demand_q.q &&
-      completion_in.tid == 6'(TID) && completion_in.addr == demand_q.addr &&
+  localparam int unsigned CompletionKeyWidth = ADDR_WIDTH + 15;
+  localparam int unsigned CompletionParts = (CompletionKeyWidth + 2) / 3;
+  localparam int unsigned CompletionGroups = (CompletionParts + 5) / 6;
+  wire [CompletionKeyWidth-1:0] completion_key =
+      {completion_in.q, completion_in.tid, completion_in.addr};
+  wire [CompletionKeyWidth-1:0] expected_completion_key =
+      {demand_q.q, 6'(TID), demand_q.addr};
+  (* keep = "true" *) logic [CompletionParts-1:0] completion_parts;
+  (* keep = "true" *) logic [CompletionGroups-1:0] completion_groups;
+  logic completion_matches;
+  for (genvar part = 0; part < CompletionParts; part++) begin : gen_completion_part
+    localparam int unsigned Bits = CompletionKeyWidth - 3 * part < 3 ?
+        CompletionKeyWidth - 3 * part : 3;
+    assign completion_parts[part] = completion_key[3*part+:Bits] ==
+        expected_completion_key[3*part+:Bits];
+  end
+  for (
+      genvar group_index = 0; group_index < CompletionGroups; group_index++
+  ) begin : gen_completion_group
+    localparam int unsigned Parts = CompletionParts - 6 * group_index < 6 ?
+        CompletionParts - 6 * group_index : 6;
+    assign completion_groups[group_index] = &completion_parts[6*group_index+:Parts];
+  end
+  assign completion_matches = &completion_groups;
+  assign o_c_ready = !i_rst && phase_q == WaitC && completion_matches &&
       completion_in.status <= coherence_pkg::Error &&
       ((completion_in.status != coherence_pkg::Error && !grant_error_q) || i_error_disposed) &&
       !(grant_error_q && completion_in.status == coherence_pkg::Consumed) &&
@@ -165,6 +188,17 @@ module coherence_home_endpoint #(
       )) begin : gen_invalid_config
     initial $fatal(1, "coherence_home_endpoint: invalid parameters");
   end
+`ifndef SYNTHESIS
+`ifdef FORMAL
+  always_comb begin
+`else
+  always @(posedge i_clk) begin
+`endif
+    p_completion_key_exact : assert (completion_matches ==
+        (completion_in.q == demand_q.q && completion_in.tid == 6'(TID) &&
+         completion_in.addr == demand_q.addr));
+  end
+`endif
 `ifdef FORMAL
   logic f_past_valid = 1'b0;
   logic f_granted, f_completed, f_early_cancel;

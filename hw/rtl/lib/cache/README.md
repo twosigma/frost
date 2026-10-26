@@ -158,6 +158,7 @@ register captures it. The dispatcher prevents duplicate live q values across
 records. A record accepts C only after G and emits U only after C and every
 registered absorbed-PutAck dependency. It becomes available on U consumption.
 The caller owns the line lock and destination pin through that edge.
+Completion identity and address comparisons use parallel three-bit groups.
 
 The home service registers an absorbed R through `i_absorb` after preserving
 its dirty image in a reserved sink. This port records cancellation metadata;
