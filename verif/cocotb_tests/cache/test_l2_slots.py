@@ -85,25 +85,24 @@ async def _reader(
     lock: Lock,
     clock: _Collector,
     timing: dict[str, dict[str, int]],
+    expected: list[int],
 ) -> None:
     """Read reader k's lines one at a time; track its port's waits in timing.
 
     A read's wait runs from the cycle it is ready to go, before its port's
     other readers or the port's ready can hold it, to its response.
     """
-    model = ReferenceModel(dut)
     geom = cache_geometry(dut)
     port_timing = timing.setdefault(port, {"worst_wait": 0, "finished": 0})
     for n in range(LINES_PER_READER):
         req_id = ids[n % 2]
         addr = _line(geom, k, n)
-        expected = model.read_line(addr)
         asked = clock.cycle
         async with lock:
             await _fire(dut, port, write=False, addr=addr, req_id=req_id)
         _, got = await col.wait_for(req_id)
         port_timing["worst_wait"] = max(port_timing["worst_wait"], clock.cycle - asked)
-        assert got == expected, f"{port} read @0x{addr:08x}"
+        assert got == expected[n], f"{port} read @0x{addr:08x}"
     port_timing["finished"] = max(port_timing["finished"], clock.cycle)
 
 
@@ -113,6 +112,11 @@ async def test_l2_slot_parallelism(dut: Any) -> None:
     await _setup(dut)
     geom = cache_geometry(dut)
     assert geom.l2_way_bytes // geom.l2_line >= len(READERS), "a reader without a set"
+    model = ReferenceModel(dut)
+    expected = [
+        [model.read_line(_line(geom, k, n)) for n in range(LINES_PER_READER)]
+        for k in range(len(READERS))
+    ]
     lq = LoadQueueStub(dut)
     l2 = dut.cache_hierarchy.cluster_cache.l2_cache
     num_mshr = int(l2.NUM_MSHR.value)
@@ -130,7 +134,9 @@ async def test_l2_slot_parallelism(dut: Any) -> None:
     start = clock.cycle
     readers = [
         cocotb.start_soon(
-            _reader(dut, k, port, ids, cols[port], locks[port], clock, timing)
+            _reader(
+                dut, k, port, ids, cols[port], locks[port], clock, timing, expected[k]
+            )
         )
         for k, (port, ids) in enumerate(READERS)
     ]
