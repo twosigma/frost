@@ -462,6 +462,9 @@ module platform_top #(
   );
 
   soc_top #(
+`ifdef FROST_COHERENT_CLUSTER
+      .COHERENT_CLUSTER(COHERENT_CLUSTER),
+`endif
       .ASYNC_CPU_CLOCK(ASYNC_CPU_CLOCK),
       .MEM_SIZE_BYTES(MEM_SIZE_BYTES),
       .SIM_TIMER_SPEEDUP(SIM_TIMER_SPEEDUP),

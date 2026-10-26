@@ -3557,6 +3557,7 @@ for _depth in (128, 256):
 
 # The coherent cluster is selected explicitly for each program build.
 for _program in (
+    "debug_test",
     "hello_world",
     "isa_test",
     "coremark",
