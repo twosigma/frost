@@ -27,14 +27,14 @@ covers training the profiles.
 | `COREMARK_SEED_SET` | `performance` (default) or `validation`, the two official seed sets |
 | `COREMARK_COMPRESSED=1` | Build with compressed instructions |
 | `COREMARK_SOURCE_ORDER` | Reorder the benchmark's translation units |
-| `ITERATIONS` | Timed iterations (default 14,000) |
+| `ITERATIONS` | Timed iterations (default 20,000) |
 
 ## Measuring
 
 A score comes from a run of at least ten seconds that passes every seed, list,
-matrix and state CRC, with both seed sets. At 322 MHz the default 14,000
-iterations take a little over ten seconds. CoreMark/MHz is the score divided by
-the clock in MHz.
+matrix and state CRC, with both seed sets. At 322 MHz the default 20,000
+iterations take about 14 seconds. CoreMark/MHz is the score divided by the
+clock in MHz.
 
 On the X3, with the [hardware regression environment](../../../fpga/README.md#hardware-regression)
 set up:
