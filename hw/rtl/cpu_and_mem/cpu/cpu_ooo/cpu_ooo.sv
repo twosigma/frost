@@ -2044,8 +2044,8 @@ module cpu_ooo #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_lq_tag;
   logic coherent_sq_sc;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_sq_tag, coherent_amo_tag;
-  assign coherent_head_protected = coherent_atomic_active && !coherent_atomic_retired &&
-      head_valid && head_tag == coherent_atomic_tag;
+  // An active, unretired context identifies the valid ROB head.
+  assign coherent_head_protected = coherent_atomic_active && !coherent_atomic_retired;
   assign coherent_retire_hold = coherent_atomic_active && coherent_atomic_retired &&
       i_coherent_atomic_live;
   assign o_coherent_atomic_protected = coherent_atomic_active;
@@ -2076,7 +2076,7 @@ module cpu_ooo #(
 `ifndef SYNTHESIS
     always_ff @(posedge i_clk) begin
       if (!i_rst && coherent_atomic_active && !i_fatal_stop) begin
-        if (!coherent_atomic_retired) assert (head_tag == coherent_atomic_tag);
+        if (!coherent_atomic_retired) assert (head_valid && head_tag == coherent_atomic_tag);
         if (trap_taken) assert (trap_pending && !i_coherent_atomic_live);
         if (lq_router_flush_all) assert (trap_taken && trap_pending && !i_coherent_atomic_live);
       end
