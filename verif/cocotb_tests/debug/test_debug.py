@@ -275,6 +275,26 @@ async def test_debug(dut: Any) -> None:
     assert (await dm.read_csr(CSR_DSCRATCH0)) == 0xDEADBEEFCAFEF00D
     assert (await dm.read_csr(CSR_DPC)) == dpc
 
+    # A doubleword patch supplies two executable instruction words in BRAM.
+    patch_addr = 0x1E000
+    saved_patch = await dm.read_mem(patch_addr, 8)
+    saved_next = await dm.read_mem(patch_addr + 8, 4)
+    saved_dcsr = await dm.read_dcsr()
+    await dm.write_mem(patch_addr + 8, 4, INSN_EBREAK)
+    await dm.write_mem(patch_addr, 8, addi(5, 0, 17) | (addi(5, 5, 23) << 32))
+    await dm.write_gpr(5, 0)
+    await dm.write_dpc(patch_addr)
+    await dm.set_step(True)
+    assert (await dm.step()) == patch_addr + 4
+    assert (await dm.read_gpr(5)) == 17, "lower instruction word was not mirrored"
+    assert (await dm.step()) == patch_addr + 8
+    assert (await dm.read_gpr(5)) == 40, "upper instruction word was not mirrored"
+    await dm.write_dcsr(saved_dcsr)
+    await dm.write_dpc(dpc)
+    await dm.write_gpr(5, saved_t0)
+    await dm.write_mem(patch_addr, 8, saved_patch)
+    await dm.write_mem(patch_addr + 8, 4, saved_next)
+
     # ---- Memory: BRAM data, MMIO, DDR, sizes -------------------------------
     table = syms["table"]
     assert (await dm.read_mem(table, 8)) == 0x1000000000000001

@@ -65,6 +65,7 @@ def test_coherent_sources_are_available() -> None:
     sources = runner.parse_filelist(runner.filelist)
     names = {Path(source).name for source in sources}
     assert "frost_hart_cache.sv" in names
+    assert "debug_store_mirror_hold.sv" not in names
     assert not any(name.startswith(("coherence_", "coherent_")) for name in names)
     sources = runner.parse_filelist(runner.filelist, coherent_cluster=True)
     names = {Path(source).name for source in sources}
@@ -72,6 +73,7 @@ def test_coherent_sources_are_available() -> None:
         "frost_hart_cache.sv",
         "coherent_hart_cache.sv",
         "coherence_home.sv",
+        "debug_store_mirror_hold.sv",
     } <= names
     assert all(Path(source).is_file() for source in sources)
 
@@ -120,6 +122,18 @@ def test_coherent_cpu_configuration(cached: int, dma: int) -> None:
             "ENABLE_CACHED_TIER": cached,
             "ENABLE_COHERENCE": dma,
         },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.synthesis
+def test_coherent_soc_configuration() -> None:
+    """The coherent SoC elaborates its selected debug mirror storage."""
+    runner = YosysRunner()
+    result = runner.run_synthesis(
+        synth_command="synth -top soc_top -run coarse",
+        top_module="soc_top",
+        parameters={"COHERENT_CLUSTER": 1},
     )
     assert result.returncode == 0, result.stdout + result.stderr
 

@@ -20,6 +20,9 @@
   The cached tier connects to DDR through the cache hierarchy and AXI bridge.
 */
 module soc_top #(
+`ifdef FROST_COHERENT_CLUSTER
+    parameter bit COHERENT_CLUSTER = 1'b0,
+`endif
     parameter bit ASYNC_CPU_CLOCK = 1'b0,
     parameter int unsigned NUM_HARTS = 1,
     parameter int unsigned AXI_ID_BITS = 6,
@@ -976,6 +979,19 @@ module soc_top #(
     if (debug_soc_rst) mirror_overflow_q <= 1'b0;
     else mirror_overflow_q <= mirror_overflow;
   end
+`ifdef FROST_COHERENT_CLUSTER
+  if (COHERENT_CLUSTER) begin : gen_coherent_mirror_hold
+  debug_store_mirror_hold #(.ADDR_WIDTH(MemWordAddrWidth)) mirror_hold (
+      .i_clk,
+      .i_rst(debug_soc_rst),
+      .i_push(mirror_lo && mirror_hi && slice_req_ready),
+      .i_pop(slice_req_ready),
+      .i_addr({dbg_bram_store_addr[MemByteAddrWidth-1:3], 1'b1}),
+      .o_valid(mirror_hold_valid_q),
+      .o_addr(mirror_hold_addr_q)
+  );
+  end else begin : gen_direct_mirror_hold
+`endif
   always_ff @(posedge i_clk) begin
     if (debug_soc_rst) begin
       mirror_hold_valid_q <= 1'b0;
@@ -987,6 +1003,9 @@ module soc_top #(
       mirror_hold_addr_q  <= {dbg_bram_store_addr[MemByteAddrWidth-1:3], 1'b1};
     end
   end
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`endif
   logic dm_request_ready, dm_all_done;
   logic dm_soc_valid;
   logic [MemByteAddrWidth-1:2] dm_soc_addr;

@@ -1,0 +1,21 @@
+[tasks]
+mirror_hold_prove normal
+mirror_hold15_prove narrow
+mirror_hold32_prove wide
+
+[options]
+mode prove
+depth 4
+timeout 60
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv debug_store_mirror_hold.sv
+narrow: chparam -set ADDR_WIDTH 15 debug_store_mirror_hold
+wide: chparam -set ADDR_WIDTH 32 debug_store_mirror_hold
+prep -top debug_store_mirror_hold
+
+[files]
+../hw/rtl/cpu_and_mem/debug/debug_store_mirror_hold.sv

@@ -86,6 +86,11 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "debug_store_mirror_hold.sby",
+        "Debug mirror validity and occupied address equality.",
+        tasks=("mirror_hold_prove", "mirror_hold15_prove", "mirror_hold32_prove"),
+    ),
+    FormalTarget(
         "coherence_read_payload.sby",
         "Buffered coherent read payloads equal allocation-only storage.",
         tasks=("coh_read_payload_prove", "coh_read_payload64_prove"),
@@ -837,6 +842,9 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("mirror_hold_prove", "Debug mirror address equality at sixteen bits."),
+    ("mirror_hold15_prove", "Debug mirror address equality at fifteen bits."),
+    ("mirror_hold32_prove", "Debug mirror address equality at thirty-two bits."),
     ("coh_read_payload_prove", "Coherent read payload storage at 32 address bits."),
     ("coh_read_payload64_prove", "Coherent read payload storage at 64 address bits."),
     ("coh_l0_flags_prove", "Coherent L0 next-state equality at 128 entries."),
