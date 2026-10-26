@@ -1626,8 +1626,28 @@ module load_queue #(
   // An arriving MMIO address may stage before ROB head. sq_check_is_mmio_q
   // blocks its SQ probe and memory issue until it reaches head.
   assign update_scan_issueable = update_scan_found;
+`ifdef FROST_COHERENT_CLUSTER
+  if (COHERENT_CLUSTER) begin : gen_coherent_scan_order
+    assign update_scan_older_than_stored_scan =
+        |(merged_scan_onehot & update_scan_onehot & ~stored_scan_onehot);
+  end else begin : gen_line_scan_order
+`endif
   assign update_scan_older_than_stored_scan =
       update_scan_issueable && (!stored_scan_found || (update_scan_pos < stored_scan_pos));
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`ifndef SYNTHESIS
+  if (COHERENT_CLUSTER) begin : gen_coherent_scan_checks
+    always_comb begin
+      p_scan_order_exact : assert (update_scan_older_than_stored_scan ==
+          (update_scan_issueable && (!stored_scan_found || (update_scan_pos < stored_scan_pos))));
+      p_issue_found_exact : assert (issue_mem_found ==
+          (head_mem_stored_found || (i_addr_update.valid && head_mem_update_found) ||
+           update_scan_wins || stored_scan_found));
+    end
+  end
+`endif
+`endif
   assign update_scan_wins = i_addr_update.valid && update_scan_older_than_stored_scan;
 
   // Phase B: prefer an eligible ROB-head load, then ring order. Select stored
@@ -1669,6 +1689,12 @@ module load_queue #(
       issue_mem_rob_tag = stored_scan_rob_tag;
       issue_mem_onehot  = stored_scan_onehot;
     end
+`ifdef FROST_COHERENT_CLUSTER
+    if (COHERENT_CLUSTER) begin
+      issue_mem_found = head_mem_stored_found || stored_scan_found ||
+          (i_addr_update.valid && (head_mem_update_found || update_scan_found));
+    end
+`endif
   end
 
   // ===========================================================================
