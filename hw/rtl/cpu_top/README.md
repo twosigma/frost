@@ -58,6 +58,8 @@ The cache is a unified physical memory domain below its private levels: a downst
 
 ID 33 and IDs above 35 are unused. An ID stays owned until its CPU-side response is consumed. Different IDs may complete out of order; each response is matched to its owner. ID values do not select cacheability, device behavior, ordering or address routing.
 
+Instruction-fetch IDs belong only to reads. Their ID, word-lane selection, data and error status use the master's registered R payload directly. Shared R/B arbitration controls response validity; the fetch payload is consumed only when that arbitration publishes its ID.
+
 An internal request register separates client arbitration from the master's ID and channel availability checks. It holds the complete address, attributes, ID, data and strobes under backpressure and permits simultaneous dequeue and replacement. CPU reset discards this request if it has not reached the master; already presented AXI traffic still drains. `o_axi_idle` includes this register.
 
 On a successful response, the uncached adapter may enqueue its next waiting

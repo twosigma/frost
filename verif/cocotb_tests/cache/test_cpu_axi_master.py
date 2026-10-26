@@ -42,6 +42,9 @@ class Bench:
             "resp_id",
             "resp_rdata",
             "resp_status",
+            "read_resp_id",
+            "read_resp_rdata",
+            "read_resp_status",
             "idle",
             "axi_bready",
             "axi_rready",
@@ -68,6 +71,9 @@ class Bench:
             "axi_w" + field for field in ("valid", "data", "strb", "last", "user")
         ]
         result = {name: int(getattr(self.dut, "o_" + name).value) for name in names}
+        if result["resp_valid"] and not result["resp_write"]:
+            for field in ("id", "rdata", "status"):
+                assert result["read_resp_" + field] == result["resp_" + field]
         fabric_reset = int(self.dut.i_axi_rst.value)
         cpu_reset = int(self.dut.i_rst.value)
         for channel, fields, ready in (
