@@ -1,5 +1,4 @@
 [tasks]
-coh_stage_take_prove stage_take
 coh_address_class_prove address_class
 coh_candidate_select_prove candidate
 coh_sc_selected_prove sc
@@ -23,7 +22,7 @@ read -sv riscv_pkg.sv
 sc: read -formal -sv -D FROST_COHERENT_CLUSTER -D COHERENT_SC_LOCAL_PROOF sc_pending_unit.sv
 sc: chparam -set COHERENT_CLUSTER 1 sc_pending_unit
 sc: prep -flatten -top sc_pending_unit
-lq: read -sv -D FROST_COHERENT_CLUSTER sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv lq_l0_cache.sv coherent_l0_flags.sv lq_issue_selector.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv coherent_lq_stage_take.sv
+lq: read -sv -D FROST_COHERENT_CLUSTER sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv lq_l0_cache.sv coherent_l0_flags.sv lq_issue_selector.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv
 lq: read -formal -sv coherent_lq_address_store.sv
 lq: read -formal -sv -D FROST_COHERENT_CLUSTER -D F_LQ_PREMATCH_ONLY -D COHERENT_LQ_LOCAL_PROOF load_queue.sv
 lq: chparam -set COHERENT_CLUSTER 1 load_queue
@@ -42,9 +41,6 @@ candidate: prep -top coherent_lq_candidate_select
 address_class: read -formal -sv coherent_lq_address_store.sv
 address_class: prep -flatten -top coherent_lq_address_store
 
-stage_take: read -formal -sv coherent_lq_stage_take.sv
-stage_take: prep -top coherent_lq_stage_take
-
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
@@ -58,4 +54,3 @@ stage_take: prep -top coherent_lq_stage_take
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
-../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_stage_take.sv
