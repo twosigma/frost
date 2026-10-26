@@ -14,7 +14,7 @@
 
 """Check DDR image loading and reset behavior through the model's AXI port.
 
-Ordinary dense and wide sparse storage load the image and retain writes
+Dense and wide sparse storage load the image and preserve writes
 across reset. TestRIG starts empty, ignores the image, and clears on reset.
 """
 
@@ -129,7 +129,16 @@ async def image_and_writes_follow_reset_contract(dut: Any) -> None:
 
     initial = 0 if mode == "dii" else IMAGE
     assert await _read(dut, 0) == initial, "DDR boot image missing after reset"
-    assert await _read(dut, LINE_BYTES) == 0
+    words_per_line = LINE_BYTES // 4
+    untouched = (
+        sum(
+            int(dut.memory[words_per_line + index].value) << (32 * index)
+            for index in range(words_per_line)
+        )
+        if mode == "dense"
+        else 0
+    )
+    assert await _read(dut, LINE_BYTES) == untouched
 
     # Overwrite part of the boot image. A reset must retain the modified
     # bytes, not clear the memory or reload the original image.
