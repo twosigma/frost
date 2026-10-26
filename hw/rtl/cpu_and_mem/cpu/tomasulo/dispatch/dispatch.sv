@@ -781,13 +781,16 @@ module dispatch #(
   end
 
   // Separate per-RS fire terms and fanout limits localize dispatch enables.
-  (* max_fanout = 64 *)logic dispatch_common_ready;
-  (* max_fanout = 64 *)logic dispatch_fire;
-  (* max_fanout = 64 *)logic slot1_can_fire;  // Slot-1 standalone gate
+  (* keep = "true" *) logic dispatch_resources_ready;
+  (* keep = "true" *) logic bundle_resources_ready;
+  (* keep = "true" *) logic [3:0] rs_bundle_resources_ready;
+  (* max_fanout = 64 *) logic dispatch_common_ready;
+  (* max_fanout = 64 *) logic dispatch_fire;
+  (* max_fanout = 64 *) logic slot1_can_fire;  // Slot-1 standalone gate
   // Slot-2 gate, conditional on slot1_can_fire.
-  (* keep = "true", max_fanout = 64 *)logic slot2_can_fire;
+  (* keep = "true", max_fanout = 64 *) logic slot2_can_fire;
   logic slot2_resources_ok;
-  (* max_fanout = 64 *)logic slot2_bundle_ok;
+  (* max_fanout = 64 *) logic slot2_bundle_ok;
   logic int_rs_dispatch_fire;
   logic mul_rs_dispatch_fire;
   logic mem_rs_dispatch_fire;
@@ -797,13 +800,15 @@ module dispatch #(
   logic mem_rs_dispatch_fire_2;
   logic fp_rs_dispatch_fire_2;
 
-  assign dispatch_common_ready =
-      dispatch_valid &&
+  // Resource admission is independent of slot-1 validity. Validity qualifies
+  // each destination's completed resource decision.
+  assign dispatch_resources_ready =
       !i_hold &&
       !i_rob_full &&
       !(need_lq && i_lq_full) &&
       !(need_sq && i_sq_full) &&
       !(need_checkpoint && !i_checkpoint_available);
+  assign dispatch_common_ready = dispatch_valid && dispatch_resources_ready;
   assign slot1_can_fire = dispatch_common_ready && !rs_full;
   // A slot-1 branch or jump ends the bundle. Slot 2 requires slot 1 to fire
   // and enough space for both slots in each shared resource.
@@ -846,11 +851,12 @@ module dispatch #(
       (is_branch_flag || i_rob_full_for_2 || (need_lq_2 && lq_full_for_slot2) ||
        (need_sq_2 && sq_full_for_slot2) || (need_checkpoint_2 && !i_checkpoint_available));
   assign slot2_bundle_ok = !(|slot2_rs_blocks) && !slot2_other_block;
-  assign slot2_can_fire = slot1_can_fire && slot2_present_for_admission && slot2_bundle_ok;
+  assign bundle_resources_ready = dispatch_resources_ready && !rs_full && slot2_bundle_ok;
+  assign slot2_can_fire = dispatch_valid && bundle_resources_ready && slot2_present_for_admission;
   // Count cycles where slot 2 alone blocks dispatch.
   assign slot2_only_block = dispatch_valid_2 && slot1_can_fire && !slot2_resources_ok;
   // Both admitted slots fire together; absent slot 2 adds no restriction.
-  assign bundle_fire_ok = slot1_can_fire && slot2_bundle_ok;
+  assign bundle_fire_ok = dispatch_valid && bundle_resources_ready;
   assign dispatch_fire = bundle_fire_ok;
 
 `ifndef SYNTHESIS
@@ -867,6 +873,16 @@ module dispatch #(
   end
 `endif
 `ifdef DISPATCH_ADMISSION_LOCAL_PROOF
+  logic f_admit_common;
+  logic f_admit_slot1;
+  logic f_admit_slot2;
+  logic f_admit_bundle;
+  assign f_admit_common = i_valid && !i_flush && !i_hold && !i_rob_full &&
+      !(need_lq && i_lq_full) && !(need_sq && i_sq_full) &&
+      !(need_checkpoint && !i_checkpoint_available);
+  assign f_admit_slot1 = f_admit_common && !rs_full;
+  assign f_admit_slot2 = f_admit_slot1 && dispatch_valid_2 && slot2_resources_ok;
+  assign f_admit_bundle = f_admit_slot1 && (!dispatch_valid_2 || slot2_resources_ok);
   always_comb begin
     if (SLOT2_VALID_FROM_BUNDLE && dispatch_valid) assume (i_valid_2 == i_from_id_to_ex_2.is_real);
     // Only FMA ops read FP source 3, and they route to FP_RS. ID and the
@@ -878,22 +894,43 @@ module dispatch #(
     assert (bundle_fire_ok == (slot1_can_fire && (!dispatch_valid_2 || slot2_resources_ok)));
     p_slot2_admission_formal :
     assert (slot2_can_fire == (slot1_can_fire && dispatch_valid_2 && slot2_resources_ok));
+    p_admission_reference_formal :
+    assert ({dispatch_common_ready, slot1_can_fire, slot2_can_fire, bundle_fire_ok} ==
+            {f_admit_common, f_admit_slot1, f_admit_slot2, f_admit_bundle});
+    p_rs_admission_reference_formal :
+    assert ({fp_rs_dispatch_fire, mem_rs_dispatch_fire,
+             mul_rs_dispatch_fire, int_rs_dispatch_fire} ==
+            {f_admit_common && rs_type == riscv_pkg::RS_FP && !i_fp_rs_full &&
+                 (!dispatch_valid_2 || slot2_resources_ok),
+             f_admit_common && rs_type == riscv_pkg::RS_MEM && !i_mem_rs_full &&
+                 (!dispatch_valid_2 || slot2_resources_ok),
+             f_admit_common && rs_type == riscv_pkg::RS_MUL && !i_mul_rs_full &&
+                 (!dispatch_valid_2 || slot2_resources_ok),
+             f_admit_common && rs_type == riscv_pkg::RS_INT && !i_int_rs_full &&
+                 (!dispatch_valid_2 || slot2_resources_ok)});
+    p_checkpoint_admission_reference_formal :
+    assert (o_checkpoint_save == ((f_admit_bundle && need_checkpoint) ||
+                                  (f_admit_slot2 && need_checkpoint_2)));
   end
 `endif
 
 
-  assign int_rs_dispatch_fire =
-      dispatch_common_ready && (rs_type == riscv_pkg::RS_INT) && !i_int_rs_full &&
+  assign rs_bundle_resources_ready[0] =
+      dispatch_resources_ready && (rs_type == riscv_pkg::RS_INT) && !i_int_rs_full &&
       slot2_bundle_ok;
-  assign mul_rs_dispatch_fire =
-      dispatch_common_ready && (rs_type == riscv_pkg::RS_MUL) && !i_mul_rs_full &&
+  assign rs_bundle_resources_ready[1] =
+      dispatch_resources_ready && (rs_type == riscv_pkg::RS_MUL) && !i_mul_rs_full &&
       slot2_bundle_ok;
-  assign mem_rs_dispatch_fire =
-      dispatch_common_ready && (rs_type == riscv_pkg::RS_MEM) && !i_mem_rs_full &&
+  assign rs_bundle_resources_ready[2] =
+      dispatch_resources_ready && (rs_type == riscv_pkg::RS_MEM) && !i_mem_rs_full &&
       slot2_bundle_ok;
-  assign fp_rs_dispatch_fire =
-      dispatch_common_ready && (rs_type == riscv_pkg::RS_FP) && !i_fp_rs_full &&
+  assign rs_bundle_resources_ready[3] =
+      dispatch_resources_ready && (rs_type == riscv_pkg::RS_FP) && !i_fp_rs_full &&
       slot2_bundle_ok;
+  assign int_rs_dispatch_fire = dispatch_valid && rs_bundle_resources_ready[0];
+  assign mul_rs_dispatch_fire = dispatch_valid && rs_bundle_resources_ready[1];
+  assign mem_rs_dispatch_fire = dispatch_valid && rs_bundle_resources_ready[2];
+  assign fp_rs_dispatch_fire = dispatch_valid && rs_bundle_resources_ready[3];
 
   assign int_rs_dispatch_fire_2 = slot2_can_fire && (rs_type_2 == riscv_pkg::RS_INT);
   assign mul_rs_dispatch_fire_2 = slot2_can_fire && (rs_type_2 == riscv_pkg::RS_MUL);
@@ -1663,21 +1700,22 @@ module dispatch #(
   // ROB tag and IF-time RAS state, with slot 1's rename overlaid in the RAT
   // snapshot so recovery preserves that allocation.
 
-  logic checkpoint_save_slot1;
   logic checkpoint_save_slot2;
-  assign checkpoint_save_slot1 = dispatch_fire && need_checkpoint;
   assign checkpoint_save_slot2 = slot2_can_fire && need_checkpoint_2;
 
   // Saved data uses this candidate only on a save. A saving bundle has
   // exactly one branch, so it equals checkpoint_save_slot2 in that cycle.
   logic checkpoint_slot2_candidate;
+  (* keep = "true" *)logic checkpoint_resources_ready;
   assign checkpoint_slot2_candidate = slot2_present_for_admission && need_checkpoint_2;
+  assign checkpoint_resources_ready = bundle_resources_ready &&
+      (need_checkpoint || checkpoint_slot2_candidate);
   assign o_checkpoint_slot2_candidate = checkpoint_slot2_candidate;
   assign o_alloc_has_dest = has_dest;
   assign o_alloc_has_dest_2 = slot2_present_for_admission && has_dest_2;
 
   always_comb begin
-    o_checkpoint_save = checkpoint_save_slot1 || checkpoint_save_slot2;
+    o_checkpoint_save = dispatch_valid && checkpoint_resources_ready;
     o_checkpoint_save_for_slot2 = checkpoint_save_slot2;
     o_checkpoint_id = i_checkpoint_alloc_id;
     // Select the checkpointed ROB entry with the candidate qualified above.
