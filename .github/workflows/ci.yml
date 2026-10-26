@@ -913,12 +913,11 @@ jobs:
   # memories over 4,096 bits mocked as one row (asic/README.md). The frost
   # image prepares the sources; the flow runs in the ORFS image that
   # asic/orfs.py pins, with a 256 KiB L2 (asic/config.mk). Global routing,
-  # detailed routing, and the final report peak at about 16, 20, and 25 GB of
-  # memory, so on standard runners they lean on swap space, and since one job
-  # would far exceed the six-hour limit, the flow runs in four chained jobs:
+  # detailed routing, and the final report use swap space on standard runners.
+  # The flow runs in four chained jobs, each with a six-hour limit:
   # synthesis through clock tree synthesis, global routing, detailed routing,
   # and the GDS with the final report, each resuming from the database of the
-  # one before. The databases of all the stages take about 22 GB of disk.
+  # one before.
   asic-flow-place:
     name: ASIC Flow (synthesis to clock tree synthesis)
     runs-on: ubuntu-26.04
@@ -995,7 +994,6 @@ jobs:
           nproc
           df -h / /mnt
 
-      # Global routing peaks at about 16 GB of memory.
       - name: Add swap space
         run: |
           swapfile=/mnt/asic-flow.swap
@@ -1066,9 +1064,7 @@ jobs:
           nproc
           df -h / /mnt
 
-      # Detailed routing peaks at about 20 GB of memory. It reuses global
-      # routing's pin access (asic/config.mk), and this job takes about two
-      # hours on four CPUs.
+      # Detailed routing reuses global routing's pin access (asic/config.mk).
       - name: Add swap space
         run: |
           swapfile=/mnt/asic-flow.swap
@@ -1139,7 +1135,6 @@ jobs:
           nproc
           df -h / /mnt
 
-      # The final report peaks at about 25 GB of memory.
       - name: Add swap space
         run: |
           swapfile=/mnt/asic-flow.swap

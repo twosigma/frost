@@ -95,9 +95,9 @@ export MACRO_PLACEMENT_TCL = $(DESIGN_DIR)/macro_placement.tcl
 # The pins go on the left and right edges, which pass the logic band, not
 # on the top and bottom edges, which run along the macros.
 export PLACE_PINS_ARGS = -exclude top:* -exclude bottom:*
-# Place the standard cells at the lower bound of the density plus a fifth of
-# the remaining room, as the platform's gcd design does.
-export PLACE_DENSITY_LB_ADDON = 0.20
+# The initial placement target is its lower bound plus a tenth of the
+# remaining room and 0.01. Whitespace gives routes room around the SRAM macros.
+export PLACE_DENSITY_LB_ADDON = 0.10
 # Skip the repairs after global routing, which take hours: with 4 threads,
 # repairing slew and capacitance over the routed wires took 82 minutes, the
 # timing repair 49 more, and they raised global routing's peak memory from

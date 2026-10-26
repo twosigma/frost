@@ -45,9 +45,8 @@ The script needs Docker and the `frost` image (see the
 `--frost-image`, or `FROST_DOCKER_IMAGE`, names another frost image. Both
 images run as the invoking user, with the checkout mounted at `/workspace`,
 and everything the flow writes goes under `asic/build`, which git ignores.
-With 16 threads the whole flow takes about three and a half hours. The final
-report needs about 28 GB of memory, detailed routing 22 GB, and global
-routing 17 GB, and the stages' databases about 23 GB of disk.
+The [CI jobs](#ci) provide swap space for routing and the final report.
+`summary` reports the elapsed time and peak memory of each stage.
 
 `run` has three steps:
 
@@ -91,7 +90,7 @@ the stage before it.
 | Macro placement | [`macro_placement.tcl`](macro_placement.tcl) (`MACRO_PLACEMENT_TCL`) |
 | Pin placement | `PLACE_PINS_ARGS`: the die's left and right edges only, which pass the logic band |
 | Power grid | The platform's, with [`sram_power.tcl`](sram_power.tcl) (`PRE_PDN_TCL`) connecting the macros' supply pins and [`check_power_grid.tcl`](check_power_grid.tcl) (`POST_PDN_TCL`) checking that everything placed reaches the grid |
-| Placement density | `PLACE_DENSITY_LB_ADDON=0.20`: the lower bound plus a fifth of the remaining room |
+| Placement density | `PLACE_DENSITY_LB_ADDON=0.10`: the initial target is the lower bound plus a tenth of the remaining room and 0.01, leaving whitespace for routing around the SRAM macros |
 | Clock tree synthesis | `CTS_ARGS`: ORFS's default arguments, with the clock ports' nets as the roots ([Timing constraints](#timing-constraints)) |
 | Repairs after global routing | `SKIP_INCREMENTAL_REPAIR=1`: with 4 threads they add over two hours to global routing, 82 minutes of it repairing slew and capacitance over the routed wires and 49 the timing repair, and raise its peak memory from 15.6 to 21.1 GB, more than a CI job allows; the repairs after placement and clock tree synthesis still run |
 | Antenna repair after global routing | `SKIP_ANTENNA_REPAIR=1`: it finds nothing to repair, and the placement check after it needs 4.5 GB of memory |
@@ -424,7 +423,8 @@ write port and their read port, as the X3's block RAMs do.
 
 ## Results with the SRAM macros
 
-The 256 KiB L2 column uses the default 3.103 ns core clock and 16 threads.
+The 256 KiB L2 column uses the default 3.103 ns core clock,
+`PLACE_DENSITY_LB_ADDON=0.20`, and 16 threads.
 The 2 MiB L2 column uses the X3's L2 size and a mocked instruction memory at
 commit `ea7289e0`. The mocked-memory column uses commit `e54df6da`, before
 the caches became 4-way set-associative, with every memory over 4,096 bits
@@ -685,29 +685,30 @@ mocks, so it cannot rank that family until real arrays replace the mocks.
 Four chained jobs run the flow on every pull request and every push to
 `main`, each resuming from the database of the one before:
 
-| Job | Runs |
-| --- | --- |
-| `ASIC Flow (synthesis to clock tree synthesis)` | `./asic/orfs.py run --target cts` |
-| `ASIC Flow (global routing)` | `./asic/orfs.py run --from grt --target grt` |
-| `ASIC Flow (detailed routing)` | `./asic/orfs.py run --from route --target route` |
-| `ASIC Flow (GDS and final report)` | `./asic/orfs.py run --from finish` |
+| Job | Runs | Extra swap |
+| --- | --- | ---: |
+| `ASIC Flow (synthesis to clock tree synthesis)` | `./asic/orfs.py run --target cts` | None |
+| `ASIC Flow (global routing)` | `./asic/orfs.py run --from grt --target grt` | 8 GiB |
+| `ASIC Flow (detailed routing)` | `./asic/orfs.py run --from route --target route` | 12 GiB |
+| `ASIC Flow (GDS and final report)` | `./asic/orfs.py run --from finish` | 16 GiB |
 
 The last job's step summary shows `summary.md`, and its `asic-flow-results`
 artifact holds the logs, reports, and summary of all four. The runners have
 four CPUs and 16 GB of memory, less than global routing, detailed routing,
 and the final report need, so their jobs add swap space. Each job also
-deletes preinstalled toolchains to make room for the databases.
+deletes preinstalled toolchains to make room for the databases and has a
+six-hour limit. The allocations are set in the
+[CI workflow](../.github/workflows/ci.yml).
 
 Detailed routing reuses the pin access saved in the global routing database.
 On the same 256 KiB input with four threads, `-no_pin_access` cut its CPU
 time from 24,280 to 18,282 seconds, about 25%, and produced byte-identical
-routed DEF with no DRC or antenna violations. The detailed routing job
-takes about two hours, below the six-hour job limit.
+routed DEF with no DRC or antenna violations.
 
 Those three steps hold the design's cell connectivity, routing guides,
 and power-grid shapes in memory. The final report also runs IR drop
-analysis and renders layout images. With 16 threads, global routing,
-detailed routing, and the final report peak at 17, 22, and 28 GB.
+analysis and renders layout images. Peak memory and elapsed time depend on
+the design and thread count; `summary.md` records both for each step.
 
 ## The ORFS image
 
