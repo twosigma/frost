@@ -92,7 +92,8 @@ from the stored or arriving address. Misalignment checks use the live trap setti
 address source wins ring order. Candidate presence is independent of
 that ordering and the selected payload.
 Coherent L0 valid bits and data writes share fill permission computed for
-each response source before the cached/uncached response selection.
+each response source before the cached/uncached response selection. Valid-state
+updates are computed for both fill outcomes before the fill flag selects one.
 
 ### ROB-head priority
 

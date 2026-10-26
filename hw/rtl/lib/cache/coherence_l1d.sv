@@ -142,7 +142,8 @@ module coherence_l1d #(
   logic [2:0] rd_size_q[8];
   logic [TAG_BITS-1:0] rd_tag_q[8];
   logic [63:0] rd_data_q[8];
-  logic [7:0] rd_error_q, rd_ready_next, rd_error_next;
+  logic [7:0] rd_error_q, rd_ready_next, rd_error_next, rd_valid_next, rd_miss_next;
+  logic read_miss;
   logic read_failure, read_hit, read_fill;
   logic rd_candidate, rd_response;
   logic [2:0] rd_pick, rd_result, rd_rr_q, rd_response_rr_q, selected_read_q;
@@ -212,10 +213,16 @@ module coherence_l1d #(
       operation_q != ProbeOp && operation_q != GrantOp && operation_q != StoreOp &&
       operation_q != AtomicWriteOp && operation_q != MaintOp &&
       rd_kind_q[selected_read_q] != ReadAMO && array_hit;
+  assign read_miss = active && phase_q == LookupWait && array_valid &&
+      operation_q != ProbeOp && operation_q != GrantOp && operation_q != StoreOp &&
+      operation_q != AtomicWriteOp && operation_q != MaintOp &&
+      (rd_kind_q[selected_read_q] == ReadAMO || !array_hit);
   assign read_fill = active && phase_q == UpdateWait && array_ready &&
       operation_q == GrantOp && !acquisition_store_q && !acquisition_sc_q;
 
   coherence_read_flags read_flags (
+      .i_valid(rd_valid_q),
+      .i_miss(rd_miss_q),
       .i_ready(rd_ready_q),
       .i_error(rd_error_q),
       .i_allocate_valid(i_read_valid),
@@ -228,6 +235,9 @@ module coherence_l1d #(
       .i_hit_valid(read_hit),
       .i_hit_id(selected_read_q),
       .i_fill_valid(read_fill),
+      .i_miss_valid(read_miss),
+      .o_valid(rd_valid_next),
+      .o_miss(rd_miss_next),
       .o_ready(rd_ready_next),
       .o_error(rd_error_next)
   );
@@ -533,6 +543,8 @@ module coherence_l1d #(
         rd_data_q[index] <= '0;
       end
     end else begin
+      rd_valid_q <= rd_valid_next;
+      rd_miss_q <= rd_miss_next;
       rd_ready_q <= rd_ready_next;
       rd_error_q <= rd_error_next;
       o_write_done <= 1'b0;
@@ -565,16 +577,13 @@ module coherence_l1d #(
           o_read_data <= rd_data_q[rd_result];
           o_read_error <= rd_error_q[rd_result];
           rd_response_rr_q <= rd_result + 1'b1;
-          rd_valid_q[rd_result] <= 1'b0;
         end
       end
       if (i_read_valid) begin
-        rd_valid_q[i_read_id] <= 1'b1;
-        rd_miss_q[i_read_id]  <= 1'b0;
-        rd_addr_q[i_read_id]  <= i_address;
-        rd_kind_q[i_read_id]  <= i_read_kind;
-        rd_size_q[i_read_id]  <= i_read_size;
-        rd_tag_q[i_read_id]   <= i_read_tag;
+        rd_addr_q[i_read_id] <= i_address;
+        rd_kind_q[i_read_id] <= i_read_kind;
+        rd_size_q[i_read_id] <= i_read_size;
+        rd_tag_q[i_read_id]  <= i_read_tag;
       end
       if (|i_write_mask) begin
         if (i_write_atomic) begin
@@ -781,7 +790,6 @@ module coherence_l1d #(
               end
               default: begin
                 if (rd_kind_q[selected_read_q] == ReadAMO) begin
-                  rd_miss_q[selected_read_q] <= 1'b1;
                   if (!request_live && !atomic_q && wb_free && i_atomic_protected) begin
                     atomic_q <= 1'b1;
                     atomic_sc_q <= 1'b0;
@@ -796,7 +804,6 @@ module coherence_l1d #(
                   rd_data_q[selected_read_q] <= array_data[64*rd_addr_q[selected_read_q][4:3]+:64];
                   phase_q <= Idle;
                 end else begin
-                  rd_miss_q[selected_read_q] <= 1'b1;
                   phase_q <= !request_live && wb_free ? Acquire : Idle;
                 end
               end
@@ -882,12 +889,19 @@ module coherence_l1d #(
     end
   end
 `ifndef SYNTHESIS
-  logic [7:0] reference_ready_next, reference_error_next;
+  logic [7:0] reference_ready_next, reference_error_next, reference_valid_next, reference_miss_next;
   always_comb begin
+    reference_valid_next = rd_valid_q;
+    reference_miss_next  = rd_miss_q;
     reference_ready_next = rd_ready_q;
     reference_error_next = rd_error_q;
-    if ((!o_read_valid || i_read_ready) && rd_response) reference_ready_next[rd_result] = 1'b0;
+    if ((!o_read_valid || i_read_ready) && rd_response) begin
+      reference_ready_next[rd_result] = 1'b0;
+      reference_valid_next[rd_result] = 1'b0;
+    end
     if (i_read_valid) begin
+      reference_valid_next[i_read_id] = 1'b1;
+      reference_miss_next[i_read_id]  = 1'b0;
       reference_ready_next[i_read_id] = 1'b0;
       reference_error_next[i_read_id] = 1'b0;
     end
@@ -914,9 +928,11 @@ module coherence_l1d #(
           case (operation_q)
             ProbeOp, GrantOp, StoreOp, AtomicWriteOp, MaintOp: begin
             end
-            default:
-            if (rd_kind_q[selected_read_q] != ReadAMO && array_hit)
-              reference_ready_next[selected_read_q] = 1'b1;
+            default: begin
+              if (rd_kind_q[selected_read_q] != ReadAMO && array_hit)
+                reference_ready_next[selected_read_q] = 1'b1;
+              else reference_miss_next[selected_read_q] = 1'b1;
+            end
           endcase
         end
         UpdateWait:
@@ -931,7 +947,8 @@ module coherence_l1d #(
       endcase
     end
     p_read_status_exact :
-    assert ({rd_ready_next, rd_error_next} == {reference_ready_next, reference_error_next});
+    assert ({rd_valid_next, rd_miss_next, rd_ready_next, rd_error_next} ==
+        {reference_valid_next, reference_miss_next, reference_ready_next, reference_error_next});
   end
   logic store_launch_ready_q;
   always_ff @(posedge i_clk) begin

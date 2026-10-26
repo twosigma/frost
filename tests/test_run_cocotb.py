@@ -3542,6 +3542,19 @@ for _program in ("dma_torture", "nic_loopback", "itlb_test"):
             ),
         )
 
+for _depth in (128, 256):
+    _base_config = TEST_REGISTRY[f"lq_l0_cache_{_depth}"]
+    TEST_REGISTRY[f"coherent_l0_{_depth}"] = replace(
+        _base_config,
+        description=f"Coherent L0 fills, stores and invalidations at {_depth} entries.",
+        verilator_extra_args=(
+            *_base_config.verilator_extra_args,
+            "-DFROST_COHERENT_CLUSTER",
+            "-GCOHERENT_CLUSTER=1",
+            "--assert",
+        ),
+    )
+
 # The coherent cluster is selected explicitly for each program build.
 for _program in (
     "hello_world",
