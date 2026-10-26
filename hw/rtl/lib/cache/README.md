@@ -245,6 +245,9 @@ refill L0. Loads blocked by a pending store or selected atomic are parked so
 that unrelated rows can issue. Cut admission and replay acknowledgement
 precede the probe reply.
 
+The atomic guard captures the candidate tag while idle and holds it while
+active. Only an active context qualifies the tag.
+
 Cached SC and AMO requests acquire the home lock even on an M hit. The CPU
 arms a tagged ROB-head context before D presentation. The active, unretired
 context identifies a valid ROB head. Interrupt and debug
