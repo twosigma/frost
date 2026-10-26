@@ -127,6 +127,8 @@ FORMAL_TARGETS = [
             "coh_ingress_prove",
             "coh_atomic_guard_prove",
             "coh_read_flags_prove",
+            "coh_read_select_prove",
+            "coh_read_select64_prove",
         ),
     ),
     FormalTarget(
@@ -822,6 +824,11 @@ SBY_TASKS = [
         "coh_read_flags_prove",
         "Coherent read flags preserve response and completion priority.",
     ),
+    (
+        "coh_read_select_prove",
+        "Coherent reads preserve blocked-slot circular priority.",
+    ),
+    ("coh_read_select64_prove", "Coherent read selection covers full-width addresses."),
     ("coh_l1d_bmc", "Coherent L1 pending ownership and independent probes."),
     ("coh_home_wb_prove", "Detached victim ownership through successful B."),
     ("coh_home_victim_cover", "Victim allocation, delayed B, and blocked refetch."),
