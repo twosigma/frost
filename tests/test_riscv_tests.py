@@ -335,6 +335,7 @@ def check_pass_fail(sim_result: subprocess.CompletedProcess[str]) -> tuple[str, 
     # Check returncode first: when cocotb hits max cycles, its error message
     # may contain the literal '<<PASS>>' string, causing a false positive.
     if sim_result.returncode != 0:
+        print(combined_output, flush=True)
         if "<<FAIL>>" in combined_output:
             # Report the <<FAIL>> line, which carries the failing test number.
             for line in combined_output.splitlines():
