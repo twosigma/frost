@@ -167,8 +167,8 @@ async def _dma_write(
 
 
 async def _check_dma_read(dut: Any, model: ReferenceModel, addr: int) -> None:
-    got = await _dma(dut, write=False, addr=addr)
     expected = model.read_line(addr)
+    got = await _dma(dut, write=False, addr=addr)
     assert got == expected, (
         f"DMA read mismatch @0x{addr:08x}: got 0x{got:064x} expected 0x{expected:064x}"
     )
@@ -184,7 +184,7 @@ async def test_dma_write_to_absent_line(dut: Any) -> None:
     """A DMA write to a line the L1D does not hold is visible to a CPU read."""
     await _setup(dut)
     lq = LoadQueueStub(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     addr = ABSENT_BASE + 3 * LINE_BYTES
     await _dma_write(dut, model, addr, _pattern(1), FULL)
     await _check_read(dut, model, addr)
@@ -206,7 +206,7 @@ async def test_dma_write_invalidates_clean_copy(dut: Any) -> None:
     """A clean L1D copy is invalidated by the probe; the re-read fetches new data."""
     await _setup(dut)
     lq = LoadQueueStub(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     addr = CLEAN_BASE + 7 * LINE_BYTES
     await _cpu_write(dut, model, addr, _pattern(3), FULL)
     await _fence_sync(dut)  # writeback-all leaves the line valid and clean
@@ -226,7 +226,7 @@ async def test_dma_write_merges_with_dirty_copy(dut: Any) -> None:
     """
     await _setup(dut)
     lq = LoadQueueStub(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     addr = DIRTY_BASE + 11 * LINE_BYTES
     await _cpu_write(dut, model, addr, _pattern(5), 0x00FF_00FF)
     await _settle(dut)  # a partial write miss is acknowledged before its fill installs
@@ -248,7 +248,7 @@ async def test_dma_read_sees_dirty_cpu_data(dut: Any) -> None:
     """A DMA read of a dirty line gets the CPU's data; the copy stays valid, clean."""
     await _setup(dut)
     lq = LoadQueueStub(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     addr = READ_BASE + 5 * LINE_BYTES
     await _cpu_write(dut, model, addr, _pattern(9), FULL)
     await _cpu_write(dut, model, addr, _pattern(10), 0x0000_00F0)
@@ -276,7 +276,7 @@ async def test_probe_waits_for_fill_in_flight(dut: Any) -> None:
     """
     await _setup(dut)
     lq = LoadQueueStub(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     addr = TRANSIT_BASE + 2 * LINE_BYTES
     old = _pattern(11)
     await _dma_write(dut, model, addr, old, FULL)
@@ -309,7 +309,7 @@ async def test_lock_serves_post_write_line_to_racing_miss(dut: Any) -> None:
     """
     await _setup(dut)
     lq = LoadQueueStub(dut, inval_delay=60)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     addr = LOCK_BASE + 9 * LINE_BYTES
     old = _pattern(14)
     await _cpu_write(dut, model, addr, old, FULL)
@@ -353,7 +353,7 @@ async def test_same_line_dma_requests_serialize(dut: Any) -> None:
     """
     await _setup(dut)
     lq = LoadQueueStub(dut, admit_delay=3, inval_delay=5)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     col = _Collector(dut, "dma")
     addr = SERIAL_BASE + 4 * LINE_BYTES
     for i in range(6):
@@ -377,7 +377,7 @@ async def test_dma_write_during_fence_writeback_all(dut: Any) -> None:
     """A DMA write racing fence.i's writeback-all completes with correct data."""
     await _setup(dut)
     lq = LoadQueueStub(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     lines = [FENCE_BASE + i * LINE_BYTES for i in range(12)]
     for i, addr in enumerate(lines):
         await _cpu_write(dut, model, addr, _pattern(40 + i), FULL)
@@ -401,7 +401,7 @@ async def test_dma_completes_under_cpu_miss_flood(dut: Any) -> None:
     """DMA requests under a data-side miss flood complete with correct data."""
     await _setup(dut)
     lq = LoadQueueStub(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     stop = [False]
 
     async def flood() -> None:
@@ -445,7 +445,7 @@ async def test_concurrent_disjoint_traffic(dut: Any) -> None:
     rng = random.Random(0xD3A1)
 
     async def cpu_side(base: int, seed: int, count: int) -> None:
-        model = ReferenceModel()
+        model = ReferenceModel(dut)
         r = random.Random(seed)
         for _ in range(count):
             addr = base + r.randrange(64) * LINE_BYTES
@@ -457,13 +457,12 @@ async def test_concurrent_disjoint_traffic(dut: Any) -> None:
             elif pick < 0.75:
                 await _check_read(dut, model, addr)
             else:
+                expected = model.read_line(addr)
                 got = await _port_transaction(dut, "wup", write=False, addr=addr)
-                assert got == model.read_line(addr), (
-                    f"walker read mismatch @0x{addr:08x}"
-                )
+                assert got == expected, f"walker read mismatch @0x{addr:08x}"
 
     async def dma_side(base: int, seed: int, count: int) -> None:
-        model = ReferenceModel()
+        model = ReferenceModel(dut)
         r = random.Random(seed)
         for _ in range(count):
             addr = base + r.randrange(64) * LINE_BYTES
@@ -489,13 +488,15 @@ async def test_cpu_reads_dma_writes_in_coherence_order(dut: Any) -> None:
 
     The DMA side writes an increasing sequence number, unique across lines,
     into each line; the CPU side reads the lines concurrently, in any
-    interleaving. Every value the CPU observes in a line must be one the DMA
-    side has issued to that line (or the line's initial zero), and per line
-    the sequence it observes must never go backwards.
+    interleaving. The DMA port initializes these lines to zero. Every value
+    the CPU observes in a line must be one the DMA side has issued to that
+    line. The sequence it observes must never go backwards within a line.
     """
     await _setup(dut)
     lq = LoadQueueStub(dut, inval_delay=3)
     lines = [ORDER_BASE + i * LINE_BYTES for i in range(4)]
+    for addr in lines:
+        await _dma(dut, write=True, addr=addr, wdata=0, wstrb=FULL)
     written: dict[int, set[int]] = {addr: {0} for addr in lines}
     done = [False]
 
@@ -534,7 +535,7 @@ async def test_random_mixed_traffic_vs_model(dut: Any) -> None:
     """Sequential random CPU, DMA, and walker traffic against one model."""
     await _setup(dut)
     lq = LoadQueueStub(dut, admit_delay=1, inval_delay=1)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     rng = random.Random(random.getrandbits(32))
     for _ in range(900):
         addr = RANDOM_BASE + rng.randrange(256) * LINE_BYTES
@@ -554,6 +555,7 @@ async def test_random_mixed_traffic_vs_model(dut: Any) -> None:
         else:
             # Walker reads probe the L1D on their way to the shared level, so
             # they see CPU and DMA data alike with no fence in between.
+            expected = model.read_line(addr)
             got = await _port_transaction(dut, "wup", write=False, addr=addr)
-            assert got == model.read_line(addr), f"walker read mismatch @0x{addr:08x}"
+            assert got == expected, f"walker read mismatch @0x{addr:08x}"
     lq.stop()
