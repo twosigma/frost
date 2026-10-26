@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Elaborate coherent endpoints without selecting them in the CPU hierarchy."""
+"""Coherent endpoints have explicit layouts and legal resource geometry."""
 
 import subprocess
 from pathlib import Path
@@ -59,11 +59,17 @@ def test_endpoint_synthesis(address: int, harts: int, fills: int) -> None:
     assert f"Eval result: \\o_layout = 28'{layout:028b}." in result.stdout
 
 
-def test_production_excludes_coherent_endpoints() -> None:
-    """Production elaboration has no coherent endpoint sources."""
+def test_coherent_sources_are_available() -> None:
+    """The integration filelist supplies both cache selections."""
     runner = YosysRunner(memory_images=False)
     sources = runner.parse_filelist(runner.filelist)
-    assert not any(Path(source).name.startswith("coherence_") for source in sources)
+    names = {Path(source).name for source in sources}
+    assert {
+        "frost_hart_cache.sv",
+        "coherent_hart_cache.sv",
+        "coherence_home.sv",
+    } <= names
+    assert all(Path(source).is_file() for source in sources)
 
 
 @pytest.mark.synthesis
@@ -95,3 +101,42 @@ def test_reject_endpoint_configuration(module: str, parameter: str, value: int) 
     )
     assert result.returncode != 0
     assert "$fatal" in result.stdout + result.stderr
+
+
+@pytest.mark.synthesis
+@pytest.mark.parametrize("cached,dma", [(1, 1), (1, 0), (0, 0)])
+def test_coherent_cpu_configuration(cached: int, dma: int) -> None:
+    """The coherent CPU elaborates with optional caches and DMA ingress."""
+    runner = YosysRunner()
+    result = runner.run_synthesis(
+        synth_command="synth -top cpu_top -run coarse",
+        top_module="cpu_top",
+        parameters={
+            "COHERENT_CLUSTER": 1,
+            "ENABLE_CACHED_TIER": cached,
+            "ENABLE_COHERENCE": dma,
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.synthesis
+@pytest.mark.parametrize("address,line", [(32, 64), (56, 32)])
+def test_coherent_cache_geometry(address: int, line: int) -> None:
+    """The coherent cache path supports wide addresses and both line sizes."""
+    runner = YosysRunner()
+    cache = runner.root_dir / "hw/rtl/lib/cache"
+    sources = runner.parse_filelist(cache / "coherence_home.f")
+    top = "coherence_cluster_test_harness"
+    script = f"read_verilog -sv -DSYNTHESIS -I{cache} " + " ".join(sources)
+    script += f"; chparam -set ADDR_WIDTH {address} -set LINE_BYTES {line} {top}; "
+    script += f"hierarchy -check -top {top}; synth -top {top} -run coarse; "
+    script += "check -assert; select -assert-none t:$dlatch* t:$adlatch*"
+    result = subprocess.run(
+        ["yosys", "-p", script],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        cwd=runner.test_dir,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

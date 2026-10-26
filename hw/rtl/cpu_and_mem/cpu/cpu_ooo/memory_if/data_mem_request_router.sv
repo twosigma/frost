@@ -47,6 +47,7 @@
  */
 
 module data_mem_request_router #(
+    parameter bit COHERENT_CLUSTER = 1'b0,
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     // MMIO register window base, by default the PMA's (riscv_pkg). The UART
     // RX data and FIFO pop registers are fixed offsets from it.
@@ -60,6 +61,17 @@ module data_mem_request_router #(
     // The legacy local-memory wrapper retains its one-cycle path at zero.
     parameter bit VARIABLE_UNCACHED = 1'b0
 ) (
+    input logic [1:0] i_coherent_read_kind = '0,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_coherent_read_tag = '0,
+    input logic i_coherent_sq_sc = 1'b0,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_coherent_sq_tag = '0,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_coherent_amo_tag = '0,
+    output logic [1:0] o_coherent_read_kind,
+    output logic [2:0] o_coherent_read_size,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_read_tag,
+    output logic o_coherent_write_atomic,
+    output logic o_coherent_write_sc,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_write_tag,
     input logic i_clk,
     input logic i_rst,
     // Fatal-stop gate for new accesses. Payload selection stays independent
@@ -237,29 +249,31 @@ module data_mem_request_router #(
   localparam logic [XLEN-1:0] Fifo0MmioAddr = XLEN'(MMIO_ADDR) + XLEN'(32'h8);
   localparam logic [XLEN-1:0] Fifo1MmioAddr = XLEN'(MMIO_ADDR) + XLEN'(32'hC);
 
-  logic                                                     sq_write_done_fast;
-  logic                                                     write_port_busy;
-  logic                                                     amo_mem_write_done;
-  logic                                                     lq_mem_request_valid;
-  logic                 [                         XLEN-1:0] lq_mem_request_addr;
-  logic                 [riscv_pkg::CachedLoadSlotBits-1:0] lq_mem_request_id;
-  logic                 [riscv_pkg::CachedLoadSlotBits-1:0] lq_mem_request_id_eff;
-  logic                                                     lq_mem_request_no_merge;
-  riscv_pkg::mem_size_e                                     lq_mem_request_size;
-  logic                                                     lq_mem_request_no_merge_eff;
-  logic                 [                         XLEN-1:0] lq_mem_request_addr_eff;
-  logic                 [       riscv_pkg::MemDataBits-1:0] lq_mem_read_data;
-  logic                                                     lq_mem_read_valid;
-  logic                                                     lq_live_request_requires_park;
-  logic                                                     lq_pending_request_requires_drain;
-  logic                                                     lq_live_read_accepted;
-  logic                                                     lq_pending_read_candidate;
-  logic                                                     lq_pending_read_accepted;
-  logic                                                     lq_pending_read_shielded;
-  logic                                                     device_request_pending_q;
-  logic                                                     device_accept_armed_q;
-  logic                                                     lq_pending_mmio_read_accepted;
-  logic                                                     lq_mem_read_accepted;
+  logic                                                        sq_write_done_fast;
+  logic                                                        write_port_busy;
+  logic                                                        amo_mem_write_done;
+  logic                                                        lq_mem_request_valid;
+  logic                 [                            XLEN-1:0] lq_mem_request_addr;
+  logic                 [   riscv_pkg::CachedLoadSlotBits-1:0] lq_mem_request_id;
+  logic                 [   riscv_pkg::CachedLoadSlotBits-1:0] lq_mem_request_id_eff;
+  logic                                                        lq_mem_request_no_merge;
+  logic                 [                                 1:0] coherent_kind_q;
+  logic                 [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_tag_q;
+  riscv_pkg::mem_size_e                                        lq_mem_request_size;
+  logic                                                        lq_mem_request_no_merge_eff;
+  logic                 [                            XLEN-1:0] lq_mem_request_addr_eff;
+  logic                 [          riscv_pkg::MemDataBits-1:0] lq_mem_read_data;
+  logic                                                        lq_mem_read_valid;
+  logic                                                        lq_live_request_requires_park;
+  logic                                                        lq_pending_request_requires_drain;
+  logic                                                        lq_live_read_accepted;
+  logic                                                        lq_pending_read_candidate;
+  logic                                                        lq_pending_read_accepted;
+  logic                                                        lq_pending_read_shielded;
+  logic                                                        device_request_pending_q;
+  logic                                                        device_accept_armed_q;
+  logic                                                        lq_pending_mmio_read_accepted;
+  logic                                                        lq_mem_read_accepted;
 
   // Effective queued-load address: held copy if a request is pending, else the
   // live LQ read address.
@@ -270,6 +284,12 @@ module data_mem_request_router #(
   assign lq_mem_request_id_eff = lq_mem_request_valid ? lq_mem_request_id : i_lq_mem_read_id;
   assign lq_mem_request_no_merge_eff =
       lq_mem_request_valid ? lq_mem_request_no_merge : i_lq_mem_read_no_merge;
+  assign o_coherent_read_kind = lq_mem_request_valid ? coherent_kind_q : i_coherent_read_kind;
+  assign o_coherent_read_tag = lq_mem_request_valid ? coherent_tag_q : i_coherent_read_tag;
+  assign o_coherent_read_size = 3'(lq_mem_request_valid ? lq_mem_request_size : i_lq_mem_read_size);
+  assign o_coherent_write_sc = sq_mem_write_en && sq_mem_write_is_cached && i_coherent_sq_sc;
+  assign o_coherent_write_atomic = o_coherent_write_sc || amo_cached_write_launch;
+  assign o_coherent_write_tag = sq_mem_write_en ? i_coherent_sq_tag : i_coherent_amo_tag;
   // The live device-quadrant decode forces capture. Acceptance and MMIO
   // effects use only the held address.
   assign lq_live_request_requires_park = riscv_pkg::pma_device_quadrant(lq_mem_read_addr);
@@ -531,6 +551,8 @@ module data_mem_request_router #(
       lq_mem_request_id <= i_lq_mem_read_id;
       lq_mem_request_no_merge <= i_lq_mem_read_no_merge;
       lq_mem_request_size <= i_lq_mem_read_size;
+      coherent_kind_q <= i_coherent_read_kind;
+      coherent_tag_q <= i_coherent_read_tag;
     end
   end
 

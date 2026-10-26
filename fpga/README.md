@@ -28,6 +28,11 @@ slice that could alias a high request into low DDR. Resume from an older
 netlist checkpoint is rejected unless its capacity is recorded and matches
 the board; restart at synthesis after changing the DDR map.
 
+The X3 build option `--coherent-cluster` selects the one-hart S/M cache path.
+It defaults to false. `netlist_config.json` records the boolean selection as
+`coherent_cluster`; resuming a checkpoint requires the same selection.
+`--no-coherent-cluster` selects the line-port hierarchy explicitly.
+
 ## Programming the FPGA
 
 ```bash

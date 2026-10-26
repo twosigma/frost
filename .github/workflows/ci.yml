@@ -128,6 +128,10 @@ jobs:
           - name: Real Programs (DMA, NIC and coherence)
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
+              [coherent_hello_world] or [coherent_isa_test] or [coherent_coremark] or
+              [coherent_dma_torture] or [coherent_nic_loopback] or
+              [coherent_ptw_coherence_test] or [coherent_smc_fencei_test] or
+              [coherent_amo_irq_torture_sim] or
               [nic_loopback] or [nic_echo] or [dma_torture] or [dma_torture_equal_lines] or
               [ptw_coherence_test] or [ptw_coherence_test_equal_lines] or [smc_fencei_test] or
               [smc_fencei_test_equal_lines] or [ddr_test_equal_lines] or [ddr_exec_test_equal_lines]
@@ -143,7 +147,10 @@ jobs:
           - name: Real Programs (Runtime and other)
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
-              not ([coremark] or [coremark_profile] or [amo_irq_torture_sim] or [tick_torture_sim]
+              not ([coherent_hello_world] or [coherent_isa_test] or [coherent_coremark] or
+              [coherent_dma_torture] or [coherent_nic_loopback] or
+              [coherent_ptw_coherence_test] or [coherent_smc_fencei_test] or
+              [coherent_amo_irq_torture_sim] or [coremark] or [coremark_profile] or [amo_irq_torture_sim] or [tick_torture_sim]
               or [drain_trapframe_test] or [restore_window_stress] or [mret_drain_deadlock] or
               [linux_clksrc_faithful] or [trap_s2l_fwd] or [pde_return_hazard] or [nic_dma_stress]
               or [csr_test] or

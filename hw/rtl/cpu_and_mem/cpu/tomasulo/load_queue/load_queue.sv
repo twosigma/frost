@@ -26,6 +26,7 @@
  */
 
 module load_queue #(
+    parameter bit COHERENT_CLUSTER = 1'b0,
     parameter bit CACHE_NORMAL_MEMORY = 1'b0,
     parameter int unsigned DEPTH = riscv_pkg::LqDepth,  // 8
     parameter bit ENABLE_L0_FAST_PATH = 1'b1,
@@ -53,6 +54,16 @@ module load_queue #(
     parameter longint unsigned CACHED_BASE = riscv_pkg::DdrBase,
     parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes
 ) (
+    input logic i_coherent_cut_hold = 1'b0,
+    input logic [1:0] i_coherent_block_valid = '0,
+    input logic [1:0][riscv_pkg::XLEN-1:0] i_coherent_block_addr = '0,
+    input logic i_coherent_atomic_protected = 1'b0,
+    output logic o_coherent_arm_valid,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_arm_tag,
+    output logic [1:0] o_coherent_read_kind,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_read_tag,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_write_tag,
+    output logic [2:0] o_reservation_size,
     input logic i_clk,
     input logic i_rst_n,
 
@@ -529,8 +540,10 @@ module load_queue #(
   // Reservation register (LR/SC)
   logic reservation_valid;
   logic [XLEN-1:0] reservation_addr;
+  logic [2:0] reservation_size;
   assign o_reservation_valid = reservation_valid;
   assign o_reservation_addr  = reservation_addr;
+  assign o_reservation_size  = reservation_size;
 
   // AMO FSM
   typedef enum logic [1:0] {
@@ -917,14 +930,17 @@ module load_queue #(
   end
   assign coh_reservation_inval = i_coh_inval_valid && reservation_valid &&
       (i_coh_inval_addr[XLEN-1:CohLineLsb] == reservation_addr[XLEN-1:CohLineLsb]);
-  // The hart's own AMO write to the reserved doubleword cancels the
-  // reservation, as a store there does (i_reservation_snoop_invalidate).
+  // The hart's AMO write cancels a reservation in its reservation set,
+  // as a store does through i_reservation_snoop_invalidate.
   logic amo_reservation_inval;
   assign amo_reservation_inval = amo_cache_inv && reservation_valid &&
-      (amo_write_addr_q[XLEN-1:3] == reservation_addr[XLEN-1:3]);
+      (COHERENT_CLUSTER ?
+       (amo_write_addr_q[XLEN-1:5] == reservation_addr[XLEN-1:5]) :
+       (amo_write_addr_q[XLEN-1:3] == reservation_addr[XLEN-1:3]));
   logic reservation_clear;
   assign reservation_clear = i_sc_clear_reservation || i_reservation_snoop_invalidate ||
-      coh_reservation_inval || amo_reservation_inval;
+      coh_reservation_inval || amo_reservation_inval ||
+      (COHERENT_CLUSTER && mem_read_en && sq_check_is_lr_q);
   // The hold is a registered compare of the staged atomic's line against the
   // mirror. A newly captured or replaced atomic has no compare of its own
   // yet, so it waits one cycle before its first launch (coh_hold_valid_q);
@@ -1361,6 +1377,27 @@ module load_queue #(
         lq_rob_tag[g_lq_tag];
   end
 
+  logic [DEPTH-1:0] coherent_parked_q;
+  logic coherent_local_hold, coherent_sector_hold, coherent_holder_changed;
+  if (COHERENT_CLUSTER) begin : gen_coherent_park
+    logic [1:0] holder_valid_q;
+    logic [2*XLEN-1:0] holder_addr_q;
+    assign coherent_holder_changed = holder_valid_q != i_coherent_block_valid ||
+        holder_addr_q != i_coherent_block_addr;
+    always_ff @(posedge i_clk) begin
+      holder_valid_q <= i_coherent_block_valid;
+      holder_addr_q  <= i_coherent_block_addr;
+      if (!i_rst_n || i_flush_all || coherent_holder_changed) coherent_parked_q <= '0;
+      else begin
+        coherent_parked_q <= coherent_parked_q & lq_valid & ~dep_replaced_oh;
+        if (sq_check_pending && coherent_sector_hold) coherent_parked_q[sq_check_idx] <= 1'b1;
+      end
+    end
+  end else begin : gen_no_coherent_park
+    assign coherent_parked_q = '0;
+    assign coherent_holder_changed = 1'b0;
+  end
+
   lq_issue_selector #(
       .DEPTH(DEPTH)
   ) lq_issue_selector_inst (
@@ -1371,7 +1408,7 @@ module load_queue #(
       .lq_data_valid(lq_data_valid),
       .lq_is_lr(lq_is_lr),
       .lq_is_amo(lq_is_amo),
-      .sq_check_in_flight_mask(sq_check_in_flight_mask),
+      .sq_check_in_flight_mask(sq_check_in_flight_mask | coherent_parked_q),
       .addr_update_pre_match_q(addr_update_pre_match_q),
       .rob_head_match_q(rob_head_match_q),
       .lq_rob_tag_flat(lq_rob_tag_flat),
@@ -1575,11 +1612,29 @@ module load_queue #(
   // to write. A store older than an LR, to the other word of its dword, does
   // not overlap the LR, so without the wait it could write after the LR's
   // response, and its write-launch snoop would cancel the reservation.
+  assign coherent_local_hold = i_coherent_cut_hold || coherent_sector_hold;
   assign sq_check_entry_issueable = sq_check_entry_valid &&
       (!(sq_check_is_lr_q || sq_check_is_amo_q)
        || (sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty)) &&
       (!sq_check_is_mmio_q || (sq_check_rob_tag_q == i_rob_head_tag)) &&
-      !coh_launch_hold_q && !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q));
+      !coh_launch_hold_q && !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
+      !(COHERENT_CLUSTER && coherent_local_hold) &&
+      !(COHERENT_CLUSTER && sq_check_is_amo_q && sq_check_is_cached_region &&
+        !i_coherent_atomic_protected);
+
+  always_comb begin
+    coherent_sector_hold = 1'b0;
+    for (int holder = 0; holder < 2; holder++)
+    coherent_sector_hold |= i_coherent_block_valid[holder] &&
+          sq_check_addr_q[XLEN-1:5] == i_coherent_block_addr[holder][XLEN-1:5];
+  end
+  assign o_coherent_arm_valid = COHERENT_CLUSTER && sq_check_entry_valid && sq_check_is_amo_q &&
+      sq_check_is_cached_region && sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty &&
+      sq_check_pma_ok && !sq_check_misaligned && !i_flush_all && !i_flush_en;
+  assign o_coherent_arm_tag = sq_check_rob_tag_q;
+  assign o_coherent_read_kind = sq_check_is_amo_q ? 2'd2 : sq_check_is_lr_q ? 2'd1 : 2'd0;
+  assign o_coherent_read_tag = sq_check_rob_tag_q;
+  assign o_coherent_write_tag = lq_rob_tag[amo_entry_idx];
 
   // A departing staged load permits same-cycle capture of its replacement.
   // Keep this predicate aligned with sq_check_stage_clears below.
@@ -1627,7 +1682,8 @@ module load_queue #(
   // eligible it is at the ROB head, so head priority selects it.
   assign sq_check_will_clear = sq_check_pending &&
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
-       launch_mem_issue || misalign_bypass_fire || older_amo_write_pending);
+       launch_mem_issue || misalign_bypass_fire || older_amo_write_pending ||
+       (COHERENT_CLUSTER && coherent_sector_hold));
 
   // Stored MMIO at ROB head is eligible in both scans; head priority wins.
   // The router enforces committed-store drain before device acceptance.
@@ -3632,6 +3688,7 @@ module load_queue #(
   always_ff @(posedge i_clk) begin
     if (accept_mem_response && issued_is_lr && !mem_response_error) begin
       reservation_addr <= issued_addr;
+      reservation_size <= 3'(issued_size);
     end
   end
 
@@ -4849,6 +4906,27 @@ module load_queue #(
   cover_cached_response_held :
   cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n) i_cached_resp_held);
 `endif
+`endif
+
+`ifdef COHERENT_LQ_LOCAL_PROOF
+  logic [1:0] f_coherent_past = '0;
+  always_ff @(posedge i_clk) begin
+    f_coherent_past <= {f_coherent_past[0], 1'b1};
+    if (coherent_local_hold) begin
+      assert (!mem_read_en && !cache_hit_fast_path && !sq_do_forward);
+    end
+    if (mem_read_en && sq_check_is_amo_q && sq_check_is_cached_region)
+      assert (i_coherent_atomic_protected);
+    if (f_coherent_past[1] && i_rst_n && $past(i_rst_n)) begin
+      if ($past(!i_rst_n || i_flush_all || coherent_holder_changed))
+        assert (coherent_parked_q == '0);
+      if ($past(reservation_clear)) assert (!reservation_valid);
+      if (!$past(reservation_valid) && reservation_valid)
+        assert ($past(
+            accept_mem_response && !mem_response_error && issued_is_lr && !issued_lr_suppressed
+        ));
+    end
+  end
 `endif
 
 endmodule : load_queue

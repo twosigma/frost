@@ -1,0 +1,27 @@
+[tasks]
+coh_arbiter_prove arbiter
+coh_reader_prove reader
+coh_ingress_prove reader dma
+coh_atomic_guard_prove guard
+
+[options]
+mode prove
+depth 12
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv coherence_pkg.sv coherence_d_arbiter.sv coherence_line_bridge.sv coherent_atomic_guard.sv
+arbiter: chparam -set WIDTH 12 -set PORTS 3 coherence_d_arbiter
+arbiter: prep -top coherence_d_arbiter
+dma: chparam -set SOURCE 2 -set PORT_CLASS 3 -set ID_BITS 4 coherence_line_bridge
+reader: prep -top coherence_line_bridge
+guard: prep -top coherent_atomic_guard
+
+[files]
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_d_arbiter.sv
+../hw/rtl/lib/cache/coherence_line_bridge.sv
+../hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/coherent_atomic_guard.sv

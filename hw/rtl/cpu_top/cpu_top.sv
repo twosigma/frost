@@ -25,6 +25,7 @@ module cpu_top #(
     // stores. Device accesses retain precise, narrow AXI completion.
     parameter bit CACHE_NORMAL_MEMORY = 1'b0,
     parameter int unsigned NORMAL_FETCH_LINES = 256,
+    parameter bit COHERENT_CLUSTER = 1'b0,
     parameter int unsigned ENABLE_CACHED_TIER = 1,
     parameter int unsigned L0_CACHE_DEPTH = CACHE_NORMAL_MEMORY ?
         riscv_pkg::NormalLqL0Depth : riscv_pkg::LqL0Depth,
@@ -319,7 +320,33 @@ module cpu_top #(
   assign cache_perf_events.hierarchy = cache_hierarchy_perf_events;
   assign cache_perf_events.l1i_fetch_miss_stall = l1i_fetch_miss_stall;
 
+  logic coherent_d_valid;
+  logic coherent_d_ready;
+  logic [riscv_pkg::PhysAddrBits+311:0] coherent_d;
+  logic coherent_p_valid;
+  logic coherent_p_ready;
+  logic [riscv_pkg::PhysAddrBits+29:0] coherent_p;
+  logic coherent_r_valid;
+  logic coherent_r_ready;
+  logic [riscv_pkg::PhysAddrBits+274:0] coherent_r;
+  logic coherent_w_valid;
+  logic coherent_w_ready;
+  logic [riscv_pkg::PhysAddrBits+259:0] coherent_w;
+  logic coherent_wa_valid;
+  logic coherent_wa_ready;
+  logic [riscv_pkg::PhysAddrBits+10:0] coherent_wa;
+  logic coherent_g_valid;
+  logic coherent_g_ready;
+  logic [riscv_pkg::PhysAddrBits+274:0] coherent_g;
+  logic coherent_c_valid;
+  logic coherent_c_ready;
+  logic [riscv_pkg::PhysAddrBits+17:0] coherent_c;
+  logic coherent_u_valid;
+  logic coherent_u_ready;
+  logic [riscv_pkg::PhysAddrBits+14:0] coherent_u;
+
   frost_hart #(
+      .COHERENT_CLUSTER(COHERENT_CLUSTER),
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .NORMAL_FETCH_LINES(NORMAL_FETCH_LINES),
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
@@ -338,6 +365,30 @@ module cpu_top #(
       .DATA_BYTES(L2_LINE_BYTES),
       .DATA_PROT(AXI_MEMORY_PROT)
   ) hart (
+      .o_coherent_d_valid(coherent_d_valid),
+      .i_coherent_d_ready(coherent_d_ready),
+      .o_coherent_d(coherent_d),
+      .i_coherent_p_valid(coherent_p_valid),
+      .o_coherent_p_ready(coherent_p_ready),
+      .i_coherent_p(coherent_p),
+      .o_coherent_r_valid(coherent_r_valid),
+      .i_coherent_r_ready(coherent_r_ready),
+      .o_coherent_r(coherent_r),
+      .o_coherent_w_valid(coherent_w_valid),
+      .i_coherent_w_ready(coherent_w_ready),
+      .o_coherent_w(coherent_w),
+      .i_coherent_wa_valid(coherent_wa_valid),
+      .o_coherent_wa_ready(coherent_wa_ready),
+      .i_coherent_wa(coherent_wa),
+      .i_coherent_g_valid(coherent_g_valid),
+      .o_coherent_g_ready(coherent_g_ready),
+      .i_coherent_g(coherent_g),
+      .o_coherent_c_valid(coherent_c_valid),
+      .i_coherent_c_ready(coherent_c_ready),
+      .o_coherent_c(coherent_c),
+      .i_coherent_u_valid(coherent_u_valid),
+      .o_coherent_u_ready(coherent_u_ready),
+      .i_coherent_u(coherent_u),
       .i_clk,
       .i_rst,
       .i_boot_addr,
@@ -447,6 +498,7 @@ module cpu_top #(
   );
 
   frost_cluster_memory #(
+      .COHERENT_CLUSTER(COHERENT_CLUSTER),
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
       .ENABLE_COHERENCE(ENABLE_COHERENCE),
       .L2_CACHE_BYTES(L2_CACHE_BYTES),
@@ -464,6 +516,30 @@ module cpu_top #(
       .AXI_USER_BITS(AXI_USER_BITS),
       .AXI_MEMORY_PROT(AXI_MEMORY_PROT)
   ) cluster_memory (
+      .i_coherent_d_valid(coherent_d_valid),
+      .o_coherent_d_ready(coherent_d_ready),
+      .i_coherent_d(coherent_d),
+      .o_coherent_p_valid(coherent_p_valid),
+      .i_coherent_p_ready(coherent_p_ready),
+      .o_coherent_p(coherent_p),
+      .i_coherent_r_valid(coherent_r_valid),
+      .o_coherent_r_ready(coherent_r_ready),
+      .i_coherent_r(coherent_r),
+      .i_coherent_w_valid(coherent_w_valid),
+      .o_coherent_w_ready(coherent_w_ready),
+      .i_coherent_w(coherent_w),
+      .o_coherent_wa_valid(coherent_wa_valid),
+      .i_coherent_wa_ready(coherent_wa_ready),
+      .o_coherent_wa(coherent_wa),
+      .o_coherent_g_valid(coherent_g_valid),
+      .i_coherent_g_ready(coherent_g_ready),
+      .o_coherent_g(coherent_g),
+      .i_coherent_c_valid(coherent_c_valid),
+      .o_coherent_c_ready(coherent_c_ready),
+      .i_coherent_c(coherent_c),
+      .o_coherent_u_valid(coherent_u_valid),
+      .i_coherent_u_ready(coherent_u_ready),
+      .o_coherent_u(coherent_u),
       .i_clk,
       .i_rst,
       .i_axi_rst,

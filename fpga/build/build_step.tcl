@@ -874,7 +874,16 @@ if {$step eq "synth"} {
         add_files -norecurse $ddr_subsys_wrapper
     }
 
-    set rtl_source_files [flatten_rtl_file_list $rtl_file_list $project_root_directory]
+    set rtl_source_files [list]
+    set rtl_include_dirs [get_property include_dirs [current_fileset]]
+    foreach item [flatten_rtl_file_list $rtl_file_list $project_root_directory] {
+        if {[string match {+incdir+*} $item]} {
+            lappend rtl_include_dirs [string range $item 8 end]
+        } else {
+            lappend rtl_source_files $item
+        }
+    }
+    set_property include_dirs [lsort -unique $rtl_include_dirs] [current_fileset]
 
     # Enable Xilinx primitives and Vivado initialization only in this flow.
     set current_verilog_defines [get_property verilog_define [current_fileset]]
@@ -951,6 +960,14 @@ if {$step eq "synth"} {
     if {$perf_counters eq "1"} {
         lappend synth_args -generic PERF_COUNTERS=1
         puts "Profiling counters included (generic PERF_COUNTERS)"
+    }
+    set coherent_cluster [getenv_default FROST_COHERENT_CLUSTER 0]
+    if {$coherent_cluster ne "0" && $coherent_cluster ne "1"} {
+        puts "Error: FROST_COHERENT_CLUSTER must be 0 or 1"
+        exit 1
+    }
+    if {$coherent_cluster eq "1"} {
+        lappend synth_args -generic COHERENT_CLUSTER=1
     }
     # A name used before its declaration becomes an implicit net. Verilator
     # binds the later declaration, but inside a generate block Vivado gives the
