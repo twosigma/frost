@@ -379,9 +379,13 @@ namespace eval ::frost_x3_local_placement {
     }
 
     proc below_gate_count {} {
-        set paths [get_timing_paths -quiet -group clock_from_mmcm -delay_type max \
-            -slack_lesser_than -0.2015 -max_paths 10000 -nworst 1]
-        if {[llength $paths] >= 10000} {error "Guidance endpoint count reached its query limit"}
+        set limit 10000
+        while {1} {
+            set paths [get_timing_paths -quiet -group clock_from_mmcm -delay_type max \
+                -slack_lesser_than -0.2015 -max_paths $limit -nworst 1]
+            if {[llength $paths] < $limit} {break}
+            set limit [expr {2 * $limit}]
+        }
         if {![llength $paths]} {return 0}
         return [llength [lsort -unique [get_property ENDPOINT_PIN $paths]]]
     }

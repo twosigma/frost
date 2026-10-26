@@ -420,3 +420,84 @@ def test_guidance_failure_boundaries(tmp_path: Path, scenario: str) -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"PASS {scenario}" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("path_count", "expected_limits"),
+    (
+        (0, "10000"),
+        (1, "10000"),
+        (9999, "10000"),
+        (10000, "10000 20000"),
+        (10001, "10000 20000"),
+        (20000, "10000 20000 40000"),
+        (20001, "10000 20000 40000"),
+    ),
+)
+@pytest.mark.parametrize("duplicate_endpoints", (False, True))
+def test_guidance_endpoint_query(
+    tmp_path: Path,
+    path_count: int,
+    expected_limits: str,
+    duplicate_endpoints: bool,
+) -> None:
+    """Count every distinct endpoint, including endpoints beyond a full query."""
+    script = tmp_path / "query.tcl"
+    script.write_text(
+        r"""
+source $::env(LOCAL_SOURCE)
+set limits {}
+set query_options {}
+proc get_timing_paths {args} {
+    set index [lsearch -exact $args -max_paths]
+    if {$index < 0} {error "Missing query limit"}
+    set limit [lindex $args [expr {$index + 1}]]
+    lappend ::limits $limit
+    set options [lreplace $args $index [expr {$index + 1}]]
+    if {$::query_options ne {} && $options ne $::query_options} {
+        error "Query options changed while expanding the limit"
+    }
+    set ::query_options $options
+    set paths {}
+    for {set i 0} {$i < min($::env(PATH_COUNT), $limit)} {incr i} {
+        lappend paths $i
+    }
+    return $paths
+}
+proc get_property {property paths} {
+    if {$property ne "ENDPOINT_PIN" || ![llength $paths]} {
+        error "Unexpected property query"
+    }
+    set pins {}
+    foreach path $paths {
+        if {$::env(DUPLICATE_ENDPOINTS)} {set path [expr {$path / 2}]}
+        lappend pins endpoint_$path
+    }
+    return $pins
+}
+set count [::frost_x3_local_placement::below_gate_count]
+if {$count != $::env(EXPECTED_COUNT)} {error "Incomplete endpoint count: $count"}
+if {$limits ne $::env(EXPECTED_LIMITS)} {error "Unexpected query limits: $limits"}
+puts PASS
+"""
+    )
+    source = Path(__file__).resolve().parents[1] / "fpga/build/x3_local_placement.tcl"
+    result = subprocess.run(
+        ["tclsh", str(script)],
+        env=dict(
+            os.environ,
+            LOCAL_SOURCE=str(source),
+            PATH_COUNT=str(path_count),
+            EXPECTED_LIMITS=expected_limits,
+            DUPLICATE_ENDPOINTS=str(int(duplicate_endpoints)),
+            EXPECTED_COUNT=str(
+                (path_count + 1) // 2 if duplicate_endpoints else path_count
+            ),
+        ),
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS" in result.stdout
