@@ -54,6 +54,10 @@ rename writes with the bundle fire, and its checkpoint snapshot uses the
 slot-2 candidate directly, which is safe because a checkpoint save implies
 the fire.
 
+Resource checks form separate bundle, station and checkpoint decisions.
+Slot-1 validity qualifies each completed decision and every allocation valid
+output.
+
 ## Source operands
 
 Each source reads the INT or FP RAT, as the `uses_int_rs*` and `uses_fp_rs*`

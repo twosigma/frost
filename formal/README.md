@@ -138,7 +138,7 @@ bits, so a type taken from a different source than its target would show.
 | Target | Checks |
 | --- | --- |
 | `decoded_bundle_queue` | FIFO order and payload against an independent queue model, unbounded, at depths 4 and 2 (`prove_depth2`), with covers for bypass, full, wraparound, simultaneous push and pop, and flush of a nonempty queue. See below |
-| `dispatch_admission` | Bundle and slot-2 admission equal the reference equations, and a firing slot 2 never reads FP source 3 (so done-repair channel 6 stays idle). Assumes only FP_RS ops read FP source 3, which `instr_operand_classifier` checks. `bmc_queued` uses the CPU's `SLOT2_VALID_FROM_BUNDLE=1` and assumes the queue's slot-2 valid rule |
+| `dispatch_admission` | Bundle, slot-2, station and checkpoint admission equal the reference equations, and a firing slot 2 never reads FP source 3 (so done-repair channel 6 stays idle). Assumes only FP_RS ops read FP source 3, which `instr_operand_classifier` checks. `bmc_queued` uses the CPU's `SLOT2_VALID_FROM_BUNDLE=1` and assumes the queue's slot-2 valid rule |
 | `instr_operand_classifier` | Decode's operand-class fields equal classification through the decoder's operation enum for every instruction bit pattern, injected NOPs, illegal flags, and fetch faults; only FP_RS ops read FP source 3 |
 | `register_alias_table` | x0 is never renamed; a rename records its ROB tag; an INT commit clears a mapping only if the mapping still holds the committing tag; reset clears mappings and checkpoints; a full flush clears the checkpoints and, unless a checkpoint restore coincides, the mappings; a reclaim-all restore frees every checkpoint |
 
