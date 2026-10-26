@@ -1421,6 +1421,49 @@ module load_queue #(
   end
 
 `endif
+`ifdef FROST_COHERENT_CLUSTER
+  if (COHERENT_CLUSTER) begin : gen_coherent_issue_selector
+    coherent_lq_issue_selector #(
+        .DEPTH(DEPTH)
+    ) selector (
+        .lq_valid(lq_valid),
+        .lq_addr_valid(lq_addr_valid),
+        .lq_is_mmio(lq_is_mmio),
+        .lq_issued(lq_issued),
+        .lq_data_valid(lq_data_valid),
+        .lq_is_lr(lq_is_lr),
+        .lq_is_amo(lq_is_amo),
+        .sq_check_in_flight_mask(sq_check_in_flight_mask | coherent_parked_q),
+        .addr_update_pre_match_q(addr_update_pre_match_q),
+        .rob_head_match_q(rob_head_match_q),
+        .lq_rob_tag_flat(lq_rob_tag_flat),
+        .blocked_by_amo_phys_q(older_amo_block_q),
+        .head_idx(head_idx),
+        .i_sq_committed_empty(i_sq_committed_empty),
+        .o_issue_cdb_found(issue_cdb_found),
+        .o_issue_cdb_idx(issue_cdb_idx),
+        .o_merged_scan_onehot(merged_scan_onehot),
+        .o_stored_scan_found(stored_scan_found),
+        .o_stored_scan_idx(stored_scan_idx),
+        .o_stored_scan_pos(stored_scan_pos),
+        .o_stored_scan_onehot(stored_scan_onehot),
+        .o_stored_scan_rob_tag(stored_scan_rob_tag),
+        .o_update_scan_found(update_scan_found),
+        .o_update_scan_idx(update_scan_idx),
+        .o_update_scan_pos(update_scan_pos),
+        .o_update_scan_onehot(update_scan_onehot),
+        .o_update_scan_rob_tag(update_scan_rob_tag),
+        .o_head_mem_stored_found(head_mem_stored_found),
+        .o_head_mem_stored_idx(head_mem_stored_idx),
+        .o_head_mem_stored_onehot(head_mem_stored_onehot),
+        .o_head_mem_stored_rob_tag(head_mem_stored_rob_tag),
+        .o_head_mem_update_found(head_mem_update_found),
+        .o_head_mem_update_idx(head_mem_update_idx),
+        .o_head_mem_update_onehot(head_mem_update_onehot),
+        .o_head_mem_update_rob_tag(head_mem_update_rob_tag)
+    );
+  end else begin : gen_line_issue_selector
+`endif
   lq_issue_selector #(
       .DEPTH(DEPTH)
   ) lq_issue_selector_inst (
@@ -1464,6 +1507,9 @@ module load_queue #(
       .o_head_mem_update_onehot(head_mem_update_onehot),
       .o_head_mem_update_rob_tag(head_mem_update_rob_tag)
   );
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`endif
 
   // ===========================================================================
   // Head-load sub-bucket diagnostics

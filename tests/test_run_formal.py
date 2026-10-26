@@ -87,8 +87,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherent_cpu.sby",
-        "Coherent selected SC ownership, load parking, and reservation cuts.",
-        tasks=("coh_sc_selected_prove", "coh_lq_cut_prove"),
+        "Coherent SC ownership, load selection, parking, and reservation cuts.",
+        tasks=("coh_sc_selected_prove", "coh_lq_cut_prove", "coh_lq_selector_prove"),
     ),
     FormalTarget(
         "coherence_l1d.sby",
@@ -801,6 +801,7 @@ SBY_TASKS = [
         "coh_lq_cut_prove",
         "Coherent cuts block load completion and reservation renewal.",
     ),
+    ("coh_lq_selector_prove", "Coherent issue selection matches both SQ drain states."),
     ("coh_l1d_bmc", "Coherent L1 pending ownership and independent probes."),
     ("coh_home_wb_prove", "Detached victim ownership through successful B."),
     ("coh_home_victim_cover", "Victim allocation, delayed B, and blocked refetch."),
