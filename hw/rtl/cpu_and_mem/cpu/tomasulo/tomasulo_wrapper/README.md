@@ -283,6 +283,21 @@ does not complete at issue. It waits in `sc_pending_unit`, and fires only when:
 
 The DMA coherence port can also hold SC fires around a DMA write.
 
+With `COHERENT_CLUSTER=1`, a cached SC compares the exact physical address
+and W/D size recorded by LR. The reservation set is a 32-byte sector. Local
+writes and DMA invalidations to that sector clear it; read probes preserve
+it. The SC table holds the virtual address for access-fault completion.
+A selected SC owns an immutable request and result context independently
+of the speculative SC table. The CPU arms interrupt/debug protection before
+request presentation. Home CheckSC and the conditional write recheck the
+reservation. A successful cached SC retires before its tagged SQ write;
+that write blocks younger retirement and drain completion until it finishes.
+The reservation clears at the exact write-complete edge. A failed SC drops
+its SQ entry without a write. Ungranted AMO and LR candidates yield probes.
+
+The following reservation granule applies to `COHERENT_CLUSTER=0`.
+Both selections use the uncached response handling described below.
+
 The SC succeeds when the LR reservation, held in the LQ, is valid and covers
 the SC's aligned doubleword, FROST's reservation granule. The reservation is
 cleared when any SC commits, when the SQ launches a write to the same

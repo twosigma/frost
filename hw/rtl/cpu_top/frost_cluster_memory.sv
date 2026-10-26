@@ -20,7 +20,10 @@
 // combines the L2's line traffic with the hart's uncached data and
 // instruction requests. cpu_top composes it with frost_hart. See
 // cpu_top/README.md.
+`include "coherence_types.svh"
+
 module frost_cluster_memory #(
+    parameter bit COHERENT_CLUSTER = 1'b0,
     parameter int unsigned ENABLE_CACHED_TIER = 1,
     parameter bit ENABLE_COHERENCE = 1'b0,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
@@ -67,6 +70,31 @@ module frost_cluster_memory #(
     output logic [LineIdBits-1:0] o_coherent_resp_id,
     output logic [L1LineBytes*8-1:0] o_coherent_resp_rdata,
     output logic o_coherent_resp_error,
+
+    input logic i_coherent_d_valid,
+    output logic o_coherent_d_ready,
+    input logic [riscv_pkg::PhysAddrBits+311:0] i_coherent_d,
+    output logic o_coherent_p_valid,
+    input logic i_coherent_p_ready,
+    output logic [riscv_pkg::PhysAddrBits+29:0] o_coherent_p,
+    input logic i_coherent_r_valid,
+    output logic o_coherent_r_ready,
+    input logic [riscv_pkg::PhysAddrBits+274:0] i_coherent_r,
+    input logic i_coherent_w_valid,
+    output logic o_coherent_w_ready,
+    input logic [riscv_pkg::PhysAddrBits+259:0] i_coherent_w,
+    output logic o_coherent_wa_valid,
+    input logic i_coherent_wa_ready,
+    output logic [riscv_pkg::PhysAddrBits+10:0] o_coherent_wa,
+    output logic o_coherent_g_valid,
+    input logic i_coherent_g_ready,
+    output logic [riscv_pkg::PhysAddrBits+274:0] o_coherent_g,
+    input logic i_coherent_c_valid,
+    output logic o_coherent_c_ready,
+    input logic [riscv_pkg::PhysAddrBits+17:0] i_coherent_c,
+    output logic o_coherent_u_valid,
+    input logic i_coherent_u_ready,
+    output logic [riscv_pkg::PhysAddrBits+14:0] o_coherent_u,
 
     // The hart's L1D downstream line port (slave).
     input logic i_l1d_down_req_valid,
@@ -254,7 +282,7 @@ module frost_cluster_memory #(
   logic [DdrAxiIdBits-1:0] down_resp_id;
   logic [L2_LINE_BYTES*8-1:0] down_resp_rdata;
 
-  if (ENABLE_CACHED_TIER != 0) begin : gen_cached_tier
+  if (ENABLE_CACHED_TIER != 0 && !COHERENT_CLUSTER) begin : gen_cached_tier
     frost_cluster_cache #(
         .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
         .ENABLE_RESPONSE_ERRORS(1'b1),
@@ -357,6 +385,156 @@ module frost_cluster_memory #(
     );
 
 
+  end else if (ENABLE_CACHED_TIER != 0) begin : gen_coherent_tier
+    `FROST_COHERENCE_TYPES(riscv_pkg::PhysAddrBits)
+    coh_d_t dma_d, home_d;
+    coh_g_t grant;
+    coh_c_t dma_c, home_c;
+    coh_u_t release_message;
+    logic dma_d_valid, dma_d_ready, home_d_valid, home_d_ready;
+    logic g_valid, g_ready, dma_g_ready, dma_c_valid, dma_c_ready;
+    logic home_c_valid, home_c_ready, u_valid, u_ready, dma_u_ready, dma_owner_q;
+    coherence_line_bridge #(
+        .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
+        .ID_BITS(4),
+        .SOURCE(2),
+        .PORT_CLASS(3)
+    ) ingress (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_fatal_stop(i_fatal_error),
+        .i_req_valid(dma_req_valid),
+        .o_req_ready(dma_req_ready),
+        .i_req_write(dma_req_write),
+        .i_req_addr(dma_req_addr),
+        .i_req_data(dma_req_wdata),
+        .i_req_mask(dma_req_wstrb),
+        .i_req_id(dma_req_id),
+        .o_resp_valid(dma_resp_valid),
+        .o_resp_id(dma_resp_id),
+        .o_resp_data(dma_resp_rdata),
+        .o_resp_error(dma_resp_error),
+        .o_clean_valid(),
+        .o_clean_addr(),
+        .i_clean_done(1'b0),
+        .o_d_valid(dma_d_valid),
+        .i_d_ready(dma_d_ready),
+        .o_d(dma_d),
+        .i_g_valid(g_valid && dma_owner_q),
+        .o_g_ready(dma_g_ready),
+        .i_g(grant),
+        .o_c_valid(dma_c_valid),
+        .i_c_ready(dma_c_ready),
+        .o_c(dma_c),
+        .i_u_valid(u_valid && dma_owner_q),
+        .o_u_ready(dma_u_ready),
+        .i_u(release_message)
+    );
+    coherence_d_arbiter #(
+        .WIDTH((riscv_pkg::PhysAddrBits + 312)),
+        .PORTS(2)
+    ) demands (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_valid({dma_d_valid, i_coherent_d_valid}),
+        .o_ready({dma_d_ready, o_coherent_d_ready}),
+        .i_payload({dma_d, i_coherent_d}),
+        .o_valid(home_d_valid),
+        .i_ready(home_d_ready),
+        .o_payload(home_d)
+    );
+    always_ff @(posedge i_clk) begin
+      if (i_rst) dma_owner_q <= 1'b0;
+      else if (home_d_valid && home_d_ready) dma_owner_q <= home_d.q[8:7] == 2;
+    end
+    assign o_coherent_g_valid = g_valid && !dma_owner_q;
+    assign o_coherent_g = grant;
+    assign g_ready = dma_owner_q ? dma_g_ready : i_coherent_g_ready;
+    assign home_c_valid = dma_owner_q ? dma_c_valid : i_coherent_c_valid;
+    assign home_c = dma_owner_q ? dma_c : i_coherent_c;
+    assign dma_c_ready = home_c_ready && dma_owner_q;
+    assign o_coherent_c_ready = home_c_ready && !dma_owner_q;
+    assign o_coherent_u_valid = u_valid && !dma_owner_q;
+    assign o_coherent_u = release_message;
+    assign u_ready = dma_owner_q ? dma_u_ready : i_coherent_u_ready;
+    coherence_home #(
+        .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
+        .LINE_BYTES(L2_LINE_BYTES),
+        .CACHE_BYTES(L2_CACHE_BYTES),
+        .WAYS(L2_WAYS),
+        .NUM_WB(L2_NUM_WB)
+    ) home (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_fatal_stop(i_fatal_error),
+        .i_d_valid(home_d_valid),
+        .o_d_ready(home_d_ready),
+        .i_d(home_d),
+        .o_p_valid(o_coherent_p_valid),
+        .i_p_ready(i_coherent_p_ready),
+        .o_p(o_coherent_p),
+        .i_r_valid(i_coherent_r_valid),
+        .o_r_ready(o_coherent_r_ready),
+        .i_r(i_coherent_r),
+        .i_w_valid(i_coherent_w_valid),
+        .o_w_ready(o_coherent_w_ready),
+        .i_w(i_coherent_w),
+        .o_wa_valid(o_coherent_wa_valid),
+        .i_wa_ready(i_coherent_wa_ready),
+        .o_wa(o_coherent_wa),
+        .o_g_valid(g_valid),
+        .i_g_ready(g_ready),
+        .o_g(grant),
+        .i_c_valid(home_c_valid),
+        .o_c_ready(home_c_ready),
+        .i_c(home_c),
+        .o_u_valid(u_valid),
+        .i_u_ready(u_ready),
+        .o_u(release_message),
+        .o_mem_req_valid(down_req_valid),
+        .i_mem_req_ready(down_req_ready),
+        .o_mem_req_write(down_req_write),
+        .o_mem_req_addr(down_req_addr),
+        .o_mem_req_data(down_req_wdata),
+        .o_mem_req_mask(down_req_wstrb),
+        .o_mem_req_id(down_req_id),
+        .i_mem_resp_valid(down_resp_valid),
+        .i_mem_resp_id(down_resp_id),
+        .i_mem_resp_data(down_resp_rdata),
+        .i_mem_resp_error(down_resp_error),
+        .o_fatal(o_cache_fatal),
+        .o_fatal_addr(o_cache_fatal_addr)
+    );
+    assign o_l2_perf_events = '0;
+    assign o_l2_write_perf_events = '0;
+    assign o_coh_admit_valid = 1'b0;
+    assign o_coh_admit_slot = '0;
+    assign o_coh_admit_addr = '0;
+    assign o_coh_inval_valid = 1'b0;
+    assign o_coh_inval_slot = '0;
+    assign o_coh_release_valid = 1'b0;
+    assign o_coh_release_slot = '0;
+    assign o_dma_probe_req_valid = 1'b0;
+    assign o_dma_probe_req_addr = '0;
+    assign o_dma_probe_req_inval = 1'b0;
+    assign o_dma_probe_req_id = '0;
+    assign o_dma_probe_release_valid = 1'b0;
+    assign o_dma_probe_release_id = '0;
+    assign o_l1d_down_req_ready = 1'b0;
+    assign o_l1d_down_resp_valid = 1'b0;
+    assign o_l1d_down_resp_id = '0;
+    assign o_l1d_down_resp_rdata = '0;
+    assign o_l1d_down_resp_error = 1'b0;
+    assign o_l1i_down_req_ready = 1'b0;
+    assign o_l1i_down_resp_valid = 1'b0;
+    assign o_l1i_down_resp_id = '0;
+    assign o_l1i_down_resp_rdata = '0;
+    assign o_l1i_down_resp_error = 1'b0;
+    assign o_walk_down_req_ready = 1'b0;
+    assign o_walk_down_resp_valid = 1'b0;
+    assign o_walk_down_resp_id = '0;
+    assign o_walk_down_resp_rdata = '0;
+    assign o_walk_down_resp_error = 1'b0;
   end else begin : gen_no_cached_tier
     assign o_cache_fatal = 1'b0;
     assign o_cache_fatal_addr = '0;
@@ -401,6 +579,21 @@ module frost_cluster_memory #(
     assign down_req_wdata = '0;
     assign down_req_wstrb = '0;
     assign down_req_id = '0;
+  end
+
+  if (!COHERENT_CLUSTER || ENABLE_CACHED_TIER == 0) begin : gen_no_coherent_channels
+    assign o_coherent_d_ready = '0;
+    assign o_coherent_p_valid = '0;
+    assign o_coherent_p = '0;
+    assign o_coherent_r_ready = '0;
+    assign o_coherent_w_ready = '0;
+    assign o_coherent_wa_valid = '0;
+    assign o_coherent_wa = '0;
+    assign o_coherent_g_valid = '0;
+    assign o_coherent_g = '0;
+    assign o_coherent_c_ready = '0;
+    assign o_coherent_u_valid = '0;
+    assign o_coherent_u = '0;
   end
 
   cpu_memory_fabric #(

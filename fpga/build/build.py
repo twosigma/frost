@@ -1593,11 +1593,15 @@ def is_reference_x3_netlist(main_work: Path) -> bool:
         and config.get("cpu_base_clock_hz") == BOARD_CONFIG["x3"]["clock_freq"]
         and config.get("cpu_clock_div") == 1
         and config.get("ddr_capacity_log2_bytes") == 30
+        and not config.get("coherent_cluster", False)
     )
 
 
 def require_x3_netlist_configuration(
-    main_work: Path, cpu_clock_div: int, ddr_capacity_log2_bytes: int
+    main_work: Path,
+    cpu_clock_div: int,
+    ddr_capacity_log2_bytes: int,
+    coherent_cluster: bool = False,
 ) -> bool:
     """Resume only a checkpoint built for the requested clock and DDR map."""
     try:
@@ -1607,14 +1611,13 @@ def require_x3_netlist_configuration(
             or config.get("cpu_base_clock_hz") != BOARD_CONFIG["x3"]["clock_freq"]
             or config.get("cpu_clock_div") != cpu_clock_div
             or config.get("ddr_capacity_log2_bytes") != ddr_capacity_log2_bytes
+            or config.get("coherent_cluster", False) != coherent_cluster
         ):
-            raise ValueError(
-                "checkpoint clock or DDR capacity differs from the X3 build"
-            )
+            raise ValueError("checkpoint configuration differs from the X3 build")
     except (OSError, ValueError) as error:
         print(
             f"Error: cannot resume X3 netlist configuration: {error}. "
-            "Use the checkpoint's clock and DDR capacity or restart synthesis."
+            "Use the checkpoint's configuration or restart synthesis."
         )
         return False
     return True
@@ -1666,6 +1669,8 @@ def copy_results_to_main_work(
                 {
                     "schema": "x3_netlist_config_v4",
                     "perf_counters": perf_counters,
+                    "coherent_cluster": os.environ.get("FROST_COHERENT_CLUSTER", "0")
+                    == "1",
                     "cpu_base_clock_hz": BOARD_CONFIG["x3"]["clock_freq"],
                     "cpu_clock_div": int(os.environ.get("FROST_CPU_CLK_DIV", "1")),
                     "ddr_capacity_log2_bytes": int(
@@ -3428,6 +3433,12 @@ Examples:
         default="AggressiveExplore",
         help="Ignored; physical optimization uses directive sweeps and retiming",
     )
+    parser.add_argument(
+        "--coherent-cluster",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Select the one-hart coherent S/M cluster (default: disabled)",
+    )
     args = parser.parse_args()
 
     if os.environ.get("FROST_CPU_BASE_CLK_HZ"):
@@ -3556,6 +3567,9 @@ Examples:
             for name in ("FROST_PLACE_CELL_BLOAT", "FROST_PLACE_CELL_BLOAT_CELLS")
         )
     )
+    if args.coherent_cluster and board_name != "x3":
+        parser.error("--coherent-cluster is only supported for x3")
+    os.environ["FROST_COHERENT_CLUSTER"] = "1" if args.coherent_cluster else "0"
     if args.debug_ila:
         if board_name != "x3":
             parser.error("--debug-ila is only supported for x3")
@@ -3716,7 +3730,10 @@ Examples:
             sys.exit(1)
         print(f"Starting from checkpoint: {checkpoint_path}")
         if board_name == "x3" and not require_x3_netlist_configuration(
-            main_work, functional_policy.cpu_clock_div, board_ddr_log2
+            main_work,
+            functional_policy.cpu_clock_div,
+            board_ddr_log2,
+            args.coherent_cluster,
         ):
             sys.exit(1)
 

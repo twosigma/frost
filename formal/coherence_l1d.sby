@@ -1,0 +1,31 @@
+[tasks]
+coh_l1d_bmc
+
+[options]
+mode bmc
+depth 40
+timeout 180
+aigsmt boolector
+
+[engines]
+abc bmc3
+
+[script]
+read -sv coherence_pkg.sv coherence_request_endpoint.sv coherence_put_endpoint.sv
+read -formal -sv coherence_l1d.sv
+read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
+chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
+prep -flatten -top coherence_l1d
+memory_map
+opt
+
+[files]
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_array.sv
+../hw/rtl/lib/cache/coherence_request_endpoint.sv
+../hw/rtl/lib/cache/coherence_put_endpoint.sv
+../hw/rtl/lib/cache/coherence_l1d.sv

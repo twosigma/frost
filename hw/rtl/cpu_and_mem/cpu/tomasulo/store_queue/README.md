@@ -101,6 +101,14 @@ launches only when no other write is in flight, and nothing else launches until
 it completes. A cached write completes once the L1D has ordered it, so a store
 miss does not hold up the drain for the line fill.
 
+With `COHERENT_CLUSTER=1`, cached ordinary stores may complete into one
+pending L1D record. That record participates in committed-empty and fence,
+Device and serializer drains. It blocks subsequent ordinary SQ launches
+until its bytes reach M. Cached SC writes carry their selected ROB tag and
+complete only after the conditional cache update. The selected context
+blocks younger retirement through that write, including flush-producing
+instructions.
+
 An entry is freed when its write completes, not when it launches, and stays
 visible to forwarding until then.
 

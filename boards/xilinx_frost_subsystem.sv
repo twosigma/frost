@@ -18,6 +18,7 @@
 // programming path, the BSCAN debug transport, and the reset sequencing around
 // them. Board-specific top modules supply clock generation and board I/O.
 module xilinx_frost_subsystem #(
+    parameter bit COHERENT_CLUSTER = 1'b0,
     // CPU clock frequency in Hz. Must match the clock the board wrapper drives
     // on i_clk. The UART sits on i_clk_div4, so its baud divisor is derived
     // from CLK_FREQ_HZ / 4.
@@ -339,6 +340,7 @@ module xilinx_frost_subsystem #(
       .L2_NUM_MSHR(L2_NUM_MSHR),
       .L2_PREFETCH_INFLIGHT(L2_PREFETCH_INFLIGHT),
       .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE),
+      .COHERENT_CLUSTER(COHERENT_CLUSTER),
       .PERF_COUNTERS(PERF_COUNTERS),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),

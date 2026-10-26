@@ -1,7 +1,7 @@
 # Cache library
 
-This is FROST's cached memory tier: one set-associative, write-back,
-non-blocking line cache used three times (L1D, L1I, and L2), the arbiters
+With `COHERENT_CLUSTER=0`, the cached memory tier uses one set-associative,
+write-back, non-blocking line cache three times (L1D, L1I, and L2), the arbiters
 that merge line ports, two sequencers that make DMA and page-table walks
 coherent with the L1D, an adapter between the L1s' 32-byte lines and the
 L2's 64-byte lines, a prefetcher that reads ahead of L1D miss streams into
@@ -29,9 +29,10 @@ still dirty in the L1D, and software never flushes a cache for them.
 
 ## Line protocol
 
-Every port between the CPU-side adapters and the AXI bridge carries one line
-per transaction, with a transaction id. Lines are 32 bytes from the
-CPU-side adapters down to the line-size adapter and 64 bytes from there to
+In the line-port hierarchy, each port between the CPU-side adapters and the
+AXI bridge carries one line per transaction with a transaction id. Lines are
+32 bytes from the CPU-side adapters down to the line-size adapter and
+64 bytes from there to
 the bridge (`LINE_BYTES` below):
 
 ```
@@ -77,11 +78,11 @@ must take no action on a request until it fires.
 
 ## Coherent endpoint library
 
-`coherence.f` selects standalone coherent endpoints and their programmable
-harness. The production `cache.f` and `cpu_top` use the line protocol above.
-The coherent endpoints provide transport and ownership bookkeeping. Cache
-permission changes, line arbitration, dirty-data merging, and CPU cut service
-belong to their callers; these functions have no implementation in this library.
+`coherence.f` selects the channel endpoints and their programmable harness.
+`cache.f` supplies both the line-port and coherent cache paths. The default
+`COHERENT_CLUSTER=0` selection uses the line-port hierarchy. The coherent
+endpoints provide transport and ownership bookkeeping for the controllers
+selected by `COHERENT_CLUSTER=1`.
 
 `coherence_pkg` defines opcodes, request identity, and home identity ranges.
 `FROST_COHERENCE_TYPES(P)` in `coherence_types.svh` declares packed payloads
@@ -188,9 +189,89 @@ and PutM slots. Probe service, grant production, completion delivery, and
 release delivery require independent service resources. Debug halt and WFI
 must not stop those resources in an integration.
 
+## Coherent one-hart cache path
+
+`coherent_hart_cache` contains the L1D, read-only L1I, instruction and walker
+bridges, and maintenance arbitration. `coherence_home` contains the shared
+L2 controller and array. `coherence_array` serializes tag lookup, data read
+and masked updates. It uses block RAM for L1D and UltraRAM for L2.
+The L1D uses 32-byte sectors; the L2 supports 32-byte or 64-byte lines.
+
+The L1D has I, S and M states. Reads use S or M. A store hit in M writes its
+bytes before completing. An S/I store reserves one committed pending record
+and a dirty-eviction slot before acquiring M. The pending record owns the
+address, bytes and mask after the SQ completion. It blocks local accesses to
+its sector and yields probes while unrelated reads proceed. SQ launch readiness reserves the next cycle's registered write even when
+line maintenance starts on that edge. There are eight
+unmerged CPU read slots, two frozen PutM slots and one acquisition endpoint.
+There are no E grants, silent upgrades, sharer hints or stream prefetches in
+this selection. `L2_NUM_MSHR` and the prefetch parameters configure the
+line-port selection; the coherent home has one fill and `L2_NUM_WB` victim
+write slots.
+
+The hart uses source 0 and classes 0, 1 and 2 for data, instruction and walker
+requests. Each class has one request identity. Source 2 and class 3 identify
+DMA, whose four-bit ingress ID occupies q.id. The home accepts one D or
+ordinary W operation at a time. Round-robin arbitration rotates eligible
+requesters, read responses and individual PutM slots. Probe replies have
+separate ownership from CPU reads, pending stores and PutM presentation.
+A ProbeRead of M merges dirty bytes and leaves S. ProbeInvalidate leaves I
+after the CPU cut. CheckSC returns the selected reservation result.
+
+Every M sector has a resident L2 merge destination. Clean S and L0 copies
+may outlive an L2 replacement. Replacement recalls every victim sector
+without a directory hint, merges dirty replies, and freezes the complete
+victim image before reusing its row. Its physical address stays locked until
+a successful memory B response. A failed fill cannot expose the detached
+victim tag. Grants pin their destination through C and U. An absorbed PutM
+keeps its exact slot and epoch until WA cancellation, and an ordinary PutM
+keeps the home busy through WA. DMA reads collect dirty private data; DMA
+writes merge only their selected bytes after invalidation.
+
+The CPU cut stops local load launches at invalidation-probe capture. No read merging
+crosses the cut. Invalidation covers L1D, L0, live read slots, reservations
+and returned-load observations held until retirement. Delayed invalidated
+LR responses cannot establish a reservation, and stale responses cannot
+refill L0. Loads blocked by a pending store or selected atomic are parked so
+that unrelated rows can issue. Cut admission and replay acknowledgement
+precede the probe reply.
+
+Cached SC and AMO requests acquire the home lock even on an M hit. The CPU
+arms a tagged ROB-head context after fault and drain checks and before D
+presentation. Interrupt and debug entry cannot cancel that context. SC
+checks the reservation after home resource entitlement; a passing CheckSC
+uses a self-ProbeRead to collect dirty data without cancelling its own
+reservation. The SC bridge holds the home lock and same-sector interlock
+through the tagged post-retirement SQ write. AMO holds them through its
+read/compute/write sequence. C reports the actual write. U releases the
+home ownership, and precise instruction ownership also waits for retirement.
+Clean faults dispose C/U before precise exception entry. Dirty errors hold
+ownership and raise the cluster fatal indication until reset.
+
+A walker read first cleans its L1D sector through PutM, then uses ReadOnce.PTW.
+Instruction refills use ReadOnce.IF. FENCE.I drains older writes, cleans the
+whole L1D through PutM, invalidates L1I and resets the fetch generation.
+Maintenance yields to probes and shares local array service fairly with
+reads. FENCE, Device publication and serializer drains include pending
+committed stores and the selected SC write. They do not require all dirty L2
+bytes to reach external memory.
+
+The unit benches `coherence_home`, `coherence_home_equal`, `coherence_cluster`
+and `coherent_cut` cover controller ownership, inclusion, cuts, atomics and
+probe service. `coherent_*` program configurations select this path in the
+whole SoC. Formal targets `coherence_control`, `coherence_array`,
+`coherence_home`, `coherence_l1d` and `coherent_cpu` check endpoint service,
+representative byte values, bounded controller transitions and CPU ownership.
+Detached victim validity, address and a watched byte are checked by induction
+through B. Cover tasks reach allocation, a delayed B, a blocked refetch,
+successful disposal and a failed B with preserved dirty ownership.
+The controller bounds assume legal channel peers and immediate local cut
+acknowledgement; they do not bound external memory response latency.
+
 ## The line cache
 
-`frost_cache` is one module for every level and every target. The
+The following sections describe `COHERENT_CLUSTER=0`.
+`frost_cache` supplies each level of its line-port hierarchy. The
 instances differ in size, line size, storage, and slot counts:
 
 | Instance | Size | Line | Ways x sets | Tags | Data | Miss slots | Waiter seats per miss slot | Writeback slots | Probe slots |
