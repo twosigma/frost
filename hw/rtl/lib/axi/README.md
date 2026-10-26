@@ -1,14 +1,15 @@
 # AXI library
 
-AXI4 blocks for the masters that reach cached memory without a CPU: the NIC
-and the DMA test engine in `soc_top`, and later any block with an AXI4 master
-port. `axi_mux` joins the masters and `axi_coherent_bridge` turns their bursts
+AXI4 interconnect, coherent ingress and clock crossings for the CPU, NIC
+and DMA test engine in `soc_top`. `axi_mux` joins the masters and
+`axi_coherent_bridge` turns their bursts
 into requests on `cpu_top`'s coherent ingress, so their reads see data still
 dirty in the L1D and their writes update or invalidate the CPU's cached
 copies.
 
 | File | Role |
 |------|------|
+| `axi_cdc.sv` | Five independent asynchronous FIFOs carrying all AXI4 channel fields between unrelated clocks |
 | `axi_coherent_bridge.sv` | AXI4 slave into the coherent ingress: classifies each burst, splits it into line requests, and returns B and R in AXI order |
 | `axi_mux.sv` | N AXI4 slave ports onto one AXI4 master port, round-robin per burst, with the port index prefixed to ids |
 | `axi_checker.sv` | Simulation-only protocol monitor for one AXI4 interface |
@@ -35,6 +36,29 @@ complete before the optional status write and interrupt.
 The NIC is port 0 and the engine port 1; their 3-bit ids reach the bridge as
 4-bit ids. An `axi_checker` watches each port and the bridge's slave port
 in simulation.
+
+## axi_cdc
+
+The AW, W and AR channels cross from the source clock to the destination
+clock; B and R cross in the reverse direction. Each FIFO uses registered
+Gray pointers, two-flop synchronizers and dual-clock RAM with a registered
+output skid buffer. A channel preserves its full payload and holds VALID
+and payload through backpressure. Address and data channels are independent.
+`DEPTH` defaults to four RAM entries per channel, plus the output skid.
+
+The caller supplies synchronous resets with an overlapping assertion
+window and no traffic until both sides have observed reset.
+`cdc_reset_pair` holds both sides until each clock has advanced its release
+chain, including when a clock stops. Reset discards every queued channel
+beat, so the connected owners reset together. CPU-only reset leaves the
+memory crossing active to drain the CPU master's outstanding requests.
+
+In the optional FROST CPU clock configuration, the memory master crosses
+before `soc_axi_slave`. DMA crosses after `axi_mux`, and
+`axi_coherent_bridge` runs on the CPU clock. The common-clock configuration
+uses direct wires. The constraints bound Gray-pointer and payload paths
+below a period of the faster clock, without an asynchronous clock-group
+exception between these two clocks.
 
 ## axi_coherent_bridge
 
@@ -80,9 +104,11 @@ next cycle; each segment occupies the line port for one cycle.
 
 `i_rst` is synchronous, and while it is asserted every VALID and READY is
 low. The bridge resets with its AXI masters, and each reset of the ingress,
-which drops the requests it holds, must overlap one of the bridge. In
-`soc_top` the masters, the mux and the bridge reset with `rst_core`, and the
-ingress's reset includes it.
+which drops the requests it holds, must overlap one of the bridge. In the
+common-clock `soc_top` configuration, the masters, mux and bridge
+reset with `rst_core`, and the ingress reset includes it. The optional
+asynchronous configuration pairs the resets of the DMA owners across both
+clocks.
 
 ## axi_mux
 
@@ -113,6 +139,7 @@ Its body is empty in synthesis and formal builds.
 | Target | Coverage |
 | --- | --- |
 | `axi_coherent_bridge`, `axi_coherent_bridge_64`, `axi_coherent_bridge_32` | Random bursts of every type and size against a byte reference at 256, 64 and 32 bits, error bursts, ingress errors, out-of-order line responses with stalls, exhausted ids and tables, read starvation under writes, and reset with bursts in flight |
+| `axi_cdc` | All channel fields, independent backpressure, full FIFOs, wraparound, reset cancellation, equal periods with phase offset and unequal periods in both directions |
 | `axi_mux` | Three masters sharing id values against a reordering slave, late write data, and reset mid-traffic |
 
 Unbounded formal safety proofs cover the bridge (`axi_coherent_bridge`: AXI4 slave

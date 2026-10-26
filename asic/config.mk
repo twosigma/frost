@@ -32,6 +32,10 @@ include $(WORK_HOME)/sources.mk
 # steps need with it, fits the standard CI runners (asic/README.md).
 export VERILOG_DEFINES = -DSYNTHESIS -DFROST_SRAM_MACROS
 export VERILOG_TOP_PARAMS = ENABLE_CACHED_TIER 1 USE_BEHAVIORAL_DDR 0 L2_CACHE_BYTES 262144
+ifneq ($(FROST_CPU_CLOCK_PERIOD),)
+export FROST_CPU_CLOCK_PERIOD
+export VERILOG_TOP_PARAMS += ASYNC_CPU_CLOCK 1
+endif
 export SYNTH_CANONICALIZE_TCL = $(DESIGN_DIR)/canonicalize.tcl
 
 # The SRAM macros that asic/openram.py generates with OpenRAM, one directory
@@ -70,6 +74,11 @@ export POST_FINAL_REPORT_TCL = $(DESIGN_DIR)/clock_slack.tcl
 # constraint.sdc needs its port here.
 export CTS_ARGS = -sink_clustering_enable -repair_clock_nets \
   -clk_nets {i_clk i_clk_div4 i_nic_tx_clk i_nic_rx_clk i_jtag_tck}
+
+ifneq ($(FROST_CPU_CLOCK_PERIOD),)
+export CTS_ARGS = -sink_clustering_enable -repair_clock_nets \
+  -clk_nets {i_clk i_cpu_clk i_clk_div4 i_nic_tx_clk i_nic_rx_clk i_jtag_tck}
+endif
 
 # Skip the formal equivalence check between the synthesized and final
 # netlists. On this design it needs over 40 GB of memory and spends more than

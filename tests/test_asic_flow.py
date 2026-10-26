@@ -230,6 +230,38 @@ def test_run_refuses_a_build_with_another_clock_period(
     assert "delete it to run the flow at 3.103 ns" in capsys.readouterr().err
 
 
+def test_cpu_clock_build_configuration_and_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CPU clock configuration changes require a fresh build; resumes use its clock."""
+    _write_synthesized_build(tmp_path, "3.1030")
+    monkeypatch.setattr(orfs, "BUILD_DIRECTORY", tmp_path)
+    assert orfs.main(["run", "--cpu-clock-period", "1.3"]) == 2
+    assert "CPU clock configuration differs" in capsys.readouterr().err
+    constraints = (
+        tmp_path / orfs.FLOW_SUBDIRECTORY.format(kind="results") / "1_synth.sdc"
+    )
+    constraints.write_text(
+        constraints.read_text()
+        + "create_clock -name cpu_clk -period 1.3000 [get_ports {i_cpu_clk}]\n"
+    )
+    assert orfs.main(["run"]) == 2
+    assert "CPU clock configuration differs" in capsys.readouterr().err
+    assert orfs.main(["run", "--cpu-clock-period", "7"]) == 2
+    assert "CPU clock configuration differs" in capsys.readouterr().err
+    commands: list[list[str]] = []
+
+    def capture(command: list[str], *args: object) -> int:
+        commands.append(command)
+        return 1
+
+    monkeypatch.setattr(orfs, "run_logged", capture)
+    monkeypatch.setattr(orfs, "summarize", lambda **kwargs: 0)
+    assert orfs.main(["run", "--from", "cts"]) == 1
+    assert len(commands) == 1
+    assert "FROST_CPU_CLOCK_PERIOD=1.3" in commands[0]
+
+
 def test_clock_period_option_rejects_periods_the_sdc_refuses(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -299,7 +331,13 @@ proc get_pins {args} {
 }
 proc get_ports {patterns} {return $patterns}
 proc get_clocks {names} {return $names}
-proc set_clock_groups {args} {}
+proc set_clock_groups {args} {
+    foreach {flag members} [lrange $args 1 end] {
+        if {$flag eq "-group"} {puts "group [join $members { }]"}
+    }
+}
+proc set_max_delay {delay args} {puts "max_delay $delay [join $args { }]"}
+proc set_min_delay {delay args} {puts "min_delay $delay [join $args { }]"}
 proc all_inputs {args} {return $::inputs}
 proc all_outputs {} {return $::outputs}
 proc get_full_name {object} {return $object}
@@ -344,7 +382,11 @@ PORT_CLOCKS = {
 
 
 def _evaluate_sdc(
-    tmp_path: Path, core_period: str | None = None, *, find_pins: bool = True
+    tmp_path: Path,
+    core_period: str | None = None,
+    *,
+    find_pins: bool = True,
+    cpu_period: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run asic/constraint.sdc in tclsh with FROST_CORE_CLOCK_PERIOD set or not."""
     harness = tmp_path / "harness.tcl"
@@ -352,10 +394,17 @@ def _evaluate_sdc(
     environment = {
         name: value
         for name, value in os.environ.items()
-        if name not in (orfs.CLOCK_PERIOD_VARIABLE, "FROST_HARNESS_NO_PINS")
+        if name
+        not in (
+            orfs.CLOCK_PERIOD_VARIABLE,
+            "FROST_HARNESS_NO_PINS",
+            "FROST_CPU_CLOCK_PERIOD",
+        )
     }
     if core_period is not None:
         environment[orfs.CLOCK_PERIOD_VARIABLE] = core_period
+    if cpu_period is not None:
+        environment["FROST_CPU_CLOCK_PERIOD"] = cpu_period
     if not find_pins:
         environment["FROST_HARNESS_NO_PINS"] = "1"
     return subprocess.run(
@@ -532,10 +581,12 @@ def test_quarter_rate_clock_is_related_to_the_core_clock(tmp_path: Path) -> None
     The debug slice writer's dc_fifo needs the core clock and its quarter-rate
     programming clock timed together, as the X3 constraints do.
     """
-    sdc = (ASIC_DIRECTORY / "constraint.sdc").read_text()
+    result = _evaluate_sdc(tmp_path)
+    assert result.returncode == 0, result.stderr
     groups = [
-        set(members.split())
-        for members in re.findall(r"-group \[get_clocks \{?([^\]}]+)\}?\]", sdc)
+        set(line.split()[1:])
+        for line in result.stdout.splitlines()
+        if line.startswith("group ")
     ]
 
     assert sorted(map(sorted, groups)) == [
@@ -545,6 +596,40 @@ def test_quarter_rate_clock_is_related_to_the_core_clock(tmp_path: Path) -> None
         ["nic_tx_clk", "nic_tx_clk_io"],
     ]
     assert set().union(*groups) == set(_sdc_constraints(tmp_path)[0])
+
+
+@pytest.mark.parametrize("cpu_period", ["1.3", "3.103", "7"])
+def test_cpu_boundary_constraints_bound_both_directions(
+    tmp_path: Path, cpu_period: str
+) -> None:
+    """CPU, SoC and debug clocks share a group with bounded crossing delays."""
+    result = _evaluate_sdc(tmp_path, cpu_period=cpu_period)
+    assert result.returncode == 0, result.stderr
+    groups = [
+        set(line.split()[1:])
+        for line in result.stdout.splitlines()
+        if line.startswith("group ")
+    ]
+    assert any(
+        {"cpu_clk", "core_clk", "core_clk_io", "jtag_tck", "jtag_tck_io"} <= group
+        for group in groups
+    )
+    limits = [
+        line.split()
+        for line in result.stdout.splitlines()
+        if line.startswith("max_delay ")
+    ]
+    assert len(limits) == 4
+    for row in limits[:2]:
+        assert float(row[1]) < min(float(cpu_period), orfs.default_clock_period())
+        assert "-ignore_clock_latency" in row
+    for row in limits[2:]:
+        assert float(row[1]) < min(float(cpu_period), 100.0)
+        assert "-ignore_clock_latency" in row
+    assert limits[0][3:] == ["-from", "cpu_clk", "-to", "core_clk", "core_clk_io"]
+    assert limits[1][3:] == ["-from", "core_clk", "core_clk_io", "-to", "cpu_clk"]
+    assert limits[2][3:] == ["-from", "jtag_tck", "jtag_tck_io", "-to", "cpu_clk"]
+    assert limits[3][3:] == ["-from", "cpu_clk", "-to", "jtag_tck", "jtag_tck_io"]
 
 
 def test_mocked_memories_come_from_the_synthesis_log(tmp_path: Path) -> None:

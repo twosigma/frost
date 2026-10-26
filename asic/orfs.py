@@ -221,8 +221,10 @@ def default_clock_period() -> float:
     return float(match[1])
 
 
-def built_clock_period(build_directory: Path) -> float | None:
-    """Return the core clock period of a build, or None if no stage wrote one.
+def built_clock_period(
+    build_directory: Path, clock_name: str = "core_clk"
+) -> float | None:
+    """Clock periods come from written stage constraints.
 
     Synthesis evaluates constraint.sdc, and OpenSTA writes the result next to
     each stage's database, so any of those SDC files holds the period.
@@ -230,7 +232,9 @@ def built_clock_period(build_directory: Path) -> float | None:
     results = build_directory / FLOW_SUBDIRECTORY.format(kind="results")
     for sdc in sorted(results.glob("*.sdc")):
         match = re.search(
-            r"^create_clock -name core_clk -period ([\d.]+) ", sdc.read_text(), re.M
+            rf"^create_clock -name {re.escape(clock_name)} -period ([\d.]+) ",
+            sdc.read_text(),
+            re.M,
         )
         if match:
             return float(match[1])
@@ -242,11 +246,15 @@ def format_period(period: float) -> str:
     return f"{period:.4f}".rstrip("0").rstrip(".")
 
 
-def make_variables(num_cores: int, clock_period: float | None) -> list[str]:
+def make_variables(
+    num_cores: int, clock_period: float | None, cpu_clock_period: float | None = None
+) -> list[str]:
     """Return the variables that the flow's make takes from the command line."""
     variables = [f"NUM_CORES={num_cores}"]
     if clock_period is not None:
         variables.append(f"{CLOCK_PERIOD_VARIABLE}={format_period(clock_period)}")
+    if cpu_clock_period is not None:
+        variables.append(f"FROST_CPU_CLOCK_PERIOD={format_period(cpu_clock_period)}")
     return variables
 
 
@@ -278,10 +286,12 @@ def run(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    if args.first is not None and args.clock_period is not None:
+    if args.first is not None and (
+        args.clock_period is not None or args.cpu_clock_period is not None
+    ):
         print(
             "Error: the clock period takes effect at synthesis; "
-            "--clock-period cannot be combined with --from",
+            "--clock-period and --cpu-clock-period cannot be combined with --from",
             file=sys.stderr,
         )
         return 2
@@ -297,6 +307,15 @@ def run(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
+    built_cpu_period = built_clock_period(BUILD_DIRECTORY, "cpu_clk")
+    if args.first is None and built_clock_period(BUILD_DIRECTORY) is not None:
+        if built_cpu_period != args.cpu_clock_period:
+            print(
+                "Error: CPU clock configuration differs from the build; use an empty build directory",
+                file=sys.stderr,
+            )
+            return 2
+    cpu_period = built_cpu_period if args.first is not None else args.cpu_clock_period
     BUILD_DIRECTORY.mkdir(parents=True, exist_ok=True)
     log_path = BUILD_DIRECTORY / "orfs.log"
     if args.first is None:
@@ -308,7 +327,7 @@ def run(args: argparse.Namespace) -> int:
     uid, gid = os.getuid(), os.getgid()
     status = run_logged(
         orfs_command(
-            [*make_variables(args.num_cores, args.clock_period), *goals],
+            [*make_variables(args.num_cores, args.clock_period, cpu_period), *goals],
             uid=uid,
             gid=gid,
         ),
@@ -938,6 +957,12 @@ def _argument_parser() -> argparse.ArgumentParser:
             "core clock period in ns, which the quarter-rate clock and the I/O "
             "delays follow (default: the X3's, from asic/constraint.sdc)"
         ),
+    )
+    run_parser.add_argument(
+        "--cpu-clock-period",
+        type=_clock_period,
+        metavar="NS",
+        help="enable the asynchronous CPU boundary with this CPU clock period in ns",
     )
     run_parser.add_argument(
         "--from",

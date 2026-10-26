@@ -46,6 +46,7 @@ class Bench:
                 "wdata",
                 "wstrb",
                 "error",
+                "user",
             ),
             "axi_r": ("valid", "id", "data", "resp", "last", "user"),
             "axi_b": ("valid", "id", "resp", "user"),
@@ -70,7 +71,7 @@ class Bench:
             payload = tuple(s[prefix + field] for field in fields[1:])
             # Read requests have no meaningful write payload.
             if prefix == "local_" and not s["local_write"]:
-                payload = payload[:4] + payload[-1:]
+                payload = payload[:4] + payload[-2:]
             valid = s[prefix + "valid"]
             if prefix in self.held and not reset:
                 assert valid and payload == self.held[prefix], prefix
@@ -121,7 +122,9 @@ async def narrow_lanes_complete_once_on_response(dut: Any) -> None:
     for size in range(4):
         addr = 0x40000000 + 64 - (1 << size)
         strb = ((1 << (1 << size)) - 1) << (addr & 63)
+        await b.step(axi_awuser=size & 1)
         await b.address("aw", 32, addr, size)
+        await b.step(axi_awuser=1 - (size & 1))
         await b.step(axi_wvalid=1, axi_wdata=data, axi_wstrb=strb)
         for _ in range(5):
             s = await b.step()
@@ -131,6 +134,7 @@ async def narrow_lanes_complete_once_on_response(dut: Any) -> None:
                 size,
                 3,
             )
+            assert s["local_user"] == (size & 1)
             assert s["local_wdata"] == data >> 448
             assert s["local_wstrb"] == strb >> 56
         s = await b.step(local_ready=1)

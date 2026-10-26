@@ -54,6 +54,7 @@ from cocotb_tests.test_real_program import (
     UartMonitor,
     UartRxDriver,
     generate_divided_clock,
+    start_cpu_clock,
 )
 
 TOOL = Path(__file__).resolve().parents[3] / "fpga" / "debug" / "cache_counters.py"
@@ -171,6 +172,7 @@ async def test_cache_counters_openocd(dut: Any) -> None:
         return
 
     Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start()
+    start_cpu_clock(dut)
     cocotb.start_soon(generate_divided_clock(dut))
     # The window's two OpenOCD runs.
     server = RemoteBitbangServer(dut, sessions=2)

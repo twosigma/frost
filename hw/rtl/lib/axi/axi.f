@@ -7,3 +7,4 @@ $(ROOT)/hw/rtl/lib/axi/axi_mux.sv
 $(ROOT)/hw/rtl/lib/axi/axi_coherent_bridge.sv
 $(ROOT)/hw/rtl/lib/axi/axil_checker.sv
 $(ROOT)/hw/rtl/lib/axi/axil_reg_bridge.sv
+$(ROOT)/hw/rtl/lib/axi/axi_cdc.sv

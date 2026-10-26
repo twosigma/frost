@@ -347,7 +347,8 @@ behavioral arrays.
 
 ## Timing constraints
 
-[`constraint.sdc`](constraint.sdc) defines one clock per clock input:
+[`constraint.sdc`](constraint.sdc) defines these clocks for the default
+configuration:
 
 | Clock | Port | Period | Source |
 | --- | --- | --- | --- |
@@ -356,6 +357,17 @@ behavioral arrays.
 | `nic_tx_clk` | `i_nic_tx_clk` | 6.206 ns (161.1328125 MHz) | The X3 transceiver's TX user clock |
 | `nic_rx_clk` | `i_nic_rx_clk` | 6.206 ns | The X3 transceiver's recovered RX user clock |
 | `jtag_tck` | `i_jtag_tck` | 100 ns (10 MHz) | The JTAG TAP inside `platform_top` (`DEBUG_JTAG_TAP=1`) |
+
+`--cpu-clock-period NS` enables `ASYNC_CPU_CLOCK` and creates `cpu_clk`
+on `i_cpu_clk`. In that configuration, `core_clk` names the SoC clock on
+`i_clk`, and its I/O reference is the SoC slave's AW register.
+The CPU clock has no data ports. Clock tree synthesis includes `i_cpu_clk`.
+The CPU, SoC and debug transport clocks belong to the same exception
+group. Explicit maximum delays below the faster clock's period bound
+Gray pointers and held handshake payloads in both CPU/SoC and CPU/TCK
+directions, excluding clock-tree latency. Reset-chain asynchronous pins
+have false paths.
+Changing either clock configuration requires an empty build directory.
 
 `core_clk_div4` is derived from the core clock, as on the X3, so the two are
 related: both rise at time 0, and OpenSTA times the paths between them, as
@@ -498,6 +510,9 @@ with the parasitics and clocks of the stage's own report, logs OpenROAD to
 | Paths between core clock registers | The worst path between registers for each pair of core clocks and launching edge, and the fmax it allows |
 | Core clock endpoints by block | The blocks whose registers have the worst core clock slack |
 | Core clock paths by start and end block | Each endpoint's worst path, grouped by the blocks of its startpoint and endpoint, with its cells and notes on ports, the quarter-rate clock, and mocked memories |
+
+With an independent CPU clock, the core-clock tables describe the SoC
+domain. The table of endpoints by capture clock includes `cpu_clk`.
 
 A block is the first four levels of a register's instance name, such as
 `cpu.hart.cpu_inst.u_tomasulo` for the out-of-order back end. The fmax

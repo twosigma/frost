@@ -42,6 +42,16 @@ create_clock -name nic_tx_clk -period 6.206 [get_ports i_nic_tx_clk]
 create_clock -name nic_rx_clk -period 6.206 [get_ports i_nic_rx_clk]
 create_clock -name jtag_tck -period 100.0 [get_ports i_jtag_tck]
 
+set cpu_boundary 0
+if {[info exists ::env(FROST_CPU_CLOCK_PERIOD)] && $::env(FROST_CPU_CLOCK_PERIOD) ne ""} {
+  set cpu_boundary 1
+  set cpu_period $::env(FROST_CPU_CLOCK_PERIOD)
+  if {![regexp {^(0|[1-9][0-9]?)(\.[0-9]{1,4})?$} $cpu_period] || $cpu_period == 0} {
+    error "FROST_CPU_CLOCK_PERIOD must be positive ns below 100 with at most four decimals"
+  }
+  create_clock -name cpu_clk -period $cpu_period [get_ports i_cpu_clk]
+}
+
 # Board-level I/O takes a fifth of the period on each side of a port, timed
 # against the clock as it arrives inside the chip, as if a PLL aligned the
 # board's clock with a point inside it, or the logic beyond the ports shared
@@ -64,6 +74,9 @@ set io_references {
   nic_rx_clk i_nic_rx_clk {soc.gen_cached_tier.nic.u_mac.u_mac.rx_gearbox.reservoir[0]$*/CK}
   jtag_tck i_jtag_tck {soc.gen_jtag_tap.u_jtag_tap.bypass_shift$*/CK}
 }
+if {$cpu_boundary} {
+  lset io_references 2 {soc.bus_slave.aw_valid_q$*/CK}
+}
 foreach {clock source pattern} $io_references {
   set pins [get_pins -quiet $pattern]
   if { [llength $pins] != 1 } {
@@ -80,11 +93,16 @@ foreach {clock source pattern} $io_references {
 # asynchronous to the core clocks and to each other; the RTL synchronizes
 # those crossings with Gray-coded FIFOs, two-flop synchronizers, and
 # handshakes. Each I/O copy goes with its master.
-set_clock_groups -asynchronous \
-  -group [get_clocks {core_clk core_clk_div4 core_clk_io core_clk_div4_io}] \
+set system_clock_names {core_clk core_clk_div4 core_clk_io core_clk_div4_io}
+if {$cpu_boundary} { lappend system_clock_names cpu_clk jtag_tck jtag_tck_io }
+set clock_group_arguments [list \
+  -group [get_clocks $system_clock_names] \
   -group [get_clocks {nic_tx_clk nic_tx_clk_io}] \
-  -group [get_clocks {nic_rx_clk nic_rx_clk_io}] \
-  -group [get_clocks {jtag_tck jtag_tck_io}]
+  -group [get_clocks {nic_rx_clk nic_rx_clk_io}]]
+if {!$cpu_boundary} {
+  lappend clock_group_arguments -group [get_clocks {jtag_tck jtag_tck_io}]
+}
+set_clock_groups -asynchronous {*}$clock_group_arguments
 
 # Ports take the core clock unless listed here.
 set io_fraction 0.2
@@ -120,3 +138,26 @@ foreach port [all_outputs] {
   set_output_delay [expr { $period * $io_fraction }] -clock ${clock}_io $port
 }
 set_false_path -from [get_ports $async_ports]
+
+# Maximum delay bounds the skew of Gray pointers and settles held payloads
+# before their synchronized requests. CPU and SoC share a clock group so
+# an asynchronous-group exception cannot mask these paths.
+if {$cpu_boundary} {
+  set boundary_limit [expr {0.8 * min($cpu_period, $clk_period)}]
+  set soc_clocks [get_clocks {core_clk core_clk_io}]
+  set cpu_clocks [get_clocks cpu_clk]
+  set_max_delay $boundary_limit -ignore_clock_latency -from $cpu_clocks -to $soc_clocks
+  set_max_delay $boundary_limit -ignore_clock_latency -from $soc_clocks -to $cpu_clocks
+  set_min_delay 0 -ignore_clock_latency -from $cpu_clocks -to $soc_clocks
+  set_min_delay 0 -ignore_clock_latency -from $soc_clocks -to $cpu_clocks
+  # The DMI request and response payloads precede synchronized toggles.
+  set dtm_clocks [get_clocks {jtag_tck jtag_tck_io}]
+  set dtm_limit [expr {0.8 * min($cpu_period, [get_property [get_clocks jtag_tck] period])}]
+  set_max_delay $dtm_limit -ignore_clock_latency -from $dtm_clocks -to $cpu_clocks
+  set_max_delay $dtm_limit -ignore_clock_latency -from $cpu_clocks -to $dtm_clocks
+  set_min_delay 0 -ignore_clock_latency -from $dtm_clocks -to $cpu_clocks
+  set_min_delay 0 -ignore_clock_latency -from $cpu_clocks -to $dtm_clocks
+  set reset_pins [get_pins -quiet -hierarchical {*gen_clock_resets*chain_q*/SN *gen_clock_resets*chain_q*/RN}]
+  if {![llength $reset_pins]} { error "CPU boundary reset pins are missing" }
+  set_false_path -to $reset_pins
+}

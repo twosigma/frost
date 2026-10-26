@@ -959,6 +959,9 @@ if {$step eq "synth"} {
     # simulation truncates the index to the intended vector width.
     set_msg_config -id {Synth 8-324} -new_severity ERROR
     synth_design {*}$synth_args
+    if {$board_name eq "x3"} {
+        source [file join $board_specific_directory constr/cpu_clock_boundary.tcl]
+    }
 
     if {[getenv_default FROST_DEBUG_ILA 0] eq "1"} {
         frost_insert_fetch_ila main_clock [getenv_default FROST_DEBUG_ILA_DEPTH 4096]

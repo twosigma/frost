@@ -79,6 +79,7 @@ from cocotb_tests.test_real_program import (
     UartMonitor,
     generate_divided_clock,
     start_clocks,
+    start_cpu_clock,
     takes_last_edge,
 )
 
@@ -143,6 +144,7 @@ def _cause(dcsr: int) -> int:
 async def test_debug(dut: Any) -> None:
     """Bit-bang a full debugger session against the frost toplevel."""
     start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
+    start_cpu_clock(dut)
     cocotb.start_soon(generate_divided_clock(dut))
     log = cocotb.log
     syms = _read_symbols()

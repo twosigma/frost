@@ -18,14 +18,15 @@
   FROST system top level: the CPU/SoC integration (platform_top), reset
   synchronization, the UART with its clock-crossing FIFOs, and the two MMIO
   FIFOs. The debug transport arrives on i_jtag_* (generic TAP) or, with
-  DEBUG_JTAG_TAP=0, as the board's BSCAN bundle. i_clk runs the CPU and
-  memories; i_clk_div4 runs the UART and the BRAM programming port that the
-  JTAG loader uses. The two clocks are related, which lets the dual-clock
-  FIFOs use binary pointers. The RTL is portable: defining FROST_XILINX_PRIMS
-  selects explicit Xilinx primitives in a few modules, and builds without it
-  use the portable implementations.
+  DEBUG_JTAG_TAP=0, as the board's BSCAN bundle. i_clk runs the SoC. The CPU
+  uses i_clk unless ASYNC_CPU_CLOCK=1 selects i_cpu_clk. i_clk_div4 runs the
+  UART and the BRAM programming port that the JTAG loader uses. i_clk and
+  i_clk_div4 are related, so their dual-clock FIFOs use binary pointers.
+  FROST_XILINX_PRIMS selects primitive implementations for supported cells;
+  other builds use portable RTL.
 */
 module frost #(
+    parameter bit ASYNC_CPU_CLOCK = 1'b0,
     parameter bit CACHE_NORMAL_MEMORY = 1'b1,
     parameter int unsigned CLK_FREQ_HZ = 322265625,
     // Low-memory size; override in simulation with Verilator -G.
@@ -104,6 +105,7 @@ module frost #(
     parameter int unsigned RAW_LOOPBACK = 1
 ) (
     input logic i_clk,
+    input logic i_cpu_clk = 1'b0,
     input logic i_clk_div4,
     input logic i_rst_n,
 
@@ -217,7 +219,7 @@ module frost #(
     for (int i = 0; i < NumResetSyncStages; ++i)
       reset_synchronizer_shift_register[i] <= (i > 0) ?
                                               reset_synchronizer_shift_register[i-1] :
-                                              ~i_rst_n;  // Invert: active-low input to active-high
+                                              ~i_rst_n;  // Active-high reset.
   always_ff @(posedge i_clk)
     reset_synchronized <= reset_synchronizer_shift_register[NumResetSyncStages-1];
 
@@ -242,6 +244,19 @@ module frost #(
                                                    reset_div4_synchronizer_shift_register[i-1] :
                                                    ~i_rst_n;
   assign reset_div4_synchronized = reset_div4_synchronizer_shift_register[NumResetSyncStages-1];
+  logic async_soc_reset, async_div4_reset;
+  if (ASYNC_CPU_CLOCK) begin : gen_external_reset_pair
+    cdc_reset_pair external_reset (
+        .i_arst (!i_rst_n),
+        .i_a_clk(i_clk),
+        .i_b_clk(i_clk_div4),
+        .o_a_rst(async_soc_reset),
+        .o_b_rst(async_div4_reset)
+    );
+  end else begin : gen_external_reset_unused
+    assign async_soc_reset  = 1'b0;
+    assign async_div4_reset = 1'b0;
+  end
 
   // UART TX: soc_top's registered UART write feeds the transmit FIFO
   // directly, and the transmit status it reads comes back from that FIFO and
@@ -278,11 +293,17 @@ module frost #(
 
   // The programming port stays in the div4 domain through this connection.
 `ifdef FROST_RVFI_DII
+  initial begin
+    if (ASYNC_CPU_CLOCK) $fatal(1, "TestRIG requires ASYNC_CPU_CLOCK=0");
+  end
   `define FROST_PLATFORM_MODULE frost_rvfi_platform
 `else
   `define FROST_PLATFORM_MODULE platform_top
 `endif
   `FROST_PLATFORM_MODULE #(
+`ifndef FROST_RVFI_DII
+      .ASYNC_CPU_CLOCK(ASYNC_CPU_CLOCK),
+`endif
       .MEM_SIZE_BYTES(MEM_SIZE_BYTES),
       .SIM_TIMER_SPEEDUP(SIM_TIMER_SPEEDUP),
       .CACHED_BASE(CACHED_BASE),
@@ -328,8 +349,11 @@ module frost #(
       .RAW_LOOPBACK(RAW_LOOPBACK)
   ) cpu_and_memory_subsystem (
       .i_clk,
+`ifndef FROST_RVFI_DII
+      .i_cpu_clk,
+`endif
       .i_clk_div4,
-      .i_rst(reset_synchronized),
+      .i_rst((ASYNC_CPU_CLOCK ? async_soc_reset : reset_synchronized)),
       .i_ddr_axi_rst(ddr_axi_reset),
       .o_ddr_axi_awvalid,
       .i_ddr_axi_awready,
@@ -432,7 +456,7 @@ module frost #(
       .ADDR_WIDTH(9)    // 512 entries deep
   ) memory_mapped_io_fifo_0 (
       .i_clk,
-      .i_rst(reset_synchronized),
+      .i_rst((ASYNC_CPU_CLOCK ? async_soc_reset : reset_synchronized)),
       // Software must avoid overflow; the full flag is not exposed.
       .i_write_enable(mmio_fifo0_write_enable),
       .i_read_enable(mmio_fifo0_read_enable),
@@ -448,7 +472,7 @@ module frost #(
       .ADDR_WIDTH(9)    // 512 entries deep
   ) memory_mapped_io_fifo_1 (
       .i_clk,
-      .i_rst(reset_synchronized),
+      .i_rst((ASYNC_CPU_CLOCK ? async_soc_reset : reset_synchronized)),
       // Software must avoid overflow; the full flag is not exposed.
       .i_write_enable(mmio_fifo1_write_enable),
       .i_read_enable(mmio_fifo1_read_enable),
@@ -459,7 +483,7 @@ module frost #(
   );
 
   /*
-    Dual-clock FIFO carrying UART data from the CPU domain to the clk_div4 UART
+    Dual-clock FIFO carrying UART data from the SoC domain to the clk_div4 UART
     domain. It buffers console output so the CPU runs ahead while the
     transmitter drains the FIFO at the baud rate. A write is refused only when
     the FIFO has no room. Software paces itself with the TX status
@@ -474,9 +498,9 @@ module frost #(
       .ALMOST_FULL_MARGIN(64)
   ) uart_transmit_clock_domain_crossing_fifo (
       .o_clk(i_clk_div4),  // Output: UART clock domain (slow)
-      .i_clk(i_clk),  // Input: CPU clock domain (fast)
-      .o_rst(reset_div4_synchronized),
-      .i_rst(reset_synchronized),
+      .i_clk(i_clk),  // Input: SoC clock domain
+      .o_rst((ASYNC_CPU_CLOCK ? async_div4_reset : reset_div4_synchronized)),
+      .i_rst((ASYNC_CPU_CLOCK ? async_soc_reset : reset_synchronized)),
       .i_data(uart_write_data_from_cpu),
       .i_valid(uart_write_enable_from_cpu),
       .o_ready(uart_fifo_input_ready),
@@ -493,7 +517,9 @@ module frost #(
   int unsigned uart_tx_drop_check;
   initial if (!$value$plusargs("uart_tx_drop_check=%d", uart_tx_drop_check)) uart_tx_drop_check = 1;
   always_ff @(posedge i_clk)
-    if (uart_tx_drop_check != 0 && !reset_synchronized && uart_write_enable_from_cpu &&
+    if (uart_tx_drop_check != 0 &&
+        !(ASYNC_CPU_CLOCK ? async_soc_reset : reset_synchronized) &&
+        uart_write_enable_from_cpu &&
         !uart_fifo_input_ready)
       $error("frost: UART TX byte dropped: the transmit FIFO was full");
 `endif
@@ -504,7 +530,7 @@ module frost #(
       .BAUD_RATE(115200)  // Standard baud rate for console communication
   ) uart_transmitter (
       .i_clk  (i_clk_div4),
-      .i_rst  (reset_div4_synchronized),
+      .i_rst  ((ASYNC_CPU_CLOCK ? async_div4_reset : reset_div4_synchronized)),
       .i_data (uart_fifo_data),
       .i_valid(uart_fifo_valid),
       .o_ready(uart_fifo_ready),
@@ -531,7 +557,7 @@ module frost #(
   /*
     UART RX subsystem. uart_rx runs in the clk_div4 domain like TX, so both
     derive the same baud rate. A dual-clock FIFO carries received bytes into
-    the CPU domain, where MMIO reads collect them.
+    the SoC domain, where MMIO reads collect them.
   */
 
   logic [7:0] uart_rx_data_from_receiver;
@@ -544,7 +570,7 @@ module frost #(
       .BAUD_RATE(115200)  // Standard baud rate for console communication
   ) uart_receiver (
       .i_clk  (i_clk_div4),
-      .i_rst  (reset_div4_synchronized),
+      .i_rst  ((ASYNC_CPU_CLOCK ? async_div4_reset : reset_div4_synchronized)),
       .i_uart (i_uart_rx),
       .o_data (uart_rx_data_from_receiver),
       .o_valid(uart_rx_valid_from_receiver),
@@ -552,15 +578,15 @@ module frost #(
   );
 
   /*
-    Buffer received bytes across the UART-to-CPU clock boundary.
+    Buffer received bytes across the UART-to-SoC clock boundary.
   */
   dc_fifo #(
       .DATA_WIDTH(8)  // 8 bits per UART character
   ) uart_receive_clock_domain_crossing_fifo (
       .i_clk(i_clk_div4),  // Input: UART clock domain (slow)
-      .o_clk(i_clk),  // Output: CPU clock domain (fast)
-      .i_rst(reset_div4_synchronized),
-      .o_rst(reset_synchronized),
+      .o_clk(i_clk),  // Output: SoC clock domain
+      .i_rst((ASYNC_CPU_CLOCK ? async_div4_reset : reset_div4_synchronized)),
+      .o_rst((ASYNC_CPU_CLOCK ? async_soc_reset : reset_synchronized)),
       .i_data(uart_rx_data_from_receiver),
       .i_valid(uart_rx_valid_from_receiver),
       .o_ready(uart_rx_ready_to_receiver),

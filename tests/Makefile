@@ -338,6 +338,13 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/debug/debug_module.sv
 VERILOG_SOURCES :=
+else ifneq ($(filter $(TOPLEVEL),axi_cdc cdc_mailbox cdc_reset_pair),)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/ram/ram.f \
+        -f $(ROOT)/hw/rtl/lib/cdc/cdc.f \
+        -f $(ROOT)/hw/rtl/lib/fifo/fifo.f \
+        $(ROOT)/hw/rtl/lib/axi/axi_cdc.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),async_fifo)
 # Asynchronous FIFO unit bench (Gray pointers over the dual-clock block RAM)
 COMPILE_ARGS := \
@@ -630,6 +637,9 @@ DDR_MODEL_LATENCY ?= 30
 # The RTL default is 0; board builds leave it disabled.
 SIM_FAST_MAINT ?= 1
 ifeq ($(TOPLEVEL),frost)
+ifneq ($(strip $(FROST_CPU_PERIOD_PS)),)
+	EXTRA_ARGS += -GASYNC_CPU_CLOCK=1
+endif
 	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES) -GENABLE_CACHED_TIER=$(ENABLE_CACHED_TIER) -GDDR_MODEL_BYTES=$(DDR_MODEL_BYTES) -GDDR_MODEL_LATENCY=$(DDR_MODEL_LATENCY) -GSIM_FAST_MAINT=$(SIM_FAST_MAINT)
 endif
 

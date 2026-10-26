@@ -74,6 +74,8 @@ def _hierarchy_command(synth_command: str) -> str:
     if family == "xcup":
         commands.append("chparam -set ENABLE_CACHED_TIER 1 platform_top")
         commands.append("chparam -set USE_BEHAVIORAL_DDR 0 platform_top")
+    if os.environ.get("FROST_ASYNC_CPU_CLOCK") == "1":
+        commands.append("chparam -set ASYNC_CPU_CLOCK 1 platform_top")
     commands.append("hierarchy -top platform_top")
     return "\n".join(commands)
 
@@ -506,6 +508,7 @@ def test_synthesis_rejects_invalid_nic(
     fault: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Missing dependencies and real latches must fail even the coarse target."""
+    monkeypatch.delenv("FROST_ASYNC_CPU_CLOCK", raising=False)
     monkeypatch.setattr(YosysRunner, "setup_sw_mem", lambda self: None)
     runner = YosysRunner()
     runner.root_dir = tmp_path
@@ -546,6 +549,7 @@ def test_synthesis_accepts_specialized_top(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The final check must retain the top selected by Xilinx elaboration."""
+    monkeypatch.delenv("FROST_ASYNC_CPU_CLOCK", raising=False)
     monkeypatch.setattr(YosysRunner, "setup_sw_mem", lambda self: None)
     runner = YosysRunner()
     runner.root_dir = tmp_path
@@ -574,6 +578,7 @@ def test_xilinx_pc_hierarchy_keeps_parameterized_dependencies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Late primitive loading must not rederive a parent after child pruning."""
+    monkeypatch.delenv("FROST_ASYNC_CPU_CLOCK", raising=False)
     monkeypatch.setattr(YosysRunner, "setup_sw_mem", lambda self: None)
     runner = YosysRunner()
     rtl = runner.root_dir / "hw/rtl/cpu_and_mem/cpu"
