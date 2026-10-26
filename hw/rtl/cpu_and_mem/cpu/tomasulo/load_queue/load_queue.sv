@@ -1428,6 +1428,7 @@ module load_queue #(
     coherent_lq_issue_selector #(
         .DEPTH(DEPTH)
     ) selector (
+        .i_clk,
         .lq_valid(lq_valid),
         .lq_addr_valid(lq_addr_valid),
         .lq_is_mmio(lq_is_mmio),
@@ -1638,7 +1639,11 @@ module load_queue #(
   end
 `ifndef SYNTHESIS
   if (COHERENT_CLUSTER) begin : gen_coherent_scan_checks
+`ifdef FORMAL
     always_comb begin
+`else
+    always @(posedge i_clk) begin
+`endif
       p_scan_order_exact : assert (update_scan_older_than_stored_scan ==
           (update_scan_issueable && (!stored_scan_found || (update_scan_pos < stored_scan_pos))));
       p_issue_found_exact : assert (issue_mem_found ==

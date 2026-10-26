@@ -18,6 +18,7 @@
 module coherent_lq_issue_selector #(
     parameter int unsigned DEPTH = riscv_pkg::LqDepth
 ) (
+    input logic i_clk,
     input logic [DEPTH-1:0] lq_valid,
     input logic [DEPTH-1:0] lq_addr_valid,
     input logic [DEPTH-1:0] lq_is_mmio,
@@ -81,48 +82,87 @@ module coherent_lq_issue_selector #(
   selection_t selected;
   wire [$bits(selected)-1:0] choices[2];
 
+  localparam int unsigned IdxWidth = $clog2(DEPTH);
+  localparam int unsigned TagWidth = riscv_pkg::ReorderBufferTagWidth;
+  logic [DEPTH-1:0] at_or_above_head;
+  for (genvar index = 0; index < DEPTH; index++) begin : gen_head_range
+    if (index == DEPTH - 1) begin : gen_last
+      assign at_or_above_head[index] = 1'b1;
+    end else begin : gen_before_last
+      assign at_or_above_head[index] = IdxWidth'(index) >= head_idx;
+    end
+  end
+
   for (genvar drained = 0; drained < 2; drained++) begin : gen_drain_choice
     (* keep = "true" *) selection_t choice;
+    logic [DEPTH-1:0] eligible[4];
+    logic [DEPTH-1:0] first[4];
+    logic [DEPTH-1:0] head_stored, head_update;
     assign choices[drained] = choice;
-    lq_issue_selector #(
-        .DEPTH(DEPTH)
-    ) selector (
-        .lq_valid(lq_valid),
-        .lq_addr_valid(lq_addr_valid),
-        .lq_is_mmio(lq_is_mmio),
-        .lq_issued(lq_issued),
-        .lq_data_valid(lq_data_valid),
-        .lq_is_lr(lq_is_lr),
-        .lq_is_amo(lq_is_amo),
-        .sq_check_in_flight_mask(sq_check_in_flight_mask),
-        .addr_update_pre_match_q(addr_update_pre_match_q),
-        .rob_head_match_q(rob_head_match_q),
-        .blocked_by_amo_phys_q(blocked_by_amo_phys_q),
-        .lq_rob_tag_flat(lq_rob_tag_flat),
-        .head_idx(head_idx),
-        .i_sq_committed_empty(1'(drained)),
-        .o_issue_cdb_found(choice.issue_cdb_found),
-        .o_issue_cdb_idx(choice.issue_cdb_idx),
-        .o_merged_scan_onehot(choice.merged_scan_onehot),
-        .o_stored_scan_found(choice.stored_scan_found),
-        .o_stored_scan_idx(choice.stored_scan_idx),
-        .o_stored_scan_pos(choice.stored_scan_pos),
-        .o_stored_scan_onehot(choice.stored_scan_onehot),
-        .o_stored_scan_rob_tag(choice.stored_scan_rob_tag),
-        .o_update_scan_found(choice.update_scan_found),
-        .o_update_scan_idx(choice.update_scan_idx),
-        .o_update_scan_pos(choice.update_scan_pos),
-        .o_update_scan_onehot(choice.update_scan_onehot),
-        .o_update_scan_rob_tag(choice.update_scan_rob_tag),
-        .o_head_mem_stored_found(choice.head_mem_stored_found),
-        .o_head_mem_stored_idx(choice.head_mem_stored_idx),
-        .o_head_mem_stored_onehot(choice.head_mem_stored_onehot),
-        .o_head_mem_stored_rob_tag(choice.head_mem_stored_rob_tag),
-        .o_head_mem_update_found(choice.head_mem_update_found),
-        .o_head_mem_update_idx(choice.head_mem_update_idx),
-        .o_head_mem_update_onehot(choice.head_mem_update_onehot),
-        .o_head_mem_update_rob_tag(choice.head_mem_update_rob_tag)
-    );
+    for (genvar index = 0; index < DEPTH; index++) begin : gen_eligible
+      wire available = lq_valid[index] && !lq_issued[index] &&
+          !lq_data_valid[index] && !sq_check_in_flight_mask[index];
+      wire atomic_ok = !(lq_is_lr[index] || lq_is_amo[index]) ||
+          (rob_head_match_q[index] && 1'(drained));
+      assign eligible[0][index] = available && lq_addr_valid[index] &&
+          (!lq_is_mmio[index] || rob_head_match_q[index]) && atomic_ok &&
+          !blocked_by_amo_phys_q[index];
+      assign eligible[1][index] = available && addr_update_pre_match_q[index] &&
+          atomic_ok && !blocked_by_amo_phys_q[index];
+      assign eligible[2][index] = eligible[0][index] || eligible[1][index];
+      assign eligible[3][index] = lq_valid[index] && lq_data_valid[index];
+      assign head_stored[index] = available && rob_head_match_q[index] &&
+          lq_addr_valid[index] && (!(lq_is_lr[index] || lq_is_amo[index]) || 1'(drained));
+      assign head_update[index] = available && rob_head_match_q[index] &&
+          addr_update_pre_match_q[index] &&
+          (!(lq_is_lr[index] || lq_is_amo[index]) || 1'(drained));
+    end
+    for (genvar source = 0; source < 4; source++) begin : gen_ring
+      logic [DEPTH-1:0] upper;
+      (* keep = "true" *) logic [DEPTH-1:0] first_upper, first_any;
+      assign upper = eligible[source] & at_or_above_head;
+      for (genvar index = 0; index < DEPTH; index++) begin : gen_first
+        if (index == 0) begin : gen_zero
+          assign first_upper[index] = upper[index];
+          assign first_any[index]   = eligible[source][index];
+        end else begin : gen_later
+          assign first_upper[index] = upper[index] && !(|upper[index-1:0]);
+          assign first_any[index]   = eligible[source][index] && !(|eligible[source][index-1:0]);
+        end
+      end
+      assign first[source] = (|upper) ? first_upper : first_any;
+    end
+    always_comb begin
+      choice = '0;
+      choice.issue_cdb_found = |eligible[3];
+      choice.merged_scan_onehot = first[2];
+      choice.stored_scan_found = |eligible[0];
+      choice.stored_scan_onehot = first[0];
+      choice.update_scan_found = |eligible[1];
+      choice.update_scan_onehot = first[1];
+      choice.head_mem_stored_found = |head_stored;
+      choice.head_mem_stored_onehot = head_stored;
+      choice.head_mem_update_found = |head_update;
+      choice.head_mem_update_onehot = head_update;
+      for (int index = 0; index < DEPTH; index++) begin
+        choice.issue_cdb_idx |= IdxWidth'(index) & {IdxWidth{first[3][index]}};
+        choice.stored_scan_idx |= IdxWidth'(index) & {IdxWidth{first[0][index]}};
+        choice.stored_scan_pos |= IdxWidth'(IdxWidth'(index) - head_idx) &
+            {IdxWidth{first[0][index]}};
+        choice.stored_scan_rob_tag |= lq_rob_tag_flat[index*TagWidth+:TagWidth] &
+            {TagWidth{first[0][index]}};
+        choice.update_scan_idx |= IdxWidth'(index) & {IdxWidth{first[1][index]}};
+        choice.update_scan_pos |= IdxWidth'(IdxWidth'(index) - head_idx) &
+            {IdxWidth{first[1][index]}};
+        choice.update_scan_rob_tag |= lq_rob_tag_flat[index*TagWidth+:TagWidth] &
+            {TagWidth{first[1][index]}};
+        choice.head_mem_stored_idx |= IdxWidth'(index) & {IdxWidth{rob_head_match_q[index]}};
+        choice.head_mem_stored_rob_tag |= lq_rob_tag_flat[index*TagWidth+:TagWidth] &
+            {TagWidth{rob_head_match_q[index]}};
+      end
+      choice.head_mem_update_idx = choice.head_mem_stored_idx;
+      choice.head_mem_update_rob_tag = choice.head_mem_stored_rob_tag;
+    end
   end
   assign selected = i_sq_committed_empty ? choices[1] : choices[0];
   assign o_issue_cdb_found = selected.issue_cdb_found;
@@ -188,7 +228,11 @@ module coherent_lq_issue_selector #(
       .o_head_mem_update_onehot(reference.head_mem_update_onehot),
       .o_head_mem_update_rob_tag(reference.head_mem_update_rob_tag)
   );
+`ifdef FORMAL
   always_comb begin
+`else
+  always @(posedge i_clk) begin
+`endif
     p_selection_exact : assert (selected == reference);
   end
 `endif
