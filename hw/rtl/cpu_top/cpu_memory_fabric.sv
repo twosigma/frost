@@ -127,6 +127,7 @@ module cpu_memory_fabric #(
   logic [ID_BITS-1:0] read_resp_id;
   logic [DATA_BYTES*8-1:0] read_resp_data;
   logic [1:0] read_resp_status;
+  logic read_resp_valid;
   logic resp_write;
   logic queued_write;
   logic [ADDR_WIDTH-1:0] queued_addr;
@@ -139,6 +140,12 @@ module cpu_memory_fabric #(
   logic [DATA_BYTES*8-1:0] resp_data;
   logic [1:0] resp_status;
   logic [$clog2(DATA_BYTES)-4:0] fetch_dword_q[2];
+  logic [$clog2(DATA_BYTES)-4:0] fetch_resp_dword_q;
+  logic read_resp_capture;
+  // Lane selection captures beside the master's R payload on the same edge.
+  always_ff @(posedge i_clk) begin
+    if (read_resp_capture) fetch_resp_dword_q <= fetch_dword_q[i_axi_rid[0]];
+  end
   assign requests = {i_fetch_valid, i_data_valid, i_cache_valid};
   always_comb begin
     selected = next_client_q;
@@ -234,19 +241,23 @@ module cpu_memory_fabric #(
   assign o_data_resp_status = resp_status;
   logic data_resp_ok;
   assign o_data_resp_ok = data_resp_ok;
-  assign o_fetch_resp_valid = resp_valid && (resp_id == ID_BITS'(34) || resp_id == ID_BITS'(35));
+  assign o_fetch_resp_valid = read_resp_valid &&
+      (read_resp_id == ID_BITS'(34) || read_resp_id == ID_BITS'(35));
   // Fetch IDs belong only to reads. Select their word lanes from the R buffer
   // while the shared response arbitration controls publication.
   assign o_fetch_resp_id = read_resp_id[0];
-  assign o_fetch_resp_data = (FETCH_BYTES * 8)'(read_resp_data >>
-      {fetch_dword_q[read_resp_id[0]], 6'b0});
+  assign o_fetch_resp_data = (FETCH_BYTES * 8)'(read_resp_data >> {fetch_resp_dword_q, 6'b0});
   assign o_fetch_resp_error = read_resp_status[1];
 
 `ifndef SYNTHESIS
   always_comb begin
+    p_fetch_response_valid_exact :
+    assert (o_fetch_resp_valid ==
+            (resp_valid && (resp_id == ID_BITS'(34) || resp_id == ID_BITS'(35))));
     if (o_fetch_resp_valid) begin
       p_fetch_response_is_read : assert (!resp_write);
       p_fetch_response_id_exact : assert (o_fetch_resp_id == resp_id[0]);
+      p_fetch_response_lane_exact : assert (fetch_resp_dword_q == fetch_dword_q[resp_id[0]]);
       p_fetch_response_data_exact :
       assert (o_fetch_resp_data == (FETCH_BYTES * 8)'(resp_data >>
               {fetch_dword_q[resp_id[0]], 6'b0}));
@@ -282,9 +293,11 @@ module cpu_memory_fabric #(
       .o_resp_status(resp_status),
       .o_resp_valid_id(data_resp_valid),
       .o_resp_ok_id(data_resp_ok),
+      .o_read_resp_valid(read_resp_valid),
       .o_read_resp_id(read_resp_id),
       .o_read_resp_rdata(read_resp_data),
       .o_read_resp_status(read_resp_status),
+      .o_read_resp_capture(read_resp_capture),
       .o_idle(master_idle),
       .o_axi_awvalid,
       .i_axi_awready,

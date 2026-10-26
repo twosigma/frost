@@ -27,6 +27,7 @@ class Bench:
         """Keep stalled AXI payloads for stability checks."""
         self.dut = dut
         self.held: dict[str, tuple[int, ...]] = {}
+        self.read_requests: list[tuple[int, int]] = []
 
     async def step(self, **inputs: int) -> dict[str, int]:
         """Drive inputs, sample outputs, check held beats, then clock once."""
@@ -61,6 +62,8 @@ class Bench:
         for channel, fields in channel_fields.items():
             names += ["axi_" + channel + field for field in ("valid", *fields)]
         s = {name: int(getattr(self.dut, "o_" + name).value) for name in names}
+        if s["axi_arvalid"] and int(self.dut.i_axi_arready.value):
+            self.read_requests.append((s["axi_arid"], s["axi_araddr"]))
         for channel, fields in channel_fields.items():
             valid = s["axi_" + channel + "valid"]
             payload = tuple(s["axi_" + channel + f] for f in fields)
@@ -129,6 +132,8 @@ async def arbitration_holds_payloads_and_routes_responses(dut: Any) -> None:
     await b.reset()
     full_data = int.from_bytes(bytes(range(64)), "little")
     fetch_word = 0x13579BDF2468ACE0
+    fetch_bytes = len(dut.o_fetch_resp_data) // 8
+    fetch_offset = 64 - fetch_bytes
     inputs = {
         "cache_valid": 1,
         "cache_write": 1,
@@ -145,7 +150,7 @@ async def arbitration_holds_payloads_and_routes_responses(dut: Any) -> None:
         "data_wdata": 0xA5 << (23 * 8),
         "data_wstrb": 1 << 23,
         "fetch_valid": 1,
-        "fetch_addr": 0x1238,
+        "fetch_addr": 0x1200 + fetch_offset,
         "fetch_id": 1,
     }
     accepted: list[str] = []
@@ -170,7 +175,7 @@ async def arbitration_holds_payloads_and_routes_responses(dut: Any) -> None:
         inputs.update(
             axi_rvalid=int(bool(ar) and not r_done and cycle >= 55),
             axi_rid=35,
-            axi_rdata=fetch_word << (7 * 64),
+            axi_rdata=fetch_word << (fetch_offset * 8),
         )
         s = await b.step(**inputs)
         for client in ("cache", "data", "fetch"):
@@ -208,7 +213,15 @@ async def arbitration_holds_payloads_and_routes_responses(dut: Any) -> None:
     assert accepted == ["cache", "data", "fetch"]
     assert aw == [(5, 0x80000080, 6, 15, 3), (32, 0x40000017, 0, 0, 3)]
     assert w == [(full_data, (1 << 64) - 1, 1), (0xA5 << (23 * 8), 1 << 23, 1)]
-    assert ar == [(35, 0x1238, 3, 2, 7)]
+    assert ar == [
+        (
+            35,
+            0x1200 + fetch_offset,
+            fetch_bytes.bit_length() - 1,
+            14 if fetch_bytes > 8 else 2,
+            7,
+        )
+    ]
     assert sorted(replies) == [("cache", 5, 1), ("data", 32, 3), ("fetch", 1, 0)]
 
 
@@ -281,7 +294,7 @@ async def reused_fetch_id_ignores_wrong_channel_response(dut: Any) -> None:
     await b.reset()
     fetch_bytes = len(dut.o_fetch_resp_data) // 8
     for sequence in range(3):
-        offset = sequence * fetch_bytes
+        offset = (sequence * fetch_bytes) % (len(dut.i_axi_rdata) // 8)
         payload = 0x1234567800000000 + sequence
         s = await b.step(
             axi_arready=1, fetch_valid=1, fetch_id=0, fetch_addr=0x1000 + offset
@@ -392,3 +405,133 @@ async def fabric_reset_clears_both_request_stages(dut: Any) -> None:
         s = await b.step(rst=0, axi_rst=0, axi_awready=1, axi_wready=1, axi_arready=1)
         assert s["idle"]
         assert not (s["axi_awvalid"] or s["axi_wvalid"] or s["axi_arvalid"])
+
+
+@cocotb.test()
+async def lane_metadata_tracks_replacement_and_id_reuse(dut: Any) -> None:
+    """Keep each read's lane through buffer replacement and same-edge ID reuse."""
+    b = Bench(dut)
+    await b.reset()
+    bus_bytes = len(dut.i_axi_rdata) // 8
+    fetch_bytes = len(dut.o_fetch_resp_data) // 8
+    last_offset = bus_bytes - fetch_bytes
+    low_word, high_word, reused_word = 0x12345678, 0x23456789, 0x3456789A
+    s = await b.step(axi_arready=1, fetch_valid=1, fetch_id=0, fetch_addr=0x1000)
+    assert s["fetch_ready"]
+    s = await b.step(fetch_id=1, fetch_addr=0x2000 + last_offset)
+    assert s["fetch_ready"]
+    await b.step(fetch_valid=0)
+    for _ in range(6):
+        await b.step()
+    await b.step(axi_rvalid=1, axi_rid=34, axi_rdata=low_word)
+    s = await b.step(
+        axi_rid=35,
+        axi_rdata=high_word << (last_offset * 8),
+        axi_rresp=2,
+        fetch_valid=1,
+        fetch_id=0,
+        fetch_addr=0x3000 + last_offset,
+    )
+    assert s["fetch_ready"] and s["axi_rready"]
+    assert s["fetch_resp_valid"] and s["fetch_resp_id"] == 0
+    assert s["fetch_resp_data"] == low_word and not s["fetch_resp_error"]
+    s = await b.step(axi_rvalid=0, fetch_valid=0)
+    assert s["fetch_resp_valid"] and s["fetch_resp_id"] == 1
+    assert s["fetch_resp_data"] == high_word and s["fetch_resp_error"]
+    for _ in range(6):
+        await b.step()
+    await b.step(
+        axi_rvalid=1,
+        axi_rid=34,
+        axi_rdata=reused_word << (last_offset * 8),
+        axi_rresp=0,
+    )
+    s = await b.step(axi_rvalid=0)
+    assert s["fetch_resp_valid"] and s["fetch_resp_id"] == 0
+    assert s["fetch_resp_data"] == reused_word and not s["fetch_resp_error"]
+    assert (await b.step())["idle"]
+
+
+@cocotb.test()
+async def reversed_fetch_replies_survive_an_intervening_data_read(dut: Any) -> None:
+    """Match out-of-order fetch lanes across a data-client response."""
+    b = Bench(dut)
+    await b.reset()
+    bus_bytes = len(dut.i_axi_rdata) // 8
+    fetch_bytes = len(dut.o_fetch_resp_data) // 8
+    mask = (1 << (fetch_bytes * 8)) - 1
+    offset = bus_bytes - fetch_bytes
+    payloads = [
+        int.from_bytes(bytes(base + x for x in range(bus_bytes)), "little")
+        for base in (0, 80, 160)
+    ]
+    s = await b.step(
+        axi_arready=1, fetch_valid=1, fetch_id=0, fetch_addr=0x1000 + offset
+    )
+    assert s["fetch_ready"]
+    s = await b.step(fetch_id=1, fetch_addr=0x2000)
+    assert s["fetch_ready"]
+    s = await b.step(
+        fetch_valid=0, data_valid=1, data_write=0, data_addr=0x40000000, data_size=3
+    )
+    for _ in range(12):
+        if s["data_ready"]:
+            break
+        s = await b.step()
+    assert s["data_ready"]
+    await b.step(data_valid=0)
+    for _ in range(6):
+        await b.step()
+    assert b.read_requests == [(34, 0x1000 + offset), (35, 0x2000), (32, 0x40000000)]
+    assert (await b.step(axi_rvalid=1, axi_rid=35, axi_rdata=payloads[0]))["axi_rready"]
+    s = await b.step(axi_rid=32, axi_rdata=payloads[1])
+    assert s["axi_rready"]
+    assert s["fetch_resp_valid"] and s["fetch_resp_id"] == 1
+    assert s["fetch_resp_data"] == payloads[0] & mask and not s["fetch_resp_error"]
+    s = await b.step(axi_rid=34, axi_rdata=payloads[2], axi_rresp=2)
+    assert s["axi_rready"]
+    assert s["data_resp_valid"] and not s["fetch_resp_valid"]
+    assert s["data_resp_data"] == payloads[1] and s["data_resp_status"] == 0
+    s = await b.step(axi_rvalid=0)
+    assert s["fetch_resp_valid"] and s["fetch_resp_id"] == 0
+    assert s["fetch_resp_data"] == (payloads[2] >> (offset * 8)) & mask
+    assert s["fetch_resp_error"]
+    assert (await b.step())["idle"]
+
+
+@cocotb.test()
+async def reset_cancels_buffered_fetch_lane_before_reuse(dut: Any) -> None:
+    """Refresh lane metadata after buffered cancellation and stale draining."""
+    b = Bench(dut)
+    await b.reset()
+    bus_bytes = len(dut.i_axi_rdata) // 8
+    fetch_bytes = len(dut.o_fetch_resp_data) // 8
+    offset = bus_bytes - fetch_bytes
+    s = await b.step(
+        axi_arready=1, fetch_valid=1, fetch_id=0, fetch_addr=0x1000 + offset
+    )
+    assert s["fetch_ready"]
+    s = await b.step(fetch_id=1, fetch_addr=0x2000)
+    assert s["fetch_ready"]
+    await b.step(fetch_valid=0)
+    for _ in range(6):
+        await b.step()
+    assert b.read_requests == [(34, 0x1000 + offset), (35, 0x2000)]
+    assert (await b.step(axi_rvalid=1, axi_rid=34, axi_rdata=0x1234 << (offset * 8)))[
+        "axi_rready"
+    ]
+    s = await b.step(rst=1, axi_rvalid=0)
+    assert not s["fetch_resp_valid"]
+    s = await b.step(rst=0, fetch_valid=1, fetch_id=0, fetch_addr=0x3000)
+    assert s["fetch_ready"] and not s["fetch_resp_valid"]
+    s = await b.step(fetch_valid=0, axi_rvalid=1, axi_rid=35, axi_rdata=0xBAD)
+    assert s["axi_rready"] and not s["fetch_resp_valid"]
+    for _ in range(8):
+        s = await b.step(axi_rvalid=0)
+        assert not s["fetch_resp_valid"]
+    assert b.read_requests[-1] == (34, 0x3000) and len(b.read_requests) == 3
+    assert (await b.step(axi_rvalid=1, axi_rid=34, axi_rdata=0x5678))["axi_rready"]
+    s = await b.step(axi_rvalid=0)
+    assert s["fetch_resp_valid"] and s["fetch_resp_id"] == 0
+    assert s["fetch_resp_data"] == 0x5678 and not s["fetch_resp_error"]
+    assert (await b.step())["idle"]
