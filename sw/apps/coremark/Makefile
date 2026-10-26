@@ -96,7 +96,7 @@ $(error COREMARK_PGO must be 0 or 1)
 endif
 
 # Set enough iterations to exceed the ten-second minimum on the target board.
-ITERATIONS ?= 14000
+ITERATIONS ?= 20000
 
 # CoreMark allocates its workspace on the stack. Both settings stay
 # overridable so a targeted reproducer run can place it elsewhere.
