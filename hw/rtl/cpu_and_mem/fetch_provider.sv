@@ -326,13 +326,27 @@ module fetch_provider #(
 
   logic [31:0] ddr_word0, ddr_word1;
   logic [SbWidth-1:0] ddr_sb0, ddr_sb1, ddr_sb_even, ddr_sb_odd;
-  wire [LineBits-1:0] window_line0 = DIRECT_LOOKUP ? vs_data_q[direct_idx0] :
+  logic [  LineBits-1:0] direct_bank_data;
+  logic [LineSbBits-1:0] direct_bank_sb;
+  if (DIRECT_LOOKUP) begin : gen_direct_read_banks
+    // Adjacent words have opposite parity. Each word bank serves only the
+    // matching word and reads that word's line index.
+    for (genvar w = 0; w < WordsPerLine; w++) begin : gen_word
+      wire [DirectIndexBits-1:0] read_index = (word0_pos[0] == 1'(w)) ? direct_idx0 : direct_idx1;
+      assign direct_bank_data[w*32+:32] = direct_data_q[w][read_index];
+      assign direct_bank_sb[w*SbWidth+:SbWidth] = direct_sb_q[w][read_index];
+    end
+  end else begin : gen_no_direct_read_banks
+    assign direct_bank_data = '0;
+    assign direct_bank_sb   = '0;
+  end
+  wire [LineBits-1:0] window_line0 = DIRECT_LOOKUP ? direct_bank_data :
       slot_data_q[word0_pos[WordSelBits]];
-  wire [LineBits-1:0] window_line1 = DIRECT_LOOKUP ? vs_data_q[direct_idx1] :
+  wire [LineBits-1:0] window_line1 = DIRECT_LOOKUP ? direct_bank_data :
       slot_data_q[word1_pos[WordSelBits]];
-  wire [LineSbBits-1:0] window_sb0 = DIRECT_LOOKUP ? vs_sb_q[direct_idx0] :
+  wire [LineSbBits-1:0] window_sb0 = DIRECT_LOOKUP ? direct_bank_sb :
       slot_sb_q[word0_pos[WordSelBits]];
-  wire [LineSbBits-1:0] window_sb1 = DIRECT_LOOKUP ? vs_sb_q[direct_idx1] :
+  wire [LineSbBits-1:0] window_sb1 = DIRECT_LOOKUP ? direct_bank_sb :
       slot_sb_q[word1_pos[WordSelBits]];
   assign ddr_word0 = window_line0[word0_pos[WordSelBits-1:0]*32+:32];
   assign ddr_word1 = window_line1[word1_pos[WordSelBits-1:0]*32+:32];
@@ -375,9 +389,9 @@ module fetch_provider #(
   logic [31:0] ddr_word1_ref;
   logic [SbWidth-1:0] ddr_sb_even_ref, ddr_sb_odd_ref;
   assign word_sel1_ref = win_addr1[2+:WordSelBits];
-  assign ddr_word1_ref = DIRECT_LOOKUP ? vs_data_q[direct_idx1][word_sel1_ref*32+:32] :
+  assign ddr_word1_ref = DIRECT_LOOKUP ? direct_data_q[word_sel1_ref][direct_idx1] :
       slot_data_q[win_line1[0]][word_sel1_ref*32+:32];
-  assign ddr_sb1_ref = DIRECT_LOOKUP ? vs_sb_q[direct_idx1][word_sel1_ref*SbWidth+:SbWidth] :
+  assign ddr_sb1_ref = DIRECT_LOOKUP ? direct_sb_q[word_sel1_ref][direct_idx1] :
       slot_sb_q[win_line1[0]][word_sel1_ref*SbWidth+:SbWidth];
   assign ddr_sb_even_ref = fetch_addr[2] ? ddr_sb1_ref : ddr_sb0;
   assign ddr_sb_odd_ref = fetch_addr[2] ? ddr_sb0 : ddr_sb1_ref;
@@ -579,6 +593,8 @@ module fetch_provider #(
   logic [LineAddrBits-1:0] vs_line_q[VictimLines];
   logic [LineBits-1:0] vs_data_q[VictimLines];
   logic [LineSbBits-1:0] vs_sb_q[VictimLines];
+  logic [31:0] direct_data_q[WordsPerLine][VictimLines];
+  logic [SbWidth-1:0] direct_sb_q[WordsPerLine][VictimLines];
   logic [VictimPtrBits-1:0] vs_wr_ptr_q;
   // Hold evicted slot contents until the victim-store write, for timing.
   logic [1:0] ev_pending_q;
@@ -897,17 +913,38 @@ module fetch_provider #(
   assign vs_wr_idx = DIRECT_LOOKUP ? ev_line_q[ev_sel][VictimPtrBits-1:0] :
       vs_free_found ? vs_free_idx : vs_wr_ptr_q;
 
+  logic direct_fill;
+  assign direct_fill = i_line_resp_valid && fill_busy_q[resp_slot] && fill_sent_q[resp_slot] &&
+      !fill_discard_q[resp_slot] && !(ENABLE_RESPONSE_ERRORS && i_line_resp_error);
+  logic [SlotGroups-1:0] direct_install;
+  always_comb begin
+    for (int g = 0; g < SlotGroups; g++) begin
+      direct_install[g] = grp_install[resp_slot][g] && fill_sent_q[resp_slot] &&
+          !(ENABLE_RESPONSE_ERRORS && i_line_resp_error);
+    end
+  end
+
   always_ff @(posedge i_clk) begin
+    // Each word's busy/discard copies qualify its data and predecode write.
+    // The tag has a separate group. Reset and invalidation suppress every group.
+    if (DIRECT_LOOKUP) begin
+      for (int w = 0; w < WordsPerLine; w++) begin
+        if (direct_install[w]) begin
+          direct_data_q[w][fill_line_q[resp_slot][DirectIndexBits-1:0]] <=
+              i_line_resp_rdata[w*32+:32];
+          direct_sb_q[w][fill_line_q[resp_slot][DirectIndexBits-1:0]] <=
+              fill_sideband[w*SbWidth+:SbWidth];
+        end
+      end
+      if (direct_install[TagGroup])
+        vs_line_q[fill_line_q[resp_slot][DirectIndexBits-1:0]] <= fill_line_q[resp_slot];
+    end
     if (i_rst || i_invalidate) begin
       vs_valid_q  <= '0;
       vs_wr_ptr_q <= '0;
     end else if (DIRECT_LOOKUP) begin
-      if (i_line_resp_valid && fill_busy_q[resp_slot] && fill_sent_q[resp_slot] &&
-          !fill_discard_q[resp_slot] && !(ENABLE_RESPONSE_ERRORS && i_line_resp_error)) begin
+      if (direct_fill) begin
         vs_valid_q[fill_line_q[resp_slot][DirectIndexBits-1:0]] <= 1'b1;
-        vs_line_q[fill_line_q[resp_slot][DirectIndexBits-1:0]] <= fill_line_q[resp_slot];
-        vs_data_q[fill_line_q[resp_slot][DirectIndexBits-1:0]] <= i_line_resp_rdata;
-        vs_sb_q[fill_line_q[resp_slot][DirectIndexBits-1:0]] <= fill_sideband;
       end
     end else begin
       // Release first so a same-cycle store write to that entry wins, for the
@@ -1038,6 +1075,60 @@ module fetch_provider #(
         if (f_slot_ref_valid[p])
           assert ({slot_line_q[p], slot_data_q[p], slot_sb_q[p]} == f_slot_ref[p]);
       end
+    end
+  end
+`endif
+
+`ifdef FETCH_DIRECT_CAPTURE_PROOF
+  // Compare grouped writes with a whole-line reference, including invalid
+  // entries after their first write. The watched index is arbitrary and constant.
+  (* anyconst *) logic [DirectIndexBits-1:0] f_direct_index;
+  logic f_direct_past_valid = 1'b0;
+  logic f_direct_ref_valid;
+  logic f_direct_ref_written = 1'b0;
+  logic [LineAddrBits+LineBits+LineSbBits-1:0] f_direct_ref_payload;
+  logic [LineBits-1:0] f_direct_entry_data;
+  logic [LineSbBits-1:0] f_direct_entry_sb;
+  always_comb begin
+    for (int w = 0; w < WordsPerLine; w++) begin
+      f_direct_entry_data[w*32+:32] = direct_data_q[w][f_direct_index];
+      f_direct_entry_sb[w*SbWidth+:SbWidth] = direct_sb_q[w][f_direct_index];
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    f_direct_past_valid <= 1'b1;
+    if (!f_direct_past_valid) assume (i_rst);
+    if (!i_rst && i_line_resp_valid) begin
+      assume (i_line_resp_id <= LINE_ID_BITS'(1));
+      assume (fill_busy_q[resp_slot] && fill_sent_q[resp_slot]);
+    end
+    if (i_rst || i_invalidate) begin
+      f_direct_ref_valid <= 1'b0;
+    end else if (i_line_resp_valid && fill_busy_q[resp_slot] && fill_sent_q[resp_slot] &&
+        !fill_discard_q[resp_slot] && !(ENABLE_RESPONSE_ERRORS && i_line_resp_error) &&
+        fill_line_q[resp_slot][DirectIndexBits-1:0] == f_direct_index) begin
+      f_direct_ref_valid   <= 1'b1;
+      f_direct_ref_written <= 1'b1;
+      f_direct_ref_payload <= {fill_line_q[resp_slot], i_line_resp_rdata, fill_sideband};
+    end
+    if (f_direct_past_valid) begin
+      assert (vs_valid_q[f_direct_index] == f_direct_ref_valid);
+      assert (direct_install == {SlotGroups{!i_rst && !i_invalidate && direct_fill}});
+      if (f_direct_ref_written)
+        assert ({vs_line_q[f_direct_index], f_direct_entry_data,
+                 f_direct_entry_sb} == f_direct_ref_payload);
+      assert (word0_pos[0] != word1_pos[0]);
+      assert (ddr_word0 == direct_data_q[word0_pos[WordSelBits-1:0]][direct_idx0]);
+      assert (ddr_word1 == direct_data_q[word1_pos[WordSelBits-1:0]][direct_idx1]);
+      assert (ddr_sb0 == direct_sb_q[word0_pos[WordSelBits-1:0]][direct_idx0]);
+      assert (ddr_sb1 == direct_sb_q[word1_pos[WordSelBits-1:0]][direct_idx1]);
+      cover (i_invalidate && direct_fill);
+      cover (i_rst && direct_fill);
+      cover (vs_valid_q[f_direct_index] && i_line_resp_valid && i_line_resp_error &&
+             fill_line_q[resp_slot][DirectIndexBits-1:0] == f_direct_index);
+      cover (word0_pos[WordSelBits-1:0] == WordSelBits'(WordsPerLine - 1) &&
+             vs_valid_q[direct_idx0] && vs_valid_q[direct_idx1] && o_instr_valid &&
+             !window_fault0 && !window_fault1);
     end
   end
 `endif

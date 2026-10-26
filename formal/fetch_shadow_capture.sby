@@ -1,8 +1,10 @@
 [tasks]
-prove proof
-cover reach
-prove_victim0 proof zero
-prove_victim1 proof one
+prove proof shadow
+cover reach shadow
+prove_victim0 proof shadow zero
+prove_victim1 proof shadow one
+prove_direct proof direct
+cover_direct reach direct
 
 [options]
 proof: mode prove
@@ -15,7 +17,9 @@ smtbmc boolector
 
 [script]
 read -sv riscv_pkg.sv imem_predecode_line.sv
-read_verilog -formal -D SYNTHESIS -D FETCH_SHADOW_CAPTURE_PROOF -sv fetch_provider.sv
+shadow: read_verilog -formal -D SYNTHESIS -D FETCH_SHADOW_CAPTURE_PROOF -sv fetch_provider.sv
+direct: read_verilog -formal -D SYNTHESIS -D FETCH_DIRECT_CAPTURE_PROOF -sv fetch_provider.sv
+direct: chparam -set DIRECT_LOOKUP 1 -set VICTIM_LINES 4 -set ENABLE_RESPONSE_ERRORS 1 fetch_provider
 zero: chparam -set VICTIM_LINES 0 fetch_provider
 one: chparam -set VICTIM_LINES 1 fetch_provider
 prep -top fetch_provider
