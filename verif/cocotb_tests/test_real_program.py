@@ -277,8 +277,62 @@ async def wait_for_power_on_reset(dut: Any) -> None:
         await RisingEdge(dut.i_clk)
 
 
-def load_data_images(dut: Any) -> None:
-    """Load data images once the memory controllers have completed cold reset."""
+def _write_instruction_bank(bank: Any, words: list[int]) -> None:
+    """Load a packed instruction bank through its simulation array or SRAM tiles."""
+    if hasattr(bank, "ram"):
+        bank.ram.value = Immediate(words)
+    elif hasattr(bank.u_sram, "gen_array"):
+        bank.u_sram.gen_array.memory.value = Immediate(words)
+    else:
+        for row_index, row in enumerate(bank.u_sram.gen_macros.gen_row):
+            for column_index, column in enumerate(row.gen_column):
+                array = column.gen_macro.u_macro.mem
+                width = len(array[0])
+                mask = (1 << width) - 1
+                start = row_index * len(array)
+                array.value = Immediate(
+                    [
+                        (word >> (column_index * width)) & mask
+                        for word in words[start : start + len(array)]
+                    ]
+                )
+
+
+def _load_instruction_image(memory: Any) -> None:
+    """Load instruction words and metadata while programming writes are idle."""
+    assert not int(memory.i_port_a_write_enable.value)
+    assert not int(memory.port_a_write_even.value)
+    assert not int(memory.port_a_write_odd.value)
+    model = _load_imem_predecode_model()
+    words = model.parse_verilog_hex(Path("sw.mem"))
+    banks = model.split_words(
+        words,
+        1 << int(memory.ADDR_WIDTH.value),
+        1 << int(memory.INIT_ADDR_WIDTH.value),
+    )
+    sidebands = {
+        word: model.make_sideband(word) for bank in banks for word in set(bank)
+    }
+    for parity, bank_words in zip(("even", "odd"), banks):
+        packed = {
+            "cold": [model.pack_cold_data(word) for word in bank_words],
+            "frontend_hot": [model.pack_frontend_hot(word) for word in bank_words],
+            "sideband": [sidebands[word] for word in bank_words],
+            "compressed": [
+                model.make_fast_replica(word, sidebands[word]) for word in bank_words
+            ],
+        }
+        for name, values in packed.items():
+            _write_instruction_bank(getattr(memory, f"u_{parity}_{name}"), values)
+        for name, bit in model.SCALAR_REPLICA_BITS:
+            array = getattr(memory, f"u_{parity}_{name}_bank").u_ram.ram
+            array.value = Immediate(
+                [(sidebands[word] >> bit) & 1 for word in bank_words[: len(array)]]
+            )
+
+
+def load_program_images(dut: Any) -> None:
+    """Load program images once the memory controllers have completed cold reset."""
     platform = getattr(dut, "cpu_and_memory_subsystem", dut)
     soc = platform.soc if hasattr(platform, "soc") else platform
     if hasattr(dut, "i_rst"):
@@ -287,9 +341,12 @@ def load_data_images(dut: Any) -> None:
         system_reset = dut.async_soc_reset
     else:
         system_reset = dut.reset_synchronized
-    assert int(system_reset.value), "data image load requires system reset"
-    assert int(soc.rst_core.value), "data image load requires core reset"
-    assert int(soc.rst_div4.value), "data image load requires programming reset"
+    assert int(system_reset.value), "program image load requires system reset"
+    assert int(soc.rst_core.value), "program image load requires core reset"
+    assert int(soc.rst_div4.value), "program image load requires programming reset"
+    # TestRIG fetches instructions from its injected stream.
+    if hasattr(soc, "instruction_memory"):
+        _load_instruction_image(soc.instruction_memory)
     memory = soc.data_memory
     if hasattr(memory, "u_sram"):
         memory = memory.u_sram
@@ -349,7 +406,7 @@ async def generate_divided_clock(dut: Any, *, core_clock: Any | None = None) -> 
         level ^= 1
         divided.value = level
     await ReadWrite()
-    load_data_images(dut)
+    load_program_images(dut)
     while True:
         await clock_edge
         await clock_edge
@@ -689,8 +746,9 @@ def _first_signal(dut: Any, paths: list[str]) -> Any | None:
     return None
 
 
-def _load_rvc_expand() -> Callable[[int], tuple[int, bool]]:
-    """Load the RVC expansion model from sw/common/generate_imem_predecode_init.py."""
+@functools.cache
+def _load_imem_predecode_model() -> Any:
+    """Load the instruction image packer and RVC expansion model."""
     path = (
         Path(__file__).resolve().parents[2]
         / "sw"
@@ -701,7 +759,14 @@ def _load_rvc_expand() -> Callable[[int], tuple[int, bool]]:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    rvc_expand: Callable[[int], tuple[int, bool]] = module.rvc_expand
+    return module
+
+
+def _load_rvc_expand() -> Callable[[int], tuple[int, bool]]:
+    """Read the RVC expansion function from the instruction image model."""
+    rvc_expand: Callable[[int], tuple[int, bool]] = (
+        _load_imem_predecode_model().rvc_expand
+    )
     return rvc_expand
 
 

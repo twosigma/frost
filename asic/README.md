@@ -202,15 +202,16 @@ differ from the block RAMs they replace in these cases:
   overwrite a word that the reader needs. Unused RX fetches may collide with
   writes; the reader discards them and fetches again. The RX simulation check
   rejects a copied word whose fetch shared a write's edge.
-- The macros have no initial contents and no bulk clear. Simulation starts
-  the data memory and the instruction memory with their program images,
-  which a chip would load through the program-loading port; the instruction
-  memory's come from the app's block-RAM images, which its build writes with
-  `GENERATE_IMEM_INIT=1`. An image load leaves the models' internal write
-  selects inactive until their first rising clock edges, so an initial
-  falling edge cannot write into the loaded image. The caches clear their
-  tags and replacement state with a sweep at reset; simulation's fast maintenance
-  (`SIM_FAST_MAINT`) clears those macros' models directly.
+- The macros have no initial contents and no bulk clear. Simulation supplies
+  program images to the data and instruction memories. A chip loads them
+  through the program-loading port. Instruction images come from the app's
+  block-RAM images, which its build writes with `GENERATE_IMEM_INIT=1`.
+  The models' internal write selects start inactive; rising clock edges
+  capture the write controls. The shared SoC bench loads program images while
+  system reset is held, after cold-reset programming writes have drained.
+  The caches clear their tags and replacement state with a sweep at reset;
+  simulation's fast maintenance (`SIM_FAST_MAINT`) clears those macros'
+  models directly.
 
 The registry's `sram_macros_*` benches build each wrapper with the
 parameters of one of the design's memories and the macros' Verilog models,
