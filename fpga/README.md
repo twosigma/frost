@@ -29,7 +29,9 @@ netlist checkpoint is rejected unless its capacity is recorded and matches
 the board; restart at synthesis after changing the DDR map.
 
 The X3 build option `--coherent-cluster` selects the one-hart S/M cache path.
-It defaults to false. `netlist_config.json` records the boolean selection as
+It defaults to false. The option supplies `FROST_COHERENT_CLUSTER`, the
+coherent source filelist and the `COHERENT_CLUSTER=1` parameter.
+`netlist_config.json` records the boolean selection as
 `coherent_cluster`; resuming a checkpoint requires the same selection.
 `--no-coherent-cluster` selects the line-port hierarchy explicitly.
 

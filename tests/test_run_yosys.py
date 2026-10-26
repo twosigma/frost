@@ -197,7 +197,9 @@ class YosysRunner:
                 mem_link.unlink()
             mem_link.symlink_to(mem_target)
 
-    def parse_filelist(self, filelist_path: Path) -> list[str]:
+    def parse_filelist(
+        self, filelist_path: Path, *, coherent_cluster: bool = False
+    ) -> list[str]:
         """Return Verilog paths in first-occurrence order, removing duplicates.
 
         Standalone filelists repeat package and RAM dependencies when nested in the
@@ -207,6 +209,10 @@ class YosysRunner:
         files: list[str] = []
         self.include_dirs: set[str] = set()
 
+        if coherent_cluster:
+            self._parse_filelist_recursive(
+                self.root_dir / "hw/rtl/cpu_top/coherent_cluster.f", files, seen
+            )
         self._parse_filelist_recursive(filelist_path, files, seen)
         return files
 
@@ -305,7 +311,10 @@ class YosysRunner:
         if not self.filelist.exists():
             raise FileNotFoundError(f"Filelist not found: {self.filelist}")
 
-        verilog_files = self.parse_filelist(self.filelist)
+        coherent_cluster = bool(parameters and parameters.get("COHERENT_CLUSTER", 0))
+        verilog_files = self.parse_filelist(
+            self.filelist, coherent_cluster=coherent_cluster
+        )
 
         if not verilog_files:
             raise ValueError("No Verilog files found in filelist")
@@ -313,6 +322,8 @@ class YosysRunner:
         # Exclude simulation-only code. Enable Xilinx primitives only for
         # synth_xilinx targets.
         defines = _synthesis_defines()
+        if coherent_cluster:
+            defines += " -DFROST_COHERENT_CLUSTER"
         defines += "".join(f" -I{directory}" for directory in sorted(self.include_dirs))
         if synth_command.startswith("synth_xilinx"):
             defines += " -DFROST_XILINX_PRIMS"
@@ -349,6 +360,11 @@ class YosysRunner:
                 yosys_script.append(
                     "select -assert-none t:*coherence_home* t:*coherence_l1d* "
                     "t:*coherent_hart_cache* t:*coherent_atomic_guard*"
+                )
+                yosys_script.append(
+                    "select -assert-none w:i_coherent_d w:o_coherent_d "
+                    "w:i_coherent_store_pending w:o_coherent_read_kind "
+                    "w:o_coherent_arm_valid w:i_atomic_protected"
                 )
             # Preserve RX parser encoding to avoid expanding its symbolic
             # transitions into a table.

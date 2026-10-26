@@ -655,6 +655,9 @@ endif
 # appended after the defaults above because Verilator takes the last -G given
 # for a parameter, so registry-specific diagnostic sizing overrides win.
 FROST_VERILATOR_EXTRA_ARGS ?=
+ifneq ($(findstring -DFROST_COHERENT_CLUSTER,$(FROST_VERILATOR_EXTRA_ARGS)),)
+	COMPILE_ARGS := -f $(ROOT)/hw/rtl/cpu_top/coherent_cluster.f $(COMPILE_ARGS)
+endif
 ifneq ($(strip $(FROST_VERILATOR_EXTRA_ARGS)),)
 	EXTRA_ARGS += $(FROST_VERILATOR_EXTRA_ARGS)
 endif

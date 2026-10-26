@@ -2116,6 +2116,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Coherent atomic faults and debug entry preserve precise ownership.",
         verilator_extra_args=(
             "--assert",
+            "-DFROST_COHERENT_CLUSTER",
             "-GCOHERENT_CLUSTER=1",
             "-GENABLE_COHERENCE=0",
             "-GENABLE_CACHED_TIER=1",
@@ -2131,7 +2132,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_cut",
         hdl_toplevel_module="tomasulo_wrapper",
         description="The coherent cut covers observations, delayed LR, and stale fills.",
-        verilator_extra_args=("-GCOHERENT_CLUSTER=1", "--assert"),
+        verilator_extra_args=(
+            "-DFROST_COHERENT_CLUSTER",
+            "-GCOHERENT_CLUSTER=1",
+            "--assert",
+        ),
     ),
     "coherence_cluster": CocotbRunConfig(
         verilator_extra_args=("--assert",),
@@ -3489,7 +3494,12 @@ for _program in (
         description=f"The coherent cluster runs {_program}.",
         include_in_pytest=True,
         extra_env=_coherent_env,
-        verilator_extra_args=(*_coherent_args, "-GCOHERENT_CLUSTER=1", "--assert"),
+        verilator_extra_args=(
+            *_coherent_args,
+            "-DFROST_COHERENT_CLUSTER",
+            "-GCOHERENT_CLUSTER=1",
+            "--assert",
+        ),
     )
 
 # Registry entries that build an app and are collected by pytest. The unit

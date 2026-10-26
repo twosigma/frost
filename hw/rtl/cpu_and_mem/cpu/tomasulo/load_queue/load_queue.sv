@@ -26,7 +26,9 @@
  */
 
 module load_queue #(
+`ifdef FROST_COHERENT_CLUSTER
     parameter bit COHERENT_CLUSTER = 1'b0,
+`endif
     parameter bit CACHE_NORMAL_MEMORY = 1'b0,
     parameter int unsigned DEPTH = riscv_pkg::LqDepth,  // 8
     parameter bit ENABLE_L0_FAST_PATH = 1'b1,
@@ -54,6 +56,7 @@ module load_queue #(
     parameter longint unsigned CACHED_BASE = riscv_pkg::DdrBase,
     parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes
 ) (
+`ifdef FROST_COHERENT_CLUSTER
     input logic i_coherent_cut_hold = 1'b0,
     input logic [1:0] i_coherent_block_valid = '0,
     input logic [1:0][riscv_pkg::XLEN-1:0] i_coherent_block_addr = '0,
@@ -64,6 +67,7 @@ module load_queue #(
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_read_tag,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_write_tag,
     output logic [2:0] o_reservation_size,
+`endif
     input logic i_clk,
     input logic i_rst_n,
 
@@ -540,10 +544,14 @@ module load_queue #(
   // Reservation register (LR/SC)
   logic reservation_valid;
   logic [XLEN-1:0] reservation_addr;
+`ifdef FROST_COHERENT_CLUSTER
   logic [2:0] reservation_size;
+`endif
   assign o_reservation_valid = reservation_valid;
   assign o_reservation_addr  = reservation_addr;
+`ifdef FROST_COHERENT_CLUSTER
   assign o_reservation_size  = reservation_size;
+`endif
 
   // AMO FSM
   typedef enum logic [1:0] {
@@ -930,17 +938,30 @@ module load_queue #(
   end
   assign coh_reservation_inval = i_coh_inval_valid && reservation_valid &&
       (i_coh_inval_addr[XLEN-1:CohLineLsb] == reservation_addr[XLEN-1:CohLineLsb]);
+`ifdef FROST_COHERENT_CLUSTER
   // The hart's AMO write cancels a reservation in its reservation set,
   // as a store does through i_reservation_snoop_invalidate.
+`else
+  // The hart's own AMO write to the reserved doubleword cancels the
+  // reservation, as a store there does (i_reservation_snoop_invalidate).
+`endif
   logic amo_reservation_inval;
   assign amo_reservation_inval = amo_cache_inv && reservation_valid &&
+`ifdef FROST_COHERENT_CLUSTER
       (COHERENT_CLUSTER ?
        (amo_write_addr_q[XLEN-1:5] == reservation_addr[XLEN-1:5]) :
        (amo_write_addr_q[XLEN-1:3] == reservation_addr[XLEN-1:3]));
+`else
+      (amo_write_addr_q[XLEN-1:3] == reservation_addr[XLEN-1:3]);
+`endif
   logic reservation_clear;
   assign reservation_clear = i_sc_clear_reservation || i_reservation_snoop_invalidate ||
+`ifdef FROST_COHERENT_CLUSTER
       coh_reservation_inval || amo_reservation_inval ||
       (COHERENT_CLUSTER && mem_read_en && sq_check_is_lr_q);
+`else
+      coh_reservation_inval || amo_reservation_inval;
+`endif
   // The hold is a registered compare of the staged atomic's line against the
   // mirror. A newly captured or replaced atomic has no compare of its own
   // yet, so it waits one cycle before its first launch (coh_hold_valid_q);
@@ -1377,6 +1398,7 @@ module load_queue #(
         lq_rob_tag[g_lq_tag];
   end
 
+`ifdef FROST_COHERENT_CLUSTER
   logic [DEPTH-1:0] coherent_parked_q;
   logic coherent_local_hold, coherent_sector_hold, coherent_holder_changed;
   if (COHERENT_CLUSTER) begin : gen_coherent_park
@@ -1398,6 +1420,7 @@ module load_queue #(
     assign coherent_holder_changed = 1'b0;
   end
 
+`endif
   lq_issue_selector #(
       .DEPTH(DEPTH)
   ) lq_issue_selector_inst (
@@ -1408,7 +1431,11 @@ module load_queue #(
       .lq_data_valid(lq_data_valid),
       .lq_is_lr(lq_is_lr),
       .lq_is_amo(lq_is_amo),
+`ifdef FROST_COHERENT_CLUSTER
       .sq_check_in_flight_mask(sq_check_in_flight_mask | coherent_parked_q),
+`else
+      .sq_check_in_flight_mask(sq_check_in_flight_mask),
+`endif
       .addr_update_pre_match_q(addr_update_pre_match_q),
       .rob_head_match_q(rob_head_match_q),
       .lq_rob_tag_flat(lq_rob_tag_flat),
@@ -1612,11 +1639,14 @@ module load_queue #(
   // to write. A store older than an LR, to the other word of its dword, does
   // not overlap the LR, so without the wait it could write after the LR's
   // response, and its write-launch snoop would cancel the reservation.
+`ifdef FROST_COHERENT_CLUSTER
   assign coherent_local_hold = i_coherent_cut_hold || coherent_sector_hold;
+`endif
   assign sq_check_entry_issueable = sq_check_entry_valid &&
       (!(sq_check_is_lr_q || sq_check_is_amo_q)
        || (sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty)) &&
       (!sq_check_is_mmio_q || (sq_check_rob_tag_q == i_rob_head_tag)) &&
+`ifdef FROST_COHERENT_CLUSTER
       !coh_launch_hold_q && !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
       !(COHERENT_CLUSTER && coherent_local_hold) &&
       !(COHERENT_CLUSTER && sq_check_is_amo_q && sq_check_is_cached_region &&
@@ -1636,6 +1666,9 @@ module load_queue #(
       sq_check_is_amo_q ? 2'd2 : sq_check_is_lr_q ? 2'd1 : 2'd0;
   assign o_coherent_read_tag = COHERENT_CLUSTER ? sq_check_rob_tag_q : '0;
   assign o_coherent_write_tag = COHERENT_CLUSTER ? lq_rob_tag[amo_entry_idx] : '0;
+`else
+      !coh_launch_hold_q && !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q));
+`endif
 
   // A departing staged load permits same-cycle capture of its replacement.
   // Keep this predicate aligned with sq_check_stage_clears below.
@@ -1683,8 +1716,12 @@ module load_queue #(
   // eligible it is at the ROB head, so head priority selects it.
   assign sq_check_will_clear = sq_check_pending &&
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
+`ifdef FROST_COHERENT_CLUSTER
        launch_mem_issue || misalign_bypass_fire || older_amo_write_pending ||
        (COHERENT_CLUSTER && coherent_sector_hold));
+`else
+       launch_mem_issue || misalign_bypass_fire || older_amo_write_pending);
+`endif
 
   // Stored MMIO at ROB head is eligible in both scans; head priority wins.
   // The router enforces committed-store drain before device acceptance.
@@ -3692,6 +3729,7 @@ module load_queue #(
     end
   end
 
+`ifdef FROST_COHERENT_CLUSTER
   if (COHERENT_CLUSTER) begin : gen_coherent_reservation_size
     always_ff @(posedge i_clk) begin
       if (accept_mem_response && issued_is_lr && !mem_response_error)
@@ -3701,6 +3739,7 @@ module load_queue #(
     assign reservation_size = '0;
   end
 
+`endif
   // -----------------------------------------------------------------
   // Internal data: CDB completion stage result
   // -----------------------------------------------------------------
@@ -4915,6 +4954,7 @@ module load_queue #(
 `endif
 `endif
 
+`ifdef FROST_COHERENT_CLUSTER
 `ifdef COHERENT_LQ_LOCAL_PROOF
   logic [1:0] f_coherent_past = '0;
   always_ff @(posedge i_clk) begin
@@ -4936,4 +4976,5 @@ module load_queue #(
   end
 `endif
 
+`endif
 endmodule : load_queue
