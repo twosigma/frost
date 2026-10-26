@@ -83,7 +83,8 @@ order and ROB-head priority. Prefix masks select the first eligible physical
 entry at or above the queue head, or the first entry below it on wraparound.
 Indices and tags decode from those masks. Selection is combinational. Coherent issue,
 forwarding and SQ-probe predicates decode address faults before applying
-the cut and same-sector holds. The first candidate mask determines which
+the cut and same-sector holds. Coherent staging captures PMA permission and cache-region
+classification with the address. Misalignment checks use the live trap setting. The first candidate mask determines which
 address source wins ring order. Candidate presence is independent of
 that ordering and the selected payload.
 Coherent L0 valid bits and data writes share fill permission computed for
