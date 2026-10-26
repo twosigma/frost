@@ -85,6 +85,11 @@ module lq_l0_cache #(
     input logic i_flush_all
 );
 
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
+`endif
+
   // ===========================================================================
   // Local Parameters
   // ===========================================================================
@@ -256,7 +261,9 @@ module lq_l0_cache #(
   end
 `ifndef SYNTHESIS
   always_comb begin
-    p_fill_write_matches_fill_valid : assert (i_fill_write == i_fill_valid);
+    if (reset_seen_q && i_rst_n) begin
+      p_fill_write_matches_fill_valid : assert (i_fill_write == i_fill_valid);
+    end
   end
 `endif
   assign lookup_hit_array = valid[lookup_index] && (&lookup_tag_groups);
@@ -477,16 +484,16 @@ module lq_l0_cache #(
 `ifdef FROST_COVERAGE
   // DMA clears all four indexed dwords even when a response fills one.
   cover_dma_invalidation_overrides_fill :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       !i_flush_all && i_fill_valid && i_invalidate_line_valid &&
       (fill_index[IndexWidth-1:2] == i_invalidate_line_addr[5+:(IndexWidth-2)]));
   // AMO completion invalidates a matching response fill on the same edge.
   cover_amo_invalidation_overrides_fill :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       !i_flush_all && i_fill_valid && !store_update && invalidate2_fill_entry);
   // A store takes the RAM write port while an unrelated response fills.
   cover_store_update_displaces_fill :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       !i_flush_all && store_update && i_fill_valid && (inv_index != fill_index));
 `endif
 `endif
