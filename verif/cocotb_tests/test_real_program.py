@@ -316,6 +316,16 @@ async def generate_divided_clock(dut: Any, *, core_clock: Any | None = None) -> 
     clock_edge = RisingEdge(dut.i_clk)
     divided = dut.i_clk_div4
     level = 0
+    # The FPGA wrapper supplies an asserted reset at the platform boundary.
+    # Its reset pipeline is outside the ASIC design's randomized state.
+    if hasattr(dut, "reset_synchronizer_shift_register"):
+        for name in (
+            "reset_synchronizer_shift_register",
+            "reset_synchronized",
+            "reset_div4_synchronizer_shift_register",
+        ):
+            signal = getattr(dut, name)
+            signal.value = Immediate((1 << len(signal)) - 1)
     # Establish idle inputs before HDL evaluates a possible startup clock edge.
     dut.i_power_on_rst.value = Immediate(0)
     divided.value = Immediate(level)

@@ -194,6 +194,10 @@ model; enabling or disabling the mode rebuilds it.
 The shared bench holds power-on reset for eight SoC clock edges and at least
 four CPU clock edges. Divided-clock generation continues while it waits for
 a slow or delayed CPU clock. System reset stays asserted through that wait.
+The FPGA wrapper's system and programming reset pipelines start asserted in
+both modes. They supply reset at the `platform_top` boundary and are outside
+the ASIC design. Random-start mode seeds the registers and memories inside
+that boundary, including its reset pipelines.
 
 The shared SoC bench loads data images after eighteen SoC clock edges, while
 system reset is held. This supplies the image after the memory controllers
