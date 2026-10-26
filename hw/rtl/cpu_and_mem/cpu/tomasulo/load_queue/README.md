@@ -84,6 +84,8 @@ forwarding and SQ-probe predicates decode address faults before applying
 the cut and same-sector holds. The first candidate mask determines which
 address source wins ring order. Candidate presence is independent of
 that ordering and the selected payload.
+Coherent L0 valid bits and data writes share fill permission computed for
+each response source before the cached/uncached response selection.
 
 ### ROB-head priority
 

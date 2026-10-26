@@ -92,6 +92,7 @@ FORMAL_TARGETS = [
             "coh_sc_selected_prove",
             "coh_lq_cut_prove",
             "coh_lq_forward_prove",
+            "coh_lq_normal_fill_prove",
             "coh_lq_selector_prove",
         ),
     ),
@@ -808,6 +809,10 @@ SBY_TASKS = [
         "Coherent cuts block load completion and reservation renewal.",
     ),
     ("coh_lq_forward_prove", "Coherent forwarding obeys cuts and same-sector holds."),
+    (
+        "coh_lq_normal_fill_prove",
+        "Coherent L0 fill permission agrees for both response sources.",
+    ),
     ("coh_lq_selector_prove", "Coherent issue selection matches both SQ drain states."),
     (
         "coh_read_flags_prove",
