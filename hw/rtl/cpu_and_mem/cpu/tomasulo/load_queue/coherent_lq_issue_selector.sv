@@ -84,12 +84,26 @@ module coherent_lq_issue_selector #(
 
   localparam int unsigned IdxWidth = $clog2(DEPTH);
   localparam int unsigned TagWidth = riscv_pkg::ReorderBufferTagWidth;
-  logic [DEPTH-1:0] at_or_above_head;
-  for (genvar index = 0; index < DEPTH; index++) begin : gen_head_range
-    if (index == DEPTH - 1) begin : gen_last
-      assign at_or_above_head[index] = 1'b1;
-    end else begin : gen_before_last
-      assign at_or_above_head[index] = IdxWidth'(index) >= head_idx;
+  logic [DEPTH-1:0] precedes[DEPTH];
+  for (genvar selected = 0; selected < DEPTH; selected++) begin : gen_order
+    for (genvar other = 0; other < DEPTH; other++) begin : gen_other
+      if (other < selected) begin : gen_below
+        if (selected == DEPTH - 1) begin : gen_last
+          assign precedes[selected][other] = head_idx <= IdxWidth'(other);
+        end else begin : gen_not_last
+          assign precedes[selected][other] = head_idx <= IdxWidth'(other) ||
+              head_idx > IdxWidth'(selected);
+        end
+      end else if (other > selected) begin : gen_above
+        if (other == DEPTH - 1) begin : gen_last
+          assign precedes[selected][other] = head_idx > IdxWidth'(selected);
+        end else begin : gen_not_last
+          assign precedes[selected][other] = head_idx <= IdxWidth'(other) &&
+              head_idx > IdxWidth'(selected);
+        end
+      end else begin : gen_same
+        assign precedes[selected][other] = 1'b0;
+      end
     end
   end
 
@@ -118,19 +132,17 @@ module coherent_lq_issue_selector #(
           (!(lq_is_lr[index] || lq_is_amo[index]) || 1'(drained));
     end
     for (genvar source = 0; source < 4; source++) begin : gen_ring
-      logic [DEPTH-1:0] upper;
-      (* keep = "true" *) logic [DEPTH-1:0] first_upper, first_any;
-      assign upper = eligible[source] & at_or_above_head;
       for (genvar index = 0; index < DEPTH; index++) begin : gen_first
-        if (index == 0) begin : gen_zero
-          assign first_upper[index] = upper[index];
-          assign first_any[index]   = eligible[source][index];
-        end else begin : gen_later
-          assign first_upper[index] = upper[index] && !(|upper[index-1:0]);
-          assign first_any[index]   = eligible[source][index] && !(|eligible[source][index-1:0]);
+        localparam int unsigned Groups = (DEPTH + 2) / 3;
+        (* keep = "true" *) logic [Groups-1:0] earlier_group;
+        for (genvar group_index = 0; group_index < Groups; group_index++) begin : gen_group
+          localparam int unsigned Bits = DEPTH - 3 * group_index < 3 ?
+              DEPTH - 3 * group_index : 3;
+          assign earlier_group[group_index] =
+              |(eligible[source][3*group_index+:Bits] & precedes[index][3*group_index+:Bits]);
         end
+        assign first[source][index] = eligible[source][index] && !(|earlier_group);
       end
-      assign first[source] = (|upper) ? first_upper : first_any;
     end
     always_comb begin
       choice = '0;
