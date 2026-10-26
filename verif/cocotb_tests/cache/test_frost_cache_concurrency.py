@@ -25,6 +25,8 @@ import cocotb
 from cocotb.triggers import FallingEdge, Lock, ReadOnly
 
 from cocotb_tests.cache.test_frost_cache import (
+    ALIAS_BASE,
+    ALIAS_BYTES,
     BASE_ADDR,
     LINE_BYTES,
     UP_ID_BITS,
@@ -47,6 +49,7 @@ FULL = (1 << LINE_BYTES) - 1
 NUM_IDS = 1 << UP_ID_BITS
 MEM_LATENCY = 12  # harness default
 L1_LINES = 1024 // LINE_BYTES  # harness L1 = 1 KiB
+FRESH_BYTES = 0x10000
 
 # Each test uses a separate 256 KiB region. Behavioral DDR persists across
 # resets between tests. Reference models capture backing bytes before reads
@@ -559,6 +562,7 @@ class _FreshLines:
                 break
         else:
             raise AssertionError("every L1 offset is in flight")
+        assert self._tag[index] < FRESH_BYTES // 1024, "fresh-line region exhausted"
         addr = self._base + self._tag[index] * 1024 + index * LINE_BYTES
         self._tag[index] += 1
         self.in_flight.add(index)
@@ -700,6 +704,8 @@ async def test_writeback_wins_within_bound_under_fill_stream(dut: Any) -> None:
     await _setup(dut)
     col = _Collector(dut, "up")
     model = ReferenceModel(dut)
+    model.capture_region(STARVE_BASE, 0x10000 + FRESH_BYTES)
+    model.capture_region(ALIAS_BASE, ALIAS_BYTES)
     cache = dut.cache_hierarchy.cluster_cache.l2_cache
 
     a = STARVE_BASE + 7 * LINE_BYTES
@@ -805,6 +811,8 @@ async def test_writeback_slots_take_turns_under_dirty_victim_stream(dut: Any) ->
         return
     col = _Collector(dut, "up")
     model = ReferenceModel(dut)
+    model.capture_region(TURNS_BASE, 0x10000 + FRESH_BYTES)
+    model.capture_region(ALIAS_BASE, ALIAS_BYTES)
 
     base = TURNS_BASE
     n_dirty = 12
@@ -928,6 +936,7 @@ async def test_fill_slots_take_turns_under_recycled_misses(dut: Any) -> None:
         return
     col = _Collector(dut, "up")
     model = ReferenceModel(dut)
+    model.capture_region(FILL_TURNS_BASE, 0x10000 + FRESH_BYTES)
 
     await FallingEdge(dut.i_clk)
     dut.i_down_hold.value = 1
@@ -1136,6 +1145,7 @@ async def test_fence_with_pending_misses(dut: Any) -> None:
     icol = _Collector(dut, "iup")
     model = ReferenceModel(dut)
     lines = [FENCE_BASE + k * LINE_BYTES for k in range(4)]
+    model.capture_region(FENCE_BASE, len(lines) * LINE_BYTES)
     ids = []
     for k, addr in enumerate(lines):
         data = _line_int(bytes([(0x70 + k + b) & 0xFF for b in range(32)]))
@@ -1176,8 +1186,7 @@ async def test_random_outstanding_traffic(dut: Any) -> None:
     cols = {"up": _Collector(dut, "up"), "iup": _Collector(dut, "iup")}
     dmodel = ReferenceModel(dut)
     window_lines = 64  # 2 KiB: thrashes the 1 KiB L1D and lands in/out of L2
-    for line in range(window_lines):
-        dmodel.read_line(RANDOM_BASE + line * LINE_BYTES)
+    dmodel.capture_region(RANDOM_BASE, window_lines * LINE_BYTES)
     bursts = 80
 
     async def _d_master() -> None:

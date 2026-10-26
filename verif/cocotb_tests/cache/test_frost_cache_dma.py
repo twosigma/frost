@@ -445,9 +445,8 @@ async def test_concurrent_disjoint_traffic(dut: Any) -> None:
     rng = random.Random(0xD3A1)
     cpu_model = ReferenceModel(dut)
     dma_model = ReferenceModel(dut)
-    for line in range(64):
-        cpu_model.read_line(DISJOINT_BASE + line * LINE_BYTES)
-        dma_model.read_line(DISJOINT_BASE + 0x10000 + line * LINE_BYTES)
+    cpu_model.capture_region(DISJOINT_BASE, 64 * LINE_BYTES)
+    dma_model.capture_region(DISJOINT_BASE + 0x10000, 64 * LINE_BYTES)
 
     async def cpu_side(base: int, seed: int, count: int) -> None:
         model = cpu_model
@@ -541,6 +540,7 @@ async def test_random_mixed_traffic_vs_model(dut: Any) -> None:
     await _setup(dut)
     lq = LoadQueueStub(dut, admit_delay=1, inval_delay=1)
     model = ReferenceModel(dut)
+    model.capture_region(RANDOM_BASE, 256 * LINE_BYTES)
     rng = random.Random(random.getrandbits(32))
     for _ in range(900):
         addr = RANDOM_BASE + rng.randrange(256) * LINE_BYTES
