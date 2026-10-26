@@ -1401,6 +1401,8 @@ module load_queue #(
 `ifdef FROST_COHERENT_CLUSTER
   logic [DEPTH-1:0] coherent_parked_q;
   logic coherent_local_hold, coherent_sector_hold, coherent_holder_changed;
+  logic coherent_unheld_eligible, coherent_address_fault;
+  (* keep = "true" *) logic coherent_probe_ok, coherent_issue_ok, coherent_forward_ok;
   if (COHERENT_CLUSTER) begin : gen_coherent_park
     logic [1:0] holder_valid_q;
     logic [2*XLEN-1:0] holder_addr_q;
@@ -1704,6 +1706,19 @@ module load_queue #(
     coherent_sector_hold |= i_coherent_block_valid[holder] &&
           sq_check_addr_q[XLEN-1:5] == i_coherent_block_addr[holder][XLEN-1:5];
   end
+  // Address faults are independent of the cut and same-sector holds.
+  assign coherent_unheld_eligible = sq_check_entry_valid &&
+      (!(sq_check_is_lr_q || sq_check_is_amo_q) ||
+       (sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty)) &&
+      (!sq_check_is_mmio_q || sq_check_rob_tag_q == i_rob_head_tag) &&
+      !coh_launch_hold_q && !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
+      !(sq_check_is_amo_q && sq_check_is_cached_region && !i_coherent_atomic_protected);
+  assign coherent_address_fault =
+      riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q) != riscv_pkg::DFAULT_NONE ||
+      !sq_check_pma_ok ||
+      (i_trap_misaligned_accesses && is_load_misaligned(sq_check_size_q, sq_check_addr_q));
+  assign coherent_probe_ok = coherent_unheld_eligible && !coherent_address_fault &&
+      !l0_lookup_busy && !(sq_check_no_older_store_q || i_sq_empty);
   assign o_coherent_arm_valid = COHERENT_CLUSTER && sq_check_entry_valid && sq_check_is_amo_q &&
       sq_check_is_cached_region && sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty &&
       sq_check_pma_ok && !sq_check_misaligned && !i_flush_all && !i_flush_en;
@@ -1853,6 +1868,14 @@ module load_queue #(
         !(sq_check_no_older_store_q || i_sq_empty)) begin
       o_sq_check_capture_valid = 1'b1;
     end
+`ifdef FROST_COHERENT_CLUSTER
+    if (COHERENT_CLUSTER) begin
+      o_sq_check_valid = coherent_probe_ok && !coherent_local_hold &&
+          !i_flush_all && !i_flush_en && !drop_mem_response_pending && !sq_commit_check_block;
+      o_sq_check_capture_valid = coherent_probe_ok && !coherent_local_hold &&
+          !drop_mem_response_pending;
+    end
+`endif
   end
 
   // ===========================================================================
@@ -1889,15 +1912,36 @@ module load_queue #(
   assign sq_head_amo_clear = sq_check_is_amo_q &&
       (sq_check_rob_tag_q == i_rob_head_tag) && i_sq_committed_empty;
 
+`ifdef FROST_COHERENT_CLUSTER
+  assign coherent_issue_ok = sq_check_phase2 && coherent_unheld_eligible &&
+      !coherent_address_fault && !sq_commit_interlock && !older_amo_write_pending &&
+      (sq_no_older_store || sq_head_amo_clear ||
+       (i_sq_all_older_addrs_known && !i_sq_forward.match));
+  if (COHERENT_CLUSTER) begin : gen_coherent_issue_gate
+    assign sq_can_issue = coherent_issue_ok && !coherent_local_hold;
+  end else begin : gen_line_issue_gate
+`endif
   assign sq_can_issue = sq_check_phase2 && sq_check_entry_issueable &&
       !sq_check_misaligned &&
       !sq_commit_interlock &&
       !older_amo_write_pending &&
       (sq_no_older_store || sq_head_amo_clear ||
        (i_sq_all_older_addrs_known && !i_sq_forward.match));
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`endif
   // Forwarding also requires all older addresses known: an unresolved store
   // could overlap the load and be newer than the selected store, making its
   // data stale. Address-known and forwarding results come from the same scan.
+`ifdef FROST_COHERENT_CLUSTER
+  assign coherent_forward_ok = ENABLE_SQ_FORWARD_FAST_PATH && sq_check_phase2 &&
+      coherent_unheld_eligible && !coherent_address_fault && !sq_no_older_store &&
+      !sq_commit_interlock && !older_amo_write_pending && i_sq_all_older_addrs_known &&
+      i_sq_forward.can_forward && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
+  if (COHERENT_CLUSTER) begin : gen_coherent_forward_gate
+    assign sq_do_forward = coherent_forward_ok && !coherent_local_hold;
+  end else begin : gen_line_forward_gate
+`endif
   assign sq_do_forward = ENABLE_SQ_FORWARD_FAST_PATH
       && sq_check_phase2 && sq_check_entry_issueable && !sq_no_older_store &&
       !sq_check_misaligned &&
@@ -1906,6 +1950,32 @@ module load_queue #(
       i_sq_all_older_addrs_known &&
       i_sq_forward.can_forward
       && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`ifndef SYNTHESIS
+  if (COHERENT_CLUSTER) begin : gen_coherent_gate_checks
+    always_comb begin
+      p_issue_gate_exact : assert (sq_can_issue ==
+          (sq_check_phase2 && sq_check_entry_issueable && !sq_check_misaligned &&
+           !sq_commit_interlock && !older_amo_write_pending &&
+           (sq_no_older_store || sq_head_amo_clear ||
+            (i_sq_all_older_addrs_known && !i_sq_forward.match))));
+      p_forward_gate_exact : assert (sq_do_forward ==
+          (ENABLE_SQ_FORWARD_FAST_PATH && sq_check_phase2 && sq_check_entry_issueable &&
+           !sq_no_older_store && !sq_check_misaligned && !sq_commit_interlock &&
+           !older_amo_write_pending && i_sq_all_older_addrs_known && i_sq_forward.can_forward &&
+           !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q));
+      p_probe_gate_exact : assert (o_sq_check_valid ==
+          (!i_flush_all && !i_flush_en && !drop_mem_response_pending && !l0_lookup_busy &&
+           !sq_commit_check_block && sq_check_entry_issueable && !sq_check_misaligned &&
+           !(sq_check_no_older_store_q || i_sq_empty)));
+      p_probe_capture_gate_exact : assert (o_sq_check_capture_valid ==
+          (!drop_mem_response_pending && !l0_lookup_busy && sq_check_entry_issueable &&
+           !sq_check_misaligned && !(sq_check_no_older_store_q || i_sq_empty)));
+    end
+  end
+`endif
+`endif
 
 
   assign flush_all_entries = i_flush_en && !i_early_recovery_flush &&
@@ -5012,9 +5082,9 @@ module load_queue #(
     end
     if (mem_read_en && sq_check_is_amo_q && sq_check_is_cached_region)
       assert (i_coherent_atomic_protected);
+    if (f_coherent_past[1] && $past(!i_rst_n || i_flush_all || coherent_holder_changed))
+      assert (coherent_parked_q == '0);
     if (f_coherent_past[1] && i_rst_n && $past(i_rst_n)) begin
-      if ($past(!i_rst_n || i_flush_all || coherent_holder_changed))
-        assert (coherent_parked_q == '0);
       if ($past(reservation_clear)) assert (!reservation_valid);
       if (!$past(reservation_valid) && reservation_valid)
         assert ($past(
