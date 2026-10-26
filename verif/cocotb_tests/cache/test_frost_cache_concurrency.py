@@ -1176,6 +1176,8 @@ async def test_random_outstanding_traffic(dut: Any) -> None:
     cols = {"up": _Collector(dut, "up"), "iup": _Collector(dut, "iup")}
     dmodel = ReferenceModel(dut)
     window_lines = 64  # 2 KiB: thrashes the 1 KiB L1D and lands in/out of L2
+    for line in range(window_lines):
+        dmodel.read_line(RANDOM_BASE + line * LINE_BYTES)
     bursts = 80
 
     async def _d_master() -> None:

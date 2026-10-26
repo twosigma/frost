@@ -791,6 +791,9 @@ async def test_random_traffic_vs_model(dut: Any) -> None:
     """Randomized reads/writes over a window far larger than both caches."""
     await _setup(dut)
     model = ReferenceModel(dut)
+    # Capture untouched bytes before traffic can alter another line.
+    for line in range(WINDOW_LINES):
+        model.read_line(RANDOM_BASE + line * LINE_BYTES)
     rng = random.Random(random.getrandbits(32))
     full = (1 << LINE_BYTES) - 1
 
