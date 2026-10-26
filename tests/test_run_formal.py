@@ -86,6 +86,11 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "coherence_read_payload.sby",
+        "Buffered coherent read payloads equal allocation-only storage.",
+        tasks=("coh_read_payload_prove", "coh_read_payload64_prove"),
+    ),
+    FormalTarget(
         "coherent_l0.sby",
         "Coherent L0 valid masks, data, and invalidation at two cache depths.",
         tasks=(
@@ -101,6 +106,7 @@ FORMAL_TARGETS = [
         "coherent_cpu.sby",
         "Coherent SC ownership, load selection, parking, and reservation cuts.",
         tasks=(
+            "coh_stage_take_prove",
             "coh_sc_selected_prove",
             "coh_lq_cut_prove",
             "coh_lq_forward_prove",
@@ -831,6 +837,12 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("coh_read_payload_prove", "Coherent read payload storage at 32 address bits."),
+    ("coh_read_payload64_prove", "Coherent read payload storage at 64 address bits."),
+    (
+        "coh_stage_take_prove",
+        "Coherent staging permission for both completion outcomes.",
+    ),
     ("coh_l0_flags_prove", "Coherent L0 next-state equality at 128 entries."),
     ("coh_l0_flags256_prove", "Coherent L0 next-state equality at 256 entries."),
     ("coh_l0_bmc", "Coherent L0 data and invalidation at 128 entries."),

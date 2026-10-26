@@ -141,6 +141,8 @@ module coherence_l1d #(
   logic [1:0] rd_kind_q[8];
   logic [2:0] rd_size_q[8];
   logic [TAG_BITS-1:0] rd_tag_q[8];
+  localparam int unsigned ReadPayloadWidth = ADDR_WIDTH + TAG_BITS + 5;
+  logic [8*ReadPayloadWidth-1:0] rd_payload_flat;
   logic [63:0] rd_data_q[8];
   logic [7:0] rd_error_q, rd_ready_next, rd_error_next, rd_valid_next, rd_miss_next;
   logic read_miss;
@@ -241,6 +243,21 @@ module coherence_l1d #(
       .o_ready(rd_ready_next),
       .o_error(rd_error_next)
   );
+
+  coherence_read_payload #(
+      .WIDTH(ReadPayloadWidth)
+  ) read_payload (
+      .i_clk,
+      .i_rst,
+      .i_allocate(i_read_valid),
+      .i_allocate_id(i_read_id),
+      .i_payload({i_address, i_read_kind, i_read_size, i_read_tag}),
+      .o_payload(rd_payload_flat)
+  );
+  for (genvar slot = 0; slot < 8; slot++) begin : gen_unpack_read_payload
+    assign {rd_addr_q[slot], rd_kind_q[slot], rd_size_q[slot], rd_tag_q[slot]} =
+        rd_payload_flat[slot*ReadPayloadWidth+:ReadPayloadWidth];
+  end
 
   assign active = !i_rst && !i_fatal_stop && !o_fatal;
   assign probe_in = i_p;
@@ -536,10 +553,6 @@ module coherence_l1d #(
       o_fatal <= 1'b0;
       o_fatal_addr <= '0;
       for (int index = 0; index < 8; index++) begin
-        rd_addr_q[index] <= '0;
-        rd_kind_q[index] <= '0;
-        rd_size_q[index] <= '0;
-        rd_tag_q[index]  <= '0;
         rd_data_q[index] <= '0;
       end
     end else begin
@@ -578,12 +591,6 @@ module coherence_l1d #(
           o_read_error <= rd_error_q[rd_result];
           rd_response_rr_q <= rd_result + 1'b1;
         end
-      end
-      if (i_read_valid) begin
-        rd_addr_q[i_read_id] <= i_address;
-        rd_kind_q[i_read_id] <= i_read_kind;
-        rd_size_q[i_read_id] <= i_read_size;
-        rd_tag_q[i_read_id]  <= i_read_tag;
       end
       if (|i_write_mask) begin
         if (i_write_atomic) begin

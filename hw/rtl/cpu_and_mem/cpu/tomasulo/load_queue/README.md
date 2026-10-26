@@ -85,7 +85,8 @@ is eligible. Scan indices and tags decode from the winning-entry masks.
 Selection is combinational.
 The pre-issue selector registers a one-hot mask alongside the candidate matches.
 Staging permission combines capture space and replacement age at each physical
-entry before selecting the winner. Coherent issue,
+entry before selecting the winner. Completion selects permission computed
+for both completion outcomes. Coherent issue,
 forwarding and SQ-probe predicates decode address faults before applying
 the cut and same-sector holds. Each coherent address slot stores PMA permission
 and cache-region classification with its address. Staging selects those classes
