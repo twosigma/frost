@@ -256,17 +256,38 @@ def takes_last_edge(
     return run
 
 
-async def _assert_power_on_reset(dut: Any) -> None:
-    """Give asynchronous reset logic an assertion edge after HDL initialization."""
+async def _assert_power_on_reset(dut: Any, core_clock: Any) -> None:
+    """Assert cold reset after HDL initialization and clock its CPU consumers."""
     await ReadWrite()
     dut.i_power_on_rst.value = 1
+    for _ in range(4):
+        await RisingEdge(core_clock)
+
+
+async def _release_power_on_reset(dut: Any, cpu_reset: Any) -> None:
+    """Release cold reset after the CPU has sampled its request."""
+    await cpu_reset
+    await ReadWrite()
+    dut.i_power_on_rst.value = 0
+
+
+async def wait_for_power_on_reset(dut: Any) -> None:
+    """Keep system reset held through a slow or delayed CPU's cold reset."""
+    while int(dut.i_power_on_rst.value):
+        await RisingEdge(dut.i_clk)
 
 
 def load_data_images(dut: Any) -> None:
     """Load data images once the memory controllers have completed cold reset."""
-    platform = dut.cpu_and_memory_subsystem
+    platform = getattr(dut, "cpu_and_memory_subsystem", dut)
     soc = platform.soc if hasattr(platform, "soc") else platform
-    assert int(dut.reset_synchronized.value), "data image load requires system reset"
+    if hasattr(dut, "i_rst"):
+        system_reset = dut.i_rst
+    elif os.environ.get("FROST_CPU_PERIOD_PS"):
+        system_reset = dut.async_soc_reset
+    else:
+        system_reset = dut.reset_synchronized
+    assert int(system_reset.value), "data image load requires system reset"
     assert int(soc.rst_core.value), "data image load requires core reset"
     assert int(soc.rst_div4.value), "data image load requires programming reset"
     memory = soc.data_memory
@@ -285,12 +306,12 @@ def load_data_images(dut: Any) -> None:
         model.sim_load_image.value = 1
 
 
-async def generate_divided_clock(dut: Any) -> None:
+async def generate_divided_clock(dut: Any, *, core_clock: Any | None = None) -> None:
     """Generate i_clk_div4 with four times i_clk's period and aligned rising edges.
 
     The dc_fifo crosses binary pointers without Gray coding and requires
     related clocks. Toggle i_clk_div4 on every second i_clk rising edge.
-    Apply power-on reset during the first eight core clock edges.
+    Hold power-on reset for eight SoC edges and at least four CPU edges.
     """
     clock_edge = RisingEdge(dut.i_clk)
     divided = dut.i_clk_div4
@@ -298,14 +319,20 @@ async def generate_divided_clock(dut: Any) -> None:
     # Establish idle inputs before HDL evaluates a possible startup clock edge.
     dut.i_power_on_rst.value = Immediate(0)
     divided.value = Immediate(level)
-    cocotb.start_soon(_assert_power_on_reset(dut))
+    cpu_reset = cocotb.start_soon(
+        _assert_power_on_reset(
+            dut, cpu_clock(dut) if core_clock is None else core_clock
+        )
+    )
     for _ in range(4):
         await clock_edge
         await clock_edge
         level ^= 1
         divided.value = level
-    await ReadWrite()
-    dut.i_power_on_rst.value = 0
+    if cpu_reset.done():
+        await _release_power_on_reset(dut, cpu_reset)
+    else:
+        cocotb.start_soon(_release_power_on_reset(dut, cpu_reset))
     for _ in range(5):
         await clock_edge
         await clock_edge
@@ -4737,6 +4764,7 @@ async def test_real_program(dut: Any) -> None:
                 dut.i_external_interrupt.value = 0
             for _ in range(RESET_CYCLES):
                 await RisingEdge(dut.i_clk)
+            await wait_for_power_on_reset(dut)
             # Output qualifiers are arbitrary before the first completed reset.
             uart_monitor.clear()
             if line_monitor is not None:

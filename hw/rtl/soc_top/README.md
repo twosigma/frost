@@ -47,7 +47,7 @@ programming port and UART use `i_clk_div4`, derived from `i_clk`.
 | MSI stores | A FIFO of address/data pairs before the CPU-clocked IMSIC decoder; CPU stores reserve space before execution, and APLIC delivery waits for space |
 | Debug slice programming | A held request handshake acknowledged after the slice writer completes its BRAM writes |
 | Retirement diagnostics | Coherent snapshots of the latest PCs, IRQ status and accumulated retirement activity |
-| Reset | Asynchronous assertion and release only after both domains clock their reset chains |
+| System and fabric reset | Asynchronous assertion and release only after both domains clock their reset chains |
 
 The CPU time CSR observes a delayed snapshot of the SoC timer. A snapshot
 contains one complete timer value, including software writes. MTIP uses the
@@ -65,6 +65,11 @@ posting an interrupt. Presented AXI transactions can execute after reset
 release and have device side effects, as specified by the CPU's reset-drain
 contract.
 The Debug Module survives `ndmreset` and resets with the external reset.
+The separate power-on request clears debug transport ownership and the
+pending DMI request. Its CPU side uses `i_cpu_clk` in this configuration;
+its TCK side asserts asynchronously and can release independently. The
+CPU clock runs while power-on reset is held. The [RTL guide](../README.md#build-and-simulation)
+describes the power-on contract.
 
 Debug CSR operations run beside the CPU. Debug-mode metadata accompanies
 each AXI write through AWUSER bit 0; the adapter holds that bit while AW

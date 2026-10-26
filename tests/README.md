@@ -170,8 +170,10 @@ FROST_RANDOM_START_SEED=1 ./scripts/frost.py cocotb hello_world
 FROST_RANDOM_START_SEED=1 FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb hello_world
 ```
 
-The mode uses `--x-initial unique`, `--x-assign unique`, and Verilator's
-seeded random reset. `FROST_RANDOM_START` selects unknown values for hardware
+The mode uses `--x-initial unique`, `--x-assign unique`, `--x-initial-edge`,
+and Verilator's seeded random reset. Initial edges let an asynchronous reset
+that starts asserted trigger its consumers while their clock is stopped.
+`FROST_RANDOM_START` selects unknown values for hardware
 declaration initializers. Verilator turns those unknowns into random bits.
 RAM wrappers, live-value tables, and the store queue forwarding array fill
 each row with seeded random words, including every bit of wide entries.
@@ -189,7 +191,11 @@ this pulse alongside the ordinary system-reset sequence. Warm resets leave
 the transport handshake intact. Changing only the seed reuses the compiled
 model; enabling or disabling the mode rebuilds it.
 
-The shared SoC bench loads data images after eighteen core clock edges, while
+The shared bench holds power-on reset for eight SoC clock edges and at least
+four CPU clock edges. Divided-clock generation continues while it waits for
+a slow or delayed CPU clock. System reset stays asserted through that wait.
+
+The shared SoC bench loads data images after eighteen SoC clock edges, while
 system reset is held. This supplies the image after the memory controllers
 have reset and programming writes have drained, including writes to the
 data SRAM macros. The load covers data BRAM, data SRAM and behavioral DDR.
@@ -473,8 +479,10 @@ reset cancellation and reset release with a stopped clock. The explicit
 targets check register mapping, subsystem reset and fabric reset across the
 CPU boundary at those CPU periods in ps, with a SoC period of 3000 ps. The
 7000 ps configuration runs in the unit-test CI job.
-`soc_async_reset` and `frost_async_reset` targets check retained writes,
-interrupted debug mirrors and external reset with a stopped SoC clock.
+`soc_async_reset` checks retained writes and interrupted debug mirrors.
+`frost_async_reset` checks paired system reset with a stopped CPU or SoC
+clock and power-on reset with a stopped SoC clock. Both targets check that
+cold reset waits for a delayed CPU clock while programming clocks continue.
 
 ## Coverage
 

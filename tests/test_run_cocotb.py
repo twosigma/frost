@@ -243,7 +243,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="hello_world",
         include_in_pytest=False,
-        description="External reset assertion while the SoC clock is stopped",
+        description="Power-on reset and paired reset with stopped CPU or SoC clocks",
         extra_env=(("FROST_CPU_PERIOD_PS", "7000"),),
         verilator_extra_args=("-GENABLE_CACHED_TIER=0",),
     ),

@@ -579,7 +579,7 @@ endif
 # ASIC power-up: uninitialized state and hardware declaration initializers
 # take seeded random values. Image loading and verification state are separate.
 ifeq ($(FROST_RANDOM_START),1)
-COMPILE_ARGS += --x-assign unique --x-initial unique +define+FROST_RANDOM_START
+COMPILE_ARGS += --x-assign unique --x-initial unique --x-initial-edge +define+FROST_RANDOM_START
 COCOTB_PLUSARGS += +verilator+rand+reset+2 +verilator+seed+$(FROST_RANDOM_START_VERILATOR_SEED)
 endif
 
