@@ -2110,6 +2110,55 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GSIM_FAST_MAINT=1",
         ),
     ),
+    "coherent_cpu_faults": CocotbRunConfig(
+        python_test_module="cocotb_tests.integration.test_coherent_cpu_faults",
+        hdl_toplevel_module="cpu_top",
+        description="Coherent SC refill errors preserve the virtual fault address.",
+        verilator_extra_args=(
+            "--assert",
+            "-GCOHERENT_CLUSTER=1",
+            "-GENABLE_COHERENCE=0",
+            "-GENABLE_CACHED_TIER=1",
+            "-GL1D_WAYS=1",
+            "-GL1I_WAYS=1",
+            "-GL2_WAYS=1",
+            "-GL1_CACHE_BYTES=256",
+            "-GL1I_CACHE_BYTES=256",
+            "-GL2_CACHE_BYTES=128",
+        ),
+    ),
+    "coherent_cut": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_cut",
+        hdl_toplevel_module="tomasulo_wrapper",
+        description="The coherent cut covers observations, delayed LR, and stale fills.",
+        verilator_extra_args=("-GCOHERENT_CLUSTER=1", "--assert"),
+    ),
+    "coherence_cluster": CocotbRunConfig(
+        verilator_extra_args=("--assert",),
+        python_test_module="cocotb_tests.cache.test_coherence_cluster",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="One hart, DMA, pending stores, recalls, and atomic ownership",
+    ),
+    "coherence_home": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home",
+        hdl_toplevel_module="coherence_home",
+        description="Serialized acquisitions, dirty recalls, completion pins, and victim locks",
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=1024",
+        ),
+    ),
+    "coherence_home_equal": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home",
+        hdl_toplevel_module="coherence_home",
+        description="Coherent home with equal private and shared line sizes",
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=512",
+            "-GLINE_BYTES=32",
+            "-GULTRA=0",
+        ),
+    ),
     "coherence_endpoints": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_endpoints",
         hdl_toplevel_module="coherence_endpoints_test_harness",
@@ -3413,6 +3462,35 @@ for _program in ("dma_torture", "nic_loopback", "itlb_test"):
                 f"-DFROST_DDR_CAPACITY_LOG2_BYTES={_capacity_log2}",
             ),
         )
+
+# The coherent cluster is selected explicitly for each program build.
+for _program in (
+    "hello_world",
+    "isa_test",
+    "coremark",
+    "dma_torture",
+    "nic_loopback",
+    "ptw_coherence_test",
+    "smc_fencei_test",
+    "amo_irq_torture_sim",
+):
+    _base_config = TEST_REGISTRY[_program]
+    _coherent_env = _base_config.extra_env
+    _coherent_args = _base_config.verilator_extra_args
+    if _program == "ptw_coherence_test":
+        _coherent_env += (("COCOTB_MAX_CYCLES", "1000000"),)
+    elif _program == "amo_irq_torture_sim":
+        _coherent_env = (("EXTRA_CFLAGS", "-DAMO_TORTURE_ITERS=64"),)
+    elif _program == "smc_fencei_test":
+        _coherent_env += (("COCOTB_MAX_CYCLES", "1000000"),)
+        _coherent_args += ("-GL1_CACHE_BYTES=4096", "-GL1I_CACHE_BYTES=4096")
+    TEST_REGISTRY[f"coherent_{_program}"] = replace(
+        _base_config,
+        description=f"The coherent cluster runs {_program}.",
+        include_in_pytest=True,
+        extra_env=_coherent_env,
+        verilator_extra_args=(*_coherent_args, "-GCOHERENT_CLUSTER=1", "--assert"),
+    )
 
 # Registry entries that build an app and are collected by pytest. The unit
 # benches have no app_name and are excluded. Entries with the same Verilator

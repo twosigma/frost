@@ -63,6 +63,41 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "coherent_cpu.sby",
+        "Coherent selected SC ownership, load parking, and reservation cuts.",
+        tasks=("coh_sc_selected_prove", "coh_lq_cut_prove"),
+    ),
+    FormalTarget(
+        "coherence_l1d.sby",
+        "The coherent L1 preserves pending stores, cuts, and exact atomic writes.",
+        tasks=("coh_l1d_bmc",),
+    ),
+    FormalTarget(
+        "coherence_home.sby",
+        "The coherent home preserves pins, dirty replies, and victim ownership.",
+        tasks=(
+            "coh_home_bmc",
+            "coh_home_wb_prove",
+            "coh_home_victim_cover",
+            "coh_home_error_cover",
+        ),
+    ),
+    FormalTarget(
+        "coherence_array.sby",
+        "A watched byte preserves masked updates across serialized array operations.",
+        tasks=("coh_array_bmc", "coh_array_uram_bmc"),
+    ),
+    FormalTarget(
+        "coherence_control.sby",
+        "Coherent request arbitration, bridge lifetime, and atomic protection.",
+        tasks=(
+            "coh_arbiter_prove",
+            "coh_reader_prove",
+            "coh_ingress_prove",
+            "coh_atomic_guard_prove",
+        ),
+    ),
+    FormalTarget(
         "coherence_endpoints.sby",
         "Coherent endpoint payloads, identities and cancellation lifetimes",
         tasks=(
@@ -727,6 +762,25 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    (
+        "coh_sc_selected_prove",
+        "Selected SC payload survives flushes through its result.",
+    ),
+    (
+        "coh_lq_cut_prove",
+        "Coherent cuts block load completion and reservation renewal.",
+    ),
+    ("coh_l1d_bmc", "Coherent L1 pending ownership and independent probes."),
+    ("coh_home_wb_prove", "Detached victim ownership through successful B."),
+    ("coh_home_victim_cover", "Victim allocation, delayed B, and blocked refetch."),
+    ("coh_home_error_cover", "Failed B preserves dirty victim ownership."),
+    ("coh_home_bmc", "Coherent home completion, merge, and victim locks."),
+    ("coh_array_bmc", "Coherent array byte values and held responses."),
+    ("coh_array_uram_bmc", "Coherent array byte values through registered RAM ports."),
+    ("coh_arbiter_prove", "Coherent arbitration preserves held payloads."),
+    ("coh_reader_prove", "Read identities survive through release."),
+    ("coh_ingress_prove", "DMA identities survive through release."),
+    ("coh_atomic_guard_prove", "Atomic protection covers retirement and release."),
     ("layout32", "Coherent channel layout at 32 physical address bits"),
     ("layout56", "Coherent channel layout at 56 physical address bits"),
     ("request_prove", "Unbounded coherent endpoint safety"),

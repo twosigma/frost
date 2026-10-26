@@ -372,6 +372,19 @@ it, so no stale dependency reaches a new load. A fenced load cannot launch,
 forward or hit the L0, and if it is staged it gives up the staging register
 (`older_amo_write_pending`) so the AMO can reach the memory port.
 
+## Coherent cluster selection
+
+`COHERENT_CLUSTER=1` supplies request kind, size and ROB tag to the coherent
+L1D. Cached AMOs require effective ROB-head protection before launch. LR
+records its exact physical address and W/D size with a 32-byte reservation
+set. A matching write or cut clears that reservation. The delayed-response
+suppression flag prevents an invalidated LR from recreating it.
+
+The local cut hold blocks L0 hits, forwarding and memory-read launch during
+capture. Returned-load observations remain replayable after their LQ rows
+are released. A load matching a pending store or selected atomic is parked
+until its holder changes. Other rows remain eligible for issue.
+
 ## DMA coherence
 
 A DMA agent below the L1D can write memory the core is reading. The wrapper's

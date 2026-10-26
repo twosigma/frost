@@ -4275,6 +4275,7 @@ def test_post_synth_promotion_stamps_the_netlist_perf_counters(
     assert json.loads(stamp.read_text()) == {
         "schema": "x3_netlist_config_v4",
         "perf_counters": int(perf_counters),
+        "coherent_cluster": False,
         "cpu_base_clock_hz": 322265625,
         "cpu_clock_div": int(divider),
         "ddr_capacity_log2_bytes": 30,
@@ -5078,3 +5079,23 @@ def test_placement_sweep_rejects_changed_post_opt(
         tmp_path, "place", ["Explore"], "placer", "unused", max_jobs=1
     )[0]
     assert not (work / "post_place_gate_binding.json").exists()
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_coherent_cluster_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selected: bool
+) -> None:
+    """The cluster selection survives checkpoint promotion and gates resume."""
+    monkeypatch.setenv("FROST_COHERENT_CLUSTER", str(int(selected)))
+    monkeypatch.setenv("FROST_DDR_CAPACITY_LOG2_BYTES", "30")
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    source, dest = tmp_path / "source", tmp_path / "dest"
+    source.mkdir()
+    dest.mkdir()
+    (source / "post_synth.dcp").write_bytes(b"checkpoint")
+    fpga_build.copy_results_to_main_work(source, dest, "post_synth.dcp", "post_synth")
+    config = json.loads((dest / fpga_build.X3_NETLIST_CONFIG_NAME).read_text())
+    assert config["coherent_cluster"] == selected
+    assert fpga_build.require_x3_netlist_configuration(dest, 1, 30, selected)
+    assert not fpga_build.require_x3_netlist_configuration(dest, 1, 30, not selected)
+    assert fpga_build.is_reference_x3_netlist(dest) == (not selected)

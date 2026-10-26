@@ -4,7 +4,8 @@
 
 ## Internal structure
 
-`cpu_top` composes one `frost_hart` with one `frost_cluster_memory`:
+`cpu_top` composes one `frost_hart` with one `frost_cluster_memory`.
+The following table describes the default `COHERENT_CLUSTER=0` selection:
 
 | Module | Contents |
 | --- | --- |
@@ -163,21 +164,26 @@ The ingress registers each accepted request before cache admission. It holds the
 
 Requests must be aligned to 32 bytes and remain within the configured cached memory region. An invalid address is not accepted and triggers a simulation assertion. Its sequencer probes dirty L1D lines, orders traffic at L2, and coordinates writes with the load queue and reservation/SC windows. FROST connects its NIC and DMA test engine, both AXI4 masters, through `axi_mux` and `axi_coherent_bridge` in `soc_top` ([AXI library](../lib/axi/README.md)). External masters accessing cached memory must use this path; bypassing it on the external AXI fabric is noncoherent. AMOs use CPU serialization and this coherence protocol, not AXI exclusives. Uncached atomic memory must be private to the hart or protected by the integrating system from competing noncoherent masters.
 
-L2 is inside this single-hart `cpu_top`. Neither the outgoing plain AXI4
-master nor this DMA-oriented ingress constitutes a complete inter-tile SMP
-coherence protocol. Two `cpu_top` instances connected to shared RAM are not
-therefore coherent. Inside the tile, `frost_hart` holds the per-hart blocks
-and `frost_cluster_memory` the shared L2, but the link between them carries
-the single-hart protocol: line ports from the one L1D and L1I, and probes
-from the DMA sequencer into that L1D. The [SMP plan](../../../ROADMAP.md#smp)
-replaces it with a coherent interface inside the cluster, which a second
-hart needs.
+L2 is inside this single-hart `cpu_top`. The outgoing AXI master does not
+provide coherence between separate CPU instances.
 
-The [coherent endpoint library](../lib/cache/README.md#coherent-endpoint-library)
-defines standalone channel types and ownership records. It is selected by
-`coherence.f` for unit elaboration. The production hierarchy has no instances
-of these endpoints and exposes no coherent CPU selection. `ENABLE_COHERENCE`
-controls the DMA ingress described above.
+`COHERENT_CLUSTER=1` selects the [coherent one-hart cache path](../lib/cache/README.md#coherent-one-hart-cache-path).
+`frost_hart` contains `coherent_hart_cache`, and `frost_cluster_memory`
+contains `coherence_home`. Their D/P/R/W/WA/G/C/U channels carry permission,
+probe, dirty-data and completion ownership. The uncached ports and memory
+fabric use the same interfaces in both selections. The coherent queues and
+atomic ownership registers belong only to the selected generate branches.
+`COHERENT_CLUSTER=0` selects the line-port hierarchy without these queues.
+`ENABLE_COHERENCE` controls DMA ingress independently of this selection.
+`ENABLE_CACHED_TIER=0` builds neither cache path.
+
+The coherent selection has one hart with S/M permissions and one serialized
+home acquisition. It does not provide a second hart or E permission.
+Reset and fatal handling cover the whole cluster. Debug halt and WFI leave
+cache, probe and completion service running. The X3 build accepts
+`--coherent-cluster` and records the selection as `coherent_cluster` in its
+netlist configuration. The option defaults to false, and checkpoint reuse
+requires the recorded selection to match.
 
 ## BRAM-only profile
 

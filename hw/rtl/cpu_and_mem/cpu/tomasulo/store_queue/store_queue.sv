@@ -29,6 +29,7 @@
  */
 
 module store_queue #(
+    parameter bit COHERENT_CLUSTER = 1'b0,
     parameter bit CACHE_NORMAL_MEMORY = 1'b0,
     parameter int unsigned DEPTH = riscv_pkg::SqDepth,  // 8
     // Rely on dispatch to check SQ room. Its conservative registered full flags
@@ -44,6 +45,12 @@ module store_queue #(
     parameter longint unsigned CACHED_BASE = riscv_pkg::DdrBase,
     parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes
 ) (
+    input logic i_coherent_store_pending = 1'b0,
+    input logic i_coherent_store_ready = 1'b1,
+    input logic i_coherent_sc_pending = 1'b0,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_coherent_sc_tag = '0,
+    output logic o_coherent_write_sc,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_write_tag,
     input logic i_clk,
     input logic i_rst_n,
 
@@ -871,10 +878,16 @@ module store_queue #(
     end
   end
 
+  logic coherent_selected_sc, coherent_launch_ok;
+  assign coherent_selected_sc = i_coherent_sc_pending && sq_is_sc[drain_idx_q] &&
+      sq_rob_tag[drain_idx_q] == i_coherent_sc_tag;
+  assign coherent_launch_ok = !i_coherent_store_pending &&
+      (!i_coherent_sc_pending || coherent_selected_sc) &&
+      (!mem_write_addr_cached_for_plain_next || i_coherent_store_ready || coherent_selected_sc);
   assign drain_ready = sq_valid[drain_idx_q] &&
                        (sq_committed[drain_idx_q] || uncached_precommit_ready) &&
                        sq_addr_valid[drain_idx_q] && sq_data_valid[drain_idx_q] &&
-                       !sq_sent[drain_idx_q];
+                       !sq_sent[drain_idx_q] && (!COHERENT_CLUSTER || coherent_launch_ok);
 
   logic [       riscv_pkg::XLEN-1:0] mem_write_addr_next;
   logic [riscv_pkg::MemDataBits-1:0] mem_write_data_next;
@@ -947,6 +960,8 @@ module store_queue #(
     o_mem_write_data <= mem_write_data_next;
     o_mem_write_byte_en <= mem_write_byte_en_next;
     o_mem_write_size <= sq_size[drain_idx_q];
+    o_coherent_write_sc <= sq_is_sc[drain_idx_q];
+    o_coherent_write_tag <= sq_rob_tag[drain_idx_q];
     o_mem_write_is_mmio <= mem_write_is_mmio_next;
     o_mem_write_buffered <= PRECISE_UNCACHED && CACHE_NORMAL_MEMORY &&
         !sq_is_sc[drain_idx_q] && !mem_write_is_mmio_next &&

@@ -63,7 +63,25 @@ identity reuse, independent probe queues, keyed PutAck cancellation, errors,
 and cluster reset. The wide case uses 56-bit physical addresses and 16 fill
 identities. `test_coherence_endpoint_build.py` elaborates and synthesizes these
 geometries, checks the six-bit home-ID capacity boundary, rejects invalid
-parameters, and checks that the production filelist excludes the endpoints.
+parameters, and checks that the default elaboration excludes coherent instances.
+
+`coherence_home`, `coherence_home_equal`, `coherence_cluster` and `coherent_cut`
+check the one-hart S/M controller, inclusion, pending writes, atomic bridges
+and CPU observation cuts. They run in the unit shard. The DMA/NIC program
+shard also selects `COHERENT_CLUSTER=1` for `coherent_hello_world`,
+`coherent_isa_test`, `coherent_coremark`, `coherent_dma_torture`,
+`coherent_nic_loopback`, `coherent_ptw_coherence_test`,
+`coherent_smc_fencei_test` and `coherent_amo_irq_torture_sim` in both memory
+configurations. The coherent selection leaves whole-L1D maintenance active in simulation. The synthesis
+checks include cached, cache-disabled and DMA-disabled coherent CPU builds,
+and both line sizes at 32-bit and 56-bit physical widths.
+
+The `coherent_cpu_faults` bench injects SC refill errors after clean replacement.
+It checks architectural trap cause, EPC and virtual fault address with and without
+translation. A delayed SC refill also checks that debug entry follows the
+exact selected write and release. The coherent FENCE.I program uses 4 KiB
+private caches and full L1D maintenance sweeps. The coherent AMO interrupt
+workload uses 64 bursts of 64 AMOs, covering two rotations of its counters.
 
 ```bash
 ./scripts/frost.py cocotb --list-tests                                        # every target, with a description
@@ -128,7 +146,7 @@ and startup code reinitialize the kernel, heap, and application state.
 
 | Entries that run once | Reason |
 | --- | --- |
-| `coremark_pro_loops`, `coremark_pro_nnet`, `lq_stale_slot_probe` | Run time |
+| `coherent_amo_irq_torture_sim`, `coherent_coremark`, `coremark_pro_loops`, `coremark_pro_nnet`, `lq_stale_slot_probe` | Run time |
 | `opensbi_smoke` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
 | `amo_irq_torture_sim`, `coremark`, `coremark_profile`, `coremark_pro_core`, `coremark_pro_linear_alg`, `coremark_pro_radix2`, `itlb_test` (and its aperture variants), `pde_return_hazard`, `restore_window_stress`, `sprintf_test`, `tick_torture_sim`, `tomasulo_perf`, `wfi_lost_tick`, `window_skip_repro` | Each kind of state it leaves for the reset is also left by a shorter application that runs twice, and where CI collects its coverage, its second run reaches no coverage point that another application misses |
 
