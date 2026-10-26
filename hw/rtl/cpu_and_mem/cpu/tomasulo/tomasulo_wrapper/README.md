@@ -271,24 +271,27 @@ reports any fault.
 ## Store-conditional resolution
 
 MEM_RS issues an SC like a store: its address and data go to the SQ. The SC
-does not complete at issue. It waits in `sc_pending_unit`, and fires only when:
+does not complete at issue. It waits in `sc_pending_unit`. Selection requires:
 
-- its ROB entry is at the head,
-- the SQ is committed-empty,
-- its physical address is known (under data translation the data MMU supplies
+- its ROB entry at the head,
+- an empty committed SQ,
+- a known physical address (under data translation the data MMU supplies
   it after issue),
 - and nothing else is using or about to use the MEM CDB slot: no LQ result, no
   pending MEM adapter, no registered store fault, and no earlier SC result
-  still waiting.
+  awaiting consumption.
 
-The DMA coherence port can also hold SC fires around a DMA write.
+With `COHERENT_CLUSTER=0`, the DMA coherence port can hold SC fires around a
+DMA write.
 
 With `COHERENT_CLUSTER=1`, a cached SC compares the exact physical address
 and W/D size recorded by LR. The reservation set is a 32-byte sector. Local
 writes and DMA invalidations to that sector clear it; read probes preserve
 it. The SC table holds the virtual address for access-fault completion.
 A selected SC owns an immutable request and result context independently
-of the speculative SC table. The CPU arms interrupt/debug protection before
+of the speculative SC table. Its completion requires the matching home
+response and an available result slot, independently of SQ committed-empty
+status. The CPU arms interrupt/debug protection before
 request presentation. Home CheckSC and the conditional write recheck the
 reservation. A successful cached SC retires before its tagged SQ write;
 that write blocks younger retirement and drain completion until it finishes.
