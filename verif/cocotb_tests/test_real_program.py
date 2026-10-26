@@ -363,9 +363,9 @@ def hold_nic_without_mac_clocks(dut: Any, access_signals: tuple[Any, ...]) -> No
     Both MAC clocks stay low and their clock-OK levels are low, so the NIC's
     reset controller keeps the MAC domains in reset and neither direction
     READY (hw/rtl/peripherals/nic/README.md). FROST_NIC_MAC_CLOCKS=0 selects
-    this mode. Each access signal triggers fail_on_nic_access: the SoC's
-    register-window select for applications. TestRIG passes no access signals
-    because its device requests use the harness RAM.
+    this mode. Each access signal triggers fail_on_nic_access. The SoC's
+    nic_access_q records register transactions after local reset. TestRIG
+    ties off the NIC register port and supplies no access signals.
     """
     dut.i_nic_tx_clk.value = 0
     dut.i_nic_rx_clk.value = 0

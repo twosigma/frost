@@ -47,6 +47,7 @@ module axil_checker #(
 );
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  logic reset_seen_q = 1'b0;
   logic aw_wait_q, w_wait_q, b_wait_q, ar_wait_q, r_wait_q;
   logic [ADDR_BITS+2:0] aw_q, ar_q;
   logic [71:0] w_q;
@@ -55,15 +56,16 @@ module axil_checker #(
   int unsigned aw_count, w_count, ar_count;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
+      reset_seen_q <= 1'b1;
       aw_wait_q <= 1'b0;
-      w_wait_q  <= 1'b0;
-      b_wait_q  <= 1'b0;
+      w_wait_q <= 1'b0;
+      b_wait_q <= 1'b0;
       ar_wait_q <= 1'b0;
-      r_wait_q  <= 1'b0;
-      aw_count  <= 0;
-      w_count   <= 0;
-      ar_count  <= 0;
-    end else begin
+      r_wait_q <= 1'b0;
+      aw_count <= 0;
+      w_count <= 0;
+      ar_count <= 0;
+    end else if (reset_seen_q) begin
       if (aw_wait_q)
         assert (i_awvalid && aw_q == {i_awaddr, i_awprot})
         else $error("axil_checker: AW withdrawn or changed before AWREADY");

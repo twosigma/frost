@@ -524,10 +524,14 @@ module soc_top #(
 
 `ifndef SYNTHESIS
   // Observe NIC-window accesses in both cached-tier configurations.
+  logic nic_access_armed_q = 1'b0;
   logic nic_access_q;
   always_ff @(posedge i_clk) begin
-    nic_access_q <= riscv_pkg::pma_device_quadrant(riscv_pkg::XLEN'(data_memory_address)) &&
-        (data_memory_address[31:12] == NicBase[31:12]);
+    if (soc_axi_rst) nic_access_armed_q <= 1'b1;
+    nic_access_q <= nic_access_armed_q && !soc_axi_rst && local_fire &&
+        riscv_pkg::pma_device_quadrant(
+        riscv_pkg::XLEN'(data_memory_address)
+    ) && (data_memory_address[31:12] == NicBase[31:12]);
   end
 `endif
   logic mmio_response_capture;
