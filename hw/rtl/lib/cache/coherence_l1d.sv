@@ -202,7 +202,7 @@ module coherence_l1d #(
   coh_g_t grant, grant_q;
   logic done_q, done_ready, written_q;
   logic [1:0] done_status_q;
-  logic pending_blocked, read_blocked;
+  logic pending_blocked;
 
   assign read_failure = active && phase_q == Idle &&
       !(probe_valid_q && !o_r_valid) && !i_p_valid && !(i_sc_valid && o_sc_ready) &&
@@ -332,6 +332,40 @@ module coherence_l1d #(
   assign o_wa_ready = |wb_wa_ready;
   assign freeze = {1'b0, freeze_slot_q, 1'b0, freeze_addr_q, freeze_data_q, freeze_maintenance_q};
 
+  logic [8*ADDR_WIDTH-1:0] rd_addr_flat;
+  logic [15:0] rd_kind_flat;
+  logic [ADDR_WIDTH-1:0] rd_selected_addr;
+  for (genvar read_slot = 0; read_slot < 8; read_slot++) begin : gen_read_payload
+    assign rd_addr_flat[read_slot*ADDR_WIDTH+:ADDR_WIDTH] = rd_addr_q[read_slot];
+    assign rd_kind_flat[read_slot*2+:2] = rd_kind_q[read_slot];
+  end
+  coherence_read_select #(
+      .ADDR_WIDTH(ADDR_WIDTH)
+  ) read_select (
+      .i_clk(i_clk),
+      .i_valid(rd_valid_q),
+      .i_ready(rd_ready_q),
+      .i_miss(rd_miss_q),
+      .i_kind(rd_kind_flat),
+      .i_addr(rd_addr_flat),
+      .i_round_robin(rd_rr_q),
+      .i_pending(pending_q),
+      .i_pending_addr(pending_addr_q),
+      .i_atomic(atomic_q),
+      .i_atomic_addr(atomic_addr_q),
+      .i_wb_live(wb_live),
+      .i_wb_addr(wb_addr),
+      .i_atomic_protected(i_atomic_protected),
+      .i_request_live(request_live),
+      .i_acquisition_store(acquisition_store_q),
+      .i_acquisition_sc(acquisition_sc_q),
+      .i_acquisition_read(acquisition_read_q),
+      .i_wb_free(wb_free),
+      .o_found(rd_candidate),
+      .o_index(rd_pick),
+      .o_address(rd_selected_addr)
+  );
+
   always_comb begin
     wb_free = 1'b0;
     wb_free_slot = 1'b0;
@@ -350,32 +384,12 @@ module coherence_l1d #(
       if (wb_live[slot] && wb_addr[slot][ADDR_WIDTH-1:5] == pending_addr_q[ADDR_WIDTH-1:5])
         pending_blocked = 1'b1;
     end
-    rd_candidate = 1'b0;
-    rd_pick = '0;
     rd_response = 1'b0;
-    rd_result = '0;
-    read_blocked = 1'b0;
+    rd_result   = '0;
     for (int index = 7; index >= 0; index--) begin
       if (rd_ready_q[3'(rd_response_rr_q+3'(index))]) begin
         rd_response = 1'b1;
         rd_result   = 3'(rd_response_rr_q + 3'(index));
-      end
-      read_blocked = (pending_q && rd_addr_q[3'(rd_rr_q + 3'(index))][ADDR_WIDTH-1:5] ==
-          pending_addr_q[ADDR_WIDTH-1:5]) ||
-          (atomic_q && rd_addr_q[3'(rd_rr_q + 3'(index))][ADDR_WIDTH-1:5] ==
-              atomic_addr_q[ADDR_WIDTH-1:5]);
-      for (int slot = 0; slot < 2; slot++) begin
-        read_blocked |= wb_live[slot] && wb_addr[slot][ADDR_WIDTH-1:5] ==
-            rd_addr_q[3'(rd_rr_q + 3'(index))][ADDR_WIDTH-1:5];
-      end
-      if (rd_valid_q[3'(rd_rr_q + 3'(index))] && !rd_ready_q[3'(rd_rr_q + 3'(index))] &&
-          !read_blocked &&
-          (rd_kind_q[3'(rd_rr_q + 3'(index))] != ReadAMO || i_atomic_protected) &&
-          !(request_live && !acquisition_store_q && !acquisition_sc_q &&
-          acquisition_read_q == 3'(rd_rr_q + 3'(index))) &&
-          (!rd_miss_q[3'(rd_rr_q + 3'(index))] || (!request_live && wb_free))) begin
-        rd_candidate = 1'b1;
-        rd_pick = 3'(rd_rr_q + 3'(index));
       end
     end
     exclude = '0;
@@ -668,7 +682,7 @@ module coherence_l1d #(
               maint_turn_q <= 1'b1;
               operation_q <= ReadOp;
               selected_read_q <= rd_pick;
-              lookup_addr_q <= rd_addr_q[rd_pick];
+              lookup_addr_q <= rd_selected_addr;
               rd_rr_q <= rd_pick + 1'b1;
               phase_q <= Lookup;
             end else if (maint_eligible) begin
