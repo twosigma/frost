@@ -28,9 +28,12 @@ one AXI4 master and an optional coherent-agent ingress. `cpu_top` contains the
 pipeline, MMUs, caches and memory-system logic, as one hart (`frost_hart`)
 and the shared L2 and AXI master below it (`frost_cluster_memory`). `soc_top`
 owns low BRAM, peripheral registers, timers/APLIC, debug transport, NIC, DMA
-and the DDR connection. `i_clk` runs the CPU and SoC logic; `i_clk_div4` runs
-UART and programming logic. The standalone CPU has only one clock; CDC
-belongs in its integrating wrapper.
+and the DDR connection. `i_clk` runs SoC logic; `i_clk_div4` runs UART and
+programming logic. With the default `ASYNC_CPU_CLOCK=0`, the CPU also uses
+`i_clk`. With `ASYNC_CPU_CLOCK=1`, `i_cpu_clk` runs the CPU, coherent bridge,
+IMSIC decoder and Debug Module. AXI asynchronous FIFOs and control
+synchronizers in `soc_top` connect those domains. The standalone CPU has
+one clock; its integrating wrapper owns clock crossings.
 
 | Stage | Main files | Role |
 |-------|------------|------|
@@ -290,7 +293,8 @@ against misaligned-address and page faults.
 IMSIC pages accept only aligned 32-bit stores, at offset 0 for little-endian
 identity data or offset 4 for big-endian data. Other sizes and offsets are
 ignored. All loads in the 2 MiB window return zero without side effects.
-The SoC registers the decoded MSI before sending it to the addressed CPU.
+The SoC registers the decoded MSI in the CPU clock domain. With the optional
+asynchronous boundary, a FIFO carries the MSI stores to that decoder.
 
 MMIO is strongly ordered: accesses from one hart complete in program order
 without fences. Uncached stores retire only after B; reads wait for R. Errors
@@ -355,13 +359,21 @@ and DDR latency jitter or reordering for stress runs. The cache unit benches
 instantiate `frost_cache_hierarchy` directly, with smaller caches so that
 evictions are cheap to reach.
 
+`ASYNC_CPU_CLOCK=1` selects an independent CPU clock on `i_cpu_clk`.
+`CLK_FREQ_HZ` describes `i_clk`, including the NIC tick and UART divisors.
+The machine timer increments on `i_clk`; the CPU reads coherent snapshots
+through its time CSR. The boot address is a static parameter. Reset release
+waits for both clocks. The [SoC guide](soc_top/README.md) describes the
+crossings and reset ownership.
+
 ## Parameters
 
 The main parameters; `frost.sv` documents the rest.
 
 | Module | Parameter | Default | Description |
 |--------|-----------|---------|-------------|
-| `frost.sv` | `CLK_FREQ_HZ` | `322265625` | CPU clock frequency |
+| `frost.sv` | `CLK_FREQ_HZ` | Defined in `frost.sv` | SoC clock frequency |
+| `frost.sv` | `ASYNC_CPU_CLOCK` | `0` | 1 selects the independent `i_cpu_clk` input and asynchronous CPU boundary |
 | `frost.sv` | `MEM_SIZE_BYTES` | `2 ** 18` | Low BRAM size (256 KiB); instruction fetch reaches its first 128 KiB (`riscv_pkg::LowBramCodeAddrBits`) |
 | `frost.sv` | `SIM_TIMER_SPEEDUP` | `1` | `mtime` increment per cycle (simulation) |
 | `frost.sv` | `CACHED_BASE` | `32'h8000_0000` | Cached-region base address |

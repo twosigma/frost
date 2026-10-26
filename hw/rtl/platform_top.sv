@@ -20,6 +20,7 @@
   coherent-agent port. The SoC owns board memory, peripheral and debug CDC.
 */
 module platform_top #(
+    parameter bit ASYNC_CPU_CLOCK = 1'b0,
     parameter bit CACHE_NORMAL_MEMORY = 1'b1,
     parameter logic [63:0] BOOT_ADDR = 64'd0,
     parameter int unsigned MEM_SIZE_BYTES = 2 ** 17,
@@ -84,7 +85,7 @@ module platform_top #(
     // On-silicon boot-hang classifier that can take over the console UART.
     // Keep it default-off for normal interactive software and Linux bring-up.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,
-    // Triage intervals in core cycles (about 2.8 s and 1 s at 322 MHz).
+    // Triage intervals in SoC clock cycles.
     parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd900_000_000,
     parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd322_265_625,
     // RISC-V debug transport: 1 = the generic 5-bit-IR JTAG TAP
@@ -95,7 +96,7 @@ module platform_top #(
     parameter int unsigned DEBUG_JTAG_TAP = 1,
     // CPU profiling counters (see cpu_ooo); disabled in production.
     parameter int unsigned PERF_COUNTERS = 0,
-    // Core clock frequency; sets the NIC's default TICK (cycles per
+    // SoC clock frequency; sets the NIC's default TICK (cycles per
     // microsecond).
     parameter int unsigned CLK_FREQ_HZ = 322265625,
     // The NIC's raw TX-to-RX loopback (see frost.sv): 1 for one MAC clock
@@ -103,6 +104,7 @@ module platform_top #(
     parameter int unsigned RAW_LOOPBACK = 1
 ) (
     input logic i_clk,
+    input logic i_cpu_clk = 1'b0,
     input logic i_clk_div4,  // Divided clock for the low-BRAM programming port
     input logic i_rst,
 
@@ -175,7 +177,7 @@ module platform_top #(
     // USE_BEHAVIORAL_DDR=1 or the cached tier is disabled. Transaction ids
     // are the L2's downstream ids (DdrAxiIdBits wide, board-fixed).
     // i_ddr_axi_rst (i_clk domain) is the reset of the interconnect behind
-    // these ports; the behavioral memory uses the CPU reset instead.
+    // these ports; the behavioral memory uses the fabric reset.
     input  logic                                 i_ddr_axi_rst,
     output logic                                 o_ddr_axi_awvalid,
     input  logic                                 i_ddr_axi_awready,
@@ -225,6 +227,7 @@ module platform_top #(
     output logic        o_nic_rx_block_lock
 );
 
+  wire cpu_clk = ASYNC_CPU_CLOCK ? i_cpu_clk : i_clk;
   logic cpu_rst;
   logic cpu_axi_rst;
   riscv_pkg::interrupt_t cpu_interrupts;
@@ -340,7 +343,7 @@ module platform_top #(
       .PERF_COUNTERS(PERF_COUNTERS),
       .ENABLE_COHERENCE(ENABLE_CACHED_TIER != 0)
   ) cpu (
-      .i_clk(i_clk),
+      .i_clk(cpu_clk),
       .i_rst(cpu_rst),
       .i_axi_rst(cpu_axi_rst),
       .i_boot_addr(BOOT_ADDR),
@@ -428,6 +431,7 @@ module platform_top #(
   );
 
   soc_top #(
+      .ASYNC_CPU_CLOCK(ASYNC_CPU_CLOCK),
       .MEM_SIZE_BYTES(MEM_SIZE_BYTES),
       .SIM_TIMER_SPEEDUP(SIM_TIMER_SPEEDUP),
       .CACHED_BASE(64'(CACHED_BASE)),
@@ -451,6 +455,7 @@ module platform_top #(
       .RAW_LOOPBACK(RAW_LOOPBACK)
   ) soc (
       .i_clk(i_clk),
+      .i_cpu_clk(cpu_clk),
       .i_clk_div4(i_clk_div4),
       .i_rst(i_rst),
       .i_instr_mem_en(i_instr_mem_en),

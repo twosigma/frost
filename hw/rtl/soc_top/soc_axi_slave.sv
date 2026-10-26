@@ -25,7 +25,8 @@ module soc_axi_slave #(
     parameter int unsigned ID_BITS = 6,
     parameter int unsigned USER_BITS = 1,
     parameter longint unsigned DDR_BASE = riscv_pkg::DdrBase,
-    parameter longint unsigned DDR_BYTES = riscv_pkg::DdrCapacityBytes
+    parameter longint unsigned DDR_BYTES = riscv_pkg::DdrCapacityBytes,
+    parameter bit LOCAL_USER_ENABLE = 1'b0
 ) (
     input  logic                                 i_clk,
     input  logic                                 i_axi_rst,
@@ -114,7 +115,8 @@ module soc_axi_slave #(
     input  logic [                          4:0] i_ddr_axi_rid,
     input  logic [             DATA_BYTES*8-1:0] i_ddr_axi_rdata,
     input  logic [                          1:0] i_ddr_axi_rresp,
-    input  logic                                 i_ddr_axi_rlast
+    input  logic                                 i_ddr_axi_rlast,
+    output logic [                USER_BITS-1:0] o_local_user
 );
   localparam int unsigned OffsetBits = $clog2(DATA_BYTES);
   logic aw_valid_q, aw_sent_q, w_sent_q, aw_ddr_q, aw_bad_q;
@@ -307,5 +309,14 @@ module soc_axi_slave #(
         end
       end
     end
+  end
+  if (LOCAL_USER_ENABLE) begin : gen_local_user
+    logic [USER_BITS-1:0] aw_user_q;
+    always_ff @(posedge i_clk)
+      if (!i_axi_rst && i_axi_awvalid && o_axi_awready)
+        aw_user_q <= i_axi_awuser;
+    assign o_local_user = choose_read ? '0 : aw_valid_q ? aw_user_q : i_axi_awuser;
+  end else begin : gen_local_user_unused
+    assign o_local_user = '0;
   end
 endmodule

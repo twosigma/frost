@@ -97,6 +97,7 @@ MAKEFILE_BUILD_VARIABLES = (
     "FROST_COVERAGE",
     "FROST_COVERAGE_TOGGLE",
     "SIM_MEM_SIZE_BYTES",
+    "FROST_CPU_PERIOD_PS",
     "ENABLE_CACHED_TIER",
     "DDR_MODEL_BYTES",
     "DDR_MODEL_LATENCY",
@@ -223,6 +224,28 @@ UART_LINE_CHECK: dict[str, Any] = {
 
 # Single source of truth for every runnable test, keyed by test name.
 TEST_REGISTRY: dict[str, CocotbRunConfig] = {
+    "soc_async_reset": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_async_boundary",
+        hdl_toplevel_module="soc_top",
+        app_name="hello_world",
+        include_in_pytest=False,
+        description="CPU-only reset drains MSI and interrupted debug writes",
+        verilator_extra_args=(
+            "-GASYNC_CPU_CLOCK=1",
+            "-GENABLE_CACHED_TIER=1",
+            "-GUSE_BEHAVIORAL_DDR=0",
+            "-GMEM_SIZE_BYTES=262144",
+        ),
+    ),
+    "frost_async_reset": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_async_boundary",
+        hdl_toplevel_module="frost",
+        app_name="hello_world",
+        include_in_pytest=False,
+        description="External reset assertion while the SoC clock is stopped",
+        extra_env=(("FROST_CPU_PERIOD_PS", "7000"),),
+        verilator_extra_args=("-GENABLE_CACHED_TIER=0",),
+    ),
     # Real-program tests on the frost toplevel.
     "branch_pred_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -2439,6 +2462,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GQUIET_CYCLES=40", "-GREEMIT_CYCLES=100"),
     ),
     # Clock-crossing library and the NIC.
+    "axi_cdc": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_axi_cdc",
+        hdl_toplevel_module="axi_cdc",
+        description="Independent AXI channels across unrelated clocks and reset",
+        verilator_extra_args=("-GDATA_WIDTH=512", "-GID_WIDTH=6", "-GADDR_WIDTH=32"),
+    ),
+    "cdc_mailbox": CocotbRunConfig(
+        python_test_module="cocotb_tests.lib.test_cdc_mailbox",
+        hdl_toplevel_module="cdc_mailbox",
+        description="Coherent snapshots under backpressure and reset",
+    ),
+    "cdc_reset_pair": CocotbRunConfig(
+        python_test_module="cocotb_tests.lib.test_cdc_reset_pair",
+        hdl_toplevel_module="cdc_reset_pair",
+        description="Reset release with either clock stopped",
+    ),
     "async_fifo": CocotbRunConfig(
         python_test_module="cocotb_tests.lib.test_async_fifo",
         hdl_toplevel_module="async_fifo",
@@ -2688,6 +2727,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="SoC AXI4-Lite register mapping, CPU backpressure and reset recovery",
         verilator_extra_args=("-GENABLE_CACHED_TIER=1", "-GUSE_BEHAVIORAL_DDR=0"),
     ),
+    **{
+        f"soc_axil_async_{period}": CocotbRunConfig(
+            python_test_module="cocotb_tests.axi.test_soc_axil",
+            hdl_toplevel_module="soc_top",
+            description="AXI4-Lite registers behind the asynchronous CPU memory boundary",
+            verilator_extra_args=(
+                "-GENABLE_CACHED_TIER=1",
+                "-GUSE_BEHAVIORAL_DDR=0",
+                "-GASYNC_CPU_CLOCK=1",
+            ),
+            extra_env=(("FROST_SOC_AXIL_CPU_PERIOD_PS", str(period)),),
+            include_in_pytest=period == 7000,
+        )
+        for period in (1300, 3000, 7000)
+    },
     "soc_axil_no_cached_tier": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_soc_axil",
         hdl_toplevel_module="soc_top",
@@ -2698,6 +2752,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "soc_axi_slave": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_soc_axi_slave",
         hdl_toplevel_module="soc_axi_slave",
+        verilator_extra_args=("-GLOCAL_USER_ENABLE=1",),
         description="FROST AXI decode, narrow lanes and concurrent read/write ownership under errors and backpressure",
     ),
     "cpu_memory_fabric": CocotbRunConfig(
@@ -3321,6 +3376,23 @@ for _capacity_log2 in (30, 31, 32, 33, 34, 35, 37):
                 f"-GAXI_ADDR_WIDTH={_capacity_log2}",
             ),
         )
+    )
+
+# Independent CPU clocks use each program's checks and peripheral settings.
+for _program, _period in (
+    ("hello_world", 3000),
+    ("nic_loopback", 1300),
+    ("dma_torture", 7000),
+):
+    _base_config = TEST_REGISTRY[_program]
+    TEST_REGISTRY[f"async_{_program}"] = replace(
+        _base_config,
+        description=f"Independent CPU clock: {_program}, {_period} ps period",
+        extra_env=(
+            *_base_config.extra_env,
+            ("FROST_CPU_PERIOD_PS", str(_period)),
+            ("FROST_CPU_PHASE_PS", "700"),
+        ),
     )
 
 # Select wide apertures explicitly for programs otherwise using the default.

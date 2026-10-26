@@ -20,6 +20,7 @@
   The cached tier connects to DDR through the cache hierarchy and AXI bridge.
 */
 module soc_top #(
+    parameter bit ASYNC_CPU_CLOCK = 1'b0,
     parameter int unsigned NUM_HARTS = 1,
     parameter int unsigned AXI_ID_BITS = 6,
     parameter int unsigned AXI_USER_BITS = 1,
@@ -48,6 +49,7 @@ module soc_top #(
     parameter int unsigned RAW_LOOPBACK = 1
 ) (
     input logic i_clk,
+    input logic i_cpu_clk = 1'b0,
     input logic i_clk_div4,  // Divided clock for the low-BRAM programming port
     input logic i_rst,
 
@@ -120,7 +122,7 @@ module soc_top #(
     // USE_BEHAVIORAL_DDR=1 or the cached tier is disabled. Transaction ids
     // are the L2's downstream ids (DdrAxiIdBits wide, board-fixed).
     // i_ddr_axi_rst (i_clk domain) is the reset of the interconnect behind
-    // these ports; the behavioral memory uses the CPU reset instead.
+    // these ports; the behavioral memory uses the fabric reset.
     input  logic                                 i_ddr_axi_rst,
     output logic                                 o_ddr_axi_awvalid,
     input  logic                                 i_ddr_axi_awready,
@@ -250,10 +252,47 @@ module soc_top #(
   // Registered core reset combines external reset and ndmreset, for fanout.
   // Debug logic uses external reset alone so it survives debugger-requested
   // resets. Cache tags are swept on core reset.
+  wire  core_clk = ASYNC_CPU_CLOCK ? i_cpu_clk : i_clk;
   logic dbg_ndmreset;
+  logic soc_cpu_rst, soc_axi_rst;
+  logic debug_cpu_rst, debug_soc_rst;
+  logic reset_request_soc;
+  wire  fabric_reset_request = (USE_BEHAVIORAL_DDR != 0) ? i_rst : i_ddr_axi_rst;
+  if (ASYNC_CPU_CLOCK) begin : gen_clock_resets
+    logic core_reset_cpu;
+    cdc_reset_pair fabric_reset (
+        .i_arst (fabric_reset_request),
+        .i_a_clk(i_clk),
+        .i_b_clk(core_clk),
+        .o_a_rst(soc_axi_rst),
+        .o_b_rst(o_cpu_axi_rst)
+    );
+    cdc_reset_pair core_reset (
+        .i_arst (i_rst || dbg_ndmreset || fabric_reset_request),
+        .i_a_clk(i_clk),
+        .i_b_clk(core_clk),
+        .o_a_rst(reset_request_soc),
+        .o_b_rst(core_reset_cpu)
+    );
+    cdc_reset_pair debug_reset (
+        .i_arst (i_rst),
+        .i_a_clk(i_clk),
+        .i_b_clk(core_clk),
+        .o_a_rst(debug_soc_rst),
+        .o_b_rst(debug_cpu_rst)
+    );
+    assign o_cpu_rst = core_reset_cpu || o_cpu_axi_rst;
+  end else begin : gen_common_clock_resets
+    assign soc_axi_rst = fabric_reset_request;
+    assign o_cpu_axi_rst = soc_axi_rst;
+    assign o_cpu_rst = soc_cpu_rst;
+    assign reset_request_soc = i_rst || dbg_ndmreset;
+    assign debug_cpu_rst = i_rst;
+    assign debug_soc_rst = i_rst;
+  end
   // The NIC registers the same next value to keep its local reset in step.
   logic rst_core_next;
-  assign rst_core_next = i_rst || dbg_ndmreset;
+  assign rst_core_next = reset_request_soc;
   // Limit reset fanout per replica.
   (* max_fanout = 256 *) logic rst_core;
   always_ff @(posedge i_clk) rst_core <= rst_core_next;
@@ -539,26 +578,60 @@ module soc_top #(
        (data_memory_byte_write_enable_registered == 8'hF0));
   // CPU IPI stores win the single port. Invalid high APLIC addresses are
   // consumed and dropped before narrowing, never aliased into a valid page.
-  assign aplic_msi_ready = !imsic_cpu_write;
-  assign imsic_write = imsic_cpu_write ||
-      (aplic_msi_valid && aplic_msi_ready && (aplic_msi_addr[55:32] == '0));
+  logic msi_ready;
+  wire local_imsic_pending = local_state_q == 4 && local_write &&
+      local_addr[31:21] == ImsicWindowSel;
+  assign aplic_msi_ready = !imsic_cpu_write &&
+      (!ASYNC_CPU_CLOCK || (!local_imsic_pending && msi_ready));
+  assign imsic_write = (!ASYNC_CPU_CLOCK || !soc_cpu_rst) &&
+      (imsic_cpu_write ||
+       (aplic_msi_valid && aplic_msi_ready && (aplic_msi_addr[55:32] == '0)));
   assign imsic_write_addr = imsic_cpu_write ?
       {data_memory_address_registered[31:3],
        data_memory_byte_write_enable_registered[4] ? 3'b100 : 3'b000} : aplic_msi_addr[31:0];
   assign imsic_write_data = imsic_cpu_write ?
       (data_memory_byte_write_enable_registered[4] ? data_memory_write_data_registered[63:32] :
        data_memory_write_data_registered[31:0]) : aplic_msi_data;
+  logic imsic_decode_write;
+  logic [63:0] imsic_decode_payload;
+  if (ASYNC_CPU_CLOCK) begin : gen_msi_cdc
+    async_fifo #(
+        .DATA_WIDTH(64),
+        .DEPTH(8),
+        .READY_MARGIN(0)
+    ) messages (
+        .i_clk  (i_clk),
+        .i_rst  (soc_cpu_rst),
+        .i_data ({imsic_write_addr, imsic_write_data}),
+        .i_valid(imsic_write),
+        .o_ready(msi_ready),
+        .o_clk  (core_clk),
+        .o_rst  (o_cpu_rst),
+        .o_data (imsic_decode_payload),
+        .o_valid(imsic_decode_write),
+        .i_ready(1'b1)
+    );
+`ifndef SYNTHESIS
+    always_ff @(posedge i_clk) begin
+      if (!soc_cpu_rst) assert (!imsic_write || msi_ready);
+    end
+`endif
+  end else begin : gen_msi_direct
+    assign msi_ready = 1'b1;
+    assign imsic_decode_write = imsic_write;
+    assign imsic_decode_payload = {imsic_write_addr, imsic_write_data};
+  end
   imsic_decode #(
       .NUM_HARTS(NUM_HARTS),
       .NUM_IDS(63),
       .M_BASE_ADDR(ImsicMBase),
       .S_BASE_ADDR(ImsicSBase)
   ) imsic_store_decode (
-      .i_clk,
+      .i_clk(core_clk),
       .i_rst(o_cpu_rst),
-      .i_wr_en(imsic_write),
-      .i_wr_addr(imsic_write_addr),
-      .i_wr_data(imsic_write_data),
+      .i_wr_en(imsic_decode_write),
+      .i_wr_addr(imsic_decode_payload[63:32]),
+      .i_wr_data(imsic_decode_payload[31:0]),
       .o_msi_valid(o_cpu_msi_valid),
       .o_msi_level(o_cpu_msi_level),
       .o_msi_id(o_cpu_msi_id)
@@ -632,11 +705,36 @@ module soc_top #(
   logic [7:0] dbg_bram_store_strb;
   // A fabric reset discards transport ownership, so reset CPU owners too.
   // This also covers the first edge before rst_core has registered i_rst.
-  assign o_cpu_rst = rst_core || o_cpu_axi_rst;
-  assign o_cpu_axi_rst = (USE_BEHAVIORAL_DDR != 0) ? i_rst : i_ddr_axi_rst;
-  assign o_cpu_interrupts = interrupts;
-  assign o_cpu_seip = aplic_seip[0];
-  assign o_cpu_mtime = mtime;
+  assign soc_cpu_rst = rst_core || soc_axi_rst;
+  if (ASYNC_CPU_CLOCK) begin : gen_cpu_controls
+    cdc_sync #(
+        .WIDTH(4)
+    ) interrupt_sync (
+        .i_clk  (core_clk),
+        .i_rst  (o_cpu_rst),
+        .i_async({aplic_seip[0], interrupts}),
+        .o_sync ({o_cpu_seip, o_cpu_interrupts})
+    );
+    cdc_mailbox #(
+        .WIDTH(64)
+    ) timer_snapshot (
+        .i_src_clk  (i_clk),
+        .i_src_rst  (soc_cpu_rst),
+        .i_src_data (mtime),
+        .i_src_valid(1'b1),
+        .o_src_ready(),
+        .o_src_idle (),
+        .i_dst_clk  (core_clk),
+        .i_dst_rst  (o_cpu_rst),
+        .o_dst_data (o_cpu_mtime),
+        .o_dst_valid(),
+        .i_dst_ready(1'b1)
+    );
+  end else begin : gen_common_clock_controls
+    assign o_cpu_interrupts = interrupts;
+    assign o_cpu_seip = aplic_seip[0];
+    assign o_cpu_mtime = mtime;
+  end
   assign o_dbg_haltreq = dbg_haltreq;
   assign o_dbg_go = dbg_go;
   assign o_dbg_go_addr = dbg_go_addr;
@@ -647,12 +745,53 @@ module soc_top #(
   assign dbg_parked = i_dbg_parked;
   assign dbg_cmd_err = i_dbg_cmd_err;
   assign dbg_go_taken = i_dbg_go_taken;
-  assign commit_vld = i_commit_valid;
-  assign cpu_debug_irq_status = i_debug_irq_status;
-  assign cpu_debug_commit_pc = i_debug_commit_pc[31:0];
-  assign cpu_debug_commit_2_pc = i_debug_commit_2_pc[31:0];
-  assign cpu_debug_commit_valid = i_debug_commit_valid;
-  assign program_counter = i_debug_commit_pc;
+  if (ASYNC_CPU_CLOCK) begin : gen_diagnostic_cdc
+    logic activity_q, snapshot_ready, snapshot_valid;
+    logic [63:0] pc_q, pc2_q;
+    logic [  1:0] valid_q;
+    logic [136:0] snapshot;
+    always_ff @(posedge core_clk) begin
+      if (o_cpu_rst) begin
+        activity_q <= 1'b0;
+        valid_q <= '0;
+        pc_q <= '0;
+        pc2_q <= '0;
+      end else begin
+        activity_q <= (activity_q && !snapshot_ready) || i_commit_valid;
+        if (i_debug_commit_valid[0]) pc_q <= i_debug_commit_pc;
+        if (i_debug_commit_valid[1]) pc2_q <= i_debug_commit_2_pc;
+        valid_q <= (valid_q & {2{!snapshot_ready}}) | i_debug_commit_valid;
+      end
+    end
+    cdc_mailbox #(
+        .WIDTH(137)
+    ) observations (
+        .i_src_clk  (core_clk),
+        .i_src_rst  (o_cpu_rst),
+        .i_src_data ({activity_q, i_debug_irq_status, valid_q, pc_q, pc2_q}),
+        .i_src_valid(1'b1),
+        .o_src_ready(snapshot_ready),
+        .o_src_idle (),
+        .i_dst_clk  (i_clk),
+        .i_dst_rst  (soc_cpu_rst),
+        .o_dst_data (snapshot),
+        .o_dst_valid(snapshot_valid),
+        .i_dst_ready(1'b1)
+    );
+    assign commit_vld = snapshot_valid && snapshot[136];
+    assign cpu_debug_irq_status = snapshot[135:130];
+    assign cpu_debug_commit_valid = snapshot[129:128] & {2{snapshot_valid}};
+    assign cpu_debug_commit_pc = snapshot[95:64];
+    assign cpu_debug_commit_2_pc = snapshot[31:0];
+    assign program_counter = snapshot[127:64];
+  end else begin : gen_diagnostic_direct
+    assign commit_vld = i_commit_valid;
+    assign cpu_debug_irq_status = i_debug_irq_status;
+    assign cpu_debug_commit_pc = i_debug_commit_pc[31:0];
+    assign cpu_debug_commit_2_pc = i_debug_commit_2_pc[31:0];
+    assign cpu_debug_commit_valid = i_debug_commit_valid;
+    assign program_counter = i_debug_commit_pc;
+  end
   // ===========================================================================
   // RISC-V debug: the slice writer programs low BRAM and mirrors Debug-Mode
   // stores into the instruction copy. See hw/rtl/README.md, "Debug".
@@ -708,7 +847,7 @@ module soc_top #(
       .i_tdi(dtm_tdi),
       .o_tdo_dtmcs(dtm_tdo_dtmcs),
       .o_tdo_dmi(dtm_tdo_dmi),
-      .i_clk(i_clk),
+      .i_clk(core_clk),
       .o_dmi_req_valid(dmi_req_valid),
       .o_dmi_req_op(dmi_req_op),
       .o_dmi_req_addr(dmi_req_addr),
@@ -734,11 +873,11 @@ module soc_top #(
   logic [MemByteAddrWidth-1:2] mirror_now_addr;
   // dbg_bram_store is the OR of dbg_bram_store_strb (cpu_ooo), so either
   // half's strobes imply it.
-  assign mirror_lo = dbg_debug_mode && (|dbg_bram_store_strb[3:0]);
-  assign mirror_hi = dbg_debug_mode && (|dbg_bram_store_strb[7:4]);
+  assign mirror_lo = store_debug_mode && (|dbg_bram_store_strb[3:0]);
+  assign mirror_hi = store_debug_mode && (|dbg_bram_store_strb[7:4]);
   // Mirror the held word 1 first, else the new store's word 0 or lone word 1.
-  // mirror_lo || mirror_hi equals dbg_debug_mode && dbg_bram_store.
-  assign mirror_now_valid = mirror_hold_valid_q || (dbg_debug_mode && dbg_bram_store);
+  // mirror_lo || mirror_hi equals store_debug_mode && dbg_bram_store.
+  assign mirror_now_valid = mirror_hold_valid_q || (store_debug_mode && dbg_bram_store);
   assign mirror_now_addr = mirror_hold_valid_q ? mirror_hold_addr_q :
       mirror_lo ? {dbg_bram_store_addr[MemByteAddrWidth-1:3], 1'b0} :
                   {dbg_bram_store_addr[MemByteAddrWidth-1:3], 1'b1};
@@ -752,11 +891,11 @@ module soc_top #(
   // after re-parking and retains it as a sticky error.
   logic mirror_overflow_q;
   always_ff @(posedge i_clk) begin
-    if (i_rst) mirror_overflow_q <= 1'b0;
+    if (debug_soc_rst) mirror_overflow_q <= 1'b0;
     else mirror_overflow_q <= mirror_overflow;
   end
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
+    if (debug_soc_rst) begin
       mirror_hold_valid_q <= 1'b0;
       mirror_hold_addr_q  <= '0;
     end else if (mirror_hold_valid_q) begin
@@ -766,16 +905,52 @@ module soc_top #(
       mirror_hold_addr_q  <= {dbg_bram_store_addr[MemByteAddrWidth-1:3], 1'b1};
     end
   end
-  assign slice_req_valid = mirror_now_valid || dm_slice_req_valid;
+  logic dm_request_ready, dm_all_done;
+  logic dm_soc_valid;
+  logic [MemByteAddrWidth-1:2] dm_soc_addr;
+  logic [31:0] dm_soc_data;
+  if (ASYNC_CPU_CLOCK) begin : gen_debug_slice_cdc
+    logic waiting_q, request_valid;
+    logic [MemByteAddrWidth+29:0] request_data;
+    cdc_mailbox #(
+        .WIDTH(MemByteAddrWidth + 30)
+    ) requests (
+        .i_src_clk  (core_clk),
+        .i_src_rst  (debug_cpu_rst),
+        .i_src_data ({dm_slice_word_addr, dm_slice_data}),
+        .i_src_valid(dm_slice_req_valid),
+        .o_src_ready(dm_request_ready),
+        .o_src_idle (dm_all_done),
+        .i_dst_clk  (i_clk),
+        .i_dst_rst  (debug_soc_rst),
+        .o_dst_data (request_data),
+        .o_dst_valid(request_valid),
+        .i_dst_ready(waiting_q && slice_all_done)
+    );
+    always_ff @(posedge i_clk) begin
+      if (debug_soc_rst) waiting_q <= 1'b0;
+      else if (waiting_q && slice_all_done) waiting_q <= 1'b0;
+      else if (dm_soc_valid && slice_req_ready && !mirror_now_valid) waiting_q <= 1'b1;
+    end
+    assign dm_soc_valid = request_valid && !waiting_q;
+    assign {dm_soc_addr, dm_soc_data} = request_data;
+  end else begin : gen_debug_slice_direct
+    assign dm_request_ready = slice_req_ready && !mirror_now_valid;
+    assign dm_all_done = slice_all_done;
+    assign dm_soc_valid = dm_slice_req_valid;
+    assign dm_soc_addr = dm_slice_word_addr;
+    assign dm_soc_data = dm_slice_data;
+  end
+  assign slice_req_valid = mirror_now_valid || dm_soc_valid;
   assign slice_req_mirror = mirror_now_valid;
-  assign slice_req_word_addr = mirror_now_valid ? mirror_now_addr : dm_slice_word_addr;
-  assign slice_req_data = dm_slice_data;
+  assign slice_req_word_addr = mirror_now_valid ? mirror_now_addr : dm_soc_addr;
+  assign slice_req_data = dm_soc_data;
 
   debug_module #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth)
   ) u_debug_module (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
+      .i_clk(core_clk),
+      .i_rst(debug_cpu_rst),
       .i_dmi_req_valid(dmi_req_valid),
       .i_dmi_req_op(dmi_req_op),
       .i_dmi_req_addr(dmi_req_addr),
@@ -793,14 +968,14 @@ module soc_top #(
       .i_parked(dbg_parked),
       .i_cmd_err(dbg_cmd_err),
       .i_go_taken(dbg_go_taken),
-      .i_core_in_reset(rst_core),
+      .i_core_in_reset(ASYNC_CPU_CLOCK ? o_cpu_rst : rst_core),
       .o_ndmreset(dbg_ndmreset),
       .o_slice_req_valid(dm_slice_req_valid),
       .o_slice_word_addr(dm_slice_word_addr),
       .o_slice_data(dm_slice_data),
-      .i_slice_req_ready(slice_req_ready && !mirror_now_valid),
-      .i_slice_all_done(slice_all_done),
-      .i_slice_overflow(mirror_overflow_q)
+      .i_slice_req_ready(dm_request_ready),
+      .i_slice_all_done(dm_all_done),
+      .i_slice_overflow(ASYNC_CPU_CLOCK ? 1'b0 : mirror_overflow_q)
   );
 
   // div4-domain reset for the writer's engine (the external reset, resynced).
@@ -818,7 +993,7 @@ module soc_top #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth)
   ) u_slice_writer (
       .i_clk(i_clk),
-      .i_rst(i_rst),
+      .i_rst(debug_soc_rst),
       .i_req_valid(slice_req_valid),
       .i_req_mirror(slice_req_mirror),
       .i_req_word_addr(slice_req_word_addr),
@@ -928,6 +1103,14 @@ module soc_top #(
 
   logic local_valid, local_ready, local_write, local_error;
   logic local_req_write, local_req_error;
+  logic [AXI_USER_BITS-1:0] local_req_user;
+  logic local_debug_q, local_mirror_aborted_q;
+  wire store_debug_mode = ASYNC_CPU_CLOCK ?
+      (use_incoming_payload ? local_req_user[0] : local_debug_q) : dbg_debug_mode;
+  wire debug_store_room = !ASYNC_CPU_CLOCK || !store_debug_mode || debug_soc_rst ||
+      (slice_req_ready && !mirror_hold_valid_q);
+  wire debug_store_done = !ASYNC_CPU_CLOCK || !local_debug_q || !local_write ||
+      debug_soc_rst || local_mirror_aborted_q || (slice_all_done && !mirror_hold_valid_q);
   logic [riscv_pkg::PhysAddrBits-1:0] local_req_addr;
   logic [2:0] local_req_size, local_req_prot;
   logic [63:0] local_req_wdata;
@@ -952,7 +1135,7 @@ module soc_top #(
   logic local_read_instruction_q, local_read_device_q;
   logic [15:0] fetch_fuzz_lfsr_q;
   always_ff @(posedge i_clk) begin
-    if (o_cpu_axi_rst) fetch_fuzz_lfsr_q <= 16'(FETCH_VALID_FUZZ_SEED);
+    if (soc_axi_rst) fetch_fuzz_lfsr_q <= 16'(FETCH_VALID_FUZZ_SEED);
     else
       fetch_fuzz_lfsr_q <= {
         fetch_fuzz_lfsr_q[14:0],
@@ -960,11 +1143,12 @@ module soc_top #(
                (fetch_fuzz_lfsr_q[12] ^ fetch_fuzz_lfsr_q[10])
       };
   end
-  assign local_ready = local_state_q == 0 && !o_cpu_axi_rst;
+  assign local_ready = local_state_q == 0 && !soc_axi_rst && debug_store_room;
   // MMIO captures the chosen request before decoding or executing it. Narrow
   // BRAM requests can access the synchronous RAM on acceptance; their response
   // still waits for that read/write edge. Both paths retain the payload.
-  assign local_fire = local_state_q == 4 && !o_cpu_axi_rst;
+  assign local_fire = local_state_q == 4 && !soc_axi_rst && debug_store_room &&
+      (!ASYNC_CPU_CLOCK || !local_imsic_pending || soc_cpu_rst || msi_ready);
   assign local_bram = 64'(local_addr) < 64'(MEM_SIZE_BYTES);
   assign local_device = riscv_pkg::pma_device_ok(riscv_pkg::XLEN'(local_addr));
   assign local_instruction = local_prot[2];
@@ -1019,7 +1203,7 @@ module soc_top #(
 
 `ifndef SYNTHESIS
   always @(posedge i_clk) begin
-    if (!o_cpu_axi_rst) begin
+    if (!soc_axi_rst) begin
       assert (data_memory_bram_byte_write_enable ==
           ((fast_bram_fire || local_bram) ? data_memory_byte_write_enable : 8'b0));
       assert (dbg_bram_store == (|data_memory_bram_byte_write_enable));
@@ -1033,7 +1217,7 @@ module soc_top #(
   wire [63:0] local_read_word = local_read_instruction_q ? bram_fetch_instr :
       local_read_device_q ? mmio_read_data_reg : data_memory_read_data;
   always_ff @(posedge i_clk) begin
-    if (o_cpu_axi_rst) begin
+    if (soc_axi_rst) begin
       local_state_q <= 0;
       local_resp_valid <= 1'b0;
       mmio_fifo0_read_pulse <= 1'b0;
@@ -1054,6 +1238,8 @@ module soc_top #(
         local_dword_q <= 0;
         local_resp_data <= 0;
         local_write <= local_req_write;
+        local_debug_q <= local_req_user[0];
+        local_mirror_aborted_q <= ASYNC_CPU_CLOCK && debug_soc_rst;
         local_error <= local_req_error;
         local_addr <= local_req_addr;
         local_size <= local_req_size;
@@ -1069,7 +1255,7 @@ module soc_top #(
         local_state_q <= 1;
         local_resp_status <= rst_core ? 2'b00 : local_write ?
             reg_axil_bresp[reg_axil_port_q] : reg_axil_rresp[reg_axil_port_q];
-      end else if (local_state_q == 1) begin
+      end else if (local_state_q == 1 && debug_store_done) begin
         local_state_q <= fast_bram_q ? 3 : 2;
         if (fast_bram_q) local_resp_valid <= 1'b1;
         if (local_line) begin
@@ -1079,7 +1265,7 @@ module soc_top #(
             local_state_q <= 1;
           end
         end else local_resp_data <= (L2_LINE_BYTES * 8)'(local_read_word);
-      end else if (local_state_q == 2 &&
+      end else if (local_state_q == 2 && debug_store_done &&
                    (FETCH_VALID_FUZZ == 0 || !local_read_instruction_q ||
                     fetch_fuzz_lfsr_q[1:0] == 0)) begin
         // All register writes and destructive-read pulses have landed before
@@ -1089,6 +1275,13 @@ module soc_top #(
       end else if (local_resp_valid && local_resp_ready) begin
         local_resp_valid <= 1'b0;
         local_state_q <= 0;
+      end
+      // External reset cancels the slice writer. A discarded mirror is an
+      // error, even when the data copy has already accepted the store.
+      if (ASYNC_CPU_CLOCK && local_debug_q && local_write &&
+          (local_state_q == 1 || local_state_q == 2 || local_state_q == 4)) begin
+        if (debug_soc_rst) local_mirror_aborted_q <= 1'b1;
+        if (debug_soc_rst || local_mirror_aborted_q) local_resp_status <= 2'b10;
       end
     end
   end
@@ -1100,15 +1293,15 @@ module soc_top #(
       ((local_addr[31:12] == NicBase[31:12]) ||
        (local_addr[31:8] == DmaEngineBase[31:8]));
   assign reg_axil_bready = (local_state_q == 5 && local_write && !rst_core &&
-      !o_cpu_axi_rst) ? (2'b01 << reg_axil_port_q) : 2'b00;
+      !soc_axi_rst) ? (2'b01 << reg_axil_port_q) : 2'b00;
   assign reg_axil_rready = (local_state_q == 5 && !local_write && !rst_core &&
-      !o_cpu_axi_rst) ? (2'b01 << reg_axil_port_q) : 2'b00;
-  assign reg_axil_done = local_state_q == 5 && !o_cpu_axi_rst &&
+      !soc_axi_rst) ? (2'b01 << reg_axil_port_q) : 2'b00;
+  assign reg_axil_done = local_state_q == 5 && !soc_axi_rst &&
       (rst_core || (|(reg_axil_bvalid & reg_axil_bready)) ||
        (|(reg_axil_rvalid & reg_axil_rready)));
   assign reg_axil_read_capture = reg_axil_done && !local_write;
   always_ff @(posedge i_clk) begin
-    if (o_cpu_axi_rst || rst_core) begin
+    if (soc_axi_rst || rst_core) begin
       reg_axil_awvalid <= '0;
       reg_axil_wvalid  <= '0;
       reg_axil_arvalid <= '0;
@@ -1139,9 +1332,9 @@ module soc_top #(
     // DMA port through dma_bridge (hw/rtl/lib/axi/README.md). The bus is 256
     // bits, one beat per line. The bridge's line ids fill the low bits of
     // the port's LineIdBits-bit ids, so bit 3 stays clear, which the
-    // hierarchy's stream prefetcher needs. All four reset with rst_core. The
-    // ingress resets with o_cpu_rst, which adds the DDR interconnect's reset;
-    // the platform asserts i_rst whenever it holds that reset (README.md).
+    // hierarchy's stream prefetcher needs. The bridge uses the CPU clock
+    // when ASYNC_CPU_CLOCK is set. Paired resets cover both DMA domains.
+    // The common-clock profile resets all four blocks with rst_core.
     localparam int unsigned DmaPorts = 2;
     localparam int unsigned DmaAxiAddrBits = 64;
     localparam int unsigned DmaAxiDataBits = 8 * L1LineBytes;
@@ -1411,6 +1604,194 @@ module soc_top #(
         .i_dn_rlast(dn_rlast)
     );
 
+    logic cdc_dn_awvalid;
+    logic cdc_dn_awready;
+    logic [DmaDownIdBits-1:0] cdc_dn_awid;
+    logic [DmaAxiAddrBits-1:0] cdc_dn_awaddr;
+    logic [8-1:0] cdc_dn_awlen;
+    logic [3-1:0] cdc_dn_awsize;
+    logic [2-1:0] cdc_dn_awburst;
+    logic cdc_dn_awlock;
+    logic [4-1:0] cdc_dn_awcache;
+    logic [3-1:0] cdc_dn_awprot;
+    logic [4-1:0] cdc_dn_awqos;
+    logic [4-1:0] cdc_dn_awregion;
+    logic cdc_dn_awuser;
+    logic cdc_dn_wvalid;
+    logic cdc_dn_wready;
+    logic [DmaAxiDataBits-1:0] cdc_dn_wdata;
+    logic [DmaAxiDataBits/8-1:0] cdc_dn_wstrb;
+    logic cdc_dn_wlast;
+    logic cdc_dn_wuser;
+    logic cdc_dn_bvalid;
+    logic cdc_dn_bready;
+    logic [DmaDownIdBits-1:0] cdc_dn_bid;
+    logic [2-1:0] cdc_dn_bresp;
+    logic cdc_dn_buser;
+    logic cdc_dn_arvalid;
+    logic cdc_dn_arready;
+    logic [DmaDownIdBits-1:0] cdc_dn_arid;
+    logic [DmaAxiAddrBits-1:0] cdc_dn_araddr;
+    logic [8-1:0] cdc_dn_arlen;
+    logic [3-1:0] cdc_dn_arsize;
+    logic [2-1:0] cdc_dn_arburst;
+    logic cdc_dn_arlock;
+    logic [4-1:0] cdc_dn_arcache;
+    logic [3-1:0] cdc_dn_arprot;
+    logic [4-1:0] cdc_dn_arqos;
+    logic [4-1:0] cdc_dn_arregion;
+    logic cdc_dn_aruser;
+    logic cdc_dn_rvalid;
+    logic cdc_dn_rready;
+    logic [DmaDownIdBits-1:0] cdc_dn_rid;
+    logic [DmaAxiDataBits-1:0] cdc_dn_rdata;
+    logic [2-1:0] cdc_dn_rresp;
+    logic cdc_dn_rlast;
+    logic cdc_dn_ruser;
+    if (ASYNC_CPU_CLOCK) begin : gen_dma_cdc
+      axi_cdc #(
+          .ADDR_WIDTH(DmaAxiAddrBits),
+          .DATA_WIDTH(DmaAxiDataBits),
+          .ID_WIDTH  (DmaDownIdBits),
+          .USER_WIDTH(1)
+      ) dma_cdc (
+          .i_src_clk(i_clk),
+          .i_src_rst(rst_core),
+          .i_dst_clk(core_clk),
+          .i_dst_rst(o_cpu_rst),
+          .i_src_awvalid(dn_awvalid),
+          .o_dst_awvalid(cdc_dn_awvalid),
+          .o_src_awready(dn_awready),
+          .i_dst_awready(cdc_dn_awready),
+          .i_src_awid(dn_awid),
+          .o_dst_awid(cdc_dn_awid),
+          .i_src_awaddr(dn_awaddr),
+          .o_dst_awaddr(cdc_dn_awaddr),
+          .i_src_awlen(dn_awlen),
+          .o_dst_awlen(cdc_dn_awlen),
+          .i_src_awsize(dn_awsize),
+          .o_dst_awsize(cdc_dn_awsize),
+          .i_src_awburst(dn_awburst),
+          .o_dst_awburst(cdc_dn_awburst),
+          .i_src_awlock(dn_awlock),
+          .o_dst_awlock(cdc_dn_awlock),
+          .i_src_awcache(dn_awcache),
+          .o_dst_awcache(cdc_dn_awcache),
+          .i_src_awprot(dn_awprot),
+          .o_dst_awprot(cdc_dn_awprot),
+          .i_src_awqos(dn_awqos),
+          .o_dst_awqos(cdc_dn_awqos),
+          .i_src_awregion('0),
+          .o_dst_awregion(cdc_dn_awregion),
+          .i_src_awuser('0),
+          .o_dst_awuser(cdc_dn_awuser),
+          .i_src_wvalid(dn_wvalid),
+          .o_dst_wvalid(cdc_dn_wvalid),
+          .o_src_wready(dn_wready),
+          .i_dst_wready(cdc_dn_wready),
+          .i_src_wdata(dn_wdata),
+          .o_dst_wdata(cdc_dn_wdata),
+          .i_src_wstrb(dn_wstrb),
+          .o_dst_wstrb(cdc_dn_wstrb),
+          .i_src_wlast(dn_wlast),
+          .o_dst_wlast(cdc_dn_wlast),
+          .i_src_wuser('0),
+          .o_dst_wuser(cdc_dn_wuser),
+          .o_src_bvalid(dn_bvalid),
+          .i_dst_bvalid(cdc_dn_bvalid),
+          .i_src_bready(dn_bready),
+          .o_dst_bready(cdc_dn_bready),
+          .o_src_bid(dn_bid),
+          .i_dst_bid(cdc_dn_bid),
+          .o_src_bresp(dn_bresp),
+          .i_dst_bresp(cdc_dn_bresp),
+          .o_src_buser(),
+          .i_dst_buser(cdc_dn_buser),
+          .i_src_arvalid(dn_arvalid),
+          .o_dst_arvalid(cdc_dn_arvalid),
+          .o_src_arready(dn_arready),
+          .i_dst_arready(cdc_dn_arready),
+          .i_src_arid(dn_arid),
+          .o_dst_arid(cdc_dn_arid),
+          .i_src_araddr(dn_araddr),
+          .o_dst_araddr(cdc_dn_araddr),
+          .i_src_arlen(dn_arlen),
+          .o_dst_arlen(cdc_dn_arlen),
+          .i_src_arsize(dn_arsize),
+          .o_dst_arsize(cdc_dn_arsize),
+          .i_src_arburst(dn_arburst),
+          .o_dst_arburst(cdc_dn_arburst),
+          .i_src_arlock(dn_arlock),
+          .o_dst_arlock(cdc_dn_arlock),
+          .i_src_arcache(dn_arcache),
+          .o_dst_arcache(cdc_dn_arcache),
+          .i_src_arprot(dn_arprot),
+          .o_dst_arprot(cdc_dn_arprot),
+          .i_src_arqos(dn_arqos),
+          .o_dst_arqos(cdc_dn_arqos),
+          .i_src_arregion('0),
+          .o_dst_arregion(cdc_dn_arregion),
+          .i_src_aruser('0),
+          .o_dst_aruser(cdc_dn_aruser),
+          .o_src_rvalid(dn_rvalid),
+          .i_dst_rvalid(cdc_dn_rvalid),
+          .i_src_rready(dn_rready),
+          .o_dst_rready(cdc_dn_rready),
+          .o_src_rid(dn_rid),
+          .i_dst_rid(cdc_dn_rid),
+          .o_src_rdata(dn_rdata),
+          .i_dst_rdata(cdc_dn_rdata),
+          .o_src_rresp(dn_rresp),
+          .i_dst_rresp(cdc_dn_rresp),
+          .o_src_rlast(dn_rlast),
+          .i_dst_rlast(cdc_dn_rlast),
+          .o_src_ruser(),
+          .i_dst_ruser(cdc_dn_ruser)
+      );
+    end else begin : gen_dma_cdc_bypass
+      assign cdc_dn_awvalid = dn_awvalid;
+      assign dn_awready = cdc_dn_awready;
+      assign cdc_dn_awid = dn_awid;
+      assign cdc_dn_awaddr = dn_awaddr;
+      assign cdc_dn_awlen = dn_awlen;
+      assign cdc_dn_awsize = dn_awsize;
+      assign cdc_dn_awburst = dn_awburst;
+      assign cdc_dn_awlock = dn_awlock;
+      assign cdc_dn_awcache = dn_awcache;
+      assign cdc_dn_awprot = dn_awprot;
+      assign cdc_dn_awqos = dn_awqos;
+      assign cdc_dn_awregion = '0;
+      assign cdc_dn_awuser = '0;
+      assign cdc_dn_wvalid = dn_wvalid;
+      assign dn_wready = cdc_dn_wready;
+      assign cdc_dn_wdata = dn_wdata;
+      assign cdc_dn_wstrb = dn_wstrb;
+      assign cdc_dn_wlast = dn_wlast;
+      assign cdc_dn_wuser = '0;
+      assign dn_bvalid = cdc_dn_bvalid;
+      assign cdc_dn_bready = dn_bready;
+      assign dn_bid = cdc_dn_bid;
+      assign dn_bresp = cdc_dn_bresp;
+      assign cdc_dn_arvalid = dn_arvalid;
+      assign dn_arready = cdc_dn_arready;
+      assign cdc_dn_arid = dn_arid;
+      assign cdc_dn_araddr = dn_araddr;
+      assign cdc_dn_arlen = dn_arlen;
+      assign cdc_dn_arsize = dn_arsize;
+      assign cdc_dn_arburst = dn_arburst;
+      assign cdc_dn_arlock = dn_arlock;
+      assign cdc_dn_arcache = dn_arcache;
+      assign cdc_dn_arprot = dn_arprot;
+      assign cdc_dn_arqos = dn_arqos;
+      assign cdc_dn_arregion = '0;
+      assign cdc_dn_aruser = '0;
+      assign dn_rvalid = cdc_dn_rvalid;
+      assign cdc_dn_rready = dn_rready;
+      assign dn_rid = cdc_dn_rid;
+      assign dn_rdata = cdc_dn_rdata;
+      assign dn_rresp = cdc_dn_rresp;
+      assign dn_rlast = cdc_dn_rlast;
+    end
     logic [DmaLineIdBits-1:0] dma_line_req_id;
     axi_coherent_bridge #(
         .ADDR_WIDTH(DmaAxiAddrBits),
@@ -1421,45 +1802,45 @@ module soc_top #(
         .REGION_BASE(64'(CACHED_BASE)),
         .REGION_BYTES(CACHED_SIZE_BYTES)
     ) dma_bridge (
-        .i_clk(i_clk),
-        .i_rst(rst_core),
-        .i_axi_awvalid(dn_awvalid),
-        .i_axi_awid(dn_awid),
-        .i_axi_awaddr(dn_awaddr),
-        .i_axi_awlen(dn_awlen),
-        .i_axi_awsize(dn_awsize),
-        .i_axi_awburst(dn_awburst),
-        .i_axi_awlock(dn_awlock),
-        .i_axi_awcache(dn_awcache),
-        .i_axi_awprot(dn_awprot),
-        .i_axi_awqos(dn_awqos),
-        .i_axi_wvalid(dn_wvalid),
-        .i_axi_wdata(dn_wdata),
-        .i_axi_wstrb(dn_wstrb),
-        .i_axi_wlast(dn_wlast),
-        .i_axi_bready(dn_bready),
-        .i_axi_arvalid(dn_arvalid),
-        .i_axi_arid(dn_arid),
-        .i_axi_araddr(dn_araddr),
-        .i_axi_arlen(dn_arlen),
-        .i_axi_arsize(dn_arsize),
-        .i_axi_arburst(dn_arburst),
-        .i_axi_arlock(dn_arlock),
-        .i_axi_arcache(dn_arcache),
-        .i_axi_arprot(dn_arprot),
-        .i_axi_arqos(dn_arqos),
-        .i_axi_rready(dn_rready),
-        .o_axi_awready(dn_awready),
-        .o_axi_wready(dn_wready),
-        .o_axi_bvalid(dn_bvalid),
-        .o_axi_bid(dn_bid),
-        .o_axi_bresp(dn_bresp),
-        .o_axi_arready(dn_arready),
-        .o_axi_rvalid(dn_rvalid),
-        .o_axi_rid(dn_rid),
-        .o_axi_rdata(dn_rdata),
-        .o_axi_rresp(dn_rresp),
-        .o_axi_rlast(dn_rlast),
+        .i_clk(core_clk),
+        .i_rst(ASYNC_CPU_CLOCK ? o_cpu_rst : rst_core),
+        .i_axi_awvalid(cdc_dn_awvalid),
+        .i_axi_awid(cdc_dn_awid),
+        .i_axi_awaddr(cdc_dn_awaddr),
+        .i_axi_awlen(cdc_dn_awlen),
+        .i_axi_awsize(cdc_dn_awsize),
+        .i_axi_awburst(cdc_dn_awburst),
+        .i_axi_awlock(cdc_dn_awlock),
+        .i_axi_awcache(cdc_dn_awcache),
+        .i_axi_awprot(cdc_dn_awprot),
+        .i_axi_awqos(cdc_dn_awqos),
+        .i_axi_wvalid(cdc_dn_wvalid),
+        .i_axi_wdata(cdc_dn_wdata),
+        .i_axi_wstrb(cdc_dn_wstrb),
+        .i_axi_wlast(cdc_dn_wlast),
+        .i_axi_bready(cdc_dn_bready),
+        .i_axi_arvalid(cdc_dn_arvalid),
+        .i_axi_arid(cdc_dn_arid),
+        .i_axi_araddr(cdc_dn_araddr),
+        .i_axi_arlen(cdc_dn_arlen),
+        .i_axi_arsize(cdc_dn_arsize),
+        .i_axi_arburst(cdc_dn_arburst),
+        .i_axi_arlock(cdc_dn_arlock),
+        .i_axi_arcache(cdc_dn_arcache),
+        .i_axi_arprot(cdc_dn_arprot),
+        .i_axi_arqos(cdc_dn_arqos),
+        .i_axi_rready(cdc_dn_rready),
+        .o_axi_awready(cdc_dn_awready),
+        .o_axi_wready(cdc_dn_wready),
+        .o_axi_bvalid(cdc_dn_bvalid),
+        .o_axi_bid(cdc_dn_bid),
+        .o_axi_bresp(cdc_dn_bresp),
+        .o_axi_arready(cdc_dn_arready),
+        .o_axi_rvalid(cdc_dn_rvalid),
+        .o_axi_rid(cdc_dn_rid),
+        .o_axi_rdata(cdc_dn_rdata),
+        .o_axi_rresp(cdc_dn_rresp),
+        .o_axi_rlast(cdc_dn_rlast),
         .o_line_req_valid(o_coherent_req_valid),
         .i_line_req_ready(i_coherent_req_ready),
         .o_line_req_write(o_coherent_req_write),
@@ -1596,16 +1977,222 @@ module soc_top #(
   logic [DdrAxiIdBits-1:0] axi_awid, axi_arid, axi_bid, axi_rid;
 
 
+  logic mem_awvalid;
+  logic mem_awready;
+  logic [AXI_ID_BITS-1:0] mem_awid;
+  logic [riscv_pkg::PhysAddrBits-1:0] mem_awaddr;
+  logic [8-1:0] mem_awlen;
+  logic [3-1:0] mem_awsize;
+  logic [2-1:0] mem_awburst;
+  logic mem_awlock;
+  logic [4-1:0] mem_awcache;
+  logic [3-1:0] mem_awprot;
+  logic [4-1:0] mem_awqos;
+  logic [4-1:0] mem_awregion;
+  logic [AXI_USER_BITS-1:0] mem_awuser;
+  logic mem_wvalid;
+  logic mem_wready;
+  logic [L2_LINE_BYTES*8-1:0] mem_wdata;
+  logic [L2_LINE_BYTES*8/8-1:0] mem_wstrb;
+  logic mem_wlast;
+  logic [AXI_USER_BITS-1:0] mem_wuser;
+  logic mem_bvalid;
+  logic mem_bready;
+  logic [AXI_ID_BITS-1:0] mem_bid;
+  logic [2-1:0] mem_bresp;
+  logic [AXI_USER_BITS-1:0] mem_buser;
+  logic mem_arvalid;
+  logic mem_arready;
+  logic [AXI_ID_BITS-1:0] mem_arid;
+  logic [riscv_pkg::PhysAddrBits-1:0] mem_araddr;
+  logic [8-1:0] mem_arlen;
+  logic [3-1:0] mem_arsize;
+  logic [2-1:0] mem_arburst;
+  logic mem_arlock;
+  logic [4-1:0] mem_arcache;
+  logic [3-1:0] mem_arprot;
+  logic [4-1:0] mem_arqos;
+  logic [4-1:0] mem_arregion;
+  logic [AXI_USER_BITS-1:0] mem_aruser;
+  logic mem_rvalid;
+  logic mem_rready;
+  logic [AXI_ID_BITS-1:0] mem_rid;
+  logic [L2_LINE_BYTES*8-1:0] mem_rdata;
+  logic [2-1:0] mem_rresp;
+  logic mem_rlast;
+  logic [AXI_USER_BITS-1:0] mem_ruser;
+  logic aw_debug_hold_q, aw_debug_q;
+  wire [AXI_USER_BITS-1:0] aw_debug_user =
+      AXI_USER_BITS'(aw_debug_hold_q ? aw_debug_q : i_debug_mode);
+  if (ASYNC_CPU_CLOCK) begin : gen_debug_write_tag
+    always_ff @(posedge core_clk) begin
+      if (o_cpu_axi_rst) aw_debug_hold_q <= 1'b0;
+      else begin
+        aw_debug_hold_q <= i_axi_awvalid && !o_axi_awready;
+        if (!aw_debug_hold_q) aw_debug_q <= i_debug_mode;
+      end
+    end
+  end else begin : gen_debug_write_tag_unused
+    assign aw_debug_hold_q = 1'b0;
+    assign aw_debug_q = 1'b0;
+  end
+  if (ASYNC_CPU_CLOCK) begin : gen_memory_cdc
+    axi_cdc #(
+        .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
+        .DATA_WIDTH(L2_LINE_BYTES * 8),
+        .ID_WIDTH  (AXI_ID_BITS),
+        .USER_WIDTH(AXI_USER_BITS)
+    ) memory_cdc (
+        .i_src_clk(core_clk),
+        .i_src_rst(o_cpu_axi_rst),
+        .i_dst_clk(i_clk),
+        .i_dst_rst(soc_axi_rst),
+        .i_src_awvalid(i_axi_awvalid),
+        .o_dst_awvalid(mem_awvalid),
+        .o_src_awready(o_axi_awready),
+        .i_dst_awready(mem_awready),
+        .i_src_awid(i_axi_awid),
+        .o_dst_awid(mem_awid),
+        .i_src_awaddr(i_axi_awaddr),
+        .o_dst_awaddr(mem_awaddr),
+        .i_src_awlen(i_axi_awlen),
+        .o_dst_awlen(mem_awlen),
+        .i_src_awsize(i_axi_awsize),
+        .o_dst_awsize(mem_awsize),
+        .i_src_awburst(i_axi_awburst),
+        .o_dst_awburst(mem_awburst),
+        .i_src_awlock(i_axi_awlock),
+        .o_dst_awlock(mem_awlock),
+        .i_src_awcache(i_axi_awcache),
+        .o_dst_awcache(mem_awcache),
+        .i_src_awprot(i_axi_awprot),
+        .o_dst_awprot(mem_awprot),
+        .i_src_awqos(i_axi_awqos),
+        .o_dst_awqos(mem_awqos),
+        .i_src_awregion(i_axi_awregion),
+        .o_dst_awregion(mem_awregion),
+        .i_src_awuser(aw_debug_user),
+        .o_dst_awuser(mem_awuser),
+        .i_src_wvalid(i_axi_wvalid),
+        .o_dst_wvalid(mem_wvalid),
+        .o_src_wready(o_axi_wready),
+        .i_dst_wready(mem_wready),
+        .i_src_wdata(i_axi_wdata),
+        .o_dst_wdata(mem_wdata),
+        .i_src_wstrb(i_axi_wstrb),
+        .o_dst_wstrb(mem_wstrb),
+        .i_src_wlast(i_axi_wlast),
+        .o_dst_wlast(mem_wlast),
+        .i_src_wuser(i_axi_wuser),
+        .o_dst_wuser(mem_wuser),
+        .o_src_bvalid(o_axi_bvalid),
+        .i_dst_bvalid(mem_bvalid),
+        .i_src_bready(i_axi_bready),
+        .o_dst_bready(mem_bready),
+        .o_src_bid(o_axi_bid),
+        .i_dst_bid(mem_bid),
+        .o_src_bresp(o_axi_bresp),
+        .i_dst_bresp(mem_bresp),
+        .o_src_buser(o_axi_buser),
+        .i_dst_buser(mem_buser),
+        .i_src_arvalid(i_axi_arvalid),
+        .o_dst_arvalid(mem_arvalid),
+        .o_src_arready(o_axi_arready),
+        .i_dst_arready(mem_arready),
+        .i_src_arid(i_axi_arid),
+        .o_dst_arid(mem_arid),
+        .i_src_araddr(i_axi_araddr),
+        .o_dst_araddr(mem_araddr),
+        .i_src_arlen(i_axi_arlen),
+        .o_dst_arlen(mem_arlen),
+        .i_src_arsize(i_axi_arsize),
+        .o_dst_arsize(mem_arsize),
+        .i_src_arburst(i_axi_arburst),
+        .o_dst_arburst(mem_arburst),
+        .i_src_arlock(i_axi_arlock),
+        .o_dst_arlock(mem_arlock),
+        .i_src_arcache(i_axi_arcache),
+        .o_dst_arcache(mem_arcache),
+        .i_src_arprot(i_axi_arprot),
+        .o_dst_arprot(mem_arprot),
+        .i_src_arqos(i_axi_arqos),
+        .o_dst_arqos(mem_arqos),
+        .i_src_arregion(i_axi_arregion),
+        .o_dst_arregion(mem_arregion),
+        .i_src_aruser(i_axi_aruser),
+        .o_dst_aruser(mem_aruser),
+        .o_src_rvalid(o_axi_rvalid),
+        .i_dst_rvalid(mem_rvalid),
+        .i_src_rready(i_axi_rready),
+        .o_dst_rready(mem_rready),
+        .o_src_rid(o_axi_rid),
+        .i_dst_rid(mem_rid),
+        .o_src_rdata(o_axi_rdata),
+        .i_dst_rdata(mem_rdata),
+        .o_src_rresp(o_axi_rresp),
+        .i_dst_rresp(mem_rresp),
+        .o_src_rlast(o_axi_rlast),
+        .i_dst_rlast(mem_rlast),
+        .o_src_ruser(o_axi_ruser),
+        .i_dst_ruser(mem_ruser)
+    );
+  end else begin : gen_memory_cdc_bypass
+    assign mem_awvalid = '0;
+    assign o_axi_awready = mem_awready;
+    assign mem_awid = '0;
+    assign mem_awaddr = '0;
+    assign mem_awlen = '0;
+    assign mem_awsize = '0;
+    assign mem_awburst = '0;
+    assign mem_awlock = '0;
+    assign mem_awcache = '0;
+    assign mem_awprot = '0;
+    assign mem_awqos = '0;
+    assign mem_awregion = '0;
+    assign mem_awuser = '0;
+    assign mem_wvalid = '0;
+    assign o_axi_wready = mem_wready;
+    assign mem_wdata = '0;
+    assign mem_wstrb = '0;
+    assign mem_wlast = '0;
+    assign mem_wuser = '0;
+    assign o_axi_bvalid = mem_bvalid;
+    assign mem_bready = '0;
+    assign o_axi_bid = mem_bid;
+    assign o_axi_bresp = mem_bresp;
+    assign o_axi_buser = mem_buser;
+    assign mem_arvalid = '0;
+    assign o_axi_arready = mem_arready;
+    assign mem_arid = '0;
+    assign mem_araddr = '0;
+    assign mem_arlen = '0;
+    assign mem_arsize = '0;
+    assign mem_arburst = '0;
+    assign mem_arlock = '0;
+    assign mem_arcache = '0;
+    assign mem_arprot = '0;
+    assign mem_arqos = '0;
+    assign mem_arregion = '0;
+    assign mem_aruser = '0;
+    assign o_axi_rvalid = mem_rvalid;
+    assign mem_rready = '0;
+    assign o_axi_rid = mem_rid;
+    assign o_axi_rdata = mem_rdata;
+    assign o_axi_rresp = mem_rresp;
+    assign o_axi_rlast = mem_rlast;
+    assign o_axi_ruser = mem_ruser;
+  end
   soc_axi_slave #(
       .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
       .DATA_BYTES(L2_LINE_BYTES),
       .ID_BITS(AXI_ID_BITS),
       .USER_BITS(AXI_USER_BITS),
       .DDR_BASE(64'(CACHED_BASE)),
-      .DDR_BYTES(CACHED_SIZE_BYTES)
+      .DDR_BYTES(CACHED_SIZE_BYTES),
+      .LOCAL_USER_ENABLE(ASYNC_CPU_CLOCK)
   ) bus_slave (
       .i_clk,
-      .i_axi_rst(o_cpu_axi_rst),
+      .i_axi_rst(soc_axi_rst),
       .o_local_valid(local_valid),
       .i_local_ready(local_ready),
       .o_local_write(local_req_write),
@@ -1615,54 +2202,55 @@ module soc_top #(
       .o_local_wdata(local_req_wdata),
       .o_local_wstrb(local_req_wstrb),
       .o_local_error(local_req_error),
+      .o_local_user(local_req_user),
       .i_local_resp_valid(local_resp_valid),
       .o_local_resp_ready(local_resp_ready),
       .i_local_resp_rdata(local_resp_data),
       .i_local_resp_status(local_resp_status),
-      .i_axi_awvalid,
-      .o_axi_awready,
-      .i_axi_awid,
-      .i_axi_awaddr,
-      .i_axi_awlen,
-      .i_axi_awsize,
-      .i_axi_awburst,
-      .i_axi_awlock,
-      .i_axi_awcache,
-      .i_axi_awprot,
-      .i_axi_awqos,
-      .i_axi_awregion,
-      .i_axi_awuser,
-      .i_axi_wvalid,
-      .o_axi_wready,
-      .i_axi_wdata,
-      .i_axi_wstrb,
-      .i_axi_wlast,
-      .i_axi_wuser,
-      .o_axi_bvalid,
-      .i_axi_bready,
-      .o_axi_bid,
-      .o_axi_bresp,
-      .o_axi_buser,
-      .i_axi_arvalid,
-      .o_axi_arready,
-      .i_axi_arid,
-      .i_axi_araddr,
-      .i_axi_arlen,
-      .i_axi_arsize,
-      .i_axi_arburst,
-      .i_axi_arlock,
-      .i_axi_arcache,
-      .i_axi_arprot,
-      .i_axi_arqos,
-      .i_axi_arregion,
-      .i_axi_aruser,
-      .o_axi_rvalid,
-      .i_axi_rready,
-      .o_axi_rid,
-      .o_axi_rdata,
-      .o_axi_rresp,
-      .o_axi_rlast,
-      .o_axi_ruser,
+      .i_axi_awvalid(ASYNC_CPU_CLOCK ? mem_awvalid : i_axi_awvalid),
+      .o_axi_awready(mem_awready),
+      .i_axi_awid(ASYNC_CPU_CLOCK ? mem_awid : i_axi_awid),
+      .i_axi_awaddr(ASYNC_CPU_CLOCK ? mem_awaddr : i_axi_awaddr),
+      .i_axi_awlen(ASYNC_CPU_CLOCK ? mem_awlen : i_axi_awlen),
+      .i_axi_awsize(ASYNC_CPU_CLOCK ? mem_awsize : i_axi_awsize),
+      .i_axi_awburst(ASYNC_CPU_CLOCK ? mem_awburst : i_axi_awburst),
+      .i_axi_awlock(ASYNC_CPU_CLOCK ? mem_awlock : i_axi_awlock),
+      .i_axi_awcache(ASYNC_CPU_CLOCK ? mem_awcache : i_axi_awcache),
+      .i_axi_awprot(ASYNC_CPU_CLOCK ? mem_awprot : i_axi_awprot),
+      .i_axi_awqos(ASYNC_CPU_CLOCK ? mem_awqos : i_axi_awqos),
+      .i_axi_awregion(ASYNC_CPU_CLOCK ? mem_awregion : i_axi_awregion),
+      .i_axi_awuser(ASYNC_CPU_CLOCK ? mem_awuser : i_axi_awuser),
+      .i_axi_wvalid(ASYNC_CPU_CLOCK ? mem_wvalid : i_axi_wvalid),
+      .o_axi_wready(mem_wready),
+      .i_axi_wdata(ASYNC_CPU_CLOCK ? mem_wdata : i_axi_wdata),
+      .i_axi_wstrb(ASYNC_CPU_CLOCK ? mem_wstrb : i_axi_wstrb),
+      .i_axi_wlast(ASYNC_CPU_CLOCK ? mem_wlast : i_axi_wlast),
+      .i_axi_wuser(ASYNC_CPU_CLOCK ? mem_wuser : i_axi_wuser),
+      .o_axi_bvalid(mem_bvalid),
+      .i_axi_bready(ASYNC_CPU_CLOCK ? mem_bready : i_axi_bready),
+      .o_axi_bid(mem_bid),
+      .o_axi_bresp(mem_bresp),
+      .o_axi_buser(mem_buser),
+      .i_axi_arvalid(ASYNC_CPU_CLOCK ? mem_arvalid : i_axi_arvalid),
+      .o_axi_arready(mem_arready),
+      .i_axi_arid(ASYNC_CPU_CLOCK ? mem_arid : i_axi_arid),
+      .i_axi_araddr(ASYNC_CPU_CLOCK ? mem_araddr : i_axi_araddr),
+      .i_axi_arlen(ASYNC_CPU_CLOCK ? mem_arlen : i_axi_arlen),
+      .i_axi_arsize(ASYNC_CPU_CLOCK ? mem_arsize : i_axi_arsize),
+      .i_axi_arburst(ASYNC_CPU_CLOCK ? mem_arburst : i_axi_arburst),
+      .i_axi_arlock(ASYNC_CPU_CLOCK ? mem_arlock : i_axi_arlock),
+      .i_axi_arcache(ASYNC_CPU_CLOCK ? mem_arcache : i_axi_arcache),
+      .i_axi_arprot(ASYNC_CPU_CLOCK ? mem_arprot : i_axi_arprot),
+      .i_axi_arqos(ASYNC_CPU_CLOCK ? mem_arqos : i_axi_arqos),
+      .i_axi_arregion(ASYNC_CPU_CLOCK ? mem_arregion : i_axi_arregion),
+      .i_axi_aruser(ASYNC_CPU_CLOCK ? mem_aruser : i_axi_aruser),
+      .o_axi_rvalid(mem_rvalid),
+      .i_axi_rready(ASYNC_CPU_CLOCK ? mem_rready : i_axi_rready),
+      .o_axi_rid(mem_rid),
+      .o_axi_rdata(mem_rdata),
+      .o_axi_rresp(mem_rresp),
+      .o_axi_rlast(mem_rlast),
+      .o_axi_ruser(mem_ruser),
       .o_ddr_axi_awvalid(axi_awvalid),
       .i_ddr_axi_awready(axi_awready),
       .o_ddr_axi_awid(axi_awid),
@@ -1721,7 +2309,7 @@ module soc_top #(
         .INIT_FILE("sw_ddr.mem")
     ) ddr_model (
         .i_clk(i_clk),
-        .i_rst(o_cpu_axi_rst),
+        .i_rst(soc_axi_rst),
         .i_axi_awvalid(axi_awvalid),
         .o_axi_awready(axi_awready),
         .i_axi_awid(axi_awid),

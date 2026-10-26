@@ -209,6 +209,30 @@ async def _write_edges_without_delay(signals: tuple[Any, ...], period_ps: int) -
         )
 
 
+def cpu_clock(dut: Any) -> Any:
+    """CPU clock advances architectural state."""
+    return dut.i_cpu_clk if os.environ.get("FROST_CPU_PERIOD_PS") else dut.i_clk
+
+
+def start_cpu_clock(dut: Any) -> None:
+    """CPU clock starts with a configured period and phase."""
+    raw = os.environ.get("FROST_CPU_PERIOD_PS")
+    if not raw:
+        return
+    period = int(raw)
+    phase = int(os.environ.get("FROST_CPU_PHASE_PS", "700"))
+    if period < 2 or phase < 0:
+        raise ValueError("CPU clock needs period >= 2 ps and phase >= 0 ps")
+    dut.i_cpu_clk.value = 0
+
+    async def start() -> None:
+        if phase:
+            await Timer(phase, unit="ps")
+        start_clocks((dut.i_cpu_clk,), period)
+
+    cocotb.start_soon(start())
+
+
 def takes_last_edge(
     test: Callable[[Any], Coroutine[Any, Any, None]],
 ) -> Callable[[Any], Coroutine[Any, Any, None]]:
@@ -292,8 +316,8 @@ def hold_nic_without_mac_clocks(dut: Any, access_signals: tuple[Any, ...]) -> No
     reset controller keeps the MAC domains in reset and neither direction
     READY (hw/rtl/peripherals/nic/README.md). FROST_NIC_MAC_CLOCKS=0 selects
     this mode. Each access signal triggers fail_on_nic_access: the SoC's
-    register-window select for applications, or the NIC write enables for
-    TestRIG, whose device reads come from its RAM model.
+    register-window select for applications. TestRIG passes no access signals
+    because its device requests use the harness RAM.
     """
     dut.i_nic_tx_clk.value = 0
     dut.i_nic_rx_clk.value = 0
@@ -790,7 +814,7 @@ async def l0_hit_watch(dut: Any) -> None:
     cocotb.log.info(f"l0_hit_watch: armed for [{lo:#x}, {hi:#x}) (absolute)")
     hits = 0
     while True:
-        await RisingEdge(dut.i_clk)
+        await RisingEdge(cpu_clock(dut))
         if _read_bool(hit):
             a = _read_int(addr) or 0
             if lo <= a < hi:
@@ -837,7 +861,7 @@ class WfiRecoveryWatch:
         """Watch every cycle; fail at once on a seeded resume PC."""
         seeded_pc = None
         while True:
-            await RisingEdge(self.dut.i_clk)
+            await RisingEdge(cpu_clock(self.dut))
             await ReadOnly()
             if seeded_pc is not None:
                 resume = _read_int(self.sig["interrupt_resume_pc"])
@@ -1967,7 +1991,10 @@ async def run_until_complete(
         app_name=app_name,
         run_number=run_number,
         num_runs=NUM_RUNS,
-        clock_period_ns=CLK_PERIOD_NS,
+        clock_period_ns=int(
+            os.environ.get("FROST_CPU_PERIOD_PS", str(CLK_PERIOD_NS * 1000))
+        )
+        / 1000,
         symbol_code=_load_symbol_machine_code,
     )
     if control_flow_trace_env:
@@ -3372,7 +3399,7 @@ async def run_until_complete(
     # fatal-stop check runs every cycle.
     checked_output_length = -1
     expect_fatal = False
-    clock_edge = RisingEdge(dut.i_clk)
+    clock_edge = RisingEdge(cpu_clock(dut))
     for cycle in range(max_cycles):
         await clock_edge
         if external_irq_enabled and hasattr(dut, "i_external_interrupt"):
@@ -4524,6 +4551,7 @@ async def run_uart_echo_interaction(
 async def test_real_program(dut: Any) -> None:
     """Reset and run the loaded program NUM_RUNS times, checking UART each run."""
     start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
+    start_cpu_clock(dut)
     # i_clk_div4 exists only in frost.sv, not in the cpu_tb.sv testbench. It is
     # derived from i_clk rather than started as an independent Clock because the
     # dc_fifo clock domain crossing needs a fixed phase relationship.

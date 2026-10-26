@@ -24,7 +24,13 @@ All ports are synchronous to the rising edge of `i_clk`. There are no clock cros
 - CPU reset does not clear the integer or floating-point register files. Apart from hardwired `x0`, software must initialize register values before using them; integration must not assume zeroed GPRs after reset.
 - `o_axi_idle` covers the master's queued requests, fabric transactions, buffered responses, and reset drain. It does not prove that all dirty cache lines have reached memory, and it is not a clock-gating permission by itself.
 
-FROST's SoC combines external reset and the Debug Module's `ndmreset` for CPU reset. The Debug Module survives `ndmreset`. Its board and JTAG clock crossings remain in `soc_top` and `frost`.
+FROST's SoC combines external reset and the Debug Module's `ndmreset` for CPU reset. The Debug Module survives `ndmreset`. Its board and JTAG clock crossings belong to `soc_top` and `frost`.
+With `ASYNC_CPU_CLOCK=1`, FROST runs the Debug Module and the core side of
+its transport on the CPU clock. Debug data CSR reads and writes therefore
+share the same clock. The SoC boundary carries memory and DMA AXI channels
+through asynchronous FIFOs, interrupt levels through two-flop synchronizers,
+and the writable timer through a snapshot handshake. The standalone CPU's
+ports and reset-drain contract are independent of that option.
 
 ## Outgoing AXI4 master
 

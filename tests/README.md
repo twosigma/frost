@@ -397,6 +397,9 @@ which have 90 minutes each. `--verbose` prints solver output.
 | `COCOTB_NUM_RUNS` | Runs per application, with a reset between them (default 2; 1 in the DDR tier and for entries with `rerun_after_reset=False`) |
 | `FROST_CALIBRATION_TRACE_PATH` | Records a calibration trace of one run for the [performance model](../perf-modeling/README.md); the other `FROST_CALIBRATION_*` variables choose the run, the window, and more output files |
 | `FROST_CALIBRATION_TEST` | Limits the calibration capture to the runs of the registry test it names |
+| `FROST_CPU_PERIOD_PS` | Enables `ASYNC_CPU_CLOCK=1` in `frost` builds; the real-program and debug benches drive the independent CPU clock with this period in ps |
+| `FROST_CPU_PHASE_PS` | Initial CPU clock phase in ps when the independent clock is selected; default 700 |
+| `FROST_ASYNC_CPU_CLOCK` | `1` enables the independent CPU boundary in Yosys synthesis tests |
 | `FROST_NIC_MAC_CLOCKS` | For the whole-SoC program and TestRIG benches, overrides the registry or runner default: `0` holds both NIC MAC clocks and their clock-OK inputs low with an access guard; `1` starts the clocks. The ISA, torture, and TestRIG runners default to `0` |
 | `SIM_FAST_MAINT` | Fast `fence.i` cache maintenance in whole-SoC simulation (default 1; hardware uses the full sweeps, as `0` does) |
 
@@ -409,6 +412,19 @@ failures. Before running a runner any way other than the `cocotb` and
 tool or a version that differs from the Dockerfile, rebuild the image. If a
 long program runs out of cycles, first measure a complete passing run with
 an extended limit, then set its budget with headroom.
+
+The `async_hello_world`, `async_nic_loopback` and `async_dma_torture`
+program configurations exercise equal periods with a phase offset, a
+faster CPU, and a slower CPU. They run in both memory configurations in the
+DMA, NIC and coherence shard. `axi_cdc`, `cdc_mailbox` and `cdc_reset_pair`
+unit benches cover channel conservation, coherent snapshots, backpressure,
+reset cancellation and reset release with a stopped clock. The explicit
+`soc_axil_async_1300`, `soc_axil_async_3000` and `soc_axil_async_7000`
+targets check register mapping, subsystem reset and fabric reset across the
+CPU boundary at those CPU periods in ps, with a SoC period of 3000 ps. The
+7000 ps configuration runs in the unit-test CI job.
+`soc_async_reset` and `frost_async_reset` targets check retained writes,
+interrupted debug mirrors and external reset with a stopped SoC clock.
 
 ## Coverage
 

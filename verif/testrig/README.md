@@ -65,10 +65,13 @@ collects, preamble included.
 
 The NIC is instantiated with both MAC clocks and their clock-OK inputs
 held low (`nic_mac_clocks=False` in the `rvfi_dii` registry entry).
-Device loads read the harness RAM, and device stores leave both NIC write
-enables low. The bench fails if either write enable rises. Accesses to the
-RAM at addresses in the NIC's window are allowed. `FROST_NIC_MAC_CLOCKS=1` starts
-the MAC clocks for a comparison run.
+Device loads and stores use the harness RAM. The NIC and DMA engine
+AXI4-Lite request channels are tied low. Accesses to the harness RAM in the
+NIC's window are allowed.
+`FROST_NIC_MAC_CLOCKS=1` starts the MAC clocks for a comparison run.
+The fixture uses `i_clk` for the CPU and SoC and requires
+`ASYNC_CPU_CLOCK=0`. The independent CPU boundary belongs to the production
+`platform_top` integration.
 
 CI runs four TestRIG jobs in parallel. Each draws its own 100 sequences per
 template and its own 200 A-extension tests, and each simulates the SoC with

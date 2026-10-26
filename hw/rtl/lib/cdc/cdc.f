@@ -8,3 +8,6 @@ $(ROOT)/hw/rtl/lib/cdc/cdc_reset_sync.sv
 
 # Gray-coded event counter with an epoch rebase
 $(ROOT)/hw/rtl/lib/cdc/cdc_gray_count.sv
+
+$(ROOT)/hw/rtl/lib/cdc/cdc_mailbox.sv
+$(ROOT)/hw/rtl/lib/cdc/cdc_reset_pair.sv

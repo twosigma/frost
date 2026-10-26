@@ -23,6 +23,7 @@ two waiter seats per miss.
 | `x3/x3_nic_gty.sv` | Ethernet transceiver, MAC clocks, transceiver reset supervisor |
 | `x3/x3_cpu_clock_gty.sv` | CPU clock from a dedicated GTY transmitter |
 | `x3/constr/x3.xdc` | Pin and timing constraints |
+| `x3/constr/cpu_clock_boundary.tcl` | Conditional CPU clock constraints, applied after synthesis |
 
 `x3/x3_frost.f` lists the board RTL. The Vivado flow generates the loader,
 DDR, and transceiver IP from `fpga/build/build_step.tcl`, `x3_ddr_bd.tcl`, and

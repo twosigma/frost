@@ -49,6 +49,7 @@ from cocotb_tests.test_real_program import (
     UartMonitor,
     generate_divided_clock,
     start_clocks,
+    start_cpu_clock,
     takes_last_edge,
 )
 
@@ -207,6 +208,7 @@ async def test_debug_openocd(dut: Any) -> None:
         return
 
     start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
+    start_cpu_clock(dut)
     cocotb.start_soon(generate_divided_clock(dut))
     syms = _read_symbols()
     server = RemoteBitbangServer(dut)
@@ -290,6 +292,7 @@ async def test_debug_gdb(dut: Any) -> None:
         return
 
     start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
+    start_cpu_clock(dut)
     cocotb.start_soon(generate_divided_clock(dut))
     syms = _read_symbols()
     server = RemoteBitbangServer(dut)

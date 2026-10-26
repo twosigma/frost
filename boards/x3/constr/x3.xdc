@@ -408,7 +408,11 @@ set_bus_skew 3.0 -from $nic_s9 -to [get_cells -of_objects $nic_d9]
 # Bound single-bit status, reset-handshake, and PHY-control crossings to the
 # first cdc_sync stage, from each launch clock. RXRESETDONE uses RX USRCLK2;
 # PLL lock and power good have no launch clock. No bus-skew bound is needed.
-set nic_sync_d [get_pins -hierarchical -filter {NAME =~ "*/stage_q_reg[0]*/D"}]
+# CPU boundary synchronizers use cpu_clock_boundary.tcl.
+set nic_sync_d [get_pins -hierarchical -filter {NAME =~ "*/stage_q_reg[0]*/D" &&
+  NAME !~ "*gen_memory_cdc*" && NAME !~ "*gen_dma_cdc*" &&
+  NAME !~ "*gen_msi_cdc*" && NAME !~ "*gen_cpu_controls*" &&
+  NAME !~ "*gen_diagnostic_cdc*" && NAME !~ "*gen_debug_slice_cdc*"}]
 set_max_delay -datapath_only 3.0 -from $nic_core_clk    -to $nic_sync_d
 set_max_delay -datapath_only 3.0 -from $nic_tx_clk      -to $nic_sync_d
 set_max_delay -datapath_only 3.0 -from $nic_rx_clk      -to $nic_sync_d

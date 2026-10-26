@@ -11,8 +11,7 @@
 -f $(ROOT)/hw/rtl/net10g/net10g.f
 -f $(ROOT)/hw/rtl/peripherals/nic/nic.f
 
-# AXI4 pieces of the SoC's DMA path (hw/rtl/lib/axi): the mux and the
-# coherent bridge, which soc_top instantiates.
+# AXI4 interconnect, coherent ingress and CPU clock crossings in soc_top.
 -f $(ROOT)/hw/rtl/lib/axi/axi.f
 
 # CPU and memory subsystem (includes all pipeline stages and RAM library)
