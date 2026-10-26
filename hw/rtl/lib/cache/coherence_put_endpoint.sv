@@ -104,8 +104,10 @@ module coherence_put_endpoint #(
   end
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
-    if (!i_rst && o_w_valid && absorbed_q) assert (!i_w_ready);
+    if (i_rst) reset_seen_q <= 1'b1;
+    if (reset_seen_q && !i_rst && o_w_valid && absorbed_q) assert (!i_w_ready);
   end
 `endif
 `endif

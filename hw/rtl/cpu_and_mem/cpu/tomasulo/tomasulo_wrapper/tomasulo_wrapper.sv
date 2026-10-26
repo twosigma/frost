@@ -2858,6 +2858,9 @@ module tomasulo_wrapper #(
   mem_wakeup_merge #(
       .FORMAL_STANDALONE_ENV(1'b0)
   ) u_int_wakeup_merge (
+`ifndef SYNTHESIS
+      .i_check_enable(sc_check_armed && i_rst_n),
+`endif
       .i_enable(mem_rs_early_wakeup_enable),
       .i_load(lq_early_wakeup_load),
       .i_registered_0(cdb_bus_int_rs_qualified),
@@ -2878,6 +2881,9 @@ module tomasulo_wrapper #(
   mem_wakeup_merge #(
       .FORMAL_STANDALONE_ENV(1'b0)
   ) u_int_issue_wakeup_merge (
+`ifndef SYNTHESIS
+      .i_check_enable(sc_check_armed && i_rst_n),
+`endif
       .i_enable(mem_rs_early_wakeup_enable),
       .i_load(lq_early_wakeup_load),
       .i_registered_0(int_rs_issue_registered_0),
@@ -2889,7 +2895,7 @@ module tomasulo_wrapper #(
 
 `ifndef SYNTHESIS
   always_comb begin
-    if (i_rst_n) begin
+    if (sc_check_armed && i_rst_n) begin
       p_int_early_load_matches_mem :
       assert (int_rs_early_load_injected == mem_rs_early_load_injected);
       p_int_early_issue_lane0_identity :

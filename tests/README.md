@@ -137,8 +137,8 @@ clock: both MAC clocks absent and their clock-OK levels low, so the NIC keeps
 its MAC domains in reset ([NIC](../hw/rtl/peripherals/nic/README.md#reset-and-clock-domains)),
 and the simulation saves the evaluations of the MAC clocks' edges. Application
 entries using this setting never touch the NIC's registers, DMA, interrupt,
-or link status. The SoC's simulation-only NIC-window selector detects register
-accesses with or without the cached tier, and a run fails if such an
+or link status. The SoC's simulation-only NIC-access monitor detects register
+transactions after local reset, with or without the cached tier. A run fails if such an
 application loads or stores in the NIC's register window. The NIC programs,
 `opensbi_smoke`, and
 `pma_fault_test`, which loads from the NIC's window to check a PMA boundary,
