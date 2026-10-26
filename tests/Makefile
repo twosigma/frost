@@ -132,7 +132,8 @@ COMPILE_ARGS := \
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),data_mem_response_mux_tb)
 # Data-memory response mux bench: a request router fed the mux's merged payload,
-# compared every cycle with a reference router fed the separate inputs
+# compared with a reference router fed the separate inputs on every cycle
+# after two startup reset edges
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv \
