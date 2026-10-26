@@ -123,6 +123,7 @@ FORMAL_TARGETS = [
             "coh_reader_prove",
             "coh_ingress_prove",
             "coh_atomic_guard_prove",
+            "coh_read_flags_prove",
         ),
     ),
     FormalTarget(
@@ -808,6 +809,10 @@ SBY_TASKS = [
     ),
     ("coh_lq_forward_prove", "Coherent forwarding obeys cuts and same-sector holds."),
     ("coh_lq_selector_prove", "Coherent issue selection matches both SQ drain states."),
+    (
+        "coh_read_flags_prove",
+        "Coherent read flags preserve response and completion priority.",
+    ),
     ("coh_l1d_bmc", "Coherent L1 pending ownership and independent probes."),
     ("coh_home_wb_prove", "Detached victim ownership through successful B."),
     ("coh_home_victim_cover", "Victim allocation, delayed B, and blocked refetch."),
