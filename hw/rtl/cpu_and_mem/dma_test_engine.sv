@@ -121,6 +121,11 @@ module dma_test_engine #(
     input  logic [     ID_BITS-1:0] i_dma_resp_id,
     input  logic [LINE_BYTES*8-1:0] i_dma_resp_rdata
 );
+
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+`endif
   localparam int unsigned LineBits   = LINE_BYTES * 8;
   localparam int unsigned OffsetBits = $clog2(LINE_BYTES);
 
@@ -424,7 +429,7 @@ module dma_test_engine #(
 
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
-    if (!i_rst && i_dma_resp_valid) begin
+    if (reset_seen_q && !i_rst && i_dma_resp_valid) begin
       if (!((state_q == S_READ_WAIT) || (state_q == S_WRITE_WAIT) || (state_q == S_STATUS_WAIT)))
         $error("dma_test_engine: response with nothing outstanding");
       if ((state_q == S_READ_WAIT) && (i_dma_resp_id != ID_BITS'(1)))

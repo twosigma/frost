@@ -68,6 +68,11 @@ module nic_byte_pack #(
 
     output logic o_busy  // a frame is in the packer (until its last write left)
 );
+
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+`endif
   localparam int unsigned OffsetBits  = $clog2(LINE_BYTES);
   localparam int unsigned WindowBytes = 2 * LINE_BYTES;
 
@@ -191,7 +196,7 @@ module nic_byte_pack #(
   assign lower_issue = lower_complete_after && ((|win_strb_q[LINE_BYTES-1:0]) || beat_adds_lower);
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
-    if (!i_rst && (|beat_count_q) && active_q) begin
+    if (reset_seen_q && !i_rst && (|beat_count_q) && active_q) begin
       assert (lower_issue == (lower_complete_after && (|win_strb_n[LINE_BYTES-1:0])))
       else $error("lower_issue diverged from the placed-strobe form");
     end

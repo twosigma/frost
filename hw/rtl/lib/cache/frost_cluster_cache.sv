@@ -224,6 +224,11 @@ module frost_cluster_cache #(
     output cache_perf_pkg::cache_write_perf_events_t o_l2_write_perf_events
 );
 
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+`endif
+
   // Walker/L1I local id width under the 2-bit prefix (see the id tree in
   // the header).
   localparam int unsigned WalkIdBits  = UP_ID_BITS - 1;
@@ -450,7 +455,7 @@ module frost_cluster_cache #(
     assign dma_down_resp_id = UP_ID_BITS'(dma_shared_resp_id);
 `ifndef SYNTHESIS
     always_ff @(posedge i_clk) begin
-      if (!i_rst && dma_down_req_valid && dma_down_req_id[UP_ID_BITS-1])
+      if (reset_seen_q && !i_rst && dma_down_req_valid && dma_down_req_id[UP_ID_BITS-1])
         $error(
             "frost_cluster_cache: DMA id %0d has its top bit set beside the prefetcher",
             dma_down_req_id
@@ -640,7 +645,7 @@ module frost_cluster_cache #(
   // Dump the links if the L1D's port remains refused for 2048 cycles.
   int unsigned down_stall_cnt;
   always_ff @(posedge i_clk) begin
-    if (i_rst || !(i_l1d_down_req_valid && !o_l1d_down_req_ready)) begin
+    if (!reset_seen_q || i_rst || !(i_l1d_down_req_valid && !o_l1d_down_req_ready)) begin
       down_stall_cnt <= 0;
     end else begin
       down_stall_cnt <= down_stall_cnt + 1;
@@ -694,7 +699,7 @@ module frost_cluster_cache #(
       end
     end
     cover_demand_read_meets_prefetch :
-    cover property (@(posedge i_clk) disable iff (i_rst)
+    cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
         i_l1d_down_req_valid && o_l1d_down_req_ready && !i_l1d_down_req_write &&
         cover_pf_line_match);
   end

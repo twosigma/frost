@@ -196,6 +196,12 @@ data SRAM macros. The load covers data BRAM, data SRAM and behavioral DDR.
 The image load does not repeat on warm reset. Instruction images use the
 programming domain's power-on write protection.
 
+Consistency checks that depend on reset state and functional cover points
+arm after their local reset completes. They remain active in ordinary and
+random-start simulations. Full-board simulation with power-on reset tied
+inactive uses configuration initializers and does not arm the DTM ownership
+assertions. Transport verification requires a power-on reset pulse.
+
 This is a two-state power-up test. It does not model metastability, reset
 recovery or removal timing, SRAM analog behavior, or power-domain sequencing.
 Sparse external-memory models return their defined default for absent keys.

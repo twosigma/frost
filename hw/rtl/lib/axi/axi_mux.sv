@@ -288,8 +288,10 @@ module axi_mux #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       if (i_dn_bvalid && (32'(b_port) >= NUM_PORTS))
         $error("axi_mux: B for nonexistent port %0d", b_port);
       if (i_dn_rvalid && (32'(r_port) >= NUM_PORTS))

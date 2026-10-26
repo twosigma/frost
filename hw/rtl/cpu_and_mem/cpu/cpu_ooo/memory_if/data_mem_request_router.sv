@@ -187,6 +187,11 @@ module data_mem_request_router #(
     output logic [riscv_pkg::CachedLoadSlotBits-1:0] o_lq_mem_read_id
 );
 
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+`endif
+
   assign o_uncached_write_buffered = i_sq_mem_write_en && i_sq_mem_write_buffered;
   assign o_uncached_write_size = i_sq_mem_write_en ? i_sq_mem_write_size :
       i_amo_mem_write_is_dword ? riscv_pkg::MEM_SIZE_DOUBLE : riscv_pkg::MEM_SIZE_WORD;
@@ -547,7 +552,7 @@ module data_mem_request_router #(
   // The LQ's bus-busy gate includes the valid bit, so the one-entry register
   // never receives a second request while it holds one. Check that contract.
   always @(posedge i_clk) begin
-    if (!i_rst && lq_mem_request_valid && lq_mem_read_en)
+    if (reset_seen_q && !i_rst && lq_mem_request_valid && lq_mem_read_en)
       $error("data_mem_request_router: live LQ read overlapped held request");
   end
 `endif
@@ -857,7 +862,8 @@ module data_mem_request_router #(
   // A full flush, from an interrupt or a debug halt, cancels a device read
   // parked before accept.
   cover_flush_cancels_parked_device_read :
-  cover property (@(posedge i_clk) disable iff (i_rst) o_device_request_pending && i_flush_all);
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
+      o_device_request_pending && i_flush_all);
 `endif
 `endif
 

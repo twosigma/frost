@@ -1508,7 +1508,7 @@ module cpu_ooo #(
       end
 `ifndef FORMAL
       p_queue_held_id_is_stable :
-      assert property (@(posedge i_clk) disable iff (i_rst || flush_pipeline)
+      assert property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst || flush_pipeline)
           pipeline_ctrl.stall |=> $stable(
           {decoded_packet, decoded_packet_2, pd_valid_q}
       ));
@@ -2662,6 +2662,9 @@ module cpu_ooo #(
   branch_resolution #(
       .XLEN(XLEN)
   ) branch_resolution_inst (
+`ifndef SYNTHESIS
+      .i_check_enable(reset_seen_q && !i_rst),
+`endif
       .i_rs_issue_int(rs_issue_int),
       .i_branch_predicate_tag(rs_issue_int_branch_predicate_tag),
       .i_head_tag(head_tag),
@@ -2745,7 +2748,7 @@ module cpu_ooo #(
   localparam int unsigned DeviceShieldWatchdogCycles = 4096;
   int unsigned device_shield_stuck_cnt;
   always @(posedge i_clk) begin
-    if (i_rst || !device_read_shield_q) begin
+    if (!reset_seen_q || i_rst || !device_read_shield_q) begin
       device_shield_stuck_cnt <= 0;
     end else begin
       device_shield_stuck_cnt <= device_shield_stuck_cnt + 1;

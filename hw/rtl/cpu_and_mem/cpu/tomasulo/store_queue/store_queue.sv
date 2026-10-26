@@ -483,10 +483,13 @@ module store_queue #(
   assign slot2_alloc_en = i_alloc_2.valid && (i_alloc.valid ? alloc_room_2 : alloc_room_1);
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
+
   // Check trusted allocation against the room-qualified form to prevent live
   // slot overwrites. Sample at the edge, where all allocation consumers act.
   always_ff @(posedge i_clk) begin
-    if (TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
+    if (reset_seen_q && TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
             {i_alloc.valid, i_alloc_2.valid, full, full_for_2, alloc_flush_ok}
         )) begin
       p_trusted_sq_alloc_exact :
@@ -500,7 +503,7 @@ module store_queue #(
     // The registered dispatch back-pressure must stay conservative w.r.t.
     // the live window (no same-cycle reclaim ever shrinks it early); the
     // trusted alloc enables depend on this invariant.
-    if (TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
+    if (reset_seen_q && TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
             {full, full_for_2, dispatch_full_q, dispatch_full_for_2_q}
         )) begin
       p_trusted_sq_status_conservative : assert (!full || dispatch_full_q);
@@ -1372,9 +1375,6 @@ module store_queue #(
   // assumes this input rule; Yosys does not parse the assert-else action.
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  logic reset_seen_q = 1'b0;
-  always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
-
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n) begin
       assert (!(i_flush_en && (i_commit_valid_comb || i_commit_valid_comb_2)))

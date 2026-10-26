@@ -115,6 +115,13 @@ module cpu_axi_master #(
     input logic i_axi_rlast,
     input logic [USER_BITS-1:0] i_axi_ruser
 );
+
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+  logic axi_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_axi_rst) axi_reset_seen_q <= 1'b1;
+`endif
   localparam int unsigned NumIds = 1 << ID_BITS;
 
   initial begin
@@ -330,7 +337,7 @@ module cpu_axi_master #(
             (o_resp_valid && (o_resp_id == ID_BITS'(FLAG_RESP_ID)) && (o_resp_status == 2'b00)));
   end
   always @(posedge i_clk) begin
-    if (req_fire) begin
+    if (reset_seen_q && axi_reset_seen_q && req_fire) begin
       assert (i_req_size <= 3'($clog2(DATA_BYTES)))
       else $error("cpu_axi_master: transfer exceeds bus width");
       assert ((i_req_addr & ((ADDR_WIDTH'(1) << i_req_size) - 1)) == 0)
@@ -343,7 +350,7 @@ module cpu_axi_master #(
             i_req_size
         );
     end
-    if (!i_rst && !i_axi_rst && r_fire && r_known) begin
+    if (reset_seen_q && axi_reset_seen_q && !i_rst && !i_axi_rst && r_fire && r_known) begin
       assert (i_axi_rlast)
       else $error("cpu_axi_master: expected single-beat RLAST");
     end

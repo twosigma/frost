@@ -71,6 +71,11 @@ module fu_cdb_adapter #(
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag
 );
 
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
+`endif
+
   // ---------------------------------------------------------------------------
   // Age comparison for partial flush
   // ---------------------------------------------------------------------------
@@ -141,7 +146,7 @@ module fu_cdb_adapter #(
         assert (!REGISTER_OUTPUT && !ALLOW_GRANT_REFILL);
       end
       always_ff @(posedge i_clk) begin
-        if (i_rst_n && o_fu_complete.valid && !i_flush) begin
+        if (reset_seen_q && i_rst_n && o_fu_complete.valid && !i_flush) begin
           p_valid_result_is_granted : assert (i_grant);
         end
       end

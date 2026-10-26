@@ -69,6 +69,10 @@ module sdp_ram_byte_en #(
     // READ_LATENCY cycles (see the header).
     parameter bit REGISTER_READ_OUTPUT = 1'b0
 ) (
+`ifndef SYNTHESIS
+    // The caller enables consistency checks after its reset.
+    input logic i_check_enable = 1'b1,
+`endif
     input logic i_clk,
 
     // Write port (port A): byte-granular, row-addressed.
@@ -308,8 +312,19 @@ module sdp_ram_byte_en #(
     assign check_re    = i_re;
     assign check_raddr = i_raddr;
   end
+  localparam int CheckHistoryCycles = WriteRegStages > int'(REGISTER_READ_INPUT) ?
+      WriteRegStages : int'(REGISTER_READ_INPUT);
+  wire check_history_ready;
+  if (CheckHistoryCycles > 0) begin : gen_check_history
+    logic [CheckHistoryCycles-1:0] valid_q = '0;
+    always_ff @(posedge i_clk) valid_q <= (valid_q << 1) | CheckHistoryCycles'(1);
+    assign check_history_ready = valid_q[CheckHistoryCycles-1];
+  end else begin : gen_check_no_history
+    assign check_history_ready = 1'b1;
+  end
   always @(posedge i_clk) begin
-    if (check_re && row_write_en && (check_raddr == waddr_q)) begin
+    if (i_check_enable && check_history_ready && check_re && row_write_en &&
+        (check_raddr == waddr_q)) begin
       $error("sdp_ram_byte_en: row %0d read and written at the same edge", check_raddr);
     end
   end
