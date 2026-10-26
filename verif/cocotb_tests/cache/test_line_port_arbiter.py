@@ -197,8 +197,8 @@ def _line_int(data: bytes) -> int:
 async def _check_read(
     dut: Any, port: int, collector: _ResponseCollector, model: ReferenceModel, addr: int
 ) -> None:
-    got = await _line_transaction(dut, port, collector, write=False, addr=addr)
     expected = model.read_line(addr)
+    got = await _line_transaction(dut, port, collector, write=False, addr=addr)
     assert got == expected, (
         f"port {port} read mismatch @0x{addr:08x}: "
         f"got 0x{got:064x} expected 0x{expected:064x}"
@@ -445,7 +445,7 @@ async def test_random_outstanding_traffic(dut: Any) -> None:
         for _ in range(bursts_per_port):
             burst = local_rng.randrange(1, NUM_IDS + 1)
             lines = local_rng.sample(range(WINDOW_LINES), burst)
-            issued: list[tuple[int, int | None]] = []
+            issued: list[tuple[int, int | None, int]] = []
             for line in lines:
                 addr = RANDOM_OUT_BASE[port] + line * LINE_BYTES
                 req_id = _ids.take(port)
@@ -466,16 +466,16 @@ async def test_random_outstanding_traffic(dut: Any) -> None:
                         wdata=wdata,
                         wstrb=wstrb,
                     )
-                    issued.append((req_id, None))
+                    issued.append((req_id, None, 0))
                 else:
+                    expected = models[port].read_line(addr)
                     await _fire_request(
                         dut, port, write=False, addr=addr, req_id=req_id
                     )
-                    issued.append((req_id, addr))
-            for req_id, read_addr in issued:
+                    issued.append((req_id, addr, expected))
+            for req_id, read_addr, expected in issued:
                 got = await collectors[port].wait_for(req_id)
                 if read_addr is not None:
-                    expected = models[port].read_line(read_addr)
                     assert got == expected, (
                         f"port {port} id {req_id} @0x{read_addr:08x}: "
                         f"got 0x{got:064x} expected 0x{expected:064x}"
