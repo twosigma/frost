@@ -181,9 +181,7 @@ Assertion-history initializers and program image loads execute normally,
 including instruction predecode metadata. Arrays loaded by their parent
 skip random fill as well as arrays with their own image file.
 Instruction-image padding is zero in every packed copy, matching the
-generated bank images. SRAM model image loading leaves internal write
-selects idle until their first rising clock edges; initial falling edges
-preserve the loaded contents. The benches establish idle programming clocks
+generated bank images. The benches establish idle programming clocks
 before HDL initialization, then assert power-on reset at time zero after the
 first HDL evaluation. This supplies an assertion edge to asynchronous reset
 logic even when the input's arbitrary initial value was high. Both modes use
@@ -199,12 +197,14 @@ both modes. They supply reset at the `platform_top` boundary and are outside
 the ASIC design. Random-start mode seeds the registers and memories inside
 that boundary, including its reset pipelines.
 
-The shared SoC bench loads data images after eighteen SoC clock edges, while
-system reset is held. This supplies the image after the memory controllers
-have reset and programming writes have drained, including writes to the
-data SRAM macros. The load covers data BRAM, data SRAM and behavioral DDR.
-The image load does not repeat on warm reset. Instruction images use the
-programming domain's power-on write protection.
+The shared SoC bench loads program images after eighteen SoC clock edges,
+while system reset is held. The memory controllers have completed cold reset
+and programming writes have drained. Instruction programming enables must
+be idle during the load. The load covers instruction words, predecode
+metadata, data BRAM, data SRAM and behavioral DDR. Instruction banks use the
+packing functions in `sw/common/generate_imem_predecode_init.py`, including
+the scalar metadata copies and the SRAM tiles. The image load does not repeat
+on warm reset.
 
 Consistency checks that depend on reset state and functional cover points
 arm after their local reset completes. They remain active in ordinary and
