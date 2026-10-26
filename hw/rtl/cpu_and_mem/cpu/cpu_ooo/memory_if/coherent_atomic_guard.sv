@@ -31,6 +31,7 @@ module coherent_atomic_guard #(
     input logic i_own_fault,
     output logic o_active,
     output logic o_retired,
+    // The active context qualifies the tag.
     output logic [TAG_BITS-1:0] o_tag
 );
   wire arm = !o_active && i_arm_valid && i_head_valid && i_arm_tag == i_head_tag && !i_entry_wins;
@@ -40,16 +41,45 @@ module coherent_atomic_guard #(
       o_retired <= 1'b0;
       o_tag <= '0;
     end else begin
+      if (!o_active) o_tag <= i_arm_tag;
       if (arm) begin
-        o_active <= 1'b1;
+        o_active  <= 1'b1;
         o_retired <= 1'b0;
-        o_tag <= i_arm_tag;
       end
       if (o_active && i_commit_valid && i_commit_tag == o_tag) o_retired <= 1'b1;
       if (o_active && o_retired && !i_home_live) o_active <= 1'b0;
       if (o_active && i_own_fault && !i_home_live) o_active <= 1'b0;
     end
   end
+`ifndef SYNTHESIS
+  logic reference_active, reference_retired;
+  logic [TAG_BITS-1:0] reference_tag;
+  logic reference_seen = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      reference_active <= 1'b0;
+      reference_retired <= 1'b0;
+      reference_tag <= '0;
+      reference_seen <= 1'b1;
+    end else begin
+      if (!reference_active && i_arm_valid && i_head_valid &&
+          i_arm_tag == i_head_tag && !i_entry_wins) begin
+        reference_active <= 1'b1;
+        reference_retired <= 1'b0;
+        reference_tag <= i_arm_tag;
+      end
+      if (reference_active && i_commit_valid && i_commit_tag == reference_tag)
+        reference_retired <= 1'b1;
+      if (reference_active && reference_retired && !i_home_live) reference_active <= 1'b0;
+      if (reference_active && i_own_fault && !i_home_live) reference_active <= 1'b0;
+    end
+    if (reference_seen) begin
+      assert (o_active == reference_active);
+      assert (o_retired == reference_retired);
+      if (o_active) assert (o_tag == reference_tag);
+    end
+  end
+`endif
 `ifdef FORMAL
   logic f_past_valid = 1'b0;
   always_ff @(posedge i_clk) begin
