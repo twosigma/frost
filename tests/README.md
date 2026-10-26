@@ -79,7 +79,11 @@ and both line sizes at 32-bit and 56-bit physical widths.
 The `coherent_cpu_faults` bench injects SC refill errors after clean replacement.
 It checks architectural trap cause, EPC and virtual fault address with and without
 translation. A delayed SC refill also checks that debug entry follows the
-exact selected write and release. The coherent FENCE.I program uses 4 KiB
+exact selected write and release. Single-step cases execute LR before SC or
+AMO in cached and private uncached memory. They check the retired instruction,
+debug PC, absence of following atomic ownership and unchanged memory. A
+subsequent debug command reports DPC through a Device write and parks again.
+The coherent FENCE.I program uses 4 KiB
 private caches and full L1D maintenance sweeps. The coherent AMO interrupt
 workload uses 64 bursts of 64 AMOs, covering two rotations of its counters.
 

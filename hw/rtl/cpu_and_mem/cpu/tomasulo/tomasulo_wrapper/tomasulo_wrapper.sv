@@ -1573,16 +1573,6 @@ module tomasulo_wrapper #(
   logic sq_committed_empty;
   logic sq_committed_empty_rob;
   logic sq_committed_empty_lq;
-  logic sq_committed_empty_raw, sq_committed_empty_rob_raw;
-  logic sq_committed_empty_lq_raw, sq_committed_empty_trap_raw;
-  logic coherent_drain_pending;
-  assign coherent_drain_pending = COHERENT_CLUSTER &&
-      (i_coherent_store_pending || i_coherent_sc_pending ||
-       (o_sq_mem_write_en && o_sq_mem_write_is_cached));
-  assign sq_committed_empty = sq_committed_empty_raw && !coherent_drain_pending;
-  assign sq_committed_empty_rob = sq_committed_empty_rob_raw && !coherent_drain_pending;
-  assign sq_committed_empty_lq = sq_committed_empty_lq_raw && !coherent_drain_pending;
-  assign o_sq_committed_empty_trap = sq_committed_empty_trap_raw && !coherent_drain_pending;
   assign o_sq_committed_empty = sq_committed_empty;
 
   // A coherent successful SC clears at its tagged write; other SCs clear at commit.
@@ -1628,8 +1618,8 @@ module tomasulo_wrapper #(
   assign sq_commit_valid_scan_2 = commit_bus_2_q_valid_raw && commit_q_2_is_store_like;
 
   // ===========================================================================
-  // SC completion hand-off: sc_pending_unit tracks in-flight SCs in a ROB-tag
-  // table and fires the one at the ROB head once the SQ is committed-empty
+  // SC selection requires a ROB-head match and an empty committed SQ.
+  // A selected coherent SC completes independently of that drain status.
   // ===========================================================================
   logic sc_pending;
   // Forward declaration (assigned in SQ address section below)
@@ -4223,10 +4213,10 @@ module tomasulo_wrapper #(
       // Status
       .o_empty               (sq_empty_exact),
       .o_dispatch_empty      (o_sq_empty),
-      .o_committed_empty     (sq_committed_empty_raw),
-      .o_committed_empty_rob (sq_committed_empty_rob_raw),
-      .o_committed_empty_trap(sq_committed_empty_trap_raw),
-      .o_committed_empty_lq  (sq_committed_empty_lq_raw),
+      .o_committed_empty     (sq_committed_empty),
+      .o_committed_empty_rob (sq_committed_empty_rob),
+      .o_committed_empty_trap(o_sq_committed_empty_trap),
+      .o_committed_empty_lq  (sq_committed_empty_lq),
       .o_count               (sq_count_exact),
       .o_dispatch_count      (o_sq_count)
   );

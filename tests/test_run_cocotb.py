@@ -2113,7 +2113,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherent_cpu_faults": CocotbRunConfig(
         python_test_module="cocotb_tests.integration.test_coherent_cpu_faults",
         hdl_toplevel_module="cpu_top",
-        description="Coherent SC refill errors preserve the virtual fault address.",
+        description="Coherent atomic faults and debug entry preserve precise ownership.",
         verilator_extra_args=(
             "--assert",
             "-GCOHERENT_CLUSTER=1",

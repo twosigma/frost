@@ -1631,10 +1631,11 @@ module load_queue #(
   assign o_coherent_arm_valid = COHERENT_CLUSTER && sq_check_entry_valid && sq_check_is_amo_q &&
       sq_check_is_cached_region && sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty &&
       sq_check_pma_ok && !sq_check_misaligned && !i_flush_all && !i_flush_en;
-  assign o_coherent_arm_tag = sq_check_rob_tag_q;
-  assign o_coherent_read_kind = sq_check_is_amo_q ? 2'd2 : sq_check_is_lr_q ? 2'd1 : 2'd0;
-  assign o_coherent_read_tag = sq_check_rob_tag_q;
-  assign o_coherent_write_tag = lq_rob_tag[amo_entry_idx];
+  assign o_coherent_arm_tag = COHERENT_CLUSTER ? sq_check_rob_tag_q : '0;
+  assign o_coherent_read_kind = !COHERENT_CLUSTER ? 2'd0 :
+      sq_check_is_amo_q ? 2'd2 : sq_check_is_lr_q ? 2'd1 : 2'd0;
+  assign o_coherent_read_tag = COHERENT_CLUSTER ? sq_check_rob_tag_q : '0;
+  assign o_coherent_write_tag = COHERENT_CLUSTER ? lq_rob_tag[amo_entry_idx] : '0;
 
   // A departing staged load permits same-cycle capture of its replacement.
   // Keep this predicate aligned with sq_check_stage_clears below.
@@ -3688,8 +3689,16 @@ module load_queue #(
   always_ff @(posedge i_clk) begin
     if (accept_mem_response && issued_is_lr && !mem_response_error) begin
       reservation_addr <= issued_addr;
-      reservation_size <= 3'(issued_size);
     end
+  end
+
+  if (COHERENT_CLUSTER) begin : gen_coherent_reservation_size
+    always_ff @(posedge i_clk) begin
+      if (accept_mem_response && issued_is_lr && !mem_response_error)
+        reservation_size <= 3'(issued_size);
+    end
+  end else begin : gen_no_coherent_reservation_size
+    assign reservation_size = '0;
   end
 
   // -----------------------------------------------------------------
