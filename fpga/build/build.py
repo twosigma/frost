@@ -3447,6 +3447,9 @@ Examples:
         args.build_dir = args.build_dir.resolve()
 
     board_name = args.board_name
+    if args.coherent_cluster and board_name != "x3":
+        parser.error("--coherent-cluster is only supported for x3")
+    os.environ["FROST_COHERENT_CLUSTER"] = "1" if args.coherent_cluster else "0"
 
     if args.start_at == "bitstream":
         if args.stop_after is not None:
@@ -3454,8 +3457,26 @@ Examples:
         build_options = (
             {"build_dir": args.build_dir} if args.build_dir is not None else {}
         )
+        script_dir = Path(__file__).parent.resolve()
+        if board_name == "x3":
+            board_build = (
+                args.build_dir if args.build_dir is not None else script_dir / "x3"
+            )
+            try:
+                capacity = board_ddr_capacity_log2_bytes(
+                    BOARD_DESIGN_DIR / "x3_ddr_bd.tcl"
+                )
+            except (OSError, ValueError) as error:
+                parser.error(str(error))
+            if not require_x3_netlist_configuration(
+                board_build / "work",
+                args.cpu_clock_div,
+                capacity,
+                args.coherent_cluster,
+            ):
+                sys.exit(1)
         if not generate_bitstream(
-            Path(__file__).parent.resolve(),
+            script_dir,
             board_name,
             args.vivado_path,
             **build_options,
@@ -3556,9 +3577,6 @@ Examples:
             for name in ("FROST_PLACE_CELL_BLOAT", "FROST_PLACE_CELL_BLOAT_CELLS")
         )
     )
-    if args.coherent_cluster and board_name != "x3":
-        parser.error("--coherent-cluster is only supported for x3")
-    os.environ["FROST_COHERENT_CLUSTER"] = "1" if args.coherent_cluster else "0"
     if args.debug_ila:
         if board_name != "x3":
             parser.error("--debug-ila is only supported for x3")

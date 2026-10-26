@@ -5099,3 +5099,48 @@ def test_coherent_cluster_manifest(
     assert fpga_build.require_x3_netlist_configuration(dest, 1, 30, selected)
     assert not fpga_build.require_x3_netlist_configuration(dest, 1, 30, not selected)
     assert fpga_build.is_reference_x3_netlist(dest) == (not selected)
+
+
+@pytest.mark.parametrize("stored", [False, True])
+@pytest.mark.parametrize("requested", [False, True])
+def test_coherent_configuration_on_final_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stored: bool,
+    requested: bool,
+) -> None:
+    """Check the cluster selection before using a completed checkpoint."""
+    work = _sweep_input(tmp_path, "post_second_route_physopt")
+    _write_qualified_descendant(work, "post_second_route_physopt", final=True)
+    manifest = work / fpga_build.X3_NETLIST_CONFIG_NAME
+    config = json.loads(manifest.read_text())
+    config["coherent_cluster"] = stored
+    manifest.write_text(json.dumps(config))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build.py",
+            "x3",
+            "--start-at",
+            "bitstream",
+            "--build-dir",
+            str(work.parent),
+            "--coherent-cluster" if requested else "--no-coherent-cluster",
+        ],
+    )
+    calls = []
+
+    def resume(*_args: Any, **_kwargs: Any) -> bool:
+        calls.append(True)
+        return True
+
+    monkeypatch.setattr(fpga_build, "generate_bitstream", resume)
+    if requested == stored:
+        fpga_build.main()
+        assert calls == [True]
+    else:
+        with pytest.raises(SystemExit) as error:
+            fpga_build.main()
+        assert error.value.code == 1
+        assert not calls
