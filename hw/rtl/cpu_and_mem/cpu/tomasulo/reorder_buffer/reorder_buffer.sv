@@ -1463,6 +1463,11 @@ module reorder_buffer #(
         .LINK_WIDTH (XLEN),
         .ONEHOT_READ(1'b1)
     ) u_rob_value_head (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_check_enable (dbg_mask_seen_reset && i_rst_n),
+`endif
+`endif
         .i_clk,
         .i_alloc_enable ({alloc_en_2, alloc_en}),
         .i_alloc_address({tail_idx_2, tail_idx}),
@@ -1483,6 +1488,11 @@ module reorder_buffer #(
         .LINK_WIDTH (XLEN),
         .ONEHOT_READ(1'b1)
     ) u_rob_value_head_next (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_check_enable (dbg_mask_seen_reset && i_rst_n),
+`endif
+`endif
         .i_clk,
         .i_alloc_enable ({alloc_en_2, alloc_en}),
         .i_alloc_address({tail_idx_2, tail_idx}),
@@ -1503,6 +1513,11 @@ module reorder_buffer #(
         .LINK_WIDTH (XLEN),
         .ONEHOT_READ(1'b0)
     ) u_rob_value_bypass_1 (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_check_enable (dbg_mask_seen_reset && i_rst_n),
+`endif
+`endif
         .i_clk,
         .i_alloc_enable ({alloc_en_2, alloc_en}),
         .i_alloc_address({tail_idx_2, tail_idx}),
@@ -1522,6 +1537,11 @@ module reorder_buffer #(
         .LINK_WIDTH (XLEN),
         .ONEHOT_READ(1'b0)
     ) u_rob_value_bypass_2 (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_check_enable (dbg_mask_seen_reset && i_rst_n),
+`endif
+`endif
         .i_clk,
         .i_alloc_enable ({alloc_en_2, alloc_en}),
         .i_alloc_address({tail_idx_2, tail_idx}),
@@ -1541,6 +1561,11 @@ module reorder_buffer #(
         .LINK_WIDTH (XLEN),
         .ONEHOT_READ(1'b0)
     ) u_rob_value_bypass_3 (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_check_enable (dbg_mask_seen_reset && i_rst_n),
+`endif
+`endif
         .i_clk,
         .i_alloc_enable ({alloc_en_2, alloc_en}),
         .i_alloc_address({tail_idx_2, tail_idx}),
@@ -1561,6 +1586,11 @@ module reorder_buffer #(
         .LINK_WIDTH (XLEN),
         .ONEHOT_READ(1'b0)
     ) u_rob_value_bypass_4 (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_check_enable (dbg_mask_seen_reset && i_rst_n),
+`endif
+`endif
         .i_clk,
         .i_alloc_enable ({alloc_en_2, alloc_en}),
         .i_alloc_address({tail_idx_2, tail_idx}),
@@ -1580,6 +1610,11 @@ module reorder_buffer #(
         .LINK_WIDTH (XLEN),
         .ONEHOT_READ(1'b0)
     ) u_rob_value_bypass_5 (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_check_enable (dbg_mask_seen_reset && i_rst_n),
+`endif
+`endif
         .i_clk,
         .i_alloc_enable ({alloc_en_2, alloc_en}),
         .i_alloc_address({tail_idx_2, tail_idx}),
@@ -1599,6 +1634,11 @@ module reorder_buffer #(
         .LINK_WIDTH (XLEN),
         .ONEHOT_READ(1'b0)
     ) u_rob_value_bypass_6 (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_check_enable (dbg_mask_seen_reset && i_rst_n),
+`endif
+`endif
         .i_clk,
         .i_alloc_enable ({alloc_en_2, alloc_en}),
         .i_alloc_address({tail_idx_2, tail_idx}),
@@ -3177,8 +3217,8 @@ module reorder_buffer #(
   // entries, so at most one may be a branch. Rejected requests do not count.
   if (SharedLinkBank) begin : g_shared_link_bank_check
     always @(posedge i_clk) begin
-      if (alloc_en && alloc_en_2 && i_alloc_req.is_branch && i_alloc_req_2.is_branch &&
-          (tail_idx != tail_idx_2)) begin
+      if (dbg_mask_seen_reset && i_rst_n && alloc_en && alloc_en_2 &&
+          i_alloc_req.is_branch && i_alloc_req_2.is_branch && (tail_idx != tail_idx_2)) begin
         $error("Reorder Buffer: branch allocations at entries %0d and %0d in one cycle", tail_idx,
                tail_idx_2);
       end

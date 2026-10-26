@@ -2839,6 +2839,9 @@ module tomasulo_wrapper #(
   mem_wakeup_merge #(
       .FORMAL_STANDALONE_ENV(1'b0)
   ) u_mem_wakeup_merge (
+`ifndef SYNTHESIS
+      .i_check_enable(sc_check_armed && i_rst_n),
+`endif
       // No reset gate is needed: MEM_RS entries, stage2, pending flags, and LQ
       // pre-issue state clear on reset, so a reset-cycle token has no lasting effect.
       .i_enable(mem_rs_early_wakeup_enable),

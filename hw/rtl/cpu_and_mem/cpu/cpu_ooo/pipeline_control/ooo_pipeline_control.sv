@@ -75,6 +75,11 @@ module ooo_pipeline_control #(
     output logic [XLEN-1:0] o_trap_target_reg
 );
 
+
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+`endif
   // --- Port aliases.
   riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req;
   riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req_2;
@@ -173,7 +178,7 @@ module ooo_pipeline_control #(
   // The bits rely on a save taking a free checkpoint and a resolution
   // naming a live one.
   always_ff @(posedge i_clk) begin
-    if (!i_rst && !$isunknown(
+    if (reset_seen_q && !i_rst && !$isunknown(
             {rob_checkpoint_valid, branch_resolved_correct, checkpoint_in_use}
         )) begin
       p_unresolved_save_takes_free_checkpoint :
@@ -276,7 +281,7 @@ module ooo_pipeline_control #(
   // Check that id_stall_q includes csr_in_flight and gates ID validity exactly
   // as a live !csr_in_flight term would, including replay and release.
   always_ff @(posedge i_clk) begin
-    if (!i_rst && !flush_pipeline && !$isunknown(
+    if (reset_seen_q && !i_rst && !flush_pipeline && !$isunknown(
             {serializing_alloc_fire_comb, dispatch_stall, csr_in_flight,
              id_stall_q, id_stall_legacy_q, replay_after_dispatch_stall_q}
         )) begin
@@ -297,7 +302,7 @@ module ooo_pipeline_control #(
   // its consumed_q guard handles this case.
   if (!QUEUED_FRONTEND) begin : gen_direct_csr_release
     p_held_csr_release_is_advance_only :
-    assert property (@(posedge i_clk) disable iff (i_rst || flush_pipeline)
+    assert property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst || flush_pipeline)
       (replay_after_serialize_stall_next && csr_alloc_held_id_q)
       |=> (id_stall_q && !serializing_alloc_fire_comb));
   end

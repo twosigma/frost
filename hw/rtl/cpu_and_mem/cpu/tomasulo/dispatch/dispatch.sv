@@ -1930,10 +1930,10 @@ module dispatch #(
   // dispatch, in either slot, because the store queue is full, and a load
   // because the load queue is full.
   cover_store_waits_for_full_sq :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       o_status.sq_full || (slot2_only_block && need_sq_2 && sq_full_for_slot2));
   cover_load_waits_for_full_lq :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       o_status.lq_full || (slot2_only_block && need_lq_2 && lq_full_for_slot2));
 `endif
 `endif

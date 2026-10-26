@@ -95,6 +95,11 @@ module axi_behavioral_memory #(
     output logic                      o_axi_rlast
 );
 
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+`endif
+
   localparam int unsigned NumWords = MEM_BYTES / 4;
   localparam int unsigned WordIndexBits = (NumWords > 1) ? $clog2(NumWords) : 1;
   localparam int unsigned WordsPerLine = LINE_BYTES / 4;
@@ -551,7 +556,7 @@ module axi_behavioral_memory #(
   // Dump both channels if AR remains blocked for 1024 cycles.
   int unsigned ar_stall_cnt;
   always_ff @(posedge i_clk) begin
-    if (i_rst || !(i_axi_arvalid && !o_axi_arready)) begin
+    if (!reset_seen_q || i_rst || !(i_axi_arvalid && !o_axi_arready)) begin
       ar_stall_cnt <= 0;
     end else begin
       ar_stall_cnt <= ar_stall_cnt + 1;
@@ -586,7 +591,7 @@ module axi_behavioral_memory #(
   // are architectural and indicate that the modeled working set is too small.
   int unsigned oob_warnings = 0;
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       if (i_axi_awvalid && o_axi_awready && i_axi_awlen != 8'd0)
         $error("axi_behavioral_memory: only single-beat write bursts supported");
       if (i_axi_arvalid && o_axi_arready && i_axi_arlen != 8'd0)

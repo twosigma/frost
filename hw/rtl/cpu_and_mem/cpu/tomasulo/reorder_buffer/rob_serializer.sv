@@ -70,6 +70,11 @@ module rob_serializer (
     output logic o_commit_stall_for_retire
 );
 
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
+`endif
+
   riscv_pkg::serial_state_e serial_state, serial_state_next;
   logic commit_stall;
   logic retire_permit;
@@ -287,7 +292,7 @@ module rob_serializer (
   // Simulation-only assertions: $isunknown would put unsupported z literals
   // into the BTOR model. The formal properties live in the parent ROB.
   always_ff @(posedge i_clk) begin
-    if (i_rst_n && !i_flush_all && !$isunknown(
+    if (reset_seen_q && i_rst_n && !i_flush_all && !$isunknown(
             {
               sfence_window_q,
               serial_state,

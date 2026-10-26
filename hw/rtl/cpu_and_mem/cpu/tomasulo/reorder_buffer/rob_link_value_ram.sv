@@ -51,6 +51,10 @@ module rob_link_value_ram #(
     parameter int unsigned LINK_WIDTH  = DATA_WIDTH,
     parameter bit          ONEHOT_READ = 1'b0
 ) (
+`ifndef SYNTHESIS
+    // The caller enables consistency checks after its reset.
+    input logic i_check_enable = 1'b1,
+`endif
     input logic i_clk,
 
     // Allocation ports [0] = slot 1, [1] = slot 2 (staged LVT update).
@@ -239,7 +243,7 @@ module rob_link_value_ram #(
 
   // The shared link bank cannot write two distinct addresses in one cycle.
   always @(posedge i_clk) begin
-    if (!$isunknown(
+    if (i_check_enable && !$isunknown(
             {i_alloc_enable, i_alloc_branch}
         ) && (&(i_alloc_enable & i_alloc_branch)) &&
             (i_alloc_address[0] != i_alloc_address[1])) begin

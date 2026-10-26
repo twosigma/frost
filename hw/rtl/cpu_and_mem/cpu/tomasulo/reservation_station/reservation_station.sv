@@ -1102,7 +1102,7 @@ module reservation_station #(
   // valids may change between edges. Full flush is exempt: it clears valid
   // state and count regardless of a stale dispatch packet.
   always_ff @(posedge i_clk) begin
-    if (TRUST_DISPATCH_VALID && i_rst_n && !i_flush_all && !$isunknown(
+    if (reset_seen_q && TRUST_DISPATCH_VALID && i_rst_n && !i_flush_all && !$isunknown(
             {dispatch_valid, dispatch_valid_2, full, full_for_2}
         )) begin
       p_trusted_dispatch_fire_exact : assert (dispatch_fire == (dispatch_valid && !full));
@@ -1112,7 +1112,7 @@ module reservation_station #(
     end
     // Exported status must conservatively cover live occupancy for trusted
     // valids. A reserve of one entry is insufficient for two-slot dispatch.
-    if (TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
+    if (reset_seen_q && TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
             {full, full_for_2, dispatch_full_q, dispatch_full_for_2_q}
         )) begin
       p_trusted_status_conservative : assert (!full || dispatch_full_q);
@@ -2287,17 +2287,23 @@ module reservation_station #(
             stage2b_operand_oracle_valid_q <= 1'b0;
           end else if (issue_fire_2) begin
             stage2b_operand_oracle_valid_q <= 1'b1;
-            assert (!(issue2_src1_cdb_bypass_selected && issue2_src1_cdb_bypass_l1_selected))
-            else $error("RS: issue-2 src1 matched both CDB lanes");
-            assert (!(issue2_src2_cdb_bypass_selected && issue2_src2_cdb_bypass_l1_selected))
-            else $error("RS: issue-2 src2 matched both CDB lanes");
+            if (reset_seen_q) begin
+              assert (!(issue2_src1_cdb_bypass_selected && issue2_src1_cdb_bypass_l1_selected))
+              else $error("RS: issue-2 src1 matched both CDB lanes");
+            end
+            if (reset_seen_q) begin
+              assert (!(issue2_src2_cdb_bypass_selected && issue2_src2_cdb_bypass_l1_selected))
+              else $error("RS: issue-2 src2 matched both CDB lanes");
+            end
             stage2b_src1_value_oracle_q <= issue2_src1_cdb_bypass_selected ? i_cdb.value :
                 issue2_src1_cdb_bypass_l1_selected ? i_cdb_2.value : issue2_src1_value_selected;
             stage2b_src2_value_oracle_q <= issue2_src2_cdb_bypass_selected ? i_cdb.value :
                 issue2_src2_cdb_bypass_l1_selected ? i_cdb_2.value : issue2_src2_value_selected;
             if (HAS_SRC3) begin
-              assert (!(issue2_src3_cdb_bypass_selected && issue2_src3_cdb_bypass_l1_selected))
-              else $error("RS: issue-2 src3 matched both CDB lanes");
+              if (reset_seen_q) begin
+                assert (!(issue2_src3_cdb_bypass_selected && issue2_src3_cdb_bypass_l1_selected))
+                else $error("RS: issue-2 src3 matched both CDB lanes");
+              end
               stage2b_src3_value_oracle_q <= issue2_src3_cdb_bypass_selected ? i_cdb.value :
                   issue2_src3_cdb_bypass_l1_selected ? i_cdb_2.value : issue2_src3_value_selected;
             end

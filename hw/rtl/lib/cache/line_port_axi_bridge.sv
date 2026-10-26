@@ -140,6 +140,13 @@ module line_port_axi_bridge #(
     output logic [AXI_ID_BITS-1:0] o_wr_err_id
 );
 
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+  logic axi_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_axi_rst) axi_reset_seen_q <= 1'b1;
+`endif
+
   localparam int unsigned NumIds = 1 << ID_BITS;
 
   initial begin
@@ -334,7 +341,7 @@ module line_port_axi_bridge #(
   int axi_error_check;
   initial if (!$value$plusargs("axi_error_check=%d", axi_error_check)) axi_error_check = 1;
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && axi_reset_seen_q && !i_rst) begin
       if (req_fire && inflight_q[i_req_id])
         $error("line_port_axi_bridge: request reuses in-flight id %0d", i_req_id);
       if (r_accept && r_known && b_accept && b_known &&
@@ -363,7 +370,7 @@ module line_port_axi_bridge #(
   // initial counter could trigger the watchdog spuriously.
   int unsigned req_stall_cnt;
   always_ff @(posedge i_clk) begin
-    if (i_rst || !(i_req_valid && !o_req_ready)) begin
+    if (!reset_seen_q || !axi_reset_seen_q || i_rst || !(i_req_valid && !o_req_ready)) begin
       req_stall_cnt <= 0;
     end else begin
       req_stall_cnt <= req_stall_cnt + 1;

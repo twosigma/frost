@@ -29,6 +29,10 @@
 module mem_wakeup_merge #(
     parameter bit FORMAL_STANDALONE_ENV = 1'b1
 ) (
+`ifndef SYNTHESIS
+    // The caller enables consistency checks after its reset.
+    input logic i_check_enable = 1'b1,
+`endif
     input logic i_enable,
     input riscv_pkg::fu_complete_t i_load,
     input riscv_pkg::cdb_broadcast_t i_registered_0,
@@ -78,7 +82,7 @@ module mem_wakeup_merge #(
   end
 `else
   always_comb begin
-    if (!$isunknown(duplicates_registered_lane)) begin
+    if (i_check_enable && !$isunknown(duplicates_registered_lane)) begin
       p_early_load_tag_not_registered : assert (!duplicates_registered_lane);
     end
   end

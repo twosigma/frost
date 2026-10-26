@@ -318,7 +318,7 @@ module line_port_arbiter #(
   // higher priority.
   if (STARVATION_LIMIT != 0) begin : gen_starvation_cover
     cover_starved_port_granted :
-    cover property (@(posedge i_clk) disable iff (i_rst)
+    cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
         o_down_req_valid && i_down_req_ready && |(grant & starved & valid_below));
   end
 `endif

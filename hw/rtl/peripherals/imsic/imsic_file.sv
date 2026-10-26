@@ -108,6 +108,13 @@ module imsic_file #(
     output logic o_eip
 );
 
+`ifndef SYNTHESIS
+`ifdef FROST_COVERAGE
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+`endif
+`endif
+
   localparam int unsigned IdBits = $clog2(NUM_IDS + 1);
   // 64-bit eip and eie words; word w holds identities 64w to 64w+63.
   localparam int unsigned NumWords = (NUM_IDS + 1) / 64;
@@ -449,12 +456,12 @@ module imsic_file #(
 `ifdef FROST_COVERAGE
   // An MSI sets the identity that the same edge's claim clears.
   cover_msi_reasserts_claimed_identity :
-  cover property (@(posedge i_clk) disable iff (i_rst)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
       i_topei_claim && (|(top_onehot_q & msi_onehot)));
   for (genvar w = 0; w < int'(NumWords); w++) begin : gen_eip_cover
     // An MSI wins over a CSR write clearing its pending bit.
     cover_msi_over_eip_clear :
-    cover property (@(posedge i_clk) disable iff (i_rst)
+    cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
         wr_eip[w] && (|(msi_onehot[64*w+:64] & ~i_ireg_keep & ~i_ireg_set)));
   end
 `endif

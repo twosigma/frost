@@ -115,6 +115,11 @@ module tage_history #(
     output logic                    o_train_mispredicted
 );
 
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+`endif
+
   localparam int unsigned RobDepth = riscv_pkg::ReorderBufferDepth;
 
   typedef struct packed {
@@ -249,7 +254,7 @@ module tage_history #(
   end
 `ifndef SYNTHESIS
   always @(posedge i_clk) begin
-    if (!i_rst && alloc_branch) begin
+    if (reset_seen_q && !i_rst && alloc_branch) begin
       p_early_read_after_index_write : assert (!i_early_active || alloc_branch_tag != i_early_tag);
       p_commit_read_after_index_write :
       assert (!(i_commit_valid[0] && alloc_branch_tag == i_commit_tag[0]) &&

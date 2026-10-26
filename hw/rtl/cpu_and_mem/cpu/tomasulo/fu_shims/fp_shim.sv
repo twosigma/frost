@@ -61,6 +61,11 @@ module fp_shim #(
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag
 );
 
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
+`endif
+
   localparam int unsigned TagW = riscv_pkg::ReorderBufferTagWidth;
 
   function automatic logic is_younger(input logic [TagW-1:0] entry_tag,
@@ -167,7 +172,7 @@ module fp_shim #(
   // The RS removes an entry on issue, so issuing while the engine is busy
   // loses it. This also forbids issue in a squashed start's decode cycle.
   always @(posedge i_clk) begin
-    if (i_rst_n && i_rs_issue.valid && !eng_idle) begin
+    if (reset_seen_q && i_rst_n && i_rs_issue.valid && !eng_idle) begin
       $error("fp_shim: issue of tag %0d while the engine is busy", i_rs_issue.rob_tag);
     end
   end

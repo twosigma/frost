@@ -66,6 +66,11 @@ module fp_engine (
     output riscv_pkg::fp_flags_t        o_flags
 );
 
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
+`endif
+
   // ===========================================================================
   // Operation decode
   // ===========================================================================
@@ -1768,7 +1773,7 @@ module fp_engine (
 
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
-    if (i_rst_n && i_start && (state_q != ST_IDLE)) begin
+    if (reset_seen_q && i_rst_n && i_start && (state_q != ST_IDLE)) begin
       $error("fp_engine: start while busy (op %0d)", i_op);
     end
   end

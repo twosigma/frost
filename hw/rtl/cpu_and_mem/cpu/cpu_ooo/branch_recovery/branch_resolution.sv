@@ -31,6 +31,10 @@
 module branch_resolution #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
+`ifndef SYNTHESIS
+    // The caller enables consistency checks after its reset.
+    input logic i_check_enable = 1'b1,
+`endif
     input riscv_pkg::rs_issue_t i_rs_issue_int,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_branch_predicate_tag,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_head_tag,
@@ -256,7 +260,7 @@ module branch_resolution #(
   // For a qualified direct branch predicted taken, the precomputed target
   // check must match the full comparison against the tag-indexed prediction.
   always_comb begin
-    if (!$isunknown(
+    if (i_check_enable && !$isunknown(
             {
               is_branch_update_issue,
               rs_issue_int.is_jalr,
@@ -279,7 +283,7 @@ module branch_resolution #(
   // apply regardless of predicted_taken. The reservation station separately
   // checks all three side-RAM words against the dispatched packet.
   always_comb begin
-    if (!$isunknown(
+    if (i_check_enable && !$isunknown(
             {
               is_branch_update_issue,
               rs_issue_int.is_jalr,
