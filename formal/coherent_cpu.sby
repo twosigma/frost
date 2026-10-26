@@ -1,6 +1,7 @@
 [tasks]
 coh_sc_selected_prove sc
 coh_lq_cut_prove lq
+coh_lq_selector_prove selector
 
 [options]
 mode prove
@@ -15,10 +16,13 @@ read -sv riscv_pkg.sv
 sc: read -formal -sv -D FROST_COHERENT_CLUSTER -D COHERENT_SC_LOCAL_PROOF sc_pending_unit.sv
 sc: chparam -set COHERENT_CLUSTER 1 sc_pending_unit
 sc: prep -flatten -top sc_pending_unit
-lq: read -sv sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv lq_l0_cache.sv lq_issue_selector.sv
+lq: read -sv sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv lq_l0_cache.sv lq_issue_selector.sv coherent_lq_issue_selector.sv
 lq: read -formal -sv -D FROST_COHERENT_CLUSTER -D F_LQ_PREMATCH_ONLY -D COHERENT_LQ_LOCAL_PROOF load_queue.sv
 lq: chparam -set COHERENT_CLUSTER 1 load_queue
 lq: prep -flatten -top load_queue
+
+selector: read -formal -sv lq_issue_selector.sv coherent_lq_issue_selector.sv
+selector: prep -flatten -top coherent_lq_issue_selector
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
@@ -27,5 +31,6 @@ lq: prep -flatten -top load_queue
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/atomics/sc_pending_unit.sv

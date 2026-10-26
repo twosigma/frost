@@ -76,6 +76,11 @@ load if it is ready for memory, which wins. A device load may be staged before
 it reaches the ROB head, but device loads, LRs and AMOs neither probe the SQ
 nor leave the LQ until they are at the head.
 
+The coherent selection computes memory candidates for both SQ drain states
+in [`coherent_lq_issue_selector.sv`](coherent_lq_issue_selector.sv). The live
+drain flag selects between those results. Both cases use the same ring
+order and ROB-head priority. Selection is combinational.
+
 ### ROB-head priority
 
 Holes make ring order differ from age, so the ROB-head load H gets priority
