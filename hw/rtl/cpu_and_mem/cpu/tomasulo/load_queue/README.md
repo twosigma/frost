@@ -79,7 +79,9 @@ nor leave the LQ until they are at the head.
 The coherent selection computes memory candidates for both SQ drain states
 in [`coherent_lq_issue_selector.sv`](coherent_lq_issue_selector.sv). The live
 drain flag selects between those results. Both cases use the same ring
-order and ROB-head priority. Selection is combinational.
+order and ROB-head priority. Selection is combinational. Coherent issue,
+forwarding and SQ-probe predicates decode address faults before applying
+the cut and same-sector holds.
 
 ### ROB-head priority
 
