@@ -95,7 +95,8 @@ address source wins ring order. Candidate presence is independent of
 that ordering and the selected payload.
 Coherent L0 valid bits and data writes share fill permission computed for
 each response source before the cached/uncached response selection. Valid-state
-updates are computed for both fill outcomes before the fill flag selects one.
+updates are computed for every fill and store-update combination. Those two
+flags select the resulting valid bits.
 
 ### ROB-head priority
 
