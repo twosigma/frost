@@ -442,7 +442,7 @@ module if_stage #(
   // differ while prediction is blocked.
   logic slot2_candidate_legacy_oracle_active;
   assign slot2_candidate_legacy_oracle_active =
-      !i_pipeline_ctrl.reset && slot2_prediction_valid &&
+      coverage_reset_seen_q && !i_pipeline_ctrl.reset && slot2_prediction_valid &&
       !i_trap_ctrl.trap_taken && !i_trap_ctrl.mret_taken &&
       !if_stage_stall_registered && !any_holdoff_safe &&
       !prediction_holdoff && !use_instr_buffer &&
@@ -1702,9 +1702,9 @@ module if_stage #(
   assign o_from_if_to_pd.pd_target_compressed_high_select = pd_target_compressed_high_select;
 
 `ifndef SYNTHESIS
-  // The candidate operands are the packet's PC and instruction.
+  // Saved candidate operands and packet history are checked after reset.
   always_comb begin
-    if (!$isunknown(
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
             {
               o_from_if_to_pd.program_counter,
               o_from_if_to_pd.effective_instr,

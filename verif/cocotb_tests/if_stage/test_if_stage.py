@@ -23,6 +23,7 @@ from pathlib import Path
 
 import cocotb
 from cocotb.clock import Clock
+from cocotb.handle import Immediate
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
 from config import XLEN
 from cocotb_tests.cpu_structs import (
@@ -460,6 +461,33 @@ async def _redirect_to(dut: Any, target: int) -> None:
     _drive_from_ex(dut, {})
     await _advance_cycle(dut)
     assert int(dut.o_pc.value) == target + 4
+
+
+@cocotb.test()
+async def test_candidate_history_starts_at_reset(dut: Any) -> None:
+    """Independent saved operands may disagree before the first reset."""
+    for signal in dut:
+        if signal._name.startswith("i_"):
+            signal.value = Immediate(0)
+    _clear_inputs(dut)
+    _drive_pipeline_ctrl(dut, {"stall_registered": True})
+    dut.c_ext_state_inst.saved_values_valid.value = 1
+    dut.sel_nop_saved.value = 0
+    dut.u_instruction_pc_sc.saved.value = 0
+    dut.u_assembled_instr_sc.saved.value = NOP_INSTR
+    dut.pd_target_pc_low_saved_q.value = 0
+    dut.pd_target_native_imm_saved_q.value = 2
+    await _settle()
+    assert int(dut.coverage_reset_seen_q.value) == 0
+    assert int(dut.replay_saved_if_outputs.value) == 1
+    assert int(dut.pd_target_native_low.value) == 2
+    packet = _read_if_packet(dut)
+    assert packet["program_counter"] == 0
+    assert packet["effective_instr"] == NOP_INSTR
+
+    await _setup_test(dut)
+    assert int(dut.coverage_reset_seen_q.value) == 1
+    assert int(dut.replay_saved_if_outputs.value) == 0
 
 
 @cocotb.test()
