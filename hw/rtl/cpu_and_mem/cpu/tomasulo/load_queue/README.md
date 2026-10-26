@@ -88,7 +88,10 @@ Staging capture uses candidate presence independently of ring ordering.
 Replacement uses the selected candidate's age. Coherent issue,
 forwarding and SQ-probe predicates decode address faults before applying
 the cut and same-sector holds. The coherent memory launch applies those holds
-after L0-hit selection. Each coherent address slot stores PMA permission
+after L0-hit selection. Issue and SQ-probe permission are computed for both
+head-match outcomes. The head comparison selects between them. Forwarding
+requires an ordinary load and has no head-match dependency.
+Each coherent address slot stores PMA permission
 and cache-region classification with its address. Staging selects those classes
 from the stored or arriving address. Misalignment checks use the live trap setting. The first candidate mask determines which
 address source wins ring order. Candidate presence is independent of

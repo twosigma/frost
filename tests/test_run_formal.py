@@ -109,6 +109,7 @@ FORMAL_TARGETS = [
             "coh_sc_selected_prove",
             "coh_lq_cut_prove",
             "coh_lq_forward_prove",
+            "coh_lq_forward_normal_prove",
             "coh_lq_normal_fill_prove",
             "coh_address_class_prove",
             "coh_candidate_select_prove",
@@ -853,6 +854,10 @@ SBY_TASKS = [
         "Coherent cuts block load completion and reservation renewal.",
     ),
     ("coh_lq_forward_prove", "Coherent forwarding obeys cuts and same-sector holds."),
+    (
+        "coh_lq_forward_normal_prove",
+        "Coherent forwarding and Normal-cache controls obey local invariants.",
+    ),
     (
         "coh_lq_normal_fill_prove",
         "Coherent L0 fill permission agrees for both response sources.",
