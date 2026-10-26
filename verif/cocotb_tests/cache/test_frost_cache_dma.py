@@ -443,9 +443,14 @@ async def test_concurrent_disjoint_traffic(dut: Any) -> None:
     await _setup(dut)
     lq = LoadQueueStub(dut, admit_delay=1, inval_delay=2)
     rng = random.Random(0xD3A1)
+    cpu_model = ReferenceModel(dut)
+    dma_model = ReferenceModel(dut)
+    for line in range(64):
+        cpu_model.read_line(DISJOINT_BASE + line * LINE_BYTES)
+        dma_model.read_line(DISJOINT_BASE + 0x10000 + line * LINE_BYTES)
 
     async def cpu_side(base: int, seed: int, count: int) -> None:
-        model = ReferenceModel(dut)
+        model = cpu_model
         r = random.Random(seed)
         for _ in range(count):
             addr = base + r.randrange(64) * LINE_BYTES
@@ -462,7 +467,7 @@ async def test_concurrent_disjoint_traffic(dut: Any) -> None:
                 assert got == expected, f"walker read mismatch @0x{addr:08x}"
 
     async def dma_side(base: int, seed: int, count: int) -> None:
-        model = ReferenceModel(dut)
+        model = dma_model
         r = random.Random(seed)
         for _ in range(count):
             addr = base + r.randrange(64) * LINE_BYTES
