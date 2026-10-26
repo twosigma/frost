@@ -150,10 +150,13 @@ async def _sdp_ram_byte_en(dut: Any) -> None:
     register_input = int(dut.REGISTER_READ_INPUT.value)
     addresses = _hot_addresses(address_width, 12)
 
+    dut.i_clk.value = Immediate(0)
+    dut.i_check_enable.value = Immediate(0)
+    dut.i_wbyte_en.value = Immediate(0)
+    dut.i_re.value = Immediate(0)
     Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
-    dut.i_wbyte_en.value = 0
-    dut.i_re.value = 0
     await _start_cycle(dut.i_clk)
+    dut.i_check_enable.value = 1
 
     # A write presented in cycle c reaches the array in cycle
     # c + write_latency - 1, and a read presented in cycle c samples the array
