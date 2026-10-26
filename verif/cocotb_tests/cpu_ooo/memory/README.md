@@ -8,8 +8,9 @@ data-memory router. The testbench
 runs two copies of the real `data_mem_request_router` side by side. One gets
 the mux's merged payload on both of its data inputs. The other gets the plain
 selection (MMIO data while MMIO is valid, otherwise BRAM data) and the cached
-data separately. Every router output must match on every cycle, valid or not,
-across stalls, device reads, flushes, and resets. Standalone 32- and 64-bit
+data separately. Comparisons begin after two startup reset edges. Every
+router output must then match on every cycle, valid or not, across stalls,
+device reads, flushes, and resets. Standalone 32- and 64-bit
 instances also go through all 32 combinations of the three data inputs and two
 selects, and walk a one across every data bit.
 

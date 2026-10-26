@@ -16,9 +16,9 @@
 
 The reference receives MMIO data when valid, otherwise BRAM data, plus a
 separate cached payload. The other router receives the merged payload on
-both inputs. Compare all outputs before and after each edge, even when
-invalid. Standalone 32- and 64-bit instances check the LUT truth table;
-the same tests run with portable logic and Xilinx LUT5s.
+both inputs. After two reset edges, compare all outputs before and after
+each edge, even when invalid. Standalone 32- and 64-bit instances check
+the LUT truth table with portable logic and LUT5 primitives.
 """
 
 import random
@@ -149,11 +149,14 @@ class RouterPair:
         return observed
 
     async def reset(self) -> None:
-        """Initialize every testbench input and apply two synchronous reset edges."""
+        """Apply two reset edges before comparing the independent router states."""
         self.drive(**dict.fromkeys(INPUTS, 0))
         self.drive(rst=1, sq_committed_empty=1)
-        await self.edge()
-        await self.edge()
+        for _ in range(2):
+            await Timer(1, unit="ns")
+            self.drive(clk=1)
+            await Timer(1, unit="ns")
+            self.drive(clk=0)
         self.drive(rst=0)
         await self.sample()
 
