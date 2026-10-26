@@ -470,6 +470,12 @@ data RAM, and nothing enters `cdb_stage` on a partial-flush cycle. When
 several results are ready, `cdb_stage` takes a queued completion first, then
 a memory response, a fault, an SQ forward, and an L0 hit.
 
+In the coherent selection, bypass payloads use the staged address-fault and
+forwarding predicates before cut and sector holds. Staged-load capture applies
+those holds; responses and queued completions use their own eligibility.
+Value, exception and cause match the qualified selections whenever the
+completion stage captures them.
+
 A load that faults (misaligned when `i_trap_misaligned_accesses` is set,
 outside the physical memory map, an AMO or LR to the device quadrant, or with
 a fault the data MMU parked on the entry) never reaches memory. It completes

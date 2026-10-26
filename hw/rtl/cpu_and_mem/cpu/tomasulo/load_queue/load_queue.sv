@@ -2799,7 +2799,15 @@ module load_queue #(
   logic misalign_bypass_data_sel;
   assign resp_bypass_data_sel = i_mem_read_valid && resp_outstanding &&
       !resp_drop && lq_valid[issued_idx] && !issued_is_amo && !mem_response_error;
+`ifdef FROST_COHERENT_CLUSTER
+  if (COHERENT_CLUSTER) begin : gen_coherent_bypass_payload
+    assign misalign_bypass_data_sel = !resp_bypass_data_sel && coherent_address_fault;
+  end else begin : gen_direct_bypass_payload
+`endif
   assign misalign_bypass_data_sel = !resp_bypass_data_sel && sq_check_misaligned;
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`endif
 
   // cache_hit_fast_path is already flush-gated at its own assign.
   assign cache_hit_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
@@ -2885,13 +2893,48 @@ module load_queue #(
   logic [FLEN-1:0] cdb_value_next;
   assign cdb_value_nonresponse = issue_cdb_found ? issue_cdb_result.value :
       misalign_bypass_data_sel ? {{(FLEN - XLEN) {1'b0}}, sq_check_addr_q} :
+`ifdef FROST_COHERENT_CLUSTER
+      (COHERENT_CLUSTER ? coherent_forward_ok : sq_do_forward) ?
+      fwd_bypass_value : cache_hit_bypass_value;
+`else
       sq_do_forward ? fwd_bypass_value : cache_hit_bypass_value;
+`endif
   assign cdb_value_select_response = !issue_cdb_found &&
       !misalign_bypass_data_sel && resp_bypass_data_sel;
   assign cdb_value_next = cdb_value_select_response ? resp_bypass_value : cdb_value_nonresponse;
 
+`ifdef FROST_COHERENT_CLUSTER
+`ifndef SYNTHESIS
+  if (COHERENT_CLUSTER) begin : gen_coherent_bypass_payload_check
+    always_ff @(posedge i_clk) begin
+      if (issue_cdb_fire || bypass_fire) begin
+        p_coherent_cdb_value_exact : assert (cdb_value_next ==
+            (issue_cdb_found ? issue_cdb_result.value :
+             (!resp_bypass_data_sel && sq_check_misaligned) ?
+             {{(FLEN - XLEN) {1'b0}}, sq_check_addr_q} :
+             resp_bypass_data_sel ? resp_bypass_value :
+             sq_do_forward ? fwd_bypass_value : cache_hit_bypass_value));
+        if (!issue_cdb_found) begin
+          p_coherent_cdb_fault_exact : assert (misalign_bypass_data_sel ==
+              (!resp_bypass_data_sel && sq_check_misaligned));
+          if (misalign_bypass_data_sel) begin
+            p_coherent_cdb_cause_exact : assert (
+                lq_bypass_cause(riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q),
+                    !sq_check_pma_ok, sq_check_is_amo_q) ==
+                lq_bypass_cause(riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q),
+                    sq_check_pma_fault, sq_check_is_amo_q));
+          end
+        end
+      end
+    end
+  end
+`endif
+`endif
 `ifdef F_LQ_RESPONSE_FINAL_PROOF
   always_comb begin
+`ifdef FROST_COHERENT_CLUSTER
+    if (!COHERENT_CLUSTER || issue_cdb_fire || bypass_fire)
+`endif
     p_response_final_mux_exact :
     assert (cdb_value_next == (issue_cdb_found ? issue_cdb_result.value : bypass_value));
   end
@@ -4119,7 +4162,11 @@ module load_queue #(
         cdb_stage_data.exc_cause <= !misalign_bypass_data_sel ? riscv_pkg::exc_cause_t'('0) :
             lq_bypass_cause(
             riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q),
+`ifdef FROST_COHERENT_CLUSTER
+            COHERENT_CLUSTER ? !sq_check_pma_ok : sq_check_pma_fault,
+`else
             sq_check_pma_fault,
+`endif
             sq_check_is_amo_q
         );
         cdb_stage_data.fp_flags <= '0;

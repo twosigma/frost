@@ -25,7 +25,7 @@ sc: chparam -set COHERENT_CLUSTER 1 sc_pending_unit
 sc: prep -flatten -top sc_pending_unit
 lq: read -sv -D FROST_COHERENT_CLUSTER sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv lq_l0_cache.sv coherent_l0_flags.sv lq_issue_selector.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv
 lq: read -formal -sv coherent_lq_address_store.sv
-lq: read -formal -sv -D FROST_COHERENT_CLUSTER -D F_LQ_PREMATCH_ONLY -D COHERENT_LQ_LOCAL_PROOF load_queue.sv
+lq: read -formal -sv -D FROST_COHERENT_CLUSTER -D F_LQ_PREMATCH_ONLY -D COHERENT_LQ_LOCAL_PROOF -D F_LQ_RESPONSE_FINAL_PROOF load_queue.sv
 lq: chparam -set COHERENT_CLUSTER 1 load_queue
 forward: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
 normal: chparam -set CACHE_NORMAL_MEMORY 1 -set CACHE_UNCACHED_DATA 0 -set MEM_RESPONSE_ERRORS 1 load_queue
