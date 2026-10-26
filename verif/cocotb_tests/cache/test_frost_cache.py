@@ -595,6 +595,12 @@ class ReferenceModel:
             if (wstrb >> b) & 1:
                 self._bytes[addr + b] = (wdata >> (8 * b)) & 0xFF
 
+    def capture_region(self, addr: int, size: int) -> None:
+        """Capture every line in a region before traffic can change its bytes."""
+        assert addr % LINE_BYTES == 0 and size % LINE_BYTES == 0
+        for offset in range(0, size, LINE_BYTES):
+            self._snapshot_line(addr + offset)
+
     def read_line(self, addr: int) -> int:
         """Return the 32-byte line at addr as a little-endian integer."""
         self._snapshot_line(addr)
@@ -792,8 +798,7 @@ async def test_random_traffic_vs_model(dut: Any) -> None:
     await _setup(dut)
     model = ReferenceModel(dut)
     # Capture untouched bytes before traffic can alter another line.
-    for line in range(WINDOW_LINES):
-        model.read_line(RANDOM_BASE + line * LINE_BYTES)
+    model.capture_region(RANDOM_BASE, WINDOW_LINES * LINE_BYTES)
     rng = random.Random(random.getrandbits(32))
     full = (1 << LINE_BYTES) - 1
 
@@ -1575,9 +1580,9 @@ async def test_fence_request_raised_again_mid_sequence(dut: Any) -> None:
 async def test_fence_sync_idle_cache(dut: Any) -> None:
     """A fence with nothing dirty completes and disturbs nothing."""
     await _setup(dut)
+    initial_data = ReferenceModel(dut).read_line(FENCE2_BASE)
     await _fence_sync(dut)
     await _fence_sync(dut)  # back-to-back syncs from idle
-    initial_data = ReferenceModel(dut).read_line(FENCE2_BASE)
     got = await _port_transaction(dut, "iup", write=False, addr=FENCE2_BASE)
     assert got == initial_data
 

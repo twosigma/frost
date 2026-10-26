@@ -285,6 +285,8 @@ async def test_no_grant_lock(dut: Any) -> None:
     await _setup(dut)
     collectors = [_ResponseCollector(dut, port) for port in (0, 1)]
     models = (ReferenceModel(dut), ReferenceModel(dut))
+    for port in (0, 1):
+        models[port].read_line(NOLOCK_BASE[port] + 3 * LINE_BYTES)
     cycle = [0]
 
     async def _count_cycles() -> None:
@@ -370,6 +372,8 @@ async def test_random_interleaved_traffic(dut: Any) -> None:
     collectors = [_ResponseCollector(dut, port) for port in (0, 1)]
     transactions_per_port = 200
     models = (ReferenceModel(dut), ReferenceModel(dut))
+    for port in (0, 1):
+        models[port].capture_region(RANDOM_BASE[port], WINDOW_LINES * LINE_BYTES)
 
     async def _master(port: int) -> None:
         # Port-local RNG so the two coroutines don't share draw order.
@@ -438,6 +442,8 @@ async def test_random_outstanding_traffic(dut: Any) -> None:
     rng = random.Random(random.getrandbits(32))
     collectors = [_ResponseCollector(dut, port) for port in (0, 1)]
     models = (ReferenceModel(dut), ReferenceModel(dut))
+    for port in (0, 1):
+        models[port].capture_region(RANDOM_OUT_BASE[port], WINDOW_LINES * LINE_BYTES)
     bursts_per_port = 60
 
     async def _master(port: int) -> None:
