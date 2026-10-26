@@ -2758,6 +2758,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "cpu_memory_fabric": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_cpu_memory_fabric",
         hdl_toplevel_module="cpu_memory_fabric",
+        verilator_extra_args=("--assert",),
         description=(
             "CPU client arbitration, queued payload ownership under AXI backpressure, "
             "response routing, and reset cancellation versus AXI draining"
@@ -2766,6 +2767,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "cpu_axi_master": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_cpu_axi_master",
         hdl_toplevel_module="cpu_axi_master",
+        verilator_extra_args=("--assert",),
         description=(
             "Unified CPU AXI master: narrow sizes and attributes, independent channel "
             "backpressure, response errors, ID ownership, and reset draining"

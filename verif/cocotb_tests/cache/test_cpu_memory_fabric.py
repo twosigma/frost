@@ -212,6 +212,97 @@ async def arbitration_holds_payloads_and_routes_responses(dut: Any) -> None:
     assert sorted(replies) == [("cache", 5, 1), ("data", 32, 3), ("fetch", 1, 0)]
 
 
+@cocotb.test()
+async def interleaved_read_and_write_responses_preserve_fetch_lanes(dut: Any) -> None:
+    """Exercise both fetch IDs and every word lane across an R/B/R sequence."""
+    b = Bench(dut)
+    bus_bytes = len(dut.i_axi_rdata) // 8
+    fetch_bytes = len(dut.o_fetch_resp_data) // 8
+    mask = (1 << (fetch_bytes * 8)) - 1
+    for offset in range(0, bus_bytes, fetch_bytes):
+        await b.reset()
+        write_id = 4 + (offset // fetch_bytes) % 2
+        offsets = (offset, bus_bytes - fetch_bytes - offset)
+        payloads = (
+            int.from_bytes(bytes(range(bus_bytes)), "little"),
+            int.from_bytes(bytes(255 - x for x in range(bus_bytes)), "little"),
+        )
+        s = await b.step(
+            axi_awready=1,
+            axi_wready=1,
+            axi_arready=1,
+            cache_valid=1,
+            cache_write=1,
+            cache_id=write_id,
+            cache_addr=0x80000000,
+            cache_wstrb=(1 << bus_bytes) - 1,
+        )
+        assert s["cache_ready"]
+        s = await b.step(
+            cache_valid=0, fetch_valid=1, fetch_id=0, fetch_addr=0x1000 + offsets[0]
+        )
+        assert s["fetch_ready"]
+        s = await b.step(fetch_id=1, fetch_addr=0x2000 + offsets[1])
+        assert s["fetch_ready"]
+        await b.step(fetch_valid=0)
+        for _ in range(6):
+            await b.step()
+        await b.step(
+            axi_rvalid=1,
+            axi_rid=34,
+            axi_rdata=payloads[0],
+            axi_rresp=0,
+            axi_bvalid=1,
+            axi_bid=write_id,
+            axi_bresp=3,
+        )
+        first = await b.step(
+            axi_rid=35, axi_rdata=payloads[1], axi_rresp=2, axi_bvalid=0
+        )
+        assert first["axi_rready"] and first["fetch_resp_valid"]
+        assert first["fetch_resp_id"] == 0 and not first["fetch_resp_error"]
+        assert first["fetch_resp_data"] == (payloads[0] >> (8 * offsets[0])) & mask
+        middle = await b.step(axi_rvalid=0)
+        assert middle["cache_resp_valid"] and middle["cache_resp_id"] == write_id
+        assert middle["cache_resp_error"] and not middle["fetch_resp_valid"]
+        last = await b.step()
+        assert last["fetch_resp_valid"] and last["fetch_resp_id"] == 1
+        assert last["fetch_resp_error"]
+        assert last["fetch_resp_data"] == (payloads[1] >> (8 * offsets[1])) & mask
+        for _ in range(3):
+            s = await b.step()
+            assert s["idle"] and not (s["cache_resp_valid"] or s["fetch_resp_valid"])
+
+
+@cocotb.test()
+async def reused_fetch_id_ignores_wrong_channel_response(dut: Any) -> None:
+    """Check that a B carrying a pending fetch ID cannot complete its read."""
+    b = Bench(dut)
+    await b.reset()
+    fetch_bytes = len(dut.o_fetch_resp_data) // 8
+    for sequence in range(3):
+        offset = sequence * fetch_bytes
+        payload = 0x1234567800000000 + sequence
+        s = await b.step(
+            axi_arready=1, fetch_valid=1, fetch_id=0, fetch_addr=0x1000 + offset
+        )
+        assert s["fetch_ready"]
+        await b.step(fetch_valid=0)
+        for _ in range(6):
+            await b.step()
+        s = await b.step(axi_bvalid=1, axi_bid=34, axi_bresp=3)
+        assert s["axi_bready"] and not s["fetch_resp_valid"]
+        s = await b.step(axi_bvalid=0)
+        assert not s["fetch_resp_valid"]
+        await b.step(
+            axi_rvalid=1, axi_rid=34, axi_rdata=payload << (offset * 8), axi_rresp=0
+        )
+        s = await b.step(axi_rvalid=0)
+        assert s["fetch_resp_valid"] and s["fetch_resp_id"] == 0
+        assert s["fetch_resp_data"] == payload and not s["fetch_resp_error"]
+        assert (await b.step())["idle"]
+
+
 async def fill_two_write_slots(b: Bench) -> None:
     """Park one write in the master and a second in the fabric register."""
     s = await b.step(

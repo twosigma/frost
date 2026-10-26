@@ -59,6 +59,10 @@ module cpu_axi_master #(
     output logic [1:0] o_resp_status,
     output logic o_resp_valid_id,
     output logic o_resp_ok_id,
+    // Read payload taps are consumed only when the selected response is a read.
+    output logic [ID_BITS-1:0] o_read_resp_id,
+    output logic [DATA_BYTES*8-1:0] o_read_resp_rdata,
+    output logic [1:0] o_read_resp_status,
     // Includes queued requests, fabric transactions, buffered responses, and
     // pre-reset traffic. It is not merely an AXI channel-idle indication.
     output logic o_idle,
@@ -222,6 +226,9 @@ module cpu_axi_master #(
   assign o_resp_id = select_b ? b_id_q : r_id_q;
   assign o_resp_rdata = select_b ? '0 : r_data_q;
   assign o_resp_status = select_b ? b_status_q : r_status_q;
+  assign o_read_resp_id = r_id_q;
+  assign o_read_resp_rdata = r_data_q;
+  assign o_read_resp_status = r_status_q;
   // The same functions as o_resp_valid && o_resp_id == FLAG_RESP_ID, and
   // that with o_resp_status == OKAY, compared per channel before the select
   // and kept apart from the widely loaded response valid.

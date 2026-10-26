@@ -124,6 +124,10 @@ module cpu_memory_fabric #(
   logic [DATA_BYTES*8-1:0] req_data;
   logic [DATA_BYTES-1:0] req_strb;
   logic [ID_BITS-1:0] req_id, resp_id;
+  logic [ID_BITS-1:0] read_resp_id;
+  logic [DATA_BYTES*8-1:0] read_resp_data;
+  logic [1:0] read_resp_status;
+  logic resp_write;
   logic queued_write;
   logic [ADDR_WIDTH-1:0] queued_addr;
   logic [2:0] queued_size, queued_prot;
@@ -231,9 +235,25 @@ module cpu_memory_fabric #(
   logic data_resp_ok;
   assign o_data_resp_ok = data_resp_ok;
   assign o_fetch_resp_valid = resp_valid && (resp_id == ID_BITS'(34) || resp_id == ID_BITS'(35));
-  assign o_fetch_resp_id = resp_id[0];
-  assign o_fetch_resp_data = (FETCH_BYTES * 8)'(resp_data >> {fetch_dword_q[resp_id[0]], 6'b0});
-  assign o_fetch_resp_error = resp_status[1];
+  // Fetch IDs belong only to reads. Select their word lanes from the R buffer
+  // while the shared response arbitration controls publication.
+  assign o_fetch_resp_id = read_resp_id[0];
+  assign o_fetch_resp_data = (FETCH_BYTES * 8)'(read_resp_data >>
+      {fetch_dword_q[read_resp_id[0]], 6'b0});
+  assign o_fetch_resp_error = read_resp_status[1];
+
+`ifndef SYNTHESIS
+  always_comb begin
+    if (o_fetch_resp_valid) begin
+      p_fetch_response_is_read : assert (!resp_write);
+      p_fetch_response_id_exact : assert (o_fetch_resp_id == resp_id[0]);
+      p_fetch_response_data_exact :
+      assert (o_fetch_resp_data == (FETCH_BYTES * 8)'(resp_data >>
+              {fetch_dword_q[resp_id[0]], 6'b0}));
+      p_fetch_response_error_exact : assert (o_fetch_resp_error == resp_status[1]);
+    end
+  end
+`endif
   cpu_axi_master #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .DATA_BYTES(DATA_BYTES),
@@ -256,12 +276,15 @@ module cpu_memory_fabric #(
       .i_req_id(queued_id),
       .o_resp_valid(resp_valid),
       .i_resp_ready(1'b1),
-      .o_resp_write(),
+      .o_resp_write(resp_write),
       .o_resp_id(resp_id),
       .o_resp_rdata(resp_data),
       .o_resp_status(resp_status),
       .o_resp_valid_id(data_resp_valid),
       .o_resp_ok_id(data_resp_ok),
+      .o_read_resp_id(read_resp_id),
+      .o_read_resp_rdata(read_resp_data),
+      .o_read_resp_status(read_resp_status),
       .o_idle(master_idle),
       .o_axi_awvalid,
       .i_axi_awready,
