@@ -354,7 +354,8 @@ floating-point registers it uses. Program images supply the
 instruction and data memories independently of reset.
 
 `platform_top.i_power_on_rst` is an asynchronous power-on request, separate
-from system reset. Hold both resets at power-up with the core clock running.
+from system reset. Hold both resets at power-up with the selected CPU clock
+running: `i_cpu_clk` when `ASYNC_CPU_CLOCK=1`, otherwise `i_clk`.
 The core synchronizes the power-on request before synchronously resetting
 the debug transport handshake and the debug module's pending DMI request.
 These survive system reset. TCK reset asserts asynchronously, releases after
@@ -401,8 +402,9 @@ evictions are cheap to reach.
 `CLK_FREQ_HZ` describes `i_clk`, including the NIC tick and UART divisors.
 The machine timer increments on `i_clk`; the CPU reads coherent snapshots
 through its time CSR. The boot address is a static parameter. Reset release
-waits for both clocks. The [SoC guide](soc_top/README.md) describes the
-crossings and reset ownership.
+waits for both clocks. Power-on reset leaves these paired system and fabric
+resets separate; they establish ownership in the CPU/SoC crossings.
+The [SoC guide](soc_top/README.md) describes the crossings and reset ownership.
 
 ## Parameters
 

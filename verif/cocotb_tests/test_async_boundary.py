@@ -18,6 +18,7 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
+from cocotb.handle import Immediate
 from cocotb.triggers import FallingEdge, RisingEdge, Timer, with_timeout
 
 from cocotb_tests.test_real_program import generate_divided_clock
@@ -70,7 +71,7 @@ async def _soc_draining(dut: Any) -> None:
     dut.i_rst.value = 1
     dut.i_ddr_axi_rst.value = 1
     Clock(dut.i_clk, 3, unit="ns").start()
-    cocotb.start_soon(generate_divided_clock(dut))
+    cocotb.start_soon(generate_divided_clock(dut, core_clock=dut.i_cpu_clk))
     await Timer(0.7, unit="ns")
     Clock(dut.i_cpu_clk, 10, unit="ns").start()
     await Timer(250, unit="ns")
@@ -166,9 +167,9 @@ async def _stopped_soc(dut: Any) -> None:
     dut.i_rst_n.value = 0
     dut.i_ddr_axi_rst_n.value = 1
     soc_clock = Clock(dut.i_clk, 3, unit="ns").start()
-    cocotb.start_soon(generate_divided_clock(dut))
+    cocotb.start_soon(generate_divided_clock(dut, core_clock=dut.i_cpu_clk))
     await Timer(0.7, unit="ns")
-    Clock(dut.i_cpu_clk, 7, unit="ns").start()
+    cpu_clock = Clock(dut.i_cpu_clk, 7, unit="ns").start()
     await Timer(250, unit="ns")
     dut.i_rst_n.value = 1
     await Timer(250, unit="ns")
@@ -181,6 +182,24 @@ async def _stopped_soc(dut: Any) -> None:
     await Timer(1, unit="ns")
     assert int(platform.cpu.i_rst.value)
     assert int(platform.soc.debug_cpu_rst.value)
+    soc = platform.soc
+    dut.i_power_on_rst.value = 1
+    await Timer(35, unit="ns")
+    assert int(soc.power_on_rst_core.value)
+    assert int(soc.power_on_rst_tck.value)
+    assert int(soc.gen_jtag_tap.u_jtag_tap.o_tlr.value)
+    _check_debug_ownership(soc)
+    dut.i_power_on_rst.value = 0
+    await Timer(35, unit="ns")
+    assert not int(soc.power_on_rst_core.value)
+    assert int(soc.power_on_rst_tck.value)
+    dut.i_jtag_trst_n.value = 1
+    tck = Clock(dut.i_jtag_tck, 14, unit="ns").start()
+    await Timer(70, unit="ns")
+    assert not int(soc.power_on_rst_tck.value)
+    _check_debug_ownership(soc)
+    tck.cancel()
+    dut.i_jtag_tck.value = 0
     dut.i_rst_n.value = 1
     await Timer(250, unit="ns")
     assert int(platform.cpu.i_rst.value)
@@ -188,14 +207,81 @@ async def _stopped_soc(dut: Any) -> None:
     await Timer(250, unit="ns")
     assert not int(platform.cpu.i_rst.value)
 
+    # The paired system reset also waits for a stopped CPU clock.
+    cpu_clock.cancel()
+    dut.i_cpu_clk.value = 0
+    await Timer(1, unit="ns")
+    dut.i_rst_n.value = 0
+    await Timer(1, unit="ns")
+    assert int(platform.cpu.i_rst.value)
+    assert int(soc.soc_cpu_rst.value)
+    dut.i_rst_n.value = 1
+    await Timer(100, unit="ns")
+    assert int(platform.cpu.i_rst.value)
+    assert int(soc.soc_cpu_rst.value)
+    Clock(dut.i_cpu_clk, 7, unit="ns").start()
+    await Timer(250, unit="ns")
+    assert not int(platform.cpu.i_rst.value)
+    assert not int(soc.soc_cpu_rst.value)
+    _check_debug_ownership(soc)
+
+
+def _check_debug_ownership(soc: Any) -> None:
+    """Cold reset leaves no request or response owned by the transport."""
+    for name in ("req_toggle_q", "ack_toggle_q", "req_seen_q", "ack_seen_q"):
+        assert int(getattr(soc.u_dtm, name).value) == 0, name
+    assert not int(soc.u_dtm.o_dmi_req_valid.value)
+    assert not int(soc.u_debug_module.dmi_req_pending_q.value)
+
 
 @cocotb.test()
 async def reset_boundary(dut: Any) -> None:
     """Reset drains old writes and reaches the CPU with a stopped SoC clock."""
     for signal in dut:
         if signal._name.startswith("i_"):
-            signal.value = 0
+            signal.value = Immediate(0)
+    await Timer(1, unit="ps")
     if hasattr(dut, "i_rst_n"):
         await _stopped_soc(dut)
     else:
         await _soc_draining(dut)
+
+
+@cocotb.test()
+async def power_on_waits_for_cpu(dut: Any) -> None:
+    """Cold reset spans a delayed CPU clock while programming clocks continue."""
+    for signal in dut:
+        if signal._name.startswith("i_"):
+            signal.value = Immediate(0)
+    await Timer(1, unit="ps")
+    is_frost = hasattr(dut, "i_rst_n")
+    if is_frost:
+        dut.i_rst_n.value = 0
+        dut.i_ddr_axi_rst_n.value = 0
+        soc = dut.cpu_and_memory_subsystem.soc
+    else:
+        dut.i_rst.value = 1
+        dut.i_ddr_axi_rst.value = 1
+        soc = dut
+    Clock(dut.i_clk, 3, unit="ns").start()
+    cocotb.start_soon(generate_divided_clock(dut, core_clock=dut.i_cpu_clk))
+    await Timer(90, unit="ns")
+    assert int(dut.i_power_on_rst.value)
+    assert int(soc.power_on_rst_tck.value)
+    assert int(soc.rst_div4.value)
+    Clock(dut.i_cpu_clk, 101, unit="ns").start()
+    await Timer(610, unit="ns")
+    assert not int(dut.i_power_on_rst.value)
+    assert not int(soc.power_on_rst_core.value)
+    assert int(soc.power_on_rst_tck.value)
+    _check_debug_ownership(soc)
+    if is_frost:
+        dut.i_rst_n.value = 1
+        dut.i_ddr_axi_rst_n.value = 1
+    else:
+        dut.i_rst.value = 0
+        dut.i_ddr_axi_rst.value = 0
+    await Timer(610, unit="ns")
+    assert not int(soc.o_cpu_rst.value)
+    assert not int(soc.soc_cpu_rst.value)
+    _check_debug_ownership(soc)
