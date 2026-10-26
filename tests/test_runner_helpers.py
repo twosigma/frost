@@ -43,12 +43,15 @@ def _failed_simulation() -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_riscv_nonzero_simulator_exit_is_a_failure() -> None:
+def test_riscv_nonzero_simulator_exit_is_a_failure(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """A broken simulator invocation must turn the standalone CI job red."""
     status, message = test_riscv_tests.check_pass_fail(_failed_simulation())
 
     assert status == "FAIL"
     assert "exit code 2" in message
+    assert "Verilator build failed" in capsys.readouterr().out
 
 
 def test_arch_timeout_is_a_failure(
