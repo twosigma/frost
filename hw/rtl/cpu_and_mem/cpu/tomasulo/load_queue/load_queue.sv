@@ -2111,7 +2111,11 @@ module load_queue #(
       .o_lookup_data(cache_lookup_data),
 
       // Fill: on memory response
+`ifdef FROST_COHERENT_CLUSTER
+      .i_fill_valid(COHERENT_CLUSTER ? cache_fill_write : cache_fill_valid),
+`else
       .i_fill_valid(cache_fill_valid),
+`endif
       .i_fill_write(cache_fill_write),
       .i_fill_addr (cache_fill_addr),
       .i_fill_data (cache_fill_data),
@@ -2448,10 +2452,8 @@ module load_queue #(
       (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
       fast_addr
   ) && !fast_line_invalidated && !fast_line_invalidate_now);
-  // The fill qualification once more for the L0 RAM write enables, prepared
-  // for each response source so the response valid and its tier arrive at
-  // the last gate. cache_fill_valid keeps the shared response selects above
-  // for the valid bits and every other consumer.
+  // Per-source fill qualification supplies the L0 RAM write enables and
+  // coherent valid bits. The default valid-bit path uses cache_fill_valid.
   (* keep = "true" *) logic cache_fill_if_slot, cache_fill_if_fast;
   assign cache_fill_if_slot = cs_valid[resp_slot] && !i_flush_all && !cs_drop[resp_slot] &&
       lq_valid[cs_idx[resp_slot]] && !cs_is_lr[resp_slot] && !cs_is_amo[resp_slot] &&

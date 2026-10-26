@@ -2,6 +2,7 @@
 coh_sc_selected_prove sc
 coh_lq_cut_prove lq
 coh_lq_forward_prove lq forward
+coh_lq_normal_fill_prove lq normal
 coh_lq_selector_prove selector
 
 [options]
@@ -21,6 +22,7 @@ lq: read -sv sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv lq_l0_cache.sv lq_issu
 lq: read -formal -sv -D FROST_COHERENT_CLUSTER -D F_LQ_PREMATCH_ONLY -D COHERENT_LQ_LOCAL_PROOF load_queue.sv
 lq: chparam -set COHERENT_CLUSTER 1 load_queue
 forward: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
+normal: chparam -set CACHE_NORMAL_MEMORY 1 -set CACHE_UNCACHED_DATA 0 -set MEM_RESPONSE_ERRORS 1 load_queue
 lq: prep -flatten -top load_queue
 
 selector: read -formal -sv lq_issue_selector.sv coherent_lq_issue_selector.sv
