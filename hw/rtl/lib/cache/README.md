@@ -211,7 +211,10 @@ Read status uses per-slot masks for allocation, response transfer, lookup
 results and grant completion. Completion and miss sets dominate allocation
 clears. Allocation sets dominate response clears of valid bits. A failed
 grant supplies the selected read's error bit.
-Read eligibility compares each physical slot with pending, atomic and frozen
+Read-slot payload writes pass through a one-record buffer. Its forwarding mux
+makes each allocation visible on the allocation edge. Each slot keeps its
+allocated payload until reset or another allocation to that slot.
+Allocation marks an empty slot valid. Read eligibility compares each physical slot with pending, atomic and frozen
 writeback sectors. Circular priority selects a qualified slot and its address.
 There are no E grants, silent upgrades, sharer hints or stream prefetches in
 this selection. `L2_NUM_MSHR` and the prefetch parameters configure the

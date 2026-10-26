@@ -12,7 +12,7 @@ abc bmc3
 
 [script]
 read -sv coherence_pkg.sv coherence_request_endpoint.sv coherence_put_endpoint.sv coherence_read_flags.sv coherence_read_select.sv
-read -formal -sv coherence_l1d.sv
+read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
 chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
 prep -flatten -top coherence_l1d
@@ -31,3 +31,4 @@ opt
 ../hw/rtl/lib/cache/coherence_l1d.sv
 ../hw/rtl/lib/cache/coherence_read_flags.sv
 ../hw/rtl/lib/cache/coherence_read_select.sv
+../hw/rtl/lib/cache/coherence_read_payload.sv

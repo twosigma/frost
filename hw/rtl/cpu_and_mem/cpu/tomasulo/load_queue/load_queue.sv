@@ -1954,21 +1954,22 @@ module load_queue #(
 `ifdef FROST_COHERENT_CLUSTER
   logic [3:0] coherent_stage_take;
   wire [3:0] coherent_pending = {sq_check_pending_copy, sq_check_pending};
+  coherent_lq_stage_take #(.DEPTH(DEPTH)) stage_take (
+      .i_clk,
+      .i_pending(coherent_pending),
+      .i_clear(sq_check_will_clear),
+      .i_gate(sq_check_gate_early),
+      .i_update(i_addr_update.valid),
+      .i_staged_younger(staged_younger_than_entry),
+      .i_head_stored(head_mem_stored_onehot),
+      .i_head_update(head_mem_update_onehot),
+      .i_stored_scan(stored_scan_onehot),
+      .i_merged_scan(merged_scan_onehot),
+      .i_head_stored_found(head_mem_stored_found),
+      .i_head_update_found(head_mem_update_found),
+      .o_take(coherent_stage_take)
+  );
   for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_coherent_stage_take
-    logic [DEPTH-1:0] permitted;
-    (* keep = "true" *) logic stored_head, update_head, stored_scan, merged_scan;
-    logic without_update, with_update;
-    assign permitted = {DEPTH{!coherent_pending[copy_index] || sq_check_will_clear}} |
-        (staged_younger_than_entry & {DEPTH{sq_check_pending}});
-    assign stored_head = |(permitted & head_mem_stored_onehot);
-    assign update_head = |(permitted & head_mem_update_onehot);
-    assign stored_scan = |(permitted & stored_scan_onehot);
-    assign merged_scan = |(permitted & merged_scan_onehot);
-    assign without_update = head_mem_stored_found ? stored_head : stored_scan;
-    assign with_update = head_mem_stored_found ? stored_head :
-        head_mem_update_found ? update_head : merged_scan;
-    assign coherent_stage_take[copy_index] = sq_check_gate_early &&
-        (i_addr_update.valid ? with_update : without_update);
 `ifndef SYNTHESIS
 `ifdef FORMAL
     always_comb begin
