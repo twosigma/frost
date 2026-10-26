@@ -1785,11 +1785,51 @@ module load_queue #(
   assign sq_check_parked_fault = sq_check_entry_valid && sq_check_entry_issueable &&
       (riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q) != riscv_pkg::DFAULT_NONE);
   logic sq_check_pma_ok;
+`ifdef FROST_COHERENT_CLUSTER
+  if (COHERENT_CLUSTER) begin : gen_coherent_staged_class
+    logic pma_ok_q, cached_q;
+    always_ff @(posedge i_clk) begin
+      if (sq_check_payload_en) begin
+        pma_ok_q <= (sq_check_is_amo_next || sq_check_is_lr_next) ?
+            riscv_pkg::pma_atomic_ok(sq_check_addr_next) :
+            riscv_pkg::pma_data_ok(sq_check_addr_next);
+        cached_q <= is_cached_addr(sq_check_addr_next);
+      end
+    end
+    assign sq_check_pma_ok = pma_ok_q;
+    assign sq_check_is_cached_region = cached_q;
+`ifndef SYNTHESIS
+    logic payload_seen = 1'b0;
+    logic pending_payload_seen = 1'b0;
+    logic reset_seen = 1'b0;
+    always_ff @(posedge i_clk) begin
+      if (!i_rst_n) begin
+        reset_seen <= 1'b1;
+        pending_payload_seen <= 1'b0;
+      end else if (sq_check_payload_en) pending_payload_seen <= 1'b1;
+      if (sq_check_payload_en) payload_seen <= 1'b1;
+      if (reset_seen && i_rst_n && sq_check_pending)
+        p_staged_payload_seen : assert (pending_payload_seen);
+      if (payload_seen) begin
+        p_staged_pma_exact : assert (pma_ok_q ==
+            ((sq_check_is_amo_q || sq_check_is_lr_q) ?
+             riscv_pkg::pma_atomic_ok(sq_check_addr_q) : riscv_pkg::pma_data_ok(sq_check_addr_q)));
+        p_staged_cached_exact : assert (cached_q == is_cached_addr(sq_check_addr_q));
+      end
+    end
+`endif
+  end else begin : gen_direct_staged_class
+    assign sq_check_pma_ok = (sq_check_is_amo_q || sq_check_is_lr_q) ?
+        riscv_pkg::pma_atomic_ok(sq_check_addr_q) : riscv_pkg::pma_data_ok(sq_check_addr_q);
+    assign sq_check_is_cached_region = is_cached_addr(sq_check_addr_q);
+  end
+`else
   assign sq_check_pma_ok = (sq_check_is_amo_q || sq_check_is_lr_q) ? riscv_pkg::pma_atomic_ok(
       sq_check_addr_q
   ) : riscv_pkg::pma_data_ok(
       sq_check_addr_q
   );
+`endif
   assign sq_check_pma_fault = !sq_check_parked_fault &&
       sq_check_entry_valid && sq_check_entry_issueable && !sq_check_pma_ok;
   assign sq_check_misaligned = sq_check_parked_fault || sq_check_pma_fault ||
@@ -1798,7 +1838,9 @@ module load_queue #(
        is_load_misaligned(
       sq_check_size_q, sq_check_addr_q
   ));
+`ifndef FROST_COHERENT_CLUSTER
   assign sq_check_is_cached_region = is_cached_addr(sq_check_addr_q);
+`endif
   assign sq_commit_check_block =
       i_sq_commit_pending && sq_check_entry_valid && sq_check_is_cached_region;
   // older_amo_write_pending releases the staged entry: a load fenced behind
