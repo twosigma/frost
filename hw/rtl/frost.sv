@@ -532,7 +532,8 @@ module frost #(
   bit uart_reset_seen_q = 1'b0;
   initial if (!$value$plusargs("uart_tx_drop_check=%d", uart_tx_drop_check)) uart_tx_drop_check = 1;
   always_ff @(posedge i_clk)
-    if (ASYNC_CPU_CLOCK ? async_soc_reset : reset_synchronized) uart_reset_seen_q <= 1'b1;
+    if (ASYNC_CPU_CLOCK ? async_soc_reset : reset_synchronized)
+      uart_reset_seen_q <= 1'b1;
   always_ff @(posedge i_clk)
     if (uart_reset_seen_q && uart_tx_drop_check != 0 &&
         !(ASYNC_CPU_CLOCK ? async_soc_reset : reset_synchronized) &&

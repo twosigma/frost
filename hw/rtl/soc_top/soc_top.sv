@@ -618,8 +618,10 @@ module soc_top #(
         .i_ready(1'b1)
     );
 `ifndef SYNTHESIS
+    bit reset_seen_q = 1'b0;
     always_ff @(posedge i_clk) begin
-      if (!soc_cpu_rst) assert (!imsic_write || msi_ready);
+      if (soc_cpu_rst) reset_seen_q <= 1'b1;
+      if (reset_seen_q && !soc_cpu_rst) assert (!imsic_write || msi_ready);
     end
 `endif
   end else begin : gen_msi_direct
