@@ -27,7 +27,9 @@
 */
 module frost #(
     parameter bit ASYNC_CPU_CLOCK = 1'b0,
+`ifdef FROST_COHERENT_CLUSTER
     parameter bit COHERENT_CLUSTER = 1'b0,
+`endif
     parameter bit CACHE_NORMAL_MEMORY = 1'b1,
     parameter int unsigned CLK_FREQ_HZ = 322265625,
     // Low-memory size; override in simulation with Verilator -G.
@@ -340,7 +342,9 @@ module frost #(
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
 `ifndef FROST_RVFI_DII
       // The TestRIG fixture retains its fixed-latency Normal memory interface.
+`ifdef FROST_COHERENT_CLUSTER
       .COHERENT_CLUSTER(COHERENT_CLUSTER),
+`endif
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
 `endif
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),

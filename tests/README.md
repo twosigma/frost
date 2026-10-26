@@ -64,6 +64,9 @@ and cluster reset. The wide case uses 56-bit physical addresses and 16 fill
 identities. `test_coherence_endpoint_build.py` elaborates and synthesizes these
 geometries, checks the six-bit home-ID capacity boundary, rejects invalid
 parameters, and checks that the default elaboration excludes coherent instances.
+Coherent CPU configurations supply `FROST_COHERENT_CLUSTER` and the
+`coherent_cluster.f` sources along with `COHERENT_CLUSTER=1`. Default builds
+omit the coherent sources and interface declarations.
 
 `coherence_home`, `coherence_home_equal`, `coherence_cluster` and `coherent_cut`
 check the one-hart S/M controller, inclusion, pending writes, atomic bridges

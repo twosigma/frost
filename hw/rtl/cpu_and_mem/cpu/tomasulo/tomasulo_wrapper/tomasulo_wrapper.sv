@@ -32,7 +32,9 @@
  */
 
 module tomasulo_wrapper #(
+`ifdef FROST_COHERENT_CLUSTER
     parameter bit COHERENT_CLUSTER = 1'b0,
+`endif
     parameter bit CACHE_NORMAL_MEMORY = 1'b0,
     parameter bit SPLIT_RS_DISPATCH = 1'b0,
     parameter bit ENABLE_DISPATCH_DONE_REPAIR = 1'b0,
@@ -51,6 +53,7 @@ module tomasulo_wrapper #(
     // passes its build option; the standalone default enables counters.
     parameter int unsigned PERF_COUNTERS = 1
 ) (
+`ifdef FROST_COHERENT_CLUSTER
     // Coherent store ownership and selected atomic context.
     input logic i_coherent_store_pending = 1'b0,
     input logic i_coherent_store_ready = 1'b1,
@@ -81,6 +84,7 @@ module tomasulo_wrapper #(
     output logic o_coherent_write_sc,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_sq_write_tag,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_amo_write_tag,
+`endif
     input logic i_clk,
     input logic i_rst_n,
 
@@ -1577,25 +1581,43 @@ module tomasulo_wrapper #(
   logic sq_committed_empty_lq;
   assign o_sq_committed_empty = sq_committed_empty;
 
+`ifdef FROST_COHERENT_CLUSTER
   // A coherent successful SC clears at its tagged write; other SCs clear at commit.
+`else
+  // Any SC commit, success or failure, clears the reservation via registered commit.
+`endif
   logic sc_clear_reservation;
+`ifdef FROST_COHERENT_CLUSTER
   assign sc_clear_reservation = (commit_bus_q_valid && commit_q_is_sc &&
       !(COHERENT_CLUSTER && !commit_q_sc_failed &&
         i_coherent_atomic_live && commit_bus_q.tag == o_coherent_sc_tag)) ||
       (COHERENT_CLUSTER && i_coherent_sc_write_done);
+`else
+  assign sc_clear_reservation = commit_bus_q_valid && commit_q_is_sc;
+`endif
 
   // Reservation snoop invalidation: SQ write to the reservation address. The
+`ifdef FROST_COHERENT_CLUSTER
   // reservation covers a doubleword in the line-port selection and a
   // 32-byte sector in the coherent selection.
+`else
+  // reservation covers a doubleword (RV64A: LR.D reserves one, and a granule
+  // may exceed the LR width), so any store in the dword kills it.
+`endif
   logic reservation_snoop_invalidate;
   assign reservation_snoop_invalidate = sq_cache_invalidate_valid &&
       lq_reservation_valid &&
+`ifdef FROST_COHERENT_CLUSTER
       !(COHERENT_CLUSTER && o_coherent_write_sc && o_sq_mem_write_is_cached) &&
       (COHERENT_CLUSTER ?
        (sq_cache_invalidate_addr[riscv_pkg::XLEN-1:5] == lq_reservation_addr[riscv_pkg::XLEN-1:5]) :
        (sq_cache_invalidate_addr[riscv_pkg::XLEN-1:3] == lq_reservation_addr[riscv_pkg::XLEN-1:3]));
   assign o_coherent_reservation_valid = lq_reservation_valid;
   assign o_coherent_reservation_addr = lq_reservation_addr;
+`else
+      (sq_cache_invalidate_addr[riscv_pkg::XLEN-1:3] ==
+       lq_reservation_addr[riscv_pkg::XLEN-1:3]);
+`endif
 
   // A failed SC invalidates its SQ entry via registered commit.
   logic sc_discard;
@@ -1620,8 +1642,13 @@ module tomasulo_wrapper #(
   assign sq_commit_valid_scan_2 = commit_bus_2_q_valid_raw && commit_q_2_is_store_like;
 
   // ===========================================================================
+`ifdef FROST_COHERENT_CLUSTER
   // SC selection requires a ROB-head match and an empty committed SQ.
   // A selected coherent SC completes independently of that drain status.
+`else
+  // SC completion hand-off: sc_pending_unit tracks in-flight SCs in a ROB-tag
+  // table and fires the one at the ROB head once the SQ is committed-empty
+`endif
   // ===========================================================================
   logic sc_pending;
   // Forward declaration (assigned in SQ address section below)
@@ -2142,10 +2169,12 @@ module tomasulo_wrapper #(
   logic [riscv_pkg::DmaCoherenceLocks-1:0][riscv_pkg::XLEN-1:0] coh_lq_block_addr;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coh_observe_rob_tag;
   logic [riscv_pkg::ReorderBufferDepth-1:0] coh_replay_set_mask;
+`ifdef FROST_COHERENT_CLUSTER
   logic coherent_sc_arm, coherent_amo_arm;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_sc_arm_tag, coherent_amo_arm_tag;
   assign o_coherent_arm_valid = coherent_sc_arm || coherent_amo_arm;
   assign o_coherent_arm_tag   = coherent_sc_arm ? coherent_sc_arm_tag : coherent_amo_arm_tag;
+`endif
 
   lq_coherence_port #(
       .NUM_LOCK(riscv_pkg::DmaCoherenceLocks)
@@ -2162,7 +2191,11 @@ module tomasulo_wrapper #(
       .i_release_valid(i_coh_release_valid),
       .i_release_slot(i_coh_release_slot),
       .o_lq_query_addr(coh_lq_query_addr),
+`ifdef FROST_COHERENT_CLUSTER
       .i_lq_query_busy(COHERENT_CLUSTER ? 1'b0 : coh_lq_query_busy),
+`else
+      .i_lq_query_busy(coh_lq_query_busy),
+`endif
       .o_lq_inval_valid(coh_lq_inval_valid),
       .o_lq_inval_addr(coh_lq_inval_addr),
       .o_lq_block_valid(coh_lq_block_valid),
@@ -2171,11 +2204,21 @@ module tomasulo_wrapper #(
       .i_observe_valid(coh_observe_valid),
       .i_observe_rob_tag(coh_observe_rob_tag),
       .i_observe_addr(coh_observe_addr),
+`ifdef FROST_COHERENT_CLUSTER
       .i_sc_head_addr_valid(COHERENT_CLUSTER ? 1'b0 : coh_sc_head_addr_valid),
+`else
+      .i_sc_head_addr_valid(coh_sc_head_addr_valid),
+`endif
       .i_sc_head_addr(coh_sc_head_addr),
+`ifdef FROST_COHERENT_CLUSTER
       .i_sc_head_query_match(COHERENT_CLUSTER ? 1'b0 : coh_sc_head_query_match),
       .i_sc_fire_success(COHERENT_CLUSTER ? 1'b0 : coh_sc_fire_success),
       .i_sc_commit(COHERENT_CLUSTER ? 1'b0 : sc_clear_reservation),
+`else
+      .i_sc_head_query_match(coh_sc_head_query_match),
+      .i_sc_fire_success(coh_sc_fire_success),
+      .i_sc_commit(sc_clear_reservation),
+`endif
       .i_sq_committed_empty(sq_committed_empty),
       .o_sc_hold(coh_sc_hold),
       .i_commit_valid(commit_bus_q_valid),
@@ -2190,10 +2233,13 @@ module tomasulo_wrapper #(
   );
 
   sc_pending_unit #(
+`ifdef FROST_COHERENT_CLUSTER
       .COHERENT_CLUSTER(COHERENT_CLUSTER),
+`endif
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
   ) sc_pending_unit_inst (
+`ifdef FROST_COHERENT_CLUSTER
       .i_atomic_protected              (i_coherent_atomic_protected),
       .i_reservation_size              (o_coherent_reservation_size),
       .o_coherent_arm_valid            (coherent_sc_arm),
@@ -2207,6 +2253,7 @@ module tomasulo_wrapper #(
       .o_coherent_result_ready         (o_coherent_sc_result_ready),
       .i_coherent_success              (i_coherent_sc_success),
       .i_coherent_error                (i_coherent_sc_error),
+`endif
       .i_clk                           (i_clk),
       .i_rst_n                         (i_rst_n),
       .i_flush_en                      (i_flush_en),
@@ -2227,7 +2274,11 @@ module tomasulo_wrapper #(
       .i_sct_addr_fill_addr            (dmmu_out_addr),
       .i_speculative_flush_all         (speculative_flush_all),
       .i_speculative_flush_en          (speculative_flush_en),
+`ifdef FROST_COHERENT_CLUSTER
       .i_coh_sc_hold                   (COHERENT_CLUSTER ? 1'b0 : coh_sc_hold),
+`else
+      .i_coh_sc_hold                   (coh_sc_hold),
+`endif
       .i_coh_query_addr                (coh_lq_query_addr),
       .o_sc_head_query_match           (coh_sc_head_query_match),
       .o_sc_head_addr_valid            (coh_sc_head_addr_valid),
@@ -3547,7 +3598,9 @@ module tomasulo_wrapper #(
   // Load Queue Instance
   // ===========================================================================
   load_queue #(
+`ifdef FROST_COHERENT_CLUSTER
       .COHERENT_CLUSTER(COHERENT_CLUSTER),
+`endif
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .MEM_RESPONSE_ERRORS(MEM_RESPONSE_ERRORS),
       .CACHE_UNCACHED_DATA(!MEM_RESPONSE_ERRORS),
@@ -3561,6 +3614,7 @@ module tomasulo_wrapper #(
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
       .ENABLE_SQ_FORWARD_FAST_PATH(1'b1)
   ) u_lq (
+`ifdef FROST_COHERENT_CLUSTER
       .i_coherent_cut_hold(i_coherent_cut_hold),
       .i_coherent_block_valid(i_coherent_block_valid),
       .i_coherent_block_addr(i_coherent_block_addr),
@@ -3572,6 +3626,9 @@ module tomasulo_wrapper #(
       .o_coherent_write_tag(o_coherent_amo_write_tag),
       .o_reservation_size(o_coherent_reservation_size),
       .i_clk(i_clk),
+`else
+      .i_clk  (i_clk),
+`endif
       .i_rst_n(i_rst_n),
 
       // Allocation (from dispatch)
@@ -4109,7 +4166,9 @@ module tomasulo_wrapper #(
   // Store Queue Instance
   // ===========================================================================
   store_queue #(
+`ifdef FROST_COHERENT_CLUSTER
       .COHERENT_CLUSTER(COHERENT_CLUSTER),
+`endif
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .PRECISE_UNCACHED(MEM_RESPONSE_ERRORS),
       .CACHED_BASE(CACHED_BASE),
@@ -4119,6 +4178,7 @@ module tomasulo_wrapper #(
       // local re-checks are redundant (see the parameter comment).
       .TRUST_DISPATCH_VALID(1'b1)
   ) u_sq (
+`ifdef FROST_COHERENT_CLUSTER
       .i_coherent_store_pending(i_coherent_store_pending),
       .i_coherent_store_ready(i_coherent_store_ready),
       .i_coherent_sc_pending(i_coherent_sc_pending),
@@ -4126,6 +4186,9 @@ module tomasulo_wrapper #(
       .o_coherent_write_sc(o_coherent_write_sc),
       .o_coherent_write_tag(o_coherent_sq_write_tag),
       .i_clk(i_clk),
+`else
+      .i_clk  (i_clk),
+`endif
       .i_rst_n(i_rst_n),
 
       // Allocation (from dispatch)

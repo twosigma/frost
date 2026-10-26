@@ -60,9 +60,13 @@ def test_endpoint_synthesis(address: int, harts: int, fills: int) -> None:
 
 
 def test_coherent_sources_are_available() -> None:
-    """The integration filelist supplies both cache selections."""
+    """Select coherent sources independently of the production filelist."""
     runner = YosysRunner(memory_images=False)
     sources = runner.parse_filelist(runner.filelist)
+    names = {Path(source).name for source in sources}
+    assert "frost_hart_cache.sv" in names
+    assert not any(name.startswith(("coherence_", "coherent_")) for name in names)
+    sources = runner.parse_filelist(runner.filelist, coherent_cluster=True)
     names = {Path(source).name for source in sources}
     assert {
         "frost_hart_cache.sv",

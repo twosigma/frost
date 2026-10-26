@@ -22,7 +22,9 @@
 // uncached data and uncached fetch ports lead to frost_cluster_memory, and
 // cpu_top composes the two. See cpu_top/README.md.
 module frost_hart #(
+`ifdef FROST_COHERENT_CLUSTER
     parameter bit COHERENT_CLUSTER = 1'b0,
+`endif
     parameter bit CACHE_NORMAL_MEMORY = 1'b0,
     parameter int unsigned NORMAL_FETCH_LINES = 256,
     parameter int unsigned ENABLE_CACHED_TIER = 1,
@@ -101,6 +103,7 @@ module frost_hart #(
     output cache_perf_pkg::cache_instance_perf_events_t o_l1i_perf_events,
     output logic o_l1i_fetch_miss_stall,
     input cache_perf_pkg::cache_perf_events_t i_cache_perf_events,
+`ifdef FROST_COHERENT_CLUSTER
 
     output logic o_coherent_d_valid,
     input logic i_coherent_d_ready,
@@ -126,6 +129,7 @@ module frost_hart #(
     input logic i_coherent_u_valid,
     output logic o_coherent_u_ready,
     input logic [riscv_pkg::PhysAddrBits+14:0] i_coherent_u,
+`endif
 
     // The L1D's downstream line port (master).
     output logic o_l1d_down_req_valid,
@@ -280,6 +284,7 @@ module frost_hart #(
   logic [1:0] uncached_read_status, uncached_write_status;
   logic [7:0] uncached_write_strb;
   logic uncached_write_buffered;
+`ifdef FROST_COHERENT_CLUSTER
   logic coherent_store_pending;
   logic coherent_store_ready;
   logic coherent_sc_pending;
@@ -313,6 +318,7 @@ module frost_hart #(
   logic [riscv_pkg::PhysAddrBits-1:0] cut_addr;
   logic [1:0][riscv_pkg::PhysAddrBits-1:0] block_addr;
   assign coherent_block_addr = {riscv_pkg::XLEN'(block_addr[1]), riscv_pkg::XLEN'(block_addr[0])};
+`endif
   localparam longint unsigned CachedBase = riscv_pkg::DdrBase;
   localparam longint unsigned CachedSizeBytes = riscv_pkg::DdrCapacityBytes;
   logic debug_go, debug_fetch_invalidate;
@@ -335,7 +341,9 @@ module frost_hart #(
   end
 
   cpu_ooo #(
+`ifdef FROST_COHERENT_CLUSTER
       .COHERENT_CLUSTER(COHERENT_CLUSTER && ENABLE_CACHED_TIER != 0),
+`endif
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .MEM_BYTE_ADDR_WIDTH(riscv_pkg::LowBramAddrBits),
       .VARIABLE_UNCACHED(1'b1),
@@ -349,6 +357,7 @@ module frost_hart #(
       .INT_RS_DEPTH(INT_RS_DEPTH),
       .DECODED_QUEUE_DEPTH(DECODED_QUEUE_DEPTH)
   ) cpu_inst (
+`ifdef FROST_COHERENT_CLUSTER
       .i_coherent_store_pending(coherent_store_pending),
       .i_coherent_store_ready(coherent_store_ready),
       .i_coherent_sc_pending(coherent_sc_pending),
@@ -378,6 +387,7 @@ module frost_hart #(
       .o_coherent_write_tag(coherent_write_tag),
       .o_coherent_atomic_protected(coherent_atomic_protected),
       .o_coherent_sc_commit(coherent_sc_commit),
+`endif
       .i_clk,
       .i_boot_addr,
       .i_fatal_stop(i_fatal_stop),
@@ -467,15 +477,31 @@ module frost_hart #(
       .i_uncached_write_status(uncached_write_status),
       .i_uncached_write_inflight(uncached_write_inflight),
       // DMA coherence handshake
+`ifdef FROST_COHERENT_CLUSTER
       .i_coh_admit_valid(COHERENT_CLUSTER ? cut_admit : i_coh_admit_valid),
       .i_coh_admit_slot(COHERENT_CLUSTER ? '0 : i_coh_admit_slot),
       .i_coh_admit_addr(riscv_pkg::XLEN'(COHERENT_CLUSTER ? cut_addr : i_coh_admit_addr)),
+`else
+      .i_coh_admit_valid(i_coh_admit_valid),
+      .i_coh_admit_slot(i_coh_admit_slot),
+      .i_coh_admit_addr(riscv_pkg::XLEN'(i_coh_admit_addr)),
+`endif
       .o_coh_admit_ready(o_coh_admit_ready),
+`ifdef FROST_COHERENT_CLUSTER
       .i_coh_inval_valid(COHERENT_CLUSTER ? cut_inval : i_coh_inval_valid),
       .i_coh_inval_slot(COHERENT_CLUSTER ? '0 : i_coh_inval_slot),
+`else
+      .i_coh_inval_valid(i_coh_inval_valid),
+      .i_coh_inval_slot(i_coh_inval_slot),
+`endif
       .o_coh_inval_done(o_coh_inval_done),
+`ifdef FROST_COHERENT_CLUSTER
       .i_coh_release_valid(COHERENT_CLUSTER ? cut_release : i_coh_release_valid),
       .i_coh_release_slot(COHERENT_CLUSTER ? '0 : i_coh_release_slot),
+`else
+      .i_coh_release_valid(i_coh_release_valid),
+      .i_coh_release_slot(i_coh_release_slot),
+`endif
       .i_cache_perf_events(i_cache_perf_events),
       .o_mmio_read_pulse(),
       .o_mmio_load_addr(),
@@ -675,7 +701,11 @@ module frost_hart #(
       .i_line_resp_rdata(iup_resp_rdata)
   );
 
+`ifdef FROST_COHERENT_CLUSTER
   if (ENABLE_CACHED_TIER != 0 && !COHERENT_CLUSTER) begin : gen_cached_tier
+`else
+  if (ENABLE_CACHED_TIER != 0) begin : gen_cached_tier
+`endif
     logic line_req_valid, line_req_ready, line_req_write;
     logic [riscv_pkg::PhysAddrBits-1:0] line_req_addr;
     logic [L1LineBytes*8-1:0] line_req_wdata;
@@ -823,6 +853,7 @@ module frost_hart #(
     );
 
 
+`ifdef FROST_COHERENT_CLUSTER
   end else if (ENABLE_CACHED_TIER != 0) begin : gen_coherent_tier
     coherent_hart_cache #(
         .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
@@ -949,6 +980,7 @@ module frost_hart #(
     assign o_dma_probe_req_ready = 1'b0;
     assign o_dma_probe_ack_valid = 1'b0;
     assign o_dma_probe_ack_id = '0;
+`endif
   end else begin : gen_no_cached_tier
     assign o_cache_fatal = 1'b0;
     assign o_cache_fatal_addr = '0;
@@ -1011,6 +1043,7 @@ module frost_hart #(
     end
   end
 
+`ifdef FROST_COHERENT_CLUSTER
   if (!COHERENT_CLUSTER || ENABLE_CACHED_TIER == 0) begin : gen_no_coherent_channels
     assign o_coherent_d_valid = '0;
     assign o_coherent_d = '0;
@@ -1043,6 +1076,7 @@ module frost_hart #(
     assign cut_addr = '0;
   end
 
+`endif
   cpu_uncached_adapter #(
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .ADDR_WIDTH(riscv_pkg::PhysAddrBits),

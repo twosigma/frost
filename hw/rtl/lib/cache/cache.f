@@ -46,11 +46,3 @@ $(ROOT)/hw/rtl/lib/cache/frost_cache_test_harness.sv
 
 # Cocotb unit-bench harness (arbiter + bridge + behavioral memory)
 $(ROOT)/hw/rtl/lib/cache/line_port_arbiter_test_harness.sv
-
--f $(ROOT)/hw/rtl/lib/cache/coherence.f
-$(ROOT)/hw/rtl/lib/cache/coherence_array.sv
-$(ROOT)/hw/rtl/lib/cache/coherence_home.sv
-$(ROOT)/hw/rtl/lib/cache/coherence_d_arbiter.sv
-$(ROOT)/hw/rtl/lib/cache/coherence_l1d.sv
-$(ROOT)/hw/rtl/lib/cache/coherence_line_bridge.sv
-$(ROOT)/hw/rtl/lib/cache/coherent_hart_cache.sv

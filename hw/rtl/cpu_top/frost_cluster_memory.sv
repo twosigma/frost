@@ -20,10 +20,14 @@
 // combines the L2's line traffic with the hart's uncached data and
 // instruction requests. cpu_top composes it with frost_hart. See
 // cpu_top/README.md.
+`ifdef FROST_COHERENT_CLUSTER
 `include "coherence_types.svh"
 
+`endif
 module frost_cluster_memory #(
+`ifdef FROST_COHERENT_CLUSTER
     parameter bit COHERENT_CLUSTER = 1'b0,
+`endif
     parameter int unsigned ENABLE_CACHED_TIER = 1,
     parameter bit ENABLE_COHERENCE = 1'b0,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
@@ -70,6 +74,7 @@ module frost_cluster_memory #(
     output logic [LineIdBits-1:0] o_coherent_resp_id,
     output logic [L1LineBytes*8-1:0] o_coherent_resp_rdata,
     output logic o_coherent_resp_error,
+`ifdef FROST_COHERENT_CLUSTER
 
     input logic i_coherent_d_valid,
     output logic o_coherent_d_ready,
@@ -95,6 +100,7 @@ module frost_cluster_memory #(
     output logic o_coherent_u_valid,
     input logic i_coherent_u_ready,
     output logic [riscv_pkg::PhysAddrBits+14:0] o_coherent_u,
+`endif
 
     // The hart's L1D downstream line port (slave).
     input logic i_l1d_down_req_valid,
@@ -282,7 +288,11 @@ module frost_cluster_memory #(
   logic [DdrAxiIdBits-1:0] down_resp_id;
   logic [L2_LINE_BYTES*8-1:0] down_resp_rdata;
 
+`ifdef FROST_COHERENT_CLUSTER
   if (ENABLE_CACHED_TIER != 0 && !COHERENT_CLUSTER) begin : gen_cached_tier
+`else
+  if (ENABLE_CACHED_TIER != 0) begin : gen_cached_tier
+`endif
     frost_cluster_cache #(
         .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
         .ENABLE_RESPONSE_ERRORS(1'b1),
@@ -385,6 +395,7 @@ module frost_cluster_memory #(
     );
 
 
+`ifdef FROST_COHERENT_CLUSTER
   end else if (ENABLE_CACHED_TIER != 0) begin : gen_coherent_tier
     `FROST_COHERENCE_TYPES(riscv_pkg::PhysAddrBits)
     coh_d_t dma_d, home_d;
@@ -535,6 +546,7 @@ module frost_cluster_memory #(
     assign o_walk_down_resp_id = '0;
     assign o_walk_down_resp_rdata = '0;
     assign o_walk_down_resp_error = 1'b0;
+`endif
   end else begin : gen_no_cached_tier
     assign o_cache_fatal = 1'b0;
     assign o_cache_fatal_addr = '0;
@@ -579,6 +591,7 @@ module frost_cluster_memory #(
     assign down_req_wdata = '0;
     assign down_req_wstrb = '0;
     assign down_req_id = '0;
+`ifdef FROST_COHERENT_CLUSTER
   end
 
   if (!COHERENT_CLUSTER || ENABLE_CACHED_TIER == 0) begin : gen_no_coherent_channels
@@ -594,6 +607,7 @@ module frost_cluster_memory #(
     assign o_coherent_c_ready = '0;
     assign o_coherent_u_valid = '0;
     assign o_coherent_u = '0;
+`endif
   end
 
   cpu_memory_fabric #(

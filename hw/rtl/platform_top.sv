@@ -21,7 +21,9 @@
 */
 module platform_top #(
     parameter bit ASYNC_CPU_CLOCK = 1'b0,
+`ifdef FROST_COHERENT_CLUSTER
     parameter bit COHERENT_CLUSTER = 1'b0,
+`endif
     parameter bit CACHE_NORMAL_MEMORY = 1'b1,
     parameter logic [63:0] BOOT_ADDR = 64'd0,
     parameter int unsigned MEM_SIZE_BYTES = 2 ** 17,
@@ -344,7 +346,9 @@ module platform_top #(
   end
 
   cpu_top #(
+`ifdef FROST_COHERENT_CLUSTER
       .COHERENT_CLUSTER(COHERENT_CLUSTER),
+`endif
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
