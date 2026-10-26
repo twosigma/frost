@@ -313,7 +313,14 @@ def run_simulation(
 
         return result
 
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
+        for output in (error.stdout, error.stderr):
+            print(
+                output.decode(errors="replace")
+                if isinstance(output, bytes)
+                else output or "",
+                flush=True,
+            )
         return None
     finally:
         for mem_name in ("sw.mem", "sw64.mem", "sw_ddr.mem"):

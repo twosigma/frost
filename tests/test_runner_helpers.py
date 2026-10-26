@@ -637,6 +637,41 @@ def test_run_in_process_group_returns_output() -> None:
     assert result.stderr == "err\n"
 
 
+@pytest.mark.parametrize("binary_output", (False, True))
+def test_riscv_timeout_keeps_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    binary_output: bool,
+) -> None:
+    """A simulator timeout prints partial output and removes image links."""
+    monkeypatch.setenv("SIM", "verilator")
+    monkeypatch.setattr(test_riscv_tests, "TESTS_DIR", tmp_path)
+    monkeypatch.setattr(test_riscv_tests, "RISCV_TESTS_APP_DIR", tmp_path / "app")
+    runner_class = test_run_cocotb.CocotbRunner
+    monkeypatch.setattr(runner_class, "setup_environment", lambda _: {})
+    monkeypatch.setattr(runner_class, "_verilator_needs_rebuild", lambda *_: False)
+
+    def timeout(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        stdout = "boot progress\n"
+        stderr = "worker stalled\n"
+        raise subprocess.TimeoutExpired(
+            ["make"],
+            7200,
+            output=stdout.encode() if binary_output else stdout,
+            stderr=stderr.encode() if binary_output else stderr,
+        )
+
+    monkeypatch.setattr(test_riscv_tests, "run_in_process_group", timeout)
+    original_directory = Path.cwd()
+    assert test_riscv_tests.run_simulation("verilator") is None
+    output = capsys.readouterr().out
+    assert "boot progress" in output
+    assert "worker stalled" in output
+    assert Path.cwd() == original_directory
+    assert not any(tmp_path.iterdir())
+
+
 def test_run_in_process_group_kills_grandchildren_on_timeout(tmp_path: Path) -> None:
     """A timeout kills the command's whole process group, not just its shell."""
     pid_file = tmp_path / "child.pid"
