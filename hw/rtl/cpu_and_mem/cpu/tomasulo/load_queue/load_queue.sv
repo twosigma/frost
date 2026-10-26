@@ -1451,7 +1451,9 @@ module load_queue #(
 `ifdef FROST_COHERENT_CLUSTER
   logic [DEPTH-1:0] coherent_parked_q;
   logic coherent_local_hold, coherent_sector_hold, coherent_holder_changed;
-  logic coherent_unheld_eligible, coherent_address_fault;
+  logic coherent_address_fault;
+  logic coherent_staged_at_head;
+  logic [1:0] coherent_probe_choice, coherent_issue_choice;
   (* keep = "true" *) logic coherent_probe_ok, coherent_issue_ok, coherent_forward_ok;
   if (COHERENT_CLUSTER) begin : gen_coherent_park
     logic [1:0] holder_valid_q;
@@ -1788,18 +1790,13 @@ module load_queue #(
           sq_check_addr_q[XLEN-1:5] == i_coherent_block_addr[holder][XLEN-1:5];
   end
   // Address faults are independent of the cut and same-sector holds.
-  assign coherent_unheld_eligible = sq_check_entry_valid &&
-      (!(sq_check_is_lr_q || sq_check_is_amo_q) ||
-       (sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty)) &&
-      (!sq_check_is_mmio_q || sq_check_rob_tag_q == i_rob_head_tag) &&
-      !coh_launch_hold_q && !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
-      !(sq_check_is_amo_q && sq_check_is_cached_region && !i_coherent_atomic_protected);
   assign coherent_address_fault =
       riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q) != riscv_pkg::DFAULT_NONE ||
       !sq_check_pma_ok ||
       (i_trap_misaligned_accesses && is_load_misaligned(sq_check_size_q, sq_check_addr_q));
-  assign coherent_probe_ok = coherent_unheld_eligible && !coherent_address_fault &&
-      !l0_lookup_busy && !(sq_check_no_older_store_q || i_sq_empty);
+  assign coherent_staged_at_head = sq_check_rob_tag_q == i_rob_head_tag;
+  assign coherent_probe_ok = coherent_staged_at_head ?
+      coherent_probe_choice[1] : coherent_probe_choice[0];
   assign o_coherent_arm_valid = COHERENT_CLUSTER && sq_check_entry_valid && sq_check_is_amo_q &&
       sq_check_is_cached_region && sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty &&
       sq_check_pma_ok && !sq_check_misaligned && !i_flush_all && !i_flush_en;
@@ -2066,10 +2063,26 @@ module load_queue #(
       (sq_check_rob_tag_q == i_rob_head_tag) && i_sq_committed_empty;
 
 `ifdef FROST_COHERENT_CLUSTER
-  assign coherent_issue_ok = sq_check_phase2 && coherent_unheld_eligible &&
-      !coherent_address_fault && !sq_commit_interlock && !older_amo_write_pending &&
-      (sq_no_older_store || sq_head_amo_clear ||
-       (i_sq_all_older_addrs_known && !i_sq_forward.match));
+  for (genvar head_case = 0; head_case < 2; head_case++) begin : gen_coherent_head_choice
+    localparam bit AtHead = head_case != 0;
+    logic eligible;
+    (* keep = "true" *) logic probe, issue;
+    assign eligible = sq_check_entry_valid &&
+        (!(sq_check_is_lr_q || sq_check_is_amo_q) || (AtHead && i_sq_committed_empty)) &&
+        (!sq_check_is_mmio_q || AtHead) && !coh_launch_hold_q &&
+        !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
+        !(sq_check_is_amo_q && sq_check_is_cached_region && !i_coherent_atomic_protected);
+    assign probe = eligible && !coherent_address_fault &&
+        !l0_lookup_busy && !(sq_check_no_older_store_q || i_sq_empty);
+    assign issue = sq_check_phase2 && eligible && !coherent_address_fault &&
+        !sq_commit_interlock && !older_amo_write_pending &&
+        (sq_no_older_store || (sq_check_is_amo_q && AtHead && i_sq_committed_empty) ||
+         (i_sq_all_older_addrs_known && !i_sq_forward.match));
+    assign coherent_probe_choice[head_case] = probe;
+    assign coherent_issue_choice[head_case] = issue;
+  end
+  assign coherent_issue_ok = coherent_staged_at_head ?
+      coherent_issue_choice[1] : coherent_issue_choice[0];
   if (COHERENT_CLUSTER) begin : gen_coherent_issue_gate
     assign sq_can_issue = coherent_issue_ok && !coherent_local_hold;
   end else begin : gen_line_issue_gate
@@ -2088,7 +2101,7 @@ module load_queue #(
   // data stale. Address-known and forwarding results come from the same scan.
 `ifdef FROST_COHERENT_CLUSTER
   assign coherent_forward_ok = ENABLE_SQ_FORWARD_FAST_PATH && sq_check_phase2 &&
-      coherent_unheld_eligible && !coherent_address_fault && !sq_no_older_store &&
+      sq_check_entry_valid && !coh_launch_hold_q && !coherent_address_fault && !sq_no_older_store &&
       !sq_commit_interlock && !older_amo_write_pending && i_sq_all_older_addrs_known &&
       i_sq_forward.can_forward && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
   if (COHERENT_CLUSTER) begin : gen_coherent_forward_gate

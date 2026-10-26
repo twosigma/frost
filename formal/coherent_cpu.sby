@@ -4,6 +4,7 @@ coh_candidate_select_prove candidate
 coh_sc_selected_prove sc
 coh_lq_cut_prove lq
 coh_lq_forward_prove lq forward
+coh_lq_forward_normal_prove lq forward normal
 coh_lq_normal_fill_prove lq normal
 coh_lq_selector_prove selector
 coh_lq_selector4_prove selector selector4
