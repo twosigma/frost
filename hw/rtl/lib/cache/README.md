@@ -240,8 +240,10 @@ that unrelated rows can issue. Cut admission and replay acknowledgement
 precede the probe reply.
 
 Cached SC and AMO requests acquire the home lock even on an M hit. The CPU
-arms a tagged ROB-head context after fault and drain checks and before D
-presentation. Interrupt and debug entry cannot cancel that context. SC
+arms a tagged ROB-head context before D presentation. The active, unretired
+context identifies a valid ROB head. Interrupt and debug
+entry cannot cancel that context. A fault in the selected instruction
+releases the context when no home transaction is live. SC
 checks the reservation after home resource entitlement; a passing CheckSC
 uses a self-ProbeRead to collect dirty data without cancelling its own
 reservation. A granted SC asserts pending-write ownership while its result
