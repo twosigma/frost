@@ -106,7 +106,6 @@ FORMAL_TARGETS = [
         "coherent_cpu.sby",
         "Coherent SC ownership, load selection, parking, and reservation cuts.",
         tasks=(
-            "coh_stage_take_prove",
             "coh_sc_selected_prove",
             "coh_lq_cut_prove",
             "coh_lq_forward_prove",
@@ -839,10 +838,6 @@ FORMAL_TARGETS = [
 SBY_TASKS = [
     ("coh_read_payload_prove", "Coherent read payload storage at 32 address bits."),
     ("coh_read_payload64_prove", "Coherent read payload storage at 64 address bits."),
-    (
-        "coh_stage_take_prove",
-        "Coherent staging permission for both completion outcomes.",
-    ),
     ("coh_l0_flags_prove", "Coherent L0 next-state equality at 128 entries."),
     ("coh_l0_flags256_prove", "Coherent L0 next-state equality at 256 entries."),
     ("coh_l0_bmc", "Coherent L0 data and invalidation at 128 entries."),
