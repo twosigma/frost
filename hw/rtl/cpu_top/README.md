@@ -5,7 +5,7 @@
 ## Internal structure
 
 `cpu_top` composes one `frost_hart` with one `frost_cluster_memory`.
-The following table describes the default `COHERENT_CLUSTER=0` selection:
+The following table describes the default line-port configuration:
 
 | Module | Contents |
 | --- | --- |
@@ -182,13 +182,17 @@ Requests must be aligned to 32 bytes and remain within the configured cached mem
 L2 is inside this single-hart `cpu_top`. The outgoing AXI master does not
 provide coherence between separate CPU instances.
 
-`COHERENT_CLUSTER=1` selects the [coherent one-hart cache path](../lib/cache/README.md#coherent-one-hart-cache-path).
+The `FROST_COHERENT_CLUSTER` compile definition enables the coherent ports
+and parameters. Its sources are in `coherent_cluster.f`, which precedes
+`cpu_top.f` or `frost.f` in that configuration. `COHERENT_CLUSTER=1` selects
+the [coherent one-hart cache path](../lib/cache/README.md#coherent-one-hart-cache-path).
 `frost_hart` contains `coherent_hart_cache`, and `frost_cluster_memory`
 contains `coherence_home`. Their D/P/R/W/WA/G/C/U channels carry permission,
 probe, dirty-data and completion ownership. The uncached ports and memory
 fabric use the same interfaces in both selections. The coherent queues and
 atomic ownership registers belong only to the selected generate branches.
-`COHERENT_CLUSTER=0` selects the line-port hierarchy without these queues.
+Without the compile definition, the modules expose only the line-port
+interfaces and contain the line-port hierarchy.
 `ENABLE_COHERENCE` controls DMA ingress independently of this selection.
 `ENABLE_CACHED_TIER=0` builds neither cache path.
 
@@ -196,7 +200,8 @@ The coherent selection has one hart with S/M permissions and one serialized
 home acquisition. It does not provide a second hart or E permission.
 Reset and fatal handling cover the whole cluster. Debug halt and WFI leave
 cache, probe and completion service running. The X3 build accepts
-`--coherent-cluster` and records the selection as `coherent_cluster` in its
+`--coherent-cluster`, supplies the compile definition and parameter, and
+records the selection as `coherent_cluster` in its
 netlist configuration. The option defaults to false, and checkpoint reuse
 requires the recorded selection to match.
 

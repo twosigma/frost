@@ -1,6 +1,6 @@
 # Cache library
 
-With `COHERENT_CLUSTER=0`, the cached memory tier uses one set-associative,
+In the default configuration, the cached memory tier uses one set-associative,
 write-back, non-blocking line cache three times (L1D, L1I, and L2), the arbiters
 that merge line ports, two sequencers that make DMA and page-table walks
 coherent with the L1D, an adapter between the L1s' 32-byte lines and the
@@ -79,10 +79,12 @@ must take no action on a request until it fires.
 ## Coherent endpoint library
 
 `coherence.f` selects the channel endpoints and their programmable harness.
-`cache.f` supplies both the line-port and coherent cache paths. The default
-`COHERENT_CLUSTER=0` selection uses the line-port hierarchy. The coherent
+`cache.f` supplies the line-port cache path. `cpu_top/coherent_cluster.f`
+supplies the coherent controllers and CPU ownership guard. The coherent
 endpoints provide transport and ownership bookkeeping for the controllers
-selected by `COHERENT_CLUSTER=1`.
+selected by `COHERENT_CLUSTER=1` with the `FROST_COHERENT_CLUSTER` compile
+definition. The definition enables coherent interfaces in the shared CPU
+modules. Without it, those ports and their logic are absent.
 
 `coherence_pkg` defines opcodes, request identity, and home identity ranges.
 `FROST_COHERENCE_TYPES(P)` in `coherence_types.svh` declares packed payloads
@@ -274,7 +276,7 @@ acknowledgement; they do not bound external memory response latency.
 
 ## The line cache
 
-The following sections describe `COHERENT_CLUSTER=0`.
+The following sections describe the line-port configuration.
 `frost_cache` supplies each level of its line-port hierarchy. The
 instances differ in size, line size, storage, and slot counts:
 

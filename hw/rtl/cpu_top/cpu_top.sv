@@ -25,7 +25,9 @@ module cpu_top #(
     // stores. Device accesses retain precise, narrow AXI completion.
     parameter bit CACHE_NORMAL_MEMORY = 1'b0,
     parameter int unsigned NORMAL_FETCH_LINES = 256,
+`ifdef FROST_COHERENT_CLUSTER
     parameter bit COHERENT_CLUSTER = 1'b0,
+`endif
     parameter int unsigned ENABLE_CACHED_TIER = 1,
     parameter int unsigned L0_CACHE_DEPTH = CACHE_NORMAL_MEMORY ?
         riscv_pkg::NormalLqL0Depth : riscv_pkg::LqL0Depth,
@@ -320,6 +322,7 @@ module cpu_top #(
   assign cache_perf_events.hierarchy = cache_hierarchy_perf_events;
   assign cache_perf_events.l1i_fetch_miss_stall = l1i_fetch_miss_stall;
 
+`ifdef FROST_COHERENT_CLUSTER
   logic coherent_d_valid;
   logic coherent_d_ready;
   logic [riscv_pkg::PhysAddrBits+311:0] coherent_d;
@@ -345,8 +348,11 @@ module cpu_top #(
   logic coherent_u_ready;
   logic [riscv_pkg::PhysAddrBits+14:0] coherent_u;
 
+`endif
   frost_hart #(
+`ifdef FROST_COHERENT_CLUSTER
       .COHERENT_CLUSTER(COHERENT_CLUSTER),
+`endif
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .NORMAL_FETCH_LINES(NORMAL_FETCH_LINES),
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
@@ -365,6 +371,7 @@ module cpu_top #(
       .DATA_BYTES(L2_LINE_BYTES),
       .DATA_PROT(AXI_MEMORY_PROT)
   ) hart (
+`ifdef FROST_COHERENT_CLUSTER
       .o_coherent_d_valid(coherent_d_valid),
       .i_coherent_d_ready(coherent_d_ready),
       .o_coherent_d(coherent_d),
@@ -389,6 +396,7 @@ module cpu_top #(
       .i_coherent_u_valid(coherent_u_valid),
       .o_coherent_u_ready(coherent_u_ready),
       .i_coherent_u(coherent_u),
+`endif
       .i_clk,
       .i_rst,
       .i_boot_addr,
@@ -498,7 +506,9 @@ module cpu_top #(
   );
 
   frost_cluster_memory #(
+`ifdef FROST_COHERENT_CLUSTER
       .COHERENT_CLUSTER(COHERENT_CLUSTER),
+`endif
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
       .ENABLE_COHERENCE(ENABLE_COHERENCE),
       .L2_CACHE_BYTES(L2_CACHE_BYTES),
@@ -516,6 +526,7 @@ module cpu_top #(
       .AXI_USER_BITS(AXI_USER_BITS),
       .AXI_MEMORY_PROT(AXI_MEMORY_PROT)
   ) cluster_memory (
+`ifdef FROST_COHERENT_CLUSTER
       .i_coherent_d_valid(coherent_d_valid),
       .o_coherent_d_ready(coherent_d_ready),
       .i_coherent_d(coherent_d),
@@ -540,6 +551,7 @@ module cpu_top #(
       .o_coherent_u_valid(coherent_u_valid),
       .i_coherent_u_ready(coherent_u_ready),
       .o_coherent_u(coherent_u),
+`endif
       .i_clk,
       .i_rst,
       .i_axi_rst,

@@ -27,7 +27,9 @@
  */
 
 module cpu_ooo #(
+`ifdef FROST_COHERENT_CLUSTER
     parameter bit COHERENT_CLUSTER = 1'b0,
+`endif
     parameter bit CACHE_NORMAL_MEMORY = 1'b0,
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned MEM_BYTE_ADDR_WIDTH = 16,
@@ -53,6 +55,7 @@ module cpu_ooo #(
     // The walker's line port carries the L1s' 32-byte lines.
     localparam int unsigned WalkLineBytes = 32
 ) (
+`ifdef FROST_COHERENT_CLUSTER
     // Coherent store ownership and selected atomic context.
     input logic i_coherent_store_pending = 1'b0,
     input logic i_coherent_store_ready = 1'b1,
@@ -83,6 +86,7 @@ module cpu_ooo #(
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_write_tag,
     output logic o_coherent_atomic_protected,
     output logic o_coherent_sc_commit,
+`endif
     input logic i_clk,
     input logic i_rst,
     input logic [XLEN-1:0] i_boot_addr = '0,
@@ -2032,6 +2036,7 @@ module cpu_ooo #(
   logic [XLEN-1:0] csr_mtvec;
   logic csr_mtvec_traps_misaligned;  // |mtvec[XLEN-1:2], registered in csr_file
 
+`ifdef FROST_COHERENT_CLUSTER
   logic coherent_arm_valid, coherent_atomic_active, coherent_atomic_retired;
   logic coherent_head_protected, coherent_retire_hold;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_arm_tag, coherent_atomic_tag;
@@ -2083,8 +2088,11 @@ module cpu_ooo #(
     assign coherent_atomic_tag = '0;
   end
 
+`endif
   tomasulo_wrapper #(
+`ifdef FROST_COHERENT_CLUSTER
       .COHERENT_CLUSTER(COHERENT_CLUSTER),
+`endif
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .MEM_RESPONSE_ERRORS(VARIABLE_UNCACHED),
       .SPLIT_RS_DISPATCH(1'b1),
@@ -2101,6 +2109,7 @@ module cpu_ooo #(
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
   ) u_tomasulo (
+`ifdef FROST_COHERENT_CLUSTER
       .i_coherent_store_pending(i_coherent_store_pending),
       .i_coherent_store_ready(i_coherent_store_ready),
       .i_coherent_sc_pending(i_coherent_sc_pending),
@@ -2130,6 +2139,7 @@ module cpu_ooo #(
       .o_coherent_write_sc(coherent_sq_sc),
       .o_coherent_sq_write_tag(coherent_sq_tag),
       .o_coherent_amo_write_tag(coherent_amo_tag),
+`endif
       .i_clk,
       .i_rst_n(rst_n),
 
@@ -2203,7 +2213,11 @@ module cpu_ooo #(
       // Commit-time branch recovery is registered for timing; hold the ROB
       // during that recovery cycle so younger wrong-path entries cannot retire.
       .i_commit_hold(csr_commit_fire || trap_mret_commit_hold_q ||
+`ifdef FROST_COHERENT_CLUSTER
                      mispredict_recovery_pending || i_fatal_stop || coherent_retire_hold),
+`else
+                     mispredict_recovery_pending || i_fatal_stop),
+`endif
 
       // ROB external coordination
       .o_csr_start(csr_start),
@@ -2254,7 +2268,11 @@ module cpu_ooo #(
       .i_flush_tag(flush_tag),
       .i_flush_all(flush_all),
       .i_flush_after_head_commit(commit_recovery_flush_after_head),
+`ifdef FROST_COHERENT_CLUSTER
       .i_backend_recovery_hold(backend_recovery_hold || (COHERENT_CLUSTER && step_done_q)),
+`else
+      .i_backend_recovery_hold(backend_recovery_hold),
+`endif
       .i_slow_write_inflight(slow_write_inflight),
       .i_uncached_read_busy(VARIABLE_UNCACHED && !i_uncached_read_request_ready),
       .i_coh_admit_valid(i_coh_admit_valid),
@@ -2515,11 +2533,20 @@ module cpu_ooo #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_all) trap_mret_commit_hold_q <= 1'b0;
+`ifdef FROST_COHERENT_CLUSTER
     // A drain holds younger retirement. The protected cached SC retires
     // before its pending write can complete.
+`else
+    // trap_drain_wait: a trap or xRET is waiting for committed stores to
+    // drain (see trap_unit). Hold commit so the wait is bounded.
+`endif
     else
+`ifdef FROST_COHERENT_CLUSTER
       trap_mret_commit_hold_q <= trap_pending || mret_start ||
       (trap_drain_wait && !coherent_head_protected) ||
+`else
+      trap_mret_commit_hold_q <= trap_pending || mret_start || trap_drain_wait ||
+`endif
       // Single step: after the stepped instruction retires, hold the next
       // head until the debug halt lands (registered: the first retirement
       // decides this cycle, the hold blocks the next one).
@@ -3380,13 +3407,16 @@ module cpu_ooo #(
 `endif
 
   data_mem_request_router #(
+`ifdef FROST_COHERENT_CLUSTER
       .COHERENT_CLUSTER(COHERENT_CLUSTER),
+`endif
       .VARIABLE_UNCACHED(VARIABLE_UNCACHED),
       .XLEN(XLEN),
       .MMIO_ADDR(MMIO_ADDR),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
   ) data_mem_request_router_inst (
+`ifdef FROST_COHERENT_CLUSTER
       .i_coherent_read_kind(coherent_lq_kind),
       .i_coherent_read_tag(coherent_lq_tag),
       .i_coherent_sq_sc(coherent_sq_sc),
@@ -3398,6 +3428,7 @@ module cpu_ooo #(
       .o_coherent_write_atomic(o_coherent_write_atomic),
       .o_coherent_write_sc(o_coherent_write_sc),
       .o_coherent_write_tag(o_coherent_write_tag),
+`endif
       .i_clk,
       .i_rst,
       .i_block_new_requests(i_fatal_stop),
@@ -4095,9 +4126,13 @@ module cpu_ooo #(
   // interrupt flush after arming.
   always_ff @(posedge i_clk) begin
     if (i_rst || lq_router_flush_all) device_read_shield_q <= 1'b0;
+`ifdef FROST_COHERENT_CLUSTER
     else if ((lq_device_request_pending || uncached_store_pending) &&
         !(COHERENT_CLUSTER && step_done_q))
       device_read_shield_q <= 1'b1;
+`else
+    else if (lq_device_request_pending || uncached_store_pending) device_read_shield_q <= 1'b1;
+`endif
     else if (rob_commit_valid) device_read_shield_q <= 1'b0;
   end
 
@@ -4116,8 +4151,12 @@ module cpu_ooo #(
       .i_pipeline_stall(fence_class_quiesce),
       .i_sq_committed_empty(sq_committed_empty_for_trap),
       .o_trap_drain_wait(trap_drain_wait),
+`ifdef FROST_COHERENT_CLUSTER
       .i_amo_at_head((amo_at_head_shield_q && !(COHERENT_CLUSTER && step_done_q)) ||
           coherent_atomic_active),
+`else
+      .i_amo_at_head(amo_at_head_shield_q),
+`endif
       .i_device_read_at_head(device_read_shield_q),
       .i_mstatus(csr_mstatus),
       .i_mie(csr_mie),
@@ -4143,8 +4182,12 @@ module cpu_ooo #(
       // unit's exception latch, so mask the exception over the same T+1/T+2
       // window; otherwise a stale younger exception could survive the full
       // flush and be taken at T+3.
+`ifdef FROST_COHERENT_CLUSTER
       .i_exception_valid(trap_pending && !fence_class_quiesce &&
           (!coherent_atomic_active || !i_coherent_atomic_live)),
+`else
+      .i_exception_valid(trap_pending && !fence_class_quiesce),
+`endif
       .i_exception_cause({
         {(XLEN - $bits(rob_trap_cause_remapped)) {1'b0}}, rob_trap_cause_remapped
       }),
