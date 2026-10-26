@@ -188,13 +188,13 @@ for an ASIC, the RTL also needs:
 
 ## Single-core performance
 
-FROST runs CoreMark at 4.48 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
+FROST runs CoreMark at 4.51 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
 The next goal is 5 CoreMark/MHz. A score counts only from a run of at least
 ten seconds that passes the CRC checks for both official seed sets, with the
 compiler flags, the `sw.bin` hash, and memory and cache settings recorded;
 see the [CoreMark README](sw/apps/coremark/README.md).
 
-5 CoreMark/MHz is 200,000 cycles per iteration, against about 223,000 today.
+5 CoreMark/MHz is 200,000 cycles per iteration, against about 222,000 today.
 A model driven by the CoreMark instruction trace gives these estimates for
 each change on its own, for the design before load results woke integer
 consumers early and before Zbc. It treats the BRAM as attached directly to

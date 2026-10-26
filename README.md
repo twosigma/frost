@@ -4,10 +4,10 @@
 
 FROST is a two-wide, out-of-order RISC-V processor for FPGAs, written in
 SystemVerilog. It implements RV64GCB with machine, supervisor, and user modes
-and Sv39 virtual memory. The AMD Alveo X3522PV configuration targets 322 MHz and boots
-Debian 13 with Debian's unmodified riscv64 kernel, mounting its root
+and Sv39 virtual memory. The AMD Alveo X3522PV configuration targets 322 MHz
+and boots Debian 13 with Debian's unmodified riscv64 kernel, mounting its root
 filesystem over NFS through its own 10 Gigabit Ethernet NIC. It runs
-[CoreMark](sw/apps/coremark/README.md) at 4.48 CoreMark/MHz, 1,444 CoreMark at
+[CoreMark](sw/apps/coremark/README.md) at 4.51 CoreMark/MHz, 1,453 CoreMark at
 322 MHz.
 
 [![FROST architecture: two-wide out-of-order CPU, Sv39 translation, X3 cache hierarchy, and system peripherals](docs/diagrams/frost-architecture.svg)](docs/diagrams/frost-architecture.svg)
@@ -17,45 +17,60 @@ The diagram shows the X3 configuration; click it for the full-size version.
 ## Highlights
 
 - Debian 13 with systemd on an NFS root filesystem; the
-  [Debian guide](docs/debian_nfsroot.md) walks through the setup.
-- A 10 Gigabit Ethernet NIC (MAC, PCS, and descriptor-ring DMA that is
-  coherent with the caches) with a Linux driver.
-- FreeRTOS and all nine EEMBC CoreMark-PRO workloads.
+  [Debian guide](docs/debian_nfsroot.md) walks through the setup. A Linux
+  driver for the memory error unit reports DDR ECC errors, scrubs corrected
+  lines, and patrols memory in the background.
+- A 10 Gigabit Ethernet NIC with FROST's own MAC and PCS, descriptor-ring DMA
+  that is coherent with the data caches, and a Linux driver.
+- Continuous testing on pull requests and pushes to `main`: the RISC-V
+  architecture tests and random riscv-torture programs checked against Spike,
+  the riscv-tests suites, and TestRIG, which compares FROST with the Sail
+  RISC-V model one instruction at a time on random sequences drawn anew on
+  every run. Formal proofs, unit benches for the hardware blocks, and whole
+  programs from BRAM and DDR run alongside, and CI merges simulation coverage,
+  including cover points for microarchitectural corner cases, into one report.
+- A reusable CPU: `cpu_top` packages the core, its MMUs, and the caches as one
+  single-clock module with an AXI4 memory master. In the SoC, the NIC and the
+  DMA test engine attach over AXI4: their DMA bursts enter the coherent data
+  caches through a bridge, and their registers sit on AXI4-Lite.
 - An open-source flow: simulation (Verilator and cocotb), synthesis checks
   (Yosys), and formal proofs (SymbiYosys) run in a pinned Docker image, and
   OpenROAD takes the design from synthesis to GDS on the FreePDK45 process,
-  with SRAM macros that OpenRAM generates for the caches and the instruction
-  and data memories.
-  AMD Vivado is needed only for the FPGA itself: building bitstreams and
-  programming and loading the board.
-- Continuous testing against the RISC-V architecture tests and random
-  riscv-torture programs, with Spike as the reference, plus the riscv-tests
-  suites and unit benches for the hardware blocks. TestRIG compares FROST
-  with the Sail RISC-V model one instruction at a time, on random instruction
-  sequences drawn anew on every run.
-- Hand-written SystemVerilog rather than RTL generated from Chisel or
-  SpinalHDL, with optional Xilinx primitives and board integration kept
-  separate.
+  with SRAM macros that OpenRAM generates for the caches, the instruction and
+  data memories, and the NIC's buffers; the [ASIC guide](asic/README.md) lists
+  what the flow reduces or mocks. AMD Vivado is needed only for the FPGA
+  itself: building bitstreams and programming and loading the board.
+- A cycle-approximate [performance model](perf-modeling/README.md) of the CPU
+  and memory system for design-space sweeps, with RTL event capture and a
+  CoreMark IPC comparison against the RTL. Optional hardware performance
+  counters report stall causes, occupancy, and cache traffic.
+- FreeRTOS and all nine EEMBC CoreMark-PRO workloads.
 - A [VS Code extension](tools/vscode-frost/README.md) that programs the FPGA,
-  loads software, and debugs it with source breakpoints and a serial console.
+  builds and loads software, and debugs it with source breakpoints and a
+  two-way serial console, locally or over Remote-SSH.
+- Native SystemVerilog rather than RTL generated from Chisel or SpinalHDL,
+  with optional Xilinx primitives and board integration kept separate.
 - The Apache 2.0 license.
 
 ## Quick Start
 
-You don't need an FPGA to try FROST. From the repository root:
+You don't need an FPGA to try FROST. On an x86-64 Linux host with Git, Docker,
+and Python 3.12 or newer:
 
 ```bash
-docker build -t frost .                   # build the toolchain image (once)
+git clone --recurse-submodules https://github.com/twosigma/frost.git
+cd frost
+docker build -t frost .                   # build the toolchain image
 ./scripts/frost.py doctor                 # check the setup (read-only)
 ./scripts/frost.py cocotb hello_world     # simulate the SoC running Hello World
 ```
 
 The first image build compiles GCC, Verilator, Yosys, QEMU, Spike, and other
-tools from source, so expect it to take a while. The last command compiles
-the program, simulates the full SoC in Verilator, and prints
-`Frost: Hello, world!` from the simulated UART. `scripts/frost.py`
-runs each tool inside the image as your user, so build outputs stay yours, and
-initializes Git submodules automatically. Use it for every simulation, formal,
+tools from source, so expect it to take a while; `doctor` reports when a
+change to the Dockerfile calls for a rebuild. The last command compiles the
+program, simulates the full SoC in Verilator, and prints `Frost: Hello, world!`
+from the simulated UART. `scripts/frost.py` runs each tool inside the image as
+your user, so build outputs stay yours. Use it for every simulation, formal,
 and lint run.
 
 Other programs to simulate:
@@ -73,7 +88,7 @@ Other programs to simulate:
 # Run a program from cached DDR instead of on-chip BRAM
 FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb hello_world
 
-# Write waveforms (dump.fst)
+# Write waveforms (tests/dump.fst)
 WAVES=1 ./scripts/frost.py cocotb directed_traps
 
 # Open a shell inside the image
@@ -82,7 +97,8 @@ WAVES=1 ./scripts/frost.py cocotb directed_traps
 
 ## Running on the FPGA
 
-FPGA builds and board tools run natively on a host with Vivado:
+FPGA builds and board tools run natively on a host with Vivado 2025.2 and the
+[RISC-V toolchain](docs/tooling.md#shared-risc-v-toolchain):
 
 ```bash
 # 1. Build the bitstream (takes hours)
@@ -140,21 +156,28 @@ every supported extension and privilege mode.
 
 - Tomasulo out-of-order execution with two-wide decode, rename, and commit, a
   32-entry reorder buffer, and precise exceptions.
-- Four reservation stations, two integer ALUs, and an iterative single- and
-  double-precision floating-point unit.
+- Four reservation stations, two integer ALUs, a multiply and divide unit that
+  also performs carry-less multiplication, and an iterative single- and
+  double-precision floating-point unit. A load result can wake dependent
+  integer and memory operations a cycle before the common data bus
+  broadcasts it.
 - Branch prediction with a 256-entry BTB, a bimodal and a tagged
   path-history direction predictor, and an 8-entry return stack. A
-  mispredicted conditional branch recovers in about two cycles.
+  mispredicted conditional branch redirects fetch and restores the rename
+  tables the cycle after it resolves.
 - Sv39 virtual memory with hardware page-table walks and separate instruction
   and data TLBs.
 - Separate instruction and data paths into a cache hierarchy. On X3: 16 KiB
-  L1I, 128 KiB L1D, 2 MiB L2, and a 256-entry L0 cache in the load queue. Low
-  BRAM uses an 8 KiB instruction cache and L0 data reads with write-through
-  stores. DMA is coherent with the DDR data caches.
+  L1I, 128 KiB L1D, and 2 MiB L2, all four-way, and a 256-entry L0 cache in the
+  load queue. The L1D and the L2 each track eight misses, and a stream
+  prefetcher reads ahead of L1D misses into the L2. Low BRAM uses an 8 KiB
+  instruction cache and L0 data reads with write-through stores. DMA is
+  coherent with the data caches.
 - 256 KiB of on-chip BRAM and 1 GiB of cached DDR4, with the same
   [memory map](sw/README.md#memory-map) in simulation and on hardware.
-- UART, CLINT-compatible timer, APLIC interrupt controller, and 10GBASE-R
-  Ethernet.
+- UART, CLINT-compatible timer, an APLIC interrupt controller that delivers
+  interrupts directly or as MSIs to the CPU's IMSIC files, a memory error
+  unit, and 10GBASE-R Ethernet.
 - JTAG debugging with halt, resume, and single-step through OpenOCD and GDB.
 
 The [design documentation](#design-documentation) below explains how each
@@ -216,9 +239,10 @@ results, the riscv-tests suites, TestRIG's instruction-by-instruction
 comparison with the Sail RISC-V model, unit benches for the CPU and SoC
 blocks, full programs from on-chip BRAM and from cached DDR, formal proofs,
 synthesis checks, the OpenROAD flow, the Ethernet MAC/PCS benches, and QEMU
-boots of the Linux images, and it merges the coverage of its simulations into
-one report. The [test guide](tests/README.md#ci-integration) has the details
-and the commands for each suite.
+boots of the Linux images, and it merges the coverage of its simulations,
+cover points included, into one report. The
+[test guide](tests/README.md#ci-integration) has the details and the commands
+for each suite.
 
 ### Building Software
 
@@ -227,7 +251,7 @@ automatically. To compile by hand:
 
 ```bash
 ./scripts/frost.py run make -C sw/apps/hello_world         # one application
-./scripts/frost.py run python3 sw/apps/build_all_apps.py   # all applications
+./scripts/frost.py run python3 sw/apps/build_all_apps.py   # every standalone application
 ```
 
 For native builds outside the container, initialize the submodules first with
@@ -245,7 +269,7 @@ For native builds outside the container, initialize the submodules first with
 | [tests/](tests/README.md) | Test runners |
 | [verif/](verif/README.md) | Cocotb tests, reference models, and monitors |
 | [formal/](formal/README.md) | Formal verification |
-| [perf-modeling/](perf-modeling/README.md) | Cycle-approximate performance model of the CPU and SoC, checked against RTL traces |
+| [perf-modeling/](perf-modeling/README.md) | Cycle-approximate performance model of the CPU and SoC, with RTL event capture and a CoreMark IPC check |
 | [asic/](asic/README.md) | OpenROAD flow on FreePDK45 and its OpenRAM SRAM macros |
 | [tools/vscode-frost/](tools/vscode-frost/README.md) | VS Code extension |
 | [docs/](docs/) | Debian setup and toolchain guides; diagrams |
@@ -257,6 +281,7 @@ For native builds outside the container, initialize the submodules first with
 |----------|--------|
 | [RTL overview](hw/rtl/README.md) | SoC structure, memory map, and the data bus rules |
 | [CPU integration boundary](hw/rtl/cpu_top/README.md) | Standalone CPU AXI, PMA, reset, debug and coherent ingress contract |
+| [SoC wrapper](hw/rtl/soc_top/README.md) | MMIO decode, peripherals, and the AXI4 DMA and AXI4-Lite register paths |
 | [CPU](hw/rtl/cpu_and_mem/cpu/README.md) | Front end, branch prediction, address translation, and debug |
 | [Out-of-order back end](hw/rtl/cpu_and_mem/cpu/tomasulo/README.md) | Renaming, scheduling, memory ordering, and commit, with a README for each block |
 | [Cache hierarchy](hw/rtl/lib/cache/README.md) | Caches, coherence, and the DMA port |
@@ -299,11 +324,12 @@ the image.
 ## Status and Roadmap
 
 FROST supports one board, the Alveo X3522PV, and a single hart. Planned work
-includes a two-hart SMP configuration with the RISC-V Advanced Interrupt
-Architecture and 5 CoreMark/MHz; see [ROADMAP.md](ROADMAP.md).
+includes a two-hart SMP configuration and 5 CoreMark/MHz; see
+[ROADMAP.md](ROADMAP.md).
 
 ## Contributors and License
 
 [CONTRIBUTORS.md](CONTRIBUTORS.md) lists contributors. FROST is licensed under
-the [Apache License 2.0](LICENSE); third-party code in submodules keeps its own
+the [Apache License 2.0](LICENSE). The Linux drivers are dual-licensed under
+GPL-2.0-only or BSD-2-Clause, and third-party code in submodules keeps its own
 license.

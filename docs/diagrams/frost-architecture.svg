@@ -6,29 +6,38 @@
     32-entry reorder buffer, four reservation stations, and memory queues.
     The INT, MUL, FP and MEM stations have 16, 4, 2 and 8 entries. INT issues
     to two ALUs; pipe 0 resolves branches. Other stations serve integer
-    multiply/divide, every floating-point compute operation (on one iterative
-    engine), and memory operations. Two CDB lanes
+    multiply/divide and carry-less multiply, every floating-point compute
+    operation (on one iterative engine), and memory operations. Two CDB lanes
     broadcast results to the reservation stations and ROB. The ROB commits
     up to two instructions in order to INT/FP register files and releases
     stores. CSR accesses execute at commit; traps support M/S/U delegation.
-    Conditional-branch mispredictions redirect fetch and restore the RAT in
-    about two cycles; JALR mispredictions and traps recover at commit.
+    Conditional-branch mispredictions redirect fetch and restore the RAT the
+    cycle after resolution, then flush younger backend work the following cycle.
+    JALR mispredictions and traps recover at commit.
     Sv39 uses an eight-entry ITLB in IF and a 16-entry DTLB ahead of the
     eight-entry load and store queues. The load queue contains a direct-mapped
     256-entry, eight-byte-granule L0 cache in FROST and receives store forwarding.
     Matching I and D badges connect the CPU to the system view below.
-    Cached instruction fetch uses a two-line fetch buffer and 16 KiB L1I;
-    cached data uses a 128 KiB L1D. One shared page-table walker serves both
+    Cached instruction fetch uses a two-line fetch buffer and 16 KiB L1I with
+    two miss slots; cached data uses a 128 KiB L1D with eight miss slots.
+    One shared page-table walker serves both
     TLBs and reads below them through a coherence sequencer that probes the
-    L1D first. The 10GbE NIC's descriptor and buffer traffic enters as a
-    fourth port through a coherence sequencer of its own, so its rings need no
-    cache maintenance. A tagged 2:1 arbiter merges the walker and L1I, and a
-    3:1 arbiter admits L1D first, then that merged port, then the NIC's DMA,
-    whose wait is bounded, into a 2 MiB UltraRAM L2 with 64-byte lines, then a
-    Unified AXI4 master and the board DDR4 controller. Software sees a 1 GiB cached region at
-    0x80000000. Uncached instruction/data accesses use the same AXI master to reach
-    SoC low BRAM and UART, FIFO0/1, CLINT, APLIC and the NIC's register
-    window MMIO, and the NIC raises one APLIC source. JTAG connects through the
+    L1D first. The NIC and DMA test engine use a 256-bit AXI4 mux and bridge
+    in the SoC to reach the CPU's coherent line ingress. Its sequencer probes
+    L1D and LQ, so DMA buffers need no data-cache maintenance. Two tagged 2:1
+    arbiters merge walker over L1I and DMA over stream prefetch. A bounded 3:1
+    arbiter admits L1D, the walker/L1I pair, then the DMA/prefetch pair through
+    a 32-to-64-byte line adapter into a 2 MiB UltraRAM L2 with eight miss slots,
+    two waiter seats per miss and two writeback slots. Prefetch permits eight
+    requests and reads up to eight L2 lines ahead within a page. All three
+    DDR caches are four-way. A 512-bit AXI4 master reaches the board DDR4
+    controller. Software sees a 1 GiB cached region at 0x80000000.
+    The same master serves low BRAM and MMIO. Low BRAM has an 8 KiB instruction
+    cache, L0 data reads and write-through stores; debug-page data bypasses L0.
+    SoC devices include UART, FIFO0/1, CLINT, APLIC and the NIC and DMA engine's
+    64-bit AXI4-Lite registers. The NIC is at 0x40030000 and raises APLIC source 4.
+    APLIC supports direct delivery and MSIs to the CPU's M/S IMSIC files.
+    JTAG connects through the
     DTM to the debug module for halt, resume and single-step. Capacities show
     the X3 configuration. Only selected connections are drawn; memory arrows
     follow requests, with responses omitted.
@@ -46,7 +55,7 @@
       hw/rtl/platform_top.sv + cpu_top/{cpu_top,frost_hart,frost_cluster_memory}.sv
         + soc_top/soc_top.sv: fetch buffer, memory, MMIO, debug.
       hw/rtl/lib/cache/frost_{hart,cluster}_cache.sv: the L1s, then the
-        D > walker > I > DMA tree and L2; {dma,walker}_coherence_sequencer.sv:
+        D > walker > I > DMA > prefetch tree and L2; {dma,walker}_coherence_sequencer.sv:
         the two probing entries.
       hw/rtl/peripherals/nic/nic_top.sv: the NIC's register window, rings,
         DMA front and interrupt.
@@ -190,7 +199,7 @@
     <text x="138" y="600" class="small">on pipe 0</text>
     <rect x="212" y="510" width="116" height="126" rx="10" class="execution"/>
     <text x="270" y="545" class="label">MUL / DIV</text>
-    <text x="270" y="575" class="small">Multiply</text>
+    <text x="270" y="575" class="small">MUL / CLMUL</text>
     <text x="270" y="600" class="small">Divide / rem.</text>
     <rect x="344" y="510" width="380" height="126" rx="10" class="execution"/>
     <text x="534" y="545" class="label">FP engine</text>
@@ -236,18 +245,18 @@
     <rect x="926" y="538" width="210" height="98" rx="12" class="retire"/>
     <text x="1031" y="569" class="heading">2-wide commit</text>
     <text x="1031" y="596" class="small">In-order retirement</text>
-    <text x="1031" y="621" class="small">Drain cached stores</text>
+    <text x="1031" y="621" class="small">Release cached stores</text>
     <path d="M 1031 636 V 668" class="commit" marker-end="url(#commit-arrow)"/>
     <rect x="926" y="668" width="210" height="70" rx="12" class="retire"/>
     <text x="1031" y="697" class="label">INT / FP regfiles</text>
     <text x="1031" y="724" class="small">2 write ports each</text>
     <path d="M 1136 587 H 1151 V 812 H 1136" class="commit" marker-end="url(#commit-arrow)"/>
     <rect x="926" y="776" width="210" height="92" rx="12" class="retire"/>
-    <text x="1031" y="805" class="label">CSRs + traps</text>
+    <text x="1031" y="805" class="label">CSRs / IMSIC / traps</text>
     <text x="1031" y="832" class="small">CSR access at commit</text>
     <text x="1031" y="855" class="small">M/S/U · delegation</text>
   </g>
-  <text x="80" y="849" font-size="19" fill="#edc37d">Conditional-branch recovery ≈ 2 cycles: redirect fetch + restore RAT</text>
+  <text x="80" y="849" font-size="19" fill="#edc37d">Conditional-branch misprediction: next-cycle redirect + RAT restore, then backend flush</text>
   <text x="80" y="875" class="small">JALR mispredictions and traps recover at commit. Queue allocation occurs at dispatch.</text>
 
   <!-- I/D badges connect the core ports above to the selected system paths. -->
@@ -262,13 +271,13 @@
   <circle cx="632" cy="990" r="13" class="port"/>
   <text x="632" y="996" class="port-text">D</text>
   <text x="656" y="996" class="body">Cached loads / stores</text>
-  <text x="1014" y="996" class="body center">10GbE rings + buffers</text>
+  <text x="1014" y="996" class="body center">NIC + DMA → AXI4 mux</text>
 
   <g id="l1-and-walker" class="center">
     <rect x="64" y="1016" width="244" height="100" rx="12" class="memory"/>
     <text x="186" y="1048" class="heading">Fetch buf. → L1I</text>
     <text x="186" y="1075" class="body">2-line · 16 KiB L1I</text>
-    <text x="186" y="1101" class="small">Read-only · BRAM</text>
+    <text x="186" y="1101" class="small">4-way · BRAM · 2 miss slots</text>
     <rect x="340" y="1016" width="244" height="100" rx="12" class="memory"/>
     <text x="462" y="1048" class="heading">Sv39 walker</text>
     <text x="462" y="1075" class="body">Shared · one walk</text>
@@ -276,10 +285,10 @@
     <rect x="616" y="1016" width="244" height="100" rx="12" class="memory"/>
     <text x="738" y="1048" class="heading">L1D · 128 KiB</text>
     <text x="738" y="1075" class="body">Write-back, allocate</text>
-    <text x="738" y="1101" class="small">Non-blocking · BRAM</text>
+    <text x="738" y="1101" class="small">4-way · BRAM · 8 miss slots</text>
     <rect x="892" y="1016" width="244" height="100" rx="12" class="memory"/>
     <text x="1014" y="1048" class="heading">Coherent ingress</text>
-    <text x="1014" y="1075" class="body">External NIC / DMA agents</text>
+    <text x="1014" y="1075" class="body">SoC AXI4 → line bridge</text>
     <text x="1014" y="1101" class="small">Sequencer probes L1D + LQ</text>
   </g>
   <g class="memlink" marker-end="url(#memory-arrow)">
@@ -289,34 +298,34 @@
     <path d="M 1014 1116 V 1144"/>
   </g>
   <rect x="64" y="1144" width="1072" height="50" rx="10" class="memory"/>
-  <text x="600" y="1176" class="label center">Tagged line-port arbitration · L1D &gt; walker &gt; L1I &gt; DMA · 2:1 under a bounded 3:1</text>
+  <text x="600" y="1176" class="label center">Line arbitration · D &gt; (walker &gt; I) &gt; (DMA &gt; prefetch) · 32 B → 64 B</text>
   <path d="M 226 1194 V 1222" class="memlink" marker-end="url(#memory-arrow)"/>
   <g id="l2-and-ddr" class="center">
     <rect x="64" y="1222" width="324" height="88" rx="12" class="memory"/>
     <text x="226" y="1258" class="heading">Shared L2 · 2 MiB</text>
-    <text x="226" y="1288" class="body">64 B lines · UltraRAM</text>
+    <text x="226" y="1288" class="body">4-way · 64 B · URAM · 8 misses</text>
     <path d="M 388 1266 H 438" class="memlink" marker-end="url(#memory-arrow)"/>
     <rect x="438" y="1222" width="324" height="88" rx="12" class="memory"/>
-    <text x="600" y="1258" class="heading">Unified AXI4 master</text>
+    <text x="600" y="1258" class="heading">512-bit AXI4 master</text>
     <text x="600" y="1288" class="body">Cached + narrow uncached traffic</text>
     <path d="M 762 1266 H 812" class="memlink" marker-end="url(#memory-arrow)"/>
     <rect x="812" y="1222" width="324" height="88" rx="12" class="memory"/>
     <text x="974" y="1258" class="heading">SoC decode → board DDR4</text>
     <text x="974" y="1288" class="body">1 GiB region @ 0x8000_0000</text>
   </g>
-  <text x="600" y="1338" class="small center">4-way, write-back caches: L1I / L1D 32 B lines, L2 64 B lines. Memory arrows show requests; responses return to their source.</text>
+  <text x="600" y="1338" class="small center">DDR caches: L1I / L1D 32 B lines, L2 64 B. Stream prefetch: 8 requests, up to 8 lines ahead within a page.</text>
 
   <path d="M 64 1359 H 1136" stroke="#2b3c55"/>
   <text x="64" y="1388" class="section">SOC SERVICES · OUTSIDE CPU_TOP</text>
   <g id="system-services">
     <rect x="64" y="1404" width="324" height="112" rx="12" class="system"/>
-    <text x="84" y="1437" class="heading">AXI → SoC low BRAM</text>
-    <text x="84" y="1467" class="body">256 KiB · uncached code + data</text>
-    <text x="84" y="1495" class="small">Base address: 0x0000_0000</text>
+    <text x="84" y="1437" class="heading">Low BRAM · 256 KiB</text>
+    <text x="84" y="1467" class="body">CPU reads: 8 KiB I-cache + L0</text>
+    <text x="84" y="1495" class="small">0x0000_0000 · write-through stores</text>
     <rect x="438" y="1404" width="324" height="112" rx="12" class="system"/>
     <text x="458" y="1437" class="heading">AXI → SoC MMIO</text>
-    <text x="458" y="1467" class="body">UART · FIFO0/1 · NIC 0x4003_0000</text>
-    <text x="458" y="1495" class="small">CLINT + APLIC (NIC source) → M/S</text>
+    <text x="458" y="1467" class="body">UART · FIFOs · NIC / DMA AXI-Lite</text>
+    <text x="458" y="1495" class="small">APLIC → M/S IMSIC; CLINT</text>
     <rect x="812" y="1404" width="324" height="112" rx="12" class="system"/>
     <text x="832" y="1437" class="heading">JTAG debug</text>
     <text x="832" y="1467" class="body">DTM → debug module → core</text>
