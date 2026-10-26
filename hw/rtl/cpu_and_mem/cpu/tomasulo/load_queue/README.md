@@ -81,7 +81,10 @@ in [`coherent_lq_issue_selector.sv`](coherent_lq_issue_selector.sv). The live
 drain flag selects between those results. Both cases use the same ring
 order and ROB-head priority. Prefix masks select the first eligible physical
 entry at or above the queue head, or the first entry below it on wraparound.
-Indices and tags decode from those masks. Selection is combinational. Coherent issue,
+Indices and tags decode from those masks. Selection is combinational.
+The pre-issue selector registers a one-hot mask alongside the candidate matches.
+Staging permission combines capture space and replacement age at each physical
+entry before selecting the winner. Coherent issue,
 forwarding and SQ-probe predicates decode address faults before applying
 the cut and same-sector holds. Coherent staging captures PMA permission and cache-region
 classification with the address. Misalignment checks use the live trap setting. The first candidate mask determines which

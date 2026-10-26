@@ -973,7 +973,12 @@ module load_queue #(
       coh_hold_valid_q  <= 1'b0;
     end else begin
       coh_launch_hold_q <= coh_staged_amo_lr && coh_block_hit;
+`ifdef FROST_COHERENT_CLUSTER
+      coh_hold_valid_q <= coh_staged_amo_lr &&
+          !(COHERENT_CLUSTER ? coherent_stage_take[0] : (sq_check_capture || sq_check_replace));
+`else
       coh_hold_valid_q  <= coh_staged_amo_lr && !sq_check_capture && !sq_check_replace;
+`endif
     end
   end
 
@@ -1277,6 +1282,23 @@ module load_queue #(
     end
     // Select among registered candidates for timing. Reset and full flush
     // zero every candidate, so the selector is then irrelevant.
+`ifdef FROST_COHERENT_CLUSTER
+    if (COHERENT_CLUSTER) begin : gen_coherent_candidate_select
+      wire [DEPTH*NumCandidates-1:0] candidates_flat;
+      for (genvar candidate = 0; candidate < NumCandidates; candidate++) begin : gen_flat
+        assign candidates_flat[candidate*DEPTH+:DEPTH] = candidate_match_q[candidate];
+      end
+      coherent_lq_candidate_select #(
+          .WIDTH(DEPTH),
+          .SELECT_WIDTH(PREISSUE_SEL_WIDTH)
+      ) candidate_select (
+          .i_clk,
+          .i_select(i_pre_issue_sel),
+          .i_candidates(candidates_flat),
+          .o_selected(addr_update_pre_match_tags_q)
+      );
+    end else begin : gen_direct_candidate_select
+`endif
     wire [DEPTH-1:0] select_tree[2*NumCandidates];
     for (genvar leaf = 0; leaf < NumCandidates; leaf++) begin : gen_leaf
       assign select_tree[NumCandidates+leaf] = candidate_match_q[leaf];
@@ -1288,6 +1310,9 @@ module load_queue #(
       end
     end
     assign addr_update_pre_match_tags_q = select_tree[1];
+`ifdef FROST_COHERENT_CLUSTER
+    end
+`endif
 `ifndef SYNTHESIS
     always @(posedge i_clk) begin
       if (reset_seen_q && i_rst_n && i_pre_issue_needs_lq) begin
@@ -1900,6 +1925,36 @@ module load_queue #(
       (head_mem_update_found ? replace_update_head : replace_merged_scan);
   assign sq_check_replace = sq_check_pending && sq_check_gate_early &&
       (i_addr_update.valid ? replace_with_update : replace_without_update);
+`ifdef FROST_COHERENT_CLUSTER
+  logic [3:0] coherent_stage_take;
+  wire [3:0] coherent_pending = {sq_check_pending_copy, sq_check_pending};
+  for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_coherent_stage_take
+    logic [DEPTH-1:0] permitted;
+    (* keep = "true" *) logic stored_head, update_head, stored_scan, merged_scan;
+    logic without_update, with_update;
+    assign permitted = {DEPTH{!coherent_pending[copy_index] || sq_check_will_clear}} |
+        (staged_younger_than_entry & {DEPTH{sq_check_pending}});
+    assign stored_head = |(permitted & head_mem_stored_onehot);
+    assign update_head = |(permitted & head_mem_update_onehot);
+    assign stored_scan = |(permitted & stored_scan_onehot);
+    assign merged_scan = |(permitted & merged_scan_onehot);
+    assign without_update = head_mem_stored_found ? stored_head : stored_scan;
+    assign with_update = head_mem_stored_found ? stored_head :
+        head_mem_update_found ? update_head : merged_scan;
+    assign coherent_stage_take[copy_index] = sq_check_gate_early &&
+        (i_addr_update.valid ? with_update : without_update);
+`ifndef SYNTHESIS
+`ifdef FORMAL
+    always_comb begin
+`else
+    always @(posedge i_clk) begin
+`endif
+      assert (coherent_stage_take[copy_index] ==
+          (sq_check_capture_on(coherent_pending[copy_index]) || sq_check_replace));
+    end
+`endif
+  end
+`endif
 `ifdef F_LQ_MERGED_REPLACE_LOCAL_PROOF
   always_comb
     assert (sq_check_replace ==
@@ -3037,6 +3092,34 @@ module load_queue #(
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
        launch_mem_issue || misalign_bypass_fire || older_amo_write_pending);
 
+`ifdef FROST_COHERENT_CLUSTER
+  if (COHERENT_CLUSTER) begin : gen_coherent_stage_control
+  always_comb begin
+    // U = capture/replace (disjoint from sq_check_flushed, see above).
+    // Clear branch: launch_mem_issue remains low through bus_busy stalls.
+    sq_check_pending_next = coherent_stage_take[0] ||
+        (sq_check_pending && !sq_check_flushed && !sq_check_stage_clears);
+
+    sq_check_no_older_store_next = (coherent_stage_take[0] && i_sq_empty) ||
+        (sq_check_no_older_store_q && !sq_check_flushed &&
+         !coherent_stage_take[0]);
+
+    sq_check_phase2_next = (coherent_stage_take[0] && i_sq_empty) ||
+        (!coherent_stage_take[0] && !sq_check_flushed &&
+         (sq_check_phase2 ||
+          (!sq_check_stage_clears &&
+           ((sq_check_pending && i_sq_empty && !sq_commit_check_block) || o_sq_check_valid))));
+
+    for (int i = 0; i < DEPTH; i++) begin
+      sq_check_in_flight_mask_next[i] =
+          (coherent_stage_take[0] && issue_mem_onehot[i]) ||
+          (sq_check_in_flight_mask[i] && !sq_check_flushed && !sq_check_stage_clears &&
+           !coherent_stage_take[0]);
+    end
+  end
+
+  end else begin : gen_direct_stage_control
+`endif
   always_comb begin
     // U = capture/replace (disjoint from sq_check_flushed, see above).
     // Clear branch: launch_mem_issue remains low through bus_busy stalls.
@@ -3060,6 +3143,10 @@ module load_queue #(
            !(sq_check_capture || sq_check_replace));
     end
   end
+
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`endif
 
   // ===========================================================================
   // Sequential Logic
@@ -3530,15 +3617,29 @@ module load_queue #(
   logic sq_check_is_lr_next;
   logic sq_check_is_amo_next;
   logic [1:0] sq_check_fault_kind_next;
+`ifdef FROST_COHERENT_CLUSTER
+  assign sq_check_payload_en = COHERENT_CLUSTER ? coherent_stage_take[0] :
+      (sq_check_capture || sq_check_replace);
+`else
   assign sq_check_payload_en = sq_check_capture || sq_check_replace;
+`endif
   // sq_check_capture with the pending bit taken from one copy.
   function automatic logic sq_check_capture_on(input logic pending);
     sq_check_capture_on = (!pending || sq_check_will_clear) && issue_mem_found &&
         sq_check_gate_early;
   endfunction
+`ifdef FROST_COHERENT_CLUSTER
+  assign sq_check_payload_en_b = COHERENT_CLUSTER ? coherent_stage_take[1] :
+      (sq_check_capture_on(sq_check_pending_copy[0]) || sq_check_replace);
+  assign sq_check_payload_en_c = COHERENT_CLUSTER ? coherent_stage_take[2] :
+      (sq_check_capture_on(sq_check_pending_copy[1]) || sq_check_replace);
+  assign sq_check_payload_en_d = COHERENT_CLUSTER ? coherent_stage_take[3] :
+      (sq_check_capture_on(sq_check_pending_copy[2]) || sq_check_replace);
+`else
   assign sq_check_payload_en_b = sq_check_capture_on(sq_check_pending_copy[0]) || sq_check_replace;
   assign sq_check_payload_en_c = sq_check_capture_on(sq_check_pending_copy[1]) || sq_check_replace;
   assign sq_check_payload_en_d = sq_check_capture_on(sq_check_pending_copy[2]) || sq_check_replace;
+`endif
   assign issue_mem_uses_addr_update = issue_mem_from_update;
   assign issue_mem_addr = issue_mem_uses_addr_update ? i_addr_update.address
                                                      : lq_address_issue_mem_rd;

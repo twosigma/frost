@@ -93,6 +93,7 @@ FORMAL_TARGETS = [
             "coh_lq_cut_prove",
             "coh_lq_forward_prove",
             "coh_lq_normal_fill_prove",
+            "coh_candidate_select_prove",
             "coh_lq_selector_prove",
             "coh_lq_selector4_prove",
             "coh_lq_selector16_prove",
@@ -816,6 +817,10 @@ SBY_TASKS = [
     (
         "coh_lq_normal_fill_prove",
         "Coherent L0 fill permission agrees for both response sources.",
+    ),
+    (
+        "coh_candidate_select_prove",
+        "Coherent candidate selection matches its registered index.",
     ),
     ("coh_lq_selector_prove", "Coherent issue selection matches both SQ drain states."),
     ("coh_lq_selector4_prove", "Coherent issue selection matches at depth four."),
