@@ -207,6 +207,9 @@ address, bytes and mask after the SQ completion. It blocks local accesses to
 its sector and yields probes while unrelated reads proceed. SQ launch readiness reserves the next cycle's registered write even when
 line maintenance starts on that edge. There are eight
 unmerged CPU read slots, two frozen PutM slots and one acquisition endpoint.
+Read status uses per-slot masks for allocation, response transfer, lookup
+hits and grant completion. Completion sets dominate allocation and response
+clears. A failed grant supplies the selected read's error bit.
 There are no E grants, silent upgrades, sharer hints or stream prefetches in
 this selection. `L2_NUM_MSHR` and the prefetch parameters configure the
 line-port selection; the coherent home has one fill and `L2_NUM_WB` victim
