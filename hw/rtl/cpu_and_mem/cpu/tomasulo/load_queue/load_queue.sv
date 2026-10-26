@@ -2227,6 +2227,9 @@ module load_queue #(
   logic [riscv_pkg::MemDataBits-1:0] cache_fill_data;
 
   lq_l0_cache #(
+`ifdef FROST_COHERENT_CLUSTER
+      .COHERENT_CLUSTER(COHERENT_CLUSTER),
+`endif
       .DEPTH(L0_CACHE_DEPTH),
       .XLEN (XLEN)
   ) u_l0_cache (

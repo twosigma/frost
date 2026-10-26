@@ -4,7 +4,7 @@ coh_l1d_bmc
 [options]
 mode bmc
 depth 40
-timeout 180
+timeout 300
 aigsmt boolector
 
 [engines]

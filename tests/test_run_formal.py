@@ -86,6 +86,18 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "coherent_l0.sby",
+        "Coherent L0 valid masks, data, and invalidation at two cache depths.",
+        tasks=(
+            "coh_l0_flags_prove",
+            "coh_l0_flags256_prove",
+            "coh_l0_bmc",
+            "coh_l0256_bmc",
+            "coh_l0_cover",
+            "coh_l0256_cover",
+        ),
+    ),
+    FormalTarget(
         "coherent_cpu.sby",
         "Coherent SC ownership, load selection, parking, and reservation cuts.",
         tasks=(
@@ -802,10 +814,29 @@ FORMAL_TARGETS = [
         "Tomasulo commit and flush integration, including FP dispatch done repair",
         tasks=("bmc", "cover", "fp_repair_bmc"),
     ),
+    FormalTarget(
+        "debug_go_pipeline.sby",
+        "Registered debug GO keeps its command or resume target, holds until "
+        "acknowledgement, and clears on acknowledgement or module reset",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "debug_fetch_barrier.sby",
+        "Debug go follows fetch invalidation, preserves its target, and handles "
+        "withdrawal and reset without replay",
+        tasks=("prove", "cover"),
+    ),
+
 ]
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("coh_l0_flags_prove", "Coherent L0 next-state equality at 128 entries."),
+    ("coh_l0_flags256_prove", "Coherent L0 next-state equality at 256 entries."),
+    ("coh_l0_bmc", "Coherent L0 data and invalidation at 128 entries."),
+    ("coh_l0256_bmc", "Coherent L0 data and invalidation at 256 entries."),
+    ("coh_l0_cover", "Coherent L0 hit and invalidation covers at 128 entries."),
+    ("coh_l0256_cover", "Coherent L0 hit and invalidation covers at 256 entries."),
     (
         "coh_sc_selected_prove",
         "Selected SC payload survives flushes through its result.",

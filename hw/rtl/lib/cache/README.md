@@ -208,8 +208,9 @@ its sector and yields probes while unrelated reads proceed. SQ launch readiness 
 line maintenance starts on that edge. There are eight
 unmerged CPU read slots, two frozen PutM slots and one acquisition endpoint.
 Read status uses per-slot masks for allocation, response transfer, lookup
-hits and grant completion. Completion sets dominate allocation and response
-clears. A failed grant supplies the selected read's error bit.
+results and grant completion. Completion and miss sets dominate allocation
+clears. Allocation sets dominate response clears of valid bits. A failed
+grant supplies the selected read's error bit.
 Read eligibility compares each physical slot with pending, atomic and frozen
 writeback sectors. Circular priority selects a qualified slot and its address.
 There are no E grants, silent upgrades, sharer hints or stream prefetches in

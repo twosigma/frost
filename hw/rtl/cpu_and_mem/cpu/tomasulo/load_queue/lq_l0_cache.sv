@@ -42,6 +42,9 @@
  */
 
 module lq_l0_cache #(
+`ifdef FROST_COHERENT_CLUSTER
+    parameter bit COHERENT_CLUSTER = 1'b0,
+`endif
     parameter int unsigned DEPTH = riscv_pkg::LqL0Depth,
     parameter int unsigned XLEN  = riscv_pkg::XLEN
 ) (
@@ -284,6 +287,34 @@ module lq_l0_cache #(
   // ===========================================================================
   // Sequential: Fill, Invalidate, Flush
   // ===========================================================================
+`ifdef FROST_COHERENT_CLUSTER
+  if (COHERENT_CLUSTER) begin : gen_coherent_valid
+    logic [DEPTH-1:0] next_valid;
+    coherent_l0_flags #(.DEPTH(DEPTH), .TAG_WIDTH(TagWidth)) flags (
+        .i_clk,
+        .i_valid(valid),
+        .i_fill(i_fill_valid),
+        .i_fill_index(fill_index),
+        .i_fill_tag(fill_tag),
+        .i_store_update(store_update),
+        .i_inv(i_invalidate_valid),
+        .i_inv_index(inv_index),
+        .i_inv_tag(inv_tag),
+        .i_inv_tag_match(inv_tag_match),
+        .i_inv2(i_invalidate2_valid),
+        .i_inv2_index(inv2_index),
+        .i_inv2_tag(inv2_tag),
+        .i_inv2_tag_match(inv2_tag_match),
+        .i_line(i_invalidate_line_valid),
+        .i_line_index(i_invalidate_line_addr[5+:(IndexWidth-2)]),
+        .o_next(next_valid)
+    );
+    always_ff @(posedge i_clk) begin
+      if (!i_rst_n || i_flush_all) valid <= '0;
+      else valid <= next_valid;
+    end
+  end else begin : gen_direct_valid
+`endif
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       valid <= '0;
@@ -312,6 +343,10 @@ module lq_l0_cache #(
       end
     end
   end
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`endif
+
 
   // ===========================================================================
   // Formal Verification
