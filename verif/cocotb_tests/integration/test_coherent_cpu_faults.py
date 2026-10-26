@@ -12,13 +12,20 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Check coherent SC fault retirement through the CPU and its AXI ports."""
+"""Check coherent atomic faults and debug entry through the CPU."""
 
 from typing import Any
 
 import cocotb
 
-from cocotb_tests.integration.test_cpu_top import System, addi, csr, load, trap_program
+from cocotb_tests.integration.test_cpu_top import (
+    System,
+    addi,
+    csr,
+    load,
+    store,
+    trap_program,
+)
 
 
 def literal(register: int, value: int) -> list[int]:
@@ -138,3 +145,94 @@ async def debug_halt_waits_for_selected_sc(dut: Any) -> None:
     assert writes == 1
     assert not int(dut.hart.coherent_atomic_live.value)
     assert not int(dut.hart.coherent_sc_pending.value)
+
+
+async def debug_go(system: System, address: int) -> None:
+    """Redirect a parked CPU and hold GO through its acceptance edge."""
+    dut = system.dut
+    dut.i_dbg_go_addr.value = address
+    dut.i_dbg_go.value = 1
+    for _ in range(2000):
+        await system.step()
+        if int(dut.o_dbg_go_taken.value):
+            break
+    else:
+        raise AssertionError("Debug command did not start")
+    await system.step()
+    dut.i_dbg_go.value = 0
+
+
+@cocotb.test()
+async def completed_step_precedes_following_atomic(dut: Any) -> None:
+    """Check one stepped LR stops before a following SC or AMO can acquire."""
+    for address, operation in (
+        (0x80000000, 3),
+        (0x80000000, 0),
+        (0x3000, 3),
+        (0x3000, 0),
+    ):
+        s = System(dut)
+        stepped_pc = 0x2000
+        s.program([0x0000006F])
+        s.program([0x0000006F], 0x17C00)
+        setup = literal(4, address) + [addi(7, 0, 99)]
+        setup += literal(11, stepped_pc) + [csr(0, 11, 0x7B1)]
+        setup += [addi(11, 0, 7), csr(0, 11, 0x7B0), 0x7B200073]
+        s.program(setup, 0x1200)
+        s.program(
+            [csr(10, 0, 0x7B1, 2), 0x400005B7, store(10, 11, 0x30, 3), 0x00100073],
+            0x1300,
+        )
+        s.program(
+            [
+                (2 << 27) | (4 << 15) | (3 << 12) | (5 << 7) | 0x2F,
+                (operation << 27) | (7 << 20) | (4 << 15) | (3 << 12) | (6 << 7) | 0x2F,
+                0x0000006F,
+            ],
+            stepped_pc,
+        )
+        s.memory[address] = 123
+        await s.reset()
+        dut.i_dbg_haltreq.value = 1
+        for _ in range(2000):
+            await s.step()
+            if int(dut.o_dbg_parked.value):
+                break
+        else:
+            raise AssertionError("Initial debug entry did not complete")
+        dut.i_dbg_haltreq.value = 0
+        await debug_go(s, 0x1200)
+        for _ in range(2000):
+            await s.step()
+            if not int(dut.o_debug_mode.value):
+                break
+        else:
+            raise AssertionError("Debug setup did not resume the stepped LR")
+        retired = []
+        for _ in range(2000):
+            await s.step()
+            valid = int(dut.o_debug_commit_valid.value)
+            if valid & 1:
+                retired.append(int(dut.o_debug_commit_pc.value))
+            if valid & 2:
+                retired.append(int(dut.o_debug_commit_2_pc.value))
+            assert not int(dut.hart.coherent_atomic_live.value)
+            if int(dut.o_dbg_parked.value):
+                break
+        else:
+            raise AssertionError(
+                f"Completed step did not enter debug: address={address:#x}, operation={operation}, retired={retired}"
+            )
+        assert s.memory[address] == 123
+        assert retired == [stepped_pc], retired
+        assert int(dut.hart.cpu_inst.csr_dpc.value) == stepped_pc + 4
+        assert not int(dut.hart.cpu_inst.coherent_atomic_active.value)
+        await debug_go(s, 0x1300)
+        assert await s.until_write(0x40000030) == stepped_pc + 4
+        for _ in range(2000):
+            await s.step()
+            if int(dut.o_dbg_parked.value):
+                break
+        else:
+            raise AssertionError("Debug command did not finish after single-step entry")
+        assert not int(dut.o_dbg_cmd_err.value)

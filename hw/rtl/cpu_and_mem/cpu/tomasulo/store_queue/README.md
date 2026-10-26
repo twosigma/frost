@@ -118,8 +118,10 @@ Cached and buffered Normal stores commit through two ports, one per ROB
 commit slot. Precise uncached stores report completion before retirement
 and free their SQ owner after B. Slot 2 retires only
 plain stores; the ROB keeps SCs and AMOs on slot 1. The committed-empty
-status is a register, with copies for its distant consumers (the ROB, the
-trap unit, and the LQ). Each commit port has a combinational copy
+base status is a register, with copies for its distant consumers (the ROB,
+the trap unit, and the LQ). The coherent selection qualifies each output with
+pending ordinary stores, the selected SC write and the registered cached
+write strobe. Each commit port has a combinational copy
 (`i_commit_valid_comb*`) that feeds it directly, so the status turns
 non-empty at the edge that ends the commit cycle, when the registered commit
 arrives, and a fence, SC, trap, or device read never sees an empty committed

@@ -263,6 +263,10 @@ async def sc_self_probe_and_exact_write(dut: Any) -> None:
     await b.wait("o_sc_result_valid")
     assert b.get("o_sc_success") and not b.get("o_sc_error")
     assert b.get("i_reservation_valid")
+    for _ in range(20):
+        assert b.get("o_sc_write_pending")
+        assert b.get("o_atomic_live") and b.sc_writes == []
+        await b.tick()
     await b.set(i_sc_result_ready=1)
     await b.tick()
     await b.set(i_sc_result_ready=0, i_sc_commit=1)

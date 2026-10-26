@@ -284,12 +284,31 @@ module data_mem_request_router #(
   assign lq_mem_request_id_eff = lq_mem_request_valid ? lq_mem_request_id : i_lq_mem_read_id;
   assign lq_mem_request_no_merge_eff =
       lq_mem_request_valid ? lq_mem_request_no_merge : i_lq_mem_read_no_merge;
-  assign o_coherent_read_kind = lq_mem_request_valid ? coherent_kind_q : i_coherent_read_kind;
-  assign o_coherent_read_tag = lq_mem_request_valid ? coherent_tag_q : i_coherent_read_tag;
-  assign o_coherent_read_size = 3'(lq_mem_request_valid ? lq_mem_request_size : i_lq_mem_read_size);
-  assign o_coherent_write_sc = sq_mem_write_en && sq_mem_write_is_cached && i_coherent_sq_sc;
-  assign o_coherent_write_atomic = o_coherent_write_sc || amo_cached_write_launch;
-  assign o_coherent_write_tag = sq_mem_write_en ? i_coherent_sq_tag : i_coherent_amo_tag;
+  if (COHERENT_CLUSTER) begin : gen_coherent_metadata
+    always_ff @(posedge i_clk) begin
+      if (!lq_mem_request_valid) begin
+        coherent_kind_q <= i_coherent_read_kind;
+        coherent_tag_q  <= i_coherent_read_tag;
+      end
+    end
+    assign o_coherent_read_kind = lq_mem_request_valid ? coherent_kind_q : i_coherent_read_kind;
+    assign o_coherent_read_tag = lq_mem_request_valid ? coherent_tag_q : i_coherent_read_tag;
+    assign o_coherent_read_size = 3'(
+        lq_mem_request_valid ? lq_mem_request_size : i_lq_mem_read_size
+    );
+    assign o_coherent_write_sc = sq_mem_write_en && sq_mem_write_is_cached && i_coherent_sq_sc;
+    assign o_coherent_write_atomic = o_coherent_write_sc || amo_cached_write_launch;
+    assign o_coherent_write_tag = sq_mem_write_en ? i_coherent_sq_tag : i_coherent_amo_tag;
+  end else begin : gen_no_coherent_metadata
+    assign coherent_kind_q = '0;
+    assign coherent_tag_q = '0;
+    assign o_coherent_read_kind = '0;
+    assign o_coherent_read_tag = '0;
+    assign o_coherent_read_size = '0;
+    assign o_coherent_write_sc = 1'b0;
+    assign o_coherent_write_atomic = 1'b0;
+    assign o_coherent_write_tag = '0;
+  end
   // The live device-quadrant decode forces capture. Acceptance and MMIO
   // effects use only the held address.
   assign lq_live_request_requires_park = riscv_pkg::pma_device_quadrant(lq_mem_read_addr);
@@ -551,8 +570,6 @@ module data_mem_request_router #(
       lq_mem_request_id <= i_lq_mem_read_id;
       lq_mem_request_no_merge <= i_lq_mem_read_no_merge;
       lq_mem_request_size <= i_lq_mem_read_size;
-      coherent_kind_q <= i_coherent_read_kind;
-      coherent_tag_q <= i_coherent_read_tag;
     end
   end
 

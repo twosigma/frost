@@ -209,8 +209,7 @@ module coherence_l1d #(
   assign maint_eligible = maint_q && !pending_q && !atomic_q && !request_live && wb_free;
   assign o_pending_store = pending_q;
   assign o_atomic_live = atomic_q;
-  assign o_sc_write_pending = atomic_q && atomic_sc_q && !atomic_written_q &&
-      (sc_committed_q || i_sc_commit);
+  assign o_sc_write_pending = atomic_q && atomic_sc_q && atomic_granted_q && !atomic_written_q;
   // SQ launch readiness precedes its registered write by one cycle.
   assign o_store_ready = active && !pending_q && !atomic_q && !maint_q && !i_maint_valid;
   assign o_write_inflight = (pending_q && !pending_reported_q) || atomic_write_q;

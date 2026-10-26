@@ -194,7 +194,8 @@ must not stop those resources in an integration.
 `coherent_hart_cache` contains the L1D, read-only L1I, instruction and walker
 bridges, and maintenance arbitration. `coherence_home` contains the shared
 L2 controller and array. `coherence_array` serializes tag lookup, data read
-and masked updates. It uses block RAM for L1D and UltraRAM for L2.
+and masked updates. It uses block RAM for L1D and the registered RAM
+configuration for L2.
 The L1D uses 32-byte sectors; the L2 supports 32-byte or 64-byte lines.
 
 The L1D has I, S and M states. Reads use S or M. A store hit in M writes its
@@ -241,10 +242,13 @@ arms a tagged ROB-head context after fault and drain checks and before D
 presentation. Interrupt and debug entry cannot cancel that context. SC
 checks the reservation after home resource entitlement; a passing CheckSC
 uses a self-ProbeRead to collect dirty data without cancelling its own
-reservation. The SC bridge holds the home lock and same-sector interlock
-through the tagged post-retirement SQ write. AMO holds them through its
-read/compute/write sequence. C reports the actual write. U releases the
-home ownership, and precise instruction ownership also waits for retirement.
+reservation. A granted SC asserts pending-write ownership while its result
+waits for retirement. An interrupt or debug drain cannot stall the protected
+owner's retirement. A completed single step prevents the following atomic
+from acquiring ownership. The SQ writes only after the owner's retirement.
+The SC bridge holds the home lock and same-sector interlock through the tagged SQ write.
+AMO holds them through its read/compute/write sequence. C reports the actual
+write. U releases the home ownership, and precise instruction ownership also waits for retirement.
 Clean faults dispose C/U before precise exception entry. Dirty errors hold
 ownership and raise the cluster fatal indication until reset.
 
