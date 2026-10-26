@@ -97,8 +97,15 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "fetch_shadow_capture.sby",
-        "Fetch shadows preserve pending tags and payloads across response capture",
-        tasks=("prove", "cover", "prove_victim0", "prove_victim1"),
+        "Fetch shadows and grouped direct-cache writes match qualified response captures",
+        tasks=(
+            "prove",
+            "cover",
+            "prove_victim0",
+            "prove_victim1",
+            "prove_direct",
+            "cover_direct",
+        ),
     ),
     FormalTarget(
         "sq_live_count.sby",
@@ -833,6 +840,8 @@ SBY_TASKS = [
         "Unbounded fetch-shadow equivalence with the victim store disabled",
     ),
     ("prove_victim1", "Unbounded fetch-shadow equivalence with one victim entry"),
+    ("prove_direct", "Unbounded grouped direct-fetch payload equivalence"),
+    ("cover_direct", "Direct-fetch responses coincident with clears and errors"),
     ("bmc_repair", "Bounded equivalence with insertion-time repair enabled"),
     ("prove_integrated", "Unbounded proof under the integrated interface contract"),
     ("prove_perf_off", "Unbounded proof with profiling counters absent"),

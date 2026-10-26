@@ -2085,13 +2085,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.predecode.test_fetch_provider_errors",
         hdl_toplevel_module="fetch_provider",
         description="Instruction read faults, line straddles, and recovery without poisoned victims",
-        verilator_extra_args=("-GENABLE_RESPONSE_ERRORS=1",),
+        verilator_extra_args=("--assert", "-GENABLE_RESPONSE_ERRORS=1"),
     ),
     "fetch_provider_uncached": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_fetch_provider_uncached",
         hdl_toplevel_module="fetch_provider",
         description="Replay handoff from cached fetch to uncached instructions or page faults",
         verilator_extra_args=(
+            "--assert",
             "-GLINE_BYTES=8",
             "-GLINE_ID_BITS=1",
             "-GVICTIM_LINES=0",
@@ -2691,8 +2692,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "cocotb_tests.predecode.test_fetch_provider_direct"
         ),
         hdl_toplevel_module="fetch_provider",
-        description="Direct instruction-cache hits, conflict replacement, backpressure, errors and invalidation",
+        description="Direct instruction-cache hits, conflicts, errors and coincident response/reset/invalidation",
         verilator_extra_args=(
+            "--assert",
             "-GDIRECT_LOOKUP=1",
             "-GVICTIM_LINES=64",
             "-GENABLE_RESPONSE_ERRORS=1",
@@ -3111,6 +3113,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.predecode.test_fetch_provider",
         hdl_toplevel_module="fetch_provider",
         description="Cached-DDR fetch windows, line fills, redirects, and invalidation",
+        verilator_extra_args=("--assert",),
     ),
     "frontend_validity_tracker": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.frontend.test_frontend_validity_tracker",
