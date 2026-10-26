@@ -287,6 +287,7 @@ def run_simulation(
     When the test passes, the bench reads its signature from the data BRAM
     and writes it to SIGNATURE_FILE, a line of words per run.
     coverage_label names the run's coverage file under FROST_COVERAGE=1.
+    Simulator errors and timeouts print their captured diagnostics.
     """
     runner = CocotbRunner(
         python_test_module="cocotb_tests.test_real_program",
@@ -339,10 +340,19 @@ def run_simulation(
 
         if result.returncode == 0:
             runner._update_verilator_toplevel_marker(sim_build_dir)
+        else:
+            print((result.stdout or "") + (result.stderr or ""), flush=True)
 
         return result
 
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
+        for output in (error.stdout, error.stderr):
+            print(
+                output.decode(errors="replace")
+                if isinstance(output, bytes)
+                else output or "",
+                flush=True,
+            )
         return None
     finally:
         for mem_name in ("sw.mem", "sw64.mem", "sw_ddr.mem"):

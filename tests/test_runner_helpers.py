@@ -552,8 +552,12 @@ def test_ddr_model_timing_needs_a_seed_and_the_soc(
     assert unit_bench.verilator_extra_args == ()
 
 
-def test_arch_simulation_tells_the_bench_where_the_signature_is(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize("outcome", ("pass", "exit", "timeout"))
+def test_arch_simulation_signature_and_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    outcome: str,
 ) -> None:
     """Arch runs name the signature's low-BRAM bytes and its file, and run once.
 
@@ -588,11 +592,27 @@ def test_arch_simulation_tells_the_bench_where_the_signature_is(
         _command: list[str], *, env: dict[str, str], timeout: float
     ) -> subprocess.CompletedProcess[str]:
         environments.append(env)
-        return subprocess.CompletedProcess(args=["make"], returncode=0)
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired(
+                ["make"], timeout, output=b"boot progress\n", stderr=b"worker stalled\n"
+            )
+        return subprocess.CompletedProcess(
+            args=["make"],
+            returncode=0 if outcome == "pass" else 2,
+            stdout="boot progress\n",
+            stderr="worker stalled\n",
+        )
 
     monkeypatch.setattr(test_arch_compliance, "run_in_process_group", simulation_run)
 
-    test_arch_compliance.run_simulation()
+    result = test_arch_compliance.run_simulation()
+    assert (result is None) == (outcome == "timeout")
+    if result is not None:
+        assert result.returncode == (0 if outcome == "pass" else 2)
+    output = capsys.readouterr().out
+    if outcome != "pass":
+        assert "boot progress" in output
+        assert "worker stalled" in output
 
     assert elves == [tmp_path / "app" / "sw.elf"]
     assert not signature_file.exists()
