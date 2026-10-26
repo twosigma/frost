@@ -2327,11 +2327,24 @@ module load_queue #(
   // since the miss value already holds the flush and issue terms. Internal
   // consumers keep launch_mem_issue.
   (* keep = "true" *) logic launch_if_miss, launch_if_hit;
+`ifdef FROST_COHERENT_CLUSTER
+  if (COHERENT_CLUSTER) begin : gen_coherent_launch_gate
+    assign launch_if_miss = !i_flush_en && !i_flush_all && !i_mem_bus_busy &&
+        coherent_issue_ok && !cached_launch_hold_q;
+    assign launch_if_hit = launch_if_miss && !(ENABLE_L0_FAST_PATH && sq_check_cacheable &&
+        !l0_lookup_busy && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q);
+    assign o_mem_read_en = !coherent_local_hold &&
+        (cache_lookup_hit ? launch_if_hit : launch_if_miss);
+  end else begin : gen_line_launch_gate
+`endif
   assign launch_if_miss = !i_flush_en && !i_flush_all && !i_mem_bus_busy && sq_can_issue &&
       !cached_launch_hold_q;
   assign launch_if_hit = launch_if_miss && !(ENABLE_L0_FAST_PATH && sq_check_cacheable &&
       !l0_lookup_busy && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q);
   assign o_mem_read_en = cache_lookup_hit ? launch_if_hit : launch_if_miss;
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`endif
 `ifndef SYNTHESIS
   always_comb begin
     p_mem_read_en_exact : assert (o_mem_read_en == launch_mem_issue);
