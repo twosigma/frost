@@ -79,7 +79,9 @@ nor leave the LQ until they are at the head.
 The coherent selection computes memory candidates for both SQ drain states
 in [`coherent_lq_issue_selector.sv`](coherent_lq_issue_selector.sv). The live
 drain flag selects between those results. Both cases use the same ring
-order and ROB-head priority. Selection is combinational. Coherent issue,
+order and ROB-head priority. Prefix masks select the first eligible physical
+entry at or above the queue head, or the first entry below it on wraparound.
+Indices and tags decode from those masks. Selection is combinational. Coherent issue,
 forwarding and SQ-probe predicates decode address faults before applying
 the cut and same-sector holds. The first candidate mask determines which
 address source wins ring order. Candidate presence is independent of

@@ -4,6 +4,8 @@ coh_lq_cut_prove lq
 coh_lq_forward_prove lq forward
 coh_lq_normal_fill_prove lq normal
 coh_lq_selector_prove selector
+coh_lq_selector4_prove selector selector4
+coh_lq_selector16_prove selector selector16
 
 [options]
 mode prove
@@ -26,6 +28,8 @@ normal: chparam -set CACHE_NORMAL_MEMORY 1 -set CACHE_UNCACHED_DATA 0 -set MEM_R
 lq: prep -flatten -top load_queue
 
 selector: read -formal -sv lq_issue_selector.sv coherent_lq_issue_selector.sv
+selector4: chparam -set DEPTH 4 coherent_lq_issue_selector
+selector16: chparam -set DEPTH 16 coherent_lq_issue_selector
 selector: prep -flatten -top coherent_lq_issue_selector
 
 [files]
