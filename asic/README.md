@@ -206,9 +206,10 @@ differ from the block RAMs they replace in these cases:
   program images to the data and instruction memories. A chip loads them
   through the program-loading port. Instruction images come from the app's
   block-RAM images, which its build writes with `GENERATE_IMEM_INIT=1`.
-  The models' internal write selects start inactive; rising clock edges
-  capture the write controls. The shared SoC bench loads program images while
-  system reset is held, after cold-reset programming writes have drained.
+  Models loaded with program images start with inactive internal write
+  selects; rising clock edges capture the write controls. The shared SoC bench
+  loads program images while system reset is held, after cold-reset
+  programming writes have drained.
   The caches clear their tags and replacement state with a sweep at reset;
   simulation's fast maintenance (`SIM_FAST_MAINT`) clears those macros'
   models directly.
