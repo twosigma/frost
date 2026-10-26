@@ -91,22 +91,27 @@ async def _train_pc(dut: Any, pc: int, *, taken: bool, count: int = 1) -> None:
 
 
 @cocotb.test()
-async def test_initial_state_is_strongly_not_taken_and_exports_pc_index(
+async def test_reset_preserves_trained_state_and_exports_pc_index(
     dut: Any,
 ) -> None:
-    """Counters start at 00, and a lookup exposes pc[BIM_BITS:1] as its index."""
+    """Reset preserves trained counters, and lookups expose pc[BIM_BITS:1]."""
     await _setup_test(dut)
 
     await _lookup(dut, PC_A)
-
-    assert not dut.o_taken.value
     assert int(dut.o_pred_idx.value) == _idx(PC_A)
 
-    # From 01 (weakly not-taken), one taken update would predict taken. The
-    # entry is one no other test trains.
-    await _train_pc(dut, PC_D, taken=True)
+    await _train_pc(dut, PC_D, taken=True, count=3)
     await _lookup(dut, PC_D)
-    assert not dut.o_taken.value
+    assert dut.o_taken.value
+    await FallingEdge(dut.i_clk)
+    dut.i_rst.value = 1
+    await _advance_cycle(dut)
+    assert dut.o_taken.value
+    await FallingEdge(dut.i_clk)
+    dut.i_rst.value = 0
+    await _settle()
+    assert dut.o_taken.value
+    assert int(dut.o_pred_idx.value) == _idx(PC_D)
 
 
 @cocotb.test()
@@ -132,6 +137,7 @@ async def test_taken_training_requires_two_updates_then_saturates(dut: Any) -> N
     """A counter starting strongly not-taken needs two taken updates, then saturates."""
     await _setup_test(dut)
 
+    await _train_pc(dut, PC_A, taken=False, count=3)
     await _train_pc(dut, PC_A, taken=True)
     await _lookup(dut, PC_A)
     assert not dut.o_taken.value
@@ -176,6 +182,8 @@ async def test_training_uses_carried_update_index_not_current_lookup_pc(
     """Commit-time training writes i_update_idx even when i_pc points elsewhere."""
     await _setup_test(dut)
 
+    await _train_pc(dut, PC_A, taken=False, count=3)
+    await _train_pc(dut, PC_B, taken=False, count=3)
     await _lookup(dut, PC_A)
     await _train_idx(dut, _idx(PC_B), taken=True)
     await _train_idx(dut, _idx(PC_B), taken=True)
