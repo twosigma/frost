@@ -790,6 +790,25 @@ module load_queue #(
 
   // lq_address and lq_amo_rs2 are only written once the address CAM resolves.
   // Valid bits stay in FFs; stale RAM contents are don't-care until addr_valid.
+`ifdef FROST_COHERENT_CLUSTER
+  logic [2:0] coherent_stored_class, coherent_update_class;
+  if (COHERENT_CLUSTER) begin : gen_coherent_address_store
+    coherent_lq_address_store #(
+        .ADDR_WIDTH(IdxWidth),
+        .CACHED_BASE(CACHED_BASE),
+        .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
+    ) address_store (
+        .i_clk,
+        .i_write_enable(lq_addr_update_we),
+        .i_write_address(lq_addr_update_idx),
+        .i_write_data(i_addr_update.address),
+        .i_read_address(issue_mem_stored_idx),
+        .o_read_data(lq_address_issue_mem_rd),
+        .o_read_class(coherent_stored_class),
+        .o_write_class(coherent_update_class)
+    );
+  end else begin : gen_direct_address_store
+`endif
   sdp_dist_ram #(
       .ADDR_WIDTH(IdxWidth),
       .DATA_WIDTH(XLEN)
@@ -801,6 +820,12 @@ module load_queue #(
       .i_read_address (issue_mem_stored_idx),
       .o_read_data    (lq_address_issue_mem_rd)
   );
+`ifdef FROST_COHERENT_CLUSTER
+    assign coherent_stored_class = '0;
+    assign coherent_update_class = '0;
+  end
+`endif
+
 
   sdp_dist_ram #(
       .ADDR_WIDTH(IdxWidth),
@@ -1813,12 +1838,13 @@ module load_queue #(
 `ifdef FROST_COHERENT_CLUSTER
   if (COHERENT_CLUSTER) begin : gen_coherent_staged_class
     logic pma_ok_q, cached_q;
+    wire [2:0] selected_class = issue_mem_uses_addr_update ?
+        coherent_update_class : coherent_stored_class;
     always_ff @(posedge i_clk) begin
       if (sq_check_payload_en) begin
         pma_ok_q <= (sq_check_is_amo_next || sq_check_is_lr_next) ?
-            riscv_pkg::pma_atomic_ok(sq_check_addr_next) :
-            riscv_pkg::pma_data_ok(sq_check_addr_next);
-        cached_q <= is_cached_addr(sq_check_addr_next);
+            selected_class[2] : selected_class[1];
+        cached_q <= selected_class[0];
       end
     end
     assign sq_check_pma_ok = pma_ok_q;

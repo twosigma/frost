@@ -86,8 +86,9 @@ The pre-issue selector registers a one-hot mask alongside the candidate matches.
 Staging permission combines capture space and replacement age at each physical
 entry before selecting the winner. Coherent issue,
 forwarding and SQ-probe predicates decode address faults before applying
-the cut and same-sector holds. Coherent staging captures PMA permission and cache-region
-classification with the address. Misalignment checks use the live trap setting. The first candidate mask determines which
+the cut and same-sector holds. Each coherent address slot stores PMA permission
+and cache-region classification with its address. Staging selects those classes
+from the stored or arriving address. Misalignment checks use the live trap setting. The first candidate mask determines which
 address source wins ring order. Candidate presence is independent of
 that ordering and the selected payload.
 Coherent L0 valid bits and data writes share fill permission computed for

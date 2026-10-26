@@ -1,4 +1,5 @@
 [tasks]
+coh_address_class_prove address_class
 coh_candidate_select_prove candidate
 coh_sc_selected_prove sc
 coh_lq_cut_prove lq
@@ -22,6 +23,7 @@ sc: read -formal -sv -D FROST_COHERENT_CLUSTER -D COHERENT_SC_LOCAL_PROOF sc_pen
 sc: chparam -set COHERENT_CLUSTER 1 sc_pending_unit
 sc: prep -flatten -top sc_pending_unit
 lq: read -sv sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv lq_l0_cache.sv lq_issue_selector.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv
+lq: read -formal -sv coherent_lq_address_store.sv
 lq: read -formal -sv -D FROST_COHERENT_CLUSTER -D F_LQ_PREMATCH_ONLY -D COHERENT_LQ_LOCAL_PROOF load_queue.sv
 lq: chparam -set COHERENT_CLUSTER 1 load_queue
 forward: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
@@ -36,6 +38,9 @@ selector: prep -flatten -top coherent_lq_issue_selector
 candidate: read -formal -sv coherent_lq_candidate_select.sv
 candidate: prep -top coherent_lq_candidate_select
 
+address_class: read -formal -sv coherent_lq_address_store.sv
+address_class: prep -flatten -top coherent_lq_address_store
+
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
@@ -47,3 +52,4 @@ candidate: prep -top coherent_lq_candidate_select
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/atomics/sc_pending_unit.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
