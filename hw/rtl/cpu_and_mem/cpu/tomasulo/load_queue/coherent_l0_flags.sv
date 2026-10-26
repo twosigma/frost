@@ -14,7 +14,7 @@
  *    limitations under the License.
  */
 
-// Fill-qualified valid masks include store and line invalidations.
+// Fill and store choices include word and line invalidations.
 module coherent_l0_flags #(
     parameter int unsigned DEPTH = 256,
     parameter int unsigned TAG_WIDTH = 22,
@@ -38,31 +38,35 @@ module coherent_l0_flags #(
     input logic [IndexWidth-3:0] i_line_index,
     output logic [DEPTH-1:0] o_next
 );
-  logic [DEPTH-1:0] choices[2];
-  for (genvar filled = 0; filled < 2; filled++) begin : gen_fill_choice
-    (* keep = "true" *) logic [DEPTH-1:0] choice;
-    wire write_valid = i_store_update || 1'(filled);
-    wire [IndexWidth-1:0] write_index = i_store_update ? i_inv_index : i_fill_index;
-    wire [TAG_WIDTH-1:0] write_tag = i_store_update ? i_inv_tag : i_fill_tag;
-    wire inv_fill = i_inv && !i_store_update && write_valid &&
-        write_index == i_inv_index && write_tag == i_inv_tag;
-    wire inv_old = i_inv && !i_store_update && i_valid[i_inv_index] && i_inv_tag_match &&
-        !(write_valid && write_index == i_inv_index && write_tag != i_inv_tag);
-    wire inv2_fill = i_inv2 && write_valid && write_index == i_inv2_index &&
-        write_tag == i_inv2_tag;
-    wire inv2_old = i_inv2 && i_valid[i_inv2_index] && i_inv2_tag_match &&
-        !(write_valid && write_index == i_inv2_index && write_tag != i_inv2_tag);
-    always_comb begin
-      choice = i_valid;
-      if (write_valid) choice[write_index] = 1'b1;
-      if (inv_fill || inv_old) choice[i_inv_index] = 1'b0;
-      if (inv2_fill || inv2_old) choice[i_inv2_index] = 1'b0;
-      if (i_line)
-        for (int k = 0; k < 4; k++) choice[{i_line_index, 2'(k)}] = 1'b0;
+  logic [DEPTH-1:0] choices[4];
+  for (genvar stored = 0; stored < 2; stored++) begin : gen_store_choice
+    for (genvar filled = 0; filled < 2; filled++) begin : gen_fill_choice
+      localparam bit Store = stored != 0;
+      localparam bit Fill = filled != 0;
+      (* keep = "true" *) logic [DEPTH-1:0] choice;
+      wire write_valid = Store || Fill;
+      wire [IndexWidth-1:0] write_index = Store ? i_inv_index : i_fill_index;
+      wire [TAG_WIDTH-1:0] write_tag = Store ? i_inv_tag : i_fill_tag;
+      wire inv_fill = i_inv && !Store && write_valid &&
+          write_index == i_inv_index && write_tag == i_inv_tag;
+      wire inv_old = i_inv && !Store && i_valid[i_inv_index] && i_inv_tag_match &&
+          !(write_valid && write_index == i_inv_index && write_tag != i_inv_tag);
+      wire inv2_fill = i_inv2 && write_valid && write_index == i_inv2_index &&
+          write_tag == i_inv2_tag;
+      wire inv2_old = i_inv2 && i_valid[i_inv2_index] && i_inv2_tag_match &&
+          !(write_valid && write_index == i_inv2_index && write_tag != i_inv2_tag);
+      always_comb begin
+        choice = i_valid;
+        if (write_valid) choice[write_index] = 1'b1;
+        if (inv_fill || inv_old) choice[i_inv_index] = 1'b0;
+        if (inv2_fill || inv2_old) choice[i_inv2_index] = 1'b0;
+        if (i_line)
+          for (int k = 0; k < 4; k++) choice[{i_line_index, 2'(k)}] = 1'b0;
+      end
+      assign choices[2*stored+filled] = choice;
     end
-    assign choices[filled] = choice;
   end
-  assign o_next = i_fill ? choices[1] : choices[0];
+  assign o_next = choices[{i_store_update, i_fill}];
 `ifndef SYNTHESIS
   logic [DEPTH-1:0] reference;
   wire write_valid = i_store_update || i_fill;
