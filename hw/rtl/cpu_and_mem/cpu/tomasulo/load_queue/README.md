@@ -81,7 +81,9 @@ in [`coherent_lq_issue_selector.sv`](coherent_lq_issue_selector.sv). The live
 drain flag selects between those results. Both cases use the same ring
 order and ROB-head priority. Selection is combinational. Coherent issue,
 forwarding and SQ-probe predicates decode address faults before applying
-the cut and same-sector holds.
+the cut and same-sector holds. The first candidate mask determines which
+address source wins ring order. Candidate presence is independent of
+that ordering and the selected payload.
 
 ### ROB-head priority
 
