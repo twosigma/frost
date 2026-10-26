@@ -1,6 +1,7 @@
 [tasks]
 coh_sc_selected_prove sc
 coh_lq_cut_prove lq
+coh_lq_forward_prove lq forward
 coh_lq_selector_prove selector
 
 [options]
@@ -19,6 +20,7 @@ sc: prep -flatten -top sc_pending_unit
 lq: read -sv sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv lq_l0_cache.sv lq_issue_selector.sv coherent_lq_issue_selector.sv
 lq: read -formal -sv -D FROST_COHERENT_CLUSTER -D F_LQ_PREMATCH_ONLY -D COHERENT_LQ_LOCAL_PROOF load_queue.sv
 lq: chparam -set COHERENT_CLUSTER 1 load_queue
+forward: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
 lq: prep -flatten -top load_queue
 
 selector: read -formal -sv lq_issue_selector.sv coherent_lq_issue_selector.sv
