@@ -428,7 +428,7 @@ def run_single_test(
         # In the bram and icache tiers, a linker region overflow means the test
         # does not fit in low BRAM (95 KiB of code, 1 KiB reserved for debug,
         # and 160 KiB of data and stack), assuming icache code fits its 64 MiB
-        # DDR region. Report SKIP: the ddr tier, with 64 MiB, runs the test.
+        # DDR region. Report SKIP and identify the tier with enough space.
         if mem_config != "ddr" and (
             "will not fit in region" in compile_out or "overflowed by" in compile_out
         ):
@@ -436,7 +436,7 @@ def run_single_test(
                 test_name,
                 extension,
                 "SKIP",
-                f"exceeds low-BRAM capacity ({mem_config}); covered by the ddr tier",
+                f"exceeds low-BRAM capacity ({mem_config}); run with --mem-config ddr",
             )
         return TestResult(test_name, extension, "FAIL", "Compilation failed")
 
