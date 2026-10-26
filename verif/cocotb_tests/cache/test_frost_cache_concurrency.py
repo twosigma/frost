@@ -48,11 +48,9 @@ NUM_IDS = 1 << UP_ID_BITS
 MEM_LATENCY = 12  # harness default
 L1_LINES = 1024 // LINE_BYTES  # harness L1 = 1 KiB
 
-# Per-test 256 KiB regions, disjoint from each other and from the other cache
-# benches' ranges. The behavioral DDR persists across the in-run resets, so a
-# test whose model assumes zero-filled memory needs lines no earlier test
-# wrote; every line a test touches, its eviction reads included, stays inside
-# its own region.
+# Each test uses a separate 256 KiB region. Behavioral DDR persists across
+# resets between tests. Reference models capture backing bytes before reads
+# and partial writes.
 PIPE_BASE = BASE_ADDR + 0x400000
 HUM_BASE = BASE_ADDR + 0x440000
 MUM_BASE = BASE_ADDR + 0x480000
@@ -246,7 +244,7 @@ async def test_pipelined_hits(dut: Any) -> None:
     """Back-to-back read hits complete one per cycle, not one per hit latency."""
     await _setup(dut)
     col = _Collector(dut, "up")
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     n = 8
     for line in range(n):
         addr = PIPE_BASE + line * LINE_BYTES
@@ -289,7 +287,7 @@ async def test_hit_under_miss(dut: Any) -> None:
     """A hit issued behind a miss completes before the miss."""
     await _setup(dut)
     col = _Collector(dut, "up")
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     hit_addr = HUM_BASE + 3 * LINE_BYTES
     miss_addr = HUM_BASE + 0x20000 + 7 * LINE_BYTES
     hit_data = _line_int(bytes([0x11 + b for b in range(32)]))
@@ -321,7 +319,7 @@ async def test_miss_under_miss(dut: Any) -> None:
     """Three demand misses overlap: all complete within one memory latency of each other."""
     await _setup(dut)
     col = _Collector(dut, "up")
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     # Distinct sets at every level.
     addrs = [MUM_BASE + 0x10000 * k + (5 + 3 * k) * LINE_BYTES for k in range(3)]
     for k, addr in enumerate(addrs):
@@ -351,7 +349,7 @@ async def test_write_miss_early_ack_and_merge(dut: Any) -> None:
     """A write miss is acknowledged before its fill lands; later writes merge into it."""
     await _setup(dut)
     col = _Collector(dut, "up")
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     addr = MERGE_BASE + 11 * LINE_BYTES
     seed = _line_int(bytes([(0xA0 + b) & 0xFF for b in range(32)]))
     model.write_line(addr, seed, FULL)
@@ -392,7 +390,7 @@ async def test_read_waiter(dut: Any) -> None:
     """Secondary reads of a line under fill complete with the fill's data."""
     await _setup(dut)
     col = _Collector(dut, "up")
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     addr = WAITER_BASE + 2 * LINE_BYTES
     data = _line_int(bytes([(0xC3 + b) & 0xFF for b in range(32)]))
     model.write_line(addr, data, FULL)
@@ -420,7 +418,7 @@ async def test_set_conflict(dut: Any) -> None:
     """
     await _setup(dut)
     col = _Collector(dut, "up")
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     l1 = dut.cache_hierarchy.hart_cache.l1_cache
     ways = cache_geometry(dut).l1d_ways
     # 1 KiB apart: one L1 set at any number of ways.
@@ -474,7 +472,7 @@ async def test_fill_waits_for_pending_writeback(dut: Any) -> None:
     """A fill of a line whose writeback is still in flight returns the written-back data."""
     await _setup(dut)
     col = _Collector(dut, "up")
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     x = WBFILL_BASE + 4 * LINE_BYTES
     seed = _line_int(bytes([(0x9A + b) & 0xFF for b in range(32)]))
     model.write_line(x, seed, FULL)
@@ -609,11 +607,12 @@ async def _stream_reader(
         addr, index = lines.take()
         req_id = ids[issued % 2]
         issued += 1
+        expected = model.read_line(addr)
         async with port_lock:
             await _fire(dut, "up", write=False, addr=addr, req_id=req_id)
         _, got = await col.wait_for(req_id)
         lines.release(index)
-        assert got == model.read_line(addr), f"stream read mismatch @0x{addr:08x}"
+        assert got == expected, f"stream read mismatch @0x{addr:08x}"
 
 
 async def _dirty_victim_reader(
@@ -635,14 +634,14 @@ async def _dirty_victim_reader(
     whose fill the pick keeps waiting stay in flight while the next issues.
     """
     num_wb = int(cache.NUM_WB.value)
-    pending: list[tuple[int, int]] = []  # (id, addr)
+    pending: list[tuple[int, int, int]] = []  # (id, addr, expected)
     issued = 0
     for addr in aliases:
         for _ in range(RESP_TIMEOUT_CYCLES):
             while pending and col.pending.get(pending[0][0]):
-                req_id, done = pending.pop(0)
+                req_id, done, expected = pending.pop(0)
                 _, got = await col.wait_for(req_id)
-                assert got == model.read_line(done), f"dirty-victim read @0x{done:08x}"
+                assert got == expected, f"dirty-victim read @0x{done:08x}"
             if stop[0] or (
                 len(pending) < 2
                 and any(
@@ -657,14 +656,15 @@ async def _dirty_victim_reader(
             break
         req_id = ids[issued % 2]
         issued += 1
+        expected = model.read_line(addr)
         async with port_lock:
             await _fire(dut, "up", write=False, addr=addr, req_id=req_id)
-        pending.append((req_id, addr))
+        pending.append((req_id, addr, expected))
         # Let the miss take its slot before the slots are checked again.
         await _settle(dut, 24)
-    for req_id, done in pending:
+    for req_id, done, expected in pending:
         _, got = await col.wait_for(req_id)
-        assert got == model.read_line(done), f"dirty-victim read @0x{done:08x}"
+        assert got == expected, f"dirty-victim read @0x{done:08x}"
 
 
 async def _release_downstream_once(dut: Any) -> tuple[bool, bool, int]:
@@ -699,7 +699,7 @@ async def test_writeback_wins_within_bound_under_fill_stream(dut: Any) -> None:
     """
     await _setup(dut)
     col = _Collector(dut, "up")
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     cache = dut.cache_hierarchy.cluster_cache.l2_cache
 
     a = STARVE_BASE + 7 * LINE_BYTES
@@ -778,7 +778,8 @@ async def test_writeback_wins_within_bound_under_fill_stream(dut: Any) -> None:
     await _settle(dut)
 
     assert await _transaction(dut, "up", col, write=False, addr=a) == v0
-    assert await _transaction(dut, "up", col, write=False, addr=evictor) == 0
+    expected = model.read_line(evictor)
+    assert await _transaction(dut, "up", col, write=False, addr=evictor) == expected
     col.stop()
 
 
@@ -803,7 +804,7 @@ async def test_writeback_slots_take_turns_under_dirty_victim_stream(dut: Any) ->
         dut._log.info("skipped: the bench drives exactly two writeback slots")
         return
     col = _Collector(dut, "up")
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
 
     base = TURNS_BASE
     n_dirty = 12
@@ -926,7 +927,7 @@ async def test_fill_slots_take_turns_under_recycled_misses(dut: Any) -> None:
         dut._log.info("skipped: prefetches take L2 miss slots the readers must hold")
         return
     col = _Collector(dut, "up")
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
 
     await FallingEdge(dut.i_clk)
     dut.i_down_hold.value = 1
@@ -958,6 +959,7 @@ async def test_fill_slots_take_turns_under_recycled_misses(dut: Any) -> None:
     else:
         raise AssertionError("the readers never held every miss slot but the last")
     target_id = 3
+    expected = model.read_line(target)
     async with port_lock:
         await _fire(dut, "up", write=False, addr=target, req_id=target_id)
     for _ in range(RESP_TIMEOUT_CYCLES):
@@ -991,7 +993,7 @@ async def test_fill_slots_take_turns_under_recycled_misses(dut: Any) -> None:
         f"the bound is {num_mshr + 1}"
     )
     _, got = await col.wait_for(target_id)
-    assert got == model.read_line(target), f"read mismatch @0x{target:08x}"
+    assert got == expected, f"read mismatch @0x{target:08x}"
     for reader in readers:
         await reader
     col.stop()
@@ -1080,7 +1082,7 @@ async def test_stale_match_recycled_slot(dut: Any) -> None:
     """
     await _setup(dut)
     col = _Collector(dut, "up")
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
 
     for k in range(14):
         base = STALE_BASE + k * 0x4000
@@ -1132,7 +1134,7 @@ async def test_fence_with_pending_misses(dut: Any) -> None:
     await _setup(dut)
     col = _Collector(dut, "up")
     icol = _Collector(dut, "iup")
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     lines = [FENCE_BASE + k * LINE_BYTES for k in range(4)]
     ids = []
     for k, addr in enumerate(lines):
@@ -1172,7 +1174,7 @@ async def test_random_outstanding_traffic(dut: Any) -> None:
     await _setup(dut)
     rng = random.Random(random.getrandbits(32))
     cols = {"up": _Collector(dut, "up"), "iup": _Collector(dut, "iup")}
-    dmodel = ReferenceModel()
+    dmodel = ReferenceModel(dut)
     window_lines = 64  # 2 KiB: thrashes the 1 KiB L1D and lands in/out of L2
     bursts = 80
 
@@ -1234,7 +1236,7 @@ async def test_random_outstanding_traffic(dut: Any) -> None:
 
     # Warm the I region through the D port and push it down to the shared
     # level so the I side sees it.
-    imodel = ReferenceModel()
+    imodel = ReferenceModel(dut)
     for line in range(16):
         addr = RANDOM_BASE + 0x20000 + line * LINE_BYTES
         data = _line_int(bytes([(line * 13 + b) & 0xFF for b in range(32)]))
@@ -1250,7 +1252,8 @@ async def test_random_outstanding_traffic(dut: Any) -> None:
     # Final sweep of the D window.
     for line in range(window_lines):
         addr = RANDOM_BASE + line * LINE_BYTES
+        expected = dmodel.read_line(addr)
         got = await _transaction(dut, "up", cols["up"], write=False, addr=addr)
-        assert got == dmodel.read_line(addr), f"final sweep mismatch @0x{addr:08x}"
+        assert got == expected, f"final sweep mismatch @0x{addr:08x}"
     for col in cols.values():
         col.stop()
