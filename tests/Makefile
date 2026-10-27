@@ -339,6 +339,13 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/debug/debug_module.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),debug_fetch_barrier_tb)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode_line.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/fetch_provider.sv \
+        $(ROOT)/hw/rtl/cpu_top/debug_fetch_barrier.sv
+VERILOG_SOURCES := $(ROOT)/hw/sim/debug_fetch_barrier_tb.sv
 else ifneq ($(filter $(TOPLEVEL),axi_cdc cdc_mailbox cdc_reset_pair),)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \

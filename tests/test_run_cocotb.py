@@ -2448,6 +2448,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Debug transport requests, sticky status, and reset during a request"
         ),
     ),
+    "debug_fetch_barrier": CocotbRunConfig(
+        python_test_module="cocotb_tests.debug.test_debug_fetch_barrier",
+        hdl_toplevel_module="debug_fetch_barrier_tb",
+        description="Debug go ordering, cancellation and stale fetch response rejection",
+        verilator_extra_args=("--assert",),
+    ),
     "debug_module": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_debug_module",
         hdl_toplevel_module="debug_module",
