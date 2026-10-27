@@ -1453,7 +1453,9 @@ module load_queue #(
   logic coherent_local_hold, coherent_sector_hold, coherent_holder_changed;
   logic coherent_address_fault;
   logic coherent_staged_at_head;
-  logic [1:0] coherent_probe_choice, coherent_issue_choice, coherent_eligible_choice;
+  logic [1:0] coherent_probe_choice, coherent_issue_choice, coherent_clear_eligible_choice;
+  logic [1:0] coherent_issue_clear_choice;
+  (* keep = "true" *) logic coherent_issue_clear_eligible, coherent_forward_clear_eligible;
   (* keep = "true" *) logic coherent_probe_ok, coherent_issue_ok, coherent_forward_ok;
   if (COHERENT_CLUSTER) begin : gen_coherent_park
     logic [1:0] holder_valid_q;
@@ -2014,21 +2016,21 @@ module load_queue #(
   logic [3:0] coherent_capture_choice[8];
   logic [7:0] coherent_stage_clear_choice;
   wire [2:0] coherent_control_choice = {resp_bypass_ok, coherent_local_hold, cache_lookup_hit};
-  wire coherent_entry_eligible = coherent_staged_at_head ?
-      coherent_eligible_choice[1] : coherent_eligible_choice[0];
+  wire coherent_clear_entry_eligible = coherent_staged_at_head ?
+      coherent_clear_eligible_choice[1] : coherent_clear_eligible_choice[0];
   wire coherent_clear_fault_ready = cdb_stage_slot_available && !issue_cdb_fire &&
-      coherent_entry_eligible && coherent_address_fault && !i_flush_en;
+      coherent_clear_entry_eligible && coherent_address_fault && !i_flush_en;
   for (genvar state_case = 0; state_case < 8; state_case++) begin : gen_coherent_capture_choice
     localparam bit Held = (state_case & 2) != 0;
     localparam bit Hit = (state_case & 1) != 0;
     localparam bit ResponseBypass = (state_case & 4) != 0;
-    wire clear_memory = !i_flush_all && !i_flush_en && coherent_issue_ok &&
+    wire clear_memory = !i_flush_all && !i_flush_en && coherent_issue_clear_eligible &&
         ((!i_mem_bus_busy && !cached_launch_hold_q) ||
          (ENABLE_L0_FAST_PATH && sq_check_cacheable && !l0_lookup_busy && Hit &&
           !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q));
     wire stage_clear = sq_check_pending &&
         (!sq_check_entry_valid || older_amo_write_pending ||
-         (!Held && (clear_memory || coherent_forward_ok ||
+         (!Held && (clear_memory || coherent_forward_clear_eligible ||
                     (!ResponseBypass && coherent_clear_fault_ready))));
     wire will_clear = stage_clear || (sq_check_pending && coherent_sector_hold);
     assign coherent_stage_clear_choice[state_case] = stage_clear;
@@ -2166,24 +2168,30 @@ module load_queue #(
   for (genvar head_case = 0; head_case < 2; head_case++) begin : gen_coherent_head_choice
     localparam bit AtHead = head_case != 0;
     logic eligible;
-    (* keep = "true" *) logic probe, issue;
-    assign eligible = sq_check_entry_valid &&
+    (* keep = "true" *) logic eligible_without_valid, probe, issue, issue_for_clear;
+    assign eligible_without_valid =
         (!(sq_check_is_lr_q || sq_check_is_amo_q) || (AtHead && i_sq_committed_empty)) &&
         (!sq_check_is_mmio_q || AtHead) && !coh_launch_hold_q &&
         !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
         !(sq_check_is_amo_q && sq_check_is_cached_region && !i_coherent_atomic_protected);
+    assign eligible = sq_check_entry_valid && eligible_without_valid;
     assign probe = eligible && !coherent_address_fault &&
         !l0_lookup_busy && !(sq_check_no_older_store_q || i_sq_empty);
-    assign issue = sq_check_phase2 && eligible && !coherent_address_fault &&
-        !sq_commit_interlock && !older_amo_write_pending &&
+    assign issue_for_clear = sq_check_phase2 && eligible_without_valid &&
+        !coherent_address_fault &&
+        !sq_commit_interlock &&
         (sq_no_older_store || (sq_check_is_amo_q && AtHead && i_sq_committed_empty) ||
          (i_sq_all_older_addrs_known && !i_sq_forward.match));
-    assign coherent_eligible_choice[head_case] = eligible;
+    assign coherent_clear_eligible_choice[head_case] = eligible_without_valid;
     assign coherent_probe_choice[head_case] = probe;
+    assign issue = issue_for_clear && sq_check_entry_valid && !older_amo_write_pending;
     assign coherent_issue_choice[head_case] = issue;
+    assign coherent_issue_clear_choice[head_case] = issue_for_clear;
   end
   assign coherent_issue_ok = coherent_staged_at_head ?
       coherent_issue_choice[1] : coherent_issue_choice[0];
+  assign coherent_issue_clear_eligible = coherent_staged_at_head ?
+      coherent_issue_clear_choice[1] : coherent_issue_clear_choice[0];
   if (COHERENT_CLUSTER) begin : gen_coherent_issue_gate
     assign sq_can_issue = coherent_issue_ok && !coherent_local_hold;
   end else begin : gen_line_issue_gate
@@ -2201,10 +2209,12 @@ module load_queue #(
   // could overlap the load and be newer than the selected store, making its
   // data stale. Address-known and forwarding results come from the same scan.
 `ifdef FROST_COHERENT_CLUSTER
-  assign coherent_forward_ok = ENABLE_SQ_FORWARD_FAST_PATH && sq_check_phase2 &&
-      sq_check_entry_valid && !coh_launch_hold_q && !coherent_address_fault && !sq_no_older_store &&
-      !sq_commit_interlock && !older_amo_write_pending && i_sq_all_older_addrs_known &&
+  assign coherent_forward_clear_eligible = ENABLE_SQ_FORWARD_FAST_PATH && sq_check_phase2 &&
+      !coh_launch_hold_q && !coherent_address_fault && !sq_no_older_store &&
+      !sq_commit_interlock && i_sq_all_older_addrs_known &&
       i_sq_forward.can_forward && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
+  assign coherent_forward_ok = coherent_forward_clear_eligible && sq_check_entry_valid &&
+      !older_amo_write_pending;
   if (COHERENT_CLUSTER) begin : gen_coherent_forward_gate
     assign sq_do_forward = coherent_forward_ok && !coherent_local_hold;
   end else begin : gen_line_forward_gate
