@@ -37,6 +37,9 @@
  */
 
 module reservation_station #(
+`ifdef FROST_COHERENT_CLUSTER
+    parameter bit COHERENT_CLUSTER = 1'b0,
+`endif
     parameter int unsigned DEPTH = 8,
     parameter bit HAS_SRC3 = 1'b1,
     // Precompute lookahead winners for both CDB lane-valid bits.
@@ -1050,6 +1053,31 @@ module reservation_station #(
   // Flush uses the count of surviving entries.
   logic dispatch_full_next;
   logic dispatch_full_for_2_next;
+`ifdef FROST_COHERENT_CLUSTER
+  logic coherent_full, coherent_full_for_2;
+  if (COHERENT_CLUSTER) begin : gen_coherent_capacity
+    coherent_rs_capacity #(
+        .DEPTH(DEPTH)
+    ) capacity (
+        .i_count(count),
+        .i_issue({issue_fire_2, issue_fire}),
+        .i_dispatch({dispatch_fire_2, dispatch_fire}),
+        .i_flush(i_flush_all || i_flush_en),
+        .i_flush_count(count_next),
+        .o_full(coherent_full),
+        .o_full_for_2(coherent_full_for_2)
+    );
+`ifndef SYNTHESIS
+    always @(posedge i_clk) begin
+      if (i_rst_n) begin
+        p_capacity_full_exact : assert (coherent_full == (count_next == CountWidth'(DEPTH)));
+        p_capacity_two_exact :
+        assert (coherent_full_for_2 == (count_next >= CountWidth'(DEPTH - 1)));
+      end
+    end
+`endif
+  end
+`endif
   always_comb begin
     if (i_flush_all || i_flush_en) begin
       dispatch_full_next       = count_next == CountWidth'(DEPTH);
@@ -1072,6 +1100,12 @@ module reservation_station #(
         end
       endcase
     end
+`ifdef FROST_COHERENT_CLUSTER
+    if (COHERENT_CLUSTER) begin
+      dispatch_full_next = coherent_full;
+      dispatch_full_for_2_next = coherent_full_for_2;
+    end
+`endif
   end
 
   assign full = (count == CountWidth'(DEPTH));

@@ -84,6 +84,8 @@ BRAM instruction mirroring with the coherent cluster selected. The debugger
 executes both words of an aligned doubleword instruction patch.
 The debug-module unit bench checks stalled slice requests and overlapping
 program-buffer writes in the direct and coherent selections.
+The reservation-station unit checks capacity after second-port issue, dual
+issue, simultaneous dispatch and issue, and flush in both selections.
 
 The `coherent_cpu_faults` bench injects SC refill errors after clean replacement.
 It checks architectural trap cause, EPC and virtual fault address with and without

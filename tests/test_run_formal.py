@@ -91,6 +91,15 @@ FORMAL_TARGETS = [
         tasks=("debug_request_count_prove", "debug_request_count4_prove"),
     ),
     FormalTarget(
+        "coherent_rs_capacity.sby",
+        "Coherent reservation-station full flags match issue and dispatch arithmetic.",
+        tasks=(
+            "coh_rs_capacity4_prove",
+            "coh_rs_capacity8_prove",
+            "coh_rs_capacity16_prove",
+        ),
+    ),
+    FormalTarget(
         "debug_dirty_next.sby",
         "Debug dirty-word next-state equality for arbitrary control inputs.",
         tasks=("debug_dirty_next_prove",),
@@ -865,6 +874,9 @@ FORMAL_TARGETS = [
 SBY_TASKS = [
     ("debug_request_count_prove", "Coherent debug request count at eight bits."),
     ("debug_request_count4_prove", "Coherent debug request count at four bits."),
+    ("coh_rs_capacity4_prove", "Coherent capacity equality at four entries."),
+    ("coh_rs_capacity8_prove", "Coherent capacity equality at eight entries."),
+    ("coh_rs_capacity16_prove", "Coherent capacity equality at sixteen entries."),
     ("coh_c_payload_prove", "Completion payload equality outside reset at fifty bits."),
     (
         "coh_c_payload_wide_prove",

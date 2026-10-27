@@ -3553,6 +3553,17 @@ for _depth in (128, 256):
         ),
     )
 
+TEST_REGISTRY["coherent_reservation_station"] = replace(
+    TEST_REGISTRY["reservation_station"],
+    description="Coherent reservation-station dispatch capacity, issue and recovery.",
+    verilator_extra_args=(
+        *TEST_REGISTRY["reservation_station"].verilator_extra_args,
+        "-DFROST_COHERENT_CLUSTER",
+        "-GCOHERENT_CLUSTER=1",
+        "--assert",
+    ),
+)
+
 TEST_REGISTRY["coherent_debug_module"] = replace(
     TEST_REGISTRY["debug_module"],
     description="Coherent debug replies, slice backpressure and dirty-word priority.",
