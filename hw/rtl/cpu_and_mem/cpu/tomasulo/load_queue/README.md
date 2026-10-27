@@ -95,6 +95,13 @@ for all combinations of response bypass, local hold and cache hit. Those
 inputs select the
 result.
 Replacement selects stored and arriving age predicates with ROB-head priority.
+Stored, arriving and head candidate predicates are computed per row before
+its validity bit qualifies the candidate masks.
+The coherent clear calculation applies staging validity outside its issue,
+forwarding and fault eligibility terms. Older pending AMOs independently
+clear the staged load. Issue, forwarding and probes require staging validity;
+issue and forwarding also apply the older-AMO veto.
+
 Capture, replacement and clear controls directly determine the staged state. Sector
 blocking supplies capture permission separately from the condition that clears
 the stage. Coherent issue,

@@ -120,22 +120,29 @@ module coherent_lq_issue_selector #(
     logic [DEPTH-1:0] head_stored, head_update;
     assign choices[drained] = choice;
     for (genvar index = 0; index < DEPTH; index++) begin : gen_eligible
-      wire available = lq_valid[index] && !lq_issued[index] &&
-          !lq_data_valid[index] && !sq_check_in_flight_mask[index];
+      wire available_without_valid = !lq_issued[index] && !lq_data_valid[index] &&
+          !sq_check_in_flight_mask[index];
       wire atomic_ok = !(lq_is_lr[index] || lq_is_amo[index]) ||
           (rob_head_match_q[index] && 1'(drained));
-      assign eligible[0][index] = available && lq_addr_valid[index] &&
+      (* keep = "true" *) logic stored_ready, update_ready, merged_ready;
+      (* keep = "true" *) logic head_stored_ready, head_update_ready;
+      assign stored_ready = available_without_valid && lq_addr_valid[index] &&
           (!lq_is_mmio[index] || rob_head_match_q[index]) && atomic_ok &&
           !blocked_by_amo_phys_q[index];
-      assign eligible[1][index] = available && addr_update_pre_match_q[index] &&
+      assign update_ready = available_without_valid && addr_update_pre_match_q[index] &&
           atomic_ok && !blocked_by_amo_phys_q[index];
-      assign eligible[2][index] = eligible[0][index] || eligible[1][index];
-      assign eligible[3][index] = lq_valid[index] && lq_data_valid[index];
-      assign head_stored[index] = available && rob_head_match_q[index] &&
+      assign merged_ready = stored_ready || update_ready;
+      assign head_stored_ready = available_without_valid && rob_head_match_q[index] &&
           lq_addr_valid[index] && (!(lq_is_lr[index] || lq_is_amo[index]) || 1'(drained));
-      assign head_update[index] = available && rob_head_match_q[index] &&
+      assign head_update_ready = available_without_valid && rob_head_match_q[index] &&
           addr_update_pre_match_q[index] &&
           (!(lq_is_lr[index] || lq_is_amo[index]) || 1'(drained));
+      assign eligible[0][index] = lq_valid[index] && stored_ready;
+      assign eligible[1][index] = lq_valid[index] && update_ready;
+      assign eligible[2][index] = lq_valid[index] && merged_ready;
+      assign eligible[3][index] = lq_valid[index] && lq_data_valid[index];
+      assign head_stored[index] = lq_valid[index] && head_stored_ready;
+      assign head_update[index] = lq_valid[index] && head_update_ready;
     end
     for (genvar source = 0; source < 4; source++) begin : gen_ring
       for (genvar index = 0; index < DEPTH; index++) begin : gen_first
