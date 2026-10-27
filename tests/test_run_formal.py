@@ -86,6 +86,15 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "coherent_rs_issue2_selector.sby",
+        "Coherent second-issue selection equals the tree and serial references.",
+        tasks=(
+            "coh_rs_issue2_8_prove",
+            "coh_rs_issue2_16_prove",
+            "coh_rs_issue2_5_prove",
+        ),
+    ),
+    FormalTarget(
         "coherent_debug_request_count.sby",
         "Coherent debug request count equality, including modulo wrap and reset.",
         tasks=("debug_request_count_prove", "debug_request_count4_prove"),
@@ -872,6 +881,9 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("coh_rs_issue2_8_prove", "Coherent second-issue equality at eight entries."),
+    ("coh_rs_issue2_16_prove", "Coherent second-issue equality at sixteen entries."),
+    ("coh_rs_issue2_5_prove", "Coherent second-issue equality at five entries."),
     ("debug_request_count_prove", "Coherent debug request count at eight bits."),
     ("debug_request_count4_prove", "Coherent debug request count at four bits."),
     ("coh_rs_capacity4_prove", "Coherent capacity equality at four entries."),
