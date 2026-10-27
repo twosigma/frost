@@ -112,6 +112,11 @@ FORMAL_TARGETS = [
         "Coherent SC ownership, load selection, parking, and reservation cuts.",
         tasks=(
             "coh_sc_selected_prove",
+            "coh_sc_class_small_prove",
+            "coh_sc_class_offset_prove",
+            "coh_sc_class_size_prove",
+            "coh_sc_class_zero_prove",
+            "coh_sc_class_wrap_prove",
             "coh_lq_cut_prove",
             "coh_lq_forward_prove",
             "coh_lq_forward_normal_prove",
@@ -842,6 +847,11 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("coh_sc_class_small_prove", "Coherent SC class for an aligned four-KiB region."),
+    ("coh_sc_class_offset_prove", "Coherent SC class for an unaligned base."),
+    ("coh_sc_class_size_prove", "Coherent SC class for a non-power-of-two size."),
+    ("coh_sc_class_zero_prove", "Coherent SC class for an empty region."),
+    ("coh_sc_class_wrap_prove", "Coherent SC class for a wrapping region limit."),
     ("mirror_hold_prove", "Debug mirror address equality at sixteen bits."),
     ("mirror_hold15_prove", "Debug mirror address equality at fifteen bits."),
     ("mirror_hold32_prove", "Debug mirror address equality at thirty-two bits."),

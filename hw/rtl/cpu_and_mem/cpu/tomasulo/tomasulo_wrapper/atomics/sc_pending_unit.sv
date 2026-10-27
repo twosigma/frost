@@ -167,9 +167,40 @@ module sc_pending_unit #(
     addr_is_cached = (addr >= riscv_pkg::XLEN'(CACHED_BASE)) &&
         (addr < riscv_pkg::XLEN'(CACHED_BASE) + riscv_pkg::XLEN'(CACHED_SIZE_BYTES));
   endfunction
+`ifdef FROST_COHERENT_CLUSTER
+  localparam logic [riscv_pkg::XLEN-1:0] CachedBase = riscv_pkg::XLEN'(CACHED_BASE);
+  localparam logic [riscv_pkg::XLEN-1:0] CachedSize = riscv_pkg::XLEN'(CACHED_SIZE_BYTES);
+  localparam logic [riscv_pkg::XLEN-1:0] CachedLimit = CachedBase + CachedSize;
+  localparam logic [riscv_pkg::XLEN-1:0] CachedMask = CachedSize - 1'b1;
+  localparam bit CachedRegionAligned = CachedSize != 0 &&
+      (CachedSize & CachedMask) == 0 && (CachedBase & CachedMask) == 0 &&
+      CachedLimit > CachedBase;
+  if (COHERENT_CLUSTER && CachedRegionAligned) begin : gen_coherent_cached_class
+    for (genvar i = 0; i < ScTableDepth; i++) begin : gen_slot
+      assign sct_is_cached[i] = (sct_addr[i] & ~CachedMask) == CachedBase;
+    end
+  end else begin : gen_range_cached_class
+`endif
   for (genvar i = 0; i < ScTableDepth; i++) begin : gen_cached_class
     assign sct_is_cached[i] = addr_is_cached(sct_addr[i]);
   end
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`ifndef SYNTHESIS
+  if (COHERENT_CLUSTER) begin : gen_cached_class_check
+    for (genvar i = 0; i < ScTableDepth; i++) begin : gen_slot
+`ifdef FORMAL
+      always_comb begin
+`else
+      always @(posedge i_clk) begin
+        if (!$isunknown(sct_addr[i]))
+`endif
+        assert (sct_is_cached[i] == addr_is_cached(sct_addr[i]));
+      end
+    end
+  end
+`endif
+`endif
 
   // Compare ROB ages relative to the head for partial flushes.
   function automatic logic is_younger(input logic [riscv_pkg::ReorderBufferTagWidth-1:0] entry_tag,
