@@ -34,7 +34,30 @@ module coherent_atomic_guard #(
     // The active context qualifies the tag.
     output logic [TAG_BITS-1:0] o_tag
 );
-  wire arm = !o_active && i_arm_valid && i_head_valid && i_arm_tag == i_head_tag && !i_entry_wins;
+  logic [1:0] context_choice[2];
+  logic [1:0] selected_context;
+  for (genvar entry_case = 0; entry_case < 2; entry_case++) begin : gen_entry_case
+    localparam bit EntryWins = entry_case != 0;
+    (* keep = "true" *) logic [1:0] result;
+    logic active, retired;
+    always_comb begin
+      active  = o_active;
+      retired = o_retired;
+      if (!o_active && i_arm_valid && i_head_valid && i_arm_tag == i_head_tag && !EntryWins) begin
+        active  = 1'b1;
+        retired = 1'b0;
+      end
+      if (o_active && i_commit_valid && i_commit_tag == o_tag) retired = 1'b1;
+      if (o_active && o_retired && !i_home_live) active = 1'b0;
+      if (o_active && i_own_fault && !i_home_live) active = 1'b0;
+    end
+    assign result = {active, retired};
+    assign context_choice[entry_case] = result;
+  end
+  always_comb begin
+    selected_context = context_choice[1];
+    if (!i_entry_wins) selected_context = context_choice[0];
+  end
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       o_active <= 1'b0;
@@ -42,13 +65,7 @@ module coherent_atomic_guard #(
       o_tag <= '0;
     end else begin
       if (!o_active) o_tag <= i_arm_tag;
-      if (arm) begin
-        o_active  <= 1'b1;
-        o_retired <= 1'b0;
-      end
-      if (o_active && i_commit_valid && i_commit_tag == o_tag) o_retired <= 1'b1;
-      if (o_active && o_retired && !i_home_live) o_active <= 1'b0;
-      if (o_active && i_own_fault && !i_home_live) o_active <= 1'b0;
+      {o_active, o_retired} <= selected_context;
     end
   end
 `ifndef SYNTHESIS
@@ -81,6 +98,7 @@ module coherent_atomic_guard #(
   end
 `endif
 `ifdef FORMAL
+  wire  arm = !o_active && i_arm_valid && i_head_valid && i_arm_tag == i_head_tag && !i_entry_wins;
   logic f_past_valid = 1'b0;
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;

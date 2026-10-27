@@ -257,6 +257,8 @@ refill L0. Loads blocked by a pending store or selected atomic are parked so
 that unrelated rows can issue. Cut admission and replay acknowledgement
 precede the probe reply.
 
+The atomic guard computes active and retired state for both values of
+`i_entry_wins`. That input selects the state to register.
 The atomic guard captures the candidate tag while idle and holds it while
 active. Only an active context qualifies the tag.
 
