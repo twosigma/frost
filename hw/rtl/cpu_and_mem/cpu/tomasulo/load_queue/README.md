@@ -94,9 +94,10 @@ and tag.
 The pre-issue selector registers a one-hot mask alongside the candidate matches.
 Staging capture uses candidate presence independently of ring ordering.
 The coherent selection computes capture permission for all combinations of
-local hold, cache hit and committed-store presence. The hold and hit values
-select each committed-store case. The live committed-store flag selects the
-capture and clear results. Fault release computes clear and capture permission
+local hold, cache hit and committed-store presence. Each cache hit case computes
+both local hold values. Local hold and committed-store presence select each
+memory permission case. The live cache hit value selects the complete capture
+and clear outcomes. Fault release computes clear and capture permission
 separately. CDB availability and completion priority qualify that fault
 permission at the final selection.
 Vacancy and release eligibility are computed before candidate presence.
@@ -112,10 +113,11 @@ issue and forwarding also apply the older-AMO veto.
 Capture and clear outcomes are computed for both SQ-empty values and each
 combination of memory-busy and L0-hit permission. Each SQ-empty case uses
 its own memory-issue and forwarding permission. The live SQ-empty flag selects
-between those complete outcomes before the separate fault grant is applied. Those inputs select the outcome after local permission
-and candidate selection. Capture, replacement and clear controls directly determine the staged state. Sector
-blocking supplies capture permission separately from the condition that clears
-the stage. Coherent issue,
+an outcome within each cache hit case. The cache hit result selects between
+those outcomes before the separate fault grant is applied. Capture, replacement
+and clear controls directly determine the staged state. Sector blocking supplies
+capture permission separately from the condition that clears the stage.
+Coherent issue,
 forwarding and SQ-probe predicates decode address faults before applying
 the cut and same-sector holds. The coherent memory launch computes permission
 before applying the L0-hit result. Issue and SQ-probe permission are computed for both
