@@ -105,6 +105,8 @@ Staged control fields select capture values or separately computed hold values.
 Replacement selects stored and arriving age predicates with ROB-head priority.
 Stored, arriving and head candidate predicates are computed per row before
 its validity bit qualifies the candidate masks.
+Alignment is evaluated separately for stored and arriving candidates before
+the selected result enters the staging register.
 The coherent clear calculation applies staging validity outside its issue,
 forwarding and fault eligibility terms. An older pending AMO clears the pending
 stage independently of the prepared outcomes. That release supplies capture

@@ -1890,12 +1890,18 @@ module load_queue #(
     wire selected_permission = issue_mem_uses_addr_update ? update_permission : stored_permission;
     wire [3:0] selected_class = issue_mem_uses_addr_update ?
         coherent_update_class : coherent_stored_class;
+    (* keep = "true" *) wire stored_misaligned = is_load_misaligned(
+        riscv_pkg::mem_size_e'(lq_size[issue_mem_stored_idx]), lq_address_issue_mem_rd);
+    (* keep = "true" *) wire update_misaligned = is_load_misaligned(
+        riscv_pkg::mem_size_e'(lq_size[update_issue_payload_idx]), i_addr_update.address);
+    wire selected_misaligned = issue_mem_uses_addr_update ?
+        update_misaligned : stored_misaligned;
     always_ff @(posedge i_clk) begin
       if (sq_check_payload_en) begin
         pma_ok_q <= selected_permission;
         cached_q <= selected_class[0];
         normal_q <= selected_class[3];
-        misaligned_q <= is_load_misaligned(sq_check_size_next, sq_check_addr_next);
+        misaligned_q <= selected_misaligned;
       end
     end
     assign sq_check_pma_ok = pma_ok_q;
@@ -1910,6 +1916,8 @@ module load_queue #(
 `endif
       p_stage_class_choice_exact : assert (selected_permission ==
           ((sq_check_is_amo_next || sq_check_is_lr_next) ? selected_class[2] : selected_class[1]));
+      p_stage_alignment_choice_exact : assert (selected_misaligned ==
+          is_load_misaligned(sq_check_size_next, sq_check_addr_next));
     end
     logic payload_seen = 1'b0;
     logic pending_payload_seen = 1'b0;
