@@ -86,6 +86,11 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "coherent_debug_request_count.sby",
+        "Coherent debug request count equality, including modulo wrap and reset.",
+        tasks=("debug_request_count_prove", "debug_request_count4_prove"),
+    ),
+    FormalTarget(
         "debug_dirty_next.sby",
         "Debug dirty-word next-state equality for arbitrary control inputs.",
         tasks=("debug_dirty_next_prove",),
@@ -858,6 +863,8 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("debug_request_count_prove", "Coherent debug request count at eight bits."),
+    ("debug_request_count4_prove", "Coherent debug request count at four bits."),
     ("coh_c_payload_prove", "Completion payload equality outside reset at fifty bits."),
     (
         "coh_c_payload_wide_prove",

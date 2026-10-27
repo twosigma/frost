@@ -1101,6 +1101,9 @@ module soc_top #(
   logic slice_imem_we, slice_dmem_we;
   logic [63:0] dmem_port_a_rd_data;
   debug_slice_writer #(
+`ifdef FROST_COHERENT_CLUSTER
+      .COHERENT_CLUSTER(COHERENT_CLUSTER),
+`endif
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth)
   ) u_slice_writer (
       .i_clk(i_clk),
