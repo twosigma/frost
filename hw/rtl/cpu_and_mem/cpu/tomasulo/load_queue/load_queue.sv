@@ -1495,6 +1495,9 @@ module load_queue #(
         .blocked_by_amo_phys_q(older_amo_block_q),
         .head_idx(head_idx),
         .i_sq_committed_empty(i_sq_committed_empty),
+        .i_staged_younger(staged_younger_than_entry),
+        .o_replace_without_update(coherent_replace_without_update),
+        .o_replace_with_update(coherent_replace_with_update),
         .o_issue_cdb_found(issue_cdb_found),
         .o_issue_cdb_idx(issue_cdb_idx),
         .o_merged_scan_onehot(merged_scan_onehot),
@@ -1518,6 +1521,8 @@ module load_queue #(
         .o_head_mem_update_rob_tag(head_mem_update_rob_tag)
     );
   end else begin : gen_line_issue_selector
+    assign coherent_replace_without_update = replace_without_update;
+    assign coherent_replace_with_update = replace_with_update;
 `endif
   lq_issue_selector #(
       .DEPTH(DEPTH)
@@ -2000,7 +2005,11 @@ module load_queue #(
       (i_addr_update.valid ? replace_with_update : replace_without_update);
 `ifdef FROST_COHERENT_CLUSTER
   logic [3:0] coherent_stage_take;
-  wire coherent_stage_replace = sq_check_replace;
+  wire coherent_replace_without_update, coherent_replace_with_update;
+  wire coherent_stage_replace = COHERENT_CLUSTER ?
+      (sq_check_pending && sq_check_gate_early &&
+       (i_addr_update.valid ? coherent_replace_with_update : coherent_replace_without_update)) :
+      sq_check_replace;
   wire [3:0] coherent_pending = {sq_check_pending_copy, sq_check_pending};
 `ifndef SYNTHESIS
 `ifdef FORMAL
@@ -4235,15 +4244,53 @@ module load_queue #(
     end
   end
 
+`ifdef FROST_COHERENT_CLUSTER
+  wire [riscv_pkg::ExcCauseWidth-1:0] coherent_cdb_cause_next;
+  if (COHERENT_CLUSTER) begin : gen_coherent_cdb_cause
+    (* keep = "true" *) riscv_pkg::exc_cause_t cause;
+    always_comb begin
+      cause = !misalign_bypass_data_sel ? riscv_pkg::exc_cause_t'('0) :
+          lq_bypass_cause(riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q),
+              !sq_check_pma_ok, sq_check_is_amo_q);
+      if (issue_cdb_found) cause = issue_cdb_result.exc_cause;
+    end
+    assign coherent_cdb_cause_next = cause;
+`ifndef SYNTHESIS
+    riscv_pkg::exc_cause_t reference_cause;
+    logic reference_seen = 1'b0;
+    always_ff @(posedge i_clk) begin
+      if (issue_cdb_fire || bypass_fire) begin
+        reference_seen <= 1'b1;
+        if (issue_cdb_found) reference_cause <= issue_cdb_result.exc_cause;
+        else reference_cause <= !misalign_bypass_data_sel ? riscv_pkg::exc_cause_t'('0) :
+            lq_bypass_cause(riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q),
+                !sq_check_pma_ok, sq_check_is_amo_q);
+      end
+      if (reference_seen) begin
+        p_cdb_cause_capture_exact : assert (cdb_stage_data.exc_cause === reference_cause);
+      end
+    end
+`endif
+  end else begin : gen_direct_cdb_cause
+    assign coherent_cdb_cause_next = '0;
+  end
+`endif
+
   // Capture implies an available slot and no partial flush, so issue_cdb_found
   // equals issue_cdb_fire. The reduced bypass selects are likewise equivalent
   // under capture; omit flush and grant from payload selection for timing.
   always_ff @(posedge i_clk) begin
     if (issue_cdb_fire || bypass_fire) begin
       cdb_stage_data.value <= cdb_value_next;
+`ifdef FROST_COHERENT_CLUSTER
+      if (COHERENT_CLUSTER) cdb_stage_data.exc_cause <= coherent_cdb_cause_next;
+`endif
       if (issue_cdb_found) begin
         cdb_stage_data.tag       <= issue_cdb_result.tag;
         cdb_stage_data.exception <= issue_cdb_result.exception;
+`ifdef FROST_COHERENT_CLUSTER
+        if (!COHERENT_CLUSTER)
+`endif
         cdb_stage_data.exc_cause <= issue_cdb_result.exc_cause;
         cdb_stage_data.fp_flags  <= issue_cdb_result.fp_flags;
       end else begin
@@ -4252,6 +4299,9 @@ module load_queue #(
         // Parked MISALIGN/PAGE/ACCESS select load causes 4/13/5 or AMO causes 6/15/7
         // (Spike and the privileged spec). Otherwise PMA access faults outrank
         // misalignment; see lq_bypass_cause.
+`ifdef FROST_COHERENT_CLUSTER
+        if (!COHERENT_CLUSTER)
+`endif
         cdb_stage_data.exc_cause <= !misalign_bypass_data_sel ? riscv_pkg::exc_cause_t'('0) :
             lq_bypass_cause(
             riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q),

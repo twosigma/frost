@@ -78,8 +78,9 @@ nor leave the LQ until they are at the head.
 
 The coherent selection computes memory candidates for both SQ drain states
 in [`coherent_lq_issue_selector.sv`](coherent_lq_issue_selector.sv). The live
-drain flag selects between those results. Both cases use the same ring
-order and ROB-head priority. Each entry has a cyclic precedence mask derived
+drain flag selects between those results. Each case also computes staged
+replacement from its winning masks and the per-entry age predicates. Both
+cases use the same ring order and ROB-head priority. Each entry has a cyclic precedence mask derived
 from the queue head. An eligible entry wins when none of its predecessors
 is eligible. Scan indices and tags decode from the winning-entry masks.
 Selection is combinational. The coherent memory identity uses the merged ring
@@ -483,7 +484,8 @@ In the coherent selection, bypass payloads use the staged address-fault and
 forwarding predicates before cut and sector holds. Staged-load capture applies
 those holds; responses and queued completions use their own eligibility.
 Value, exception and cause match the qualified selections whenever the
-completion stage captures them.
+completion stage captures them. The coherent cause selection combines queued
+completion and bypass causes before the stage capture enable.
 
 A load that faults (misaligned when `i_trap_misaligned_accesses` is set,
 outside the physical memory map, an AMO or LR to the device quadrant, or with
