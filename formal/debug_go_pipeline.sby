@@ -1,0 +1,21 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+prove: depth 6
+cover: mode cover
+cover: depth 40
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read_verilog -formal -D SYNTHESIS -D DEBUG_GO_PIPELINE_PROOF -sv debug_module.sv
+prep -top debug_module
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/debug/debug_module.sv

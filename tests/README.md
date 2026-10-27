@@ -151,6 +151,9 @@ without them. Registry entries default to keeping the clocks.
 withdrawal, acknowledgement without replay, and reset in each request phase.
 Its fetch-provider composition checks cached windows and old responses arriving
 on or after the invalidation edge.
+`debug_module` checks DMI replies and registered command/resume GO requests,
+including waiting for slice completion, stable targets, acknowledgement, reset and
+module deactivation.
 `debug_test` drives the JTAG debug module directly; `debug_openocd_test` runs
 OpenOCD and GDB sessions through `remote_bitbang`, and `cache_counters_openocd`
 reads the cache profiling counters that way with `fpga/debug/cache_counters.py`.

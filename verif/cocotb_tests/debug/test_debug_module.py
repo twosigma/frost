@@ -16,14 +16,15 @@
 
 Each request requires one answer: the next cycle, or after reset ends if
 it arrives during reset. Hold the payload until the answer, as dtm_core
-does. Hart and slice-writer inputs stay idle.
+does. GO tests drive the hart and slice-writer handshakes to check registered
+requests, target alignment, acknowledgement and cancellation.
 """
 
 from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, RisingEdge
+from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 DM_DATA0 = 0x04
 DM_DMCONTROL = 0x10
@@ -125,3 +126,135 @@ async def test_answers_every_request_the_next_cycle(dut: Any) -> None:
     assert status == STATUS_OK and dmstatus & 0xF == 2, f"dmstatus {dmstatus:#x}"
     assert await _request(dut, OP_WRITE, DM_DATA0, 0xCAFE_F00D) == (STATUS_OK, 0)
     assert await _request(dut, OP_READ, DM_DATA0) == (STATUS_OK, 0xCAFE_F00D)
+
+
+DM_COMMAND = 0x17
+DEBUG_ABSTRACT_ADDR = 0x17C08
+DEBUG_RESUME_ADDR = 0x17C38
+
+
+async def _go_edge(dut: Any, **inputs: int) -> tuple[int, int]:
+    await FallingEdge(dut.i_clk)
+    for name, value in inputs.items():
+        getattr(dut, name).value = value
+    await RisingEdge(dut.i_clk)
+    await Timer(1, unit="ns")
+    return int(dut.o_go.value), int(dut.o_go_addr.value)
+
+
+async def _drain_slice(dut: Any) -> None:
+    for _ in range(40):
+        await FallingEdge(dut.i_clk)
+        assert not int(dut.o_go.value), "GO preceded slice publication"
+        if not int(dut.o_slice_req_valid.value):
+            return
+    raise AssertionError("slice words did not drain")
+
+
+async def _activate_hart(dut: Any) -> None:
+    await _go_edge(
+        dut,
+        i_rst=0,
+        i_debug_mode=1,
+        i_parked=1,
+        i_go_taken=0,
+        i_slice_req_ready=1,
+        i_slice_all_done=0,
+    )
+    assert await _request(dut, OP_WRITE, DM_DMCONTROL, 1) == (STATUS_OK, 0)
+    await _drain_slice(dut)
+
+
+async def _prepare_go(dut: Any, *, resume: bool, publish: bool = True) -> int:
+    await _go_edge(dut, i_slice_all_done=0)
+    if resume:
+        assert await _request(dut, OP_WRITE, DM_DMCONTROL, (1 << 30) | 1) == (
+            STATUS_OK,
+            1,
+        )
+        target = DEBUG_RESUME_ADDR
+    else:
+        assert await _request(dut, OP_WRITE, DM_COMMAND, 0) == (STATUS_OK, 0)
+        target = DEBUG_ABSTRACT_ADDR
+    await _drain_slice(dut)
+    for _ in range(3):
+        assert (await _go_edge(dut))[0] == 0
+    if publish:
+        assert (await _go_edge(dut, i_slice_all_done=1))[0] == 0
+    return target
+
+
+async def _complete_go(dut: Any, *, resume: bool) -> None:
+    assert (await _go_edge(dut, i_go_taken=1))[0] == 0
+    if resume:
+        await _go_edge(dut, i_go_taken=0, i_debug_mode=0)
+        await _go_edge(dut, i_debug_mode=1, i_parked=1)
+    else:
+        await _go_edge(dut, i_go_taken=0, i_parked=0)
+        await _go_edge(dut, i_parked=1)
+    for _ in range(6):
+        assert (await _go_edge(dut))[0] == 0, "acknowledged GO replayed"
+
+
+@cocotb.test()
+async def test_registered_go_target_and_acknowledgement(dut: Any) -> None:
+    """Command and resume targets align with GO and stay stable until acceptance."""
+    await _setup(dut)
+    await _activate_hart(dut)
+    for resume in (False, True, False):
+        target = await _prepare_go(dut, resume=resume)
+        assert await _go_edge(dut) == (1, target)
+        for _ in range(8):
+            assert await _go_edge(dut) == (1, target)
+        await _complete_go(dut, resume=resume)
+
+
+@cocotb.test()
+async def test_module_reset_clears_pending_and_presented_go(dut: Any) -> None:
+    """Reset cancels requests before release and while they wait for acceptance."""
+    await _setup(dut)
+    for resume in (False, True):
+        for released in (False, True):
+            await _activate_hart(dut)
+            target = await _prepare_go(dut, resume=resume)
+            if released:
+                assert await _go_edge(dut) == (1, target)
+            assert (await _go_edge(dut, i_rst=1))[0] == 0
+            for _ in range(3):
+                assert (await _go_edge(dut))[0] == 0
+    await _activate_hart(dut)
+    target = await _prepare_go(dut, resume=False)
+    assert await _go_edge(dut) == (1, target)
+    await _complete_go(dut, resume=False)
+
+
+@cocotb.test()
+async def test_deactivation_cancels_go_and_allows_a_fresh_request(dut: Any) -> None:
+    """Clearing dmactive resets the request with the command/resume sequencer."""
+    await _setup(dut)
+    for resume in (False, True):
+        for released in (False, True):
+            await _activate_hart(dut)
+            target = await _prepare_go(dut, resume=resume, publish=released)
+            if released:
+                assert await _go_edge(dut) == (1, target)
+                assert await _request(dut, OP_WRITE, DM_DMCONTROL, 0) == (STATUS_OK, 1)
+            else:
+                assert (
+                    await _go_edge(
+                        dut,
+                        i_slice_all_done=1,
+                        i_dmi_req_valid=1,
+                        i_dmi_req_op=OP_WRITE,
+                        i_dmi_req_addr=DM_DMCONTROL,
+                        i_dmi_req_data=0,
+                    )
+                )[0] == 0
+                assert _answer(dut) == (STATUS_OK, 1)
+                assert (await _go_edge(dut, i_dmi_req_valid=0))[0] == 0
+            for _ in range(5):
+                assert (await _go_edge(dut))[0] == 0
+    await _activate_hart(dut)
+    target = await _prepare_go(dut, resume=True)
+    assert await _go_edge(dut) == (1, target)
+    await _complete_go(dut, resume=True)
