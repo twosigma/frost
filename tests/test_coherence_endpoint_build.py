@@ -80,6 +80,7 @@ def test_coherent_sources_are_available() -> None:
         "coherence_c_payload.sv",
         "coherent_atomic_select.sv",
         "debug_dirty_next.sv",
+        "coherent_debug_request_count.sv",
     } <= names
     assert all(Path(source).is_file() for source in sources)
 

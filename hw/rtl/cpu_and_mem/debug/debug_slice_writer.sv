@@ -41,6 +41,9 @@
  * becomes a sticky command error.
  */
 module debug_slice_writer #(
+`ifdef FROST_COHERENT_CLUSTER
+    parameter bit COHERENT_CLUSTER = 1'b0,
+`endif
     parameter int unsigned MEM_BYTE_ADDR_WIDTH = 18,
     parameter int unsigned DEPTH = 32
 ) (
@@ -89,10 +92,23 @@ module debug_slice_writer #(
   end
 
   logic [CountBits-1:0] req_count_q;
+`ifdef FROST_COHERENT_CLUSTER
+  if (COHERENT_CLUSTER) begin : gen_coherent_request_count
+    coherent_debug_request_count #(.WIDTH(CountBits)) counter (
+        .i_clk,
+        .i_rst,
+        .i_accept(accept),
+        .o_count(req_count_q)
+    );
+  end else begin : gen_direct_request_count
+`endif
   always_ff @(posedge i_clk) begin
     if (i_rst) req_count_q <= '0;
     else if (accept) req_count_q <= req_count_q + 1'b1;
   end
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`endif
 
   logic [ReqBits-1:0] fifo_out;
   logic fifo_out_valid, fifo_pop;

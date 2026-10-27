@@ -1,0 +1,19 @@
+[tasks]
+debug_request_count_prove normal
+debug_request_count4_prove narrow
+
+[options]
+mode prove
+depth 4
+timeout 60
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv coherent_debug_request_count.sv
+narrow: chparam -set WIDTH 4 coherent_debug_request_count
+prep -top coherent_debug_request_count
+
+[files]
+../hw/rtl/cpu_and_mem/debug/coherent_debug_request_count.sv
