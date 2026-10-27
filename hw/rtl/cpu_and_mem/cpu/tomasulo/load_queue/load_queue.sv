@@ -2075,11 +2075,8 @@ module load_queue #(
                   ((!Busy && !cached_launch_hold_q) ||
                    (ENABLE_L0_FAST_PATH && sq_check_cacheable && (!Busy || L0Allowed) && Hit &&
                     !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q));
-              wire stage_clear = sq_check_pending &&
-                  (!sq_check_entry_valid || older_amo_write_pending ||
-                   (!Held &&
-                    (clear_memory ||
-                     (coherent_forward_unblocked_empty[empty_case] && !interlock))));
+              wire stage_clear = sq_check_pending && !Held &&
+                  (clear_memory || (coherent_forward_unblocked_empty[empty_case] && !interlock));
               wire will_clear = stage_clear || (sq_check_pending && coherent_sector_hold);
               assign coherent_stage_clear_choice[commit_case][state_case] = stage_clear;
               for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_copy
@@ -2108,6 +2105,10 @@ module load_queue #(
       assign take_by_hit[hit_case] = take_by_empty[i_sq_empty];
       assign clear_by_hit[hit_case] = clear_by_empty[i_sq_empty];
     end
+    (* keep = "true" *) wire independent_clear = sq_check_pending &&
+        (!sq_check_entry_valid || older_amo_write_pending);
+    (* keep = "true" *) wire independent_take = independent_clear && issue_mem_found &&
+        sq_check_gate_early;
     (* keep = "true" *) wire fault_clear_ready = sq_check_pending && !coherent_local_hold &&
         !resp_bypass_ok && coherent_eligible_by_drain[i_sq_committed_empty] &&
         coherent_address_fault && !i_flush_en;
@@ -2115,9 +2116,9 @@ module load_queue #(
         sq_check_gate_early;
     wire fault_granted = cdb_stage_slot_available && !issue_cdb_fire;
     assign coherent_stage_take = take_by_hit[coherent_control_choice[0]] |
-        {4{fault_take_ready && fault_granted}};
+        {4{independent_take || (fault_take_ready && fault_granted)}};
     assign coherent_stage_clear = clear_by_hit[coherent_control_choice[0]] ||
-        (fault_clear_ready && fault_granted);
+        independent_clear || (fault_clear_ready && fault_granted);
   end else begin : gen_no_coherent_capture_choices
     for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_take
       assign coherent_stage_take[copy_index] =

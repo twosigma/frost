@@ -106,8 +106,10 @@ Replacement selects stored and arriving age predicates with ROB-head priority.
 Stored, arriving and head candidate predicates are computed per row before
 its validity bit qualifies the candidate masks.
 The coherent clear calculation applies staging validity outside its issue,
-forwarding and fault eligibility terms. Older pending AMOs independently
-clear the staged load. Issue, forwarding and probes require staging validity;
+forwarding and fault eligibility terms. An older pending AMO clears the pending
+stage independently of the prepared outcomes. That release supplies capture
+permission at the final selection when a candidate is present and the capture
+gate is open. Issue, forwarding and probes require staging validity;
 issue and forwarding also apply the older-AMO veto.
 
 Capture and clear outcomes are computed for both SQ-empty values and each
