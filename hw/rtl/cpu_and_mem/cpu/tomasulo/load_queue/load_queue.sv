@@ -2039,10 +2039,12 @@ module load_queue #(
   wire [1:0] coherent_commit_choice = {i_sq_commit_pending, i_sq_committed_empty};
   wire [2:0] coherent_control_choice = {resp_bypass_ok, coherent_local_hold, cache_lookup_hit};
   if (COHERENT_CLUSTER) begin : gen_coherent_capture_choices
-    (* keep = "true" *) logic [3:0] take_by_busy[2];
-    (* keep = "true" *) logic [1:0] clear_by_busy;
-    for (genvar busy_case = 0; busy_case < 2; busy_case++) begin : gen_busy_choice
-      localparam bit Busy = busy_case != 0;
+    (* keep = "true" *) logic [3:0] take_by_bus[4];
+    (* keep = "true" *) logic [3:0] clear_by_bus;
+    wire [1:0] bus_choice = {i_mem_bus_busy, i_l0_hit_allowed};
+    for (genvar bus_case = 0; bus_case < 4; bus_case++) begin : gen_bus_choice
+      localparam bit Busy = (bus_case & 2) != 0;
+      localparam bit L0Allowed = (bus_case & 1) != 0;
       wire gate_early = !drop_mem_response_pending &&
           (PREPARE_LOAD_WHILE_BUSY || !Busy) && !i_flush_en;
       wire replace_ready = sq_check_pending && gate_early &&
@@ -2065,7 +2067,7 @@ module load_queue #(
           wire clear_memory = !i_flush_all && !i_flush_en && coherent_issue_by_drain[Drained] &&
               !interlock &&
               ((!Busy && !cached_launch_hold_q) ||
-               (ENABLE_L0_FAST_PATH && sq_check_cacheable && !l0_lookup_busy && Hit &&
+               (ENABLE_L0_FAST_PATH && sq_check_cacheable && (!Busy || L0Allowed) && Hit &&
                 !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q));
           wire stage_clear = sq_check_pending &&
               (!sq_check_entry_valid || older_amo_write_pending ||
@@ -2085,14 +2087,14 @@ module load_queue #(
             coherent_stage_clear_choice[commit_case][coherent_control_choice];
       end
       for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_take
-        assign take_by_busy[busy_case][copy_index] =
+        assign take_by_bus[bus_case][copy_index] =
             (capture_selected[coherent_commit_choice][copy_index] && issue_mem_found) ||
             replace_ready;
       end
-      assign clear_by_busy[busy_case] = clear_selected[coherent_commit_choice];
+      assign clear_by_bus[bus_case] = clear_selected[coherent_commit_choice];
     end
-    assign coherent_stage_take = take_by_busy[i_mem_bus_busy];
-    assign coherent_stage_clear = clear_by_busy[i_mem_bus_busy];
+    assign coherent_stage_take = take_by_bus[bus_choice];
+    assign coherent_stage_clear = clear_by_bus[bus_choice];
   end else begin : gen_no_coherent_capture_choices
     for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_take
       assign coherent_stage_take[copy_index] =
