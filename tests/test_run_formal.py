@@ -957,7 +957,8 @@ SBY_TASKS = [
     ),
     (
         "coh_lq_cut_prove",
-        "Coherent cuts block load completion and reservation renewal.",
+        "Coherent cuts block load launches and local fast paths; "
+        "invalidated LR responses cannot renew reservations.",
     ),
     ("coh_lq_forward_prove", "Coherent forwarding obeys cuts and same-sector holds."),
     (

@@ -258,7 +258,8 @@ module coherence_home #(
     end
   end
 
-  assign o_p_valid = active && phase_q == ProbeSend;
+  (* keep = "true" *) wire probe_eligible = !i_fatal_stop && !o_fatal && phase_q == ProbeSend;
+  assign o_p_valid = !i_rst && probe_eligible;
   assign o_p = probe_q;
   assign probe_matches = reply.tid == probe_q.tid && reply.epoch == probe_q.epoch &&
       reply.hart == 0 && reply.addr == probe_q.addr &&
@@ -538,6 +539,13 @@ module coherence_home #(
     initial $fatal(1, "coherence_home: invalid writeback capacity");
   end
 `ifndef SYNTHESIS
+`ifdef FORMAL
+  always_comb begin
+`else
+  always @(posedge i_clk) begin
+`endif
+    p_probe_valid_exact : assert (o_p_valid == (active && phase_q == ProbeSend));
+  end
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
       if (i_r_valid && phase_q == ProbeWait) assert (probe_matches);
