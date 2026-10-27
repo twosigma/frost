@@ -109,8 +109,10 @@ forwarding and fault eligibility terms. Older pending AMOs independently
 clear the staged load. Issue, forwarding and probes require staging validity;
 issue and forwarding also apply the older-AMO veto.
 
-Capture and clear outcomes are computed for each combination of memory-busy
-and L0-hit permission. Those inputs select the outcome after local permission
+Capture and clear outcomes are computed for both SQ-empty values and each
+combination of memory-busy and L0-hit permission. Each SQ-empty case uses
+its own memory-issue and forwarding permission. The live SQ-empty flag selects
+between those complete outcomes before the separate fault grant is applied. Those inputs select the outcome after local permission
 and candidate selection. Capture, replacement and clear controls directly determine the staged state. Sector
 blocking supplies capture permission separately from the condition that clears
 the stage. Coherent issue,
