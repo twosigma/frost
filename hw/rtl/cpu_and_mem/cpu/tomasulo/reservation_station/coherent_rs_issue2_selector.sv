@@ -28,18 +28,29 @@ module coherent_rs_issue2_selector #(
   assign first_ready = i_ready & (~i_ready + DEPTH'(1));
   assign eligible = i_ready & ~i_branch_class & ~first_ready;
   assign o_issue_2_onehot = eligible & (~eligible + DEPTH'(1));
-  logic [DEPTH-1:0] later_nonbranch_ready;
-  for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_presence
-    if (entry == 0) begin : gen_first
-      assign later_nonbranch_ready[entry] = 1'b0;
-    end else begin : gen_later
-      (* keep = "true" *) logic earlier_ready;
-      assign earlier_ready = |i_ready[entry-1:0];
-      assign later_nonbranch_ready[entry] =
-          i_ready[entry] && !i_branch_class[entry] && earlier_ready;
+  localparam int unsigned Leaves = 1 << $clog2(DEPTH);
+  localparam int unsigned Nodes  = 2 * Leaves - 1;
+  (* keep = "true" *) logic [Nodes-1:0] ready_present, nonbranch_present, pair_present;
+  for (genvar leaf = 0; leaf < Leaves; leaf++) begin : gen_presence_leaf
+    localparam int unsigned Node = Leaves - 1 + leaf;
+    if (leaf < DEPTH) begin : gen_entry
+      assign ready_present[Node] = i_ready[leaf];
+      assign nonbranch_present[Node] = i_ready[leaf] && !i_branch_class[leaf];
+    end else begin : gen_padding
+      assign ready_present[Node] = 1'b0;
+      assign nonbranch_present[Node] = 1'b0;
     end
+    assign pair_present[Node] = 1'b0;
   end
-  assign o_issue_2_valid = |later_nonbranch_ready;
+  for (genvar node = 0; node < Leaves - 1; node++) begin : gen_presence_node
+    localparam int unsigned Left  = 2 * node + 1;
+    localparam int unsigned Right = 2 * node + 2;
+    assign ready_present[node] = ready_present[Left] || ready_present[Right];
+    assign nonbranch_present[node] = nonbranch_present[Left] || nonbranch_present[Right];
+    assign pair_present[node] = pair_present[Left] || pair_present[Right] ||
+        (ready_present[Left] && nonbranch_present[Right]);
+  end
+  assign o_issue_2_valid = pair_present[0];
   always_comb begin
     o_issue_2_idx = '0;
     for (int entry = 0; entry < DEPTH; entry++) begin
