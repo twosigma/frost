@@ -2458,8 +2458,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.debug.test_debug_module",
         hdl_toplevel_module="debug_module",
         description=(
-            "Each DMI request gets one reply, including requests held across reset"
+            "DMI replies across reset and registered command/resume GO handshakes"
         ),
+        verilator_extra_args=("--assert",),
     ),
     "hang_triage": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_hang_triage",

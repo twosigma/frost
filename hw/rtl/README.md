@@ -321,6 +321,11 @@ low-BRAM debug slice. The module supports abstract GPR access and an 8-word
 program buffer. Debugger memory accesses run through that buffer; there is no
 system bus access.
 
+The Debug Module registers GO and its target after the instruction slice is
+visible. GO stays asserted with a stable target until the hart acknowledges
+it. Acknowledgement or module reset clears GO on that clock edge. Command
+and resume sequencing waits for the hart's response to this request.
+
 The system reset (the board-level reset, which on X3 follows the clock lock
 and DDR readiness, and the image-load reset) also resets the debug module, so
 `dmactive`, a pending halt request, and the program buffer do not survive it.

@@ -29,8 +29,10 @@
  *   a1/a2 = ebreak without postexec, or nop/nop to enter the program buffer.
  *        Its implicit ebreak returns the hart to the park loop.
  * Dirty words are written in the background, so DMI need not wait for the
- * writer FIFO. Every go waits until all words are visible. The command
- * completes when the hart parks again; exceptions other than ebreak set cmderr 3.
+ * writer FIFO. Every go waits until all words are visible. GO and its target
+ * pass through a register; acknowledgement or module reset clears GO on that
+ * clock edge. The command completes when the hart parks again; exceptions
+ * other than ebreak set cmderr 3.
  * resumereq redirects to the resume word; dret leaves Debug Mode, then
  * resumeack asserts.
  *
@@ -507,9 +509,16 @@ module debug_module #(
   // Hart-facing outputs
   // ---------------------------------------------------------------------------
   assign o_haltreq = haltreq_q;
-  assign o_go = (cmd_state_q == CmdGo) || (res_state_q == ResGo);
-  assign o_go_addr = (res_state_q == ResGo) ? riscv_pkg::DebugResumeAddr :
-                                              riscv_pkg::DebugAbstractAddr;
+  always_ff @(posedge i_clk) begin
+    if (dm_rst) begin
+      o_go <= 1'b0;
+      o_go_addr <= riscv_pkg::DebugAbstractAddr;
+    end else begin
+      o_go <= ((cmd_state_q == CmdGo) || (res_state_q == ResGo)) && !i_go_taken;
+      o_go_addr <= (res_state_q == ResGo) ? riscv_pkg::DebugResumeAddr :
+                                            riscv_pkg::DebugAbstractAddr;
+    end
+  end
   assign o_data = {data1_q, data0_q};
   assign o_ndmreset = ndmreset_q;
 
@@ -521,6 +530,35 @@ module debug_module #(
       if ((cmd_state_q == CmdGo) && (res_state_q == ResGo))
         $error("debug_module: command and resume go requests overlap");
       if (o_go && !i_debug_mode) $error("debug_module: go requested outside Debug Mode");
+    end
+  end
+`endif
+
+`ifdef DEBUG_GO_PIPELINE_PROOF
+  logic f_go_past_valid = 1'b0;
+  always_ff @(posedge i_clk) begin
+    f_go_past_valid <= 1'b1;
+    if (!f_go_past_valid) assume (i_rst);
+    assume (!i_go_taken || o_go);
+    if (f_go_past_valid) begin
+      assert (!(cmd_busy && res_busy));
+      if (o_go) begin
+        assert ((cmd_state_q == CmdGo) ^ (res_state_q == ResGo));
+        assert (o_go_addr == ((res_state_q == ResGo) ? riscv_pkg::DebugResumeAddr :
+                                                               riscv_pkg::DebugAbstractAddr));
+      end
+      if ($past(dm_rst || i_go_taken)) assert (!o_go);
+      if ($past(i_go_taken)) assert (cmd_state_q != CmdGo && res_state_q != ResGo);
+      if ($past(o_go && !i_go_taken && !dm_rst)) begin
+        assert (o_go);
+        assert (o_go_addr == $past(o_go_addr));
+      end
+      if ($past(((cmd_state_q == CmdGo) || (res_state_q == ResGo)) && !dm_rst && !i_go_taken))
+        assert (o_go);
+      cover (o_go && i_go_taken && o_go_addr == riscv_pkg::DebugAbstractAddr);
+      cover (o_go && i_go_taken && o_go_addr == riscv_pkg::DebugResumeAddr);
+      cover (o_go && $past(o_go) && !i_go_taken);
+      cover ($past(o_go && dm_rst) && !o_go);
     end
   end
 `endif
