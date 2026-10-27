@@ -156,11 +156,10 @@ balanced tree. Each subtree reports whether it holds a ready entry, its first
 ready non-branch entry, and its first ready non-branch entry other than its
 own first ready entry. Merging pairs of subtrees gives the serial answer in
 log2(window) levels. The coherent INT selection uses
-`coherent_rs_issue2_selector`. Its first one-hot mask isolates the lowest ready
-entry. The eligible mask excludes that entry and branch-class entries. A second
-one-hot mask isolates the lowest eligible entry. Each isolation computes
-`mask & (~mask + 1)` at the window width. The index is encoded from the selected
-mask. Availability uses a balanced tree of ready-entry, non-branch and pair
+`coherent_rs_issue2_selector`. An entry is eligible when it is ready, has no
+branch class and has a ready entry at a lower index. A one-hot mask isolates
+the lowest eligible entry with `mask & (~mask + 1)` at the window width.
+The index is encoded from the selected mask. Availability uses a balanced tree of ready-entry, non-branch and pair
 flags. A pair has a ready entry followed by a ready non-branch entry.
 Each leaf computes these flags from two adjacent entries. An unpaired entry
 contributes readiness and non-branch presence; padding contributes zero.
@@ -274,7 +273,7 @@ issued while another entry was also ready; the wrapper exports it for MEM_RS.
 | Parameter | Default | Wrapper setting | Effect |
 |-----------|---------|-----------------|--------|
 | `DEPTH` | 8 | Per instance (table above) | Number of entries |
-| `COHERENT_CLUSTER` | 0 | 1 on coherent INT | Select coherent issue controls, count and full flags from prepared outcomes; use arithmetic winners and per-entry shift values for port 1 |
+| `COHERENT_CLUSTER` | 0 | 1 on coherent INT | Select coherent issue controls, count and full flags from prepared outcomes; use prefix eligibility, arithmetic selection and per-entry shift values for port 1 |
 | `HAS_SRC3` | 1 | 1 on FP, 0 elsewhere | Third source operand, for FMA |
 | `DUAL_ISSUE` | 0 | 1 on INT | Second issue port |
 | `ISSUE2_WINDOW` | 0 (all entries) | 8 on INT | Port 1 considers only entries below this index |
