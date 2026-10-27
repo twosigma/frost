@@ -169,6 +169,7 @@ FORMAL_TARGETS = [
             "coh_lq_cut_prove",
             "coh_lq_forward_prove",
             "coh_lq_forward_normal_prove",
+            "coh_lq_busy_prove",
             "coh_lq_normal_fill_prove",
             "coh_address_class_prove",
             "coh_candidate_select_prove",
@@ -962,6 +963,10 @@ SBY_TASKS = [
     (
         "coh_lq_forward_normal_prove",
         "Coherent forwarding and Normal-cache controls obey local invariants.",
+    ),
+    (
+        "coh_lq_busy_prove",
+        "Coherent capture obeys busy gating with load preparation disabled.",
     ),
     (
         "coh_lq_normal_fill_prove",
