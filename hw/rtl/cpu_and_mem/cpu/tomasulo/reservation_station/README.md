@@ -162,6 +162,8 @@ one-hot mask isolates the lowest eligible entry. Each isolation computes
 `mask & (~mask + 1)` at the window width. The index is encoded from the selected
 mask. Availability uses a balanced tree of ready-entry, non-branch and pair
 flags. A pair has a ready entry followed by a ready non-branch entry.
+Each leaf computes these flags from two adjacent entries. An unpaired entry
+contributes readiness and non-branch presence; padding contributes zero.
 Each merge combines pairs within either child and pairs across the children.
 Readiness and selection are computed for all four CDB-valid
 combinations before the live valid bits select the result.

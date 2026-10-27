@@ -2,6 +2,8 @@
 coh_rs_issue2_8_prove d8
 coh_rs_issue2_16_prove
 coh_rs_issue2_5_prove d5
+coh_rs_issue2_2_prove d2
+coh_rs_issue2_3_prove d3
 
 [options]
 mode prove
@@ -15,6 +17,8 @@ smtbmc boolector
 read -formal -sv rs_issue2_selector.sv coherent_rs_issue2_selector.sv
 d8: chparam -set DEPTH 8 coherent_rs_issue2_selector
 d5: chparam -set DEPTH 5 coherent_rs_issue2_selector
+d2: chparam -set DEPTH 2 coherent_rs_issue2_selector
+d3: chparam -set DEPTH 3 coherent_rs_issue2_selector
 prep -flatten -top coherent_rs_issue2_selector
 
 [files]

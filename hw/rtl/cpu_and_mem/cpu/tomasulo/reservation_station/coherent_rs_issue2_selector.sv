@@ -28,19 +28,28 @@ module coherent_rs_issue2_selector #(
   assign first_ready = i_ready & (~i_ready + DEPTH'(1));
   assign eligible = i_ready & ~i_branch_class & ~first_ready;
   assign o_issue_2_onehot = eligible & (~eligible + DEPTH'(1));
-  localparam int unsigned Leaves = 1 << $clog2(DEPTH);
+  localparam int unsigned Leaves = 1 << $clog2((DEPTH + 1) / 2);
   localparam int unsigned Nodes  = 2 * Leaves - 1;
   (* keep = "true" *) logic [Nodes-1:0] ready_present, nonbranch_present, pair_present;
   for (genvar leaf = 0; leaf < Leaves; leaf++) begin : gen_presence_leaf
-    localparam int unsigned Node = Leaves - 1 + leaf;
-    if (leaf < DEPTH) begin : gen_entry
-      assign ready_present[Node] = i_ready[leaf];
-      assign nonbranch_present[Node] = i_ready[leaf] && !i_branch_class[leaf];
+    localparam int unsigned Node   = Leaves - 1 + leaf;
+    localparam int unsigned First  = 2 * leaf;
+    localparam int unsigned Second = First + 1;
+    if (Second < DEPTH) begin : gen_pair
+      assign ready_present[Node] = i_ready[First] || i_ready[Second];
+      assign nonbranch_present[Node] =
+          (i_ready[First] && !i_branch_class[First]) ||
+          (i_ready[Second] && !i_branch_class[Second]);
+      assign pair_present[Node] = i_ready[First] && i_ready[Second] && !i_branch_class[Second];
+    end else if (First < DEPTH) begin : gen_single
+      assign ready_present[Node] = i_ready[First];
+      assign nonbranch_present[Node] = i_ready[First] && !i_branch_class[First];
+      assign pair_present[Node] = 1'b0;
     end else begin : gen_padding
       assign ready_present[Node] = 1'b0;
       assign nonbranch_present[Node] = 1'b0;
+      assign pair_present[Node] = 1'b0;
     end
-    assign pair_present[Node] = 1'b0;
   end
   for (genvar node = 0; node < Leaves - 1; node++) begin : gen_presence_node
     localparam int unsigned Left  = 2 * node + 1;

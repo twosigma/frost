@@ -111,6 +111,8 @@ FORMAL_TARGETS = [
             "coh_rs_issue2_8_prove",
             "coh_rs_issue2_16_prove",
             "coh_rs_issue2_5_prove",
+            "coh_rs_issue2_2_prove",
+            "coh_rs_issue2_3_prove",
         ),
     ),
     FormalTarget(
@@ -919,6 +921,8 @@ SBY_TASKS = [
     ("coh_rs_issue2_8_prove", "Coherent second-issue equality at eight entries."),
     ("coh_rs_issue2_16_prove", "Coherent second-issue equality at sixteen entries."),
     ("coh_rs_issue2_5_prove", "Coherent second-issue equality at five entries."),
+    ("coh_rs_issue2_2_prove", "Coherent second-issue equality at two entries."),
+    ("coh_rs_issue2_3_prove", "Coherent second-issue equality at three entries."),
     ("debug_request_count_prove", "Coherent debug request count at eight bits."),
     ("debug_request_count4_prove", "Coherent debug request count at four bits."),
     ("coh_rs_capacity4_prove", "Coherent capacity equality at four entries."),
