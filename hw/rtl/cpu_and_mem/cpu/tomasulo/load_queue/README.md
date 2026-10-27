@@ -91,7 +91,8 @@ and tag.
 The pre-issue selector registers a one-hot mask alongside the candidate matches.
 Staging capture uses candidate presence independently of ring ordering.
 The coherent selection computes capture permission and staged control state
-for all combinations of local hold and cache hit. Those inputs select the
+for all combinations of response bypass, local hold and cache hit. Those
+inputs select the
 result.
 Replacement selects stored and arriving age predicates with ROB-head priority.
 Capture, replacement and clear controls directly determine the staged state. Sector

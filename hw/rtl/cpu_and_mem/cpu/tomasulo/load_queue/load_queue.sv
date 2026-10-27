@@ -2011,23 +2011,25 @@ module load_queue #(
        (i_addr_update.valid ? coherent_replace_with_update : coherent_replace_without_update)) :
       sq_check_replace;
   wire [3:0] coherent_pending = {sq_check_pending_copy, sq_check_pending};
-  logic [3:0] coherent_capture_choice[4];
-  logic [3:0] coherent_stage_clear_choice;
-  wire [1:0] coherent_control_choice = {coherent_local_hold, cache_lookup_hit};
+  logic [3:0] coherent_capture_choice[8];
+  logic [7:0] coherent_stage_clear_choice;
+  wire [2:0] coherent_control_choice = {resp_bypass_ok, coherent_local_hold, cache_lookup_hit};
   wire coherent_entry_eligible = coherent_staged_at_head ?
       coherent_eligible_choice[1] : coherent_eligible_choice[0];
-  wire coherent_clear_fault = cdb_stage_slot_available && !issue_cdb_fire &&
-      !resp_bypass_ok && coherent_entry_eligible && coherent_address_fault && !i_flush_en;
-  for (genvar state_case = 0; state_case < 4; state_case++) begin : gen_coherent_capture_choice
+  wire coherent_clear_fault_ready = cdb_stage_slot_available && !issue_cdb_fire &&
+      coherent_entry_eligible && coherent_address_fault && !i_flush_en;
+  for (genvar state_case = 0; state_case < 8; state_case++) begin : gen_coherent_capture_choice
     localparam bit Held = (state_case & 2) != 0;
     localparam bit Hit = (state_case & 1) != 0;
+    localparam bit ResponseBypass = (state_case & 4) != 0;
     wire clear_memory = !i_flush_all && !i_flush_en && coherent_issue_ok &&
         ((!i_mem_bus_busy && !cached_launch_hold_q) ||
          (ENABLE_L0_FAST_PATH && sq_check_cacheable && !l0_lookup_busy && Hit &&
           !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q));
     wire stage_clear = sq_check_pending &&
         (!sq_check_entry_valid || older_amo_write_pending ||
-         (!Held && (clear_memory || coherent_forward_ok || coherent_clear_fault)));
+         (!Held && (clear_memory || coherent_forward_ok ||
+                    (!ResponseBypass && coherent_clear_fault_ready))));
     wire will_clear = stage_clear || (sq_check_pending && coherent_sector_hold);
     assign coherent_stage_clear_choice[state_case] = stage_clear;
     for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_copy
@@ -3362,8 +3364,8 @@ module load_queue #(
 
 `ifdef FROST_COHERENT_CLUSTER
   if (COHERENT_CLUSTER) begin : gen_coherent_stage_control
-    logic [DEPTH+2:0] state_choice[4];
-    for (genvar state_case = 0; state_case < 4; state_case++) begin : gen_choice
+    logic [DEPTH+2:0] state_choice[8];
+    for (genvar state_case = 0; state_case < 8; state_case++) begin : gen_choice
       localparam bit Held = (state_case & 2) != 0;
       wire take = coherent_capture_choice[state_case][0];
       wire stage_clear = coherent_stage_clear_choice[state_case];
