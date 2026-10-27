@@ -85,7 +85,15 @@ Misaligned loads, stores and atomics trap in the CPU before issuing an AXI
 request, including before firmware installs `mtvec`. The standalone interface
 does not split misaligned accesses into multiple transactions.
 
-RRESP/BRESP SLVERR and DECERR propagate as access faults for data reads, precise uncached stores/AMOs, instruction fetch and page-table walks. Read-fill errors never install cache data or executable instruction-cache entries. Data-bus faults report zero in `xtval`; instruction and translation faults report the virtual address. RISC-V permits zero `xtval` for these faults; a physical address must not be reported as though it were the faulting virtual address. See the [privileged architecture](https://docs.riscv.org/reference/isa/priv/machine.html).
+RRESP/BRESP SLVERR and DECERR propagate as access faults for data reads,
+precise uncached stores/AMOs, instruction fetch and page-table walks.
+Read-fill errors never install cache data or executable instruction-cache
+entries. Coherent cached SC access faults report the saved virtual address
+in `xtval`. Other data-bus faults report zero. Instruction and translation
+faults report the virtual address. RISC-V permits zero `xtval` for these
+faults; a physical address must not be reported as though it were the
+faulting virtual address. See the
+[privileged architecture](https://docs.riscv.org/reference/isa/priv/machine.html).
 
 Buffered cached stores may already have retired when a writeback or write-allocated refill fails. Such failures retain the dirty cache ownership, assert sticky `o_fatal_error`, record `o_fatal_addr`, and stop further CPU retirement and new side effects. They do not fabricate a precise exception for an instruction that has already retired. The wrapper must handle the fatal indication and eventually reset the CPU; automatic retries are not performed.
 
