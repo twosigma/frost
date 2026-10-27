@@ -176,10 +176,11 @@ amount; port 0's ALU derives its own.
 Fields that every entry compares or updates in parallel live in flip-flops:
 valid and ready bits, source tags and values, the ROB tag, and the few bits
 the port-1 selector and shift amount need. Fields written once at dispatch and
-read once at issue live in a distributed-RAM payload with one write port per
+read once at issue live in payload storage with one write port per
 dispatch slot: the operation, immediate, JALR offset, rounding mode,
 prediction bits, memory-op flags, CSR address and immediate, checkpoint ID,
-compressed flag, and a branch-class predecode. The coherent INT selection
+compressed flag, and a branch-class predecode. Port 0 uses distributed RAM.
+The coherent INT selection
 stores port 1's payload in a two-write register bank. The issue winner's
 one-hot mask selects its row. Write port index 1, corresponding to dispatch
 slot 2, wins a same-row write collision.
