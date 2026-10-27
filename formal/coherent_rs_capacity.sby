@@ -16,6 +16,9 @@ read -formal -sv coherent_rs_capacity.sv
 d4: chparam -set DEPTH 4 coherent_rs_capacity
 d8: chparam -set DEPTH 8 coherent_rs_capacity
 prep -top coherent_rs_capacity
+select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
+select -assert-count 3 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
