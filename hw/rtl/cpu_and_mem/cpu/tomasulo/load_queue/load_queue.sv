@@ -791,7 +791,7 @@ module load_queue #(
   // lq_address and lq_amo_rs2 are only written once the address CAM resolves.
   // Valid bits stay in FFs; stale RAM contents are don't-care until addr_valid.
 `ifdef FROST_COHERENT_CLUSTER
-  logic [2:0] coherent_stored_class, coherent_update_class;
+  logic [3:0] coherent_stored_class, coherent_update_class;
   if (COHERENT_CLUSTER) begin : gen_coherent_address_store
     coherent_lq_address_store #(
         .ADDR_WIDTH(IdxWidth),
@@ -1876,8 +1876,9 @@ module load_queue #(
       (riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q) != riscv_pkg::DFAULT_NONE);
   logic sq_check_pma_ok;
 `ifdef FROST_COHERENT_CLUSTER
+  logic coherent_staged_normal;
   if (COHERENT_CLUSTER) begin : gen_coherent_staged_class
-    logic pma_ok_q, cached_q, misaligned_q;
+    logic pma_ok_q, cached_q, misaligned_q, normal_q;
     wire stored_atomic = lq_is_amo[issue_mem_stored_idx] || lq_is_lr[issue_mem_stored_idx];
     wire update_atomic = lq_is_amo[update_issue_payload_idx] || lq_is_lr[update_issue_payload_idx];
     (* keep = "true" *) wire stored_permission =
@@ -1885,18 +1886,20 @@ module load_queue #(
     (* keep = "true" *) wire update_permission =
         update_atomic ? coherent_update_class[2] : coherent_update_class[1];
     wire selected_permission = issue_mem_uses_addr_update ? update_permission : stored_permission;
-    wire [2:0] selected_class = issue_mem_uses_addr_update ?
+    wire [3:0] selected_class = issue_mem_uses_addr_update ?
         coherent_update_class : coherent_stored_class;
     always_ff @(posedge i_clk) begin
       if (sq_check_payload_en) begin
         pma_ok_q <= selected_permission;
         cached_q <= selected_class[0];
+        normal_q <= selected_class[3];
         misaligned_q <= is_load_misaligned(sq_check_size_next, sq_check_addr_next);
       end
     end
     assign sq_check_pma_ok = pma_ok_q;
     assign sq_check_is_cached_region = cached_q;
     assign coherent_staged_misaligned = misaligned_q;
+    assign coherent_staged_normal = normal_q;
 `ifndef SYNTHESIS
 `ifdef FORMAL
     always_comb begin
@@ -1922,12 +1925,18 @@ module load_queue #(
             ((sq_check_is_amo_q || sq_check_is_lr_q) ?
              riscv_pkg::pma_atomic_ok(sq_check_addr_q) : riscv_pkg::pma_data_ok(sq_check_addr_q)));
         p_staged_cached_exact : assert (cached_q == is_cached_addr(sq_check_addr_q));
+        p_staged_normal_exact : assert (normal_q ==
+            riscv_pkg::pma_writethrough_ok(sq_check_addr_q));
+        p_staged_cacheable_exact : assert (sq_check_cacheable ==
+            (CACHE_UNCACHED_DATA || is_cached_addr(sq_check_addr_q) ||
+             (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(sq_check_addr_q))));
         p_staged_misaligned_exact : assert (misaligned_q ==
             is_load_misaligned(sq_check_size_q, sq_check_addr_q));
       end
     end
 `endif
   end else begin : gen_direct_staged_class
+    assign coherent_staged_normal = riscv_pkg::pma_writethrough_ok(sq_check_addr_q);
     assign coherent_staged_misaligned = is_load_misaligned(sq_check_size_q, sq_check_addr_q);
     assign sq_check_pma_ok = (sq_check_is_amo_q || sq_check_is_lr_q) ?
         riscv_pkg::pma_atomic_ok(sq_check_addr_q) : riscv_pkg::pma_data_ok(sq_check_addr_q);
@@ -2484,10 +2493,15 @@ module load_queue #(
   // may permit an unrelated hit during a buffered Normal store or older
   // Normal read. Same-dword stores, AMOs, precise writes and pending Device
   // handoffs still block it through disambiguation/invalidation or permission.
+`ifdef FROST_COHERENT_CLUSTER
+  wire sq_check_cacheable = CACHE_UNCACHED_DATA || sq_check_is_cached_region ||
+      (CACHE_NORMAL_MEMORY && coherent_staged_normal);
+`else
   wire sq_check_cacheable = CACHE_UNCACHED_DATA || sq_check_is_cached_region ||
       (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
       sq_check_addr_q
   ));
+`endif
   assign cache_hit_fast_path = ENABLE_L0_FAST_PATH && sq_check_cacheable &&
       !i_flush_all && !i_flush_en && !l0_lookup_busy && sq_can_issue && cache_lookup_hit &&
       !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;

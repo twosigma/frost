@@ -115,10 +115,11 @@ the cut and same-sector holds. The coherent memory launch applies those holds
 after L0-hit selection. Issue and SQ-probe permission are computed for both
 head-match outcomes. The head comparison selects between them. Forwarding
 requires an ordinary load and has no head-match dependency.
-Each coherent address slot stores PMA permission
+Each coherent address slot stores PMA permission, Normal-memory classification
 and cache-region classification with its address. Stored and arriving payloads
 compute PMA permission before address-source selection. Staging selects the
-permission and cache-region class from the stored or arriving address.
+permission, Normal-memory class and cache-region class from the stored or arriving
+address. The captured Normal-memory class supplies L0-hit eligibility.
 Staging captures misalignment with the address and size. Fault checks apply
 the live trap setting to that captured result. The first candidate mask determines which
 address source wins ring order. Candidate presence is independent of

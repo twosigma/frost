@@ -28,15 +28,16 @@ module coherent_lq_address_store #(
     input logic [XLEN-1:0] i_write_data,
     input logic [ADDR_WIDTH-1:0] i_read_address,
     output logic [XLEN-1:0] o_read_data,
-    output logic [2:0] o_read_class,
-    output logic [2:0] o_write_class
+    output logic [3:0] o_read_class,
+    output logic [3:0] o_write_class
 );
-  function automatic logic [2:0] classify(input logic [XLEN-1:0] addr);
-    classify = {riscv_pkg::pma_atomic_ok(addr), riscv_pkg::pma_data_ok(addr),
+  function automatic logic [3:0] classify(input logic [XLEN-1:0] addr);
+    classify = {riscv_pkg::pma_writethrough_ok(addr),
+                riscv_pkg::pma_atomic_ok(addr), riscv_pkg::pma_data_ok(addr),
                 (addr >= XLEN'(CACHED_BASE)) &&
                 (addr < (XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)))};
   endfunction
-  (* ram_style = "distributed" *) logic [XLEN+2:0] payload[DEPTH];
+  (* ram_style = "distributed" *) logic [XLEN+3:0] payload[DEPTH];
   initial for (int i = 0; i < DEPTH; i++) payload[i] = {classify('0), {XLEN{1'b0}}};
   assign o_write_class = classify(i_write_data);
   always_ff @(posedge i_clk)
@@ -56,7 +57,7 @@ module coherent_lq_address_store #(
     assert (o_read_class == classify(o_read_data));
     for (int i = 0; i < DEPTH; i++) begin
       assert (payload[i][XLEN-1:0] == reference[i]);
-      assert (payload[i][XLEN+2:XLEN] == classify(payload[i][XLEN-1:0]));
+      assert (payload[i][XLEN+3:XLEN] == classify(payload[i][XLEN-1:0]));
     end
   end
 `endif
