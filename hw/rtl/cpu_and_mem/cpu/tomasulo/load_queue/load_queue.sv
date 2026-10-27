@@ -2213,20 +2213,47 @@ module load_queue #(
 `ifdef FROST_COHERENT_CLUSTER
   if (COHERENT_CLUSTER) begin : gen_coherent_issue_gate
     (* keep = "true" *) logic probe_ok, issue_ok;
+    (* keep = "true" *) wire ordinary_eligible =
+        !sq_check_is_lr_q && !sq_check_is_amo_q && !coh_launch_hold_q;
+    (* keep = "true" *) wire ordinary_issue = ordinary_eligible && sq_check_phase2 &&
+        !coherent_address_fault &&
+        (sq_no_older_store || (i_sq_all_older_addrs_known && !i_sq_forward.match));
+    (* keep = "true" *) wire head_drained_eligible = !coh_launch_hold_q &&
+        !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
+        !(sq_check_is_amo_q && sq_check_is_cached_region && !i_coherent_atomic_protected);
+    (* keep = "true" *) wire head_drained_issue = head_drained_eligible && sq_check_phase2 &&
+        !coherent_address_fault &&
+        (sq_no_older_store || sq_check_is_amo_q ||
+         (i_sq_all_older_addrs_known && !i_sq_forward.match));
     for (genvar drain_case = 0; drain_case < 2; drain_case++) begin : gen_coherent_drain_choice
       localparam bit Drained = drain_case != 0;
       (* keep = "true" *) logic [1:0] eligible_choice, issue_choice;
       for (genvar head_case = 0; head_case < 2; head_case++) begin : gen_head_choice
         localparam bit AtHead = head_case != 0;
-        wire eligible = (!(sq_check_is_lr_q || sq_check_is_amo_q) || (AtHead && Drained)) &&
+        assign eligible_choice[head_case] = AtHead ?
+            (Drained ? head_drained_eligible : ordinary_eligible) :
+            (ordinary_eligible && !sq_check_is_mmio_q);
+        assign issue_choice[head_case] = AtHead ?
+            (Drained ? head_drained_issue : ordinary_issue) :
+            (ordinary_issue && !sq_check_is_mmio_q);
+`ifndef SYNTHESIS
+        wire reference_eligible =
+            (!(sq_check_is_lr_q || sq_check_is_amo_q) || (AtHead && Drained)) &&
             (!sq_check_is_mmio_q || AtHead) && !coh_launch_hold_q &&
             !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
             !(sq_check_is_amo_q && sq_check_is_cached_region && !i_coherent_atomic_protected);
-        assign eligible_choice[head_case] = eligible;
-        assign issue_choice[head_case] = sq_check_phase2 && eligible &&
-            !coherent_address_fault &&
-            (sq_no_older_store || (sq_check_is_amo_q && AtHead && Drained) ||
-             (i_sq_all_older_addrs_known && !i_sq_forward.match));
+`ifdef FORMAL
+        always_comb begin
+`else
+        always @(posedge i_clk) begin
+`endif
+          assert (eligible_choice[head_case] == reference_eligible);
+          assert (issue_choice[head_case] ==
+              (sq_check_phase2 && reference_eligible && !coherent_address_fault &&
+               (sq_no_older_store || (sq_check_is_amo_q && AtHead && Drained) ||
+                (i_sq_all_older_addrs_known && !i_sq_forward.match))));
+        end
+`endif
       end
       assign coherent_eligible_by_drain[drain_case] = eligible_choice[coherent_staged_at_head];
       assign coherent_issue_by_drain[drain_case] = issue_choice[coherent_staged_at_head];
@@ -2236,18 +2263,15 @@ module load_queue #(
       logic eligible;
       (* keep = "true" *) logic eligible_without_valid, probe, issue, issue_for_clear;
       (* keep = "true" *) logic issue_unblocked;
-      assign eligible_without_valid =
-          (!(sq_check_is_lr_q || sq_check_is_amo_q) || (AtHead && i_sq_committed_empty)) &&
-          (!sq_check_is_mmio_q || AtHead) && !coh_launch_hold_q &&
-          !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
-          !(sq_check_is_amo_q && sq_check_is_cached_region && !i_coherent_atomic_protected);
+      assign eligible_without_valid = AtHead ?
+          (i_sq_committed_empty ? head_drained_eligible : ordinary_eligible) :
+          (ordinary_eligible && !sq_check_is_mmio_q);
       assign eligible = sq_check_entry_valid && eligible_without_valid;
       assign probe = eligible && !coherent_address_fault &&
           !l0_lookup_busy && !(sq_check_no_older_store_q || i_sq_empty);
-      assign issue_unblocked = sq_check_phase2 && eligible_without_valid &&
-          !coherent_address_fault &&
-          (sq_no_older_store || (sq_check_is_amo_q && AtHead && i_sq_committed_empty) ||
-           (i_sq_all_older_addrs_known && !i_sq_forward.match));
+      assign issue_unblocked = AtHead ?
+          (i_sq_committed_empty ? head_drained_issue : ordinary_issue) :
+          (ordinary_issue && !sq_check_is_mmio_q);
       assign coherent_probe_choice[head_case] = probe;
       assign issue = issue_for_clear && sq_check_entry_valid && !older_amo_write_pending;
       assign coherent_issue_choice[head_case] = issue;
@@ -2540,16 +2564,17 @@ module load_queue #(
   if (COHERENT_CLUSTER) begin : gen_coherent_launch_gate
     (* keep = "true" *) logic [1:0] launch_choice;
     for (genvar drain_case = 0; drain_case < 2; drain_case++) begin : gen_drain_choice
-      wire miss = !i_flush_en && !i_flush_all && !i_mem_bus_busy &&
+      assign launch_choice[drain_case] = !i_flush_en && !i_flush_all && !i_mem_bus_busy &&
           coherent_issue_by_drain[drain_case] && !cached_launch_hold_q &&
           sq_check_entry_valid && !older_amo_write_pending && !sq_commit_interlock;
-      wire hit = miss && !(ENABLE_L0_FAST_PATH && sq_check_cacheable &&
-          !l0_lookup_busy && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q);
-      assign launch_choice[drain_case] = cache_lookup_hit ? hit : miss;
     end
+    (* keep = "true" *) wire permitted =
+        !coherent_local_hold && launch_choice[i_sq_committed_empty];
+    (* keep = "true" *) wire hit_blocks = ENABLE_L0_FAST_PATH && sq_check_cacheable &&
+        !l0_lookup_busy && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
     assign launch_if_miss = 1'b0;
     assign launch_if_hit = 1'b0;
-    assign o_mem_read_en = !coherent_local_hold && launch_choice[i_sq_committed_empty];
+    assign o_mem_read_en = permitted && !(cache_lookup_hit && hit_blocks);
   end else begin : gen_line_launch_gate
 `endif
   assign launch_if_miss = !i_flush_en && !i_flush_all && !i_mem_bus_busy && sq_can_issue &&
