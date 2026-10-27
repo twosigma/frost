@@ -160,8 +160,10 @@ log2(window) levels. The coherent INT selection uses
 entry. The eligible mask excludes that entry and branch-class entries. A second
 one-hot mask isolates the lowest eligible entry. Each isolation computes
 `mask & (~mask + 1)` at the window width. The index is encoded from the selected
-mask. Availability is computed from ready non-branch entries that have an
-earlier ready entry. Readiness and selection are computed for all four CDB-valid
+mask. Availability uses a balanced tree of ready-entry, non-branch and pair
+flags. A pair has a ready entry followed by a ready non-branch entry.
+Each merge combines pairs within either child and pairs across the children.
+Readiness and selection are computed for all four CDB-valid
 combinations before the live valid bits select the result.
 Each combination also selects the immediate-use bit before live CDB validity.
 The secondary clear mask applies port permission to the winner mask. A zero
