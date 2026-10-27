@@ -15,10 +15,9 @@
  */
 
 /*
- * lq_coherence_port: the core's side of the DMA coherence handshake
- * (hw/rtl/lib/cache/dma_coherence_sequencer.sv). A DMA write to a line the
- * CPU may hold walks three phases here, in the order the sequencer issues
- * them:
+ * lq_coherence_port: the CPU's admission, invalidation and release handshake.
+ * The line-port hierarchy uses hw/rtl/lib/cache/dma_coherence_sequencer.sv.
+ * A DMA write to a line the CPU may hold walks three phases in that hierarchy:
  *
  *   admit    The line is admitted when no atomic on it is between its read
  *            and its write: the load queue reports a staged, in-flight or
@@ -40,9 +39,10 @@
  *   release  The DMA write has been ordered at the shared level: the mirror
  *            entry is dropped and the launch holds lift.
  *
- * The mirror tracks the hierarchy, not speculative core state, so it survives
- * flushes: the sequencer still holds its entry and releases it once the write
- * is ordered.
+ * The coherent hierarchy completes CPU invalidation before the L1D tag
+ * lookup and permission update.
+ * Mirror ownership survives speculative flushes until the hierarchy releases
+ * it after ordering the write at the shared level.
  */
 module lq_coherence_port #(
     parameter int unsigned NUM_LOCK = riscv_pkg::DmaCoherenceLocks,
@@ -54,7 +54,7 @@ module lq_coherence_port #(
     input logic i_clk,
     input logic i_rst_n,
 
-    // Hierarchy handshake (dma_coherence_sequencer): latched presentations.
+    // Hierarchy handshake: latched presentations.
     input  logic                i_admit_valid,
     input  logic [LockBits-1:0] i_admit_slot,
     input  logic [    XLEN-1:0] i_admit_addr,
