@@ -156,12 +156,12 @@ balanced tree. Each subtree reports whether it holds a ready entry, its first
 ready non-branch entry, and its first ready non-branch entry other than its
 own first ready entry. Merging pairs of subtrees gives the serial answer in
 log2(window) levels. The coherent INT selection uses
-`coherent_rs_issue2_selector`: a ready nonbranch entry is eligible when an earlier
-entry is ready, and a prefix reduction selects the first eligible entry.
-The index is encoded from that entry's one-hot mask. Readiness and selection
-are computed for all four CDB-valid combinations before the live valid bits
-select the result.
-Separate reductions produce the ready and eligible prefixes for each entry.
+`coherent_rs_issue2_selector`. Its first one-hot mask isolates the lowest ready
+entry. The eligible mask excludes that entry and branch-class entries. A second
+one-hot mask isolates the lowest eligible entry. Each isolation computes
+`mask & (~mask + 1)` at the window width. The index is encoded from the selected
+mask. Readiness and selection are computed for all four CDB-valid combinations
+before the live valid bits select the result.
 
 Port 1's stage-2 register captures each operand's final value at issue (CDB
 lane 0, then lane 1, then the resident or repair value), so ALU2 reads its
