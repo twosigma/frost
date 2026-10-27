@@ -1957,10 +1957,21 @@ module load_queue #(
       (i_addr_update.valid ? replace_with_update : replace_without_update);
 `ifdef FROST_COHERENT_CLUSTER
   logic [3:0] coherent_stage_take;
+  wire coherent_stage_replace = sq_check_pending && sq_check_gate_early &&
+      (|(staged_younger_than_entry & issue_mem_onehot));
   wire [3:0] coherent_pending = {sq_check_pending_copy, sq_check_pending};
+`ifndef SYNTHESIS
+`ifdef FORMAL
+  always_comb begin
+`else
+  always @(posedge i_clk) begin
+`endif
+    p_stage_replace_exact : assert (coherent_stage_replace == sq_check_replace);
+  end
+`endif
   for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_coherent_stage_take
     assign coherent_stage_take[copy_index] =
-        sq_check_capture_on(coherent_pending[copy_index]) || sq_check_replace;
+        sq_check_capture_on(coherent_pending[copy_index]) || coherent_stage_replace;
 `ifndef SYNTHESIS
     wire [DEPTH-1:0] permitted =
         {DEPTH{!coherent_pending[copy_index] || sq_check_will_clear}} |
