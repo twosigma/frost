@@ -86,6 +86,16 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "coherent_rs_payload.sby",
+        "Coherent second-issue payload equals two-write banked storage.",
+        tasks=(
+            "coh_rs_payload4_prove",
+            "coh_rs_payload8_prove",
+            "coh_rs_payload16_prove",
+            "coh_rs_payload_wide_prove",
+        ),
+    ),
+    FormalTarget(
         "coherent_rs_control.sby",
         "Coherent second-issue readiness and flush-count equality.",
         tasks=(
@@ -890,6 +900,10 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("coh_rs_payload4_prove", "Coherent payload storage equality at four entries."),
+    ("coh_rs_payload8_prove", "Coherent payload storage equality at eight entries."),
+    ("coh_rs_payload16_prove", "Coherent payload storage equality at sixteen entries."),
+    ("coh_rs_payload_wide_prove", "Coherent payload storage equality at 125 bits."),
     (
         "coh_rs_control_prove",
         "Coherent issue and flush-count equality with three sources.",
