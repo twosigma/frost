@@ -163,6 +163,9 @@ one-hot mask isolates the lowest eligible entry. Each isolation computes
 mask. Availability is computed from ready non-branch entries that have an
 earlier ready entry. Readiness and selection are computed for all four CDB-valid
 combinations before the live valid bits select the result.
+Each combination also selects the immediate-use bit before live CDB validity.
+The secondary clear mask applies port permission to the winner mask. A zero
+winner mask clears no entry.
 
 The coherent selection computes the shift amount for each entry before
 winner selection. The entry chooses its immediate or effective second operand.
@@ -267,7 +270,7 @@ issued while another entry was also ready; the wrapper exports it for MEM_RS.
 | Parameter | Default | Wrapper setting | Effect |
 |-----------|---------|-----------------|--------|
 | `DEPTH` | 8 | Per instance (table above) | Number of entries |
-| `COHERENT_CLUSTER` | 0 | 1 on coherent INT | Select count and full flags from issue outcomes, arithmetic winners and per-entry shift values for port 1; available with the coherent source selection |
+| `COHERENT_CLUSTER` | 0 | 1 on coherent INT | Select coherent issue controls, count and full flags from prepared outcomes; use arithmetic winners and per-entry shift values for port 1 |
 | `HAS_SRC3` | 1 | 1 on FP, 0 elsewhere | Third source operand, for FMA |
 | `DUAL_ISSUE` | 0 | 1 on INT | Second issue port |
 | `ISSUE2_WINDOW` | 0 (all entries) | 8 on INT | Port 1 considers only entries below this index |
