@@ -261,7 +261,7 @@ issued while another entry was also ready; the wrapper exports it for MEM_RS.
 | Parameter | Default | Wrapper setting | Effect |
 |-----------|---------|-----------------|--------|
 | `DEPTH` | 8 | Per instance (table above) | Number of entries |
-| `COHERENT_CLUSTER` | 0 | 1 on coherent INT | Select full flags from issue outcomes and the prefix selector for port 1; available with the coherent source selection |
+| `COHERENT_CLUSTER` | 0 | 1 on coherent INT | Select full flags from issue outcomes and the arithmetic selector for port 1; available with the coherent source selection |
 | `HAS_SRC3` | 1 | 1 on FP, 0 elsewhere | Third source operand, for FMA |
 | `DUAL_ISSUE` | 0 | 1 on INT | Second issue port |
 | `ISSUE2_WINDOW` | 0 (all entries) | 8 on INT | Port 1 considers only entries below this index |
