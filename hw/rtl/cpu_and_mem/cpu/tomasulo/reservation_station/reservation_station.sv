@@ -1056,6 +1056,23 @@ module reservation_station #(
 `ifdef FROST_COHERENT_CLUSTER
   logic coherent_full, coherent_full_for_2;
   if (COHERENT_CLUSTER) begin : gen_coherent_capacity
+    logic [CountWidth-1:0] flush_count;
+    always_comb begin
+      if (i_flush_all) begin
+        flush_count = '0;
+      end else begin
+        flush_count = '0;
+        for (int entry = 0; entry < DEPTH; entry++) begin
+          flush_count += CountWidth'(rs_valid[entry] &&
+              !should_flush_entry(rs_rob_tag[entry], i_flush_tag, i_rob_head_tag));
+        end
+      end
+    end
+`ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
+    always_comb begin
+      p_flush_count_exact : assert (!(i_flush_all || i_flush_en) || flush_count == count_next);
+    end
+`endif
     coherent_rs_capacity #(
         .DEPTH(DEPTH)
     ) capacity (
@@ -1063,7 +1080,7 @@ module reservation_station #(
         .i_issue({issue_fire_2, issue_fire}),
         .i_dispatch({dispatch_fire_2, dispatch_fire}),
         .i_flush(i_flush_all || i_flush_en),
-        .i_flush_count(count_next),
+        .i_flush_count(flush_count),
         .o_full(coherent_full),
         .o_full_for_2(coherent_full_for_2)
     );
@@ -2032,15 +2049,73 @@ module reservation_station #(
       logic [Issue2Window-1:0] issue_sel_2_window;
 `ifdef FROST_COHERENT_CLUSTER
       if (COHERENT_CLUSTER) begin : gen_coherent_second_selector
-        coherent_rs_issue2_selector #(
+        wire [1:0] live_case = {issue_cdb_2_valid, issue_cdb_valid};
+        logic [Issue2Window-1:0] ready_choice[4];
+        (* keep = "true" *) logic [3:0] valid_choice;
+        (* keep = "true" *) logic [$clog2(Issue2Window)-1:0] index_choice[4];
+        (* keep = "true" *) logic [Issue2Window-1:0] onehot_choice[4];
+        for (genvar valids = 0; valids < 4; valids++) begin : gen_valid_choice
+          localparam bit Valid0 = (valids & 1) != 0;
+          localparam bit Valid1 = (valids & 2) != 0;
+          for (genvar entry = 0; entry < Issue2Window; entry++) begin : gen_ready
+            assign ready_choice[valids][entry] = rs_valid[entry] &&
+                !(rs_is_divide[entry] && divide_blocked) &&
+                (rs_src1_ready[entry] || (src1_repair_sel[entry] != 3'd0) ||
+                 (Valid0 && !rs_src1_ready[entry] && !src1_cdb_pend[entry] &&
+                  (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[entry] : rs_src1_tag[entry]) ==
+                      issue_cdb_tag) ||
+                 (LANE1_ISSUE_BYPASS && Valid1 &&
+                  !rs_src1_ready[entry] && !src1_cdb_pend[entry] &&
+                  (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[entry] : rs_src1_tag[entry]) ==
+                      issue_cdb_2_tag)) &&
+                (rs_src2_ready[entry] || (src2_repair_sel[entry] != 3'd0) ||
+                 (Valid0 && !rs_src2_ready[entry] && !src2_cdb_pend[entry] &&
+                  (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[entry] : rs_src2_tag[entry]) ==
+                      issue_cdb_tag) ||
+                 (LANE1_ISSUE_BYPASS && Valid1 &&
+                  !rs_src2_ready[entry] && !src2_cdb_pend[entry] &&
+                  (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[entry] : rs_src2_tag[entry]) ==
+                      issue_cdb_2_tag)) &&
+                (rs_src3_ready[entry] || (src3_repair_sel[entry] != 3'd0) ||
+                 (HAS_SRC3 && Valid0 && !rs_src3_ready[entry] && !src3_cdb_pend[entry] &&
+                  rs_src3_tag[entry] == issue_cdb_tag) ||
+                 (HAS_SRC3 && LANE1_ISSUE_BYPASS && Valid1 &&
+                  !rs_src3_ready[entry] && !src3_cdb_pend[entry] &&
+                  rs_src3_tag[entry] == issue_cdb_2_tag));
+          end
+          coherent_rs_issue2_selector #(
+              .DEPTH(Issue2Window)
+          ) selector (
+              .i_ready(ready_choice[valids]),
+              .i_branch_class(rs_is_branch_class[Issue2Window-1:0]),
+              .o_issue_2_valid(valid_choice[valids]),
+              .o_issue_2_idx(index_choice[valids]),
+              .o_issue_2_onehot(onehot_choice[valids])
+          );
+        end
+        assign any_ready_2 = valid_choice[live_case];
+        assign issue_idx_2_window = index_choice[live_case];
+        assign issue_sel_2_window = onehot_choice[live_case];
+`ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
+        logic f_valid;
+        logic [$clog2(Issue2Window)-1:0] f_index;
+        logic [Issue2Window-1:0] f_onehot;
+        rs_issue2_selector #(
             .DEPTH(Issue2Window)
-        ) selector (
+        ) formal_selector (
             .i_ready(entry_ready[Issue2Window-1:0]),
             .i_branch_class(rs_is_branch_class[Issue2Window-1:0]),
-            .o_issue_2_valid(any_ready_2),
-            .o_issue_2_idx(issue_idx_2_window),
-            .o_issue_2_onehot(issue_sel_2_window)
+            .o_issue_2_valid(f_valid),
+            .o_issue_2_idx(f_index),
+            .o_issue_2_onehot(f_onehot)
         );
+        always_comb begin
+          p_ready_choice_exact : assert (ready_choice[live_case] == entry_ready[Issue2Window-1:0]);
+          p_issue_valid_exact : assert (any_ready_2 == f_valid);
+          p_issue_index_exact : assert (issue_idx_2_window == f_index);
+          p_issue_onehot_exact : assert (issue_sel_2_window == f_onehot);
+        end
+`endif
 `ifndef SYNTHESIS
 `ifndef FORMAL
         logic reference_valid;
@@ -2056,6 +2131,8 @@ module reservation_station #(
             .o_issue_2_onehot(reference_onehot)
         );
         always @(posedge i_clk) begin
+          if (!$isunknown({live_case, entry_ready[Issue2Window-1:0],
+                           rs_is_branch_class[Issue2Window-1:0]}))
           p_issue_selection_exact : assert (
               {any_ready_2, issue_idx_2_window, issue_sel_2_window} ===
               {reference_valid, reference_index, reference_onehot});
