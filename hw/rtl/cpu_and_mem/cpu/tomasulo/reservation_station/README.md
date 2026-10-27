@@ -160,8 +160,9 @@ log2(window) levels. The coherent INT selection uses
 entry. The eligible mask excludes that entry and branch-class entries. A second
 one-hot mask isolates the lowest eligible entry. Each isolation computes
 `mask & (~mask + 1)` at the window width. The index is encoded from the selected
-mask. Readiness and selection are computed for all four CDB-valid combinations
-before the live valid bits select the result.
+mask. Availability is computed from ready non-branch entries that have an
+earlier ready entry. Readiness and selection are computed for all four CDB-valid
+combinations before the live valid bits select the result.
 
 The coherent selection computes the shift amount for each entry before
 winner selection. The entry chooses its immediate or effective second operand.

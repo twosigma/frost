@@ -28,7 +28,18 @@ module coherent_rs_issue2_selector #(
   assign first_ready = i_ready & (~i_ready + DEPTH'(1));
   assign eligible = i_ready & ~i_branch_class & ~first_ready;
   assign o_issue_2_onehot = eligible & (~eligible + DEPTH'(1));
-  assign o_issue_2_valid = |eligible;
+  logic [DEPTH-1:0] later_nonbranch_ready;
+  for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_presence
+    if (entry == 0) begin : gen_first
+      assign later_nonbranch_ready[entry] = 1'b0;
+    end else begin : gen_later
+      (* keep = "true" *) logic earlier_ready;
+      assign earlier_ready = |i_ready[entry-1:0];
+      assign later_nonbranch_ready[entry] =
+          i_ready[entry] && !i_branch_class[entry] && earlier_ready;
+    end
+  end
+  assign o_issue_2_valid = |later_nonbranch_ready;
   always_comb begin
     o_issue_2_idx = '0;
     for (int entry = 0; entry < DEPTH; entry++) begin
