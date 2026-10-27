@@ -36,14 +36,14 @@ module coherent_atomic_guard #(
 );
   logic [1:0] context_choice[2];
   logic [1:0] selected_context;
-  for (genvar entry_case = 0; entry_case < 2; entry_case++) begin : gen_entry_case
-    localparam bit EntryWins = entry_case != 0;
+  for (genvar arm_case = 0; arm_case < 2; arm_case++) begin : gen_arm_case
+    localparam bit CanArm = arm_case != 0;
     (* keep = "true" *) logic [1:0] result;
     logic active, retired;
     always_comb begin
       active  = o_active;
       retired = o_retired;
-      if (!o_active && i_arm_valid && i_head_valid && i_arm_tag == i_head_tag && !EntryWins) begin
+      if (!o_active && CanArm && i_head_valid && i_arm_tag == i_head_tag) begin
         active  = 1'b1;
         retired = 1'b0;
       end
@@ -52,11 +52,11 @@ module coherent_atomic_guard #(
       if (o_active && i_own_fault && !i_home_live) active = 1'b0;
     end
     assign result = {active, retired};
-    assign context_choice[entry_case] = result;
+    assign context_choice[arm_case] = result;
   end
   always_comb begin
-    selected_context = context_choice[1];
-    if (!i_entry_wins) selected_context = context_choice[0];
+    selected_context = context_choice[0];
+    if (i_arm_valid && !i_entry_wins) selected_context = context_choice[1];
   end
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
