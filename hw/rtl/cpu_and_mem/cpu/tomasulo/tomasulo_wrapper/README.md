@@ -288,6 +288,10 @@ Coherent atomic candidate selection compares each source tag with the ROB head
 before selection. SC has priority over AMO. A qualified candidate carries the
 head tag; an invalid candidate's tag is unqualified.
 
+Coherent SC completion supplies a zero-value flag from the selected success
+or fault-address source. The uncached store permit uses this flag with the
+completion valid bit and cached-region classification.
+
 The coherent SC table classifies aligned power-of-two cached regions with an
 address mask. Empty, unaligned, non-power-of-two or wrapping regions use the
 unsigned range comparison.

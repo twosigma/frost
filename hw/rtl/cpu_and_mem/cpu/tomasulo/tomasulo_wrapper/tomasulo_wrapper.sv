@@ -1676,8 +1676,25 @@ module tomasulo_wrapper #(
   // Resolve the reservation at the head, but do not announce successful
   // uncached SC until the AXI write response. Failed SC still returns 1
   // immediately and the commit-side discard removes its SQ entry.
+`ifdef FROST_COHERENT_CLUSTER
+  logic sc_value_zero;
+  if (COHERENT_CLUSTER) begin : gen_coherent_sc_value
+    assign uncached_sc_success = MEM_RESPONSE_ERRORS && sc_resolution.valid &&
+        sc_value_zero && !coh_sc_head_is_cached;
+`ifndef SYNTHESIS
+    always @(posedge i_clk) begin
+      p_uncached_sc_exact :
+      assert (uncached_sc_success == (MEM_RESPONSE_ERRORS && sc_resolution.valid &&
+          (sc_resolution.value == '0) && !coh_sc_head_is_cached));
+    end
+`endif
+  end else begin : gen_direct_sc_value
+`endif
   assign uncached_sc_success = MEM_RESPONSE_ERRORS && sc_resolution.valid &&
       (sc_resolution.value == '0) && !coh_sc_head_is_cached;
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`endif
   always_comb begin
     sc_fu_complete = sc_resolution;
     sc_fu_complete.valid = sc_resolution.valid && !uncached_sc_success;
@@ -2277,6 +2294,7 @@ module tomasulo_wrapper #(
       .o_coherent_result_ready         (o_coherent_sc_result_ready),
       .i_coherent_success              (i_coherent_sc_success),
       .i_coherent_error                (i_coherent_sc_error),
+      .o_sc_value_zero                 (sc_value_zero),
 `endif
       .i_clk                           (i_clk),
       .i_rst_n                         (i_rst_n),

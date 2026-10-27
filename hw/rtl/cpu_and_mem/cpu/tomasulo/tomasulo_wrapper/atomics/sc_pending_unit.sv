@@ -63,6 +63,7 @@ module sc_pending_unit #(
     output logic o_coherent_result_ready,
     input logic i_coherent_success = 1'b0,
     input logic i_coherent_error = 1'b0,
+    output logic o_sc_value_zero,
 `endif
     input logic i_clk,
     input logic i_rst_n,
@@ -413,6 +414,7 @@ module sc_pending_unit #(
 
     // SC completion carries the selected request identity.
     always_comb begin
+      o_sc_value_zero = coherent_selected_q ? i_coherent_success : sc_success;
       sc_fu_complete = '0;
       sc_fu_complete.valid = sc_fire_now;
       sc_fu_complete.tag = coherent_selected_q ? coherent_tag_q : head_tag;
@@ -420,6 +422,7 @@ module sc_pending_unit #(
         {(riscv_pkg::FLEN - 1) {1'b0}}, ~(coherent_selected_q ? i_coherent_success : sc_success)
       };
       if (coherent_selected_q && i_coherent_error) begin
+        o_sc_value_zero = coherent_vaddr_q == '0;
         sc_fu_complete.value = riscv_pkg::FLEN'(coherent_vaddr_q);
         sc_fu_complete.exception = 1'b1;
         sc_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(riscv_pkg::ExcStoreAccessFault);
@@ -428,6 +431,7 @@ module sc_pending_unit #(
     assign o_sc_fire_success = sc_fire_now &&
         (coherent_selected_q ? i_coherent_success && !i_coherent_error : sc_success);
   end else begin : gen_line_completion
+    assign o_sc_value_zero = sc_success;
     assign sc_slot_ready = 1'b0;
     assign coherent_head = 1'b0;
     assign coherent_selected_q = 1'b0;
@@ -582,6 +586,18 @@ module sc_pending_unit #(
 
   assign o_sc_pending     = |sct_valid;
   assign o_sc_fu_complete = sc_fu_complete;
+`ifdef FROST_COHERENT_CLUSTER
+`ifndef SYNTHESIS
+`ifdef FORMAL
+  always_comb begin
+`else
+  always @(posedge i_clk) begin
+    if (!$isunknown({o_sc_value_zero, sc_fu_complete.value}))
+`endif
+      p_sc_value_zero_exact : assert (o_sc_value_zero == (sc_fu_complete.value == '0));
+  end
+`endif
+`endif
 
 `ifdef FROST_COHERENT_CLUSTER
 `ifdef COHERENT_SC_LOCAL_PROOF
