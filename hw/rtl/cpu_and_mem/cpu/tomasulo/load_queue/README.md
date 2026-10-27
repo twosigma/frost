@@ -76,6 +76,9 @@ load if it is ready for memory, which wins. A device load may be staged before
 it reaches the ROB head, but device loads, LRs and AMOs neither probe the SQ
 nor leave the LQ until they are at the head.
 
+Coherent capture, issue and forwarding control banks elaborate only when
+`COHERENT_CLUSTER` is enabled.
+
 The coherent selection computes memory candidates for both SQ drain states
 in [`coherent_lq_issue_selector.sv`](coherent_lq_issue_selector.sv). The live
 drain flag selects between those results. Each case also computes staged

@@ -127,8 +127,24 @@ def test_reject_endpoint_configuration(module: str, parameter: str, value: int) 
 def test_coherent_cpu_configuration(cached: int, dma: int) -> None:
     """The coherent CPU elaborates with optional caches and DMA ingress."""
     runner = YosysRunner()
+    checks = "select -assert-any *load_queue*/w:*; "
+    controls = (
+        "*load_queue*/w:*gen_commit_choice*",
+        "*load_queue*/w:*gen_coherent_drain_choice*",
+        "*load_queue*/w:*gen_coherent_head_choice*",
+        "*load_queue*/w:gen_coherent_forward_gate.*",
+        "*load_queue*/w:gen_coherent_replace_gate.*",
+        "*load_queue*/w:gen_coherent_capture_choices.*",
+        "*load_queue*/w:gen_coherent_issue_gate.*",
+    )
+    for control in controls:
+        checks += f"select -assert-{'any' if cached else 'none'} {control}; "
+    if not cached:
+        checks += "select -assert-none *load_queue*/w:coherent_* a:keep %i; "
     result = runner.run_synthesis(
-        synth_command="synth -top cpu_top -run coarse",
+        synth_command="synth -top cpu_top -run begin:begin; "
+        + checks
+        + "synth -top cpu_top -run coarse",
         top_module="cpu_top",
         parameters={
             "COHERENT_CLUSTER": 1,
