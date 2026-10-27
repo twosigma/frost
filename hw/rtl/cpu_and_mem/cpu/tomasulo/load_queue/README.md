@@ -107,7 +107,9 @@ forwarding and fault eligibility terms. Older pending AMOs independently
 clear the staged load. Issue, forwarding and probes require staging validity;
 issue and forwarding also apply the older-AMO veto.
 
-Capture, replacement and clear controls directly determine the staged state. Sector
+Capture and clear outcomes are computed for both memory-busy states.
+The memory-busy input selects the outcome after local permission and candidate
+selection. Capture, replacement and clear controls directly determine the staged state. Sector
 blocking supplies capture permission separately from the condition that clears
 the stage. Coherent issue,
 forwarding and SQ-probe predicates decode address faults before applying
