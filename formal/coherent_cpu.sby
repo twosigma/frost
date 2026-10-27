@@ -2,6 +2,11 @@
 coh_address_class_prove address_class
 coh_candidate_select_prove candidate
 coh_sc_selected_prove sc
+coh_sc_class_small_prove sc sc_small
+coh_sc_class_offset_prove sc sc_offset
+coh_sc_class_size_prove sc sc_size
+coh_sc_class_zero_prove sc sc_zero
+coh_sc_class_wrap_prove sc sc_wrap
 coh_lq_cut_prove lq
 coh_lq_forward_prove lq forward
 coh_lq_forward_normal_prove lq forward normal
@@ -22,6 +27,11 @@ smtbmc boolector
 read -sv riscv_pkg.sv
 sc: read -formal -sv -D FROST_COHERENT_CLUSTER -D COHERENT_SC_LOCAL_PROOF sc_pending_unit.sv
 sc: chparam -set COHERENT_CLUSTER 1 sc_pending_unit
+sc_small: chparam -set CACHED_BASE 8192 -set CACHED_SIZE_BYTES 4096 sc_pending_unit
+sc_offset: chparam -set CACHED_BASE 2147483680 -set CACHED_SIZE_BYTES 8192 sc_pending_unit
+sc_size: chparam -set CACHED_SIZE_BYTES 402653184 sc_pending_unit
+sc_zero: chparam -set CACHED_BASE 0 -set CACHED_SIZE_BYTES 0 sc_pending_unit
+sc_wrap: chparam -set CACHED_BASE 64'hfffffffffffff000 -set CACHED_SIZE_BYTES 4096 sc_pending_unit
 sc: prep -flatten -top sc_pending_unit
 lq: read -sv -D FROST_COHERENT_CLUSTER sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv lq_l0_cache.sv coherent_l0_flags.sv lq_issue_selector.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv
 lq: read -formal -sv coherent_lq_address_store.sv

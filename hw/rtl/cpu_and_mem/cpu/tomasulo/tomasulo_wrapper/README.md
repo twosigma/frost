@@ -284,6 +284,10 @@ does not complete at issue. It waits in `sc_pending_unit`. Selection requires:
 With `COHERENT_CLUSTER=0`, the DMA coherence port can hold SC fires around a
 DMA write.
 
+The coherent SC table classifies aligned power-of-two cached regions with an
+address mask. Empty, unaligned, non-power-of-two or wrapping regions use the
+unsigned range comparison.
+
 With `COHERENT_CLUSTER=1`, a cached SC compares the exact physical address
 and W/D size recorded by LR. The reservation set is a 32-byte sector. Local
 writes and DMA invalidations to that sector clear it; read probes preserve
