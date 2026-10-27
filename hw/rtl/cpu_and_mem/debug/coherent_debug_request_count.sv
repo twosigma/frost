@@ -14,27 +14,31 @@
  *    limitations under the License.
  */
 
-// Accepted requests toggle a count bit when its lower bits are all ones.
+// Request validity selects the count prepared from readiness and carry bits.
 module coherent_debug_request_count #(
     parameter int unsigned WIDTH = 8
 ) (
     input logic i_clk,
     input logic i_rst,
-    input logic i_accept,
+    input logic i_valid,
+    input logic i_ready,
     output logic [WIDTH-1:0] o_count
 );
-  logic accepted;
+  logic valid, ready;
   logic [WIDTH-1:0] carry;
-  (* keep = "true" *) logic [WIDTH-1:0] next_count;
+  (* keep = "true" *) logic [WIDTH-1:0] ready_count, next_count;
   always_comb begin
-    accepted = 1'b0;
-    if (i_accept) accepted = 1'b1;
+    valid = 1'b0;
+    ready = 1'b0;
+    if (i_valid) valid = 1'b1;
+    if (i_ready) ready = 1'b1;
   end
   assign carry[0] = 1'b1;
   for (genvar bit_index = 1; bit_index < WIDTH; bit_index++) begin : gen_carry
     assign carry[bit_index] = &o_count[bit_index-1:0];
   end
-  assign next_count = o_count ^ (carry & {WIDTH{accepted}});
+  assign ready_count = o_count ^ (carry & {WIDTH{ready}});
+  assign next_count  = valid ? ready_count : o_count;
   always_ff @(posedge i_clk) begin
     if (i_rst) o_count <= '0;
     else o_count <= next_count;
@@ -46,14 +50,14 @@ module coherent_debug_request_count #(
     if (i_rst) begin
       reference_count <= '0;
       reference_seen  <= 1'b1;
-    end else if (i_accept) reference_count <= reference_count + 1'b1;
+    end else if (i_valid && i_ready) reference_count <= reference_count + 1'b1;
     if (reference_seen) p_count_exact : assert (o_count === reference_count);
   end
 `endif
 `ifdef FORMAL
   initial assume (i_rst);
   always_comb begin
-    p_next_exact : assert (next_count == o_count + WIDTH'(accepted));
+    p_next_exact : assert (next_count == o_count + WIDTH'(i_valid && i_ready));
   end
 `endif
 endmodule

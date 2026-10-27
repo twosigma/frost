@@ -97,7 +97,8 @@ module debug_slice_writer #(
     coherent_debug_request_count #(.WIDTH(CountBits)) counter (
         .i_clk,
         .i_rst,
-        .i_accept(accept),
+        .i_valid(i_req_valid),
+        .i_ready(o_req_ready),
         .o_count(req_count_q)
     );
   end else begin : gen_direct_request_count
