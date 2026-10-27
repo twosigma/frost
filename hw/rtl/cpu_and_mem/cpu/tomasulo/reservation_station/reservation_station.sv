@@ -797,6 +797,9 @@ module reservation_station #(
   logic [DEPTH-1:0] issue_sel_2;
   logic any_ready_2;
   logic issue_fire_2;
+`ifdef FROST_COHERENT_CLUSTER
+  logic [DEPTH-1:0] coherent_issue2_clear_mask;
+`endif
   logic stage2b_valid;
   logic stage2b_head_query_match;
   logic [(2**$clog2(DEPTH))-1:0] issue_sel_2_ohread;
@@ -2052,10 +2055,12 @@ module reservation_station #(
       logic [$clog2(Issue2Window)-1:0] issue_idx_2_window;
       logic [Issue2Window-1:0] issue_sel_2_window;
 `ifdef FROST_COHERENT_CLUSTER
+      logic coherent_issue2_use_imm;
       if (COHERENT_CLUSTER) begin : gen_coherent_second_selector
         wire [1:0] live_case = {issue_cdb_2_valid, issue_cdb_valid};
         (* keep = "true" *) logic [Issue2Window-1:0] ready_choice[4];
         (* keep = "true" *) logic [3:0] valid_choice;
+        (* keep = "true" *) logic [3:0] use_imm_choice;
         (* keep = "true" *) logic [$clog2(Issue2Window)-1:0] index_choice[4];
         (* keep = "true" *) logic [Issue2Window-1:0] onehot_choice[4];
         for (genvar valids = 0; valids < 4; valids++) begin : gen_valid_choice
@@ -2087,6 +2092,8 @@ module reservation_station #(
                   !rs_src3_ready[entry] && !src3_cdb_pend[entry] &&
                   rs_src3_tag[entry] == issue_cdb_2_tag));
           end
+          assign use_imm_choice[valids] =
+              |(rs_use_imm[Issue2Window-1:0] & onehot_choice[valids]);
           coherent_rs_issue2_selector #(
               .DEPTH(Issue2Window)
           ) selector (
@@ -2097,6 +2104,7 @@ module reservation_station #(
               .o_issue_2_onehot(onehot_choice[valids])
           );
         end
+        assign coherent_issue2_use_imm = use_imm_choice[live_case];
         assign any_ready_2 = valid_choice[live_case];
         assign issue_idx_2_window = index_choice[live_case];
         assign issue_sel_2_window = onehot_choice[live_case];
@@ -2144,6 +2152,7 @@ module reservation_station #(
 `endif
 `endif
       end else begin : gen_line_second_selector
+        assign coherent_issue2_use_imm = 1'b0;
 `endif
       rs_issue2_selector #(
           .DEPTH(Issue2Window)
@@ -2450,6 +2459,28 @@ module reservation_station #(
       assign issue_fire_2 = any_ready_2 && i_fu_ready_2 && can_issue_to_stage2b &&
           !i_flush_all && !i_flush_en;
 
+`ifdef FROST_COHERENT_CLUSTER
+      assign coherent_issue2_clear_mask = issue_sel_2 &
+          {DEPTH{i_fu_ready_2 && can_issue_to_stage2b && !i_flush_all && !i_flush_en}};
+`ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
+      always_comb begin
+        p_coherent_use_imm_exact : assert (coherent_issue2_use_imm == issue2_use_imm_selected);
+        p_coherent_clear_mask_exact : assert (
+            coherent_issue2_clear_mask == ({DEPTH{issue_fire_2}} & issue_sel_2));
+      end
+`endif
+`ifndef SYNTHESIS
+      always @(posedge i_clk) begin
+        if (COHERENT_CLUSTER && i_rst_n) begin
+          p_coherent_clear_capture_exact : assert (
+              coherent_issue2_clear_mask == ({DEPTH{issue_fire_2}} & issue_sel_2));
+          if (issue_fire_2)
+          p_coherent_use_imm_capture_exact : assert (
+              coherent_issue2_use_imm == issue2_use_imm_selected);
+        end
+      end
+`endif
+`endif
       always_ff @(posedge i_clk) begin
         if (!i_rst_n) begin
           stage2b_valid <= 1'b0;
@@ -2474,6 +2505,10 @@ module reservation_station #(
           end
           stage2b_imm <= pl2_imm;
           stage2b_jalr_imm <= pl2_jalr_imm;
+`ifdef FROST_COHERENT_CLUSTER
+          if (COHERENT_CLUSTER) stage2b_use_imm <= coherent_issue2_use_imm;
+          else
+`endif
           stage2b_use_imm <= issue2_use_imm_selected;
           stage2b_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ?
               issue2_writes_cdb_hint_selected : 1'b0;
@@ -2633,6 +2668,9 @@ module reservation_station #(
       assign issue_sel_2 = '0;
       assign any_ready_2 = 1'b0;
       assign issue_fire_2 = 1'b0;
+`ifdef FROST_COHERENT_CLUSTER
+      assign coherent_issue2_clear_mask = '0;
+`endif
       assign stage2b_valid = 1'b0;
       assign stage2b_head_query_match = 1'b0;
       assign o_issue_2 = '0;
@@ -2674,7 +2712,15 @@ module reservation_station #(
   logic [DEPTH-1:0] issue1_clear_mask;
   assign issue1_clear_mask = {DEPTH{issue_fire}} & primary_issue_onehot[DEPTH-1:0];
   logic [DEPTH-1:0] issue2_clear_mask;
+`ifdef FROST_COHERENT_CLUSTER
+  if (COHERENT_CLUSTER) begin : gen_coherent_issue2_clear
+    assign issue2_clear_mask = coherent_issue2_clear_mask;
+  end else begin : gen_line_issue2_clear
+`endif
   assign issue2_clear_mask = {DEPTH{issue_fire_2}} & issue_sel_2;
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`endif
 
 `ifdef RS_ISSUE_CLEAR_LOCAL_PROOF
   logic [DEPTH-1:0] f_issue2_clear_mask;
