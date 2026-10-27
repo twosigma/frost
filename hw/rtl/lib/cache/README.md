@@ -159,6 +159,10 @@ records. A record accepts C only after G and emits U only after C and every
 registered absorbed-PutAck dependency. It becomes available on U consumption.
 The caller owns the line lock and destination pin through that edge.
 Completion identity and address comparisons use parallel three-bit groups.
+Hart completion payloads select with local endpoint phase indications.
+Channel valid signals apply reset qualification. Outside reset, each phase
+indication equals its channel-valid signal. The local `o_c_selected` output
+supplies this indication to the hart payload multiplexer.
 
 The home service registers an absorbed R through `i_absorb` after preserving
 its dirty image in a reserved sink. This port records cancellation metadata;
