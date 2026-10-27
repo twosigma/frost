@@ -208,7 +208,7 @@ module coherence_l1d #(
   logic pending_blocked;
 
   assign read_failure = active && phase_q == Idle &&
-      !(probe_valid_q && !o_r_valid) && !i_p_valid && !(i_sc_valid && o_sc_ready) &&
+      !(probe_valid_q && !o_r_valid) && !i_p_valid &&
       grant_valid && (grant.error || grant.opcode == coherence_pkg::GrantFail) &&
       !acquisition_sc_q && !acquisition_store_q;
   assign read_hit = active && phase_q == LookupWait && array_valid &&
@@ -660,8 +660,6 @@ module coherence_l1d #(
               else phase_q <= Lookup;
             end else if (i_p_valid) begin
               // Probe capture owns this arbitration edge.
-            end else if (i_sc_valid && o_sc_ready) begin
-              // The selected SC owns the following acquisition.
             end else if (grant_valid) begin
               grant_q <= grant;
               operation_q <= GrantOp;
@@ -680,6 +678,8 @@ module coherence_l1d #(
                   o_fatal_addr <= acquisition_q.addr;
                 end
               end else phase_q <= Lookup;
+            end else if (i_sc_valid && o_sc_ready) begin
+              // The selected SC owns the following acquisition.
             end else if (atomic_write_q) begin
               operation_q <= AtomicWriteOp;
               lookup_addr_q <= atomic_addr_q;
@@ -897,6 +897,10 @@ module coherence_l1d #(
   end
 `ifndef SYNTHESIS
   logic [7:0] reference_ready_next, reference_error_next, reference_valid_next, reference_miss_next;
+  always_ff @(posedge i_clk) begin
+    p_grant_live : assert (!grant_valid || request_live);
+    p_grant_sc_exclusive : assert (!(grant_valid && o_sc_ready));
+  end
   always_comb begin
     reference_valid_next = rd_valid_q;
     reference_miss_next  = rd_miss_q;

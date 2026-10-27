@@ -212,6 +212,10 @@ Read status uses per-slot masks for allocation, response transfer, lookup
 results and grant completion. Completion and miss sets dominate allocation
 clears. Allocation sets dominate response clears of valid bits. A failed
 grant supplies the selected read's error bit.
+
+An L1D grant belongs to a live request endpoint. SC acceptance requires that
+endpoint to be idle, so grant processing and SC acceptance are mutually
+exclusive. Probe capture and service precede both in the local arbitration.
 Read-slot payload writes pass through a one-record buffer. Its forwarding mux
 makes each allocation visible on the allocation edge. Each slot keeps its
 allocated payload until reset or another allocation to that slot.

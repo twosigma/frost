@@ -138,6 +138,9 @@ module coherence_request_endpoint #(
     initial $fatal(1, "coherence_request_endpoint: invalid parameters");
   end
 `ifdef FORMAL
+  always_comb begin
+    p_grant_live : assert (!o_grant_valid || o_live);
+  end
   logic f_past_valid = 1'b0;
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
