@@ -252,6 +252,12 @@ keeps its exact slot and epoch until WA cancellation, and an ordinary PutM
 keeps the home busy through WA. DMA reads collect dirty private data; DMA
 writes merge only their selected bytes after invalidation.
 
+The home computes probe eligibility from its phase and fatal status before
+reset qualifies the probe-valid output. The L1D computes incoming invalidate
+eligibility from its phase, probe occupancy, reply occupancy, opcode and fatal
+status. Probe validity and reset qualify that eligibility before it combines
+with the resident invalidation hold.
+
 The CPU cut stops local load launches at invalidation-probe capture. No read merging
 crosses the cut. Invalidation covers L1D, L0, live read slots, reservations
 and returned-load observations held until retirement. Delayed invalidated

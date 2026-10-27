@@ -277,9 +277,23 @@ module coherence_l1d #(
       !probe_valid_q && !i_p_valid;
   assign o_sc_write_tag = atomic_tag_q;
   assign o_p_ready = active && phase_q == Idle && !probe_valid_q && !o_r_valid;
-  assign o_cut_hold = (i_p_valid && o_p_ready && probe_in.opcode ==
-      coherence_pkg::ProbeInvalidate) ||
+  (* keep = "true" *) wire invalidate_eligible = !i_fatal_stop && !o_fatal &&
+      phase_q == Idle && !probe_valid_q && !o_r_valid &&
+      probe_in.opcode == coherence_pkg::ProbeInvalidate;
+  assign o_cut_hold = (i_p_valid && !i_rst && invalidate_eligible) ||
       (probe_valid_q && probe_q.opcode == coherence_pkg::ProbeInvalidate && phase_q != ProbeReply);
+`ifndef SYNTHESIS
+`ifdef FORMAL
+  always_comb begin
+`else
+  always @(posedge i_clk) begin
+`endif
+    p_cut_hold_exact : assert (o_cut_hold ==
+        ((i_p_valid && o_p_ready && probe_in.opcode == coherence_pkg::ProbeInvalidate) ||
+         (probe_valid_q && probe_q.opcode == coherence_pkg::ProbeInvalidate &&
+          phase_q != ProbeReply)));
+  end
+`endif
   assign o_cut_address = probe_q.addr;
   assign o_cut_admit_valid = active && phase_q == CutAdmit;
   assign o_cut_inval_valid = active && phase_q == CutInvalidate;
