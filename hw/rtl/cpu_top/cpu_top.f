@@ -6,6 +6,7 @@ $(ROOT)/hw/rtl/lib/stall_capture_reg.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/cached_tier_adapter.sv
 $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode_line.sv
 $(ROOT)/hw/rtl/cpu_and_mem/fetch_provider.sv
+$(ROOT)/hw/rtl/cpu_top/debug_fetch_barrier.sv
 $(ROOT)/hw/rtl/cpu_top/cpu_axi_master.sv
 $(ROOT)/hw/rtl/cpu_top/cpu_uncached_adapter.sv
 $(ROOT)/hw/rtl/cpu_top/cpu_memory_fabric.sv

@@ -256,6 +256,25 @@ module frost_hart #(
   logic uncached_write_buffered;
   localparam longint unsigned CachedBase = riscv_pkg::DdrBase;
   localparam longint unsigned CachedSizeBytes = riscv_pkg::DdrCapacityBytes;
+  logic debug_go, debug_fetch_invalidate;
+  logic [31:0] debug_go_addr;
+  if (CACHE_NORMAL_MEMORY) begin : gen_debug_fetch_barrier
+    debug_fetch_barrier barrier (
+        .i_clk,
+        .i_rst,
+        .i_req_valid(i_dbg_go),
+        .i_req_addr(i_dbg_go_addr),
+        .i_go_taken(o_dbg_go_taken),
+        .o_invalidate(debug_fetch_invalidate),
+        .o_go_valid(debug_go),
+        .o_go_addr(debug_go_addr)
+    );
+  end else begin : gen_debug_fetch_bypass
+    assign debug_go = i_dbg_go;
+    assign debug_go_addr = i_dbg_go_addr;
+    assign debug_fetch_invalidate = 1'b0;
+  end
+
   cpu_ooo #(
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .MEM_BYTE_ADDR_WIDTH(riscv_pkg::LowBramAddrBits),
@@ -398,8 +417,8 @@ module frost_hart #(
 
       // Debug module interface
       .i_dbg_haltreq(i_dbg_haltreq),
-      .i_dbg_go(i_dbg_go),
-      .i_dbg_go_addr(i_dbg_go_addr),
+      .i_dbg_go(debug_go),
+      .i_dbg_go_addr(debug_go_addr),
       .i_dbg_data(i_dbg_data),
       .o_dbg_data_we(o_dbg_data_we),
       .o_dbg_data_wdata(o_dbg_data_wdata),
@@ -460,7 +479,7 @@ module frost_hart #(
   assign instruction_fault0_page = served_page0[provider_q];
   assign instruction_fault1_page = served_page1[provider_q];
   wire normal_fetch_invalidate = fence_i_flush ||
-      (CACHE_NORMAL_MEMORY ? o_dbg_go_taken : fetch_cached_retarget);
+      (CACHE_NORMAL_MEMORY ? debug_fetch_invalidate : fetch_cached_retarget);
   fetch_provider #(
       .LINE_BYTES(NormalFetchBytes),
       .LINE_ID_BITS(1),

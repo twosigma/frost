@@ -49,6 +49,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/data_mem_response_mux.sv
 $(ROOT)/hw/rtl/cpu_top/cpu_axi_master.sv
 $(ROOT)/hw/rtl/cpu_top/cpu_uncached_adapter.sv
 $(ROOT)/hw/rtl/cpu_top/cpu_memory_fabric.sv
+$(ROOT)/hw/rtl/cpu_top/debug_fetch_barrier.sv
 $(ROOT)/hw/rtl/cpu_top/frost_hart.sv
 $(ROOT)/hw/rtl/cpu_top/frost_cluster_memory.sv
 $(ROOT)/hw/rtl/cpu_top/cpu_top.sv
