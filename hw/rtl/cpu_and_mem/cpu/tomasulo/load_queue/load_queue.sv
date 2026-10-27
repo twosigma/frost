@@ -1694,12 +1694,21 @@ module load_queue #(
     wire [DEPTH-1:0] reference_mem_onehot = head_mem_stored_found ? head_mem_stored_onehot :
         (i_addr_update.valid && head_mem_update_found) ? head_mem_update_onehot :
         update_scan_wins ? update_scan_onehot : stored_scan_found ? stored_scan_onehot : '0;
+    wire [IdxWidth-1:0] reference_mem_idx = head_mem_stored_found ? head_mem_stored_idx :
+        (i_addr_update.valid && head_mem_update_found) ? head_mem_update_idx :
+        update_scan_wins ? update_scan_idx : stored_scan_found ? stored_scan_idx : '0;
+    wire [ReorderBufferTagWidth-1:0] reference_mem_tag;
+    assign reference_mem_tag = head_mem_stored_found ? stored_issue_rob_tag :
+        (i_addr_update.valid && head_mem_update_found) ? update_issue_rob_tag :
+        update_scan_wins ? update_scan_rob_tag : stored_scan_found ? stored_scan_rob_tag : '0;
 `ifdef FORMAL
     always_comb begin
 `else
     always @(posedge i_clk) begin
 `endif
       p_issue_mask_exact : assert (issue_mem_onehot == reference_mem_onehot);
+      p_issue_idx_exact : assert (issue_mem_idx == reference_mem_idx);
+      p_issue_tag_exact : assert (issue_mem_rob_tag == reference_mem_tag);
       p_scan_order_exact : assert (update_scan_older_than_stored_scan ==
           (update_scan_issueable && (!stored_scan_found || (update_scan_pos < stored_scan_pos))));
       p_issue_found_exact : assert (issue_mem_found ==
@@ -1710,6 +1719,21 @@ module load_queue #(
 `endif
 `endif
   assign update_scan_wins = i_addr_update.valid && update_scan_older_than_stored_scan;
+
+`ifdef FROST_COHERENT_CLUSTER
+  wire [DEPTH-1:0] coherent_ring_mask =
+      i_addr_update.valid ? merged_scan_onehot : stored_scan_onehot;
+  logic [IdxWidth-1:0] coherent_ring_idx;
+  logic [ReorderBufferTagWidth-1:0] coherent_ring_tag;
+  always_comb begin
+    coherent_ring_idx = '0;
+    coherent_ring_tag = '0;
+    for (int entry = 0; entry < DEPTH; entry++) begin
+      coherent_ring_idx |= {IdxWidth{coherent_ring_mask[entry]}} & IdxWidth'(entry);
+      coherent_ring_tag |= {ReorderBufferTagWidth{coherent_ring_mask[entry]}} & lq_rob_tag[entry];
+    end
+  end
+`endif
 
   // Phase B: prefer an eligible ROB-head load, then ring order. Select stored
   // and arriving-address candidates separately for address RAM timing.
@@ -1757,6 +1781,11 @@ module load_queue #(
       issue_mem_onehot = head_mem_stored_found ? head_mem_stored_onehot :
           (i_addr_update.valid && head_mem_update_found) ? head_mem_update_onehot :
           i_addr_update.valid ? merged_scan_onehot : stored_scan_onehot;
+      issue_mem_idx = head_mem_stored_found ? head_mem_stored_idx :
+          (i_addr_update.valid && head_mem_update_found) ? head_mem_update_idx : coherent_ring_idx;
+      issue_mem_rob_tag = head_mem_stored_found ? head_mem_stored_rob_tag :
+          (i_addr_update.valid && head_mem_update_found) ?
+              head_mem_update_rob_tag : coherent_ring_tag;
     end
 `endif
   end
@@ -1842,18 +1871,32 @@ module load_queue #(
 `ifdef FROST_COHERENT_CLUSTER
   if (COHERENT_CLUSTER) begin : gen_coherent_staged_class
     logic pma_ok_q, cached_q;
+    wire stored_atomic = lq_is_amo[issue_mem_stored_idx] || lq_is_lr[issue_mem_stored_idx];
+    wire update_atomic = lq_is_amo[update_issue_payload_idx] || lq_is_lr[update_issue_payload_idx];
+    (* keep = "true" *) wire stored_permission =
+        stored_atomic ? coherent_stored_class[2] : coherent_stored_class[1];
+    (* keep = "true" *) wire update_permission =
+        update_atomic ? coherent_update_class[2] : coherent_update_class[1];
+    wire selected_permission = issue_mem_uses_addr_update ? update_permission : stored_permission;
     wire [2:0] selected_class = issue_mem_uses_addr_update ?
         coherent_update_class : coherent_stored_class;
     always_ff @(posedge i_clk) begin
       if (sq_check_payload_en) begin
-        pma_ok_q <= (sq_check_is_amo_next || sq_check_is_lr_next) ?
-            selected_class[2] : selected_class[1];
+        pma_ok_q <= selected_permission;
         cached_q <= selected_class[0];
       end
     end
     assign sq_check_pma_ok = pma_ok_q;
     assign sq_check_is_cached_region = cached_q;
 `ifndef SYNTHESIS
+`ifdef FORMAL
+    always_comb begin
+`else
+    always @(posedge i_clk) begin
+`endif
+      p_stage_class_choice_exact : assert (selected_permission ==
+          ((sq_check_is_amo_next || sq_check_is_lr_next) ? selected_class[2] : selected_class[1]));
+    end
     logic payload_seen = 1'b0;
     logic pending_payload_seen = 1'b0;
     logic reset_seen = 1'b0;
@@ -1957,8 +2000,7 @@ module load_queue #(
       (i_addr_update.valid ? replace_with_update : replace_without_update);
 `ifdef FROST_COHERENT_CLUSTER
   logic [3:0] coherent_stage_take;
-  wire coherent_stage_replace = sq_check_pending && sq_check_gate_early &&
-      (|(staged_younger_than_entry & issue_mem_onehot));
+  wire coherent_stage_replace = sq_check_replace;
   wire [3:0] coherent_pending = {sq_check_pending_copy, sq_check_pending};
 `ifndef SYNTHESIS
 `ifdef FORMAL
@@ -1966,7 +2008,9 @@ module load_queue #(
 `else
   always @(posedge i_clk) begin
 `endif
-    p_stage_replace_exact : assert (coherent_stage_replace == sq_check_replace);
+    p_stage_replace_exact : assert (coherent_stage_replace ==
+        (sq_check_pending && sq_check_gate_early &&
+         (|(staged_younger_than_entry & issue_mem_onehot))));
   end
 `endif
   for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_coherent_stage_take
