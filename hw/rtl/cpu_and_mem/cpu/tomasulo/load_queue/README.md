@@ -486,6 +486,8 @@ a memory response, a fault, an SQ forward, and an L0 hit.
 The coherent selection compares completion indices with each entry before
 selecting the free mask. Allocation has priority over freeing, and reset and
 full flush clear every valid bit.
+Cached response slots each qualify their live entry and AMO kind before
+response selection. The uncached tracker supplies its own qualification.
 
 In the coherent selection, bypass payloads use the staged address-fault and
 forwarding predicates before cut and sector holds. Staged-load capture applies

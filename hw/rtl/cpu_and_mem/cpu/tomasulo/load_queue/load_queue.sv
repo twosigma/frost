@@ -2698,8 +2698,43 @@ module load_queue #(
   // Never fill on full flush or from a previously drop-marked response. MMIO,
   // LR, AMO, and cached responses invalidated by a store or DMA also cannot
   // fill. Use the launch-time issued_addr snapshot.
+`ifdef FROST_COHERENT_CLUSTER
+  logic coherent_response_bypass;
+  if (COHERENT_CLUSTER) begin : gen_coherent_response_qualification
+    (* keep = "true" *) logic [CachedSlots-1:0] slot_live, slot_bypass;
+    (* keep = "true" *) logic fast_live, fast_bypass;
+    for (genvar slot = 0; slot < CachedSlots; slot++) begin : gen_slot
+      assign slot_live[slot] = cs_valid[slot] && !cs_drop[slot] && lq_valid[cs_idx[slot]];
+      assign slot_bypass[slot] = slot_live[slot] && !cs_is_amo[slot];
+    end
+    assign fast_live = mem_outstanding && !drop_mem_response_pending && lq_valid[fast_idx];
+    assign fast_bypass = fast_live && !fast_is_amo;
+    assign cache_fill_response_valid = i_mem_read_valid && !i_flush_all &&
+        (i_mem_read_is_cached ? slot_live[resp_slot] : fast_live);
+    assign coherent_response_bypass = i_mem_read_valid && !mem_response_error &&
+        (i_mem_read_is_cached ? slot_bypass[resp_slot] : fast_bypass);
+`ifndef SYNTHESIS
+`ifdef FORMAL
+    always_comb begin
+`else
+    always @(posedge i_clk) begin
+`endif
+      p_response_live_exact : assert (cache_fill_response_valid ==
+          (i_mem_read_valid && resp_outstanding && !i_flush_all && !resp_drop &&
+           lq_valid[issued_idx]));
+      p_response_bypass_select_exact : assert (coherent_response_bypass ==
+          (i_mem_read_valid && resp_outstanding && !resp_drop && lq_valid[issued_idx] &&
+           !issued_is_amo && !mem_response_error));
+    end
+`endif
+  end else begin : gen_direct_response_qualification
+    assign coherent_response_bypass = 1'b0;
+`endif
   assign cache_fill_response_valid = i_mem_read_valid && resp_outstanding &&
       !i_flush_all && !resp_drop && lq_valid[issued_idx];
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`endif
   // Only the uncached response needs Normal-PMA qualification. Classify
   // its retained address before the late cached/uncached response select,
   // rather than putting that select ahead of the full-width range checks.
@@ -2872,7 +2907,15 @@ module load_queue #(
   // therefore does not need the age-dependent issued_entry_flushed term,
   // which itself implies i_flush_en. Full-flush, stale-response and live-tracker
   // checks remain in cache_fill_response_valid, exactly as in acceptance.
+`ifdef FROST_COHERENT_CLUSTER
+  if (COHERENT_CLUSTER) begin : gen_coherent_response_bypass
+    assign resp_bypass_ok = !i_flush_all && coherent_response_bypass;
+  end else begin : gen_direct_response_bypass
+`endif
   assign resp_bypass_ok = cache_fill_response_valid && !issued_is_amo && !mem_response_error;
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`endif
 
   assign resp_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
                             resp_bypass_ok && !i_flush_en;
@@ -2896,8 +2939,16 @@ module load_queue #(
   // State transitions still use fully qualified fires.
   logic resp_bypass_data_sel;
   logic misalign_bypass_data_sel;
+`ifdef FROST_COHERENT_CLUSTER
+  if (COHERENT_CLUSTER) begin : gen_coherent_response_data_select
+    assign resp_bypass_data_sel = coherent_response_bypass;
+  end else begin : gen_direct_response_data_select
+`endif
   assign resp_bypass_data_sel = i_mem_read_valid && resp_outstanding &&
       !resp_drop && lq_valid[issued_idx] && !issued_is_amo && !mem_response_error;
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`endif
 `ifdef FROST_COHERENT_CLUSTER
   if (COHERENT_CLUSTER) begin : gen_coherent_bypass_payload
     assign misalign_bypass_data_sel = !resp_bypass_data_sel && coherent_address_fault;
