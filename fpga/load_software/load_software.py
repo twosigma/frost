@@ -107,6 +107,7 @@ BOARD_CONFIG = {
     # ``has_ddr``: the bitstream provides the JTAG DDR-load master and the
     # cached DDR region. A BRAM-only board sets it False and loads no DDR image.
     "x3": {"clock_freq": 322265625, "coremark_iterations": 20000, "has_ddr": True},
+    "vcu118": {"clock_freq": 200000000, "coremark_iterations": 10800, "has_ddr": True},
 }
 
 # A divided-clock bitstream (build.py --cpu-clock-div) runs the CPU below the
@@ -279,7 +280,7 @@ def compile_app_for_board(
             )
             return False
         env["FROST_DDR_CAPACITY_LOG2_BYTES"] = capacity_log2
-        if app_name == "linux_boot":
+        if app_name == "linux_boot" and "FROST_LINUX_MEM_SIZE" not in env:
             env["FROST_LINUX_MEM_SIZE"] = str(ddr_bytes)
     if app_name == "coremark":
         env["ITERATIONS"] = str(coremark_iterations)

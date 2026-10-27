@@ -1,9 +1,8 @@
 # FPGA Board Support
 
-The supported board is the **Alveo X3522PV (X3)**: a 322.265625 MHz CPU,
-256 KiB BRAM, 16 KiB L1I, 128 KiB L1D, 2 MiB URAM L2, and 1 GiB DDR4.
-See the [FPGA guide](../fpga/README.md) for build, programming, and loading
-commands.
+The supported boards are:
+- **Alveo X3522PV (X3)**: a 322.265625 MHz CPU, 256 KiB BRAM, 16 KiB L1I, 128 KiB L1D, 2 MiB URAM L2, and 1 GiB DDR4. See the [FPGA guide](../fpga/README.md) for build, programming, and loading commands.
+- **VCU118 Evaluation Board**: an AMD Virtex UltraScale+ board targeting a 200.000 MHz baseline (and up to 240.000 MHz), 256 KiB BRAM, 16 KiB L1I, 128 KiB L1D, 2 MiB URAM L2, and onboard component DDR4. See the [VCU118 guide](vcu118/README.md).
 
 The X3 has eight L2 miss slots, eight L1D miss slots, and eight load queue
 entries. Its stream prefetcher permits eight outstanding requests and reads

@@ -24,6 +24,7 @@ from pathlib import Path
 # because every target contains ``xilinx_tcf``.
 BOARD_VENDOR_INFO = {
     "x3": ("/Xilinx/", "Xilinx"),
+    "vcu118": ("/Digilent/", "Digilent"),
 }
 
 
