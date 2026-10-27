@@ -2530,9 +2530,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "debug_module": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_debug_module",
         hdl_toplevel_module="debug_module",
-        description=(
-            "DMI replies across reset and registered command/resume GO handshakes"
-        ),
+        description=("DMI reset, registered GO, slice stalls and dirty-word priority"),
         verilator_extra_args=("--assert",),
     ),
     "hang_triage": CocotbRunConfig(
@@ -3554,6 +3552,16 @@ for _depth in (128, 256):
             "--assert",
         ),
     )
+
+TEST_REGISTRY["coherent_debug_module"] = replace(
+    TEST_REGISTRY["debug_module"],
+    description="Coherent debug replies, slice backpressure and dirty-word priority.",
+    verilator_extra_args=(
+        "-DFROST_COHERENT_CLUSTER",
+        "-GCOHERENT_CLUSTER=1",
+        "--assert",
+    ),
+)
 
 # The coherent cluster is selected explicitly for each program build.
 for _program in (

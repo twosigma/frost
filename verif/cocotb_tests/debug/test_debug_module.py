@@ -17,7 +17,8 @@
 Each request requires one answer: the next cycle, or after reset ends if
 it arrives during reset. Hold the payload until the answer, as dtm_core
 does. GO tests drive the hart and slice-writer handshakes to check registered
-requests, target alignment, acknowledgement and cancellation.
+requests, target alignment, acknowledgement and cancellation. Slice requests
+exercise writer backpressure and overlapping program-buffer writes.
 """
 
 from typing import Any
@@ -258,3 +259,64 @@ async def test_deactivation_cancels_go_and_allows_a_fresh_request(dut: Any) -> N
     target = await _prepare_go(dut, resume=True)
     assert await _go_edge(dut) == (1, target)
     await _complete_go(dut, resume=True)
+
+
+@cocotb.test()
+async def test_dirty_words_wait_and_preserve_overlapping_write(dut: Any) -> None:
+    """Writer stalls hold the selected word, and a concurrent DMI write wins."""
+    await _setup(dut)
+    await FallingEdge(dut.i_clk)
+    dut.i_rst.value = 0
+    dut.i_slice_req_ready.value = 0
+    await FallingEdge(dut.i_clk)
+    assert await _request(dut, OP_WRITE, DM_DMCONTROL, 1) == (STATUS_OK, 0)
+    assert int(dut.o_slice_req_valid.value)
+    base_word = int(dut.o_slice_word_addr.value)
+    assert int(dut.o_slice_data.value) == 0x0000_006F
+    for _ in range(3):
+        await FallingEdge(dut.i_clk)
+        assert int(dut.o_slice_req_valid.value)
+        assert int(dut.o_slice_word_addr.value) == base_word
+        assert int(dut.o_slice_data.value) == 0x0000_006F
+
+    assert await _request(dut, OP_WRITE, 0x20, 0x1122_3344) == (STATUS_OK, 0)
+    dut.i_slice_req_ready.value = 1
+    for index in range(5):
+        assert int(dut.o_slice_req_valid.value)
+        assert int(dut.o_slice_word_addr.value) == base_word + index
+        await FallingEdge(dut.i_clk)
+    dut.i_slice_req_ready.value = 0
+    assert int(dut.o_slice_word_addr.value) == base_word + 5
+    assert int(dut.o_slice_data.value) == 0x1122_3344
+    await FallingEdge(dut.i_clk)
+    dut.i_dmi_req_valid.value = 1
+    dut.i_dmi_req_op.value = OP_WRITE
+    dut.i_dmi_req_addr.value = 0x20
+    dut.i_dmi_req_data.value = 0x5566_7788
+    dut.i_slice_req_ready.value = 1
+    await FallingEdge(dut.i_clk)
+    dut.i_dmi_req_valid.value = 0
+    dut.i_slice_req_ready.value = 0
+    answer = _answer(dut)
+    assert answer is not None and answer[0] == STATUS_OK
+    assert int(dut.o_slice_req_valid.value)
+    assert int(dut.o_slice_word_addr.value) == base_word + 5
+    assert int(dut.o_slice_data.value) == 0x5566_7788
+    await FallingEdge(dut.i_clk)
+    dut.i_slice_req_ready.value = 1
+    for index in range(5, 16):
+        assert int(dut.o_slice_req_valid.value)
+        assert int(dut.o_slice_word_addr.value) == base_word + index
+        await FallingEdge(dut.i_clk)
+    dut.i_slice_req_ready.value = 0
+    assert not int(dut.o_slice_req_valid.value)
+
+    assert await _request(dut, OP_WRITE, 0x28, 0xAABB_CCDD) == (STATUS_OK, 0)
+    assert not int(dut.o_slice_req_valid.value)
+    assert await _request(dut, OP_WRITE, 0x27, 0x99AA_BBCC) == (STATUS_OK, 0)
+    assert int(dut.o_slice_req_valid.value)
+    assert int(dut.o_slice_word_addr.value) == base_word + 12
+    assert int(dut.o_slice_data.value) == 0x99AA_BBCC
+    dut.i_slice_req_ready.value = 1
+    await FallingEdge(dut.i_clk)
+    assert not int(dut.o_slice_req_valid.value)

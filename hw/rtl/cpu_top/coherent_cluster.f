@@ -23,3 +23,4 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
 $(ROOT)/hw/rtl/cpu_and_mem/debug/debug_store_mirror_hold.sv
+$(ROOT)/hw/rtl/cpu_and_mem/debug/debug_dirty_next.sv

@@ -82,6 +82,8 @@ and both line sizes at 32-bit and 56-bit physical widths.
 The `coherent_debug_test` program exercises JTAG control, memory access and
 BRAM instruction mirroring with the coherent cluster selected. The debugger
 executes both words of an aligned doubleword instruction patch.
+The debug-module unit bench checks stalled slice requests and overlapping
+program-buffer writes in the direct and coherent selections.
 
 The `coherent_cpu_faults` bench injects SC refill errors after clean replacement.
 It checks architectural trap cause, EPC and virtual fault address with and without

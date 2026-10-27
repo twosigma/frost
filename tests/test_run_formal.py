@@ -86,6 +86,11 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "debug_dirty_next.sby",
+        "Debug dirty-word next-state equality for arbitrary control inputs.",
+        tasks=("debug_dirty_next_prove",),
+    ),
+    FormalTarget(
         "debug_store_mirror_hold.sby",
         "Debug mirror validity and occupied address equality.",
         tasks=("mirror_hold_prove", "mirror_hold15_prove", "mirror_hold32_prove"),
@@ -847,6 +852,7 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("debug_dirty_next_prove", "Debug dirty-word clear and set priority."),
     ("coh_sc_class_small_prove", "Coherent SC class for an aligned four-KiB region."),
     ("coh_sc_class_offset_prove", "Coherent SC class for an unaligned base."),
     ("coh_sc_class_size_prove", "Coherent SC class for a non-power-of-two size."),
