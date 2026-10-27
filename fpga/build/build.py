@@ -71,6 +71,11 @@ BOARD_CONFIG = {
         "is_ultrascale": True,
         "synth_directive": "AlternateRoutability",
     },
+    "vcu118": {
+        "clock_freq": 200000000,
+        "is_ultrascale": True,
+        "synth_directive": "AlternateRoutability",
+    },
 }
 
 
@@ -3501,7 +3506,7 @@ Examples:
     # A wider aperture would alias a high request into the 30-bit AXI port.
     board_ddr_design = BOARD_DESIGN_DIR / f"{board_name}_ddr_bd.tcl"
     board_ddr_log2 = 0
-    if board_name == "x3":
+    if board_name in ("x3", "vcu118"):
         try:
             board_ddr_log2 = board_ddr_capacity_log2_bytes(board_ddr_design)
         except (OSError, ValueError) as error:

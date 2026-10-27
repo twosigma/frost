@@ -294,7 +294,7 @@ proc frost_insert_fetch_ila {clock_net_name depth} {
 }
 
 proc split_env_list {value} {
-    set normalized [string map [list "," " "] $value]
+    set normalized [string map [list "," " " ":" " "] $value]
     set result [list]
     foreach item [split $normalized] {
         set trimmed [string trim $item]
@@ -781,6 +781,7 @@ if {$x3_place_mode ne "" && ($board_name ne "x3" || $step ne "place" ||
 # create_<board>_gty_ip procedure.
 set board_build_configs [dict create \
     x3 [dict create part_number xcux35-vsva1365-3-e has_ddr 1 has_gty 1] \
+    vcu118 [dict create part_number xcvu9p-flga2104-2L-e has_ddr 1 has_gty 0] \
 ]
 if {![dict exists $board_build_configs $board_name]} {
     puts "Error: Invalid board name '$board_name'"
@@ -983,6 +984,9 @@ if {$step eq "synth"} {
         exit 1
     }
     open_checkpoint $checkpoint_path
+    if {[file exists $constraints_file]} {
+        read_xdc $constraints_file
+    }
 
     # build.py --debug-ila: the synthesis step defined the fetch ILA;
     # instantiate it (and the debug hub) before optimization.
@@ -1016,6 +1020,9 @@ if {$step eq "synth"} {
     file delete $work_directory/post_place_pin_swap_audit.txt
     file delete $work_directory/post_place_flush_guidance_audit.tcldict
     open_checkpoint $checkpoint_path
+    if {[file exists $constraints_file]} {
+        read_xdc $constraints_file
+    }
 
     # Optional UG904 CELL_BLOAT_FACTOR for wire-dense hierarchies. Enable with
     # FROST_PLACE_CELL_BLOAT=LOW/MEDIUM/HIGH; FROST_PLACE_CELL_BLOAT_CELLS
