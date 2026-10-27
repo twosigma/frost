@@ -36,10 +36,9 @@ module coherence_read_flags (
     output logic [7:0] o_ready,
     output logic [7:0] o_error
 );
-  logic [7:0] allocate_mask, response_mask, failure_mask, hit_mask, fill_mask;
+  logic [7:0] response_mask, failure_mask, hit_mask, fill_mask;
   (* keep = "true" *) logic [7:0] complete_mask, ready_preserved, error_preserved, error_set;
   (* keep = "true" *) logic [7:0] miss_mask, valid_preserved;
-  assign allocate_mask = i_allocate_valid ? 8'h01 << i_allocate_id : '0;
   assign response_mask = i_response_valid ? 8'h01 << i_response_id : '0;
   assign failure_mask = i_failure_valid ? 8'h01 << i_acquisition_id : '0;
   assign hit_mask = i_hit_valid ? 8'h01 << i_hit_id : '0;
@@ -50,10 +49,20 @@ module coherence_read_flags (
   assign error_set = failure_mask & {8{i_failure_error}};
   assign valid_preserved = i_valid & ~response_mask;
   assign miss_mask = i_miss_valid ? 8'h01 << i_hit_id : '0;
-  assign o_valid = valid_preserved | allocate_mask;
-  assign o_miss = miss_mask | (i_miss & ~allocate_mask);
-  assign o_ready = complete_mask | (ready_preserved & ~allocate_mask);
-  assign o_error = error_set | (error_preserved & ~allocate_mask);
+  wire [7:0] selected_slot = 8'h01 << i_allocate_id;
+  (* keep = "true" *) logic [7:0] valid_choices[2], miss_choices[2];
+  (* keep = "true" *) logic [7:0] ready_choices[2], error_choices[2];
+  for (genvar allocated = 0; allocated < 2; allocated++) begin : gen_allocation_choice
+    wire [7:0] mask = allocated != 0 ? selected_slot : '0;
+    assign valid_choices[allocated] = valid_preserved | mask;
+    assign miss_choices[allocated]  = miss_mask | (i_miss & ~mask);
+    assign ready_choices[allocated] = complete_mask | (ready_preserved & ~mask);
+    assign error_choices[allocated] = error_set | (error_preserved & ~mask);
+  end
+  assign o_valid = valid_choices[i_allocate_valid];
+  assign o_miss  = miss_choices[i_allocate_valid];
+  assign o_ready = ready_choices[i_allocate_valid];
+  assign o_error = error_choices[i_allocate_valid];
 
 `ifndef SYNTHESIS
   logic [7:0] reference_ready, reference_error, reference_valid, reference_miss;
