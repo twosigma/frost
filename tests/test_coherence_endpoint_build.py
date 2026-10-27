@@ -69,6 +69,7 @@ def test_coherent_sources_are_available() -> None:
     assert "coherence_c_payload.sv" not in names
     assert "coherent_atomic_select.sv" not in names
     assert "coherent_rs_capacity.sv" not in names
+    assert "coherent_rs_issue2_selector.sv" not in names
     assert "debug_dirty_next.sv" not in names
     assert not any(name.startswith(("coherence_", "coherent_")) for name in names)
     sources = runner.parse_filelist(runner.filelist, coherent_cluster=True)
@@ -81,6 +82,7 @@ def test_coherent_sources_are_available() -> None:
         "coherence_c_payload.sv",
         "coherent_atomic_select.sv",
         "coherent_rs_capacity.sv",
+        "coherent_rs_issue2_selector.sv",
         "debug_dirty_next.sv",
         "coherent_debug_request_count.sv",
     } <= names

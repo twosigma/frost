@@ -2030,6 +2030,40 @@ module reservation_station #(
           (ISSUE2_WINDOW == 0 || ISSUE2_WINDOW > DEPTH) ? DEPTH : ISSUE2_WINDOW;
       logic [$clog2(Issue2Window)-1:0] issue_idx_2_window;
       logic [Issue2Window-1:0] issue_sel_2_window;
+`ifdef FROST_COHERENT_CLUSTER
+      if (COHERENT_CLUSTER) begin : gen_coherent_second_selector
+        coherent_rs_issue2_selector #(
+            .DEPTH(Issue2Window)
+        ) selector (
+            .i_ready(entry_ready[Issue2Window-1:0]),
+            .i_branch_class(rs_is_branch_class[Issue2Window-1:0]),
+            .o_issue_2_valid(any_ready_2),
+            .o_issue_2_idx(issue_idx_2_window),
+            .o_issue_2_onehot(issue_sel_2_window)
+        );
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        logic reference_valid;
+        logic [$clog2(Issue2Window)-1:0] reference_index;
+        logic [Issue2Window-1:0] reference_onehot;
+        rs_issue2_selector #(
+            .DEPTH(Issue2Window)
+        ) reference_selector (
+            .i_ready(entry_ready[Issue2Window-1:0]),
+            .i_branch_class(rs_is_branch_class[Issue2Window-1:0]),
+            .o_issue_2_valid(reference_valid),
+            .o_issue_2_idx(reference_index),
+            .o_issue_2_onehot(reference_onehot)
+        );
+        always @(posedge i_clk) begin
+          p_issue_selection_exact : assert (
+              {any_ready_2, issue_idx_2_window, issue_sel_2_window} ===
+              {reference_valid, reference_index, reference_onehot});
+        end
+`endif
+`endif
+      end else begin : gen_line_second_selector
+`endif
       rs_issue2_selector #(
           .DEPTH(Issue2Window)
       ) u_issue2_selector (
@@ -2039,6 +2073,9 @@ module reservation_station #(
           .o_issue_2_idx   (issue_idx_2_window),
           .o_issue_2_onehot(issue_sel_2_window)
       );
+`ifdef FROST_COHERENT_CLUSTER
+      end
+`endif
       assign issue_idx_2 = $clog2(DEPTH)'(issue_idx_2_window);
       always_comb begin
         issue_sel_2 = '0;

@@ -155,7 +155,10 @@ window holds a ready entry; when it holds none, port 1 has nothing to issue.
 balanced tree. Each subtree reports whether it holds a ready entry, its first
 ready non-branch entry, and its first ready non-branch entry other than its
 own first ready entry. Merging pairs of subtrees gives the serial answer in
-log2(window) levels.
+log2(window) levels. The coherent INT selection uses
+`coherent_rs_issue2_selector`: a ready nonbranch entry is eligible when an earlier
+entry is ready, and a prefix reduction selects the first eligible entry.
+The index is encoded from that entry's one-hot mask.
 
 Port 1's stage-2 register captures each operand's final value at issue (CDB
 lane 0, then lane 1, then the resident or repair value), so ALU2 reads its
@@ -250,7 +253,7 @@ issued while another entry was also ready; the wrapper exports it for MEM_RS.
 | Parameter | Default | Wrapper setting | Effect |
 |-----------|---------|-----------------|--------|
 | `DEPTH` | 8 | Per instance (table above) | Number of entries |
-| `COHERENT_CLUSTER` | 0 | 1 on coherent INT | Select full flags from precomputed issue outcomes; available with the coherent source selection |
+| `COHERENT_CLUSTER` | 0 | 1 on coherent INT | Select full flags from issue outcomes and the prefix selector for port 1; available with the coherent source selection |
 | `HAS_SRC3` | 1 | 1 on FP, 0 elsewhere | Third source operand, for FMA |
 | `DUAL_ISSUE` | 0 | 1 on INT | Second issue port |
 | `ISSUE2_WINDOW` | 0 (all entries) | 8 on INT | Port 1 considers only entries below this index |
