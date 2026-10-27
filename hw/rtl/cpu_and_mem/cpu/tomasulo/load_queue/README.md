@@ -91,7 +91,9 @@ and tag.
 The pre-issue selector registers a one-hot mask alongside the candidate matches.
 Staging capture uses candidate presence independently of ring ordering.
 The coherent selection computes capture permission for all combinations of
-response bypass, local hold and cache hit. Those inputs select the result.
+response bypass, local hold, cache hit and committed-store presence. The
+response, hold and hit values select each committed-store case. The live
+committed-store flag selects the capture and clear results.
 Vacancy and release eligibility are computed before candidate presence.
 Staged control fields select capture values or separately computed hold values.
 Replacement selects stored and arriving age predicates with ROB-head priority.
