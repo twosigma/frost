@@ -119,7 +119,8 @@ Each coherent address slot stores PMA permission
 and cache-region classification with its address. Stored and arriving payloads
 compute PMA permission before address-source selection. Staging selects the
 permission and cache-region class from the stored or arriving address.
-Misalignment checks use the live trap setting. The first candidate mask determines which
+Staging captures misalignment with the address and size. Fault checks apply
+the live trap setting to that captured result. The first candidate mask determines which
 address source wins ring order. Candidate presence is independent of
 that ordering and the selected payload.
 Coherent L0 valid bits and data writes share fill permission computed for
@@ -145,7 +146,8 @@ committed-store queue is empty.
 
 The coherent selection prepares staging capture, clear and memory launch
 controls for both committed-store drain states. The live drain flag selects
-the completed controls. Capture and clear also account for both commit-pending
+the completed controls. Local holds qualify memory launch after drain selection.
+Capture and clear also account for both commit-pending
 states before the live commit flag selects them. Candidate presence qualifies
 the selected capture permission, and replacement independently permits capture.
 

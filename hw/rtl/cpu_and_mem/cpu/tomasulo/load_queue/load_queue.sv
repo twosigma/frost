@@ -1452,6 +1452,7 @@ module load_queue #(
   logic [DEPTH-1:0] coherent_parked_q;
   logic coherent_local_hold, coherent_sector_hold, coherent_holder_changed;
   logic coherent_address_fault;
+  logic coherent_staged_misaligned;
   logic coherent_staged_at_head;
   logic [1:0] coherent_probe_choice, coherent_issue_choice;
   logic [1:0] coherent_issue_by_drain, coherent_eligible_by_drain;
@@ -1837,7 +1838,7 @@ module load_queue #(
   assign coherent_address_fault =
       riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q) != riscv_pkg::DFAULT_NONE ||
       !sq_check_pma_ok ||
-      (i_trap_misaligned_accesses && is_load_misaligned(sq_check_size_q, sq_check_addr_q));
+      (i_trap_misaligned_accesses && coherent_staged_misaligned);
   assign coherent_staged_at_head = sq_check_rob_tag_q == i_rob_head_tag;
   assign o_coherent_arm_valid = COHERENT_CLUSTER && sq_check_entry_valid && sq_check_is_amo_q &&
       sq_check_is_cached_region && sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty &&
@@ -1876,7 +1877,7 @@ module load_queue #(
   logic sq_check_pma_ok;
 `ifdef FROST_COHERENT_CLUSTER
   if (COHERENT_CLUSTER) begin : gen_coherent_staged_class
-    logic pma_ok_q, cached_q;
+    logic pma_ok_q, cached_q, misaligned_q;
     wire stored_atomic = lq_is_amo[issue_mem_stored_idx] || lq_is_lr[issue_mem_stored_idx];
     wire update_atomic = lq_is_amo[update_issue_payload_idx] || lq_is_lr[update_issue_payload_idx];
     (* keep = "true" *) wire stored_permission =
@@ -1890,10 +1891,12 @@ module load_queue #(
       if (sq_check_payload_en) begin
         pma_ok_q <= selected_permission;
         cached_q <= selected_class[0];
+        misaligned_q <= is_load_misaligned(sq_check_size_next, sq_check_addr_next);
       end
     end
     assign sq_check_pma_ok = pma_ok_q;
     assign sq_check_is_cached_region = cached_q;
+    assign coherent_staged_misaligned = misaligned_q;
 `ifndef SYNTHESIS
 `ifdef FORMAL
     always_comb begin
@@ -1919,10 +1922,13 @@ module load_queue #(
             ((sq_check_is_amo_q || sq_check_is_lr_q) ?
              riscv_pkg::pma_atomic_ok(sq_check_addr_q) : riscv_pkg::pma_data_ok(sq_check_addr_q)));
         p_staged_cached_exact : assert (cached_q == is_cached_addr(sq_check_addr_q));
+        p_staged_misaligned_exact : assert (misaligned_q ==
+            is_load_misaligned(sq_check_size_q, sq_check_addr_q));
       end
     end
 `endif
   end else begin : gen_direct_staged_class
+    assign coherent_staged_misaligned = is_load_misaligned(sq_check_size_q, sq_check_addr_q);
     assign sq_check_pma_ok = (sq_check_is_amo_q || sq_check_is_lr_q) ?
         riscv_pkg::pma_atomic_ok(sq_check_addr_q) : riscv_pkg::pma_data_ok(sq_check_addr_q);
     assign sq_check_is_cached_region = is_cached_addr(sq_check_addr_q);
@@ -1939,9 +1945,13 @@ module load_queue #(
   assign sq_check_misaligned = sq_check_parked_fault || sq_check_pma_fault ||
       (i_trap_misaligned_accesses &&
        sq_check_entry_valid && sq_check_entry_issueable &&
+`ifdef FROST_COHERENT_CLUSTER
+       coherent_staged_misaligned);
+`else
        is_load_misaligned(
       sq_check_size_q, sq_check_addr_q
   ));
+`endif
 `ifndef FROST_COHERENT_CLUSTER
   assign sq_check_is_cached_region = is_cached_addr(sq_check_addr_q);
 `endif
@@ -2521,11 +2531,11 @@ module load_queue #(
           sq_check_entry_valid && !older_amo_write_pending && !sq_commit_interlock;
       wire hit = miss && !(ENABLE_L0_FAST_PATH && sq_check_cacheable &&
           !l0_lookup_busy && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q);
-      assign launch_choice[drain_case] = !coherent_local_hold && (cache_lookup_hit ? hit : miss);
+      assign launch_choice[drain_case] = cache_lookup_hit ? hit : miss;
     end
     assign launch_if_miss = 1'b0;
     assign launch_if_hit = 1'b0;
-    assign o_mem_read_en = launch_choice[i_sq_committed_empty];
+    assign o_mem_read_en = !coherent_local_hold && launch_choice[i_sq_committed_empty];
   end else begin : gen_line_launch_gate
 `endif
   assign launch_if_miss = !i_flush_en && !i_flush_all && !i_mem_bus_busy && sq_can_issue &&
