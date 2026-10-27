@@ -32,6 +32,9 @@ dispatch never puts an FP compute op in slot 2.
 
 `o_full` and `o_full_for_2` are registered. `o_full_for_2` means at most one
 entry is free; dispatch checks it when both slots target the same station.
+The coherent INT station computes the full flags for all issue-count outcomes.
+Issue acceptance selects the result after dispatch-width decoding. Flush uses
+the count of surviving entries.
 
 A flush has priority over dispatch: in a flush cycle the station accepts no
 dispatch and moves no new entry into stage 2.
@@ -247,6 +250,7 @@ issued while another entry was also ready; the wrapper exports it for MEM_RS.
 | Parameter | Default | Wrapper setting | Effect |
 |-----------|---------|-----------------|--------|
 | `DEPTH` | 8 | Per instance (table above) | Number of entries |
+| `COHERENT_CLUSTER` | 0 | 1 on coherent INT | Select full flags from precomputed issue outcomes; available with the coherent source selection |
 | `HAS_SRC3` | 1 | 1 on FP, 0 elsewhere | Third source operand, for FMA |
 | `DUAL_ISSUE` | 0 | 1 on INT | Second issue port |
 | `ISSUE2_WINDOW` | 0 (all entries) | 8 on INT | Port 1 considers only entries below this index |

@@ -2712,6 +2712,9 @@ module tomasulo_wrapper #(
   end
 
   reservation_station #(
+`ifdef FROST_COHERENT_CLUSTER
+      .COHERENT_CLUSTER(COHERENT_CLUSTER),
+`endif
       .DEPTH(INT_RS_DEPTH),
       .HAS_SRC3(1'b0),
       .DISPATCH_REPAIR_BYPASS(1'b0),
