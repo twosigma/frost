@@ -78,6 +78,13 @@ source ${script_dir}/file_to_ddr.tcl
 source ${script_dir}/../common/hw_session.tcl
 frost_hw_session [lindex $argv 3] [lindex $argv 5] $hw_target {
 
+set probes_files [glob -nocomplain [file join $project_root fpga build * work *_frost.ltx]]
+foreach pfile $probes_files {
+    if {[file exists $pfile]} {
+        catch {set_property PROBES.FILE $pfile [lindex [get_hw_devices] 0]}
+        break
+    }
+}
 refresh_hw_device [lindex [get_hw_devices] 0]
 reset_hw_axi [get_hw_axis -of_objects [lindex [get_hw_devices] 0]]
 
@@ -114,10 +121,17 @@ proc probe_hw_axi_echoes {axi_name} {
     catch {delete_hw_axi_txn probe_rd}
     create_hw_axi_txn probe_wr [get_hw_axis $axi_name] \
         -type write -address 0x00000000 -len 1 -data {A5A5A5A5}
-    run_hw_axi [get_hw_axi_txns probe_wr]
+    if {[catch {run_hw_axi [get_hw_axi_txns probe_wr]}]} {
+        catch {delete_hw_axi_txn probe_wr}
+        return 0
+    }
     create_hw_axi_txn probe_rd [get_hw_axis $axi_name] \
         -type read -address 0x00000000 -len 1
-    run_hw_axi [get_hw_axi_txns probe_rd]
+    if {[catch {run_hw_axi [get_hw_axi_txns probe_rd]}]} {
+        catch {delete_hw_axi_txn probe_wr}
+        catch {delete_hw_axi_txn probe_rd}
+        return 0
+    }
     set data [get_property DATA [get_hw_axi_txns probe_rd]]
     delete_hw_axi_txn probe_wr
     delete_hw_axi_txn probe_rd

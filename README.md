@@ -188,6 +188,7 @@ part works.
 | Board              | FPGA                 | CPU Clock  | Cache hierarchy → main memory               |
 |--------------------|----------------------|------------|---------------------------------------------|
 | Alveo X3522PV      | UltraScale+ (xcux35) | 322.27 MHz | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
+| VCU118 Evaluation Board | Virtex UltraScale+ (xcvu9p) | 200.00 MHz | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 2 GiB DDR4 |
 
 See the [board guide](boards/README.md) for pinouts, clocking, and adding a board.
 

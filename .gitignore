@@ -91,6 +91,7 @@ sw/apps/arch_test/test_src_repaired.S
 # Vivado
 *.jou
 *.log
+dfx_runtime.txt
 # Keep byte-exact board UART captures for parser tests.
 !tests/fixtures/*.log
 *.str
