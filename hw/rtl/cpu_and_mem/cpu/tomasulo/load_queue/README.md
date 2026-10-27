@@ -87,9 +87,10 @@ mask when an address update is valid and the stored mask otherwise. Eligible
 ROB-head entries precede the ring scan.
 The pre-issue selector registers a one-hot mask alongside the candidate matches.
 Staging capture uses candidate presence independently of ring ordering.
-Replacement uses the selected candidate's age. Capture, replacement and clear
-controls directly determine the staged state. Sector blocking supplies capture
-permission separately from the condition that clears the stage. Coherent issue,
+Replacement combines the selected memory mask with per-entry age. Capture,
+replacement and clear controls directly determine the staged state. Sector
+blocking supplies capture permission separately from the condition that clears
+the stage. Coherent issue,
 forwarding and SQ-probe predicates decode address faults before applying
 the cut and same-sector holds. The coherent memory launch applies those holds
 after L0-hit selection. Issue and SQ-probe permission are computed for both
