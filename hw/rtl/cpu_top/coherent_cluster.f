@@ -16,6 +16,7 @@
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 $(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv
 -f $(ROOT)/hw/rtl/lib/cache/coherence_home.f
+$(ROOT)/hw/rtl/lib/cache/coherence_c_payload.sv
 $(ROOT)/hw/rtl/lib/cache/coherent_hart_cache.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/coherent_atomic_guard.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv

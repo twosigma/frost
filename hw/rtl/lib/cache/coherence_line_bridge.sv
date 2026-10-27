@@ -48,6 +48,7 @@ module coherence_line_bridge #(
     output logic o_g_ready,
     input logic [ADDR_WIDTH+274:0] i_g,
     output logic o_c_valid,
+    output logic o_c_selected,
     input logic i_c_ready,
     output logic [ADDR_WIDTH+17:0] o_c,
     input logic i_u_valid,
@@ -85,6 +86,7 @@ module coherence_line_bridge #(
     grant_q.error ? coherence_pkg::Error : coherence_pkg::Consumed,
     1'b1
   };
+  assign o_c_selected = phase_q == Complete;
   assign o_c_valid = !i_rst && phase_q == Complete;
   assign o_c = completion;
   assign o_u_ready = !i_rst && phase_q == Release && release_in.q == demand_q.q &&
@@ -148,6 +150,9 @@ module coherence_line_bridge #(
   end
 `endif
 `ifdef FORMAL
+  always_comb begin
+    p_c_selected_exact : assert (o_c_valid == (!i_rst && o_c_selected));
+  end
   logic f_past_valid = 1'b0;
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;

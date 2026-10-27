@@ -435,6 +435,7 @@ module frost_cluster_memory #(
         .o_g_ready(dma_g_ready),
         .i_g(grant),
         .o_c_valid(dma_c_valid),
+        .o_c_selected(),
         .i_c_ready(dma_c_ready),
         .o_c(dma_c),
         .i_u_valid(u_valid && dma_owner_q),

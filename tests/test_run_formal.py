@@ -157,6 +157,8 @@ FORMAL_TARGETS = [
         "coherence_control.sby",
         "Coherent request arbitration, bridge lifetime, and atomic protection.",
         tasks=(
+            "coh_c_payload_prove",
+            "coh_c_payload_wide_prove",
             "coh_arbiter_prove",
             "coh_reader_prove",
             "coh_ingress_prove",
@@ -852,6 +854,11 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("coh_c_payload_prove", "Completion payload equality outside reset at fifty bits."),
+    (
+        "coh_c_payload_wide_prove",
+        "Completion payload equality outside reset at seventy-four bits.",
+    ),
     ("debug_dirty_next_prove", "Debug dirty-word clear and set priority."),
     ("coh_sc_class_small_prove", "Coherent SC class for an aligned four-KiB region."),
     ("coh_sc_class_offset_prove", "Coherent SC class for an unaligned base."),

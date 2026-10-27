@@ -124,7 +124,7 @@ module coherent_hart_cache #(
 );
 
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
-  logic [2:0] d_valid, d_ready, g_ready, c_valid, u_ready;
+  logic [2:0] d_valid, d_ready, g_ready, c_valid, c_selected, u_ready;
   coh_d_t demand[3];
   coh_g_t grant;
   coh_c_t completion[3];
@@ -158,9 +158,14 @@ module coherent_hart_cache #(
   assign o_g_ready = g_ready[grant.q[6:5]];
   assign o_u_ready = u_ready[release_message.q[6:5]];
   assign o_c_valid = |c_valid;
-  assign o_c = (completion[0] & {(ADDR_WIDTH + 18){c_valid[0]}}) |
-      (completion[1] & {(ADDR_WIDTH + 18){c_valid[1]}}) |
-      (completion[2] & {(ADDR_WIDTH + 18){c_valid[2]}});
+  coherence_c_payload #(
+      .WIDTH(ADDR_WIDTH + 18)
+  ) completion_payload (
+      .i_rst,
+      .i_selected(c_selected),
+      .i_payload ({completion[2], completion[1], completion[0]}),
+      .o_payload (o_c)
+  );
   coherence_d_arbiter #(
       .WIDTH((ADDR_WIDTH + 312)),
       .PORTS(3)
@@ -253,6 +258,7 @@ module coherent_hart_cache #(
       .o_g_ready(g_ready[0]),
       .i_g(i_g),
       .o_c_valid(c_valid[0]),
+      .o_c_selected(c_selected[0]),
       .i_c_ready(i_c_ready),
       .o_c(completion[0]),
       .i_u_valid(i_u_valid && release_message.q[6:5] == 0),
@@ -346,6 +352,7 @@ module coherent_hart_cache #(
       .o_g_ready(g_ready[1]),
       .i_g(i_g),
       .o_c_valid(c_valid[1]),
+      .o_c_selected(c_selected[1]),
       .i_c_ready(i_c_ready),
       .o_c(completion[1]),
       .i_u_valid(i_u_valid && release_message.q[6:5] == 1),
@@ -381,6 +388,7 @@ module coherent_hart_cache #(
       .o_g_ready(g_ready[2]),
       .i_g(i_g),
       .o_c_valid(c_valid[2]),
+      .o_c_selected(c_selected[2]),
       .i_c_ready(i_c_ready),
       .o_c(completion[2]),
       .i_u_valid(i_u_valid && release_message.q[6:5] == 2),
@@ -419,7 +427,15 @@ module coherent_hart_cache #(
   end
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
-    if (!i_rst) assert ($onehot0(c_valid));
+    assert (c_valid == (c_selected & {3{!i_rst}}));
+    if (!i_rst) begin
+      assert ($onehot0(c_valid));
+      p_c_payload_exact :
+      assert (o_c ==
+          ((completion[0] & {(ADDR_WIDTH + 18){c_valid[0]}}) |
+           (completion[1] & {(ADDR_WIDTH + 18){c_valid[1]}}) |
+           (completion[2] & {(ADDR_WIDTH + 18){c_valid[2]}})));
+    end
   end
 `endif
 endmodule

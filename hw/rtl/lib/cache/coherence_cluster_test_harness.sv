@@ -197,6 +197,7 @@ module coherence_cluster_test_harness #(
       .o_g_ready(hart_g_ready),
       .i_g(grant),
       .o_c_valid(hart_c_valid),
+      .o_c_selected(),
       .i_c_ready(hart_c_ready),
       .o_c(hart_c),
       .i_u_valid(u_valid && !agent_q),
