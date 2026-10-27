@@ -24,9 +24,14 @@ module coherent_rs_issue2_selector #(
     output logic [DEPTH-1:0] o_issue_2_onehot
 );
   localparam int unsigned IdxWidth = $clog2(DEPTH);
-  (* keep = "true" *) logic [DEPTH-1:0] first_ready, eligible;
-  assign first_ready = i_ready & (~i_ready + DEPTH'(1));
-  assign eligible = i_ready & ~i_branch_class & ~first_ready;
+  (* keep = "true" *) logic [DEPTH-1:0] eligible;
+  for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_eligibility
+    if (entry == 0) begin : gen_first
+      assign eligible[entry] = 1'b0;
+    end else begin : gen_later
+      assign eligible[entry] = i_ready[entry] && !i_branch_class[entry] && (|i_ready[entry-1:0]);
+    end
+  end
   assign o_issue_2_onehot = eligible & (~eligible + DEPTH'(1));
   localparam int unsigned Leaves = 1 << $clog2((DEPTH + 1) / 2);
   localparam int unsigned Nodes  = 2 * Leaves - 1;
