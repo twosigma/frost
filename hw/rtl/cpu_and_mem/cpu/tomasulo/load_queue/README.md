@@ -140,6 +140,12 @@ committed-store queue is empty.
 
 ### Staging and the SQ check
 
+The coherent selection prepares staging capture, clear and memory launch
+controls for both committed-store drain states. The live drain flag selects
+the completed controls. Capture and clear also account for both commit-pending
+states before the live commit flag selects them. Candidate presence qualifies
+the selected capture permission, and replacement independently permits capture.
+
 The staging register (`sq_check_*`) holds the selected load while the SQ
 checks it. Disambiguation is conservative: a load reads memory only when every
 older store address is known and none overlaps it. The SQ answers in the next
