@@ -1453,7 +1453,7 @@ module load_queue #(
   logic coherent_local_hold, coherent_sector_hold, coherent_holder_changed;
   logic coherent_address_fault;
   logic coherent_staged_at_head;
-  logic [1:0] coherent_probe_choice, coherent_issue_choice;
+  logic [1:0] coherent_probe_choice, coherent_issue_choice, coherent_eligible_choice;
   (* keep = "true" *) logic coherent_probe_ok, coherent_issue_ok, coherent_forward_ok;
   if (COHERENT_CLUSTER) begin : gen_coherent_park
     logic [1:0] holder_valid_q;
@@ -1951,9 +1951,36 @@ module load_queue #(
 `ifdef FROST_COHERENT_CLUSTER
   logic [3:0] coherent_stage_take;
   wire [3:0] coherent_pending = {sq_check_pending_copy, sq_check_pending};
+  logic [1:0] coherent_stage_clear_choice;
+  logic [3:0] coherent_stage_take_choice[2];
+  wire coherent_entry_eligible = coherent_staged_at_head ?
+      coherent_eligible_choice[1] : coherent_eligible_choice[0];
+  wire coherent_clear_memory = !i_flush_all && !i_flush_en && coherent_issue_ok &&
+      ((!i_mem_bus_busy && !cached_launch_hold_q) ||
+       (ENABLE_L0_FAST_PATH && sq_check_cacheable && !l0_lookup_busy && cache_lookup_hit &&
+        !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q));
+  wire coherent_clear_fault = cdb_stage_slot_available && !issue_cdb_fire &&
+      !resp_bypass_ok && coherent_entry_eligible && coherent_address_fault && !i_flush_en;
+  for (genvar hold_case = 0; hold_case < 2; hold_case++) begin : gen_coherent_clear_choice
+    localparam bit Held = hold_case != 0;
+    (* keep = "true" *) logic clears;
+    wire will_clear = clears || (sq_check_pending && coherent_sector_hold);
+    assign clears = sq_check_pending &&
+        (!sq_check_entry_valid || older_amo_write_pending ||
+         (!Held && (coherent_clear_memory || coherent_forward_ok || coherent_clear_fault)));
+    assign coherent_stage_clear_choice[hold_case] = clears;
+    for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_copy
+      (* keep = "true" *) logic take;
+      assign take = ((!coherent_pending[copy_index] || will_clear) &&
+                     issue_mem_found && sq_check_gate_early) || sq_check_replace;
+      assign coherent_stage_take_choice[hold_case][copy_index] = take;
+    end
+  end
   for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_coherent_stage_take
-    assign coherent_stage_take[copy_index] =
-        sq_check_capture_on(coherent_pending[copy_index]) || sq_check_replace;
+    assign coherent_stage_take[copy_index] = COHERENT_CLUSTER ?
+        (coherent_local_hold ? coherent_stage_take_choice[1][copy_index] :
+         coherent_stage_take_choice[0][copy_index]) :
+        (sq_check_capture_on(coherent_pending[copy_index]) || sq_check_replace);
 `ifndef SYNTHESIS
     wire [DEPTH-1:0] permitted =
         {DEPTH{!coherent_pending[copy_index] || sq_check_will_clear}} |
@@ -2078,6 +2105,7 @@ module load_queue #(
         !sq_commit_interlock && !older_amo_write_pending &&
         (sq_no_older_store || (sq_check_is_amo_q && AtHead && i_sq_committed_empty) ||
          (i_sq_all_older_addrs_known && !i_sq_forward.match));
+    assign coherent_eligible_choice[head_case] = eligible;
     assign coherent_probe_choice[head_case] = probe;
     assign coherent_issue_choice[head_case] = issue;
   end
@@ -3191,30 +3219,66 @@ module load_queue #(
 
 `ifdef FROST_COHERENT_CLUSTER
   if (COHERENT_CLUSTER) begin : gen_coherent_stage_control
-  always_comb begin
-    // U = capture/replace (disjoint from sq_check_flushed, see above).
-    // Clear branch: launch_mem_issue remains low through bus_busy stalls.
-    sq_check_pending_next = coherent_stage_take[0] ||
-        (sq_check_pending && !sq_check_flushed && !sq_check_stage_clears);
-
-    sq_check_no_older_store_next = (coherent_stage_take[0] && i_sq_empty) ||
-        (sq_check_no_older_store_q && !sq_check_flushed &&
-         !coherent_stage_take[0]);
-
-    sq_check_phase2_next = (coherent_stage_take[0] && i_sq_empty) ||
-        (!coherent_stage_take[0] && !sq_check_flushed &&
-         (sq_check_phase2 ||
-          (!sq_check_stage_clears &&
-           ((sq_check_pending && i_sq_empty && !sq_commit_check_block) || o_sq_check_valid))));
-
-    for (int i = 0; i < DEPTH; i++) begin
-      sq_check_in_flight_mask_next[i] =
-          (coherent_stage_take[0] && issue_mem_onehot[i]) ||
-          (sq_check_in_flight_mask[i] && !sq_check_flushed && !sq_check_stage_clears &&
-           !coherent_stage_take[0]);
+    logic [DEPTH+2:0] state_choice[2];
+    for (genvar hold_case = 0; hold_case < 2; hold_case++) begin : gen_hold_case
+      localparam bit Held = hold_case != 0;
+      wire take = coherent_stage_take_choice[hold_case][0];
+      wire clears = coherent_stage_clear_choice[hold_case];
+      wire probe = !Held && coherent_probe_ok && !i_flush_all && !i_flush_en &&
+          !drop_mem_response_pending && !sq_commit_check_block;
+      logic pending, no_older, phase2;
+      logic [DEPTH-1:0] mask;
+      (* keep = "true" *) logic [DEPTH+2:0] next_state;
+      always_comb begin
+        pending = take || (sq_check_pending && !sq_check_flushed && !clears);
+        no_older = (take && i_sq_empty) ||
+            (sq_check_no_older_store_q && !sq_check_flushed && !take);
+        phase2 = (take && i_sq_empty) ||
+            (!take && !sq_check_flushed &&
+             (sq_check_phase2 ||
+              (!clears && ((sq_check_pending && i_sq_empty && !sq_commit_check_block) || probe))));
+        for (int i = 0; i < DEPTH; i++) begin
+          mask[i] = (take && issue_mem_onehot[i]) ||
+              (sq_check_in_flight_mask[i] && !sq_check_flushed && !clears && !take);
+        end
+      end
+      assign next_state = {pending, no_older, phase2, mask};
+      assign state_choice[hold_case] = next_state;
     end
-  end
-
+    assign {sq_check_pending_next, sq_check_no_older_store_next,
+            sq_check_phase2_next, sq_check_in_flight_mask_next} =
+        coherent_local_hold ? state_choice[1] : state_choice[0];
+`ifndef SYNTHESIS
+    logic reference_pending, reference_no_older, reference_phase2;
+    logic [DEPTH-1:0] reference_mask;
+    always_comb begin
+      reference_pending = sq_check_capture || sq_check_replace ||
+          (sq_check_pending && !sq_check_flushed && !sq_check_stage_clears);
+      reference_no_older = ((sq_check_capture || sq_check_replace) && i_sq_empty) ||
+          (sq_check_no_older_store_q && !sq_check_flushed &&
+           !(sq_check_capture || sq_check_replace));
+      reference_phase2 = ((sq_check_capture || sq_check_replace) && i_sq_empty) ||
+          (!(sq_check_capture || sq_check_replace) && !sq_check_flushed &&
+           (sq_check_phase2 ||
+            (!sq_check_stage_clears &&
+             ((sq_check_pending && i_sq_empty && !sq_commit_check_block) || o_sq_check_valid))));
+      for (int i = 0; i < DEPTH; i++) begin
+        reference_mask[i] = ((sq_check_capture || sq_check_replace) && issue_mem_onehot[i]) ||
+            (sq_check_in_flight_mask[i] && !sq_check_flushed && !sq_check_stage_clears &&
+             !(sq_check_capture || sq_check_replace));
+      end
+    end
+`ifdef FORMAL
+    always_comb begin
+`else
+    always @(posedge i_clk) begin
+`endif
+      p_stage_state_exact : assert (
+          {sq_check_pending_next, sq_check_no_older_store_next,
+           sq_check_phase2_next, sq_check_in_flight_mask_next} ==
+          {reference_pending, reference_no_older, reference_phase2, reference_mask});
+    end
+`endif
   end else begin : gen_direct_stage_control
 `endif
   always_comb begin
