@@ -90,8 +90,9 @@ decode from the selected ring mask. Head matches use the head selector's index
 and tag.
 The pre-issue selector registers a one-hot mask alongside the candidate matches.
 Staging capture uses candidate presence independently of ring ordering.
-The coherent selection computes capture permission for both local hold
-outcomes before the cut and sector holds select the result.
+The coherent selection computes capture permission and staged control state
+for all combinations of local hold and cache hit. Those inputs select the
+result.
 Replacement selects stored and arriving age predicates with ROB-head priority.
 Capture, replacement and clear controls directly determine the staged state. Sector
 blocking supplies capture permission separately from the condition that clears
@@ -481,6 +482,10 @@ result waits in the data RAM. An AMO that does not fault completes through the
 data RAM, and nothing enters `cdb_stage` on a partial-flush cycle. When
 several results are ready, `cdb_stage` takes a queued completion first, then
 a memory response, a fault, an SQ forward, and an L0 hit.
+
+The coherent selection compares completion indices with each entry before
+selecting the free mask. Allocation has priority over freeing, and reset and
+full flush clear every valid bit.
 
 In the coherent selection, bypass payloads use the staged address-fault and
 forwarding predicates before cut and sector holds. Staged-load capture applies
