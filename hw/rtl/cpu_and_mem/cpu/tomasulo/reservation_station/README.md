@@ -161,6 +161,7 @@ entry is ready, and a prefix reduction selects the first eligible entry.
 The index is encoded from that entry's one-hot mask. Readiness and selection
 are computed for all four CDB-valid combinations before the live valid bits
 select the result.
+Separate reductions produce the ready and eligible prefixes for each entry.
 
 Port 1's stage-2 register captures each operand's final value at issue (CDB
 lane 0, then lane 1, then the resident or repair value), so ALU2 reads its
