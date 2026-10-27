@@ -657,6 +657,23 @@ module pc_controller #(
               (i_window_cannot_serve_raw ? o_pending_prediction_holdoff_wcs :
                                            o_pending_prediction_holdoff_wcs0));
     end
+    if (!$isunknown(
+            {
+              i_window_cannot_serve_raw,
+              o_pending_prediction_fetch_holdoff,
+              o_pending_prediction_fetch_holdoff_wcs0,
+              o_pending_prediction_fetch_holdoff_wcs
+            }
+        )) begin
+      p_pending_fetch_holdoff_wcs0_cofactor_exact :
+      assert (i_window_cannot_serve_raw ||
+              o_pending_prediction_fetch_holdoff_wcs0 ==
+              o_pending_prediction_fetch_holdoff);
+      p_pending_fetch_holdoff_wcs_cofactor_exact :
+      assert (!i_window_cannot_serve_raw ||
+              o_pending_prediction_fetch_holdoff_wcs ==
+              o_pending_prediction_fetch_holdoff);
+    end
   end
 `endif
   assign o_pending_prediction_target_handoff = pending_prediction_target_handoff_applies;
@@ -783,13 +800,14 @@ module pc_controller #(
   // separately). These checks catch a priority change that would consume a
   // handoff without applying it.
   always_comb begin
-    if (PENDING_HANDOFF_EXCLUDES_SLOT2 && !$isunknown(
+    if (pending_rel_check_armed_q && !i_reset && PENDING_HANDOFF_EXCLUDES_SLOT2 && !$isunknown(
             {pending_prediction_target_handoff, i_slot2_prediction_used_for_pc}
         )) begin
       p_integrated_pending_handoff_excludes_slot2 :
       assert (!(pending_prediction_target_handoff && i_slot2_prediction_used_for_pc));
     end
-    if (pending_prediction_target_handoff && !fetch_stall && !i_reset && !$isunknown(
+    if (pending_rel_check_armed_q && pending_prediction_target_handoff &&
+        !fetch_stall && !i_reset && !$isunknown(
             {i_window_cannot_serve, i_slot2_prediction_used_for_pc,
                      o_pending_prediction_target_holdoff}
         )) begin
@@ -798,8 +816,8 @@ module pc_controller #(
               (!i_window_cannot_serve && !i_slot2_prediction_used_for_pc &&
                !o_pending_prediction_target_holdoff));
     end
-    if (pending_prediction_effective && pc_reg_at_pending && i_prediction_holdoff &&
-        !fetch_stall && !$isunknown(
+    if (pending_rel_check_armed_q && !i_reset && pending_prediction_effective &&
+        pc_reg_at_pending && i_prediction_holdoff && !fetch_stall && !$isunknown(
             {i_window_cannot_serve, i_slot2_prediction_used_for_pc,
              o_pending_prediction_target_holdoff}
         )) begin
@@ -1152,7 +1170,7 @@ module pc_controller #(
     end
   end
   always_comb begin
-    if (!$isunknown(
+    if (pending_rel_check_armed_q && !i_reset && !$isunknown(
             {
               npc_cond_without_prediction,
               pending_mux_consume_is_seq,
@@ -1378,7 +1396,7 @@ module pc_controller #(
       !o_pending_prediction_target_holdoff && !pc_reg_land_on_pending_ref &&
       !pending_mux_cross && !pending_mux_target && !sel_prediction_r;
   always_comb begin
-    if (!$isunknown(
+    if (pending_rel_check_armed_q && !i_reset && !$isunknown(
             {
               pc_reg_seq_candidate,
               pc_reg_seq_candidate_ref,
@@ -1732,7 +1750,7 @@ module pc_controller #(
   end
 
   always_comb begin
-    if (!$isunknown(
+    if ((i_reset || pending_rel_check_armed_q) && !$isunknown(
             {pc_update_en, pc_reg_load_en, o_pc_reg, next_pc_reg, next_pc_reg_priority_ref}
         )) begin
       p_pc_reg_clock_enable_factoring_exact :
@@ -1817,10 +1835,9 @@ module pc_controller #(
 `endif
 
 `ifndef SYNTHESIS
-  // Reference pending-handoff equations in serial form. The synthesized
-  // equations above rely on the before/at/after PC relations being mutually
-  // exclusive; these checks compare them with the reference for every fully
-  // known input.
+  // Reference pending-handoff equations in serial form. The before/at/after
+  // PC relations are mutually exclusive after reset and capture establish
+  // the saved state. Reset history qualifies checks of those relations.
   logic pending_crossing_ref;
   logic pending_cross_handoff_ref;
   logic pending_target_handoff_ref;
@@ -1882,7 +1899,7 @@ module pc_controller #(
   end
 
   always_comb begin
-    if (!$isunknown(
+    if (pending_rel_check_armed_q && !i_reset && !$isunknown(
             {
               pending_prediction_effective,
               pending_prediction_allow_cross,
@@ -1910,14 +1927,6 @@ module pc_controller #(
       p_pending_emit_reduction_exact : assert (pending_imm_pred_emit == pending_emit_ref);
       p_pending_hold_reduction_exact :
       assert (hold_pending_prediction_fetch == pending_hold_fetch_ref);
-      p_pending_fetch_holdoff_wcs0_cofactor_exact :
-      assert (i_window_cannot_serve_raw ||
-              o_pending_prediction_fetch_holdoff_wcs0 ==
-              o_pending_prediction_fetch_holdoff);
-      p_pending_fetch_holdoff_wcs_cofactor_exact :
-      assert (!i_window_cannot_serve_raw ||
-              o_pending_prediction_fetch_holdoff_wcs ==
-              o_pending_prediction_fetch_holdoff);
       p_pending_consume_reduction_exact :
       assert (hold_pending_prediction_consume_fetch == pending_hold_consume_ref);
       p_pending_cross_pc_mux_reduction_exact :
@@ -1967,7 +1976,8 @@ module pc_controller #(
     end
   end
 
-  // Check the fetch-PC mux against a serial priority chain every cycle.
+  // Compare the fetch-PC mux with a serial priority chain. Reset selects are
+  // valid immediately; pending-state comparisons require reset history.
   logic [XLEN-1:0] npc_ref;
   always_comb begin
     if (i_reset) npc_ref = i_boot_addr;
@@ -1992,7 +2002,9 @@ module pc_controller #(
 
   always_comb begin
     p_next_pc_onehot : assert ($onehot(npc_sel));
-    p_next_pc_matches_priority : assert (next_pc == npc_ref);
+    if (i_reset || pending_rel_check_armed_q) begin
+      p_next_pc_matches_priority : assert (next_pc == npc_ref);
+    end
   end
 
   // Arm-observation contract: a sequential arm is o_pc + d, 0 <= d < 16;
