@@ -215,7 +215,8 @@ unmerged CPU read slots, two frozen PutM slots and one acquisition endpoint.
 Read status uses per-slot masks for allocation, response transfer, lookup
 results and grant completion. Completion and miss sets dominate allocation
 clears. Allocation sets dominate response clears of valid bits. A failed
-grant supplies the selected read's error bit.
+grant supplies the selected read's error bit. Status outcomes are computed
+with and without allocation. The allocation pulse selects the outcome.
 
 An L1D grant belongs to a live request endpoint. SC acceptance requires that
 endpoint to be idle, so grant processing and SC acceptance are mutually
